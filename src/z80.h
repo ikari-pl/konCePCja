@@ -118,7 +118,18 @@ void z80_reset();
 void z80_init_tables();
 void z80_mf2stop();
 
+// Kaprys debug helpers
+void z80_add_breakpoint(word addr);
+void z80_del_breakpoint(word addr);
+void z80_clear_breakpoints();
+void z80_step_instruction();
+std::vector<Breakpoint> z80_list_breakpoints();
+
 int z80_execute();
+
+// Breakpoint hit notification hook (Kaprys IPC)
+typedef void (*BreakpointHitHook)(word pc, bool watchpoint);
+void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 
 // Handle main z80 instructions.
 void z80_execute_instruction();

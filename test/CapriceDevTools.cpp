@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
+#include <array>
+
 #include "SDL.h"
 
 #include "CapriceDevTools.h"
@@ -16,11 +18,11 @@ class CapriceDevToolsTest : public testing::Test {
     CapriceDevToolsTest() : app(/*pWindow=*/nullptr) {}
 
     void SetUp() {
-      byte membank0[1] = {0};
-      membank_read[0] = membank0;
-      membank_read[1] = membank0;
-      membank_read[2] = membank0;
-      membank_read[3] = membank0;
+      membank0[0] = 0;
+      membank_read[0] = membank0.data();
+      membank_read[1] = membank0.data();
+      membank_read[2] = membank0.data();
+      membank_read[3] = membank0.data();
       CPC.resources_path = "resources";
       app.Init();
       CRect rect;
@@ -36,6 +38,7 @@ class CapriceDevToolsTest : public testing::Test {
     }
 
   protected:
+    std::array<byte, 1> membank0;
     CApplication app;
     SDL_Surface *surface;
     CView *view;

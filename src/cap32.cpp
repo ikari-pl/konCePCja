@@ -27,6 +27,9 @@
 #include "SDL.h"
 
 #include "cap32.h"
+#include "ipc_server.h"
+#include "wg_renderedstring.h"
+#include "wg_color.h"
 #include "crtc.h"
 #include "devtools.h"
 #include "disk.h"
@@ -38,6 +41,10 @@
 #include "stringutils.h"
 #include "zip.h"
 #include "keyboard.h"
+
+namespace {
+  KaprysIpcServer* g_ipc = new KaprysIpcServer();
+}
 #include "cartridge.h"
 #include "asic.h"
 #include "argparse.h"
@@ -86,6 +93,60 @@ extern SDL_Window* mainSDLWindow;
 SDL_AudioDeviceID audio_device_id = 0;
 SDL_Surface *back_surface = nullptr;
 video_plugin* vid_plugin;
+
+static SDL_Surface* topbar_surface = nullptr;
+static std::unique_ptr<wGui::CFontEngine> topbar_font;
+static int topbar_height_px = 24;
+static int topbar_menu_width = 70;
+static bool topbar_cursor_visible = false;
+static bool devtools_mouse_in_panel = false;
+
+extern t_CPC CPC;
+static void update_topbar(const std::string& fps_text);
+
+static std::string topbar_font_path()
+{
+  const std::string menlo = "/System/Library/Fonts/Menlo.ttc";
+  const std::string menloSupplemental = "/System/Library/Fonts/Supplemental/Menlo.ttc";
+  const std::string resourcesVera = CPC.resources_path + "/vera_sans.ttf";
+  if (std::filesystem::exists(menlo)) return menlo;
+  if (std::filesystem::exists(menloSupplemental)) return menloSupplemental;
+  if (std::filesystem::exists(resourcesVera)) return resourcesVera;
+  return CPC.resources_path + "/vera_mono.ttf";
+}
+
+static void init_topbar()
+{
+  if (!back_surface) return;
+  if (topbar_surface) {
+    SDL_FreeSurface(topbar_surface);
+    topbar_surface = nullptr;
+  }
+  int bar_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale;
+  topbar_surface = SDL_CreateRGBSurface(0, bar_width, topbar_height_px, 32,
+                                        0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+  if (!topbar_font) {
+    topbar_font = std::make_unique<wGui::CFontEngine>(topbar_font_path(), 12);
+  }
+  video_set_topbar(topbar_surface, topbar_height_px);
+  update_topbar("");
+}
+
+static void update_topbar(const std::string& fps_text)
+{
+  if (!topbar_surface || !topbar_font) return;
+  SDL_FillRect(topbar_surface, nullptr, SDL_MapRGB(topbar_surface->format, 24, 24, 24));
+  wGui::CRGBColor textColor(220, 220, 220);
+  wGui::CRenderedString menuText(topbar_font.get(), "Menu", wGui::CRenderedString::VALIGN_CENTER, wGui::CRenderedString::HALIGN_LEFT);
+  menuText.Draw(topbar_surface, wGui::CRect(0, 0, topbar_surface->w, topbar_surface->h), wGui::CPoint(8, topbar_height_px/2), textColor);
+  topbar_menu_width = menuText.GetWidth("Menu") + 16;
+  if (!fps_text.empty()) {
+    wGui::CRenderedString fpsText(topbar_font.get(), fps_text, wGui::CRenderedString::VALIGN_CENTER, wGui::CRenderedString::HALIGN_LEFT);
+    int fpsWidth = fpsText.GetWidth(fps_text);
+    fpsText.Draw(topbar_surface, wGui::CRect(0, 0, topbar_surface->w, topbar_surface->h),
+                 wGui::CPoint(topbar_surface->w - fpsWidth - 8, topbar_height_px/2), textColor);
+  }
+}
 SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 std::list<DevTools> devtools;
 
@@ -2067,21 +2128,25 @@ void loadBreakpoints()
 bool showDevTools()
 {
   Uint32 flags = SDL_GetWindowFlags(mainSDLWindow);
-  // DevTools don't behave very well in fullscreen mode, so just disallow it
-  // It's still possible to use it in fullscreen with multiscreen by starting it
-  // when in windowed mode, moving the window on a different screen and
-  // switching to fullscreen after.
-  if ((flags & SDL_WINDOW_FULLSCREEN) ||
-      (flags & SDL_WINDOW_FULLSCREEN_DESKTOP)) {
-    set_osd_message("Dev tools not available in fullscreen");
-    return false;
-  }
+  bool isFullscreen = (flags & SDL_WINDOW_FULLSCREEN) ||
+      (flags & SDL_WINDOW_FULLSCREEN_DESKTOP);
+
   devtools.emplace_back();
-  if (!devtools.back().Activate(CPC.devtools_scale)) {
+  if (!devtools.back().Activate(CPC.devtools_scale, /*useMainWindow=*/!isFullscreen)) {
     LOG_ERROR("Failed to activate developers tools");
+    return false;
   }
   if (!args.symFilePath.empty()) devtools.back().LoadSymbols(args.symFilePath);
   return true;
+}
+
+bool dumpScreenTo(const std::string& path) {
+   if (!back_surface) return false;
+   if (SDL_SavePNG(back_surface, path)) {
+     LOG_ERROR("Could not write screenshot file to " + path);
+     return false;
+   }
+   return true;
 }
 
 void dumpScreen() {
@@ -2093,7 +2158,7 @@ void dumpScreen() {
    std::string dumpFile = "screenshot_" + getDateString() + ".png";
    std::string dumpPath = dir + "/" + dumpFile;
    LOG_INFO("Dumping screen to " + dumpPath);
-   if (SDL_SavePNG(back_surface, dumpPath)) {
+   if (!dumpScreenTo(dumpPath)) {
      LOG_ERROR("Could not write screenshot file to " + dumpPath);
    }
    else {
@@ -2692,6 +2757,9 @@ int cap32_main (int argc, char **argv)
       exit(-1);
    }
 
+   // Kaprys IPC server (stub)
+   g_ipc->start();
+
    #ifndef APP_PATH
    if(getcwd(chAppPath, sizeof(chAppPath)-1) == nullptr) {
       fprintf(stderr, "getcwd failed: %s\n", strerror(errno));
@@ -2714,6 +2782,7 @@ int cap32_main (int argc, char **argv)
       fprintf(stderr, "video_init() failed. Aborting.\n");
       cleanExit(-1);
    }
+   init_topbar();
    mouse_init();
 
    if (audio_init()) {
@@ -2803,7 +2872,9 @@ int cap32_main (int argc, char **argv)
         // Ensure execution is resumed when all devtools are closed
         if (devtools.empty()) CPC.paused = false;
         for (auto& devtool : devtools) devtool.PreUpdate();
-        for (auto& devtool : devtools) devtool.PostUpdate();
+        for (auto& devtool : devtools) {
+          if (!devtool.UsesMainWindow()) devtool.PostUpdate();
+        }
       }
       while (SDL_PollEvent(&event)) {
          bool processed = false;
@@ -2811,8 +2882,43 @@ int cap32_main (int argc, char **argv)
            devtools.remove_if([](DevTools& d) { return !d.IsActive(); });
            // Ensure execution is resumed when all devtools are closed
            if (devtools.empty()) CPC.paused = false;
+           int panel_width = video_get_devtools_panel_width();
+           int panel_height = video_get_devtools_panel_height();
+           int panel_surface_width = video_get_devtools_panel_surface_width();
+           int panel_surface_height = video_get_devtools_panel_surface_height();
+           int win_width = 0, win_height = 0;
+           if (mainSDLWindow) SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+           int panel_x = std::max(0, win_width - panel_width);
+           int panel_y = video_get_topbar_height();
+           bool is_mouse_event = (event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP);
+           int mx = 0, my = 0;
+           if (is_mouse_event) {
+             if (event.type == SDL_MOUSEMOTION) { mx = event.motion.x; my = event.motion.y; }
+             else { mx = event.button.x; my = event.button.y; }
+             devtools_mouse_in_panel = (panel_width > 0 && mx >= panel_x && mx < panel_x + panel_width && my >= panel_y && my < panel_y + panel_height);
+           }
            for (auto& devtool : devtools) {
-             if (devtool.PassEvent(event)) {
+             bool route = true;
+             SDL_Event routed_event = event;
+             if (devtool.UsesMainWindow() && panel_width > 0) {
+               if (is_mouse_event) {
+                 route = devtools_mouse_in_panel;
+                 if (route) {
+                   float sx = (panel_width > 0 && panel_surface_width > 0) ? (static_cast<float>(panel_surface_width) / panel_width) : 1.0f;
+                   float sy = (panel_height > 0 && panel_surface_height > 0) ? (static_cast<float>(panel_surface_height) / panel_height) : 1.0f;
+                   if (event.type == SDL_MOUSEMOTION) {
+                     routed_event.motion.x = static_cast<int>((event.motion.x - panel_x) * sx);
+                     routed_event.motion.y = static_cast<int>((event.motion.y - panel_y) * sy);
+                   } else {
+                     routed_event.button.x = static_cast<int>((event.button.x - panel_x) * sx);
+                     routed_event.button.y = static_cast<int>((event.button.y - panel_y) * sy);
+                   }
+                 }
+               } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP || event.type == SDL_TEXTINPUT || event.type == SDL_TEXTEDITING) {
+                 route = devtools_mouse_in_panel;
+               }
+             }
+             if (route && devtool.PassEvent(routed_event)) {
                processed = true;
                break;
              }
@@ -3036,6 +3142,16 @@ int cap32_main (int argc, char **argv)
 
             case SDL_MOUSEMOTION:
             {
+              if (topbar_surface) {
+                bool over_topbar = event.motion.y < topbar_height_px;
+                if (over_topbar && !topbar_cursor_visible) {
+                  ShowCursor(true);
+                  topbar_cursor_visible = true;
+                } else if (!over_topbar && topbar_cursor_visible && !CPC.scr_gui_is_currently_on && !CPC.phazer_emulation) {
+                  ShowCursor(false);
+                  topbar_cursor_visible = false;
+                }
+              }
               CPC.phazer_x = (event.motion.x-vid_plugin->x_offset) * vid_plugin->x_scale;
               CPC.phazer_y = (event.motion.y-vid_plugin->y_offset) * vid_plugin->y_scale;
             }
@@ -3043,6 +3159,10 @@ int cap32_main (int argc, char **argv)
 
             case SDL_MOUSEBUTTONDOWN:
             {
+              if (topbar_surface && event.button.y < topbar_height_px && event.button.x < topbar_menu_width) {
+                if (!CPC.scr_gui_is_currently_on) showGui();
+                break;
+              }
               if (CPC.phazer_emulation) {
                 // Trojan Light Phazer uses Joystick Fire for the trigger button:
                 // https://www.cpcwiki.eu/index.php/Trojan_Light_Phazer
@@ -3163,13 +3283,23 @@ int cap32_main (int argc, char **argv)
             dwFrameCount++;
             if (SDL_GetTicks() < osd_timing) {
                print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs, osd_message.c_str(), true);
-            } else if (CPC.scr_fps) {
+            }
+            std::string fpsText;
+            if (CPC.scr_fps) {
                char chStr[15];
                sprintf(chStr, "%3dFPS %3d%%", static_cast<int>(dwFPS), static_cast<int>(dwFPS) * 100 / (1000 / static_cast<int>(FRAME_PERIOD_MS)));
-               print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs, chStr, true); // display the frames per second counter
+               fpsText = chStr;
             }
+            update_topbar(fpsText);
             asic_draw_sprites();
             video_display(); // update PC display
+            if (!devtools.empty()) {
+              devtools.remove_if([](DevTools& d) { return !d.IsActive(); });
+              if (devtools.empty()) CPC.paused = false;
+              for (auto& devtool : devtools) {
+                if (devtool.UsesMainWindow()) devtool.PostUpdate();
+              }
+            }
             if (take_screenshot) {
               dumpScreen();
               take_screenshot = false;
@@ -3181,5 +3311,6 @@ int cap32_main (int argc, char **argv)
       }
    }
 
+   g_ipc->stop();
    return 0;
 }

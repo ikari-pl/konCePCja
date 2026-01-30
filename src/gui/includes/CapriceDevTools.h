@@ -63,6 +63,39 @@ namespace wGui
         int RAMCfg = 0;
     };
 
+    class CapriceDisasmPanel : public CFrame {
+      public:
+        CapriceDisasmPanel(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFontEngine, DevTools* devtools);
+        ~CapriceDisasmPanel() override = default;
+
+        void LoadSymbols(const std::string& filename);
+
+        void PreUpdate();
+        void PostUpdate();
+
+        bool HandleMessage(CMessage* pMessage) override;
+
+      protected:
+        void RefreshDisassembly();
+        void UpdateDisassembly();
+        void UpdateDisassemblyPos();
+
+        CLabel* m_pTitleLabel;
+        CButton* m_pCloseButton;
+        CListBox* m_pAssemblyCode;
+
+        DisassembledCode m_Disassembled;
+        Symfile m_Symfile;
+        std::vector<word> m_EntryPoints;
+
+        DevTools* m_pDevTools;
+        bool wasRunning = false;
+
+      private:
+        CapriceDisasmPanel(const CapriceDisasmPanel&) = delete;
+        CapriceDisasmPanel& operator=(const CapriceDisasmPanel&) = delete;
+    };
+
     class CapriceDevTools : public CFrame {
       public:
         //! \param pParent A pointer to the parent view
@@ -115,6 +148,7 @@ namespace wGui
         void UpdateWatchPointsList();
         void UpdateMemConfig();
         void UpdateTextMemory();
+        void UpdateMemDump();
         void UpdateAudio();
 
         void RemoveEphemeralBreakpoints();
@@ -288,6 +322,12 @@ namespace wGui
         CCheckBox* m_pMemConfigCurHiROM;
         CEditBox* m_pMemConfigCurRAMBank;
         CEditBox* m_pMemConfigCurRAMConfig;
+
+        CGroupBox* m_pMemDumpGrp;
+        CLabel* m_pMemDumpAddrLabel;
+        CEditBox* m_pMemDumpAddr;
+        CButton* m_pMemDumpButton;
+        CTextBox* m_pMemDumpText;
 
         RAMConfig m_MemRAMConfig;
 

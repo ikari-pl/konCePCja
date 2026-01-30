@@ -25,6 +25,7 @@ CapriceMenu::CapriceMenu(const CRect& WindowRect, CWindow* pParent, SDL_Surface*
     { MenuItem::OPTIONS, "Options" },
     { MenuItem::LOAD_SAVE, "Load / Save" },
     { MenuItem::MEMORY_TOOL, "Memory tool" },
+    { MenuItem::DEVTOOLS, "DevTools (Shift+F2)" },
     { MenuItem::RESET, "Reset (F5)" },
     { MenuItem::ABOUT, "About" },
     { MenuItem::RESUME, "Resume" },
@@ -101,6 +102,10 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
               bHandled = true;
               selected = MenuItem::MEMORY_TOOL;
               break;
+            case SDLK_d:
+              bHandled = true;
+              selected = MenuItem::DEVTOOLS;
+              break;
             case SDLK_F5:
               bHandled = true;
               selected = MenuItem::RESET;
@@ -155,6 +160,12 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
     case MenuItem::MEMORY_TOOL:
       {
         /*CapriceMemoryTool* pMemoryTool = */new CapriceMemoryTool(CRect(ViewToClient(CPoint(m_pScreenSurface->w /2 - 165, m_pScreenSurface->h /2 - 140)), 330, 270), this, nullptr);
+        break;
+      }
+    case MenuItem::DEVTOOLS:
+      {
+        showDevTools();
+        Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
         break;
       }
     case MenuItem::RESET:

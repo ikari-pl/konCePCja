@@ -135,6 +135,90 @@ RAMConfig RAMConfig::CurrentConfig()
   return result;
 }
 
+CapriceDisasmPanel::CapriceDisasmPanel(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFontEngine, DevTools* devtools) :
+  CFrame(WindowRect, pParent, pFontEngine, "Disassembly", false), m_pDevTools(devtools)
+{
+  SetTitleBarHeight(0);
+  SetModal(false);
+
+  auto monoFontEngine = Application().GetFontEngine(CPC.resources_path + "/vera_mono.ttf", 10);
+
+  m_pTitleLabel = new CLabel(CPoint(8, 6), this, "Disasm");
+  m_pCloseButton = new CButton(CRect(CPoint(m_ClientRect.Width() - 45, 4), 35, 16), this, "Close");
+  m_pCloseButton->SetIsFocusable(true);
+
+  int listTop = 24;
+  int listHeight = m_ClientRect.Height() - listTop - 6;
+  m_pAssemblyCode = new CListBox(CRect(6, listTop, m_ClientRect.Width() - 12, listHeight), this,
+                                 /*bSingleSelection=*/true, /*iItemHeight=*/14, monoFontEngine);
+
+  UpdateDisassembly();
+  UpdateDisassemblyPos();
+}
+
+void CapriceDisasmPanel::LoadSymbols(const std::string& filename)
+{
+  m_Symfile = Symfile(filename);
+  m_EntryPoints = m_Symfile.Entrypoints();
+  RefreshDisassembly();
+}
+
+void CapriceDisasmPanel::PreUpdate()
+{
+  if (wasRunning) {
+    UpdateDisassemblyPos();
+  }
+  wasRunning = !CPC.paused;
+}
+
+void CapriceDisasmPanel::PostUpdate()
+{
+}
+
+bool CapriceDisasmPanel::HandleMessage(CMessage* pMessage)
+{
+  bool bHandled = false;
+
+  if (pMessage && pMessage->MessageType() == CMessage::CTRL_SINGLELCLICK) {
+    if (pMessage->Destination() == this && pMessage->Source() == m_pCloseButton) {
+      if (m_pDevTools) {
+        m_pDevTools->Deactivate();
+      }
+      bHandled = true;
+    }
+  }
+
+  if (!bHandled) {
+    bHandled = CFrame::HandleMessage(pMessage);
+  }
+  return bHandled;
+}
+
+void CapriceDisasmPanel::UpdateDisassemblyPos()
+{
+  if (!m_Disassembled.LineAt(_PC).has_value()) {
+    UpdateDisassembly();
+    return;
+  }
+
+  auto lines = m_pAssemblyCode->GetAllItems();
+  if (lines.empty()) return;
+
+  SListItem toFind("ignored", reinterpret_cast<void*>(_PC));
+  auto curpos = std::lower_bound(lines.begin(), lines.end(), toFind, [](auto x, auto y) {
+    return x.pItemData < y.pItemData;
+  });
+  int idx = std::distance(lines.begin(), curpos);
+  m_pAssemblyCode->SetPosition(idx, CListBox::CENTER);
+  if (curpos != lines.end() && curpos->pItemData == toFind.pItemData) {
+    while ((curpos = std::next(curpos)) != lines.end() && curpos->pItemData == toFind.pItemData) idx++;
+    m_pAssemblyCode->SetSelection(idx, /*bSelected=*/true, /*bNotify=*/false);
+  } else {
+    m_pAssemblyCode->SetAllSelections(false);
+    m_pAssemblyCode->Draw();
+  }
+}
+
 CapriceDevTools::CapriceDevTools(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFontEngine, DevTools* devtools) :
   CFrame(WindowRect, pParent, pFontEngine, "DevTools", false), m_pDevTools(devtools)
 {
@@ -419,6 +503,15 @@ CapriceDevTools::CapriceDevTools(const CRect& WindowRect, CWindow* pParent, CFon
     m_pMemConfigCurRAMConfig = new CEditBox(CRect(CPoint(160, 50), 70, 20), m_pMemConfigGrp);
     m_pMemConfigCurRAMConfig->SetReadOnly(true);
 
+    m_pMemDumpGrp = new CGroupBox(CRect(CPoint(380, 253), 240, 185), m_pGroupBoxTabMemory, "Dump");
+    m_pMemDumpAddrLabel = new CLabel(CPoint(10, 20), m_pMemDumpGrp, "Addr:");
+    m_pMemDumpAddr = new CEditBox(CRect(CPoint(50, 15), 50, 20), m_pMemDumpGrp);
+    m_pMemDumpAddr->SetContentType(CEditBox::HEXNUMBER);
+    m_pMemDumpAddr->SetWindowText("0000");
+    m_pMemDumpButton = new CButton(CRect(CPoint(110, 15), 40, 20), m_pMemDumpGrp, "Go");
+    m_pMemDumpText = new CTextBox(CRect(CPoint(10, 45), 220, 125), m_pMemDumpGrp, monoFontEngine);
+    m_pMemDumpText->SetReadOnly(true);
+
     // ---------------- 'Video' screen ----------------
     m_pVidLabel = new CLabel(CPoint(10, 10), m_pGroupBoxTabVideo, "Work in progress ... Nothing to see here yet, but come back later for video (CRTC & GateArray info).");
 
@@ -607,6 +700,62 @@ std::string FormatSymbol(const std::map<word, std::string>::iterator& symbol_it)
   std::ostringstream oss;
   oss << symbol_it->second << ": [" << std::hex << std::setw(4) << std::setfill('0') << symbol_it->first << "]";
   return oss.str();
+}
+
+void CapriceDisasmPanel::RefreshDisassembly()
+{
+  std::vector<SListItem> items;
+  std::map<word, std::string> symbols = m_Symfile.Symbols();
+  std::map<word, std::string>::iterator symbols_it = symbols.begin();
+  for (const auto& line : m_Disassembled.lines) {
+    while (symbols_it != symbols.end() && symbols_it->first <= line.address_) {
+      items.emplace_back(FormatSymbol(symbols_it), reinterpret_cast<void*>(symbols_it->first), COLOR_BLUE);
+      symbols_it++;
+    }
+    std::ostringstream oss;
+    oss << std::hex << " " << std::setw(4) << std::setfill('0') << line.address_ << ": ";
+    if (line.opcode_ <= 0xFF) {
+      oss << "        " << std::setw(2) << std::setfill('0') << line.opcode_;
+    } else if (line.opcode_ <= 0xFFFF) {
+      oss << "      " << std::setw(4) << std::setfill('0') << line.opcode_;
+    } else if (line.opcode_ <= 0xFFFFFF) {
+      oss << "    " << std::setw(6) << std::setfill('0') << line.opcode_;
+    } else if (line.opcode_ <= 0xFFFFFFFF) {
+      oss << "  " << std::setw(8) << std::setfill('0') << line.opcode_;
+    } else {
+      oss << std::setw(10) << std::setfill('0') << line.opcode_;
+    }
+    oss << "     " << line.instruction_;
+    std::string instruction = oss.str();
+    std::map<word, std::string>::iterator it;
+    if (!line.ref_address_string_.empty() &&
+        ((it = symbols.find(line.ref_address_)) != symbols.end())) {
+      instruction = stringutils::replace(instruction, line.ref_address_string_, it->second);
+    }
+    auto color = COLOR_BLACK;
+    if (std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) {
+          return (b.address == line.address_);
+          })) {
+      color = COLOR_RED;
+    } else if (line.instruction_ == "ret") {
+      color = COLOR_BLUE;
+    }
+    items.emplace_back(instruction, reinterpret_cast<void*>(line.address_), color);
+  }
+
+  m_pAssemblyCode->ClearItems();
+  m_pAssemblyCode->AddItems(items);
+  UpdateDisassemblyPos();
+}
+
+void CapriceDisasmPanel::UpdateDisassembly()
+{
+  std::vector<word> entrypoints = m_EntryPoints;
+  if (std::find(entrypoints.begin(), entrypoints.end(), _PC) == entrypoints.end()) {
+    entrypoints.push_back(_PC);
+  }
+  m_Disassembled = disassemble(entrypoints);
+  RefreshDisassembly();
 }
 
 void CapriceDevTools::AsmSearch(SearchFrom from, SearchDir dir)
@@ -1051,6 +1200,37 @@ void CapriceDevTools::UpdateTextMemory()
     }
   }
   m_pMemTextContent->SetWindowText(memText.str().substr(0, memText.str().size()-1));
+  UpdateMemDump();
+}
+
+void CapriceDevTools::UpdateMemDump()
+{
+  PrepareMemBankConfig();
+  std::string addressText = m_pMemDumpAddr->GetWindowText();
+  unsigned int baseAddress = 0;
+  if (!addressText.empty()) {
+    baseAddress = static_cast<unsigned int>(strtol(addressText.c_str(), nullptr, 16)) & 0xffff;
+  }
+  std::ostringstream dumpText;
+  constexpr int bytesPerLine = 16;
+  constexpr int lines = 8;
+  for (int line = 0; line < lines; ++line) {
+    unsigned int addr = (baseAddress + line * bytesPerLine) & 0xffff;
+    dumpText << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << addr << ": ";
+    std::string ascii;
+    for (int i = 0; i < bytesPerLine; ++i) {
+      unsigned int byteVal = ReadMem(static_cast<word>((addr + i) & 0xffff));
+      dumpText << std::setfill('0') << std::setw(2) << std::hex << byteVal << ' ';
+      char ch = static_cast<char>(byteVal);
+      ascii += (ch >= 32 && ch < 127) ? ch : '.';
+    }
+    dumpText << " |" << ascii << "|\n";
+  }
+  auto dumpStr = dumpText.str();
+  if (!dumpStr.empty()) {
+    dumpStr.pop_back();
+  }
+  m_pMemDumpText->SetWindowText(dumpStr);
 }
 
 void CapriceDevTools::PauseExecution()
@@ -1343,6 +1523,11 @@ bool CapriceDevTools::HandleMessage(CMessage* pMessage)
               if(SDL_SetClipboardText(m_pMemTextContent->GetWindowText().c_str()) < 0) {
                 LOG_ERROR("Error while copying data to clipboard: " << SDL_GetError());
               }
+              bHandled = true;
+              break;
+            }
+            if (pMessage->Source() == m_pMemDumpButton) {
+              UpdateMemDump();
               bHandled = true;
               break;
             }

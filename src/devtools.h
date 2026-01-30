@@ -5,13 +5,16 @@
 #include "SDL.h"
 #include "CapriceGui.h"
 #include "CapriceDevToolsView.h"
+#include "CapriceRegsPanelView.h"
+#include "CapriceDisasmPanelView.h"
 
 class DevTools {
   public:
-    bool Activate(int scale);
+    bool Activate(int scale, bool useMainWindow);
     void Deactivate();
 
     bool IsActive() const { return active; };
+    bool UsesMainWindow() const { return useMainWindow; };
 
     void LoadSymbols(const std::string& filename);
 
@@ -25,7 +28,9 @@ class DevTools {
   private:
     std::unique_ptr<CapriceGui> capriceGui;
     std::unique_ptr<CapriceDevToolsView> devToolsView;
+    std::unique_ptr<wGui::CapriceRegsPanelView> regsPanelView;
     bool active = false;
+    bool useMainWindow = false;
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
     SDL_Texture* texture = nullptr;

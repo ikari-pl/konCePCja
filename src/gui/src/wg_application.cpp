@@ -28,6 +28,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <filesystem>
 #include "cap32.h"
 #include "log.h"
 
@@ -362,7 +363,20 @@ void CApplication::Init()
 	MessageServer()->RegisterMessageClient(this, CMessage::APP_EXIT, CMessageServer::PRIORITY_LAST);
 
 	// judb removed references to wgui.conf; for caprice32 we may integrate these settings in cap32.cfg:
-	m_pDefaultFontEngine = GetFontEngine(CPC.resources_path + "/vera_sans.ttf", 10); // default size was 10
+	std::string fontPath;
+	const std::string menlo = "/System/Library/Fonts/Menlo.ttc";
+	const std::string menloSupplemental = "/System/Library/Fonts/Supplemental/Menlo.ttc";
+	const std::string resourcesVera = CPC.resources_path + "/vera_sans.ttf";
+	if (std::filesystem::exists(menlo)) {
+		fontPath = menlo;
+	} else if (std::filesystem::exists(menloSupplemental)) {
+		fontPath = menloSupplemental;
+	} else if (std::filesystem::exists(resourcesVera)) {
+		fontPath = resourcesVera;
+	} else {
+		fontPath = CPC.resources_path + "/vera_mono.ttf";
+	}
+	m_pDefaultFontEngine = GetFontEngine(fontPath, 10); // default size was 10
 	m_DefaultBackgroundColor = DEFAULT_BACKGROUND_COLOR;
 	m_DefaultForegroundColor = DEFAULT_FOREGROUND_COLOR;
 	m_DefaultSelectionColor  = DEFAULT_SELECTION_COLOR;

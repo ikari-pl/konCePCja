@@ -53,7 +53,20 @@ SDL_Surface* scaled = nullptr;
 // the video surface shown by the plugin to the application
 SDL_Surface* pub = nullptr;
 
+SDL_Surface* devtools_panel_surface = nullptr;
+SDL_Texture* devtools_panel_texture = nullptr;
+int devtools_panel_width = 0;
+int devtools_panel_height = 0;
+int devtools_panel_surface_width = 0;
+int devtools_panel_surface_height = 0;
+int devtools_cpc_height = 0;
+
+SDL_Surface* topbar_surface = nullptr;
+SDL_Texture* topbar_texture = nullptr;
+int topbar_height = 0;
+
 extern t_CPC CPC;
+extern video_plugin* vid_plugin;
 
 #ifndef min
 #define min(a,b) ((a)<(b) ? (a) : (b))
@@ -97,6 +110,15 @@ void compute_scale(video_plugin* t, int w, int h)
 {
   int win_width, win_height;
   SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+  if (devtools_panel_width > 0) {
+    win_width = max(1, win_width - devtools_panel_width);
+  }
+  if (topbar_height > 0) {
+    win_height = max(1, win_height - topbar_height);
+  }
+  if (devtools_cpc_height > 0) {
+    win_height = devtools_cpc_height;
+  }
   if (CPC.scr_preserve_aspect_ratio != 0) {
     float win_x_scale, win_y_scale;
     win_x_scale = w/static_cast<float>(win_width);
@@ -106,6 +128,8 @@ void compute_scale(video_plugin* t, int w, int h)
     t->height=h/scale;
     float x_offset = 0.5*(win_width-t->width);
     float y_offset = 0.5*(win_height-t->height);
+    if (devtools_panel_width > 0) x_offset = 0;
+    if (topbar_height > 0) y_offset = static_cast<float>(topbar_height);
     t->x_offset=x_offset;
     t->y_offset=y_offset;
     t->x_scale=scale;
@@ -161,6 +185,18 @@ void direct_flip(video_plugin* t)
     SDL_RenderCopy(renderer, texture, nullptr, &dest_rect);
   } else {
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+  }
+  if (topbar_texture && topbar_surface) {
+    SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
+    SDL_Rect bar_rect = { 0, 0, topbar_surface->w, topbar_height };
+    SDL_RenderCopy(renderer, topbar_texture, nullptr, &bar_rect);
+  }
+  if (devtools_panel_texture && devtools_panel_surface) {
+    SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
+    int win_width, win_height;
+    SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+    SDL_Rect panel_rect = { win_width - devtools_panel_width, topbar_height, devtools_panel_width, devtools_panel_height };
+    SDL_RenderCopy(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
   SDL_RenderPresent(renderer);
 }
@@ -556,6 +592,103 @@ void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels)
   compute_rects(src, dst, half_pixels);
 }
 
+void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int scale)
+{
+  if (!mainSDLWindow || !renderer || !surface) return;
+  if (devtools_panel_texture) {
+    SDL_DestroyTexture(devtools_panel_texture);
+    devtools_panel_texture = nullptr;
+  }
+  devtools_panel_surface = surface;
+  devtools_panel_width = width * scale;
+  devtools_panel_height = height * scale;
+  devtools_panel_surface_width = surface->w;
+  devtools_panel_surface_height = surface->h;
+  devtools_cpc_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale;
+  devtools_panel_texture = SDL_CreateTextureFromSurface(renderer, devtools_panel_surface);
+  int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale + devtools_panel_width;
+  int win_height = max(devtools_cpc_height + topbar_height, devtools_panel_height);
+  SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
+}
+
+void video_clear_devtools_panel()
+{
+  if (devtools_panel_texture) {
+    SDL_DestroyTexture(devtools_panel_texture);
+    devtools_panel_texture = nullptr;
+  }
+  devtools_panel_surface = nullptr;
+  devtools_panel_width = 0;
+  devtools_panel_height = 0;
+  devtools_panel_surface_width = 0;
+  devtools_panel_surface_height = 0;
+  devtools_cpc_height = 0;
+  if (mainSDLWindow) {
+    int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale;
+    int win_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale + topbar_height;
+    SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  }
+  if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
+}
+
+void video_set_topbar(SDL_Surface* surface, int height)
+{
+  if (!mainSDLWindow || !renderer || !surface) return;
+  if (topbar_texture) {
+    SDL_DestroyTexture(topbar_texture);
+    topbar_texture = nullptr;
+  }
+  topbar_surface = surface;
+  topbar_height = height;
+  topbar_texture = SDL_CreateTextureFromSurface(renderer, topbar_surface);
+  int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale + devtools_panel_width;
+  int win_height = max(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale + topbar_height, devtools_panel_height);
+  SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
+}
+
+void video_clear_topbar()
+{
+  if (topbar_texture) {
+    SDL_DestroyTexture(topbar_texture);
+    topbar_texture = nullptr;
+  }
+  topbar_surface = nullptr;
+  topbar_height = 0;
+  if (mainSDLWindow) {
+    int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale + devtools_panel_width;
+    int win_height = max(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale, devtools_panel_height);
+    SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  }
+  if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
+}
+
+int video_get_devtools_panel_width()
+{
+  return devtools_panel_width;
+}
+
+int video_get_devtools_panel_height()
+{
+  return devtools_panel_height;
+}
+
+int video_get_devtools_panel_surface_width()
+{
+  return devtools_panel_surface_width;
+}
+
+int video_get_devtools_panel_surface_height()
+{
+  return devtools_panel_surface_height;
+}
+
+int video_get_topbar_height()
+{
+  return topbar_height;
+}
+
 SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
 {
   SDL_CreateWindowAndRenderer(CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN_DESKTOP:SDL_WINDOW_SHOWN), &mainSDLWindow, &renderer);
@@ -607,6 +740,18 @@ void swscale_blit(video_plugin* t)
     SDL_RenderCopy(renderer, texture, nullptr, &dest_rect);
   } else {
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+  }
+  if (topbar_texture && topbar_surface) {
+    SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
+    SDL_Rect bar_rect = { 0, 0, topbar_surface->w, topbar_height };
+    SDL_RenderCopy(renderer, topbar_texture, nullptr, &bar_rect);
+  }
+  if (devtools_panel_texture && devtools_panel_surface) {
+    SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
+    int win_width, win_height;
+    SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+    SDL_Rect panel_rect = { win_width - devtools_panel_width, topbar_height, devtools_panel_width, devtools_panel_height };
+    SDL_RenderCopy(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
   SDL_RenderPresent(renderer);
 }

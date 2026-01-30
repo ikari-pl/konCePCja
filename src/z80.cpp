@@ -163,6 +163,8 @@ t_z80regs z80;
 std::vector<Breakpoint> breakpoints;
 std::vector<Watchpoint> watchpoints;
 int iCycleCount, iWSAdjust;
+
+static BreakpointHitHook g_breakpoint_hit_hook = nullptr;
 static byte SZ[256]; // zero and sign flags
 static byte SZ_BIT[256]; // zero, sign and parity/overflow (=zero) flags for BIT opcode
 static byte SZP[256]; // zero, sign and parity flags
@@ -984,6 +986,11 @@ inline byte SRL(byte val) {
    } \
 }
 
+void z80_set_breakpoint_hit_hook(BreakpointHitHook hook)
+{
+   g_breakpoint_hit_hook = hook;
+}
+
 void z80_reset()
 {
    z80 = t_z80regs();
@@ -1096,9 +1103,14 @@ int z80_execute()
       // TODO: Measure impact. If important, create templated version of
       // z80_execute, read_mem, write_mem ...
       if (!breakpoints.empty()) {
-        if ((z80.breakpoint_reached = std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) { return b.address == _PC; }))) break;
+        z80.breakpoint_reached = std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) { return b.address == _PC; });
       }
-      if (z80.watchpoint_reached) break;
+      if (z80.breakpoint_reached || z80.watchpoint_reached) {
+        if (g_breakpoint_hit_hook) {
+          g_breakpoint_hit_hook(_PC, z80.watchpoint_reached != 0);
+        }
+        break;
+      }
       if (z80.step_in) { z80.step_in++; break; }
 
       if (z80.trace) { // tracing instructions?
@@ -2997,4 +3009,29 @@ void z80_execute_pfx_fdcb_instruction()
       case srl_l:       _L = read_mem(_IY+o); _L = SRL(_L); write_mem(_IY+o, _L); break;
       case srl_mhl:     { byte b = read_mem(_IY+o); write_mem(_IY+o, SRL(b)); } break;
    }
+}
+
+// --- Kaprys debug helpers ---
+void z80_add_breakpoint(word addr) {
+  if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b){ return b.address == addr; })) {
+    breakpoints.emplace_back(addr, NORMAL);
+  }
+}
+
+void z80_del_breakpoint(word addr) {
+  breakpoints.erase(
+    std::remove_if(breakpoints.begin(), breakpoints.end(), [&](const auto& b){ return b.address == addr; }),
+    breakpoints.end());
+}
+
+void z80_clear_breakpoints() {
+  breakpoints.clear();
+}
+
+void z80_step_instruction() {
+  z80_execute_instruction();
+}
+
+std::vector<Breakpoint> z80_list_breakpoints() {
+  return breakpoints;
 }
