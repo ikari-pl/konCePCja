@@ -23,6 +23,7 @@
 #include <string>
 #include <thread>
 #include <filesystem>
+#include <unistd.h>
 
 #include "SDL.h"
 
@@ -55,6 +56,7 @@ namespace {
 #include <cstring>
 
 #include "wg_error.h"
+#include "wg_resource_handle.h"
 #include "CapriceGui.h"
 #include "CapriceGuiView.h"
 #include "CapriceVKeyboardView.h"
@@ -89,6 +91,7 @@ extern t_disk_format disk_format[];
 extern byte* pbCartridgePages[];
 
 extern SDL_Window* mainSDLWindow;
+extern SDL_Renderer* renderer;
 
 SDL_AudioDeviceID audio_device_id = 0;
 SDL_Surface *back_surface = nullptr;
@@ -1173,7 +1176,7 @@ int emulator_init ()
 {
    if (input_init()) {
       fprintf(stderr, "input_init() failed. Aborting.\n");
-      exit(-1);
+      _exit(-1);
    }
 
    // Cartridge must be loaded before init as ROM needs to be present.
@@ -2213,6 +2216,9 @@ void doCleanUp ()
 
    joysticks_shutdown();
    audio_shutdown();
+   video_clear_topbar();
+   video_clear_devtools_panel();
+   wGui::CResourceHandle::BeginShutdown();
    video_shutdown();
 
    #ifdef DEBUG
@@ -2229,11 +2235,12 @@ void cleanExit(int returnCode, bool askIfUnsaved)
    if (askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
      return;
    }
+   wGui::CResourceHandle::BeginShutdown();
    for (auto& devtool : devtools) {
      devtool.Deactivate();
    }
    doCleanUp();
-   exit(returnCode);
+   _exit(returnCode);
 }
 
 // TODO(SDL2): Remove these 2 maps once not needed to debug keymaps anymore
@@ -2754,7 +2761,7 @@ int cap32_main (int argc, char **argv)
 
    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE) < 0) { // initialize SDL
       fprintf(stderr, "SDL_Init() failed: %s\n", SDL_GetError());
-      exit(-1);
+      _exit(-1);
    }
 
    // Kaprys IPC server (stub)
@@ -2890,12 +2897,25 @@ int cap32_main (int argc, char **argv)
            if (mainSDLWindow) SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
            int panel_x = std::max(0, win_width - panel_width);
            int panel_y = video_get_topbar_height();
+           int panel_w_scaled = panel_width;
+           int panel_h_scaled = panel_height;
            bool is_mouse_event = (event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP);
            int mx = 0, my = 0;
            if (is_mouse_event) {
-             if (event.type == SDL_MOUSEMOTION) { mx = event.motion.x; my = event.motion.y; }
-             else { mx = event.button.x; my = event.button.y; }
-             devtools_mouse_in_panel = (panel_width > 0 && mx >= panel_x && mx < panel_x + panel_width && my >= panel_y && my < panel_y + panel_height);
+             float lx = 0.0f, ly = 0.0f;
+             if (renderer) {
+               if (event.type == SDL_MOUSEMOTION) {
+                 SDL_RenderWindowToLogical(renderer, static_cast<float>(event.motion.x), static_cast<float>(event.motion.y), &lx, &ly);
+               } else {
+                 SDL_RenderWindowToLogical(renderer, static_cast<float>(event.button.x), static_cast<float>(event.button.y), &lx, &ly);
+               }
+               mx = static_cast<int>(lx);
+               my = static_cast<int>(ly);
+             } else {
+               if (event.type == SDL_MOUSEMOTION) { mx = event.motion.x; my = event.motion.y; }
+               else { mx = event.button.x; my = event.button.y; }
+             }
+             devtools_mouse_in_panel = (panel_width > 0 && mx >= panel_x && mx < panel_x + panel_w_scaled && my >= panel_y && my < panel_y + panel_h_scaled);
            }
            for (auto& devtool : devtools) {
              bool route = true;
@@ -2904,23 +2924,30 @@ int cap32_main (int argc, char **argv)
                if (is_mouse_event) {
                  route = devtools_mouse_in_panel;
                  if (route) {
-                   float sx = (panel_width > 0 && panel_surface_width > 0) ? (static_cast<float>(panel_surface_width) / panel_width) : 1.0f;
-                   float sy = (panel_height > 0 && panel_surface_height > 0) ? (static_cast<float>(panel_surface_height) / panel_height) : 1.0f;
+                   float sx = (panel_w_scaled > 0) ? (static_cast<float>(panel_surface_width) / panel_w_scaled) : 1.0f;
+                   float sy = (panel_h_scaled > 0) ? (static_cast<float>(panel_surface_height) / panel_h_scaled) : 1.0f;
                    if (event.type == SDL_MOUSEMOTION) {
-                     routed_event.motion.x = static_cast<int>((event.motion.x - panel_x) * sx);
-                     routed_event.motion.y = static_cast<int>((event.motion.y - panel_y) * sy);
+                     routed_event.motion.x = static_cast<int>((mx - panel_x) * sx);
+                     routed_event.motion.y = static_cast<int>((my - panel_y) * sy);
                    } else {
-                     routed_event.button.x = static_cast<int>((event.button.x - panel_x) * sx);
-                     routed_event.button.y = static_cast<int>((event.button.y - panel_y) * sy);
+                     routed_event.button.x = static_cast<int>((mx - panel_x) * sx);
+                     routed_event.button.y = static_cast<int>((my - panel_y) * sy);
                    }
                  }
                } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP || event.type == SDL_TEXTINPUT || event.type == SDL_TEXTEDITING) {
                  route = devtools_mouse_in_panel;
                }
              }
-             if (route && devtool.PassEvent(routed_event)) {
-               processed = true;
-               break;
+             if (route) {
+               if (is_mouse_event && (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEMOTION)) {
+                 int cx = (event.type == SDL_MOUSEMOTION) ? routed_event.motion.x : routed_event.button.x;
+                 int cy = (event.type == SDL_MOUSEMOTION) ? routed_event.motion.y : routed_event.button.y;
+                 devtools_set_debug_click(cx, cy);
+               }
+               if (devtool.PassEvent(routed_event)) {
+                 processed = true;
+                 break;
+               }
              }
            }
          }

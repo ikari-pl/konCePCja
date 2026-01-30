@@ -10,6 +10,9 @@ extern t_CPC CPC;
 extern SDL_Window* mainSDLWindow;
 extern SDL_Surface* back_surface;
 
+static int g_dbg_click_x = -1;
+static int g_dbg_click_y = -1;
+
 bool DevTools::Activate(int scale, bool useMainWindow) {
   this->scale = scale;
   this->useMainWindow = useMainWindow;
@@ -24,7 +27,7 @@ bool DevTools::Activate(int scale, bool useMainWindow) {
       texture = nullptr;
       surface = SDL_CreateRGBSurface(0, DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, 32, 0, 0, 0, 0);
       if (!surface) { Deactivate(); return false; }
-      capriceGui = std::make_unique<CapriceGui>(window, /*bInMainView=*/true, /*scale=*/1);
+      capriceGui = std::make_unique<CapriceGui>(window, /*bInMainView=*/false, /*scale=*/1);
       capriceGui->Init();
       devToolsView = std::make_unique<CapriceDevToolsView>(*capriceGui, surface, renderer, texture, wGui::CRect(0, 0, DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT), this);
       video_set_devtools_panel(surface, DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, 1);
@@ -92,4 +95,16 @@ void DevTools::PostUpdate() {
 
 bool DevTools::PassEvent(SDL_Event& event) {
   return capriceGui->ProcessEvent(event);
+}
+
+void devtools_set_debug_click(int x, int y) {
+  g_dbg_click_x = x;
+  g_dbg_click_y = y;
+}
+
+bool devtools_get_debug_click(int& x, int& y) {
+  if (g_dbg_click_x < 0 || g_dbg_click_y < 0) return false;
+  x = g_dbg_click_x;
+  y = g_dbg_click_y;
+  return true;
 }

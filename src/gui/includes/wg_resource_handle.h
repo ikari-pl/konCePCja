@@ -64,6 +64,9 @@ public:
 	//! \return The reference count of the handle
 	unsigned int GetRefCount() const { return m_RefCountMap[m_ResourceId]; }
 
+	//! Mark resource system as shutting down to avoid double-free
+	static void BeginShutdown();
+
 protected:
 	//! The resource ID for the handle
 	TResourceId m_ResourceId;
@@ -99,6 +102,9 @@ public:
 	//! Gets the handle's bitmap
 	//! \return An SDL_Surface pointer (the bitmap)
 	SDL_Surface* Bitmap() const;
+
+	//! Cleanup all bitmap resources
+	static void CleanupAll();
 
 protected:
 	//! The map of bitmaps held by the handles
@@ -147,6 +153,9 @@ public:
 	//! \return A string
 	std::string String() const;
 
+	//! Cleanup all string resources
+	static void CleanupAll();
+
 protected:
 	//! A map of strings that are used by the handles
 	static std::map<TResourceId, std::string> m_StringMap;
@@ -175,6 +184,9 @@ public:
 	//! Returns the SDL Cursor pointer
 	//! \return A pointer to an SDL cursor object
 	SDL_Cursor* Cursor() const;
+
+	//! Cleanup all cursor resources
+	static void CleanupAll();
 
 protected:
 	//! A map of cursors used by the handles

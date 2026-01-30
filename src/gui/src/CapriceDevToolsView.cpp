@@ -1,6 +1,7 @@
 // Developers' tools for Caprice32
 #include "CapriceDevToolsView.h"
 #include "CapriceDevTools.h"
+#include "devtools.h"
 #include <string>
 
 using namespace wGui;
@@ -31,6 +32,12 @@ void CapriceDevToolsView::PaintToSurface(SDL_Surface& ScreenSurface, SDL_Surface
       {
         child->PaintToSurface(ScreenSurface, FloatingSurface, Offset);
       }
+    }
+
+    int dbg_x = 0, dbg_y = 0;
+    if (devtools_get_debug_click(dbg_x, dbg_y)) {
+      SDL_Rect marker = { dbg_x - 2, dbg_y - 2, 5, 5 };
+      SDL_FillRect(&ScreenSurface, &marker, SDL_MapRGB(ScreenSurface.format, 255, 0, 0));
     }
   }
 }

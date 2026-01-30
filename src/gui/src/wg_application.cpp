@@ -29,6 +29,7 @@
 #include <fstream>
 #include <string>
 #include <filesystem>
+#include <unistd.h>
 #include "cap32.h"
 #include "log.h"
 
@@ -252,7 +253,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
 
 	case SDL_QUIT:
 //		MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
-    exit(0);
+    _exit(0);
 		break;
 	default:
 		MessageServer()->QueueMessage(new CSDLMessage(CMessage::SDL, nullptr, this, event));

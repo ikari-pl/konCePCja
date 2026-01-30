@@ -32,7 +32,7 @@ CapriceMenu::CapriceMenu(const CRect& WindowRect, CWindow* pParent, SDL_Surface*
     { MenuItem::QUIT, "Quit (F10)" }
   };
   CPoint button_space = CPoint(0, 30);
-  CRect button_rect(CPoint(20, 10), 100, 20);
+  CRect button_rect(CPoint(20, 10), 180, 20);
 
   for(auto& b : buttons) {
     CButton *button = new CButton(button_rect, this, b.second);
@@ -40,6 +40,11 @@ CapriceMenu::CapriceMenu(const CRect& WindowRect, CWindow* pParent, SDL_Surface*
     m_buttons.emplace_back(b.first, button);
     button_rect += button_space;
   }
+
+  int padding = 20;
+  int total_height = button_rect.Top() + button_rect.Height() + padding;
+  int total_width = button_rect.Width() + padding * 2;
+  SetWindowRect(CRect(m_WindowRect.TopLeft(), m_WindowRect.TopLeft() + CPoint(total_width, total_height)));
 }
 
 CapriceMenu::~CapriceMenu() = default;

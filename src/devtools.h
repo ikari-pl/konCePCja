@@ -38,4 +38,7 @@ class DevTools {
     int scale = 0;
 };
 
+void devtools_set_debug_click(int x, int y);
+bool devtools_get_debug_click(int& x, int& y);
+
 #endif

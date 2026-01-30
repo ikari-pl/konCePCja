@@ -36,6 +36,12 @@ std::map<TResourceId, SDL_Surface*> CBitmapResourceHandle::m_BitmapMap;
 std::map<TResourceId, std::string> CStringResourceHandle::m_StringMap;
 std::map<TResourceId, SDL_Cursor*> CCursorResourceHandle::m_SDLCursorMap;
 TResourceId CResourceHandle::m_NextUnusedResourceId = 10000;
+static bool g_resources_shutting_down = false;
+
+void CResourceHandle::BeginShutdown()
+{
+	g_resources_shutting_down = true;
+}
 
 
 CResourceHandle::CResourceHandle(TResourceId resId) :
@@ -67,6 +73,7 @@ CResourceHandle::CResourceHandle(const CResourceHandle& resHandle)
 
 CResourceHandle::~CResourceHandle()
 {
+	if (g_resources_shutting_down) return;
 	if (GetRefCount() > 0)
 	{
 		--m_RefCountMap[m_ResourceId];
@@ -80,6 +87,8 @@ CResourceHandle::~CResourceHandle()
 
 CBitmapResourceHandle::~CBitmapResourceHandle()
 {
+	if (g_resources_shutting_down) return;
+	if (SDL_WasInit(SDL_INIT_VIDEO) == 0) return;
 	if (GetRefCount() == 1 && m_BitmapMap.find(m_ResourceId) != m_BitmapMap.end())
 	{
 		SDL_FreeSurface(m_BitmapMap[m_ResourceId]);
@@ -91,6 +100,14 @@ CBitmapResourceHandle::~CBitmapResourceHandle()
 SDL_Surface* CBitmapResourceHandle::Bitmap() const
 {
 	return (m_BitmapMap.find(m_ResourceId) != m_BitmapMap.end()) ? m_BitmapMap[m_ResourceId] : nullptr;
+}
+
+void CBitmapResourceHandle::CleanupAll()
+{
+	for (auto& it : m_BitmapMap) {
+		if (it.second) SDL_FreeSurface(it.second);
+	}
+	m_BitmapMap.clear();
 }
 
 
@@ -112,6 +129,7 @@ CBitmapFileResourceHandle::CBitmapFileResourceHandle(std::string sFilename) :
 
 CStringResourceHandle::~CStringResourceHandle()
 {
+	if (g_resources_shutting_down) return;
 	if (GetRefCount() == 1 && m_StringMap.find(m_ResourceId) != m_StringMap.end())
 	{
 		m_StringMap.erase(m_ResourceId);
@@ -124,9 +142,16 @@ std::string CStringResourceHandle::String() const
 	return (m_StringMap.find(m_ResourceId) != m_StringMap.end()) ? m_StringMap[m_ResourceId] : "";
 }
 
+void CStringResourceHandle::CleanupAll()
+{
+	m_StringMap.clear();
+}
+
 
 CCursorResourceHandle::~CCursorResourceHandle()
 {
+	if (g_resources_shutting_down) return;
+	if (SDL_WasInit(SDL_INIT_VIDEO) == 0) return;
 	if (GetRefCount() == 1 && m_SDLCursorMap.find(m_ResourceId) != m_SDLCursorMap.end())
 	{
 		SDL_FreeCursor(m_SDLCursorMap[m_ResourceId]);
@@ -138,6 +163,14 @@ CCursorResourceHandle::~CCursorResourceHandle()
 SDL_Cursor* CCursorResourceHandle::Cursor() const
 {
 	return (m_SDLCursorMap.find(m_ResourceId) != m_SDLCursorMap.end()) ? m_SDLCursorMap[m_ResourceId] : nullptr;
+}
+
+void CCursorResourceHandle::CleanupAll()
+{
+	for (auto& it : m_SDLCursorMap) {
+		if (it.second) SDL_FreeCursor(it.second);
+	}
+	m_SDLCursorMap.clear();
 }
 
 }

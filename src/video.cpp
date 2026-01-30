@@ -186,16 +186,20 @@ void direct_flip(video_plugin* t)
   } else {
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
   }
+  int win_width = 0, win_height = 0;
+  int out_width = 0, out_height = 0;
+  SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+  SDL_GetRendererOutputSize(renderer, &out_width, &out_height);
+  float sx = (win_width > 0 && out_width > 0) ? (static_cast<float>(out_width) / win_width) : 1.0f;
+  float sy = (win_height > 0 && out_height > 0) ? (static_cast<float>(out_height) / win_height) : 1.0f;
   if (topbar_texture && topbar_surface) {
     SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
-    SDL_Rect bar_rect = { 0, 0, topbar_surface->w, topbar_height };
+    SDL_Rect bar_rect = { 0, 0, static_cast<int>(topbar_surface->w * sx), static_cast<int>(topbar_height * sy) };
     SDL_RenderCopy(renderer, topbar_texture, nullptr, &bar_rect);
   }
   if (devtools_panel_texture && devtools_panel_surface) {
     SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
-    int win_width, win_height;
-    SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-    SDL_Rect panel_rect = { win_width - devtools_panel_width, topbar_height, devtools_panel_width, devtools_panel_height };
+    SDL_Rect panel_rect = { static_cast<int>((win_width - devtools_panel_width) * sx), static_cast<int>(topbar_height * sy), static_cast<int>(devtools_panel_width * sx), static_cast<int>(devtools_panel_height * sy) };
     SDL_RenderCopy(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
   SDL_RenderPresent(renderer);
@@ -741,16 +745,20 @@ void swscale_blit(video_plugin* t)
   } else {
     SDL_RenderCopy(renderer, texture, nullptr, nullptr);
   }
+  int win_width = 0, win_height = 0;
+  int out_width = 0, out_height = 0;
+  SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+  SDL_GetRendererOutputSize(renderer, &out_width, &out_height);
+  float sx = (win_width > 0 && out_width > 0) ? (static_cast<float>(out_width) / win_width) : 1.0f;
+  float sy = (win_height > 0 && out_height > 0) ? (static_cast<float>(out_height) / win_height) : 1.0f;
   if (topbar_texture && topbar_surface) {
     SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
-    SDL_Rect bar_rect = { 0, 0, topbar_surface->w, topbar_height };
+    SDL_Rect bar_rect = { 0, 0, static_cast<int>(topbar_surface->w * sx), static_cast<int>(topbar_height * sy) };
     SDL_RenderCopy(renderer, topbar_texture, nullptr, &bar_rect);
   }
   if (devtools_panel_texture && devtools_panel_surface) {
     SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
-    int win_width, win_height;
-    SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-    SDL_Rect panel_rect = { win_width - devtools_panel_width, topbar_height, devtools_panel_width, devtools_panel_height };
+    SDL_Rect panel_rect = { static_cast<int>((win_width - devtools_panel_width) * sx), static_cast<int>(topbar_height * sy), static_cast<int>(devtools_panel_width * sx), static_cast<int>(devtools_panel_height * sy) };
     SDL_RenderCopy(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
   SDL_RenderPresent(renderer);
