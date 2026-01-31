@@ -10,10 +10,19 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: actions/setup-node@v4
       - run: brew update
-      - run: brew install sdl2 freetype zlib libpng gnu-sed
+      - run: brew install freetype zlib libpng gnu-sed cmake
+
+      - name: Build vendored SDL3
+        run: |
+          cd vendor/SDL
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
+          cmake --build build -j 3
+
       - run: make -j 3 ARCH=macos
       - run: make -j 3 ARCH=macos unit_test
       - run: alias sed=gsed && make -j 3 e2e_test

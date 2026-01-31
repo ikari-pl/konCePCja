@@ -11,11 +11,22 @@ jobs:
   linux-build:
     name: Linux build
     runs-on: ubuntu-latest
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/build
+      LD_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/build
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - run: sudo apt-get update
-      - run: sudo apt-get install pkg-config libsdl2-dev libfreetype6-dev zlib1g-dev libpng-dev devscripts
+      - run: sudo apt-get install pkg-config cmake libfreetype6-dev zlib1g-dev libpng-dev devscripts libgl-dev
+
+      - name: Build vendored SDL3
+        run: |
+          cd vendor/SDL
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
+          cmake --build build -j 3
 
       - run: make -j 3
       - run: make -j 3 unit_test
