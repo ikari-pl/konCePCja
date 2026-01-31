@@ -1,4 +1,5 @@
-![konCePCja logo](resources/koncepcja-logo.png)
+<img alt="konCePCja logo" width="300" src="resources/koncepcja-logo.png" />
+
 # konCePCja - Amstrad CPC Emulator
 
 (c) Copyright 1997-2015 Ulrich Doewich
@@ -9,11 +10,14 @@
 
 https://github.com/ikari/konCePCja
 
-Linux build: [![Linux build Status](https://github.com/ikari/konCePCja/actions/workflows/linux.yml/badge.svg?branch=latest)](https://github.com/ikari/konCePCja/actions/workflows/linux.yml)
+Linux build: 
+![Linux build Status](https://github.com/ikari/konCePCja/actions/workflows/linux.yml/badge.svg?branch=latest)
 
-Windows build: [![Windows build Status](https://github.com/ikari/konCePCja/actions/workflows/windows.yml/badge.svg?branch=latest)](https://github.com/ikari/konCePCja/actions/workflows/windows.yml)
+Windows build:
+![Windows build Status](https://github.com/ikari/konCePCja/actions/workflows/windows.yml/badge.svg?branch=latest)
 
-MacOS build: [![MacOS build status](https://github.com/ikari/konCePCja/actions/workflows/macos.yml/badge.svg?branch=latest)](https://github.com/ikari/konCePCja/actions/workflows/macos.yml)
+MacOS build:
+![MacOS build status](https://github.com/ikari/konCePCja/actions/workflows/macos.yml/badge.svg?branch=latest)
 
 # What is it ?
 
