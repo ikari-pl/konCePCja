@@ -25,7 +25,7 @@
 #ifndef _WG_RESOURCES_H_
 #define _WG_RESOURCES_H_
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include "wg_resource_handle.h"
 #include "wg_color.h"
 #include "wg_application.h"

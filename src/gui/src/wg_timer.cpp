@@ -29,7 +29,7 @@
 namespace wGui
 {
 
-Uint32 TimerCallback(Uint32 Interval, void* param)
+Uint32 TimerCallback(void* param, SDL_TimerID /*timerID*/, Uint32 Interval)
 {
 	return static_cast<CTimer*>(param)->TimerHit(Interval);
 }

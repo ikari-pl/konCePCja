@@ -29,7 +29,7 @@
 #include "wg_color.h"
 #include "wg_point.h"
 #include "wg_window.h"
-#include "SDL.h"
+#include "SDL3/SDL.h"
 
 
 namespace wGui

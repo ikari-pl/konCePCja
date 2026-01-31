@@ -6,7 +6,7 @@
  * Code was copied and slightly adapted from driedfruit savepng.
  * See https://github.com/driedfruit/SDL_SavePNG
  */
-#include <SDL.h>
+#include <SDL3/SDL.h>
 #include <png.h>
 #include <cinttypes>
 #include <cstdint>
@@ -45,8 +45,8 @@ static void png_error_SDL(png_structp ctx, png_const_charp str)
 }
 static void png_write_SDL(png_structp png_ptr, png_bytep data, png_size_t length)
 {
-  SDL_RWops *rw = static_cast<SDL_RWops*>(png_get_io_ptr(png_ptr));
-  SDL_RWwrite(rw, data, sizeof(png_byte), length);
+  SDL_IOStream *io = static_cast<SDL_IOStream*>(png_get_io_ptr(png_ptr));
+  SDL_WriteIO(io, data, length);
 }
 
 SDL_Surface *SDL_PNGFormatAlpha(SDL_Surface *src)
@@ -57,8 +57,8 @@ SDL_Surface *SDL_PNGFormatAlpha(SDL_Surface *src)
   /* Convert 32bpp alpha-less image to 24bpp alpha-less image */
   rect.w = src->w;
   rect.h = src->h;
-  surf = SDL_CreateRGBSurface(0, src->w, src->h, 24, rmask, gmask, bmask, 0);
-  SDL_LowerBlit(src, &rect, surf, &rect);
+  surf = SDL_CreateSurface(src->w, src->h, SDL_PIXELFORMAT_RGBA32);
+  SDL_BlitSurface(src, &rect, surf, &rect);
 
   return surf;
 }
@@ -68,7 +68,7 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
   /* Initialize and do basic error checking */
   if (!src)
   {
-    SDL_SetError("Argument 1 to SDL_SavePNG_RW can't be NULL, expecting SDL_Surface*\n");
+    SDL_SetError("Argument 1 to SDL_SavePNG can't be NULL, expecting SDL_Surface*\n");
     return (ERROR);
   }
   SDL_Surface *surface = SDL_PNGFormatAlpha(src);
@@ -77,11 +77,11 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
     return (ERROR);
   }
 
-  SDL_RWops *dst = SDL_RWFromFile(file.c_str(), "wb");
+  SDL_IOStream *dst = SDL_IOFromFile(file.c_str(), "wb");
   if (!dst)
   {
     SDL_SetError("Failed to open file for writing: %s\n", file.c_str());
-    SDL_FreeSurface(surface);
+    SDL_DestroySurface(surface);
     return (ERROR);
   }
 
@@ -89,8 +89,8 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
   if (!png_ptr)
   {
     SDL_SetError("Unable to png_create_write_struct on %s\n", PNG_LIBPNG_VER_STRING);
-    SDL_RWclose(dst);
-    SDL_FreeSurface(surface);
+    SDL_CloseIO(dst);
+    SDL_DestroySurface(surface);
     return (ERROR);
   }
 
@@ -99,16 +99,16 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
   {
     SDL_SetError("Unable to png_create_info_struct\n");
     png_destroy_write_struct(&png_ptr, nullptr);
-    SDL_RWclose(dst);
-    SDL_FreeSurface(surface);
+    SDL_CloseIO(dst);
+    SDL_DestroySurface(surface);
     return (ERROR);
   }
 
   if (setjmp(png_jmpbuf(png_ptr)))  /* All other errors, see also "png_error_SDL" */
   {
     png_destroy_write_struct(&png_ptr, &info_ptr);
-    SDL_RWclose(dst);
-    SDL_FreeSurface(surface);
+    SDL_CloseIO(dst);
+    SDL_DestroySurface(surface);
     return (ERROR);
   }
 
@@ -116,12 +116,14 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
   /* Setup our RWops writer */
   png_set_write_fn(png_ptr, dst, png_write_SDL, nullptr); /* w_ptr, write_fn, flush_fn */
 
-  SDL_Palette *pal;
+  const SDL_PixelFormatDetails* details = SDL_GetPixelFormatDetails(surface->format);
+  SDL_Palette *pal = SDL_GetSurfacePalette(surface);
+  int bpp = SDL_BYTESPERPIXEL(surface->format);
   /* Prepare chunks */
   colortype = PNG_COLOR_MASK_COLOR;
-  if (surface->format->BytesPerPixel > 0
-      && surface->format->BytesPerPixel <= 8
-      && (pal = surface->format->palette))
+  if (bpp > 0
+      && bpp <= 8
+      && (pal = pal))
   {
     colortype |= PNG_COLOR_MASK_PALETTE;
     std::unique_ptr<png_color[]> pal_ptr = std::make_unique<png_color[]>(pal->ncolors);
@@ -132,7 +134,7 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
     }
     png_set_PLTE(png_ptr, info_ptr, pal_ptr.get(), pal->ncolors);
   }
-  else if (surface->format->BytesPerPixel > 3 || surface->format->Amask)
+  else if (bpp > 3 || (details ? details->Amask : 0))
     colortype |= PNG_COLOR_MASK_ALPHA;
 
   png_set_IHDR(png_ptr, info_ptr, surface->w, surface->h, 8, colortype,
@@ -141,9 +143,9 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
 //  png_set_packing(png_ptr);
 
   /* Allow BGR surfaces */
-  if (surface->format->Rmask == bmask
-      && surface->format->Gmask == gmask
-      && surface->format->Bmask == rmask)
+  if ((details ? details->Rmask : 0) == bmask
+      && (details ? details->Gmask : 0) == gmask
+      && (details ? details->Bmask : 0) == rmask)
     png_set_bgr(png_ptr);
 
   /* Write everything */
@@ -161,8 +163,8 @@ int SDL_SavePNG(SDL_Surface *src, const std::string& file)
 
   /* Done */
   png_destroy_write_struct(&png_ptr, &info_ptr);
-  SDL_RWclose(dst);
-  SDL_FreeSurface(surface);
+  SDL_CloseIO(dst);
+  SDL_DestroySurface(surface);
 
   return (SUCCESS);
 }

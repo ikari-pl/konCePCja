@@ -25,7 +25,7 @@
 #ifndef _WG_COLOR_H_
 #define _WG_COLOR_H_
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include <cmath>
 #include <string>
 
@@ -57,7 +57,7 @@ public:
 	//! Construct a CRGBColor object from an SDL Color
 	//! \param pColorValue A pointer to the SDL Color
 	//! \param pFormat A pointer to the SDL Pixel Format
-	CRGBColor(const Uint32* pColorValue, const SDL_PixelFormat* pFormat);
+	CRGBColor(const Uint32* pColorValue, SDL_PixelFormat format);
 
 	//! Construct a CRGBColor object from a text string
 	//!  The string can be passed one of 2 ways.
@@ -68,8 +68,11 @@ public:
 
 	//! Convert the color so an SDL Color
 	//! \param pFormat A pointer to the SDL Pixel Format
-	unsigned long int SDLColor(SDL_PixelFormat* pFormat) const
-		{ return SDL_MapRGBA(pFormat, red, green, blue, alpha); }
+	unsigned long int SDLColor(SDL_PixelFormat format, const SDL_Palette* palette = nullptr) const
+		{
+			const SDL_PixelFormatDetails* details = SDL_GetPixelFormatDetails(format);
+			return SDL_MapRGBA(details, palette, red, green, blue, alpha);
+		}
 
 	//! Comparison operator does not take into account alpha values
 	//! \return true if the Red, Green, and Blue color components are the same

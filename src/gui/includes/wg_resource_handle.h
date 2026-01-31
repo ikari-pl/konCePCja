@@ -25,7 +25,7 @@
 #ifndef _WG_RESOURCE_HANDLE_H_
 #define _WG_RESOURCE_HANDLE_H_
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include <map>
 #include <string>
 

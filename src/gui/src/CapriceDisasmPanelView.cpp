@@ -20,7 +20,9 @@ void CapriceDisasmPanelView::PaintToSurface(SDL_Surface& ScreenSurface, SDL_Surf
 {
   if (m_bVisible)
   {
-    SDL_FillRect(&ScreenSurface, nullptr, SDL_MapRGB(ScreenSurface.format, 255, 255, 255));
+    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(ScreenSurface.format);
+    SDL_Palette* pal = SDL_GetSurfacePalette(&ScreenSurface);
+    SDL_FillSurfaceRect(&ScreenSurface, nullptr, SDL_MapRGB(fmt, pal, 255, 255, 255));
 
     for (const auto child : m_ChildWindows)
     {

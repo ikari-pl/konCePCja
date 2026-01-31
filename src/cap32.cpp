@@ -25,7 +25,13 @@
 #include <filesystem>
 #include <unistd.h>
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
+
+static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
+  const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(surface->format);
+  SDL_Palette* pal = SDL_GetSurfacePalette(surface);
+  return SDL_MapRGB(fmt, pal, r, g, b);
+}
 
 #include "cap32.h"
 #include "ipc_server.h"
@@ -42,6 +48,7 @@
 #include "stringutils.h"
 #include "zip.h"
 #include "keyboard.h"
+#include "macos_menu.h"
 
 namespace {
   KaprysIpcServer* g_ipc = new KaprysIpcServer();
@@ -93,9 +100,11 @@ extern byte* pbCartridgePages[];
 extern SDL_Window* mainSDLWindow;
 extern SDL_Renderer* renderer;
 
-SDL_AudioDeviceID audio_device_id = 0;
+SDL_AudioStream* audio_stream = nullptr;
 SDL_Surface *back_surface = nullptr;
 video_plugin* vid_plugin;
+
+static bool g_take_screenshot = false;
 
 static SDL_Surface* topbar_surface = nullptr;
 static std::unique_ptr<wGui::CFontEngine> topbar_font;
@@ -122,12 +131,11 @@ static void init_topbar()
 {
   if (!back_surface) return;
   if (topbar_surface) {
-    SDL_FreeSurface(topbar_surface);
+    SDL_DestroySurface(topbar_surface);
     topbar_surface = nullptr;
   }
   int bar_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale;
-  topbar_surface = SDL_CreateRGBSurface(0, bar_width, topbar_height_px, 32,
-                                        0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+  topbar_surface = SDL_CreateSurface(bar_width, topbar_height_px, SDL_PIXELFORMAT_RGBA32);
   if (!topbar_font) {
     topbar_font = std::make_unique<wGui::CFontEngine>(topbar_font_path(), 12);
   }
@@ -138,7 +146,7 @@ static void init_topbar()
 static void update_topbar(const std::string& fps_text)
 {
   if (!topbar_surface || !topbar_font) return;
-  SDL_FillRect(topbar_surface, nullptr, SDL_MapRGB(topbar_surface->format, 24, 24, 24));
+  SDL_FillSurfaceRect(topbar_surface, nullptr, MapRGBSurface(topbar_surface, 24, 24, 24));
   wGui::CRGBColor textColor(220, 220, 220);
   wGui::CRenderedString menuText(topbar_font.get(), "Menu", wGui::CRenderedString::VALIGN_CENTER, wGui::CRenderedString::HALIGN_LEFT);
   menuText.Draw(topbar_surface, wGui::CRect(0, 0, topbar_surface->w, topbar_surface->h), wGui::CPoint(8, topbar_height_px/2), textColor);
@@ -561,13 +569,12 @@ void z80_OUT_handler (reg_pair port, byte val)
                byte colour = val & 0x1f; // isolate colour value
                LOG_DEBUG("Set ink value " << static_cast<int>(GateArray.pen) << " to " << static_cast<int>(colour));
                GateArray.ink_values[GateArray.pen] = colour;
-               GateArray.palette[GateArray.pen] = SDL_MapRGB(back_surface->format,
-                     colours[colour].r, colours[colour].g, colours[colour].b);
+               GateArray.palette[GateArray.pen] = MapRGBSurface(back_surface, colours[colour].r, colours[colour].g, colours[colour].b);
                if (GateArray.pen < 2) {
                   byte r = (static_cast<dword>(colours[GateArray.ink_values[0]].r) + static_cast<dword>(colours[GateArray.ink_values[1]].r)) >> 1;
                   byte g = (static_cast<dword>(colours[GateArray.ink_values[0]].g) + static_cast<dword>(colours[GateArray.ink_values[1]].g)) >> 1;
                   byte b = (static_cast<dword>(colours[GateArray.ink_values[0]].b) + static_cast<dword>(colours[GateArray.ink_values[1]].b)) >> 1;
-                  GateArray.palette[33] = SDL_MapRGB(back_surface->format, r, g, b); // update the mode 2 'anti-aliasing' colour
+                  GateArray.palette[33] = MapRGBSurface(back_surface, r, g, b); // update the mode 2 'anti-aliasing' colour
                }
                // TODO: update pbRegisterPage
             }
@@ -1012,7 +1019,7 @@ void print (byte *pbAddr, const char *pchStr, bool bolColour)
          break;
 
       case 8:
-         bColour = bolColour ? SDL_MapRGB(back_surface->format,255,255,255) : SDL_MapRGB(back_surface->format,0,0,0);
+         bColour = bolColour ? MapRGBSurface(back_surface, 255,255,255) : MapRGBSurface(back_surface, 0,0,0);
          for (int n = 0; n < iLen; n++) {
             iIdx = static_cast<int>(pchStr[n]); // get the ASCII value
             if ((iIdx < FNT_MIN_CHAR) || (iIdx > FNT_MAX_CHAR)) { // limit it to the range of chars in the font
@@ -1303,7 +1310,7 @@ int emulator_init ()
    emulator_reset();
    CPC.paused = false;
 
-   return 0;
+      return 0;
 }
 
 
@@ -1392,14 +1399,17 @@ void printer_stop ()
 
 
 
-void audio_update (void *userdata __attribute__((unused)), byte *stream, int len)
+void audio_update(void *userdata __attribute__((unused)), SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
   if (CPC.snd_ready) {
-    //LOG_VERBOSE("Audio: audio_update: copying " << len << " bytes");
-    memcpy(stream, pbSndBuffer.get(), len);
-    dwSndBufferCopied = 1;
+    int len = additional_amount;
+    if (len > CPC.snd_buffersize) len = CPC.snd_buffersize;
+    if (len > 0) {
+      SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
+      dwSndBufferCopied = 1;
+    }
   } else {
-    LOG_VERBOSE("Audio: audio_update: skipping the copy of " << len << " bytes: sound buffer not ready");
+    LOG_VERBOSE("Audio: audio_update: skipping audio: sound buffer not ready");
   }
 }
 
@@ -1419,7 +1429,7 @@ int audio_align_samples (int given)
 
 int audio_init ()
 {
-   SDL_AudioSpec desired, obtained;
+   SDL_AudioSpec desired;
 
    if (!CPC.snd_enabled) {
       return 0;
@@ -1427,58 +1437,54 @@ int audio_init ()
 
    CPC.snd_ready = false;
 
-   for (int i = 0; i < SDL_GetNumAudioDevices(0); i++) {
-      LOG_VERBOSE("Audio: device " << i << ": " << SDL_GetAudioDeviceName(i, 0));
-   }
-
    desired.freq = freq_table[CPC.snd_playback_rate];
-   desired.format = CPC.snd_bits ? AUDIO_S16LSB : AUDIO_S8;
-   desired.channels = CPC.snd_stereo+1;
-   desired.samples = audio_align_samples(desired.freq * FRAME_PERIOD_MS / 1000);
-   desired.callback = audio_update;
-   desired.userdata = nullptr;
+   desired.format = CPC.snd_bits ? SDL_AUDIO_S16LE : SDL_AUDIO_S8;
+   desired.channels = CPC.snd_stereo + 1;
 
-   audio_device_id = SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0 /* no change allowed */);
-   if (audio_device_id == 0) {
+   int sample_frames = audio_align_samples(desired.freq * FRAME_PERIOD_MS / 1000);
+   char frames_hint[32];
+   snprintf(frames_hint, sizeof(frames_hint), "%d", sample_frames);
+   SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, frames_hint);
+
+   audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired, audio_update, nullptr);
+   if (audio_stream == nullptr) {
       LOG_ERROR("Could not open audio: " << SDL_GetError());
       return 1;
    }
-   SDL_PauseAudioDevice(audio_device_id, 0);
+   SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
 
-   LOG_VERBOSE("Audio: Desired: Freq: " << desired.freq << ", Format: " << desired.format << ", Channels: " << static_cast<int>(desired.channels) << ", Samples: " << desired.samples << ", Size: " << desired.size);
-   LOG_VERBOSE("Audio: Obtained: Freq: " << obtained.freq << ", Format: " << obtained.format << ", Channels: " << static_cast<int>(obtained.channels) << ", Samples: " << obtained.samples << ", Size: " << obtained.size);
+   LOG_VERBOSE("Audio: Desired: Freq: " << desired.freq << ", Format: " << desired.format << ", Channels: " << static_cast<int>(desired.channels) << ", Frames: " << sample_frames);
 
-   CPC.snd_buffersize = obtained.size; // size is samples * channels * bytes per sample (1 or 2)
-   pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize); // allocate the sound data buffer
+   CPC.snd_buffersize = sample_frames * SDL_AUDIO_FRAMESIZE(desired);
+   pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize);
    pbSndBufferEnd = pbSndBuffer.get() + CPC.snd_buffersize;
    memset(pbSndBuffer.get(), 0, CPC.snd_buffersize);
-   CPC.snd_bufferptr = pbSndBuffer.get(); // init write cursor
+   CPC.snd_bufferptr = pbSndBuffer.get();
    CPC.snd_ready = true;
    LOG_VERBOSE("Audio: Sound buffer ready");
 
    InitAY();
 
    for (int n = 0; n < 16; n++) {
-      SetAYRegister(n, PSG.RegisterAY.Index[n]); // init sound emulation with valid values
+      SetAYRegister(n, PSG.RegisterAY.Index[n]);
    }
 
-   return 0;
+      return 0;
 }
 
 
 
 void audio_shutdown ()
 {
-   SDL_CloseAudioDevice(audio_device_id);
-   audio_device_id = 0;
+   if (audio_stream) { SDL_DestroyAudioStream(audio_stream); audio_stream = nullptr; }
 }
 
 
 
 void audio_pause ()
 {
-   if (CPC.snd_enabled) {
-      SDL_PauseAudio(1);
+   if (CPC.snd_enabled && audio_stream) {
+      SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
    }
 }
 
@@ -1486,8 +1492,8 @@ void audio_pause ()
 
 void audio_resume ()
 {
-   if (CPC.snd_enabled) {
-      SDL_PauseAudio(0);
+   if (CPC.snd_enabled && audio_stream) {
+      SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
    }
 }
 
@@ -1549,10 +1555,10 @@ int video_set_palette ()
 
    for (int n = 0; n < 17; n++) { // loop for all colours + border
       int i=GateArray.ink_values[n];
-      GateArray.palette[n] = SDL_MapRGB(back_surface->format,colours[i].r,colours[i].g,colours[i].b);
+      GateArray.palette[n] = MapRGBSurface(back_surface, colours[i].r,colours[i].g,colours[i].b);
    }
 
-   return 0;
+      return 0;
 }
 
 
@@ -1660,7 +1666,10 @@ int video_init ()
       return ERR_VIDEO_SET_MODE;
    }
 
-   CPC.scr_bpp = back_surface->format->BitsPerPixel; // bit depth of the surface
+   {
+      const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
+      CPC.scr_bpp = fmt ? fmt->bits_per_pixel : 0; // bit depth of the surface
+   }
    video_set_style(); // select rendering style
 
    int iErrCode = video_set_palette(); // init CPC colours
@@ -1677,7 +1686,7 @@ int video_init ()
 
    crtc_init();
 
-   return 0;
+      return 0;
 }
 
 
@@ -1707,20 +1716,15 @@ int joysticks_init ()
       return ERR_JOYSTICKS_INIT;
    }
 
-   int nbJoysticks = SDL_NumJoysticks();
-   if (nbJoysticks < 0) {
-      fprintf(stderr, "Failed to count joysticks. Error: %s\n", SDL_GetError());
-      return ERR_JOYSTICKS_INIT;
-   }
-   if (nbJoysticks == 0) {
+   int nbJoysticks = 0;
+   SDL_JoystickID* ids = SDL_GetJoysticks(&nbJoysticks);
+   if (!ids || nbJoysticks <= 0) {
       fprintf(stderr, "No joystick found.\n");
+      if (ids) SDL_free(ids);
       return ERR_JOYSTICKS_INIT;
    }
 
-   if (SDL_JoystickEventState(SDL_ENABLE) != 1) {
-      fprintf(stderr, "Failed to activate joystick events. Error: %s\n", SDL_GetError());
-      return ERR_JOYSTICKS_INIT;
-   }
+   SDL_SetJoystickEventsEnabled(true);
 
    if(nbJoysticks > MAX_NB_JOYSTICKS) {
       nbJoysticks = MAX_NB_JOYSTICKS;
@@ -1728,7 +1732,7 @@ int joysticks_init ()
 
    for(int i = 0; i < MAX_NB_JOYSTICKS; i++) {
       if(i < nbJoysticks) {
-        joysticks[i] = SDL_JoystickOpen(i);
+        joysticks[i] = SDL_OpenJoystick(ids[i]);
         if(joysticks[i] == nullptr) {
           fprintf(stderr, "Failed to open joystick %d. Error: %s\n", i, SDL_GetError());
           //return ERR_JOYSTICKS_INIT;
@@ -1738,6 +1742,7 @@ int joysticks_init ()
       }
    }
 
+   SDL_free(ids);
    return 0;
 }
 
@@ -1748,7 +1753,7 @@ void joysticks_shutdown ()
 /* This cores for an unknown reason - anyway, SDL_QuitSubSystem will do the job
    for(int i = 0; i < MAX_NB_JOYSTICKS; i++) {
       if(joysticks[i] != nullptr) {
-         SDL_JoystickClose(joysticks[i]);
+         SDL_CloseJoystick(joysticks[i]);
       }
    }
 */
@@ -2015,9 +2020,9 @@ void ShowCursor(bool show)
   }
   if (shows_count < 0) shows_count = 0;
   if (shows_count > 0) {
-    SDL_ShowCursor(SDL_ENABLE);
+    SDL_ShowCursor();
   } else {
-    SDL_ShowCursor(SDL_DISABLE);
+    SDL_HideCursor();
   }
 }
 
@@ -2028,16 +2033,16 @@ SDL_Surface* prepareShowUI()
    CPC.scr_gui_is_currently_on = true;
    ShowCursor(true);
    // guiBackSurface will allow the GUI to capture the current frame
-   SDL_Surface* guiBackSurface(SDL_CreateRGBSurface(0, back_surface->w, back_surface->h, 32, 0x000000FF, 0x0000FF00, 0x00FF0000, 0x00000000));
+   SDL_Surface* guiBackSurface(SDL_CreateSurface(back_surface->w, back_surface->h, SDL_PIXELFORMAT_RGBA32));
    SDL_BlitSurface(back_surface, nullptr, guiBackSurface, nullptr);
    return guiBackSurface;
 }
 
 void cleanupShowUI(SDL_Surface* guiBackSurface)
 {
-   SDL_FreeSurface(guiBackSurface);
+   SDL_DestroySurface(guiBackSurface);
    // Clear SDL surface:
-   SDL_FillRect(back_surface, nullptr, SDL_MapRGB(back_surface->format, 0, 0, 0));
+   SDL_FillSurfaceRect(back_surface, nullptr, MapRGBSurface(back_surface, 0, 0, 0));
    ShowCursor(false);
    CPC.scr_gui_is_currently_on = false;
    audio_resume();
@@ -2049,7 +2054,7 @@ bool userConfirmsQuitWithoutSaving()
    bool confirmed = false;
    // Show warning
    try {
-      CapriceGui capriceGui(mainSDLWindow, /*bInMainView=*/true);
+      CapriceGui capriceGui(mainSDLWindow, true);
       capriceGui.Init();
       CapriceLeavingWithoutSavingView capriceLeavingWarning(capriceGui, back_surface, guiBackSurface, CRect(0, 0, back_surface->w, back_surface->h));
       capriceGui.Exec();
@@ -2062,12 +2067,17 @@ bool userConfirmsQuitWithoutSaving()
    return confirmed;
 }
 
+void showGui();
+void showVKeyboard();
+bool showDevTools();
+void dumpSnapshot();
+void loadSnapshot();
 void showVKeyboard()
 {
    auto guiBackSurface = prepareShowUI();
    // Activate virtual keyboard
    try {
-      CapriceGui capriceGui(mainSDLWindow, /*bInMainView=*/true);
+      CapriceGui capriceGui(mainSDLWindow, true);
       capriceGui.Init();
       CapriceVKeyboardView capriceVKeyboardView(capriceGui, back_surface, guiBackSurface, CRect(0, 0, back_surface->w, back_surface->h));
       capriceGui.Exec();
@@ -2081,11 +2091,176 @@ void showVKeyboard()
    cleanupShowUI(guiBackSurface);
 }
 
+
+void cap32_menu_action(int action)
+{
+   switch (action) {
+      case CAP32_GUI:
+        {
+          showGui();
+          break;
+        }
+
+      case CAP32_VKBD:
+        {
+          showVKeyboard();
+          break;
+        }
+
+      case CAP32_DEVTOOLS:
+        {
+          showDevTools();
+          break;
+        }
+
+      case CAP32_FULLSCRN:
+         audio_pause();
+         SDL_Delay(20);
+         video_shutdown();
+         CPC.scr_window = CPC.scr_window ? 0 : 1;
+         if (video_init()) {
+            fprintf(stderr, "video_init() failed. Aborting.\n");
+            cleanExit(-1);
+         }
+#ifdef __APPLE__
+         cap32_setup_macos_menu();
+#endif
+         audio_resume();
+         break;
+
+      case CAP32_SCRNSHOT:
+         // Delay taking the screenshot to ensure the frame is complete.
+         g_take_screenshot = true;
+         break;
+
+      case CAP32_DELAY:
+         // Reuse boot_time as it is a reasonable wait time for Plus transition between the F1/F2 nag screen and the command line.
+         // TODO: Support an argument to CAP32_DELAY in autocmd instead.
+         LOG_VERBOSE("Take into account CAP32_DELAY");
+         nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+         break;
+
+      case CAP32_WAITBREAK:
+         breakPointsToSkipBeforeProceedingWithVirtualEvents++;
+         LOG_INFO("Will skip " << breakPointsToSkipBeforeProceedingWithVirtualEvents << " before processing more virtual events.");
+         LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point << ").");
+         z80.break_point = 0; // set break point to address 0. FIXME would be interesting to change this via a parameter of CAP32_WAITBREAK on command line.
+         break;
+
+      case CAP32_SNAPSHOT:
+         dumpSnapshot();
+         break;
+
+      case CAP32_LD_SNAP:
+         loadSnapshot();
+         break;
+
+      case CAP32_TAPEPLAY:
+         LOG_VERBOSE("Request to play tape");
+         Tape_Rewind();
+         if (!pbTapeImage.empty()) {
+            if (CPC.tape_play_button) {
+               LOG_VERBOSE("Play button released");
+               CPC.tape_play_button = 0;
+            } else {
+               LOG_VERBOSE("Play button pushed");
+               CPC.tape_play_button = 0x10;
+            }
+         }
+         set_osd_message(std::string("Play tape: ") + (CPC.tape_play_button ? "on" : "off"));
+         break;
+
+      case CAP32_MF2STOP:
+         if(CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
+           reg_pair port;
+
+           // Set mode to activate ROM_config
+           //port.b.h = 0x40;
+           //z80_OUT_handler(port, 128);
+
+           // Attempt to load MF2 in lower ROM (can fail if lower ROM is not active)
+           port.b.h = 0xfe;
+           port.b.l = 0xe8;
+           dwMF2Flags &= ~MF2_INVISIBLE;
+           z80_OUT_handler(port, 0);
+
+           // Stop execution if load succeeded
+           if(dwMF2Flags & MF2_ACTIVE) {
+             z80_mf2stop();
+           }
+         }
+         break;
+
+      case CAP32_RESET:
+         LOG_VERBOSE("User requested emulator reset");
+         emulator_reset();
+         break;
+
+      case CAP32_JOY:
+         CPC.joystick_emulation = CPC.joystick_emulation ? 0 : 1;
+         CPC.InputMapper->set_joystick_emulation();
+         set_osd_message(std::string("Joystick emulation: ") + (CPC.joystick_emulation ? "on" : "off"));
+         break;
+
+      case CAP32_PHAZER:
+         CPC.phazer_emulation = CPC.phazer_emulation.Next();
+         if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
+         mouse_init();
+         set_osd_message(std::string("Phazer emulation: ") + CPC.phazer_emulation.ToString());
+         break;
+
+      case CAP32_PASTE:
+         set_osd_message("Pasting...");
+         {
+           auto content = std::string(SDL_GetClipboardText());
+           LOG_VERBOSE("Pasting '" << content << "'");
+           auto newEvents = CPC.InputMapper->StringToEvents(content);
+           virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
+           nextVirtualEventFrameCount = dwFrameCountOverall;
+           break;
+         }
+
+      case CAP32_EXIT:
+         cleanExit (0);
+         break;
+
+      case CAP32_FPS:
+         CPC.scr_fps = CPC.scr_fps ? 0 : 1; // toggle fps display on or off
+         set_osd_message(std::string("Performances info: ") + (CPC.scr_fps ? "on" : "off"));
+         break;
+
+      case CAP32_SPEED:
+         CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+         set_osd_message(std::string("Limit speed: ") + (CPC.limit_speed ? "on" : "off"));
+         break;
+
+      case CAP32_DEBUG:
+         log_verbose = !log_verbose;
+         #ifdef DEBUG
+         dwDebugFlag = dwDebugFlag ? 0 : 1;
+         #endif
+         #ifdef DEBUG_CRTC
+         if (dwDebugFlag) {
+            for (int n = 0; n < 14; n++) {
+               fprintf(pfoDebug, "%02x = %02x\r\n", n, CRTC.registers[n]);
+            }
+         }
+         #endif
+         set_osd_message(std::string("Debug mode: ") + (log_verbose ? "on" : "off"));
+         break;
+
+      case CAP32_NEXTDISKA:
+         CPC.driveA.zip_index += 1;
+         file_load(CPC.driveA);
+         break;
+   }
+}
+
 void showGui()
 {
    auto guiBackSurface = prepareShowUI();
    try {
-      CapriceGui capriceGui(mainSDLWindow, /*bInMainView=*/true);
+      CapriceGui capriceGui(mainSDLWindow, true);
       capriceGui.Init();
       CapriceGuiView capriceGuiView(capriceGui, back_surface, guiBackSurface, CRect(0, 0, back_surface->w, back_surface->h));
       capriceGui.Exec();
@@ -2132,7 +2307,7 @@ bool showDevTools()
 {
   Uint32 flags = SDL_GetWindowFlags(mainSDLWindow);
   bool isFullscreen = (flags & SDL_WINDOW_FULLSCREEN) ||
-      (flags & SDL_WINDOW_FULLSCREEN_DESKTOP);
+      false;
 
   devtools.emplace_back();
   if (!devtools.back().Activate(CPC.devtools_scale, /*useMainWindow=*/!isFullscreen)) {
@@ -2253,12 +2428,12 @@ std::map<SDL_Keycode, std::string> keycode_names = {
     {SDLK_TAB, "SDLK_TAB"},
     {SDLK_SPACE, "SDLK_SPACE"},
     {SDLK_EXCLAIM, "SDLK_EXCLAIM"},
-    {SDLK_QUOTEDBL, "SDLK_QUOTEDBL"},
+    {SDLK_DBLAPOSTROPHE, "SDLK_DBLAPOSTROPHE"},
     {SDLK_HASH, "SDLK_HASH"},
     {SDLK_PERCENT, "SDLK_PERCENT"},
     {SDLK_DOLLAR, "SDLK_DOLLAR"},
     {SDLK_AMPERSAND, "SDLK_AMPERSAND"},
-    {SDLK_QUOTE, "SDLK_QUOTE"},
+    {SDLK_APOSTROPHE, "SDLK_APOSTROPHE"},
     {SDLK_LEFTPAREN, "SDLK_LEFTPAREN"},
     {SDLK_RIGHTPAREN, "SDLK_RIGHTPAREN"},
     {SDLK_ASTERISK, "SDLK_ASTERISK"},
@@ -2289,33 +2464,33 @@ std::map<SDL_Keycode, std::string> keycode_names = {
     {SDLK_RIGHTBRACKET, "SDLK_RIGHTBRACKET"},
     {SDLK_CARET, "SDLK_CARET"},
     {SDLK_UNDERSCORE, "SDLK_UNDERSCORE"},
-    {SDLK_BACKQUOTE, "SDLK_BACKQUOTE"},
-    {SDLK_a, "SDLK_a"},
-    {SDLK_b, "SDLK_b"},
-    {SDLK_c, "SDLK_c"},
-    {SDLK_d, "SDLK_d"},
-    {SDLK_e, "SDLK_e"},
-    {SDLK_f, "SDLK_f"},
-    {SDLK_g, "SDLK_g"},
-    {SDLK_h, "SDLK_h"},
-    {SDLK_i, "SDLK_i"},
-    {SDLK_j, "SDLK_j"},
-    {SDLK_k, "SDLK_k"},
-    {SDLK_l, "SDLK_l"},
-    {SDLK_m, "SDLK_m"},
-    {SDLK_n, "SDLK_n"},
-    {SDLK_o, "SDLK_o"},
-    {SDLK_p, "SDLK_p"},
-    {SDLK_q, "SDLK_q"},
-    {SDLK_r, "SDLK_r"},
-    {SDLK_s, "SDLK_s"},
-    {SDLK_t, "SDLK_t"},
-    {SDLK_u, "SDLK_u"},
-    {SDLK_v, "SDLK_v"},
-    {SDLK_w, "SDLK_w"},
-    {SDLK_x, "SDLK_x"},
-    {SDLK_y, "SDLK_y"},
-    {SDLK_z, "SDLK_z"},
+    {SDLK_GRAVE, "SDLK_GRAVE"},
+    {SDLK_A, "SDLK_A"},
+    {SDLK_B, "SDLK_B"},
+    {SDLK_C, "SDLK_C"},
+    {SDLK_D, "SDLK_D"},
+    {SDLK_E, "SDLK_E"},
+    {SDLK_F, "SDLK_F"},
+    {SDLK_G, "SDLK_G"},
+    {SDLK_H, "SDLK_H"},
+    {SDLK_I, "SDLK_I"},
+    {SDLK_J, "SDLK_J"},
+    {SDLK_K, "SDLK_K"},
+    {SDLK_L, "SDLK_L"},
+    {SDLK_M, "SDLK_M"},
+    {SDLK_N, "SDLK_N"},
+    {SDLK_O, "SDLK_O"},
+    {SDLK_P, "SDLK_P"},
+    {SDLK_Q, "SDLK_Q"},
+    {SDLK_R, "SDLK_R"},
+    {SDLK_S, "SDLK_S"},
+    {SDLK_T, "SDLK_T"},
+    {SDLK_U, "SDLK_U"},
+    {SDLK_V, "SDLK_V"},
+    {SDLK_W, "SDLK_W"},
+    {SDLK_X, "SDLK_X"},
+    {SDLK_Y, "SDLK_Y"},
+    {SDLK_Z, "SDLK_Z"},
     {SDLK_CAPSLOCK, "SDLK_CAPSLOCK"},
     {SDLK_F1, "SDLK_F1"},
     {SDLK_F2, "SDLK_F2"},
@@ -2457,16 +2632,12 @@ std::map<SDL_Keycode, std::string> keycode_names = {
     {SDLK_RALT, "SDLK_RALT"},
     {SDLK_RGUI, "SDLK_RGUI"},
     {SDLK_MODE, "SDLK_MODE"},
-    {SDLK_AUDIONEXT, "SDLK_AUDIONEXT"},
-    {SDLK_AUDIOPREV, "SDLK_AUDIOPREV"},
-    {SDLK_AUDIOSTOP, "SDLK_AUDIOSTOP"},
-    {SDLK_AUDIOPLAY, "SDLK_AUDIOPLAY"},
-    {SDLK_AUDIOMUTE, "SDLK_AUDIOMUTE"},
-    {SDLK_MEDIASELECT, "SDLK_MEDIASELECT"},
-    {SDLK_WWW, "SDLK_WWW"},
-    {SDLK_MAIL, "SDLK_MAIL"},
-    {SDLK_CALCULATOR, "SDLK_CALCULATOR"},
-    {SDLK_COMPUTER, "SDLK_COMPUTER"},
+    {SDLK_MEDIA_NEXT_TRACK, "SDLK_MEDIA_NEXT_TRACK"},
+    {SDLK_MEDIA_PREVIOUS_TRACK, "SDLK_MEDIA_PREVIOUS_TRACK"},
+    {SDLK_MEDIA_STOP, "SDLK_MEDIA_STOP"},
+    {SDLK_MEDIA_PLAY, "SDLK_MEDIA_PLAY"},
+    {SDLK_MUTE, "SDLK_MUTE"},
+    {SDLK_MEDIA_SELECT, "SDLK_MEDIA_SELECT"},
     {SDLK_AC_SEARCH, "SDLK_AC_SEARCH"},
     {SDLK_AC_HOME, "SDLK_AC_HOME"},
     {SDLK_AC_BACK, "SDLK_AC_BACK"},
@@ -2474,19 +2645,11 @@ std::map<SDL_Keycode, std::string> keycode_names = {
     {SDLK_AC_STOP, "SDLK_AC_STOP"},
     {SDLK_AC_REFRESH, "SDLK_AC_REFRESH"},
     {SDLK_AC_BOOKMARKS, "SDLK_AC_BOOKMARKS"},
-    {SDLK_BRIGHTNESSDOWN, "SDLK_BRIGHTNESSDOWN"},
-    {SDLK_BRIGHTNESSUP, "SDLK_BRIGHTNESSUP"},
-    {SDLK_DISPLAYSWITCH, "SDLK_DISPLAYSWITCH"},
-    {SDLK_KBDILLUMTOGGLE, "SDLK_KBDILLUMTOGGLE"},
-    {SDLK_KBDILLUMDOWN, "SDLK_KBDILLUMDOWN"},
-    {SDLK_KBDILLUMUP, "SDLK_KBDILLUMUP"},
-    {SDLK_EJECT, "SDLK_EJECT"},
+    {SDLK_MEDIA_EJECT, "SDLK_MEDIA_EJECT"},
     {SDLK_SLEEP, "SDLK_SLEEP"},
     #if SDL_VERSION_ATLEAST(2, 0, 6)
-    {SDLK_APP1, "SDLK_APP1"},
-    {SDLK_APP2, "SDLK_APP2"},
-    {SDLK_AUDIOREWIND, "SDLK_AUDIOREWIND"},
-    {SDLK_AUDIOFASTFORWARD, "SDLK_AUDIOFASTFORWARD"},
+    {SDLK_MEDIA_REWIND, "SDLK_MEDIA_REWIND"},
+    {SDLK_MEDIA_FAST_FORWARD, "SDLK_MEDIA_FAST_FORWARD"},
     #endif
 };
 
@@ -2708,16 +2871,12 @@ std::map<SDL_Scancode, std::string> scancode_names = {
     {SDL_SCANCODE_RALT, "SDL_SCANCODE_RALT"},
     {SDL_SCANCODE_RGUI, "SDL_SCANCODE_RGUI"},
     {SDL_SCANCODE_MODE, "SDL_SCANCODE_MODE"},
-    {SDL_SCANCODE_AUDIONEXT, "SDL_SCANCODE_AUDIONEXT"},
-    {SDL_SCANCODE_AUDIOPREV, "SDL_SCANCODE_AUDIOPREV"},
-    {SDL_SCANCODE_AUDIOSTOP, "SDL_SCANCODE_AUDIOSTOP"},
-    {SDL_SCANCODE_AUDIOPLAY, "SDL_SCANCODE_AUDIOPLAY"},
-    {SDL_SCANCODE_AUDIOMUTE, "SDL_SCANCODE_AUDIOMUTE"},
-    {SDL_SCANCODE_MEDIASELECT, "SDL_SCANCODE_MEDIASELECT"},
-    {SDL_SCANCODE_WWW, "SDL_SCANCODE_WWW"},
-    {SDL_SCANCODE_MAIL, "SDL_SCANCODE_MAIL"},
-    {SDL_SCANCODE_CALCULATOR, "SDL_SCANCODE_CALCULATOR"},
-    {SDL_SCANCODE_COMPUTER, "SDL_SCANCODE_COMPUTER"},
+    {SDL_SCANCODE_MEDIA_NEXT_TRACK, "SDL_SCANCODE_MEDIA_NEXT_TRACK"},
+    {SDL_SCANCODE_MEDIA_PREVIOUS_TRACK, "SDL_SCANCODE_MEDIA_PREVIOUS_TRACK"},
+    {SDL_SCANCODE_MEDIA_STOP, "SDL_SCANCODE_MEDIA_STOP"},
+    {SDL_SCANCODE_MEDIA_PLAY, "SDL_SCANCODE_MEDIA_PLAY"},
+    {SDL_SCANCODE_MUTE, "SDL_SCANCODE_MUTE"},
+    {SDL_SCANCODE_MEDIA_SELECT, "SDL_SCANCODE_MEDIA_SELECT"},
     {SDL_SCANCODE_AC_SEARCH, "SDL_SCANCODE_AC_SEARCH"},
     {SDL_SCANCODE_AC_HOME, "SDL_SCANCODE_AC_HOME"},
     {SDL_SCANCODE_AC_BACK, "SDL_SCANCODE_AC_BACK"},
@@ -2725,27 +2884,18 @@ std::map<SDL_Scancode, std::string> scancode_names = {
     {SDL_SCANCODE_AC_STOP, "SDL_SCANCODE_AC_STOP"},
     {SDL_SCANCODE_AC_REFRESH, "SDL_SCANCODE_AC_REFRESH"},
     {SDL_SCANCODE_AC_BOOKMARKS, "SDL_SCANCODE_AC_BOOKMARKS"},
-    {SDL_SCANCODE_BRIGHTNESSDOWN, "SDL_SCANCODE_BRIGHTNESSDOWN"},
-    {SDL_SCANCODE_BRIGHTNESSUP, "SDL_SCANCODE_BRIGHTNESSUP"},
-    {SDL_SCANCODE_DISPLAYSWITCH, "SDL_SCANCODE_DISPLAYSWITCH"},
-    {SDL_SCANCODE_KBDILLUMTOGGLE, "SDL_SCANCODE_KBDILLUMTOGGLE"},
-    {SDL_SCANCODE_KBDILLUMDOWN, "SDL_SCANCODE_KBDILLUMDOWN"},
-    {SDL_SCANCODE_KBDILLUMUP, "SDL_SCANCODE_KBDILLUMUP"},
-    {SDL_SCANCODE_EJECT, "SDL_SCANCODE_EJECT"},
+    {SDL_SCANCODE_MEDIA_EJECT, "SDL_SCANCODE_MEDIA_EJECT"},
     {SDL_SCANCODE_SLEEP, "SDL_SCANCODE_SLEEP"},
-    {SDL_SCANCODE_APP1, "SDL_SCANCODE_APP1"},
-    {SDL_SCANCODE_APP2, "SDL_SCANCODE_APP2"},
     #if SDL_VERSION_ATLEAST(2, 0, 6)
-    {SDL_SCANCODE_AUDIOREWIND, "SDL_SCANCODE_AUDIOREWIND"},
-    {SDL_SCANCODE_AUDIOFASTFORWARD, "SDL_SCANCODE_AUDIOFASTFORWARD"},
+    {SDL_SCANCODE_MEDIA_REWIND, "SDL_SCANCODE_MEDIA_REWIND"},
+    {SDL_SCANCODE_MEDIA_FAST_FORWARD, "SDL_SCANCODE_MEDIA_FAST_FORWARD"},
     #endif
-    {SDL_NUM_SCANCODES, "SDL_NUM_SCANCODES"},
+    {SDL_SCANCODE_COUNT, "SDL_SCANCODE_COUNT"},
 };
 
 int cap32_main (int argc, char **argv)
 {
    int iExitCondition;
-   bool take_screenshot = false;
    bool bin_loaded = false;
    SDL_Event event;
    std::vector<std::string> slot_list;
@@ -2759,7 +2909,7 @@ int cap32_main (int argc, char **argv)
    }
    parseArguments(argc, argv, slot_list, args);
 
-   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_NOPARACHUTE) < 0) { // initialize SDL
+   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) { // initialize SDL
       fprintf(stderr, "SDL_Init() failed: %s\n", SDL_GetError());
       _exit(-1);
    }
@@ -2789,6 +2939,9 @@ int cap32_main (int argc, char **argv)
       fprintf(stderr, "video_init() failed. Aborting.\n");
       cleanExit(-1);
    }
+#ifdef __APPLE__
+   cap32_setup_macos_menu();
+#endif
    init_topbar();
    mouse_init();
 
@@ -2854,19 +3007,20 @@ int cap32_main (int argc, char **argv)
          auto nextVirtualEvent = &virtualKeyboardEvents.front();
          SDL_PushEvent(nextVirtualEvent);
 
-         auto keysym = nextVirtualEvent->key.keysym;
+         auto key = nextVirtualEvent->key.key;
+         auto mod = static_cast<SDL_Keymod>(nextVirtualEvent->key.mod);
          auto evtype = nextVirtualEvent->key.type;
-         LOG_DEBUG("Inserted virtual event keysym=" << int(keysym.sym) << " (" << evtype << ")");
+         LOG_DEBUG("Inserted virtual event key=" << int(key) << " (" << evtype << ")");
 
-         CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(keysym);
+         CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(key, mod);
          if (!(scancode & MOD_EMU_KEY)) {
             LOG_DEBUG("The virtual event is a keypress (not a command), so introduce a pause.");
             // Setting nextVirtualEventFrameCount below guarantees to
             // immediately break the loop enclosing this code and wait
             // at least one frame.
             nextVirtualEventFrameCount = dwFrameCountOverall
-               + ((evtype == SDL_KEYDOWN || evtype == SDL_KEYUP)?1:0);
-            // The extra delay in case of SDL_KEYDOWN is to keep the
+               + ((evtype == SDL_EVENT_KEY_DOWN || evtype == SDL_EVENT_KEY_UP)?1:0);
+            // The extra delay in case of SDL_EVENT_KEY_DOWN is to keep the
             // key pressed long enough.  If we don't do this, the CPC
             // firmware debouncer eats repeated characters.
          }
@@ -2899,20 +3053,20 @@ int cap32_main (int argc, char **argv)
            int panel_y = video_get_topbar_height();
            int panel_w_scaled = panel_width;
            int panel_h_scaled = panel_height;
-           bool is_mouse_event = (event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP);
+           bool is_mouse_event = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP);
            int mx = 0, my = 0;
            if (is_mouse_event) {
              float lx = 0.0f, ly = 0.0f;
              if (renderer) {
-               if (event.type == SDL_MOUSEMOTION) {
-                 SDL_RenderWindowToLogical(renderer, static_cast<float>(event.motion.x), static_cast<float>(event.motion.y), &lx, &ly);
+               if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                 SDL_RenderCoordinatesFromWindow(renderer, static_cast<float>(event.motion.x), static_cast<float>(event.motion.y), &lx, &ly);
                } else {
-                 SDL_RenderWindowToLogical(renderer, static_cast<float>(event.button.x), static_cast<float>(event.button.y), &lx, &ly);
+                 SDL_RenderCoordinatesFromWindow(renderer, static_cast<float>(event.button.x), static_cast<float>(event.button.y), &lx, &ly);
                }
                mx = static_cast<int>(lx);
                my = static_cast<int>(ly);
              } else {
-               if (event.type == SDL_MOUSEMOTION) { mx = event.motion.x; my = event.motion.y; }
+               if (event.type == SDL_EVENT_MOUSE_MOTION) { mx = event.motion.x; my = event.motion.y; }
                else { mx = event.button.x; my = event.button.y; }
              }
              devtools_mouse_in_panel = (panel_width > 0 && mx >= panel_x && mx < panel_x + panel_w_scaled && my >= panel_y && my < panel_y + panel_h_scaled);
@@ -2926,7 +3080,7 @@ int cap32_main (int argc, char **argv)
                  if (route) {
                    float sx = (panel_w_scaled > 0) ? (static_cast<float>(panel_surface_width) / panel_w_scaled) : 1.0f;
                    float sy = (panel_h_scaled > 0) ? (static_cast<float>(panel_surface_height) / panel_h_scaled) : 1.0f;
-                   if (event.type == SDL_MOUSEMOTION) {
+                   if (event.type == SDL_EVENT_MOUSE_MOTION) {
                      routed_event.motion.x = static_cast<int>((mx - panel_x) * sx);
                      routed_event.motion.y = static_cast<int>((my - panel_y) * sy);
                    } else {
@@ -2934,14 +3088,14 @@ int cap32_main (int argc, char **argv)
                      routed_event.button.y = static_cast<int>((my - panel_y) * sy);
                    }
                  }
-               } else if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP || event.type == SDL_TEXTINPUT || event.type == SDL_TEXTEDITING) {
+               } else if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT || event.type == SDL_EVENT_TEXT_EDITING) {
                  route = devtools_mouse_in_panel;
                }
              }
              if (route) {
-               if (is_mouse_event && (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEMOTION)) {
-                 int cx = (event.type == SDL_MOUSEMOTION) ? routed_event.motion.x : routed_event.button.x;
-                 int cy = (event.type == SDL_MOUSEMOTION) ? routed_event.motion.y : routed_event.button.y;
+               if (is_mouse_event && (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_MOTION)) {
+                 int cx = (event.type == SDL_EVENT_MOUSE_MOTION) ? routed_event.motion.x : routed_event.button.x;
+                 int cy = (event.type == SDL_EVENT_MOUSE_MOTION) ? routed_event.motion.y : routed_event.button.y;
                  devtools_set_debug_click(cx, cy);
                }
                if (devtool.PassEvent(routed_event)) {
@@ -2953,19 +3107,19 @@ int cap32_main (int argc, char **argv)
          }
          if (processed) continue;
          switch (event.type) {
-            case SDL_KEYDOWN:
+            case SDL_EVENT_KEY_DOWN:
                {
-                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(event.key.keysym);
-                  LOG_VERBOSE("Keyboard: pressed: " << SDL_GetKeyName(event.key.keysym.sym) << " - keycode: " << keycode_names[event.key.keysym.sym] << " (" << event.key.keysym.sym << ") - scancode: " << scancode_names[event.key.keysym.scancode] << " (" << event.key.keysym.scancode << ") - CPC key: " << CPC.InputMapper->CPCkeyToString(CPC.InputMapper->CPCkeyFromKeysym(event.key.keysym)) << " - CPC scancode: " << scancode);
+                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(event.key.key, static_cast<SDL_Keymod>(event.key.mod));
+                  LOG_VERBOSE("Keyboard: pressed: " << SDL_GetKeyName(event.key.key) << " - keycode: " << keycode_names[event.key.key] << " (" << event.key.key << ") - scancode: " << scancode_names[event.key.scancode] << " (" << event.key.scancode << ") - CPC key: " << CPC.InputMapper->CPCkeyToString(CPC.InputMapper->CPCkeyFromKeysym(event.key.key, static_cast<SDL_Keymod>(event.key.mod))) << " - CPC scancode: " << scancode);
                   if (!(scancode & MOD_EMU_KEY)) {
                      applyKeypress(scancode, keyboard_matrix, true);
                   }
                }
                break;
 
-            case SDL_KEYUP:
+            case SDL_EVENT_KEY_UP:
                {
-                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(event.key.keysym);
+                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(event.key.key, static_cast<SDL_Keymod>(event.key.mod));
                   if (!(scancode & MOD_EMU_KEY)) {
                      applyKeypress(scancode, keyboard_matrix, false);
                   }
@@ -2998,12 +3152,15 @@ int cap32_main (int argc, char **argv)
                               fprintf(stderr, "video_init() failed. Aborting.\n");
                               cleanExit(-1);
                            }
+#ifdef __APPLE__
+                           cap32_setup_macos_menu();
+#endif
                            audio_resume();
                            break;
 
                         case CAP32_SCRNSHOT:
                            // Delay taking the screenshot to ensure the frame is complete.
-                           take_screenshot = true;
+                           g_take_screenshot = true;
                            break;
 
                         case CAP32_DELAY:
@@ -3131,7 +3288,7 @@ int cap32_main (int argc, char **argv)
                }
                break;
 
-            case SDL_JOYBUTTONDOWN:
+            case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
             {
                 CPCScancode scancode = CPC.InputMapper->CPCscancodeFromJoystickButton(event.jbutton);
                 if (scancode == 0xff) {
@@ -3148,14 +3305,14 @@ int cap32_main (int argc, char **argv)
             }
             break;
 
-            case SDL_JOYBUTTONUP:
+            case SDL_EVENT_JOYSTICK_BUTTON_UP:
             {
               CPCScancode scancode = CPC.InputMapper->CPCscancodeFromJoystickButton(event.jbutton);
               applyKeypress(scancode, keyboard_matrix, false);
             }
             break;
 
-            case SDL_JOYAXISMOTION:
+            case SDL_EVENT_JOYSTICK_AXIS_MOTION:
             {
               CPCScancode scancodes[2] = {0xff, 0xff};
               bool release = false;
@@ -3167,7 +3324,7 @@ int cap32_main (int argc, char **argv)
             }
             break;
 
-            case SDL_MOUSEMOTION:
+            case SDL_EVENT_MOUSE_MOTION:
             {
               if (topbar_surface) {
                 bool over_topbar = event.motion.y < topbar_height_px;
@@ -3184,7 +3341,7 @@ int cap32_main (int argc, char **argv)
             }
             break;
 
-            case SDL_MOUSEBUTTONDOWN:
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
             {
               if (topbar_surface && event.button.y < topbar_height_px && event.button.x < topbar_menu_width) {
                 if (!CPC.scr_gui_is_currently_on) showGui();
@@ -3202,7 +3359,7 @@ int cap32_main (int argc, char **argv)
             }
             break;
 
-            case SDL_MOUSEBUTTONUP:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
             {
               if (CPC.phazer_emulation) {
                 if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer) {
@@ -3217,28 +3374,21 @@ int cap32_main (int argc, char **argv)
             // TODO: What if we were paused because of other reason than losing focus and then only lost focus
             //       the right thing to do here is to restore focus but keep paused... implementing this require
             //       keeping track of pause source, which will be a pain.
-            case SDL_WINDOWEVENT:
-            switch (event.window.event) {
-              #if SDL_VERSION_ATLEAST(2, 0, 5)
-              case SDL_WINDOWEVENT_TAKE_FOCUS:
-              #endif
-              case SDL_WINDOWEVENT_FOCUS_GAINED:
-              case SDL_WINDOWEVENT_ENTER:
-                if (CPC.auto_pause) {
-                  cpc_resume();
-                }
-                break;
-              case SDL_WINDOWEVENT_FOCUS_LOST:
-              case SDL_WINDOWEVENT_LEAVE:
-              case SDL_WINDOWEVENT_MINIMIZED:
-                if (CPC.auto_pause) {
-                  cpc_pause();
-                }
-                break;
-            }
-            break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+            case SDL_EVENT_WINDOW_MOUSE_ENTER:
+              if (CPC.auto_pause) {
+                cpc_resume();
+              }
+              break;
+            case SDL_EVENT_WINDOW_FOCUS_LOST:
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+            case SDL_EVENT_WINDOW_MINIMIZED:
+              if (CPC.auto_pause) {
+                cpc_pause();
+              }
+              break;
 
-            case SDL_QUIT:
+            case SDL_EVENT_QUIT:
                cleanExit(0);
          }
       }
@@ -3327,9 +3477,9 @@ int cap32_main (int argc, char **argv)
                 if (devtool.UsesMainWindow()) devtool.PostUpdate();
               }
             }
-            if (take_screenshot) {
+            if (g_take_screenshot) {
               dumpScreen();
-              take_screenshot = false;
+              g_take_screenshot = false;
             }
          }
       }

@@ -5,7 +5,7 @@
 #include <fstream>
 #include <map>
 #include <string>
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include "cap32.h"
 #include "keyboard.h"
 #include "stringutils.h"

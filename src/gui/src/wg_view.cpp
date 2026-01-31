@@ -118,7 +118,7 @@ bool CView::HandleMessage(CMessage* pMessage)
 		case CMessage::APP_PAINT :
 			if (pMessage->Destination() == this || pMessage->Destination() == nullptr)
 			{
-				SDL_Surface* pFloatingSurface = SDL_CreateRGBSurface(0, m_pScreenSurface->w, m_pScreenSurface->h, Application().GetBitsPerPixel(), 0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
+				SDL_Surface* pFloatingSurface = SDL_CreateSurface(m_pScreenSurface->w, m_pScreenSurface->h, SDL_PIXELFORMAT_RGBA32);
 				PaintToSurface(*m_pScreenSurface, *pFloatingSurface, CPoint(0, 0));
 				// judb use entire application SDL surface (otherwise strange clipping effects occur
 				// when moving frames, also clipping of listboxes.)
@@ -127,7 +127,7 @@ bool CView::HandleMessage(CMessage* pMessage)
 //				SDL_Rect DestRect = CRect(m_WindowRect.SizeRect()).SDLRect();
 				SDL_Rect DestRect = CRect(0, 0, m_pScreenSurface->w, m_pScreenSurface->h).SDLRect();
 				SDL_BlitSurface(pFloatingSurface, &SourceRect, m_pScreenSurface, &DestRect);
-				SDL_FreeSurface(pFloatingSurface);
+				SDL_DestroySurface(pFloatingSurface);
 				//SDL_UpdateRect(m_pScreenSurface, 0, 0, 0, 0);
 				Flip();
 

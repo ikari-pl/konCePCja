@@ -2,7 +2,7 @@
 #define DEVTOOLS_H
 
 #include <string>
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include "CapriceGui.h"
 #include "CapriceDevToolsView.h"
 #include "CapriceRegsPanelView.h"

@@ -3,7 +3,7 @@
 
 #include "wg_application.h"
 #include "wg_view.h"
-#include "SDL.h"
+#include "SDL3/SDL.h"
 
 class CapriceGui : public wGui::CApplication
 {

@@ -23,7 +23,9 @@ void CapriceDevToolsView::PaintToSurface(SDL_Surface& ScreenSurface, SDL_Surface
   if (m_bVisible)
   {
     // Reset backgound
-    SDL_FillRect(&ScreenSurface, nullptr, SDL_MapRGB(ScreenSurface.format, 255, 255, 255));
+    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(ScreenSurface.format);
+    SDL_Palette* pal = SDL_GetSurfacePalette(&ScreenSurface);
+    SDL_FillSurfaceRect(&ScreenSurface, nullptr, SDL_MapRGB(fmt, pal, 255, 255, 255));
 
     // Draw all child windows recursively
     for (const auto child : m_ChildWindows)
@@ -37,7 +39,7 @@ void CapriceDevToolsView::PaintToSurface(SDL_Surface& ScreenSurface, SDL_Surface
     int dbg_x = 0, dbg_y = 0;
     if (devtools_get_debug_click(dbg_x, dbg_y)) {
       SDL_Rect marker = { dbg_x - 2, dbg_y - 2, 5, 5 };
-      SDL_FillRect(&ScreenSurface, &marker, SDL_MapRGB(ScreenSurface.format, 255, 0, 0));
+      SDL_FillSurfaceRect(&ScreenSurface, &marker, SDL_MapRGB(fmt, pal, 255, 0, 0));
     }
   }
 }
@@ -57,7 +59,7 @@ void CapriceDevToolsView::Flip() const
   if (m_pRenderer && m_pTexture) {
     SDL_UpdateTexture(m_pTexture, nullptr, m_pScreenSurface->pixels, m_pScreenSurface->pitch);
     SDL_RenderClear(m_pRenderer);
-    SDL_RenderCopy(m_pRenderer, m_pTexture, nullptr, nullptr);
+    SDL_RenderTexture(m_pRenderer, m_pTexture, nullptr, nullptr);
     SDL_RenderPresent(m_pRenderer);
   }
 }

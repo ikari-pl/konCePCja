@@ -2,7 +2,7 @@
 #define _KEYBOARD_H_
 
 #include "types.h"
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include <map>
 #include <list>
 #include <string>
@@ -14,11 +14,11 @@
 
 #define BITSHIFT_MOD 32
 #define BITMASK_NOMOD ((static_cast<PCKey>(1)<<BITSHIFT_MOD) - 1)
-#define MOD_PC_SHIFT    (static_cast<PCKey>(KMOD_SHIFT) << BITSHIFT_MOD)
-#define MOD_PC_CTRL     (static_cast<PCKey>(KMOD_CTRL) << BITSHIFT_MOD)
-#define MOD_PC_MODE     (static_cast<PCKey>(KMOD_MODE) << BITSHIFT_MOD)
+#define MOD_PC_SHIFT    (static_cast<PCKey>(SDL_KMOD_SHIFT) << BITSHIFT_MOD)
+#define MOD_PC_CTRL     (static_cast<PCKey>(SDL_KMOD_CTRL) << BITSHIFT_MOD)
+#define MOD_PC_MODE     (static_cast<PCKey>(SDL_KMOD_MODE) << BITSHIFT_MOD)
 // MOD_PC_ALT shouldn't be used: SDLK_LALT is mapped as a non-modifier key to CPC_COPY.
-#define MOD_PC_ALT      (static_cast<PCKey>(KMOD_LALT) << BITSHIFT_MOD)
+#define MOD_PC_ALT      (static_cast<PCKey>(SDL_KMOD_LALT) << BITSHIFT_MOD)
 #define MOD_PC_NUM      (static_cast<PCKey>(KMOD_NUM) << BITSHIFT_MOD)
 #define MOD_PC_CAPS     (static_cast<PCKey>(KMOD_CAPS) << BITSHIFT_MOD)
 
@@ -44,6 +44,14 @@ typedef enum {
    CAP32_DEVTOOLS,
    CAP32_NEXTDISKA
 } CAP32_KEYS;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+void cap32_menu_action(int action);
+#ifdef __cplusplus
+}
+#endif
 
 typedef enum {
    CPC_0,
@@ -307,8 +315,8 @@ class InputMapper {
     bool load_layout(const std::string& filename);
     void init();
     CPCScancode CPCscancodeFromCPCkey(CPC_KEYS cpc_key);
-    CPCScancode CPCscancodeFromKeysym(SDL_Keysym keysym);
-    CapriceKey CPCkeyFromKeysym(SDL_Keysym keysym);
+    CPCScancode CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod);
+    CapriceKey CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod);
     std::string CPCkeyToString(const CapriceKey cpc_key);
     CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
     void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode *cpc_key, bool &release);

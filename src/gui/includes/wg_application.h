@@ -25,7 +25,7 @@
 #ifndef _WG_APPLICATION_H_
 #define _WG_APPLICATION_H_
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include <list>
 #include <string>
 #include <map>

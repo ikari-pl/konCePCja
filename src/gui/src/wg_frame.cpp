@@ -306,7 +306,7 @@ bool CFrame::HandleMessage(CMessage* pMessage)  // virtual
                   break;
                 case SDLK_TAB:
                   bHandled = true;
-                  if(pKeyboardMessage->Modifiers & KMOD_SHIFT) {
+                  if(pKeyboardMessage->Modifiers & SDL_KMOD_SHIFT) {
                     CFrame::FocusNext(EFocusDirection::BACKWARD);
                   } else {
                     CFrame::FocusNext(EFocusDirection::FORWARD);

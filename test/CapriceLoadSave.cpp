@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include "CapriceGuiView.h"
 #include "CapriceLoadSave.h"
 #include "cap32.h"

@@ -421,7 +421,7 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 				m_bDrawCursor = true;
 				Draw();
 				bHandled = true;
-        SDL_StartTextInput();
+        SDL_StartTextInput(nullptr);
 			}
 			break;
 		case CMessage::CTRL_LOSINGKEYFOCUS:
@@ -430,7 +430,7 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 				m_pCursorTimer->StopTimer();
 				Draw();
 				bHandled = true;
-        SDL_StopTextInput();
+        SDL_StopTextInput(nullptr);
 			}
 			break;
     case CMessage::TEXTINPUT:
@@ -505,13 +505,13 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 						break;
 
 					case SDLK_LEFT:
-						if (pKeyboardMessage->Modifiers & KMOD_SHIFT) //Shift modifier
+						if (pKeyboardMessage->Modifiers & SDL_KMOD_SHIFT) //Shift modifier
 						{
 							if (m_SelStart > 0)
 							{
 								if ((m_SelLength > 0) || ((m_SelStart - abs(m_SelLength)) > 0))
 								{
-									if (pKeyboardMessage->Modifiers & KMOD_CTRL)
+									if (pKeyboardMessage->Modifiers & SDL_KMOD_CTRL)
 									{
 										std::string::size_type pos = sBuffer.rfind(' ', (m_SelStart + m_SelLength) - 1);
 										if (pos != std::string::npos)
@@ -541,7 +541,7 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 						}
 						else if (m_SelStart > 0)
 						{
-							if (pKeyboardMessage->Modifiers & KMOD_CTRL)
+							if (pKeyboardMessage->Modifiers & SDL_KMOD_CTRL)
 							{
 								std::string::size_type pos = sBuffer.rfind(' ', m_SelStart - 1);
 								if (pos != std::string::npos)
@@ -563,9 +563,9 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 					case SDLK_RIGHT:
 						if (m_SelStart <= sBuffer.length())
 						{
-							if (pKeyboardMessage->Modifiers & KMOD_SHIFT)
+							if (pKeyboardMessage->Modifiers & SDL_KMOD_SHIFT)
 							{
-								if (pKeyboardMessage->Modifiers & KMOD_CTRL)
+								if (pKeyboardMessage->Modifiers & SDL_KMOD_CTRL)
 								{
 									std::string::size_type pos = sBuffer.find(' ', m_SelStart + m_SelLength);
 									if (pos != std::string::npos)
@@ -588,7 +588,7 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 								// If we find one, we set the cursor position to that location.
 								// If we can't find one, we set the cursor position to the end of the string.
 								// If we don't have the ctrl modifier, then we just incriment the cursor position by one character
-								if (pKeyboardMessage->Modifiers & KMOD_CTRL)
+								if (pKeyboardMessage->Modifiers & SDL_KMOD_CTRL)
 								{
 									std::string::size_type pos = sBuffer.find(' ', m_SelStart + 1);
 									if (pos != std::string::npos)
@@ -616,7 +616,7 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 						}
 						break;
 					case SDLK_END:
-						if (pKeyboardMessage->Modifiers & KMOD_SHIFT)
+						if (pKeyboardMessage->Modifiers & SDL_KMOD_SHIFT)
 						{
 							m_SelLength = stdex::safe_static_cast<int>(sBuffer.length()) - stdex::safe_static_cast<int>(m_SelStart);
 						}
@@ -627,7 +627,7 @@ bool CEditBox::HandleMessage(CMessage* pMessage)
 						}
 						break;
 					case SDLK_HOME:
-						if (pKeyboardMessage->Modifiers & KMOD_SHIFT)
+						if (pKeyboardMessage->Modifiers & SDL_KMOD_SHIFT)
 						{
 							m_SelLength = stdex::safe_static_cast<int>(m_SelStart);
 							m_SelStart = 0;

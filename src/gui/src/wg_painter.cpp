@@ -72,7 +72,7 @@ void CPainter::DrawHLine(int xStart, int xEnd, int y, const CRGBColor& LineColor
 	Rect.y = stdex::safe_static_cast<short int>(y);
 	Rect.w = stdex::safe_static_cast<short int>(std::max(xEnd - xStart + 1, xStart - xEnd + 1));
 	Rect.h = 1;
-	SDL_FillRect(m_pSurface, &Rect, LineColor.SDLColor(m_pSurface->format));
+	SDL_FillSurfaceRect(m_pSurface, &Rect, LineColor.SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 }
 
 
@@ -90,7 +90,7 @@ void CPainter::DrawVLine(int yStart, int yEnd, int x, const CRGBColor& LineColor
 	Rect.y = stdex::safe_static_cast<short int>(std::min(yStart, yEnd));
 	Rect.w = 1;
 	Rect.h = stdex::safe_static_cast<short int>(std::max(yEnd - yStart + 1, yStart - yEnd + 1));
-	SDL_FillRect(m_pSurface, &Rect, LineColor.SDLColor(m_pSurface->format));
+	SDL_FillSurfaceRect(m_pSurface, &Rect, LineColor.SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 }
 
 void CPainter::DrawRect(const CRect& Rect, bool bFilled, const CRGBColor& BorderColor, const CRGBColor& FillColor)
@@ -115,7 +115,7 @@ void CPainter::DrawRect(const CRect& Rect, bool bFilled, const CRGBColor& Border
 		if (m_PaintMode == PAINT_REPLACE)
 		{
 			SDL_Rect FillRect = RealRect.SDLRect();
-			SDL_FillRect(m_pSurface, &FillRect, FillColor.SDLColor(m_pSurface->format));
+			SDL_FillSurfaceRect(m_pSurface, &FillRect, FillColor.SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 		}
 		else
 		{
@@ -198,7 +198,7 @@ void CPainter::DrawBox(CPoint UpperLeftPoint, int width, int height, const CRGBC
         UpperLeftPoint = UpperLeftPoint + Offset;
 	}
 	SDL_Rect Rect = CRect(UpperLeftPoint, width, height).SDLRect();
-	SDL_FillRect(m_pSurface, &Rect, LineColor.SDLColor(m_pSurface->format));
+	SDL_FillSurfaceRect(m_pSurface, &Rect, LineColor.SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 }
 
 
@@ -209,18 +209,18 @@ void CPainter::DrawPoint(const CPoint& Point, const CRGBColor& PointColor)
 	{
 		LockSurface();
 		Uint8* PixelOffset = static_cast<Uint8*>(m_pSurface->pixels) +
-			m_pSurface->format->BytesPerPixel * RealPoint.XPos() + m_pSurface->pitch * RealPoint.YPos();
-		switch (m_pSurface->format->BytesPerPixel)
+			SDL_BYTESPERPIXEL(m_pSurface->format) * RealPoint.XPos() + m_pSurface->pitch * RealPoint.YPos();
+		switch (SDL_BYTESPERPIXEL(m_pSurface->format))
 		{
 		case 1: // 8 bpp
-			*reinterpret_cast<Uint8*>(PixelOffset) = static_cast<Uint8>(MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format));
+			*reinterpret_cast<Uint8*>(PixelOffset) = static_cast<Uint8>(MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 			break;
 		case 2: // 16 bpp
-			*reinterpret_cast<Uint16*>(PixelOffset) = static_cast<Uint16>(MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format));
+			*reinterpret_cast<Uint16*>(PixelOffset) = static_cast<Uint16>(MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 			break;
 		case 3:  // 24 bpp
 		{
-			Uint32 PixelColor = MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format);
+			Uint32 PixelColor = MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface));
 			Uint8* pPixelSource = reinterpret_cast<Uint8*>(&PixelColor);
 			Uint8* pPixelDest = reinterpret_cast<Uint8*>(PixelOffset);
 			*pPixelDest = *pPixelSource;
@@ -229,7 +229,7 @@ void CPainter::DrawPoint(const CPoint& Point, const CRGBColor& PointColor)
 			break;
 		}
 		case 4: // 32 bpp
-			*reinterpret_cast<Uint32*>(PixelOffset) = static_cast<Uint32>(MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format));
+			*reinterpret_cast<Uint32*>(PixelOffset) = static_cast<Uint32>(MixColor(ReadPoint(Point), PointColor).SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 			break;
 		default:
 			throw(Wg_Ex_SDL("Unrecognized BytesPerPixel.", "CPainter::DrawPoint"));
@@ -247,8 +247,8 @@ CRGBColor CPainter::ReadPoint(const CPoint& Point)
 	if (CRect(0, 0, m_pSurface->w, m_pSurface->h).HitTest(RealPoint) == CRect::RELPOS_INSIDE)
 	{
 		Uint8* PixelOffset = static_cast<Uint8*>(m_pSurface->pixels) +
-			m_pSurface->format->BytesPerPixel * RealPoint.XPos() + m_pSurface->pitch * RealPoint.YPos();
-		switch (m_pSurface->format->BytesPerPixel)
+			SDL_BYTESPERPIXEL(m_pSurface->format) * RealPoint.XPos() + m_pSurface->pitch * RealPoint.YPos();
+		switch (SDL_BYTESPERPIXEL(m_pSurface->format))
 		{
 		case 1: // 8 bpp
 			PixelColor = *reinterpret_cast<Uint8*>(PixelOffset);
@@ -281,10 +281,10 @@ void CPainter::LockSurface()
 {
 	if (SDL_MUSTLOCK(m_pSurface))
 	{
-		if (SDL_LockSurface(m_pSurface) < 0)
+		if (!SDL_LockSurface(m_pSurface))
 		{
 			SDL_Delay(10);
-			if (SDL_LockSurface(m_pSurface) < 0)
+			if (!SDL_LockSurface(m_pSurface))
 			{
 				throw(Wg_Ex_SDL("Unable to lock surface.", "CPainter::LockSurface"));
 			}
@@ -352,7 +352,7 @@ void CPainter::ReplaceColor(const CRGBColor& NewColor, const CRGBColor& OldColor
 
 void CPainter::TransparentColor(const CRGBColor& TransparentColor)
 {
-	SDL_SetColorKey(m_pSurface, SDL_TRUE, TransparentColor.SDLColor(m_pSurface->format));
+	SDL_SetSurfaceColorKey(m_pSurface, true, TransparentColor.SDLColor(m_pSurface->format, SDL_GetSurfacePalette(m_pSurface)));
 }
 
 }

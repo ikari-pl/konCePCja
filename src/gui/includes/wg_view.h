@@ -26,7 +26,7 @@
 #define _WG_VIEW_H_
 
 #include "wg_window.h"
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include "wg_menu.h"
 #include <string>
 

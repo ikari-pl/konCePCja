@@ -25,7 +25,7 @@ bool DevTools::Activate(int scale, bool useMainWindow) {
       window = mainSDLWindow;
       renderer = nullptr;
       texture = nullptr;
-      surface = SDL_CreateRGBSurface(0, DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, 32, 0, 0, 0, 0);
+      surface = SDL_CreateSurface(DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, SDL_PIXELFORMAT_RGBA32);
       if (!surface) { Deactivate(); return false; }
       capriceGui = std::make_unique<CapriceGui>(window, /*bInMainView=*/false, /*scale=*/1);
       capriceGui->Init();
@@ -34,14 +34,18 @@ bool DevTools::Activate(int scale, bool useMainWindow) {
     } else {
       // TODO: This position only makes sense for me. Ideally we would probably want to find where current window is, find display size and place
       // the window where there's the most space available. On the other hand, getting display size is not very reliable on multi-screen setups under linux ...
-      window = SDL_CreateWindow("Caprice32 - Developers' tools", 100, 100, DEVTOOLS_WIDTH*scale, DEVTOOLS_HEIGHT*scale, SDL_WINDOW_SHOWN);
-      renderer = SDL_CreateRenderer(window, -1, 0);
+      window = SDL_CreateWindow("Caprice32 - Developers' tools", DEVTOOLS_WIDTH*scale, DEVTOOLS_HEIGHT*scale, 0);
+      renderer = SDL_CreateRenderer(window, nullptr);
       if (!window || !renderer) { Deactivate(); return false; }
-      surface = SDL_CreateRGBSurface(0, DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, renderer_bpp(renderer), 0, 0, 0, 0);
+      surface = SDL_CreateSurface(DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, SDL_PIXELFORMAT_RGBA32);
       if (!surface) { Deactivate(); return false; }
       texture = SDL_CreateTextureFromSurface(renderer, surface);
       if (!texture) { Deactivate(); return false; }
-      SDL_FillRect(surface, nullptr, SDL_MapRGB(surface->format, 0, 0, 0));
+      {
+        const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(surface->format);
+        SDL_Palette* pal = SDL_GetSurfacePalette(surface);
+        SDL_FillSurfaceRect(surface, nullptr, SDL_MapRGB(fmt, pal, 0, 0, 0));
+      }
       capriceGui = std::make_unique<CapriceGui>(window, /*bInMainView=*/false, scale);
       capriceGui->Init();
       devToolsView = std::make_unique<CapriceDevToolsView>(*capriceGui, surface, renderer, texture, wGui::CRect(0, 0, DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT), this);
@@ -62,12 +66,12 @@ void DevTools::Deactivate() {
   capriceGui = nullptr;
   if (!useMainWindow) {
     if (texture) SDL_DestroyTexture(texture);
-    if (surface) SDL_FreeSurface(surface);
+    if (surface) SDL_DestroySurface(surface);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
   } else {
     video_clear_devtools_panel();
-    if (surface) SDL_FreeSurface(surface);
+    if (surface) SDL_DestroySurface(surface);
   }
   texture = nullptr;
   surface = nullptr;

@@ -33,7 +33,7 @@ namespace wGui
 
 //! For internal use only
 //! \internal The callback used by the SDL Timer
-Uint32 TimerCallback(Uint32 Interval, void* param);
+Uint32 TimerCallback(void* param, SDL_TimerID timerID, Uint32 Interval);
 
 
 //! A simple timer class

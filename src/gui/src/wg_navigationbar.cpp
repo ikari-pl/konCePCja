@@ -76,7 +76,7 @@ unsigned int CNavigationBar::AddItem(SNavBarItem NavBarItem) {
     if (!NavBarItem.sPictureFilename.empty()) {
         m_Bitmaps.push_back(new CBitmapFileResourceHandle(NavBarItem.sPictureFilename));
         // Set transparency color to COLOR_WHITE:
-        SDL_SetColorKey(m_Bitmaps.at(m_Bitmaps.size() - 1)->Bitmap(), SDL_TRUE, COLOR_WHITE.SDLColor(m_pSDLSurface->format));
+        SDL_SetSurfaceColorKey(m_Bitmaps.at(m_Bitmaps.size() - 1)->Bitmap(), true, COLOR_WHITE.SDLColor(m_pSDLSurface->format, SDL_GetSurfacePalette(m_pSDLSurface)));
     } else {
         m_Bitmaps.push_back(nullptr);
     }

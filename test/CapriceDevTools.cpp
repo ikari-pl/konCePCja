@@ -3,7 +3,7 @@
 
 #include <array>
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 
 #include "CapriceDevTools.h"
 #include "cap32.h"

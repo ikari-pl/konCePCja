@@ -8,7 +8,7 @@
  * Code was copied and slightly adapted from driedfruit savepng.
  * See https://github.com/driedfruit/SDL_SavePNG
  */
-#include <SDL_video.h>
+#include <SDL3/SDL_video.h>
 #include <string>
 
 /*

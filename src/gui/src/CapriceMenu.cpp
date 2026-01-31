@@ -44,7 +44,13 @@ CapriceMenu::CapriceMenu(const CRect& WindowRect, CWindow* pParent, SDL_Surface*
   int padding = 20;
   int total_height = button_rect.Top() + button_rect.Height() + padding;
   int total_width = button_rect.Width() + padding * 2;
-  SetWindowRect(CRect(m_WindowRect.TopLeft(), m_WindowRect.TopLeft() + CPoint(total_width, total_height)));
+
+  CPoint top_left((m_pScreenSurface->w - total_width) / 2, (m_pScreenSurface->h - total_height) / 2);
+  SetWindowRect(CRect(top_left, total_width, total_height));
+
+  CRGBColor bg = GetBackgroundColor();
+  bg.alpha = 0xCC; // ~80% opacity
+  SetBackgroundColor(bg);
 }
 
 CapriceMenu::~CapriceMenu() = default;
@@ -95,19 +101,19 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
                 }
               }
               break;
-            case SDLK_o:
+            case SDLK_O:
               bHandled = true;
               selected = MenuItem::OPTIONS;
               break;
-            case SDLK_l:
+            case SDLK_L:
               bHandled = true;
               selected = MenuItem::LOAD_SAVE;
               break;
-            case SDLK_m:
+            case SDLK_M:
               bHandled = true;
               selected = MenuItem::MEMORY_TOOL;
               break;
-            case SDLK_d:
+            case SDLK_D:
               bHandled = true;
               selected = MenuItem::DEVTOOLS;
               break;
@@ -115,16 +121,16 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
               bHandled = true;
               selected = MenuItem::RESET;
               break;
-            case SDLK_a:
+            case SDLK_A:
               bHandled = true;
               selected = MenuItem::ABOUT;
               break;
-            case SDLK_q:
+            case SDLK_Q:
             case SDLK_F10:
               bHandled = true;
               selected = MenuItem::QUIT;
               break;
-            case SDLK_r:
+            case SDLK_R:
             case SDLK_ESCAPE: 
               bHandled = true;
               selected = MenuItem::RESUME;

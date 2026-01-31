@@ -763,84 +763,84 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = {
   { CPC_7,           SDLK_7 },
   { CPC_8,           SDLK_8 },
   { CPC_9,           SDLK_9 },
-  { CPC_A,           SDLK_a | MOD_PC_SHIFT },
-  { CPC_B,           SDLK_b | MOD_PC_SHIFT },
-  { CPC_C,           SDLK_c | MOD_PC_SHIFT },
-  { CPC_D,           SDLK_d | MOD_PC_SHIFT },
-  { CPC_E,           SDLK_e | MOD_PC_SHIFT },
-  { CPC_F,           SDLK_f | MOD_PC_SHIFT },
-  { CPC_G,           SDLK_g | MOD_PC_SHIFT },
-  { CPC_H,           SDLK_h | MOD_PC_SHIFT },
-  { CPC_I,           SDLK_i | MOD_PC_SHIFT },
-  { CPC_J,           SDLK_j | MOD_PC_SHIFT },
-  { CPC_K,           SDLK_k | MOD_PC_SHIFT },
-  { CPC_L,           SDLK_l | MOD_PC_SHIFT },
-  { CPC_M,           SDLK_m | MOD_PC_SHIFT },
-  { CPC_N,           SDLK_n | MOD_PC_SHIFT },
-  { CPC_O,           SDLK_o | MOD_PC_SHIFT },
-  { CPC_P,           SDLK_p | MOD_PC_SHIFT },
-  { CPC_Q,           SDLK_q | MOD_PC_SHIFT },
-  { CPC_R,           SDLK_r | MOD_PC_SHIFT },
-  { CPC_S,           SDLK_s | MOD_PC_SHIFT },
-  { CPC_T,           SDLK_t | MOD_PC_SHIFT },
-  { CPC_U,           SDLK_u | MOD_PC_SHIFT },
-  { CPC_V,           SDLK_v | MOD_PC_SHIFT },
-  { CPC_W,           SDLK_w | MOD_PC_SHIFT },
-  { CPC_X,           SDLK_x | MOD_PC_SHIFT },
-  { CPC_Y,           SDLK_y | MOD_PC_SHIFT },
-  { CPC_Z,           SDLK_z | MOD_PC_SHIFT },
-  { CPC_a,           SDLK_a },
-  { CPC_b,           SDLK_b },
-  { CPC_c,           SDLK_c },
-  { CPC_d,           SDLK_d },
-  { CPC_e,           SDLK_e },
-  { CPC_f,           SDLK_f },
-  { CPC_g,           SDLK_g },
-  { CPC_h,           SDLK_h },
-  { CPC_i,           SDLK_i },
-  { CPC_j,           SDLK_j },
-  { CPC_k,           SDLK_k },
-  { CPC_l,           SDLK_l },
-  { CPC_m,           SDLK_m },
-  { CPC_n,           SDLK_n },
-  { CPC_o,           SDLK_o },
-  { CPC_p,           SDLK_p },
-  { CPC_q,           SDLK_q },
-  { CPC_r,           SDLK_r },
-  { CPC_s,           SDLK_s },
-  { CPC_t,           SDLK_t },
-  { CPC_u,           SDLK_u },
-  { CPC_v,           SDLK_v },
-  { CPC_w,           SDLK_w },
-  { CPC_x,           SDLK_x },
-  { CPC_y,           SDLK_y },
-  { CPC_z,           SDLK_z },
-  { CPC_CTRL_a,      SDLK_a | MOD_PC_CTRL },
-  { CPC_CTRL_b,      SDLK_b | MOD_PC_CTRL },
-  { CPC_CTRL_c,      SDLK_c | MOD_PC_CTRL },
-  { CPC_CTRL_d,      SDLK_d | MOD_PC_CTRL },
-  { CPC_CTRL_e,      SDLK_e | MOD_PC_CTRL },
-  { CPC_CTRL_f,      SDLK_f | MOD_PC_CTRL },
-  { CPC_CTRL_g,      SDLK_g | MOD_PC_CTRL },
-  { CPC_CTRL_h,      SDLK_h | MOD_PC_CTRL },
-  { CPC_CTRL_i,      SDLK_i | MOD_PC_CTRL },
-  { CPC_CTRL_j,      SDLK_j | MOD_PC_CTRL },
-  { CPC_CTRL_k,      SDLK_k | MOD_PC_CTRL },
-  { CPC_CTRL_l,      SDLK_l | MOD_PC_CTRL },
-  { CPC_CTRL_m,      SDLK_m | MOD_PC_CTRL },
-  { CPC_CTRL_n,      SDLK_n | MOD_PC_CTRL },
-  { CPC_CTRL_o,      SDLK_o | MOD_PC_CTRL },
-  { CPC_CTRL_p,      SDLK_p | MOD_PC_CTRL },
-  { CPC_CTRL_q,      SDLK_q | MOD_PC_CTRL },
-  { CPC_CTRL_r,      SDLK_r | MOD_PC_CTRL },
-  { CPC_CTRL_s,      SDLK_s | MOD_PC_CTRL },
-  { CPC_CTRL_t,      SDLK_t | MOD_PC_CTRL },
-  { CPC_CTRL_u,      SDLK_u | MOD_PC_CTRL },
-  { CPC_CTRL_v,      SDLK_v | MOD_PC_CTRL },
-  { CPC_CTRL_w,      SDLK_w | MOD_PC_CTRL },
-  { CPC_CTRL_x,      SDLK_x | MOD_PC_CTRL },
-  { CPC_CTRL_y,      SDLK_y | MOD_PC_CTRL },
-  { CPC_CTRL_z,      SDLK_z | MOD_PC_CTRL },
+  { CPC_A,           SDLK_A | MOD_PC_SHIFT },
+  { CPC_B,           SDLK_B | MOD_PC_SHIFT },
+  { CPC_C,           SDLK_C | MOD_PC_SHIFT },
+  { CPC_D,           SDLK_D | MOD_PC_SHIFT },
+  { CPC_E,           SDLK_E | MOD_PC_SHIFT },
+  { CPC_F,           SDLK_F | MOD_PC_SHIFT },
+  { CPC_G,           SDLK_G | MOD_PC_SHIFT },
+  { CPC_H,           SDLK_H | MOD_PC_SHIFT },
+  { CPC_I,           SDLK_I | MOD_PC_SHIFT },
+  { CPC_J,           SDLK_J | MOD_PC_SHIFT },
+  { CPC_K,           SDLK_K | MOD_PC_SHIFT },
+  { CPC_L,           SDLK_L | MOD_PC_SHIFT },
+  { CPC_M,           SDLK_M | MOD_PC_SHIFT },
+  { CPC_N,           SDLK_N | MOD_PC_SHIFT },
+  { CPC_O,           SDLK_O | MOD_PC_SHIFT },
+  { CPC_P,           SDLK_P | MOD_PC_SHIFT },
+  { CPC_Q,           SDLK_Q | MOD_PC_SHIFT },
+  { CPC_R,           SDLK_R | MOD_PC_SHIFT },
+  { CPC_S,           SDLK_S | MOD_PC_SHIFT },
+  { CPC_T,           SDLK_T | MOD_PC_SHIFT },
+  { CPC_U,           SDLK_U | MOD_PC_SHIFT },
+  { CPC_V,           SDLK_V | MOD_PC_SHIFT },
+  { CPC_W,           SDLK_W | MOD_PC_SHIFT },
+  { CPC_X,           SDLK_X | MOD_PC_SHIFT },
+  { CPC_Y,           SDLK_Y | MOD_PC_SHIFT },
+  { CPC_Z,           SDLK_Z | MOD_PC_SHIFT },
+  { CPC_a,           SDLK_A },
+  { CPC_b,           SDLK_B },
+  { CPC_c,           SDLK_C },
+  { CPC_d,           SDLK_D },
+  { CPC_e,           SDLK_E },
+  { CPC_f,           SDLK_F },
+  { CPC_g,           SDLK_G },
+  { CPC_h,           SDLK_H },
+  { CPC_i,           SDLK_I },
+  { CPC_j,           SDLK_J },
+  { CPC_k,           SDLK_K },
+  { CPC_l,           SDLK_L },
+  { CPC_m,           SDLK_M },
+  { CPC_n,           SDLK_N },
+  { CPC_o,           SDLK_O },
+  { CPC_p,           SDLK_P },
+  { CPC_q,           SDLK_Q },
+  { CPC_r,           SDLK_R },
+  { CPC_s,           SDLK_S },
+  { CPC_t,           SDLK_T },
+  { CPC_u,           SDLK_U },
+  { CPC_v,           SDLK_V },
+  { CPC_w,           SDLK_W },
+  { CPC_x,           SDLK_X },
+  { CPC_y,           SDLK_Y },
+  { CPC_z,           SDLK_Z },
+  { CPC_CTRL_a,      SDLK_A | MOD_PC_CTRL },
+  { CPC_CTRL_b,      SDLK_B | MOD_PC_CTRL },
+  { CPC_CTRL_c,      SDLK_C | MOD_PC_CTRL },
+  { CPC_CTRL_d,      SDLK_D | MOD_PC_CTRL },
+  { CPC_CTRL_e,      SDLK_E | MOD_PC_CTRL },
+  { CPC_CTRL_f,      SDLK_F | MOD_PC_CTRL },
+  { CPC_CTRL_g,      SDLK_G | MOD_PC_CTRL },
+  { CPC_CTRL_h,      SDLK_H | MOD_PC_CTRL },
+  { CPC_CTRL_i,      SDLK_I | MOD_PC_CTRL },
+  { CPC_CTRL_j,      SDLK_J | MOD_PC_CTRL },
+  { CPC_CTRL_k,      SDLK_K | MOD_PC_CTRL },
+  { CPC_CTRL_l,      SDLK_L | MOD_PC_CTRL },
+  { CPC_CTRL_m,      SDLK_M | MOD_PC_CTRL },
+  { CPC_CTRL_n,      SDLK_N | MOD_PC_CTRL },
+  { CPC_CTRL_o,      SDLK_O | MOD_PC_CTRL },
+  { CPC_CTRL_p,      SDLK_P | MOD_PC_CTRL },
+  { CPC_CTRL_q,      SDLK_Q | MOD_PC_CTRL },
+  { CPC_CTRL_r,      SDLK_R | MOD_PC_CTRL },
+  { CPC_CTRL_s,      SDLK_S | MOD_PC_CTRL },
+  { CPC_CTRL_t,      SDLK_T | MOD_PC_CTRL },
+  { CPC_CTRL_u,      SDLK_U | MOD_PC_CTRL },
+  { CPC_CTRL_v,      SDLK_V | MOD_PC_CTRL },
+  { CPC_CTRL_w,      SDLK_W | MOD_PC_CTRL },
+  { CPC_CTRL_x,      SDLK_X | MOD_PC_CTRL },
+  { CPC_CTRL_y,      SDLK_Y | MOD_PC_CTRL },
+  { CPC_CTRL_z,      SDLK_Z | MOD_PC_CTRL },
   { CPC_CTRL_0,      SDLK_0 | MOD_PC_CTRL },
   { CPC_CTRL_1,      SDLK_1 | MOD_PC_CTRL },
   { CPC_CTRL_2,      SDLK_2 | MOD_PC_CTRL },
@@ -858,7 +858,7 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = {
   { CPC_AMPERSAND,   SDLK_7 | MOD_PC_SHIFT },
   { CPC_ASTERISK,    SDLK_8 | MOD_PC_SHIFT },
   { CPC_AT,          SDLK_2 | MOD_PC_SHIFT },
-  { CPC_BACKQUOTE,   SDLK_BACKQUOTE },
+  { CPC_BACKQUOTE,   SDLK_GRAVE },
   { CPC_BACKSLASH,   SDLK_BACKSLASH },
   { CPC_CAPSLOCK,    SDLK_CAPSLOCK },
   { CPC_CLR,         SDLK_DELETE },
@@ -878,7 +878,7 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = {
   { CPC_CUR_ENDLN,   SDLK_END },
   { CPC_CUR_HOMEBL,  SDLK_HOME | MOD_PC_CTRL },
   { CPC_CUR_ENDBL,   SDLK_END | MOD_PC_CTRL },
-  { CPC_DBLQUOTE,    SDLK_QUOTE | MOD_PC_SHIFT },
+  { CPC_DBLQUOTE,    SDLK_APOSTROPHE | MOD_PC_SHIFT },
   { CPC_DEL,         SDLK_BACKSPACE },
   { CPC_DOLLAR,      SDLK_4 | MOD_PC_SHIFT },
   { CPC_ENTER,       SDLK_KP_ENTER },
@@ -931,7 +931,7 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = {
   { CPC_POUND,       0 },
   { CPC_POWER,       SDLK_6 | MOD_PC_SHIFT },
   { CPC_QUESTION,    SDLK_SLASH | MOD_PC_SHIFT },
-  { CPC_QUOTE,       SDLK_QUOTE },
+  { CPC_QUOTE,       SDLK_APOSTROPHE },
   { CPC_RBRACKET,    SDLK_RIGHTBRACKET },
   { CPC_RCBRACE,     SDLK_RIGHTBRACKET | MOD_PC_SHIFT },
   { CPC_RETURN,      SDLK_RETURN },
@@ -1207,11 +1207,11 @@ const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings =
   { "SDLK_ESCAPE", SDLK_ESCAPE},
   { "SDLK_SPACE", SDLK_SPACE},
   { "SDLK_EXCLAIM", SDLK_EXCLAIM},
-  { "SDLK_QUOTEDBL", SDLK_QUOTEDBL},
+  { "SDLK_DBLAPOSTROPHE", SDLK_DBLAPOSTROPHE},
   { "SDLK_HASH", SDLK_HASH},
   { "SDLK_DOLLAR", SDLK_DOLLAR},
   { "SDLK_AMPERSAND", SDLK_AMPERSAND},
-  { "SDLK_QUOTE", SDLK_QUOTE},
+  { "SDLK_APOSTROPHE", SDLK_APOSTROPHE},
   { "SDLK_LEFTPAREN", SDLK_LEFTPAREN},
   { "SDLK_RIGHTPAREN", SDLK_RIGHTPAREN},
   { "SDLK_ASTERISK", SDLK_ASTERISK},
@@ -1242,33 +1242,33 @@ const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings =
   { "SDLK_RIGHTBRACKET", SDLK_RIGHTBRACKET},
   { "SDLK_CARET", SDLK_CARET},
   { "SDLK_UNDERSCORE", SDLK_UNDERSCORE},
-  { "SDLK_BACKQUOTE", SDLK_BACKQUOTE},
-  { "SDLK_a", SDLK_a},
-  { "SDLK_b", SDLK_b},
-  { "SDLK_c", SDLK_c},
-  { "SDLK_d", SDLK_d},
-  { "SDLK_e", SDLK_e},
-  { "SDLK_f", SDLK_f},
-  { "SDLK_g", SDLK_g},
-  { "SDLK_h", SDLK_h},
-  { "SDLK_i", SDLK_i},
-  { "SDLK_j", SDLK_j},
-  { "SDLK_k", SDLK_k},
-  { "SDLK_l", SDLK_l},
-  { "SDLK_m", SDLK_m},
-  { "SDLK_n", SDLK_n},
-  { "SDLK_o", SDLK_o},
-  { "SDLK_p", SDLK_p},
-  { "SDLK_q", SDLK_q},
-  { "SDLK_r", SDLK_r},
-  { "SDLK_s", SDLK_s},
-  { "SDLK_t", SDLK_t},
-  { "SDLK_u", SDLK_u},
-  { "SDLK_v", SDLK_v},
-  { "SDLK_w", SDLK_w},
-  { "SDLK_x", SDLK_x},
-  { "SDLK_y", SDLK_y},
-  { "SDLK_z", SDLK_z},
+  { "SDLK_GRAVE", SDLK_GRAVE},
+  { "SDLK_A", SDLK_A},
+  { "SDLK_B", SDLK_B},
+  { "SDLK_C", SDLK_C},
+  { "SDLK_D", SDLK_D},
+  { "SDLK_E", SDLK_E},
+  { "SDLK_F", SDLK_F},
+  { "SDLK_G", SDLK_G},
+  { "SDLK_H", SDLK_H},
+  { "SDLK_I", SDLK_I},
+  { "SDLK_J", SDLK_J},
+  { "SDLK_K", SDLK_K},
+  { "SDLK_L", SDLK_L},
+  { "SDLK_M", SDLK_M},
+  { "SDLK_N", SDLK_N},
+  { "SDLK_O", SDLK_O},
+  { "SDLK_P", SDLK_P},
+  { "SDLK_Q", SDLK_Q},
+  { "SDLK_R", SDLK_R},
+  { "SDLK_S", SDLK_S},
+  { "SDLK_T", SDLK_T},
+  { "SDLK_U", SDLK_U},
+  { "SDLK_V", SDLK_V},
+  { "SDLK_W", SDLK_W},
+  { "SDLK_X", SDLK_X},
+  { "SDLK_Y", SDLK_Y},
+  { "SDLK_Z", SDLK_Z},
   { "SDLK_DELETE", SDLK_DELETE},
   { "SDLK_PERCENT", SDLK_PERCENT},
   /*@}*/
@@ -1350,9 +1350,9 @@ const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings =
   /*@}*/
   /*@{*/
     /** @name Fake SDL keycodes */
-  { "SDLK_nTILDE", 241},
-  { "SDLK_uGRAVE", 249},
-  { "SDLK_cCEDIL", 231},
+  { "SDLK_NTILDE", 241},
+  { "SDLK_UGRAVE", 249},
+  { "SDLK_CCEDIL", 231},
   { "SDLK_CIRC", 0x40000000},
   { "SDLK_ESZETT", 223},
   { "SDLK_DEGREE", 186},
@@ -1367,7 +1367,7 @@ const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings =
 };
 
 
-// Format of a line: CPC_xxx\tSDLK_xxx\tMODIFIER
+// Format of a line: CPC_xxx\tSDLK_Xxx\tMODIFIER
 // Last field is optional
 LineParsingResult InputMapper::process_cfg_line(char *line)
 {
@@ -1479,14 +1479,14 @@ CPCScancode InputMapper::CPCscancodeFromCPCkey(CPC_KEYS cpc_key) {
   return cpc_kbd[CPC->keyboard][cpc_key];
 }
 
-CPCScancode InputMapper::CPCscancodeFromKeysym(SDL_Keysym keysym) {
-    PCKey sdl_key = keysym.sym;
+CPCScancode InputMapper::CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod) {
+    PCKey sdl_key = key;
 
-    if (keysym.mod & KMOD_SHIFT)                sdl_key |= MOD_PC_SHIFT;
-    if (keysym.mod & KMOD_CTRL)                 sdl_key |= MOD_PC_CTRL;
+    if (mod & SDL_KMOD_SHIFT)                sdl_key |= MOD_PC_SHIFT;
+    if (mod & SDL_KMOD_CTRL)                 sdl_key |= MOD_PC_CTRL;
     // Map right alt to Mode (AltGr). Not clear what determines whether SDL2 uses one or the other and if both can happen together.
-    if (keysym.mod & (KMOD_MODE | KMOD_RALT))   sdl_key |= MOD_PC_MODE;
-    // Not mapping KMOD_LALT, the key itself is mapped to CPC_COPY.
+    if (mod & (SDL_KMOD_MODE | SDL_KMOD_RALT))   sdl_key |= MOD_PC_MODE;
+    // Not mapping SDL_KMOD_LALT, the key itself is mapped to CPC_COPY.
     // Ignore sticky modifiers (MOD_PC_NUM and MOD_PC_CAPS)
 
     auto cpc_key = CPCkeysFromSDLkeysym.find(sdl_key);
@@ -1498,14 +1498,14 @@ CPCScancode InputMapper::CPCscancodeFromKeysym(SDL_Keysym keysym) {
     return cpc_kbd[CPC->keyboard][cpc_key->second];
 }
 
-CapriceKey InputMapper::CPCkeyFromKeysym(SDL_Keysym keysym) {
-    PCKey sdl_key = keysym.sym;
+CapriceKey InputMapper::CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod) {
+    PCKey sdl_key = key;
 
-    if (keysym.mod & KMOD_SHIFT)                sdl_key |= MOD_PC_SHIFT;
-    if (keysym.mod & KMOD_CTRL)                 sdl_key |= MOD_PC_CTRL;
+    if (mod & SDL_KMOD_SHIFT)                sdl_key |= MOD_PC_SHIFT;
+    if (mod & SDL_KMOD_CTRL)                 sdl_key |= MOD_PC_CTRL;
     // Map right alt to Mode (AltGr). Not clear what determines whether SDL2 uses one or the other and if both can happen together.
-    if (keysym.mod & (KMOD_MODE | KMOD_RALT))   sdl_key |= MOD_PC_MODE;
-    // Not mapping KMOD_LALT, the key itself is mapped to CPC_COPY.
+    if (mod & (SDL_KMOD_MODE | SDL_KMOD_RALT))   sdl_key |= MOD_PC_MODE;
+    // Not mapping SDL_KMOD_LALT, the key itself is mapped to CPC_COPY.
     // Ignore sticky modifiers (MOD_PC_NUM and MOD_PC_CAPS)
 
     auto cpc_key = CPCkeysFromSDLkeysym.find(sdl_key);
@@ -1551,23 +1551,23 @@ std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
         // Lookup the SDL key corresponding to this emulator command
         sdl_keysym = SDLkeysymFromCPCkeys.find(keycode);
         if (sdl_keysym != SDLkeysymFromCPCkeys.end()) {
-          key.key.keysym.sym = static_cast<SDL_Keycode>(sdl_keysym->second & BITMASK_NOMOD);
-          key.key.keysym.mod = static_cast<SDL_Keymod>(sdl_keysym->second >> BITSHIFT_MOD);
+          key.key.key = static_cast<SDL_Keycode>(sdl_keysym->second & BITMASK_NOMOD);
+          key.key.mod = static_cast<SDL_Keymod>(sdl_keysym->second >> BITSHIFT_MOD);
         }
         escaped = false;
         cap32_cmd = false;
       } else {
         // key.key.keysym.scancode = ;
-        key.key.keysym.sym = SDLkeysFromChars[c].first;
-        key.key.keysym.mod = SDLkeysFromChars[c].second;
+        key.key.key = SDLkeysFromChars[c].first;
+        key.key.mod = SDLkeysFromChars[c].second;
         // key.key.keysym.unicode = c;
       }
-      key.key.type = SDL_KEYDOWN;
-      key.key.state = SDL_PRESSED;
+      key.type = SDL_EVENT_KEY_DOWN;
+      
       result.push_back(key);
 
-      key.key.type = SDL_KEYUP;
-      key.key.state = SDL_RELEASED;
+      key.type = SDL_EVENT_KEY_UP;
+      
       result.push_back(key);
     }
     return result;

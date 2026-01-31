@@ -91,7 +91,7 @@ CBitmapResourceHandle::~CBitmapResourceHandle()
 	if (SDL_WasInit(SDL_INIT_VIDEO) == 0) return;
 	if (GetRefCount() == 1 && m_BitmapMap.find(m_ResourceId) != m_BitmapMap.end())
 	{
-		SDL_FreeSurface(m_BitmapMap[m_ResourceId]);
+		SDL_DestroySurface(m_BitmapMap[m_ResourceId]);
 		m_BitmapMap.erase(m_ResourceId);
 	}
 }
@@ -105,7 +105,7 @@ SDL_Surface* CBitmapResourceHandle::Bitmap() const
 void CBitmapResourceHandle::CleanupAll()
 {
 	for (auto& it : m_BitmapMap) {
-		if (it.second) SDL_FreeSurface(it.second);
+		if (it.second) SDL_DestroySurface(it.second);
 	}
 	m_BitmapMap.clear();
 }
@@ -154,7 +154,7 @@ CCursorResourceHandle::~CCursorResourceHandle()
 	if (SDL_WasInit(SDL_INIT_VIDEO) == 0) return;
 	if (GetRefCount() == 1 && m_SDLCursorMap.find(m_ResourceId) != m_SDLCursorMap.end())
 	{
-		SDL_FreeCursor(m_SDLCursorMap[m_ResourceId]);
+		SDL_DestroyCursor(m_SDLCursorMap[m_ResourceId]);
 		m_SDLCursorMap.erase(m_ResourceId);
 	}
 }
@@ -168,7 +168,7 @@ SDL_Cursor* CCursorResourceHandle::Cursor() const
 void CCursorResourceHandle::CleanupAll()
 {
 	for (auto& it : m_SDLCursorMap) {
-		if (it.second) SDL_FreeCursor(it.second);
+		if (it.second) SDL_DestroyCursor(it.second);
 	}
 	m_SDLCursorMap.clear();
 }

@@ -19,7 +19,7 @@
 #ifndef VIDEO_H
 #define VIDEO_H
 
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include <vector>
 
 typedef struct video_plugin

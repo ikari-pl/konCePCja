@@ -1,3 +1,4 @@
+UNAME_S := $(shell uname -s)
 # use "make" to build for linux
 # use "make debug" or "make DEBUG=TRUE" to build a debug executable for linux
 # use "make ARCH=win32" or "make ARCH=win64" to build for windows
@@ -19,9 +20,19 @@ REVISION=0
 
 LAST_BUILD_IN_DEBUG = $(shell [ -e .debug ] && echo 1 || echo 0)
 
+ifeq ($(UNAME_S),Darwin)
+ARCH ?= macos
+else
 ARCH ?= linux
+endif
 
 COMMON_CFLAGS ?= 
+
+USE_VENDORED_SDL ?= 1
+SDL_VENDOR_DIR = vendor/SDL
+SDL_VENDOR_BUILD = $(SDL_VENDOR_DIR)/build
+SDL_VENDOR_INCLUDE = -I$(SDL_VENDOR_DIR)/include
+SDL_VENDOR_LIBS = -L$(SDL_VENDOR_BUILD) -lSDL3
 
 ifeq ($(ARCH),win64)
 # Rename main to SDL_main to solve the "undefined reference to `SDL_main'".
@@ -40,6 +51,7 @@ PLATFORM=linux
 else ifeq ($(ARCH),macos)
 # Yes that's weird, but the build on macos works the same way as on linux
 PLATFORM=linux
+LDFLAGS += -framework Cocoa
 else
 $(error Unknown ARCH. Supported ones are linux, win32 and win64.)
 endif
@@ -56,13 +68,30 @@ endif
 
 CAPS_INCLUDES=-Isrc/capsimg/LibIPF -Isrc/capsimg/Device -Isrc/capsimg/CAPSImg -Isrc/capsimg/Codec -Isrc/capsimg/Core
 
-IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes `pkg-config --cflags freetype2` `sdl2-config --cflags` `pkg-config --cflags libpng` `pkg-config --cflags zlib`
-LIBS = `sdl2-config --libs` `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
+PKG_SDL_CFLAGS=`pkg-config --cflags sdl3`
+PKG_SDL_LIBS=`pkg-config --libs sdl3`
+ifeq ($(ARCH),macos)
+ifeq ($(USE_VENDORED_SDL),1)
+PKG_SDL_CFLAGS=$(SDL_VENDOR_INCLUDE)
+PKG_SDL_LIBS=$(SDL_VENDOR_LIBS)
+ifeq ($(ARCH),macos)
+LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)
+endif
+endif
+endif
+IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
+LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 CXX ?= g++
 COMMON_CFLAGS += -fPIC
 
 ifneq (,$(findstring g++,$(CXX)))
 LIBS += -lstdc++fs
+endif
+
+ifeq ($(UNAME_S),Darwin)
+ifeq ($(ARCH),)
+ARCH=macos
+endif
 endif
 
 ifndef RELEASE
@@ -97,9 +126,16 @@ GROFF_DOC:=doc/man6/cap32.6
 MAIN:=$(OBJDIR)/main.o
 
 SOURCES:=$(shell find $(SRCDIR) -name \*.cpp)
+MM_SOURCES:=
+ifeq ($(ARCH),macos)
+MM_SOURCES:=$(shell find $(SRCDIR) -name \*.mm)
+endif
 HEADERS:=$(shell find $(SRCDIR) -name \*.h)
 DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
-OBJECTS:=$(DEPENDS:.d=.o)
+MM_DEPENDS:=$(foreach file,$(MM_SOURCES:.mm=.d),$(shell echo "$(OBJDIR)/$(file)"))
+OBJECTS_CPP:=$(DEPENDS:.d=.o)
+OBJECTS_MM:=$(MM_DEPENDS:.d=.o)
+OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM)
 
 TEST_SOURCES:=$(shell find $(TSTDIR) -name \*.cpp)
 TEST_HEADERS:=$(shell find $(TSTDIR) -name \*.h)
@@ -151,7 +187,16 @@ $(DEPENDS): $(OBJDIR)/%.d: %.cpp
 	@mkdir -p `dirname $@`
 	@$(CXX) -MM $(BUILD_FLAGS) $(ALL_CFLAGS) $< | { sed 's#^[^:]*\.o[ :]*#$(OBJDIR)/$*.o $(OBJDIR)/$*.os $(OBJDIR)/$*.d : #g' ; echo "%.h:;" ; echo "" ; } > $@
 
-$(OBJECTS): $(OBJDIR)/%.o: %.cpp
+$(OBJECTS_CPP): $(OBJDIR)/%.o: %.cpp
+	@mkdir -p `dirname $@`
+	$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $@ $<
+
+$(MM_DEPENDS): $(OBJDIR)/%.d: %.mm
+	@echo Computing dependencies for $<
+	@mkdir -p `dirname $@`
+	@$(CXX) -MM $(BUILD_FLAGS) $(ALL_CFLAGS) $< | { sed 's#^[^:]*\.o[ :]*#$(OBJDIR)/$*.o $(OBJDIR)/$*.os $(OBJDIR)/$*.d : #g' ; echo "%.h:;" ; echo "" ; } > $@
+
+$(MM_DEPENDS:.d=.o): $(OBJDIR)/%.o: %.mm
 	@mkdir -p `dirname $@`
 	$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $@ $<
 
@@ -165,7 +210,7 @@ endif
 
 ifeq ($(PLATFORM),linux)
 check_deps:
-	@sdl2-config --cflags >/dev/null 2>&1 || (echo "Error: missing dependency libSDL2. Try installing libsdl2 development package (e.g: libsdl2-dev)" && false)
+	@pkg-config --cflags sdl3 >/dev/null 2>&1 || (echo "Error: missing dependency SDL3. Try installing libsdl3 development package" && false)
 	@pkg-config --version >/dev/null 2>&1 || (echo "Error: missing pkg-config. Try installing pkg-config" && false)
 	@pkg-config --cflags freetype2 >/dev/null 2>&1 || (echo "Error: missing dependency libfreetype. Try installing libfreetype development package (e.g: libfreetype6-dev)" && false)
 	@pkg-config --cflags zlib >/dev/null 2>&1 || (echo "Error: missing dependency zlib. Try installing zlib development package (e.g: zlib1g-dev)" && false)

@@ -139,23 +139,23 @@ unsigned int CMouseMessage::TranslateSDLButton(Uint8 SDLButton)
 unsigned int CMouseMessage::TranslateSDLButtonState(Uint8 SDLButtonState)
 {
 	unsigned int Button = 0;
-	if (SDLButtonState & SDL_BUTTON(1))
+	if (SDLButtonState & SDL_BUTTON_MASK(1))
 	{
 		Button |= LEFT;
 	}
-	if (SDLButtonState & SDL_BUTTON(2))
+	if (SDLButtonState & SDL_BUTTON_MASK(2))
 	{
 		Button |= RIGHT;
 	}
-	if (SDLButtonState & SDL_BUTTON(3))
+	if (SDLButtonState & SDL_BUTTON_MASK(3))
 	{
 		Button |= MIDDLE;
 	}
-	if (SDLButtonState & SDL_BUTTON(4))
+	if (SDLButtonState & SDL_BUTTON_MASK(4))
 	{
 		Button |= WHEELUP;
 	}
-	if (SDLButtonState & SDL_BUTTON(5))
+	if (SDLButtonState & SDL_BUTTON_MASK(5))
 	{
 		Button |= WHEELDOWN;
 	}

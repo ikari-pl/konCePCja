@@ -46,37 +46,37 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
   auto windowId = SDL_GetWindowID(m_pSDLWindow);
   bool forMe = m_Focused;
   switch (event.type) {
-    case SDL_KEYDOWN:
-    case SDL_KEYUP:
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP:
       if (event.key.windowID == windowId) forMe = true;
       break;
-    case SDL_MOUSEBUTTONDOWN:
-    case SDL_MOUSEBUTTONUP:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
       if (event.button.windowID == windowId) forMe = true;
       break;
-    case SDL_TEXTEDITING:
+    case SDL_EVENT_TEXT_EDITING:
       if (event.edit.windowID == windowId) forMe = true;
       break;
-    case SDL_MOUSEMOTION:
+    case SDL_EVENT_MOUSE_MOTION:
       if (event.motion.windowID == windowId) forMe = true;
       break;
-    case SDL_TEXTINPUT:
+    case SDL_EVENT_TEXT_INPUT:
       if (event.text.windowID == windowId) forMe = true;
       break;
-    case SDL_MOUSEWHEEL:
+    case SDL_EVENT_MOUSE_WHEEL:
       if (event.wheel.windowID == windowId) forMe = true;
       break;
-    case SDL_WINDOWEVENT:
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
       if (event.window.windowID == windowId) forMe = true;
-      if (forMe && event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) {
-        m_Focused = true;
-        return true;
-      }
-      if (forMe && event.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
-        m_Focused = false;
-        return true;
-      }
-      if (forMe && event.window.event == SDL_WINDOWEVENT_CLOSE) {
+      if (forMe) { m_Focused = true; return true; }
+      break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+      if (event.window.windowID == windowId) forMe = true;
+      if (forMe) { m_Focused = false; return true; }
+      break;
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+      if (event.window.windowID == windowId) forMe = true;
+      if (forMe) {
         MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
         return true;
       }
@@ -87,32 +87,30 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
 	// this will turn an SDL event into a wGui message
 	switch (event.type)
 	{
-  case SDL_WINDOWEVENT:
+  case SDL_EVENT_WINDOW_RESIZED:
+  case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
     MessageServer()->QueueMessage(new CMessage(CMessage::APP_PAINT, nullptr, this));
-    if (event.window.event == SDL_WINDOWEVENT_RESIZED ||
-        event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-      MessageServer()->QueueMessage(new TPointMessage(
-            CMessage::CTRL_RESIZE, nullptr, this, CPoint(event.window.data1, event.window.data2)));
-    }
-		break;
-  case SDL_TEXTINPUT:
+    MessageServer()->QueueMessage(new TPointMessage(
+          CMessage::CTRL_RESIZE, nullptr, this, CPoint(event.window.data1, event.window.data2)));
+    break;
+  case SDL_EVENT_TEXT_INPUT:
     MessageServer()->QueueMessage(new CTextInputMessage(
           CMessage::TEXTINPUT, GetKeyFocus(), this,
           std::string(event.text.text)));
     break;
-	case SDL_KEYDOWN:
+	case SDL_EVENT_KEY_DOWN:
 		MessageServer()->QueueMessage(new CKeyboardMessage(
 			CMessage::KEYBOARD_KEYDOWN, GetKeyFocus(), this,
-			event.key.keysym.scancode, static_cast<SDL_Keymod>(event.key.keysym.mod),
-			event.key.keysym.sym));
+			event.key.scancode, static_cast<SDL_Keymod>(event.key.mod),
+			event.key.key));
 		break;
-	case SDL_KEYUP:
+	case SDL_EVENT_KEY_UP:
 		MessageServer()->QueueMessage(new CKeyboardMessage(
 			CMessage::KEYBOARD_KEYUP, GetKeyFocus(), this,
-			event.key.keysym.scancode, static_cast<SDL_Keymod>(event.key.keysym.mod),
-			event.key.keysym.sym));
+			event.key.scancode, static_cast<SDL_Keymod>(event.key.mod),
+			event.key.key));
 		break;
-	case SDL_MOUSEBUTTONDOWN:
+	case SDL_EVENT_MOUSE_BUTTON_DOWN:
     {
       int x(event.button.x), y(event.button.y);
       if (m_bInMainView) {
@@ -127,7 +125,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
             CMouseMessage::TranslateSDLButton(event.button.button)));
       break;
     }
-	case SDL_MOUSEBUTTONUP:
+	case SDL_EVENT_MOUSE_BUTTON_UP:
     {
       int x(event.button.x), y(event.button.y);
       if (m_bInMainView) {
@@ -142,7 +140,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
             CMouseMessage::TranslateSDLButton(event.button.button)));
       break;
     }
-  case SDL_MOUSEWHEEL:
+  case SDL_EVENT_MOUSE_WHEEL:
     {
       unsigned int wheeldirection = CMouseMessage::NONE;
       if (event.wheel.x > 0 || event.wheel.y > 0) {
@@ -150,7 +148,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
       } else {
         wheeldirection = CMouseMessage::WHEELDOWN;
       }
-      int x, y;
+      float x = 0.0f, y = 0.0f;
       SDL_GetMouseState(&x, &y);
       if (m_bInMainView) {
         x = (x-vid_plugin->x_offset)*vid_plugin->x_scale;
@@ -164,7 +162,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
             wheeldirection));
       break;
     }
-	case SDL_MOUSEMOTION:
+	case SDL_EVENT_MOUSE_MOTION:
     {
       int x(event.motion.x), y(event.motion.y);
       if (m_bInMainView) {
@@ -179,7 +177,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
             CMouseMessage::TranslateSDLButtonState(event.motion.state)));
       break;
     }
-  case SDL_JOYAXISMOTION:
+  case SDL_EVENT_JOYSTICK_AXIS_MOTION:
     {
       SDL_Keycode key(SDLK_UNKNOWN);
       switch(event.jaxis.axis) {
@@ -205,22 +203,22 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
       if (key != SDLK_UNKNOWN) {
         MessageServer()->QueueMessage(new CKeyboardMessage(
               CMessage::KEYBOARD_KEYDOWN, GetKeyFocus(), this,
-              0, KMOD_NONE, key));
+              0, SDL_KMOD_NONE, key));
         MessageServer()->QueueMessage(new CKeyboardMessage(
               CMessage::KEYBOARD_KEYUP, GetKeyFocus(), this,
-              0, KMOD_NONE, key));
+              0, SDL_KMOD_NONE, key));
       }
       break;
     }
-  case SDL_JOYBUTTONUP:
-  case SDL_JOYBUTTONDOWN:
+  case SDL_EVENT_JOYSTICK_BUTTON_UP:
+  case SDL_EVENT_JOYSTICK_BUTTON_DOWN:
     {
       CMessage::EMessageType type = CMessage::KEYBOARD_KEYDOWN;
-      if (event.type == SDL_JOYBUTTONUP) {
+      if (event.type == SDL_EVENT_JOYSTICK_BUTTON_UP) {
         type = CMessage::KEYBOARD_KEYUP;
       }
       SDL_Keycode key(SDLK_UNKNOWN);
-      SDL_Keymod mod = KMOD_NONE;
+      SDL_Keymod mod = SDL_KMOD_NONE;
       bool ignore_event = false;
       // TODO: arbitrary binding: validate with various joystick models
       switch (event.jbutton.button) {
@@ -234,7 +232,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
         case 2:
         case 5:
           key = SDLK_TAB;
-          mod = KMOD_RSHIFT;
+          mod = SDL_KMOD_RSHIFT;
           break;
         case 3:
           key = SDLK_ESCAPE;
@@ -251,7 +249,7 @@ bool CApplication::HandleSDLEvent(SDL_Event event)
       break;
     }
 
-	case SDL_QUIT:
+	case SDL_EVENT_QUIT:
 //		MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
     _exit(0);
 		break;
@@ -459,7 +457,7 @@ void CApplication::ApplicationExit(int iExitCode)
 	// push an event into the SDL queue so the SDLEventLoopThread can exit
 	// the actual contents of the event are not a concern as it serves just to trigger the SDL_WaitEvent
 	SDL_Event user_event;
-	user_event.type=SDL_USEREVENT;
+	user_event.type=SDL_EVENT_USER;
 	user_event.user.code=0;
 	user_event.user.data1=nullptr;
 	user_event.user.data2=nullptr;

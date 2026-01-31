@@ -30,7 +30,7 @@
 #include <vector>
 #include "wg_rect.h"
 #include "wg_color.h"
-#include "SDL.h"
+#include "SDL3/SDL.h"
 #include "std_ex.h"
 #include <string>
 

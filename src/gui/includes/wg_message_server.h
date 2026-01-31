@@ -29,8 +29,8 @@
 #include "wg_message.h"
 #include <deque>
 #include <map>
-#include "SDL.h"
-#include "SDL_thread.h"
+#include "SDL3/SDL.h"
+#include "SDL3/SDL_thread.h"
 
 
 namespace wGui
@@ -121,7 +121,7 @@ public:
 protected:
 	std::deque<CMessage*> m_MessageQueue;  //!< The message queue
 	t_MessageClientMap m_MessageClients;  //!< A map of all the registered clients
-	SDL_sem* m_pSemaphore;  //!< A semaphore indicating how many messages are in the queue
+	SDL_Semaphore* m_pSemaphore;  //!< A semaphore indicating how many messages are in the queue
 	bool m_bIgnoreAllNewMessages;  //!< Locks the queue so that no new messages are added, this is used during initialization, defaults to true
 };
 

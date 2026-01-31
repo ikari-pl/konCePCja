@@ -35,7 +35,7 @@
 #include "log.h"
 #include "glfuncs.h"
 #ifdef HAVE_GL
-#include "SDL_opengl.h"
+#include "SDL3/SDL_opengl.h"
 #endif
 #include <math.h>
 #include <memory>
@@ -100,9 +100,8 @@ static bool have_gl_extension (const char *nom_ext)
 // Returns a bpp compatible with the renderer
 int renderer_bpp(SDL_Renderer *sdl_renderer)
 {
-  SDL_RendererInfo infos;
-  SDL_GetRendererInfo(sdl_renderer, &infos);
-  return SDL_BITSPERPIXEL(infos.texture_formats[0]);
+  (void)sdl_renderer;
+  return 32;
 }
 
 // TODO: Cleanup sw_scaling if really not needed
@@ -149,7 +148,7 @@ void compute_scale(video_plugin* t, int w, int h)
 /* ------------------------------------------------------------------------------------ */
 SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
 {
-  SDL_CreateWindowAndRenderer(CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN_DESKTOP:SDL_WINDOW_SHOWN), &mainSDLWindow, &renderer);
+  SDL_CreateWindowAndRenderer("Caprice32", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   SDL_SetWindowTitle(mainSDLWindow, "Caprice32 " VERSION_STRING);
   int surface_width, surface_height;
@@ -162,18 +161,24 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
     surface_width = CPC_VISIBLE_SCR_WIDTH;
     surface_height = CPC_VISIBLE_SCR_HEIGHT;
   }
-  vid = SDL_CreateRGBSurface(0, surface_width, surface_height, renderer_bpp(renderer), 0, 0, 0, 0);
+  vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
   texture = SDL_CreateTextureFromSurface(renderer, vid);
   if (!texture) return nullptr;
-  SDL_FillRect(vid, nullptr, SDL_MapRGB(vid->format,0,0,0));
+  {
+    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(vid->format);
+    SDL_Palette* pal = SDL_GetSurfacePalette(vid);
+    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(fmt, pal, 0, 0, 0));
+  }
   compute_scale(t, surface_width, surface_height);
   return vid;
 }
 
 void direct_setpal(SDL_Color* c)
 {
-  SDL_SetPaletteColors(vid->format->palette, c, 0, 32);
+  if (SDL_Palette* pal = SDL_GetSurfacePalette(vid)) {
+    SDL_SetPaletteColors(pal, c, 0, 32);
+  }
 }
 
 void direct_flip(video_plugin* t)
@@ -181,26 +186,26 @@ void direct_flip(video_plugin* t)
   SDL_UpdateTexture(texture, nullptr, vid->pixels, vid->pitch);
   SDL_RenderClear(renderer);
   if (CPC.scr_preserve_aspect_ratio != 0) {
-    SDL_Rect dest_rect = { t->x_offset, t->y_offset, t->width, t->height };
-    SDL_RenderCopy(renderer, texture, nullptr, &dest_rect);
+    SDL_FRect dest_rect = { static_cast<float>(t->x_offset), static_cast<float>(t->y_offset), static_cast<float>(t->width), static_cast<float>(t->height) };
+    SDL_RenderTexture(renderer, texture, nullptr, &dest_rect);
   } else {
-    SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+    SDL_RenderTexture(renderer, texture, nullptr, nullptr);
   }
   int win_width = 0, win_height = 0;
   int out_width = 0, out_height = 0;
   SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-  SDL_GetRendererOutputSize(renderer, &out_width, &out_height);
+  SDL_GetRenderOutputSize(renderer, &out_width, &out_height);
   float sx = (win_width > 0 && out_width > 0) ? (static_cast<float>(out_width) / win_width) : 1.0f;
   float sy = (win_height > 0 && out_height > 0) ? (static_cast<float>(out_height) / win_height) : 1.0f;
   if (topbar_texture && topbar_surface) {
     SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
-    SDL_Rect bar_rect = { 0, 0, static_cast<int>(topbar_surface->w * sx), static_cast<int>(topbar_height * sy) };
-    SDL_RenderCopy(renderer, topbar_texture, nullptr, &bar_rect);
+    SDL_FRect bar_rect = { 0.0f, 0.0f, static_cast<float>(topbar_surface->w * sx), static_cast<float>(topbar_height * sy) };
+    SDL_RenderTexture(renderer, topbar_texture, nullptr, &bar_rect);
   }
   if (devtools_panel_texture && devtools_panel_surface) {
     SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
-    SDL_Rect panel_rect = { static_cast<int>((win_width - devtools_panel_width) * sx), static_cast<int>(topbar_height * sy), static_cast<int>(devtools_panel_width * sx), static_cast<int>(devtools_panel_height * sy) };
-    SDL_RenderCopy(renderer, devtools_panel_texture, nullptr, &panel_rect);
+    SDL_FRect panel_rect = { static_cast<float>((win_width - devtools_panel_width) * sx), static_cast<float>(topbar_height * sy), static_cast<float>(devtools_panel_width * sx), static_cast<float>(devtools_panel_height * sy) };
+    SDL_RenderTexture(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
   SDL_RenderPresent(renderer);
 }
@@ -208,7 +213,7 @@ void direct_flip(video_plugin* t)
 void direct_close()
 {
   if (texture) SDL_DestroyTexture(texture);
-  if (vid) SDL_FreeSurface(vid);
+  if (vid) SDL_DestroySurface(vid);
   if (renderer) SDL_DestroyRenderer(renderer);
   if (mainSDLWindow) SDL_DestroyWindow(mainSDLWindow);
 }
@@ -241,7 +246,7 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
 
   int width = CPC_VISIBLE_SCR_WIDTH*scale;
   int height = CPC_VISIBLE_SCR_HEIGHT*scale;
-  SDL_CreateWindowAndRenderer(width, height, (fs?SDL_WINDOW_FULLSCREEN_DESKTOP:SDL_WINDOW_SHOWN) | SDL_WINDOW_OPENGL, &mainSDLWindow, &renderer);
+  SDL_CreateWindowAndRenderer("Caprice32", width, height, (fs?SDL_WINDOW_FULLSCREEN:0) | SDL_WINDOW_OPENGL, &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   if (fs) {
     SDL_DisplayMode display;
@@ -249,7 +254,7 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
     width = display.w;
     height = display.h;
   }
-  vid = SDL_CreateRGBSurface(0, width, height, renderer_bpp(renderer), 0, 0, 0, 0);
+  vid = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
   glcontext = SDL_GL_CreateContext(mainSDLWindow);
   if (init_glfuncs()!=0)
@@ -389,24 +394,32 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
   eglMatrixMode(GL_MODELVIEW);
   eglLoadIdentity();
 
-  pub=SDL_CreateRGBSurface(0, original_width, original_height, surface_bpp, 0, 0, 0, 0);
+  SDL_PixelFormat pub_fmt = SDL_PIXELFORMAT_BGR24;
+  if (surface_bpp == 16) pub_fmt = SDL_PIXELFORMAT_RGB565;
+  else if (surface_bpp == 8) pub_fmt = SDL_PIXELFORMAT_INDEX8;
+  pub = SDL_CreateSurface(original_width, original_height, pub_fmt);
+  if (!pub) return nullptr;
+  if (surface_bpp == 8) {
+    SDL_Palette* pal = SDL_GetSurfacePalette(pub);
+    (void)pal;
+  }
   return pub;
 }
 
 void glscale_setpal(SDL_Color* c)
 {
-  SDL_SetPaletteColors(pub->format->palette, c, 0, 32);
-  if (pub->format->palette)
-  {
-    std::unique_ptr<Uint8[]> pal = std::make_unique<Uint8[]>(256*3);
+  SDL_Palette* pal = SDL_GetSurfacePalette(pub);
+  if (pal) {
+    SDL_SetPaletteColors(pal, c, 0, 32);
+    std::unique_ptr<Uint8[]> palbuf = std::make_unique<Uint8[]>(256*3);
     for(int i=0;i<256;i++)
     {
-      pal[3*i  ] = pub->format->palette->colors[i].r;
-      pal[3*i+1] = pub->format->palette->colors[i].g;
-      pal[3*i+2] = pub->format->palette->colors[i].b;
+      palbuf[3*i  ] = pal->colors[i].r;
+      palbuf[3*i+1] = pal->colors[i].g;
+      palbuf[3*i+2] = pal->colors[i].b;
     }
     eglBindTexture(GL_TEXTURE_2D,screen_texnum);
-    eglColorTableEXT(GL_TEXTURE_2D,GL_RGB8,256,GL_RGB,GL_UNSIGNED_BYTE,pal.get());
+    eglColorTableEXT(GL_TEXTURE_2D,GL_RGB8,256,GL_RGB,GL_UNSIGNED_BYTE,palbuf.get());
   }
 }
 
@@ -462,7 +475,8 @@ void glscale_flip(video_plugin* t __attribute__((unused)))
   }
 
   /* upload the texture */
-  switch(pub->format->BitsPerPixel)
+  const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(pub->format);
+  switch(fmt ? fmt->bits_per_pixel : 0)
   {
     case 24:
       eglTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
@@ -515,7 +529,7 @@ void glscale_flip(video_plugin* t __attribute__((unused)))
 void glscale_close()
 {
   direct_close();
-  SDL_FreeSurface(pub);
+  SDL_DestroySurface(pub);
   pub = nullptr;
 }
 #endif // HAVE_GL
@@ -695,7 +709,7 @@ int video_get_topbar_height()
 
 SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
 {
-  SDL_CreateWindowAndRenderer(CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN_DESKTOP:SDL_WINDOW_SHOWN), &mainSDLWindow, &renderer);
+  SDL_CreateWindowAndRenderer("Caprice32", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   SDL_SetWindowTitle(mainSDLWindow, "Caprice32 " VERSION_STRING);
   int surface_width, surface_height;
@@ -708,25 +722,35 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
     surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
     surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
   }
-  vid = SDL_CreateRGBSurface(0, surface_width*2, surface_height*2, renderer_bpp(renderer), 0, 0, 0, 0);
+  vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
   texture = SDL_CreateTextureFromSurface(renderer, vid);
   if (!texture) return nullptr;
 
-  scaled = SDL_CreateRGBSurface(0, surface_width*2, surface_height*2, 16, 0, 0, 0, 0);
+  scaled = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGB565);
   if (!scaled) return nullptr;
-  if (scaled->format->BitsPerPixel!=16)
   {
-    LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(scaled->format->BitsPerPixel) << " bpp one.");
-    return nullptr;
+    const SDL_PixelFormatDetails* s_fmt = SDL_GetPixelFormatDetails(scaled->format);
+    if (!s_fmt || s_fmt->bits_per_pixel != 16)
+    {
+      LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(s_fmt ? s_fmt->bits_per_pixel : 0) << " bpp one.");
+      return nullptr;
+    }
   }
-  SDL_FillRect(vid, nullptr, SDL_MapRGB(vid->format,0,0,0));
-  compute_scale(t, surface_width, surface_height);
-  pub = SDL_CreateRGBSurface(0, surface_width, surface_height, 16, 0, 0, 0, 0);
-  if (pub->format->BitsPerPixel!=16)
   {
-    LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(pub->format->BitsPerPixel) << " bpp one.");
-    return nullptr;
+    const SDL_PixelFormatDetails* v_fmt = SDL_GetPixelFormatDetails(vid->format);
+    SDL_Palette* v_pal = SDL_GetSurfacePalette(vid);
+    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(v_fmt, v_pal, 0, 0, 0));
+  }
+  compute_scale(t, surface_width, surface_height);
+  pub = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGB565);
+  {
+    const SDL_PixelFormatDetails* p_fmt = SDL_GetPixelFormatDetails(pub->format);
+    if (!p_fmt || p_fmt->bits_per_pixel != 16)
+    {
+      LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(p_fmt ? p_fmt->bits_per_pixel : 0) << " bpp one.");
+      return nullptr;
+    }
   }
 
   return pub;
@@ -740,40 +764,44 @@ void swscale_blit(video_plugin* t)
   SDL_UpdateTexture(texture, nullptr, vid->pixels, vid->pitch);
   SDL_RenderClear(renderer);
   if (CPC.scr_preserve_aspect_ratio != 0) {
-    SDL_Rect dest_rect = { t->x_offset, t->y_offset, t->width, t->height };
-    SDL_RenderCopy(renderer, texture, nullptr, &dest_rect);
+    SDL_FRect dest_rect = { static_cast<float>(t->x_offset), static_cast<float>(t->y_offset), static_cast<float>(t->width), static_cast<float>(t->height) };
+    SDL_RenderTexture(renderer, texture, nullptr, &dest_rect);
   } else {
-    SDL_RenderCopy(renderer, texture, nullptr, nullptr);
+    SDL_RenderTexture(renderer, texture, nullptr, nullptr);
   }
   int win_width = 0, win_height = 0;
   int out_width = 0, out_height = 0;
   SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-  SDL_GetRendererOutputSize(renderer, &out_width, &out_height);
+  SDL_GetRenderOutputSize(renderer, &out_width, &out_height);
   float sx = (win_width > 0 && out_width > 0) ? (static_cast<float>(out_width) / win_width) : 1.0f;
   float sy = (win_height > 0 && out_height > 0) ? (static_cast<float>(out_height) / win_height) : 1.0f;
   if (topbar_texture && topbar_surface) {
     SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
-    SDL_Rect bar_rect = { 0, 0, static_cast<int>(topbar_surface->w * sx), static_cast<int>(topbar_height * sy) };
-    SDL_RenderCopy(renderer, topbar_texture, nullptr, &bar_rect);
+    SDL_FRect bar_rect = { 0.0f, 0.0f, static_cast<float>(topbar_surface->w * sx), static_cast<float>(topbar_height * sy) };
+    SDL_RenderTexture(renderer, topbar_texture, nullptr, &bar_rect);
   }
   if (devtools_panel_texture && devtools_panel_surface) {
     SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
-    SDL_Rect panel_rect = { static_cast<int>((win_width - devtools_panel_width) * sx), static_cast<int>(topbar_height * sy), static_cast<int>(devtools_panel_width * sx), static_cast<int>(devtools_panel_height * sy) };
-    SDL_RenderCopy(renderer, devtools_panel_texture, nullptr, &panel_rect);
+    SDL_FRect panel_rect = { static_cast<float>((win_width - devtools_panel_width) * sx), static_cast<float>(topbar_height * sy), static_cast<float>(devtools_panel_width * sx), static_cast<float>(devtools_panel_height * sy) };
+    SDL_RenderTexture(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
   SDL_RenderPresent(renderer);
 }
 
 void swscale_setpal(SDL_Color* c)
 {
-  SDL_SetPaletteColors(scaled->format->palette, c, 0, 32);
-  SDL_SetPaletteColors(pub->format->palette, c, 0, 32);
+  if (SDL_Palette* pal = SDL_GetSurfacePalette(scaled)) {
+    SDL_SetPaletteColors(pal, c, 0, 32);
+  }
+  if (SDL_Palette* pal = SDL_GetSurfacePalette(pub)) {
+    SDL_SetPaletteColors(pal, c, 0, 32);
+  }
 }
 
 void swscale_close()
 {
   direct_close();
-  SDL_FreeSurface(pub);
+  SDL_DestroySurface(pub);
   pub = nullptr;
 }
 

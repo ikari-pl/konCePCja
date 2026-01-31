@@ -87,7 +87,7 @@ CWindow::~CWindow()
 	Application().MessageServer()->DeregisterMessageClient(this);
 
 	if (m_pSDLSurface)
-		SDL_FreeSurface(m_pSDLSurface);
+		SDL_DestroySurface(m_pSDLSurface);
 	while (!m_ChildWindows.empty())
 	{
 		delete *(m_ChildWindows.begin());
@@ -103,9 +103,8 @@ void CWindow::SetWindowRect(const CRect& WindowRect)
 	double dVerticalScale = m_WindowRect.Height() != 0 ? static_cast<double>(WindowRect.Height()) / m_WindowRect.Height() : 0;
 	m_WindowRect = WindowRect;
 	if (m_pSDLSurface)
-		SDL_FreeSurface(m_pSDLSurface);
-	m_pSDLSurface = SDL_CreateRGBSurface(0, m_WindowRect.Width(), m_WindowRect.Height(),
-		Application().GetBitsPerPixel(), 0x000000FF, 0x0000FF00, 0x00FF0000, /*0xFF000000*/ 0);
+		SDL_DestroySurface(m_pSDLSurface);
+	m_pSDLSurface = SDL_CreateSurface(m_WindowRect.Width(), m_WindowRect.Height(), SDL_PIXELFORMAT_RGBA32);
 	if (!m_pSDLSurface)
 	{
     LOG_ERROR("CWindow::SetWindowRect: Unable to create SDL Surface of size " << m_WindowRect << ": " << SDL_GetError());
@@ -302,8 +301,8 @@ bool CWindow::HitTest(const CPoint& Point) const
 void CWindow::Draw() const
 {
 	if (m_pSDLSurface)	{
-
-		CPainter Painter(m_pSDLSurface, CPainter::PAINT_REPLACE);
+		CPainter::EPaintMode mode = (m_BackgroundColor.alpha < 0xFF) ? CPainter::PAINT_NORMAL : CPainter::PAINT_REPLACE;
+		CPainter Painter(m_pSDLSurface, mode);
 		Painter.DrawRect(m_WindowRect.SizeRect(), true, m_BackgroundColor, m_BackgroundColor);
 		Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_PAINT, nullptr, this));
 	}
