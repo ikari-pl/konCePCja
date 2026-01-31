@@ -8,6 +8,8 @@ jobs:
   macos-build:
     name: MacOS build
     runs-on: macos-latest
+    env:
+      PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/build
 
     steps:
       - uses: actions/checkout@v4

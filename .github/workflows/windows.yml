@@ -38,7 +38,7 @@ jobs:
       - name: Install SDL3 from MSYS2
         if: ${{ !matrix.sdl_from_source }}
         shell: msys2 {0}
-        run: pacman -S --noconfirm ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-SDL3
+        run: pacman -S --noconfirm ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-sdl3
 
       - name: Build SDL3 from source
         if: ${{ matrix.sdl_from_source }}
