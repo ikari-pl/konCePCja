@@ -12,8 +12,8 @@ jobs:
     name: Linux build
     runs-on: ubuntu-latest
     env:
-      PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/build
-      LD_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/build
+      PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/install/lib/pkgconfig
+      LD_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
 
     steps:
       - uses: actions/checkout@v4
@@ -29,8 +29,9 @@ jobs:
       - name: Build vendored SDL3
         run: |
           cd vendor/SDL
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/vendor/SDL/install
           cmake --build build -j 3
+          cmake --install build
 
       - run: make -j 3
       - run: make -j 3 unit_test

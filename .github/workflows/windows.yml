@@ -45,8 +45,9 @@ jobs:
         shell: msys2 {0}
         run: |
           cd vendor/SDL
-          cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
+          cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/install
           cmake --build build -j 4
+          cmake --install build
 
       # This is awful but we have to pass the mingw{32,64}/include directory so that
       # zlib.h can be found because pkg-config doesn't return any cflags for
@@ -55,7 +56,8 @@ jobs:
         shell: msys2 {0}
         run: |
           if [ "${{matrix.sdl_from_source}}" = "true" ]; then
-            export PKG_CONFIG_PATH="$(pwd)/vendor/SDL/build:$PKG_CONFIG_PATH"
+            export PKG_CONFIG_PATH="$(pwd)/vendor/SDL/install/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export PATH="$(pwd)/vendor/SDL/install/bin:$PATH"
           fi
           make ARCH=${{matrix.arch}} CXX=g++ WINE=\"\" CFLAGS="-ID:/a/_temp/msys64/${{matrix.mingw}}/include/" debug -j 4 -k
           make ARCH=${{matrix.arch}} CXX=g++ WINE=\"\" CFLAGS="-ID:/a/_temp/msys64/${{matrix.mingw}}/include/" -j 4 clean
