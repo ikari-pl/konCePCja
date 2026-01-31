@@ -9,11 +9,13 @@ jobs:
     strategy:
       matrix:
         include:
-         - { version: MINGW32, mingw: mingw32, arch: win32, env: i686,   ipf_win_file: ipflib42_w32.zip,     ipf_dll: ipflib42_w32/CAPSImg.dll, ipf_license: ipflib42_w32/LICENSE.txt }
-         - { version: MINGW64, mingw: mingw64, arch: win64, env: x86_64, ipf_win_file: ipflib42_win_x64.zip, ipf_dll: CAPSImg_x64.dll,          ipf_license: LICENSE.txt }
+         - { version: MINGW32, mingw: mingw32, arch: win32, env: i686,   ipf_win_file: ipflib42_w32.zip,     ipf_dll: ipflib42_w32/CAPSImg.dll, ipf_license: ipflib42_w32/LICENSE.txt, sdl_from_source: true }
+         - { version: MINGW64, mingw: mingw64, arch: win64, env: x86_64, ipf_win_file: ipflib42_win_x64.zip, ipf_dll: CAPSImg_x64.dll,          ipf_license: LICENSE.txt, sdl_from_source: false }
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - uses: msys2/setup-msys2@v2
         with:
           msystem: ${{ matrix.version }}
@@ -24,20 +26,37 @@ jobs:
             git
             make
             zip
+            ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-cmake
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-diffutils
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-freetype
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-libpng
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-pkg-config
-            ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-SDL2
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-toolchain
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-zlib
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-7zip
+
+      - name: Install SDL3 from MSYS2
+        if: ${{ !matrix.sdl_from_source }}
+        shell: msys2 {0}
+        run: pacman -S --noconfirm ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-SDL3
+
+      - name: Build SDL3 from source
+        if: ${{ matrix.sdl_from_source }}
+        shell: msys2 {0}
+        run: |
+          cd vendor/SDL
+          cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF
+          cmake --build build -j 4
+
       # This is awful but we have to pass the mingw{32,64}/include directory so that
       # zlib.h can be found because pkg-config doesn't return any cflags for
       # zlib.
       - name: Build konCePCja
         shell: msys2 {0}
         run: |
+          if [ "${{matrix.sdl_from_source}}" = "true" ]; then
+            export PKG_CONFIG_PATH="$(pwd)/vendor/SDL/build:$PKG_CONFIG_PATH"
+          fi
           make ARCH=${{matrix.arch}} CXX=g++ WINE=\"\" CFLAGS="-ID:/a/_temp/msys64/${{matrix.mingw}}/include/" debug -j 4 -k
           make ARCH=${{matrix.arch}} CXX=g++ WINE=\"\" CFLAGS="-ID:/a/_temp/msys64/${{matrix.mingw}}/include/" -j 4 clean
           make ARCH=${{matrix.arch}} CXX=g++ WINE=\"\" CFLAGS="-ID:/a/_temp/msys64/${{matrix.mingw}}/include/ -Ii686-linux-gnu-capsimage/include" -j 4 -k
