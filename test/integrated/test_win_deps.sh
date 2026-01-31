@@ -34,9 +34,9 @@ zlib1.dll
 EOF
 
 echo "ldd output:"
-ldd cap32.exe
+ldd koncepcja.exe
 
-ldd cap32.exe | grep mingw | sed 's/ =>.*//' | sed 's/^[ \t]*//' | sort -u > ${ACTUAL}
+ldd koncepcja.exe | grep mingw | sed 's/ =>.*//' | sed 's/^[ \t]*//' | sort -u > ${ACTUAL}
 
 echo "mingw dependencies:"
 cat "${ACTUAL}"

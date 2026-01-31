@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2004 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -25,7 +25,7 @@
 #endif
 
 // It seems there's no OpenGL on MacOS anymore:
-// https://github.com/ColinPitrat/caprice32/pull/201
+// https://github.com/ikari/konCePCja/pull/201
 #ifdef __APPLE__
 #undef HAVE_GL
 #endif

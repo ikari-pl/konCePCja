@@ -1,4 +1,4 @@
-// 'Menu' window for Caprice32
+// 'Menu' window for konCePCja
 // Inherited from CFrame
 
 #ifndef _WG_CAPRICE32MENU_H_

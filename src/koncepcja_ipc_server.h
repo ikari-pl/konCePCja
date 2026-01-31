@@ -4,10 +4,10 @@
 #include <thread>
 #include <cstdint>
 
-// Kaprys IPC Server (minimal stub)
-class KaprysIpcServer {
+// konCePCja IPC Server (minimal stub)
+class KoncepcjaIpcServer {
 public:
-  ~KaprysIpcServer();
+  ~KoncepcjaIpcServer();
   void start();
   void stop();
 

@@ -7,7 +7,7 @@
 
 TEST(ArgParseTest, parseArgsNoArg)
 {
-   const char *argv[] = {"./cap32"};
+   const char *argv[] = {"./koncepcja"};
    CapriceArgs args;
    std::vector<std::string> slot_list;
 
@@ -18,7 +18,7 @@ TEST(ArgParseTest, parseArgsNoArg)
 
 TEST(ArgParseTest, parseArgsOneArg)
 {
-   const char *argv[] = {"./cap32", "./foo.dsk"};
+   const char *argv[] = {"./koncepcja", "./foo.dsk"};
    CapriceArgs args;
    std::vector<std::string> slot_list;
 
@@ -30,7 +30,7 @@ TEST(ArgParseTest, parseArgsOneArg)
 
 TEST(ArgParseTest, parseArgsSeveralArgs)
 {
-   const char *argv[] = {"./cap32", "./foo.dsk", "bar.zip", "0", "__"};
+   const char *argv[] = {"./koncepcja", "./foo.dsk", "bar.zip", "0", "__"};
    CapriceArgs args;
    std::vector<std::string> slot_list;
 
@@ -43,17 +43,17 @@ TEST(ArgParseTest, parseArgsSeveralArgs)
 
 TEST(argParseTest, cfgFileArgsSwitch)
 {
-   const char *argv[] = {"./caprice32", "--cfg_file=/home/caprice32/cap32.cfg"};
+   const char *argv[] = {"./koncepcja", "--cfg_file=/home/koncepcja/koncepcja.cfg"};
    CapriceArgs args;
    std::vector<std::string> slot_list;
 
    parseArguments(2, const_cast<char **>(argv), slot_list, args);
-   ASSERT_EQ("/home/caprice32/cap32.cfg", args.cfgFilePath);
+   ASSERT_EQ("/home/koncepcja/koncepcja.cfg", args.cfgFilePath);
 }
 
 TEST(argParseTest, cfgOverrideValid)
 {
-   const char *argv[] = {"./caprice32", "--override=system.model=3", "--override=control.kbd_layout=keymap_us.map", "--override=no.value="};
+   const char *argv[] = {"./koncepcja", "--override=system.model=3", "--override=control.kbd_layout=keymap_us.map", "--override=no.value="};
    CapriceArgs args;
    std::vector<std::string> slot_list;
 
@@ -65,7 +65,7 @@ TEST(argParseTest, cfgOverrideValid)
 
 TEST(argParseTest, cfgOverrideInvalid)
 {
-   const char *argv[] = {"./caprice32", "--override=no.value", "--override=nosection=3", "--override=emptyitem.=3", "--override=.emptysection=3", "--override==nokey"};
+   const char *argv[] = {"./koncepcja", "--override=no.value", "--override=nosection=3", "--override=emptyitem.=3", "--override=.emptysection=3", "--override==nokey"};
    CapriceArgs args;
    std::vector<std::string> slot_list;
 

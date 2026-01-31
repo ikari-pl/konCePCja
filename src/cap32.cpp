@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2005 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -34,7 +34,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 }
 
 #include "cap32.h"
-#include "ipc_server.h"
+#include "koncepcja_ipc_server.h"
 #include "wg_renderedstring.h"
 #include "wg_color.h"
 #include "crtc.h"
@@ -51,7 +51,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "macos_menu.h"
 
 namespace {
-  KaprysIpcServer* g_ipc = new KaprysIpcServer();
+  KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
 }
 #include "cartridge.h"
 #include "asic.h"
@@ -244,7 +244,7 @@ double colours_green_classic[32] = {
 };
 
 // added by a proposal from libretro project,
-// see https://github.com/ColinPitrat/caprice32/issues/135
+// see https://github.com/ikari/konCePCja/issues/135
 
 double colours_green_libretro[32] = {
    0.5755,  0.5755,  0.7534,  0.9718,
@@ -1213,7 +1213,7 @@ int emulator_init ()
          if (rom_file == "DEFAULT") {
            // On 464, there's no AMSDOS by default.
            // We still allow users to override this if they want.
-           // More details: https://github.com/ColinPitrat/caprice32/issues/227
+           // More details: https://github.com/ikari/konCePCja/issues/227
            if (CPC.model == 0) continue;
            rom_file = "amsdos.rom";
          }
@@ -1788,12 +1788,12 @@ std::string getConfigurationFilename(bool forWrite)
 
   std::vector<std::pair<const char*, std::string>> configPaths = {
     { PATH_OK, args.cfgFilePath}, // First look in any user supplied configuration file path
-    { chAppPath, "/cap32.cfg" }, // If not found, cap32.cfg in the same directory as the executable
-    { getenv("XDG_CONFIG_HOME"), "/cap32.cfg" },
-    { getenv("HOME"), "/.config/cap32.cfg" },
-    { getenv("HOME"), "/.cap32.cfg" },
-    { DESTDIR, "/etc/cap32.cfg" },
-    { binPath.string().c_str(), "/../Resources/cap32.cfg" }, // To find the configuration from the bundle on MacOS
+    { chAppPath, "/koncepcja.cfg" }, // If not found, koncepcja.cfg in the same directory as the executable
+    { getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg" },
+    { getenv("HOME"), "/.config/koncepcja.cfg" },
+    { getenv("HOME"), "/.koncepcja.cfg" },
+    { DESTDIR, "/etc/koncepcja.cfg" },
+    { binPath.string().c_str(), "/../Resources/koncepcja.cfg" }, // To find the configuration from the bundle on MacOS
   };
 
   for(const auto& p: configPaths){
@@ -1803,8 +1803,8 @@ std::string getConfigurationFilename(bool forWrite)
     if (access(s.c_str(), mode) == 0) {
       std::cout << "Using configuration file" << (forWrite ? " to save" : "") << ": " << s << std::endl;
       // Dirty hack for MacOS Bundle to work: change dir to the bin dir
-      // cap32.cfg is edited to have relative paths from the bin dir
-      if (p.second == "/../Resources/cap32.cfg") {
+      // koncepcja.cfg is edited to have relative paths from the bin dir
+      if (p.second == "/../Resources/koncepcja.cfg") {
               std::filesystem::current_path(binPath);
       }
       return s;
@@ -2914,7 +2914,9 @@ int cap32_main (int argc, char **argv)
       _exit(-1);
    }
 
-   // Kaprys IPC server (stub)
+   // PNG loader uses libpng; no SDL_image init required
+
+   // konCePCja IPC server (stub)
    g_ipc->start();
 
    #ifndef APP_PATH

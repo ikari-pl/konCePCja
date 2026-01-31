@@ -208,45 +208,45 @@ TEST(StringUtils, Replace)
 
 TEST(StringUtils, SplitPathOnUnix)
 {
-  std::string path = "/usr/bin/cap32";
+  std::string path = "/usr/bin/koncepcja";
   std::string dirname, filename;
 
   stringutils::splitPath(path, dirname, filename);
 
   ASSERT_EQ("/usr/bin/", dirname);
-  ASSERT_EQ("cap32", filename);
+  ASSERT_EQ("koncepcja", filename);
 }
 
 TEST(StringUtils, SplitPathOnUnixWithExtension)
 {
-  std::string path = "/home/user/caprice32/disk/test.dsk";
+  std::string path = "/home/user/koncepcja/disk/test.dsk";
   std::string dirname, filename;
 
   stringutils::splitPath(path, dirname, filename);
 
-  ASSERT_EQ("/home/user/caprice32/disk/", dirname);
+  ASSERT_EQ("/home/user/koncepcja/disk/", dirname);
   ASSERT_EQ("test.dsk", filename);
 }
 
 TEST(StringUtils, SplitPathOnUnixWithSpaces)
 {
-  std::string path = "/home/user name/caprice32/disk/test disk.dsk";
+  std::string path = "/home/user name/koncepcja/disk/test disk.dsk";
   std::string dirname, filename;
 
   stringutils::splitPath(path, dirname, filename);
 
-  ASSERT_EQ("/home/user name/caprice32/disk/", dirname);
+  ASSERT_EQ("/home/user name/koncepcja/disk/", dirname);
   ASSERT_EQ("test disk.dsk", filename);
 }
 
 TEST(StringUtils, SplitPathOnUnixWithBackslash)
 {
-  std::string path = "/home/user\\ name/caprice32/disk/test\\ disk.dsk";
+  std::string path = "/home/user\\ name/koncepcja/disk/test\\ disk.dsk";
   std::string dirname, filename;
 
   stringutils::splitPath(path, dirname, filename);
 
-  ASSERT_EQ("/home/user\\ name/caprice32/disk/", dirname);
+  ASSERT_EQ("/home/user\\ name/koncepcja/disk/", dirname);
   ASSERT_EQ("test\\ disk.dsk", filename);
 }
 
@@ -263,12 +263,12 @@ TEST(StringUtils, SplitPathWithoutDelimiter)
 
 TEST(StringUtils, SplitPathOnWindows)
 {
-  std::string path = "C:\\Users\\username\\caprice32\\disk\\test.dsk";
+  std::string path = "C:\\Users\\username\\koncepcja\\disk\\test.dsk";
   std::string dirname, filename;
 
   stringutils::splitPath(path, dirname, filename);
 
-  ASSERT_EQ("C:\\Users\\username\\caprice32\\disk\\", dirname);
+  ASSERT_EQ("C:\\Users\\username\\koncepcja\\disk\\", dirname);
   ASSERT_EQ("test.dsk", filename);
 }
 
@@ -277,12 +277,12 @@ TEST(StringUtils, SplitPathOnWindows)
 // TODO(cpitrat): Could be nice (and easy) to fix though.
 TEST(StringUtils, SplitInvalidPathOnWindowsWithSlash)
 {
-  std::string path = "C:\\Users\\username\\caprice32/disk\\test.dsk";
+  std::string path = "C:\\Users\\username\\koncepcja/disk\\test.dsk";
   std::string dirname, filename;
 
   stringutils::splitPath(path, dirname, filename);
 
-  ASSERT_EQ("C:\\Users\\username\\caprice32/", dirname);
+  ASSERT_EQ("C:\\Users\\username\\koncepcja/", dirname);
   ASSERT_EQ("disk\\test.dsk", filename);
 }
 

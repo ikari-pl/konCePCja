@@ -71,7 +71,7 @@ public:
 	//! \return a pointer to the current floating window
 	CWindow* GetFloatingWindow() const { return m_pFloatingWindow; }
 
-	// judb ; sometimes the surface is re-created in caprice32; in this case, we have
+	// judb ; sometimes the surface is re-created in konCePCja; in this case, we have
 	// to pass it on here
 	void SetSurface(SDL_Surface* surface) { m_pScreenSurface = surface; }
 
@@ -99,7 +99,7 @@ protected:
 	SDL_Window* m_pWindow;  //!< A pointer to the window
 	SDL_Surface* m_pScreenSurface;  //!< A pointer to the actual screen surface
 
-	SDL_Surface* m_pBackSurface;  // Caprice32-specific; contains the current Caprice32 output surface
+	SDL_Surface* m_pBackSurface;  // konCePCja-specific; contains the current konCePCja output surface
 	                              // so we can draw the gui on top of it.
 
 private:

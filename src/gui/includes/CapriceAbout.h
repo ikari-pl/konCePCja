@@ -1,4 +1,4 @@
-// 'About' box for Caprice32
+// 'About' box for konCePCja
 // Inherited from CMessageBox
 
 

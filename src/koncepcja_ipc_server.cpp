@@ -1,4 +1,4 @@
-#include "ipc_server.h"
+#include "koncepcja_ipc_server.h"
 
 #include <cstring>
 #include <string>
@@ -23,7 +23,7 @@ extern t_CPC CPC;
 
 namespace {
 constexpr int kPort = 6543;
-KaprysIpcServer* g_ipc_instance = nullptr;
+KoncepcjaIpcServer* g_ipc_instance = nullptr;
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
   if (g_ipc_instance) {
@@ -411,19 +411,19 @@ std::string handle_command(const std::string& line) {
 }
 }
 
-KaprysIpcServer::~KaprysIpcServer() {
+KoncepcjaIpcServer::~KoncepcjaIpcServer() {
   stop();
 }
 
-void KaprysIpcServer::start() {
+void KoncepcjaIpcServer::start() {
   if (running.load()) return;
   running.store(true);
   g_ipc_instance = this;
   z80_set_breakpoint_hit_hook(&breakpoint_hit_hook);
-  server_thread = std::thread(&KaprysIpcServer::run, this);
+  server_thread = std::thread(&KoncepcjaIpcServer::run, this);
 }
 
-void KaprysIpcServer::stop() {
+void KoncepcjaIpcServer::stop() {
   running.store(false);
   if (server_thread.joinable()) server_thread.join();
   if (g_ipc_instance == this) {
@@ -432,13 +432,13 @@ void KaprysIpcServer::stop() {
   }
 }
 
-void KaprysIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint) {
+void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint) {
   breakpoint_pc.store(pc);
   breakpoint_watchpoint.store(watchpoint);
   breakpoint_hit.store(true);
 }
 
-bool KaprysIpcServer::consume_breakpoint_hit(uint16_t& pc, bool& watchpoint) {
+bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc, bool& watchpoint) {
   if (!breakpoint_hit.load()) return false;
   pc = breakpoint_pc.load();
   watchpoint = breakpoint_watchpoint.load();
@@ -446,7 +446,7 @@ bool KaprysIpcServer::consume_breakpoint_hit(uint16_t& pc, bool& watchpoint) {
   return true;
 }
 
-void KaprysIpcServer::run() {
+void KoncepcjaIpcServer::run() {
   int server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) return;
 

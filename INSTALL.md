@@ -50,15 +50,15 @@ The usual way to organize disk/tape/cartridge images and snapshots is to create 
 
 Start the emulator with:
 
-`./cap32`
+`./koncepcja`
 
 or
 
-`./cap32 <file>`
+`./koncepcja <file>`
 
 where `file` can be a `.dsk`, `.voc`, `.cdt`, `.cpr`, `.sna` or a `.zip` containing one of these files.
 
-See "Using the emulator" below for information on how to use Caprice.
+See "Using the emulator" below for information on how to use konCePCja.
 
 ### Troubleshooting
 
@@ -99,8 +99,8 @@ Set your proxy variables (if necessary) and clone the caprice repository.
 export HTTP_PROXY="http://proxy.company.com:9999"
 export HTTPS_PROXY=$HTTP_PROXY
 
-git clone https://github.com/ColinPitrat/caprice32.git
-cd caprice32
+git clone https://github.com/ikari/konCePCja.git
+cd koncepcja
 ```
 
 Install g++, make, sdl2 and freetype.
@@ -117,7 +117,7 @@ To speed up the build you can use more than one processes if you have more cores
 
 Test the binary
 
-`./cap32`
+`./koncepcja`
 
 ### Debian/Ubuntu package:
 
@@ -129,7 +129,7 @@ Then, to create a debian package:
 
  * fill in the required version in the debian/changelog file
  * compile with `make VERSION=<my_version_string>`
- * go to `release/cap32_linux/caprice32-<version>/debian`
+ * go to `release/koncepcja_linux/koncepcja-<version>/debian`
  * execute `debuild -us -uc --lintian-opts --profile debian` or `pdebuild` if you want to run in a chrooted env.
 
 ### Windows target:
@@ -178,9 +178,9 @@ Install git.
 
 `pacman -S git`
 
-Clone the caprice32 repository.
+Clone the koncepcja repository.
 
-`git clone https://github.com/ColinPitrat/caprice32.git`
+`git clone https://github.com/ikari/konCePCja.git`
 
 Install the 64 bit gcc compiler.
 
@@ -203,7 +203,7 @@ Adjust the windows part in the makefile.
 
 ```
 ifeq ($(PLATFORM),windows)
-TARGET = cap32.exe
+TARGET = koncepcja.exe
 TEST_TARGET = test_runner.exe
 IPATHS = -Isrc/ -Isrc/gui/includes -I$(MINGW_PATH)/include -I$(MINGW_PATH)/include/SDL2 -I$(MINGW_PATH)/include/freetype2
 LIBS = $(MINGW_PATH)/lib/libSDL2.dll.a $(MINGW_PATH)/lib/libfreetype.dll.a $(MINGW_PATH)/lib/libz.dll.a $(MINGW_PATH)/lib/libpng16.dll.a $(MINGW_PATH)/lib/libpng.dll.a
@@ -227,9 +227,9 @@ Finally build the caprice binary.
 
 `make ARCH=win64`
 
-Test the fresh Caprice32 Build.
+Test the fresh konCePCja Build.
 
-`./cap32`
+`./koncepcja`
 
 If you want to build the 32 bit version you need to adjust the MINGW_PATH in the makefile and to install the proper packages for i686 (32 bit) instead of x86_64 e.g.
 
@@ -260,7 +260,7 @@ sudo chmod a+r /usr/include/caps /usr/include/caps/* /usr/lib/libcapsimage.so*
 F1 provides the emulator's main menu. The `About` section contains a list of shortcuts.
 
 To get a list of supported command line flags:
-`cap32 --help` 
+`koncepcja --help` 
 
 These flags can be useful to automate things.
 
@@ -271,7 +271,7 @@ Once in the emulator, you can type F1 and then "Load/Save" to:
  - Save a disk
  - Save the emulator's state in a snapshot
 
-By default, Caprice uses CPC 6128 which is on disk by default. To see what's on a disk loaded in drive A, type `cat`.
+By default, konCePCja uses CPC 6128 which is on disk by default. To see what's on a disk loaded in drive A, type `cat`.
 
 To start a program, type `run"program`.
 

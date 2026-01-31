@@ -8,7 +8,7 @@ extern t_CPC CPC;
 namespace wGui {
 
   CapriceVKeyboard::CapriceVKeyboard(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFontEngine) :
-    CFrame(WindowRect, pParent, pFontEngine, "Caprice32 - Virtual Keyboard", false)
+    CFrame(WindowRect, pParent, pFontEngine, "konCePCja - Virtual Keyboard", false)
   {
     // TODO: This became ugly with time ... Make this more generic by creating a
     // class key that has a displayable string and SDL events associated

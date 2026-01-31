@@ -27,9 +27,76 @@
 #include <map>
 #include <string>
 #include "log.h"
+#include <png.h>
 
 namespace wGui
 {
+
+static SDL_Surface* LoadPngSurface(const std::string& filename)
+{
+	FILE* fp = fopen(filename.c_str(), "rb");
+	if (!fp) return nullptr;
+
+	png_byte header[8];
+	if (fread(header, 1, 8, fp) != 8 || png_sig_cmp(header, 0, 8)) {
+		fclose(fp);
+		return nullptr;
+	}
+
+	png_structp png_ptr = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+	if (!png_ptr) { fclose(fp); return nullptr; }
+	png_infop info_ptr = png_create_info_struct(png_ptr);
+	if (!info_ptr) { png_destroy_read_struct(&png_ptr, nullptr, nullptr); fclose(fp); return nullptr; }
+	if (setjmp(png_jmpbuf(png_ptr))) {
+		png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+		fclose(fp);
+		return nullptr;
+	}
+
+	png_init_io(png_ptr, fp);
+	png_set_sig_bytes(png_ptr, 8);
+	png_read_info(png_ptr, info_ptr);
+
+	png_uint_32 width = 0, height = 0;
+	int bit_depth = 0, color_type = 0;
+	png_get_IHDR(png_ptr, info_ptr, &width, &height, &bit_depth, &color_type, nullptr, nullptr, nullptr);
+
+	if (bit_depth == 16) png_set_strip_16(png_ptr);
+	if (color_type == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(png_ptr);
+	if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) png_set_expand_gray_1_2_4_to_8(png_ptr);
+	if (png_get_valid(png_ptr, info_ptr, PNG_INFO_tRNS)) png_set_tRNS_to_alpha(png_ptr);
+	if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA) png_set_gray_to_rgb(png_ptr);
+	if (!(color_type & PNG_COLOR_MASK_ALPHA)) png_set_add_alpha(png_ptr, 0xFF, PNG_FILLER_AFTER);
+
+	png_read_update_info(png_ptr, info_ptr);
+
+	SDL_Surface* surface = SDL_CreateSurface((int)width, (int)height, SDL_PIXELFORMAT_RGBA32);
+	if (!surface) {
+		png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+		fclose(fp);
+		return nullptr;
+	}
+
+	png_bytep* rows = (png_bytep*)malloc(sizeof(png_bytep) * height);
+	if (!rows) {
+		SDL_DestroySurface(surface);
+		png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+		fclose(fp);
+		return nullptr;
+	}
+
+	for (png_uint_32 y = 0; y < height; ++y) {
+		rows[y] = (png_bytep)surface->pixels + y * surface->pitch;
+	}
+
+	png_read_image(png_ptr, rows);
+	png_read_end(png_ptr, nullptr);
+
+	free(rows);
+	png_destroy_read_struct(&png_ptr, &info_ptr, nullptr);
+	fclose(fp);
+	return surface;
+}
 
 std::map<TResourceId, unsigned int> CResourceHandle::m_RefCountMap;
 std::map<TResourceId, SDL_Surface*> CBitmapResourceHandle::m_BitmapMap;
@@ -117,7 +184,15 @@ CBitmapFileResourceHandle::CBitmapFileResourceHandle(std::string sFilename) :
 {
 	if (m_BitmapMap.find(m_ResourceId) == m_BitmapMap.end())
 	{
-		SDL_Surface* pSurface = SDL_LoadBMP(m_sFilename.c_str());
+		SDL_Surface* pSurface = nullptr;
+		// Load PNG with libpng (for alpha), otherwise fallback to BMP
+		if (m_sFilename.size() >= 4 && m_sFilename.substr(m_sFilename.size() - 4) == ".png") {
+			pSurface = LoadPngSurface(m_sFilename);
+		}
+		if (!pSurface)
+		{
+			pSurface = SDL_LoadBMP(m_sFilename.c_str());
+		}
 		if (!pSurface)
 		{
 			throw(Wg_Ex_App("Unable to load bitmap: " + m_sFilename, "CBitmapFileResourceHandle::CBitmapFileResourceHandle"));

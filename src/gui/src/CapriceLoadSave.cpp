@@ -1,4 +1,4 @@
-// 'Load/save' box for Caprice32
+// 'Load/save' box for konCePCja
 // Inherited from CMessageBox
 
 #include "CapriceLoadSave.h"

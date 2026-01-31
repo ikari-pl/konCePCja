@@ -1,4 +1,4 @@
-// Disassembly panel view for Caprice32
+// Disassembly panel view for konCePCja
 #include "CapriceDisasmPanelView.h"
 #include "CapriceDevTools.h"
 #include <string>

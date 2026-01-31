@@ -1,4 +1,4 @@
-// Developers' tools for Caprice32
+// Developers' tools for konCePCja
 #ifndef _WG_CAPRICEDEVTOOLSVIEW_H
 #define _WG_CAPRICEDEVTOOLSVIEW_H
 

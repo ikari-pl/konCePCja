@@ -13,12 +13,12 @@
        table   { margin-top: 0; margin-bottom: 0; vertical-align: top }
        h1      { text-align: center }
 </style>
-<title>cap32</title>
+<title>koncepcja</title>
 
 </head>
 <body>
 
-<h1 align="center">cap32</h1>
+<h1 align="center">koncepcja</h1>
 
 <a href="#NAME">NAME</a><br>
 <a href="#SYNOPSIS">SYNOPSIS</a><br>
@@ -38,15 +38,15 @@
 </h2>
 
 
-<p style="margin-left:11%; margin-top: 1em">cap32 -
-Caprice32 Amstrad CPC emulator</p>
+<p style="margin-left:11%; margin-top: 1em">koncepcja -
+konCePCja Amstrad CPC emulator</p>
 
 <h2>SYNOPSIS
 <a name="SYNOPSIS"></a>
 </h2>
 
 
-<p style="margin-left:11%; margin-top: 1em"><b>cap32</b>
+<p style="margin-left:11%; margin-top: 1em"><b>koncepcja</b>
 [<i>OPTION</i>]... [<i>FILE</i>]...</p>
 
 <h2>DESCRIPTION
@@ -55,7 +55,7 @@ Caprice32 Amstrad CPC emulator</p>
 
 
 
-<p style="margin-left:11%; margin-top: 1em"><b>Caprice32</b>
+<p style="margin-left:11%; margin-top: 1em"><b>konCePCja</b>
 is an Amstrad CPC emulator. It emulates the Amstrad CPC464,
 664, 6128 and 6128+ home computers.</p>
 
@@ -65,7 +65,7 @@ loading</b></p>
 <p style="margin-left:22%;">Upon invocation, the FILEs
 specified as arguments will be used to populate the various
 available CPC machine slots. The type of slot is determined
-by the file format, detected by its extension. Caprice32
+by the file format, detected by its extension. konCePCja
 supports the following file formats: <b>.dsk</b> (disk
 image), <b>.ipf</b> (Interchangeable Preservation Format
 disk image), <b>.raw</b> (CT-RAW format), <b>.voc</b> or
@@ -74,7 +74,7 @@ disk image), <b>.raw</b> (CT-RAW format), <b>.voc</b> or
 previously described file). Specifying slot content on
 the command line is optional.</p>
 
-<p style="margin-left:22%; margin-top: 1em">Caprice32
+<p style="margin-left:22%; margin-top: 1em">konCePCja
 supports two disk drives: drive A and drive B. If two disk
 image files (.dsk or .ipf) are provided, the first one will
 be loaded in drive A and the second one in drive B.</p>
@@ -95,22 +95,22 @@ cartridges.</p>
 
 <p style="margin-left:11%; margin-top: 1em"><b>Configuration</b></p>
 
-<p style="margin-left:22%;">When launched, Caprice32 will
+<p style="margin-left:22%;">When launched, konCePCja will
 look for a configuration file in several locations. If a
 configuration file was specified using the <b>--cfg_file</b>
-command line switch, Caprice32 will try and use it. If no
+command line switch, konCePCja will try and use it. If no
 configuration file was specified, or the configuration file
-specified does not exist, Caprice32 will try and open, in
+specified does not exist, konCePCja will try and open, in
 this order: <br>
-- <b>$CWD/cap32.cfg</b> ($CWD being the directory where the
-cap32 executable resides) <br>
-- <b>cap32.cfg</b> file in the location pointed to by the
+- <b>$CWD/koncepcja.cfg</b> ($CWD being the directory where the
+koncepcja executable resides) <br>
+- <b>koncepcja.cfg</b> file in the location pointed to by the
 XDG_CONFIG_HOME environment variable. If XDG_CONFIG_HOME is
 undefined, it will look at $HOME/.config/ as default
 XDG_CONFIG_HOME directory. <br>
-- <b>$HOME/.cap32.cfg</b> for compatibility. <br>
-- <b>/etc/cap32.cfg</b>. <br>
-Caprice32 will use the first valid file it finds. If no
+- <b>$HOME/.koncepcja.cfg</b> for compatibility. <br>
+- <b>/etc/koncepcja.cfg</b>. <br>
+konCePCja will use the first valid file it finds. If no
 configuration file is found, a default configuration will be
 used.</p>
 
@@ -124,7 +124,7 @@ permission condition.</p>
 
 <p style="margin-left:22%; margin-top: 1em">Most of the
 configuration file entries are commented in the
-configuration file provided by default with Caprice32.
+configuration file provided by default with konCePCja.
 However, when overwriting the configuration file from the
 emulator menu, all comments will be lost.</p>
 
@@ -169,7 +169,7 @@ real joysticks are disabled, and the keyboard arrows
 (directions) as well as X and Z (fire buttons) keys are
 remapped to emulate the joystick 1 of the CPC machine.</p>
 
-<p style="margin-left:22%; margin-top: 1em">Caprice32 can
+<p style="margin-left:22%; margin-top: 1em">konCePCja can
 also be controlled completely from the joystick. The
 configuration file <b>joystick_menu_button</b> and
 <b>joystick_vkeyboard_button</b> entries allow binding menu
@@ -179,7 +179,7 @@ joystick button.</p>
 <p style="margin-left:11%; margin-top: 1em"><b>Keyboard
 mapping</b></p>
 
-<p style="margin-left:22%;">Caprice32 supports CPC English,
+<p style="margin-left:22%;">konCePCja supports CPC English,
 French and Spanish keyboard layouts. The CPC keyboard layout
 is defined in the configuration file by the <b>keyboard</b>
 entry (0: English, 1: French, 2: Spanish). The host keyboard
@@ -188,7 +188,7 @@ host key to any specific key. The mapping file to use is set
 by the <b>kbd_layout</b> configuration entry. The mapping
 file must be put in the resources directory, defined by the
 configuration file <b>resources_path</b> entry. If the
-mapping file is not defined or not found, Caprice32 will
+mapping file is not defined or not found, konCePCja will
 default to a standard US keyboard map.</p>
 
 <h2>OPTIONS
@@ -201,7 +201,7 @@ default to a standard US keyboard map.</p>
 
 <p style="margin-left:22%;">pass command to execute to the
 emulator. The option can be repeated to pass multiple
-commands. For example: cap32 -a &rsquo;print
+commands. For example: koncepcja -a &rsquo;print
 &quot;Hello&quot;&rsquo; -a &rsquo;print
 &quot;World&quot;&rsquo;</p>
 
@@ -241,7 +241,7 @@ developers&rsquo; tools.</p>
 
 <p style="margin-left:11%;"><b>-V</b>, <b>--version</b></p>
 
-<p style="margin-left:22%;">display Caprice32 version and
+<p style="margin-left:22%;">display konCePCja version and
 exits</p>
 
 <p style="margin-left:11%;"><b>-v</b>, <b>--verbose</b></p>
@@ -254,10 +254,10 @@ emulator is doing (mostly for debug builds)</p>
 </h2>
 
 
-<p style="margin-left:11%; margin-top: 1em">cap32
+<p style="margin-left:11%; margin-top: 1em">koncepcja
 ./disk/sorcery.dsk ./trail.dsk</p>
 
-<p style="margin-left:22%;">Launches cap32, loads the
+<p style="margin-left:22%;">Launches koncepcja, loads the
 content of ./disk/sorcery.dsk in the drive A slot, and
 ./trail.dsk in the drive B slot.</p>
 
@@ -271,7 +271,7 @@ emulation is incomplete: vectored &amp; DMA interrupts,
 analog joysticks and 8 bit printer are not emulated.</p>
 
 <p style="margin-left:11%; margin-top: 1em">See
-https://github.com/ColinPitrat/caprice32/issues for the list
+https://github.com/ikari/konCePCja/issues for the list
 of reported bugs.</p>
 
 <h2>AUTHOR
@@ -279,11 +279,11 @@ of reported bugs.</p>
 </h2>
 
 
-<p style="margin-left:11%; margin-top: 1em">Caprice32 was
+<p style="margin-left:11%; margin-top: 1em">konCePCja was
 originally written by Ulrich Doewich.</p>
 
 <p style="margin-left:11%; margin-top: 1em">This manual
-page covers Colin Pitrat&rsquo;s fork of Caprice32.</p>
+page covers ikari&rsquo;s fork of konCePCja.</p>
 
 <p style="margin-left:11%; margin-top: 1em">The screen
 capture code uses driedfruit SDL_SavePNG code
@@ -295,9 +295,9 @@ capture code uses driedfruit SDL_SavePNG code
 
 
 
-<p style="margin-left:11%; margin-top: 1em">$HOME/.cap32.cfg
+<p style="margin-left:11%; margin-top: 1em">$HOME/.koncepcja.cfg
 <br>
-/etc/cap32.cfg</p>
+/etc/koncepcja.cfg</p>
 
 <h2>SEE ALSO
 <a name="SEE ALSO"></a>
@@ -305,7 +305,7 @@ capture code uses driedfruit SDL_SavePNG code
 
 
 
-<p style="margin-left:11%; margin-top: 1em">https://github.com/ColinPitrat/caprice32
+<p style="margin-left:11%; margin-top: 1em">https://github.com/ikari/konCePCja
 <br>
  https://github.com/driedfruit/SDL_SavePNG</p>
 <hr>

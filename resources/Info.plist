@@ -5,11 +5,11 @@
   <key>CFBundleDevelopmentRegion</key>
   <string>English</string>
   <key>CFBundleExecutable</key>
-  <string>Caprice32</string>
+  <string>koncepcja</string>
   <key>CFBundleIconFile</key>
-  <string>cap32logo.bmp</string>
+  <string>koncepcja.icns</string>
   <key>CFBundleIdentifier</key>
-  <string>org.magnifier.magnifier</string>
+  <string>pl.ikari.koncepcja</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundlePackageType</key>

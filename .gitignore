@@ -1,5 +1,5 @@
 /obj
-/cap32
+/koncepcja
 /printer.dat
 /wGui.log
 /tags
@@ -10,9 +10,9 @@
 /screenshots
 /release
 .pc
-debian/caprice32.debhelper.log
-debian/caprice32.postinst.debhelper
-debian/caprice32.postrm.debhelper
-debian/caprice32.substvars
-debian/caprice32/
+debian/koncepcja.debhelper.log
+debian/koncepcja.postinst.debhelper
+debian/koncepcja.postrm.debhelper
+debian/koncepcja.substvars
+debian/koncepcja/
 debian/files

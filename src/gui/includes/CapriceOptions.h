@@ -1,4 +1,4 @@
-// 'Options' window for Caprice32
+// 'Options' window for konCePCja
 // Inherited from CFrame
 
 #ifndef _WG_CAPRICE32OPTIONS_H_

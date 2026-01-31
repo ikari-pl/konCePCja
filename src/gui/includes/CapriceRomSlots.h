@@ -1,4 +1,4 @@
-// Caprice32 ROM slot selection window
+// konCePCja ROM slot selection window
 // Inherited from CFrame
 
 #ifndef _WG_CAPRICE32ROMSLOTS_H_

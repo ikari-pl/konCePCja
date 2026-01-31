@@ -1,4 +1,4 @@
-// 'Memory tool' window for Caprice32
+// 'Memory tool' window for konCePCja
 
 #ifndef _WG_CAPRICE32MEMORYTOOL_H_
 #define _WG_CAPRICE32MEMORYTOOL_H_

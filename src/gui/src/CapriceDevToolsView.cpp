@@ -1,4 +1,4 @@
-// Developers' tools for Caprice32
+// Developers' tools for konCePCja
 #include "CapriceDevToolsView.h"
 #include "CapriceDevTools.h"
 #include "devtools.h"

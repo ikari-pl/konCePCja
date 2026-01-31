@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2005 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -648,7 +648,7 @@ int dsk_save (const std::string &filename, t_drive *drive)
    if ((pfileObject = fopen(filename.c_str(), "wb")) != nullptr) {
       memset(&dh, 0, sizeof(dh));
       memcpy(dh.id, "EXTENDED CPC DSK File\r\nDisk-Info\r\n", sizeof(dh.id));
-      strncpy(dh.unused1, "Caprice32\r\n", sizeof(dh.unused1));
+      strncpy(dh.unused1, "konCePCja\r\n", sizeof(dh.unused1));
       dh.tracks = drive->tracks;
       dh.sides = (drive->sides+1) | (drive->random_DEs); // correct side count and indicate random DEs, if necessary
       pos = 0;

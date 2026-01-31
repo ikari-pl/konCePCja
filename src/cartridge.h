@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    
    Loading of Plus range cartridge files (.cpr)
    The file format is RIFF (Resource Interchange File Format) as described

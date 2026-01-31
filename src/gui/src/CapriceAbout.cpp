@@ -1,4 +1,4 @@
-// 'About' box for Caprice32
+// 'About' box for konCePCja
 // Inherited from CMessageBox
 
 #include "CapriceAbout.h"
@@ -30,7 +30,7 @@ Shift + F5 - Next disk (drive A)
 Shift + F7 - Activate phazer)";
 
 CapriceAbout::CapriceAbout(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFontEngine) :
-	CMessageBox(WindowRect, pParent, pFontEngine, "About Caprice32", "", CMessageBox::BUTTON_OK)
+	CMessageBox(WindowRect, pParent, pFontEngine, "About konCePCja", "", CMessageBox::BUTTON_OK)
 {
     SetModal(true);
 	// Override here: specify position of label ourselves:
@@ -44,10 +44,10 @@ CapriceAbout::CapriceAbout(const CRect& WindowRect, CWindow* pParent, CFontEngin
   m_pTextBox->SetWindowText(shortcuts);
   m_pTextBox->SetReadOnly(true);
 	try	{
-	    m_pPicture = new CPicture(CRect(CPoint(18, 5), 162, 62), this, CPC.resources_path + "/cap32logo.bmp", true);
+	    m_pPicture = new CPicture(CRect(CPoint(18, 5), 162, 62), this, CPC.resources_path + "/koncepcja-logo.png", true);
 	} catch (Wg_Ex_App &e) {
 		// we don't want to stop the program if we can't load the picture, so just print the error and keep going
-    LOG_ERROR("CapriceAbout::CapriceAbout: Couldn't load cap32logo.bmp: " << e.std_what());
+    LOG_ERROR("CapriceAbout::CapriceAbout: Couldn't load koncepcja-logo.png: " << e.std_what());
 	}
 }
 

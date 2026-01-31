@@ -1,4 +1,4 @@
-// 'Memory tool' window for Caprice32
+// 'Memory tool' window for konCePCja
 
 #include "CapriceMemoryTool.h"
 #include "cap32.h"

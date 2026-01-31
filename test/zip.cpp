@@ -74,6 +74,6 @@ TEST(Zip, ExtractOnFileWithMultipleEntries)
   char buffer[256];
   size_t r = fread(buffer, 1, 256, file);
   buffer[r] = 0;
-  ASSERT_STREQ("This file is a sample zip file used by Caprice32 tests.\n", buffer);
+  ASSERT_STREQ("This file is a sample zip file used by konCePCja tests.\n", buffer);
   ASSERT_EQ(0, fclose(file));
 }

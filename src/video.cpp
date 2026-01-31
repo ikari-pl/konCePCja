@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2004 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -148,9 +148,9 @@ void compute_scale(video_plugin* t, int w, int h)
 /* ------------------------------------------------------------------------------------ */
 SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
 {
-  SDL_CreateWindowAndRenderer("Caprice32", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
+  SDL_CreateWindowAndRenderer("konCePCja", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
-  SDL_SetWindowTitle(mainSDLWindow, "Caprice32 " VERSION_STRING);
+  SDL_SetWindowTitle(mainSDLWindow, "konCePCja " VERSION_STRING);
   int surface_width, surface_height;
   if (scale > 1) {
     t->half_pixels = 0;
@@ -246,7 +246,7 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
 
   int width = CPC_VISIBLE_SCR_WIDTH*scale;
   int height = CPC_VISIBLE_SCR_HEIGHT*scale;
-  SDL_CreateWindowAndRenderer("Caprice32", width, height, (fs?SDL_WINDOW_FULLSCREEN:0) | SDL_WINDOW_OPENGL, &mainSDLWindow, &renderer);
+  SDL_CreateWindowAndRenderer("konCePCja", width, height, (fs?SDL_WINDOW_FULLSCREEN:0) | SDL_WINDOW_OPENGL, &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   if (fs) {
     SDL_DisplayMode display;
@@ -709,9 +709,9 @@ int video_get_topbar_height()
 
 SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
 {
-  SDL_CreateWindowAndRenderer("Caprice32", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
+  SDL_CreateWindowAndRenderer("konCePCja", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
-  SDL_SetWindowTitle(mainSDLWindow, "Caprice32 " VERSION_STRING);
+  SDL_SetWindowTitle(mainSDLWindow, "konCePCja " VERSION_STRING);
   int surface_width, surface_height;
   if (scale < 4) {
     t->half_pixels = 1;

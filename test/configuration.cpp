@@ -45,7 +45,7 @@ class ConfigurationTest : public testing::Test
   private:
     void createTmpFile(std::string &filename)
     {
-      char tmpFilename[] = "test/.cap32_tmp_XXXXXX";
+      char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
       int fd = mkstemp(tmpFilename);
       ASSERT_GE(fd, 0);
       close(fd);

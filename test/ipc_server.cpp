@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "cap32.h"
-#include "ipc_server.h"
+#include "koncepcja_ipc_server.h"
 #include "z80.h"
 
 extern t_z80regs z80;
@@ -85,11 +85,11 @@ class IpcServerTest : public testing::Test {
     }
   }
 
-  static KaprysIpcServer server;
+  static KoncepcjaIpcServer server;
   static byte memory[4][kBankSize];
 };
 
-KaprysIpcServer IpcServerTest::server;
+KoncepcjaIpcServer IpcServerTest::server;
 byte IpcServerTest::memory[4][kBankSize];
 
 TEST_F(IpcServerTest, RegSetUpdatesRegisters) {

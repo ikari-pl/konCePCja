@@ -34,7 +34,7 @@ bool DevTools::Activate(int scale, bool useMainWindow) {
     } else {
       // TODO: This position only makes sense for me. Ideally we would probably want to find where current window is, find display size and place
       // the window where there's the most space available. On the other hand, getting display size is not very reliable on multi-screen setups under linux ...
-      window = SDL_CreateWindow("Caprice32 - Developers' tools", DEVTOOLS_WIDTH*scale, DEVTOOLS_HEIGHT*scale, 0);
+      window = SDL_CreateWindow("konCePCja - Developers' tools", DEVTOOLS_WIDTH*scale, DEVTOOLS_HEIGHT*scale, 0);
       renderer = SDL_CreateRenderer(window, nullptr);
       if (!window || !renderer) { Deactivate(); return false; }
       surface = SDL_CreateSurface(DEVTOOLS_WIDTH, DEVTOOLS_HEIGHT, SDL_PIXELFORMAT_RGBA32);

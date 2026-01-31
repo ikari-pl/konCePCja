@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2004 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -118,7 +118,7 @@ void z80_reset();
 void z80_init_tables();
 void z80_mf2stop();
 
-// Kaprys debug helpers
+// konCePCja debug helpers
 void z80_add_breakpoint(word addr);
 void z80_del_breakpoint(word addr);
 void z80_clear_breakpoints();
@@ -127,7 +127,7 @@ std::vector<Breakpoint> z80_list_breakpoints();
 
 int z80_execute();
 
-// Breakpoint hit notification hook (Kaprys IPC)
+// Breakpoint hit notification hook (konCePCja IPC)
 typedef void (*BreakpointHitHook)(word pc, bool watchpoint);
 void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 

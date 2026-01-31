@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2004 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -19,7 +19,7 @@
 /*
  * TODO: single letter macros are reserved for compiler internal use and
  * should be renamed/refactored in future.
- * See: https://github.com/ColinPitrat/caprice32/issues/150
+ * See: https://github.com/ikari/konCePCja/issues/150
  */
 
 #ifndef Z80_MACROS_H

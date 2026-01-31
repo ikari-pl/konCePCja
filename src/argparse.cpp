@@ -48,7 +48,7 @@ void usage(std::ostream &os, char *progPath, int errcode)
    os << "Ports files are identified by their extension. Supported formats are .dsk (disk), .cdt or .voc (tape), .cpr (cartridge), .sna (snapshot), or .zip (archive containing one or more of the supported ports files).\n";
    os << "\nExample: " << progname << " sorcery.dsk\n";
    os << "\nPress F1 when the emulator is running to show the in-application option menu.\n";
-   os << "\nSee https://github.com/ColinPitrat/caprice32 or check the man page (man cap32) for more extensive information.\n";
+   os << "\nSee https://github.com/ikari/konCePCja or check the man page (man koncepcja) for more extensive information.\n";
    exit(errcode);
 }
 
@@ -166,7 +166,7 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
 
          case 'V':
             // Version
-            std::cout << "Caprice32 " << VERSION_STRING;
+            std::cout << "konCePCja " << VERSION_STRING;
 #ifdef HASH
             std::cout << (std::string(HASH).empty()?"":"-"+std::string(HASH));
 #endif

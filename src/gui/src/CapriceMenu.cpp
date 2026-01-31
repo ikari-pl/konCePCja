@@ -1,4 +1,4 @@
-// 'Menu' window for Caprice32
+// 'Menu' window for konCePCja
 // Inherited from CFrame
 
 #include <map>
@@ -17,7 +17,7 @@ extern t_CPC CPC;
 namespace wGui {
 
 CapriceMenu::CapriceMenu(const CRect& WindowRect, CWindow* pParent, SDL_Surface* screen, CFontEngine* pFontEngine) :
-  CFrame(WindowRect, pParent, pFontEngine, "Caprice32 - Menu", false), m_pScreenSurface(screen)
+  CFrame(WindowRect, pParent, pFontEngine, "konCePCja - Menu", false), m_pScreenSurface(screen)
 {
   Application().MessageServer()->RegisterMessageClient(this, CMessage::CTRL_MESSAGEBOXRETURN);
   SetModal(true);

@@ -1,5 +1,5 @@
 *************
-* cap32.cpp *
+* koncepcja.cpp *
 *************
    Oct 11, 2000 - 22:12 preliminary IN/OUT handlers; started with the GA OUT register write routines
    Oct 12, 2000 - 23:31 added GA ROM select to z80_OUT_handler
@@ -15,7 +15,7 @@
    Dec 12, 2000 - 18:14 changed load_dsk() to work with a C based disk info structure
    Jan 24, 2001 - 22:28 loading from disk images works (again)!
    Apr 06, 2001 - 12:52 fixed the keyboard translation table (Allegro WIP 3.9.34 added 3 more keys to the array)
-   Jun 13, 2001 - 17:25 added DirectDraw and DirectInput8 init routines for the new Windows port of Caprice32
+   Jun 13, 2001 - 17:25 added DirectDraw and DirectInput8 init routines for the new Windows port of konCePCja
    Jun 13, 2001 - 20:50 keyboard emualtion works now via the DI8 action mapping
    Jun 21, 2001 - 00:30 changed DDraw code to work in windowed mode; added routines to render CPC screen in 32bpp; added drag'n drop functionality for CPC drive A
    Jun 23, 2001 - 16:15 only the visible portion of the CPC screen is rendered to the frame buffer; Windows window is now sized to the proper CPC screen dimensions
@@ -67,7 +67,7 @@
    Sep 08, 2002 - 16:06 rewrote PCVideo init routines to support windowed/fullscreen mode switching
    Sep 12, 2002 - 00:02 fixed 50Hz timer by using QueryPerformanceCounter
    Sep 20, 2002 - 18:19 re-implemented DirectSound support; fixed timing problems - sound playback should no longer pop
-   Sep 21, 2002 - 15:35 LoadConfiguration & SaveConfiguration now use the cap32.cfg file instead of the Registry
+   Sep 21, 2002 - 15:35 LoadConfiguration & SaveConfiguration now use the koncepcja.cfg file instead of the Registry
    Sep 25, 2002 - 22:49 full screen resolution is selectable in the Options dialog; auto-sizes visible portion; allows mode change while being fs
    Sep 26, 2002 - 22:26 added scanline and line doubling (in software) rendering modes
    Sep 28, 2002 - 17:38 added a speed slider to the General page of the Options dialog
@@ -120,7 +120,7 @@
    Apr 07, 2003 - 21:59 doh! fixed the MF2 problem: the MF2 page-out port always set RAM bank0 instead if checking if the lower ROM was active
    Apr 09, 2003 - 15:49 MF2 ROM is now restored at every reset to ensure the ROM area has not been corrupted by memory writes
    Apr 13, 2003 - 16:18 added code to display the logo in the About box with a transparent background
-   Apr 16, 2003 - 16:18 joystick emulation can be toggled on/off; keyboard control assignments now override regular CPC keyboard actions; all dialogs now feature the "Caprice32 - " string to make identification easier; ZIP selector shows ZIP file name
+   Apr 16, 2003 - 16:18 joystick emulation can be toggled on/off; keyboard control assignments now override regular CPC keyboard actions; all dialogs now feature the "konCePCja - " string to make identification easier; ZIP selector shows ZIP file name
    Apr 26, 2003 - 14:03 added CaptureScreenshot to save the screen contents to a PNG file
    Apr 26, 2003 - 16:25 finished screen capture implementation: added file selector and path/file storage to config file
    May 05, 2003 - 22:46 updated the Audio page in the Options dialog with controls to choose the sample size and adjust the volume
@@ -199,11 +199,11 @@
    Jul 28, 2001 - 15:23 switched to the AY emulation from MAME
    Jul 28, 2001 - 16:09 fixed the envelope problem: the amp_table was still being referenced as byte!
    Aug 01, 2001 - 17:28 added code to support mono output
-   Aug 12, 2001 - 21:42 moved psg_reg_write() from cap32.cpp
+   Aug 12, 2001 - 21:42 moved psg_reg_write() from koncepcja.cpp
    Dec 08, 2002 - 10:43 properly integrated the tape noise into the mixing buffer
    Apr 29, 2003 - 21:48 started to convert AyEmul source code from Pascal to C
    Apr 30, 2003 - 23:39 continued with conversion
-   May 04, 2003 - 00:13 modified Synthesizer_Stereo16 for Caprice32 - new AY code works for the first time!
+   May 04, 2003 - 00:13 modified Synthesizer_Stereo16 for konCePCja - new AY code works for the first time!
    May 04, 2003 - 16:09 fixed the problem with the envelope period: the struct in TRegisterAY wasn't accessed properly
    May 05, 2003 - 18:46 added alternate synthesizers for mono/stereo + 8/16 bits; some code cleanup
    May 06, 2003 - 15:18 enabled 'tape noise' again

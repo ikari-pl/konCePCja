@@ -57,12 +57,12 @@ $(error Unknown ARCH. Supported ones are linux, win32 and win64.)
 endif
 
 ifeq ($(PLATFORM),windows)
-TARGET = cap32.exe
+TARGET = koncepcja.exe
 TEST_TARGET = test_runner.exe
 COMMON_CFLAGS += -DWINDOWS
 else
 prefix = /usr/local
-TARGET = cap32
+TARGET = koncepcja
 TEST_TARGET = test_runner
 endif
 
@@ -70,6 +70,7 @@ CAPS_INCLUDES=-Isrc/capsimg/LibIPF -Isrc/capsimg/Device -Isrc/capsimg/CAPSImg -I
 
 PKG_SDL_CFLAGS=`pkg-config --cflags sdl3`
 PKG_SDL_LIBS=`pkg-config --libs sdl3`
+# SDL_image optional support removed; PNG loads via libpng
 ifeq ($(ARCH),macos)
 ifeq ($(USE_VENDORED_SDL),1)
 PKG_SDL_CFLAGS=$(SDL_VENDOR_INCLUDE)
@@ -102,7 +103,7 @@ endif
 ifdef APP_PATH
 COMMON_CFLAGS += -DAPP_PATH=\"$(APP_PATH)\"
 else
-$(info Notice: APP_PATH not specified.  Will look for cap32.cfg debug-style.  See `README.md` for details. )
+$(info Notice: APP_PATH not specified.  Will look for koncepcja.cfg debug-style.  See `README.md` for details. )
 endif
 
 ifdef DESTDIR
@@ -117,11 +118,11 @@ SRCDIR:=src
 TSTDIR:=test
 OBJDIR:=obj/$(ARCH)
 RELEASE_DIR = release
-ARCHIVE = cap32-$(ARCH)
+ARCHIVE = koncepcja-$(ARCH)
 ARCHIVE_DIR = $(RELEASE_DIR)/$(ARCHIVE)
 
 HTML_DOC:=doc/man.html
-GROFF_DOC:=doc/man6/cap32.6
+GROFF_DOC:=doc/man6/koncepcja.6
 
 MAIN:=$(OBJDIR)/main.o
 
@@ -228,10 +229,10 @@ doc: $(HTML_DOC)
 $(HTML_DOC): $(GROFF_DOC)
 	groff -mandoc -Thtml $< > $@
 
-cap32.cfg: cap32.cfg.tmpl
-	@sed 's/__SHARE_PATH__.*//' cap32.cfg.tmpl > cap32.cfg
+koncepcja.cfg: koncepcja.cfg.tmpl
+	@sed 's/__SHARE_PATH__.*//' koncepcja.cfg.tmpl > koncepcja.cfg
 
-$(TARGET): $(OBJECTS) $(MAIN) cap32.cfg
+$(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg
 	$(CXX) $(LDFLAGS) -o $(TARGET) $(OBJECTS) $(MAIN) $(LIBS)
 
 ifeq ($(PLATFORM),windows)
@@ -246,7 +247,7 @@ distrib: $(TARGET)
 	cp $(TARGET) $(ARCHIVE_DIR)/
 	$(foreach DLL,$(DLLS),[ -f $(MINGW_PATH)/bin/$(DLL) ] && cp $(MINGW_PATH)/bin/$(DLL) $(ARCHIVE_DIR)/ || (echo "$(MINGW_PATH)/bin/$(DLL) doesn't exist" && false);)
 	cp $(MINGW_PATH)/bin/libgcc_s_*-1.dll $(ARCHIVE_DIR)/
-	cp cap32.cfg.tmpl cap32.cfg COPYING.txt README.md $(ARCHIVE_DIR)/
+	cp koncepcja.cfg.tmpl koncepcja.cfg COPYING.txt README.md $(ARCHIVE_DIR)/
 	cp -r resources/ rom/ licenses/ $(ARCHIVE_DIR)/
 	cd $(RELEASE_DIR) && zip -r $(ARCHIVE).zip $(ARCHIVE)
 
@@ -256,39 +257,39 @@ else
 
 ifeq ($(ARCH),macos)
 
-# Create a zip with a cap32 binary that should work launched locally
+# Create a zip with a koncepcja binary that should work launched locally
 distrib: $(TARGET)
 	mkdir -p $(ARCHIVE_DIR)
 	rm -f $(RELEASE_DIR)/$(ARCHIVE).zip
 	cp $(TARGET) $(ARCHIVE_DIR)/
 	cp -r rom resources doc licenses $(ARCHIVE_DIR)
-	cp cap32.cfg README.md COPYING.txt $(ARCHIVE_DIR)
+	cp koncepcja.cfg README.md COPYING.txt $(ARCHIVE_DIR)
 	cd $(RELEASE_DIR) && zip -r $(ARCHIVE).zip $(ARCHIVE)
 
 else
 
-SRC_PACKAGE_DIR=$(ARCHIVE_DIR)/caprice32-$(VERSION)
+SRC_PACKAGE_DIR=$(ARCHIVE_DIR)/koncepcja-$(VERSION)
 
 # Create a debian source package
 distrib: $(TARGET)
 	mkdir -p $(SRC_PACKAGE_DIR)
 	rm -fr $(SRC_PACKAGE_DIR)/*
 	cp -r src rom resources doc licenses debian $(SRC_PACKAGE_DIR)
-	cp main.cpp cap32.cfg.tmpl cap32.cfg makefile README.md INSTALL.md COPYING.txt $(SRC_PACKAGE_DIR)
-	tar jcf $(SRC_PACKAGE_DIR).tar.bz2 -C $(ARCHIVE_DIR) caprice32-$(VERSION)
-	ln -s caprice32-$(VERSION).tar.bz2 $(ARCHIVE_DIR)/caprice32_$(VERSION).orig.tar.bz2 || true
+	cp main.cpp koncepcja.cfg.tmpl koncepcja.cfg makefile README.md INSTALL.md COPYING.txt $(SRC_PACKAGE_DIR)
+	tar jcf $(SRC_PACKAGE_DIR).tar.bz2 -C $(ARCHIVE_DIR) koncepcja-$(VERSION)
+	ln -s koncepcja-$(VERSION).tar.bz2 $(ARCHIVE_DIR)/koncepcja_$(VERSION).orig.tar.bz2 || true
 
 endif  # ARCH =? macos
 
 install: $(TARGET)
 	install -D $(TARGET) $(DESTDIR)$(prefix)/bin/$(TARGET)
-	install -D $(GROFF_DOC) $(DESTDIR)$(prefix)/share/man/man6/cap32.6
-	if [ ! -f $(DESTDIR)/etc/cap32.cfg ]; then \
-		install -D -m664 cap32.cfg.tmpl $(DESTDIR)/etc/cap32.cfg; \
-		sed -i "s,__SHARE_PATH__,$(DESTDIR)$(prefix)/share/caprice32," $(DESTDIR)/etc/cap32.cfg; \
+	install -D $(GROFF_DOC) $(DESTDIR)$(prefix)/share/man/man6/koncepcja.6
+	if [ ! -f $(DESTDIR)/etc/koncepcja.cfg ]; then \
+		install -D -m664 koncepcja.cfg.tmpl $(DESTDIR)/etc/koncepcja.cfg; \
+		sed -i "s,__SHARE_PATH__,$(DESTDIR)$(prefix)/share/koncepcja," $(DESTDIR)/etc/koncepcja.cfg; \
 	fi
-	mkdir -p $(DESTDIR)$(prefix)/share/caprice32
-	cp -r resources rom $(DESTDIR)$(prefix)/share/caprice32
+	mkdir -p $(DESTDIR)$(prefix)/share/koncepcja
+	cp -r resources rom $(DESTDIR)$(prefix)/share/koncepcja
 
 endif
 
@@ -345,24 +346,24 @@ endif
 deb_pkg: all
 	# Both changelog files need to be patched with the proper version !
 	sed -i "1s/(.*)/($(VERSION)-$(REVISION))/" debian/changelog
-	sed -i "1s/(.*)/($(VERSION)-$(REVISION))/" $(ARCHIVE_DIR)/caprice32-$(VERSION)/debian/changelog
-	cd $(ARCHIVE_DIR)/caprice32-$(VERSION)/debian && debuild -e CXX -us -uc --lintian-opts --profile debian
+	sed -i "1s/(.*)/($(VERSION)-$(REVISION))/" $(ARCHIVE_DIR)/koncepcja-$(VERSION)/debian/changelog
+	cd $(ARCHIVE_DIR)/koncepcja-$(VERSION)/debian && debuild -e CXX -us -uc --lintian-opts --profile debian
 
-BUNDLE_DIR=release/cap32-macos-bundle/Caprice32.app
+BUNDLE_DIR=release/koncepcja-macos-bundle/konCePCja.app
 macos_bundle: all
 	rm -rf $(BUNDLE_DIR)
 	mkdir -p $(BUNDLE_DIR)/Contents/MacOS
 	mkdir -p $(BUNDLE_DIR)/Contents/Resources
-	install $(TARGET) $(BUNDLE_DIR)/Contents/MacOS/Caprice32
+	install $(TARGET) $(BUNDLE_DIR)/Contents/MacOS/$(TARGET)
 	install resources/Info.plist $(BUNDLE_DIR)/Contents/
-	install -m664 cap32.cfg.tmpl $(BUNDLE_DIR)/Contents/Resources/cap32.cfg
-	gsed -i "s,__SHARE_PATH__,../Resources," $(BUNDLE_DIR)/Contents/Resources/cap32.cfg
+	install -m664 koncepcja.cfg.tmpl $(BUNDLE_DIR)/Contents/Resources/koncepcja.cfg
+	gsed -i "s,__SHARE_PATH__,../Resources," $(BUNDLE_DIR)/Contents/Resources/koncepcja.cfg
 	cp -r resources rom $(BUNDLE_DIR)/Contents/Resources
 	mkdir -p $(BUNDLE_DIR)/Contents/Frameworks
 	# Copy shared libs. For some reason, it can happen that some are not found. Not sure why, let's just ignore it.
-	for lib in `otool -L $(BUNDLE_DIR)/Contents/MacOS/Caprice32 | grep ".dylib" | awk '{ print $$1 }'`; do echo "Copying '$$lib'"; cp "$$lib" $(BUNDLE_DIR)/Contents/Frameworks/; done || true
+	for lib in `otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep ".dylib" | awk '{ print $$1 }'`; do echo "Copying '$$lib'"; cp "$$lib" $(BUNDLE_DIR)/Contents/Frameworks/; done || true
 	# Retry hdiutil up to 3 times: it occasionally fails with "Resource Busy"
-	for i in 1 2 3; do hdiutil create -volname Caprice32-$(VERSION) -srcfolder $(BUNDLE_DIR) -ov -format UDZO release/cap32-macos-bundle/Caprice32.dmg && break || sleep 5; done
+	for i in 1 2 3; do hdiutil create -volname konCePCja-$(VERSION) -srcfolder $(BUNDLE_DIR) -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg && break || sleep 5; done
 
 clang-tidy:
 	if $(CLANG_TIDY) -checks=-*,$(CLANG_CHECKS) $(SOURCES) -header-filter=src/* -- $(COMMON_CFLAGS) | grep "."; then false; fi
@@ -379,6 +380,6 @@ doxygen:
 
 clean:
 	rm -rf obj/ release/ .pc/ doxygen/
-	rm -f test_runner test_runner.exe cap32 cap32.exe .debug tags
+	rm -f test_runner test_runner.exe koncepcja koncepcja.exe .debug tags
 
 -include $(DEPENDS) $(TEST_DEPENDS)

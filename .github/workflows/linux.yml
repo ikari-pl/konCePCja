@@ -29,8 +29,8 @@ jobs:
       #- run: make -j 3 deb_pkg VERSION=99.99.0 REVISION=1
 
       - run: make -j 3 clean
-      - run: make -j 3 APP_PATH=/tmp/cap32 DESTDIR=/tmp/cap32 install
-      - run: test/integrated/test_make_install.sh /tmp/cap32
+      - run: make -j 3 APP_PATH=/tmp/koncepcja DESTDIR=/tmp/koncepcja install
+      - run: test/integrated/test_make_install.sh /tmp/koncepcja
 
       # Linux build is responsible for pushing the latest tag.
       # MacOS & Windows build will create the release and upload artifacts to it

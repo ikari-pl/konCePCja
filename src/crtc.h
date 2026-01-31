@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2004 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify

@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SDL_DIR="$ROOT/vendor/SDL"
 PATCH_DIR="$ROOT/vendor/SDL/patches"
-PATCH_FILE="$PATCH_DIR/cap32-menu.patch"
+PATCH_FILE="$PATCH_DIR/koncepcja-menu.patch"
 
 if [ ! -d "$SDL_DIR" ]; then
   echo "SDL submodule not found at $SDL_DIR" >&2

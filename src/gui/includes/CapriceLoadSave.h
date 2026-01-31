@@ -1,4 +1,4 @@
-// 'Load/save' box for Caprice32
+// 'Load/save' box for konCePCja
 
 #ifndef _WG_CAPRICE32LOADSAVE_H_
 #define _WG_CAPRICE32LOADSAVE_H_

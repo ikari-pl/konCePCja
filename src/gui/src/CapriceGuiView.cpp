@@ -9,8 +9,8 @@ CapriceGuiView::CapriceGuiView(CApplication& application, SDL_Surface* surface, 
   m_menuFrame = new CapriceMenu(CRect(CPoint(m_pScreenSurface->w / 2 - 70, m_pScreenSurface->h / 2 - 110), 140, 240), this, m_pScreenSurface, nullptr);
 }
 
-// judb Show the Caprice32 emulation display, and our CCaGuiView (CView) on top of it.
-// The only CView object in Caprice32 is the first window you see when you activate the gui.
+// judb Show the konCePCja emulation display, and our CCaGuiView (CView) on top of it.
+// The only CView object in konCePCja is the first window you see when you activate the gui.
 void CapriceGuiView::PaintToSurface(SDL_Surface& ScreenSurface, SDL_Surface& FloatingSurface, const CPoint& Offset) const
 {
   if (m_bVisible)

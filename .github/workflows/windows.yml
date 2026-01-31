@@ -39,7 +39,7 @@ jobs:
       # This is awful but we have to pass the mingw{32,64}/include directory so that
       # zlib.h can be found because pkg-config doesn't return any cflags for
       # zlib.
-      - name: Build caprice
+      - name: Build konCePCja
         shell: msys2 {0}
         run: |
           make ARCH=${{matrix.arch}} CXX=g++ WINE=\"\" CFLAGS="-ID:/a/_temp/msys64/${{matrix.mingw}}/include/" debug -j 4 -k
@@ -56,9 +56,9 @@ jobs:
         with:
           name: latest
           tag_name: latest
-          message: Caprice32 latest
-          body: Latest build of Caprice 32, with the newest cool features and the most recent bugs.
-          files: release/cap32-${{matrix.arch}}.zip
+          message: konCePCja latest
+          body: Latest build of konCePCja, with the newest cool features and the most recent bugs.
+          files: release/koncepcja-${{matrix.arch}}.zip
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
@@ -71,9 +71,9 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          message: Caprice32 ${{ github.ref }}
-          body: Caprice32 ${{ github.ref }}. Release notes to be added manually.
-          files: release/cap32-${{matrix.arch}}.zip
+          message: konCePCja ${{ github.ref }}
+          body: konCePCja ${{ github.ref }}. Release notes to be added manually.
+          files: release/koncepcja-${{matrix.arch}}.zip
           fail_on_unmatched_files: true
           draft: false
           prerelease: false

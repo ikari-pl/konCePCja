@@ -29,11 +29,11 @@ jobs:
         with:
           name: latest
           tag_name: latest
-          message: Caprice32 latest
-          body: Latest build of Caprice 32, with the newest cool features and the most recent bugs.
+          message: konCePCja latest
+          body: Latest build of konCePCja, with the newest cool features and the most recent bugs.
           files: |
-            release/cap32-macos-bundle/Caprice32.dmg
-            release/cap32-macos.zip
+            release/koncepcja-macos-bundle/konCePCja.dmg
+            release/koncepcja-macos.zip
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
@@ -46,11 +46,11 @@ jobs:
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          message: Caprice32 ${{ github.ref }}
-          body: Caprice32 ${{ github.ref }}. Release notes to be added manually.
+          message: konCePCja ${{ github.ref }}
+          body: konCePCja ${{ github.ref }}. Release notes to be added manually.
           files: |
-            release/cap32-macos-bundle/Caprice32.dmg
-            release/cap32-macos.zip
+            release/koncepcja-macos-bundle/konCePCja.dmg
+            release/koncepcja-macos.zip
           fail_on_unmatched_files: true
           draft: false
           prerelease: false

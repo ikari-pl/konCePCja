@@ -1,4 +1,4 @@
-// 'DevTools' window for Caprice32
+// 'DevTools' window for konCePCja
 
 #include <algorithm>
 #include <iomanip>

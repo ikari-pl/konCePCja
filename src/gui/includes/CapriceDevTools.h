@@ -1,4 +1,4 @@
-// 'DevTools' window for Caprice32
+// 'DevTools' window for konCePCja
 
 #ifndef _WG_CAPRICE32DEVTOOLS_H_
 #define _WG_CAPRICE32DEVTOOLS_H_

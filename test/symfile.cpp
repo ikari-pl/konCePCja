@@ -19,7 +19,7 @@ class SymfileTest : public testing::Test
   protected:
     std::string createTmpFile()
     {
-      char tmpFilename[] = "test/.cap32_tmp_XXXXXX";
+      char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
       int fd = mkstemp(tmpFilename);
       if (fd <= 0) return "";
       close(fd);

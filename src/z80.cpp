@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2004 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -22,7 +22,7 @@
    code portions and ideas taken from the Z80 emulations by:
     Juergen Buchmueller (MAME Z80 core v3.3)
     Marat Fayzullin
-    and my own Z80 x86 assembly code (Caprice32 up to version 2.00b2)
+    and my own Z80 x86 assembly code (konCePCja up to version 2.00b2)
 */
 
 #include "cap32.h"
@@ -3011,7 +3011,7 @@ void z80_execute_pfx_fdcb_instruction()
    }
 }
 
-// --- Kaprys debug helpers ---
+// --- konCePCja debug helpers ---
 void z80_add_breakpoint(word addr) {
   if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b){ return b.address == addr; })) {
     breakpoints.emplace_back(addr, NORMAL);

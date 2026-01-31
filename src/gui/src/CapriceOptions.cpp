@@ -1,4 +1,4 @@
-// 'Options' window for Caprice32
+// 'Options' window for konCePCja
 // Inherited from CFrame
 
 #include <map>
@@ -477,7 +477,7 @@ void CapriceOptions::EnableTab(std::string sTabName) {
 }
 
 
-// Reinitialize parts of Caprice32 depending on options that have changed.
+// Reinitialize parts of konCePCja depending on options that have changed.
 bool CapriceOptions::ProcessOptionChanges(t_CPC& CPC, bool saveChanges) {
     // if one of the following options has changed, re-init the CPC emulation :
     //  - CPC Model

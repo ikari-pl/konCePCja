@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
 
    The ASIC of the Plus range replaces multiple parts of the old CPC and
    provides new additional features.

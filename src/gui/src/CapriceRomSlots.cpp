@@ -1,4 +1,4 @@
-// Caprice32 ROM slot selection window
+// konCePCja ROM slot selection window
 // Inherited from CFrame
 
 #include <dirent.h>
@@ -90,7 +90,7 @@ bool CapriceRomSlots::HandleMessage(CMessage* pMessage)
 	return bHandled;
 }
 
-// Reads the existing ROM filenames (in roms subdirectory defined in cap32.cfg)
+// Reads the existing ROM filenames (in roms subdirectory defined in koncepcja.cfg)
 std::vector<std::string> CapriceRomSlots::getAvailableRoms() {
    // CPC.rom_path contains the ROM path, e.g. ./rom:
    return listDirectory(CPC.rom_path);

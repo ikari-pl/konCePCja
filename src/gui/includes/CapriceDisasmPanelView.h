@@ -1,4 +1,4 @@
-// Disassembly panel view for Caprice32
+// Disassembly panel view for konCePCja
 #ifndef _WG_CAPRICEDISASMPANELVIEW_H
 #define _WG_CAPRICEDISASMPANELVIEW_H
 

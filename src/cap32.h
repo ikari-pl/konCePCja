@@ -1,4 +1,4 @@
-/* Caprice32 - Amstrad CPC Emulator
+/* konCePCja - Amstrad CPC Emulator
    (c) Copyright 1997-2005 Ulrich Doewich
 
    This program is free software; you can redistribute it and/or modify
@@ -446,11 +446,11 @@ void cleanExit(int returnCode, bool askIfUnsaved = true);
 
 // Return the path to the best (i.e: most specific) configuration file.
 // Priority order is:
-//  - cap32.cfg in the same directory as cap32 binary
-//  - $XDG_CONFIG_HOME/cap32.cfg
-//  - $HOME/.config/cap32.cfg
-//  - $HOME/.cap32.cfg
-//  - /etc/cap32.cfg
+//  - koncepcja.cfg in the same directory as koncepcja binary
+//  - $XDG_CONFIG_HOME/koncepcja.cfg
+//  - $HOME/.config/koncepcja.cfg
+//  - $HOME/.koncepcja.cfg
+//  - /etc/koncepcja.cfg
 std::string getConfigurationFilename(bool forWrite = false);
 void loadConfiguration (t_CPC &CPC, const std::string& configFilename);
 bool saveConfiguration (t_CPC &CPC, const std::string& configFilename);

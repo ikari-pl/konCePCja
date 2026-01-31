@@ -361,7 +361,7 @@ void CApplication::Init()
 {
 	MessageServer()->RegisterMessageClient(this, CMessage::APP_EXIT, CMessageServer::PRIORITY_LAST);
 
-	// judb removed references to wgui.conf; for caprice32 we may integrate these settings in cap32.cfg:
+	// judb removed references to wgui.conf; for konCePCja we may integrate these settings in koncepcja.cfg:
 	std::string fontPath;
 	const std::string menlo = "/System/Library/Fonts/Menlo.ttc";
 	const std::string menloSupplemental = "/System/Library/Fonts/Supplemental/Menlo.ttc";
