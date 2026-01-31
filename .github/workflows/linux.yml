@@ -4,9 +4,8 @@ on:
   push:
     branches:
       - '**'
-    tags:
-      - 'latest'
-      - 'v*'
+  release:
+    types: [published]
 
 jobs:
   linux-build:
@@ -41,41 +40,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.LATEST_TOKEN }}
 
-      # Build source package for tagged releases
+      # Build source package for release
       - name: Build source package
-        if: startsWith(github.ref, 'refs/tags/')
-        run: make -j 3 distrib VERSION=${{ github.ref_name }}
+        run: make -j 3 distrib VERSION=${{ github.event.release.tag_name }}
 
-      - name: Publish latest
+      - name: Upload assets to release
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/tags/latest'
         with:
-          name: latest
-          tag_name: latest
-          message: konCePCja latest
-          body: Latest build of konCePCja (Linux source package).
+          name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ github.event.release.tag_name }}
+          message: konCePCja ${{ github.event.release.tag_name }}
+          body: konCePCja ${{ github.event.release.tag_name }} (Linux source package). Release notes to be added manually.
           files: |
-            release/koncepcja-${{ github.ref_name }}.tar.bz2
-            release/koncepcja_${{ github.ref_name }}.orig.tar.bz2
+            release/koncepcja-${{ github.event.release.tag_name }}.tar.bz2
+            release/koncepcja_${{ github.event.release.tag_name }}.orig.tar.bz2
           fail_on_unmatched_files: true
           draft: false
           prerelease: false
           make_latest: true
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
-        with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          message: konCePCja ${{ github.ref }}
-          body: konCePCja ${{ github.ref }} (Linux source package). Release notes to be added manually.
-          files: |
-            release/koncepcja-${{ github.ref_name }}.tar.bz2
-            release/koncepcja_${{ github.ref_name }}.orig.tar.bz2
-          fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: false
           token: ${{ secrets.GITHUB_TOKEN }}

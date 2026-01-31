@@ -1,12 +1,8 @@
 name: Windows build
 
 on:
-  push:
-    tags:
-      - 'latest'
-      - 'v*'
-    branches-ignore:
-      - master
+  release:
+    types: [published]
 
 jobs:
   build:
@@ -52,7 +48,7 @@ jobs:
 
       - name: Publish latest
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/tags/latest'
+        if: github.event.release.tag_name == 'latest'
         with:
           name: latest
           tag_name: latest
@@ -67,12 +63,12 @@ jobs:
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.event.release.tag_name, 'v')
         with:
-          name: ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          message: konCePCja ${{ github.ref }}
-          body: konCePCja ${{ github.ref }}. Release notes to be added manually.
+          name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ github.event.release.tag_name }}
+          message: konCePCja ${{ github.event.release.tag_name }}
+          body: konCePCja ${{ github.event.release.tag_name }}. Release notes to be added manually.
           files: release/koncepcja-${{matrix.arch}}.zip
           fail_on_unmatched_files: true
           draft: false
