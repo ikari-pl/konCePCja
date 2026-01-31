@@ -20,7 +20,11 @@ jobs:
         with:
           submodules: true
       - run: sudo apt-get update
-      - run: sudo apt-get install pkg-config cmake libfreetype6-dev zlib1g-dev libpng-dev devscripts libgl-dev
+      - run: >-
+          sudo apt-get install pkg-config cmake libfreetype6-dev zlib1g-dev libpng-dev devscripts
+          libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev
+          libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev
+          libwayland-dev libxkbcommon-dev libdrm-dev libgbm-dev libdecor-0-dev
 
       - name: Build vendored SDL3
         run: |
