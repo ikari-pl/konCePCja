@@ -99,7 +99,7 @@ Set your proxy variables (if necessary) and clone the caprice repository.
 export HTTP_PROXY="http://proxy.company.com:9999"
 export HTTPS_PROXY=$HTTP_PROXY
 
-git clone https://github.com/ikari/konCePCja.git
+git clone https://github.com/ikari-pl/konCePCja.git
 cd koncepcja
 ```
 
@@ -180,7 +180,7 @@ Install git.
 
 Clone the koncepcja repository.
 
-`git clone https://github.com/ikari/konCePCja.git`
+`git clone https://github.com/ikari-pl/konCePCja.git`
 
 Install the 64 bit gcc compiler.
 

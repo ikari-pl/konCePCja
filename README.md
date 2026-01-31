@@ -8,16 +8,16 @@
 
 (c) 2026 Cezar "ikari" Pokorski
 
-https://github.com/ikari/konCePCja
+https://github.com/ikari-pl/konCePCja
 
 Linux build: 
-![Linux build Status](https://github.com/ikari/konCePCja/actions/workflows/linux.yml/badge.svg?branch=latest)
+![Linux build Status](https://github.com/ikari-pl/konCePCja/actions/workflows/linux.yml/badge.svg?branch=latest)
 
 Windows build:
-![Windows build Status](https://github.com/ikari/konCePCja/actions/workflows/windows.yml/badge.svg?branch=latest)
+![Windows build Status](https://github.com/ikari-pl/konCePCja/actions/workflows/windows.yml/badge.svg?branch=latest)
 
 MacOS build:
-![MacOS build status](https://github.com/ikari/konCePCja/actions/workflows/macos.yml/badge.svg?branch=latest)
+![MacOS build status](https://github.com/ikari-pl/konCePCja/actions/workflows/macos.yml/badge.svg?branch=latest)
 
 # What is it ?
 
@@ -69,7 +69,7 @@ documented behavior, use `APP_PATH` like in the examples below.
 ### From Git
 
 ```
-git clone https://github.com/ikari/konCePCja.git
+git clone https://github.com/ikari-pl/konCePCja.git
 cd konCePCja
 make APP_PATH="$PWD"
 ./koncepcja
@@ -77,7 +77,7 @@ make APP_PATH="$PWD"
 
 ### From releases
 
-Download a release from https://github.com/ikari/konCePCja/releases.
+Download a release from https://github.com/ikari-pl/konCePCja/releases.
 Decompress it and then from a terminal in the resulting directory:
 
 ```
@@ -90,12 +90,12 @@ A SNAP (maintained by a third party) is available at https://snapcraft.io/konCeP
 
 ## Windows
 
-Download a release from https://github.com/ikari/konCePCja/releases.
+Download a release from https://github.com/ikari-pl/konCePCja/releases.
 Decompress it and double click on koncepcja.exe
 
 # Basic usage
 
-See the [manual page](http://htmlpreview.github.io/?https://github.com/ikari/konCePCja/blob/master/doc/man.html) for more details. If you are really lost, you can simply invoke the emulator without any argument, then press F1 to get the in-emulator menu.
+See the [manual page](http://htmlpreview.github.io/?https://github.com/ikari-pl/konCePCja/blob/master/doc/man.html) for more details. If you are really lost, you can simply invoke the emulator without any argument, then press F1 to get the in-emulator menu.
 
 # Help needed
 
