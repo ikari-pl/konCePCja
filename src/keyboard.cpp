@@ -1563,11 +1563,11 @@ std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
         // key.key.keysym.unicode = c;
       }
       key.type = SDL_EVENT_KEY_DOWN;
-      
+      key.key.down = true;
       result.push_back(key);
 
       key.type = SDL_EVENT_KEY_UP;
-      
+      key.key.down = false;
       result.push_back(key);
     }
     return result;
