@@ -26,7 +26,7 @@ class CapriceDevToolsTest : public testing::Test {
       CPC.resources_path = "resources";
       app.Init();
       CRect rect;
-      surface = SDL_CreateRGBSurface(/*flags=*/0,/*width=*/10,/*height=*/10,/*depth=*/32,0,0,0,0);
+      surface = SDL_CreateSurface(10, 10, SDL_PIXELFORMAT_RGBA32);
       view = new CView(app, surface, surface, rect);
       cdt = new CapriceDevTools(rect, /*pParent=*/view, /*pFontEngine=*/nullptr, /*devtools=*/nullptr);
     }
@@ -34,7 +34,7 @@ class CapriceDevToolsTest : public testing::Test {
     void TearDown() {
       delete cdt;
       delete view;
-      SDL_FreeSurface(surface);
+      SDL_DestroySurface(surface);
     }
 
   protected:
