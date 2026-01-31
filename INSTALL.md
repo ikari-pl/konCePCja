@@ -24,8 +24,8 @@ Clone and build:
 ```
 git clone --recurse-submodules https://github.com/ikari-pl/konCePCja.git
 cd konCePCja
-cd vendor/SDL && cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF && cmake --build build -j$(nproc) && cd ../..
-PKG_CONFIG_PATH=vendor/SDL/build make APP_PATH="$PWD" -j$(nproc)
+cd vendor/SDL && cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/install && cmake --build build -j$(nproc) && cmake --install build && cd ../..
+PKG_CONFIG_PATH=vendor/SDL/install/lib/pkgconfig LD_LIBRARY_PATH=vendor/SDL/install/lib make APP_PATH="$PWD" -j$(nproc)
 ./koncepcja
 ```
 
@@ -65,7 +65,7 @@ Clone and build:
 ```
 git clone --recurse-submodules https://github.com/ikari-pl/konCePCja.git
 cd konCePCja
-cd vendor/SDL && cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF && cmake --build build -j$(sysctl -n hw.ncpu) && cd ../..
+cd vendor/SDL && cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/install && cmake --build build -j$(sysctl -n hw.ncpu) && cmake --install build && cd ../..
 make ARCH=macos APP_PATH="$PWD" -j$(sysctl -n hw.ncpu)
 ./koncepcja
 ```
@@ -101,8 +101,8 @@ For 32-bit (i686), SDL3 must be built from source as there is no MSYS2 package:
 # In a MINGW32 shell
 pacman -S mingw-w64-i686-gcc mingw-w64-i686-cmake mingw-w64-i686-freetype \
   mingw-w64-i686-libpng mingw-w64-i686-zlib mingw-w64-i686-pkg-config
-cd vendor/SDL && cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF && cmake --build build -j4 && cd ../..
-PKG_CONFIG_PATH=vendor/SDL/build make ARCH=win32 -j4
+cd vendor/SDL && cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/install && cmake --build build -j4 && cmake --install build && cd ../..
+PKG_CONFIG_PATH=vendor/SDL/install/lib/pkgconfig make ARCH=win32 -j4
 ```
 
 # IPF disk image support
