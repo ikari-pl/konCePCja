@@ -23,6 +23,15 @@ MacOS build:
 
 konCePCja is a software emulator of the Amstrad CPC 8-bit home computer series running on Linux, macOS and Windows. The emulator faithfully imitates the CPC464, CPC664, and CPC6128 models. By recreating the operations of all hardware components at a low level, the emulator achieves a high degree of compatibility with original CPC software. These programs or games can be run unmodified at real-time or higher speeds, depending on the emulator host environment.
 
+# Changes vs Caprice32
+
+konCePCja is a fork of Caprice32 with modernized tooling and UI integration.
+Key differences so far:
+  * SDL3 migration + macOS menu integration
+  * Project rename, bundle ID, and updated defaults/paths
+  * PNG logo + macOS icns icon
+  * Ongoing work on IPC/debug hooks for automation
+
 # Features
 
 konCePCja provides:
@@ -61,7 +70,7 @@ documented behavior, use `APP_PATH` like in the examples below.
 
 ```
 git clone https://github.com/ikari/konCePCja.git
-cd koncepcja
+cd konCePCja
 make APP_PATH="$PWD"
 ./koncepcja
 ```
@@ -72,7 +81,6 @@ Download a release from https://github.com/ikari/konCePCja/releases.
 Decompress it and then from a terminal in the resulting directory:
 
 ```
-make APP_PATH="$PWD"
 ./koncepcja
 ```
 
@@ -99,12 +107,6 @@ You can:
   * Write some documentation
   * Package it for your favourite distribution (if not yet available)
   * Port it to iOS so that Mac users can enjoy it too
-
-# Supporting
-
-You can support me on Liberapay:
-
-[<img alt="Donate using Liberapay" src="https://liberapay.com/assets/widgets/donate.svg">](https://liberapay.com/ColinPitrat/donate)
 
 # Building and compiling
 
