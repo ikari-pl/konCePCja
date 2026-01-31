@@ -4,8 +4,9 @@ on:
   push:
     branches:
       - '**'
-    tags-ignore:
-      - latest
+    tags:
+      - 'latest'
+      - 'v*'
 
 jobs:
   linux-build:
@@ -32,36 +33,49 @@ jobs:
       - run: make -j 3 APP_PATH=/tmp/koncepcja DESTDIR=/tmp/koncepcja install
       - run: test/integrated/test_make_install.sh /tmp/koncepcja
 
-      # Linux build is responsible for pushing the latest tag.
-      # MacOS & Windows build will create the release and upload artifacts to it
-      # when they'll be called to build the tag itself.
-      #
-      # We have to use a dedicated access token because events raised by workflows
-      # using GITHUB_TOKEN do not trigger other workflows:
-      # https://help.github.com/en/actions/automating-your-workflow-with-github-actions/events-that-trigger-workflows#about-workflow-events
-      # To create the token, see:
-      # https://docs.github.com/en/github/authenticating-to-github/creating-a-personal-access-token
-      # And then to create the secret containing it, see:
-      # https://docs.github.com/en/actions/reference/encrypted-secrets#creating-encrypted-secrets-for-a-repository
-      #
-      ## Unfortunately we have to delete the release as otherwise draft releases pile-up.
-      ## I really don't like it because this means the latest release disappears on each push on master.
-      #- if: github.ref_name == 'master'
-      #  uses: dev-drprasad/delete-tag-and-release@v1.1
-      #  with:
-      #    delete_release: true
-      #    tag_name: "latest"
-      #  env:
-      #    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      ## This one requires the tag to be deleted before creating it
-      #- uses: tvdias/github-tagger@v0.0.1
-      #  if: github.ref_name == 'master'
-      #  with:
-      #    tag: latest
-      #    repo-token: ${{ secrets.LATEST_TOKEN }}
+      # Linux build updates the "latest" tag on master
       - uses: richardsimko/update-tag@v1
         if: github.ref_name == 'master'
         with:
           tag_name: latest
         env:
           GITHUB_TOKEN: ${{ secrets.LATEST_TOKEN }}
+
+      # Build source package for tagged releases
+      - name: Build source package
+        if: startsWith(github.ref, 'refs/tags/')
+        run: make -j 3 distrib VERSION=${{ github.ref_name }}
+
+      - name: Publish latest
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/tags/latest'
+        with:
+          name: latest
+          tag_name: latest
+          message: konCePCja latest
+          body: Latest build of konCePCja (Linux source package).
+          files: |
+            release/koncepcja-${{ github.ref_name }}.tar.bz2
+            release/koncepcja_${{ github.ref_name }}.orig.tar.bz2
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          make_latest: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          message: konCePCja ${{ github.ref }}
+          body: konCePCja ${{ github.ref }} (Linux source package). Release notes to be added manually.
+          files: |
+            release/koncepcja-${{ github.ref_name }}.tar.bz2
+            release/koncepcja_${{ github.ref_name }}.orig.tar.bz2
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
+          make_latest: false
+          token: ${{ secrets.GITHUB_TOKEN }}
