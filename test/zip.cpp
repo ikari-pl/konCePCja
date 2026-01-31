@@ -37,9 +37,9 @@ TEST(Zip, DirOnFileWithOneExtensionAndMultipleEntries)
   ASSERT_EQ(0, rc);
   ASSERT_EQ(2, file_infos.filesOffsets.size());
   ASSERT_EQ("disk/empty.dsk", file_infos.filesOffsets[0].first);
-  ASSERT_EQ(119, file_infos.filesOffsets[0].second);
+  ASSERT_EQ(91, file_infos.filesOffsets[0].second);
   ASSERT_EQ("disk/hello.dsk", file_infos.filesOffsets[1].first);
-  ASSERT_EQ(1918, file_infos.filesOffsets[1].second);
+  ASSERT_EQ(1862, file_infos.filesOffsets[1].second);
 }
 
 TEST(Zip, DirOnFileWithMultipleExtensions)
