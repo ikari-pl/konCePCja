@@ -7,6 +7,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
          - { version: MINGW32, mingw: mingw32, arch: win32, env: i686,   ipf_win_file: ipflib42_w32.zip,     ipf_dll: ipflib42_w32/CAPSImg.dll, ipf_license: ipflib42_w32/LICENSE.txt, sdl_from_source: true }
@@ -45,7 +46,7 @@ jobs:
         shell: msys2 {0}
         run: |
           cd vendor/SDL
-          cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/install
+          cmake -B build -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_OPENGLES=OFF -DCMAKE_INSTALL_PREFIX=$(pwd)/install
           cmake --build build -j 4
           cmake --install build
 
