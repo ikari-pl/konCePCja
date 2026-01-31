@@ -5,6 +5,8 @@
 
 (c) Copyright 2016-2025 Colin Pitrat
 
+(c) 2026 Cezar "ikari" Pokorski
+
 https://github.com/ikari/konCePCja
 
 Linux build: [![Linux build Status](https://github.com/ikari/konCePCja/actions/workflows/linux.yml/badge.svg?branch=master)](https://github.com/ikari/konCePCja/actions/workflows/linux.yml)
