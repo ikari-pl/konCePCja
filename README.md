@@ -9,7 +9,7 @@
 
 https://github.com/ikari/konCePCja
 
-Linux build: [![Linux build Status](https://github.com/ikari/konCePCja/actions/workflows/linux.yml/badge.svg?branch=master)](https://github.com/ikari/konCePCja/actions/workflows/linux.yml)
+Linux build: [![Linux build Status](https://github.com/ikari/konCePCja/actions/workflows/linux.yml/badge.svg?branch=latest)](https://github.com/ikari/konCePCja/actions/workflows/linux.yml)
 
 Windows build: [![Windows build Status](https://github.com/ikari/konCePCja/actions/workflows/windows.yml/badge.svg?branch=latest)](https://github.com/ikari/konCePCja/actions/workflows/windows.yml)
 
