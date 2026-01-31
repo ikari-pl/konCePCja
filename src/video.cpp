@@ -249,10 +249,11 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
   SDL_CreateWindowAndRenderer("konCePCja", width, height, (fs?SDL_WINDOW_FULLSCREEN:0) | SDL_WINDOW_OPENGL, &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   if (fs) {
-    SDL_DisplayMode display;
-    SDL_GetCurrentDisplayMode(0, &display);
-    width = display.w;
-    height = display.h;
+    const SDL_DisplayMode *display = SDL_GetCurrentDisplayMode(SDL_GetPrimaryDisplay());
+    if (display) {
+      width = display->w;
+      height = display->h;
+    }
   }
   vid = SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;

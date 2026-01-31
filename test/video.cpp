@@ -57,7 +57,7 @@ class ComputeRectsTest : public testing::Test {
 
     SDL_Surface* CreateSurface(int width, int height) {
       // BPP shouldn't influence this method. Anyway, it is currently called only by filters that support only 16bpp.
-      return SDL_CreateRGBSurface(SDL_SWSURFACE, width, height, 16, 0, 0, 0, 0);
+      return SDL_CreateSurface(width, height, SDL_PIXELFORMAT_RGB565);
     }
 
     SDL_Rect src, dst;
