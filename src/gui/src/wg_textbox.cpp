@@ -49,7 +49,7 @@ CTextBox::CTextBox(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFont
 	m_bDrawCursor(true),
 	m_bScrollToCursor(false)
 {
-	m_BackgroundColor = COLOR_WHITE;
+	m_BackgroundColor = COLOR_DARKGRAY;
 	m_ClientRect = CRect(3, 3, m_WindowRect.Width() - 17, m_WindowRect.Height() - 17);
 	if (pFontEngine)
 	{
@@ -98,7 +98,7 @@ CTextBox::~CTextBox()  // virtual
 
 void CTextBox::SetReadOnly(bool bReadOnly)  // virtual
 {
-	m_BackgroundColor = bReadOnly ? COLOR_LIGHTGRAY : COLOR_WHITE;
+	m_BackgroundColor = bReadOnly ? COLOR_DARKGRAY : COLOR_DARKGRAY;
 	m_bReadOnly = bReadOnly;
 	Draw();
 }

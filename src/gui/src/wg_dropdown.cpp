@@ -43,7 +43,7 @@ CDropDown::CDropDown(const CRect& WindowRect, CWindow* pParent, bool bAllowEdit,
   {
     m_pEditBox->SetReadOnly(true);
     // Override the normal read-only BG color
-    m_pEditBox->SetBackgroundColor(COLOR_WHITE);
+    m_pEditBox->SetBackgroundColor(COLOR_DARKGRAY);
   }
 
   m_pListBox = new CListBox(CRect(0, m_WindowRect.Height(), m_WindowRect.Width(), m_WindowRect.Height() + iItemHeight * m_iItemCount + 2),

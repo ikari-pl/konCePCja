@@ -138,10 +138,10 @@ void CPainter::Draw3DRaisedRect(const CRect& Rect, const CRGBColor& Color)
 		RealRect = Rect + m_pWindow->GetClientRect().TopLeft();
 		RealRect.ClipTo(m_pWindow->GetClientRect());
 	}
-	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Top(), Color * 1.6);
-	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Left(), Color * 1.6);
-	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Right(), Color * 0.3);
-	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Bottom(), Color * 0.3);
+	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Top(), Color * 1.15);
+	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Left(), Color * 1.15);
+	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Right(), Color * 0.85);
+	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Bottom(), Color * 0.85);
 }
 
 // judb draw a 'lowered button' border based on the given color
@@ -152,10 +152,10 @@ void CPainter::Draw3DLoweredRect(const CRect& Rect, const CRGBColor& Color)
 		RealRect = Rect + m_pWindow->GetClientRect().TopLeft();
 		RealRect.ClipTo(m_pWindow->GetClientRect());
 	}
-	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Top(), Color * 0.3);
-	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Bottom(), Color * 1.6);
-	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Left(), Color * 0.3);
-	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Right(), Color * 1.6);
+	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Top(), Color * 0.85);
+	DrawHLine(RealRect.Left(), RealRect.Right(), RealRect.Bottom(), Color * 1.15);
+	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Left(), Color * 0.85);
+	DrawVLine(RealRect.Top(), RealRect.Bottom(), RealRect.Right(), Color * 1.15);
 }
 
 

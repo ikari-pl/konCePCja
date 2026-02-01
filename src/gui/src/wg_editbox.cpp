@@ -47,7 +47,7 @@ CEditBox::CEditBox(const CRect& WindowRect, CWindow* pParent, CFontEngine* pFont
   m_contentType(ANY),
 	m_bDrawCursor(true)
 {
-	m_BackgroundColor = COLOR_WHITE;
+	m_BackgroundColor = COLOR_DARKGRAY;
 	m_ClientRect.Grow(-4);
 	if (pFontEngine)
 	{
@@ -83,7 +83,7 @@ CEditBox::~CEditBox()  // virtual
 
 void CEditBox::SetReadOnly(bool bReadOnly)
 {
-	m_BackgroundColor = bReadOnly ? COLOR_LIGHTGRAY : COLOR_WHITE;
+	m_BackgroundColor = bReadOnly ? COLOR_DARKGRAY : COLOR_DARKGRAY;
 	m_bReadOnly = bReadOnly;
   SetIsFocusable(!bReadOnly);
 	Draw();
@@ -187,7 +187,7 @@ void CEditBox::Draw() const
 			m_pRenderedString->SetMaskChar(' ');
 		}
 
-		CRGBColor FontColor = m_bReadOnly ? DEFAULT_DISABLED_LINE_COLOR : COLOR_BLACK;
+		CRGBColor FontColor = m_bReadOnly ? COLOR_GRAY : DEFAULT_TEXT_COLOR;
 		if (Application().GetKeyFocus() == dynamic_cast<const CWindow*>(this) && !m_bReadOnly)
 		{
 			CPoint BoundedDims;

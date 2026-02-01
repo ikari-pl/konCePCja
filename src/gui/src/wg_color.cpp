@@ -190,16 +190,16 @@ CRGBColor CRGBColor::MixNormal(const CRGBColor& c) const
 	return CRGBColor(new_red, new_green, new_blue, alpha);
 }
 
-// standard
-CRGBColor DEFAULT_BACKGROUND_COLOR = CRGBColor(0xC0, 0xC0, 0xCA);
-CRGBColor DEFAULT_FOREGROUND_COLOR = CRGBColor(0x90, 0x90, 0x90);
-CRGBColor DEFAULT_LINE_COLOR = CRGBColor(0xC0, 0xC0, 0xC0);
-CRGBColor DEFAULT_DISABLED_LINE_COLOR = CRGBColor(0x80, 0x80, 0x80);
+// standard — dark flat theme
+CRGBColor DEFAULT_BACKGROUND_COLOR = CRGBColor(0x1A, 0x1A, 0x1E);
+CRGBColor DEFAULT_FOREGROUND_COLOR = CRGBColor(0x55, 0x55, 0x5C);
+CRGBColor DEFAULT_LINE_COLOR = CRGBColor(0x78, 0x78, 0x82);
+CRGBColor DEFAULT_DISABLED_LINE_COLOR = CRGBColor(0x6A, 0x6A, 0x72);
 CRGBColor COLOR_TRANSPARENT = CRGBColor(0x00, 0x00, 0x00, 0x00);
 CRGBColor COLOR_WHITE = CRGBColor(0xFF, 0xFF, 0xFF);
-CRGBColor COLOR_LIGHTGRAY = CRGBColor(0xC0, 0xC0, 0xC0);
-CRGBColor COLOR_GRAY = CRGBColor(0x80, 0x80, 0x80);
-CRGBColor COLOR_DARKGRAY = CRGBColor(0x40, 0x40, 0x40);
+CRGBColor COLOR_LIGHTGRAY = CRGBColor(0x30, 0x30, 0x36);
+CRGBColor COLOR_GRAY = CRGBColor(0x88, 0x88, 0x90);
+CRGBColor COLOR_DARKGRAY = CRGBColor(0x10, 0x10, 0x14);
 CRGBColor COLOR_BLACK = CRGBColor(0x00, 0x00, 0x00);
 CRGBColor COLOR_BLUE = CRGBColor(0x00, 0x00, 0xFF);
 CRGBColor COLOR_DARKBLUE = CRGBColor(0x00, 0x00, 0x80);
@@ -212,15 +212,15 @@ CRGBColor COLOR_CYAN = CRGBColor(0x00, 0xFF, 0xFF);
 CRGBColor COLOR_MAGENTA = CRGBColor(0xFF, 0x00, 0xFF);
 CRGBColor COLOR_DARKMAGENTA = CRGBColor(0x80, 0x00, 0x80);
 
-// judb 
-CRGBColor DEFAULT_TITLEBAR_COLOR = CRGBColor(0xA6, 0xAD, 0xD0);  // caption bar for CFrames
-CRGBColor DEFAULT_TITLEBAR_TEXT_COLOR = CRGBColor(0x30, 0x38, 0x63); // text in titlebar
-CRGBColor DEFAULT_BUTTON_COLOR = CRGBColor(0xC0, 0xC0, 0xCA); // (picture) buttons, scrollbar and dropdown buttons.
-CRGBColor DEFAULT_TEXT_COLOR = CRGBColor(0x00, 0x00, 0x00); // text in labels, buttons...
-CRGBColor ALTERNATE_TEXT_COLOR = CRGBColor(0x30, 0x38, 0x63); // a 2nd color for example text on groupboxes...
-CRGBColor DEFAULT_CHECKBOX_COLOR = CRGBColor(0x40, 0x48, 0x73); // checkbox and radiobutton color
-CRGBColor DEFAULT_CHECKBOX_BACK_COLOR = CRGBColor(0xFF, 0xFF, 0xFF); // checkbox and radiobutton background color
-CRGBColor DEFAULT_SELECTION_COLOR = CRGBColor(0xA6, 0xAD, 0xD0);
+// judb — dark flat theme
+CRGBColor DEFAULT_TITLEBAR_COLOR = CRGBColor(0x8A, 0x6A, 0x10);  // warm amber
+CRGBColor DEFAULT_TITLEBAR_TEXT_COLOR = CRGBColor(0x10, 0x10, 0x10);
+CRGBColor DEFAULT_BUTTON_COLOR = CRGBColor(0x30, 0x30, 0x36);
+CRGBColor DEFAULT_TEXT_COLOR = CRGBColor(0xF0, 0xF0, 0xF0);
+CRGBColor ALTERNATE_TEXT_COLOR = CRGBColor(0xA0, 0xB8, 0xFF);
+CRGBColor DEFAULT_CHECKBOX_COLOR = CRGBColor(0x3D, 0x5A, 0xFE);
+CRGBColor DEFAULT_CHECKBOX_BACK_COLOR = CRGBColor(0x25, 0x25, 0x28);
+CRGBColor DEFAULT_SELECTION_COLOR = CRGBColor(0x3D, 0x5A, 0xFE);
 
 
 }
