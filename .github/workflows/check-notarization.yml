@@ -1,0 +1,32 @@
+name: Check notarization status
+
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: 'Submission ID (leave empty to list recent)'
+        required: false
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - name: Check notarization status
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          if [ -z "${{ inputs.submission_id }}" ]; then
+            echo "Recent submissions:"
+            xcrun notarytool history \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD"
+          else
+            echo "Checking ${{ inputs.submission_id }}..."
+            xcrun notarytool info "${{ inputs.submission_id }}" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD"
+          fi

@@ -21,6 +21,7 @@ jobs:
         with:
           msystem: ${{ matrix.version }}
           update: true
+          cache: true
           install: >-
             ctags
             gcc
@@ -41,8 +42,16 @@ jobs:
         shell: msys2 {0}
         run: pacman -S --noconfirm ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-sdl3
 
-      - name: Build SDL3 from source
+      - name: Cache vendored SDL3 (win32)
         if: ${{ matrix.sdl_from_source }}
+        id: cache-sdl
+        uses: actions/cache@v4
+        with:
+          path: vendor/SDL/install
+          key: sdl3-${{ matrix.arch }}-${{ hashFiles('vendor/SDL/**/*.c', 'vendor/SDL/**/*.h', 'vendor/SDL/CMakeLists.txt') }}
+
+      - name: Build SDL3 from source
+        if: ${{ matrix.sdl_from_source && steps.cache-sdl.outputs.cache-hit != 'true' }}
         shell: msys2 {0}
         run: |
           cd vendor/SDL
@@ -72,28 +81,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.event.release.tag_name == 'latest'
         with:
-          name: latest
-          tag_name: latest
-          message: konCePCja latest
-          body: Latest build of konCePCja, with the newest cool features and the most recent bugs.
           files: release/koncepcja-${{matrix.arch}}.zip
           fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.event.release.tag_name, 'v')
         with:
-          name: ${{ github.event.release.tag_name }}
-          tag_name: ${{ github.event.release.tag_name }}
-          message: konCePCja ${{ github.event.release.tag_name }}
-          body: konCePCja ${{ github.event.release.tag_name }}. Release notes to be added manually.
           files: release/koncepcja-${{matrix.arch}}.zip
           fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}

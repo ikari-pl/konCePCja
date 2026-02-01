@@ -1401,9 +1401,10 @@ void printer_stop ()
 
 void audio_update(void *userdata __attribute__((unused)), SDL_AudioStream *stream, int additional_amount, int total_amount)
 {
+  (void)total_amount;
   if (CPC.snd_ready) {
     int len = additional_amount;
-    if (len > CPC.snd_buffersize) len = CPC.snd_buffersize;
+    if (len > static_cast<int>(CPC.snd_buffersize)) len = static_cast<int>(CPC.snd_buffersize);
     if (len > 0) {
       SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
       dwSndBufferCopied = 1;
@@ -1711,7 +1712,7 @@ int joysticks_init ()
       return 0;
    }
 
-   if (SDL_InitSubSystem(SDL_INIT_JOYSTICK) < 0) {
+   if (!SDL_InitSubSystem(SDL_INIT_JOYSTICK)) {
       fprintf(stderr, "Failed to initialize joystick subsystem. Error: %s\n", SDL_GetError());
       return ERR_JOYSTICKS_INIT;
    }
@@ -2069,7 +2070,6 @@ bool userConfirmsQuitWithoutSaving()
 
 void showGui();
 void showVKeyboard();
-bool showDevTools();
 void dumpSnapshot();
 void loadSnapshot();
 void showVKeyboard()
@@ -2909,7 +2909,7 @@ int cap32_main (int argc, char **argv)
    }
    parseArguments(argc, argv, slot_list, args);
 
-   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) { // initialize SDL
+   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) { // initialize SDL
       fprintf(stderr, "SDL_Init() failed: %s\n", SDL_GetError());
       _exit(-1);
    }

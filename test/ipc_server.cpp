@@ -1,9 +1,14 @@
 #include <gtest/gtest.h>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <cstring>
@@ -27,9 +32,15 @@ constexpr int kPort = 6543;
 constexpr size_t kBankSize = 16 * 1024;
 
 std::string send_command(const std::string& command) {
+#ifdef _WIN32
+  SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  EXPECT_NE(fd, INVALID_SOCKET);
+  if (fd == INVALID_SOCKET) return "";
+#else
   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
   EXPECT_GE(fd, 0);
   if (fd < 0) return "";
+#endif
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
@@ -37,42 +48,68 @@ std::string send_command(const std::string& command) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
   bool connected = false;
-  for (int attempt = 0; attempt < 50 && !connected; attempt++) {
+  for (int attempt = 0; attempt < 100 && !connected; attempt++) {
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
       connected = true;
       break;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   EXPECT_TRUE(connected);
   if (!connected) {
+#ifdef _WIN32
+    closesocket(fd);
+#else
     ::close(fd);
+#endif
     return "";
   }
 
   std::string line = command + "\n";
+#ifdef _WIN32
+  int written = send(fd, line.data(), static_cast<int>(line.size()), 0);
+  EXPECT_EQ(written, static_cast<int>(line.size()));
+#else
   ssize_t written = ::write(fd, line.data(), line.size());
   EXPECT_EQ(written, static_cast<ssize_t>(line.size()));
+#endif
 
   std::string response;
   char buffer[256];
+#ifdef _WIN32
+  int n = 0;
+  while ((n = recv(fd, buffer, sizeof(buffer), 0)) > 0) {
+    response.append(buffer, buffer + n);
+  }
+  closesocket(fd);
+#else
   ssize_t n = 0;
   while ((n = ::read(fd, buffer, sizeof(buffer))) > 0) {
     response.append(buffer, buffer + n);
   }
   ::close(fd);
+#endif
   return response;
 }
 
 class IpcServerTest : public testing::Test {
  protected:
   static void SetUpTestSuite() {
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
     CPC.snd_enabled = 0;
     server.start();
+    // Give the listener thread time to bind and listen
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 
   static void TearDownTestSuite() {
     server.stop();
+#ifdef _WIN32
+    WSACleanup();
+#endif
   }
 
   void SetUp() override {

@@ -26,7 +26,15 @@ jobs:
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev
           libwayland-dev libxkbcommon-dev libdrm-dev libgbm-dev libdecor-0-dev
 
+      - name: Cache vendored SDL3
+        id: cache-sdl
+        uses: actions/cache@v4
+        with:
+          path: vendor/SDL/install
+          key: sdl3-linux-${{ hashFiles('vendor/SDL/**/*.c', 'vendor/SDL/**/*.h', 'vendor/SDL/CMakeLists.txt') }}
+
       - name: Build vendored SDL3
+        if: steps.cache-sdl.outputs.cache-hit != 'true'
         run: |
           cd vendor/SDL
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/vendor/SDL/install
@@ -41,7 +49,7 @@ jobs:
           SDL_AUDIODRIVER: dummy
 
       - run: make -j 3 clean
-      - run: make -j 3 debug CFLAGS=-Wno-literal-suffix
+      - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-error=old-style-cast"
       # Disabled for now on Linux: there are too many lint errors at the moment ...
       #- run: make -j 3 clang-tidy
       # Disabled for now as this is failing for unknown reasons.
@@ -50,6 +58,9 @@ jobs:
       - run: make -j 3 clean
       - run: make -j 3 APP_PATH=/tmp/koncepcja DESTDIR=/tmp/koncepcja install
       - run: test/integrated/test_make_install.sh /tmp/koncepcja
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
 
       # Linux build updates the "latest" tag on master
       - uses: richardsimko/update-tag@v1
@@ -66,15 +77,8 @@ jobs:
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ github.event.release.tag_name }}
-          tag_name: ${{ github.event.release.tag_name }}
-          message: konCePCja ${{ github.event.release.tag_name }}
-          body: konCePCja ${{ github.event.release.tag_name }} (Linux source package). Release notes to be added manually.
           files: |
-            release/koncepcja-${{ github.event.release.tag_name }}.tar.bz2
-            release/koncepcja_${{ github.event.release.tag_name }}.orig.tar.bz2
+            release/koncepcja-linux/koncepcja-${{ github.event.release.tag_name }}.tar.bz2
+            release/koncepcja-linux/koncepcja_${{ github.event.release.tag_name }}.orig.tar.bz2
           fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}
