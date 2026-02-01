@@ -10,9 +10,15 @@
 #include "CapriceMemoryTool.h"
 #include "CapriceAbout.h"
 #include "cap32.h"
+#include "slotshandler.h"
+#include "cartridge.h"
+#include "portable-file-dialogs.h"
+#include "log.h"
 
 // CPC emulation properties, defined in cap32.h:
 extern t_CPC CPC;
+extern t_drive driveA;
+extern t_drive driveB;
 
 namespace wGui {
 
@@ -23,7 +29,15 @@ CapriceMenu::CapriceMenu(const CRect& WindowRect, CWindow* pParent, SDL_Surface*
   SetModal(true);
   std::map<MenuItem, std::string> buttons = {
     { MenuItem::OPTIONS, "Options" },
-    { MenuItem::LOAD_SAVE, "Load / Save" },
+    { MenuItem::LOAD_DISK_A, "Load Disk A..." },
+    { MenuItem::LOAD_DISK_B, "Load Disk B..." },
+    { MenuItem::SAVE_DISK_A, "Save Disk A..." },
+    { MenuItem::SAVE_DISK_B, "Save Disk B..." },
+    { MenuItem::LOAD_SNAPSHOT, "Load Snapshot..." },
+    { MenuItem::SAVE_SNAPSHOT, "Save Snapshot..." },
+    { MenuItem::LOAD_TAPE, "Load Tape..." },
+    { MenuItem::LOAD_CARTRIDGE, "Load Cartridge..." },
+    { MenuItem::INSERT_NEW_DISK, "Insert New Disk" },
     { MenuItem::MEMORY_TOOL, "Memory tool" },
     { MenuItem::DEVTOOLS, "DevTools (Shift+F2)" },
     { MenuItem::RESET, "Reset (F5)" },
@@ -105,10 +119,6 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
               bHandled = true;
               selected = MenuItem::OPTIONS;
               break;
-            case SDLK_L:
-              bHandled = true;
-              selected = MenuItem::LOAD_SAVE;
-              break;
             case SDLK_M:
               bHandled = true;
               selected = MenuItem::MEMORY_TOOL;
@@ -131,7 +141,7 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
               selected = MenuItem::QUIT;
               break;
             case SDLK_R:
-            case SDLK_ESCAPE: 
+            case SDLK_ESCAPE:
               bHandled = true;
               selected = MenuItem::RESUME;
               break;
@@ -163,7 +173,116 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
         /*CapriceOptions* pOptionsBox = */new CapriceOptions(CRect(ViewToClient(CPoint(m_pScreenSurface->w /2 - 165, m_pScreenSurface->h /2 - 127)), 330, 260), this, nullptr);
         break;
       }
-    case MenuItem::LOAD_SAVE:
+    case MenuItem::LOAD_DISK_A:
+      {
+        auto f = pfd::open_file("Load Disk A", CPC.current_dsk_path,
+          { "Disk Images", "*.dsk *.ipf *.raw *.zip" });
+        auto result = f.result();
+        if (!result.empty()) {
+          CPC.driveA.file = result[0];
+          file_load(CPC.driveA);
+          CPC.current_dsk_path = result[0].substr(0, result[0].find_last_of("/\\"));
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::LOAD_DISK_B:
+      {
+        auto f = pfd::open_file("Load Disk B", CPC.current_dsk_path,
+          { "Disk Images", "*.dsk *.ipf *.raw *.zip" });
+        auto result = f.result();
+        if (!result.empty()) {
+          CPC.driveB.file = result[0];
+          file_load(CPC.driveB);
+          CPC.current_dsk_path = result[0].substr(0, result[0].find_last_of("/\\"));
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::SAVE_DISK_A:
+      {
+        if (driveA.tracks == 0) {
+          wGui::CMessageBox *pMessageBox = new wGui::CMessageBox(CRect(CPoint(m_ClientRect.Width() /2 - 125, m_ClientRect.Height() /2 - 30), 250, 60), this, nullptr, "Error", "No disk in Drive A", CMessageBox::BUTTON_OK);
+          pMessageBox->SetModal(true);
+          break;
+        }
+        auto f = pfd::save_file("Save Disk A", CPC.current_dsk_path,
+          { "DSK Image", "*.dsk" });
+        auto result = f.result();
+        if (!result.empty()) {
+          dsk_save(result, &driveA);
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::SAVE_DISK_B:
+      {
+        if (driveB.tracks == 0) {
+          wGui::CMessageBox *pMessageBox = new wGui::CMessageBox(CRect(CPoint(m_ClientRect.Width() /2 - 125, m_ClientRect.Height() /2 - 30), 250, 60), this, nullptr, "Error", "No disk in Drive B", CMessageBox::BUTTON_OK);
+          pMessageBox->SetModal(true);
+          break;
+        }
+        auto f = pfd::save_file("Save Disk B", CPC.current_dsk_path,
+          { "DSK Image", "*.dsk" });
+        auto result = f.result();
+        if (!result.empty()) {
+          dsk_save(result, &driveB);
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::LOAD_SNAPSHOT:
+      {
+        auto f = pfd::open_file("Load Snapshot", CPC.current_snap_path,
+          { "Snapshots", "*.sna *.zip" });
+        auto result = f.result();
+        if (!result.empty()) {
+          CPC.snapshot.file = result[0];
+          file_load(CPC.snapshot);
+          CPC.current_snap_path = result[0].substr(0, result[0].find_last_of("/\\"));
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::SAVE_SNAPSHOT:
+      {
+        auto f = pfd::save_file("Save Snapshot", CPC.current_snap_path,
+          { "Snapshot", "*.sna" });
+        auto result = f.result();
+        if (!result.empty()) {
+          snapshot_save(result);
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::LOAD_TAPE:
+      {
+        auto f = pfd::open_file("Load Tape", CPC.current_tape_path,
+          { "Tape Images", "*.cdt *.voc *.zip" });
+        auto result = f.result();
+        if (!result.empty()) {
+          CPC.tape.file = result[0];
+          file_load(CPC.tape);
+          CPC.current_tape_path = result[0].substr(0, result[0].find_last_of("/\\"));
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::LOAD_CARTRIDGE:
+      {
+        auto f = pfd::open_file("Load Cartridge", CPC.current_cart_path,
+          { "Cartridges", "*.cpr *.zip" });
+        auto result = f.result();
+        if (!result.empty()) {
+          CPC.cartridge.file = result[0];
+          file_load(CPC.cartridge);
+          CPC.current_cart_path = result[0].substr(0, result[0].find_last_of("/\\"));
+          emulator_reset();
+          Application().MessageServer()->QueueMessage(new CMessage(CMessage::APP_EXIT, nullptr, this));
+        }
+        break;
+      }
+    case MenuItem::INSERT_NEW_DISK:
       {
         /*CapriceLoadSave* pLoadSaveBox = */new CapriceLoadSave(CRect(ViewToClient(CPoint(m_pScreenSurface->w /2 - 165, m_pScreenSurface->h /2 - 127)), 330, 260), this, nullptr);
         break;
@@ -200,8 +319,6 @@ bool CapriceMenu::HandleMessage(CMessage* pMessage)
       }
     case MenuItem::QUIT:
       {
-        // TODO(cpitrat): Find a way to deduplicate this with the version in cap32.cpp/CapriceLeavingWithoutSavingView.cpp
-        // The problem is that userConfirmsQuitWithoutSaving doesn't work if a GUI is already displayed.
         if (driveAltered()) {
           wGui::CMessageBox* m_pMessageBox = new wGui::CMessageBox(CRect(CPoint(m_ClientRect.Width() /2 - 125, m_ClientRect.Height() /2 - 40), 250, 80), this, nullptr, "Quit without saving?", "Unsaved changes. Do you really want to quit?", CMessageBox::BUTTON_YES | CMessageBox::BUTTON_NO);
           m_pMessageBox->SetModal(true);

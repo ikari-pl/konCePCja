@@ -43,7 +43,7 @@ CNavigationBar::CNavigationBar(CWindow* pParent, const CPoint& UpperLeft, unsign
     // To make it all match (and avoid that the last item gets clipped at the right side),
     // we added + 4 to the width (in the CWindow constructor above)
 	m_ClientRect = CRect(2, 2, m_WindowRect.Width() - 2, m_WindowRect.Height() - 2);
-	m_BackgroundColor = COLOR_WHITE;
+	m_BackgroundColor = DEFAULT_BACKGROUND_COLOR;
 	Application().MessageServer()->RegisterMessageClient(this, CMessage::KEYBOARD_KEYDOWN);
 	Application().MessageServer()->RegisterMessageClient(this, CMessage::CTRL_VALUECHANGE);
 	Application().MessageServer()->RegisterMessageClient(this, CMessage::CTRL_VALUECHANGING);

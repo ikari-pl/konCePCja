@@ -51,7 +51,7 @@ CCheckBox::~CCheckBox() = default;
 
 void CCheckBox::SetReadOnly(bool bReadOnly)
 {
-  m_BackgroundColor = bReadOnly ? COLOR_LIGHTGRAY : COLOR_WHITE;
+  m_BackgroundColor = bReadOnly ? COLOR_LIGHTGRAY : DEFAULT_CHECKBOX_BACK_COLOR;
   m_bReadOnly = bReadOnly;
   SetIsFocusable(!bReadOnly);
   Draw();
@@ -98,7 +98,7 @@ void CCheckBox::Draw() const
   {
     CRect SubRect(m_WindowRect.SizeRect());
     CPainter Painter(m_pSDLSurface, CPainter::PAINT_REPLACE);
-    Painter.DrawRect(m_WindowRect.SizeRect(), false, COLOR_WHITE);
+    Painter.DrawRect(m_WindowRect.SizeRect(), false, DEFAULT_CHECKBOX_BACK_COLOR);
     if (m_eCheckBoxState != DISABLED)
     {
       Painter.DrawRect(SubRect, false, COLOR_LIGHTGRAY);

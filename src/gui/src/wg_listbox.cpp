@@ -54,7 +54,7 @@ CListBox::CListBox(const CRect& WindowRect, CWindow* pParent, bool bSingleSelect
 
 	m_pVScrollbar->SetMaxLimit(0);
 	m_ClientRect = CRect(2, 2, m_WindowRect.Width() - 16, m_WindowRect.Height() - 2);
-	m_BackgroundColor = COLOR_WHITE;
+	m_BackgroundColor = COLOR_DARKGRAY;
 	Application().MessageServer()->RegisterMessageClient(this, CMessage::KEYBOARD_KEYDOWN);
 	Application().MessageServer()->RegisterMessageClient(this, CMessage::CTRL_VALUECHANGE);
 	Application().MessageServer()->RegisterMessageClient(this, CMessage::CTRL_VALUECHANGING);
