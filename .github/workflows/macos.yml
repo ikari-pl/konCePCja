@@ -19,7 +19,15 @@ jobs:
       - run: brew update
       - run: brew install freetype zlib libpng gnu-sed cmake
 
+      - name: Cache vendored SDL3
+        id: cache-sdl
+        uses: actions/cache@v4
+        with:
+          path: vendor/SDL/install
+          key: sdl3-macos-${{ hashFiles('vendor/SDL/**/*.c', 'vendor/SDL/**/*.h', 'vendor/SDL/CMakeLists.txt') }}
+
       - name: Build vendored SDL3
+        if: steps.cache-sdl.outputs.cache-hit != 'true'
         run: |
           cd vendor/SDL
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/vendor/SDL/install
@@ -29,38 +37,94 @@ jobs:
       - run: make -j 3 ARCH=macos
       - run: make -j 3 ARCH=macos unit_test
       - run: alias sed=gsed && make -j 3 e2e_test
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
       - run: make -j 3 ARCH=macos macos_bundle
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+          security create-keychain -p "" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "" $KEYCHAIN_PATH
+          security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "" $KEYCHAIN_PATH
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain
+
+      - name: Sign the app bundle with Developer ID
+        run: |
+          codesign --force --deep --options runtime \
+            -s "Developer ID Application" \
+            release/koncepcja-macos-bundle/konCePCja.app
+
+      - name: Create DMG with signed app
+        run: |
+          rm -f release/koncepcja-macos-bundle/konCePCja.dmg
+          hdiutil create -volname konCePCja -srcfolder release/koncepcja-macos-bundle/konCePCja.app -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg
+
+      - name: Notarize DMG
+        continue-on-error: true
+        id: notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          # Submit and capture the submission ID
+          SUBMIT_OUT=$(xcrun notarytool submit release/koncepcja-macos-bundle/konCePCja.dmg \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --output-format json)
+          echo "$SUBMIT_OUT"
+          SUB_ID=$(echo "$SUBMIT_OUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          echo "Submission ID: $SUB_ID"
+
+          # Poll with retries to survive transient network drops
+          for attempt in $(seq 1 120); do
+            sleep 30
+            STATUS_OUT=$(xcrun notarytool info "$SUB_ID" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_APP_PASSWORD" \
+              --output-format json 2>&1) || { echo "Poll failed (attempt $attempt), retrying..."; continue; }
+            STATUS=$(echo "$STATUS_OUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+            echo "Attempt $attempt: status=$STATUS"
+            case "$STATUS" in
+              Accepted) echo "Notarization succeeded!"; exit 0 ;;
+              "In Progress") continue ;;
+              Invalid|Rejected) echo "Notarization failed!"; echo "$STATUS_OUT"; exit 1 ;;
+              *) echo "Unknown status: $STATUS"; continue ;;
+            esac
+          done
+          echo "Timed out waiting for notarization"
+          exit 1
+
+      - name: Staple notarization ticket
+        if: steps.notarize.outcome == 'success'
+        run: xcrun stapler staple release/koncepcja-macos-bundle/konCePCja.dmg
 
       - name: Publish latest
         uses: softprops/action-gh-release@v2
         if: github.event.release.tag_name == 'latest'
         with:
-          name: latest
-          tag_name: latest
-          message: konCePCja latest
-          body: Latest build of konCePCja, with the newest cool features and the most recent bugs.
           files: |
             release/koncepcja-macos-bundle/konCePCja.dmg
             release/koncepcja-macos.zip
           fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.event.release.tag_name, 'v')
         with:
-          name: ${{ github.event.release.tag_name }}
-          tag_name: ${{ github.event.release.tag_name }}
-          message: konCePCja ${{ github.event.release.tag_name }}
-          body: konCePCja ${{ github.event.release.tag_name }}. Release notes to be added manually.
           files: |
             release/koncepcja-macos-bundle/konCePCja.dmg
             release/koncepcja-macos.zip
           fail_on_unmatched_files: true
-          draft: false
-          prerelease: false
-          make_latest: true
           token: ${{ secrets.GITHUB_TOKEN }}

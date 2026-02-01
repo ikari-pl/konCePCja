@@ -238,7 +238,7 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
   gl_scanlines=CPC.scr_oglscanlines;
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  if (SDL_GL_LoadLibrary(gl_library)<0)
+  if (!SDL_GL_LoadLibrary(gl_library))
   {
     fprintf(stderr,"Unable to dynamically open GL lib : %s\n",SDL_GetError());
     return nullptr;
@@ -625,7 +625,7 @@ void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int s
   devtools_panel_surface_height = surface->h;
   devtools_cpc_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale;
   devtools_panel_texture = SDL_CreateTextureFromSurface(renderer, devtools_panel_surface);
-  int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale + devtools_panel_width;
+  int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(devtools_cpc_height + topbar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
@@ -661,8 +661,8 @@ void video_set_topbar(SDL_Surface* surface, int height)
   topbar_surface = surface;
   topbar_height = height;
   topbar_texture = SDL_CreateTextureFromSurface(renderer, topbar_surface);
-  int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale + devtools_panel_width;
-  int win_height = max(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale + topbar_height, devtools_panel_height);
+  int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
+  int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
@@ -676,8 +676,8 @@ void video_clear_topbar()
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
-    int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale + devtools_panel_width;
-    int win_height = max(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale, devtools_panel_height);
+    int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
+    int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale), devtools_panel_height);
     SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);

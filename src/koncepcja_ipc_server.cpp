@@ -8,10 +8,15 @@
 #include <cctype>
 #include <sstream>
 
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#endif
 
 #include "cap32.h"
 #include "z80.h"
@@ -446,6 +451,70 @@ bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc, bool& watchpoint) 
   return true;
 }
 
+#ifdef _WIN32
+
+void KoncepcjaIpcServer::run() {
+  WSADATA wsa;
+  if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+
+  SOCKET server_fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (server_fd == INVALID_SOCKET) { WSACleanup(); return; }
+
+  int opt = 1;
+  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = htons(kPort);
+
+  if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+    closesocket(server_fd);
+    WSACleanup();
+    return;
+  }
+
+  if (listen(server_fd, 1) == SOCKET_ERROR) {
+    closesocket(server_fd);
+    WSACleanup();
+    return;
+  }
+
+  while (running.load()) {
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(server_fd, &readfds);
+    timeval tv{0, 200000}; // 200ms
+
+    int ready = select(0, &readfds, nullptr, nullptr, &tv);
+    if (ready <= 0) continue;
+
+    sockaddr_in client{};
+    int len = sizeof(client);
+    SOCKET client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
+    if (client_fd == INVALID_SOCKET) continue;
+
+    std::string buffer;
+    char buf[1024];
+    int n = recv(client_fd, buf, sizeof(buf) - 1, 0);
+    if (n > 0) {
+      buf[n] = 0;
+      buffer.append(buf);
+      auto lines = split_lines(buffer);
+      for (const auto& line : lines) {
+        auto reply = handle_command(line);
+        send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
+      }
+    }
+    closesocket(client_fd);
+  }
+
+  closesocket(server_fd);
+  WSACleanup();
+}
+
+#else // POSIX
+
 void KoncepcjaIpcServer::run() {
   int server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) return;
@@ -499,3 +568,5 @@ void KoncepcjaIpcServer::run() {
 
   ::close(server_fd);
 }
+
+#endif // _WIN32

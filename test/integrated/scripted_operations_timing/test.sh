@@ -1,5 +1,17 @@
 #!/bin/bash
 
+if [ "$SDL_VIDEODRIVER" = "dummy" ]; then
+  echo "SKIP: scripted_operations_timing not supported with dummy video driver"
+  exit 0
+fi
+
+case "$(uname -s)" in
+  Darwin*|MINGW*|MSYS*|CYGWIN*)
+    echo "SKIP: scripted_operations_timing screenshot reference is Linux-specific"
+    exit 0
+    ;;
+esac
+
 TSTDIR=`dirname "$0"`
 OUTPUT_DIR="output"
 LOGFILE="test.log"

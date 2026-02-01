@@ -9,6 +9,9 @@ extern t_CPC CPC;
 
 TEST(CApplicationTest, InitThrowExceptionWhenFailToFindResources)
 {
+#ifdef __APPLE__
+  GTEST_SKIP() << "macOS finds system fonts before checking resources_path";
+#endif
   wGui::CApplication app(/*pWindow=*/nullptr);
   CPC.resources_path = "does_not_exist";
 

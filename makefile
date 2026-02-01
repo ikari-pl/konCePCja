@@ -30,9 +30,9 @@ COMMON_CFLAGS ?=
 
 USE_VENDORED_SDL ?= 1
 SDL_VENDOR_DIR = vendor/SDL
-SDL_VENDOR_BUILD = $(SDL_VENDOR_DIR)/build
+SDL_VENDOR_BUILD = $(SDL_VENDOR_DIR)/install
 SDL_VENDOR_INCLUDE = -I$(SDL_VENDOR_DIR)/include
-SDL_VENDOR_LIBS = -L$(SDL_VENDOR_BUILD) -lSDL3
+SDL_VENDOR_LIBS = -L$(SDL_VENDOR_BUILD)/lib -lSDL3
 
 ifeq ($(ARCH),win64)
 # Rename main to SDL_main to solve the "undefined reference to `SDL_main'".
@@ -76,12 +76,15 @@ ifeq ($(USE_VENDORED_SDL),1)
 PKG_SDL_CFLAGS=$(SDL_VENDOR_INCLUDE)
 PKG_SDL_LIBS=$(SDL_VENDOR_LIBS)
 ifeq ($(ARCH),macos)
-LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)
+LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
 IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
+ifeq ($(PLATFORM),windows)
+LIBS += -lws2_32
+endif
 CXX ?= g++
 COMMON_CFLAGS += -fPIC
 
@@ -236,7 +239,7 @@ $(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg
 	$(CXX) $(LDFLAGS) -o $(TARGET) $(OBJECTS) $(MAIN) $(LIBS)
 
 ifeq ($(PLATFORM),windows)
-DLLS = SDL2.dll libbz2-1.dll libfreetype-6.dll libpng16-16.dll libstdc++-6.dll \
+DLLS = SDL3.dll libbz2-1.dll libfreetype-6.dll libpng16-16.dll libstdc++-6.dll \
        libwinpthread-1.dll zlib1.dll libglib-2.0-0.dll libgraphite2.dll \
        libharfbuzz-0.dll libiconv-2.dll libintl-8.dll libpcre2-8-0.dll \
 			 libbrotlidec.dll libbrotlicommon.dll
@@ -360,8 +363,17 @@ macos_bundle: all
 	gsed -i "s,__SHARE_PATH__,../Resources," $(BUNDLE_DIR)/Contents/Resources/koncepcja.cfg
 	cp -r resources rom $(BUNDLE_DIR)/Contents/Resources
 	mkdir -p $(BUNDLE_DIR)/Contents/Frameworks
-	# Copy shared libs. For some reason, it can happen that some are not found. Not sure why, let's just ignore it.
-	for lib in `otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep ".dylib" | awk '{ print $$1 }'`; do echo "Copying '$$lib'"; cp "$$lib" $(BUNDLE_DIR)/Contents/Frameworks/; done || true
+	# Copy shared libs — skip @rpath entries (handled separately below)
+	for lib in $$(otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep ".dylib" | awk '{ print $$1 }' | grep -v @); do \
+		echo "Copying '$$lib'"; cp "$$lib" $(BUNDLE_DIR)/Contents/Frameworks/; \
+	done || true
+	# Copy SDL3 from vendored install (otool shows @rpath, not the actual path)
+	cp vendor/SDL/install/lib/libSDL3.0.dylib $(BUNDLE_DIR)/Contents/Frameworks/
+	# Rewrite all dylib paths to use @executable_path so the bundle is self-contained
+	for lib in $(BUNDLE_DIR)/Contents/Frameworks/*.dylib; do \
+		libname=$$(basename "$$lib"); \
+		install_name_tool -change "$$(otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep "$$libname" | awk '{ print $$1 }')" "@executable_path/../Frameworks/$$libname" $(BUNDLE_DIR)/Contents/MacOS/$(TARGET); \
+	done
 	# Retry hdiutil up to 3 times: it occasionally fails with "Resource Busy"
 	for i in 1 2 3; do hdiutil create -volname konCePCja-$(VERSION) -srcfolder $(BUNDLE_DIR) -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg && break || sleep 5; done
 
