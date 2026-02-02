@@ -80,7 +80,7 @@ LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
-IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
+IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
 LIBS += -lws2_32
@@ -139,10 +139,7 @@ DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 MM_DEPENDS:=$(foreach file,$(MM_SOURCES:.mm=.d),$(shell echo "$(OBJDIR)/$(file)"))
 OBJECTS_CPP:=$(DEPENDS:.d=.o)
 OBJECTS_MM:=$(MM_DEPENDS:.d=.o)
-IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/imgui_demo.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp
-IMGUI_OBJECTS:=$(foreach file,$(IMGUI_SOURCES:.cpp=.o),$(OBJDIR)/$(file))
-
-OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM) $(IMGUI_OBJECTS)
+OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM)
 
 TEST_SOURCES:=$(shell find $(TSTDIR) -name \*.cpp)
 TEST_HEADERS:=$(shell find $(TSTDIR) -name \*.h)
@@ -207,10 +204,6 @@ $(MM_DEPENDS:.d=.o): $(OBJDIR)/%.o: %.mm
 	@mkdir -p `dirname $@`
 	$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $@ $<
 
-$(IMGUI_OBJECTS): $(OBJDIR)/%.o: %.cpp
-	@mkdir -p `dirname $@`
-	$(CXX) -c $(BUILD_FLAGS) $(COMMON_CFLAGS) -o $@ $<
-
 debug: debug_flag tags distrib unit_test
 
 debug_flag:
@@ -244,16 +237,6 @@ koncepcja.cfg: koncepcja.cfg.tmpl
 
 $(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg
 	$(CXX) $(LDFLAGS) -o $(TARGET) $(OBJECTS) $(MAIN) $(LIBS)
-ifeq ($(ARCH),macos)
-	@xattr -cr $(TARGET) 2>/dev/null || true
-	@if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then \
-		codesign --force --options runtime -s "Developer ID Application" $(TARGET); \
-		echo "Signed $(TARGET) with Developer ID"; \
-	else \
-		codesign --force -s - $(TARGET); \
-		echo "Ad-hoc signed $(TARGET)"; \
-	fi
-endif
 
 ifeq ($(PLATFORM),windows)
 DLLS = SDL3.dll libbz2-1.dll libfreetype-6.dll libpng16-16.dll libstdc++-6.dll \
@@ -391,15 +374,6 @@ macos_bundle: all
 		libname=$$(basename "$$lib"); \
 		install_name_tool -change "$$(otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep "$$libname" | awk '{ print $$1 }')" "@executable_path/../Frameworks/$$libname" $(BUNDLE_DIR)/Contents/MacOS/$(TARGET); \
 	done
-	# Sign the bundle if Developer ID cert is available, otherwise ad-hoc
-	@xattr -cr $(BUNDLE_DIR)
-	@if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then \
-		codesign --force --deep --options runtime -s "Developer ID Application" $(BUNDLE_DIR); \
-		echo "Signed $(BUNDLE_DIR) with Developer ID"; \
-	else \
-		codesign --force --deep -s - $(BUNDLE_DIR); \
-		echo "Ad-hoc signed $(BUNDLE_DIR)"; \
-	fi
 	# Retry hdiutil up to 3 times: it occasionally fails with "Resource Busy"
 	for i in 1 2 3; do hdiutil create -volname konCePCja-$(VERSION) -srcfolder $(BUNDLE_DIR) -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg && break || sleep 5; done
 

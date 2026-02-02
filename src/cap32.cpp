@@ -50,9 +50,6 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "keyboard.h"
 #include "macos_menu.h"
 
-#include "imgui.h"
-#include "imgui_impl_sdl3.h"
-
 namespace {
   KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
 }
@@ -3043,19 +3040,6 @@ int cap32_main (int argc, char **argv)
         }
       }
       while (SDL_PollEvent(&event)) {
-         // Feed event to Dear ImGui
-         ImGui_ImplSDL3_ProcessEvent(&event);
-
-         // If ImGui wants input, skip emulator processing
-         {
-           ImGuiIO& io = ImGui::GetIO();
-           bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT);
-           bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
-           if ((is_key_event && io.WantCaptureKeyboard) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
-             continue;
-           }
-         }
-
          bool processed = false;
          if (!devtools.empty()) {
            devtools.remove_if([](DevTools& d) { return !d.IsActive(); });
