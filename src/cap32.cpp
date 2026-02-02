@@ -164,7 +164,6 @@ std::list<DevTools> devtools;
 dword dwTicks, dwTicksOffset, dwTicksTarget, dwTicksTargetFPS;
 dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
-dword dwSndBufferCopied;
 
 dword osd_timing;
 std::string osd_message;
@@ -1407,7 +1406,6 @@ void audio_update(void *userdata __attribute__((unused)), SDL_AudioStream *strea
     if (len > static_cast<int>(CPC.snd_buffersize)) len = static_cast<int>(CPC.snd_buffersize);
     if (len > 0) {
       SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
-      dwSndBufferCopied = 1;
     }
   } else {
     LOG_VERBOSE("Audio: audio_update: skipping audio: sound buffer not ready");
@@ -3404,14 +3402,7 @@ int cap32_main (int argc, char **argv)
          }
 
          if (CPC.limit_speed) { // limit to original CPC speed?
-            if (CPC.snd_enabled) {
-               if (iExitCondition == EC_SOUND_BUFFER) { // Emulation filled a sound buffer.
-                  if (!dwSndBufferCopied) {
-                     continue; // delay emulation until our audio callback copied and played the buffer
-                  }
-                  dwSndBufferCopied = 0;
-               }
-            } else if (iExitCondition == EC_CYCLE_COUNT) {
+            if (iExitCondition == EC_CYCLE_COUNT) {
                dwTicks = SDL_GetTicks();
                if (dwTicks < dwTicksTarget) { // limit speed ?
                   if (dwTicksTarget - dwTicks > POLL_INTERVAL_MS) { // No need to burn cycles if next event is far away
