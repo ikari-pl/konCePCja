@@ -224,7 +224,7 @@ void direct_flip(video_plugin* t)
   ImGui_ImplSDLRenderer3_NewFrame();
   ImGui_ImplSDL3_NewFrame();
   ImGui::NewFrame();
-  ImGui::ShowDemoWindow();
+  // TODO: Port konCePCja UI panels to ImGui here
   ImGui::Render();
   ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
 
@@ -824,7 +824,7 @@ void swscale_blit(video_plugin* t)
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
-    ImGui::ShowDemoWindow();
+    // TODO: Port konCePCja UI panels to ImGui here
     ImGui::Render();
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
   }
