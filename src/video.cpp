@@ -44,6 +44,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
+#include "imgui_ui.h"
 
 SDL_Window* mainSDLWindow = nullptr;
 SDL_Renderer* renderer = nullptr;
@@ -160,6 +161,7 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
+  imgui_init_ui();
   ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer);
   ImGui_ImplSDLRenderer3_Init(renderer);
 
@@ -224,7 +226,7 @@ void direct_flip(video_plugin* t)
   ImGui_ImplSDLRenderer3_NewFrame();
   ImGui_ImplSDL3_NewFrame();
   ImGui::NewFrame();
-  // TODO: Port konCePCja UI panels to ImGui here
+  imgui_render_ui();
   ImGui::Render();
   ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
 
@@ -742,6 +744,7 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGui::StyleColorsDark();
+  imgui_init_ui();
   ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer);
   ImGui_ImplSDLRenderer3_Init(renderer);
 
@@ -824,7 +827,7 @@ void swscale_blit(video_plugin* t)
     ImGui_ImplSDLRenderer3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
-    // TODO: Port konCePCja UI panels to ImGui here
+    imgui_render_ui();
     ImGui::Render();
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
   }

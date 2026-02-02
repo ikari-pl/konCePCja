@@ -52,6 +52,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
+#include "imgui_ui.h"
 
 namespace {
   KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
@@ -2259,36 +2260,9 @@ void cap32_menu_action(int action)
 
 void showGui()
 {
-   auto guiBackSurface = prepareShowUI();
-   try {
-      CapriceGui capriceGui(mainSDLWindow, true);
-      capriceGui.Init();
-      CapriceGuiView capriceGuiView(capriceGui, back_surface, guiBackSurface, CRect(0, 0, back_surface->w, back_surface->h));
-      capriceGui.Exec();
-      // TODO: Something like that to replace Exec and allow DevTools to be used
-      // while Menu is displayed.
-      /*
-      while (capriceGui.IsRunning()) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-          if (devtools.IsActive() &&
-              devtools.PassEvent(event)) {
-            continue;
-          }
-          capriceGui->ProcessEvent(event, &capriceGuiView);
-        }
-        if (devtools.IsActive()) {
-          devtools.Update();
-        }
-        capriceGui->Update(&capriceGuiView);
-        SDL_Delay(5);
-      }
-      */
-   } catch(wGui::Wg_Ex_App& e) {
-      // TODO: improve: this is pretty silent if people don't look at the console
-      std::cout << "Failed displaying the GUI: " << e.what() << std::endl;
-   }
-   cleanupShowUI(guiBackSurface);
+   imgui_state.show_menu = true;
+   imgui_state.menu_just_opened = true;
+   CPC.paused = true;
 }
 
 // TODO: Dedupe with the version in CapriceDevTools
@@ -2306,16 +2280,7 @@ void loadBreakpoints()
 
 bool showDevTools()
 {
-  Uint32 flags = SDL_GetWindowFlags(mainSDLWindow);
-  bool isFullscreen = (flags & SDL_WINDOW_FULLSCREEN) ||
-      false;
-
-  devtools.emplace_back();
-  if (!devtools.back().Activate(CPC.devtools_scale, /*useMainWindow=*/!isFullscreen)) {
-    LOG_ERROR("Failed to activate developers tools");
-    return false;
-  }
-  if (!args.symFilePath.empty()) devtools.back().LoadSymbols(args.symFilePath);
+  imgui_state.show_devtools = true;
   return true;
 }
 
@@ -3492,7 +3457,8 @@ int cap32_main (int argc, char **argv)
             }
          }
       }
-      else { // We are paused. No need to burn CPU cycles
+      else { // We are paused — still render ImGui UI overlay
+         video_display();
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
       }
    }
