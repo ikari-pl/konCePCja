@@ -413,12 +413,11 @@ static void imgui_render_topbar()
 
         ImGui::SameLine(0, 12.0f);
 
-        // Build display name
-        std::string displayName;
+        // Build display name (use pointer into existing string to avoid allocation)
+        const char* displayName;
         if (drive.tracks) {
-          displayName = driveFile;
-          auto pos = displayName.find_last_of("/\\");
-          if (pos != std::string::npos) displayName = displayName.substr(pos + 1);
+          auto pos = driveFile.find_last_of("/\\");
+          displayName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1 : driveFile.c_str();
         } else {
           displayName = "(no disk)";
         }
@@ -474,7 +473,7 @@ static void imgui_render_topbar()
           ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(displayName.c_str());
+        ImGui::TextUnformatted(displayName);
         ImGui::PopStyleColor();
         ImGui::EndGroup();
 
@@ -572,11 +571,11 @@ static void imgui_render_topbar()
       // ── Filename (clickable when no tape → load) ──
       ImGui::SameLine(0, 4);
       {
-        std::string tapeName;
+        // Use pointer into existing string to avoid allocation
+        const char* tapeName;
         if (tape_loaded && !CPC.tape.file.empty()) {
-          tapeName = CPC.tape.file;
-          auto pos = tapeName.find_last_of("/\\");
-          if (pos != std::string::npos) tapeName = tapeName.substr(pos + 1);
+          auto pos = CPC.tape.file.find_last_of("/\\");
+          tapeName = (pos != std::string::npos) ? CPC.tape.file.c_str() + pos + 1 : CPC.tape.file.c_str();
         } else {
           tapeName = "(no tape)";
         }
@@ -584,7 +583,7 @@ static void imgui_render_topbar()
           ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(tapeName.c_str());
+        ImGui::TextUnformatted(tapeName);
         ImGui::PopStyleColor();
         if (!tape_loaded && ImGui::IsItemClicked()) {
           static const SDL_DialogFileFilter tape_filters[] = {
@@ -1237,6 +1236,18 @@ static void imgui_render_options()
 // DevTools
 // ─────────────────────────────────────────────────
 
+// Parse hex string with validation. Returns true if valid, false otherwise.
+// On success, *out contains the parsed value. On failure, *out is unchanged.
+static bool parse_hex(const char* str, unsigned long* out, unsigned long max_val)
+{
+  if (!str || !str[0]) return false;
+  char* end;
+  unsigned long val = strtoul(str, &end, 16);
+  if (*end != '\0' || val > max_val) return false;
+  *out = val;
+  return true;
+}
+
 static void devtools_tab_z80()
 {
   bool locked = imgui_state.devtools_regs_locked;
@@ -1381,9 +1392,9 @@ static void devtools_tab_asm()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Add BP")) {
-    if (imgui_state.devtools_bp_addr[0]) {
-      word addr = static_cast<word>(strtol(imgui_state.devtools_bp_addr, nullptr, 16));
-      z80_add_breakpoint(addr);
+    unsigned long addr;
+    if (parse_hex(imgui_state.devtools_bp_addr, &addr, 0xFFFF)) {
+      z80_add_breakpoint(static_cast<word>(addr));
       imgui_state.devtools_bp_addr[0] = '\0';
     }
   }
@@ -1393,51 +1404,87 @@ static void devtools_tab_asm()
   }
 }
 
-static void devtools_format_mem_line(std::ostringstream& out, unsigned int base_addr,
-                                     int bytes_per_line, int format)
+// Format memory line into stack buffer - zero heap allocations
+// Buffer size: 512 bytes handles up to 64 bytes/line with all formats
+static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr,
+                              int bytes_per_line, int format)
 {
-  out << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << base_addr << " : ";
-  for (int j = 0; j < bytes_per_line; j++) {
-    unsigned int addr = (base_addr + j) & 0xFFFF;
-    out << std::setw(2) << static_cast<unsigned int>(pbRAM[addr]) << " ";
+  char* p = buf;
+  char* end = buf + buf_size - 1;
+
+  // Address
+  int n = snprintf(p, end - p, "%04X : ", base_addr);
+  p += n;
+
+  // Hex bytes
+  for (int j = 0; j < bytes_per_line && p < end; j++) {
+    n = snprintf(p, end - p, "%02X ", pbRAM[(base_addr + j) & 0xFFFF]);
+    p += n;
   }
 
   // Extended formats
-  if (format == 1) { // Hex & char
-    out << " | ";
-    for (int j = 0; j < bytes_per_line; j++) {
+  if (format == 1 && p < end) { // Hex & char
+    n = snprintf(p, end - p, " | ");
+    p += n;
+    for (int j = 0; j < bytes_per_line && p < end; j++) {
       byte b = pbRAM[(base_addr + j) & 0xFFFF];
-      out << static_cast<char>((b >= 32 && b < 127) ? b : '.');
+      *p++ = (b >= 32 && b < 127) ? (char)b : '.';
     }
-  } else if (format == 2) { // Hex & u8
-    out << " | ";
-    for (int j = 0; j < bytes_per_line; j++) {
-      out << std::dec << std::setw(3) << static_cast<unsigned int>(pbRAM[(base_addr + j) & 0xFFFF]) << " ";
+  } else if (format == 2 && p < end) { // Hex & u8
+    n = snprintf(p, end - p, " | ");
+    p += n;
+    for (int j = 0; j < bytes_per_line && p < end; j++) {
+      n = snprintf(p, end - p, "%3u ", pbRAM[(base_addr + j) & 0xFFFF]);
+      p += n;
     }
   }
-  out << "\n";
+
+  *p = '\0';
+  return (int)(p - buf);
+}
+
+// Shared poke input UI with proper validation
+// Returns true if poke was executed
+static bool ui_poke_input(char* addr_buf, size_t addr_size,
+                          char* val_buf, size_t val_size,
+                          const char* id_suffix)
+{
+  char addr_id[32], val_id[32], btn_id[32];
+  snprintf(addr_id, sizeof(addr_id), "Addr##%s", id_suffix);
+  snprintf(val_id, sizeof(val_id), "Val##%s", id_suffix);
+  snprintf(btn_id, sizeof(btn_id), "Poke##%s", id_suffix);
+
+  ImGui::SetNextItemWidth(50);
+  ImGui::InputText(addr_id, addr_buf, addr_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(40);
+  ImGui::InputText(val_id, val_buf, val_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+
+  if (ImGui::Button(btn_id)) {
+    if (addr_buf[0] && val_buf[0]) {
+      // Parse with proper error checking
+      char* end_addr;
+      char* end_val;
+      unsigned long addr = strtoul(addr_buf, &end_addr, 16);
+      unsigned long val = strtoul(val_buf, &end_val, 16);
+
+      // Validate: complete parse, within range
+      if (*end_addr == '\0' && *end_val == '\0' &&
+          addr <= 0xFFFF && val <= 0xFF) {
+        pbRAM[addr] = static_cast<byte>(val);
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 static void devtools_tab_memory()
 {
   // Poke
-  ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Addr##dtpoke", imgui_state.devtools_poke_addr, sizeof(imgui_state.devtools_poke_addr),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(40);
-  ImGui::InputText("Val##dtpoke", imgui_state.devtools_poke_val, sizeof(imgui_state.devtools_poke_val),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  if (ImGui::Button("Poke##dt")) {
-    if (imgui_state.devtools_poke_addr[0] && imgui_state.devtools_poke_val[0]) {
-      unsigned int addr = strtol(imgui_state.devtools_poke_addr, nullptr, 16);
-      int val = strtol(imgui_state.devtools_poke_val, nullptr, 16);
-      if (addr < 65536 && val >= 0 && val <= 255) {
-        pbRAM[addr] = static_cast<byte>(val);
-      }
-    }
-  }
+  ui_poke_input(imgui_state.devtools_poke_addr, sizeof(imgui_state.devtools_poke_addr),
+                imgui_state.devtools_poke_val, sizeof(imgui_state.devtools_poke_val), "dtpoke");
 
   // Display address
   ImGui::SetNextItemWidth(50);
@@ -1445,8 +1492,9 @@ static void devtools_tab_memory()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Go##dt")) {
-    if (imgui_state.devtools_display_addr[0])
-      imgui_state.devtools_display_value = strtol(imgui_state.devtools_display_addr, nullptr, 16);
+    unsigned long addr;
+    if (parse_hex(imgui_state.devtools_display_addr, &addr, 0xFFFF))
+      imgui_state.devtools_display_value = static_cast<int>(addr);
     else
       imgui_state.devtools_display_value = -1;
   }
@@ -1480,9 +1528,9 @@ static void devtools_tab_memory()
     clipper.Begin(total_lines);
     while (clipper.Step()) {
       for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-        std::ostringstream line;
-        devtools_format_mem_line(line, i * bpl, bpl, imgui_state.devtools_mem_format);
-        ImGui::TextUnformatted(line.str().c_str());
+        char line[512];
+        format_memory_line(line, sizeof(line), i * bpl, bpl, imgui_state.devtools_mem_format);
+        ImGui::TextUnformatted(line);
       }
     }
 
@@ -1630,23 +1678,8 @@ static void imgui_render_memory_tool()
   }
 
   // Poke
-  ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Addr##mt", imgui_state.mem_poke_addr, sizeof(imgui_state.mem_poke_addr),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(40);
-  ImGui::InputText("Val##mt", imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  if (ImGui::Button("Poke##mt")) {
-    if (imgui_state.mem_poke_addr[0] && imgui_state.mem_poke_val[0]) {
-      unsigned int addr = strtol(imgui_state.mem_poke_addr, nullptr, 16);
-      int val = strtol(imgui_state.mem_poke_val, nullptr, 16);
-      if (addr < 65536 && val >= 0 && val <= 255) {
-        pbRAM[addr] = static_cast<byte>(val);
-      }
-    }
-  }
+  ui_poke_input(imgui_state.mem_poke_addr, sizeof(imgui_state.mem_poke_addr),
+                imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val), "mt");
 
   // Display address
   ImGui::SetNextItemWidth(50);
@@ -1654,8 +1687,9 @@ static void imgui_render_memory_tool()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Go##mt")) {
-    if (imgui_state.mem_display_addr[0])
-      imgui_state.mem_display_value = strtol(imgui_state.mem_display_addr, nullptr, 16);
+    unsigned long addr;
+    if (parse_hex(imgui_state.mem_display_addr, &addr, 0xFFFF))
+      imgui_state.mem_display_value = static_cast<int>(addr);
     else
       imgui_state.mem_display_value = -1;
     imgui_state.mem_filter_value = -1;
@@ -1677,8 +1711,9 @@ static void imgui_render_memory_tool()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Filter##mt")) {
-    if (imgui_state.mem_filter_val[0]) {
-      imgui_state.mem_filter_value = strtol(imgui_state.mem_filter_val, nullptr, 16);
+    unsigned long val;
+    if (parse_hex(imgui_state.mem_filter_val, &val, 0xFF)) {
+      imgui_state.mem_filter_value = static_cast<int>(val);
       imgui_state.mem_display_value = -1;
     } else {
       imgui_state.mem_filter_value = -1;
@@ -1721,12 +1756,9 @@ static void imgui_render_memory_tool()
         }
         if (!show) continue;
 
-        std::ostringstream line;
-        line << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << base << " : ";
-        for (int j = 0; j < bpl; j++) {
-          line << std::setw(2) << static_cast<unsigned int>(pbRAM[(base + j) & 0xFFFF]) << " ";
-        }
-        ImGui::TextUnformatted(line.str().c_str());
+        char line[512];
+        format_memory_line(line, sizeof(line), base, bpl, 0);
+        ImGui::TextUnformatted(line);
       }
     } else {
       // Fast path with clipper
@@ -1735,12 +1767,9 @@ static void imgui_render_memory_tool()
       while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
           unsigned int base = i * bpl;
-          std::ostringstream line;
-          line << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << base << " : ";
-          for (int j = 0; j < bpl; j++) {
-            line << std::setw(2) << static_cast<unsigned int>(pbRAM[(base + j) & 0xFFFF]) << " ";
-          }
-          ImGui::TextUnformatted(line.str().c_str());
+          char line[512];
+          format_memory_line(line, sizeof(line), base, bpl, 0);
+          ImGui::TextUnformatted(line);
         }
       }
     }

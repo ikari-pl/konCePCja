@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p2
 issue_id: "004"
 tags: [code-review, patterns, imgui-branch]
@@ -70,16 +70,17 @@ Option A - Extract single function. Quick win.
 
 ## Acceptance Criteria
 
-- [ ] Single function for memory line formatting
-- [ ] DevTools Memory tab uses shared function
-- [ ] Memory Tool uses shared function
-- [ ] All format options still work
+- [x] Single function for memory line formatting
+- [x] DevTools Memory tab uses shared function
+- [x] Memory Tool uses shared function
+- [x] All format options still work
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Created format_memory_line() using snprintf; used by both DevTools and Memory Tool | Completed |
 
 ## Resources
 
