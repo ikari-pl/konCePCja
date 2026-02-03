@@ -60,22 +60,10 @@ struct ImGuiUIState {
 
   // Tape waveform oscilloscope
   static constexpr int TAPE_WAVE_SAMPLES = 128;
-  byte tape_wave_buf[TAPE_WAVE_SAMPLES] = {};   // sub-frame rate
+  byte tape_wave_buf[TAPE_WAVE_SAMPLES] = {};   // raw pulse level
   int  tape_wave_head = 0;
-  byte tape_bits_buf[TAPE_WAVE_SAMPLES] = {};    // once-per-frame rate
-  int  tape_bits_head = 0;
 
-  // High-res edge log for sync mode — written by Tape_UpdateLevel()
-  static constexpr int TAPE_EDGE_LOG_SIZE = 512;
-  struct TapeEdge { dword cycle; byte level; };
-  TapeEdge tape_edge_log[TAPE_EDGE_LOG_SIZE] = {};
-  int tape_edge_head = 0;
-  dword tape_edge_cycle_counter = 0; // running cycle counter, reset each frame
-
-  int  tape_wave_mode = 0; // 0=pulse, 1=bits, 2=sync, 3=decoded bits
-
-  // Sync mode: latched zero-pulse width from TZX block header
-  dword tape_locked_zero_pulse = 0;
+  int  tape_wave_mode = 0; // 0=pulse, 1=decoded
 
   // Decoded bits ring buffer (written by Tape_ReadDataBit)
   static constexpr int TAPE_DECODED_SAMPLES = 200;

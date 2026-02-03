@@ -35,10 +35,8 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 
 #include "cap32.h"
 #include "koncepcja_ipc_server.h"
-#include "wg_renderedstring.h"
-#include "wg_color.h"
 #include "crtc.h"
-#include "devtools.h"
+#include "symfile.h"
 #include "disk.h"
 #include "tape.h"
 #include "video.h"
@@ -66,12 +64,7 @@ namespace {
 #include <errno.h>
 #include <cstring>
 
-#include "wg_error.h"
-#include "wg_resource_handle.h"
-#include "CapriceGui.h"
-#include "CapriceGuiView.h"
-#include "CapriceVKeyboardView.h"
-#include "CapriceLeavingWithoutSavingView.h"
+#include "portable-file-dialogs.h"
 
 #include "errors.h"
 #include "log.h"
@@ -110,60 +103,10 @@ video_plugin* vid_plugin;
 
 static bool g_take_screenshot = false;
 
-static SDL_Surface* topbar_surface = nullptr;
-static std::unique_ptr<wGui::CFontEngine> topbar_font;
 static int topbar_height_px = 24;
-static int topbar_menu_width = 70;
-static bool topbar_cursor_visible = false;
-static bool devtools_mouse_in_panel = false;
 
 extern t_CPC CPC;
-static void update_topbar(const std::string& fps_text);
-
-static std::string topbar_font_path()
-{
-  const std::string menlo = "/System/Library/Fonts/Menlo.ttc";
-  const std::string menloSupplemental = "/System/Library/Fonts/Supplemental/Menlo.ttc";
-  const std::string resourcesVera = CPC.resources_path + "/vera_sans.ttf";
-  if (std::filesystem::exists(menlo)) return menlo;
-  if (std::filesystem::exists(menloSupplemental)) return menloSupplemental;
-  if (std::filesystem::exists(resourcesVera)) return resourcesVera;
-  return CPC.resources_path + "/vera_mono.ttf";
-}
-
-static void init_topbar()
-{
-  if (!back_surface) return;
-  if (topbar_surface) {
-    SDL_DestroySurface(topbar_surface);
-    topbar_surface = nullptr;
-  }
-  int bar_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale;
-  topbar_surface = SDL_CreateSurface(bar_width, topbar_height_px, SDL_PIXELFORMAT_RGBA32);
-  if (!topbar_font) {
-    topbar_font = std::make_unique<wGui::CFontEngine>(topbar_font_path(), 12);
-  }
-  video_set_topbar(topbar_surface, topbar_height_px);
-  update_topbar("");
-}
-
-static void update_topbar(const std::string& fps_text)
-{
-  if (!topbar_surface || !topbar_font) return;
-  SDL_FillSurfaceRect(topbar_surface, nullptr, MapRGBSurface(topbar_surface, 24, 24, 24));
-  wGui::CRGBColor textColor(220, 220, 220);
-  wGui::CRenderedString menuText(topbar_font.get(), "Menu", wGui::CRenderedString::VALIGN_CENTER, wGui::CRenderedString::HALIGN_LEFT);
-  menuText.Draw(topbar_surface, wGui::CRect(0, 0, topbar_surface->w, topbar_surface->h), wGui::CPoint(8, topbar_height_px/2), textColor);
-  topbar_menu_width = menuText.GetWidth("Menu") + 16;
-  if (!fps_text.empty()) {
-    wGui::CRenderedString fpsText(topbar_font.get(), fps_text, wGui::CRenderedString::VALIGN_CENTER, wGui::CRenderedString::HALIGN_LEFT);
-    int fpsWidth = fpsText.GetWidth(fps_text);
-    fpsText.Draw(topbar_surface, wGui::CRect(0, 0, topbar_surface->w, topbar_surface->h),
-                 wGui::CPoint(topbar_surface->w - fpsWidth - 8, topbar_height_px/2), textColor);
-  }
-}
 SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
-std::list<DevTools> devtools;
 
 dword dwTicks, dwTicksOffset, dwTicksTarget, dwTicksTargetFPS;
 dword dwFPS, dwFrameCount;
@@ -1913,7 +1856,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    int iFmt = FIRST_CUSTOM_DISK_FORMAT;
    for (int i = iFmt; i < MAX_DISK_FORMAT; i++) { // loop through all user definable disk formats
       char chFmtId[14];
-      sprintf(chFmtId, "fmt%02d", i); // build format ID
+      snprintf(chFmtId, sizeof(chFmtId), "fmt%02d", i); // build format ID
       std::string formatString = conf.getStringValue("file", chFmtId, "");
       disk_format[iFmt] = parseDiskFormat(formatString);
       if (!disk_format[iFmt].label.empty()) { // found format definition for this slot?
@@ -1926,7 +1869,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    CPC.rom_path = conf.getStringValue("rom", "rom_path", appPath + "/rom/");
    for (int iRomNum = 0; iRomNum < 16; iRomNum++) { // loop for ROMs 0-15
       char chRomId[14];
-      sprintf(chRomId, "slot%02d", iRomNum); // build ROM ID
+      snprintf(chRomId, sizeof(chRomId), "slot%02d", iRomNum); // build ROM ID
       CPC.rom_file[iRomNum] = conf.getStringValue("rom", chRomId, "");
    }
    CPC.rom_mf2 = conf.getStringValue("rom", "rom_mf2", "");
@@ -1991,7 +1934,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
 
    for (int iFmt = FIRST_CUSTOM_DISK_FORMAT; iFmt < MAX_DISK_FORMAT; iFmt++) { // loop through all user definable disk formats
       char chFmtId[14];
-      sprintf(chFmtId, "fmt%02d", iFmt); // build format ID
+      snprintf(chFmtId, sizeof(chFmtId), "fmt%02d", iFmt); // build format ID
       conf.setStringValue("file", chFmtId, serializeDiskFormat(disk_format[iFmt]));
    }
    conf.setStringValue("file", "printer_file", CPC.printer_file);
@@ -2000,7 +1943,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setStringValue("rom", "rom_path", CPC.rom_path);
    for (int iRomNum = 0; iRomNum < 16; iRomNum++) { // loop for ROMs 0-15
       char chRomId[14];
-      sprintf(chRomId, "slot%02d", iRomNum); // build ROM ID
+      snprintf(chRomId, sizeof(chRomId), "slot%02d", iRomNum); // build ROM ID
       conf.setStringValue("rom", chRomId, CPC.rom_file[iRomNum]);
    }
    conf.setStringValue("rom", "rom_mf2", CPC.rom_mf2);
@@ -2030,44 +1973,12 @@ void ShowCursor(bool show)
 }
 
 
-SDL_Surface* prepareShowUI()
+static bool userConfirmsQuitWithoutSaving()
 {
-   audio_pause();
-   CPC.scr_gui_is_currently_on = true;
-   ShowCursor(true);
-   // guiBackSurface will allow the GUI to capture the current frame
-   SDL_Surface* guiBackSurface(SDL_CreateSurface(back_surface->w, back_surface->h, SDL_PIXELFORMAT_RGBA32));
-   SDL_BlitSurface(back_surface, nullptr, guiBackSurface, nullptr);
-   return guiBackSurface;
-}
-
-void cleanupShowUI(SDL_Surface* guiBackSurface)
-{
-   SDL_DestroySurface(guiBackSurface);
-   // Clear SDL surface:
-   SDL_FillSurfaceRect(back_surface, nullptr, MapRGBSurface(back_surface, 0, 0, 0));
-   ShowCursor(false);
-   CPC.scr_gui_is_currently_on = false;
-   audio_resume();
-}
-
-bool userConfirmsQuitWithoutSaving()
-{
-   auto guiBackSurface = prepareShowUI();
-   bool confirmed = false;
-   // Show warning
-   try {
-      CapriceGui capriceGui(mainSDLWindow, true);
-      capriceGui.Init();
-      CapriceLeavingWithoutSavingView capriceLeavingWarning(capriceGui, back_surface, guiBackSurface, CRect(0, 0, back_surface->w, back_surface->h));
-      capriceGui.Exec();
-      confirmed = capriceLeavingWarning.Confirmed();
-   } catch(wGui::Wg_Ex_App& e) {
-      // TODO: improve: this is pretty silent if people don't look at the console
-      std::cout << "Failed displaying the leaving without saving dialog: " << e.what() << std::endl;
-   }
-   cleanupShowUI(guiBackSurface);
-   return confirmed;
+   auto result = pfd::message("Unsaved Changes",
+     "You have unsaved changes to a disk. Quit anyway?",
+     pfd::choice::yes_no, pfd::icon::warning).result();
+   return result == pfd::button::yes;
 }
 
 void showGui();
@@ -2076,23 +1987,15 @@ void dumpSnapshot();
 void loadSnapshot();
 void showVKeyboard()
 {
-   auto guiBackSurface = prepareShowUI();
-   // Activate virtual keyboard
-   try {
-      CapriceGui capriceGui(mainSDLWindow, true);
-      capriceGui.Init();
-      CapriceVKeyboardView capriceVKeyboardView(capriceGui, back_surface, guiBackSurface, CRect(0, 0, back_surface->w, back_surface->h));
-      capriceGui.Exec();
-      auto newEvents = capriceVKeyboardView.GetEvents();
-      virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
-      nextVirtualEventFrameCount = dwFrameCountOverall;
-   } catch(wGui::Wg_Ex_App& e) {
-      // TODO: improve: this is pretty silent if people don't look at the console
-      std::cout << "Failed displaying the virtual keyboard: " << e.what() << std::endl;
-   }
-   cleanupShowUI(guiBackSurface);
+   imgui_state.show_vkeyboard = !imgui_state.show_vkeyboard;
 }
 
+void cap32_queue_virtual_keys(const std::string& text)
+{
+   auto newEvents = CPC.InputMapper->StringToEvents(text);
+   virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
+   nextVirtualEventFrameCount = dwFrameCountOverall;
+}
 
 void cap32_menu_action(int action)
 {
@@ -2111,7 +2014,7 @@ void cap32_menu_action(int action)
 
       case CAP32_DEVTOOLS:
         {
-          showDevTools();
+          imgui_state.show_devtools = true;
           break;
         }
 
@@ -2278,12 +2181,6 @@ void loadBreakpoints()
   }
 }
 
-bool showDevTools()
-{
-  imgui_state.show_devtools = true;
-  return true;
-}
-
 bool dumpScreenTo(const std::string& path) {
    if (!back_surface) return false;
    if (SDL_SavePNG(back_surface, path)) {
@@ -2358,8 +2255,6 @@ void doCleanUp ()
    joysticks_shutdown();
    audio_shutdown();
    video_clear_topbar();
-   video_clear_devtools_panel();
-   wGui::CResourceHandle::BeginShutdown();
    video_shutdown();
 
    #ifdef DEBUG
@@ -2375,10 +2270,6 @@ void cleanExit(int returnCode, bool askIfUnsaved)
 {
    if (askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
      return;
-   }
-   wGui::CResourceHandle::BeginShutdown();
-   for (auto& devtool : devtools) {
-     devtool.Deactivate();
    }
    doCleanUp();
    _exit(returnCode);
@@ -2910,7 +2801,8 @@ int cap32_main (int argc, char **argv)
 #ifdef __APPLE__
    cap32_setup_macos_menu();
 #endif
-   init_topbar();
+   topbar_height_px = imgui_topbar_height();
+   video_set_topbar(nullptr, topbar_height_px);
    mouse_init();
 
    if (audio_init()) {
@@ -2996,15 +2888,6 @@ int cap32_main (int argc, char **argv)
          virtualKeyboardEvents.pop_front();
       }
 
-      if (!devtools.empty()) {
-        devtools.remove_if([](DevTools& d) { return !d.IsActive(); });
-        // Ensure execution is resumed when all devtools are closed
-        if (devtools.empty()) CPC.paused = false;
-        for (auto& devtool : devtools) devtool.PreUpdate();
-        for (auto& devtool : devtools) {
-          if (!devtool.UsesMainWindow()) devtool.PostUpdate();
-        }
-      }
       while (SDL_PollEvent(&event)) {
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
@@ -3019,74 +2902,6 @@ int cap32_main (int argc, char **argv)
            }
          }
 
-         bool processed = false;
-         if (!devtools.empty()) {
-           devtools.remove_if([](DevTools& d) { return !d.IsActive(); });
-           // Ensure execution is resumed when all devtools are closed
-           if (devtools.empty()) CPC.paused = false;
-           int panel_width = video_get_devtools_panel_width();
-           int panel_height = video_get_devtools_panel_height();
-           int panel_surface_width = video_get_devtools_panel_surface_width();
-           int panel_surface_height = video_get_devtools_panel_surface_height();
-           int win_width = 0, win_height = 0;
-           if (mainSDLWindow) SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-           int panel_x = std::max(0, win_width - panel_width);
-           int panel_y = video_get_topbar_height();
-           int panel_w_scaled = panel_width;
-           int panel_h_scaled = panel_height;
-           bool is_mouse_event = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP);
-           int mx = 0, my = 0;
-           if (is_mouse_event) {
-             float lx = 0.0f, ly = 0.0f;
-             if (renderer) {
-               if (event.type == SDL_EVENT_MOUSE_MOTION) {
-                 SDL_RenderCoordinatesFromWindow(renderer, static_cast<float>(event.motion.x), static_cast<float>(event.motion.y), &lx, &ly);
-               } else {
-                 SDL_RenderCoordinatesFromWindow(renderer, static_cast<float>(event.button.x), static_cast<float>(event.button.y), &lx, &ly);
-               }
-               mx = static_cast<int>(lx);
-               my = static_cast<int>(ly);
-             } else {
-               if (event.type == SDL_EVENT_MOUSE_MOTION) { mx = event.motion.x; my = event.motion.y; }
-               else { mx = event.button.x; my = event.button.y; }
-             }
-             devtools_mouse_in_panel = (panel_width > 0 && mx >= panel_x && mx < panel_x + panel_w_scaled && my >= panel_y && my < panel_y + panel_h_scaled);
-           }
-           for (auto& devtool : devtools) {
-             bool route = true;
-             SDL_Event routed_event = event;
-             if (devtool.UsesMainWindow() && panel_width > 0) {
-               if (is_mouse_event) {
-                 route = devtools_mouse_in_panel;
-                 if (route) {
-                   float sx = (panel_w_scaled > 0) ? (static_cast<float>(panel_surface_width) / panel_w_scaled) : 1.0f;
-                   float sy = (panel_h_scaled > 0) ? (static_cast<float>(panel_surface_height) / panel_h_scaled) : 1.0f;
-                   if (event.type == SDL_EVENT_MOUSE_MOTION) {
-                     routed_event.motion.x = static_cast<int>((mx - panel_x) * sx);
-                     routed_event.motion.y = static_cast<int>((my - panel_y) * sy);
-                   } else {
-                     routed_event.button.x = static_cast<int>((mx - panel_x) * sx);
-                     routed_event.button.y = static_cast<int>((my - panel_y) * sy);
-                   }
-                 }
-               } else if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT || event.type == SDL_EVENT_TEXT_EDITING) {
-                 route = devtools_mouse_in_panel;
-               }
-             }
-             if (route) {
-               if (is_mouse_event && (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_MOTION)) {
-                 int cx = (event.type == SDL_EVENT_MOUSE_MOTION) ? routed_event.motion.x : routed_event.button.x;
-                 int cy = (event.type == SDL_EVENT_MOUSE_MOTION) ? routed_event.motion.y : routed_event.button.y;
-                 devtools_set_debug_click(cx, cy);
-               }
-               if (devtool.PassEvent(routed_event)) {
-                 processed = true;
-                 break;
-               }
-             }
-           }
-         }
-         if (processed) continue;
          switch (event.type) {
             case SDL_EVENT_KEY_DOWN:
                {
@@ -3120,7 +2935,7 @@ int cap32_main (int argc, char **argv)
 
                         case CAP32_DEVTOOLS:
                           {
-                            showDevTools();
+                            imgui_state.show_devtools = true;
                             break;
                           }
 
@@ -3307,8 +3122,9 @@ int cap32_main (int argc, char **argv)
 
             case SDL_EVENT_MOUSE_MOTION:
             {
-              if (topbar_surface) {
+              {
                 bool over_topbar = event.motion.y < topbar_height_px;
+                static bool topbar_cursor_visible = false;
                 if (over_topbar && !topbar_cursor_visible) {
                   ShowCursor(true);
                   topbar_cursor_visible = true;
@@ -3324,7 +3140,7 @@ int cap32_main (int argc, char **argv)
 
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             {
-              if (topbar_surface && event.button.y < topbar_height_px && event.button.x < topbar_menu_width) {
+              if (event.button.y < topbar_height_px) {
                 if (!CPC.scr_gui_is_currently_on) showGui();
                 break;
               }
@@ -3405,12 +3221,18 @@ int cap32_main (int argc, char **argv)
 
          iExitCondition = z80_execute(); // run the emulation until an exit condition is met
 
+         // Sample tape level into waveform ring buffer (sub-frame rate)
+         if (CPC.tape_motor && CPC.tape_play_button) {
+            imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
+            imgui_state.tape_wave_head = (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
+
+         }
+
          if (iExitCondition == EC_BREAKPOINT) {
             if (z80.breakpoint_reached || z80.watchpoint_reached) {
               // This is a breakpoint from DevTools or symbol file
-              if (devtools.empty()) {
-                if (showDevTools()) CPC.paused = true;
-              }
+              imgui_state.show_devtools = true;
+              CPC.paused = true;
             } else {
               // This is an old flavour breakpoint
               // We have to clear breakpoint to let the z80 emulator move on.
@@ -3438,19 +3260,14 @@ int cap32_main (int argc, char **argv)
             std::string fpsText;
             if (CPC.scr_fps) {
                char chStr[15];
-               sprintf(chStr, "%3dFPS %3d%%", static_cast<int>(dwFPS), static_cast<int>(dwFPS) * 100 / (1000 / static_cast<int>(FRAME_PERIOD_MS)));
+               snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS), static_cast<int>(dwFPS) * 100 / (1000 / static_cast<int>(FRAME_PERIOD_MS)));
                fpsText = chStr;
             }
-            update_topbar(fpsText);
+            imgui_state.topbar_fps = fpsText;
+            imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
+            imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
             asic_draw_sprites();
             video_display(); // update PC display
-            if (!devtools.empty()) {
-              devtools.remove_if([](DevTools& d) { return !d.IsActive(); });
-              if (devtools.empty()) CPC.paused = false;
-              for (auto& devtool : devtools) {
-                if (devtool.UsesMainWindow()) devtool.PostUpdate();
-              }
-            }
             if (g_take_screenshot) {
               dumpScreen();
               g_take_screenshot = false;

@@ -250,6 +250,19 @@ static void close_menu()
 // Tape block scanner — builds offset table from TZX image
 // ─────────────────────────────────────────────────
 
+// Safe read helpers for unaligned TZX block parsing
+static inline bool safe_read_word(byte* p, byte* end, size_t offset, word& out) {
+  if (p + offset + sizeof(word) > end) return false;
+  memcpy(&out, p + offset, sizeof(word));
+  return true;
+}
+
+static inline bool safe_read_dword(byte* p, byte* end, size_t offset, dword& out) {
+  if (p + offset + sizeof(dword) > end) return false;
+  memcpy(&out, p + offset, sizeof(dword));
+  return true;
+}
+
 static void tape_scan_blocks()
 {
   imgui_state.tape_block_offsets.clear();
@@ -258,30 +271,90 @@ static void tape_scan_blocks()
 
   byte* p = &pbTapeImage[0];
   byte* end = pbTapeImageEnd;
+
   while (p < end) {
     imgui_state.tape_block_offsets.push_back(p);
-    // Advance past this block (same size logic as Tape_BlockDone + Tape_GetNextBlock)
+
+    // Calculate block size with bounds checking
+    // Same size logic as Tape_BlockDone + Tape_GetNextBlock
+    size_t block_size = 0;
+    word w; dword d;
+
     switch (*p) {
-      case 0x10: p += *reinterpret_cast<word*>(p+0x01+0x02) + 0x04 + 1; break;
-      case 0x11: p += (*reinterpret_cast<dword*>(p+0x01+0x0f) & 0x00ffffff) + 0x12 + 1; break;
-      case 0x12: p += 4 + 1; break;
-      case 0x13: p += *(p+0x01) * 2 + 1 + 1; break;
-      case 0x14: p += (*reinterpret_cast<dword*>(p+0x01+0x07) & 0x00ffffff) + 0x0a + 1; break;
-      case 0x15: p += (*reinterpret_cast<dword*>(p+0x01+0x05) & 0x00ffffff) + 0x08 + 1; break;
-      case 0x20: p += 2 + 1; break;
-      case 0x21: p += *(p+0x01) + 1 + 1; break;
-      case 0x22: p += 1; break;
-      case 0x30: p += *(p+0x01) + 1 + 1; break;
-      case 0x31: p += *(p+0x01+0x01) + 2 + 1; break;
-      case 0x32: p += *reinterpret_cast<word*>(p+0x01) + 2 + 1; break;
-      case 0x33: p += (*(p+0x01) * 3) + 1 + 1; break;
-      case 0x34: p += 8 + 1; break;
-      case 0x35: p += *reinterpret_cast<dword*>(p+0x01+0x10) + 0x14 + 1; break;
-      case 0x40: p += (*reinterpret_cast<dword*>(p+0x01+0x01) & 0x00ffffff) + 0x04 + 1; break;
-      case 0x5A: p += 9 + 1; break;
-      default:   p += *reinterpret_cast<dword*>(p+0x01) + 4 + 1; break;
+      case 0x10: // Standard speed data
+        if (!safe_read_word(p, end, 0x03, w)) goto done;
+        block_size = w + 0x04 + 1;
+        break;
+      case 0x11: // Turbo speed data
+        if (!safe_read_dword(p, end, 0x10, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x12 + 1;
+        break;
+      case 0x12: // Pure tone
+        block_size = 4 + 1;
+        break;
+      case 0x13: // Pulse sequence
+        if (p + 2 > end) goto done;
+        block_size = *(p+0x01) * 2 + 1 + 1;
+        break;
+      case 0x14: // Pure data
+        if (!safe_read_dword(p, end, 0x08, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x0a + 1;
+        break;
+      case 0x15: // Direct recording
+        if (!safe_read_dword(p, end, 0x06, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x08 + 1;
+        break;
+      case 0x20: // Pause
+        block_size = 2 + 1;
+        break;
+      case 0x21: // Group start
+        if (p + 2 > end) goto done;
+        block_size = *(p+0x01) + 1 + 1;
+        break;
+      case 0x22: // Group end
+        block_size = 1;
+        break;
+      case 0x30: // Text description
+        if (p + 2 > end) goto done;
+        block_size = *(p+0x01) + 1 + 1;
+        break;
+      case 0x31: // Message
+        if (p + 3 > end) goto done;
+        block_size = *(p+0x02) + 2 + 1;
+        break;
+      case 0x32: // Archive info
+        if (!safe_read_word(p, end, 0x01, w)) goto done;
+        block_size = w + 2 + 1;
+        break;
+      case 0x33: // Hardware type
+        if (p + 2 > end) goto done;
+        block_size = (*(p+0x01) * 3) + 1 + 1;
+        break;
+      case 0x34: // Emulation info
+        block_size = 8 + 1;
+        break;
+      case 0x35: // Custom info
+        if (!safe_read_dword(p, end, 0x11, d)) goto done;
+        block_size = d + 0x14 + 1;
+        break;
+      case 0x40: // Snapshot
+        if (!safe_read_dword(p, end, 0x02, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x04 + 1;
+        break;
+      case 0x5A: // Glue
+        block_size = 9 + 1;
+        break;
+      default: // Unknown block with 4-byte length
+        if (!safe_read_dword(p, end, 0x01, d)) goto done;
+        block_size = d + 4 + 1;
+        break;
     }
+
+    // Validate we won't advance past end
+    if (p + block_size > end) goto done;
+    p += block_size;
   }
+done:;
 }
 
 // ─────────────────────────────────────────────────
@@ -458,13 +531,8 @@ static void imgui_render_topbar()
       bool tape_loaded = !pbTapeImage.empty();
       bool tape_playing = tape_loaded && CPC.tape_motor && CPC.tape_play_button;
 
-      // Latch zero-pulse width from TZX block header for sync mode
-      if (dwTapeZeroPulseCycles > 0 && imgui_state.tape_locked_zero_pulse == 0) {
-        imgui_state.tape_locked_zero_pulse = dwTapeZeroPulseCycles;
-      }
       // Reset state when tape is ejected
       if (!tape_loaded) {
-        imgui_state.tape_locked_zero_pulse = 0;
         imgui_state.tape_decoded_head = 0;
         memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
       }
@@ -479,8 +547,10 @@ static void imgui_render_topbar()
       ImU32 color_dim    = IM_COL32(0x00, 0x40, 0x20, 0xFF);
       ImU32 label_color  = tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
 
-      // Update current block index from pbTapeBlock pointer
-      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
+      // Update current block index from pbTapeBlock pointer (skip if unchanged)
+      static byte* last_pbTapeBlock = nullptr;
+      if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
+        last_pbTapeBlock = pbTapeBlock;
         for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
           if (imgui_state.tape_block_offsets[i] == pbTapeBlock) {
             imgui_state.tape_current_block = i;
@@ -679,90 +749,6 @@ static void imgui_render_topbar()
           prevX = curX;
           prevY = curY;
         }
-      } else if (mode == 1) {
-        // ── Bits (once-per-frame, original scrolling look) ──
-        int bitsOldest = imgui_state.tape_bits_head;
-        float prevX = p0.x;
-        float prevY = yForSample(imgui_state.tape_bits_buf[bitsOldest]);
-        for (int i = 1; i < N; i++) {
-          int idx = (bitsOldest + i) % N;
-          float curX = p0.x + i * stepX;
-          float curY = yForSample(imgui_state.tape_bits_buf[idx]);
-          if (curY != prevY) {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
-            dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-          } else {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-          }
-          prevX = curX;
-          prevY = curY;
-        }
-      } else if (mode == 2) {
-        // ── Sync (baud-rate locked via edge log) ──
-        // Read recent edges, find a rising-edge trigger, render actual pulse widths
-        int eN = ImGuiUIState::TAPE_EDGE_LOG_SIZE;
-        int eHead = imgui_state.tape_edge_head;
-        // Collect last 64 edges into a local array (newest last)
-        constexpr int VIEW_EDGES = 64;
-        ImGuiUIState::TapeEdge edges[VIEW_EDGES];
-        int edgeCount = 0;
-        for (int i = VIEW_EDGES; i > 0; i--) {
-          int idx = (eHead - i + eN) % eN;
-          auto& e = imgui_state.tape_edge_log[idx];
-          if (e.cycle == 0 && e.level == 0 && edgeCount == 0) continue; // skip uninitialized
-          edges[edgeCount++] = e;
-        }
-        if (edgeCount >= 2) {
-          dword windowCycles = 0;
-          if (imgui_state.tape_locked_zero_pulse > 0) {
-            // Locked: 16 zero-bit periods = 8 one-bit periods
-            windowCycles = imgui_state.tape_locked_zero_pulse * 2 * 16;
-          } else {
-            // Fallback: estimate from minimum pulse gap in edge log
-            dword minPulse = UINT32_MAX;
-            for (int i = 1; i < edgeCount; i++) {
-              dword gap = edges[i].cycle - edges[i-1].cycle;
-              if (gap > 0 && gap < minPulse) minPulse = gap;
-            }
-            windowCycles = minPulse * 2 * 8;
-          }
-
-          if (windowCycles > 0) {
-            // Window ends at newest edge, starts windowCycles before that
-            dword endCycle = edges[edgeCount - 1].cycle;
-            dword startCycle = endCycle - windowCycles;
-
-            // Find first edge within (or just before) the window
-            int firstEdge = 0;
-            for (int i = 0; i < edgeCount; i++) {
-              if (edges[i].cycle >= startCycle) { firstEdge = i > 0 ? i - 1 : 0; break; }
-              firstEdge = i;
-            }
-
-            // Render edges within the fixed window
-            float prevX = p0.x;
-            // Initial level from first visible edge
-            float prevY = edges[firstEdge].level ? yTop : yBot;
-            // Clamp first edge to window start
-            if (edges[firstEdge].cycle < startCycle) {
-              // Draw at left edge with this level, advance to next
-              firstEdge++;
-            }
-            for (int i = firstEdge; i < edgeCount; i++) {
-              float t = static_cast<float>(edges[i].cycle - startCycle) / static_cast<float>(windowCycles);
-              if (t > 1.0f) t = 1.0f;
-              float curX = p0.x + t * waveW;
-              float curY = edges[i].level ? yTop : yBot;
-              dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
-              if (curY != prevY)
-                dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-              prevX = curX;
-              prevY = curY;
-            }
-            // Extend last level to right edge
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(p0.x + waveW, prevY), wave_color, 1.0f);
-          }
-        }
       } else {
         // ── Decoded bits (green 1px bars from Tape_ReadDataBit) ──
         int dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
@@ -781,10 +767,10 @@ static void imgui_render_topbar()
         }
       }
 
-      // Advance cursor past the waveform box; click cycles mode
+      // Advance cursor past the waveform box; click cycles mode (2 modes now)
       ImGui::Dummy(ImVec2(waveW, frameH));
       if (ImGui::IsItemClicked()) {
-        imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 4;
+        imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
       }
     }
 
@@ -1573,15 +1559,6 @@ static void devtools_tab_audio()
   ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
 }
 
-static void devtools_tab_char()
-{
-  ImGui::Text("Character Set (from CPC font memory)");
-  ImGui::Separator();
-  ImGui::TextWrapped("Character grid rendering requires access to the CPC font "
-                     "memory region. This will be implemented when the font "
-                     "address is exposed from the gate array.");
-}
-
 static void imgui_render_devtools()
 {
   ImGui::SetNextWindowSize(ImVec2(560, 500), ImGuiCond_FirstUseEver);
@@ -1627,7 +1604,6 @@ static void imgui_render_devtools()
     if (ImGui::BeginTabItem("Memory")) { devtools_tab_memory(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Video"))  { devtools_tab_video();  ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Audio"))  { devtools_tab_audio();  ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Char"))   { devtools_tab_char();   ImGui::EndTabItem(); }
     ImGui::EndTabBar();
   }
 
