@@ -71,11 +71,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.LATEST_TOKEN }}
 
-      # Build source package for release
+      # ---- Release-only steps below ----
+
       - name: Build source package
+        if: github.event_name == 'release'
         run: make -j 3 distrib VERSION=${{ github.event.release.tag_name }}
 
       - name: Upload assets to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |
