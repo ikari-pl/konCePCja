@@ -50,7 +50,7 @@ jobs:
           SDL_AUDIODRIVER: dummy
 
       - run: make -j 3 clean
-      - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-error=old-style-cast"
+      - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
       # Disabled for now on Linux: there are too many lint errors at the moment ...
       #- run: make -j 3 clang-tidy
       # Disabled for now as this is failing for unknown reasons.
