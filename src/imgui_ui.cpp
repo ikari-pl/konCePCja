@@ -1435,7 +1435,7 @@ static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr
     p += n;
     for (int j = 0; j < bytes_per_line && p < end; j++) {
       byte b = pbRAM[(base_addr + j) & 0xFFFF];
-      *p++ = (b >= 32 && b < 127) ? (char)b : '.';
+      *p++ = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
     }
   } else if (format == 2 && p < end) { // Hex & u8
     n = snprintf(p, end - p, " | ");
@@ -1447,7 +1447,7 @@ static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr
   }
 
   *p = '\0';
-  return (int)(p - buf);
+  return static_cast<int>(p - buf);
 }
 
 // Shared poke input UI with proper validation
