@@ -733,21 +733,28 @@ static void imgui_render_topbar()
 
       if (mode == 0) {
         // ── Pulse (sub-frame scrolling waveform) ──
-        float prevX = p0.x;
+        // Build step waveform as polyline for batched drawing
+        ImVec2 points[N * 2 + 2]; // Max: 2 points per sample + start
+        int nPoints = 0;
+
         float prevY = yForSample(imgui_state.tape_wave_buf[oldest]);
+        points[nPoints++] = ImVec2(p0.x, prevY); // Start point
+
         for (int i = 1; i < N; i++) {
           int idx = (oldest + i) % N;
           float curX = p0.x + i * stepX;
           float curY = yForSample(imgui_state.tape_wave_buf[idx]);
           if (curY != prevY) {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
-            dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-          } else {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+            // Level change: add horizontal endpoint, then vertical step
+            points[nPoints++] = ImVec2(curX, prevY);
+            points[nPoints++] = ImVec2(curX, curY);
+            prevY = curY;
           }
-          prevX = curX;
-          prevY = curY;
         }
+        // Final horizontal endpoint
+        points[nPoints++] = ImVec2(p1.x, prevY);
+
+        dl->AddPolyline(points, nPoints, wave_color, 0, 1.0f);
       } else {
         // ── Decoded bits (green 1px bars from Tape_ReadDataBit) ──
         int dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
