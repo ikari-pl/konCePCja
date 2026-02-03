@@ -8,12 +8,16 @@
 #include <iostream>
 
 #include "cap32.h"
+#include "keyboard.h"
 #include "z80.h"
 #include "z80_disassembly.h"
 #include "slotshandler.h"
 #include "disk.h"
-#include "portable-file-dialogs.h"
+#include "tape.h"
+#include "video.h"
+#include <SDL3/SDL_dialog.h>
 
+extern SDL_Window* mainSDLWindow;
 extern t_CPC CPC;
 extern t_z80regs z80;
 extern t_CRTC CRTC;
@@ -22,14 +26,116 @@ extern t_PSG PSG;
 extern t_drive driveA;
 extern t_drive driveB;
 extern byte *pbRAM;
+extern byte bTapeLevel;
+extern std::vector<byte> pbTapeImage;
+extern byte *pbTapeImageEnd;
+extern byte *pbTapeBlock;
+extern int iTapeCycleCount;
+extern dword dwTapeZeroPulseCycles;
 
 ImGuiUIState imgui_state;
 
-// Forward declarations for per-dialog renderers
+// Forward declarations
+static void tape_scan_blocks();
+static void imgui_render_topbar();
 static void imgui_render_menu();
 static void imgui_render_options();
 static void imgui_render_devtools();
 static void imgui_render_memory_tool();
+static void imgui_render_vkeyboard();
+
+static void close_menu();
+
+// ─────────────────────────────────────────────────
+// SDL3 file dialog callback
+// ─────────────────────────────────────────────────
+
+static void SDLCALL file_dialog_callback(void *userdata, const char * const *filelist, int /*filter*/)
+{
+  auto action = static_cast<FileDialogAction>(reinterpret_cast<intptr_t>(userdata));
+  if (!filelist || !filelist[0]) return; // cancelled or error
+  imgui_state.pending_dialog = action;
+  imgui_state.pending_dialog_result = filelist[0];
+}
+
+static void process_pending_dialog()
+{
+  if (imgui_state.pending_dialog == FileDialogAction::None) return;
+
+  FileDialogAction action = imgui_state.pending_dialog;
+  std::string path = imgui_state.pending_dialog_result;
+  int rom_slot = imgui_state.pending_rom_slot;
+
+  imgui_state.pending_dialog = FileDialogAction::None;
+  imgui_state.pending_dialog_result.clear();
+  imgui_state.pending_rom_slot = -1;
+
+  std::string dir = path.substr(0, path.find_last_of("/\\"));
+
+  switch (action) {
+    case FileDialogAction::LoadDiskA:
+    case FileDialogAction::LoadDiskA_LED:
+      CPC.driveA.file = path;
+      file_load(CPC.driveA);
+      CPC.current_dsk_path = dir;
+      if (action == FileDialogAction::LoadDiskA) close_menu();
+      break;
+    case FileDialogAction::LoadDiskB:
+    case FileDialogAction::LoadDiskB_LED:
+      CPC.driveB.file = path;
+      file_load(CPC.driveB);
+      CPC.current_dsk_path = dir;
+      if (action == FileDialogAction::LoadDiskB) close_menu();
+      break;
+    case FileDialogAction::SaveDiskA:
+      dsk_save(path, &driveA);
+      CPC.current_dsk_path = dir;
+      break;
+    case FileDialogAction::SaveDiskB:
+      dsk_save(path, &driveB);
+      CPC.current_dsk_path = dir;
+      break;
+    case FileDialogAction::LoadSnapshot:
+      CPC.snapshot.file = path;
+      file_load(CPC.snapshot);
+      CPC.current_snap_path = dir;
+      close_menu();
+      break;
+    case FileDialogAction::SaveSnapshot:
+      snapshot_save(path);
+      CPC.current_snap_path = dir;
+      break;
+    case FileDialogAction::LoadTape:
+      CPC.tape.file = path;
+      file_load(CPC.tape);
+      CPC.current_tape_path = dir;
+      tape_scan_blocks();
+      close_menu();
+      break;
+    case FileDialogAction::LoadTape_LED:
+      CPC.tape.file = path;
+      file_load(CPC.tape);
+      CPC.current_tape_path = dir;
+      tape_scan_blocks();
+      break;
+    case FileDialogAction::LoadCartridge:
+      CPC.cartridge.file = path;
+      file_load(CPC.cartridge);
+      CPC.current_cart_path = dir;
+      emulator_reset();
+      close_menu();
+      break;
+    case FileDialogAction::LoadROM:
+      if (rom_slot >= 0 && rom_slot < 16)
+        CPC.rom_file[rom_slot] = path;
+      break;
+    default:
+      break;
+  }
+
+  // Clear ImGui focus so keyboard events reach the emulator immediately
+  ImGui::SetWindowFocus(NULL);
+}
 
 // ─────────────────────────────────────────────────
 // Theme setup
@@ -37,6 +143,24 @@ static void imgui_render_memory_tool();
 
 void imgui_init_ui()
 {
+  // Merge transport symbol glyphs from system font into default font
+  ImGuiIO& io = ImGui::GetIO();
+  io.Fonts->AddFontDefault();
+  ImFontConfig merge_cfg;
+  merge_cfg.MergeMode = true;
+  merge_cfg.PixelSnapH = true;
+  // Glyph ranges: U+23CF-U+23F9 (⏏⏭⏮⏹) and U+25B6 (▶)
+  static const ImWchar symbol_ranges[] = {
+    0x23CF, 0x23CF, // ⏏
+    0x25A0, 0x25A0, // ■
+    0x25B6, 0x25B6, // ▶
+    0x25C0, 0x25C0, // ◀
+    0,
+  };
+#ifdef __APPLE__
+  io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
+#endif
+
   ImGuiStyle& style = ImGui::GetStyle();
   style.WindowRounding = 6.0f;
   style.FrameRounding = 4.0f;
@@ -90,10 +214,23 @@ void imgui_init_ui()
 
 void imgui_render_ui()
 {
+  process_pending_dialog();
+  imgui_render_topbar();
   if (imgui_state.show_menu)        imgui_render_menu();
   if (imgui_state.show_options)     imgui_render_options();
   if (imgui_state.show_devtools)    imgui_render_devtools();
   if (imgui_state.show_memory_tool) imgui_render_memory_tool();
+  if (imgui_state.show_vkeyboard)   imgui_render_vkeyboard();
+
+  // When no GUI window is open, the topbar is the only ImGui window and it
+  // doesn't need keyboard input.  Force WantCaptureKeyboard off so all key
+  // events reach the emulator.
+  bool any_gui_open = imgui_state.show_menu || imgui_state.show_options ||
+                      imgui_state.show_devtools || imgui_state.show_memory_tool ||
+                      imgui_state.show_vkeyboard;
+  if (!any_gui_open) {
+    ImGui::GetIO().WantCaptureKeyboard = false;
+  }
 }
 
 // ─────────────────────────────────────────────────
@@ -107,6 +244,585 @@ static void close_menu()
   imgui_state.show_about = false;
   imgui_state.show_quit_confirm = false;
   CPC.paused = false;
+}
+
+// ─────────────────────────────────────────────────
+// Tape block scanner — builds offset table from TZX image
+// ─────────────────────────────────────────────────
+
+static void tape_scan_blocks()
+{
+  imgui_state.tape_block_offsets.clear();
+  imgui_state.tape_current_block = 0;
+  if (pbTapeImage.empty()) return;
+
+  byte* p = &pbTapeImage[0];
+  byte* end = pbTapeImageEnd;
+  while (p < end) {
+    imgui_state.tape_block_offsets.push_back(p);
+    // Advance past this block (same size logic as Tape_BlockDone + Tape_GetNextBlock)
+    switch (*p) {
+      case 0x10: p += *reinterpret_cast<word*>(p+0x01+0x02) + 0x04 + 1; break;
+      case 0x11: p += (*reinterpret_cast<dword*>(p+0x01+0x0f) & 0x00ffffff) + 0x12 + 1; break;
+      case 0x12: p += 4 + 1; break;
+      case 0x13: p += *(p+0x01) * 2 + 1 + 1; break;
+      case 0x14: p += (*reinterpret_cast<dword*>(p+0x01+0x07) & 0x00ffffff) + 0x0a + 1; break;
+      case 0x15: p += (*reinterpret_cast<dword*>(p+0x01+0x05) & 0x00ffffff) + 0x08 + 1; break;
+      case 0x20: p += 2 + 1; break;
+      case 0x21: p += *(p+0x01) + 1 + 1; break;
+      case 0x22: p += 1; break;
+      case 0x30: p += *(p+0x01) + 1 + 1; break;
+      case 0x31: p += *(p+0x01+0x01) + 2 + 1; break;
+      case 0x32: p += *reinterpret_cast<word*>(p+0x01) + 2 + 1; break;
+      case 0x33: p += (*(p+0x01) * 3) + 1 + 1; break;
+      case 0x34: p += 8 + 1; break;
+      case 0x35: p += *reinterpret_cast<dword*>(p+0x01+0x10) + 0x14 + 1; break;
+      case 0x40: p += (*reinterpret_cast<dword*>(p+0x01+0x01) & 0x00ffffff) + 0x04 + 1; break;
+      case 0x5A: p += 9 + 1; break;
+      default:   p += *reinterpret_cast<dword*>(p+0x01) + 4 + 1; break;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Top Bar
+// ─────────────────────────────────────────────────
+
+int imgui_topbar_height()
+{
+  // Button(21) + 2px padding top + 2px padding bottom = 25px.
+  // Dynamic sync (lines below) corrects if ImGui expands beyond this.
+  return 25;
+}
+
+static void imgui_render_topbar()
+{
+  ImGuiIO& io = ImGui::GetIO();
+  float pad_y = 2.0f;
+  float bar_height = static_cast<float>(imgui_topbar_height());
+
+  ImGui::SetNextWindowPos(ImVec2(0, 0));
+  ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, bar_height));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, pad_y));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.094f, 0.094f, 0.094f, 1.0f));
+
+  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                           ImGuiWindowFlags_NoDocking |
+                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+
+  if (ImGui::Begin("##topbar", nullptr, flags)) {
+    {
+      int actual_h = static_cast<int>(ImGui::GetWindowSize().y);
+      if (actual_h != video_get_topbar_height()) {
+        video_set_topbar(nullptr, actual_h);
+      }
+    }
+    if (ImGui::Button("Menu (F1)")) {
+      if (!CPC.scr_gui_is_currently_on) {
+        imgui_state.show_menu = true;
+        imgui_state.menu_just_opened = true;
+        CPC.paused = true;
+      }
+    }
+    // Drive activity LEDs
+    {
+      float frameH = ImGui::GetFrameHeight();
+      for (int drv = 0; drv < 2; drv++) {
+        bool active = drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+        t_drive& drive = drv == 0 ? driveA : driveB;
+        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        const char* driveLabel = drv == 0 ? "A:" : "B:";
+
+        ImGui::SameLine(0, 12.0f);
+
+        // Build display name
+        std::string displayName;
+        if (drive.tracks) {
+          displayName = driveFile;
+          auto pos = displayName.find_last_of("/\\");
+          if (pos != std::string::npos) displayName = displayName.substr(pos + 1);
+        } else {
+          displayName = "(no disk)";
+        }
+
+        // Push unique ID per drive to avoid conflicts
+        ImGui::PushID(drv);
+
+        ImGui::BeginGroup();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(driveLabel);
+        ImGui::SameLine(0, 2.0f);
+
+        // Draw LED
+        ImVec2 cursor = ImGui::GetCursorScreenPos();
+        float ledW = 16.0f, ledH = 8.0f;
+        float yOff = (frameH - ledH) * 0.5f;
+        ImVec2 p0(cursor.x, cursor.y + yOff);
+        ImVec2 p1(p0.x + ledW, p0.y + ledH);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (active) {
+          // Active: bright red #FF0000
+          dl->AddRectFilled(p0, p1, IM_COL32(255, 0, 0, 255));
+          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(255, 100, 100, 255));
+          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(255, 100, 100, 255));
+          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(160, 0, 0, 255));
+          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(160, 0, 0, 255));
+        } else {
+          // Inactive: dark red
+          dl->AddRectFilled(p0, p1, IM_COL32(80, 0, 0, 255));
+          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(110, 20, 20, 255));
+          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(110, 20, 20, 255));
+          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(40, 0, 0, 255));
+          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(40, 0, 0, 255));
+        }
+
+        ImGui::Dummy(ImVec2(ledW, frameH));
+        ImGui::SameLine(0, 4.0f);
+
+        // Show track number when disk is loaded
+        if (drive.tracks) {
+          char trkStr[8];
+          snprintf(trkStr, sizeof(trkStr), "T%02d", (int)drive.current_track);
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted(trkStr);
+          ImGui::PopStyleColor();
+          ImGui::SameLine(0, 4.0f);
+        }
+
+        // Show filename or "(no disk)" as clickable text
+        ImGui::PushStyleColor(ImGuiCol_Text, drive.tracks
+          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(displayName.c_str());
+        ImGui::PopStyleColor();
+        ImGui::EndGroup();
+
+        // Click on the whole group (label + LED + filename)
+        if (ImGui::IsItemClicked()) {
+          if (drive.tracks) {
+            // Ask to confirm eject
+            imgui_state.eject_confirm_drive = drv;
+          } else {
+            // Load disk
+            static const SDL_DialogFileFilter disk_filters[] = {
+              { "Disk Images", "dsk;ipf;raw;zip" }
+            };
+            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED : FileDialogAction::LoadDiskB_LED;
+            SDL_ShowOpenFileDialog(file_dialog_callback,
+              reinterpret_cast<void*>(static_cast<intptr_t>(act)),
+              mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(), false);
+          }
+        }
+
+        ImGui::PopID();
+      }
+    }
+
+    // Eject confirmation popup (rendered inside topbar window)
+    if (imgui_state.eject_confirm_drive >= 0) {
+      ImGui::OpenPopup("Eject Disk?");
+    }
+    if (ImGui::BeginPopup("Eject Disk?")) {
+      int drv = imgui_state.eject_confirm_drive;
+      const char* name = drv == 0 ? "A" : "B";
+      ImGui::Text("Eject disk from drive %s?", name);
+      ImGui::Spacing();
+      if (ImGui::Button("Eject", ImVec2(80, 0))) {
+        t_drive& drive = drv == 0 ? driveA : driveB;
+        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        dsk_eject(&drive);
+        driveFile.clear();
+        imgui_state.eject_confirm_drive = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        imgui_state.eject_confirm_drive = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    } else {
+      imgui_state.eject_confirm_drive = -1;
+    }
+
+    // ── Tape waveform oscilloscope ──
+    {
+      bool tape_loaded = !pbTapeImage.empty();
+      bool tape_playing = tape_loaded && CPC.tape_motor && CPC.tape_play_button;
+
+      // Latch zero-pulse width from TZX block header for sync mode
+      if (dwTapeZeroPulseCycles > 0 && imgui_state.tape_locked_zero_pulse == 0) {
+        imgui_state.tape_locked_zero_pulse = dwTapeZeroPulseCycles;
+      }
+      // Reset state when tape is ejected
+      if (!tape_loaded) {
+        imgui_state.tape_locked_zero_pulse = 0;
+        imgui_state.tape_decoded_head = 0;
+        memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
+      }
+
+      // Sampling happens in cap32.cpp main loop (sub-frame rate)
+
+      ImGui::SameLine(0, 12);
+      ImGui::AlignTextToFramePadding();
+      float frameH = ImGui::GetFrameHeight();
+
+      ImU32 color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
+      ImU32 color_dim    = IM_COL32(0x00, 0x40, 0x20, 0xFF);
+      ImU32 label_color  = tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+
+      // Update current block index from pbTapeBlock pointer
+      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
+        for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
+          if (imgui_state.tape_block_offsets[i] == pbTapeBlock) {
+            imgui_state.tape_current_block = i;
+            break;
+          }
+          // pbTapeBlock may be past last known offset (between blocks)
+          if (imgui_state.tape_block_offsets[i] > pbTapeBlock) {
+            imgui_state.tape_current_block = i > 0 ? i - 1 : 0;
+            break;
+          }
+        }
+      }
+
+      // ── TAPE label ──
+      ImGui::PushStyleColor(ImGuiCol_Text, label_color);
+      ImGui::TextUnformatted("TAPE");
+      ImGui::PopStyleColor();
+
+      // ── Filename (clickable when no tape → load) ──
+      ImGui::SameLine(0, 4);
+      {
+        std::string tapeName;
+        if (tape_loaded && !CPC.tape.file.empty()) {
+          tapeName = CPC.tape.file;
+          auto pos = tapeName.find_last_of("/\\");
+          if (pos != std::string::npos) tapeName = tapeName.substr(pos + 1);
+        } else {
+          tapeName = "(no tape)";
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, tape_loaded
+          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(tapeName.c_str());
+        ImGui::PopStyleColor();
+        if (!tape_loaded && ImGui::IsItemClicked()) {
+          static const SDL_DialogFileFilter tape_filters[] = {
+            { "Tape Images", "cdt;voc;zip" }
+          };
+          SDL_ShowOpenFileDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape_LED)),
+            mainSDLWindow, tape_filters, 1, CPC.current_tape_path.c_str(), false);
+        }
+      }
+
+      // ── Transport buttons (gray SmallButtons) ──
+      ImGui::SameLine(0, 6);
+      {
+        // Gray button style
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+
+        bool at_start = !tape_loaded || imgui_state.tape_current_block <= 0;
+        bool at_end = !tape_loaded || imgui_state.tape_block_offsets.empty();
+        bool is_playing = tape_loaded && CPC.tape_play_button;
+
+        // |◀ Prev block
+        ImGui::BeginDisabled(at_start);
+        if (ImGui::SmallButton("\xe2\x97\x80##prev")) { // ◀
+          int prev = imgui_state.tape_current_block - 1;
+          if (prev >= 0 && prev < (int)imgui_state.tape_block_offsets.size()) {
+            pbTapeBlock = imgui_state.tape_block_offsets[prev];
+            iTapeCycleCount = 0;
+            CPC.tape_play_button = 0;
+            Tape_GetNextBlock();
+            imgui_state.tape_current_block = prev;
+          }
+        }
+        { // Draw bar on left side of prev button
+          ImVec2 rmin = ImGui::GetItemRectMin();
+          ImVec2 rmax = ImGui::GetItemRectMax();
+          float bx = rmin.x + ImGui::GetStyle().FramePadding.x - 1.0f;
+          float pad = (rmax.y - rmin.y) * 0.15f;
+          ImU32 barCol = at_start ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine(0, 2);
+
+        // ▶ Play
+        if (is_playing) {
+          // Highlight play button green when playing
+          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.35f, 0.18f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.45f, 0.25f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.25f, 0.12f, 1.0f));
+        }
+        ImGui::BeginDisabled(!tape_loaded || is_playing);
+        if (ImGui::SmallButton("\xe2\x96\xb6##play")) { // ▶
+          CPC.tape_play_button = 0x10;
+        }
+        ImGui::EndDisabled();
+        if (is_playing) ImGui::PopStyleColor(3);
+
+        ImGui::SameLine(0, 2);
+
+        // ⏹ Stop
+        ImGui::BeginDisabled(!is_playing);
+        if (ImGui::SmallButton("\xe2\x96\xa0##stop")) { // ■
+          CPC.tape_play_button = 0;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine(0, 2);
+
+        // ▷| Next block
+        ImGui::BeginDisabled(at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1);
+        if (ImGui::SmallButton("\xe2\x96\xb6##next")) { // ▶
+          int next = imgui_state.tape_current_block + 1;
+          if (next < (int)imgui_state.tape_block_offsets.size()) {
+            pbTapeBlock = imgui_state.tape_block_offsets[next];
+            iTapeCycleCount = 0;
+            CPC.tape_play_button = 0;
+            Tape_GetNextBlock();
+            imgui_state.tape_current_block = next;
+          }
+        }
+        { // Draw bar on right side of next button
+          ImVec2 rmin = ImGui::GetItemRectMin();
+          ImVec2 rmax = ImGui::GetItemRectMax();
+          float bx = rmax.x - ImGui::GetStyle().FramePadding.x + 1.0f;
+          float pad = (rmax.y - rmin.y) * 0.15f;
+          bool dis = at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1;
+          ImU32 barCol = dis ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine(0, 2);
+
+        // ⏏ Eject
+        ImGui::BeginDisabled(!tape_loaded);
+        if (ImGui::SmallButton("\xe2\x8f\x8f##eject")) { // ⏏
+          imgui_state.eject_confirm_tape = true;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::PopStyleColor(3); // gray button style
+      }
+
+      // ── Block counter ──
+      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
+        ImGui::SameLine(0, 4);
+        char blockStr[32];
+        snprintf(blockStr, sizeof(blockStr), "%d/%d",
+          imgui_state.tape_current_block + 1,
+          (int)imgui_state.tape_block_offsets.size());
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(blockStr);
+        ImGui::PopStyleColor();
+      }
+
+      ImGui::SameLine(0, 4);
+      float waveW = 100.0f;
+      ImVec2 cursor = ImGui::GetCursorScreenPos();
+      // Vertically center the waveform box
+      float yOff = (frameH - frameH * 0.8f) * 0.5f;
+      ImVec2 p0(cursor.x, cursor.y + yOff);
+      float boxH = frameH * 0.8f;
+      ImVec2 p1(p0.x + waveW, p0.y + boxH);
+
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      dl->AddRectFilled(p0, p1, IM_COL32(0x10, 0x10, 0x10, 0xFF));
+      dl->AddRect(p0, p1, tape_playing ? IM_COL32(0x00, 0x80, 0x40, 0x80) : IM_COL32(0x00, 0x30, 0x18, 0x60));
+
+      ImU32 wave_color = tape_playing ? color_active : color_dim;
+      int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
+      float stepX = waveW / static_cast<float>(N - 1);
+      int mode = imgui_state.tape_wave_mode;
+
+      float yBot = p1.y - 2.0f;
+      float yTop = p0.y + 2.0f;
+
+      auto yForSample = [&](byte val) -> float {
+        return val ? yTop : yBot;
+      };
+
+      int oldest = imgui_state.tape_wave_head;
+
+      if (mode == 0) {
+        // ── Pulse (sub-frame scrolling waveform) ──
+        float prevX = p0.x;
+        float prevY = yForSample(imgui_state.tape_wave_buf[oldest]);
+        for (int i = 1; i < N; i++) {
+          int idx = (oldest + i) % N;
+          float curX = p0.x + i * stepX;
+          float curY = yForSample(imgui_state.tape_wave_buf[idx]);
+          if (curY != prevY) {
+            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
+            dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+          } else {
+            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+          }
+          prevX = curX;
+          prevY = curY;
+        }
+      } else if (mode == 1) {
+        // ── Bits (once-per-frame, original scrolling look) ──
+        int bitsOldest = imgui_state.tape_bits_head;
+        float prevX = p0.x;
+        float prevY = yForSample(imgui_state.tape_bits_buf[bitsOldest]);
+        for (int i = 1; i < N; i++) {
+          int idx = (bitsOldest + i) % N;
+          float curX = p0.x + i * stepX;
+          float curY = yForSample(imgui_state.tape_bits_buf[idx]);
+          if (curY != prevY) {
+            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
+            dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+          } else {
+            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+          }
+          prevX = curX;
+          prevY = curY;
+        }
+      } else if (mode == 2) {
+        // ── Sync (baud-rate locked via edge log) ──
+        // Read recent edges, find a rising-edge trigger, render actual pulse widths
+        int eN = ImGuiUIState::TAPE_EDGE_LOG_SIZE;
+        int eHead = imgui_state.tape_edge_head;
+        // Collect last 64 edges into a local array (newest last)
+        constexpr int VIEW_EDGES = 64;
+        ImGuiUIState::TapeEdge edges[VIEW_EDGES];
+        int edgeCount = 0;
+        for (int i = VIEW_EDGES; i > 0; i--) {
+          int idx = (eHead - i + eN) % eN;
+          auto& e = imgui_state.tape_edge_log[idx];
+          if (e.cycle == 0 && e.level == 0 && edgeCount == 0) continue; // skip uninitialized
+          edges[edgeCount++] = e;
+        }
+        if (edgeCount >= 2) {
+          dword windowCycles = 0;
+          if (imgui_state.tape_locked_zero_pulse > 0) {
+            // Locked: 16 zero-bit periods = 8 one-bit periods
+            windowCycles = imgui_state.tape_locked_zero_pulse * 2 * 16;
+          } else {
+            // Fallback: estimate from minimum pulse gap in edge log
+            dword minPulse = UINT32_MAX;
+            for (int i = 1; i < edgeCount; i++) {
+              dword gap = edges[i].cycle - edges[i-1].cycle;
+              if (gap > 0 && gap < minPulse) minPulse = gap;
+            }
+            windowCycles = minPulse * 2 * 8;
+          }
+
+          if (windowCycles > 0) {
+            // Window ends at newest edge, starts windowCycles before that
+            dword endCycle = edges[edgeCount - 1].cycle;
+            dword startCycle = endCycle - windowCycles;
+
+            // Find first edge within (or just before) the window
+            int firstEdge = 0;
+            for (int i = 0; i < edgeCount; i++) {
+              if (edges[i].cycle >= startCycle) { firstEdge = i > 0 ? i - 1 : 0; break; }
+              firstEdge = i;
+            }
+
+            // Render edges within the fixed window
+            float prevX = p0.x;
+            // Initial level from first visible edge
+            float prevY = edges[firstEdge].level ? yTop : yBot;
+            // Clamp first edge to window start
+            if (edges[firstEdge].cycle < startCycle) {
+              // Draw at left edge with this level, advance to next
+              firstEdge++;
+            }
+            for (int i = firstEdge; i < edgeCount; i++) {
+              float t = static_cast<float>(edges[i].cycle - startCycle) / static_cast<float>(windowCycles);
+              if (t > 1.0f) t = 1.0f;
+              float curX = p0.x + t * waveW;
+              float curY = edges[i].level ? yTop : yBot;
+              dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
+              if (curY != prevY)
+                dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+              prevX = curX;
+              prevY = curY;
+            }
+            // Extend last level to right edge
+            dl->AddLine(ImVec2(prevX, prevY), ImVec2(p0.x + waveW, prevY), wave_color, 1.0f);
+          }
+        }
+      } else {
+        // ── Decoded bits (green 1px bars from Tape_ReadDataBit) ──
+        int dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
+        int dHead = imgui_state.tape_decoded_head;
+        int visCount = static_cast<int>(waveW); // 1px per bit
+        if (visCount > dN) visCount = dN;
+        // Walk oldest→newest for the last visCount samples
+        int startIdx = (dHead - visCount + dN) % dN;
+        ImU32 col_one  = tape_playing ? IM_COL32(0x00, 0xFF, 0x80, 0xFF) : IM_COL32(0x00, 0x44, 0x00, 0xFF);
+        ImU32 col_zero = tape_playing ? IM_COL32(0x00, 0x44, 0x00, 0xFF) : IM_COL32(0x00, 0x18, 0x00, 0xFF);
+        for (int i = 0; i < visCount; i++) {
+          int idx = (startIdx + i) % dN;
+          float x = p0.x + (waveW - visCount) + i;
+          ImU32 c = imgui_state.tape_decoded_buf[idx] ? col_one : col_zero;
+          dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + 1.0f, p1.y), c);
+        }
+      }
+
+      // Advance cursor past the waveform box; click cycles mode
+      ImGui::Dummy(ImVec2(waveW, frameH));
+      if (ImGui::IsItemClicked()) {
+        imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 4;
+      }
+    }
+
+    // Tape eject confirmation popup
+    if (imgui_state.eject_confirm_tape) {
+      ImGui::OpenPopup("Eject Tape?");
+    }
+    if (ImGui::BeginPopup("Eject Tape?")) {
+      ImGui::TextUnformatted("Eject tape?");
+      ImGui::Spacing();
+      if (ImGui::Button("Eject", ImVec2(80, 0))) {
+        tape_eject();
+        CPC.tape.file.clear();
+        imgui_state.tape_block_offsets.clear();
+        imgui_state.tape_current_block = 0;
+        imgui_state.eject_confirm_tape = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        imgui_state.eject_confirm_tape = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    } else {
+      imgui_state.eject_confirm_tape = false;
+    }
+
+    if (!imgui_state.topbar_fps.empty()) {
+      float fps_width = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x;
+      ImGui::SameLine(io.DisplaySize.x - fps_width - 8);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(imgui_state.topbar_fps.c_str());
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(4);
 }
 
 // ─────────────────────────────────────────────────
@@ -152,47 +868,31 @@ static void imgui_render_menu()
 
   // --- Disk operations ---
   if (ImGui::Button("Load Disk A...", ImVec2(bw, 0))) {
-    auto f = pfd::open_file("Load Disk A", CPC.current_dsk_path,
-      { "Disk Images", "*.dsk *.ipf *.raw *.zip" });
-    auto result = f.result();
-    if (!result.empty()) {
-      CPC.driveA.file = result[0];
-      file_load(CPC.driveA);
-      CPC.current_dsk_path = result[0].substr(0, result[0].find_last_of("/\\"));
-      close_menu();
-    }
+    static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
+    SDL_ShowOpenFileDialog(file_dialog_callback,
+      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
+      mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
   }
   if (ImGui::Button("Load Disk B...", ImVec2(bw, 0))) {
-    auto f = pfd::open_file("Load Disk B", CPC.current_dsk_path,
-      { "Disk Images", "*.dsk *.ipf *.raw *.zip" });
-    auto result = f.result();
-    if (!result.empty()) {
-      CPC.driveB.file = result[0];
-      file_load(CPC.driveB);
-      CPC.current_dsk_path = result[0].substr(0, result[0].find_last_of("/\\"));
-      close_menu();
-    }
+    static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
+    SDL_ShowOpenFileDialog(file_dialog_callback,
+      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
+      mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
   }
   if (ImGui::Button("Save Disk A...", ImVec2(bw, 0))) {
     if (driveA.tracks) {
-      auto f = pfd::save_file("Save Disk A", CPC.current_dsk_path,
-        { "Disk Images", "*.dsk" });
-      auto result = f.result();
-      if (!result.empty()) {
-        dsk_save(result, &driveA);
-        CPC.current_dsk_path = result.substr(0, result.find_last_of("/\\"));
-      }
+      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
+      SDL_ShowSaveFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
+        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
     }
   }
   if (ImGui::Button("Save Disk B...", ImVec2(bw, 0))) {
     if (driveB.tracks) {
-      auto f = pfd::save_file("Save Disk B", CPC.current_dsk_path,
-        { "Disk Images", "*.dsk" });
-      auto result = f.result();
-      if (!result.empty()) {
-        dsk_save(result, &driveB);
-        CPC.current_dsk_path = result.substr(0, result.find_last_of("/\\"));
-      }
+      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
+      SDL_ShowSaveFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
+        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
     }
   }
 
@@ -200,51 +900,41 @@ static void imgui_render_menu()
 
   // --- Snapshot operations ---
   if (ImGui::Button("Load Snapshot...", ImVec2(bw, 0))) {
-    auto f = pfd::open_file("Load Snapshot", CPC.current_snap_path,
-      { "Snapshots", "*.sna *.zip" });
-    auto result = f.result();
-    if (!result.empty()) {
-      CPC.snapshot.file = result[0];
-      file_load(CPC.snapshot);
-      CPC.current_snap_path = result[0].substr(0, result[0].find_last_of("/\\"));
-      close_menu();
-    }
+    static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna;zip" } };
+    SDL_ShowOpenFileDialog(file_dialog_callback,
+      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
+      mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
   }
   if (ImGui::Button("Save Snapshot...", ImVec2(bw, 0))) {
-    auto f = pfd::save_file("Save Snapshot", CPC.current_snap_path,
-      { "Snapshots", "*.sna" });
-    auto result = f.result();
-    if (!result.empty()) {
-      snapshot_save(result);
-      CPC.current_snap_path = result.substr(0, result.find_last_of("/\\"));
-    }
+    static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna" } };
+    SDL_ShowSaveFileDialog(file_dialog_callback,
+      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
+      mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
   }
 
   ImGui::Separator();
 
   // --- Tape & Cartridge ---
   if (ImGui::Button("Load Tape...", ImVec2(bw, 0))) {
-    auto f = pfd::open_file("Load Tape", CPC.current_tape_path,
-      { "Tape Images", "*.cdt *.voc *.zip" });
-    auto result = f.result();
-    if (!result.empty()) {
-      CPC.tape.file = result[0];
-      file_load(CPC.tape);
-      CPC.current_tape_path = result[0].substr(0, result[0].find_last_of("/\\"));
+    static const SDL_DialogFileFilter filters[] = { { "Tape Images", "cdt;voc;zip" } };
+    SDL_ShowOpenFileDialog(file_dialog_callback,
+      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape)),
+      mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
+  }
+  if (!pbTapeImage.empty()) {
+    if (ImGui::Button("Eject Tape", ImVec2(bw, 0))) {
+      tape_eject();
+      CPC.tape.file.clear();
+      imgui_state.tape_block_offsets.clear();
+      imgui_state.tape_current_block = 0;
       close_menu();
     }
   }
   if (ImGui::Button("Load Cartridge...", ImVec2(bw, 0))) {
-    auto f = pfd::open_file("Load Cartridge", CPC.current_cart_path,
-      { "Cartridges", "*.cpr *.zip" });
-    auto result = f.result();
-    if (!result.empty()) {
-      CPC.cartridge.file = result[0];
-      file_load(CPC.cartridge);
-      CPC.current_cart_path = result[0].substr(0, result[0].find_last_of("/\\"));
-      emulator_reset();
-      close_menu();
-    }
+    static const SDL_DialogFileFilter filters[] = { { "Cartridges", "cpr;zip" } };
+    SDL_ShowOpenFileDialog(file_dialog_callback,
+      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
+      mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
   }
 
   ImGui::Separator();
@@ -411,12 +1101,11 @@ static void imgui_render_options()
         char btn_label[64];
         snprintf(btn_label, sizeof(btn_label), "%s: %s##rom%d", label, display.c_str(), i);
         if (ImGui::Button(btn_label, ImVec2(col_width, 0))) {
-          auto f = pfd::open_file("Select ROM", CPC.rom_path,
-            { "ROM files", "*.rom *.bin" });
-          auto result = f.result();
-          if (!result.empty()) {
-            CPC.rom_file[i] = result[0];
-          }
+          static const SDL_DialogFileFilter filters[] = { { "ROM files", "rom;bin" } };
+          imgui_state.pending_rom_slot = i;
+          SDL_ShowOpenFileDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadROM)),
+            mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
         }
       }
       ImGui::EndTabItem();
@@ -732,7 +1421,7 @@ static void devtools_format_mem_line(std::ostringstream& out, unsigned int base_
     out << " | ";
     for (int j = 0; j < bytes_per_line; j++) {
       byte b = pbRAM[(base_addr + j) & 0xFFFF];
-      out << (char)((b >= 32 && b < 127) ? b : '.');
+      out << static_cast<char>((b >= 32 && b < 127) ? b : '.');
     }
   } else if (format == 2) { // Hex & u8
     out << " | ";
@@ -1083,6 +1772,318 @@ static void imgui_render_memory_tool()
   ImGui::EndChild();
 
   if (!open) imgui_state.show_memory_tool = false;
+
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Virtual Keyboard – CPC 6128 layout
+// Main keyboard left, numeric keypad (F0-F9) right, cursor keys below numpad
+// ─────────────────────────────────────────────────
+
+static void imgui_render_vkeyboard()
+{
+  bool open = true;
+  ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
+
+  if (!ImGui::Begin("CPC 6128 Keyboard", &open, ImGuiWindowFlags_NoCollapse)) {
+    ImGui::End();
+    if (!open) imgui_state.show_vkeyboard = false;
+    return;
+  }
+
+  // Key dimensions
+  const float K = 28.0f;   // standard key width
+  const float H = 32.0f;   // key height (taller for two-line labels)
+  const float S = 2.0f;    // spacing
+  const float ROW = H + S; // row height
+
+  // CPC brown/tan key color
+  ImVec4 key_color(0.55f, 0.45f, 0.30f, 1.0f);
+  ImVec4 key_hover(0.65f, 0.55f, 0.40f, 1.0f);
+  ImVec4 key_active(0.45f, 0.35f, 0.20f, 1.0f);
+  ImVec4 mod_on_color(0.3f, 0.5f, 0.3f, 1.0f);
+
+  ImGui::PushStyleColor(ImGuiCol_Button, key_color);
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, key_hover);
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, key_active);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+
+  bool caps_on = imgui_state.vkeyboard_caps_lock;
+  bool shift_on = imgui_state.vkeyboard_shift_next || caps_on;  // either gives shift effect
+  bool ctrl_on = imgui_state.vkeyboard_ctrl_next;
+
+  // Shift mapping for non-letter keys
+  static const std::map<char, char> shift_map = {
+    {'1', '!'}, {'2', '"'}, {'3', '#'}, {'4', '$'}, {'5', '%'},
+    {'6', '&'}, {'7', '\''}, {'8', '('}, {'9', ')'}, {'0', '_'},
+    {'-', '='}, {'^', '\xa3'},  // £ in Latin-1
+    {';', '+'}, {':', '*'}, {'[', '{'}, {']', '}'},
+    {',', '<'}, {'.', '>'}, {'/', '?'}, {'\\', '`'},
+    {'@', '|'}
+  };
+
+  // Helper to emit a key - sends directly to emulator
+  auto emit_key = [&](const char* text) {
+    if (!text) return;
+    std::string to_send = text;
+
+    // SHIFT toggle (one-shot)
+    if (strcmp(text, "\x01" "SHIFT") == 0) {
+      imgui_state.vkeyboard_shift_next = !imgui_state.vkeyboard_shift_next;
+      return;
+    }
+    // CAPS LOCK toggle (sticky)
+    if (strcmp(text, "\x01" "CAPS") == 0) {
+      imgui_state.vkeyboard_caps_lock = !imgui_state.vkeyboard_caps_lock;
+      return;
+    }
+    // CTRL toggle (one-shot)
+    if (strcmp(text, "\x01" "CTRL") == 0) {
+      imgui_state.vkeyboard_ctrl_next = !imgui_state.vkeyboard_ctrl_next;
+      return;
+    }
+
+    // Apply CTRL modifier
+    if (ctrl_on && to_send.length() == 1) {
+      char c = to_send[0];
+      if (c >= 'a' && c <= 'z') {
+        to_send = std::string("\a") + static_cast<char>(CPC_CTRL_a + (c - 'a'));
+      } else if (c >= '0' && c <= '9') {
+        to_send = std::string("\a") + static_cast<char>(CPC_CTRL_0 + (c - '0'));
+      }
+      imgui_state.vkeyboard_ctrl_next = false;  // one-shot
+    }
+    // Apply SHIFT modifier
+    else if (shift_on && to_send.length() == 1) {
+      char c = to_send[0];
+      if (c >= 'a' && c <= 'z') {
+        to_send[0] = c - 32;  // uppercase
+      } else {
+        auto it = shift_map.find(c);
+        if (it != shift_map.end()) {
+          to_send[0] = it->second;
+        }
+      }
+      imgui_state.vkeyboard_shift_next = false;  // one-shot (CAPS stays)
+    }
+
+    // Send directly to emulator
+    cap32_queue_virtual_keys(to_send);
+  };
+
+  // Modifier status line
+  ImGui::Text("Modifiers:");
+  ImGui::SameLine();
+  if (caps_on)  { ImGui::TextColored(ImVec4(0,1,0.5f,1), "[CAPS]"); ImGui::SameLine(); }
+  if (imgui_state.vkeyboard_shift_next) { ImGui::TextColored(ImVec4(0.5f,1,0,1), "[SHIFT]"); ImGui::SameLine(); }
+  if (ctrl_on)  { ImGui::TextColored(ImVec4(1,0.5f,0,1), "[CTRL]"); ImGui::SameLine(); }
+  ImGui::NewLine();
+
+  float x0 = ImGui::GetCursorPosX();
+  float y0 = ImGui::GetCursorPosY();
+
+  // Width multipliers for special keys
+  const float W_TAB    = 1.3f;
+  const float W_CAPS   = 1.4f;
+  const float W_LSHIFT = 1.9f;
+  const float W_CTRL   = 1.5f;
+  const float W_COPY   = 1.6f;
+  // RETURN, right SHIFT, ENTER widths calculated dynamically to align right edges
+
+  // Calculate main keyboard right edge: 15 standard keys + ESC in row 0
+  // ESC 1 2 3 4 5 6 7 8 9 0 - ^/£ CLR DEL = 15 keys
+  float main_end_x = x0 + (K + S) * 15 - S;  // right edge of DEL
+
+  // Numpad starts after a gap from main keyboard right edge
+  float np_x = main_end_x + S * 4;
+
+  // Helper for function keys
+  char fkey_emit[2] = { '\a', 0 };
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ROW 0: ESC 1 2 3 4 5 6 7 8 9 0 - ^ CLR DEL | F7 F8 F9
+  // ═══════════════════════════════════════════════════════════════════
+  ImGui::SetCursorPos(ImVec2(x0, y0));
+  if (ImGui::Button("ESC", ImVec2(K, H))) emit_key("\a\xbb"); ImGui::SameLine(0, S);
+  if (ImGui::Button("!\n1", ImVec2(K, H))) emit_key("1"); ImGui::SameLine(0, S);
+  if (ImGui::Button("\"\n2", ImVec2(K, H))) emit_key("2"); ImGui::SameLine(0, S);
+  if (ImGui::Button("#\n3", ImVec2(K, H))) emit_key("3"); ImGui::SameLine(0, S);
+  if (ImGui::Button("$\n4", ImVec2(K, H))) emit_key("4"); ImGui::SameLine(0, S);
+  if (ImGui::Button("%\n5", ImVec2(K, H))) emit_key("5"); ImGui::SameLine(0, S);
+  if (ImGui::Button("&\n6", ImVec2(K, H))) emit_key("6"); ImGui::SameLine(0, S);
+  if (ImGui::Button("'\n7", ImVec2(K, H))) emit_key("7"); ImGui::SameLine(0, S);
+  if (ImGui::Button("(\n8", ImVec2(K, H))) emit_key("8"); ImGui::SameLine(0, S);
+  if (ImGui::Button(")\n9", ImVec2(K, H))) emit_key("9"); ImGui::SameLine(0, S);
+  if (ImGui::Button("_\n0", ImVec2(K, H))) emit_key("0"); ImGui::SameLine(0, S);
+  if (ImGui::Button("=\n-", ImVec2(K, H))) emit_key("-"); ImGui::SameLine(0, S);
+  if (ImGui::Button("\xc2\xa3\n^", ImVec2(K, H))) emit_key("^"); ImGui::SameLine(0, S);  // £ over ^
+  if (ImGui::Button("CLR", ImVec2(K, H))) emit_key("\a\xa5"); ImGui::SameLine(0, S);
+  if (ImGui::Button("DEL", ImVec2(K, H))) emit_key("\b");
+
+  // Numpad row 0: F7 F8 F9
+  ImGui::SetCursorPos(ImVec2(np_x, y0));
+  fkey_emit[1] = static_cast<char>(CPC_F7);
+  if (ImGui::Button("F7", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  fkey_emit[1] = static_cast<char>(CPC_F8);
+  if (ImGui::Button("F8", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  fkey_emit[1] = static_cast<char>(CPC_F9);
+  if (ImGui::Button("F9", ImVec2(K, H))) emit_key(fkey_emit);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ROW 1: TAB Q W E R T Y U I O P |/@ {/[  | F4 F5 F6
+  // ═══════════════════════════════════════════════════════════════════
+  ImGui::SetCursorPos(ImVec2(x0, y0 + ROW));
+  if (ImGui::Button("TAB", ImVec2(K*W_TAB, H))) emit_key("\t"); ImGui::SameLine(0, S);
+  if (ImGui::Button("Q", ImVec2(K, H))) emit_key("q"); ImGui::SameLine(0, S);
+  if (ImGui::Button("W", ImVec2(K, H))) emit_key("w"); ImGui::SameLine(0, S);
+  if (ImGui::Button("E", ImVec2(K, H))) emit_key("e"); ImGui::SameLine(0, S);
+  if (ImGui::Button("R", ImVec2(K, H))) emit_key("r"); ImGui::SameLine(0, S);
+  if (ImGui::Button("T", ImVec2(K, H))) emit_key("t"); ImGui::SameLine(0, S);
+  if (ImGui::Button("Y", ImVec2(K, H))) emit_key("y"); ImGui::SameLine(0, S);
+  if (ImGui::Button("U", ImVec2(K, H))) emit_key("u"); ImGui::SameLine(0, S);
+  if (ImGui::Button("I", ImVec2(K, H))) emit_key("i"); ImGui::SameLine(0, S);
+  if (ImGui::Button("O", ImVec2(K, H))) emit_key("o"); ImGui::SameLine(0, S);
+  if (ImGui::Button("P", ImVec2(K, H))) emit_key("p"); ImGui::SameLine(0, S);
+  if (ImGui::Button("|\n@", ImVec2(K, H))) emit_key("@"); ImGui::SameLine(0, S);
+  if (ImGui::Button("{\n[", ImVec2(K, H))) emit_key("["); ImGui::SameLine(0, S);
+  // RETURN upper part - at end of row 1
+  float ret_x = ImGui::GetCursorPosX();
+  float ret_w = main_end_x - ret_x;
+  if (ImGui::Button("RETURN##1", ImVec2(ret_w, H))) emit_key("\n");
+  // RETURN lower part - starts S after where ] ends in row 2
+  // Row 2: CAPS(1.4K) + 12 keys (A-L + ; : ]) with spacing = K*W_CAPS + S + 12*(K+S)
+  float ret2_x = x0 + K*W_CAPS + S + 12*(K + S);
+  float ret2_w = main_end_x - ret2_x;
+  ImGui::SetCursorPos(ImVec2(ret2_x, y0 + ROW + H));
+  if (ImGui::Button("##ret2", ImVec2(ret2_w, ROW))) emit_key("\n");
+
+  // Numpad row 1: F4 F5 F6
+  ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW));
+  fkey_emit[1] = static_cast<char>(CPC_F4);
+  if (ImGui::Button("F4", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  fkey_emit[1] = static_cast<char>(CPC_F5);
+  if (ImGui::Button("F5", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  fkey_emit[1] = static_cast<char>(CPC_F6);
+  if (ImGui::Button("F6", ImVec2(K, H))) emit_key(fkey_emit);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ROW 2: CAPS A S D F G H J K L +/; */: }/] RETURN(wide) | F1 F2 F3
+  // ═══════════════════════════════════════════════════════════════════
+  ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 2));
+  if (caps_on) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
+  if (ImGui::Button("CAPS\nLOCK", ImVec2(K*W_CAPS, H))) emit_key("\x01" "CAPS");
+  if (caps_on) ImGui::PopStyleColor();
+  ImGui::SameLine(0, S);
+  if (ImGui::Button("A", ImVec2(K, H))) emit_key("a"); ImGui::SameLine(0, S);
+  if (ImGui::Button("S", ImVec2(K, H))) emit_key("s"); ImGui::SameLine(0, S);
+  if (ImGui::Button("D", ImVec2(K, H))) emit_key("d"); ImGui::SameLine(0, S);
+  if (ImGui::Button("F", ImVec2(K, H))) emit_key("f"); ImGui::SameLine(0, S);
+  if (ImGui::Button("G", ImVec2(K, H))) emit_key("g"); ImGui::SameLine(0, S);
+  if (ImGui::Button("H", ImVec2(K, H))) emit_key("h"); ImGui::SameLine(0, S);
+  if (ImGui::Button("J", ImVec2(K, H))) emit_key("j"); ImGui::SameLine(0, S);
+  if (ImGui::Button("K", ImVec2(K, H))) emit_key("k"); ImGui::SameLine(0, S);
+  if (ImGui::Button("L", ImVec2(K, H))) emit_key("l"); ImGui::SameLine(0, S);
+  if (ImGui::Button("+\n;", ImVec2(K, H))) emit_key(";"); ImGui::SameLine(0, S);
+  if (ImGui::Button("*\n:", ImVec2(K, H))) emit_key(":"); ImGui::SameLine(0, S);
+  if (ImGui::Button("}\n]", ImVec2(K, H))) emit_key("]");
+
+  // Numpad row 2: F1 F2 F3
+  ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 2));
+  fkey_emit[1] = static_cast<char>(CPC_F1);
+  if (ImGui::Button("F1", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  fkey_emit[1] = static_cast<char>(CPC_F2);
+  if (ImGui::Button("F2", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  fkey_emit[1] = static_cast<char>(CPC_F3);
+  if (ImGui::Button("F3", ImVec2(K, H))) emit_key(fkey_emit);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ROW 3: SHIFT Z X C V B N M </,  >/. ?// `/\ SHIFT RETURN | F0 ↑ .
+  // RETURN lower part forms L-shape with row 2 RETURN
+  // ═══════════════════════════════════════════════════════════════════
+  ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 3));
+  bool shift_highlight = imgui_state.vkeyboard_shift_next;  // highlight both SHIFTs together
+  if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
+  if (ImGui::Button("SHIFT##L", ImVec2(K*W_LSHIFT, H))) emit_key("\x01" "SHIFT");
+  if (shift_highlight) ImGui::PopStyleColor();
+  ImGui::SameLine(0, S);
+  if (ImGui::Button("Z", ImVec2(K, H))) emit_key("z"); ImGui::SameLine(0, S);
+  if (ImGui::Button("X", ImVec2(K, H))) emit_key("x"); ImGui::SameLine(0, S);
+  if (ImGui::Button("C", ImVec2(K, H))) emit_key("c"); ImGui::SameLine(0, S);
+  if (ImGui::Button("V", ImVec2(K, H))) emit_key("v"); ImGui::SameLine(0, S);
+  if (ImGui::Button("B", ImVec2(K, H))) emit_key("b"); ImGui::SameLine(0, S);
+  if (ImGui::Button("N", ImVec2(K, H))) emit_key("n"); ImGui::SameLine(0, S);
+  if (ImGui::Button("M", ImVec2(K, H))) emit_key("m"); ImGui::SameLine(0, S);
+  if (ImGui::Button("<\n,", ImVec2(K, H))) emit_key(","); ImGui::SameLine(0, S);
+  if (ImGui::Button(">\n.##main", ImVec2(K, H))) emit_key("."); ImGui::SameLine(0, S);
+  if (ImGui::Button("?\n/", ImVec2(K, H))) emit_key("/"); ImGui::SameLine(0, S);
+  if (ImGui::Button("`\n\\", ImVec2(K, H))) emit_key("\\"); ImGui::SameLine(0, S);
+  // Right SHIFT - fills to main_end_x (naturally narrower due to wider left SHIFT)
+  float rshift_x = ImGui::GetCursorPosX();
+  float rshift_w = main_end_x - rshift_x;
+  if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
+  if (ImGui::Button("SHIFT##R", ImVec2(rshift_w, H))) emit_key("\x01" "SHIFT");
+  if (shift_highlight) ImGui::PopStyleColor();
+
+  // Numpad row 3: F0 ↑ .
+  ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 3));
+  fkey_emit[1] = static_cast<char>(CPC_F0);
+  if (ImGui::Button("F0", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("\xe2\x86\x91##up", ImVec2(K, H))) emit_key("\a\xae"); ImGui::SameLine(0, S);
+  if (ImGui::Button(".##np", ImVec2(K, H))) emit_key(".");
+
+  // ═══════════════════════════════════════════════════════════════════
+  // ROW 4: CTRL COPY ====SPACE==== ENTER | ← ↓ →
+  // ═══════════════════════════════════════════════════════════════════
+  ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 4));
+  if (ctrl_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 1.0f));
+  if (ImGui::Button("CTRL", ImVec2(K*W_CTRL, H))) emit_key("\x01" "CTRL");
+  if (ctrl_on) ImGui::PopStyleColor();
+  ImGui::SameLine(0, S);
+  if (ImGui::Button("COPY", ImVec2(K*W_COPY, H))) emit_key("\a\xa9");
+  ImGui::SameLine(0, S);
+  // SPACE - fixed width, then ENTER fills to main_end_x
+  float space_w = K * 8.0f;
+  if (ImGui::Button("SPACE", ImVec2(space_w, H))) emit_key(" ");
+  ImGui::SameLine(0, S);
+  // ENTER - calculate width to reach main_end_x
+  float enter_x = ImGui::GetCursorPosX();
+  float enter_w = main_end_x - enter_x;
+  if (ImGui::Button("ENTER", ImVec2(enter_w, H))) emit_key("\n");
+
+  // Numpad row 4: ← ↓ →
+  ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 4));
+  if (ImGui::Button("\xe2\x86\x90##left", ImVec2(K, H))) emit_key("\a\xaf"); ImGui::SameLine(0, S);
+  if (ImGui::Button("\xe2\x86\x93##down", ImVec2(K, H))) emit_key("\a\xb0"); ImGui::SameLine(0, S);
+  if (ImGui::Button("\xe2\x86\x92##right", ImVec2(K, H))) emit_key("\a\xb1");
+
+  // Move cursor below keyboard for the rest
+  ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 5 + S * 2));
+
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor(3);
+
+  ImGui::Separator();
+
+  // ── Quick commands ──
+  ImGui::Text("Quick:");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("cat")) emit_key("cat\n");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("run\"")) emit_key("run\"\n");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("cls")) emit_key("cls\n");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("|tape")) emit_key("|tape\n");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("|cpm")) emit_key("|cpm\n");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("|a")) emit_key("|a\n");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("|b")) emit_key("|b\n");
+
+
+  if (!open) imgui_state.show_vkeyboard = false;
 
   ImGui::End();
 }
