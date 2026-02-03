@@ -152,7 +152,7 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 .PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls
-COMMON_CFLAGS += $(CFLAGS) -std=c++17 $(IPATHS)
+COMMON_CFLAGS += -std=c++17 $(IPATHS)
 DEBUG_FLAGS = -Werror -g -O0 -DDEBUG
 RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions -s
 
@@ -184,7 +184,8 @@ all: check_deps distrib
 endif
 
 # gtest doesn't build with warnings flags, hence the COMMON_CFLAGS
-ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS)
+# CFLAGS comes last so user overrides can disable specific warnings
+ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS) $(CFLAGS)
 
 $(MAIN): main.cpp src/cap32.h
 	@$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $(MAIN) main.cpp
