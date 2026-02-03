@@ -1416,38 +1416,52 @@ static void devtools_tab_asm()
 static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr,
                               int bytes_per_line, int format)
 {
-  char* p = buf;
-  char* end = buf + buf_size - 1;
+  if (buf_size == 0) return 0;
+
+  int offset = 0;
+  int remaining = static_cast<int>(buf_size);
+
+  // Helper to safely advance after snprintf (clamps to remaining space)
+  auto advance = [&](int written) {
+    if (written < 0) return false;
+    int actual = (written < remaining) ? written : remaining - 1;
+    offset += actual;
+    remaining -= actual;
+    return remaining > 1;
+  };
 
   // Address
-  int n = snprintf(p, end - p, "%04X : ", base_addr);
-  p += n;
+  if (!advance(snprintf(buf + offset, remaining, "%04X : ", base_addr))) {
+    buf[offset] = '\0';
+    return offset;
+  }
 
   // Hex bytes
-  for (int j = 0; j < bytes_per_line && p < end; j++) {
-    n = snprintf(p, end - p, "%02X ", pbRAM[(base_addr + j) & 0xFFFF]);
-    p += n;
+  for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
+    if (!advance(snprintf(buf + offset, remaining, "%02X ", pbRAM[(base_addr + j) & 0xFFFF])))
+      break;
   }
 
   // Extended formats
-  if (format == 1 && p < end) { // Hex & char
-    n = snprintf(p, end - p, " | ");
-    p += n;
-    for (int j = 0; j < bytes_per_line && p < end; j++) {
-      byte b = pbRAM[(base_addr + j) & 0xFFFF];
-      *p++ = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
+  if (format == 1 && remaining > 1) { // Hex & char
+    if (advance(snprintf(buf + offset, remaining, " | "))) {
+      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
+        byte b = pbRAM[(base_addr + j) & 0xFFFF];
+        buf[offset++] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
+        remaining--;
+      }
     }
-  } else if (format == 2 && p < end) { // Hex & u8
-    n = snprintf(p, end - p, " | ");
-    p += n;
-    for (int j = 0; j < bytes_per_line && p < end; j++) {
-      n = snprintf(p, end - p, "%3u ", pbRAM[(base_addr + j) & 0xFFFF]);
-      p += n;
+  } else if (format == 2 && remaining > 1) { // Hex & u8
+    if (advance(snprintf(buf + offset, remaining, " | "))) {
+      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
+        if (!advance(snprintf(buf + offset, remaining, "%3u ", pbRAM[(base_addr + j) & 0xFFFF])))
+          break;
+      }
     }
   }
 
-  *p = '\0';
-  return static_cast<int>(p - buf);
+  buf[offset] = '\0';
+  return offset;
 }
 
 // Shared poke input UI with proper validation
@@ -1469,19 +1483,10 @@ static bool ui_poke_input(char* addr_buf, size_t addr_size,
   ImGui::SameLine();
 
   if (ImGui::Button(btn_id)) {
-    if (addr_buf[0] && val_buf[0]) {
-      // Parse with proper error checking
-      char* end_addr;
-      char* end_val;
-      unsigned long addr = strtoul(addr_buf, &end_addr, 16);
-      unsigned long val = strtoul(val_buf, &end_val, 16);
-
-      // Validate: complete parse, within range
-      if (*end_addr == '\0' && *end_val == '\0' &&
-          addr <= 0xFFFF && val <= 0xFF) {
-        pbRAM[addr] = static_cast<byte>(val);
-        return true;
-      }
+    unsigned long addr, val;
+    if (parse_hex(addr_buf, &addr, 0xFFFF) && parse_hex(val_buf, &val, 0xFF)) {
+      pbRAM[addr] = static_cast<byte>(val);
+      return true;
     }
   }
   return false;
