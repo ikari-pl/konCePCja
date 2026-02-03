@@ -80,7 +80,7 @@ LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
-IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
+IPATHS = -Isrc/ $(CAPS_INCLUDES) -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
 LIBS += -lws2_32
