@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p1
 issue_id: "001"
 tags: [code-review, security, imgui-branch]
@@ -86,16 +86,17 @@ Option A - Add bounds checks inline. This is the minimal safe fix.
 
 ## Acceptance Criteria
 
-- [ ] All `reinterpret_cast` reads are preceded by bounds validation
-- [ ] Malformed TZX with truncated block does not crash
-- [ ] Malformed TZX with oversized block length does not read past buffer
-- [ ] Normal TZX files still load correctly
+- [x] All `reinterpret_cast` reads are preceded by bounds validation
+- [x] Malformed TZX with truncated block does not crash
+- [x] Malformed TZX with oversized block length does not read past buffer
+- [x] Normal TZX files still load correctly
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Added safe_read_word/dword helpers; all block types have bounds checks | Completed |
 
 ## Resources
 
