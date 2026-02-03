@@ -146,10 +146,11 @@ void imgui_init_ui()
   // Merge transport symbol glyphs from system font into default font
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->AddFontDefault();
+#ifdef __APPLE__
+  // On macOS, merge Apple Symbols font for transport control glyphs
   ImFontConfig merge_cfg;
   merge_cfg.MergeMode = true;
   merge_cfg.PixelSnapH = true;
-  // Glyph ranges: U+23CF-U+23F9 (⏏⏭⏮⏹) and U+25B6 (▶)
   static const ImWchar symbol_ranges[] = {
     0x23CF, 0x23CF, // ⏏
     0x25A0, 0x25A0, // ■
@@ -157,7 +158,6 @@ void imgui_init_ui()
     0x25C0, 0x25C0, // ◀
     0,
   };
-#ifdef __APPLE__
   io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
 #endif
 
