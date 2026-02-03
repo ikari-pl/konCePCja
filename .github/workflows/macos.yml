@@ -1,6 +1,10 @@
 name: MacOS build
 
 on:
+  push:
+    branches:
+      - '**'
+  pull_request:
   release:
     types: [published]
 
@@ -41,7 +45,10 @@ jobs:
           DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
       - run: make -j 3 ARCH=macos macos_bundle
 
+      # ---- Release-only steps below ----
+
       - name: Import signing certificate
+        if: github.event_name == 'release'
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -57,17 +64,20 @@ jobs:
           security list-keychains -d user -s $KEYCHAIN_PATH login.keychain
 
       - name: Sign the app bundle with Developer ID
+        if: github.event_name == 'release'
         run: |
           codesign --force --deep --options runtime \
             -s "Developer ID Application" \
             release/koncepcja-macos-bundle/konCePCja.app
 
       - name: Create DMG with signed app
+        if: github.event_name == 'release'
         run: |
           rm -f release/koncepcja-macos-bundle/konCePCja.dmg
           hdiutil create -volname konCePCja -srcfolder release/koncepcja-macos-bundle/konCePCja.app -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg
 
       - name: Notarize DMG
+        if: github.event_name == 'release'
         continue-on-error: true
         id: notarize
         env:
@@ -106,12 +116,12 @@ jobs:
           exit 1
 
       - name: Staple notarization ticket
-        if: steps.notarize.outcome == 'success'
+        if: github.event_name == 'release' && steps.notarize.outcome == 'success'
         run: xcrun stapler staple release/koncepcja-macos-bundle/konCePCja.dmg
 
       - name: Publish latest
         uses: softprops/action-gh-release@v2
-        if: github.event.release.tag_name == 'latest'
+        if: github.event_name == 'release' && github.event.release.tag_name == 'latest'
         with:
           files: |
             release/koncepcja-macos-bundle/konCePCja.dmg
@@ -121,7 +131,7 @@ jobs:
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.event.release.tag_name, 'v')
+        if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')
         with:
           files: |
             release/koncepcja-macos-bundle/konCePCja.dmg
