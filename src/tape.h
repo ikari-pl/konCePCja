@@ -24,5 +24,7 @@
 
 void Tape_UpdateLevel();
 void Tape_Rewind();
+int  Tape_GetNextBlock();
+void Tape_BlockDone();
 
 #endif

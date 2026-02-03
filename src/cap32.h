@@ -420,6 +420,7 @@ using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
 
 // cap32.cpp
 void set_osd_message(const std::string& message, uint32_t for_milliseconds = 1000);
+void cap32_queue_virtual_keys(const std::string& text);
 void ga_init_banking(t_MemBankConfig& membank_config, unsigned char RAM_bank);
 bool driveAltered();
 void emulator_reset();
@@ -428,7 +429,6 @@ void cpc_resume();
 void bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);
 void dumpScreen();
-bool showDevTools();
 int  emulator_init();
 int  video_set_palette();
 void init_joystick_emulation();

@@ -25,6 +25,7 @@
 #include "cap32.h"
 #include "tape.h"
 #include "z80.h"
+#include "imgui_ui.h"
 
 #define TAPE_PILOT_STAGE 1
 #define TAPE_SYNC_STAGE 2
@@ -100,6 +101,9 @@ int Tape_ReadDataBit()
          #endif
       }
       byte bBit = bTapeData & 0x80;
+      // Push decoded bit into ring buffer for UI visualization
+      imgui_state.tape_decoded_buf[imgui_state.tape_decoded_head] = bBit ? 1 : 0;
+      imgui_state.tape_decoded_head = (imgui_state.tape_decoded_head + 1) % ImGuiUIState::TAPE_DECODED_SAMPLES;
       bTapeData <<= 1;
       dwTapeBitsToShift--;
       dwTapeDataCount--;
