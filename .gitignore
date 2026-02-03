@@ -16,3 +16,7 @@ debian/koncepcja.postrm.debhelper
 debian/koncepcja.substvars
 debian/koncepcja/
 debian/files
+
+# Personal files
+moisty-*.png
+imgui.ini
