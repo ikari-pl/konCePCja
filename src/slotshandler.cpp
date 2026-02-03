@@ -1052,40 +1052,76 @@ int tape_insert_cdt (FILE *pfile)
    pbTapeImageEnd = &pbTapeImage[lFileSize+6];
    pbBlock = &pbTapeImage[0];
    bool bolGotDataBlock = false;
+
+   // Helper lambda to check if enough bytes remain
+   auto remaining = [&]() -> ptrdiff_t { return pbTapeImageEnd - pbBlock; };
+
    while (pbBlock < pbTapeImageEnd) {
       bID = *pbBlock++;
       switch(bID) {
          case 0x10: // standard speed data block
+            if (remaining() < 4) {
+               LOG_ERROR("Truncated CDT block 0x10");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *reinterpret_cast<word *>(pbBlock+2) + 4;
             bolGotDataBlock = true;
             break;
          case 0x11: // turbo loading data block
+            if (remaining() < 0x12) {
+               LOG_ERROR("Truncated CDT block 0x11");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = (*reinterpret_cast<dword *>(pbBlock+0x0f) & 0x00ffffff) + 0x12;
             bolGotDataBlock = true;
             break;
          case 0x12: // pure tone
+            if (remaining() < 4) {
+               LOG_ERROR("Truncated CDT block 0x12");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = 4;
             bolGotDataBlock = true;
             break;
          case 0x13: // sequence of pulses of different length
+            if (remaining() < 1) {
+               LOG_ERROR("Truncated CDT block 0x13");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *pbBlock * 2 + 1;
             bolGotDataBlock = true;
             break;
          case 0x14: // pure data block
+            if (remaining() < 0x0a) {
+               LOG_ERROR("Truncated CDT block 0x14");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = (*reinterpret_cast<dword *>(pbBlock+0x07) & 0x00ffffff) + 0x0a;
             bolGotDataBlock = true;
             break;
          case 0x15: // direct recording
+            if (remaining() < 0x08) {
+               LOG_ERROR("Truncated CDT block 0x15");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = (*reinterpret_cast<dword *>(pbBlock+0x05) & 0x00ffffff) + 0x08;
             bolGotDataBlock = true;
             break;
          case 0x20: // pause
+            if (remaining() < 2) {
+               LOG_ERROR("Truncated CDT block 0x20");
+               return ERR_TAP_INVALID;
+            }
             if ((!bolGotDataBlock) && (pbBlock != &pbTapeImage[1])) {
                *reinterpret_cast<word *>(pbBlock) = 0; // remove any pauses (execept ours) before the data starts
             }
             iBlockLength = 2;
             break;
          case 0x21: // group start
+            if (remaining() < 1) {
+               LOG_ERROR("Truncated CDT block 0x21");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *pbBlock + 1;
             break;
          case 0x22: // group end
@@ -1122,24 +1158,48 @@ int tape_insert_cdt (FILE *pfile)
             iBlockLength = *reinterpret_cast<word *>(pbBlock) + 2;
             break;
          case 0x30: // text description
+            if (remaining() < 1) {
+               LOG_ERROR("Truncated CDT block 0x30");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *pbBlock + 1;
             break;
          case 0x31: // message block
+            if (remaining() < 2) {
+               LOG_ERROR("Truncated CDT block 0x31");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *(pbBlock+1) + 2;
             break;
          case 0x32: // archive info
+            if (remaining() < 2) {
+               LOG_ERROR("Truncated CDT block 0x32");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *reinterpret_cast<word *>(pbBlock) + 2;
             break;
          case 0x33: // hardware type
+            if (remaining() < 1) {
+               LOG_ERROR("Truncated CDT block 0x33");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = (*pbBlock * 3) + 1;
             break;
          case 0x34: // emulation info
             iBlockLength = 8;
             break;
          case 0x35: // custom info block
+            if (remaining() < 0x14) {
+               LOG_ERROR("Truncated CDT block 0x35");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *reinterpret_cast<dword *>(pbBlock+0x10) + 0x14;
             break;
          case 0x40: // snapshot block
+            if (remaining() < 0x04) {
+               LOG_ERROR("Truncated CDT block 0x40");
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = (*reinterpret_cast<dword *>(pbBlock+0x01) & 0x00ffffff) + 0x04;
             break;
          case 0x5A: // another tzx/cdt file
@@ -1147,7 +1207,17 @@ int tape_insert_cdt (FILE *pfile)
             break;
 
          default: // "extension rule"
+            if (remaining() < 4) {
+               LOG_ERROR("Truncated CDT block 0x" << std::hex << (int)bID);
+               return ERR_TAP_INVALID;
+            }
             iBlockLength = *reinterpret_cast<dword *>(pbBlock) + 4;
+      }
+
+      // Validate block doesn't extend past end of file
+      if (iBlockLength < 0 || pbBlock + iBlockLength > pbTapeImageEnd) {
+         LOG_ERROR("CDT block 0x" << std::hex << (int)bID << " extends past end of file");
+         return ERR_TAP_INVALID;
       }
 
       #ifdef DEBUG_TAPE
