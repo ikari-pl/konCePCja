@@ -1596,7 +1596,7 @@ void video_set_style ()
 void mouse_init ()
 {
   // hide the mouse cursor unless we emulate phazer
-  ShowCursor(CPC.phazer_emulation);
+  set_cursor_visibility(CPC.phazer_emulation);
 }
 
 
@@ -1956,7 +1956,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
 // As long as a GUI is enabled, we must show the cursor.
 // Because we can activate multiple GUIs at a time, we need to keep track of how
 // many times we've been asked to show or hide cursor.
-void ShowCursor(bool show)
+void set_cursor_visibility(bool show)
 {
   static int shows_count = 1;
   if (show) {
@@ -3126,10 +3126,10 @@ int cap32_main (int argc, char **argv)
                 bool over_topbar = event.motion.y < topbar_height_px;
                 static bool topbar_cursor_visible = false;
                 if (over_topbar && !topbar_cursor_visible) {
-                  ShowCursor(true);
+                  set_cursor_visibility(true);
                   topbar_cursor_visible = true;
                 } else if (!over_topbar && topbar_cursor_visible && !CPC.scr_gui_is_currently_on && !CPC.phazer_emulation) {
-                  ShowCursor(false);
+                  set_cursor_visibility(false);
                   topbar_cursor_visible = false;
                 }
               }
