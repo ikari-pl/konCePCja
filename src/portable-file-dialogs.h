@@ -1484,6 +1484,16 @@ inline std::string internal::file_dialog::select_folder_vista(IFileDialog *ifd, 
 
 // notify implementation
 
+#if _WIN32
+// Static callback with CALLBACK calling convention for EnumResourceNames
+// (required for 32-bit MinGW where lambdas lack __stdcall)
+static BOOL CALLBACK pfd_icon_enum_callback(HMODULE, LPCTSTR, LPTSTR lpName, LONG_PTR lParam)
+{
+    ((NOTIFYICONDATAW *)lParam)->hIcon = ::LoadIcon(GetModuleHandle(nullptr), lpName);
+    return FALSE;
+}
+#endif
+
 inline notify::notify(std::string const &title,
                       std::string const &message,
                       icon _icon /* = icon::info */)
@@ -1536,14 +1546,8 @@ inline notify::notify(std::string const &title,
         /* case icon::info: */ default: nid->dwInfoFlags = NIIF_INFO; break;
     }
 
-    ENUMRESNAMEPROC icon_enum_callback = [](HMODULE, LPCTSTR, LPTSTR lpName, LONG_PTR lParam) -> BOOL
-    {
-        ((NOTIFYICONDATAW *)lParam)->hIcon = ::LoadIcon(GetModuleHandle(nullptr), lpName);
-        return false;
-    };
-
     nid->hIcon = ::LoadIcon(nullptr, IDI_APPLICATION);
-    ::EnumResourceNames(nullptr, RT_GROUP_ICON, icon_enum_callback, (LONG_PTR)nid.get());
+    ::EnumResourceNames(nullptr, RT_GROUP_ICON, pfd_icon_enum_callback, (LONG_PTR)nid.get());
 
     nid->uTimeout = 5000;
 
