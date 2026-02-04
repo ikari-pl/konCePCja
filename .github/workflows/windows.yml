@@ -68,6 +68,9 @@ jobs:
       # zlib.
       - name: Build konCePCja
         shell: msys2 {0}
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
         run: |
           if [ "${{matrix.sdl_from_source}}" = "true" ]; then
             export PKG_CONFIG_PATH="$(pwd)/vendor/SDL/install/lib/pkgconfig:$PKG_CONFIG_PATH"
