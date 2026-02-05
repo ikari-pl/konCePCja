@@ -6,7 +6,7 @@ Amstrad CPC emulator based on Caprice32, with Dear ImGui interface and IPC debug
 
 ```
 src/
-├── cap32.cpp          # Main emulator loop, keyboard handling
+├── kon_cpc_ja.cpp     # Main emulator loop, keyboard handling
 ├── z80.cpp            # Z80 CPU emulation with breakpoint support
 ├── video.cpp          # Video rendering, scanlines
 ├── psg.cpp            # Sound chip (AY-3-8912) emulation

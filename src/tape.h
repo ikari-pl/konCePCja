@@ -27,4 +27,10 @@ void Tape_Rewind();
 int  Tape_GetNextBlock();
 void Tape_BlockDone();
 
+// Internal functions exposed for testing
+void Tape_SwitchLevel();
+int  Tape_ReadDataBit();
+int  Tape_ReadSampleDataBit();
+void Tape_GetCycleCount();
+
 #endif

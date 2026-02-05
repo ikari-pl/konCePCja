@@ -1,4 +1,5 @@
 #include "imgui_ui.h"
+#include "imgui_ui_testable.h"
 #include "imgui.h"
 #include <cstdio>
 #include <cstdlib>
@@ -250,18 +251,7 @@ static void close_menu()
 // Tape block scanner — builds offset table from TZX image
 // ─────────────────────────────────────────────────
 
-// Safe read helpers for unaligned TZX block parsing
-static inline bool safe_read_word(byte* p, byte* end, size_t offset, word& out) {
-  if (p + offset + sizeof(word) > end) return false;
-  memcpy(&out, p + offset, sizeof(word));
-  return true;
-}
-
-static inline bool safe_read_dword(byte* p, byte* end, size_t offset, dword& out) {
-  if (p + offset + sizeof(dword) > end) return false;
-  memcpy(&out, p + offset, sizeof(dword));
-  return true;
-}
+// safe_read_word/dword moved to imgui_ui_testable.h
 
 static void tape_scan_blocks()
 {
@@ -1012,19 +1002,7 @@ static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
 static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "576 KB" };
 static int ram_size_values[] = { 64, 128, 192, 256, 320, 576 };
 
-static int find_ram_index(unsigned int ram) {
-  for (int i = 0; i < 6; i++) {
-    if (ram_size_values[i] == static_cast<int>(ram)) return i;
-  }
-  return 2; // default 192
-}
-
-static int find_sample_rate_index(unsigned int rate) {
-  for (int i = 0; i < 5; i++) {
-    if (sample_rate_values[i] == static_cast<int>(rate)) return i;
-  }
-  return 2; // default 44100
-}
+// find_ram_index and find_sample_rate_index moved to imgui_ui_testable.h
 
 static void imgui_render_options()
 {
@@ -1243,17 +1221,7 @@ static void imgui_render_options()
 // DevTools
 // ─────────────────────────────────────────────────
 
-// Parse hex string with validation. Returns true if valid, false otherwise.
-// On success, *out contains the parsed value. On failure, *out is unchanged.
-static bool parse_hex(const char* str, unsigned long* out, unsigned long max_val)
-{
-  if (!str || !str[0]) return false;
-  char* end;
-  unsigned long val = strtoul(str, &end, 16);
-  if (*end != '\0' || val > max_val) return false;
-  *out = val;
-  return true;
-}
+// parse_hex, safe_read_word/dword moved to imgui_ui_testable.h
 
 static void devtools_tab_z80()
 {
