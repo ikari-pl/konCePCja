@@ -30,6 +30,7 @@
 #include "tape.h"
 #include "z80.h"
 #include "asic.h"
+#include "imgui_ui.h"
 #include "log.h"
 #include <algorithm>
 #include <vector>
@@ -46,6 +47,7 @@ extern dword dwMF2Flags;
 extern dword dwMF2ExitAddr;
 
 extern int iTapeCycleCount;
+extern byte bTapeLevel;
 
 #ifdef DEBUG_Z80
 extern FILE *pfoDebug;

@@ -36,14 +36,15 @@ SDL_VENDOR_LIBS = -L$(SDL_VENDOR_BUILD)/lib -lSDL3
 
 ifeq ($(ARCH),win64)
 # Rename main to SDL_main to solve the "undefined reference to `SDL_main'".
-# Do not make an error of old-style-cast on msys2 as the version of GCC used by
-# msys2 on GitHub actions is 13.3 which has a bug and raise it on a cast from
-# zlib.h
-COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L -Wno-error=old-style-cast
+# Do not make an error of old-style-cast or zero-as-null-pointer-constant on
+# msys2 as vendor headers trigger these warnings.
+COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L
+WARN_SUPPRESS = -Wno-error=old-style-cast -Wno-error=zero-as-null-pointer-constant
 PLATFORM=windows
 MINGW_PATH=/mingw64
 else ifeq ($(ARCH),win32)
-COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L -Wno-error=old-style-cast
+COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L
+WARN_SUPPRESS = -Wno-error=old-style-cast -Wno-error=zero-as-null-pointer-constant
 PLATFORM=windows
 MINGW_PATH=/mingw32
 else ifeq ($(ARCH),linux)
@@ -55,6 +56,18 @@ LDFLAGS += -framework Cocoa
 else
 $(error Unknown ARCH. Supported ones are linux, win32 and win64.)
 endif
+
+# macOS code signing macro: $(1) = target, $(2) = extra flags (e.g. --deep)
+define SIGN_MACOS
+@xattr -cr $(1) 2>/dev/null || true
+@if security find-identity -v -p codesigning | grep -q "Developer ID Application"; then \
+	codesign --force $(2) --options runtime -s "Developer ID Application" $(1); \
+	echo "Signed $(1) with Developer ID"; \
+else \
+	codesign --force $(2) -s - $(1); \
+	echo "Ad-hoc signed $(1)"; \
+fi
+endef
 
 ifeq ($(PLATFORM),windows)
 TARGET = koncepcja.exe
@@ -80,7 +93,7 @@ LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
-IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
+IPATHS = -Isrc/ $(CAPS_INCLUDES) -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
 LIBS += -lws2_32
@@ -139,7 +152,10 @@ DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 MM_DEPENDS:=$(foreach file,$(MM_SOURCES:.mm=.d),$(shell echo "$(OBJDIR)/$(file)"))
 OBJECTS_CPP:=$(DEPENDS:.d=.o)
 OBJECTS_MM:=$(MM_DEPENDS:.d=.o)
-OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM)
+IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp
+IMGUI_OBJECTS:=$(foreach file,$(IMGUI_SOURCES:.cpp=.o),$(OBJDIR)/$(file))
+
+OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM) $(IMGUI_OBJECTS)
 
 TEST_SOURCES:=$(shell find $(TSTDIR) -name \*.cpp)
 TEST_HEADERS:=$(shell find $(TSTDIR) -name \*.h)
@@ -149,7 +165,7 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 .PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls
-COMMON_CFLAGS += $(CFLAGS) -std=c++17 $(IPATHS)
+COMMON_CFLAGS += -std=c++17 $(IPATHS)
 DEBUG_FLAGS = -Werror -g -O0 -DDEBUG
 RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions -s
 
@@ -181,7 +197,9 @@ all: check_deps distrib
 endif
 
 # gtest doesn't build with warnings flags, hence the COMMON_CFLAGS
-ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS)
+# WARN_SUPPRESS and CFLAGS come last so platform defaults and user overrides
+# can disable specific warnings triggered by vendor code
+ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS) $(WARN_SUPPRESS) $(CFLAGS)
 
 $(MAIN): main.cpp src/cap32.h
 	@$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $(MAIN) main.cpp
@@ -203,6 +221,10 @@ $(MM_DEPENDS): $(OBJDIR)/%.d: %.mm
 $(MM_DEPENDS:.d=.o): $(OBJDIR)/%.o: %.mm
 	@mkdir -p `dirname $@`
 	$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $@ $<
+
+$(IMGUI_OBJECTS): $(OBJDIR)/%.o: %.cpp
+	@mkdir -p `dirname $@`
+	$(CXX) -c $(BUILD_FLAGS) $(COMMON_CFLAGS) -o $@ $<
 
 debug: debug_flag tags distrib unit_test
 
@@ -237,6 +259,9 @@ koncepcja.cfg: koncepcja.cfg.tmpl
 
 $(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg
 	$(CXX) $(LDFLAGS) -o $(TARGET) $(OBJECTS) $(MAIN) $(LIBS)
+ifeq ($(ARCH),macos)
+	$(call SIGN_MACOS,$(TARGET),)
+endif
 
 ifeq ($(PLATFORM),windows)
 DLLS = SDL3.dll libbz2-1.dll libfreetype-6.dll libpng16-16.dll libstdc++-6.dll \
@@ -374,6 +399,8 @@ macos_bundle: all
 		libname=$$(basename "$$lib"); \
 		install_name_tool -change "$$(otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep "$$libname" | awk '{ print $$1 }')" "@executable_path/../Frameworks/$$libname" $(BUNDLE_DIR)/Contents/MacOS/$(TARGET); \
 	done
+	# Sign the bundle if Developer ID cert is available, otherwise ad-hoc
+	$(call SIGN_MACOS,$(BUNDLE_DIR),--deep)
 	# Retry hdiutil up to 3 times: it occasionally fails with "Resource Busy"
 	for i in 1 2 3; do hdiutil create -volname konCePCja-$(VERSION) -srcfolder $(BUNDLE_DIR) -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg && break || sleep 5; done
 

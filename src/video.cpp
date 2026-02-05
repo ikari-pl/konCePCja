@@ -41,6 +41,11 @@
 #include <memory>
 #include <iostream>
 
+#include "imgui.h"
+#include "imgui_impl_sdl3.h"
+#include "imgui_impl_sdlrenderer3.h"
+#include "imgui_ui.h"
+
 SDL_Window* mainSDLWindow = nullptr;
 SDL_Renderer* renderer = nullptr;
 SDL_Texture* texture = nullptr;
@@ -151,6 +156,15 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   SDL_CreateWindowAndRenderer("konCePCja", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   SDL_SetWindowTitle(mainSDLWindow, "konCePCja " VERSION_STRING);
+
+  // Initialize Dear ImGui
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGui::StyleColorsDark();
+  imgui_init_ui();
+  ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer);
+  ImGui_ImplSDLRenderer3_Init(renderer);
+
   int surface_width, surface_height;
   if (scale > 1) {
     t->half_pixels = 0;
@@ -207,11 +221,23 @@ void direct_flip(video_plugin* t)
     SDL_FRect panel_rect = { static_cast<float>((win_width - devtools_panel_width) * sx), static_cast<float>(topbar_height * sy), static_cast<float>(devtools_panel_width * sx), static_cast<float>(devtools_panel_height * sy) };
     SDL_RenderTexture(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
+
+  // Render Dear ImGui overlay
+  ImGui_ImplSDLRenderer3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
+  imgui_render_ui();
+  ImGui::Render();
+  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+
   SDL_RenderPresent(renderer);
 }
 
 void direct_close()
 {
+  ImGui_ImplSDLRenderer3_Shutdown();
+  ImGui_ImplSDL3_Shutdown();
+  if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
   if (texture) SDL_DestroyTexture(texture);
   if (vid) SDL_DestroySurface(vid);
   if (renderer) SDL_DestroyRenderer(renderer);
@@ -713,6 +739,15 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   SDL_CreateWindowAndRenderer("konCePCja", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
   SDL_SetWindowTitle(mainSDLWindow, "konCePCja " VERSION_STRING);
+
+  // Initialize Dear ImGui
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGui::StyleColorsDark();
+  imgui_init_ui();
+  ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer);
+  ImGui_ImplSDLRenderer3_Init(renderer);
+
   int surface_width, surface_height;
   if (scale < 4) {
     t->half_pixels = 1;
@@ -786,6 +821,17 @@ void swscale_blit(video_plugin* t)
     SDL_FRect panel_rect = { static_cast<float>((win_width - devtools_panel_width) * sx), static_cast<float>(topbar_height * sy), static_cast<float>(devtools_panel_width * sx), static_cast<float>(devtools_panel_height * sy) };
     SDL_RenderTexture(renderer, devtools_panel_texture, nullptr, &panel_rect);
   }
+
+  // Render Dear ImGui overlay
+  if (ImGui::GetCurrentContext()) {
+    ImGui_ImplSDLRenderer3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    imgui_render_ui();
+    ImGui::Render();
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+  }
+
   SDL_RenderPresent(renderer);
 }
 

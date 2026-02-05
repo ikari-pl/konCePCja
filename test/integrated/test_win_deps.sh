@@ -15,17 +15,7 @@ then
 fi
 
 cat << EOF > ${EXPECTED}
-libbrotlicommon.dll
-libbrotlidec.dll
-libbz2-1.dll
-libfreetype-6.dll
 libgcc_s_seh-1.dll
-libglib-2.0-0.dll
-libgraphite2.dll
-libharfbuzz-0.dll
-libiconv-2.dll
-libintl-8.dll
-libpcre2-8-0.dll
 libpng16-16.dll
 libstdc++-6.dll
 libwinpthread-1.dll
