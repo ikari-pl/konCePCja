@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p2
 issue_id: "002"
 tags: [code-review, performance, imgui-branch]
@@ -92,8 +92,8 @@ Option A for filenames + Option B for memory display.
 
 ## Acceptance Criteria
 
-- [ ] No std::string allocation in topbar render when files haven't changed
-- [ ] Memory display uses stack-allocated char buffers
+- [x] No std::string allocation in topbar render when files haven't changed
+- [x] Memory display uses stack-allocated char buffers
 - [ ] Frame timing variance reduced (measure with profiler if available)
 
 ## Work Log
@@ -101,6 +101,7 @@ Option A for filenames + Option B for memory display.
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Replaced ostringstream with snprintf in format_memory_line; use const char* pointers for filenames | Completed |
 
 ## Resources
 

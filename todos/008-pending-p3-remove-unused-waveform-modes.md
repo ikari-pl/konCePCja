@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p3
 issue_id: "008"
 tags: [code-review, simplicity, imgui-branch]
@@ -65,15 +65,16 @@ Option A - Remove modes 1 and 2. Simplify.
 
 ## Acceptance Criteria
 
-- [ ] Only "Pulse" and "Decoded" modes available
-- [ ] Mode selector updated
-- [ ] State variable range reduced
+- [x] Only "Pulse" and "Decoded" modes available
+- [x] Mode selector updated
+- [x] State variable range reduced
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Removed modes 1 and 2, updated UI and state | Completed |
 
 ## Resources
 

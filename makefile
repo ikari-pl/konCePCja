@@ -36,14 +36,15 @@ SDL_VENDOR_LIBS = -L$(SDL_VENDOR_BUILD)/lib -lSDL3
 
 ifeq ($(ARCH),win64)
 # Rename main to SDL_main to solve the "undefined reference to `SDL_main'".
-# Do not make an error of old-style-cast on msys2 as the version of GCC used by
-# msys2 on GitHub actions is 13.3 which has a bug and raise it on a cast from
-# zlib.h
-COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L -Wno-error=old-style-cast
+# Do not make an error of old-style-cast or zero-as-null-pointer-constant on
+# msys2 as vendor headers trigger these warnings.
+COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L
+WARN_SUPPRESS = -Wno-error=old-style-cast -Wno-error=zero-as-null-pointer-constant
 PLATFORM=windows
 MINGW_PATH=/mingw64
 else ifeq ($(ARCH),win32)
-COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L -Wno-error=old-style-cast
+COMMON_CFLAGS = -DWINDOWS -D_POSIX_C_SOURCE=200809L
+WARN_SUPPRESS = -Wno-error=old-style-cast -Wno-error=zero-as-null-pointer-constant
 PLATFORM=windows
 MINGW_PATH=/mingw32
 else ifeq ($(ARCH),linux)
@@ -80,7 +81,7 @@ LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
-IPATHS = -Isrc/ $(CAPS_INCLUDES) -Isrc/gui/includes -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
+IPATHS = -Isrc/ $(CAPS_INCLUDES) -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
 LIBS += -lws2_32
@@ -152,7 +153,7 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 .PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls
-COMMON_CFLAGS += $(CFLAGS) -std=c++17 $(IPATHS)
+COMMON_CFLAGS += -std=c++17 $(IPATHS)
 DEBUG_FLAGS = -Werror -g -O0 -DDEBUG
 RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions -s
 
@@ -184,7 +185,9 @@ all: check_deps distrib
 endif
 
 # gtest doesn't build with warnings flags, hence the COMMON_CFLAGS
-ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS)
+# WARN_SUPPRESS and CFLAGS come last so platform defaults and user overrides
+# can disable specific warnings triggered by vendor code
+ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS) $(WARN_SUPPRESS) $(CFLAGS)
 
 $(MAIN): main.cpp src/cap32.h
 	@$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $(MAIN) main.cpp

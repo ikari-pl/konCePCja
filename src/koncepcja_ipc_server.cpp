@@ -1,4 +1,5 @@
 #include "koncepcja_ipc_server.h"
+#include "imgui_ui.h"
 
 #include <cstring>
 #include <string>
@@ -224,8 +225,8 @@ std::string handle_command(const std::string& line) {
     return "OK\n";
   }
   if (cmd == "devtools") {
-    if (showDevTools()) return "OK\n";
-    return "ERR 500 devtools\n";
+    imgui_state.show_devtools = true;
+    return "OK\n";
   }
   if (cmd == "snapshot" && parts.size() >= 2) {
     if (parts[1] == "save") {
@@ -252,7 +253,7 @@ std::string handle_command(const std::string& line) {
       snprintf(bytebuf, sizeof(bytebuf), "%02X", v);
       resp += bytebuf;
       if (with_ascii) {
-        char c = (v >= 32 && v <= 126) ? (char)v : '.';
+        char c = (v >= 32 && v <= 126) ? static_cast<char>(v) : '.';
         ascii.push_back(c);
         if ((i + 1) % 16 == 0) {
           resp += " |" + ascii + "| ";
@@ -316,7 +317,7 @@ std::string handle_command(const std::string& line) {
       std::string resp = "OK count=" + std::to_string(bps.size());
       char buf[8];
       for (const auto& b : bps) {
-        snprintf(buf, sizeof(buf), " %04X", (unsigned int)b.address);
+        snprintf(buf, sizeof(buf), " %04X", static_cast<unsigned int>(b.address));
         resp += buf;
       }
       resp += "\n";
@@ -527,7 +528,7 @@ void KoncepcjaIpcServer::run() {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons(kPort);
 
-  if (bind(server_fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+  if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
     ::close(server_fd);
     return;
   }
@@ -548,7 +549,7 @@ void KoncepcjaIpcServer::run() {
 
     sockaddr_in client{};
     socklen_t len = sizeof(client);
-    int client_fd = accept(server_fd, (sockaddr*)&client, &len);
+    int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
     if (client_fd < 0) continue;
 
     std::string buffer;

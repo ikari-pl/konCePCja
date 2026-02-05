@@ -55,14 +55,8 @@ void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels);
 
 int renderer_bpp(SDL_Renderer *sdl_renderer);
 
-void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int scale);
-void video_clear_devtools_panel();
 void video_set_topbar(SDL_Surface* surface, int height);
 void video_clear_topbar();
-int video_get_devtools_panel_width();
-int video_get_devtools_panel_height();
-int video_get_devtools_panel_surface_width();
-int video_get_devtools_panel_surface_height();
 int video_get_topbar_height();
 
 #endif

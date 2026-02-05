@@ -24,9 +24,15 @@ static void applyShortcut(NSMenuItem *item, const char *shortcut) {
   if ([upper containsString:@"ALT+"] || [upper containsString:@"OPTION+"]) mods |= NSEventModifierFlagOption;
   if ([upper containsString:@"CTRL+"] || [upper containsString:@"CONTROL+"]) mods |= NSEventModifierFlagControl;
 
+  // Extract the key part after all modifiers (everything after the last '+')
+  NSRange lastPlus = [upper rangeOfString:@"+" options:NSBackwardsSearch];
+  NSString *keyPart = (lastPlus.location != NSNotFound)
+    ? [upper substringFromIndex:lastPlus.location + 1]
+    : upper;
+
   unichar key = 0;
-  if ([upper hasPrefix:@"F"]) {
-    NSInteger fn = [[upper substringFromIndex:1] integerValue];
+  if ([keyPart hasPrefix:@"F"] && [keyPart length] >= 2) {
+    NSInteger fn = [[keyPart substringFromIndex:1] integerValue];
     switch (fn) {
       case 1: key = NSF1FunctionKey; break;
       case 2: key = NSF2FunctionKey; break;
@@ -42,7 +48,7 @@ static void applyShortcut(NSMenuItem *item, const char *shortcut) {
       case 12: key = NSF12FunctionKey; break;
       default: break;
     }
-  } else if ([upper containsString:@"PAUSE"]) {
+  } else if ([keyPart isEqualToString:@"PAUSE"]) {
     key = NSPauseFunctionKey;
   }
 

@@ -11,7 +11,7 @@ const std::vector<MenuAction>& cap32_menu_actions() {
     { CAP32_TAPEPLAY, "Tape Play", "F4" },
     { CAP32_LD_SNAP,  "Load Snapshot", "Shift+F4" },
     { CAP32_RESET,    "Reset", "F5" },
-    { CAP32_NEXTDISKA,"Next Disk A", "Shift+F5" },
+    { CAP32_NEXTDISKA,"Next A: Disk in ZIP", "Shift+F5" },
     { CAP32_MF2STOP,  "MF2 Stop", "F6" },
     { CAP32_JOY,      "Toggle Joystick Emulation", "F7" },
     { CAP32_PHAZER,   "Toggle Phazer Emulation", "Shift+F7" },

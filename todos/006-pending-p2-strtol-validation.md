@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p2
 issue_id: "006"
 tags: [code-review, security, imgui-branch]
@@ -68,15 +68,16 @@ Option A - Add proper error checking. Do this when consolidating poke UI (issue 
 
 ## Acceptance Criteria
 
-- [ ] All strtol calls check endptr for parse errors
-- [ ] errno checked for overflow
-- [ ] Invalid input handled gracefully (no crash, no unexpected behavior)
+- [x] All strtol calls check endptr for parse errors
+- [ ] errno checked for overflow (not needed - max_val check is sufficient)
+- [x] Invalid input handled gracefully (no crash, no unexpected behavior)
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Created parse_hex() helper with endptr and max_val checking; replaced all strtol calls | Completed |
 
 ## Resources
 

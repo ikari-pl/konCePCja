@@ -114,7 +114,7 @@ struct t_disk_format {
    unsigned int sector_size{0}; // sector size as N value
    unsigned int gap3_length{0}; // GAP#3 size
    unsigned char filler_byte{0}; // default byte to use
-   unsigned char sector_ids[2][16]{0}; // sector IDs - indices: side, sector
+   unsigned char sector_ids[2][16]{{}}; // sector IDs - indices: side, sector
 };
 
 #endif

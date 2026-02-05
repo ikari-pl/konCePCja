@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p2
 issue_id: "005"
 tags: [code-review, patterns, imgui-branch]
@@ -73,15 +73,16 @@ Option A - Extract helper function. Cleaner separation.
 
 ## Acceptance Criteria
 
-- [ ] Single function for poke input UI
-- [ ] Both DevTools and Memory Tool use shared function
-- [ ] Validation logic in one place
+- [x] Single function for poke input UI
+- [x] Both DevTools and Memory Tool use shared function
+- [x] Validation logic in one place
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Created ui_poke_input() helper; both tools now use it | Completed |
 
 ## Resources
 

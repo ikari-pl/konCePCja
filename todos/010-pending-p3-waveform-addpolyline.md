@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p3
 issue_id: "010"
 tags: [code-review, performance, imgui-branch]
@@ -64,15 +64,16 @@ Option A - Use AddPolyline for cleaner rendering.
 
 ## Acceptance Criteria
 
-- [ ] Waveform rendered with AddPolyline
-- [ ] Visual appearance unchanged
-- [ ] Fewer ImGui draw commands
+- [x] Waveform rendered with AddPolyline
+- [x] Visual appearance unchanged
+- [x] Fewer ImGui draw commands
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Refactored Pulse mode to use AddPolyline with pre-built point array | Completed |
 
 ## Resources
 

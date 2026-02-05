@@ -146,10 +146,11 @@ void imgui_init_ui()
   // Merge transport symbol glyphs from system font into default font
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->AddFontDefault();
+#ifdef __APPLE__
+  // On macOS, merge Apple Symbols font for transport control glyphs
   ImFontConfig merge_cfg;
   merge_cfg.MergeMode = true;
   merge_cfg.PixelSnapH = true;
-  // Glyph ranges: U+23CF-U+23F9 (⏏⏭⏮⏹) and U+25B6 (▶)
   static const ImWchar symbol_ranges[] = {
     0x23CF, 0x23CF, // ⏏
     0x25A0, 0x25A0, // ■
@@ -157,7 +158,6 @@ void imgui_init_ui()
     0x25C0, 0x25C0, // ◀
     0,
   };
-#ifdef __APPLE__
   io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
 #endif
 
@@ -250,6 +250,19 @@ static void close_menu()
 // Tape block scanner — builds offset table from TZX image
 // ─────────────────────────────────────────────────
 
+// Safe read helpers for unaligned TZX block parsing
+static inline bool safe_read_word(byte* p, byte* end, size_t offset, word& out) {
+  if (p + offset + sizeof(word) > end) return false;
+  memcpy(&out, p + offset, sizeof(word));
+  return true;
+}
+
+static inline bool safe_read_dword(byte* p, byte* end, size_t offset, dword& out) {
+  if (p + offset + sizeof(dword) > end) return false;
+  memcpy(&out, p + offset, sizeof(dword));
+  return true;
+}
+
 static void tape_scan_blocks()
 {
   imgui_state.tape_block_offsets.clear();
@@ -258,30 +271,90 @@ static void tape_scan_blocks()
 
   byte* p = &pbTapeImage[0];
   byte* end = pbTapeImageEnd;
+
   while (p < end) {
     imgui_state.tape_block_offsets.push_back(p);
-    // Advance past this block (same size logic as Tape_BlockDone + Tape_GetNextBlock)
+
+    // Calculate block size with bounds checking
+    // Same size logic as Tape_BlockDone + Tape_GetNextBlock
+    size_t block_size = 0;
+    word w; dword d;
+
     switch (*p) {
-      case 0x10: p += *reinterpret_cast<word*>(p+0x01+0x02) + 0x04 + 1; break;
-      case 0x11: p += (*reinterpret_cast<dword*>(p+0x01+0x0f) & 0x00ffffff) + 0x12 + 1; break;
-      case 0x12: p += 4 + 1; break;
-      case 0x13: p += *(p+0x01) * 2 + 1 + 1; break;
-      case 0x14: p += (*reinterpret_cast<dword*>(p+0x01+0x07) & 0x00ffffff) + 0x0a + 1; break;
-      case 0x15: p += (*reinterpret_cast<dword*>(p+0x01+0x05) & 0x00ffffff) + 0x08 + 1; break;
-      case 0x20: p += 2 + 1; break;
-      case 0x21: p += *(p+0x01) + 1 + 1; break;
-      case 0x22: p += 1; break;
-      case 0x30: p += *(p+0x01) + 1 + 1; break;
-      case 0x31: p += *(p+0x01+0x01) + 2 + 1; break;
-      case 0x32: p += *reinterpret_cast<word*>(p+0x01) + 2 + 1; break;
-      case 0x33: p += (*(p+0x01) * 3) + 1 + 1; break;
-      case 0x34: p += 8 + 1; break;
-      case 0x35: p += *reinterpret_cast<dword*>(p+0x01+0x10) + 0x14 + 1; break;
-      case 0x40: p += (*reinterpret_cast<dword*>(p+0x01+0x01) & 0x00ffffff) + 0x04 + 1; break;
-      case 0x5A: p += 9 + 1; break;
-      default:   p += *reinterpret_cast<dword*>(p+0x01) + 4 + 1; break;
+      case 0x10: // Standard speed data
+        if (!safe_read_word(p, end, 0x03, w)) goto done;
+        block_size = w + 0x04 + 1;
+        break;
+      case 0x11: // Turbo speed data
+        if (!safe_read_dword(p, end, 0x10, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x12 + 1;
+        break;
+      case 0x12: // Pure tone
+        block_size = 4 + 1;
+        break;
+      case 0x13: // Pulse sequence
+        if (p + 2 > end) goto done;
+        block_size = *(p+0x01) * 2 + 1 + 1;
+        break;
+      case 0x14: // Pure data
+        if (!safe_read_dword(p, end, 0x08, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x0a + 1;
+        break;
+      case 0x15: // Direct recording
+        if (!safe_read_dword(p, end, 0x06, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x08 + 1;
+        break;
+      case 0x20: // Pause
+        block_size = 2 + 1;
+        break;
+      case 0x21: // Group start
+        if (p + 2 > end) goto done;
+        block_size = *(p+0x01) + 1 + 1;
+        break;
+      case 0x22: // Group end
+        block_size = 1;
+        break;
+      case 0x30: // Text description
+        if (p + 2 > end) goto done;
+        block_size = *(p+0x01) + 1 + 1;
+        break;
+      case 0x31: // Message
+        if (p + 3 > end) goto done;
+        block_size = *(p+0x02) + 2 + 1;
+        break;
+      case 0x32: // Archive info
+        if (!safe_read_word(p, end, 0x01, w)) goto done;
+        block_size = w + 2 + 1;
+        break;
+      case 0x33: // Hardware type
+        if (p + 2 > end) goto done;
+        block_size = (*(p+0x01) * 3) + 1 + 1;
+        break;
+      case 0x34: // Emulation info
+        block_size = 8 + 1;
+        break;
+      case 0x35: // Custom info
+        if (!safe_read_dword(p, end, 0x11, d)) goto done;
+        block_size = d + 0x14 + 1;
+        break;
+      case 0x40: // Snapshot
+        if (!safe_read_dword(p, end, 0x02, d)) goto done;
+        block_size = (d & 0x00ffffff) + 0x04 + 1;
+        break;
+      case 0x5A: // Glue
+        block_size = 9 + 1;
+        break;
+      default: // Unknown block with 4-byte length
+        if (!safe_read_dword(p, end, 0x01, d)) goto done;
+        block_size = d + 4 + 1;
+        break;
     }
+
+    // Validate we won't advance past end
+    if (p + block_size > end) goto done;
+    p += block_size;
   }
+done:;
 }
 
 // ─────────────────────────────────────────────────
@@ -340,12 +413,11 @@ static void imgui_render_topbar()
 
         ImGui::SameLine(0, 12.0f);
 
-        // Build display name
-        std::string displayName;
+        // Build display name (use pointer into existing string to avoid allocation)
+        const char* displayName;
         if (drive.tracks) {
-          displayName = driveFile;
-          auto pos = displayName.find_last_of("/\\");
-          if (pos != std::string::npos) displayName = displayName.substr(pos + 1);
+          auto pos = driveFile.find_last_of("/\\");
+          displayName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1 : driveFile.c_str();
         } else {
           displayName = "(no disk)";
         }
@@ -401,7 +473,7 @@ static void imgui_render_topbar()
           ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(displayName.c_str());
+        ImGui::TextUnformatted(displayName);
         ImGui::PopStyleColor();
         ImGui::EndGroup();
 
@@ -458,13 +530,8 @@ static void imgui_render_topbar()
       bool tape_loaded = !pbTapeImage.empty();
       bool tape_playing = tape_loaded && CPC.tape_motor && CPC.tape_play_button;
 
-      // Latch zero-pulse width from TZX block header for sync mode
-      if (dwTapeZeroPulseCycles > 0 && imgui_state.tape_locked_zero_pulse == 0) {
-        imgui_state.tape_locked_zero_pulse = dwTapeZeroPulseCycles;
-      }
       // Reset state when tape is ejected
       if (!tape_loaded) {
-        imgui_state.tape_locked_zero_pulse = 0;
         imgui_state.tape_decoded_head = 0;
         memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
       }
@@ -479,8 +546,10 @@ static void imgui_render_topbar()
       ImU32 color_dim    = IM_COL32(0x00, 0x40, 0x20, 0xFF);
       ImU32 label_color  = tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
 
-      // Update current block index from pbTapeBlock pointer
-      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
+      // Update current block index from pbTapeBlock pointer (skip if unchanged)
+      static byte* last_pbTapeBlock = nullptr;
+      if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
+        last_pbTapeBlock = pbTapeBlock;
         for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
           if (imgui_state.tape_block_offsets[i] == pbTapeBlock) {
             imgui_state.tape_current_block = i;
@@ -502,11 +571,11 @@ static void imgui_render_topbar()
       // ── Filename (clickable when no tape → load) ──
       ImGui::SameLine(0, 4);
       {
-        std::string tapeName;
+        // Use pointer into existing string to avoid allocation
+        const char* tapeName;
         if (tape_loaded && !CPC.tape.file.empty()) {
-          tapeName = CPC.tape.file;
-          auto pos = tapeName.find_last_of("/\\");
-          if (pos != std::string::npos) tapeName = tapeName.substr(pos + 1);
+          auto pos = CPC.tape.file.find_last_of("/\\");
+          tapeName = (pos != std::string::npos) ? CPC.tape.file.c_str() + pos + 1 : CPC.tape.file.c_str();
         } else {
           tapeName = "(no tape)";
         }
@@ -514,7 +583,7 @@ static void imgui_render_topbar()
           ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(tapeName.c_str());
+        ImGui::TextUnformatted(tapeName);
         ImGui::PopStyleColor();
         if (!tape_loaded && ImGui::IsItemClicked()) {
           static const SDL_DialogFileFilter tape_filters[] = {
@@ -664,105 +733,28 @@ static void imgui_render_topbar()
 
       if (mode == 0) {
         // ── Pulse (sub-frame scrolling waveform) ──
-        float prevX = p0.x;
+        // Build step waveform as polyline for batched drawing
+        ImVec2 points[N * 2 + 2]; // Max: 2 points per sample + start
+        int nPoints = 0;
+
         float prevY = yForSample(imgui_state.tape_wave_buf[oldest]);
+        points[nPoints++] = ImVec2(p0.x, prevY); // Start point
+
         for (int i = 1; i < N; i++) {
           int idx = (oldest + i) % N;
           float curX = p0.x + i * stepX;
           float curY = yForSample(imgui_state.tape_wave_buf[idx]);
           if (curY != prevY) {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
-            dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-          } else {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
+            // Level change: add horizontal endpoint, then vertical step
+            points[nPoints++] = ImVec2(curX, prevY);
+            points[nPoints++] = ImVec2(curX, curY);
+            prevY = curY;
           }
-          prevX = curX;
-          prevY = curY;
         }
-      } else if (mode == 1) {
-        // ── Bits (once-per-frame, original scrolling look) ──
-        int bitsOldest = imgui_state.tape_bits_head;
-        float prevX = p0.x;
-        float prevY = yForSample(imgui_state.tape_bits_buf[bitsOldest]);
-        for (int i = 1; i < N; i++) {
-          int idx = (bitsOldest + i) % N;
-          float curX = p0.x + i * stepX;
-          float curY = yForSample(imgui_state.tape_bits_buf[idx]);
-          if (curY != prevY) {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
-            dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-          } else {
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-          }
-          prevX = curX;
-          prevY = curY;
-        }
-      } else if (mode == 2) {
-        // ── Sync (baud-rate locked via edge log) ──
-        // Read recent edges, find a rising-edge trigger, render actual pulse widths
-        int eN = ImGuiUIState::TAPE_EDGE_LOG_SIZE;
-        int eHead = imgui_state.tape_edge_head;
-        // Collect last 64 edges into a local array (newest last)
-        constexpr int VIEW_EDGES = 64;
-        ImGuiUIState::TapeEdge edges[VIEW_EDGES];
-        int edgeCount = 0;
-        for (int i = VIEW_EDGES; i > 0; i--) {
-          int idx = (eHead - i + eN) % eN;
-          auto& e = imgui_state.tape_edge_log[idx];
-          if (e.cycle == 0 && e.level == 0 && edgeCount == 0) continue; // skip uninitialized
-          edges[edgeCount++] = e;
-        }
-        if (edgeCount >= 2) {
-          dword windowCycles = 0;
-          if (imgui_state.tape_locked_zero_pulse > 0) {
-            // Locked: 16 zero-bit periods = 8 one-bit periods
-            windowCycles = imgui_state.tape_locked_zero_pulse * 2 * 16;
-          } else {
-            // Fallback: estimate from minimum pulse gap in edge log
-            dword minPulse = UINT32_MAX;
-            for (int i = 1; i < edgeCount; i++) {
-              dword gap = edges[i].cycle - edges[i-1].cycle;
-              if (gap > 0 && gap < minPulse) minPulse = gap;
-            }
-            windowCycles = minPulse * 2 * 8;
-          }
+        // Final horizontal endpoint
+        points[nPoints++] = ImVec2(p1.x, prevY);
 
-          if (windowCycles > 0) {
-            // Window ends at newest edge, starts windowCycles before that
-            dword endCycle = edges[edgeCount - 1].cycle;
-            dword startCycle = endCycle - windowCycles;
-
-            // Find first edge within (or just before) the window
-            int firstEdge = 0;
-            for (int i = 0; i < edgeCount; i++) {
-              if (edges[i].cycle >= startCycle) { firstEdge = i > 0 ? i - 1 : 0; break; }
-              firstEdge = i;
-            }
-
-            // Render edges within the fixed window
-            float prevX = p0.x;
-            // Initial level from first visible edge
-            float prevY = edges[firstEdge].level ? yTop : yBot;
-            // Clamp first edge to window start
-            if (edges[firstEdge].cycle < startCycle) {
-              // Draw at left edge with this level, advance to next
-              firstEdge++;
-            }
-            for (int i = firstEdge; i < edgeCount; i++) {
-              float t = static_cast<float>(edges[i].cycle - startCycle) / static_cast<float>(windowCycles);
-              if (t > 1.0f) t = 1.0f;
-              float curX = p0.x + t * waveW;
-              float curY = edges[i].level ? yTop : yBot;
-              dl->AddLine(ImVec2(prevX, prevY), ImVec2(curX, prevY), wave_color, 1.0f);
-              if (curY != prevY)
-                dl->AddLine(ImVec2(curX, prevY), ImVec2(curX, curY), wave_color, 1.0f);
-              prevX = curX;
-              prevY = curY;
-            }
-            // Extend last level to right edge
-            dl->AddLine(ImVec2(prevX, prevY), ImVec2(p0.x + waveW, prevY), wave_color, 1.0f);
-          }
-        }
+        dl->AddPolyline(points, nPoints, wave_color, 0, 1.0f);
       } else {
         // ── Decoded bits (green 1px bars from Tape_ReadDataBit) ──
         int dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
@@ -781,10 +773,10 @@ static void imgui_render_topbar()
         }
       }
 
-      // Advance cursor past the waveform box; click cycles mode
+      // Advance cursor past the waveform box; click cycles mode (2 modes now)
       ImGui::Dummy(ImVec2(waveW, frameH));
       if (ImGui::IsItemClicked()) {
-        imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 4;
+        imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
       }
     }
 
@@ -1251,6 +1243,18 @@ static void imgui_render_options()
 // DevTools
 // ─────────────────────────────────────────────────
 
+// Parse hex string with validation. Returns true if valid, false otherwise.
+// On success, *out contains the parsed value. On failure, *out is unchanged.
+static bool parse_hex(const char* str, unsigned long* out, unsigned long max_val)
+{
+  if (!str || !str[0]) return false;
+  char* end;
+  unsigned long val = strtoul(str, &end, 16);
+  if (*end != '\0' || val > max_val) return false;
+  *out = val;
+  return true;
+}
+
 static void devtools_tab_z80()
 {
   bool locked = imgui_state.devtools_regs_locked;
@@ -1395,9 +1399,9 @@ static void devtools_tab_asm()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Add BP")) {
-    if (imgui_state.devtools_bp_addr[0]) {
-      word addr = static_cast<word>(strtol(imgui_state.devtools_bp_addr, nullptr, 16));
-      z80_add_breakpoint(addr);
+    unsigned long addr;
+    if (parse_hex(imgui_state.devtools_bp_addr, &addr, 0xFFFF)) {
+      z80_add_breakpoint(static_cast<word>(addr));
       imgui_state.devtools_bp_addr[0] = '\0';
     }
   }
@@ -1407,51 +1411,92 @@ static void devtools_tab_asm()
   }
 }
 
-static void devtools_format_mem_line(std::ostringstream& out, unsigned int base_addr,
-                                     int bytes_per_line, int format)
+// Format memory line into stack buffer - zero heap allocations
+// Buffer size: 512 bytes handles up to 64 bytes/line with all formats
+static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr,
+                              int bytes_per_line, int format)
 {
-  out << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << base_addr << " : ";
-  for (int j = 0; j < bytes_per_line; j++) {
-    unsigned int addr = (base_addr + j) & 0xFFFF;
-    out << std::setw(2) << static_cast<unsigned int>(pbRAM[addr]) << " ";
+  if (buf_size == 0) return 0;
+
+  int offset = 0;
+  int remaining = static_cast<int>(buf_size);
+
+  // Helper to safely advance after snprintf (clamps to remaining space)
+  auto advance = [&](int written) {
+    if (written < 0) return false;
+    int actual = (written < remaining) ? written : remaining - 1;
+    offset += actual;
+    remaining -= actual;
+    return remaining > 1;
+  };
+
+  // Address
+  if (!advance(snprintf(buf + offset, remaining, "%04X : ", base_addr))) {
+    buf[offset] = '\0';
+    return offset;
+  }
+
+  // Hex bytes
+  for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
+    if (!advance(snprintf(buf + offset, remaining, "%02X ", pbRAM[(base_addr + j) & 0xFFFF])))
+      break;
   }
 
   // Extended formats
-  if (format == 1) { // Hex & char
-    out << " | ";
-    for (int j = 0; j < bytes_per_line; j++) {
-      byte b = pbRAM[(base_addr + j) & 0xFFFF];
-      out << static_cast<char>((b >= 32 && b < 127) ? b : '.');
+  if (format == 1 && remaining > 1) { // Hex & char
+    if (advance(snprintf(buf + offset, remaining, " | "))) {
+      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
+        byte b = pbRAM[(base_addr + j) & 0xFFFF];
+        buf[offset++] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
+        remaining--;
+      }
     }
-  } else if (format == 2) { // Hex & u8
-    out << " | ";
-    for (int j = 0; j < bytes_per_line; j++) {
-      out << std::dec << std::setw(3) << static_cast<unsigned int>(pbRAM[(base_addr + j) & 0xFFFF]) << " ";
+  } else if (format == 2 && remaining > 1) { // Hex & u8
+    if (advance(snprintf(buf + offset, remaining, " | "))) {
+      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
+        if (!advance(snprintf(buf + offset, remaining, "%3u ", pbRAM[(base_addr + j) & 0xFFFF])))
+          break;
+      }
     }
   }
-  out << "\n";
+
+  buf[offset] = '\0';
+  return offset;
+}
+
+// Shared poke input UI with proper validation
+// Returns true if poke was executed
+static bool ui_poke_input(char* addr_buf, size_t addr_size,
+                          char* val_buf, size_t val_size,
+                          const char* id_suffix)
+{
+  char addr_id[32], val_id[32], btn_id[32];
+  snprintf(addr_id, sizeof(addr_id), "Addr##%s", id_suffix);
+  snprintf(val_id, sizeof(val_id), "Val##%s", id_suffix);
+  snprintf(btn_id, sizeof(btn_id), "Poke##%s", id_suffix);
+
+  ImGui::SetNextItemWidth(50);
+  ImGui::InputText(addr_id, addr_buf, addr_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(40);
+  ImGui::InputText(val_id, val_buf, val_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+
+  if (ImGui::Button(btn_id)) {
+    unsigned long addr, val;
+    if (parse_hex(addr_buf, &addr, 0xFFFF) && parse_hex(val_buf, &val, 0xFF)) {
+      pbRAM[addr] = static_cast<byte>(val);
+      return true;
+    }
+  }
+  return false;
 }
 
 static void devtools_tab_memory()
 {
   // Poke
-  ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Addr##dtpoke", imgui_state.devtools_poke_addr, sizeof(imgui_state.devtools_poke_addr),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(40);
-  ImGui::InputText("Val##dtpoke", imgui_state.devtools_poke_val, sizeof(imgui_state.devtools_poke_val),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  if (ImGui::Button("Poke##dt")) {
-    if (imgui_state.devtools_poke_addr[0] && imgui_state.devtools_poke_val[0]) {
-      unsigned int addr = strtol(imgui_state.devtools_poke_addr, nullptr, 16);
-      int val = strtol(imgui_state.devtools_poke_val, nullptr, 16);
-      if (addr < 65536 && val >= 0 && val <= 255) {
-        pbRAM[addr] = static_cast<byte>(val);
-      }
-    }
-  }
+  ui_poke_input(imgui_state.devtools_poke_addr, sizeof(imgui_state.devtools_poke_addr),
+                imgui_state.devtools_poke_val, sizeof(imgui_state.devtools_poke_val), "dtpoke");
 
   // Display address
   ImGui::SetNextItemWidth(50);
@@ -1459,8 +1504,9 @@ static void devtools_tab_memory()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Go##dt")) {
-    if (imgui_state.devtools_display_addr[0])
-      imgui_state.devtools_display_value = strtol(imgui_state.devtools_display_addr, nullptr, 16);
+    unsigned long addr;
+    if (parse_hex(imgui_state.devtools_display_addr, &addr, 0xFFFF))
+      imgui_state.devtools_display_value = static_cast<int>(addr);
     else
       imgui_state.devtools_display_value = -1;
   }
@@ -1494,9 +1540,9 @@ static void devtools_tab_memory()
     clipper.Begin(total_lines);
     while (clipper.Step()) {
       for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-        std::ostringstream line;
-        devtools_format_mem_line(line, i * bpl, bpl, imgui_state.devtools_mem_format);
-        ImGui::TextUnformatted(line.str().c_str());
+        char line[512];
+        format_memory_line(line, sizeof(line), i * bpl, bpl, imgui_state.devtools_mem_format);
+        ImGui::TextUnformatted(line);
       }
     }
 
@@ -1573,15 +1619,6 @@ static void devtools_tab_audio()
   ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
 }
 
-static void devtools_tab_char()
-{
-  ImGui::Text("Character Set (from CPC font memory)");
-  ImGui::Separator();
-  ImGui::TextWrapped("Character grid rendering requires access to the CPC font "
-                     "memory region. This will be implemented when the font "
-                     "address is exposed from the gate array.");
-}
-
 static void imgui_render_devtools()
 {
   ImGui::SetNextWindowSize(ImVec2(560, 500), ImGuiCond_FirstUseEver);
@@ -1627,7 +1664,6 @@ static void imgui_render_devtools()
     if (ImGui::BeginTabItem("Memory")) { devtools_tab_memory(); ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Video"))  { devtools_tab_video();  ImGui::EndTabItem(); }
     if (ImGui::BeginTabItem("Audio"))  { devtools_tab_audio();  ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Char"))   { devtools_tab_char();   ImGui::EndTabItem(); }
     ImGui::EndTabBar();
   }
 
@@ -1654,23 +1690,8 @@ static void imgui_render_memory_tool()
   }
 
   // Poke
-  ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Addr##mt", imgui_state.mem_poke_addr, sizeof(imgui_state.mem_poke_addr),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(40);
-  ImGui::InputText("Val##mt", imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  if (ImGui::Button("Poke##mt")) {
-    if (imgui_state.mem_poke_addr[0] && imgui_state.mem_poke_val[0]) {
-      unsigned int addr = strtol(imgui_state.mem_poke_addr, nullptr, 16);
-      int val = strtol(imgui_state.mem_poke_val, nullptr, 16);
-      if (addr < 65536 && val >= 0 && val <= 255) {
-        pbRAM[addr] = static_cast<byte>(val);
-      }
-    }
-  }
+  ui_poke_input(imgui_state.mem_poke_addr, sizeof(imgui_state.mem_poke_addr),
+                imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val), "mt");
 
   // Display address
   ImGui::SetNextItemWidth(50);
@@ -1678,8 +1699,9 @@ static void imgui_render_memory_tool()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Go##mt")) {
-    if (imgui_state.mem_display_addr[0])
-      imgui_state.mem_display_value = strtol(imgui_state.mem_display_addr, nullptr, 16);
+    unsigned long addr;
+    if (parse_hex(imgui_state.mem_display_addr, &addr, 0xFFFF))
+      imgui_state.mem_display_value = static_cast<int>(addr);
     else
       imgui_state.mem_display_value = -1;
     imgui_state.mem_filter_value = -1;
@@ -1701,8 +1723,9 @@ static void imgui_render_memory_tool()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Filter##mt")) {
-    if (imgui_state.mem_filter_val[0]) {
-      imgui_state.mem_filter_value = strtol(imgui_state.mem_filter_val, nullptr, 16);
+    unsigned long val;
+    if (parse_hex(imgui_state.mem_filter_val, &val, 0xFF)) {
+      imgui_state.mem_filter_value = static_cast<int>(val);
       imgui_state.mem_display_value = -1;
     } else {
       imgui_state.mem_filter_value = -1;
@@ -1745,12 +1768,9 @@ static void imgui_render_memory_tool()
         }
         if (!show) continue;
 
-        std::ostringstream line;
-        line << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << base << " : ";
-        for (int j = 0; j < bpl; j++) {
-          line << std::setw(2) << static_cast<unsigned int>(pbRAM[(base + j) & 0xFFFF]) << " ";
-        }
-        ImGui::TextUnformatted(line.str().c_str());
+        char line[512];
+        format_memory_line(line, sizeof(line), base, bpl, 0);
+        ImGui::TextUnformatted(line);
       }
     } else {
       // Fast path with clipper
@@ -1759,12 +1779,9 @@ static void imgui_render_memory_tool()
       while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
           unsigned int base = i * bpl;
-          std::ostringstream line;
-          line << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << base << " : ";
-          for (int j = 0; j < bpl; j++) {
-            line << std::setw(2) << static_cast<unsigned int>(pbRAM[(base + j) & 0xFFFF]) << " ";
-          }
-          ImGui::TextUnformatted(line.str().c_str());
+          char line[512];
+          format_memory_line(line, sizeof(line), base, bpl, 0);
+          ImGui::TextUnformatted(line);
         }
       }
     }
@@ -1905,28 +1922,28 @@ static void imgui_render_vkeyboard()
   // ROW 0: ESC 1 2 3 4 5 6 7 8 9 0 - ^ CLR DEL | F7 F8 F9
   // ═══════════════════════════════════════════════════════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0));
-  if (ImGui::Button("ESC", ImVec2(K, H))) emit_key("\a\xbb"); ImGui::SameLine(0, S);
-  if (ImGui::Button("!\n1", ImVec2(K, H))) emit_key("1"); ImGui::SameLine(0, S);
-  if (ImGui::Button("\"\n2", ImVec2(K, H))) emit_key("2"); ImGui::SameLine(0, S);
-  if (ImGui::Button("#\n3", ImVec2(K, H))) emit_key("3"); ImGui::SameLine(0, S);
-  if (ImGui::Button("$\n4", ImVec2(K, H))) emit_key("4"); ImGui::SameLine(0, S);
-  if (ImGui::Button("%\n5", ImVec2(K, H))) emit_key("5"); ImGui::SameLine(0, S);
-  if (ImGui::Button("&\n6", ImVec2(K, H))) emit_key("6"); ImGui::SameLine(0, S);
-  if (ImGui::Button("'\n7", ImVec2(K, H))) emit_key("7"); ImGui::SameLine(0, S);
-  if (ImGui::Button("(\n8", ImVec2(K, H))) emit_key("8"); ImGui::SameLine(0, S);
-  if (ImGui::Button(")\n9", ImVec2(K, H))) emit_key("9"); ImGui::SameLine(0, S);
-  if (ImGui::Button("_\n0", ImVec2(K, H))) emit_key("0"); ImGui::SameLine(0, S);
-  if (ImGui::Button("=\n-", ImVec2(K, H))) emit_key("-"); ImGui::SameLine(0, S);
-  if (ImGui::Button("\xc2\xa3\n^", ImVec2(K, H))) emit_key("^"); ImGui::SameLine(0, S);  // £ over ^
-  if (ImGui::Button("CLR", ImVec2(K, H))) emit_key("\a\xa5"); ImGui::SameLine(0, S);
+  if (ImGui::Button("ESC", ImVec2(K, H))) { emit_key("\a\xbb"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("!\n1", ImVec2(K, H))) { emit_key("1"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("\"\n2", ImVec2(K, H))) { emit_key("2"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("#\n3", ImVec2(K, H))) { emit_key("3"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("$\n4", ImVec2(K, H))) { emit_key("4"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("%\n5", ImVec2(K, H))) { emit_key("5"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("&\n6", ImVec2(K, H))) { emit_key("6"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("'\n7", ImVec2(K, H))) { emit_key("7"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("(\n8", ImVec2(K, H))) { emit_key("8"); } ImGui::SameLine(0, S);
+  if (ImGui::Button(")\n9", ImVec2(K, H))) { emit_key("9"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("_\n0", ImVec2(K, H))) { emit_key("0"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("=\n-", ImVec2(K, H))) { emit_key("-"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("\xc2\xa3\n^", ImVec2(K, H))) { emit_key("^"); } ImGui::SameLine(0, S);  // £ over ^
+  if (ImGui::Button("CLR", ImVec2(K, H))) { emit_key("\a\xa5"); } ImGui::SameLine(0, S);
   if (ImGui::Button("DEL", ImVec2(K, H))) emit_key("\b");
 
   // Numpad row 0: F7 F8 F9
   ImGui::SetCursorPos(ImVec2(np_x, y0));
   fkey_emit[1] = static_cast<char>(CPC_F7);
-  if (ImGui::Button("F7", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("F7", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
   fkey_emit[1] = static_cast<char>(CPC_F8);
-  if (ImGui::Button("F8", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("F8", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
   fkey_emit[1] = static_cast<char>(CPC_F9);
   if (ImGui::Button("F9", ImVec2(K, H))) emit_key(fkey_emit);
 
@@ -1934,19 +1951,19 @@ static void imgui_render_vkeyboard()
   // ROW 1: TAB Q W E R T Y U I O P |/@ {/[  | F4 F5 F6
   // ═══════════════════════════════════════════════════════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW));
-  if (ImGui::Button("TAB", ImVec2(K*W_TAB, H))) emit_key("\t"); ImGui::SameLine(0, S);
-  if (ImGui::Button("Q", ImVec2(K, H))) emit_key("q"); ImGui::SameLine(0, S);
-  if (ImGui::Button("W", ImVec2(K, H))) emit_key("w"); ImGui::SameLine(0, S);
-  if (ImGui::Button("E", ImVec2(K, H))) emit_key("e"); ImGui::SameLine(0, S);
-  if (ImGui::Button("R", ImVec2(K, H))) emit_key("r"); ImGui::SameLine(0, S);
-  if (ImGui::Button("T", ImVec2(K, H))) emit_key("t"); ImGui::SameLine(0, S);
-  if (ImGui::Button("Y", ImVec2(K, H))) emit_key("y"); ImGui::SameLine(0, S);
-  if (ImGui::Button("U", ImVec2(K, H))) emit_key("u"); ImGui::SameLine(0, S);
-  if (ImGui::Button("I", ImVec2(K, H))) emit_key("i"); ImGui::SameLine(0, S);
-  if (ImGui::Button("O", ImVec2(K, H))) emit_key("o"); ImGui::SameLine(0, S);
-  if (ImGui::Button("P", ImVec2(K, H))) emit_key("p"); ImGui::SameLine(0, S);
-  if (ImGui::Button("|\n@", ImVec2(K, H))) emit_key("@"); ImGui::SameLine(0, S);
-  if (ImGui::Button("{\n[", ImVec2(K, H))) emit_key("["); ImGui::SameLine(0, S);
+  if (ImGui::Button("TAB", ImVec2(K*W_TAB, H))) { emit_key("\t"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("Q", ImVec2(K, H))) { emit_key("q"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("W", ImVec2(K, H))) { emit_key("w"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("E", ImVec2(K, H))) { emit_key("e"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("R", ImVec2(K, H))) { emit_key("r"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("T", ImVec2(K, H))) { emit_key("t"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("Y", ImVec2(K, H))) { emit_key("y"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("U", ImVec2(K, H))) { emit_key("u"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("I", ImVec2(K, H))) { emit_key("i"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("O", ImVec2(K, H))) { emit_key("o"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("P", ImVec2(K, H))) { emit_key("p"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("|\n@", ImVec2(K, H))) { emit_key("@"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("{\n[", ImVec2(K, H))) { emit_key("["); } ImGui::SameLine(0, S);
   // RETURN upper part - at end of row 1
   float ret_x = ImGui::GetCursorPosX();
   float ret_w = main_end_x - ret_x;
@@ -1961,9 +1978,9 @@ static void imgui_render_vkeyboard()
   // Numpad row 1: F4 F5 F6
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW));
   fkey_emit[1] = static_cast<char>(CPC_F4);
-  if (ImGui::Button("F4", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("F4", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
   fkey_emit[1] = static_cast<char>(CPC_F5);
-  if (ImGui::Button("F5", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("F5", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
   fkey_emit[1] = static_cast<char>(CPC_F6);
   if (ImGui::Button("F6", ImVec2(K, H))) emit_key(fkey_emit);
 
@@ -1975,25 +1992,25 @@ static void imgui_render_vkeyboard()
   if (ImGui::Button("CAPS\nLOCK", ImVec2(K*W_CAPS, H))) emit_key("\x01" "CAPS");
   if (caps_on) ImGui::PopStyleColor();
   ImGui::SameLine(0, S);
-  if (ImGui::Button("A", ImVec2(K, H))) emit_key("a"); ImGui::SameLine(0, S);
-  if (ImGui::Button("S", ImVec2(K, H))) emit_key("s"); ImGui::SameLine(0, S);
-  if (ImGui::Button("D", ImVec2(K, H))) emit_key("d"); ImGui::SameLine(0, S);
-  if (ImGui::Button("F", ImVec2(K, H))) emit_key("f"); ImGui::SameLine(0, S);
-  if (ImGui::Button("G", ImVec2(K, H))) emit_key("g"); ImGui::SameLine(0, S);
-  if (ImGui::Button("H", ImVec2(K, H))) emit_key("h"); ImGui::SameLine(0, S);
-  if (ImGui::Button("J", ImVec2(K, H))) emit_key("j"); ImGui::SameLine(0, S);
-  if (ImGui::Button("K", ImVec2(K, H))) emit_key("k"); ImGui::SameLine(0, S);
-  if (ImGui::Button("L", ImVec2(K, H))) emit_key("l"); ImGui::SameLine(0, S);
-  if (ImGui::Button("+\n;", ImVec2(K, H))) emit_key(";"); ImGui::SameLine(0, S);
-  if (ImGui::Button("*\n:", ImVec2(K, H))) emit_key(":"); ImGui::SameLine(0, S);
+  if (ImGui::Button("A", ImVec2(K, H))) { emit_key("a"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("S", ImVec2(K, H))) { emit_key("s"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("D", ImVec2(K, H))) { emit_key("d"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("F", ImVec2(K, H))) { emit_key("f"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("G", ImVec2(K, H))) { emit_key("g"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("H", ImVec2(K, H))) { emit_key("h"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("J", ImVec2(K, H))) { emit_key("j"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("K", ImVec2(K, H))) { emit_key("k"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("L", ImVec2(K, H))) { emit_key("l"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("+\n;", ImVec2(K, H))) { emit_key(";"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("*\n:", ImVec2(K, H))) { emit_key(":"); } ImGui::SameLine(0, S);
   if (ImGui::Button("}\n]", ImVec2(K, H))) emit_key("]");
 
   // Numpad row 2: F1 F2 F3
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 2));
   fkey_emit[1] = static_cast<char>(CPC_F1);
-  if (ImGui::Button("F1", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("F1", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
   fkey_emit[1] = static_cast<char>(CPC_F2);
-  if (ImGui::Button("F2", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
+  if (ImGui::Button("F2", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
   fkey_emit[1] = static_cast<char>(CPC_F3);
   if (ImGui::Button("F3", ImVec2(K, H))) emit_key(fkey_emit);
 
@@ -2007,17 +2024,17 @@ static void imgui_render_vkeyboard()
   if (ImGui::Button("SHIFT##L", ImVec2(K*W_LSHIFT, H))) emit_key("\x01" "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
   ImGui::SameLine(0, S);
-  if (ImGui::Button("Z", ImVec2(K, H))) emit_key("z"); ImGui::SameLine(0, S);
-  if (ImGui::Button("X", ImVec2(K, H))) emit_key("x"); ImGui::SameLine(0, S);
-  if (ImGui::Button("C", ImVec2(K, H))) emit_key("c"); ImGui::SameLine(0, S);
-  if (ImGui::Button("V", ImVec2(K, H))) emit_key("v"); ImGui::SameLine(0, S);
-  if (ImGui::Button("B", ImVec2(K, H))) emit_key("b"); ImGui::SameLine(0, S);
-  if (ImGui::Button("N", ImVec2(K, H))) emit_key("n"); ImGui::SameLine(0, S);
-  if (ImGui::Button("M", ImVec2(K, H))) emit_key("m"); ImGui::SameLine(0, S);
-  if (ImGui::Button("<\n,", ImVec2(K, H))) emit_key(","); ImGui::SameLine(0, S);
-  if (ImGui::Button(">\n.##main", ImVec2(K, H))) emit_key("."); ImGui::SameLine(0, S);
-  if (ImGui::Button("?\n/", ImVec2(K, H))) emit_key("/"); ImGui::SameLine(0, S);
-  if (ImGui::Button("`\n\\", ImVec2(K, H))) emit_key("\\"); ImGui::SameLine(0, S);
+  if (ImGui::Button("Z", ImVec2(K, H))) { emit_key("z"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("X", ImVec2(K, H))) { emit_key("x"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("C", ImVec2(K, H))) { emit_key("c"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("V", ImVec2(K, H))) { emit_key("v"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("B", ImVec2(K, H))) { emit_key("b"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("N", ImVec2(K, H))) { emit_key("n"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("M", ImVec2(K, H))) { emit_key("m"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("<\n,", ImVec2(K, H))) { emit_key(","); } ImGui::SameLine(0, S);
+  if (ImGui::Button(">\n.##main", ImVec2(K, H))) { emit_key("."); } ImGui::SameLine(0, S);
+  if (ImGui::Button("?\n/", ImVec2(K, H))) { emit_key("/"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("`\n\\", ImVec2(K, H))) { emit_key("\\"); } ImGui::SameLine(0, S);
   // Right SHIFT - fills to main_end_x (naturally narrower due to wider left SHIFT)
   float rshift_x = ImGui::GetCursorPosX();
   float rshift_w = main_end_x - rshift_x;
@@ -2028,8 +2045,8 @@ static void imgui_render_vkeyboard()
   // Numpad row 3: F0 ↑ .
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 3));
   fkey_emit[1] = static_cast<char>(CPC_F0);
-  if (ImGui::Button("F0", ImVec2(K, H))) emit_key(fkey_emit); ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x91##up", ImVec2(K, H))) emit_key("\a\xae"); ImGui::SameLine(0, S);
+  if (ImGui::Button("F0", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
+  if (ImGui::Button("\xe2\x86\x91##up", ImVec2(K, H))) { emit_key("\a\xae"); } ImGui::SameLine(0, S);
   if (ImGui::Button(".##np", ImVec2(K, H))) emit_key(".");
 
   // ═══════════════════════════════════════════════════════════════════
@@ -2053,8 +2070,8 @@ static void imgui_render_vkeyboard()
 
   // Numpad row 4: ← ↓ →
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 4));
-  if (ImGui::Button("\xe2\x86\x90##left", ImVec2(K, H))) emit_key("\a\xaf"); ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x93##down", ImVec2(K, H))) emit_key("\a\xb0"); ImGui::SameLine(0, S);
+  if (ImGui::Button("\xe2\x86\x90##left", ImVec2(K, H))) { emit_key("\a\xaf"); } ImGui::SameLine(0, S);
+  if (ImGui::Button("\xe2\x86\x93##down", ImVec2(K, H))) { emit_key("\a\xb0"); } ImGui::SameLine(0, S);
   if (ImGui::Button("\xe2\x86\x92##right", ImVec2(K, H))) emit_key("\a\xb1");
 
   // Move cursor below keyboard for the rest

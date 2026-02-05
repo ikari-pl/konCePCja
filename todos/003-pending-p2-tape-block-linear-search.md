@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p2
 issue_id: "003"
 tags: [code-review, performance, imgui-branch]
@@ -80,15 +80,16 @@ Option A - Skip when unchanged. Simple and effective.
 
 ## Acceptance Criteria
 
-- [ ] No linear search when tape position hasn't changed
-- [ ] Block index still updates correctly during playback
-- [ ] Block navigation (prev/next buttons) still works
+- [x] No linear search when tape position hasn't changed
+- [x] Block index still updates correctly during playback
+- [x] Block navigation (prev/next buttons) still works
 
 ## Work Log
 
 | Date | Action | Result |
 |------|--------|--------|
 | 2026-02-03 | Created from code review | Pending triage |
+| 2026-02-03 | Added last_pbTapeBlock static to skip search when unchanged | Completed |
 
 ## Resources
 
