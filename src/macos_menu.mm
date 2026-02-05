@@ -2,15 +2,15 @@
 #include "menu_actions.h"
 #include "keyboard.h"
 
-@interface Cap32MenuTarget : NSObject
+@interface KoncepcjaMenuTarget : NSObject
 @end
 
-extern "C" void cap32_menu_action(int action);
+extern "C" void koncpc_menu_action(int action);
 
-@implementation Cap32MenuTarget
+@implementation KoncepcjaMenuTarget
 - (void)menuAction:(id)sender {
   NSInteger action = [sender tag];
-  cap32_menu_action((int)action);
+  koncpc_menu_action((int)action);
 }
 @end
 
@@ -59,14 +59,14 @@ static void applyShortcut(NSMenuItem *item, const char *shortcut) {
   }
 }
 
-static const MenuAction* find_menu_action(CAP32_KEYS action) {
-  for (const auto &entry : cap32_menu_actions()) {
+static const MenuAction* find_menu_action(KONCPC_KEYS action) {
+  for (const auto &entry : koncpc_menu_actions()) {
     if (entry.action == action) return &entry;
   }
   return nullptr;
 }
 
-static void add_menu_group(NSMenu *mainMenu, Cap32MenuTarget *target, NSString *title, std::initializer_list<CAP32_KEYS> actions) {
+static void add_menu_group(NSMenu *mainMenu, KoncepcjaMenuTarget *target, NSString *title, std::initializer_list<KONCPC_KEYS> actions) {
   for (NSMenuItem *item in [mainMenu itemArray]) {
     if ([[item title] isEqualToString:title]) return;
   }
@@ -74,7 +74,7 @@ static void add_menu_group(NSMenu *mainMenu, Cap32MenuTarget *target, NSString *
   NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
   NSMenu *submenu = [[NSMenu alloc] initWithTitle:title];
 
-  for (CAP32_KEYS action : actions) {
+  for (KONCPC_KEYS action : actions) {
     const MenuAction *entry = find_menu_action(action);
     if (!entry) continue;
     NSString *itemTitle = [NSString stringWithUTF8String:entry->title];
@@ -89,54 +89,54 @@ static void add_menu_group(NSMenu *mainMenu, Cap32MenuTarget *target, NSString *
   [mainMenu addItem:menuItem];
 }
 
-static void cap32_install_emulator_menu(NSMenu *mainMenu) {
+static void koncpc_install_emulator_menu(NSMenu *mainMenu) {
   if (!mainMenu) return;
 
-  Cap32MenuTarget *target = [[Cap32MenuTarget alloc] init];
+  KoncepcjaMenuTarget *target = [[KoncepcjaMenuTarget alloc] init];
 
   add_menu_group(mainMenu, target, @"Emulator", {
-    CAP32_GUI,
-    CAP32_FULLSCRN,
-    CAP32_RESET,
-    CAP32_EXIT,
+    KONCPC_GUI,
+    KONCPC_FULLSCRN,
+    KONCPC_RESET,
+    KONCPC_EXIT,
   });
 
   add_menu_group(mainMenu, target, @"Media", {
-    CAP32_TAPEPLAY,
-    CAP32_MF2STOP,
-    CAP32_NEXTDISKA,
+    KONCPC_TAPEPLAY,
+    KONCPC_MF2STOP,
+    KONCPC_NEXTDISKA,
   });
 
   add_menu_group(mainMenu, target, @"Tools", {
-    CAP32_VKBD,
-    CAP32_DEVTOOLS,
-    CAP32_SCRNSHOT,
-    CAP32_SNAPSHOT,
-    CAP32_LD_SNAP,
-    CAP32_PASTE,
+    KONCPC_VKBD,
+    KONCPC_DEVTOOLS,
+    KONCPC_SCRNSHOT,
+    KONCPC_SNAPSHOT,
+    KONCPC_LD_SNAP,
+    KONCPC_PASTE,
   });
 
   add_menu_group(mainMenu, target, @"Options", {
-    CAP32_JOY,
-    CAP32_PHAZER,
-    CAP32_FPS,
-    CAP32_SPEED,
-    CAP32_DEBUG,
-    CAP32_DELAY,
-    CAP32_WAITBREAK,
+    KONCPC_JOY,
+    KONCPC_PHAZER,
+    KONCPC_FPS,
+    KONCPC_SPEED,
+    KONCPC_DEBUG,
+    KONCPC_DELAY,
+    KONCPC_WAITBREAK,
   });
 }
 
 extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSMenu *mainMenu) {
   @autoreleasepool {
-    cap32_install_emulator_menu(mainMenu);
+    koncpc_install_emulator_menu(mainMenu);
   }
 }
 
-void cap32_setup_macos_menu() {
+void koncpc_setup_macos_menu() {
   @autoreleasepool {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
-    cap32_install_emulator_menu([NSApp mainMenu]);
+    koncpc_install_emulator_menu([NSApp mainMenu]);
   }
 }

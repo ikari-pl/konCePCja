@@ -25,7 +25,7 @@
     and my own Z80 x86 assembly code (konCePCja up to version 2.00b2)
 */
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "disk.h"
 #include "tape.h"
 #include "z80.h"

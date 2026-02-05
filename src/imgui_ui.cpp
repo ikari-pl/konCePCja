@@ -8,7 +8,7 @@
 #include <iomanip>
 #include <iostream>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "keyboard.h"
 #include "z80.h"
 #include "z80_disassembly.h"
@@ -526,7 +526,7 @@ static void imgui_render_topbar()
         memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
       }
 
-      // Sampling happens in cap32.cpp main loop (sub-frame rate)
+      // Sampling happens in kon_cpc_ja.cpp main loop (sub-frame rate)
 
       ImGui::SameLine(0, 12);
       ImGui::AlignTextToFramePadding();
@@ -1854,7 +1854,7 @@ static void imgui_render_vkeyboard()
     }
 
     // Send directly to emulator
-    cap32_queue_virtual_keys(to_send);
+    koncpc_queue_virtual_keys(to_send);
   };
 
   // Modifier status line

@@ -111,7 +111,7 @@ namespace zip
     // Windows version of tmpfile is broken by design as it tries to create the temporary file in the root directory.
     // The "official" recommendation is to use the yet borken tempnam/fopen combination.
     // https://msdn.microsoft.com/en-us/library/x8x7sakw.aspx
-    char *tmpFilePath = tempnam(".", "cap32_tmp_");
+    char *tmpFilePath = tempnam(".", "koncpc_tmp_");
     if (tmpFilePath == nullptr) {
       LOG_ERROR("Couldn't unzip file: Couldn't generate temporary file name: " << strerror(errno));
       return ERR_FILE_UNZIP_FAILED; // couldn't create output file

@@ -22,7 +22,7 @@
 
 #include <vector>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "tape.h"
 #include "z80.h"
 #include "imgui_ui.h"

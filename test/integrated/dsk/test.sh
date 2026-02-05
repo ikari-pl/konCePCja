@@ -3,7 +3,7 @@
 TSTDIR=`dirname "$0"`
 OUTPUT_DIR="output"
 LOGFILE="test.log"
-CAP32DIR="${TSTDIR}/../../../"
+KONCPCDIR="${TSTDIR}/../../../"
 
 if [ -z "$DIFF" ]
 then
@@ -16,7 +16,7 @@ echo "" > "${LOGFILE}"
 
 cd "$TSTDIR"
 
-$CAP32DIR/koncepcja -c koncepcja.cfg -a "run\"hello" -a "call 0" -a CAP32_WAITBREAK -a CAP32_EXIT hello.zip >> "${LOGFILE}" 2>&1
+$KONCPCDIR/koncepcja -c koncepcja.cfg -a "run\"hello" -a "call 0" -a KONCPC_WAITBREAK -a KONCPC_EXIT hello.zip >> "${LOGFILE}" 2>&1
 
 if $DIFF output/printer.dat expected.dat >> "${LOGFILE}"
 then

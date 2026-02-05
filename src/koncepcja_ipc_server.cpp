@@ -19,7 +19,7 @@
 #include <unistd.h>
 #endif
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "z80.h"
 #include "z80_disassembly.h"
 #include "slotshandler.h"

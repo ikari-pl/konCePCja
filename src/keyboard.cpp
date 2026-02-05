@@ -4,7 +4,7 @@
 #include <map>
 #include <set>
 #include <string>
-#include "cap32.h"
+#include "koncepcja.h"
 #include "fileutils.h"
 #include "log.h"
 
@@ -942,26 +942,26 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = {
   { CPC_SPACE,       SDLK_SPACE },
   { CPC_TAB,         SDLK_TAB },
   { CPC_UNDERSCORE,  SDLK_MINUS | MOD_PC_SHIFT },
-  { CAP32_GUI,       SDLK_F1},
-  { CAP32_VKBD,      SDLK_F1 | MOD_PC_SHIFT },
-  { CAP32_FULLSCRN,  SDLK_F2 },
-  { CAP32_DEVTOOLS,  SDLK_F2 | MOD_PC_SHIFT },
-  { CAP32_SCRNSHOT,  SDLK_F3 },
-  { CAP32_SNAPSHOT,  SDLK_F3 | MOD_PC_SHIFT },
-  { CAP32_LD_SNAP,   SDLK_F4 | MOD_PC_SHIFT },
-  { CAP32_RESET,     SDLK_F5 },
-  { CAP32_NEXTDISKA, SDLK_F5 | MOD_PC_SHIFT },
-  { CAP32_MF2STOP,   SDLK_F6 },
-  { CAP32_JOY,       SDLK_F7 },
-  { CAP32_PHAZER,    SDLK_F7 | MOD_PC_SHIFT },
-  { CAP32_FPS,       SDLK_F8 },
-  { CAP32_SPEED,     SDLK_F9 },
-  { CAP32_EXIT,      SDLK_F10 },
-  { CAP32_PASTE,     SDLK_F11 },
-  { CAP32_DEBUG,     SDLK_F12 },
-  { CAP32_TAPEPLAY,  SDLK_F4 },
-  { CAP32_DELAY,     SDLK_PAUSE },
-  { CAP32_WAITBREAK, SDLK_PAUSE | MOD_PC_SHIFT }
+  { KONCPC_GUI,       SDLK_F1},
+  { KONCPC_VKBD,      SDLK_F1 | MOD_PC_SHIFT },
+  { KONCPC_FULLSCRN,  SDLK_F2 },
+  { KONCPC_DEVTOOLS,  SDLK_F2 | MOD_PC_SHIFT },
+  { KONCPC_SCRNSHOT,  SDLK_F3 },
+  { KONCPC_SNAPSHOT,  SDLK_F3 | MOD_PC_SHIFT },
+  { KONCPC_LD_SNAP,   SDLK_F4 | MOD_PC_SHIFT },
+  { KONCPC_RESET,     SDLK_F5 },
+  { KONCPC_NEXTDISKA, SDLK_F5 | MOD_PC_SHIFT },
+  { KONCPC_MF2STOP,   SDLK_F6 },
+  { KONCPC_JOY,       SDLK_F7 },
+  { KONCPC_PHAZER,    SDLK_F7 | MOD_PC_SHIFT },
+  { KONCPC_FPS,       SDLK_F8 },
+  { KONCPC_SPEED,     SDLK_F9 },
+  { KONCPC_EXIT,      SDLK_F10 },
+  { KONCPC_PASTE,     SDLK_F11 },
+  { KONCPC_DEBUG,     SDLK_F12 },
+  { KONCPC_TAPEPLAY,  SDLK_F4 },
+  { KONCPC_DELAY,     SDLK_PAUSE },
+  { KONCPC_WAITBREAK, SDLK_PAUSE | MOD_PC_SHIFT }
 };
 
 const std::map<const std::string, const CapriceKey> InputMapper::CPCkeysFromStrings = {
@@ -1174,26 +1174,26 @@ const std::map<const std::string, const CapriceKey> InputMapper::CPCkeysFromStri
    {"CPC_FR_cCEDIL",   CPC_FR_cCEDIL},
    {"CPC_FR_aGRAVE",   CPC_FR_aGRAVE},
    {"CPC_FR_uGRAVE",   CPC_FR_uGRAVE},
-   {"CAP32_EXIT",      CAP32_EXIT},
-   {"CAP32_PASTE",     CAP32_PASTE},
-   {"CAP32_FPS",       CAP32_FPS},
-   {"CAP32_FULLSCRN",  CAP32_FULLSCRN},
-   {"CAP32_GUI",       CAP32_GUI},
-   {"CAP32_VKBD",      CAP32_VKBD},
-   {"CAP32_JOY",       CAP32_JOY},
-   {"CAP32_PHAZER",    CAP32_PHAZER},
-   {"CAP32_MF2STOP",   CAP32_MF2STOP},
-   {"CAP32_RESET",     CAP32_RESET},
-   {"CAP32_NEXTDISKA", CAP32_NEXTDISKA},
-   {"CAP32_SCRNSHOT",  CAP32_SCRNSHOT},
-   {"CAP32_SNAPSHOT",  CAP32_SNAPSHOT},
-   {"CAP32_LD_SNAP",   CAP32_LD_SNAP},
-   {"CAP32_SPEED",     CAP32_SPEED},
-   {"CAP32_TAPEPLAY",  CAP32_TAPEPLAY},
-   {"CAP32_DEBUG",     CAP32_DEBUG},  
-   {"CAP32_DELAY",     CAP32_DELAY},
-   {"CAP32_DEVTOOLS",  CAP32_DEVTOOLS},
-   {"CAP32_WAITBREAK", CAP32_WAITBREAK},
+   {"KONCPC_EXIT",      KONCPC_EXIT},
+   {"KONCPC_PASTE",     KONCPC_PASTE},
+   {"KONCPC_FPS",       KONCPC_FPS},
+   {"KONCPC_FULLSCRN",  KONCPC_FULLSCRN},
+   {"KONCPC_GUI",       KONCPC_GUI},
+   {"KONCPC_VKBD",      KONCPC_VKBD},
+   {"KONCPC_JOY",       KONCPC_JOY},
+   {"KONCPC_PHAZER",    KONCPC_PHAZER},
+   {"KONCPC_MF2STOP",   KONCPC_MF2STOP},
+   {"KONCPC_RESET",     KONCPC_RESET},
+   {"KONCPC_NEXTDISKA", KONCPC_NEXTDISKA},
+   {"KONCPC_SCRNSHOT",  KONCPC_SCRNSHOT},
+   {"KONCPC_SNAPSHOT",  KONCPC_SNAPSHOT},
+   {"KONCPC_LD_SNAP",   KONCPC_LD_SNAP},
+   {"KONCPC_SPEED",     KONCPC_SPEED},
+   {"KONCPC_TAPEPLAY",  KONCPC_TAPEPLAY},
+   {"KONCPC_DEBUG",     KONCPC_DEBUG},  
+   {"KONCPC_DELAY",     KONCPC_DELAY},
+   {"KONCPC_DEVTOOLS",  KONCPC_DEVTOOLS},
+   {"KONCPC_WAITBREAK", KONCPC_WAITBREAK},
 };
 
 const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings = {
@@ -1528,7 +1528,7 @@ std::string InputMapper::CPCkeyToString(const CapriceKey cpc_key) {
 std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
     std::list<SDL_Event> result;
     bool escaped = false;
-    bool cap32_cmd = false;
+    bool koncpc_cmd = false;
     std::map<CapriceKey, PCKey>::iterator sdl_keysym;
 
     for (auto c : toTranslate) {
@@ -1539,13 +1539,13 @@ std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
       }
       if (c == '\f') {
         // Emulator special command
-        cap32_cmd = true;
+        koncpc_cmd = true;
         continue;
       }
       SDL_Event key;
-      if (escaped || cap32_cmd) {
+      if (escaped || koncpc_cmd) {
         int keycode = static_cast<unsigned char>(c);
-        if (cap32_cmd) {
+        if (koncpc_cmd) {
           keycode += MOD_EMU_KEY;
         }
         // Lookup the SDL key corresponding to this emulator command
@@ -1555,7 +1555,7 @@ std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
           key.key.mod = static_cast<SDL_Keymod>(sdl_keysym->second >> BITSHIFT_MOD);
         }
         escaped = false;
-        cap32_cmd = false;
+        koncpc_cmd = false;
       } else {
         // key.key.keysym.scancode = ;
         key.key.key = SDLkeysFromChars[c].first;

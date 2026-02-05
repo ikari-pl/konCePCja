@@ -7,7 +7,7 @@
 #include <dlfcn.h>
 #endif
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "disk.h"
 #include "errors.h"
 #include "fileutils.h"
@@ -312,7 +312,7 @@ int ipf_load (FILE *pfileIn, t_drive *drive)
   char *tmpFilePath = nullptr;
   std::vector<std::string> prefixes = { "/tmp", "." };
   for (const auto &prefix : prefixes) {
-    tmpFilePath = tempnam(prefix.c_str(), ".cap32_tmp_");
+    tmpFilePath = tempnam(prefix.c_str(), ".koncpc_tmp_");
     if (tmpFilePath == nullptr) {
       LOG_ERROR("Couldn't load IPF file: Couldn't generate temporary file name: " << strerror(errno));
       return ERR_DSK_INVALID; // couldn't create output file

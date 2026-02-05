@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "video.h"
-#include "cap32.h"
+#include "koncepcja.h"
 
 extern SDL_Surface* pub;
 extern SDL_Surface* scaled;

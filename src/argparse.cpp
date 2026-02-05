@@ -6,7 +6,7 @@
 #include <map>
 #include <string>
 #include "SDL3/SDL.h"
-#include "cap32.h"
+#include "koncepcja.h"
 #include "keyboard.h"
 #include "stringutils.h"
 #include "log.h"
@@ -52,7 +52,7 @@ void usage(std::ostream &os, char *progPath, int errcode)
    exit(errcode);
 }
 
-std::string cap32_keystroke(CAP32_KEYS key) {
+std::string koncpc_keystroke(KONCPC_KEYS key) {
   return std::string("\f") + char(key);
 }
 
@@ -60,26 +60,26 @@ std::string cpc_keystroke(CPC_KEYS key) {
   return std::string("\a") + char(key);
 }
 
-std::string replaceCap32Keys(std::string command)
+std::string replaceKoncpcKeys(std::string command)
 {
   static std::map<std::string, std::string> keyNames = {
-    { "CAP32_EXIT", cap32_keystroke(CAP32_EXIT) },
-    { "CAP32_FPS", cap32_keystroke(CAP32_FPS) },
-    { "CAP32_FULLSCRN", cap32_keystroke(CAP32_FULLSCRN) },
-    { "CAP32_GUI", cap32_keystroke(CAP32_GUI) },
-    { "CAP32_VKBD", cap32_keystroke(CAP32_VKBD) },
-    { "CAP32_JOY", cap32_keystroke(CAP32_JOY) },
-    { "CAP32_PHAZER", cap32_keystroke(CAP32_PHAZER) },
-    { "CAP32_MF2STOP", cap32_keystroke(CAP32_MF2STOP) },
-    { "CAP32_RESET", cap32_keystroke(CAP32_RESET) },
-    { "CAP32_SCRNSHOT", cap32_keystroke(CAP32_SCRNSHOT) },
-    { "CAP32_SPEED", cap32_keystroke(CAP32_SPEED) },
-    { "CAP32_TAPEPLAY", cap32_keystroke(CAP32_TAPEPLAY) },
-    { "CAP32_DEBUG", cap32_keystroke(CAP32_DEBUG) },
-    { "CAP32_WAITBREAK", cap32_keystroke(CAP32_WAITBREAK) },
-    { "CAP32_DELAY", cap32_keystroke(CAP32_DELAY) },
-    { "CAP32_PASTE", cap32_keystroke(CAP32_PASTE) },
-    { "CAP32_DEVTOOLS", cap32_keystroke(CAP32_DEVTOOLS) },
+    { "KONCPC_EXIT", koncpc_keystroke(KONCPC_EXIT) },
+    { "KONCPC_FPS", koncpc_keystroke(KONCPC_FPS) },
+    { "KONCPC_FULLSCRN", koncpc_keystroke(KONCPC_FULLSCRN) },
+    { "KONCPC_GUI", koncpc_keystroke(KONCPC_GUI) },
+    { "KONCPC_VKBD", koncpc_keystroke(KONCPC_VKBD) },
+    { "KONCPC_JOY", koncpc_keystroke(KONCPC_JOY) },
+    { "KONCPC_PHAZER", koncpc_keystroke(KONCPC_PHAZER) },
+    { "KONCPC_MF2STOP", koncpc_keystroke(KONCPC_MF2STOP) },
+    { "KONCPC_RESET", koncpc_keystroke(KONCPC_RESET) },
+    { "KONCPC_SCRNSHOT", koncpc_keystroke(KONCPC_SCRNSHOT) },
+    { "KONCPC_SPEED", koncpc_keystroke(KONCPC_SPEED) },
+    { "KONCPC_TAPEPLAY", koncpc_keystroke(KONCPC_TAPEPLAY) },
+    { "KONCPC_DEBUG", koncpc_keystroke(KONCPC_DEBUG) },
+    { "KONCPC_WAITBREAK", koncpc_keystroke(KONCPC_WAITBREAK) },
+    { "KONCPC_DELAY", koncpc_keystroke(KONCPC_DELAY) },
+    { "KONCPC_PASTE", koncpc_keystroke(KONCPC_PASTE) },
+    { "KONCPC_DEVTOOLS", koncpc_keystroke(KONCPC_DEVTOOLS) },
     { "CPC_F1", cpc_keystroke(CPC_F1) },
     { "CPC_F2", cpc_keystroke(CPC_F2) },
   };
@@ -115,7 +115,7 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
       {
          case 'a':
             LOG_VERBOSE("Append to autocmd: " << optarg);
-            args.autocmd += replaceCap32Keys(optarg);
+            args.autocmd += replaceKoncpcKeys(optarg);
             args.autocmd += "\n";
             break;
 

@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "types.h"
 
 // Validate that alignment is correct between bytes & words structs (cf issue #104)

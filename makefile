@@ -216,7 +216,7 @@ ALL_CFLAGS += $(COVERAGE_FLAGS)
 LDFLAGS += $(COVERAGE_FLAGS)
 endif
 
-$(MAIN): main.cpp src/cap32.h
+$(MAIN): main.cpp src/koncepcja.h
 	@$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $(MAIN) main.cpp
 
 $(DEPENDS): $(OBJDIR)/%.d: %.cpp

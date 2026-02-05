@@ -7,7 +7,7 @@
 #include <sstream>
 #include <string>
 #include "z80.h"
-#include "cap32.h"
+#include "koncepcja.h"
 #include "log.h"
 
 extern t_z80regs z80;

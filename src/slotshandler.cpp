@@ -19,7 +19,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
-#include "cap32.h"
+#include "koncepcja.h"
 #include "disk.h"
 #include "slotshandler.h"
 #include "ipf.h"

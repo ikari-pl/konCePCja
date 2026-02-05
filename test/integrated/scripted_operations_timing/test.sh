@@ -15,7 +15,7 @@ esac
 TSTDIR=`dirname "$0"`
 OUTPUT_DIR="output"
 LOGFILE="test.log"
-CAP32DIR="${TSTDIR}/../../../"
+KONCPCDIR="${TSTDIR}/../../../"
 
 if [ -z "$DIFF" ]
 then
@@ -30,9 +30,9 @@ find . -iname "*~" -exec rm -fv {} \;
 cd "$TSTDIR"
 
 
-$CAP32DIR/koncepcja -c koncepcja.cfg -a 'border 13:ink 0,13:ink 1,0:mode 1:for a=1 to 24:print"Hello World",a:next:call &bd19:call 0' -a 'CAP32_WAITBREAKCAP32_SCRNSHOT CAP32_EXIT' >> "${LOGFILE}" 2>&1
+$KONCPCDIR/koncepcja -c koncepcja.cfg -a 'border 13:ink 0,13:ink 1,0:mode 1:for a=1 to 24:print"Hello World",a:next:call &bd19:call 0' -a 'KONCPC_WAITBREAKKONCPC_SCRNSHOT KONCPC_EXIT' >> "${LOGFILE}" 2>&1
 # Intended test when ready (doesn't work for now because \n are added automatically at the end of -a):
-# $CAP32DIR/koncepcja -c koncepcja.cfg -a 'border 13:ink 0,13:ink 1,0:mode 1:for a=1 to 24:print"Hello World",a:next:call &bd19:call 0' -a CAP32_WAITBREAK -a CAP32_SCRNSHOT -a CAP32_EXIT
+# $KONCPCDIR/koncepcja -c koncepcja.cfg -a 'border 13:ink 0,13:ink 1,0:mode 1:for a=1 to 24:print"Hello World",a:next:call &bd19:call 0' -a KONCPC_WAITBREAK -a KONCPC_SCRNSHOT -a KONCPC_EXIT
 
 # Screenshot file name is not predictible (a feature, not a bug)
 mv -v ${OUTPUT_DIR}/screenshot_*png ${OUTPUT_DIR}/screenshot.png

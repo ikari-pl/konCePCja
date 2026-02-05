@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include <vector>
-#include "cap32.h"
+#include "koncepcja.h"
 #include "tape.h"
 #include "imgui_ui.h"
 

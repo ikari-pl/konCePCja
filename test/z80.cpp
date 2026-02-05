@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "z80.h"
-#include "cap32.h"
+#include "koncepcja.h"
 
 #include "z80_macros.h"
 

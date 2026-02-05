@@ -1,27 +1,27 @@
 #include "menu_actions.h"
 
-const std::vector<MenuAction>& cap32_menu_actions() {
+const std::vector<MenuAction>& koncpc_menu_actions() {
   static const std::vector<MenuAction> actions = {
-    { CAP32_GUI,      "Menu", "F1" },
-    { CAP32_VKBD,     "Virtual Keyboard", "Shift+F1" },
-    { CAP32_FULLSCRN, "Fullscreen", "F2" },
-    { CAP32_DEVTOOLS, "DevTools", "Shift+F2" },
-    { CAP32_SCRNSHOT, "Screenshot", "F3" },
-    { CAP32_SNAPSHOT, "Save Snapshot", "Shift+F3" },
-    { CAP32_TAPEPLAY, "Tape Play", "F4" },
-    { CAP32_LD_SNAP,  "Load Snapshot", "Shift+F4" },
-    { CAP32_RESET,    "Reset", "F5" },
-    { CAP32_NEXTDISKA,"Next A: Disk in ZIP", "Shift+F5" },
-    { CAP32_MF2STOP,  "MF2 Stop", "F6" },
-    { CAP32_JOY,      "Toggle Joystick Emulation", "F7" },
-    { CAP32_PHAZER,   "Toggle Phazer Emulation", "Shift+F7" },
-    { CAP32_FPS,      "Toggle FPS", "F8" },
-    { CAP32_SPEED,    "Toggle Speed Limit", "F9" },
-    { CAP32_EXIT,     "Quit", "F10" },
-    { CAP32_PASTE,    "Paste", "F11" },
-    { CAP32_DEBUG,    "Toggle Debug", "F12" },
-    { CAP32_DELAY,    "Delay", "" },
-    { CAP32_WAITBREAK,"Wait Break", "" },
+    { KONCPC_GUI,      "Menu", "F1" },
+    { KONCPC_VKBD,     "Virtual Keyboard", "Shift+F1" },
+    { KONCPC_FULLSCRN, "Fullscreen", "F2" },
+    { KONCPC_DEVTOOLS, "DevTools", "Shift+F2" },
+    { KONCPC_SCRNSHOT, "Screenshot", "F3" },
+    { KONCPC_SNAPSHOT, "Save Snapshot", "Shift+F3" },
+    { KONCPC_TAPEPLAY, "Tape Play", "F4" },
+    { KONCPC_LD_SNAP,  "Load Snapshot", "Shift+F4" },
+    { KONCPC_RESET,    "Reset", "F5" },
+    { KONCPC_NEXTDISKA,"Next A: Disk in ZIP", "Shift+F5" },
+    { KONCPC_MF2STOP,  "MF2 Stop", "F6" },
+    { KONCPC_JOY,      "Toggle Joystick Emulation", "F7" },
+    { KONCPC_PHAZER,   "Toggle Phazer Emulation", "Shift+F7" },
+    { KONCPC_FPS,      "Toggle FPS", "F8" },
+    { KONCPC_SPEED,    "Toggle Speed Limit", "F9" },
+    { KONCPC_EXIT,     "Quit", "F10" },
+    { KONCPC_PASTE,    "Paste", "F11" },
+    { KONCPC_DEBUG,    "Toggle Debug", "F12" },
+    { KONCPC_DELAY,    "Delay", "" },
+    { KONCPC_WAITBREAK,"Wait Break", "" },
   };
   return actions;
 }

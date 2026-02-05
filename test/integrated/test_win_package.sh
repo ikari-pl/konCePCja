@@ -12,7 +12,7 @@ echo -e 'Hello, world!\r' > ${EXPECTED}
 cp -r release/koncepcja-${ARCH} ${TSTDIR}/
 cd ${TSTDIR}/koncepcja-${ARCH}
 sed -i 's/printer=0/printer=1/' koncepcja.cfg
-./koncepcja.exe -a "print #8,\"Hello, world!\"" -a CAP32_EXIT >> "${LOGFILE}" 2>&1
+./koncepcja.exe -a "print #8,\"Hello, world!\"" -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
 
 if ! diff ${EXPECTED} printer.dat
 then

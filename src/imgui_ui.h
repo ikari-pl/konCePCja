@@ -3,7 +3,7 @@
 
 #include <string>
 #include <vector>
-#include "cap32.h"
+#include "koncepcja.h"
 
 enum class FileDialogAction {
   None,

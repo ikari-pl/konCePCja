@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "argparse.h"
 #include "keyboard.h"
 #include <string>
@@ -73,30 +73,30 @@ TEST(argParseTest, cfgOverrideInvalid)
    ASSERT_TRUE(args.cfgOverrides.empty());
 }
 
-TEST(argParseTest, replaceCap32KeysNoKeyword)
+TEST(argParseTest, replaceKoncpcKeysNoKeyword)
 {
   std::string command = "print \"Hello, world !\"";
 
-  ASSERT_EQ(command, replaceCap32Keys(command));
+  ASSERT_EQ(command, replaceKoncpcKeys(command));
 }
 
-TEST(argParseTest, replaceCap32KeysKeywords)
+TEST(argParseTest, replaceKoncpcKeysKeywords)
 {
   // expected
   //   Which is: "print \"Hello, world !\"\f\b\f\0"
-  // replaceCap32Keys(command)
+  // replaceKoncpcKeys(command)
   //   Which is: "print \"Hello, world !\"\f\t\f\0"
-  std::string command = "print \"Hello, world !\"CAP32_SCRNSHOTCAP32_EXIT";
+  std::string command = "print \"Hello, world !\"KONCPC_SCRNSHOTKONCPC_EXIT";
   std::string expected = "print \"Hello, world !\"\f\x9\f";
   expected += '\0';
 
-  ASSERT_EQ(expected, replaceCap32Keys(command));
+  ASSERT_EQ(expected, replaceKoncpcKeys(command));
 }
 
-TEST(argParseTest, replaceCap32KeysRepeatedKeywords)
+TEST(argParseTest, replaceKoncpcKeysRepeatedKeywords)
 {
-  std::string command = "print \"Hello\"CAP32_SCRNSHOT ; print \",\" ; CAP32_SCRNSHOT ; print \"world !\" ; CAP32_SCRNSHOT";
+  std::string command = "print \"Hello\"KONCPC_SCRNSHOT ; print \",\" ; KONCPC_SCRNSHOT ; print \"world !\" ; KONCPC_SCRNSHOT";
   std::string expected = "print \"Hello\"\f\x9 ; print \",\" ; \f\x9 ; print \"world !\" ; \f\x9";
 
-  ASSERT_EQ(expected, replaceCap32Keys(command));
+  ASSERT_EQ(expected, replaceKoncpcKeys(command));
 }

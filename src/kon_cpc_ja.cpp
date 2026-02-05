@@ -33,7 +33,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
   return SDL_MapRGB(fmt, pal, r, g, b);
 }
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "crtc.h"
 #include "symfile.h"
@@ -1990,35 +1990,35 @@ void showVKeyboard()
    imgui_state.show_vkeyboard = !imgui_state.show_vkeyboard;
 }
 
-void cap32_queue_virtual_keys(const std::string& text)
+void koncpc_queue_virtual_keys(const std::string& text)
 {
    auto newEvents = CPC.InputMapper->StringToEvents(text);
    virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
    nextVirtualEventFrameCount = dwFrameCountOverall;
 }
 
-void cap32_menu_action(int action)
+void koncpc_menu_action(int action)
 {
    switch (action) {
-      case CAP32_GUI:
+      case KONCPC_GUI:
         {
           showGui();
           break;
         }
 
-      case CAP32_VKBD:
+      case KONCPC_VKBD:
         {
           showVKeyboard();
           break;
         }
 
-      case CAP32_DEVTOOLS:
+      case KONCPC_DEVTOOLS:
         {
           imgui_state.show_devtools = true;
           break;
         }
 
-      case CAP32_FULLSCRN:
+      case KONCPC_FULLSCRN:
          audio_pause();
          SDL_Delay(20);
          video_shutdown();
@@ -2028,39 +2028,39 @@ void cap32_menu_action(int action)
             cleanExit(-1);
          }
 #ifdef __APPLE__
-         cap32_setup_macos_menu();
+         koncpc_setup_macos_menu();
 #endif
          audio_resume();
          break;
 
-      case CAP32_SCRNSHOT:
+      case KONCPC_SCRNSHOT:
          // Delay taking the screenshot to ensure the frame is complete.
          g_take_screenshot = true;
          break;
 
-      case CAP32_DELAY:
+      case KONCPC_DELAY:
          // Reuse boot_time as it is a reasonable wait time for Plus transition between the F1/F2 nag screen and the command line.
-         // TODO: Support an argument to CAP32_DELAY in autocmd instead.
-         LOG_VERBOSE("Take into account CAP32_DELAY");
+         // TODO: Support an argument to KONCPC_DELAY in autocmd instead.
+         LOG_VERBOSE("Take into account KONCPC_DELAY");
          nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
          break;
 
-      case CAP32_WAITBREAK:
+      case KONCPC_WAITBREAK:
          breakPointsToSkipBeforeProceedingWithVirtualEvents++;
          LOG_INFO("Will skip " << breakPointsToSkipBeforeProceedingWithVirtualEvents << " before processing more virtual events.");
          LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point << ").");
-         z80.break_point = 0; // set break point to address 0. FIXME would be interesting to change this via a parameter of CAP32_WAITBREAK on command line.
+         z80.break_point = 0; // set break point to address 0. FIXME would be interesting to change this via a parameter of KONCPC_WAITBREAK on command line.
          break;
 
-      case CAP32_SNAPSHOT:
+      case KONCPC_SNAPSHOT:
          dumpSnapshot();
          break;
 
-      case CAP32_LD_SNAP:
+      case KONCPC_LD_SNAP:
          loadSnapshot();
          break;
 
-      case CAP32_TAPEPLAY:
+      case KONCPC_TAPEPLAY:
          LOG_VERBOSE("Request to play tape");
          Tape_Rewind();
          if (!pbTapeImage.empty()) {
@@ -2075,7 +2075,7 @@ void cap32_menu_action(int action)
          set_osd_message(std::string("Play tape: ") + (CPC.tape_play_button ? "on" : "off"));
          break;
 
-      case CAP32_MF2STOP:
+      case KONCPC_MF2STOP:
          if(CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
            reg_pair port;
 
@@ -2096,25 +2096,25 @@ void cap32_menu_action(int action)
          }
          break;
 
-      case CAP32_RESET:
+      case KONCPC_RESET:
          LOG_VERBOSE("User requested emulator reset");
          emulator_reset();
          break;
 
-      case CAP32_JOY:
+      case KONCPC_JOY:
          CPC.joystick_emulation = CPC.joystick_emulation ? 0 : 1;
          CPC.InputMapper->set_joystick_emulation();
          set_osd_message(std::string("Joystick emulation: ") + (CPC.joystick_emulation ? "on" : "off"));
          break;
 
-      case CAP32_PHAZER:
+      case KONCPC_PHAZER:
          CPC.phazer_emulation = CPC.phazer_emulation.Next();
          if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
          mouse_init();
          set_osd_message(std::string("Phazer emulation: ") + CPC.phazer_emulation.ToString());
          break;
 
-      case CAP32_PASTE:
+      case KONCPC_PASTE:
          set_osd_message("Pasting...");
          {
            auto content = std::string(SDL_GetClipboardText());
@@ -2125,21 +2125,21 @@ void cap32_menu_action(int action)
            break;
          }
 
-      case CAP32_EXIT:
+      case KONCPC_EXIT:
          cleanExit (0);
          break;
 
-      case CAP32_FPS:
+      case KONCPC_FPS:
          CPC.scr_fps = CPC.scr_fps ? 0 : 1; // toggle fps display on or off
          set_osd_message(std::string("Performances info: ") + (CPC.scr_fps ? "on" : "off"));
          break;
 
-      case CAP32_SPEED:
+      case KONCPC_SPEED:
          CPC.limit_speed = CPC.limit_speed ? 0 : 1;
          set_osd_message(std::string("Limit speed: ") + (CPC.limit_speed ? "on" : "off"));
          break;
 
-      case CAP32_DEBUG:
+      case KONCPC_DEBUG:
          log_verbose = !log_verbose;
          #ifdef DEBUG
          dwDebugFlag = dwDebugFlag ? 0 : 1;
@@ -2154,7 +2154,7 @@ void cap32_menu_action(int action)
          set_osd_message(std::string("Debug mode: ") + (log_verbose ? "on" : "off"));
          break;
 
-      case CAP32_NEXTDISKA:
+      case KONCPC_NEXTDISKA:
          CPC.driveA.zip_index += 1;
          file_load(CPC.driveA);
          break;
@@ -2750,7 +2750,7 @@ std::map<SDL_Scancode, std::string> scancode_names = {
     {SDL_SCANCODE_COUNT, "SDL_SCANCODE_COUNT"},
 };
 
-int cap32_main (int argc, char **argv)
+int koncpc_main (int argc, char **argv)
 {
    int iExitCondition;
    bool bin_loaded = false;
@@ -2799,7 +2799,7 @@ int cap32_main (int argc, char **argv)
       cleanExit(-1);
    }
 #ifdef __APPLE__
-   cap32_setup_macos_menu();
+   koncpc_setup_macos_menu();
 #endif
    topbar_height_px = imgui_topbar_height();
    video_set_topbar(nullptr, topbar_height_px);
@@ -2921,25 +2921,25 @@ int cap32_main (int argc, char **argv)
                   }
                   else { // process emulator specific keys
                      switch (scancode) {
-                        case CAP32_GUI:
+                        case KONCPC_GUI:
                           {
                             showGui();
                             break;
                           }
 
-                        case CAP32_VKBD:
+                        case KONCPC_VKBD:
                           {
                             showVKeyboard();
                             break;
                           }
 
-                        case CAP32_DEVTOOLS:
+                        case KONCPC_DEVTOOLS:
                           {
                             imgui_state.show_devtools = true;
                             break;
                           }
 
-                        case CAP32_FULLSCRN:
+                        case KONCPC_FULLSCRN:
                            audio_pause();
                            SDL_Delay(20);
                            video_shutdown();
@@ -2949,39 +2949,39 @@ int cap32_main (int argc, char **argv)
                               cleanExit(-1);
                            }
 #ifdef __APPLE__
-                           cap32_setup_macos_menu();
+                           koncpc_setup_macos_menu();
 #endif
                            audio_resume();
                            break;
 
-                        case CAP32_SCRNSHOT:
+                        case KONCPC_SCRNSHOT:
                            // Delay taking the screenshot to ensure the frame is complete.
                            g_take_screenshot = true;
                            break;
 
-                        case CAP32_DELAY:
+                        case KONCPC_DELAY:
                            // Reuse boot_time as it is a reasonable wait time for Plus transition between the F1/F2 nag screen and the command line.
-                           // TODO: Support an argument to CAP32_DELAY in autocmd instead.
-                           LOG_VERBOSE("Take into account CAP32_DELAY");
+                           // TODO: Support an argument to KONCPC_DELAY in autocmd instead.
+                           LOG_VERBOSE("Take into account KONCPC_DELAY");
                            nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
                            break;
 
-                        case CAP32_WAITBREAK:
+                        case KONCPC_WAITBREAK:
                            breakPointsToSkipBeforeProceedingWithVirtualEvents++;
                            LOG_INFO("Will skip " << breakPointsToSkipBeforeProceedingWithVirtualEvents << " before processing more virtual events.");
                            LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point << ").");
-                           z80.break_point = 0; // set break point to address 0. FIXME would be interesting to change this via a parameter of CAP32_WAITBREAK on command line.
+                           z80.break_point = 0; // set break point to address 0. FIXME would be interesting to change this via a parameter of KONCPC_WAITBREAK on command line.
                            break;
 
-                        case CAP32_SNAPSHOT:
+                        case KONCPC_SNAPSHOT:
                            dumpSnapshot();
                            break;
 
-                        case CAP32_LD_SNAP:
+                        case KONCPC_LD_SNAP:
                            loadSnapshot();
                            break;
 
-                        case CAP32_TAPEPLAY:
+                        case KONCPC_TAPEPLAY:
                            LOG_VERBOSE("Request to play tape");
                            Tape_Rewind();
                            if (!pbTapeImage.empty()) {
@@ -2996,7 +2996,7 @@ int cap32_main (int argc, char **argv)
                            set_osd_message(std::string("Play tape: ") + (CPC.tape_play_button ? "on" : "off"));
                            break;
 
-                        case CAP32_MF2STOP:
+                        case KONCPC_MF2STOP:
                            if(CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
                              reg_pair port;
 
@@ -3017,25 +3017,25 @@ int cap32_main (int argc, char **argv)
                            }
                            break;
 
-                        case CAP32_RESET:
+                        case KONCPC_RESET:
                            LOG_VERBOSE("User requested emulator reset");
                            emulator_reset();
                            break;
 
-                        case CAP32_JOY:
+                        case KONCPC_JOY:
                            CPC.joystick_emulation = CPC.joystick_emulation ? 0 : 1;
                            CPC.InputMapper->set_joystick_emulation();
                            set_osd_message(std::string("Joystick emulation: ") + (CPC.joystick_emulation ? "on" : "off"));
                            break;
 
-                        case CAP32_PHAZER:
+                        case KONCPC_PHAZER:
                            CPC.phazer_emulation = CPC.phazer_emulation.Next();
                            if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
                            mouse_init();
                            set_osd_message(std::string("Phazer emulation: ") + CPC.phazer_emulation.ToString());
                            break;
 
-                        case CAP32_PASTE:
+                        case KONCPC_PASTE:
                            set_osd_message("Pasting...");
                            {
                              auto content = std::string(SDL_GetClipboardText());
@@ -3046,21 +3046,21 @@ int cap32_main (int argc, char **argv)
                              break;
                            }
 
-                        case CAP32_EXIT:
+                        case KONCPC_EXIT:
                            cleanExit (0);
                            break;
 
-                        case CAP32_FPS:
+                        case KONCPC_FPS:
                            CPC.scr_fps = CPC.scr_fps ? 0 : 1; // toggle fps display on or off
                            set_osd_message(std::string("Performances info: ") + (CPC.scr_fps ? "on" : "off"));
                            break;
 
-                        case CAP32_SPEED:
+                        case KONCPC_SPEED:
                            CPC.limit_speed = CPC.limit_speed ? 0 : 1;
                            set_osd_message(std::string("Limit speed: ") + (CPC.limit_speed ? "on" : "off"));
                            break;
 
-                        case CAP32_DEBUG:
+                        case KONCPC_DEBUG:
                            log_verbose = !log_verbose;
                            #ifdef DEBUG
                            dwDebugFlag = dwDebugFlag ? 0 : 1;
@@ -3075,7 +3075,7 @@ int cap32_main (int argc, char **argv)
                            set_osd_message(std::string("Debug mode: ") + (log_verbose ? "on" : "off"));
                            break;
 
-                        case CAP32_NEXTDISKA:
+                        case KONCPC_NEXTDISKA:
                            CPC.driveA.zip_index += 1;
                            file_load(CPC.driveA);
                            break;
