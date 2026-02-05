@@ -20,36 +20,38 @@ class KoncepcjaIPC:
         self.host = host
         self.port = port
         self.timeout = timeout
-        self.sock: Optional[socket.socket] = None
 
     def connect(self, retries: int = 10, delay: float = 0.5) -> bool:
-        """Connect to emulator IPC server with retries."""
+        """Verify emulator IPC server is reachable with retries."""
         for i in range(retries):
             try:
-                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.sock.settimeout(self.timeout)
-                self.sock.connect((self.host, self.port))
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(self.timeout)
+                sock.connect((self.host, self.port))
+                sock.close()
                 return True
             except (ConnectionRefusedError, socket.timeout):
                 if i < retries - 1:
                     time.sleep(delay)
-                self.sock = None
         return False
 
     def disconnect(self):
-        """Close the connection."""
-        if self.sock:
-            self.sock.close()
-            self.sock = None
+        """No-op since we use per-request connections."""
+        pass
 
     def send_command(self, cmd: str) -> Tuple[bool, str]:
-        """Send command and return (success, response)."""
-        if not self.sock:
-            return False, "Not connected"
+        """Send command and return (success, response).
 
+        Note: The server closes the connection after each command,
+        so we create a new connection for each request.
+        """
         try:
-            self.sock.sendall((cmd + '\n').encode())
-            response = self.sock.recv(65536).decode().strip()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.timeout)
+            sock.connect((self.host, self.port))
+            sock.sendall((cmd + '\n').encode())
+            response = sock.recv(65536).decode().strip()
+            sock.close()
             success = response.startswith('OK')
             return success, response
         except socket.timeout:
@@ -123,7 +125,12 @@ class KoncepcjaIPC:
 class EmulatorRunner:
     """Manages emulator process lifecycle."""
 
-    def __init__(self, exe_path: str = './koncepcja'):
+    def __init__(self, exe_path: str = None):
+        if exe_path is None:
+            # Find the executable relative to this script
+            script_dir = Path(__file__).parent
+            project_root = script_dir.parent.parent
+            exe_path = str(project_root / 'koncepcja')
         self.exe_path = exe_path
         self.process: Optional[subprocess.Popen] = None
         self.ipc = KoncepcjaIPC()
