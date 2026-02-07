@@ -1318,7 +1318,7 @@ static void devtools_tab_asm()
   word pc = z80.PC.w.l;
   std::vector<word> eps = { pc };
   DisassembledCode code = disassemble(eps);
-  auto breakpoints = z80_list_breakpoints();
+  const auto& breakpoints = z80_list_breakpoints_ref();
 
   ImGui::Text("Disassembly around PC=%04X", pc);
 
