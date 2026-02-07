@@ -1,4 +1,4 @@
 #pragma once
 #ifdef __APPLE__
-void cap32_setup_macos_menu();
+void koncpc_setup_macos_menu();
 #endif

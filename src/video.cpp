@@ -31,7 +31,7 @@
 */
 
 #include "video.h"
-#include "cap32.h"
+#include "koncepcja.h"
 #include "log.h"
 #include "glfuncs.h"
 #ifdef HAVE_GL

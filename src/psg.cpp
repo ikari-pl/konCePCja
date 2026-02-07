@@ -25,7 +25,7 @@
 #include <math.h>
 #include <memory>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "z80.h"
 #include "log.h"
 

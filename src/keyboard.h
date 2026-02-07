@@ -6,7 +6,7 @@
 #include <map>
 #include <list>
 #include <string>
-#include "cap32.h"
+#include "koncepcja.h"
 
 #define MOD_CPC_SHIFT   (0x01 << 8)
 #define MOD_CPC_CTRL    (0x02 << 8)
@@ -23,32 +23,32 @@
 #define MOD_PC_CAPS     (static_cast<PCKey>(KMOD_CAPS) << BITSHIFT_MOD)
 
 typedef enum {
-   CAP32_EXIT = MOD_EMU_KEY,
-   CAP32_FPS,
-   CAP32_FULLSCRN,
-   CAP32_GUI,
-   CAP32_VKBD,
-   CAP32_JOY,
-   CAP32_PHAZER,
-   CAP32_MF2STOP,
-   CAP32_RESET,
-   CAP32_SCRNSHOT,
-   CAP32_SPEED,
-   CAP32_TAPEPLAY,
-   CAP32_DEBUG,
-   CAP32_SNAPSHOT,
-   CAP32_LD_SNAP,
-   CAP32_WAITBREAK,
-   CAP32_DELAY,
-   CAP32_PASTE,
-   CAP32_DEVTOOLS,
-   CAP32_NEXTDISKA
-} CAP32_KEYS;
+   KONCPC_EXIT = MOD_EMU_KEY,
+   KONCPC_FPS,
+   KONCPC_FULLSCRN,
+   KONCPC_GUI,
+   KONCPC_VKBD,
+   KONCPC_JOY,
+   KONCPC_PHAZER,
+   KONCPC_MF2STOP,
+   KONCPC_RESET,
+   KONCPC_SCRNSHOT,
+   KONCPC_SPEED,
+   KONCPC_TAPEPLAY,
+   KONCPC_DEBUG,
+   KONCPC_SNAPSHOT,
+   KONCPC_LD_SNAP,
+   KONCPC_WAITBREAK,
+   KONCPC_DELAY,
+   KONCPC_PASTE,
+   KONCPC_DEVTOOLS,
+   KONCPC_NEXTDISKA
+} KONCPC_KEYS;
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-void cap32_menu_action(int action);
+void koncpc_menu_action(int action);
 #ifdef __cplusplus
 }
 #endif
@@ -273,7 +273,7 @@ typedef enum {
 using PCKey = qword;
 
 // CapriceKey represents a host-agnostic representation of a keyboard event.
-// This can be either a CPC key combination (CPC_KEYS) or an emulator command (CAP32_KEYS).
+// This can be either a CPC key combination (CPC_KEYS) or an emulator command (KONCPC_KEYS).
 using CapriceKey = unsigned int;
 
 // CPCScancode is a hardware scancode.

@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "asic.h"
-#include "cap32.h"
+#include "koncepcja.h"
 #include <vector>
 
 extern byte *membank_config[8][4];

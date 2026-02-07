@@ -16,8 +16,8 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
-#ifndef CAP32_H
-#define CAP32_H
+#ifndef KONCEPCJA_H
+#define KONCEPCJA_H
 
 #include <array>
 #include <stdint.h>
@@ -418,9 +418,9 @@ typedef struct {
 
 using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
 
-// cap32.cpp
+// kon_cpc_ja.cpp
 void set_osd_message(const std::string& message, uint32_t for_milliseconds = 1000);
-void cap32_queue_virtual_keys(const std::string& text);
+void koncpc_queue_virtual_keys(const std::string& text);
 void ga_init_banking(t_MemBankConfig& membank_config, unsigned char RAM_bank);
 bool driveAltered();
 void emulator_reset();
@@ -457,7 +457,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename);
 
 void set_cursor_visibility(bool show);
 
-int cap32_main(int argc, char **argv);
+int koncpc_main(int argc, char **argv);
 
 // fdc.c
 void fdc_write_data(unsigned char val);

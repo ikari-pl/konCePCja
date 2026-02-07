@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "keyboard.h"
 #include <string>
 

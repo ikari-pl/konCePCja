@@ -1,9 +1,9 @@
 # Creating a new major release
 
-Update the version in cap32.h:
+Update the version in koncepcja.h:
 
 ```
-$ vi src/cap32.h
+$ vi src/koncepcja.h
 (...)
 #define VERSION_STRING "vX.Y.0"
 (...)

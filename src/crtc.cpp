@@ -22,7 +22,7 @@
 
 #include <math.h>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "crtc.h"
 #include "z80.h"
 #include "log.h"

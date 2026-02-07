@@ -9,7 +9,7 @@
 TSTDIR=`dirname "$0"`
 OUTPUT_DIR="output"
 LOGFILE="test.log"
-CAP32DIR="${TSTDIR}/../../../"
+KONCPCDIR="${TSTDIR}/../../../"
 
 if [ -z "$DIFF" ]
 then
@@ -27,14 +27,14 @@ echo "" > "${LOGFILE}"
 
 cd "$TSTDIR"
 
-nb_plugins=`$CAP32DIR/koncepcja -V | grep "Number of video plugins available: " | cut -d : -f 2 | xargs`
+nb_plugins=`$KONCPCDIR/koncepcja -V | grep "Number of video plugins available: " | cut -d : -f 2 | xargs`
 let last_plugin=${nb_plugins}-1
 
 rc=0
 for style in `seq 0 $last_plugin`
 do
   $SED -i "s/^scr_style=.*$/scr_style=${style}/" koncepcja.cfg || rc=2
-  $CAP32DIR/koncepcja -c koncepcja.cfg -a "print #8,\"style=${style}\"" -a CAP32_EXIT >> "${LOGFILE}" 2>&1
+  $KONCPCDIR/koncepcja -c koncepcja.cfg -a "print #8,\"style=${style}\"" -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
 
   mv ${OUTPUT_DIR}/printer.dat ${OUTPUT_DIR}/printer.dat.${style}
   if ! $DIFF ${OUTPUT_DIR}/printer.dat.${style} model/printer.dat.${style} >> "${LOGFILE}"

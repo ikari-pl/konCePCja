@@ -1,6 +1,6 @@
 #include "asic.h"
 #include "log.h"
-#include "cap32.h"
+#include "koncepcja.h"
 #include "SDL3/SDL.h"
 #include "crtc.h"
 
@@ -223,7 +223,7 @@ void asic_set_palette() {
     const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
     SDL_Palette* pal = SDL_GetSurfacePalette(back_surface);
     GateArray.palette[colour] = SDL_MapRGB(fmt, pal, red, green, blue);
-    // TODO(cpitrat): Confirm whether we should update the mode 2 'anti-aliasing' colour (cf. src/cap32.cpp where GateArray.palette[33] is set).
+    // TODO(cpitrat): Confirm whether we should update the mode 2 'anti-aliasing' colour (cf. src/kon_cpc_ja.cpp where GateArray.palette[33] is set).
   }
 }
 
@@ -299,7 +299,7 @@ bool asic_register_page_write(word addr, byte val) {
          //LOG_DEBUG("Received color operation: color " << colour << " has green = " << green);
          asic_colours[colour].g = green;
          pbRegisterPage[(addr & 0x3FFF)] = (val & 0x0F);
-         // TODO: find a cleaner way to do this - this is a copy paste from "Set ink value" in cap32.cpp
+         // TODO: find a cleaner way to do this - this is a copy paste from "Set ink value" in kon_cpc_ja.cpp
       } else {
          double red   = static_cast<double>((val & 0xF0) >> 4)/16;
          double blue  = static_cast<double>(val & 0x0F)/16;

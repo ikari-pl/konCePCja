@@ -20,7 +20,7 @@
    (c) Copyright 1997-2003 Ulrich Doewich
 */
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "disk.h"
 #include "z80.h"
 

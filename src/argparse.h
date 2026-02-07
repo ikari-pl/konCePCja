@@ -17,7 +17,7 @@ class CapriceArgs
       std::string symFilePath;
 };
 
-std::string replaceCap32Keys(std::string command);
+std::string replaceKoncpcKeys(std::string command);
 void parseArguments(int argc, char** argv, std::vector<std::string>& slot_list, CapriceArgs& args);
 
 #endif

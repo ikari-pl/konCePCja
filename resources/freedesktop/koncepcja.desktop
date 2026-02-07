@@ -9,6 +9,6 @@ Comment=Amstrad CPC/CPC+ Emulator
 Comment[es]=Emulador de Amstrad CPC/CPC+
 Comment[fr]=Emulateur Amstrad CPC/CPC+
 Icon=caprice32
-Exec=cap32
+Exec=koncepcja
 Terminal=false
 Categories=Application;X-Debian-Applications-Emulators;

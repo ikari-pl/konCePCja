@@ -16,7 +16,7 @@
 #include <thread>
 #include <vector>
 
-#include "cap32.h"
+#include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "z80.h"
 

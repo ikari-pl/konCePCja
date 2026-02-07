@@ -162,7 +162,7 @@ TEST_HEADERS:=$(shell find $(TSTDIR) -name \*.h)
 TEST_DEPENDS:=$(foreach file,$(TEST_SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 
-.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen
+.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls
 COMMON_CFLAGS += -std=c++17 $(IPATHS)
@@ -201,7 +201,22 @@ endif
 # can disable specific warnings triggered by vendor code
 ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS) $(WARN_SUPPRESS) $(CFLAGS)
 
-$(MAIN): main.cpp src/cap32.h
+####################################
+### Coverage support
+####################################
+ifdef COVERAGE
+ifeq ($(UNAME_S),Darwin)
+# LLVM source-based coverage for macOS (clang)
+COVERAGE_FLAGS = -fprofile-instr-generate -fcoverage-mapping
+else
+# gcov-style coverage for Linux (gcc) - compatible with codecov/coveralls
+COVERAGE_FLAGS = --coverage -fprofile-arcs -ftest-coverage
+endif
+ALL_CFLAGS += $(COVERAGE_FLAGS)
+LDFLAGS += $(COVERAGE_FLAGS)
+endif
+
+$(MAIN): main.cpp src/koncepcja.h
 	@$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $(MAIN) main.cpp
 
 $(DEPENDS): $(OBJDIR)/%.d: %.cpp
@@ -416,6 +431,49 @@ fix-clang-format:
 
 doxygen:
 	doxygen doxygen.cfg
+
+####################################
+### Coverage targets
+####################################
+
+coverage: clean
+	$(MAKE) COVERAGE=1 unit_test
+	$(MAKE) coverage-report
+
+# Prefer xcrun-wrapped LLVM tools (Xcode), fall back to bare commands
+ifeq ($(UNAME_S),Darwin)
+  LLVM_PROFDATA := $(shell command -v xcrun >/dev/null 2>&1 && echo "xcrun llvm-profdata" || echo "llvm-profdata")
+  LLVM_COV := $(shell command -v xcrun >/dev/null 2>&1 && echo "xcrun llvm-cov" || echo "llvm-cov")
+endif
+
+coverage-report:
+ifeq ($(UNAME_S),Darwin)
+	@mkdir -p coverage
+	LLVM_PROFILE_FILE="coverage-%p.profraw" ./$(TEST_TARGET) --gtest_shuffle || true
+	$(LLVM_PROFDATA) merge -sparse coverage-*.profraw -o coverage.profdata
+	$(LLVM_COV) show ./$(TEST_TARGET) -instr-profile=coverage.profdata -format=html -output-dir=coverage/html src/
+	$(LLVM_COV) report ./$(TEST_TARGET) -instr-profile=coverage.profdata src/
+	@echo "Coverage report: coverage/html/index.html"
+else
+	@mkdir -p coverage
+	lcov --directory obj/ --capture --output-file coverage/coverage.info \
+		--exclude '/usr/include/*' \
+		--exclude '*/googletest/*' \
+		--exclude '*/vendor/*' \
+		--exclude '*/test/*' || true
+	genhtml coverage/coverage.info --output-directory coverage/html --demangle-cpp || true
+	gcovr --root . --filter='src/.*' --exclude='vendor/.*' --exclude='googletest/.*' --exclude='test/.*' \
+		--html coverage/gcovr.html --json coverage/coverage.json --print-summary || true
+	@echo "Coverage reports:"
+	@echo "  HTML: coverage/html/index.html"
+	@echo "  GCovr: coverage/gcovr.html"
+	@echo "  JSON: coverage/coverage.json"
+endif
+
+coverage-clean:
+	rm -rf coverage/ coverage-*.profraw coverage.profdata coverage.info
+	find obj/ -name "*.gcda" -exec rm -f {} + 2>/dev/null || true
+	find obj/ -name "*.gcno" -exec rm -f {} + 2>/dev/null || true
 
 clean:
 	rm -rf obj/ release/ .pc/ doxygen/
