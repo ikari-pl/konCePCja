@@ -148,7 +148,7 @@ void z80_step_instruction();
 const std::vector<Breakpoint>& z80_list_breakpoints_ref();
 
 // IO breakpoints
-bool z80_check_io_breakpoint(word port, IOBreakpointDir access);
+bool z80_check_io_breakpoint(word port, IOBreakpointDir access, byte val = 0);
 void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir);
 void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
                                 std::unique_ptr<ExprNode> condition,

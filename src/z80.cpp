@@ -3080,7 +3080,7 @@ const std::vector<Breakpoint>& z80_list_breakpoints_ref() {
 // --- IO breakpoints ---
 std::vector<IOBreakpoint> io_breakpoints;
 
-bool z80_check_io_breakpoint(word port, IOBreakpointDir access) {
+bool z80_check_io_breakpoint(word port, IOBreakpointDir access, byte val) {
   if (io_breakpoints.empty()) return false;
   for (auto& bp : io_breakpoints) {
     if ((bp.dir & access) && ((port & bp.mask) == (bp.port & bp.mask))) {
@@ -3094,7 +3094,7 @@ bool z80_check_io_breakpoint(word port, IOBreakpointDir access) {
         ctx.ga = &GateArray;
         ctx.psg = &PSG;
         ctx.address = port;
-        ctx.value = 0; // filled by caller if possible
+        ctx.value = val;
         if (expr_eval(bp.condition.get(), ctx) == 0) continue;
       }
       return true;

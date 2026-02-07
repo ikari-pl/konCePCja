@@ -549,40 +549,28 @@ std::string handle_command(const std::string& line) {
   if (cmd == "bp" && parts.size() >= 2) {
     if (parts[1] == "add" && parts.size() >= 3) {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
-      // Parse optional "if <expr>" and "pass <N>"
+      // Parse optional "if <expr>" and "pass <N>" in a single pass.
+      // Tokens after "if" up to "pass" (or end) form the expression.
       std::string cond_str;
       int pass_count = 0;
+      bool in_expr = false;
       for (size_t pi = 3; pi < parts.size(); pi++) {
         std::string kw = parts[pi];
-        for (auto& c : kw) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        if (kw == "if" && pi + 1 < parts.size()) {
-          // Everything after "if" until "pass" is the expression
-          std::string expr;
-          for (size_t ei = pi + 1; ei < parts.size(); ei++) {
-            std::string ekw = parts[ei];
-            std::string ekwl = ekw;
-            for (auto& c : ekwl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (ekwl == "pass") break;
-            if (!expr.empty()) expr += " ";
-            expr += parts[ei];
-          }
-          cond_str = expr;
-          break; // 'if' consumes the rest (before 'pass')
+        std::string kwl = kw;
+        for (auto& c : kwl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (kwl == "if") {
+          in_expr = true;
+          continue;
         }
-        if (kw == "pass" && pi + 1 < parts.size()) {
+        if (kwl == "pass" && pi + 1 < parts.size()) {
+          in_expr = false;
           pass_count = std::stoi(parts[pi + 1]);
-          pi++; // skip value
+          pi++; // skip the value
+          continue;
         }
-      }
-      // Also scan for "pass" after the condition
-      if (!cond_str.empty()) {
-        for (size_t pi = 3; pi < parts.size(); pi++) {
-          std::string kw = parts[pi];
-          for (auto& c : kw) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-          if (kw == "pass" && pi + 1 < parts.size()) {
-            pass_count = std::stoi(parts[pi + 1]);
-            break;
-          }
+        if (in_expr) {
+          if (!cond_str.empty()) cond_str += " ";
+          cond_str += kw;
         }
       }
       if (!cond_str.empty()) {

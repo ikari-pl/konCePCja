@@ -381,55 +381,60 @@ std::unique_ptr<ExprNode> expr_parse(const std::string& input, std::string& erro
 
 // ─── Evaluator ──────────────────────────────────────────────────────
 
-// Resolve a register variable name to its value
+// Resolve a register variable name to its value (case-insensitive)
 static int32_t resolve_variable(const std::string& name, const ExprContext& ctx) {
   if (!ctx.z80) return 0;
   const t_z80regs& z = *ctx.z80;
 
-  // 8-bit registers (case-sensitive for single chars, case-insensitive for multi)
-  if (name == "A") return z.AF.b.h;
-  if (name == "F") return z.AF.b.l;
-  if (name == "B") return z.BC.b.h;
-  if (name == "C") return z.BC.b.l;
-  if (name == "D") return z.DE.b.h;
-  if (name == "E") return z.DE.b.l;
-  if (name == "H") return z.HL.b.h;
-  if (name == "L") return z.HL.b.l;
-  if (name == "I") return z.I;
-  if (name == "R") return z.R;
+  // Normalize to lowercase for uniform matching
+  std::string n = name;
+  std::transform(n.begin(), n.end(), n.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
+
+  // 8-bit registers
+  if (n == "a") return z.AF.b.h;
+  if (n == "f") return z.AF.b.l;
+  if (n == "b") return z.BC.b.h;
+  if (n == "c") return z.BC.b.l;
+  if (n == "d") return z.DE.b.h;
+  if (n == "e") return z.DE.b.l;
+  if (n == "h") return z.HL.b.h;
+  if (n == "l") return z.HL.b.l;
+  if (n == "i") return z.I;
+  if (n == "r") return z.R;
 
   // 16-bit registers
-  if (name == "AF") return z.AF.w.l;
-  if (name == "BC") return z.BC.w.l;
-  if (name == "DE") return z.DE.w.l;
-  if (name == "HL") return z.HL.w.l;
-  if (name == "IX") return z.IX.w.l;
-  if (name == "IY") return z.IY.w.l;
-  if (name == "SP") return z.SP.w.l;
-  if (name == "PC") return z.PC.w.l;
+  if (n == "af") return z.AF.w.l;
+  if (n == "bc") return z.BC.w.l;
+  if (n == "de") return z.DE.w.l;
+  if (n == "hl") return z.HL.w.l;
+  if (n == "ix") return z.IX.w.l;
+  if (n == "iy") return z.IY.w.l;
+  if (n == "sp") return z.SP.w.l;
+  if (n == "pc") return z.PC.w.l;
 
   // IX/IY halves
-  if (name == "IXh" || name == "IXH") return z.IX.b.h;
-  if (name == "IXl" || name == "IXL") return z.IX.b.l;
-  if (name == "IYh" || name == "IYH") return z.IY.b.h;
-  if (name == "IYl" || name == "IYL") return z.IY.b.l;
+  if (n == "ixh") return z.IX.b.h;
+  if (n == "ixl") return z.IX.b.l;
+  if (n == "iyh") return z.IY.b.h;
+  if (n == "iyl") return z.IY.b.l;
 
-  // Shadow registers
-  if (name == "AF'" || name == "AFx" || name == "AFX") return z.AFx.w.l;
-  if (name == "BC'" || name == "BCx" || name == "BCX") return z.BCx.w.l;
-  if (name == "DE'" || name == "DEx" || name == "DEX") return z.DEx.w.l;
-  if (name == "HL'" || name == "HLx" || name == "HLX") return z.HLx.w.l;
+  // Shadow registers (accept both AF' and AFx forms)
+  if (n == "af'" || n == "afx") return z.AFx.w.l;
+  if (n == "bc'" || n == "bcx") return z.BCx.w.l;
+  if (n == "de'" || n == "dex") return z.DEx.w.l;
+  if (n == "hl'" || n == "hlx") return z.HLx.w.l;
 
   // Status
-  if (name == "IM") return z.IM;
-  if (name == "IFF1") return z.IFF1;
-  if (name == "IFF2") return z.IFF2;
+  if (n == "im") return z.IM;
+  if (n == "iff1") return z.IFF1;
+  if (n == "iff2") return z.IFF2;
 
   // Context variables
-  if (name == "address") return ctx.address;
-  if (name == "value") return ctx.value;
-  if (name == "previous") return ctx.previous;
-  if (name == "mode") return ctx.mode;
+  if (n == "address") return ctx.address;
+  if (n == "value") return ctx.value;
+  if (n == "previous") return ctx.previous;
+  if (n == "mode") return ctx.mode;
 
   return 0; // unknown variable
 }

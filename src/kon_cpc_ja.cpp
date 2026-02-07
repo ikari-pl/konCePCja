@@ -492,7 +492,7 @@ byte z80_IN_handler (reg_pair port)
 
 void z80_OUT_handler (reg_pair port, byte val)
 {
-   if (z80_check_io_breakpoint(port.w.l, IO_OUT)) {
+   if (z80_check_io_breakpoint(port.w.l, IO_OUT, val)) {
       z80.breakpoint_reached = 1;
    }
    LOG_DEBUG("OUT on port " << std::hex << static_cast<int>(port.w.l) << ", val=" << static_cast<int>(val) << std::dec);
