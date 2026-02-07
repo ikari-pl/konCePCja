@@ -15,6 +15,9 @@ class CapriceArgs
       size_t binOffset;
       std::map<std::string, std::map<std::string, std::string>> cfgOverrides;
       std::string symFilePath;
+      bool headless = false;
+      std::string exitAfter;       // e.g. "100f", "5s", "3000ms"
+      bool exitOnBreak = false;
 };
 
 std::string replaceKoncpcKeys(std::string command);

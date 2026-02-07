@@ -444,6 +444,8 @@ int video_init ();
 void video_shutdown ();
 void cleanExit(int returnCode, bool askIfUnsaved = true);
 
+extern bool g_headless;
+
 // Return the path to the best (i.e: most specific) configuration file.
 // Priority order is:
 //  - koncepcja.cfg in the same directory as koncepcja binary

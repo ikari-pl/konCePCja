@@ -46,6 +46,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "stringutils.h"
 #include "zip.h"
 #include "keyboard.h"
+#include "trace.h"
 #include "macos_menu.h"
 
 #include "imgui.h"
@@ -102,6 +103,11 @@ SDL_Surface *back_surface = nullptr;
 video_plugin* vid_plugin;
 
 static bool g_take_screenshot = false;
+bool g_headless = false;
+static bool g_exit_on_break = false;
+static enum { EXIT_NONE, EXIT_FRAMES, EXIT_MS } g_exit_mode = EXIT_NONE;
+static dword g_exit_target = 0;
+static dword g_exit_start_ticks = 0;
 
 static int topbar_height_px = 24;
 
@@ -2268,7 +2274,7 @@ void doCleanUp ()
 
 void cleanExit(int returnCode, bool askIfUnsaved)
 {
-   if (askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
+   if (!g_headless && askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
      return;
    }
    doCleanUp();
@@ -2765,10 +2771,39 @@ int koncpc_main (int argc, char **argv)
      binPath = std::filesystem::absolute(".");
    }
    parseArguments(argc, argv, slot_list, args);
+   g_headless = args.headless;
+   g_exit_on_break = args.exitOnBreak;
 
-   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) { // initialize SDL
-      fprintf(stderr, "SDL_Init() failed: %s\n", SDL_GetError());
-      _exit(-1);
+   // Parse --exit-after spec: Nf (frames), Ns (seconds), Nms (milliseconds)
+   if (!args.exitAfter.empty()) {
+      const std::string& spec = args.exitAfter;
+      if (spec.size() > 2 && spec.substr(spec.size()-2) == "ms") {
+         g_exit_mode = EXIT_MS;
+         g_exit_target = std::stoul(spec.substr(0, spec.size()-2));
+      } else if (spec.back() == 's') {
+         g_exit_mode = EXIT_MS;
+         g_exit_target = std::stoul(spec.substr(0, spec.size()-1)) * 1000;
+      } else if (spec.back() == 'f') {
+         g_exit_mode = EXIT_FRAMES;
+         g_exit_target = std::stoul(spec.substr(0, spec.size()-1));
+      } else {
+         // Default: treat bare number as frames
+         g_exit_mode = EXIT_FRAMES;
+         g_exit_target = std::stoul(spec);
+      }
+   }
+
+   if (g_headless) {
+      // SDL3: timer is always available, init core only for headless
+      if (!SDL_Init(0)) {
+         fprintf(stderr, "SDL_Init(0) failed: %s\n", SDL_GetError());
+         _exit(-1);
+      }
+   } else {
+      if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
+         fprintf(stderr, "SDL_Init() failed: %s\n", SDL_GetError());
+         _exit(-1);
+      }
    }
 
    // PNG loader uses libpng; no SDL_image init required
@@ -2794,28 +2829,52 @@ int koncpc_main (int argc, char **argv)
 
    z80_init_tables(); // init Z80 emulation
 
-   if (video_init()) {
-      fprintf(stderr, "video_init() failed. Aborting.\n");
-      cleanExit(-1);
-   }
+   if (g_headless) {
+      // In headless mode, force the headless video plugin (offscreen surface only)
+      static video_plugin hp = video_headless_plugin();
+      vid_plugin = &hp;
+      back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, false);
+      if (!back_surface) {
+         fprintf(stderr, "headless video_init() failed. Aborting.\n");
+         _exit(-1);
+      }
+      {
+         const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
+         CPC.scr_bpp = fmt ? fmt->bits_per_pixel : 0;
+      }
+      video_set_style();
+      if (video_set_palette()) {
+         fprintf(stderr, "headless video_set_palette() failed. Aborting.\n");
+         _exit(-1);
+      }
+      asic_set_palette();
+      CPC.scr_bps = back_surface->pitch;
+      CPC.scr_line_offs = CPC.scr_bps * dwYScale;
+      CPC.scr_pos = CPC.scr_base = static_cast<byte *>(back_surface->pixels);
+      CPC.scr_gui_is_currently_on = false;
+      crtc_init();
+      // No audio in headless mode
+      CPC.snd_enabled = 0;
+   } else {
+      if (video_init()) {
+         fprintf(stderr, "video_init() failed. Aborting.\n");
+         cleanExit(-1);
+      }
 #ifdef __APPLE__
-   koncpc_setup_macos_menu();
+      koncpc_setup_macos_menu();
 #endif
-   topbar_height_px = imgui_topbar_height();
-   video_set_topbar(nullptr, topbar_height_px);
-   mouse_init();
+      topbar_height_px = imgui_topbar_height();
+      video_set_topbar(nullptr, topbar_height_px);
+      mouse_init();
 
-   if (audio_init()) {
-      fprintf(stderr, "audio_init() failed. Disabling sound.\n");
-      // TODO(cpitrat): Do not set this to 0 when audio_init fail as this affect
-      // configuration when saving from GUI. Rather use some other indicator to
-      // know whether snd_bufferptr is usable or not.
-      // To test it, set SDL_AUDIODRIVER=dsp or some other unsupported value.
-      CPC.snd_enabled = 0; // disable sound emulation
-   }
+      if (audio_init()) {
+         fprintf(stderr, "audio_init() failed. Disabling sound.\n");
+         CPC.snd_enabled = 0;
+      }
 
-   if (joysticks_init()) {
-      fprintf(stderr, "joysticks_init() failed. Joysticks won't work.\n");
+      if (joysticks_init()) {
+         fprintf(stderr, "joysticks_init() failed. Joysticks won't work.\n");
+      }
    }
 
 #ifdef DEBUG
@@ -2846,10 +2905,11 @@ int koncpc_main (int argc, char **argv)
 // ----------------------------------------------------------------------------
 
    update_timings();
-   audio_resume();
+   if (!g_headless) audio_resume();
 
    loadBreakpoints();
 
+   g_exit_start_ticks = SDL_GetTicks();
    iExitCondition = EC_FRAME_COMPLETE;
 
    while (true) {
@@ -2865,7 +2925,7 @@ int koncpc_main (int argc, char **argv)
          && (breakPointsToSkipBeforeProceedingWithVirtualEvents == 0)) {
 
          auto nextVirtualEvent = &virtualKeyboardEvents.front();
-         SDL_PushEvent(nextVirtualEvent);
+         if (!g_headless) SDL_PushEvent(nextVirtualEvent);
 
          auto key = nextVirtualEvent->key.key;
          auto mod = static_cast<SDL_Keymod>(nextVirtualEvent->key.mod);
@@ -2875,20 +2935,22 @@ int koncpc_main (int argc, char **argv)
          CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(key, mod);
          if (!(scancode & MOD_EMU_KEY)) {
             LOG_DEBUG("The virtual event is a keypress (not a command), so introduce a pause.");
-            // Setting nextVirtualEventFrameCount below guarantees to
-            // immediately break the loop enclosing this code and wait
-            // at least one frame.
             nextVirtualEventFrameCount = dwFrameCountOverall
                + ((evtype == SDL_EVENT_KEY_DOWN || evtype == SDL_EVENT_KEY_UP)?1:0);
-            // The extra delay in case of SDL_EVENT_KEY_DOWN is to keep the
-            // key pressed long enough.  If we don't do this, the CPC
-            // firmware debouncer eats repeated characters.
+         }
+
+         // In headless mode, directly process keyboard events
+         if (g_headless) {
+            if (!(scancode & MOD_EMU_KEY)) {
+               bool press = (evtype == SDL_EVENT_KEY_DOWN);
+               applyKeypress(scancode, keyboard_matrix, press);
+            }
          }
 
          virtualKeyboardEvents.pop_front();
       }
 
-      while (SDL_PollEvent(&event)) {
+      while (!g_headless && SDL_PollEvent(&event)) {
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
 
@@ -3230,6 +3292,10 @@ int koncpc_main (int argc, char **argv)
 
          if (iExitCondition == EC_BREAKPOINT) {
             if (z80.breakpoint_reached || z80.watchpoint_reached) {
+              g_trace.dump_if_crash();
+              if (g_exit_on_break) {
+                cleanExit(1, false);
+              }
               // This is a breakpoint from DevTools or symbol file
               imgui_state.show_devtools = true;
               CPC.paused = true;
@@ -3254,20 +3320,43 @@ int koncpc_main (int argc, char **argv)
          if (iExitCondition == EC_FRAME_COMPLETE) { // emulation finished rendering a complete frame?
             dwFrameCountOverall++;
             dwFrameCount++;
-            if (SDL_GetTicks() < osd_timing) {
-               print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs, osd_message.c_str(), true);
+
+            // Check --exit-after condition
+            if (g_exit_mode == EXIT_FRAMES && dwFrameCountOverall >= g_exit_target) {
+               cleanExit(0, false);
             }
-            std::string fpsText;
-            if (CPC.scr_fps) {
-               char chStr[15];
-               snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS), static_cast<int>(dwFPS) * 100 / (1000 / static_cast<int>(FRAME_PERIOD_MS)));
-               fpsText = chStr;
+            if (g_exit_mode == EXIT_MS && (SDL_GetTicks() - g_exit_start_ticks) >= g_exit_target) {
+               cleanExit(0, false);
             }
-            imgui_state.topbar_fps = fpsText;
-            imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
-            imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
+
+            // Check IPC VBL events
+            ipc_check_vbl_events();
+
+            // Handle IPC "step frame" — decrement remaining, pause when done
+            if (g_ipc->frame_step_active.load()) {
+               int remaining = g_ipc->frame_step_remaining.fetch_sub(1) - 1;
+               if (remaining <= 0) {
+                  cpc_pause();
+                  g_ipc->notify_frame_step_done();
+               }
+            }
+
+            if (!g_headless) {
+               if (SDL_GetTicks() < osd_timing) {
+                  print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs, osd_message.c_str(), true);
+               }
+               std::string fpsText;
+               if (CPC.scr_fps) {
+                  char chStr[15];
+                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS), static_cast<int>(dwFPS) * 100 / (1000 / static_cast<int>(FRAME_PERIOD_MS)));
+                  fpsText = chStr;
+               }
+               imgui_state.topbar_fps = fpsText;
+               imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
+               imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
+            }
             asic_draw_sprites();
-            video_display(); // update PC display
+            if (!g_headless) video_display();
             if (g_take_screenshot) {
               dumpScreen();
               g_take_screenshot = false;
@@ -3275,7 +3364,9 @@ int koncpc_main (int argc, char **argv)
          }
       }
       else { // We are paused — still render ImGui UI overlay
-         video_display();
+         if (!g_headless) {
+            video_display();
+         }
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
       }
    }

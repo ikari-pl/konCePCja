@@ -21,7 +21,17 @@ Key differences so far:
   * SDL3 migration + macOS menu integration
   * Project rename, bundle ID and updated defaults/paths
   * PNG logo + macOS icns icon
-  * Ongoing work on IPC/debug hooks for automation
+  * **Headless mode** (`--headless`) — run without a window for CI and automation
+  * **IPC protocol** — TCP server on port 6543 for remote control by scripts and LLM agents
+  * **Input replay** — type text, press keys and control joysticks over IPC
+  * **Frame stepping** — advance exact frame counts for deterministic testing
+  * **Instruction trace** — ring-buffer Z80 execution trace with dump to file
+  * **Frame dumps** — save sequential PNG screenshots for animation/regression
+  * **Event system** — fire IPC commands on PC match, memory write or VBL interval
+  * **Hash commands** — CRC32 of VRAM, memory ranges and registers for CI assertions
+  * **Exit control** — `--exit-after`, `--exit-on-break` and `quit` for scripted runs
+
+See [docs/ipc-protocol.md](docs/ipc-protocol.md) for the full IPC command reference.
 
 ## Features
 

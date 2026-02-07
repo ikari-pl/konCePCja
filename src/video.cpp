@@ -244,6 +244,39 @@ void direct_close()
   if (mainSDLWindow) SDL_DestroyWindow(mainSDLWindow);
 }
 
+/* ------------------------------------------------------------------------------------ */
+/* Headless video plugin (no window, offscreen surface only) -------------------------- */
+/* ------------------------------------------------------------------------------------ */
+SDL_Surface* headless_init(video_plugin* t, int /*scale*/, bool /*fs*/)
+{
+  t->half_pixels = 1;
+  int surface_width = CPC_VISIBLE_SCR_WIDTH;
+  int surface_height = CPC_VISIBLE_SCR_HEIGHT;
+  vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
+  if (!vid) return nullptr;
+  {
+    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(vid->format);
+    SDL_Palette* pal = SDL_GetSurfacePalette(vid);
+    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(fmt, pal, 0, 0, 0));
+  }
+  return vid;
+}
+
+void headless_setpal(SDL_Color* /*c*/)
+{
+  // palette stored in CPC colours array; no GPU upload needed
+}
+
+void headless_flip(video_plugin* /*t*/)
+{
+  // no-op: nothing to present in headless mode
+}
+
+void headless_close()
+{
+  if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
+}
+
 
 #ifdef HAVE_GL
 /* ------------------------------------------------------------------------------------ */
@@ -1605,6 +1638,11 @@ void dotmat_flip(video_plugin* t __attribute__((unused)))
 /* ------------------------------------------------------------------------------------ */
 /* End of video plugins --------------------------------------------------------------- */
 /* ------------------------------------------------------------------------------------ */
+
+video_plugin video_headless_plugin()
+{
+  return {"Headless", true, headless_init, headless_setpal, headless_flip, headless_close, 1, 0, 0, 0, 0, 0, 0};
+}
 
 std::vector<video_plugin> video_plugin_list =
 {
