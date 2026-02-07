@@ -39,7 +39,13 @@ void TraceRecorder::record(uint16_t pc, uint8_t a, uint8_t f,
     // Read opcode bytes (peek without side effects)
     e.opcode[0] = z80_read_mem(pc);
 
-    // Determine instruction length from first byte and prefixes
+    // Capture opcode prefix bytes for the trace log.  This is a simplified
+    // heuristic that records enough to identify the instruction but does NOT
+    // determine the full instruction length (which would require a complete
+    // decode table).  Variable-length operands (e.g. LD (IX+d),n = 4 bytes
+    // after prefix) are not fully captured.  The register dump alongside
+    // each trace entry is the authoritative record; the opcode bytes are a
+    // convenience for quick identification.
     uint8_t op0 = e.opcode[0];
     int len = 1;
 
@@ -54,8 +60,6 @@ void TraceRecorder::record(uint16_t pc, uint8_t a, uint8_t f,
             len = 4;
         } else {
             len = 2;
-            // Some IX/IY instructions have displacement + operand bytes
-            // For trace purposes, 2 bytes of prefix+opcode is sufficient
         }
     }
     e.opcode_len = static_cast<uint8_t>(len);

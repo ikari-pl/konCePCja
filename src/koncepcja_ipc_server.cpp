@@ -472,10 +472,7 @@ std::string handle_command(const std::string& line) {
       g_ipc_instance->frame_step_remaining.store(n);
       g_ipc_instance->frame_step_active.store(true);
       cpc_resume();
-      // Block until frame stepping completes
-      while (g_ipc_instance->frame_step_active.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      }
+      g_ipc_instance->wait_frame_step_done();
       return "OK\n";
     }
     // "step [N]" — single-step N instructions
@@ -937,6 +934,18 @@ bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc, bool& watchpoint) 
   return true;
 }
 
+// --- Frame step synchronization ---
+
+void KoncepcjaIpcServer::notify_frame_step_done() {
+  frame_step_active.store(false);
+  frame_step_cv.notify_all();
+}
+
+void KoncepcjaIpcServer::wait_frame_step_done() {
+  std::unique_lock<std::mutex> lock(frame_step_mutex);
+  frame_step_cv.wait(lock, [this]{ return !frame_step_active.load(); });
+}
+
 // --- Event system ---
 
 void KoncepcjaIpcServer::update_event_flags() {
@@ -978,8 +987,16 @@ std::vector<IpcEvent> KoncepcjaIpcServer::list_events() const {
 }
 
 void KoncepcjaIpcServer::execute_event_command(const std::string& cmd) {
-  // Execute the IPC command internally (reuse handle_command from anonymous namespace)
+  // Guard against infinite recursion (e.g. event triggers command that
+  // re-triggers the same event: "event on mem=0xC000 mem write 0xC000 1")
+  static thread_local int recursion_depth = 0;
+  if (recursion_depth >= 4) {
+    fprintf(stderr, "IPC event recursion limit reached, dropping: %s\n", cmd.c_str());
+    return;
+  }
+  recursion_depth++;
   handle_command(cmd);
+  recursion_depth--;
 }
 
 void KoncepcjaIpcServer::check_pc_events(uint16_t pc) {

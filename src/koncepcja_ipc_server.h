@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <thread>
 #include <cstdint>
 #include <string>
@@ -37,6 +38,11 @@ public:
   // Set true when frame stepping is active; main loop pauses when count reaches 0
   std::atomic<bool> frame_step_active{false};
 
+  // Signal that frame stepping has completed (called from main loop)
+  void notify_frame_step_done();
+  // Block until frame_step_active becomes false
+  void wait_frame_step_done();
+
   // Event system — called from hot paths, must be fast
   void check_pc_events(uint16_t pc);
   void check_mem_write_events(uint16_t addr, uint8_t val);
@@ -57,6 +63,10 @@ private:
   std::atomic<bool> breakpoint_hit{false};
   std::atomic<uint16_t> breakpoint_pc{0};
   std::atomic<bool> breakpoint_watchpoint{false};
+
+  // Condition variable for frame-step completion (replaces busy-wait)
+  std::mutex frame_step_mutex;
+  std::condition_variable frame_step_cv;
 
   // Events — guarded by mutex for add/remove, but checks use atomic flag for fast path
   mutable std::mutex events_mutex;

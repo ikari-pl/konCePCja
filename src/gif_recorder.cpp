@@ -2,8 +2,8 @@
 #include "msf_gif.h"
 
 #include "gif_recorder.h"
-#include <cstdio>
 #include <cstring>
+#include <fstream>
 
 bool GifRecorder::begin(int width, int height, int delay) {
     if (recording) abort();
@@ -38,11 +38,12 @@ bool GifRecorder::end(const std::string& path) {
 
     if (!result.data) return false;
 
-    FILE* fp = fopen(path.c_str(), "wb");
+    std::ofstream ofs(path, std::ios::binary);
     bool ok = false;
-    if (fp) {
-        ok = fwrite(result.data, result.dataSize, 1, fp) == 1;
-        fclose(fp);
+    if (ofs) {
+        ofs.write(static_cast<const char*>(static_cast<const void*>(result.data)),
+                  result.dataSize);
+        ok = ofs.good();
     }
     msf_gif_free(result);
     return ok;

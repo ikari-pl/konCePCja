@@ -3337,7 +3337,7 @@ int koncpc_main (int argc, char **argv)
                int remaining = g_ipc->frame_step_remaining.fetch_sub(1) - 1;
                if (remaining <= 0) {
                   cpc_pause();
-                  g_ipc->frame_step_active.store(false);
+                  g_ipc->notify_frame_step_done();
                }
             }
 
