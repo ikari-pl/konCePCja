@@ -15,15 +15,18 @@
 
 const struct option long_options[] =
 {
-   {"autocmd",  required_argument, nullptr, 'a'},
-   {"cfg_file", required_argument, nullptr, 'c'},
-   {"inject", required_argument, nullptr, 'i'},
-   {"offset", required_argument, nullptr, 'o'},
-   {"override", required_argument, nullptr, 'O'},
-   {"sym_file", required_argument, nullptr, 's'},
-   {"version",  no_argument, nullptr, 'V'},
-   {"help",     no_argument, nullptr, 'h'},
-   {"verbose",  no_argument, nullptr, 'v'},
+   {"autocmd",       required_argument, nullptr, 'a'},
+   {"cfg_file",      required_argument, nullptr, 'c'},
+   {"exit-after",    required_argument, nullptr, 'E'},
+   {"exit-on-break", no_argument, nullptr, 'B'},
+   {"headless",      no_argument, nullptr, 'H'},
+   {"inject",        required_argument, nullptr, 'i'},
+   {"offset",        required_argument, nullptr, 'o'},
+   {"override",      required_argument, nullptr, 'O'},
+   {"sym_file",      required_argument, nullptr, 's'},
+   {"version",       no_argument, nullptr, 'V'},
+   {"help",          no_argument, nullptr, 'h'},
+   {"verbose",       no_argument, nullptr, 'v'},
    {nullptr, 0, nullptr, 0},
 };
 
@@ -36,7 +39,10 @@ void usage(std::ostream &os, char *progPath, int errcode)
    os << "Usage: " << progname << " [options] <slotfile(s)>\n";
    os << "\nSupported options are:\n";
    os << "   -a/--autocmd=<command>: execute command as soon as the emulator starts.\n";
+   os << "   -B/--exit-on-break:     exit with code 1 when a breakpoint is hit (instead of pausing).\n";
    os << "   -c/--cfg_file=<file>:   use <file> as the emulator configuration file instead of the default.\n";
+   os << "   -E/--exit-after=<spec>: exit after N frames (e.g. 100f), seconds (5s), or milliseconds (3000ms).\n";
+   os << "   -H/--headless:          run without display or audio (IPC and emulation only).\n";
    os << "   -h/--help:              shows this help\n";
    os << "   -i/--inject=<file>:     inject a binary in memory after the CPC startup finishes\n";
    os << "   -o/--offset=<address>:  offset at which to inject the binary provided with -i (default: 0x6000)\n";
@@ -102,7 +108,7 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
 
    optind = 0; // To please test framework, when this function is called multiple times !
    while(true) {
-      c = getopt_long (argc, argv, "a:c:hi:o:O:s:vV",
+      c = getopt_long (argc, argv, "a:Bc:E:Hhi:o:O:s:vV",
                        long_options, &option_index);
       // Logs before processing of the -v will not be visible.
       LOG_DEBUG("Next option: " << c << "(" << static_cast<char>(c) << ")");
@@ -121,6 +127,18 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
 
          case 'c':
             args.cfgFilePath = optarg;
+            break;
+
+         case 'B':
+            args.exitOnBreak = true;
+            break;
+
+         case 'E':
+            args.exitAfter = optarg;
+            break;
+
+         case 'H':
+            args.headless = true;
             break;
 
          case 'h':

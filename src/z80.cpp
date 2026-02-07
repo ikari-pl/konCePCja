@@ -31,6 +31,8 @@
 #include "z80.h"
 #include "asic.h"
 #include "imgui_ui.h"
+#include "trace.h"
+#include "koncepcja_ipc_server.h"
 #include "log.h"
 #include <algorithm>
 #include <vector>
@@ -369,6 +371,7 @@ inline void write_mem(word addr, byte val) {
   }
   //LOG_DEBUG("Write " << static_cast<int>(val) << " at " << addr);
   write_mem_no_watchpoint(addr, val);
+  ipc_check_mem_write_events(addr, val);
 }
 
 byte z80_read_mem(word addr) {
@@ -1071,6 +1074,12 @@ int z80_execute()
             dwMF2Flags = MF2_INVISIBLE; // clear running flag and make the MF2 'invisible'
          }
       }
+
+      if (g_trace.is_active()) {
+         g_trace.record(_PC, _A, _F, z80.BC.w.l, z80.DE.w.l, z80.HL.w.l, z80.SP.w.l);
+      }
+
+      ipc_check_pc_events(_PC);
 
       z80_execute_instruction();
 

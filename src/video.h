@@ -59,4 +59,6 @@ void video_set_topbar(SDL_Surface* surface, int height);
 void video_clear_topbar();
 int video_get_topbar_height();
 
+video_plugin video_headless_plugin();
+
 #endif
