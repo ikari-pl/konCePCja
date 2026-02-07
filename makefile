@@ -440,13 +440,19 @@ coverage: clean
 	$(MAKE) COVERAGE=1 unit_test
 	$(MAKE) coverage-report
 
+# Prefer xcrun-wrapped LLVM tools (Xcode), fall back to bare commands
+ifeq ($(UNAME_S),Darwin)
+  LLVM_PROFDATA := $(shell command -v xcrun >/dev/null 2>&1 && echo "xcrun llvm-profdata" || echo "llvm-profdata")
+  LLVM_COV := $(shell command -v xcrun >/dev/null 2>&1 && echo "xcrun llvm-cov" || echo "llvm-cov")
+endif
+
 coverage-report:
 ifeq ($(UNAME_S),Darwin)
 	@mkdir -p coverage
 	LLVM_PROFILE_FILE="coverage-%p.profraw" ./$(TEST_TARGET) --gtest_shuffle || true
-	xcrun llvm-profdata merge -sparse coverage-*.profraw -o coverage.profdata 2>/dev/null || llvm-profdata merge -sparse coverage-*.profraw -o coverage.profdata
-	xcrun llvm-cov show ./$(TEST_TARGET) -instr-profile=coverage.profdata -format=html -output-dir=coverage/html src/ 2>/dev/null || llvm-cov show ./$(TEST_TARGET) -instr-profile=coverage.profdata -format=html -output-dir=coverage/html src/
-	xcrun llvm-cov report ./$(TEST_TARGET) -instr-profile=coverage.profdata src/ 2>/dev/null || llvm-cov report ./$(TEST_TARGET) -instr-profile=coverage.profdata src/
+	$(LLVM_PROFDATA) merge -sparse coverage-*.profraw -o coverage.profdata
+	$(LLVM_COV) show ./$(TEST_TARGET) -instr-profile=coverage.profdata -format=html -output-dir=coverage/html src/
+	$(LLVM_COV) report ./$(TEST_TARGET) -instr-profile=coverage.profdata src/
 	@echo "Coverage report: coverage/html/index.html"
 else
 	@mkdir -p coverage
@@ -466,8 +472,8 @@ endif
 
 coverage-clean:
 	rm -rf coverage/ coverage-*.profraw coverage.profdata coverage.info
-	find obj/ -name "*.gcda" -delete 2>/dev/null || true
-	find obj/ -name "*.gcno" -delete 2>/dev/null || true
+	find obj/ -name "*.gcda" -exec rm -f {} + 2>/dev/null || true
+	find obj/ -name "*.gcno" -exec rm -f {} + 2>/dev/null || true
 
 clean:
 	rm -rf obj/ release/ .pc/ doxygen/
