@@ -180,7 +180,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "vram") {
       // Hash the visible video memory (back_surface pixels)
       if (!back_surface) return "ERR 503 no-surface\n";
-      uLong crc = crc32(0L, Z_NULL, 0);
+      uLong crc = crc32(0L, nullptr, 0);
       crc = crc32(crc, static_cast<const Bytef*>(back_surface->pixels),
                   static_cast<uInt>(back_surface->h * back_surface->pitch));
       snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
@@ -189,7 +189,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "mem" && parts.size() >= 4) {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
       unsigned int len = std::stoul(parts[3], nullptr, 0);
-      uLong crc = crc32(0L, Z_NULL, 0);
+      uLong crc = crc32(0L, nullptr, 0);
       // Read through z80 memory banking for correctness
       std::vector<byte> tmp(len);
       for (unsigned int i = 0; i < len; i++) {
@@ -214,7 +214,7 @@ std::string handle_command(const std::string& line) {
       packed.DEx = z80.DEx.w.l; packed.HLx = z80.HLx.w.l;
       packed.I = z80.I; packed.R = z80.R;
       packed.IM = z80.IM; packed.IFF1 = z80.IFF1; packed.IFF2 = z80.IFF2;
-      uLong crc = crc32(0L, Z_NULL, 0);
+      uLong crc = crc32(0L, nullptr, 0);
       crc = crc32(crc, reinterpret_cast<const Bytef*>(&packed), sizeof(packed));
       snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
       return std::string(buf);
@@ -817,7 +817,10 @@ std::string handle_command(const std::string& line) {
       }
       char fname[512];
       if (pattern.find('%') != std::string::npos) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
         snprintf(fname, sizeof(fname), pattern.c_str(), i);
+#pragma GCC diagnostic pop
       } else {
         snprintf(fname, sizeof(fname), "%s_%04d.png", pattern.c_str(), i);
       }

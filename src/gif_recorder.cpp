@@ -1,5 +1,9 @@
 #define MSF_GIF_IMPL
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 #include "msf_gif.h"
+#pragma GCC diagnostic pop
 
 #include "gif_recorder.h"
 #include <cstring>
