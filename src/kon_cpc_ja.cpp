@@ -384,6 +384,9 @@ void ga_memory_manager ()
 
 byte z80_IN_handler (reg_pair port)
 {
+   if (z80_check_io_breakpoint(port.w.l, IO_IN)) {
+      z80.breakpoint_reached = 1;
+   }
    byte ret_val;
 
    ret_val = 0xff; // default return value
@@ -489,6 +492,9 @@ byte z80_IN_handler (reg_pair port)
 
 void z80_OUT_handler (reg_pair port, byte val)
 {
+   if (z80_check_io_breakpoint(port.w.l, IO_OUT)) {
+      z80.breakpoint_reached = 1;
+   }
    LOG_DEBUG("OUT on port " << std::hex << static_cast<int>(port.w.l) << ", val=" << static_cast<int>(val) << std::dec);
    // Amstrad Magnum Phazer
    if ((port.b.h == 0xfb) && (port.b.l == 0xfe)) {
@@ -1663,6 +1669,14 @@ int joysticks_init ()
       return 0;
    }
 
+   // Disable HIDAPI drivers known to crash inside SDL3 during device
+   // negotiation (null-deref in SetEnhancedReportHint / WriteSubcommand).
+   // The standard system joystick driver still works for these devices.
+   // Users can override with env vars (e.g. SDL_JOYSTICK_HIDAPI_SWITCH=1).
+   SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_SWITCH, "0");
+   SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_JOY_CONS, "0");
+   SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_NINTENDO_CLASSIC, "0");
+
    if (!SDL_InitSubSystem(SDL_INIT_JOYSTICK)) {
       fprintf(stderr, "Failed to initialize joystick subsystem. Error: %s\n", SDL_GetError());
       return ERR_JOYSTICKS_INIT;
@@ -1684,10 +1698,11 @@ int joysticks_init ()
 
    for(int i = 0; i < MAX_NB_JOYSTICKS; i++) {
       if(i < nbJoysticks) {
+        const char* name = SDL_GetJoystickNameForID(ids[i]);
+        fprintf(stderr, "Opening joystick %d: %s\n", i, name ? name : "(unknown)");
         joysticks[i] = SDL_OpenJoystick(ids[i]);
         if(joysticks[i] == nullptr) {
           fprintf(stderr, "Failed to open joystick %d. Error: %s\n", i, SDL_GetError());
-          //return ERR_JOYSTICKS_INIT;
         }
       } else {
         joysticks[i] = nullptr;

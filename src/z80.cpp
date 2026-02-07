@@ -33,6 +33,7 @@
 #include "imgui_ui.h"
 #include "trace.h"
 #include "koncepcja_ipc_server.h"
+#include "expr_parser.h"
 #include "log.h"
 #include <algorithm>
 #include <vector>
@@ -167,6 +168,7 @@ t_z80regs z80;
 std::vector<Breakpoint> breakpoints;
 std::vector<Watchpoint> watchpoints;
 int iCycleCount, iWSAdjust;
+uint64_t g_tstate_counter = 0;
 
 static BreakpointHitHook g_breakpoint_hit_hook = nullptr;
 static byte SZ[256]; // zero and sign flags
@@ -382,7 +384,14 @@ void z80_write_mem(word addr, byte val) {
   write_mem_no_watchpoint(addr, val);
 }
 
+byte z80_read_mem_via_write_bank(word addr) {
+  return *(membank_write[addr >> 14] + (addr & 0x3FFF));
+}
 
+byte z80_read_mem_raw_bank(word addr, int bank) {
+  extern byte *pbRAM;
+  return pbRAM[bank * 16384 + (addr % 16384)];
+}
 
 #define z80_wait_states \
 { \
@@ -414,6 +423,7 @@ void z80_write_mem(word addr, byte val) {
          } \
       } \
       CPC.cycle_count -= iCycleCount; \
+      g_tstate_counter += iCycleCount; \
    } \
 }
 
@@ -1114,7 +1124,18 @@ int z80_execute()
       // TODO: Measure impact. If important, create templated version of
       // z80_execute, read_mem, write_mem ...
       if (!breakpoints.empty()) {
-        z80.breakpoint_reached = std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) { return b.address == _PC; });
+        for (auto& b : breakpoints) {
+          if (b.address != _PC) continue;
+          if (b.condition) {
+            ExprContext ctx;
+            ctx.z80 = &z80;
+            ctx.address = _PC;
+            if (expr_eval(b.condition.get(), ctx) == 0) continue;
+          }
+          if (b.pass_count > 0 && ++b.hit_count < b.pass_count) continue;
+          z80.breakpoint_reached = 1;
+          break;
+        }
       }
       if (z80.breakpoint_reached || z80.watchpoint_reached) {
         if (g_breakpoint_hit_hook) {
@@ -3024,9 +3045,18 @@ void z80_execute_pfx_fdcb_instruction()
 
 // --- konCePCja debug helpers ---
 void z80_add_breakpoint(word addr) {
-  if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b){ return b.address == addr; })) {
+  if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b){ return b.address == addr && !b.condition; })) {
     breakpoints.emplace_back(addr, NORMAL);
   }
+}
+
+void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
+                             const std::string& cond_str, int pass_count) {
+  Breakpoint bp(addr, NORMAL);
+  bp.condition = std::move(condition);
+  bp.condition_str = cond_str;
+  bp.pass_count = pass_count;
+  breakpoints.push_back(std::move(bp));
 }
 
 void z80_del_breakpoint(word addr) {
@@ -3043,6 +3073,66 @@ void z80_step_instruction() {
   z80_execute_instruction();
 }
 
-std::vector<Breakpoint> z80_list_breakpoints() {
+const std::vector<Breakpoint>& z80_list_breakpoints_ref() {
   return breakpoints;
+}
+
+// --- IO breakpoints ---
+std::vector<IOBreakpoint> io_breakpoints;
+
+bool z80_check_io_breakpoint(word port, IOBreakpointDir access) {
+  if (io_breakpoints.empty()) return false;
+  for (auto& bp : io_breakpoints) {
+    if ((bp.dir & access) && ((port & bp.mask) == (bp.port & bp.mask))) {
+      if (bp.condition) {
+        extern t_CRTC CRTC;
+        extern t_GateArray GateArray;
+        extern t_PSG PSG;
+        ExprContext ctx;
+        ctx.z80 = &z80;
+        ctx.crtc = &CRTC;
+        ctx.ga = &GateArray;
+        ctx.psg = &PSG;
+        ctx.address = port;
+        ctx.value = 0; // filled by caller if possible
+        if (expr_eval(bp.condition.get(), ctx) == 0) continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir) {
+  IOBreakpoint bp;
+  bp.port = port;
+  bp.mask = mask;
+  bp.dir = dir;
+  io_breakpoints.push_back(std::move(bp));
+}
+
+void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
+                                std::unique_ptr<ExprNode> condition,
+                                const std::string& cond_str) {
+  IOBreakpoint bp;
+  bp.port = port;
+  bp.mask = mask;
+  bp.dir = dir;
+  bp.condition = std::move(condition);
+  bp.condition_str = cond_str;
+  io_breakpoints.push_back(std::move(bp));
+}
+
+void z80_del_io_breakpoint(int index) {
+  if (index >= 0 && index < static_cast<int>(io_breakpoints.size())) {
+    io_breakpoints.erase(io_breakpoints.begin() + index);
+  }
+}
+
+void z80_clear_io_breakpoints() {
+  io_breakpoints.clear();
+}
+
+const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref() {
+  return io_breakpoints;
 }

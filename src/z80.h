@@ -22,6 +22,10 @@
 #include "SDL3/SDL.h"
 #include "types.h"
 #include "crtc.h"
+#include <memory>
+#include <string>
+#include <vector>
+#include "expr_parser.h"
 
 // A pair of register really only needs a word (16 bits).
 // So in practice, b.h2, b.h3 and w.h should never be used (there's an
@@ -63,6 +67,10 @@ struct Breakpoint {
 
   dword address;
   BreakpointType type;
+  std::unique_ptr<ExprNode> condition;  // nullptr = unconditional
+  int pass_count = 0;   // break only after this many hits
+  int hit_count = 0;
+  std::string condition_str; // original condition text for display
 };
 
 enum WatchpointType {
@@ -75,6 +83,16 @@ struct Watchpoint {
   Watchpoint(word val, WatchpointType t) : address(val), type(t) {};
   dword address;
   WatchpointType type;
+};
+
+enum IOBreakpointDir { IO_IN = 1, IO_OUT = 2, IO_BOTH = 3 };
+
+struct IOBreakpoint {
+  word port;
+  word mask;
+  IOBreakpointDir dir;
+  std::unique_ptr<ExprNode> condition;
+  std::string condition_str;
 };
 
 class t_z80regs {
@@ -109,6 +127,8 @@ class t_z80regs {
 
 byte z80_read_mem(word addr);
 void z80_write_mem(word addr, byte val);
+byte z80_read_mem_via_write_bank(word addr);
+byte z80_read_mem_raw_bank(word addr, int bank);
 
 // TODO: put declaration or definition of these two methods somewhere else !!!
 byte z80_IN_handler(reg_pair port); // not provided by Z80.c
@@ -120,12 +140,27 @@ void z80_mf2stop();
 
 // konCePCja debug helpers
 void z80_add_breakpoint(word addr);
+void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
+                             const std::string& cond_str, int pass_count = 0);
 void z80_del_breakpoint(word addr);
 void z80_clear_breakpoints();
 void z80_step_instruction();
-std::vector<Breakpoint> z80_list_breakpoints();
+const std::vector<Breakpoint>& z80_list_breakpoints_ref();
+
+// IO breakpoints
+bool z80_check_io_breakpoint(word port, IOBreakpointDir access);
+void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir);
+void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
+                                std::unique_ptr<ExprNode> condition,
+                                const std::string& cond_str);
+void z80_del_io_breakpoint(int index);
+void z80_clear_io_breakpoints();
+const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref();
 
 int z80_execute();
+
+// Global T-state counter for debug timers
+extern uint64_t g_tstate_counter;
 
 // Breakpoint hit notification hook (konCePCja IPC)
 typedef void (*BreakpointHitHook)(word pc, bool watchpoint);

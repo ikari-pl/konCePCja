@@ -23,6 +23,8 @@
 #include "SDL3/SDL.h"
 #include "koncepcja.h"
 #include "z80.h"
+#include "expr_parser.h"
+#include "debug_timers.h"
 #include "z80_disassembly.h"
 #include "slotshandler.h"
 #include "keyboard.h"
@@ -31,8 +33,12 @@
 
 extern t_z80regs z80;
 extern t_CPC CPC;
+extern t_CRTC CRTC;
+extern t_GateArray GateArray;
+extern t_PSG PSG;
 extern SDL_Surface *back_surface;
 extern byte *pbRAM;
+extern byte *membank_read[4], *membank_write[4];
 extern byte keyboard_matrix[16];
 
 // Friendly key names → CPC_KEYS for IPC input commands
@@ -162,7 +168,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write) bp(list/add/del/clear) step wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare) bp(list/add/del/clear) iobp(add/del/clear/list) step wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -341,6 +347,54 @@ std::string handle_command(const std::string& line) {
 
     return "ERR 400 bad-reg\n";
   }
+  if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 && parts[1] == "crtc") {
+    // regs crtc → CRTC 6845 registers + internal counters
+    std::ostringstream resp;
+    resp << "OK";
+    for (int i = 0; i < 18; i++) {
+      char buf[16];
+      snprintf(buf, sizeof(buf), " R%d=%02X", i, CRTC.registers[i]);
+      resp << buf;
+    }
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+      " VCC=%02X VLC=%02X HCC=%02X HSC=%02X VSC=%02X VMA=%04X R52=%02X SL=%02X",
+      CRTC.line_count, CRTC.raster_count, CRTC.char_count,
+      CRTC.hsw_count, CRTC.vsw_count, CRTC.addr,
+      CRTC.reg5, CRTC.sl_count);
+    resp << buf << "\n";
+    return resp.str();
+  }
+  if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 && parts[1] == "ga") {
+    // regs ga → Gate Array state
+    std::ostringstream resp;
+    resp << "OK";
+    char buf[64];
+    snprintf(buf, sizeof(buf), " MODE=%u PEN=%02X", GateArray.scr_mode, GateArray.pen);
+    resp << buf;
+    for (int i = 0; i < 17; i++) {
+      snprintf(buf, sizeof(buf), " INK%d=%02X", i, GateArray.ink_values[i]);
+      resp << buf;
+    }
+    snprintf(buf, sizeof(buf), " ROM_CFG=%02X RAM_CFG=%02X SL=%02X INT_DELAY=%02X",
+             GateArray.ROM_config, GateArray.RAM_config,
+             GateArray.sl_count, GateArray.int_delay);
+    resp << buf << "\n";
+    return resp.str();
+  }
+  if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 && parts[1] == "psg") {
+    // regs psg → AY-3-8912 registers
+    std::ostringstream resp;
+    resp << "OK";
+    char buf[32];
+    for (int i = 0; i < 16; i++) {
+      snprintf(buf, sizeof(buf), " R%d=%02X", i, PSG.RegisterAY.Index[i]);
+      resp << buf;
+    }
+    snprintf(buf, sizeof(buf), " SELECT=%02X CONTROL=%02X", PSG.reg_select, PSG.control);
+    resp << buf << "\n";
+    return resp.str();
+  }
   if (cmd == "regs") {
     char out[256];
     snprintf(out, sizeof(out),
@@ -380,28 +434,47 @@ std::string handle_command(const std::string& line) {
     }
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "read") {
-    // mem read <addr> <len> [ascii]
+    // mem read <addr> <len> [--view=read|write] [--bank=N] [ascii]
     unsigned int addr = std::stoul(parts[2], nullptr, 0);
     unsigned int len = std::stoul(parts[3], nullptr, 0);
-    bool with_ascii = (parts.size() >= 5 && parts[4] == "ascii");
+    bool with_ascii = false;
+    int view_mode = 0; // 0=read(default), 1=write
+    int raw_bank = -1; // -1=not set
+    for (size_t pi = 4; pi < parts.size(); pi++) {
+      if (parts[pi] == "ascii") with_ascii = true;
+      else if (parts[pi].rfind("--view=", 0) == 0) {
+        std::string v = parts[pi].substr(7);
+        if (v == "write") view_mode = 1;
+      }
+      else if (parts[pi].rfind("--bank=", 0) == 0) {
+        raw_bank = std::stoi(parts[pi].substr(7));
+      }
+    }
     std::string resp = "OK ";
-    std::string ascii;
+    std::string ascii_str;
     char bytebuf[4];
     for (unsigned int i = 0; i < len; i++) {
-      byte v = z80_read_mem(static_cast<word>(addr + i));
+      byte v;
+      if (raw_bank >= 0) {
+        v = z80_read_mem_raw_bank(static_cast<word>(addr + i), raw_bank);
+      } else if (view_mode == 1) {
+        v = z80_read_mem_via_write_bank(static_cast<word>(addr + i));
+      } else {
+        v = z80_read_mem(static_cast<word>(addr + i));
+      }
       snprintf(bytebuf, sizeof(bytebuf), "%02X", v);
       resp += bytebuf;
       if (with_ascii) {
         char c = (v >= 32 && v <= 126) ? static_cast<char>(v) : '.';
-        ascii.push_back(c);
+        ascii_str.push_back(c);
         if ((i + 1) % 16 == 0) {
-          resp += " |" + ascii + "| ";
-          ascii.clear();
+          resp += " |" + ascii_str + "| ";
+          ascii_str.clear();
         }
       }
     }
-    if (!ascii.empty()) {
-      resp += " |" + ascii + "|";
+    if (!ascii_str.empty()) {
+      resp += " |" + ascii_str + "|";
     }
     resp += "\n";
     return resp;
@@ -418,6 +491,43 @@ std::string handle_command(const std::string& line) {
       z80_write_mem(static_cast<word>(addr + (i/2)), v);
     }
     return "OK\n";
+  }
+  if (cmd == "mem" && parts.size() >= 5 && parts[1] == "fill") {
+    // mem fill <addr> <len> <hex-pattern>
+    unsigned int addr = std::stoul(parts[2], nullptr, 0);
+    unsigned int len = std::stoul(parts[3], nullptr, 0);
+    const std::string& hex = parts[4];
+    if (hex.empty() || hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
+    std::vector<byte> pattern;
+    for (size_t i = 0; i < hex.size(); i += 2) {
+      pattern.push_back(static_cast<byte>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+    }
+    for (unsigned int i = 0; i < len; i++) {
+      z80_write_mem(static_cast<word>(addr + i), pattern[i % pattern.size()]);
+    }
+    return "OK\n";
+  }
+  if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
+    // mem compare <addr1> <addr2> <len>
+    unsigned int addr1 = std::stoul(parts[2], nullptr, 0);
+    unsigned int addr2 = std::stoul(parts[3], nullptr, 0);
+    unsigned int len = std::stoul(parts[4], nullptr, 0);
+    int diff_count = 0;
+    std::string diffs;
+    for (unsigned int i = 0; i < len; i++) {
+      byte v1 = z80_read_mem(static_cast<word>(addr1 + i));
+      byte v2 = z80_read_mem(static_cast<word>(addr2 + i));
+      if (v1 != v2) {
+        diff_count++;
+        if (diff_count <= 64) {
+          char buf[32];
+          snprintf(buf, sizeof(buf), " %04X:%02X:%02X",
+                   static_cast<unsigned int>(addr1 + i), v1, v2);
+          diffs += buf;
+        }
+      }
+    }
+    return "OK diffs=" + std::to_string(diff_count) + diffs + "\n";
   }
   if (cmd == "disasm" && parts.size() >= 3) {
     unsigned int addr = std::stoul(parts[1], nullptr, 0);
@@ -439,7 +549,50 @@ std::string handle_command(const std::string& line) {
   if (cmd == "bp" && parts.size() >= 2) {
     if (parts[1] == "add" && parts.size() >= 3) {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
-      z80_add_breakpoint(static_cast<word>(addr));
+      // Parse optional "if <expr>" and "pass <N>"
+      std::string cond_str;
+      int pass_count = 0;
+      for (size_t pi = 3; pi < parts.size(); pi++) {
+        std::string kw = parts[pi];
+        for (auto& c : kw) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (kw == "if" && pi + 1 < parts.size()) {
+          // Everything after "if" until "pass" is the expression
+          std::string expr;
+          for (size_t ei = pi + 1; ei < parts.size(); ei++) {
+            std::string ekw = parts[ei];
+            std::string ekwl = ekw;
+            for (auto& c : ekwl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (ekwl == "pass") break;
+            if (!expr.empty()) expr += " ";
+            expr += parts[ei];
+          }
+          cond_str = expr;
+          break; // 'if' consumes the rest (before 'pass')
+        }
+        if (kw == "pass" && pi + 1 < parts.size()) {
+          pass_count = std::stoi(parts[pi + 1]);
+          pi++; // skip value
+        }
+      }
+      // Also scan for "pass" after the condition
+      if (!cond_str.empty()) {
+        for (size_t pi = 3; pi < parts.size(); pi++) {
+          std::string kw = parts[pi];
+          for (auto& c : kw) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+          if (kw == "pass" && pi + 1 < parts.size()) {
+            pass_count = std::stoi(parts[pi + 1]);
+            break;
+          }
+        }
+      }
+      if (!cond_str.empty()) {
+        std::string err;
+        auto ast = expr_parse(cond_str, err);
+        if (!ast) return "ERR 400 bad-expr: " + err + "\n";
+        z80_add_breakpoint_cond(static_cast<word>(addr), std::move(ast), cond_str, pass_count);
+      } else {
+        z80_add_breakpoint(static_cast<word>(addr));
+      }
       return "OK\n";
     }
     if (parts[1] == "del" && parts.size() >= 3) {
@@ -452,16 +605,119 @@ std::string handle_command(const std::string& line) {
       return "OK\n";
     }
     if (parts[1] == "list") {
-      auto bps = z80_list_breakpoints();
+      const auto& bps = z80_list_breakpoints_ref();
       std::string resp = "OK count=" + std::to_string(bps.size());
-      char buf[8];
+      char buf[128];
       for (const auto& b : bps) {
         snprintf(buf, sizeof(buf), " %04X", static_cast<unsigned int>(b.address));
         resp += buf;
+        if (!b.condition_str.empty()) {
+          resp += "[if ";
+          resp += b.condition_str;
+          resp += "]";
+        }
+        if (b.pass_count > 0) {
+          resp += "[pass ";
+          resp += std::to_string(b.pass_count);
+          resp += "]";
+        }
       }
       resp += "\n";
       return resp;
     }
+  }
+  if (cmd == "iobp" && parts.size() >= 2) {
+    if (parts[1] == "add" && parts.size() >= 3) {
+      // iobp add <port> [mask] [in|out|both]
+      // Port can be shorthand like "BCXX" where X=wildcard nibble
+      std::string port_str = parts[2];
+      word port_val = 0, mask_val = 0xFFFF;
+      if (port_str.size() == 4 && (port_str.find('X') != std::string::npos || port_str.find('x') != std::string::npos)) {
+        // Shorthand: BCXX → port=0xBC00, mask=0xFF00
+        port_val = 0;
+        mask_val = 0;
+        for (int ni = 0; ni < 4; ni++) {
+          char ch = port_str[ni];
+          int shift = (3 - ni) * 4;
+          if (ch == 'X' || ch == 'x') {
+            // wildcard nibble: port bits = 0, mask bits = 0
+          } else {
+            unsigned int nibble = 0;
+            if (ch >= '0' && ch <= '9') nibble = ch - '0';
+            else if (ch >= 'A' && ch <= 'F') nibble = ch - 'A' + 10;
+            else if (ch >= 'a' && ch <= 'f') nibble = ch - 'a' + 10;
+            port_val |= static_cast<word>(nibble << shift);
+            mask_val |= static_cast<word>(0xF << shift);
+          }
+        }
+      } else {
+        port_val = static_cast<word>(std::stoul(port_str, nullptr, 0));
+      }
+      // Parse optional mask, direction, and condition
+      IOBreakpointDir dir = IO_BOTH;
+      std::string cond_str;
+      for (size_t pi = 3; pi < parts.size(); pi++) {
+        std::string arg = parts[pi];
+        std::string argl = arg;
+        for (auto& c : argl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (argl == "in") dir = IO_IN;
+        else if (argl == "out") dir = IO_OUT;
+        else if (argl == "both") dir = IO_BOTH;
+        else if (argl == "if") {
+          // Everything after "if" is the expression
+          std::string expr;
+          for (size_t ei = pi + 1; ei < parts.size(); ei++) {
+            if (!expr.empty()) expr += " ";
+            expr += parts[ei];
+          }
+          cond_str = expr;
+          break;
+        }
+        else if (!arg.empty() && (argl.rfind("0x", 0) == 0 || (argl[0] >= '0' && argl[0] <= '9'))) {
+          mask_val = static_cast<word>(std::stoul(arg, nullptr, 0));
+        }
+      }
+      if (!cond_str.empty()) {
+        std::string err;
+        auto ast = expr_parse(cond_str, err);
+        if (!ast) return "ERR 400 bad-expr: " + err + "\n";
+        z80_add_io_breakpoint_cond(port_val, mask_val, dir, std::move(ast), cond_str);
+      } else {
+        z80_add_io_breakpoint(port_val, mask_val, dir);
+      }
+      return "OK\n";
+    }
+    if (parts[1] == "del" && parts.size() >= 3) {
+      int idx = std::stoi(parts[2]);
+      z80_del_io_breakpoint(idx);
+      return "OK\n";
+    }
+    if (parts[1] == "clear") {
+      z80_clear_io_breakpoints();
+      return "OK\n";
+    }
+    if (parts[1] == "list") {
+      const auto& bps = z80_list_io_breakpoints_ref();
+      std::string resp = "OK count=" + std::to_string(bps.size());
+      for (size_t i = 0; i < bps.size(); i++) {
+        char buf[64];
+        const char* dir_str = "both";
+        if (bps[i].dir == IO_IN) dir_str = "in";
+        else if (bps[i].dir == IO_OUT) dir_str = "out";
+        snprintf(buf, sizeof(buf), " %zu:%04X/%04X/%s",
+                 i, static_cast<unsigned>(bps[i].port),
+                 static_cast<unsigned>(bps[i].mask), dir_str);
+        resp += buf;
+        if (!bps[i].condition_str.empty()) {
+          resp += "[if ";
+          resp += bps[i].condition_str;
+          resp += "]";
+        }
+      }
+      resp += "\n";
+      return resp;
+    }
+    return "ERR 400 bad-iobp-cmd (add|del|clear|list)\n";
   }
   if (cmd == "step") {
     // "step frame [N]" — advance N complete frames, then pause
@@ -893,6 +1149,29 @@ std::string handle_command(const std::string& line) {
       return resp;
     }
     return "ERR 400 bad-event-cmd (on|once|off|list)\n";
+  }
+
+  if (cmd == "timer" && parts.size() >= 2) {
+    if (parts[1] == "list") {
+      const auto& timers = g_debug_timers.timers();
+      std::string resp = "OK count=" + std::to_string(timers.size());
+      for (const auto& [id, t] : timers) {
+        char buf[128];
+        uint32_t avg = t.count > 0 ? static_cast<uint32_t>(t.total_us / t.count) : 0;
+        snprintf(buf, sizeof(buf), " id=%d count=%u last=%u min=%u max=%u avg=%u",
+                 id, t.count, t.last_us,
+                 t.min_us == UINT32_MAX ? 0 : t.min_us,
+                 t.max_us, avg);
+        resp += buf;
+      }
+      resp += "\n";
+      return resp;
+    }
+    if (parts[1] == "clear") {
+      g_debug_timers.clear();
+      return "OK\n";
+    }
+    return "ERR 400 bad-timer-cmd (list|clear)\n";
   }
 
   return "ERR 501 not-implemented\n";
