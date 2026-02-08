@@ -6,9 +6,6 @@
 
 TraceRecorder g_trace;
 
-// Read memory without side effects (no watchpoint triggers)
-extern byte z80_read_mem(word addr);
-
 void TraceRecorder::enable(int buffer_size) {
     buffer.resize(buffer_size);
     head = 0;

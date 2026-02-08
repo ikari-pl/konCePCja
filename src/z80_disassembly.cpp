@@ -124,6 +124,8 @@ void append_address(std::string& instruction, word address)
 DisassembledLine disassemble_one(dword start_address, DisassembledCode& result, std::vector<dword>& called_points)
 {
   static auto opcode_to_instructions = load_opcodes_table();
+  // Retry if the first load failed (e.g. CPC.resources_path was not yet set)
+  if (opcode_to_instructions.empty()) opcode_to_instructions = load_opcodes_table();
   uint64_t opcode = 0;
   word pos = start_address;
   for (int bytes_read = 0; bytes_read < 3; bytes_read++) {

@@ -28,39 +28,39 @@ public:
 
   Token next() {
     skip_ws();
-    if (pos >= src.size()) return {TokenType::END};
+    if (pos >= src.size()) return {TokenType::END, 0, {}};
 
     char ch = src[pos];
 
     // Parentheses and comma
-    if (ch == '(') { pos++; return {TokenType::LPAREN}; }
-    if (ch == ')') { pos++; return {TokenType::RPAREN}; }
-    if (ch == ',') { pos++; return {TokenType::COMMA}; }
-    if (ch == '+') { pos++; return {TokenType::PLUS}; }
-    if (ch == '-') { pos++; return {TokenType::MINUS}; }
-    if (ch == '*') { pos++; return {TokenType::STAR}; }
-    if (ch == '/') { pos++; return {TokenType::SLASH}; }
+    if (ch == '(') { pos++; return {TokenType::LPAREN, 0, {}}; }
+    if (ch == ')') { pos++; return {TokenType::RPAREN, 0, {}}; }
+    if (ch == ',') { pos++; return {TokenType::COMMA, 0, {}}; }
+    if (ch == '+') { pos++; return {TokenType::PLUS, 0, {}}; }
+    if (ch == '-') { pos++; return {TokenType::MINUS, 0, {}}; }
+    if (ch == '*') { pos++; return {TokenType::STAR, 0, {}}; }
+    if (ch == '/') { pos++; return {TokenType::SLASH, 0, {}}; }
 
     // Comparison operators
     if (ch == '<') {
       pos++;
-      if (pos < src.size() && src[pos] == '=') { pos++; return {TokenType::LE}; }
-      if (pos < src.size() && src[pos] == '>') { pos++; return {TokenType::NE}; }
-      return {TokenType::LT};
+      if (pos < src.size() && src[pos] == '=') { pos++; return {TokenType::LE, 0, {}}; }
+      if (pos < src.size() && src[pos] == '>') { pos++; return {TokenType::NE, 0, {}}; }
+      return {TokenType::LT, 0, {}};
     }
     if (ch == '>') {
       pos++;
-      if (pos < src.size() && src[pos] == '=') { pos++; return {TokenType::GE}; }
-      return {TokenType::GT};
+      if (pos < src.size() && src[pos] == '=') { pos++; return {TokenType::GE, 0, {}}; }
+      return {TokenType::GT, 0, {}};
     }
     if (ch == '=') {
       pos++;
       if (pos < src.size() && src[pos] == '=') pos++; // accept both = and ==
-      return {TokenType::EQ};
+      return {TokenType::EQ, 0, {}};
     }
     if (ch == '!' && pos + 1 < src.size() && src[pos + 1] == '=') {
       pos += 2;
-      return {TokenType::NE};
+      return {TokenType::NE, 0, {}};
     }
 
     // Number: decimal, #hex, &hex, 0xhex, %binary
