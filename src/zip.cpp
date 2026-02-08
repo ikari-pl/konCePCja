@@ -1,5 +1,8 @@
 #include "zip.h"
 
+#ifdef WINDOWS
+#include <windows.h>
+#endif
 #include <cstring>
 #include <strings.h>
 #include <zlib.h>
