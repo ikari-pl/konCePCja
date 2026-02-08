@@ -16,3 +16,7 @@ debian/koncepcja.postrm.debhelper
 debian/koncepcja.substvars
 debian/koncepcja/
 debian/files
+.DS_Store
+imgui.ini
+coverage.profdata
+coverage.profraw
