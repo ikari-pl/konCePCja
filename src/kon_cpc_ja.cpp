@@ -2986,6 +2986,23 @@ int koncpc_main (int argc, char **argv)
                   case KONCPC_RESET:
                      emulator_reset();
                      break;
+                  case KONCPC_WAITBREAK:
+                     breakPointsToSkipBeforeProceedingWithVirtualEvents++;
+                     LOG_INFO("Will skip " << breakPointsToSkipBeforeProceedingWithVirtualEvents << " before processing more virtual events.");
+                     z80.break_point = 0;
+                     break;
+                  case KONCPC_DELAY:
+                     nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+                     break;
+                  case KONCPC_SNAPSHOT:
+                     dumpSnapshot();
+                     break;
+                  case KONCPC_TAPEPLAY:
+                     Tape_Rewind();
+                     if (!pbTapeImage.empty()) {
+                        CPC.tape_play_button = CPC.tape_play_button ? 0 : 0x10;
+                     }
+                     break;
                   case KONCPC_SPEED:
                      CPC.limit_speed = CPC.limit_speed ? 0 : 1;
                      break;
