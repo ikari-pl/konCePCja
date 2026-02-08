@@ -1621,9 +1621,19 @@ int video_init ()
 
    back_surface=vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
 
-   if (!back_surface) { // attempt to set the required video mode
-      LOG_ERROR("Could not set requested video mode: " << SDL_GetError());
-      return ERR_VIDEO_SET_MODE;
+   if (!back_surface) {
+      // OpenGL may be unavailable (e.g. SDL_VIDEODRIVER=dummy in CI).
+      // Fall back to headless rendering so the emulator remains functional.
+      LOG_ERROR("Could not set requested video mode: " << SDL_GetError()
+                << " — falling back to headless");
+      static video_plugin hp = video_headless_plugin();
+      vid_plugin = &hp;
+      g_headless = true;
+      back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, false);
+      if (!back_surface) {
+         LOG_ERROR("Headless fallback also failed. Aborting.");
+         return ERR_VIDEO_SET_MODE;
+      }
    }
 
    {
