@@ -52,7 +52,7 @@ PLATFORM=linux
 else ifeq ($(ARCH),macos)
 # Yes that's weird, but the build on macos works the same way as on linux
 PLATFORM=linux
-LDFLAGS += -framework Cocoa -framework OpenGL
+LDFLAGS += -framework Cocoa
 else
 $(error Unknown ARCH. Supported ones are linux, win32 and win64.)
 endif
@@ -152,7 +152,7 @@ DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 MM_DEPENDS:=$(foreach file,$(MM_SOURCES:.mm=.d),$(shell echo "$(OBJDIR)/$(file)"))
 OBJECTS_CPP:=$(DEPENDS:.d=.o)
 OBJECTS_MM:=$(MM_DEPENDS:.d=.o)
-IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp vendor/imgui/backends/imgui_impl_opengl3.cpp
+IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp
 IMGUI_OBJECTS:=$(foreach file,$(IMGUI_SOURCES:.cpp=.o),$(OBJDIR)/$(file))
 
 OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM) $(IMGUI_OBJECTS)

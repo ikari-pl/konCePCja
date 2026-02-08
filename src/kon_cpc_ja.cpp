@@ -53,8 +53,6 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "imgui_impl_sdl3.h"
 #include "imgui_ui.h"
 
-Symfile g_symfile;
-
 namespace {
   KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
 }
@@ -1758,9 +1756,7 @@ std::string getConfigurationFilename(bool forWrite)
   std::vector<std::pair<const char*, std::string>> configPaths = {
     { PATH_OK, args.cfgFilePath}, // First look in any user supplied configuration file path
     { chAppPath, "/koncepcja.cfg" }, // If not found, koncepcja.cfg in the same directory as the executable
-    { getenv("XDG_CONFIG_HOME"), "/koncepcja/koncepcja.cfg" },
-    { getenv("HOME"), "/.config/koncepcja/koncepcja.cfg" },
-    { getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg" }, // legacy flat paths
+    { getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg" },
     { getenv("HOME"), "/.config/koncepcja.cfg" },
     { getenv("HOME"), "/.koncepcja.cfg" },
     { DESTDIR, "/etc/koncepcja.cfg" },
@@ -2203,10 +2199,6 @@ void loadBreakpoints()
     if (std::find_if(breakpoints.begin(), breakpoints.end(),
           [&](const auto& bp) { return bp.address == breakpoint; } ) != breakpoints.end()) continue;
     breakpoints.emplace_back(breakpoint);
-  }
-  // Populate global symbol table from symfile
-  for (const auto& [addr, name] : symfile.Symbols()) {
-    g_symfile.addSymbol(addr, name);
   }
 }
 
@@ -2974,14 +2966,6 @@ int koncpc_main (int argc, char **argv)
       }
 
       while (!g_headless && SDL_PollEvent(&event)) {
-         // Handle main window close before ImGui consumes the event
-         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
-           SDL_WindowID main_id = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
-           if (event.window.windowID == main_id) {
-             cleanExit(0);
-           }
-         }
-
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
 
