@@ -5,6 +5,7 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 #include "koncepcja.h"
@@ -309,19 +310,21 @@ int ipf_load (FILE *pfileIn, t_drive *drive)
   // This file is not deleted.
   // TODO(cpitrat): register the file for cleanup somewhere (e.g: at caprice exit)
   FILE *pfileOut = nullptr;
-  char *tmpFilePath = nullptr;
+  char tmpFilePath[256] = {};
   std::vector<std::string> prefixes = { "/tmp", "." };
   for (const auto &prefix : prefixes) {
-    tmpFilePath = tempnam(prefix.c_str(), ".koncpc_tmp_");
-    if (tmpFilePath == nullptr) {
-      LOG_ERROR("Couldn't load IPF file: Couldn't generate temporary file name: " << strerror(errno));
-      return ERR_DSK_INVALID; // couldn't create output file
+    snprintf(tmpFilePath, sizeof(tmpFilePath), "%s/.koncpc_tmp_XXXXXX", prefix.c_str());
+    int fd = mkstemp(tmpFilePath);
+    if (fd == -1) {
+      LOG_ERROR("Couldn't load IPF file: Couldn't create temporary file in " << prefix << ": " << strerror(errno));
+      continue;
     }
     LOG_DEBUG("Using temporary file: " << tmpFilePath);
-    pfileOut = fopen(tmpFilePath, "w+b");
+    pfileOut = fdopen(fd, "w+b");
     if (pfileOut != nullptr) {
       break;
     }
+    close(fd);
   }
 
   if (!file_copy(pfileIn, pfileOut)) {
