@@ -78,5 +78,56 @@ void Symfile::addEntrypoint(word addr)
 
 void Symfile::addSymbol(word addr, const std::string& symbol)
 {
+  // Remove old reverse mapping if this address already had a symbol
+  auto it = symbols.find(addr);
+  if (it != symbols.end()) {
+    name_to_addr.erase(it->second);
+  }
   symbols[addr] = symbol;
+  name_to_addr[symbol] = addr;
+}
+
+void Symfile::delSymbol(const std::string& name)
+{
+  auto it = name_to_addr.find(name);
+  if (it != name_to_addr.end()) {
+    symbols.erase(it->second);
+    name_to_addr.erase(it);
+  }
+}
+
+std::string Symfile::lookupAddr(word addr) const
+{
+  auto it = symbols.find(addr);
+  if (it != symbols.end()) return it->second;
+  return "";
+}
+
+int Symfile::lookupName(const std::string& name, word& addr) const
+{
+  auto it = name_to_addr.find(name);
+  if (it != name_to_addr.end()) {
+    addr = it->second;
+    return 0;
+  }
+  return -1;
+}
+
+std::vector<std::pair<word, std::string>> Symfile::listSymbols(const std::string& filter) const
+{
+  std::vector<std::pair<word, std::string>> result;
+  for (const auto& [addr, name] : symbols) {
+    if (filter.empty() || name.find(filter) != std::string::npos) {
+      result.emplace_back(addr, name);
+    }
+  }
+  return result;
+}
+
+void Symfile::clear()
+{
+  symbols.clear();
+  name_to_addr.clear();
+  breakpoints.clear();
+  entrypoints.clear();
 }

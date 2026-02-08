@@ -82,7 +82,12 @@ enum WatchpointType {
 struct Watchpoint {
   Watchpoint(word val, WatchpointType t) : address(val), type(t) {};
   dword address;
+  word length = 1;                        // range: addr..addr+length-1
   WatchpointType type;
+  std::unique_ptr<ExprNode> condition;    // nullptr = unconditional
+  std::string condition_str;
+  int pass_count = 0;
+  int hit_count = 0;
 };
 
 enum IOBreakpointDir { IO_IN = 1, IO_OUT = 2, IO_BOTH = 3 };
@@ -103,6 +108,7 @@ class t_z80regs {
      I = 0; R = 0; Rb7 = 0; IFF1 = 0; IFF2 = 0; IM = 0; HALT = 0;
      EI_issued = 0; int_pending = 0;
      watchpoint_reached = 0; breakpoint_reached = 0;
+     watchpoint_addr = 0; watchpoint_value = 0; watchpoint_old = 0;
      step_in = 0; step_out = 0;
      break_point = 0; trace = 0;
    };
@@ -111,6 +117,9 @@ class t_z80regs {
    byte I, R, Rb7, IFF1, IFF2, IM, HALT, EI_issued, int_pending;
    byte watchpoint_reached;
    byte breakpoint_reached;
+   word watchpoint_addr;    // address that triggered
+   byte watchpoint_value;   // value being read/written
+   byte watchpoint_old;     // previous value at address
    byte step_in;
    byte step_out;
    std::vector<word> step_out_addresses;
@@ -146,6 +155,18 @@ void z80_del_breakpoint(word addr);
 void z80_clear_breakpoints();
 void z80_step_instruction();
 const std::vector<Breakpoint>& z80_list_breakpoints_ref();
+
+// Watchpoints
+void z80_add_watchpoint(word addr, word len, WatchpointType type);
+void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
+                             std::unique_ptr<ExprNode> cond,
+                             const std::string& cond_str, int pass_count = 0);
+void z80_del_watchpoint(int index);
+void z80_clear_watchpoints();
+const std::vector<Watchpoint>& z80_list_watchpoints_ref();
+
+// Ephemeral breakpoints (removed when execution next pauses)
+void z80_add_breakpoint_ephemeral(word addr);
 
 // IO breakpoints
 bool z80_check_io_breakpoint(word port, IOBreakpointDir access, byte val = 0);

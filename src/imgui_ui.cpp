@@ -16,6 +16,7 @@
 #include "disk.h"
 #include "tape.h"
 #include "video.h"
+#include "symfile.h"
 #include <SDL3/SDL_dialog.h>
 
 extern SDL_Window* mainSDLWindow;
@@ -44,6 +45,12 @@ static void imgui_render_options();
 static void imgui_render_devtools();
 static void imgui_render_memory_tool();
 static void imgui_render_vkeyboard();
+// Phase 2 debug windows
+static void imgui_render_registers_window();
+static void imgui_render_disassembly_window();
+static void imgui_render_memory_hex_window();
+static void imgui_render_stack_window();
+static void imgui_render_breakpoint_list_window();
 
 static void close_menu();
 
@@ -207,6 +214,12 @@ void imgui_init_ui()
   c[ImGuiCol_SliderGrab]      = ImVec4(0.541f, 0.416f, 0.063f, 0.80f);
   c[ImGuiCol_SliderGrabActive]= ImVec4(0.650f, 0.520f, 0.130f, 1.00f);
   c[ImGuiCol_Separator]       = ImVec4(0.300f, 0.300f, 0.350f, 0.50f);
+
+  // When viewports are enabled, platform windows should not have rounded corners
+  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    style.WindowRounding = 0.0f;
+    c[ImGuiCol_WindowBg].w = 1.0f;
+  }
 }
 
 // ─────────────────────────────────────────────────
@@ -222,13 +235,22 @@ void imgui_render_ui()
   if (imgui_state.show_devtools)    imgui_render_devtools();
   if (imgui_state.show_memory_tool) imgui_render_memory_tool();
   if (imgui_state.show_vkeyboard)   imgui_render_vkeyboard();
+  // Phase 2 debug windows
+  if (imgui_state.show_registers)       imgui_render_registers_window();
+  if (imgui_state.show_disassembly)     imgui_render_disassembly_window();
+  if (imgui_state.show_memory_hex)      imgui_render_memory_hex_window();
+  if (imgui_state.show_stack_window)    imgui_render_stack_window();
+  if (imgui_state.show_breakpoint_list) imgui_render_breakpoint_list_window();
 
   // When no GUI window is open, the topbar is the only ImGui window and it
   // doesn't need keyboard input.  Force WantCaptureKeyboard off so all key
   // events reach the emulator.
   bool any_gui_open = imgui_state.show_menu || imgui_state.show_options ||
                       imgui_state.show_devtools || imgui_state.show_memory_tool ||
-                      imgui_state.show_vkeyboard;
+                      imgui_state.show_vkeyboard ||
+                      imgui_state.show_registers || imgui_state.show_disassembly ||
+                      imgui_state.show_memory_hex || imgui_state.show_stack_window ||
+                      imgui_state.show_breakpoint_list;
   if (!any_gui_open) {
     ImGui::GetIO().WantCaptureKeyboard = false;
   }
@@ -364,8 +386,9 @@ static void imgui_render_topbar()
   float pad_y = 2.0f;
   float bar_height = static_cast<float>(imgui_topbar_height());
 
-  ImGui::SetNextWindowPos(ImVec2(0, 0));
-  ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, bar_height));
+  ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(vp->Pos);
+  ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -797,7 +820,7 @@ static void imgui_render_topbar()
 
     if (!imgui_state.topbar_fps.empty()) {
       float fps_width = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x;
-      ImGui::SameLine(io.DisplaySize.x - fps_width - 8);
+      ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
       ImGui::AlignTextToFramePadding();
       ImGui::TextUnformatted(imgui_state.topbar_fps.c_str());
     }
@@ -813,37 +836,42 @@ static void imgui_render_topbar()
 
 static void imgui_render_menu()
 {
-  ImGuiIO& io = ImGui::GetIO();
-  ImVec2 center(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
   ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
   ImGui::SetNextWindowSize(ImVec2(260, 0));
 
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                           ImGuiWindowFlags_NoDocking |
                            ImGuiWindowFlags_AlwaysAutoResize;
 
-  if (!ImGui::Begin("konCePCja", nullptr, flags)) {
+  bool menu_open = true;
+  if (!ImGui::Begin("konCePCja", &menu_open, flags)) {
+    if (!menu_open) close_menu();
     ImGui::End();
     return;
   }
+  if (!menu_open) { close_menu(); ImGui::End(); return; }
 
   // Keyboard shortcuts within menu
+  bool action = false;
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { close_menu(); ImGui::End(); return; }
-    if (ImGui::IsKeyPressed(ImGuiKey_O)) { imgui_state.show_options = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_M)) { imgui_state.show_memory_tool = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_D)) { imgui_state.show_devtools = true; close_menu(); ImGui::End(); return; }
-    if (ImGui::IsKeyPressed(ImGuiKey_R)) { emulator_reset(); close_menu(); ImGui::End(); return; }
+    if (ImGui::IsKeyPressed(ImGuiKey_O)) { imgui_state.show_options = true; action = true; }
+    if (ImGui::IsKeyPressed(ImGuiKey_M)) { imgui_state.show_memory_tool = true; action = true; }
+    if (ImGui::IsKeyPressed(ImGuiKey_D)) { imgui_state.show_devtools = true; action = true; }
+    if (ImGui::IsKeyPressed(ImGuiKey_R)) { emulator_reset(); action = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_Q)) { imgui_state.show_quit_confirm = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_A)) { imgui_state.show_about = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_F5)) { emulator_reset(); close_menu(); ImGui::End(); return; }
+    if (ImGui::IsKeyPressed(ImGuiKey_F5)) { emulator_reset(); action = true; }
   }
 
   float bw = ImGui::GetContentRegionAvail().x;
 
   if (ImGui::Button("Options (O)", ImVec2(bw, 0))) {
     imgui_state.show_options = true;
+    action = true;
   }
 
   ImGui::Separator();
@@ -854,12 +882,14 @@ static void imgui_render_menu()
     SDL_ShowOpenFileDialog(file_dialog_callback,
       reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
       mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+    action = true;
   }
   if (ImGui::Button("Load Disk B...", ImVec2(bw, 0))) {
     static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
     SDL_ShowOpenFileDialog(file_dialog_callback,
       reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
       mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+    action = true;
   }
   if (ImGui::Button("Save Disk A...", ImVec2(bw, 0))) {
     if (driveA.tracks) {
@@ -867,6 +897,7 @@ static void imgui_render_menu()
       SDL_ShowSaveFileDialog(file_dialog_callback,
         reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
         mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+      action = true;
     }
   }
   if (ImGui::Button("Save Disk B...", ImVec2(bw, 0))) {
@@ -875,6 +906,7 @@ static void imgui_render_menu()
       SDL_ShowSaveFileDialog(file_dialog_callback,
         reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
         mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+      action = true;
     }
   }
 
@@ -886,12 +918,14 @@ static void imgui_render_menu()
     SDL_ShowOpenFileDialog(file_dialog_callback,
       reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
       mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
+    action = true;
   }
   if (ImGui::Button("Save Snapshot...", ImVec2(bw, 0))) {
     static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna" } };
     SDL_ShowSaveFileDialog(file_dialog_callback,
       reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
       mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
+    action = true;
   }
 
   ImGui::Separator();
@@ -902,6 +936,7 @@ static void imgui_render_menu()
     SDL_ShowOpenFileDialog(file_dialog_callback,
       reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape)),
       mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
+    action = true;
   }
   if (!pbTapeImage.empty()) {
     if (ImGui::Button("Eject Tape", ImVec2(bw, 0))) {
@@ -909,7 +944,7 @@ static void imgui_render_menu()
       CPC.tape.file.clear();
       imgui_state.tape_block_offsets.clear();
       imgui_state.tape_current_block = 0;
-      close_menu();
+      action = true;
     }
   }
   if (ImGui::Button("Load Cartridge...", ImVec2(bw, 0))) {
@@ -917,6 +952,7 @@ static void imgui_render_menu()
     SDL_ShowOpenFileDialog(file_dialog_callback,
       reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
       mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
+    action = true;
   }
 
   ImGui::Separator();
@@ -924,29 +960,33 @@ static void imgui_render_menu()
   // --- Tools ---
   if (ImGui::Button("Memory Tool (M)", ImVec2(bw, 0))) {
     imgui_state.show_memory_tool = true;
+    action = true;
   }
   if (ImGui::Button("DevTools (D)", ImVec2(bw, 0))) {
     imgui_state.show_devtools = true;
-    close_menu();
+    action = true;
   }
 
   ImGui::Separator();
 
   if (ImGui::Button("Reset (F5/R)", ImVec2(bw, 0))) {
     emulator_reset();
-    close_menu();
+    action = true;
   }
+  // About and Quit open sub-popups within the menu — don't close
   if (ImGui::Button("About (A)", ImVec2(bw, 0))) {
     imgui_state.show_about = true;
   }
   if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
-    close_menu();
+    action = true;
   }
   if (ImGui::Button("Quit (Q)", ImVec2(bw, 0))) {
     imgui_state.show_quit_confirm = true;
   }
 
   ImGui::End();
+
+  if (action) close_menu();
 
   // --- About popup ---
   if (imgui_state.show_about) {
@@ -1012,8 +1052,7 @@ static void imgui_render_options()
     first_open = false;
   }
 
-  ImGuiIO& io = ImGui::GetIO();
-  ImVec2 center(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_Appearing);
 
@@ -1602,6 +1641,15 @@ static void imgui_render_devtools()
 
   // Toolbar
   if (ImGui::BeginMenuBar()) {
+    if (ImGui::BeginMenu("Debug")) {
+      ImGui::MenuItem("Registers",       nullptr, &imgui_state.show_registers);
+      ImGui::MenuItem("Disassembly",     nullptr, &imgui_state.show_disassembly);
+      ImGui::MenuItem("Memory Hex",      nullptr, &imgui_state.show_memory_hex);
+      ImGui::MenuItem("Stack",           nullptr, &imgui_state.show_stack_window);
+      ImGui::MenuItem("Breakpoints/WP",  nullptr, &imgui_state.show_breakpoint_list);
+      ImGui::EndMenu();
+    }
+    ImGui::Separator();
     if (ImGui::Button("Step In"))  { z80.step_in = 1; CPC.paused = false; }
     if (ImGui::Button("Step Over")) {
       // Step over = set ephemeral breakpoint at next instruction
@@ -1613,7 +1661,7 @@ static void imgui_render_devtools()
       if (it != dc.lines.end()) {
         auto next_it = std::next(it);
         if (next_it != dc.lines.end()) {
-          z80_add_breakpoint(next_it->address_);
+          z80_add_breakpoint_ephemeral(next_it->address_);
         }
       }
       CPC.paused = false;
@@ -2070,5 +2118,560 @@ static void imgui_render_vkeyboard()
 
   if (!open) imgui_state.show_vkeyboard = false;
 
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Debug Window 1: Registers
+// ─────────────────────────────────────────────────
+
+static void imgui_render_registers_window()
+{
+  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(620, 30), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Registers", &open)) {
+    if (!open) imgui_state.show_registers = false;
+    ImGui::End();
+    return;
+  }
+
+  bool locked = !CPC.paused;
+  ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
+    (locked ? ImGuiInputTextFlags_ReadOnly : 0);
+
+  auto RegField16 = [&](const char* label, reg_pair& rp) {
+    unsigned short val = rp.w.l;
+    ImGui::SetNextItemWidth(60);
+    if (ImGui::InputScalar(label, ImGuiDataType_U16, &val, nullptr, nullptr, "%04X", hex_flags)) {
+      if (!locked) rp.w.l = val;
+    }
+  };
+
+  auto RegField8 = [&](const char* label, byte& val) {
+    ImGui::SetNextItemWidth(40);
+    unsigned char v = val;
+    if (ImGui::InputScalar(label, ImGuiDataType_U8, &v, nullptr, nullptr, "%02X", hex_flags)) {
+      if (!locked) val = v;
+    }
+  };
+
+  // Main registers in two columns
+  ImGui::Columns(2, "regs_main", false);
+  RegField16("AF", z80.AF); ImGui::NextColumn();
+  RegField16("AF'", z80.AFx); ImGui::NextColumn();
+  RegField16("BC", z80.BC); ImGui::NextColumn();
+  RegField16("BC'", z80.BCx); ImGui::NextColumn();
+  RegField16("DE", z80.DE); ImGui::NextColumn();
+  RegField16("DE'", z80.DEx); ImGui::NextColumn();
+  RegField16("HL", z80.HL); ImGui::NextColumn();
+  RegField16("HL'", z80.HLx); ImGui::NextColumn();
+  RegField16("IX", z80.IX); ImGui::NextColumn();
+  RegField16("IY", z80.IY); ImGui::NextColumn();
+  RegField16("SP", z80.SP); ImGui::NextColumn();
+  RegField16("PC", z80.PC); ImGui::NextColumn();
+  ImGui::Columns(1);
+
+  ImGui::Spacing();
+  RegField8("I", z80.I);
+  ImGui::SameLine();
+  RegField8("R", z80.R);
+
+  // Interrupt state
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Text("IFF1: %d  IFF2: %d  IM: %d  HALT: %d",
+              z80.IFF1, z80.IFF2, z80.IM, z80.HALT);
+  ImGui::Text("T-states: %llu", static_cast<unsigned long long>(g_tstate_counter));
+
+  // Flags
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Text("Flags");
+  byte f = z80.AF.b.l;
+  bool s = f & Sflag, zf = f & Zflag, h = f & Hflag, pv = f & Pflag, n = f & Nflag, cf = f & Cflag;
+  ImGui::Checkbox("S", &s);   ImGui::SameLine();
+  ImGui::Checkbox("Z", &zf);  ImGui::SameLine();
+  ImGui::Checkbox("H", &h);   ImGui::SameLine();
+  ImGui::Checkbox("P/V", &pv); ImGui::SameLine();
+  ImGui::Checkbox("N", &n);   ImGui::SameLine();
+  ImGui::Checkbox("C", &cf);
+  if (!locked) {
+    byte new_f = 0;
+    if (s)  new_f |= Sflag;
+    if (zf) new_f |= Zflag;
+    if (h)  new_f |= Hflag;
+    if (pv) new_f |= Pflag;
+    if (n)  new_f |= Nflag;
+    if (cf) new_f |= Cflag;
+    z80.AF.b.l = new_f | (f & Xflags);
+  }
+
+  if (!open) imgui_state.show_registers = false;
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Debug Window 2: Disassembly
+// ─────────────────────────────────────────────────
+
+static void imgui_render_disassembly_window()
+{
+  ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Disassembly", &open, ImGuiWindowFlags_MenuBar)) {
+    if (!open) imgui_state.show_disassembly = false;
+    ImGui::End();
+    return;
+  }
+
+  // Toolbar
+  if (ImGui::BeginMenuBar()) {
+    ImGui::Checkbox("Follow PC", &imgui_state.disasm_follow_pc);
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(60);
+    if (ImGui::InputText("Goto", imgui_state.disasm_goto_addr,
+        sizeof(imgui_state.disasm_goto_addr),
+        ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+      unsigned long addr;
+      if (parse_hex(imgui_state.disasm_goto_addr, &addr, 0xFFFF)) {
+        imgui_state.disasm_goto_value = static_cast<int>(addr);
+        imgui_state.disasm_follow_pc = false;
+      }
+    }
+    ImGui::EndMenuBar();
+  }
+
+  // Determine the center address
+  word center_pc = z80.PC.w.l;
+  if (!imgui_state.disasm_follow_pc && imgui_state.disasm_goto_value >= 0) {
+    center_pc = static_cast<word>(imgui_state.disasm_goto_value);
+  }
+
+  // Disassemble ~48 instructions starting from an estimated position before center
+  // We go back ~20 instructions (estimate 2 bytes avg) then forward
+  word start_addr = center_pc - 40; // rough estimate, will wrap around on 16-bit
+  constexpr int NUM_LINES = 48;
+
+  // Linear disassembly from start_addr
+  DisassembledCode dummy_dc;
+  std::vector<dword> dummy_eps;
+  struct DisasmEntry {
+    word addr;
+    std::string text;
+    std::string label;
+  };
+  std::vector<DisasmEntry> lines;
+  lines.reserve(NUM_LINES);
+
+  word addr = start_addr;
+  for (int i = 0; i < NUM_LINES; i++) {
+    DisasmEntry entry;
+    entry.addr = addr;
+
+    // Check for symbol at this address
+    entry.label = g_symfile.lookupAddr(addr);
+
+    auto line = disassemble_one(addr, dummy_dc, dummy_eps);
+    entry.text = line.instruction_;
+    int len = line.Size();
+    if (len <= 0) len = 1; // safety: advance at least 1 byte
+    addr = (addr + len) & 0xFFFF;
+    lines.push_back(std::move(entry));
+  }
+
+  const auto& breakpoints = z80_list_breakpoints_ref();
+
+  if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+    int scroll_to_idx = -1;
+
+    for (int i = 0; i < static_cast<int>(lines.size()); i++) {
+      const auto& entry = lines[i];
+      bool is_pc = (entry.addr == z80.PC.w.l);
+      bool is_bp = false;
+      for (const auto& bp : breakpoints) {
+        if (bp.address == entry.addr && bp.type != EPHEMERAL) { is_bp = true; break; }
+      }
+
+      // Symbol label above the instruction
+      if (!entry.label.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.8f, 1.0f, 1.0f));
+        ImGui::Text("  %s:", entry.label.c_str());
+        ImGui::PopStyleColor();
+      }
+
+      // Build display text
+      char label[160];
+      snprintf(label, sizeof(label), "%s %04X  %s",
+               is_bp ? "\xe2\x97\x8f" : " ",  // ● marker for breakpoint
+               entry.addr, entry.text.c_str());
+
+      // Color: green for PC, red for breakpoint
+      if (is_pc) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
+      } else if (is_bp) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+      }
+
+      char selectable_id[180];
+      snprintf(selectable_id, sizeof(selectable_id), "%s##disasm_%04X", label, entry.addr);
+      if (ImGui::Selectable(selectable_id, is_pc)) {
+        // Left click: toggle breakpoint
+        if (is_bp)
+          z80_del_breakpoint(entry.addr);
+        else
+          z80_add_breakpoint(entry.addr);
+      }
+
+      // Right-click context menu
+      if (ImGui::BeginPopupContextItem()) {
+        if (ImGui::MenuItem("Run to here")) {
+          z80_add_breakpoint_ephemeral(entry.addr);
+          CPC.paused = false;
+        }
+        if (ImGui::MenuItem("Set PC here")) {
+          z80.PC.w.l = entry.addr;
+        }
+        if (ImGui::MenuItem("Goto this address")) {
+          imgui_state.disasm_goto_value = entry.addr;
+          imgui_state.disasm_follow_pc = false;
+          snprintf(imgui_state.disasm_goto_addr, sizeof(imgui_state.disasm_goto_addr),
+                   "%04X", entry.addr);
+        }
+        ImGui::EndPopup();
+      }
+
+      if (is_pc || is_bp) ImGui::PopStyleColor();
+
+      // Track the PC line for auto-scroll
+      if (is_pc) scroll_to_idx = i;
+    }
+
+    // Auto-scroll to PC line
+    if (imgui_state.disasm_follow_pc && scroll_to_idx >= 0) {
+      float item_height = ImGui::GetTextLineHeightWithSpacing();
+      ImGui::SetScrollY(scroll_to_idx * item_height - ImGui::GetWindowHeight() * 0.3f);
+    }
+  }
+  ImGui::EndChild();
+
+  if (!open) imgui_state.show_disassembly = false;
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Debug Window 3: Memory Hex Dump
+// ─────────────────────────────────────────────────
+
+static void imgui_render_memory_hex_window()
+{
+  ImGui::SetNextWindowSize(ImVec2(520, 400), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(460, 30), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Memory Hex", &open, ImGuiWindowFlags_MenuBar)) {
+    if (!open) imgui_state.show_memory_hex = false;
+    ImGui::End();
+    return;
+  }
+
+  // Toolbar
+  if (ImGui::BeginMenuBar()) {
+    ImGui::SetNextItemWidth(60);
+    if (ImGui::InputText("Goto##memhex", imgui_state.memhex_goto_addr,
+        sizeof(imgui_state.memhex_goto_addr),
+        ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+      unsigned long addr;
+      if (parse_hex(imgui_state.memhex_goto_addr, &addr, 0xFFFF)) {
+        imgui_state.memhex_goto_value = static_cast<int>(addr);
+      }
+    }
+    ImGui::Separator();
+    ImGui::Text("W:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(40);
+    int bpr = imgui_state.memhex_bytes_per_row;
+    if (ImGui::InputInt("##bpr", &bpr, 0, 0)) {
+      if (bpr >= 4 && bpr <= 32) imgui_state.memhex_bytes_per_row = bpr;
+    }
+    ImGui::EndMenuBar();
+  }
+
+  int bytes_per_row = imgui_state.memhex_bytes_per_row;
+  int total_rows = (0x10000 + bytes_per_row - 1) / bytes_per_row;
+
+  // Collect watchpoint ranges for highlighting
+  const auto& watchpoints = z80_list_watchpoints_ref();
+
+  if (ImGui::BeginChild("##hexview", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+    // Use clipper for efficient scrolling over all 64K
+    ImGuiListClipper clipper;
+    clipper.Begin(total_rows);
+
+    // Handle goto
+    if (imgui_state.memhex_goto_value >= 0) {
+      int target_row = imgui_state.memhex_goto_value / bytes_per_row;
+      float item_height = ImGui::GetTextLineHeightWithSpacing();
+      ImGui::SetScrollY(target_row * item_height);
+      imgui_state.memhex_goto_value = -1;
+    }
+
+    while (clipper.Step()) {
+      for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
+        unsigned int base_addr = row * bytes_per_row;
+
+        // Build the full hex line with watchpoint coloring
+        // Address
+        ImGui::Text("%04X:", base_addr & 0xFFFF);
+
+        // Hex bytes with watchpoint highlighting
+        for (int col = 0; col < bytes_per_row; col++) {
+          word a = (base_addr + col) & 0xFFFF;
+          byte val = z80_read_mem(a);
+
+          ImGui::SameLine();
+
+          // Check watchpoint highlighting
+          bool wp_r = false, wp_w = false;
+          for (const auto& wp : watchpoints) {
+            word wp_end = (wp.address + wp.length) & 0xFFFF;
+            // Handle non-wrapping case
+            if (wp.length > 0 && a >= wp.address && a < wp.address + wp.length) {
+              if (wp.type == READ || wp.type == READWRITE) wp_r = true;
+              if (wp.type == WRITE || wp.type == READWRITE) wp_w = true;
+            }
+          }
+
+          bool colored = wp_r || wp_w;
+          if (wp_r && wp_w) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.2f, 1.0f));
+          } else if (wp_w) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+          } else if (wp_r) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
+          }
+
+          ImGui::Text("%02X", val);
+
+          if (colored) ImGui::PopStyleColor();
+        }
+
+        // ASCII column
+        ImGui::SameLine();
+        char ascii[33];
+        int asc_len = bytes_per_row < 32 ? bytes_per_row : 32;
+        for (int col = 0; col < asc_len; col++) {
+          byte b = z80_read_mem((base_addr + col) & 0xFFFF);
+          ascii[col] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
+        }
+        ascii[asc_len] = '\0';
+        ImGui::Text("|%s|", ascii);
+      }
+    }
+    clipper.End();
+  }
+  ImGui::EndChild();
+
+  if (!open) imgui_state.show_memory_hex = false;
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Debug Window 4: Stack
+// ─────────────────────────────────────────────────
+
+static void imgui_render_stack_window()
+{
+  ImGui::SetNextWindowSize(ImVec2(260, 400), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(460, 440), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Stack", &open)) {
+    if (!open) imgui_state.show_stack_window = false;
+    ImGui::End();
+    return;
+  }
+
+  word sp = z80.SP.w.l;
+  ImGui::Text("SP = %04X", sp);
+  ImGui::Separator();
+
+  if (ImGui::BeginChild("##stack_entries", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+    constexpr int MAX_DEPTH = 32;
+    for (int i = 0; i < MAX_DEPTH; i++) {
+      word addr = (sp + i * 2) & 0xFFFF;
+      byte lo = z80_read_mem(addr);
+      byte hi = z80_read_mem((addr + 1) & 0xFFFF);
+      word value = (hi << 8) | lo;
+
+      // Heuristic: check if the instruction before `value` is a CALL or RST
+      bool is_ret_addr = false;
+      // CALL nn is 3 bytes (CD xx xx), CALL cc,nn also 3 bytes
+      if (value >= 3) {
+        byte op3 = z80_read_mem((value - 3) & 0xFFFF);
+        if (op3 == 0xCD || (op3 & 0xC7) == 0xC4) is_ret_addr = true;
+      }
+      // RST n is 1 byte: C7/CF/D7/DF/E7/EF/F7/FF
+      if (value >= 1 && !is_ret_addr) {
+        byte op1 = z80_read_mem((value - 1) & 0xFFFF);
+        if ((op1 & 0xC7) == 0xC7) is_ret_addr = true;
+      }
+
+      // Look up symbol
+      std::string sym = g_symfile.lookupAddr(value);
+
+      if (is_ret_addr) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 1.0f, 0.5f, 1.0f));
+      }
+
+      char line[128];
+      if (!sym.empty()) {
+        snprintf(line, sizeof(line), "SP+%02X: %04X %s%s",
+                 i * 2, value, is_ret_addr ? "[call] " : "", sym.c_str());
+      } else {
+        snprintf(line, sizeof(line), "SP+%02X: %04X%s",
+                 i * 2, value, is_ret_addr ? "  [call]" : "");
+      }
+
+      // Double-click navigates disassembly
+      if (ImGui::Selectable(line, false, ImGuiSelectableFlags_AllowDoubleClick)) {
+        if (ImGui::IsMouseDoubleClicked(0)) {
+          imgui_state.disasm_goto_value = value;
+          imgui_state.disasm_follow_pc = false;
+          snprintf(imgui_state.disasm_goto_addr, sizeof(imgui_state.disasm_goto_addr),
+                   "%04X", value);
+          imgui_state.show_disassembly = true;
+        }
+      }
+
+      if (is_ret_addr) ImGui::PopStyleColor();
+    }
+  }
+  ImGui::EndChild();
+
+  if (!open) imgui_state.show_stack_window = false;
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Debug Window 5: Breakpoint / Watchpoint List
+// ─────────────────────────────────────────────────
+
+static void imgui_render_breakpoint_list_window()
+{
+  ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(10, 540), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Breakpoints & Watchpoints", &open)) {
+    if (!open) imgui_state.show_breakpoint_list = false;
+    ImGui::End();
+    return;
+  }
+
+  // Clear all buttons
+  if (ImGui::Button("Clear All BPs")) z80_clear_breakpoints();
+  ImGui::SameLine();
+  if (ImGui::Button("Clear All WPs")) z80_clear_watchpoints();
+  ImGui::SameLine();
+  if (ImGui::Button("Clear All IOBPs")) z80_clear_io_breakpoints();
+  ImGui::Separator();
+
+  const auto& bps = z80_list_breakpoints_ref();
+  const auto& wps = z80_list_watchpoints_ref();
+  const auto& iobps = z80_list_io_breakpoints_ref();
+
+  if (ImGui::BeginTable("bpwp_table", 5,
+      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 50);
+    ImGui::TableSetupColumn("Address/Port", ImGuiTableColumnFlags_WidthFixed, 100);
+    ImGui::TableSetupColumn("Condition", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed, 40);
+    ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
+    ImGui::TableHeadersRow();
+
+    // Breakpoints
+    for (size_t i = 0; i < bps.size(); i++) {
+      const auto& bp = bps[i];
+      if (bp.type == EPHEMERAL) continue;
+
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("BP");
+      ImGui::TableSetColumnIndex(1);
+      std::string sym = g_symfile.lookupAddr(bp.address);
+      if (!sym.empty())
+        ImGui::Text("%04X %s", bp.address, sym.c_str());
+      else
+        ImGui::Text("%04X", bp.address);
+      ImGui::TableSetColumnIndex(2);
+      if (!bp.condition_str.empty())
+        ImGui::TextUnformatted(bp.condition_str.c_str());
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("%d", bp.hit_count);
+      ImGui::TableSetColumnIndex(4);
+      char del_id[16];
+      snprintf(del_id, sizeof(del_id), "X##bp%zu", i);
+      if (ImGui::SmallButton(del_id)) {
+        z80_del_breakpoint(bp.address);
+      }
+    }
+
+    // Watchpoints
+    for (size_t i = 0; i < wps.size(); i++) {
+      const auto& wp = wps[i];
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      const char* wp_type = (wp.type == READ) ? "WP/R" :
+                            (wp.type == WRITE) ? "WP/W" : "WP/RW";
+      ImGui::Text("%s", wp_type);
+      ImGui::TableSetColumnIndex(1);
+      if (wp.length > 1)
+        ImGui::Text("%04X+%d", static_cast<word>(wp.address), wp.length);
+      else
+        ImGui::Text("%04X", static_cast<word>(wp.address));
+      ImGui::TableSetColumnIndex(2);
+      if (!wp.condition_str.empty())
+        ImGui::TextUnformatted(wp.condition_str.c_str());
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("%d", wp.hit_count);
+      ImGui::TableSetColumnIndex(4);
+      char del_id[16];
+      snprintf(del_id, sizeof(del_id), "X##wp%zu", i);
+      if (ImGui::SmallButton(del_id)) {
+        z80_del_watchpoint(static_cast<int>(i));
+      }
+    }
+
+    // IO Breakpoints
+    for (size_t i = 0; i < iobps.size(); i++) {
+      const auto& iobp = iobps[i];
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      const char* dir_str = (iobp.dir == IO_IN) ? "IO/IN" :
+                            (iobp.dir == IO_OUT) ? "IO/OUT" : "IO/RW";
+      ImGui::Text("%s", dir_str);
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("%04X/%04X", iobp.port, iobp.mask);
+      ImGui::TableSetColumnIndex(2);
+      if (!iobp.condition_str.empty())
+        ImGui::TextUnformatted(iobp.condition_str.c_str());
+      ImGui::TableSetColumnIndex(3);
+      ImGui::Text("-");
+      ImGui::TableSetColumnIndex(4);
+      char del_id[16];
+      snprintf(del_id, sizeof(del_id), "X##io%zu", i);
+      if (ImGui::SmallButton(del_id)) {
+        z80_del_io_breakpoint(static_cast<int>(i));
+      }
+    }
+
+    ImGui::EndTable();
+  }
+
+  if (!open) imgui_state.show_breakpoint_list = false;
   ImGui::End();
 }

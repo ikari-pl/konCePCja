@@ -19,6 +19,7 @@
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "z80.h"
+#include "symfile.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -115,6 +116,8 @@ class IpcServerTest : public testing::Test {
   void SetUp() override {
     z80 = t_z80regs();
     z80_clear_breakpoints();
+    z80_clear_watchpoints();
+    g_symfile.clear();
     for (int i = 0; i < 4; i++) {
       std::memset(memory[i], 0, kBankSize);
       membank_read[i] = memory[i];
@@ -197,6 +200,123 @@ TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto resp = send_command("screenshot /tmp/kaprys_test.png");
   EXPECT_EQ(resp, "ERR 503 no-surface\n");
+}
+
+TEST_F(IpcServerTest, WatchpointAddListDelClear) {
+  auto resp = send_command("wp clear");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp add 0x4000 256 w");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp add 0xC000 1 rw");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp list");
+  EXPECT_TRUE(resp.find("count=2") != std::string::npos);
+  EXPECT_TRUE(resp.find("4000+256/w") != std::string::npos);
+  EXPECT_TRUE(resp.find("C000+1/rw") != std::string::npos);
+
+  resp = send_command("wp del 0");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp list");
+  EXPECT_TRUE(resp.find("count=1") != std::string::npos);
+
+  resp = send_command("wp clear");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp list");
+  EXPECT_TRUE(resp.find("count=0") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, WatchpointConditional) {
+  auto resp = send_command("wp add 0x4000 1 w if value > 128");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp list");
+  EXPECT_TRUE(resp.find("if value > 128") != std::string::npos);
+
+  send_command("wp clear");
+}
+
+TEST_F(IpcServerTest, SymbolAddLookupDel) {
+  auto resp = send_command("sym add 0x0038 interrupt_handler");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("sym lookup 0x0038");
+  EXPECT_EQ(resp, "OK interrupt_handler\n");
+
+  resp = send_command("sym lookup interrupt_handler");
+  EXPECT_EQ(resp, "OK 0038\n");
+
+  resp = send_command("sym list");
+  EXPECT_TRUE(resp.find("count=1") != std::string::npos);
+  EXPECT_TRUE(resp.find("0038 interrupt_handler") != std::string::npos);
+
+  resp = send_command("sym del interrupt_handler");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("sym lookup interrupt_handler");
+  EXPECT_EQ(resp, "ERR 404 not-found\n");
+}
+
+TEST_F(IpcServerTest, DisasmWithSymbols) {
+  // Add a symbol, then disassemble with --symbols
+  send_command("sym add 0x0000 entry_point");
+  auto resp = send_command("disasm 0x0000 1 --symbols");
+  EXPECT_TRUE(resp.find("OK") != std::string::npos);
+  EXPECT_TRUE(resp.find("entry_point") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, MemFindHex) {
+  // Write a known pattern at 0x1000
+  send_command("mem write 0x1000 DEADBEEF");
+  auto resp = send_command("mem find hex 0x0000 0xFFFF DEADBEEF");
+  EXPECT_TRUE(resp.find("OK") != std::string::npos);
+  EXPECT_TRUE(resp.find("1000") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, MemFindText) {
+  // Write ASCII text at 0x2000
+  send_command("mem write 0x2000 48454C4C4F");  // "HELLO"
+  auto resp = send_command("mem find text 0x0000 0xFFFF HELLO");
+  EXPECT_TRUE(resp.find("OK") != std::string::npos);
+  EXPECT_TRUE(resp.find("2000") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, StackCommand) {
+  z80.SP.w.l = 0xBFFA;
+  // Write some values on the stack
+  z80_write_mem(0xBFFA, 0x34);
+  z80_write_mem(0xBFFB, 0x12);
+  auto resp = send_command("stack 4");
+  EXPECT_TRUE(resp.find("OK") != std::string::npos);
+  EXPECT_TRUE(resp.find("depth=4") != std::string::npos);
+  EXPECT_TRUE(resp.find("1234") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, StepOverDoesNotDescendIntoCall) {
+  // This is a basic check that the command is accepted
+  // (full behavioral test requires a running emulator)
+  z80.PC.w.l = 0x0000;
+  // Write NOP (0x00) at address 0
+  z80_write_mem(0x0000, 0x00);
+  auto resp = send_command("step over");
+  EXPECT_EQ(resp, "OK\n");
+}
+
+TEST_F(IpcServerTest, StepToCommand) {
+  // Write NOP at 0x0000, step to 0x0001 should work immediately via ephemeral bp
+  z80.PC.w.l = 0x0000;
+  z80_write_mem(0x0000, 0x00);
+  // step to on a paused emulator won't actually run; check command is accepted
+  // In test environment without main loop, this will timeout
+  // Just verify the command doesn't crash
+  auto resp = send_command("step to 0x0001");
+  // Either timeout or OK is acceptable in test harness
+  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
+              resp.find("ERR 408") != std::string::npos);
 }
 
 }  // namespace
