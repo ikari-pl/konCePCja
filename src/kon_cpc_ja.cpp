@@ -2977,6 +2977,25 @@ int koncpc_main (int argc, char **argv)
             if (!(scancode & MOD_EMU_KEY)) {
                bool press = (evtype == SDL_EVENT_KEY_DOWN);
                applyKeypress(scancode, keyboard_matrix, press);
+            } else if (evtype == SDL_EVENT_KEY_DOWN) {
+               // Handle emulator commands (no SDL event loop in headless mode)
+               switch (scancode) {
+                  case KONCPC_EXIT:
+                     cleanExit(0);
+                     break;
+                  case KONCPC_RESET:
+                     emulator_reset();
+                     break;
+                  case KONCPC_SPEED:
+                     CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+                     break;
+                  case KONCPC_DEBUG:
+                     log_verbose = !log_verbose;
+                     break;
+                  default:
+                     LOG_DEBUG("Ignoring emulator key " << scancode << " in headless mode");
+                     break;
+               }
             }
          }
 
