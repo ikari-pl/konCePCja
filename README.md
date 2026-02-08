@@ -2,9 +2,9 @@
 
 # konCePCja — Amstrad CPC Emulator
 
-(c) Copyright 1997–2015 Ulrich Doewich
-(c) Copyright 2016–2025 Colin Pitrat
-(c) 2026 Cezar "ikari" Pokorski
+&copy; Copyright 1997–2015 Ulrich Doewich \
+&copy; Copyright 2016–2025 Colin Pitrat \
+&copy; 2026 Cezar "ikari" Pokorski
 
 https://github.com/ikari-pl/konCePCja
 
@@ -95,7 +95,7 @@ The source for konCePCja is distributed under the terms of the GNU General Publi
 
 The screen-capture code uses [driedfruit SDL_SavePNG](https://github.com/driedfruit/SDL_SavePNG), released under the zlib/libpng license (compatible with GPLv2).
 
-The bundled ROM images in `rom/` are (c) Amstrad plc and Locomotive Software Ltd, redistributed with permission.
+The bundled ROM images in `rom/` are &copy; Amstrad plc and Locomotive Software Ltd, redistributed with permission.
 Amstrad have kindly given their permission for the redistribution of their copyrighted material but retain that copyright.
 See [`rom/ROM-LICENSE.txt`](rom/ROM-LICENSE.txt) for full details including the Multiface II ROM.
 
