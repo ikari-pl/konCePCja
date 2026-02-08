@@ -346,10 +346,25 @@ inline byte read_mem_no_watchpoint(word addr) {
 
 inline byte read_mem(word addr) {
   if (!watchpoints.empty()) {
-    if (std::any_of(watchpoints.begin(), watchpoints.end(), [&](const auto& w) {
-          return w.address == addr && (w.type & READ);
-          })) {
+    for (auto& w : watchpoints) {
+      if (!(w.type & READ)) continue;
+      if (addr < w.address || addr >= w.address + w.length) continue;
+      if (w.condition) {
+        ExprContext ctx;
+        ctx.z80 = &z80;
+        ctx.address = addr;
+        byte cur = read_mem_no_watchpoint(addr);
+        ctx.value = cur;
+        ctx.previous = cur;
+        ctx.mode = 1; // READ
+        if (expr_eval(w.condition.get(), ctx) == 0) continue;
+      }
+      if (w.pass_count > 0 && ++w.hit_count < w.pass_count) continue;
       z80.watchpoint_reached = 1;
+      z80.watchpoint_addr = addr;
+      z80.watchpoint_value = read_mem_no_watchpoint(addr);
+      z80.watchpoint_old = z80.watchpoint_value;
+      break;
     }
   }
   return read_mem_no_watchpoint(addr);
@@ -361,10 +376,25 @@ inline void write_mem_no_watchpoint(word addr, byte val) {
 
 inline void write_mem(word addr, byte val) {
   if (!watchpoints.empty()) {
-    if (std::any_of(watchpoints.begin(), watchpoints.end(), [&](const auto& w) {
-          return w.address == addr && (w.type & WRITE);
-          })) {
+    for (auto& w : watchpoints) {
+      if (!(w.type & WRITE)) continue;
+      if (addr < w.address || addr >= w.address + w.length) continue;
+      byte old_val = read_mem_no_watchpoint(addr);
+      if (w.condition) {
+        ExprContext ctx;
+        ctx.z80 = &z80;
+        ctx.address = addr;
+        ctx.value = val;
+        ctx.previous = old_val;
+        ctx.mode = 2; // WRITE
+        if (expr_eval(w.condition.get(), ctx) == 0) continue;
+      }
+      if (w.pass_count > 0 && ++w.hit_count < w.pass_count) continue;
       z80.watchpoint_reached = 1;
+      z80.watchpoint_addr = addr;
+      z80.watchpoint_value = val;
+      z80.watchpoint_old = old_val;
+      break;
     }
   }
   if (GateArray.registerPageOn) {
@@ -635,7 +665,7 @@ byte z80_read_mem_raw_bank(word addr, int bank) {
 #define RST(addr) \
 { \
    if (z80.step_out) { \
-     z80.step_out_addresses.push_back(_PC+2); \
+     z80.step_out_addresses.push_back(_PC); \
    } \
    write_mem(--_SP, z80.PC.b.h); /* store high byte of current PC */ \
    write_mem(--_SP, z80.PC.b.l); /* store low byte of current PC */ \
@@ -988,7 +1018,7 @@ inline byte SRL(byte val) {
             iCycleCount -= 4; \
          } \
         if (z80.step_out) { \
-          z80.step_out_addresses.push_back(_PC+2); \
+          z80.step_out_addresses.push_back(_PC); \
         } \
          write_mem(--_SP, z80.PC.b.h); /* store high byte of current PC */ \
          write_mem(--_SP, z80.PC.b.l); /* store low byte of current PC */ \
@@ -1141,6 +1171,11 @@ int z80_execute()
         if (g_breakpoint_hit_hook) {
           g_breakpoint_hit_hook(_PC, z80.watchpoint_reached != 0);
         }
+        // Remove ephemeral breakpoints when execution pauses
+        breakpoints.erase(
+          std::remove_if(breakpoints.begin(), breakpoints.end(),
+            [](const Breakpoint& b) { return b.type == EPHEMERAL; }),
+          breakpoints.end());
         break;
       }
       if (z80.step_in) { z80.step_in++; break; }
@@ -3135,4 +3170,43 @@ void z80_clear_io_breakpoints() {
 
 const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref() {
   return io_breakpoints;
+}
+
+// --- Watchpoints ---
+
+void z80_add_watchpoint(word addr, word len, WatchpointType type) {
+  Watchpoint wp(addr, type);
+  wp.length = len;
+  watchpoints.push_back(std::move(wp));
+}
+
+void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
+                             std::unique_ptr<ExprNode> cond,
+                             const std::string& cond_str, int pass_count) {
+  Watchpoint wp(addr, type);
+  wp.length = len;
+  wp.condition = std::move(cond);
+  wp.condition_str = cond_str;
+  wp.pass_count = pass_count;
+  watchpoints.push_back(std::move(wp));
+}
+
+void z80_del_watchpoint(int index) {
+  if (index >= 0 && index < static_cast<int>(watchpoints.size())) {
+    watchpoints.erase(watchpoints.begin() + index);
+  }
+}
+
+void z80_clear_watchpoints() {
+  watchpoints.clear();
+}
+
+const std::vector<Watchpoint>& z80_list_watchpoints_ref() {
+  return watchpoints;
+}
+
+// --- Ephemeral breakpoints ---
+
+void z80_add_breakpoint_ephemeral(word addr) {
+  breakpoints.emplace_back(addr, EPHEMERAL);
 }

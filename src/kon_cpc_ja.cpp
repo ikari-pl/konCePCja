@@ -53,6 +53,8 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "imgui_impl_sdl3.h"
 #include "imgui_ui.h"
 
+Symfile g_symfile;
+
 namespace {
   KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
 }
@@ -1619,9 +1621,19 @@ int video_init ()
 
    back_surface=vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
 
-   if (!back_surface) { // attempt to set the required video mode
-      LOG_ERROR("Could not set requested video mode: " << SDL_GetError());
-      return ERR_VIDEO_SET_MODE;
+   if (!back_surface) {
+      // OpenGL may be unavailable (e.g. SDL_VIDEODRIVER=dummy in CI).
+      // Fall back to headless rendering so the emulator remains functional.
+      LOG_ERROR("Could not set requested video mode: " << SDL_GetError()
+                << " — falling back to headless");
+      static video_plugin hp = video_headless_plugin();
+      vid_plugin = &hp;
+      g_headless = true;
+      back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, false);
+      if (!back_surface) {
+         LOG_ERROR("Headless fallback also failed. Aborting.");
+         return ERR_VIDEO_SET_MODE;
+      }
    }
 
    {
@@ -1756,7 +1768,9 @@ std::string getConfigurationFilename(bool forWrite)
   std::vector<std::pair<const char*, std::string>> configPaths = {
     { PATH_OK, args.cfgFilePath}, // First look in any user supplied configuration file path
     { chAppPath, "/koncepcja.cfg" }, // If not found, koncepcja.cfg in the same directory as the executable
-    { getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg" },
+    { getenv("XDG_CONFIG_HOME"), "/koncepcja/koncepcja.cfg" },
+    { getenv("HOME"), "/.config/koncepcja/koncepcja.cfg" },
+    { getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg" }, // legacy flat paths
     { getenv("HOME"), "/.config/koncepcja.cfg" },
     { getenv("HOME"), "/.koncepcja.cfg" },
     { DESTDIR, "/etc/koncepcja.cfg" },
@@ -2199,6 +2213,10 @@ void loadBreakpoints()
     if (std::find_if(breakpoints.begin(), breakpoints.end(),
           [&](const auto& bp) { return bp.address == breakpoint; } ) != breakpoints.end()) continue;
     breakpoints.emplace_back(breakpoint);
+  }
+  // Populate global symbol table from symfile
+  for (const auto& [addr, name] : symfile.Symbols()) {
+    g_symfile.addSymbol(addr, name);
   }
 }
 
@@ -2959,6 +2977,42 @@ int koncpc_main (int argc, char **argv)
             if (!(scancode & MOD_EMU_KEY)) {
                bool press = (evtype == SDL_EVENT_KEY_DOWN);
                applyKeypress(scancode, keyboard_matrix, press);
+            } else if (evtype == SDL_EVENT_KEY_DOWN) {
+               // Handle emulator commands (no SDL event loop in headless mode)
+               switch (scancode) {
+                  case KONCPC_EXIT:
+                     cleanExit(0);
+                     break;
+                  case KONCPC_RESET:
+                     emulator_reset();
+                     break;
+                  case KONCPC_WAITBREAK:
+                     breakPointsToSkipBeforeProceedingWithVirtualEvents++;
+                     LOG_INFO("Will skip " << breakPointsToSkipBeforeProceedingWithVirtualEvents << " before processing more virtual events.");
+                     z80.break_point = 0;
+                     break;
+                  case KONCPC_DELAY:
+                     nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+                     break;
+                  case KONCPC_SNAPSHOT:
+                     dumpSnapshot();
+                     break;
+                  case KONCPC_TAPEPLAY:
+                     Tape_Rewind();
+                     if (!pbTapeImage.empty()) {
+                        CPC.tape_play_button = CPC.tape_play_button ? 0 : 0x10;
+                     }
+                     break;
+                  case KONCPC_SPEED:
+                     CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+                     break;
+                  case KONCPC_DEBUG:
+                     log_verbose = !log_verbose;
+                     break;
+                  default:
+                     LOG_DEBUG("Ignoring emulator key " << scancode << " in headless mode");
+                     break;
+               }
             }
          }
 
@@ -2966,6 +3020,14 @@ int koncpc_main (int argc, char **argv)
       }
 
       while (!g_headless && SDL_PollEvent(&event)) {
+         // Handle main window close before ImGui consumes the event
+         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
+           SDL_WindowID main_id = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
+           if (event.window.windowID == main_id) {
+             cleanExit(0);
+           }
+         }
+
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
 

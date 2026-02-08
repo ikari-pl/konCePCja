@@ -222,3 +222,20 @@ DisassembledCode disassemble(const std::vector<word>& entry_points)
   }
   return code;
 }
+
+// --- konCePCja debug helpers ---
+
+int z80_instruction_length(word pc) {
+  DisassembledCode dummy;
+  std::vector<dword> dummy_eps;
+  auto line = disassemble_one(pc, dummy, dummy_eps);
+  return line.Size();
+}
+
+bool z80_is_call_or_rst(word pc) {
+  DisassembledCode dummy;
+  std::vector<dword> dummy_eps;
+  auto line = disassemble_one(pc, dummy, dummy_eps);
+  const auto& instr = line.instruction_;
+  return (instr.rfind("call", 0) == 0 || instr.rfind("rst", 0) == 0);
+}

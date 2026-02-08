@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cctype>
 #include <sstream>
+#include <iomanip>
 #include <zlib.h>
 
 #ifdef _WIN32
@@ -30,6 +31,7 @@
 #include "keyboard.h"
 #include "trace.h"
 #include "gif_recorder.h"
+#include "symfile.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -168,7 +170,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare) bp(list/add/del/clear) iobp(add/del/clear/list) step wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -529,22 +531,85 @@ std::string handle_command(const std::string& line) {
     }
     return "OK diffs=" + std::to_string(diff_count) + diffs + "\n";
   }
-  if (cmd == "disasm" && parts.size() >= 3) {
-    unsigned int addr = std::stoul(parts[1], nullptr, 0);
-    int count = std::stoi(parts[2]);
-    if (count < 0) return "ERR 400 bad-args\n";
-    std::ostringstream resp;
-    resp << "OK\n";
-    DisassembledCode code;
-    std::vector<dword> entry_points;
-    word pos = static_cast<word>(addr);
-    for (int i = 0; i < count; i++) {
-      auto line = disassemble_one(pos, code, entry_points);
-      code.lines.insert(line);
-      resp << line << "\n";
-      pos = static_cast<word>(pos + line.Size());
+  if (cmd == "disasm" && parts.size() >= 2) {
+    // disasm follow <addr> — recursive disassembly following jumps
+    if (parts[1] == "follow" && parts.size() >= 3) {
+      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      std::vector<word> eps = { static_cast<word>(addr) };
+      DisassembledCode code = disassemble(eps);
+      std::ostringstream resp;
+      resp << "OK count=" << code.lines.size() << "\n";
+      for (const auto& line : code.lines) {
+        std::string sym = g_symfile.lookupAddr(line.address_);
+        if (!sym.empty()) resp << sym << ":\n";
+        resp << line << "\n";
+      }
+      return resp.str();
     }
-    return resp.str();
+    // disasm refs <addr> — cross-reference search
+    if (parts[1] == "refs" && parts.size() >= 3) {
+      unsigned int target = std::stoul(parts[2], nullptr, 0);
+      std::ostringstream resp;
+      resp << "OK";
+      int found = 0;
+      DisassembledCode dummy;
+      std::vector<dword> dummy_eps;
+      for (unsigned int addr = 0; addr <= 0xFFFF && found < 100; ) {
+        auto line = disassemble_one(addr, dummy, dummy_eps);
+        if (line.ref_address_ == static_cast<word>(target) &&
+            !line.ref_address_string_.empty()) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), " %04X", addr);
+          resp << buf;
+          found++;
+        }
+        addr += line.Size();
+      }
+      resp << "\n";
+      return resp.str();
+    }
+    // disasm <addr> <count> [--symbols]
+    if (parts.size() >= 3) {
+      unsigned int addr = std::stoul(parts[1], nullptr, 0);
+      int count = std::stoi(parts[2]);
+      if (count < 0) return "ERR 400 bad-args\n";
+      bool with_symbols = false;
+      for (size_t pi = 3; pi < parts.size(); pi++) {
+        if (parts[pi] == "--symbols") with_symbols = true;
+      }
+      std::ostringstream resp;
+      resp << "OK\n";
+      DisassembledCode code;
+      std::vector<dword> entry_points;
+      word pos = static_cast<word>(addr);
+      for (int i = 0; i < count; i++) {
+        if (with_symbols) {
+          std::string sym = g_symfile.lookupAddr(pos);
+          if (!sym.empty()) resp << sym << ":\n";
+        }
+        auto line = disassemble_one(pos, code, entry_points);
+        code.lines.insert(line);
+        if (with_symbols && !line.ref_address_string_.empty()) {
+          // Try to replace hex reference with symbol name
+          std::string sym = g_symfile.lookupAddr(line.ref_address_);
+          if (!sym.empty()) {
+            std::string instr = line.instruction_;
+            auto ref_pos = instr.find(line.ref_address_string_);
+            if (ref_pos != std::string::npos) {
+              instr.replace(ref_pos, line.ref_address_string_.size(), sym);
+            }
+            resp << std::setfill('0') << std::setw(4) << std::hex << line.address_ << ": ";
+            resp << std::setfill(' ') << std::setw(8) << line.opcode_ << " " << instr << "\n";
+          } else {
+            resp << line << "\n";
+          }
+        } else {
+          resp << line << "\n";
+        }
+        pos = static_cast<word>(pos + line.Size());
+      }
+      return resp.str();
+    }
   }
   if (cmd == "bp" && parts.size() >= 2) {
     if (parts[1] == "add" && parts.size() >= 3) {
@@ -717,6 +782,77 @@ std::string handle_command(const std::string& line) {
       g_ipc_instance->frame_step_active.store(true);
       cpc_resume();
       g_ipc_instance->wait_frame_step_done();
+      return "OK\n";
+    }
+    // "step over [N]" — step over CALL/RST (or single-step if not a call)
+    if (parts.size() >= 2 && parts[1] == "over") {
+      cpc_pause();
+      int count = 1;
+      if (parts.size() >= 3) count = std::stoi(parts[2]);
+      for (int i = 0; i < count; i++) {
+        word pc = z80.PC.w.l;
+        if (z80_is_call_or_rst(pc)) {
+          int len = z80_instruction_length(pc);
+          z80_add_breakpoint_ephemeral(static_cast<word>(pc + len));
+          cpc_resume();
+          // Wait for breakpoint hit
+          auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+          while (true) {
+            uint16_t hit_pc = 0;
+            bool watch = false;
+            if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
+            if (std::chrono::steady_clock::now() > deadline) {
+              cpc_pause();
+              return "ERR 408 timeout\n";
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+          cpc_pause();
+        } else {
+          z80_step_instruction();
+        }
+      }
+      return "OK\n";
+    }
+    // "step out" — run until current function returns
+    if (parts.size() >= 2 && parts[1] == "out") {
+      z80.step_out = 1;
+      z80.step_out_addresses.clear();
+      cpc_resume();
+      // Wait for step_out to complete (step_in transitions to 2 on return)
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (true) {
+        uint16_t hit_pc = 0;
+        bool watch = false;
+        if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
+        if (z80.step_in >= 2) break;
+        if (std::chrono::steady_clock::now() > deadline) {
+          cpc_pause();
+          z80.step_out = 0;
+          return "ERR 408 timeout\n";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      cpc_pause();
+      return "OK\n";
+    }
+    // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
+    if (parts.size() >= 3 && parts[1] == "to") {
+      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      z80_add_breakpoint_ephemeral(static_cast<word>(addr));
+      cpc_resume();
+      auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      while (true) {
+        uint16_t hit_pc = 0;
+        bool watch = false;
+        if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
+        if (std::chrono::steady_clock::now() > deadline) {
+          cpc_pause();
+          return "ERR 408 timeout\n";
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      cpc_pause();
       return "OK\n";
     }
     // "step [N]" — single-step N instructions
@@ -1004,8 +1140,13 @@ std::string handle_command(const std::string& line) {
           uint16_t pc = 0;
           bool watch = false;
           if (g_ipc_instance->consume_breakpoint_hit(pc, watch)) {
-            char resp[64];
-            snprintf(resp, sizeof(resp), "OK PC=%04X WATCH=%u\n", pc, watch ? 1 : 0);
+            char resp[128];
+            if (watch) {
+              snprintf(resp, sizeof(resp), "OK PC=%04X WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X\n",
+                       pc, z80.watchpoint_addr, z80.watchpoint_value, z80.watchpoint_old);
+            } else {
+              snprintf(resp, sizeof(resp), "OK PC=%04X WATCH=0\n", pc);
+            }
             return std::string(resp);
           }
         }
@@ -1163,6 +1304,312 @@ std::string handle_command(const std::string& line) {
       return "OK\n";
     }
     return "ERR 400 bad-timer-cmd (list|clear)\n";
+  }
+
+  // --- Watchpoint commands ---
+  if (cmd == "wp" && parts.size() >= 2) {
+    if (parts[1] == "add" && parts.size() >= 3) {
+      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      word len = 1;
+      WatchpointType wtype = READWRITE;
+      std::string cond_str;
+      int pass_count = 0;
+      bool in_expr = false;
+      for (size_t pi = 3; pi < parts.size(); pi++) {
+        std::string kw = parts[pi];
+        std::string kwl = kw;
+        for (auto& c : kwl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (kwl == "if") {
+          in_expr = true;
+          continue;
+        }
+        if (kwl == "pass" && pi + 1 < parts.size()) {
+          in_expr = false;
+          pass_count = std::stoi(parts[pi + 1]);
+          pi++;
+          continue;
+        }
+        if (in_expr) {
+          if (!cond_str.empty()) cond_str += " ";
+          cond_str += kw;
+          continue;
+        }
+        if (kwl == "r") wtype = READ;
+        else if (kwl == "w") wtype = WRITE;
+        else if (kwl == "rw") wtype = READWRITE;
+        else {
+          // Try as length
+          try {
+            unsigned int v = std::stoul(kw, nullptr, 0);
+            len = static_cast<word>(v);
+          } catch (...) {}
+        }
+      }
+      if (!cond_str.empty()) {
+        std::string err;
+        auto ast = expr_parse(cond_str, err);
+        if (!ast) return "ERR 400 bad-expr: " + err + "\n";
+        z80_add_watchpoint_cond(static_cast<word>(addr), len, wtype,
+                                std::move(ast), cond_str, pass_count);
+      } else {
+        z80_add_watchpoint(static_cast<word>(addr), len, wtype);
+      }
+      return "OK\n";
+    }
+    if (parts[1] == "del" && parts.size() >= 3) {
+      int idx = std::stoi(parts[2]);
+      z80_del_watchpoint(idx);
+      return "OK\n";
+    }
+    if (parts[1] == "clear") {
+      z80_clear_watchpoints();
+      return "OK\n";
+    }
+    if (parts[1] == "list") {
+      const auto& wps = z80_list_watchpoints_ref();
+      std::string resp = "OK count=" + std::to_string(wps.size());
+      for (size_t i = 0; i < wps.size(); i++) {
+        const auto& w = wps[i];
+        char buf[128];
+        const char* type_str = "rw";
+        if (w.type == READ) type_str = "r";
+        else if (w.type == WRITE) type_str = "w";
+        snprintf(buf, sizeof(buf), " %zu:%04X+%u/%s",
+                 i, static_cast<unsigned>(w.address),
+                 static_cast<unsigned>(w.length), type_str);
+        resp += buf;
+        if (!w.condition_str.empty()) {
+          resp += "[if ";
+          resp += w.condition_str;
+          resp += "]";
+        }
+        if (w.pass_count > 0) {
+          resp += "[pass ";
+          resp += std::to_string(w.pass_count);
+          resp += "]";
+        }
+      }
+      resp += "\n";
+      return resp;
+    }
+    return "ERR 400 bad-wp-cmd (add|del|clear|list)\n";
+  }
+
+  // --- Symbol commands ---
+  if (cmd == "sym" && parts.size() >= 2) {
+    if (parts[1] == "load" && parts.size() >= 3) {
+      Symfile loaded(parts[2]);
+      int count = 0;
+      for (const auto& [addr, name] : loaded.Symbols()) {
+        g_symfile.addSymbol(addr, name);
+        count++;
+      }
+      char buf[32];
+      snprintf(buf, sizeof(buf), "OK loaded=%d\n", count);
+      return std::string(buf);
+    }
+    if (parts[1] == "add" && parts.size() >= 4) {
+      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      g_symfile.addSymbol(static_cast<word>(addr), parts[3]);
+      return "OK\n";
+    }
+    if (parts[1] == "del" && parts.size() >= 3) {
+      g_symfile.delSymbol(parts[2]);
+      return "OK\n";
+    }
+    if (parts[1] == "list") {
+      std::string filter;
+      if (parts.size() >= 3) filter = parts[2];
+      auto syms = g_symfile.listSymbols(filter);
+      std::string resp = "OK count=" + std::to_string(syms.size()) + "\n";
+      for (const auto& [addr, name] : syms) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "  %04X %s\n",
+                 static_cast<unsigned>(addr), name.c_str());
+        resp += buf;
+      }
+      return resp;
+    }
+    if (parts[1] == "lookup" && parts.size() >= 3) {
+      // Try as address first
+      try {
+        unsigned int addr = std::stoul(parts[2], nullptr, 0);
+        std::string name = g_symfile.lookupAddr(static_cast<word>(addr));
+        if (!name.empty()) {
+          return "OK " + name + "\n";
+        }
+      } catch (...) {}
+      // Try as name
+      word addr = 0;
+      if (g_symfile.lookupName(parts[2], addr) == 0) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "OK %04X\n", static_cast<unsigned>(addr));
+        return std::string(buf);
+      }
+      return "ERR 404 not-found\n";
+    }
+    return "ERR 400 bad-sym-cmd (load|add|del|list|lookup)\n";
+  }
+
+  // --- Memory search ---
+  if (cmd == "mem" && parts.size() >= 5 && parts[1] == "find") {
+    unsigned int start = std::stoul(parts[3], nullptr, 0);
+    unsigned int end = std::stoul(parts[4], nullptr, 0);
+    if (end > 0xFFFF) end = 0xFFFF;
+
+    if (parts[2] == "hex" && parts.size() >= 6) {
+      // Parse hex pattern with ?? wildcards
+      const std::string& hex = parts[5];
+      std::vector<int> pattern; // -1 = wildcard, else byte value
+      for (size_t i = 0; i + 1 < hex.size(); i += 2) {
+        if (hex[i] == '?' && hex[i + 1] == '?') {
+          pattern.push_back(-1);
+        } else {
+          pattern.push_back(static_cast<int>(std::stoul(hex.substr(i, 2), nullptr, 16)));
+        }
+      }
+      if (pattern.empty()) return "ERR 400 empty-pattern\n";
+      std::string resp = "OK";
+      int found = 0;
+      for (unsigned int addr = start; addr + pattern.size() - 1 <= end && found < 32; addr++) {
+        bool match = true;
+        for (size_t j = 0; j < pattern.size(); j++) {
+          if (pattern[j] < 0) continue;
+          if (z80_read_mem(static_cast<word>(addr + j)) != static_cast<byte>(pattern[j])) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), " %04X", addr);
+          resp += buf;
+          found++;
+        }
+      }
+      resp += "\n";
+      return resp;
+    }
+    if (parts[2] == "text" && parts.size() >= 6) {
+      // Collect text from remaining parts (may have spaces)
+      std::string text;
+      for (size_t pi = 5; pi < parts.size(); pi++) {
+        if (!text.empty()) text += " ";
+        text += parts[pi];
+      }
+      // Strip surrounding quotes
+      if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
+        text = text.substr(1, text.size() - 2);
+      }
+      if (text.empty()) return "ERR 400 empty-pattern\n";
+      std::string resp = "OK";
+      int found = 0;
+      for (unsigned int addr = start; addr + text.size() - 1 <= end && found < 32; addr++) {
+        bool match = true;
+        for (size_t j = 0; j < text.size(); j++) {
+          if (z80_read_mem(static_cast<word>(addr + j)) != static_cast<byte>(text[j])) {
+            match = false;
+            break;
+          }
+        }
+        if (match) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), " %04X", addr);
+          resp += buf;
+          found++;
+        }
+      }
+      resp += "\n";
+      return resp;
+    }
+    if (parts[2] == "asm" && parts.size() >= 6) {
+      // Collect asm pattern from remaining parts
+      std::string pattern;
+      for (size_t pi = 5; pi < parts.size(); pi++) {
+        if (!pattern.empty()) pattern += " ";
+        pattern += parts[pi];
+      }
+      // Lowercase pattern for case-insensitive matching
+      std::string lower_pattern = pattern;
+      for (auto& c : lower_pattern) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      std::string resp = "OK";
+      int found = 0;
+      DisassembledCode dummy;
+      std::vector<dword> dummy_eps;
+      for (unsigned int addr = start; addr <= end && found < 32; ) {
+        auto line = disassemble_one(addr, dummy, dummy_eps);
+        std::string lower_instr = line.instruction_;
+        for (auto& c : lower_instr) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        // Match: * = any substring in operand position
+        bool match = false;
+        if (lower_pattern.find('*') != std::string::npos) {
+          // Split pattern at *, check prefix and suffix
+          auto star = lower_pattern.find('*');
+          std::string prefix = lower_pattern.substr(0, star);
+          std::string suffix = lower_pattern.substr(star + 1);
+          match = (lower_instr.rfind(prefix, 0) == 0);
+          if (match && !suffix.empty()) {
+            match = (lower_instr.size() >= suffix.size() &&
+                     lower_instr.substr(lower_instr.size() - suffix.size()) == suffix);
+          }
+        } else {
+          match = (lower_instr.find(lower_pattern) != std::string::npos);
+        }
+        if (match) {
+          char buf[8];
+          snprintf(buf, sizeof(buf), " %04X", addr);
+          resp += buf;
+          found++;
+        }
+        addr += line.Size();
+      }
+      resp += "\n";
+      return resp;
+    }
+    return "ERR 400 bad-find-type (hex|text|asm)\n";
+  }
+
+  // --- Stack command ---
+  if (cmd == "stack") {
+    int depth = 16;
+    if (parts.size() >= 2) depth = std::stoi(parts[1]);
+    if (depth < 1) depth = 1;
+    if (depth > 128) depth = 128;
+    word sp = z80.SP.w.l;
+    std::ostringstream resp;
+    resp << "OK depth=" << depth << "\n";
+    DisassembledCode dummy;
+    std::vector<dword> dummy_eps;
+    for (int i = 0; i < depth; i++) {
+      word addr = static_cast<word>(sp + i * 2);
+      byte lo = z80_read_mem(addr);
+      byte hi = z80_read_mem(static_cast<word>(addr + 1));
+      word val = static_cast<word>((hi << 8) | lo);
+      char buf[64];
+      snprintf(buf, sizeof(buf), "  SP+%d: %04X", i * 2, static_cast<unsigned>(val));
+      resp << buf;
+      // Heuristic: check if instruction before val is a CALL or RST
+      if (val >= 1) {
+        // Check 3, 2, 1 bytes back for CALL/RST
+        bool is_ret_addr = false;
+        for (int back = 3; back >= 1; back--) {
+          word check_addr = static_cast<word>(val - back);
+          auto dline = disassemble_one(check_addr, dummy, dummy_eps);
+          if (dline.Size() == back &&
+              (dline.instruction_.rfind("call", 0) == 0 ||
+               dline.instruction_.rfind("rst", 0) == 0)) {
+            is_ret_addr = true;
+            break;
+          }
+        }
+        if (is_ret_addr) resp << " [call]";
+      }
+      // Include symbol name if known
+      std::string sym = g_symfile.lookupAddr(val);
+      if (!sym.empty()) resp << " " << sym;
+      resp << "\n";
+    }
+    return resp.str();
   }
 
   return "ERR 501 not-implemented\n";

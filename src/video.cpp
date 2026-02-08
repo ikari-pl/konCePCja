@@ -43,13 +43,36 @@
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
-#include "imgui_impl_sdlrenderer3.h"
+#include "imgui_impl_opengl3.h"
 #include "imgui_ui.h"
+
+#ifdef __APPLE__
+#include <OpenGL/gl3.h>
+#else
+#include <GL/gl.h>
+#endif
 
 SDL_Window* mainSDLWindow = nullptr;
 SDL_Renderer* renderer = nullptr;
 SDL_Texture* texture = nullptr;
 SDL_GLContext glcontext;
+
+// OpenGL texture for CPC framebuffer (used by OpenGL3/ImGui rendering path)
+static GLuint cpc_gl_texture = 0;
+
+// Returns path for imgui.ini in the same directory as koncepcja.cfg.
+// Uses a static string so the c_str() pointer remains valid for io.IniFilename.
+static const char* imgui_ini_path() {
+  static std::string path;
+  if (path.empty()) {
+    std::string cfg = getConfigurationFilename();
+    if (!cfg.empty()) {
+      auto slash = cfg.find_last_of('/');
+      path = (slash != std::string::npos ? cfg.substr(0, slash + 1) : "") + "imgui.ini";
+    }
+  }
+  return path.empty() ? nullptr : path.c_str();
+}
 
 // the video surface ready to display
 SDL_Surface* vid = nullptr;
@@ -59,7 +82,6 @@ SDL_Surface* scaled = nullptr;
 SDL_Surface* pub = nullptr;
 
 SDL_Surface* devtools_panel_surface = nullptr;
-SDL_Texture* devtools_panel_texture = nullptr;
 int devtools_panel_width = 0;
 int devtools_panel_height = 0;
 int devtools_panel_surface_width = 0;
@@ -67,7 +89,6 @@ int devtools_panel_surface_height = 0;
 int devtools_cpc_height = 0;
 
 SDL_Surface* topbar_surface = nullptr;
-SDL_Texture* topbar_texture = nullptr;
 int topbar_height = 0;
 
 extern t_CPC CPC;
@@ -153,17 +174,36 @@ void compute_scale(video_plugin* t, int w, int h)
 /* ------------------------------------------------------------------------------------ */
 SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
 {
-  SDL_CreateWindowAndRenderer("konCePCja", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
-  if (!mainSDLWindow || !renderer) return nullptr;
-  SDL_SetWindowTitle(mainSDLWindow, "konCePCja " VERSION_STRING);
+  // Create OpenGL window
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+
+  mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
+      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+  if (!mainSDLWindow) return nullptr;
+
+  glcontext = SDL_GL_CreateContext(mainSDLWindow);
+  if (!glcontext) return nullptr;
+  SDL_GL_MakeCurrent(mainSDLWindow, glcontext);
+  if (!SDL_GL_SetSwapInterval(-1)) // adaptive vsync (no tearing, reduced drag latency)
+    SDL_GL_SetSwapInterval(1);     // fall back to standard vsync
 
   // Initialize Dear ImGui
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = imgui_ini_path();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer);
-  ImGui_ImplSDLRenderer3_Init(renderer);
+  ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
+  ImGui_ImplOpenGL3_Init("#version 150");
 
   int surface_width, surface_height;
   if (scale > 1) {
@@ -177,8 +217,15 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   }
   vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
-  texture = SDL_CreateTextureFromSurface(renderer, vid);
-  if (!texture) return nullptr;
+
+  // Create GL texture for CPC framebuffer
+  glGenTextures(1, &cpc_gl_texture);
+  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, surface_width, surface_height, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+
   {
     const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(vid->format);
     SDL_Palette* pal = SDL_GetSurfacePalette(vid);
@@ -197,51 +244,60 @@ void direct_setpal(SDL_Color* c)
 
 void direct_flip(video_plugin* t)
 {
-  SDL_UpdateTexture(texture, nullptr, vid->pixels, vid->pitch);
-  SDL_RenderClear(renderer);
-  if (CPC.scr_preserve_aspect_ratio != 0) {
-    SDL_FRect dest_rect = { static_cast<float>(t->x_offset), static_cast<float>(t->y_offset), static_cast<float>(t->width), static_cast<float>(t->height) };
-    SDL_RenderTexture(renderer, texture, nullptr, &dest_rect);
-  } else {
-    SDL_RenderTexture(renderer, texture, nullptr, nullptr);
-  }
-  int win_width = 0, win_height = 0;
-  int out_width = 0, out_height = 0;
-  SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-  SDL_GetRenderOutputSize(renderer, &out_width, &out_height);
-  float sx = (win_width > 0 && out_width > 0) ? (static_cast<float>(out_width) / win_width) : 1.0f;
-  float sy = (win_height > 0 && out_height > 0) ? (static_cast<float>(out_height) / win_height) : 1.0f;
-  if (topbar_texture && topbar_surface) {
-    SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
-    SDL_FRect bar_rect = { 0.0f, 0.0f, static_cast<float>(topbar_surface->w * sx), static_cast<float>(topbar_height * sy) };
-    SDL_RenderTexture(renderer, topbar_texture, nullptr, &bar_rect);
-  }
-  if (devtools_panel_texture && devtools_panel_surface) {
-    SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
-    SDL_FRect panel_rect = { static_cast<float>((win_width - devtools_panel_width) * sx), static_cast<float>(topbar_height * sy), static_cast<float>(devtools_panel_width * sx), static_cast<float>(devtools_panel_height * sy) };
-    SDL_RenderTexture(renderer, devtools_panel_texture, nullptr, &panel_rect);
-  }
+  // Upload CPC framebuffer to GL texture
+  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
+                  GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
 
-  // Render Dear ImGui overlay
-  ImGui_ImplSDLRenderer3_NewFrame();
+  // Start ImGui frame
+  ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL3_NewFrame();
   ImGui::NewFrame();
+
+  // Draw CPC framebuffer as background image via ImGui
+  // With viewports enabled, background draw list uses screen-space coordinates
+  ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::GetBackgroundDrawList(vp)->AddImage(
+      static_cast<ImTextureID>(cpc_gl_texture),
+      ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+      ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+
+  // Render all ImGui windows
   imgui_render_ui();
   ImGui::Render();
-  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
 
-  SDL_RenderPresent(renderer);
+  // GL clear and render
+  int display_w, display_h;
+  SDL_GetWindowSizeInPixels(mainSDLWindow, &display_w, &display_h);
+  glViewport(0, 0, display_w, display_h);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  // Multi-viewport: update and render platform windows
+  ImGuiIO& io = ImGui::GetIO();
+  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
+    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
+    SDL_GL_MakeCurrent(backup_window, backup_context);
+  }
+
+  SDL_GL_SwapWindow(mainSDLWindow);
 }
 
 void direct_close()
 {
-  ImGui_ImplSDLRenderer3_Shutdown();
-  ImGui_ImplSDL3_Shutdown();
-  if (ImGui::GetCurrentContext()) ImGui::DestroyContext();
-  if (texture) SDL_DestroyTexture(texture);
-  if (vid) SDL_DestroySurface(vid);
-  if (renderer) SDL_DestroyRenderer(renderer);
-  if (mainSDLWindow) SDL_DestroyWindow(mainSDLWindow);
+  if (ImGui::GetCurrentContext()) {
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+  }
+  if (cpc_gl_texture) { glDeleteTextures(1, &cpc_gl_texture); cpc_gl_texture = 0; }
+  if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
+  if (glcontext) { SDL_GL_DestroyContext(glcontext); glcontext = nullptr; }
+  if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -672,18 +728,13 @@ void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels)
 
 void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int scale)
 {
-  if (!mainSDLWindow || !renderer || !surface) return;
-  if (devtools_panel_texture) {
-    SDL_DestroyTexture(devtools_panel_texture);
-    devtools_panel_texture = nullptr;
-  }
+  if (!mainSDLWindow || !surface) return;
   devtools_panel_surface = surface;
   devtools_panel_width = width * scale;
   devtools_panel_height = height * scale;
   devtools_panel_surface_width = surface->w;
   devtools_panel_surface_height = surface->h;
   devtools_cpc_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale;
-  devtools_panel_texture = SDL_CreateTextureFromSurface(renderer, devtools_panel_surface);
   int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(devtools_cpc_height + topbar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
@@ -692,10 +743,6 @@ void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int s
 
 void video_clear_devtools_panel()
 {
-  if (devtools_panel_texture) {
-    SDL_DestroyTexture(devtools_panel_texture);
-    devtools_panel_texture = nullptr;
-  }
   devtools_panel_surface = nullptr;
   devtools_panel_width = 0;
   devtools_panel_height = 0;
@@ -712,14 +759,9 @@ void video_clear_devtools_panel()
 
 void video_set_topbar(SDL_Surface* surface, int height)
 {
-  if (!mainSDLWindow || !renderer || !surface) return;
-  if (topbar_texture) {
-    SDL_DestroyTexture(topbar_texture);
-    topbar_texture = nullptr;
-  }
+  if (!mainSDLWindow) return;
   topbar_surface = surface;
   topbar_height = height;
-  topbar_texture = SDL_CreateTextureFromSurface(renderer, topbar_surface);
   int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
@@ -728,10 +770,6 @@ void video_set_topbar(SDL_Surface* surface, int height)
 
 void video_clear_topbar()
 {
-  if (topbar_texture) {
-    SDL_DestroyTexture(topbar_texture);
-    topbar_texture = nullptr;
-  }
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
@@ -769,17 +807,36 @@ int video_get_topbar_height()
 
 SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
 {
-  SDL_CreateWindowAndRenderer("konCePCja", CPC_VISIBLE_SCR_WIDTH*scale, CPC_VISIBLE_SCR_HEIGHT*scale, (fs?SDL_WINDOW_FULLSCREEN:0), &mainSDLWindow, &renderer);
-  if (!mainSDLWindow || !renderer) return nullptr;
-  SDL_SetWindowTitle(mainSDLWindow, "konCePCja " VERSION_STRING);
+  // Create OpenGL window
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+
+  mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
+      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+  if (!mainSDLWindow) return nullptr;
+
+  glcontext = SDL_GL_CreateContext(mainSDLWindow);
+  if (!glcontext) return nullptr;
+  SDL_GL_MakeCurrent(mainSDLWindow, glcontext);
+  if (!SDL_GL_SetSwapInterval(-1))
+    SDL_GL_SetSwapInterval(1);
 
   // Initialize Dear ImGui
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = imgui_ini_path();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer);
-  ImGui_ImplSDLRenderer3_Init(renderer);
+  ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
+  ImGui_ImplOpenGL3_Init("#version 150");
 
   int surface_width, surface_height;
   if (scale < 4) {
@@ -793,8 +850,14 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   }
   vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
-  texture = SDL_CreateTextureFromSurface(renderer, vid);
-  if (!texture) return nullptr;
+
+  // Create GL texture for CPC framebuffer (swscale uses 2x surfaces)
+  glGenTextures(1, &cpc_gl_texture);
+  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, surface_width * 2, surface_height * 2, 0,
+               GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
 
   scaled = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGB565);
   if (!scaled) return nullptr;
@@ -828,44 +891,50 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
 // Common code to all software plugin to display the vid surface after it's been computed.
 void swscale_blit(video_plugin* t)
 {
-  // Blit to convert from 16bpp to pixel format compatible with renderer.
+  // Blit to convert from 16bpp to RGBA32 for GL upload
   SDL_BlitSurface(scaled, nullptr, vid, nullptr);
-  SDL_UpdateTexture(texture, nullptr, vid->pixels, vid->pitch);
-  SDL_RenderClear(renderer);
-  if (CPC.scr_preserve_aspect_ratio != 0) {
-    SDL_FRect dest_rect = { static_cast<float>(t->x_offset), static_cast<float>(t->y_offset), static_cast<float>(t->width), static_cast<float>(t->height) };
-    SDL_RenderTexture(renderer, texture, nullptr, &dest_rect);
-  } else {
-    SDL_RenderTexture(renderer, texture, nullptr, nullptr);
-  }
-  int win_width = 0, win_height = 0;
-  int out_width = 0, out_height = 0;
-  SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
-  SDL_GetRenderOutputSize(renderer, &out_width, &out_height);
-  float sx = (win_width > 0 && out_width > 0) ? (static_cast<float>(out_width) / win_width) : 1.0f;
-  float sy = (win_height > 0 && out_height > 0) ? (static_cast<float>(out_height) / win_height) : 1.0f;
-  if (topbar_texture && topbar_surface) {
-    SDL_UpdateTexture(topbar_texture, nullptr, topbar_surface->pixels, topbar_surface->pitch);
-    SDL_FRect bar_rect = { 0.0f, 0.0f, static_cast<float>(topbar_surface->w * sx), static_cast<float>(topbar_height * sy) };
-    SDL_RenderTexture(renderer, topbar_texture, nullptr, &bar_rect);
-  }
-  if (devtools_panel_texture && devtools_panel_surface) {
-    SDL_UpdateTexture(devtools_panel_texture, nullptr, devtools_panel_surface->pixels, devtools_panel_surface->pitch);
-    SDL_FRect panel_rect = { static_cast<float>((win_width - devtools_panel_width) * sx), static_cast<float>(topbar_height * sy), static_cast<float>(devtools_panel_width * sx), static_cast<float>(devtools_panel_height * sy) };
-    SDL_RenderTexture(renderer, devtools_panel_texture, nullptr, &panel_rect);
+
+  // Upload CPC framebuffer to GL texture
+  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
+                  GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
+
+  // Start ImGui frame
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
+
+  // Draw CPC framebuffer as background image via ImGui
+  // With viewports enabled, background draw list uses screen-space coordinates
+  ImGuiViewport* vp = ImGui::GetMainViewport();
+  ImGui::GetBackgroundDrawList(vp)->AddImage(
+      static_cast<ImTextureID>(cpc_gl_texture),
+      ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+      ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+
+  // Render all ImGui windows
+  imgui_render_ui();
+  ImGui::Render();
+
+  // GL clear and render
+  int display_w, display_h;
+  SDL_GetWindowSizeInPixels(mainSDLWindow, &display_w, &display_h);
+  glViewport(0, 0, display_w, display_h);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  // Multi-viewport: update and render platform windows
+  ImGuiIO& io = ImGui::GetIO();
+  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
+    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
+    SDL_GL_MakeCurrent(backup_window, backup_context);
   }
 
-  // Render Dear ImGui overlay
-  if (ImGui::GetCurrentContext()) {
-    ImGui_ImplSDLRenderer3_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
-    imgui_render_ui();
-    ImGui::Render();
-    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
-  }
-
-  SDL_RenderPresent(renderer);
+  SDL_GL_SwapWindow(mainSDLWindow);
 }
 
 void swscale_setpal(SDL_Color* c)
@@ -881,8 +950,8 @@ void swscale_setpal(SDL_Color* c)
 void swscale_close()
 {
   direct_close();
-  SDL_DestroySurface(pub);
-  pub = nullptr;
+  if (scaled) { SDL_DestroySurface(scaled); scaled = nullptr; }
+  if (pub) { SDL_DestroySurface(pub); pub = nullptr; }
 }
 
 /* ------------------------------------------------------------------------------------ */
