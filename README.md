@@ -95,6 +95,10 @@ The source for konCePCja is distributed under the terms of the GNU General Publi
 
 The screen-capture code uses [driedfruit SDL_SavePNG](https://github.com/driedfruit/SDL_SavePNG), released under the zlib/libpng license (compatible with GPLv2).
 
+The bundled ROM images in `rom/` are (c) Amstrad plc and Locomotive Software Ltd, redistributed with permission.
+Amstrad have kindly given their permission for the redistribution of their copyrighted material but retain that copyright.
+See [`rom/ROM-LICENSE.txt`](rom/ROM-LICENSE.txt) for full details including the Multiface II ROM.
+
 ## Contributing
 
 Bug reports, feature suggestions and pull requests are welcome — just open an issue or submit a PR.
