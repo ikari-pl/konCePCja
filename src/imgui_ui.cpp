@@ -382,7 +382,6 @@ int imgui_topbar_height()
 
 static void imgui_render_topbar()
 {
-  ImGuiIO& io = ImGui::GetIO();
   float pad_y = 2.0f;
   float bar_height = static_cast<float>(imgui_topbar_height());
 
@@ -2435,7 +2434,6 @@ static void imgui_render_memory_hex_window()
           // Check watchpoint highlighting
           bool wp_r = false, wp_w = false;
           for (const auto& wp : watchpoints) {
-            word wp_end = (wp.address + wp.length) & 0xFFFF;
             // Handle non-wrapping case
             if (wp.length > 0 && a >= wp.address && a < wp.address + wp.length) {
               if (wp.type == READ || wp.type == READWRITE) wp_r = true;
