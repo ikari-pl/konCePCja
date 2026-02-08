@@ -89,7 +89,7 @@ ifeq ($(USE_VENDORED_SDL),1)
 PKG_SDL_CFLAGS=$(SDL_VENDOR_INCLUDE)
 PKG_SDL_LIBS=$(SDL_VENDOR_LIBS)
 ifeq ($(ARCH),macos)
-LDFLAGS += -Wl,-rpath,$(SDL_VENDOR_BUILD)/lib
+LDFLAGS += -Wl,-rpath,@executable_path/$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
