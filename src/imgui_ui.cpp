@@ -2316,9 +2316,7 @@ static void imgui_render_disassembly_window()
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
       }
 
-      char selectable_id[180];
-      snprintf(selectable_id, sizeof(selectable_id), "%s##disasm_%04X", label, entry.addr);
-      if (ImGui::Selectable(selectable_id, is_pc)) {
+      if (ImGui::Selectable(label, is_pc)) {
         // Left click: toggle breakpoint
         if (is_bp)
           z80_del_breakpoint(entry.addr);
@@ -2527,17 +2525,21 @@ static void imgui_render_stack_window()
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 1.0f, 0.5f, 1.0f));
       }
 
-      char line[128];
+      std::string line;
       if (!sym.empty()) {
-        snprintf(line, sizeof(line), "SP+%02X: %04X %s%s",
-                 i * 2, value, is_ret_addr ? "[call] " : "", sym.c_str());
+        char prefix[32];
+        snprintf(prefix, sizeof(prefix), "SP+%02X: %04X %s", i * 2, value,
+                 is_ret_addr ? "[call] " : "");
+        line = std::string(prefix) + sym;
       } else {
-        snprintf(line, sizeof(line), "SP+%02X: %04X%s",
+        char buf[48];
+        snprintf(buf, sizeof(buf), "SP+%02X: %04X%s",
                  i * 2, value, is_ret_addr ? "  [call]" : "");
+        line = buf;
       }
 
       // Double-click navigates disassembly
-      if (ImGui::Selectable(line, false, ImGuiSelectableFlags_AllowDoubleClick)) {
+      if (ImGui::Selectable(line.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
         if (ImGui::IsMouseDoubleClicked(0)) {
           imgui_state.disasm_goto_value = value;
           imgui_state.disasm_follow_pc = false;
@@ -2613,11 +2615,11 @@ static void imgui_render_breakpoint_list_window()
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("%d", bp.hit_count);
       ImGui::TableSetColumnIndex(4);
-      char del_id[16];
-      snprintf(del_id, sizeof(del_id), "X##bp%zu", i);
-      if (ImGui::SmallButton(del_id)) {
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::SmallButton("X")) {
         z80_del_breakpoint(bp.address);
       }
+      ImGui::PopID();
     }
 
     // Watchpoints
@@ -2639,11 +2641,11 @@ static void imgui_render_breakpoint_list_window()
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("%d", wp.hit_count);
       ImGui::TableSetColumnIndex(4);
-      char del_id[16];
-      snprintf(del_id, sizeof(del_id), "X##wp%zu", i);
-      if (ImGui::SmallButton(del_id)) {
+      ImGui::PushID(1000 + static_cast<int>(i));
+      if (ImGui::SmallButton("X")) {
         z80_del_watchpoint(static_cast<int>(i));
       }
+      ImGui::PopID();
     }
 
     // IO Breakpoints
@@ -2662,11 +2664,11 @@ static void imgui_render_breakpoint_list_window()
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("-");
       ImGui::TableSetColumnIndex(4);
-      char del_id[16];
-      snprintf(del_id, sizeof(del_id), "X##io%zu", i);
-      if (ImGui::SmallButton(del_id)) {
+      ImGui::PushID(2000 + static_cast<int>(i));
+      if (ImGui::SmallButton("X")) {
         z80_del_io_breakpoint(static_cast<int>(i));
       }
+      ImGui::PopID();
     }
 
     ImGui::EndTable();
