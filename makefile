@@ -52,6 +52,7 @@ PLATFORM=linux
 else ifeq ($(ARCH),macos)
 # Yes that's weird, but the build on macos works the same way as on linux
 PLATFORM=linux
+COMMON_CFLAGS += -DGL_SILENCE_DEPRECATION
 LDFLAGS += -framework Cocoa -framework OpenGL
 else
 $(error Unknown ARCH. Supported ones are linux, win32 and win64.)
@@ -169,7 +170,11 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls
 COMMON_CFLAGS += -std=c++17 $(IPATHS)
 DEBUG_FLAGS = -Werror -g -O0 -DDEBUG
-RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions -s
+RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions
+# Strip symbols in release builds (linker flag; skipped on macOS where it's unsupported by clang)
+ifneq ($(ARCH),macos)
+RELEASE_FLAGS += -s
+endif
 
 ifeq ($(findstring "g++",$(CXX)),"g++")
 WARNINGS += -Wlogical-op

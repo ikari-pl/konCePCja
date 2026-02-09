@@ -953,6 +953,7 @@ std::string handle_command(const std::string& line) {
       }
       char fname[512];
       if (pattern.find('%') != std::string::npos) {
+        // User-provided printf format (e.g. "/tmp/frame_%04d.png") — non-literal by design
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
         snprintf(fname, sizeof(fname), pattern.c_str(), i);

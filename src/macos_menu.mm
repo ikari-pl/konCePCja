@@ -10,7 +10,7 @@ extern "C" void koncpc_menu_action(int action);
 @implementation KoncepcjaMenuTarget
 - (void)menuAction:(id)sender {
   NSInteger action = [sender tag];
-  koncpc_menu_action((int)action);
+  koncpc_menu_action(static_cast<int>(action));
 }
 @end
 
@@ -80,7 +80,7 @@ static void add_menu_group(NSMenu *mainMenu, KoncepcjaMenuTarget *target, NSStri
     NSString *itemTitle = [NSString stringWithUTF8String:entry->title];
     NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:itemTitle action:@selector(menuAction:) keyEquivalent:@""];
     [item setTarget:target];
-    [item setTag:(NSInteger)entry->action];
+    [item setTag:static_cast<NSInteger>(entry->action)];
     applyShortcut(item, entry->shortcut);
     [submenu addItem:item];
   }

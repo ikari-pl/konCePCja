@@ -1208,7 +1208,7 @@ int tape_insert_cdt (FILE *pfile)
 
          default: // "extension rule"
             if (remaining() < 4) {
-               LOG_ERROR("Truncated CDT block 0x" << std::hex << (int)bID);
+               LOG_ERROR("Truncated CDT block 0x" << std::hex << static_cast<int>(bID));
                return ERR_TAP_INVALID;
             }
             iBlockLength = *reinterpret_cast<dword *>(pbBlock) + 4;
@@ -1216,7 +1216,7 @@ int tape_insert_cdt (FILE *pfile)
 
       // Validate block doesn't extend past end of file
       if (iBlockLength < 0 || pbBlock + iBlockLength > pbTapeImageEnd) {
-         LOG_ERROR("CDT block 0x" << std::hex << (int)bID << " extends past end of file");
+         LOG_ERROR("CDT block 0x" << std::hex << static_cast<int>(bID) << " extends past end of file");
          return ERR_TAP_INVALID;
       }
 

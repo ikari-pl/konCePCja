@@ -1359,9 +1359,8 @@ void printer_stop ()
 
 
 
-void audio_update(void *userdata __attribute__((unused)), SDL_AudioStream *stream, int additional_amount, int total_amount)
+void audio_update([[maybe_unused]] void *userdata, SDL_AudioStream *stream, int additional_amount, [[maybe_unused]] int total_amount)
 {
-  (void)total_amount;
   if (CPC.snd_ready) {
     int len = additional_amount;
     if (len > static_cast<int>(CPC.snd_buffersize)) len = static_cast<int>(CPC.snd_buffersize);
