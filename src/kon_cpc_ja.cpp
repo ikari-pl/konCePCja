@@ -48,6 +48,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "zip.h"
 #include "keyboard.h"
 #include "trace.h"
+#include "wav_recorder.h"
 #include "macos_menu.h"
 
 #include "imgui.h"
@@ -1367,6 +1368,9 @@ void audio_update([[maybe_unused]] void *userdata, SDL_AudioStream *stream, int 
     if (len > static_cast<int>(CPC.snd_buffersize)) len = static_cast<int>(CPC.snd_buffersize);
     if (len > 0) {
       SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
+      if (g_wav_recorder.is_recording()) {
+        g_wav_recorder.write_samples(pbSndBuffer.get(), static_cast<uint32_t>(len));
+      }
     }
   } else {
     LOG_VERBOSE("Audio: audio_update: skipping audio: sound buffer not ready");

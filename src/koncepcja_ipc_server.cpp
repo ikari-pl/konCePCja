@@ -33,6 +33,7 @@
 #include "keyboard.h"
 #include "trace.h"
 #include "gif_recorder.h"
+#include "wav_recorder.h"
 #include "symfile.h"
 
 extern t_z80regs z80;
@@ -172,7 +173,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new) record(wav)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1670,6 +1671,39 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 unknown disk subcommand\n";
   }
+
+  // --- WAV audio recording ---
+  if (cmd == "record" && parts.size() >= 2) {
+    if (parts[1] == "wav") {
+      if (parts.size() < 3) return "ERR 400 missing-action (start|stop|status)\n";
+      if (parts[2] == "start") {
+        if (parts.size() < 4) return "ERR 400 missing-path\n";
+        static const unsigned int wav_rates[] = {11025, 22050, 44100, 48000, 96000};
+        uint32_t rate = wav_rates[CPC.snd_playback_rate];
+        uint16_t bits = CPC.snd_bits ? 16 : 8;
+        uint16_t channels = CPC.snd_stereo ? 2 : 1;
+        auto err = g_wav_recorder.start(parts[3], rate, bits, channels);
+        if (err.empty()) return "OK\n";
+        return "ERR " + err + "\n";
+      }
+      if (parts[2] == "stop") {
+        if (!g_wav_recorder.is_recording()) return "ERR not-recording\n";
+        std::string path = g_wav_recorder.current_path();
+        uint32_t bytes = g_wav_recorder.stop();
+        return "OK " + path + " " + std::to_string(bytes) + "\n";
+      }
+      if (parts[2] == "status") {
+        if (g_wav_recorder.is_recording()) {
+          return "OK recording " + g_wav_recorder.current_path() + " " +
+                 std::to_string(g_wav_recorder.bytes_written()) + "\n";
+        }
+        return "OK idle\n";
+      }
+      return "ERR 400 bad-wav-cmd (start|stop|status)\n";
+    }
+    return "ERR 400 bad-record-cmd (wav)\n";
+  }
+
   return "ERR 501 not-implemented\n";
 }
 }
