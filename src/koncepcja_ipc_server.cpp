@@ -35,6 +35,7 @@
 #include "gif_recorder.h"
 #include "wav_recorder.h"
 #include "symfile.h"
+#include "pokes.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -173,7 +174,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new) record(wav)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new) record(wav) poke(load/list/apply/unapply/write)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1702,6 +1703,110 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 bad-wav-cmd (start|stop|status)\n";
     }
     return "ERR 400 bad-record-cmd (wav)\n";
+  }
+
+  // --- Poke commands ---
+  if (cmd == "poke" && parts.size() >= 2) {
+    if (parts[1] == "load" && parts.size() >= 3) {
+      // Reconstruct path (may contain spaces if quoted, but split_ws breaks on space)
+      // For simplicity, take everything after "poke load "
+      size_t pos = line.find("load ");
+      if (pos == std::string::npos) return "ERR 400 bad-args\n";
+      std::string path = line.substr(pos + 5);
+      // Strip surrounding quotes if present
+      if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+        path = path.substr(1, path.size() - 2);
+      }
+      auto err = g_poke_manager.load(path);
+      if (err.empty()) {
+        return "OK loaded " + std::to_string(g_poke_manager.games().size()) + " games\n";
+      }
+      return "ERR " + err + "\n";
+    }
+    if (parts[1] == "list") {
+      const auto& games = g_poke_manager.games();
+      if (games.empty()) return "OK (no games loaded)\n";
+      std::ostringstream resp;
+      resp << "OK\n";
+      for (size_t gi = 0; gi < games.size(); gi++) {
+        resp << games[gi].title << "\n";
+        for (size_t pi = 0; pi < games[gi].pokes.size(); pi++) {
+          resp << "  Poke: " << games[gi].pokes[pi].description;
+          resp << " [" << games[gi].pokes[pi].values.size() << " value";
+          if (games[gi].pokes[pi].values.size() != 1) resp << "s";
+          resp << "]";
+          if (games[gi].pokes[pi].applied) resp << " [applied]";
+          resp << "\n";
+        }
+      }
+      return resp.str();
+    }
+    if (parts[1] == "apply" && parts.size() >= 3) {
+      size_t game_idx;
+      try {
+        game_idx = static_cast<size_t>(std::stoul(parts[2]));
+      } catch (const std::invalid_argument&) {
+        return "ERR 400 invalid game index\n";
+      } catch (const std::out_of_range&) {
+        return "ERR 400 game index out of range\n";
+      }
+      if (parts.size() >= 4 && parts[3] == "all") {
+        int total_vals = 0;
+        int n = g_poke_manager.apply_all(game_idx,
+          [](uint16_t a, uint8_t v){ z80_write_mem(static_cast<word>(a), v); },
+          [](uint16_t a) -> uint8_t { return z80_read_mem(static_cast<word>(a)); },
+          &total_vals);
+        if (n < 0) return "ERR invalid game index\n";
+        return "OK applied " + std::to_string(n) + " pokes (" + std::to_string(total_vals) + " values total)\n";
+      }
+      if (parts.size() >= 4) {
+        size_t poke_idx;
+        try {
+          poke_idx = static_cast<size_t>(std::stoul(parts[3]));
+        } catch (const std::invalid_argument&) {
+          return "ERR 400 invalid poke index\n";
+        } catch (const std::out_of_range&) {
+          return "ERR 400 poke index out of range\n";
+        }
+        int n = g_poke_manager.apply(game_idx, poke_idx,
+          [](uint16_t a, uint8_t v){ z80_write_mem(static_cast<word>(a), v); },
+          [](uint16_t a) -> uint8_t { return z80_read_mem(static_cast<word>(a)); });
+        if (n < 0) return "ERR invalid index\n";
+        return "OK applied " + std::to_string(n) + " values\n";
+      }
+      return "ERR 400 bad-args (poke apply <game> <poke|all>)\n";
+    }
+    if (parts[1] == "unapply" && parts.size() >= 4) {
+      size_t game_idx, poke_idx;
+      try {
+        game_idx = static_cast<size_t>(std::stoul(parts[2]));
+        poke_idx = static_cast<size_t>(std::stoul(parts[3]));
+      } catch (const std::invalid_argument&) {
+        return "ERR 400 invalid index\n";
+      } catch (const std::out_of_range&) {
+        return "ERR 400 index out of range\n";
+      }
+      int n = g_poke_manager.unapply(game_idx, poke_idx,
+        [](uint16_t a, uint8_t v){ z80_write_mem(static_cast<word>(a), v); });
+      if (n < 0) return "ERR unapply failed (not applied or invalid index)\n";
+      return "OK restored " + std::to_string(n) + " values\n";
+    }
+    if (parts[1] == "write" && parts.size() >= 4) {
+      unsigned int addr;
+      unsigned int val;
+      try {
+        addr = std::stoul(parts[2], nullptr, 16);
+        val = std::stoul(parts[3]);
+      } catch (const std::invalid_argument&) {
+        return "ERR 400 bad-args (poke write <hex_addr> <value>)\n";
+      } catch (const std::out_of_range&) {
+        return "ERR 400 bad-args (poke write <hex_addr> <value>)\n";
+      }
+      if (val > 255) return "ERR 400 value must be 0-255\n";
+      z80_write_mem(static_cast<word>(addr), static_cast<byte>(val));
+      return "OK\n";
+    }
+    return "ERR 400 bad-poke-cmd (load|list|apply|unapply|write)\n";
   }
 
   return "ERR 501 not-implemented\n";
