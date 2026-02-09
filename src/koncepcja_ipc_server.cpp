@@ -29,6 +29,7 @@
 #include "debug_timers.h"
 #include "z80_disassembly.h"
 #include "slotshandler.h"
+#include "disk_format.h"
 #include "keyboard.h"
 #include "trace.h"
 #include "gif_recorder.h"
@@ -171,7 +172,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1640,6 +1641,35 @@ std::string handle_command(const std::string& line) {
     return "OK\n";
   }
 
+  // --- Disk management commands ---
+  if (cmd == "disk") {
+    if (parts.size() < 2) return "ERR 400 missing subcommand (formats|format|new)\n";
+    if (parts[1] == "formats") {
+      auto names = disk_format_names();
+      std::string resp = "OK";
+      for (const auto& n : names) resp += " " + n;
+      resp += "\n";
+      return resp;
+    }
+    if (parts[1] == "format") {
+      if (parts.size() < 4)
+        return "ERR 400 usage: disk format <A|B> <format_name>\n";
+      char drive = parts[2][0];
+      std::string err = disk_format_drive(drive, parts[3]);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    if (parts[1] == "new") {
+      if (parts.size() < 3)
+        return "ERR 400 usage: disk new <path> [format]\n";
+      std::string path = parts[2];
+      std::string fmt = (parts.size() >= 4) ? parts[3] : "data";
+      std::string err = disk_create_new(path, fmt);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    return "ERR 400 unknown disk subcommand\n";
+  }
   return "ERR 501 not-implemented\n";
 }
 }
