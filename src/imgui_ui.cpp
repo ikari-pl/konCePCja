@@ -51,6 +51,7 @@ static void imgui_render_disassembly_window();
 static void imgui_render_memory_hex_window();
 static void imgui_render_stack_window();
 static void imgui_render_breakpoint_list_window();
+static void imgui_render_symbol_table_window();
 
 static void close_menu();
 
@@ -241,6 +242,7 @@ void imgui_render_ui()
   if (imgui_state.show_memory_hex)      imgui_render_memory_hex_window();
   if (imgui_state.show_stack_window)    imgui_render_stack_window();
   if (imgui_state.show_breakpoint_list) imgui_render_breakpoint_list_window();
+  if (imgui_state.show_symbol_table)   imgui_render_symbol_table_window();
 
   // When no GUI window is open, the topbar is the only ImGui window and it
   // doesn't need keyboard input.  Force WantCaptureKeyboard off so all key
@@ -250,7 +252,8 @@ void imgui_render_ui()
                       imgui_state.show_vkeyboard ||
                       imgui_state.show_registers || imgui_state.show_disassembly ||
                       imgui_state.show_memory_hex || imgui_state.show_stack_window ||
-                      imgui_state.show_breakpoint_list;
+                      imgui_state.show_breakpoint_list ||
+                      imgui_state.show_symbol_table;
   if (!any_gui_open) {
     ImGui::GetIO().WantCaptureKeyboard = false;
   }
@@ -1646,6 +1649,7 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Memory Hex",      nullptr, &imgui_state.show_memory_hex);
       ImGui::MenuItem("Stack",           nullptr, &imgui_state.show_stack_window);
       ImGui::MenuItem("Breakpoints/WP",  nullptr, &imgui_state.show_breakpoint_list);
+      ImGui::MenuItem("Symbols",         nullptr, &imgui_state.show_symbol_table);
       ImGui::EndMenu();
     }
     ImGui::Separator();
@@ -2673,5 +2677,67 @@ static void imgui_render_breakpoint_list_window()
   }
 
   if (!open) imgui_state.show_breakpoint_list = false;
+  ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Symbol Table Viewer
+// ─────────────────────────────────────────────────
+static void imgui_render_symbol_table_window()
+{
+  auto syms = g_symfile.listSymbols(imgui_state.symtable_filter);
+
+  char title[64];
+  snprintf(title, sizeof(title), "Symbols (%d)###SymbolTable", static_cast<int>(syms.size()));
+
+  ImGui::SetNextWindowSize(ImVec2(340, 400), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(520, 540), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin(title, &open)) {
+    if (!open) imgui_state.show_symbol_table = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##symfilter", "Filter...", imgui_state.symtable_filter,
+                           sizeof(imgui_state.symtable_filter));
+  ImGui::Separator();
+
+  if (ImGui::BeginTable("sym_table", 3,
+      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
+      ImGuiTableFlags_ScrollY)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
+    ImGui::TableHeadersRow();
+
+    for (const auto& [addr, name] : syms) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      if (ImGui::Selectable(nullptr, false, ImGuiSelectableFlags_SpanAllColumns)) {
+        // Navigate disassembly to this address
+        imgui_state.show_disassembly = true;
+        imgui_state.disasm_follow_pc = false;
+        imgui_state.disasm_goto_value = addr;
+      }
+      ImGui::SameLine();
+      ImGui::Text("%04X", addr);
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextUnformatted(name.c_str());
+      ImGui::TableSetColumnIndex(2);
+      ImGui::PushID(static_cast<int>(addr));
+      if (ImGui::SmallButton("X")) {
+        g_symfile.delSymbol(name);
+      }
+      ImGui::PopID();
+    }
+
+    ImGui::EndTable();
+  }
+
+  if (!open) imgui_state.show_symbol_table = false;
   ImGui::End();
 }
