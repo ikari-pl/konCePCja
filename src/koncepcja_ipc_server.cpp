@@ -1,4 +1,5 @@
 #include "koncepcja_ipc_server.h"
+#include "autotype.h"
 #include "imgui_ui.h"
 
 #include <cstring>
@@ -170,7 +171,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1611,6 +1612,32 @@ std::string handle_command(const std::string& line) {
       resp << "\n";
     }
     return resp.str();
+  }
+
+
+  // Auto-type command: queue text/key sequences for injection
+  if (cmd == "autotype") {
+    if (parts.size() >= 2 && parts[1] == "status") {
+      if (g_autotype_queue.is_active()) {
+        return "OK active: " + std::to_string(g_autotype_queue.remaining()) + " actions remaining\n";
+      }
+      return "OK idle\n";
+    }
+    if (parts.size() >= 2 && parts[1] == "clear") {
+      g_autotype_queue.clear();
+      return "OK\n";
+    }
+    // Everything after "autotype " is the text to type
+    size_t pos = line.find(' ');
+    if (pos == std::string::npos || pos + 1 >= line.size()) {
+      return "ERR 400 bad-args (autotype TEXT|status|clear)\n";
+    }
+    std::string text = line.substr(pos + 1);
+    auto err = g_autotype_queue.enqueue(text);
+    if (!err.empty()) {
+      return "ERR 400 " + err + "\n";
+    }
+    return "OK\n";
   }
 
   return "ERR 501 not-implemented\n";

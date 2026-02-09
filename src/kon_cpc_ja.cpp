@@ -35,6 +35,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "autotype.h"
 #include "crtc.h"
 #include "symfile.h"
 #include "disk.h"
@@ -3407,6 +3408,32 @@ int koncpc_main (int argc, char **argv)
 
             // Check IPC VBL events
             ipc_check_vbl_events();
+
+            // Auto-type: drain queue one action per frame
+            if (g_autotype_queue.is_active()) {
+               g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
+                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
+                  // Direct matrix manipulation (same as ipc_apply_keypress)
+                  if (static_cast<byte>(scancode) == 0xff) return;
+                  if (pressed) {
+                     keyboard_matrix[static_cast<byte>(scancode) >> 4] &= ~bit_values[static_cast<byte>(scancode) & 7];
+                     if (scancode & MOD_CPC_SHIFT) {
+                        keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7];
+                     } else {
+                        keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
+                     }
+                     if (scancode & MOD_CPC_CTRL) {
+                        keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7];
+                     } else {
+                        keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+                     }
+                  } else {
+                     keyboard_matrix[static_cast<byte>(scancode) >> 4] |= bit_values[static_cast<byte>(scancode) & 7];
+                     keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
+                     keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+                  }
+               });
+            }
 
             // Handle IPC "step frame" — decrement remaining, pause when done
             if (g_ipc->frame_step_active.load()) {
