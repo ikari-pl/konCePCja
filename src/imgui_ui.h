@@ -94,6 +94,10 @@ struct ImGuiUIState {
   bool show_memory_hex = false;
   bool show_stack_window = false;
   bool show_breakpoint_list = false;
+  bool show_symbol_table = false;
+
+  // Symbol table filter
+  char symtable_filter[64] = "";
 
   // Disassembly window state
   bool disasm_follow_pc = true;

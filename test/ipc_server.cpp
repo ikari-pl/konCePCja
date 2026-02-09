@@ -11,7 +11,10 @@
 #endif
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -317,6 +320,68 @@ TEST_F(IpcServerTest, StepToCommand) {
   // Either timeout or OK is acceptable in test harness
   EXPECT_TRUE(resp.find("OK") != std::string::npos ||
               resp.find("ERR 408") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, WatchpointRange) {
+  send_command("wp clear");
+
+  // Add a range watchpoint covering 16 bytes
+  auto resp = send_command("wp add 0x4000 16 rw");
+  EXPECT_EQ(resp, "OK\n");
+
+  resp = send_command("wp list");
+  EXPECT_TRUE(resp.find("count=1") != std::string::npos);
+  EXPECT_TRUE(resp.find("4000+16/rw") != std::string::npos);
+
+  send_command("wp clear");
+}
+
+TEST_F(IpcServerTest, StepOutCommand) {
+  z80.PC.w.l = 0x0000;
+  z80_write_mem(0x0000, 0xC9);  // RET instruction
+
+  // Step out without a running main loop will timeout or succeed immediately.
+  // Verify the command is accepted and doesn't crash.
+  auto resp = send_command("step out");
+  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
+              resp.find("ERR 408") != std::string::npos);
+}
+
+TEST_F(IpcServerTest, SymbolLoad) {
+  // Create a minimal .sym file in the platform temp directory
+  auto sympath = std::filesystem::temp_directory_path() / "koncepcja_test.sym";
+  std::string symfile = sympath.string();
+  {
+    std::ofstream ofs(symfile);
+    ofs << "; test symbols\n"
+        << "al $0038 .interrupt_handler\n"
+        << "al $0000 .reset_vector\n"
+        << "al $FC00 .screen_base\n";
+  }
+
+  auto resp = send_command("sym load " + symfile);
+  EXPECT_TRUE(resp.find("OK loaded=3") != std::string::npos);
+
+  // Verify loaded symbols are queryable
+  resp = send_command("sym lookup 0x0038");
+  EXPECT_EQ(resp, "OK interrupt_handler\n");
+
+  resp = send_command("sym lookup screen_base");
+  EXPECT_EQ(resp, "OK FC00\n");
+
+  std::filesystem::remove(sympath);
+}
+
+TEST_F(IpcServerTest, MemFindWildcard) {
+  // Write a pattern at a known address: DE ?? BE EF
+  z80_write_mem(0x3000, 0xDE);
+  z80_write_mem(0x3001, 0x42);  // any value
+  z80_write_mem(0x3002, 0xBE);
+  z80_write_mem(0x3003, 0xEF);
+
+  auto resp = send_command("mem find hex 0x2F00 0x3100 DE??BEEF");
+  EXPECT_TRUE(resp.find("OK") != std::string::npos);
+  EXPECT_TRUE(resp.find("3000") != std::string::npos);
 }
 
 }  // namespace

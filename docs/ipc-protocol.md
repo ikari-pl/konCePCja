@@ -124,6 +124,9 @@ echo "iobp add 0xF400 0xFF00 in" | nc -w 1 localhost 6543
 | Command | Description |
 |---------|-------------|
 | `step [N]` | Single-step N instructions (default 1). Pauses first. |
+| `step over [N]` | Execute N instructions, skipping over CALL/RST (sets ephemeral breakpoint at next PC). Timeout: 5s. |
+| `step out` | Run until current function returns (uses return address tracking). Timeout: 5s. |
+| `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. |
 | `step frame [N]` | Advance N complete frames (default 1), then pause. Blocks until done. |
 
 ## Waiting
@@ -157,11 +160,87 @@ CRC32 hashes for CI regression testing.
 | `snapshot save <path>` | Save emulator state (.sna) |
 | `snapshot load <path>` | Load emulator state (.sna) |
 
+## Watchpoints
+
+Memory access breakpoints. Trigger on read, write, or both within an address range.
+
+| Command | Description |
+|---------|-------------|
+| `wp add <addr> [len] [r\|w\|rw] [if <expr>] [pass <N>]` | Add watchpoint. Default: length 1, type rw. |
+| `wp del <index>` | Remove watchpoint by index |
+| `wp clear` | Remove all watchpoints |
+| `wp list` | `OK count=N idx:ADDR+LEN/TYPE[if ...][pass N] ...` |
+
+When a watchpoint triggers, the breakpoint hit response includes: `OK PC=XXXX WATCH=1 WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX`
+
+Watchpoint conditions can use the special variables `address`, `value`, and `previous` to inspect the access that triggered.
+
+```bash
+# Break on any write to screen memory (first 256 bytes)
+echo "wp add 0xC000 256 w" | nc -w 1 localhost 6543
+
+# Break only when writing values > 0x80
+echo "wp add 0x4000 1 w if value > #80" | nc -w 1 localhost 6543
+```
+
+## Symbols
+
+Load, manage, and query the global symbol table. Symbols appear in disassembly output and stack traces.
+
+| Command | Response |
+|---------|----------|
+| `sym load <file>` | `OK loaded=N` — merge symbols from .sym file |
+| `sym add <addr> <name>` | `OK` |
+| `sym del <name>` | `OK` |
+| `sym list [filter]` | `OK count=N\n  ADDR NAME\n ...` — optional substring filter |
+| `sym lookup <addr_or_name>` | `OK <name>` or `OK <addr>` — bidirectional lookup |
+
+```bash
+echo "sym add 0x0038 irq_handler" | nc -w 1 localhost 6543
+echo "sym lookup irq_handler" | nc -w 1 localhost 6543   # → OK 0038
+echo "sym lookup 0x0038" | nc -w 1 localhost 6543         # → OK irq_handler
+```
+
+## Memory Search
+
+| Command | Description |
+|---------|-------------|
+| `mem find hex <start> <end> <hex-pattern>` | Search for hex bytes. `??` = wildcard byte. Max 32 results. |
+| `mem find text <start> <end> <string>` | Search for ASCII text. Quotes optional. |
+| `mem find asm <start> <end> <pattern>` | Search for Z80 instructions. `*` = operand wildcard. Case-insensitive. |
+
+```bash
+# Find CALL 0x0038 instructions (CD 38 00)
+echo "mem find hex 0x0000 0xFFFF CD3800" | nc -w 1 localhost 6543
+
+# Find "AMSTRAD" in memory
+echo "mem find text 0x0000 0xFFFF AMSTRAD" | nc -w 1 localhost 6543
+
+# Find all LD (*),HL instructions
+echo "mem find asm 0x0000 0xFFFF ld (*),hl" | nc -w 1 localhost 6543
+```
+
+## Call Stack
+
+| Command | Response |
+|---------|----------|
+| `stack [depth]` | `OK depth=N\n  SP+0: XXXX [call] label\n ...` |
+
+Walk from SP upward, reading 16-bit words. Default depth: 16, max: 128.
+
+Each entry is heuristically checked: if the instruction *before* the potential return address is a CALL or RST, the entry is marked `[call]`. Symbol names are included when the global symbol table has a match.
+
+```bash
+echo "stack 8" | nc -w 1 localhost 6543
+```
+
 ## Disassembly
 
 | Command | Response |
 |---------|----------|
-| `disasm <addr> <count>` | `OK\n<line1>\n<line2>\n...` — disassemble N instructions from addr |
+| `disasm <addr> <count> [--symbols]` | `OK\n<line1>\n<line2>\n...` — disassemble N instructions. With `--symbols`, show labels and replace hex targets with symbol names. |
+| `disasm follow <addr>` | Recursive disassembly following jumps and calls from entry point. Includes symbol labels. |
+| `disasm refs <addr>` | Cross-reference search: find all CALL/JP/JR instructions targeting addr. Max 100 results. |
 
 ## Input Replay
 
