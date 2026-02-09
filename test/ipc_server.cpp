@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -347,8 +348,9 @@ TEST_F(IpcServerTest, StepOutCommand) {
 }
 
 TEST_F(IpcServerTest, SymbolLoad) {
-  // Create a minimal .sym file
-  const char* symfile = "/tmp/koncepcja_test.sym";
+  // Create a minimal .sym file in the platform temp directory
+  auto sympath = std::filesystem::temp_directory_path() / "koncepcja_test.sym";
+  std::string symfile = sympath.string();
   {
     std::ofstream ofs(symfile);
     ofs << "; test symbols\n"
@@ -357,7 +359,7 @@ TEST_F(IpcServerTest, SymbolLoad) {
         << "al $FC00 .screen_base\n";
   }
 
-  auto resp = send_command(std::string("sym load ") + symfile);
+  auto resp = send_command("sym load " + symfile);
   EXPECT_TRUE(resp.find("OK loaded=3") != std::string::npos);
 
   // Verify loaded symbols are queryable
@@ -367,7 +369,7 @@ TEST_F(IpcServerTest, SymbolLoad) {
   resp = send_command("sym lookup screen_base");
   EXPECT_EQ(resp, "OK FC00\n");
 
-  std::remove(symfile);
+  std::filesystem::remove(sympath);
 }
 
 TEST_F(IpcServerTest, MemFindWildcard) {
