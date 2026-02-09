@@ -539,7 +539,7 @@ void glscale_setpal(SDL_Color* c)
   }
 }
 
-void glscale_flip(video_plugin* t __attribute__((unused)))
+void glscale_flip([[maybe_unused]] video_plugin* t)
 {
   eglDisable(GL_BLEND);
   eglClearColor(0,0,0,1);
@@ -1252,7 +1252,7 @@ void filter_scale2x(Uint8 *srcPtr, Uint32 srcPitch,
   }
 }
 
-void scale2x_flip(video_plugin* t __attribute__((unused)))
+void scale2x_flip([[maybe_unused]] video_plugin* t)
 {
   if (SDL_MUSTLOCK(scaled))
     SDL_LockSurface(scaled);
@@ -1459,7 +1459,7 @@ void filter_ascale2x (Uint8 *srcPtr, Uint32 srcPitch,
 
 
 
-void ascale2x_flip(video_plugin* t __attribute__((unused)))
+void ascale2x_flip([[maybe_unused]] video_plugin* t)
 {
   if (SDL_MUSTLOCK(scaled))
     SDL_LockSurface(scaled);
@@ -1506,7 +1506,7 @@ void filter_tv2x(Uint8 *srcPtr, Uint32 srcPitch,
   }
 }
 
-void tv2x_flip(video_plugin* t __attribute__((unused)))
+void tv2x_flip([[maybe_unused]] video_plugin* t)
 {
   if (SDL_MUSTLOCK(scaled))
     SDL_LockSurface(scaled);
@@ -1549,7 +1549,7 @@ void filter_bilinear(Uint8 *srcPtr, Uint32 srcPitch,
   }
 }
 
-void swbilin_flip(video_plugin* t __attribute__((unused)))
+void swbilin_flip([[maybe_unused]] video_plugin* t)
 {
   if (SDL_MUSTLOCK(scaled))
     SDL_LockSurface(scaled);
@@ -1639,7 +1639,7 @@ void filter_bicubic(Uint8 *srcPtr, Uint32 srcPitch,
   }
 }
 
-void swbicub_flip(video_plugin* t __attribute__((unused)))
+void swbicub_flip([[maybe_unused]] video_plugin* t)
 {
   if (SDL_MUSTLOCK(scaled))
     SDL_LockSurface(scaled);
@@ -1690,7 +1690,7 @@ void filter_dotmatrix(Uint8 *srcPtr, Uint32 srcPitch,
   }
 }
 
-void dotmat_flip(video_plugin* t __attribute__((unused)))
+void dotmat_flip([[maybe_unused]] video_plugin* t)
 {
   if (SDL_MUSTLOCK(scaled))
     SDL_LockSurface(scaled);

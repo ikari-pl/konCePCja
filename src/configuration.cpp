@@ -23,7 +23,7 @@ namespace config
 
   std::istream& Config::parseStream(std::istream& configStream)
   {
-    std::streamsize maxSize = 256;
+    constexpr std::streamsize maxSize = 256;
     char chLine[maxSize];
     std::string section;
     while(configStream.good())
