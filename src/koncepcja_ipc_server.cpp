@@ -39,6 +39,7 @@
 #include "wav_recorder.h"
 #include "symfile.h"
 #include "pokes.h"
+#include "config_profile.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -179,7 +180,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info) record(wav) poke(load/list/apply/unapply/write)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info) record(wav) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1944,6 +1945,47 @@ std::string handle_command(const std::string& line) {
       return "OK\n";
     }
     return "ERR 400 bad-poke-cmd (load|list|apply|unapply|write)\n";
+  }
+
+  // --- Profile commands ---
+  if (cmd == "profile") {
+    if (parts.size() < 2) return "ERR 400 missing subcommand (list|current|load|save|delete)\n";
+    if (parts[1] == "list") {
+      auto names = g_profile_manager.list();
+      std::string cur = g_profile_manager.current();
+      std::ostringstream resp;
+      resp << "OK\n";
+      for (const auto& n : names) {
+        if (n == cur) resp << "* ";
+        else resp << "  ";
+        resp << n << "\n";
+      }
+      return resp.str();
+    }
+    if (parts[1] == "current") {
+      std::string cur = g_profile_manager.current();
+      if (cur.empty()) return "OK (default)\n";
+      return "OK " + cur + "\n";
+    }
+    if (parts[1] == "load") {
+      if (parts.size() < 3) return "ERR 400 missing profile name\n";
+      auto err = g_profile_manager.load(parts[2]);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    if (parts[1] == "save") {
+      if (parts.size() < 3) return "ERR 400 missing profile name\n";
+      auto err = g_profile_manager.save(parts[2]);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    if (parts[1] == "delete") {
+      if (parts.size() < 3) return "ERR 400 missing profile name\n";
+      auto err = g_profile_manager.remove(parts[2]);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    return "ERR 400 unknown profile subcommand (list|current|load|save|delete)\n";
   }
 
   return "ERR 501 not-implemented\n";
