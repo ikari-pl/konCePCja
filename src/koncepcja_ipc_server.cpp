@@ -10,6 +10,8 @@
 #include <cctype>
 #include <sstream>
 #include <iomanip>
+#include <fstream>
+#include <filesystem>
 #include <zlib.h>
 
 #ifdef _WIN32
@@ -30,6 +32,7 @@
 #include "z80_disassembly.h"
 #include "slotshandler.h"
 #include "disk_format.h"
+#include "disk_file_editor.h"
 #include "keyboard.h"
 #include "trace.h"
 #include "gif_recorder.h"
@@ -46,6 +49,8 @@ extern SDL_Surface *back_surface;
 extern byte *pbRAM;
 extern byte *membank_read[4], *membank_write[4];
 extern byte keyboard_matrix[16];
+extern t_drive driveA;
+extern t_drive driveB;
 
 // Friendly key names → CPC_KEYS for IPC input commands
 static const std::map<std::string, CPC_KEYS> ipc_key_names = {
@@ -174,7 +179,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new) record(wav) poke(load/list/apply/unapply/write)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info) record(wav) poke(load/list/apply/unapply/write)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1645,7 +1650,7 @@ std::string handle_command(const std::string& line) {
 
   // --- Disk management commands ---
   if (cmd == "disk") {
-    if (parts.size() < 2) return "ERR 400 missing subcommand (formats|format|new)\n";
+    if (parts.size() < 2) return "ERR 400 missing subcommand (formats|format|new|ls|cat|get|put|rm|info)\n";
     if (parts[1] == "formats") {
       auto names = disk_format_names();
       std::string resp = "OK";
@@ -1669,6 +1674,138 @@ std::string handle_command(const std::string& line) {
       std::string err = disk_create_new(path, fmt);
       if (!err.empty()) return "ERR " + err + "\n";
       return "OK\n";
+    }
+    // Helper lambda: resolve drive letter to t_drive*
+    auto resolve_drive = [&](const std::string& letter) -> t_drive* {
+      if (letter.empty()) return nullptr;
+      char c = static_cast<char>(std::toupper(static_cast<unsigned char>(letter[0])));
+      if (c == 'A') return &driveA;
+      if (c == 'B') return &driveB;
+      return nullptr;
+    };
+
+    if (parts[1] == "ls") {
+      if (parts.size() < 3)
+        return "ERR 400 usage: disk ls <A|B>\n";
+      t_drive* drv = resolve_drive(parts[2]);
+      if (!drv) return "ERR 400 invalid drive letter\n";
+      std::string err;
+      auto files = disk_list_files(drv, err);
+      if (!err.empty()) return "ERR " + err + "\n";
+      std::ostringstream resp;
+      resp << "OK\n";
+      for (const auto& f : files) {
+        resp << f.display_name << " " << f.size_bytes;
+        if (f.read_only) resp << " R/O";
+        if (f.system) resp << " SYS";
+        resp << "\n";
+      }
+      return resp.str();
+    }
+    if (parts[1] == "cat") {
+      if (parts.size() < 4)
+        return "ERR 400 usage: disk cat <A|B> <filename>\n";
+      t_drive* drv = resolve_drive(parts[2]);
+      if (!drv) return "ERR 400 invalid drive letter\n";
+      std::string err;
+      auto raw = disk_read_file(drv, parts[3], err);
+      if (!err.empty()) return "ERR " + err + "\n";
+      // Check for AMSDOS header -- if present, skip it and report actual length
+      auto hdr_info = disk_parse_amsdos_header(raw);
+      size_t offset = 0;
+      size_t reported_size = raw.size();
+      if (hdr_info.valid && raw.size() >= 128) {
+        offset = 128;
+        reported_size = hdr_info.file_length;
+      }
+      std::ostringstream resp;
+      resp << "OK size=" << reported_size << "\n";
+      resp << std::hex << std::uppercase << std::setfill('0');
+      for (size_t i = offset; i < raw.size() && (i - offset) < reported_size; i++) {
+        if (i > offset) resp << ' ';
+        resp << std::setw(2) << static_cast<unsigned>(raw[i]);
+      }
+      resp << "\n";
+      return resp.str();
+    }
+    if (parts[1] == "get") {
+      if (parts.size() < 5)
+        return "ERR 400 usage: disk get <A|B> <filename> <local_path>\n";
+      t_drive* drv = resolve_drive(parts[2]);
+      if (!drv) return "ERR 400 invalid drive letter\n";
+      std::string err;
+      auto raw = disk_read_file(drv, parts[3], err);
+      if (!err.empty()) return "ERR " + err + "\n";
+      // Strip AMSDOS header if present
+      auto hdr_info = disk_parse_amsdos_header(raw);
+      size_t offset = 0;
+      size_t length = raw.size();
+      if (hdr_info.valid && raw.size() >= 128) {
+        offset = 128;
+        length = hdr_info.file_length;
+      }
+      if (offset + length > raw.size()) length = raw.size() - offset;
+      std::ofstream out(parts[4], std::ios::binary);
+      if (!out) return "ERR failed to open " + parts[4] + "\n";
+      out.write(reinterpret_cast<const char*>(raw.data() + offset),
+                static_cast<std::streamsize>(length));
+      out.close();
+      return "OK bytes=" + std::to_string(length) + "\n";
+    }
+    if (parts[1] == "put") {
+      if (parts.size() < 4)
+        return "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename]\n";
+      t_drive* drv = resolve_drive(parts[2]);
+      if (!drv) return "ERR 400 invalid drive letter\n";
+      std::string local_path = parts[3];
+      std::string cpc_name;
+      if (parts.size() >= 5) {
+        cpc_name = parts[4];
+        // Uppercase it
+        for (auto& c : cpc_name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      } else {
+        cpc_name = disk_to_cpc_filename(local_path);
+        if (cpc_name.empty()) return "ERR cannot derive CPC filename from path\n";
+      }
+      std::ifstream in(local_path, std::ios::binary);
+      if (!in) return "ERR cannot open " + local_path + "\n";
+      std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+      in.close();
+      std::string err = disk_write_file(drv, cpc_name, data, true);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    if (parts[1] == "rm") {
+      if (parts.size() < 4)
+        return "ERR 400 usage: disk rm <A|B> <filename>\n";
+      t_drive* drv = resolve_drive(parts[2]);
+      if (!drv) return "ERR 400 invalid drive letter\n";
+      std::string err = disk_delete_file(drv, parts[3]);
+      if (!err.empty()) return "ERR " + err + "\n";
+      return "OK\n";
+    }
+    if (parts[1] == "info") {
+      if (parts.size() < 4)
+        return "ERR 400 usage: disk info <A|B> <filename>\n";
+      t_drive* drv = resolve_drive(parts[2]);
+      if (!drv) return "ERR 400 invalid drive letter\n";
+      std::string err;
+      auto raw = disk_read_file(drv, parts[3], err);
+      if (!err.empty()) return "ERR " + err + "\n";
+      auto info = disk_parse_amsdos_header(raw);
+      if (!info.valid) return "ERR no valid AMSDOS header\n";
+      char buf[256];
+      const char* type_str = "unknown";
+      switch (info.type) {
+        case AmsdosFileType::BASIC: type_str = "basic"; break;
+        case AmsdosFileType::PROTECTED: type_str = "protected"; break;
+        case AmsdosFileType::BINARY: type_str = "binary"; break;
+        default: break;
+      }
+      std::snprintf(buf, sizeof(buf), "OK type=%s load=%04X exec=%04X size=%u\n",
+                    type_str, info.load_addr, info.exec_addr, info.file_length);
+      return std::string(buf);
     }
     return "ERR 400 unknown disk subcommand\n";
   }
