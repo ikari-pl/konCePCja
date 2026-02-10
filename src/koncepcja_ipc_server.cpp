@@ -33,6 +33,7 @@
 #include "slotshandler.h"
 #include "disk_format.h"
 #include "disk_file_editor.h"
+#include "disk_sector_editor.h"
 #include "keyboard.h"
 #include "trace.h"
 #include "gif_recorder.h"
@@ -181,7 +182,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info) record(wav) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1668,7 +1669,7 @@ std::string handle_command(const std::string& line) {
 
   // --- Disk management commands ---
   if (cmd == "disk") {
-    if (parts.size() < 2) return "ERR 400 missing subcommand (formats|format|new|ls|cat|get|put|rm|info)\n";
+    if (parts.size() < 2) return "ERR 400 missing subcommand (formats|format|new|ls|cat|get|put|rm|info|sector)\n";
     if (parts[1] == "formats") {
       auto names = disk_format_names();
       std::string resp = "OK";
@@ -1824,6 +1825,91 @@ std::string handle_command(const std::string& line) {
       std::snprintf(buf, sizeof(buf), "OK type=%s load=%04X exec=%04X size=%u\n",
                     type_str, info.load_addr, info.exec_addr, info.file_length);
       return std::string(buf);
+    }
+    if (parts[1] == "sector") {
+      if (parts.size() < 3)
+        return "ERR 400 usage: disk sector (read|write|info) ...\n";
+
+      // Helper lambda: resolve drive letter to t_drive* (reuse from above scope)
+      auto sec_resolve_drive = [&](const std::string& letter) -> t_drive* {
+        if (letter.empty()) return nullptr;
+        char c = static_cast<char>(std::toupper(static_cast<unsigned char>(letter[0])));
+        if (c == 'A') return &driveA;
+        if (c == 'B') return &driveB;
+        return nullptr;
+      };
+
+      if (parts[2] == "read") {
+        // disk sector read <drive> <track> <side> <sector_id>
+        if (parts.size() < 7)
+          return "ERR 400 usage: disk sector read <drive> <track> <side> <sector_id>\n";
+        t_drive* drv = sec_resolve_drive(parts[3]);
+        if (!drv) return "ERR 400 invalid drive letter\n";
+        unsigned int trk = static_cast<unsigned int>(std::stoul(parts[4]));
+        unsigned int side = static_cast<unsigned int>(std::stoul(parts[5]));
+        uint8_t sector_id = static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+        std::string err;
+        auto data = disk_sector_read(drv, trk, side, sector_id, err);
+        if (!err.empty()) return "ERR " + err + "\n";
+        std::ostringstream resp;
+        resp << "OK size=" << data.size() << "\n";
+        resp << std::hex << std::uppercase << std::setfill('0');
+        for (size_t i = 0; i < data.size(); i++) {
+          if (i > 0) resp << ' ';
+          resp << std::setw(2) << static_cast<unsigned>(data[i]);
+        }
+        resp << "\n";
+        return resp.str();
+      }
+      if (parts[2] == "write") {
+        // disk sector write <drive> <track> <side> <sector_id> <hex_data>
+        if (parts.size() < 8)
+          return "ERR 400 usage: disk sector write <drive> <track> <side> <sector_id> <hex_data>\n";
+        t_drive* drv = sec_resolve_drive(parts[3]);
+        if (!drv) return "ERR 400 invalid drive letter\n";
+        unsigned int trk = static_cast<unsigned int>(std::stoul(parts[4]));
+        unsigned int side = static_cast<unsigned int>(std::stoul(parts[5]));
+        uint8_t sector_id = static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+        // Parse hex data: remaining parts are space-separated hex bytes
+        std::vector<uint8_t> data;
+        for (size_t i = 7; i < parts.size(); i++) {
+          // Each part may be a single hex byte like "FF" or multiple bytes
+          // Handle both "FF" and "FFAA" formats
+          const std::string& hex_str = parts[i];
+          for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
+            std::string byte_str = hex_str.substr(j, 2);
+            data.push_back(static_cast<uint8_t>(std::stoul(byte_str, nullptr, 16)));
+          }
+        }
+        std::string err = disk_sector_write(drv, trk, side, sector_id, data);
+        if (!err.empty()) return "ERR " + err + "\n";
+        return "OK\n";
+      }
+      if (parts[2] == "info") {
+        // disk sector info <drive> <track> <side>
+        if (parts.size() < 6)
+          return "ERR 400 usage: disk sector info <drive> <track> <side>\n";
+        t_drive* drv = sec_resolve_drive(parts[3]);
+        if (!drv) return "ERR 400 invalid drive letter\n";
+        unsigned int trk = static_cast<unsigned int>(std::stoul(parts[4]));
+        unsigned int side = static_cast<unsigned int>(std::stoul(parts[5]));
+        std::string err;
+        auto sectors = disk_sector_info(drv, trk, side, err);
+        if (!err.empty()) return "ERR " + err + "\n";
+        std::ostringstream resp;
+        resp << "OK sectors=" << sectors.size() << "\n";
+        resp << std::hex << std::uppercase << std::setfill('0');
+        for (const auto& s : sectors) {
+          resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
+               << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
+               << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
+               << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
+               << " size=" << std::dec << s.size << "\n";
+          resp << std::hex; // reset for next iteration
+        }
+        return resp.str();
+      }
+      return "ERR 400 unknown sector subcommand (read|write|info)\n";
     }
     return "ERR 400 unknown disk subcommand\n";
   }
