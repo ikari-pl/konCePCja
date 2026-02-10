@@ -43,6 +43,7 @@
 #include "pokes.h"
 #include "config_profile.h"
 #include "asic_debug.h"
+#include "drive_status.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -55,6 +56,7 @@ extern byte *membank_read[4], *membank_write[4];
 extern byte keyboard_matrix[16];
 extern t_drive driveA;
 extern t_drive driveB;
+extern t_FDC FDC;
 
 // Friendly key names → CPC_KEYS for IPC input commands
 static const std::map<std::string, CPC_KEYS> ipc_key_names = {
@@ -183,7 +185,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) status(drives)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2113,6 +2115,14 @@ std::string handle_command(const std::string& line) {
       return "OK\n";
     }
     return "ERR 400 unknown profile subcommand (list|current|load|save|delete)\n";
+  }
+
+  // --- Status command ---
+  if (cmd == "status") {
+    if (parts.size() >= 2 && parts[1] == "drives") {
+      return "OK " + drive_status_detailed() + "\n";
+    }
+    return "OK " + emulator_status_summary() + "\n" + drive_status_summary() + "\n";
   }
 
   return "ERR 501 not-implemented\n";
