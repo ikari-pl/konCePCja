@@ -38,6 +38,7 @@
 #include "trace.h"
 #include "gif_recorder.h"
 #include "wav_recorder.h"
+#include "ym_recorder.h"
 #include "symfile.h"
 #include "pokes.h"
 #include "config_profile.h"
@@ -182,7 +183,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1943,7 +1944,30 @@ std::string handle_command(const std::string& line) {
       }
       return "ERR 400 bad-wav-cmd (start|stop|status)\n";
     }
-    return "ERR 400 bad-record-cmd (wav)\n";
+    if (parts[1] == "ym") {
+      if (parts.size() < 3) return "ERR 400 missing-action (start|stop|status)\n";
+      if (parts[2] == "start") {
+        if (parts.size() < 4) return "ERR 400 missing-path\n";
+        auto err = g_ym_recorder.start(parts[3]);
+        if (err.empty()) return "OK\n";
+        return "ERR " + err + "\n";
+      }
+      if (parts[2] == "stop") {
+        if (!g_ym_recorder.is_recording()) return "ERR not-recording\n";
+        std::string path = g_ym_recorder.current_path();
+        uint32_t frames = g_ym_recorder.stop();
+        return "OK " + path + " " + std::to_string(frames) + "\n";
+      }
+      if (parts[2] == "status") {
+        if (g_ym_recorder.is_recording()) {
+          return "OK recording " + g_ym_recorder.current_path() + " " +
+                 std::to_string(g_ym_recorder.frame_count()) + "\n";
+        }
+        return "OK idle\n";
+      }
+      return "ERR 400 bad-ym-cmd (start|stop|status)\n";
+    }
+    return "ERR 400 bad-record-cmd (wav|ym)\n";
   }
 
   // --- Poke commands ---

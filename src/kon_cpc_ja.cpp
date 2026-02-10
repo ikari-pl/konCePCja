@@ -49,6 +49,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "keyboard.h"
 #include "trace.h"
 #include "wav_recorder.h"
+#include "ym_recorder.h"
 #include "macos_menu.h"
 
 #include "imgui.h"
@@ -3412,6 +3413,11 @@ int koncpc_main (int argc, char **argv)
 
             // Check IPC VBL events
             ipc_check_vbl_events();
+
+            // YM register recording: capture PSG state once per VBL
+            if (g_ym_recorder.is_recording()) {
+               g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
+            }
 
             // Auto-type: drain queue one action per frame
             if (g_autotype_queue.is_active()) {

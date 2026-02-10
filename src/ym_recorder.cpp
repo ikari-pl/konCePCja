@@ -1,0 +1,146 @@
+#include "ym_recorder.h"
+#include <cstdio>
+#include <cstring>
+
+namespace {
+
+void write_be_u16(uint16_t val, FILE* f) {
+    fputc((val >> 8) & 0xff, f);
+    fputc(val & 0xff, f);
+}
+
+void write_be_u32(uint32_t val, FILE* f) {
+    fputc((val >> 24) & 0xff, f);
+    fputc((val >> 16) & 0xff, f);
+    fputc((val >> 8) & 0xff, f);
+    fputc(val & 0xff, f);
+}
+
+} // namespace
+
+YmRecorder g_ym_recorder;
+
+YmRecorder::~YmRecorder() {
+    if (recording_) {
+        stop();
+    }
+}
+
+std::string YmRecorder::start(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (recording_) {
+        return "already recording";
+    }
+
+    // Verify the path is writable by opening it briefly
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) {
+        return std::string("cannot open file: ") + strerror(errno);
+    }
+    fclose(f);
+
+    path_ = path;
+    frames_.clear();
+    recording_ = true;
+    return "";
+}
+
+uint32_t YmRecorder::stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recording_) {
+        return 0;
+    }
+
+    recording_ = false;
+    uint32_t count = static_cast<uint32_t>(frames_.size());
+
+    write_ym5_file();
+
+    path_.clear();
+    frames_.clear();
+    return count;
+}
+
+void YmRecorder::capture_frame(const uint8_t* regs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!recording_) return;
+
+    std::array<uint8_t, 14> frame;
+    for (int i = 0; i < NUM_REGISTERS; i++) {
+        frame[i] = regs[i];
+    }
+    frames_.push_back(frame);
+}
+
+bool YmRecorder::is_recording() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return recording_;
+}
+
+uint32_t YmRecorder::frame_count() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<uint32_t>(frames_.size());
+}
+
+std::string YmRecorder::current_path() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return path_;
+}
+
+bool YmRecorder::write_ym5_file() {
+    FILE* f = fopen(path_.c_str(), "wb");
+    if (!f) return false;
+
+    uint32_t num_frames = static_cast<uint32_t>(frames_.size());
+
+    // 1. Magic: "YM5!"
+    fwrite("YM5!", 1, 4, f);
+
+    // 2. Check string: "LeOnArD!"
+    fwrite("LeOnArD!", 1, 8, f);
+
+    // 3. Number of frames (uint32_t BE)
+    write_be_u32(num_frames, f);
+
+    // 4. Song attributes (uint32_t BE) - 1 = interleaved
+    write_be_u32(1, f);
+
+    // 5. Number of digidrums (uint16_t BE) - 0
+    write_be_u16(0, f);
+
+    // 6. Master clock (uint32_t BE) - 1000000 for CPC
+    write_be_u32(1000000, f);
+
+    // 7. Player frequency (uint16_t BE) - 50 Hz for PAL CPC
+    write_be_u16(50, f);
+
+    // 8. VBL loop frame (uint32_t BE) - 0
+    write_be_u32(0, f);
+
+    // 9. Additional data size (uint16_t BE) - 0
+    write_be_u16(0, f);
+
+    // 10. Song name (null-terminated)
+    const char* song_name = "konCePCja recording";
+    fwrite(song_name, 1, strlen(song_name) + 1, f);
+
+    // 11. Author name (null-terminated)
+    fputc(0, f);
+
+    // 12. Comment (null-terminated)
+    fputc(0, f);
+
+    // 13. Register data: interleaved format
+    // 14 blocks, each block is num_frames bytes (one byte per frame for that register)
+    for (int reg = 0; reg < NUM_REGISTERS; reg++) {
+        for (uint32_t frame = 0; frame < num_frames; frame++) {
+            fputc(frames_[frame][reg], f);
+        }
+    }
+
+    // 14. End marker: "End!"
+    fwrite("End!", 1, 4, f);
+
+    fclose(f);
+    return true;
+}
