@@ -40,6 +40,7 @@
 #include "symfile.h"
 #include "pokes.h"
 #include "config_profile.h"
+#include "asic_debug.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -180,7 +181,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info) record(wav) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info) record(wav) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -406,6 +407,22 @@ std::string handle_command(const std::string& line) {
     snprintf(buf, sizeof(buf), " SELECT=%02X CONTROL=%02X", PSG.reg_select, PSG.control);
     resp << buf << "\n";
     return resp.str();
+  }
+  if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 && parts[1] == "asic") {
+    if (parts.size() >= 3 && parts[2] == "dma") {
+      return "OK\n" + asic_dump_dma() + "\n";
+    }
+    if (parts.size() >= 3 && parts[2] == "sprites") {
+      return "OK\n" + asic_dump_sprites() + "\n";
+    }
+    if (parts.size() >= 3 && parts[2] == "interrupts") {
+      return "OK\n" + asic_dump_interrupts() + "\n";
+    }
+    if (parts.size() >= 3 && parts[2] == "palette") {
+      return "OK\n" + asic_dump_palette() + "\n";
+    }
+    // regs asic → full ASIC state dump
+    return "OK\n" + asic_dump_all() + "\n";
   }
   if (cmd == "regs") {
     char out[256];
