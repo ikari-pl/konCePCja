@@ -19,6 +19,8 @@ class AsicDebugTest : public testing::Test {
       reg_page_ = new byte[16 * 1024]();
       reg_page_allocated_ = true;
     }
+    // Re-zero every test — tests run in shuffle order (--gtest_shuffle)
+    memset(reg_page_, 0, 16 * 1024);
     pbRegisterPage = reg_page_;
   }
 
