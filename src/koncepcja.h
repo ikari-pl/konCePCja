@@ -91,6 +91,8 @@ class InputMapper;
 // TODO: Tune threshold based on different joysticks or make it configurable ?
 #define JOYSTICK_AXIS_THRESHOLD 16384
 
+constexpr int MAX_ROM_SLOTS = 32;
+
 #define DEFAULT_VIDEO_PLUGIN 0
 
 #ifdef _WIN32
@@ -276,7 +278,7 @@ class t_CPC {
    std::string sdump_dir;
 
    std::string rom_path;
-   std::string rom_file[32];
+   std::string rom_file[MAX_ROM_SLOTS];
    std::string rom_mf2;
 
    std::string current_snap_path; // Last used snapshot path in the file dialog.

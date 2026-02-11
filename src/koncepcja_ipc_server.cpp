@@ -439,7 +439,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "sprite") {
       if (parts.size() < 3) return "ERR 400 bad-args (asic sprite <0-15>)\n";
       int idx = 0;
-      try { idx = std::stoi(parts[2]); } catch (...) { return "ERR 400 bad-args (asic sprite <0-15>)\n"; }
+      try { idx = std::stoi(parts[2]); } catch (const std::exception&) { return "ERR 400 bad-args (asic sprite <0-15>)\n"; }
       if (idx < 0 || idx > 15) return "ERR 400 sprite index out of range (0-15)\n";
       return "OK\n" + asic_dump_sprite(idx) + "\n";
     }
@@ -449,7 +449,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "dma") {
       if (parts.size() >= 3) {
         int ch = 0;
-        try { ch = std::stoi(parts[2]); } catch (...) { return "ERR 400 bad-args (asic dma <0-2>)\n"; }
+        try { ch = std::stoi(parts[2]); } catch (const std::exception&) { return "ERR 400 bad-args (asic dma <0-2>)\n"; }
         if (ch < 0 || ch > 2) return "ERR 400 DMA channel out of range (0-2)\n";
         return "OK\n" + asic_dump_dma_channel(ch) + "\n";
       }
@@ -1403,7 +1403,7 @@ std::string handle_command(const std::string& line) {
           try {
             unsigned int v = std::stoul(kw, nullptr, 0);
             len = static_cast<word>(v);
-          } catch (...) {}
+          } catch (const std::exception&) {}
         }
       }
       if (!cond_str.empty()) {
@@ -1499,7 +1499,7 @@ std::string handle_command(const std::string& line) {
         if (!name.empty()) {
           return "OK " + name + "\n";
         }
-      } catch (...) {}
+      } catch (const std::exception&) {}
       // Try as name
       word addr = 0;
       if (g_symfile.lookupName(parts[2], addr) == 0) {
@@ -2004,7 +2004,7 @@ std::string handle_command(const std::string& line) {
         if (parts.size() < 4) return "ERR 400 missing-path\n";
         int quality = 85;
         if (parts.size() >= 5) {
-          try { quality = std::stoi(parts[4]); } catch (...) {}
+          try { quality = std::stoi(parts[4]); } catch (const std::exception&) {}
         }
         static const unsigned int wav_rates[] = {11025, 22050, 44100, 48000, 96000};
         uint32_t rate = wav_rates[CPC.snd_playback_rate];
@@ -2303,24 +2303,23 @@ std::string handle_command(const std::string& line) {
   // --- ROM slot management ---
   if (cmd == "rom" && parts.size() >= 2) {
     if (parts[1] == "list") {
-      std::string resp = "OK";
-      for (int i = 0; i < 32; i++) {
-        resp += " ";
-        resp += std::to_string(i);
-        resp += "=";
+      std::ostringstream oss;
+      oss << "OK";
+      for (int i = 0; i < MAX_ROM_SLOTS; i++) {
+        oss << " " << i << "=";
         if (CPC.rom_file[i].empty()) {
-          resp += "(empty)";
+          oss << "(empty)";
         } else {
-          resp += CPC.rom_file[i];
+          oss << CPC.rom_file[i];
         }
       }
-      resp += "\n";
-      return resp;
+      oss << "\n";
+      return oss.str();
     }
     if (parts[1] == "load" && parts.size() >= 4) {
       int slot = -1;
-      try { slot = std::stoi(parts[2]); } catch (...) {}
-      if (slot < 0 || slot > 31) return "ERR 400 slot must be 0-31\n";
+      try { slot = std::stoi(parts[2]); } catch (const std::exception&) {}
+      if (slot < 0 || slot >= MAX_ROM_SLOTS) return "ERR 400 slot must be 0-31\n";
       std::string path;
       for (size_t pi = 3; pi < parts.size(); pi++) {
         if (!path.empty()) path += " ";
@@ -2387,8 +2386,8 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "unload" && parts.size() >= 3) {
       int slot = -1;
-      try { slot = std::stoi(parts[2]); } catch (...) {}
-      if (slot < 0 || slot > 31) return "ERR 400 slot must be 0-31\n";
+      try { slot = std::stoi(parts[2]); } catch (const std::exception&) {}
+      if (slot < 0 || slot >= MAX_ROM_SLOTS) return "ERR 400 slot must be 0-31\n";
       if (slot < 2) return "ERR 400 cannot-unload-system-rom\n";
       if (memmap_ROM[slot] != nullptr) {
         delete[] memmap_ROM[slot];
@@ -2406,8 +2405,8 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "info" && parts.size() >= 3) {
       int slot = -1;
-      try { slot = std::stoi(parts[2]); } catch (...) {}
-      if (slot < 0 || slot > 31) return "ERR 400 slot must be 0-31\n";
+      try { slot = std::stoi(parts[2]); } catch (const std::exception&) {}
+      if (slot < 0 || slot >= MAX_ROM_SLOTS) return "ERR 400 slot must be 0-31\n";
       if (memmap_ROM[slot] == nullptr) {
         return "OK slot=" + std::to_string(slot) + " loaded=false\n";
       }
