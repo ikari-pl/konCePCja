@@ -23,6 +23,20 @@ constexpr uint32_t FOURCC_00dc = 0x63643030;  // "00dc" - video data chunk
 constexpr uint32_t AVIIF_KEYFRAME = 0x00000010;
 #endif
 
+// File offsets for fields that patch_sizes() must update after recording.
+// Layout: RIFF(4) + size(4) + "AVI "(4) = 12 bytes
+//         LIST(4) + size(4) + "hdrl"(4) = 12 bytes
+//         "avih"(4) + size(4) + 56 bytes avih data = 64 bytes
+//         LIST(4) + size(4) + "strl"(4) = 12 bytes  (video)
+//         "strh"(4) + size(4) + 56 bytes strh data = 64 bytes
+//         "strf"(4) + size(4) + 40 bytes strf data = 48 bytes
+//         LIST(4) + size(4) + "strl"(4) = 12 bytes  (audio)
+//         "strh"(4) + size(4) + 56 bytes strh data = 64 bytes
+constexpr long RIFF_SIZE_OFFSET = 4;                 // RIFF file size
+constexpr long AVIH_TOTAL_FRAMES_OFFSET = 48;        // avih.dwTotalFrames
+constexpr long VIDEO_STRH_LENGTH_OFFSET = 128;       // video strh.dwLength
+constexpr long AUDIO_STRH_LENGTH_OFFSET = 252;       // audio strh.dwLength
+
 } // namespace
 
 void AviRecorder::write_le_u16(uint16_t val, FILE* f) {
@@ -379,39 +393,23 @@ void AviRecorder::write_idx1() {
 void AviRecorder::patch_sizes() {
     long file_end = ftell(file_);
 
-    // Patch RIFF size at offset 4
+    // Patch RIFF file size (total file size minus 8 bytes for RIFF header)
     uint32_t riff_size = static_cast<uint32_t>(file_end - 8);
-    fseek(file_, 4, SEEK_SET);
+    fseek(file_, RIFF_SIZE_OFFSET, SEEK_SET);
     write_le_u32(riff_size, file_);
 
-    // Patch avih dwTotalFrames at offset 48
-    // avih starts at: RIFF(12) + LIST(8) + "hdrl"(4) + "avih"(4) + size(4) = 32
-    // dwTotalFrames is at offset 16 within avih data => file offset 48
-    fseek(file_, 48, SEEK_SET);
+    // Patch avih.dwTotalFrames
+    fseek(file_, AVIH_TOTAL_FRAMES_OFFSET, SEEK_SET);
     write_le_u32(video_frames_, file_);
 
-    // Patch video strh dwLength
-    // video strh starts at: 32(avih header offset) + 56(avih data) + 8(avih chunk overhead)
-    //   = actually let me compute it properly.
-    // RIFF header: 12 bytes (RIFF + size + AVI)
-    // LIST hdrl: 8 bytes (LIST + size) + 4 bytes (hdrl) = 12
-    // avih chunk: 8 bytes (avih + size) + 56 bytes data = 64
-    // LIST strl(video): 8 bytes (LIST + size) + 4 bytes (strl) = 12
-    // strh chunk: 8 bytes (strh + size) + data...
-    // strh.dwLength is at offset 20 within strh data
-    // So file offset = 12 + 12 + 64 + 12 + 8 + 20 = 128
-    fseek(file_, 128, SEEK_SET);
+    // Patch video strh.dwLength (total video frames)
+    fseek(file_, VIDEO_STRH_LENGTH_OFFSET, SEEK_SET);
     write_le_u32(video_frames_, file_);
 
-    // Patch audio strh dwLength
-    // After video strl: 12 + 12 + 64 + 12 + 64(strh) + 48(strf) = 212
-    // LIST strl(audio): 12
-    // strh chunk: 8 + data...
-    // strh.dwLength at offset 20 in strh data
-    // file offset = 212 + 12 + 8 + 20 = 252
+    // Patch audio strh.dwLength (total audio samples)
     uint16_t block_align = static_cast<uint16_t>(channels_ * (bits_per_sample_ / 8));
     uint32_t audio_samples = (block_align > 0) ? (audio_bytes_ / block_align) : 0;
-    fseek(file_, 252, SEEK_SET);
+    fseek(file_, AUDIO_STRH_LENGTH_OFFSET, SEEK_SET);
     write_le_u32(audio_samples, file_);
 
     fseek(file_, file_end, SEEK_SET);
