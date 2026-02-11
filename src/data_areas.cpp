@@ -36,25 +36,30 @@ std::vector<DataArea> DataAreaManager::list() const {
 }
 
 const DataArea* DataAreaManager::find(uint16_t addr) const {
-    // Check all areas to see if addr falls within any of them
-    for (const auto& kv : areas_) {
-        if (addr >= kv.second.start && addr <= kv.second.end) {
-            return &kv.second;
-        }
+    // O(log N) binary search using map ordering by start address
+    auto it = areas_.upper_bound(addr);
+    if (it == areas_.begin()) return nullptr;
+    --it;
+    if (addr >= it->second.start && addr <= it->second.end) {
+        return &it->second;
     }
     return nullptr;
 }
 
-std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t mem_size) const {
+std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t mem_size,
+                                       int* bytes_consumed) const {
     const DataArea* area = find(addr);
-    if (!area) return {};
+    if (!area) {
+        if (bytes_consumed) *bytes_consumed = 0;
+        return {};
+    }
 
     std::ostringstream oss;
     char buf[8];
+    int consumed = 0;
 
     switch (area->type) {
         case DataType::BYTES: {
-            // Up to 8 bytes per line
             oss << "db ";
             int remaining = static_cast<int>(area->end) - static_cast<int>(addr) + 1;
             int count = std::min(remaining, 8);
@@ -64,15 +69,14 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
                 if (i > 0) oss << ",";
                 snprintf(buf, sizeof(buf), "$%02X", mem[a]);
                 oss << buf;
+                consumed++;
             }
             break;
         }
         case DataType::WORDS: {
-            // Up to 4 words per line
             oss << "dw ";
             int remaining_bytes = static_cast<int>(area->end) - static_cast<int>(addr) + 1;
             int word_count = std::min(remaining_bytes / 2, 4);
-            if (word_count == 0 && remaining_bytes >= 2) word_count = 1;
             for (int i = 0; i < word_count; i++) {
                 uint16_t a = static_cast<uint16_t>(addr + i * 2);
                 if (static_cast<size_t>(a + 1) >= mem_size) break;
@@ -80,14 +84,14 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
                 uint16_t w = static_cast<uint16_t>(mem[a] | (mem[a + 1] << 8));
                 snprintf(buf, sizeof(buf), "$%04X", w);
                 oss << buf;
+                consumed += 2;
             }
             break;
         }
         case DataType::TEXT: {
-            // Emit printable chars as string, non-printable as hex
             oss << "db ";
             int remaining = static_cast<int>(area->end) - static_cast<int>(addr) + 1;
-            int count = std::min(remaining, 64);  // reasonable line limit
+            int count = std::min(remaining, 64);
             bool in_string = false;
             bool first = true;
             for (int i = 0; i < count; i++) {
@@ -111,11 +115,13 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
                     oss << buf;
                 }
                 first = false;
+                consumed++;
             }
             if (in_string) oss << "\"";
             break;
         }
     }
 
+    if (bytes_consumed) *bytes_consumed = consumed;
     return oss.str();
 }

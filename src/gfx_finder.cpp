@@ -15,18 +15,11 @@ int gfx_decode_byte(uint8_t val, int mode, uint8_t* out) {
     switch (mode) {
     case 0: {
         // 2 pixels, 4 bits each (interleaved)
-        uint8_t p0 = ((val >> 7) & 1) | ((val >> 4) & 2) |
-                     ((val >> 1) & 4) | ((val << 2) & 8);
-        uint8_t p1 = ((val >> 6) & 1) | ((val >> 3) & 2) |
-                     ((val >> 0) & 4) | ((val << 3) & 8);
-        // WinAPE-compatible bit ordering: swap high/low nibble contribution
-        // The actual CPC hardware decodes: px0 bits {7,5,3,1}, px1 bits {6,4,2,0}
-        // Where bit7 is MSB of the color index and bit1 is LSB
+        // CPC hardware decodes: px0 bits {7,5,3,1}, px1 bits {6,4,2,0}
         out[0] = ((val & 0x80) >> 7) | ((val & 0x20) >> 4) |
                  ((val & 0x08) >> 1) | ((val & 0x02) << 2);
         out[1] = ((val & 0x40) >> 6) | ((val & 0x10) >> 3) |
                  ((val & 0x04) >> 0) | ((val & 0x01) << 3);
-        (void)p0; (void)p1; // suppress unused variable warnings from initial attempt
         return 2;
     }
     case 1: {
@@ -111,6 +104,19 @@ int gfx_decode(const uint8_t* mem, size_t mem_size,
     return pixel_width;
 }
 
+// Write a 32-bit value in little-endian to a byte buffer
+static void write_le32(uint8_t* dst, int32_t val) {
+    dst[0] = static_cast<uint8_t>(val);
+    dst[1] = static_cast<uint8_t>(val >> 8);
+    dst[2] = static_cast<uint8_t>(val >> 16);
+    dst[3] = static_cast<uint8_t>(val >> 24);
+}
+
+static void write_le16(uint8_t* dst, uint16_t val) {
+    dst[0] = static_cast<uint8_t>(val);
+    dst[1] = static_cast<uint8_t>(val >> 8);
+}
+
 bool gfx_export_bmp(const std::string& path,
                     const uint32_t* pixels, int width, int height) {
     if (!pixels || width <= 0 || height <= 0) return false;
@@ -123,28 +129,21 @@ bool gfx_export_bmp(const std::string& path,
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return false;
 
-    // BITMAPFILEHEADER
-    uint8_t hdr[14] = {};
-    hdr[0] = 'B'; hdr[1] = 'M';
-    memcpy(hdr + 2, &file_size, 4);
-    int offset = 54;
-    memcpy(hdr + 10, &offset, 4);
-    fwrite(hdr, 1, 14, f);
+    // BITMAPFILEHEADER (portable little-endian writes)
+    uint8_t hdr[14] = {'B', 'M'};
+    write_le32(hdr + 2, file_size);
+    write_le32(hdr + 10, 54);
+    if (fwrite(hdr, 1, 14, f) != 14) { fclose(f); return false; }
 
     // BITMAPINFOHEADER
     uint8_t info[40] = {};
-    int info_size = 40;
-    memcpy(info + 0, &info_size, 4);
-    memcpy(info + 4, &width, 4);
-    int neg_height = -height;  // top-down BMP
-    memcpy(info + 8, &neg_height, 4);
-    uint16_t planes = 1;
-    memcpy(info + 12, &planes, 2);
-    uint16_t bpp = 32;
-    memcpy(info + 14, &bpp, 2);
-    // compression = 0 (BI_RGB), rest zeros
-    memcpy(info + 20, &data_size, 4);
-    fwrite(info, 1, 40, f);
+    write_le32(info + 0, 40);
+    write_le32(info + 4, width);
+    write_le32(info + 8, -height);  // top-down BMP
+    write_le16(info + 12, 1);      // planes
+    write_le16(info + 14, 32);     // bpp
+    write_le32(info + 20, data_size);
+    if (fwrite(info, 1, 40, f) != 40) { fclose(f); return false; }
 
     // Pixel data: convert RGBA to BGRA
     std::vector<uint8_t> row(static_cast<size_t>(row_bytes));
@@ -160,7 +159,11 @@ bool gfx_export_bmp(const std::string& path,
             row[x * 4 + 2] = r;
             row[x * 4 + 3] = a;
         }
-        fwrite(row.data(), 1, static_cast<size_t>(row_bytes), f);
+        if (fwrite(row.data(), 1, static_cast<size_t>(row_bytes), f) !=
+            static_cast<size_t>(row_bytes)) {
+            fclose(f);
+            return false;
+        }
     }
 
     fclose(f);

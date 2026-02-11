@@ -49,6 +49,7 @@
 #include "drive_status.h"
 #include "crtc.h"
 #include "data_areas.h"
+#include "imgui_ui_testable.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -652,26 +653,18 @@ std::string handle_command(const std::string& line) {
         // Check if this address is in a data area
         const DataArea* da = g_data_areas.find(pos);
         if (da) {
-          // Use data area formatting instead of disassembly
-          // Build a flat memory buffer from z80_read_mem for the needed range
+          // Read only the bytes needed for this line from emulated memory
+          int remaining = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
+          int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
+          int buf_len = std::min(remaining, max_bytes);
+          std::vector<uint8_t> membuf(static_cast<size_t>(pos) + buf_len);
+          for (int mi = 0; mi < buf_len; mi++) {
+            membuf[static_cast<size_t>(pos) + mi] = z80_read_mem(static_cast<word>(pos + mi));
+          }
           int line_bytes = 0;
-          if (da->type == DataType::BYTES) {
-            line_bytes = std::min(static_cast<int>(da->end) - static_cast<int>(pos) + 1, 8);
-          } else if (da->type == DataType::WORDS) {
-            int rem = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
-            line_bytes = std::min((rem / 2) * 2, 8);
-            if (line_bytes == 0 && rem >= 2) line_bytes = 2;
-          } else {
-            // TEXT: consume remaining bytes in the data area (up to 64)
-            line_bytes = std::min(static_cast<int>(da->end) - static_cast<int>(pos) + 1, 64);
-          }
-          if (line_bytes == 0) line_bytes = 1;
-          std::vector<uint8_t> membuf(static_cast<size_t>(da->end) + 1);
-          for (size_t mi = da->start; mi <= da->end; mi++) {
-            membuf[mi] = z80_read_mem(static_cast<word>(mi));
-          }
-          std::string formatted = g_data_areas.format_at(pos, membuf.data(), membuf.size());
+          std::string formatted = g_data_areas.format_at(pos, membuf.data(), membuf.size(), &line_bytes);
           resp << std::setfill('0') << std::setw(4) << std::hex << pos << ":          " << formatted << "\n";
+          if (line_bytes == 0) line_bytes = 1;
           pos = static_cast<word>(pos + line_bytes);
         } else {
           auto line = disassemble_one(pos, code, entry_points);
@@ -2242,8 +2235,8 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[2] == "ram_size") {
         int sz = std::stoi(parts[3]);
-        if (sz != 64 && sz != 128 && sz != 256 && sz != 512 && sz != 576 && sz != 4160) {
-          return "ERR 400 ram_size must be 64|128|256|512|576|4160\n";
+        if (!is_valid_ram_size(static_cast<unsigned int>(sz))) {
+          return "ERR 400 invalid ram_size\n";
         }
         CPC.ram_size = static_cast<unsigned int>(sz);
         return "OK (reset required)\n";
@@ -2482,15 +2475,14 @@ std::string handle_command(const std::string& line) {
       return "OK\n";
     }
     if (parts[1] == "clear") {
-      if (parts.size() >= 3 && parts[2] == "all") {
+      if (parts.size() < 3) return "ERR 400 usage: data clear <addr|all>\n";
+      if (parts[2] == "all") {
         g_data_areas.clear_all();
-        return "OK\n";
-      }
-      if (parts.size() >= 3) {
+      } else {
         unsigned int start = std::stoul(parts[2], nullptr, 0);
         g_data_areas.clear(static_cast<uint16_t>(start));
-        return "OK\n";
       }
+      return "OK\n";
     }
     if (parts[1] == "list") {
       auto areas = g_data_areas.list();
