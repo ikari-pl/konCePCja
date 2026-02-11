@@ -40,6 +40,7 @@
 #include "gif_recorder.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
+#include "avi_recorder.h"
 #include "symfile.h"
 #include "pokes.h"
 #include "config_profile.h"
@@ -187,7 +188,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -1971,7 +1972,39 @@ std::string handle_command(const std::string& line) {
       }
       return "ERR 400 bad-ym-cmd (start|stop|status)\n";
     }
-    return "ERR 400 bad-record-cmd (wav|ym)\n";
+    if (parts[1] == "avi") {
+      if (parts.size() < 3) return "ERR 400 missing-action (start|stop|status)\n";
+      if (parts[2] == "start") {
+        if (parts.size() < 4) return "ERR 400 missing-path\n";
+        int quality = 85;
+        if (parts.size() >= 5) {
+          try { quality = std::stoi(parts[4]); } catch (...) {}
+        }
+        static const unsigned int wav_rates[] = {11025, 22050, 44100, 48000, 96000};
+        uint32_t rate = wav_rates[CPC.snd_playback_rate];
+        uint16_t bits = CPC.snd_bits ? 16 : 8;
+        uint16_t channels = CPC.snd_stereo ? 2 : 1;
+        auto err = g_avi_recorder.start(parts[3], quality, rate, channels, bits);
+        if (err.empty()) return "OK\n";
+        return "ERR " + err + "\n";
+      }
+      if (parts[2] == "stop") {
+        if (!g_avi_recorder.is_recording()) return "ERR not-recording\n";
+        std::string path = g_avi_recorder.current_path();
+        uint32_t frames = g_avi_recorder.stop();
+        return "OK " + path + " " + std::to_string(frames) + "\n";
+      }
+      if (parts[2] == "status") {
+        if (g_avi_recorder.is_recording()) {
+          return "OK recording " + g_avi_recorder.current_path() + " frames=" +
+                 std::to_string(g_avi_recorder.frame_count()) + " bytes=" +
+                 std::to_string(g_avi_recorder.bytes_written()) + "\n";
+        }
+        return "OK idle\n";
+      }
+      return "ERR 400 bad-avi-cmd (start|stop|status)\n";
+    }
+    return "ERR 400 bad-record-cmd (wav|ym|avi)\n";
   }
 
   // --- Poke commands ---
