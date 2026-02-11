@@ -60,6 +60,9 @@ extern byte keyboard_matrix[16];
 extern t_drive driveA;
 extern t_drive driveB;
 extern t_FDC FDC;
+extern byte *memmap_ROM[256];
+extern byte *pbExpansionROM;
+extern byte *pbROMhi;
 
 // Friendly key names → CPC_KEYS for IPC input commands
 static const std::map<std::string, CPC_KEYS> ipc_key_names = {
@@ -188,7 +191,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2294,6 +2297,129 @@ std::string handle_command(const std::string& line) {
     }
     resp += "\n";
     return resp;
+  }
+
+
+  // --- ROM slot management ---
+  if (cmd == "rom" && parts.size() >= 2) {
+    if (parts[1] == "list") {
+      std::string resp = "OK";
+      for (int i = 0; i < 32; i++) {
+        resp += " ";
+        resp += std::to_string(i);
+        resp += "=";
+        if (CPC.rom_file[i].empty()) {
+          resp += "(empty)";
+        } else {
+          resp += CPC.rom_file[i];
+        }
+      }
+      resp += "\n";
+      return resp;
+    }
+    if (parts[1] == "load" && parts.size() >= 4) {
+      int slot = -1;
+      try { slot = std::stoi(parts[2]); } catch (...) {}
+      if (slot < 0 || slot > 31) return "ERR 400 slot must be 0-31\n";
+      std::string path;
+      for (size_t pi = 3; pi < parts.size(); pi++) {
+        if (!path.empty()) path += " ";
+        path += parts[pi];
+      }
+      // Strip surrounding quotes
+      if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+        path = path.substr(1, path.size() - 2);
+      }
+      if (path.empty()) return "ERR 400 missing-path\n";
+      // Resolve relative paths against rom_path
+      if (path[0] != '/' && path[0] != '\\' && !(path.size() >= 2 && path[1] == ':')) {
+        path = CPC.rom_path + "/" + path;
+      }
+      // Validate file exists and is a valid ROM
+      FILE *f = fopen(path.c_str(), "rb");
+      if (!f) return "ERR 404 file-not-found\n";
+      byte header[128];
+      if (fread(header, 128, 1, f) != 1) {
+        fclose(f);
+        return "ERR 400 file-too-small\n";
+      }
+      // Check for AMSDOS header and skip if present
+      word checksum = 0;
+      for (int n = 0; n < 0x43; n++) checksum += header[n];
+      bool has_amsdos = (checksum == ((header[0x43] << 8) + header[0x44]));
+      if (has_amsdos) {
+        if (fread(header, 128, 1, f) != 1) {
+          fclose(f);
+          return "ERR 400 file-too-small-after-header\n";
+        }
+      }
+      // Validate ROM type byte (0=foreground, 1=background, 2=extension) or Graduate 'G'
+      bool valid_rom = !(header[0] & 0xfc);
+      bool graduate_rom = (header[0] == 0x47);
+      if (!valid_rom && !graduate_rom) {
+        fclose(f);
+        return "ERR 400 not-a-valid-rom\n";
+      }
+      // Allocate and load
+      byte *rom_data = new byte[16384];
+      memcpy(rom_data, header, 128);
+      size_t remaining = 16384 - 128;
+      if (fread(rom_data + 128, remaining, 1, f) != 1) {
+        fclose(f);
+        delete[] rom_data;
+        return "ERR 400 rom-read-error\n";
+      }
+      fclose(f);
+      // Free old ROM data if present (but not for slots 0/1 which are system ROMs)
+      if (slot >= 2 && memmap_ROM[slot] != nullptr) {
+        delete[] memmap_ROM[slot];
+      }
+      memmap_ROM[slot] = rom_data;
+      CPC.rom_file[slot] = path;
+      // If the currently selected upper ROM is this slot, update pointer
+      if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
+        pbExpansionROM = memmap_ROM[slot];
+        if (!(GateArray.ROM_config & 0x08)) {
+          membank_read[3] = pbExpansionROM;
+        }
+      }
+      return "OK\n";
+    }
+    if (parts[1] == "unload" && parts.size() >= 3) {
+      int slot = -1;
+      try { slot = std::stoi(parts[2]); } catch (...) {}
+      if (slot < 0 || slot > 31) return "ERR 400 slot must be 0-31\n";
+      if (slot < 2) return "ERR 400 cannot-unload-system-rom\n";
+      if (memmap_ROM[slot] != nullptr) {
+        delete[] memmap_ROM[slot];
+        memmap_ROM[slot] = nullptr;
+      }
+      CPC.rom_file[slot] = "";
+      // If this was the active upper ROM, revert to BASIC
+      if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
+        pbExpansionROM = pbROMhi;
+        if (!(GateArray.ROM_config & 0x08)) {
+          membank_read[3] = pbExpansionROM;
+        }
+      }
+      return "OK\n";
+    }
+    if (parts[1] == "info" && parts.size() >= 3) {
+      int slot = -1;
+      try { slot = std::stoi(parts[2]); } catch (...) {}
+      if (slot < 0 || slot > 31) return "ERR 400 slot must be 0-31\n";
+      if (memmap_ROM[slot] == nullptr) {
+        return "OK slot=" + std::to_string(slot) + " loaded=false\n";
+      }
+      // Compute CRC32 of ROM data
+      uLong crc = crc32(0L, nullptr, 0);
+      crc = crc32(crc, memmap_ROM[slot], 16384);
+      char buf[256];
+      snprintf(buf, sizeof(buf), "OK slot=%d loaded=true size=16384 crc=%08lX path=%s\n",
+               slot, static_cast<unsigned long>(crc), CPC.rom_file[slot].c_str());
+      return std::string(buf);
+    }
+    return "ERR 400 bad-rom-cmd (list|load|unload|info)\n";
   }
 
   return "ERR 501 not-implemented\n";

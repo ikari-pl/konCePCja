@@ -276,7 +276,7 @@ class t_CPC {
    std::string sdump_dir;
 
    std::string rom_path;
-   std::string rom_file[16];
+   std::string rom_file[32];
    std::string rom_mf2;
 
    std::string current_snap_path; // Last used snapshot path in the file dialog.
