@@ -88,26 +88,6 @@ struct ImGuiUIState {
   bool vkeyboard_shift_next = false;     // SHIFT - one-shot, clears after 1 char
   bool vkeyboard_ctrl_next = false;      // CTRL - one-shot, clears after 1 char
 
-  // Debug windows (Phase 2)
-  bool show_registers = false;
-  bool show_disassembly = false;
-  bool show_memory_hex = false;
-  bool show_stack_window = false;
-  bool show_breakpoint_list = false;
-  bool show_symbol_table = false;
-
-  // Symbol table filter
-  char symtable_filter[64] = "";
-
-  // Disassembly window state
-  bool disasm_follow_pc = true;
-  char disasm_goto_addr[8] = "";
-  int disasm_goto_value = -1;
-
-  // Memory hex window state
-  char memhex_goto_addr[8] = "";
-  int memhex_goto_value = -1;
-  int memhex_bytes_per_row = 16;
 };
 
 extern ImGuiUIState imgui_state;
