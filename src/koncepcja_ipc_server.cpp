@@ -188,7 +188,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -430,6 +430,29 @@ std::string handle_command(const std::string& line) {
     }
     // regs asic → full ASIC state dump
     return "OK\n" + asic_dump_all() + "\n";
+  }
+  // Top-level "asic" commands for detailed views
+  if (cmd == "asic" && parts.size() >= 2) {
+    if (parts[1] == "sprite") {
+      if (parts.size() < 3) return "ERR 400 bad-args (asic sprite <0-15>)\n";
+      int idx = 0;
+      try { idx = std::stoi(parts[2]); } catch (...) { return "ERR 400 bad-args (asic sprite <0-15>)\n"; }
+      if (idx < 0 || idx > 15) return "ERR 400 sprite index out of range (0-15)\n";
+      return "OK\n" + asic_dump_sprite(idx) + "\n";
+    }
+    if (parts[1] == "palette") {
+      return "OK\n" + asic_dump_palette() + "\n";
+    }
+    if (parts[1] == "dma") {
+      if (parts.size() >= 3) {
+        int ch = 0;
+        try { ch = std::stoi(parts[2]); } catch (...) { return "ERR 400 bad-args (asic dma <0-2>)\n"; }
+        if (ch < 0 || ch > 2) return "ERR 400 DMA channel out of range (0-2)\n";
+        return "OK\n" + asic_dump_dma_channel(ch) + "\n";
+      }
+      return "OK\n" + asic_dump_dma() + "\n";
+    }
+    return "ERR 400 bad-args (asic sprite|palette|dma)\n";
   }
   if (cmd == "regs") {
     char out[256];

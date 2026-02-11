@@ -4,7 +4,9 @@
 #include <string>
 
 std::string asic_dump_dma();
+std::string asic_dump_dma_channel(int channel);
 std::string asic_dump_sprites();
+std::string asic_dump_sprite(int index);
 std::string asic_dump_interrupts();
 std::string asic_dump_palette();
 std::string asic_dump_all();

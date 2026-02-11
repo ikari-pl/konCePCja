@@ -25,6 +25,22 @@ std::string asic_dump_dma() {
   return out.str();
 }
 
+std::string asic_dump_dma_channel(int channel) {
+  if (channel < 0 || channel >= NB_DMA_CHANNELS) return "";
+  const dma_channel &ch = asic.dma.ch[channel];
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+           "ch%d: addr=%04X loop_addr=%04X prescaler=%02X enabled=%d "
+           "interrupt=%d pause=%d tick_cycles=%02X loop_count=%d",
+           channel, ch.source_address, ch.loop_address, ch.prescaler,
+           ch.enabled ? 1 : 0,
+           ch.interrupt ? 1 : 0,
+           (ch.pause_ticks > 0) ? 1 : 0,
+           ch.tick_cycles,
+           ch.loops);
+  return std::string(buf);
+}
+
 std::string asic_dump_sprites() {
   std::ostringstream out;
   for (int i = 0; i < 16; i++) {
@@ -37,6 +53,33 @@ std::string asic_dump_sprites() {
              static_cast<int>(asic.sprites_mag_y[i]));
     if (i > 0) out << "\n";
     out << buf;
+  }
+  return out.str();
+}
+
+std::string asic_dump_sprite(int index) {
+  if (index < 0 || index >= 16) return "";
+  std::ostringstream out;
+  char buf[128];
+  int mx = static_cast<int>(asic.sprites_mag_x[index]);
+  int my = static_cast<int>(asic.sprites_mag_y[index]);
+  bool enabled = (mx > 0 && my > 0);
+  snprintf(buf, sizeof(buf), "spr%d: x=%d y=%d mag_x=%d mag_y=%d enabled=%d",
+           index,
+           static_cast<int>(asic.sprites_x[index]),
+           static_cast<int>(asic.sprites_y[index]),
+           mx, my, enabled ? 1 : 0);
+  out << buf << "\n";
+  // 16x16 pixel data as hex (each pixel is a 4-bit palette index)
+  // In asic.sprites[id][x][y], color+16 is stored for non-zero (transparent=0)
+  for (int y = 0; y < 16; y++) {
+    for (int x = 0; x < 16; x++) {
+      byte pix = asic.sprites[index][x][y];
+      int val = (pix == 0) ? 0 : (pix - 16);
+      snprintf(buf, sizeof(buf), "%X", val & 0x0F);
+      out << buf;
+    }
+    if (y < 15) out << "\n";
   }
   return out.str();
 }
