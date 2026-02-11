@@ -1,5 +1,6 @@
 #include "koncepcja_ipc_server.h"
 #include "autotype.h"
+#include "gfx_finder.h"
 #include "search_engine.h"
 #include "imgui_ui.h"
 
@@ -192,7 +193,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2508,6 +2509,116 @@ std::string handle_command(const std::string& line) {
       return resp.str();
     }
     return "ERR 400 bad-data-cmd (mark|clear|list)\n";
+  }
+
+
+  // --- Graphics Finder commands ---
+  if (cmd == "gfx" && parts.size() >= 2) {
+    if (parts[1] == "view" && parts.size() >= 6) {
+      // gfx view <addr> <width_bytes> <height> <mode> [path]
+      try {
+        unsigned int addr = std::stoul(parts[2], nullptr, 0);
+        int w = std::stoi(parts[3]);
+        int h = std::stoi(parts[4]);
+        int mode = std::stoi(parts[5]);
+        if (mode < 0 || mode > 2) return "ERR 400 mode must be 0-2\n";
+        if (w <= 0 || w > 256) return "ERR 400 width must be 1-256 bytes\n";
+        if (h <= 0 || h > 256) return "ERR 400 height must be 1-256 rows\n";
+
+        GfxViewParams params;
+        params.address = static_cast<uint16_t>(addr & 0xFFFF);
+        params.width = w;
+        params.height = h;
+        params.mode = mode;
+
+        uint32_t palette[16];
+        gfx_get_palette_rgba(palette, 16);
+
+        std::vector<uint32_t> pixels;
+        int pixel_width = gfx_decode(pbRAM, CPC.ram_size * 1024, params, palette, pixels);
+        if (pixel_width == 0) return "ERR 500 decode failed\n";
+
+        if (parts.size() >= 7) {
+          // Export to BMP
+          if (!gfx_export_bmp(parts[6], pixels.data(), pixel_width, h)) {
+            return "ERR 500 export failed\n";
+          }
+          char buf[128];
+          snprintf(buf, sizeof(buf), "OK exported %dx%d to %s\n",
+                   pixel_width, h, parts[6].c_str());
+          return std::string(buf);
+        }
+
+        // Return hex dump of first row as preview
+        std::ostringstream resp;
+        resp << "OK " << pixel_width << "x" << h << " mode=" << mode << "\n";
+        return resp.str();
+      } catch (const std::exception& e) {
+        return std::string("ERR 400 ") + e.what() + "\n";
+      }
+    }
+    if (parts[1] == "decode" && parts.size() >= 4) {
+      // gfx decode <byte_hex> <mode> — decode a single byte
+      try {
+        unsigned int byte_val = std::stoul(parts[2], nullptr, 16);
+        int mode = std::stoi(parts[3]);
+        uint8_t indices[8];
+        int count = gfx_decode_byte(static_cast<uint8_t>(byte_val), mode, indices);
+        if (count == 0) return "ERR 400 invalid mode\n";
+        std::ostringstream resp;
+        resp << "OK";
+        for (int i = 0; i < count; i++) {
+          resp << " " << static_cast<int>(indices[i]);
+        }
+        resp << "\n";
+        return resp.str();
+      } catch (const std::exception& e) {
+        return std::string("ERR 400 ") + e.what() + "\n";
+      }
+    }
+    if (parts[1] == "paint" && parts.size() >= 8) {
+      // gfx paint <addr> <width_bytes> <height> <mode> <x> <y> <color>
+      // Note: parts indices are paint=1, addr=2, w=3, h=4, mode=5, x=6, y=7, color=8
+      // We need 9 parts total for the paint command
+      if (parts.size() < 9) return "ERR 400 usage: gfx paint <addr> <w> <h> <mode> <x> <y> <color>\n";
+      try {
+        unsigned int addr = std::stoul(parts[2], nullptr, 0);
+        int w = std::stoi(parts[3]);
+        int h = std::stoi(parts[4]);
+        int mode = std::stoi(parts[5]);
+        int x = std::stoi(parts[6]);
+        int y = std::stoi(parts[7]);
+        int color = std::stoi(parts[8]);
+
+        GfxViewParams params;
+        params.address = static_cast<uint16_t>(addr & 0xFFFF);
+        params.width = w;
+        params.height = h;
+        params.mode = mode;
+
+        if (!gfx_paint(pbRAM, CPC.ram_size * 1024, params, x, y,
+                       static_cast<uint8_t>(color))) {
+          return "ERR 400 paint failed (out of bounds?)\n";
+        }
+        return "OK\n";
+      } catch (const std::exception& e) {
+        return std::string("ERR 400 ") + e.what() + "\n";
+      }
+    }
+    if (parts[1] == "palette") {
+      // gfx palette — show current palette as RGBA hex
+      uint32_t palette[16];
+      gfx_get_palette_rgba(palette, 16);
+      std::ostringstream resp;
+      resp << "OK\n";
+      for (int i = 0; i < 16; i++) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%2d: #%08X\n", i, palette[i]);
+        resp << buf;
+      }
+      return resp.str();
+    }
+    return "ERR 400 bad-gfx-cmd (view|decode|paint|palette)\n";
   }
 
   return "ERR 501 not-implemented\n";
