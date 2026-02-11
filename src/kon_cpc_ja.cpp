@@ -69,6 +69,7 @@ namespace {
 #include "argparse.h"
 #include "slotshandler.h"
 #include "fileutils.h"
+#include "imgui_ui_testable.h"
 
 #include <errno.h>
 #include <cstring>
@@ -1910,9 +1911,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    }
    CPC.jumpers = conf.getIntValue("system", "jumpers", 0x1e) & 0x1e; // OEM is Amstrad, video refresh is 50Hz
    CPC.ram_size = conf.getIntValue("system", "ram_size", 128);
-   // Validate RAM size: allowed values are 64, 128, 256, 512, 576, 4160 (Yarek 4MB)
-   if (CPC.ram_size != 64 && CPC.ram_size != 128 && CPC.ram_size != 256 &&
-       CPC.ram_size != 512 && CPC.ram_size != 576 && CPC.ram_size != 4160) {
+   if (!is_valid_ram_size(CPC.ram_size)) {
       CPC.ram_size = 128; // default to 128KB
    }
    if ((CPC.model >= 2) && (CPC.ram_size < 128)) {

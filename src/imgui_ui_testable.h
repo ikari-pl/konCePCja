@@ -55,6 +55,14 @@ constexpr int RAM_SIZE_COUNT = sizeof(RAM_SIZES) / sizeof(RAM_SIZES[0]);
 constexpr unsigned int SAMPLE_RATES[] = { 11025, 22050, 44100, 48000, 96000 };
 constexpr int SAMPLE_RATE_COUNT = sizeof(SAMPLE_RATES) / sizeof(SAMPLE_RATES[0]);
 
+// Check if a RAM size is in the allowed set
+inline bool is_valid_ram_size(unsigned int ram) {
+  for (int i = 0; i < RAM_SIZE_COUNT; i++) {
+    if (RAM_SIZES[i] == ram) return true;
+  }
+  return false;
+}
+
 // Find index of RAM size in options array, returns 2 (192 KB default) if not found
 inline int find_ram_index(unsigned int ram) {
   for (int i = 0; i < RAM_SIZE_COUNT; i++) {
