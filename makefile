@@ -104,6 +104,31 @@ endif
 CXX ?= g++
 COMMON_CFLAGS += -fPIC
 
+# Optional libjpeg support for AVI recording
+# jpeg-turbo on macOS is keg-only, so check both default and homebrew paths
+BREW := $(shell which brew 2>/dev/null)
+ifneq ($(BREW),)
+JPEG_PREFIX := $(shell $(BREW) --prefix jpeg-turbo 2>/dev/null)
+ifeq ($(JPEG_PREFIX),)
+JPEG_PREFIX := $(shell $(BREW) --prefix libjpeg-turbo 2>/dev/null)
+endif
+endif
+ifneq ($(JPEG_PREFIX),)
+HAS_LIBJPEG := $(shell test -f $(JPEG_PREFIX)/include/jpeglib.h && echo 1)
+ifeq ($(HAS_LIBJPEG),1)
+COMMON_CFLAGS += -DHAS_LIBJPEG -I$(JPEG_PREFIX)/include
+LIBS += -L$(JPEG_PREFIX)/lib -ljpeg
+endif
+else
+# Fallback: test whether the compiler can actually find and preprocess jpeglib.h
+# Use printf with octal \043 for '#' to avoid shell escaping issues
+HAS_LIBJPEG := $(shell printf '\043include <jpeglib.h>' | $(CXX) -x c++ -E - >/dev/null 2>&1 && echo 1)
+ifeq ($(HAS_LIBJPEG),1)
+COMMON_CFLAGS += -DHAS_LIBJPEG
+LIBS += -ljpeg
+endif
+endif
+
 ifneq (,$(findstring g++,$(CXX)))
 LIBS += -lstdc++fs
 endif

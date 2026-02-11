@@ -50,6 +50,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "trace.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
+#include "avi_recorder.h"
 #include "macos_menu.h"
 
 #include "imgui.h"
@@ -1449,6 +1450,11 @@ void audio_update([[maybe_unused]] void *userdata, SDL_AudioStream *stream, int 
       SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
       if (g_wav_recorder.is_recording()) {
         g_wav_recorder.write_samples(pbSndBuffer.get(), static_cast<uint32_t>(len));
+      }
+      if (g_avi_recorder.is_recording()) {
+        g_avi_recorder.capture_audio_samples(
+           reinterpret_cast<const int16_t*>(pbSndBuffer.get()),
+           static_cast<size_t>(len) / sizeof(int16_t));
       }
     }
   } else {
@@ -3504,6 +3510,13 @@ int koncpc_main (int argc, char **argv)
             // YM register recording: capture PSG state once per VBL
             if (g_ym_recorder.is_recording()) {
                g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
+            }
+
+            // AVI video recording: capture frame once per VBL
+            if (g_avi_recorder.is_recording()) {
+               g_avi_recorder.capture_video_frame(
+                  static_cast<const uint8_t*>(back_surface->pixels),
+                  back_surface->w, back_surface->h, back_surface->pitch);
             }
 
             // Auto-type: drain queue one action per frame
