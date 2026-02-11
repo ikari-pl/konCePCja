@@ -189,8 +189,16 @@ TEST(FindRamIndex, Find320KB) {
   EXPECT_EQ(4, find_ram_index(320));
 }
 
+TEST(FindRamIndex, Find512KB) {
+  EXPECT_EQ(5, find_ram_index(512));
+}
+
 TEST(FindRamIndex, Find576KB) {
-  EXPECT_EQ(5, find_ram_index(576));
+  EXPECT_EQ(6, find_ram_index(576));
+}
+
+TEST(FindRamIndex, Find4160KB) {
+  EXPECT_EQ(7, find_ram_index(4160));
 }
 
 TEST(FindRamIndex, InvalidValue) {

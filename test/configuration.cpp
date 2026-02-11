@@ -192,7 +192,7 @@ TEST_F(ConfigurationTest, loadConfigurationWithInvalidValues)
   configFile << "[system]\n"
              << "model=4\n" // model should be <= 3 - default to 2
              << "jumpers=255\n" // jumpers is & with 0x1e == 30
-             << "ram_size=704\n" // max ram size is 576 - moreover it's & with 704
+             << "ram_size=704\n" // 704 is not a valid RAM size, defaults to 128
              << "speed=64\n" // max speed is 32 - will default to 4
              << "printer=2\n" // printer should be 0 or 1 - it's & with 1
              << "resources_path=\n"
@@ -205,7 +205,7 @@ TEST_F(ConfigurationTest, loadConfigurationWithInvalidValues)
 
   ASSERT_EQ(2, CPC.model);
   ASSERT_EQ(30, CPC.jumpers);
-  ASSERT_EQ(576, CPC.ram_size);
+  ASSERT_EQ(128, CPC.ram_size);
   ASSERT_EQ(4, CPC.speed);
   ASSERT_EQ(1, CPC.limit_speed);
   ASSERT_EQ(0, CPC.printer);

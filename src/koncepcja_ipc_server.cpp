@@ -2200,6 +2200,9 @@ std::string handle_command(const std::string& line) {
                  crtc_type_manufacturer(CRTC.crtc_type));
         return std::string(buf) + "\n";
       }
+      if (parts[2] == "ram_size") {
+        return "OK " + std::to_string(CPC.ram_size) + "\n";
+      }
       return "ERR 400 unknown-config-key\n";
     }
     if (parts[1] == "set" && parts.size() >= 4) {
@@ -2208,6 +2211,14 @@ std::string handle_command(const std::string& line) {
         if (t < 0 || t > 3) return "ERR 400 crtc_type must be 0-3\n";
         CRTC.crtc_type = static_cast<unsigned char>(t);
         return "OK\n";
+      }
+      if (parts[2] == "ram_size") {
+        int sz = std::stoi(parts[3]);
+        if (sz != 64 && sz != 128 && sz != 256 && sz != 512 && sz != 576 && sz != 4160) {
+          return "ERR 400 ram_size must be 64|128|256|512|576|4160\n";
+        }
+        CPC.ram_size = static_cast<unsigned int>(sz);
+        return "OK (reset required)\n";
       }
       return "ERR 400 unknown-config-key\n";
     }
