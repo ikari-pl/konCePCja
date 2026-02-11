@@ -1069,8 +1069,8 @@ static const char* scale_items[] = { "1x", "2x", "3x", "4x" };
 static const char* sample_rates[] = { "11025", "22050", "44100", "48000", "96000" };
 static int sample_rate_values[] = { 11025, 22050, 44100, 48000, 96000 };
 static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
-static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "576 KB" };
-static int ram_size_values[] = { 64, 128, 192, 256, 320, 576 };
+static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)" };
+static int ram_size_values[] = { 64, 128, 192, 256, 320, 512, 576, 4160 };
 
 // find_ram_index and find_sample_rate_index moved to imgui_ui_testable.h
 

@@ -53,6 +53,7 @@ else ifeq ($(ARCH),macos)
 # Yes that's weird, but the build on macos works the same way as on linux
 PLATFORM=linux
 COMMON_CFLAGS += -DGL_SILENCE_DEPRECATION
+WARN_SUPPRESS = -Wno-error=old-style-cast -Wno-error=zero-as-null-pointer-constant -Wno-error=missing-braces -Wno-error=deprecated-declarations -Wno-error=self-assign -Wno-error=vla-cxx-extension
 LDFLAGS += -framework Cocoa -framework OpenGL
 else
 $(error Unknown ARCH. Supported ones are linux, win32 and win64.)

@@ -48,7 +48,7 @@ inline bool safe_read_dword(byte* p, byte* end, size_t offset, dword& out) {
 // ─────────────────────────────────────────────────
 
 // RAM size options in KB
-constexpr unsigned int RAM_SIZES[] = { 64, 128, 192, 256, 320, 576 };
+constexpr unsigned int RAM_SIZES[] = { 64, 128, 192, 256, 320, 512, 576, 4160 };
 constexpr int RAM_SIZE_COUNT = sizeof(RAM_SIZES) / sizeof(RAM_SIZES[0]);
 
 // Sample rate options in Hz

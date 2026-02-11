@@ -353,6 +353,13 @@ void ga_memory_manager ()
    if (CPC.ram_size == 64) { // 64KB of RAM?
       mem_bank = 0; // no expansion memory
       GateArray.RAM_config = 0; // the only valid configuration is 0
+   } else if (CPC.ram_size > 576) {
+      // Yarek 4MB expansion: 6-bit bank number from data bits 5-3 (low) and
+      // inverted port address bits 5-3 (high), stored in GateArray.RAM_ext
+      mem_bank = (static_cast<dword>(GateArray.RAM_ext) << 3) | ((GateArray.RAM_config >> 3) & 7);
+      if (((mem_bank+2)*64) > CPC.ram_size) { // selection is beyond available memory?
+         mem_bank = 0; // force default mapping
+      }
    } else {
       mem_bank = (GateArray.RAM_config >> 3) & 7; // extract expansion memory bank
       if (((mem_bank+2)*64) > CPC.ram_size) { // selection is beyond available memory?
@@ -653,6 +660,9 @@ void z80_OUT_handler (reg_pair port, byte val)
      #endif
      LOG_DEBUG("RAM config: " << std::hex << static_cast<int>(val) << std::dec);
      GateArray.RAM_config = val;
+     // Yarek 4MB: extract extended bank bits from inverted port address bits 5-3
+     // Standard port #7F has bits 5-3 = 111, inverted = 000 (bank 0, backward compatible)
+     GateArray.RAM_ext = (~port.b.h >> 3) & 7;
      ga_memory_manager();
      if (CPC.mf2) { // MF2 enabled?
         *(pbMF2ROM + 0x03fff) = val;
@@ -1899,10 +1909,13 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
       CPC.model = 2;
    }
    CPC.jumpers = conf.getIntValue("system", "jumpers", 0x1e) & 0x1e; // OEM is Amstrad, video refresh is 50Hz
-   CPC.ram_size = conf.getIntValue("system", "ram_size", 128) & 0x02c0; // 128KB RAM
-   if (CPC.ram_size > 576) {
-      CPC.ram_size = 576;
-   } else if ((CPC.model >= 2) && (CPC.ram_size < 128)) {
+   CPC.ram_size = conf.getIntValue("system", "ram_size", 128);
+   // Validate RAM size: allowed values are 64, 128, 256, 512, 576, 4160 (Yarek 4MB)
+   if (CPC.ram_size != 64 && CPC.ram_size != 128 && CPC.ram_size != 256 &&
+       CPC.ram_size != 512 && CPC.ram_size != 576 && CPC.ram_size != 4160) {
+      CPC.ram_size = 128; // default to 128KB
+   }
+   if ((CPC.model >= 2) && (CPC.ram_size < 128)) {
       CPC.ram_size = 128; // minimum RAM size for CPC 6128 is 128KB
    }
    CPC.speed = conf.getIntValue("system", "speed", DEF_SPEED_SETTING); // original CPC speed

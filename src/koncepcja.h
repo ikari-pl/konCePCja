@@ -356,6 +356,7 @@ typedef struct {
    bool registerPageOn;
    unsigned char RAM_bank;
    unsigned char RAM_config;
+   unsigned char RAM_ext;        // extended bank bits from port address (Yarek 4MB)
    unsigned char upper_ROM;
    unsigned int requested_scr_mode;
    unsigned int scr_mode;
@@ -425,6 +426,7 @@ using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
 void set_osd_message(const std::string& message, uint32_t for_milliseconds = 1000);
 void koncpc_queue_virtual_keys(const std::string& text);
 void ga_init_banking(t_MemBankConfig& membank_config, unsigned char RAM_bank);
+void ga_memory_manager();
 bool driveAltered();
 void emulator_reset();
 void cpc_pause();
