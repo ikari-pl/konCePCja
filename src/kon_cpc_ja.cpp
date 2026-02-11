@@ -1249,7 +1249,7 @@ int emulator_init ()
       return iErr;
    }
 
-   for (iRomNum = 0; iRomNum < 16; iRomNum++) { // loop for ROMs 0-15
+   for (iRomNum = 0; iRomNum < 32; iRomNum++) { // loop for ROMs 0-31
       if (!CPC.rom_file[iRomNum].empty()) { // is a ROM image specified for this slot?
          std::string rom_file = CPC.rom_file[iRomNum];
          if (rom_file == "DEFAULT") {
@@ -1365,7 +1365,7 @@ void emulator_shutdown ()
    delete [] pbMF2ROM;
    pbMF2ROM = nullptr;
    pbMF2ROMbackup = nullptr;
-   for (iRomNum = 2; iRomNum < 16; iRomNum++) // loop for ROMs 2-15
+   for (iRomNum = 2; iRomNum < 32; iRomNum++) // loop for ROMs 2-31
    {
       if (memmap_ROM[iRomNum] != nullptr) // was a ROM assigned to this slot?
          delete [] memmap_ROM[iRomNum]; // if so, release the associated memory
@@ -1991,7 +1991,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    CPC.sdump_dir = conf.getStringValue("file", "sdump_dir", appPath + "/screenshots");
 
    CPC.rom_path = conf.getStringValue("rom", "rom_path", appPath + "/rom/");
-   for (int iRomNum = 0; iRomNum < 16; iRomNum++) { // loop for ROMs 0-15
+   for (int iRomNum = 0; iRomNum < 32; iRomNum++) { // loop for ROMs 0-31
       char chRomId[14];
       snprintf(chRomId, sizeof(chRomId), "slot%02d", iRomNum); // build ROM ID
       CPC.rom_file[iRomNum] = conf.getStringValue("rom", chRomId, "");
@@ -2065,7 +2065,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setStringValue("file", "sdump_dir", CPC.sdump_dir);
 
    conf.setStringValue("rom", "rom_path", CPC.rom_path);
-   for (int iRomNum = 0; iRomNum < 16; iRomNum++) { // loop for ROMs 0-15
+   for (int iRomNum = 0; iRomNum < 32; iRomNum++) { // loop for ROMs 0-31
       char chRomId[14];
       snprintf(chRomId, sizeof(chRomId), "slot%02d", iRomNum); // build ROM ID
       conf.setStringValue("rom", chRomId, CPC.rom_file[iRomNum]);
