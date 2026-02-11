@@ -1,5 +1,6 @@
 #include "koncepcja_ipc_server.h"
 #include "autotype.h"
+#include "search_engine.h"
 #include "imgui_ui.h"
 
 #include <cstring>
@@ -186,7 +187,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2152,6 +2153,91 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 unknown-config-key\n";
     }
     return "ERR 400 bad-config-cmd (get|set)\n";
+  }
+
+  // --- Enhanced search command (with wildcard support) ---
+  if (cmd == "search" && parts.size() >= 3) {
+    std::string submode = parts[1];
+    // Collect pattern from remaining parts
+    std::string pattern;
+    for (size_t pi = 2; pi < parts.size(); pi++) {
+      if (!pattern.empty()) pattern += " ";
+      pattern += parts[pi];
+    }
+    // Strip surrounding quotes
+    if (pattern.size() >= 2 && pattern.front() == '"' && pattern.back() == '"') {
+      pattern = pattern.substr(1, pattern.size() - 2);
+    }
+    if (pattern.empty()) return "ERR 400 empty-pattern\n";
+
+    SearchMode mode;
+    if (submode == "hex") mode = SearchMode::HEX;
+    else if (submode == "text") mode = SearchMode::TEXT;
+    else if (submode == "asm") mode = SearchMode::ASM;
+    else return "ERR 400 bad-search-mode (hex|text|asm)\n";
+
+    if (mode == SearchMode::ASM) {
+      // ASM mode uses disassembly infrastructure directly
+      std::string lower_pattern = pattern;
+      for (auto& c : lower_pattern) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      std::string resp = "OK";
+      int found = 0;
+      DisassembledCode dummy;
+      std::vector<dword> dummy_eps;
+      for (unsigned int addr = 0; addr <= 0xFFFF && found < 256; ) {
+        auto line = disassemble_one(addr, dummy, dummy_eps);
+        std::string lower_instr = line.instruction_;
+        for (auto& c : lower_instr) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        bool match = false;
+        // Glob match with ? for single char and * for any sequence
+        size_t gpi = 0, gti = 0;
+        size_t plen = lower_pattern.size(), tlen = lower_instr.size();
+        size_t star_p = std::string::npos, star_t = 0;
+        while (gti < tlen) {
+          if (gpi < plen && (lower_pattern[gpi] == lower_instr[gti] || lower_pattern[gpi] == '?')) {
+            gpi++; gti++;
+          } else if (gpi < plen && lower_pattern[gpi] == '*') {
+            star_p = gpi++;
+            star_t = gti;
+          } else if (star_p != std::string::npos) {
+            gpi = star_p + 1;
+            gti = ++star_t;
+          } else {
+            break;
+          }
+        }
+        while (gpi < plen && lower_pattern[gpi] == '*') gpi++;
+        match = (gpi == plen && gti == tlen);
+        if (match) {
+          char buf[32];
+          snprintf(buf, sizeof(buf), " %04X", addr);
+          resp += buf;
+          resp += " ";
+          resp += line.instruction_;
+          found++;
+        }
+        int sz = line.Size();
+        if (sz < 1) sz = 1;
+        addr += static_cast<unsigned int>(sz);
+      }
+      resp += "\n";
+      return resp;
+    }
+
+    // HEX / TEXT mode: read full 64K into buffer
+    std::vector<uint8_t> membuf(65536);
+    for (size_t i = 0; i < 65536; i++) {
+      membuf[i] = z80_read_mem(static_cast<word>(i));
+    }
+    auto results = search_memory(membuf.data(), membuf.size(), pattern, mode, 256);
+    std::string resp = "OK";
+    for (const auto& r : results) {
+      char buf[16];
+      snprintf(buf, sizeof(buf), " %04X", r.address);
+      resp += buf;
+    }
+    resp += "\n";
+    return resp;
   }
 
   return "ERR 501 not-implemented\n";
