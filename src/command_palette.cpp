@@ -205,17 +205,15 @@ void CommandPalette::render() {
       } else if (ipc_history_pos_ > 0) {
         ipc_history_pos_--;
       }
-      std::strncpy(ipc_input_buf_,
-                    ipc_history_[static_cast<size_t>(ipc_history_pos_)].c_str(),
-                    sizeof(ipc_input_buf_) - 1);
+      snprintf(ipc_input_buf_, sizeof(ipc_input_buf_), "%s",
+               ipc_history_[static_cast<size_t>(ipc_history_pos_)].c_str());
     }
     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow) && !ipc_history_.empty()) {
       if (ipc_history_pos_ >= 0 &&
           ipc_history_pos_ < static_cast<int>(ipc_history_.size()) - 1) {
         ipc_history_pos_++;
-        std::strncpy(ipc_input_buf_,
-                      ipc_history_[static_cast<size_t>(ipc_history_pos_)].c_str(),
-                      sizeof(ipc_input_buf_) - 1);
+        snprintf(ipc_input_buf_, sizeof(ipc_input_buf_), "%s",
+                 ipc_history_[static_cast<size_t>(ipc_history_pos_)].c_str());
       } else {
         ipc_history_pos_ = -1;
         std::memset(ipc_input_buf_, 0, sizeof(ipc_input_buf_));

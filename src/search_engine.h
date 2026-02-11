@@ -31,7 +31,7 @@ std::vector<PatternElement> compile_text_pattern(const std::string& pattern,
                                                  bool case_insensitive = true);
 bool match_pattern(const std::vector<PatternElement>& compiled,
                    const uint8_t* mem, size_t mem_size, size_t offset,
-                   size_t& match_len);
+                   size_t& match_len, bool case_insensitive = false);
 int fuzzy_score(const std::string& query, const std::string& text);
 
 } // namespace search_detail

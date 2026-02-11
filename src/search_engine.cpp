@@ -116,32 +116,15 @@ static bool match_recursive(const std::vector<PatternElement>& compiled,
 
 bool match_pattern(const std::vector<PatternElement>& compiled,
                    const uint8_t* mem, size_t mem_size, size_t offset,
-                   size_t& match_len) {
+                   size_t& match_len, bool case_insensitive) {
   if (compiled.empty()) {
     match_len = 0;
     return true;
   }
-  // Determine if this is a text pattern (has case-insensitive literals)
-  // We always use case-insensitive for text patterns since compile_text_pattern
-  // stores uppercase. For hex patterns the bytes are exact.
-  // To distinguish: check if any literal has value > 0x7F or is already uppercase ASCII.
-  // Actually, we just pass false for hex and the caller can decide.
-  // For simplicity in this unified matcher, we check if uppercase matching is needed
-  // by looking at whether any literal is an ASCII letter.
-  bool has_alpha = false;
-  for (const auto& e : compiled) {
-    if (e.kind == PatternElement::LITERAL) {
-      uint8_t v = e.value;
-      if ((v >= 'A' && v <= 'Z') || (v >= 'a' && v <= 'z')) {
-        has_alpha = true;
-        break;
-      }
-    }
-  }
 
   size_t match_end = 0;
   if (match_recursive(compiled, 0, mem, mem_size, offset, offset,
-                       match_end, has_alpha)) {
+                       match_end, case_insensitive)) {
     match_len = match_end - offset;
     return true;
   }
@@ -235,7 +218,7 @@ std::vector<SearchResult> search_memory(const uint8_t* mem, size_t mem_size,
 
     for (size_t addr = 0; addr < mem_size && results.size() < max_results; addr++) {
       size_t match_len = 0;
-      if (search_detail::match_pattern(compiled, mem, mem_size, addr, match_len)) {
+      if (search_detail::match_pattern(compiled, mem, mem_size, addr, match_len, true)) {
         SearchResult r;
         r.address = static_cast<uint16_t>(addr);
         r.matched_bytes.assign(mem + addr, mem + addr + match_len);

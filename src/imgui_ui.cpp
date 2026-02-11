@@ -235,12 +235,6 @@ void imgui_init_ui()
     g_command_palette.register_command(
         title, "", shortcut,
         [action_key]() {
-          // Inject the emulator key as a virtual event
-          SDL_Event ev{};
-          ev.type = SDL_EVENT_KEY_UP;
-          ev.key.key = SDLK_UNKNOWN;
-          // Emulator keys are dispatched via the scancode path; for simplicity
-          // we directly toggle the relevant state here.
           extern void applyKeypress(CPCScancode scancode, byte keyboard_matrix[], bool pressed);
           extern byte keyboard_matrix[];
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, true);
@@ -251,7 +245,7 @@ void imgui_init_ui()
   g_command_palette.register_command("Pause / Resume", "Toggle emulation pause", "Pause",
       []() {
         extern t_CPC CPC;
-        if (CPC.paused) { CPC.paused = false; } else { CPC.paused = true; }
+        CPC.paused = !CPC.paused;
       });
   g_command_palette.register_command("DevTools", "Open developer tools", "Shift+F2",
       []() { imgui_state.show_devtools = !imgui_state.show_devtools; });
