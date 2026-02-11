@@ -132,7 +132,7 @@ static void process_pending_dialog()
       close_menu();
       break;
     case FileDialogAction::LoadROM:
-      if (rom_slot >= 0 && rom_slot < 32)
+      if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS)
         CPC.rom_file[rom_slot] = path;
       break;
     default:
@@ -1128,7 +1128,7 @@ static void imgui_render_options()
     if (ImGui::BeginTabItem("ROMs")) {
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
-      for (int i = 0; i < 32; i++) {
+      for (int i = 0; i < MAX_ROM_SLOTS; i++) {
         char label[32];
         snprintf(label, sizeof(label), "Slot %d", i);
         float col_width = (ImGui::GetContentRegionAvail().x - 8) / 2.0f;
