@@ -47,6 +47,7 @@
 #include "asic_debug.h"
 #include "drive_status.h"
 #include "crtc.h"
+#include "data_areas.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -191,7 +192,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -647,26 +648,52 @@ std::string handle_command(const std::string& line) {
           std::string sym = g_symfile.lookupAddr(pos);
           if (!sym.empty()) resp << sym << ":\n";
         }
-        auto line = disassemble_one(pos, code, entry_points);
-        code.lines.insert(line);
-        if (with_symbols && !line.ref_address_string_.empty()) {
-          // Try to replace hex reference with symbol name
-          std::string sym = g_symfile.lookupAddr(line.ref_address_);
-          if (!sym.empty()) {
-            std::string instr = line.instruction_;
-            auto ref_pos = instr.find(line.ref_address_string_);
-            if (ref_pos != std::string::npos) {
-              instr.replace(ref_pos, line.ref_address_string_.size(), sym);
+        // Check if this address is in a data area
+        const DataArea* da = g_data_areas.find(pos);
+        if (da) {
+          // Use data area formatting instead of disassembly
+          // Build a flat memory buffer from z80_read_mem for the needed range
+          int line_bytes = 0;
+          if (da->type == DataType::BYTES) {
+            line_bytes = std::min(static_cast<int>(da->end) - static_cast<int>(pos) + 1, 8);
+          } else if (da->type == DataType::WORDS) {
+            int rem = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
+            line_bytes = std::min((rem / 2) * 2, 8);
+            if (line_bytes == 0 && rem >= 2) line_bytes = 2;
+          } else {
+            // TEXT: consume remaining bytes in the data area (up to 64)
+            line_bytes = std::min(static_cast<int>(da->end) - static_cast<int>(pos) + 1, 64);
+          }
+          if (line_bytes == 0) line_bytes = 1;
+          std::vector<uint8_t> membuf(static_cast<size_t>(da->end) + 1);
+          for (size_t mi = da->start; mi <= da->end; mi++) {
+            membuf[mi] = z80_read_mem(static_cast<word>(mi));
+          }
+          std::string formatted = g_data_areas.format_at(pos, membuf.data(), membuf.size());
+          resp << std::setfill('0') << std::setw(4) << std::hex << pos << ":          " << formatted << "\n";
+          pos = static_cast<word>(pos + line_bytes);
+        } else {
+          auto line = disassemble_one(pos, code, entry_points);
+          code.lines.insert(line);
+          if (with_symbols && !line.ref_address_string_.empty()) {
+            // Try to replace hex reference with symbol name
+            std::string sym = g_symfile.lookupAddr(line.ref_address_);
+            if (!sym.empty()) {
+              std::string instr = line.instruction_;
+              auto ref_pos = instr.find(line.ref_address_string_);
+              if (ref_pos != std::string::npos) {
+                instr.replace(ref_pos, line.ref_address_string_.size(), sym);
+              }
+              resp << std::setfill('0') << std::setw(4) << std::hex << line.address_ << ": ";
+              resp << std::setfill(' ') << std::setw(8) << line.opcode_ << " " << instr << "\n";
+            } else {
+              resp << line << "\n";
             }
-            resp << std::setfill('0') << std::setw(4) << std::hex << line.address_ << ": ";
-            resp << std::setfill(' ') << std::setw(8) << line.opcode_ << " " << instr << "\n";
           } else {
             resp << line << "\n";
           }
-        } else {
-          resp << line << "\n";
+          pos = static_cast<word>(pos + line.Size());
         }
-        pos = static_cast<word>(pos + line.Size());
       }
       return resp.str();
     }
@@ -2430,6 +2457,57 @@ std::string handle_command(const std::string& line) {
       return std::string(buf);
     }
     return "ERR 400 bad-rom-cmd (list|load|unload|info)\n";
+  }
+
+  if (cmd == "data" && parts.size() >= 2) {
+    if (parts[1] == "mark" && parts.size() >= 5) {
+      unsigned int start = std::stoul(parts[2], nullptr, 0);
+      unsigned int end = std::stoul(parts[3], nullptr, 0);
+      if (start > 0xFFFF || end > 0xFFFF || start > end)
+        return "ERR 400 bad-range\n";
+      DataType dtype;
+      if (parts[4] == "bytes") dtype = DataType::BYTES;
+      else if (parts[4] == "words") dtype = DataType::WORDS;
+      else if (parts[4] == "text") dtype = DataType::TEXT;
+      else return "ERR 400 bad-type (bytes|words|text)\n";
+      std::string label;
+      if (parts.size() >= 6) {
+        for (size_t i = 5; i < parts.size(); i++) {
+          if (!label.empty()) label += " ";
+          label += parts[i];
+        }
+      }
+      g_data_areas.mark(static_cast<uint16_t>(start), static_cast<uint16_t>(end), dtype, label);
+      return "OK\n";
+    }
+    if (parts[1] == "clear") {
+      if (parts.size() >= 3 && parts[2] == "all") {
+        g_data_areas.clear_all();
+        return "OK\n";
+      }
+      if (parts.size() >= 3) {
+        unsigned int start = std::stoul(parts[2], nullptr, 0);
+        g_data_areas.clear(static_cast<uint16_t>(start));
+        return "OK\n";
+      }
+    }
+    if (parts[1] == "list") {
+      auto areas = g_data_areas.list();
+      std::ostringstream resp;
+      resp << "OK count=" << areas.size() << "\n";
+      for (const auto& a : areas) {
+        char buf[64];
+        const char* type_str = "bytes";
+        if (a.type == DataType::WORDS) type_str = "words";
+        else if (a.type == DataType::TEXT) type_str = "text";
+        snprintf(buf, sizeof(buf), "%04X %04X %s", a.start, a.end, type_str);
+        resp << buf;
+        if (!a.label.empty()) resp << " " << a.label;
+        resp << "\n";
+      }
+      return resp.str();
+    }
+    return "ERR 400 bad-data-cmd (mark|clear|list)\n";
   }
 
   return "ERR 501 not-implemented\n";
