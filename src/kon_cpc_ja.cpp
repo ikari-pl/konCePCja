@@ -55,6 +55,8 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_ui.h"
+#include "command_palette.h"
+#include "menu_actions.h"
 
 Symfile g_symfile;
 
@@ -3111,6 +3113,15 @@ int koncpc_main (int argc, char **argv)
 
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
+
+         // Check for command palette shortcut (Cmd+K / Ctrl+K)
+         if (event.type == SDL_EVENT_KEY_DOWN) {
+           bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
+           bool cmd_key = (event.key.mod & SDL_KMOD_GUI) != 0;
+           if (g_command_palette.handle_key(event.key.key, ctrl, cmd_key)) {
+             continue;
+           }
+         }
 
          // If ImGui wants input, skip emulator processing
          {

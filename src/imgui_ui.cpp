@@ -1,6 +1,8 @@
 #include "imgui_ui.h"
 #include "imgui_ui_testable.h"
 #include "imgui.h"
+#include "command_palette.h"
+#include "menu_actions.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,6 +19,7 @@
 #include "tape.h"
 #include "video.h"
 #include "symfile.h"
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 
 extern SDL_Window* mainSDLWindow;
@@ -221,6 +224,43 @@ void imgui_init_ui()
     style.WindowRounding = 0.0f;
     c[ImGuiCol_WindowBg].w = 1.0f;
   }
+
+  // Register command palette entries from menu actions
+  g_command_palette.clear_commands();
+  for (const auto& ma : koncpc_menu_actions()) {
+    if (ma.title[0] == '\0') continue; // skip empty entries
+    std::string title = ma.title;
+    std::string shortcut = ma.shortcut ? ma.shortcut : "";
+    KONCPC_KEYS action_key = ma.action;
+    g_command_palette.register_command(
+        title, "", shortcut,
+        [action_key]() {
+          extern void applyKeypress(CPCScancode scancode, byte keyboard_matrix[], bool pressed);
+          extern byte keyboard_matrix[];
+          applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, true);
+          applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, false);
+        });
+  }
+  // Extra commands
+  g_command_palette.register_command("Pause / Resume", "Toggle emulation pause", "Pause",
+      []() {
+        extern t_CPC CPC;
+        CPC.paused = !CPC.paused;
+      });
+  g_command_palette.register_command("DevTools", "Open developer tools", "Shift+F2",
+      []() { imgui_state.show_devtools = !imgui_state.show_devtools; });
+  g_command_palette.register_command("Registers", "Show CPU registers", "",
+      []() { imgui_state.show_registers = !imgui_state.show_registers; });
+  g_command_palette.register_command("Disassembly", "Show disassembly view", "",
+      []() { imgui_state.show_disassembly = !imgui_state.show_disassembly; });
+  g_command_palette.register_command("Memory Hex", "Show memory hex view", "",
+      []() { imgui_state.show_memory_hex = !imgui_state.show_memory_hex; });
+  g_command_palette.register_command("Stack", "Show stack window", "",
+      []() { imgui_state.show_stack_window = !imgui_state.show_stack_window; });
+  g_command_palette.register_command("Breakpoints", "Show breakpoint list", "",
+      []() { imgui_state.show_breakpoint_list = !imgui_state.show_breakpoint_list; });
+  g_command_palette.register_command("Symbol Table", "Show symbol table", "",
+      []() { imgui_state.show_symbol_table = !imgui_state.show_symbol_table; });
 }
 
 // ─────────────────────────────────────────────────
@@ -243,6 +283,7 @@ void imgui_render_ui()
   if (imgui_state.show_stack_window)    imgui_render_stack_window();
   if (imgui_state.show_breakpoint_list) imgui_render_breakpoint_list_window();
   if (imgui_state.show_symbol_table)   imgui_render_symbol_table_window();
+  g_command_palette.render();
 
   // When no GUI window is open, the topbar is the only ImGui window and it
   // doesn't need keyboard input.  Force WantCaptureKeyboard off so all key
@@ -253,7 +294,8 @@ void imgui_render_ui()
                       imgui_state.show_registers || imgui_state.show_disassembly ||
                       imgui_state.show_memory_hex || imgui_state.show_stack_window ||
                       imgui_state.show_breakpoint_list ||
-                      imgui_state.show_symbol_table;
+                      imgui_state.show_symbol_table ||
+                      g_command_palette.is_open();
   if (!any_gui_open) {
     ImGui::GetIO().WantCaptureKeyboard = false;
   }
