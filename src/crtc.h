@@ -59,6 +59,11 @@ void prerender_normal_half_plus();
 void crtc_cycle(int repeat_count);
 void crtc_init();
 void crtc_reset();
+
+// CRTC type helpers
+unsigned char crtc_type_for_model(unsigned int cpc_model);
+const char* crtc_type_chip_name(unsigned char crtc_type);
+const char* crtc_type_manufacturer(unsigned char crtc_type);
 dword shiftLittleEndianDwordTriplet(dword val1, dword val2, dword val3, unsigned int byteShift);
 
 void render8bpp();

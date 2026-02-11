@@ -397,12 +397,60 @@ byte z80_IN_handler (reg_pair port)
    ret_val = 0xff; // default return value
 // CRTC -----------------------------------------------------------------------
    if (!(port.b.h & 0x40)) { // CRTC chip select?
-      if ((port.b.h & 3) == 3) { // read CRTC register?
-         if ((CRTC.reg_select > 11) && (CRTC.reg_select < 18)) { // valid range?
-            ret_val = CRTC.registers[CRTC.reg_select];
+      byte crtc_rport = port.b.h & 3;
+      bool is_reg_read = false;
+      if (crtc_rport == 3) {
+         // &BFxx: read register on all types
+         is_reg_read = true;
+      } else if (crtc_rport == 2) {
+         if (CRTC.crtc_type == 1) {
+            // Type 1 (UM6845R): &BExx reads status register
+            ret_val = 0;
+            if (CRTC.line_count >= CRTC.registers[6]) {
+               ret_val |= 0x20; // bit 5: vertical blanking active
+            }
+            // bit 6: light pen strobe (not emulated, always 0)
+         } else if (CRTC.crtc_type == 3) {
+            // Type 3 (ASIC): &BExx also reads registers
+            is_reg_read = true;
          }
-         else {
-            ret_val = 0; // write only registers return 0
+         // Types 0/2: &BExx has no function, ret_val stays 0xff
+      }
+      if (is_reg_read) {
+         byte reg = CRTC.reg_select;
+         switch (CRTC.crtc_type) {
+            case 0: // HD6845S: R12-R17 readable, rest returns 0
+               if (reg >= 12 && reg <= 17) {
+                  ret_val = CRTC.registers[reg];
+               } else {
+                  ret_val = 0;
+               }
+               break;
+            case 1: // UM6845R: R14-R17 readable, R12-R13 write-only (return 0)
+                     // R31 returns 0xFF, R18-30 return 0
+               if (reg >= 14 && reg <= 17) {
+                  ret_val = CRTC.registers[reg];
+               } else if (reg == 31) {
+                  ret_val = 0xff;
+               } else {
+                  ret_val = 0;
+               }
+               break;
+            case 2: // MC6845: R14-R17 readable, rest returns 0
+               if (reg >= 14 && reg <= 17) {
+                  ret_val = CRTC.registers[reg];
+               } else {
+                  ret_val = 0;
+               }
+               break;
+            case 3: // AMS40489 (ASIC): R12-R17 readable, R0-R11 write-only
+            default:
+               if (reg >= 12 && reg <= 17) {
+                  ret_val = CRTC.registers[reg];
+               } else {
+                  ret_val = 0;
+               }
+               break;
          }
       }
    }
@@ -637,7 +685,18 @@ void z80_OUT_handler (reg_pair port, byte val)
                case 3: // sync width
                   CRTC.registers[3] = val;
                   CRTC.hsw = val & 0x0f; // isolate horizontal sync width
-                  CRTC.vsw = val >> 4; // isolate vertical sync width
+                  if (CRTC.crtc_type == 1 || CRTC.crtc_type == 2) {
+                     // Types 1/2: VSYNC width fixed at 16 lines, R3 upper bits ignored
+                     CRTC.vsw = 0; // 0 = 16 lines (counter wraps at 4 bits)
+                  } else {
+                     // Types 0/3: VSYNC width from R3 bits 7..4 (0 means 16)
+                     CRTC.vsw = val >> 4;
+                  }
+                  // Type 0: HSYNC width 0 means no HSYNC (no interrupts)
+                  // Type 2/3: HSYNC width 0 means 16
+                  if (CRTC.hsw == 0 && (CRTC.crtc_type == 2 || CRTC.crtc_type == 3)) {
+                     CRTC.hsw = 16; // treat 0 as 16 on types 2/3
+                  }
                   break;
                case 4: // vertical total
                   CRTC.registers[4] = val & 0x7f;
@@ -683,7 +742,13 @@ void z80_OUT_handler (reg_pair port, byte val)
                   }
                   break;
                case 8: // interlace and skew
-                  CRTC.registers[8] = val;
+                  if (CRTC.crtc_type == 1 || CRTC.crtc_type == 2) {
+                     // Types 1/2: only bits 1..0 (interlace mode) are meaningful
+                     CRTC.registers[8] = val & 0x03;
+                  } else {
+                     // Types 0/3: full register (skew + interlace)
+                     CRTC.registers[8] = val;
+                  }
                   update_skew();
                   break;
                case 9: // maximum raster count
@@ -726,10 +791,20 @@ void z80_OUT_handler (reg_pair port, byte val)
                case 12: // start address high byte
                   CRTC.registers[12] = val & 0x3f;
                   CRTC.requested_addr = CRTC.registers[13] + (CRTC.registers[12] << 8);
+                  // Type 1 (UM6845R): when VCC=0, R12/R13 re-read at start of each line
+                  if (CRTC.crtc_type == 1 && CRTC.line_count == 0) {
+                     CRTC.addr = CRTC.requested_addr;
+                     CRTC.next_addr = CRTC.requested_addr;
+                  }
                   break;
                case 13: // start address low byte
                   CRTC.registers[13] = val;
                   CRTC.requested_addr = CRTC.registers[13] + (CRTC.registers[12] << 8);
+                  // Type 1 (UM6845R): when VCC=0, R12/R13 re-read at start of each line
+                  if (CRTC.crtc_type == 1 && CRTC.line_count == 0) {
+                     CRTC.addr = CRTC.requested_addr;
+                     CRTC.next_addr = CRTC.requested_addr;
+                  }
                   break;
                case 14: // cursor address high byte
                   CRTC.registers[14] = val & 0x3f;
@@ -1093,6 +1168,7 @@ void emulator_reset ()
    VDU.flag_drawing = 1;
 
 // CRTC
+   CRTC.crtc_type = crtc_type_for_model(CPC.model);
    crtc_reset();
 
 // Gate Array

@@ -44,6 +44,7 @@
 #include "config_profile.h"
 #include "asic_debug.h"
 #include "drive_status.h"
+#include "crtc.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -185,7 +186,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) status(drives)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2123,6 +2124,34 @@ std::string handle_command(const std::string& line) {
       return "OK " + drive_status_detailed() + "\n";
     }
     return "OK " + emulator_status_summary() + "\n" + drive_status_summary() + "\n";
+  }
+
+  // --- Config commands ---
+  if (cmd == "config" && parts.size() >= 2) {
+    if (parts[1] == "get" && parts.size() >= 3) {
+      if (parts[2] == "crtc_type") {
+        return "OK " + std::to_string(CRTC.crtc_type) + "\n";
+      }
+      if (parts[2] == "crtc_info") {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "OK type=%d chip=%s manufacturer=%s",
+                 CRTC.crtc_type,
+                 crtc_type_chip_name(CRTC.crtc_type),
+                 crtc_type_manufacturer(CRTC.crtc_type));
+        return std::string(buf) + "\n";
+      }
+      return "ERR 400 unknown-config-key\n";
+    }
+    if (parts[1] == "set" && parts.size() >= 4) {
+      if (parts[2] == "crtc_type") {
+        int t = std::stoi(parts[3]);
+        if (t < 0 || t > 3) return "ERR 400 crtc_type must be 0-3\n";
+        CRTC.crtc_type = static_cast<unsigned char>(t);
+        return "OK\n";
+      }
+      return "ERR 400 unknown-config-key\n";
+    }
+    return "ERR 400 bad-config-cmd (get|set)\n";
   }
 
   return "ERR 501 not-implemented\n";
