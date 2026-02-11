@@ -321,6 +321,7 @@ typedef struct {
    void (*CharInstSL)();
    unsigned char reg_select;
    unsigned char registers[18];
+   unsigned char crtc_type; // 0=HD6845S, 1=UM6845R, 2=MC6845, 3=AMS40489
    // 6128+ split screen support
    unsigned int split_addr;
    unsigned char split_sl;

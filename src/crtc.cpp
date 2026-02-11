@@ -489,7 +489,14 @@ dword M3hMap[0x100] = {
 void update_skew()
 {
    new_dt.NewHDSPTIMG |= 0x02; // enable horizontal DISPTMG by default
-   dword skew = (CRTC.registers[8] >> 4) & 3; // isolate the display skew
+   dword skew;
+   if (CRTC.crtc_type == 1 || CRTC.crtc_type == 2) {
+      // Types 1/2: R8 bits 7..2 are ignored, no DISPTMG skew support
+      skew = 0;
+   } else {
+      // Types 0/3/4: R8 bits 5..4 define DISPTMG skew
+      skew = (CRTC.registers[8] >> 4) & 3;
+   }
    if (skew == 3) { // disable output?
       new_dt.NewHDSPTIMG &= 0xfd; // disable horizontal DISPTMG
    } else {
@@ -1343,6 +1350,44 @@ void crtc_cycle(int repeat_count)
 
 
 
+unsigned char crtc_type_for_model(unsigned int cpc_model)
+{
+   // CPC464=0, CPC664=1 -> Type 0 (HD6845S/UM6845)
+   // CPC6128=2 -> Type 1 (UM6845R)
+   // Plus/6128+=3 -> Type 3 (AMS40489/ASIC)
+   switch (cpc_model) {
+      case 0: return 0; // CPC 464
+      case 1: return 0; // CPC 664
+      case 2: return 1; // CPC 6128
+      case 3: return 3; // 6128+
+      default: return 0;
+   }
+}
+
+const char* crtc_type_chip_name(unsigned char crtc_type)
+{
+   switch (crtc_type) {
+      case 0: return "HD6845S";
+      case 1: return "UM6845R";
+      case 2: return "MC6845";
+      case 3: return "AMS40489";
+      default: return "Unknown";
+   }
+}
+
+const char* crtc_type_manufacturer(unsigned char crtc_type)
+{
+   switch (crtc_type) {
+      case 0: return "Hitachi";
+      case 1: return "UMC";
+      case 2: return "Motorola";
+      case 3: return "Amstrad";
+      default: return "Unknown";
+   }
+}
+
+
+
 void crtc_init()
 {
    if (dwXScale == 1) {
@@ -1381,7 +1426,9 @@ void crtc_init()
 
 void crtc_reset()
 {
+   unsigned char saved_type = CRTC.crtc_type; // preserve type across reset
    memset(&CRTC, 0, sizeof(CRTC)); // clear CRTC data structure
+   CRTC.crtc_type = saved_type;
    CRTC.registers[0] = 0x3f;
    CRTC.registers[2] = 0x2e;
    CRTC.registers[3] = 0x8e;
