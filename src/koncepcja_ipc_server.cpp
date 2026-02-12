@@ -634,8 +634,13 @@ std::string handle_command(const std::string& line) {
     // disasm export <start> <end> [path] [--symbols]
     // Exports memory range as assembler source (.asm)
     if (parts[1] == "export" && parts.size() >= 4) {
-      unsigned int start_addr = std::stoul(parts[2], nullptr, 0);
-      unsigned int end_addr = std::stoul(parts[3], nullptr, 0);
+      unsigned int start_addr, end_addr;
+      try {
+        start_addr = std::stoul(parts[2], nullptr, 0);
+        end_addr = std::stoul(parts[3], nullptr, 0);
+      } catch (const std::exception&) {
+        return "ERR 400 bad-address\n";
+      }
       if (start_addr > 0xFFFF || end_addr > 0xFFFF || start_addr > end_addr)
         return "ERR 400 bad-range\n";
 
@@ -725,6 +730,10 @@ std::string handle_command(const std::string& line) {
 
       std::string result = oss.str();
       if (!path.empty()) {
+        // Reject path traversal
+        for (const auto& comp : std::filesystem::path(path)) {
+          if (comp == "..") return "ERR 403 path-traversal\n";
+        }
         std::ofstream f(path);
         if (!f) return "ERR 500 cannot-write " + path + "\n";
         f << result;
