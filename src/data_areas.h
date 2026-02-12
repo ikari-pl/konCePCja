@@ -24,6 +24,7 @@ public:
     const DataArea* find(uint16_t addr) const;
 
     // Format a data area line for disassembly output.
+    // mem points to data starting at addr (relative indexing: mem[0] is the byte at addr).
     // Returns empty string if addr is not in a data area.
     // If bytes_consumed is non-null, stores the number of bytes this line covers.
     std::string format_at(uint16_t addr, const uint8_t* mem, size_t mem_size,

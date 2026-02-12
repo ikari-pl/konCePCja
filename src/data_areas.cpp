@@ -64,10 +64,9 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
             int remaining = static_cast<int>(area->end) - static_cast<int>(addr) + 1;
             int count = std::min(remaining, 8);
             for (int i = 0; i < count; i++) {
-                uint16_t a = static_cast<uint16_t>(addr + i);
-                if (a >= mem_size) break;
+                if (static_cast<size_t>(i) >= mem_size) break;
                 if (i > 0) oss << ",";
-                snprintf(buf, sizeof(buf), "$%02X", mem[a]);
+                snprintf(buf, sizeof(buf), "$%02X", mem[i]);
                 oss << buf;
                 consumed++;
             }
@@ -78,10 +77,10 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
             int remaining_bytes = static_cast<int>(area->end) - static_cast<int>(addr) + 1;
             int word_count = std::min(remaining_bytes / 2, 4);
             for (int i = 0; i < word_count; i++) {
-                uint16_t a = static_cast<uint16_t>(addr + i * 2);
-                if (static_cast<size_t>(a + 1) >= mem_size) break;
+                size_t off = static_cast<size_t>(i * 2);
+                if (off + 1 >= mem_size) break;
                 if (i > 0) oss << ",";
-                uint16_t w = static_cast<uint16_t>(mem[a] | (mem[a + 1] << 8));
+                uint16_t w = static_cast<uint16_t>(mem[off] | (mem[off + 1] << 8));
                 snprintf(buf, sizeof(buf), "$%04X", w);
                 oss << buf;
                 consumed += 2;
@@ -95,9 +94,8 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
             bool in_string = false;
             bool first = true;
             for (int i = 0; i < count; i++) {
-                uint16_t a = static_cast<uint16_t>(addr + i);
-                if (a >= mem_size) break;
-                uint8_t c = mem[a];
+                if (static_cast<size_t>(i) >= mem_size) break;
+                uint8_t c = mem[i];
                 if (c >= 0x20 && c < 0x7F) {
                     if (!in_string) {
                         if (!first) oss << ",";
