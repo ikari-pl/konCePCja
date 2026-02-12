@@ -2,17 +2,25 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <memory>
 
 SessionRecorder g_session;
 
+// RAII wrapper for FILE*
+struct FileCloser { void operator()(FILE* f) const { if (f) fclose(f); } };
+using FilePtr = std::unique_ptr<FILE, FileCloser>;
+
 // Portable little-endian helpers
+static void write_le32_buf(uint8_t* buf, uint32_t val) {
+    buf[0] = static_cast<uint8_t>(val);
+    buf[1] = static_cast<uint8_t>(val >> 8);
+    buf[2] = static_cast<uint8_t>(val >> 16);
+    buf[3] = static_cast<uint8_t>(val >> 24);
+}
+
 static void write_le32(FILE* f, uint32_t val) {
-    uint8_t b[4] = {
-        static_cast<uint8_t>(val),
-        static_cast<uint8_t>(val >> 8),
-        static_cast<uint8_t>(val >> 16),
-        static_cast<uint8_t>(val >> 24)
-    };
+    uint8_t b[4];
+    write_le32_buf(b, val);
     fwrite(b, 1, 4, f);
 }
 
@@ -45,19 +53,18 @@ bool SessionRecorder::start_recording(const std::string& path, const std::string
     if (state_ != SessionState::IDLE) return false;
 
     // Read the SNA file that was saved before calling us
-    FILE* snap_f = fopen(snap_path.c_str(), "rb");
+    FilePtr snap_f(fopen(snap_path.c_str(), "rb"));
     if (!snap_f) return false;
-    fseek(snap_f, 0, SEEK_END);
-    long snap_size = ftell(snap_f);
-    fseek(snap_f, 0, SEEK_SET);
-    if (snap_size <= 0) { fclose(snap_f); return false; }
+    fseek(snap_f.get(), 0, SEEK_END);
+    long snap_size = ftell(snap_f.get());
+    fseek(snap_f.get(), 0, SEEK_SET);
+    if (snap_size <= 0) return false;
 
     std::vector<uint8_t> snap_data(static_cast<size_t>(snap_size));
-    if (fread(snap_data.data(), 1, snap_data.size(), snap_f) != snap_data.size()) {
-        fclose(snap_f);
+    if (fread(snap_data.data(), 1, snap_data.size(), snap_f.get()) != snap_data.size()) {
         return false;
     }
-    fclose(snap_f);
+    snap_f.reset();  // done with SNA input
 
     // Open the KSR file
     rec_file_ = fopen(path.c_str(), "wb");
@@ -68,10 +75,7 @@ bool SessionRecorder::start_recording(const std::string& path, const std::string
     header[0] = 'K'; header[1] = 'S'; header[2] = 'R'; header[3] = 0x1A;
     header[4] = KSR_VERSION;
     // SNA size at offset 8 (LE32)
-    header[8]  = static_cast<uint8_t>(snap_size);
-    header[9]  = static_cast<uint8_t>(snap_size >> 8);
-    header[10] = static_cast<uint8_t>(snap_size >> 16);
-    header[11] = static_cast<uint8_t>(snap_size >> 24);
+    write_le32_buf(header + 8, static_cast<uint32_t>(snap_size));
     // Event count at offset 12 will be filled on stop
     if (fwrite(header, 1, KSR_HEADER_SIZE, rec_file_) != KSR_HEADER_SIZE) {
         fclose(rec_file_);
@@ -124,21 +128,18 @@ bool SessionRecorder::stop_recording() {
 bool SessionRecorder::start_playback(const std::string& path, std::string& snap_path_out) {
     if (state_ != SessionState::IDLE) return false;
 
-    FILE* f = fopen(path.c_str(), "rb");
+    FilePtr f(fopen(path.c_str(), "rb"));
     if (!f) return false;
 
     // Read header
     uint8_t header[KSR_HEADER_SIZE];
-    if (fread(header, 1, KSR_HEADER_SIZE, f) != KSR_HEADER_SIZE) {
-        fclose(f);
+    if (fread(header, 1, KSR_HEADER_SIZE, f.get()) != KSR_HEADER_SIZE) {
         return false;
     }
     if (header[0] != 'K' || header[1] != 'S' || header[2] != 'R' || header[3] != 0x1A) {
-        fclose(f);
         return false;
     }
     if (header[4] != KSR_VERSION) {
-        fclose(f);
         return false;
     }
 
@@ -147,30 +148,27 @@ bool SessionRecorder::start_playback(const std::string& path, std::string& snap_
 
     // Read and write SNA to temp file
     std::vector<uint8_t> sna_data(sna_size);
-    if (fread(sna_data.data(), 1, sna_size, f) != sna_size) {
-        fclose(f);
+    if (fread(sna_data.data(), 1, sna_size, f.get()) != sna_size) {
         return false;
     }
 
     // Write SNA to a temp file for snapshot_load
     snap_path_out = path + ".sna";
-    FILE* snap_f = fopen(snap_path_out.c_str(), "wb");
-    if (!snap_f) { fclose(f); return false; }
-    if (fwrite(sna_data.data(), 1, sna_size, snap_f) != sna_size) {
-        fclose(snap_f);
-        fclose(f);
+    FilePtr snap_f(fopen(snap_path_out.c_str(), "wb"));
+    if (!snap_f) return false;
+    if (fwrite(sna_data.data(), 1, sna_size, snap_f.get()) != sna_size) {
         return false;
     }
-    fclose(snap_f);
+    snap_f.reset();  // done writing SNA
 
-    // Read all events
+    // Read all events (read-first loop avoids feof() anti-pattern)
     events_.clear();
     events_.reserve(evt_count);
     total_frames_ = 0;
 
-    while (!feof(f)) {
+    for (;;) {
         uint8_t type_byte;
-        if (fread(&type_byte, 1, 1, f) != 1) break;
+        if (fread(&type_byte, 1, 1, f.get()) != 1) break;
 
         SessionEvent evt;
         evt.type = static_cast<SessionEventType>(type_byte);
@@ -178,14 +176,13 @@ bool SessionRecorder::start_playback(const std::string& path, std::string& snap_
 
         if (evt.type != SessionEventType::FRAME_SYNC) {
             uint8_t d[2];
-            if (fread(d, 1, 2, f) != 2) break;
+            if (fread(d, 1, 2, f.get()) != 2) break;
             evt.data = read_le16(d);
         } else {
             total_frames_++;
         }
         events_.push_back(evt);
     }
-    fclose(f);
 
     path_ = path;
     state_ = SessionState::PLAYING;
