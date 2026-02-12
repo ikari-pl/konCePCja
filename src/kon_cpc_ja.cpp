@@ -70,6 +70,7 @@ namespace {
 #include "slotshandler.h"
 #include "fileutils.h"
 #include "imgui_ui_testable.h"
+#include "session_recording.h"
 #include "silicon_disc.h"
 
 #include <errno.h>
@@ -3542,6 +3543,36 @@ int koncpc_main (int argc, char **argv)
                g_avi_recorder.capture_video_frame(
                   static_cast<const uint8_t*>(back_surface->pixels),
                   back_surface->w, back_surface->h, back_surface->pitch);
+            }
+
+            // Session recording: capture keyboard state per frame
+            if (g_session.state() == SessionState::RECORDING) {
+               // Record changed keyboard matrix bytes as key events
+               static uint8_t prev_matrix[16] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+                                                   0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+               for (int row = 0; row < 16; row++) {
+                  if (keyboard_matrix[row] != prev_matrix[row]) {
+                     // Encode as row in high byte, value in low byte
+                     uint16_t data = static_cast<uint16_t>((row << 8) | keyboard_matrix[row]);
+                     g_session.record_event(SessionEventType::KEY_DOWN, data);
+                     prev_matrix[row] = keyboard_matrix[row];
+                  }
+               }
+               g_session.record_frame_sync();
+            }
+
+            // Session playback: replay events for this frame
+            if (g_session.state() == SessionState::PLAYING) {
+               SessionEvent evt;
+               while (g_session.next_event(evt)) {
+                  if (evt.type == SessionEventType::KEY_DOWN) {
+                     int row = (evt.data >> 8) & 0x0F;
+                     keyboard_matrix[row] = static_cast<byte>(evt.data & 0xFF);
+                  }
+               }
+               if (!g_session.advance_frame()) {
+                  // Recording finished, session goes back to IDLE
+               }
             }
 
             // Auto-type: drain queue one action per frame
