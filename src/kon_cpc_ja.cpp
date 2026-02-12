@@ -70,6 +70,7 @@ namespace {
 #include "slotshandler.h"
 #include "fileutils.h"
 #include "imgui_ui_testable.h"
+#include "silicon_disc.h"
 
 #include <errno.h>
 #include <cstring>
@@ -299,7 +300,12 @@ void ga_init_banking (t_MemBankConfig& membank_config, unsigned char RAM_bank)
    romb2 = pbRAM + 2*16384;
    romb3 = pbRAM + 3*16384;
 
-   pbRAMbank = pbRAM + ((RAM_bank + 1) * 65536);
+   // Check if this bank falls in the Silicon Disc range
+   if (g_silicon_disc.owns_bank(RAM_bank)) {
+      pbRAMbank = g_silicon_disc.bank_ptr(RAM_bank - SILICON_DISC_FIRST_BANK);
+   } else {
+      pbRAMbank = pbRAM + ((RAM_bank + 1) * 65536);
+   }
    romb4 = pbRAMbank;
    romb5 = pbRAMbank + 1*16384;
    romb6 = pbRAMbank + 2*16384;
@@ -363,7 +369,8 @@ void ga_memory_manager ()
       }
    } else {
       mem_bank = (GateArray.RAM_config >> 3) & 7; // extract expansion memory bank
-      if (((mem_bank+2)*64) > CPC.ram_size) { // selection is beyond available memory?
+      if (!g_silicon_disc.owns_bank(mem_bank) &&
+          ((mem_bank+2)*64) > CPC.ram_size) { // selection is beyond available memory?
          mem_bank = 0; // force default mapping
       }
    }
@@ -1917,6 +1924,12 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    if ((CPC.model >= 2) && (CPC.ram_size < 128)) {
       CPC.ram_size = 128; // minimum RAM size for CPC 6128 is 128KB
    }
+   // Silicon Disc: battery-backed 256K RAM (banks 4-7)
+   g_silicon_disc.enabled = conf.getIntValue("system", "silicon_disc", 0) != 0;
+   if (g_silicon_disc.enabled) {
+      silicon_disc_init(g_silicon_disc);
+   }
+
    CPC.speed = conf.getIntValue("system", "speed", DEF_SPEED_SETTING); // original CPC speed
    if ((CPC.speed < MIN_SPEED_SETTING) || (CPC.speed > MAX_SPEED_SETTING)) {
       CPC.speed = DEF_SPEED_SETTING;

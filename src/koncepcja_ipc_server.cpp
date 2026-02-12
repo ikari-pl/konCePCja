@@ -50,6 +50,7 @@
 #include "crtc.h"
 #include "data_areas.h"
 #include "imgui_ui_testable.h"
+#include "silicon_disc.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -194,7 +195,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2224,6 +2225,9 @@ std::string handle_command(const std::string& line) {
       if (parts[2] == "ram_size") {
         return "OK " + std::to_string(CPC.ram_size) + "\n";
       }
+      if (parts[2] == "silicon_disc") {
+        return std::string("OK ") + (g_silicon_disc.enabled ? "1" : "0") + "\n";
+      }
       return "ERR 400 unknown-config-key\n";
     }
     if (parts[1] == "set" && parts.size() >= 4) {
@@ -2241,9 +2245,51 @@ std::string handle_command(const std::string& line) {
         CPC.ram_size = static_cast<unsigned int>(sz);
         return "OK (reset required)\n";
       }
+      if (parts[2] == "silicon_disc") {
+        int v = std::stoi(parts[3]);
+        g_silicon_disc.enabled = (v != 0);
+        if (g_silicon_disc.enabled && !g_silicon_disc.data) {
+          silicon_disc_init(g_silicon_disc);
+        }
+        ga_memory_manager();
+        return "OK\n";
+      }
       return "ERR 400 unknown-config-key\n";
     }
     return "ERR 400 bad-config-cmd (get|set)\n";
+  }
+
+  // --- Silicon Disc commands ---
+  if (cmd == "sdisc" && parts.size() >= 2) {
+    if (parts[1] == "status") {
+      std::string status = g_silicon_disc.enabled ? "enabled" : "disabled";
+      std::string allocated = g_silicon_disc.data ? "allocated" : "not-allocated";
+      return "OK " + status + " " + allocated + " size=256K banks=4-7\n";
+    }
+    if (parts[1] == "clear") {
+      if (!g_silicon_disc.enabled) return "ERR 400 silicon-disc-not-enabled\n";
+      silicon_disc_clear(g_silicon_disc);
+      return "OK cleared 256K\n";
+    }
+    if (parts[1] == "save" && parts.size() >= 3) {
+      if (!g_silicon_disc.enabled || !g_silicon_disc.data)
+        return "ERR 400 silicon-disc-not-enabled\n";
+      if (silicon_disc_save(g_silicon_disc, parts[2]))
+        return "OK saved to " + parts[2] + "\n";
+      return "ERR 500 save-failed\n";
+    }
+    if (parts[1] == "load" && parts.size() >= 3) {
+      if (!g_silicon_disc.enabled) {
+        g_silicon_disc.enabled = true;
+        silicon_disc_init(g_silicon_disc);
+      }
+      if (silicon_disc_load(g_silicon_disc, parts[2])) {
+        ga_memory_manager();
+        return "OK loaded from " + parts[2] + "\n";
+      }
+      return "ERR 500 load-failed\n";
+    }
+    return "ERR 400 usage: sdisc (status|clear|save|load) [path]\n";
   }
 
   // --- Enhanced search command (with wildcard support) ---
