@@ -201,7 +201,8 @@ TEST_F(IpcServerTest, WaitVblCompletes) {
 
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
-  auto resp = send_command("screenshot /tmp/kaprys_test.png");
+  auto screenshotPath = (std::filesystem::temp_directory_path() / "kaprys_test.png").string();
+  auto resp = send_command("screenshot " + screenshotPath);
   EXPECT_EQ(resp, "ERR 503 no-surface\n");
 }
 

@@ -2913,9 +2913,9 @@ int koncpc_main (int argc, char **argv)
 
    try {
      binPath = std::filesystem::absolute(std::filesystem::path(argv[0]).parent_path());
-   } catch(...) {
-     // Dirty fallback in case the executable is found in the path.
-     // binPath is only use for bundles anyway, where this is not the case.
+   } catch(const std::filesystem::filesystem_error&) {
+     // Fallback in case argv[0] is unresolvable (e.g. found via PATH).
+     // binPath is only used for bundles anyway.
      binPath = std::filesystem::absolute(".");
    }
    parseArguments(argc, argv, slot_list, args);
