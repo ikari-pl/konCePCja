@@ -134,6 +134,7 @@ void WavRecorder::finalize_header() {
     ok = ok && fseek(file_, 4, SEEK_SET) == 0;
     ok = ok && write_le_u32(riff_size, file_);
 
-    fflush(file_);
-    if (!ok) error_ = true;
+    if (!ok || fflush(file_) != 0) {
+        error_ = true;
+    }
 }

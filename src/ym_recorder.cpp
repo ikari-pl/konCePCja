@@ -144,13 +144,15 @@ bool YmRecorder::write_ym5_file() {
     // 14 blocks, each block is num_frames bytes (one byte per frame for that register)
     for (int reg = 0; reg < NUM_REGISTERS && ok; reg++) {
         for (uint32_t frame = 0; frame < num_frames && ok; frame++) {
-            ok = fputc(frames_[frame][reg], f) != EOF;
+            ok = ok && (fputc(frames_[frame][reg], f) != EOF);
         }
     }
 
     // 14. End marker: "End!"
     ok = ok && fwrite("End!", 1, 4, f) == 4;
 
-    fclose(f);
+    if (fclose(f) != 0) {
+        ok = false;
+    }
     return ok;
 }
