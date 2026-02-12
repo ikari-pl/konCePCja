@@ -6,8 +6,7 @@ SiliconDisc g_silicon_disc;
 
 void silicon_disc_init(SiliconDisc& sd) {
     if (sd.data) return; // already allocated
-    sd.data = new uint8_t[SILICON_DISC_SIZE];
-    memset(sd.data, 0, SILICON_DISC_SIZE);
+    sd.data = new uint8_t[SILICON_DISC_SIZE]();  // value-initialized (zero)
 }
 
 void silicon_disc_free(SiliconDisc& sd) {

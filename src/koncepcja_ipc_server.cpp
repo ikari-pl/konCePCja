@@ -2246,7 +2246,10 @@ std::string handle_command(const std::string& line) {
         return "OK (reset required)\n";
       }
       if (parts[2] == "silicon_disc") {
-        int v = std::stoi(parts[3]);
+        int v;
+        try { v = std::stoi(parts[3]); } catch (const std::exception&) {
+          return "ERR 400 bad-value\n";
+        }
         g_silicon_disc.enabled = (v != 0);
         if (g_silicon_disc.enabled && !g_silicon_disc.data) {
           silicon_disc_init(g_silicon_disc);
@@ -2274,11 +2277,19 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "save" && parts.size() >= 3) {
       if (!g_silicon_disc.enabled || !g_silicon_disc.data)
         return "ERR 400 silicon-disc-not-enabled\n";
+      // Reject path traversal
+      for (const auto& comp : std::filesystem::path(parts[2])) {
+        if (comp == "..") return "ERR 403 path-traversal\n";
+      }
       if (silicon_disc_save(g_silicon_disc, parts[2]))
         return "OK saved to " + parts[2] + "\n";
       return "ERR 500 save-failed\n";
     }
     if (parts[1] == "load" && parts.size() >= 3) {
+      // Reject path traversal
+      for (const auto& comp : std::filesystem::path(parts[2])) {
+        if (comp == "..") return "ERR 403 path-traversal\n";
+      }
       if (!g_silicon_disc.enabled) {
         g_silicon_disc.enabled = true;
         silicon_disc_init(g_silicon_disc);
