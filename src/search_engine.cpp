@@ -27,9 +27,8 @@ std::vector<PatternElement> compile_hex_pattern(const std::string& pattern) {
           unsigned int val = 0;
           try {
             val = std::stoul(pair, nullptr, 16);
-          } catch (const std::invalid_argument&) {
-            continue;
-          } catch (const std::out_of_range&) {
+          } catch (const std::logic_error&) {
+            // Skip invalid hex
             continue;
           }
           result.push_back({PatternElement::LITERAL, static_cast<uint8_t>(val)});

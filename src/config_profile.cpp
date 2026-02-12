@@ -217,10 +217,8 @@ std::string ConfigProfileManager::read_profile(const std::string& path, ConfigPr
         unsigned int val;
         try {
             val = static_cast<unsigned int>(std::stoul(val_str));
-        } catch (const std::invalid_argument&) {
+        } catch (const std::logic_error&) {
             continue; // skip unparseable values
-        } catch (const std::out_of_range&) {
-            continue;
         }
 
         if (key == "model") p.model = val;
