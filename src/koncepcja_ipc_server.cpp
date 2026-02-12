@@ -50,6 +50,7 @@
 #include "crtc.h"
 #include "data_areas.h"
 #include "imgui_ui_testable.h"
+#include "session_recording.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -194,7 +195,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) session(record/play/stop/status)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2611,6 +2612,59 @@ std::string handle_command(const std::string& line) {
       return resp.str();
     }
     return "ERR 400 bad-gfx-cmd (view|decode|paint|palette)\n";
+  }
+
+  // --- Session recording/playback ---
+  if (cmd == "session" && parts.size() >= 2) {
+    if (parts[1] == "record" && parts.size() >= 3) {
+      if (g_session.state() != SessionState::IDLE)
+        return "ERR 400 session-already-active\n";
+      // Save a snapshot first, then start recording
+      std::string snap_path = parts[2] + ".sna";
+      if (snapshot_save(snap_path) != 0)
+        return "ERR 500 snapshot-save-failed\n";
+      if (!g_session.start_recording(parts[2], snap_path))
+        return "ERR 500 record-start-failed\n";
+      return "OK recording to " + parts[2] + "\n";
+    }
+    if (parts[1] == "play" && parts.size() >= 3) {
+      if (g_session.state() != SessionState::IDLE)
+        return "ERR 400 session-already-active\n";
+      std::string snap_path;
+      if (!g_session.start_playback(parts[2], snap_path))
+        return "ERR 500 playback-start-failed\n";
+      // Load the embedded snapshot to restore state
+      if (snapshot_load(snap_path) != 0) {
+        g_session.stop_playback();
+        return "ERR 500 snapshot-load-failed\n";
+      }
+      return "OK playing from " + parts[2] +
+             " frames=" + std::to_string(g_session.total_frames()) + "\n";
+    }
+    if (parts[1] == "stop") {
+      if (g_session.state() == SessionState::RECORDING) {
+        g_session.stop_recording();
+        return "OK stopped recording (frames=" +
+               std::to_string(g_session.frame_count()) +
+               " events=" + std::to_string(g_session.event_count()) + ")\n";
+      }
+      if (g_session.state() == SessionState::PLAYING) {
+        g_session.stop_playback();
+        return "OK stopped playback\n";
+      }
+      return "ERR 400 no-active-session\n";
+    }
+    if (parts[1] == "status") {
+      const char* state_str = "idle";
+      if (g_session.state() == SessionState::RECORDING) state_str = "recording";
+      else if (g_session.state() == SessionState::PLAYING) state_str = "playing";
+      char buf[256];
+      snprintf(buf, sizeof(buf), "OK state=%s frames=%u events=%u path=%s",
+               state_str, g_session.frame_count(), g_session.event_count(),
+               g_session.path().empty() ? "(none)" : g_session.path().c_str());
+      return std::string(buf) + "\n";
+    }
+    return "ERR 400 usage: session (record|play|stop|status) [path]\n";
   }
 
   return "ERR 501 not-implemented\n";
