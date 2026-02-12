@@ -1,6 +1,6 @@
 #include "data_areas.h"
 #include <algorithm>
-#include <cstdio>
+#include <iomanip>
 #include <sstream>
 
 DataAreaManager g_data_areas;
@@ -55,7 +55,7 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
     }
 
     std::ostringstream oss;
-    char buf[8];
+    oss << std::hex << std::uppercase << std::setfill('0');
     int consumed = 0;
 
     switch (area->type) {
@@ -66,8 +66,7 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
             for (int i = 0; i < count; i++) {
                 if (static_cast<size_t>(i) >= mem_size) break;
                 if (i > 0) oss << ",";
-                snprintf(buf, sizeof(buf), "$%02X", mem[i]);
-                oss << buf;
+                oss << '$' << std::setw(2) << static_cast<int>(mem[i]);
                 consumed++;
             }
             break;
@@ -81,8 +80,7 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
                 if (off + 1 >= mem_size) break;
                 if (i > 0) oss << ",";
                 uint16_t w = static_cast<uint16_t>(mem[off] | (mem[off + 1] << 8));
-                snprintf(buf, sizeof(buf), "$%04X", w);
-                oss << buf;
+                oss << '$' << std::setw(4) << w;
                 consumed += 2;
             }
             break;
@@ -109,8 +107,7 @@ std::string DataAreaManager::format_at(uint16_t addr, const uint8_t* mem, size_t
                         in_string = false;
                     }
                     if (!first) oss << ",";
-                    snprintf(buf, sizeof(buf), "$%02X", c);
-                    oss << buf;
+                    oss << '$' << std::setw(2) << static_cast<int>(c);
                 }
                 first = false;
                 consumed++;
