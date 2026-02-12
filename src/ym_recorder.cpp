@@ -4,16 +4,16 @@
 
 namespace {
 
-void write_be_u16(uint16_t val, FILE* f) {
-    fputc((val >> 8) & 0xff, f);
-    fputc(val & 0xff, f);
+bool write_be_u16(uint16_t val, FILE* f) {
+    return fputc((val >> 8) & 0xff, f) != EOF &&
+           fputc(val & 0xff, f) != EOF;
 }
 
-void write_be_u32(uint32_t val, FILE* f) {
-    fputc((val >> 24) & 0xff, f);
-    fputc((val >> 16) & 0xff, f);
-    fputc((val >> 8) & 0xff, f);
-    fputc(val & 0xff, f);
+bool write_be_u32(uint32_t val, FILE* f) {
+    return fputc((val >> 24) & 0xff, f) != EOF &&
+           fputc((val >> 16) & 0xff, f) != EOF &&
+           fputc((val >> 8) & 0xff, f) != EOF &&
+           fputc(val & 0xff, f) != EOF;
 }
 
 } // namespace
@@ -42,6 +42,7 @@ std::string YmRecorder::start(const std::string& path) {
     path_ = path;
     frames_.clear();
     recording_ = true;
+    error_ = false;
     return "";
 }
 
@@ -54,7 +55,9 @@ uint32_t YmRecorder::stop() {
     recording_ = false;
     uint32_t count = static_cast<uint32_t>(frames_.size());
 
-    write_ym5_file();
+    if (!write_ym5_file()) {
+        error_ = true;
+    }
 
     path_.clear();
     frames_.clear();
@@ -77,6 +80,11 @@ bool YmRecorder::is_recording() const {
     return recording_;
 }
 
+bool YmRecorder::has_error() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return error_;
+}
+
 uint32_t YmRecorder::frame_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return static_cast<uint32_t>(frames_.size());
@@ -91,56 +99,58 @@ bool YmRecorder::write_ym5_file() {
     FILE* f = fopen(path_.c_str(), "wb");
     if (!f) return false;
 
+    bool ok = true;
     uint32_t num_frames = static_cast<uint32_t>(frames_.size());
 
     // 1. Magic: "YM5!"
-    fwrite("YM5!", 1, 4, f);
+    ok = ok && fwrite("YM5!", 1, 4, f) == 4;
 
     // 2. Check string: "LeOnArD!"
-    fwrite("LeOnArD!", 1, 8, f);
+    ok = ok && fwrite("LeOnArD!", 1, 8, f) == 8;
 
     // 3. Number of frames (uint32_t BE)
-    write_be_u32(num_frames, f);
+    ok = ok && write_be_u32(num_frames, f);
 
     // 4. Song attributes (uint32_t BE) - 1 = interleaved
-    write_be_u32(1, f);
+    ok = ok && write_be_u32(1, f);
 
     // 5. Number of digidrums (uint16_t BE) - 0
-    write_be_u16(0, f);
+    ok = ok && write_be_u16(0, f);
 
     // 6. Master clock (uint32_t BE) - 1000000 for CPC
-    write_be_u32(1000000, f);
+    ok = ok && write_be_u32(1000000, f);
 
     // 7. Player frequency (uint16_t BE) - 50 Hz for PAL CPC
-    write_be_u16(50, f);
+    ok = ok && write_be_u16(50, f);
 
     // 8. VBL loop frame (uint32_t BE) - 0
-    write_be_u32(0, f);
+    ok = ok && write_be_u32(0, f);
 
     // 9. Additional data size (uint16_t BE) - 0
-    write_be_u16(0, f);
+    ok = ok && write_be_u16(0, f);
 
     // 10. Song name (null-terminated)
     const char* song_name = "konCePCja recording";
-    fwrite(song_name, 1, strlen(song_name) + 1, f);
+    size_t name_len = strlen(song_name) + 1;
+    ok = ok && fwrite(song_name, 1, name_len, f) == name_len;
 
     // 11. Author name (null-terminated)
-    fputc(0, f);
+    ok = ok && fputc(0, f) != EOF;
 
     // 12. Comment (null-terminated)
-    fputc(0, f);
+    ok = ok && fputc(0, f) != EOF;
 
     // 13. Register data: interleaved format
     // 14 blocks, each block is num_frames bytes (one byte per frame for that register)
-    for (int reg = 0; reg < NUM_REGISTERS; reg++) {
-        for (uint32_t frame = 0; frame < num_frames; frame++) {
-            fputc(frames_[frame][reg], f);
+    for (int reg = 0; reg < NUM_REGISTERS && ok; reg++) {
+        for (uint32_t frame = 0; frame < num_frames && ok; frame++) {
+            ok = fputc(frames_[frame][reg], f) != EOF;
         }
     }
 
     // 14. End marker: "End!"
-    fwrite("End!", 1, 4, f);
+    ok = ok && fwrite("End!", 1, 4, f) == 4;
 
     fclose(f);
-    return true;
+    return ok;
 }
