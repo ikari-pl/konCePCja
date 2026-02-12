@@ -194,7 +194,7 @@ std::string handle_command(const std::string& line) {
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") return "OK kaprys-0.1\n";
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -630,6 +630,118 @@ std::string handle_command(const std::string& line) {
       }
       resp << "\n";
       return resp.str();
+    }
+    // disasm export <start> <end> [path] [--symbols]
+    // Exports memory range as assembler source (.asm)
+    if (parts[1] == "export" && parts.size() >= 4) {
+      unsigned int start_addr, end_addr;
+      try {
+        start_addr = std::stoul(parts[2], nullptr, 0);
+        end_addr = std::stoul(parts[3], nullptr, 0);
+      } catch (const std::exception&) {
+        return "ERR 400 bad-address\n";
+      }
+      if (start_addr > 0xFFFF || end_addr > 0xFFFF || start_addr > end_addr)
+        return "ERR 400 bad-range\n";
+
+      std::string path;
+      bool with_symbols = false;
+      for (size_t pi = 4; pi < parts.size(); pi++) {
+        if (parts[pi] == "--symbols") with_symbols = true;
+        else if (path.empty()) path = parts[pi];
+      }
+
+      std::ostringstream oss;
+      char buf[32];
+      snprintf(buf, sizeof(buf), "$%04X", start_addr);
+      oss << "; Disassembly export from konCePCja\n";
+      oss << "org " << buf << "\n\n";
+
+      DisassembledCode code;
+      std::vector<dword> entry_points;
+      word pos = static_cast<word>(start_addr);
+      word end_pos = static_cast<word>(end_addr);
+
+      while (pos <= end_pos) {
+        // Emit symbol label if present
+        if (with_symbols) {
+          std::string sym = g_symfile.lookupAddr(pos);
+          if (!sym.empty()) oss << sym << ":\n";
+        }
+
+        // Check data areas first
+        const DataArea* da = g_data_areas.find(pos);
+        if (da) {
+          int remaining = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
+          int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
+          int buf_len = std::min(remaining, max_bytes);
+          // Don't exceed end of export range
+          if (pos + buf_len - 1 > end_pos) buf_len = end_pos - pos + 1;
+          std::vector<uint8_t> membuf(static_cast<size_t>(pos) + buf_len);
+          for (int mi = 0; mi < buf_len; mi++) {
+            membuf[static_cast<size_t>(pos) + mi] = z80_read_mem(static_cast<word>(pos + mi));
+          }
+          int line_bytes = 0;
+          std::string formatted = g_data_areas.format_at(pos, membuf.data(), membuf.size(), &line_bytes);
+          oss << "  " << formatted;
+          // Add hex comment
+          oss << "  ; ";
+          snprintf(buf, sizeof(buf), "%04X:", static_cast<unsigned>(pos));
+          oss << buf;
+          for (int mi = 0; mi < line_bytes && mi < 8; mi++) {
+            snprintf(buf, sizeof(buf), " %02X", membuf[static_cast<size_t>(pos) + mi]);
+            oss << buf;
+          }
+          oss << "\n";
+          if (line_bytes == 0) line_bytes = 1;
+          unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
+          if (next > 0xFFFF || next > end_addr + 1u) break;
+          pos = static_cast<word>(next);
+        } else {
+          auto line = disassemble_one(pos, code, entry_points);
+          code.lines.insert(line);
+          std::string instr = line.instruction_;
+          // Replace hex refs with symbol names if requested
+          if (with_symbols && !line.ref_address_string_.empty()) {
+            std::string sym = g_symfile.lookupAddr(line.ref_address_);
+            if (!sym.empty()) {
+              auto ref_pos = instr.find(line.ref_address_string_);
+              if (ref_pos != std::string::npos) {
+                instr.replace(ref_pos, line.ref_address_string_.size(), sym);
+              }
+            }
+          }
+          oss << "  " << instr;
+          // Add hex byte comment
+          oss << "  ; ";
+          snprintf(buf, sizeof(buf), "%04X:", static_cast<unsigned>(pos));
+          oss << buf;
+          int sz = line.Size();
+          for (int bi = 0; bi < sz; bi++) {
+            snprintf(buf, sizeof(buf), " %02X", z80_read_mem(static_cast<word>(pos + bi)));
+            oss << buf;
+          }
+          oss << "\n";
+          unsigned int next = static_cast<unsigned int>(pos) + line.Size();
+          if (next > 0xFFFF || next > end_addr + 1u) break;
+          pos = static_cast<word>(next);
+        }
+      }
+
+      std::string result = oss.str();
+      if (!path.empty()) {
+        // Reject path traversal
+        for (const auto& comp : std::filesystem::path(path)) {
+          if (comp == "..") return "ERR 403 path-traversal\n";
+        }
+        std::ofstream f(path);
+        if (!f) return "ERR 500 cannot-write " + path + "\n";
+        f << result;
+        f.close();
+        snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(result.size()));
+        return std::string("OK written ") + buf + " bytes to " + path + "\n";
+      }
+      return "OK\n" + result;
     }
     // disasm <addr> <count> [--symbols]
     if (parts.size() >= 3) {
