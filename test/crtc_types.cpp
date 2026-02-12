@@ -41,7 +41,7 @@ class CrtcTypesTest : public testing::Test {
 protected:
    void SetUp() override {
       memset(&CRTC, 0, sizeof(CRTC));
-      memset(&z80, 0, sizeof(z80));
+      z80 = t_z80regs();
       CRTC.registers[0] = 0x3f;
       CRTC.registers[2] = 0x2e;
       CRTC.registers[3] = 0x8e;
