@@ -12,11 +12,22 @@
 #include "symfile.h"
 #include "data_areas.h"
 
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
 extern t_CPC CPC;
 extern t_z80regs z80;
+
+// Reject paths containing ".." to prevent path traversal
+static bool has_path_traversal(const char* path)
+{
+  for (const auto& comp : std::filesystem::path(path)) {
+    if (comp == "..") return true;
+  }
+  return false;
+}
 
 DevToolsUI g_devtools_ui;
 
@@ -647,8 +658,8 @@ void DevToolsUI::render_breakpoints()
     if (ImGui::Button("Add WP")) {
       unsigned long addr;
       if (parse_hex(wp_addr_, &addr, 0xFFFF)) {
-        int len = std::atoi(wp_len_);
-        if (len < 1) len = 1;
+        long len_val = std::strtol(wp_len_, nullptr, 10);
+        int len = (len_val > 0 && len_val <= 0xFFFF) ? static_cast<int>(len_val) : 1;
         WatchpointType wt = (wp_type_ == 0) ? READ :
                             (wp_type_ == 1) ? WRITE : READWRITE;
         z80_add_watchpoint(static_cast<word>(addr), static_cast<word>(len), wt);
@@ -711,7 +722,7 @@ void DevToolsUI::render_symbols()
 
   // Load / Save buttons
   if (ImGui::Button("Load .sym")) {
-    if (sym_path_[0] != '\0') {
+    if (sym_path_[0] != '\0' && !has_path_traversal(sym_path_)) {
       Symfile loaded(sym_path_);
       for (const auto& [addr, name] : loaded.Symbols()) {
         g_symfile.addSymbol(addr, name);
@@ -720,7 +731,7 @@ void DevToolsUI::render_symbols()
   }
   ImGui::SameLine();
   if (ImGui::Button("Save .sym")) {
-    if (sym_path_[0] != '\0') {
+    if (sym_path_[0] != '\0' && !has_path_traversal(sym_path_)) {
       g_symfile.SaveTo(sym_path_);
     }
   }
@@ -930,12 +941,12 @@ void DevToolsUI::render_disasm_export()
           int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
           int buf_len = std::min(remaining, max_bytes);
           if (pos + buf_len - 1 > end_pos) buf_len = end_pos - pos + 1;
-          std::vector<uint8_t> membuf(buf_len);
+          uint8_t membuf[64];
           for (int mi = 0; mi < buf_len; mi++)
             membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
           int line_bytes = 0;
-          std::string formatted = g_data_areas.format_at(pos, membuf.data(),
-                                                          membuf.size(), &line_bytes);
+          std::string formatted = g_data_areas.format_at(pos, membuf,
+                                                          buf_len, &line_bytes);
           oss << "  " << formatted << "\n";
           if (line_bytes == 0) line_bytes = 1;
           unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
@@ -962,13 +973,17 @@ void DevToolsUI::render_disasm_export()
 
       std::string result = oss.str();
       if (dex_path_[0] != '\0') {
-        std::ofstream f(dex_path_);
-        if (f) {
-          f << result;
-          f.close();
-          dex_status_ = "Exported " + std::to_string(result.size()) + " bytes to " + dex_path_;
+        if (has_path_traversal(dex_path_)) {
+          dex_status_ = "Error: path traversal not allowed";
         } else {
-          dex_status_ = "Error: cannot write to " + std::string(dex_path_);
+          std::ofstream f(dex_path_);
+          if (f) {
+            f << result;
+            f.close();
+            dex_status_ = "Exported " + std::to_string(result.size()) + " bytes to " + dex_path_;
+          } else {
+            dex_status_ = "Error: cannot write to " + std::string(dex_path_);
+          }
         }
       } else {
         dex_status_ = "Error: no output path specified";
