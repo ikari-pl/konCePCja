@@ -4,6 +4,7 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 namespace search_detail {
 
@@ -26,7 +27,7 @@ std::vector<PatternElement> compile_hex_pattern(const std::string& pattern) {
           unsigned int val = 0;
           try {
             val = std::stoul(pair, nullptr, 16);
-          } catch (...) {
+          } catch (const std::logic_error&) {
             // Skip invalid hex
             continue;
           }

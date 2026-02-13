@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <algorithm>
 #include <cctype>
 
@@ -216,7 +217,7 @@ std::string ConfigProfileManager::read_profile(const std::string& path, ConfigPr
         unsigned int val;
         try {
             val = static_cast<unsigned int>(std::stoul(val_str));
-        } catch (...) {
+        } catch (const std::logic_error&) {
             continue; // skip unparseable values
         }
 

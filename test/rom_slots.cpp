@@ -140,7 +140,7 @@ class RomSlotsTest : public testing::Test {
       membank_read[i] = memory[i];
       membank_write[i] = memory[i];
     }
-    for (int i = 2; i < 32; i++) {
+    for (int i = 2; i < MAX_ROM_SLOTS; i++) {
       if (memmap_ROM[i] != nullptr) {
         delete[] memmap_ROM[i];
         memmap_ROM[i] = nullptr;
@@ -156,7 +156,7 @@ class RomSlotsTest : public testing::Test {
   }
 
   void TearDown() override {
-    for (int i = 2; i < 32; i++) {
+    for (int i = 2; i < MAX_ROM_SLOTS; i++) {
       if (memmap_ROM[i] != nullptr) {
         delete[] memmap_ROM[i];
         memmap_ROM[i] = nullptr;
@@ -285,14 +285,14 @@ TEST_F(RomSlotsTest, RomInfoRejectsSlot32) {
   EXPECT_TRUE(resp.find("ERR 400 slot must be 0-31") != std::string::npos);
 }
 
-TEST_F(RomSlotsTest, ArraySizeIs32) {
-  for (int i = 0; i < 32; i++) {
+TEST_F(RomSlotsTest, ArraySizeIsMaxRomSlots) {
+  for (int i = 0; i < MAX_ROM_SLOTS; i++) {
     CPC.rom_file[i] = "slot_" + std::to_string(i);
   }
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < MAX_ROM_SLOTS; i++) {
     EXPECT_EQ(CPC.rom_file[i], "slot_" + std::to_string(i));
   }
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < MAX_ROM_SLOTS; i++) {
     CPC.rom_file[i] = "";
   }
 }
@@ -301,16 +301,16 @@ TEST_F(RomSlotsTest, BackwardCompatibility16SlotConfig) {
   for (int i = 0; i < 16; i++) {
     CPC.rom_file[i] = "legacy_rom_" + std::to_string(i);
   }
-  for (int i = 16; i < 32; i++) {
+  for (int i = 16; i < MAX_ROM_SLOTS; i++) {
     CPC.rom_file[i] = "";
   }
   for (int i = 0; i < 16; i++) {
     EXPECT_EQ(CPC.rom_file[i], "legacy_rom_" + std::to_string(i));
   }
-  for (int i = 16; i < 32; i++) {
+  for (int i = 16; i < MAX_ROM_SLOTS; i++) {
     EXPECT_EQ(CPC.rom_file[i], "");
   }
-  for (int i = 0; i < 32; i++) {
+  for (int i = 0; i < MAX_ROM_SLOTS; i++) {
     CPC.rom_file[i] = "";
   }
 }
