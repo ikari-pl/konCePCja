@@ -255,6 +255,10 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("breakpoints"); });
   g_command_palette.register_command("Symbol Table", "Show symbol table", "",
       []() { g_devtools_ui.toggle_window("symbols"); });
+  g_command_palette.register_command("Session Recording", "Show session recording controls", "",
+      []() { g_devtools_ui.toggle_window("session_recording"); });
+  g_command_palette.register_command("Graphics Finder", "Show graphics finder/tile viewer", "",
+      []() { g_devtools_ui.toggle_window("gfx_finder"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1672,12 +1676,15 @@ static void imgui_render_devtools()
   // Toolbar
   if (ImGui::BeginMenuBar()) {
     if (ImGui::BeginMenu("Debug")) {
-      ImGui::MenuItem("Registers",       nullptr, g_devtools_ui.window_ptr("registers"));
-      ImGui::MenuItem("Disassembly",     nullptr, g_devtools_ui.window_ptr("disassembly"));
-      ImGui::MenuItem("Memory Hex",      nullptr, g_devtools_ui.window_ptr("memory_hex"));
-      ImGui::MenuItem("Stack",           nullptr, g_devtools_ui.window_ptr("stack"));
-      ImGui::MenuItem("Breakpoints/WP",  nullptr, g_devtools_ui.window_ptr("breakpoints"));
-      ImGui::MenuItem("Symbols",         nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::MenuItem("Registers",         nullptr, g_devtools_ui.window_ptr("registers"));
+      ImGui::MenuItem("Disassembly",       nullptr, g_devtools_ui.window_ptr("disassembly"));
+      ImGui::MenuItem("Memory Hex",        nullptr, g_devtools_ui.window_ptr("memory_hex"));
+      ImGui::MenuItem("Stack",             nullptr, g_devtools_ui.window_ptr("stack"));
+      ImGui::MenuItem("Breakpoints/WP",    nullptr, g_devtools_ui.window_ptr("breakpoints"));
+      ImGui::MenuItem("Symbols",           nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::Separator();
+      ImGui::MenuItem("Session Recording", nullptr, g_devtools_ui.window_ptr("session_recording"));
+      ImGui::MenuItem("Graphics Finder",   nullptr, g_devtools_ui.window_ptr("gfx_finder"));
       ImGui::EndMenu();
     }
     ImGui::Separator();
