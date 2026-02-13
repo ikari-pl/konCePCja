@@ -831,18 +831,19 @@ void DevToolsUI::render_gfx_finder()
   unsigned long base_addr = 0;
   parse_hex(gfx_addr_, &base_addr, 0xFFFF);
 
-  GfxViewParams params;
-  params.address = static_cast<uint16_t>(base_addr);
-  params.width = gfx_width_;
-  params.height = gfx_height_;
-  params.mode = gfx_mode_;
-
-  // Read CPC memory into a buffer
+  // Read CPC memory into a buffer starting from base_addr
   size_t mem_size = static_cast<size_t>(gfx_width_) * gfx_height_;
   std::vector<uint8_t> mem_buf(mem_size);
   for (size_t i = 0; i < mem_size; i++) {
     mem_buf[i] = z80_read_mem(static_cast<word>((base_addr + i) & 0xFFFF));
   }
+
+  // Use address=0 since mem_buf is already relative to base_addr
+  GfxViewParams params;
+  params.address = 0;
+  params.width = gfx_width_;
+  params.height = gfx_height_;
+  params.mode = gfx_mode_;
 
   // Get current palette
   uint32_t palette[27];
@@ -887,17 +888,19 @@ void DevToolsUI::render_gfx_finder()
     ImGui::InvisibleButton("##gfxcanvas", canvas_size);
     bool hovered = ImGui::IsItemHovered();
 
-    // Handle paint on click
+    // Handle paint on click — only write back the single modified byte
     if (hovered && ImGui::IsMouseDown(0)) {
       ImVec2 mouse = ImGui::GetMousePos();
       int mx = static_cast<int>((mouse.x - canvas_pos.x) / zoom);
       int my = static_cast<int>((mouse.y - canvas_pos.y) / zoom);
       if (mx >= 0 && mx < pixel_w && my >= 0 && my < pixel_h) {
-        gfx_paint(mem_buf.data(), mem_buf.size(), params,
-                  mx, my, static_cast<uint8_t>(gfx_paint_color_));
-        // Write modified bytes back to CPC memory
-        for (size_t i = 0; i < mem_size; i++) {
-          z80_write_mem(static_cast<word>((base_addr + i) & 0xFFFF), mem_buf[i]);
+        int ppb = (gfx_mode_ == 0) ? 2 : (gfx_mode_ == 1) ? 4 : 8;
+        int byte_col = mx / ppb;
+        size_t byte_offset = static_cast<size_t>(my) * gfx_width_ + byte_col;
+        if (gfx_paint(mem_buf.data(), mem_buf.size(), params,
+                      mx, my, static_cast<uint8_t>(gfx_paint_color_))) {
+          z80_write_mem(static_cast<word>((base_addr + byte_offset) & 0xFFFF),
+                        mem_buf[byte_offset]);
         }
       }
     }
