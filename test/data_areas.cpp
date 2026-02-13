@@ -104,8 +104,8 @@ TEST_F(DataAreaManagerTest, FormatAtBytesMaxEightPerLine) {
     // At addr 0, should emit 8 bytes
     std::string result = mgr_.format_at(0x0000, mem, sizeof(mem));
     EXPECT_EQ(result, "db $00,$01,$02,$03,$04,$05,$06,$07");
-    // At addr 8, should emit next 8
-    result = mgr_.format_at(0x0008, mem, sizeof(mem));
+    // At addr 8, should emit next 8 (mem pointer starts at addr)
+    result = mgr_.format_at(0x0008, mem + 8, sizeof(mem) - 8);
     EXPECT_EQ(result, "db $08,$09,$0A,$0B,$0C,$0D,$0E,$0F");
 }
 

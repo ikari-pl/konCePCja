@@ -2965,7 +2965,7 @@ int koncpc_main (int argc, char **argv)
       cleanExit(-1);
    }
    #else
-      strncpy(chAppPath,APP_PATH,_MAX_PATH);
+      snprintf(chAppPath, sizeof(chAppPath), "%s", APP_PATH);
    #endif
 
    loadConfiguration(CPC, getConfigurationFilename()); // retrieve the emulator configuration

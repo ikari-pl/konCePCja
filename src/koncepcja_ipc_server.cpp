@@ -679,9 +679,9 @@ std::string handle_command(const std::string& line) {
           int buf_len = std::min(remaining, max_bytes);
           // Don't exceed end of export range
           if (pos + buf_len - 1 > end_pos) buf_len = end_pos - pos + 1;
-          std::vector<uint8_t> membuf(static_cast<size_t>(pos) + buf_len);
+          std::vector<uint8_t> membuf(buf_len);
           for (int mi = 0; mi < buf_len; mi++) {
-            membuf[static_cast<size_t>(pos) + mi] = z80_read_mem(static_cast<word>(pos + mi));
+            membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
           }
           int line_bytes = 0;
           std::string formatted = g_data_areas.format_at(pos, membuf.data(), membuf.size(), &line_bytes);
@@ -691,7 +691,7 @@ std::string handle_command(const std::string& line) {
           snprintf(buf, sizeof(buf), "%04X:", static_cast<unsigned>(pos));
           oss << buf;
           for (int mi = 0; mi < line_bytes && mi < 8; mi++) {
-            snprintf(buf, sizeof(buf), " %02X", membuf[static_cast<size_t>(pos) + mi]);
+            snprintf(buf, sizeof(buf), " %02X", membuf[mi]);
             oss << buf;
           }
           oss << "\n";
@@ -771,9 +771,9 @@ std::string handle_command(const std::string& line) {
           int remaining = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
           int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
           int buf_len = std::min(remaining, max_bytes);
-          std::vector<uint8_t> membuf(static_cast<size_t>(pos) + buf_len);
+          std::vector<uint8_t> membuf(buf_len);
           for (int mi = 0; mi < buf_len; mi++) {
-            membuf[static_cast<size_t>(pos) + mi] = z80_read_mem(static_cast<word>(pos + mi));
+            membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
           }
           int line_bytes = 0;
           std::string formatted = g_data_areas.format_at(pos, membuf.data(), membuf.size(), &line_bytes);

@@ -26,7 +26,8 @@ TEST_F(DisasmExportDataTest, BytesDataAreaFormatsAsDb) {
     mem_[0x4002] = 0xCC;
     mem_[0x4003] = 0xDD;
     int consumed = 0;
-    std::string result = mgr_.format_at(0x4000, mem_, sizeof(mem_), &consumed);
+    // mem pointer starts at addr (relative indexing)
+    std::string result = mgr_.format_at(0x4000, mem_ + 0x4000, sizeof(mem_) - 0x4000, &consumed);
     EXPECT_EQ(consumed, 4);
     EXPECT_EQ(result, "db $AA,$BB,$CC,$DD");
 }
@@ -38,7 +39,7 @@ TEST_F(DisasmExportDataTest, WordsDataAreaFormatsAsDw) {
     mem_[0x5002] = 0x78;
     mem_[0x5003] = 0x56;
     int consumed = 0;
-    std::string result = mgr_.format_at(0x5000, mem_, sizeof(mem_), &consumed);
+    std::string result = mgr_.format_at(0x5000, mem_ + 0x5000, sizeof(mem_) - 0x5000, &consumed);
     EXPECT_EQ(consumed, 4);
     EXPECT_EQ(result, "dw $1234,$5678");
 }
@@ -51,7 +52,7 @@ TEST_F(DisasmExportDataTest, TextDataAreaFormatsAsDbWithQuotes) {
     mem_[0x6003] = 'l';
     mem_[0x6004] = 'o';
     int consumed = 0;
-    std::string result = mgr_.format_at(0x6000, mem_, sizeof(mem_), &consumed);
+    std::string result = mgr_.format_at(0x6000, mem_ + 0x6000, sizeof(mem_) - 0x6000, &consumed);
     EXPECT_EQ(consumed, 5);
     EXPECT_EQ(result, "db \"Hello\"");
 }
@@ -63,7 +64,7 @@ TEST_F(DisasmExportDataTest, TextWithNonPrintableFormatsAsMixed) {
     mem_[0x7002] = 0x00;  // null terminator
     mem_[0x7003] = 'C';
     int consumed = 0;
-    std::string result = mgr_.format_at(0x7000, mem_, sizeof(mem_), &consumed);
+    std::string result = mgr_.format_at(0x7000, mem_ + 0x7000, sizeof(mem_) - 0x7000, &consumed);
     EXPECT_EQ(consumed, 4);
     // "AB" followed by $00 then "C"
     EXPECT_EQ(result, "db \"AB\",$00,\"C\"");
@@ -71,7 +72,7 @@ TEST_F(DisasmExportDataTest, TextWithNonPrintableFormatsAsMixed) {
 
 TEST_F(DisasmExportDataTest, FormatAtReturnsEmptyForNonDataArea) {
     int consumed = 0;
-    std::string result = mgr_.format_at(0x8000, mem_, sizeof(mem_), &consumed);
+    std::string result = mgr_.format_at(0x8000, mem_ + 0x8000, sizeof(mem_) - 0x8000, &consumed);
     EXPECT_EQ(consumed, 0);
     EXPECT_TRUE(result.empty());
 }
@@ -82,13 +83,13 @@ TEST_F(DisasmExportDataTest, BytesAreaPartialFormat) {
     for (int i = 0; i < 16; i++) mem_[0x4000 + i] = static_cast<uint8_t>(i);
 
     int consumed1 = 0;
-    std::string line1 = mgr_.format_at(0x4000, mem_, sizeof(mem_), &consumed1);
+    std::string line1 = mgr_.format_at(0x4000, mem_ + 0x4000, sizeof(mem_) - 0x4000, &consumed1);
     EXPECT_EQ(consumed1, 8);
     EXPECT_EQ(line1, "db $00,$01,$02,$03,$04,$05,$06,$07");
 
     // Second call at 0x4008 should produce next 8 bytes
     int consumed2 = 0;
-    std::string line2 = mgr_.format_at(0x4008, mem_, sizeof(mem_), &consumed2);
+    std::string line2 = mgr_.format_at(0x4008, mem_ + 0x4008, sizeof(mem_) - 0x4008, &consumed2);
     EXPECT_EQ(consumed2, 8);
     EXPECT_EQ(line2, "db $08,$09,$0A,$0B,$0C,$0D,$0E,$0F");
 }
@@ -111,9 +112,21 @@ TEST_F(DisasmExportDataTest, WordsAreaOddRemainder) {
     mem_[0x5001] = 0x12;
     mem_[0x5002] = 0xFF;
     int consumed = 0;
-    std::string result = mgr_.format_at(0x5000, mem_, sizeof(mem_), &consumed);
+    std::string result = mgr_.format_at(0x5000, mem_ + 0x5000, sizeof(mem_) - 0x5000, &consumed);
     EXPECT_EQ(consumed, 2);  // one word = 2 bytes
     EXPECT_EQ(result, "dw $1234");
+}
+
+TEST_F(DisasmExportDataTest, FormatAtWithSmallBufferAtHighAddress) {
+    // Regression: format_at previously required a buffer indexed by absolute
+    // address, causing allocations of pos+len bytes (up to 64K). Now it uses
+    // relative indexing — a small buffer starting at addr is sufficient.
+    mgr_.mark(0xC000, 0xC003, DataType::BYTES);
+    uint8_t small_buf[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    int consumed = 0;
+    std::string result = mgr_.format_at(0xC000, small_buf, 4, &consumed);
+    EXPECT_EQ(consumed, 4);
+    EXPECT_EQ(result, "db $DE,$AD,$BE,$EF");
 }
 
 } // namespace
