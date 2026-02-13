@@ -40,6 +40,8 @@ private:
 
     // Silicon Disc state
     char sd_path_[256] = "";
+    float sd_bank_usage_[4] = {};
+    bool sd_usage_dirty_ = true;
 
     // Disc Tools state
     int dt_drive_ = 0;  // 0=A, 1=B
@@ -50,6 +52,8 @@ private:
     std::vector<DiskFileEntry> dt_file_cache_;
     std::string dt_file_error_;
     bool dt_files_dirty_ = true;
+    std::string dt_format_combo_;
+    bool dt_format_combo_dirty_ = true;
     std::vector<SectorInfo> dt_sector_cache_;
     std::string dt_sector_error_;
     std::vector<uint8_t> dt_sector_data_;

@@ -22,6 +22,7 @@ extern t_z80regs z80;
 extern t_drive driveA;
 extern t_drive driveB;
 extern double colours_rgb[32][3];
+extern t_GateArray GateArray;
 
 DevToolsUI g_devtools_ui;
 
@@ -720,20 +721,26 @@ void DevToolsUI::render_silicon_disc()
   ImGui::Checkbox("Enabled", &g_silicon_disc.enabled);
   ImGui::Separator();
 
-  // Bank usage bars (% non-zero bytes per 64K bank)
+  // Bank usage bars (% non-zero bytes per 64K bank) — cached to avoid 256K scan every frame
   if (g_silicon_disc.data) {
-    for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
-      const uint8_t* ptr = g_silicon_disc.bank_ptr(bank);
-      int used = 0;
-      for (size_t i = 0; i < SILICON_DISC_BANK_SIZE; i++) {
-        if (ptr[i] != 0) used++;
+    if (sd_usage_dirty_) {
+      for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
+        const uint8_t* ptr = g_silicon_disc.bank_ptr(bank);
+        int used = 0;
+        for (size_t i = 0; i < SILICON_DISC_BANK_SIZE; i++) {
+          if (ptr[i] != 0) used++;
+        }
+        sd_bank_usage_[bank] = static_cast<float>(used) / SILICON_DISC_BANK_SIZE;
       }
-      float frac = static_cast<float>(used) / SILICON_DISC_BANK_SIZE;
+      sd_usage_dirty_ = false;
+    }
+    for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
       char overlay[32];
       snprintf(overlay, sizeof(overlay), "Bank %d: %d%% used", bank + SILICON_DISC_FIRST_BANK,
-               static_cast<int>(frac * 100));
-      ImGui::ProgressBar(frac, ImVec2(-1, 0), overlay);
+               static_cast<int>(sd_bank_usage_[bank] * 100));
+      ImGui::ProgressBar(sd_bank_usage_[bank], ImVec2(-1, 0), overlay);
     }
+    if (ImGui::SmallButton("Refresh Usage")) sd_usage_dirty_ = true;
   } else {
     ImGui::TextDisabled("Not initialized (enable and reset to allocate)");
   }
@@ -749,12 +756,15 @@ void DevToolsUI::render_silicon_disc()
   }
   ImGui::SameLine();
   if (ImGui::Button("Load")) {
-    if (sd_path_[0] != '\0')
+    if (sd_path_[0] != '\0') {
       silicon_disc_load(g_silicon_disc, sd_path_);
+      sd_usage_dirty_ = true;
+    }
   }
   ImGui::SameLine();
   if (ImGui::Button("Clear")) {
     silicon_disc_clear(g_silicon_disc);
+    sd_usage_dirty_ = true;
   }
 
   if (!open) show_silicon_disc_ = false;
@@ -829,7 +839,6 @@ void DevToolsUI::render_asic()
 
   // Palette
   if (ImGui::CollapsingHeader("Palette")) {
-    extern t_GateArray GateArray;
     float sz = 20.0f;
     for (int i = 0; i < 17; i++) {
       int hw_color = GateArray.ink_values[i];
@@ -890,19 +899,23 @@ void DevToolsUI::render_disc_tools()
 
   // Format section
   if (ImGui::CollapsingHeader("Format Disc")) {
-    auto formats = disk_format_names();
-    if (!formats.empty()) {
-      // Build a combined string for ImGui combo
-      std::string combo_items;
+    // Cache format names and combo string (they don't change at runtime)
+    if (dt_format_combo_dirty_) {
+      auto formats = disk_format_names();
+      dt_format_combo_.clear();
       for (const auto& f : formats) {
-        combo_items += f;
-        combo_items += '\0';
+        dt_format_combo_ += f;
+        dt_format_combo_ += '\0';
       }
-      combo_items += '\0';
+      dt_format_combo_ += '\0';
+      dt_format_combo_dirty_ = false;
+    }
+    if (!dt_format_combo_.empty()) {
       ImGui::SetNextItemWidth(120);
-      ImGui::Combo("Format##dt", &dt_format_, combo_items.c_str());
+      ImGui::Combo("Format##dt", &dt_format_, dt_format_combo_.c_str());
       ImGui::SameLine();
       if (ImGui::Button("Format")) {
+        auto formats = disk_format_names();
         char letter = (dt_drive_ == 0) ? 'A' : 'B';
         if (dt_format_ >= 0 && dt_format_ < static_cast<int>(formats.size())) {
           disk_format_drive(letter, formats[dt_format_]);
