@@ -21,6 +21,7 @@ public:
     void capture_frame(const uint8_t* regs);
 
     bool is_recording() const;
+    bool has_error() const;
     uint32_t frame_count() const;
     std::string current_path() const;
 
@@ -30,6 +31,7 @@ private:
     std::string path_;
     std::vector<std::array<uint8_t, 14>> frames_;
     bool recording_ = false;
+    bool error_ = false;
     mutable std::mutex mutex_;
 
     bool write_ym5_file();
