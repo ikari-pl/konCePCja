@@ -255,6 +255,12 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("breakpoints"); });
   g_command_palette.register_command("Symbol Table", "Show symbol table", "",
       []() { g_devtools_ui.toggle_window("symbols"); });
+  g_command_palette.register_command("Silicon Disc", "Show Silicon Disc panel", "",
+      []() { g_devtools_ui.toggle_window("silicon_disc"); });
+  g_command_palette.register_command("ASIC Registers", "Show ASIC register viewer", "",
+      []() { g_devtools_ui.toggle_window("asic"); });
+  g_command_palette.register_command("Disc Tools", "Show disc file/sector tools", "",
+      []() { g_devtools_ui.toggle_window("disc_tools"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1678,6 +1684,10 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Stack",           nullptr, g_devtools_ui.window_ptr("stack"));
       ImGui::MenuItem("Breakpoints/WP",  nullptr, g_devtools_ui.window_ptr("breakpoints"));
       ImGui::MenuItem("Symbols",         nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::Separator();
+      ImGui::MenuItem("Silicon Disc",    nullptr, g_devtools_ui.window_ptr("silicon_disc"));
+      ImGui::MenuItem("ASIC Registers",  nullptr, g_devtools_ui.window_ptr("asic"));
+      ImGui::MenuItem("Disc Tools",      nullptr, g_devtools_ui.window_ptr("disc_tools"));
       ImGui::EndMenu();
     }
     ImGui::Separator();

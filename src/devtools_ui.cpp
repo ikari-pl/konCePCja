@@ -10,9 +10,18 @@
 #include "z80.h"
 #include "z80_disassembly.h"
 #include "symfile.h"
+#include "silicon_disc.h"
+#include "asic.h"
+#include "disk.h"
+#include "disk_file_editor.h"
+#include "disk_sector_editor.h"
+#include "disk_format.h"
 
 extern t_CPC CPC;
 extern t_z80regs z80;
+extern t_drive driveA;
+extern t_drive driveB;
+extern double colours_rgb[32][3];
 
 DevToolsUI g_devtools_ui;
 
@@ -22,12 +31,15 @@ DevToolsUI g_devtools_ui;
 
 bool* DevToolsUI::window_ptr(const std::string& name)
 {
-  if (name == "registers")   return &show_registers_;
-  if (name == "disassembly") return &show_disassembly_;
-  if (name == "memory_hex")  return &show_memory_hex_;
-  if (name == "stack")       return &show_stack_;
-  if (name == "breakpoints") return &show_breakpoints_;
-  if (name == "symbols")     return &show_symbols_;
+  if (name == "registers")    return &show_registers_;
+  if (name == "disassembly")  return &show_disassembly_;
+  if (name == "memory_hex")   return &show_memory_hex_;
+  if (name == "stack")        return &show_stack_;
+  if (name == "breakpoints")  return &show_breakpoints_;
+  if (name == "symbols")      return &show_symbols_;
+  if (name == "silicon_disc") return &show_silicon_disc_;
+  if (name == "asic")         return &show_asic_;
+  if (name == "disc_tools")   return &show_disc_tools_;
   return nullptr;
 }
 
@@ -39,19 +51,23 @@ void DevToolsUI::toggle_window(const std::string& name)
 
 bool DevToolsUI::is_window_open(const std::string& name) const
 {
-  if (name == "registers")   return show_registers_;
-  if (name == "disassembly") return show_disassembly_;
-  if (name == "memory_hex")  return show_memory_hex_;
-  if (name == "stack")       return show_stack_;
-  if (name == "breakpoints") return show_breakpoints_;
-  if (name == "symbols")     return show_symbols_;
+  if (name == "registers")    return show_registers_;
+  if (name == "disassembly")  return show_disassembly_;
+  if (name == "memory_hex")   return show_memory_hex_;
+  if (name == "stack")        return show_stack_;
+  if (name == "breakpoints")  return show_breakpoints_;
+  if (name == "symbols")      return show_symbols_;
+  if (name == "silicon_disc") return show_silicon_disc_;
+  if (name == "asic")         return show_asic_;
+  if (name == "disc_tools")   return show_disc_tools_;
   return false;
 }
 
 bool DevToolsUI::any_window_open() const
 {
   return show_registers_ || show_disassembly_ || show_memory_hex_ ||
-         show_stack_ || show_breakpoints_ || show_symbols_;
+         show_stack_ || show_breakpoints_ || show_symbols_ ||
+         show_silicon_disc_ || show_asic_ || show_disc_tools_;
 }
 
 void DevToolsUI::navigate_disassembly(word addr)
@@ -68,12 +84,15 @@ void DevToolsUI::navigate_disassembly(word addr)
 
 void DevToolsUI::render()
 {
-  if (show_registers_)   render_registers();
-  if (show_disassembly_) render_disassembly();
-  if (show_memory_hex_)  render_memory_hex();
-  if (show_stack_)       render_stack();
-  if (show_breakpoints_) render_breakpoints();
-  if (show_symbols_)     render_symbols();
+  if (show_registers_)    render_registers();
+  if (show_disassembly_)  render_disassembly();
+  if (show_memory_hex_)   render_memory_hex();
+  if (show_stack_)        render_stack();
+  if (show_breakpoints_)  render_breakpoints();
+  if (show_symbols_)      render_symbols();
+  if (show_silicon_disc_) render_silicon_disc();
+  if (show_asic_)         render_asic();
+  if (show_disc_tools_)   render_disc_tools();
 }
 
 // -----------------------------------------------
@@ -680,5 +699,349 @@ void DevToolsUI::render_symbols()
   }
 
   if (!open) show_symbols_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 7: Silicon Disc
+// -----------------------------------------------
+
+void DevToolsUI::render_silicon_disc()
+{
+  ImGui::SetNextWindowSize(ImVec2(380, 280), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Silicon Disc", &open)) {
+    if (!open) show_silicon_disc_ = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::Checkbox("Enabled", &g_silicon_disc.enabled);
+  ImGui::Separator();
+
+  // Bank usage bars (% non-zero bytes per 64K bank)
+  if (g_silicon_disc.data) {
+    for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
+      const uint8_t* ptr = g_silicon_disc.bank_ptr(bank);
+      int used = 0;
+      for (size_t i = 0; i < SILICON_DISC_BANK_SIZE; i++) {
+        if (ptr[i] != 0) used++;
+      }
+      float frac = static_cast<float>(used) / SILICON_DISC_BANK_SIZE;
+      char overlay[32];
+      snprintf(overlay, sizeof(overlay), "Bank %d: %d%% used", bank + SILICON_DISC_FIRST_BANK,
+               static_cast<int>(frac * 100));
+      ImGui::ProgressBar(frac, ImVec2(-1, 0), overlay);
+    }
+  } else {
+    ImGui::TextDisabled("Not initialized (enable and reset to allocate)");
+  }
+
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##sdpath", "File path for save/load...",
+                           sd_path_, sizeof(sd_path_));
+
+  if (ImGui::Button("Save")) {
+    if (sd_path_[0] != '\0')
+      silicon_disc_save(g_silicon_disc, sd_path_);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Load")) {
+    if (sd_path_[0] != '\0')
+      silicon_disc_load(g_silicon_disc, sd_path_);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Clear")) {
+    silicon_disc_clear(g_silicon_disc);
+  }
+
+  if (!open) show_silicon_disc_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 8: ASIC Register Viewer
+// -----------------------------------------------
+
+void DevToolsUI::render_asic()
+{
+  ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("ASIC Registers", &open)) {
+    if (!open) show_asic_ = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::Text("Lock state: %s (pos %d)", asic.locked ? "Locked" : "Unlocked", asic.lockSeqPos);
+  ImGui::Separator();
+
+  // Sprites
+  if (ImGui::CollapsingHeader("Sprites", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::BeginTable("asic_sprites", 5,
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+      ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 20);
+      ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthFixed, 50);
+      ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthFixed, 50);
+      ImGui::TableSetupColumn("Mag", ImGuiTableColumnFlags_WidthFixed, 60);
+      ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 50);
+      ImGui::TableHeadersRow();
+
+      for (int i = 0; i < 16; i++) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::Text("%d", i);
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("%d", asic.sprites_x[i]);
+        ImGui::TableSetColumnIndex(2);
+        ImGui::Text("%d", asic.sprites_y[i]);
+        ImGui::TableSetColumnIndex(3);
+        ImGui::Text("%dx%d", asic.sprites_mag_x[i], asic.sprites_mag_y[i]);
+        ImGui::TableSetColumnIndex(4);
+        bool visible = (asic.sprites_x[i] != 0 || asic.sprites_y[i] != 0);
+        ImGui::Text("%s", visible ? "Yes" : "No");
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  // DMA Channels
+  if (ImGui::CollapsingHeader("DMA Channels", ImGuiTreeNodeFlags_DefaultOpen)) {
+    for (int ch = 0; ch < NB_DMA_CHANNELS; ch++) {
+      const auto& dma_ch = asic.dma.ch[ch];
+      ImGui::PushID(ch);
+      ImGui::Text("Channel %d:", ch);
+      ImGui::SameLine();
+      ImGui::TextColored(dma_ch.enabled ? ImVec4(0.2f, 1.0f, 0.2f, 1.0f)
+                                        : ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                         "%s", dma_ch.enabled ? "ENABLED" : "disabled");
+      ImGui::Text("  Addr: %04X  Loop: %04X  Prescaler: %d  Pause: %d  Loops: %d",
+                  dma_ch.source_address, dma_ch.loop_address,
+                  dma_ch.prescaler, dma_ch.pause_ticks, dma_ch.loops);
+      ImGui::Text("  IRQ: %s  Tick cycles: %d",
+                  dma_ch.interrupt ? "yes" : "no", dma_ch.tick_cycles);
+      ImGui::PopID();
+    }
+  }
+
+  // Palette
+  if (ImGui::CollapsingHeader("Palette")) {
+    extern t_GateArray GateArray;
+    float sz = 20.0f;
+    for (int i = 0; i < 17; i++) {
+      int hw_color = GateArray.ink_values[i];
+      float r = static_cast<float>(colours_rgb[hw_color][0]);
+      float g = static_cast<float>(colours_rgb[hw_color][1]);
+      float b = static_cast<float>(colours_rgb[hw_color][2]);
+      ImVec4 col(r, g, b, 1.0f);
+      char label[16];
+      snprintf(label, sizeof(label), "##ink%d", i);
+      ImGui::ColorButton(label, col, ImGuiColorEditFlags_NoTooltip, ImVec2(sz, sz));
+      if (i < 16) ImGui::SameLine();
+    }
+    ImGui::Text("Ink 0-15 + Border");
+  }
+
+  // Interrupts & scroll
+  if (ImGui::CollapsingHeader("Interrupts & Scroll")) {
+    ImGui::Text("Raster interrupt: %s", asic.raster_interrupt ? "enabled" : "disabled");
+    ImGui::Text("Interrupt vector: %02X", asic.interrupt_vector);
+    ImGui::Text("H-Scroll: %d  V-Scroll: %d", asic.hscroll, asic.vscroll);
+    ImGui::Text("Extend border: %s", asic.extend_border ? "yes" : "no");
+
+    ImGui::Text("DMA IRQ flags:");
+    for (int ch = 0; ch < NB_DMA_CHANNELS; ch++) {
+      ImGui::SameLine();
+      ImGui::Text("CH%d:%s", ch, asic.dma.ch[ch].interrupt ? "IRQ" : "---");
+    }
+  }
+
+  if (!open) show_asic_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 9: Disc Tools
+// -----------------------------------------------
+
+void DevToolsUI::render_disc_tools()
+{
+  ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Disc Tools", &open)) {
+    if (!open) show_disc_tools_ = false;
+    ImGui::End();
+    return;
+  }
+
+  // Drive selector
+  const char* drives[] = { "Drive A", "Drive B" };
+  ImGui::SetNextItemWidth(100);
+  if (ImGui::Combo("Drive", &dt_drive_, drives, 2)) {
+    dt_files_dirty_ = true;
+  }
+  t_drive* drv = (dt_drive_ == 0) ? &driveA : &driveB;
+
+  ImGui::Separator();
+
+  // Format section
+  if (ImGui::CollapsingHeader("Format Disc")) {
+    auto formats = disk_format_names();
+    if (!formats.empty()) {
+      // Build a combined string for ImGui combo
+      std::string combo_items;
+      for (const auto& f : formats) {
+        combo_items += f;
+        combo_items += '\0';
+      }
+      combo_items += '\0';
+      ImGui::SetNextItemWidth(120);
+      ImGui::Combo("Format##dt", &dt_format_, combo_items.c_str());
+      ImGui::SameLine();
+      if (ImGui::Button("Format")) {
+        char letter = (dt_drive_ == 0) ? 'A' : 'B';
+        if (dt_format_ >= 0 && dt_format_ < static_cast<int>(formats.size())) {
+          disk_format_drive(letter, formats[dt_format_]);
+          dt_files_dirty_ = true;
+        }
+      }
+    }
+  }
+
+  // File browser
+  if (ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (dt_files_dirty_) {
+      dt_file_cache_ = disk_list_files(drv, dt_file_error_);
+      dt_files_dirty_ = false;
+    }
+    if (ImGui::Button("Refresh##files")) dt_files_dirty_ = true;
+
+    if (!dt_file_error_.empty()) {
+      ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_file_error_.c_str());
+    }
+
+    if (ImGui::BeginTable("dt_files", 4,
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+        ImVec2(0, 200))) {
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 60);
+      ImGui::TableSetupColumn("User", ImGuiTableColumnFlags_WidthFixed, 30);
+      ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
+      ImGui::TableHeadersRow();
+
+      for (size_t i = 0; i < dt_file_cache_.size(); i++) {
+        const auto& fe = dt_file_cache_[i];
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(fe.display_name.c_str());
+        ImGui::TableSetColumnIndex(1);
+        ImGui::Text("%u", fe.size_bytes);
+        ImGui::TableSetColumnIndex(2);
+        ImGui::Text("%d", fe.user);
+        ImGui::TableSetColumnIndex(3);
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::SmallButton("X")) {
+          disk_delete_file(drv, fe.filename);
+          dt_files_dirty_ = true;
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  // Sector browser
+  if (ImGui::CollapsingHeader("Sector Browser")) {
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputInt("Track##sec", &dt_track_, 1, 1);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(40);
+    ImGui::InputInt("Side##sec", &dt_side_, 1, 1);
+    if (dt_track_ < 0) dt_track_ = 0;
+    if (dt_side_ < 0) dt_side_ = 0;
+
+    ImGui::SameLine();
+    if (ImGui::Button("List Sectors")) {
+      dt_sector_cache_ = disk_sector_info(drv, static_cast<unsigned>(dt_track_),
+                                           static_cast<unsigned>(dt_side_),
+                                           dt_sector_error_);
+    }
+
+    if (!dt_sector_error_.empty()) {
+      ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_sector_error_.c_str());
+    }
+
+    if (!dt_sector_cache_.empty()) {
+      if (ImGui::BeginTable("dt_sectors", 5,
+          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthFixed, 25);
+        ImGui::TableSetupColumn("H", ImGuiTableColumnFlags_WidthFixed, 25);
+        ImGui::TableSetupColumn("R", ImGuiTableColumnFlags_WidthFixed, 30);
+        ImGui::TableSetupColumn("N", ImGuiTableColumnFlags_WidthFixed, 25);
+        ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 50);
+        ImGui::TableHeadersRow();
+
+        for (const auto& si : dt_sector_cache_) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0); ImGui::Text("%02X", si.C);
+          ImGui::TableSetColumnIndex(1); ImGui::Text("%02X", si.H);
+          ImGui::TableSetColumnIndex(2); ImGui::Text("%02X", si.R);
+          ImGui::TableSetColumnIndex(3); ImGui::Text("%02X", si.N);
+          ImGui::TableSetColumnIndex(4); ImGui::Text("%u", si.size);
+        }
+        ImGui::EndTable();
+      }
+    }
+
+    // Read a specific sector
+    ImGui::SetNextItemWidth(40);
+    ImGui::InputText("Sector ID##read", dt_sector_id_, sizeof(dt_sector_id_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    if (ImGui::Button("Read Sector")) {
+      unsigned long sid;
+      if (parse_hex(dt_sector_id_, &sid, 0xFF)) {
+        dt_sector_data_ = disk_sector_read(drv, static_cast<unsigned>(dt_track_),
+                                            static_cast<unsigned>(dt_side_),
+                                            static_cast<uint8_t>(sid),
+                                            dt_sector_read_error_);
+      }
+    }
+
+    if (!dt_sector_read_error_.empty()) {
+      ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_sector_read_error_.c_str());
+    }
+
+    // Hex dump of read sector
+    if (!dt_sector_data_.empty()) {
+      ImGui::Text("Sector data (%zu bytes):", dt_sector_data_.size());
+      if (ImGui::BeginChild("##secdata", ImVec2(0, 150), ImGuiChildFlags_Borders)) {
+        for (size_t off = 0; off < dt_sector_data_.size(); off += 16) {
+          ImGui::Text("%04X:", static_cast<unsigned>(off));
+          ImGui::SameLine();
+          for (size_t col = 0; col < 16 && off + col < dt_sector_data_.size(); col++) {
+            ImGui::SameLine();
+            ImGui::Text("%02X", dt_sector_data_[off + col]);
+          }
+          // ASCII
+          ImGui::SameLine();
+          char ascii[17] = {};
+          for (size_t col = 0; col < 16 && off + col < dt_sector_data_.size(); col++) {
+            uint8_t b = dt_sector_data_[off + col];
+            ascii[col] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
+          }
+          ImGui::Text("|%s|", ascii);
+        }
+      }
+      ImGui::EndChild();
+    }
+  }
+
+  if (!open) show_disc_tools_ = false;
   ImGui::End();
 }
