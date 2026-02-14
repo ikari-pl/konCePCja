@@ -12,43 +12,111 @@ https://github.com/ikari-pl/konCePCja
 
 ## What is it?
 
-konCePCja is a software emulator of the Amstrad CPC 8-bit home computer series, running on Linux, macOS and Windows. It faithfully imitates the CPC464, CPC664 and CPC6128 models. By recreating the operations of all hardware components at a low level, the emulator achieves a high degree of compatibility with original CPC software. Programs and games run unmodified at real-time or higher speeds, depending on the host environment.
+konCePCja is a software emulator of the Amstrad CPC 8-bit home computer series, running on Linux, macOS and Windows. It faithfully imitates the CPC464, CPC664 and CPC6128 models, plus the CPC464+, CPC6128+ and GX4000 Plus Range machines. By recreating the operations of all hardware components at a low level, the emulator achieves a high degree of compatibility with original CPC software. Programs and games run unmodified at real-time or higher speeds, depending on the host environment.
+
+konCePCja is designed as an **IPC-controllable debugging tool** — every feature is accessible via a TCP text protocol, making it scriptable by automation pipelines, CI systems and LLM agents. The 13-window Dear ImGui DevTools UI is built on top of the same API.
 
 ## Changes vs Caprice32
 
-konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with modernized tooling and UI integration.
-Key differences so far:
-  * SDL3 migration + macOS menu integration
-  * Project rename, bundle ID and updated defaults/paths
-  * PNG logo + macOS icns icon
-  * **Headless mode** (`--headless`) — run without a window for CI and automation
-  * **IPC protocol** — TCP server on port 6543 for remote control by scripts and LLM agents
-  * **Input replay** — type text, press keys and control joysticks over IPC
-  * **Frame stepping** — advance exact frame counts for deterministic testing
-  * **Instruction trace** — ring-buffer Z80 execution trace with dump to file
-  * **Frame dumps** — save sequential PNG screenshots for animation/regression
-  * **Event system** — fire IPC commands on PC match, memory write or VBL interval
-  * **Hash commands** — CRC32 of VRAM, memory ranges and registers for CI assertions
-  * **Exit control** — `--exit-after`, `--exit-on-break` and `quit` for scripted runs
+konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 41 pull requests, 623 tests, 38K lines of source.
 
-See [docs/ipc-protocol.md](docs/ipc-protocol.md) for the full IPC command reference.
+### Platform & UI
+  * SDL3 migration + macOS menu integration
+  * Dear ImGui overlay with 13 DevTools windows (see [DevTools](#devtools) below)
+  * PNG logo + macOS icns icon
+
+### IPC Automation
+  * **IPC protocol** — TCP server on port 6543 for remote control by scripts and LLM agents
+  * **Headless mode** (`--headless`) — run without a window for CI and automation
+  * **Input replay** — type text, press keys and control joysticks over IPC
+  * **Auto-Type** — `autotype` command with WinAPE `~KEY~` syntax for scripted keyboard input
+  * **Frame stepping** — advance exact frame counts for deterministic testing
+  * **Exit control** — `--exit-after`, `--exit-on-break` and `quit` for scripted runs
+  * **Hash commands** — CRC32 of VRAM, memory ranges and registers for CI assertions
+  * **Event system** — fire IPC commands on PC match, memory write or VBL interval
+
+### Debugger
+  * **Breakpoints** with conditional expressions (`if A > #10 and peek(HL) = #C9`) and pass counts
+  * **Watchpoints** — memory access breakpoints on read, write or both with address ranges
+  * **IO breakpoints** — break on Z80 IN/OUT with port masks and conditions
+  * **Step over / step out / step to** — function-level stepping, not just single instructions
+  * **Expression parser** — WinAPE-compatible syntax with registers, `peek()`, `ay()`, `crtc()`, bitwise operators
+  * **Debug timers** — measure T-state durations between code points via expression side-effects
+  * **Symbol table** — load/save `.sym` files, bidirectional lookup, symbols in disassembly output
+  * **Memory search** — find hex patterns (`??` wildcards), ASCII text, or Z80 mnemonics (`ld (*),hl`)
+  * **Call stack** — heuristic stack walk with CALL/RST detection and symbol labels
+  * **Data areas** — mark address ranges as bytes/words/text for correct disassembly output
+  * **Disassembly export** — export address ranges to source files with optional symbol labels
+  * **Instruction trace** — ring-buffer Z80 execution trace with dump to file
+  * **Memory bank viewer** — read through Z80 banking, write path, or raw physical banks
+
+### Disc & Media Tools
+  * **Disc file editor** — `disk ls/get/put/rm` for AMSDOS files on DSK images
+  * **Sector editor** — read/write individual sectors by track/side/sector ID
+  * **Disc formatting** — create blank discs in standard CPC, IBM, and custom formats
+  * **WAV recording** — capture audio output to WAV files
+  * **YM recording** — capture PSG register writes to YM chiptune files
+  * **AVI recording** — capture video+audio to AVI files
+  * **Frame dumps** — save sequential PNG screenshots or animated GIFs with LZW compression
+
+### Hardware & Plus Range
+  * **Full Plus Range** — CPC464+/CPC6128+/GX4000 with ASIC hardware sprites, enhanced palette, DMA sound channels, and vectored interrupts
+  * **CRTC type selection** — types 0, 1, 2 and 3 with per-type register behaviour
+  * **4MB RAM expansion** (Yarek-compatible) — configurable up to 4096 KB
+  * **Silicon Disc** — 256 KB battery-backed RAM disc in banks 4-7
+  * **32 ROM slots** — load/unload/query ROM images
+  * **ASIC register viewer** — sprites, DMA channels, palette, interrupts
+
+### Session & Graphics
+  * **Session recording** — record and replay full emulator input/state sessions
+  * **Graphics finder** — decode CPC Mode 0/1/2 pixel data at any address with zoom and paint
+  * **Pokes system** — load, apply and manage game cheats in .pok format
+  * **Configuration profiles** — save and switch between named config presets
+
+See [docs/ipc-protocol.md](docs/ipc-protocol.md) for the full IPC command reference (80+ commands).
 
 ## Features
 
   * Complete emulation of CPC464, CPC664 and CPC6128
-  * Mostly working Plus Range support: CPC464+/CPC6128+/GX4000 (missing vectored & DMA interrupts, analog joysticks and 8-bit printer)
+  * Plus Range support: CPC464+/CPC6128+/GX4000 with ASIC sprites, DMA, enhanced palette, and vectored interrupts
+  * CRTC types 0-3 with per-type behaviour
   * Joystick support — fully usable with joystick only, thanks to an integrated virtual keyboard
   * Joystick emulation — joystick-only games can be played using the keyboard
   * English, French or Spanish keyboards
   * DSK, [IPF](http://softpres.org/glossary:ipf) and CT-RAW files for disks — VOC and CDT files for tapes — CPR files for cartridges
   * Snapshots (SNA files)
   * Direct load of ZIP files
-  * Developer tools: debugger, memory editor, disassembler
+  * 13-window ImGui DevTools: registers, disassembly, memory hex, stack, breakpoints, symbols, data areas, graphics finder, session recording, silicon disc, ASIC viewer, disc tools, disasm export
+  * Disc file editor, sector editor and formatting (IPC and GUI)
+  * WAV, YM and AVI recording
   * Custom disk formats
   * Printer support
   * Experimental Multiface 2 support (prefer the memory tool where possible)
+  * 623 unit tests across 78 test suites
 
 Something missing? Open an issue to suggest it.
+
+## DevTools
+
+Press **F12** or send `devtools` via IPC to open the developer tools overlay. The DevTools provide 13 floating windows, all backed by the same IPC commands available to scripts:
+
+| Window | Description |
+|--------|-------------|
+| **Registers** | Z80 registers and flags, editable in-place |
+| **Disassembly** | Live disassembly with follow-PC, goto address, symbol labels and data area formatting |
+| **Memory Hex** | Hex editor with configurable bytes-per-row and goto address |
+| **Stack** | Stack view with heuristic CALL/RST detection and symbol names |
+| **Breakpoints** | Unified table of breakpoints, watchpoints and IO breakpoints with add/delete forms |
+| **Symbols** | Symbol table with filter, add/delete, load/save `.sym` files |
+| **Data Areas** | Mark memory ranges as bytes/words/text for correct disassembly |
+| **Disasm Export** | Export disassembly to source files with address range and symbol options |
+| **Session Recording** | Record, stop and replay emulator sessions with progress display |
+| **Graphics Finder** | Decode CPC pixel data at any address in Mode 0/1/2, with zoom, palette selector and paint |
+| **Silicon Disc** | Enable/disable, bank usage display, clear/save/load the 256K RAM disc |
+| **ASIC Viewer** | Plus Range hardware: 16 sprites, 3 DMA channels, 32-colour palette, interrupt state |
+| **Disc Tools** | Drive selector, disc formatting, AMSDOS file browser, sector-level read |
+
+All windows are accessible from the **DevTools** menu in the menu bar and the command palette.
 
 ## Installation
 

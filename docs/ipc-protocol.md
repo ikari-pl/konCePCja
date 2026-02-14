@@ -426,6 +426,273 @@ echo "timer list" | nc -w 1 localhost 6543
 
 Note: `timer_start()` always returns 0 and `timer_stop()` returns the elapsed microseconds, so `if timer_start(1)` evaluates to false and the breakpoint doesn't actually pause — it just starts/stops the timer as a side effect. To also break, use `if timer_start(1) or 1`.
 
+## Auto-Type
+
+WinAPE-compatible auto-type with special key syntax.
+
+| Command | Description |
+|---------|-------------|
+| `autotype <text>` | Queue text for typing. Supports `~KEY~` syntax for special keys (e.g. `~ENTER~`, `~SHIFT~`). |
+| `autotype status` | `OK active: N actions remaining` or `OK idle` |
+| `autotype clear` | Cancel pending auto-type queue. |
+
+```bash
+echo 'autotype 10 PRINT "HELLO"~ENTER~RUN~ENTER~' | nc -w 1 localhost 6543
+```
+
+## Disc Management
+
+File-level and sector-level access to DSK disc images.
+
+### Disc Commands
+
+| Command | Description |
+|---------|-------------|
+| `disk formats` | `OK data vendor system ...` — list available format names |
+| `disk format <A\|B> <format_name>` | Format drive with named format |
+| `disk new <path> [format]` | Create a new blank DSK file (default format: `data`) |
+| `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
+| `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
+| `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
+| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted) |
+| `disk rm <A\|B> <filename>` | Delete file from disc |
+| `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
+
+### Sector Commands
+
+| Command | Description |
+|---------|-------------|
+| `disk sector read <drive> <track> <side> <sector_id>` | Read raw sector data as hex |
+| `disk sector write <drive> <track> <side> <sector_id> <hex>` | Write raw hex data to sector |
+| `disk sector info <drive> <track> <side>` | List sectors on track: `C=xx H=xx R=xx N=xx size=N` per sector |
+
+```bash
+# List files on drive A
+echo "disk ls A" | nc -w 1 localhost 6543
+
+# Extract a file
+echo "disk get A GAME.BAS /tmp/game.bas" | nc -w 1 localhost 6543
+
+# Read sector C1 on track 0 side 0
+echo "disk sector read A 0 0 C1" | nc -w 1 localhost 6543
+```
+
+## Recording
+
+Capture audio and video output.
+
+### WAV Recording
+
+| Command | Description |
+|---------|-------------|
+| `record wav start <path>` | Start recording audio to WAV file |
+| `record wav stop` | Stop recording. Returns `OK <path> <bytes>` |
+| `record wav status` | `OK recording <path> <bytes>` or `OK idle` |
+
+### YM Recording
+
+| Command | Description |
+|---------|-------------|
+| `record ym start <path>` | Start recording PSG registers to YM chiptune file |
+| `record ym stop` | Stop recording. Returns `OK <path> <frames>` |
+| `record ym status` | `OK recording <path> <frames>` or `OK idle` |
+
+### AVI Recording
+
+| Command | Description |
+|---------|-------------|
+| `record avi start <path> [quality]` | Start recording video+audio to AVI (default quality: 85) |
+| `record avi stop` | Stop recording. Returns `OK <path> <frames>` |
+| `record avi status` | `OK recording <path> frames=N bytes=N` or `OK idle` |
+
+```bash
+# Record 5 seconds of audio
+echo "record wav start /tmp/audio.wav" | nc -w 1 localhost 6543
+echo "step frame 250" | nc -w 10 localhost 6543
+echo "record wav stop" | nc -w 1 localhost 6543
+```
+
+## Pokes
+
+Game cheat system supporting .pok format files.
+
+| Command | Description |
+|---------|-------------|
+| `poke load <path>` | Load pokes from .pok file. Returns `OK loaded N games` |
+| `poke list` | List loaded games with their pokes and application status |
+| `poke apply <game_idx> <poke_idx\|all>` | Apply one poke or all pokes for a game |
+| `poke unapply <game_idx> <poke_idx>` | Restore original values for a poke |
+| `poke write <hex_addr> <value>` | Direct single-byte poke (0-255) |
+
+```bash
+echo "poke load cheats.pok" | nc -w 1 localhost 6543
+echo "poke list" | nc -w 1 localhost 6543
+echo "poke apply 0 all" | nc -w 1 localhost 6543
+```
+
+## Configuration Profiles
+
+Save and switch between named config presets.
+
+| Command | Description |
+|---------|-------------|
+| `profile list` | List profiles. Active profile marked with `*`. |
+| `profile current` | Show active profile name |
+| `profile load <name>` | Switch to named profile |
+| `profile save <name>` | Save current config as named profile |
+| `profile delete <name>` | Remove a profile |
+
+## Configuration
+
+Read and write emulator settings.
+
+| Command | Description |
+|---------|-------------|
+| `config get crtc_type` | `OK 0`-`3` — current CRTC type |
+| `config get crtc_info` | `OK type=N chip=<name> manufacturer=<name>` |
+| `config get ram_size` | `OK <kb>` — current RAM in KB |
+| `config get silicon_disc` | `OK 0\|1` — Silicon Disc enabled |
+| `config set crtc_type <0-3>` | Set CRTC type (0=HD6845S, 1=UM6845R, 2=MC6845, 3=ASIC) |
+| `config set ram_size <kb>` | Set RAM size (reset required) |
+| `config set silicon_disc <0\|1>` | Enable/disable Silicon Disc |
+
+## Status
+
+| Command | Description |
+|---------|-------------|
+| `status` | Overall emulator status summary |
+| `status drives` | Detailed drive state (loaded image, tracks, format) |
+
+## ASIC Registers (Plus Range)
+
+| Command | Description |
+|---------|-------------|
+| `regs asic` | Dump ASIC state: sprites, DMA, palette, interrupts |
+| `regs asic dma` | DMA channel details (3 channels) |
+| `regs asic sprites` | All 16 hardware sprite positions and magnification |
+| `regs asic interrupts` | Raster line, DMA IRQ flags, vector |
+| `regs asic palette` | 32-colour ASIC palette in RGB |
+| `asic sprite <n>` | Individual sprite info |
+| `asic palette [index]` | Read palette entry or all entries |
+| `asic dma <channel>` | Individual DMA channel state |
+
+## Silicon Disc
+
+256 KB battery-backed RAM disc in banks 4-7.
+
+| Command | Description |
+|---------|-------------|
+| `sdisc status` | `OK enabled\|disabled allocated\|not-allocated size=256K banks=4-7` |
+| `sdisc clear` | Zero all 256 KB of Silicon Disc memory |
+| `sdisc save <path>` | Save Silicon Disc contents to file |
+| `sdisc load <path>` | Load Silicon Disc contents from file (auto-enables if disabled) |
+
+## ROM Management
+
+Load and unload ROM images in 32 expansion ROM slots.
+
+| Command | Description |
+|---------|-------------|
+| `rom list` | List all 32 slots with loaded ROM paths |
+| `rom load <slot> <path>` | Load ROM file into slot (0-31). Validates ROM header. |
+| `rom unload <slot>` | Unload ROM from slot (2-31; system ROMs 0-1 cannot be unloaded) |
+| `rom info <slot>` | `OK slot=N loaded=true\|false size=16384 crc=XXXXXXXX path=...` |
+
+```bash
+echo "rom list" | nc -w 1 localhost 6543
+echo "rom load 7 maxam.rom" | nc -w 1 localhost 6543
+```
+
+## Data Areas
+
+Mark memory regions as data (not code) for correct disassembly output.
+
+| Command | Description |
+|---------|-------------|
+| `data mark <start> <end> <bytes\|words\|text> [label]` | Mark address range as data |
+| `data clear <addr\|all>` | Remove data area at addr, or clear all |
+| `data list` | List all data areas: `XXXX XXXX type [label]` per line |
+
+```bash
+echo "data mark 0x8000 0x80FF bytes sprite_data" | nc -w 1 localhost 6543
+echo "data mark 0x9000 0x903F text message_table" | nc -w 1 localhost 6543
+echo "data list" | nc -w 1 localhost 6543
+```
+
+## Graphics Finder
+
+Decode and manipulate CPC pixel data at arbitrary memory addresses.
+
+| Command | Description |
+|---------|-------------|
+| `gfx view <addr> <w_bytes> <h> <mode> [path]` | Decode pixels. If path given, export as BMP. Returns dimensions. |
+| `gfx decode <byte_hex> <mode>` | Decode a single byte to palette indices |
+| `gfx paint <addr> <w> <h> <mode> <x> <y> <color>` | Set pixel colour at (x,y) in the decoded region |
+| `gfx palette` | Show current 16-colour palette as RGBA hex |
+
+Mode 0 = 2 pixels/byte (16 colours), Mode 1 = 4 pixels/byte (4 colours), Mode 2 = 8 pixels/byte (2 colours).
+
+```bash
+# View 16x16 sprite at 0xC000 in Mode 1, export to BMP
+echo "gfx view 0xC000 4 16 1 /tmp/sprite.bmp" | nc -w 1 localhost 6543
+
+# Show palette
+echo "gfx palette" | nc -w 1 localhost 6543
+```
+
+## Disassembly Export
+
+Export memory as Z80 assembly source.
+
+| Command | Description |
+|---------|-------------|
+| `disasm export <start> <end> [path] [--symbols]` | Export range as `.asm` source. Uses data areas for correct formatting. With `--symbols`, includes symbol labels. If path given, writes to file; otherwise returns in response. |
+
+```bash
+echo "disasm export 0x4000 0x5FFF /tmp/game.asm --symbols" | nc -w 1 localhost 6543
+```
+
+## Session Recording
+
+Record and replay full emulator sessions (input events + state snapshots).
+
+| Command | Description |
+|---------|-------------|
+| `session record <path>` | Start recording. Saves a snapshot alongside the recording. |
+| `session play <path>` | Start playback. Loads the embedded snapshot first. Returns `OK playing from <path> frames=N`. |
+| `session stop` | Stop recording or playback |
+| `session status` | `OK state=idle\|recording\|playing frames=N events=N path=...` |
+
+```bash
+# Record a session
+echo "session record /tmp/demo" | nc -w 1 localhost 6543
+# ... play for a while ...
+echo "session stop" | nc -w 1 localhost 6543
+
+# Play it back
+echo "session play /tmp/demo" | nc -w 1 localhost 6543
+```
+
+## Enhanced Search
+
+Full-memory search with glob-style wildcards. Searches the entire 64K address space.
+
+| Command | Description |
+|---------|-------------|
+| `search hex <pattern>` | Search for hex bytes. `??` = wildcard. Max 256 results. |
+| `search text <pattern>` | Search for ASCII text. Case-sensitive. |
+| `search asm <pattern>` | Search for Z80 mnemonics with `?` (single char) and `*` (any sequence) glob wildcards. |
+
+Note: `search` scans 0x0000-0xFFFF. For range-limited search, use `mem find`.
+
+```bash
+# Find all RET instructions
+echo "search asm ret" | nc -w 1 localhost 6543
+
+# Find all JP instructions with any operand
+echo "search asm jp *" | nc -w 1 localhost 6543
+```
+
 ## CLI Flags
 
 | Flag | Description |
