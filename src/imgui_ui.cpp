@@ -255,6 +255,10 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("breakpoints"); });
   g_command_palette.register_command("Symbol Table", "Show symbol table", "",
       []() { g_devtools_ui.toggle_window("symbols"); });
+  g_command_palette.register_command("Data Areas", "Show data area manager", "",
+      []() { g_devtools_ui.toggle_window("data_areas"); });
+  g_command_palette.register_command("Disasm Export", "Export disassembly to file", "",
+      []() { g_devtools_ui.toggle_window("disasm_export"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1678,6 +1682,8 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Stack",           nullptr, g_devtools_ui.window_ptr("stack"));
       ImGui::MenuItem("Breakpoints/WP",  nullptr, g_devtools_ui.window_ptr("breakpoints"));
       ImGui::MenuItem("Symbols",         nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::MenuItem("Data Areas",      nullptr, g_devtools_ui.window_ptr("data_areas"));
+      ImGui::MenuItem("Disasm Export",   nullptr, g_devtools_ui.window_ptr("disasm_export"));
       ImGui::EndMenu();
     }
     ImGui::Separator();
