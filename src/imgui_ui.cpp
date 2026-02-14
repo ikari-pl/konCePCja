@@ -261,6 +261,10 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("asic"); });
   g_command_palette.register_command("Disc Tools", "Show disc file/sector tools", "",
       []() { g_devtools_ui.toggle_window("disc_tools"); });
+  g_command_palette.register_command("Data Areas", "Show data area manager", "",
+      []() { g_devtools_ui.toggle_window("data_areas"); });
+  g_command_palette.register_command("Disasm Export", "Export disassembly to file", "",
+      []() { g_devtools_ui.toggle_window("disasm_export"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1684,6 +1688,8 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Stack",           nullptr, g_devtools_ui.window_ptr("stack"));
       ImGui::MenuItem("Breakpoints/WP",  nullptr, g_devtools_ui.window_ptr("breakpoints"));
       ImGui::MenuItem("Symbols",         nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::MenuItem("Data Areas",      nullptr, g_devtools_ui.window_ptr("data_areas"));
+      ImGui::MenuItem("Disasm Export",   nullptr, g_devtools_ui.window_ptr("disasm_export"));
       ImGui::Separator();
       ImGui::MenuItem("Silicon Disc",    nullptr, g_devtools_ui.window_ptr("silicon_disc"));
       ImGui::MenuItem("ASIC Registers",  nullptr, g_devtools_ui.window_ptr("asic"));

@@ -251,6 +251,55 @@ When we weren't sure how the Z80's `RST` instruction should interact with
 `step_out` should set a breakpoint at `SP+2`. The test caught a real bug in
 the implementation.
 
+### Immediate-Mode UI and the Frame Budget
+
+ImGui operates in "immediate mode" — every widget is redrawn from scratch each
+frame (~60fps). This means anything in a `render_*()` function runs 60 times
+per second. Scanning 256K of Silicon Disc memory to compute bank usage
+percentages, or rebuilding a format name string from a `std::vector`, adds up
+fast.
+
+The pattern is **cache computed values, invalidate on demand**. Add a `bool
+dirty_` flag, recompute only when it's set, and provide a "Refresh" button or
+invalidate on known mutation events (load, clear, format). This is the UI
+equivalent of a database index — trade a bit of staleness for a massive
+reduction in per-frame work.
+
+### Relative vs Absolute Addressing in Buffer APIs
+
+When an API computes `addr = base_address + offset` and uses that to index
+into a memory buffer, you need to know whether the buffer represents the
+full address space (64K for the CPC) or just a slice starting at `base_address`.
+If you pass a small relative buffer but leave `base_address = 0xC000`, the
+computed index overflows the buffer and reads all zeros.
+
+We hit this in the graphics finder: `gfx_decode()` uses `params.address`
+to compute the read offset, but the UI passed a small buffer already starting
+from `params.address`. Fix: set `params.address = 0` for relative buffers.
+This is a general lesson about API contracts — **document whether your buffer
+parameter is absolute or relative**, and verify the assumption at call sites.
+
 ---
 
-*konCePCja: 34 PRs, 600+ tests, 6 phases of development, and still learning.*
+## Growing the Codebase: From 34 to 41 PRs
+
+### Batching PRs by Theme Works
+
+Grouping related changes into themed PRs (debugger UI enhancements, hardware
+panels, session/graphics) kept reviews focused and merges clean. Each PR
+modified the same core files (`devtools_ui.h/cpp`, `imgui_ui.cpp`) but touched
+different sections. The risk of merge conflicts is real — we branched each PR
+from master independently rather than stacking branches.
+
+### Path Traversal Is Always a Risk
+
+Any UI feature that takes a file path from user input needs path traversal
+protection. Even in a desktop emulator. We added `has_path_traversal()` using
+`std::filesystem::path` to check for `..` components before allowing symbol
+file load/save and disassembly export. The IPC server already had this check —
+the lesson is that **UI code paths need the same security as network-facing
+code** because they accept the same kind of input.
+
+---
+
+*konCePCja: 41 PRs, 620+ tests, 6 phases of development, and still learning.*

@@ -16,6 +16,12 @@
 #include "disk_file_editor.h"
 #include "disk_sector_editor.h"
 #include "disk_format.h"
+#include "data_areas.h"
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 extern t_CPC CPC;
 extern t_z80regs z80;
@@ -23,6 +29,15 @@ extern t_drive driveA;
 extern t_drive driveB;
 extern double colours_rgb[32][3];
 extern t_GateArray GateArray;
+
+// Reject paths containing ".." to prevent path traversal
+static bool has_path_traversal(const char* path)
+{
+  for (const auto& comp : std::filesystem::path(path)) {
+    if (comp == "..") return true;
+  }
+  return false;
+}
 
 DevToolsUI g_devtools_ui;
 
@@ -41,6 +56,8 @@ bool* DevToolsUI::window_ptr(const std::string& name)
   if (name == "silicon_disc") return &show_silicon_disc_;
   if (name == "asic")         return &show_asic_;
   if (name == "disc_tools")   return &show_disc_tools_;
+  if (name == "data_areas")   return &show_data_areas_;
+  if (name == "disasm_export") return &show_disasm_export_;
   return nullptr;
 }
 
@@ -61,6 +78,8 @@ bool DevToolsUI::is_window_open(const std::string& name) const
   if (name == "silicon_disc") return show_silicon_disc_;
   if (name == "asic")         return show_asic_;
   if (name == "disc_tools")   return show_disc_tools_;
+  if (name == "data_areas")   return show_data_areas_;
+  if (name == "disasm_export") return show_disasm_export_;
   return false;
 }
 
@@ -68,7 +87,8 @@ bool DevToolsUI::any_window_open() const
 {
   return show_registers_ || show_disassembly_ || show_memory_hex_ ||
          show_stack_ || show_breakpoints_ || show_symbols_ ||
-         show_silicon_disc_ || show_asic_ || show_disc_tools_;
+         show_silicon_disc_ || show_asic_ || show_disc_tools_ ||
+         show_data_areas_ || show_disasm_export_;
 }
 
 void DevToolsUI::navigate_disassembly(word addr)
@@ -94,6 +114,8 @@ void DevToolsUI::render()
   if (show_silicon_disc_) render_silicon_disc();
   if (show_asic_)         render_asic();
   if (show_disc_tools_)   render_disc_tools();
+  if (show_data_areas_)   render_data_areas();
+  if (show_disasm_export_) render_disasm_export();
 }
 
 // -----------------------------------------------
@@ -638,6 +660,61 @@ void DevToolsUI::render_breakpoints()
     ImGui::EndTable();
   }
 
+  // Add Watchpoint form
+  ImGui::Spacing();
+  if (ImGui::CollapsingHeader("Add Watchpoint")) {
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("Addr##wp", wp_addr_, sizeof(wp_addr_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(40);
+    ImGui::InputText("Len##wp", wp_len_, sizeof(wp_len_),
+                     ImGuiInputTextFlags_CharsDecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
+    const char* wp_types[] = { "Read", "Write", "R/W" };
+    ImGui::Combo("Type##wp", &wp_type_, wp_types, 3);
+    ImGui::SameLine();
+    if (ImGui::Button("Add WP")) {
+      unsigned long addr;
+      if (parse_hex(wp_addr_, &addr, 0xFFFF)) {
+        long len_val = std::strtol(wp_len_, nullptr, 10);
+        int len = (len_val > 0 && len_val <= 0xFFFF) ? static_cast<int>(len_val) : 1;
+        WatchpointType wt = (wp_type_ == 0) ? READ :
+                            (wp_type_ == 1) ? WRITE : READWRITE;
+        z80_add_watchpoint(static_cast<word>(addr), static_cast<word>(len), wt);
+        wp_addr_[0] = '\0';
+      }
+    }
+  }
+
+  // Add IO Breakpoint form
+  if (ImGui::CollapsingHeader("Add IO Breakpoint")) {
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("Port##iobp", iobp_port_, sizeof(iobp_port_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("Mask##iobp", iobp_mask_, sizeof(iobp_mask_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
+    const char* iobp_dirs[] = { "IN", "OUT", "Both" };
+    ImGui::Combo("Dir##iobp", &iobp_dir_, iobp_dirs, 3);
+    ImGui::SameLine();
+    if (ImGui::Button("Add IOBP")) {
+      unsigned long port, mask;
+      if (parse_hex(iobp_port_, &port, 0xFFFF) &&
+          parse_hex(iobp_mask_, &mask, 0xFFFF)) {
+        IOBreakpointDir dir = (iobp_dir_ == 0) ? IO_IN :
+                              (iobp_dir_ == 1) ? IO_OUT : IO_BOTH;
+        z80_add_io_breakpoint(static_cast<word>(port),
+                              static_cast<word>(mask), dir);
+        iobp_port_[0] = '\0';
+      }
+    }
+  }
+
   if (!open) show_breakpoints_ = false;
   ImGui::End();
 }
@@ -663,6 +740,44 @@ void DevToolsUI::render_symbols()
     return;
   }
 
+  // Load / Save buttons
+  if (ImGui::Button("Load .sym")) {
+    if (sym_path_[0] != '\0' && !has_path_traversal(sym_path_)) {
+      Symfile loaded(sym_path_);
+      for (const auto& [addr, name] : loaded.Symbols()) {
+        g_symfile.addSymbol(addr, name);
+      }
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Save .sym")) {
+    if (sym_path_[0] != '\0' && !has_path_traversal(sym_path_)) {
+      g_symfile.SaveTo(sym_path_);
+    }
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##sympath", "Symbol file path...", sym_path_,
+                           sizeof(sym_path_));
+
+  // Add Symbol form
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputText("Addr##addsym", sym_addr_, sizeof(sym_addr_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(150);
+  ImGui::InputText("Name##addsym", sym_name_, sizeof(sym_name_));
+  ImGui::SameLine();
+  if (ImGui::Button("Add##addsym")) {
+    unsigned long addr;
+    if (parse_hex(sym_addr_, &addr, 0xFFFF) && sym_name_[0] != '\0') {
+      g_symfile.addSymbol(static_cast<word>(addr), sym_name_);
+      sym_addr_[0] = '\0';
+      sym_name_[0] = '\0';
+    }
+  }
+
+  ImGui::Separator();
   ImGui::SetNextItemWidth(-1);
   ImGui::InputTextWithHint("##symfilter", "Filter...", symtable_filter_,
                            sizeof(symtable_filter_));
@@ -1056,5 +1171,208 @@ void DevToolsUI::render_disc_tools()
   }
 
   if (!open) show_disc_tools_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 10: Data Areas
+// -----------------------------------------------
+
+void DevToolsUI::render_data_areas()
+{
+  ImGui::SetNextWindowSize(ImVec2(450, 350), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Data Areas", &open)) {
+    if (!open) show_data_areas_ = false;
+    ImGui::End();
+    return;
+  }
+
+  if (ImGui::Button("Clear All")) g_data_areas.clear_all();
+  ImGui::Separator();
+
+  // Mark form
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputText("Start##da", da_start_, sizeof(da_start_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputText("End##da", da_end_, sizeof(da_end_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(80);
+  const char* da_types[] = { "Bytes", "Words", "Text" };
+  ImGui::Combo("Type##da", &da_type_, da_types, 3);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(100);
+  ImGui::InputText("Label##da", da_label_, sizeof(da_label_));
+  ImGui::SameLine();
+  if (ImGui::Button("Mark")) {
+    unsigned long s, e;
+    if (parse_hex(da_start_, &s, 0xFFFF) && parse_hex(da_end_, &e, 0xFFFF) && s <= e) {
+      DataType dt = (da_type_ == 0) ? DataType::BYTES :
+                    (da_type_ == 1) ? DataType::WORDS : DataType::TEXT;
+      g_data_areas.mark(static_cast<uint16_t>(s), static_cast<uint16_t>(e), dt,
+                        da_label_[0] ? da_label_ : "");
+      da_start_[0] = '\0';
+      da_end_[0] = '\0';
+      da_label_[0] = '\0';
+    }
+  }
+  ImGui::Separator();
+
+  // List data areas in a table
+  auto areas = g_data_areas.list();
+  if (ImGui::BeginTable("da_table", 5,
+      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_WidthFixed, 50);
+    ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_WidthFixed, 50);
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 50);
+    ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
+    ImGui::TableHeadersRow();
+
+    for (const auto& da : areas) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::Text("%04X", da.start);
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("%04X", da.end);
+      ImGui::TableSetColumnIndex(2);
+      const char* type_str = (da.type == DataType::BYTES) ? "Bytes" :
+                             (da.type == DataType::WORDS) ? "Words" : "Text";
+      ImGui::Text("%s", type_str);
+      ImGui::TableSetColumnIndex(3);
+      if (!da.label.empty()) ImGui::TextUnformatted(da.label.c_str());
+      ImGui::TableSetColumnIndex(4);
+      ImGui::PushID(static_cast<int>(da.start));
+      if (ImGui::SmallButton("X")) {
+        g_data_areas.clear(da.start);
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+
+  if (!open) show_data_areas_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 11: Disassembly Export
+// -----------------------------------------------
+
+void DevToolsUI::render_disasm_export()
+{
+  ImGui::SetNextWindowSize(ImVec2(420, 220), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Disassembly Export", &open)) {
+    if (!open) show_disasm_export_ = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputText("Start##dex", dex_start_, sizeof(dex_start_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputText("End##dex", dex_end_, sizeof(dex_end_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::Checkbox("Symbols", &dex_symbols_);
+
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##dexpath", "Output path (e.g. /tmp/out.asm)...",
+                           dex_path_, sizeof(dex_path_));
+
+  if (ImGui::Button("Export")) {
+    unsigned long start_addr, end_addr;
+    if (parse_hex(dex_start_, &start_addr, 0xFFFF) &&
+        parse_hex(dex_end_, &end_addr, 0xFFFF) &&
+        start_addr <= end_addr) {
+      std::ostringstream oss;
+      char hexbuf[32];
+      snprintf(hexbuf, sizeof(hexbuf), "$%04X", static_cast<unsigned>(start_addr));
+      oss << "; Disassembly export from konCePCja\n";
+      oss << "org " << hexbuf << "\n\n";
+
+      DisassembledCode code;
+      std::vector<dword> entry_points;
+      word pos = static_cast<word>(start_addr);
+      word end_pos = static_cast<word>(end_addr);
+
+      while (pos <= end_pos) {
+        if (dex_symbols_) {
+          std::string sym = g_symfile.lookupAddr(pos);
+          if (!sym.empty()) oss << sym << ":\n";
+        }
+
+        const DataArea* da = g_data_areas.find(pos);
+        if (da) {
+          int remaining = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
+          int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
+          int buf_len = std::min(remaining, max_bytes);
+          if (pos + buf_len - 1 > end_pos) buf_len = end_pos - pos + 1;
+          uint8_t membuf[64];
+          for (int mi = 0; mi < buf_len; mi++)
+            membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
+          int line_bytes = 0;
+          std::string formatted = g_data_areas.format_at(pos, membuf,
+                                                          buf_len, &line_bytes);
+          oss << "  " << formatted << "\n";
+          if (line_bytes == 0) line_bytes = 1;
+          unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
+          if (next > 0xFFFF || next > end_addr + 1u) break;
+          pos = static_cast<word>(next);
+        } else {
+          auto line = disassemble_one(pos, code, entry_points);
+          code.lines.insert(line);
+          std::string instr = line.instruction_;
+          if (dex_symbols_ && !line.ref_address_string_.empty()) {
+            std::string sym = g_symfile.lookupAddr(line.ref_address_);
+            if (!sym.empty()) {
+              auto ref_pos = instr.find(line.ref_address_string_);
+              if (ref_pos != std::string::npos)
+                instr.replace(ref_pos, line.ref_address_string_.size(), sym);
+            }
+          }
+          oss << "  " << instr << "\n";
+          unsigned int next = static_cast<unsigned int>(pos) + line.Size();
+          if (next > 0xFFFF || next > end_addr + 1u) break;
+          pos = static_cast<word>(next);
+        }
+      }
+
+      std::string result = oss.str();
+      if (dex_path_[0] != '\0') {
+        if (has_path_traversal(dex_path_)) {
+          dex_status_ = "Error: path traversal not allowed";
+        } else {
+          std::ofstream f(dex_path_);
+          if (f) {
+            f << result;
+            f.close();
+            dex_status_ = "Exported " + std::to_string(result.size()) + " bytes to " + dex_path_;
+          } else {
+            dex_status_ = "Error: cannot write to " + std::string(dex_path_);
+          }
+        }
+      } else {
+        dex_status_ = "Error: no output path specified";
+      }
+    } else {
+      dex_status_ = "Error: invalid address range";
+    }
+  }
+
+  if (!dex_status_.empty()) {
+    ImGui::TextWrapped("%s", dex_status_.c_str());
+  }
+
+  if (!open) show_disasm_export_ = false;
   ImGui::End();
 }
