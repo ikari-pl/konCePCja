@@ -10,6 +10,8 @@
 #include "z80.h"
 #include "z80_disassembly.h"
 #include "symfile.h"
+#include "session_recording.h"
+#include "gfx_finder.h"
 #include "silicon_disc.h"
 #include "asic.h"
 #include "disk.h"
@@ -25,6 +27,7 @@
 
 extern t_CPC CPC;
 extern t_z80regs z80;
+extern byte* pbRAM;
 extern t_drive driveA;
 extern t_drive driveB;
 extern double colours_rgb[32][3];
@@ -47,17 +50,19 @@ DevToolsUI g_devtools_ui;
 
 bool* DevToolsUI::window_ptr(const std::string& name)
 {
-  if (name == "registers")    return &show_registers_;
-  if (name == "disassembly")  return &show_disassembly_;
-  if (name == "memory_hex")   return &show_memory_hex_;
-  if (name == "stack")        return &show_stack_;
-  if (name == "breakpoints")  return &show_breakpoints_;
-  if (name == "symbols")      return &show_symbols_;
-  if (name == "silicon_disc") return &show_silicon_disc_;
-  if (name == "asic")         return &show_asic_;
-  if (name == "disc_tools")   return &show_disc_tools_;
-  if (name == "data_areas")   return &show_data_areas_;
-  if (name == "disasm_export") return &show_disasm_export_;
+  if (name == "registers")          return &show_registers_;
+  if (name == "disassembly")        return &show_disassembly_;
+  if (name == "memory_hex")         return &show_memory_hex_;
+  if (name == "stack")              return &show_stack_;
+  if (name == "breakpoints")        return &show_breakpoints_;
+  if (name == "symbols")            return &show_symbols_;
+  if (name == "session_recording")  return &show_session_recording_;
+  if (name == "gfx_finder")         return &show_gfx_finder_;
+  if (name == "silicon_disc")       return &show_silicon_disc_;
+  if (name == "asic")               return &show_asic_;
+  if (name == "disc_tools")         return &show_disc_tools_;
+  if (name == "data_areas")         return &show_data_areas_;
+  if (name == "disasm_export")      return &show_disasm_export_;
   return nullptr;
 }
 
@@ -69,17 +74,19 @@ void DevToolsUI::toggle_window(const std::string& name)
 
 bool DevToolsUI::is_window_open(const std::string& name) const
 {
-  if (name == "registers")    return show_registers_;
-  if (name == "disassembly")  return show_disassembly_;
-  if (name == "memory_hex")   return show_memory_hex_;
-  if (name == "stack")        return show_stack_;
-  if (name == "breakpoints")  return show_breakpoints_;
-  if (name == "symbols")      return show_symbols_;
-  if (name == "silicon_disc") return show_silicon_disc_;
-  if (name == "asic")         return show_asic_;
-  if (name == "disc_tools")   return show_disc_tools_;
-  if (name == "data_areas")   return show_data_areas_;
-  if (name == "disasm_export") return show_disasm_export_;
+  if (name == "registers")          return show_registers_;
+  if (name == "disassembly")        return show_disassembly_;
+  if (name == "memory_hex")         return show_memory_hex_;
+  if (name == "stack")              return show_stack_;
+  if (name == "breakpoints")        return show_breakpoints_;
+  if (name == "symbols")            return show_symbols_;
+  if (name == "session_recording")  return show_session_recording_;
+  if (name == "gfx_finder")         return show_gfx_finder_;
+  if (name == "silicon_disc")       return show_silicon_disc_;
+  if (name == "asic")               return show_asic_;
+  if (name == "disc_tools")         return show_disc_tools_;
+  if (name == "data_areas")         return show_data_areas_;
+  if (name == "disasm_export")      return show_disasm_export_;
   return false;
 }
 
@@ -87,6 +94,7 @@ bool DevToolsUI::any_window_open() const
 {
   return show_registers_ || show_disassembly_ || show_memory_hex_ ||
          show_stack_ || show_breakpoints_ || show_symbols_ ||
+         show_session_recording_ || show_gfx_finder_ ||
          show_silicon_disc_ || show_asic_ || show_disc_tools_ ||
          show_data_areas_ || show_disasm_export_;
 }
@@ -105,17 +113,19 @@ void DevToolsUI::navigate_disassembly(word addr)
 
 void DevToolsUI::render()
 {
-  if (show_registers_)    render_registers();
-  if (show_disassembly_)  render_disassembly();
-  if (show_memory_hex_)   render_memory_hex();
-  if (show_stack_)        render_stack();
-  if (show_breakpoints_)  render_breakpoints();
-  if (show_symbols_)      render_symbols();
-  if (show_silicon_disc_) render_silicon_disc();
-  if (show_asic_)         render_asic();
-  if (show_disc_tools_)   render_disc_tools();
-  if (show_data_areas_)   render_data_areas();
-  if (show_disasm_export_) render_disasm_export();
+  if (show_registers_)          render_registers();
+  if (show_disassembly_)        render_disassembly();
+  if (show_memory_hex_)         render_memory_hex();
+  if (show_stack_)              render_stack();
+  if (show_breakpoints_)        render_breakpoints();
+  if (show_symbols_)            render_symbols();
+  if (show_silicon_disc_)       render_silicon_disc();
+  if (show_asic_)               render_asic();
+  if (show_disc_tools_)         render_disc_tools();
+  if (show_data_areas_)         render_data_areas();
+  if (show_disasm_export_)      render_disasm_export();
+  if (show_session_recording_)  render_session_recording();
+  if (show_gfx_finder_)         render_gfx_finder();
 }
 
 // -----------------------------------------------
@@ -1374,5 +1384,257 @@ void DevToolsUI::render_disasm_export()
   }
 
   if (!open) show_disasm_export_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 12: Session Recording
+// -----------------------------------------------
+
+void DevToolsUI::render_session_recording()
+{
+  ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Session Recording", &open)) {
+    if (!open) show_session_recording_ = false;
+    ImGui::End();
+    return;
+  }
+
+  SessionState state = g_session.state();
+
+  // State indicator
+  if (state == SessionState::IDLE) {
+    ImGui::Text("Status: Idle");
+  } else if (state == SessionState::RECORDING) {
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                       "Status: Recording (%u frames, %u events)",
+                       g_session.frame_count(), g_session.event_count());
+  } else if (state == SessionState::PLAYING) {
+    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f),
+                       "Status: Playing (%u / %u frames)",
+                       g_session.frame_count(), g_session.total_frames());
+    float progress = g_session.total_frames() > 0
+        ? static_cast<float>(g_session.frame_count()) / g_session.total_frames()
+        : 0.0f;
+    ImGui::ProgressBar(progress, ImVec2(-1, 0));
+  }
+
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(-1);
+  ImGui::InputTextWithHint("##srpath", "Recording file path (.ksr)...",
+                           sr_path_, sizeof(sr_path_));
+
+  // Buttons
+  if (state == SessionState::IDLE) {
+    if (ImGui::Button("Record")) {
+      if (sr_path_[0] != '\0') {
+        std::string snap_path = std::string(sr_path_) + ".sna";
+        extern int snapshot_save(const std::string&);
+        if (snapshot_save(snap_path) == 0) {
+          if (g_session.start_recording(sr_path_, snap_path))
+            sr_status_ = "Recording started";
+          else
+            sr_status_ = "Error: failed to start recording";
+        } else {
+          sr_status_ = "Error: failed to save snapshot";
+        }
+      } else {
+        sr_status_ = "Error: no path specified";
+      }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Play")) {
+      if (sr_path_[0] != '\0') {
+        std::string snap_path;
+        if (g_session.start_playback(sr_path_, snap_path)) {
+          extern int snapshot_load(const std::string&);
+          snapshot_load(snap_path);
+          sr_status_ = "Playback started";
+        } else {
+          sr_status_ = "Error: failed to start playback";
+        }
+      } else {
+        sr_status_ = "Error: no path specified";
+      }
+    }
+  } else {
+    if (ImGui::Button("Stop")) {
+      if (state == SessionState::RECORDING) {
+        g_session.stop_recording();
+        sr_status_ = "Recording stopped";
+      } else {
+        g_session.stop_playback();
+        sr_status_ = "Playback stopped";
+      }
+    }
+  }
+
+  if (!sr_status_.empty()) {
+    ImGui::TextWrapped("%s", sr_status_.c_str());
+  }
+
+  if (!g_session.path().empty()) {
+    ImGui::TextDisabled("File: %s", g_session.path().c_str());
+  }
+
+  if (!open) show_session_recording_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 13: Graphics Finder
+// -----------------------------------------------
+
+void DevToolsUI::render_gfx_finder()
+{
+  ImGui::SetNextWindowSize(ImVec2(500, 500), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Graphics Finder", &open)) {
+    if (!open) show_gfx_finder_ = false;
+    ImGui::End();
+    return;
+  }
+
+  // Parameters
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputText("Addr##gfx", gfx_addr_, sizeof(gfx_addr_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputInt("W (bytes)##gfx", &gfx_width_);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60);
+  ImGui::InputInt("H##gfx", &gfx_height_);
+
+  if (gfx_width_ < 1) gfx_width_ = 1;
+  if (gfx_width_ > 80) gfx_width_ = 80;
+  if (gfx_height_ < 1) gfx_height_ = 1;
+  if (gfx_height_ > 256) gfx_height_ = 256;
+
+  ImGui::SetNextItemWidth(80);
+  const char* modes[] = { "Mode 0", "Mode 1", "Mode 2" };
+  ImGui::Combo("Mode##gfx", &gfx_mode_, modes, 3);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(80);
+  ImGui::SliderInt("Zoom##gfx", &gfx_zoom_, 1, 16);
+
+  // Decode the graphics
+  unsigned long base_addr = 0;
+  parse_hex(gfx_addr_, &base_addr, 0xFFFF);
+
+  // Read CPC memory into a buffer starting from base_addr
+  size_t mem_size = static_cast<size_t>(gfx_width_) * gfx_height_;
+  std::vector<uint8_t> mem_buf(mem_size);
+  for (size_t i = 0; i < mem_size; i++) {
+    mem_buf[i] = z80_read_mem(static_cast<word>((base_addr + i) & 0xFFFF));
+  }
+
+  // Use address=0 since mem_buf is already relative to base_addr
+  GfxViewParams params;
+  params.address = 0;
+  params.width = gfx_width_;
+  params.height = gfx_height_;
+  params.mode = gfx_mode_;
+
+  // Get current palette
+  uint32_t palette[27];
+  gfx_get_palette_rgba(palette, 27);
+
+  // Decode
+  gfx_pixels_.clear();
+  gfx_pixel_width_ = gfx_decode(mem_buf.data(), mem_buf.size(), params,
+                                  palette, gfx_pixels_);
+
+  ImGui::Separator();
+
+  // Palette selector for paint mode
+  ImGui::Text("Paint color:");
+  ImGui::SameLine();
+  for (int i = 0; i < 16; i++) {
+    uint32_t rgba = palette[i];
+    float r = ((rgba >> 0) & 0xFF) / 255.0f;
+    float g = ((rgba >> 8) & 0xFF) / 255.0f;
+    float b = ((rgba >> 16) & 0xFF) / 255.0f;
+    ImVec4 col(r, g, b, 1.0f);
+    char label[16];
+    snprintf(label, sizeof(label), "##pal%d", i);
+    if (ImGui::ColorButton(label, col, ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16))) {
+      gfx_paint_color_ = i;
+    }
+    if (i < 15) ImGui::SameLine();
+  }
+
+  ImGui::Separator();
+
+  // Render using DrawList rectangles
+  if (gfx_pixel_width_ > 0 && !gfx_pixels_.empty()) {
+    int pixel_h = gfx_height_;
+    int pixel_w = gfx_pixel_width_;
+    float zoom = static_cast<float>(gfx_zoom_);
+
+    ImVec2 canvas_size(pixel_w * zoom, pixel_h * zoom);
+    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+
+    // Invisible button for interaction
+    ImGui::InvisibleButton("##gfxcanvas", canvas_size);
+    bool hovered = ImGui::IsItemHovered();
+
+    // Handle paint on click — only write back the single modified byte
+    if (hovered && ImGui::IsMouseDown(0)) {
+      ImVec2 mouse = ImGui::GetMousePos();
+      int mx = static_cast<int>((mouse.x - canvas_pos.x) / zoom);
+      int my = static_cast<int>((mouse.y - canvas_pos.y) / zoom);
+      if (mx >= 0 && mx < pixel_w && my >= 0 && my < pixel_h) {
+        int ppb = (gfx_mode_ == 0) ? 2 : (gfx_mode_ == 1) ? 4 : 8;
+        int byte_col = mx / ppb;
+        size_t byte_offset = static_cast<size_t>(my) * gfx_width_ + byte_col;
+        if (gfx_paint(mem_buf.data(), mem_buf.size(), params,
+                      mx, my, static_cast<uint8_t>(gfx_paint_color_))) {
+          z80_write_mem(static_cast<word>((base_addr + byte_offset) & 0xFFFF),
+                        mem_buf[byte_offset]);
+        }
+      }
+    }
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    for (int y = 0; y < pixel_h; y++) {
+      for (int x = 0; x < pixel_w; x++) {
+        uint32_t rgba = gfx_pixels_[y * pixel_w + x];
+        ImU32 col = IM_COL32((rgba >> 0) & 0xFF, (rgba >> 8) & 0xFF,
+                             (rgba >> 16) & 0xFF, 255);
+        ImVec2 p0(canvas_pos.x + x * zoom, canvas_pos.y + y * zoom);
+        ImVec2 p1(p0.x + zoom, p0.y + zoom);
+        draw_list->AddRectFilled(p0, p1, col);
+      }
+    }
+
+    // Show mouse coordinates
+    if (hovered) {
+      ImVec2 mouse = ImGui::GetMousePos();
+      int mx = static_cast<int>((mouse.x - canvas_pos.x) / zoom);
+      int my = static_cast<int>((mouse.y - canvas_pos.y) / zoom);
+      ImGui::Text("Pixel: (%d, %d)", mx, my);
+    }
+  } else {
+    ImGui::TextDisabled("No graphics to display");
+  }
+
+  // Export
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(-80);
+  ImGui::InputTextWithHint("##gfxexport", "Export path (.bmp)...",
+                           gfx_export_path_, sizeof(gfx_export_path_));
+  ImGui::SameLine();
+  if (ImGui::Button("Export BMP") && gfx_pixel_width_ > 0 && !gfx_pixels_.empty()) {
+    if (gfx_export_path_[0] != '\0') {
+      gfx_export_bmp(gfx_export_path_, gfx_pixels_.data(),
+                     gfx_pixel_width_, gfx_height_);
+    }
+  }
+
+  if (!open) show_gfx_finder_ = false;
   ImGui::End();
 }
