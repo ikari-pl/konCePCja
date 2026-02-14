@@ -259,6 +259,16 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("session_recording"); });
   g_command_palette.register_command("Graphics Finder", "Show graphics finder/tile viewer", "",
       []() { g_devtools_ui.toggle_window("gfx_finder"); });
+  g_command_palette.register_command("Silicon Disc", "Show Silicon Disc panel", "",
+      []() { g_devtools_ui.toggle_window("silicon_disc"); });
+  g_command_palette.register_command("ASIC Registers", "Show ASIC register viewer", "",
+      []() { g_devtools_ui.toggle_window("asic"); });
+  g_command_palette.register_command("Disc Tools", "Show disc file/sector tools", "",
+      []() { g_devtools_ui.toggle_window("disc_tools"); });
+  g_command_palette.register_command("Data Areas", "Show data area manager", "",
+      []() { g_devtools_ui.toggle_window("data_areas"); });
+  g_command_palette.register_command("Disasm Export", "Export disassembly to file", "",
+      []() { g_devtools_ui.toggle_window("disasm_export"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1682,9 +1692,14 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Stack",             nullptr, g_devtools_ui.window_ptr("stack"));
       ImGui::MenuItem("Breakpoints/WP",    nullptr, g_devtools_ui.window_ptr("breakpoints"));
       ImGui::MenuItem("Symbols",           nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::MenuItem("Data Areas",        nullptr, g_devtools_ui.window_ptr("data_areas"));
+      ImGui::MenuItem("Disasm Export",     nullptr, g_devtools_ui.window_ptr("disasm_export"));
       ImGui::Separator();
       ImGui::MenuItem("Session Recording", nullptr, g_devtools_ui.window_ptr("session_recording"));
       ImGui::MenuItem("Graphics Finder",   nullptr, g_devtools_ui.window_ptr("gfx_finder"));
+      ImGui::MenuItem("Silicon Disc",      nullptr, g_devtools_ui.window_ptr("silicon_disc"));
+      ImGui::MenuItem("ASIC Registers",    nullptr, g_devtools_ui.window_ptr("asic"));
+      ImGui::MenuItem("Disc Tools",        nullptr, g_devtools_ui.window_ptr("disc_tools"));
       ImGui::EndMenu();
     }
     ImGui::Separator();
