@@ -87,7 +87,7 @@ memory access, screenshots, disc operations — is accessible via a TCP
 text protocol on port 6543.
 
 This means:
-- **Testing** doesn't require a GUI — our 600+ unit tests run headless
+- **Testing** doesn't require a GUI — our 623 unit tests run headless
 - **Automation** scripts can drive the emulator like a debugging server
 - **AI agents** can connect and debug CPC programs through the same interface
 - **GUI is secondary** — the ImGui interface calls the same code paths as IPC
@@ -154,7 +154,7 @@ CI cycles.
 
 ### Code Review Comments Are Not Optional
 
-We created 34 pull requests with automated Gemini code review. For the first
+We created 41 pull requests with automated Gemini code review. For the first
 ~18 PRs, we merged without systematically addressing the review comments.
 When we audited the backlog, we found **~50 unaddressed comments** including
 9+ high-priority issues (path traversal vulnerabilities, unchecked return
@@ -245,7 +245,7 @@ a whole session to audit and triage.
 
 ### Tests Are Documentation
 
-Our 600+ tests serve as the executable specification of CPC hardware behaviour.
+Our 623 tests serve as the executable specification of CPC hardware behaviour.
 When we weren't sure how the Z80's `RST` instruction should interact with
 `step_out`, the test told us: `RST` pushes a return address like `CALL`, so
 `step_out` should set a breakpoint at `SP+2`. The test caught a real bug in
@@ -300,6 +300,100 @@ file load/save and disassembly export. The IPC server already had this check —
 the lesson is that **UI code paths need the same security as network-facing
 code** because they accept the same kind of input.
 
+### Sequential Merges to the Same Files Need a Strategy
+
+PRs #39, #40 and #41 all modified the same three files (`devtools_ui.h`,
+`devtools_ui.cpp`, `imgui_ui.cpp`). They were branched independently from
+master, so the first one merged cleanly — but the second had conflicts in
+every file, and the third had even more (now two PRs worth of changes
+had landed). Each merge required resolving 5-10 conflict regions.
+
+The strategy that worked: **merge one at a time, resolve conflicts by merging
+master into the feature branch, build, run tests, push, wait for CI, then
+merge the next**. Trying to resolve all three at once would have been a mess.
+The key insight is that "keep both sides" is almost always correct when the
+conflict is between *additions to the same dispatch table* (adding different
+`case` entries, different menu items, different `if` blocks). The dangerous
+case is when both sides *modify the same logic*.
+
+### The Dispatch Table Pattern Scales but Creaks
+
+`DevToolsUI` manages 13 floating windows through explicit dispatch: each
+new window adds a `bool show_*` flag, a `render_*()` method, an entry in
+`window_ptr()`, `is_window_open()`, `any_window_open()`, and `render()`.
+That's 5+ touch-points per window, plus a menu item in `imgui_ui.cpp`.
+
+This is repetitive but has a huge advantage: **it's completely explicit and
+grep-able**. There's no registration system, no reflection, no macros hiding
+the flow. When something doesn't render, you can trace exactly why in 30
+seconds. For 13 windows, the boilerplate is annoying but manageable. At 30+
+windows, we'd want a registry pattern — but we're not there, and YAGNI
+applies.
+
+### The IPC-GUI Symmetry Principle
+
+Every DevTools window calls the same backend functions as the corresponding
+IPC command. The silicon disc window calls `silicon_disc_save()` — the same
+function that `sdisc save <path>` calls. The graphics finder window calls
+`gfx_decode()` and `gfx_paint()` — the same functions behind `gfx view`
+and `gfx paint`.
+
+This wasn't an accident — it was a design constraint. The IPC commands were
+built first, tested in isolation, and then the UI was layered on top. If we
+had built the UI first, we'd have ended up with logic tangled into ImGui
+callbacks, untestable without rendering a frame. The principle: **build the
+API, test the API, then build the UI as a thin layer on top**.
+
 ---
 
-*konCePCja: 41 PRs, 620+ tests, 6 phases of development, and still learning.*
+## Documentation: The Missing Phase
+
+### Feature Velocity Outruns Documentation
+
+By the time we updated the README, it was describing the emulator as it
+existed at Phase 0 — headless mode, IPC protocol, input replay, hash
+commands. The actual emulator had grown through Phases 1-5: a full WinAPE-class
+debugger, disc tools, ASIC hardware support, Silicon Disc, session recording,
+graphics finder, 13-window DevTools UI, and 80+ IPC commands.
+
+The README said "Mostly working Plus Range support: missing vectored & DMA
+interrupts" — but vectored interrupts and DMA had been implemented in Phase 4,
+three months earlier. **A README that describes missing features which are
+actually present is worse than no README at all** — it actively discourages
+potential users.
+
+The lesson: **documentation updates should be part of the PR checklist, not
+a separate "documentation phase"**. When you merge a feature PR, the README
+should mention it. When you add an IPC command, the protocol doc should
+include it. Batching all documentation work for later means it never happens
+until someone notices the gap.
+
+### The IPC Protocol Doc as Living Specification
+
+The IPC protocol document (`docs/ipc-protocol.md`) grew from 30 commands at
+Phase 0 to 80+ commands across Phases 1-5. When we finally audited it, 14
+entire command families were undocumented — disc management, recording,
+pokes, profiles, configuration, ASIC registers, Silicon Disc, ROMs, data
+areas, graphics finder, session recording, search, and disassembly export.
+
+The protocol doc serves a dual purpose: it's documentation for human users,
+but it's also the **specification for AI agents**. An LLM connecting to the
+IPC server can only use commands it knows about. Undocumented commands are
+invisible commands. This reinforces the agent-native principle — **if the
+protocol doc doesn't list it, agents can't use it, and it might as well
+not exist**.
+
+### 80+ Commands Need Structure
+
+At 30 commands, a flat list with examples works fine. At 80+ commands, the
+document needs **categories with headers**: lifecycle, registers, memory,
+breakpoints, IO breakpoints, stepping, waiting, hashes, screenshots,
+watchpoints, symbols, search, disassembly, input, trace, frames, events,
+timers, auto-type, disc management, recording, pokes, profiles, config,
+status, ASIC, silicon disc, ROMs, data areas, graphics, sessions. Each
+category is its own mental model — mixing them would make the doc unusable.
+
+---
+
+*konCePCja: 41 PRs, 623 tests, 80+ IPC commands, 6 phases of development,
+13 DevTools windows, and still learning.*
