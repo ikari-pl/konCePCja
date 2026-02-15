@@ -280,6 +280,7 @@ void DevToolsUI::render_disassembly()
       if (parse_hex(disasm_goto_addr_, &addr, 0xFFFF)) {
         disasm_goto_value_ = static_cast<int>(addr);
         disasm_follow_pc_ = false;
+        disasm_scroll_pending_ = true;
       }
     }
     ImGui::EndMenuBar();
@@ -386,16 +387,20 @@ void DevToolsUI::render_disassembly()
 
       if (is_pc || is_bp) ImGui::PopStyleColor();
 
-      // Track lines for auto-scroll
-      if (is_pc && disasm_follow_pc_) scroll_to_idx = i;
+      // Follow PC: scroll to keep PC visible (using SetScrollHereY in-place)
+      if (is_pc && disasm_follow_pc_) {
+        ImGui::SetScrollHereY(0.3f);
+      }
+
+      // Track goto target for one-shot scroll
       if (disasm_scroll_pending_ && disasm_goto_value_ >= 0 &&
           entry.addr == static_cast<word>(disasm_goto_value_)) {
         scroll_to_idx = i;
       }
     }
 
-    // Auto-scroll to target line (PC when following, goto address when navigating)
-    if (scroll_to_idx >= 0) {
+    // One-shot scroll to goto target
+    if (disasm_scroll_pending_ && scroll_to_idx >= 0) {
       float item_height = ImGui::GetTextLineHeightWithSpacing();
       ImGui::SetScrollY(scroll_to_idx * item_height - ImGui::GetWindowHeight() * 0.3f);
       disasm_scroll_pending_ = false;
