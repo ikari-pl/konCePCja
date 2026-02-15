@@ -3010,6 +3010,7 @@ int koncpc_main (int argc, char **argv)
       }
 #ifdef __APPLE__
       koncpc_setup_macos_menu();
+      koncpc_disable_app_nap();
 #endif
       topbar_height_px = imgui_topbar_height();
       video_set_topbar(nullptr, topbar_height_px);
@@ -3625,7 +3626,10 @@ int koncpc_main (int argc, char **argv)
                imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
             }
             asic_draw_sprites();
-            if (!g_headless) video_display();
+            if (!g_headless) {
+              video_display();
+              video_take_pending_window_screenshot();
+            }
             if (g_take_screenshot) {
               dumpScreen();
               g_take_screenshot = false;
@@ -3635,6 +3639,7 @@ int koncpc_main (int argc, char **argv)
       else { // We are paused — still render ImGui UI overlay
          if (!g_headless) {
             video_display();
+            video_take_pending_window_screenshot();
          }
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
       }

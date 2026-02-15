@@ -20,6 +20,7 @@
 #define VIDEO_H
 
 #include "SDL3/SDL.h"
+#include <string>
 #include <vector>
 
 typedef struct video_plugin
@@ -60,5 +61,11 @@ void video_clear_topbar();
 int video_get_topbar_height();
 
 video_plugin video_headless_plugin();
+
+// Request a window screenshot (CPC display + ImGui overlay).
+// Sets path; capture happens on the next rendered frame.
+void video_request_window_screenshot(const std::string& path);
+// Call from main loop after video_display() to capture pending screenshots.
+void video_take_pending_window_screenshot();
 
 #endif

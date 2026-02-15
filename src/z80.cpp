@@ -165,6 +165,7 @@ enum EDcodes {
 
 
 t_z80regs z80;
+std::atomic<bool> z80_stop_requested{false};
 std::vector<Breakpoint> breakpoints;
 std::vector<Watchpoint> watchpoints;
 int iCycleCount, iWSAdjust;
@@ -1149,6 +1150,10 @@ int z80_execute()
       if (CPC.cycle_count <= 0) { // emulation loop ran for one frame?
          CPC.cycle_count += CYCLE_COUNT_INIT;
          return EC_CYCLE_COUNT; // exit emulation loop
+      }
+      if (z80_stop_requested.load(std::memory_order_relaxed) || CPC.paused) {
+         z80_stop_requested.store(false, std::memory_order_relaxed);
+         return EC_STOP_REQUESTED;
       }
 
       // TODO: Measure impact. If important, create templated version of

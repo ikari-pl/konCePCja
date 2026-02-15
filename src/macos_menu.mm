@@ -140,3 +140,35 @@ void koncpc_setup_macos_menu() {
     koncpc_install_emulator_menu([NSApp mainMenu]);
   }
 }
+
+// App Nap control: used by screenshot capture to ensure rendering continues
+// when the emulator window is in the background.
+static id<NSObject> g_app_nap_activity = nil;
+
+void koncpc_disable_app_nap() {
+  @autoreleasepool {
+    if (!g_app_nap_activity) {
+      g_app_nap_activity = [[NSProcessInfo processInfo]
+          beginActivityWithOptions:NSActivityUserInitiated
+          reason:@"Screenshot capture in progress"];
+    }
+  }
+}
+
+void koncpc_enable_app_nap() {
+  @autoreleasepool {
+    if (g_app_nap_activity) {
+      [[NSProcessInfo processInfo] endActivity:g_app_nap_activity];
+      g_app_nap_activity = nil;
+    }
+  }
+}
+
+void koncpc_activate_app() {
+  // Must dispatch to main thread for NSApp activation
+  dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+      [NSApp activateIgnoringOtherApps:YES];
+    }
+  });
+}

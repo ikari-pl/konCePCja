@@ -53,6 +53,8 @@
 #include "imgui_ui_testable.h"
 #include "session_recording.h"
 #include "silicon_disc.h"
+#include "devtools_ui.h"
+#include "video.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -427,6 +429,24 @@ std::string handle_command(const std::string& line) {
     return std::string(out);
   }
   if (cmd == "screenshot") {
+    if (parts.size() >= 3 && parts[1] == "window") {
+      std::string path = parts[2];
+      // Force z80_execute to return so the main loop can render a frame
+      bool was_paused = CPC.paused;
+      z80_stop_requested.store(true, std::memory_order_relaxed);
+      if (!was_paused) cpc_pause();
+      video_request_window_screenshot(path);
+      // Wait for the main loop to render a frame and capture (up to 5 seconds)
+      for (int i = 0; i < 500; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        if (access(path.c_str(), F_OK) == 0) {
+          if (!was_paused) cpc_resume();
+          return "OK\n";
+        }
+      }
+      if (!was_paused) cpc_resume();
+      return "ERR 504 timeout\n";
+    }
     if (parts.size() >= 2) {
       if (dumpScreenTo(parts[1])) return "OK\n";
       return "ERR 503 no-surface\n";
@@ -435,6 +455,18 @@ std::string handle_command(const std::string& line) {
     return "OK\n";
   }
   if (cmd == "devtools") {
+    if (parts.size() >= 3 && parts[1] == "show") {
+      bool* ptr = g_devtools_ui.window_ptr(parts[2]);
+      if (!ptr) return "ERR 404 unknown window\n";
+      *ptr = true;
+      return "OK\n";
+    }
+    if (parts.size() >= 3 && parts[1] == "hide") {
+      bool* ptr = g_devtools_ui.window_ptr(parts[2]);
+      if (!ptr) return "ERR 404 unknown window\n";
+      *ptr = false;
+      return "OK\n";
+    }
     imgui_state.show_devtools = true;
     return "OK\n";
   }

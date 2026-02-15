@@ -22,6 +22,7 @@
 #include "SDL3/SDL.h"
 #include "types.h"
 #include "crtc.h"
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -127,11 +128,15 @@ class t_z80regs {
 };
 
 
+// IPC signal to break out of z80_execute (separate from t_z80regs to keep it copyable)
+extern std::atomic<bool> z80_stop_requested;
+
 #define EC_BREAKPOINT      10
 #define EC_TRACE           20
 #define EC_FRAME_COMPLETE  30
 #define EC_CYCLE_COUNT     40
 #define EC_SOUND_BUFFER    50
+#define EC_STOP_REQUESTED  60
 
 
 byte z80_read_mem(word addr);

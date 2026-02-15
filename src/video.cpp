@@ -37,9 +37,11 @@
 #ifdef HAVE_GL
 #include "SDL3/SDL_opengl.h"
 #endif
+#include <atomic>
 #include <math.h>
 #include <memory>
 #include <iostream>
+#include "savepng.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -93,6 +95,60 @@ int topbar_height = 0;
 
 extern t_CPC CPC;
 extern video_plugin* vid_plugin;
+
+// Window screenshot: set a pending path for capture by the main thread.
+// The capture happens in direct_flip() after ImGui is rendered.
+#include <mutex>
+#include <vector>
+static std::mutex g_wss_mutex;
+static std::string g_wss_pending_path;
+
+void video_request_window_screenshot(const std::string& path) {
+  std::lock_guard<std::mutex> lock(g_wss_mutex);
+  g_wss_pending_path = path;
+}
+
+// Called from direct_flip() to capture the current frame
+static void video_capture_if_pending(int display_w, int display_h) {
+  std::string wss_path;
+  {
+    std::lock_guard<std::mutex> lock(g_wss_mutex);
+    if (g_wss_pending_path.empty()) return;
+    wss_path = g_wss_pending_path;
+    g_wss_pending_path.clear();
+  }
+
+  std::vector<uint8_t> pixels(display_w * display_h * 4);
+  glReadPixels(0, 0, display_w, display_h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+  // Flip vertically (OpenGL origin is bottom-left)
+  int row_bytes = display_w * 4;
+  std::vector<uint8_t> row(row_bytes);
+  for (int y = 0; y < display_h / 2; y++) {
+    uint8_t* top = pixels.data() + y * row_bytes;
+    uint8_t* bot = pixels.data() + (display_h - 1 - y) * row_bytes;
+    memcpy(row.data(), top, row_bytes);
+    memcpy(top, bot, row_bytes);
+    memcpy(bot, row.data(), row_bytes);
+  }
+
+  SDL_Surface* surf = SDL_CreateSurfaceFrom(display_w, display_h,
+      SDL_PIXELFORMAT_RGBA32, pixels.data(), row_bytes);
+  if (surf) {
+    if (SDL_SavePNG(surf, wss_path)) {
+      LOG_ERROR("Window screenshot: SDL_SavePNG failed for " + wss_path);
+    } else {
+      LOG_INFO("Window screenshot saved to " + wss_path);
+    }
+    SDL_DestroySurface(surf);
+  } else {
+    LOG_ERROR("Window screenshot: SDL_CreateSurfaceFrom failed");
+  }
+}
+
+void video_take_pending_window_screenshot() {
+  // no-op: capture happens inside direct_flip via video_capture_if_pending
+}
 
 #ifndef min
 #define min(a,b) ((a)<(b) ? (a) : (b))
@@ -189,8 +245,11 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   glcontext = SDL_GL_CreateContext(mainSDLWindow);
   if (!glcontext) return nullptr;
   SDL_GL_MakeCurrent(mainSDLWindow, glcontext);
-  if (!SDL_GL_SetSwapInterval(-1)) // adaptive vsync (no tearing, reduced drag latency)
-    SDL_GL_SetSwapInterval(1);     // fall back to standard vsync
+  // Disable vsync: the emulator's own speed limiter handles frame pacing.
+  // Vsync causes SDL_GL_SwapWindow to block when macOS throttles background apps,
+  // which prevents IPC screenshot capture from working.
+  // macOS forces compositor-level vsync anyway, so no tearing in practice.
+  SDL_GL_SetSwapInterval(0);
 
   // Initialize Dear ImGui
   IMGUI_CHECKVERSION();
@@ -244,6 +303,20 @@ void direct_setpal(SDL_Color* c)
 
 void direct_flip(video_plugin* t)
 {
+  // Check if a screenshot is pending — if so, temporarily disable multi-viewport
+  // so all ImGui windows render in the main framebuffer for capture.
+  bool screenshot_pending;
+  {
+    std::lock_guard<std::mutex> lock(g_wss_mutex);
+    screenshot_pending = !g_wss_pending_path.empty();
+  }
+
+  ImGuiIO& io = ImGui::GetIO();
+  bool viewports_were_enabled = (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
+  if (screenshot_pending && viewports_were_enabled) {
+    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+  }
+
   // Upload CPC framebuffer to GL texture
   glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
@@ -255,7 +328,6 @@ void direct_flip(video_plugin* t)
   ImGui::NewFrame();
 
   // Draw CPC framebuffer as background image via ImGui
-  // With viewports enabled, background draw list uses screen-space coordinates
   ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::GetBackgroundDrawList(vp)->AddImage(
       static_cast<ImTextureID>(cpc_gl_texture),
@@ -274,8 +346,15 @@ void direct_flip(video_plugin* t)
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+  // Capture window screenshot after ImGui render
+  video_capture_if_pending(display_w, display_h);
+
+  // Restore viewports flag if it was temporarily disabled
+  if (screenshot_pending && viewports_were_enabled) {
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  }
+
   // Multi-viewport: update and render platform windows
-  ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
@@ -822,8 +901,7 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   glcontext = SDL_GL_CreateContext(mainSDLWindow);
   if (!glcontext) return nullptr;
   SDL_GL_MakeCurrent(mainSDLWindow, glcontext);
-  if (!SDL_GL_SetSwapInterval(-1))
-    SDL_GL_SetSwapInterval(1);
+  SDL_GL_SetSwapInterval(0);
 
   // Initialize Dear ImGui
   IMGUI_CHECKVERSION();
