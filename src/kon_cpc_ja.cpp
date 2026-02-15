@@ -1466,14 +1466,21 @@ void audio_update([[maybe_unused]] void *userdata, SDL_AudioStream *stream, int 
     int len = additional_amount;
     if (len > static_cast<int>(CPC.snd_buffersize)) len = static_cast<int>(CPC.snd_buffersize);
     if (len > 0) {
-      SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
-      if (g_wav_recorder.is_recording()) {
-        g_wav_recorder.write_samples(pbSndBuffer.get(), static_cast<uint32_t>(len));
-      }
-      if (g_avi_recorder.is_recording()) {
-        g_avi_recorder.capture_audio_samples(
-           reinterpret_cast<const int16_t*>(pbSndBuffer.get()),
-           static_cast<size_t>(len) / sizeof(int16_t));
+      if (CPC.paused) {
+        // Send silence when paused to avoid buzzing from looped last buffer
+        static std::vector<byte> silence;
+        if (static_cast<int>(silence.size()) < len) silence.resize(len, 0);
+        SDL_PutAudioStreamData(stream, silence.data(), len);
+      } else {
+        SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
+        if (g_wav_recorder.is_recording()) {
+          g_wav_recorder.write_samples(pbSndBuffer.get(), static_cast<uint32_t>(len));
+        }
+        if (g_avi_recorder.is_recording()) {
+          g_avi_recorder.capture_audio_samples(
+             reinterpret_cast<const int16_t*>(pbSndBuffer.get()),
+             static_cast<size_t>(len) / sizeof(int16_t));
+        }
       }
     }
   } else {
