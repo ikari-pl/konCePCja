@@ -111,6 +111,7 @@ void DevToolsUI::navigate_disassembly(word addr)
   show_disassembly_ = true;
   disasm_follow_pc_ = false;
   disasm_goto_value_ = addr;
+  disasm_scroll_pending_ = true;
   snprintf(disasm_goto_addr_, sizeof(disasm_goto_addr_), "%04X", addr);
 }
 
@@ -290,8 +291,9 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
-  // Disassemble ~48 instructions starting from an estimated position before center
-  word start_addr = center_pc - 40;
+  // Disassemble ~48 instructions starting a few lines before center
+  // Use a small offset so the target appears near the top 1/3 of the view
+  word start_addr = center_pc - 16;
   constexpr int NUM_LINES = 48;
 
   DisassembledCode dummy_dc;
@@ -384,14 +386,19 @@ void DevToolsUI::render_disassembly()
 
       if (is_pc || is_bp) ImGui::PopStyleColor();
 
-      // Track the PC line for auto-scroll
-      if (is_pc) scroll_to_idx = i;
+      // Track lines for auto-scroll
+      if (is_pc && disasm_follow_pc_) scroll_to_idx = i;
+      if (disasm_scroll_pending_ && disasm_goto_value_ >= 0 &&
+          entry.addr == static_cast<word>(disasm_goto_value_)) {
+        scroll_to_idx = i;
+      }
     }
 
-    // Auto-scroll to PC line
-    if (disasm_follow_pc_ && scroll_to_idx >= 0) {
+    // Auto-scroll to target line (PC when following, goto address when navigating)
+    if (scroll_to_idx >= 0) {
       float item_height = ImGui::GetTextLineHeightWithSpacing();
       ImGui::SetScrollY(scroll_to_idx * item_height - ImGui::GetWindowHeight() * 0.3f);
+      disasm_scroll_pending_ = false;
     }
   }
   ImGui::EndChild();
@@ -504,23 +511,33 @@ void DevToolsUI::render_memory_hex()
         }
         ascii[asc_len] = '\0';
         ImGui::Text("|%s|", ascii);
-
-        // Right-click context menu for this row
-        char ctx_id[16];
-        snprintf(ctx_id, sizeof(ctx_id), "##memctx%04X", base_addr & 0xFFFF);
-        if (ImGui::BeginPopupContextItem(ctx_id)) {
-          word ctx_addr = static_cast<word>(base_addr & 0xFFFF);
-          if (ImGui::MenuItem("Disassemble here")) {
-            navigate_to(ctx_addr, NavTarget::DISASM);
-          }
-          if (ImGui::MenuItem("View as graphics")) {
-            navigate_to(ctx_addr, NavTarget::GFX);
-          }
-          ImGui::EndPopup();
-        }
       }
     }
     clipper.End();
+
+    // Right-click context menu for the whole hex view
+    if (ImGui::BeginPopupContextWindow("##memhex_ctx")) {
+      // Calculate which row was right-clicked
+      float item_height = ImGui::GetTextLineHeightWithSpacing();
+      ImVec2 click_pos = ImGui::GetMousePosOnOpeningCurrentPopup();
+      ImVec2 win_pos = ImGui::GetWindowPos();
+      ImVec2 content_min = ImGui::GetWindowContentRegionMin();
+      float scroll = ImGui::GetScrollY();
+      int row = static_cast<int>((click_pos.y - win_pos.y - content_min.y + scroll) / item_height);
+      if (row < 0) row = 0;
+      if (row >= total_rows) row = total_rows - 1;
+      word ctx_addr = static_cast<word>((row * bytes_per_row) & 0xFFFF);
+
+      ImGui::TextDisabled("%04X", ctx_addr);
+      ImGui::Separator();
+      if (ImGui::MenuItem("Disassemble here")) {
+        navigate_to(ctx_addr, NavTarget::DISASM);
+      }
+      if (ImGui::MenuItem("View as graphics")) {
+        navigate_to(ctx_addr, NavTarget::GFX);
+      }
+      ImGui::EndPopup();
+    }
   }
   ImGui::EndChild();
 
@@ -1253,7 +1270,7 @@ void DevToolsUI::render_disc_tools()
 
 void DevToolsUI::render_data_areas()
 {
-  ImGui::SetNextWindowSize(ImVec2(450, 350), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(560, 350), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Data Areas", &open)) {
@@ -1724,6 +1741,8 @@ void DevToolsUI::render_video_state()
     return;
   }
 
+  ImGui::TextDisabled("Live  |  Read-only");
+  ImGui::Spacing();
   ImGui::Text("CRTC Registers");
   ImGui::Separator();
   const char* crtc_names[] = {
@@ -1768,6 +1787,8 @@ void DevToolsUI::render_audio_state()
     return;
   }
 
+  ImGui::TextDisabled("Live  |  Read-only");
+  ImGui::Spacing();
   ImGui::Text("PSG (AY-3-8912) Registers");
   ImGui::Separator();
 

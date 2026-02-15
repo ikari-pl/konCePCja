@@ -41,6 +41,7 @@ private:
     bool disasm_follow_pc_ = true;
     char disasm_goto_addr_[8] = "";
     int disasm_goto_value_ = -1;
+    bool disasm_scroll_pending_ = false;
 
     char memhex_goto_addr_[8] = "";
     int memhex_goto_value_ = -1;
