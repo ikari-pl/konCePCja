@@ -1873,9 +1873,11 @@ std::string getConfigurationFilename(bool forWrite)
 
   const char* PATH_OK = "";
 
+  std::string binPathStr = binPath.string();
   std::vector<std::pair<const char*, std::string>> configPaths = {
     { PATH_OK, args.cfgFilePath}, // First look in any user supplied configuration file path
-    { chAppPath, "/koncepcja.cfg" }, // If not found, koncepcja.cfg in the same directory as the executable
+    { chAppPath, "/koncepcja.cfg" }, // koncepcja.cfg in the current working directory
+    { binPathStr.c_str(), "/koncepcja.cfg" }, // koncepcja.cfg next to the binary (Finder launch)
     { getenv("XDG_CONFIG_HOME"), "/koncepcja/koncepcja.cfg" },
     { getenv("HOME"), "/.config/koncepcja/koncepcja.cfg" },
     { getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg" }, // legacy flat paths
@@ -1891,9 +1893,13 @@ std::string getConfigurationFilename(bool forWrite)
     std::string s = std::string(p.first) + p.second;
     if (access(s.c_str(), mode) == 0) {
       std::cout << "Using configuration file" << (forWrite ? " to save" : "") << ": " << s << std::endl;
-      // Dirty hack for MacOS Bundle to work: change dir to the bin dir
-      // koncepcja.cfg is edited to have relative paths from the bin dir
-      if (p.second == "/../Resources/koncepcja.cfg") {
+      // When config is found relative to the binary (not CWD), change
+      // to the binary dir so relative paths in the config resolve correctly.
+      // This handles Finder double-click (CWD=~) and macOS bundles.
+      if (s == binPathStr + "/koncepcja.cfg") {
+              std::filesystem::current_path(binPath);
+              snprintf(chAppPath, sizeof(chAppPath), "%s", binPath.string().c_str());
+      } else if (p.second == "/../Resources/koncepcja.cfg") {
               std::filesystem::current_path(binPath);
       }
       return s;
