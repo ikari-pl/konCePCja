@@ -70,19 +70,6 @@ struct ImGuiUIState {
   byte tape_decoded_buf[TAPE_DECODED_SAMPLES] = {};
   int  tape_decoded_head = 0;
 
-  // DevTools state
-  bool devtools_regs_locked = true;
-  char devtools_search[64] = "";
-  char devtools_poke_addr[8] = "";
-  char devtools_poke_val[8] = "";
-  char devtools_display_addr[8] = "";
-  int devtools_bytes_per_line = 16;
-  int devtools_mem_format = 0;
-  int devtools_display_value = -1;
-  int devtools_filter_value = -1;
-  char devtools_bp_addr[8] = "";
-  char devtools_ep_addr[8] = "";
-
   // Virtual keyboard state
   bool vkeyboard_caps_lock = false;      // CAPS LOCK - sticky toggle
   bool vkeyboard_shift_next = false;     // SHIFT - one-shot, clears after 1 char

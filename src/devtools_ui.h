@@ -8,6 +8,8 @@
 #include "disk_file_editor.h"
 #include "disk_sector_editor.h"
 
+enum class NavTarget { DISASM, MEMORY, GFX };
+
 class DevToolsUI {
 public:
     void render();
@@ -16,6 +18,8 @@ public:
     bool any_window_open() const;
     bool* window_ptr(const std::string& name);
     void navigate_disassembly(word addr);
+    void navigate_to(word addr, NavTarget target);
+    void navigate_memory(word addr);
 
 private:
     bool show_registers_ = false;
@@ -31,6 +35,8 @@ private:
     bool show_disc_tools_ = false;
     bool show_data_areas_ = false;
     bool show_disasm_export_ = false;
+    bool show_video_state_ = false;
+    bool show_audio_state_ = false;
 
     bool disasm_follow_pc_ = true;
     char disasm_goto_addr_[8] = "";
@@ -119,6 +125,8 @@ private:
     void render_disc_tools();
     void render_data_areas();
     void render_disasm_export();
+    void render_video_state();
+    void render_audio_state();
 };
 
 extern DevToolsUI g_devtools_ui;

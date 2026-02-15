@@ -32,6 +32,8 @@ extern t_drive driveA;
 extern t_drive driveB;
 extern double colours_rgb[32][3];
 extern t_GateArray GateArray;
+extern t_CRTC CRTC;
+extern t_PSG PSG;
 
 // Reject paths containing ".." to prevent path traversal
 static bool has_path_traversal(const char* path)
@@ -63,6 +65,8 @@ bool* DevToolsUI::window_ptr(const std::string& name)
   if (name == "disc_tools")         return &show_disc_tools_;
   if (name == "data_areas")         return &show_data_areas_;
   if (name == "disasm_export")      return &show_disasm_export_;
+  if (name == "video_state")        return &show_video_state_;
+  if (name == "audio_state")        return &show_audio_state_;
   return nullptr;
 }
 
@@ -87,6 +91,8 @@ bool DevToolsUI::is_window_open(const std::string& name) const
   if (name == "disc_tools")         return show_disc_tools_;
   if (name == "data_areas")         return show_data_areas_;
   if (name == "disasm_export")      return show_disasm_export_;
+  if (name == "video_state")        return show_video_state_;
+  if (name == "audio_state")        return show_audio_state_;
   return false;
 }
 
@@ -96,7 +102,8 @@ bool DevToolsUI::any_window_open() const
          show_stack_ || show_breakpoints_ || show_symbols_ ||
          show_session_recording_ || show_gfx_finder_ ||
          show_silicon_disc_ || show_asic_ || show_disc_tools_ ||
-         show_data_areas_ || show_disasm_export_;
+         show_data_areas_ || show_disasm_export_ ||
+         show_video_state_ || show_audio_state_;
 }
 
 void DevToolsUI::navigate_disassembly(word addr)
@@ -105,6 +112,29 @@ void DevToolsUI::navigate_disassembly(word addr)
   disasm_follow_pc_ = false;
   disasm_goto_value_ = addr;
   snprintf(disasm_goto_addr_, sizeof(disasm_goto_addr_), "%04X", addr);
+}
+
+void DevToolsUI::navigate_to(word addr, NavTarget target)
+{
+  switch (target) {
+    case NavTarget::DISASM:
+      navigate_disassembly(addr);
+      break;
+    case NavTarget::MEMORY:
+      navigate_memory(addr);
+      break;
+    case NavTarget::GFX:
+      show_gfx_finder_ = true;
+      snprintf(gfx_addr_, sizeof(gfx_addr_), "%04X", addr);
+      break;
+  }
+}
+
+void DevToolsUI::navigate_memory(word addr)
+{
+  show_memory_hex_ = true;
+  memhex_goto_value_ = addr;
+  snprintf(memhex_goto_addr_, sizeof(memhex_goto_addr_), "%04X", addr);
 }
 
 // -----------------------------------------------
@@ -126,6 +156,8 @@ void DevToolsUI::render()
   if (show_disasm_export_)      render_disasm_export();
   if (show_session_recording_)  render_session_recording();
   if (show_gfx_finder_)         render_gfx_finder();
+  if (show_video_state_)        render_video_state();
+  if (show_audio_state_)        render_audio_state();
 }
 
 // -----------------------------------------------
@@ -344,6 +376,9 @@ void DevToolsUI::render_disassembly()
           snprintf(disasm_goto_addr_, sizeof(disasm_goto_addr_),
                    "%04X", entry.addr);
         }
+        if (ImGui::MenuItem("View in Memory")) {
+          navigate_to(entry.addr, NavTarget::MEMORY);
+        }
         ImGui::EndPopup();
       }
 
@@ -469,6 +504,20 @@ void DevToolsUI::render_memory_hex()
         }
         ascii[asc_len] = '\0';
         ImGui::Text("|%s|", ascii);
+
+        // Right-click context menu for this row
+        char ctx_id[16];
+        snprintf(ctx_id, sizeof(ctx_id), "##memctx%04X", base_addr & 0xFFFF);
+        if (ImGui::BeginPopupContextItem(ctx_id)) {
+          word ctx_addr = static_cast<word>(base_addr & 0xFFFF);
+          if (ImGui::MenuItem("Disassemble here")) {
+            navigate_to(ctx_addr, NavTarget::DISASM);
+          }
+          if (ImGui::MenuItem("View as graphics")) {
+            navigate_to(ctx_addr, NavTarget::GFX);
+          }
+          ImGui::EndPopup();
+        }
       }
     }
     clipper.End();
@@ -600,11 +649,18 @@ void DevToolsUI::render_breakpoints()
       ImGui::TableSetColumnIndex(0);
       ImGui::Text("BP");
       ImGui::TableSetColumnIndex(1);
-      std::string sym = g_symfile.lookupAddr(bp.address);
-      if (!sym.empty())
-        ImGui::Text("%04X %s", bp.address, sym.c_str());
-      else
-        ImGui::Text("%04X", bp.address);
+      {
+        std::string sym = g_symfile.lookupAddr(bp.address);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        char bp_label[80];
+        if (!sym.empty())
+          snprintf(bp_label, sizeof(bp_label), "%04X %s##bp_nav%d", bp.address, sym.c_str(), static_cast<int>(i));
+        else
+          snprintf(bp_label, sizeof(bp_label), "%04X##bp_nav%d", bp.address, static_cast<int>(i));
+        if (ImGui::Selectable(bp_label, false, ImGuiSelectableFlags_DontClosePopups))
+          navigate_to(bp.address, NavTarget::DISASM);
+        ImGui::PopStyleColor();
+      }
       ImGui::TableSetColumnIndex(2);
       if (!bp.condition_str.empty())
         ImGui::TextUnformatted(bp.condition_str.c_str());
@@ -627,10 +683,17 @@ void DevToolsUI::render_breakpoints()
                             (wp.type == WRITE) ? "WP/W" : "WP/RW";
       ImGui::Text("%s", wp_type);
       ImGui::TableSetColumnIndex(1);
-      if (wp.length > 1)
-        ImGui::Text("%04X+%d", static_cast<word>(wp.address), wp.length);
-      else
-        ImGui::Text("%04X", static_cast<word>(wp.address));
+      {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        char wp_label[80];
+        if (wp.length > 1)
+          snprintf(wp_label, sizeof(wp_label), "%04X+%d##wp_nav%d", static_cast<word>(wp.address), wp.length, static_cast<int>(i));
+        else
+          snprintf(wp_label, sizeof(wp_label), "%04X##wp_nav%d", static_cast<word>(wp.address), static_cast<int>(i));
+        if (ImGui::Selectable(wp_label, false, ImGuiSelectableFlags_DontClosePopups))
+          navigate_to(static_cast<word>(wp.address), NavTarget::MEMORY);
+        ImGui::PopStyleColor();
+      }
       ImGui::TableSetColumnIndex(2);
       if (!wp.condition_str.empty())
         ImGui::TextUnformatted(wp.condition_str.c_str());
@@ -1247,7 +1310,14 @@ void DevToolsUI::render_data_areas()
     for (const auto& da : areas) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      ImGui::Text("%04X", da.start);
+      {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        char da_label_id[32];
+        snprintf(da_label_id, sizeof(da_label_id), "%04X##da_nav%04X", da.start, da.start);
+        if (ImGui::Selectable(da_label_id, false, ImGuiSelectableFlags_DontClosePopups))
+          navigate_to(da.start, NavTarget::DISASM);
+        ImGui::PopStyleColor();
+      }
       ImGui::TableSetColumnIndex(1);
       ImGui::Text("%04X", da.end);
       ImGui::TableSetColumnIndex(2);
@@ -1636,5 +1706,97 @@ void DevToolsUI::render_gfx_finder()
   }
 
   if (!open) show_gfx_finder_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 14: Video State
+// -----------------------------------------------
+
+void DevToolsUI::render_video_state()
+{
+  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Video State", &open)) {
+    if (!open) show_video_state_ = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::Text("CRTC Registers");
+  ImGui::Separator();
+  const char* crtc_names[] = {
+    "R0: H Total", "R1: H Displayed", "R2: H Sync Pos", "R3: Sync Widths",
+    "R4: V Total", "R5: V Total Adj", "R6: V Displayed", "R7: V Sync Pos",
+    "R8: Interlace", "R9: Max Raster", "R10: Cursor Start", "R11: Cursor End",
+    "R12: Start Addr H", "R13: Start Addr L", "R14: Cursor H", "R15: Cursor L",
+    "R16: LPEN H", "R17: LPEN L"
+  };
+
+  for (int i = 0; i < 18; i++) {
+    unsigned char val = CRTC.registers[i];
+    ImGui::SetNextItemWidth(50);
+    ImGui::InputScalar(crtc_names[i], ImGuiDataType_U8, &val, nullptr, nullptr, "%02X",
+                       ImGuiInputTextFlags_ReadOnly);
+  }
+
+  ImGui::Spacing();
+  ImGui::Text("Gate Array");
+  ImGui::Separator();
+  ImGui::Text("Screen Mode: %d", GateArray.scr_mode);
+  ImGui::Text("ROM Config: %02X", GateArray.ROM_config);
+  ImGui::Text("RAM Config: %02X", GateArray.RAM_config);
+  ImGui::Text("Pen: %d", GateArray.pen);
+
+  if (!open) show_video_state_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 15: Audio State
+// -----------------------------------------------
+
+void DevToolsUI::render_audio_state()
+{
+  ImGui::SetNextWindowSize(ImVec2(380, 250), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Audio State", &open)) {
+    if (!open) show_audio_state_ = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::Text("PSG (AY-3-8912) Registers");
+  ImGui::Separator();
+
+  if (ImGui::BeginTable("##psg_state", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+    ImGui::TableSetupColumn("Channel");
+    ImGui::TableSetupColumn("Tone Freq");
+    ImGui::TableSetupColumn("Volume");
+    ImGui::TableSetupColumn("Tone/Noise");
+    ImGui::TableHeadersRow();
+
+    auto row = [](const char* ch, unsigned short tone, unsigned char amp, bool tone_on, bool noise_on) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn(); ImGui::Text("%s", ch);
+      ImGui::TableNextColumn(); ImGui::Text("%d", tone & 0xFFF);
+      ImGui::TableNextColumn(); ImGui::Text("%d", amp & 0x1F);
+      ImGui::TableNextColumn(); ImGui::Text("%s/%s", tone_on ? "ON" : "off", noise_on ? "ON" : "off");
+    };
+
+    byte mixer = PSG.RegisterAY.Mixer;
+    row("A", PSG.RegisterAY.TonA, PSG.RegisterAY.AmplitudeA, !(mixer & 1), !(mixer & 8));
+    row("B", PSG.RegisterAY.TonB, PSG.RegisterAY.AmplitudeB, !(mixer & 2), !(mixer & 16));
+    row("C", PSG.RegisterAY.TonC, PSG.RegisterAY.AmplitudeC, !(mixer & 4), !(mixer & 32));
+    ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  ImGui::Text("Noise Freq: %d", PSG.RegisterAY.Noise & 0x1F);
+  ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
+
+  if (!open) show_audio_state_ = false;
   ImGui::End();
 }

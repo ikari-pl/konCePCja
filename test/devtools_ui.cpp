@@ -76,7 +76,10 @@ TEST(DevToolsUI, AllWindowNames) {
   DevToolsUI dt;
   const char* names[] = {
     "registers", "disassembly", "memory_hex",
-    "stack", "breakpoints", "symbols"
+    "stack", "breakpoints", "symbols",
+    "session_recording", "gfx_finder", "silicon_disc",
+    "asic", "disc_tools", "data_areas", "disasm_export",
+    "video_state", "audio_state"
   };
   for (const char* name : names) {
     EXPECT_FALSE(dt.is_window_open(name)) << "Window " << name << " should start closed";
@@ -85,6 +88,44 @@ TEST(DevToolsUI, AllWindowNames) {
     EXPECT_TRUE(dt.is_window_open(name)) << "Window " << name << " should be open after toggle";
   }
   EXPECT_TRUE(dt.any_window_open());
+}
+
+// -----------------------------------------------
+// navigate_to / navigate_memory tests
+// -----------------------------------------------
+
+TEST(DevToolsUI, NavigateToDisasmOpensDisassembly) {
+  DevToolsUI dt;
+  EXPECT_FALSE(dt.is_window_open("disassembly"));
+  dt.navigate_to(0x4000, NavTarget::DISASM);
+  EXPECT_TRUE(dt.is_window_open("disassembly"));
+}
+
+TEST(DevToolsUI, NavigateToMemoryOpensMemoryHex) {
+  DevToolsUI dt;
+  EXPECT_FALSE(dt.is_window_open("memory_hex"));
+  dt.navigate_to(0xBE80, NavTarget::MEMORY);
+  EXPECT_TRUE(dt.is_window_open("memory_hex"));
+}
+
+TEST(DevToolsUI, NavigateToGfxOpensGfxFinder) {
+  DevToolsUI dt;
+  EXPECT_FALSE(dt.is_window_open("gfx_finder"));
+  dt.navigate_to(0xC000, NavTarget::GFX);
+  EXPECT_TRUE(dt.is_window_open("gfx_finder"));
+}
+
+TEST(DevToolsUI, NavigateMemoryOpensMemoryHex) {
+  DevToolsUI dt;
+  EXPECT_FALSE(dt.is_window_open("memory_hex"));
+  dt.navigate_memory(0x1234);
+  EXPECT_TRUE(dt.is_window_open("memory_hex"));
+}
+
+TEST(DevToolsUI, NavigateDisassemblyOpensDisassembly) {
+  DevToolsUI dt;
+  dt.navigate_disassembly(0x8000);
+  EXPECT_TRUE(dt.is_window_open("disassembly"));
 }
 
 TEST(DevToolsUI, AnyWindowOpenReflectsState) {

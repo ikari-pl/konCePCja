@@ -1306,161 +1306,6 @@ static void imgui_render_options()
 
 // parse_hex, safe_read_word/dword moved to imgui_ui_testable.h
 
-static void devtools_tab_z80()
-{
-  bool locked = imgui_state.devtools_regs_locked;
-  ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
-    (locked ? ImGuiInputTextFlags_ReadOnly : 0);
-
-  auto RegField16 = [&](const char* label, reg_pair& rp) {
-    unsigned short val = rp.w.l;
-    ImGui::SetNextItemWidth(60);
-    if (ImGui::InputScalar(label, ImGuiDataType_U16, &val, nullptr, nullptr, "%04X", hex_flags)) {
-      if (!locked) rp.w.l = val;
-    }
-  };
-
-  auto RegField8 = [&](const char* label, byte& val) {
-    ImGui::SetNextItemWidth(40);
-    unsigned char v = val;
-    if (ImGui::InputScalar(label, ImGuiDataType_U8, &v, nullptr, nullptr, "%02X", hex_flags)) {
-      if (!locked) val = v;
-    }
-  };
-
-  // Register grid
-  ImGui::Text("Main Registers");
-  ImGui::Separator();
-
-  ImGui::Columns(2, "z80_regs", false);
-  RegField16("AF", z80.AF); ImGui::NextColumn();
-  RegField16("AF'", z80.AFx); ImGui::NextColumn();
-  RegField16("BC", z80.BC); ImGui::NextColumn();
-  RegField16("BC'", z80.BCx); ImGui::NextColumn();
-  RegField16("DE", z80.DE); ImGui::NextColumn();
-  RegField16("DE'", z80.DEx); ImGui::NextColumn();
-  RegField16("HL", z80.HL); ImGui::NextColumn();
-  RegField16("HL'", z80.HLx); ImGui::NextColumn();
-  RegField16("IX", z80.IX); ImGui::NextColumn();
-  RegField16("IY", z80.IY); ImGui::NextColumn();
-  RegField16("SP", z80.SP); ImGui::NextColumn();
-  RegField16("PC", z80.PC); ImGui::NextColumn();
-  ImGui::Columns(1);
-
-  ImGui::Spacing();
-  RegField8("I", z80.I);
-  ImGui::SameLine();
-  RegField8("R", z80.R);
-
-  // Flags
-  ImGui::Spacing();
-  ImGui::Text("Flags");
-  ImGui::Separator();
-  byte f = z80.AF.b.l;
-  bool s = f & Sflag, zf = f & Zflag, h = f & Hflag, pv = f & Pflag, n = f & Nflag, cf = f & Cflag;
-  ImGui::Checkbox("S (Sign)", &s);     ImGui::SameLine();
-  ImGui::Checkbox("Z (Zero)", &zf);    ImGui::SameLine();
-  ImGui::Checkbox("H (Half)", &h);
-  ImGui::Checkbox("P/V", &pv);         ImGui::SameLine();
-  ImGui::Checkbox("N (Neg)", &n);      ImGui::SameLine();
-  ImGui::Checkbox("C (Carry)", &cf);
-  if (!locked) {
-    byte new_f = 0;
-    if (s)  new_f |= Sflag;
-    if (zf) new_f |= Zflag;
-    if (h)  new_f |= Hflag;
-    if (pv) new_f |= Pflag;
-    if (n)  new_f |= Nflag;
-    if (cf) new_f |= Cflag;
-    z80.AF.b.l = new_f | (f & Xflags);
-  }
-
-  ImGui::Spacing();
-  if (ImGui::Button(locked ? "Unlock Registers" : "Lock Registers")) {
-    imgui_state.devtools_regs_locked = !imgui_state.devtools_regs_locked;
-  }
-
-  // Stack display
-  ImGui::Spacing();
-  ImGui::Text("Stack (top 16 entries):");
-  if (ImGui::BeginChild("##stack", ImVec2(120, 200), ImGuiChildFlags_Borders)) {
-    word sp = z80.SP.w.l;
-    for (int i = 0; i < 16; i++) {
-      word addr = sp + i * 2;
-      byte lo = z80_read_mem(addr);
-      byte hi = z80_read_mem(addr + 1);
-      ImGui::Text("%04X: %04X", addr & 0xFFFF, (hi << 8) | lo);
-    }
-  }
-  ImGui::EndChild();
-}
-
-static void devtools_tab_asm()
-{
-  // Disassemble around PC
-  word pc = z80.PC.w.l;
-  std::vector<word> eps = { pc };
-  DisassembledCode code = disassemble(eps);
-  const auto& breakpoints = z80_list_breakpoints_ref();
-
-  ImGui::Text("Disassembly around PC=%04X", pc);
-
-  // Search
-  ImGui::SetNextItemWidth(200);
-  ImGui::InputText("Search", imgui_state.devtools_search, sizeof(imgui_state.devtools_search));
-
-  if (ImGui::BeginChild("##asm", ImVec2(0, 250), ImGuiChildFlags_Borders)) {
-    for (auto& line : code.lines) {
-      bool is_pc = (line.address_ == pc);
-      bool is_bp = false;
-      for (auto& bp : breakpoints) {
-        if (bp.address == line.address_) { is_bp = true; break; }
-      }
-
-      // Filter by search
-      if (imgui_state.devtools_search[0] != '\0') {
-        char buf[128];
-        snprintf(buf, sizeof(buf), "%04X %s", line.address_, line.instruction_.c_str());
-        if (strstr(buf, imgui_state.devtools_search) == nullptr) continue;
-      }
-
-      if (is_pc) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
-      else if (is_bp) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-
-      char label[128];
-      snprintf(label, sizeof(label), "%s%04X  %s", is_bp ? "*" : " ", line.address_, line.instruction_.c_str());
-      if (ImGui::Selectable(label, is_pc)) {
-        // Toggle breakpoint on click
-        if (is_bp)
-          z80_del_breakpoint(line.address_);
-        else
-          z80_add_breakpoint(line.address_);
-      }
-
-      if (is_pc || is_bp) ImGui::PopStyleColor();
-      if (is_pc) ImGui::SetScrollHereY(0.3f);
-    }
-  }
-  ImGui::EndChild();
-
-  // Breakpoint management
-  ImGui::Spacing();
-  ImGui::SetNextItemWidth(60);
-  ImGui::InputText("BP Addr", imgui_state.devtools_bp_addr, sizeof(imgui_state.devtools_bp_addr),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  if (ImGui::Button("Add BP")) {
-    unsigned long addr;
-    if (parse_hex(imgui_state.devtools_bp_addr, &addr, 0xFFFF)) {
-      z80_add_breakpoint(static_cast<word>(addr));
-      imgui_state.devtools_bp_addr[0] = '\0';
-    }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Clear BPs")) {
-    z80_clear_breakpoints();
-  }
-}
 
 // Format memory line into stack buffer - zero heap allocations
 // Buffer size: 512 bytes handles up to 64 bytes/line with all formats
@@ -1543,141 +1388,28 @@ static bool ui_poke_input(char* addr_buf, size_t addr_size,
   return false;
 }
 
-static void devtools_tab_memory()
-{
-  // Poke
-  ui_poke_input(imgui_state.devtools_poke_addr, sizeof(imgui_state.devtools_poke_addr),
-                imgui_state.devtools_poke_val, sizeof(imgui_state.devtools_poke_val), "dtpoke");
 
-  // Display address
-  ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Display##dt", imgui_state.devtools_display_addr, sizeof(imgui_state.devtools_display_addr),
-                   ImGuiInputTextFlags_CharsHexadecimal);
-  ImGui::SameLine();
-  if (ImGui::Button("Go##dt")) {
-    unsigned long addr;
-    if (parse_hex(imgui_state.devtools_display_addr, &addr, 0xFFFF))
-      imgui_state.devtools_display_value = static_cast<int>(addr);
-    else
-      imgui_state.devtools_display_value = -1;
-  }
-
-  // Bytes per line & format
-  const char* bpl_items[] = { "1", "4", "8", "16", "32" };
-  int bpl_values[] = { 1, 4, 8, 16, 32 };
-  int bpl_idx = 3;
-  for (int i = 0; i < 5; i++) { if (bpl_values[i] == imgui_state.devtools_bytes_per_line) bpl_idx = i; }
-  ImGui::SetNextItemWidth(60);
-  if (ImGui::Combo("Bytes/Line##dt", &bpl_idx, bpl_items, 5)) {
-    imgui_state.devtools_bytes_per_line = bpl_values[bpl_idx];
-  }
-  ImGui::SameLine();
-  const char* fmt_items[] = { "Hex", "Hex & char", "Hex & u8" };
-  ImGui::SetNextItemWidth(100);
-  ImGui::Combo("Format##dt", &imgui_state.devtools_mem_format, fmt_items, 3);
-
-  // Hex dump
-  if (ImGui::BeginChild("##dtmem", ImVec2(0, 250), ImGuiChildFlags_Borders)) {
-    int bpl = imgui_state.devtools_bytes_per_line;
-    int start_line = 0;
-    int total_lines = 65536 / bpl;
-
-    if (imgui_state.devtools_display_value >= 0 && imgui_state.devtools_display_value <= 0xFFFF) {
-      start_line = imgui_state.devtools_display_value / bpl;
-    }
-
-    // Use clipper for performance
-    ImGuiListClipper clipper;
-    clipper.Begin(total_lines);
-    while (clipper.Step()) {
-      for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-        char line[512];
-        format_memory_line(line, sizeof(line), i * bpl, bpl, imgui_state.devtools_mem_format);
-        ImGui::TextUnformatted(line);
-      }
-    }
-
-    if (start_line > 0) {
-      float scroll_y = (static_cast<float>(start_line) / total_lines) * ImGui::GetScrollMaxY();
-      ImGui::SetScrollY(scroll_y);
-      imgui_state.devtools_display_value = -1; // only scroll once
-    }
-  }
-  ImGui::EndChild();
-
-  // Watchpoints
-  ImGui::Spacing();
-  ImGui::Text("RAM Config: %d  Bank: %d", GateArray.RAM_config, GateArray.RAM_bank);
-}
-
-static void devtools_tab_video()
-{
-  ImGui::Text("CRTC Registers");
-  ImGui::Separator();
-  const char* crtc_names[] = {
-    "R0: H Total", "R1: H Displayed", "R2: H Sync Pos", "R3: Sync Widths",
-    "R4: V Total", "R5: V Total Adj", "R6: V Displayed", "R7: V Sync Pos",
-    "R8: Interlace", "R9: Max Raster", "R10: Cursor Start", "R11: Cursor End",
-    "R12: Start Addr H", "R13: Start Addr L", "R14: Cursor H", "R15: Cursor L",
-    "R16: LPEN H", "R17: LPEN L"
-  };
-
-  for (int i = 0; i < 18; i++) {
-    unsigned char val = CRTC.registers[i];
-    ImGui::SetNextItemWidth(50);
-    ImGui::InputScalar(crtc_names[i], ImGuiDataType_U8, &val, nullptr, nullptr, "%02X",
-                       ImGuiInputTextFlags_ReadOnly);
-  }
-
-  ImGui::Spacing();
-  ImGui::Text("Gate Array");
-  ImGui::Separator();
-  ImGui::Text("Screen Mode: %d", GateArray.scr_mode);
-  ImGui::Text("ROM Config: %02X", GateArray.ROM_config);
-  ImGui::Text("RAM Config: %02X", GateArray.RAM_config);
-  ImGui::Text("Pen: %d", GateArray.pen);
-}
-
-static void devtools_tab_audio()
-{
-  ImGui::Text("PSG (AY-3-8912) Registers");
-  ImGui::Separator();
-
-  if (ImGui::BeginTable("##psg", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
-    ImGui::TableSetupColumn("Channel");
-    ImGui::TableSetupColumn("Tone Freq");
-    ImGui::TableSetupColumn("Volume");
-    ImGui::TableSetupColumn("Tone/Noise");
-    ImGui::TableHeadersRow();
-
-    auto row = [](const char* ch, unsigned short tone, unsigned char amp, bool tone_on, bool noise_on) {
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn(); ImGui::Text("%s", ch);
-      ImGui::TableNextColumn(); ImGui::Text("%d", tone & 0xFFF);
-      ImGui::TableNextColumn(); ImGui::Text("%d", amp & 0x1F);
-      ImGui::TableNextColumn(); ImGui::Text("%s/%s", tone_on ? "ON" : "off", noise_on ? "ON" : "off");
-    };
-
-    byte mixer = PSG.RegisterAY.Mixer;
-    row("A", PSG.RegisterAY.TonA, PSG.RegisterAY.AmplitudeA, !(mixer & 1), !(mixer & 8));
-    row("B", PSG.RegisterAY.TonB, PSG.RegisterAY.AmplitudeB, !(mixer & 2), !(mixer & 16));
-    row("C", PSG.RegisterAY.TonC, PSG.RegisterAY.AmplitudeC, !(mixer & 4), !(mixer & 32));
-    ImGui::EndTable();
-  }
-
-  ImGui::Spacing();
-  ImGui::Text("Noise Freq: %d", PSG.RegisterAY.Noise & 0x1F);
-  ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
-}
+static bool devtools_first_open = true;
 
 static void imgui_render_devtools()
 {
-  ImGui::SetNextWindowSize(ImVec2(560, 500), ImGuiCond_FirstUseEver);
+  // Auto-open core windows on first DevTools open
+  if (devtools_first_open) {
+    if (!g_devtools_ui.any_window_open()) {
+      g_devtools_ui.toggle_window("registers");
+      g_devtools_ui.toggle_window("disassembly");
+      g_devtools_ui.toggle_window("stack");
+    }
+    devtools_first_open = false;
+  }
+
+  ImGui::SetNextWindowSize(ImVec2(560, 80), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("DevTools", &open,
-      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar)) {
+      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_MenuBar |
+      ImGuiWindowFlags_AlwaysAutoResize)) {
     if (!open) imgui_state.show_devtools = false;
     ImGui::End();
     return;
@@ -1695,11 +1427,14 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Data Areas",        nullptr, g_devtools_ui.window_ptr("data_areas"));
       ImGui::MenuItem("Disasm Export",     nullptr, g_devtools_ui.window_ptr("disasm_export"));
       ImGui::Separator();
-      ImGui::MenuItem("Session Recording", nullptr, g_devtools_ui.window_ptr("session_recording"));
-      ImGui::MenuItem("Graphics Finder",   nullptr, g_devtools_ui.window_ptr("gfx_finder"));
+      ImGui::MenuItem("Video State",       nullptr, g_devtools_ui.window_ptr("video_state"));
+      ImGui::MenuItem("Audio State",       nullptr, g_devtools_ui.window_ptr("audio_state"));
       ImGui::MenuItem("Silicon Disc",      nullptr, g_devtools_ui.window_ptr("silicon_disc"));
       ImGui::MenuItem("ASIC Registers",    nullptr, g_devtools_ui.window_ptr("asic"));
       ImGui::MenuItem("Disc Tools",        nullptr, g_devtools_ui.window_ptr("disc_tools"));
+      ImGui::Separator();
+      ImGui::MenuItem("Session Recording", nullptr, g_devtools_ui.window_ptr("session_recording"));
+      ImGui::MenuItem("Graphics Finder",   nullptr, g_devtools_ui.window_ptr("gfx_finder"));
       ImGui::EndMenu();
     }
     ImGui::Separator();
@@ -1725,15 +1460,6 @@ static void imgui_render_devtools()
       CPC.paused = !CPC.paused;
     }
     ImGui::EndMenuBar();
-  }
-
-  if (ImGui::BeginTabBar("DevToolsTabs")) {
-    if (ImGui::BeginTabItem("Z80"))    { devtools_tab_z80();    ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Asm"))    { devtools_tab_asm();    ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Memory")) { devtools_tab_memory(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Video"))  { devtools_tab_video();  ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Audio"))  { devtools_tab_audio();  ImGui::EndTabItem(); }
-    ImGui::EndTabBar();
   }
 
   if (!open) {
