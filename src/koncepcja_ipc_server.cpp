@@ -996,13 +996,13 @@ std::string handle_command(const std::string& line) {
       z80.step_out = 1;
       z80.step_out_addresses.clear();
       cpc_resume();
-      // Wait for step_out to complete (step_in transitions to 2 on return)
+      // Wait for step_out to complete (main loop pauses when step_in >= 2)
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (true) {
         uint16_t hit_pc = 0;
         bool watch = false;
         if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
-        if (z80.step_in >= 2) break;
+        if (CPC.paused) break;  // main loop paused after step completion
         if (std::chrono::steady_clock::now() > deadline) {
           cpc_pause();
           z80.step_out = 0;
@@ -1010,7 +1010,7 @@ std::string handle_command(const std::string& line) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
-      cpc_pause();
+      if (!CPC.paused) cpc_pause();
       return "OK\n";
     }
     // "step to <addr>" — run-to-cursor (ephemeral breakpoint)

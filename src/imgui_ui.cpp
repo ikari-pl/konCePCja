@@ -1438,9 +1438,17 @@ static void imgui_render_devtools()
       ImGui::EndMenu();
     }
     ImGui::Separator();
-    if (ImGui::Button("Step In"))  { z80.step_in = 1; CPC.paused = false; }
+    if (ImGui::Button("Step In"))  {
+      z80.step_in = 1;
+      z80.step_out = 0;
+      z80.step_out_addresses.clear();
+      CPC.paused = false;
+    }
     if (ImGui::Button("Step Over")) {
       // Step over = set ephemeral breakpoint at next instruction
+      z80.step_in = 0;
+      z80.step_out = 0;
+      z80.step_out_addresses.clear();
       word pc = z80.PC.w.l;
       // Read instruction length by disassembling one
       std::vector<word> eps = { pc };
@@ -1454,7 +1462,12 @@ static void imgui_render_devtools()
       }
       CPC.paused = false;
     }
-    if (ImGui::Button("Step Out")) { z80.step_out = 1; CPC.paused = false; }
+    if (ImGui::Button("Step Out")) {
+      z80.step_out = 1;
+      z80.step_out_addresses.clear();
+      z80.step_in = 0;
+      CPC.paused = false;
+    }
     ImGui::Separator();
     if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {
       CPC.paused = !CPC.paused;
