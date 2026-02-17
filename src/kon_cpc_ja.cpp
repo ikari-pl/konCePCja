@@ -3169,12 +3169,14 @@ int koncpc_main (int argc, char **argv)
            }
          }
 
-         // If ImGui wants input, skip emulator processing
+         // If ImGui wants input, skip emulator processing.
+         // Exception: virtual keyboard events (windowID=0) always reach the emulator.
          {
            ImGuiIO& io = ImGui::GetIO();
            bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT);
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
-           if ((is_key_event && io.WantCaptureKeyboard) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
+           bool is_virtual_key = is_key_event && event.key.windowID == 0;
+           if ((is_key_event && !is_virtual_key && io.WantCaptureKeyboard) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
              continue;
            }
          }

@@ -1542,7 +1542,7 @@ std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
         koncpc_cmd = true;
         continue;
       }
-      SDL_Event key;
+      SDL_Event key = {};  // zero-init so windowID=0 marks virtual events
       if (escaped || koncpc_cmd) {
         int keycode = static_cast<unsigned char>(c);
         if (koncpc_cmd) {
