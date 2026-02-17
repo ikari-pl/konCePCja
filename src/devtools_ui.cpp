@@ -146,21 +146,32 @@ void DevToolsUI::navigate_memory(word addr)
 
 void DevToolsUI::render()
 {
-  if (show_registers_)          render_registers();
-  if (show_disassembly_)        render_disassembly();
-  if (show_memory_hex_)         render_memory_hex();
-  if (show_stack_)              render_stack();
-  if (show_breakpoints_)        render_breakpoints();
-  if (show_symbols_)            render_symbols();
-  if (show_silicon_disc_)       render_silicon_disc();
-  if (show_asic_)               render_asic();
-  if (show_disc_tools_)         render_disc_tools();
-  if (show_data_areas_)         render_data_areas();
-  if (show_disasm_export_)      render_disasm_export();
-  if (show_session_recording_)  render_session_recording();
-  if (show_gfx_finder_)         render_gfx_finder();
-  if (show_video_state_)        render_video_state();
-  if (show_audio_state_)        render_audio_state();
+  // Debug windows stay on top of the main emulator window when dragged outside
+  ImGuiWindowClass topmost;
+  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
+
+  auto dispatch = [&](bool flag, auto fn) {
+    if (flag) {
+      ImGui::SetNextWindowClass(&topmost);
+      (this->*fn)();
+    }
+  };
+
+  dispatch(show_registers_,         &DevToolsUI::render_registers);
+  dispatch(show_disassembly_,       &DevToolsUI::render_disassembly);
+  dispatch(show_memory_hex_,        &DevToolsUI::render_memory_hex);
+  dispatch(show_stack_,             &DevToolsUI::render_stack);
+  dispatch(show_breakpoints_,       &DevToolsUI::render_breakpoints);
+  dispatch(show_symbols_,           &DevToolsUI::render_symbols);
+  dispatch(show_silicon_disc_,      &DevToolsUI::render_silicon_disc);
+  dispatch(show_asic_,              &DevToolsUI::render_asic);
+  dispatch(show_disc_tools_,        &DevToolsUI::render_disc_tools);
+  dispatch(show_data_areas_,        &DevToolsUI::render_data_areas);
+  dispatch(show_disasm_export_,     &DevToolsUI::render_disasm_export);
+  dispatch(show_session_recording_, &DevToolsUI::render_session_recording);
+  dispatch(show_gfx_finder_,       &DevToolsUI::render_gfx_finder);
+  dispatch(show_video_state_,       &DevToolsUI::render_video_state);
+  dispatch(show_audio_state_,       &DevToolsUI::render_audio_state);
 }
 
 // -----------------------------------------------
