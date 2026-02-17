@@ -1445,22 +1445,19 @@ static void imgui_render_devtools()
       CPC.paused = false;
     }
     if (ImGui::Button("Step Over")) {
-      // Step over = set ephemeral breakpoint at next instruction
       z80.step_in = 0;
       z80.step_out = 0;
       z80.step_out_addresses.clear();
       word pc = z80.PC.w.l;
-      // Read instruction length by disassembling one
-      std::vector<word> eps = { pc };
-      DisassembledCode dc = disassemble(eps);
-      auto it = dc.lines.begin();
-      if (it != dc.lines.end()) {
-        auto next_it = std::next(it);
-        if (next_it != dc.lines.end()) {
-          z80_add_breakpoint_ephemeral(next_it->address_);
-        }
+      if (z80_is_call_or_rst(pc)) {
+        // CALL/RST: set ephemeral breakpoint at return address
+        z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
+        CPC.paused = false;
+      } else {
+        // Non-call: same as Step In (one instruction)
+        z80.step_in = 1;
+        CPC.paused = false;
       }
-      CPC.paused = false;
     }
     if (ImGui::Button("Step Out")) {
       z80.step_out = 1;
