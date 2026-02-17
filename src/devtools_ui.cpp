@@ -136,6 +136,8 @@ void DevToolsUI::navigate_memory(word addr)
   show_memory_hex_ = true;
   memhex_goto_value_ = addr;
   snprintf(memhex_goto_addr_, sizeof(memhex_goto_addr_), "%04X", addr);
+  memhex_highlight_addr_ = addr;
+  memhex_highlight_frames_ = 90;  // ~1.5 seconds at 60fps
 }
 
 // -----------------------------------------------
@@ -503,6 +505,16 @@ void DevToolsUI::render_memory_hex()
 
           ImGui::Text("%02X", val);
 
+          // Flash-highlight the navigation target byte
+          if (memhex_highlight_frames_ > 0 && a == static_cast<word>(memhex_highlight_addr_)) {
+            float alpha = static_cast<float>(memhex_highlight_frames_) / 90.0f;
+            ImVec2 rmin = ImGui::GetItemRectMin();
+            ImVec2 rmax = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRectFilled(
+              rmin, rmax,
+              ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.8f, 0.0f, 0.5f * alpha)));
+          }
+
           if (colored) ImGui::PopStyleColor();
         }
 
@@ -545,6 +557,8 @@ void DevToolsUI::render_memory_hex()
     }
   }
   ImGui::EndChild();
+
+  if (memhex_highlight_frames_ > 0) memhex_highlight_frames_--;
 
   if (!open) show_memory_hex_ = false;
   ImGui::End();

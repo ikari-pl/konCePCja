@@ -46,6 +46,8 @@ private:
     char memhex_goto_addr_[8] = "";
     int memhex_goto_value_ = -1;
     int memhex_bytes_per_row_ = 16;
+    int memhex_highlight_addr_ = -1;  // address to flash-highlight (-1 = none)
+    int memhex_highlight_frames_ = 0; // remaining frames of highlight
 
     char symtable_filter_[64] = "";
 
