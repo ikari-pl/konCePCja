@@ -177,11 +177,24 @@ void koncpc_activate_app() {
 
 extern SDL_Window* mainSDLWindow;
 
+static NSWindow* nswindow_from_viewport(ImGuiViewport* vp) {
+  SDL_WindowID wid = (SDL_WindowID)(intptr_t)vp->PlatformHandle;
+  SDL_Window* sdlWin = SDL_GetWindowFromID(wid);
+  if (!sdlWin) return nil;
+  return (__bridge NSWindow*)SDL_GetPointerProperty(
+      SDL_GetWindowProperties(sdlWin),
+      SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+}
+
 void koncpc_order_viewports_above_main() {
   // On macOS, ImGui's SDL3 backend skips SDL_SetWindowParent() because it
   // breaks multi-monitor support.  Instead we use Cocoa's orderWindow: to
-  // keep ImGui viewport windows (tool panels, popups, dropdowns) above the
-  // main emulator window without making them system-level always-on-top.
+  // keep ImGui viewport windows above the main emulator window without
+  // making them system-level always-on-top.
+  //
+  // Two tiers:
+  //   1. Tool windows (with title bar) → above main emulator window
+  //   2. Popups/menus/dropdowns (NoTaskBarIcon) → above all tool windows
   if (!mainSDLWindow) return;
 
   NSWindow* mainNS = (__bridge NSWindow*)SDL_GetPointerProperty(
@@ -191,15 +204,24 @@ void koncpc_order_viewports_above_main() {
   NSInteger mainNum = [mainNS windowNumber];
 
   ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+
+  // Pass 1: tool windows above main emulator
   for (int i = 1; i < pio.Viewports.Size; i++) {
-    SDL_WindowID wid = (SDL_WindowID)(intptr_t)pio.Viewports[i]->PlatformHandle;
-    SDL_Window* sdlWin = SDL_GetWindowFromID(wid);
-    if (!sdlWin) continue;
-    NSWindow* ns = (__bridge NSWindow*)SDL_GetPointerProperty(
-        SDL_GetWindowProperties(sdlWin),
-        SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    ImGuiViewport* vp = pio.Viewports[i];
+    if (vp->Flags & ImGuiViewportFlags_NoTaskBarIcon) continue;  // popup
+    NSWindow* ns = nswindow_from_viewport(vp);
     if (ns && [ns windowNumber] != mainNum) {
       [ns orderWindow:NSWindowAbove relativeTo:mainNum];
+    }
+  }
+
+  // Pass 2: popups/menus above everything (orderFront without stealing focus)
+  for (int i = 1; i < pio.Viewports.Size; i++) {
+    ImGuiViewport* vp = pio.Viewports[i];
+    if (!(vp->Flags & ImGuiViewportFlags_NoTaskBarIcon)) continue;  // tool
+    NSWindow* ns = nswindow_from_viewport(vp);
+    if (ns) {
+      [ns orderFront:nil];
     }
   }
 }
