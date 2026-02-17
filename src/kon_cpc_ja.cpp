@@ -3402,7 +3402,9 @@ int koncpc_main (int argc, char **argv)
             case SDL_EVENT_MOUSE_MOTION:
             {
               {
-                bool over_topbar = event.motion.y < topbar_height_px;
+                SDL_WindowID main_wid = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
+                bool on_main = (event.motion.windowID == main_wid);
+                bool over_topbar = on_main && event.motion.y < topbar_height_px;
                 static bool topbar_cursor_visible = false;
                 if (over_topbar && !topbar_cursor_visible) {
                   set_cursor_visibility(true);
@@ -3419,7 +3421,8 @@ int koncpc_main (int argc, char **argv)
 
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             {
-              if (event.button.y < topbar_height_px) {
+              SDL_WindowID main_wid = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
+              if (event.button.windowID == main_wid && event.button.y < topbar_height_px) {
                 if (!CPC.scr_gui_is_currently_on) showGui();
                 break;
               }

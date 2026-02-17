@@ -359,6 +359,16 @@ void direct_flip(video_plugin* t)
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
+    // Ensure all ImGui viewport windows (including popups/dropdowns)
+    // stay above the main emulator window.
+    {
+      ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+      for (int i = 1; i < pio.Viewports.Size; i++) {
+        SDL_Window* w = SDL_GetWindowFromID(
+            (SDL_WindowID)(intptr_t)pio.Viewports[i]->PlatformHandle);
+        if (w) SDL_SetWindowAlwaysOnTop(w, true);
+      }
+    }
     ImGui::RenderPlatformWindowsDefault();
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
@@ -1008,6 +1018,16 @@ void swscale_blit(video_plugin* t)
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
+    // Ensure all ImGui viewport windows (including popups/dropdowns)
+    // stay above the main emulator window.
+    {
+      ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+      for (int i = 1; i < pio.Viewports.Size; i++) {
+        SDL_Window* w = SDL_GetWindowFromID(
+            (SDL_WindowID)(intptr_t)pio.Viewports[i]->PlatformHandle);
+        if (w) SDL_SetWindowAlwaysOnTop(w, true);
+      }
+    }
     ImGui::RenderPlatformWindowsDefault();
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
