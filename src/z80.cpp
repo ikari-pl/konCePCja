@@ -360,7 +360,8 @@ inline byte read_mem(word addr) {
         ctx.mode = 1; // READ
         if (expr_eval(w.condition.get(), ctx) == 0) continue;
       }
-      if (w.pass_count > 0 && ++w.hit_count < w.pass_count) continue;
+      w.hit_count++;
+      if (w.pass_count > 0 && w.hit_count < w.pass_count) continue;
       z80.watchpoint_reached = 1;
       z80.watchpoint_addr = addr;
       z80.watchpoint_value = read_mem_no_watchpoint(addr);
@@ -390,7 +391,8 @@ inline void write_mem(word addr, byte val) {
         ctx.mode = 2; // WRITE
         if (expr_eval(w.condition.get(), ctx) == 0) continue;
       }
-      if (w.pass_count > 0 && ++w.hit_count < w.pass_count) continue;
+      w.hit_count++;
+      if (w.pass_count > 0 && w.hit_count < w.pass_count) continue;
       z80.watchpoint_reached = 1;
       z80.watchpoint_addr = addr;
       z80.watchpoint_value = val;
@@ -1167,7 +1169,8 @@ int z80_execute()
             ctx.address = _PC;
             if (expr_eval(b.condition.get(), ctx) == 0) continue;
           }
-          if (b.pass_count > 0 && ++b.hit_count < b.pass_count) continue;
+          b.hit_count++;
+          if (b.pass_count > 0 && b.hit_count < b.pass_count) continue;
           z80.breakpoint_reached = 1;
           break;
         }
