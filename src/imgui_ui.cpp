@@ -881,11 +881,11 @@ static void imgui_render_topbar()
 static void imgui_render_menu()
 {
   ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-  ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
   ImGui::SetNextWindowSize(ImVec2(260, 0));
 
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+  ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize |
                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
                            ImGuiWindowFlags_NoDocking |
                            ImGuiWindowFlags_AlwaysAutoResize;
