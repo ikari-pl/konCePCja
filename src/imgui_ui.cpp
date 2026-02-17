@@ -890,9 +890,6 @@ static void imgui_render_menu()
                            ImGuiWindowFlags_NoDocking |
                            ImGuiWindowFlags_AlwaysAutoResize;
 
-  ImGuiWindowClass topmost;
-  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
-  ImGui::SetNextWindowClass(&topmost);
 
   bool menu_open = true;
   if (!ImGui::Begin("konCePCja", &menu_open, flags)) {
@@ -1104,9 +1101,6 @@ static void imgui_render_options()
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_Appearing);
 
-  ImGuiWindowClass topmost;
-  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
-  ImGui::SetNextWindowClass(&topmost);
 
   bool open = true;
   if (!ImGui::Begin("Options", &open, ImGuiWindowFlags_NoCollapse)) {
@@ -1411,10 +1405,6 @@ static void imgui_render_devtools()
     devtools_first_open = false;
   }
 
-  // DevTools toolbar stays on top of main emulator window
-  ImGuiWindowClass topmost;
-  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
-  ImGui::SetNextWindowClass(&topmost);
   ImGui::SetNextWindowSize(ImVec2(560, 80), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
 
@@ -1499,9 +1489,6 @@ static void imgui_render_memory_tool()
 {
   ImGui::SetNextWindowSize(ImVec2(400, 340), ImGuiCond_FirstUseEver);
 
-  ImGuiWindowClass topmost;
-  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
-  ImGui::SetNextWindowClass(&topmost);
 
   bool open = true;
   if (!ImGui::Begin("Memory Tool", &open, ImGuiWindowFlags_NoCollapse)) {
@@ -1624,9 +1611,6 @@ static void imgui_render_vkeyboard()
   bool open = true;
   ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
 
-  ImGuiWindowClass topmost;
-  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
-  ImGui::SetNextWindowClass(&topmost);
 
   if (!ImGui::Begin("CPC 6128 Keyboard", &open, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();

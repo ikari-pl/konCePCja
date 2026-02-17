@@ -1,6 +1,8 @@
 #import <Cocoa/Cocoa.h>
 #include "menu_actions.h"
 #include "keyboard.h"
+#include "imgui.h"
+#include "SDL3/SDL.h"
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
@@ -171,4 +173,33 @@ void koncpc_activate_app() {
       [NSApp activateIgnoringOtherApps:YES];
     }
   });
+}
+
+extern SDL_Window* mainSDLWindow;
+
+void koncpc_order_viewports_above_main() {
+  // On macOS, ImGui's SDL3 backend skips SDL_SetWindowParent() because it
+  // breaks multi-monitor support.  Instead we use Cocoa's orderWindow: to
+  // keep ImGui viewport windows (tool panels, popups, dropdowns) above the
+  // main emulator window without making them system-level always-on-top.
+  if (!mainSDLWindow) return;
+
+  NSWindow* mainNS = (__bridge NSWindow*)SDL_GetPointerProperty(
+      SDL_GetWindowProperties(mainSDLWindow),
+      SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+  if (!mainNS) return;
+  NSInteger mainNum = [mainNS windowNumber];
+
+  ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+  for (int i = 1; i < pio.Viewports.Size; i++) {
+    SDL_WindowID wid = (SDL_WindowID)(intptr_t)pio.Viewports[i]->PlatformHandle;
+    SDL_Window* sdlWin = SDL_GetWindowFromID(wid);
+    if (!sdlWin) continue;
+    NSWindow* ns = (__bridge NSWindow*)SDL_GetPointerProperty(
+        SDL_GetWindowProperties(sdlWin),
+        SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (ns && [ns windowNumber] != mainNum) {
+      [ns orderWindow:NSWindowAbove relativeTo:mainNum];
+    }
+  }
 }

@@ -47,6 +47,7 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_ui.h"
+#include "macos_menu.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
@@ -359,16 +360,7 @@ void direct_flip(video_plugin* t)
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
-    // Ensure all ImGui viewport windows (including popups/dropdowns)
-    // stay above the main emulator window.
-    {
-      ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
-      for (int i = 1; i < pio.Viewports.Size; i++) {
-        SDL_Window* w = SDL_GetWindowFromID(
-            (SDL_WindowID)(intptr_t)pio.Viewports[i]->PlatformHandle);
-        if (w) SDL_SetWindowAlwaysOnTop(w, true);
-      }
-    }
+    koncpc_order_viewports_above_main();
     ImGui::RenderPlatformWindowsDefault();
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
@@ -1018,16 +1010,7 @@ void swscale_blit(video_plugin* t)
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
-    // Ensure all ImGui viewport windows (including popups/dropdowns)
-    // stay above the main emulator window.
-    {
-      ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
-      for (int i = 1; i < pio.Viewports.Size; i++) {
-        SDL_Window* w = SDL_GetWindowFromID(
-            (SDL_WindowID)(intptr_t)pio.Viewports[i]->PlatformHandle);
-        if (w) SDL_SetWindowAlwaysOnTop(w, true);
-      }
-    }
+    koncpc_order_viewports_above_main();
     ImGui::RenderPlatformWindowsDefault();
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }

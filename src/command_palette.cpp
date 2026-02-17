@@ -108,10 +108,6 @@ void CommandPalette::render() {
       ImVec2(0, 0), display_size,
       ImGui::ColorConvertFloat4ToU32(ImVec4(0.0f, 0.0f, 0.0f, 0.5f)));
 
-  ImGuiWindowClass topmost;
-  topmost.ViewportFlagsOverrideSet = ImGuiViewportFlags_TopMost;
-  ImGui::SetNextWindowClass(&topmost);
-
   if (!ImGui::Begin("##CommandPalette", &open_, flags)) {
     ImGui::End();
     return;
