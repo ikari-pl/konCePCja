@@ -1419,24 +1419,54 @@ static void imgui_render_devtools()
 
   // Toolbar
   if (ImGui::BeginMenuBar()) {
-    if (ImGui::BeginMenu("Debug")) {
-      ImGui::MenuItem("Registers",         nullptr, g_devtools_ui.window_ptr("registers"));
-      ImGui::MenuItem("Disassembly",       nullptr, g_devtools_ui.window_ptr("disassembly"));
-      ImGui::MenuItem("Memory Hex",        nullptr, g_devtools_ui.window_ptr("memory_hex"));
-      ImGui::MenuItem("Stack",             nullptr, g_devtools_ui.window_ptr("stack"));
-      ImGui::MenuItem("Breakpoints/WP",    nullptr, g_devtools_ui.window_ptr("breakpoints"));
-      ImGui::MenuItem("Symbols",           nullptr, g_devtools_ui.window_ptr("symbols"));
-      ImGui::MenuItem("Data Areas",        nullptr, g_devtools_ui.window_ptr("data_areas"));
+    if (ImGui::BeginMenu("CPU")) {
+      ImGui::MenuItem("Registers",      nullptr, g_devtools_ui.window_ptr("registers"));
+      ImGui::MenuItem("Disassembly",    nullptr, g_devtools_ui.window_ptr("disassembly"));
+      ImGui::MenuItem("Stack",          nullptr, g_devtools_ui.window_ptr("stack"));
+      ImGui::MenuItem("Breakpoints/WP", nullptr, g_devtools_ui.window_ptr("breakpoints"));
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Memory")) {
+      ImGui::MenuItem("Memory Hex",     nullptr, g_devtools_ui.window_ptr("memory_hex"));
+      ImGui::MenuItem("Data Areas",     nullptr, g_devtools_ui.window_ptr("data_areas"));
+      ImGui::MenuItem("Symbols",        nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Hardware")) {
+      ImGui::MenuItem("Video State",    nullptr, g_devtools_ui.window_ptr("video_state"));
+      ImGui::MenuItem("Audio State",    nullptr, g_devtools_ui.window_ptr("audio_state"));
+      ImGui::MenuItem("ASIC Registers", nullptr, g_devtools_ui.window_ptr("asic"));
+      ImGui::MenuItem("Silicon Disc",   nullptr, g_devtools_ui.window_ptr("silicon_disc"));
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Media")) {
+      ImGui::MenuItem("Disc Tools",     nullptr, g_devtools_ui.window_ptr("disc_tools"));
+      ImGui::MenuItem("Graphics Finder",nullptr, g_devtools_ui.window_ptr("gfx_finder"));
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Export")) {
       ImGui::MenuItem("Disasm Export",     nullptr, g_devtools_ui.window_ptr("disasm_export"));
-      ImGui::Separator();
-      ImGui::MenuItem("Video State",       nullptr, g_devtools_ui.window_ptr("video_state"));
-      ImGui::MenuItem("Audio State",       nullptr, g_devtools_ui.window_ptr("audio_state"));
-      ImGui::MenuItem("Silicon Disc",      nullptr, g_devtools_ui.window_ptr("silicon_disc"));
-      ImGui::MenuItem("ASIC Registers",    nullptr, g_devtools_ui.window_ptr("asic"));
-      ImGui::MenuItem("Disc Tools",        nullptr, g_devtools_ui.window_ptr("disc_tools"));
-      ImGui::Separator();
       ImGui::MenuItem("Session Recording", nullptr, g_devtools_ui.window_ptr("session_recording"));
-      ImGui::MenuItem("Graphics Finder",   nullptr, g_devtools_ui.window_ptr("gfx_finder"));
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Layout")) {
+      if (ImGui::MenuItem("Debug")) {
+        g_devtools_ui.toggle_window("registers");
+        g_devtools_ui.toggle_window("disassembly");
+        g_devtools_ui.toggle_window("stack");
+        g_devtools_ui.toggle_window("breakpoints");
+      }
+      if (ImGui::MenuItem("Memory")) {
+        g_devtools_ui.toggle_window("memory_hex");
+        g_devtools_ui.toggle_window("symbols");
+        g_devtools_ui.toggle_window("data_areas");
+      }
+      if (ImGui::MenuItem("Hardware")) {
+        g_devtools_ui.toggle_window("video_state");
+        g_devtools_ui.toggle_window("audio_state");
+        g_devtools_ui.toggle_window("asic");
+        g_devtools_ui.toggle_window("silicon_disc");
+      }
       ImGui::EndMenu();
     }
     ImGui::Separator();

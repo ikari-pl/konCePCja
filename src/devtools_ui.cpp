@@ -73,7 +73,11 @@ bool* DevToolsUI::window_ptr(const std::string& name)
 void DevToolsUI::toggle_window(const std::string& name)
 {
   bool* p = window_ptr(name);
-  if (p) *p = !*p;
+  if (!p) return;
+  *p = !*p;
+  // Pre-fill disasm export address range from current disassembly view
+  if (name == "disasm_export" && *p)
+    dex_prefill_pending_ = true;
 }
 
 bool DevToolsUI::is_window_open(const std::string& name) const
@@ -146,6 +150,12 @@ void DevToolsUI::navigate_memory(word addr)
 
 void DevToolsUI::render()
 {
+  // Detect disasm_export opening via MenuItem (bypasses toggle_window)
+  static bool prev_disasm_export = false;
+  if (show_disasm_export_ && !prev_disasm_export)
+    dex_prefill_pending_ = true;
+  prev_disasm_export = show_disasm_export_;
+
   if (show_registers_)         render_registers();
   if (show_disassembly_)       render_disassembly();
   if (show_memory_hex_)        render_memory_hex();
@@ -695,6 +705,7 @@ void DevToolsUI::render_breakpoints()
           snprintf(bp_label, sizeof(bp_label), "%04X##bp_nav%d", bp.address, static_cast<int>(i));
         if (ImGui::Selectable(bp_label, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(bp.address, NavTarget::DISASM);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Disassembly");
         ImGui::PopStyleColor();
       }
       ImGui::TableSetColumnIndex(2);
@@ -728,6 +739,7 @@ void DevToolsUI::render_breakpoints()
           snprintf(wp_label, sizeof(wp_label), "%04X##wp_nav%d", static_cast<word>(wp.address), static_cast<int>(i));
         if (ImGui::Selectable(wp_label, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(static_cast<word>(wp.address), NavTarget::MEMORY);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Memory Hex");
         ImGui::PopStyleColor();
       }
       ImGui::TableSetColumnIndex(2);
@@ -1352,6 +1364,7 @@ void DevToolsUI::render_data_areas()
         snprintf(da_label_id, sizeof(da_label_id), "%04X##da_nav%04X", da.start, da.start);
         if (ImGui::Selectable(da_label_id, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(da.start, NavTarget::DISASM);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Disassembly");
         ImGui::PopStyleColor();
       }
       ImGui::TableSetColumnIndex(1);
@@ -1382,6 +1395,16 @@ void DevToolsUI::render_data_areas()
 
 void DevToolsUI::render_disasm_export()
 {
+  // Pre-fill address range from current disassembly view on first open
+  if (dex_prefill_pending_) {
+    word start = disasm_follow_pc_ ? z80.PC.w.l
+               : (disasm_goto_value_ >= 0 ? static_cast<word>(disasm_goto_value_) : z80.PC.w.l);
+    word end = start + 0xFF;
+    snprintf(dex_start_, sizeof(dex_start_), "%04X", start);
+    snprintf(dex_end_, sizeof(dex_end_), "%04X", end);
+    dex_prefill_pending_ = false;
+  }
+
   ImGui::SetNextWindowSize(ImVec2(420, 220), ImGuiCond_FirstUseEver);
 
   bool open = true;

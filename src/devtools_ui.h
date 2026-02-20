@@ -113,6 +113,7 @@ private:
     char dex_end_[8] = "FFFF";
     char dex_path_[256] = "";
     bool dex_symbols_ = true;
+    bool dex_prefill_pending_ = false;
     std::string dex_status_;
 
     void render_registers();
