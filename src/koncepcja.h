@@ -413,6 +413,23 @@ typedef struct {
    void (*Synthesizer)();
 } t_PSG;
 
+// Audio oscilloscope capture — per-channel levels sampled by the PSG mixer
+struct PsgScopeCapture {
+   static constexpr int SIZE = 512;
+   struct Sample {
+      int16_t chan_a, chan_b, chan_c;
+      int8_t envelope;  // 0-31
+   };
+   Sample buf[SIZE] = {};
+   int head = 0;
+
+   void push(int a, int b, int c, int env) {
+      buf[head] = { (int16_t)a, (int16_t)b, (int16_t)c, (int8_t)env };
+      head = (head + 1) % SIZE;
+   }
+};
+extern PsgScopeCapture g_psg_scope;
+
 typedef struct {
    int scrln;
    int scanline;

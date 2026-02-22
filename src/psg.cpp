@@ -92,6 +92,9 @@ byte Index_AL, Index_AR, Index_BL, Index_BR, Index_CL, Index_CR;
 int PreAmp, PreAmpMax;
 int Left_Chan, Right_Chan;
 
+// Audio oscilloscope capture buffer — written by mixer, read by UI
+PsgScopeCapture g_psg_scope;
+
 
 
 inline void SetMixerRegister(byte Value)
@@ -361,6 +364,7 @@ inline void Synthesizer_Logic_Q()
 inline void Synthesizer_Mixer_Q()
 {
    int LevL, LevR, k;
+   int chanA = 0, chanB = 0, chanC = 0;
 
    LevL = bTapeLevel ? LevelTape : 0; // start with the tape signal
    if (CPC.snd_pp_device) {
@@ -384,11 +388,13 @@ inline void Synthesizer_Mixer_Q()
    }
    if (k) {
       if (Envelope_EnA) {
-         LevL += Level_AL[PSG.RegisterAY.AmplitudeA * 2 + 1];
+         chanA = Level_AL[PSG.RegisterAY.AmplitudeA * 2 + 1];
+         LevL += chanA;
          LevR += Level_AR[PSG.RegisterAY.AmplitudeA * 2 + 1];
       }
       else {
-         LevL += Level_AL[PSG.AmplitudeEnv];
+         chanA = Level_AL[PSG.AmplitudeEnv];
+         LevL += chanA;
          LevR += Level_AR[PSG.AmplitudeEnv];
       }
    }
@@ -409,11 +415,13 @@ inline void Synthesizer_Mixer_Q()
    }
    if (k) {
       if (Envelope_EnB) {
-         LevL += Level_BL[PSG.RegisterAY.AmplitudeB * 2 + 1];
+         chanB = Level_BL[PSG.RegisterAY.AmplitudeB * 2 + 1];
+         LevL += chanB;
          LevR += Level_BR[PSG.RegisterAY.AmplitudeB * 2 + 1];
       }
       else {
-         LevL += Level_BL[PSG.AmplitudeEnv];
+         chanB = Level_BL[PSG.AmplitudeEnv];
+         LevL += chanB;
          LevR += Level_BR[PSG.AmplitudeEnv];
       }
    }
@@ -434,14 +442,18 @@ inline void Synthesizer_Mixer_Q()
    }
    if (k) {
       if (Envelope_EnC) {
-         LevL += Level_CL[PSG.RegisterAY.AmplitudeC * 2 + 1];
+         chanC = Level_CL[PSG.RegisterAY.AmplitudeC * 2 + 1];
+         LevL += chanC;
          LevR += Level_CR[PSG.RegisterAY.AmplitudeC * 2 + 1];
       }
       else {
-         LevL += Level_CL[PSG.AmplitudeEnv];
+         chanC = Level_CL[PSG.AmplitudeEnv];
+         LevL += chanC;
          LevR += Level_CR[PSG.AmplitudeEnv];
       }
    }
+
+   g_psg_scope.push(chanA, chanB, chanC, PSG.AmplitudeEnv);
 
    Left_Chan += LevL;
    Right_Chan += LevR;
@@ -502,6 +514,7 @@ void Synthesizer_Stereo8()
 inline void Synthesizer_Mixer_Q_Mono()
 {
    int Lev, k;
+   int chanA = 0, chanB = 0, chanC = 0;
 
    Lev = bTapeLevel ? LevelTape : 0; // start with the tape signal
    if (CPC.snd_pp_device) {
@@ -524,11 +537,12 @@ inline void Synthesizer_Mixer_Q_Mono()
    }
    if (k) {
       if (Envelope_EnA) {
-         Lev += Level_AL[PSG.RegisterAY.AmplitudeA * 2 + 1];
+         chanA = Level_AL[PSG.RegisterAY.AmplitudeA * 2 + 1];
       }
       else {
-         Lev += Level_AL[PSG.AmplitudeEnv];
+         chanA = Level_AL[PSG.AmplitudeEnv];
       }
+      Lev += chanA;
    }
 
    if (Ton_EnB) {
@@ -547,11 +561,12 @@ inline void Synthesizer_Mixer_Q_Mono()
    }
    if (k) {
       if (Envelope_EnB) {
-         Lev += Level_BL[PSG.RegisterAY.AmplitudeB * 2 + 1];
+         chanB = Level_BL[PSG.RegisterAY.AmplitudeB * 2 + 1];
       }
       else {
-         Lev += Level_BL[PSG.AmplitudeEnv];
+         chanB = Level_BL[PSG.AmplitudeEnv];
       }
+      Lev += chanB;
    }
 
    if (Ton_EnC) {
@@ -570,12 +585,15 @@ inline void Synthesizer_Mixer_Q_Mono()
    }
    if (k) {
       if (Envelope_EnC) {
-         Lev += Level_CL[PSG.RegisterAY.AmplitudeC * 2 + 1];
+         chanC = Level_CL[PSG.RegisterAY.AmplitudeC * 2 + 1];
       }
       else {
-         Lev += Level_CL[PSG.AmplitudeEnv];
+         chanC = Level_CL[PSG.AmplitudeEnv];
       }
+      Lev += chanC;
    }
+
+   g_psg_scope.push(chanA, chanB, chanC, PSG.AmplitudeEnv);
 
    Left_Chan += Lev;
 }

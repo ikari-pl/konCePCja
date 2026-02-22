@@ -1884,9 +1884,75 @@ void DevToolsUI::render_video_state()
 // Debug Window 15: Audio State
 // -----------------------------------------------
 
+// Draw a single oscilloscope channel strip
+static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCapture& scope,
+                             int chan_idx, float width, float height)
+{
+  ImGui::Text("%s", label);
+  ImGui::SameLine(20.0f);
+
+  ImVec2 p0 = ImGui::GetCursorScreenPos();
+  ImVec2 p1(p0.x + width, p0.y + height);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(p0, p1, IM_COL32(0x10, 0x10, 0x10, 0xFF));
+  dl->AddRect(p0, p1, IM_COL32(0x30, 0x30, 0x30, 0xFF));
+
+  // Find the peak value across all samples for normalization
+  int peak = 1;
+  for (int i = 0; i < PsgScopeCapture::SIZE; i++) {
+    int v;
+    switch (chan_idx) {
+      case 0: v = scope.buf[i].chan_a; break;
+      case 1: v = scope.buf[i].chan_b; break;
+      default: v = scope.buf[i].chan_c; break;
+    }
+    if (v < 0) v = -v;
+    if (v > peak) peak = v;
+  }
+
+  constexpr int N = PsgScopeCapture::SIZE;
+  float stepX = width / (float)(N - 1);
+  float midY = p0.y + height;  // baseline at bottom
+  float hRange = height - 4.0f;  // leave 2px margin top/bottom
+
+  // Build step-waveform polyline (square wave style)
+  ImVec2 points[N * 2 + 2];
+  int nPoints = 0;
+
+  auto sample = [&](int i) -> float {
+    int idx = (scope.head + i) % N;
+    int v;
+    switch (chan_idx) {
+      case 0: v = scope.buf[idx].chan_a; break;
+      case 1: v = scope.buf[idx].chan_b; break;
+      default: v = scope.buf[idx].chan_c; break;
+    }
+    return (float)v / (float)peak;
+  };
+
+  float prevY = midY - sample(0) * hRange;
+  points[nPoints++] = ImVec2(p0.x, prevY);
+
+  for (int i = 1; i < N; i++) {
+    float curX = p0.x + i * stepX;
+    float curY = midY - sample(i) * hRange;
+    if (curY != prevY) {
+      points[nPoints++] = ImVec2(curX, prevY);
+      points[nPoints++] = ImVec2(curX, curY);
+      prevY = curY;
+    }
+  }
+  points[nPoints++] = ImVec2(p1.x, prevY);
+
+  dl->AddPolyline(points, nPoints, color, 0, 1.0f);
+
+  // Reserve space in ImGui layout
+  ImGui::Dummy(ImVec2(width, height));
+}
+
 void DevToolsUI::render_audio_state()
 {
-  ImGui::SetNextWindowSize(ImVec2(380, 250), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(420, 520), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Audio State", &open)) {
@@ -1925,6 +1991,49 @@ void DevToolsUI::render_audio_state()
   ImGui::Spacing();
   ImGui::Text("Noise Freq: %d", PSG.RegisterAY.Noise & 0x1F);
   ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
+
+  // ── Waveforms (per-channel oscilloscope) ──
+  ImGui::Spacing();
+  if (ImGui::CollapsingHeader("Waveforms", ImGuiTreeNodeFlags_DefaultOpen)) {
+    float waveW = ImGui::GetContentRegionAvail().x - 24.0f;
+    if (waveW < 100.0f) waveW = 100.0f;
+    float stripH = 40.0f;
+
+    draw_scope_strip("A", IM_COL32(0xFF, 0x40, 0x40, 0xFF), g_psg_scope, 0, waveW, stripH);
+    ImGui::Spacing();
+    draw_scope_strip("B", IM_COL32(0x40, 0xFF, 0x40, 0xFF), g_psg_scope, 1, waveW, stripH);
+    ImGui::Spacing();
+    draw_scope_strip("C", IM_COL32(0x40, 0x80, 0xFF, 0xFF), g_psg_scope, 2, waveW, stripH);
+  }
+
+  // ── Envelope visualization ──
+  if (ImGui::CollapsingHeader("Envelope", ImGuiTreeNodeFlags_DefaultOpen)) {
+    float waveW = ImGui::GetContentRegionAvail().x - 4.0f;
+    if (waveW < 100.0f) waveW = 100.0f;
+    float stripH = 40.0f;
+
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImVec2 p1(p0.x + waveW, p0.y + stripH);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(0x10, 0x10, 0x10, 0xFF));
+    dl->AddRect(p0, p1, IM_COL32(0x30, 0x30, 0x30, 0xFF));
+
+    constexpr int N = PsgScopeCapture::SIZE;
+    float stepX = waveW / (float)(N - 1);
+    float botY = p0.y + stripH - 2.0f;
+    float topY = p0.y + 2.0f;
+    float hRange = botY - topY;
+
+    ImVec2 points[N];
+    for (int i = 0; i < N; i++) {
+      int idx = (g_psg_scope.head + i) % N;
+      float val = g_psg_scope.buf[idx].envelope / 31.0f;  // normalize 0..1
+      points[i] = ImVec2(p0.x + i * stepX, botY - val * hRange);
+    }
+    dl->AddPolyline(points, N, IM_COL32(0xFF, 0xD0, 0x40, 0xFF), 0, 1.0f);
+
+    ImGui::Dummy(ImVec2(waveW, stripH));
+  }
 
   if (!open) show_audio_state_ = false;
   ImGui::End();
