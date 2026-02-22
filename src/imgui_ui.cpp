@@ -12,6 +12,7 @@
 #include <iostream>
 
 #include "koncepcja.h"
+#include "crtc.h"
 #include "keyboard.h"
 #include "z80.h"
 #include "z80_disassembly.h"
@@ -32,6 +33,10 @@ extern t_PSG PSG;
 extern t_drive driveA;
 extern t_drive driveB;
 extern byte *pbRAM;
+extern byte *memmap_ROM[256];
+extern byte *membank_read[4];
+extern byte *pbExpansionROM;
+extern byte *pbROMhi;
 extern byte bTapeLevel;
 extern std::vector<byte> pbTapeImage;
 extern byte *pbTapeImageEnd;
@@ -310,10 +315,13 @@ void imgui_render_ui()
 static void close_menu()
 {
   imgui_state.show_menu = false;
-  imgui_state.show_options = false;
-  imgui_state.show_about = false;
-  imgui_state.show_quit_confirm = false;
-  CPC.paused = false;
+  // Don't clear show_options/show_about/show_quit_confirm here —
+  // they may have just been set by the menu action that triggered close_menu().
+  // Each dialog is responsible for clearing its own flag on close.
+  // Only unpause if no dialog is keeping the emulator paused.
+  if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
+    CPC.paused = false;
+  }
 }
 
 // ─────────────────────────────────────────────────
@@ -1089,13 +1097,22 @@ static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
 static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)" };
 static int ram_size_values[] = { 64, 128, 192, 256, 320, 512, 576, 4160 };
 
+static const char* crtc_type_labels[] = {
+  "Type 0 - HD6845S (Hitachi)",
+  "Type 1 - UM6845R (UMC)",
+  "Type 2 - MC6845 (Motorola)",
+  "Type 3 - AMS40489 (Amstrad ASIC)"
+};
+
 // find_ram_index and find_sample_rate_index moved to imgui_ui_testable.h
 
 static void imgui_render_options()
 {
   static bool first_open = true;
+  static unsigned char old_crtc_type = 0;
   if (first_open) {
     imgui_state.old_cpc_settings = CPC;
+    old_crtc_type = CRTC.crtc_type;
     first_open = false;
   }
 
@@ -1124,6 +1141,14 @@ static void imgui_render_options()
         CPC.ram_size = ram_size_values[ram_idx];
       }
 
+      int crtc = static_cast<int>(CRTC.crtc_type);
+      if (ImGui::Combo("CRTC Type", &crtc, crtc_type_labels, IM_ARRAYSIZE(crtc_type_labels))) {
+        CRTC.crtc_type = static_cast<unsigned char>(crtc);
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Auto-set by CPC Model on reset.\nOverride for compatibility testing.");
+      }
+
       bool limit = CPC.limit_speed != 0;
       if (ImGui::Checkbox("Limit Speed", &limit)) {
         CPC.limit_speed = limit ? 1 : 0;
@@ -1146,26 +1171,76 @@ static void imgui_render_options()
     if (ImGui::BeginTabItem("ROMs")) {
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
-      for (int i = 0; i < MAX_ROM_SLOTS; i++) {
-        ImGui::PushID(i);
-        char label[32];
-        snprintf(label, sizeof(label), "Slot %d", i);
-        float col_width = (ImGui::GetContentRegionAvail().x - 8) / 2.0f;
-        if (i % 2 != 0) ImGui::SameLine(col_width + 16);
+      if (ImGui::BeginTable("rom_slots", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthFixed, 16.0f);
+        ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 40.0f);
+        ImGui::TableSetupColumn("ROM", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("##unload", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+        ImGui::TableHeadersRow();
 
-        std::string display = CPC.rom_file[i].empty() ? "(empty)" : CPC.rom_file[i];
-        if (display.length() > 20) display = "..." + display.substr(display.length() - 17);
+        for (int i = 0; i < MAX_ROM_SLOTS; i++) {
+          ImGui::PushID(i);
+          ImGui::TableNextRow();
 
-        char btn_label[48];
-        snprintf(btn_label, sizeof(btn_label), "%s: %s", label, display.c_str());
-        if (ImGui::Button(btn_label, ImVec2(col_width, 0))) {
-          static const SDL_DialogFileFilter filters[] = { { "ROM files", "rom;bin" } };
-          imgui_state.pending_rom_slot = i;
-          SDL_ShowOpenFileDialog(file_dialog_callback,
-            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadROM)),
-            mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
+          bool loaded = (memmap_ROM[i] != nullptr);
+
+          // Status dot
+          ImGui::TableSetColumnIndex(0);
+          ImVec4 dot_color = loaded ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
+          ImGui::TextColored(dot_color, loaded ? "●" : "○");
+
+          // Slot number
+          ImGui::TableSetColumnIndex(1);
+          ImGui::Text("%d", i);
+
+          // ROM filename (clickable to load)
+          ImGui::TableSetColumnIndex(2);
+          std::string display;
+          if (CPC.rom_file[i].empty()) {
+            display = "(empty)";
+          } else if (CPC.rom_file[i] == "DEFAULT") {
+            display = (CPC.model == 0) ? "(default - none)" : "amsdos.rom (default)";
+          } else {
+            // Show just the filename, not the full path
+            size_t sep = CPC.rom_file[i].find_last_of("/\\");
+            display = (sep != std::string::npos) ? CPC.rom_file[i].substr(sep + 1) : CPC.rom_file[i];
+          }
+          if (display.length() > 28) display = "..." + display.substr(display.length() - 25);
+
+          if (ImGui::Selectable(display.c_str(), false, ImGuiSelectableFlags_SpanAllColumns & 0 /* just this col */)) {
+            static const SDL_DialogFileFilter filters[] = { { "ROM files", "rom;bin" } };
+            imgui_state.pending_rom_slot = i;
+            SDL_ShowOpenFileDialog(file_dialog_callback,
+              reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadROM)),
+              mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
+          }
+          if (!CPC.rom_file[i].empty() && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("%s", CPC.rom_file[i].c_str());
+          }
+
+          // Unload button (slots 0-1 are system ROMs, protected)
+          ImGui::TableSetColumnIndex(3);
+          if (i >= 2 && loaded) {
+            if (ImGui::SmallButton("X")) {
+              delete[] memmap_ROM[i];
+              memmap_ROM[i] = nullptr;
+              CPC.rom_file[i] = "";
+              // If this was the active upper ROM, revert to BASIC ROM
+              if (GateArray.upper_ROM == static_cast<unsigned char>(i)) {
+                pbExpansionROM = pbROMhi;
+                if (!(GateArray.ROM_config & 0x08)) {
+                  membank_read[3] = pbExpansionROM;
+                }
+              }
+            }
+            if (ImGui::IsItemHovered()) {
+              ImGui::SetTooltip("Unload ROM from slot %d", i);
+            }
+          }
+
+          ImGui::PopID();
         }
-        ImGui::PopID();
+        ImGui::EndTable();
       }
       ImGui::EndTabItem();
     }
@@ -1275,12 +1350,15 @@ static void imgui_render_options()
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
+    CPC.paused = false;
     first_open = true;
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel", ImVec2(80, 0))) {
     CPC = imgui_state.old_cpc_settings;
+    CRTC.crtc_type = old_crtc_type;
     imgui_state.show_options = false;
+    CPC.paused = false;
     first_open = true;
   }
   ImGui::SameLine();
@@ -1293,13 +1371,16 @@ static void imgui_render_options()
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
+    CPC.paused = false;
     first_open = true;
   }
 
   if (!open) {
     // Window closed via X button — treat as Cancel
     CPC = imgui_state.old_cpc_settings;
+    CRTC.crtc_type = old_crtc_type;
     imgui_state.show_options = false;
+    CPC.paused = false;
     first_open = true;
   }
 
