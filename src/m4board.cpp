@@ -56,7 +56,8 @@ static std::string resolve_path(const std::string& rel_path)
          return "";
       }
       return cs;
-   } catch (...) {
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
       return "";
    }
 }
@@ -113,7 +114,8 @@ static void cmd_cd()
          g_m4board.response[0] = M4_ERROR;
          g_m4board.response_len = 1;
       }
-   } catch (...) {
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
    }
@@ -148,7 +150,8 @@ static void cmd_readdir()
          memcpy(g_m4board.response + pos, name.c_str(), name.size() + 1);
          pos += static_cast<int>(name.size()) + 1;
       }
-   } catch (...) {
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
@@ -257,7 +260,8 @@ static void cmd_fsize()
       g_m4board.response[3] = (fsize >> 16) & 0xFF;
       g_m4board.response[4] = (fsize >> 24) & 0xFF;
       g_m4board.response_len = 5;
-   } catch (...) {
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
    }
@@ -279,7 +283,8 @@ static void cmd_erasefile()
       } else {
          g_m4board.response[0] = M4_ERROR;
       }
-   } catch (...) {
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
       g_m4board.response[0] = M4_ERROR;
    }
    g_m4board.response_len = 1;
@@ -298,7 +303,8 @@ static void cmd_makedir()
    try {
       std::filesystem::create_directories(resolved);
       g_m4board.response[0] = M4_OK;
-   } catch (...) {
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
       g_m4board.response[0] = M4_ERROR;
    }
    g_m4board.response_len = 1;

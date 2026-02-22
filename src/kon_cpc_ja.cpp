@@ -933,7 +933,7 @@ void z80_OUT_handler (reg_pair port, byte val)
             if (!(PPI.control & 1)) { // output lower half?
                LOG_DEBUG("PPI write to portC (keyboard_line): " << static_cast<int>(val));
                CPC.keyboard_line = val;
-               if (g_amx_mouse.enabled) amx_mouse_row_select(val & 0x0f);
+               if (g_amx_mouse.enabled) amx_mouse_row_select(CPC.keyboard_line & 0x0f);
             }
             if (!(PPI.control & 8)) { // output upper half?
                LOG_DEBUG("PPI write to portC (upper half): " << static_cast<int>(val));
@@ -962,7 +962,7 @@ void z80_OUT_handler (reg_pair port, byte val)
                if (!(PPI.control & 1)) { // output lower half?
                   LOG_DEBUG("PPI.portC update (keyboard_line): " << static_cast<int>(PPI.portC));
                   CPC.keyboard_line = PPI.portC;
-                  if (g_amx_mouse.enabled) amx_mouse_row_select(PPI.portC & 0x0f);
+                  if (g_amx_mouse.enabled) amx_mouse_row_select(CPC.keyboard_line & 0x0f);
                }
                if (!(PPI.control & 8)) { // output upper half?
                   LOG_DEBUG("PPI.portC update (upper half): " << static_cast<int>(PPI.portC));

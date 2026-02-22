@@ -39,7 +39,7 @@ static void ide_set_string(uint16_t* buf, int word_start, int word_count, const 
    for (int w = 0; w < word_count; w++) {
       int si = w * 2;
       char c0 = str[si] ? str[si] : ' ';
-      char c1 = str[si + 1] ? str[si + 1] : ' ';
+      char c1 = (str[si] && str[si + 1]) ? str[si + 1] : ' ';
       buf[word_start + w] = (static_cast<uint16_t>(c0) << 8) | c1;
       if (!str[si] || !str[si + 1]) {
          // Pad rest with spaces
