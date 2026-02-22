@@ -356,9 +356,10 @@ void DevToolsUI::render_disassembly()
       }
 
       // Build display text
-      char label[160];
+      static constexpr const char* kBreakpointMarker = "\xe2\x97\x8f"; // Unicode ●
+      char label[256];
       snprintf(label, sizeof(label), "%s %04X  %s",
-               is_bp ? "\xe2\x97\x8f" : " ",
+               is_bp ? kBreakpointMarker : " ",
                entry.addr, entry.text.c_str());
 
       // Color: green for PC, red for breakpoint
@@ -695,14 +696,15 @@ void DevToolsUI::render_breakpoints()
       ImGui::TableSetColumnIndex(0);
       ImGui::Text("BP");
       ImGui::TableSetColumnIndex(1);
+      ImGui::PushID(static_cast<int>(i));
       {
         std::string sym = g_symfile.lookupAddr(bp.address);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
         char bp_label[80];
         if (!sym.empty())
-          snprintf(bp_label, sizeof(bp_label), "%04X %s##bp_nav%d", bp.address, sym.c_str(), static_cast<int>(i));
+          snprintf(bp_label, sizeof(bp_label), "%04X %s", bp.address, sym.c_str());
         else
-          snprintf(bp_label, sizeof(bp_label), "%04X##bp_nav%d", bp.address, static_cast<int>(i));
+          snprintf(bp_label, sizeof(bp_label), "%04X", bp.address);
         if (ImGui::Selectable(bp_label, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(bp.address, NavTarget::DISASM);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Disassembly");
@@ -714,7 +716,6 @@ void DevToolsUI::render_breakpoints()
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("%d", bp.hit_count);
       ImGui::TableSetColumnIndex(4);
-      ImGui::PushID(static_cast<int>(i));
       if (ImGui::SmallButton("X")) {
         z80_del_breakpoint(bp.address);
       }
@@ -730,13 +731,14 @@ void DevToolsUI::render_breakpoints()
                             (wp.type == WRITE) ? "WP/W" : "WP/RW";
       ImGui::Text("%s", wp_type);
       ImGui::TableSetColumnIndex(1);
+      ImGui::PushID(1000 + static_cast<int>(i));
       {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
-        char wp_label[80];
+        char wp_label[32];
         if (wp.length > 1)
-          snprintf(wp_label, sizeof(wp_label), "%04X+%d##wp_nav%d", static_cast<word>(wp.address), wp.length, static_cast<int>(i));
+          snprintf(wp_label, sizeof(wp_label), "%04X+%d", static_cast<word>(wp.address), wp.length);
         else
-          snprintf(wp_label, sizeof(wp_label), "%04X##wp_nav%d", static_cast<word>(wp.address), static_cast<int>(i));
+          snprintf(wp_label, sizeof(wp_label), "%04X", static_cast<word>(wp.address));
         if (ImGui::Selectable(wp_label, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(static_cast<word>(wp.address), NavTarget::MEMORY);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Memory Hex");
@@ -748,7 +750,6 @@ void DevToolsUI::render_breakpoints()
       ImGui::TableSetColumnIndex(3);
       ImGui::Text("%d", wp.hit_count);
       ImGui::TableSetColumnIndex(4);
-      ImGui::PushID(1000 + static_cast<int>(i));
       if (ImGui::SmallButton("X")) {
         z80_del_watchpoint(static_cast<int>(i));
       }
@@ -1082,9 +1083,9 @@ void DevToolsUI::render_asic()
       float g = static_cast<float>(colours_rgb[hw_color][1]);
       float b = static_cast<float>(colours_rgb[hw_color][2]);
       ImVec4 col(r, g, b, 1.0f);
-      char label[16];
-      snprintf(label, sizeof(label), "##ink%d", i);
-      ImGui::ColorButton(label, col, ImGuiColorEditFlags_NoTooltip, ImVec2(sz, sz));
+      ImGui::PushID(i);
+      ImGui::ColorButton("##ink", col, ImGuiColorEditFlags_NoTooltip, ImVec2(sz, sz));
+      ImGui::PopID();
       if (i < 16) ImGui::SameLine();
     }
     ImGui::Text("Ink 0-15 + Border");
@@ -1356,12 +1357,13 @@ void DevToolsUI::render_data_areas()
     ImGui::TableHeadersRow();
 
     for (const auto& da : areas) {
+      ImGui::PushID(static_cast<int>(da.start));
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
-        char da_label_id[32];
-        snprintf(da_label_id, sizeof(da_label_id), "%04X##da_nav%04X", da.start, da.start);
+        char da_label_id[8];
+        snprintf(da_label_id, sizeof(da_label_id), "%04X", da.start);
         if (ImGui::Selectable(da_label_id, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(da.start, NavTarget::DISASM);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Disassembly");
@@ -1376,7 +1378,6 @@ void DevToolsUI::render_data_areas()
       ImGui::TableSetColumnIndex(3);
       if (!da.label.empty()) ImGui::TextUnformatted(da.label.c_str());
       ImGui::TableSetColumnIndex(4);
-      ImGui::PushID(static_cast<int>(da.start));
       if (ImGui::SmallButton("X")) {
         g_data_areas.clear(da.start);
       }
@@ -1688,11 +1689,11 @@ void DevToolsUI::render_gfx_finder()
     float g = ((rgba >> 8) & 0xFF) / 255.0f;
     float b = ((rgba >> 16) & 0xFF) / 255.0f;
     ImVec4 col(r, g, b, 1.0f);
-    char label[16];
-    snprintf(label, sizeof(label), "##pal%d", i);
-    if (ImGui::ColorButton(label, col, ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16))) {
+    ImGui::PushID(i);
+    if (ImGui::ColorButton("##pal", col, ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16))) {
       gfx_paint_color_ = i;
     }
+    ImGui::PopID();
     if (i < 15) ImGui::SameLine();
   }
 

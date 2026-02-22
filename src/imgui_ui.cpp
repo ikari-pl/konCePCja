@@ -1145,6 +1145,7 @@ static void imgui_render_options()
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
       for (int i = 0; i < MAX_ROM_SLOTS; i++) {
+        ImGui::PushID(i);
         char label[32];
         snprintf(label, sizeof(label), "Slot %d", i);
         float col_width = (ImGui::GetContentRegionAvail().x - 8) / 2.0f;
@@ -1153,8 +1154,8 @@ static void imgui_render_options()
         std::string display = CPC.rom_file[i].empty() ? "(empty)" : CPC.rom_file[i];
         if (display.length() > 20) display = "..." + display.substr(display.length() - 17);
 
-        char btn_label[64];
-        snprintf(btn_label, sizeof(btn_label), "%s: %s##rom%d", label, display.c_str(), i);
+        char btn_label[48];
+        snprintf(btn_label, sizeof(btn_label), "%s: %s", label, display.c_str());
         if (ImGui::Button(btn_label, ImVec2(col_width, 0))) {
           static const SDL_DialogFileFilter filters[] = { { "ROM files", "rom;bin" } };
           imgui_state.pending_rom_slot = i;
@@ -1162,6 +1163,7 @@ static void imgui_render_options()
             reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadROM)),
             mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
         }
+        ImGui::PopID();
       }
       ImGui::EndTabItem();
     }
@@ -1368,26 +1370,25 @@ static bool ui_poke_input(char* addr_buf, size_t addr_size,
                           char* val_buf, size_t val_size,
                           const char* id_suffix)
 {
-  char addr_id[32], val_id[32], btn_id[32];
-  snprintf(addr_id, sizeof(addr_id), "Addr##%s", id_suffix);
-  snprintf(val_id, sizeof(val_id), "Val##%s", id_suffix);
-  snprintf(btn_id, sizeof(btn_id), "Poke##%s", id_suffix);
+  ImGui::PushID(id_suffix);
 
   ImGui::SetNextItemWidth(50);
-  ImGui::InputText(addr_id, addr_buf, addr_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::InputText("Addr", addr_buf, addr_size, ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(40);
-  ImGui::InputText(val_id, val_buf, val_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::InputText("Val", val_buf, val_size, ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
 
-  if (ImGui::Button(btn_id)) {
+  bool poked = false;
+  if (ImGui::Button("Poke")) {
     unsigned long addr, val;
     if (parse_hex(addr_buf, &addr, 0xFFFF) && parse_hex(val_buf, &val, 0xFF)) {
       pbRAM[addr] = static_cast<byte>(val);
-      return true;
+      poked = true;
     }
   }
-  return false;
+  ImGui::PopID();
+  return poked;
 }
 
 
