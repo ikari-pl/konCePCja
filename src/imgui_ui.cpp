@@ -1117,9 +1117,11 @@ static void imgui_render_options()
 {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
+  static bool old_m4_enabled = false;
   if (first_open) {
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
+    old_m4_enabled = g_m4board.enabled;
     first_open = false;
   }
 
@@ -1396,7 +1398,8 @@ static void imgui_render_options()
     // Apply changes that need re-init
     if (CPC.model != imgui_state.old_cpc_settings.model ||
         CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-        CPC.keyboard != imgui_state.old_cpc_settings.keyboard) {
+        CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
+        g_m4board.enabled != old_m4_enabled) {
       emulator_init();
     }
     update_cpc_speed();
@@ -1409,6 +1412,7 @@ static void imgui_render_options()
   if (ImGui::Button("Cancel", ImVec2(80, 0))) {
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
+    g_m4board.enabled = old_m4_enabled;
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;
@@ -1417,7 +1421,8 @@ static void imgui_render_options()
   if (ImGui::Button("OK", ImVec2(80, 0))) {
     if (CPC.model != imgui_state.old_cpc_settings.model ||
         CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-        CPC.keyboard != imgui_state.old_cpc_settings.keyboard) {
+        CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
+        g_m4board.enabled != old_m4_enabled) {
       emulator_init();
     }
     update_cpc_speed();
@@ -1431,6 +1436,7 @@ static void imgui_render_options()
     // Window closed via X button — treat as Cancel
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
+    g_m4board.enabled = old_m4_enabled;
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;

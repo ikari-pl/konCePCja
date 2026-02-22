@@ -34,8 +34,9 @@ struct M4Board {
    // File handles (up to 4 concurrent)
    FILE* open_files[4] = {};
 
-   // ROM slot
+   // ROM slot and auto-load tracking
    int rom_slot = 7;
+   bool rom_auto_loaded = false;   // true if we loaded the ROM (vs. user)
 };
 
 extern M4Board g_m4board;
@@ -47,5 +48,12 @@ void m4board_execute();
 
 // Write response into upper ROM overlay memory at given base
 void m4board_write_response(byte* rom_base);
+
+// Auto-load M4 ROM into the configured slot (called by emulator_init)
+// rom_map: the memmap_ROM[] array, rom_path: CPC.rom_path search directory
+void m4board_load_rom(byte** rom_map, const std::string& rom_path);
+
+// Unload M4 ROM if we auto-loaded it (called by emulator_shutdown)
+void m4board_unload_rom(byte** rom_map);
 
 #endif

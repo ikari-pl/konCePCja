@@ -607,3 +607,75 @@ void m4board_write_response(byte* rom_base)
    int len = std::min(g_m4board.response_len, M4Board::RESPONSE_SIZE);
    memcpy(rom_base + offset, g_m4board.response, len);
 }
+
+void m4board_load_rom(byte** rom_map, const std::string& rom_path)
+{
+   if (!g_m4board.enabled) return;
+
+   int slot = g_m4board.rom_slot;
+   if (slot < 0 || slot >= 256) return;
+
+   // Don't overwrite a user-loaded ROM in this slot
+   if (rom_map[slot] != nullptr) {
+      LOG_INFO("M4: ROM slot " << slot << " already occupied, using existing ROM");
+      return;
+   }
+
+   // Search for the M4 ROM in standard locations
+   static const char* rom_names[] = { "m4board.rom", "M4ROM.BIN", nullptr };
+   std::string found_path;
+
+   for (int i = 0; rom_names[i]; i++) {
+      // Check rom_path (where other CPC ROMs live)
+      std::string candidate = rom_path + "/" + rom_names[i];
+      if (std::filesystem::exists(candidate)) {
+         found_path = candidate;
+         break;
+      }
+      // Check resources/roms/ (extracted from firmware)
+      candidate = "resources/roms/" + std::string(rom_names[i]);
+      if (std::filesystem::exists(candidate)) {
+         found_path = candidate;
+         break;
+      }
+   }
+
+   if (found_path.empty()) {
+      LOG_ERROR("M4: ROM file not found (searched for m4board.rom / M4ROM.BIN in " << rom_path << ")");
+      return;
+   }
+
+   FILE* fp = fopen(found_path.c_str(), "rb");
+   if (!fp) {
+      LOG_ERROR("M4: cannot open ROM file: " << found_path);
+      return;
+   }
+
+   byte* rom_data = new byte[16384];
+   memset(rom_data, 0xFF, 16384);
+   size_t read = fread(rom_data, 1, 16384, fp);
+   fclose(fp);
+
+   if (read < 128 || !(rom_data[0] <= 0x02)) {
+      LOG_ERROR("M4: invalid ROM file: " << found_path);
+      delete[] rom_data;
+      return;
+   }
+
+   rom_map[slot] = rom_data;
+   g_m4board.rom_auto_loaded = true;
+   LOG_INFO("M4: auto-loaded ROM from " << found_path << " into slot " << slot);
+}
+
+void m4board_unload_rom(byte** rom_map)
+{
+   if (!g_m4board.rom_auto_loaded) return;
+
+   int slot = g_m4board.rom_slot;
+   if (slot >= 0 && slot < 256 && rom_map[slot] != nullptr) {
+      delete[] rom_map[slot];
+      rom_map[slot] = nullptr;
+      LOG_INFO("M4: unloaded ROM from slot " << slot);
+   }
+   g_m4board.rom_auto_loaded = false;
+}

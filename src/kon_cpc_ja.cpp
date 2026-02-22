@@ -1453,6 +1453,9 @@ int emulator_init ()
       }
    }
 
+   // Auto-load M4 Board ROM if enabled and slot is free
+   m4board_load_rom(memmap_ROM, CPC.rom_path);
+
    emulator_reset();
    CPC.paused = false;
 
@@ -1469,6 +1472,7 @@ void emulator_shutdown ()
    delete [] pbMF2ROM;
    pbMF2ROM = nullptr;
    pbMF2ROMbackup = nullptr;
+   m4board_unload_rom(memmap_ROM); // free auto-loaded M4 ROM before general cleanup
    for (iRomNum = 2; iRomNum < MAX_ROM_SLOTS; iRomNum++) // loop for ROMs 2-31
    {
       if (memmap_ROM[iRomNum] != nullptr) // was a ROM assigned to this slot?
