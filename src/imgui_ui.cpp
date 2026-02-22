@@ -13,6 +13,7 @@
 
 #include "koncepcja.h"
 #include "crtc.h"
+#include "rom_identify.h"
 #include "keyboard.h"
 #include "z80.h"
 #include "z80_disassembly.h"
@@ -1171,10 +1172,11 @@ static void imgui_render_options()
     if (ImGui::BeginTabItem("ROMs")) {
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
-      if (ImGui::BeginTable("rom_slots", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+      if (ImGui::BeginTable("rom_slots", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthFixed, 16.0f);
-        ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-        ImGui::TableSetupColumn("ROM", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 34.0f);
+        ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("##unload", ImGuiTableColumnFlags_WidthFixed, 24.0f);
         ImGui::TableHeadersRow();
 
@@ -1205,9 +1207,9 @@ static void imgui_render_options()
             size_t sep = CPC.rom_file[i].find_last_of("/\\");
             display = (sep != std::string::npos) ? CPC.rom_file[i].substr(sep + 1) : CPC.rom_file[i];
           }
-          if (display.length() > 28) display = "..." + display.substr(display.length() - 25);
+          if (display.length() > 24) display = "..." + display.substr(display.length() - 21);
 
-          if (ImGui::Selectable(display.c_str(), false, ImGuiSelectableFlags_SpanAllColumns & 0 /* just this col */)) {
+          if (ImGui::Selectable(display.c_str())) {
             static const SDL_DialogFileFilter filters[] = { { "ROM files", "rom;bin" } };
             imgui_state.pending_rom_slot = i;
             SDL_ShowOpenFileDialog(file_dialog_callback,
@@ -1216,6 +1218,15 @@ static void imgui_render_options()
           }
           if (!CPC.rom_file[i].empty() && ImGui::IsItemHovered()) {
             ImGui::SetTooltip("%s", CPC.rom_file[i].c_str());
+          }
+
+          // Identified ROM name
+          ImGui::TableSetColumnIndex(3);
+          if (loaded) {
+            std::string id = rom_identify(memmap_ROM[i]);
+            if (!id.empty()) {
+              ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "%s", id.c_str());
+            }
           }
 
           // Unload button (slots 0-1 are system ROMs, protected)
