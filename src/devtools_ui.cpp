@@ -1952,7 +1952,7 @@ static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCaptu
 
 void DevToolsUI::render_audio_state()
 {
-  ImGui::SetNextWindowSize(ImVec2(420, 520), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(420, 600), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Audio State", &open)) {
