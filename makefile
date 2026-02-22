@@ -134,6 +134,13 @@ ifneq (,$(findstring g++,$(CXX)))
 LIBS += -lstdc++fs
 endif
 
+# libcurl for M4 Board HTTP support
+HAS_LIBCURL := $(shell pkg-config --exists libcurl 2>/dev/null && echo 1 || (curl-config --libs >/dev/null 2>&1 && echo 1))
+ifeq ($(HAS_LIBCURL),1)
+COMMON_CFLAGS += -DHAS_LIBCURL $(shell pkg-config --cflags libcurl 2>/dev/null || curl-config --cflags 2>/dev/null)
+LIBS += $(shell pkg-config --libs libcurl 2>/dev/null || curl-config --libs 2>/dev/null)
+endif
+
 ifeq ($(UNAME_S),Darwin)
 ifeq ($(ARCH),)
 ARCH=macos
