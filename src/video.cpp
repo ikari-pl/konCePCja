@@ -263,6 +263,10 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
+  // Re-enable mouse auto-capture after ImGui init (backend disables it for
+  // cross-viewport drag-and-drop which we don't use). Without this, resizing
+  // ImGui viewport windows on macOS loses mouse tracking immediately.
+  SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, "1");
   ImGui_ImplOpenGL3_Init("#version 150");
 
   int surface_width, surface_height;
@@ -916,6 +920,10 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
+  // Re-enable mouse auto-capture after ImGui init (backend disables it for
+  // cross-viewport drag-and-drop which we don't use). Without this, resizing
+  // ImGui viewport windows on macOS loses mouse tracking immediately.
+  SDL_SetHint(SDL_HINT_MOUSE_AUTO_CAPTURE, "1");
   ImGui_ImplOpenGL3_Init("#version 150");
 
   int surface_width, surface_height;
