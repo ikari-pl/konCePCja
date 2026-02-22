@@ -601,8 +601,9 @@ void m4board_execute()
 void m4board_write_response(byte* rom_base)
 {
    if (!rom_base || g_m4board.response_len == 0) return;
-   // Write response at offset &0800 within the ROM (maps to &E800 in CPC address space)
-   int offset = 0x0800;
+   // Write response at offset &2800 within the ROM (maps to &E800 in CPC address space)
+   // The M4 ROM link table at &FF02 points to &E800 = ROM base + &2800
+   int offset = 0x2800;
    int len = std::min(g_m4board.response_len, M4Board::RESPONSE_SIZE);
    memcpy(rom_base + offset, g_m4board.response, len);
 }

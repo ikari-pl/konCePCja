@@ -20,3 +20,4 @@ debian/files
 imgui.ini
 coverage.profdata
 coverage.profraw
+resources/roms/
