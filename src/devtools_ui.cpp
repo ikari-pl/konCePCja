@@ -1912,8 +1912,8 @@ static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCaptu
 
   constexpr int N = PsgScopeCapture::SIZE;
   float stepX = width / (float)(N - 1);
-  float midY = p0.y + height;  // baseline at bottom
-  float hRange = height - 4.0f;  // leave 2px margin top/bottom
+  float midY = p0.y + height - 2.0f;  // baseline 2px above bottom border
+  float hRange = height - 4.0f;       // leave 2px margin top/bottom
 
   // Build step-waveform polyline (square wave style)
   ImVec2 points[N * 2 + 2];
