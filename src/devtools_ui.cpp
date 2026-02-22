@@ -329,6 +329,7 @@ void DevToolsUI::render_disassembly()
     word addr;
     std::string text;
     std::string label;
+    bool is_data_area = false;
   };
   std::vector<DisasmEntry> lines;
   lines.reserve(NUM_LINES);
@@ -341,11 +342,27 @@ void DevToolsUI::render_disassembly()
     // Check for symbol at this address
     entry.label = g_symfile.lookupAddr(addr);
 
-    auto line = disassemble_one(addr, dummy_dc, dummy_eps);
-    entry.text = line.instruction_;
-    int len = line.Size();
-    if (len <= 0) len = 1;
-    addr = (addr + len) & 0xFFFF;
+    // Check if this address is in a data area
+    const DataArea* da = g_data_areas.find(addr);
+    if (da) {
+      entry.is_data_area = true;
+      int remaining = static_cast<int>(da->end) - static_cast<int>(addr) + 1;
+      int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
+      int buf_len = std::min(remaining, max_bytes);
+      uint8_t membuf[64];
+      for (int mi = 0; mi < buf_len; mi++)
+        membuf[mi] = z80_read_mem(static_cast<word>(addr + mi));
+      int line_bytes = 0;
+      entry.text = g_data_areas.format_at(addr, membuf, buf_len, &line_bytes);
+      if (line_bytes <= 0) line_bytes = 1;
+      addr = (addr + line_bytes) & 0xFFFF;
+    } else {
+      auto line = disassemble_one(addr, dummy_dc, dummy_eps);
+      entry.text = line.instruction_;
+      int len = line.Size();
+      if (len <= 0) len = 1;
+      addr = (addr + len) & 0xFFFF;
+    }
     lines.push_back(std::move(entry));
   }
 
@@ -376,33 +393,49 @@ void DevToolsUI::render_disassembly()
                is_bp ? kBreakpointMarker : " ",
                entry.addr, entry.text.c_str());
 
-      // Color: green for PC, red for breakpoint
-      if (is_pc) {
+      // Color: green for PC, red for breakpoint, amber for data area
+      int style_colors_pushed = 0;
+      if (entry.is_data_area && !is_pc && !is_bp) {
+        // Subtle amber background for data area lines
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.20f, 0.05f, 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.75f, 0.45f, 1.0f));
+        style_colors_pushed = 2;
+      } else if (is_pc) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
+        style_colors_pushed = 1;
       } else if (is_bp) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        style_colors_pushed = 1;
       }
 
-      if (ImGui::Selectable(label, is_pc)) {
-        // Left click: toggle breakpoint
-        if (is_bp)
-          z80_del_breakpoint(entry.addr);
-        else
-          z80_add_breakpoint(entry.addr);
+      if (ImGui::Selectable(label, is_pc || entry.is_data_area)) {
+        if (!entry.is_data_area) {
+          // Left click: toggle breakpoint (not meaningful for data areas)
+          if (is_bp)
+            z80_del_breakpoint(entry.addr);
+          else
+            z80_add_breakpoint(entry.addr);
+        }
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Click: toggle breakpoint | Right-click: more options");
+        if (entry.is_data_area)
+          ImGui::SetTooltip("Data area | Right-click: edit/remove");
+        else
+          ImGui::SetTooltip("Click: toggle breakpoint | Right-click: more options");
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       }
 
       // Right-click context menu
       if (ImGui::BeginPopupContextItem()) {
-        if (ImGui::MenuItem("Run to here")) {
-          z80_add_breakpoint_ephemeral(entry.addr);
-          CPC.paused = false;
-        }
-        if (ImGui::MenuItem("Set PC here")) {
-          z80.PC.w.l = entry.addr;
+        const DataArea* ctx_da = g_data_areas.find(entry.addr);
+        if (!entry.is_data_area) {
+          if (ImGui::MenuItem("Run to here")) {
+            z80_add_breakpoint_ephemeral(entry.addr);
+            CPC.paused = false;
+          }
+          if (ImGui::MenuItem("Set PC here")) {
+            z80.PC.w.l = entry.addr;
+          }
         }
         if (ImGui::MenuItem("Goto this address")) {
           disasm_goto_value_ = entry.addr;
@@ -413,10 +446,38 @@ void DevToolsUI::render_disassembly()
         if (ImGui::MenuItem("View in Memory")) {
           navigate_to(entry.addr, NavTarget::MEMORY);
         }
+        ImGui::Separator();
+        if (ctx_da) {
+          if (ImGui::MenuItem("Edit data area")) {
+            // Pre-fill the Data Areas mark form and open the window
+            snprintf(da_start_, sizeof(da_start_), "%04X", ctx_da->start);
+            snprintf(da_end_, sizeof(da_end_), "%04X", ctx_da->end);
+            da_type_ = (ctx_da->type == DataType::BYTES) ? 0 :
+                       (ctx_da->type == DataType::WORDS) ? 1 : 2;
+            if (!ctx_da->label.empty())
+              snprintf(da_label_, sizeof(da_label_), "%s", ctx_da->label.c_str());
+            else
+              da_label_[0] = '\0';
+            show_data_areas_ = true;
+          }
+          if (ImGui::MenuItem("Remove data area")) {
+            g_data_areas.clear(ctx_da->start);
+          }
+        } else {
+          if (ImGui::MenuItem("Mark as bytes")) {
+            g_data_areas.mark(entry.addr, entry.addr, DataType::BYTES);
+          }
+          if (ImGui::MenuItem("Mark as words")) {
+            g_data_areas.mark(entry.addr, entry.addr + 1, DataType::WORDS);
+          }
+          if (ImGui::MenuItem("Mark as text")) {
+            g_data_areas.mark(entry.addr, entry.addr, DataType::TEXT);
+          }
+        }
         ImGui::EndPopup();
       }
 
-      if (is_pc || is_bp) ImGui::PopStyleColor();
+      if (style_colors_pushed > 0) ImGui::PopStyleColor(style_colors_pushed);
 
       // Follow PC: scroll to keep PC visible (using SetScrollHereY in-place)
       if (is_pc && disasm_follow_pc_) {
@@ -1362,6 +1423,26 @@ void DevToolsUI::render_data_areas()
   ImGui::SameLine();
   if (ImGui::SmallButton("Open Disasm Export"))
     show_disasm_export_ = true;
+  ImGui::SameLine();
+  {
+    auto areas_tmp = g_data_areas.list();
+    bool has_areas = !areas_tmp.empty();
+    if (!has_areas) ImGui::BeginDisabled();
+    if (ImGui::SmallButton("Export Marked Range")) {
+      uint16_t lo = 0xFFFF, hi = 0x0000;
+      for (const auto& a : areas_tmp) {
+        if (a.start < lo) lo = a.start;
+        if (a.end > hi) hi = a.end;
+      }
+      snprintf(dex_start_, sizeof(dex_start_), "%04X", lo);
+      snprintf(dex_end_, sizeof(dex_end_), "%04X", hi);
+      dex_prefill_pending_ = false;
+      show_disasm_export_ = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Open Disasm Export pre-filled with the bounding range of all data areas");
+    if (!has_areas) ImGui::EndDisabled();
+  }
   ImGui::Separator();
 
   // Mark form
@@ -1439,6 +1520,12 @@ void DevToolsUI::render_data_areas()
     ImGui::EndTable();
   }
 
+  ImGui::Spacing();
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+  ImGui::TextWrapped("These markers affect Disasm Export output (db/dw/text directives) "
+                     "and appear with distinct highlighting in the Disassembly view.");
+  ImGui::PopStyleColor();
+
   if (!open) show_data_areas_ = false;
   ImGui::End();
 }
@@ -1459,7 +1546,7 @@ void DevToolsUI::render_disasm_export()
     dex_prefill_pending_ = false;
   }
 
-  ImGui::SetNextWindowSize(ImVec2(420, 220), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(420, 450), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Disassembly Export", &open)) {
@@ -1477,6 +1564,36 @@ void DevToolsUI::render_disasm_export()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   ImGui::Checkbox("Symbols", &dex_symbols_);
+
+  // Data areas summary within selected range
+  {
+    unsigned long s_addr, e_addr;
+    if (parse_hex(dex_start_, &s_addr, 0xFFFF) && parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
+      auto all_areas = g_data_areas.list();
+      int byte_count = 0, word_count = 0, text_count = 0;
+      for (const auto& a : all_areas) {
+        if (a.end >= s_addr && a.start <= e_addr) {
+          switch (a.type) {
+            case DataType::BYTES: byte_count++; break;
+            case DataType::WORDS: word_count++; break;
+            case DataType::TEXT:  text_count++; break;
+          }
+        }
+      }
+      int total = byte_count + word_count + text_count;
+      if (total > 0) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
+        std::string summary = std::to_string(total) + " data area" + (total > 1 ? "s" : "") + " in range (";
+        bool first = true;
+        if (byte_count > 0) { summary += std::to_string(byte_count) + " bytes"; first = false; }
+        if (word_count > 0) { if (!first) summary += ", "; summary += std::to_string(word_count) + " words"; first = false; }
+        if (text_count > 0) { if (!first) summary += ", "; summary += std::to_string(text_count) + " text"; }
+        summary += ")";
+        ImGui::TextUnformatted(summary.c_str());
+        ImGui::PopStyleColor();
+      }
+    }
+  }
 
   ImGui::SetNextItemWidth(-1);
   ImGui::InputTextWithHint("##dexpath", "Output path (e.g. /tmp/out.asm)...",
@@ -1564,6 +1681,85 @@ void DevToolsUI::render_disasm_export()
 
   if (!dex_status_.empty()) {
     ImGui::TextWrapped("%s", dex_status_.c_str());
+  }
+
+  ImGui::Separator();
+
+  // Quick "Mark as data" form
+  if (ImGui::TreeNode("Mark as data")) {
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("Start##dexmark", dex_mark_start_, sizeof(dex_mark_start_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("End##dexmark", dex_mark_end_, sizeof(dex_mark_end_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(80);
+    const char* mark_types[] = { "Bytes", "Words", "Text" };
+    ImGui::Combo("##dexmarktype", &dex_mark_type_, mark_types, 3);
+    ImGui::SameLine();
+    if (ImGui::Button("Mark##dex")) {
+      unsigned long ms, me;
+      if (parse_hex(dex_mark_start_, &ms, 0xFFFF) && parse_hex(dex_mark_end_, &me, 0xFFFF) && ms <= me) {
+        DataType dt = (dex_mark_type_ == 0) ? DataType::BYTES :
+                      (dex_mark_type_ == 1) ? DataType::WORDS : DataType::TEXT;
+        g_data_areas.mark(static_cast<uint16_t>(ms), static_cast<uint16_t>(me), dt);
+        dex_mark_start_[0] = '\0';
+        dex_mark_end_[0] = '\0';
+      }
+    }
+    ImGui::TreePop();
+  }
+
+  // Inline preview
+  {
+    unsigned long s_addr, e_addr;
+    if (parse_hex(dex_start_, &s_addr, 0xFFFF) && parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
+      ImGui::Separator();
+      ImGui::Text("Preview:");
+      ImGui::BeginChild("##dex_preview", ImVec2(0, 0), ImGuiChildFlags_Borders);
+      DisassembledCode preview_code;
+      std::vector<dword> preview_eps;
+      word pos = static_cast<word>(s_addr);
+      word end_pos = static_cast<word>(e_addr);
+      int line_count = 0;
+      constexpr int MAX_PREVIEW_LINES = 200;
+
+      while (pos <= end_pos && line_count < MAX_PREVIEW_LINES) {
+        const DataArea* da = g_data_areas.find(pos);
+        if (da) {
+          int remaining = static_cast<int>(da->end) - static_cast<int>(pos) + 1;
+          int max_bytes = (da->type == DataType::TEXT) ? 64 : 8;
+          int buf_len = std::min(remaining, max_bytes);
+          if (pos + buf_len - 1 > end_pos) buf_len = end_pos - pos + 1;
+          uint8_t membuf[64];
+          for (int mi = 0; mi < buf_len; mi++)
+            membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
+          int line_bytes = 0;
+          std::string formatted = g_data_areas.format_at(pos, membuf, buf_len, &line_bytes);
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.9f, 0.6f, 1.0f));
+          ImGui::Text("%04X  %s", pos, formatted.c_str());
+          ImGui::PopStyleColor();
+          if (line_bytes == 0) line_bytes = 1;
+          unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
+          if (next > 0xFFFF || next > e_addr + 1u) break;
+          pos = static_cast<word>(next);
+        } else {
+          auto line = disassemble_one(pos, preview_code, preview_eps);
+          preview_code.lines.insert(line);
+          ImGui::Text("%04X  %s", pos, line.instruction_.c_str());
+          unsigned int next = static_cast<unsigned int>(pos) + line.Size();
+          if (next > 0xFFFF || next > e_addr + 1u) break;
+          pos = static_cast<word>(next);
+        }
+        line_count++;
+      }
+      if (line_count >= MAX_PREVIEW_LINES) {
+        ImGui::TextDisabled("... (truncated at %d lines)", MAX_PREVIEW_LINES);
+      }
+      ImGui::EndChild();
+    }
   }
 
   if (!open) show_disasm_export_ = false;

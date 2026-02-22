@@ -116,6 +116,9 @@ private:
     bool dex_symbols_ = true;
     bool dex_prefill_pending_ = false;
     std::string dex_status_;
+    char dex_mark_start_[8] = "";
+    char dex_mark_end_[8] = "";
+    int dex_mark_type_ = 0;
 
     // Recording Controls state
     char rc_wav_path_[256] = "";
