@@ -621,25 +621,11 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::st
    int slot = g_m4board.rom_slot;
    if (slot < 0 || slot >= 256) return;
 
-   // If configured slot is occupied, find a free one
+   // Override any existing ROM in this slot (like real hardware on the expansion bus)
    if (rom_map[slot] != nullptr) {
-      int orig_slot = slot;
-      slot = -1;
-      // Search downward from the original slot, then upward
-      for (int s = orig_slot - 1; s >= 2; s--) {
-         if (rom_map[s] == nullptr) { slot = s; break; }
-      }
-      if (slot < 0) {
-         for (int s = orig_slot + 1; s < 32; s++) {
-            if (rom_map[s] == nullptr) { slot = s; break; }
-         }
-      }
-      if (slot < 0) {
-         LOG_ERROR("M4: no free ROM slot available");
-         return;
-      }
-      LOG_INFO("M4: slot " << orig_slot << " occupied, using slot " << slot << " instead");
-      g_m4board.rom_slot = slot;
+      LOG_INFO("M4: overriding ROM in slot " << slot << " (expansion bus priority)");
+      delete[] rom_map[slot];
+      rom_map[slot] = nullptr;
    }
 
    // Search for the M4 ROM in standard locations
