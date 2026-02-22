@@ -499,9 +499,9 @@ std::string handle_command(const std::string& line) {
         raw_bank = std::stoi(parts[pi].substr(7));
       }
     }
-    std::string resp = "OK ";
+    std::ostringstream resp;
+    resp << "OK ";
     std::string ascii_str;
-    char bytebuf[4];
     for (unsigned int i = 0; i < len; i++) {
       byte v;
       if (raw_bank >= 0) {
@@ -511,22 +511,21 @@ std::string handle_command(const std::string& line) {
       } else {
         v = z80_read_mem(static_cast<word>(addr + i));
       }
-      snprintf(bytebuf, sizeof(bytebuf), "%02X", v);
-      resp += bytebuf;
+      resp << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << static_cast<int>(v);
       if (with_ascii) {
         char c = (v >= 32 && v <= 126) ? static_cast<char>(v) : '.';
         ascii_str.push_back(c);
         if ((i + 1) % 16 == 0) {
-          resp += " |" + ascii_str + "| ";
+          resp << " |" << ascii_str << "| ";
           ascii_str.clear();
         }
       }
     }
     if (!ascii_str.empty()) {
-      resp += " |" + ascii_str + "|";
+      resp << " |" << ascii_str << "|";
     }
-    resp += "\n";
-    return resp;
+    resp << "\n";
+    return resp.str();
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "write") {
     // mem write <addr> <hexbytes...>
@@ -836,24 +835,20 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "list") {
       const auto& bps = z80_list_breakpoints_ref();
-      std::string resp = "OK count=" + std::to_string(bps.size());
-      char buf[128];
+      std::ostringstream resp;
+      resp << "OK count=" << bps.size();
       for (const auto& b : bps) {
-        snprintf(buf, sizeof(buf), " %04X", static_cast<unsigned int>(b.address));
-        resp += buf;
+        resp << " " << std::hex << std::uppercase << std::setfill('0') << std::setw(4)
+             << static_cast<unsigned int>(b.address);
         if (!b.condition_str.empty()) {
-          resp += "[if ";
-          resp += b.condition_str;
-          resp += "]";
+          resp << "[if " << b.condition_str << "]";
         }
         if (b.pass_count > 0) {
-          resp += "[pass ";
-          resp += std::to_string(b.pass_count);
-          resp += "]";
+          resp << "[pass " << std::dec << b.pass_count << "]";
         }
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
   }
   if (cmd == "iobp" && parts.size() >= 2) {
@@ -928,24 +923,22 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "list") {
       const auto& bps = z80_list_io_breakpoints_ref();
-      std::string resp = "OK count=" + std::to_string(bps.size());
+      std::ostringstream resp;
+      resp << "OK count=" << bps.size();
       for (size_t i = 0; i < bps.size(); i++) {
-        char buf[64];
         const char* dir_str = "both";
         if (bps[i].dir == IO_IN) dir_str = "in";
         else if (bps[i].dir == IO_OUT) dir_str = "out";
-        snprintf(buf, sizeof(buf), " %zu:%04X/%04X/%s",
-                 i, static_cast<unsigned>(bps[i].port),
-                 static_cast<unsigned>(bps[i].mask), dir_str);
-        resp += buf;
+        resp << " " << i << ":" << std::hex << std::uppercase << std::setfill('0')
+             << std::setw(4) << static_cast<unsigned>(bps[i].port) << "/"
+             << std::setw(4) << static_cast<unsigned>(bps[i].mask) << "/"
+             << dir_str;
         if (!bps[i].condition_str.empty()) {
-          resp += "[if ";
-          resp += bps[i].condition_str;
-          resp += "]";
+          resp << "[if " << bps[i].condition_str << "]";
         }
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
     return "ERR 400 bad-iobp-cmd (add|del|clear|list)\n";
   }
@@ -1438,25 +1431,24 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "list") {
       auto evts = g_ipc_instance->list_events();
-      std::string resp = "OK count=" + std::to_string(evts.size()) + "\n";
+      std::ostringstream resp;
+      resp << "OK count=" << evts.size() << "\n";
       for (const auto& e : evts) {
-        char buf[256];
         const char* trig_name = "?";
         if (e.trigger == EventTrigger::PC) trig_name = "pc";
         else if (e.trigger == EventTrigger::MEM_WRITE) trig_name = "mem";
         else if (e.trigger == EventTrigger::VBL) trig_name = "vbl";
+        resp << "  id=" << e.id << " trigger=" << trig_name << "=";
         if (e.trigger == EventTrigger::VBL) {
-          snprintf(buf, sizeof(buf), "  id=%d trigger=%s=%d%s cmd=%s\n",
-                   e.id, trig_name, e.vbl_interval,
-                   e.one_shot ? " once" : "", e.command.c_str());
+          resp << std::dec << e.vbl_interval;
         } else {
-          snprintf(buf, sizeof(buf), "  id=%d trigger=%s=0x%04X%s cmd=%s\n",
-                   e.id, trig_name, e.address,
-                   e.one_shot ? " once" : "", e.command.c_str());
+          resp << "0x" << std::hex << std::uppercase << std::setfill('0')
+               << std::setw(4) << e.address;
         }
-        resp += buf;
+        if (e.one_shot) resp << " once";
+        resp << " cmd=" << e.command << "\n";
       }
-      return resp;
+      return resp.str();
     }
     return "ERR 400 bad-event-cmd (on|once|off|list)\n";
   }
@@ -1464,18 +1456,17 @@ std::string handle_command(const std::string& line) {
   if (cmd == "timer" && parts.size() >= 2) {
     if (parts[1] == "list") {
       const auto& timers = g_debug_timers.timers();
-      std::string resp = "OK count=" + std::to_string(timers.size());
+      std::ostringstream resp;
+      resp << "OK count=" << timers.size();
       for (const auto& [id, t] : timers) {
-        char buf[128];
         uint32_t avg = t.count > 0 ? static_cast<uint32_t>(t.total_us / t.count) : 0;
-        snprintf(buf, sizeof(buf), " id=%d count=%u last=%u min=%u max=%u avg=%u",
-                 id, t.count, t.last_us,
-                 t.min_us == UINT32_MAX ? 0 : t.min_us,
-                 t.max_us, avg);
-        resp += buf;
+        resp << " id=" << id << " count=" << t.count
+             << " last=" << t.last_us
+             << " min=" << (t.min_us == UINT32_MAX ? 0 : t.min_us)
+             << " max=" << t.max_us << " avg=" << avg;
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
     if (parts[1] == "clear") {
       g_debug_timers.clear();
@@ -1545,30 +1536,26 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "list") {
       const auto& wps = z80_list_watchpoints_ref();
-      std::string resp = "OK count=" + std::to_string(wps.size());
+      std::ostringstream resp;
+      resp << "OK count=" << wps.size();
       for (size_t i = 0; i < wps.size(); i++) {
         const auto& w = wps[i];
-        char buf[128];
         const char* type_str = "rw";
         if (w.type == READ) type_str = "r";
         else if (w.type == WRITE) type_str = "w";
-        snprintf(buf, sizeof(buf), " %zu:%04X+%u/%s",
-                 i, static_cast<unsigned>(w.address),
-                 static_cast<unsigned>(w.length), type_str);
-        resp += buf;
+        resp << " " << i << ":" << std::hex << std::uppercase << std::setfill('0')
+             << std::setw(4) << static_cast<unsigned>(w.address)
+             << "+" << std::dec << static_cast<unsigned>(w.length)
+             << "/" << type_str;
         if (!w.condition_str.empty()) {
-          resp += "[if ";
-          resp += w.condition_str;
-          resp += "]";
+          resp << "[if " << w.condition_str << "]";
         }
         if (w.pass_count > 0) {
-          resp += "[pass ";
-          resp += std::to_string(w.pass_count);
-          resp += "]";
+          resp << "[pass " << std::dec << w.pass_count << "]";
         }
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
     return "ERR 400 bad-wp-cmd (add|del|clear|list)\n";
   }
@@ -1599,14 +1586,14 @@ std::string handle_command(const std::string& line) {
       std::string filter;
       if (parts.size() >= 3) filter = parts[2];
       auto syms = g_symfile.listSymbols(filter);
-      std::string resp = "OK count=" + std::to_string(syms.size()) + "\n";
+      std::ostringstream resp;
+      resp << "OK count=" << syms.size() << "\n";
       for (const auto& [addr, name] : syms) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "  %04X %s\n",
-                 static_cast<unsigned>(addr), name.c_str());
-        resp += buf;
+        resp << "  " << std::hex << std::uppercase << std::setfill('0')
+             << std::setw(4) << static_cast<unsigned>(addr)
+             << " " << name << "\n";
       }
-      return resp;
+      return resp.str();
     }
     if (parts[1] == "lookup" && parts.size() >= 3) {
       // Try as address first
@@ -1647,7 +1634,8 @@ std::string handle_command(const std::string& line) {
         }
       }
       if (pattern.empty()) return "ERR 400 empty-pattern\n";
-      std::string resp = "OK";
+      std::ostringstream resp;
+      resp << "OK";
       int found = 0;
       for (unsigned int addr = start; addr + pattern.size() - 1 <= end && found < 32; addr++) {
         bool match = true;
@@ -1659,14 +1647,12 @@ std::string handle_command(const std::string& line) {
           }
         }
         if (match) {
-          char buf[8];
-          snprintf(buf, sizeof(buf), " %04X", addr);
-          resp += buf;
+          resp << " " << std::hex << std::uppercase << std::setfill('0') << std::setw(4) << addr;
           found++;
         }
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
     if (parts[2] == "text" && parts.size() >= 6) {
       // Collect text from remaining parts (may have spaces)
@@ -1680,7 +1666,8 @@ std::string handle_command(const std::string& line) {
         text = text.substr(1, text.size() - 2);
       }
       if (text.empty()) return "ERR 400 empty-pattern\n";
-      std::string resp = "OK";
+      std::ostringstream resp;
+      resp << "OK";
       int found = 0;
       for (unsigned int addr = start; addr + text.size() - 1 <= end && found < 32; addr++) {
         bool match = true;
@@ -1691,14 +1678,12 @@ std::string handle_command(const std::string& line) {
           }
         }
         if (match) {
-          char buf[8];
-          snprintf(buf, sizeof(buf), " %04X", addr);
-          resp += buf;
+          resp << " " << std::hex << std::uppercase << std::setfill('0') << std::setw(4) << addr;
           found++;
         }
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
     if (parts[2] == "asm" && parts.size() >= 6) {
       // Collect asm pattern from remaining parts
@@ -1710,7 +1695,8 @@ std::string handle_command(const std::string& line) {
       // Lowercase pattern for case-insensitive matching
       std::string lower_pattern = pattern;
       for (auto& c : lower_pattern) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      std::string resp = "OK";
+      std::ostringstream resp;
+      resp << "OK";
       int found = 0;
       DisassembledCode dummy;
       std::vector<dword> dummy_eps;
@@ -1734,15 +1720,13 @@ std::string handle_command(const std::string& line) {
           match = (lower_instr.find(lower_pattern) != std::string::npos);
         }
         if (match) {
-          char buf[8];
-          snprintf(buf, sizeof(buf), " %04X", addr);
-          resp += buf;
+          resp << " " << std::hex << std::uppercase << std::setfill('0') << std::setw(4) << addr;
           found++;
         }
         addr += line.Size();
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
     return "ERR 400 bad-find-type (hex|text|asm)\n";
   }
@@ -1821,10 +1805,11 @@ std::string handle_command(const std::string& line) {
     if (parts.size() < 2) return "ERR 400 missing subcommand (formats|format|new|ls|cat|get|put|rm|info|sector)\n";
     if (parts[1] == "formats") {
       auto names = disk_format_names();
-      std::string resp = "OK";
-      for (const auto& n : names) resp += " " + n;
-      resp += "\n";
-      return resp;
+      std::ostringstream resp;
+      resp << "OK";
+      for (const auto& n : names) resp << " " << n;
+      resp << "\n";
+      return resp.str();
     }
     if (parts[1] == "format") {
       if (parts.size() < 4)
@@ -2421,7 +2406,8 @@ std::string handle_command(const std::string& line) {
       // ASM mode uses disassembly infrastructure directly
       std::string lower_pattern = pattern;
       for (auto& c : lower_pattern) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      std::string resp = "OK";
+      std::ostringstream resp;
+      resp << "OK";
       int found = 0;
       DisassembledCode dummy;
       std::vector<dword> dummy_eps;
@@ -2450,19 +2436,16 @@ std::string handle_command(const std::string& line) {
         while (gpi < plen && lower_pattern[gpi] == '*') gpi++;
         match = (gpi == plen && gti == tlen);
         if (match) {
-          char buf[32];
-          snprintf(buf, sizeof(buf), " %04X", addr);
-          resp += buf;
-          resp += " ";
-          resp += line.instruction_;
+          resp << " " << std::hex << std::uppercase << std::setfill('0')
+               << std::setw(4) << addr << " " << line.instruction_;
           found++;
         }
         int sz = line.Size();
         if (sz < 1) sz = 1;
         addr += static_cast<unsigned int>(sz);
       }
-      resp += "\n";
-      return resp;
+      resp << "\n";
+      return resp.str();
     }
 
     // HEX / TEXT mode: read full 64K into buffer
@@ -2471,14 +2454,13 @@ std::string handle_command(const std::string& line) {
       membuf[i] = z80_read_mem(static_cast<word>(i));
     }
     auto results = search_memory(membuf.data(), membuf.size(), pattern, mode, 256);
-    std::string resp = "OK";
+    std::ostringstream resp;
+    resp << "OK";
     for (const auto& r : results) {
-      char buf[16];
-      snprintf(buf, sizeof(buf), " %04X", r.address);
-      resp += buf;
+      resp << " " << std::hex << std::uppercase << std::setfill('0') << std::setw(4) << r.address;
     }
-    resp += "\n";
-    return resp;
+    resp << "\n";
+    return resp.str();
   }
 
 
