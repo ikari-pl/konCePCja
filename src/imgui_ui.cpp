@@ -22,6 +22,12 @@
 #include "tape.h"
 #include "video.h"
 #include "symfile.h"
+#include "amdrum.h"
+#include "smartwatch.h"
+#include "amx_mouse.h"
+#include "drive_sounds.h"
+#include "symbiface.h"
+#include "m4board.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 
@@ -1111,9 +1117,11 @@ static void imgui_render_options()
 {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
+  static bool old_m4_enabled = false;
   if (first_open) {
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
+    old_m4_enabled = g_m4board.enabled;
     first_open = false;
   }
 
@@ -1163,6 +1171,24 @@ static void imgui_render_options()
       bool printer = CPC.printer != 0;
       if (ImGui::Checkbox("Printer Capture", &printer)) {
         CPC.printer = printer ? 1 : 0;
+      }
+
+      bool sw = g_smartwatch.enabled;
+      if (ImGui::Checkbox("SmartWatch RTC", &sw)) { g_smartwatch.enabled = sw; }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Dobbertin SmartWatch (DS1216) in upper ROM socket.\nProvides real-time clock via host system time.");
+      }
+
+      bool sf2 = g_symbiface.enabled;
+      if (ImGui::Checkbox("Symbiface II", &sf2)) { g_symbiface.enabled = sf2; }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Symbiface II expansion (IDE + RTC + PS/2 Mouse).\nConfigure IDE images in config file.");
+      }
+
+      bool m4 = g_m4board.enabled;
+      if (ImGui::Checkbox("M4 Board", &m4)) { g_m4board.enabled = m4; }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("M4 Board (WiFi/SD).\nSet m4_sd_path in config for virtual SD card.");
       }
 
       ImGui::EndTabItem();
@@ -1316,6 +1342,17 @@ static void imgui_render_options()
       int vol = static_cast<int>(CPC.snd_volume);
       if (ImGui::SliderInt("Volume", &vol, 0, 100)) { CPC.snd_volume = vol; }
 
+      ImGui::Separator();
+      ImGui::Text("Peripherals");
+      bool pp = CPC.snd_pp_device != 0;
+      if (ImGui::Checkbox("Digiblaster", &pp)) { CPC.snd_pp_device = pp ? 1 : 0; }
+      bool amdrum = g_amdrum.enabled;
+      if (ImGui::Checkbox("AmDrum", &amdrum)) { g_amdrum.enabled = amdrum; }
+      bool disk_snd = g_drive_sounds.disk_enabled;
+      if (ImGui::Checkbox("Disk Drive Sounds", &disk_snd)) { g_drive_sounds.disk_enabled = disk_snd; }
+      bool tape_snd = g_drive_sounds.tape_enabled;
+      if (ImGui::Checkbox("Tape Sounds", &tape_snd)) { g_drive_sounds.tape_enabled = tape_snd; }
+
       ImGui::EndTabItem();
     }
 
@@ -1339,6 +1376,12 @@ static void imgui_render_options()
         CPC.joysticks = joysticks ? 1 : 0;
       }
 
+      bool amx = g_amx_mouse.enabled;
+      if (ImGui::Checkbox("AMX Mouse", &amx)) { g_amx_mouse.enabled = amx; }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("AMX Mouse on joystick port.\nMaps host mouse to CPC joystick directions + buttons.");
+      }
+
       ImGui::EndTabItem();
     }
 
@@ -1355,7 +1398,8 @@ static void imgui_render_options()
     // Apply changes that need re-init
     if (CPC.model != imgui_state.old_cpc_settings.model ||
         CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-        CPC.keyboard != imgui_state.old_cpc_settings.keyboard) {
+        CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
+        g_m4board.enabled != old_m4_enabled) {
       emulator_init();
     }
     update_cpc_speed();
@@ -1368,6 +1412,7 @@ static void imgui_render_options()
   if (ImGui::Button("Cancel", ImVec2(80, 0))) {
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
+    g_m4board.enabled = old_m4_enabled;
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;
@@ -1376,7 +1421,8 @@ static void imgui_render_options()
   if (ImGui::Button("OK", ImVec2(80, 0))) {
     if (CPC.model != imgui_state.old_cpc_settings.model ||
         CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-        CPC.keyboard != imgui_state.old_cpc_settings.keyboard) {
+        CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
+        g_m4board.enabled != old_m4_enabled) {
       emulator_init();
     }
     update_cpc_speed();
@@ -1390,6 +1436,7 @@ static void imgui_render_options()
     // Window closed via X button — treat as Cancel
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
+    g_m4board.enabled = old_m4_enabled;
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;

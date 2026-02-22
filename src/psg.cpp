@@ -28,6 +28,8 @@
 #include "koncepcja.h"
 #include "z80.h"
 #include "log.h"
+#include "amdrum.h"
+#include "drive_sounds.h"
 
 extern t_CPC CPC;
 extern t_PSG PSG;
@@ -46,6 +48,7 @@ word Amplitudes_AY[16] = {
 };
 
 int Level_PP[256];
+int Level_AmDrum[256];
 
 union TLoopCount {
    struct {
@@ -370,6 +373,9 @@ inline void Synthesizer_Mixer_Q()
    if (CPC.snd_pp_device) {
       LevL += Level_PP[CPC.printer_port];
    }
+   if (g_amdrum.enabled) {
+      LevL += Level_AmDrum[g_amdrum.dac_value];
+   }
 
    LevR = LevL;
    if (Ton_EnA) {
@@ -472,8 +478,15 @@ void Synthesizer_Stereo16()
    }
    LoopCount.Re += LoopCountInit;
    reg_pair val;
-   val.w.l = Left_Chan / Tick_Counter;
-   val.w.h = Right_Chan / Tick_Counter;
+   int l_out = Left_Chan / Tick_Counter;
+   int r_out = Right_Chan / Tick_Counter;
+   if (g_drive_sounds.disk_enabled || g_drive_sounds.tape_enabled) {
+      int16_t ds = drive_sounds_next_sample();
+      l_out += ds;
+      r_out += ds;
+   }
+   val.w.l = static_cast<word>(l_out);
+   val.w.h = static_cast<word>(r_out);
    *reinterpret_cast<dword *>(CPC.snd_bufferptr) = val.d; // write to mixing buffer
    CPC.snd_bufferptr += 4;
    Left_Chan = 0;
@@ -519,6 +532,9 @@ inline void Synthesizer_Mixer_Q_Mono()
    Lev = bTapeLevel ? LevelTape : 0; // start with the tape signal
    if (CPC.snd_pp_device) {
       Lev += Level_PP[CPC.printer_port];
+   }
+   if (g_amdrum.enabled) {
+      Lev += Level_AmDrum[g_amdrum.dac_value];
    }
 
    if (Ton_EnA) {
@@ -610,7 +626,11 @@ void Synthesizer_Mono16()
       LoopCount.Hi--;
    }
    LoopCount.Re += LoopCountInit;
-   *reinterpret_cast<word *>(CPC.snd_bufferptr) = Left_Chan / Tick_Counter; // write to mixing buffer
+   int m_out = Left_Chan / Tick_Counter;
+   if (g_drive_sounds.disk_enabled || g_drive_sounds.tape_enabled) {
+      m_out += drive_sounds_next_sample();
+   }
+   *reinterpret_cast<word *>(CPC.snd_bufferptr) = static_cast<word>(m_out); // write to mixing buffer
    CPC.snd_bufferptr += 2;
    Left_Chan = 0;
    if (CPC.snd_bufferptr >= pbSndBufferEnd) {
@@ -717,6 +737,7 @@ void Calculate_Level_Tables()
    }
    for (i = 0, b = 255; i < 256; i++) { // calculate the 256 levels of the Digiblaster/Soundplayer
       Level_PP[i] = -static_cast<int>(rint(((b << 8) / 65535.0 * l) * k));
+      Level_AmDrum[i] = Level_PP[i]; // AmDrum uses the same DAC curve
       b--;
    }
 }

@@ -34,6 +34,7 @@
 #include "trace.h"
 #include "koncepcja_ipc_server.h"
 #include "expr_parser.h"
+#include "smartwatch.h"
 #include "log.h"
 #include <algorithm>
 #include <vector>
@@ -342,7 +343,12 @@ static byte cc_ex[256] = {
 extern byte *membank_read[4], *membank_write[4];
 
 inline byte read_mem_no_watchpoint(word addr) {
-  return (*(membank_read[addr >> 14] + (addr & 0x3fff))); // returns a byte from a 16KB memory bank
+  byte val = *(membank_read[addr >> 14] + (addr & 0x3fff)); // returns a byte from a 16KB memory bank
+  // SmartWatch intercepts upper ROM reads (ROM must be paged in)
+  if (g_smartwatch.enabled && (addr >= 0xC000) && !(GateArray.ROM_config & 0x08)) {
+    val = smartwatch_rom_read(addr, val);
+  }
+  return val;
 }
 
 inline byte read_mem(word addr) {
