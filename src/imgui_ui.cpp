@@ -269,6 +269,8 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("data_areas"); });
   g_command_palette.register_command("Disasm Export", "Export disassembly to file", "",
       []() { g_devtools_ui.toggle_window("disasm_export"); });
+  g_command_palette.register_command("Recording Controls", "WAV/YM/AVI recording start/stop", "",
+      []() { g_devtools_ui.toggle_window("recording_controls"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1448,6 +1450,7 @@ static void imgui_render_devtools()
     if (ImGui::BeginMenu("Export")) {
       ImGui::MenuItem("Disasm Export",     nullptr, g_devtools_ui.window_ptr("disasm_export"));
       ImGui::MenuItem("Session Recording", nullptr, g_devtools_ui.window_ptr("session_recording"));
+      ImGui::MenuItem("Recording Controls", nullptr, g_devtools_ui.window_ptr("recording_controls"));
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Layout")) {

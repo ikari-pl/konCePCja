@@ -19,6 +19,9 @@
 #include "disk_sector_editor.h"
 #include "disk_format.h"
 #include "data_areas.h"
+#include "wav_recorder.h"
+#include "ym_recorder.h"
+#include "avi_recorder.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -70,6 +73,7 @@ bool* DevToolsUI::window_ptr(const std::string& name)
   if (name == "disasm_export")      return &show_disasm_export_;
   if (name == "video_state")        return &show_video_state_;
   if (name == "audio_state")        return &show_audio_state_;
+  if (name == "recording_controls") return &show_recording_controls_;
   return nullptr;
 }
 
@@ -100,6 +104,7 @@ bool DevToolsUI::is_window_open(const std::string& name) const
   if (name == "disasm_export")      return show_disasm_export_;
   if (name == "video_state")        return show_video_state_;
   if (name == "audio_state")        return show_audio_state_;
+  if (name == "recording_controls") return show_recording_controls_;
   return false;
 }
 
@@ -110,7 +115,8 @@ bool DevToolsUI::any_window_open() const
          show_session_recording_ || show_gfx_finder_ ||
          show_silicon_disc_ || show_asic_ || show_disc_tools_ ||
          show_data_areas_ || show_disasm_export_ ||
-         show_video_state_ || show_audio_state_;
+         show_video_state_ || show_audio_state_ ||
+         show_recording_controls_;
 }
 
 void DevToolsUI::navigate_disassembly(word addr)
@@ -174,6 +180,7 @@ void DevToolsUI::render()
   if (show_gfx_finder_)       render_gfx_finder();
   if (show_video_state_)       render_video_state();
   if (show_audio_state_)       render_audio_state();
+  if (show_recording_controls_) render_recording_controls();
 }
 
 // -----------------------------------------------
@@ -1920,5 +1927,149 @@ void DevToolsUI::render_audio_state()
   ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
 
   if (!open) show_audio_state_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 16: Recording Controls
+// -----------------------------------------------
+
+static std::string format_size(uint64_t bytes)
+{
+  char buf[32];
+  if (bytes >= 1048576) {
+    snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
+  } else if (bytes >= 1024) {
+    snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0);
+  } else {
+    snprintf(buf, sizeof(buf), "%llu B", static_cast<unsigned long long>(bytes));
+  }
+  return buf;
+}
+
+void DevToolsUI::render_recording_controls()
+{
+  ImGui::SetNextWindowSize(ImVec2(420, 400), ImGuiCond_FirstUseEver);
+
+  bool open = true;
+  if (!ImGui::Begin("Recording Controls", &open)) {
+    if (!open) show_recording_controls_ = false;
+    ImGui::End();
+    return;
+  }
+
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Records audio/video output to files.\nWAV = raw PCM audio, YM = PSG music, AVI = MJPEG video+audio.");
+  ImGui::Separator();
+
+  // Audio config from CPC state
+  unsigned int sample_rate = SAMPLE_RATES[CPC.snd_playback_rate < SAMPLE_RATE_COUNT ? CPC.snd_playback_rate : 2];
+  uint16_t bits = CPC.snd_bits ? 16 : 8;
+  uint16_t channels = CPC.snd_stereo ? 2 : 1;
+
+  // --- WAV ---
+  if (ImGui::CollapsingHeader("WAV Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SetNextItemWidth(-80);
+    ImGui::InputTextWithHint("##wavpath", "WAV file path...", rc_wav_path_, sizeof(rc_wav_path_));
+    ImGui::SameLine();
+    if (g_wav_recorder.is_recording()) {
+      if (ImGui::Button("Stop##wav")) {
+        uint32_t written = g_wav_recorder.stop();
+        rc_status_ = "WAV stopped (" + format_size(written) + " written)";
+      }
+      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                         "Recording (%uHz, %d-bit %s)",
+                         sample_rate, bits, channels == 2 ? "stereo" : "mono");
+      ImGui::Text("Written: %s", format_size(g_wav_recorder.bytes_written()).c_str());
+    } else {
+      if (ImGui::Button("Record##wav")) {
+        if (rc_wav_path_[0] != '\0') {
+          std::string err = g_wav_recorder.start(rc_wav_path_, sample_rate, bits, channels);
+          rc_status_ = err.empty() ? "WAV recording started" : err;
+        } else {
+          rc_status_ = "Error: no WAV path specified";
+        }
+      }
+      ImGui::TextDisabled("Idle");
+    }
+  }
+
+  // --- YM ---
+  if (ImGui::CollapsingHeader("YM Music", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SetNextItemWidth(-80);
+    ImGui::InputTextWithHint("##ympath", "YM file path...", rc_ym_path_, sizeof(rc_ym_path_));
+    ImGui::SameLine();
+    if (g_ym_recorder.is_recording()) {
+      if (ImGui::Button("Stop##ym")) {
+        uint32_t frames = g_ym_recorder.stop();
+        rc_status_ = "YM stopped (" + std::to_string(frames) + " frames)";
+      }
+      uint32_t fc = g_ym_recorder.frame_count();
+      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                         "Recording (%u frames, %.1fs)",
+                         fc, fc / 50.0f);
+    } else {
+      if (ImGui::Button("Record##ym")) {
+        if (rc_ym_path_[0] != '\0') {
+          std::string err = g_ym_recorder.start(rc_ym_path_);
+          rc_status_ = err.empty() ? "YM recording started" : err;
+        } else {
+          rc_status_ = "Error: no YM path specified";
+        }
+      }
+      ImGui::TextDisabled("Idle");
+    }
+  }
+
+  // --- AVI ---
+  if (ImGui::CollapsingHeader("AVI Video", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SetNextItemWidth(-80);
+    ImGui::InputTextWithHint("##avipath", "AVI file path...", rc_avi_path_, sizeof(rc_avi_path_));
+    ImGui::SameLine();
+    if (g_avi_recorder.is_recording()) {
+      if (ImGui::Button("Stop##avi")) {
+        uint32_t frames = g_avi_recorder.stop();
+        rc_status_ = "AVI stopped (" + std::to_string(frames) + " frames)";
+      }
+      uint32_t fc = g_avi_recorder.frame_count();
+      ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                         "Recording (%u frames, %s)",
+                         fc, format_size(g_avi_recorder.bytes_written()).c_str());
+    } else {
+      ImGui::SetNextItemWidth(120);
+      ImGui::SliderInt("Quality##avi", &rc_avi_quality_, 1, 100);
+      if (ImGui::Button("Record##avi")) {
+        if (rc_avi_path_[0] != '\0') {
+          std::string err = g_avi_recorder.start(rc_avi_path_, rc_avi_quality_,
+                                                  sample_rate, channels, bits);
+          rc_status_ = err.empty() ? "AVI recording started" : err;
+        } else {
+          rc_status_ = "Error: no AVI path specified";
+        }
+      }
+      ImGui::TextDisabled("Idle");
+    }
+  }
+
+  // --- Stop All ---
+  ImGui::Separator();
+  bool any_recording = g_wav_recorder.is_recording() ||
+                       g_ym_recorder.is_recording() ||
+                       g_avi_recorder.is_recording();
+  if (!any_recording) ImGui::BeginDisabled();
+  if (ImGui::Button("Stop All")) {
+    if (g_wav_recorder.is_recording()) g_wav_recorder.stop();
+    if (g_ym_recorder.is_recording()) g_ym_recorder.stop();
+    if (g_avi_recorder.is_recording()) g_avi_recorder.stop();
+    rc_status_ = "All recordings stopped";
+  }
+  if (!any_recording) ImGui::EndDisabled();
+
+  if (!rc_status_.empty()) {
+    ImGui::TextWrapped("%s", rc_status_.c_str());
+  }
+
+  if (!open) show_recording_controls_ = false;
   ImGui::End();
 }

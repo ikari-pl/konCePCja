@@ -37,6 +37,7 @@ private:
     bool show_disasm_export_ = false;
     bool show_video_state_ = false;
     bool show_audio_state_ = false;
+    bool show_recording_controls_ = false;
 
     bool disasm_follow_pc_ = true;
     char disasm_goto_addr_[8] = "";
@@ -116,6 +117,13 @@ private:
     bool dex_prefill_pending_ = false;
     std::string dex_status_;
 
+    // Recording Controls state
+    char rc_wav_path_[256] = "";
+    char rc_ym_path_[256] = "";
+    char rc_avi_path_[256] = "";
+    int rc_avi_quality_ = 85;
+    std::string rc_status_;
+
     void render_registers();
     void render_disassembly();
     void render_memory_hex();
@@ -131,6 +139,7 @@ private:
     void render_disasm_export();
     void render_video_state();
     void render_audio_state();
+    void render_recording_controls();
 };
 
 extern DevToolsUI g_devtools_ui;
