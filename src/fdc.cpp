@@ -23,6 +23,7 @@
 #include "koncepcja.h"
 #include "disk.h"
 #include "z80.h"
+#include "drive_sounds.h"
 
 extern t_CPC CPC;
 extern t_FDC FDC;
@@ -787,6 +788,7 @@ void fdc_seek()
       if (active_drive->current_track >= DSK_TRACKMAX) { // beyond valid range?
          active_drive->current_track = DSK_TRACKMAX-1; // limit to maximum
       }
+      drive_sounds_seek();
    }
    FDC.flags |= (FDC.command[CMD_UNIT] & 1) ? SEEKDRVB_flag : SEEKDRVA_flag; // signal completion of seek operation
    FDC.phase = CMD_PHASE; // switch back to command phase (fdc_seek has no result phase!)

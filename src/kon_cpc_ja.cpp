@@ -49,6 +49,12 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "keyboard.h"
 #include "trace.h"
 #include "wav_recorder.h"
+#include "amdrum.h"
+#include "smartwatch.h"
+#include "amx_mouse.h"
+#include "drive_sounds.h"
+#include "symbiface.h"
+#include "m4board.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
 #include "macos_menu.h"
@@ -487,6 +493,9 @@ byte z80_IN_handler (reg_pair port)
                         } else {
                            ret_val = PSG.RegisterAY.Index[14] & (keyboard_matrix[CPC.keyboard_line & 0x0f]); // return last value w/ logic AND of input
                         }
+                        if (g_amx_mouse.enabled && (CPC.keyboard_line & 0x0f) == 9) {
+                           ret_val &= amx_mouse_get_row9(); // AND in mouse bits
+                        }
                         LOG_DEBUG("PPI read from portA (keyboard_line): " << CPC.keyboard_line << " - " << static_cast<int>(ret_val));
                      } else if (PSG.reg_select == 15) { // PSG port B?
                         if ((PSG.RegisterAY.Index[7] & 0x80)) { // port B in output mode?
@@ -554,6 +563,26 @@ byte z80_IN_handler (reg_pair port)
          } else { // FDC data register
             ret_val = fdc_read_data();
          }
+      }
+   }
+// Symbiface II ----------------------------------------------------------------
+   if (g_symbiface.enabled) {
+      if (port.b.h == 0xFD && (port.b.l & 0xC0) == 0x00) {
+         byte sub = port.b.l & 0x38;
+         if (sub == 0x08) {
+            ret_val = symbiface_ide_read(port.b.l & 0x07);
+         } else if (sub == 0x18) {
+            // Alt status = same as status (no interrupt clear)
+            ret_val = symbiface_ide_read(7);
+         } else if (sub == 0x00 && (port.b.l & 0x01)) {
+            ret_val = symbiface_rtc_read();
+         }
+      }
+      if (port.b.h == 0xFB && port.b.l == 0xEE) {
+         ret_val = g_symbiface.mouse.x_counter;
+      }
+      if (port.b.h == 0xFB && port.b.l == 0xEF) {
+         ret_val = g_symbiface.mouse.y_counter;
       }
    }
    LOG_DEBUG("IN on port " << std::hex << static_cast<int>(port.w.l) << ", ret_val=" << static_cast<int>(ret_val) << std::dec);
@@ -904,10 +933,12 @@ void z80_OUT_handler (reg_pair port, byte val)
             if (!(PPI.control & 1)) { // output lower half?
                LOG_DEBUG("PPI write to portC (keyboard_line): " << static_cast<int>(val));
                CPC.keyboard_line = val;
+               if (g_amx_mouse.enabled) amx_mouse_row_select(val & 0x0f);
             }
             if (!(PPI.control & 8)) { // output upper half?
                LOG_DEBUG("PPI write to portC (upper half): " << static_cast<int>(val));
                CPC.tape_motor = val & 0x10; // update tape motor control
+               drive_sounds_tape(CPC.tape_motor && CPC.tape_play_button);
                PSG.control = val; // change PSG control
                byte psg_data = PPI.portA;
                psg_write
@@ -931,10 +962,12 @@ void z80_OUT_handler (reg_pair port, byte val)
                if (!(PPI.control & 1)) { // output lower half?
                   LOG_DEBUG("PPI.portC update (keyboard_line): " << static_cast<int>(PPI.portC));
                   CPC.keyboard_line = PPI.portC;
+                  if (g_amx_mouse.enabled) amx_mouse_row_select(PPI.portC & 0x0f);
                }
                if (!(PPI.control & 8)) { // output upper half?
                   LOG_DEBUG("PPI.portC update (upper half): " << static_cast<int>(PPI.portC));
                   CPC.tape_motor = PPI.portC & 0x10;
+                  drive_sounds_tape(CPC.tape_motor && CPC.tape_play_button);
                   PSG.control = PPI.portC; // change PSG control
                   byte psg_data = PPI.portA;
                   psg_write
@@ -950,6 +983,7 @@ void z80_OUT_handler (reg_pair port, byte val)
    if ((port.b.h == 0xfa) && (!(port.b.l & 0x80))) { // floppy motor control?
       LOG_DEBUG("FDC motor control access: " << static_cast<int>(port.b.l) << " - " << static_cast<int>(val));
       FDC.motor = val & 0x01;
+      drive_sounds_motor(FDC.motor != 0);
       #ifdef DEBUG_FDC
       fputs(FDC.motor ? "\r\n--- motor on" : "\r\n--- motor off", pfoDebug);
       #endif
@@ -958,8 +992,22 @@ void z80_OUT_handler (reg_pair port, byte val)
    else if ((port.b.h == 0xfb) && (!(port.b.l & 0x80))) { // FDC data register?
       fdc_write_data(val);
    }
+// M4 Board --------------------------------------------------------------------
+   if (g_m4board.enabled) {
+      if (port.b.h == 0xFE && port.b.l == 0x00) {
+         m4board_data_out(val);
+      }
+      else if (port.b.h == 0xFC) {
+         m4board_execute();
+         // Write response into M4 ROM overlay
+         extern byte *memmap_ROM[];
+         if (memmap_ROM[g_m4board.rom_slot]) {
+            m4board_write_response(memmap_ROM[g_m4board.rom_slot]);
+         }
+      }
+   }
 // MF2 ------------------------------------------------------------------------
-   else if ((CPC.mf2) && (port.b.h == 0xfe)) { // Multiface 2?
+   if ((CPC.mf2) && (port.b.h == 0xfe)) { // Multiface 2?
       if ((port.b.l == 0xe8) && (!(dwMF2Flags & MF2_INVISIBLE))) { // page in MF2 ROM?
          dwMF2Flags |= MF2_ACTIVE;
          ga_memory_manager();
@@ -968,6 +1016,28 @@ void z80_OUT_handler (reg_pair port, byte val)
          dwMF2Flags &= ~MF2_ACTIVE;
          ga_memory_manager();
       }
+   }
+// Symbiface II ----------------------------------------------------------------
+   if (g_symbiface.enabled) {
+      if (port.b.h == 0xFD && (port.b.l & 0xC0) == 0x00) {
+         byte sub = port.b.l & 0x38;
+         if (sub == 0x08) {
+            symbiface_ide_write(port.b.l & 0x07, val);
+         } else if (sub == 0x18) {
+            // Device control register — only reset bit matters
+            if (val & 0x04) symbiface_reset();
+         } else if (sub == 0x00) {
+            if (port.b.l & 0x01) {
+               symbiface_rtc_write_data(val);
+            } else {
+               symbiface_rtc_write_addr(val);
+            }
+         }
+      }
+   }
+// AmDrum DAC ------------------------------------------------------------------
+   if (g_amdrum.enabled && port.b.h == 0xff) {
+      g_amdrum.dac_value = val;
    }
 }
 
@@ -1207,6 +1277,21 @@ void emulator_reset ()
 // PSG
    PSG.control = 0;
    ResetAYChipEmulation();
+
+// AmDrum
+   amdrum_reset();
+
+// SmartWatch
+   smartwatch_reset();
+
+// AMX Mouse
+   amx_mouse_reset();
+
+// Symbiface II
+   symbiface_reset();
+
+// M4 Board
+   m4board_reset();
 
 // FDC
    memset(&FDC, 0, sizeof(FDC)); // clear FDC data structure
@@ -1539,6 +1624,7 @@ int audio_init ()
    LOG_VERBOSE("Audio: Sound buffer ready");
 
    InitAY();
+   drive_sounds_init(desired.freq);
 
    for (int n = 0; n < 16; n++) {
       SetAYRegister(n, PSG.RegisterAY.Index[n]);
@@ -2003,6 +2089,26 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
       CPC.snd_volume = 80;
    }
    CPC.snd_pp_device = conf.getIntValue("sound", "pp_device", 0) & 1;
+   g_amdrum.enabled = conf.getIntValue("sound", "amdrum", 0) & 1;
+   g_drive_sounds.disk_enabled = conf.getIntValue("sound", "disk_sounds", 0) & 1;
+   g_drive_sounds.tape_enabled = conf.getIntValue("sound", "tape_sounds", 0) & 1;
+   g_smartwatch.enabled = conf.getIntValue("system", "smartwatch", 0) & 1;
+   g_amx_mouse.enabled = conf.getIntValue("input", "amx_mouse", 0) & 1;
+
+   g_symbiface.enabled = conf.getIntValue("peripheral", "symbiface", 0) & 1;
+   g_m4board.enabled = conf.getIntValue("peripheral", "m4board", 0) & 1;
+   g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
+   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 7);
+   {
+      std::string ide_path = conf.getStringValue("peripheral", "ide_master", "");
+      if (!ide_path.empty() && g_symbiface.enabled) {
+         symbiface_ide_attach(0, ide_path);
+      }
+      ide_path = conf.getStringValue("peripheral", "ide_slave", "");
+      if (!ide_path.empty() && g_symbiface.enabled) {
+         symbiface_ide_attach(1, ide_path);
+      }
+   }
 
    CPC.kbd_layout = conf.getStringValue("control", "kbd_layout", "keymap_us.map");
 
@@ -2086,6 +2192,18 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("sound", "stereo", CPC.snd_stereo);
    conf.setIntValue("sound", "volume", CPC.snd_volume);
    conf.setIntValue("sound", "pp_device", CPC.snd_pp_device);
+   conf.setIntValue("sound", "amdrum", g_amdrum.enabled ? 1 : 0);
+   conf.setIntValue("sound", "disk_sounds", g_drive_sounds.disk_enabled ? 1 : 0);
+   conf.setIntValue("sound", "tape_sounds", g_drive_sounds.tape_enabled ? 1 : 0);
+   conf.setIntValue("system", "smartwatch", g_smartwatch.enabled ? 1 : 0);
+   conf.setIntValue("input", "amx_mouse", g_amx_mouse.enabled ? 1 : 0);
+
+   conf.setIntValue("peripheral", "symbiface", g_symbiface.enabled ? 1 : 0);
+   conf.setStringValue("peripheral", "ide_master", g_symbiface.ide_master.image_path);
+   conf.setStringValue("peripheral", "ide_slave", g_symbiface.ide_slave.image_path);
+   conf.setIntValue("peripheral", "m4board", g_m4board.enabled ? 1 : 0);
+   conf.setStringValue("peripheral", "m4_sd_path", g_m4board.sd_root_path);
+   conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
 
    conf.setStringValue("control", "kbd_layout", CPC.kbd_layout);
 
@@ -2419,6 +2537,8 @@ void doCleanUp ()
    dsk_eject(&driveB);
    tape_eject();
 
+   symbiface_cleanup();
+   m4board_cleanup();
    joysticks_shutdown();
    audio_shutdown();
    video_clear_topbar();
@@ -3416,6 +3536,12 @@ int koncpc_main (int argc, char **argv)
               }
               CPC.phazer_x = (event.motion.x-vid_plugin->x_offset) * vid_plugin->x_scale;
               CPC.phazer_y = (event.motion.y-vid_plugin->y_offset) * vid_plugin->y_scale;
+              if (g_amx_mouse.enabled) {
+                amx_mouse_update(event.motion.xrel, event.motion.yrel, SDL_GetMouseState(nullptr, nullptr));
+              }
+              if (g_symbiface.enabled) {
+                symbiface_mouse_update(event.motion.xrel, event.motion.yrel, SDL_GetMouseState(nullptr, nullptr));
+              }
             }
             break;
 
@@ -3435,6 +3561,9 @@ int koncpc_main (int argc, char **argv)
                 }
                 CPC.phazer_pressed = true;
               }
+              if (g_amx_mouse.enabled) {
+                amx_mouse_update(0, 0, SDL_GetMouseState(nullptr, nullptr));
+              }
             }
             break;
 
@@ -3446,6 +3575,9 @@ int koncpc_main (int argc, char **argv)
                   applyKeypress(scancode, keyboard_matrix, false);
                 }
                 CPC.phazer_pressed = false;
+              }
+              if (g_amx_mouse.enabled) {
+                amx_mouse_update(0, 0, SDL_GetMouseState(nullptr, nullptr));
               }
             }
             break;
