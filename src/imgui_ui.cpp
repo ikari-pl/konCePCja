@@ -1474,6 +1474,7 @@ static void imgui_render_devtools()
       ImGui::EndMenu();
     }
     ImGui::Separator();
+    if (!CPC.paused) ImGui::BeginDisabled();
     if (ImGui::Button("Step In"))  {
       z80.step_in = 1;
       z80.step_out = 0;
@@ -1501,6 +1502,7 @@ static void imgui_render_devtools()
       z80.step_in = 0;
       CPC.paused = false;
     }
+    if (!CPC.paused) ImGui::EndDisabled();
     ImGui::Separator();
     if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {
       CPC.paused = !CPC.paused;
