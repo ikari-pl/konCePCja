@@ -1424,7 +1424,7 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Registers",      nullptr, g_devtools_ui.window_ptr("registers"));
       ImGui::MenuItem("Disassembly",    nullptr, g_devtools_ui.window_ptr("disassembly"));
       ImGui::MenuItem("Stack",          nullptr, g_devtools_ui.window_ptr("stack"));
-      ImGui::MenuItem("Breakpoints/WP", nullptr, g_devtools_ui.window_ptr("breakpoints"));
+      ImGui::MenuItem("Breakpoints/WP/IO", nullptr, g_devtools_ui.window_ptr("breakpoints"));
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Memory")) {

@@ -44,6 +44,9 @@ static bool has_path_traversal(const char* path)
   return false;
 }
 
+// Consistent link color for all navigable addresses
+static constexpr ImVec4 kLinkColor(0.4f, 0.8f, 1.0f, 1.0f);
+
 DevToolsUI g_devtools_ui;
 
 // -----------------------------------------------
@@ -295,6 +298,10 @@ void DevToolsUI::render_disassembly()
         disasm_scroll_pending_ = true;
       }
     }
+    ImGui::Separator();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Click lines to toggle breakpoints. Right-click for more options.");
     ImGui::EndMenuBar();
   }
 
@@ -375,6 +382,10 @@ void DevToolsUI::render_disassembly()
           z80_del_breakpoint(entry.addr);
         else
           z80_add_breakpoint(entry.addr);
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Click: toggle breakpoint | Right-click: more options");
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       }
 
       // Right-click context menu
@@ -460,6 +471,10 @@ void DevToolsUI::render_memory_hex()
     if (ImGui::InputInt("##bpr", &bpr, 0, 0)) {
       if (bpr >= 4 && bpr <= 32) memhex_bytes_per_row_ = bpr;
     }
+    ImGui::Separator();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Right-click for navigation options.");
     ImGui::EndMenuBar();
   }
 
@@ -640,6 +655,10 @@ void DevToolsUI::render_stack()
           navigate_disassembly(value);
         }
       }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Double-click to view in Disassembly");
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+      }
 
       if (is_ret_addr) ImGui::PopStyleColor();
     }
@@ -660,7 +679,7 @@ void DevToolsUI::render_breakpoints()
   ImGui::SetNextWindowPos(ImVec2(10, 540), ImGuiCond_FirstUseEver);
 
   bool open = true;
-  if (!ImGui::Begin("Breakpoints & Watchpoints", &open)) {
+  if (!ImGui::Begin("Breakpoints & Watchpoints & IO###BPWindow", &open)) {
     if (!open) show_breakpoints_ = false;
     ImGui::End();
     return;
@@ -672,11 +691,18 @@ void DevToolsUI::render_breakpoints()
   if (ImGui::Button("Clear All WPs")) z80_clear_watchpoints();
   ImGui::SameLine();
   if (ImGui::Button("Clear All IOBPs")) z80_clear_io_breakpoints();
-  ImGui::Separator();
 
   const auto& bps = z80_list_breakpoints_ref();
   const auto& wps = z80_list_watchpoints_ref();
   const auto& iobps = z80_list_io_breakpoints_ref();
+
+  // Count visible (non-ephemeral) breakpoints
+  int bp_visible = 0;
+  for (const auto& bp : bps) {
+    if (bp.type != EPHEMERAL) bp_visible++;
+  }
+  ImGui::Text("BP: %d  |  WP: %zu  |  IO: %zu", bp_visible, wps.size(), iobps.size());
+  ImGui::Separator();
 
   if (ImGui::BeginTable("bpwp_table", 5,
       ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
@@ -699,7 +725,7 @@ void DevToolsUI::render_breakpoints()
       ImGui::PushID(static_cast<int>(i));
       {
         std::string sym = g_symfile.lookupAddr(bp.address);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, kLinkColor);
         char bp_label[80];
         if (!sym.empty())
           snprintf(bp_label, sizeof(bp_label), "%04X %s", bp.address, sym.c_str());
@@ -707,7 +733,10 @@ void DevToolsUI::render_breakpoints()
           snprintf(bp_label, sizeof(bp_label), "%04X", bp.address);
         if (ImGui::Selectable(bp_label, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(bp.address, NavTarget::DISASM);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Disassembly");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Click to show in Disassembly");
+          ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
         ImGui::PopStyleColor();
       }
       ImGui::TableSetColumnIndex(2);
@@ -733,7 +762,7 @@ void DevToolsUI::render_breakpoints()
       ImGui::TableSetColumnIndex(1);
       ImGui::PushID(1000 + static_cast<int>(i));
       {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, kLinkColor);
         char wp_label[32];
         if (wp.length > 1)
           snprintf(wp_label, sizeof(wp_label), "%04X+%d", static_cast<word>(wp.address), wp.length);
@@ -741,7 +770,10 @@ void DevToolsUI::render_breakpoints()
           snprintf(wp_label, sizeof(wp_label), "%04X", static_cast<word>(wp.address));
         if (ImGui::Selectable(wp_label, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(static_cast<word>(wp.address), NavTarget::MEMORY);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Memory Hex");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Click to show in Memory Hex");
+          ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
         ImGui::PopStyleColor();
       }
       ImGui::TableSetColumnIndex(2);
@@ -920,6 +952,10 @@ void DevToolsUI::render_symbols()
       if (ImGui::Selectable(nullptr, false, ImGuiSelectableFlags_SpanAllColumns)) {
         // Navigate disassembly to this address
         navigate_disassembly(addr);
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Click to view in Disassembly");
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       }
       ImGui::SameLine();
       ImGui::Text("%04X", addr);
@@ -1312,6 +1348,13 @@ void DevToolsUI::render_data_areas()
   }
 
   if (ImGui::Button("Clear All")) g_data_areas.clear_all();
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Marked regions appear as db/dw/text in Disasm Export");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Open Disasm Export"))
+    show_disasm_export_ = true;
   ImGui::Separator();
 
   // Mark form
@@ -1361,12 +1404,15 @@ void DevToolsUI::render_data_areas()
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
       {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 0.8f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, kLinkColor);
         char da_label_id[8];
         snprintf(da_label_id, sizeof(da_label_id), "%04X", da.start);
         if (ImGui::Selectable(da_label_id, false, ImGuiSelectableFlags_DontClosePopups))
           navigate_to(da.start, NavTarget::DISASM);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click to show in Disassembly");
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Click to show in Disassembly");
+          ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
         ImGui::PopStyleColor();
       }
       ImGui::TableSetColumnIndex(1);
@@ -1532,6 +1578,12 @@ void DevToolsUI::render_session_recording()
     return;
   }
 
+  // Help icon
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Records keyboard input for replay.");
+  ImGui::Separator();
+
   SessionState state = g_session.state();
 
   // State indicator
@@ -1627,6 +1679,12 @@ void DevToolsUI::render_gfx_finder()
     ImGui::End();
     return;
   }
+
+  // Help icon
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Click on the canvas to paint pixels.");
+  ImGui::SameLine();
 
   // Parameters
   ImGui::SetNextItemWidth(60);
