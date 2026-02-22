@@ -728,8 +728,14 @@ std::string handle_command(const std::string& line) {
     }
     // disasm <addr> <count> [--symbols]
     if (parts.size() >= 3) {
-      unsigned int addr = std::stoul(parts[1], nullptr, 0);
-      int count = std::stoi(parts[2]);
+      unsigned int addr;
+      int count;
+      try {
+        addr = std::stoul(parts[1], nullptr, 0);
+        count = std::stoi(parts[2]);
+      } catch (const std::exception&) {
+        return "ERR 400 bad-address\n";
+      }
       if (count < 0) return "ERR 400 bad-args\n";
       bool with_symbols = false;
       for (size_t pi = 3; pi < parts.size(); pi++) {

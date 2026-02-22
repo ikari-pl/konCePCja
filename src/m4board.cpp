@@ -669,6 +669,15 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::st
       return;
    }
 
+   // On real hardware, the M4 firmware (ESP8266) pre-fills runtime data in the ROM
+   // image before the CPC boots. The ROM's init then patches the CPC firmware jumpblock
+   // (&BC77+) to redirect certain firmware calls through M4 event handlers. Without
+   // real M4 hardware writing those handlers, the patched vectors crash the CPC.
+   // Fix: NOP out the firmware patcher at ROM offset 0x798 (CPC &C798) and its
+   // 464-variant at 0x7EA. RSX commands still work (registered via KL LOG EXT).
+   rom_data[0x0798] = 0xC9;  // RET — skip firmware jumpblock patching (664/6128)
+   rom_data[0x07EA] = 0xC9;  // RET — skip firmware jumpblock patching (464 variant)
+
    rom_map[slot] = rom_data;
    g_m4board.rom_auto_loaded = true;
    LOG_INFO("M4: auto-loaded ROM from " << found_path << " into slot " << slot);
