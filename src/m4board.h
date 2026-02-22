@@ -50,8 +50,8 @@ void m4board_execute();
 void m4board_write_response(byte* rom_base);
 
 // Auto-load M4 ROM into the configured slot (called by emulator_init)
-// rom_map: the memmap_ROM[] array, rom_path: CPC.rom_path search directory
-void m4board_load_rom(byte** rom_map, const std::string& rom_path);
+// rom_map: the memmap_ROM[] array, rom_path: CPC.rom_path, resources_path: CPC.resources_path
+void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::string& resources_path);
 
 // Unload M4 ROM if we auto-loaded it (called by emulator_shutdown)
 void m4board_unload_rom(byte** rom_map);

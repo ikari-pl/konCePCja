@@ -614,17 +614,32 @@ void m4board_write_response(byte* rom_base)
    memcpy(rom_base + offset, g_m4board.response, len);
 }
 
-void m4board_load_rom(byte** rom_map, const std::string& rom_path)
+void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::string& resources_path)
 {
    if (!g_m4board.enabled) return;
 
    int slot = g_m4board.rom_slot;
    if (slot < 0 || slot >= 256) return;
 
-   // Don't overwrite a user-loaded ROM in this slot
+   // If configured slot is occupied, find a free one
    if (rom_map[slot] != nullptr) {
-      LOG_INFO("M4: ROM slot " << slot << " already occupied, using existing ROM");
-      return;
+      int orig_slot = slot;
+      slot = -1;
+      // Search downward from the original slot, then upward
+      for (int s = orig_slot - 1; s >= 2; s--) {
+         if (rom_map[s] == nullptr) { slot = s; break; }
+      }
+      if (slot < 0) {
+         for (int s = orig_slot + 1; s < 32; s++) {
+            if (rom_map[s] == nullptr) { slot = s; break; }
+         }
+      }
+      if (slot < 0) {
+         LOG_ERROR("M4: no free ROM slot available");
+         return;
+      }
+      LOG_INFO("M4: slot " << orig_slot << " occupied, using slot " << slot << " instead");
+      g_m4board.rom_slot = slot;
    }
 
    // Search for the M4 ROM in standard locations
@@ -638,8 +653,8 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path)
          found_path = candidate;
          break;
       }
-      // Check resources/roms/ (extracted from firmware)
-      candidate = "resources/roms/" + std::string(rom_names[i]);
+      // Check resources/roms/ (absolute path from app directory)
+      candidate = resources_path + "/roms/" + rom_names[i];
       if (std::filesystem::exists(candidate)) {
          found_path = candidate;
          break;

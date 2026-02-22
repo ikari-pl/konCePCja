@@ -1454,7 +1454,7 @@ int emulator_init ()
    }
 
    // Auto-load M4 Board ROM if enabled and slot is free
-   m4board_load_rom(memmap_ROM, CPC.rom_path);
+   m4board_load_rom(memmap_ROM, CPC.rom_path, CPC.resources_path);
 
    emulator_reset();
    CPC.paused = false;
