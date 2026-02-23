@@ -57,3 +57,24 @@ byte amx_mouse_get_row9()
 
    return val;
 }
+
+// ── I/O dispatch registration ──────────────────
+
+#include "io_dispatch.h"
+
+static byte amx_kbd_read_hook(int line)
+{
+   if (line == 9) return amx_mouse_get_row9();
+   return 0xFF;  // no modification for other rows
+}
+
+static void amx_kbd_line_hook(int line)
+{
+   amx_mouse_row_select(line);
+}
+
+void amx_mouse_register_hooks()
+{
+   io_register_kbd_read_hook(amx_kbd_read_hook, &g_amx_mouse.enabled);
+   io_register_kbd_line_hook(amx_kbd_line_hook, &g_amx_mouse.enabled);
+}

@@ -55,6 +55,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "drive_sounds.h"
 #include "symbiface.h"
 #include "m4board.h"
+#include "io_dispatch.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
 #include "macos_menu.h"
@@ -411,6 +412,34 @@ void ga_memory_manager ()
 }
 
 
+// ── MF2 I/O dispatch handler ────────────────────
+// MF2 paging uses file-local dwMF2Flags and ga_memory_manager(),
+// so its handler must live in this file.
+
+static bool s_mf2_enabled = false;  // synced from CPC.mf2
+
+static bool mf2_out_handler(reg_pair port, byte /*val*/)
+{
+   if (port.b.h != 0xFE) return false;
+   if ((port.b.l == 0xE8) && (!(dwMF2Flags & MF2_INVISIBLE))) {
+      dwMF2Flags |= MF2_ACTIVE;
+      ga_memory_manager();
+      return true;
+   }
+   if (port.b.l == 0xEA) {
+      dwMF2Flags &= ~MF2_ACTIVE;
+      ga_memory_manager();
+      return true;
+   }
+   return false;
+}
+
+void mf2_register_io()
+{
+   s_mf2_enabled = CPC.mf2 != 0;
+   io_register_out(0xFE, mf2_out_handler, &s_mf2_enabled, "Multiface II");
+}
+
 
 byte z80_IN_handler (reg_pair port)
 {
@@ -493,9 +522,7 @@ byte z80_IN_handler (reg_pair port)
                         } else {
                            ret_val = PSG.RegisterAY.Index[14] & (keyboard_matrix[CPC.keyboard_line & 0x0f]); // return last value w/ logic AND of input
                         }
-                        if (g_amx_mouse.enabled && (CPC.keyboard_line & 0x0f) == 9) {
-                           ret_val &= amx_mouse_get_row9(); // AND in mouse bits
-                        }
+                        ret_val &= io_fire_kbd_read_hooks(CPC.keyboard_line & 0x0f);
                         LOG_DEBUG("PPI read from portA (keyboard_line): " << CPC.keyboard_line << " - " << static_cast<int>(ret_val));
                      } else if (PSG.reg_select == 15) { // PSG port B?
                         if ((PSG.RegisterAY.Index[7] & 0x80)) { // port B in output mode?
@@ -565,26 +592,8 @@ byte z80_IN_handler (reg_pair port)
          }
       }
    }
-// Symbiface II ----------------------------------------------------------------
-   if (g_symbiface.enabled) {
-      if (port.b.h == 0xFD && (port.b.l & 0xC0) == 0x00) {
-         byte sub = port.b.l & 0x38;
-         if (sub == 0x08) {
-            ret_val = symbiface_ide_read(port.b.l & 0x07);
-         } else if (sub == 0x18) {
-            // Alt status = same as status (no interrupt clear)
-            ret_val = symbiface_ide_read(7);
-         } else if (sub == 0x00 && (port.b.l & 0x01)) {
-            ret_val = symbiface_rtc_read();
-         }
-      }
-      if (port.b.h == 0xFB && port.b.l == 0xEE) {
-         ret_val = g_symbiface.mouse.x_counter;
-      }
-      if (port.b.h == 0xFB && port.b.l == 0xEF) {
-         ret_val = g_symbiface.mouse.y_counter;
-      }
-   }
+// Peripheral dispatch (Symbiface II, etc.) ------------------------------------
+   ret_val = io_dispatch_in(port, ret_val);
    LOG_DEBUG("IN on port " << std::hex << static_cast<int>(port.w.l) << ", ret_val=" << static_cast<int>(ret_val) << std::dec);
    return ret_val;
 }
@@ -597,12 +606,6 @@ void z80_OUT_handler (reg_pair port, byte val)
       z80.breakpoint_reached = 1;
    }
    LOG_DEBUG("OUT on port " << std::hex << static_cast<int>(port.w.l) << ", val=" << static_cast<int>(val) << std::dec);
-   // Amstrad Magnum Phazer
-   if ((port.b.h == 0xfb) && (port.b.l == 0xfe)) {
-     // When the phazer is not pressed, the CRTC is constantly refreshing R16 & R17:
-     // https://www.cpcwiki.eu/index.php/Amstrad_Magnum_Phaser
-     if (!CPC.phazer_pressed) CRTC.registers[17] += 1;
-   }
 // Gate Array -----------------------------------------------------------------
    if ((port.b.h & 0xc0) == 0x40) { // GA chip select?
       switch (val >> 6) {
@@ -933,12 +936,12 @@ void z80_OUT_handler (reg_pair port, byte val)
             if (!(PPI.control & 1)) { // output lower half?
                LOG_DEBUG("PPI write to portC (keyboard_line): " << static_cast<int>(val));
                CPC.keyboard_line = val;
-               if (g_amx_mouse.enabled) amx_mouse_row_select(CPC.keyboard_line & 0x0f);
+               io_fire_kbd_line_hooks(CPC.keyboard_line & 0x0f);
             }
             if (!(PPI.control & 8)) { // output upper half?
                LOG_DEBUG("PPI write to portC (upper half): " << static_cast<int>(val));
                CPC.tape_motor = val & 0x10; // update tape motor control
-               drive_sounds_tape(CPC.tape_motor && CPC.tape_play_button);
+               io_fire_tape_motor_hooks(CPC.tape_motor && CPC.tape_play_button);
                PSG.control = val; // change PSG control
                byte psg_data = PPI.portA;
                psg_write
@@ -962,12 +965,12 @@ void z80_OUT_handler (reg_pair port, byte val)
                if (!(PPI.control & 1)) { // output lower half?
                   LOG_DEBUG("PPI.portC update (keyboard_line): " << static_cast<int>(PPI.portC));
                   CPC.keyboard_line = PPI.portC;
-                  if (g_amx_mouse.enabled) amx_mouse_row_select(CPC.keyboard_line & 0x0f);
+                  io_fire_kbd_line_hooks(CPC.keyboard_line & 0x0f);
                }
                if (!(PPI.control & 8)) { // output upper half?
                   LOG_DEBUG("PPI.portC update (upper half): " << static_cast<int>(PPI.portC));
                   CPC.tape_motor = PPI.portC & 0x10;
-                  drive_sounds_tape(CPC.tape_motor && CPC.tape_play_button);
+                  io_fire_tape_motor_hooks(CPC.tape_motor && CPC.tape_play_button);
                   PSG.control = PPI.portC; // change PSG control
                   byte psg_data = PPI.portA;
                   psg_write
@@ -983,7 +986,7 @@ void z80_OUT_handler (reg_pair port, byte val)
    if ((port.b.h == 0xfa) && (!(port.b.l & 0x80))) { // floppy motor control?
       LOG_DEBUG("FDC motor control access: " << static_cast<int>(port.b.l) << " - " << static_cast<int>(val));
       FDC.motor = val & 0x01;
-      drive_sounds_motor(FDC.motor != 0);
+      io_fire_fdc_motor_hooks(FDC.motor != 0);
       #ifdef DEBUG_FDC
       fputs(FDC.motor ? "\r\n--- motor on" : "\r\n--- motor off", pfoDebug);
       #endif
@@ -992,53 +995,8 @@ void z80_OUT_handler (reg_pair port, byte val)
    else if ((port.b.h == 0xfb) && (!(port.b.l & 0x80))) { // FDC data register?
       fdc_write_data(val);
    }
-// M4 Board --------------------------------------------------------------------
-   if (g_m4board.enabled) {
-      if (port.b.h == 0xFE && port.b.l == 0x00) {
-         m4board_data_out(val);
-      }
-      else if (port.b.h == 0xFC) {
-         m4board_execute();
-         // Write response into M4 ROM overlay
-         extern byte *memmap_ROM[];
-         if (memmap_ROM[g_m4board.rom_slot]) {
-            m4board_write_response(memmap_ROM[g_m4board.rom_slot]);
-         }
-      }
-   }
-// MF2 ------------------------------------------------------------------------
-   if ((CPC.mf2) && (port.b.h == 0xfe)) { // Multiface 2?
-      if ((port.b.l == 0xe8) && (!(dwMF2Flags & MF2_INVISIBLE))) { // page in MF2 ROM?
-         dwMF2Flags |= MF2_ACTIVE;
-         ga_memory_manager();
-      }
-      else if (port.b.l == 0xea) { // page out MF2 ROM?
-         dwMF2Flags &= ~MF2_ACTIVE;
-         ga_memory_manager();
-      }
-   }
-// Symbiface II ----------------------------------------------------------------
-   if (g_symbiface.enabled) {
-      if (port.b.h == 0xFD && (port.b.l & 0xC0) == 0x00) {
-         byte sub = port.b.l & 0x38;
-         if (sub == 0x08) {
-            symbiface_ide_write(port.b.l & 0x07, val);
-         } else if (sub == 0x18) {
-            // Device control register — only reset bit matters
-            if (val & 0x04) symbiface_reset();
-         } else if (sub == 0x00) {
-            if (port.b.l & 0x01) {
-               symbiface_rtc_write_data(val);
-            } else {
-               symbiface_rtc_write_addr(val);
-            }
-         }
-      }
-   }
-// AmDrum DAC ------------------------------------------------------------------
-   if (g_amdrum.enabled && port.b.h == 0xff) {
-      g_amdrum.dac_value = val;
-   }
+// Peripheral dispatch (M4 Board, MF2, Symbiface II, AmDrum, Phazer) -----------
+   io_dispatch_out(port, val);
 }
 
 
@@ -1455,6 +1413,9 @@ int emulator_init ()
 
    // Auto-load M4 Board ROM if enabled and slot is free
    m4board_load_rom(memmap_ROM, CPC.rom_path, CPC.resources_path);
+
+   // Register peripheral I/O handlers and core hooks
+   io_dispatch_init();
 
    emulator_reset();
    CPC.paused = false;

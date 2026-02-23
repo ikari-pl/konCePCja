@@ -49,5 +49,6 @@ int16_t drive_sounds_next_sample();
 void drive_sounds_motor(bool on);
 void drive_sounds_seek();
 void drive_sounds_tape(bool playing);
+void drive_sounds_register_hooks();
 
 #endif

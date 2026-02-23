@@ -37,5 +37,6 @@ void amx_mouse_reset();
 void amx_mouse_update(float dx, float dy, uint32_t sdl_buttons);
 void amx_mouse_row_select(int line);
 byte amx_mouse_get_row9();
+void amx_mouse_register_hooks();
 
 #endif

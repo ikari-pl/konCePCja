@@ -378,3 +378,59 @@ void symbiface_mouse_update(float dx, float dy, uint32_t sdl_buttons)
    if (sdl_buttons & 4) g_symbiface.mouse.buttons &= ~0x02; // right
    if (sdl_buttons & 2) g_symbiface.mouse.buttons &= ~0x04; // middle
 }
+
+// ── I/O dispatch registration ──────────────────
+
+#include "io_dispatch.h"
+
+static bool symbiface_in_handler_fd(reg_pair port, byte& ret_val)
+{
+   if ((port.b.l & 0xC0) != 0x00) return false;
+   byte sub = port.b.l & 0x38;
+   if (sub == 0x08) {
+      ret_val = symbiface_ide_read(port.b.l & 0x07);
+      return true;
+   } else if (sub == 0x18) {
+      ret_val = symbiface_ide_read(7);
+      return true;
+   } else if (sub == 0x00 && (port.b.l & 0x01)) {
+      ret_val = symbiface_rtc_read();
+      return true;
+   }
+   return false;
+}
+
+static bool symbiface_in_handler_fb(reg_pair port, byte& ret_val)
+{
+   if (port.b.l == 0xEE) { ret_val = g_symbiface.mouse.x_counter; return true; }
+   if (port.b.l == 0xEF) { ret_val = g_symbiface.mouse.y_counter; return true; }
+   return false;
+}
+
+static bool symbiface_out_handler_fd(reg_pair port, byte val)
+{
+   if ((port.b.l & 0xC0) != 0x00) return false;
+   byte sub = port.b.l & 0x38;
+   if (sub == 0x08) {
+      symbiface_ide_write(port.b.l & 0x07, val);
+      return true;
+   } else if (sub == 0x18) {
+      if (val & 0x04) symbiface_reset();
+      return true;
+   } else if (sub == 0x00) {
+      if (port.b.l & 0x01) {
+         symbiface_rtc_write_data(val);
+      } else {
+         symbiface_rtc_write_addr(val);
+      }
+      return true;
+   }
+   return false;
+}
+
+void symbiface_register_io()
+{
+   io_register_in(0xFD, symbiface_in_handler_fd, &g_symbiface.enabled, "Symbiface II IDE/RTC");
+   io_register_in(0xFB, symbiface_in_handler_fb, &g_symbiface.enabled, "Symbiface II Mouse");
+   io_register_out(0xFD, symbiface_out_handler_fd, &g_symbiface.enabled, "Symbiface II IDE/RTC");
+}

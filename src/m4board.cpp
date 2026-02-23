@@ -736,3 +736,31 @@ void m4board_unload_rom(byte** rom_map)
    }
    g_m4board.rom_auto_loaded = false;
 }
+
+// ── I/O dispatch registration ──────────────────
+
+#include "io_dispatch.h"
+
+static bool m4board_out_handler_fe(reg_pair port, byte val)
+{
+   if (port.b.l != 0x00) return false;
+   m4board_data_out(val);
+   return true;
+}
+
+static bool m4board_out_handler_fc(reg_pair /*port*/, byte /*val*/)
+{
+   m4board_execute();
+   // Write response into M4 ROM overlay
+   extern byte *memmap_ROM[];
+   if (memmap_ROM[g_m4board.rom_slot]) {
+      m4board_write_response(memmap_ROM[g_m4board.rom_slot]);
+   }
+   return true;
+}
+
+void m4board_register_io()
+{
+   io_register_out(0xFE, m4board_out_handler_fe, &g_m4board.enabled, "M4 Board Data");
+   io_register_out(0xFC, m4board_out_handler_fc, &g_m4board.enabled, "M4 Board Kick");
+}

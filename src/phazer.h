@@ -19,12 +19,13 @@ class PhazerType {
     PhazerType Next();
     operator Value() const { return value; };
 
-    // if(phazer_type) 
+    // if(phazer_type)
     operator bool() const { return value != None; };
 
   private:
     Value value;
 };
 
+void phazer_register_io();
 
 #endif

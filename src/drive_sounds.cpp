@@ -138,3 +138,18 @@ void drive_sounds_tape(bool playing)
       g_drive_sounds.tape_frac = 0.0;
    }
 }
+
+// ── I/O dispatch registration ──────────────────
+
+#include "io_dispatch.h"
+
+// Drive sounds have two independent enable flags (disk_enabled, tape_enabled).
+// We use a single "always enabled" flag for the hooks and let the existing
+// drive_sounds_motor/tape functions check their own enable flags internally.
+static bool s_drive_sounds_always_enabled = true;
+
+void drive_sounds_register_hooks()
+{
+   io_register_tape_motor_hook(drive_sounds_tape, &s_drive_sounds_always_enabled);
+   io_register_fdc_motor_hook(drive_sounds_motor, &s_drive_sounds_always_enabled);
+}

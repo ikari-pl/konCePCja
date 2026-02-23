@@ -87,4 +87,7 @@ void symbiface_rtc_write_data(byte val);
 // Mouse
 void symbiface_mouse_update(float dx, float dy, uint32_t sdl_buttons);
 
+// I/O dispatch registration
+void symbiface_register_io();
+
 #endif

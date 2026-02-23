@@ -56,4 +56,7 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::st
 // Unload M4 ROM if we auto-loaded it (called by emulator_shutdown)
 void m4board_unload_rom(byte** rom_map);
 
+// I/O dispatch registration
+void m4board_register_io();
+
 #endif

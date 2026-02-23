@@ -19,5 +19,6 @@ struct AmDrum {
 extern AmDrum g_amdrum;
 
 void amdrum_reset();
+void amdrum_register_io();
 
 #endif
