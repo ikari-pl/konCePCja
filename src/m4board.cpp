@@ -678,6 +678,47 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::st
    rom_data[0x0798] = 0xC9;  // RET — skip firmware jumpblock patching (664/6128)
    rom_data[0x07EA] = 0xC9;  // RET — skip firmware jumpblock patching (464 variant)
 
+   // Patch the init return (offset 0x268: AND A / SCF / RET) to jump to a boot
+   // message routine. We use offset 0x3800 (CPC &F800) — NOT the response area
+   // at 0x2800 (&E800), because the ROM's own init code writes 0xFF there.
+   rom_data[0x0268] = 0xC3;  // JP &F800
+   rom_data[0x0269] = 0x00;
+   rom_data[0x026A] = 0xF8;
+
+   // Boot message: two-stage approach because code in upper ROM space (&C000+)
+   // becomes inaccessible when TXT OUTPUT pages out the ROM to write screen memory.
+   // Stage 1 (ROM &F800): saves DE, copies stage 2 + string to RAM &8000, jumps there.
+   // Stage 2 (RAM &8000): prints string via CALL &BB5A, restores DE, SCF/RET.
+   // DE must be preserved — the firmware uses it to track free memory after ROM init.
+   static const uint8_t stage1[] = {
+      0xD5,                  // PUSH DE (save firmware memory pointer)
+      0x21, 0x0F, 0xF8,     // LD HL, &F80F  (stage2 source in ROM)
+      0x11, 0x00, 0x80,     // LD DE, &8000   (dest in RAM)
+      0x01, 0x27, 0x00,     // LD BC, 39      (stage2 + string size)
+      0xED, 0xB0,           // LDIR
+      0xC3, 0x00, 0x80,     // JP &8000
+   };
+   // Stage 2: print boot message from RAM, restore DE, signal success.
+   static const uint8_t stage2[] = {
+      0x21, 0x12, 0x80,     // LD HL, &8012  (string in RAM at &8000+18)
+      0x7E,                  // loop: LD A, (HL)
+      0xB7,                  // OR A
+      0x28, 0x08,            // JR Z, +8 → done
+      0xE5,                  // PUSH HL
+      0xCD, 0x5A, 0xBB,     // CALL &BB5A (TXT OUTPUT)
+      0xE1,                  // POP HL
+      0x23,                  // INC HL
+      0x18, 0xF4,            // JR loop
+      0xD1,                  // done: POP DE (restore firmware memory pointer)
+      0x37,                  // SCF (ROM init success)
+      0xC9,                  // RET
+   };
+   static const char boot_msg[] = "\r\nEmulated M4 v2.0\r\n";
+
+   memcpy(rom_data + 0x3800, stage1, sizeof(stage1));                      // 15 bytes
+   memcpy(rom_data + 0x380F, stage2, sizeof(stage2));                      // 18 bytes
+   memcpy(rom_data + 0x380F + sizeof(stage2), boot_msg, sizeof(boot_msg)); // 21 bytes
+
    rom_map[slot] = rom_data;
    g_m4board.rom_auto_loaded = true;
    LOG_INFO("M4: auto-loaded ROM from " << found_path << " into slot " << slot);
