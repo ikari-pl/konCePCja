@@ -151,7 +151,7 @@ std::string handle_command(const std::string& line) {
   if (cmd == "ping") return "OK pong\n";
   if (cmd == "version") {
     int p = g_ipc_instance ? g_ipc_instance->port() : 0;
-    return "OK kaprys-0.1 port=" + std::to_string(p) + "\n";
+    return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
   }
   if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status)\n";
   if (cmd == "quit") {
