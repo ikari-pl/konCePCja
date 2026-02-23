@@ -29,6 +29,7 @@ public:
   ~KoncepcjaIpcServer();
   void start();
   void stop();
+  int port() const { return actual_port.load(); }
 
   void notify_breakpoint_hit(uint16_t pc, bool watchpoint);
   bool consume_breakpoint_hit(uint16_t& pc, bool& watchpoint);
@@ -58,6 +59,7 @@ private:
   void execute_event_command(const std::string& cmd);
 
   std::atomic<bool> running{false};
+  std::atomic<int> actual_port{0};
   std::thread server_thread;
 
   std::atomic<bool> breakpoint_hit{false};

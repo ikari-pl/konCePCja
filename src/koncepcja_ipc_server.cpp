@@ -1,4 +1,5 @@
 #include "koncepcja_ipc_server.h"
+#include "log.h"
 #include "autotype.h"
 #include "gfx_finder.h"
 #include "search_engine.h"
@@ -101,7 +102,8 @@ static void ipc_apply_keypress(CPCScancode cpc_key, byte keyboard_matrix[], bool
 }
 
 namespace {
-constexpr int kPort = 6543;
+constexpr int kBasePort = 6543;
+constexpr int kMaxPortAttempts = 10;  // try 6543..6552
 KoncepcjaIpcServer* g_ipc_instance = nullptr;
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
@@ -147,7 +149,10 @@ std::string handle_command(const std::string& line) {
 
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
-  if (cmd == "version") return "OK kaprys-0.1\n";
+  if (cmd == "version") {
+    int p = g_ipc_instance ? g_ipc_instance->port() : 0;
+    return "OK kaprys-0.1 port=" + std::to_string(p) + "\n";
+  }
   if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status)\n";
   if (cmd == "quit") {
     int code = 0;
@@ -2994,9 +2999,17 @@ void KoncepcjaIpcServer::run() {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(kPort);
 
-  if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+  int bound_port = 0;
+  for (int p = kBasePort; p < kBasePort + kMaxPortAttempts; p++) {
+    addr.sin_port = htons(static_cast<uint16_t>(p));
+    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR) {
+      bound_port = p;
+      break;
+    }
+  }
+  if (bound_port == 0) {
+    LOG_ERROR("IPC: could not bind to any port in range " << kBasePort << "-" << (kBasePort + kMaxPortAttempts - 1));
     closesocket(server_fd);
     WSACleanup();
     return;
@@ -3007,6 +3020,9 @@ void KoncepcjaIpcServer::run() {
     WSACleanup();
     return;
   }
+
+  actual_port.store(bound_port);
+  LOG_INFO("IPC: listening on port " << bound_port);
 
   while (running.load()) {
     fd_set readfds;
@@ -3053,9 +3069,17 @@ void KoncepcjaIpcServer::run() {
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(kPort);
 
-  if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+  int bound_port = 0;
+  for (int p = kBasePort; p < kBasePort + kMaxPortAttempts; p++) {
+    addr.sin_port = htons(static_cast<uint16_t>(p));
+    if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+      bound_port = p;
+      break;
+    }
+  }
+  if (bound_port == 0) {
+    LOG_ERROR("IPC: could not bind to any port in range " << kBasePort << "-" << (kBasePort + kMaxPortAttempts - 1));
     ::close(server_fd);
     return;
   }
@@ -3064,6 +3088,9 @@ void KoncepcjaIpcServer::run() {
     ::close(server_fd);
     return;
   }
+
+  actual_port.store(bound_port);
+  LOG_INFO("IPC: listening on port " << bound_port);
 
   while (running.load()) {
     fd_set readfds;
