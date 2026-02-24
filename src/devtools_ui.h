@@ -21,6 +21,9 @@ public:
     void navigate_to(word addr, NavTarget target);
     void navigate_memory(word addr);
 
+    // Returns the array of all window key strings (16 entries).
+    static const char* const* all_window_keys(int* count);
+
 private:
     bool show_registers_ = false;
     bool show_disassembly_ = false;

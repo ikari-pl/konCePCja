@@ -109,6 +109,15 @@ void video_request_window_screenshot(const std::string& path) {
   g_wss_pending_path = path;
 }
 
+uintptr_t video_get_cpc_texture() {
+  return static_cast<uintptr_t>(cpc_gl_texture);
+}
+
+void video_get_cpc_size(int& w, int& h) {
+  if (vid) { w = vid->w; h = vid->h; }
+  else     { w = 0; h = 0; }
+}
+
 // Called from direct_flip() to capture the current frame
 static void video_capture_if_pending(int display_w, int display_h) {
   std::string wss_path;
@@ -328,12 +337,15 @@ void direct_flip(video_plugin* t)
   ImGui_ImplSDL3_NewFrame();
   ImGui::NewFrame();
 
-  // Draw CPC framebuffer as background image via ImGui
-  ImGuiViewport* vp = ImGui::GetMainViewport();
-  ImGui::GetBackgroundDrawList(vp)->AddImage(
-      static_cast<ImTextureID>(cpc_gl_texture),
-      ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-      ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+  // Draw CPC framebuffer as background image via ImGui (classic mode only;
+  // in docked mode the CPC Screen window handles its own ImGui::Image())
+  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::GetBackgroundDrawList(vp)->AddImage(
+        static_cast<ImTextureID>(cpc_gl_texture),
+        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+        ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+  }
 
   // Render all ImGui windows
   imgui_render_ui();
@@ -984,13 +996,14 @@ void swscale_blit(video_plugin* t)
   ImGui_ImplSDL3_NewFrame();
   ImGui::NewFrame();
 
-  // Draw CPC framebuffer as background image via ImGui
-  // With viewports enabled, background draw list uses screen-space coordinates
-  ImGuiViewport* vp = ImGui::GetMainViewport();
-  ImGui::GetBackgroundDrawList(vp)->AddImage(
-      static_cast<ImTextureID>(cpc_gl_texture),
-      ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-      ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+  // Draw CPC framebuffer as background image via ImGui (classic mode only)
+  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::GetBackgroundDrawList(vp)->AddImage(
+        static_cast<ImTextureID>(cpc_gl_texture),
+        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+        ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+  }
 
   // Render all ImGui windows
   imgui_render_ui();

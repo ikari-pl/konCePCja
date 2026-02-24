@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "command_palette.h"
 #include "menu_actions.h"
+#include "workspace_layout.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -292,6 +293,9 @@ void imgui_init_ui()
 void imgui_render_ui()
 {
   process_pending_dialog();
+  // Dockspace host must be rendered before other windows so they can dock into it
+  workspace_render_dockspace();
+  workspace_render_cpc_screen();
   imgui_render_topbar();
   if (imgui_state.show_menu)        imgui_render_menu();
   if (imgui_state.show_options)     imgui_render_options();
@@ -1593,23 +1597,150 @@ static void imgui_render_devtools()
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Layout")) {
-      if (ImGui::MenuItem("Debug")) {
-        g_devtools_ui.toggle_window("registers");
-        g_devtools_ui.toggle_window("disassembly");
-        g_devtools_ui.toggle_window("stack");
-        g_devtools_ui.toggle_window("breakpoints");
+      // Mode selection
+      if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic)) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
       }
-      if (ImGui::MenuItem("Memory")) {
-        g_devtools_ui.toggle_window("memory_hex");
-        g_devtools_ui.toggle_window("symbols");
-        g_devtools_ui.toggle_window("data_areas");
+      if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked)) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
       }
-      if (ImGui::MenuItem("Hardware")) {
-        g_devtools_ui.toggle_window("video_state");
-        g_devtools_ui.toggle_window("audio_state");
-        g_devtools_ui.toggle_window("asic");
-        g_devtools_ui.toggle_window("silicon_disc");
+      ImGui::Separator();
+
+      // Preset layouts (apply DockBuilder templates in docked mode,
+      // toggle window groups in classic mode)
+      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+        if (ImGui::MenuItem("Apply Debug Layout"))
+          workspace_apply_preset(WorkspacePreset::Debug);
+        if (ImGui::MenuItem("Apply IDE Layout"))
+          workspace_apply_preset(WorkspacePreset::IDE);
+        if (ImGui::MenuItem("Apply Hardware Layout"))
+          workspace_apply_preset(WorkspacePreset::Hardware);
+      } else {
+        if (ImGui::MenuItem("Debug")) {
+          g_devtools_ui.toggle_window("registers");
+          g_devtools_ui.toggle_window("disassembly");
+          g_devtools_ui.toggle_window("stack");
+          g_devtools_ui.toggle_window("breakpoints");
+        }
+        if (ImGui::MenuItem("Memory")) {
+          g_devtools_ui.toggle_window("memory_hex");
+          g_devtools_ui.toggle_window("symbols");
+          g_devtools_ui.toggle_window("data_areas");
+        }
+        if (ImGui::MenuItem("Hardware")) {
+          g_devtools_ui.toggle_window("video_state");
+          g_devtools_ui.toggle_window("audio_state");
+          g_devtools_ui.toggle_window("asic");
+          g_devtools_ui.toggle_window("silicon_disc");
+        }
       }
+
+      // Custom saved layouts
+      ImGui::Separator();
+      {
+        static bool open_save_popup = false;
+        if (ImGui::MenuItem("Save Layout..."))
+          open_save_popup = true;
+
+        auto layouts = workspace_list_layouts();
+
+        if (ImGui::BeginMenu("Load Layout")) {
+          if (layouts.empty()) {
+            ImGui::MenuItem("No saved layouts", nullptr, false, false);
+          } else {
+            for (auto& l : layouts) {
+              if (ImGui::MenuItem(l.c_str()))
+                workspace_load_layout(l);
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Delete Layout")) {
+          if (layouts.empty()) {
+            ImGui::MenuItem("No saved layouts", nullptr, false, false);
+          } else {
+            for (auto& l : layouts) {
+              if (ImGui::MenuItem(l.c_str()))
+                workspace_delete_layout(l);
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        // Deferred popup open (must happen outside menu to avoid ImGui ID stack issues)
+        if (open_save_popup) {
+          ImGui::OpenPopup("Save Layout##popup");
+          open_save_popup = false;
+        }
+      }
+
+      // CPC Screen scale (only in docked mode)
+      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("CPC Screen Scale");
+        if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit)) CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
+        if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
+        if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
+        if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
+      }
+
+      // Save Layout modal popup
+      {
+        static char save_name[64] = "";
+        static std::string save_error;
+        if (ImGui::BeginPopup("Save Layout##popup")) {
+          ImGui::TextUnformatted("Layout Name:");
+          bool enter_pressed = ImGui::InputText("##save_name", save_name, sizeof(save_name),
+              ImGuiInputTextFlags_EnterReturnsTrue);
+          if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere(-1);
+
+          if (!save_error.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::TextUnformatted(save_error.c_str());
+            ImGui::PopStyleColor();
+          }
+
+          bool do_save = enter_pressed || ImGui::Button("Save");
+          ImGui::SameLine();
+          bool do_cancel = ImGui::Button("Cancel");
+
+          if (do_save) {
+            std::string name(save_name);
+            // Trim whitespace
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+
+            // Validate
+            bool valid = !name.empty();
+            if (valid) {
+              for (char c : name) {
+                if (c == '/' || c == '\\' || c == '\0') { valid = false; break; }
+              }
+            }
+            if (valid && (name == "." || name == "..")) valid = false;
+
+            if (!valid) {
+              save_error = "Invalid name";
+            } else if (workspace_save_layout(name)) {
+              save_name[0] = '\0';
+              save_error.clear();
+              ImGui::CloseCurrentPopup();
+            } else {
+              save_error = "Save failed";
+            }
+          }
+          if (do_cancel) {
+            save_name[0] = '\0';
+            save_error.clear();
+            ImGui::CloseCurrentPopup();
+          }
+
+          ImGui::EndPopup();
+        }
+      }
+
       ImGui::EndMenu();
     }
     ImGui::Separator();
