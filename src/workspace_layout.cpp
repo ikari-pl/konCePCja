@@ -260,9 +260,7 @@ static std::filesystem::path layouts_dir()
     if (dir.empty()) {
         std::string cfg = getConfigurationFilename();
         if (!cfg.empty()) {
-            auto slash = cfg.find_last_of('/');
-            std::string base = (slash != std::string::npos) ? cfg.substr(0, slash + 1) : "";
-            dir = std::filesystem::path(base) / "layouts";
+            dir = std::filesystem::path(cfg).parent_path() / "layouts";
         }
     }
     return dir;
@@ -348,6 +346,7 @@ bool workspace_load_layout(const std::string& name)
     if (!in) return false;
 
     auto size = in.tellg();
+    if (size <= 0) return false;
     in.seekg(0);
     std::string data(static_cast<size_t>(size), '\0');
     in.read(&data[0], size);
@@ -366,10 +365,12 @@ bool workspace_load_layout(const std::string& name)
         while (std::getline(ss, line)) {
             if (line.rfind("show_devtools=", 0) == 0)
                 restore_devtools = (line.substr(14) != "0");
-            else if (line.rfind("workspace_layout=", 0) == 0)
-                restore_workspace = std::stoi(line.substr(17));
-            else if (line.rfind("cpc_screen_scale=", 0) == 0)
-                restore_scale = std::stoi(line.substr(17));
+            else if (line.rfind("workspace_layout=", 0) == 0) {
+                try { restore_workspace = std::stoi(line.substr(17)); } catch (...) {}
+            }
+            else if (line.rfind("cpc_screen_scale=", 0) == 0) {
+                try { restore_scale = std::stoi(line.substr(17)); } catch (...) {}
+            }
             else if (line.rfind("windows=", 0) == 0) {
                 std::string wlist = line.substr(8);
                 std::istringstream ws(wlist);
