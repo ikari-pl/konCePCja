@@ -1635,6 +1635,46 @@ static void imgui_render_devtools()
         }
       }
 
+      // Custom saved layouts
+      ImGui::Separator();
+      {
+        static bool open_save_popup = false;
+        if (ImGui::MenuItem("Save Layout..."))
+          open_save_popup = true;
+
+        auto layouts = workspace_list_layouts();
+
+        if (ImGui::BeginMenu("Load Layout")) {
+          if (layouts.empty()) {
+            ImGui::MenuItem("No saved layouts", nullptr, false, false);
+          } else {
+            for (auto& l : layouts) {
+              if (ImGui::MenuItem(l.c_str()))
+                workspace_load_layout(l);
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Delete Layout")) {
+          if (layouts.empty()) {
+            ImGui::MenuItem("No saved layouts", nullptr, false, false);
+          } else {
+            for (auto& l : layouts) {
+              if (ImGui::MenuItem(l.c_str()))
+                workspace_delete_layout(l);
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        // Deferred popup open (must happen outside menu to avoid ImGui ID stack issues)
+        if (open_save_popup) {
+          ImGui::OpenPopup("Save Layout##popup");
+          open_save_popup = false;
+        }
+      }
+
       // CPC Screen scale (only in docked mode)
       if (CPC.workspace_layout == 1) {
         ImGui::Separator();
@@ -1643,6 +1683,62 @@ static void imgui_render_devtools()
         if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == 1)) CPC.cpc_screen_scale = 1;
         if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == 2)) CPC.cpc_screen_scale = 2;
         if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == 3)) CPC.cpc_screen_scale = 3;
+      }
+
+      // Save Layout modal popup
+      {
+        static char save_name[64] = "";
+        static std::string save_error;
+        if (ImGui::BeginPopup("Save Layout##popup")) {
+          ImGui::TextUnformatted("Layout Name:");
+          bool enter_pressed = ImGui::InputText("##save_name", save_name, sizeof(save_name),
+              ImGuiInputTextFlags_EnterReturnsTrue);
+          if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere(-1);
+
+          if (!save_error.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::TextUnformatted(save_error.c_str());
+            ImGui::PopStyleColor();
+          }
+
+          bool do_save = enter_pressed || ImGui::Button("Save");
+          ImGui::SameLine();
+          bool do_cancel = ImGui::Button("Cancel");
+
+          if (do_save) {
+            std::string name(save_name);
+            // Trim whitespace
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+
+            // Validate
+            bool valid = !name.empty();
+            if (valid) {
+              for (char c : name) {
+                if (c == '/' || c == '\\' || c == '\0') { valid = false; break; }
+              }
+            }
+            if (valid && (name == "." || name == "..")) valid = false;
+
+            if (!valid) {
+              save_error = "Invalid name";
+            } else if (workspace_save_layout(name)) {
+              save_name[0] = '\0';
+              save_error.clear();
+              ImGui::CloseCurrentPopup();
+            } else {
+              save_error = "Save failed";
+            }
+          }
+          if (do_cancel) {
+            save_name[0] = '\0';
+            save_error.clear();
+            ImGui::CloseCurrentPopup();
+          }
+
+          ImGui::EndPopup();
+        }
       }
 
       ImGui::EndMenu();

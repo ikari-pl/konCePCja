@@ -119,6 +119,18 @@ bool DevToolsUI::any_window_open() const
          show_recording_controls_;
 }
 
+const char* const* DevToolsUI::all_window_keys(int* count)
+{
+  static const char* keys[] = {
+    "registers", "disassembly", "memory_hex", "stack", "breakpoints",
+    "symbols", "session_recording", "gfx_finder", "silicon_disc",
+    "asic", "disc_tools", "data_areas", "disasm_export",
+    "video_state", "audio_state", "recording_controls"
+  };
+  *count = 16;
+  return keys;
+}
+
 void DevToolsUI::navigate_disassembly(word addr)
 {
   show_disassembly_ = true;

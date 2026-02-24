@@ -5,6 +5,10 @@
 #include "imgui_ui.h"
 #include "imgui.h"
 #include "imgui_internal.h"
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 extern t_CPC CPC;
 
@@ -148,6 +152,13 @@ static void ensure_window_open(const char* name) {
     }
 }
 
+// Helper: close a DevToolsUI window by name (if open)
+static void ensure_window_closed(const char* name) {
+    if (g_devtools_ui.is_window_open(name)) {
+        g_devtools_ui.toggle_window(name);
+    }
+}
+
 void workspace_apply_preset(WorkspacePreset preset)
 {
     // Clear existing dockspace layout
@@ -235,4 +246,170 @@ void workspace_apply_preset(WorkspacePreset preset)
     imgui_state.show_devtools = true;
 
     ImGui::DockBuilderFinish(DOCKSPACE_ID);
+}
+
+// ─────────────────────────────────────────────────
+// Custom layout save/load/delete
+// ─────────────────────────────────────────────────
+
+// Layouts directory: same parent as imgui.ini + "/layouts/"
+static std::filesystem::path layouts_dir()
+{
+    static std::filesystem::path dir;
+    if (dir.empty()) {
+        std::string cfg = getConfigurationFilename();
+        if (!cfg.empty()) {
+            auto slash = cfg.find_last_of('/');
+            std::string base = (slash != std::string::npos) ? cfg.substr(0, slash + 1) : "";
+            dir = std::filesystem::path(base) / "layouts";
+        }
+    }
+    return dir;
+}
+
+// Cached layout list — invalidated on save/delete
+static std::vector<std::string> s_layout_cache;
+static bool s_layout_cache_dirty = true;
+
+std::vector<std::string> workspace_list_layouts()
+{
+    if (!s_layout_cache_dirty) return s_layout_cache;
+
+    s_layout_cache.clear();
+    auto dir = layouts_dir();
+    if (dir.empty() || !std::filesystem::is_directory(dir)) {
+        s_layout_cache_dirty = false;
+        return s_layout_cache;
+    }
+
+    for (auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".ini") {
+            s_layout_cache.push_back(entry.path().stem().string());
+        }
+    }
+    std::sort(s_layout_cache.begin(), s_layout_cache.end());
+    s_layout_cache_dirty = false;
+    return s_layout_cache;
+}
+
+bool workspace_save_layout(const std::string& name)
+{
+    auto dir = layouts_dir();
+    if (dir.empty()) return false;
+
+    std::filesystem::create_directories(dir);
+
+    // Snapshot full ImGui ini state
+    size_t ini_size = 0;
+    const char* ini_data = ImGui::SaveIniSettingsToMemory(&ini_size);
+    if (!ini_data || ini_size == 0) return false;
+
+    // Build our custom section
+    std::ostringstream extra;
+    extra << "\n[KonCePCja]\n";
+    extra << "show_devtools=" << (imgui_state.show_devtools ? 1 : 0) << "\n";
+    extra << "workspace_layout=" << CPC.workspace_layout << "\n";
+    extra << "cpc_screen_scale=" << CPC.cpc_screen_scale << "\n";
+
+    // Record which DevToolsUI windows are open
+    int count = 0;
+    const char* const* keys = DevToolsUI::all_window_keys(&count);
+    extra << "windows=";
+    bool first = true;
+    for (int i = 0; i < count; i++) {
+        if (g_devtools_ui.is_window_open(keys[i])) {
+            if (!first) extra << ",";
+            extra << keys[i];
+            first = false;
+        }
+    }
+    extra << "\n";
+
+    // Write to file
+    auto path = dir / (name + ".ini");
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(ini_data, ini_size);
+    out << extra.str();
+    out.close();
+
+    s_layout_cache_dirty = true;
+    return true;
+}
+
+bool workspace_load_layout(const std::string& name)
+{
+    auto dir = layouts_dir();
+    if (dir.empty()) return false;
+
+    auto path = dir / (name + ".ini");
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) return false;
+
+    auto size = in.tellg();
+    in.seekg(0);
+    std::string data(static_cast<size_t>(size), '\0');
+    in.read(&data[0], size);
+    in.close();
+
+    // Parse our [KonCePCja] section
+    bool restore_devtools = true;
+    int restore_workspace = -1;
+    int restore_scale = -1;
+    std::vector<std::string> open_windows;
+
+    auto section_pos = data.find("\n[KonCePCja]");
+    if (section_pos != std::string::npos) {
+        std::istringstream ss(data.substr(section_pos));
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.rfind("show_devtools=", 0) == 0)
+                restore_devtools = (line.substr(14) != "0");
+            else if (line.rfind("workspace_layout=", 0) == 0)
+                restore_workspace = std::stoi(line.substr(17));
+            else if (line.rfind("cpc_screen_scale=", 0) == 0)
+                restore_scale = std::stoi(line.substr(17));
+            else if (line.rfind("windows=", 0) == 0) {
+                std::string wlist = line.substr(8);
+                std::istringstream ws(wlist);
+                std::string w;
+                while (std::getline(ws, w, ',')) {
+                    if (!w.empty()) open_windows.push_back(w);
+                }
+            }
+        }
+    }
+
+    // Close all DevToolsUI windows first
+    int count = 0;
+    const char* const* keys = DevToolsUI::all_window_keys(&count);
+    for (int i = 0; i < count; i++) {
+        ensure_window_closed(keys[i]);
+    }
+
+    // Restore ImGui ini state (dock tree, window positions)
+    ImGui::LoadIniSettingsFromMemory(data.c_str(), data.size());
+
+    // Restore our metadata
+    imgui_state.show_devtools = restore_devtools;
+    if (restore_workspace >= 0) CPC.workspace_layout = restore_workspace;
+    if (restore_scale >= 0) CPC.cpc_screen_scale = restore_scale;
+
+    // Open the windows that were saved
+    for (auto& w : open_windows) {
+        ensure_window_open(w.c_str());
+    }
+
+    return true;
+}
+
+bool workspace_delete_layout(const std::string& name)
+{
+    auto dir = layouts_dir();
+    if (dir.empty()) return false;
+
+    auto path = dir / (name + ".ini");
+    bool ok = std::filesystem::remove(path);
+    s_layout_cache_dirty = true;
+    return ok;
 }
