@@ -10,7 +10,7 @@ https://github.com/ikari-pl/konCePCja
 
 ![Linux](https://github.com/ikari-pl/konCePCja/actions/workflows/linux.yml/badge.svg) ![Windows](https://github.com/ikari-pl/konCePCja/actions/workflows/windows.yml/badge.svg) ![macOS](https://github.com/ikari-pl/konCePCja/actions/workflows/macos.yml/badge.svg)
 
-<img width="530" height="356" alt="2026-02-24_20-49" src="https://github.com/user-attachments/assets/4dae1a65-ce2a-4e93-bc7d-3bbe98909355" />
+<img width="100%" alt="2026-02-24_20-49" src="https://github.com/user-attachments/assets/4dae1a65-ce2a-4e93-bc7d-3bbe98909355" />
 
 
 ## What is it?
