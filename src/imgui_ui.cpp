@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "command_palette.h"
 #include "menu_actions.h"
+#include "workspace_layout.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -292,6 +293,9 @@ void imgui_init_ui()
 void imgui_render_ui()
 {
   process_pending_dialog();
+  // Dockspace host must be rendered before other windows so they can dock into it
+  workspace_render_dockspace();
+  workspace_render_cpc_screen();
   imgui_render_topbar();
   if (imgui_state.show_menu)        imgui_render_menu();
   if (imgui_state.show_options)     imgui_render_options();
@@ -1593,23 +1597,54 @@ static void imgui_render_devtools()
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Layout")) {
-      if (ImGui::MenuItem("Debug")) {
-        g_devtools_ui.toggle_window("registers");
-        g_devtools_ui.toggle_window("disassembly");
-        g_devtools_ui.toggle_window("stack");
-        g_devtools_ui.toggle_window("breakpoints");
+      // Mode selection
+      if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == 0)) {
+        CPC.workspace_layout = 0;
       }
-      if (ImGui::MenuItem("Memory")) {
-        g_devtools_ui.toggle_window("memory_hex");
-        g_devtools_ui.toggle_window("symbols");
-        g_devtools_ui.toggle_window("data_areas");
+      if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == 1)) {
+        CPC.workspace_layout = 1;
       }
-      if (ImGui::MenuItem("Hardware")) {
-        g_devtools_ui.toggle_window("video_state");
-        g_devtools_ui.toggle_window("audio_state");
-        g_devtools_ui.toggle_window("asic");
-        g_devtools_ui.toggle_window("silicon_disc");
+      ImGui::Separator();
+
+      // Preset layouts (apply DockBuilder templates in docked mode,
+      // toggle window groups in classic mode)
+      if (CPC.workspace_layout == 1) {
+        if (ImGui::MenuItem("Apply Debug Layout"))
+          workspace_apply_preset(WorkspacePreset::Debug);
+        if (ImGui::MenuItem("Apply IDE Layout"))
+          workspace_apply_preset(WorkspacePreset::IDE);
+        if (ImGui::MenuItem("Apply Hardware Layout"))
+          workspace_apply_preset(WorkspacePreset::Hardware);
+      } else {
+        if (ImGui::MenuItem("Debug")) {
+          g_devtools_ui.toggle_window("registers");
+          g_devtools_ui.toggle_window("disassembly");
+          g_devtools_ui.toggle_window("stack");
+          g_devtools_ui.toggle_window("breakpoints");
+        }
+        if (ImGui::MenuItem("Memory")) {
+          g_devtools_ui.toggle_window("memory_hex");
+          g_devtools_ui.toggle_window("symbols");
+          g_devtools_ui.toggle_window("data_areas");
+        }
+        if (ImGui::MenuItem("Hardware")) {
+          g_devtools_ui.toggle_window("video_state");
+          g_devtools_ui.toggle_window("audio_state");
+          g_devtools_ui.toggle_window("asic");
+          g_devtools_ui.toggle_window("silicon_disc");
+        }
       }
+
+      // CPC Screen scale (only in docked mode)
+      if (CPC.workspace_layout == 1) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("CPC Screen Scale");
+        if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == 0)) CPC.cpc_screen_scale = 0;
+        if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == 1)) CPC.cpc_screen_scale = 1;
+        if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == 2)) CPC.cpc_screen_scale = 2;
+        if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == 3)) CPC.cpc_screen_scale = 3;
+      }
+
       ImGui::EndMenu();
     }
     ImGui::Separator();

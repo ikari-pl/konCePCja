@@ -2017,6 +2017,11 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    CPC.devtools_scale = conf.getIntValue("devtools", "scale", 1);
    CPC.devtools_max_stack_size = conf.getIntValue("devtools", "max_stack_size", 50);
 
+   CPC.workspace_layout = conf.getIntValue("ui", "workspace_layout", 0);
+   if (CPC.workspace_layout < 0 || CPC.workspace_layout > 1) CPC.workspace_layout = 0;
+   CPC.cpc_screen_scale = conf.getIntValue("ui", "cpc_screen_scale", 0);
+   if (CPC.cpc_screen_scale < 0 || CPC.cpc_screen_scale > 3) CPC.cpc_screen_scale = 0;
+
    CPC.scr_scale = conf.getIntValue("video", "scr_scale", 2);
    CPC.scr_preserve_aspect_ratio = conf.getIntValue("video", "scr_preserve_aspect_ratio", 1);
    CPC.scr_style = conf.getIntValue("video", "scr_style", 1);
@@ -2147,6 +2152,9 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("video", "scr_window", CPC.scr_window);
 
    conf.setIntValue("devtools", "scale", CPC.devtools_scale);
+
+   conf.setIntValue("ui", "workspace_layout", CPC.workspace_layout);
+   conf.setIntValue("ui", "cpc_screen_scale", CPC.cpc_screen_scale);
 
    conf.setIntValue("video", "scr_green_mode", CPC.scr_green_mode);
    conf.setIntValue("video", "scr_green_blue_percent", CPC.scr_green_blue_percent);
