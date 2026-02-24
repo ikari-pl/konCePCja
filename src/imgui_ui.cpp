@@ -1598,17 +1598,17 @@ static void imgui_render_devtools()
     }
     if (ImGui::BeginMenu("Layout")) {
       // Mode selection
-      if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == 0)) {
-        CPC.workspace_layout = 0;
+      if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic)) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
       }
-      if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == 1)) {
-        CPC.workspace_layout = 1;
+      if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked)) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
       }
       ImGui::Separator();
 
       // Preset layouts (apply DockBuilder templates in docked mode,
       // toggle window groups in classic mode)
-      if (CPC.workspace_layout == 1) {
+      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
         if (ImGui::MenuItem("Apply Debug Layout"))
           workspace_apply_preset(WorkspacePreset::Debug);
         if (ImGui::MenuItem("Apply IDE Layout"))
@@ -1676,13 +1676,13 @@ static void imgui_render_devtools()
       }
 
       // CPC Screen scale (only in docked mode)
-      if (CPC.workspace_layout == 1) {
+      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
         ImGui::Separator();
         ImGui::TextUnformatted("CPC Screen Scale");
-        if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == 0)) CPC.cpc_screen_scale = 0;
-        if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == 1)) CPC.cpc_screen_scale = 1;
-        if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == 2)) CPC.cpc_screen_scale = 2;
-        if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == 3)) CPC.cpc_screen_scale = 3;
+        if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit)) CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
+        if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
+        if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
+        if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
       }
 
       // Save Layout modal popup

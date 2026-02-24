@@ -66,7 +66,7 @@ video_plugin video_headless_plugin();
 // CPC framebuffer texture/size for docked workspace mode.
 // Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to ImTextureID.
 uintptr_t video_get_cpc_texture();
-void video_get_cpc_size(int* w, int* h);
+void video_get_cpc_size(int& w, int& h);
 
 // Request a window screenshot (CPC display + ImGui overlay).
 // Sets path; capture happens on the next rendered frame.

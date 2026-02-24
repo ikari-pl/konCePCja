@@ -242,8 +242,11 @@ class t_CPC {
    int devtools_scale;
    unsigned int devtools_max_stack_size;
 
-   int workspace_layout;    // 0=Classic (floating), 1=Docked
-   int cpc_screen_scale;    // 0=Fit, 1/2/3=fixed pixel multiplier
+   enum class WorkspaceLayoutMode { Classic = 0, Docked = 1 };
+   enum class ScreenScale { Fit = 0, X1 = 1, X2 = 2, X3 = 3 };
+
+   WorkspaceLayoutMode workspace_layout;
+   ScreenScale cpc_screen_scale;
 
    unsigned int snd_enabled;
    bool snd_ready;

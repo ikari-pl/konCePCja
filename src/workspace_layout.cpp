@@ -24,7 +24,7 @@ static bool s_first_dock = true;
 
 void workspace_render_dockspace()
 {
-    if (CPC.workspace_layout != 1) return;
+    if (CPC.workspace_layout != t_CPC::WorkspaceLayoutMode::Docked) return;
 
     // Auto-apply Debug preset on first entry into docked mode
     if (s_first_dock) {
@@ -72,11 +72,11 @@ void workspace_render_dockspace()
 
 void workspace_render_cpc_screen()
 {
-    if (CPC.workspace_layout != 1) return;
+    if (CPC.workspace_layout != t_CPC::WorkspaceLayoutMode::Docked) return;
 
     ImTextureID tex = static_cast<ImTextureID>(video_get_cpc_texture());
     int tex_w, tex_h;
-    video_get_cpc_size(&tex_w, &tex_h);
+    video_get_cpc_size(tex_w, tex_h);
     if (!tex || tex_w <= 0 || tex_h <= 0) return;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -88,7 +88,7 @@ void workspace_render_cpc_screen()
         float src_aspect = static_cast<float>(tex_w) / static_cast<float>(tex_h);
 
         float draw_w, draw_h;
-        if (CPC.cpc_screen_scale == 0) {
+        if (CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit) {
             // Fit: scale to fill available space preserving aspect ratio
             float dst_aspect = avail.x / avail.y;
             if (dst_aspect > src_aspect) {
@@ -100,8 +100,9 @@ void workspace_render_cpc_screen()
             }
         } else {
             // Fixed 1x/2x/3x
-            draw_w = static_cast<float>(tex_w * CPC.cpc_screen_scale);
-            draw_h = static_cast<float>(tex_h * CPC.cpc_screen_scale);
+            int scale = static_cast<int>(CPC.cpc_screen_scale);
+            draw_w = static_cast<float>(tex_w * scale);
+            draw_h = static_cast<float>(tex_h * scale);
         }
 
         // Center in available space
@@ -125,10 +126,10 @@ void workspace_render_cpc_screen()
         if (ImGui::BeginPopupContextWindow("##CPCScreenCtx")) {
             ImGui::TextUnformatted("Scale Mode");
             ImGui::Separator();
-            if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == 0)) CPC.cpc_screen_scale = 0;
-            if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == 1)) CPC.cpc_screen_scale = 1;
-            if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == 2)) CPC.cpc_screen_scale = 2;
-            if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == 3)) CPC.cpc_screen_scale = 3;
+            if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit)) CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
+            if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
+            if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
+            if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
             ImGui::EndPopup();
         }
     }
@@ -137,7 +138,7 @@ void workspace_render_cpc_screen()
 
     // If user closed the CPC Screen window, switch back to classic mode
     if (!open) {
-        CPC.workspace_layout = 0;
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
     }
 }
 
@@ -308,8 +309,8 @@ bool workspace_save_layout(const std::string& name)
     std::ostringstream extra;
     extra << "\n[KonCePCja]\n";
     extra << "show_devtools=" << (imgui_state.show_devtools ? 1 : 0) << "\n";
-    extra << "workspace_layout=" << CPC.workspace_layout << "\n";
-    extra << "cpc_screen_scale=" << CPC.cpc_screen_scale << "\n";
+    extra << "workspace_layout=" << static_cast<int>(CPC.workspace_layout) << "\n";
+    extra << "cpc_screen_scale=" << static_cast<int>(CPC.cpc_screen_scale) << "\n";
 
     // Record which DevToolsUI windows are open
     int count = 0;
@@ -392,8 +393,12 @@ bool workspace_load_layout(const std::string& name)
 
     // Restore our metadata
     imgui_state.show_devtools = restore_devtools;
-    if (restore_workspace >= 0) CPC.workspace_layout = restore_workspace;
-    if (restore_scale >= 0) CPC.cpc_screen_scale = restore_scale;
+    if (restore_workspace >= 0)
+        CPC.workspace_layout = (restore_workspace == 1)
+            ? t_CPC::WorkspaceLayoutMode::Docked
+            : t_CPC::WorkspaceLayoutMode::Classic;
+    if (restore_scale >= 0 && restore_scale <= 3)
+        CPC.cpc_screen_scale = static_cast<t_CPC::ScreenScale>(restore_scale);
 
     // Open the windows that were saved
     for (auto& w : open_windows) {

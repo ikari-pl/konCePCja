@@ -113,9 +113,9 @@ uintptr_t video_get_cpc_texture() {
   return static_cast<uintptr_t>(cpc_gl_texture);
 }
 
-void video_get_cpc_size(int* w, int* h) {
-  if (vid) { *w = vid->w; *h = vid->h; }
-  else     { *w = 0; *h = 0; }
+void video_get_cpc_size(int& w, int& h) {
+  if (vid) { w = vid->w; h = vid->h; }
+  else     { w = 0; h = 0; }
 }
 
 // Called from direct_flip() to capture the current frame
@@ -339,7 +339,7 @@ void direct_flip(video_plugin* t)
 
   // Draw CPC framebuffer as background image via ImGui (classic mode only;
   // in docked mode the CPC Screen window handles its own ImGui::Image())
-  if (CPC.workspace_layout == 0) {
+  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::GetBackgroundDrawList(vp)->AddImage(
         static_cast<ImTextureID>(cpc_gl_texture),
@@ -997,7 +997,7 @@ void swscale_blit(video_plugin* t)
   ImGui::NewFrame();
 
   // Draw CPC framebuffer as background image via ImGui (classic mode only)
-  if (CPC.workspace_layout == 0) {
+  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::GetBackgroundDrawList(vp)->AddImage(
         static_cast<ImTextureID>(cpc_gl_texture),
