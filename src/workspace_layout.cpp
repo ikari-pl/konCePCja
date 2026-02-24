@@ -185,10 +185,9 @@ void workspace_apply_preset(WorkspacePreset preset)
         ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, &bottom, &center);
 
         ImGui::DockBuilderDockWindow("CPC Screen", center);
-        ImGui::DockBuilderDockWindow("DevTools", center);  // tabs with CPC Screen
 
         ImGui::DockBuilderDockWindow("Disassembly", left);
-        ImGui::DockBuilderDockWindow("Breakpoints/WP/IO", left);
+        ImGui::DockBuilderDockWindow("Breakpoints & Watchpoints & IO###BPWindow", left);
 
         ImGui::DockBuilderDockWindow("Registers", right);
         ImGui::DockBuilderDockWindow("Stack", right);
@@ -208,12 +207,11 @@ void workspace_apply_preset(WorkspacePreset preset)
         ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, &right, &center);
 
         ImGui::DockBuilderDockWindow("CPC Screen", center);
-        ImGui::DockBuilderDockWindow("DevTools", center);
 
         ImGui::DockBuilderDockWindow("Disassembly", left);
 
-        ImGui::DockBuilderDockWindow("Symbols", right);
-        ImGui::DockBuilderDockWindow("Breakpoints/WP/IO", right);
+        ImGui::DockBuilderDockWindow("Symbols (0)###SymbolTable", right);
+        ImGui::DockBuilderDockWindow("Breakpoints & Watchpoints & IO###BPWindow", right);
 
         ensure_window_open("disassembly");
         ensure_window_open("symbols");
@@ -226,7 +224,6 @@ void workspace_apply_preset(WorkspacePreset preset)
         ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, &bottom, &center);
 
         ImGui::DockBuilderDockWindow("CPC Screen", center);
-        ImGui::DockBuilderDockWindow("DevTools", center);
 
         ImGui::DockBuilderDockWindow("Video State", right);
         ImGui::DockBuilderDockWindow("Audio State", right);
