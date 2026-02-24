@@ -1806,8 +1806,11 @@ static void imgui_render_devtools()
     }
 
     // ── Step/Pause controls ──
+    // Capture paused state once so BeginDisabled/EndDisabled stay balanced
+    // even when a button handler sets CPC.paused = false mid-frame.
     ImGui::SameLine(0, 12.0f);
-    if (!CPC.paused) ImGui::BeginDisabled();
+    bool was_paused = CPC.paused;
+    if (!was_paused) ImGui::BeginDisabled();
     if (ImGui::Button("Step In"))  {
       z80.step_in = 1;
       z80.step_out = 0;
@@ -1835,7 +1838,7 @@ static void imgui_render_devtools()
       z80.step_in = 0;
       CPC.paused = false;
     }
-    if (!CPC.paused) ImGui::EndDisabled();
+    if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {
       CPC.paused = !CPC.paused;
