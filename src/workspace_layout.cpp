@@ -79,9 +79,18 @@ void workspace_render_cpc_screen()
     video_get_cpc_size(tex_w, tex_h);
     if (!tex || tex_w <= 0 || tex_h <= 0) return;
 
+    // Focus CPC Screen when requested (e.g. after app switch)
+    if (imgui_state.request_cpc_screen_focus) {
+        ImGui::SetNextWindowFocus();
+        imgui_state.request_cpc_screen_focus = false;
+    }
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     bool open = true;
     if (ImGui::Begin("CPC Screen", &open, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        // Track focus for keyboard routing — emulator receives keyboard only
+        // when CPC Screen is the active/focused window in the dockspace.
+        imgui_state.cpc_screen_focused = ImGui::IsWindowFocused();
         ImVec2 avail = ImGui::GetContentRegionAvail();
 
         // CPC aspect ratio
@@ -132,6 +141,8 @@ void workspace_render_cpc_screen()
             if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
             ImGui::EndPopup();
         }
+    } else {
+        imgui_state.cpc_screen_focused = false;
     }
     ImGui::End();
     ImGui::PopStyleVar();

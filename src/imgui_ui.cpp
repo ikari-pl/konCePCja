@@ -317,15 +317,15 @@ void imgui_render_ui()
   }
 
   // Keyboard capture policy:
-  // "Modal" GUI (menus, options dialogs, etc.) always captures keyboard.
-  // In docked mode, devtools windows are always visible but should NOT capture
-  // keyboard unless a text input field is actually active (WantTextInput).
-  // In classic mode, any open window (including floating devtools) captures.
+  // In docked mode, the emulator receives keyboard input only when the
+  // CPC Screen tab is the focused/active window.  Clicking on any devtools
+  // window (including text fields) naturally routes keyboard to ImGui.
+  // In classic mode, keyboard goes to the emulator unless a GUI window is open.
   bool any_modal_gui = imgui_state.show_menu || imgui_state.show_options ||
                        imgui_state.show_memory_tool || imgui_state.show_vkeyboard ||
                        g_command_palette.is_open();
   if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-    if (!any_modal_gui && !ImGui::GetIO().WantTextInput) {
+    if (!any_modal_gui && imgui_state.cpc_screen_focused) {
       ImGui::GetIO().WantCaptureKeyboard = false;
     }
   } else {

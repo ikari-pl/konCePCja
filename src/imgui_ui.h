@@ -75,6 +75,10 @@ struct ImGuiUIState {
   bool vkeyboard_shift_next = false;     // SHIFT - one-shot, clears after 1 char
   bool vkeyboard_ctrl_next = false;      // CTRL - one-shot, clears after 1 char
 
+  // Docked mode: CPC Screen focus tracking for keyboard routing
+  bool cpc_screen_focused = false;       // true when CPC Screen tab is the focused window
+  bool request_cpc_screen_focus = false;  // set by event loop on app focus gain
+
 };
 
 extern ImGuiUIState imgui_state;

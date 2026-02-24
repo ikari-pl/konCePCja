@@ -3568,6 +3568,10 @@ int koncpc_main (int argc, char **argv)
               if (CPC.auto_pause) {
                 cpc_resume();
               }
+              // In docked mode, refocus CPC Screen so keyboard routes to emulator
+              if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+                imgui_state.request_cpc_screen_focus = true;
+              }
               break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
             case SDL_EVENT_WINDOW_MOUSE_LEAVE:
