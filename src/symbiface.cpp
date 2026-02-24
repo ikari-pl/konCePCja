@@ -37,13 +37,12 @@ static void ide_set_string(uint16_t* buf, int word_start, int word_count, const 
 {
    // ATA strings are byte-swapped within each word.
    // Track string length to avoid reading past the null terminator.
-   int slen = 0;
-   while (str[slen]) slen++;
+   int slen = str ? static_cast<int>(strlen(str)) : 0;
 
    for (int w = 0; w < word_count; w++) {
       int si = w * 2;
-      char c0 = (si < slen) ? str[si] : ' ';
-      char c1 = (si + 1 < slen) ? str[si + 1] : ' ';
+      uint8_t c0 = (si < slen) ? static_cast<uint8_t>(str[si]) : 0x20;
+      uint8_t c1 = (si + 1 < slen) ? static_cast<uint8_t>(str[si + 1]) : 0x20;
       buf[word_start + w] = (static_cast<uint16_t>(c0) << 8) | c1;
       if (si + 1 >= slen) {
          // Pad rest with spaces
