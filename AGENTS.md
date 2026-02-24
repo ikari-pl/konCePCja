@@ -252,6 +252,33 @@ snd_playback_rate=2  # 0=11025, 1=22050, 2=44100, 3=48000, 4=96000
 - Reset: `emulator_reset()`
 - ImGui state is in global `imgui_state` struct
 
+## Code Review Themes
+
+Recurring patterns from code reviews. Follow these to avoid common pitfalls:
+
+### Type Safety
+- **`enum class` over int magic numbers** — Mode/state fields that have a fixed set of values (e.g. `workspace_layout`, `cpc_screen_scale`) must use `enum class`, not bare `int` with `#define` or comment-documented constants. This enables compiler-checked exhaustive `switch` and prevents accidental comparisons with unrelated integers.
+- **Reference out-params over pointer out-params** — When a function fills in output values, use `int& w` not `int* w`. References cannot be null and make the calling convention explicit.
+
+### Exception Safety
+- **Catch specific exceptions, not `catch(...)`** — Always catch the most specific type possible: `std::filesystem::filesystem_error`, `std::invalid_argument`, `std::out_of_range`, etc. `catch(...)` swallows programmer errors.
+- **Guard `std::stoi`/`std::stoul`** — These throw `std::invalid_argument` or `std::out_of_range` on bad input. Either wrap each call, or use a top-level try/catch in the command dispatcher (as IPC server does).
+
+### Resource & I/O
+- **Check `fwrite`/`fclose`/`fflush` return values** — Disk-full or I/O errors are silent if unchecked. At minimum, log a warning on failure.
+- **Avoid `while(!feof(f))`** — This reads one extra time past EOF. Check the return value of `fread`/`fgets` instead.
+- **Use `new T[N]()` or `= {}` for value-initialization** — Don't allocate then `memset`. Value-init is cleaner and works with non-POD types.
+- **Never `memset` non-POD types** — Use default constructors, `= {}`, or assignment. `memset` on a `std::string` or struct with constructors is undefined behavior.
+
+### Performance in Render Loops
+- **Cache per-frame expensive computations** — ImGui render functions run every frame. Scanning 256KB of memory, rebuilding string lists, or formatting large tables must use a dirty flag and only recompute when state changes.
+- **Stack arrays for small fixed-size buffers** — Don't use `std::vector` in per-frame code for buffers whose size is known at compile time. `char buf[64]` or `std::array` avoids heap allocation.
+- **`std::map::upper_bound` for range lookups** — O(log N) instead of linear scan when looking up "which region does address X belong to?"
+
+### String & Buffer Safety
+- **Track string lengths explicitly** — When packing strings into fixed-width fields (like ATA IDENTIFY), compute `strlen` once and bounds-check per-character access. Don't rely on null-terminator proximity to short-circuit evaluation.
+- **Path traversal protection** — Any user-supplied path (IPC, M4 virtual FS) must be validated: reject `..`, absolute paths, and symlink escapes.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

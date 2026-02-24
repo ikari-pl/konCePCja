@@ -35,13 +35,17 @@ static uint32_t ide_lba(const IDE_Device& dev)
 
 static void ide_set_string(uint16_t* buf, int word_start, int word_count, const char* str)
 {
-   // ATA strings are byte-swapped within each word
+   // ATA strings are byte-swapped within each word.
+   // Track string length to avoid reading past the null terminator.
+   int slen = 0;
+   while (str[slen]) slen++;
+
    for (int w = 0; w < word_count; w++) {
       int si = w * 2;
-      char c0 = str[si] ? str[si] : ' ';
-      char c1 = (str[si] && str[si + 1]) ? str[si + 1] : ' ';
+      char c0 = (si < slen) ? str[si] : ' ';
+      char c1 = (si + 1 < slen) ? str[si + 1] : ' ';
       buf[word_start + w] = (static_cast<uint16_t>(c0) << 8) | c1;
-      if (!str[si] || !str[si + 1]) {
+      if (si + 1 >= slen) {
          // Pad rest with spaces
          for (int w2 = w + 1; w2 < word_count; w2++) {
             buf[word_start + w2] = 0x2020;

@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cctype>
 #include <sstream>
+#include <stdexcept>
 #include <iomanip>
 #include <fstream>
 #include <filesystem>
@@ -146,6 +147,8 @@ std::string handle_command(const std::string& line) {
   if (line.empty()) return "OK\n";
   auto parts = split_ws(line);
   if (parts.empty()) return "OK\n";
+
+  try {
 
   const auto& cmd = parts[0];
   if (cmd == "ping") return "OK pong\n";
@@ -2810,6 +2813,12 @@ std::string handle_command(const std::string& line) {
   }
 
   return "ERR 501 not-implemented\n";
+
+  } catch (const std::invalid_argument&) {
+    return "ERR 400 bad-number\n";
+  } catch (const std::out_of_range&) {
+    return "ERR 400 number-out-of-range\n";
+  }
 }
 }
 
