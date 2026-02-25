@@ -266,13 +266,18 @@ static void cmd_readdir()
       memcpy(g_m4board.response + pos, name83, 12);  // FILENAME.EXT
       pos += 12;
 
-      // ASCII size field (5 chars)
+      // ASCII size field (5 chars): "1234B", " 100K", "  15M", "   2G", or "<DIR>"
       char sizebuf[6];
       if (entry.is_dir) {
          memcpy(sizebuf, "<DIR>", 5);
+      } else if (entry.size < 1024) {
+         snprintf(sizebuf, sizeof(sizebuf), "%4uB", entry.size);
+      } else if (entry.size < 1024 * 1024) {
+         snprintf(sizebuf, sizeof(sizebuf), "%4uK", (entry.size + 1023) / 1024);
+      } else if (entry.size < 1024u * 1024 * 1024) {
+         snprintf(sizebuf, sizeof(sizebuf), "%4uM", (entry.size + 1024*1024 - 1) / (1024*1024));
       } else {
-         uint32_t kb = (entry.size + 1023) / 1024;
-         snprintf(sizebuf, sizeof(sizebuf), "%5u", kb > 99999 ? 99999 : kb);
+         snprintf(sizebuf, sizeof(sizebuf), "%4uG", (entry.size + 1024u*1024*1024 - 1) / (1024u*1024*1024));
       }
       memcpy(g_m4board.response + pos, sizebuf, 5);
       pos += 5;
