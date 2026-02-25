@@ -12,7 +12,8 @@ enum class FileDialogAction {
   LoadTape, LoadCartridge,
   LoadROM,
   LoadDiskA_LED, LoadDiskB_LED,
-  LoadTape_LED
+  LoadTape_LED,
+  SelectM4SDFolder
 };
 
 struct ImGuiUIState {

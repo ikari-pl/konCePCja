@@ -21,8 +21,14 @@ static constexpr uint16_t C_ERASEFILE  = 0x430E;
 static constexpr uint16_t C_RENAME     = 0x430F;
 static constexpr uint16_t C_MAKEDIR    = 0x4310;
 static constexpr uint16_t C_FSIZE      = 0x4311;
+static constexpr uint16_t C_EOF        = 0x4307;
+static constexpr uint16_t C_FTELL      = 0x430A;
+static constexpr uint16_t C_GETPATH    = 0x4313;
 static constexpr uint16_t C_HTTPGET    = 0x4320;
+static constexpr uint16_t C_DIRSETARGS = 0x4325;
 static constexpr uint16_t C_VERSION    = 0x4326;
+static constexpr uint16_t C_ROMWRITE   = 0x43FD;
+static constexpr uint16_t C_CONFIG     = 0x43FE;
 
 // Response status codes
 static constexpr uint8_t M4_OK    = 0x00;
@@ -85,7 +91,7 @@ static void cmd_version()
 
 static void cmd_cd()
 {
-   std::string path = extract_string(g_m4board.cmd_buf, 2);
+   std::string path = extract_string(g_m4board.cmd_buf, 3);
    if (path == "/") {
       g_m4board.current_dir = "/";
       g_m4board.response[0] = M4_OK;
@@ -166,7 +172,7 @@ static void cmd_readdir()
 
 static void cmd_open()
 {
-   std::string path = extract_string(g_m4board.cmd_buf, 2);
+   std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
       g_m4board.response[0] = M4_ERROR;
@@ -202,12 +208,12 @@ static void cmd_open()
 
 static void cmd_close()
 {
-   if (g_m4board.cmd_buf.size() < 3) {
+   if (g_m4board.cmd_buf.size() < 4) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
    }
-   int handle = g_m4board.cmd_buf[2];
+   int handle = g_m4board.cmd_buf[3];
    if (handle >= 0 && handle < 4 && g_m4board.open_files[handle]) {
       fclose(g_m4board.open_files[handle]);
       g_m4board.open_files[handle] = nullptr;
@@ -218,13 +224,13 @@ static void cmd_close()
 
 static void cmd_read()
 {
-   if (g_m4board.cmd_buf.size() < 5) {
+   if (g_m4board.cmd_buf.size() < 6) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
    }
-   int handle = g_m4board.cmd_buf[2];
-   uint16_t count = g_m4board.cmd_buf[3] | (g_m4board.cmd_buf[4] << 8);
+   int handle = g_m4board.cmd_buf[3];
+   uint16_t count = g_m4board.cmd_buf[4] | (g_m4board.cmd_buf[5] << 8);
 
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
       g_m4board.response[0] = M4_ERROR;
@@ -244,7 +250,7 @@ static void cmd_read()
 
 static void cmd_fsize()
 {
-   std::string path = extract_string(g_m4board.cmd_buf, 2);
+   std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
       g_m4board.response[0] = M4_ERROR;
@@ -269,7 +275,7 @@ static void cmd_fsize()
 
 static void cmd_erasefile()
 {
-   std::string path = extract_string(g_m4board.cmd_buf, 2);
+   std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
       g_m4board.response[0] = M4_ERROR;
@@ -292,7 +298,7 @@ static void cmd_erasefile()
 
 static void cmd_makedir()
 {
-   std::string path = extract_string(g_m4board.cmd_buf, 2);
+   std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
       g_m4board.response[0] = M4_ERROR;
@@ -312,22 +318,22 @@ static void cmd_makedir()
 
 static void cmd_write()
 {
-   // Protocol: data[0] = fd, data[1..] = file data
-   // cmd_buf[2] = fd, cmd_buf[3..] = data to write
-   if (g_m4board.cmd_buf.size() < 4) {
+   // Protocol: [size, cmd_lo, cmd_hi, fd, data...]
+   // cmd_buf[3] = fd, cmd_buf[4..] = data to write
+   if (g_m4board.cmd_buf.size() < 5) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
    }
-   int handle = g_m4board.cmd_buf[2];
+   int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
    }
 
-   size_t data_len = g_m4board.cmd_buf.size() - 3;
-   size_t written = fwrite(g_m4board.cmd_buf.data() + 3, 1, data_len,
+   size_t data_len = g_m4board.cmd_buf.size() - 4;
+   size_t written = fwrite(g_m4board.cmd_buf.data() + 4, 1, data_len,
                            g_m4board.open_files[handle]);
    fflush(g_m4board.open_files[handle]);
 
@@ -341,24 +347,24 @@ static void cmd_write()
 
 static void cmd_seek()
 {
-   // Protocol: data[0] = fd, data[1..4] = 32-bit LE offset
-   // cmd_buf[2] = fd, cmd_buf[3..6] = offset
-   if (g_m4board.cmd_buf.size() < 7) {
+   // Protocol: [size, cmd_lo, cmd_hi, fd, offset(4 bytes LE)]
+   // cmd_buf[3] = fd, cmd_buf[4..7] = offset
+   if (g_m4board.cmd_buf.size() < 8) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
    }
-   int handle = g_m4board.cmd_buf[2];
+   int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
       return;
    }
 
-   uint32_t offset = static_cast<uint32_t>(g_m4board.cmd_buf[3]) |
-                     (static_cast<uint32_t>(g_m4board.cmd_buf[4]) << 8) |
-                     (static_cast<uint32_t>(g_m4board.cmd_buf[5]) << 16) |
-                     (static_cast<uint32_t>(g_m4board.cmd_buf[6]) << 24);
+   uint32_t offset = static_cast<uint32_t>(g_m4board.cmd_buf[4]) |
+                     (static_cast<uint32_t>(g_m4board.cmd_buf[5]) << 8) |
+                     (static_cast<uint32_t>(g_m4board.cmd_buf[6]) << 16) |
+                     (static_cast<uint32_t>(g_m4board.cmd_buf[7]) << 24);
 
    if (fseek(g_m4board.open_files[handle], static_cast<long>(offset), SEEK_SET) == 0) {
       g_m4board.response[0] = M4_OK;
@@ -370,11 +376,11 @@ static void cmd_seek()
 
 static void cmd_rename()
 {
-   // Protocol: data = "newname\0oldname\0"
-   // cmd_buf[2..] = "newname\0oldname\0"
-   std::string newname = extract_string(g_m4board.cmd_buf, 2);
+   // Protocol: [size, cmd_lo, cmd_hi, "newname\0oldname\0"]
+   // cmd_buf[3..] = "newname\0oldname\0"
+   std::string newname = extract_string(g_m4board.cmd_buf, 3);
    // Find the second string after the first null terminator
-   size_t old_offset = 2 + newname.size() + 1;
+   size_t old_offset = 3 + newname.size() + 1;
    if (old_offset >= g_m4board.cmd_buf.size()) {
       g_m4board.response[0] = M4_ERROR;
       g_m4board.response_len = 1;
@@ -416,9 +422,9 @@ static size_t curl_write_file(void* ptr, size_t size, size_t nmemb, void* userda
 
 static void cmd_httpget()
 {
-   // Protocol: data[0] = "url:port/file"
+   // Protocol: [size, cmd_lo, cmd_hi, "url:port/file"]
    // URL format: [@ prefix]host[:port]/path[>outfile]
-   std::string raw_url = extract_string(g_m4board.cmd_buf, 2);
+   std::string raw_url = extract_string(g_m4board.cmd_buf, 3);
    if (raw_url.empty()) {
       g_m4board.response[0] = M4_ERROR;
       const char* msg = "No URL given";
@@ -542,6 +548,114 @@ static void cmd_httpget()
 
 #endif // HAS_LIBCURL
 
+// ── New command handlers ────────────────────────
+
+static void cmd_config()
+{
+   // Protocol: [size, 0xFE, 0x43, config_offset, data...]
+   // The M4 ROM init sends C_CONFIG to populate its runtime data area
+   // (jump vectors, ROM slot number, AMSDOS version, etc.) at ROM offset 0x3400+.
+   if (g_m4board.cmd_buf.size() < 4) {
+      g_m4board.response[0] = M4_ERROR;
+      g_m4board.response_len = 1;
+      return;
+   }
+   uint8_t config_offset = g_m4board.cmd_buf[3];
+   size_t data_len = g_m4board.cmd_buf.size() - 4;
+
+   // Store in local config buffer
+   size_t max_len = std::min(data_len,
+      static_cast<size_t>(M4Board::CONFIG_SIZE - config_offset));
+   if (max_len > 0) {
+      memcpy(g_m4board.config_buf + config_offset, &g_m4board.cmd_buf[4], max_len);
+   }
+
+   // Write to ROM data area at offset 0x3400 + config_offset
+   // This populates jump_vec, rom_num, amsdos_ver, etc. that set_SDdrive reads
+   extern byte *memmap_ROM[];
+   byte* rom = memmap_ROM[g_m4board.rom_slot];
+   if (rom && config_offset + max_len <= 0xC00) {  // stay within 16K ROM bounds
+      memcpy(rom + 0x3400 + config_offset, &g_m4board.cmd_buf[4], max_len);
+   }
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response_len = 1;
+   LOG_DEBUG("M4: C_CONFIG offset=" << (int)config_offset << " len=" << max_len);
+}
+
+static void cmd_romwrite()
+{
+   // C_ROMWRITE stores keyboard layout data — not needed for emulation
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response_len = 1;
+}
+
+static void cmd_eof()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, fd]
+   if (g_m4board.cmd_buf.size() < 4) {
+      g_m4board.response[0] = M4_ERROR;
+      g_m4board.response_len = 1;
+      return;
+   }
+   int handle = g_m4board.cmd_buf[3];
+   if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
+      g_m4board.response[0] = M4_ERROR;
+      g_m4board.response_len = 1;
+      return;
+   }
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = feof(g_m4board.open_files[handle]) ? 1 : 0;
+   g_m4board.response_len = 2;
+}
+
+static void cmd_ftell()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, fd]
+   if (g_m4board.cmd_buf.size() < 4) {
+      g_m4board.response[0] = M4_ERROR;
+      g_m4board.response_len = 1;
+      return;
+   }
+   int handle = g_m4board.cmd_buf[3];
+   if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
+      g_m4board.response[0] = M4_ERROR;
+      g_m4board.response_len = 1;
+      return;
+   }
+   long pos = ftell(g_m4board.open_files[handle]);
+   if (pos < 0) {
+      g_m4board.response[0] = M4_ERROR;
+      g_m4board.response_len = 1;
+      return;
+   }
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = static_cast<uint8_t>(pos & 0xFF);
+   g_m4board.response[2] = static_cast<uint8_t>((pos >> 8) & 0xFF);
+   g_m4board.response[3] = static_cast<uint8_t>((pos >> 16) & 0xFF);
+   g_m4board.response[4] = static_cast<uint8_t>((pos >> 24) & 0xFF);
+   g_m4board.response_len = 5;
+}
+
+static void cmd_getpath()
+{
+   // Return current working directory within virtual SD
+   g_m4board.response[0] = M4_OK;
+   const std::string& dir = g_m4board.current_dir;
+   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 2);
+   size_t len = std::min(dir.size(), max_len);
+   memcpy(g_m4board.response + 1, dir.c_str(), len);
+   g_m4board.response[1 + len] = 0;
+   g_m4board.response_len = static_cast<int>(2 + len);
+}
+
+static void cmd_dirsetargs()
+{
+   // Directory display format — cosmetic, not needed for emulation
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response_len = 1;
+}
+
 // ── Public API ──────────────────────────────────
 
 void m4board_reset()
@@ -551,6 +665,7 @@ void m4board_reset()
    g_m4board.current_dir = "/";
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
+   memset(g_m4board.config_buf, 0, M4Board::CONFIG_SIZE);
 }
 
 void m4board_cleanup()
@@ -570,30 +685,39 @@ void m4board_data_out(byte val)
 
 void m4board_execute()
 {
-   if (g_m4board.cmd_buf.size() < 2) {
+   // Protocol: [size_prefix, cmd_lo, cmd_hi, data...]
+   // The M4 ROM sends a size byte at position 0, then the 16-bit command at 1-2.
+   // Direct I/O sends 0x00 as the size prefix.
+   if (g_m4board.cmd_buf.size() < 3) {
       g_m4board.cmd_buf.clear();
       return;
    }
 
-   uint16_t cmd = g_m4board.cmd_buf[0] | (static_cast<uint16_t>(g_m4board.cmd_buf[1]) << 8);
+   uint16_t cmd = g_m4board.cmd_buf[1] | (static_cast<uint16_t>(g_m4board.cmd_buf[2]) << 8);
 
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
 
    switch (cmd) {
-      case C_VERSION:   cmd_version(); break;
-      case C_CD:        cmd_cd(); break;
-      case C_READDIR:   cmd_readdir(); break;
-      case C_OPEN:      cmd_open(); break;
-      case C_CLOSE:     cmd_close(); break;
-      case C_READ:      cmd_read(); break;
-      case C_WRITE:     cmd_write(); break;
-      case C_SEEK:      cmd_seek(); break;
-      case C_FSIZE:     cmd_fsize(); break;
-      case C_ERASEFILE: cmd_erasefile(); break;
-      case C_RENAME:    cmd_rename(); break;
-      case C_MAKEDIR:   cmd_makedir(); break;
-      case C_HTTPGET:   cmd_httpget(); break;
+      case C_VERSION:    cmd_version(); break;
+      case C_CD:         cmd_cd(); break;
+      case C_READDIR:    cmd_readdir(); break;
+      case C_OPEN:       cmd_open(); break;
+      case C_CLOSE:      cmd_close(); break;
+      case C_READ:       cmd_read(); break;
+      case C_WRITE:      cmd_write(); break;
+      case C_SEEK:       cmd_seek(); break;
+      case C_EOF:        cmd_eof(); break;
+      case C_FSIZE:      cmd_fsize(); break;
+      case C_FTELL:      cmd_ftell(); break;
+      case C_ERASEFILE:  cmd_erasefile(); break;
+      case C_RENAME:     cmd_rename(); break;
+      case C_MAKEDIR:    cmd_makedir(); break;
+      case C_GETPATH:    cmd_getpath(); break;
+      case C_HTTPGET:    cmd_httpget(); break;
+      case C_DIRSETARGS: cmd_dirsetargs(); break;
+      case C_CONFIG:     cmd_config(); break;
+      case C_ROMWRITE:   cmd_romwrite(); break;
       default:
          LOG_DEBUG("M4: unknown command 0x" << std::hex << cmd);
          g_m4board.response[0] = M4_ERROR;
@@ -670,13 +794,11 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path, const std::st
    }
 
    // On real hardware, the M4 firmware (ESP8266) pre-fills runtime data in the ROM
-   // image before the CPC boots. The ROM's init then patches the CPC firmware jumpblock
-   // (&BC77+) to redirect certain firmware calls through M4 event handlers. Without
-   // real M4 hardware writing those handlers, the patched vectors crash the CPC.
-   // Fix: NOP out the firmware patcher at ROM offset 0x798 (CPC &C798) and its
-   // 464-variant at 0x7EA. RSX commands still work (registered via KL LOG EXT).
-   rom_data[0x0798] = 0xC9;  // RET — skip firmware jumpblock patching (664/6128)
-   rom_data[0x07EA] = 0xC9;  // RET — skip firmware jumpblock patching (464 variant)
+   // image before the CPC boots. The ROM's init sends C_CONFIG commands to populate
+   // the data area at offset 0x3400+ (jump vectors, ROM slot number, AMSDOS version).
+   // Then set_SDdrive (offset 0x798) patches the CAS firmware jumpblock (&BC77+)
+   // so CAT/LOAD/SAVE go through the M4. This works now because cmd_config() fills
+   // the ROM data area — no need to disable set_SDdrive.
 
    // Patch the init return (offset 0x268: AND A / SCF / RET) to jump to a boot
    // message routine. We use offset 0x3800 (CPC &F800) — NOT the response area

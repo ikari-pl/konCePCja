@@ -152,6 +152,10 @@ static void process_pending_dialog()
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS)
         CPC.rom_file[rom_slot] = path;
       break;
+    case FileDialogAction::SelectM4SDFolder:
+      g_m4board.sd_root_path = path;
+      if (g_m4board.enabled) emulator_init();
+      break;
     default:
       break;
   }
@@ -1369,7 +1373,50 @@ static void imgui_render_options()
       bool m4 = g_m4board.enabled;
       if (ImGui::Checkbox("M4 Board", &m4)) { g_m4board.enabled = m4; }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("M4 Board (WiFi/SD).\nSet m4_sd_path in config for virtual SD card.");
+        ImGui::SetTooltip(
+          "M4 Board — Virtual WiFi/SD expansion\n\n"
+          "Set a host directory as the virtual SD card, then reset.\n\n"
+          "RSX commands (type in BASIC after reset):\n"
+          "  |SD            Switch to SD card (CAT/LOAD/SAVE work)\n"
+          "  |DISC          Switch back to disc drive\n"
+          "  |DIR           List SD directory\n"
+          "  |CD,\"path\"     Change directory\n"
+          "  |ERA,\"file\"    Delete file\n"
+          "  |REN,\"new\",\"old\" Rename file\n"
+          "  |MKDIR,\"dir\"   Create directory\n\n"
+          "After |SD, standard BASIC commands work:\n"
+          "  CAT  LOAD\"file\"  SAVE\"file\"  RUN\"file\""
+        );
+      }
+
+      if (m4) {
+        ImGui::Indent();
+        // SD card path display + browse button
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
+        char sd_buf[512];
+        snprintf(sd_buf, sizeof(sd_buf), "%s", g_m4board.sd_root_path.c_str());
+        ImGui::InputText("##m4sd", sd_buf, sizeof(sd_buf), ImGuiInputTextFlags_ReadOnly);
+        ImGui::SameLine();
+        if (ImGui::Button("Browse##m4sd")) {
+          const char* default_loc = g_m4board.sd_root_path.empty()
+            ? nullptr : g_m4board.sd_root_path.c_str();
+          SDL_ShowOpenFolderDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SelectM4SDFolder)),
+            mainSDLWindow, default_loc, false);
+        }
+        if (g_m4board.sd_root_path.empty()) {
+          ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "No SD directory set");
+        }
+
+        // ROM slot selector
+        int slot = g_m4board.rom_slot;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputInt("ROM Slot##m4", &slot, 1, 1)) {
+          if (slot < 0) slot = 0;
+          if (slot > 31) slot = 31;
+          g_m4board.rom_slot = slot;
+        }
+        ImGui::Unindent();
       }
 
       ImGui::EndTabItem();

@@ -37,6 +37,11 @@ struct M4Board {
    // ROM slot and auto-load tracking
    int rom_slot = 7;
    bool rom_auto_loaded = false;   // true if we loaded the ROM (vs. user)
+
+   // Config buffer — mirrors ROM data area at offset 0x3400
+   // Populated by C_CONFIG commands from the M4 ROM init code
+   static constexpr int CONFIG_SIZE = 128;
+   uint8_t config_buf[CONFIG_SIZE] = {};
 };
 
 extern M4Board g_m4board;
