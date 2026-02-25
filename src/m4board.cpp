@@ -22,6 +22,7 @@ static constexpr uint16_t C_RENAME     = 0x430F;
 static constexpr uint16_t C_MAKEDIR    = 0x4310;
 static constexpr uint16_t C_FSIZE      = 0x4311;
 static constexpr uint16_t C_EOF        = 0x4307;
+static constexpr uint16_t C_FREE       = 0x4309;
 static constexpr uint16_t C_FTELL      = 0x430A;
 static constexpr uint16_t C_GETPATH    = 0x4313;
 static constexpr uint16_t C_HTTPGET    = 0x4320;
@@ -77,16 +78,50 @@ static std::string extract_string(const std::vector<uint8_t>& buf, size_t offset
    return s;
 }
 
+// ── Response Helpers ────────────────────────────
+// Real M4 firmware response format: [status, len_lo, len_hi, data...]
+// The ROM reads command-specific data from rom_response+3 (offset 3).
+// For simple success: response[3] = 0. For errors: response[3] = 0xFF.
+
+static void respond_ok()
+{
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0;  // command-level success
+   g_m4board.response_len = 4;
+}
+
+static void respond_error(const char* msg = nullptr)
+{
+   g_m4board.response[0] = M4_ERROR;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0xFF;  // command-level error marker
+   if (msg) {
+      size_t len = strlen(msg);
+      size_t max = static_cast<size_t>(M4Board::RESPONSE_SIZE - 5);
+      if (len > max) len = max;
+      memcpy(g_m4board.response + 4, msg, len);
+      g_m4board.response[4 + len] = 0;
+      g_m4board.response_len = static_cast<int>(5 + len);
+   } else {
+      g_m4board.response_len = 4;
+   }
+}
+
 // ── Command Handlers ────────────────────────────
 
 static void cmd_version()
 {
    const char* ver = "M4 konCePCja v1.0";
    g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
    size_t len = strlen(ver);
-   memcpy(g_m4board.response + 1, ver, len);
-   g_m4board.response[1 + len] = 0;
-   g_m4board.response_len = static_cast<int>(2 + len);
+   memcpy(g_m4board.response + 3, ver, len);
+   g_m4board.response[3 + len] = 0;
+   g_m4board.response_len = static_cast<int>(4 + len);
 }
 
 static void cmd_cd()
@@ -94,80 +129,162 @@ static void cmd_cd()
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    if (path == "/") {
       g_m4board.current_dir = "/";
-      g_m4board.response[0] = M4_OK;
-      g_m4board.response_len = 1;
+      respond_ok();
       return;
    }
 
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Invalid path");
       return;
    }
 
    try {
       if (std::filesystem::is_directory(resolved)) {
-         // Convert back to relative path within SD root
          auto root_canonical = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
          std::string rel = resolved.substr(root_canonical.string().size());
          if (rel.empty()) rel = "/";
          if (rel.back() != '/') rel += '/';
          g_m4board.current_dir = rel;
-         g_m4board.response[0] = M4_OK;
-         g_m4board.response_len = 1;
+         respond_ok();
       } else {
-         g_m4board.response[0] = M4_ERROR;
-         g_m4board.response_len = 1;
+         respond_error("Not a directory");
       }
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error(e.what());
+   }
+}
+
+// Populate the directory entry cache (called by C_DIRSETARGS or on first C_READDIR)
+static void dir_populate()
+{
+   g_m4board.dir_entries.clear();
+   g_m4board.dir_index = 0;
+
+   std::string resolved = resolve_path(g_m4board.current_dir);
+   if (resolved.empty()) return;
+
+   try {
+      for (auto& entry : std::filesystem::directory_iterator(resolved)) {
+         std::string name = entry.path().filename().string();
+         if (name.empty() || name[0] == '.') continue; // skip dotfiles
+         bool is_dir = entry.is_directory();
+         uint32_t fsize = 0;
+         if (!is_dir) {
+            try { fsize = static_cast<uint32_t>(entry.file_size()); }
+            catch (...) {}
+         }
+         g_m4board.dir_entries.push_back({name, is_dir, fsize});
+      }
+   } catch (const std::filesystem::filesystem_error& e) {
+      LOG_ERROR("M4: " << e.what());
+   }
+}
+
+// Convert a filename to AMSDOS 8.3 format: "FILENAME.EXT"
+// Returns 12 characters (8 + '.' + 3), space-padded, uppercase
+static void format_amsdos_83(const std::string& name, bool is_dir, char out[12])
+{
+   // Split on last '.' to separate name and extension
+   std::string base, ext;
+   size_t dot = name.rfind('.');
+   if (dot != std::string::npos && dot > 0 && !is_dir) {
+      base = name.substr(0, dot);
+      ext = name.substr(dot + 1);
+   } else {
+      base = name;
+   }
+
+   // Truncate and pad filename to 8 chars
+   for (int i = 0; i < 8; i++) {
+      if (i < static_cast<int>(base.size()))
+         out[i] = static_cast<char>(toupper(static_cast<unsigned char>(base[i])));
+      else
+         out[i] = ' ';
+   }
+   out[8] = '.';
+   // Truncate and pad extension to 3 chars
+   for (int i = 0; i < 3; i++) {
+      if (i < static_cast<int>(ext.size()))
+         out[9 + i] = static_cast<char>(toupper(static_cast<unsigned char>(ext[i])));
+      else
+         out[9 + i] = ' ';
    }
 }
 
 static void cmd_readdir()
 {
-   std::string resolved = resolve_path(g_m4board.current_dir);
-   if (resolved.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+   // If no entries cached yet (e.g. C_DIRSETARGS wasn't called), populate now
+   if (g_m4board.dir_entries.empty() && g_m4board.dir_index == 0) {
+      dir_populate();
+   }
+
+   // Check if directory listing is exhausted
+   if (g_m4board.dir_index >= g_m4board.dir_entries.size()) {
+      // Status 2 = end of directory
+      g_m4board.response[0] = 2;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response_len = 3;
       return;
    }
 
-   g_m4board.response[0] = M4_OK;
-   int pos = 1;
+   auto& entry = g_m4board.dir_entries[g_m4board.dir_index++];
 
-   try {
-      for (auto& entry : std::filesystem::directory_iterator(resolved)) {
-         std::string name = entry.path().filename().string();
-         bool is_dir = entry.is_directory();
-         size_t fsize = is_dir ? 0 : entry.file_size();
+   // Check if LS mode (long filenames) — cmd_buf has extra data byte
+   bool ls_mode = (g_m4board.cmd_buf.size() > 3);
 
-         // Format: type(1) + size(4) + name + null
-         if (pos + 5 + static_cast<int>(name.size()) + 1 >= M4Board::RESPONSE_SIZE) break;
+   g_m4board.response[0] = 1;  // status: entry present
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
 
-         g_m4board.response[pos++] = is_dir ? 0x10 : 0x00;
-         g_m4board.response[pos++] = fsize & 0xFF;
-         g_m4board.response[pos++] = (fsize >> 8) & 0xFF;
-         g_m4board.response[pos++] = (fsize >> 16) & 0xFF;
-         g_m4board.response[pos++] = (fsize >> 24) & 0xFF;
-         memcpy(g_m4board.response + pos, name.c_str(), name.size() + 1);
-         pos += static_cast<int>(name.size()) + 1;
+   if (ls_mode) {
+      // LS format: rom_response[3+] = null-terminated string
+      // Directories prefixed with '>'
+      int pos = 3;
+      if (entry.is_dir) {
+         g_m4board.response[pos++] = '>';
       }
-   } catch (const std::filesystem::filesystem_error& e) {
-      LOG_ERROR("M4: " << e.what());
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
-      return;
-   }
+      int max_name = M4Board::RESPONSE_SIZE - pos - 1;
+      int len = std::min(static_cast<int>(entry.name.size()), max_name);
+      memcpy(g_m4board.response + pos, entry.name.c_str(), len);
+      pos += len;
+      g_m4board.response[pos++] = 0;
+      g_m4board.response_len = pos;
+   } else {
+      // CAT format: rom_response[3+] = AMSDOS 8.3 directory entry (20 bytes)
+      // Bytes 0-7:   FILENAME (8 chars, space-padded, uppercase)
+      // Byte 8:      '.'
+      // Bytes 9-11:  EXT (3 chars, attributes in bit 7)
+      // Bytes 12-16: ASCII size (5 chars, e.g. " 123K" or "<DIR>")
+      // Byte 17:     null terminator
+      // Bytes 18-19: binary file size in KB (16-bit LE)
+      int pos = 3;
+      char name83[12];
+      format_amsdos_83(entry.name, entry.is_dir, name83);
+      memcpy(g_m4board.response + pos, name83, 12);  // FILENAME.EXT
+      pos += 12;
 
-   // End marker
-   if (pos < M4Board::RESPONSE_SIZE) {
-      g_m4board.response[pos++] = 0xFF;
+      // ASCII size field (5 chars)
+      char sizebuf[6];
+      if (entry.is_dir) {
+         memcpy(sizebuf, "<DIR>", 5);
+      } else {
+         uint32_t kb = (entry.size + 1023) / 1024;
+         snprintf(sizebuf, sizeof(sizebuf), "%5u", kb > 99999 ? 99999 : kb);
+      }
+      memcpy(g_m4board.response + pos, sizebuf, 5);
+      pos += 5;
+      g_m4board.response[pos++] = 0;  // null terminator
+
+      // Binary file size in KB (16-bit LE)
+      uint16_t kb = static_cast<uint16_t>(std::min(entry.size / 1024, uint32_t(0xFFFF)));
+      g_m4board.response[pos++] = kb & 0xFF;
+      g_m4board.response[pos++] = (kb >> 8) & 0xFF;
+
+      g_m4board.response_len = pos;
    }
-   g_m4board.response_len = pos;
 }
 
 static void cmd_open()
@@ -175,19 +292,16 @@ static void cmd_open()
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Invalid path");
       return;
    }
 
-   // Find free handle
    int handle = -1;
    for (int i = 0; i < 4; i++) {
       if (!g_m4board.open_files[i]) { handle = i; break; }
    }
    if (handle < 0) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("No free handles");
       return;
    }
 
@@ -196,21 +310,23 @@ static void cmd_open()
       g_m4board.open_files[handle] = fopen(resolved.c_str(), "rb");
    }
    if (!g_m4board.open_files[handle]) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Cannot open file");
       return;
    }
 
+   // ROM reads: response[3] = fd, response[4] = error (0 = ok)
    g_m4board.response[0] = M4_OK;
-   g_m4board.response[1] = static_cast<uint8_t>(handle);
-   g_m4board.response_len = 2;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = static_cast<uint8_t>(handle);
+   g_m4board.response[4] = 0;  // success
+   g_m4board.response_len = 5;
 }
 
 static void cmd_close()
 {
    if (g_m4board.cmd_buf.size() < 4) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
@@ -218,34 +334,39 @@ static void cmd_close()
       fclose(g_m4board.open_files[handle]);
       g_m4board.open_files[handle] = nullptr;
    }
-   g_m4board.response[0] = M4_OK;
-   g_m4board.response_len = 1;
+   respond_ok();
 }
 
 static void cmd_read()
 {
    if (g_m4board.cmd_buf.size() < 6) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
    uint16_t count = g_m4board.cmd_buf[4] | (g_m4board.cmd_buf[5] << 8);
 
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Bad handle");
       return;
    }
 
-   int max_read = M4Board::RESPONSE_SIZE - 3;
+   // ROM reads: response[3] = status, response[4-5] = bytes read, response[8+] = data
+   int max_read = M4Board::RESPONSE_SIZE - 8;
    if (count > max_read) count = static_cast<uint16_t>(max_read);
 
-   size_t read = fread(g_m4board.response + 3, 1, count, g_m4board.open_files[handle]);
+   size_t nread = fread(g_m4board.response + 8, 1, count, g_m4board.open_files[handle]);
+   bool at_eof = feof(g_m4board.open_files[handle]);
+
    g_m4board.response[0] = M4_OK;
-   g_m4board.response[1] = read & 0xFF;
-   g_m4board.response[2] = (read >> 8) & 0xFF;
-   g_m4board.response_len = static_cast<int>(3 + read);
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = at_eof ? 0x14 : 0;  // 0x14 = eof indicator
+   g_m4board.response[4] = nread & 0xFF;
+   g_m4board.response[5] = (nread >> 8) & 0xFF;
+   g_m4board.response[6] = 0;
+   g_m4board.response[7] = 0;
+   g_m4board.response_len = static_cast<int>(8 + nread);
 }
 
 static void cmd_fsize()
@@ -253,23 +374,23 @@ static void cmd_fsize()
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Invalid path");
       return;
    }
 
    try {
       auto fsize = std::filesystem::file_size(resolved);
       g_m4board.response[0] = M4_OK;
-      g_m4board.response[1] = fsize & 0xFF;
-      g_m4board.response[2] = (fsize >> 8) & 0xFF;
-      g_m4board.response[3] = (fsize >> 16) & 0xFF;
-      g_m4board.response[4] = (fsize >> 24) & 0xFF;
-      g_m4board.response_len = 5;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = fsize & 0xFF;
+      g_m4board.response[4] = (fsize >> 8) & 0xFF;
+      g_m4board.response[5] = (fsize >> 16) & 0xFF;
+      g_m4board.response[6] = (fsize >> 24) & 0xFF;
+      g_m4board.response_len = 7;
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error(e.what());
    }
 }
 
@@ -278,22 +399,20 @@ static void cmd_erasefile()
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Invalid path");
       return;
    }
 
    try {
       if (std::filesystem::remove(resolved)) {
-         g_m4board.response[0] = M4_OK;
+         respond_ok();
       } else {
-         g_m4board.response[0] = M4_ERROR;
+         respond_error("File not found");
       }
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
-      g_m4board.response[0] = M4_ERROR;
+      respond_error(e.what());
    }
-   g_m4board.response_len = 1;
 }
 
 static void cmd_makedir()
@@ -301,19 +420,17 @@ static void cmd_makedir()
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Invalid path");
       return;
    }
 
    try {
       std::filesystem::create_directories(resolved);
-      g_m4board.response[0] = M4_OK;
+      respond_ok();
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
-      g_m4board.response[0] = M4_ERROR;
+      respond_error(e.what());
    }
-   g_m4board.response_len = 1;
 }
 
 static void cmd_write()
@@ -321,14 +438,12 @@ static void cmd_write()
    // Protocol: [size, cmd_lo, cmd_hi, fd, data...]
    // cmd_buf[3] = fd, cmd_buf[4..] = data to write
    if (g_m4board.cmd_buf.size() < 5) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Bad handle");
       return;
    }
 
@@ -338,11 +453,10 @@ static void cmd_write()
    fflush(g_m4board.open_files[handle]);
 
    if (written == data_len) {
-      g_m4board.response[0] = M4_OK;
+      respond_ok();
    } else {
-      g_m4board.response[0] = M4_ERROR;
+      respond_error("Write failed");
    }
-   g_m4board.response_len = 1;
 }
 
 static void cmd_seek()
@@ -350,14 +464,12 @@ static void cmd_seek()
    // Protocol: [size, cmd_lo, cmd_hi, fd, offset(4 bytes LE)]
    // cmd_buf[3] = fd, cmd_buf[4..7] = offset
    if (g_m4board.cmd_buf.size() < 8) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Bad handle");
       return;
    }
 
@@ -367,11 +479,10 @@ static void cmd_seek()
                      (static_cast<uint32_t>(g_m4board.cmd_buf[7]) << 24);
 
    if (fseek(g_m4board.open_files[handle], static_cast<long>(offset), SEEK_SET) == 0) {
-      g_m4board.response[0] = M4_OK;
+      respond_ok();
    } else {
-      g_m4board.response[0] = M4_ERROR;
+      respond_error("Seek failed");
    }
-   g_m4board.response_len = 1;
 }
 
 static void cmd_rename()
@@ -382,8 +493,7 @@ static void cmd_rename()
    // Find the second string after the first null terminator
    size_t old_offset = 3 + newname.size() + 1;
    if (old_offset >= g_m4board.cmd_buf.size()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Missing old name");
       return;
    }
    std::string oldname = extract_string(g_m4board.cmd_buf, old_offset);
@@ -391,22 +501,15 @@ static void cmd_rename()
    std::string resolved_old = resolve_path(oldname);
    std::string resolved_new = resolve_path(newname);
    if (resolved_old.empty() || resolved_new.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Invalid path");
       return;
    }
 
    try {
       std::filesystem::rename(resolved_old, resolved_new);
-      g_m4board.response[0] = M4_OK;
-      g_m4board.response_len = 1;
+      respond_ok();
    } catch (const std::exception& e) {
-      g_m4board.response[0] = M4_ERROR;
-      std::string msg = e.what();
-      size_t max_msg = static_cast<size_t>(M4Board::RESPONSE_SIZE - 2);
-      if (msg.size() > max_msg) msg.resize(max_msg);
-      memcpy(g_m4board.response + 1, msg.c_str(), msg.size() + 1);
-      g_m4board.response_len = static_cast<int>(2 + msg.size());
+      respond_error(e.what());
    }
 }
 
@@ -426,10 +529,7 @@ static void cmd_httpget()
    // URL format: [@ prefix]host[:port]/path[>outfile]
    std::string raw_url = extract_string(g_m4board.cmd_buf, 3);
    if (raw_url.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      const char* msg = "No URL given";
-      memcpy(g_m4board.response + 1, msg, strlen(msg) + 1);
-      g_m4board.response_len = static_cast<int>(2 + strlen(msg));
+      respond_error("No URL given");
       return;
    }
 
@@ -457,10 +557,7 @@ static void cmd_httpget()
    }
 
    if (out_filename.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      const char* msg = "No filename in URL";
-      memcpy(g_m4board.response + 1, msg, strlen(msg) + 1);
-      g_m4board.response_len = static_cast<int>(2 + strlen(msg));
+      respond_error("No filename in URL");
       return;
    }
 
@@ -470,20 +567,14 @@ static void cmd_httpget()
    // Resolve output path within the virtual SD
    std::string dest = resolve_path(out_filename);
    if (dest.empty()) {
-      g_m4board.response[0] = M4_ERROR;
-      const char* msg = "Invalid output path";
-      memcpy(g_m4board.response + 1, msg, strlen(msg) + 1);
-      g_m4board.response_len = static_cast<int>(2 + strlen(msg));
+      respond_error("Invalid output path");
       return;
    }
 
    // Perform the HTTP GET download
    FILE* fp = fopen(dest.c_str(), "wb");
    if (!fp) {
-      g_m4board.response[0] = M4_ERROR;
-      const char* msg = "Cannot create file";
-      memcpy(g_m4board.response + 1, msg, strlen(msg) + 1);
-      g_m4board.response_len = static_cast<int>(2 + strlen(msg));
+      respond_error("Cannot create file");
       return;
    }
 
@@ -491,10 +582,7 @@ static void cmd_httpget()
    if (!curl) {
       fclose(fp);
       std::filesystem::remove(dest);
-      g_m4board.response[0] = M4_ERROR;
-      const char* msg = "HTTP init failed";
-      memcpy(g_m4board.response + 1, msg, strlen(msg) + 1);
-      g_m4board.response_len = static_cast<int>(2 + strlen(msg));
+      respond_error("HTTP init failed");
       return;
    }
 
@@ -505,7 +593,6 @@ static void cmd_httpget()
    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
    curl_easy_setopt(curl, CURLOPT_USERAGENT, "M4Board/2.0");
-   // Check for Content-Disposition filename (the real M4 uses attachment filenames)
    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
 
    CURLcode res = curl_easy_perform(curl);
@@ -516,22 +603,20 @@ static void cmd_httpget()
 
    if (res != CURLE_OK) {
       std::filesystem::remove(dest);
-      g_m4board.response[0] = M4_ERROR;
-      std::string msg = curl_easy_strerror(res);
-      size_t max_msg = static_cast<size_t>(M4Board::RESPONSE_SIZE - 2);
-      if (msg.size() > max_msg) msg.resize(max_msg);
-      memcpy(g_m4board.response + 1, msg.c_str(), msg.size() + 1);
-      g_m4board.response_len = static_cast<int>(2 + msg.size());
-      LOG_ERROR("M4 HTTPGET: " << msg << " (URL: " << full_url << ")");
+      respond_error(curl_easy_strerror(res));
+      LOG_ERROR("M4 HTTPGET: " << curl_easy_strerror(res) << " (URL: " << full_url << ")");
       return;
    }
 
-   // Success response: "Downloaded <filename>\r\n"
+   // Success response: message at offset 3
    std::string ok_msg = "Downloaded " + out_filename + "\r\n";
-   size_t max_ok = static_cast<size_t>(M4Board::RESPONSE_SIZE - 1);
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   size_t max_ok = static_cast<size_t>(M4Board::RESPONSE_SIZE - 4);
    if (ok_msg.size() > max_ok) ok_msg.resize(max_ok);
-   memcpy(g_m4board.response, ok_msg.c_str(), ok_msg.size() + 1);
-   g_m4board.response_len = static_cast<int>(ok_msg.size() + 1);
+   memcpy(g_m4board.response + 3, ok_msg.c_str(), ok_msg.size() + 1);
+   g_m4board.response_len = static_cast<int>(4 + ok_msg.size());
    LOG_INFO("M4 HTTPGET: downloaded " << full_url << " -> " << dest);
 }
 
@@ -539,10 +624,7 @@ static void cmd_httpget()
 
 static void cmd_httpget()
 {
-   g_m4board.response[0] = M4_ERROR;
-   const char* msg = "HTTP not available (no libcurl)";
-   memcpy(g_m4board.response + 1, msg, strlen(msg) + 1);
-   g_m4board.response_len = static_cast<int>(2 + strlen(msg));
+   respond_error("HTTP not available (no libcurl)");
    LOG_ERROR("M4 HTTPGET: libcurl not available at build time");
 }
 
@@ -556,8 +638,7 @@ static void cmd_config()
    // The M4 ROM init sends C_CONFIG to populate its runtime data area
    // (jump vectors, ROM slot number, AMSDOS version, etc.) at ROM offset 0x3400+.
    if (g_m4board.cmd_buf.size() < 4) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    uint8_t config_offset = g_m4board.cmd_buf[3];
@@ -578,82 +659,111 @@ static void cmd_config()
       memcpy(rom + 0x3400 + config_offset, &g_m4board.cmd_buf[4], max_len);
    }
 
-   g_m4board.response[0] = M4_OK;
-   g_m4board.response_len = 1;
+   respond_ok();
    LOG_DEBUG("M4: C_CONFIG offset=" << (int)config_offset << " len=" << max_len);
 }
 
 static void cmd_romwrite()
 {
    // C_ROMWRITE stores keyboard layout data — not needed for emulation
-   g_m4board.response[0] = M4_OK;
-   g_m4board.response_len = 1;
+   respond_ok();
 }
 
 static void cmd_eof()
 {
    // Protocol: [size, cmd_lo, cmd_hi, fd]
    if (g_m4board.cmd_buf.size() < 4) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Bad handle");
       return;
    }
    g_m4board.response[0] = M4_OK;
-   g_m4board.response[1] = feof(g_m4board.open_files[handle]) ? 1 : 0;
-   g_m4board.response_len = 2;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = feof(g_m4board.open_files[handle]) ? 1 : 0;
+   g_m4board.response_len = 4;
 }
 
 static void cmd_ftell()
 {
    // Protocol: [size, cmd_lo, cmd_hi, fd]
    if (g_m4board.cmd_buf.size() < 4) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("Bad handle");
       return;
    }
    long pos = ftell(g_m4board.open_files[handle]);
    if (pos < 0) {
-      g_m4board.response[0] = M4_ERROR;
-      g_m4board.response_len = 1;
+      respond_error("ftell failed");
       return;
    }
    g_m4board.response[0] = M4_OK;
-   g_m4board.response[1] = static_cast<uint8_t>(pos & 0xFF);
-   g_m4board.response[2] = static_cast<uint8_t>((pos >> 8) & 0xFF);
-   g_m4board.response[3] = static_cast<uint8_t>((pos >> 16) & 0xFF);
-   g_m4board.response[4] = static_cast<uint8_t>((pos >> 24) & 0xFF);
-   g_m4board.response_len = 5;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = static_cast<uint8_t>(pos & 0xFF);
+   g_m4board.response[4] = static_cast<uint8_t>((pos >> 8) & 0xFF);
+   g_m4board.response[5] = static_cast<uint8_t>((pos >> 16) & 0xFF);
+   g_m4board.response[6] = static_cast<uint8_t>((pos >> 24) & 0xFF);
+   g_m4board.response_len = 7;
 }
 
 static void cmd_getpath()
 {
    // Return current working directory within virtual SD
    g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
    const std::string& dir = g_m4board.current_dir;
-   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 2);
+   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 4);
    size_t len = std::min(dir.size(), max_len);
-   memcpy(g_m4board.response + 1, dir.c_str(), len);
-   g_m4board.response[1 + len] = 0;
-   g_m4board.response_len = static_cast<int>(2 + len);
+   memcpy(g_m4board.response + 3, dir.c_str(), len);
+   g_m4board.response[3 + len] = 0;
+   g_m4board.response_len = static_cast<int>(4 + len);
 }
 
 static void cmd_dirsetargs()
 {
-   // Directory display format — cosmetic, not needed for emulation
+   // C_DIRSETARGS is sent before C_READDIR to start a new listing.
+   // Populate the directory cache now so C_READDIR can iterate one-at-a-time.
+   dir_populate();
+   respond_ok();
+}
+
+static void cmd_free()
+{
+   // Return free disk space as a string at rom_response[3+]
    g_m4board.response[0] = M4_OK;
-   g_m4board.response_len = 1;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+
+   std::string resolved = resolve_path("/");
+   uint64_t free_kb = 0;
+   if (!resolved.empty()) {
+      try {
+         auto si = std::filesystem::space(resolved);
+         free_kb = si.available / 1024;
+      } catch (const std::filesystem::filesystem_error&) {}
+   }
+
+   char buf[32];
+   if (free_kb >= 1048576)
+      snprintf(buf, sizeof(buf), "%lluG free", (unsigned long long)(free_kb / 1048576));
+   else if (free_kb >= 1024)
+      snprintf(buf, sizeof(buf), "%lluM free", (unsigned long long)(free_kb / 1024));
+   else
+      snprintf(buf, sizeof(buf), "%lluK free", (unsigned long long)free_kb);
+
+   size_t len = strlen(buf);
+   memcpy(g_m4board.response + 3, buf, len + 1);
+   g_m4board.response_len = static_cast<int>(4 + len);
 }
 
 // ── Public API ──────────────────────────────────
@@ -666,6 +776,8 @@ void m4board_reset()
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
    memset(g_m4board.config_buf, 0, M4Board::CONFIG_SIZE);
+   g_m4board.dir_entries.clear();
+   g_m4board.dir_index = 0;
 }
 
 void m4board_cleanup()
@@ -708,6 +820,7 @@ void m4board_execute()
       case C_WRITE:      cmd_write(); break;
       case C_SEEK:       cmd_seek(); break;
       case C_EOF:        cmd_eof(); break;
+      case C_FREE:       cmd_free(); break;
       case C_FSIZE:      cmd_fsize(); break;
       case C_FTELL:      cmd_ftell(); break;
       case C_ERASEFILE:  cmd_erasefile(); break;
@@ -720,8 +833,7 @@ void m4board_execute()
       case C_ROMWRITE:   cmd_romwrite(); break;
       default:
          LOG_DEBUG("M4: unknown command 0x" << std::hex << cmd);
-         g_m4board.response[0] = M4_ERROR;
-         g_m4board.response_len = 1;
+         respond_error();
          break;
    }
 

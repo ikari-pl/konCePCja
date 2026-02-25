@@ -42,6 +42,15 @@ struct M4Board {
    // Populated by C_CONFIG commands from the M4 ROM init code
    static constexpr int CONFIG_SIZE = 128;
    uint8_t config_buf[CONFIG_SIZE] = {};
+
+   // Directory listing state — the ROM calls C_READDIR once per entry
+   struct DirEntry {
+      std::string name;     // original filename
+      bool is_dir;
+      uint32_t size;        // file size in bytes
+   };
+   std::vector<DirEntry> dir_entries;
+   size_t dir_index = 0;
 };
 
 extern M4Board g_m4board;
