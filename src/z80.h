@@ -192,6 +192,11 @@ extern uint64_t g_tstate_counter;
 typedef void (*BreakpointHitHook)(word pc, bool watchpoint);
 void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 
+// TXT_OUTPUT hook — fires when PC hits the given address, passing the A register.
+// Used by the telnet console to mirror CPC text output.
+using TxtOutputHook = void(*)(uint8_t ch);
+void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address);
+
 // Handle main z80 instructions.
 void z80_execute_instruction();
 

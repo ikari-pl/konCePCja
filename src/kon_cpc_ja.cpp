@@ -35,6 +35,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "telnet_console.h"
 #include "autotype.h"
 #include "crtc.h"
 #include "symfile.h"
@@ -3070,6 +3071,9 @@ int koncpc_main (int argc, char **argv)
    // konCePCja IPC server (stub)
    g_ipc->start();
 
+   // Telnet console — CPC text mirror on IPC+1
+   g_telnet.start();
+
    #ifndef APP_PATH
    if(getcwd(chAppPath, sizeof(chAppPath)-1) == nullptr) {
       fprintf(stderr, "getcwd failed: %s\n", strerror(errno));
@@ -3743,6 +3747,9 @@ int koncpc_main (int argc, char **argv)
                });
             }
 
+            // Telnet console: drain input into autotype queue
+            g_telnet.drain_input();
+
             // Handle IPC "step frame" — decrement remaining, pause when done
             if (g_ipc->frame_step_active.load()) {
                int remaining = g_ipc->frame_step_remaining.fetch_sub(1) - 1;
@@ -3786,6 +3793,7 @@ int koncpc_main (int argc, char **argv)
       }
    }
 
+   g_telnet.stop();
    g_ipc->stop();
    return 0;
 }
