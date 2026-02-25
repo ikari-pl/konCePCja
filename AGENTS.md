@@ -170,7 +170,8 @@ nc localhost 6544
 
 ### How it works
 
-- **Output**: Hooks the CPC firmware's TXT_OUTPUT vector (&BB5A) via a Z80 execution loop callback. When the Z80 PC reaches &BB5A, the character in register A is pushed to a lock-free SPSC ring buffer, drained to the TCP client by the server thread.
+- **Output (AMSDOS)**: Hooks TXT_OUTPUT (&BB5A) — when the Z80 PC hits this firmware vector, register A (the character) is pushed to a lock-free SPSC ring buffer, drained to the TCP client by the server thread.
+- **Output (CP/M)**: Hooks BDOS entry (PC=0x0005) — when C=2 (C_WRITE), register E (the character) is captured. Works automatically alongside the firmware hook.
 - **Input**: Received bytes are buffered and fed to AutoTypeQueue each frame. ANSI escape sequences are mapped to CPC keys (arrows, ESC, DEL, TAB).
 - **Connection model**: Single client at a time (new connection replaces existing). Port probes forward up to +10 if 6544 is taken.
 
@@ -190,7 +191,7 @@ nc localhost 6544
 
 - `src/telnet_console.h` — TelnetConsole class, ring buffer, input mutex
 - `src/telnet_console.cpp` — TCP server thread, ANSI parsing, Z80 hook callback
-- Z80 hook: `z80_set_txt_output_hook()` in `src/z80.cpp` / `src/z80.h`
+- Z80 hooks: `z80_set_txt_output_hook()` (firmware) and `z80_set_bdos_output_hook()` (CP/M) in `src/z80.cpp` / `src/z80.h`
 - Main loop integration: `g_telnet.start()` / `drain_input()` / `stop()` in `src/kon_cpc_ja.cpp`
 
 ## Debugging Tips

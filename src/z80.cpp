@@ -175,6 +175,7 @@ uint64_t g_tstate_counter = 0;
 static BreakpointHitHook g_breakpoint_hit_hook = nullptr;
 static TxtOutputHook g_txt_output_hook = nullptr;
 static uint16_t g_txt_output_hook_addr = 0;
+static TxtOutputHook g_bdos_output_hook = nullptr;
 static byte SZ[256]; // zero and sign flags
 static byte SZ_BIT[256]; // zero, sign and parity/overflow (=zero) flags for BIT opcode
 static byte SZP[256]; // zero, sign and parity flags
@@ -1053,6 +1054,11 @@ void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address)
    g_txt_output_hook_addr = address;
 }
 
+void z80_set_bdos_output_hook(TxtOutputHook hook)
+{
+   g_bdos_output_hook = hook;
+}
+
 void z80_reset()
 {
    z80 = t_z80regs();
@@ -1140,6 +1146,9 @@ int z80_execute()
 
       if (g_txt_output_hook && _PC == g_txt_output_hook_addr) {
          g_txt_output_hook(_A);
+      }
+      if (g_bdos_output_hook && _PC == 0x0005 && _C == 2) {
+         g_bdos_output_hook(_E);
       }
 
       z80_execute_instruction();

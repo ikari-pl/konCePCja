@@ -144,6 +144,7 @@ void TelnetConsole::start(int base_port)
    output_head.store(0);
    output_tail.store(0);
    z80_set_txt_output_hook(&txt_output_hook, 0xBB5A);
+   z80_set_bdos_output_hook(&txt_output_hook);  // CP/M: BDOS C_WRITE (C=2, char in E)
    server_thread = std::thread(&TelnetConsole::run, this);
 }
 
@@ -151,6 +152,7 @@ void TelnetConsole::stop()
 {
    running.store(false);
    z80_set_txt_output_hook(nullptr, 0);
+   z80_set_bdos_output_hook(nullptr);
    if (server_thread.joinable()) server_thread.join();
 }
 

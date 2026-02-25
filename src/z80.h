@@ -197,6 +197,10 @@ void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 using TxtOutputHook = void(*)(uint8_t ch);
 void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address);
 
+// CP/M BDOS hook — fires when PC == 0x0005 and C == 2 (C_WRITE), passing E register.
+// Used by the telnet console to capture CP/M console output.
+void z80_set_bdos_output_hook(TxtOutputHook hook);
+
 // Handle main z80 instructions.
 void z80_execute_instruction();
 

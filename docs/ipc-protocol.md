@@ -16,7 +16,7 @@ the telnet console keeps the connection open.
 nc localhost 6544       # connect — type to interact with the CPC
 ```
 
-- Output is captured by hooking TXT_OUTPUT (&BB5A) in the Z80 execution loop
+- Output is captured by hooking TXT_OUTPUT (&BB5A) for AMSDOS and BDOS C_WRITE (PC=0x0005, C=2) for CP/M
 - Input is fed through AutoTypeQueue with ANSI escape → CPC key mapping
 - Single client at a time; new connections replace the existing one
 - Port probes forward up to +10 if 6544 is taken
