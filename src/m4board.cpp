@@ -28,6 +28,8 @@ static constexpr uint16_t C_GETPATH    = 0x4313;
 static constexpr uint16_t C_HTTPGET    = 0x4320;
 static constexpr uint16_t C_DIRSETARGS = 0x4325;
 static constexpr uint16_t C_VERSION    = 0x4326;
+static constexpr uint16_t C_READSECTOR = 0x430B;
+static constexpr uint16_t C_READ2      = 0x4312;
 static constexpr uint16_t C_ROMWRITE   = 0x43FD;
 static constexpr uint16_t C_CONFIG     = 0x43FE;
 
@@ -108,6 +110,19 @@ static void respond_error(const char* msg = nullptr)
    } else {
       g_m4board.response_len = 4;
    }
+}
+
+// Error response with FatFs error code at response[4].
+// The M4 ROM's fopen translates via ff_error_map[code] → CPC error.
+//   0 = FR_OK, 4 = FR_NO_FILE, 5 = FR_NO_PATH, 8 = FR_EXIST, 255 = raw
+static void respond_error_code(uint8_t code)
+{
+   g_m4board.response[0] = M4_ERROR;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0xFF;
+   g_m4board.response[4] = code;
+   g_m4board.response_len = 5;
 }
 
 // ── Command Handlers ────────────────────────────
@@ -292,39 +307,123 @@ static void cmd_readdir()
    }
 }
 
+// Try to open a file, searching case-insensitively and with CPC extensions.
+// CPC convention: RUN"TEST means search for TEST, TEST.BAS, TEST.BIN, etc.
+static FILE* try_open_cpc(const std::string& dir_path, const std::string& filename)
+{
+   // Build list of names to try: exact, with extensions
+   std::vector<std::string> candidates = { filename };
+   // If no extension in the requested name, try common CPC extensions
+   if (filename.find('.') == std::string::npos) {
+      for (const char* ext : { ".BAS", ".BIN", ".", "" }) {
+         candidates.push_back(filename + ext);
+      }
+   }
+
+   // Scan directory for case-insensitive match against each candidate
+   try {
+      for (const auto& entry : std::filesystem::directory_iterator(dir_path)) {
+         std::string entry_name = entry.path().filename().string();
+         std::string entry_upper = entry_name;
+         for (auto& c : entry_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+
+         for (const auto& cand : candidates) {
+            std::string cand_upper = cand;
+            for (auto& c : cand_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            if (entry_upper == cand_upper) {
+               std::string full = dir_path + "/" + entry_name;
+               FILE* fp = fopen(full.c_str(), "r+b");
+               if (!fp) fp = fopen(full.c_str(), "rb");
+               if (fp) {
+                  LOG_DEBUG("M4: C_OPEN matched '" << entry_name << "' for '" << filename << "'");
+                  return fp;
+               }
+            }
+         }
+      }
+   } catch (const std::filesystem::filesystem_error&) {}
+   return nullptr;
+}
+
 static void cmd_open()
 {
-   std::string path = extract_string(g_m4board.cmd_buf, 3);
-   std::string resolved = resolve_path(path);
-   if (resolved.empty()) {
-      respond_error("Invalid path");
+   // cmd_buf layout: [size, 0x01, 0x43, mode, filename...]
+   // mode = FatFs access flags: FA_READ=0x01, FA_WRITE=0x02, FA_CREATE_ALWAYS=0x08
+   // Read (RUN/LOAD):  mode = FA_READ (0x01)
+   // Write (SAVE):     mode = FA_WRITE|FA_CREATE_ALWAYS (0x0A)
+   uint8_t mode = (g_m4board.cmd_buf.size() > 3) ? g_m4board.cmd_buf[3] : 0x01;
+   bool is_write = (mode & 0x02) != 0;   // FA_WRITE
+   bool is_create = (mode & 0x08) != 0;  // FA_CREATE_ALWAYS
+   std::string raw_name = extract_string(g_m4board.cmd_buf, 4);
+   if (raw_name.empty()) {
+      raw_name = extract_string(g_m4board.cmd_buf, 3);
+   }
+   LOG_DEBUG("M4: C_OPEN name='" << raw_name << "' mode=0x" << std::hex << (int)mode << std::dec);
+
+   std::string dir = resolve_path(g_m4board.current_dir);
+   if (dir.empty()) {
+      respond_error_code(5); // FR_NO_PATH
       return;
    }
 
+   // The M4 ROM hardcodes fd=1 for CAS input, fd=2 for CAS output.
+   // Use the ROM's convention: write → fd 2, read → fd 1, else first free.
    int handle = -1;
-   for (int i = 0; i < 4; i++) {
-      if (!g_m4board.open_files[i]) { handle = i; break; }
+   if (is_write) {
+      handle = 2;
+   } else if (mode == 0x01) {  // FA_READ only
+      handle = 1;
+   }
+   if (handle >= 0 && g_m4board.open_files[handle]) {
+      // Close previous file at this slot
+      fclose(g_m4board.open_files[handle]);
+      g_m4board.open_files[handle] = nullptr;
    }
    if (handle < 0) {
-      respond_error("No free handles");
+      // General file access: find first free handle
+      for (int i = 0; i < 4; i++) {
+         if (!g_m4board.open_files[i]) { handle = i; break; }
+      }
+   }
+   if (handle < 0) {
+      respond_error_code(255); // no free handles
       return;
    }
 
-   g_m4board.open_files[handle] = fopen(resolved.c_str(), "r+b");
-   if (!g_m4board.open_files[handle]) {
-      g_m4board.open_files[handle] = fopen(resolved.c_str(), "rb");
-   }
-   if (!g_m4board.open_files[handle]) {
-      respond_error("Cannot open file");
-      return;
+   if (is_write && is_create) {
+      // Write+create mode (SAVE): create or truncate in current directory
+      std::string resolved = resolve_path(raw_name);
+      if (resolved.empty()) {
+         respond_error_code(6); // FR_INVALID_NAME
+         return;
+      }
+      g_m4board.open_files[handle] = fopen(resolved.c_str(), "w+b");
+      if (!g_m4board.open_files[handle]) {
+         respond_error_code(7); // FR_DENIED
+         return;
+      }
+   } else {
+      // Read mode (RUN/LOAD): search for existing file
+      std::string resolved = resolve_path(raw_name);
+      if (!resolved.empty()) {
+         g_m4board.open_files[handle] = fopen(resolved.c_str(), is_write ? "r+b" : "rb");
+      }
+      // Case-insensitive search with CPC extension probing
+      if (!g_m4board.open_files[handle]) {
+         g_m4board.open_files[handle] = try_open_cpc(dir, raw_name);
+      }
+      if (!g_m4board.open_files[handle]) {
+         respond_error_code(4); // FR_NO_FILE
+         return;
+      }
    }
 
-   // ROM reads: response[3] = fd, response[4] = error (0 = ok)
+   LOG_DEBUG("M4: C_OPEN → OK, handle=" << handle);
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
    g_m4board.response[3] = static_cast<uint8_t>(handle);
-   g_m4board.response[4] = 0;  // success
+   g_m4board.response[4] = 0;  // FR_OK
    g_m4board.response_len = 5;
 }
 
@@ -342,6 +441,10 @@ static void cmd_close()
    respond_ok();
 }
 
+// C_READ: Used by fread() in M4 ROM for bulk data loading (_cas_in_direct, etc.)
+// Protocol: cmd[3]=fd, cmd[4-5]=count (16-bit LE)
+// Response: response[3]=status (0=OK, non-zero=error), response[4+]=data bytes
+// ROM copies data from rom_response+4 with LDIR, bc=requested chunk size.
 static void cmd_read()
 {
    if (g_m4board.cmd_buf.size() < 6) {
@@ -356,7 +459,38 @@ static void cmd_read()
       return;
    }
 
-   // ROM reads: response[3] = status, response[4-5] = bytes read, response[8+] = data
+   int max_read = M4Board::RESPONSE_SIZE - 4;
+   if (count > max_read) count = static_cast<uint16_t>(max_read);
+
+   size_t nread = fread(g_m4board.response + 4, 1, count, g_m4board.open_files[handle]);
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0;  // status: 0 = OK
+   g_m4board.response_len = static_cast<int>(4 + nread);
+}
+
+// C_READ2: Used by _cas_in_char() for byte-by-byte BASIC file reading.
+// Same as C_READ but without AMSDOS header checking.
+// Protocol: cmd[3]=fd, cmd[4-5]=count (sent as 0x0800 = 2048 bytes)
+// Response: response[3]=status (0=OK, 0x14=EOF), response[4-5]=bytes_read (16-bit LE),
+//           response[8+]=data bytes.
+// ROM copies data from rom_response+8 with LDIR, bc=response[4-5].
+static void cmd_read2()
+{
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error();
+      return;
+   }
+   int handle = g_m4board.cmd_buf[3];
+   uint16_t count = g_m4board.cmd_buf[4] | (g_m4board.cmd_buf[5] << 8);
+
+   if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
+      respond_error("Bad handle");
+      return;
+   }
+
    int max_read = M4Board::RESPONSE_SIZE - 8;
    if (count > max_read) count = static_cast<uint16_t>(max_read);
 
@@ -366,12 +500,59 @@ static void cmd_read()
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   g_m4board.response[3] = at_eof ? 0x14 : 0;  // 0x14 = eof indicator
+   g_m4board.response[3] = at_eof ? 0x14 : 0;  // 0x14 = EOF indicator
    g_m4board.response[4] = nread & 0xFF;
    g_m4board.response[5] = (nread >> 8) & 0xFF;
    g_m4board.response[6] = 0;
    g_m4board.response[7] = 0;
    g_m4board.response_len = static_cast<int>(8 + nread);
+}
+
+// C_READSECTOR: BIOS-level disc sector read redirected through M4 virtual FS.
+// Protocol: cmd[3]=track, cmd[4]=sector, cmd[5]=drive
+// Response: response[3]=status (0=OK), response[4+]=512 bytes sector data.
+// On the real M4, this reads from .dsk images. For our virtual FS (loose files),
+// we map track/sector to a linear file offset via AMSDOS convention:
+// offset = (track * 9 + (sector - 0xC1)) * 512
+// AMSDOS sectors are numbered &C1-&C9 (9 sectors per track).
+static void cmd_readsector()
+{
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error();
+      return;
+   }
+   uint8_t track  = g_m4board.cmd_buf[3];
+   uint8_t sector = g_m4board.cmd_buf[4];
+   // cmd_buf[5] = drive (unused for virtual FS)
+
+   // We need an open file to read from. Use handle 1 (the read handle).
+   FILE* f = g_m4board.open_files[1];
+   if (!f) {
+      // No file open — return error
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 1;  // error status
+      memset(g_m4board.response + 4, 0xE5, 512);
+      g_m4board.response_len = 4 + 512;
+      return;
+   }
+
+   // AMSDOS sectors &C1-&C9 → linear sector 0-8
+   int linear_sector = (sector >= 0xC1) ? (sector - 0xC1) : sector;
+   long offset = (track * 9 + linear_sector) * 512L;
+
+   fseek(f, offset, SEEK_SET);
+   size_t nread = fread(g_m4board.response + 4, 1, 512, f);
+   // Pad remainder with 0xE5 (empty disc filler)
+   if (nread < 512)
+      memset(g_m4board.response + 4 + nread, 0xE5, 512 - nread);
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0;  // status: OK
+   g_m4board.response_len = 4 + 512;
 }
 
 static void cmd_fsize()
@@ -443,16 +624,21 @@ static void cmd_write()
    // Protocol: [size, cmd_lo, cmd_hi, fd, data...]
    // cmd_buf[3] = fd, cmd_buf[4..] = data to write
    if (g_m4board.cmd_buf.size() < 5) {
+      LOG_DEBUG("M4: C_WRITE too short, buf_size=" << g_m4board.cmd_buf.size());
       respond_error();
       return;
    }
    int handle = g_m4board.cmd_buf[3];
    if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
+      LOG_DEBUG("M4: C_WRITE bad handle=" << handle
+               << " file=" << (g_m4board.open_files[handle & 3] ? "open" : "null"));
       respond_error("Bad handle");
       return;
    }
 
    size_t data_len = g_m4board.cmd_buf.size() - 4;
+   LOG_DEBUG("M4: C_WRITE fd=" << handle << " data_len=" << data_len
+            << " buf_size=" << g_m4board.cmd_buf.size());
    size_t written = fwrite(g_m4board.cmd_buf.data() + 4, 1, data_len,
                            g_m4board.open_files[handle]);
    fflush(g_m4board.open_files[handle]);
@@ -665,14 +851,8 @@ static void cmd_config()
    }
 
    respond_ok();
-   LOG_INFO("M4: C_CONFIG offset=" << (int)config_offset << " len=" << max_len
-            << " rom=" << (rom ? "yes" : "null") << " slot=" << g_m4board.rom_slot);
-   if (config_offset == 0 && max_len >= 5) {
-      LOG_INFO("M4: CONFIG[0] jump_vec=0x" << std::hex
-               << (int)g_m4board.cmd_buf[6] << (int)g_m4board.cmd_buf[7]
-               << " rom_num=" << (int)g_m4board.cmd_buf[8]
-               << " amsdos_ver=" << (max_len > 20 ? (int)g_m4board.cmd_buf[24] : -1));
-   }
+   LOG_DEBUG("M4: C_CONFIG offset=" << (int)config_offset << " len=" << max_len
+            << " slot=" << g_m4board.rom_slot);
 }
 
 static void cmd_romwrite()
@@ -819,7 +999,7 @@ void m4board_execute()
 
    uint16_t cmd = g_m4board.cmd_buf[1] | (static_cast<uint16_t>(g_m4board.cmd_buf[2]) << 8);
 
-   LOG_DEBUG("M4: execute cmd=0x" << std::hex << cmd << " buf_size=" << std::dec << g_m4board.cmd_buf.size());
+   LOG_DEBUG("M4: exec cmd=0x" << std::hex << cmd << std::dec);
 
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
@@ -831,6 +1011,8 @@ void m4board_execute()
       case C_OPEN:       cmd_open(); break;
       case C_CLOSE:      cmd_close(); break;
       case C_READ:       cmd_read(); break;
+      case C_READ2:      cmd_read2(); break;
+      case C_READSECTOR: cmd_readsector(); break;
       case C_WRITE:      cmd_write(); break;
       case C_SEEK:       cmd_seek(); break;
       case C_EOF:        cmd_eof(); break;
