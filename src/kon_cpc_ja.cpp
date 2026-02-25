@@ -2074,7 +2074,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    g_symbiface.enabled = conf.getIntValue("peripheral", "symbiface", 0) & 1;
    g_m4board.enabled = conf.getIntValue("peripheral", "m4board", 0) & 1;
    g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
-   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 7);
+   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 6);
    {
       std::string ide_path = conf.getStringValue("peripheral", "ide_master", "");
       if (!ide_path.empty() && g_symbiface.enabled) {

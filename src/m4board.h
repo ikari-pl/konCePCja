@@ -35,7 +35,7 @@ struct M4Board {
    FILE* open_files[4] = {};
 
    // ROM slot and auto-load tracking
-   int rom_slot = 7;
+   int rom_slot = 6;
    bool rom_auto_loaded = false;   // true if we loaded the ROM (vs. user)
 
    // Config buffer — mirrors ROM data area at offset 0x3400

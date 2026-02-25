@@ -55,6 +55,7 @@
 #include "imgui_ui_testable.h"
 #include "session_recording.h"
 #include "silicon_disc.h"
+#include "m4board.h"
 #include "devtools_ui.h"
 #include "video.h"
 
@@ -2320,6 +2321,15 @@ std::string handle_command(const std::string& line) {
       if (parts[2] == "silicon_disc") {
         return std::string("OK ") + (g_silicon_disc.enabled ? "1" : "0") + "\n";
       }
+      if (parts[2] == "m4board") {
+        return std::string("OK ") + (g_m4board.enabled ? "1" : "0") + "\n";
+      }
+      if (parts[2] == "m4_sd_path") {
+        return "OK " + g_m4board.sd_root_path + "\n";
+      }
+      if (parts[2] == "m4_rom_slot") {
+        return "OK " + std::to_string(g_m4board.rom_slot) + "\n";
+      }
       return "ERR 400 unknown-config-key\n";
     }
     if (parts[1] == "set" && parts.size() >= 4) {
@@ -2347,6 +2357,21 @@ std::string handle_command(const std::string& line) {
           silicon_disc_init(g_silicon_disc);
         }
         ga_memory_manager();
+        return "OK\n";
+      }
+      if (parts[2] == "m4board") {
+        int v;
+        try { v = std::stoi(parts[3]); } catch (const std::exception&) {
+          return "ERR 400 bad-value\n";
+        }
+        g_m4board.enabled = (v != 0);
+        return "OK (reset required)\n";
+      }
+      if (parts[2] == "m4_sd_path") {
+        // Collect rest of line after "config set m4_sd_path "
+        size_t pos = line.find("m4_sd_path ");
+        if (pos == std::string::npos) return "ERR 400 bad-args\n";
+        g_m4board.sd_root_path = line.substr(pos + 11);
         return "OK\n";
       }
       return "ERR 400 unknown-config-key\n";
