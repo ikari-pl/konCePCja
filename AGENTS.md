@@ -14,6 +14,7 @@ src/
 ├── slotshandler.cpp   # File loading (DSK, CDT, SNA, CPR)
 ├── imgui_ui.cpp       # Dear ImGui interface (topbar, devtools, menus)
 ├── koncepcja_ipc_server.cpp  # TCP IPC server for external debugging
+├── telnet_console.cpp # TCP text console — mirrors CPC output, injects keyboard
 └── disk.cpp           # Floppy disk emulation
 ```
 
@@ -156,6 +157,41 @@ echo "run" | nc localhost 6543
 echo "wait pc 0xC000 30000" | nc localhost 6543  # Wait for game entry
 echo "screenshot /tmp/game.bmp" | nc localhost 6543
 ```
+
+## Telnet Console
+
+A persistent TCP text console on **port 6544** (IPC+1). Mirrors everything the CPC prints and accepts keyboard input — like a remote terminal for the emulated CPC.
+
+### Connecting
+
+```bash
+nc localhost 6544
+```
+
+### How it works
+
+- **Output**: Hooks the CPC firmware's TXT_OUTPUT vector (&BB5A) via a Z80 execution loop callback. When the Z80 PC reaches &BB5A, the character in register A is pushed to a lock-free SPSC ring buffer, drained to the TCP client by the server thread.
+- **Input**: Received bytes are buffered and fed to AutoTypeQueue each frame. ANSI escape sequences are mapped to CPC keys (arrows, ESC, DEL, TAB).
+- **Connection model**: Single client at a time (new connection replaces existing). Port probes forward up to +10 if 6544 is taken.
+
+### ANSI escape mapping
+
+| Terminal input | CPC key | Notes |
+|---------------|---------|-------|
+| `\x1b[A/B/C/D` | Cursor Up/Down/Right/Left | Standard ANSI arrows |
+| `\x1b` (alone) | ESC | Bare escape |
+| `\x7f` / `\x08` | DEL | Backspace |
+| `\t` | TAB | |
+| `\x03` (Ctrl+C) | ESC | Common telnet interrupt |
+| `\r` or `\n` | RETURN | CR+LF collapsed |
+| Printable ASCII | Corresponding key | Direct pass-through |
+
+### Source files
+
+- `src/telnet_console.h` — TelnetConsole class, ring buffer, input mutex
+- `src/telnet_console.cpp` — TCP server thread, ANSI parsing, Z80 hook callback
+- Z80 hook: `z80_set_txt_output_hook()` in `src/z80.cpp` / `src/z80.h`
+- Main loop integration: `g_telnet.start()` / `drain_input()` / `stop()` in `src/kon_cpc_ja.cpp`
 
 ## Debugging Tips
 

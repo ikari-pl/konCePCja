@@ -32,6 +32,7 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
 
 ### IPC Automation
   * **IPC protocol** — TCP server on port 6543 for remote control by scripts and LLM agents
+  * **Telnet console** — persistent TCP text terminal on port 6544, mirrors CPC output and accepts keyboard input (`nc localhost 6544`)
   * **Headless mode** (`--headless`) — run without a window for CI and automation
   * **Input replay** — type text, press keys and control joysticks over IPC
   * **Auto-Type** — `autotype` command with WinAPE `~KEY~` syntax for scripted keyboard input

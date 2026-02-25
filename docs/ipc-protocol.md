@@ -5,6 +5,24 @@ Responses start with `OK` or `ERR <code> <reason>`.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+## Companion: Telnet Console (port 6544)
+
+A separate persistent TCP connection on **port 6544** provides a text terminal
+for the CPC — everything the CPC prints appears in the terminal, and everything
+typed is injected as keyboard input. Unlike IPC (one-shot command/response),
+the telnet console keeps the connection open.
+
+```bash
+nc localhost 6544       # connect — type to interact with the CPC
+```
+
+- Output is captured by hooking TXT_OUTPUT (&BB5A) in the Z80 execution loop
+- Input is fed through AutoTypeQueue with ANSI escape → CPC key mapping
+- Single client at a time; new connections replace the existing one
+- Port probes forward up to +10 if 6544 is taken
+
+See CLAUDE.md § Telnet Console for architecture details and key mappings.
+
 ## Lifecycle
 
 | Command | Description |
