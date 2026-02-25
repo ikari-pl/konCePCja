@@ -660,7 +660,14 @@ static void cmd_config()
    }
 
    respond_ok();
-   LOG_DEBUG("M4: C_CONFIG offset=" << (int)config_offset << " len=" << max_len);
+   LOG_INFO("M4: C_CONFIG offset=" << (int)config_offset << " len=" << max_len
+            << " rom=" << (rom ? "yes" : "null") << " slot=" << g_m4board.rom_slot);
+   if (config_offset == 0 && max_len >= 5) {
+      LOG_INFO("M4: CONFIG[0] jump_vec=0x" << std::hex
+               << (int)g_m4board.cmd_buf[6] << (int)g_m4board.cmd_buf[7]
+               << " rom_num=" << (int)g_m4board.cmd_buf[8]
+               << " amsdos_ver=" << (max_len > 20 ? (int)g_m4board.cmd_buf[24] : -1));
+   }
 }
 
 static void cmd_romwrite()
@@ -806,6 +813,8 @@ void m4board_execute()
    }
 
    uint16_t cmd = g_m4board.cmd_buf[1] | (static_cast<uint16_t>(g_m4board.cmd_buf[2]) << 8);
+
+   LOG_DEBUG("M4: execute cmd=0x" << std::hex << cmd << " buf_size=" << std::dec << g_m4board.cmd_buf.size());
 
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
