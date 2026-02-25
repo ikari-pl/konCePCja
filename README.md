@@ -17,15 +17,17 @@ https://github.com/ikari-pl/konCePCja
 
 konCePCja is a software emulator of the Amstrad CPC 8-bit home computer series, running on Linux, macOS and Windows. It faithfully imitates the CPC464, CPC664 and CPC6128 models, plus the CPC464+, CPC6128+ and GX4000 Plus Range machines. By recreating the operations of all hardware components at a low level, the emulator achieves a high degree of compatibility with original CPC software. Programs and games run unmodified at real-time or higher speeds, depending on the host environment.
 
-konCePCja is designed as an **IPC-controllable debugging tool** — every feature is accessible via a TCP text protocol, making it scriptable by automation pipelines, CI systems and LLM agents. The 13-window Dear ImGui DevTools UI is built on top of the same API.
+konCePCja is designed as an **IPC-controllable debugging tool** — every feature is accessible via a TCP text protocol, making it scriptable by automation pipelines, CI systems and LLM agents. The 16-window Dear ImGui DevTools UI is built on top of the same API.
 
 ## Changes vs Caprice32
 
-konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 41 pull requests, 623 tests, 38K lines of source.
+konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 55K lines of source, 646 tests across 79 suites.
 
 ### Platform & UI
   * SDL3 migration + macOS menu integration
-  * Dear ImGui overlay with 13 DevTools windows (see [DevTools](#devtools) below)
+  * Dear ImGui overlay with 16 DevTools windows (see [DevTools](#devtools) below)
+  * **Dockable workspace** — Classic (floating windows) or Docked mode with Debug, IDE and Hardware layout presets, plus custom save/load
+  * **DevTools toolbar** — toggleable second topbar (F12) with dropdown menus and step/pause controls
   * PNG logo + macOS icns icon
 
 ### IPC Automation
@@ -69,6 +71,7 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **Silicon Disc** — 256 KB battery-backed RAM disc in banks 4-7
   * **32 ROM slots** — load/unload/query ROM images
   * **ASIC register viewer** — sprites, DMA channels, palette, interrupts
+  * **Video / Audio state** — live CRTC, Gate Array, PSG register viewers
 
 ### Session & Graphics
   * **Session recording** — record and replay full emulator input/state sessions
@@ -89,19 +92,20 @@ See [docs/ipc-protocol.md](docs/ipc-protocol.md) for the full IPC command refere
   * DSK, [IPF](http://softpres.org/glossary:ipf) and CT-RAW files for disks — VOC and CDT files for tapes — CPR files for cartridges
   * Snapshots (SNA files)
   * Direct load of ZIP files
-  * 13-window ImGui DevTools: registers, disassembly, memory hex, stack, breakpoints, symbols, data areas, graphics finder, session recording, silicon disc, ASIC viewer, disc tools, disasm export
+  * 16-window ImGui DevTools: registers, disassembly, memory hex, stack, breakpoints, symbols, data areas, graphics finder, session recording, silicon disc, ASIC viewer, disc tools, disasm export, video state, audio state, recording controls
+  * Dockable workspace with Debug/IDE/Hardware presets and custom layout save/load
   * Disc file editor, sector editor and formatting (IPC and GUI)
   * WAV, YM and AVI recording
   * Custom disk formats
   * Printer support
   * Experimental Multiface 2 support (prefer the memory tool where possible)
-  * 623 unit tests across 78 test suites
+  * 646 unit tests across 79 test suites
 
 Something missing? Open an issue to suggest it.
 
 ## DevTools
 
-Press **F12** or send `devtools` via IPC to open the developer tools overlay. The DevTools provide 13 floating windows, all backed by the same IPC commands available to scripts:
+Press **F12** or send `devtools` via IPC to toggle the DevTools toolbar below the main topbar. The toolbar provides dropdown menus (CPU, Memory, Hardware, Media, Export) and step/pause controls. All 16 windows are also accessible from the command palette:
 
 | Window | Description |
 |--------|-------------|
@@ -114,12 +118,15 @@ Press **F12** or send `devtools` via IPC to open the developer tools overlay. Th
 | **Data Areas** | Mark memory ranges as bytes/words/text for correct disassembly |
 | **Disasm Export** | Export disassembly to source files with address range and symbol options |
 | **Session Recording** | Record, stop and replay emulator sessions with progress display |
+| **Recording Controls** | Transport controls for session playback with progress bar |
 | **Graphics Finder** | Decode CPC pixel data at any address in Mode 0/1/2, with zoom, palette selector and paint |
 | **Silicon Disc** | Enable/disable, bank usage display, clear/save/load the 256K RAM disc |
 | **ASIC Viewer** | Plus Range hardware: 16 sprites, 3 DMA channels, 32-colour palette, interrupt state |
 | **Disc Tools** | Drive selector, disc formatting, AMSDOS file browser, sector-level read |
+| **Video State** | Live CRTC and Gate Array register display |
+| **Audio State** | Live PSG (AY-3-8912) register display |
 
-All windows are accessible from the **DevTools** menu in the menu bar and the command palette.
+In **Docked mode**, windows snap into a tiled layout. Three presets are available (Debug, IDE, Hardware) and custom layouts can be saved/loaded from the Layout menu.
 
 ## Installation
 
