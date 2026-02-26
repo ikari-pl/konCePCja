@@ -282,7 +282,7 @@ static void cmd_readdir()
       pos += 12;
 
       // ASCII size field (5 chars): "1234B", " 100K", "  15M", "   2G", or "<DIR>"
-      char sizebuf[6];
+      char sizebuf[12];
       if (entry.is_dir) {
          memcpy(sizebuf, "<DIR>", 5);
       } else if (entry.size < 1024) {
