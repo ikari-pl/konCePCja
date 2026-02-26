@@ -1,12 +1,30 @@
 /* konCePCja - Amstrad CPC Emulator
    Symbiface II - IDE + RTC + PS/2 Mouse expansion board
 
-   Port map:
-   - IDE + RTC: &FD00-&FD3F (port.b.h == 0xFD, port.b.l & 0xC0 == 0x00)
-     - IDE regs: port.b.l & 0x38 == 0x08, offset = port.b.l & 0x07
-     - IDE alt:  port.b.l & 0x38 == 0x18
-     - RTC:      port.b.l & 0x38 == 0x00, addr/data via port.b.l & 0x01
-   - PS/2 Mouse: &FBEE (X), &FBEF (Y)
+   Port map (from CPCWiki SYMBiFACE_II:I/O_Map_Summary):
+   All ports at &FDxx (port.b.h == 0xFD), full 16-bit address decoding.
+
+     &FD06     IDE Alternate Status (read) / Digital Output (write)
+     &FD07     IDE Drive Address (read)
+     &FD08     IDE Data Register (read/write)
+     &FD09     IDE Error (read) / Features (write)
+     &FD0A     IDE Sector Count
+     &FD0B     IDE Sector Number / LBA Low
+     &FD0C     IDE Cylinder Low / LBA Mid
+     &FD0D     IDE Cylinder High / LBA High
+     &FD0E     IDE Device/Head
+     &FD0F     IDE Status (read) / Command (write)
+     &FD10     PS/2 Mouse Status (read) — multiplexed FIFO
+     &FD14     RTC Data (read/write)
+     &FD15     RTC Index (write)
+     &FD18     PS/2 Mouse Status (read) — alias of &FD10
+
+   PS/2 Mouse status byte format (from CPCWiki SYMBiFACE_II:PS/2_mouse):
+     Bits 7-6 (mm): 00=no data, 01=X offset, 10=Y offset, 11=buttons/scroll
+     Bits 5-0 (D):  signed 6-bit offset (modes 01/10), or button/scroll data (mode 11)
+     Mode 11, D[5]=0: D[0]=left, D[1]=right, D[2]=middle, D[3]=fwd, D[4]=back
+     Mode 11, D[5]=1: D[0-4]=scroll wheel offset (signed)
+     Read repeatedly until mm=00 (no more data).
 */
 
 #ifndef SYMBIFACE_H
@@ -49,11 +67,13 @@ struct SF2_RTC {
    uint8_t cmos_ram[50] = {};     // 50 bytes of CMOS NVRAM
 };
 
-// ── PS/2 Mouse (Kempston) ──────────────────────
+// ── PS/2 Mouse (multiplexed FIFO protocol) ───
 struct SF2_Mouse {
-   uint8_t x_counter = 0;    // wrapping 8-bit X position
-   uint8_t y_counter = 0;    // wrapping 8-bit Y position
-   uint8_t buttons = 0xFF;   // active-high: bit 0=left, bit 1=right, bit 2=middle
+   static constexpr int FIFO_SIZE = 64;
+   uint8_t fifo[FIFO_SIZE] = {};
+   int head = 0;             // write position (main thread)
+   int tail = 0;             // read position (Z80 I/O read)
+   uint8_t last_buttons = 0; // previous button state (for change detection)
 };
 
 // ── Master struct ──────────────────────────────

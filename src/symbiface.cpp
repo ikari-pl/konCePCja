@@ -122,7 +122,9 @@ static void ide_do_write_commit(IDE_Device& dev)
       return;
    }
    fseek(dev.image, lba * 512L, SEEK_SET);
-   fwrite(dev.sector_buf, 1, 512, dev.image);
+   if (fwrite(dev.sector_buf, 1, 512, dev.image) != 512) {
+      LOG_ERROR("Symbiface IDE: write failed at LBA " << lba);
+   }
    fflush(dev.image);
 
    dev.write_pending = false;
@@ -190,9 +192,9 @@ void symbiface_reset()
    g_symbiface.ide_slave.write_pending = false;
 
    g_symbiface.rtc.address_reg = 0;
-   g_symbiface.mouse.x_counter = 0;
-   g_symbiface.mouse.y_counter = 0;
-   g_symbiface.mouse.buttons = 0xFF;
+   g_symbiface.mouse.head = 0;
+   g_symbiface.mouse.tail = 0;
+   g_symbiface.mouse.last_buttons = 0;
 }
 
 void symbiface_cleanup()
@@ -368,64 +370,118 @@ byte symbiface_rtc_read()
    return 0xFF;
 }
 
-// ── PS/2 Mouse ──────────────────────────────────
+// ── PS/2 Mouse (multiplexed FIFO protocol) ──────
+// CPCWiki SYMBiFACE_II:PS/2_mouse — status byte format:
+//   Bits 7-6 (mm): 00=no data, 01=X offset, 10=Y offset, 11=buttons/scroll
+//   Bits 5-0 (D):  6-bit payload
+// Hardware only sends data that has changed.
+
+static void mouse_fifo_push(SF2_Mouse& m, uint8_t val)
+{
+   int next = (m.head + 1) % SF2_Mouse::FIFO_SIZE;
+   if (next == m.tail) return; // full — drop oldest would complicate, just drop new
+   m.fifo[m.head] = val;
+   m.head = next;
+}
+
+static uint8_t mouse_fifo_pop(SF2_Mouse& m)
+{
+   if (m.head == m.tail) return 0x00; // empty → mode 00 = no data
+   uint8_t val = m.fifo[m.tail];
+   m.tail = (m.tail + 1) % SF2_Mouse::FIFO_SIZE;
+   return val;
+}
 
 void symbiface_mouse_update(float dx, float dy, uint32_t sdl_buttons)
 {
-   g_symbiface.mouse.x_counter += static_cast<int8_t>(dx);
-   g_symbiface.mouse.y_counter -= static_cast<int8_t>(dy); // Y inverted
+   SF2_Mouse& m = g_symbiface.mouse;
 
-   // Buttons: active-high for Kempston mouse
-   g_symbiface.mouse.buttons = 0xFF;
-   if (sdl_buttons & 1) g_symbiface.mouse.buttons &= ~0x01; // left
-   if (sdl_buttons & 4) g_symbiface.mouse.buttons &= ~0x02; // right
-   if (sdl_buttons & 2) g_symbiface.mouse.buttons &= ~0x04; // middle
+   // X movement: mode 01, signed 6-bit (-32..+31)
+   // SDL: positive xrel = rightward (same as SF2 convention)
+   int ix = static_cast<int>(dx);
+   if (ix != 0) {
+      if (ix > 31) ix = 31;
+      if (ix < -32) ix = -32;
+      mouse_fifo_push(m, 0x40 | (ix & 0x3F));
+   }
+
+   // Y movement: mode 10, signed 6-bit (-32..+31)
+   // SDL: positive yrel = downward; SF2: positive = upward → negate
+   int iy = -static_cast<int>(dy);
+   if (iy != 0) {
+      if (iy > 31) iy = 31;
+      if (iy < -32) iy = -32;
+      mouse_fifo_push(m, 0x80 | (iy & 0x3F));
+   }
+
+   // Buttons: mode 11, D[5]=0, D[0-4] = active-high button bits
+   // SDL: bit 0=left(1), bit 2=middle(2), bit 1=right(4)
+   uint8_t btn = 0;
+   if (sdl_buttons & 1) btn |= 0x01; // left
+   if (sdl_buttons & 4) btn |= 0x02; // right
+   if (sdl_buttons & 2) btn |= 0x04; // middle
+   if (btn != m.last_buttons) {
+      mouse_fifo_push(m, 0xC0 | (btn & 0x1F));
+      m.last_buttons = btn;
+   }
 }
 
 // ── I/O dispatch registration ──────────────────
 
 #include "io_dispatch.h"
 
+// Port decode: full 16-bit addressing within &FD00-&FD3F.
+// CPCWiki SYMBiFACE_II:I/O_Map_Summary (verified against Cyboard clone docs).
+
 static bool symbiface_in_handler_fd(reg_pair port, byte& ret_val)
 {
-   if ((port.b.l & 0xC0) != 0x00) return false;
-   byte sub = port.b.l & 0x38;
-   if (sub == 0x08) {
-      ret_val = symbiface_ide_read(port.b.l & 0x07);
+   byte lo = port.b.l;
+
+   // IDE primary registers: &FD08-&FD0F
+   if (lo >= 0x08 && lo <= 0x0F) {
+      ret_val = symbiface_ide_read(lo - 0x08);
       return true;
-   } else if (sub == 0x18) {
-      ret_val = symbiface_ide_read(7);
+   }
+   // IDE alternate status: &FD06
+   if (lo == 0x06) {
+      ret_val = symbiface_ide_read(7); // alt status = same as status
       return true;
-   } else if (sub == 0x00 && (port.b.l & 0x01)) {
+   }
+   // PS/2 Mouse Status: &FD10 and &FD18 (multiplexed FIFO read)
+   if (lo == 0x10 || lo == 0x18) {
+      ret_val = mouse_fifo_pop(g_symbiface.mouse);
+      return true;
+   }
+   // RTC data register: &FD14
+   if (lo == 0x14) {
       ret_val = symbiface_rtc_read();
       return true;
    }
    return false;
 }
 
-static bool symbiface_in_handler_fb(reg_pair port, byte& ret_val)
-{
-   if (port.b.l == 0xEE) { ret_val = g_symbiface.mouse.x_counter; return true; }
-   if (port.b.l == 0xEF) { ret_val = g_symbiface.mouse.y_counter; return true; }
-   return false;
-}
-
 static bool symbiface_out_handler_fd(reg_pair port, byte val)
 {
-   if ((port.b.l & 0xC0) != 0x00) return false;
-   byte sub = port.b.l & 0x38;
-   if (sub == 0x08) {
-      symbiface_ide_write(port.b.l & 0x07, val);
+   byte lo = port.b.l;
+
+   // IDE primary registers: &FD08-&FD0F
+   if (lo >= 0x08 && lo <= 0x0F) {
+      symbiface_ide_write(lo - 0x08, val);
       return true;
-   } else if (sub == 0x18) {
+   }
+   // IDE device control (SRST): &FD06
+   if (lo == 0x06) {
       if (val & 0x04) symbiface_reset();
       return true;
-   } else if (sub == 0x00) {
-      if (port.b.l & 0x01) {
-         symbiface_rtc_write_data(val);
-      } else {
-         symbiface_rtc_write_addr(val);
-      }
+   }
+   // RTC data register: &FD14
+   if (lo == 0x14) {
+      symbiface_rtc_write_data(val);
+      return true;
+   }
+   // RTC index register: &FD15
+   if (lo == 0x15) {
+      symbiface_rtc_write_addr(val);
       return true;
    }
    return false;
@@ -433,7 +489,6 @@ static bool symbiface_out_handler_fd(reg_pair port, byte val)
 
 void symbiface_register_io()
 {
-   io_register_in(0xFD, symbiface_in_handler_fd, &g_symbiface.enabled, "Symbiface II IDE/RTC");
-   io_register_in(0xFB, symbiface_in_handler_fb, &g_symbiface.enabled, "Symbiface II Mouse");
-   io_register_out(0xFD, symbiface_out_handler_fd, &g_symbiface.enabled, "Symbiface II IDE/RTC");
+   io_register_in(0xFD, symbiface_in_handler_fd, &g_symbiface.enabled, "Symbiface II");
+   io_register_out(0xFD, symbiface_out_handler_fd, &g_symbiface.enabled, "Symbiface II");
 }
