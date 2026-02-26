@@ -8,11 +8,14 @@
 #include "disk_file_editor.h"
 #include "disk_sector_editor.h"
 #include "z80_assembler.h"
+#include "TextEditor.h"
+#include <memory>
 
 enum class NavTarget { DISASM, MEMORY, GFX };
 
 class DevToolsUI {
 public:
+    ~DevToolsUI();
     void render();
     void toggle_window(const std::string& name);
     bool is_window_open(const std::string& name) const;
@@ -21,8 +24,10 @@ public:
     void navigate_disassembly(word addr);
     void navigate_to(word addr, NavTarget target);
     void navigate_memory(word addr);
-    char* asm_source_buf() { return asm_source_; }
-    size_t asm_source_buf_size() const { return sizeof(asm_source_); }
+    // IPC access: returns a shadow buffer synced from TextEditor on demand
+    char* asm_source_buf();
+    size_t asm_source_buf_size() const { return sizeof(asm_source_shadow_); }
+    void asm_set_source(const char* text);  // IPC write path
 
     // Returns the array of all window key strings (16 entries).
     static const char* const* all_window_keys(int* count);
@@ -135,12 +140,12 @@ private:
     std::string rc_status_;
 
     // Assembler state
-    char asm_source_[65536] = "";
+    std::unique_ptr<TextEditor> asm_editor_;
+    bool asm_editor_initialized_ = false;
+    char asm_source_shadow_[65536] = "";  // shadow buffer for IPC compatibility
     std::vector<AsmError> asm_errors_;
     std::string asm_status_;
     char asm_path_[256] = "";
-    int asm_prev_line_count_ = 0;
-    bool asm_autoformat_ = true;
     char asm_org_addr_[8] = "4000";
     bool show_asm_reference_ = false;
 

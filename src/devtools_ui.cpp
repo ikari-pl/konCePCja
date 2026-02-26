@@ -1,4 +1,5 @@
 #include "devtools_ui.h"
+#include "TextEditor.h"
 #include "imgui_ui_testable.h"
 #include "imgui.h"
 #include <cstdio>
@@ -54,6 +55,9 @@ static bool has_path_traversal(const char* path)
 static constexpr ImVec4 kLinkColor(0.4f, 0.8f, 1.0f, 1.0f);
 
 DevToolsUI g_devtools_ui;
+
+// Destructor defined here where TextEditor is a complete type
+DevToolsUI::~DevToolsUI() = default;
 
 // -----------------------------------------------
 // Name-to-pointer mapping helpers
@@ -2403,14 +2407,6 @@ void DevToolsUI::render_recording_controls()
 
 // ── Maxam-style auto-format helpers ──
 
-// Count newlines in buffer
-static int asm_count_lines(const char* buf) {
-  int count = 1;
-  for (const char* p = buf; *p; ++p)
-    if (*p == '\n') ++count;
-  return count;
-}
-
 // Uppercase a string in-place (returns same ref)
 static std::string& asm_upper(std::string& s) {
   for (auto& c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
@@ -2453,6 +2449,29 @@ static std::string asm_upper_registers(const std::string& ops) {
     }
   }
   return result;
+}
+
+// ── IPC compatibility for TextEditor ──
+
+// Ensure the TextEditor exists (lazy creation to avoid ImGui context crash at static init)
+static TextEditor& ensure_editor(std::unique_ptr<TextEditor>& ptr) {
+  if (!ptr)
+    ptr = std::make_unique<TextEditor>();
+  return *ptr;
+}
+
+char* DevToolsUI::asm_source_buf() {
+  auto& ed = ensure_editor(asm_editor_);
+  std::string text = ed.GetText();
+  size_t len = std::min(text.size(), sizeof(asm_source_shadow_) - 1);
+  memcpy(asm_source_shadow_, text.c_str(), len);
+  asm_source_shadow_[len] = '\0';
+  return asm_source_shadow_;
+}
+
+void DevToolsUI::asm_set_source(const char* text) {
+  auto& ed = ensure_editor(asm_editor_);
+  ed.SetText(text ? text : "");
 }
 
 // Format one line into Maxam columns: label@0, mnemonic@16, operands@24, comment@40
@@ -2570,45 +2589,6 @@ static std::string asm_format_line(const std::string& line) {
   return out;
 }
 
-// ImGui InputText callback for auto-formatting
-static int asm_format_callback(ImGuiInputTextCallbackData* data)
-{
-  // UserData points to the DevToolsUI's asm_prev_line_count_ and asm_autoformat_
-  struct AsmCbData { int* prev_count; bool autoformat; };
-  auto* cbd = static_cast<AsmCbData*>(data->UserData);
-  if (!cbd->autoformat) return 0;
-
-  int cur_lines = asm_count_lines(data->Buf);
-
-  if (cur_lines > *cbd->prev_count && data->CursorPos > 0) {
-    // A new line was added — find and format the previous line
-    // Find the start of the current line (the one cursor is on after Enter)
-    int cursor = data->CursorPos;
-    // Go back past the newline we just inserted
-    int nl_pos = cursor - 1;
-    if (nl_pos >= 0 && data->Buf[nl_pos] == '\n') {
-      // Find start of previous line
-      int prev_end = nl_pos; // exclusive end of previous line
-      int prev_start = nl_pos - 1;
-      while (prev_start > 0 && data->Buf[prev_start - 1] != '\n')
-        --prev_start;
-      if (prev_start < 0) prev_start = 0;
-
-      std::string prev_line(data->Buf + prev_start, prev_end - prev_start);
-      std::string formatted = asm_format_line(prev_line);
-
-      if (formatted != prev_line) {
-        // Replace the previous line in the buffer
-        data->DeleteChars(prev_start, prev_end - prev_start);
-        data->InsertChars(prev_start, formatted.c_str());
-      }
-    }
-  }
-
-  *cbd->prev_count = asm_count_lines(data->Buf);
-  return 0;
-}
-
 // Helper: run assemble/check, optionally prepending org directive
 static std::string asm_build_source_with_org(const char* source, const char* org_addr)
 {
@@ -2643,13 +2623,35 @@ void DevToolsUI::render_assembler()
     return;
   }
 
-  // ── Toolbar Row 1: Assemble/Check/Clear ... Browse/Path/Load/Save ... Ref ──
+  auto& ed = ensure_editor(asm_editor_);
+
+  // Initialize editor on first use
+  if (!asm_editor_initialized_) {
+    ed.SetCustomLanguageDefinition(&TextEditor::LanguageDefinition::Z80Assembly());
+    ed.SetPalette(TextEditor::PaletteId::Dark);
+    ed.SetShowWhitespacesEnabled(false);
+    ed.SetTabSize(8);
+    asm_editor_initialized_ = true;
+  }
+
+  // Helper lambda to get source text for assembler
+  auto get_source = [&]() -> std::string {
+    std::string text = ed.GetText();
+    return asm_build_source_with_org(text.c_str(), asm_org_addr_);
+  };
+
+  auto source_len = [&]() -> size_t {
+    return ed.GetText().size();
+  };
+
+  // ── Toolbar Row 1: Assemble/Check/Clear/Format ... Browse/Path/Load/Save ... Ref ──
   if (ImGui::Button("Assemble")) {
-    std::string src = asm_build_source_with_org(asm_source_, asm_org_addr_);
+    size_t orig_len = source_len();
+    std::string src = get_source();
     AsmResult r = g_assembler.assemble(src);
     asm_errors_ = r.errors;
     // Adjust line numbers if we prepended org
-    if (src.size() > strlen(asm_source_) && !asm_errors_.empty()) {
+    if (src.size() > orig_len && !asm_errors_.empty()) {
       for (auto& e : asm_errors_) if (e.line > 0) --e.line;
     }
     if (r.success) {
@@ -2668,10 +2670,11 @@ void DevToolsUI::render_assembler()
   }
   ImGui::SameLine();
   if (ImGui::Button("Check")) {
-    std::string src = asm_build_source_with_org(asm_source_, asm_org_addr_);
+    size_t orig_len = source_len();
+    std::string src = get_source();
     AsmResult r = g_assembler.check(src);
     asm_errors_ = r.errors;
-    if (src.size() > strlen(asm_source_) && !asm_errors_.empty()) {
+    if (src.size() > orig_len && !asm_errors_.empty()) {
       for (auto& e : asm_errors_) if (e.line > 0) --e.line;
     }
     if (r.success) {
@@ -2687,9 +2690,22 @@ void DevToolsUI::render_assembler()
   }
   ImGui::SameLine();
   if (ImGui::Button("Clear")) {
-    asm_source_[0] = '\0';
+    ed.SetText("");
     asm_errors_.clear();
     asm_status_.clear();
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Format")) {
+    std::string text = ed.GetText();
+    std::istringstream ss(text);
+    std::string line, formatted;
+    bool first = true;
+    while (std::getline(ss, line)) {
+      if (!first) formatted += '\n';
+      formatted += asm_format_line(line);
+      first = false;
+    }
+    ed.SetText(formatted);
   }
 
   // File operations with browse buttons
@@ -2705,9 +2721,7 @@ void DevToolsUI::render_assembler()
         if (f.good()) {
           std::string content((std::istreambuf_iterator<char>(f)),
                                std::istreambuf_iterator<char>());
-          size_t max_len = sizeof(asm_source_) - 1;
-          if (content.size() > max_len) content.resize(max_len);
-          memcpy(asm_source_, content.c_str(), content.size() + 1);
+          ed.SetText(content);
           asm_status_ = "Loaded " + std::to_string(content.size()) + " bytes";
           asm_errors_.clear();
         }
@@ -2726,9 +2740,7 @@ void DevToolsUI::render_assembler()
       if (f.good()) {
         std::string content((std::istreambuf_iterator<char>(f)),
                              std::istreambuf_iterator<char>());
-        size_t max_len = sizeof(asm_source_) - 1;
-        if (content.size() > max_len) content.resize(max_len);
-        memcpy(asm_source_, content.c_str(), content.size() + 1);
+        ed.SetText(content);
         asm_status_ = "Loaded " + std::to_string(content.size()) + " bytes";
         asm_errors_.clear();
       } else {
@@ -2751,7 +2763,7 @@ void DevToolsUI::render_assembler()
       } else {
         std::ofstream f(asm_path_);
         if (f.good()) {
-          f << asm_source_;
+          f << ed.GetText();
           asm_status_ = "Saved";
         } else {
           asm_status_ = "Error: cannot write file";
@@ -2764,7 +2776,7 @@ void DevToolsUI::render_assembler()
   if (ImGui::Button("? Ref"))
     show_asm_reference_ = !show_asm_reference_;
 
-  // ── Row 2: Origin address, auto-format toggle, status ──
+  // ── Row 2: Origin address, Format hint, status ──
   ImGui::Text("Origin:");
   ImGui::SameLine();
   ImGui::SetNextItemWidth(60.0f);
@@ -2772,8 +2784,6 @@ void DevToolsUI::render_assembler()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   ImGui::TextDisabled("(hex)");
-  ImGui::SameLine(0, 16.0f);
-  ImGui::Checkbox("Auto-format", &asm_autoformat_);
 
   // Status inline
   if (!asm_status_.empty()) {
@@ -2786,19 +2796,11 @@ void DevToolsUI::render_assembler()
       ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", asm_status_.c_str());
   }
 
-  // ── Source editor ──
+  // ── Source editor (syntax-highlighted) ──
   float avail = ImGui::GetContentRegionAvail().y;
   float editor_height = asm_errors_.empty() ? avail : avail * 0.7f;
 
-  // Callback data for auto-formatting
-  struct AsmCbData { int* prev_count; bool autoformat; };
-  AsmCbData cbd = { &asm_prev_line_count_, asm_autoformat_ };
-
-  ImGui::InputTextMultiline("##asm_source", asm_source_, sizeof(asm_source_),
-                            ImVec2(-1.0f, editor_height),
-                            ImGuiInputTextFlags_AllowTabInput |
-                            ImGuiInputTextFlags_CallbackEdit,
-                            asm_format_callback, &cbd);
+  ed.Render("##asm_editor", ImGui::IsWindowFocused(), ImVec2(-1.0f, editor_height));
 
   // Error list
   if (!asm_errors_.empty()) {
