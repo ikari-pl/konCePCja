@@ -49,6 +49,7 @@ extern t_PSG PSG;
 extern t_VDU VDU;
 extern dword dwMF2Flags;
 extern dword dwMF2ExitAddr;
+extern byte *pbMF2ROM;
 
 extern int iTapeCycleCount;
 extern byte bTapeLevel;
@@ -408,6 +409,13 @@ inline void write_mem(word addr, byte val) {
       z80.watchpoint_old = old_val;
       break;
     }
+  }
+  // MF2 RAM: redirect writes to 0x2000-0x3FFF to MF2's 8K SRAM
+  // (MF2 ROM at 0x0000-0x1FFF is read-only; those writes fall through to CPC RAM)
+  if ((dwMF2Flags & MF2_ACTIVE) && pbMF2ROM && addr >= 0x2000 && addr < 0x4000) {
+    pbMF2ROM[addr] = val;
+    ipc_check_mem_write_events(addr, val);
+    return;
   }
   if (GateArray.registerPageOn) {
     //LOG_DEBUG("Pass write to ASIC: " << static_cast<int>(val) << " at " << addr);

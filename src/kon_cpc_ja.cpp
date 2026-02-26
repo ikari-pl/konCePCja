@@ -393,12 +393,10 @@ void ga_memory_manager ()
    }
    if (!(GateArray.ROM_config & 0x04)) { // lower ROM is enabled?
       if (dwMF2Flags & MF2_ACTIVE) { // is the Multiface 2 paged in?
-         // TODO: I think this is why the MF2 doesn't work properly:
-         // ROM should be loaded R/O at 0x0000-0x1FFF (i.e not loaded in membank_write ?)
-         // Writes should probably be disabled in membank_write (pointing to a dummy buffer, but not MF2 ROM ?)
-         // MF2 also has a RAM (8kB) that should be loaded as R/W at 0x2000-0x3FFF
+         // MF2 ROM (8K) at 0x0000-0x1FFF: read-only overlay
+         // MF2 RAM (8K) at 0x2000-0x3FFF: read-write (intercepted in z80.cpp write_mem)
+         // Writes to 0x0000-0x1FFF fall through to CPC RAM (membank_write unchanged)
          membank_read[GateArray.lower_ROM_bank] = pbMF2ROM;
-         membank_write[GateArray.lower_ROM_bank] = pbMF2ROM;
       } else {
          membank_read[GateArray.lower_ROM_bank] = pbROMlo; // 'page in' lower ROM
       }

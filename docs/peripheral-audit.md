@@ -46,23 +46,9 @@ Additionally, the entire data protocol was wrong — our code used simple X/Y co
 
 ## MODERATE ISSUES
 
-### 5. Multiface II: ROM/RAM mapping is incorrect (known)
+### 5. ~~Multiface II: ROM/RAM mapping is incorrect~~ FIXED
 
-**File**: `src/kon_cpc_ja.cpp:395-401`
-
-The TODO comment in the code acknowledges this:
-```cpp
-// TODO: I think this is why the MF2 doesn't work properly:
-// ROM should be loaded R/O at 0x0000-0x1FFF
-// Writes should probably be disabled in membank_write
-// MF2 also has a RAM (8kB) that should be loaded as R/W at 0x2000-0x3FFF
-```
-
-On real hardware:
-- MF2 ROM (8K) maps to `&0000-&1FFF` (**read-only**)
-- MF2 RAM (8K) maps to `&2000-&3FFF` (**read-write**)
-
-Our code maps both through a single 16K buffer with read AND write access, making the ROM area writable. This is an inherited Caprice32 limitation.
+**FIXED**: `ga_memory_manager()` now only sets `membank_read` for MF2 (not `membank_write`), so writes to 0x0000-0x1FFF fall through to CPC RAM (ROM protected). A write intercept in `z80.cpp:write_mem()` redirects writes to 0x2000-0x3FFF to MF2's 8K SRAM.
 
 ---
 
@@ -176,10 +162,10 @@ The phaser implementation increments CRTC R17 on every OUT to `&FBFE` when the p
 | Symbiface II IDE | ✅ Correct | All ports fixed (FD06/FD08-FD0F), fwrite checked |
 | Symbiface II RTC | ✅ Correct | Remapped to FD14/FD15 |
 | Symbiface II Mouse | ✅ Correct | Remapped to FD10/FD18, real FIFO protocol |
-| Multiface II | ⚠️ Known issue | ROM/RAM mapping incorrect (TODO in code) |
+| Multiface II | ✅ Correct | ROM read-only, RAM write-intercepted |
 | Magnum Phaser | ⚠️ Approximation | Inherited from Caprice32 |
 | Digiblaster | ✅ Correct | None |
 | M4 Board | ✅ Correct | None |
 | Drive/Tape Sounds | ✅ Correct | Cosmetic only, no spec |
 
-**All critical Symbiface II bugs fixed.** Remaining issues: Multiface II ROM/RAM mapping (moderate, inherited from Caprice32) and AMX Mouse sub-pixel loss (minor).
+**All bugs fixed.** Remaining non-issues: Magnum Phaser approximation (inherited from Caprice32, cosmetic) and AMX Mouse sub-pixel loss (fixed separately).
