@@ -8,17 +8,6 @@
 #include <string>
 #include <vector>
 
-class OpCode {
-  public:
-    OpCode() = default;
-    OpCode(int value, int length, int argsize, std::string instruction);
-
-    int value_;
-    int length_;
-    int argsize_;
-    std::string instruction_;
-};
-
 class DisassembledLine {
   public:
     DisassembledLine(word address, uint64_t opcode, std::string&& instruction, int64_t ref_address = -1);
@@ -50,7 +39,6 @@ class DisassembledCode {
 
 std::ostream& operator<<(std::ostream& os, const DisassembledCode& code);
 
-std::map<int, OpCode> load_opcodes_table();
 DisassembledLine disassemble_one(dword pos, DisassembledCode& result, std::vector<dword>& entry_points);
 DisassembledCode disassemble(const std::vector<word>& entry_points);
 

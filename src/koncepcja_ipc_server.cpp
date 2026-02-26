@@ -57,6 +57,7 @@
 #include "silicon_disc.h"
 #include "m4board.h"
 #include "devtools_ui.h"
+#include "z80_assembler.h"
 #include "video.h"
 
 extern t_z80regs z80;
@@ -157,7 +158,7 @@ std::string handle_command(const std::string& line) {
     int p = g_ipc_instance ? g_ipc_instance->port() : 0;
     return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
   }
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2835,6 +2836,73 @@ std::string handle_command(const std::string& line) {
       return std::string(buf) + "\n";
     }
     return "ERR 400 usage: session (record|play|stop|status) [path]\n";
+  }
+
+  // ── asm ──
+  if (cmd == "asm" && parts.size() >= 2) {
+    if (parts[1] == "text" && parts.size() >= 3) {
+      // "asm text <source>" — set assembler source (rest of line after "asm text ")
+      size_t offset = line.find("text ");
+      if (offset == std::string::npos) return "ERR 400 bad-args\n";
+      std::string source = line.substr(offset + 5);
+      auto* buf = g_devtools_ui.asm_source_buf();
+      size_t max_len = g_devtools_ui.asm_source_buf_size() - 1;
+      if (source.size() > max_len) source.resize(max_len);
+      memcpy(buf, source.c_str(), source.size() + 1);
+      return "OK\n";
+    }
+    if (parts[1] == "load" && parts.size() >= 3) {
+      std::string path = parts[2];
+      if (path.find("..") != std::string::npos) return "ERR 403 path-traversal\n";
+      std::ifstream f(path);
+      if (!f.good()) return "ERR 404 file-not-found\n";
+      std::string content((std::istreambuf_iterator<char>(f)),
+                           std::istreambuf_iterator<char>());
+      auto* buf = g_devtools_ui.asm_source_buf();
+      size_t max_len = g_devtools_ui.asm_source_buf_size() - 1;
+      if (content.size() > max_len) content.resize(max_len);
+      memcpy(buf, content.c_str(), content.size() + 1);
+      return "OK\n";
+    }
+    if (parts[1] == "assemble") {
+      AsmResult r = g_assembler.assemble(g_devtools_ui.asm_source_buf());
+      if (r.success) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "OK bytes=%d start=%04X end=%04X\n",
+                 r.bytes_written, r.start_addr, r.end_addr);
+        // Export symbols
+        for (auto& [name, addr] : r.symbols)
+          g_symfile.addSymbol(addr, name);
+        return std::string(buf);
+      }
+      char buf[64];
+      snprintf(buf, sizeof(buf), "ERR asm %d errors\n", static_cast<int>(r.errors.size()));
+      return std::string(buf);
+    }
+    if (parts[1] == "errors") {
+      // Run check without writing and report errors
+      AsmResult r = g_assembler.check(g_devtools_ui.asm_source_buf());
+      std::string resp = "OK";
+      for (auto& e : r.errors) {
+        resp += " line=" + std::to_string(e.line) + " " + e.message + "\n";
+      }
+      if (r.errors.empty()) resp += " no-errors";
+      return resp + "\n";
+    }
+    if (parts[1] == "symbols") {
+      AsmResult r = g_assembler.check(g_devtools_ui.asm_source_buf());
+      std::string resp = "OK";
+      for (auto& [name, addr] : r.symbols) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), " %s=%04X", name.c_str(), addr);
+        resp += buf;
+      }
+      return resp + "\n";
+    }
+    if (parts[1] == "source") {
+      return "OK " + std::string(g_devtools_ui.asm_source_buf()) + "\n";
+    }
+    return "ERR 400 usage: asm (text|load|assemble|errors|symbols|source)\n";
   }
 
   return "ERR 501 not-implemented\n";
