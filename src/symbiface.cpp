@@ -195,6 +195,8 @@ void symbiface_reset()
    g_symbiface.mouse.head = 0;
    g_symbiface.mouse.tail = 0;
    g_symbiface.mouse.last_buttons = 0;
+   g_symbiface.mouse.accum_x = 0.0f;
+   g_symbiface.mouse.accum_y = 0.0f;
 }
 
 void symbiface_cleanup()
@@ -396,10 +398,15 @@ void symbiface_mouse_update(float dx, float dy, uint32_t sdl_buttons)
 {
    SF2_Mouse& m = g_symbiface.mouse;
 
+   // Accumulate sub-pixel motion from SDL3 float deltas
+   m.accum_x += dx;
+   m.accum_y += dy;
+
    // X movement: mode 01, signed 6-bit (-32..+31)
    // SDL: positive xrel = rightward (same as SF2 convention)
-   int ix = static_cast<int>(dx);
+   int ix = static_cast<int>(m.accum_x);
    if (ix != 0) {
+      m.accum_x -= ix;
       if (ix > 31) ix = 31;
       if (ix < -32) ix = -32;
       mouse_fifo_push(m, 0x40 | (ix & 0x3F));
@@ -407,8 +414,10 @@ void symbiface_mouse_update(float dx, float dy, uint32_t sdl_buttons)
 
    // Y movement: mode 10, signed 6-bit (-32..+31)
    // SDL: positive yrel = downward; SF2: positive = upward → negate
-   int iy = -static_cast<int>(dy);
-   if (iy != 0) {
+   int whole_y = static_cast<int>(m.accum_y);
+   if (whole_y != 0) {
+      m.accum_y -= whole_y;
+      int iy = -whole_y;
       if (iy > 31) iy = 31;
       if (iy < -32) iy = -32;
       mouse_fifo_push(m, 0x80 | (iy & 0x3F));

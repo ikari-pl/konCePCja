@@ -74,6 +74,8 @@ struct SF2_Mouse {
    int head = 0;             // write position (main thread)
    int tail = 0;             // read position (Z80 I/O read)
    uint8_t last_buttons = 0; // previous button state (for change detection)
+   float accum_x = 0.0f;     // sub-pixel accumulator X
+   float accum_y = 0.0f;     // sub-pixel accumulator Y
 };
 
 // ── Master struct ──────────────────────────────
