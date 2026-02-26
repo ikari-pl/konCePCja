@@ -61,6 +61,7 @@ struct ExprToken {
 
 static bool tokenize_expr(const std::string& expr, std::vector<ExprToken>& tokens, std::string& error) {
     size_t i = 0;
+    try {
     while (i < expr.size()) {
         char c = expr[i];
         if (isspace(static_cast<unsigned char>(c))) { i++; continue; }
@@ -210,6 +211,13 @@ static bool tokenize_expr(const std::string& expr, std::vector<ExprToken>& token
         }
 
         error = std::string("unexpected character '") + c + "' in expression";
+        return false;
+    }
+    } catch (const std::invalid_argument&) {
+        error = "invalid numeric literal in expression";
+        return false;
+    } catch (const std::out_of_range&) {
+        error = "numeric literal out of range";
         return false;
     }
     tokens.push_back({ExprTokenType::END, 0, ""});

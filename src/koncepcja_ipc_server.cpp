@@ -104,6 +104,14 @@ static void ipc_apply_keypress(CPCScancode cpc_key, byte keyboard_matrix[], bool
     }
 }
 
+static bool has_path_traversal(const std::string& path)
+{
+  for (const auto& comp : std::filesystem::path(path)) {
+    if (comp == "..") return true;
+  }
+  return false;
+}
+
 namespace {
 constexpr int kBasePort = 6543;
 constexpr int kMaxPortAttempts = 10;  // try 6543..6552
@@ -2853,7 +2861,7 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "load" && parts.size() >= 3) {
       std::string path = parts[2];
-      if (path.find("..") != std::string::npos) return "ERR 403 path-traversal\n";
+      if (has_path_traversal(path)) return "ERR 403 path-traversal\n";
       std::ifstream f(path);
       if (!f.good()) return "ERR 404 file-not-found\n";
       std::string content((std::istreambuf_iterator<char>(f)),
