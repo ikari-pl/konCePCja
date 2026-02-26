@@ -19,6 +19,7 @@
 #include "disk_sector_editor.h"
 #include "disk_format.h"
 #include "data_areas.h"
+#include "z80_assembler.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
@@ -74,6 +75,7 @@ bool* DevToolsUI::window_ptr(const std::string& name)
   if (name == "video_state")        return &show_video_state_;
   if (name == "audio_state")        return &show_audio_state_;
   if (name == "recording_controls") return &show_recording_controls_;
+  if (name == "assembler")          return &show_assembler_;
   return nullptr;
 }
 
@@ -105,6 +107,7 @@ bool DevToolsUI::is_window_open(const std::string& name) const
   if (name == "video_state")        return show_video_state_;
   if (name == "audio_state")        return show_audio_state_;
   if (name == "recording_controls") return show_recording_controls_;
+  if (name == "assembler")          return show_assembler_;
   return false;
 }
 
@@ -116,7 +119,7 @@ bool DevToolsUI::any_window_open() const
          show_silicon_disc_ || show_asic_ || show_disc_tools_ ||
          show_data_areas_ || show_disasm_export_ ||
          show_video_state_ || show_audio_state_ ||
-         show_recording_controls_;
+         show_recording_controls_ || show_assembler_;
 }
 
 const char* const* DevToolsUI::all_window_keys(int* count)
@@ -125,9 +128,9 @@ const char* const* DevToolsUI::all_window_keys(int* count)
     "registers", "disassembly", "memory_hex", "stack", "breakpoints",
     "symbols", "session_recording", "gfx_finder", "silicon_disc",
     "asic", "disc_tools", "data_areas", "disasm_export",
-    "video_state", "audio_state", "recording_controls"
+    "video_state", "audio_state", "recording_controls", "assembler"
   };
-  *count = 16;
+  *count = 17;
   return keys;
 }
 
@@ -193,6 +196,7 @@ void DevToolsUI::render()
   if (show_video_state_)       render_video_state();
   if (show_audio_state_)       render_audio_state();
   if (show_recording_controls_) render_recording_controls();
+  if (show_assembler_)          render_assembler();
 }
 
 // -----------------------------------------------
@@ -2388,5 +2392,130 @@ void DevToolsUI::render_recording_controls()
   }
 
   if (!open) show_recording_controls_ = false;
+  ImGui::End();
+}
+
+// -----------------------------------------------
+// Debug Window 17: Assembler
+// -----------------------------------------------
+
+void DevToolsUI::render_assembler()
+{
+  ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
+  bool open = true;
+  if (!ImGui::Begin("Assembler##devtools", &open)) {
+    ImGui::End();
+    return;
+  }
+
+  // Toolbar
+  if (ImGui::Button("Assemble")) {
+    AsmResult r = g_assembler.assemble(asm_source_);
+    asm_errors_ = r.errors;
+    if (r.success) {
+      char buf[128];
+      snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X",
+               r.bytes_written, r.start_addr, r.end_addr);
+      asm_status_ = buf;
+      // Export symbols to debugger
+      for (auto& [name, addr] : r.symbols) {
+        g_symfile.addSymbol(addr, name);
+      }
+    } else {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%d error(s)", static_cast<int>(r.errors.size()));
+      asm_status_ = buf;
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Check")) {
+    AsmResult r = g_assembler.check(asm_source_);
+    asm_errors_ = r.errors;
+    if (r.success) {
+      char buf[128];
+      snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X (dry run)",
+               r.bytes_written, r.start_addr, r.end_addr);
+      asm_status_ = buf;
+    } else {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%d error(s)", static_cast<int>(r.errors.size()));
+      asm_status_ = buf;
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Clear")) {
+    asm_source_[0] = '\0';
+    asm_errors_.clear();
+    asm_status_.clear();
+  }
+
+  // Load/Save
+  ImGui::SameLine(0, 16.0f);
+  ImGui::SetNextItemWidth(200.0f);
+  ImGui::InputText("##asm_path", asm_path_, sizeof(asm_path_));
+  ImGui::SameLine();
+  if (ImGui::Button("Load")) {
+    if (has_path_traversal(asm_path_)) {
+      asm_status_ = "Error: path traversal not allowed";
+    } else {
+      std::ifstream f(asm_path_);
+      if (f.good()) {
+        std::string content((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+        size_t max_len = sizeof(asm_source_) - 1;
+        if (content.size() > max_len) content.resize(max_len);
+        memcpy(asm_source_, content.c_str(), content.size() + 1);
+        asm_status_ = "Loaded " + std::to_string(content.size()) + " bytes";
+        asm_errors_.clear();
+      } else {
+        asm_status_ = "Error: cannot open file";
+      }
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Save")) {
+    if (has_path_traversal(asm_path_)) {
+      asm_status_ = "Error: path traversal not allowed";
+    } else {
+      std::ofstream f(asm_path_);
+      if (f.good()) {
+        f << asm_source_;
+        asm_status_ = "Saved";
+      } else {
+        asm_status_ = "Error: cannot write file";
+      }
+    }
+  }
+
+  // Status line
+  if (!asm_status_.empty()) {
+    bool is_error = asm_status_.find("error") != std::string::npos ||
+                    asm_status_.find("Error") != std::string::npos;
+    if (is_error)
+      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", asm_status_.c_str());
+    else
+      ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", asm_status_.c_str());
+  }
+
+  // Source editor — use remaining space minus error list area
+  float avail = ImGui::GetContentRegionAvail().y;
+  float editor_height = asm_errors_.empty() ? avail : avail * 0.7f;
+  ImGui::InputTextMultiline("##asm_source", asm_source_, sizeof(asm_source_),
+                            ImVec2(-1.0f, editor_height),
+                            ImGuiInputTextFlags_AllowTabInput);
+
+  // Error list
+  if (!asm_errors_.empty()) {
+    ImGui::Separator();
+    ImGui::Text("Errors:");
+    ImGui::BeginChild("##asm_errors", ImVec2(0, 0), ImGuiChildFlags_None);
+    for (auto& err : asm_errors_) {
+      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                         "Line %d: %s", err.line, err.message.c_str());
+    }
+    ImGui::EndChild();
+  }
+
+  if (!open) show_assembler_ = false;
   ImGui::End();
 }

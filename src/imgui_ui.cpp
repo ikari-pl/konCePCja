@@ -292,6 +292,8 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("disasm_export"); });
   g_command_palette.register_command("Recording Controls", "WAV/YM/AVI recording start/stop", "",
       []() { g_devtools_ui.toggle_window("recording_controls"); });
+  g_command_palette.register_command("Assembler", "Z80 assembler IDE", "",
+      []() { g_devtools_ui.toggle_window("assembler"); });
 }
 
 // ─────────────────────────────────────────────────
@@ -1830,6 +1832,9 @@ static void imgui_render_devtools()
       ImGui::MenuItem("Graphics Finder", nullptr, g_devtools_ui.window_ptr("gfx_finder"));
       ImGui::EndPopup();
     }
+
+    ImGui::SameLine();
+    if (ImGui::Button("ASM")) g_devtools_ui.toggle_window("assembler");
 
     ImGui::SameLine();
     if (ImGui::Button("Export")) ImGui::OpenPopup("##dt_export");

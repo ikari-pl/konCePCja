@@ -1,21 +1,41 @@
 #include "z80_disassembly.h"
 #include <algorithm>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <sstream>
 #include <string>
 #include "z80.h"
-#include "koncepcja.h"
+#include "z80_opcode_table.h"
 #include "log.h"
 
 extern t_z80regs z80;
 #include "z80_macros.h"
-extern t_CPC CPC;
 
-OpCode::OpCode(int value, int length, int argsize, std::string instruction) :
-  value_(value), length_(length), argsize_(argsize), instruction_(std::move(instruction)) {}
+// Internal OpCode struct — same shape as the old public class, now file-local.
+// Preserves the existing disassemble_one() lookup logic exactly.
+namespace {
+struct OpCode {
+    int value_;
+    int length_;
+    int argsize_;
+    std::string instruction_;
+};
+
+std::map<int, OpCode> build_opcodes_from_master_table() {
+  z80_opcode_table_init();
+  std::map<int, OpCode> result;
+  for (int i = 0; i < g_z80_opcode_count; i++) {
+    const auto& op = g_z80_opcodes[i];
+    int key = z80_opcode_to_legacy_key(op);
+    // length = number of prefix+opcode bytes (excluding operand bytes)
+    int prefix_len = static_cast<int>(op.length) - static_cast<int>(op.operand_bytes);
+    int nbargs = static_cast<int>(op.operand_bytes);
+    result[key] = OpCode{key, prefix_len, nbargs, std::string(op.mnemonic)};
+  }
+  return result;
+}
+} // anonymous namespace
 
 uint64_t DisassembledCode::hash() const {
   uint64_t h = 0;
@@ -83,28 +103,6 @@ bool operator==(const DisassembledLine& l, const DisassembledLine& r) {
   return l.address_ == r.address_ && l.opcode_ == r.opcode_ && l.instruction_ == r.instruction_;
 }
 
-std::map<int, OpCode> load_opcodes_table()
-{
-  std::map<int, OpCode> opcode_to_instruction;
-  std::ifstream infile(CPC.resources_path + "/z80_opcodes.txt");
-  if (!infile.good()) {
-    LOG_ERROR("Error opening " << CPC.resources_path << "/z80_opcodes.txt");
-  }
-  std::string line;
-  while (std::getline(infile, line)) {
-    auto delimiter = line.find(':');
-    std::string opcode = line.substr(0, delimiter);
-    // -2 for the 0x prefix, divide by 2 to get number of bytes
-    int opcode_length = (opcode.length() - 2) / 2;
-    int opcode_value = std::stol(opcode, nullptr, 0);
-    std::string instruction = line.substr(delimiter+1);
-    int nbargs = std::count(instruction.begin(), instruction.end(), '*');
-    opcode_to_instruction[opcode_value] = OpCode(opcode_value, opcode_length, nbargs, instruction);
-    //std::cout << opcode << "(" << std::hex << opcode_value << "): " << instruction << std::endl;
-  }
-  return opcode_to_instruction;
-}
-
 void add_if_new(word address, const DisassembledCode& result, std::vector<dword>& to_disassemble_from, const std::string& why, word from)
 {
   DisassembledLine fakeLine(address, 0, "");
@@ -123,15 +121,12 @@ void append_address(std::string& instruction, word address)
 
 DisassembledLine disassemble_one(dword start_address, DisassembledCode& result, std::vector<dword>& called_points)
 {
-  static auto opcode_to_instructions = load_opcodes_table();
-  // Retry if the first load failed (e.g. CPC.resources_path was not yet set)
-  if (opcode_to_instructions.empty()) opcode_to_instructions = load_opcodes_table();
+  static auto opcode_to_instructions = build_opcodes_from_master_table();
   uint64_t opcode = 0;
   word pos = start_address;
   for (int bytes_read = 0; bytes_read < 3; bytes_read++) {
     int64_t ref_address = -1;
     opcode = (opcode << 8) + z80_read_mem(pos++);
-    //std::cout << "Looking for opcode " << std::hex << opcode << std::endl;
     if (opcode_to_instructions.find(opcode) != opcode_to_instructions.end()) {
       auto instr = opcode_to_instructions[opcode];
       std::string instruction = instr.instruction_;

@@ -7,6 +7,7 @@
 #include "types.h"
 #include "disk_file_editor.h"
 #include "disk_sector_editor.h"
+#include "z80_assembler.h"
 
 enum class NavTarget { DISASM, MEMORY, GFX };
 
@@ -20,6 +21,8 @@ public:
     void navigate_disassembly(word addr);
     void navigate_to(word addr, NavTarget target);
     void navigate_memory(word addr);
+    char* asm_source_buf() { return asm_source_; }
+    size_t asm_source_buf_size() const { return sizeof(asm_source_); }
 
     // Returns the array of all window key strings (16 entries).
     static const char* const* all_window_keys(int* count);
@@ -41,6 +44,7 @@ private:
     bool show_video_state_ = false;
     bool show_audio_state_ = false;
     bool show_recording_controls_ = false;
+    bool show_assembler_ = false;
 
     bool disasm_follow_pc_ = true;
     char disasm_goto_addr_[8] = "";
@@ -130,6 +134,12 @@ private:
     int rc_avi_quality_ = 85;
     std::string rc_status_;
 
+    // Assembler state
+    char asm_source_[65536] = "";
+    std::vector<AsmError> asm_errors_;
+    std::string asm_status_;
+    char asm_path_[256] = "";
+
     void render_registers();
     void render_disassembly();
     void render_memory_hex();
@@ -146,6 +156,7 @@ private:
     void render_video_state();
     void render_audio_state();
     void render_recording_controls();
+    void render_assembler();
 };
 
 extern DevToolsUI g_devtools_ui;
