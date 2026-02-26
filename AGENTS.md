@@ -35,9 +35,9 @@ src/
 - **Dobbertin SmartWatch** — Dallas DS1216 phantom RTC in upper ROM socket. Intercepts ROM reads using a 64-bit recognition pattern sent via address lines A0 (data) and A2 (mode). Returns BCD-encoded host system time via data bit D0
 - **AMX Mouse** — Joystick port mouse on keyboard matrix row 9. Direction bits pulse LOW for one "mickey" per deselect/reselect cycle of row 9. Uses monostable reset tracking
 - **Symbiface II** — Multi-function expansion board:
-  - **IDE (ATA PIO)** at `&FD00-&FD3F` — Standard ATA register file backed by raw `.img` files. Supports READ/WRITE SECTORS and IDENTIFY DEVICE
-  - **RTC (DS12887)** at `&FD00-&FD3F` — 14 time registers (BCD from host clock) + 50 bytes CMOS NVRAM
-  - **PS/2 Mouse** at `&FBEE`/`&FBEF` — Kempston protocol with wrapping 8-bit X/Y counters
+  - **IDE (ATA PIO)** at `&FD06-&FD0F` — Standard ATA register file backed by raw `.img` files. Supports READ/WRITE SECTORS and IDENTIFY DEVICE
+  - **RTC (DS12887)** at `&FD14`/`&FD15` — 14 time registers (BCD from host clock) + 50 bytes CMOS NVRAM
+  - **PS/2 Mouse** at `&FD10`/`&FD18` — Multiplexed FIFO protocol: status byte with 2-bit mode (X/Y offset, buttons) + 6-bit payload
 - **M4 Board** — Virtual filesystem expansion via command/response protocol. OUTs to `&FE00` accumulate command bytes, OUT to `&FC00` triggers execution. Response written to ROM overlay at `&E800`. Backs virtual SD card with a host directory (path traversal protected)
 - **Drive/Tape Sounds** — Procedurally generated audio effects for FDC motor hum, head seek clicks, and tape loading hiss, mixed into the PSG audio output
 - **Multiface II** — ROM-based debugging interface (original Caprice32 implementation)

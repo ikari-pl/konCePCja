@@ -11,113 +11,50 @@ Systematic review of every emulated peripheral against primary sources (datashee
 
 ---
 
-## CRITICAL BUGS
+## CRITICAL BUGS (all fixed)
 
-### 1. Symbiface II: PS/2 Mouse at wrong I/O ports
+### 1. ~~Symbiface II: PS/2 Mouse at wrong I/O ports~~ FIXED
 
-**Files**: `src/symbiface.h:9`, `src/symbiface.cpp:406-411`, `src/symbiface.cpp:437`
+**FIXED**: Remapped to `&FD10`/`&FD18` with correct multiplexed FIFO protocol.
 
-**Official I/O Map** (CPCWiki SYMBiFACE_II:I/O_Map_Summary):
-```
-#FD10 — PS/2 Mouse Status (read)
-#FD18 — PS/2 Mouse Status (read)
-```
+Additionally, the entire data protocol was wrong — our code used simple X/Y counter registers (Kempston/Spectrum style), but the real Symbiface II uses a multiplexed status byte FIFO at port `&FD10`:
+- Bits 7-6 (mm): 00=no data, 01=X offset, 10=Y offset, 11=buttons/scroll
+- Bits 5-0 (D): 6-bit signed payload (movement) or button state
+- Software reads repeatedly until mm=00 (empty)
 
-**Our implementation**:
-```
-#FBEE — Mouse X counter (read)  ← WRONG: not a Symbiface II port
-#FBEF — Mouse Y counter (read)  ← WRONG: not a Symbiface II port
-```
-
-The `&FBEE`/`&FBEF` addresses are Kempston mouse ports from the ZX Spectrum ecosystem, NOT the Symbiface II. The real Symbiface II presents mouse data at `&FD10` and `&FD18` within its own I/O address space.
-
-**Impact**: CPC software using the Symbiface II PS/2 mouse (e.g., SymbOS mouse driver) reads `&FD10`/`&FD18` — our code doesn't handle those addresses at all, so the mouse appears dead. Our code responds at `&FBEE`/`&FBEF` which no Symbiface II software reads.
-
-**Source**: CPCWiki SYMBiFACE II I/O Map Summary (archived 2020-10-25), Cyboard README (confirms "fully compatible with the original Symbiface II" using "same I/O port addresses")
+**Source**: CPCWiki SYMBiFACE_II:PS/2_mouse documentation + I/O Map Summary (archived 2020-10-25)
 
 ---
 
-### 2. Symbiface II: RTC at wrong I/O ports
+### 2. ~~Symbiface II: RTC at wrong I/O ports~~ FIXED
 
-**Files**: `src/symbiface.cpp:399-402`, `src/symbiface.cpp:423-429`
-
-**Official I/O Map**:
-```
-#FD14 — RTC Data (read/write)
-#FD15 — RTC Index (write only)
-```
-
-**Our implementation**:
-```
-#FD00 — RTC address register (write, via sub=0x00, even port)
-#FD01 — RTC data register (read/write, via sub=0x00, odd port)
-```
-
-Port `&FD14` decodes as `port.b.l & 0x38 = 0x10`, which our handler doesn't match (it only handles `sub == 0x00`, `0x08`, `0x18`). Similarly `&FD15` has `sub = 0x10`.
-
-**Impact**: CPC software accessing the RTC at `&FD14`/`&FD15` gets no response. Our RTC handler sits at `&FD00`/`&FD01` where no Symbiface II software expects it.
+**FIXED**: Remapped to `&FD14` (data read/write) and `&FD15` (index write).
 
 ---
 
-### 3. Symbiface II: IDE alternate status at wrong port
+### 3. ~~Symbiface II: IDE alternate status at wrong port~~ FIXED
 
-**Files**: `src/symbiface.cpp:396-398` (IN), `src/symbiface.cpp:420-422` (OUT)
-
-**Official I/O Map**:
-```
-#FD06 — IDE Alternate Status (read) / IDE Digital Output (write)
-#FD07 — IDE Drive Address (read)
-```
-
-**Our implementation**: Handles IDE alternate at `sub == 0x18` → ports `&FD18-&FD1F`.
-
-Port `&FD06` decodes as `port.b.l & 0x38 = 0x00`, which in our code goes to the RTC handler, not the IDE alt handler.
-
-**Impact**: Software reading IDE alternate status or writing device control (SRST) at `&FD06` reaches our RTC handler instead. Our IDE alt handler at `&FD18` matches the address where the official mouse status lives.
+**FIXED**: Remapped to `&FD06` (read: alternate status, write: device control/SRST).
 
 ---
 
-### 4. Symbiface II: Mouse button state never readable
+### 4. ~~Symbiface II: Mouse button state never readable~~ FIXED
 
-**Files**: `src/symbiface.cpp:373-383`, `src/symbiface.cpp:406-411`
-
-The `symbiface_mouse_update()` function stores button state in `g_symbiface.mouse.buttons`, applying active-low encoding. However, no I/O handler returns this value — only `x_counter` and `y_counter` are exposed. Even at the correct ports, buttons would not be readable.
-
-**Note**: Header comment says "active-high" (`symbiface.h:56`) but code behavior is active-low (0xFF default, bits cleared when pressed). The comment is also wrong.
+**FIXED**: Rewritten to use the real multiplexed FIFO protocol. Button changes are now pushed into the FIFO with mode=11 (bits 7-6 = 0xC0) and active-high button bits in D[0-4], matching the CPCWiki PS/2 mouse documentation exactly.
 
 ---
 
 ## MODERATE ISSUES
 
-### 5. Multiface II: ROM/RAM mapping is incorrect (known)
+### 5. ~~Multiface II: ROM/RAM mapping is incorrect~~ FIXED
 
-**File**: `src/kon_cpc_ja.cpp:395-401`
-
-The TODO comment in the code acknowledges this:
-```cpp
-// TODO: I think this is why the MF2 doesn't work properly:
-// ROM should be loaded R/O at 0x0000-0x1FFF
-// Writes should probably be disabled in membank_write
-// MF2 also has a RAM (8kB) that should be loaded as R/W at 0x2000-0x3FFF
-```
-
-On real hardware:
-- MF2 ROM (8K) maps to `&0000-&1FFF` (**read-only**)
-- MF2 RAM (8K) maps to `&2000-&3FFF` (**read-write**)
-
-Our code maps both through a single 16K buffer with read AND write access, making the ROM area writable. This is an inherited Caprice32 limitation.
+**FIXED**: `ga_memory_manager()` now only sets `membank_read` for MF2 (not `membank_write`), so writes to 0x0000-0x1FFF fall through to CPC RAM (ROM protected). A write intercept in `z80.cpp:write_mem()` redirects writes to 0x2000-0x3FFF to MF2's 8K SRAM.
 
 ---
 
-### 6. Symbiface II: fwrite return value unchecked
+### 6. ~~Symbiface II: fwrite return value unchecked~~ FIXED
 
-**File**: `src/symbiface.cpp:125`
-
-```cpp
-fwrite(dev.sector_buf, 1, 512, dev.image);
-```
-
-Per project code conventions (CLAUDE.md): "Check `fwrite`/`fclose`/`fflush` return values — Disk-full or I/O errors are silent if unchecked."
+**FIXED**: Added return value check with LOG_ERROR on short write.
 
 ---
 
@@ -165,21 +102,31 @@ The phaser implementation increments CRTC R17 on every OUT to `&FBFE` when the p
 - **Mickey protocol**: One mickey consumed per deselect/reselect cycle of row 9 ✓
 - **Active-low encoding**: 0xFF = nothing pressed, bits cleared when active ✓
 
-### Symbiface II IDE (primary registers only)
-- **Port mapping**: `&FD08-&FD0F` (offset 0-7 via `port.b.l & 0x07` when sub=0x08) ✓
+### Symbiface II IDE
+- **Port mapping**: `&FD08-&FD0F` (primary), `&FD06` (alternate status/device control) ✓
 - **Register file**: Data(0), Error/Features(1), SectorCount(2), LBA_Low(3), LBA_Mid(4), LBA_High(5), DriveHead(6), Status/Command(7) ✓
 - **LBA construction**: `(drive_head & 0x0F) << 24 | lba_high << 16 | lba_mid << 8 | lba_low` — ATA 28-bit LBA ✓
 - **IDENTIFY DEVICE** (0xEC): Word 0=0x0040 (non-removable), word 49=0x0200 (LBA), words 60-61=total sectors, string byte-swapping ✓
 - **READ/WRITE SECTORS**: Multi-sector advance, DRQ/BSY protocol ✓
 - **Drive selection**: Bit 4 of drive/head register selects master/slave ✓
+- **fwrite checked**: Return value verified, LOG_ERROR on failure ✓
 
-### DS12887 RTC (register values correct, port address wrong — see bug #2)
+### DS12887 RTC
+- **Port mapping**: `&FD14` (data read/write), `&FD15` (index write) ✓
 - **Time registers**: BCD encoding for seconds(0), minutes(2), hours(4), dow(6), dom(7), month(8), year(9) ✓
 - **Register A** (0x26): UIP=0, DV=010 (32.768 KHz), RS=0110 ✓
 - **Register B** (0x02): 24h mode, BCD format ✓
 - **Register D** (0x80): VRT=1 (valid RAM and time) ✓
 - **Address masking**: `& 0x3F` = 6-bit (64 registers) ✓
 - **CMOS NVRAM**: Registers 14-63 (50 bytes) read-write ✓
+
+### Symbiface II PS/2 Mouse
+- **Port mapping**: `&FD10` and `&FD18` (multiplexed FIFO read) ✓
+- **Status byte protocol**: mm=00 (empty), 01 (X), 10 (Y), 11 (buttons) ✓
+- **Signed 6-bit offsets**: -32 to +31 range, clamped ✓
+- **Y axis convention**: SDL downward→negative (SF2 positive=upward) ✓
+- **Button encoding**: Active-high in D[0-4], change-only events ✓
+- **Source**: CPCWiki SYMBiFACE_II:PS/2_mouse documentation ✓
 
 ### Digiblaster
 - **Mixing**: Via `Level_PP[CPC.printer_port]` lookup table in PSG output ✓
@@ -212,13 +159,13 @@ The phaser implementation increments CRTC R17 on every OUT to `&FBFE` when the p
 | AmDrum | ✅ Correct | None |
 | SmartWatch DS1216 | ✅ Correct | None |
 | AMX Mouse | ✅ Correct | Minor: sub-pixel loss |
-| Symbiface II IDE | ⚠️ Partial | Alt status at wrong port |
-| Symbiface II RTC | ❌ Wrong ports | FD00/FD01 instead of FD14/FD15 |
-| Symbiface II Mouse | ❌ Wrong ports | FBEE/FBEF instead of FD10/FD18; buttons unreadable |
-| Multiface II | ⚠️ Known issue | ROM/RAM mapping incorrect (TODO in code) |
+| Symbiface II IDE | ✅ Correct | All ports fixed (FD06/FD08-FD0F), fwrite checked |
+| Symbiface II RTC | ✅ Correct | Remapped to FD14/FD15 |
+| Symbiface II Mouse | ✅ Correct | Remapped to FD10/FD18, real FIFO protocol |
+| Multiface II | ✅ Correct | ROM read-only, RAM write-intercepted |
 | Magnum Phaser | ⚠️ Approximation | Inherited from Caprice32 |
 | Digiblaster | ✅ Correct | None |
 | M4 Board | ✅ Correct | None |
 | Drive/Tape Sounds | ✅ Correct | Cosmetic only, no spec |
 
-**Critical findings**: 3 out of 4 Symbiface II sub-devices have incorrect I/O port addresses. The IDE primary register file is the only correct mapping. The PS/2 Mouse, RTC, and IDE alternate status all need to be remapped to match the official Symbiface II I/O Map.
+**All bugs fixed.** Remaining non-issues: Magnum Phaser approximation (inherited from Caprice32, cosmetic) and AMX Mouse sub-pixel loss (fixed separately).

@@ -24,8 +24,10 @@
 
 struct AMXMouse {
    bool enabled = false;
-   int accum_x = 0;          // accumulated X mickeys since last read
-   int accum_y = 0;          // accumulated Y mickeys since last read
+   float accum_x = 0;        // sub-pixel accumulator X (float for SDL3 deltas)
+   float accum_y = 0;        // sub-pixel accumulator Y
+   int mickey_x = 0;         // whole-pixel mickeys pending for CPC
+   int mickey_y = 0;
    uint8_t buttons = 0;      // SDL button state (not CPC-inverted)
    bool row9_selected = false;   // true when CPC is selecting row 9
    bool row9_was_deselected = false; // set when row deselected, cleared on reselect
