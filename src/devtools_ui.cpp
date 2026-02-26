@@ -28,6 +28,8 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include "portable-file-dialogs.h"
+#include "z80_opcode_table.h"
 
 extern t_CPC CPC;
 extern t_z80regs z80;
@@ -2399,25 +2401,262 @@ void DevToolsUI::render_recording_controls()
 // Debug Window 17: Assembler
 // -----------------------------------------------
 
+// ── Maxam-style auto-format helpers ──
+
+// Count newlines in buffer
+static int asm_count_lines(const char* buf) {
+  int count = 1;
+  for (const char* p = buf; *p; ++p)
+    if (*p == '\n') ++count;
+  return count;
+}
+
+// Uppercase a string in-place (returns same ref)
+static std::string& asm_upper(std::string& s) {
+  for (auto& c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+  return s;
+}
+
+// Check if a word is a Z80 register name (for operand uppercasing)
+static bool asm_is_register(const std::string& w) {
+  static const char* regs[] = {
+    "A","B","C","D","E","H","L","F","I","R",
+    "AF","BC","DE","HL","SP","IX","IY",
+    "AF'","IXH","IXL","IYH","IYL",
+    nullptr
+  };
+  std::string u = w;
+  asm_upper(u);
+  for (const char** r = regs; *r; ++r)
+    if (u == *r) return true;
+  return false;
+}
+
+// Uppercase register names within an operands string, leave other tokens alone
+static std::string asm_upper_registers(const std::string& ops) {
+  std::string result;
+  result.reserve(ops.size());
+  size_t i = 0;
+  while (i < ops.size()) {
+    // Collect an alphanumeric+apostrophe token
+    if (isalpha(static_cast<unsigned char>(ops[i]))) {
+      size_t start = i;
+      while (i < ops.size() && (isalnum(static_cast<unsigned char>(ops[i]))
+                                || ops[i] == '\'' || ops[i] == '_'))
+        ++i;
+      std::string token = ops.substr(start, i - start);
+      if (asm_is_register(token))
+        asm_upper(token);
+      result += token;
+    } else {
+      result += ops[i++];
+    }
+  }
+  return result;
+}
+
+// Format one line into Maxam columns: label@0, mnemonic@16, operands@24, comment@40
+static std::string asm_format_line(const std::string& line) {
+  if (line.empty()) return line;
+  // Pure comment — leave untouched
+  size_t first_nonspace = line.find_first_not_of(" \t");
+  if (first_nonspace == std::string::npos) return line;
+  if (line[first_nonspace] == ';') return line;
+
+  // Parse into label, mnemonic, operands, comment
+  std::string label, mnemonic, operands, comment;
+
+  // Extract trailing comment
+  std::string work = line;
+  size_t semi = std::string::npos;
+  bool in_quote = false;
+  char quote_char = 0;
+  for (size_t j = 0; j < work.size(); ++j) {
+    if (!in_quote && (work[j] == '\'' || work[j] == '"')) {
+      in_quote = true; quote_char = work[j];
+    } else if (in_quote && work[j] == quote_char) {
+      in_quote = false;
+    } else if (!in_quote && work[j] == ';') {
+      semi = j; break;
+    }
+  }
+  if (semi != std::string::npos) {
+    comment = work.substr(semi);
+    work = work.substr(0, semi);
+  }
+  // Trim trailing whitespace from work
+  while (!work.empty() && (work.back() == ' ' || work.back() == '\t'))
+    work.pop_back();
+
+  // Tokenize work
+  // If first char is not whitespace, first token is label
+  size_t pos = 0;
+  if (pos < work.size() && !isspace(static_cast<unsigned char>(work[pos]))) {
+    size_t end = pos;
+    while (end < work.size() && !isspace(static_cast<unsigned char>(work[end])))
+      ++end;
+    label = work.substr(pos, end - pos);
+    // Strip trailing colon from label (it's a label marker, not part of the name)
+    if (!label.empty() && label.back() == ':')
+      label.pop_back();
+    pos = end;
+  }
+  // Skip whitespace
+  while (pos < work.size() && isspace(static_cast<unsigned char>(work[pos])))
+    ++pos;
+  // Mnemonic
+  if (pos < work.size()) {
+    size_t end = pos;
+    while (end < work.size() && !isspace(static_cast<unsigned char>(work[end])))
+      ++end;
+    mnemonic = work.substr(pos, end - pos);
+    pos = end;
+  }
+  // Skip whitespace
+  while (pos < work.size() && isspace(static_cast<unsigned char>(work[pos])))
+    ++pos;
+  // Operands — rest of work
+  if (pos < work.size()) {
+    operands = work.substr(pos);
+    // Trim trailing whitespace
+    while (!operands.empty() && (operands.back() == ' ' || operands.back() == '\t'))
+      operands.pop_back();
+  }
+
+  // If we only got a label but no mnemonic, and it looks like a mnemonic keyword, treat it as one
+  if (!label.empty() && mnemonic.empty()) {
+    std::string upper_label = label;
+    asm_upper(upper_label);
+    if (z80_is_mnemonic_keyword(upper_label) || upper_label == "ORG" ||
+        upper_label == "EQU" || upper_label == "DEFL" || upper_label == "DEFB" ||
+        upper_label == "DB" || upper_label == "DEFW" || upper_label == "DW" ||
+        upper_label == "DEFS" || upper_label == "DS" || upper_label == "END") {
+      mnemonic = label;
+      label.clear();
+    }
+  }
+
+  // Build formatted line
+  std::string out;
+  out.reserve(80);
+
+  // Column 0: label
+  out += label;
+
+  if (!mnemonic.empty()) {
+    // Pad to column 16
+    while (out.size() < 16) out += ' ';
+    // Uppercase mnemonic
+    asm_upper(mnemonic);
+    out += mnemonic;
+
+    if (!operands.empty()) {
+      // Pad to column 24
+      while (out.size() < 24) out += ' ';
+      out += asm_upper_registers(operands);
+    }
+  }
+
+  if (!comment.empty()) {
+    // Pad to column 40
+    while (out.size() < 40) out += ' ';
+    out += comment;
+  }
+
+  // Trim trailing whitespace
+  while (!out.empty() && out.back() == ' ')
+    out.pop_back();
+
+  return out;
+}
+
+// ImGui InputText callback for auto-formatting
+static int asm_format_callback(ImGuiInputTextCallbackData* data)
+{
+  // UserData points to the DevToolsUI's asm_prev_line_count_ and asm_autoformat_
+  struct AsmCbData { int* prev_count; bool autoformat; };
+  auto* cbd = static_cast<AsmCbData*>(data->UserData);
+  if (!cbd->autoformat) return 0;
+
+  int cur_lines = asm_count_lines(data->Buf);
+
+  if (cur_lines > *cbd->prev_count && data->CursorPos > 0) {
+    // A new line was added — find and format the previous line
+    // Find the start of the current line (the one cursor is on after Enter)
+    int cursor = data->CursorPos;
+    // Go back past the newline we just inserted
+    int nl_pos = cursor - 1;
+    if (nl_pos >= 0 && data->Buf[nl_pos] == '\n') {
+      // Find start of previous line
+      int prev_end = nl_pos; // exclusive end of previous line
+      int prev_start = nl_pos - 1;
+      while (prev_start > 0 && data->Buf[prev_start - 1] != '\n')
+        --prev_start;
+      if (prev_start < 0) prev_start = 0;
+
+      std::string prev_line(data->Buf + prev_start, prev_end - prev_start);
+      std::string formatted = asm_format_line(prev_line);
+
+      if (formatted != prev_line) {
+        // Replace the previous line in the buffer
+        data->DeleteChars(prev_start, prev_end - prev_start);
+        data->InsertChars(prev_start, formatted.c_str());
+      }
+    }
+  }
+
+  *cbd->prev_count = asm_count_lines(data->Buf);
+  return 0;
+}
+
+// Helper: run assemble/check, optionally prepending org directive
+static std::string asm_build_source_with_org(const char* source, const char* org_addr)
+{
+  // Check if source already has an org on the first non-empty/non-comment line
+  std::istringstream ss(source);
+  std::string line;
+  bool has_org = false;
+  while (std::getline(ss, line)) {
+    size_t nsp = line.find_first_not_of(" \t");
+    if (nsp == std::string::npos) continue;  // empty line
+    if (line[nsp] == ';') continue;          // pure comment
+    // Check if this line starts with org (possibly after a label)
+    std::string upper_line = line;
+    for (auto& c : upper_line) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+    if (upper_line.find("ORG") != std::string::npos) {
+      has_org = true;
+    }
+    break;
+  }
+  if (!has_org && org_addr[0] != '\0') {
+    return std::string("org &") + org_addr + "\n" + source;
+  }
+  return source;
+}
+
 void DevToolsUI::render_assembler()
 {
-  ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(700, 550), ImGuiCond_FirstUseEver);
   bool open = true;
   if (!ImGui::Begin("Assembler##devtools", &open)) {
     ImGui::End();
     return;
   }
 
-  // Toolbar
+  // ── Toolbar Row 1: Assemble/Check/Clear ... Browse/Path/Load/Save ... Ref ──
   if (ImGui::Button("Assemble")) {
-    AsmResult r = g_assembler.assemble(asm_source_);
+    std::string src = asm_build_source_with_org(asm_source_, asm_org_addr_);
+    AsmResult r = g_assembler.assemble(src);
     asm_errors_ = r.errors;
+    // Adjust line numbers if we prepended org
+    if (src.size() > strlen(asm_source_) && !asm_errors_.empty()) {
+      for (auto& e : asm_errors_) if (e.line > 0) --e.line;
+    }
     if (r.success) {
       char buf[128];
       snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X",
                r.bytes_written, r.start_addr, r.end_addr);
       asm_status_ = buf;
-      // Export symbols to debugger
       for (auto& [name, addr] : r.symbols) {
         g_symfile.addSymbol(addr, name);
       }
@@ -2429,8 +2668,12 @@ void DevToolsUI::render_assembler()
   }
   ImGui::SameLine();
   if (ImGui::Button("Check")) {
-    AsmResult r = g_assembler.check(asm_source_);
+    std::string src = asm_build_source_with_org(asm_source_, asm_org_addr_);
+    AsmResult r = g_assembler.check(src);
     asm_errors_ = r.errors;
+    if (src.size() > strlen(asm_source_) && !asm_errors_.empty()) {
+      for (auto& e : asm_errors_) if (e.line > 0) --e.line;
+    }
     if (r.success) {
       char buf[128];
       snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X (dry run)",
@@ -2449,8 +2692,29 @@ void DevToolsUI::render_assembler()
     asm_status_.clear();
   }
 
-  // Load/Save
+  // File operations with browse buttons
   ImGui::SameLine(0, 16.0f);
+  if (ImGui::Button("...##asm_open")) {
+    auto result = pfd::open_file("Open Assembly Source", asm_path_,
+      {"Z80 Assembly", "*.asm *.z80 *.s", "All Files", "*"}).result();
+    if (!result.empty()) {
+      snprintf(asm_path_, sizeof(asm_path_), "%s", result[0].c_str());
+      // Auto-load
+      if (!has_path_traversal(asm_path_)) {
+        std::ifstream f(asm_path_);
+        if (f.good()) {
+          std::string content((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
+          size_t max_len = sizeof(asm_source_) - 1;
+          if (content.size() > max_len) content.resize(max_len);
+          memcpy(asm_source_, content.c_str(), content.size() + 1);
+          asm_status_ = "Loaded " + std::to_string(content.size()) + " bytes";
+          asm_errors_.clear();
+        }
+      }
+    }
+  }
+  ImGui::SameLine();
   ImGui::SetNextItemWidth(200.0f);
   ImGui::InputText("##asm_path", asm_path_, sizeof(asm_path_));
   ImGui::SameLine();
@@ -2474,21 +2738,46 @@ void DevToolsUI::render_assembler()
   }
   ImGui::SameLine();
   if (ImGui::Button("Save")) {
-    if (has_path_traversal(asm_path_)) {
-      asm_status_ = "Error: path traversal not allowed";
-    } else {
-      std::ofstream f(asm_path_);
-      if (f.good()) {
-        f << asm_source_;
-        asm_status_ = "Saved";
+    if (asm_path_[0] == '\0') {
+      // No path set — open Save dialog
+      auto result = pfd::save_file("Save Assembly Source", "",
+        {"Z80 Assembly", "*.asm *.z80 *.s", "All Files", "*"}).result();
+      if (!result.empty())
+        snprintf(asm_path_, sizeof(asm_path_), "%s", result.c_str());
+    }
+    if (asm_path_[0] != '\0') {
+      if (has_path_traversal(asm_path_)) {
+        asm_status_ = "Error: path traversal not allowed";
       } else {
-        asm_status_ = "Error: cannot write file";
+        std::ofstream f(asm_path_);
+        if (f.good()) {
+          f << asm_source_;
+          asm_status_ = "Saved";
+        } else {
+          asm_status_ = "Error: cannot write file";
+        }
       }
     }
   }
 
-  // Status line
+  ImGui::SameLine(0, 16.0f);
+  if (ImGui::Button("? Ref"))
+    show_asm_reference_ = !show_asm_reference_;
+
+  // ── Row 2: Origin address, auto-format toggle, status ──
+  ImGui::Text("Origin:");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(60.0f);
+  ImGui::InputText("##asm_org", asm_org_addr_, sizeof(asm_org_addr_),
+                   ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(hex)");
+  ImGui::SameLine(0, 16.0f);
+  ImGui::Checkbox("Auto-format", &asm_autoformat_);
+
+  // Status inline
   if (!asm_status_.empty()) {
+    ImGui::SameLine(0, 16.0f);
     bool is_error = asm_status_.find("error") != std::string::npos ||
                     asm_status_.find("Error") != std::string::npos;
     if (is_error)
@@ -2497,12 +2786,19 @@ void DevToolsUI::render_assembler()
       ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", asm_status_.c_str());
   }
 
-  // Source editor — use remaining space minus error list area
+  // ── Source editor ──
   float avail = ImGui::GetContentRegionAvail().y;
   float editor_height = asm_errors_.empty() ? avail : avail * 0.7f;
+
+  // Callback data for auto-formatting
+  struct AsmCbData { int* prev_count; bool autoformat; };
+  AsmCbData cbd = { &asm_prev_line_count_, asm_autoformat_ };
+
   ImGui::InputTextMultiline("##asm_source", asm_source_, sizeof(asm_source_),
                             ImVec2(-1.0f, editor_height),
-                            ImGuiInputTextFlags_AllowTabInput);
+                            ImGuiInputTextFlags_AllowTabInput |
+                            ImGuiInputTextFlags_CallbackEdit,
+                            asm_format_callback, &cbd);
 
   // Error list
   if (!asm_errors_.empty()) {
@@ -2517,5 +2813,177 @@ void DevToolsUI::render_assembler()
   }
 
   if (!open) show_assembler_ = false;
+  ImGui::End();
+
+  // Render reference window if open
+  if (show_asm_reference_) render_asm_reference();
+}
+
+// -----------------------------------------------
+// Assembly Reference Window
+// -----------------------------------------------
+
+void DevToolsUI::render_asm_reference()
+{
+  ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("Assembly Reference##devtools", &show_asm_reference_)) {
+    ImGui::End();
+    return;
+  }
+
+  if (ImGui::BeginTabBar("##asm_ref_tabs")) {
+
+    // ── Tab 1: Quick Cheat Sheet ──
+    if (ImGui::BeginTabItem("Cheat Sheet")) {
+      ImGui::TextWrapped("Syntax quick reference for the konCePCja Z80 assembler.");
+      ImGui::Separator();
+
+      if (ImGui::CollapsingHeader("Directives", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::BulletText("ORG addr     - Set assembly origin address");
+        ImGui::BulletText("EQU / DEFL   - Define constant / reassignable symbol");
+        ImGui::BulletText("DEFB / DB    - Define byte(s): DB 1,2,3,'A'");
+        ImGui::BulletText("DEFW / DW    - Define word(s): DW &C000");
+        ImGui::BulletText("DEFS / DS    - Reserve N bytes: DS 10 or DS 10,&FF");
+        ImGui::BulletText("END          - End of source (optional)");
+      }
+
+      if (ImGui::CollapsingHeader("Number Formats", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::BulletText("&FF  #FF  $FF  0xFF  FFh  - Hexadecimal");
+        ImGui::BulletText("%%10110011               - Binary");
+        ImGui::BulletText("123                      - Decimal");
+        ImGui::BulletText("'A'                      - Character literal");
+        ImGui::BulletText("$                        - Current PC (program counter)");
+      }
+
+      if (ImGui::CollapsingHeader("Operators")) {
+        ImGui::BulletText("+  -  *  /  %%  - Arithmetic (left-to-right, Maxam compat)");
+        ImGui::BulletText("&  |  ^  ~     - Bitwise AND, OR, XOR, NOT");
+        ImGui::BulletText("<<  >>         - Shift left, shift right");
+      }
+
+      if (ImGui::CollapsingHeader("Labels & Comments")) {
+        ImGui::BulletText("Labels: alphanumeric + _ + ., optional : suffix");
+        ImGui::BulletText("Comments: ; to end of line");
+        ImGui::BulletText("Multi-statement: : separates on same line");
+        ImGui::BulletText("  e.g.  LD A,B : INC A : RET");
+      }
+
+      if (ImGui::CollapsingHeader("Registers")) {
+        ImGui::BulletText("8-bit:  A B C D E H L F I R");
+        ImGui::BulletText("16-bit: AF BC DE HL SP IX IY");
+        ImGui::BulletText("Shadow: AF' (EX AF,AF' / EXX)");
+        ImGui::BulletText("Index:  (IX+d) (IY+d)  - signed offset");
+      }
+
+      if (ImGui::CollapsingHeader("Condition Codes")) {
+        ImGui::BulletText("NZ  Z   - Not Zero / Zero");
+        ImGui::BulletText("NC  C   - Not Carry / Carry");
+        ImGui::BulletText("PO  PE  - Parity Odd / Even");
+        ImGui::BulletText("P   M   - Plus (Sign=0) / Minus (Sign=1)");
+      }
+
+      ImGui::EndTabItem();
+    }
+
+    // ── Tab 2: Instruction Reference ──
+    if (ImGui::BeginTabItem("Instructions")) {
+
+      // Build grouped instruction cache on first use
+      struct InstrEntry {
+        std::string mnemonic;
+        int length;
+        int t_states;
+        int t_extra;
+      };
+      struct InstrGroup {
+        std::string name;
+        std::vector<InstrEntry> entries;
+      };
+      static std::vector<InstrGroup> groups;
+      static bool built = false;
+      if (!built) {
+        built = true;
+        std::map<std::string, std::vector<InstrEntry>> grouped;
+        for (int i = 0; i < g_z80_opcode_count; ++i) {
+          const auto& op = g_z80_opcodes[i];
+          // Extract mnemonic keyword (first word before space or operand)
+          std::string mn = op.mnemonic;
+          size_t sp = mn.find(' ');
+          std::string keyword = (sp != std::string::npos) ? mn.substr(0, sp) : mn;
+          // Uppercase keyword
+          for (auto& c : keyword) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+
+          InstrEntry ie;
+          // Uppercase the full mnemonic for display
+          ie.mnemonic = op.mnemonic;
+          for (auto& c : ie.mnemonic) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+          ie.length = op.length;
+          ie.t_states = op.t_states;
+          ie.t_extra = op.t_states_extra;
+          grouped[keyword].push_back(ie);
+        }
+        // Sort groups alphabetically
+        for (auto& [key, entries] : grouped) {
+          groups.push_back({key, std::move(entries)});
+        }
+        std::sort(groups.begin(), groups.end(),
+                  [](const InstrGroup& a, const InstrGroup& b) { return a.name < b.name; });
+      }
+
+      ImGui::TextDisabled("%d groups, %d total instructions", static_cast<int>(groups.size()), g_z80_opcode_count);
+      ImGui::Separator();
+
+      // Filter
+      static char instr_filter[32] = "";
+      ImGui::SetNextItemWidth(200.0f);
+      ImGui::InputTextWithHint("##instr_filter", "Filter...", instr_filter, sizeof(instr_filter));
+
+      std::string filter_upper;
+      if (instr_filter[0]) {
+        filter_upper = instr_filter;
+        for (auto& c : filter_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+      }
+
+      ImGui::BeginChild("##instr_list", ImVec2(0, 0));
+      for (auto& grp : groups) {
+        // Apply filter
+        if (!filter_upper.empty() && grp.name.find(filter_upper) == std::string::npos)
+          continue;
+
+        if (ImGui::CollapsingHeader(grp.name.c_str())) {
+          if (ImGui::BeginTable("##instr_tbl", 4,
+              ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+              ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Mnemonic", 0, 3.0f);
+            ImGui::TableSetupColumn("Bytes", 0, 0.8f);
+            ImGui::TableSetupColumn("T-states", 0, 1.0f);
+            ImGui::TableSetupColumn("+Extra", 0, 0.8f);
+            ImGui::TableHeadersRow();
+
+            for (auto& ie : grp.entries) {
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImGui::TextUnformatted(ie.mnemonic.c_str());
+              ImGui::TableNextColumn();
+              ImGui::Text("%d", ie.length);
+              ImGui::TableNextColumn();
+              ImGui::Text("%d", ie.t_states);
+              ImGui::TableNextColumn();
+              if (ie.t_extra > 0)
+                ImGui::Text("+%d", ie.t_extra);
+              else
+                ImGui::TextDisabled("-");
+            }
+            ImGui::EndTable();
+          }
+        }
+      }
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
+  }
+
   ImGui::End();
 }

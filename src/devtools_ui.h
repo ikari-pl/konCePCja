@@ -139,6 +139,10 @@ private:
     std::vector<AsmError> asm_errors_;
     std::string asm_status_;
     char asm_path_[256] = "";
+    int asm_prev_line_count_ = 0;
+    bool asm_autoformat_ = true;
+    char asm_org_addr_[8] = "4000";
+    bool show_asm_reference_ = false;
 
     void render_registers();
     void render_disassembly();
@@ -157,6 +161,7 @@ private:
     void render_audio_state();
     void render_recording_controls();
     void render_assembler();
+    void render_asm_reference();
 };
 
 extern DevToolsUI g_devtools_ui;

@@ -32,10 +32,13 @@ extern byte *membank_write[4];
 
 namespace {
 
-constexpr int kPort = 6543;
 constexpr size_t kBankSize = 16 * 1024;
 
+// Forward-declare the server so send_command can query its actual port
+static KoncepcjaIpcServer* g_test_server = nullptr;
+
 std::string send_command(const std::string& command) {
+  int port = g_test_server ? g_test_server->port() : 6543;
 #ifdef _WIN32
   SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   EXPECT_NE(fd, INVALID_SOCKET);
@@ -48,7 +51,7 @@ std::string send_command(const std::string& command) {
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(kPort);
+  addr.sin_port = htons(static_cast<uint16_t>(port));
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
   bool connected = false;
@@ -104,6 +107,7 @@ class IpcServerTest : public testing::Test {
     WSAStartup(MAKEWORD(2, 2), &wsa);
 #endif
     CPC.snd_enabled = 0;
+    g_test_server = &server;
     server.start();
     // Give the listener thread time to bind and listen
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -111,6 +115,7 @@ class IpcServerTest : public testing::Test {
 
   static void TearDownTestSuite() {
     server.stop();
+    g_test_server = nullptr;
 #ifdef _WIN32
     WSACleanup();
 #endif
