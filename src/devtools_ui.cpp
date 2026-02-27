@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include "SDL3/SDL.h"
 #include "portable-file-dialogs.h"
 #include "z80_opcode_table.h"
 
@@ -2804,17 +2805,16 @@ void DevToolsUI::render_assembler()
   // is focused.  Pass this to the TextEditor so it knows to accept keyboard
   // input even when focus is on the parent rather than the child.
   bool asm_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
-  ed.Render("##asm_editor", asm_focused, ImVec2(-1.0f, editor_height));
+  bool was_focused = ed.Render("##asm_editor", asm_focused, ImVec2(-1.0f, editor_height));
 
-  // While any part of the assembler UI has focus, prevent the emulator from
-  // consuming keyboard events.  The TextEditor sets WantCaptureKeyboard from
-  // inside its child window, but that only works once the child itself is
-  // focused.  This ensures the flag is also set when focus is on the parent
-  // (e.g. the user just clicked a toolbar button and then starts typing).
-  if (asm_focused) {
-    ImGuiIO& io = ImGui::GetIO();
-    io.WantCaptureKeyboard = true;
-    io.WantTextInput = true;
+  // SDL3 requires SDL_StartTextInput() per-window for SDL_EVENT_TEXT_INPUT
+  // events to be generated.  ImGui's built-in InputText widgets handle this
+  // via PlatformImeData, but the TextEditor is a custom widget that doesn't
+  // go through that path.  We call SDL directly when the editor has focus.
+  if (was_focused || asm_focused) {
+    SDL_Window* w = SDL_GetKeyboardFocus();
+    if (w && !SDL_TextInputActive(w))
+      SDL_StartTextInput(w);
   }
 
   // Error list
