@@ -2807,6 +2807,26 @@ void DevToolsUI::render_assembler()
   bool asm_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
   bool was_focused = ed.Render("##asm_editor", asm_focused, ImVec2(-1.0f, editor_height));
 
+  // Auto-format previous line on Enter (Maxam-style column alignment)
+  {
+    int cur_line = 0, cur_col = 0;
+    ed.GetCursorPosition(cur_line, cur_col);
+    int cur_line_count = ed.GetLineCount();
+    if (asm_prev_line_count_ >= 0 &&
+        cur_line_count == asm_prev_line_count_ + 1 &&
+        cur_line == asm_prev_cursor_line_ + 1) {
+      auto lines = ed.GetTextLines();
+      int prev = asm_prev_cursor_line_;
+      if (prev >= 0 && prev < static_cast<int>(lines.size())) {
+        std::string formatted = asm_format_line(lines[prev]);
+        if (formatted != lines[prev])
+          ed.ReplaceLine(prev, formatted);
+      }
+    }
+    asm_prev_cursor_line_ = cur_line;
+    asm_prev_line_count_ = cur_line_count;
+  }
+
   // SDL3 requires SDL_StartTextInput() per-window for SDL_EVENT_TEXT_INPUT
   // events to be generated.  ImGui's built-in InputText widgets handle this
   // via PlatformImeData, but the TextEditor is a custom widget that doesn't

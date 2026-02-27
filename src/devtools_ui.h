@@ -142,6 +142,8 @@ private:
     // Assembler state
     std::unique_ptr<TextEditor> asm_editor_;
     bool asm_editor_initialized_ = false;
+    int asm_prev_cursor_line_ = -1;
+    int asm_prev_line_count_ = -1;
     char asm_source_shadow_[65536] = "";  // shadow buffer for IPC compatibility
     std::vector<AsmError> asm_errors_;
     std::string asm_status_;

@@ -279,6 +279,12 @@ $(MM_DEPENDS:.d=.o): $(OBJDIR)/%.o: %.mm
 	@mkdir -p `dirname $@`
 	$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $@ $<
 
+# Vendored TextEditor: compile with relaxed warnings (like ImGui)
+VENDORED_TEXTEDITOR := $(OBJDIR)/src/TextEditor.o $(OBJDIR)/src/LanguageDefinitions.o
+$(VENDORED_TEXTEDITOR): $(OBJDIR)/%.o: %.cpp
+	@mkdir -p `dirname $@`
+	$(CXX) -c $(BUILD_FLAGS) $(COMMON_CFLAGS) -o $@ $<
+
 $(IMGUI_OBJECTS): $(OBJDIR)/%.o: %.cpp
 	@mkdir -p `dirname $@`
 	$(CXX) -c $(BUILD_FLAGS) $(COMMON_CFLAGS) -o $@ $<

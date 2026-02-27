@@ -431,6 +431,17 @@ std::vector<std::string> TextEditor::GetTextLines() const
 	return result;
 }
 
+void TextEditor::ReplaceLine(int aLine, const std::string& aText)
+{
+	if (aLine < 0 || aLine >= (int)mLines.size())
+		return;
+	auto& line = mLines[aLine];
+	line.clear();
+	for (char c : aText)
+		line.push_back(Glyph(c, PaletteIndex::Default));
+	Colorize(aLine, 1);
+}
+
 bool TextEditor::Render(const char* aTitle, bool aParentIsFocused, const ImVec2& aSize, bool aBorder)
 {
 	if (mCursorPositionChanged)
@@ -2003,6 +2014,7 @@ void TextEditor::HandleKeyboardInputs(bool aParentIsFocused)
 		auto isAltOnly = alt && !ctrl && !shift && !super;
 		auto isCtrlOnly = ctrl && !alt && !shift && !super;
 		auto isShiftOnly = shift && !alt && !ctrl && !super;
+		auto otherMod = isOSX ? ctrl : super;  // the "other" modifier (not the shortcut key)
 
 		io.WantCaptureKeyboard = true;
 		io.WantTextInput = true;
@@ -2039,17 +2051,17 @@ void TextEditor::HandleKeyboardInputs(bool aParentIsFocused)
 			Delete(ctrl);
 		else if (!mReadOnly && !alt && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Backspace))
 			Backspace(ctrl);
-		else if (!mReadOnly && !alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_K))
+		else if (!mReadOnly && !alt && isShiftShortcut && ImGui::IsKeyPressed(ImGuiKey_K))
 			RemoveCurrentLines();
-		else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_LeftBracket))
+		else if (!mReadOnly && !alt && isShortcut && ImGui::IsKeyPressed(ImGuiKey_LeftBracket))
 			ChangeCurrentLinesIndentation(false);
-		else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_RightBracket))
+		else if (!mReadOnly && !alt && isShortcut && ImGui::IsKeyPressed(ImGuiKey_RightBracket))
 			ChangeCurrentLinesIndentation(true);
-		else if (!alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+		else if (!alt && !otherMod && isShiftShortcut && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
 			MoveUpCurrentLines();
-		else if (!alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+		else if (!alt && !otherMod && isShiftShortcut && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
 			MoveDownCurrentLines();
-		else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Slash))
+		else if (!mReadOnly && !alt && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Slash))
 			ToggleLineComment();
 		else if (isCtrlOnly && ImGui::IsKeyPressed(ImGuiKey_Insert))
 			Copy();
@@ -2782,7 +2794,8 @@ void TextEditor::ColorizeInternal()
 						auto& startStr = mLanguageDefinition->mCommentStart;
 						auto& singleStartStr = mLanguageDefinition->mSingleLineComment;
 
-						if (!withinSingleLineComment && currentIndex + startStr.size() <= line.size() &&
+						if (!withinSingleLineComment && !startStr.empty() &&
+							currentIndex + startStr.size() <= line.size() &&
 							ColorizerEquals(startStr.begin(), startStr.end(), from, from + startStr.size(), pred))
 						{
 							commentStartLine = currentLine;
@@ -2801,7 +2814,7 @@ void TextEditor::ColorizeInternal()
 						line[currentIndex].mComment = withinSingleLineComment;
 
 						auto& endStr = mLanguageDefinition->mCommentEnd;
-						if (currentIndex + 1 >= (int)endStr.size() &&
+						if (!endStr.empty() && currentIndex + 1 >= (int)endStr.size() &&
 							ColorizerEquals(endStr.begin(), endStr.end(), from + 1 - endStr.size(), from + 1, pred))
 						{
 							commentStartIndex = endIndex;

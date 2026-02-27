@@ -268,7 +268,9 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  // ViewportsEnable disabled: SDL_CaptureMouse() is a no-op on macOS Cocoa,
+  // so mouse-up events route to the wrong NSWindow when viewport windows exist,
+  // breaking button clicks in the main window.
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
@@ -857,7 +859,11 @@ void video_set_topbar(SDL_Surface* surface, int height)
   topbar_height = height;
   int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height, devtools_panel_height);
-  SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  int cur_w, cur_h;
+  SDL_GetWindowSize(mainSDLWindow, &cur_w, &cur_h);
+  if (cur_w != win_width || cur_h != win_height) {
+    SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -924,7 +930,7 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  // ViewportsEnable disabled: see note above (SDL_CaptureMouse macOS no-op)
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
