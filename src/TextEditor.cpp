@@ -2630,7 +2630,7 @@ void TextEditor::ColorizeRange(int aFromLine, int aToLine)
 				{
 					bool regexSearchResult = false;
 					try { regexSearchResult = std::regex_search(first, last, results, p.first, std::regex_constants::match_default); }
-					catch (...) {}
+					catch (const std::regex_error&) {}
 					if (regexSearchResult)
 					{
 						hasTokenizeResult = true;
