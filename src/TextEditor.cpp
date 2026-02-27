@@ -2120,6 +2120,9 @@ void TextEditor::HandleMouseInputs()
 	if (ImGui::IsWindowHovered())
 	{
 		auto click = ImGui::IsMouseClicked(0);
+		// Ensure this child window acquires keyboard focus when clicked
+		if (click)
+			ImGui::SetWindowFocus();
 		if (!shift && !alt)
 		{
 			auto doubleClick = ImGui::IsMouseDoubleClicked(0);

@@ -2800,7 +2800,22 @@ void DevToolsUI::render_assembler()
   float avail = ImGui::GetContentRegionAvail().y;
   float editor_height = asm_errors_.empty() ? avail : avail * 0.7f;
 
-  ed.Render("##asm_editor", ImGui::IsWindowFocused(), ImVec2(-1.0f, editor_height));
+  // Check if the Assembler window (or any of its children, incl. the editor)
+  // is focused.  Pass this to the TextEditor so it knows to accept keyboard
+  // input even when focus is on the parent rather than the child.
+  bool asm_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
+  ed.Render("##asm_editor", asm_focused, ImVec2(-1.0f, editor_height));
+
+  // While any part of the assembler UI has focus, prevent the emulator from
+  // consuming keyboard events.  The TextEditor sets WantCaptureKeyboard from
+  // inside its child window, but that only works once the child itself is
+  // focused.  This ensures the flag is also set when focus is on the parent
+  // (e.g. the user just clicked a toolbar button and then starts typing).
+  if (asm_focused) {
+    ImGuiIO& io = ImGui::GetIO();
+    io.WantCaptureKeyboard = true;
+    io.WantTextInput = true;
+  }
 
   // Error list
   if (!asm_errors_.empty()) {
