@@ -3248,6 +3248,18 @@ int koncpc_main (int argc, char **argv)
          virtualKeyboardEvents.pop_front();
       }
 
+      // SDL3/macOS workaround: the Cocoa backend sometimes drops
+      // MOUSE_BUTTON_UP events, leaving ImGui's mouse permanently stuck
+      // in the pressed state.  Poll actual hardware state each frame and
+      // inject a synthetic release when SDL reports the button is up but
+      // ImGui still thinks it is down.
+      if (!g_headless) {
+         ImGuiIO& io = ImGui::GetIO();
+         SDL_MouseButtonFlags buttons = SDL_GetMouseState(nullptr, nullptr);
+         if (io.MouseDown[0] && !(buttons & SDL_BUTTON_LMASK))
+            io.AddMouseButtonEvent(0, false);
+      }
+
       while (!g_headless && SDL_PollEvent(&event)) {
          // Handle main window close before ImGui consumes the event
          if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
