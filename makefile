@@ -98,7 +98,7 @@ endif
 IPATHS = -Isrc/ $(CAPS_INCLUDES) -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
-LIBS += -lws2_32 -lopengl32
+LIBS += -lws2_32 -lopengl32 -luuid
 else ifeq ($(ARCH),linux)
 LIBS += -lGL
 endif
@@ -278,6 +278,12 @@ $(MM_DEPENDS): $(OBJDIR)/%.d: %.mm
 $(MM_DEPENDS:.d=.o): $(OBJDIR)/%.o: %.mm
 	@mkdir -p `dirname $@`
 	$(CXX) -c $(BUILD_FLAGS) $(ALL_CFLAGS) -o $@ $<
+
+# Vendored TextEditor: compile with relaxed warnings (like ImGui)
+VENDORED_TEXTEDITOR := $(OBJDIR)/src/TextEditor.o $(OBJDIR)/src/LanguageDefinitions.o
+$(VENDORED_TEXTEDITOR): $(OBJDIR)/%.o: %.cpp
+	@mkdir -p `dirname $@`
+	$(CXX) -c $(BUILD_FLAGS) $(COMMON_CFLAGS) -o $@ $<
 
 $(IMGUI_OBJECTS): $(OBJDIR)/%.o: %.cpp
 	@mkdir -p `dirname $@`

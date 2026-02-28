@@ -2853,10 +2853,9 @@ std::string handle_command(const std::string& line) {
       size_t offset = line.find("text ");
       if (offset == std::string::npos) return "ERR 400 bad-args\n";
       std::string source = line.substr(offset + 5);
-      auto* buf = g_devtools_ui.asm_source_buf();
       size_t max_len = g_devtools_ui.asm_source_buf_size() - 1;
       if (source.size() > max_len) source.resize(max_len);
-      memcpy(buf, source.c_str(), source.size() + 1);
+      g_devtools_ui.asm_set_source(source.c_str());
       return "OK\n";
     }
     if (parts[1] == "load" && parts.size() >= 3) {
@@ -2866,10 +2865,9 @@ std::string handle_command(const std::string& line) {
       if (!f.good()) return "ERR 404 file-not-found\n";
       std::string content((std::istreambuf_iterator<char>(f)),
                            std::istreambuf_iterator<char>());
-      auto* buf = g_devtools_ui.asm_source_buf();
       size_t max_len = g_devtools_ui.asm_source_buf_size() - 1;
       if (content.size() > max_len) content.resize(max_len);
-      memcpy(buf, content.c_str(), content.size() + 1);
+      g_devtools_ui.asm_set_source(content.c_str());
       return "OK\n";
     }
     if (parts[1] == "assemble") {

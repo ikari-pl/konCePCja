@@ -68,6 +68,7 @@ static void close_menu();
 // Height tracking for stacked topbar + devtools bar
 static int s_main_topbar_h = 25;
 static int s_devtools_bar_h = 0;
+static bool s_topbar_height_dirty = false; // defer SDL_SetWindowSize to after render
 
 // ─────────────────────────────────────────────────
 // SDL3 file dialog callback
@@ -319,7 +320,18 @@ void imgui_render_ui()
   // Reset devtools bar height when hidden so dockspace reclaims the space
   if (!imgui_state.show_devtools && s_devtools_bar_h != 0) {
     s_devtools_bar_h = 0;
-    video_set_topbar(nullptr, s_main_topbar_h);
+    s_topbar_height_dirty = true;
+  }
+
+  // Apply deferred topbar resize AFTER all ImGui rendering is complete.
+  // Calling SDL_SetWindowSize during the render loop causes macOS to shift
+  // window coordinates mid-frame, breaking button click detection.
+  if (s_topbar_height_dirty) {
+    int total = s_main_topbar_h + s_devtools_bar_h;
+    if (total != video_get_topbar_height()) {
+      video_set_topbar(nullptr, total);
+    }
+    s_topbar_height_dirty = false;
   }
 
   // Keyboard capture policy:
@@ -492,13 +504,11 @@ static void imgui_render_topbar()
 
   if (ImGui::Begin("##topbar", nullptr, flags)) {
     {
-      s_main_topbar_h = static_cast<int>(ImGui::GetWindowSize().y);
-      int total = s_main_topbar_h + s_devtools_bar_h;
-      if (total != video_get_topbar_height()) {
-        video_set_topbar(nullptr, total);
-      }
+      int h = static_cast<int>(ImGui::GetWindowSize().y);
+      if (h != s_main_topbar_h) { s_main_topbar_h = h; s_topbar_height_dirty = true; }
     }
-    if (ImGui::Button("Menu (F1)")) {
+    bool menu_pressed = ImGui::Button("Menu (F1)");
+    if (menu_pressed) {
       if (!CPC.scr_gui_is_currently_on) {
         imgui_state.show_menu = true;
         imgui_state.menu_just_opened = true;
@@ -1897,10 +1907,9 @@ static void imgui_render_devtools()
     }
 
     // ── Sync devtools bar height ──
-    s_devtools_bar_h = static_cast<int>(ImGui::GetWindowSize().y);
-    int total = s_main_topbar_h + s_devtools_bar_h;
-    if (total != video_get_topbar_height()) {
-      video_set_topbar(nullptr, total);
+    {
+      int h = static_cast<int>(ImGui::GetWindowSize().y);
+      if (h != s_devtools_bar_h) { s_devtools_bar_h = h; s_topbar_height_dirty = true; }
     }
   }
   ImGui::End();
