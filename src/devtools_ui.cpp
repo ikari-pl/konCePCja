@@ -213,7 +213,7 @@ void DevToolsUI::render()
 void DevToolsUI::render_registers()
 {
   ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(620, 30), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(620, 60), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Registers", &open)) {
@@ -304,7 +304,7 @@ void DevToolsUI::render_registers()
 void DevToolsUI::render_disassembly()
 {
   ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(10, 60), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Disassembly", &open, ImGuiWindowFlags_MenuBar)) {
@@ -534,7 +534,7 @@ void DevToolsUI::render_disassembly()
 void DevToolsUI::render_memory_hex()
 {
   ImGui::SetNextWindowSize(ImVec2(520, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(460, 30), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(ImVec2(460, 60), ImGuiCond_FirstUseEver);
 
   bool open = true;
   if (!ImGui::Begin("Memory Hex", &open, ImGuiWindowFlags_MenuBar)) {
