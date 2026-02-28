@@ -3527,13 +3527,8 @@ int koncpc_main (int argc, char **argv)
 
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             {
-              SDL_WindowID main_wid = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
-              if (event.button.windowID == main_wid && event.button.y < topbar_height_px) {
-                if (!CPC.scr_gui_is_currently_on) {
-                  showGui();
-                }
-                break;
-              }
+              // Topbar clicks (Menu button, drive LEDs, etc.) are handled by ImGui's
+              // imgui_render_topbar(). No legacy showGui() handler needed here.
               if (CPC.phazer_emulation) {
                 // Trojan Light Phazer uses Joystick Fire for the trigger button:
                 // https://www.cpcwiki.eu/index.php/Trojan_Light_Phazer

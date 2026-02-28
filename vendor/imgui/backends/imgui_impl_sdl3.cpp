@@ -432,8 +432,10 @@ bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event)
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
         case SDL_EVENT_MOUSE_BUTTON_UP:
         {
-            if (ImGui_ImplSDL3_GetViewportForWindowID(event->button.windowID) == nullptr)
-                return false;
+            // No viewport check — button state is global. ImGui uses io.MousePos for hit-testing,
+            // not the button event's windowID. The GLFW and Win32 backends don't have this check.
+            // On macOS, SDL_CaptureMouse() is a no-op, so button-up events may arrive with an
+            // unexpected windowID; dropping them leaves bd->MouseButtonsDown permanently stuck.
             int mouse_button = -1;
             if (event->button.button == SDL_BUTTON_LEFT) { mouse_button = 0; }
             if (event->button.button == SDL_BUTTON_RIGHT) { mouse_button = 1; }
@@ -479,8 +481,9 @@ bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event)
         }
         case SDL_EVENT_WINDOW_MOUSE_ENTER:
         {
-            if (ImGui_ImplSDL3_GetViewportForWindowID(event->window.windowID) == nullptr)
-                return false;
+            // No viewport check — MouseWindowID must track the actual window the cursor is in,
+            // even if it's not (yet) a registered viewport. Dropping this update on macOS causes
+            // stale MouseWindowID after the cursor re-enters the main window from a viewport.
             bd->MouseWindowID = event->window.windowID;
             bd->MousePendingLeaveFrame = 0;
             return true;
