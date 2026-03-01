@@ -255,6 +255,27 @@ Press **F12** or send `devtools` via IPC to open the developer tools:
 | Shift+F1 | Virtual keyboard |
 | Shift+F3 | Save snapshot |
 
+### SDL3 macOS Mouse Events & ImGui Viewports
+
+When `ImGuiConfigFlags_ViewportsEnable` is active, ImGui creates separate OS windows (viewports) for floating devtools. On macOS this triggers a chain of issues:
+
+**Root cause chain:**
+1. `SDL_CaptureMouse()` is a permanent no-op on Cocoa (`SDL_cocoamouse.m:347`) — just returns `true`.
+2. `koncpc_order_viewports_above_main()` keeps viewport windows above the main window via `orderWindow:NSWindowAbove`. This confuses macOS mouse-up delivery during drags.
+3. macOS may deliver `mouseUp:` to a different NSWindow or lose it entirely.
+4. SDL's internal `source->buttonstate` gets stuck at "pressed".
+5. `SDL_PrivateSendMouseButton()` has duplicate suppression (`if (buttonstate == source->buttonstate) return`) — once stuck, ALL future button events for that button are silently dropped at the SDL level.
+
+**The fix** (three layers):
+- **SDL Cocoa backend** (`vendor/SDL/src/video/cocoa/SDL_cocoamouse.m`): `Cocoa_ReconcileMouseButtons()` polls `[NSEvent pressedMouseButtons]` (hardware truth via IOKit) once per frame in `Cocoa_PumpEvents()`. Calls `SDL_SendMouseButton(RELEASED)` through SDL's full pipeline for any stuck buttons.
+- **ImGui SDL3 backend** (`vendor/imgui/backends/imgui_impl_sdl3.cpp`): Viewport windowID check removed for mouse button and MOUSE_ENTER events. Button state is global — the GLFW and Win32 backends never had this check.
+- **Application** (`src/kon_cpc_ja.cpp`): No legacy `showGui()` click handler — topbar clicks are handled purely by ImGui's `Button("Menu (F1)")`.
+
+**Key pitfalls when debugging mouse issues:**
+- `SDL_GetMouseState()` reads SDL's **event-derived cache** — if the button-up event was lost, this cache is stuck too. Use `SDL_GetGlobalMouseState()` for hardware truth (calls `[NSEvent pressedMouseButtons]`).
+- SDL and ImGui use **different button-to-bit mappings**: SDL has Left=bit0, Middle=bit1, Right=bit2; ImGui's `MouseButtonsDown` has Left=bit0, Right=bit1, Middle=bit2. Always use an explicit mapping table, not `(1 << button_n)` for both.
+- SDL is a pre-built submodule. Edits to `vendor/SDL/src/` require rebuilding: `cd vendor/SDL/build && make -j$(sysctl -n hw.ncpu)` then `cmake --install . --prefix ../install`.
+
 ## Configuration
 
 Config file locations (in order of precedence):
