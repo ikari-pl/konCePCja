@@ -345,7 +345,6 @@ static byte cc_ex[256] = {
 
 
 
-extern byte *membank_read[4], *membank_write[4];
 extern MemoryBus g_memory_bus;
 
 inline byte read_mem_no_watchpoint(word addr) {
@@ -437,7 +436,7 @@ void z80_write_mem(word addr, byte val) {
 }
 
 byte z80_read_mem_via_write_bank(word addr) {
-  return *(membank_write[addr >> 14] + (addr & 0x3FFF));
+  return g_memory_bus.read_raw_via_write_bank(addr);
 }
 
 byte z80_read_mem_raw_bank(word addr, int bank) {
