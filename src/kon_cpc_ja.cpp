@@ -60,6 +60,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "ym_recorder.h"
 #include "avi_recorder.h"
 #include "macos_menu.h"
+#include "cpc_machine.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -276,6 +277,21 @@ t_VDU VDU;
 
 t_drive driveA;
 t_drive driveB;
+
+// Phase 1: non-owning aggregate of core globals. Behavior is unchanged;
+// this simply provides a structured view for future refactors.
+CpcMachine g_machine{
+  &CPC,
+  &CRTC,
+  &GateArray,
+  &FDC,
+  &PPI,
+  &PSG,
+  &VDU,
+  &driveA,
+  &driveB,
+  &z80,
+};
 
 #define psg_write \
 { \
