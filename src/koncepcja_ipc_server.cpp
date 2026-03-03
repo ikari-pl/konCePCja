@@ -67,7 +67,6 @@ extern t_GateArray GateArray;
 extern t_PSG PSG;
 extern SDL_Surface *back_surface;
 extern byte *pbRAM;
-extern byte *membank_read[4], *membank_write[4];
 extern byte keyboard_matrix[16];
 extern t_drive driveA;
 extern t_drive driveB;
@@ -2591,7 +2590,7 @@ std::string handle_command(const std::string& line) {
       if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
         pbExpansionROM = memmap_ROM[slot];
         if (!(GateArray.ROM_config & 0x08)) {
-          membank_read[3] = pbExpansionROM;
+          memory_set_read_bank(3, pbExpansionROM);
         }
       }
       return "OK\n";
@@ -2610,7 +2609,7 @@ std::string handle_command(const std::string& line) {
       if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
         pbExpansionROM = pbROMhi;
         if (!(GateArray.ROM_config & 0x08)) {
-          membank_read[3] = pbExpansionROM;
+          memory_set_read_bank(3, pbExpansionROM);
         }
       }
       return "OK\n";

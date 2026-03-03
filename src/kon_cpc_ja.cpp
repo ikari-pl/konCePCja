@@ -411,28 +411,35 @@ void ga_memory_manager ()
       ga_init_banking(membank_config, GateArray.RAM_bank);
    }
    for (int n = 0; n < 4; n++) { // remap active memory banks
-      membank_read[n] = membank_config[GateArray.RAM_config & 7][n];
-      membank_write[n] = membank_config[GateArray.RAM_config & 7][n];
+      memory_set_read_bank(n, membank_config[GateArray.RAM_config & 7][n]);
+      memory_set_write_bank(n, membank_config[GateArray.RAM_config & 7][n]);
    }
    if (!(GateArray.ROM_config & 0x04)) { // lower ROM is enabled?
       if (dwMF2Flags & MF2_ACTIVE) { // is the Multiface 2 paged in?
          // MF2 ROM (8K) at 0x0000-0x1FFF: read-only overlay
          // MF2 RAM (8K) at 0x2000-0x3FFF: read-write (intercepted in z80.cpp write_mem)
          // Writes to 0x0000-0x1FFF fall through to CPC RAM (membank_write unchanged)
-         membank_read[GateArray.lower_ROM_bank] = pbMF2ROM;
+         memory_set_read_bank(GateArray.lower_ROM_bank, pbMF2ROM);
       } else {
-         membank_read[GateArray.lower_ROM_bank] = pbROMlo; // 'page in' lower ROM
+         memory_set_read_bank(GateArray.lower_ROM_bank, pbROMlo); // 'page in' lower ROM
       }
    }
    if (CPC.model > 2 && GateArray.registerPageOn) {
-      membank_read[1] = pbRegisterPage;
-      membank_write[1] = pbRegisterPage;
+      memory_set_read_bank(1, pbRegisterPage);
+      memory_set_write_bank(1, pbRegisterPage);
    }
    if (!(GateArray.ROM_config & 0x08)) { // upper/expansion ROM is enabled?
-      membank_read[3] = pbExpansionROM; // 'page in' upper/expansion ROM
+      memory_set_read_bank(3, pbExpansionROM); // 'page in' upper/expansion ROM
    }
 }
 
+void memory_set_read_bank(int slot, byte* ptr) {
+  membank_read[slot] = ptr;
+}
+
+void memory_set_write_bank(int slot, byte* ptr) {
+  membank_write[slot] = ptr;
+}
 
 // ── MF2 I/O dispatch handler ────────────────────
 // MF2 paging uses file-local dwMF2Flags and ga_memory_manager(),
@@ -920,7 +927,7 @@ void z80_OUT_handler (reg_pair port, byte val)
          pbExpansionROM = pbCartridgePages[page];
       }
       if (!(GateArray.ROM_config & 0x08)) { // upper/expansion ROM is enabled?
-         membank_read[3] = pbExpansionROM; // 'page in' upper/expansion ROM
+         memory_set_read_bank(3, pbExpansionROM); // 'page in' upper/expansion ROM
       }
       if (CPC.mf2) { // MF2 enabled?
          *(pbMF2ROM + 0x03aac) = val;
@@ -1284,11 +1291,11 @@ void emulator_reset ()
      memset(pbMF2ROM+8192, 0, 8192); // clear the MF2's RAM area
    }
    for (int n = 0; n < 4; n++) { // initialize active read/write bank configuration
-      membank_read[n] = membank_config[0][n];
-      membank_write[n] = membank_config[0][n];
+      memory_set_read_bank(n, membank_config[0][n]);
+      memory_set_write_bank(n, membank_config[0][n]);
    }
-   membank_read[0] = pbROMlo; // 'page in' lower ROM
-   membank_read[3] = pbROMhi; // 'page in' upper ROM
+   memory_set_read_bank(0, pbROMlo); // 'page in' lower ROM
+   memory_set_read_bank(3, pbROMhi); // 'page in' upper ROM
 
 // Multiface 2
    dwMF2Flags = 0;
