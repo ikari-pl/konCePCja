@@ -61,6 +61,8 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "avi_recorder.h"
 #include "macos_menu.h"
 #include "cpc_machine.h"
+#include "memory_bus.h"
+#include "io_bus.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -292,6 +294,11 @@ CpcMachine g_machine{
   &driveB,
   &z80,
 };
+
+// Phase 2: non-owning bus views over existing banking / IO dispatch.
+// These are helpers only; core hot paths still use the original globals.
+MemoryBus g_memory_bus{ membank_read, membank_write };
+IoBus g_io_bus{};
 
 #define psg_write \
 { \
