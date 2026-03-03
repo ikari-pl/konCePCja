@@ -615,7 +615,7 @@ byte z80_IN_handler (reg_pair port)
       }
    }
 // Peripheral dispatch (Symbiface II, etc.) ------------------------------------
-   ret_val = io_dispatch_in(port, ret_val);
+   ret_val = g_io_bus.in(port, ret_val);
    LOG_DEBUG("IN on port " << std::hex << static_cast<int>(port.w.l) << ", ret_val=" << static_cast<int>(ret_val) << std::dec);
    return ret_val;
 }
@@ -1018,7 +1018,7 @@ void z80_OUT_handler (reg_pair port, byte val)
       fdc_write_data(val);
    }
 // Peripheral dispatch (M4 Board, MF2, Symbiface II, AmDrum, Phazer) -----------
-   io_dispatch_out(port, val);
+   g_io_bus.out(port, val);
 }
 
 
