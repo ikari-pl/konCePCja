@@ -296,7 +296,7 @@ CpcMachine g_machine{
 };
 
 // Phase 2: non-owning bus views over existing banking / IO dispatch.
-// These are helpers only; core hot paths still use the original globals.
+// Memory hot paths use g_memory_bus (wrapping membank_*); IO still goes via the same dispatch.
 MemoryBus g_memory_bus{ membank_read, membank_write };
 IoBus g_io_bus{};
 

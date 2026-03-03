@@ -1,5 +1,5 @@
 // MemoryBus - thin, non-owning view over CPC memory banking.
-// Phase 2: helper only, not yet wired into hot paths.
+// Used by the core (including hot-path memory accesses) as a simple bus view.
 //
 // Design notes for humans:
 // - This is intentionally just a pair of pointers to the existing
@@ -31,7 +31,7 @@ struct MemoryBus {
     *(write_banks[addr >> 14] + (addr & 0x3fff)) = v;
   }
 
-  // Convenience helpers to get the base pointer for a 16KB bank.
+  // Convenience helpers for tools/DevTools that need a bank base (e.g. hex viewer).
   inline byte* bank_read_ptr(int bank) const {
     return read_banks[bank];
   }
