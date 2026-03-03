@@ -61,6 +61,8 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "avi_recorder.h"
 #include "macos_menu.h"
 #include "cpc_machine.h"
+#include "memory_bus.h"
+#include "io_bus.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -292,6 +294,11 @@ CpcMachine g_machine{
   &driveB,
   &z80,
 };
+
+// Phase 2: non-owning bus views over existing banking / IO dispatch.
+// Memory hot paths use g_memory_bus (wrapping membank_*); IO still goes via the same dispatch.
+MemoryBus g_memory_bus{ membank_read, membank_write };
+IoBus g_io_bus{};
 
 #define psg_write \
 { \
@@ -608,7 +615,7 @@ byte z80_IN_handler (reg_pair port)
       }
    }
 // Peripheral dispatch (Symbiface II, etc.) ------------------------------------
-   ret_val = io_dispatch_in(port, ret_val);
+   ret_val = g_io_bus.in(port, ret_val);
    LOG_DEBUG("IN on port " << std::hex << static_cast<int>(port.w.l) << ", ret_val=" << static_cast<int>(ret_val) << std::dec);
    return ret_val;
 }
@@ -1011,7 +1018,7 @@ void z80_OUT_handler (reg_pair port, byte val)
       fdc_write_data(val);
    }
 // Peripheral dispatch (M4 Board, MF2, Symbiface II, AmDrum, Phazer) -----------
-   io_dispatch_out(port, val);
+   g_io_bus.out(port, val);
 }
 
 

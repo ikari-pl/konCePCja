@@ -36,6 +36,7 @@
 #include "expr_parser.h"
 #include "smartwatch.h"
 #include "log.h"
+#include "memory_bus.h"
 #include <algorithm>
 #include <vector>
 #include <iomanip>
@@ -345,9 +346,10 @@ static byte cc_ex[256] = {
 
 
 extern byte *membank_read[4], *membank_write[4];
+extern MemoryBus g_memory_bus;
 
 inline byte read_mem_no_watchpoint(word addr) {
-  byte val = *(membank_read[addr >> 14] + (addr & 0x3fff)); // returns a byte from a 16KB memory bank
+  byte val = g_memory_bus.read_raw(addr); // returns a byte from a 16KB memory bank
   // SmartWatch intercepts upper ROM reads (ROM must be paged in)
   if (g_smartwatch.enabled && (addr >= 0xC000) && !(GateArray.ROM_config & 0x08)) {
     val = smartwatch_rom_read(addr, val);
@@ -383,7 +385,7 @@ inline byte read_mem(word addr) {
 }
 
 inline void write_mem_no_watchpoint(word addr, byte val) {
-  *(membank_write[addr >> 14] + (addr & 0x3fff)) = val; // writes a byte to a 16KB memory bank
+  g_memory_bus.write_raw(addr, val); // writes a byte to a 16KB memory bank
 }
 
 inline void write_mem(word addr, byte val) {
