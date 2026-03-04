@@ -165,7 +165,7 @@ std::string handle_command(const std::string& line) {
     int p = g_ipc_instance ? g_ipc_instance->port() : 0;
     return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
   }
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -595,31 +595,43 @@ std::string handle_command(const std::string& line) {
     return "OK diffs=" + std::to_string(diff_count) + diffs + "\n";
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "cpu-read") {
-    // mem cpu-read <addr> <len>
-    unsigned int addr = std::stoul(parts[2], nullptr, 0);
-    unsigned int len = std::stoul(parts[3], nullptr, 0);
-    std::ostringstream resp;
-    resp << "OK ";
-    for (unsigned int i = 0; i < len; i++) {
-      byte v = z80_cpu_read_mem(static_cast<word>(addr + i));
-      resp << std::hex << std::uppercase << std::setfill('0') << std::setw(2)
-           << static_cast<int>(v);
+    // mem cpu-read <addr> <len> — reads through CPU memory map (SmartWatch/ROM banking)
+    // but does NOT trigger watchpoints or IPC events.
+    try {
+      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int len = std::stoul(parts[3], nullptr, 0);
+      if (len > 0x10000) return "ERR 400 len exceeds 64K\n";
+      std::ostringstream resp;
+      resp << "OK ";
+      for (unsigned int i = 0; i < len; i++) {
+        byte v = z80_cpu_read_mem(static_cast<word>(addr + i));
+        resp << std::hex << std::uppercase << std::setfill('0') << std::setw(2)
+             << static_cast<int>(v);
+      }
+      resp << "\n";
+      return resp.str();
+    } catch (const std::exception&) {
+      return "ERR 400 bad-number\n";
     }
-    resp << "\n";
-    return resp.str();
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "cpu-write") {
-    // mem cpu-write <addr> <hexbytes...>
-    unsigned int addr = std::stoul(parts[2], nullptr, 0);
-    std::string hex;
-    for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
-    if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
-    for (size_t i = 0; i < hex.size(); i += 2) {
-      std::string byte_str = hex.substr(i, 2);
-      byte v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
-      z80_cpu_write_mem(static_cast<word>(addr + (i/2)), v);
+    // mem cpu-write <addr> <hexbytes...> — writes through CPU memory map
+    // but does NOT trigger watchpoints or IPC mem-write events.
+    try {
+      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      std::string hex;
+      for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
+      if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
+      if (hex.size() / 2 > 0x10000) return "ERR 400 len exceeds 64K\n";
+      for (size_t i = 0; i < hex.size(); i += 2) {
+        std::string byte_str = hex.substr(i, 2);
+        byte v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
+        z80_cpu_write_mem(static_cast<word>(addr + (i/2)), v);
+      }
+      return "OK\n";
+    } catch (const std::exception&) {
+      return "ERR 400 bad-number\n";
     }
-    return "OK\n";
   }
   if (cmd == "disasm" && parts.size() >= 2) {
     // disasm follow <addr> — recursive disassembly following jumps

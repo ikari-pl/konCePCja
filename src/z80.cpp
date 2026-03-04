@@ -439,11 +439,11 @@ void z80_write_mem(word addr, byte val) {
 }
 
 byte z80_cpu_read_mem(word addr) {
-  return read_mem(addr);
+  return read_mem_no_watchpoint(addr);
 }
 
 void z80_cpu_write_mem(word addr, byte val) {
-  write_mem(addr, val);
+  write_mem_no_watchpoint(addr, val);
 }
 
 byte z80_read_mem_via_write_bank(word addr) {
