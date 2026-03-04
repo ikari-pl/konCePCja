@@ -187,7 +187,7 @@ std::string handle_command(const std::string& line) {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
       unsigned int len = std::stoul(parts[3], nullptr, 0);
       uLong crc = crc32(0L, nullptr, 0);
-      // Read through z80 memory banking for correctness
+      // Read through direct Z80 memory (SmartWatch only, no watchpoints)
       std::vector<byte> tmp(len);
       for (unsigned int i = 0; i < len; i++) {
         tmp[i] = z80_read_mem(static_cast<word>(addr + i));
@@ -593,6 +593,33 @@ std::string handle_command(const std::string& line) {
       }
     }
     return "OK diffs=" + std::to_string(diff_count) + diffs + "\n";
+  }
+  if (cmd == "mem" && parts.size() >= 4 && parts[1] == "cpu-read") {
+    // mem cpu-read <addr> <len>
+    unsigned int addr = std::stoul(parts[2], nullptr, 0);
+    unsigned int len = std::stoul(parts[3], nullptr, 0);
+    std::ostringstream resp;
+    resp << "OK ";
+    for (unsigned int i = 0; i < len; i++) {
+      byte v = z80_cpu_read_mem(static_cast<word>(addr + i));
+      resp << std::hex << std::uppercase << std::setfill('0') << std::setw(2)
+           << static_cast<int>(v);
+    }
+    resp << "\n";
+    return resp.str();
+  }
+  if (cmd == "mem" && parts.size() >= 4 && parts[1] == "cpu-write") {
+    // mem cpu-write <addr> <hexbytes...>
+    unsigned int addr = std::stoul(parts[2], nullptr, 0);
+    std::string hex;
+    for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
+    if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
+    for (size_t i = 0; i < hex.size(); i += 2) {
+      std::string byte_str = hex.substr(i, 2);
+      byte v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
+      z80_cpu_write_mem(static_cast<word>(addr + (i/2)), v);
+    }
+    return "OK\n";
   }
   if (cmd == "disasm" && parts.size() >= 2) {
     // disasm follow <addr> — recursive disassembly following jumps
