@@ -23,6 +23,12 @@ jobs:
       - run: brew update
       - run: brew install freetype zlib libpng gnu-sed cmake
 
+      - name: Apply SDL patches
+        run: |
+          for p in vendor/sdl-patches/*.patch; do
+            [ -f "$p" ] && git -C vendor/SDL apply "../../$p"
+          done
+
       - name: Cache vendored SDL3
         id: cache-sdl
         uses: actions/cache@v4

@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +41,13 @@ jobs:
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-toolchain
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-zlib
             ${{matrix.mingw}}/mingw-w64-${{matrix.env}}-7zip
+
+      - name: Apply SDL patches
+        shell: msys2 {0}
+        run: |
+          for p in vendor/sdl-patches/*.patch; do
+            [ -f "$p" ] && git -C vendor/SDL apply "../../$p"
+          done
 
       - name: Install SDL3 from MSYS2
         if: ${{ !matrix.sdl_from_source }}
