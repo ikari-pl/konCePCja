@@ -30,6 +30,8 @@ static constexpr uint16_t C_DIRSETARGS = 0x4325;
 static constexpr uint16_t C_VERSION    = 0x4326;
 static constexpr uint16_t C_READSECTOR = 0x430B;
 static constexpr uint16_t C_READ2      = 0x4312;
+static constexpr uint16_t C_FSTAT      = 0x4316;
+static constexpr uint16_t C_WRITE2     = 0x431B;
 static constexpr uint16_t C_ROMWRITE   = 0x43FD;
 static constexpr uint16_t C_CONFIG     = 0x43FE;
 
@@ -418,6 +420,7 @@ static void cmd_open()
       }
    }
 
+   g_m4board.last_filename = raw_name;
    LOG_DEBUG("M4: C_OPEN → OK, handle=" << handle);
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
@@ -821,6 +824,35 @@ static void cmd_httpget()
 
 #endif // HAS_LIBCURL
 
+static void cmd_fstat()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, fd]
+   // Returns file attributes byte at response[3]:
+   //   0x00 = normal file, 0x10 = directory
+   if (g_m4board.cmd_buf.size() < 4) {
+      respond_error();
+      return;
+   }
+   int handle = g_m4board.cmd_buf[3];
+   if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
+      respond_error("Bad handle");
+      return;
+   }
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0;  // attributes: normal file
+   g_m4board.response_len = 4;
+}
+
+static void cmd_write2()
+{
+   // C_WRITE2 is the buffered write counterpart to C_READ2.
+   // The M4 ROM uses this for _cas_out_char buffered writes.
+   // Same protocol as C_WRITE.
+   cmd_write();
+}
+
 // ── New command handlers ────────────────────────
 
 static void cmd_config()
@@ -970,6 +1002,10 @@ void m4board_reset()
    memset(g_m4board.config_buf, 0, M4Board::CONFIG_SIZE);
    g_m4board.dir_entries.clear();
    g_m4board.dir_index = 0;
+   g_m4board.activity_frames = 0;
+   g_m4board.last_op = M4Board::LastOp::NONE;
+   g_m4board.last_filename.clear();
+   g_m4board.cmd_count = 0;
 }
 
 void m4board_cleanup()
@@ -1004,27 +1040,34 @@ void m4board_execute()
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
 
+   // Activity tracking
+   g_m4board.cmd_count++;
+   g_m4board.activity_frames = 30;  // ~0.6s at 50fps
+   g_m4board.last_op = M4Board::LastOp::CMD;
+
    switch (cmd) {
       case C_VERSION:    cmd_version(); break;
       case C_CD:         cmd_cd(); break;
-      case C_READDIR:    cmd_readdir(); break;
+      case C_READDIR:    cmd_readdir(); g_m4board.last_op = M4Board::LastOp::DIR; break;
       case C_OPEN:       cmd_open(); break;
       case C_CLOSE:      cmd_close(); break;
-      case C_READ:       cmd_read(); break;
-      case C_READ2:      cmd_read2(); break;
-      case C_READSECTOR: cmd_readsector(); break;
-      case C_WRITE:      cmd_write(); break;
+      case C_READ:       cmd_read(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_READ2:      cmd_read2(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_READSECTOR: cmd_readsector(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_WRITE:      cmd_write(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_WRITE2:     cmd_write2(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
       case C_SEEK:       cmd_seek(); break;
       case C_EOF:        cmd_eof(); break;
       case C_FREE:       cmd_free(); break;
       case C_FSIZE:      cmd_fsize(); break;
+      case C_FSTAT:      cmd_fstat(); break;
       case C_FTELL:      cmd_ftell(); break;
       case C_ERASEFILE:  cmd_erasefile(); break;
       case C_RENAME:     cmd_rename(); break;
       case C_MAKEDIR:    cmd_makedir(); break;
       case C_GETPATH:    cmd_getpath(); break;
       case C_HTTPGET:    cmd_httpget(); break;
-      case C_DIRSETARGS: cmd_dirsetargs(); break;
+      case C_DIRSETARGS: cmd_dirsetargs(); g_m4board.last_op = M4Board::LastOp::DIR; break;
       case C_CONFIG:     cmd_config(); break;
       case C_ROMWRITE:   cmd_romwrite(); break;
       default:
