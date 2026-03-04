@@ -27,6 +27,12 @@ jobs:
           libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev
           libwayland-dev libxkbcommon-dev libdrm-dev libgbm-dev libdecor-0-dev
 
+      - name: Apply SDL patches
+        run: |
+          for p in vendor/sdl-patches/*.patch; do
+            [ -f "$p" ] && git -C vendor/SDL apply "../../$p"
+          done
+
       - name: Cache vendored SDL3
         id: cache-sdl
         uses: actions/cache@v4
