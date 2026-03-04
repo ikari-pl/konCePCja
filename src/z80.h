@@ -139,10 +139,17 @@ extern std::atomic<bool> z80_stop_requested;
 #define EC_STOP_REQUESTED  60
 
 
+// Direct memory access used by IPC and tools:
+// - z80_read_mem / z80_write_mem: SmartWatch on read, raw bus on write (no watchpoints).
 byte z80_read_mem(word addr);
 void z80_write_mem(word addr, byte val);
 byte z80_read_mem_via_write_bank(word addr);
 byte z80_read_mem_raw_bank(word addr, int bank);
+
+// CPU-view accessors (SmartWatch/MF2/ASIC + bus, NO watchpoints).
+// Safe for IPC and UI — won't trigger watchpoint hits or IPC re-entrancy.
+byte z80_cpu_read_mem(word addr);
+void z80_cpu_write_mem(word addr, byte val);
 
 // TODO: put declaration or definition of these two methods somewhere else !!!
 byte z80_IN_handler(reg_pair port); // not provided by Z80.c

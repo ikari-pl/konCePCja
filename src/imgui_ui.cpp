@@ -42,7 +42,6 @@ extern t_drive driveA;
 extern t_drive driveB;
 extern byte *pbRAM;
 extern byte *memmap_ROM[256];
-extern byte *membank_read[4];
 extern byte *pbExpansionROM;
 extern byte *pbROMhi;
 extern byte bTapeLevel;
@@ -1506,7 +1505,7 @@ static void imgui_render_options()
               if (GateArray.upper_ROM == static_cast<unsigned char>(i)) {
                 pbExpansionROM = pbROMhi;
                 if (!(GateArray.ROM_config & 0x08)) {
-                  membank_read[3] = pbExpansionROM;
+                  memory_set_read_bank(3, pbExpansionROM);
                 }
               }
             }

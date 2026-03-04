@@ -1,6 +1,7 @@
 #include "asic.h"
 #include "log.h"
 #include "koncepcja.h"
+#include "memory_bus.h"
 #include "SDL3/SDL.h"
 #include "crtc.h"
 
@@ -13,7 +14,6 @@ extern t_PSG PSG;
 extern SDL_Surface *back_surface;
 extern dword dwXScale;
 extern byte *membank_config[8][4];
-extern byte *membank_write[4];
 
 asic_t asic;
 
@@ -176,12 +176,12 @@ void asic_dma_cycle() {
     // TODO: cleaner way to modify back the register value here ...
     {
       word addr = 0x6C00 + (c << 2);
-      *(membank_write[addr >> 14] + (addr & 0x3fff)) = static_cast<byte>(channel.source_address & 0xFF);
+      g_memory_bus.write_raw(addr, static_cast<byte>(channel.source_address & 0xFF));
       addr++;
-      *(membank_write[addr >> 14] + (addr & 0x3fff)) = static_cast<byte>((channel.source_address & 0xFF00) >> 8);
+      g_memory_bus.write_raw(addr, static_cast<byte>((channel.source_address & 0xFF00) >> 8));
       /* Useless ?
       addr++;
-      *(membank_write[addr >> 14] + (addr & 0x3fff)) = channel.prescaler;
+      g_memory_bus.write_raw(addr + 1, channel.prescaler);
       */
       if (channel.enabled) {
         dcsr |= (0x1 << c);
@@ -197,8 +197,7 @@ void asic_dma_cycle() {
   // Run RAM test of testplus.cpr when touching this (this is not a guarantee that this is correct but at least it's a guarantee that it's less wrong ! cf issue #40)
   if (dcsr_changed)
   {
-    word addr = 0x6C0F;
-    *(membank_write[addr >> 14] + (addr & 0x3fff)) = dcsr;
+    g_memory_bus.write_raw(0x6C0F, dcsr);
   }
 }
 

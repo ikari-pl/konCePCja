@@ -31,6 +31,11 @@ struct MemoryBus {
     *(write_banks[addr >> 14] + (addr & 0x3fff)) = v;
   }
 
+  // Read using the write bank view (same 4x16KB indexing; used e.g. by IPC memory dump).
+  inline byte read_raw_via_write_bank(word addr) const {
+    return *(write_banks[addr >> 14] + (addr & 0x3fff));
+  }
+
   // Convenience helpers for tools/DevTools that need a bank base (e.g. hex viewer).
   inline byte* bank_read_ptr(int bank) const {
     return read_banks[bank];

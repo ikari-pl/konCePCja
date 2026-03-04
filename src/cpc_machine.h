@@ -5,8 +5,10 @@
 #define CPC_MACHINE_H
 
 #include "koncepcja.h"
+#include "layered_memory.h"
 
 class t_z80regs;
+struct t_drive;
 
 struct CpcMachine {
   t_CPC*       cpc        = nullptr;
@@ -19,6 +21,7 @@ struct CpcMachine {
   t_drive*     driveA     = nullptr;
   t_drive*     driveB     = nullptr;
   t_z80regs*   z80        = nullptr;
+  LayeredMemory memory{};
 };
 
 extern CpcMachine g_machine;

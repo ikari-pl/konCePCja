@@ -450,6 +450,8 @@ void set_osd_message(const std::string& message, uint32_t for_milliseconds = 100
 void koncpc_queue_virtual_keys(const std::string& text);
 void ga_init_banking(t_MemBankConfig& membank_config, unsigned char RAM_bank);
 void ga_memory_manager();
+void memory_set_read_bank(int slot, byte* ptr);
+void memory_set_write_bank(int slot, byte* ptr);
 bool driveAltered();
 void emulator_reset();
 void cpc_pause();

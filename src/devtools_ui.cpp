@@ -563,6 +563,12 @@ void DevToolsUI::render_memory_hex()
       if (bpr >= 4 && bpr <= 32) memhex_bytes_per_row_ = bpr;
     }
     ImGui::Separator();
+    ImGui::Checkbox("CPU view", &memhex_cpu_view_);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("When enabled, reads go through the full CPU view (watchpoints, SmartWatch, MF2/ASIC).\n"
+                        "When disabled, reads use the direct debugger view (SmartWatch only, no watchpoints).");
+    }
+    ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Right-click for navigation options.");
@@ -598,7 +604,7 @@ void DevToolsUI::render_memory_hex()
         // Hex bytes with watchpoint highlighting
         for (int col = 0; col < bytes_per_row; col++) {
           word a = (base_addr + col) & 0xFFFF;
-          byte val = z80_read_mem(a);
+          byte val = memhex_cpu_view_ ? z80_cpu_read_mem(a) : z80_read_mem(a);
 
           ImGui::SameLine();
 
@@ -640,7 +646,8 @@ void DevToolsUI::render_memory_hex()
         char ascii[33];
         int asc_len = bytes_per_row < 32 ? bytes_per_row : 32;
         for (int col = 0; col < asc_len; col++) {
-          byte b = z80_read_mem((base_addr + col) & 0xFFFF);
+          byte b = memhex_cpu_view_ ? z80_cpu_read_mem((base_addr + col) & 0xFFFF)
+                                    : z80_read_mem((base_addr + col) & 0xFFFF);
           ascii[col] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
         }
         ascii[asc_len] = '\0';

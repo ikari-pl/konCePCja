@@ -345,9 +345,11 @@ static byte cc_ex[256] = {
 
 
 
-extern byte *membank_read[4], *membank_write[4];
 extern MemoryBus g_memory_bus;
 
+// Internal helpers for the different memory views:
+// - read_mem_no_watchpoint / write_mem_no_watchpoint: SmartWatch on read, raw bus on write
+// - read_mem / write_mem: full CPU view with watchpoints, SmartWatch, MF2, ASIC
 inline byte read_mem_no_watchpoint(word addr) {
   byte val = g_memory_bus.read_raw(addr); // returns a byte from a 16KB memory bank
   // SmartWatch intercepts upper ROM reads (ROM must be paged in)
@@ -436,8 +438,16 @@ void z80_write_mem(word addr, byte val) {
   write_mem_no_watchpoint(addr, val);
 }
 
+byte z80_cpu_read_mem(word addr) {
+  return read_mem_no_watchpoint(addr);
+}
+
+void z80_cpu_write_mem(word addr, byte val) {
+  write_mem_no_watchpoint(addr, val);
+}
+
 byte z80_read_mem_via_write_bank(word addr) {
-  return *(membank_write[addr >> 14] + (addr & 0x3FFF));
+  return g_memory_bus.read_raw_via_write_bank(addr);
 }
 
 byte z80_read_mem_raw_bank(word addr, int bank) {
