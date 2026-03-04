@@ -1427,6 +1427,38 @@ static void imgui_render_options()
           if (slot > 31) slot = 31;
           g_m4board.rom_slot = slot;
         }
+
+        // M4 Status display
+        ImGui::Separator();
+        ImGui::TextDisabled("M4 Status");
+
+        // Activity LED + current directory
+        bool active = g_m4board.activity_frames > 0;
+        ImVec4 led_color = active ? ImVec4(0.2f, 0.9f, 0.2f, 1.0f)
+                                  : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
+        ImGui::TextColored(led_color, "%s", active ? "SD Active" : "SD Idle");
+        ImGui::SameLine(0, 16);
+        ImGui::TextDisabled("Dir: %s", g_m4board.current_dir.c_str());
+
+        // Open files count + last filename
+        int open_count = 0;
+        for (int i = 0; i < 4; i++) {
+          if (g_m4board.open_files[i]) open_count++;
+        }
+        ImGui::Text("Open files: %d/4", open_count);
+        if (!g_m4board.last_filename.empty()) {
+          ImGui::SameLine(0, 16);
+          ImGui::TextDisabled("Last: %s", g_m4board.last_filename.c_str());
+        }
+
+        // Command count
+        if (g_m4board.cmd_count > 0) {
+          ImGui::Text("Commands: %d", g_m4board.cmd_count);
+        }
+
+        // Decrement activity counter each frame
+        if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
+
         ImGui::Unindent();
       }
 

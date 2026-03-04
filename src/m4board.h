@@ -51,6 +51,12 @@ struct M4Board {
    };
    std::vector<DirEntry> dir_entries;
    size_t dir_index = 0;
+
+   // Activity tracking for UI display
+   int activity_frames = 0;       // countdown timer for LED (frames at 50fps)
+   enum class LastOp { NONE, READ, WRITE, DIR, CMD } last_op = LastOp::NONE;
+   std::string last_filename;     // last opened file (for display)
+   int cmd_count = 0;             // total commands processed
 };
 
 extern M4Board g_m4board;

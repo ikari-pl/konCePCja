@@ -165,7 +165,7 @@ std::string handle_command(const std::string& line) {
     int p = g_ipc_instance ? g_ipc_instance->port() : 0;
     return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
   }
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source) m4(status/ls/cd/reset)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2947,6 +2947,71 @@ std::string handle_command(const std::string& line) {
       return "OK " + std::string(g_devtools_ui.asm_source_buf()) + "\n";
     }
     return "ERR 400 usage: asm (text|load|assemble|errors|symbols|source)\n";
+  }
+
+  // ── m4 ──
+  if (cmd == "m4" && parts.size() >= 2) {
+    if (parts[1] == "status") {
+      int open_files = 0;
+      for (int i = 0; i < 4; i++) {
+        if (g_m4board.open_files[i]) open_files++;
+      }
+      char buf[256];
+      snprintf(buf, sizeof(buf), "OK enabled=%d sd_path=%s dir=%s files=%d/4 cmds=%d\n",
+               g_m4board.enabled ? 1 : 0,
+               g_m4board.sd_root_path.empty() ? "(none)" : g_m4board.sd_root_path.c_str(),
+               g_m4board.current_dir.c_str(),
+               open_files,
+               g_m4board.cmd_count);
+      return std::string(buf);
+    }
+    if (parts[1] == "ls") {
+      std::string resolved = g_m4board.sd_root_path;
+      if (resolved.empty()) return "ERR 400 no-sd-path\n";
+      try {
+        auto root = std::filesystem::weakly_canonical(resolved);
+        auto dir = std::filesystem::weakly_canonical(resolved + g_m4board.current_dir);
+        std::string resp = "OK\n";
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+          std::string name = entry.path().filename().string();
+          if (name.empty() || name[0] == '.') continue;
+          if (entry.is_directory()) resp += ">" + name + "\n";
+          else resp += name + "\n";
+        }
+        return resp;
+      } catch (const std::filesystem::filesystem_error& e) {
+        return "ERR 500 " + std::string(e.what()) + "\n";
+      }
+    }
+    if (parts[1] == "cd" && parts.size() >= 3) {
+      std::string path = parts[2];
+      if (path == "/") {
+        g_m4board.current_dir = "/";
+        return "OK /\n";
+      }
+      if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
+      try {
+        std::string full = g_m4board.sd_root_path + (path[0] == '/' ? "" : g_m4board.current_dir.c_str()) + path;
+        auto canonical = std::filesystem::weakly_canonical(full);
+        auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
+        std::string cs = canonical.string(), rs = root.string();
+        if (cs.substr(0, rs.size()) != rs) return "ERR 403 path-traversal\n";
+        if (!std::filesystem::is_directory(canonical)) return "ERR 404 not-a-directory\n";
+        std::string rel = cs.substr(rs.size());
+        if (rel.empty()) rel = "/";
+        if (rel.back() != '/') rel += '/';
+        g_m4board.current_dir = rel;
+        return "OK " + rel + "\n";
+      } catch (const std::filesystem::filesystem_error& e) {
+        return "ERR 500 " + std::string(e.what()) + "\n";
+      }
+    }
+    if (parts[1] == "reset") {
+      m4board_cleanup();
+      m4board_reset();
+      return "OK\n";
+    }
+    return "ERR 400 usage: m4 (status|ls|cd|reset)\n";
   }
 
   return "ERR 501 not-implemented\n";
