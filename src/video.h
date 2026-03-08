@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <mutex>
 
 typedef struct video_plugin
 {

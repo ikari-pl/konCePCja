@@ -3787,30 +3787,6 @@ int koncpc_main (int argc, char **argv)
                }
             }
 
-            // Handle IPC "repaint" — re-render frame from RAM without Z80 advancement
-            if (g_repaint_pending.load()) {
-               std::string shot_path;
-               {
-                  std::lock_guard<std::mutex> lock(g_repaint_mutex);
-                  shot_path = g_repaint_screenshot_path;
-                  g_repaint_screenshot_path.clear();
-               }
-               
-               video_repaint_from_ram();
-               
-               if (!shot_path.empty()) {
-                  if (SDL_SavePNG(back_surface, shot_path)) {
-                     g_repaint_error = "SDL_SavePNG failed for " + shot_path;
-                  } else {
-                     LOG_INFO("Repaint screenshot saved to " + shot_path);
-                  }
-               }
-               
-               video_display(); // Force update UI
-               g_repaint_done.store(true);
-               g_repaint_pending.store(false);
-            }
-
             if (!g_headless) {
                if (SDL_GetTicks() < osd_timing) {
                   print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs, osd_message.c_str(), true);
@@ -3830,6 +3806,7 @@ int koncpc_main (int argc, char **argv)
               video_display();
               video_take_pending_window_screenshot();
             }
+
             if (g_take_screenshot) {
               dumpScreen();
               g_take_screenshot = false;
@@ -3842,6 +3819,31 @@ int koncpc_main (int argc, char **argv)
             video_take_pending_window_screenshot();
          }
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+      }
+
+      // Handle IPC "repaint" — re-render frame from RAM without Z80 advancement
+      // Checked every loop (paused or unpaused)
+      if (g_repaint_pending.load()) {
+         std::string shot_path;
+         {
+            std::lock_guard<std::mutex> lock(g_repaint_mutex);
+            shot_path = g_repaint_screenshot_path;
+            g_repaint_screenshot_path.clear();
+         }
+         
+         video_repaint_from_ram();
+         
+         if (!shot_path.empty()) {
+            if (SDL_SavePNG(back_surface, shot_path)) {
+               g_repaint_error = "SDL_SavePNG failed for " + shot_path;
+            } else {
+               LOG_INFO("Repaint screenshot saved to " + shot_path);
+            }
+         }
+         
+         video_display(); // Force update UI
+         g_repaint_done.store(true);
+         g_repaint_pending.store(false);
       }
    }
 
