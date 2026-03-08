@@ -4,8 +4,6 @@
 
 #include "io_dispatch.h"
 #include "log.h"
-#include <cassert>
-#include <iostream>
 
 IODispatch g_io_dispatch;
 

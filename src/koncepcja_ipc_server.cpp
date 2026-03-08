@@ -81,6 +81,15 @@ extern byte *pbROMhi;
 
 extern byte bit_values[];
 
+// Helper to prevent path traversal via IPC.
+static bool is_safe_path(const std::string& path_str) {
+  if (path_str.empty()) return false;
+  std::filesystem::path p(path_str);
+  if (p.is_absolute()) return true; // Allow absolute paths (trusted user/agent)
+  auto rel = p.lexically_relative(".");
+  return rel.string().find("..") != 0;
+}
+
 // Direct keyboard matrix manipulation that works even when CPC.paused is true.
 // applyKeypress() refuses to act when paused, but IPC input commands need to
 // set keys before resuming emulation for frame stepping.
@@ -128,6 +137,7 @@ struct IpcCommand {
 };
 
 std::map<std::string, IpcCommand> g_ipc_commands;
+static std::once_flag g_ipc_init_once;
 
 void register_command(const std::string& name, const std::string& category,
                       const std::string& usage, const std::string& description,
@@ -204,6 +214,42 @@ void init_command_registry() {
     "contents without advancing the Z80 CPU. Useful when the CPU is paused and "
     "the display surface may not reflect the latest writes to screen memory.\n"
     "  --screenshot PATH  Save the repainted frame as a PNG file.");
+
+  register_command("screenshot", "MEDIA", "screenshot <path> [window]", "Capture screen to PNG",
+    "Saves the current display to a PNG file. By default, captures only the emulated "
+    "CPC screen. Use 'window' as a second argument to request a full window capture "
+    "on the next rendered frame (including ImGui overlays).");
+
+  register_command("snapshot", "MEDIA", "snapshot save <path> | snapshot load <path>", "Manage machine snapshots",
+    "Saves or loads the entire state of the emulated CPC into a .SNA file.");
+
+  register_command("record", "MEDIA", "record wav|ym|avi <start|stop> [path]", "Record audio or video",
+    "Records the emulator output to various file formats.\n"
+    "  wav:  Record audio to a WAV file.\n"
+    "  ym:   Record PSG registers to a YM file.\n"
+    "  avi:  Record video and audio to an AVI file.");
+
+  register_command("frames", "MEDIA", "frames dump <pattern> <count>", "Dump series of frames",
+    "Dumps a sequence of frames to an animated GIF (if pattern ends in .gif) "
+    "or a series of PNG files. Pattern can include %d or %04d for frame numbering.");
+
+  register_command("devtools", "TOOLS", "devtools <on|off|show|hide> [name]", "Manage developer tools",
+    "Toggles the developer tool overlay or individual debug windows.");
+
+  register_command("profile", "TOOLS", "profile list | profile load <name>", "Manage configuration profiles",
+    "Lists available profiles or switches the emulator to a different configuration.");
+
+  register_command("config", "TOOLS", "config get <key> | config set <key> <val>", "Access emulator settings",
+    "Reads or modifies internal emulator configuration variables.");
+
+  register_command("search", "TOOLS", "search hex <pattern> | search text <string>", "Search memory",
+    "Searches the 64KB RAM space for byte sequences or strings.");
+
+  register_command("rom", "HARDWARE", "rom list | rom load <slot> <path>", "Manage expansion ROMs",
+    "Lists currently mapped ROMs or loads a new ROM image into a specific slot (0-255).");
+
+  register_command("asm", "TOOLS", "asm text <source> | asm assemble", "Z80 Assembler",
+    "Enters Z80 assembly source code and assembles it into emulated memory.");
 }
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
@@ -243,7 +289,7 @@ std::vector<std::string> split_ws(const std::string& s) {
 }
 
 std::string handle_command(const std::string& line) {
-  init_command_registry();
+  std::call_once(g_ipc_init_once, init_command_registry);
   if (line.empty()) return "OK\n";
   auto parts = split_ws(line);
   if (parts.empty()) return "OK\n";
@@ -423,6 +469,7 @@ std::string handle_command(const std::string& line) {
   if (cmd == "load") {
     if (parts.size() < 2) return "ERR 400 bad-args\n";
     const std::string& path = parts[1];
+    if (!is_safe_path(path)) return "ERR 403 path-traversal-blocked\n";
     std::string lower = path;
     for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     auto dot = lower.find_last_of('.');
@@ -679,11 +726,13 @@ std::string handle_command(const std::string& line) {
   if (cmd == "snapshot" && parts.size() >= 2) {
     if (parts[1] == "save") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
+      if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       if (snapshot_save(parts[2]) == 0) return "OK\n";
       return "ERR 500 snapshot-save\n";
     }
     if (parts[1] == "load") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
+      if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       if (snapshot_load(parts[2]) == 0) return "OK\n";
       return "ERR 500 snapshot-load\n";
     }
@@ -1194,8 +1243,9 @@ std::string handle_command(const std::string& line) {
     return "ERR 400 bad-iobp-cmd (add|del|clear|list)\n";
   }
   if (cmd == "step") {
+    cpc_pause();
     // "step in [N]" or "step [N]" — single-step instructions
-    if (parts.size() == 1 || (parts.size() >= 2 && (parts[1] == "in" || std::isdigit(parts[1][0])))) {
+    if (parts.size() == 1 || (parts.size() >= 2 && (parts[1] == "in" || std::isdigit(static_cast<unsigned char>(parts[1][0]))))) {
       int count = 1;
       if (parts.size() >= 2) {
         if (parts[1] == "in") {
@@ -1350,6 +1400,7 @@ std::string handle_command(const std::string& line) {
   // If path ends in .gif → animated GIF; otherwise → PNG series
   if (cmd == "frames" && parts.size() >= 4 && parts[1] == "dump") {
     std::string pattern = parts[2];
+    if (!is_safe_path(pattern)) return "ERR 403 path-traversal-blocked\n";
     int frame_count = std::stoi(parts[3]);
     if (frame_count < 1 || frame_count > 10000) return "ERR 400 bad-count\n";
 
@@ -1402,11 +1453,18 @@ std::string handle_command(const std::string& line) {
       }
       char fname[512];
       if (pattern.find('%') != std::string::npos) {
-        // User-provided printf format (e.g. "/tmp/frame_%04d.png") — non-literal by design
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-nonliteral"
-        snprintf(fname, sizeof(fname), pattern.c_str(), i);
-#pragma GCC diagnostic pop
+        // Safe replacement for common patterns
+        std::string fname_str = pattern;
+        size_t p;
+        if ((p = fname_str.find("%04d")) != std::string::npos) {
+           char buf[16]; snprintf(buf, sizeof(buf), "%04d", i);
+           fname_str.replace(p, 4, buf);
+        } else if ((p = fname_str.find("%d")) != std::string::npos) {
+           fname_str.replace(p, 2, std::to_string(i));
+        } else {
+           return "ERR 400 bad-format (only %d or %04d supported)\n";
+        }
+        snprintf(fname, sizeof(fname), "%s", fname_str.c_str());
       } else {
         snprintf(fname, sizeof(fname), "%s_%04d.png", pattern.c_str(), i);
       }
@@ -1842,6 +1900,7 @@ std::string handle_command(const std::string& line) {
   // --- Symbol commands ---
   if (cmd == "sym" && parts.size() >= 2) {
     if (parts[1] == "load" && parts.size() >= 3) {
+      if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       Symfile loaded(parts[2]);
       int count = 0;
       for (const auto& [addr, name] : loaded.Symbols()) {
@@ -2797,6 +2856,7 @@ std::string handle_command(const std::string& line) {
         path = path.substr(1, path.size() - 2);
       }
       if (path.empty()) return "ERR 400 missing-path\n";
+      if (!is_safe_path(path)) return "ERR 403 path-traversal-blocked\n";
       // Resolve relative paths against rom_path
       if (path[0] != '/' && path[0] != '\\' && !(path.size() >= 2 && path[1] == ':')) {
         path = CPC.rom_path + "/" + path;

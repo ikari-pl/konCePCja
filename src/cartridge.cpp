@@ -131,8 +131,8 @@ int cpr_load (FILE *pfile)
             memset(&pbCartridgeImage[cartridgeOffset+chunkKept], 0, CARTRIDGE_PAGE_SIZE-chunkKept);
          } else if(chunkKept < chunkSize) {
             LOG_DEBUG("This chunk is bigger than the max allowed size !!!");
-            if(fread(pbTmpBuffer, chunkSize-chunkKept, 1, pfile) != 1) { // read excessive chunk content
-               LOG_DEBUG("Failed reading chunk content");
+            if(fseek(pfile, chunkSize - chunkKept, SEEK_CUR) != 0) { // skip excessive chunk content
+               LOG_DEBUG("Failed skipping excessive chunk content");
                return ERR_CPR_INVALID;
             }
          }

@@ -358,8 +358,10 @@ int CDiskFile::FindFile(char *result, const char *filename, const char *filter)
 						// if matches, check entry to match the filter pattern if filter is specified
 						if (!filter || FileNameMatch(filter, fn)) {
 							// success; copy the original path and add the entry found
-							memcpy(result, filename, pathlen);
-							snprintf(result + pathlen, MAX_FILENAMELEN - pathlen, "%s", fn);
+							if (pathlen < MAX_FILENAMELEN) {
+								memcpy(result, filename, pathlen);
+								snprintf(result + pathlen, MAX_FILENAMELEN - pathlen, "%s", fn);
+							}
 
 							// keep this result, don't copy the source
 							rescopy = 0;

@@ -178,7 +178,8 @@ void koncpc_activate_app() {
 extern SDL_Window* mainSDLWindow;
 
 static NSWindow* nswindow_from_viewport(ImGuiViewport* vp) {
-  SDL_Window* sdlWin = (SDL_Window*)vp->PlatformHandle;
+  SDL_WindowID wid = (SDL_WindowID)(uintptr_t)vp->PlatformHandle;
+  SDL_Window* sdlWin = SDL_GetWindowFromID(wid);
   if (!sdlWin) return nil;
   return (__bridge NSWindow*)SDL_GetPointerProperty(
       SDL_GetWindowProperties(sdlWin),
