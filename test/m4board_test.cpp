@@ -825,6 +825,8 @@ TEST_F(M4BoardTest, NetstatReportsHostNetwork) {
    EXPECT_EQ(g_m4board.response[i], 0); // null terminator
 
    // Status byte is after the null
+   ASSERT_LT(i + 1, static_cast<size_t>(M4Board::RESPONSE_SIZE))
+      << "Status byte must be within response buffer";
    uint8_t status = g_m4board.response[i + 1];
    EXPECT_TRUE(status == 0 || status == 5)
       << "Expected status 0 (disconnected) or 5 (connected), got " << (int)status;

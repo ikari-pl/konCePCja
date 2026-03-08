@@ -1729,9 +1729,9 @@ static void cmd_netsend()
    size_t avail = g_m4board.cmd_buf.size() - 6;
    size_t to_send = std::min(static_cast<size_t>(data_size), avail);
    if (to_send > 0) {
-      ssize_t sent = send(g_m4board.sockets[slot],
-                          reinterpret_cast<const char*>(g_m4board.cmd_buf.data() + 6),
-                          static_cast<int>(to_send), 0);
+      int sent = send(g_m4board.sockets[slot],
+                      reinterpret_cast<const char*>(g_m4board.cmd_buf.data() + 6),
+                      static_cast<int>(to_send), 0);
       g_m4board.response[3] = (sent > 0) ? 0 : 0xFF;
    } else {
       g_m4board.response[3] = 0;
@@ -1770,9 +1770,9 @@ static void cmd_netrecv()
    size_t to_recv = std::min(static_cast<size_t>(max_recv), buf_space);
 
    // Non-blocking recv — returns immediately if no data available
-   ssize_t received = recv(g_m4board.sockets[slot],
-                           reinterpret_cast<char*>(g_m4board.response + 6),
-                           static_cast<int>(to_recv), 0);
+   int received = recv(g_m4board.sockets[slot],
+                       reinterpret_cast<char*>(g_m4board.response + 6),
+                       static_cast<int>(to_recv), 0);
 
    if (received > 0) {
       g_m4board.response[3] = 0; // OK
