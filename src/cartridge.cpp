@@ -116,6 +116,10 @@ int cpr_load (FILE *pfile)
       }
       // A chunk can be empty (observed on some CPR files)
       if(chunkKept > 0) {
+         if (cartridgeOffset + CARTRIDGE_PAGE_SIZE > CARTRIDGE_MAX_SIZE) {
+            LOG_DEBUG("Maximum cartridge size exceeded ! (" << CARTRIDGE_MAX_SIZE << " bytes)");
+            return ERR_CPR_INVALID;
+         }
          if(fread(&pbCartridgeImage[cartridgeOffset], chunkKept, 1, pfile) != 1) { // read chunk content
             LOG_DEBUG("Failed reading chunk content");
             return ERR_CPR_INVALID;
@@ -127,8 +131,8 @@ int cpr_load (FILE *pfile)
             memset(&pbCartridgeImage[cartridgeOffset+chunkKept], 0, CARTRIDGE_PAGE_SIZE-chunkKept);
          } else if(chunkKept < chunkSize) {
             LOG_DEBUG("This chunk is bigger than the max allowed size !!!");
-            if(fread(pbTmpBuffer, chunkSize-chunkKept, 1, pfile) != 1) { // read excessive chunk content
-               LOG_DEBUG("Failed reading chunk content");
+            if(fseek(pfile, chunkSize - chunkKept, SEEK_CUR) != 0) { // skip excessive chunk content
+               LOG_DEBUG("Failed skipping excessive chunk content");
                return ERR_CPR_INVALID;
             }
          }
@@ -138,7 +142,9 @@ int cpr_load (FILE *pfile)
    }
    LOG_DEBUG("Final offset: " << offset);
    LOG_DEBUG("Final cartridge offset: " << cartridgeOffset);
-   memset(&pbCartridgeImage[cartridgeOffset], 0, CARTRIDGE_MAX_SIZE-cartridgeOffset);
+   if (cartridgeOffset < CARTRIDGE_MAX_SIZE) {
+      memset(&pbCartridgeImage[cartridgeOffset], 0, CARTRIDGE_MAX_SIZE-cartridgeOffset);
+   }
    pbROMlo = &pbCartridgeImage[0];
    return 0;
 }

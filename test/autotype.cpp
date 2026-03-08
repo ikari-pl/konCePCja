@@ -213,10 +213,14 @@ TEST_F(AutoTypeTest, TickCharPressRelease) {
 
   // Frame 2: release
   calls.clear();
-  EXPECT_FALSE(queue.tick(recorder()));  // no more actions after release
+  EXPECT_TRUE(queue.tick(recorder()));  // returns true due to inter-char pause
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].cpc_key, static_cast<uint16_t>(CPC_A));
   EXPECT_FALSE(calls[0].pressed);
+  EXPECT_TRUE(queue.is_active()); // active during pause frame
+
+  // Frame 3: pause frame
+  EXPECT_FALSE(queue.tick(recorder())); // now finished
   EXPECT_FALSE(queue.is_active());
 }
 
@@ -232,15 +236,21 @@ TEST_F(AutoTypeTest, TickTwoChars) {
   EXPECT_EQ(calls.back().cpc_key, static_cast<uint16_t>(CPC_A));
   EXPECT_FALSE(calls.back().pressed);
 
-  // Frame 3: press B
+  // Frame 3: pause frame
+  EXPECT_TRUE(queue.tick(recorder()));
+
+  // Frame 4: press B
   EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.back().cpc_key, static_cast<uint16_t>(CPC_B));
   EXPECT_TRUE(calls.back().pressed);
 
-  // Frame 4: release B
-  EXPECT_FALSE(queue.tick(recorder()));
+  // Frame 5: release B
+  EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.back().cpc_key, static_cast<uint16_t>(CPC_B));
   EXPECT_FALSE(calls.back().pressed);
+
+  // Frame 6: pause frame
+  EXPECT_FALSE(queue.tick(recorder()));
 
   EXPECT_FALSE(queue.is_active());
 }
@@ -256,10 +266,14 @@ TEST_F(AutoTypeTest, TickKeyPress) {
 
 TEST_F(AutoTypeTest, TickKeyRelease) {
   queue.enqueue("~-SHIFT~");
-  EXPECT_FALSE(queue.tick(recorder()));
+  // Release triggers an inter-char pause frame
+  EXPECT_TRUE(queue.tick(recorder()));
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].cpc_key, static_cast<uint16_t>(CPC_LSHIFT));
   EXPECT_FALSE(calls[0].pressed);
+
+  // Frame 2: pause frame
+  EXPECT_FALSE(queue.tick(recorder()));
 }
 
 TEST_F(AutoTypeTest, TickPause) {
@@ -272,34 +286,40 @@ TEST_F(AutoTypeTest, TickPause) {
   EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 2u);
 
-  // Frame 3: pause starts (frame 1 of 3)
-  EXPECT_TRUE(queue.tick(recorder()));
-  EXPECT_EQ(calls.size(), 2u);  // no key calls during pause
-
-  // Frame 4: pause (frame 2 of 3)
+  // Frame 3: inter-char pause starts
   EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 2u);
 
-  // Frame 5: pause (frame 3 of 3)
+  // Frame 4: manual pause (frame 1 of 3)
   EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 2u);
 
-  // Frame 6: press B
+  // Frame 5: manual pause (frame 2 of 3)
+  EXPECT_TRUE(queue.tick(recorder()));
+  EXPECT_EQ(calls.size(), 2u);
+
+  // Frame 6: manual pause (frame 3 of 3)
+  EXPECT_TRUE(queue.tick(recorder()));
+  EXPECT_EQ(calls.size(), 2u);
+
+  // Frame 7: press B
   EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 3u);
   EXPECT_EQ(calls[2].cpc_key, static_cast<uint16_t>(CPC_B));
   EXPECT_TRUE(calls[2].pressed);
 
-  // Frame 7: release B
-  EXPECT_FALSE(queue.tick(recorder()));
+  // Frame 8: release B
+  EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 4u);
+
+  // Frame 9: final pause frame
+  EXPECT_FALSE(queue.tick(recorder()));
 }
 
 TEST_F(AutoTypeTest, TickShiftedChar) {
   // Hold shift, type a, release shift
   queue.enqueue("~+SHIFT~a~-SHIFT~");
   // Frame 1: press SHIFT (KEY_PRESS, no awaiting_release)
-  // KEY_PRESS returns !queue_.empty(), which is true (a and -SHIFT remaining)
   EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 1u);
   EXPECT_TRUE(calls[0].pressed);
@@ -315,11 +335,17 @@ TEST_F(AutoTypeTest, TickShiftedChar) {
   EXPECT_EQ(calls.size(), 3u);
   EXPECT_FALSE(calls[2].pressed);
 
-  // Frame 4: release SHIFT
-  EXPECT_FALSE(queue.tick(recorder()));
+  // Frame 4: inter-char pause
+  EXPECT_TRUE(queue.tick(recorder()));
+
+  // Frame 5: release SHIFT
+  EXPECT_TRUE(queue.tick(recorder()));
   EXPECT_EQ(calls.size(), 4u);
   EXPECT_EQ(calls[3].cpc_key, static_cast<uint16_t>(CPC_LSHIFT));
   EXPECT_FALSE(calls[3].pressed);
+
+  // Frame 6: final pause
+  EXPECT_FALSE(queue.tick(recorder()));
 }
 
 TEST_F(AutoTypeTest, TickEmpty) {

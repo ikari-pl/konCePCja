@@ -9,6 +9,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <map>
+#include <functional>
 #include <chrono>
 #include <cctype>
 #include <sstream>
@@ -79,6 +81,23 @@ extern byte *pbROMhi;
 
 extern byte bit_values[];
 
+// Helper to prevent path traversal via IPC.
+static bool is_safe_path(const std::string& path_str) {
+  if (path_str.empty()) return false;
+  std::filesystem::path p(path_str);
+  // Normalize the path to collapse "." and ".." components.
+  std::filesystem::path normalized = p.lexically_normal();
+
+  // Reject any path that contains a ".." component after normalization.
+  for (const auto& comp : normalized) {
+    if (comp == "..") {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // Direct keyboard matrix manipulation that works even when CPC.paused is true.
 // applyKeypress() refuses to act when paused, but IPC input commands need to
 // set keys before resuming emulation for frame stepping.
@@ -115,6 +134,131 @@ namespace {
 constexpr int kBasePort = 6543;
 constexpr int kMaxPortAttempts = 10;  // try 6543..6552
 KoncepcjaIpcServer* g_ipc_instance = nullptr;
+
+struct IpcCommand {
+  std::string name;
+  std::string category;
+  std::string usage;
+  std::string description;
+  std::string man_page;
+  std::function<std::string(const std::vector<std::string>&, const std::string&)> handler;
+};
+
+std::map<std::string, IpcCommand> g_ipc_commands;
+static std::once_flag g_ipc_init_once;
+
+void register_command(const std::string& name, const std::string& category,
+                      const std::string& usage, const std::string& description,
+                      const std::string& man_page = "",
+                      std::function<std::string(const std::vector<std::string>&, const std::string&)> handler = nullptr) {
+  g_ipc_commands[name] = {name, category, usage, description, man_page, handler};
+}
+
+void init_command_registry() {
+  if (!g_ipc_commands.empty()) return;
+
+  register_command("ping", "CORE", "ping", "Check if server is alive",
+    "Pings the IPC server. The server will respond with 'OK pong' if it is operational.",
+    [](const auto&, const auto&) { return "OK pong\n"; });
+
+  register_command("version", "CORE", "version", "Get emulator and protocol version",
+    "Returns the emulator version string and the active IPC port number.",
+    [](const auto&, const auto&) {
+      int p = g_ipc_instance ? g_ipc_instance->port() : 0;
+      return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
+    });
+
+  register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
+    "Terminates the emulator process immediately. An optional integer exit code can be provided.");
+
+  register_command("pause", "CORE", "pause", "Pause emulation",
+    "Stops the Z80 CPU and machine timers. The UI remains responsive and can still be used to inspect state.");
+
+  register_command("run", "CORE", "run", "Resume emulation",
+    "Resumes the machine from a paused state.");
+
+  register_command("reset", "CORE", "reset [--no-resume]", "Reset the machine and resume (unless --no-resume is used)",
+    "Performs a hardware reset of the CPC. By default, emulation resumes immediately after reset. "
+    "Use --no-resume to keep the machine paused (useful for setting breakpoints before BIOS startup).");
+
+  register_command("load", "CORE", "load <file>", "Load a .DSK, .SNA, or .CPR file",
+    "Loads a media or state file. Supports Disk Images (.DSK), Snapshots (.SNA), and Cartridges (.CPR). "
+    "The file type is determined by the extension. For disks, it loads into Drive A.");
+
+  register_command("regs", "DEBUG", "regs", "Get all Z80 and core hardware registers",
+    "Returns a comprehensive list of all Z80 registers (AF, BC, HL, etc.), alternate registers, "
+    "and core hardware states (Gate Array, CRTC, PSG). Data is returned in space-separated key=val pairs.");
+
+  register_command("mem", "DEBUG", "mem read <addr> <len> | mem write <addr> <hex>", "Access emulated memory",
+    "Allows direct manipulation of the 64K/128K RAM space.\n"
+    "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
+    "  write: Writes the provided <hex> string into memory starting at <addr>.");
+
+  register_command("bp", "DEBUG", "bp list | bp add <addr> | bp del <id>", "Manage execution breakpoints",
+    "Controls execution breakpoints.\n"
+    "  list: Shows all active breakpoints with their IDs and addresses.\n"
+    "  add: Adds a new breakpoint at <addr>.\n"
+    "  del: Removes the breakpoint with the specified ID.");
+
+  register_command("step", "DEBUG", "step in [N] | step over [N] | step out | step frame [N]", "Step the CPU or emulation frame",
+    "Executes code and pauses again.\n"
+    "  in [N]:    Steps into exactly N instructions (default 1). Traces inside subroutines.\n"
+    "  over [N]:  Steps over the current CALL or RST. If not a call, it performs a single step.\n"
+    "  out:       Continues execution until the current subroutine returns.\n"
+    "  frame [N]: Steps exactly N video frames (1/50th of a second).");
+
+  register_command("input", "INPUT", "input key <scan> | input type <text>", "Simulate user input",
+    "Injects keyboard events directly into the emulated hardware.\n"
+    "  key: Toggles a specific CPC scancode.\n"
+    "  type: Automatically types a string of text. Supports WinAPE syntax (e.g., ~RETURN~).");
+
+  register_command("disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>", "Manage emulated floppy disks",
+    "High-level disk management.\n"
+    "  ls: Lists files on the disk currently in the specified drive.\n"
+    "  put: Copies a file from the host machine onto the emulated disk.");
+
+  register_command("repaint", "DEBUG", "repaint [--screenshot PATH]", "Force screen render from current RAM state (no CPU advancement)",
+    "Re-renders the CPC display from the current CRTC registers and video RAM "
+    "contents without advancing the Z80 CPU. Useful when the CPU is paused and "
+    "the display surface may not reflect the latest writes to screen memory.\n"
+    "  --screenshot PATH  Save the repainted frame as a PNG file.");
+
+  register_command("screenshot", "MEDIA", "screenshot window <path>", "Capture emulator window to PNG",
+    "Saves a PNG file of the emulator window on the next rendered frame. "
+    "Note: Currently captures the emulated CPC display only; ImGui overlays "
+    "are omitted for simplicity across all rendering modes.");
+
+  register_command("snapshot", "MEDIA", "snapshot save <path> | snapshot load <path>", "Manage machine snapshots",
+    "Saves or loads the entire state of the emulated CPC into a .SNA file.");
+
+  register_command("record", "MEDIA", "record wav|ym|avi <start|stop> [path]", "Record audio or video",
+    "Records the emulator output to various file formats.\n"
+    "  wav:  Record audio to a WAV file.\n"
+    "  ym:   Record PSG registers to a YM file.\n"
+    "  avi:  Record video and audio to an AVI file.");
+
+  register_command("frames", "MEDIA", "frames dump <pattern> <count>", "Dump series of frames",
+    "Dumps a sequence of frames to an animated GIF (if pattern ends in .gif) "
+    "or a series of PNG files. Pattern can include %d or %04d for frame numbering.");
+
+  register_command("devtools", "TOOLS", "devtools <on|off|show|hide> [name]", "Manage developer tools",
+    "Toggles the developer tool overlay or individual debug windows.");
+
+  register_command("profile", "TOOLS", "profile list | profile load <name>", "Manage configuration profiles",
+    "Lists available profiles or switches the emulator to a different configuration.");
+
+  register_command("config", "TOOLS", "config get <key> | config set <key> <val>", "Access emulator settings",
+    "Reads or modifies internal emulator configuration variables.");
+
+  register_command("search", "TOOLS", "search hex <pattern> | search text <string>", "Search memory",
+    "Searches the 64KB RAM space for byte sequences or strings.");
+
+  register_command("rom", "HARDWARE", "rom list | rom load <slot> <path>", "Manage expansion ROMs",
+    "Lists currently mapped ROMs or loads a new ROM image into a specific slot (0-255).");
+
+  register_command("asm", "TOOLS", "asm text <source> | asm assemble", "Z80 Assembler",
+    "Enters Z80 assembly source code and assembles it into emulated memory.");
+}
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
   if (g_ipc_instance) {
@@ -153,6 +297,7 @@ std::vector<std::string> split_ws(const std::string& s) {
 }
 
 std::string handle_command(const std::string& line) {
+  std::call_once(g_ipc_init_once, init_command_registry);
   if (line.empty()) return "OK\n";
   auto parts = split_ws(line);
   if (parts.empty()) return "OK\n";
@@ -160,12 +305,56 @@ std::string handle_command(const std::string& line) {
   try {
 
   const auto& cmd = parts[0];
-  if (cmd == "ping") return "OK pong\n";
-  if (cmd == "version") {
-    int p = g_ipc_instance ? g_ipc_instance->port() : 0;
-    return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
+
+  // Dispatch to registered handler if available
+  auto cmd_it = g_ipc_commands.find(cmd);
+  if (cmd_it != g_ipc_commands.end() && cmd_it->second.handler) {
+    return cmd_it->second.handler(parts, line);
   }
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source) m4(status/ls/cd/reset)\n";
+
+  if (cmd == "help") {
+    if (parts.size() > 1) {
+      auto it = g_ipc_commands.find(parts[1]);
+      if (it != g_ipc_commands.end()) {
+        std::ostringstream oss;
+        oss << "OK usage: " << it->second.usage << "\n";
+        oss << "DESCRIPTION: " << it->second.description << "\n";
+        if (!it->second.man_page.empty()) {
+          oss << "\n" << it->second.man_page << "\n";
+        }
+        return oss.str();
+      }
+      return "ERR 404 no specific help for '" + parts[1] + "'. Try 'help' for the list.\n";
+    }
+
+    std::map<std::string, std::vector<std::string>> categories;
+    for (const auto& [name, info] : g_ipc_commands) {
+      categories[info.category].push_back(info.usage);
+    }
+
+    std::ostringstream oss;
+    oss << "OK available commands (usage: help <command>):\n";
+    static const std::vector<std::string> order = {"CORE", "DEBUG", "HARDWARE", "INPUT", "MEDIA", "TOOLS"};
+    for (const auto& cat : order) {
+      if (categories.find(cat) == categories.end()) continue;
+      oss << "  " << std::setw(10) << std::left << (cat + ":") << " ";
+      const auto& cmds = categories[cat];
+      for (size_t i = 0; i < cmds.size(); i++) {
+        oss << cmds[i] << (i == cmds.size() - 1 ? "" : ", ");
+      }
+      oss << "\n";
+    }
+    return oss.str();
+  }
+
+  if (cmd == "commands") {
+    std::string resp = "OK\n";
+    for (const auto& [name, info] : g_ipc_commands) {
+      resp += name + "\n";
+    }
+    return resp;
+  }
+
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -186,13 +375,24 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "mem" && parts.size() >= 4) {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
       unsigned int len = std::stoul(parts[3], nullptr, 0);
+      if (len > 65536) len = 65536; // Clamp to full address space
       uLong crc = crc32(0L, nullptr, 0);
       // Read through direct Z80 memory (SmartWatch only, no watchpoints)
-      std::vector<byte> tmp(len);
-      for (unsigned int i = 0; i < len; i++) {
-        tmp[i] = z80_read_mem(static_cast<word>(addr + i));
+      const unsigned int CHUNK_SIZE = 4096;
+      std::vector<byte> tmp(CHUNK_SIZE);
+      unsigned int remaining = len;
+      unsigned int current_addr = addr;
+
+      while (remaining > 0) {
+        unsigned int chunk = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : remaining;
+        for (unsigned int i = 0; i < chunk; i++) {
+          tmp[i] = z80_read_mem(static_cast<word>(current_addr + i));
+        }
+        crc = crc32(crc, tmp.data(), static_cast<uInt>(chunk));
+        remaining -= chunk;
+        current_addr += chunk;
       }
-      crc = crc32(crc, tmp.data(), static_cast<uInt>(len));
+
       snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
       return std::string(buf);
     }
@@ -229,11 +429,56 @@ std::string handle_command(const std::string& line) {
   }
   if (cmd == "reset") {
     emulator_reset();
+    bool no_resume = false;
+    for (size_t i = 1; i < parts.size(); i++) {
+      if (parts[i] == "--no-resume") no_resume = true;
+    }
+    if (!no_resume) {
+      cpc_resume();
+    }
     return "OK\n";
   }
+  if (cmd == "repaint") {
+    std::string shot_path;
+    for (size_t i = 1; i < parts.size(); i++) {
+      if (parts[i] == "--screenshot" && i + 1 < parts.size()) {
+        shot_path = parts[i+1];
+        if (!is_safe_path(shot_path)) return "ERR 403 path-traversal-blocked\n";
+        break;
+      }
+    }
+    
+    {
+      std::lock_guard<std::mutex> lock(g_repaint_mutex);
+      g_repaint_screenshot_path = shot_path;
+      g_repaint_error.clear();
+      g_repaint_done.store(false);
+      g_repaint_pending.store(true);
+    }
+    
+    // Wait for completion (with 5s timeout)
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!g_repaint_done.load()) {
+      if (std::chrono::steady_clock::now() > deadline) {
+        return "ERR 408 timeout\n";
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    {
+      std::lock_guard<std::mutex> lock(g_repaint_mutex);
+      if (!g_repaint_error.empty()) {
+        return "ERR 500 " + g_repaint_error + "\n";
+      }
+    }
+    
+    return "OK\n";
+  }
+
   if (cmd == "load") {
     if (parts.size() < 2) return "ERR 400 bad-args\n";
     const std::string& path = parts[1];
+    if (!is_safe_path(path)) return "ERR 403 path-traversal-blocked\n";
     std::string lower = path;
     for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     auto dot = lower.find_last_of('.');
@@ -490,11 +735,13 @@ std::string handle_command(const std::string& line) {
   if (cmd == "snapshot" && parts.size() >= 2) {
     if (parts[1] == "save") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
+      if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       if (snapshot_save(parts[2]) == 0) return "OK\n";
       return "ERR 500 snapshot-save\n";
     }
     if (parts[1] == "load") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
+      if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       if (snapshot_load(parts[2]) == 0) return "OK\n";
       return "ERR 500 snapshot-load\n";
     }
@@ -1005,6 +1252,22 @@ std::string handle_command(const std::string& line) {
     return "ERR 400 bad-iobp-cmd (add|del|clear|list)\n";
   }
   if (cmd == "step") {
+    cpc_pause();
+    // "step in [N]" or "step [N]" — single-step instructions
+    if (parts.size() == 1 || (parts.size() >= 2 && (parts[1] == "in" || std::isdigit(static_cast<unsigned char>(parts[1][0]))))) {
+      int count = 1;
+      if (parts.size() >= 2) {
+        if (parts[1] == "in") {
+          if (parts.size() >= 3) count = std::stoi(parts[2]);
+        } else {
+          try { count = std::stoi(parts[1]); } catch (...) { count = 1; }
+        }
+      }
+      for (int i = 0; i < count; i++) {
+        z80_step_instruction();
+      }
+      return "OK\n";
+    }
     // "step frame [N]" — advance N complete frames, then pause
     if (parts.size() >= 2 && parts[1] == "frame") {
       int n = 1;
@@ -1018,21 +1281,28 @@ std::string handle_command(const std::string& line) {
     }
     // "step over [N]" — step over CALL/RST (or single-step if not a call)
     if (parts.size() >= 2 && parts[1] == "over") {
-      cpc_pause();
       int count = 1;
       if (parts.size() >= 3) count = std::stoi(parts[2]);
       for (int i = 0; i < count; i++) {
         word pc = z80.PC.w.l;
         if (z80_is_call_or_rst(pc)) {
           int len = z80_instruction_length(pc);
-          z80_add_breakpoint_ephemeral(static_cast<word>(pc + len));
+          word next_pc = static_cast<word>(pc + len);
+          z80_add_breakpoint_ephemeral(next_pc);
+          // Clear stale hits before resume to avoid race conditions
+          uint16_t dummy_pc; bool dummy_watch;
+          g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
           cpc_resume();
           // Wait for breakpoint hit
           auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
           while (true) {
             uint16_t hit_pc = 0;
             bool watch = false;
-            if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
+            if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
+              if (hit_pc == next_pc) break;
+              // If we hit a different breakpoint, stop stepping
+              return "OK breakpoint-hit\n";
+            }
             if (std::chrono::steady_clock::now() > deadline) {
               cpc_pause();
               return "ERR 408 timeout\n";
@@ -1050,6 +1320,9 @@ std::string handle_command(const std::string& line) {
     if (parts.size() >= 2 && parts[1] == "out") {
       z80.step_out = 1;
       z80.step_out_addresses.clear();
+      // Clear stale hits before resume to avoid race conditions
+      uint16_t dummy_pc; bool dummy_watch;
+      g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
       cpc_resume();
       // Wait for step_out to complete (main loop pauses when step_in >= 2)
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1072,6 +1345,9 @@ std::string handle_command(const std::string& line) {
     if (parts.size() >= 3 && parts[1] == "to") {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
       z80_add_breakpoint_ephemeral(static_cast<word>(addr));
+      // Clear stale hits before resume to avoid race conditions
+      uint16_t dummy_pc; bool dummy_watch;
+      g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
       cpc_resume();
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (true) {
@@ -1133,6 +1409,7 @@ std::string handle_command(const std::string& line) {
   // If path ends in .gif → animated GIF; otherwise → PNG series
   if (cmd == "frames" && parts.size() >= 4 && parts[1] == "dump") {
     std::string pattern = parts[2];
+    if (!is_safe_path(pattern)) return "ERR 403 path-traversal-blocked\n";
     int frame_count = std::stoi(parts[3]);
     if (frame_count < 1 || frame_count > 10000) return "ERR 400 bad-count\n";
 
@@ -1185,11 +1462,18 @@ std::string handle_command(const std::string& line) {
       }
       char fname[512];
       if (pattern.find('%') != std::string::npos) {
-        // User-provided printf format (e.g. "/tmp/frame_%04d.png") — non-literal by design
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-nonliteral"
-        snprintf(fname, sizeof(fname), pattern.c_str(), i);
-#pragma GCC diagnostic pop
+        // Safe replacement for common patterns
+        std::string fname_str = pattern;
+        size_t p;
+        if ((p = fname_str.find("%04d")) != std::string::npos) {
+           char buf[16]; snprintf(buf, sizeof(buf), "%04d", i);
+           fname_str.replace(p, 4, buf);
+        } else if ((p = fname_str.find("%d")) != std::string::npos) {
+           fname_str.replace(p, 2, std::to_string(i));
+        } else {
+           return "ERR 400 bad-format (only %d or %04d supported)\n";
+        }
+        snprintf(fname, sizeof(fname), "%s", fname_str.c_str());
       } else {
         snprintf(fname, sizeof(fname), "%s_%04d.png", pattern.c_str(), i);
       }
@@ -1625,6 +1909,7 @@ std::string handle_command(const std::string& line) {
   // --- Symbol commands ---
   if (cmd == "sym" && parts.size() >= 2) {
     if (parts[1] == "load" && parts.size() >= 3) {
+      if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       Symfile loaded(parts[2]);
       int count = 0;
       for (const auto& [addr, name] : loaded.Symbols()) {
@@ -2580,6 +2865,7 @@ std::string handle_command(const std::string& line) {
         path = path.substr(1, path.size() - 2);
       }
       if (path.empty()) return "ERR 400 missing-path\n";
+      if (!is_safe_path(path)) return "ERR 403 path-traversal-blocked\n";
       // Resolve relative paths against rom_path
       if (path[0] != '/' && path[0] != '\\' && !(path.size() >= 2 && path[1] == ':')) {
         path = CPC.rom_path + "/" + path;

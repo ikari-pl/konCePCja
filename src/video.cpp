@@ -104,6 +104,12 @@ extern video_plugin* vid_plugin;
 static std::mutex g_wss_mutex;
 static std::string g_wss_pending_path;
 
+std::atomic<bool> g_repaint_pending{false};
+std::atomic<bool> g_repaint_done{false};
+std::mutex g_repaint_mutex;
+std::string g_repaint_screenshot_path;
+std::string g_repaint_error;
+
 void video_request_window_screenshot(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_wss_mutex);
   g_wss_pending_path = path;
@@ -118,8 +124,8 @@ void video_get_cpc_size(int& w, int& h) {
   else     { w = 0; h = 0; }
 }
 
-// Called from direct_flip() to capture the current frame
-static void video_capture_if_pending(int display_w, int display_h) {
+// Called from direct_flip() and swscale_blit() to capture the current frame
+static void video_capture_if_pending() {
   std::string wss_path;
   {
     std::lock_guard<std::mutex> lock(g_wss_mutex);
@@ -128,36 +134,17 @@ static void video_capture_if_pending(int display_w, int display_h) {
     g_wss_pending_path.clear();
   }
 
-  std::vector<uint8_t> pixels(display_w * display_h * 4);
-  glReadPixels(0, 0, display_w, display_h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-
-  // Flip vertically (OpenGL origin is bottom-left)
-  int row_bytes = display_w * 4;
-  std::vector<uint8_t> row(row_bytes);
-  for (int y = 0; y < display_h / 2; y++) {
-    uint8_t* top = pixels.data() + y * row_bytes;
-    uint8_t* bot = pixels.data() + (display_h - 1 - y) * row_bytes;
-    memcpy(row.data(), top, row_bytes);
-    memcpy(top, bot, row_bytes);
-    memcpy(bot, row.data(), row_bytes);
-  }
-
-  SDL_Surface* surf = SDL_CreateSurfaceFrom(display_w, display_h,
-      SDL_PIXELFORMAT_RGBA32, pixels.data(), row_bytes);
-  if (surf) {
-    if (SDL_SavePNG(surf, wss_path)) {
-      LOG_ERROR("Window screenshot: SDL_SavePNG failed for " + wss_path);
+  if (vid) {
+    if (SDL_SavePNG(vid, wss_path)) {
+      LOG_ERROR("Screenshot: SDL_SavePNG failed for " + wss_path);
     } else {
-      LOG_INFO("Window screenshot saved to " + wss_path);
+      LOG_INFO("Screenshot saved to " + wss_path);
     }
-    SDL_DestroySurface(surf);
-  } else {
-    LOG_ERROR("Window screenshot: SDL_CreateSurfaceFrom failed");
   }
 }
 
 void video_take_pending_window_screenshot() {
-  // no-op: capture happens inside direct_flip via video_capture_if_pending
+  // no-op: capture happens inside flip handlers via video_capture_if_pending
 }
 
 #ifndef min
@@ -313,20 +300,6 @@ void direct_setpal(SDL_Color* c)
 
 void direct_flip(video_plugin* t)
 {
-  // Check if a screenshot is pending — if so, temporarily disable multi-viewport
-  // so all ImGui windows render in the main framebuffer for capture.
-  bool screenshot_pending;
-  {
-    std::lock_guard<std::mutex> lock(g_wss_mutex);
-    screenshot_pending = !g_wss_pending_path.empty();
-  }
-
-  ImGuiIO& io = ImGui::GetIO();
-  bool viewports_were_enabled = (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
-  if (screenshot_pending && viewports_were_enabled) {
-    io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
-  }
-
   // Upload CPC framebuffer to GL texture
   glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
@@ -359,15 +332,11 @@ void direct_flip(video_plugin* t)
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-  // Capture window screenshot after ImGui render
-  video_capture_if_pending(display_w, display_h);
-
-  // Restore viewports flag if it was temporarily disabled
-  if (screenshot_pending && viewports_were_enabled) {
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-  }
+  // Capture screenshot (emulator screen only)
+  video_capture_if_pending();
 
   // Multi-viewport: update and render platform windows
+  ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
@@ -1016,6 +985,9 @@ void swscale_blit(video_plugin* t)
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+  // Capture screenshot (emulator screen only)
+  video_capture_if_pending();
 
   // Multi-viewport: update and render platform windows
   ImGuiIO& io = ImGui::GetIO();

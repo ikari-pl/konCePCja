@@ -174,6 +174,11 @@ void imgui_init_ui()
   // Merge transport symbol glyphs from system font into default font
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->AddFontDefault();
+
+  // Prevent accidental dragging of windows by clicking on their body.
+  // Only the title bar can be used to move windows.
+  io.ConfigWindowsMoveFromTitleBarOnly = true;
+
 #ifdef __APPLE__
   // On macOS, merge Apple Symbols font for transport control glyphs
   ImFontConfig merge_cfg;
