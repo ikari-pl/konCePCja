@@ -6,6 +6,17 @@
 #include <ctime>
 #include <filesystem>
 #include <algorithm>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <iphlpapi.h>
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "ws2_32.lib")
+#else
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#endif
 #ifdef HAS_LIBCURL
 #include <curl/curl.h>
 #endif
@@ -1245,13 +1256,80 @@ static void cmd_sdwrite()
 // "not connected" / "no network" responses that match the firmware's
 // expected response format, so the ROM handles it gracefully.
 
+// ── Host Network Info ────────────────────────────
+// Query the host computer's network state so |NETSTAT shows real info.
+
+static std::string get_host_ip()
+{
+#ifdef _WIN32
+   char hostname[256];
+   if (gethostname(hostname, sizeof(hostname)) != 0) return "";
+   struct hostent* host = gethostbyname(hostname);
+   if (!host || !host->h_addr_list[0]) return "";
+   return inet_ntoa(*reinterpret_cast<struct in_addr*>(host->h_addr_list[0]));
+#else
+   struct ifaddrs* ifap = nullptr;
+   if (getifaddrs(&ifap) != 0) return "";
+   std::string result;
+   for (struct ifaddrs* ifa = ifap; ifa; ifa = ifa->ifa_next) {
+      if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+      // Skip loopback
+      if (std::string(ifa->ifa_name) == "lo" || std::string(ifa->ifa_name) == "lo0") continue;
+      auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+      char buf[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf));
+      std::string ip(buf);
+      if (ip == "127.0.0.1") continue;
+      result = ip;
+      // Prefer en0/wlan0 (WiFi) over other interfaces
+      std::string name(ifa->ifa_name);
+      if (name == "en0" || name == "wlan0" || name.substr(0, 4) == "wlan") break;
+   }
+   freeifaddrs(ifap);
+   return result;
+#endif
+}
+
+static std::string get_host_ssid()
+{
+#ifdef __APPLE__
+   // macOS: use system_profiler (no private API needed)
+   FILE* pipe = popen("networksetup -getairportnetwork en0 2>/dev/null", "r");
+   if (!pipe) return "";
+   char buf[256];
+   std::string output;
+   while (fgets(buf, sizeof(buf), pipe)) output += buf;
+   pclose(pipe);
+   // Output: "Current Wi-Fi Network: MyNetwork\n"
+   auto pos = output.find(": ");
+   if (pos == std::string::npos) return "";
+   std::string ssid = output.substr(pos + 2);
+   // Strip trailing whitespace
+   while (!ssid.empty() && (ssid.back() == '\n' || ssid.back() == '\r' || ssid.back() == ' '))
+      ssid.pop_back();
+   return ssid;
+#elif defined(__linux__)
+   FILE* pipe = popen("iwgetid -r 2>/dev/null", "r");
+   if (!pipe) return "";
+   char buf[256];
+   std::string ssid;
+   if (fgets(buf, sizeof(buf), pipe)) ssid = buf;
+   pclose(pipe);
+   while (!ssid.empty() && (ssid.back() == '\n' || ssid.back() == '\r'))
+      ssid.pop_back();
+   return ssid;
+#else
+   return "";
+#endif
+}
+
 static void cmd_setnetwork()
 {
    // Protocol: [size, cmd_lo, cmd_hi, setup_string\0]
    // The real M4 configures WiFi SSID/password here.
-   // In emulation, just acknowledge.
+   // In emulation we use the host's network, so just acknowledge.
    respond_ok();
-   LOG_DEBUG("M4: C_SETNETWORK (ignored in emulation)");
+   LOG_DEBUG("M4: C_SETNETWORK (using host network)");
 }
 
 static void cmd_netstat()
@@ -1259,15 +1337,30 @@ static void cmd_netstat()
    // Response: [status_string] [status_byte]
    // Status byte: 0=disconnected, 1=connecting, 2=wrong_password,
    //              3=no_ap, 4=connect_fail, 5=connected
-   // We report "not connected" — the ROM shows this as network status.
+   // Report the host computer's actual network state.
+   std::string ip = get_host_ip();
+   std::string ssid = get_host_ssid();
+
+   std::string msg;
+   uint8_t status_byte;
+   if (!ip.empty()) {
+      msg = "IP: " + ip;
+      if (!ssid.empty()) msg += " (" + ssid + ")";
+      msg += "\r\n";
+      status_byte = 5; // connected
+   } else {
+      msg = "No network\r\n";
+      status_byte = 0; // disconnected
+   }
+
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   const char* msg = "Emulated (no WiFi)\r\n";
-   size_t len = strlen(msg);
-   memcpy(g_m4board.response + 3, msg, len);
-   g_m4board.response[3 + len] = 0; // status byte: 0 = disconnected
-   g_m4board.response_len = static_cast<int>(4 + len);
+   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 5);
+   if (msg.size() > max_len) msg.resize(max_len);
+   memcpy(g_m4board.response + 3, msg.c_str(), msg.size());
+   g_m4board.response[3 + msg.size()] = status_byte;
+   g_m4board.response_len = static_cast<int>(4 + msg.size());
 }
 
 static void cmd_time()
@@ -1352,14 +1445,50 @@ static void cmd_netrecv()
 static void cmd_nethostip()
 {
    // Protocol: [size, cmd_lo, cmd_hi, hostname\0]
-   // Response: [1=lookup in progress] (then poll via C_NETRECV for result)
-   // We return "lookup in progress" but the result will never arrive — matching
-   // the behavior of a real M4 with no WiFi connection.
+   // On real hardware: response[3]=1 means "lookup in progress", then the result
+   // comes later. In emulation we can resolve synchronously and return the IP
+   // directly: response[3]=0 (done), response[4-7]=IP bytes.
+   std::string hostname = extract_string(g_m4board.cmd_buf, 3);
+   if (hostname.empty()) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF; // error
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   struct addrinfo hints = {}, *result = nullptr;
+   hints.ai_family = AF_INET;
+   int err = getaddrinfo(hostname.c_str(), nullptr, &hints, &result);
+   if (err != 0 || !result) {
+      // Lookup failed — return "in progress" (will never resolve, as on offline M4)
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 1; // lookup in progress (= failed)
+      g_m4board.response_len = 4;
+      if (result) freeaddrinfo(result);
+      return;
+   }
+
+   auto* addr = reinterpret_cast<struct sockaddr_in*>(result->ai_addr);
+   uint32_t ip = ntohl(addr->sin_addr.s_addr);
+   freeaddrinfo(result);
+
+   // Return resolved IP: [0=done] [ip0] [ip1] [ip2] [ip3]
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   g_m4board.response[3] = 1; // lookup in progress
-   g_m4board.response_len = 4;
+   g_m4board.response[3] = 0; // done (resolved)
+   g_m4board.response[4] = static_cast<uint8_t>((ip >> 24) & 0xFF);
+   g_m4board.response[5] = static_cast<uint8_t>((ip >> 16) & 0xFF);
+   g_m4board.response[6] = static_cast<uint8_t>((ip >> 8) & 0xFF);
+   g_m4board.response[7] = static_cast<uint8_t>(ip & 0xFF);
+   g_m4board.response_len = 8;
+   LOG_DEBUG("M4: C_NETHOSTIP resolved " << hostname << " -> "
+            << (int)g_m4board.response[4] << "." << (int)g_m4board.response[5] << "."
+            << (int)g_m4board.response[6] << "." << (int)g_m4board.response[7]);
 }
 
 // ── ROM Management ──────────────────────────────

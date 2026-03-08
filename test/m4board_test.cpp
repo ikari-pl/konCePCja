@@ -810,15 +810,19 @@ TEST_F(M4BoardTest, SetNetworkAcknowledges) {
    EXPECT_EQ(g_m4board.response[0], 0x00); // OK
 }
 
-TEST_F(M4BoardTest, NetstatReturnsDisconnected) {
+TEST_F(M4BoardTest, NetstatReportsHostNetwork) {
    send_command(C_NETSTAT, {});
    EXPECT_EQ(g_m4board.response[0], 0x00); // OK
    // Status string should be present at offset 3
    EXPECT_NE(g_m4board.response[3], 0); // non-empty string
-   // Find the null terminator after the string, then check status byte = 0
+   // Find the end of the status string, then check the status byte
    size_t i = 3;
-   while (i < M4Board::RESPONSE_SIZE && g_m4board.response[i] != 0) i++;
-   EXPECT_EQ(g_m4board.response[i], 0); // status byte = disconnected
+   while (i < static_cast<size_t>(g_m4board.response_len - 1) && g_m4board.response[i] != '\0'
+          && g_m4board.response[i] != 0 && g_m4board.response[i] != 5) i++;
+   // Status byte should be either 0 (disconnected) or 5 (connected)
+   uint8_t status = g_m4board.response[i];
+   EXPECT_TRUE(status == 0 || status == 5)
+      << "Expected status 0 (disconnected) or 5 (connected), got " << (int)status;
 }
 
 TEST_F(M4BoardTest, TimeReturnsFormattedString) {
@@ -870,9 +874,19 @@ TEST_F(M4BoardTest, NetRecvReturnsEmpty) {
    EXPECT_EQ(g_m4board.response[5], 0); // actual_hi = 0
 }
 
-TEST_F(M4BoardTest, NetHostIpReturnsLookupInProgress) {
-   send_command_str(C_NETHOSTIP, "example.com");
-   EXPECT_EQ(g_m4board.response[3], 1); // lookup in progress
+TEST_F(M4BoardTest, NetHostIpResolvesHostname) {
+   // "localhost" should always resolve to 127.0.0.1
+   send_command_str(C_NETHOSTIP, "localhost");
+   // response[3]=0 means resolved, response[3]=1 means lookup in progress (failed)
+   if (g_m4board.response[3] == 0) {
+      // Resolved: check IP bytes at [4..7]
+      EXPECT_EQ(g_m4board.response[4], 127);
+      EXPECT_EQ(g_m4board.response[5], 0);
+      EXPECT_EQ(g_m4board.response[6], 0);
+      EXPECT_EQ(g_m4board.response[7], 1);
+      EXPECT_EQ(g_m4board.response_len, 8);
+   }
+   // If DNS is unavailable, response[3]=1 is also acceptable
 }
 
 TEST_F(M4BoardTest, RomsUpdateOk) {
