@@ -1275,20 +1275,48 @@ static std::string get_host_ip()
 #else
    struct ifaddrs* ifap = nullptr;
    if (getifaddrs(&ifap) != 0) return "";
+
+   // Score interfaces to prefer real hardware over VPN/VM bridges.
+   // Higher score = more likely to be the "real" connection.
+   auto score_interface = [](const char* name, const char* ip) -> int {
+      std::string n(name);
+      std::string addr(ip);
+      // Skip loopback
+      if (n == "lo" || n == "lo0" || addr == "127.0.0.1") return -1;
+      // Skip known virtual/tunnel interfaces
+      if (n.substr(0, 4) == "utun") return 0;    // VPN tunnels (macOS)
+      if (n.substr(0, 3) == "tun") return 0;     // VPN tunnels (Linux)
+      if (n.substr(0, 3) == "tap") return 0;     // VM tap interfaces
+      if (n.substr(0, 6) == "bridge") return 0;  // VM bridges (macOS)
+      if (n.substr(0, 6) == "vmenet") return 0;  // VM virtual ethernet (macOS)
+      if (n.substr(0, 5) == "veth") return 0;    // Docker veth pairs
+      if (n.substr(0, 6) == "docker") return 0;  // Docker bridge
+      if (n.substr(0, 2) == "br") return 0;      // Linux bridges
+      if (n.substr(0, 4) == "virbr") return 0;   // libvirt bridges
+      if (n.substr(0, 3) == "llw") return 0;     // Low-latency WLAN (macOS internal)
+      if (n.substr(0, 4) == "awdl") return 0;    // Apple Wireless Direct Link
+      if (n.substr(0, 2) == "ap") return 0;      // Apple access point
+      if (n.substr(0, 4) == "anpi") return 0;    // Apple Network Performance Interface
+      // 169.254.x.x = link-local (no real connectivity)
+      if (addr.substr(0, 8) == "169.254.") return 0;
+      // Real interfaces: en*, eth*, wlan* — prefer these
+      if (n.substr(0, 2) == "en" || n.substr(0, 3) == "eth" || n.substr(0, 4) == "wlan") return 2;
+      // Anything else is unknown — give it a middling score
+      return 1;
+   };
+
    std::string result;
+   int best_score = -1;
    for (struct ifaddrs* ifa = ifap; ifa; ifa = ifa->ifa_next) {
       if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
-      // Skip loopback
-      if (std::string(ifa->ifa_name) == "lo" || std::string(ifa->ifa_name) == "lo0") continue;
       auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
       char buf[INET_ADDRSTRLEN];
       inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf));
-      std::string ip(buf);
-      if (ip == "127.0.0.1") continue;
-      result = ip;
-      // Prefer en0/wlan0 (WiFi) over other interfaces
-      std::string name(ifa->ifa_name);
-      if (name == "en0" || name == "wlan0" || name.substr(0, 4) == "wlan") break;
+      int s = score_interface(ifa->ifa_name, buf);
+      if (s > best_score) {
+         best_score = s;
+         result = buf;
+      }
    }
    freeifaddrs(ifap);
    return result;
@@ -1298,16 +1326,43 @@ static std::string get_host_ip()
 static std::string get_host_ssid()
 {
 #ifdef __APPLE__
-   FILE* pipe = popen("networksetup -getairportnetwork en0 2>/dev/null", "r");
+   // Discover the Wi-Fi interface name (not always en0 — can be en1, en2, etc.)
+   std::string wifi_if;
+   FILE* lp = popen("networksetup -listallhardwareports 2>/dev/null", "r");
+   if (lp) {
+      char lbuf[256];
+      bool next_is_device = false;
+      while (fgets(lbuf, sizeof(lbuf), lp)) {
+         std::string line(lbuf);
+         if (line.find("Wi-Fi") != std::string::npos) {
+            next_is_device = true;
+         } else if (next_is_device && line.find("Device:") != std::string::npos) {
+            auto dpos = line.find("Device:");
+            wifi_if = line.substr(dpos + 7);
+            while (!wifi_if.empty() && (wifi_if.front() == ' ' || wifi_if.front() == '\t'))
+               wifi_if.erase(wifi_if.begin());
+            while (!wifi_if.empty() && (wifi_if.back() == '\n' || wifi_if.back() == '\r' || wifi_if.back() == ' '))
+               wifi_if.pop_back();
+            break;
+         }
+      }
+      pclose(lp);
+   }
+   if (wifi_if.empty()) return "";
+
+   std::string cmd = "networksetup -getairportnetwork " + wifi_if + " 2>/dev/null";
+   FILE* pipe = popen(cmd.c_str(), "r");
    if (!pipe) return "";
    char buf[256];
    std::string output;
    while (fgets(buf, sizeof(buf), pipe)) output += buf;
-   pclose(pipe);
+   int status = pclose(pipe);
+   // Non-zero exit = error (e.g. "Error obtaining wireless information.")
+   if (status != 0) return "";
    // Output: "Current Wi-Fi Network: MyNetwork\n"
-   auto pos = output.find(": ");
+   auto pos = output.find("Network: ");
    if (pos == std::string::npos) return "";
-   std::string ssid = output.substr(pos + 2);
+   std::string ssid = output.substr(pos + 9);
    while (!ssid.empty() && (ssid.back() == '\n' || ssid.back() == '\r' || ssid.back() == ' '))
       ssid.pop_back();
    return ssid;
@@ -1386,11 +1441,14 @@ static void cmd_netstat()
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 5);
+   // Layout: [3: string...] [3+len: \0] [3+len+1: status_byte]
+   // The ROM prints from offset 3 until \0, then reads the status byte after it.
+   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 6); // room for \0 + status
    if (msg.size() > max_len) msg.resize(max_len);
    memcpy(g_m4board.response + 3, msg.c_str(), msg.size());
-   g_m4board.response[3 + msg.size()] = status_byte;
-   g_m4board.response_len = static_cast<int>(4 + msg.size());
+   g_m4board.response[3 + msg.size()] = 0;              // null terminator
+   g_m4board.response[3 + msg.size() + 1] = status_byte; // status after null
+   g_m4board.response_len = static_cast<int>(5 + msg.size());
 }
 
 static void cmd_time()

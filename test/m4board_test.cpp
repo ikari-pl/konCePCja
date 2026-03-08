@@ -813,16 +813,26 @@ TEST_F(M4BoardTest, SetNetworkAcknowledges) {
 TEST_F(M4BoardTest, NetstatReportsHostNetwork) {
    send_command(C_NETSTAT, {});
    EXPECT_EQ(g_m4board.response[0], 0x00); // OK
-   // Status string should be present at offset 3
-   EXPECT_NE(g_m4board.response[3], 0); // non-empty string
-   // Find the end of the status string, then check the status byte
+
+   // Response layout: [3: string...] [3+len: \0] [3+len+1: status_byte]
+   // Find the null terminator
    size_t i = 3;
-   while (i < static_cast<size_t>(g_m4board.response_len - 1) && g_m4board.response[i] != '\0'
-          && g_m4board.response[i] != 0 && g_m4board.response[i] != 5) i++;
-   // Status byte should be either 0 (disconnected) or 5 (connected)
-   uint8_t status = g_m4board.response[i];
+   while (i < static_cast<size_t>(g_m4board.response_len) && g_m4board.response[i] != 0) i++;
+   ASSERT_LT(i, static_cast<size_t>(g_m4board.response_len))
+      << "Response string should be null-terminated";
+   EXPECT_EQ(g_m4board.response[i], 0); // null terminator
+
+   // Status byte is after the null
+   uint8_t status = g_m4board.response[i + 1];
    EXPECT_TRUE(status == 0 || status == 5)
       << "Expected status 0 (disconnected) or 5 (connected), got " << (int)status;
+
+   // If connected, the string should contain "IP:"
+   if (status == 5) {
+      std::string msg(reinterpret_cast<char*>(g_m4board.response + 3));
+      EXPECT_NE(msg.find("IP:"), std::string::npos)
+         << "Connected status should include IP address, got: " << msg;
+   }
 }
 
 TEST_F(M4BoardTest, TimeReturnsFormattedString) {
