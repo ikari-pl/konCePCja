@@ -84,13 +84,20 @@ static constexpr uint8_t M4_ERROR = 0xFF;
 
 #ifdef _WIN32
 // One-time Winsock initialisation for socket-based commands.
-static void ensure_winsock_init()
+static bool ensure_winsock_init()
 {
-   static bool done = false;
-   if (done) return;
+   static bool ok = false;
+   static bool tried = false;
+   if (tried) return ok;
+   tried = true;
    WSADATA wsa;
-   WSAStartup(MAKEWORD(2, 2), &wsa);
-   done = true;
+   int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+   if (err != 0) {
+      LOG_ERROR("M4: WSAStartup failed with error " << err);
+      return false;
+   }
+   ok = true;
+   return true;
 }
 #endif
 
@@ -522,7 +529,8 @@ static FILE* container_open_file(const std::string& filename)
       }
       // Get file list and match case-insensitively
       auto files = disk_list_files(g_m4board.container_drive, err);
-      err.clear();
+      if (files.empty()) return nullptr;
+      err.clear(); // listing succeeded — clear for disk_read_file below
       for (const auto& cand : candidates) {
          std::string cand_upper = cand;
          for (auto& c : cand_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
