@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <cstring>
@@ -746,6 +747,7 @@ TEST_F(M4BoardTest, WriteSectorToOpenFile) {
    // Create a small "disk image" file
    std::string path = (temp_dir / "disk.img").string();
    FILE* f = fopen(path.c_str(), "wb");
+   ASSERT_NE(f, nullptr);
    std::vector<uint8_t> blank(9 * 512, 0xE5); // 1 track, 9 sectors
    fwrite(blank.data(), 1, blank.size(), f);
    fclose(f);

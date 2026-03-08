@@ -2,6 +2,8 @@
 #include "disk.h"
 #include "disk_file_editor.h"
 #include "log.h"
+#include <cctype>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -10,8 +12,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
+#endif
 #else
 #include <sys/socket.h>
 #include <ifaddrs.h>
@@ -77,6 +81,18 @@ static constexpr uint16_t C_CONFIG      = 0x43FE;
 // Response status codes
 static constexpr uint8_t M4_OK    = 0x00;
 static constexpr uint8_t M4_ERROR = 0xFF;
+
+#ifdef _WIN32
+// One-time Winsock initialisation for socket-based commands.
+static void ensure_winsock_init()
+{
+   static bool done = false;
+   if (done) return;
+   WSADATA wsa;
+   WSAStartup(MAKEWORD(2, 2), &wsa);
+   done = true;
+}
+#endif
 
 // ── Path Safety ─────────────────────────────────
 
@@ -470,6 +486,26 @@ static FILE* try_open_cpc(const std::string& dir_path, const std::string& filena
    return nullptr;
 }
 
+// Cross-platform temporary file creation.
+// On POSIX, tmpfile() works reliably. On Windows it often fails due to
+// permissions (tries to create in the root of C:\).
+static FILE* portable_tmpfile()
+{
+#ifdef _WIN32
+   char tmppath[MAX_PATH];
+   char tmpname[MAX_PATH];
+   if (GetTempPathA(MAX_PATH, tmppath) == 0) return nullptr;
+   if (GetTempFileNameA(tmppath, "m4b", 0, tmpname) == 0) return nullptr;
+   // GetTempFileNameA creates the file; reopen in w+b mode.
+   // FILE_FLAG_DELETE_ON_CLOSE would be ideal but fopen doesn't support it
+   // on all CRTs. We accept the leak of tiny temp files — they're in %TEMP%
+   // which the OS cleans periodically.
+   return fopen(tmpname, "w+b");
+#else
+   return tmpfile();
+#endif
+}
+
 // Open a file from inside a DSK container: extract to a temp file, return FILE*.
 static FILE* container_open_file(const std::string& filename)
 {
@@ -503,7 +539,7 @@ static FILE* container_open_file(const std::string& filename)
    }
 found:
    // Write extracted data to a temp file
-   FILE* fp = tmpfile();
+   FILE* fp = portable_tmpfile();
    if (!fp) return nullptr;
    if (!data.empty()) {
       fwrite(data.data(), 1, data.size(), fp);
@@ -1267,6 +1303,7 @@ static void cmd_sdwrite()
 static std::string get_host_ip()
 {
 #ifdef _WIN32
+   ensure_winsock_init();
    char hostname[256];
    if (gethostname(hostname, sizeof(hostname)) != 0) return "";
    struct hostent* host = gethostbyname(hostname);
@@ -1323,7 +1360,24 @@ static std::string get_host_ip()
 #endif
 }
 
+static std::string get_host_ssid_uncached();
+
 static std::string get_host_ssid()
+{
+   // Cache the SSID for 30 seconds to avoid shelling out on every |NETSTAT call.
+   static std::string cached_ssid;
+   static std::chrono::steady_clock::time_point cached_at{};
+   auto now = std::chrono::steady_clock::now();
+   if (std::chrono::duration_cast<std::chrono::seconds>(now - cached_at).count() < 30
+       && !cached_ssid.empty()) {
+      return cached_ssid;
+   }
+   cached_ssid = get_host_ssid_uncached();
+   cached_at = now;
+   return cached_ssid;
+}
+
+static std::string get_host_ssid_uncached()
 {
 #ifdef __APPLE__
    // Discover the Wi-Fi interface name (not always en0 — can be en1, en2, etc.)
@@ -1511,6 +1565,9 @@ static void m4_close_all_sockets()
 
 static void cmd_netsocket()
 {
+#ifdef _WIN32
+   ensure_winsock_init();
+#endif
    // Protocol: [size, cmd_lo, cmd_hi, domain, type, protocol]
    // Response: [socket_num or 0xFF=error]
    // Find a free slot
@@ -1699,6 +1756,9 @@ static void cmd_netrecv()
 
 static void cmd_nethostip()
 {
+#ifdef _WIN32
+   ensure_winsock_init();
+#endif
    // Protocol: [size, cmd_lo, cmd_hi, hostname\0]
    // On real hardware: response[3]=1 means "lookup in progress", then the result
    // comes later. In emulation we can resolve synchronously and return the IP

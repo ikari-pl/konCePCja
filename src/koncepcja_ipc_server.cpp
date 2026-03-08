@@ -2966,6 +2966,17 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "ls") {
       if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
+      // Inside a DSK container — list files from the disk image, not the host FS
+      if (g_m4board.container_type != M4Board::ContainerType::NONE
+          && g_m4board.container_drive) {
+        std::string err;
+        auto files = disk_list_files(g_m4board.container_drive, err);
+        if (!err.empty()) return "ERR 500 " + err + "\n";
+        std::string resp = "OK\n";
+        for (const auto& f : files)
+          resp += f.display_name + "\n";
+        return resp;
+      }
       try {
         auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
         std::filesystem::path dir_path = root / g_m4board.current_dir.substr(1);
@@ -2989,9 +3000,39 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "cd" && parts.size() >= 3) {
       std::string path = parts[2];
       if (path == "/") {
+        // Exit container if inside one, then go to root
+        if (g_m4board.container_type != M4Board::ContainerType::NONE) {
+          // container_exit is static in m4board.cpp; replicate its effect
+          if (g_m4board.container_drive) {
+            dsk_eject(g_m4board.container_drive);
+            delete g_m4board.container_drive;
+            g_m4board.container_drive = nullptr;
+          }
+          g_m4board.container_parent_dir.clear();
+          g_m4board.container_host_path.clear();
+          g_m4board.container_type = M4Board::ContainerType::NONE;
+        }
         g_m4board.current_dir = "/";
         return "OK /\n";
       }
+      // "cd .." from inside a container exits the container
+      if ((path == ".." || path == "../")
+          && g_m4board.container_type != M4Board::ContainerType::NONE) {
+        std::string parent = g_m4board.container_parent_dir;
+        if (g_m4board.container_drive) {
+          dsk_eject(g_m4board.container_drive);
+          delete g_m4board.container_drive;
+          g_m4board.container_drive = nullptr;
+        }
+        g_m4board.container_parent_dir.clear();
+        g_m4board.container_host_path.clear();
+        g_m4board.container_type = M4Board::ContainerType::NONE;
+        g_m4board.current_dir = parent.empty() ? "/" : parent;
+        return "OK " + g_m4board.current_dir + "\n";
+      }
+      // Cannot navigate further inside a container (no subdirs in DSK)
+      if (g_m4board.container_type != M4Board::ContainerType::NONE)
+        return "ERR 400 cannot-cd-inside-container\n";
       if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
       try {
         auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
