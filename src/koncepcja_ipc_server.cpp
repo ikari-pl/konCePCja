@@ -2956,21 +2956,24 @@ std::string handle_command(const std::string& line) {
       for (int i = 0; i < 4; i++) {
         if (g_m4board.open_files[i]) open_files++;
       }
-      char buf[256];
-      snprintf(buf, sizeof(buf), "OK enabled=%d sd_path=%s dir=%s files=%d/4 cmds=%d\n",
-               g_m4board.enabled ? 1 : 0,
-               g_m4board.sd_root_path.empty() ? "(none)" : g_m4board.sd_root_path.c_str(),
-               g_m4board.current_dir.c_str(),
-               open_files,
-               g_m4board.cmd_count);
-      return std::string(buf);
+      std::ostringstream oss;
+      oss << "OK enabled=" << (g_m4board.enabled ? 1 : 0)
+          << " sd_path=" << (g_m4board.sd_root_path.empty() ? "(none)" : g_m4board.sd_root_path)
+          << " dir=" << g_m4board.current_dir
+          << " files=" << open_files << "/4"
+          << " cmds=" << g_m4board.cmd_count << "\n";
+      return oss.str();
     }
     if (parts[1] == "ls") {
-      std::string resolved = g_m4board.sd_root_path;
-      if (resolved.empty()) return "ERR 400 no-sd-path\n";
+      if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
       try {
-        auto root = std::filesystem::weakly_canonical(resolved);
-        auto dir = std::filesystem::weakly_canonical(resolved + g_m4board.current_dir);
+        auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
+        std::filesystem::path dir_path = root / g_m4board.current_dir.substr(1);
+        auto dir = std::filesystem::weakly_canonical(dir_path);
+        // Verify dir is inside root (component-wise, not string prefix)
+        auto rel = dir.lexically_normal().lexically_relative(root.lexically_normal());
+        if (rel.empty() || (!rel.empty() && *rel.begin() == ".."))
+          return "ERR 403 path-traversal\n";
         std::string resp = "OK\n";
         for (const auto& entry : std::filesystem::directory_iterator(dir)) {
           std::string name = entry.path().filename().string();
@@ -2991,22 +2994,35 @@ std::string handle_command(const std::string& line) {
       }
       if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
       try {
-        std::string full = g_m4board.sd_root_path + (path[0] == '/' ? "" : g_m4board.current_dir.c_str()) + path;
-        auto canonical = std::filesystem::weakly_canonical(full);
         auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
-        std::string cs = canonical.string(), rs = root.string();
-        if (cs.substr(0, rs.size()) != rs) return "ERR 403 path-traversal\n";
+        std::filesystem::path full_path = root;
+        if (path.front() == '/') {
+          full_path /= path.substr(1);
+        } else {
+          full_path /= g_m4board.current_dir.substr(1);
+          full_path /= path;
+        }
+        auto canonical = std::filesystem::weakly_canonical(full_path);
+        // Component-aware path traversal check
+        auto rel = canonical.lexically_normal().lexically_relative(root.lexically_normal());
+        if (rel.empty() || (!rel.empty() && *rel.begin() == ".."))
+          return "ERR 403 path-traversal\n";
         if (!std::filesystem::is_directory(canonical)) return "ERR 404 not-a-directory\n";
-        std::string rel = cs.substr(rs.size());
-        if (rel.empty()) rel = "/";
-        if (rel.back() != '/') rel += '/';
-        g_m4board.current_dir = rel;
-        return "OK " + rel + "\n";
+        std::string rel_str;
+        if (rel == ".") {
+          rel_str = "/";
+        } else {
+          rel_str = "/" + rel.generic_string();
+          if (rel_str.back() != '/') rel_str += '/';
+        }
+        g_m4board.current_dir = rel_str;
+        return "OK " + rel_str + "\n";
       } catch (const std::filesystem::filesystem_error& e) {
         return "ERR 500 " + std::string(e.what()) + "\n";
       }
     }
     if (parts[1] == "reset") {
+      if (!CPC.paused) return "ERR 400 pause-first\n";
       m4board_cleanup();
       m4board_reset();
       return "OK\n";

@@ -1456,8 +1456,7 @@ static void imgui_render_options()
           ImGui::Text("Commands: %d", g_m4board.cmd_count);
         }
 
-        // Decrement activity counter each frame
-        if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
+        // activity_frames is decremented in the main emulation loop (EC_FRAME_COMPLETE)
 
         ImGui::Unindent();
       }
