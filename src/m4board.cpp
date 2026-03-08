@@ -8,14 +8,19 @@
 #include <algorithm>
 #ifdef _WIN32
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
 #else
+#include <sys/socket.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 #endif
 #ifdef HAS_LIBCURL
 #include <curl/curl.h>
@@ -1293,7 +1298,6 @@ static std::string get_host_ip()
 static std::string get_host_ssid()
 {
 #ifdef __APPLE__
-   // macOS: use system_profiler (no private API needed)
    FILE* pipe = popen("networksetup -getairportnetwork en0 2>/dev/null", "r");
    if (!pipe) return "";
    char buf[256];
@@ -1304,9 +1308,35 @@ static std::string get_host_ssid()
    auto pos = output.find(": ");
    if (pos == std::string::npos) return "";
    std::string ssid = output.substr(pos + 2);
-   // Strip trailing whitespace
    while (!ssid.empty() && (ssid.back() == '\n' || ssid.back() == '\r' || ssid.back() == ' '))
       ssid.pop_back();
+   return ssid;
+#elif defined(_WIN32)
+   // Windows: parse "netsh wlan show interfaces"
+   FILE* pipe = _popen("netsh wlan show interfaces 2>nul", "r");
+   if (!pipe) return "";
+   char buf[512];
+   std::string ssid;
+   while (fgets(buf, sizeof(buf), pipe)) {
+      std::string line(buf);
+      // Look for "    SSID                   : MyNetwork"
+      auto pos = line.find("SSID");
+      if (pos == std::string::npos) continue;
+      // Skip "BSSID" lines
+      if (pos > 0 && line[pos - 1] == 'B') continue;
+      auto colon = line.find(':', pos);
+      if (colon == std::string::npos) continue;
+      ssid = line.substr(colon + 1);
+      // Trim whitespace
+      size_t start = ssid.find_first_not_of(" \t\r\n");
+      size_t end = ssid.find_last_not_of(" \t\r\n");
+      if (start != std::string::npos && end != std::string::npos)
+         ssid = ssid.substr(start, end - start + 1);
+      else
+         ssid.clear();
+      break;
+   }
+   _pclose(pipe);
    return ssid;
 #elif defined(__linux__)
    FILE* pipe = popen("iwgetid -r 2>/dev/null", "r");
@@ -1389,43 +1419,175 @@ static void cmd_m4off()
    LOG_INFO("M4: C_M4OFF — M4 Board disabled");
 }
 
+// ── Cross-platform socket helpers ────────────────
+
+static void sock_close(M4Board::socket_t s)
+{
+#ifdef _WIN32
+   closesocket(s);
+#else
+   close(s);
+#endif
+}
+
+static void sock_set_nonblocking(M4Board::socket_t s)
+{
+#ifdef _WIN32
+   u_long mode = 1;
+   ioctlsocket(s, FIONBIO, &mode);
+#else
+   int flags = fcntl(s, F_GETFL, 0);
+   if (flags >= 0) fcntl(s, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+static void m4_close_all_sockets()
+{
+   for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
+      if (g_m4board.sockets[i] != M4Board::INVALID_SOCK) {
+         sock_close(g_m4board.sockets[i]);
+         g_m4board.sockets[i] = M4Board::INVALID_SOCK;
+      }
+   }
+}
+
 static void cmd_netsocket()
 {
    // Protocol: [size, cmd_lo, cmd_hi, domain, type, protocol]
    // Response: [socket_num or 0xFF=error]
-   // No real network available — return error
+   // Find a free slot
+   int slot = -1;
+   for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
+      if (g_m4board.sockets[i] == M4Board::INVALID_SOCK) { slot = i; break; }
+   }
+   if (slot < 0) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF; // no free slot
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   // Create a TCP socket (CPC software always wants AF_INET + SOCK_STREAM)
+   M4Board::socket_t s = socket(AF_INET, SOCK_STREAM, 0);
+   if (s == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   g_m4board.sockets[slot] = s;
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   g_m4board.response[3] = 0xFF; // error: no socket available
+   g_m4board.response[3] = static_cast<uint8_t>(slot);
    g_m4board.response_len = 4;
+   LOG_DEBUG("M4: C_NETSOCKET created slot " << slot);
 }
 
 static void cmd_netconnect()
 {
    // Protocol: [size, cmd_lo, cmd_hi, socket, ip0, ip1, ip2, ip3, port_hi, port_lo]
-   // Response: [0=OK, 0xFF=error]
+   if (g_m4board.cmd_buf.size() < 10) {
+      respond_error();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   struct sockaddr_in addr = {};
+   addr.sin_family = AF_INET;
+   uint32_t ip = (static_cast<uint32_t>(g_m4board.cmd_buf[4]) << 24) |
+                 (static_cast<uint32_t>(g_m4board.cmd_buf[5]) << 16) |
+                 (static_cast<uint32_t>(g_m4board.cmd_buf[6]) << 8) |
+                  static_cast<uint32_t>(g_m4board.cmd_buf[7]);
+   addr.sin_addr.s_addr = htonl(ip);
+   uint16_t port = (static_cast<uint16_t>(g_m4board.cmd_buf[8]) << 8) |
+                    static_cast<uint16_t>(g_m4board.cmd_buf[9]);
+   addr.sin_port = htons(port);
+
+   int result = connect(g_m4board.sockets[slot],
+                        reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   g_m4board.response[3] = 0xFF; // error: connection failed
+   if (result == 0) {
+      // Connected — set non-blocking for subsequent recv calls
+      sock_set_nonblocking(g_m4board.sockets[slot]);
+      g_m4board.response[3] = 0; // OK
+      LOG_INFO("M4: C_NETCONNECT slot " << slot << " -> "
+               << (int)g_m4board.cmd_buf[4] << "." << (int)g_m4board.cmd_buf[5] << "."
+               << (int)g_m4board.cmd_buf[6] << "." << (int)g_m4board.cmd_buf[7]
+               << ":" << port);
+   } else {
+      g_m4board.response[3] = 0xFF; // error
+      LOG_ERROR("M4: C_NETCONNECT failed for slot " << slot);
+   }
    g_m4board.response_len = 4;
 }
 
 static void cmd_netclose()
 {
    // Protocol: [size, cmd_lo, cmd_hi, socket]
+   if (g_m4board.cmd_buf.size() < 4) {
+      respond_ok();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   if (slot >= 0 && slot < M4Board::MAX_SOCKETS &&
+       g_m4board.sockets[slot] != M4Board::INVALID_SOCK) {
+      sock_close(g_m4board.sockets[slot]);
+      g_m4board.sockets[slot] = M4Board::INVALID_SOCK;
+      LOG_DEBUG("M4: C_NETCLOSE slot " << slot);
+   }
    respond_ok();
 }
 
 static void cmd_netsend()
 {
    // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi, data...]
-   // Response: [0=OK, 0xFF=error]
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   uint16_t data_size = static_cast<uint16_t>(g_m4board.cmd_buf[4]) |
+                        (static_cast<uint16_t>(g_m4board.cmd_buf[5]) << 8);
+
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   g_m4board.response[3] = 0xFF; // error: not connected
+
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   size_t avail = g_m4board.cmd_buf.size() - 6;
+   size_t to_send = std::min(static_cast<size_t>(data_size), avail);
+   if (to_send > 0) {
+      ssize_t sent = send(g_m4board.sockets[slot],
+                          reinterpret_cast<const char*>(g_m4board.cmd_buf.data() + 6),
+                          static_cast<int>(to_send), 0);
+      g_m4board.response[3] = (sent > 0) ? 0 : 0xFF;
+   } else {
+      g_m4board.response[3] = 0;
+   }
    g_m4board.response_len = 4;
 }
 
@@ -1433,13 +1595,48 @@ static void cmd_netrecv()
 {
    // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi]
    // Response: [0] [actual_lo] [actual_hi] [data...]
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   uint16_t max_recv = static_cast<uint16_t>(g_m4board.cmd_buf[4]) |
+                       (static_cast<uint16_t>(g_m4board.cmd_buf[5]) << 8);
+
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   g_m4board.response[3] = 0;  // status OK (just no data)
-   g_m4board.response[4] = 0;  // actual_lo = 0
-   g_m4board.response[5] = 0;  // actual_hi = 0
-   g_m4board.response_len = 6;
+
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[3] = 0xFF; // error
+      g_m4board.response[4] = 0;
+      g_m4board.response[5] = 0;
+      g_m4board.response_len = 6;
+      return;
+   }
+
+   // Cap to available response buffer space (offset 6 onward)
+   size_t buf_space = static_cast<size_t>(M4Board::RESPONSE_SIZE - 6);
+   size_t to_recv = std::min(static_cast<size_t>(max_recv), buf_space);
+
+   // Non-blocking recv — returns immediately if no data available
+   ssize_t received = recv(g_m4board.sockets[slot],
+                           reinterpret_cast<char*>(g_m4board.response + 6),
+                           static_cast<int>(to_recv), 0);
+
+   if (received > 0) {
+      g_m4board.response[3] = 0; // OK
+      g_m4board.response[4] = static_cast<uint8_t>(received & 0xFF);
+      g_m4board.response[5] = static_cast<uint8_t>((received >> 8) & 0xFF);
+      g_m4board.response_len = static_cast<int>(6 + received);
+   } else {
+      // EAGAIN/EWOULDBLOCK = no data yet (not an error), or connection closed
+      g_m4board.response[3] = 0; // OK (just no data)
+      g_m4board.response[4] = 0;
+      g_m4board.response[5] = 0;
+      g_m4board.response_len = 6;
+   }
 }
 
 static void cmd_nethostip()
@@ -1687,6 +1884,7 @@ void m4board_reset()
    g_m4board.last_op = M4Board::LastOp::NONE;
    g_m4board.last_filename.clear();
    g_m4board.cmd_count = 0;
+   m4_close_all_sockets();
 }
 
 void m4board_cleanup()
@@ -1698,6 +1896,7 @@ void m4board_cleanup()
          g_m4board.open_files[i] = nullptr;
       }
    }
+   m4_close_all_sockets();
 }
 
 void m4board_data_out(byte val)

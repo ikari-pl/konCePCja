@@ -845,33 +845,78 @@ TEST_F(M4BoardTest, M4OffDisablesBoard) {
    g_m4board.enabled = true;
 }
 
-TEST_F(M4BoardTest, NetSocketReturnsError) {
+TEST_F(M4BoardTest, NetSocketCreatesRealSocket) {
    // domain=2 (AF_INET), type=1 (SOCK_STREAM), protocol=0
    send_command(C_NETSOCKET, {2, 1, 0});
-   EXPECT_EQ(g_m4board.response[3], 0xFF); // no socket
-}
-
-TEST_F(M4BoardTest, NetConnectReturnsError) {
-   // socket=0, ip=127.0.0.1, port=80
-   send_command(C_NETCONNECT, {0, 127, 0, 0, 1, 0, 80});
-   EXPECT_EQ(g_m4board.response[3], 0xFF); // connection failed
-}
-
-TEST_F(M4BoardTest, NetCloseOk) {
-   send_command(C_NETCLOSE, {0});
    EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+   uint8_t slot = g_m4board.response[3];
+   EXPECT_NE(slot, 0xFF) << "Should create a real socket";
+   EXPECT_LT(slot, M4Board::MAX_SOCKETS);
+   EXPECT_NE(g_m4board.sockets[slot], M4Board::INVALID_SOCK);
+
+   // Clean up
+   send_command(C_NETCLOSE, {slot});
+   EXPECT_EQ(g_m4board.sockets[slot], M4Board::INVALID_SOCK);
 }
 
-TEST_F(M4BoardTest, NetSendReturnsError) {
-   send_command(C_NETSEND, {0, 5, 0, 'H', 'e', 'l', 'l', 'o'});
-   EXPECT_EQ(g_m4board.response[3], 0xFF); // not connected
+TEST_F(M4BoardTest, NetSocketExhaustsSlots) {
+   // Fill all 4 slots
+   for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
+      send_command(C_NETSOCKET, {2, 1, 0});
+      EXPECT_NE(g_m4board.response[3], 0xFF);
+   }
+   // 5th should fail
+   send_command(C_NETSOCKET, {2, 1, 0});
+   EXPECT_EQ(g_m4board.response[3], 0xFF);
+
+   // Clean up all
+   for (int i = 0; i < M4Board::MAX_SOCKETS; i++)
+      send_command(C_NETCLOSE, {static_cast<uint8_t>(i)});
 }
 
-TEST_F(M4BoardTest, NetRecvReturnsEmpty) {
-   send_command(C_NETRECV, {0, 0xFF, 0x00}); // socket, size
-   EXPECT_EQ(g_m4board.response[3], 0); // status OK
+TEST_F(M4BoardTest, NetConnectToClosedPort) {
+   // Create socket
+   send_command(C_NETSOCKET, {2, 1, 0});
+   uint8_t slot = g_m4board.response[3];
+   ASSERT_NE(slot, 0xFF);
+
+   // Connect to 127.0.0.1 port 1 (almost certainly closed/refused)
+   send_command(C_NETCONNECT, {slot, 127, 0, 0, 1, 0, 1});
+   EXPECT_EQ(g_m4board.response[3], 0xFF); // connection refused
+
+   send_command(C_NETCLOSE, {slot});
+}
+
+TEST_F(M4BoardTest, NetCloseInvalidSlot) {
+   // Closing a non-existent slot should not crash
+   send_command(C_NETCLOSE, {99});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK (no-op)
+}
+
+TEST_F(M4BoardTest, NetSendWithoutConnect) {
+   send_command(C_NETSOCKET, {2, 1, 0});
+   uint8_t slot = g_m4board.response[3];
+   ASSERT_NE(slot, 0xFF);
+
+   // Send on unconnected socket — should fail
+   send_command(C_NETSEND, {slot, 5, 0, 'H', 'e', 'l', 'l', 'o'});
+   EXPECT_EQ(g_m4board.response[3], 0xFF); // error
+
+   send_command(C_NETCLOSE, {slot});
+}
+
+TEST_F(M4BoardTest, NetRecvNoData) {
+   send_command(C_NETSOCKET, {2, 1, 0});
+   uint8_t slot = g_m4board.response[3];
+   ASSERT_NE(slot, 0xFF);
+
+   // Recv on unconnected socket — returns 0 bytes (non-blocking)
+   send_command(C_NETRECV, {slot, 0xFF, 0x00});
+   // Either error or 0 bytes is acceptable for unconnected socket
    EXPECT_EQ(g_m4board.response[4], 0); // actual_lo = 0
    EXPECT_EQ(g_m4board.response[5], 0); // actual_hi = 0
+
+   send_command(C_NETCLOSE, {slot});
 }
 
 TEST_F(M4BoardTest, NetHostIpResolvesHostname) {

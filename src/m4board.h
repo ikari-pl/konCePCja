@@ -63,6 +63,20 @@ struct M4Board {
    std::string container_parent_dir; // current_dir before entering the container
    t_drive* container_drive = nullptr; // parsed DSK image (heap-allocated)
 
+   // ── TCP socket bridging (v1.0.9+ protocol) ──
+   // The real M4 firmware exposes raw TCP sockets via the ESP8266.
+   // We bridge these to host sockets so CPC software (IRC clients, etc.)
+   // can make real TCP connections through the emulator.
+   static constexpr int MAX_SOCKETS = 4;
+#ifdef _WIN32
+   using socket_t = uintptr_t; // SOCKET is UINT_PTR on Windows
+   static constexpr socket_t INVALID_SOCK = ~static_cast<socket_t>(0);
+#else
+   using socket_t = int;
+   static constexpr socket_t INVALID_SOCK = -1;
+#endif
+   socket_t sockets[MAX_SOCKETS] = {INVALID_SOCK, INVALID_SOCK, INVALID_SOCK, INVALID_SOCK};
+
    // Activity tracking for UI display
    int activity_frames = 0;       // countdown timer for LED (frames at 50fps)
    enum class LastOp { NONE, READ, WRITE, DIR, CMD } last_op = LastOp::NONE;
