@@ -1,4 +1,6 @@
 #include "m4board.h"
+#include "disk.h"
+#include "disk_file_editor.h"
 #include "log.h"
 #include <cstring>
 #include <filesystem>
@@ -6,6 +8,10 @@
 #ifdef HAS_LIBCURL
 #include <curl/curl.h>
 #endif
+
+// Forward declarations from slotshandler.cpp
+int dsk_load(const std::string& filename, t_drive* drive);
+void dsk_eject(t_drive* drive);
 
 M4Board g_m4board;
 
@@ -56,17 +62,16 @@ static std::string resolve_path(const std::string& rel_path)
       full += rel_path;
    }
 
-   // Resolve and verify it's within sd_root_path
+   // Resolve and verify it's within sd_root_path (component-aware check)
    try {
       auto canonical = std::filesystem::weakly_canonical(full);
       auto root_canonical = std::filesystem::weakly_canonical(base);
-      std::string cs = canonical.string();
-      std::string rs = root_canonical.string();
-      if (cs.substr(0, rs.size()) != rs) {
+      auto rel = canonical.lexically_normal().lexically_relative(root_canonical.lexically_normal());
+      if (rel.empty() || (!rel.empty() && *rel.begin() == "..")) {
          LOG_ERROR("M4: path traversal blocked: " << full);
          return "";
       }
-      return cs;
+      return canonical.string();
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
       return "";
@@ -127,6 +132,44 @@ static void respond_error_code(uint8_t code)
    g_m4board.response_len = 5;
 }
 
+// ── Container Helpers ───────────────────────────
+
+static void container_exit()
+{
+   if (g_m4board.container_drive) {
+      dsk_eject(g_m4board.container_drive);
+      delete g_m4board.container_drive;
+      g_m4board.container_drive = nullptr;
+   }
+   g_m4board.current_dir = g_m4board.container_parent_dir;
+   g_m4board.container_parent_dir.clear();
+   g_m4board.container_host_path.clear();
+   g_m4board.container_type = M4Board::ContainerType::NONE;
+}
+
+static bool container_enter_dsk(const std::string& host_path, const std::string& parent_dir)
+{
+   auto* drive = new t_drive{};
+   int rc = dsk_load(host_path, drive);
+   if (rc != 0) {
+      delete drive;
+      return false;
+   }
+   g_m4board.container_drive = drive;
+   g_m4board.container_type = M4Board::ContainerType::DSK;
+   g_m4board.container_host_path = host_path;
+   g_m4board.container_parent_dir = parent_dir;
+   // current_dir shows the container filename as a virtual directory
+   auto fname = std::filesystem::path(host_path).filename().string();
+   g_m4board.current_dir = parent_dir + fname + "/";
+   return true;
+}
+
+static bool in_container()
+{
+   return g_m4board.container_type != M4Board::ContainerType::NONE;
+}
+
 // ── Command Handlers ────────────────────────────
 
 static void cmd_version()
@@ -144,9 +187,25 @@ static void cmd_version()
 static void cmd_cd()
 {
    std::string path = extract_string(g_m4board.cmd_buf, 3);
+
+   // cd "/" — go to root, exit any container
    if (path == "/") {
+      if (in_container()) container_exit();
       g_m4board.current_dir = "/";
       respond_ok();
+      return;
+   }
+
+   // cd ".." from inside a container — exit the container
+   if ((path == ".." || path == "../") && in_container()) {
+      container_exit();
+      respond_ok();
+      return;
+   }
+
+   // Can't navigate further inside a container (no subdirectories in DSK)
+   if (in_container()) {
+      respond_error("Not a directory");
       return;
    }
 
@@ -159,13 +218,30 @@ static void cmd_cd()
    try {
       if (std::filesystem::is_directory(resolved)) {
          auto root_canonical = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
-         std::string rel = resolved.substr(root_canonical.string().size());
-         if (rel.empty()) rel = "/";
-         if (rel.back() != '/') rel += '/';
-         g_m4board.current_dir = rel;
+         auto rel = std::filesystem::path(resolved).lexically_normal().lexically_relative(
+            root_canonical.lexically_normal());
+         std::string rel_str;
+         if (rel == ".") {
+            rel_str = "/";
+         } else {
+            rel_str = "/" + rel.generic_string();
+            if (rel_str.back() != '/') rel_str += '/';
+         }
+         g_m4board.current_dir = rel_str;
          respond_ok();
       } else {
-         respond_error("Not a directory");
+         // Check if it's a DSK file — enter as container
+         std::string lower = path;
+         for (auto& c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+         if (lower.size() >= 4 && lower.substr(lower.size() - 4) == ".dsk") {
+            if (container_enter_dsk(resolved, g_m4board.current_dir)) {
+               respond_ok();
+            } else {
+               respond_error("Cannot open DSK");
+            }
+         } else {
+            respond_error("Not a directory");
+         }
       }
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
@@ -178,6 +254,20 @@ static void dir_populate()
 {
    g_m4board.dir_entries.clear();
    g_m4board.dir_index = 0;
+
+   // Inside a DSK container — list CP/M directory entries
+   if (in_container() && g_m4board.container_drive) {
+      std::string err;
+      auto files = disk_list_files(g_m4board.container_drive, err);
+      if (!err.empty()) {
+         LOG_ERROR("M4: container dir_populate: " << err);
+         return;
+      }
+      for (const auto& f : files) {
+         g_m4board.dir_entries.push_back({f.display_name, false, f.size_bytes});
+      }
+      return;
+   }
 
    std::string resolved = resolve_path(g_m4board.current_dir);
    if (resolved.empty()) return;
@@ -347,6 +437,49 @@ static FILE* try_open_cpc(const std::string& dir_path, const std::string& filena
    return nullptr;
 }
 
+// Open a file from inside a DSK container: extract to a temp file, return FILE*.
+static FILE* container_open_file(const std::string& filename)
+{
+   if (!g_m4board.container_drive) return nullptr;
+
+   std::string err;
+   auto data = disk_read_file(g_m4board.container_drive, filename, err);
+   if (!err.empty()) {
+      // Case-insensitive retry with CPC extensions
+      std::vector<std::string> candidates = { filename };
+      if (filename.find('.') == std::string::npos) {
+         for (const char* ext : { ".BAS", ".BIN", ".", "" })
+            candidates.push_back(filename + ext);
+      }
+      // Get file list and match case-insensitively
+      auto files = disk_list_files(g_m4board.container_drive, err);
+      err.clear();
+      for (const auto& cand : candidates) {
+         std::string cand_upper = cand;
+         for (auto& c : cand_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+         for (const auto& f : files) {
+            std::string disp_upper = f.display_name;
+            for (auto& c : disp_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            if (disp_upper == cand_upper) {
+               data = disk_read_file(g_m4board.container_drive, f.display_name, err);
+               if (err.empty()) goto found;
+            }
+         }
+      }
+      return nullptr;
+   }
+found:
+   // Write extracted data to a temp file
+   FILE* fp = tmpfile();
+   if (!fp) return nullptr;
+   if (!data.empty()) {
+      fwrite(data.data(), 1, data.size(), fp);
+      fflush(fp);
+      rewind(fp);
+   }
+   return fp;
+}
+
 static void cmd_open()
 {
    // cmd_buf layout: [size, 0x01, 0x43, mode, filename...]
@@ -361,6 +494,33 @@ static void cmd_open()
       raw_name = extract_string(g_m4board.cmd_buf, 3);
    }
    LOG_DEBUG("M4: C_OPEN name='" << raw_name << "' mode=0x" << std::hex << (int)mode << std::dec);
+
+   // Inside a container — read-only, extract file to temp
+   if (in_container()) {
+      if (is_write) {
+         respond_error_code(7); // FR_DENIED — containers are read-only
+         return;
+      }
+      int handle = 1; // FA_READ → handle 1
+      if (g_m4board.open_files[handle]) {
+         fclose(g_m4board.open_files[handle]);
+         g_m4board.open_files[handle] = nullptr;
+      }
+      g_m4board.open_files[handle] = container_open_file(raw_name);
+      if (!g_m4board.open_files[handle]) {
+         respond_error_code(4); // FR_NO_FILE
+         return;
+      }
+      g_m4board.last_filename = raw_name;
+      LOG_DEBUG("M4: C_OPEN container → OK, handle=" << handle);
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = static_cast<uint8_t>(handle);
+      g_m4board.response[4] = 0;  // FR_OK
+      g_m4board.response_len = 5;
+      return;
+   }
 
    std::string dir = resolve_path(g_m4board.current_dir);
    if (dir.empty()) {
@@ -528,6 +688,38 @@ static void cmd_readsector()
    uint8_t sector = g_m4board.cmd_buf[4];
    // cmd_buf[5] = drive (unused for virtual FS)
 
+   // Inside a DSK container — read directly from the parsed t_drive
+   if (in_container() && g_m4board.container_drive) {
+      t_drive* drv = g_m4board.container_drive;
+      if (track >= drv->tracks) {
+         g_m4board.response[0] = M4_OK;
+         g_m4board.response[3] = 1; // error
+         memset(g_m4board.response + 4, 0xE5, 512);
+         g_m4board.response_len = 4 + 512;
+         return;
+      }
+      t_track& trk = drv->track[track][0];
+      // Find sector by ID
+      uint8_t* data = nullptr;
+      for (unsigned int s = 0; s < trk.sectors; s++) {
+         if (trk.sector[s].CHRN[2] == sector) {
+            data = trk.sector[s].getDataForRead();
+            break;
+         }
+      }
+      if (data) {
+         memcpy(g_m4board.response + 4, data, 512);
+      } else {
+         memset(g_m4board.response + 4, 0xE5, 512);
+      }
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0;
+      g_m4board.response_len = 4 + 512;
+      return;
+   }
+
    // We need an open file to read from. Use handle 1 (the read handle).
    FILE* f = g_m4board.open_files[1];
    if (!f) {
@@ -561,6 +753,34 @@ static void cmd_readsector()
 static void cmd_fsize()
 {
    std::string path = extract_string(g_m4board.cmd_buf, 3);
+
+   // Inside a container — look up file size from CP/M directory
+   if (in_container() && g_m4board.container_drive) {
+      std::string err;
+      auto files = disk_list_files(g_m4board.container_drive, err);
+      // Case-insensitive search
+      std::string upper = path;
+      for (auto& c : upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+      for (const auto& f : files) {
+         std::string fu = f.display_name;
+         for (auto& c : fu) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+         if (fu == upper) {
+            uint32_t sz = f.size_bytes;
+            g_m4board.response[0] = M4_OK;
+            g_m4board.response[1] = 0;
+            g_m4board.response[2] = 0;
+            g_m4board.response[3] = sz & 0xFF;
+            g_m4board.response[4] = (sz >> 8) & 0xFF;
+            g_m4board.response[5] = (sz >> 16) & 0xFF;
+            g_m4board.response[6] = (sz >> 24) & 0xFF;
+            g_m4board.response_len = 7;
+            return;
+         }
+      }
+      respond_error("File not found");
+      return;
+   }
+
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
       respond_error("Invalid path");
@@ -585,6 +805,7 @@ static void cmd_fsize()
 
 static void cmd_erasefile()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
@@ -606,6 +827,7 @@ static void cmd_erasefile()
 
 static void cmd_makedir()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
@@ -624,6 +846,7 @@ static void cmd_makedir()
 
 static void cmd_write()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, fd, data...]
    // cmd_buf[3] = fd, cmd_buf[4..] = data to write
    if (g_m4board.cmd_buf.size() < 5) {
@@ -681,6 +904,7 @@ static void cmd_seek()
 
 static void cmd_rename()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, "newname\0oldname\0"]
    // cmd_buf[3..] = "newname\0oldname\0"
    std::string newname = extract_string(g_m4board.cmd_buf, 3);
@@ -847,6 +1071,7 @@ static void cmd_fstat()
 
 static void cmd_write2()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    // C_WRITE2 is the buffered write counterpart to C_READ2.
    // The M4 ROM uses this for _cas_out_char buffered writes.
    // Same protocol as C_WRITE.
@@ -994,6 +1219,7 @@ static void cmd_free()
 
 void m4board_reset()
 {
+   if (in_container()) container_exit();
    g_m4board.cmd_buf.clear();
    g_m4board.cmd_pending = false;
    g_m4board.current_dir = "/";
@@ -1010,6 +1236,7 @@ void m4board_reset()
 
 void m4board_cleanup()
 {
+   if (in_container()) container_exit();
    for (int i = 0; i < 4; i++) {
       if (g_m4board.open_files[i]) {
          fclose(g_m4board.open_files[i]);

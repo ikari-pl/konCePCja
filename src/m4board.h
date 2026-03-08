@@ -17,6 +17,8 @@
 #include <vector>
 #include <cstdio>
 
+struct t_drive;
+
 struct M4Board {
    bool enabled = false;
    std::string sd_root_path;       // host directory = virtual SD
@@ -51,6 +53,15 @@ struct M4Board {
    };
    std::vector<DirEntry> dir_entries;
    size_t dir_index = 0;
+
+   // ── Container browsing (cd into DSK/CPR files) ──
+   // The real M4 firmware lets users |cd,"game.dsk" to browse a DSK image
+   // as a virtual directory. Files inside can be listed and loaded.
+   enum class ContainerType { NONE, DSK };
+   ContainerType container_type = ContainerType::NONE;
+   std::string container_host_path;  // host path of the opened container file
+   std::string container_parent_dir; // current_dir before entering the container
+   t_drive* container_drive = nullptr; // parsed DSK image (heap-allocated)
 
    // Activity tracking for UI display
    int activity_frames = 0;       // countdown timer for LED (frames at 50fps)

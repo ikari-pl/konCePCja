@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -608,6 +609,55 @@ static void imgui_render_topbar()
 
         ImGui::PopID();
       }
+    }
+
+    // M4 Board activity LED (green, only shown when M4 is enabled)
+    if (g_m4board.enabled) {
+      float frameH = ImGui::GetFrameHeight();
+      bool active = g_m4board.activity_frames > 0;
+
+      ImGui::SameLine(0, 12.0f);
+      ImGui::BeginGroup();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("M4:");
+      ImGui::SameLine(0, 2.0f);
+
+      ImVec2 cursor = ImGui::GetCursorScreenPos();
+      float ledW = 16.0f, ledH = 8.0f;
+      float yOff = (frameH - ledH) * 0.5f;
+      ImVec2 p0(cursor.x, cursor.y + yOff);
+      ImVec2 p1(p0.x + ledW, p0.y + ledH);
+
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      if (active) {
+        // Active: bright green
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 255, 0, 255));
+        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(100, 255, 100, 255));
+        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(100, 255, 100, 255));
+        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 160, 0, 255));
+        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 160, 0, 255));
+      } else {
+        // Inactive: dark green
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 80, 0, 255));
+        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(20, 110, 20, 255));
+        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(20, 110, 20, 255));
+        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 40, 0, 255));
+        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 40, 0, 255));
+      }
+
+      ImGui::Dummy(ImVec2(ledW, frameH));
+
+      // Show container name if inside a DSK
+      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
+        ImGui::SameLine(0, 4.0f);
+        auto fname = std::filesystem::path(g_m4board.container_host_path).filename().string();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(fname.c_str());
+        ImGui::PopStyleColor();
+      }
+
+      ImGui::EndGroup();
     }
 
     // Eject confirmation popup (rendered inside topbar window)

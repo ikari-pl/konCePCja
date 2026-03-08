@@ -470,3 +470,256 @@ TEST_F(M4BoardTest, LastFilenameTracking) {
    open_for_read("track.me");
    EXPECT_EQ(g_m4board.last_filename, "track.me");
 }
+
+// ── DSK Container Tests ────────────────────────
+// Helper: create a minimal valid DATA-format DSK with one file.
+// The DSK has 1 track, 1 side, 9 sectors (C1-C9), 512 bytes each.
+// Sectors C1-C2 = directory (block 0), sectors C3-C4 = directory (block 1),
+// sectors C5-C6 = data (block 2) = first 1K of file data.
+static void create_test_dsk(const std::filesystem::path& path,
+                            const std::string& cpc_name, // e.g. "HELLO   .BAS"
+                            const std::vector<uint8_t>& file_data)
+{
+   // Build a "MV - CPCEMU" normal DSK with 1 track, 1 side
+   const int TRACKS = 1, SIDES = 1, SECTORS = 9, SECTOR_SIZE = 512;
+   const int TRACK_DATA_SIZE = SECTORS * SECTOR_SIZE; // 4608
+
+   // DSK header (256 bytes)
+   uint8_t dsk_header[256] = {};
+   memcpy(dsk_header, "MV - CPCEMU Disk-File\r\nDisk-Info\r\n", 34);
+   dsk_header[0x30] = static_cast<uint8_t>(TRACKS);
+   dsk_header[0x31] = static_cast<uint8_t>(SIDES);
+   uint16_t track_total = static_cast<uint16_t>(0x100 + TRACK_DATA_SIZE);
+   dsk_header[0x32] = track_total & 0xFF;
+   dsk_header[0x33] = (track_total >> 8) & 0xFF;
+
+   // Track header (256 bytes)
+   uint8_t track_header[256] = {};
+   memcpy(track_header, "Track-Info\r\n", 12);
+   track_header[0x10] = 0; // track number
+   track_header[0x11] = 0; // side number
+   track_header[0x14] = 2; // sector size code (2 = 512 bytes)
+   track_header[0x15] = static_cast<uint8_t>(SECTORS);
+   track_header[0x16] = 0x4E; // GAP3
+   track_header[0x17] = 0xE5; // filler
+   // Sector info table: 8 bytes per sector
+   for (int s = 0; s < SECTORS; s++) {
+      uint8_t* si = track_header + 0x18 + s * 8;
+      si[0] = 0;    // C (cylinder)
+      si[1] = 0;    // H (head)
+      si[2] = static_cast<uint8_t>(0xC1 + s); // R (sector ID)
+      si[3] = 2;    // N (size code)
+   }
+
+   // Track data (9 sectors * 512 bytes = 4608 bytes)
+   uint8_t track_data[SECTORS * SECTOR_SIZE];
+   memset(track_data, 0xE5, sizeof(track_data)); // fill with empty marker
+
+   // Build CP/M directory entry in sector C1 (first 32 bytes of block 0)
+   // Entry: [user=0, name(8), ext(3), extent_lo, s1, s2, RC, block_alloc(16)]
+   uint8_t* dir_entry = track_data; // sector C1 offset 0
+   dir_entry[0] = 0; // user 0
+   // Copy 8.3 name (must be 11 chars: "HELLO   BAS")
+   if (cpc_name.size() >= 11) {
+      // Remove dot: "HELLO   .BAS" → "HELLO   BAS"
+      for (int i = 0; i < 8; i++) dir_entry[1 + i] = static_cast<uint8_t>(cpc_name[i]);
+      // Skip the dot at position 8
+      int ext_start = (cpc_name[8] == '.') ? 9 : 8;
+      for (int i = 0; i < 3 && ext_start + i < static_cast<int>(cpc_name.size()); i++)
+         dir_entry[9 + i] = static_cast<uint8_t>(cpc_name[ext_start + i]);
+   }
+   // Extent 0
+   dir_entry[12] = 0; // extent low
+   dir_entry[13] = 0; // S1
+   dir_entry[14] = 0; // S2
+   // RC = records used = ceil(file_data.size() / 128)
+   int records = static_cast<int>((file_data.size() + 127) / 128);
+   if (records > 128) records = 128;
+   dir_entry[15] = static_cast<uint8_t>(records);
+   // Block allocation: file data starts at block 2 (blocks 0-1 = directory)
+   int blocks_needed = static_cast<int>((file_data.size() + 1023) / 1024);
+   for (int b = 0; b < blocks_needed && b < 16; b++) {
+      dir_entry[16 + b] = static_cast<uint8_t>(2 + b);
+   }
+
+   // Write file data into block 2 (sectors C5-C6)
+   // Block 2 = sectors 4-5 (0-indexed) = sector IDs C5-C6
+   size_t data_offset = 4 * SECTOR_SIZE; // sector C5 starts here
+   size_t copy_len = std::min(file_data.size(), static_cast<size_t>(SECTOR_SIZE * 2));
+   if (!file_data.empty()) {
+      memcpy(track_data + data_offset, file_data.data(), copy_len);
+   }
+
+   // Write the DSK file
+   std::ofstream f(path, std::ios::binary);
+   f.write(reinterpret_cast<char*>(dsk_header), sizeof(dsk_header));
+   f.write(reinterpret_cast<char*>(track_header), sizeof(track_header));
+   f.write(reinterpret_cast<char*>(track_data), sizeof(track_data));
+}
+
+TEST_F(M4BoardTest, CdIntoDsk) {
+   std::vector<uint8_t> content = {'H', 'E', 'L', 'L', 'O'};
+   create_test_dsk(temp_dir / "game.dsk", "HELLO   .BAS", content);
+
+   // cd into the DSK
+   send_command_str(C_CD, "game.dsk");
+   EXPECT_EQ(g_m4board.response[0], 0x00) << "cd into DSK should succeed";
+   EXPECT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+   EXPECT_NE(g_m4board.container_drive, nullptr);
+   EXPECT_TRUE(g_m4board.current_dir.find("game.dsk") != std::string::npos);
+}
+
+TEST_F(M4BoardTest, CdDotDotExitsContainer) {
+   std::vector<uint8_t> content = {'H', 'I'};
+   create_test_dsk(temp_dir / "test.dsk", "DATA    .BIN", content);
+
+   std::string orig_dir = g_m4board.current_dir;
+   send_command_str(C_CD, "test.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // cd ".." should exit
+   send_command_str(C_CD, "..");
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   EXPECT_EQ(g_m4board.container_type, M4Board::ContainerType::NONE);
+   EXPECT_EQ(g_m4board.container_drive, nullptr);
+   EXPECT_EQ(g_m4board.current_dir, orig_dir);
+}
+
+TEST_F(M4BoardTest, CdSlashExitsContainer) {
+   std::vector<uint8_t> content = {'X'};
+   create_test_dsk(temp_dir / "test.dsk", "FILE    .   ", content);
+
+   send_command_str(C_CD, "test.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // cd "/" should exit container and go to root
+   send_command_str(C_CD, "/");
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   EXPECT_EQ(g_m4board.container_type, M4Board::ContainerType::NONE);
+   EXPECT_EQ(g_m4board.current_dir, "/");
+}
+
+TEST_F(M4BoardTest, DirInsideDsk) {
+   std::vector<uint8_t> content = {'D', 'A', 'T', 'A'};
+   create_test_dsk(temp_dir / "files.dsk", "HELLO   .BAS", content);
+
+   send_command_str(C_CD, "files.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // DIRSETARGS + READDIR should list the file
+   send_command(C_DIRSETARGS);
+   // Read first entry (LS mode)
+   std::vector<uint8_t> ls_data = {0x01};
+   send_command(C_READDIR, ls_data);
+   EXPECT_EQ(g_m4board.response[0], 1) << "Should have an entry";
+   std::string name(reinterpret_cast<char*>(g_m4board.response + 3));
+   EXPECT_EQ(name, "HELLO.BAS");
+
+   // Second READDIR should signal end
+   send_command(C_READDIR, ls_data);
+   EXPECT_EQ(g_m4board.response[0], 2) << "Should be end of directory";
+}
+
+TEST_F(M4BoardTest, OpenFileInsideDsk) {
+   std::vector<uint8_t> content = {'C', 'P', 'C', '!', '!'};
+   create_test_dsk(temp_dir / "run.dsk", "GAME    .BIN", content);
+
+   send_command_str(C_CD, "run.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // Open the file
+   int handle = open_for_read("GAME.BIN");
+   ASSERT_GE(handle, 0) << "Should open file from container";
+
+   // Read the data
+   std::vector<uint8_t> read_cmd = {
+      static_cast<uint8_t>(handle),
+      0x00, 0x06  // count = 0x0600 (1536 bytes, more than our 5)
+   };
+   send_command(C_READ, read_cmd);
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   // Verify the first 5 bytes match what we wrote
+   EXPECT_EQ(g_m4board.response[4], 'C');
+   EXPECT_EQ(g_m4board.response[5], 'P');
+   EXPECT_EQ(g_m4board.response[6], 'C');
+   EXPECT_EQ(g_m4board.response[7], '!');
+   EXPECT_EQ(g_m4board.response[8], '!');
+}
+
+TEST_F(M4BoardTest, WriteBlockedInContainer) {
+   std::vector<uint8_t> content = {'X'};
+   create_test_dsk(temp_dir / "ro.dsk", "FILE    .BAS", content);
+
+   send_command_str(C_CD, "ro.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // Attempt to open for write — should fail
+   int handle = open_for_write("NEWFILE.BAS");
+   EXPECT_EQ(handle, -1) << "Write should be denied in container";
+}
+
+TEST_F(M4BoardTest, FsizeInsideDsk) {
+   std::vector<uint8_t> content(256, 0xAA);
+   create_test_dsk(temp_dir / "sz.dsk", "BIG     .DAT", content);
+
+   send_command_str(C_CD, "sz.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // FSIZE should return the file size
+   send_command_str(C_FSIZE, "BIG.DAT");
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   uint32_t size = g_m4board.response[3] |
+                   (g_m4board.response[4] << 8) |
+                   (g_m4board.response[5] << 16) |
+                   (g_m4board.response[6] << 24);
+   // CP/M reports size in records * 128 — 256 bytes = 2 records = 256 bytes
+   EXPECT_EQ(size, 256u);
+}
+
+TEST_F(M4BoardTest, CdIntoNonexistentDsk) {
+   send_command_str(C_CD, "ghost.dsk");
+   EXPECT_EQ(g_m4board.response[0], 0xFF) << "Should fail for missing file";
+   EXPECT_EQ(g_m4board.container_type, M4Board::ContainerType::NONE);
+}
+
+TEST_F(M4BoardTest, CdIntoCorruptDsk) {
+   // Create a file with .dsk extension but garbage content
+   create_file("bad.dsk", "This is not a valid DSK file at all");
+   send_command_str(C_CD, "bad.dsk");
+   EXPECT_EQ(g_m4board.response[0], 0xFF) << "Should fail for corrupt DSK";
+   EXPECT_EQ(g_m4board.container_type, M4Board::ContainerType::NONE);
+}
+
+TEST_F(M4BoardTest, ResetExitsContainer) {
+   std::vector<uint8_t> content = {'X'};
+   create_test_dsk(temp_dir / "rst.dsk", "FILE    .BAS", content);
+
+   send_command_str(C_CD, "rst.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   m4board_cleanup();
+   m4board_reset();
+   // Re-set test state
+   g_m4board.enabled = true;
+   g_m4board.sd_root_path = temp_dir.string();
+   EXPECT_EQ(g_m4board.container_type, M4Board::ContainerType::NONE);
+   EXPECT_EQ(g_m4board.container_drive, nullptr);
+}
+
+TEST_F(M4BoardTest, ReadSectorInsideDsk) {
+   // Create DSK with known data in sector C5 (block 2)
+   std::vector<uint8_t> content(512, 0x42); // 512 bytes of 0x42
+   create_test_dsk(temp_dir / "sec.dsk", "SECT    .BIN", content);
+
+   send_command_str(C_CD, "sec.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   // READSECTOR: track=0, sector=C5 (block 2, first sector)
+   std::vector<uint8_t> cmd = {0, 0xC5, 0}; // track, sector, drive
+   send_command(0x430B, cmd); // C_READSECTOR
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   EXPECT_EQ(g_m4board.response[3], 0x00); // status OK
+   // Sector C5 should contain our 0x42 data
+   EXPECT_EQ(g_m4board.response[4], 0x42);
+   EXPECT_EQ(g_m4board.response[4 + 511], 0x42);
+}
