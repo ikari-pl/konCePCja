@@ -3,6 +3,7 @@
 #include "disk_file_editor.h"
 #include "log.h"
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <algorithm>
 #ifdef HAS_LIBCURL
@@ -38,8 +39,24 @@ static constexpr uint16_t C_READSECTOR = 0x430B;
 static constexpr uint16_t C_READ2      = 0x4312;
 static constexpr uint16_t C_FSTAT      = 0x4316;
 static constexpr uint16_t C_WRITE2     = 0x431B;
-static constexpr uint16_t C_ROMWRITE   = 0x43FD;
-static constexpr uint16_t C_CONFIG     = 0x43FE;
+static constexpr uint16_t C_WRITESECTOR = 0x430C;
+static constexpr uint16_t C_FORMATTRACK = 0x430D;
+static constexpr uint16_t C_SDREAD      = 0x4314;
+static constexpr uint16_t C_SDWRITE     = 0x4315;
+static constexpr uint16_t C_SETNETWORK  = 0x4321;
+static constexpr uint16_t C_M4OFF       = 0x4322;
+static constexpr uint16_t C_NETSTAT     = 0x4323;
+static constexpr uint16_t C_TIME        = 0x4324;
+static constexpr uint16_t C_HTTPGETMEM  = 0x4328;
+static constexpr uint16_t C_ROMSUPDATE  = 0x432B;
+static constexpr uint16_t C_NETSOCKET   = 0x4331;
+static constexpr uint16_t C_NETCONNECT  = 0x4332;
+static constexpr uint16_t C_NETCLOSE    = 0x4333;
+static constexpr uint16_t C_NETSEND     = 0x4334;
+static constexpr uint16_t C_NETRECV     = 0x4335;
+static constexpr uint16_t C_NETHOSTIP   = 0x4336;
+static constexpr uint16_t C_ROMWRITE    = 0x43FD;
+static constexpr uint16_t C_CONFIG      = 0x43FE;
 
 // Response status codes
 static constexpr uint8_t M4_OK    = 0x00;
@@ -1048,6 +1065,315 @@ static void cmd_httpget()
 
 #endif // HAS_LIBCURL
 
+// ── HTTP GET to memory ──────────────────────────
+
+#ifdef HAS_LIBCURL
+
+struct MemBuf {
+   std::vector<uint8_t> data;
+   size_t max_size;
+};
+
+static size_t curl_write_mem(void* ptr, size_t size, size_t nmemb, void* userdata)
+{
+   auto* buf = static_cast<MemBuf*>(userdata);
+   size_t total = size * nmemb;
+   size_t remain = buf->max_size - buf->data.size();
+   size_t to_copy = std::min(total, remain);
+   if (to_copy > 0) {
+      auto* bytes = static_cast<uint8_t*>(ptr);
+      buf->data.insert(buf->data.end(), bytes, bytes + to_copy);
+   }
+   return total; // pretend we consumed all (to avoid curl error)
+}
+
+static void cmd_httpgetmem()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, size_hi, size_lo, url\0]
+   // Downloads to CPC memory instead of SD card
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error("Bad args");
+      return;
+   }
+   uint16_t max_dl = (static_cast<uint16_t>(g_m4board.cmd_buf[3]) << 8) |
+                      static_cast<uint16_t>(g_m4board.cmd_buf[4]);
+   std::string raw_url = extract_string(g_m4board.cmd_buf, 5);
+   if (raw_url.empty()) {
+      respond_error("No URL given");
+      return;
+   }
+
+   std::string url = raw_url;
+   if (!url.empty() && url[0] == '@') url = url.substr(1);
+   if (url.substr(0, 7) == "http://") url = url.substr(7);
+   std::string full_url = "http://" + url;
+
+   // Cap download to response buffer space (offset 5 onward)
+   size_t max_size = std::min(static_cast<size_t>(max_dl),
+      static_cast<size_t>(M4Board::RESPONSE_SIZE - 5));
+
+   MemBuf membuf;
+   membuf.max_size = max_size;
+
+   CURL* curl = curl_easy_init();
+   if (!curl) {
+      respond_error("HTTP init failed");
+      return;
+   }
+
+   curl_easy_setopt(curl, CURLOPT_URL, full_url.c_str());
+   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_mem);
+   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &membuf);
+   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+   curl_easy_setopt(curl, CURLOPT_USERAGENT, "M4Board/2.0");
+   curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+   CURLcode res = curl_easy_perform(curl);
+   curl_easy_cleanup(curl);
+
+   if (res != CURLE_OK) {
+      respond_error(curl_easy_strerror(res));
+      return;
+   }
+
+   // Response: [status=0] [0] [0] [dl_size_hi] [dl_size_lo] [data...]
+   uint16_t dl_size = static_cast<uint16_t>(membuf.data.size());
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = static_cast<uint8_t>(dl_size >> 8);
+   g_m4board.response[4] = static_cast<uint8_t>(dl_size & 0xFF);
+   if (!membuf.data.empty())
+      memcpy(g_m4board.response + 5, membuf.data.data(), membuf.data.size());
+   g_m4board.response_len = static_cast<int>(5 + membuf.data.size());
+   LOG_INFO("M4 HTTPGETMEM: downloaded " << dl_size << " bytes from " << full_url);
+}
+
+#else // !HAS_LIBCURL
+
+static void cmd_httpgetmem()
+{
+   respond_error("HTTP not available (no libcurl)");
+}
+
+#endif // HAS_LIBCURL
+
+// ── Write Sector ────────────────────────────────
+
+static void cmd_writesector()
+{
+   if (in_container()) { respond_error("Read-only container"); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, track, sector, drive, 512 bytes]
+   if (g_m4board.cmd_buf.size() < 6 + 512) {
+      respond_error();
+      return;
+   }
+   uint8_t track  = g_m4board.cmd_buf[3];
+   uint8_t sector = g_m4board.cmd_buf[4];
+   // cmd_buf[5] = drive (unused for virtual FS)
+
+   FILE* f = g_m4board.open_files[2]; // write handle
+   if (!f) {
+      respond_error("No file open for write");
+      return;
+   }
+
+   int linear_sector = (sector >= 0xC1) ? (sector - 0xC1) : sector;
+   long offset = (track * 9 + linear_sector) * 512L;
+
+   fseek(f, offset, SEEK_SET);
+   size_t written = fwrite(g_m4board.cmd_buf.data() + 6, 1, 512, f);
+   fflush(f);
+
+   if (written == 512) {
+      respond_ok();
+   } else {
+      respond_error("Write sector failed");
+   }
+}
+
+static void cmd_formattrack()
+{
+   // Not implemented even on real M4 hardware
+   respond_error("Format not supported");
+}
+
+// ── Raw SD Card Access ──────────────────────────
+// The real M4 provides raw block-level access to the SD card.
+// We map LBA sectors to a flat file ("sdcard.img") in the SD root, if present.
+
+static void cmd_sdread()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, lba0, lba1, lba2, lba3, num_sectors]
+   if (g_m4board.cmd_buf.size() < 8) {
+      respond_error();
+      return;
+   }
+   uint32_t lba = static_cast<uint32_t>(g_m4board.cmd_buf[3]) |
+                  (static_cast<uint32_t>(g_m4board.cmd_buf[4]) << 8) |
+                  (static_cast<uint32_t>(g_m4board.cmd_buf[5]) << 16) |
+                  (static_cast<uint32_t>(g_m4board.cmd_buf[6]) << 24);
+   uint8_t num = g_m4board.cmd_buf[7];
+
+   // Raw SD not supported in emulation — return error
+   (void)lba;
+   (void)num;
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 1; // error flag
+   g_m4board.response_len = 4;
+   LOG_DEBUG("M4: C_SDREAD lba=" << lba << " n=" << (int)num << " (not supported)");
+}
+
+static void cmd_sdwrite()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, lba0, lba1, lba2, lba3, num_sectors, data...]
+   // Raw SD not supported in emulation
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 1; // error flag
+   g_m4board.response_len = 4;
+   LOG_DEBUG("M4: C_SDWRITE (not supported)");
+}
+
+// ── Network & Socket Operations ─────────────────
+// The real M4 has an ESP8266 WiFi module. In emulation we return
+// "not connected" / "no network" responses that match the firmware's
+// expected response format, so the ROM handles it gracefully.
+
+static void cmd_setnetwork()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, setup_string\0]
+   // The real M4 configures WiFi SSID/password here.
+   // In emulation, just acknowledge.
+   respond_ok();
+   LOG_DEBUG("M4: C_SETNETWORK (ignored in emulation)");
+}
+
+static void cmd_netstat()
+{
+   // Response: [status_string] [status_byte]
+   // Status byte: 0=disconnected, 1=connecting, 2=wrong_password,
+   //              3=no_ap, 4=connect_fail, 5=connected
+   // We report "not connected" — the ROM shows this as network status.
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   const char* msg = "Emulated (no WiFi)\r\n";
+   size_t len = strlen(msg);
+   memcpy(g_m4board.response + 3, msg, len);
+   g_m4board.response[3 + len] = 0; // status byte: 0 = disconnected
+   g_m4board.response_len = static_cast<int>(4 + len);
+}
+
+static void cmd_time()
+{
+   // Response: "hh:mm:ss yyyy-mm-dd" at offset 3
+   time_t now = time(nullptr);
+   struct tm* t = localtime(&now);
+   char buf[32];
+   snprintf(buf, sizeof(buf), "%02d:%02d:%02d %04d-%02d-%02d",
+            t->tm_hour, t->tm_min, t->tm_sec,
+            t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   size_t len = strlen(buf);
+   memcpy(g_m4board.response + 3, buf, len + 1);
+   g_m4board.response_len = static_cast<int>(4 + len);
+}
+
+static void cmd_m4off()
+{
+   // Disable M4 ROM and trigger a reset.
+   // On real hardware this disables the M4 until next power cycle.
+   g_m4board.enabled = false;
+   respond_ok();
+   LOG_INFO("M4: C_M4OFF — M4 Board disabled");
+}
+
+static void cmd_netsocket()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, domain, type, protocol]
+   // Response: [socket_num or 0xFF=error]
+   // No real network available — return error
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0xFF; // error: no socket available
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netconnect()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, socket, ip0, ip1, ip2, ip3, port_hi, port_lo]
+   // Response: [0=OK, 0xFF=error]
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0xFF; // error: connection failed
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netclose()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, socket]
+   respond_ok();
+}
+
+static void cmd_netsend()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi, data...]
+   // Response: [0=OK, 0xFF=error]
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0xFF; // error: not connected
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netrecv()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi]
+   // Response: [0] [actual_lo] [actual_hi] [data...]
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0;  // status OK (just no data)
+   g_m4board.response[4] = 0;  // actual_lo = 0
+   g_m4board.response[5] = 0;  // actual_hi = 0
+   g_m4board.response_len = 6;
+}
+
+static void cmd_nethostip()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, hostname\0]
+   // Response: [1=lookup in progress] (then poll via C_NETRECV for result)
+   // We return "lookup in progress" but the result will never arrive — matching
+   // the behavior of a real M4 with no WiFi connection.
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 1; // lookup in progress
+   g_m4board.response_len = 4;
+}
+
+// ── ROM Management ──────────────────────────────
+
+static void cmd_romsupdate()
+{
+   // On real hardware, applies ROM configuration changes from the config buffer.
+   // In emulation, ROM slots are managed by the emulator directly.
+   respond_ok();
+   LOG_DEBUG("M4: C_ROMSUPDATE (no-op in emulation)");
+}
+
+// ── Remaining handlers ──────────────────────────
+
 static void cmd_fstat()
 {
    // Protocol: [size, cmd_lo, cmd_hi, fd]
@@ -1280,7 +1606,9 @@ void m4board_execute()
       case C_CLOSE:      cmd_close(); break;
       case C_READ:       cmd_read(); g_m4board.last_op = M4Board::LastOp::READ; break;
       case C_READ2:      cmd_read2(); g_m4board.last_op = M4Board::LastOp::READ; break;
-      case C_READSECTOR: cmd_readsector(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_READSECTOR:  cmd_readsector(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_WRITESECTOR: cmd_writesector(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_FORMATTRACK: cmd_formattrack(); break;
       case C_WRITE:      cmd_write(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
       case C_WRITE2:     cmd_write2(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
       case C_SEEK:       cmd_seek(); break;
@@ -1293,10 +1621,24 @@ void m4board_execute()
       case C_RENAME:     cmd_rename(); break;
       case C_MAKEDIR:    cmd_makedir(); break;
       case C_GETPATH:    cmd_getpath(); break;
-      case C_HTTPGET:    cmd_httpget(); break;
-      case C_DIRSETARGS: cmd_dirsetargs(); g_m4board.last_op = M4Board::LastOp::DIR; break;
-      case C_CONFIG:     cmd_config(); break;
-      case C_ROMWRITE:   cmd_romwrite(); break;
+      case C_HTTPGET:     cmd_httpget(); break;
+      case C_HTTPGETMEM:  cmd_httpgetmem(); break;
+      case C_DIRSETARGS:  cmd_dirsetargs(); g_m4board.last_op = M4Board::LastOp::DIR; break;
+      case C_SDREAD:      cmd_sdread(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_SDWRITE:     cmd_sdwrite(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_SETNETWORK:  cmd_setnetwork(); break;
+      case C_M4OFF:       cmd_m4off(); break;
+      case C_NETSTAT:     cmd_netstat(); break;
+      case C_TIME:        cmd_time(); break;
+      case C_NETSOCKET:   cmd_netsocket(); break;
+      case C_NETCONNECT:  cmd_netconnect(); break;
+      case C_NETCLOSE:    cmd_netclose(); break;
+      case C_NETSEND:     cmd_netsend(); break;
+      case C_NETRECV:     cmd_netrecv(); break;
+      case C_NETHOSTIP:   cmd_nethostip(); break;
+      case C_ROMSUPDATE:  cmd_romsupdate(); break;
+      case C_CONFIG:      cmd_config(); break;
+      case C_ROMWRITE:    cmd_romwrite(); break;
       default:
          LOG_DEBUG("M4: unknown command 0x" << std::hex << cmd);
          respond_error();

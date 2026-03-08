@@ -40,7 +40,23 @@ static constexpr uint16_t C_FSTAT      = 0x4316;
 static constexpr uint16_t C_WRITE2     = 0x431B;
 static constexpr uint16_t C_DIRSETARGS = 0x4325;
 static constexpr uint16_t C_VERSION    = 0x4326;
-static constexpr uint16_t C_CONFIG     = 0x43FE;
+static constexpr uint16_t C_WRITESECTOR = 0x430C;
+static constexpr uint16_t C_FORMATTRACK = 0x430D;
+static constexpr uint16_t C_SDREAD      = 0x4314;
+static constexpr uint16_t C_SDWRITE     = 0x4315;
+static constexpr uint16_t C_SETNETWORK  = 0x4321;
+static constexpr uint16_t C_M4OFF       = 0x4322;
+static constexpr uint16_t C_NETSTAT     = 0x4323;
+static constexpr uint16_t C_TIME        = 0x4324;
+static constexpr uint16_t C_HTTPGETMEM  = 0x4328;
+static constexpr uint16_t C_ROMSUPDATE  = 0x432B;
+static constexpr uint16_t C_NETSOCKET   = 0x4331;
+static constexpr uint16_t C_NETCONNECT  = 0x4332;
+static constexpr uint16_t C_NETCLOSE    = 0x4333;
+static constexpr uint16_t C_NETSEND     = 0x4334;
+static constexpr uint16_t C_NETRECV     = 0x4335;
+static constexpr uint16_t C_NETHOSTIP   = 0x4336;
+static constexpr uint16_t C_CONFIG      = 0x43FE;
 
 class M4BoardTest : public ::testing::Test {
 protected:
@@ -722,4 +738,160 @@ TEST_F(M4BoardTest, ReadSectorInsideDsk) {
    // Sector C5 should contain our 0x42 data
    EXPECT_EQ(g_m4board.response[4], 0x42);
    EXPECT_EQ(g_m4board.response[4 + 511], 0x42);
+}
+
+// ── Tests for newly implemented commands ──────────
+
+TEST_F(M4BoardTest, WriteSectorToOpenFile) {
+   // Create a small "disk image" file
+   std::string path = (temp_dir / "disk.img").string();
+   FILE* f = fopen(path.c_str(), "wb");
+   std::vector<uint8_t> blank(9 * 512, 0xE5); // 1 track, 9 sectors
+   fwrite(blank.data(), 1, blank.size(), f);
+   fclose(f);
+
+   // Open for writing (handle 2)
+   std::vector<uint8_t> open_data = {0x0A}; // FA_WRITE | FA_CREATE_ALWAYS
+   std::string fname = "disk.img";
+   open_data.insert(open_data.end(), fname.begin(), fname.end());
+   open_data.push_back(0);
+   send_command(C_OPEN, open_data);
+   ASSERT_EQ(g_m4board.response[4], 0x00); // FR_OK (response[3] = fd)
+
+   // Write sector: track=0, sector=0xC1, drive=0, 512 bytes of 0xAA
+   std::vector<uint8_t> ws_data = {0, 0xC1, 0};
+   ws_data.insert(ws_data.end(), 512, 0xAA);
+   send_command(C_WRITESECTOR, ws_data);
+   EXPECT_EQ(g_m4board.response[3], 0x00); // OK
+
+   // Read back via READSECTOR to verify
+   // First close and reopen for reading
+   send_command(C_CLOSE, {2});
+   std::vector<uint8_t> open_read = {0x01}; // FA_READ
+   open_read.insert(open_read.end(), fname.begin(), fname.end());
+   open_read.push_back(0);
+   send_command(C_OPEN, open_read);
+
+   std::vector<uint8_t> rs_data = {0, 0xC1, 0}; // track, sector, drive
+   send_command(0x430B, rs_data); // C_READSECTOR
+   EXPECT_EQ(g_m4board.response[3], 0x00);
+   EXPECT_EQ(g_m4board.response[4], 0xAA);
+}
+
+TEST_F(M4BoardTest, WriteSectorBlockedInContainer) {
+   create_test_dsk(temp_dir / "ws.dsk", "FILE    .BIN", {0x01});
+   send_command_str(C_CD, "ws.dsk");
+   ASSERT_EQ(g_m4board.container_type, M4Board::ContainerType::DSK);
+
+   std::vector<uint8_t> ws_data = {0, 0xC1, 0};
+   ws_data.insert(ws_data.end(), 512, 0x00);
+   send_command(C_WRITESECTOR, ws_data);
+   EXPECT_EQ(g_m4board.response[0], 0xFF); // error
+}
+
+TEST_F(M4BoardTest, FormatTrackReturnsError) {
+   send_command(C_FORMATTRACK, {});
+   EXPECT_EQ(g_m4board.response[0], 0xFF); // not supported
+}
+
+TEST_F(M4BoardTest, SdReadReturnsError) {
+   // Protocol: lba0-3, num_sectors
+   send_command(C_SDREAD, {0, 0, 0, 0, 1});
+   EXPECT_EQ(g_m4board.response[3], 1); // error flag
+}
+
+TEST_F(M4BoardTest, SdWriteReturnsError) {
+   send_command(C_SDWRITE, {0, 0, 0, 0, 1});
+   EXPECT_EQ(g_m4board.response[3], 1); // error flag
+}
+
+TEST_F(M4BoardTest, SetNetworkAcknowledges) {
+   send_command_str(C_SETNETWORK, "ssid:password");
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+}
+
+TEST_F(M4BoardTest, NetstatReturnsDisconnected) {
+   send_command(C_NETSTAT, {});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+   // Status string should be present at offset 3
+   EXPECT_NE(g_m4board.response[3], 0); // non-empty string
+   // Find the null terminator after the string, then check status byte = 0
+   size_t i = 3;
+   while (i < M4Board::RESPONSE_SIZE && g_m4board.response[i] != 0) i++;
+   EXPECT_EQ(g_m4board.response[i], 0); // status byte = disconnected
+}
+
+TEST_F(M4BoardTest, TimeReturnsFormattedString) {
+   send_command(C_TIME, {});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+   // Should contain ":" (time) and "-" (date)
+   std::string time_str(reinterpret_cast<char*>(g_m4board.response + 3));
+   EXPECT_NE(time_str.find(':'), std::string::npos);
+   EXPECT_NE(time_str.find('-'), std::string::npos);
+   // Format: "hh:mm:ss yyyy-mm-dd" = 19 chars
+   EXPECT_GE(time_str.size(), 19u);
+}
+
+TEST_F(M4BoardTest, M4OffDisablesBoard) {
+   ASSERT_TRUE(g_m4board.enabled);
+   send_command(C_M4OFF, {});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+   EXPECT_FALSE(g_m4board.enabled);
+   // Re-enable for TearDown
+   g_m4board.enabled = true;
+}
+
+TEST_F(M4BoardTest, NetSocketReturnsError) {
+   // domain=2 (AF_INET), type=1 (SOCK_STREAM), protocol=0
+   send_command(C_NETSOCKET, {2, 1, 0});
+   EXPECT_EQ(g_m4board.response[3], 0xFF); // no socket
+}
+
+TEST_F(M4BoardTest, NetConnectReturnsError) {
+   // socket=0, ip=127.0.0.1, port=80
+   send_command(C_NETCONNECT, {0, 127, 0, 0, 1, 0, 80});
+   EXPECT_EQ(g_m4board.response[3], 0xFF); // connection failed
+}
+
+TEST_F(M4BoardTest, NetCloseOk) {
+   send_command(C_NETCLOSE, {0});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+}
+
+TEST_F(M4BoardTest, NetSendReturnsError) {
+   send_command(C_NETSEND, {0, 5, 0, 'H', 'e', 'l', 'l', 'o'});
+   EXPECT_EQ(g_m4board.response[3], 0xFF); // not connected
+}
+
+TEST_F(M4BoardTest, NetRecvReturnsEmpty) {
+   send_command(C_NETRECV, {0, 0xFF, 0x00}); // socket, size
+   EXPECT_EQ(g_m4board.response[3], 0); // status OK
+   EXPECT_EQ(g_m4board.response[4], 0); // actual_lo = 0
+   EXPECT_EQ(g_m4board.response[5], 0); // actual_hi = 0
+}
+
+TEST_F(M4BoardTest, NetHostIpReturnsLookupInProgress) {
+   send_command_str(C_NETHOSTIP, "example.com");
+   EXPECT_EQ(g_m4board.response[3], 1); // lookup in progress
+}
+
+TEST_F(M4BoardTest, RomsUpdateOk) {
+   send_command(C_ROMSUPDATE, {});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK
+}
+
+TEST_F(M4BoardTest, ActivityTracksNewCommands) {
+   g_m4board.activity_frames = 0;
+   send_command(C_TIME, {});
+   EXPECT_GT(g_m4board.activity_frames, 0);
+   EXPECT_EQ(g_m4board.last_op, M4Board::LastOp::CMD);
+
+   send_command(C_SDREAD, {0, 0, 0, 0, 1});
+   EXPECT_EQ(g_m4board.last_op, M4Board::LastOp::READ);
+
+   std::vector<uint8_t> ws_data = {0, 0xC1, 0};
+   ws_data.insert(ws_data.end(), 512, 0x00);
+   // Need a file open for write handle — just test SDWRITE tracking
+   send_command(C_SDWRITE, {0, 0, 0, 0, 1});
+   EXPECT_EQ(g_m4board.last_op, M4Board::LastOp::WRITE);
 }
