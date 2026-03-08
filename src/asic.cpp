@@ -375,6 +375,9 @@ bool asic_register_page_write(word addr, byte val) {
 
 void putpixel(SDL_Surface *surface, int x, int y, Uint32 pixel)
 {
+   if (!surface || x < 0 || y < 0 || x >= surface->w || y >= surface->h) {
+      return;
+   }
    int bpp = SDL_BYTESPERPIXEL(surface->format);
    /* Here p is the address to the pixel we want to set */
    Uint8 *p = static_cast<Uint8 *>(surface->pixels) + y * surface->pitch + x * bpp;

@@ -76,8 +76,10 @@ int CDiskFile::OpenAnyPath(char **path, const char *name, unsigned int mode)
 		// try each path entry in order
 		for (pos=0; path[pos]; pos++) {
 			// append name to current path entry
-			int len=sprintf(tempname, "%s", path[pos]);
-			sprintf(tempname+len, "%s", name);
+			int n = snprintf(tempname, sizeof(tempname), "%s%s", path[pos], name);
+			if (n < 0 || n >= (int)sizeof(tempname)) {
+				continue; // Buffer overflow protection
+			}
 
 			// open the file, return the name index position on success
 			if (!Open(tempname, mode))
@@ -248,6 +250,9 @@ void CDiskFile::MakePath(const char *filename)
 
 	// create each directory level delimited by / or \ if does not exist
 	for (int rpos = 0, wpos = 0; filename[rpos]; rpos++) {
+		if (wpos >= MAX_FILENAMELEN - 1)
+			break;
+
 		if (filename[rpos] == '/' || filename[rpos] == '\\') {
 			path[wpos] = 0;
 
@@ -354,7 +359,7 @@ int CDiskFile::FindFile(char *result, const char *filename, const char *filter)
 						if (!filter || FileNameMatch(filter, fn)) {
 							// success; copy the original path and add the entry found
 							memcpy(result, filename, pathlen);
-							strcpy(result + pathlen, fn);
+							snprintf(result + pathlen, MAX_FILENAMELEN - pathlen, "%s", fn);
 
 							// keep this result, don't copy the source
 							rescopy = 0;

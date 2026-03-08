@@ -3,7 +3,9 @@
 */
 
 #include "io_dispatch.h"
+#include "log.h"
 #include <cassert>
+#include <iostream>
 
 IODispatch g_io_dispatch;
 
@@ -13,7 +15,12 @@ void io_register_in(byte port_high, PeriphInHandler fn,
                     const bool* enabled, const char* name)
 {
    PortSlot& slot = g_io_dispatch.in_slots[port_high];
-   assert(slot.count < MAX_PORT_HANDLERS);
+   if (slot.count >= MAX_PORT_HANDLERS) {
+      LOG_ERROR("Expansion '" << name << "' cannot be enabled for I/O IN on port high-byte 0x"
+                << std::hex << (int)port_high << std::dec << ": the slot is full (max 4 handlers). "
+                << "Try disabling other expansions sharing this port range.");
+      return;
+   }
    auto& e = slot.entries[slot.count++];
    e.in_fn   = fn;
    e.enabled = enabled;
@@ -24,7 +31,12 @@ void io_register_out(byte port_high, PeriphOutHandler fn,
                      const bool* enabled, const char* name)
 {
    PortSlot& slot = g_io_dispatch.out_slots[port_high];
-   assert(slot.count < MAX_PORT_HANDLERS);
+   if (slot.count >= MAX_PORT_HANDLERS) {
+      LOG_ERROR("Expansion '" << name << "' cannot be enabled for I/O OUT on port high-byte 0x"
+                << std::hex << (int)port_high << std::dec << ": the slot is full (max 4 handlers). "
+                << "Try disabling other expansions sharing this port range.");
+      return;
+   }
    auto& e = slot.entries[slot.count++];
    e.out_fn  = fn;
    e.enabled = enabled;
@@ -34,28 +46,40 @@ void io_register_out(byte port_high, PeriphOutHandler fn,
 void io_register_kbd_read_hook(KeyboardReadHook fn, const bool* enabled)
 {
    auto& slot = g_io_dispatch.kbd_read_hooks;
-   assert(slot.count < MAX_HOOKS);
+   if (slot.count >= MAX_HOOKS) {
+      LOG_ERROR("Failed to register keyboard read hook: maximum capacity reached.");
+      return;
+   }
    slot.entries[slot.count++] = { fn, enabled };
 }
 
 void io_register_kbd_line_hook(NotifyHookInt fn, const bool* enabled)
 {
    auto& slot = g_io_dispatch.kbd_line_hooks;
-   assert(slot.count < MAX_HOOKS);
+   if (slot.count >= MAX_HOOKS) {
+      LOG_ERROR("Failed to register keyboard line hook: maximum capacity reached.");
+      return;
+   }
    slot.entries[slot.count++] = { fn, enabled };
 }
 
 void io_register_tape_motor_hook(NotifyHookBool fn, const bool* enabled)
 {
    auto& slot = g_io_dispatch.tape_motor_hooks;
-   assert(slot.count < MAX_HOOKS);
+   if (slot.count >= MAX_HOOKS) {
+      LOG_ERROR("Failed to register tape motor hook: maximum capacity reached.");
+      return;
+   }
    slot.entries[slot.count++] = { fn, enabled };
 }
 
 void io_register_fdc_motor_hook(NotifyHookBool fn, const bool* enabled)
 {
    auto& slot = g_io_dispatch.fdc_motor_hooks;
-   assert(slot.count < MAX_HOOKS);
+   if (slot.count >= MAX_HOOKS) {
+      LOG_ERROR("Failed to register FDC motor hook: maximum capacity reached.");
+      return;
+   }
    slot.entries[slot.count++] = { fn, enabled };
 }
 

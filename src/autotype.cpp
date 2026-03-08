@@ -121,10 +121,20 @@ bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
     apply_key(pending_release_key_, false);
     awaiting_release_ = false;
     pending_release_key_ = 0;
+    // Always wait one frame after a release before the next press.
+    // This ensures consecutive identical keys (like "ll") are registered
+    // as separate events by the CPC firmware.
+    inter_char_pause_ = true;
+    return true;
+  }
+
+  // Handle mandatory 1-frame pause between characters
+  if (inter_char_pause_) {
+    inter_char_pause_ = false;
     return !queue_.empty();
   }
 
-  // Handle active pause
+  // Handle active pause tag
   if (pause_counter_ > 0) {
     pause_counter_--;
     return true;
@@ -149,7 +159,9 @@ bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
 
     case AutoTypeAction::KEY_RELEASE:
       apply_key(action.cpc_key, false);
-      return !queue_.empty() || awaiting_release_;
+      // Even manual releases should probably trigger a pause to be safe
+      inter_char_pause_ = true;
+      return true;
 
     case AutoTypeAction::PAUSE:
       pause_counter_ = action.pause_frames - 1;  // -1 because this frame counts
@@ -160,7 +172,7 @@ bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
 }
 
 bool AutoTypeQueue::is_active() const {
-  return !queue_.empty() || awaiting_release_ || pause_counter_ > 0;
+  return !queue_.empty() || awaiting_release_ || pause_counter_ > 0 || inter_char_pause_;
 }
 
 size_t AutoTypeQueue::remaining() const {
@@ -172,4 +184,5 @@ void AutoTypeQueue::clear() {
   pause_counter_ = 0;
   awaiting_release_ = false;
   pending_release_key_ = 0;
+  inter_char_pause_ = false;
 }

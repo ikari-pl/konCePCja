@@ -1416,6 +1416,11 @@ static std::string get_host_ssid_uncached()
    }
    if (wifi_if.empty()) return "";
 
+   // Sanitize interface name to prevent command injection
+   for (char c : wifi_if) {
+      if (!isalnum(c) && c != '_' && c != '-' && c != '.') return "";
+   }
+
    std::string cmd = "networksetup -getairportnetwork " + wifi_if + " 2>/dev/null";
    FILE* pipe = popen(cmd.c_str(), "r");
    if (!pipe) return "";

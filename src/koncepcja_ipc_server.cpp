@@ -116,6 +116,88 @@ constexpr int kBasePort = 6543;
 constexpr int kMaxPortAttempts = 10;  // try 6543..6552
 KoncepcjaIpcServer* g_ipc_instance = nullptr;
 
+struct IpcCommand {
+  std::string name;
+  std::string category;
+  std::string usage;
+  std::string description;
+  std::string man_page;
+  std::function<std::string(const std::vector<std::string>&, const std::string&)> handler;
+};
+
+std::map<std::string, IpcCommand> g_ipc_commands;
+
+void register_command(const std::string& name, const std::string& category,
+                      const std::string& usage, const std::string& description,
+                      const std::string& man_page = "",
+                      std::function<std::string(const std::vector<std::string>&, const std::string&)> handler = nullptr) {
+  g_ipc_commands[name] = {name, category, usage, description, man_page, handler};
+}
+
+void init_command_registry() {
+  if (!g_ipc_commands.empty()) return;
+
+  register_command("ping", "CORE", "ping", "Check if server is alive",
+    "Pings the IPC server. The server will respond with 'OK pong' if it is operational.",
+    [](const auto&, const auto&) { return "OK pong\n"; });
+
+  register_command("version", "CORE", "version", "Get emulator and protocol version",
+    "Returns the emulator version string and the active IPC port number.",
+    [](const auto&, const auto&) {
+      int p = g_ipc_instance ? g_ipc_instance->port() : 0;
+      return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
+    });
+
+  register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
+    "Terminates the emulator process immediately. An optional integer exit code can be provided.");
+
+  register_command("pause", "CORE", "pause", "Pause emulation",
+    "Stops the Z80 CPU and machine timers. The UI remains responsive and can still be used to inspect state.");
+
+  register_command("run", "CORE", "run", "Resume emulation",
+    "Resumes the machine from a paused state.");
+
+  register_command("reset", "CORE", "reset [--no-resume]", "Reset the machine and resume (unless --no-resume is used)",
+    "Performs a hardware reset of the CPC. By default, emulation resumes immediately after reset. "
+    "Use --no-resume to keep the machine paused (useful for setting breakpoints before BIOS startup).");
+
+  register_command("load", "CORE", "load <file>", "Load a .DSK, .SNA, or .CPR file",
+    "Loads a media or state file. Supports Disk Images (.DSK), Snapshots (.SNA), and Cartridges (.CPR). "
+    "The file type is determined by the extension. For disks, it loads into Drive A.");
+
+  register_command("regs", "DEBUG", "regs", "Get all Z80 and core hardware registers",
+    "Returns a comprehensive list of all Z80 registers (AF, BC, HL, etc.), alternate registers, "
+    "and core hardware states (Gate Array, CRTC, PSG). Data is returned in space-separated key=val pairs.");
+
+  register_command("mem", "DEBUG", "mem read <addr> <len> | mem write <addr> <hex>", "Access emulated memory",
+    "Allows direct manipulation of the 64K/128K RAM space.\n"
+    "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
+    "  write: Writes the provided <hex> string into memory starting at <addr>.");
+
+  register_command("bp", "DEBUG", "bp list | bp add <addr> | bp del <id>", "Manage execution breakpoints",
+    "Controls execution breakpoints.\n"
+    "  list: Shows all active breakpoints with their IDs and addresses.\n"
+    "  add: Adds a new breakpoint at <addr>.\n"
+    "  del: Removes the breakpoint with the specified ID.");
+
+  register_command("step", "DEBUG", "step in [N] | step over [N] | step out | step frame [N]", "Step the CPU or emulation frame",
+    "Executes code and pauses again.\n"
+    "  in [N]:    Steps into exactly N instructions (default 1). Traces inside subroutines.\n"
+    "  over [N]:  Steps over the current CALL or RST. If not a call, it performs a single step.\n"
+    "  out:       Continues execution until the current subroutine returns.\n"
+    "  frame [N]: Steps exactly N video frames (1/50th of a second).");
+
+  register_command("input", "INPUT", "input key <scan> | input type <text>", "Simulate user input",
+    "Injects keyboard events directly into the emulated hardware.\n"
+    "  key: Toggles a specific CPC scancode.\n"
+    "  type: Automatically types a string of text. Supports WinAPE syntax (e.g., ~RETURN~).");
+
+  register_command("disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>", "Manage emulated floppy disks",
+    "High-level disk management.\n"
+    "  ls: Lists files on the disk currently in the specified drive.\n"
+    "  put: Copies a file from the host machine onto the emulated disk.");
+}
+
 void breakpoint_hit_hook(word pc, bool watchpoint) {
   if (g_ipc_instance) {
     g_ipc_instance->notify_breakpoint_hit(pc, watchpoint);
@@ -153,6 +235,7 @@ std::vector<std::string> split_ws(const std::string& s) {
 }
 
 std::string handle_command(const std::string& line) {
+  init_command_registry();
   if (line.empty()) return "OK\n";
   auto parts = split_ws(line);
   if (parts.empty()) return "OK\n";
@@ -160,12 +243,56 @@ std::string handle_command(const std::string& line) {
   try {
 
   const auto& cmd = parts[0];
-  if (cmd == "ping") return "OK pong\n";
-  if (cmd == "version") {
-    int p = g_ipc_instance ? g_ipc_instance->port() : 0;
-    return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
+
+  // Dispatch to registered handler if available
+  auto cmd_it = g_ipc_commands.find(cmd);
+  if (cmd_it != g_ipc_commands.end() && cmd_it->second.handler) {
+    return cmd_it->second.handler(parts, line);
   }
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source) m4(status/ls/cd/reset)\n";
+
+  if (cmd == "help") {
+    if (parts.size() > 1) {
+      auto it = g_ipc_commands.find(parts[1]);
+      if (it != g_ipc_commands.end()) {
+        std::ostringstream oss;
+        oss << "OK usage: " << it->second.usage << "\n";
+        oss << "DESCRIPTION: " << it->second.description << "\n";
+        if (!it->second.man_page.empty()) {
+          oss << "\n" << it->second.man_page << "\n";
+        }
+        return oss.str();
+      }
+      return "ERR 404 no specific help for '" + parts[1] + "'. Try 'help' for the list.\n";
+    }
+
+    std::map<std::string, std::vector<std::string>> categories;
+    for (const auto& [name, info] : g_ipc_commands) {
+      categories[info.category].push_back(info.usage);
+    }
+
+    std::ostringstream oss;
+    oss << "OK available commands (usage: help <command>):\n";
+    static const std::vector<std::string> order = {"CORE", "DEBUG", "HARDWARE", "INPUT", "MEDIA", "TOOLS"};
+    for (const auto& cat : order) {
+      if (categories.find(cat) == categories.end()) continue;
+      oss << "  " << std::setw(10) << std::left << (cat + ":") << " ";
+      const auto& cmds = categories[cat];
+      for (size_t i = 0; i < cmds.size(); i++) {
+        oss << cmds[i] << (i == cmds.size() - 1 ? "" : ", ");
+      }
+      oss << "\n";
+    }
+    return oss.str();
+  }
+
+  if (cmd == "commands") {
+    std::string resp = "OK\n";
+    for (const auto& [name, info] : g_ipc_commands) {
+      resp += name + "\n";
+    }
+    return resp;
+  }
+
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -188,11 +315,21 @@ std::string handle_command(const std::string& line) {
       unsigned int len = std::stoul(parts[3], nullptr, 0);
       uLong crc = crc32(0L, nullptr, 0);
       // Read through direct Z80 memory (SmartWatch only, no watchpoints)
-      std::vector<byte> tmp(len);
-      for (unsigned int i = 0; i < len; i++) {
-        tmp[i] = z80_read_mem(static_cast<word>(addr + i));
+      const unsigned int CHUNK_SIZE = 4096;
+      std::vector<byte> tmp(CHUNK_SIZE);
+      unsigned int remaining = len;
+      unsigned int current_addr = addr;
+
+      while (remaining > 0) {
+        unsigned int chunk = (remaining > CHUNK_SIZE) ? CHUNK_SIZE : remaining;
+        for (unsigned int i = 0; i < chunk; i++) {
+          tmp[i] = z80_read_mem(static_cast<word>(current_addr + i));
+        }
+        crc = crc32(crc, tmp.data(), static_cast<uInt>(chunk));
+        remaining -= chunk;
+        current_addr += chunk;
       }
-      crc = crc32(crc, tmp.data(), static_cast<uInt>(len));
+
       snprintf(buf, sizeof(buf), "OK crc32=%08lX\n", crc);
       return std::string(buf);
     }
@@ -229,6 +366,13 @@ std::string handle_command(const std::string& line) {
   }
   if (cmd == "reset") {
     emulator_reset();
+    bool no_resume = false;
+    for (size_t i = 1; i < parts.size(); i++) {
+      if (parts[i] == "--no-resume") no_resume = true;
+    }
+    if (!no_resume) {
+      cpc_resume();
+    }
     return "OK\n";
   }
   if (cmd == "load") {
@@ -1005,6 +1149,21 @@ std::string handle_command(const std::string& line) {
     return "ERR 400 bad-iobp-cmd (add|del|clear|list)\n";
   }
   if (cmd == "step") {
+    // "step in [N]" or "step [N]" — single-step instructions
+    if (parts.size() == 1 || (parts.size() >= 2 && (parts[1] == "in" || std::isdigit(parts[1][0])))) {
+      int count = 1;
+      if (parts.size() >= 2) {
+        if (parts[1] == "in") {
+          if (parts.size() >= 3) count = std::stoi(parts[2]);
+        } else {
+          try { count = std::stoi(parts[1]); } catch (...) { count = 1; }
+        }
+      }
+      for (int i = 0; i < count; i++) {
+        z80_step_instruction();
+      }
+      return "OK\n";
+    }
     // "step frame [N]" — advance N complete frames, then pause
     if (parts.size() >= 2 && parts[1] == "frame") {
       int n = 1;
@@ -1018,21 +1177,25 @@ std::string handle_command(const std::string& line) {
     }
     // "step over [N]" — step over CALL/RST (or single-step if not a call)
     if (parts.size() >= 2 && parts[1] == "over") {
-      cpc_pause();
       int count = 1;
       if (parts.size() >= 3) count = std::stoi(parts[2]);
       for (int i = 0; i < count; i++) {
         word pc = z80.PC.w.l;
         if (z80_is_call_or_rst(pc)) {
           int len = z80_instruction_length(pc);
-          z80_add_breakpoint_ephemeral(static_cast<word>(pc + len));
+          word next_pc = static_cast<word>(pc + len);
+          z80_add_breakpoint_ephemeral(next_pc);
           cpc_resume();
           // Wait for breakpoint hit
           auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
           while (true) {
             uint16_t hit_pc = 0;
             bool watch = false;
-            if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
+            if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
+              if (hit_pc == next_pc) break;
+              // If we hit a different breakpoint, stop stepping
+              return "OK breakpoint-hit\n";
+            }
             if (std::chrono::steady_clock::now() > deadline) {
               cpc_pause();
               return "ERR 408 timeout\n";

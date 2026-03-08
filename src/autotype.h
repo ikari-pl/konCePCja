@@ -43,6 +43,7 @@ private:
   // For CHAR_PRESS_RELEASE: press on one frame, release on next
   bool awaiting_release_ = false;
   uint16_t pending_release_key_ = 0;
+  bool inter_char_pause_ = false;
 };
 
 extern AutoTypeQueue g_autotype_queue;
