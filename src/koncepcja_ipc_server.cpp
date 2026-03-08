@@ -9,6 +9,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <map>
+#include <functional>
 #include <chrono>
 #include <cctype>
 #include <sstream>
