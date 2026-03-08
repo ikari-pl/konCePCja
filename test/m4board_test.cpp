@@ -918,15 +918,19 @@ TEST_F(M4BoardTest, NetSocketExhaustsSlots) {
       send_command(C_NETCLOSE, {static_cast<uint8_t>(i)});
 }
 
-TEST_F(M4BoardTest, NetConnectToClosedPort) {
-   // Create socket
+TEST_F(M4BoardTest, NetConnectNonBlocking) {
+   // Non-blocking connect to localhost:1 returns OK (EINPROGRESS) or error
+   // — either is valid, the key thing is we don't block the thread.
    send_command(C_NETSOCKET, {2, 1, 0});
    uint8_t slot = g_m4board.response[3];
    ASSERT_NE(slot, 0xFF);
 
-   // Connect to 127.0.0.1 port 1 (almost certainly closed/refused)
+   // Connect to 127.0.0.1 port 1 — with non-blocking socket, this
+   // returns 0x00 (EINPROGRESS) or 0xFF (immediate refusal)
    send_command(C_NETCONNECT, {slot, 127, 0, 0, 1, 0, 1});
-   EXPECT_EQ(g_m4board.response[3], 0xFF); // connection refused
+   uint8_t result = g_m4board.response[3];
+   EXPECT_TRUE(result == 0x00 || result == 0xFF)
+      << "Expected OK (in progress) or error, got " << (int)result;
 
    send_command(C_NETCLOSE, {slot});
 }

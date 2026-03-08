@@ -1137,7 +1137,8 @@ static size_t curl_write_mem(void* ptr, size_t size, size_t nmemb, void* userdat
       auto* bytes = static_cast<uint8_t*>(ptr);
       buf->data.insert(buf->data.end(), bytes, bytes + to_copy);
    }
-   return total; // pretend we consumed all (to avoid curl error)
+   // Return bytes actually stored; 0 when full stops the transfer.
+   return to_copy;
 }
 
 static void cmd_httpgetmem()
@@ -1187,7 +1188,8 @@ static void cmd_httpgetmem()
    CURLcode res = curl_easy_perform(curl);
    curl_easy_cleanup(curl);
 
-   if (res != CURLE_OK) {
+   // CURLE_WRITE_ERROR is expected when the buffer fills up (truncation).
+   if (res != CURLE_OK && !(res == CURLE_WRITE_ERROR && !membuf.data.empty())) {
       respond_error(curl_easy_strerror(res));
       return;
    }
@@ -1650,20 +1652,33 @@ static void cmd_netconnect()
                     static_cast<uint16_t>(g_m4board.cmd_buf[9]);
    addr.sin_port = htons(port);
 
+   // Set non-blocking before connect to avoid freezing the emulation thread
+   // on unreachable hosts (OS-level TCP timeout can be minutes).
+   sock_set_nonblocking(g_m4board.sockets[slot]);
+
    int result = connect(g_m4board.sockets[slot],
                         reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+
+   bool ok = (result == 0);
+   if (!ok) {
+#ifdef _WIN32
+      int err = WSAGetLastError();
+      ok = (err == WSAEINPROGRESS || err == WSAEWOULDBLOCK);
+#else
+      ok = (errno == EINPROGRESS);
+#endif
+   }
 
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
    g_m4board.response[2] = 0;
-   if (result == 0) {
-      // Connected — set non-blocking for subsequent recv calls
-      sock_set_nonblocking(g_m4board.sockets[slot]);
-      g_m4board.response[3] = 0; // OK
+   if (ok) {
+      g_m4board.response[3] = 0; // OK (connected or in progress)
       LOG_INFO("M4: C_NETCONNECT slot " << slot << " -> "
                << (int)g_m4board.cmd_buf[4] << "." << (int)g_m4board.cmd_buf[5] << "."
                << (int)g_m4board.cmd_buf[6] << "." << (int)g_m4board.cmd_buf[7]
-               << ":" << port);
+               << ":" << port
+               << (result == 0 ? " (connected)" : " (in progress)"));
    } else {
       g_m4board.response[3] = 0xFF; // error
       LOG_ERROR("M4: C_NETCONNECT failed for slot " << slot);
