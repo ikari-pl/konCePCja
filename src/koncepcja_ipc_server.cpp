@@ -315,6 +315,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "mem" && parts.size() >= 4) {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
       unsigned int len = std::stoul(parts[3], nullptr, 0);
+      if (len > 65536) len = 65536; // Clamp to full address space
       uLong crc = crc32(0L, nullptr, 0);
       // Read through direct Z80 memory (SmartWatch only, no watchpoints)
       const unsigned int CHUNK_SIZE = 4096;
@@ -1187,6 +1188,9 @@ std::string handle_command(const std::string& line) {
           int len = z80_instruction_length(pc);
           word next_pc = static_cast<word>(pc + len);
           z80_add_breakpoint_ephemeral(next_pc);
+          // Clear stale hits before resume to avoid race conditions
+          uint16_t dummy_pc; bool dummy_watch;
+          g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
           cpc_resume();
           // Wait for breakpoint hit
           auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1215,6 +1219,9 @@ std::string handle_command(const std::string& line) {
     if (parts.size() >= 2 && parts[1] == "out") {
       z80.step_out = 1;
       z80.step_out_addresses.clear();
+      // Clear stale hits before resume to avoid race conditions
+      uint16_t dummy_pc; bool dummy_watch;
+      g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
       cpc_resume();
       // Wait for step_out to complete (main loop pauses when step_in >= 2)
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1237,6 +1244,9 @@ std::string handle_command(const std::string& line) {
     if (parts.size() >= 3 && parts[1] == "to") {
       unsigned int addr = std::stoul(parts[2], nullptr, 0);
       z80_add_breakpoint_ephemeral(static_cast<word>(addr));
+      // Clear stale hits before resume to avoid race conditions
+      uint16_t dummy_pc; bool dummy_watch;
+      g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
       cpc_resume();
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (true) {
