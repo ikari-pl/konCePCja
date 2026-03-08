@@ -857,6 +857,38 @@ TEST_F(M4BoardTest, M4OffDisablesBoard) {
    g_m4board.enabled = true;
 }
 
+TEST_F(M4BoardTest, WifiDisableBlocksNetstat) {
+   g_m4board.network_enabled = false;
+   send_command(C_NETSTAT, {});
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   // Should report "WiFi disabled" and status byte 0 (disconnected)
+   const char* msg = reinterpret_cast<const char*>(g_m4board.response + 3);
+   EXPECT_NE(std::string(msg).find("disabled"), std::string::npos);
+   // Find null terminator and check status byte after it
+   size_t len = strlen(msg);
+   EXPECT_EQ(g_m4board.response[3 + len], 0);       // null terminator
+   EXPECT_EQ(g_m4board.response[3 + len + 1], 0);    // status: disconnected
+   g_m4board.network_enabled = true;
+}
+
+TEST_F(M4BoardTest, WifiDisableBlocksSocket) {
+   g_m4board.network_enabled = false;
+   send_command(C_NETSOCKET, {2, 1, 0});
+   EXPECT_EQ(g_m4board.response[0], 0xFF); // error
+   g_m4board.network_enabled = true;
+}
+
+TEST_F(M4BoardTest, WifiReenableRestoresNetwork) {
+   g_m4board.network_enabled = false;
+   send_command(C_NETSOCKET, {2, 1, 0});
+   EXPECT_EQ(g_m4board.response[0], 0xFF); // error while disabled
+   g_m4board.network_enabled = true;
+   send_command(C_NETSOCKET, {2, 1, 0});
+   EXPECT_EQ(g_m4board.response[0], 0x00); // OK when re-enabled
+   uint8_t slot = g_m4board.response[3];
+   if (slot != 0xFF) send_command(C_NETCLOSE, {slot});
+}
+
 TEST_F(M4BoardTest, NetSocketCreatesRealSocket) {
    // domain=2 (AF_INET), type=1 (SOCK_STREAM), protocol=0
    send_command(C_NETSOCKET, {2, 1, 0});

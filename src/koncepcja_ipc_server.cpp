@@ -3068,7 +3068,14 @@ std::string handle_command(const std::string& line) {
       m4board_reset();
       return "OK\n";
     }
-    return "ERR 400 usage: m4 (status|ls|cd|reset)\n";
+    if (parts[1] == "wifi") {
+      if (parts.size() < 3) {
+        return std::string("OK ") + (g_m4board.network_enabled ? "1" : "0") + "\n";
+      }
+      g_m4board.network_enabled = (parts[2] != "0");
+      return "OK\n";
+    }
+    return "ERR 400 usage: m4 (status|ls|cd|reset|wifi)\n";
   }
 
   return "ERR 501 not-implemented\n";

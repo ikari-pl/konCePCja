@@ -1012,6 +1012,7 @@ static size_t curl_write_file(void* ptr, size_t size, size_t nmemb, void* userda
 
 static void cmd_httpget()
 {
+   if (!g_m4board.network_enabled) { respond_error("WiFi disabled"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, "url:port/file"]
    // URL format: [@ prefix]host[:port]/path[>outfile]
    std::string raw_url = extract_string(g_m4board.cmd_buf, 3);
@@ -1141,6 +1142,7 @@ static size_t curl_write_mem(void* ptr, size_t size, size_t nmemb, void* userdat
 
 static void cmd_httpgetmem()
 {
+   if (!g_m4board.network_enabled) { respond_error("WiFi disabled"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, size_hi, size_lo, url\0]
    // Downloads to CPC memory instead of SD card
    if (g_m4board.cmd_buf.size() < 6) {
@@ -1477,6 +1479,19 @@ static void cmd_netstat()
    // Status byte: 0=disconnected, 1=connecting, 2=wrong_password,
    //              3=no_ap, 4=connect_fail, 5=connected
    // Report the host computer's actual network state.
+   // If network is disabled (|WIFI,0), report disconnected.
+   if (!g_m4board.network_enabled) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      const char* msg = "WiFi disabled\r\n";
+      size_t len = strlen(msg);
+      memcpy(g_m4board.response + 3, msg, len);
+      g_m4board.response[3 + len] = 0;     // null terminator
+      g_m4board.response[3 + len + 1] = 0;  // status: disconnected
+      g_m4board.response_len = static_cast<int>(5 + len);
+      return;
+   }
    std::string ip = get_host_ip();
    std::string ssid = get_host_ssid();
 
@@ -1510,7 +1525,7 @@ static void cmd_time()
    // Response: "hh:mm:ss yyyy-mm-dd" at offset 3
    time_t now = time(nullptr);
    struct tm* t = localtime(&now);
-   char buf[32];
+   char buf[64];
    snprintf(buf, sizeof(buf), "%02d:%02d:%02d %04d-%02d-%02d",
             t->tm_hour, t->tm_min, t->tm_sec,
             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
@@ -1565,6 +1580,7 @@ static void m4_close_all_sockets()
 
 static void cmd_netsocket()
 {
+   if (!g_m4board.network_enabled) { respond_error(); return; }
 #ifdef _WIN32
    ensure_winsock_init();
 #endif
@@ -1606,6 +1622,7 @@ static void cmd_netsocket()
 
 static void cmd_netconnect()
 {
+   if (!g_m4board.network_enabled) { respond_error(); return; }
    // Protocol: [size, cmd_lo, cmd_hi, socket, ip0, ip1, ip2, ip3, port_hi, port_lo]
    if (g_m4board.cmd_buf.size() < 10) {
       respond_error();
@@ -1673,6 +1690,7 @@ static void cmd_netclose()
 
 static void cmd_netsend()
 {
+   if (!g_m4board.network_enabled) { respond_error(); return; }
    // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi, data...]
    if (g_m4board.cmd_buf.size() < 6) {
       respond_error();
@@ -1708,6 +1726,7 @@ static void cmd_netsend()
 
 static void cmd_netrecv()
 {
+   if (!g_m4board.network_enabled) { respond_error(); return; }
    // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi]
    // Response: [0] [actual_lo] [actual_hi] [data...]
    if (g_m4board.cmd_buf.size() < 6) {
@@ -1756,6 +1775,7 @@ static void cmd_netrecv()
 
 static void cmd_nethostip()
 {
+   if (!g_m4board.network_enabled) { respond_error(); return; }
 #ifdef _WIN32
    ensure_winsock_init();
 #endif
@@ -2002,6 +2022,7 @@ void m4board_reset()
    g_m4board.last_op = M4Board::LastOp::NONE;
    g_m4board.last_filename.clear();
    g_m4board.cmd_count = 0;
+   g_m4board.network_enabled = true;  // |WIFI,0 resets on power cycle
    m4_close_all_sockets();
 }
 

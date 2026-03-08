@@ -21,6 +21,7 @@ struct t_drive;
 
 struct M4Board {
    bool enabled = false;
+   bool network_enabled = true;    // |WIFI,0 / |WIFI,1 toggle
    std::string sd_root_path;       // host directory = virtual SD
    std::string current_dir = "/";
 
