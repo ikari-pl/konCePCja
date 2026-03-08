@@ -33,6 +33,7 @@ extern t_CRTC CRTC;
 extern t_GateArray GateArray;
 extern t_VDU VDU;
 extern t_z80regs z80;
+extern SDL_Surface *back_surface;
 
 extern dword dwXScale;
 extern byte *pbRAM;
@@ -1460,4 +1461,101 @@ void crtc_reset()
    MinVSync = MID_VHOLD;
    MaxVSync = MinVSync + MIN_VHOLD_RANGE + static_cast<int>(ceil(static_cast<float>((MinVSync - MIN_VHOLD) *
     (MAX_VHOLD_RANGE - MIN_VHOLD_RANGE) / (MAX_VHOLD - MIN_VHOLD))));
+}
+
+void video_repaint_from_ram()
+{
+   if (!back_surface) return;
+
+   // Save ALL global state that crtc_cycle and its sub-functions touch
+   t_CRTC crtc_save = CRTC;
+   t_VDU vdu_save = VDU;
+   t_GateArray ga_save = GateArray;
+   t_z80regs z80_save = z80;
+   t_flags1 flags1_save = flags1;
+   t_new_dt new_dt_save = new_dt;
+   dword LastPreRend_save = LastPreRend;
+   void (*PreRender_save)() = PreRender;
+   byte* scr_pos_save = CPC.scr_pos;
+   byte* scr_base_save = CPC.scr_base;
+   int HorzPos_save = HorzPos;
+   int iMonHSPeakPos_save = iMonHSPeakPos;
+   int iMonHSStartPos_save = iMonHSStartPos;
+   int iMonHSEndPos_save = iMonHSEndPos;
+   int iMonHSPeakToStart_save = iMonHSPeakToStart;
+   int iMonHSStartToPeak_save = iMonHSStartToPeak;
+   int iMonHSEndToPeak_save = iMonHSEndToPeak;
+   int iMonHSPeakToEnd_save = iMonHSPeakToEnd;
+   int MonHSYNC_save = MonHSYNC;
+   int MonFreeSync_save = MonFreeSync;
+   int HSyncDuration_save = HSyncDuration;
+   int MinHSync_save = MinHSync;
+   int MaxHSync_save = MaxHSync;
+   int HadP_save = HadP;
+   byte HorzChar_save = HorzChar;
+   byte HorzMax_save = HorzMax;
+   byte* RendWid_save = RendWid;
+   byte* RendOut_save = RendOut;
+   dword* RendPos_save = RendPos;
+   dword* ModeMap_save = ModeMap;
+
+   // Initialize state for a clean frame render starting from a known point
+   restart_frame();
+   
+   // Set surface start
+   CPC.scr_base = static_cast<byte*>(back_surface->pixels);
+   CPC.scr_pos = CPC.scr_base;
+   VDU.scrln = 0;
+   VDU.scanline = 0;
+   VDU.flag_drawing = 1;
+   VDU.frame_completed = 0;
+   
+   // Ensure PreRender is correctly initialized for the current mode
+   LastPreRend = 0; 
+   set_prerender();
+   ModeMap = ModeMaps[GateArray.scr_mode];
+
+   // Horizontal timing setup (match initial values from crtc_reset/init)
+   HorzPos = -HSyncDuration; 
+   HorzChar = 0;
+   HorzMax = 48;
+
+   // Render the frame cycle-by-cycle.
+   // Standard frame is ~64000 cycles (312 lines * 64 chars/line).
+   // 100,000 is a safe upper bound.
+   for (int i = 0; i < 100000 && !VDU.frame_completed; i++) {
+      crtc_cycle(1);
+   }
+
+   // Restore ALL saved state
+   CRTC = crtc_save;
+   VDU = vdu_save;
+   GateArray = ga_save;
+   z80 = z80_save;
+   flags1 = flags1_save;
+   new_dt = new_dt_save;
+   LastPreRend = LastPreRend_save;
+   PreRender = PreRender_save;
+   CPC.scr_pos = scr_pos_save;
+   CPC.scr_base = scr_base_save;
+   HorzPos = HorzPos_save;
+   iMonHSPeakPos = iMonHSPeakPos_save;
+   iMonHSStartPos = iMonHSStartPos_save;
+   iMonHSEndPos = iMonHSEndPos_save;
+   iMonHSPeakToStart = iMonHSPeakToStart_save;
+   iMonHSStartToPeak = iMonHSStartToPeak_save;
+   iMonHSEndToPeak = iMonHSEndToPeak_save;
+   iMonHSPeakToEnd = iMonHSPeakToEnd_save;
+   MonHSYNC = MonHSYNC_save;
+   MonFreeSync = MonFreeSync_save;
+   HSyncDuration = HSyncDuration_save;
+   MinHSync = MinHSync_save;
+   MaxHSync = MaxHSync_save;
+   HadP = HadP_save;
+   HorzChar = HorzChar_save;
+   HorzMax = HorzMax_save;
+   RendWid = RendWid_save;
+   RendOut = RendOut_save;
+   RendPos = RendPos_save;
+   ModeMap = ModeMap_save;
 }

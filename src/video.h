@@ -74,4 +74,10 @@ void video_request_window_screenshot(const std::string& path);
 // Call from main loop after video_display() to capture pending screenshots.
 void video_take_pending_window_screenshot();
 
+extern std::atomic<bool> g_repaint_pending;
+extern std::atomic<bool> g_repaint_done;
+extern std::mutex g_repaint_mutex;
+extern std::string g_repaint_screenshot_path;
+extern std::string g_repaint_error;
+
 #endif

@@ -104,6 +104,12 @@ extern video_plugin* vid_plugin;
 static std::mutex g_wss_mutex;
 static std::string g_wss_pending_path;
 
+std::atomic<bool> g_repaint_pending{false};
+std::atomic<bool> g_repaint_done{false};
+std::mutex g_repaint_mutex;
+std::string g_repaint_screenshot_path;
+std::string g_repaint_error;
+
 void video_request_window_screenshot(const std::string& path) {
   std::lock_guard<std::mutex> lock(g_wss_mutex);
   g_wss_pending_path = path;

@@ -198,6 +198,12 @@ void init_command_registry() {
     "High-level disk management.\n"
     "  ls: Lists files on the disk currently in the specified drive.\n"
     "  put: Copies a file from the host machine onto the emulated disk.");
+
+  register_command("repaint", "DEBUG", "repaint [--screenshot PATH]", "Force screen render from current RAM state (no CPU advancement)",
+    "Re-renders the CPC display from the current CRTC registers and video RAM "
+    "contents without advancing the Z80 CPU. Useful when the CPU is paused and "
+    "the display surface may not reflect the latest writes to screen memory.\n"
+    "  --screenshot PATH  Save the repainted frame as a PNG file.");
 }
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
@@ -378,6 +384,42 @@ std::string handle_command(const std::string& line) {
     }
     return "OK\n";
   }
+  if (cmd == "repaint") {
+    std::string shot_path;
+    for (size_t i = 1; i < parts.size(); i++) {
+      if (parts[i] == "--screenshot" && i + 1 < parts.size()) {
+        shot_path = parts[i+1];
+        break;
+      }
+    }
+    
+    {
+      std::lock_guard<std::mutex> lock(g_repaint_mutex);
+      g_repaint_screenshot_path = shot_path;
+      g_repaint_error.clear();
+      g_repaint_done.store(false);
+      g_repaint_pending.store(true);
+    }
+    
+    // Wait for completion (with 5s timeout)
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!g_repaint_done.load()) {
+      if (std::chrono::steady_clock::now() > deadline) {
+        return "ERR 408 timeout\n";
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    {
+      std::lock_guard<std::mutex> lock(g_repaint_mutex);
+      if (!g_repaint_error.empty()) {
+        return "ERR 500 " + g_repaint_error + "\n";
+      }
+    }
+    
+    return "OK\n";
+  }
+
   if (cmd == "load") {
     if (parts.size() < 2) return "ERR 400 bad-args\n";
     const std::string& path = parts[1];
