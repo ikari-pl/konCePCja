@@ -165,7 +165,7 @@ std::string handle_command(const std::string& line) {
     int p = g_ipc_instance ? g_ipc_instance->port() : 0;
     return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
   }
-  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source)\n";
+  if (cmd == "help") return "OK commands: ping version help quit pause run reset load regs reg(set/get) regs(crtc/ga/psg/asic) regs_asic(dma/sprites/interrupts/palette) asic(sprite/palette/dma) mem(read/write/fill/compare/find/cpu-read/cpu-write) bp(list/add/del/clear) wp(add/del/clear/list) iobp(add/del/clear/list) step(N/over/out/to/frame) wait hash(vram/mem/regs) screenshot snapshot(save/load) disasm(follow/refs/export) devtools input(keydown/keyup/key/type/joy) trace(on/off/dump/on_crash/status) frames(dump) event(on/once/off/list) timer(list/clear) sym(load/add/del/list/lookup) stack autotype(text/status/clear) disk(formats/format/new/ls/cat/get/put/rm/info/sector) record(wav/ym/avi) poke(load/list/apply/unapply/write) profile(list/current/load/save/delete) config(get/set) status(drives) search(hex/text/asm) rom(list/load/unload/info) data(mark/clear/list) gfx(view/decode/paint/palette) sdisc(status/clear/save/load) session(record/play/stop/status) asm(text/load/assemble/errors/symbols/source) m4(status/ls/cd/reset)\n";
   if (cmd == "quit") {
     int code = 0;
     if (parts.size() >= 2) code = std::stoi(parts[1]);
@@ -2947,6 +2947,135 @@ std::string handle_command(const std::string& line) {
       return "OK " + std::string(g_devtools_ui.asm_source_buf()) + "\n";
     }
     return "ERR 400 usage: asm (text|load|assemble|errors|symbols|source)\n";
+  }
+
+  // ── m4 ──
+  if (cmd == "m4" && parts.size() >= 2) {
+    if (parts[1] == "status") {
+      int open_files = 0;
+      for (int i = 0; i < 4; i++) {
+        if (g_m4board.open_files[i]) open_files++;
+      }
+      std::ostringstream oss;
+      oss << "OK enabled=" << (g_m4board.enabled ? 1 : 0)
+          << " sd_path=" << (g_m4board.sd_root_path.empty() ? "(none)" : g_m4board.sd_root_path)
+          << " dir=" << g_m4board.current_dir
+          << " files=" << open_files << "/4"
+          << " cmds=" << g_m4board.cmd_count << "\n";
+      return oss.str();
+    }
+    if (parts[1] == "ls") {
+      if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
+      // Inside a DSK container — list files from the disk image, not the host FS
+      if (g_m4board.container_type != M4Board::ContainerType::NONE
+          && g_m4board.container_drive) {
+        std::string err;
+        auto files = disk_list_files(g_m4board.container_drive, err);
+        if (!err.empty()) return "ERR 500 " + err + "\n";
+        std::string resp = "OK\n";
+        for (const auto& f : files)
+          resp += f.display_name + "\n";
+        return resp;
+      }
+      try {
+        auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
+        std::filesystem::path dir_path = root / g_m4board.current_dir.substr(1);
+        auto dir = std::filesystem::weakly_canonical(dir_path);
+        // Verify dir is inside root (component-wise, not string prefix)
+        auto rel = dir.lexically_normal().lexically_relative(root.lexically_normal());
+        if (rel.empty() || (!rel.empty() && *rel.begin() == ".."))
+          return "ERR 403 path-traversal\n";
+        std::string resp = "OK\n";
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+          std::string name = entry.path().filename().string();
+          if (name.empty() || name[0] == '.') continue;
+          if (entry.is_directory()) resp += ">" + name + "\n";
+          else resp += name + "\n";
+        }
+        return resp;
+      } catch (const std::filesystem::filesystem_error& e) {
+        return "ERR 500 " + std::string(e.what()) + "\n";
+      }
+    }
+    if (parts[1] == "cd" && parts.size() >= 3) {
+      std::string path = parts[2];
+      if (path == "/") {
+        // Exit container if inside one, then go to root
+        if (g_m4board.container_type != M4Board::ContainerType::NONE) {
+          // container_exit is static in m4board.cpp; replicate its effect
+          if (g_m4board.container_drive) {
+            dsk_eject(g_m4board.container_drive);
+            delete g_m4board.container_drive;
+            g_m4board.container_drive = nullptr;
+          }
+          g_m4board.container_parent_dir.clear();
+          g_m4board.container_host_path.clear();
+          g_m4board.container_type = M4Board::ContainerType::NONE;
+        }
+        g_m4board.current_dir = "/";
+        return "OK /\n";
+      }
+      // "cd .." from inside a container exits the container
+      if ((path == ".." || path == "../")
+          && g_m4board.container_type != M4Board::ContainerType::NONE) {
+        std::string parent = g_m4board.container_parent_dir;
+        if (g_m4board.container_drive) {
+          dsk_eject(g_m4board.container_drive);
+          delete g_m4board.container_drive;
+          g_m4board.container_drive = nullptr;
+        }
+        g_m4board.container_parent_dir.clear();
+        g_m4board.container_host_path.clear();
+        g_m4board.container_type = M4Board::ContainerType::NONE;
+        g_m4board.current_dir = parent.empty() ? "/" : parent;
+        return "OK " + g_m4board.current_dir + "\n";
+      }
+      // Cannot navigate further inside a container (no subdirs in DSK)
+      if (g_m4board.container_type != M4Board::ContainerType::NONE)
+        return "ERR 400 cannot-cd-inside-container\n";
+      if (g_m4board.sd_root_path.empty()) return "ERR 400 no-sd-path\n";
+      try {
+        auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
+        std::filesystem::path full_path = root;
+        if (path.front() == '/') {
+          full_path /= path.substr(1);
+        } else {
+          full_path /= g_m4board.current_dir.substr(1);
+          full_path /= path;
+        }
+        auto canonical = std::filesystem::weakly_canonical(full_path);
+        // Component-aware path traversal check
+        auto rel = canonical.lexically_normal().lexically_relative(root.lexically_normal());
+        if (rel.empty() || (!rel.empty() && *rel.begin() == ".."))
+          return "ERR 403 path-traversal\n";
+        if (!std::filesystem::is_directory(canonical)) return "ERR 404 not-a-directory\n";
+        std::string rel_str;
+        if (rel == ".") {
+          rel_str = "/";
+        } else {
+          rel_str = "/" + rel.generic_string();
+          if (rel_str.back() != '/') rel_str += '/';
+        }
+        g_m4board.current_dir = rel_str;
+        return "OK " + rel_str + "\n";
+      } catch (const std::filesystem::filesystem_error& e) {
+        return "ERR 500 " + std::string(e.what()) + "\n";
+      }
+    }
+    if (parts[1] == "reset") {
+      if (!CPC.paused) return "ERR 400 pause-first\n";
+      m4board_cleanup();
+      m4board_reset();
+      return "OK\n";
+    }
+    if (parts[1] == "wifi") {
+      if (parts.size() < 3) {
+        return std::string("OK ") + (g_m4board.network_enabled ? "1" : "0") + "\n";
+      }
+      g_m4board.network_enabled = (parts[2] != "0");
+      return "OK\n";
+    }
+    return "ERR 400 usage: m4 (status|ls|cd|reset|wifi)\n";
   }
 
   return "ERR 501 not-implemented\n";

@@ -1,11 +1,38 @@
 #include "m4board.h"
+#include "disk.h"
+#include "disk_file_editor.h"
 #include "log.h"
+#include <cctype>
+#include <chrono>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <algorithm>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "ws2_32.lib")
+#endif
+#else
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#endif
 #ifdef HAS_LIBCURL
 #include <curl/curl.h>
 #endif
+
+// Forward declarations from slotshandler.cpp
+int dsk_load(const std::string& filename, t_drive* drive);
+void dsk_eject(t_drive* drive);
 
 M4Board g_m4board;
 
@@ -30,12 +57,49 @@ static constexpr uint16_t C_DIRSETARGS = 0x4325;
 static constexpr uint16_t C_VERSION    = 0x4326;
 static constexpr uint16_t C_READSECTOR = 0x430B;
 static constexpr uint16_t C_READ2      = 0x4312;
-static constexpr uint16_t C_ROMWRITE   = 0x43FD;
-static constexpr uint16_t C_CONFIG     = 0x43FE;
+static constexpr uint16_t C_FSTAT      = 0x4316;
+static constexpr uint16_t C_WRITE2     = 0x431B;
+static constexpr uint16_t C_WRITESECTOR = 0x430C;
+static constexpr uint16_t C_FORMATTRACK = 0x430D;
+static constexpr uint16_t C_SDREAD      = 0x4314;
+static constexpr uint16_t C_SDWRITE     = 0x4315;
+static constexpr uint16_t C_SETNETWORK  = 0x4321;
+static constexpr uint16_t C_M4OFF       = 0x4322;
+static constexpr uint16_t C_NETSTAT     = 0x4323;
+static constexpr uint16_t C_TIME        = 0x4324;
+static constexpr uint16_t C_HTTPGETMEM  = 0x4328;
+static constexpr uint16_t C_ROMSUPDATE  = 0x432B;
+static constexpr uint16_t C_NETSOCKET   = 0x4331;
+static constexpr uint16_t C_NETCONNECT  = 0x4332;
+static constexpr uint16_t C_NETCLOSE    = 0x4333;
+static constexpr uint16_t C_NETSEND     = 0x4334;
+static constexpr uint16_t C_NETRECV     = 0x4335;
+static constexpr uint16_t C_NETHOSTIP   = 0x4336;
+static constexpr uint16_t C_ROMWRITE    = 0x43FD;
+static constexpr uint16_t C_CONFIG      = 0x43FE;
 
 // Response status codes
 static constexpr uint8_t M4_OK    = 0x00;
 static constexpr uint8_t M4_ERROR = 0xFF;
+
+#ifdef _WIN32
+// One-time Winsock initialisation for socket-based commands.
+static bool ensure_winsock_init()
+{
+   static bool ok = false;
+   static bool tried = false;
+   if (tried) return ok;
+   tried = true;
+   WSADATA wsa;
+   int err = WSAStartup(MAKEWORD(2, 2), &wsa);
+   if (err != 0) {
+      LOG_ERROR("M4: WSAStartup failed with error " << err);
+      return false;
+   }
+   ok = true;
+   return true;
+}
+#endif
 
 // ── Path Safety ─────────────────────────────────
 
@@ -54,17 +118,16 @@ static std::string resolve_path(const std::string& rel_path)
       full += rel_path;
    }
 
-   // Resolve and verify it's within sd_root_path
+   // Resolve and verify it's within sd_root_path (component-aware check)
    try {
       auto canonical = std::filesystem::weakly_canonical(full);
       auto root_canonical = std::filesystem::weakly_canonical(base);
-      std::string cs = canonical.string();
-      std::string rs = root_canonical.string();
-      if (cs.substr(0, rs.size()) != rs) {
+      auto rel = canonical.lexically_normal().lexically_relative(root_canonical.lexically_normal());
+      if (rel.empty() || (!rel.empty() && *rel.begin() == "..")) {
          LOG_ERROR("M4: path traversal blocked: " << full);
          return "";
       }
-      return cs;
+      return canonical.string();
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
       return "";
@@ -125,6 +188,44 @@ static void respond_error_code(uint8_t code)
    g_m4board.response_len = 5;
 }
 
+// ── Container Helpers ───────────────────────────
+
+static void container_exit()
+{
+   if (g_m4board.container_drive) {
+      dsk_eject(g_m4board.container_drive);
+      delete g_m4board.container_drive;
+      g_m4board.container_drive = nullptr;
+   }
+   g_m4board.current_dir = g_m4board.container_parent_dir;
+   g_m4board.container_parent_dir.clear();
+   g_m4board.container_host_path.clear();
+   g_m4board.container_type = M4Board::ContainerType::NONE;
+}
+
+static bool container_enter_dsk(const std::string& host_path, const std::string& parent_dir)
+{
+   auto* drive = new t_drive{};
+   int rc = dsk_load(host_path, drive);
+   if (rc != 0) {
+      delete drive;
+      return false;
+   }
+   g_m4board.container_drive = drive;
+   g_m4board.container_type = M4Board::ContainerType::DSK;
+   g_m4board.container_host_path = host_path;
+   g_m4board.container_parent_dir = parent_dir;
+   // current_dir shows the container filename as a virtual directory
+   auto fname = std::filesystem::path(host_path).filename().string();
+   g_m4board.current_dir = parent_dir + fname + "/";
+   return true;
+}
+
+static bool in_container()
+{
+   return g_m4board.container_type != M4Board::ContainerType::NONE;
+}
+
 // ── Command Handlers ────────────────────────────
 
 static void cmd_version()
@@ -142,9 +243,25 @@ static void cmd_version()
 static void cmd_cd()
 {
    std::string path = extract_string(g_m4board.cmd_buf, 3);
+
+   // cd "/" — go to root, exit any container
    if (path == "/") {
+      if (in_container()) container_exit();
       g_m4board.current_dir = "/";
       respond_ok();
+      return;
+   }
+
+   // cd ".." from inside a container — exit the container
+   if ((path == ".." || path == "../") && in_container()) {
+      container_exit();
+      respond_ok();
+      return;
+   }
+
+   // Can't navigate further inside a container (no subdirectories in DSK)
+   if (in_container()) {
+      respond_error("Not a directory");
       return;
    }
 
@@ -157,13 +274,30 @@ static void cmd_cd()
    try {
       if (std::filesystem::is_directory(resolved)) {
          auto root_canonical = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
-         std::string rel = resolved.substr(root_canonical.string().size());
-         if (rel.empty()) rel = "/";
-         if (rel.back() != '/') rel += '/';
-         g_m4board.current_dir = rel;
+         auto rel = std::filesystem::path(resolved).lexically_normal().lexically_relative(
+            root_canonical.lexically_normal());
+         std::string rel_str;
+         if (rel == ".") {
+            rel_str = "/";
+         } else {
+            rel_str = "/" + rel.generic_string();
+            if (rel_str.back() != '/') rel_str += '/';
+         }
+         g_m4board.current_dir = rel_str;
          respond_ok();
       } else {
-         respond_error("Not a directory");
+         // Check if it's a DSK file — enter as container
+         std::string lower = path;
+         for (auto& c : lower) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+         if (lower.size() >= 4 && lower.substr(lower.size() - 4) == ".dsk") {
+            if (container_enter_dsk(resolved, g_m4board.current_dir)) {
+               respond_ok();
+            } else {
+               respond_error("Cannot open DSK");
+            }
+         } else {
+            respond_error("Not a directory");
+         }
       }
    } catch (const std::filesystem::filesystem_error& e) {
       LOG_ERROR("M4: " << e.what());
@@ -176,6 +310,20 @@ static void dir_populate()
 {
    g_m4board.dir_entries.clear();
    g_m4board.dir_index = 0;
+
+   // Inside a DSK container — list CP/M directory entries
+   if (in_container() && g_m4board.container_drive) {
+      std::string err;
+      auto files = disk_list_files(g_m4board.container_drive, err);
+      if (!err.empty()) {
+         LOG_ERROR("M4: container dir_populate: " << err);
+         return;
+      }
+      for (const auto& f : files) {
+         g_m4board.dir_entries.push_back({f.display_name, false, f.size_bytes});
+      }
+      return;
+   }
 
    std::string resolved = resolve_path(g_m4board.current_dir);
    if (resolved.empty()) return;
@@ -345,6 +493,70 @@ static FILE* try_open_cpc(const std::string& dir_path, const std::string& filena
    return nullptr;
 }
 
+// Cross-platform temporary file creation.
+// On POSIX, tmpfile() works reliably. On Windows it often fails due to
+// permissions (tries to create in the root of C:\).
+static FILE* portable_tmpfile()
+{
+#ifdef _WIN32
+   char tmppath[MAX_PATH];
+   char tmpname[MAX_PATH];
+   if (GetTempPathA(MAX_PATH, tmppath) == 0) return nullptr;
+   if (GetTempFileNameA(tmppath, "m4b", 0, tmpname) == 0) return nullptr;
+   // GetTempFileNameA creates the file; reopen in w+b mode.
+   // FILE_FLAG_DELETE_ON_CLOSE would be ideal but fopen doesn't support it
+   // on all CRTs. We accept the leak of tiny temp files — they're in %TEMP%
+   // which the OS cleans periodically.
+   return fopen(tmpname, "w+b");
+#else
+   return tmpfile();
+#endif
+}
+
+// Open a file from inside a DSK container: extract to a temp file, return FILE*.
+static FILE* container_open_file(const std::string& filename)
+{
+   if (!g_m4board.container_drive) return nullptr;
+
+   std::string err;
+   auto data = disk_read_file(g_m4board.container_drive, filename, err);
+   if (!err.empty()) {
+      // Case-insensitive retry with CPC extensions
+      std::vector<std::string> candidates = { filename };
+      if (filename.find('.') == std::string::npos) {
+         for (const char* ext : { ".BAS", ".BIN", ".", "" })
+            candidates.push_back(filename + ext);
+      }
+      // Get file list and match case-insensitively
+      auto files = disk_list_files(g_m4board.container_drive, err);
+      if (files.empty()) return nullptr;
+      err.clear(); // listing succeeded — clear for disk_read_file below
+      for (const auto& cand : candidates) {
+         std::string cand_upper = cand;
+         for (auto& c : cand_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+         for (const auto& f : files) {
+            std::string disp_upper = f.display_name;
+            for (auto& c : disp_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            if (disp_upper == cand_upper) {
+               data = disk_read_file(g_m4board.container_drive, f.display_name, err);
+               if (err.empty()) goto found;
+            }
+         }
+      }
+      return nullptr;
+   }
+found:
+   // Write extracted data to a temp file
+   FILE* fp = portable_tmpfile();
+   if (!fp) return nullptr;
+   if (!data.empty()) {
+      fwrite(data.data(), 1, data.size(), fp);
+      fflush(fp);
+      rewind(fp);
+   }
+   return fp;
+}
+
 static void cmd_open()
 {
    // cmd_buf layout: [size, 0x01, 0x43, mode, filename...]
@@ -359,6 +571,33 @@ static void cmd_open()
       raw_name = extract_string(g_m4board.cmd_buf, 3);
    }
    LOG_DEBUG("M4: C_OPEN name='" << raw_name << "' mode=0x" << std::hex << (int)mode << std::dec);
+
+   // Inside a container — read-only, extract file to temp
+   if (in_container()) {
+      if (is_write) {
+         respond_error_code(7); // FR_DENIED — containers are read-only
+         return;
+      }
+      int handle = 1; // FA_READ → handle 1
+      if (g_m4board.open_files[handle]) {
+         fclose(g_m4board.open_files[handle]);
+         g_m4board.open_files[handle] = nullptr;
+      }
+      g_m4board.open_files[handle] = container_open_file(raw_name);
+      if (!g_m4board.open_files[handle]) {
+         respond_error_code(4); // FR_NO_FILE
+         return;
+      }
+      g_m4board.last_filename = raw_name;
+      LOG_DEBUG("M4: C_OPEN container → OK, handle=" << handle);
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = static_cast<uint8_t>(handle);
+      g_m4board.response[4] = 0;  // FR_OK
+      g_m4board.response_len = 5;
+      return;
+   }
 
    std::string dir = resolve_path(g_m4board.current_dir);
    if (dir.empty()) {
@@ -418,6 +657,7 @@ static void cmd_open()
       }
    }
 
+   g_m4board.last_filename = raw_name;
    LOG_DEBUG("M4: C_OPEN → OK, handle=" << handle);
    g_m4board.response[0] = M4_OK;
    g_m4board.response[1] = 0;
@@ -525,6 +765,38 @@ static void cmd_readsector()
    uint8_t sector = g_m4board.cmd_buf[4];
    // cmd_buf[5] = drive (unused for virtual FS)
 
+   // Inside a DSK container — read directly from the parsed t_drive
+   if (in_container() && g_m4board.container_drive) {
+      t_drive* drv = g_m4board.container_drive;
+      if (track >= drv->tracks) {
+         g_m4board.response[0] = M4_OK;
+         g_m4board.response[3] = 1; // error
+         memset(g_m4board.response + 4, 0xE5, 512);
+         g_m4board.response_len = 4 + 512;
+         return;
+      }
+      t_track& trk = drv->track[track][0];
+      // Find sector by ID
+      uint8_t* data = nullptr;
+      for (unsigned int s = 0; s < trk.sectors; s++) {
+         if (trk.sector[s].CHRN[2] == sector) {
+            data = trk.sector[s].getDataForRead();
+            break;
+         }
+      }
+      if (data) {
+         memcpy(g_m4board.response + 4, data, 512);
+      } else {
+         memset(g_m4board.response + 4, 0xE5, 512);
+      }
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0;
+      g_m4board.response_len = 4 + 512;
+      return;
+   }
+
    // We need an open file to read from. Use handle 1 (the read handle).
    FILE* f = g_m4board.open_files[1];
    if (!f) {
@@ -558,6 +830,34 @@ static void cmd_readsector()
 static void cmd_fsize()
 {
    std::string path = extract_string(g_m4board.cmd_buf, 3);
+
+   // Inside a container — look up file size from CP/M directory
+   if (in_container() && g_m4board.container_drive) {
+      std::string err;
+      auto files = disk_list_files(g_m4board.container_drive, err);
+      // Case-insensitive search
+      std::string upper = path;
+      for (auto& c : upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+      for (const auto& f : files) {
+         std::string fu = f.display_name;
+         for (auto& c : fu) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+         if (fu == upper) {
+            uint32_t sz = f.size_bytes;
+            g_m4board.response[0] = M4_OK;
+            g_m4board.response[1] = 0;
+            g_m4board.response[2] = 0;
+            g_m4board.response[3] = sz & 0xFF;
+            g_m4board.response[4] = (sz >> 8) & 0xFF;
+            g_m4board.response[5] = (sz >> 16) & 0xFF;
+            g_m4board.response[6] = (sz >> 24) & 0xFF;
+            g_m4board.response_len = 7;
+            return;
+         }
+      }
+      respond_error("File not found");
+      return;
+   }
+
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
       respond_error("Invalid path");
@@ -582,6 +882,7 @@ static void cmd_fsize()
 
 static void cmd_erasefile()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
@@ -603,6 +904,7 @@ static void cmd_erasefile()
 
 static void cmd_makedir()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    std::string path = extract_string(g_m4board.cmd_buf, 3);
    std::string resolved = resolve_path(path);
    if (resolved.empty()) {
@@ -621,6 +923,7 @@ static void cmd_makedir()
 
 static void cmd_write()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, fd, data...]
    // cmd_buf[3] = fd, cmd_buf[4..] = data to write
    if (g_m4board.cmd_buf.size() < 5) {
@@ -678,6 +981,7 @@ static void cmd_seek()
 
 static void cmd_rename()
 {
+   if (in_container()) { respond_error("Read-only container"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, "newname\0oldname\0"]
    // cmd_buf[3..] = "newname\0oldname\0"
    std::string newname = extract_string(g_m4board.cmd_buf, 3);
@@ -716,6 +1020,7 @@ static size_t curl_write_file(void* ptr, size_t size, size_t nmemb, void* userda
 
 static void cmd_httpget()
 {
+   if (!g_m4board.network_enabled) { respond_error("WiFi disabled"); return; }
    // Protocol: [size, cmd_lo, cmd_hi, "url:port/file"]
    // URL format: [@ prefix]host[:port]/path[>outfile]
    std::string raw_url = extract_string(g_m4board.cmd_buf, 3);
@@ -820,6 +1125,771 @@ static void cmd_httpget()
 }
 
 #endif // HAS_LIBCURL
+
+// ── HTTP GET to memory ──────────────────────────
+
+#ifdef HAS_LIBCURL
+
+struct MemBuf {
+   std::vector<uint8_t> data;
+   size_t max_size;
+};
+
+static size_t curl_write_mem(void* ptr, size_t size, size_t nmemb, void* userdata)
+{
+   auto* buf = static_cast<MemBuf*>(userdata);
+   size_t total = size * nmemb;
+   size_t remain = buf->max_size - buf->data.size();
+   size_t to_copy = std::min(total, remain);
+   if (to_copy > 0) {
+      auto* bytes = static_cast<uint8_t*>(ptr);
+      buf->data.insert(buf->data.end(), bytes, bytes + to_copy);
+   }
+   // Return bytes actually stored; 0 when full stops the transfer.
+   return to_copy;
+}
+
+static void cmd_httpgetmem()
+{
+   if (!g_m4board.network_enabled) { respond_error("WiFi disabled"); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, size_hi, size_lo, url\0]
+   // Downloads to CPC memory instead of SD card
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error("Bad args");
+      return;
+   }
+   uint16_t max_dl = (static_cast<uint16_t>(g_m4board.cmd_buf[3]) << 8) |
+                      static_cast<uint16_t>(g_m4board.cmd_buf[4]);
+   std::string raw_url = extract_string(g_m4board.cmd_buf, 5);
+   if (raw_url.empty()) {
+      respond_error("No URL given");
+      return;
+   }
+
+   std::string url = raw_url;
+   if (!url.empty() && url[0] == '@') url = url.substr(1);
+   if (url.substr(0, 7) == "http://") url = url.substr(7);
+   std::string full_url = "http://" + url;
+
+   // Cap download to response buffer space (offset 5 onward)
+   size_t max_size = std::min(static_cast<size_t>(max_dl),
+      static_cast<size_t>(M4Board::RESPONSE_SIZE - 5));
+
+   MemBuf membuf;
+   membuf.max_size = max_size;
+
+   CURL* curl = curl_easy_init();
+   if (!curl) {
+      respond_error("HTTP init failed");
+      return;
+   }
+
+   curl_easy_setopt(curl, CURLOPT_URL, full_url.c_str());
+   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_mem);
+   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &membuf);
+   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+   curl_easy_setopt(curl, CURLOPT_USERAGENT, "M4Board/2.0");
+   curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+   CURLcode res = curl_easy_perform(curl);
+   curl_easy_cleanup(curl);
+
+   // CURLE_WRITE_ERROR is expected when the buffer fills up (truncation).
+   if (res != CURLE_OK && !(res == CURLE_WRITE_ERROR && !membuf.data.empty())) {
+      respond_error(curl_easy_strerror(res));
+      return;
+   }
+
+   // Response: [status=0] [0] [0] [dl_size_hi] [dl_size_lo] [data...]
+   uint16_t dl_size = static_cast<uint16_t>(membuf.data.size());
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = static_cast<uint8_t>(dl_size >> 8);
+   g_m4board.response[4] = static_cast<uint8_t>(dl_size & 0xFF);
+   if (!membuf.data.empty())
+      memcpy(g_m4board.response + 5, membuf.data.data(), membuf.data.size());
+   g_m4board.response_len = static_cast<int>(5 + membuf.data.size());
+   LOG_INFO("M4 HTTPGETMEM: downloaded " << dl_size << " bytes from " << full_url);
+}
+
+#else // !HAS_LIBCURL
+
+static void cmd_httpgetmem()
+{
+   respond_error("HTTP not available (no libcurl)");
+}
+
+#endif // HAS_LIBCURL
+
+// ── Write Sector ────────────────────────────────
+
+static void cmd_writesector()
+{
+   if (in_container()) { respond_error("Read-only container"); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, track, sector, drive, 512 bytes]
+   if (g_m4board.cmd_buf.size() < 6 + 512) {
+      respond_error();
+      return;
+   }
+   uint8_t track  = g_m4board.cmd_buf[3];
+   uint8_t sector = g_m4board.cmd_buf[4];
+   // cmd_buf[5] = drive (unused for virtual FS)
+
+   FILE* f = g_m4board.open_files[2]; // write handle
+   if (!f) {
+      respond_error("No file open for write");
+      return;
+   }
+
+   int linear_sector = (sector >= 0xC1) ? (sector - 0xC1) : sector;
+   long offset = (track * 9 + linear_sector) * 512L;
+
+   fseek(f, offset, SEEK_SET);
+   size_t written = fwrite(g_m4board.cmd_buf.data() + 6, 1, 512, f);
+   fflush(f);
+
+   if (written == 512) {
+      respond_ok();
+   } else {
+      respond_error("Write sector failed");
+   }
+}
+
+static void cmd_formattrack()
+{
+   // Not implemented even on real M4 hardware
+   respond_error("Format not supported");
+}
+
+// ── Raw SD Card Access ──────────────────────────
+// The real M4 provides raw block-level access to the SD card.
+// We map LBA sectors to a flat file ("sdcard.img") in the SD root, if present.
+
+static void cmd_sdread()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, lba0, lba1, lba2, lba3, num_sectors]
+   if (g_m4board.cmd_buf.size() < 8) {
+      respond_error();
+      return;
+   }
+   uint32_t lba = static_cast<uint32_t>(g_m4board.cmd_buf[3]) |
+                  (static_cast<uint32_t>(g_m4board.cmd_buf[4]) << 8) |
+                  (static_cast<uint32_t>(g_m4board.cmd_buf[5]) << 16) |
+                  (static_cast<uint32_t>(g_m4board.cmd_buf[6]) << 24);
+   uint8_t num = g_m4board.cmd_buf[7];
+
+   // Raw SD not supported in emulation — return error
+   (void)lba;
+   (void)num;
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 1; // error flag
+   g_m4board.response_len = 4;
+   LOG_DEBUG("M4: C_SDREAD lba=" << lba << " n=" << (int)num << " (not supported)");
+}
+
+static void cmd_sdwrite()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, lba0, lba1, lba2, lba3, num_sectors, data...]
+   // Raw SD not supported in emulation
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 1; // error flag
+   g_m4board.response_len = 4;
+   LOG_DEBUG("M4: C_SDWRITE (not supported)");
+}
+
+// ── Network & Socket Operations ─────────────────
+// The real M4 has an ESP8266 WiFi module. In emulation we return
+// "not connected" / "no network" responses that match the firmware's
+// expected response format, so the ROM handles it gracefully.
+
+// ── Host Network Info ────────────────────────────
+// Query the host computer's network state so |NETSTAT shows real info.
+
+static std::string get_host_ip()
+{
+#ifdef _WIN32
+   ensure_winsock_init();
+   char hostname[256];
+   if (gethostname(hostname, sizeof(hostname)) != 0) return "";
+   struct hostent* host = gethostbyname(hostname);
+   if (!host || !host->h_addr_list[0]) return "";
+   return inet_ntoa(*reinterpret_cast<struct in_addr*>(host->h_addr_list[0]));
+#else
+   struct ifaddrs* ifap = nullptr;
+   if (getifaddrs(&ifap) != 0) return "";
+
+   // Score interfaces to prefer real hardware over VPN/VM bridges.
+   // Higher score = more likely to be the "real" connection.
+   auto score_interface = [](const char* name, const char* ip) -> int {
+      std::string n(name);
+      std::string addr(ip);
+      // Skip loopback
+      if (n == "lo" || n == "lo0" || addr == "127.0.0.1") return -1;
+      // Skip known virtual/tunnel interfaces
+      if (n.substr(0, 4) == "utun") return 0;    // VPN tunnels (macOS)
+      if (n.substr(0, 3) == "tun") return 0;     // VPN tunnels (Linux)
+      if (n.substr(0, 3) == "tap") return 0;     // VM tap interfaces
+      if (n.substr(0, 6) == "bridge") return 0;  // VM bridges (macOS)
+      if (n.substr(0, 6) == "vmenet") return 0;  // VM virtual ethernet (macOS)
+      if (n.substr(0, 5) == "veth") return 0;    // Docker veth pairs
+      if (n.substr(0, 6) == "docker") return 0;  // Docker bridge
+      if (n.substr(0, 2) == "br") return 0;      // Linux bridges
+      if (n.substr(0, 4) == "virbr") return 0;   // libvirt bridges
+      if (n.substr(0, 3) == "llw") return 0;     // Low-latency WLAN (macOS internal)
+      if (n.substr(0, 4) == "awdl") return 0;    // Apple Wireless Direct Link
+      if (n.substr(0, 2) == "ap") return 0;      // Apple access point
+      if (n.substr(0, 4) == "anpi") return 0;    // Apple Network Performance Interface
+      // 169.254.x.x = link-local (no real connectivity)
+      if (addr.substr(0, 8) == "169.254.") return 0;
+      // Real interfaces: en*, eth*, wlan* — prefer these
+      if (n.substr(0, 2) == "en" || n.substr(0, 3) == "eth" || n.substr(0, 4) == "wlan") return 2;
+      // Anything else is unknown — give it a middling score
+      return 1;
+   };
+
+   std::string result;
+   int best_score = -1;
+   for (struct ifaddrs* ifa = ifap; ifa; ifa = ifa->ifa_next) {
+      if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+      auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+      char buf[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf));
+      int s = score_interface(ifa->ifa_name, buf);
+      if (s > best_score) {
+         best_score = s;
+         result = buf;
+      }
+   }
+   freeifaddrs(ifap);
+   return result;
+#endif
+}
+
+static std::string get_host_ssid_uncached();
+
+static std::string get_host_ssid()
+{
+   // Cache the SSID for 30 seconds to avoid shelling out on every |NETSTAT call.
+   static std::string cached_ssid;
+   static std::chrono::steady_clock::time_point cached_at{};
+   auto now = std::chrono::steady_clock::now();
+   if (std::chrono::duration_cast<std::chrono::seconds>(now - cached_at).count() < 30
+       && !cached_ssid.empty()) {
+      return cached_ssid;
+   }
+   cached_ssid = get_host_ssid_uncached();
+   cached_at = now;
+   return cached_ssid;
+}
+
+static std::string get_host_ssid_uncached()
+{
+#ifdef __APPLE__
+   // Discover the Wi-Fi interface name (not always en0 — can be en1, en2, etc.)
+   std::string wifi_if;
+   FILE* lp = popen("networksetup -listallhardwareports 2>/dev/null", "r");
+   if (lp) {
+      char lbuf[256];
+      bool next_is_device = false;
+      while (fgets(lbuf, sizeof(lbuf), lp)) {
+         std::string line(lbuf);
+         if (line.find("Wi-Fi") != std::string::npos) {
+            next_is_device = true;
+         } else if (next_is_device && line.find("Device:") != std::string::npos) {
+            auto dpos = line.find("Device:");
+            wifi_if = line.substr(dpos + 7);
+            while (!wifi_if.empty() && (wifi_if.front() == ' ' || wifi_if.front() == '\t'))
+               wifi_if.erase(wifi_if.begin());
+            while (!wifi_if.empty() && (wifi_if.back() == '\n' || wifi_if.back() == '\r' || wifi_if.back() == ' '))
+               wifi_if.pop_back();
+            break;
+         }
+      }
+      pclose(lp);
+   }
+   if (wifi_if.empty()) return "";
+
+   std::string cmd = "networksetup -getairportnetwork " + wifi_if + " 2>/dev/null";
+   FILE* pipe = popen(cmd.c_str(), "r");
+   if (!pipe) return "";
+   char buf[256];
+   std::string output;
+   while (fgets(buf, sizeof(buf), pipe)) output += buf;
+   int status = pclose(pipe);
+   // Non-zero exit = error (e.g. "Error obtaining wireless information.")
+   if (status != 0) return "";
+   // Output: "Current Wi-Fi Network: MyNetwork\n"
+   auto pos = output.find("Network: ");
+   if (pos == std::string::npos) return "";
+   std::string ssid = output.substr(pos + 9);
+   while (!ssid.empty() && (ssid.back() == '\n' || ssid.back() == '\r' || ssid.back() == ' '))
+      ssid.pop_back();
+   return ssid;
+#elif defined(_WIN32)
+   // Windows: parse "netsh wlan show interfaces"
+   FILE* pipe = _popen("netsh wlan show interfaces 2>nul", "r");
+   if (!pipe) return "";
+   char buf[512];
+   std::string ssid;
+   while (fgets(buf, sizeof(buf), pipe)) {
+      std::string line(buf);
+      // Look for "    SSID                   : MyNetwork"
+      auto pos = line.find("SSID");
+      if (pos == std::string::npos) continue;
+      // Skip "BSSID" lines
+      if (pos > 0 && line[pos - 1] == 'B') continue;
+      auto colon = line.find(':', pos);
+      if (colon == std::string::npos) continue;
+      ssid = line.substr(colon + 1);
+      // Trim whitespace
+      size_t start = ssid.find_first_not_of(" \t\r\n");
+      size_t end = ssid.find_last_not_of(" \t\r\n");
+      if (start != std::string::npos && end != std::string::npos)
+         ssid = ssid.substr(start, end - start + 1);
+      else
+         ssid.clear();
+      break;
+   }
+   _pclose(pipe);
+   return ssid;
+#elif defined(__linux__)
+   FILE* pipe = popen("iwgetid -r 2>/dev/null", "r");
+   if (!pipe) return "";
+   char buf[256];
+   std::string ssid;
+   if (fgets(buf, sizeof(buf), pipe)) ssid = buf;
+   pclose(pipe);
+   while (!ssid.empty() && (ssid.back() == '\n' || ssid.back() == '\r'))
+      ssid.pop_back();
+   return ssid;
+#else
+   return "";
+#endif
+}
+
+static void cmd_setnetwork()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, setup_string\0]
+   // The real M4 configures WiFi SSID/password here.
+   // In emulation we use the host's network, so just acknowledge.
+   respond_ok();
+   LOG_DEBUG("M4: C_SETNETWORK (using host network)");
+}
+
+static void cmd_netstat()
+{
+   // Response: [status_string] [status_byte]
+   // Status byte: 0=disconnected, 1=connecting, 2=wrong_password,
+   //              3=no_ap, 4=connect_fail, 5=connected
+   // Report the host computer's actual network state.
+   // If network is disabled (|WIFI,0), report disconnected.
+   if (!g_m4board.network_enabled) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      const char* msg = "WiFi disabled\r\n";
+      size_t len = strlen(msg);
+      memcpy(g_m4board.response + 3, msg, len);
+      g_m4board.response[3 + len] = 0;     // null terminator
+      g_m4board.response[3 + len + 1] = 0;  // status: disconnected
+      g_m4board.response_len = static_cast<int>(5 + len);
+      return;
+   }
+   std::string ip = get_host_ip();
+   std::string ssid = get_host_ssid();
+
+   std::string msg;
+   uint8_t status_byte;
+   if (!ip.empty()) {
+      msg = "IP: " + ip;
+      if (!ssid.empty()) msg += " (" + ssid + ")";
+      msg += "\r\n";
+      status_byte = 5; // connected
+   } else {
+      msg = "No network\r\n";
+      status_byte = 0; // disconnected
+   }
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   // Layout: [3: string...] [3+len: \0] [3+len+1: status_byte]
+   // The ROM prints from offset 3 until \0, then reads the status byte after it.
+   size_t max_len = static_cast<size_t>(M4Board::RESPONSE_SIZE - 6); // room for \0 + status
+   if (msg.size() > max_len) msg.resize(max_len);
+   memcpy(g_m4board.response + 3, msg.c_str(), msg.size());
+   g_m4board.response[3 + msg.size()] = 0;              // null terminator
+   g_m4board.response[3 + msg.size() + 1] = status_byte; // status after null
+   g_m4board.response_len = static_cast<int>(5 + msg.size());
+}
+
+static void cmd_time()
+{
+   // Response: "hh:mm:ss yyyy-mm-dd" at offset 3
+   time_t now = time(nullptr);
+   struct tm* t = localtime(&now);
+   char buf[64];
+   snprintf(buf, sizeof(buf), "%02d:%02d:%02d %04d-%02d-%02d",
+            t->tm_hour, t->tm_min, t->tm_sec,
+            t->tm_year + 1900, t->tm_mon + 1, t->tm_mday);
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   size_t len = strlen(buf);
+   memcpy(g_m4board.response + 3, buf, len + 1);
+   g_m4board.response_len = static_cast<int>(4 + len);
+}
+
+static void cmd_m4off()
+{
+   // Disable M4 ROM and trigger a reset.
+   // On real hardware this disables the M4 until next power cycle.
+   g_m4board.enabled = false;
+   respond_ok();
+   LOG_INFO("M4: C_M4OFF — M4 Board disabled");
+}
+
+// ── Cross-platform socket helpers ────────────────
+
+static void sock_close(M4Board::socket_t s)
+{
+#ifdef _WIN32
+   closesocket(s);
+#else
+   close(s);
+#endif
+}
+
+static void sock_set_nonblocking(M4Board::socket_t s)
+{
+#ifdef _WIN32
+   u_long mode = 1;
+   ioctlsocket(s, FIONBIO, &mode);
+#else
+   int flags = fcntl(s, F_GETFL, 0);
+   if (flags >= 0) fcntl(s, F_SETFL, flags | O_NONBLOCK);
+#endif
+}
+
+static void m4_close_all_sockets()
+{
+   for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
+      if (g_m4board.sockets[i] != M4Board::INVALID_SOCK) {
+         sock_close(g_m4board.sockets[i]);
+         g_m4board.sockets[i] = M4Board::INVALID_SOCK;
+      }
+   }
+}
+
+static void cmd_netsocket()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+#ifdef _WIN32
+   ensure_winsock_init();
+#endif
+   // Protocol: [size, cmd_lo, cmd_hi, domain, type, protocol]
+   // Response: [socket_num or 0xFF=error]
+   // Find a free slot
+   int slot = -1;
+   for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
+      if (g_m4board.sockets[i] == M4Board::INVALID_SOCK) { slot = i; break; }
+   }
+   if (slot < 0) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF; // no free slot
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   // Create a TCP socket (CPC software always wants AF_INET + SOCK_STREAM)
+   M4Board::socket_t s = socket(AF_INET, SOCK_STREAM, 0);
+   if (s == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   g_m4board.sockets[slot] = s;
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = static_cast<uint8_t>(slot);
+   g_m4board.response_len = 4;
+   LOG_DEBUG("M4: C_NETSOCKET created slot " << slot);
+}
+
+static void cmd_netconnect()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, socket, ip0, ip1, ip2, ip3, port_hi, port_lo]
+   if (g_m4board.cmd_buf.size() < 10) {
+      respond_error();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   struct sockaddr_in addr = {};
+   addr.sin_family = AF_INET;
+   uint32_t ip = (static_cast<uint32_t>(g_m4board.cmd_buf[4]) << 24) |
+                 (static_cast<uint32_t>(g_m4board.cmd_buf[5]) << 16) |
+                 (static_cast<uint32_t>(g_m4board.cmd_buf[6]) << 8) |
+                  static_cast<uint32_t>(g_m4board.cmd_buf[7]);
+   addr.sin_addr.s_addr = htonl(ip);
+   uint16_t port = (static_cast<uint16_t>(g_m4board.cmd_buf[8]) << 8) |
+                    static_cast<uint16_t>(g_m4board.cmd_buf[9]);
+   addr.sin_port = htons(port);
+
+   // Set non-blocking before connect to avoid freezing the emulation thread
+   // on unreachable hosts (OS-level TCP timeout can be minutes).
+   sock_set_nonblocking(g_m4board.sockets[slot]);
+
+   int result = connect(g_m4board.sockets[slot],
+                        reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+
+   bool ok = (result == 0);
+   if (!ok) {
+#ifdef _WIN32
+      int err = WSAGetLastError();
+      ok = (err == WSAEINPROGRESS || err == WSAEWOULDBLOCK);
+#else
+      ok = (errno == EINPROGRESS);
+#endif
+   }
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   if (ok) {
+      g_m4board.response[3] = 0; // OK (connected or in progress)
+      LOG_INFO("M4: C_NETCONNECT slot " << slot << " -> "
+               << (int)g_m4board.cmd_buf[4] << "." << (int)g_m4board.cmd_buf[5] << "."
+               << (int)g_m4board.cmd_buf[6] << "." << (int)g_m4board.cmd_buf[7]
+               << ":" << port
+               << (result == 0 ? " (connected)" : " (in progress)"));
+   } else {
+      g_m4board.response[3] = 0xFF; // error
+      LOG_ERROR("M4: C_NETCONNECT failed for slot " << slot);
+   }
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netclose()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, socket]
+   if (g_m4board.cmd_buf.size() < 4) {
+      respond_ok();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   if (slot >= 0 && slot < M4Board::MAX_SOCKETS &&
+       g_m4board.sockets[slot] != M4Board::INVALID_SOCK) {
+      sock_close(g_m4board.sockets[slot]);
+      g_m4board.sockets[slot] = M4Board::INVALID_SOCK;
+      LOG_DEBUG("M4: C_NETCLOSE slot " << slot);
+   }
+   respond_ok();
+}
+
+static void cmd_netsend()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi, data...]
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   uint16_t data_size = static_cast<uint16_t>(g_m4board.cmd_buf[4]) |
+                        (static_cast<uint16_t>(g_m4board.cmd_buf[5]) << 8);
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   size_t avail = g_m4board.cmd_buf.size() - 6;
+   size_t to_send = std::min(static_cast<size_t>(data_size), avail);
+   if (to_send > 0) {
+      int sent = send(g_m4board.sockets[slot],
+                      reinterpret_cast<const char*>(g_m4board.cmd_buf.data() + 6),
+                      static_cast<int>(to_send), 0);
+      g_m4board.response[3] = (sent > 0) ? 0 : 0xFF;
+   } else {
+      g_m4board.response[3] = 0;
+   }
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netrecv()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, socket, size_lo, size_hi]
+   // Response: [0] [actual_lo] [actual_hi] [data...]
+   if (g_m4board.cmd_buf.size() < 6) {
+      respond_error();
+      return;
+   }
+   int slot = g_m4board.cmd_buf[3];
+   uint16_t max_recv = static_cast<uint16_t>(g_m4board.cmd_buf[4]) |
+                       (static_cast<uint16_t>(g_m4board.cmd_buf[5]) << 8);
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[3] = 0xFF; // error
+      g_m4board.response[4] = 0;
+      g_m4board.response[5] = 0;
+      g_m4board.response_len = 6;
+      return;
+   }
+
+   // Cap to available response buffer space (offset 6 onward)
+   size_t buf_space = static_cast<size_t>(M4Board::RESPONSE_SIZE - 6);
+   size_t to_recv = std::min(static_cast<size_t>(max_recv), buf_space);
+
+   // Non-blocking recv — returns immediately if no data available
+   int received = recv(g_m4board.sockets[slot],
+                       reinterpret_cast<char*>(g_m4board.response + 6),
+                       static_cast<int>(to_recv), 0);
+
+   if (received > 0) {
+      g_m4board.response[3] = 0; // OK
+      g_m4board.response[4] = static_cast<uint8_t>(received & 0xFF);
+      g_m4board.response[5] = static_cast<uint8_t>((received >> 8) & 0xFF);
+      g_m4board.response_len = static_cast<int>(6 + received);
+   } else {
+      // EAGAIN/EWOULDBLOCK = no data yet (not an error), or connection closed
+      g_m4board.response[3] = 0; // OK (just no data)
+      g_m4board.response[4] = 0;
+      g_m4board.response[5] = 0;
+      g_m4board.response_len = 6;
+   }
+}
+
+static void cmd_nethostip()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+#ifdef _WIN32
+   ensure_winsock_init();
+#endif
+   // Protocol: [size, cmd_lo, cmd_hi, hostname\0]
+   // On real hardware: response[3]=1 means "lookup in progress", then the result
+   // comes later. In emulation we can resolve synchronously and return the IP
+   // directly: response[3]=0 (done), response[4-7]=IP bytes.
+   std::string hostname = extract_string(g_m4board.cmd_buf, 3);
+   if (hostname.empty()) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF; // error
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   struct addrinfo hints = {}, *result = nullptr;
+   hints.ai_family = AF_INET;
+   int err = getaddrinfo(hostname.c_str(), nullptr, &hints, &result);
+   if (err != 0 || !result) {
+      // Lookup failed — return "in progress" (will never resolve, as on offline M4)
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 1; // lookup in progress (= failed)
+      g_m4board.response_len = 4;
+      if (result) freeaddrinfo(result);
+      return;
+   }
+
+   auto* addr = reinterpret_cast<struct sockaddr_in*>(result->ai_addr);
+   uint32_t ip = ntohl(addr->sin_addr.s_addr);
+   freeaddrinfo(result);
+
+   // Return resolved IP: [0=done] [ip0] [ip1] [ip2] [ip3]
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0; // done (resolved)
+   g_m4board.response[4] = static_cast<uint8_t>((ip >> 24) & 0xFF);
+   g_m4board.response[5] = static_cast<uint8_t>((ip >> 16) & 0xFF);
+   g_m4board.response[6] = static_cast<uint8_t>((ip >> 8) & 0xFF);
+   g_m4board.response[7] = static_cast<uint8_t>(ip & 0xFF);
+   g_m4board.response_len = 8;
+   LOG_DEBUG("M4: C_NETHOSTIP resolved " << hostname << " -> "
+            << (int)g_m4board.response[4] << "." << (int)g_m4board.response[5] << "."
+            << (int)g_m4board.response[6] << "." << (int)g_m4board.response[7]);
+}
+
+// ── ROM Management ──────────────────────────────
+
+static void cmd_romsupdate()
+{
+   // On real hardware, applies ROM configuration changes from the config buffer.
+   // In emulation, ROM slots are managed by the emulator directly.
+   respond_ok();
+   LOG_DEBUG("M4: C_ROMSUPDATE (no-op in emulation)");
+}
+
+// ── Remaining handlers ──────────────────────────
+
+static void cmd_fstat()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, fd]
+   // Returns file attributes byte at response[3]:
+   //   0x00 = normal file, 0x10 = directory
+   if (g_m4board.cmd_buf.size() < 4) {
+      respond_error();
+      return;
+   }
+   int handle = g_m4board.cmd_buf[3];
+   if (handle < 0 || handle >= 4 || !g_m4board.open_files[handle]) {
+      respond_error("Bad handle");
+      return;
+   }
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0;  // attributes: normal file
+   g_m4board.response_len = 4;
+}
+
+static void cmd_write2()
+{
+   if (in_container()) { respond_error("Read-only container"); return; }
+   // C_WRITE2 is the buffered write counterpart to C_READ2.
+   // The M4 ROM uses this for _cas_out_char buffered writes.
+   // Same protocol as C_WRITE.
+   cmd_write();
+}
 
 // ── New command handlers ────────────────────────
 
@@ -962,6 +2032,7 @@ static void cmd_free()
 
 void m4board_reset()
 {
+   if (in_container()) container_exit();
    g_m4board.cmd_buf.clear();
    g_m4board.cmd_pending = false;
    g_m4board.current_dir = "/";
@@ -970,16 +2041,24 @@ void m4board_reset()
    memset(g_m4board.config_buf, 0, M4Board::CONFIG_SIZE);
    g_m4board.dir_entries.clear();
    g_m4board.dir_index = 0;
+   g_m4board.activity_frames = 0;
+   g_m4board.last_op = M4Board::LastOp::NONE;
+   g_m4board.last_filename.clear();
+   g_m4board.cmd_count = 0;
+   g_m4board.network_enabled = true;  // |WIFI,0 resets on power cycle
+   m4_close_all_sockets();
 }
 
 void m4board_cleanup()
 {
+   if (in_container()) container_exit();
    for (int i = 0; i < 4; i++) {
       if (g_m4board.open_files[i]) {
          fclose(g_m4board.open_files[i]);
          g_m4board.open_files[i] = nullptr;
       }
    }
+   m4_close_all_sockets();
 }
 
 void m4board_data_out(byte val)
@@ -1004,29 +2083,52 @@ void m4board_execute()
    memset(g_m4board.response, 0, M4Board::RESPONSE_SIZE);
    g_m4board.response_len = 0;
 
+   // Activity tracking
+   g_m4board.cmd_count++;
+   g_m4board.activity_frames = 30;  // ~0.6s at 50fps
+   g_m4board.last_op = M4Board::LastOp::CMD;
+
    switch (cmd) {
       case C_VERSION:    cmd_version(); break;
       case C_CD:         cmd_cd(); break;
-      case C_READDIR:    cmd_readdir(); break;
+      case C_READDIR:    cmd_readdir(); g_m4board.last_op = M4Board::LastOp::DIR; break;
       case C_OPEN:       cmd_open(); break;
       case C_CLOSE:      cmd_close(); break;
-      case C_READ:       cmd_read(); break;
-      case C_READ2:      cmd_read2(); break;
-      case C_READSECTOR: cmd_readsector(); break;
-      case C_WRITE:      cmd_write(); break;
+      case C_READ:       cmd_read(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_READ2:      cmd_read2(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_READSECTOR:  cmd_readsector(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_WRITESECTOR: cmd_writesector(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_FORMATTRACK: cmd_formattrack(); break;
+      case C_WRITE:      cmd_write(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_WRITE2:     cmd_write2(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
       case C_SEEK:       cmd_seek(); break;
       case C_EOF:        cmd_eof(); break;
       case C_FREE:       cmd_free(); break;
       case C_FSIZE:      cmd_fsize(); break;
+      case C_FSTAT:      cmd_fstat(); break;
       case C_FTELL:      cmd_ftell(); break;
       case C_ERASEFILE:  cmd_erasefile(); break;
       case C_RENAME:     cmd_rename(); break;
       case C_MAKEDIR:    cmd_makedir(); break;
       case C_GETPATH:    cmd_getpath(); break;
-      case C_HTTPGET:    cmd_httpget(); break;
-      case C_DIRSETARGS: cmd_dirsetargs(); break;
-      case C_CONFIG:     cmd_config(); break;
-      case C_ROMWRITE:   cmd_romwrite(); break;
+      case C_HTTPGET:     cmd_httpget(); break;
+      case C_HTTPGETMEM:  cmd_httpgetmem(); break;
+      case C_DIRSETARGS:  cmd_dirsetargs(); g_m4board.last_op = M4Board::LastOp::DIR; break;
+      case C_SDREAD:      cmd_sdread(); g_m4board.last_op = M4Board::LastOp::READ; break;
+      case C_SDWRITE:     cmd_sdwrite(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_SETNETWORK:  cmd_setnetwork(); break;
+      case C_M4OFF:       cmd_m4off(); break;
+      case C_NETSTAT:     cmd_netstat(); break;
+      case C_TIME:        cmd_time(); break;
+      case C_NETSOCKET:   cmd_netsocket(); break;
+      case C_NETCONNECT:  cmd_netconnect(); break;
+      case C_NETCLOSE:    cmd_netclose(); break;
+      case C_NETSEND:     cmd_netsend(); break;
+      case C_NETRECV:     cmd_netrecv(); break;
+      case C_NETHOSTIP:   cmd_nethostip(); break;
+      case C_ROMSUPDATE:  cmd_romsupdate(); break;
+      case C_CONFIG:      cmd_config(); break;
+      case C_ROMWRITE:    cmd_romwrite(); break;
       default:
          LOG_DEBUG("M4: unknown command 0x" << std::hex << cmd);
          respond_error();

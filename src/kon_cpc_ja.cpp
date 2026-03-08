@@ -3704,6 +3704,9 @@ int koncpc_main (int argc, char **argv)
             // Check IPC VBL events
             ipc_check_vbl_events();
 
+            // M4 Board activity LED countdown (1 per frame at 50fps)
+            if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
+
             // YM register recording: capture PSG state once per VBL
             if (g_ym_recorder.is_recording()) {
                g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
