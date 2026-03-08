@@ -85,9 +85,17 @@ extern byte bit_values[];
 static bool is_safe_path(const std::string& path_str) {
   if (path_str.empty()) return false;
   std::filesystem::path p(path_str);
-  if (p.is_absolute()) return true; // Allow absolute paths (trusted user/agent)
-  auto rel = p.lexically_relative(".");
-  return rel.string().find("..") != 0;
+  // Normalize the path to collapse "." and ".." components.
+  std::filesystem::path normalized = p.lexically_normal();
+
+  // Reject any path that contains a ".." component after normalization.
+  for (const auto& comp : normalized) {
+    if (comp == "..") {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 // Direct keyboard matrix manipulation that works even when CPC.paused is true.
@@ -215,10 +223,10 @@ void init_command_registry() {
     "the display surface may not reflect the latest writes to screen memory.\n"
     "  --screenshot PATH  Save the repainted frame as a PNG file.");
 
-  register_command("screenshot", "MEDIA", "screenshot <path> [window]", "Capture screen to PNG",
-    "Saves the current display to a PNG file. By default, captures only the emulated "
-    "CPC screen. Use 'window' as a second argument to request a full window capture "
-    "on the next rendered frame (including ImGui overlays).");
+  register_command("screenshot", "MEDIA", "screenshot window <path>", "Capture emulator window to PNG",
+    "Saves a PNG file of the emulator window on the next rendered frame. "
+    "Note: Currently captures the emulated CPC display only; ImGui overlays "
+    "are omitted for simplicity across all rendering modes.");
 
   register_command("snapshot", "MEDIA", "snapshot save <path> | snapshot load <path>", "Manage machine snapshots",
     "Saves or loads the entire state of the emulated CPC into a .SNA file.");
@@ -435,6 +443,7 @@ std::string handle_command(const std::string& line) {
     for (size_t i = 1; i < parts.size(); i++) {
       if (parts[i] == "--screenshot" && i + 1 < parts.size()) {
         shot_path = parts[i+1];
+        if (!is_safe_path(shot_path)) return "ERR 403 path-traversal-blocked\n";
         break;
       }
     }

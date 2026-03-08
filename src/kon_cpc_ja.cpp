@@ -3835,6 +3835,7 @@ int koncpc_main (int argc, char **argv)
          
          if (!shot_path.empty()) {
             if (SDL_SavePNG(back_surface, shot_path)) {
+               std::lock_guard<std::mutex> lock(g_repaint_mutex);
                g_repaint_error = "SDL_SavePNG failed for " + shot_path;
             } else {
                LOG_INFO("Repaint screenshot saved to " + shot_path);
