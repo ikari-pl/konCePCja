@@ -1628,6 +1628,19 @@ static void imgui_render_options()
       int intensity = static_cast<int>(CPC.scr_intensity);
       if (ImGui::SliderInt("Intensity", &intensity, 5, 15)) {
         CPC.scr_intensity = intensity;
+        video_set_palette();
+      }
+
+      bool scanlines = CPC.scr_scanlines != 0;
+      if (ImGui::Checkbox("Scanlines", &scanlines)) {
+        CPC.scr_scanlines = scanlines ? 1 : 0;
+      }
+      if (scanlines) {
+        int sl_intensity = static_cast<int>(CPC.scr_oglscanlines);
+        if (ImGui::SliderInt("Scanline Intensity", &sl_intensity, 0, 100)) {
+          CPC.scr_oglscanlines = sl_intensity;
+          video_set_palette();
+        }
       }
 
       bool fps = CPC.scr_fps != 0;
