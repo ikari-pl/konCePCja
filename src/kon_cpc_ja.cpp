@@ -1665,6 +1665,7 @@ void cpc_resume()
 
 void video_update_palette_entry(int index, Uint8 r, Uint8 g, Uint8 b) {
   if (index < 0 || index >= 34) return;
+  if (!back_surface) return;
   const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
   SDL_Palette* pal = SDL_GetSurfacePalette(back_surface);
   GateArray.palette[index] = SDL_MapRGB(fmt, pal, r, g, b);
