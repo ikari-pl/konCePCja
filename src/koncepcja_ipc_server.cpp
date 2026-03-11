@@ -258,6 +258,16 @@ void init_command_registry() {
 
   register_command("asm", "TOOLS", "asm text <source> | asm assemble", "Z80 Assembler",
     "Enters Z80 assembly source code and assembles it into emulated memory.");
+
+  register_command("telnet", "TOOLS", "telnet (port 6544)", "Text console for CPC I/O",
+    "A telnet interface runs on port IPC+1 (default 6544) that captures all CPC text output "
+    "(TXT_OUTPUT calls) and allows text input. Connecting returns a banner line followed by "
+    "'---', then all accumulated text output since the last read.\n"
+    "  The buffer drains on each read — reconnecting returns only new text since the previous connection.\n"
+    "  Input bytes sent to the telnet port are fed into the CPC keyboard buffer (AutoTypeQueue).\n"
+    "  ANSI escape sequences are converted to CPC special keys (arrows, DEL, ESC, TAB).\n"
+    "  Preferred over screenshots for automated regression testing of text-based programs.\n"
+    "  Example:  nc -w 1 localhost 6544 < /dev/null");
 }
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
