@@ -80,6 +80,9 @@ struct ImGuiUIState {
   bool cpc_screen_focused = false;       // true when CPC Screen tab is the focused window
   bool request_cpc_screen_focus = false;  // set by event loop on app focus gain
 
+  // Layout dropdown (topbar)
+  bool show_layout_dropdown = false;
+
 };
 
 extern ImGuiUIState imgui_state;

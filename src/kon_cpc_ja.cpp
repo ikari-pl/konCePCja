@@ -3593,13 +3593,19 @@ int koncpc_main (int argc, char **argv)
             //       the right thing to do here is to restore focus but keep paused... implementing this require
             //       keeping track of pause source, which will be a pain.
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
-            case SDL_EVENT_WINDOW_MOUSE_ENTER:
               if (CPC.auto_pause) {
                 cpc_resume();
               }
               // In docked mode, refocus CPC Screen so keyboard routes to emulator
+              // Only on app focus gain — not mouse enter, which fires during
+              // normal UI interaction and would steal focus from popups/menus.
               if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
                 imgui_state.request_cpc_screen_focus = true;
+              }
+              break;
+            case SDL_EVENT_WINDOW_MOUSE_ENTER:
+              if (CPC.auto_pause) {
+                cpc_resume();
               }
               break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
