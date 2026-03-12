@@ -381,6 +381,9 @@ void direct_close()
 /* ------------------------------------------------------------------------------------ */
 /* SDL_Renderer video plugin (D3D11 on Windows, no OpenGL required) ------------------- */
 /* ------------------------------------------------------------------------------------ */
+void sdlr_close();
+void sdlr_swscale_close();
+
 SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
 {
   mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
