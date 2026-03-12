@@ -200,11 +200,17 @@ void imgui_init_ui()
     io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
 #elif defined(_WIN32)
     {
-      std::string font_path = "C:\\Windows\\Fonts\\seguisym.ttf";
+      std::filesystem::path fonts_dir = "C:\\Windows\\Fonts";
       if (const char* sys_root = getenv("SystemRoot")) {
-        font_path = (std::filesystem::path(sys_root) / "Fonts" / "seguisym.ttf").string();
+        fonts_dir = std::filesystem::path(sys_root) / "Fonts";
       }
-      io.Fonts->AddFontFromFileTTF(font_path.c_str(), 13.0f, &merge_cfg, symbol_ranges);
+      // Try Segoe UI Symbol first, then Segoe UI Emoji, then Arial Unicode MS
+      const char* candidates[] = { "seguisym.ttf", "seguiemj.ttf", "ARIALUNI.TTF" };
+      for (const char* name : candidates) {
+        auto path = (fonts_dir / name).string();
+        if (io.Fonts->AddFontFromFileTTF(path.c_str(), 13.0f, &merge_cfg, symbol_ranges))
+          break;
+      }
     }
 #endif
   }
