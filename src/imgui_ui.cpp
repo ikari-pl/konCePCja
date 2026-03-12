@@ -565,13 +565,13 @@ static void imgui_render_menubar()
         mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Load Snapshot...", "Shift+F4")) {
+    if (ImGui::MenuItem("Load Snapshot...")) {
       static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna;zip" } };
       SDL_ShowOpenFileDialog(file_dialog_callback,
         reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
         mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
     }
-    if (ImGui::MenuItem("Save Snapshot...", "Shift+F3")) {
+    if (ImGui::MenuItem("Save Snapshot...")) {
       static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna" } };
       SDL_ShowSaveFileDialog(file_dialog_callback,
         reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),

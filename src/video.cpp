@@ -407,8 +407,14 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
   // ViewportsEnable not supported by SDL_Renderer backend
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow) ||
-      !ImGui_ImplSDLRenderer3_Init(renderer)) {
+  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow)) {
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer); renderer = nullptr;
     SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
@@ -512,8 +518,14 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow) ||
-      !ImGui_ImplSDLRenderer3_Init(renderer)) {
+  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow)) {
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer); renderer = nullptr;
     SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
@@ -555,6 +567,7 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
   }
   compute_scale(t, surface_width, surface_height);
   pub = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGB565);
+  if (!pub) { sdlr_swscale_close(); return nullptr; }
   {
     const SDL_PixelFormatDetails* p_fmt = SDL_GetPixelFormatDetails(pub->format);
     if (!p_fmt || p_fmt->bits_per_pixel != 16)
