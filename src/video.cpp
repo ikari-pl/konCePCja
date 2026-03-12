@@ -404,8 +404,13 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
   // ViewportsEnable not supported by SDL_Renderer backend
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  ImGui_ImplSDL3_InitForOther(mainSDLWindow);
-  ImGui_ImplSDLRenderer3_Init(renderer);
+  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow) ||
+      !ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
 
   int surface_width, surface_height;
   if (scale > 1) {
@@ -418,11 +423,11 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
     surface_height = CPC_VISIBLE_SCR_HEIGHT;
   }
   vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
-  if (!vid) return nullptr;
+  if (!vid) { sdlr_close(); return nullptr; }
 
   cpc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
       SDL_TEXTUREACCESS_STREAMING, surface_width, surface_height);
-  if (!cpc_sdl_texture) return nullptr;
+  if (!cpc_sdl_texture) { sdlr_close(); return nullptr; }
   SDL_SetTextureScaleMode(cpc_sdl_texture, SDL_SCALEMODE_NEAREST);
 
   {
@@ -504,8 +509,13 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  ImGui_ImplSDL3_InitForOther(mainSDLWindow);
-  ImGui_ImplSDLRenderer3_Init(renderer);
+  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow) ||
+      !ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
 
   int surface_width, surface_height;
   if (scale < 4) {
@@ -518,21 +528,21 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
     surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
   }
   vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
-  if (!vid) return nullptr;
+  if (!vid) { sdlr_close(); return nullptr; }
 
   cpc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
       SDL_TEXTUREACCESS_STREAMING, surface_width * 2, surface_height * 2);
-  if (!cpc_sdl_texture) return nullptr;
+  if (!cpc_sdl_texture) { sdlr_close(); return nullptr; }
   SDL_SetTextureScaleMode(cpc_sdl_texture, SDL_SCALEMODE_NEAREST);
 
   scaled = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGB565);
-  if (!scaled) return nullptr;
+  if (!scaled) { sdlr_swscale_close(); return nullptr; }
   {
     const SDL_PixelFormatDetails* s_fmt = SDL_GetPixelFormatDetails(scaled->format);
     if (!s_fmt || s_fmt->bits_per_pixel != 16)
     {
       LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(s_fmt ? s_fmt->bits_per_pixel : 0) << " bpp one.");
-      return nullptr;
+      sdlr_swscale_close(); return nullptr;
     }
   }
   {
@@ -547,7 +557,7 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
     if (!p_fmt || p_fmt->bits_per_pixel != 16)
     {
       LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(p_fmt ? p_fmt->bits_per_pixel : 0) << " bpp one.");
-      return nullptr;
+      sdlr_swscale_close(); return nullptr;
     }
   }
   using_sdl_renderer = true;
@@ -2046,9 +2056,9 @@ std::vector<video_plugin> video_plugin_list =
   /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
      No OpenGL context required; no multi-viewport support. */
   {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,     1,         0, 0,          0, 0, 0, 0 },
-  {"Super eagle (SDL)",       false, sdlr_swscale_init,  swscale_setpal,  seagle_flip,   swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Scale2x (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  scale2x_flip,  swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Super eagle (SDL)",       false, sdlr_swscale_init,  swscale_setpal,  seagle_flip,   sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Scale2x (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  scale2x_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
 };

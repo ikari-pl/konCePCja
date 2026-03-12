@@ -1829,7 +1829,6 @@ int video_init ()
       for (size_t i = 0; i < video_plugin_list.size(); i++) {
          if (std::string(video_plugin_list[i].name).find("(SDL)") != std::string::npos) {
             vid_plugin = &video_plugin_list[i];
-            CPC.scr_style = static_cast<int>(i);
             LOG_INFO("Falling back to: " << vid_plugin->name);
             back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
             if (back_surface) break;
@@ -2555,6 +2554,9 @@ bool driveAltered() {
 
 void doCleanUp ()
 {
+#ifdef _WIN32
+   timeEndPeriod(1);
+#endif
    printer_stop();
    emulator_shutdown();
 
@@ -3065,8 +3067,8 @@ std::map<SDL_Scancode, std::string> scancode_names = {
 int koncpc_main (int argc, char **argv)
 {
 #ifdef _WIN32
-   // Set Windows timer resolution to 1ms for accurate sleep_for() in the speed limiter.
-   // Without this, sleep_for(1ms) actually sleeps ~15.6ms (default 64Hz timer).
+   // Set Windows timer resolution to 1ms for accurate SDL_Delay() in the speed limiter.
+   // Without this, SDL_Delay(1) actually sleeps ~15.6ms (default 64Hz timer).
    timeBeginPeriod(1);
 #endif
    int iExitCondition;
