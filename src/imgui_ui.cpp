@@ -183,21 +183,31 @@ void imgui_init_ui()
   // Only the title bar can be used to move windows.
   io.ConfigWindowsMoveFromTitleBarOnly = true;
 
+#if defined(__APPLE__) || defined(_WIN32)
   // Merge a system symbol font for transport control glyphs (play/stop/eject etc.)
-  ImFontConfig merge_cfg;
-  merge_cfg.MergeMode = true;
-  merge_cfg.PixelSnapH = true;
-  static const ImWchar symbol_ranges[] = {
-    0x23CF, 0x23CF, // ⏏
-    0x25A0, 0x25A0, // ■
-    0x25B6, 0x25B6, // ▶
-    0x25C0, 0x25C0, // ◀
-    0,
-  };
+  {
+    ImFontConfig merge_cfg;
+    merge_cfg.MergeMode = true;
+    merge_cfg.PixelSnapH = true;
+    static const ImWchar symbol_ranges[] = {
+      0x23CF, 0x23CF, // ⏏
+      0x25A0, 0x25A0, // ■
+      0x25B6, 0x25B6, // ▶
+      0x25C0, 0x25C0, // ◀
+      0,
+    };
 #ifdef __APPLE__
-  io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
+    io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
 #elif defined(_WIN32)
-  io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\seguisym.ttf", 13.0f, &merge_cfg, symbol_ranges);
+    {
+      std::string font_path = "C:\\Windows\\Fonts\\seguisym.ttf";
+      if (const char* sys_root = getenv("SystemRoot")) {
+        font_path = (std::filesystem::path(sys_root) / "Fonts" / "seguisym.ttf").string();
+      }
+      io.Fonts->AddFontFromFileTTF(font_path.c_str(), 13.0f, &merge_cfg, symbol_ranges);
+    }
+#endif
+  }
 #endif
 
   ImGuiStyle& style = ImGui::GetStyle();
