@@ -98,7 +98,7 @@ endif
 IPATHS = -Isrc/ $(CAPS_INCLUDES) -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
-LIBS += -lws2_32 -lopengl32 -luuid
+LIBS += -lws2_32 -lopengl32 -luuid -lwinmm
 else ifeq ($(ARCH),linux)
 LIBS += -lGL
 endif
@@ -190,7 +190,7 @@ DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 MM_DEPENDS:=$(foreach file,$(MM_SOURCES:.mm=.d),$(shell echo "$(OBJDIR)/$(file)"))
 OBJECTS_CPP:=$(DEPENDS:.d=.o)
 OBJECTS_MM:=$(MM_DEPENDS:.d=.o)
-IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_opengl3.cpp
+IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_opengl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp
 IMGUI_OBJECTS:=$(foreach file,$(IMGUI_SOURCES:.cpp=.o),$(OBJDIR)/$(file))
 
 OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM) $(IMGUI_OBJECTS)
