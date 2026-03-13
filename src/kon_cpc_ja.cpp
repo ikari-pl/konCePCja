@@ -660,14 +660,13 @@ void z80_OUT_handler (reg_pair port, byte val)
                byte colour = val & 0x1f; // isolate colour value
                LOG_DEBUG("Set ink value " << static_cast<int>(GateArray.pen) << " to " << static_cast<int>(colour));
                GateArray.ink_values[GateArray.pen] = colour;
-               GateArray.palette[GateArray.pen] = MapRGBSurface(back_surface, colours[colour].r, colours[colour].g, colours[colour].b);
+               video_update_palette_entry(GateArray.pen, colours[colour].r, colours[colour].g, colours[colour].b);
                if (GateArray.pen < 2) {
                   byte r = (static_cast<dword>(colours[GateArray.ink_values[0]].r) + static_cast<dword>(colours[GateArray.ink_values[1]].r)) >> 1;
                   byte g = (static_cast<dword>(colours[GateArray.ink_values[0]].g) + static_cast<dword>(colours[GateArray.ink_values[1]].g)) >> 1;
                   byte b = (static_cast<dword>(colours[GateArray.ink_values[0]].b) + static_cast<dword>(colours[GateArray.ink_values[1]].b)) >> 1;
-                  GateArray.palette[33] = MapRGBSurface(back_surface, r, g, b); // update the mode 2 'anti-aliasing' colour
-               }
-               // TODO: update pbRegisterPage
+                  video_update_palette_entry(33, r, g, b); // update the mode 2 'anti-aliasing' colour
+               }               // TODO: update pbRegisterPage
             }
             if (CPC.mf2) { // MF2 enabled?
                int iPen = *(pbMF2ROM + 0x03fcf);
@@ -1664,6 +1663,20 @@ void cpc_resume()
    audio_resume();
 }
 
+void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
+  if (index < 0 || index >= 34) return;
+  if (!back_surface) return;
+  const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
+  SDL_Palette* pal = SDL_GetSurfacePalette(back_surface);
+  GateArray.palette[index] = SDL_MapRGB(fmt, pal, r, g, b);
+
+  float factor = (100 - CPC.scr_oglscanlines) / 100.0f;
+  GateArray.dark_palette[index] = SDL_MapRGB(fmt, pal, 
+      static_cast<uint8_t>(r * factor),
+      static_cast<uint8_t>(g * factor),
+      static_cast<uint8_t>(b * factor));
+}
+
 int video_set_palette ()
 {
    if (!CPC.scr_tube) {
@@ -1680,9 +1693,9 @@ int video_set_palette ()
          if (blue > 255) {
             blue = 255;
          }
-         colours[n].r = red;
-         colours[n].g = green;
-         colours[n].b = blue;
+         colours[n].r = static_cast<Uint8>(red);
+         colours[n].g = static_cast<Uint8>(green);
+         colours[n].b = static_cast<Uint8>(blue);
       }
    } else {
       for (int n = 0; n < 32; n++) {
@@ -1701,8 +1714,8 @@ int video_set_palette ()
          }
 
          colours[n].r = 0;
-         colours[n].g = green;
-         colours[n].b = blue;
+         colours[n].g = static_cast<Uint8>(green);
+         colours[n].b = static_cast<Uint8>(blue);
       }
    }
 
@@ -1710,10 +1723,10 @@ int video_set_palette ()
 
    for (int n = 0; n < 17; n++) { // loop for all colours + border
       int i=GateArray.ink_values[n];
-      GateArray.palette[n] = MapRGBSurface(back_surface, colours[i].r,colours[i].g,colours[i].b);
+      video_update_palette_entry(n, colours[i].r, colours[i].g, colours[i].b);
    }
 
-      return 0;
+   return 0;
 }
 
 
@@ -2068,6 +2081,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    if (CPC.scr_oglscanlines > 100) {
       CPC.scr_oglscanlines = 30;
    }
+   CPC.scr_scanlines = conf.getIntValue("video", "scr_scanlines", 0) & 1;
    CPC.scr_led = conf.getIntValue("video", "scr_led", 1) & 1;
    CPC.scr_fps = conf.getIntValue("video", "scr_fps", 0) & 1;
    CPC.scr_tube = conf.getIntValue("video", "scr_tube", 0) & 1;
@@ -2178,6 +2192,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("video", "scr_style", CPC.scr_style);
    conf.setIntValue("video", "scr_oglfilter", CPC.scr_oglfilter);
    conf.setIntValue("video", "scr_oglscanlines", CPC.scr_oglscanlines);
+   conf.setIntValue("video", "scr_scanlines", CPC.scr_scanlines);
    conf.setIntValue("video", "scr_led", CPC.scr_led);
    conf.setIntValue("video", "scr_fps", CPC.scr_fps);
    conf.setIntValue("video", "scr_tube", CPC.scr_tube);

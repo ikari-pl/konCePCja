@@ -219,9 +219,7 @@ void asic_set_palette() {
     if (blue > 255) {
       blue = 255;
     }
-    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
-    SDL_Palette* pal = SDL_GetSurfacePalette(back_surface);
-    GateArray.palette[colour] = SDL_MapRGB(fmt, pal, red, green, blue);
+    video_update_palette_entry(colour, static_cast<uint8_t>(red), static_cast<uint8_t>(green), static_cast<uint8_t>(blue));
     // TODO(cpitrat): Confirm whether we should update the mode 2 'anti-aliasing' colour (cf. src/kon_cpc_ja.cpp where GateArray.palette[33] is set).
   }
 }

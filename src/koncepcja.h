@@ -217,6 +217,7 @@ class t_CPC {
    unsigned int scr_scale;
    unsigned int scr_oglfilter;
    unsigned int scr_oglscanlines;
+   unsigned int scr_scanlines;
    unsigned int scr_led;
    unsigned int scr_fps;
    unsigned int scr_tube;
@@ -369,6 +370,7 @@ typedef struct {
    unsigned char pen;
    unsigned char ink_values[17];
    unsigned int palette[34];
+   unsigned int dark_palette[34];
    unsigned char sl_count;
    unsigned char int_delay;
 } t_GateArray;
@@ -461,6 +463,7 @@ bool dumpScreenTo(const std::string& path);
 void dumpScreen();
 int  emulator_init();
 int  video_set_palette();
+void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();
 void update_cpc_speed();
 int  printer_start();

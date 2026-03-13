@@ -975,8 +975,9 @@ void render8bpp_doubleY()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      byte val = getPixel();
-      *(CPC.scr_pos + CPC.scr_bps) = val;
+      byte pen = *RendOut++;
+      byte val = static_cast<byte>(GateArray.palette[pen]);
+      *(CPC.scr_pos + CPC.scr_bps) = CPC.scr_scanlines ? static_cast<byte>(GateArray.dark_palette[pen]) : val;
       *CPC.scr_pos++ = val;
    }
 }
@@ -987,7 +988,8 @@ void render16bpp()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      word val = getPixel();
+      byte pen = *RendOut++;
+      word val = static_cast<word>(GateArray.palette[pen]);
       *reinterpret_cast<word*>(CPC.scr_pos) = val;
       CPC.scr_pos += 2;
    }
@@ -999,9 +1001,10 @@ void render16bpp_doubleY()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      word val = getPixel();
+      byte pen = *RendOut++;
+      word val = static_cast<word>(GateArray.palette[pen]);
       *reinterpret_cast<word*>(CPC.scr_pos) = val;
-      *(reinterpret_cast<word*>(CPC.scr_pos + CPC.scr_bps)) = val;
+      *(reinterpret_cast<word*>(CPC.scr_pos + CPC.scr_bps)) = CPC.scr_scanlines ? static_cast<word>(GateArray.dark_palette[pen]) : val;
       CPC.scr_pos += 2;
    }
 }
@@ -1012,7 +1015,8 @@ void render24bpp()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      dword val = getPixel();
+      byte pen = *RendOut++;
+      dword val = GateArray.palette[pen];
       *reinterpret_cast<word *>(CPC.scr_pos) = static_cast<word>(val);
       *(CPC.scr_pos + 2) = static_cast<byte>(val >> 16);
       CPC.scr_pos += 3;
@@ -1025,13 +1029,15 @@ void render24bpp_doubleY()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      dword val = getPixel();
-      *reinterpret_cast<word *>(CPC.scr_pos + CPC.scr_bps) = static_cast<word>(val);
+      byte pen = *RendOut++;
+      dword val = GateArray.palette[pen];
+      dword dark_val = CPC.scr_scanlines ? GateArray.dark_palette[pen] : val;
+      *reinterpret_cast<word *>(CPC.scr_pos + CPC.scr_bps) = static_cast<word>(dark_val);
       *reinterpret_cast<word *>(CPC.scr_pos) = static_cast<word>(val);
-      val >>= 16;
+      
       CPC.scr_pos += 2;
-      *(CPC.scr_pos + CPC.scr_bps) = static_cast<byte>(val);
-      *(CPC.scr_pos) = static_cast<byte>(val);
+      *(CPC.scr_pos + CPC.scr_bps) = static_cast<byte>(dark_val >> 16);
+      *(CPC.scr_pos) = static_cast<byte>(val >> 16);
       CPC.scr_pos++;
    }
 }
@@ -1042,7 +1048,8 @@ void render32bpp()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      dword val = getPixel();
+      byte pen = *RendOut++;
+      dword val = GateArray.palette[pen];
       *reinterpret_cast<dword*>(CPC.scr_pos) = val;
       CPC.scr_pos += 4;
    }
@@ -1054,9 +1061,10 @@ void render32bpp_doubleY()
 {
    byte bCount = *RendWid++;
    while (bCount--) {
-      dword val = getPixel();
+      byte pen = *RendOut++;
+      dword val = GateArray.palette[pen];
       *reinterpret_cast<dword*>(CPC.scr_pos) = val;
-      *(reinterpret_cast<dword*>(CPC.scr_pos + CPC.scr_bps)) = val;
+      *(reinterpret_cast<dword*>(CPC.scr_pos + CPC.scr_bps)) = CPC.scr_scanlines ? GateArray.dark_palette[pen] : val;
       CPC.scr_pos += 4;
    }
 }
@@ -1471,7 +1479,11 @@ void video_repaint_from_ram()
    t_CRTC crtc_save = CRTC;
    t_VDU vdu_save = VDU;
    t_GateArray ga_save = GateArray;
-   t_z80regs z80_save = z80;
+   
+   // Don't shallow copy z80 regs (contains a vector)
+   word pc_save = z80.PC.w.l;
+   byte int_pending_save = z80.int_pending;
+
    t_flags1 flags1_save = flags1;
    t_new_dt new_dt_save = new_dt;
    dword LastPreRend_save = LastPreRend;
@@ -1515,6 +1527,11 @@ void video_repaint_from_ram()
    set_prerender();
    ModeMap = ModeMaps[GateArray.scr_mode];
 
+   // Initialize rendering pointers (crucial to avoid NULL deref in render functions)
+   RendPos = reinterpret_cast<dword *>(&RendBuff[0]);
+   RendOut = reinterpret_cast<byte *>(RendStart);
+   RendWid = &HorzPix[0];
+
    // Horizontal timing setup (match initial values from crtc_reset/init)
    HorzPos = -HSyncDuration; 
    HorzChar = 0;
@@ -1531,7 +1548,8 @@ void video_repaint_from_ram()
    CRTC = crtc_save;
    VDU = vdu_save;
    GateArray = ga_save;
-   z80 = z80_save;
+   z80.PC.w.l = pc_save;
+   z80.int_pending = int_pending_save;
    flags1 = flags1_save;
    new_dt = new_dt_save;
    LastPreRend = LastPreRend_save;

@@ -165,7 +165,7 @@ void init_command_registry() {
     "Returns the emulator version string and the active IPC port number.",
     [](const auto&, const auto&) {
       int p = g_ipc_instance ? g_ipc_instance->port() : 0;
-      return "OK koncepcja-0.1 port=" + std::to_string(p) + "\n";
+      return "OK koncepcja-0.2 port=" + std::to_string(p) + "\n";
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
