@@ -37,6 +37,7 @@
 #ifdef HAVE_GL
 #include "SDL3/SDL_opengl.h"
 #endif
+#include <algorithm>
 #include <atomic>
 #include <math.h>
 #include <memory>
@@ -662,7 +663,8 @@ void headless_close()
 /* ------------------------------------------------------------------------------------ */
 static int tex_x,tex_y;
 static GLuint screen_texnum,modulate_texnum;
-static int gl_scanlines;
+static int gl_scanlines;       // last-applied value, compared each frame
+static bool gl_scanlines_inited; // whether the modulation texture exists
 
 SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
 {
@@ -803,22 +805,17 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
       break;
   }
 
-  if (gl_scanlines!=0)
+  // Always create the modulation texture so scanlines can be toggled at runtime.
   {
-    Uint8 texmod;
-    texmod=(100-gl_scanlines)*255/100;
-    eglGenTextures(1,&modulate_texnum);
-    eglBindTexture(GL_TEXTURE_2D,modulate_texnum);
-    eglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, CPC.scr_oglfilter?GL_LINEAR:GL_NEAREST);
-    eglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, CPC.scr_oglfilter?GL_LINEAR:GL_NEAREST);
-
-    Uint8 modulate_texture[]={
-      255,255,255,
-      0,0,0};
-    modulate_texture[3]=texmod;
-    modulate_texture[4]=texmod;
-    modulate_texture[5]=texmod;
-    eglTexImage2D(GL_TEXTURE_2D, 0,GL_RGB8,1,2, 0,GL_RGB,GL_UNSIGNED_BYTE, modulate_texture);
+    unsigned int clamped = std::clamp(CPC.scr_oglscanlines, 0u, 100u);
+    Uint8 texmod = static_cast<Uint8>((100 - clamped) * 255 / 100);
+    eglGenTextures(1, &modulate_texnum);
+    eglBindTexture(GL_TEXTURE_2D, modulate_texnum);
+    eglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, CPC.scr_oglfilter ? GL_LINEAR : GL_NEAREST);
+    eglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, CPC.scr_oglfilter ? GL_LINEAR : GL_NEAREST);
+    Uint8 modulate_texture[] = { 255, 255, 255, texmod, texmod, texmod };
+    eglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 1, 2, 0, GL_RGB, GL_UNSIGNED_BYTE, modulate_texture);
+    gl_scanlines_inited = true;
   }
   if (CPC.scr_preserve_aspect_ratio) {
     eglViewport(t->x_offset, t->y_offset, t->width, t->height);
@@ -863,17 +860,36 @@ void glscale_setpal(SDL_Color* c)
 
 void glscale_flip([[maybe_unused]] video_plugin* t)
 {
+  // Update GL scanline state from CPC config each frame
+  {
+    int cur = static_cast<int>(std::clamp(CPC.scr_oglscanlines, 0u, 100u));
+    if (cur != gl_scanlines && gl_scanlines_inited) {
+      gl_scanlines = cur;
+      Uint8 texmod = static_cast<Uint8>((100 - cur) * 255 / 100);
+      Uint8 modulate_texture[] = { 255, 255, 255, texmod, texmod, texmod };
+      eglBindTexture(GL_TEXTURE_2D, modulate_texnum);
+      eglTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 2, GL_RGB, GL_UNSIGNED_BYTE, modulate_texture);
+    }
+  }
+
   eglDisable(GL_BLEND);
   eglClearColor(0,0,0,1);
   eglClear(GL_COLOR_BUFFER_BIT);
-  
-  if (gl_scanlines!=0)
+
+  if (gl_scanlines != 0)
   {
     eglActiveTextureARB(GL_TEXTURE1_ARB);
     eglEnable(GL_TEXTURE_2D);
     eglBindTexture(GL_TEXTURE_2D,modulate_texnum);
     eglTexEnvf (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     eglColor4f(1.0,1.0,1.0,1.0);
+    eglActiveTextureARB(GL_TEXTURE0_ARB);
+  }
+  else if (gl_scanlines_inited)
+  {
+    // Ensure texture unit 1 is disabled when scanlines are off
+    eglActiveTextureARB(GL_TEXTURE1_ARB);
+    eglDisable(GL_TEXTURE_2D);
     eglActiveTextureARB(GL_TEXTURE0_ARB);
   }
 
