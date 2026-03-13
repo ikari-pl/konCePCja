@@ -1,0 +1,20 @@
+CompileFlags:
+  Add:
+    - "-std=c++17"
+    - "-DGL_SILENCE_DEPRECATION"
+    - "-DHAS_LIBJPEG"
+    - "-DHAS_LIBCURL"
+    - "-DWITH_GL"
+    # Project sources
+    - "-Isrc/"
+    # CAPS disk image library
+    - "-Isrc/capsimg/LibIPF"
+    - "-Isrc/capsimg/Device"
+    - "-Isrc/capsimg/CAPSImg"
+    - "-Isrc/capsimg/Codec"
+    - "-Isrc/capsimg/Core"
+    # Dear ImGui
+    - "-Ivendor/imgui"
+    - "-Ivendor/imgui/backends"
+    # SDL3 (vendored build)
+    - "-Ivendor/SDL/include"
