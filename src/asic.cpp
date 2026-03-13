@@ -219,7 +219,7 @@ void asic_set_palette() {
     if (blue > 255) {
       blue = 255;
     }
-    video_update_palette_entry(colour, static_cast<Uint8>(red), static_cast<Uint8>(green), static_cast<Uint8>(blue));
+    video_update_palette_entry(colour, static_cast<uint8_t>(red), static_cast<uint8_t>(green), static_cast<uint8_t>(blue));
     // TODO(cpitrat): Confirm whether we should update the mode 2 'anti-aliasing' colour (cf. src/kon_cpc_ja.cpp where GateArray.palette[33] is set).
   }
 }

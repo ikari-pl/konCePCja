@@ -463,7 +463,7 @@ bool dumpScreenTo(const std::string& path);
 void dumpScreen();
 int  emulator_init();
 int  video_set_palette();
-void video_update_palette_entry(int index, Uint8 r, Uint8 g, Uint8 b);
+void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();
 void update_cpc_speed();
 int  printer_start();

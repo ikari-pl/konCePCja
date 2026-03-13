@@ -1663,7 +1663,7 @@ void cpc_resume()
    audio_resume();
 }
 
-void video_update_palette_entry(int index, Uint8 r, Uint8 g, Uint8 b) {
+void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
   if (index < 0 || index >= 34) return;
   if (!back_surface) return;
   const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
@@ -1672,9 +1672,9 @@ void video_update_palette_entry(int index, Uint8 r, Uint8 g, Uint8 b) {
 
   float factor = (100 - CPC.scr_oglscanlines) / 100.0f;
   GateArray.dark_palette[index] = SDL_MapRGB(fmt, pal, 
-      static_cast<Uint8>(r * factor), 
-      static_cast<Uint8>(g * factor), 
-      static_cast<Uint8>(b * factor));
+      static_cast<uint8_t>(r * factor),
+      static_cast<uint8_t>(g * factor),
+      static_cast<uint8_t>(b * factor));
 }
 
 int video_set_palette ()
