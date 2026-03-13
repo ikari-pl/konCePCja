@@ -1480,8 +1480,9 @@ void video_repaint_from_ram()
    t_VDU vdu_save = VDU;
    t_GateArray ga_save = GateArray;
    
-   // Save only the z80 fields that crtc_cycle touches (PC, int_pending).
-   // A full copy of t_z80regs is safe (std::vector deep-copies) but wasteful.
+   // Save z80 fields that the repaint loop may affect (int_pending via
+   // interrupt logic, PC as a safety net). A full t_z80regs copy is safe
+   // (std::vector deep-copies) but wasteful for just two fields.
    word pc_save = z80.PC.w.l;
    byte int_pending_save = z80.int_pending;
 
