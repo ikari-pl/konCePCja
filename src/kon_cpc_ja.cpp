@@ -1675,8 +1675,9 @@ void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
   SDL_Palette* pal = SDL_GetSurfacePalette(back_surface);
   GateArray.palette[index] = SDL_MapRGB(fmt, pal, r, g, b);
 
-  float factor = (100 - CPC.scr_oglscanlines) / 100.0f;
-  GateArray.dark_palette[index] = SDL_MapRGB(fmt, pal, 
+  unsigned int clamped = CPC.scr_oglscanlines > 100 ? 100 : CPC.scr_oglscanlines;
+  float factor = (100 - clamped) / 100.0f;
+  GateArray.dark_palette[index] = SDL_MapRGB(fmt, pal,
       static_cast<uint8_t>(r * factor),
       static_cast<uint8_t>(g * factor),
       static_cast<uint8_t>(b * factor));
