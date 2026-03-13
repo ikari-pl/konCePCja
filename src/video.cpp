@@ -120,6 +120,10 @@ void video_request_window_screenshot(const std::string& path) {
   g_wss_pending_path = path;
 }
 
+// Returns the CPC screen texture as an opaque ImTextureID-compatible value.
+// The actual type is backend-dependent: GL texture ID for OpenGL backends,
+// SDL_Texture* cast to uintptr_t for SDL_Renderer backends.
+// Callers should only use the returned value as an ImTextureID.
 uintptr_t video_get_cpc_texture() {
   if (cpc_sdl_texture)
     return reinterpret_cast<uintptr_t>(cpc_sdl_texture);
@@ -407,7 +411,7 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
   // ViewportsEnable not supported by SDL_Renderer backend
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow)) {
+  if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer); renderer = nullptr;
     SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
@@ -518,7 +522,7 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
-  if (!ImGui_ImplSDL3_InitForOther(mainSDLWindow)) {
+  if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer); renderer = nullptr;
     SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
@@ -563,7 +567,8 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
   {
     const SDL_PixelFormatDetails* v_fmt = SDL_GetPixelFormatDetails(vid->format);
     SDL_Palette* v_pal = SDL_GetSurfacePalette(vid);
-    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(v_fmt, v_pal, 0, 0, 0));
+    if (v_fmt)
+      SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(v_fmt, v_pal, 0, 0, 0));
   }
   compute_scale(t, surface_width, surface_height);
   pub = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGB565);

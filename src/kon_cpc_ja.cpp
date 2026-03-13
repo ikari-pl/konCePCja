@@ -1816,6 +1816,7 @@ void mouse_init ()
 
 int video_init ()
 {
+   int original_scr_style = CPC.scr_style;
    vid_plugin=&video_plugin_list[CPC.scr_style];
    LOG_DEBUG("video_init: vid_plugin = " << vid_plugin->name)
 
@@ -1831,7 +1832,10 @@ int video_init ()
             vid_plugin = &video_plugin_list[i];
             LOG_INFO("Falling back to: " << vid_plugin->name);
             back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
-            if (back_surface) break;
+            if (back_surface) {
+               CPC.scr_style = static_cast<int>(i);
+               break;
+            }
          }
       }
    }
@@ -1843,6 +1847,7 @@ int video_init ()
       g_headless = true;
       back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, false);
       if (!back_surface) {
+         CPC.scr_style = original_scr_style;
          LOG_ERROR("Headless fallback also failed. Aborting.");
          return ERR_VIDEO_SET_MODE;
       }
@@ -3069,7 +3074,10 @@ int koncpc_main (int argc, char **argv)
 #ifdef _WIN32
    // Set Windows timer resolution to 1ms for accurate SDL_Delay() in the speed limiter.
    // Without this, SDL_Delay(1) actually sleeps ~15.6ms (default 64Hz timer).
-   timeBeginPeriod(1);
+   struct Win32TimerGuard {
+      Win32TimerGuard()  { timeBeginPeriod(1); }
+      ~Win32TimerGuard() { timeEndPeriod(1);   }
+   } win32TimerGuard;
 #endif
    int iExitCondition;
    bool bin_loaded = false;
@@ -3662,7 +3670,7 @@ int koncpc_main (int argc, char **argv)
                   if (remaining > 2) {
                      SDL_Delay(remaining - 2); // sleep most of the wait, leave 2ms for spin
                   }
-                  while (SDL_GetTicks() < dwTicksTarget) {} // spin-wait for precision
+                  while (SDL_GetTicks() < dwTicksTarget) { SDL_Delay(0); } // spin-wait for precision
                }
                dwTicksTarget += dwTicksOffset; // accumulator: next frame exactly N ms later
                // If we fell behind (e.g. slow frame), don't try to catch up
