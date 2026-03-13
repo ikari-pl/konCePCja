@@ -1749,6 +1749,10 @@ static void imgui_render_options()
       bool scanlines = CPC.scr_scanlines != 0;
       if (ImGui::Checkbox("Scanlines", &scanlines)) {
         CPC.scr_scanlines = scanlines ? 1 : 0;
+        if (!scanlines) {
+          CPC.scr_oglscanlines = 0;
+          video_set_palette();
+        }
       }
       if (scanlines) {
         int sl_intensity = static_cast<int>(CPC.scr_oglscanlines);

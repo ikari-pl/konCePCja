@@ -119,7 +119,7 @@ echo "help" | nc localhost 6543
 | Command | Description | Example |
 |---------|-------------|---------|
 | `ping` | Test connection | `ping` → `OK pong` |
-| `version` | Get version | `version` → `OK koncepcja-0.2` |
+| `version` | Get version | `version` → `OK koncepcja-0.2 port=6543` |
 | `help` | List commands | `help` → `OK commands: ...` |
 | `pause` | Pause emulation | `pause` → `OK` |
 | `run` | Resume emulation | `run` → `OK` |
