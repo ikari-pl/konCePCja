@@ -1,9 +1,13 @@
 # Minimal clangd config for IDE support (vendored library includes).
 # For full build-accurate flags, generate compile_commands.json:
-#   bear -- make ARCH=macos
+#   bear -- make              # Linux/macOS (auto-detects arch)
+#   bear -- make ARCH=win64   # cross-compiling for Windows
 #
-# Note: HAS_LIBJPEG, HAS_LIBCURL, WITH_GL are conditionally enabled
-# by the Makefile. Enable them in a local .clangd override if needed.
+# Optional defines (conditionally enabled by the Makefile):
+#   -DHAS_LIBJPEG, -DHAS_LIBCURL, -DWITH_GL
+# To enable them for clangd, add to your user config (~/.config/clangd/config.yaml):
+#   CompileFlags:
+#     Add: [-DWITH_GL, -DHAS_LIBJPEG, -DHAS_LIBCURL]
 CompileFlags:
   Add:
     - "-std=c++17"
