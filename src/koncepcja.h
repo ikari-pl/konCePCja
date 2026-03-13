@@ -41,7 +41,7 @@ class InputMapper;
 //#define DEBUG_TAPE
 //#define DEBUG_Z80
 
-#define VERSION_STRING "v5.2.1"
+#define VERSION_STRING "v5.2.2"
 
 #ifndef _MAX_PATH
  #ifdef _POSIX_PATH_MAX

@@ -395,5 +395,147 @@ category is its own mental model — mixing them would make the doc unusable.
 
 ---
 
-*konCePCja: 41 PRs, 623 tests, 80+ IPC commands, 6 phases of development,
-13 DevTools windows, and still learning.*
+## The Review Comment Treadmill (PRs #52–#58)
+
+### Automated Reviewers Generate Recursive Work
+
+When Gemini and Copilot review a PR, their comments are actionable — but
+fixing those comments triggers *new* reviews on the fix commits, which generate
+*new* comments. PR #55 (Windows support) went through three rounds of Copilot
+review generating 30 comments, most of which were duplicates or rephrases of
+the first round's findings.
+
+The lesson: **batch your fixes, push once, check once**. Don't push after each
+individual fix — that triggers a new review cycle per push. Accumulate fixes
+locally, push the batch, wait for the single review pass, then address any
+genuinely new findings. Also: always check for new comments *before* merging,
+not after.
+
+### The GL Scanline Caching Bug: Init-Time Values in Per-Frame Code
+
+`glscale_init()` copied `CPC.scr_oglscanlines` into a static `gl_scanlines`
+at startup. The modulation texture (a 1×2 pixel texture used with GL
+multitexturing to darken every other scanline) was built once from that value.
+Changing the intensity slider in the UI updated `CPC.scr_oglscanlines` — but
+the GL backend never re-read it.
+
+The fix: `glscale_flip()` now compares `CPC.scr_oglscanlines` against the
+cached value each frame, and re-uploads the modulation texture via
+`glTexSubImage2D` when it changes. The texture is always created at init
+(even if scanlines start at 0), and texture unit 1 is explicitly disabled
+when scanlines are off.
+
+General principle: **if a value is settable at runtime, every consumer must
+read it at runtime** — not snapshot it at init and forget. Caching is fine
+as long as the cache is invalidated. The dirty-flag pattern we use for ImGui
+windows applies to GL state too.
+
+### Unsigned Underflow in Palette Computation
+
+`video_update_palette_entry()` computed a darkening factor:
+```c
+float factor = (100 - CPC.scr_oglscanlines) / 100.0f;
+```
+Since `scr_oglscanlines` is `unsigned int`, setting it above 100 (possible
+via config profiles that don't clamp) wraps the subtraction to ~4 billion,
+producing a massive factor and garbled colors after `static_cast<uint8_t>`.
+
+The fix: `std::clamp(CPC.scr_oglscanlines, 0u, 100u)` before the computation.
+This is a textbook unsigned-arithmetic footgun — **always clamp unsigned values
+at the computation site, not just at the input site**, because there are
+multiple input paths (UI slider, config file, IPC command).
+
+### Version String Housekeeping Matters
+
+`VERSION_STRING` in `koncepcja.h` had drifted to `v4.6.0` while GitHub releases
+were at `v5.1.1`. Bumping it without checking the release history created a
+worse mess — `v4.6.1`, then `v5.1.2`, then realising the feature scope
+warranted `v5.2.0`. We had to delete and recreate three GitHub releases to
+get semver right.
+
+The lesson: **VERSION_STRING and GitHub releases must be updated in the same
+commit/PR**. Check `gh release list` before bumping. And use `gh api` to
+create releases (not just tags) so CI builds artifacts automatically.
+
+### SDL Types Don't Belong in Non-SDL Headers
+
+`video_update_palette_entry()` was declared with `Uint8` parameters in
+`koncepcja.h`, which doesn't include SDL headers. Any translation unit that
+included `koncepcja.h` without also including SDL would fail to compile.
+The MINGW CI caught this; macOS didn't because its include chain happened
+to pull in SDL transitively.
+
+Rule: **public headers must be self-contained**. Use standard types (`uint8_t`)
+in headers, and only use library-specific types (`Uint8`, `SDL_Surface*`) in
+implementation files that include the library.
+
+### CR+LF vs LF in End-to-End Tests
+
+The CPC's `PRINT #8` (printer output) generates CR+LF line endings — it's
+emulating a physical line printer. Our e2e test model files for `scr_style`
+used LF-only, causing every SDL plugin test (styles 12–17) to fail. The fix
+was `printf 'style=%d\r\n'` in the model file generator.
+
+Broader lesson: **test model data must match the exact byte-level output of
+the emulated hardware**, not what looks right in a text editor. Use `xxd` or
+`hexdump` to verify model files when tests fail with "output mismatch".
+
+### `.clangd` Config: Minimal Shared, Full Local
+
+The first `.clangd` commit unconditionally defined `HAS_LIBJPEG`,
+`HAS_LIBCURL`, and `WITH_GL` — all feature-detected by the Makefile. This
+would cause clangd to parse code guarded by those defines on machines without
+the libraries, producing "file not found" errors worse than having no config.
+
+The fix: the shared `.clangd` only includes vendored library paths (SDL,
+ImGui, CAPS) and `-std=c++17`. Optional defines go in the user's
+`~/.config/clangd/config.yaml`. Alternatively, `bear -- make` generates a
+complete `compile_commands.json` from the actual build. **Shared IDE configs
+should be the minimal common denominator — anything conditional belongs in
+user-local config.**
+
+### Windows Support Is Not a Bolt-On
+
+PR #55 added SDL_Renderer fallback for machines without OpenGL, which sounds
+simple but touched almost every video init path:
+
+- `ImGui_ImplSDL3_InitForOther()` is wrong for SDL_Renderer —
+  `ImGui_ImplSDL3_InitForSDLRenderer()` is the correct backend init
+- `SDL_GetPixelFormatDetails()` can return NULL on fallback pixel formats
+- `timeBeginPeriod(1)` on Windows needs RAII pairing with `timeEndPeriod(1)`
+- The speed limiter spin-loop needs `SDL_Delay(0)` to yield CPU
+- The fallback loop must not mutate `CPC.scr_style` until init succeeds
+
+Each of these was caught by Copilot/Gemini review, not by testing. **Windows
+support requires reviewing every platform-conditional code path, not just
+adding `#ifdef _WIN32` around the obvious parts.**
+
+---
+
+## Growing the Codebase: From 41 to 58 PRs
+
+### The Review-Fix-Review Cycle Needs a Circuit Breaker
+
+PRs #54–#58 demonstrated a pattern: merge a feature PR, automated reviewers
+comment, create a follow-up PR to address comments, reviewers comment on the
+follow-up, create *another* follow-up... PR #54's scanline feature generated
+PR #57 for review fixes, which itself received a comment about the GL backend
+caching — leading to the full runtime scanline fix.
+
+At some point you have to **declare the review round done** and file remaining
+nits as future work. The circuit breaker: if a comment describes a pre-existing
+architectural issue (like the CRTC repaint DMA side effects), acknowledge it,
+file a tracking issue, and move on. Don't let the perfect be the enemy of the
+merged.
+
+### Test Count Isn't Everything, But It's Something
+
+From 623 to 774 tests in two weeks. The M4 Board alone added ~1000 lines of
+tests. The assembler added ~500 more. The integrated scr_style tests caught
+the CR+LF bug. Tests are still our most reliable safety net — **every bug
+found by a reviewer should become a test**, so it can't regress.
+
+---
+
+*konCePCja: 58 PRs, 774 tests, 80+ IPC commands, 6 phases of development,
+17 DevTools windows, and still learning.*

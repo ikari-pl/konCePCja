@@ -345,6 +345,27 @@ void imgui_render_ui()
   g_devtools_ui.render();
   g_command_palette.render();
 
+  // --- Quit confirmation popup (rendered here so it works regardless of show_menu) ---
+  if (imgui_state.show_quit_confirm) {
+    ImGui::OpenPopup("Confirm Quit");
+    imgui_state.show_quit_confirm = false;
+  }
+  if (ImGui::BeginPopupModal("Confirm Quit", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("Are you sure you want to quit?");
+    ImGui::Spacing();
+    if (ImGui::Button("Yes", ImVec2(80, 0))) {
+      cleanExit(0, false);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("No", ImVec2(80, 0))) {
+      ImGui::CloseCurrentPopup();
+      if (!imgui_state.show_menu && !imgui_state.show_options) {
+        CPC.paused = false;
+      }
+    }
+    ImGui::EndPopup();
+  }
+
   // Reset devtools bar height when hidden so dockspace reclaims the space
   if (!imgui_state.show_devtools && s_devtools_bar_h != 0) {
     s_devtools_bar_h = 0;
@@ -534,6 +555,7 @@ static void imgui_render_menubar()
     }
     if (ImGui::MenuItem("Quit", "F10")) {
       imgui_state.show_quit_confirm = true;
+      CPC.paused = true;
     }
     ImGui::EndMenu();
   }
@@ -1438,23 +1460,6 @@ static void imgui_render_menu()
     ImGui::EndPopup();
   }
 
-  // --- Quit confirmation popup ---
-  if (imgui_state.show_quit_confirm) {
-    ImGui::OpenPopup("Confirm Quit");
-    imgui_state.show_quit_confirm = false;
-  }
-  if (ImGui::BeginPopupModal("Confirm Quit", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Are you sure you want to quit?");
-    ImGui::Spacing();
-    if (ImGui::Button("Yes", ImVec2(80, 0))) {
-      cleanExit(0, false);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("No", ImVec2(80, 0))) {
-      ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndPopup();
-  }
 }
 
 // ─────────────────────────────────────────────────

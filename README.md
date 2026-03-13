@@ -21,13 +21,15 @@ konCePCja is designed as an **IPC-controllable debugging tool** — every featur
 
 ## Changes vs Caprice32
 
-konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 55K lines of source, 646 tests across 79 suites.
+konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 776 tests across 83 suites.
 
 ### Platform & UI
   * SDL3 migration + macOS menu integration
-  * Dear ImGui overlay with 16 DevTools windows (see [DevTools](#devtools) below)
+  * Dear ImGui overlay with 18 DevTools windows (see [DevTools](#devtools) below)
   * **Dockable workspace** — Classic (floating windows) or Docked mode with Debug, IDE and Hardware layout presets, plus custom save/load
   * **DevTools toolbar** — toggleable second topbar (F12) with dropdown menus and step/pause controls
+  * **SDL_Renderer fallback** — automatic fallback to software rendering on systems without OpenGL
+  * **Software scanlines** — configurable scanline intensity for all video backends (GL and software)
   * PNG logo + macOS icns icon
 
 ### IPC Automation
@@ -48,6 +50,7 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **Step over / step out / step to** — function-level stepping, not just single instructions
   * **Expression parser** — WinAPE-compatible syntax with registers, `peek()`, `ay()`, `crtc()`, bitwise operators
   * **Debug timers** — measure T-state durations between code points via expression side-effects
+  * **Z80 Assembler** — integrated assembler with labels, expressions, `&`/`$`/`%` number formats, two-pass assembly, error reporting and IPC access
   * **Symbol table** — load/save `.sym` files, bidirectional lookup, symbols in disassembly output
   * **Memory search** — find hex patterns (`??` wildcards), ASCII text, or Z80 mnemonics (`ld (*),hl`)
   * **Call stack** — heuristic stack walk with CALL/RST detection and symbol labels
@@ -72,7 +75,17 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **Silicon Disc** — 256 KB battery-backed RAM disc in banks 4-7
   * **32 ROM slots** — load/unload/query ROM images
   * **ASIC register viewer** — sprites, DMA channels, palette, interrupts
-  * **Video / Audio state** — live CRTC, Gate Array, PSG register viewers
+  * **Video / Audio state** — live CRTC, Gate Array, PSG register viewers with audio oscilloscope
+
+### Peripheral Expansions
+  * **M4 Board** — virtual filesystem with host directory backing, 39 firmware commands, 31 RSX commands, DSK container support and LED status
+  * **Symbiface II** — IDE hard disc (ATA PIO with raw `.img` files), DS12887 RTC with NVRAM, PS/2 mouse
+  * **Digiblaster** — printer port 8-bit DAC mixed into audio output
+  * **AmDrum (Cheetah)** — 8-bit DAC on port `&FFxx`
+  * **Dobbertin SmartWatch** — Dallas DS1216 phantom RTC returning host system time
+  * **AMX Mouse** — joystick port mouse on keyboard matrix
+  * **Amstrad Magnum Phaser** — light gun via CRTC register intercept
+  * **Drive/tape sounds** — procedurally generated FDC motor hum, head seek clicks and tape loading hiss
 
 ### Session & Graphics
   * **Session recording** — record and replay full emulator input/state sessions
@@ -93,20 +106,23 @@ See [docs/ipc-protocol.md](docs/ipc-protocol.md) for the full IPC command refere
   * DSK, [IPF](http://softpres.org/glossary:ipf) and CT-RAW files for disks — VOC and CDT files for tapes — CPR files for cartridges
   * Snapshots (SNA files)
   * Direct load of ZIP files
-  * 16-window ImGui DevTools: registers, disassembly, memory hex, stack, breakpoints, symbols, data areas, graphics finder, session recording, silicon disc, ASIC viewer, disc tools, disasm export, video state, audio state, recording controls
+  * 18-window ImGui DevTools: registers, disassembly, memory hex, stack, breakpoints, symbols, data areas, graphics finder, session recording, silicon disc, ASIC viewer, disc tools, disasm export, video state, audio state, recording controls, assembler, instruction reference
   * Dockable workspace with Debug/IDE/Hardware presets and custom layout save/load
   * Disc file editor, sector editor and formatting (IPC and GUI)
   * WAV, YM and AVI recording
+  * Software scanlines with configurable intensity
+  * SDL_Renderer fallback for systems without OpenGL
+  * 8 peripheral expansions: M4 Board, Symbiface II, Digiblaster, AmDrum, SmartWatch, AMX Mouse, Phaser, drive/tape sounds
   * Custom disk formats
   * Printer support
   * Experimental Multiface 2 support (prefer the memory tool where possible)
-  * 646 unit tests across 79 test suites
+  * 776 unit tests across 83 test suites
 
 Something missing? Open an issue to suggest it.
 
 ## DevTools
 
-Press **F12** or send `devtools` via IPC to toggle the DevTools toolbar below the main topbar. The toolbar provides dropdown menus (CPU, Memory, Hardware, Media, Export) and step/pause controls. All 16 windows are also accessible from the command palette:
+Press **F12** or send `devtools` via IPC to toggle the DevTools toolbar below the main topbar. The toolbar provides dropdown menus (CPU, Memory, Hardware, Media, Export) and step/pause controls. All 18 windows are also accessible from the command palette:
 
 | Window | Description |
 |--------|-------------|
@@ -125,7 +141,9 @@ Press **F12** or send `devtools` via IPC to toggle the DevTools toolbar below th
 | **ASIC Viewer** | Plus Range hardware: 16 sprites, 3 DMA channels, 32-colour palette, interrupt state |
 | **Disc Tools** | Drive selector, disc formatting, AMSDOS file browser, sector-level read |
 | **Video State** | Live CRTC and Gate Array register display |
-| **Audio State** | Live PSG (AY-3-8912) register display |
+| **Audio State** | Live PSG (AY-3-8912) register display with oscilloscope |
+| **Assembler** | Z80 assembler with labels, expressions, error list and assemble-to-memory |
+| **Instruction Reference** | Searchable Z80 opcode table (1268 entries across 7 prefix groups) |
 
 In **Docked mode**, windows snap into a tiled layout. Three presets are available (Debug, IDE, Hardware) and custom layouts can be saved/loaded from the Layout menu.
 
