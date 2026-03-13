@@ -25,6 +25,11 @@
 #include <filesystem>
 #include <unistd.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <timeapi.h>
+#endif
+
 #include "SDL3/SDL.h"
 
 static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
@@ -1824,21 +1829,38 @@ void mouse_init ()
 
 int video_init ()
 {
+   int original_scr_style = CPC.scr_style;
    vid_plugin=&video_plugin_list[CPC.scr_style];
    LOG_DEBUG("video_init: vid_plugin = " << vid_plugin->name)
 
    back_surface=vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
 
    if (!back_surface) {
-      // OpenGL may be unavailable (e.g. SDL_VIDEODRIVER=dummy in CI).
-      // Fall back to headless rendering so the emulator remains functional.
+      // OpenGL may be unavailable (e.g. Intel HD 3000 only exposes GL 1.1).
+      // Try the SDL_Renderer backend which uses D3D11/Metal instead of OpenGL.
       LOG_ERROR("Could not set requested video mode: " << SDL_GetError()
-                << " — falling back to headless");
+                << " — trying SDL_Renderer fallback");
+      for (size_t i = 0; i < video_plugin_list.size(); i++) {
+         if (std::string(video_plugin_list[i].name).find("(SDL)") != std::string::npos) {
+            vid_plugin = &video_plugin_list[i];
+            LOG_INFO("Falling back to: " << vid_plugin->name);
+            back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
+            if (back_surface) {
+               CPC.scr_style = static_cast<int>(i);
+               break;
+            }
+         }
+      }
+   }
+   if (!back_surface) {
+      // Last resort: headless rendering (no window).
+      LOG_ERROR("SDL_Renderer fallback also failed — falling back to headless");
       static video_plugin hp = video_headless_plugin();
       vid_plugin = &hp;
       g_headless = true;
       back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, false);
       if (!back_surface) {
+         CPC.scr_style = original_scr_style;
          LOG_ERROR("Headless fallback also failed. Aborting.");
          return ERR_VIDEO_SET_MODE;
       }
@@ -2552,6 +2574,9 @@ bool driveAltered() {
 
 void doCleanUp ()
 {
+#ifdef _WIN32
+   timeEndPeriod(1);
+#endif
    printer_stop();
    emulator_shutdown();
 
@@ -3061,6 +3086,14 @@ std::map<SDL_Scancode, std::string> scancode_names = {
 
 int koncpc_main (int argc, char **argv)
 {
+#ifdef _WIN32
+   // Set Windows timer resolution to 1ms for accurate SDL_Delay() in the speed limiter.
+   // Without this, SDL_Delay(1) actually sleeps ~15.6ms (default 64Hz timer).
+   struct Win32TimerGuard {
+      Win32TimerGuard()  { timeBeginPeriod(1); }
+      ~Win32TimerGuard() { timeEndPeriod(1);   }
+   } win32TimerGuard;
+#endif
    int iExitCondition;
    bool bin_loaded = false;
    SDL_Event event;
@@ -3648,12 +3681,18 @@ int koncpc_main (int argc, char **argv)
             if (iExitCondition == EC_CYCLE_COUNT) {
                dwTicks = SDL_GetTicks();
                if (dwTicks < dwTicksTarget) { // limit speed ?
-                  if (dwTicksTarget - dwTicks > POLL_INTERVAL_MS) { // No need to burn cycles if next event is far away
-                     std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+                  dword remaining = dwTicksTarget - dwTicks;
+                  if (remaining > 2) {
+                     SDL_Delay(remaining - 2); // sleep most of the wait, leave 2ms for spin
                   }
-                  continue; // delay emulation
+                  while (SDL_GetTicks() < dwTicksTarget) { SDL_Delay(0); } // spin-wait for precision
                }
-               dwTicksTarget = dwTicks + dwTicksOffset; // prep counter for the next run
+               dwTicksTarget += dwTicksOffset; // accumulator: next frame exactly N ms later
+               // If we fell behind (e.g. slow frame), don't try to catch up
+               dwTicks = SDL_GetTicks();
+               if (dwTicksTarget < dwTicks) {
+                  dwTicksTarget = dwTicks + dwTicksOffset;
+               }
             }
          }
 

@@ -14,6 +14,7 @@
 #include <iostream>
 
 #include "koncepcja.h"
+#include "log.h"
 #include "crtc.h"
 #include "rom_identify.h"
 #include "keyboard.h"
@@ -56,6 +57,7 @@ ImGuiUIState imgui_state;
 
 // Forward declarations
 static void tape_scan_blocks();
+static void imgui_render_menubar();
 static void imgui_render_topbar();
 static void imgui_render_menu();
 static void imgui_render_options();
@@ -65,7 +67,8 @@ static void imgui_render_vkeyboard();
 
 static void close_menu();
 
-// Height tracking for stacked topbar + devtools bar
+// Height tracking for stacked menubar + topbar + devtools bar
+static float s_menubar_h = 19.0f; // ImGui main menu bar default height
 static int s_main_topbar_h = 25;
 static int s_devtools_bar_h = 0;
 static ImVec2 s_layout_btn_pos;  // set in topbar, read in layout dropdown
@@ -180,19 +183,37 @@ void imgui_init_ui()
   // Only the title bar can be used to move windows.
   io.ConfigWindowsMoveFromTitleBarOnly = true;
 
+#if defined(__APPLE__) || defined(_WIN32)
+  // Merge a system symbol font for transport control glyphs (play/stop/eject etc.)
+  {
+    ImFontConfig merge_cfg;
+    merge_cfg.MergeMode = true;
+    merge_cfg.PixelSnapH = true;
+    static const ImWchar symbol_ranges[] = {
+      0x23CF, 0x23CF, // ⏏
+      0x25A0, 0x25A0, // ■
+      0x25B6, 0x25B6, // ▶
+      0x25C0, 0x25C0, // ◀
+      0,
+    };
 #ifdef __APPLE__
-  // On macOS, merge Apple Symbols font for transport control glyphs
-  ImFontConfig merge_cfg;
-  merge_cfg.MergeMode = true;
-  merge_cfg.PixelSnapH = true;
-  static const ImWchar symbol_ranges[] = {
-    0x23CF, 0x23CF, // ⏏
-    0x25A0, 0x25A0, // ■
-    0x25B6, 0x25B6, // ▶
-    0x25C0, 0x25C0, // ◀
-    0,
-  };
-  io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
+    io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
+#elif defined(_WIN32)
+    {
+      std::filesystem::path fonts_dir = "C:\\Windows\\Fonts";
+      if (const char* sys_root = getenv("SystemRoot")) {
+        fonts_dir = std::filesystem::path(sys_root) / "Fonts";
+      }
+      // Try Segoe UI Symbol first, then Segoe UI Emoji, then Arial Unicode MS
+      const char* candidates[] = { "seguisym.ttf", "seguiemj.ttf", "ARIALUNI.TTF" };
+      for (const char* name : candidates) {
+        auto path = (fonts_dir / name).string();
+        if (io.Fonts->AddFontFromFileTTF(path.c_str(), 13.0f, &merge_cfg, symbol_ranges))
+          break;
+      }
+    }
+#endif
+  }
 #endif
 
   ImGuiStyle& style = ImGui::GetStyle();
@@ -313,6 +334,7 @@ void imgui_render_ui()
   // Dockspace host must be rendered before other windows so they can dock into it
   workspace_render_dockspace();
   workspace_render_cpc_screen();
+  imgui_render_menubar();
   imgui_render_topbar();
   if (imgui_state.show_menu)        imgui_render_menu();
   if (imgui_state.show_options)     imgui_render_options();
@@ -333,7 +355,7 @@ void imgui_render_ui()
   // Calling SDL_SetWindowSize during the render loop causes macOS to shift
   // window coordinates mid-frame, breaking button click detection.
   if (s_topbar_height_dirty) {
-    int total = s_main_topbar_h + s_devtools_bar_h;
+    int total = static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
     if (total != video_get_topbar_height()) {
       video_set_topbar(nullptr, total);
     }
@@ -478,23 +500,173 @@ done:;
 }
 
 // ─────────────────────────────────────────────────
+// Main Menu Bar
+// ─────────────────────────────────────────────────
+
+static void imgui_render_menubar()
+{
+  if (!ImGui::BeginMainMenuBar()) return;
+
+  float h = ImGui::GetWindowSize().y;
+  if (h != s_menubar_h) { s_menubar_h = h; s_topbar_height_dirty = true; }
+
+  // ── Emulator ──
+  if (ImGui::BeginMenu("Emulator")) {
+    if (ImGui::MenuItem("Options...")) {
+      imgui_state.show_options = true;
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Fullscreen", "F2")) {
+      koncpc_menu_action(KONCPC_FULLSCRN);
+    }
+    if (ImGui::MenuItem("Screenshot", "F3")) {
+      koncpc_menu_action(KONCPC_SCRNSHOT);
+    }
+    if (ImGui::MenuItem("Paste", "F11")) {
+      koncpc_menu_action(KONCPC_PASTE);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Reset", "F5")) {
+      emulator_reset();
+    }
+    if (ImGui::MenuItem("About...")) {
+      imgui_state.show_about = true;
+    }
+    if (ImGui::MenuItem("Quit", "F10")) {
+      imgui_state.show_quit_confirm = true;
+    }
+    ImGui::EndMenu();
+  }
+
+  // ── Media ──
+  if (ImGui::BeginMenu("Media")) {
+    if (ImGui::MenuItem("Load Disk A...")) {
+      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
+      SDL_ShowOpenFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
+        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+    }
+    if (ImGui::MenuItem("Load Disk B...")) {
+      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
+      SDL_ShowOpenFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
+        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+    }
+    if (ImGui::MenuItem("Save Disk A...", nullptr, false, driveA.tracks != 0)) {
+      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
+      SDL_ShowSaveFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
+        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+    }
+    if (ImGui::MenuItem("Save Disk B...", nullptr, false, driveB.tracks != 0)) {
+      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
+      SDL_ShowSaveFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
+        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Load Snapshot...")) {
+      static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna;zip" } };
+      SDL_ShowOpenFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
+        mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
+    }
+    if (ImGui::MenuItem("Save Snapshot...")) {
+      static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna" } };
+      SDL_ShowSaveFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
+        mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
+    }
+    if (ImGui::MenuItem("Quick Save Snapshot", "Shift+F3")) {
+      koncpc_menu_action(KONCPC_SNAPSHOT);
+    }
+    if (ImGui::MenuItem("Quick Load Snapshot", "Shift+F4")) {
+      koncpc_menu_action(KONCPC_LD_SNAP);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Load Tape...")) {
+      static const SDL_DialogFileFilter filters[] = { { "Tape Images", "cdt;voc;zip" } };
+      SDL_ShowOpenFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape)),
+        mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
+    }
+    if (ImGui::MenuItem("Tape Play/Stop", "F4", false, !pbTapeImage.empty())) {
+      koncpc_menu_action(KONCPC_TAPEPLAY);
+    }
+    if (ImGui::MenuItem("Eject Tape", nullptr, false, !pbTapeImage.empty())) {
+      tape_eject();
+      CPC.tape.file.clear();
+      imgui_state.tape_block_offsets.clear();
+      imgui_state.tape_current_block = 0;
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Load Cartridge...")) {
+      static const SDL_DialogFileFilter filters[] = { { "Cartridges", "cpr;zip" } };
+      SDL_ShowOpenFileDialog(file_dialog_callback,
+        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
+        mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
+    }
+    ImGui::EndMenu();
+  }
+
+  // ── Tools ──
+  if (ImGui::BeginMenu("Tools")) {
+    if (ImGui::MenuItem("Memory Tool")) {
+      imgui_state.show_memory_tool = true;
+    }
+    if (ImGui::MenuItem("DevTools", "Shift+F2")) {
+      imgui_state.show_devtools = true;
+    }
+    if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
+      koncpc_menu_action(KONCPC_VKBD);
+    }
+    if (ImGui::MenuItem("MF2 Stop", "F6")) {
+      koncpc_menu_action(KONCPC_MF2STOP);
+    }
+    ImGui::EndMenu();
+  }
+
+  // ── Options ──
+  if (ImGui::BeginMenu("Options")) {
+    if (ImGui::MenuItem("Joystick Emulation", "F7", CPC.joystick_emulation != 0)) {
+      koncpc_menu_action(KONCPC_JOY);
+    }
+    if (ImGui::MenuItem("Phazer Emulation", "Shift+F7", static_cast<bool>(CPC.phazer_emulation))) {
+      koncpc_menu_action(KONCPC_PHAZER);
+    }
+    if (ImGui::MenuItem("Speed Limit", "F9", CPC.limit_speed != 0)) {
+      koncpc_menu_action(KONCPC_SPEED);
+    }
+    if (ImGui::MenuItem("Show FPS", "F8", CPC.scr_fps != 0)) {
+      koncpc_menu_action(KONCPC_FPS);
+    }
+    if (ImGui::MenuItem("Verbose Logging", "F12", log_verbose)) {
+      koncpc_menu_action(KONCPC_DEBUG);
+    }
+    ImGui::EndMenu();
+  }
+
+  ImGui::EndMainMenuBar();
+}
+
+// ─────────────────────────────────────────────────
 // Top Bar
 // ─────────────────────────────────────────────────
 
 int imgui_topbar_height()
 {
-  // Button(21) + 2px padding top + 2px padding bottom = 25px.
+  // Menu bar + button bar (21) + 2px padding top + 2px padding bottom = ~44px.
   // Dynamic sync (lines below) corrects if ImGui expands beyond this.
-  return 25;
+  return static_cast<int>(s_menubar_h) + 25;
 }
 
 static void imgui_render_topbar()
 {
   float pad_y = 2.0f;
-  float bar_height = static_cast<float>(imgui_topbar_height());
+  float bar_height = 25.0f; // topbar window only (not including menu bar)
 
   ImGuiViewport* vp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(vp->Pos);
+  ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
@@ -513,7 +685,7 @@ static void imgui_render_topbar()
       int h = static_cast<int>(ImGui::GetWindowSize().y);
       if (h != s_main_topbar_h) { s_main_topbar_h = h; s_topbar_height_dirty = true; }
     }
-    bool menu_pressed = ImGui::Button("Menu (F1)");
+    bool menu_pressed = ImGui::Button("Pause (F1)");
     if (menu_pressed) {
       if (!CPC.scr_gui_is_currently_on) {
         imgui_state.show_menu = true;
@@ -1211,13 +1383,10 @@ static void imgui_render_menu()
   }
   if (!menu_open) { close_menu(); ImGui::End(); return; }
 
-  // Keyboard shortcuts within menu
+  // Keyboard shortcuts within pause menu
   bool action = false;
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { close_menu(); ImGui::End(); return; }
-    if (ImGui::IsKeyPressed(ImGuiKey_O)) { imgui_state.show_options = true; action = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_M)) { imgui_state.show_memory_tool = true; action = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_D)) { imgui_state.show_devtools = true; action = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_R)) { emulator_reset(); action = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_Q)) { imgui_state.show_quit_confirm = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_A)) { imgui_state.show_about = true; }
@@ -1226,116 +1395,18 @@ static void imgui_render_menu()
 
   float bw = ImGui::GetContentRegionAvail().x;
 
-  if (ImGui::Button("Options (O)", ImVec2(bw, 0))) {
-    imgui_state.show_options = true;
+  ImGui::TextWrapped("Emulation paused. Use the menu bar above for all actions.");
+  ImGui::Spacing();
+
+  if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
     action = true;
   }
-
-  ImGui::Separator();
-
-  // --- Disk operations ---
-  if (ImGui::Button("Load Disk A...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
-    SDL_ShowOpenFileDialog(file_dialog_callback,
-      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
-      mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
-    action = true;
-  }
-  if (ImGui::Button("Load Disk B...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
-    SDL_ShowOpenFileDialog(file_dialog_callback,
-      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
-      mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
-    action = true;
-  }
-  if (ImGui::Button("Save Disk A...", ImVec2(bw, 0))) {
-    if (driveA.tracks) {
-      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
-      SDL_ShowSaveFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
-        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
-      action = true;
-    }
-  }
-  if (ImGui::Button("Save Disk B...", ImVec2(bw, 0))) {
-    if (driveB.tracks) {
-      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
-      SDL_ShowSaveFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
-        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
-      action = true;
-    }
-  }
-
-  ImGui::Separator();
-
-  // --- Snapshot operations ---
-  if (ImGui::Button("Load Snapshot...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna;zip" } };
-    SDL_ShowOpenFileDialog(file_dialog_callback,
-      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
-      mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
-    action = true;
-  }
-  if (ImGui::Button("Save Snapshot...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna" } };
-    SDL_ShowSaveFileDialog(file_dialog_callback,
-      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
-      mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
-    action = true;
-  }
-
-  ImGui::Separator();
-
-  // --- Tape & Cartridge ---
-  if (ImGui::Button("Load Tape...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter filters[] = { { "Tape Images", "cdt;voc;zip" } };
-    SDL_ShowOpenFileDialog(file_dialog_callback,
-      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape)),
-      mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
-    action = true;
-  }
-  if (!pbTapeImage.empty()) {
-    if (ImGui::Button("Eject Tape", ImVec2(bw, 0))) {
-      tape_eject();
-      CPC.tape.file.clear();
-      imgui_state.tape_block_offsets.clear();
-      imgui_state.tape_current_block = 0;
-      action = true;
-    }
-  }
-  if (ImGui::Button("Load Cartridge...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter filters[] = { { "Cartridges", "cpr;zip" } };
-    SDL_ShowOpenFileDialog(file_dialog_callback,
-      reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
-      mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
-    action = true;
-  }
-
-  ImGui::Separator();
-
-  // --- Tools ---
-  if (ImGui::Button("Memory Tool (M)", ImVec2(bw, 0))) {
-    imgui_state.show_memory_tool = true;
-    action = true;
-  }
-  if (ImGui::Button("DevTools (D)", ImVec2(bw, 0))) {
-    imgui_state.show_devtools = true;
-    action = true;
-  }
-
-  ImGui::Separator();
-
   if (ImGui::Button("Reset (F5/R)", ImVec2(bw, 0))) {
     emulator_reset();
     action = true;
   }
-  // About and Quit open sub-popups within the menu — don't close
   if (ImGui::Button("About (A)", ImVec2(bw, 0))) {
     imgui_state.show_about = true;
-  }
-  if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
-    action = true;
   }
   if (ImGui::Button("Quit (Q)", ImVec2(bw, 0))) {
     imgui_state.show_quit_confirm = true;
@@ -1930,7 +2001,7 @@ static void imgui_render_devtools()
   }
 
   ImGuiViewport* vp = ImGui::GetMainViewport();
-  float bar_y = vp->Pos.y + static_cast<float>(s_main_topbar_h);
+  float bar_y = vp->Pos.y + s_menubar_h + static_cast<float>(s_main_topbar_h);
 
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 0));  // auto-height

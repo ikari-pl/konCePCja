@@ -46,6 +46,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui_impl_sdlrenderer3.h"
 #include "imgui_ui.h"
 #include "macos_menu.h"
 
@@ -62,6 +63,10 @@ SDL_GLContext glcontext;
 
 // OpenGL texture for CPC framebuffer (used by OpenGL3/ImGui rendering path)
 static GLuint cpc_gl_texture = 0;
+// SDL texture for CPC framebuffer (used by SDL_Renderer/D3D rendering path)
+static SDL_Texture* cpc_sdl_texture = nullptr;
+// Which ImGui rendering backend is active
+static bool using_sdl_renderer = false;
 
 // Returns path for imgui.ini in the same directory as koncepcja.cfg.
 // Uses a static string so the c_str() pointer remains valid for io.IniFilename.
@@ -115,7 +120,13 @@ void video_request_window_screenshot(const std::string& path) {
   g_wss_pending_path = path;
 }
 
+// Returns the CPC screen texture as an opaque ImTextureID-compatible value.
+// The actual type is backend-dependent: GL texture ID for OpenGL backends,
+// SDL_Texture* cast to uintptr_t for SDL_Renderer backends.
+// Callers should only use the returned value as an ImTextureID.
 uintptr_t video_get_cpc_texture() {
+  if (cpc_sdl_texture)
+    return reinterpret_cast<uintptr_t>(cpc_sdl_texture);
   return static_cast<uintptr_t>(cpc_gl_texture);
 }
 
@@ -259,7 +270,16 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
-  ImGui_ImplOpenGL3_Init("#version 150");
+  if (!ImGui_ImplOpenGL3_Init("#version 150")) {
+    // OpenGL loader failed (e.g. driver only exposes GL 1.1)
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    SDL_GL_DestroyContext(glcontext);
+    glcontext = nullptr;
+    SDL_DestroyWindow(mainSDLWindow);
+    mainSDLWindow = nullptr;
+    return nullptr;
+  }
 
   int surface_width, surface_height;
   if (scale > 1) {
@@ -360,6 +380,246 @@ void direct_close()
   if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
   if (glcontext) { SDL_GL_DestroyContext(glcontext); glcontext = nullptr; }
   if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
+}
+
+/* ------------------------------------------------------------------------------------ */
+/* SDL_Renderer video plugin (D3D11 on Windows, no OpenGL required) ------------------- */
+/* ------------------------------------------------------------------------------------ */
+void sdlr_close();
+void sdlr_swscale_close();
+
+SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
+{
+  mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
+      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+  if (!mainSDLWindow) return nullptr;
+
+  renderer = SDL_CreateRenderer(mainSDLWindow, nullptr);
+  if (!renderer) {
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+
+  // Initialize Dear ImGui
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = imgui_ini_path();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  // ViewportsEnable not supported by SDL_Renderer backend
+  ImGui::StyleColorsDark();
+  imgui_init_ui();
+  if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+
+  int surface_width, surface_height;
+  if (scale > 1) {
+    t->half_pixels = 0;
+    surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
+    surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
+  } else {
+    t->half_pixels = 1;
+    surface_width = CPC_VISIBLE_SCR_WIDTH;
+    surface_height = CPC_VISIBLE_SCR_HEIGHT;
+  }
+  vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
+  if (!vid) { sdlr_close(); return nullptr; }
+
+  cpc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+      SDL_TEXTUREACCESS_STREAMING, surface_width, surface_height);
+  if (!cpc_sdl_texture) { sdlr_close(); return nullptr; }
+  SDL_SetTextureScaleMode(cpc_sdl_texture, SDL_SCALEMODE_NEAREST);
+
+  {
+    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(vid->format);
+    SDL_Palette* pal = SDL_GetSurfacePalette(vid);
+    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(fmt, pal, 0, 0, 0));
+  }
+  using_sdl_renderer = true;
+  compute_scale(t, surface_width, surface_height);
+  return vid;
+}
+
+void sdlr_flip(video_plugin* t)
+{
+  // Upload CPC framebuffer to SDL texture
+  SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
+
+  // Start ImGui frame
+  ImGui_ImplSDLRenderer3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
+
+  // Draw CPC framebuffer as background image via ImGui (classic mode only)
+  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::GetBackgroundDrawList(vp)->AddImage(
+        reinterpret_cast<ImTextureID>(cpc_sdl_texture),
+        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+        ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+  }
+
+  // Render all ImGui windows
+  imgui_render_ui();
+  ImGui::Render();
+
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+  SDL_RenderClear(renderer);
+  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+
+  // Capture screenshot (emulator screen only)
+  video_capture_if_pending();
+
+  SDL_RenderPresent(renderer);
+}
+
+void sdlr_close()
+{
+  if (ImGui::GetCurrentContext()) {
+    ImGui_ImplSDLRenderer3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+  }
+  if (cpc_sdl_texture) { SDL_DestroyTexture(cpc_sdl_texture); cpc_sdl_texture = nullptr; }
+  if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
+  if (renderer) { SDL_DestroyRenderer(renderer); renderer = nullptr; }
+  if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
+  using_sdl_renderer = false;
+}
+
+/* SDL_Renderer swscale plugin -------------------------------------------------------- */
+SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
+{
+  mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
+      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+  if (!mainSDLWindow) return nullptr;
+
+  renderer = SDL_CreateRenderer(mainSDLWindow, nullptr);
+  if (!renderer) {
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = imgui_ini_path();
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  ImGui::StyleColorsDark();
+  imgui_init_ui();
+  if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    SDL_DestroyRenderer(renderer); renderer = nullptr;
+    SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr;
+    return nullptr;
+  }
+
+  int surface_width, surface_height;
+  if (scale < 4) {
+    t->half_pixels = 1;
+    surface_width = CPC_VISIBLE_SCR_WIDTH;
+    surface_height = CPC_VISIBLE_SCR_HEIGHT;
+  } else {
+    t->half_pixels = 0;
+    surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
+    surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
+  }
+  vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
+  if (!vid) { sdlr_close(); return nullptr; }
+
+  cpc_sdl_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+      SDL_TEXTUREACCESS_STREAMING, surface_width * 2, surface_height * 2);
+  if (!cpc_sdl_texture) { sdlr_close(); return nullptr; }
+  SDL_SetTextureScaleMode(cpc_sdl_texture, SDL_SCALEMODE_NEAREST);
+
+  scaled = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGB565);
+  if (!scaled) { sdlr_swscale_close(); return nullptr; }
+  {
+    const SDL_PixelFormatDetails* s_fmt = SDL_GetPixelFormatDetails(scaled->format);
+    if (!s_fmt || s_fmt->bits_per_pixel != 16)
+    {
+      LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(s_fmt ? s_fmt->bits_per_pixel : 0) << " bpp one.");
+      sdlr_swscale_close(); return nullptr;
+    }
+  }
+  {
+    const SDL_PixelFormatDetails* v_fmt = SDL_GetPixelFormatDetails(vid->format);
+    SDL_Palette* v_pal = SDL_GetSurfacePalette(vid);
+    if (v_fmt)
+      SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(v_fmt, v_pal, 0, 0, 0));
+  }
+  compute_scale(t, surface_width, surface_height);
+  pub = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGB565);
+  if (!pub) { sdlr_swscale_close(); return nullptr; }
+  {
+    const SDL_PixelFormatDetails* p_fmt = SDL_GetPixelFormatDetails(pub->format);
+    if (!p_fmt || p_fmt->bits_per_pixel != 16)
+    {
+      LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(p_fmt ? p_fmt->bits_per_pixel : 0) << " bpp one.");
+      sdlr_swscale_close(); return nullptr;
+    }
+  }
+  using_sdl_renderer = true;
+  return pub;
+}
+
+void sdlr_swscale_blit(video_plugin* t)
+{
+  SDL_BlitSurface(scaled, nullptr, vid, nullptr);
+
+  SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
+
+  ImGui_ImplSDLRenderer3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
+
+  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::GetBackgroundDrawList(vp)->AddImage(
+        reinterpret_cast<ImTextureID>(cpc_sdl_texture),
+        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+        ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
+  }
+
+  imgui_render_ui();
+  ImGui::Render();
+
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+  SDL_RenderClear(renderer);
+  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+
+  video_capture_if_pending();
+
+  SDL_RenderPresent(renderer);
+}
+
+void sdlr_swscale_close()
+{
+  sdlr_close();
+  if (scaled) { SDL_DestroySurface(scaled); scaled = nullptr; }
+  if (pub) { SDL_DestroySurface(pub); pub = nullptr; }
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -897,7 +1157,15 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
-  ImGui_ImplOpenGL3_Init("#version 150");
+  if (!ImGui_ImplOpenGL3_Init("#version 150")) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    SDL_GL_DestroyContext(glcontext);
+    glcontext = nullptr;
+    SDL_DestroyWindow(mainSDLWindow);
+    mainSDLWindow = nullptr;
+    return nullptr;
+  }
 
   int surface_width, surface_height;
   if (scale < 4) {
@@ -952,6 +1220,12 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
 // Common code to all software plugin to display the vid surface after it's been computed.
 void swscale_blit(video_plugin* t)
 {
+  // Dispatch to SDL_Renderer path if active
+  if (using_sdl_renderer) {
+    sdlr_swscale_blit(t);
+    return;
+  }
+
   // Blit to convert from 16bpp to RGBA32 for GL upload
   SDL_BlitSurface(scaled, nullptr, vid, nullptr);
 
@@ -1015,7 +1289,10 @@ void swscale_setpal(SDL_Color* c)
 
 void swscale_close()
 {
-  direct_close();
+  if (using_sdl_renderer)
+    sdlr_close();
+  else
+    direct_close();
   if (scaled) { SDL_DestroySurface(scaled); scaled = nullptr; }
   if (pub) { SDL_DestroySurface(pub); pub = nullptr; }
 }
@@ -1797,4 +2074,12 @@ std::vector<video_plugin> video_plugin_list =
 #ifdef HAVE_GL
   {"OpenGL scaling",          false, glscale_init,  glscale_setpal,  glscale_flip,  glscale_close,  0,         0, 0,          0, 0, 0, 0 },
 #endif
+  /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
+     No OpenGL context required; no multi-viewport support. */
+  {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,     1,         0, 0,          0, 0, 0, 0 },
+  {"Super eagle (SDL)",       false, sdlr_swscale_init,  swscale_setpal,  seagle_flip,   sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Scale2x (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  scale2x_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
 };
