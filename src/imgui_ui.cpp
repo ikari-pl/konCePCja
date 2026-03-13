@@ -68,6 +68,7 @@ static void close_menu();
 // Height tracking for stacked topbar + devtools bar
 static int s_main_topbar_h = 25;
 static int s_devtools_bar_h = 0;
+static ImVec2 s_layout_btn_pos;  // set in topbar, read in layout dropdown
 static bool s_topbar_height_dirty = false; // defer SDL_SetWindowSize to after render
 
 // ─────────────────────────────────────────────────
@@ -973,6 +974,9 @@ static void imgui_render_topbar()
     }
 
     // ── Layout dropdown ──
+    // Uses a state-flag + standalone window instead of ImGui popup,
+    // because popups from the fixed topbar close immediately in docked
+    // mode due to focus interactions with the dockspace.
     {
       // Right-align before FPS counter
       float fps_w = 0.0f;
@@ -982,152 +986,11 @@ static void imgui_render_topbar()
       ImGui::SameLine(ImGui::GetWindowWidth() - fps_w - btn_w - 12.0f);
 
       if (ImGui::Button("Layout")) {
-        ImGui::OpenPopup("##LayoutPopup");
+        imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
       }
-      if (ImGui::BeginPopup("##LayoutPopup")) {
-        // Mode selection
-        if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic)) {
-          CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
-        }
-        if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked)) {
-          CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
-        }
-        ImGui::Separator();
-
-        // Preset layouts
-        if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-          if (ImGui::MenuItem("Apply Debug Layout"))
-            workspace_apply_preset(WorkspacePreset::Debug);
-          if (ImGui::MenuItem("Apply IDE Layout"))
-            workspace_apply_preset(WorkspacePreset::IDE);
-          if (ImGui::MenuItem("Apply Hardware Layout"))
-            workspace_apply_preset(WorkspacePreset::Hardware);
-        } else {
-          if (ImGui::MenuItem("Debug")) {
-            g_devtools_ui.toggle_window("registers");
-            g_devtools_ui.toggle_window("disassembly");
-            g_devtools_ui.toggle_window("stack");
-            g_devtools_ui.toggle_window("breakpoints");
-          }
-          if (ImGui::MenuItem("Memory")) {
-            g_devtools_ui.toggle_window("memory_hex");
-            g_devtools_ui.toggle_window("symbols");
-            g_devtools_ui.toggle_window("data_areas");
-          }
-          if (ImGui::MenuItem("Hardware")) {
-            g_devtools_ui.toggle_window("video_state");
-            g_devtools_ui.toggle_window("audio_state");
-            g_devtools_ui.toggle_window("asic");
-            g_devtools_ui.toggle_window("silicon_disc");
-          }
-        }
-
-        // Custom saved layouts
-        ImGui::Separator();
-        {
-          static bool open_save_popup = false;
-          if (ImGui::MenuItem("Save Layout..."))
-            open_save_popup = true;
-
-          auto layouts = workspace_list_layouts();
-
-          if (ImGui::BeginMenu("Load Layout")) {
-            if (layouts.empty()) {
-              ImGui::MenuItem("No saved layouts", nullptr, false, false);
-            } else {
-              for (auto& l : layouts) {
-                if (ImGui::MenuItem(l.c_str()))
-                  workspace_load_layout(l);
-              }
-            }
-            ImGui::EndMenu();
-          }
-
-          if (ImGui::BeginMenu("Delete Layout")) {
-            if (layouts.empty()) {
-              ImGui::MenuItem("No saved layouts", nullptr, false, false);
-            } else {
-              for (auto& l : layouts) {
-                if (ImGui::MenuItem(l.c_str()))
-                  workspace_delete_layout(l);
-              }
-            }
-            ImGui::EndMenu();
-          }
-
-          // Deferred popup open
-          if (open_save_popup) {
-            ImGui::OpenPopup("Save Layout##popup");
-            open_save_popup = false;
-          }
-        }
-
-        // CPC Screen scale (only in docked mode)
-        if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-          ImGui::Separator();
-          ImGui::TextUnformatted("CPC Screen Scale");
-          if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit)) CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
-          if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
-          if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
-          if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
-        }
-
-        // Save Layout popup
-        {
-          static char save_name[64] = "";
-          static std::string save_error;
-          if (ImGui::BeginPopup("Save Layout##popup")) {
-            ImGui::TextUnformatted("Layout Name:");
-            bool enter_pressed = ImGui::InputText("##save_name", save_name, sizeof(save_name),
-                ImGuiInputTextFlags_EnterReturnsTrue);
-            if (ImGui::IsWindowAppearing())
-              ImGui::SetKeyboardFocusHere(-1);
-
-            if (!save_error.empty()) {
-              ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-              ImGui::TextUnformatted(save_error.c_str());
-              ImGui::PopStyleColor();
-            }
-
-            bool do_save = enter_pressed || ImGui::Button("Save");
-            ImGui::SameLine();
-            bool do_cancel = ImGui::Button("Cancel");
-
-            if (do_save) {
-              std::string name(save_name);
-              while (!name.empty() && name.front() == ' ') name.erase(name.begin());
-              while (!name.empty() && name.back() == ' ') name.pop_back();
-
-              bool valid = !name.empty();
-              if (valid) {
-                for (char c : name) {
-                  if (c == '/' || c == '\\' || c == '\0') { valid = false; break; }
-                }
-              }
-              if (valid && (name == "." || name == "..")) valid = false;
-
-              if (!valid) {
-                save_error = "Invalid name";
-              } else if (workspace_save_layout(name)) {
-                save_name[0] = '\0';
-                save_error.clear();
-                ImGui::CloseCurrentPopup();
-              } else {
-                save_error = "Save failed";
-              }
-            }
-            if (do_cancel) {
-              save_name[0] = '\0';
-              save_error.clear();
-              ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::EndPopup();
-          }
-        }
-
-        ImGui::EndPopup();
-      }
+      // Remember button position for dropdown window placement
+      s_layout_btn_pos = ImGui::GetItemRectMin();
+      s_layout_btn_pos.y = ImGui::GetItemRectMax().y + 2.0f;
     }
 
     if (!imgui_state.topbar_fps.empty()) {
@@ -1140,6 +1003,187 @@ static void imgui_render_topbar()
   ImGui::End();
   ImGui::PopStyleColor();
   ImGui::PopStyleVar(4);
+
+  // ── Layout dropdown window (rendered outside topbar) ──
+  if (imgui_state.show_layout_dropdown) {
+    // Position below the Layout button
+    ImGui::SetNextWindowPos(s_layout_btn_pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(220, 0));  // auto-height
+
+    ImGuiWindowFlags dd_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+    if (ImGui::Begin("##LayoutDropdown", nullptr, dd_flags)) {
+      // Close when clicking outside
+      if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+          ImGui::IsMouseClicked(0)) {
+        imgui_state.show_layout_dropdown = false;
+      }
+
+      // Mode selection
+      if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic)) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
+        imgui_state.show_layout_dropdown = false;
+      }
+      if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked)) {
+        if (CPC.workspace_layout != t_CPC::WorkspaceLayoutMode::Docked) {
+          CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
+          workspace_request_initial_preset();
+        }
+        imgui_state.show_layout_dropdown = false;
+      }
+      ImGui::Separator();
+
+      // Preset layouts
+      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+        if (ImGui::MenuItem("Apply Debug Layout")) {
+          workspace_apply_preset(WorkspacePreset::Debug);
+          imgui_state.show_layout_dropdown = false;
+        }
+        if (ImGui::MenuItem("Apply IDE Layout")) {
+          workspace_apply_preset(WorkspacePreset::IDE);
+          imgui_state.show_layout_dropdown = false;
+        }
+        if (ImGui::MenuItem("Apply Hardware Layout")) {
+          workspace_apply_preset(WorkspacePreset::Hardware);
+          imgui_state.show_layout_dropdown = false;
+        }
+      } else {
+        if (ImGui::MenuItem("Debug")) {
+          g_devtools_ui.toggle_window("registers");
+          g_devtools_ui.toggle_window("disassembly");
+          g_devtools_ui.toggle_window("stack");
+          g_devtools_ui.toggle_window("breakpoints");
+          imgui_state.show_layout_dropdown = false;
+        }
+        if (ImGui::MenuItem("Memory")) {
+          g_devtools_ui.toggle_window("memory_hex");
+          g_devtools_ui.toggle_window("symbols");
+          g_devtools_ui.toggle_window("data_areas");
+          imgui_state.show_layout_dropdown = false;
+        }
+        if (ImGui::MenuItem("Hardware")) {
+          g_devtools_ui.toggle_window("video_state");
+          g_devtools_ui.toggle_window("audio_state");
+          g_devtools_ui.toggle_window("asic");
+          g_devtools_ui.toggle_window("silicon_disc");
+          imgui_state.show_layout_dropdown = false;
+        }
+      }
+
+      // Custom saved layouts
+      ImGui::Separator();
+      {
+        static bool open_save_popup = false;
+        if (ImGui::MenuItem("Save Layout..."))
+          open_save_popup = true;
+
+        auto layouts = workspace_list_layouts();
+
+        if (ImGui::BeginMenu("Load Layout")) {
+          if (layouts.empty()) {
+            ImGui::MenuItem("No saved layouts", nullptr, false, false);
+          } else {
+            for (auto& l : layouts) {
+              if (ImGui::MenuItem(l.c_str())) {
+                workspace_load_layout(l);
+                imgui_state.show_layout_dropdown = false;
+              }
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Delete Layout")) {
+          if (layouts.empty()) {
+            ImGui::MenuItem("No saved layouts", nullptr, false, false);
+          } else {
+            for (auto& l : layouts) {
+              if (ImGui::MenuItem(l.c_str()))
+                workspace_delete_layout(l);
+            }
+          }
+          ImGui::EndMenu();
+        }
+
+        // Deferred popup open
+        if (open_save_popup) {
+          ImGui::OpenPopup("Save Layout##popup");
+          open_save_popup = false;
+        }
+      }
+
+      // CPC Screen scale (only in docked mode)
+      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("CPC Screen Scale");
+        if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit)) CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
+        if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
+        if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
+        if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
+      }
+
+      // Save Layout popup (modal, so it won't have focus issues)
+      {
+        static char save_name[64] = "";
+        static std::string save_error;
+        if (ImGui::BeginPopup("Save Layout##popup")) {
+          ImGui::TextUnformatted("Layout Name:");
+          bool enter_pressed = ImGui::InputText("##save_name", save_name, sizeof(save_name),
+              ImGuiInputTextFlags_EnterReturnsTrue);
+          if (ImGui::IsWindowAppearing())
+            ImGui::SetKeyboardFocusHere(-1);
+
+          if (!save_error.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::TextUnformatted(save_error.c_str());
+            ImGui::PopStyleColor();
+          }
+
+          bool do_save = enter_pressed || ImGui::Button("Save");
+          ImGui::SameLine();
+          bool do_cancel = ImGui::Button("Cancel");
+
+          if (do_save) {
+            std::string name(save_name);
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+
+            bool valid = !name.empty();
+            if (valid) {
+              for (char c : name) {
+                if (c == '/' || c == '\\' || c == '\0') { valid = false; break; }
+              }
+            }
+            if (valid && (name == "." || name == "..")) valid = false;
+
+            if (!valid) {
+              save_error = "Invalid name";
+            } else if (workspace_save_layout(name)) {
+              save_name[0] = '\0';
+              save_error.clear();
+              ImGui::CloseCurrentPopup();
+              imgui_state.show_layout_dropdown = false;
+            } else {
+              save_error = "Save failed";
+            }
+          }
+          if (do_cancel) {
+            save_name[0] = '\0';
+            save_error.clear();
+            ImGui::CloseCurrentPopup();
+          }
+
+          ImGui::EndPopup();
+        }
+      }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+  }
 }
 
 // ─────────────────────────────────────────────────

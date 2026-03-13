@@ -258,6 +258,16 @@ void init_command_registry() {
 
   register_command("asm", "TOOLS", "asm text <source> | asm assemble", "Z80 Assembler",
     "Enters Z80 assembly source code and assembles it into emulated memory.");
+
+  register_command("telnet", "TOOLS", "telnet (port 6544)", "Text console for CPC I/O",
+    "A telnet interface runs on port IPC+1 (default 6544) that captures all CPC text output "
+    "(TXT_OUTPUT calls) and allows text input. Connecting returns a banner line followed by "
+    "'---', then all accumulated text output since the last read.\n"
+    "  The buffer drains on each read — reconnecting returns only new text since the previous connection.\n"
+    "  Input bytes sent to the telnet port are fed into the CPC keyboard buffer (AutoTypeQueue).\n"
+    "  ANSI escape sequences are converted to CPC special keys (arrows, DEL, ESC, TAB).\n"
+    "  Preferred over screenshots for automated regression testing of text-based programs.\n"
+    "  Example:  nc -w 1 localhost 6544 < /dev/null");
 }
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
@@ -428,6 +438,8 @@ std::string handle_command(const std::string& line) {
     return "OK\n";
   }
   if (cmd == "reset") {
+    bool was_paused = CPC.paused;
+    if (!was_paused) cpc_pause();
     emulator_reset();
     bool no_resume = false;
     for (size_t i = 1; i < parts.size(); i++) {
@@ -435,6 +447,8 @@ std::string handle_command(const std::string& line) {
     }
     if (!no_resume) {
       cpc_resume();
+    } else if (was_paused) {
+      // Was already paused and user wants no-resume, keep paused
     }
     return "OK\n";
   }
@@ -490,9 +504,13 @@ std::string handle_command(const std::string& line) {
       return file_load(CPC.driveA) == 0 ? "OK\n" : "ERR 500 load-dsk\n";
     }
     if (ext == ".sna") {
+      bool was_paused = CPC.paused;
+      if (!was_paused) cpc_pause();
       CPC.snapshot.file = path;
       CPC.snapshot.zip_index = 0;
-      return file_load(CPC.snapshot) == 0 ? "OK\n" : "ERR 500 load-sna\n";
+      int rc = file_load(CPC.snapshot);
+      if (!was_paused) cpc_resume();
+      return rc == 0 ? "OK\n" : "ERR 500 load-sna\n";
     }
     if (ext == ".cpr") {
       CPC.cartridge.file = path;
@@ -742,8 +760,11 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "load") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
       if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-      if (snapshot_load(parts[2]) == 0) return "OK\n";
-      return "ERR 500 snapshot-load\n";
+      bool was_paused = CPC.paused;
+      if (!was_paused) cpc_pause();
+      int rc = snapshot_load(parts[2]);
+      if (!was_paused) cpc_resume();
+      return rc == 0 ? "OK\n" : "ERR 500 snapshot-load\n";
     }
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "read") {
@@ -3137,9 +3158,15 @@ std::string handle_command(const std::string& line) {
       if (!g_session.start_playback(parts[2], snap_path))
         return "ERR 500 playback-start-failed\n";
       // Load the embedded snapshot to restore state
-      if (snapshot_load(snap_path) != 0) {
-        g_session.stop_playback();
-        return "ERR 500 snapshot-load-failed\n";
+      {
+        bool was_paused = CPC.paused;
+        if (!was_paused) cpc_pause();
+        int rc = snapshot_load(snap_path);
+        if (!was_paused) cpc_resume();
+        if (rc != 0) {
+          g_session.stop_playback();
+          return "ERR 500 snapshot-load-failed\n";
+        }
       }
       return "OK playing from " + parts[2] +
              " frames=" + std::to_string(g_session.total_frames()) + "\n";

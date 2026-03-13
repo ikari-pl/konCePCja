@@ -15,8 +15,13 @@ extern t_CPC CPC;
 // Persistent dockspace ID
 static const ImGuiID DOCKSPACE_ID = ImHashStr("KonCePCjaDockSpace");
 
-// Track whether we've ever applied a preset (to auto-apply Debug on first dock)
-static bool s_first_dock = true;
+// Track whether we need to apply a preset on next render
+static bool s_need_initial_preset = true;
+
+void workspace_request_initial_preset()
+{
+    s_need_initial_preset = true;
+}
 
 // ─────────────────────────────────────────────────
 // Dockspace host window
@@ -26,14 +31,10 @@ void workspace_render_dockspace()
 {
     if (CPC.workspace_layout != t_CPC::WorkspaceLayoutMode::Docked) return;
 
-    // Auto-apply Debug preset on first entry into docked mode
-    if (s_first_dock) {
-        // Only apply if dockspace has no saved layout (no child nodes)
-        ImGuiDockNode* node = ImGui::DockBuilderGetNode(DOCKSPACE_ID);
-        if (!node || !node->ChildNodes[0]) {
-            workspace_apply_preset(WorkspacePreset::Debug);
-        }
-        s_first_dock = false;
+    // Auto-apply Debug preset when entering docked mode
+    if (s_need_initial_preset) {
+        workspace_apply_preset(WorkspacePreset::Debug);
+        s_need_initial_preset = false;
     }
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -189,21 +190,23 @@ void workspace_apply_preset(WorkspacePreset preset)
     ImGuiID left, right, bottom;
 
     switch (preset) {
-    case WorkspacePreset::Debug:
-        // Split: left 25% | center | right 25%, bottom 30%
-        ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.25f, &left, &center);
-        ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.33f, &right, &center);
-        ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, &bottom, &center);
+    case WorkspacePreset::Debug: {
+        // Layout: CPC Screen (center) | right panel (registers top, disasm+stack bottom)
+        // Bottom strip for memory hex
+        ImGuiID right_top, right_bottom;
+        ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.38f, &right, &center);
+        ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, &bottom, &center);
+        ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.55f, &right_bottom, &right_top);
 
         ImGui::DockBuilderDockWindow("CPC Screen", center);
 
-        ImGui::DockBuilderDockWindow("Disassembly", left);
-        ImGui::DockBuilderDockWindow("Breakpoints & Watchpoints & IO###BPWindow", left);
+        ImGui::DockBuilderDockWindow("Registers", right_top);
 
-        ImGui::DockBuilderDockWindow("Registers", right);
-        ImGui::DockBuilderDockWindow("Stack", right);
+        ImGui::DockBuilderDockWindow("Disassembly", right_bottom);
+        ImGui::DockBuilderDockWindow("Stack", right_bottom);
 
         ImGui::DockBuilderDockWindow("Memory Hex", bottom);
+        ImGui::DockBuilderDockWindow("Breakpoints & Watchpoints & IO###BPWindow", bottom);
 
         ensure_window_open("registers");
         ensure_window_open("disassembly");
@@ -211,6 +214,7 @@ void workspace_apply_preset(WorkspacePreset preset)
         ensure_window_open("breakpoints");
         ensure_window_open("memory_hex");
         break;
+    }
 
     case WorkspacePreset::IDE:
         // Split: left 20% | center | right 25%

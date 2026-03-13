@@ -18,6 +18,10 @@ void workspace_render_cpc_screen();
 // Resets dockspace splits and docks windows by title.
 void workspace_apply_preset(WorkspacePreset preset);
 
+// Request that the dockspace applies the default preset on next render
+// (used when switching from classic to docked mode).
+void workspace_request_initial_preset();
+
 // Save current window arrangement as a named layout.
 bool workspace_save_layout(const std::string& name);
 
