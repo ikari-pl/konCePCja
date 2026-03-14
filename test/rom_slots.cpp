@@ -78,9 +78,11 @@ std::string send_command(const std::string& command) {
 #ifdef _WIN32
   int written = send(fd, line.data(), static_cast<int>(line.size()), 0);
   EXPECT_EQ(written, static_cast<int>(line.size()));
+  shutdown(fd, SD_SEND);
 #else
   ssize_t written = ::write(fd, line.data(), line.size());
   EXPECT_EQ(written, static_cast<ssize_t>(line.size()));
+  shutdown(fd, SHUT_WR);
 #endif
 
   std::string response;

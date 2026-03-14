@@ -136,6 +136,13 @@ static enum { EXIT_NONE, EXIT_FRAMES, EXIT_MS } g_exit_mode = EXIT_NONE;
 static dword g_exit_target = 0;
 static dword g_exit_start_ticks = 0;
 
+// Autotype keyboard-scan synchronization:
+// Set when the Z80 reads the keyboard matrix via PPI Port A (PSG reg 14).
+// The autotype tick is gated on this flag so key changes happen between scan cycles.
+static bool g_keyboard_scanned = false;
+static int g_keyboard_scan_timeout = 0; // frames since last scan, for fallback
+static const int kAutotypeScanTimeoutFrames = 10; // inject anyway after N frames without a scan
+
 static int topbar_height_px = 24;
 
 extern t_CPC CPC;
@@ -575,6 +582,7 @@ byte z80_IN_handler (reg_pair port)
                            ret_val = PSG.RegisterAY.Index[14] & (keyboard_matrix[CPC.keyboard_line & 0x0f]); // return last value w/ logic AND of input
                         }
                         ret_val &= io_fire_kbd_read_hooks(CPC.keyboard_line & 0x0f);
+                        g_keyboard_scanned = true; // signal autotype that firmware has scanned
                         LOG_DEBUG("PPI read from portA (keyboard_line): " << CPC.keyboard_line << " - " << static_cast<int>(ret_val));
                      } else if (PSG.reg_select == 15) { // PSG port B?
                         if ((PSG.RegisterAY.Index[7] & 0x80)) { // port B in output mode?
@@ -3888,30 +3896,44 @@ int koncpc_main (int argc, char **argv)
                }
             }
 
-            // Auto-type: drain queue one action per frame
+            // Auto-type: drain queue synchronized with keyboard scans.
+            // Only inject key changes after the firmware has read the matrix,
+            // so keys aren't changed mid-scan. Fallback after 10 frames for
+            // programs that don't scan the keyboard (e.g. during loading).
             if (g_autotype_queue.is_active()) {
-               g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
-                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
-                  // Direct matrix manipulation (same as ipc_apply_keypress)
-                  if (static_cast<byte>(scancode) == 0xff) return;
-                  if (pressed) {
-                     keyboard_matrix[static_cast<byte>(scancode) >> 4] &= ~bit_values[static_cast<byte>(scancode) & 7];
-                     if (scancode & MOD_CPC_SHIFT) {
-                        keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7];
+               bool do_tick = false;
+               if (g_keyboard_scanned) {
+                  g_keyboard_scanned = false;
+                  g_keyboard_scan_timeout = 0;
+                  do_tick = true;
+               } else if (++g_keyboard_scan_timeout >= kAutotypeScanTimeoutFrames) {
+                  g_keyboard_scan_timeout = 0;
+                  do_tick = true;
+               }
+               if (do_tick) {
+                  g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
+                     CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
+                     // Direct matrix manipulation (same as ipc_apply_keypress)
+                     if (static_cast<byte>(scancode) == 0xff) return;
+                     if (pressed) {
+                        keyboard_matrix[static_cast<byte>(scancode) >> 4] &= ~bit_values[static_cast<byte>(scancode) & 7];
+                        if (scancode & MOD_CPC_SHIFT) {
+                           keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7];
+                        } else {
+                           keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
+                        }
+                        if (scancode & MOD_CPC_CTRL) {
+                           keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7];
+                        } else {
+                           keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+                        }
                      } else {
+                        keyboard_matrix[static_cast<byte>(scancode) >> 4] |= bit_values[static_cast<byte>(scancode) & 7];
                         keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
-                     }
-                     if (scancode & MOD_CPC_CTRL) {
-                        keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7];
-                     } else {
                         keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
                      }
-                  } else {
-                     keyboard_matrix[static_cast<byte>(scancode) >> 4] |= bit_values[static_cast<byte>(scancode) & 7];
-                     keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
-                     keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
-                  }
-               });
+                  });
+               }
             }
 
             // Telnet console: drain input into autotype queue
