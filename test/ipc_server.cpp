@@ -40,11 +40,6 @@ constexpr size_t kBankSize = 16 * 1024;
   EXPECT_TRUE((resp).substr(0, 3) == "OK " || (resp) == "OK\n") \
     << "Expected OK response, got: " << (resp)
 
-// Check that a response starts with "ERR 408" (timeout with context trailer).
-#define EXPECT_TIMEOUT(resp) \
-  EXPECT_TRUE((resp).find("ERR 408") == 0) \
-    << "Expected ERR 408 timeout, got: " << (resp)
-
 // Forward-declare the server so send_command can query its actual port
 static KoncepcjaIpcServer* g_test_server = nullptr;
 

@@ -141,6 +141,7 @@ static dword g_exit_start_ticks = 0;
 // The autotype tick is gated on this flag so key changes happen between scan cycles.
 static bool g_keyboard_scanned = false;
 static int g_keyboard_scan_timeout = 0; // frames since last scan, for fallback
+static const int kAutotypeScanTimeoutFrames = 10; // inject anyway after N frames without a scan
 
 static int topbar_height_px = 24;
 
@@ -3827,7 +3828,7 @@ int koncpc_main (int argc, char **argv)
                   g_keyboard_scanned = false;
                   g_keyboard_scan_timeout = 0;
                   do_tick = true;
-               } else if (++g_keyboard_scan_timeout >= 10) {
+               } else if (++g_keyboard_scan_timeout >= kAutotypeScanTimeoutFrames) {
                   g_keyboard_scan_timeout = 0;
                   do_tick = true;
                }

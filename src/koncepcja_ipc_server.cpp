@@ -94,7 +94,7 @@ static unsigned long parse_number(const std::string& s) {
 static int parse_int(const std::string& s) {
   if (s.empty()) throw std::invalid_argument("empty number");
   if (s[0] == '$' || s[0] == '&' || s[0] == '#')
-    return static_cast<int>(std::stoul(s.substr(1), nullptr, 16));
+    return std::stoi(s.substr(1), nullptr, 16);
   return std::stoi(s);
 }
 
@@ -145,7 +145,9 @@ static std::string build_debug_context() {
     GateArray.RAM_config & 7, CPC.ram_size,
     bps.size(), wps.size(), ios.size());
 
-  std::string result(buf, static_cast<size_t>(n));
+  // Clamp to buffer size in case of truncation; n<0 would indicate encoding error
+  size_t len = (n < 0) ? 0 : std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+  std::string result(buf, len);
   if (z80.HALT) result += "|HALT";
   if (!z80.IFF1) result += "|DI";
   result += ']';
@@ -239,8 +241,8 @@ void init_command_registry() {
 
   register_command("disconnect", "CORE", "disconnect", "Close the current IPC connection",
     "Closes the current persistent IPC connection. The client socket is closed and the server "
-    "returns to listening for new connections. Alias: 'quit' with no arguments when used as "
-    "a connection command (quit with an exit code still terminates the emulator).");
+    "returns to listening for new connections. Note: 'quit' always terminates the emulator "
+    "(with optional exit code); use 'disconnect' to close only the connection.");
 
   register_command("pause", "CORE", "pause", "Pause emulation",
     "Stops the Z80 CPU and machine timers. The UI remains responsive and can still be used to inspect state.");
@@ -594,7 +596,10 @@ std::string handle_command(const std::string& line) {
 
   if (cmd == "quit") {
     int code = 0;
-    if (parts.size() >= 2) code = parse_int(parts[1]);
+    if (parts.size() >= 2) {
+      try { code = parse_int(parts[1]); }
+      catch (const std::exception&) { return "ERR 400 bad-exit-code\n"; }
+    }
     cleanExit(code, false);
     return "OK\n"; // unreachable, but satisfies return type
   }
@@ -610,8 +615,11 @@ std::string handle_command(const std::string& line) {
       return std::string(buf);
     }
     if (parts[1] == "mem" && parts.size() >= 4) {
-      unsigned int addr = parse_number(parts[2]);
-      unsigned int len = parse_number(parts[3]);
+      unsigned int addr, len;
+      try {
+        addr = parse_number(parts[2]);
+        len = parse_number(parts[3]);
+      } catch (const std::exception&) { return "ERR 400 bad-number\n"; }
       if (len > 65536) len = 65536; // Clamp to full address space
       uLong crc = crc32(0L, nullptr, 0);
       // Read through direct Z80 memory (SmartWatch only, no watchpoints)
@@ -1455,7 +1463,8 @@ std::string handle_command(const std::string& line) {
           cond_str = expr;
           break;
         }
-        else if (!arg.empty() && (argl.rfind("0x", 0) == 0 || (argl[0] >= '0' && argl[0] <= '9'))) {
+        else if (!arg.empty() && (argl.rfind("0x", 0) == 0 || (argl[0] >= '0' && argl[0] <= '9')
+                 || arg[0] == '$' || arg[0] == '&' || arg[0] == '#')) {
           mask_val = static_cast<word>(parse_number(arg));
         }
       }
@@ -2821,9 +2830,9 @@ std::string handle_command(const std::string& line) {
         addr = parse_number(parts[2]);
         val = parse_number(parts[3]);
       } catch (const std::invalid_argument&) {
-        return "ERR 400 bad-args (poke write <hex_addr> <value>)\n";
+        return "ERR 400 bad-args (poke write <addr> <value>)\n";
       } catch (const std::out_of_range&) {
-        return "ERR 400 bad-args (poke write <hex_addr> <value>)\n";
+        return "ERR 400 bad-args (poke write <addr> <value>)\n";
       }
       if (val > 255) return "ERR 400 value must be 0-255\n";
       z80_write_mem(static_cast<word>(addr), static_cast<byte>(val));
