@@ -165,7 +165,7 @@ void init_command_registry() {
     "Returns the emulator version string and the active IPC port number.",
     [](const auto&, const auto&) {
       int p = g_ipc_instance ? g_ipc_instance->port() : 0;
-      return "OK koncepcja-0.2 port=" + std::to_string(p) + "\n";
+      return "OK koncepcja-" VERSION_STRING " port=" + std::to_string(p) + "\n";
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
@@ -194,11 +194,42 @@ void init_command_registry() {
     "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
     "  write: Writes the provided <hex> string into memory starting at <addr>.");
 
-  register_command("bp", "DEBUG", "bp list | bp add <addr> | bp del <id>", "Manage execution breakpoints",
+  register_command("bp", "DEBUG",
+    "bp list | bp add <addr> [if <expr>] [pass <N>] | bp del <addr> | bp clear",
+    "Manage execution breakpoints",
     "Controls execution breakpoints.\n"
-    "  list: Shows all active breakpoints with their IDs and addresses.\n"
-    "  add: Adds a new breakpoint at <addr>.\n"
-    "  del: Removes the breakpoint with the specified ID.");
+    "  list:  Shows all active breakpoints with their addresses and conditions.\n"
+    "  add:   Adds a new breakpoint at <addr>. Optional condition and pass count.\n"
+    "  del:   Removes the breakpoint at the specified address.\n"
+    "  clear: Removes all breakpoints.");
+
+  register_command("wp", "DEBUG",
+    "wp add <addr> [len] [r|w|rw] [if <expr>] [pass <N>] | wp del <index> | wp list | wp clear",
+    "Manage memory watchpoints",
+    "Controls memory access watchpoints (break on read/write).\n"
+    "  add:   Adds a watchpoint at <addr>. Default length=1, type=rw.\n"
+    "  del:   Removes watchpoint by index.\n"
+    "  list:  Shows all watchpoints with index, address, range, type and conditions.\n"
+    "  clear: Removes all watchpoints.\n"
+    "When a watchpoint triggers, 'wait bp' returns: OK PC=XXXX WATCH=1 WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX");
+
+  register_command("iobp", "DEBUG",
+    "iobp add <port> [mask] [in|out|both] [if <expr>] | iobp del <index> | iobp list | iobp clear",
+    "Manage IO breakpoints",
+    "Controls I/O port breakpoints (break on IN/OUT instructions).\n"
+    "  add:   Adds an IO breakpoint. Port can use BCXX shorthand (X=wildcard nibble).\n"
+    "  del:   Removes IO breakpoint by index.\n"
+    "  list:  Shows all IO breakpoints with index, port, mask, direction and conditions.\n"
+    "  clear: Removes all IO breakpoints.");
+
+  register_command("wait", "DEBUG",
+    "wait pc <addr> [timeout] | wait mem <addr> <val> [mask] [timeout] | wait bp [timeout] | wait vbl <N> [timeout]",
+    "Wait for a condition before returning",
+    "Blocks until a condition is met or timeout (default 5000ms).\n"
+    "  pc:  Resumes and waits until PC equals <addr>.\n"
+    "  mem: Resumes and waits until memory at <addr> equals <val> (with optional mask).\n"
+    "  bp:  Waits for a breakpoint or watchpoint hit. Watchpoint hits include WP_ADDR/WP_VAL/WP_OLD.\n"
+    "  vbl: Waits for N vertical blanks (1/50th second each).");
 
   register_command("step", "DEBUG", "step in [N] | step over [N] | step out | step frame [N]", "Step the CPU or emulation frame",
     "Executes code and pauses again.\n"
@@ -268,6 +299,124 @@ void init_command_registry() {
     "  ANSI escape sequences are converted to CPC special keys (arrows, DEL, ESC, TAB).\n"
     "  Preferred over screenshots for automated regression testing of text-based programs.\n"
     "  Example:  nc -w 1 localhost 6544 < /dev/null");
+
+  register_command("disasm", "DEBUG",
+    "disasm <addr> <count> [--symbols] | disasm follow <addr> | disasm refs <addr> | disasm export <start> <end> [path] [--symbols]",
+    "Disassemble Z80 code",
+    "Disassemble instructions, follow code flow, find cross-references, or export to .asm source.\n"
+    "  <addr> <count>: Disassemble N instructions from address.\n"
+    "  follow <addr>:  Recursively follow jumps/calls from entry point.\n"
+    "  refs <addr>:    Find all CALL/JP/JR instructions targeting address.\n"
+    "  export:         Export address range as Z80 assembly source file.");
+
+  register_command("sym", "DEBUG",
+    "sym load <path> | sym add <addr> <name> | sym del <name> | sym list [filter] | sym lookup <addr_or_name>",
+    "Manage symbol table",
+    "Load .sym files, add/delete symbols, list with optional filter, or look up by address or name.");
+
+  register_command("data", "DEBUG",
+    "data mark <start> <end> <bytes|words|text> [label] | data clear <addr|all> | data list",
+    "Mark memory regions as data for disassembly",
+    "Marks address ranges so the disassembler formats them as data (bytes, words or text) instead of code.");
+
+  register_command("stack", "DEBUG", "stack [depth]",
+    "Walk call stack",
+    "Heuristic stack walk from SP upward. Shows return addresses with [call] markers and symbol names.\n"
+    "  Default depth: 16, max: 128.");
+
+  register_command("trace", "DEBUG",
+    "trace on [buffer_size] | trace off | trace dump <path> | trace on_crash <path> | trace status",
+    "Z80 instruction trace",
+    "Ring-buffer execution trace (default 65536 entries).\n"
+    "  on:       Enable tracing.\n"
+    "  off:      Disable tracing.\n"
+    "  dump:     Write trace buffer to text file.\n"
+    "  on_crash: Auto-dump to file on breakpoint/watchpoint hit.\n"
+    "  status:   Show active state and entry count.");
+
+  register_command("timer", "DEBUG", "timer list | timer clear",
+    "Debug timers",
+    "List debug timers with hit count, last/min/max/average elapsed times. Clear all timers.");
+
+  register_command("event", "DEBUG",
+    "event on <trigger> <command> | event once <trigger> <command> | event off <id> | event list",
+    "Fire IPC commands on triggers",
+    "Register commands to auto-execute on PC match (pc=ADDR), memory write (mem=ADDR[:VAL]), or VBL interval (vbl=N).\n"
+    "  on:   Register persistent event.\n"
+    "  once: Register one-shot event (deleted after firing).\n"
+    "  off:  Remove event by ID.\n"
+    "  list: Show all registered events.");
+
+  register_command("hash", "DEBUG",
+    "hash vram | hash mem <addr> <len> | hash regs",
+    "CRC32 hashes for CI assertions",
+    "Compute CRC32 of screen surface, memory range, or packed register state.\n"
+    "Useful for deterministic regression testing.");
+
+  register_command("autotype", "INPUT", "autotype <text> | autotype status | autotype clear",
+    "Queue text for keyboard injection",
+    "Types text into the CPC using AutoTypeQueue. Supports WinAPE ~KEY~ syntax (e.g. ~ENTER~, ~CLR~).\n"
+    "  status: Show pending queue length.\n"
+    "  clear:  Cancel pending input.");
+
+  register_command("status", "CORE", "status | status drives",
+    "Emulator status summary",
+    "Shows CPU state, clock speed, frame count, and paused status.\n"
+    "  drives: Detailed drive info (loaded image, track position, format).");
+
+  register_command("gfx", "DEBUG",
+    "gfx view <addr> <w> <h> <mode> [path] | gfx decode <hex> <mode> | gfx paint <addr> <w> <h> <mode> <x> <y> <color> | gfx palette",
+    "Graphics finder and pixel tools",
+    "Decode CPC pixel data at any address in Mode 0/1/2.\n"
+    "  view:    Render pixel block, optionally export to BMP.\n"
+    "  decode:  Decode a hex byte into pixel values for a given mode.\n"
+    "  paint:   Write a pixel value at (x,y) in a pixel block.\n"
+    "  palette: Show current 16-colour palette as RGBA hex.");
+
+  register_command("asic", "HARDWARE",
+    "asic sprite <0-15> | asic palette | asic dma [<0-2>]",
+    "Read 6128+ ASIC hardware state",
+    "Query Plus Range hardware registers.\n"
+    "  sprite:  Position, magnification and visibility for sprite 0-15.\n"
+    "  palette: 32-colour ASIC RGB palette.\n"
+    "  dma:     DMA channel transfer registers (0-2, or all).");
+
+  register_command("sdisc", "HARDWARE",
+    "sdisc status | sdisc clear | sdisc save <path> | sdisc load <path>",
+    "Silicon Disc (256 KB RAM disc)",
+    "Manage the 256 KB battery-backed Silicon Disc in banks 4-7 (6128+ only).\n"
+    "  status: Show enabled/disabled and allocation.\n"
+    "  clear:  Zero all contents.\n"
+    "  save/load: Persist to/from file.");
+
+  register_command("m4", "HARDWARE",
+    "m4 status | m4 ls | m4 cd <path> | m4 reset | m4 wifi [0|1]",
+    "M4 Board virtual filesystem",
+    "Manage M4 Board virtual SD card backed by a host directory.\n"
+    "  status: Show enabled state, open files, command count.\n"
+    "  ls:     List files in current directory.\n"
+    "  cd:     Change directory (path traversal protected).\n"
+    "  reset:  Reset board state.\n"
+    "  wifi:   Toggle network enable.");
+
+  register_command("poke", "TOOLS",
+    "poke load <path> | poke list | poke apply <game> <poke|all> | poke unapply <game> <poke> | poke write <addr> <val>",
+    "Game cheats (.pok files)",
+    "Load, apply and manage game cheats in .pok format.\n"
+    "  load:    Load a .pok cheat file.\n"
+    "  list:    List games and pokes with application status.\n"
+    "  apply:   Apply a single poke or all pokes for a game.\n"
+    "  unapply: Revert a previously applied poke.\n"
+    "  write:   Direct single-byte write to memory.");
+
+  register_command("session", "TOOLS",
+    "session record <path> | session play <path> | session stop | session status",
+    "Session recording and replay",
+    "Record full emulator sessions (input + state) and play them back.\n"
+    "  record: Start recording to file.\n"
+    "  play:   Play back a recorded session.\n"
+    "  stop:   Stop recording or playback.\n"
+    "  status: Show state (idle/recording/playing), frame and event counts.");
 }
 
 void breakpoint_hit_hook(word pc, bool watchpoint) {
@@ -1623,7 +1772,7 @@ std::string handle_command(const std::string& line) {
     return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy)\n";
   }
 
-  if (cmd == "wait" && parts.size() >= 3) {
+  if (cmd == "wait" && parts.size() >= 2) {
     auto timeout_ms = std::chrono::milliseconds(5000);
     auto deadline = std::chrono::steady_clock::now() + timeout_ms;
 
