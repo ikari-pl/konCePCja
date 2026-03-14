@@ -95,7 +95,7 @@ static int parse_int(const std::string& s) {
   if (s.empty()) throw std::invalid_argument("empty number");
   if (s[0] == '$' || s[0] == '&' || s[0] == '#')
     return std::stoi(s.substr(1), nullptr, 16);
-  return std::stoi(s);
+  return std::stoi(s, nullptr, 0);
 }
 
 // Helper to prevent path traversal via IPC.
