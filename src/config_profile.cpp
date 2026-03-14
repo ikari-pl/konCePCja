@@ -112,7 +112,7 @@ std::string ConfigProfileManager::load(const std::string& name) {
     CPC.snd_bits = p.snd_bits;
     CPC.snd_stereo = p.snd_stereo;
     CPC.snd_volume = p.snd_volume;
-    CPC.joystick_emulation = p.joystick_emulation;
+    CPC.joystick_emulation = static_cast<JoystickEmulation>(p.joystick_emulation);
 
     current_name_ = name;
     return "";
@@ -137,7 +137,7 @@ std::string ConfigProfileManager::save(const std::string& name) {
     p.snd_bits = CPC.snd_bits;
     p.snd_stereo = CPC.snd_stereo;
     p.snd_volume = CPC.snd_volume;
-    p.joystick_emulation = CPC.joystick_emulation;
+    p.joystick_emulation = static_cast<unsigned int>(CPC.joystick_emulation);
 
     auto err = write_profile(profile_path(name), p);
     if (!err.empty()) return err;
