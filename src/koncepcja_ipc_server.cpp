@@ -194,11 +194,42 @@ void init_command_registry() {
     "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
     "  write: Writes the provided <hex> string into memory starting at <addr>.");
 
-  register_command("bp", "DEBUG", "bp list | bp add <addr> | bp del <id>", "Manage execution breakpoints",
+  register_command("bp", "DEBUG",
+    "bp list | bp add <addr> [if <expr>] [pass <N>] | bp del <id> | bp clear",
+    "Manage execution breakpoints",
     "Controls execution breakpoints.\n"
-    "  list: Shows all active breakpoints with their IDs and addresses.\n"
-    "  add: Adds a new breakpoint at <addr>.\n"
-    "  del: Removes the breakpoint with the specified ID.");
+    "  list:  Shows all active breakpoints with their IDs and addresses.\n"
+    "  add:   Adds a new breakpoint at <addr>. Optional condition and pass count.\n"
+    "  del:   Removes the breakpoint with the specified ID.\n"
+    "  clear: Removes all breakpoints.");
+
+  register_command("wp", "DEBUG",
+    "wp add <addr> [len] [r|w|rw] [if <expr>] [pass <N>] | wp del <index> | wp list | wp clear",
+    "Manage memory watchpoints",
+    "Controls memory access watchpoints (break on read/write).\n"
+    "  add:   Adds a watchpoint at <addr>. Default length=1, type=rw.\n"
+    "  del:   Removes watchpoint by index.\n"
+    "  list:  Shows all watchpoints with index, address, range, type and conditions.\n"
+    "  clear: Removes all watchpoints.\n"
+    "When a watchpoint triggers, 'wait bp' returns: OK PC=XXXX WATCH=1 WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX");
+
+  register_command("iobp", "DEBUG",
+    "iobp add <port> [mask] [in|out|both] [if <expr>] | iobp del <index> | iobp list | iobp clear",
+    "Manage IO breakpoints",
+    "Controls I/O port breakpoints (break on IN/OUT instructions).\n"
+    "  add:   Adds an IO breakpoint. Port can use BCXX shorthand (X=wildcard nibble).\n"
+    "  del:   Removes IO breakpoint by index.\n"
+    "  list:  Shows all IO breakpoints with port, mask, direction and conditions.\n"
+    "  clear: Removes all IO breakpoints.");
+
+  register_command("wait", "DEBUG",
+    "wait pc <addr> [timeout] | wait mem <addr> <val> [mask] [timeout] | wait bp [timeout] | wait vbl <N> [timeout]",
+    "Wait for a condition before returning",
+    "Blocks until a condition is met or timeout (default 5000ms).\n"
+    "  pc:  Resumes and waits until PC equals <addr>.\n"
+    "  mem: Resumes and waits until memory at <addr> equals <val> (with optional mask).\n"
+    "  bp:  Waits for a breakpoint or watchpoint hit. Watchpoint hits include WP_ADDR/WP_VAL/WP_OLD.\n"
+    "  vbl: Waits for N vertical blanks (1/50th second each).");
 
   register_command("step", "DEBUG", "step in [N] | step over [N] | step out | step frame [N]", "Step the CPU or emulation frame",
     "Executes code and pauses again.\n"
