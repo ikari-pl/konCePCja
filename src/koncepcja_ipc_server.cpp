@@ -195,12 +195,12 @@ void init_command_registry() {
     "  write: Writes the provided <hex> string into memory starting at <addr>.");
 
   register_command("bp", "DEBUG",
-    "bp list | bp add <addr> [if <expr>] [pass <N>] | bp del <id> | bp clear",
+    "bp list | bp add <addr> [if <expr>] [pass <N>] | bp del <addr> | bp clear",
     "Manage execution breakpoints",
     "Controls execution breakpoints.\n"
-    "  list:  Shows all active breakpoints with their IDs and addresses.\n"
+    "  list:  Shows all active breakpoints with their addresses and conditions.\n"
     "  add:   Adds a new breakpoint at <addr>. Optional condition and pass count.\n"
-    "  del:   Removes the breakpoint with the specified ID.\n"
+    "  del:   Removes the breakpoint at the specified address.\n"
     "  clear: Removes all breakpoints.");
 
   register_command("wp", "DEBUG",
@@ -219,7 +219,7 @@ void init_command_registry() {
     "Controls I/O port breakpoints (break on IN/OUT instructions).\n"
     "  add:   Adds an IO breakpoint. Port can use BCXX shorthand (X=wildcard nibble).\n"
     "  del:   Removes IO breakpoint by index.\n"
-    "  list:  Shows all IO breakpoints with port, mask, direction and conditions.\n"
+    "  list:  Shows all IO breakpoints with index, port, mask, direction and conditions.\n"
     "  clear: Removes all IO breakpoints.");
 
   register_command("wait", "DEBUG",
@@ -1772,7 +1772,7 @@ std::string handle_command(const std::string& line) {
     return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy)\n";
   }
 
-  if (cmd == "wait" && parts.size() >= 3) {
+  if (cmd == "wait" && parts.size() >= 2) {
     auto timeout_ms = std::chrono::milliseconds(5000);
     auto deadline = std::chrono::steady_clock::now() + timeout_ms;
 
