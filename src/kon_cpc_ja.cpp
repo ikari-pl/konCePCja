@@ -273,6 +273,24 @@ std::string chROMFile[4] = {
    "system.cpr"
 };
 
+JoystickEmulation nextJoystickEmulation(JoystickEmulation current) {
+  return static_cast<JoystickEmulation>((static_cast<int>(current)+1) % static_cast<int>(JoystickEmulation::Last));
+}
+
+std::string JoystickEmulationToString(JoystickEmulation value) {
+  switch (value) {
+    case JoystickEmulation::None:
+      return "off";
+    case JoystickEmulation::Keyboard:
+      return "keyboard";
+    case JoystickEmulation::Mouse:
+      return "mouse";
+    case JoystickEmulation::Last:
+      return "<invalid joystick emulation: last>";
+  }
+  return "<invalid joystick emulation>";
+}
+
 t_CPC::t_CPC() {
   driveA.drive = DRIVE::DSK_A;
   driveB.drive = DRIVE::DSK_B;
@@ -1321,6 +1339,7 @@ int input_init ()
 {
    CPC.InputMapper->init();
    CPC.InputMapper->set_joystick_emulation();
+   SDL_SetWindowRelativeMouseMode(mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
    return 0;
 }
 
@@ -1368,6 +1387,7 @@ int emulator_init ()
          if ((pfileObject = fopen(romFilename.c_str(), "rb")) != nullptr) { // attempt to open the ROM image
             if(fread(pchRomData, 128, 1, pfileObject) != 1) { // read 128 bytes of ROM data
               fclose(pfileObject);
+              LOG_ERROR("Invalid ROM '" << romFilename << "': less than 128 bytes. Not a CPC ROM?");
               return ERR_NOT_A_CPC_ROM;
             }
             word checksum = 0;
@@ -1389,16 +1409,27 @@ int emulator_init ()
             }
             // end of Graduate accessory ROM checks
 
-
+            bool has_amsdos_header = false;
             if (checksum == ((pchRomData[0x43] << 8) + pchRomData[0x44])) { // if the checksum matches, we got us an AMSDOS header
+               has_amsdos_header = true;
                if(fread(pchRomData, 128, 1, pfileObject) != 1) { // skip it
+                 LOG_ERROR("Invalid ROM '" << romFilename << "': couldn't read the 128 bytes of the AMSDOS header. Not a CPC ROM?");
                  fclose(pfileObject);
                  return ERR_NOT_A_CPC_ROM;
                }
             }
-            if (!(pchRomData[0] & 0xfc)) { // is it a valid CPC ROM image (0 = forground, 1 = background, 2 = extension)?
-               if(fread(pchRomData+128, 16384-128, 1, pfileObject) != 1) { // read the rest of the ROM file
+
+            auto rom_file_size = file_size(fileno(pfileObject));
+            int max_rom_size = has_amsdos_header ? 16384 + 128 : 16384;
+            if (rom_file_size > max_rom_size) {
                  fclose(pfileObject);
+                 LOG_ERROR("Invalid ROM '" << romFilename << "': total ROM size is greater than 16kB. Not a CPC ROM?");
+                 return ERR_NOT_A_CPC_ROM;
+            }
+            if (!(pchRomData[0] & 0xfc)) { // is it a valid CPC ROM image (0 = foreground, 1 = background, 2 = extension)?
+               if(fread(pchRomData+128, rom_file_size-128, 1, pfileObject) != 1) { // read the rest of the ROM file
+                 fclose(pfileObject);
+                 LOG_ERROR("Internal error: couldn't read the expected ROM size from " << romFilename);
                  return ERR_NOT_A_CPC_ROM;
                }
                memmap_ROM[iRomNum] = pchRomData; // update the ROM map
@@ -1406,8 +1437,9 @@ int emulator_init ()
             // Graduate Software Accessory Roms use a non standard format. Only the first byte is validated, and as long as
             // it's a "G" and terminated with a "$" it'll try to use it.
             // See https://www.cpcwiki.eu/index.php/Graduate_Software#Structure_of_a_utility_ROM for more details.
-              if(fread(pchRomData+128, 16384-128, 1, pfileObject) != 1) { // read the rest of the ROM file
+              if(fread(pchRomData+128, rom_file_size-128, 1, pfileObject) != 1) { // read the rest of the ROM file
                 fclose(pfileObject);
+                LOG_ERROR("Internal error: couldn't read the expected ROM size from " << romFilename);
                 return ERR_NOT_A_CPC_ROM;
               }
               memmap_ROM[iRomNum] = pchRomData; // update the ROM map
@@ -2081,7 +2113,14 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    if (CPC.keyboard > MAX_ROM_MODS) {
       CPC.keyboard = 0;
    }
-   CPC.joystick_emulation = conf.getIntValue("system", "joystick_emulation", 0) & 1;
+   {
+      int joy_emu_val = conf.getIntValue("system", "joystick_emulation", 0);
+      if (joy_emu_val < 0 || joy_emu_val >= static_cast<int>(JoystickEmulation::Last)) {
+         LOG_WARNING("Invalid joystick_emulation value " << joy_emu_val << " in configuration. Defaulting to 'off'.");
+         joy_emu_val = static_cast<int>(JoystickEmulation::None);
+      }
+      CPC.joystick_emulation = static_cast<JoystickEmulation>(joy_emu_val);
+   }
    CPC.joysticks = conf.getIntValue("system", "joysticks", 1) & 1;
    CPC.joystick_menu_button = conf.getIntValue("system", "joystick_menu_button", 9) - 1;
    CPC.joystick_vkeyboard_button = conf.getIntValue("system", "joystick_vkeyboard_button", 10) - 1;
@@ -2212,7 +2251,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("system", "mf2", CPC.mf2);
    conf.setIntValue("system", "keyboard", CPC.keyboard);
    conf.setIntValue("system", "boot_time", CPC.boot_time);
-   conf.setIntValue("system", "joystick_emulation", CPC.joystick_emulation);
+   conf.setIntValue("system", "joystick_emulation", static_cast<int>(CPC.joystick_emulation));
    conf.setIntValue("system", "joysticks", CPC.joysticks);
    conf.setIntValue("system", "joystick_menu_button", CPC.joystick_menu_button + 1);
    conf.setIntValue("system", "joystick_vkeyboard_button", CPC.joystick_vkeyboard_button + 1);
@@ -2436,9 +2475,10 @@ void koncpc_menu_action(int action)
          break;
 
       case KONCPC_JOY:
-         CPC.joystick_emulation = CPC.joystick_emulation ? 0 : 1;
+         CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
          CPC.InputMapper->set_joystick_emulation();
-         set_osd_message(std::string("Joystick emulation: ") + (CPC.joystick_emulation ? "on" : "off"));
+         SDL_SetWindowRelativeMouseMode(mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
+         set_osd_message(std::string("Joystick emulation: ") + JoystickEmulationToString(CPC.joystick_emulation));
          break;
 
       case KONCPC_PHAZER:
@@ -3093,6 +3133,15 @@ std::map<SDL_Scancode, std::string> scancode_names = {
     {SDL_SCANCODE_COUNT, "SDL_SCANCODE_COUNT"},
 };
 
+static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event, byte keyboard_matrix[], bool pressed) {
+   if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
+      if (event.button == 1)
+         applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1), keyboard_matrix, pressed);
+      if (event.button == 3)
+         applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE2), keyboard_matrix, pressed);
+   }
+}
+
 int koncpc_main (int argc, char **argv)
 {
 #ifdef _WIN32
@@ -3261,6 +3310,8 @@ int koncpc_main (int argc, char **argv)
    g_exit_start_ticks = SDL_GetTicks();
    iExitCondition = EC_FRAME_COMPLETE;
 
+   dword nextMouseReset = 0;
+   // Whether this loop of emulation should release the joystick axis for mouse emulation.
    while (true) {
       // We can only load bin files after the CPC finished the init
       if (!bin_loaded &&
@@ -3335,6 +3386,14 @@ int koncpc_main (int argc, char **argv)
          virtualKeyboardEvents.pop_front();
       }
 
+      // Mouse-as-joystick: release all joystick axes periodically so they don't stick
+      if (dwFrameCountOverall >= nextMouseReset && CPC.joystick_emulation == JoystickEmulation::Mouse) {
+        // We set release_modifiers = false because otherwise, this somehow breaks some keys, like | on a french keyboard!
+        applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_RIGHT), keyboard_matrix, false, false);
+        applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_LEFT), keyboard_matrix, false, false);
+        applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_DOWN), keyboard_matrix, false, false);
+        applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_UP), keyboard_matrix, false, false);
+      }
       while (!g_headless && SDL_PollEvent(&event)) {
          // Handle main window close before ImGui consumes the event
          if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
@@ -3489,9 +3548,10 @@ int koncpc_main (int argc, char **argv)
                            break;
 
                         case KONCPC_JOY:
-                           CPC.joystick_emulation = CPC.joystick_emulation ? 0 : 1;
+                           CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
                            CPC.InputMapper->set_joystick_emulation();
-                           set_osd_message(std::string("Joystick emulation: ") + (CPC.joystick_emulation ? "on" : "off"));
+                           SDL_SetWindowRelativeMouseMode(mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
+                           set_osd_message(std::string("Joystick emulation: ") + JoystickEmulationToString(CPC.joystick_emulation));
                            break;
 
                         case KONCPC_PHAZER:
@@ -3609,6 +3669,22 @@ int koncpc_main (int argc, char **argv)
               if (g_symbiface.enabled) {
                 symbiface_mouse_update(event.motion.xrel, event.motion.yrel, SDL_GetMouseState(nullptr, nullptr));
               }
+              if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
+                int threshold = 2;
+                if (event.motion.yrel > threshold) {
+                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_DOWN), keyboard_matrix, true);
+                }
+                if (event.motion.yrel < -threshold) {
+                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_UP), keyboard_matrix, true);
+                }
+                if (event.motion.xrel > threshold) {
+                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_RIGHT), keyboard_matrix, true);
+                }
+                if (event.motion.xrel < -threshold) {
+                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_LEFT), keyboard_matrix, true);
+                }
+                nextMouseReset = dwFrameCountOverall + 2;
+              }
             }
             break;
 
@@ -3628,6 +3704,7 @@ int koncpc_main (int argc, char **argv)
               if (g_amx_mouse.enabled) {
                 amx_mouse_update(0, 0, SDL_GetMouseState(nullptr, nullptr));
               }
+              handle_mouse_joystick_button(event.button, keyboard_matrix, true);
             }
             break;
 
@@ -3643,6 +3720,7 @@ int koncpc_main (int argc, char **argv)
               if (g_amx_mouse.enabled) {
                 amx_mouse_update(0, 0, SDL_GetMouseState(nullptr, nullptr));
               }
+              handle_mouse_joystick_button(event.button, keyboard_matrix, false);
             }
             break;
 
