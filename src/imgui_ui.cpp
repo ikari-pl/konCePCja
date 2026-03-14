@@ -278,7 +278,6 @@ void imgui_init_ui()
     g_command_palette.register_command(
         title, "", shortcut,
         [action_key]() {
-          extern void applyKeypress(CPCScancode scancode, byte keyboard_matrix[], bool pressed);
           extern byte keyboard_matrix[];
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, true);
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, false);
@@ -650,7 +649,7 @@ static void imgui_render_menubar()
 
   // ── Options ──
   if (ImGui::BeginMenu("Options")) {
-    if (ImGui::MenuItem("Joystick Emulation", "F7", CPC.joystick_emulation != 0)) {
+    if (ImGui::MenuItem("Joystick Emulation", "F7", CPC.joystick_emulation != JoystickEmulation::None)) {
       koncpc_menu_action(KONCPC_JOY);
     }
     if (ImGui::MenuItem("Phazer Emulation", "Shift+F7", static_cast<bool>(CPC.phazer_emulation))) {
@@ -1828,9 +1827,9 @@ static void imgui_render_options()
         CPC.keyboard = keyboard;
       }
 
-      bool joy_emu = CPC.joystick_emulation != 0;
+      bool joy_emu = CPC.joystick_emulation != JoystickEmulation::None;
       if (ImGui::Checkbox("Joystick Emulation", &joy_emu)) {
-        CPC.joystick_emulation = joy_emu ? 1 : 0;
+        CPC.joystick_emulation = joy_emu ? JoystickEmulation::Keyboard : JoystickEmulation::None;
       }
 
       bool joysticks = CPC.joysticks != 0;

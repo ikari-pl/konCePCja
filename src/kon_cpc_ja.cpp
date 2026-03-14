@@ -1331,7 +1331,7 @@ int input_init ()
 {
    CPC.InputMapper->init();
    CPC.InputMapper->set_joystick_emulation();
-   SDL_SetRelativeMouseMode(SDL_bool(CPC.joystick_emulation == JoystickEmulation::Mouse));
+   SDL_SetWindowRelativeMouseMode(mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
    return 0;
 }
 
@@ -1401,7 +1401,9 @@ int emulator_init ()
             }
             // end of Graduate accessory ROM checks
 
+            bool has_amsdos_header = false;
             if (checksum == ((pchRomData[0x43] << 8) + pchRomData[0x44])) { // if the checksum matches, we got us an AMSDOS header
+               has_amsdos_header = true;
                if(fread(pchRomData, 128, 1, pfileObject) != 1) { // skip it
                  LOG_ERROR("Invalid ROM '" << romFilename << "': couldn't read the 128 bytes of the AMSDOS header. Not a CPC ROM?");
                  fclose(pfileObject);
@@ -1410,7 +1412,8 @@ int emulator_init ()
             }
 
             auto rom_file_size = file_size(fileno(pfileObject));
-            if (rom_file_size > 16384) {
+            int max_rom_size = has_amsdos_header ? 16384 + 128 : 16384;
+            if (rom_file_size > max_rom_size) {
                  fclose(pfileObject);
                  LOG_ERROR("Invalid ROM '" << romFilename << "': total ROM size is greater than 16kB. Not a CPC ROM?");
                  return ERR_NOT_A_CPC_ROM;
@@ -2102,7 +2105,14 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    if (CPC.keyboard > MAX_ROM_MODS) {
       CPC.keyboard = 0;
    }
-   CPC.joystick_emulation = static_cast<JoystickEmulation>(conf.getIntValue("system", "joystick_emulation", 0));
+   {
+      int joy_emu_val = conf.getIntValue("system", "joystick_emulation", 0);
+      if (joy_emu_val < 0 || joy_emu_val >= static_cast<int>(JoystickEmulation::Last)) {
+         LOG_WARNING("Invalid joystick_emulation value " << joy_emu_val << " in configuration. Defaulting to 'off'.");
+         joy_emu_val = static_cast<int>(JoystickEmulation::None);
+      }
+      CPC.joystick_emulation = static_cast<JoystickEmulation>(joy_emu_val);
+   }
    CPC.joysticks = conf.getIntValue("system", "joysticks", 1) & 1;
    CPC.joystick_menu_button = conf.getIntValue("system", "joystick_menu_button", 9) - 1;
    CPC.joystick_vkeyboard_button = conf.getIntValue("system", "joystick_vkeyboard_button", 10) - 1;
@@ -2457,9 +2467,10 @@ void koncpc_menu_action(int action)
          break;
 
       case KONCPC_JOY:
-         CPC.joystick_emulation = CPC.joystick_emulation ? 0 : 1;
+         CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
          CPC.InputMapper->set_joystick_emulation();
-         set_osd_message(std::string("Joystick emulation: ") + (CPC.joystick_emulation ? "on" : "off"));
+         SDL_SetWindowRelativeMouseMode(mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
+         set_osd_message(std::string("Joystick emulation: ") + JoystickEmulationToString(CPC.joystick_emulation));
          break;
 
       case KONCPC_PHAZER:
@@ -3114,6 +3125,15 @@ std::map<SDL_Scancode, std::string> scancode_names = {
     {SDL_SCANCODE_COUNT, "SDL_SCANCODE_COUNT"},
 };
 
+static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event, byte keyboard_matrix[], bool pressed) {
+   if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
+      if (event.button == 1)
+         applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1), keyboard_matrix, pressed);
+      if (event.button == 3)
+         applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE2), keyboard_matrix, pressed);
+   }
+}
+
 int koncpc_main (int argc, char **argv)
 {
 #ifdef _WIN32
@@ -3522,7 +3542,7 @@ int koncpc_main (int argc, char **argv)
                         case KONCPC_JOY:
                            CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
                            CPC.InputMapper->set_joystick_emulation();
-                           SDL_SetRelativeMouseMode(SDL_bool(CPC.joystick_emulation == JoystickEmulation::Mouse));
+                           SDL_SetWindowRelativeMouseMode(mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
                            set_osd_message(std::string("Joystick emulation: ") + JoystickEmulationToString(CPC.joystick_emulation));
                            break;
 
@@ -3676,14 +3696,7 @@ int koncpc_main (int argc, char **argv)
               if (g_amx_mouse.enabled) {
                 amx_mouse_update(0, 0, SDL_GetMouseState(nullptr, nullptr));
               }
-              if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
-                if (event.button.button == 1) {
-                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1), keyboard_matrix, true);
-                }
-                if (event.button.button == 3) {
-                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE2), keyboard_matrix, true);
-                }
-              }
+              handle_mouse_joystick_button(event.button, keyboard_matrix, true);
             }
             break;
 
@@ -3699,14 +3712,7 @@ int koncpc_main (int argc, char **argv)
               if (g_amx_mouse.enabled) {
                 amx_mouse_update(0, 0, SDL_GetMouseState(nullptr, nullptr));
               }
-              if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
-                if (event.button.button == 1) {
-                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1), keyboard_matrix, false);
-                }
-                if (event.button.button == 3) {
-                  applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE2), keyboard_matrix, false);
-                }
-              }
+              handle_mouse_joystick_button(event.button, keyboard_matrix, false);
             }
             break;
 
