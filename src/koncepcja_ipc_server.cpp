@@ -81,6 +81,23 @@ extern byte *pbROMhi;
 
 extern byte bit_values[];
 
+// Parse a number from an IPC argument string.
+// Accepts CPC-style hex prefixes ($, &, #) in addition to C-style 0x and bare decimal.
+static unsigned long parse_number(const std::string& s) {
+  if (s.empty()) throw std::invalid_argument("empty number");
+  if (s[0] == '$' || s[0] == '&' || s[0] == '#')
+    return std::stoul(s.substr(1), nullptr, 16);
+  return std::stoul(s, nullptr, 0);
+}
+
+// Like parse_number but returns int (for small values like counts, indices).
+static int parse_int(const std::string& s) {
+  if (s.empty()) throw std::invalid_argument("empty number");
+  if (s[0] == '$' || s[0] == '&' || s[0] == '#')
+    return static_cast<int>(std::stoul(s.substr(1), nullptr, 16));
+  return std::stoi(s);
+}
+
 // Helper to prevent path traversal via IPC.
 static bool is_safe_path(const std::string& path_str) {
   if (path_str.empty()) return false;
@@ -96,6 +113,55 @@ static bool is_safe_path(const std::string& path_str) {
   }
 
   return true;
+}
+
+// Build a compact debug context string for IPC response trailers.
+// All fields are O(1) struct reads — safe for every response.
+static std::string build_debug_context() {
+  char buf[256];
+  // ROM config: bit2=lower ROM disable, bit3=upper ROM disable
+  bool lo_rom = !(GateArray.ROM_config & 0x04);
+  bool hi_rom = !(GateArray.ROM_config & 0x08);
+  std::string rom_str;
+  if (lo_rom && hi_rom)
+    rom_str = "LO," + std::to_string(GateArray.upper_ROM);
+  else if (lo_rom)
+    rom_str = "LO,--";
+  else if (hi_rom)
+    rom_str = "--," + std::to_string(GateArray.upper_ROM);
+  else
+    rom_str = "--,--";
+
+  auto& bps = z80_list_breakpoints_ref();
+  auto& wps = z80_list_watchpoints_ref();
+  auto& ios = z80_list_io_breakpoints_ref();
+
+  int n = snprintf(buf, sizeof(buf),
+    "[PC=%04X SP=%04X|%s|mode=%u|rom:%s|ram:%u/%uK|bp:%zu,wp:%zu,io:%zu",
+    z80.PC.w.l, z80.SP.w.l,
+    CPC.paused ? "paused" : "running",
+    GateArray.scr_mode,
+    rom_str.c_str(),
+    GateArray.RAM_config & 7, CPC.ram_size,
+    bps.size(), wps.size(), ios.size());
+
+  std::string result(buf, static_cast<size_t>(n));
+  if (z80.HALT) result += "|HALT";
+  if (!z80.IFF1) result += "|DI";
+  result += ']';
+  return result;
+}
+
+// Append debug context trailer to an OK response.
+static std::string ok_with_context(const std::string& body = "") {
+  if (body.empty())
+    return "OK " + build_debug_context() + "\n";
+  return "OK " + body + " " + build_debug_context() + "\n";
+}
+
+// Append debug context trailer to an ERR response.
+static std::string err_with_context(int code, const std::string& msg) {
+  return "ERR " + std::to_string(code) + " " + msg + " " + build_debug_context() + "\n";
 }
 
 // Direct keyboard matrix manipulation that works even when CPC.paused is true.
@@ -170,6 +236,11 @@ void init_command_registry() {
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
     "Terminates the emulator process immediately. An optional integer exit code can be provided.");
+
+  register_command("disconnect", "CORE", "disconnect", "Close the current IPC connection",
+    "Closes the current persistent IPC connection. The client socket is closed and the server "
+    "returns to listening for new connections. Alias: 'quit' with no arguments when used as "
+    "a connection command (quit with an exit code still terminates the emulator).");
 
   register_command("pause", "CORE", "pause", "Pause emulation",
     "Stops the Z80 CPU and machine timers. The UI remains responsive and can still be used to inspect state.");
@@ -425,19 +496,24 @@ void breakpoint_hit_hook(word pc, bool watchpoint) {
   }
 }
 
-std::vector<std::string> split_lines(const std::string& s) {
+
+// Split a line on semicolons for command chaining (e.g. "pause; bp add $4000; run").
+// Trims leading/trailing whitespace from each segment. Skips empty segments.
+std::vector<std::string> split_semicolons(const std::string& s) {
   std::vector<std::string> out;
-  std::string cur;
-  for (char c : s) {
-    if (c == '\n') {
-      if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-      out.push_back(cur);
-      cur.clear();
-    } else {
-      cur.push_back(c);
-    }
+  size_t start = 0;
+  while (start < s.size()) {
+    size_t pos = s.find(';', start);
+    if (pos == std::string::npos) pos = s.size();
+    // Trim whitespace from the segment
+    size_t seg_start = start;
+    while (seg_start < pos && (s[seg_start] == ' ' || s[seg_start] == '\t')) seg_start++;
+    size_t seg_end = pos;
+    while (seg_end > seg_start && (s[seg_end - 1] == ' ' || s[seg_end - 1] == '\t')) seg_end--;
+    if (seg_end > seg_start)
+      out.push_back(s.substr(seg_start, seg_end - seg_start));
+    start = pos + 1;
   }
-  if (!cur.empty()) out.push_back(cur);
   return out;
 }
 
@@ -492,7 +568,9 @@ std::string handle_command(const std::string& line) {
     }
 
     std::ostringstream oss;
-    oss << "OK available commands (usage: help <command>):\n";
+    oss << "OK available commands (usage: help <command>):\n"
+        << "  Protocol: persistent connections, ';' chains commands, 'disconnect' closes.\n"
+        << "  Numbers: 0x, $, &, # hex prefixes accepted (e.g. $C000, &4000, #BB5A).\n";
     static const std::vector<std::string> order = {"CORE", "DEBUG", "HARDWARE", "INPUT", "MEDIA", "TOOLS"};
     for (const auto& cat : order) {
       if (categories.find(cat) == categories.end()) continue;
@@ -516,7 +594,7 @@ std::string handle_command(const std::string& line) {
 
   if (cmd == "quit") {
     int code = 0;
-    if (parts.size() >= 2) code = std::stoi(parts[1]);
+    if (parts.size() >= 2) code = parse_int(parts[1]);
     cleanExit(code, false);
     return "OK\n"; // unreachable, but satisfies return type
   }
@@ -532,8 +610,8 @@ std::string handle_command(const std::string& line) {
       return std::string(buf);
     }
     if (parts[1] == "mem" && parts.size() >= 4) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
-      unsigned int len = std::stoul(parts[3], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
+      unsigned int len = parse_number(parts[3]);
       if (len > 65536) len = 65536; // Clamp to full address space
       uLong crc = crc32(0L, nullptr, 0);
       // Read through direct Z80 memory (SmartWatch only, no watchpoints)
@@ -580,11 +658,11 @@ std::string handle_command(const std::string& line) {
 
   if (cmd == "pause") {
     cpc_pause();
-    return "OK\n";
+    return ok_with_context();
   }
   if (cmd == "run") {
     cpc_resume();
-    return "OK\n";
+    return ok_with_context();
   }
   if (cmd == "reset") {
     bool was_paused = CPC.paused;
@@ -599,7 +677,7 @@ std::string handle_command(const std::string& line) {
     } else if (was_paused) {
       // Was already paused and user wants no-resume, keep paused
     }
-    return "OK\n";
+    return ok_with_context();
   }
   if (cmd == "repaint") {
     std::string shot_path;
@@ -650,7 +728,7 @@ std::string handle_command(const std::string& line) {
     if (ext == ".dsk") {
       CPC.driveA.file = path;
       CPC.driveA.zip_index = 0;
-      return file_load(CPC.driveA) == 0 ? "OK\n" : "ERR 500 load-dsk\n";
+      return file_load(CPC.driveA) == 0 ? ok_with_context() : "ERR 500 load-dsk\n";
     }
     if (ext == ".sna") {
       bool was_paused = CPC.paused;
@@ -659,16 +737,16 @@ std::string handle_command(const std::string& line) {
       CPC.snapshot.zip_index = 0;
       int rc = file_load(CPC.snapshot);
       if (!was_paused) cpc_resume();
-      return rc == 0 ? "OK\n" : "ERR 500 load-sna\n";
+      return rc == 0 ? ok_with_context() : "ERR 500 load-sna\n";
     }
     if (ext == ".cpr") {
       CPC.cartridge.file = path;
       CPC.cartridge.zip_index = 0;
-      return file_load(CPC.cartridge) == 0 ? "OK\n" : "ERR 500 load-cpr\n";
+      return file_load(CPC.cartridge) == 0 ? ok_with_context() : "ERR 500 load-cpr\n";
     }
     if (ext == ".bin") {
       bin_load(path, 0x6000);
-      return "OK\n";
+      return ok_with_context();
     }
     return "ERR 415 unsupported\n";
   }
@@ -676,7 +754,7 @@ std::string handle_command(const std::string& line) {
     if (parts.size() < 4) return "ERR 400 bad-args\n";
     std::string reg = parts[2];
     for (auto& c : reg) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    unsigned int value = std::stoul(parts[3], nullptr, 0);
+    unsigned int value = parse_number(parts[3]);
 
     auto set8 = [&](byte& target) { target = static_cast<byte>(value); };
     auto set16 = [&](word& target) { target = static_cast<word>(value); };
@@ -709,7 +787,7 @@ std::string handle_command(const std::string& line) {
     else if (reg == "HL'" || reg == "HLX") set16(z80.HLx.w.l);
     else return "ERR 400 bad-reg\n";
 
-    return "OK\n";
+    return ok_with_context();
   }
   if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 && parts[1] == "get") {
     if (parts.size() < 3) return "ERR 400 bad-args\n";
@@ -825,7 +903,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "sprite") {
       if (parts.size() < 3) return "ERR 400 bad-args (asic sprite <0-15>)\n";
       int idx = 0;
-      try { idx = std::stoi(parts[2]); } catch (const std::exception&) { return "ERR 400 bad-args (asic sprite <0-15>)\n"; }
+      try { idx = parse_int(parts[2]); } catch (const std::exception&) { return "ERR 400 bad-args (asic sprite <0-15>)\n"; }
       if (idx < 0 || idx > 15) return "ERR 400 sprite index out of range (0-15)\n";
       return "OK\n" + asic_dump_sprite(idx) + "\n";
     }
@@ -835,7 +913,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "dma") {
       if (parts.size() >= 3) {
         int ch = 0;
-        try { ch = std::stoi(parts[2]); } catch (const std::exception&) { return "ERR 400 bad-args (asic dma <0-2>)\n"; }
+        try { ch = parse_int(parts[2]); } catch (const std::exception&) { return "ERR 400 bad-args (asic dma <0-2>)\n"; }
         if (ch < 0 || ch > 2) return "ERR 400 DMA channel out of range (0-2)\n";
         return "OK\n" + asic_dump_dma_channel(ch) + "\n";
       }
@@ -903,7 +981,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "save") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
       if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-      if (snapshot_save(parts[2]) == 0) return "OK\n";
+      if (snapshot_save(parts[2]) == 0) return ok_with_context();
       return "ERR 500 snapshot-save\n";
     }
     if (parts[1] == "load") {
@@ -913,13 +991,13 @@ std::string handle_command(const std::string& line) {
       if (!was_paused) cpc_pause();
       int rc = snapshot_load(parts[2]);
       if (!was_paused) cpc_resume();
-      return rc == 0 ? "OK\n" : "ERR 500 snapshot-load\n";
+      return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
     }
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "read") {
     // mem read <addr> <len> [--view=read|write] [--bank=N] [ascii]
-    unsigned int addr = std::stoul(parts[2], nullptr, 0);
-    unsigned int len = std::stoul(parts[3], nullptr, 0);
+    unsigned int addr = parse_number(parts[2]);
+    unsigned int len = parse_number(parts[3]);
     bool with_ascii = false;
     int view_mode = 0; // 0=read(default), 1=write
     int raw_bank = -1; // -1=not set
@@ -930,7 +1008,7 @@ std::string handle_command(const std::string& line) {
         if (v == "write") view_mode = 1;
       }
       else if (parts[pi].rfind("--bank=", 0) == 0) {
-        raw_bank = std::stoi(parts[pi].substr(7));
+        raw_bank = parse_int(parts[pi].substr(7));
       }
     }
     std::ostringstream resp;
@@ -963,7 +1041,7 @@ std::string handle_command(const std::string& line) {
   }
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "write") {
     // mem write <addr> <hexbytes...>
-    unsigned int addr = std::stoul(parts[2], nullptr, 0);
+    unsigned int addr = parse_number(parts[2]);
     std::string hex;
     for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
     if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
@@ -972,12 +1050,12 @@ std::string handle_command(const std::string& line) {
       byte v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
       z80_write_mem(static_cast<word>(addr + (i/2)), v);
     }
-    return "OK\n";
+    return ok_with_context();
   }
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "fill") {
     // mem fill <addr> <len> <hex-pattern>
-    unsigned int addr = std::stoul(parts[2], nullptr, 0);
-    unsigned int len = std::stoul(parts[3], nullptr, 0);
+    unsigned int addr = parse_number(parts[2]);
+    unsigned int len = parse_number(parts[3]);
     const std::string& hex = parts[4];
     if (hex.empty() || hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
     std::vector<byte> pattern;
@@ -987,13 +1065,13 @@ std::string handle_command(const std::string& line) {
     for (unsigned int i = 0; i < len; i++) {
       z80_write_mem(static_cast<word>(addr + i), pattern[i % pattern.size()]);
     }
-    return "OK\n";
+    return ok_with_context();
   }
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
     // mem compare <addr1> <addr2> <len>
-    unsigned int addr1 = std::stoul(parts[2], nullptr, 0);
-    unsigned int addr2 = std::stoul(parts[3], nullptr, 0);
-    unsigned int len = std::stoul(parts[4], nullptr, 0);
+    unsigned int addr1 = parse_number(parts[2]);
+    unsigned int addr2 = parse_number(parts[3]);
+    unsigned int len = parse_number(parts[4]);
     int diff_count = 0;
     std::string diffs;
     for (unsigned int i = 0; i < len; i++) {
@@ -1015,8 +1093,8 @@ std::string handle_command(const std::string& line) {
     // mem cpu-read <addr> <len> — reads through CPU memory map (SmartWatch/ROM banking)
     // but does NOT trigger watchpoints or IPC events.
     try {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
-      unsigned int len = std::stoul(parts[3], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
+      unsigned int len = parse_number(parts[3]);
       if (len > 0x10000) return "ERR 400 len exceeds 64K\n";
       std::ostringstream resp;
       resp << "OK ";
@@ -1035,7 +1113,7 @@ std::string handle_command(const std::string& line) {
     // mem cpu-write <addr> <hexbytes...> — writes through CPU memory map
     // but does NOT trigger watchpoints or IPC mem-write events.
     try {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       std::string hex;
       for (size_t i = 3; i < parts.size(); i++) hex += parts[i];
       if (hex.size() % 2 != 0) return "ERR 400 bad-hex\n";
@@ -1053,7 +1131,7 @@ std::string handle_command(const std::string& line) {
   if (cmd == "disasm" && parts.size() >= 2) {
     // disasm follow <addr> — recursive disassembly following jumps
     if (parts[1] == "follow" && parts.size() >= 3) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       std::vector<word> eps = { static_cast<word>(addr) };
       DisassembledCode code = disassemble(eps);
       std::ostringstream resp;
@@ -1067,7 +1145,7 @@ std::string handle_command(const std::string& line) {
     }
     // disasm refs <addr> — cross-reference search
     if (parts[1] == "refs" && parts.size() >= 3) {
-      unsigned int target = std::stoul(parts[2], nullptr, 0);
+      unsigned int target = parse_number(parts[2]);
       std::ostringstream resp;
       resp << "OK";
       int found = 0;
@@ -1092,8 +1170,8 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "export" && parts.size() >= 4) {
       unsigned int start_addr, end_addr;
       try {
-        start_addr = std::stoul(parts[2], nullptr, 0);
-        end_addr = std::stoul(parts[3], nullptr, 0);
+        start_addr = parse_number(parts[2]);
+        end_addr = parse_number(parts[3]);
       } catch (const std::exception&) {
         return "ERR 400 bad-address\n";
       }
@@ -1204,8 +1282,8 @@ std::string handle_command(const std::string& line) {
       unsigned int addr;
       int count;
       try {
-        addr = std::stoul(parts[1], nullptr, 0);
-        count = std::stoi(parts[2]);
+        addr = parse_number(parts[1]);
+        count = parse_int(parts[2]);
       } catch (const std::exception&) {
         return "ERR 400 bad-address\n";
       }
@@ -1268,7 +1346,7 @@ std::string handle_command(const std::string& line) {
   }
   if (cmd == "bp" && parts.size() >= 2) {
     if (parts[1] == "add" && parts.size() >= 3) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       // Parse optional "if <expr>" and "pass <N>" in a single pass.
       // Tokens after "if" up to "pass" (or end) form the expression.
       std::string cond_str;
@@ -1284,7 +1362,7 @@ std::string handle_command(const std::string& line) {
         }
         if (kwl == "pass" && pi + 1 < parts.size()) {
           in_expr = false;
-          pass_count = std::stoi(parts[pi + 1]);
+          pass_count = parse_int(parts[pi + 1]);
           pi++; // skip the value
           continue;
         }
@@ -1301,16 +1379,16 @@ std::string handle_command(const std::string& line) {
       } else {
         z80_add_breakpoint(static_cast<word>(addr));
       }
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "del" && parts.size() >= 3) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       z80_del_breakpoint(static_cast<word>(addr));
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "clear") {
       z80_clear_breakpoints();
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "list") {
       const auto& bps = z80_list_breakpoints_ref();
@@ -1355,7 +1433,7 @@ std::string handle_command(const std::string& line) {
           }
         }
       } else {
-        port_val = static_cast<word>(std::stoul(port_str, nullptr, 0));
+        port_val = static_cast<word>(parse_number(port_str));
       }
       // Parse optional mask, direction, and condition
       IOBreakpointDir dir = IO_BOTH;
@@ -1378,7 +1456,7 @@ std::string handle_command(const std::string& line) {
           break;
         }
         else if (!arg.empty() && (argl.rfind("0x", 0) == 0 || (argl[0] >= '0' && argl[0] <= '9'))) {
-          mask_val = static_cast<word>(std::stoul(arg, nullptr, 0));
+          mask_val = static_cast<word>(parse_number(arg));
         }
       }
       if (!cond_str.empty()) {
@@ -1389,16 +1467,16 @@ std::string handle_command(const std::string& line) {
       } else {
         z80_add_io_breakpoint(port_val, mask_val, dir);
       }
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "del" && parts.size() >= 3) {
-      int idx = std::stoi(parts[2]);
+      int idx = parse_int(parts[2]);
       z80_del_io_breakpoint(idx);
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "clear") {
       z80_clear_io_breakpoints();
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "list") {
       const auto& bps = z80_list_io_breakpoints_ref();
@@ -1428,31 +1506,31 @@ std::string handle_command(const std::string& line) {
       int count = 1;
       if (parts.size() >= 2) {
         if (parts[1] == "in") {
-          if (parts.size() >= 3) count = std::stoi(parts[2]);
+          if (parts.size() >= 3) count = parse_int(parts[2]);
         } else {
-          try { count = std::stoi(parts[1]); } catch (...) { count = 1; }
+          try { count = parse_int(parts[1]); } catch (...) { count = 1; }
         }
       }
       for (int i = 0; i < count; i++) {
         z80_step_instruction();
       }
-      return "OK\n";
+      return ok_with_context();
     }
     // "step frame [N]" — advance N complete frames, then pause
     if (parts.size() >= 2 && parts[1] == "frame") {
       int n = 1;
-      if (parts.size() >= 3) n = std::stoi(parts[2]);
+      if (parts.size() >= 3) n = parse_int(parts[2]);
       if (n < 1) return "ERR 400 bad-args\n";
       g_ipc_instance->frame_step_remaining.store(n);
       g_ipc_instance->frame_step_active.store(true);
       cpc_resume();
       g_ipc_instance->wait_frame_step_done();
-      return "OK\n";
+      return ok_with_context();
     }
     // "step over [N]" — step over CALL/RST (or single-step if not a call)
     if (parts.size() >= 2 && parts[1] == "over") {
       int count = 1;
-      if (parts.size() >= 3) count = std::stoi(parts[2]);
+      if (parts.size() >= 3) count = parse_int(parts[2]);
       for (int i = 0; i < count; i++) {
         word pc = z80.PC.w.l;
         if (z80_is_call_or_rst(pc)) {
@@ -1475,7 +1553,7 @@ std::string handle_command(const std::string& line) {
             }
             if (std::chrono::steady_clock::now() > deadline) {
               cpc_pause();
-              return "ERR 408 timeout\n";
+              return err_with_context(408, "timeout");
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
           }
@@ -1484,7 +1562,7 @@ std::string handle_command(const std::string& line) {
           z80_step_instruction();
         }
       }
-      return "OK\n";
+      return ok_with_context();
     }
     // "step out" — run until current function returns
     if (parts.size() >= 2 && parts[1] == "out") {
@@ -1504,16 +1582,16 @@ std::string handle_command(const std::string& line) {
         if (std::chrono::steady_clock::now() > deadline) {
           cpc_pause();
           z80.step_out = 0;
-          return "ERR 408 timeout\n";
+          return err_with_context(408, "timeout");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
       if (!CPC.paused) cpc_pause();
-      return "OK\n";
+      return ok_with_context();
     }
     // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
     if (parts.size() >= 3 && parts[1] == "to") {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       z80_add_breakpoint_ephemeral(static_cast<word>(addr));
       // Clear stale hits before resume to avoid race conditions
       uint16_t dummy_pc; bool dummy_watch;
@@ -1526,26 +1604,26 @@ std::string handle_command(const std::string& line) {
         if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
         if (std::chrono::steady_clock::now() > deadline) {
           cpc_pause();
-          return "ERR 408 timeout\n";
+          return err_with_context(408, "timeout");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
       cpc_pause();
-      return "OK\n";
+      return ok_with_context();
     }
     // "step [N]" — single-step N instructions
     cpc_pause();
     int count = 1;
-    if (parts.size() >= 2) count = std::stoi(parts[1]);
+    if (parts.size() >= 2) count = parse_int(parts[1]);
     for (int i = 0; i < count; i++) z80_step_instruction();
-    return "OK\n";
+    return ok_with_context();
   }
 
   // Trace commands: trace on [size], trace off, trace dump <path>, trace on_crash <path>
   if (cmd == "trace" && parts.size() >= 2) {
     if (parts[1] == "on") {
       int size = 65536;
-      if (parts.size() >= 3) size = std::stoi(parts[2]);
+      if (parts.size() >= 3) size = parse_int(parts[2]);
       g_trace.enable(size);
       return "OK\n";
     }
@@ -1580,7 +1658,7 @@ std::string handle_command(const std::string& line) {
   if (cmd == "frames" && parts.size() >= 4 && parts[1] == "dump") {
     std::string pattern = parts[2];
     if (!is_safe_path(pattern)) return "ERR 403 path-traversal-blocked\n";
-    int frame_count = std::stoi(parts[3]);
+    int frame_count = parse_int(parts[3]);
     if (frame_count < 1 || frame_count > 10000) return "ERR 400 bad-count\n";
 
     // Check if output is GIF
@@ -1593,7 +1671,7 @@ std::string handle_command(const std::string& line) {
       // Animated GIF output
       if (!back_surface) return "ERR 503 no-surface\n";
       int delay_cs = 2; // default: 50fps (matches CPC VBL rate)
-      if (parts.size() >= 5) delay_cs = std::stoi(parts[4]);
+      if (parts.size() >= 5) delay_cs = parse_int(parts[4]);
       GifRecorder gif;
       if (!gif.begin(back_surface->w, back_surface->h, delay_cs)) {
         return "ERR 500 gif-begin-failed\n";
@@ -1744,7 +1822,7 @@ std::string handle_command(const std::string& line) {
       return "OK\n";
     }
     if (parts[1] == "joy" && parts.size() >= 4) {
-      int joy_num = std::stoi(parts[2]);
+      int joy_num = parse_int(parts[2]);
       std::string dir = parts[3];
       for (auto& c : dir) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
       bool release = (dir[0] == '-');
@@ -1777,34 +1855,34 @@ std::string handle_command(const std::string& line) {
     auto deadline = std::chrono::steady_clock::now() + timeout_ms;
 
     if (parts[1] == "pc") {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
-      if (parts.size() >= 4) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::stoi(parts[3]));
+      unsigned int addr = parse_number(parts[2]);
+      if (parts.size() >= 4) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(parse_int(parts[3]));
       cpc_resume();
       while (z80.PC.w.l != addr) {
         if (std::chrono::steady_clock::now() > deadline) {
           cpc_pause();
-          return "ERR 408 timeout\n";
+          return err_with_context(408, "timeout");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
       cpc_pause();
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "mem" && parts.size() >= 4) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
-      unsigned int val = std::stoul(parts[3], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
+      unsigned int val = parse_number(parts[3]);
       unsigned int mask = 0xFF;
       if (parts.size() >= 5) {
         if (parts[4].rfind("mask=", 0) == 0) {
-          mask = std::stoul(parts[4].substr(5), nullptr, 0);
+          mask = parse_number(parts[4].substr(5));
           if (parts.size() >= 6) {
-            deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::stoi(parts[5]));
+            deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(parse_int(parts[5]));
           }
         } else if (parts.size() >= 6) {
-          mask = std::stoul(parts[4], nullptr, 0);
-          deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::stoi(parts[5]));
+          mask = parse_number(parts[4]);
+          deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(parse_int(parts[5]));
         } else {
-          deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::stoi(parts[4]));
+          deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(parse_int(parts[4]));
         }
       }
       cpc_resume();
@@ -1813,15 +1891,15 @@ std::string handle_command(const std::string& line) {
         if ((memv & static_cast<byte>(mask)) == (static_cast<byte>(val) & static_cast<byte>(mask))) break;
         if (std::chrono::steady_clock::now() > deadline) {
           cpc_pause();
-          return "ERR 408 timeout\n";
+          return err_with_context(408, "timeout");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
       cpc_pause();
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "bp") {
-      if (parts.size() >= 3) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::stoi(parts[2]));
+      if (parts.size() >= 3) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(parse_int(parts[2]));
       while (true) {
         if (g_ipc_instance) {
           uint16_t pc = 0;
@@ -1838,24 +1916,24 @@ std::string handle_command(const std::string& line) {
           }
         }
         if (std::chrono::steady_clock::now() > deadline) {
-          return "ERR 408 timeout\n";
+          return err_with_context(408, "timeout");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     }
     if (parts[1] == "vbl") {
-      int count = std::stoi(parts[2]);
-      if (parts.size() >= 4) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::stoi(parts[3]));
+      int count = parse_int(parts[2]);
+      if (parts.size() >= 4) deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(parse_int(parts[3]));
       cpc_resume();
       for (int i = 0; i < count; i++) {
         if (std::chrono::steady_clock::now() > deadline) {
           cpc_pause();
-          return "ERR 408 timeout\n";
+          return err_with_context(408, "timeout");
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
       cpc_pause();
-      return "OK\n";
+      return ok_with_context();
     }
   }
 
@@ -1874,22 +1952,22 @@ std::string handle_command(const std::string& line) {
 
       if (trigger_str.rfind("pc=", 0) == 0) {
         ev.trigger = EventTrigger::PC;
-        ev.address = static_cast<uint16_t>(std::stoul(trigger_str.substr(3), nullptr, 0));
+        ev.address = static_cast<uint16_t>(parse_number(trigger_str.substr(3)));
       } else if (trigger_str.rfind("mem=", 0) == 0) {
         ev.trigger = EventTrigger::MEM_WRITE;
         std::string addr_val = trigger_str.substr(4);
         auto colon = addr_val.find(':');
         if (colon != std::string::npos) {
-          ev.address = static_cast<uint16_t>(std::stoul(addr_val.substr(0, colon), nullptr, 0));
-          ev.value = static_cast<uint8_t>(std::stoul(addr_val.substr(colon + 1), nullptr, 0));
+          ev.address = static_cast<uint16_t>(parse_number(addr_val.substr(0, colon)));
+          ev.value = static_cast<uint8_t>(parse_number(addr_val.substr(colon + 1)));
           ev.match_value = true;
         } else {
-          ev.address = static_cast<uint16_t>(std::stoul(addr_val, nullptr, 0));
+          ev.address = static_cast<uint16_t>(parse_number(addr_val));
           ev.match_value = false;
         }
       } else if (trigger_str.rfind("vbl=", 0) == 0) {
         ev.trigger = EventTrigger::VBL;
-        ev.vbl_interval = std::stoi(trigger_str.substr(4));
+        ev.vbl_interval = parse_int(trigger_str.substr(4));
         ev.vbl_counter = ev.vbl_interval;
       } else {
         return "ERR 400 bad-trigger (pc=ADDR|mem=ADDR[:VAL]|vbl=N)\n";
@@ -1913,22 +1991,22 @@ std::string handle_command(const std::string& line) {
 
       if (trigger_str.rfind("pc=", 0) == 0) {
         ev.trigger = EventTrigger::PC;
-        ev.address = static_cast<uint16_t>(std::stoul(trigger_str.substr(3), nullptr, 0));
+        ev.address = static_cast<uint16_t>(parse_number(trigger_str.substr(3)));
       } else if (trigger_str.rfind("mem=", 0) == 0) {
         ev.trigger = EventTrigger::MEM_WRITE;
         std::string addr_val = trigger_str.substr(4);
         auto colon = addr_val.find(':');
         if (colon != std::string::npos) {
-          ev.address = static_cast<uint16_t>(std::stoul(addr_val.substr(0, colon), nullptr, 0));
-          ev.value = static_cast<uint8_t>(std::stoul(addr_val.substr(colon + 1), nullptr, 0));
+          ev.address = static_cast<uint16_t>(parse_number(addr_val.substr(0, colon)));
+          ev.value = static_cast<uint8_t>(parse_number(addr_val.substr(colon + 1)));
           ev.match_value = true;
         } else {
-          ev.address = static_cast<uint16_t>(std::stoul(addr_val, nullptr, 0));
+          ev.address = static_cast<uint16_t>(parse_number(addr_val));
           ev.match_value = false;
         }
       } else if (trigger_str.rfind("vbl=", 0) == 0) {
         ev.trigger = EventTrigger::VBL;
-        ev.vbl_interval = std::stoi(trigger_str.substr(4));
+        ev.vbl_interval = parse_int(trigger_str.substr(4));
         ev.vbl_counter = ev.vbl_interval;
       } else {
         return "ERR 400 bad-trigger (pc=ADDR|mem=ADDR[:VAL]|vbl=N)\n";
@@ -1941,7 +2019,7 @@ std::string handle_command(const std::string& line) {
       return std::string(buf);
     }
     if (parts[1] == "off" && parts.size() >= 3) {
-      int id = std::stoi(parts[2]);
+      int id = parse_int(parts[2]);
       if (g_ipc_instance->remove_event(id)) return "OK\n";
       return "ERR 404 event-not-found\n";
     }
@@ -1994,7 +2072,7 @@ std::string handle_command(const std::string& line) {
   // --- Watchpoint commands ---
   if (cmd == "wp" && parts.size() >= 2) {
     if (parts[1] == "add" && parts.size() >= 3) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       word len = 1;
       WatchpointType wtype = READWRITE;
       std::string cond_str;
@@ -2010,7 +2088,7 @@ std::string handle_command(const std::string& line) {
         }
         if (kwl == "pass" && pi + 1 < parts.size()) {
           in_expr = false;
-          pass_count = std::stoi(parts[pi + 1]);
+          pass_count = parse_int(parts[pi + 1]);
           pi++;
           continue;
         }
@@ -2025,7 +2103,7 @@ std::string handle_command(const std::string& line) {
         else {
           // Try as length
           try {
-            unsigned int v = std::stoul(kw, nullptr, 0);
+            unsigned int v = parse_number(kw);
             len = static_cast<word>(v);
           } catch (const std::exception&) {}
         }
@@ -2039,16 +2117,16 @@ std::string handle_command(const std::string& line) {
       } else {
         z80_add_watchpoint(static_cast<word>(addr), len, wtype);
       }
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "del" && parts.size() >= 3) {
-      int idx = std::stoi(parts[2]);
+      int idx = parse_int(parts[2]);
       z80_del_watchpoint(idx);
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "clear") {
       z80_clear_watchpoints();
-      return "OK\n";
+      return ok_with_context();
     }
     if (parts[1] == "list") {
       const auto& wps = z80_list_watchpoints_ref();
@@ -2091,7 +2169,7 @@ std::string handle_command(const std::string& line) {
       return std::string(buf);
     }
     if (parts[1] == "add" && parts.size() >= 4) {
-      unsigned int addr = std::stoul(parts[2], nullptr, 0);
+      unsigned int addr = parse_number(parts[2]);
       g_symfile.addSymbol(static_cast<word>(addr), parts[3]);
       return "OK\n";
     }
@@ -2115,7 +2193,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "lookup" && parts.size() >= 3) {
       // Try as address first
       try {
-        unsigned int addr = std::stoul(parts[2], nullptr, 0);
+        unsigned int addr = parse_number(parts[2]);
         std::string name = g_symfile.lookupAddr(static_cast<word>(addr));
         if (!name.empty()) {
           return "OK " + name + "\n";
@@ -2135,8 +2213,8 @@ std::string handle_command(const std::string& line) {
 
   // --- Memory search ---
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "find") {
-    unsigned int start = std::stoul(parts[3], nullptr, 0);
-    unsigned int end = std::stoul(parts[4], nullptr, 0);
+    unsigned int start = parse_number(parts[3]);
+    unsigned int end = parse_number(parts[4]);
     if (end > 0xFFFF) end = 0xFFFF;
 
     if (parts[2] == "hex" && parts.size() >= 6) {
@@ -2251,7 +2329,7 @@ std::string handle_command(const std::string& line) {
   // --- Stack command ---
   if (cmd == "stack") {
     int depth = 16;
-    if (parts.size() >= 2) depth = std::stoi(parts[1]);
+    if (parts.size() >= 2) depth = parse_int(parts[1]);
     if (depth < 1) depth = 1;
     if (depth > 128) depth = 128;
     word sp = z80.SP.w.l;
@@ -2496,8 +2574,8 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 usage: disk sector read <drive> <track> <side> <sector_id>\n";
         t_drive* drv = sec_resolve_drive(parts[3]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        unsigned int trk = static_cast<unsigned int>(std::stoul(parts[4]));
-        unsigned int side = static_cast<unsigned int>(std::stoul(parts[5]));
+        unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
+        unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
         uint8_t sector_id = static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
         std::string err;
         auto data = disk_sector_read(drv, trk, side, sector_id, err);
@@ -2518,8 +2596,8 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 usage: disk sector write <drive> <track> <side> <sector_id> <hex_data>\n";
         t_drive* drv = sec_resolve_drive(parts[3]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        unsigned int trk = static_cast<unsigned int>(std::stoul(parts[4]));
-        unsigned int side = static_cast<unsigned int>(std::stoul(parts[5]));
+        unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
+        unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
         uint8_t sector_id = static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
         // Parse hex data: remaining parts are space-separated hex bytes
         std::vector<uint8_t> data;
@@ -2542,8 +2620,8 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 usage: disk sector info <drive> <track> <side>\n";
         t_drive* drv = sec_resolve_drive(parts[3]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        unsigned int trk = static_cast<unsigned int>(std::stoul(parts[4]));
-        unsigned int side = static_cast<unsigned int>(std::stoul(parts[5]));
+        unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
+        unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
         std::string err;
         auto sectors = disk_sector_info(drv, trk, side, err);
         if (!err.empty()) return "ERR " + err + "\n";
@@ -2622,7 +2700,7 @@ std::string handle_command(const std::string& line) {
         if (parts.size() < 4) return "ERR 400 missing-path\n";
         int quality = 85;
         if (parts.size() >= 5) {
-          try { quality = std::stoi(parts[4]); } catch (const std::exception&) {}
+          try { quality = parse_int(parts[4]); } catch (const std::exception&) {}
         }
         uint32_t rate = SAMPLE_RATES[CPC.snd_playback_rate];
         uint16_t bits = CPC.snd_bits ? 16 : 8;
@@ -2689,7 +2767,7 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "apply" && parts.size() >= 3) {
       size_t game_idx;
       try {
-        game_idx = static_cast<size_t>(std::stoul(parts[2]));
+        game_idx = static_cast<size_t>(parse_number(parts[2]));
       } catch (const std::invalid_argument&) {
         return "ERR 400 invalid game index\n";
       } catch (const std::out_of_range&) {
@@ -2707,7 +2785,7 @@ std::string handle_command(const std::string& line) {
       if (parts.size() >= 4) {
         size_t poke_idx;
         try {
-          poke_idx = static_cast<size_t>(std::stoul(parts[3]));
+          poke_idx = static_cast<size_t>(parse_number(parts[3]));
         } catch (const std::invalid_argument&) {
           return "ERR 400 invalid poke index\n";
         } catch (const std::out_of_range&) {
@@ -2724,8 +2802,8 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "unapply" && parts.size() >= 4) {
       size_t game_idx, poke_idx;
       try {
-        game_idx = static_cast<size_t>(std::stoul(parts[2]));
-        poke_idx = static_cast<size_t>(std::stoul(parts[3]));
+        game_idx = static_cast<size_t>(parse_number(parts[2]));
+        poke_idx = static_cast<size_t>(parse_number(parts[3]));
       } catch (const std::invalid_argument&) {
         return "ERR 400 invalid index\n";
       } catch (const std::out_of_range&) {
@@ -2740,8 +2818,8 @@ std::string handle_command(const std::string& line) {
       unsigned int addr;
       unsigned int val;
       try {
-        addr = std::stoul(parts[2], nullptr, 16);
-        val = std::stoul(parts[3]);
+        addr = parse_number(parts[2]);
+        val = parse_number(parts[3]);
       } catch (const std::invalid_argument&) {
         return "ERR 400 bad-args (poke write <hex_addr> <value>)\n";
       } catch (const std::out_of_range&) {
@@ -2836,13 +2914,13 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "set" && parts.size() >= 4) {
       if (parts[2] == "crtc_type") {
-        int t = std::stoi(parts[3]);
+        int t = parse_int(parts[3]);
         if (t < 0 || t > 3) return "ERR 400 crtc_type must be 0-3\n";
         CRTC.crtc_type = static_cast<unsigned char>(t);
         return "OK\n";
       }
       if (parts[2] == "ram_size") {
-        int sz = std::stoi(parts[3]);
+        int sz = parse_int(parts[3]);
         if (!is_valid_ram_size(static_cast<unsigned int>(sz))) {
           return "ERR 400 invalid ram_size\n";
         }
@@ -2851,7 +2929,7 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[2] == "silicon_disc") {
         int v;
-        try { v = std::stoi(parts[3]); } catch (const std::exception&) {
+        try { v = parse_int(parts[3]); } catch (const std::exception&) {
           return "ERR 400 bad-value\n";
         }
         g_silicon_disc.enabled = (v != 0);
@@ -2863,7 +2941,7 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[2] == "m4board") {
         int v;
-        try { v = std::stoi(parts[3]); } catch (const std::exception&) {
+        try { v = parse_int(parts[3]); } catch (const std::exception&) {
           return "ERR 400 bad-value\n";
         }
         g_m4board.enabled = (v != 0);
@@ -3023,7 +3101,7 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "load" && parts.size() >= 4) {
       int slot = -1;
-      try { slot = std::stoi(parts[2]); } catch (const std::exception&) {}
+      try { slot = parse_int(parts[2]); } catch (const std::exception&) {}
       if (slot < 0 || slot >= MAX_ROM_SLOTS) return "ERR 400 slot must be 0-31\n";
       std::string path;
       for (size_t pi = 3; pi < parts.size(); pi++) {
@@ -3092,7 +3170,7 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "unload" && parts.size() >= 3) {
       int slot = -1;
-      try { slot = std::stoi(parts[2]); } catch (const std::exception&) {}
+      try { slot = parse_int(parts[2]); } catch (const std::exception&) {}
       if (slot < 0 || slot >= MAX_ROM_SLOTS) return "ERR 400 slot must be 0-31\n";
       if (slot < 2) return "ERR 400 cannot-unload-system-rom\n";
       if (memmap_ROM[slot] != nullptr) {
@@ -3111,7 +3189,7 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "info" && parts.size() >= 3) {
       int slot = -1;
-      try { slot = std::stoi(parts[2]); } catch (const std::exception&) {}
+      try { slot = parse_int(parts[2]); } catch (const std::exception&) {}
       if (slot < 0 || slot >= MAX_ROM_SLOTS) return "ERR 400 slot must be 0-31\n";
       if (memmap_ROM[slot] == nullptr) {
         return "OK slot=" + std::to_string(slot) + " loaded=false\n";
@@ -3129,8 +3207,8 @@ std::string handle_command(const std::string& line) {
 
   if (cmd == "data" && parts.size() >= 2) {
     if (parts[1] == "mark" && parts.size() >= 5) {
-      unsigned int start = std::stoul(parts[2], nullptr, 0);
-      unsigned int end = std::stoul(parts[3], nullptr, 0);
+      unsigned int start = parse_number(parts[2]);
+      unsigned int end = parse_number(parts[3]);
       if (start > 0xFFFF || end > 0xFFFF || start > end)
         return "ERR 400 bad-range\n";
       DataType dtype;
@@ -3153,7 +3231,7 @@ std::string handle_command(const std::string& line) {
       if (parts[2] == "all") {
         g_data_areas.clear_all();
       } else {
-        unsigned int start = std::stoul(parts[2], nullptr, 0);
+        unsigned int start = parse_number(parts[2]);
         g_data_areas.clear(static_cast<uint16_t>(start));
       }
       return "OK\n";
@@ -3183,10 +3261,10 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "view" && parts.size() >= 6) {
       // gfx view <addr> <width_bytes> <height> <mode> [path]
       try {
-        unsigned int addr = std::stoul(parts[2], nullptr, 0);
-        int w = std::stoi(parts[3]);
-        int h = std::stoi(parts[4]);
-        int mode = std::stoi(parts[5]);
+        unsigned int addr = parse_number(parts[2]);
+        int w = parse_int(parts[3]);
+        int h = parse_int(parts[4]);
+        int mode = parse_int(parts[5]);
         if (mode < 0 || mode > 2) return "ERR 400 mode must be 0-2\n";
         if (w <= 0 || w > 256) return "ERR 400 width must be 1-256 bytes\n";
         if (h <= 0 || h > 256) return "ERR 400 height must be 1-256 rows\n";
@@ -3227,7 +3305,7 @@ std::string handle_command(const std::string& line) {
       // gfx decode <byte_hex> <mode> — decode a single byte
       try {
         unsigned int byte_val = std::stoul(parts[2], nullptr, 16);
-        int mode = std::stoi(parts[3]);
+        int mode = parse_int(parts[3]);
         uint8_t indices[8];
         int count = gfx_decode_byte(static_cast<uint8_t>(byte_val), mode, indices);
         if (count == 0) return "ERR 400 invalid mode\n";
@@ -3248,13 +3326,13 @@ std::string handle_command(const std::string& line) {
       // We need 9 parts total for the paint command
       if (parts.size() < 9) return "ERR 400 usage: gfx paint <addr> <w> <h> <mode> <x> <y> <color>\n";
       try {
-        unsigned int addr = std::stoul(parts[2], nullptr, 0);
-        int w = std::stoi(parts[3]);
-        int h = std::stoi(parts[4]);
-        int mode = std::stoi(parts[5]);
-        int x = std::stoi(parts[6]);
-        int y = std::stoi(parts[7]);
-        int color = std::stoi(parts[8]);
+        unsigned int addr = parse_number(parts[2]);
+        int w = parse_int(parts[3]);
+        int h = parse_int(parts[4]);
+        int mode = parse_int(parts[5]);
+        int x = parse_int(parts[6]);
+        int y = parse_int(parts[7]);
+        int color = parse_int(parts[8]);
 
         GfxViewParams params;
         params.address = static_cast<uint16_t>(addr & 0xFFFF);
@@ -3775,15 +3853,48 @@ void KoncepcjaIpcServer::run() {
     SOCKET client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
     if (client_fd == INVALID_SOCKET) continue;
 
+    // Persistent connection: read lines until client disconnects, sends "disconnect", or idle timeout.
     std::string buffer;
     char buf[1024];
-    int n = recv(client_fd, buf, sizeof(buf) - 1, 0);
-    if (n > 0) {
+    bool client_quit = false;
+    while (running.load() && !client_quit) {
+      fd_set cfds;
+      FD_ZERO(&cfds);
+      FD_SET(client_fd, &cfds);
+      timeval ctv{60, 0}; // 60s idle timeout
+
+      int cready = select(0, &cfds, nullptr, nullptr, &ctv);
+      if (cready <= 0) break; // timeout or error
+
+      int n = recv(client_fd, buf, sizeof(buf) - 1, 0);
+      if (n <= 0) break; // client disconnected or error
       buf[n] = 0;
       buffer.append(buf);
-      auto lines = split_lines(buffer);
-      for (const auto& line : lines) {
-        auto reply = handle_command(line);
+
+      // Extract and dispatch complete lines
+      size_t pos;
+      while ((pos = buffer.find('\n')) != std::string::npos) {
+        std::string raw_line = buffer.substr(0, pos);
+        buffer.erase(0, pos + 1);
+        if (!raw_line.empty() && raw_line.back() == '\r') raw_line.pop_back();
+
+        // Split on semicolons for command chaining
+        auto cmds = split_semicolons(raw_line);
+        for (const auto& cmd : cmds) {
+          if (cmd == "disconnect") { client_quit = true; break; }
+          auto reply = handle_command(cmd);
+          send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
+        }
+        if (client_quit) break;
+      }
+    }
+    // Dispatch any trailing data without newline (for single-shot clients like echo|nc)
+    if (!client_quit && !buffer.empty()) {
+      if (!buffer.empty() && buffer.back() == '\r') buffer.pop_back();
+      auto cmds = split_semicolons(buffer);
+      for (const auto& cmd : cmds) {
+        if (cmd == "disconnect") break;
+        auto reply = handle_command(cmd);
         send(client_fd, reply.c_str(), static_cast<int>(reply.size()), 0);
       }
     }
@@ -3843,15 +3954,48 @@ void KoncepcjaIpcServer::run() {
     int client_fd = accept(server_fd, reinterpret_cast<sockaddr*>(&client), &len);
     if (client_fd < 0) continue;
 
+    // Persistent connection: read lines until client disconnects, sends "disconnect", or idle timeout.
     std::string buffer;
     char buf[1024];
-    ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
-    if (n > 0) {
+    bool client_quit = false;
+    while (running.load() && !client_quit) {
+      fd_set cfds;
+      FD_ZERO(&cfds);
+      FD_SET(client_fd, &cfds);
+      timeval ctv{60, 0}; // 60s idle timeout
+
+      int cready = select(client_fd + 1, &cfds, nullptr, nullptr, &ctv);
+      if (cready <= 0) break; // timeout or error
+
+      ssize_t n = read(client_fd, buf, sizeof(buf) - 1);
+      if (n <= 0) break; // client disconnected or error
       buf[n] = 0;
       buffer.append(buf);
-      auto lines = split_lines(buffer);
-      for (const auto& line : lines) {
-        auto reply = handle_command(line);
+
+      // Extract and dispatch complete lines
+      size_t pos;
+      while ((pos = buffer.find('\n')) != std::string::npos) {
+        std::string raw_line = buffer.substr(0, pos);
+        buffer.erase(0, pos + 1);
+        if (!raw_line.empty() && raw_line.back() == '\r') raw_line.pop_back();
+
+        // Split on semicolons for command chaining
+        auto cmds = split_semicolons(raw_line);
+        for (const auto& cmd : cmds) {
+          if (cmd == "disconnect") { client_quit = true; break; }
+          auto reply = handle_command(cmd);
+          (void)write(client_fd, reply.c_str(), reply.size());
+        }
+        if (client_quit) break;
+      }
+    }
+    // Dispatch any trailing data without newline (for single-shot clients like echo|nc)
+    if (!client_quit && !buffer.empty()) {
+      if (!buffer.empty() && buffer.back() == '\r') buffer.pop_back();
+      auto cmds = split_semicolons(buffer);
+      for (const auto& cmd : cmds) {
+        if (cmd == "disconnect") break;
+        auto reply = handle_command(cmd);
         (void)write(client_fd, reply.c_str(), reply.size());
       }
     }

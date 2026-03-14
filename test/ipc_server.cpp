@@ -34,6 +34,17 @@ namespace {
 
 constexpr size_t kBankSize = 16 * 1024;
 
+// Debug-surface commands now return "OK [context]\n" instead of bare "OK\n".
+// This helper checks that a response starts with "OK " or is exactly "OK\n".
+#define EXPECT_OK(resp) \
+  EXPECT_TRUE((resp).substr(0, 3) == "OK " || (resp) == "OK\n") \
+    << "Expected OK response, got: " << (resp)
+
+// Check that a response starts with "ERR 408" (timeout with context trailer).
+#define EXPECT_TIMEOUT(resp) \
+  EXPECT_TRUE((resp).find("ERR 408") == 0) \
+    << "Expected ERR 408 timeout, got: " << (resp)
+
 // Forward-declare the server so send_command can query its actual port
 static KoncepcjaIpcServer* g_test_server = nullptr;
 
@@ -76,9 +87,13 @@ std::string send_command(const std::string& command) {
 #ifdef _WIN32
   int written = send(fd, line.data(), static_cast<int>(line.size()), 0);
   EXPECT_EQ(written, static_cast<int>(line.size()));
+  // Half-close: signal no more data so the persistent server closes its end
+  shutdown(fd, SD_SEND);
 #else
   ssize_t written = ::write(fd, line.data(), line.size());
   EXPECT_EQ(written, static_cast<ssize_t>(line.size()));
+  // Half-close: signal no more data so the persistent server closes its end
+  shutdown(fd, SHUT_WR);
 #endif
 
   std::string response;
@@ -142,11 +157,11 @@ byte IpcServerTest::memory[4][kBankSize];
 
 TEST_F(IpcServerTest, RegSetUpdatesRegisters) {
   auto resp = send_command("reg set A 0x42");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
   EXPECT_EQ(z80.AF.b.h, 0x42);
 
   resp = send_command("reg set PC 0x1234");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
   EXPECT_EQ(z80.PC.w.l, 0x1234);
 }
 
@@ -163,25 +178,25 @@ TEST_F(IpcServerTest, RegGetReturnsValues) {
 
 TEST_F(IpcServerTest, BreakpointListAddDelClear) {
   auto resp = send_command("bp clear");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("bp add 0x1234");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("bp add 0x4000");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("bp list");
   EXPECT_EQ(resp, "OK count=2 1234 4000\n");
 
   resp = send_command("bp del 0x1234");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("bp list");
   EXPECT_EQ(resp, "OK count=1 4000\n");
 
   resp = send_command("bp clear");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("bp list");
   EXPECT_EQ(resp, "OK count=0\n");
@@ -190,18 +205,18 @@ TEST_F(IpcServerTest, BreakpointListAddDelClear) {
 TEST_F(IpcServerTest, WaitPcReturnsImmediatelyWhenMatched) {
   z80.PC.w.l = 0x2000;
   auto resp = send_command("wait pc 0x2000 50");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 }
 
 TEST_F(IpcServerTest, WaitMemHonorsMask) {
   z80_write_mem(0x1000, 0xA5);
   auto resp = send_command("wait mem 0x1000 0xA0 mask=0xF0 50");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 }
 
 TEST_F(IpcServerTest, WaitVblCompletes) {
   auto resp = send_command("wait vbl 1 100");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 }
 
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
@@ -213,13 +228,13 @@ TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
 
 TEST_F(IpcServerTest, WatchpointAddListDelClear) {
   auto resp = send_command("wp clear");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp add 0x4000 256 w");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp add 0xC000 1 rw");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp list");
   EXPECT_TRUE(resp.find("count=2") != std::string::npos);
@@ -227,13 +242,13 @@ TEST_F(IpcServerTest, WatchpointAddListDelClear) {
   EXPECT_TRUE(resp.find("C000+1/rw") != std::string::npos);
 
   resp = send_command("wp del 0");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp list");
   EXPECT_TRUE(resp.find("count=1") != std::string::npos);
 
   resp = send_command("wp clear");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp list");
   EXPECT_TRUE(resp.find("count=0") != std::string::npos);
@@ -241,7 +256,7 @@ TEST_F(IpcServerTest, WatchpointAddListDelClear) {
 
 TEST_F(IpcServerTest, WatchpointConditional) {
   auto resp = send_command("wp add 0x4000 1 w if value > 128");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp list");
   EXPECT_TRUE(resp.find("if value > 128") != std::string::npos);
@@ -251,7 +266,7 @@ TEST_F(IpcServerTest, WatchpointConditional) {
 
 TEST_F(IpcServerTest, SymbolAddLookupDel) {
   auto resp = send_command("sym add 0x0038 interrupt_handler");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("sym lookup 0x0038");
   EXPECT_EQ(resp, "OK interrupt_handler\n");
@@ -264,7 +279,7 @@ TEST_F(IpcServerTest, SymbolAddLookupDel) {
   EXPECT_TRUE(resp.find("0038 interrupt_handler") != std::string::npos);
 
   resp = send_command("sym del interrupt_handler");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("sym lookup interrupt_handler");
   EXPECT_EQ(resp, "ERR 404 not-found\n");
@@ -312,7 +327,7 @@ TEST_F(IpcServerTest, StepOverDoesNotDescendIntoCall) {
   // Write NOP (0x00) at address 0
   z80_write_mem(0x0000, 0x00);
   auto resp = send_command("step over");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 }
 
 TEST_F(IpcServerTest, StepToCommand) {
@@ -333,7 +348,7 @@ TEST_F(IpcServerTest, WatchpointRange) {
 
   // Add a range watchpoint covering 16 bytes
   auto resp = send_command("wp add 0x4000 16 rw");
-  EXPECT_EQ(resp, "OK\n");
+  EXPECT_OK(resp);
 
   resp = send_command("wp list");
   EXPECT_TRUE(resp.find("count=1") != std::string::npos);
