@@ -101,6 +101,12 @@ private:
     std::vector<uint8_t> dt_sector_data_;
     std::string dt_sector_read_error_;
 
+    // Memory Hex search
+    char memhex_search_[64] = "";
+    bool memhex_search_hex_ = true; // true=hex bytes, false=ASCII
+    std::vector<word> memhex_matches_;
+    int memhex_match_idx_ = -1;
+
     // Memory Hex inline editing
     int memhex_edit_addr_ = -1;     // Address being edited (-1 = none)
     char memhex_edit_buf_[3] = "";  // 2 hex chars + null

@@ -573,8 +573,78 @@ void DevToolsUI::render_memory_hex()
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Right-click for navigation options.");
+      ImGui::SetTooltip("Right-click for navigation options.\nDouble-click a byte to edit.");
     ImGui::EndMenuBar();
+  }
+
+  // ── Search bar ──
+  {
+    ImGui::SetNextItemWidth(120);
+    bool do_search = ImGui::InputText("Find##mh", memhex_search_, sizeof(memhex_search_),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ImGui::SmallButton(memhex_search_hex_ ? "Hex" : "ASCII")) {
+      memhex_search_hex_ = !memhex_search_hex_;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Toggle Hex/ASCII search mode");
+    ImGui::SameLine();
+    do_search |= ImGui::SmallButton("Go##mhsearch");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("<##mhprev") && !memhex_matches_.empty()) {
+      memhex_match_idx_ = (memhex_match_idx_ - 1 + static_cast<int>(memhex_matches_.size())) %
+                           static_cast<int>(memhex_matches_.size());
+      memhex_goto_value_ = memhex_matches_[memhex_match_idx_];
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(">##mhnext") && !memhex_matches_.empty()) {
+      memhex_match_idx_ = (memhex_match_idx_ + 1) % static_cast<int>(memhex_matches_.size());
+      memhex_goto_value_ = memhex_matches_[memhex_match_idx_];
+    }
+    if (!memhex_matches_.empty()) {
+      ImGui::SameLine();
+      ImGui::Text("%d/%d", memhex_match_idx_ + 1, static_cast<int>(memhex_matches_.size()));
+    }
+
+    if (do_search && memhex_search_[0]) {
+      // Parse search pattern
+      std::vector<byte> pattern;
+      if (memhex_search_hex_) {
+        // Parse space-separated hex bytes: "C3 00 40"
+        const char* p = memhex_search_;
+        while (*p) {
+          while (*p == ' ') p++;
+          if (!*p) break;
+          char* end;
+          unsigned long v = strtoul(p, &end, 16);
+          if (end == p) break;
+          pattern.push_back(static_cast<byte>(v & 0xFF));
+          p = end;
+        }
+      } else {
+        // ASCII: use raw bytes
+        for (const char* p = memhex_search_; *p; p++)
+          pattern.push_back(static_cast<byte>(*p));
+      }
+      // Linear scan
+      memhex_matches_.clear();
+      memhex_match_idx_ = -1;
+      if (!pattern.empty()) {
+        int plen = static_cast<int>(pattern.size());
+        for (int addr = 0; addr <= 0xFFFF - plen + 1; addr++) {
+          bool match = true;
+          for (int j = 0; j < plen; j++) {
+            byte m = z80_read_mem(static_cast<word>(addr + j));
+            if (m != pattern[j]) { match = false; break; }
+          }
+          if (match) memhex_matches_.push_back(static_cast<word>(addr));
+        }
+        if (!memhex_matches_.empty()) {
+          memhex_match_idx_ = 0;
+          memhex_goto_value_ = memhex_matches_[0];
+        }
+      }
+    }
   }
 
   int bytes_per_row = memhex_bytes_per_row_;
@@ -669,6 +739,33 @@ void DevToolsUI::render_memory_hex()
             ImGui::GetWindowDrawList()->AddRectFilled(
               rmin, rmax,
               ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.8f, 0.0f, 0.5f * alpha)));
+          }
+
+          // Search match highlighting (yellow background)
+          if (!memhex_matches_.empty() && memhex_search_[0]) {
+            int plen = 0;
+            if (memhex_search_hex_) {
+              for (const char* sp = memhex_search_; *sp; ) {
+                while (*sp == ' ') sp++;
+                if (!*sp) break;
+                char* se; strtoul(sp, &se, 16);
+                if (se == sp) break;
+                plen++; sp = se;
+              }
+            } else {
+              plen = static_cast<int>(strlen(memhex_search_));
+            }
+            for (word ma : memhex_matches_) {
+              if (a >= ma && a < ma + plen) {
+                ImVec2 rmin = ImGui::GetItemRectMin();
+                ImVec2 rmax = ImGui::GetItemRectMax();
+                bool is_current = (memhex_match_idx_ >= 0 &&
+                    memhex_matches_[memhex_match_idx_] == ma);
+                ImU32 hcol = is_current ? IM_COL32(255, 200, 0, 100) : IM_COL32(200, 200, 0, 60);
+                ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, hcol);
+                break;
+              }
+            }
           }
 
           if (colored) ImGui::PopStyleColor();
