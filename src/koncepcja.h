@@ -303,6 +303,13 @@ class t_CPC {
    std::string current_dsk_path;  // Last used disk path in the file dialog.
    std::string current_tape_path; // Last used tape path in the file dialog.
 
+   // Recent files (MRU) — persisted in config [file] section
+   static constexpr int MRU_MAX = 10;
+   std::vector<std::string> mru_disks;
+   std::vector<std::string> mru_tapes;
+   std::vector<std::string> mru_snaps;
+   std::vector<std::string> mru_carts;
+
    class InputMapper *InputMapper;
 };
 

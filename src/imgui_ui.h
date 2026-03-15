@@ -107,6 +107,9 @@ int imgui_topbar_height();
 
 // Toast notifications
 void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);
+
+// MRU (recent files) helper — pushes path to front, deduplicates, caps at MRU_MAX
+void imgui_mru_push(std::vector<std::string>& list, const std::string& path);
 void imgui_toast_info(const std::string& message);
 void imgui_toast_success(const std::string& message);
 void imgui_toast_error(const std::string& message);

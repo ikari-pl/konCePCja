@@ -387,3 +387,58 @@ TEST_F(FormatMemoryLineTest, NonPrintableAscii) {
   EXPECT_EQ('.', pipe[4]);  // third non-printable
   EXPECT_EQ(' ', pipe[5]);  // space is printable
 }
+
+// ─────────────────────────────────────────────────
+// MRU list tests
+// ─────────────────────────────────────────────────
+
+TEST(MruList, PushToEmpty) {
+  std::vector<std::string> list;
+  mru_list_push(list, "/path/a.dsk");
+  ASSERT_EQ(1u, list.size());
+  EXPECT_EQ("/path/a.dsk", list[0]);
+}
+
+TEST(MruList, PushMovesToFront) {
+  std::vector<std::string> list = {"/a", "/b", "/c"};
+  mru_list_push(list, "/b");
+  ASSERT_EQ(3u, list.size());
+  EXPECT_EQ("/b", list[0]);
+  EXPECT_EQ("/a", list[1]);
+  EXPECT_EQ("/c", list[2]);
+}
+
+TEST(MruList, PushDeduplicates) {
+  std::vector<std::string> list = {"/a", "/b", "/a"};
+  mru_list_push(list, "/a");
+  ASSERT_EQ(2u, list.size());
+  EXPECT_EQ("/a", list[0]);
+  EXPECT_EQ("/b", list[1]);
+}
+
+TEST(MruList, PushCapsAtMax) {
+  std::vector<std::string> list;
+  for (int i = 0; i < 12; i++) {
+    mru_list_push(list, "/path/" + std::to_string(i), 10);
+  }
+  EXPECT_EQ(10u, list.size());
+  EXPECT_EQ("/path/11", list[0]);  // most recent
+  EXPECT_EQ("/path/2", list[9]);   // oldest kept (0 and 1 were evicted)
+}
+
+TEST(MruList, PushSameTwiceNoGrowth) {
+  std::vector<std::string> list = {"/a"};
+  mru_list_push(list, "/a");
+  ASSERT_EQ(1u, list.size());
+  EXPECT_EQ("/a", list[0]);
+}
+
+TEST(MruList, PushNewToFullList) {
+  std::vector<std::string> list = {"/a", "/b", "/c"};
+  mru_list_push(list, "/d", 3);
+  ASSERT_EQ(3u, list.size());
+  EXPECT_EQ("/d", list[0]);
+  EXPECT_EQ("/a", list[1]);
+  EXPECT_EQ("/b", list[2]);
+  // "/c" was evicted
+}

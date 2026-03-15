@@ -5,6 +5,7 @@
 #include "command_palette.h"
 #include "menu_actions.h"
 #include "workspace_layout.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -66,6 +67,7 @@ static void imgui_render_memory_tool();
 static void imgui_render_vkeyboard();
 
 static void close_menu();
+static void mru_push(std::vector<std::string>& list, const std::string& path);
 
 // Height tracking for stacked menubar + topbar + devtools bar
 static float s_menubar_h = 19.0f; // ImGui main menu bar default height
@@ -105,9 +107,10 @@ static void process_pending_dialog()
     case FileDialogAction::LoadDiskA:
     case FileDialogAction::LoadDiskA_LED:
       CPC.driveA.file = path;
-      if (file_load(CPC.driveA) == 0)
+      if (file_load(CPC.driveA) == 0) {
         imgui_toast_success("Drive A: " + fname);
-      else
+        mru_push(CPC.mru_disks, path);
+      } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
       if (action == FileDialogAction::LoadDiskA) close_menu();
@@ -115,9 +118,10 @@ static void process_pending_dialog()
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
       CPC.driveB.file = path;
-      if (file_load(CPC.driveB) == 0)
+      if (file_load(CPC.driveB) == 0) {
         imgui_toast_success("Drive B: " + fname);
-      else
+        mru_push(CPC.mru_disks, path);
+      } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
       if (action == FileDialogAction::LoadDiskB) close_menu();
@@ -138,9 +142,10 @@ static void process_pending_dialog()
       break;
     case FileDialogAction::LoadSnapshot:
       CPC.snapshot.file = path;
-      if (file_load(CPC.snapshot) == 0)
+      if (file_load(CPC.snapshot) == 0) {
         imgui_toast_success("Snapshot loaded: " + fname);
-      else
+        mru_push(CPC.mru_snaps, path);
+      } else
         imgui_toast_error("Failed to load snapshot: " + fname);
       CPC.current_snap_path = dir;
       close_menu();
@@ -154,9 +159,10 @@ static void process_pending_dialog()
       break;
     case FileDialogAction::LoadTape:
       CPC.tape.file = path;
-      if (file_load(CPC.tape) == 0)
+      if (file_load(CPC.tape) == 0) {
         imgui_toast_success("Tape loaded: " + fname);
-      else
+        mru_push(CPC.mru_tapes, path);
+      } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
       tape_scan_blocks();
@@ -164,18 +170,20 @@ static void process_pending_dialog()
       break;
     case FileDialogAction::LoadTape_LED:
       CPC.tape.file = path;
-      if (file_load(CPC.tape) == 0)
+      if (file_load(CPC.tape) == 0) {
         imgui_toast_success("Tape loaded: " + fname);
-      else
+        mru_push(CPC.mru_tapes, path);
+      } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
       tape_scan_blocks();
       break;
     case FileDialogAction::LoadCartridge:
       CPC.cartridge.file = path;
-      if (file_load(CPC.cartridge) == 0)
+      if (file_load(CPC.cartridge) == 0) {
         imgui_toast_success("Cartridge loaded: " + fname);
-      else
+        mru_push(CPC.mru_carts, path);
+      } else
         imgui_toast_error("Failed to load cartridge: " + fname);
       CPC.current_cart_path = dir;
       emulator_reset();
@@ -501,6 +509,18 @@ void imgui_render_ui()
 }
 
 // ─────────────────────────────────────────────────
+// MRU (recent files) helper
+// ─────────────────────────────────────────────────
+
+static void mru_push(std::vector<std::string>& list, const std::string& path) {
+  mru_list_push(list, path, t_CPC::MRU_MAX);
+}
+
+void imgui_mru_push(std::vector<std::string>& list, const std::string& path) {
+  mru_push(list, path);
+}
+
+// ─────────────────────────────────────────────────
 // Toast notification API
 // ─────────────────────────────────────────────────
 
@@ -744,6 +764,61 @@ static void imgui_render_menubar()
         reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
         mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
     }
+
+    // ── Open Recent submenu ──
+    bool has_any_mru = !CPC.mru_disks.empty() || !CPC.mru_tapes.empty() ||
+                       !CPC.mru_snaps.empty() || !CPC.mru_carts.empty();
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Open Recent", has_any_mru)) {
+      auto render_mru_section = [&](const char* label, std::vector<std::string>& list,
+                                    auto load_fn) {
+        if (!list.empty() && ImGui::BeginMenu(label)) {
+          for (int i = 0; i < static_cast<int>(list.size()); i++) {
+            auto item_fname = std::filesystem::path(list[i]).filename().string();
+            ImGui::PushID(i);
+            if (ImGui::MenuItem(item_fname.c_str())) {
+              load_fn(list[i]);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", list[i].c_str());
+            ImGui::PopID();
+          }
+          ImGui::EndMenu();
+        }
+      };
+      render_mru_section("Disks", CPC.mru_disks, [](const std::string& p) {
+        CPC.driveA.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.driveA) == 0) imgui_toast_success("Drive A: " + f);
+        else imgui_toast_error("Failed: " + f);
+      });
+      render_mru_section("Tapes", CPC.mru_tapes, [](const std::string& p) {
+        CPC.tape.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.tape) == 0) imgui_toast_success("Tape: " + f);
+        else imgui_toast_error("Failed: " + f);
+      });
+      render_mru_section("Snapshots", CPC.mru_snaps, [](const std::string& p) {
+        CPC.snapshot.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.snapshot) == 0) imgui_toast_success("Snapshot: " + f);
+        else imgui_toast_error("Failed: " + f);
+      });
+      render_mru_section("Cartridges", CPC.mru_carts, [](const std::string& p) {
+        CPC.cartridge.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.cartridge) == 0) { imgui_toast_success("Cartridge: " + f); emulator_reset(); }
+        else imgui_toast_error("Failed: " + f);
+      });
+      ImGui::Separator();
+      if (ImGui::MenuItem("Clear Recent")) {
+        CPC.mru_disks.clear();
+        CPC.mru_tapes.clear();
+        CPC.mru_snaps.clear();
+        CPC.mru_carts.clear();
+      }
+      ImGui::EndMenu();
+    }
+
     ImGui::EndMenu();
   }
 
