@@ -2617,6 +2617,21 @@ static void imgui_render_vkeyboard()
   float x0 = ImGui::GetCursorPosX();
   float y0 = ImGui::GetCursorPosY();
 
+  // Helper: check if a CPC key is currently pressed in the keyboard matrix
+  auto cpc_key_down = [](byte cpc_key) -> bool {
+    extern byte keyboard_matrix[];
+    extern byte bit_values[];
+    return !(keyboard_matrix[cpc_key >> 4] & bit_values[cpc_key & 7]);
+  };
+  // Helper: draw blue overlay on last ImGui item if CPC key is pressed
+  auto highlight_if_pressed = [&](byte cpc_key) {
+    if (cpc_key_down(cpc_key)) {
+      ImVec2 rmin = ImGui::GetItemRectMin();
+      ImVec2 rmax = ImGui::GetItemRectMax();
+      ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, IM_COL32(50, 120, 220, 100), 3.0f);
+    }
+  };
+
   // Width multipliers for special keys
   const float W_TAB    = 1.3f;
   const float W_CAPS   = 1.4f;
@@ -2632,164 +2647,121 @@ static void imgui_render_vkeyboard()
   // Numpad starts after a gap from main keyboard right edge
   float np_x = main_end_x + S * 4;
 
-  // Helper for function keys
+  // ── Key dispatch: render Button, emit keypress, highlight if held ──
+  // vk() renders a single CPC key button with pressed-key overlay.
   char fkey_emit[2] = { '\a', 0 };
+  auto vk = [&](const char* label, float w, const char* es, byte cpc_key) {
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(es);
+    highlight_if_pressed(cpc_key);
+    ImGui::SameLine(0, S);
+  };
+  // vk_end() — same but no SameLine (end of row)
+  auto vk_end = [&](const char* label, float w, const char* es, byte cpc_key) {
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(es);
+    highlight_if_pressed(cpc_key);
+  };
+  // vk_fkey() — function key (emit via \a prefix)
+  auto vk_fkey = [&](const char* label, float w, byte cpc_key, bool end = false) {
+    fkey_emit[1] = static_cast<char>(cpc_key);
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(fkey_emit);
+    highlight_if_pressed(cpc_key);
+    if (!end) ImGui::SameLine(0, S);
+  };
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 0: ESC 1 2 3 4 5 6 7 8 9 0 - ^ CLR DEL | F7 F8 F9
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 0 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0));
-  if (ImGui::Button("ESC", ImVec2(K, H))) { emit_key("\a\xbb"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("!\n1", ImVec2(K, H))) { emit_key("1"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\"\n2", ImVec2(K, H))) { emit_key("2"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("#\n3", ImVec2(K, H))) { emit_key("3"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("$\n4", ImVec2(K, H))) { emit_key("4"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("%\n5", ImVec2(K, H))) { emit_key("5"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("&\n6", ImVec2(K, H))) { emit_key("6"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("'\n7", ImVec2(K, H))) { emit_key("7"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("(\n8", ImVec2(K, H))) { emit_key("8"); } ImGui::SameLine(0, S);
-  if (ImGui::Button(")\n9", ImVec2(K, H))) { emit_key("9"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("_\n0", ImVec2(K, H))) { emit_key("0"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("=\n-", ImVec2(K, H))) { emit_key("-"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xc2\xa3\n^", ImVec2(K, H))) { emit_key("^"); } ImGui::SameLine(0, S);  // £ over ^
-  if (ImGui::Button("CLR", ImVec2(K, H))) { emit_key("\a\xa5"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("DEL", ImVec2(K, H))) emit_key("\b");
-
-  // Numpad row 0: F7 F8 F9
+  vk("ESC", K, "\a\xbb", CPC_ESC);
+  vk("!\n1", K, "1", CPC_1);      vk("\"\n2", K, "2", CPC_2);
+  vk("#\n3", K, "3", CPC_3);      vk("$\n4", K, "4", CPC_4);
+  vk("%\n5", K, "5", CPC_5);      vk("&\n6", K, "6", CPC_6);
+  vk("'\n7", K, "7", CPC_7);      vk("(\n8", K, "8", CPC_8);
+  vk(")\n9", K, "9", CPC_9);      vk("_\n0", K, "0", CPC_0);
+  vk("=\n-", K, "-", CPC_MINUS);  vk("\xc2\xa3\n^", K, "^", CPC_POWER);
+  vk("CLR", K, "\a\xa5", CPC_CLR);
+  vk_end("DEL", K, "\b", CPC_DEL);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0));
-  fkey_emit[1] = static_cast<char>(CPC_F7);
-  if (ImGui::Button("F7", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F8);
-  if (ImGui::Button("F8", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F9);
-  if (ImGui::Button("F9", ImVec2(K, H))) emit_key(fkey_emit);
+  vk_fkey("F7", K, CPC_F7);  vk_fkey("F8", K, CPC_F8);  vk_fkey("F9", K, CPC_F9, true);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 1: TAB Q W E R T Y U I O P |/@ {/[  | F4 F5 F6
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 1 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW));
-  if (ImGui::Button("TAB", ImVec2(K*W_TAB, H))) { emit_key("\t"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("Q", ImVec2(K, H))) { emit_key("q"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("W", ImVec2(K, H))) { emit_key("w"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("E", ImVec2(K, H))) { emit_key("e"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("R", ImVec2(K, H))) { emit_key("r"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("T", ImVec2(K, H))) { emit_key("t"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("Y", ImVec2(K, H))) { emit_key("y"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("U", ImVec2(K, H))) { emit_key("u"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("I", ImVec2(K, H))) { emit_key("i"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("O", ImVec2(K, H))) { emit_key("o"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("P", ImVec2(K, H))) { emit_key("p"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("|\n@", ImVec2(K, H))) { emit_key("@"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("{\n[", ImVec2(K, H))) { emit_key("["); } ImGui::SameLine(0, S);
-  // RETURN upper part - at end of row 1
+  vk("TAB", K*W_TAB, "\t", CPC_TAB);
+  vk("Q", K, "q", CPC_Q);  vk("W", K, "w", CPC_W);  vk("E", K, "e", CPC_E);
+  vk("R", K, "r", CPC_R);  vk("T", K, "t", CPC_T);  vk("Y", K, "y", CPC_Y);
+  vk("U", K, "u", CPC_U);  vk("I", K, "i", CPC_I);  vk("O", K, "o", CPC_O);
+  vk("P", K, "p", CPC_P);
+  vk("|\n@", K, "@", CPC_AT);  vk("{\n[", K, "[", CPC_LBRACKET);
+  // RETURN upper part — fills to main_end_x
   float ret_x = ImGui::GetCursorPosX();
   float ret_w = main_end_x - ret_x;
-  if (ImGui::Button("RETURN##1", ImVec2(ret_w, H))) emit_key("\n");
-  // RETURN lower part - starts S after where ] ends in row 2
-  // Row 2: CAPS(1.4K) + 12 keys (A-L + ; : ]) with spacing = K*W_CAPS + S + 12*(K+S)
+  vk_end("RETURN##1", ret_w, "\n", CPC_RETURN);
+  // RETURN lower part (L-shape into row 2)
   float ret2_x = x0 + K*W_CAPS + S + 12*(K + S);
   float ret2_w = main_end_x - ret2_x;
   ImGui::SetCursorPos(ImVec2(ret2_x, y0 + ROW + H));
   if (ImGui::Button("##ret2", ImVec2(ret2_w, ROW))) emit_key("\n");
-
-  // Numpad row 1: F4 F5 F6
+  highlight_if_pressed(CPC_RETURN);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW));
-  fkey_emit[1] = static_cast<char>(CPC_F4);
-  if (ImGui::Button("F4", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F5);
-  if (ImGui::Button("F5", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F6);
-  if (ImGui::Button("F6", ImVec2(K, H))) emit_key(fkey_emit);
+  vk_fkey("F4", K, CPC_F4);  vk_fkey("F5", K, CPC_F5);  vk_fkey("F6", K, CPC_F6, true);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 2: CAPS A S D F G H J K L +/; */: }/] RETURN(wide) | F1 F2 F3
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 2 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 2));
   if (caps_on) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
   if (ImGui::Button("CAPS\nLOCK", ImVec2(K*W_CAPS, H))) emit_key("\x01" "CAPS");
   if (caps_on) ImGui::PopStyleColor();
-  ImGui::SameLine(0, S);
-  if (ImGui::Button("A", ImVec2(K, H))) { emit_key("a"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("S", ImVec2(K, H))) { emit_key("s"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("D", ImVec2(K, H))) { emit_key("d"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("F", ImVec2(K, H))) { emit_key("f"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("G", ImVec2(K, H))) { emit_key("g"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("H", ImVec2(K, H))) { emit_key("h"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("J", ImVec2(K, H))) { emit_key("j"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("K", ImVec2(K, H))) { emit_key("k"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("L", ImVec2(K, H))) { emit_key("l"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("+\n;", ImVec2(K, H))) { emit_key(";"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("*\n:", ImVec2(K, H))) { emit_key(":"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("}\n]", ImVec2(K, H))) emit_key("]");
-
-  // Numpad row 2: F1 F2 F3
+  highlight_if_pressed(CPC_CAPSLOCK); ImGui::SameLine(0, S);
+  vk("A", K, "a", CPC_A);  vk("S", K, "s", CPC_S);  vk("D", K, "d", CPC_D);
+  vk("F", K, "f", CPC_F);  vk("G", K, "g", CPC_G);  vk("H", K, "h", CPC_H);
+  vk("J", K, "j", CPC_J);  vk("K", K, "k", CPC_K);  vk("L", K, "l", CPC_L);
+  vk("+\n;", K, ";", CPC_SEMICOLON);  vk("*\n:", K, ":", CPC_COLON);
+  vk_end("}\n]", K, "]", CPC_RBRACKET);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 2));
-  fkey_emit[1] = static_cast<char>(CPC_F1);
-  if (ImGui::Button("F1", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F2);
-  if (ImGui::Button("F2", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F3);
-  if (ImGui::Button("F3", ImVec2(K, H))) emit_key(fkey_emit);
+  vk_fkey("F1", K, CPC_F1);  vk_fkey("F2", K, CPC_F2);  vk_fkey("F3", K, CPC_F3, true);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 3: SHIFT Z X C V B N M </,  >/. ?// `/\ SHIFT RETURN | F0 ↑ .
-  // RETURN lower part forms L-shape with row 2 RETURN
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 3 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 3));
-  bool shift_highlight = imgui_state.vkeyboard_shift_next;  // highlight both SHIFTs together
+  bool shift_highlight = imgui_state.vkeyboard_shift_next;
   if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
   if (ImGui::Button("SHIFT##L", ImVec2(K*W_LSHIFT, H))) emit_key("\x01" "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
-  ImGui::SameLine(0, S);
-  if (ImGui::Button("Z", ImVec2(K, H))) { emit_key("z"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("X", ImVec2(K, H))) { emit_key("x"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("C", ImVec2(K, H))) { emit_key("c"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("V", ImVec2(K, H))) { emit_key("v"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("B", ImVec2(K, H))) { emit_key("b"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("N", ImVec2(K, H))) { emit_key("n"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("M", ImVec2(K, H))) { emit_key("m"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("<\n,", ImVec2(K, H))) { emit_key(","); } ImGui::SameLine(0, S);
-  if (ImGui::Button(">\n.##main", ImVec2(K, H))) { emit_key("."); } ImGui::SameLine(0, S);
-  if (ImGui::Button("?\n/", ImVec2(K, H))) { emit_key("/"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("`\n\\", ImVec2(K, H))) { emit_key("\\"); } ImGui::SameLine(0, S);
-  // Right SHIFT - fills to main_end_x (naturally narrower due to wider left SHIFT)
+  highlight_if_pressed(CPC_LSHIFT); ImGui::SameLine(0, S);
+  vk("Z", K, "z", CPC_Z);  vk("X", K, "x", CPC_X);  vk("C", K, "c", CPC_C);
+  vk("V", K, "v", CPC_V);  vk("B", K, "b", CPC_B);  vk("N", K, "n", CPC_N);
+  vk("M", K, "m", CPC_M);
+  vk("<\n,", K, ",", CPC_COMMA);    vk(">\n.##main", K, ".", CPC_PERIOD);
+  vk("?\n/", K, "/", CPC_SLASH);    vk("`\n\\", K, "\\", CPC_BACKSLASH);
+  // Right SHIFT — fills to main_end_x
   float rshift_x = ImGui::GetCursorPosX();
   float rshift_w = main_end_x - rshift_x;
   if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
   if (ImGui::Button("SHIFT##R", ImVec2(rshift_w, H))) emit_key("\x01" "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
-
-  // Numpad row 3: F0 ↑ .
+  highlight_if_pressed(CPC_RSHIFT);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 3));
-  fkey_emit[1] = static_cast<char>(CPC_F0);
-  if (ImGui::Button("F0", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x91##up", ImVec2(K, H))) { emit_key("\a\xae"); } ImGui::SameLine(0, S);
-  if (ImGui::Button(".##np", ImVec2(K, H))) emit_key(".");
+  vk_fkey("F0", K, CPC_F0);
+  vk("\xe2\x86\x91##up", K, "\a\xae", CPC_CUR_UP);
+  vk_end(".##np", K, ".", CPC_FPERIOD);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 4: CTRL COPY ====SPACE==== ENTER | ← ↓ →
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 4 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 4));
   if (ctrl_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 1.0f));
   if (ImGui::Button("CTRL", ImVec2(K*W_CTRL, H))) emit_key("\x01" "CTRL");
   if (ctrl_on) ImGui::PopStyleColor();
-  ImGui::SameLine(0, S);
-  if (ImGui::Button("COPY", ImVec2(K*W_COPY, H))) emit_key("\a\xa9");
-  ImGui::SameLine(0, S);
-  // SPACE - fixed width, then ENTER fills to main_end_x
+  highlight_if_pressed(CPC_CONTROL); ImGui::SameLine(0, S);
+  vk("COPY", K*W_COPY, "\a\xa9", CPC_COPY);
   float space_w = K * 8.0f;
-  if (ImGui::Button("SPACE", ImVec2(space_w, H))) emit_key(" ");
-  ImGui::SameLine(0, S);
-  // ENTER - calculate width to reach main_end_x
+  vk("SPACE", space_w, " ", CPC_SPACE);
   float enter_x = ImGui::GetCursorPosX();
   float enter_w = main_end_x - enter_x;
-  if (ImGui::Button("ENTER", ImVec2(enter_w, H))) emit_key("\n");
-
-  // Numpad row 4: ← ↓ →
+  vk_end("ENTER", enter_w, "\n", CPC_ENTER);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 4));
-  if (ImGui::Button("\xe2\x86\x90##left", ImVec2(K, H))) { emit_key("\a\xaf"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x93##down", ImVec2(K, H))) { emit_key("\a\xb0"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x92##right", ImVec2(K, H))) emit_key("\a\xb1");
+  vk("\xe2\x86\x90##left", K, "\a\xaf", CPC_CUR_LEFT);
+  vk("\xe2\x86\x93##down", K, "\a\xb0", CPC_CUR_DOWN);
+  vk_end("\xe2\x86\x92##right", K, "\a\xb1", CPC_CUR_RIGHT);
 
   // Move cursor below keyboard for the rest
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 5 + S * 2));
