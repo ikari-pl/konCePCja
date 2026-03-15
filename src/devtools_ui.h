@@ -101,6 +101,11 @@ private:
     std::vector<uint8_t> dt_sector_data_;
     std::string dt_sector_read_error_;
 
+    // Memory Hex inline editing
+    int memhex_edit_addr_ = -1;     // Address being edited (-1 = none)
+    char memhex_edit_buf_[3] = "";  // 2 hex chars + null
+    bool memhex_edit_focus_ = false; // Set focus on first frame
+
     // Add Breakpoint form state
     char bp_addr_[8] = "";
     char bp_cond_[128] = "";

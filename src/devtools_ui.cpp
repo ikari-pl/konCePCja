@@ -628,7 +628,38 @@ void DevToolsUI::render_memory_hex()
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
           }
 
-          ImGui::Text("%02X", val);
+          // Inline editing or display
+          if (memhex_edit_addr_ == static_cast<int>(a)) {
+            ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x + 8.0f);
+            if (memhex_edit_focus_) {
+              ImGui::SetKeyboardFocusHere();
+              memhex_edit_focus_ = false;
+            }
+            ImGuiInputTextFlags eflags = ImGuiInputTextFlags_CharsHexadecimal |
+                                         ImGuiInputTextFlags_EnterReturnsTrue |
+                                         ImGuiInputTextFlags_AutoSelectAll;
+            if (ImGui::InputText("##mhedit", memhex_edit_buf_, sizeof(memhex_edit_buf_), eflags)) {
+              // Enter pressed — commit
+              unsigned long nv;
+              if (parse_hex(memhex_edit_buf_, &nv, 0xFF)) {
+                if (memhex_cpu_view_)
+                  z80_cpu_write_mem(a, static_cast<byte>(nv));
+                else
+                  z80_write_mem(a, static_cast<byte>(nv));
+              }
+              memhex_edit_addr_ = -1;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+              memhex_edit_addr_ = -1;
+            }
+          } else {
+            ImGui::Text("%02X", val);
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+              memhex_edit_addr_ = static_cast<int>(a);
+              snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", val);
+              memhex_edit_focus_ = true;
+            }
+          }
 
           // Flash-highlight the navigation target byte
           if (memhex_highlight_frames_ > 0 && a == static_cast<word>(memhex_highlight_addr_)) {
@@ -673,6 +704,12 @@ void DevToolsUI::render_memory_hex()
 
       ImGui::TextDisabled("%04X", ctx_addr);
       ImGui::Separator();
+      if (ImGui::MenuItem("Edit byte")) {
+        byte v = memhex_cpu_view_ ? z80_cpu_read_mem(ctx_addr) : z80_read_mem(ctx_addr);
+        memhex_edit_addr_ = static_cast<int>(ctx_addr);
+        snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", v);
+        memhex_edit_focus_ = true;
+      }
       if (ImGui::MenuItem("Disassemble here")) {
         navigate_to(ctx_addr, NavTarget::DISASM);
       }
