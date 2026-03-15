@@ -107,7 +107,8 @@ private:
     std::vector<word> memhex_matches_;
     int memhex_match_idx_ = -1;
 
-    // Memory Hex inline editing
+    // Memory Hex selection and inline editing
+    int memhex_sel_addr_ = -1;      // Selected (highlighted) byte (-1 = none)
     int memhex_edit_addr_ = -1;     // Address being edited (-1 = none)
     char memhex_edit_buf_[3] = "";  // 2 hex chars + null
     bool memhex_edit_focus_ = false; // Set focus on first frame

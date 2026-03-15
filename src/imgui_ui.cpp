@@ -825,7 +825,9 @@ static void imgui_render_menubar()
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
     if (ImGui::MenuItem("Memory Tool")) {
-      imgui_state.show_memory_tool = true;
+      // Open the DevTools Memory Hex window (superset of legacy Memory Tool)
+      imgui_state.show_devtools = true;
+      g_devtools_ui.toggle_window("memory_hex");
     }
     if (ImGui::MenuItem("DevTools", "Shift+F2")) {
       imgui_state.show_devtools = true;

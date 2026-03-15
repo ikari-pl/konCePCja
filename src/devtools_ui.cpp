@@ -719,35 +719,87 @@ void DevToolsUI::render_memory_hex()
           }
 
           // Inline editing or display
-          if (memhex_edit_addr_ == static_cast<int>(a)) {
-            ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x + 8.0f);
-            if (memhex_edit_focus_) {
-              ImGui::SetKeyboardFocusHere();
-              memhex_edit_focus_ = false;
-            }
-            ImGuiInputTextFlags eflags = ImGuiInputTextFlags_CharsHexadecimal |
-                                         ImGuiInputTextFlags_EnterReturnsTrue |
-                                         ImGuiInputTextFlags_AutoSelectAll;
-            if (ImGui::InputText("##mhedit", memhex_edit_buf_, sizeof(memhex_edit_buf_), eflags)) {
-              // Enter pressed — commit
-              unsigned long nv;
-              if (parse_hex(memhex_edit_buf_, &nv, 0xFF)) {
-                if (memhex_cpu_view_)
-                  z80_cpu_write_mem(a, static_cast<byte>(nv));
-                else
-                  z80_write_mem(a, static_cast<byte>(nv));
+          {
+            bool is_editing = (memhex_edit_addr_ == static_cast<int>(a));
+            bool is_selected = (memhex_sel_addr_ == static_cast<int>(a));
+            char hex_label[8];
+            snprintf(hex_label, sizeof(hex_label), "%02X", val);
+
+            if (is_editing) {
+              // Compact inline edit — fixed width matching "FF"
+              ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+              ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x);
+              if (memhex_edit_focus_) {
+                ImGui::SetKeyboardFocusHere();
+                memhex_edit_focus_ = false;
               }
-              memhex_edit_addr_ = -1;
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-              memhex_edit_addr_ = -1;
-            }
-          } else {
-            ImGui::Text("%02X", val);
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
-              memhex_edit_addr_ = static_cast<int>(a);
-              snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", val);
-              memhex_edit_focus_ = true;
+              ImGuiInputTextFlags eflags = ImGuiInputTextFlags_CharsHexadecimal |
+                                           ImGuiInputTextFlags_EnterReturnsTrue |
+                                           ImGuiInputTextFlags_AutoSelectAll;
+              bool committed = ImGui::InputText("##mhedit", memhex_edit_buf_,
+                                                sizeof(memhex_edit_buf_), eflags);
+              ImGui::PopStyleVar();
+
+              if (committed) {
+                unsigned long nv;
+                if (parse_hex(memhex_edit_buf_, &nv, 0xFF)) {
+                  z80_write_mem(a, static_cast<byte>(nv));
+                }
+                memhex_edit_addr_ = -1;
+                memhex_sel_addr_ = -1;
+              }
+              if (!committed && !ImGui::IsItemActive()) {
+                // Lost focus without Enter — cancel
+                memhex_edit_addr_ = -1;
+              }
+              if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                memhex_edit_addr_ = -1;
+                memhex_sel_addr_ = -1;
+              }
+            } else {
+              // Normal display — clickable
+              if (is_selected) {
+                // Draw selection highlight
+                ImVec2 tpos = ImGui::GetCursorScreenPos();
+                ImVec2 tsz = ImGui::CalcTextSize(hex_label);
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                  tpos, ImVec2(tpos.x + tsz.x, tpos.y + tsz.y),
+                  IM_COL32(80, 80, 180, 120));
+              }
+              ImGui::Text("%s", hex_label);
+
+              if (ImGui::IsItemClicked(0)) {
+                memhex_sel_addr_ = static_cast<int>(a);
+              }
+              // Start editing: double-click OR type while selected
+              bool start_edit = false;
+              if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+                start_edit = true;
+              if (is_selected) {
+                // Any hex digit typed while selected → start editing
+                for (ImGuiKey k = ImGuiKey_0; k <= ImGuiKey_9; k = static_cast<ImGuiKey>(k + 1)) {
+                  if (ImGui::IsKeyPressed(k)) {
+                    memhex_edit_buf_[0] = '0' + (k - ImGuiKey_0);
+                    memhex_edit_buf_[1] = '\0';
+                    start_edit = true;
+                    break;
+                  }
+                }
+                for (ImGuiKey k = ImGuiKey_A; k <= ImGuiKey_F; k = static_cast<ImGuiKey>(k + 1)) {
+                  if (ImGui::IsKeyPressed(k)) {
+                    memhex_edit_buf_[0] = 'A' + (k - ImGuiKey_A);
+                    memhex_edit_buf_[1] = '\0';
+                    start_edit = true;
+                    break;
+                  }
+                }
+              }
+              if (start_edit) {
+                memhex_edit_addr_ = static_cast<int>(a);
+                if (memhex_edit_buf_[0] == '\0') // double-click: prefill
+                  snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", val);
+                memhex_edit_focus_ = true;
+              }
             }
           }
 
