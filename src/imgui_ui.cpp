@@ -1055,7 +1055,7 @@ static void imgui_render_topbar()
     if (imgui_state.eject_confirm_drive >= 0) {
       ImGui::OpenPopup("Eject Disk?");
     }
-    if (ImGui::BeginPopup("Eject Disk?")) {
+    if (ImGui::BeginPopupModal("Eject Disk?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       int drv = imgui_state.eject_confirm_drive;
       const char* name = drv == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
@@ -1348,7 +1348,7 @@ static void imgui_render_topbar()
     if (imgui_state.eject_confirm_tape) {
       ImGui::OpenPopup("Eject Tape?");
     }
-    if (ImGui::BeginPopup("Eject Tape?")) {
+    if (ImGui::BeginPopupModal("Eject Tape?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextUnformatted("Eject tape?");
       ImGui::Spacing();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
@@ -1622,6 +1622,11 @@ static void imgui_render_menu()
   ImGui::TextWrapped("Emulation paused. Use the menu bar above for all actions.");
   ImGui::Spacing();
 
+  // Enable keyboard navigation for this window (arrows/tab cycle buttons)
+  if (imgui_state.menu_just_opened) {
+    ImGui::SetKeyboardFocusHere();
+    imgui_state.menu_just_opened = false;
+  }
   if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
     action = true;
   }
@@ -1912,7 +1917,9 @@ static void imgui_render_options()
 
           // Unload button (slots 0-1 are system ROMs, protected)
           ImGui::TableSetColumnIndex(3);
-          if (i >= 2 && loaded) {
+          if (i < 2) {
+            ImGui::TextDisabled("system");
+          } else if (loaded) {
             if (ImGui::SmallButton("X")) {
               delete[] memmap_ROM[i];
               memmap_ROM[i] = nullptr;
@@ -2436,6 +2443,21 @@ static void imgui_render_memory_tool()
       std::cout << "\n";
     }
     std::cout << std::flush;
+  }
+
+  // Active mode indicator
+  if (imgui_state.mem_filter_value >= 0) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+    ImGui::Text("[FILTER: %02X]", imgui_state.mem_filter_value & 0xFF);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear##mtclear")) { imgui_state.mem_filter_value = -1; }
+  } else if (imgui_state.mem_display_value >= 0) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+    ImGui::Text("[DISPLAY: %04X]", imgui_state.mem_display_value & 0xFFFF);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear##mtclear")) { imgui_state.mem_display_value = -1; }
   }
 
   // Hex dump
