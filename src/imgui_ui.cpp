@@ -2617,11 +2617,15 @@ static void imgui_render_vkeyboard()
   float x0 = ImGui::GetCursorPosX();
   float y0 = ImGui::GetCursorPosY();
 
-  // Helper: check if a CPC key is currently pressed in the keyboard matrix
+  // Helper: check if a CPC key is currently pressed in the keyboard matrix.
+  // CPC_KEYS enum values are NOT matrix positions — must convert via scancode table.
   auto cpc_key_down = [](byte cpc_key) -> bool {
     extern byte keyboard_matrix[];
     extern byte bit_values[];
-    return !(keyboard_matrix[cpc_key >> 4] & bit_values[cpc_key & 7]);
+    CPCScancode sc = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
+    byte row = static_cast<byte>(sc >> 4);
+    byte bit = static_cast<byte>(sc & 7);
+    return row < 16 && !(keyboard_matrix[row] & bit_values[bit]);
   };
   // Helper: draw blue overlay on last ImGui item if CPC key is pressed
   auto highlight_if_pressed = [&](byte cpc_key) {
