@@ -35,6 +35,7 @@
 #include "portable-file-dialogs.h"
 #include "z80_opcode_table.h"
 
+extern SDL_Window* mainSDLWindow;
 extern t_CPC CPC;
 extern t_z80regs z80;
 extern byte* pbRAM;
@@ -1481,18 +1482,55 @@ void DevToolsUI::render_disc_tools()
       dt_files_dirty_ = false;
     }
     if (ImGui::Button("Refresh##files")) dt_files_dirty_ = true;
+    ImGui::SameLine();
+
+    // Import button
+    if (ImGui::Button("Import File...")) {
+      static const SDL_DialogFileFilter filters[] = { { "All files", "*" } };
+      SDL_ShowOpenFileDialog(
+        [](void* ud, const char* const* filelist, int) {
+          if (!filelist || !filelist[0]) return;
+          auto* self = static_cast<DevToolsUI*>(ud);
+          std::string host_path(filelist[0]);
+          t_drive* d = (self->dt_drive_ == 0) ? &driveA : &driveB;
+
+          // Read host file
+          std::ifstream f(host_path, std::ios::binary);
+          if (!f) { imgui_toast_error("Cannot open: " + host_path); return; }
+          std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
+                                     std::istreambuf_iterator<char>());
+
+          // Convert filename to CPC 8.3
+          auto fname = std::filesystem::path(host_path).filename().string();
+          std::string cpc_name = disk_to_cpc_filename(fname);
+          if (cpc_name.empty()) {
+            imgui_toast_error("Cannot convert filename: " + fname);
+            return;
+          }
+
+          std::string err = disk_write_file(d, cpc_name, data, false);
+          if (err.empty()) {
+            imgui_toast_success("Imported: " + fname);
+            self->dt_files_dirty_ = true;
+          } else {
+            imgui_toast_error("Import failed: " + err);
+          }
+        },
+        this, mainSDLWindow, filters, 1, nullptr, false);
+    }
 
     if (!dt_file_error_.empty()) {
       ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_file_error_.c_str());
     }
 
-    if (ImGui::BeginTable("dt_files", 4,
+    if (ImGui::BeginTable("dt_files", 5,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
         ImVec2(0, 200))) {
       ImGui::TableSetupScrollFreeze(0, 1);
       ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 60);
       ImGui::TableSetupColumn("User", ImGuiTableColumnFlags_WidthFixed, 30);
+      ImGui::TableSetupColumn("##export", ImGuiTableColumnFlags_WidthFixed, 42);
       ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
       ImGui::TableHeadersRow();
 
@@ -1506,6 +1544,34 @@ void DevToolsUI::render_disc_tools()
         ImGui::TableSetColumnIndex(2);
         ImGui::Text("%d", fe.user);
         ImGui::TableSetColumnIndex(3);
+        ImGui::PushID(static_cast<int>(i) + 3000);
+        if (ImGui::SmallButton("Save")) {
+          // Export: read file from disc, save to host
+          dt_export_filename_ = fe.filename;
+          dt_export_display_ = fe.display_name;
+          // Show save dialog
+          static const SDL_DialogFileFilter ef[] = { { "All files", "*" } };
+          SDL_ShowSaveFileDialog(
+            [](void* ud, const char* const* filelist, int) {
+              if (!filelist || !filelist[0]) return;
+              auto* self = static_cast<DevToolsUI*>(ud);
+              t_drive* d = (self->dt_drive_ == 0) ? &driveA : &driveB;
+              std::string err;
+              auto data = disk_read_file(d, self->dt_export_filename_, err);
+              if (!err.empty()) {
+                imgui_toast_error("Export failed: " + err);
+                return;
+              }
+              std::ofstream f(filelist[0], std::ios::binary);
+              if (!f) { imgui_toast_error("Cannot write: " + std::string(filelist[0])); return; }
+              f.write(reinterpret_cast<const char*>(data.data()),
+                      static_cast<std::streamsize>(data.size()));
+              imgui_toast_success("Exported: " + self->dt_export_display_);
+            },
+            this, mainSDLWindow, ef, 1, fe.display_name.c_str());
+        }
+        ImGui::PopID();
+        ImGui::TableSetColumnIndex(4);
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton("X")) {
           disk_delete_file(drv, fe.filename);
