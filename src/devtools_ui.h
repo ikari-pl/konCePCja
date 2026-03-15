@@ -101,6 +101,11 @@ private:
     std::vector<uint8_t> dt_sector_data_;
     std::string dt_sector_read_error_;
 
+    // Add Breakpoint form state
+    char bp_addr_[8] = "";
+    char bp_cond_[128] = "";
+    char bp_pass_[8] = "";
+
     // Add Watchpoint form state
     char wp_addr_[8] = "";
     char wp_len_[8] = "1";

@@ -21,6 +21,8 @@
 #include "disk_format.h"
 #include "data_areas.h"
 #include "z80_assembler.h"
+#include "expr_parser.h"
+#include "imgui_ui.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
@@ -912,8 +914,50 @@ void DevToolsUI::render_breakpoints()
     ImGui::EndTable();
   }
 
-  // Add Watchpoint form
+  // Add Breakpoint form
   ImGui::Spacing();
+  if (ImGui::CollapsingHeader("Add Breakpoint", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("Addr##bp", bp_addr_, sizeof(bp_addr_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180);
+    ImGui::InputText("Condition##bp", bp_cond_, sizeof(bp_cond_));
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("e.g. A==0x42, (HL)>0x100, BC==DE\nLeave empty for unconditional");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(40);
+    ImGui::InputText("Pass##bp", bp_pass_, sizeof(bp_pass_),
+                     ImGuiInputTextFlags_CharsDecimal);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Break after N hits (0 = every hit)");
+    ImGui::SameLine();
+    if (ImGui::Button("Add BP")) {
+      unsigned long addr;
+      if (parse_hex(bp_addr_, &addr, 0xFFFF)) {
+        std::string cond_str(bp_cond_);
+        int pass = std::atoi(bp_pass_);
+        if (cond_str.empty() && pass == 0) {
+          z80_add_breakpoint(static_cast<word>(addr));
+        } else {
+          std::unique_ptr<ExprNode> cond;
+          if (!cond_str.empty()) {
+            std::string err;
+            cond = expr_parse(cond_str, err);
+            if (!cond) {
+              imgui_toast_error("Bad condition: " + err);
+              goto bp_form_end;
+            }
+          }
+          z80_add_breakpoint_cond(static_cast<word>(addr), std::move(cond), cond_str, pass);
+        }
+        bp_addr_[0] = bp_cond_[0] = bp_pass_[0] = '\0';
+      }
+    }
+    bp_form_end:;
+  }
+
+  // Add Watchpoint form
   if (ImGui::CollapsingHeader("Add Watchpoint")) {
     ImGui::SetNextItemWidth(60);
     ImGui::InputText("Addr##wp", wp_addr_, sizeof(wp_addr_),
