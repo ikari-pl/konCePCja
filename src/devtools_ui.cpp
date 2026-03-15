@@ -686,19 +686,16 @@ void DevToolsUI::render_memory_hex()
       memhex_goto_value_ = -1;
     }
 
-    // ROM banking state for background tinting
-    bool lo_rom_active = !(GateArray.ROM_config & 0x04); // &0000-&3FFF
-    bool hi_rom_active = !(GateArray.ROM_config & 0x08); // &C000-&FFFF
+    // ROM detection: when read and write banks differ for a slot, ROM is overlaid
+    extern byte *membank_read[4], *membank_write[4];
 
     while (clipper.Step()) {
       for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
         unsigned int base_addr = row * bytes_per_row;
 
-        // Check if this row is in a ROM-overlaid region
-        word row_start = static_cast<word>(base_addr & 0xFFFF);
-        word row_end = static_cast<word>((base_addr + bytes_per_row - 1) & 0xFFFF);
-        bool in_rom = (lo_rom_active && row_start < 0x4000) ||
-                      (hi_rom_active && row_end >= 0xC000);
+        // Check if this row overlaps any ROM-overlaid 16K slot
+        int slot = (base_addr >> 14) & 3;
+        bool in_rom = (membank_read[slot] != membank_write[slot]);
 
         // ROM row background tint (dark purple)
         if (in_rom) {
