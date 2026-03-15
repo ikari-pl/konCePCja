@@ -654,6 +654,22 @@ void DevToolsUI::render_memory_hex()
   // Collect watchpoint ranges for highlighting
   const auto& watchpoints = z80_list_watchpoints_ref();
 
+  // Pre-compute search pattern length (avoids reparse per byte in render loop)
+  int search_plen = 0;
+  if (!memhex_matches_.empty() && memhex_search_[0]) {
+    if (memhex_search_hex_) {
+      for (const char* sp = memhex_search_; *sp; ) {
+        while (*sp == ' ') sp++;
+        if (!*sp) break;
+        char* se; strtoul(sp, &se, 16);
+        if (se == sp) break;
+        search_plen++; sp = se;
+      }
+    } else {
+      search_plen = static_cast<int>(strlen(memhex_search_));
+    }
+  }
+
   if (ImGui::BeginChild("##hexview", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
     // Use clipper for efficient scrolling over all 64K
     ImGuiListClipper clipper;
@@ -743,21 +759,9 @@ void DevToolsUI::render_memory_hex()
           }
 
           // Search match highlighting (yellow background)
-          if (!memhex_matches_.empty() && memhex_search_[0]) {
-            int plen = 0;
-            if (memhex_search_hex_) {
-              for (const char* sp = memhex_search_; *sp; ) {
-                while (*sp == ' ') sp++;
-                if (!*sp) break;
-                char* se; strtoul(sp, &se, 16);
-                if (se == sp) break;
-                plen++; sp = se;
-              }
-            } else {
-              plen = static_cast<int>(strlen(memhex_search_));
-            }
+          if (search_plen > 0) {
             for (word ma : memhex_matches_) {
-              if (a >= ma && a < ma + plen) {
+              if (a >= ma && a < ma + search_plen) {
                 ImVec2 rmin = ImGui::GetItemRectMin();
                 ImVec2 rmax = ImGui::GetItemRectMax();
                 bool is_current = (memhex_match_idx_ >= 0 &&

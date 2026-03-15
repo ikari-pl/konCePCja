@@ -161,10 +161,10 @@ static void process_pending_dialog()
       if (file_load(CPC.tape) == 0) {
         imgui_toast_success("Tape loaded: " + fname);
         mru_push(CPC.mru_tapes, path);
+        tape_scan_blocks();
       } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      tape_scan_blocks();
       close_menu();
       break;
     case FileDialogAction::LoadTape_LED:
@@ -172,10 +172,10 @@ static void process_pending_dialog()
       if (file_load(CPC.tape) == 0) {
         imgui_toast_success("Tape loaded: " + fname);
         mru_push(CPC.mru_tapes, path);
+        tape_scan_blocks();
       } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      tape_scan_blocks();
       break;
     case FileDialogAction::LoadCartridge:
       CPC.cartridge.file = path;
@@ -398,7 +398,8 @@ void imgui_render_ui()
     }
 
     // Render from bottom of viewport, stacking upward
-    ImVec2 vpSize = io.DisplaySize;
+    ImVec2 vpPos = ImGui::GetMainViewport()->Pos;
+    ImVec2 vpSize = ImGui::GetMainViewport()->Size;
     for (int i = static_cast<int>(imgui_state.toasts.size()) - 1; i >= 0; --i) {
       auto& t = imgui_state.toasts[i];
 
@@ -434,8 +435,8 @@ void imgui_render_ui()
       float boxW = textSize.x + 16.0f;
       float boxH = textSize.y + 12.0f;
 
-      float x = vpSize.x - boxW - xMargin;
-      float y = vpSize.y - yOffset - boxH;
+      float x = vpPos.x + vpSize.x - boxW - xMargin;
+      float y = vpPos.y + vpSize.y - yOffset - boxH;
 
       ImDrawList* dl = ImGui::GetForegroundDrawList();
       ImVec2 p0(x, y), p1(x + boxW, y + boxH);
@@ -793,7 +794,7 @@ static void imgui_render_menubar()
       render_mru_section("Tapes", CPC.mru_tapes, [](const std::string& p) {
         CPC.tape.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.tape) == 0) imgui_toast_success("Tape: " + f);
+        if (file_load(CPC.tape) == 0) { imgui_toast_success("Tape: " + f); tape_scan_blocks(); }
         else imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Snapshots", CPC.mru_snaps, [](const std::string& p) {
