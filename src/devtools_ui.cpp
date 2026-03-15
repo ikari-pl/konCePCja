@@ -686,12 +686,36 @@ void DevToolsUI::render_memory_hex()
       memhex_goto_value_ = -1;
     }
 
+    // ROM banking state for background tinting
+    bool lo_rom_active = !(GateArray.ROM_config & 0x04); // &0000-&3FFF
+    bool hi_rom_active = !(GateArray.ROM_config & 0x08); // &C000-&FFFF
+
     while (clipper.Step()) {
       for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
         unsigned int base_addr = row * bytes_per_row;
 
+        // Check if this row is in a ROM-overlaid region
+        word row_start = static_cast<word>(base_addr & 0xFFFF);
+        word row_end = static_cast<word>((base_addr + bytes_per_row - 1) & 0xFFFF);
+        bool in_rom = (lo_rom_active && row_start < 0x4000) ||
+                      (hi_rom_active && row_end >= 0xC000);
+
+        // ROM row background tint (dark purple)
+        if (in_rom) {
+          ImVec2 rpos = ImGui::GetCursorScreenPos();
+          float row_h = ImGui::GetTextLineHeightWithSpacing();
+          float row_w = ImGui::GetContentRegionAvail().x;
+          ImGui::GetWindowDrawList()->AddRectFilled(
+            rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
+            IM_COL32(60, 20, 60, 80));
+        }
+
         // Address
-        ImGui::Text("%04X:", base_addr & 0xFFFF);
+        if (in_rom) {
+          ImGui::TextColored(ImVec4(0.7f, 0.5f, 0.8f, 1.0f), "%04X:", base_addr & 0xFFFF);
+        } else {
+          ImGui::Text("%04X:", base_addr & 0xFFFF);
+        }
 
         // Hex bytes with watchpoint highlighting
         for (int col = 0; col < bytes_per_row; col++) {
