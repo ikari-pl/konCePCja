@@ -400,4 +400,58 @@ TEST_F(IpcServerTest, MemFindWildcard) {
   EXPECT_TRUE(resp.find("3000") != std::string::npos);
 }
 
+// ─────────────────────────────────────────────────
+// Error message quality tests
+// ─────────────────────────────────────────────────
+
+TEST_F(IpcServerTest, UnknownCommandReturns404WithSuggestion) {
+  auto resp = send_command("totype hello");
+  EXPECT_TRUE(resp.find("ERR 404") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("autotype") != std::string::npos) << resp; // "Did you mean..."
+}
+
+TEST_F(IpcServerTest, UnknownCommandReturns404NoSuggestionForGarbage) {
+  auto resp = send_command("xyzzyplugh");
+  EXPECT_TRUE(resp.find("ERR 404") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("not recognized") != std::string::npos) << resp;
+}
+
+TEST_F(IpcServerTest, BareHexAddressAccepted) {
+  // "C000" should be parsed as hex, not rejected
+  auto resp = send_command("bp add C000");
+  EXPECT_OK(resp);
+  auto list = send_command("bp list");
+  EXPECT_TRUE(list.find("C000") != std::string::npos) << list;
+}
+
+TEST_F(IpcServerTest, BpWithNoArgsReturnsUsage) {
+  auto resp = send_command("bp");
+  EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("usage:") != std::string::npos) << resp;
+}
+
+TEST_F(IpcServerTest, BpAddWithNoAddrReturnsUsage) {
+  auto resp = send_command("bp add");
+  EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("usage:") != std::string::npos) << resp;
+}
+
+TEST_F(IpcServerTest, WpWithNoArgsReturnsUsage) {
+  auto resp = send_command("wp");
+  EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("usage:") != std::string::npos) << resp;
+}
+
+TEST_F(IpcServerTest, MemWithNoArgsReturnsUsage) {
+  auto resp = send_command("mem");
+  EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("usage:") != std::string::npos) << resp;
+}
+
+TEST_F(IpcServerTest, BadNumberIncludesValueInError) {
+  auto resp = send_command("reg set A notanumber");
+  EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
+  EXPECT_TRUE(resp.find("notanumber") != std::string::npos) << resp;
+}
+
 }  // namespace

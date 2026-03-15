@@ -82,20 +82,35 @@ extern byte *pbROMhi;
 extern byte bit_values[];
 
 // Parse a number from an IPC argument string.
-// Accepts CPC-style hex prefixes ($, &, #) in addition to C-style 0x and bare decimal.
-static unsigned long parse_number(const std::string& s) {
-  if (s.empty()) throw std::invalid_argument("empty number");
+// Accepts CPC-style hex prefixes ($, &, #), C-style 0x, bare decimal,
+// and bare hex as fallback (e.g. "C004" → 0xC004).
+// Throws std::invalid_argument with the original string on failure.
+template<typename T, T(*Conv)(const std::string&, size_t*, int)>
+static T parse_num_impl(const std::string& s) {
+  if (s.empty()) throw std::invalid_argument("empty string");
   if (s[0] == '$' || s[0] == '&' || s[0] == '#')
-    return std::stoul(s.substr(1), nullptr, 16);
-  return std::stoul(s, nullptr, 0);
+    return Conv(s.substr(1), nullptr, 16);
+  // Try base-0 auto-detect first (handles 0x, 0, decimal)
+  try {
+    size_t pos = 0;
+    T v = Conv(s, &pos, 0);
+    if (pos == s.size()) return v;
+  } catch (const std::logic_error&) {}
+  // Fallback: try as bare hex (e.g. "C004", "FF")
+  try {
+    size_t pos = 0;
+    T v = Conv(s, &pos, 16);
+    if (pos == s.size()) return v;
+  } catch (const std::logic_error&) {}
+  throw std::invalid_argument(s);
 }
 
-// Like parse_number but returns int (for small values like counts, indices).
+static unsigned long parse_number(const std::string& s) {
+  return parse_num_impl<unsigned long, std::stoul>(s);
+}
+
 static int parse_int(const std::string& s) {
-  if (s.empty()) throw std::invalid_argument("empty number");
-  if (s[0] == '$' || s[0] == '&' || s[0] == '#')
-    return std::stoi(s.substr(1), nullptr, 16);
-  return std::stoi(s, nullptr, 0);
+  return parse_num_impl<int, std::stoi>(s);
 }
 
 // Helper to prevent path traversal via IPC.
@@ -906,6 +921,7 @@ std::string handle_command(const std::string& line) {
     // regs asic → full ASIC state dump
     return "OK\n" + asic_dump_all() + "\n";
   }
+  if (cmd == "reg") return "ERR 400 usage: reg (get|set|crtc|ga|psg|asic) ...\n";
   // Top-level "asic" commands for detailed views
   if (cmd == "asic" && parts.size() >= 2) {
     if (parts[1] == "sprite") {
@@ -1002,6 +1018,7 @@ std::string handle_command(const std::string& line) {
       return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
     }
   }
+  if (cmd == "snapshot") return "ERR 400 usage: snapshot (save|load) <path>\n";
   if (cmd == "mem" && parts.size() >= 4 && parts[1] == "read") {
     // mem read <addr> <len> [--view=read|write] [--bank=N] [ascii]
     unsigned int addr = parse_number(parts[2]);
@@ -1415,7 +1432,9 @@ std::string handle_command(const std::string& line) {
       resp << "\n";
       return resp.str();
     }
+    return "ERR 400 usage: bp (add <addr> [if <expr>] [pass <N>] | del <addr> | list | clear)\n";
   }
+  if (cmd == "bp") return "ERR 400 usage: bp (add <addr> [if <expr>] [pass <N>] | del <addr> | list | clear)\n";
   if (cmd == "iobp" && parts.size() >= 2) {
     if (parts[1] == "add" && parts.size() >= 3) {
       // iobp add <port> [mask] [in|out|both]
@@ -1508,6 +1527,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-iobp-cmd (add|del|clear|list)\n";
   }
+  if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
   if (cmd == "step") {
     cpc_pause();
     // "step in [N]" or "step [N]" — single-step instructions
@@ -1661,6 +1681,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-trace-cmd (on|off|dump|on_crash|status)\n";
   }
+  if (cmd == "trace") return "ERR 400 usage: trace (on|off|dump|on_crash|status)\n";
 
   // Frame dumps: frames dump <path_pattern> <count> [delay_cs]
   // If path ends in .gif → animated GIF; otherwise → PNG series
@@ -1858,6 +1879,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy)\n";
   }
+  if (cmd == "input") return "ERR 400 usage: input (keydown|keyup|key|type|joy)\n";
 
   if (cmd == "wait" && parts.size() >= 2) {
     auto timeout_ms = std::chrono::milliseconds(5000);
@@ -1945,6 +1967,7 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
   }
+  if (cmd == "wait") return "ERR 400 usage: wait (pc|mem|bp|vbl) ...\n";
 
   // Event system: event on <trigger> <command>, event off <id>, event list
   if (cmd == "event" && parts.size() >= 2) {
@@ -2162,6 +2185,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-wp-cmd (add|del|clear|list)\n";
   }
+  if (cmd == "wp") return "ERR 400 usage: wp (add|del|clear|list)\n";
 
   // --- Symbol commands ---
   if (cmd == "sym" && parts.size() >= 2) {
@@ -2219,6 +2243,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-sym-cmd (load|add|del|list|lookup)\n";
   }
+  if (cmd == "sym") return "ERR 400 usage: sym (load|add|del|list|lookup)\n";
 
   // --- Memory search ---
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "find") {
@@ -2334,6 +2359,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-find-type (hex|text|asm)\n";
   }
+  if (cmd == "mem") return "ERR 400 usage: mem (read|write|fill|compare|cpu-read|cpu-write|find) ...\n";
 
   // --- Stack command ---
   if (cmd == "stack") {
@@ -2736,6 +2762,7 @@ std::string handle_command(const std::string& line) {
     }
     return "ERR 400 bad-record-cmd (wav|ym|avi)\n";
   }
+  if (cmd == "record") return "ERR 400 usage: record (wav|ym|avi)\n";
 
   // --- Poke commands ---
   if (cmd == "poke" && parts.size() >= 2) {
@@ -3627,12 +3654,49 @@ std::string handle_command(const std::string& line) {
     return "ERR 400 usage: m4 (status|ls|cd|reset|wifi)\n";
   }
 
-  return "ERR 501 not-implemented\n";
+  // Unknown command — find closest match for "did you mean?" suggestion
+  {
+    std::string suggestion;
+    size_t best_dist = SIZE_MAX;
+    // Stack-based Levenshtein — command names are short (<20 chars)
+    static constexpr size_t MAX_CMD_LEN = 32;
+    size_t prev[MAX_CMD_LEN + 1], curr[MAX_CMD_LEN + 1];
+    for (const auto& kv : g_ipc_commands) {
+      const std::string& name = kv.first;
+      size_t n = cmd.size(), m = name.size();
+      if (n > MAX_CMD_LEN || m > MAX_CMD_LEN) continue;
+      for (size_t j = 0; j <= m; j++) prev[j] = j;
+      for (size_t i = 1; i <= n; i++) {
+        curr[0] = i;
+        for (size_t j = 1; j <= m; j++) {
+          size_t cost = (cmd[i - 1] == name[j - 1]) ? 0 : 1;
+          size_t del = prev[j] + 1, ins = curr[j - 1] + 1, sub = prev[j - 1] + cost;
+          curr[j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+        }
+        for (size_t j = 0; j <= m; j++) prev[j] = curr[j];
+      }
+      size_t dist = prev[m];
+      if (dist < best_dist && dist <= 3) {
+        best_dist = dist;
+        suggestion = name;
+      }
+    }
+    std::string msg = "unknown-command: '" + cmd + "' is not recognized";
+    if (!suggestion.empty())
+      msg += ". Did you mean '" + suggestion + "'?";
+    msg += " (Type 'help' for a list of commands)";
+    return "ERR 404 " + msg + "\n";
+  }
 
-  } catch (const std::invalid_argument&) {
-    return "ERR 400 bad-number\n";
+  } catch (const std::invalid_argument& e) {
+    std::string val = e.what();
+    std::string msg = "bad-number";
+    if (!val.empty() && val != "stoi" && val != "stoul")
+      msg += ": '" + val + "' is not a valid number";
+    msg += " (accepted: 0x, $, &, # prefixes, decimal, or bare hex)";
+    return err_with_context(400, msg);
   } catch (const std::out_of_range&) {
-    return "ERR 400 number-out-of-range\n";
+    return err_with_context(400, "number-out-of-range (value too large for target type)");
   }
 }
 }
