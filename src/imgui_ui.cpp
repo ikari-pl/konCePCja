@@ -57,7 +57,7 @@ extern dword dwTapeZeroPulseCycles;
 ImGuiUIState imgui_state;
 
 // Forward declarations
-static void tape_scan_blocks();
+void tape_scan_blocks();
 static void imgui_render_menubar();
 static void imgui_render_topbar();
 static void imgui_render_menu();
@@ -562,7 +562,7 @@ static void close_menu()
 
 // safe_read_word/dword moved to imgui_ui_testable.h
 
-static void tape_scan_blocks()
+void tape_scan_blocks()
 {
   imgui_state.tape_block_offsets.clear();
   imgui_state.tape_current_block = 0;

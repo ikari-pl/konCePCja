@@ -110,6 +110,9 @@ void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level = Im
 
 // MRU (recent files) helper — pushes path to front, deduplicates, caps at MRU_MAX
 void imgui_mru_push(std::vector<std::string>& list, const std::string& path);
+
+// Tape block scanning (called after tape load to populate block offsets)
+void tape_scan_blocks();
 void imgui_toast_info(const std::string& message);
 void imgui_toast_success(const std::string& message);
 void imgui_toast_error(const std::string& message);

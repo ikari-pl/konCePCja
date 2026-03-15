@@ -17,6 +17,7 @@
 */
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
 #include <chrono>
@@ -3441,15 +3442,9 @@ int koncpc_main (int argc, char **argv)
            const char* dropped = event.drop.data;
            if (dropped) {
              std::string drop_path(dropped);
-             std::string ext;
-             {
-               auto dot = drop_path.rfind('.');
-               if (dot != std::string::npos) {
-                 ext = drop_path.substr(dot);
-                 // lowercase extension
-                 for (auto& c : ext) c = static_cast<char>(tolower(c));
-               }
-             }
+             std::string ext = std::filesystem::path(drop_path).extension().string();
+             std::transform(ext.begin(), ext.end(), ext.begin(),
+                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
              auto drop_fname = std::filesystem::path(drop_path).filename().string();
 
              if (ext == ".dsk" || ext == ".ipf" || ext == ".raw") {
@@ -3464,6 +3459,7 @@ int koncpc_main (int argc, char **argv)
                if (file_load(CPC.tape) == 0) {
                  imgui_toast_success("Tape loaded: " + drop_fname);
                  imgui_mru_push(CPC.mru_tapes, drop_path);
+                 tape_scan_blocks();
                } else
                  imgui_toast_error("Failed to load tape: " + drop_fname);
              } else if (ext == ".sna") {
