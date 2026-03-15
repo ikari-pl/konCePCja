@@ -790,7 +790,7 @@ void DevToolsUI::render_memory_hex()
               if (ImGui::IsItemClicked(0)) {
                 memhex_sel_addr_ = static_cast<int>(a);
               }
-              // Start editing: double-click OR type while selected
+              // Start editing: double-click OR type while selected (not on ROM cells)
               bool start_edit = false;
               if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
                 start_edit = true;
@@ -813,7 +813,7 @@ void DevToolsUI::render_memory_hex()
                   }
                 }
               }
-              if (start_edit) {
+              if (start_edit && !in_rom) {
                 memhex_edit_addr_ = static_cast<int>(a);
                 if (memhex_edit_buf_[0] == '\0') // double-click: prefill
                   snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", val);
