@@ -57,7 +57,6 @@ extern dword dwTapeZeroPulseCycles;
 ImGuiUIState imgui_state;
 
 // Forward declarations
-void tape_scan_blocks();
 static void imgui_render_menubar();
 static void imgui_render_topbar();
 static void imgui_render_menu();
