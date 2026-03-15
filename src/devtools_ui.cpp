@@ -638,7 +638,8 @@ void DevToolsUI::render_memory_hex()
         for (int addr = 0; addr <= 0xFFFF - plen + 1; addr++) {
           bool match = true;
           for (int j = 0; j < plen; j++) {
-            byte m = z80_read_mem(static_cast<word>(addr + j));
+            word sa = static_cast<word>(addr + j);
+            byte m = memhex_cpu_view_ ? z80_cpu_read_mem(sa) : z80_read_mem(sa);
             if (m != pattern[j]) { match = false; break; }
           }
           if (match) memhex_matches_.push_back(static_cast<word>(addr));
@@ -1149,7 +1150,8 @@ void DevToolsUI::render_breakpoints()
       unsigned long addr;
       if (parse_hex(bp_addr_, &addr, 0xFFFF)) {
         std::string cond_str(bp_cond_);
-        int pass = std::atoi(bp_pass_);
+        int pass = (bp_pass_[0] != '\0') ? std::atoi(bp_pass_) : 0;
+        if (pass < 0) pass = 0;
         if (cond_str.empty() && pass == 0) {
           z80_add_breakpoint(static_cast<word>(addr));
         } else {
@@ -1564,13 +1566,14 @@ void DevToolsUI::render_disc_tools()
 
     // Import button
     if (ImGui::Button("Import File...")) {
+      dt_dialog_drive_ = dt_drive_;  // capture drive at dialog-open time
       static const SDL_DialogFileFilter filters[] = { { "All files", "*" } };
       SDL_ShowOpenFileDialog(
         [](void* ud, const char* const* filelist, int) {
           if (!filelist || !filelist[0]) return;
           auto* self = static_cast<DevToolsUI*>(ud);
           std::string host_path(filelist[0]);
-          t_drive* d = (self->dt_drive_ == 0) ? &driveA : &driveB;
+          t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
 
           // Read host file
           std::ifstream f(host_path, std::ios::binary);
@@ -1627,13 +1630,14 @@ void DevToolsUI::render_disc_tools()
           // Export: read file from disc, save to host
           dt_export_filename_ = fe.filename;
           dt_export_display_ = fe.display_name;
+          dt_dialog_drive_ = dt_drive_;  // capture drive at dialog-open time
           // Show save dialog
           static const SDL_DialogFileFilter ef[] = { { "All files", "*" } };
           SDL_ShowSaveFileDialog(
             [](void* ud, const char* const* filelist, int) {
               if (!filelist || !filelist[0]) return;
               auto* self = static_cast<DevToolsUI*>(ud);
-              t_drive* d = (self->dt_drive_ == 0) ? &driveA : &driveB;
+              t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
               std::string err;
               auto data = disk_read_file(d, self->dt_export_filename_, err);
               if (!err.empty()) {

@@ -113,7 +113,8 @@ private:
     char memhex_edit_buf_[3] = "";  // 2 hex chars + null
     bool memhex_edit_focus_ = false; // Set focus on first frame
 
-    // Disc tools export state (for async file dialog callback)
+    // Disc tools async dialog state (captured at dialog-open time)
+    int dt_dialog_drive_ = 0;          // Drive at time dialog was opened
     std::string dt_export_filename_;   // CPC filename being exported
     std::string dt_export_display_;    // Display name for toast
 
