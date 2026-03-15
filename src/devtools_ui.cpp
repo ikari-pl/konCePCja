@@ -731,7 +731,7 @@ void DevToolsUI::render_memory_hex()
               ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x);
               if (memhex_edit_focus_) {
                 ImGui::SetKeyboardFocusHere();
-                memhex_edit_focus_ = false;
+                // Don't clear yet — give InputText one frame to activate
               }
               ImGuiInputTextFlags eflags = ImGuiInputTextFlags_CharsHexadecimal |
                                            ImGuiInputTextFlags_EnterReturnsTrue |
@@ -740,6 +740,9 @@ void DevToolsUI::render_memory_hex()
                                                 sizeof(memhex_edit_buf_), eflags);
               ImGui::PopStyleVar();
 
+              // Clear the focus request AFTER InputText has had a chance to use it
+              memhex_edit_focus_ = false;
+
               if (committed) {
                 unsigned long nv;
                 if (parse_hex(memhex_edit_buf_, &nv, 0xFF)) {
@@ -747,24 +750,19 @@ void DevToolsUI::render_memory_hex()
                 }
                 memhex_edit_addr_ = -1;
                 memhex_sel_addr_ = -1;
-              }
-              if (!committed && !ImGui::IsItemActive()) {
-                // Lost focus without Enter — cancel
-                memhex_edit_addr_ = -1;
-              }
-              if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+              } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                 memhex_edit_addr_ = -1;
                 memhex_sel_addr_ = -1;
               }
             } else {
               // Normal display — clickable
               if (is_selected) {
-                // Draw selection highlight
+                // Draw selection highlight — bright blue
                 ImVec2 tpos = ImGui::GetCursorScreenPos();
                 ImVec2 tsz = ImGui::CalcTextSize(hex_label);
                 ImGui::GetWindowDrawList()->AddRectFilled(
                   tpos, ImVec2(tpos.x + tsz.x, tpos.y + tsz.y),
-                  IM_COL32(80, 80, 180, 120));
+                  IM_COL32(40, 80, 220, 180));
               }
               ImGui::Text("%s", hex_label);
 
