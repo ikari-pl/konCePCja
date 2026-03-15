@@ -788,25 +788,25 @@ static void imgui_render_menubar()
       render_mru_section("Disks", CPC.mru_disks, [](const std::string& p) {
         CPC.driveA.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.driveA) == 0) imgui_toast_success("Drive A: " + f);
+        if (file_load(CPC.driveA) == 0) { imgui_toast_success("Drive A: " + f); mru_push(CPC.mru_disks, p); }
         else imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Tapes", CPC.mru_tapes, [](const std::string& p) {
         CPC.tape.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.tape) == 0) { imgui_toast_success("Tape: " + f); tape_scan_blocks(); }
+        if (file_load(CPC.tape) == 0) { imgui_toast_success("Tape: " + f); tape_scan_blocks(); mru_push(CPC.mru_tapes, p); }
         else imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Snapshots", CPC.mru_snaps, [](const std::string& p) {
         CPC.snapshot.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.snapshot) == 0) imgui_toast_success("Snapshot: " + f);
+        if (file_load(CPC.snapshot) == 0) { imgui_toast_success("Snapshot: " + f); mru_push(CPC.mru_snaps, p); }
         else imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Cartridges", CPC.mru_carts, [](const std::string& p) {
         CPC.cartridge.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.cartridge) == 0) { imgui_toast_success("Cartridge: " + f); emulator_reset(); }
+        if (file_load(CPC.cartridge) == 0) { imgui_toast_success("Cartridge: " + f); emulator_reset(); mru_push(CPC.mru_carts, p); }
         else imgui_toast_error("Failed: " + f);
       });
       ImGui::Separator();

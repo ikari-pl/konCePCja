@@ -586,6 +586,8 @@ void DevToolsUI::render_memory_hex()
     ImGui::SameLine();
     if (ImGui::SmallButton(memhex_search_hex_ ? "Hex" : "ASCII")) {
       memhex_search_hex_ = !memhex_search_hex_;
+      memhex_matches_.clear();
+      memhex_match_idx_ = -1;
     }
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Toggle Hex/ASCII search mode");
@@ -619,7 +621,8 @@ void DevToolsUI::render_memory_hex()
           char* end;
           unsigned long v = strtoul(p, &end, 16);
           if (end == p) break;
-          pattern.push_back(static_cast<byte>(v & 0xFF));
+          if (v > 0xFF) { pattern.clear(); imgui_toast_error("Hex byte > FF"); break; }
+          pattern.push_back(static_cast<byte>(v));
           p = end;
         }
       } else {
@@ -758,18 +761,18 @@ void DevToolsUI::render_memory_hex()
               ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.8f, 0.0f, 0.5f * alpha)));
           }
 
-          // Search match highlighting (yellow background)
-          if (search_plen > 0) {
-            for (word ma : memhex_matches_) {
-              if (a >= ma && a < ma + search_plen) {
-                ImVec2 rmin = ImGui::GetItemRectMin();
-                ImVec2 rmax = ImGui::GetItemRectMax();
-                bool is_current = (memhex_match_idx_ >= 0 &&
-                    memhex_matches_[memhex_match_idx_] == ma);
-                ImU32 hcol = is_current ? IM_COL32(255, 200, 0, 100) : IM_COL32(200, 200, 0, 60);
-                ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, hcol);
-                break;
-              }
+          // Search match highlighting (yellow background, O(log N) via sorted matches)
+          if (search_plen > 0 && !memhex_matches_.empty()) {
+            // Find first match whose start + plen > a (i.e. could contain a)
+            word range_start = (a >= static_cast<word>(search_plen - 1)) ? a - (search_plen - 1) : 0;
+            auto it = std::lower_bound(memhex_matches_.begin(), memhex_matches_.end(), range_start);
+            if (it != memhex_matches_.end() && a >= *it && a < *it + search_plen) {
+              ImVec2 rmin = ImGui::GetItemRectMin();
+              ImVec2 rmax = ImGui::GetItemRectMax();
+              bool is_current = (memhex_match_idx_ >= 0 &&
+                  memhex_matches_[memhex_match_idx_] == *it);
+              ImU32 hcol = is_current ? IM_COL32(255, 200, 0, 100) : IM_COL32(200, 200, 0, 60);
+              ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, hcol);
             }
           }
 
