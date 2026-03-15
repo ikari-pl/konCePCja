@@ -41,7 +41,7 @@ class InputMapper;
 //#define DEBUG_TAPE
 //#define DEBUG_Z80
 
-#define VERSION_STRING "v5.2.3"
+#define VERSION_STRING "v5.3.0"
 
 #ifndef _MAX_PATH
  #ifdef _POSIX_PATH_MAX
@@ -302,6 +302,13 @@ class t_CPC {
    std::string current_cart_path; // Last used cartridge path in the file dialog.
    std::string current_dsk_path;  // Last used disk path in the file dialog.
    std::string current_tape_path; // Last used tape path in the file dialog.
+
+   // Recent files (MRU) — persisted in config [file] section
+   static constexpr int MRU_MAX = 10;
+   std::vector<std::string> mru_disks;
+   std::vector<std::string> mru_tapes;
+   std::vector<std::string> mru_snaps;
+   std::vector<std::string> mru_carts;
 
    class InputMapper *InputMapper;
 };

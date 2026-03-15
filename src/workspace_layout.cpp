@@ -132,6 +132,19 @@ void workspace_render_cpc_screen()
             ImGui::GetCursorPos().y + offset_y));
         ImGui::Image(tex, ImVec2(draw_w, draw_h));
 
+        // Focus indicator: green border when keyboard routes to CPC
+        if (imgui_state.cpc_screen_focused) {
+            ImVec2 wmin = ImGui::GetWindowPos();
+            ImVec2 wmax(wmin.x + ImGui::GetWindowSize().x, wmin.y + ImGui::GetWindowSize().y);
+            ImGui::GetWindowDrawList()->AddRect(wmin, wmax, IM_COL32(0, 200, 80, 120), 0, 0, 2.0f);
+        } else {
+            // "Click to focus" hint at bottom center
+            const char* hint = "Click to send keyboard to CPC";
+            ImVec2 tsize = ImGui::CalcTextSize(hint);
+            ImVec2 hpos(p0.x + (avail.x - tsize.x) * 0.5f, p0.y + avail.y - tsize.y - 4.0f);
+            ImGui::GetWindowDrawList()->AddText(hpos, IM_COL32(255, 255, 255, 60), hint);
+        }
+
         // Right-click context menu for scale mode
         if (ImGui::BeginPopupContextWindow("##CPCScreenCtx")) {
             ImGui::TextUnformatted("Scale Mode");

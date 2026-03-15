@@ -138,4 +138,21 @@ inline int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr
   return offset;
 }
 
+// ─────────────────────────────────────────────────
+// MRU (recent files) list management
+// ─────────────────────────────────────────────────
+
+#include <vector>
+#include <string>
+#include <algorithm>
+
+// Push a path to the front of an MRU list, deduplicate, cap at max_size.
+inline void mru_list_push(std::vector<std::string>& list, const std::string& path, int max_size = 10)
+{
+  list.erase(std::remove(list.begin(), list.end(), path), list.end());
+  list.insert(list.begin(), path);
+  if (static_cast<int>(list.size()) > max_size)
+    list.resize(max_size);
+}
+
 #endif // IMGUI_UI_TESTABLE_H

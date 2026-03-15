@@ -17,6 +17,7 @@
 */
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 #include <sstream>
 #include <chrono>
@@ -2231,6 +2232,23 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    }
    CPC.rom_mf2 = conf.getStringValue("rom", "rom_mf2", "");
 
+   // Load MRU (recent files) lists
+   for (int i = 0; i < t_CPC::MRU_MAX; i++) {
+      char key[16];
+      snprintf(key, sizeof(key), "mru_disk_%02d", i);
+      std::string val = conf.getStringValue("file", key, "");
+      if (!val.empty()) CPC.mru_disks.push_back(val);
+      snprintf(key, sizeof(key), "mru_tape_%02d", i);
+      val = conf.getStringValue("file", key, "");
+      if (!val.empty()) CPC.mru_tapes.push_back(val);
+      snprintf(key, sizeof(key), "mru_snap_%02d", i);
+      val = conf.getStringValue("file", key, "");
+      if (!val.empty()) CPC.mru_snaps.push_back(val);
+      snprintf(key, sizeof(key), "mru_cart_%02d", i);
+      val = conf.getStringValue("file", key, "");
+      if (!val.empty()) CPC.mru_carts.push_back(val);
+   }
+
    CPC.cartridge.file = CPC.rom_path + "/system.cpr"; // Only default path defined. Needed for CPC6128+
 }
 
@@ -2320,6 +2338,19 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
       conf.setStringValue("rom", chRomId, CPC.rom_file[iRomNum]);
    }
    conf.setStringValue("rom", "rom_mf2", CPC.rom_mf2);
+
+   // Save MRU (recent files) lists
+   for (int i = 0; i < t_CPC::MRU_MAX; i++) {
+      char key[16];
+      snprintf(key, sizeof(key), "mru_disk_%02d", i);
+      conf.setStringValue("file", key, i < (int)CPC.mru_disks.size() ? CPC.mru_disks[i] : "");
+      snprintf(key, sizeof(key), "mru_tape_%02d", i);
+      conf.setStringValue("file", key, i < (int)CPC.mru_tapes.size() ? CPC.mru_tapes[i] : "");
+      snprintf(key, sizeof(key), "mru_snap_%02d", i);
+      conf.setStringValue("file", key, i < (int)CPC.mru_snaps.size() ? CPC.mru_snaps[i] : "");
+      snprintf(key, sizeof(key), "mru_cart_%02d", i);
+      conf.setStringValue("file", key, i < (int)CPC.mru_carts.size() ? CPC.mru_carts[i] : "");
+   }
 
    return conf.saveToFile(configFilename);
 }
@@ -3405,6 +3436,62 @@ int koncpc_main (int argc, char **argv)
 
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
+
+         // ── Drag-and-drop file loading ──
+         if (event.type == SDL_EVENT_DROP_FILE) {
+           const char* dropped = event.drop.data;
+           if (dropped) {
+             std::string drop_path(dropped);
+             std::string ext = std::filesystem::path(drop_path).extension().string();
+             std::transform(ext.begin(), ext.end(), ext.begin(),
+                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+             auto drop_fname = std::filesystem::path(drop_path).filename().string();
+
+             if (ext == ".dsk" || ext == ".ipf" || ext == ".raw") {
+               CPC.driveA.file = drop_path;
+               if (file_load(CPC.driveA) == 0) {
+                 imgui_toast_success("Drive A: " + drop_fname);
+                 imgui_mru_push(CPC.mru_disks, drop_path);
+               } else
+                 imgui_toast_error("Failed to load disk: " + drop_fname);
+             } else if (ext == ".cdt" || ext == ".voc") {
+               CPC.tape.file = drop_path;
+               if (file_load(CPC.tape) == 0) {
+                 imgui_toast_success("Tape loaded: " + drop_fname);
+                 imgui_mru_push(CPC.mru_tapes, drop_path);
+                 tape_scan_blocks();
+               } else
+                 imgui_toast_error("Failed to load tape: " + drop_fname);
+             } else if (ext == ".sna") {
+               CPC.snapshot.file = drop_path;
+               if (file_load(CPC.snapshot) == 0) {
+                 imgui_toast_success("Snapshot loaded: " + drop_fname);
+                 imgui_mru_push(CPC.mru_snaps, drop_path);
+               } else
+                 imgui_toast_error("Failed to load snapshot: " + drop_fname);
+             } else if (ext == ".cpr") {
+               CPC.cartridge.file = drop_path;
+               if (file_load(CPC.cartridge) == 0) {
+                 imgui_toast_success("Cartridge loaded: " + drop_fname);
+                 imgui_mru_push(CPC.mru_carts, drop_path);
+                 emulator_reset();
+               } else {
+                 imgui_toast_error("Failed to load cartridge: " + drop_fname);
+               }
+             } else if (ext == ".zip") {
+               // Try as disk first (most common zip content)
+               CPC.driveA.file = drop_path;
+               if (file_load(CPC.driveA) == 0) {
+                 imgui_toast_success("Drive A: " + drop_fname);
+                 imgui_mru_push(CPC.mru_disks, drop_path);
+               } else
+                 imgui_toast_error("Unsupported ZIP content: " + drop_fname);
+             } else {
+               imgui_toast_error("Unknown file type: " + drop_fname);
+             }
+           }
+           continue;
+         }
 
          // Check for command palette shortcut (Cmd+K / Ctrl+K)
          if (event.type == SDL_EVENT_KEY_DOWN) {

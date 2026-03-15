@@ -21,6 +21,8 @@
 #include "disk_format.h"
 #include "data_areas.h"
 #include "z80_assembler.h"
+#include "expr_parser.h"
+#include "imgui_ui.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
@@ -33,6 +35,7 @@
 #include "portable-file-dialogs.h"
 #include "z80_opcode_table.h"
 
+extern SDL_Window* mainSDLWindow;
 extern t_CPC CPC;
 extern t_z80regs z80;
 extern byte* pbRAM;
@@ -571,8 +574,82 @@ void DevToolsUI::render_memory_hex()
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Right-click for navigation options.");
+      ImGui::SetTooltip("Right-click for navigation options.\nDouble-click a byte to edit.");
     ImGui::EndMenuBar();
+  }
+
+  // ── Search bar ──
+  {
+    ImGui::SetNextItemWidth(120);
+    bool do_search = ImGui::InputText("Find##mh", memhex_search_, sizeof(memhex_search_),
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ImGui::SmallButton(memhex_search_hex_ ? "Hex" : "ASCII")) {
+      memhex_search_hex_ = !memhex_search_hex_;
+      memhex_matches_.clear();
+      memhex_match_idx_ = -1;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Toggle Hex/ASCII search mode");
+    ImGui::SameLine();
+    do_search |= ImGui::SmallButton("Go##mhsearch");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("<##mhprev") && !memhex_matches_.empty()) {
+      memhex_match_idx_ = (memhex_match_idx_ - 1 + static_cast<int>(memhex_matches_.size())) %
+                           static_cast<int>(memhex_matches_.size());
+      memhex_goto_value_ = memhex_matches_[memhex_match_idx_];
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(">##mhnext") && !memhex_matches_.empty()) {
+      memhex_match_idx_ = (memhex_match_idx_ + 1) % static_cast<int>(memhex_matches_.size());
+      memhex_goto_value_ = memhex_matches_[memhex_match_idx_];
+    }
+    if (!memhex_matches_.empty()) {
+      ImGui::SameLine();
+      ImGui::Text("%d/%d", memhex_match_idx_ + 1, static_cast<int>(memhex_matches_.size()));
+    }
+
+    if (do_search && memhex_search_[0]) {
+      // Parse search pattern
+      std::vector<byte> pattern;
+      if (memhex_search_hex_) {
+        // Parse space-separated hex bytes: "C3 00 40"
+        const char* p = memhex_search_;
+        while (*p) {
+          while (*p == ' ') p++;
+          if (!*p) break;
+          char* end;
+          unsigned long v = strtoul(p, &end, 16);
+          if (end == p) break;
+          if (v > 0xFF) { pattern.clear(); imgui_toast_error("Hex byte > FF"); break; }
+          pattern.push_back(static_cast<byte>(v));
+          p = end;
+        }
+      } else {
+        // ASCII: use raw bytes
+        for (const char* p = memhex_search_; *p; p++)
+          pattern.push_back(static_cast<byte>(*p));
+      }
+      // Linear scan
+      memhex_matches_.clear();
+      memhex_match_idx_ = -1;
+      if (!pattern.empty()) {
+        int plen = static_cast<int>(pattern.size());
+        for (int addr = 0; addr <= 0xFFFF - plen + 1; addr++) {
+          bool match = true;
+          for (int j = 0; j < plen; j++) {
+            word sa = static_cast<word>(addr + j);
+            byte m = memhex_cpu_view_ ? z80_cpu_read_mem(sa) : z80_read_mem(sa);
+            if (m != pattern[j]) { match = false; break; }
+          }
+          if (match) memhex_matches_.push_back(static_cast<word>(addr));
+        }
+        if (!memhex_matches_.empty()) {
+          memhex_match_idx_ = 0;
+          memhex_goto_value_ = memhex_matches_[0];
+        }
+      }
+    }
   }
 
   int bytes_per_row = memhex_bytes_per_row_;
@@ -580,6 +657,22 @@ void DevToolsUI::render_memory_hex()
 
   // Collect watchpoint ranges for highlighting
   const auto& watchpoints = z80_list_watchpoints_ref();
+
+  // Pre-compute search pattern length (avoids reparse per byte in render loop)
+  int search_plen = 0;
+  if (!memhex_matches_.empty() && memhex_search_[0]) {
+    if (memhex_search_hex_) {
+      for (const char* sp = memhex_search_; *sp; ) {
+        while (*sp == ' ') sp++;
+        if (!*sp) break;
+        char* se; strtoul(sp, &se, 16);
+        if (se == sp) break;
+        search_plen++; sp = se;
+      }
+    } else {
+      search_plen = static_cast<int>(strlen(memhex_search_));
+    }
+  }
 
   if (ImGui::BeginChild("##hexview", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
     // Use clipper for efficient scrolling over all 64K
@@ -594,12 +687,33 @@ void DevToolsUI::render_memory_hex()
       memhex_goto_value_ = -1;
     }
 
+    // ROM detection: when read and write banks differ for a slot, ROM is overlaid
+    extern byte *membank_read[4], *membank_write[4];
+
     while (clipper.Step()) {
       for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++) {
         unsigned int base_addr = row * bytes_per_row;
 
+        // Check if this row overlaps any ROM-overlaid 16K slot
+        int slot = (base_addr >> 14) & 3;
+        bool in_rom = (membank_read[slot] != membank_write[slot]);
+
+        // ROM row background tint (dark purple)
+        if (in_rom) {
+          ImVec2 rpos = ImGui::GetCursorScreenPos();
+          float row_h = ImGui::GetTextLineHeightWithSpacing();
+          float row_w = ImGui::GetContentRegionAvail().x;
+          ImGui::GetWindowDrawList()->AddRectFilled(
+            rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
+            IM_COL32(60, 20, 60, 80));
+        }
+
         // Address
-        ImGui::Text("%04X:", base_addr & 0xFFFF);
+        if (in_rom) {
+          ImGui::TextColored(ImVec4(0.7f, 0.5f, 0.8f, 1.0f), "%04X:", base_addr & 0xFFFF);
+        } else {
+          ImGui::Text("%04X:", base_addr & 0xFFFF);
+        }
 
         // Hex bytes with watchpoint highlighting
         for (int col = 0; col < bytes_per_row; col++) {
@@ -626,7 +740,88 @@ void DevToolsUI::render_memory_hex()
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
           }
 
-          ImGui::Text("%02X", val);
+          // Inline editing or display
+          {
+            bool is_editing = (memhex_edit_addr_ == static_cast<int>(a));
+            bool is_selected = (memhex_sel_addr_ == static_cast<int>(a));
+            char hex_label[8];
+            snprintf(hex_label, sizeof(hex_label), "%02X", val);
+
+            if (is_editing) {
+              // Compact inline edit — fixed width matching "FF"
+              ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+              ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x);
+              if (memhex_edit_focus_) {
+                ImGui::SetKeyboardFocusHere();
+                // Don't clear yet — give InputText one frame to activate
+              }
+              ImGuiInputTextFlags eflags = ImGuiInputTextFlags_CharsHexadecimal |
+                                           ImGuiInputTextFlags_EnterReturnsTrue |
+                                           ImGuiInputTextFlags_AutoSelectAll;
+              bool committed = ImGui::InputText("##mhedit", memhex_edit_buf_,
+                                                sizeof(memhex_edit_buf_), eflags);
+              ImGui::PopStyleVar();
+
+              // Clear the focus request AFTER InputText has had a chance to use it
+              memhex_edit_focus_ = false;
+
+              if (committed) {
+                unsigned long nv;
+                if (parse_hex(memhex_edit_buf_, &nv, 0xFF)) {
+                  z80_write_mem(a, static_cast<byte>(nv));
+                }
+                memhex_edit_addr_ = -1;
+                memhex_sel_addr_ = -1;
+              } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                memhex_edit_addr_ = -1;
+                memhex_sel_addr_ = -1;
+              }
+            } else {
+              // Normal display — clickable
+              if (is_selected) {
+                // Draw selection highlight — bright blue
+                ImVec2 tpos = ImGui::GetCursorScreenPos();
+                ImVec2 tsz = ImGui::CalcTextSize(hex_label);
+                ImGui::GetWindowDrawList()->AddRectFilled(
+                  tpos, ImVec2(tpos.x + tsz.x, tpos.y + tsz.y),
+                  IM_COL32(40, 80, 220, 180));
+              }
+              ImGui::Text("%s", hex_label);
+
+              if (ImGui::IsItemClicked(0)) {
+                memhex_sel_addr_ = static_cast<int>(a);
+              }
+              // Start editing: double-click OR type while selected (not on ROM cells)
+              bool start_edit = false;
+              if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
+                start_edit = true;
+              if (is_selected) {
+                // Any hex digit typed while selected → start editing
+                for (ImGuiKey k = ImGuiKey_0; k <= ImGuiKey_9; k = static_cast<ImGuiKey>(k + 1)) {
+                  if (ImGui::IsKeyPressed(k)) {
+                    memhex_edit_buf_[0] = '0' + (k - ImGuiKey_0);
+                    memhex_edit_buf_[1] = '\0';
+                    start_edit = true;
+                    break;
+                  }
+                }
+                for (ImGuiKey k = ImGuiKey_A; k <= ImGuiKey_F; k = static_cast<ImGuiKey>(k + 1)) {
+                  if (ImGui::IsKeyPressed(k)) {
+                    memhex_edit_buf_[0] = 'A' + (k - ImGuiKey_A);
+                    memhex_edit_buf_[1] = '\0';
+                    start_edit = true;
+                    break;
+                  }
+                }
+              }
+              if (start_edit && !in_rom) {
+                memhex_edit_addr_ = static_cast<int>(a);
+                if (memhex_edit_buf_[0] == '\0') // double-click: prefill
+                  snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", val);
+                memhex_edit_focus_ = true;
+              }
+            }
+          }
 
           // Flash-highlight the navigation target byte
           if (memhex_highlight_frames_ > 0 && a == static_cast<word>(memhex_highlight_addr_)) {
@@ -636,6 +831,21 @@ void DevToolsUI::render_memory_hex()
             ImGui::GetWindowDrawList()->AddRectFilled(
               rmin, rmax,
               ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.8f, 0.0f, 0.5f * alpha)));
+          }
+
+          // Search match highlighting (yellow background, O(log N) via sorted matches)
+          if (search_plen > 0 && !memhex_matches_.empty()) {
+            // Find first match whose start + plen > a (i.e. could contain a)
+            word range_start = (a >= static_cast<word>(search_plen - 1)) ? a - (search_plen - 1) : 0;
+            auto it = std::lower_bound(memhex_matches_.begin(), memhex_matches_.end(), range_start);
+            if (it != memhex_matches_.end() && a >= *it && a < *it + search_plen) {
+              ImVec2 rmin = ImGui::GetItemRectMin();
+              ImVec2 rmax = ImGui::GetItemRectMax();
+              bool is_current = (memhex_match_idx_ >= 0 &&
+                  memhex_matches_[memhex_match_idx_] == *it);
+              ImU32 hcol = is_current ? IM_COL32(255, 200, 0, 100) : IM_COL32(200, 200, 0, 60);
+              ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, hcol);
+            }
           }
 
           if (colored) ImGui::PopStyleColor();
@@ -671,6 +881,12 @@ void DevToolsUI::render_memory_hex()
 
       ImGui::TextDisabled("%04X", ctx_addr);
       ImGui::Separator();
+      if (ImGui::MenuItem("Edit byte")) {
+        byte v = memhex_cpu_view_ ? z80_cpu_read_mem(ctx_addr) : z80_read_mem(ctx_addr);
+        memhex_edit_addr_ = static_cast<int>(ctx_addr);
+        snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", v);
+        memhex_edit_focus_ = true;
+      }
       if (ImGui::MenuItem("Disassemble here")) {
         navigate_to(ctx_addr, NavTarget::DISASM);
       }
@@ -912,8 +1128,51 @@ void DevToolsUI::render_breakpoints()
     ImGui::EndTable();
   }
 
-  // Add Watchpoint form
+  // Add Breakpoint form
   ImGui::Spacing();
+  if (ImGui::CollapsingHeader("Add Breakpoint", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::SetNextItemWidth(60);
+    ImGui::InputText("Addr##bp", bp_addr_, sizeof(bp_addr_),
+                     ImGuiInputTextFlags_CharsHexadecimal);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180);
+    ImGui::InputText("Condition##bp", bp_cond_, sizeof(bp_cond_));
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("e.g. A==0x42, (HL)>0x100, BC==DE\nLeave empty for unconditional");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(40);
+    ImGui::InputText("Pass##bp", bp_pass_, sizeof(bp_pass_),
+                     ImGuiInputTextFlags_CharsDecimal);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Break after N hits (0 = every hit)");
+    ImGui::SameLine();
+    if (ImGui::Button("Add BP")) {
+      unsigned long addr;
+      if (parse_hex(bp_addr_, &addr, 0xFFFF)) {
+        std::string cond_str(bp_cond_);
+        int pass = (bp_pass_[0] != '\0') ? std::atoi(bp_pass_) : 0;
+        if (pass < 0) pass = 0;
+        if (cond_str.empty() && pass == 0) {
+          z80_add_breakpoint(static_cast<word>(addr));
+        } else {
+          std::unique_ptr<ExprNode> cond;
+          if (!cond_str.empty()) {
+            std::string err;
+            cond = expr_parse(cond_str, err);
+            if (!cond) {
+              imgui_toast_error("Bad condition: " + err);
+              goto bp_form_end;
+            }
+          }
+          z80_add_breakpoint_cond(static_cast<word>(addr), std::move(cond), cond_str, pass);
+        }
+        bp_addr_[0] = bp_cond_[0] = bp_pass_[0] = '\0';
+      }
+    }
+    bp_form_end:;
+  }
+
+  // Add Watchpoint form
   if (ImGui::CollapsingHeader("Add Watchpoint")) {
     ImGui::SetNextItemWidth(60);
     ImGui::InputText("Addr##wp", wp_addr_, sizeof(wp_addr_),
@@ -1303,18 +1562,56 @@ void DevToolsUI::render_disc_tools()
       dt_files_dirty_ = false;
     }
     if (ImGui::Button("Refresh##files")) dt_files_dirty_ = true;
+    ImGui::SameLine();
+
+    // Import button
+    if (ImGui::Button("Import File...")) {
+      dt_dialog_drive_ = dt_drive_;  // capture drive at dialog-open time
+      static const SDL_DialogFileFilter filters[] = { { "All files", "*" } };
+      SDL_ShowOpenFileDialog(
+        [](void* ud, const char* const* filelist, int) {
+          if (!filelist || !filelist[0]) return;
+          auto* self = static_cast<DevToolsUI*>(ud);
+          std::string host_path(filelist[0]);
+          t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+
+          // Read host file
+          std::ifstream f(host_path, std::ios::binary);
+          if (!f) { imgui_toast_error("Cannot open: " + host_path); return; }
+          std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
+                                     std::istreambuf_iterator<char>());
+
+          // Convert filename to CPC 8.3
+          auto fname = std::filesystem::path(host_path).filename().string();
+          std::string cpc_name = disk_to_cpc_filename(fname);
+          if (cpc_name.empty()) {
+            imgui_toast_error("Cannot convert filename: " + fname);
+            return;
+          }
+
+          std::string err = disk_write_file(d, cpc_name, data, false);
+          if (err.empty()) {
+            imgui_toast_success("Imported: " + fname);
+            self->dt_files_dirty_ = true;
+          } else {
+            imgui_toast_error("Import failed: " + err);
+          }
+        },
+        this, mainSDLWindow, filters, 1, nullptr, false);
+    }
 
     if (!dt_file_error_.empty()) {
       ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_file_error_.c_str());
     }
 
-    if (ImGui::BeginTable("dt_files", 4,
+    if (ImGui::BeginTable("dt_files", 5,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
         ImVec2(0, 200))) {
       ImGui::TableSetupScrollFreeze(0, 1);
       ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 60);
       ImGui::TableSetupColumn("User", ImGuiTableColumnFlags_WidthFixed, 30);
+      ImGui::TableSetupColumn("##export", ImGuiTableColumnFlags_WidthFixed, 42);
       ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
       ImGui::TableHeadersRow();
 
@@ -1328,6 +1625,35 @@ void DevToolsUI::render_disc_tools()
         ImGui::TableSetColumnIndex(2);
         ImGui::Text("%d", fe.user);
         ImGui::TableSetColumnIndex(3);
+        ImGui::PushID(static_cast<int>(i) + 3000);
+        if (ImGui::SmallButton("Save")) {
+          // Export: read file from disc, save to host
+          dt_export_filename_ = fe.filename;
+          dt_export_display_ = fe.display_name;
+          dt_dialog_drive_ = dt_drive_;  // capture drive at dialog-open time
+          // Show save dialog
+          static const SDL_DialogFileFilter ef[] = { { "All files", "*" } };
+          SDL_ShowSaveFileDialog(
+            [](void* ud, const char* const* filelist, int) {
+              if (!filelist || !filelist[0]) return;
+              auto* self = static_cast<DevToolsUI*>(ud);
+              t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+              std::string err;
+              auto data = disk_read_file(d, self->dt_export_filename_, err);
+              if (!err.empty()) {
+                imgui_toast_error("Export failed: " + err);
+                return;
+              }
+              std::ofstream f(filelist[0], std::ios::binary);
+              if (!f) { imgui_toast_error("Cannot write: " + std::string(filelist[0])); return; }
+              f.write(reinterpret_cast<const char*>(data.data()),
+                      static_cast<std::streamsize>(data.size()));
+              imgui_toast_success("Exported: " + self->dt_export_display_);
+            },
+            this, mainSDLWindow, ef, 1, fe.display_name.c_str());
+        }
+        ImGui::PopID();
+        ImGui::TableSetColumnIndex(4);
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton("X")) {
           disk_delete_file(drv, fe.filename);
@@ -2850,8 +3176,16 @@ void DevToolsUI::render_assembler()
     ImGui::Text("Errors:");
     ImGui::BeginChild("##asm_errors", ImVec2(0, 0), ImGuiChildFlags_None);
     for (auto& err : asm_errors_) {
-      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                         "Line %d: %s", err.line, err.message.c_str());
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+      ImGui::Text("Line %d: %s", err.line, err.message.c_str());
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImGui::SetTooltip("Click to jump to line %d", err.line);
+      }
+      if (ImGui::IsItemClicked() && asm_editor_ && err.line > 0) {
+        asm_editor_->SetCursorPosition(err.line - 1, 0);
+      }
     }
     ImGui::EndChild();
   }

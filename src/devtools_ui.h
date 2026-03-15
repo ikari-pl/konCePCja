@@ -101,6 +101,28 @@ private:
     std::vector<uint8_t> dt_sector_data_;
     std::string dt_sector_read_error_;
 
+    // Memory Hex search
+    char memhex_search_[64] = "";
+    bool memhex_search_hex_ = true; // true=hex bytes, false=ASCII
+    std::vector<word> memhex_matches_;
+    int memhex_match_idx_ = -1;
+
+    // Memory Hex selection and inline editing
+    int memhex_sel_addr_ = -1;      // Selected (highlighted) byte (-1 = none)
+    int memhex_edit_addr_ = -1;     // Address being edited (-1 = none)
+    char memhex_edit_buf_[3] = "";  // 2 hex chars + null
+    bool memhex_edit_focus_ = false; // Set focus on first frame
+
+    // Disc tools async dialog state (captured at dialog-open time)
+    int dt_dialog_drive_ = 0;          // Drive at time dialog was opened
+    std::string dt_export_filename_;   // CPC filename being exported
+    std::string dt_export_display_;    // Display name for toast
+
+    // Add Breakpoint form state
+    char bp_addr_[8] = "";
+    char bp_cond_[128] = "";
+    char bp_pass_[8] = "";
+
     // Add Watchpoint form state
     char wp_addr_[8] = "";
     char wp_len_[8] = "1";

@@ -5,6 +5,7 @@
 #include "command_palette.h"
 #include "menu_actions.h"
 #include "workspace_layout.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -56,7 +57,6 @@ extern dword dwTapeZeroPulseCycles;
 ImGuiUIState imgui_state;
 
 // Forward declarations
-static void tape_scan_blocks();
 static void imgui_render_menubar();
 static void imgui_render_topbar();
 static void imgui_render_menu();
@@ -66,6 +66,7 @@ static void imgui_render_memory_tool();
 static void imgui_render_vkeyboard();
 
 static void close_menu();
+static void mru_push(std::vector<std::string>& list, const std::string& path);
 
 // Height tracking for stacked menubar + topbar + devtools bar
 static float s_menubar_h = 19.0f; // ImGui main menu bar default height
@@ -99,56 +100,90 @@ static void process_pending_dialog()
   imgui_state.pending_rom_slot = -1;
 
   std::string dir = path.substr(0, path.find_last_of("/\\"));
+  auto fname = std::filesystem::path(path).filename().string();
 
   switch (action) {
     case FileDialogAction::LoadDiskA:
     case FileDialogAction::LoadDiskA_LED:
       CPC.driveA.file = path;
-      file_load(CPC.driveA);
+      if (file_load(CPC.driveA) == 0) {
+        imgui_toast_success("Drive A: " + fname);
+        mru_push(CPC.mru_disks, path);
+      } else
+        imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
       if (action == FileDialogAction::LoadDiskA) close_menu();
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
       CPC.driveB.file = path;
-      file_load(CPC.driveB);
+      if (file_load(CPC.driveB) == 0) {
+        imgui_toast_success("Drive B: " + fname);
+        mru_push(CPC.mru_disks, path);
+      } else
+        imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
       if (action == FileDialogAction::LoadDiskB) close_menu();
       break;
     case FileDialogAction::SaveDiskA:
-      dsk_save(path, &driveA);
+      if (dsk_save(path, &driveA) == 0)
+        imgui_toast_success("Saved disk A: " + fname);
+      else
+        imgui_toast_error("Failed to save disk: " + fname);
       CPC.current_dsk_path = dir;
       break;
     case FileDialogAction::SaveDiskB:
-      dsk_save(path, &driveB);
+      if (dsk_save(path, &driveB) == 0)
+        imgui_toast_success("Saved disk B: " + fname);
+      else
+        imgui_toast_error("Failed to save disk: " + fname);
       CPC.current_dsk_path = dir;
       break;
     case FileDialogAction::LoadSnapshot:
       CPC.snapshot.file = path;
-      file_load(CPC.snapshot);
+      if (file_load(CPC.snapshot) == 0) {
+        imgui_toast_success("Snapshot loaded: " + fname);
+        mru_push(CPC.mru_snaps, path);
+      } else
+        imgui_toast_error("Failed to load snapshot: " + fname);
       CPC.current_snap_path = dir;
       close_menu();
       break;
     case FileDialogAction::SaveSnapshot:
-      snapshot_save(path);
+      if (snapshot_save(path) == 0)
+        imgui_toast_success("Snapshot saved: " + fname);
+      else
+        imgui_toast_error("Failed to save snapshot: " + fname);
       CPC.current_snap_path = dir;
       break;
     case FileDialogAction::LoadTape:
       CPC.tape.file = path;
-      file_load(CPC.tape);
+      if (file_load(CPC.tape) == 0) {
+        imgui_toast_success("Tape loaded: " + fname);
+        mru_push(CPC.mru_tapes, path);
+        tape_scan_blocks();
+      } else
+        imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      tape_scan_blocks();
       close_menu();
       break;
     case FileDialogAction::LoadTape_LED:
       CPC.tape.file = path;
-      file_load(CPC.tape);
+      if (file_load(CPC.tape) == 0) {
+        imgui_toast_success("Tape loaded: " + fname);
+        mru_push(CPC.mru_tapes, path);
+        tape_scan_blocks();
+      } else
+        imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      tape_scan_blocks();
       break;
     case FileDialogAction::LoadCartridge:
       CPC.cartridge.file = path;
-      file_load(CPC.cartridge);
+      if (file_load(CPC.cartridge) == 0) {
+        imgui_toast_success("Cartridge loaded: " + fname);
+        mru_push(CPC.mru_carts, path);
+      } else
+        imgui_toast_error("Failed to load cartridge: " + fname);
       CPC.current_cart_path = dir;
       emulator_reset();
       close_menu();
@@ -344,6 +379,76 @@ void imgui_render_ui()
   g_devtools_ui.render();
   g_command_palette.render();
 
+  // ── Toast notifications ──
+  {
+    ImGuiIO& io = ImGui::GetIO();
+    float dt = io.DeltaTime;
+    float yOffset = 40.0f; // bottom margin
+    float xMargin = 16.0f;
+    float maxWidth = 360.0f;
+
+    // Tick timers and remove expired
+    for (auto it = imgui_state.toasts.begin(); it != imgui_state.toasts.end(); ) {
+      it->timer -= dt;
+      if (it->timer <= 0.0f) {
+        it = imgui_state.toasts.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // Render from bottom of viewport, stacking upward
+    ImVec2 vpPos = ImGui::GetMainViewport()->Pos;
+    ImVec2 vpSize = ImGui::GetMainViewport()->Size;
+    for (int i = static_cast<int>(imgui_state.toasts.size()) - 1; i >= 0; --i) {
+      auto& t = imgui_state.toasts[i];
+
+      // Fade in/out
+      float alpha = 1.0f;
+      if (t.timer < ImGuiUIState::TOAST_FADE_TIME)
+        alpha = t.timer / ImGuiUIState::TOAST_FADE_TIME;
+      float age = t.initial - t.timer;
+      if (age < ImGuiUIState::TOAST_FADE_TIME)
+        alpha = std::min(alpha, age / ImGuiUIState::TOAST_FADE_TIME);
+
+      // Colors by level
+      ImU32 bgCol, borderCol, textCol;
+      switch (t.level) {
+        case ImGuiUIState::ToastLevel::Success:
+          bgCol     = IM_COL32(0x10, 0x30, 0x18, static_cast<int>(210 * alpha));
+          borderCol = IM_COL32(0x20, 0x90, 0x40, static_cast<int>(200 * alpha));
+          textCol   = IM_COL32(0x80, 0xFF, 0x80, static_cast<int>(255 * alpha));
+          break;
+        case ImGuiUIState::ToastLevel::Error:
+          bgCol     = IM_COL32(0x30, 0x10, 0x10, static_cast<int>(210 * alpha));
+          borderCol = IM_COL32(0x90, 0x20, 0x20, static_cast<int>(200 * alpha));
+          textCol   = IM_COL32(0xFF, 0x80, 0x80, static_cast<int>(255 * alpha));
+          break;
+        default: // Info
+          bgCol     = IM_COL32(0x18, 0x18, 0x20, static_cast<int>(210 * alpha));
+          borderCol = IM_COL32(0x50, 0x50, 0x70, static_cast<int>(200 * alpha));
+          textCol   = IM_COL32(0xD0, 0xD0, 0xD0, static_cast<int>(255 * alpha));
+          break;
+      }
+
+      ImVec2 textSize = ImGui::CalcTextSize(t.message.c_str(), nullptr, false, maxWidth - 16.0f);
+      float boxW = textSize.x + 16.0f;
+      float boxH = textSize.y + 12.0f;
+
+      float x = vpPos.x + vpSize.x - boxW - xMargin;
+      float y = vpPos.y + vpSize.y - yOffset - boxH;
+
+      ImDrawList* dl = ImGui::GetForegroundDrawList();
+      ImVec2 p0(x, y), p1(x + boxW, y + boxH);
+      dl->AddRectFilled(p0, p1, bgCol, 4.0f);
+      dl->AddRect(p0, p1, borderCol, 4.0f);
+      dl->AddText(nullptr, 0.0f, ImVec2(x + 8.0f, y + 6.0f), textCol,
+                  t.message.c_str(), nullptr, maxWidth - 16.0f);
+
+      yOffset += boxH + 4.0f;
+    }
+  }
+
   // --- Quit confirmation popup (rendered here so it works regardless of show_menu) ---
   if (imgui_state.show_quit_confirm) {
     ImGui::OpenPopup("Confirm Quit");
@@ -404,6 +509,38 @@ void imgui_render_ui()
 }
 
 // ─────────────────────────────────────────────────
+// MRU (recent files) helper
+// ─────────────────────────────────────────────────
+
+static void mru_push(std::vector<std::string>& list, const std::string& path) {
+  mru_list_push(list, path, t_CPC::MRU_MAX);
+}
+
+void imgui_mru_push(std::vector<std::string>& list, const std::string& path) {
+  mru_push(list, path);
+}
+
+// ─────────────────────────────────────────────────
+// Toast notification API
+// ─────────────────────────────────────────────────
+
+void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level)
+{
+  // Cap queue size
+  while (static_cast<int>(imgui_state.toasts.size()) >= ImGuiUIState::MAX_TOASTS) {
+    imgui_state.toasts.pop_front();
+  }
+  float duration = (level == ImGuiUIState::ToastLevel::Error)
+    ? ImGuiUIState::TOAST_DURATION * 1.5f   // errors stay longer
+    : ImGuiUIState::TOAST_DURATION;
+  imgui_state.toasts.push_back({message, level, duration, duration});
+}
+
+void imgui_toast_info(const std::string& message)    { imgui_toast(message, ImGuiUIState::ToastLevel::Info); }
+void imgui_toast_success(const std::string& message) { imgui_toast(message, ImGuiUIState::ToastLevel::Success); }
+void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGuiUIState::ToastLevel::Error); }
+
+// ─────────────────────────────────────────────────
 // Helper: close menu and resume emulation
 // ─────────────────────────────────────────────────
 
@@ -425,7 +562,7 @@ static void close_menu()
 
 // safe_read_word/dword moved to imgui_ui_testable.h
 
-static void tape_scan_blocks()
+void tape_scan_blocks()
 {
   imgui_state.tape_block_offsets.clear();
   imgui_state.tape_current_block = 0;
@@ -627,13 +764,70 @@ static void imgui_render_menubar()
         reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
         mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
     }
+
+    // ── Open Recent submenu ──
+    bool has_any_mru = !CPC.mru_disks.empty() || !CPC.mru_tapes.empty() ||
+                       !CPC.mru_snaps.empty() || !CPC.mru_carts.empty();
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Open Recent", has_any_mru)) {
+      auto render_mru_section = [&](const char* label, std::vector<std::string>& list,
+                                    auto load_fn) {
+        if (!list.empty() && ImGui::BeginMenu(label)) {
+          for (int i = 0; i < static_cast<int>(list.size()); i++) {
+            auto item_fname = std::filesystem::path(list[i]).filename().string();
+            ImGui::PushID(i);
+            if (ImGui::MenuItem(item_fname.c_str())) {
+              load_fn(list[i]);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", list[i].c_str());
+            ImGui::PopID();
+          }
+          ImGui::EndMenu();
+        }
+      };
+      render_mru_section("Disks", CPC.mru_disks, [](const std::string& p) {
+        CPC.driveA.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.driveA) == 0) { imgui_toast_success("Drive A: " + f); mru_push(CPC.mru_disks, p); }
+        else imgui_toast_error("Failed: " + f);
+      });
+      render_mru_section("Tapes", CPC.mru_tapes, [](const std::string& p) {
+        CPC.tape.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.tape) == 0) { imgui_toast_success("Tape: " + f); tape_scan_blocks(); mru_push(CPC.mru_tapes, p); }
+        else imgui_toast_error("Failed: " + f);
+      });
+      render_mru_section("Snapshots", CPC.mru_snaps, [](const std::string& p) {
+        CPC.snapshot.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.snapshot) == 0) { imgui_toast_success("Snapshot: " + f); mru_push(CPC.mru_snaps, p); }
+        else imgui_toast_error("Failed: " + f);
+      });
+      render_mru_section("Cartridges", CPC.mru_carts, [](const std::string& p) {
+        CPC.cartridge.file = p;
+        auto f = std::filesystem::path(p).filename().string();
+        if (file_load(CPC.cartridge) == 0) { imgui_toast_success("Cartridge: " + f); emulator_reset(); mru_push(CPC.mru_carts, p); }
+        else imgui_toast_error("Failed: " + f);
+      });
+      ImGui::Separator();
+      if (ImGui::MenuItem("Clear Recent")) {
+        CPC.mru_disks.clear();
+        CPC.mru_tapes.clear();
+        CPC.mru_snaps.clear();
+        CPC.mru_carts.clear();
+      }
+      ImGui::EndMenu();
+    }
+
     ImGui::EndMenu();
   }
 
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
     if (ImGui::MenuItem("Memory Tool")) {
-      imgui_state.show_memory_tool = true;
+      // Open the DevTools Memory Hex window (superset of legacy Memory Tool)
+      imgui_state.show_devtools = true;
+      g_devtools_ui.toggle_window("memory_hex");
     }
     if (ImGui::MenuItem("DevTools", "Shift+F2")) {
       imgui_state.show_devtools = true;
@@ -863,7 +1057,7 @@ static void imgui_render_topbar()
     if (imgui_state.eject_confirm_drive >= 0) {
       ImGui::OpenPopup("Eject Disk?");
     }
-    if (ImGui::BeginPopup("Eject Disk?")) {
+    if (ImGui::BeginPopupModal("Eject Disk?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       int drv = imgui_state.eject_confirm_drive;
       const char* name = drv == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
@@ -1134,10 +1328,21 @@ static void imgui_render_topbar()
         }
       }
 
+      // Mode label overlay (top-right corner of waveform box)
+      {
+        const char* modeLabel = (mode == 0) ? "RAW" : "BITS";
+        ImVec2 labelSize = ImGui::CalcTextSize(modeLabel);
+        ImVec2 labelPos(p1.x - labelSize.x - 2.0f, p0.y + 1.0f);
+        dl->AddText(labelPos, IM_COL32(0x80, 0x80, 0x80, 0xA0), modeLabel);
+      }
+
       // Advance cursor past the waveform box; click cycles mode (2 modes now)
       ImGui::Dummy(ImVec2(waveW, frameH));
       if (ImGui::IsItemClicked()) {
         imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Click to cycle waveform mode (RAW pulse / decoded BITS)");
       }
     }
 
@@ -1145,7 +1350,7 @@ static void imgui_render_topbar()
     if (imgui_state.eject_confirm_tape) {
       ImGui::OpenPopup("Eject Tape?");
     }
-    if (ImGui::BeginPopup("Eject Tape?")) {
+    if (ImGui::BeginPopupModal("Eject Tape?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextUnformatted("Eject tape?");
       ImGui::Spacing();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
@@ -1419,6 +1624,11 @@ static void imgui_render_menu()
   ImGui::TextWrapped("Emulation paused. Use the menu bar above for all actions.");
   ImGui::Spacing();
 
+  // Enable keyboard navigation for this window (arrows/tab cycle buttons)
+  if (imgui_state.menu_just_opened) {
+    ImGui::SetKeyboardFocusHere();
+    imgui_state.menu_just_opened = false;
+  }
   if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
     action = true;
   }
@@ -1453,7 +1663,12 @@ static void imgui_render_menu()
     ImGui::BulletText("Shift+F2 - DevTools");
     ImGui::BulletText("F5 - Reset");
     ImGui::BulletText("F10 - Quit");
-    ImGui::BulletText("Ctrl+F5 - Screenshot");
+    ImGui::BulletText("F3 - Screenshot");
+#ifdef __APPLE__
+    ImGui::BulletText("Cmd+K - Command Palette");
+#else
+    ImGui::BulletText("Ctrl+K - Command Palette");
+#endif
     ImGui::Spacing();
     if (ImGui::Button("OK", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
     ImGui::EndPopup();
@@ -1536,6 +1751,9 @@ static void imgui_render_options()
       int speed = static_cast<int>(CPC.speed);
       if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING, MAX_SPEED_SETTING)) {
         CPC.speed = speed;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("CPU clock speed in MHz (default: 4).\nHigher = faster emulation.");
       }
 
       bool printer = CPC.printer != 0;
@@ -1701,7 +1919,9 @@ static void imgui_render_options()
 
           // Unload button (slots 0-1 are system ROMs, protected)
           ImGui::TableSetColumnIndex(3);
-          if (i >= 2 && loaded) {
+          if (i < 2) {
+            ImGui::TextDisabled("system");
+          } else if (loaded) {
             if (ImGui::SmallButton("X")) {
               delete[] memmap_ROM[i];
               memmap_ROM[i] = nullptr;
@@ -1738,6 +1958,9 @@ static void imgui_render_options()
       if (ImGui::Combo("Scale", &scale, scale_items, IM_ARRAYSIZE(scale_items))) {
         CPC.scr_scale = scale + 1;
       }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Window size multiplier (1x = 384x270)");
+      }
 
       bool colour = CPC.scr_tube == 0;
       if (ImGui::RadioButton("Colour", colour)) { CPC.scr_tube = 0; }
@@ -1748,6 +1971,9 @@ static void imgui_render_options()
       if (ImGui::SliderInt("Intensity", &intensity, 5, 15)) {
         CPC.scr_intensity = intensity;
         video_set_palette();
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("CRT phosphor brightness.\nHigher = brighter colours.");
       }
 
       bool scanlines = CPC.scr_scanlines != 0;
@@ -1775,6 +2001,9 @@ static void imgui_render_options()
       bool aspect = CPC.scr_preserve_aspect_ratio != 0;
       if (ImGui::Checkbox("Preserve Aspect Ratio", &aspect)) {
         CPC.scr_preserve_aspect_ratio = aspect ? 1 : 0;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("When off, the CPC screen stretches\nto fill the entire window.");
       }
 
       ImGui::EndTabItem();
@@ -1869,6 +2098,9 @@ static void imgui_render_options()
     CPC.paused = false;
     first_open = true;
   }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Apply changes and save to config file");
+  }
   ImGui::SameLine();
   if (ImGui::Button("Cancel", ImVec2(80, 0))) {
     CPC = imgui_state.old_cpc_settings;
@@ -1879,7 +2111,7 @@ static void imgui_render_options()
     first_open = true;
   }
   ImGui::SameLine();
-  if (ImGui::Button("OK", ImVec2(80, 0))) {
+  if (ImGui::Button("Apply", ImVec2(80, 0))) {
     if (CPC.model != imgui_state.old_cpc_settings.model ||
         CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
         CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
@@ -1891,6 +2123,9 @@ static void imgui_render_options()
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Apply changes for this session only\n(not saved to config file)");
   }
 
   if (!open) {
@@ -2100,6 +2335,7 @@ static void imgui_render_devtools()
       z80.step_out_addresses.clear();
       CPC.paused = false;
     }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (enters CALLs)"); }
     ImGui::SameLine();
     if (ImGui::Button("Step Over")) {
       z80.step_in = 0;
@@ -2114,6 +2350,7 @@ static void imgui_render_devtools()
         CPC.paused = false;
       }
     }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)"); }
     ImGui::SameLine();
     if (ImGui::Button("Step Out")) {
       z80.step_out = 1;
@@ -2121,6 +2358,7 @@ static void imgui_render_devtools()
       z80.step_in = 0;
       CPC.paused = false;
     }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Run until the current subroutine returns"); }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {
@@ -2207,6 +2445,21 @@ static void imgui_render_memory_tool()
       std::cout << "\n";
     }
     std::cout << std::flush;
+  }
+
+  // Active mode indicator
+  if (imgui_state.mem_filter_value >= 0) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+    ImGui::Text("[FILTER: %02X]", imgui_state.mem_filter_value & 0xFF);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear##mtclear")) { imgui_state.mem_filter_value = -1; }
+  } else if (imgui_state.mem_display_value >= 0) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+    ImGui::Text("[DISPLAY: %04X]", imgui_state.mem_display_value & 0xFFFF);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear##mtclear")) { imgui_state.mem_display_value = -1; }
   }
 
   // Hex dump
@@ -2366,6 +2619,25 @@ static void imgui_render_vkeyboard()
   float x0 = ImGui::GetCursorPosX();
   float y0 = ImGui::GetCursorPosY();
 
+  // Helper: check if a CPC key is currently pressed in the keyboard matrix.
+  // CPC_KEYS enum values are NOT matrix positions — must convert via scancode table.
+  auto cpc_key_down = [](byte cpc_key) -> bool {
+    extern byte keyboard_matrix[];
+    extern byte bit_values[];
+    CPCScancode sc = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
+    byte row = static_cast<byte>(sc >> 4);
+    byte bit = static_cast<byte>(sc & 7);
+    return row < 16 && !(keyboard_matrix[row] & bit_values[bit]);
+  };
+  // Helper: draw blue overlay on last ImGui item if CPC key is pressed
+  auto highlight_if_pressed = [&](byte cpc_key) {
+    if (cpc_key_down(cpc_key)) {
+      ImVec2 rmin = ImGui::GetItemRectMin();
+      ImVec2 rmax = ImGui::GetItemRectMax();
+      ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, IM_COL32(50, 120, 220, 100), 3.0f);
+    }
+  };
+
   // Width multipliers for special keys
   const float W_TAB    = 1.3f;
   const float W_CAPS   = 1.4f;
@@ -2381,164 +2653,121 @@ static void imgui_render_vkeyboard()
   // Numpad starts after a gap from main keyboard right edge
   float np_x = main_end_x + S * 4;
 
-  // Helper for function keys
+  // ── Key dispatch: render Button, emit keypress, highlight if held ──
+  // vk() renders a single CPC key button with pressed-key overlay.
   char fkey_emit[2] = { '\a', 0 };
+  auto vk = [&](const char* label, float w, const char* es, byte cpc_key) {
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(es);
+    highlight_if_pressed(cpc_key);
+    ImGui::SameLine(0, S);
+  };
+  // vk_end() — same but no SameLine (end of row)
+  auto vk_end = [&](const char* label, float w, const char* es, byte cpc_key) {
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(es);
+    highlight_if_pressed(cpc_key);
+  };
+  // vk_fkey() — function key (emit via \a prefix)
+  auto vk_fkey = [&](const char* label, float w, byte cpc_key, bool end = false) {
+    fkey_emit[1] = static_cast<char>(cpc_key);
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(fkey_emit);
+    highlight_if_pressed(cpc_key);
+    if (!end) ImGui::SameLine(0, S);
+  };
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 0: ESC 1 2 3 4 5 6 7 8 9 0 - ^ CLR DEL | F7 F8 F9
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 0 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0));
-  if (ImGui::Button("ESC", ImVec2(K, H))) { emit_key("\a\xbb"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("!\n1", ImVec2(K, H))) { emit_key("1"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\"\n2", ImVec2(K, H))) { emit_key("2"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("#\n3", ImVec2(K, H))) { emit_key("3"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("$\n4", ImVec2(K, H))) { emit_key("4"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("%\n5", ImVec2(K, H))) { emit_key("5"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("&\n6", ImVec2(K, H))) { emit_key("6"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("'\n7", ImVec2(K, H))) { emit_key("7"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("(\n8", ImVec2(K, H))) { emit_key("8"); } ImGui::SameLine(0, S);
-  if (ImGui::Button(")\n9", ImVec2(K, H))) { emit_key("9"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("_\n0", ImVec2(K, H))) { emit_key("0"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("=\n-", ImVec2(K, H))) { emit_key("-"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xc2\xa3\n^", ImVec2(K, H))) { emit_key("^"); } ImGui::SameLine(0, S);  // £ over ^
-  if (ImGui::Button("CLR", ImVec2(K, H))) { emit_key("\a\xa5"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("DEL", ImVec2(K, H))) emit_key("\b");
-
-  // Numpad row 0: F7 F8 F9
+  vk("ESC", K, "\a\xbb", CPC_ESC);
+  vk("!\n1", K, "1", CPC_1);      vk("\"\n2", K, "2", CPC_2);
+  vk("#\n3", K, "3", CPC_3);      vk("$\n4", K, "4", CPC_4);
+  vk("%\n5", K, "5", CPC_5);      vk("&\n6", K, "6", CPC_6);
+  vk("'\n7", K, "7", CPC_7);      vk("(\n8", K, "8", CPC_8);
+  vk(")\n9", K, "9", CPC_9);      vk("_\n0", K, "0", CPC_0);
+  vk("=\n-", K, "-", CPC_MINUS);  vk("\xc2\xa3\n^", K, "^", CPC_POWER);
+  vk("CLR", K, "\a\xa5", CPC_CLR);
+  vk_end("DEL", K, "\b", CPC_DEL);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0));
-  fkey_emit[1] = static_cast<char>(CPC_F7);
-  if (ImGui::Button("F7", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F8);
-  if (ImGui::Button("F8", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F9);
-  if (ImGui::Button("F9", ImVec2(K, H))) emit_key(fkey_emit);
+  vk_fkey("F7", K, CPC_F7);  vk_fkey("F8", K, CPC_F8);  vk_fkey("F9", K, CPC_F9, true);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 1: TAB Q W E R T Y U I O P |/@ {/[  | F4 F5 F6
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 1 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW));
-  if (ImGui::Button("TAB", ImVec2(K*W_TAB, H))) { emit_key("\t"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("Q", ImVec2(K, H))) { emit_key("q"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("W", ImVec2(K, H))) { emit_key("w"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("E", ImVec2(K, H))) { emit_key("e"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("R", ImVec2(K, H))) { emit_key("r"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("T", ImVec2(K, H))) { emit_key("t"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("Y", ImVec2(K, H))) { emit_key("y"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("U", ImVec2(K, H))) { emit_key("u"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("I", ImVec2(K, H))) { emit_key("i"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("O", ImVec2(K, H))) { emit_key("o"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("P", ImVec2(K, H))) { emit_key("p"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("|\n@", ImVec2(K, H))) { emit_key("@"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("{\n[", ImVec2(K, H))) { emit_key("["); } ImGui::SameLine(0, S);
-  // RETURN upper part - at end of row 1
+  vk("TAB", K*W_TAB, "\t", CPC_TAB);
+  vk("Q", K, "q", CPC_Q);  vk("W", K, "w", CPC_W);  vk("E", K, "e", CPC_E);
+  vk("R", K, "r", CPC_R);  vk("T", K, "t", CPC_T);  vk("Y", K, "y", CPC_Y);
+  vk("U", K, "u", CPC_U);  vk("I", K, "i", CPC_I);  vk("O", K, "o", CPC_O);
+  vk("P", K, "p", CPC_P);
+  vk("|\n@", K, "@", CPC_AT);  vk("{\n[", K, "[", CPC_LBRACKET);
+  // RETURN upper part — fills to main_end_x
   float ret_x = ImGui::GetCursorPosX();
   float ret_w = main_end_x - ret_x;
-  if (ImGui::Button("RETURN##1", ImVec2(ret_w, H))) emit_key("\n");
-  // RETURN lower part - starts S after where ] ends in row 2
-  // Row 2: CAPS(1.4K) + 12 keys (A-L + ; : ]) with spacing = K*W_CAPS + S + 12*(K+S)
+  vk_end("RETURN##1", ret_w, "\n", CPC_RETURN);
+  // RETURN lower part (L-shape into row 2)
   float ret2_x = x0 + K*W_CAPS + S + 12*(K + S);
   float ret2_w = main_end_x - ret2_x;
   ImGui::SetCursorPos(ImVec2(ret2_x, y0 + ROW + H));
   if (ImGui::Button("##ret2", ImVec2(ret2_w, ROW))) emit_key("\n");
-
-  // Numpad row 1: F4 F5 F6
+  highlight_if_pressed(CPC_RETURN);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW));
-  fkey_emit[1] = static_cast<char>(CPC_F4);
-  if (ImGui::Button("F4", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F5);
-  if (ImGui::Button("F5", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F6);
-  if (ImGui::Button("F6", ImVec2(K, H))) emit_key(fkey_emit);
+  vk_fkey("F4", K, CPC_F4);  vk_fkey("F5", K, CPC_F5);  vk_fkey("F6", K, CPC_F6, true);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 2: CAPS A S D F G H J K L +/; */: }/] RETURN(wide) | F1 F2 F3
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 2 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 2));
   if (caps_on) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
   if (ImGui::Button("CAPS\nLOCK", ImVec2(K*W_CAPS, H))) emit_key("\x01" "CAPS");
   if (caps_on) ImGui::PopStyleColor();
-  ImGui::SameLine(0, S);
-  if (ImGui::Button("A", ImVec2(K, H))) { emit_key("a"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("S", ImVec2(K, H))) { emit_key("s"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("D", ImVec2(K, H))) { emit_key("d"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("F", ImVec2(K, H))) { emit_key("f"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("G", ImVec2(K, H))) { emit_key("g"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("H", ImVec2(K, H))) { emit_key("h"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("J", ImVec2(K, H))) { emit_key("j"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("K", ImVec2(K, H))) { emit_key("k"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("L", ImVec2(K, H))) { emit_key("l"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("+\n;", ImVec2(K, H))) { emit_key(";"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("*\n:", ImVec2(K, H))) { emit_key(":"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("}\n]", ImVec2(K, H))) emit_key("]");
-
-  // Numpad row 2: F1 F2 F3
+  highlight_if_pressed(CPC_CAPSLOCK); ImGui::SameLine(0, S);
+  vk("A", K, "a", CPC_A);  vk("S", K, "s", CPC_S);  vk("D", K, "d", CPC_D);
+  vk("F", K, "f", CPC_F);  vk("G", K, "g", CPC_G);  vk("H", K, "h", CPC_H);
+  vk("J", K, "j", CPC_J);  vk("K", K, "k", CPC_K);  vk("L", K, "l", CPC_L);
+  vk("+\n;", K, ";", CPC_SEMICOLON);  vk("*\n:", K, ":", CPC_COLON);
+  vk_end("}\n]", K, "]", CPC_RBRACKET);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 2));
-  fkey_emit[1] = static_cast<char>(CPC_F1);
-  if (ImGui::Button("F1", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F2);
-  if (ImGui::Button("F2", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  fkey_emit[1] = static_cast<char>(CPC_F3);
-  if (ImGui::Button("F3", ImVec2(K, H))) emit_key(fkey_emit);
+  vk_fkey("F1", K, CPC_F1);  vk_fkey("F2", K, CPC_F2);  vk_fkey("F3", K, CPC_F3, true);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 3: SHIFT Z X C V B N M </,  >/. ?// `/\ SHIFT RETURN | F0 ↑ .
-  // RETURN lower part forms L-shape with row 2 RETURN
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 3 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 3));
-  bool shift_highlight = imgui_state.vkeyboard_shift_next;  // highlight both SHIFTs together
+  bool shift_highlight = imgui_state.vkeyboard_shift_next;
   if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
   if (ImGui::Button("SHIFT##L", ImVec2(K*W_LSHIFT, H))) emit_key("\x01" "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
-  ImGui::SameLine(0, S);
-  if (ImGui::Button("Z", ImVec2(K, H))) { emit_key("z"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("X", ImVec2(K, H))) { emit_key("x"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("C", ImVec2(K, H))) { emit_key("c"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("V", ImVec2(K, H))) { emit_key("v"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("B", ImVec2(K, H))) { emit_key("b"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("N", ImVec2(K, H))) { emit_key("n"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("M", ImVec2(K, H))) { emit_key("m"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("<\n,", ImVec2(K, H))) { emit_key(","); } ImGui::SameLine(0, S);
-  if (ImGui::Button(">\n.##main", ImVec2(K, H))) { emit_key("."); } ImGui::SameLine(0, S);
-  if (ImGui::Button("?\n/", ImVec2(K, H))) { emit_key("/"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("`\n\\", ImVec2(K, H))) { emit_key("\\"); } ImGui::SameLine(0, S);
-  // Right SHIFT - fills to main_end_x (naturally narrower due to wider left SHIFT)
+  highlight_if_pressed(CPC_LSHIFT); ImGui::SameLine(0, S);
+  vk("Z", K, "z", CPC_Z);  vk("X", K, "x", CPC_X);  vk("C", K, "c", CPC_C);
+  vk("V", K, "v", CPC_V);  vk("B", K, "b", CPC_B);  vk("N", K, "n", CPC_N);
+  vk("M", K, "m", CPC_M);
+  vk("<\n,", K, ",", CPC_COMMA);    vk(">\n.##main", K, ".", CPC_PERIOD);
+  vk("?\n/", K, "/", CPC_SLASH);    vk("`\n\\", K, "\\", CPC_BACKSLASH);
+  // Right SHIFT — fills to main_end_x
   float rshift_x = ImGui::GetCursorPosX();
   float rshift_w = main_end_x - rshift_x;
   if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
   if (ImGui::Button("SHIFT##R", ImVec2(rshift_w, H))) emit_key("\x01" "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
-
-  // Numpad row 3: F0 ↑ .
+  highlight_if_pressed(CPC_RSHIFT);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 3));
-  fkey_emit[1] = static_cast<char>(CPC_F0);
-  if (ImGui::Button("F0", ImVec2(K, H))) { emit_key(fkey_emit); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x91##up", ImVec2(K, H))) { emit_key("\a\xae"); } ImGui::SameLine(0, S);
-  if (ImGui::Button(".##np", ImVec2(K, H))) emit_key(".");
+  vk_fkey("F0", K, CPC_F0);
+  vk("\xe2\x86\x91##up", K, "\a\xae", CPC_CUR_UP);
+  vk_end(".##np", K, ".", CPC_FPERIOD);
 
-  // ═══════════════════════════════════════════════════════════════════
-  // ROW 4: CTRL COPY ====SPACE==== ENTER | ← ↓ →
-  // ═══════════════════════════════════════════════════════════════════
+  // ═══════════════════ ROW 4 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 4));
   if (ctrl_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 1.0f));
   if (ImGui::Button("CTRL", ImVec2(K*W_CTRL, H))) emit_key("\x01" "CTRL");
   if (ctrl_on) ImGui::PopStyleColor();
-  ImGui::SameLine(0, S);
-  if (ImGui::Button("COPY", ImVec2(K*W_COPY, H))) emit_key("\a\xa9");
-  ImGui::SameLine(0, S);
-  // SPACE - fixed width, then ENTER fills to main_end_x
+  highlight_if_pressed(CPC_CONTROL); ImGui::SameLine(0, S);
+  vk("COPY", K*W_COPY, "\a\xa9", CPC_COPY);
   float space_w = K * 8.0f;
-  if (ImGui::Button("SPACE", ImVec2(space_w, H))) emit_key(" ");
-  ImGui::SameLine(0, S);
-  // ENTER - calculate width to reach main_end_x
+  vk("SPACE", space_w, " ", CPC_SPACE);
   float enter_x = ImGui::GetCursorPosX();
   float enter_w = main_end_x - enter_x;
-  if (ImGui::Button("ENTER", ImVec2(enter_w, H))) emit_key("\n");
-
-  // Numpad row 4: ← ↓ →
+  vk_end("ENTER", enter_w, "\n", CPC_ENTER);
+  // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 4));
-  if (ImGui::Button("\xe2\x86\x90##left", ImVec2(K, H))) { emit_key("\a\xaf"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x93##down", ImVec2(K, H))) { emit_key("\a\xb0"); } ImGui::SameLine(0, S);
-  if (ImGui::Button("\xe2\x86\x92##right", ImVec2(K, H))) emit_key("\a\xb1");
+  vk("\xe2\x86\x90##left", K, "\a\xaf", CPC_CUR_LEFT);
+  vk("\xe2\x86\x93##down", K, "\a\xb0", CPC_CUR_DOWN);
+  vk_end("\xe2\x86\x92##right", K, "\a\xb1", CPC_CUR_RIGHT);
 
   // Move cursor below keyboard for the rest
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 5 + S * 2));
