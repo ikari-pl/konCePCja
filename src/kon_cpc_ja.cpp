@@ -3406,6 +3406,62 @@ int koncpc_main (int argc, char **argv)
          // Feed event to Dear ImGui
          ImGui_ImplSDL3_ProcessEvent(&event);
 
+         // ── Drag-and-drop file loading ──
+         if (event.type == SDL_EVENT_DROP_FILE) {
+           const char* dropped = event.drop.data;
+           if (dropped) {
+             std::string drop_path(dropped);
+             std::string ext;
+             {
+               auto dot = drop_path.rfind('.');
+               if (dot != std::string::npos) {
+                 ext = drop_path.substr(dot);
+                 // lowercase extension
+                 for (auto& c : ext) c = static_cast<char>(tolower(c));
+               }
+             }
+             auto drop_fname = std::filesystem::path(drop_path).filename().string();
+
+             if (ext == ".dsk" || ext == ".ipf" || ext == ".raw") {
+               CPC.driveA.file = drop_path;
+               if (file_load(CPC.driveA) == 0)
+                 imgui_toast_success("Drive A: " + drop_fname);
+               else
+                 imgui_toast_error("Failed to load disk: " + drop_fname);
+             } else if (ext == ".cdt" || ext == ".voc") {
+               CPC.tape.file = drop_path;
+               if (file_load(CPC.tape) == 0)
+                 imgui_toast_success("Tape loaded: " + drop_fname);
+               else
+                 imgui_toast_error("Failed to load tape: " + drop_fname);
+             } else if (ext == ".sna") {
+               CPC.snapshot.file = drop_path;
+               if (file_load(CPC.snapshot) == 0)
+                 imgui_toast_success("Snapshot loaded: " + drop_fname);
+               else
+                 imgui_toast_error("Failed to load snapshot: " + drop_fname);
+             } else if (ext == ".cpr") {
+               CPC.cartridge.file = drop_path;
+               if (file_load(CPC.cartridge) == 0) {
+                 imgui_toast_success("Cartridge loaded: " + drop_fname);
+                 emulator_reset();
+               } else {
+                 imgui_toast_error("Failed to load cartridge: " + drop_fname);
+               }
+             } else if (ext == ".zip") {
+               // Try as disk first (most common zip content)
+               CPC.driveA.file = drop_path;
+               if (file_load(CPC.driveA) == 0)
+                 imgui_toast_success("Drive A: " + drop_fname);
+               else
+                 imgui_toast_error("Unsupported ZIP content: " + drop_fname);
+             } else {
+               imgui_toast_error("Unknown file type: " + drop_fname);
+             }
+           }
+           continue;
+         }
+
          // Check for command palette shortcut (Cmd+K / Ctrl+K)
          if (event.type == SDL_EVENT_KEY_DOWN) {
            bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;

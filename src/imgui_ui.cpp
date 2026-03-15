@@ -99,56 +99,84 @@ static void process_pending_dialog()
   imgui_state.pending_rom_slot = -1;
 
   std::string dir = path.substr(0, path.find_last_of("/\\"));
+  auto fname = std::filesystem::path(path).filename().string();
 
   switch (action) {
     case FileDialogAction::LoadDiskA:
     case FileDialogAction::LoadDiskA_LED:
       CPC.driveA.file = path;
-      file_load(CPC.driveA);
+      if (file_load(CPC.driveA) == 0)
+        imgui_toast_success("Drive A: " + fname);
+      else
+        imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
       if (action == FileDialogAction::LoadDiskA) close_menu();
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
       CPC.driveB.file = path;
-      file_load(CPC.driveB);
+      if (file_load(CPC.driveB) == 0)
+        imgui_toast_success("Drive B: " + fname);
+      else
+        imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
       if (action == FileDialogAction::LoadDiskB) close_menu();
       break;
     case FileDialogAction::SaveDiskA:
-      dsk_save(path, &driveA);
+      if (dsk_save(path, &driveA) == 0)
+        imgui_toast_success("Saved disk A: " + fname);
+      else
+        imgui_toast_error("Failed to save disk: " + fname);
       CPC.current_dsk_path = dir;
       break;
     case FileDialogAction::SaveDiskB:
-      dsk_save(path, &driveB);
+      if (dsk_save(path, &driveB) == 0)
+        imgui_toast_success("Saved disk B: " + fname);
+      else
+        imgui_toast_error("Failed to save disk: " + fname);
       CPC.current_dsk_path = dir;
       break;
     case FileDialogAction::LoadSnapshot:
       CPC.snapshot.file = path;
-      file_load(CPC.snapshot);
+      if (file_load(CPC.snapshot) == 0)
+        imgui_toast_success("Snapshot loaded: " + fname);
+      else
+        imgui_toast_error("Failed to load snapshot: " + fname);
       CPC.current_snap_path = dir;
       close_menu();
       break;
     case FileDialogAction::SaveSnapshot:
-      snapshot_save(path);
+      if (snapshot_save(path) == 0)
+        imgui_toast_success("Snapshot saved: " + fname);
+      else
+        imgui_toast_error("Failed to save snapshot: " + fname);
       CPC.current_snap_path = dir;
       break;
     case FileDialogAction::LoadTape:
       CPC.tape.file = path;
-      file_load(CPC.tape);
+      if (file_load(CPC.tape) == 0)
+        imgui_toast_success("Tape loaded: " + fname);
+      else
+        imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
       tape_scan_blocks();
       close_menu();
       break;
     case FileDialogAction::LoadTape_LED:
       CPC.tape.file = path;
-      file_load(CPC.tape);
+      if (file_load(CPC.tape) == 0)
+        imgui_toast_success("Tape loaded: " + fname);
+      else
+        imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
       tape_scan_blocks();
       break;
     case FileDialogAction::LoadCartridge:
       CPC.cartridge.file = path;
-      file_load(CPC.cartridge);
+      if (file_load(CPC.cartridge) == 0)
+        imgui_toast_success("Cartridge loaded: " + fname);
+      else
+        imgui_toast_error("Failed to load cartridge: " + fname);
       CPC.current_cart_path = dir;
       emulator_reset();
       close_menu();
@@ -344,6 +372,75 @@ void imgui_render_ui()
   g_devtools_ui.render();
   g_command_palette.render();
 
+  // ── Toast notifications ──
+  {
+    ImGuiIO& io = ImGui::GetIO();
+    float dt = io.DeltaTime;
+    float yOffset = 40.0f; // bottom margin
+    float xMargin = 16.0f;
+    float maxWidth = 360.0f;
+
+    // Tick timers and remove expired
+    for (auto it = imgui_state.toasts.begin(); it != imgui_state.toasts.end(); ) {
+      it->timer -= dt;
+      if (it->timer <= 0.0f) {
+        it = imgui_state.toasts.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+    // Render from bottom of viewport, stacking upward
+    ImVec2 vpSize = io.DisplaySize;
+    for (int i = static_cast<int>(imgui_state.toasts.size()) - 1; i >= 0; --i) {
+      auto& t = imgui_state.toasts[i];
+
+      // Fade in/out
+      float alpha = 1.0f;
+      if (t.timer < ImGuiUIState::TOAST_FADE_TIME)
+        alpha = t.timer / ImGuiUIState::TOAST_FADE_TIME;
+      float age = t.initial - t.timer;
+      if (age < ImGuiUIState::TOAST_FADE_TIME)
+        alpha = std::min(alpha, age / ImGuiUIState::TOAST_FADE_TIME);
+
+      // Colors by level
+      ImU32 bgCol, borderCol, textCol;
+      switch (t.level) {
+        case ImGuiUIState::ToastLevel::Success:
+          bgCol     = IM_COL32(0x10, 0x30, 0x18, static_cast<int>(210 * alpha));
+          borderCol = IM_COL32(0x20, 0x90, 0x40, static_cast<int>(200 * alpha));
+          textCol   = IM_COL32(0x80, 0xFF, 0x80, static_cast<int>(255 * alpha));
+          break;
+        case ImGuiUIState::ToastLevel::Error:
+          bgCol     = IM_COL32(0x30, 0x10, 0x10, static_cast<int>(210 * alpha));
+          borderCol = IM_COL32(0x90, 0x20, 0x20, static_cast<int>(200 * alpha));
+          textCol   = IM_COL32(0xFF, 0x80, 0x80, static_cast<int>(255 * alpha));
+          break;
+        default: // Info
+          bgCol     = IM_COL32(0x18, 0x18, 0x20, static_cast<int>(210 * alpha));
+          borderCol = IM_COL32(0x50, 0x50, 0x70, static_cast<int>(200 * alpha));
+          textCol   = IM_COL32(0xD0, 0xD0, 0xD0, static_cast<int>(255 * alpha));
+          break;
+      }
+
+      ImVec2 textSize = ImGui::CalcTextSize(t.message.c_str(), nullptr, false, maxWidth - 16.0f);
+      float boxW = textSize.x + 16.0f;
+      float boxH = textSize.y + 12.0f;
+
+      float x = vpSize.x - boxW - xMargin;
+      float y = vpSize.y - yOffset - boxH;
+
+      ImDrawList* dl = ImGui::GetForegroundDrawList();
+      ImVec2 p0(x, y), p1(x + boxW, y + boxH);
+      dl->AddRectFilled(p0, p1, bgCol, 4.0f);
+      dl->AddRect(p0, p1, borderCol, 4.0f);
+      dl->AddText(nullptr, 0.0f, ImVec2(x + 8.0f, y + 6.0f), textCol,
+                  t.message.c_str(), nullptr, maxWidth - 16.0f);
+
+      yOffset += boxH + 4.0f;
+    }
+  }
+
   // --- Quit confirmation popup (rendered here so it works regardless of show_menu) ---
   if (imgui_state.show_quit_confirm) {
     ImGui::OpenPopup("Confirm Quit");
@@ -402,6 +499,26 @@ void imgui_render_ui()
     }
   }
 }
+
+// ─────────────────────────────────────────────────
+// Toast notification API
+// ─────────────────────────────────────────────────
+
+void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level)
+{
+  // Cap queue size
+  while (static_cast<int>(imgui_state.toasts.size()) >= ImGuiUIState::MAX_TOASTS) {
+    imgui_state.toasts.pop_front();
+  }
+  float duration = (level == ImGuiUIState::ToastLevel::Error)
+    ? ImGuiUIState::TOAST_DURATION * 1.5f   // errors stay longer
+    : ImGuiUIState::TOAST_DURATION;
+  imgui_state.toasts.push_back({message, level, duration, duration});
+}
+
+void imgui_toast_info(const std::string& message)    { imgui_toast(message, ImGuiUIState::ToastLevel::Info); }
+void imgui_toast_success(const std::string& message) { imgui_toast(message, ImGuiUIState::ToastLevel::Success); }
+void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGuiUIState::ToastLevel::Error); }
 
 // ─────────────────────────────────────────────────
 // Helper: close menu and resume emulation
@@ -1134,10 +1251,21 @@ static void imgui_render_topbar()
         }
       }
 
+      // Mode label overlay (top-right corner of waveform box)
+      {
+        const char* modeLabel = (mode == 0) ? "RAW" : "BITS";
+        ImVec2 labelSize = ImGui::CalcTextSize(modeLabel);
+        ImVec2 labelPos(p1.x - labelSize.x - 2.0f, p0.y + 1.0f);
+        dl->AddText(labelPos, IM_COL32(0x80, 0x80, 0x80, 0xA0), modeLabel);
+      }
+
       // Advance cursor past the waveform box; click cycles mode (2 modes now)
       ImGui::Dummy(ImVec2(waveW, frameH));
       if (ImGui::IsItemClicked()) {
         imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Click to cycle waveform mode (RAW pulse / decoded BITS)");
       }
     }
 
@@ -1453,7 +1581,12 @@ static void imgui_render_menu()
     ImGui::BulletText("Shift+F2 - DevTools");
     ImGui::BulletText("F5 - Reset");
     ImGui::BulletText("F10 - Quit");
-    ImGui::BulletText("Ctrl+F5 - Screenshot");
+    ImGui::BulletText("F3 - Screenshot");
+#ifdef __APPLE__
+    ImGui::BulletText("Cmd+K - Command Palette");
+#else
+    ImGui::BulletText("Ctrl+K - Command Palette");
+#endif
     ImGui::Spacing();
     if (ImGui::Button("OK", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
     ImGui::EndPopup();
@@ -1536,6 +1669,9 @@ static void imgui_render_options()
       int speed = static_cast<int>(CPC.speed);
       if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING, MAX_SPEED_SETTING)) {
         CPC.speed = speed;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("CPU clock speed in MHz (default: 4).\nHigher = faster emulation.");
       }
 
       bool printer = CPC.printer != 0;
@@ -1738,6 +1874,9 @@ static void imgui_render_options()
       if (ImGui::Combo("Scale", &scale, scale_items, IM_ARRAYSIZE(scale_items))) {
         CPC.scr_scale = scale + 1;
       }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Window size multiplier (1x = 384x270)");
+      }
 
       bool colour = CPC.scr_tube == 0;
       if (ImGui::RadioButton("Colour", colour)) { CPC.scr_tube = 0; }
@@ -1748,6 +1887,9 @@ static void imgui_render_options()
       if (ImGui::SliderInt("Intensity", &intensity, 5, 15)) {
         CPC.scr_intensity = intensity;
         video_set_palette();
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("CRT phosphor brightness.\nHigher = brighter colours.");
       }
 
       bool scanlines = CPC.scr_scanlines != 0;
@@ -1775,6 +1917,9 @@ static void imgui_render_options()
       bool aspect = CPC.scr_preserve_aspect_ratio != 0;
       if (ImGui::Checkbox("Preserve Aspect Ratio", &aspect)) {
         CPC.scr_preserve_aspect_ratio = aspect ? 1 : 0;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("When off, the CPC screen stretches\nto fill the entire window.");
       }
 
       ImGui::EndTabItem();
@@ -1869,6 +2014,9 @@ static void imgui_render_options()
     CPC.paused = false;
     first_open = true;
   }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Apply changes and save to config file");
+  }
   ImGui::SameLine();
   if (ImGui::Button("Cancel", ImVec2(80, 0))) {
     CPC = imgui_state.old_cpc_settings;
@@ -1879,7 +2027,7 @@ static void imgui_render_options()
     first_open = true;
   }
   ImGui::SameLine();
-  if (ImGui::Button("OK", ImVec2(80, 0))) {
+  if (ImGui::Button("Apply", ImVec2(80, 0))) {
     if (CPC.model != imgui_state.old_cpc_settings.model ||
         CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
         CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
@@ -1891,6 +2039,9 @@ static void imgui_render_options()
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Apply changes for this session only\n(not saved to config file)");
   }
 
   if (!open) {
@@ -2100,6 +2251,7 @@ static void imgui_render_devtools()
       z80.step_out_addresses.clear();
       CPC.paused = false;
     }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (enters CALLs)"); }
     ImGui::SameLine();
     if (ImGui::Button("Step Over")) {
       z80.step_in = 0;
@@ -2114,6 +2266,7 @@ static void imgui_render_devtools()
         CPC.paused = false;
       }
     }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)"); }
     ImGui::SameLine();
     if (ImGui::Button("Step Out")) {
       z80.step_out = 1;
@@ -2121,6 +2274,7 @@ static void imgui_render_devtools()
       z80.step_in = 0;
       CPC.paused = false;
     }
+    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Run until the current subroutine returns"); }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {

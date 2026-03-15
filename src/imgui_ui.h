@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <deque>
 #include "koncepcja.h"
 
 enum class FileDialogAction {
@@ -83,6 +84,19 @@ struct ImGuiUIState {
   // Layout dropdown (topbar)
   bool show_layout_dropdown = false;
 
+  // Toast notification system
+  enum class ToastLevel { Info, Success, Error };
+  struct Toast {
+    std::string message;
+    ToastLevel level = ToastLevel::Info;
+    float timer = 0.0f;       // seconds remaining
+    float initial = 0.0f;     // initial duration (for fade calc)
+  };
+  std::deque<Toast> toasts;   // rendered bottom-up, newest last
+  static constexpr int MAX_TOASTS = 4;
+  static constexpr float TOAST_DURATION = 3.5f;
+  static constexpr float TOAST_FADE_TIME = 0.5f;
+
 };
 
 extern ImGuiUIState imgui_state;
@@ -90,5 +104,11 @@ extern ImGuiUIState imgui_state;
 void imgui_init_ui();
 void imgui_render_ui();
 int imgui_topbar_height();
+
+// Toast notifications
+void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);
+void imgui_toast_info(const std::string& message);
+void imgui_toast_success(const std::string& message);
+void imgui_toast_error(const std::string& message);
 
 #endif // IMGUI_UI_H

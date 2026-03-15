@@ -2850,8 +2850,16 @@ void DevToolsUI::render_assembler()
     ImGui::Text("Errors:");
     ImGui::BeginChild("##asm_errors", ImVec2(0, 0), ImGuiChildFlags_None);
     for (auto& err : asm_errors_) {
-      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
-                         "Line %d: %s", err.line, err.message.c_str());
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+      ImGui::Text("Line %d: %s", err.line, err.message.c_str());
+      ImGui::PopStyleColor();
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        ImGui::SetTooltip("Click to jump to line %d", err.line);
+      }
+      if (ImGui::IsItemClicked() && asm_editor_ && err.line > 0) {
+        asm_editor_->SetCursorPosition(err.line - 1, 0);
+      }
     }
     ImGui::EndChild();
   }
