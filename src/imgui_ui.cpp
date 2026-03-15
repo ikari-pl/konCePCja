@@ -32,6 +32,7 @@
 #include "drive_sounds.h"
 #include "symbiface.h"
 #include "m4board.h"
+#include "m4board_http.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 
@@ -1848,6 +1849,75 @@ static void imgui_render_options()
           ImGui::Text("Commands: %d", g_m4board.cmd_count);
         }
 
+        // ── M4 HTTP Server ──
+        ImGui::Separator();
+        ImGui::TextDisabled("HTTP Server");
+
+        int http_port = CPC.m4_http_port;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputInt("HTTP Port##m4http", &http_port, 1, 100)) {
+          if (http_port < 1024) http_port = 1024;
+          if (http_port > 65535) http_port = 65535;
+          CPC.m4_http_port = http_port;
+        }
+
+        char ip_buf[64];
+        snprintf(ip_buf, sizeof(ip_buf), "%s", CPC.m4_bind_ip.c_str());
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
+        if (ImGui::InputText("Bind IP##m4ip", ip_buf, sizeof(ip_buf))) {
+          CPC.m4_bind_ip = ip_buf;
+        }
+
+        if (g_m4_http.is_running()) {
+          ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f),
+            "Listening on %s:%d", g_m4_http.bind_ip().c_str(), g_m4_http.port());
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Stop##m4http")) {
+            g_m4_http.stop();
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Open in Browser##m4http")) {
+            char url[128];
+            snprintf(url, sizeof(url), "http://%s:%d/",
+                     g_m4_http.bind_ip().c_str(), g_m4_http.port());
+            SDL_OpenURL(url);
+          }
+        } else {
+          ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "HTTP server stopped");
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Start##m4http")) {
+            g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+          }
+        }
+
+        // Port forwarding table
+        if (!g_m4_http.port_mappings().empty()) {
+          ImGui::Separator();
+          ImGui::TextDisabled("Port Forwarding");
+          if (ImGui::BeginTable("##m4ports", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("CPC Port", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            ImGui::TableSetupColumn("Host Port", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+            ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            for (const auto& pm : g_m4_http.port_mappings()) {
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImVec4 color = pm.user_override ? ImVec4(1,1,1,1) : ImVec4(0.6f,0.6f,0.6f,1);
+              ImGui::TextColored(color, "%d", pm.cpc_port);
+              ImGui::TableNextColumn();
+              ImGui::TextColored(color, "%d", pm.host_port);
+              ImGui::TableNextColumn();
+              ImGui::TextColored(pm.active ? ImVec4(0.2f,0.9f,0.2f,1) : ImVec4(0.6f,0.6f,0.6f,1),
+                "%s", pm.active ? "active" : "idle");
+              ImGui::TableNextColumn();
+              if (!pm.description.empty()) ImGui::TextDisabled("%s", pm.description.c_str());
+            }
+            ImGui::EndTable();
+          }
+        }
+
         // activity_frames is decremented in the main emulation loop (EC_FRAME_COMPLETE)
 
         ImGui::Unindent();
@@ -2091,6 +2161,12 @@ static void imgui_render_options()
         CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
         g_m4board.enabled != old_m4_enabled) {
       emulator_init();
+    }
+    // Start/stop M4 HTTP server based on M4 enabled state
+    if (g_m4board.enabled && !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
+      g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+    } else if (!g_m4board.enabled && g_m4_http.is_running()) {
+      g_m4_http.stop();
     }
     update_cpc_speed();
     video_set_palette();

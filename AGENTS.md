@@ -38,7 +38,7 @@ src/
   - **IDE (ATA PIO)** at `&FD06-&FD0F` — Standard ATA register file backed by raw `.img` files. Supports READ/WRITE SECTORS and IDENTIFY DEVICE
   - **RTC (DS12887)** at `&FD14`/`&FD15` — 14 time registers (BCD from host clock) + 50 bytes CMOS NVRAM
   - **PS/2 Mouse** at `&FD10`/`&FD18` — Multiplexed FIFO protocol: status byte with 2-bit mode (X/Y offset, buttons) + 6-bit payload
-- **M4 Board** — Virtual filesystem expansion via command/response protocol. OUTs to `&FE00` accumulate command bytes, OUT to `&FC00` triggers execution. Response written to ROM overlay at `&E800`. Backs virtual SD card with a host directory (path traversal protected)
+- **M4 Board** — Virtual filesystem expansion via command/response protocol. OUTs to `&FE00` accumulate command bytes, OUT to `&FC00` triggers execution. Response written to ROM overlay at `&E800`. Backs virtual SD card with a host directory (path traversal protected). Includes embedded HTTP server on port 8080 for web-based file management, compatible with `cpcxfer` and the M4 Board Android app
 - **Drive/Tape Sounds** — Procedurally generated audio effects for FDC motor hum, head seek clicks, and tape loading hiss, mixed into the PSG audio output
 - **Multiface II** — ROM-based debugging interface (original Caprice32 implementation)
 - **Amstrad Magnum Phaser** — Light gun via CRTC register intercept
@@ -193,6 +193,67 @@ nc localhost 6544
 - `src/telnet_console.cpp` — TCP server thread, ANSI parsing, Z80 hook callback
 - Z80 hooks: `z80_set_txt_output_hook()` (firmware) and `z80_set_bdos_output_hook()` (CP/M) in `src/z80.cpp` / `src/z80.h`
 - Main loop integration: `g_telnet.start()` / `drain_input()` / `stop()` in `src/kon_cpc_ja.cpp`
+
+## M4 HTTP Server
+
+An embedded HTTP server serves a web interface for the M4 Board's virtual SD card. Compatible with `cpcxfer` and the M4 Board Android app.
+
+### Connecting
+
+```bash
+# Default: http://127.0.0.1:8080/
+curl http://localhost:8080/            # Web file browser
+curl http://localhost:8080/status      # JSON status
+curl http://localhost:8080/sd/m4/dir.txt  # Directory listing (M4 format)
+```
+
+### API Endpoints (matching real M4 Board)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET /` | File browser HTML (single-page app) |
+| `GET /config.cgi?ls=<path>` | Directory listing (text/plain) |
+| `GET /config.cgi?cd=<path>` | Change CPC directory |
+| `GET /config.cgi?run2=<path>` | Remote run file on CPC |
+| `GET /config.cgi?rm=<path>` | Delete file |
+| `GET /config.cgi?mkdir=<path>` | Create directory |
+| `GET /sd/<path>` | Download file from SD |
+| `GET /sd/m4/dir.txt` | M4-format directory listing |
+| `GET /status` | JSON status (extension) |
+| `POST /` | Upload file (multipart/form-data) |
+| `POST /reset` | Reset CPC (deferred to main thread) |
+| `POST /pause` | Toggle pause (deferred to main thread) |
+
+### IPC Commands
+
+```bash
+echo "m4 http status" | nc localhost 6543   # Check HTTP server status
+echo "m4 http start" | nc localhost 6543    # Start HTTP server
+echo "m4 http stop" | nc localhost 6543     # Stop HTTP server
+echo "m4 ports" | nc localhost 6543         # List port mappings
+echo "m4 port set 80 8080" | nc localhost 6543  # Map CPC port 80 → host 8080
+echo "m4 port del 80" | nc localhost 6543   # Remove mapping
+```
+
+### Thread Safety
+
+The HTTP server runs in its own thread. CPC-mutating operations (reset, pause toggle) are deferred to the main thread via atomic flags, drained each frame by `g_m4_http.drain_pending()`.
+
+### Source files
+
+- `src/m4board_http.h` — M4HttpServer class, M4PortMapping struct
+- `src/m4board_http.cpp` — HTTP server, request routing, file operations
+- `src/m4board_web_assets.h` — Embedded HTML/CSS web interface
+- Config: `[peripheral]` section: `m4_http_port`, `m4_bind_ip`, `m4_port_map_N`
+
+### Config
+
+```ini
+[peripheral]
+m4_http_port=8080          # HTTP server port (default 8080)
+m4_bind_ip=127.0.0.1       # Bind IP (127.0.0.2 works on macOS without root)
+m4_port_map_0=80:8080:1    # Port forwarding: cpc_port:host_port:user_override
+```
 
 ## Debugging Tips
 
@@ -362,3 +423,116 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+
+<!-- BEGIN BEADS INTEGRATION -->
+## Issue Tracking with bd (beads)
+
+**IMPORTANT**: This project uses **bd (beads)** for ALL issue tracking. Do NOT use markdown TODOs, task lists, or other tracking methods.
+
+### Why bd?
+
+- Dependency-aware: Track blockers and relationships between issues
+- Git-friendly: Dolt-powered version control with native sync
+- Agent-optimized: JSON output, ready work detection, discovered-from links
+- Prevents duplicate tracking systems and confusion
+
+### Quick Start
+
+**Check for ready work:**
+
+```bash
+bd ready --json
+```
+
+**Create new issues:**
+
+```bash
+bd create "Issue title" --description="Detailed context" -t bug|feature|task -p 0-4 --json
+bd create "Issue title" --description="What this issue is about" -p 1 --deps discovered-from:bd-123 --json
+```
+
+**Claim and update:**
+
+```bash
+bd update <id> --claim --json
+bd update bd-42 --priority 1 --json
+```
+
+**Complete work:**
+
+```bash
+bd close bd-42 --reason "Completed" --json
+```
+
+### Issue Types
+
+- `bug` - Something broken
+- `feature` - New functionality
+- `task` - Work item (tests, docs, refactoring)
+- `epic` - Large feature with subtasks
+- `chore` - Maintenance (dependencies, tooling)
+
+### Priorities
+
+- `0` - Critical (security, data loss, broken builds)
+- `1` - High (major features, important bugs)
+- `2` - Medium (default, nice-to-have)
+- `3` - Low (polish, optimization)
+- `4` - Backlog (future ideas)
+
+### Workflow for AI Agents
+
+1. **Check ready work**: `bd ready` shows unblocked issues
+2. **Claim your task atomically**: `bd update <id> --claim`
+3. **Work on it**: Implement, test, document
+4. **Discover new work?** Create linked issue:
+   - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
+5. **Complete**: `bd close <id> --reason "Done"`
+
+### Auto-Sync
+
+bd automatically syncs via Dolt:
+
+- Each write auto-commits to Dolt history
+- Use `bd dolt push`/`bd dolt pull` for remote sync
+- No manual export/import needed!
+
+### Important Rules
+
+- ✅ Use bd for ALL task tracking
+- ✅ Always use `--json` flag for programmatic use
+- ✅ Link discovered work with `discovered-from` dependencies
+- ✅ Check `bd ready` before asking "what should I work on?"
+- ❌ Do NOT create markdown TODO lists
+- ❌ Do NOT use external issue trackers
+- ❌ Do NOT duplicate tracking systems
+
+For more details, see README.md and docs/QUICKSTART.md.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+
+<!-- END BEADS INTEGRATION -->

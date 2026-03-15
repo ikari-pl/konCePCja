@@ -58,6 +58,7 @@
 #include "session_recording.h"
 #include "silicon_disc.h"
 #include "m4board.h"
+#include "m4board_http.h"
 #include "devtools_ui.h"
 #include "z80_assembler.h"
 #include "video.h"
@@ -478,8 +479,8 @@ void init_command_registry() {
     "  save/load: Persist to/from file.");
 
   register_command("m4", "HARDWARE",
-    "m4 status | m4 ls | m4 cd <path> | m4 reset | m4 wifi [0|1]",
-    "M4 Board virtual filesystem",
+    "m4 status | m4 ls | m4 cd <path> | m4 reset | m4 wifi [0|1] | m4 http [start|stop|status] | m4 ports | m4 port set/del <cpc> [host]",
+    "M4 Board virtual filesystem & HTTP server",
     "Manage M4 Board virtual SD card backed by a host directory.\n"
     "  status: Show enabled state, open files, command count.\n"
     "  ls:     List files in current directory.\n"
@@ -3651,7 +3652,61 @@ std::string handle_command(const std::string& line) {
       g_m4board.network_enabled = (parts[2] != "0");
       return "OK\n";
     }
-    return "ERR 400 usage: m4 (status|ls|cd|reset|wifi)\n";
+    if (parts[1] == "http") {
+      if (parts.size() < 3 || parts[2] == "status") {
+        std::ostringstream oss;
+        oss << "OK running=" << (g_m4_http.is_running() ? 1 : 0)
+            << " port=" << g_m4_http.port()
+            << " bind=" << g_m4_http.bind_ip() << "\n";
+        return oss.str();
+      }
+      if (parts[2] == "start") {
+        if (g_m4_http.is_running()) return "OK already-running\n";
+        g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+        return "OK started\n";
+      }
+      if (parts[2] == "stop") {
+        g_m4_http.stop();
+        return "OK stopped\n";
+      }
+      return "ERR 400 usage: m4 http [start|stop|status]\n";
+    }
+    if (parts[1] == "ports") {
+      const auto& mappings = g_m4_http.port_mappings();
+      if (mappings.empty()) return "OK count=0\n";
+      std::ostringstream oss;
+      oss << "OK count=" << mappings.size();
+      for (const auto& m : mappings) {
+        oss << " " << m.cpc_port << ":" << m.host_port
+            << (m.user_override ? ":user" : ":auto")
+            << (m.active ? ":active" : ":idle");
+      }
+      oss << "\n";
+      return oss.str();
+    }
+    if (parts[1] == "port" && parts.size() >= 3) {
+      if (parts[2] == "set" && parts.size() >= 5) {
+        try {
+          uint16_t cpc_port = static_cast<uint16_t>(std::stoul(parts[3]));
+          uint16_t host_port = static_cast<uint16_t>(std::stoul(parts[4]));
+          g_m4_http.set_port_mapping(cpc_port, host_port, true);
+          return "OK\n";
+        } catch (const std::exception& e) {
+          return std::string("ERR 400 ") + e.what() + "\n";
+        }
+      }
+      if (parts[2] == "del" && parts.size() >= 4) {
+        try {
+          uint16_t cpc_port = static_cast<uint16_t>(std::stoul(parts[3]));
+          g_m4_http.remove_port_mapping(cpc_port);
+          return "OK\n";
+        } catch (const std::exception& e) {
+          return std::string("ERR 400 ") + e.what() + "\n";
+        }
+      }
+      return "ERR 400 usage: m4 port set <cpc> <host> | m4 port del <cpc>\n";
+    }
+    return "ERR 400 usage: m4 (status|ls|cd|reset|wifi|http|ports|port)\n";
   }
 
   // Unknown command — find closest match for "did you mean?" suggestion

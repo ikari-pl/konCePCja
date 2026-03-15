@@ -310,6 +310,10 @@ class t_CPC {
    std::vector<std::string> mru_snaps;
    std::vector<std::string> mru_carts;
 
+   // M4 Board HTTP server config
+   int m4_http_port = 8080;
+   std::string m4_bind_ip = "127.0.0.1";
+
    class InputMapper *InputMapper;
 };
 
