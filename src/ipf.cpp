@@ -311,6 +311,22 @@ int ipf_load (FILE *pfileIn, t_drive *drive)
   // TODO(cpitrat): register the file for cleanup somewhere (e.g: at caprice exit)
   FILE *pfileOut = nullptr;
   char tmpFilePath[256] = {};
+#ifdef _MSC_VER
+  // MSVC doesn't have mkstemp; use _mktemp_s + fopen
+  std::vector<std::string> prefixes = { ".", std::string(getenv("TEMP") ? getenv("TEMP") : ".") };
+  for (const auto &prefix : prefixes) {
+    snprintf(tmpFilePath, sizeof(tmpFilePath), "%s\\.koncpc_tmp_XXXXXX", prefix.c_str());
+    if (_mktemp_s(tmpFilePath, strlen(tmpFilePath) + 1) != 0) {
+      LOG_ERROR("Couldn't load IPF file: Couldn't generate temporary file name in " << prefix << ": " << strerror(errno));
+      continue;
+    }
+    LOG_DEBUG("Using temporary file: " << tmpFilePath);
+    pfileOut = fopen(tmpFilePath, "w+b");
+    if (pfileOut != nullptr) {
+      break;
+    }
+  }
+#else
   std::vector<std::string> prefixes = { "/tmp", "." };
   for (const auto &prefix : prefixes) {
     snprintf(tmpFilePath, sizeof(tmpFilePath), "%s/.koncpc_tmp_XXXXXX", prefix.c_str());
@@ -326,6 +342,7 @@ int ipf_load (FILE *pfileIn, t_drive *drive)
     }
     close(fd);
   }
+#endif
 
   if (!file_copy(pfileIn, pfileOut)) {
     LOG_ERROR("Error while copying file");

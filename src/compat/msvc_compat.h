@@ -33,6 +33,15 @@
  * Instead, call sites must use _access/_getcwd on MSVC, or use the
  * wrapper macros below which are scoped to our project code only. */
 
+/* S_ISDIR / S_ISREG — MSVC's <sys/stat.h> doesn't define the POSIX macros */
+#include <sys/stat.h>
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+
 /* strcasecmp / strncasecmp — safe to macro since no SDK header uses these */
 #include <string.h>
 #ifndef strcasecmp

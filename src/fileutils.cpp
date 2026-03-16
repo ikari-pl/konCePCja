@@ -1,7 +1,9 @@
 // Caprice 32
 // File IO functions
 
-#ifndef _MSC_VER
+#ifdef _MSC_VER
+#include "compat/msvc_compat.h"
+#else
 #include <dirent.h>
 #include <unistd.h>
 #endif

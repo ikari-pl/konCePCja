@@ -4,7 +4,9 @@
 #include <windows.h>
 #endif
 #include <cstring>
-#ifndef _MSC_VER
+#ifdef _MSC_VER
+#include "compat/msvc_compat.h"
+#else
 #include <strings.h>
 #endif
 #include <zlib.h>

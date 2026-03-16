@@ -146,6 +146,7 @@ if(MSVC)
         /W4
         /wd4201 /wd4244 /wd4267 /wd4100
         /utf-8
+        /permissive-
     )
     # msvc_compat.h is included via koncepcja.h (#ifdef _MSC_VER)
     # NOT force-included via /FI — that pollutes Windows SDK headers
