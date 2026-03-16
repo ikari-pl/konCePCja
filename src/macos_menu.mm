@@ -239,11 +239,11 @@ void koncpc_set_dock_icon(const char* png_path) {
     if (g_base_icon) {
       [NSApp setApplicationIconImage:g_base_icon];
     }
-    // Try to load optional CRT overlay (translucent PNG with CRT curve shine).
-    // Should be the same dimensions as the icon, with transparency everywhere
-    // except the monitor screen area where it adds a subtle CRT glass reflection.
+    // Load the CRT overlay — same image but narrower (850 vs 1010px), with
+    // translucent CRT shine in the screen area and opaque CPC body elsewhere.
+    // When composited, it's stretched to match the base icon width.
     NSString* overlayPath = [[path stringByDeletingLastPathComponent]
-      stringByAppendingPathComponent:@"koncepcja-icon-crt-overlay.png"];
+      stringByAppendingPathComponent:@"koncepcja-icon.png"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:overlayPath]) {
       g_crt_overlay = [[NSImage alloc] initWithContentsOfFile:overlayPath];
     }
@@ -302,9 +302,11 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
                 operation:NSCompositingOperationSourceOver
                  fraction:1.0];
 
-    // Draw CRT overlay (translucent PNG with CRT curve shine) on top
+    // Draw CRT overlay stretched to full icon size — the overlay is narrower
+    // than the base icon but Cocoa scales it to fit. The screen area has
+    // translucent CRT shine (~alpha 40), the body is opaque, outside is transparent.
     if (g_crt_overlay) {
-      [g_crt_overlay drawInRect:screenRect
+      [g_crt_overlay drawInRect:NSMakeRect(0, 0, iconSize.width, iconSize.height)
                        fromRect:NSZeroRect
                       operation:NSCompositingOperationSourceOver
                        fraction:1.0];
