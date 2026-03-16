@@ -1867,6 +1867,18 @@ static void imgui_render_options()
         if (ImGui::InputText("Bind IP##m4ip", ip_buf, sizeof(ip_buf))) {
           CPC.m4_bind_ip = ip_buf;
         }
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip(
+            "IP address to bind the HTTP server to.\n\n"
+            "127.0.0.1 — localhost only (default)\n"
+            "0.0.0.0   — all interfaces (LAN-accessible)\n"
+            "127.0.0.2 — dedicated loopback address:\n"
+            "  macOS: works without root\n"
+            "  Linux: needs: sudo ip addr add 127.0.0.2/8 dev lo\n"
+            "  Windows: needs admin\n"
+            "Falls back to 127.0.0.1 if the address is unavailable."
+          );
+        }
 
         if (g_m4_http.is_running()) {
           ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f),

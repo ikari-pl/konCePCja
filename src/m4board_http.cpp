@@ -847,6 +847,26 @@ void M4HttpServer::run() {
    WSADATA wsa;
    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
 
+   // Validate bind IP — on Windows, loopback aliases need admin.
+   // Probe with an ephemeral port; fall back to 127.0.0.1 on WSAEADDRNOTAVAIL.
+   if (bind_ip_ != "127.0.0.1" && bind_ip_ != "0.0.0.0") {
+      SOCKET probe = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (probe != INVALID_SOCKET) {
+         sockaddr_in probe_addr{};
+         probe_addr.sin_family = AF_INET;
+         probe_addr.sin_port = 0;
+         inet_pton(AF_INET, bind_ip_.c_str(), &probe_addr.sin_addr);
+         if (bind(probe, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) == SOCKET_ERROR
+             && WSAGetLastError() == WSAEADDRNOTAVAIL) {
+            LOG_ERROR("M4 HTTP: " << bind_ip_
+                      << " not assignable (Windows needs admin for loopback aliases)."
+                      << " Falling back to 127.0.0.1");
+            bind_ip_ = "127.0.0.1";
+         }
+         closesocket(probe);
+      }
+   }
+
    sock_t server_fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
    if (server_fd == BAD_SOCK) { WSACleanup(); return; }
 
@@ -972,6 +992,32 @@ void M4HttpServer::run() {
 #else // POSIX
 
 void M4HttpServer::run() {
+   // Validate bind IP before creating the server socket.
+   // Platform behaviour for loopback aliases (e.g. 127.0.0.2):
+   //   macOS  — any 127.x.x.x works without root (lo0 accepts the full /8)
+   //   Linux  — only 127.0.0.1 exists by default; others need root:
+   //            "ip addr add 127.0.0.2/8 dev lo"
+   //   Windows — loopback aliases need admin
+   // If the address isn't assignable, fall back to 127.0.0.1 with a warning.
+   if (bind_ip_ != "127.0.0.1" && bind_ip_ != "0.0.0.0") {
+      int probe = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (probe >= 0) {
+         sockaddr_in probe_addr{};
+         probe_addr.sin_family = AF_INET;
+         probe_addr.sin_port = 0; // ephemeral port — we just want to test the IP
+         inet_pton(AF_INET, bind_ip_.c_str(), &probe_addr.sin_addr);
+         if (bind(probe, reinterpret_cast<sockaddr*>(&probe_addr), sizeof(probe_addr)) != 0
+             && errno == EADDRNOTAVAIL) {
+            LOG_ERROR("M4 HTTP: " << bind_ip_
+                      << " not assignable on this system"
+                      << " (Linux needs: sudo ip addr add " << bind_ip_ << "/8 dev lo)."
+                      << " Falling back to 127.0.0.1");
+            bind_ip_ = "127.0.0.1";
+         }
+         ::close(probe);
+      }
+   }
+
    sock_t server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
    if (server_fd < 0) return;
 
