@@ -3,6 +3,8 @@
 #include "keyboard.h"
 #include "imgui.h"
 #include "SDL3/SDL.h"
+#include <memory>
+#include <mach/mach_time.h>
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
@@ -228,97 +230,148 @@ void koncpc_order_viewports_above_main() {
 
 // ── Dock icon ──────────────────────────────────────────────
 
-static NSImage* g_base_icon = nil;  // the single icon file — also serves as CRT overlay
+static NSImage* g_icon_overlay = nil;  // CRT overlay (translucent screen area)
+static NSImage* g_static_icon = nil;   // static logo shown at startup / fallback
+static std::atomic<bool> g_icon_update_in_flight{false};
+static std::atomic<bool> g_icon_preview_disabled{false}; // auto-disabled if too slow
+static uint64_t g_icon_last_time_ns = 0;       // last update duration
+static int g_icon_slow_count = 0;              // consecutive slow updates
+
+// Screen region in 850x759 icon (proportional coordinates)
+static constexpr CGFloat kScreenX = 0.2141;
+static constexpr CGFloat kScreenY = 0.4800;
+static constexpr CGFloat kScreenW = 0.4918;
+static constexpr CGFloat kScreenH = 0.4350;
+
+static uint64_t nanos_now() {
+  static mach_timebase_info_data_t tb = {0, 0};
+  if (tb.denom == 0) mach_timebase_info(&tb);
+  return mach_absolute_time() * tb.numer / tb.denom;
+}
 
 void koncpc_set_dock_icon(const char* png_path) {
   @autoreleasepool {
     if (!png_path) return;
     NSString* path = [NSString stringWithUTF8String:png_path];
-    g_base_icon = [[NSImage alloc] initWithContentsOfFile:path];
-    if (g_base_icon) {
-      [NSApp setApplicationIconImage:g_base_icon];
+
+    // Load the CRT overlay (koncepcja-icon.png — translucent screen area)
+    g_icon_overlay = [[NSImage alloc] initWithContentsOfFile:path];
+
+    // Load the static logo (koncepcja-logo.png — shown before live preview starts)
+    NSString* logoPath = [[path stringByDeletingLastPathComponent]
+      stringByAppendingPathComponent:@"koncepcja-logo.png"];
+    g_static_icon = [[NSImage alloc] initWithContentsOfFile:logoPath];
+
+    // Set the static logo as the initial Dock icon
+    NSImage* initial = g_static_icon ? g_static_icon : g_icon_overlay;
+    if (initial) {
+      // Center in a square canvas
+      NSSize sz = [initial size];
+      CGFloat side = fmax(sz.width, sz.height);
+      NSImage* sq = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
+      [sq lockFocus];
+      [initial drawInRect:NSMakeRect((side - sz.width)/2, (side - sz.height)/2, sz.width, sz.height)
+                 fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+      [sq unlockFocus];
+      [NSApp setApplicationIconImage:sq];
     }
   }
 }
 
 void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surface_h,
                                      int pitch, int vis_x, int vis_y, int vis_w, int vis_h) {
-  @autoreleasepool {
-    if (!pixels || vis_w <= 0 || vis_h <= 0 || !g_base_icon) return;
+  (void)surface_w; (void)surface_h;
+  if (!pixels || vis_w <= 0 || vis_h <= 0 || !g_icon_overlay) return;
 
-    // Create CGImage from full RGBA surface, then crop to visible area
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(
-      const_cast<void*>(pixels), (size_t)surface_w, (size_t)surface_h, 8, (size_t)pitch,
-      cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
-    CGColorSpaceRelease(cs);
-    if (!ctx) return;
+  // Skip if preview was auto-disabled due to being too slow
+  if (g_icon_preview_disabled.load(std::memory_order_relaxed)) return;
 
-    CGImageRef cgFull = CGBitmapContextCreateImage(ctx);
-    CGContextRelease(ctx);
-    if (!cgFull) return;
+  // Skip if a previous update is still in flight (don't queue up work)
+  if (g_icon_update_in_flight.exchange(true)) return;
 
-    // Crop to visible CPC screen area (CGImage y=0 is bottom, but
-    // CGBitmapContext flips it, so vis_y from top works directly)
-    CGRect cropRect = CGRectMake(vis_x, vis_y, vis_w, vis_h);
-    CGImageRef cgScreen = CGImageCreateWithImageInRect(cgFull, cropRect);
-    CGImageRelease(cgFull);
-    if (!cgScreen) return;
-
-    int w = vis_w;
-    int h = vis_h;
-
-    // Composite: live CPC screen + icon overlay.
-    // koncepcja-icon.png (850x759) has a translucent screen area (~alpha 40)
-    // and opaque CPC body. We draw the live screen FIRST, then the icon ON TOP.
-    // The opaque body frames the screen; the translucent area adds CRT shine.
-    //
-    // Screen region in 850x759 (proportional coordinates):
-    //   Source coords (y from bottom): (182,676) to (600,383)
-    //   Image coords: (182,83) to (600,376)
-    //   Cocoa: x=0.214, y=0.505, w=0.492, h=0.386
-    static constexpr CGFloat kScreenX = 0.2141;
-    static constexpr CGFloat kScreenY = 0.4800; // pushed down slightly
-    static constexpr CGFloat kScreenW = 0.4918;
-    static constexpr CGFloat kScreenH = 0.4350; // taller to fill monitor vertically
-
-    // Use a square canvas — macOS Dock icons are always square.
-    // Center the non-square icon (850x759) within a square.
-    NSSize iconSize = [g_base_icon size];
-    CGFloat side = fmax(iconSize.width, iconSize.height);
-    CGFloat ox = (side - iconSize.width) / 2;   // horizontal offset to center
-    CGFloat oy = (side - iconSize.height) / 2;  // vertical offset to center
-
-    NSImage* composite = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
-    [composite lockFocus];
-
-    // Screen rect within the centered icon
-    CGFloat pad_x = iconSize.width * 0.005;
-    CGFloat pad_y = iconSize.height * 0.005;
-    NSRect screenRect = NSMakeRect(
-      ox + iconSize.width * kScreenX - pad_x,
-      oy + iconSize.height * kScreenY - pad_y,
-      iconSize.width * kScreenW + pad_x * 2,
-      iconSize.height * kScreenH + pad_y * 2);
-
-    // 1. Draw live CPC screen into the monitor area
-    NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
-    [screenImg drawInRect:screenRect
-                 fromRect:NSZeroRect
-                operation:NSCompositingOperationSourceOver
-                 fraction:1.0];
-
-    // 2. Draw icon on top — centered in the square canvas.
-    //    Opaque body frames the screen, translucent screen area adds CRT shine.
-    NSRect iconRect = NSMakeRect(ox, oy, iconSize.width, iconSize.height);
-    [g_base_icon drawInRect:iconRect
-                   fromRect:NSZeroRect
-                  operation:NSCompositingOperationSourceOver
-                   fraction:1.0];
-
-    [composite unlockFocus];
-    CGImageRelease(cgScreen);
-
-    [NSApp setApplicationIconImage:composite];
+  // Copy visible pixels for async use
+  size_t row_bytes = static_cast<size_t>(vis_w) * 4;
+  size_t buf_size = static_cast<size_t>(vis_h) * row_bytes;
+  std::shared_ptr<uint8_t> px(new uint8_t[buf_size], std::default_delete<uint8_t[]>());
+  const uint8_t* src = static_cast<const uint8_t*>(pixels);
+  for (int y = 0; y < vis_h; y++) {
+    memcpy(px.get() + y * row_bytes,
+           src + (vis_y + y) * pitch + vis_x * 4,
+           row_bytes);
   }
+
+  int w = vis_w, h = vis_h;
+
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    uint64_t t0 = nanos_now();
+    @autoreleasepool {
+      CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+      CGContextRef ctx = CGBitmapContextCreate(
+        px.get(), (size_t)w, (size_t)h, 8, row_bytes,
+        cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+      CGColorSpaceRelease(cs);
+      if (!ctx) { g_icon_update_in_flight.store(false); return; }
+
+      CGImageRef cgScreen = CGBitmapContextCreateImage(ctx);
+      CGContextRelease(ctx);
+      if (!cgScreen) { g_icon_update_in_flight.store(false); return; }
+
+      // Square canvas with centered icon
+      NSSize iconSize = [g_icon_overlay size];
+      CGFloat side = fmax(iconSize.width, iconSize.height);
+      CGFloat ox = (side - iconSize.width) / 2;
+      CGFloat oy = (side - iconSize.height) / 2;
+
+      NSImage* composite = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
+      [composite lockFocus];
+
+      // 1. Live CPC screen
+      CGFloat pad_x = iconSize.width * 0.005;
+      CGFloat pad_y = iconSize.height * 0.005;
+      NSRect screenRect = NSMakeRect(
+        ox + iconSize.width * kScreenX - pad_x,
+        oy + iconSize.height * kScreenY - pad_y,
+        iconSize.width * kScreenW + pad_x * 2,
+        iconSize.height * kScreenH + pad_y * 2);
+      NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
+      [screenImg drawInRect:screenRect fromRect:NSZeroRect
+                  operation:NSCompositingOperationSourceOver fraction:1.0];
+
+      // 2. CRT overlay on top
+      NSRect iconRect = NSMakeRect(ox, oy, iconSize.width, iconSize.height);
+      [g_icon_overlay drawInRect:iconRect fromRect:NSZeroRect
+                       operation:NSCompositingOperationSourceOver fraction:1.0];
+
+      [composite unlockFocus];
+      CGImageRelease(cgScreen);
+
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp setApplicationIconImage:composite];
+        g_icon_update_in_flight.store(false);
+
+        // Measure time and auto-disable if consistently too slow (>8ms)
+        uint64_t elapsed_ns = nanos_now() - t0;
+        g_icon_last_time_ns = elapsed_ns;
+        if (elapsed_ns > 8000000) { // >8ms
+          g_icon_slow_count++;
+          if (g_icon_slow_count >= 5) {
+            g_icon_preview_disabled.store(true);
+            // Fall back to static logo
+            if (g_static_icon) {
+              NSSize sz = [g_static_icon size];
+              CGFloat s = fmax(sz.width, sz.height);
+              NSImage* sq = [[NSImage alloc] initWithSize:NSMakeSize(s, s)];
+              [sq lockFocus];
+              [g_static_icon drawInRect:NSMakeRect((s-sz.width)/2,(s-sz.height)/2,sz.width,sz.height)
+                               fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+              [sq unlockFocus];
+              [NSApp setApplicationIconImage:sq];
+            }
+          }
+        } else {
+          g_icon_slow_count = 0; // reset on a fast update
+        }
+      });
+    }
+  });
 }
