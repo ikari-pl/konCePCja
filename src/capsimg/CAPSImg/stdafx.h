@@ -20,8 +20,11 @@
 #include <io.h>
 #include <direct.h>
 
+#ifndef _MSC_VER
+// MINGW doesn't provide _lrotl/_lrotr — define them as macros
 #define _lrotl(x,n) (((x) << (n)) | ((x) >> (sizeof(x)*8-(n))))
 #define _lrotr(x,n) (((x) >> (n)) | ((x) << (sizeof(x)*8-(n))))
+#endif
 
 #else
 
@@ -91,7 +94,9 @@ typedef const char *LPCTSTR;
 #include "CapsFDCEmulator.h"
 #include "CapsFormatMFM.h"
 
+#ifndef _MSC_VER
 #define __assume(cond) do { if (!(cond)) __builtin_unreachable(); } while (0)
+#endif
 
 #ifndef WINDOWS
 #define _access access
