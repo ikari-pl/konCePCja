@@ -26,6 +26,7 @@
 #include "autotype.h"
 #include "koncepcja.h"
 #include "z80.h"
+#include "rom_identify.h"
 #include <SDL3/SDL.h>
 
 #include <algorithm>
@@ -49,6 +50,8 @@
 extern t_CPC CPC;
 extern void emulator_reset();
 extern AutoTypeQueue g_autotype_queue;
+extern SDL_Surface *back_surface;
+extern byte *memmap_ROM[256];
 
 M4HttpServer g_m4_http;
 
@@ -595,7 +598,11 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
    // ?cnmi — trigger NMI / hack menu (deferred to main thread)
    if (req.query_string.find("cnmi") != std::string::npos) {
       pending_nmi.store(true);
-      resp.body = "OK NMI triggered";
+      if (CPC.mf2) {
+         resp.body = "NMI triggered (Multiface II)";
+      } else {
+         resp.body = "NMI triggered (no Multiface — raw Z80 NMI to 0x0066)";
+      }
       resp.content_type = "text/plain";
       return resp;
    }
@@ -633,6 +640,8 @@ M4HttpServer::HttpResponse M4HttpServer::handle_status(const HttpRequest&) {
         << "  \"paused\": " << (CPC.paused ? "true" : "false") << ",\n"
         << "  \"http_port\": " << actual_port.load() << ",\n"
         << "  \"bind_ip\": \"" << bind_ip_ << "\",\n"
+        << "  \"screen_w\": " << (back_surface ? back_surface->w : 0) << ",\n"
+        << "  \"screen_h\": " << (back_surface ? back_surface->h : 0) << ",\n"
         << "  \"version\": \"koncepcja-m4\"\n"
         << "}\n";
 
@@ -720,9 +729,6 @@ M4HttpServer::HttpResponse M4HttpServer::handle_static(const HttpRequest& req) {
 
 // ── Live preview (BMP from back_surface) ─────────────────
 
-extern SDL_Surface *back_surface;
-extern byte *memmap_ROM[256];
-
 M4HttpServer::HttpResponse M4HttpServer::handle_preview(const HttpRequest&) {
    HttpResponse resp;
 
@@ -801,9 +807,22 @@ M4HttpServer::HttpResponse M4HttpServer::handle_roms_api(const HttpRequest&) {
    for (int i = 0; i < MAX_ROM_SLOTS; i++) {
       if (i > 0) json << ",\n";
       bool loaded = (memmap_ROM[i] != nullptr);
+      std::string id;
+      if (loaded) id = rom_identify(memmap_ROM[i]);
+      // Escape quotes in strings for JSON safety
+      auto esc_json = [](const std::string& s) {
+         std::string out;
+         for (char c : s) {
+            if (c == '"') out += "\\\"";
+            else if (c == '\\') out += "\\\\";
+            else out += c;
+         }
+         return out;
+      };
       json << "  {\"slot\": " << i
            << ", \"loaded\": " << (loaded ? "true" : "false")
-           << ", \"file\": \"" << CPC.rom_file[i] << "\""
+           << ", \"file\": \"" << esc_json(CPC.rom_file[i]) << "\""
+           << ", \"name\": \"" << esc_json(id) << "\""
            << "}";
    }
    json << "\n]\n";
@@ -958,9 +977,19 @@ void M4HttpServer::drain_pending() {
    if (pending_nmi.exchange(false)) {
       if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
          z80_mf2stop();
-         LOG_INFO("M4 HTTP: NMI/Multiface triggered");
-      } else if (!CPC.mf2) {
-         LOG_INFO("M4 HTTP: NMI requested but Multiface not loaded (enable in Options)");
+         LOG_INFO("M4 HTTP: NMI triggered — Multiface II stop");
+      } else {
+         // On the real M4, this pages in NMIROM.BIN (the M4 Hack Menu).
+         // We don't have a separate M4 NMI ROM, so we trigger the Multiface
+         // if available, or just issue the raw Z80 NMI.
+         if (!CPC.mf2) {
+            LOG_INFO("M4 HTTP: NMI triggered — no Multiface loaded, "
+                     "issuing raw Z80 NMI to vector 0x0066");
+         }
+         // Issue raw NMI regardless — z80_mf2stop sets MF2 flags but the
+         // RST 0x0066 is the actual NMI. If no handler is installed at 0x0066,
+         // the CPC will likely crash (same as real hardware with no NMI ROM).
+         z80_mf2stop();
       }
    }
 }

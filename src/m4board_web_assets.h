@@ -73,8 +73,8 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
   <div class="section">
     <h2>ROM Slots</h2>
     <table class="rom-table" id="rom-table">
-      <thead><tr><th>Slot</th><th>Status</th><th>File</th></tr></thead>
-      <tbody id="rom-tbody"><tr><td colspan="3">Loading...</td></tr></tbody>
+      <thead><tr><th>Slot</th><th>Status</th><th>Identified As</th><th>File</th></tr></thead>
+      <tbody id="rom-tbody"><tr><td colspan="4">Loading...</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -315,6 +315,7 @@ function loadRoms() {
       var cls = s.loaded ? 'rom-loaded' : '';
       html += '<tr class="' + cls + '"><td>' + s.slot + '</td>'
             + '<td>' + (s.loaded ? '<span class="dot-on">Loaded</span>' : '<span class="dot-off">Empty</span>') + '</td>'
+            + '<td>' + (s.name ? '<span class="rom-name">' + esc(s.name) + '</span>' : '') + '</td>'
             + '<td>' + (s.file ? esc(s.file) : '') + '</td></tr>';
     }
     document.getElementById('rom-tbody').innerHTML = html;
@@ -323,6 +324,7 @@ function loadRoms() {
 
 // ── Live preview ──
 var previewTimer = null;
+var previewSized = false;
 function togglePreview(on) {
   if (on) {
     refreshPreview();
@@ -335,6 +337,16 @@ function togglePreview(on) {
 function refreshPreview() {
   var img = document.getElementById('preview-img');
   img.src = '/preview.bmp?t=' + Date.now();
+  // Size the image at 50% of native resolution (retina-friendly: all pixels preserved)
+  if (!previewSized) {
+    fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
+      if (s.screen_w && s.screen_h) {
+        img.style.width = Math.round(s.screen_w / 2) + 'px';
+        img.style.height = Math.round(s.screen_h / 2) + 'px';
+        previewSized = true;
+      }
+    }).catch(function(){});
+  }
 }
 
 // ── Settings page ──
@@ -471,6 +483,7 @@ body {
 .rom-loaded td { color: #e0e0e0; }
 .dot-on { color: #a3be8c; }
 .dot-off { color: #555; }
+.rom-name { color: #88c0d0; }
 .preview-container { background: #000; border-radius: 4px; padding: 4px;
   display: inline-block; }
 .preview-img { max-width: 100%; height: auto; image-rendering: pixelated;
