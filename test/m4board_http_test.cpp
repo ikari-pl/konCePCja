@@ -11,61 +11,92 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+using test_sock_t = SOCKET;
+#define TEST_INVALID_SOCK INVALID_SOCKET
+static void test_sock_close(test_sock_t s) { closesocket(s); }
+static int test_sock_send(test_sock_t s, const void* buf, int len) {
+   return ::send(s, static_cast<const char*>(buf), len, 0);
+}
+static int test_sock_recv(test_sock_t s, void* buf, int len) {
+   return ::recv(s, static_cast<char*>(buf), len, 0);
+}
+static void test_sock_set_timeout(test_sock_t s, int secs) {
+   DWORD timeout = static_cast<DWORD>(secs * 1000);
+   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
+              reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+}
+// RAII WSA init for the test suite
+struct WsaInit {
+   WsaInit() { WSADATA w; WSAStartup(MAKEWORD(2,2), &w); }
+   ~WsaInit() { WSACleanup(); }
+};
+static WsaInit g_wsa_init;
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+using test_sock_t = int;
+#define TEST_INVALID_SOCK (-1)
+static void test_sock_close(test_sock_t s) { ::close(s); }
+static int test_sock_send(test_sock_t s, const void* buf, int len) {
+   return static_cast<int>(::write(s, buf, static_cast<size_t>(len)));
+}
+static int test_sock_recv(test_sock_t s, void* buf, int len) {
+   return static_cast<int>(::read(s, buf, static_cast<size_t>(len)));
+}
+static void test_sock_set_timeout(test_sock_t s, int secs) {
+   timeval tv{secs, 0};
+   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
+              reinterpret_cast<const char*>(&tv), sizeof(tv));
+}
 #endif
 
 // ── Helpers ──
 
 static std::string http_get(int port, const std::string& path) {
-   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-   if (fd < 0) return "";
+   test_sock_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+   if (fd == TEST_INVALID_SOCK) return "";
 
    sockaddr_in addr{};
    addr.sin_family = AF_INET;
    addr.sin_port = htons(static_cast<uint16_t>(port));
    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-   if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-      ::close(fd);
+   if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      test_sock_close(fd);
       return "";
    }
 
    std::string req = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\n\r\n";
-   (void)::write(fd, req.c_str(), req.size());
+   test_sock_send(fd, req.c_str(), static_cast<int>(req.size()));
 
    std::string response;
    char buf[4096];
-   // Set read timeout
-   timeval tv{2, 0};
-   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
-              reinterpret_cast<const char*>(&tv), sizeof(tv));
+   test_sock_set_timeout(fd, 2);
 
    while (true) {
-      ssize_t n = ::read(fd, buf, sizeof(buf));
+      int n = test_sock_recv(fd, buf, sizeof(buf));
       if (n <= 0) break;
       response.append(buf, static_cast<size_t>(n));
    }
-   ::close(fd);
+   test_sock_close(fd);
    return response;
 }
 
 static std::string http_post(int port, const std::string& path,
                              const std::string& content_type,
                              const std::string& body) {
-   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-   if (fd < 0) return "";
+   test_sock_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+   if (fd == TEST_INVALID_SOCK) return "";
 
    sockaddr_in addr{};
    addr.sin_family = AF_INET;
    addr.sin_port = htons(static_cast<uint16_t>(port));
    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-   if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-      ::close(fd);
+   if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+      test_sock_close(fd);
       return "";
    }
 
@@ -74,20 +105,18 @@ static std::string http_post(int port, const std::string& path,
                      "Content-Type: " + content_type + "\r\n"
                      "Content-Length: " + std::to_string(body.size()) + "\r\n"
                      "\r\n" + body;
-   (void)::write(fd, req.c_str(), req.size());
+   test_sock_send(fd, req.c_str(), static_cast<int>(req.size()));
 
    std::string response;
    char buf[4096];
-   timeval tv{2, 0};
-   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
-              reinterpret_cast<const char*>(&tv), sizeof(tv));
+   test_sock_set_timeout(fd, 2);
 
    while (true) {
-      ssize_t n = ::read(fd, buf, sizeof(buf));
+      int n = test_sock_recv(fd, buf, sizeof(buf));
       if (n <= 0) break;
       response.append(buf, static_cast<size_t>(n));
    }
-   ::close(fd);
+   test_sock_close(fd);
    return response;
 }
 
@@ -306,21 +335,19 @@ TEST_F(M4HttpTest, UnknownRouteReturns404) {
 
 TEST_F(M4HttpTest, MethodNotAllowed) {
    // DELETE method not supported
-   int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-   ASSERT_GE(fd, 0);
+   test_sock_t fd = ::socket(AF_INET, SOCK_STREAM, 0);
+   ASSERT_NE(fd, TEST_INVALID_SOCK);
    sockaddr_in addr{};
    addr.sin_family = AF_INET;
    addr.sin_port = htons(static_cast<uint16_t>(port_));
    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
    ASSERT_EQ(0, connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)));
    std::string req = "DELETE /test HTTP/1.1\r\nHost: localhost\r\n\r\n";
-   (void)::write(fd, req.c_str(), req.size());
+   test_sock_send(fd, req.c_str(), static_cast<int>(req.size()));
    char buf[4096];
-   timeval tv{2, 0};
-   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
-              reinterpret_cast<const char*>(&tv), sizeof(tv));
-   ssize_t n = ::read(fd, buf, sizeof(buf));
-   ::close(fd);
+   test_sock_set_timeout(fd, 2);
+   int n = test_sock_recv(fd, buf, sizeof(buf));
+   test_sock_close(fd);
    ASSERT_GT(n, 0);
    std::string resp(buf, static_cast<size_t>(n));
    EXPECT_EQ(405, extract_status(resp));
