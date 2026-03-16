@@ -25,6 +25,10 @@ jobs:
         with:
           submodules: true
 
+      # ── GoogleTest (not a submodule — cloned by Makefile) ──
+      - name: Clone GoogleTest
+        run: git clone --depth 1 https://github.com/google/googletest.git
+
       # ── vcpkg (cached) ─────────────────────────────────
       - name: Set up vcpkg
         uses: lukka/run-vcpkg@v11
