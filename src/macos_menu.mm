@@ -289,7 +289,10 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
 
   int w = vis_w, h = vis_h;
 
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+  // All Cocoa drawing (lockFocus, setApplicationIconImage) must happen on
+  // the main thread. The pixel copy above is the only work on the emulation
+  // thread. The in-flight guard ensures we don't queue up frames.
+  dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
       CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
       CGContextRef ctx = CGBitmapContextCreate(
@@ -331,10 +334,8 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
       [composite unlockFocus];
       CGImageRelease(cgScreen);
 
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [NSApp setApplicationIconImage:composite];
-        g_icon_update_in_flight.store(false);
-      });
+      [NSApp setApplicationIconImage:composite];
+      g_icon_update_in_flight.store(false);
     }
   });
 }
