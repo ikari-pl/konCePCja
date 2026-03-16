@@ -1,13 +1,16 @@
 // Caprice 32
 // File IO functions
 
+#ifndef _MSC_VER
 #include <dirent.h>
+#include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <filesystem>
 #include <stdio.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <ctime>
 
 int file_size (int fd) {
@@ -44,6 +47,20 @@ std::vector<std::string> listDirectory(std::string &directory) {
    if (directory[directory.size() - 1] != '/') {
       directory += "/";
    }
+#ifdef _MSC_VER
+   // MSVC: use std::filesystem instead of POSIX dirent
+   std::error_code ec;
+   for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
+       std::string fileName = entry.path().filename().string();
+       if (fileName != ".." && fileName != ".") {
+           s.push_back(fileName);
+       }
+   }
+   if (ec) {
+       printf("directory_iterator(%s) failed; %s\n", directory.c_str(), ec.message().c_str());
+       return s;
+   }
+#else
    DIR* pDir;
    struct dirent *pent;
    pDir = opendir(directory.c_str());
@@ -58,6 +75,7 @@ std::vector<std::string> listDirectory(std::string &directory) {
        }
    }
    closedir(pDir);
+#endif
    sort(s.begin(), s.end()); // sort elements
    return s;
 }

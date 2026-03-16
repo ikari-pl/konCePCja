@@ -1,0 +1,10 @@
+{
+  "name": "koncepcja",
+  "version-string": "5.3.0",
+  "description": "Amstrad CPC emulator based on Caprice32",
+  "dependencies": [
+    "freetype",
+    "libpng",
+    "zlib"
+  ]
+}

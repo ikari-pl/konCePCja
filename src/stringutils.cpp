@@ -4,7 +4,9 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#ifndef _MSC_VER
 #include <strings.h>
+#endif
 
 namespace stringutils
 {
