@@ -2,8 +2,7 @@ name: Windows build (MINGW64)
 
 on:
   push:
-    branches:
-      - '**'
+    branches: [master]
   pull_request:
   release:
     types: [published]
