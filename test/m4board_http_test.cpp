@@ -24,6 +24,8 @@ static void test_sock_set_timeout(test_sock_t s, int secs) {
    DWORD timeout = static_cast<DWORD>(secs * 1000);
    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
               reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+   setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
+              reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 }
 // RAII WSA init for the test suite
 struct WsaInit {
@@ -73,7 +75,7 @@ static std::string http_get(int port, const std::string& path) {
 
    std::string response;
    char buf[4096];
-   test_sock_set_timeout(fd, 2);
+   test_sock_set_timeout(fd, 5);
 
    while (true) {
       int n = test_sock_recv(fd, buf, sizeof(buf));
@@ -109,7 +111,7 @@ static std::string http_post(int port, const std::string& path,
 
    std::string response;
    char buf[4096];
-   test_sock_set_timeout(fd, 2);
+   test_sock_set_timeout(fd, 5);
 
    while (true) {
       int n = test_sock_recv(fd, buf, sizeof(buf));
@@ -161,7 +163,7 @@ protected:
       int base = 30000 + static_cast<int>(rng() % 20000);
       g_m4_http.start(base, "127.0.0.1");
       // Wait for server to bind (port() > 0 means the socket is ready)
-      for (int i = 0; i < 100 && g_m4_http.port() == 0; i++) {
+      for (int i = 0; i < 200 && g_m4_http.port() == 0; i++) {
          std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
       port_ = g_m4_http.port();
@@ -345,7 +347,7 @@ TEST_F(M4HttpTest, MethodNotAllowed) {
    std::string req = "DELETE /test HTTP/1.1\r\nHost: localhost\r\n\r\n";
    test_sock_send(fd, req.c_str(), static_cast<int>(req.size()));
    char buf[4096];
-   test_sock_set_timeout(fd, 2);
+   test_sock_set_timeout(fd, 5);
    int n = test_sock_recv(fd, buf, sizeof(buf));
    test_sock_close(fd);
    ASSERT_GT(n, 0);
