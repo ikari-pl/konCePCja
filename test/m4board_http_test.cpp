@@ -323,6 +323,50 @@ TEST_F(M4HttpTest, MethodNotAllowed) {
    EXPECT_EQ(405, extract_status(resp));
 }
 
+TEST_F(M4HttpTest, PreviewReturns503WhenNoSurface) {
+   // back_surface is null in test environment
+   auto resp = http_get(port_, "/preview.bmp");
+   ASSERT_FALSE(resp.empty());
+   // 503 because back_surface is null in test mode
+   EXPECT_EQ(503, extract_status(resp));
+}
+
+TEST_F(M4HttpTest, RomsApiReturnsJson) {
+   auto resp = http_get(port_, "/roms.json");
+   ASSERT_FALSE(resp.empty());
+   EXPECT_EQ(200, extract_status(resp));
+   auto body = extract_body(resp);
+   EXPECT_NE(std::string::npos, body.find("\"slot\""));
+   EXPECT_NE(std::string::npos, body.find("\"loaded\""));
+}
+
+TEST_F(M4HttpTest, ConfigCgiCpcReset) {
+   auto resp = http_get(port_, "/config.cgi?cres=1");
+   ASSERT_FALSE(resp.empty());
+   EXPECT_EQ(200, extract_status(resp));
+   EXPECT_TRUE(g_m4_http.pending_reset.load());
+}
+
+TEST_F(M4HttpTest, ConfigCgiPauseToggle) {
+   auto resp = http_get(port_, "/config.cgi?chlt=1");
+   ASSERT_FALSE(resp.empty());
+   EXPECT_EQ(200, extract_status(resp));
+   EXPECT_TRUE(g_m4_http.pending_pause_toggle.load());
+}
+
+TEST_F(M4HttpTest, ConfigCgiNmi) {
+   auto resp = http_get(port_, "/config.cgi?cnmi=1");
+   ASSERT_FALSE(resp.empty());
+   EXPECT_EQ(200, extract_status(resp));
+   EXPECT_TRUE(g_m4_http.pending_nmi.load());
+}
+
+TEST_F(M4HttpTest, ConfigCgiRunCommand) {
+   auto resp = http_get(port_, "/config.cgi?run=cat");
+   ASSERT_FALSE(resp.empty());
+   EXPECT_EQ(200, extract_status(resp));
+}
+
 // ── Port mapping tests ──
 
 TEST(M4PortMappingTest, SetAndResolve) {

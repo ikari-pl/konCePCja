@@ -27,6 +27,7 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
   <h1>konCePCja M4 Board</h1>
   <nav>
     <a href="#" onclick="showPage('files')" class="btn" id="nav-files">Files</a>
+    <a href="#" onclick="showPage('roms')" class="btn" id="nav-roms">Roms</a>
     <a href="#" onclick="showPage('control')" class="btn" id="nav-control">Control</a>
     <a href="#" onclick="showPage('settings')" class="btn" id="nav-settings">Settings</a>
   </nav>
@@ -66,6 +67,19 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
 </div>
 </div>
 
+<!-- ═══ ROMS PAGE ═══ -->
+<div id="page-roms" class="page" style="display:none">
+<div class="container">
+  <div class="section">
+    <h2>ROM Slots</h2>
+    <table class="rom-table" id="rom-table">
+      <thead><tr><th>Slot</th><th>Status</th><th>File</th></tr></thead>
+      <tbody id="rom-tbody"><tr><td colspan="3">Loading...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+</div>
+
 <!-- ═══ CONTROL PAGE ═══ -->
 <div id="page-control" class="page" style="display:none">
 <div class="container">
@@ -101,6 +115,16 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
 <div id="page-settings" class="page" style="display:none">
 <div class="container">
   <div class="section">
+    <h2>Live Preview</h2>
+    <div class="preview-container">
+      <img id="preview-img" alt="CPC Screen" class="preview-img">
+    </div>
+    <div style="margin-top:8px">
+      <label><input type="checkbox" id="preview-toggle" onchange="togglePreview(this.checked)"> Auto-refresh (~5 fps)</label>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Status</h2>
     <table class="info-table" id="status-table">
       <tr><td>Loading...</td></tr>
@@ -132,6 +156,7 @@ function showPage(name) {
   if (nav) nav.classList.add('active');
   activePage = name;
   if (name === 'settings') refreshStatus();
+  if (name === 'roms') loadRoms();
 }
 
 // ── Files page ──
@@ -281,6 +306,37 @@ function doCdCmd() {
     .then(function(r) { return r.text(); }).then(function(t) { showToast(t); });
 }
 
+// ── Roms page ──
+function loadRoms() {
+  fetch('/roms.json').then(function(r) { return r.json(); }).then(function(slots) {
+    var html = '';
+    for (var i = 0; i < slots.length; i++) {
+      var s = slots[i];
+      var cls = s.loaded ? 'rom-loaded' : '';
+      html += '<tr class="' + cls + '"><td>' + s.slot + '</td>'
+            + '<td>' + (s.loaded ? '<span class="dot-on">Loaded</span>' : '<span class="dot-off">Empty</span>') + '</td>'
+            + '<td>' + (s.file ? esc(s.file) : '') + '</td></tr>';
+    }
+    document.getElementById('rom-tbody').innerHTML = html;
+  }).catch(function(){});
+}
+
+// ── Live preview ──
+var previewTimer = null;
+function togglePreview(on) {
+  if (on) {
+    refreshPreview();
+    previewTimer = setInterval(refreshPreview, 200);
+  } else {
+    if (previewTimer) clearInterval(previewTimer);
+    previewTimer = null;
+  }
+}
+function refreshPreview() {
+  var img = document.getElementById('preview-img');
+  img.src = '/preview.bmp?t=' + Date.now();
+}
+
 // ── Settings page ──
 function refreshStatus() {
   fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
@@ -407,6 +463,18 @@ body {
 .upload-area .link { color: #88c0d0; cursor: pointer; text-decoration: underline; }
 #upload-status p { font-size: 12px; color: #a3be8c; margin-top: 4px; }
 .loading { text-align: center; padding: 40px; color: #888; }
+.rom-table { width: 100%; border-collapse: collapse; }
+.rom-table th { text-align: left; padding: 6px 10px; background: #16213e;
+  font-size: 12px; color: #888; border-bottom: 1px solid #0f3460; }
+.rom-table td { padding: 4px 10px; border-bottom: 1px solid #0d1b2a; font-size: 13px; }
+.rom-table td:first-child { width: 50px; text-align: center; color: #888; }
+.rom-loaded td { color: #e0e0e0; }
+.dot-on { color: #a3be8c; }
+.dot-off { color: #555; }
+.preview-container { background: #000; border-radius: 4px; padding: 4px;
+  display: inline-block; }
+.preview-img { max-width: 100%; height: auto; image-rendering: pixelated;
+  display: block; }
 #toast-container {
   position: fixed; bottom: 20px; right: 20px; z-index: 9999;
   display: flex; flex-direction: column-reverse; gap: 8px;

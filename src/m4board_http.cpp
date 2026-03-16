@@ -26,6 +26,7 @@
 #include "autotype.h"
 #include "koncepcja.h"
 #include "z80.h"
+#include <SDL3/SDL.h>
 
 #include <algorithm>
 #include <cstring>
@@ -717,6 +718,101 @@ M4HttpServer::HttpResponse M4HttpServer::handle_static(const HttpRequest& req) {
    return resp;
 }
 
+// ── Live preview (BMP from back_surface) ─────────────────
+
+extern SDL_Surface *back_surface;
+extern byte *memmap_ROM[256];
+
+M4HttpServer::HttpResponse M4HttpServer::handle_preview(const HttpRequest&) {
+   HttpResponse resp;
+
+   if (!back_surface || !back_surface->pixels) {
+      resp.status = 503; resp.status_text = "Service Unavailable";
+      resp.body = "No video surface";
+      return resp;
+   }
+
+   // Read dimensions — these don't change after init
+   int w = back_surface->w;
+   int h = back_surface->h;
+   int pitch = back_surface->pitch;
+   int bpp = 4; // RGBA32
+
+   // Encode as BMP (simple, no dependencies, fast)
+   // BMP = 14-byte file header + 40-byte DIB header + pixel data (bottom-up, BGR, padded)
+   int row_size = ((w * 3 + 3) / 4) * 4; // padded to 4 bytes
+   int pixel_data_size = row_size * h;
+   int file_size = 14 + 40 + pixel_data_size;
+
+   std::string bmp;
+   bmp.resize(static_cast<size_t>(file_size));
+   char* p = &bmp[0];
+
+   // File header (14 bytes)
+   p[0] = 'B'; p[1] = 'M';
+   auto write32 = [](char* dst, uint32_t v) {
+      dst[0] = static_cast<char>(v & 0xFF);
+      dst[1] = static_cast<char>((v >> 8) & 0xFF);
+      dst[2] = static_cast<char>((v >> 16) & 0xFF);
+      dst[3] = static_cast<char>((v >> 24) & 0xFF);
+   };
+   write32(p + 2, static_cast<uint32_t>(file_size));
+   write32(p + 6, 0); // reserved
+   write32(p + 10, 14 + 40); // pixel data offset
+
+   // DIB header (BITMAPINFOHEADER, 40 bytes)
+   write32(p + 14, 40); // header size
+   write32(p + 18, static_cast<uint32_t>(w));
+   write32(p + 22, static_cast<uint32_t>(h));
+   p[26] = 1; p[27] = 0; // planes = 1
+   p[28] = 24; p[29] = 0; // bits per pixel = 24
+   write32(p + 30, 0); // compression = BI_RGB
+   write32(p + 34, static_cast<uint32_t>(pixel_data_size));
+   write32(p + 38, 2835); // h pixels per meter (~72 DPI)
+   write32(p + 42, 2835); // v pixels per meter
+   write32(p + 46, 0); // colors in palette
+   write32(p + 50, 0); // important colors
+
+   // Pixel data — BMP is bottom-up, BGR order
+   const uint8_t* src = static_cast<const uint8_t*>(back_surface->pixels);
+   for (int y = h - 1; y >= 0; y--) {
+      const uint8_t* row = src + y * pitch;
+      char* dst_row = p + 54 + (h - 1 - y) * row_size;
+      for (int x = 0; x < w; x++) {
+         // Source is RGBA32 (R at offset 0, G at 1, B at 2, A at 3)
+         dst_row[x * 3 + 0] = static_cast<char>(row[x * bpp + 2]); // B
+         dst_row[x * 3 + 1] = static_cast<char>(row[x * bpp + 1]); // G
+         dst_row[x * 3 + 2] = static_cast<char>(row[x * bpp + 0]); // R
+      }
+   }
+
+   resp.body = std::move(bmp);
+   resp.content_type = "image/bmp";
+   return resp;
+}
+
+// ── ROM slot API ─────────────────────────────────────────
+
+M4HttpServer::HttpResponse M4HttpServer::handle_roms_api(const HttpRequest&) {
+   HttpResponse resp;
+
+   std::ostringstream json;
+   json << "[\n";
+   for (int i = 0; i < MAX_ROM_SLOTS; i++) {
+      if (i > 0) json << ",\n";
+      bool loaded = (memmap_ROM[i] != nullptr);
+      json << "  {\"slot\": " << i
+           << ", \"loaded\": " << (loaded ? "true" : "false")
+           << ", \"file\": \"" << CPC.rom_file[i] << "\""
+           << "}";
+   }
+   json << "\n]\n";
+
+   resp.body = json.str();
+   resp.content_type = "application/json; charset=utf-8";
+   return resp;
+}
+
 // ── Request routing ──────────────────────────────────────
 
 M4HttpServer::HttpResponse M4HttpServer::handle_request(const HttpRequest& req) {
@@ -759,6 +855,8 @@ M4HttpServer::HttpResponse M4HttpServer::handle_request(const HttpRequest& req) 
       if (req.path == "/download") return handle_download(req);
       if (req.path == "/config.cgi") return handle_config_cgi(req);
       if (req.path == "/status") return handle_status(req);
+      if (req.path == "/preview.bmp") return handle_preview(req);
+      if (req.path == "/roms.json") return handle_roms_api(req);
 
       // /sd/* — serve files from SD card
       if (req.path.size() >= 4 && req.path.substr(0, 4) == "/sd/") {

@@ -85,6 +85,8 @@ private:
    HttpResponse handle_status(const HttpRequest& req);
    HttpResponse handle_static(const HttpRequest& req);
    HttpResponse handle_sd_file(const HttpRequest& req);
+   HttpResponse handle_preview(const HttpRequest& req);
+   HttpResponse handle_roms_api(const HttpRequest& req);
 
    // Utility
    static std::string url_decode(const std::string& str);
