@@ -9,15 +9,21 @@ on:
 
 jobs:
   msvc-build:
-    name: MSVC (${{ matrix.config }})
+    name: MSVC (${{ matrix.arch }}-${{ matrix.config }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         config: [Release, Debug]
+        arch: [x64, Win32]
+        include:
+          - arch: x64
+            triplet: x64-windows
+          - arch: Win32
+            triplet: x86-windows
 
     env:
-      VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
 
     steps:
       - uses: actions/checkout@v4
@@ -38,7 +44,7 @@ jobs:
       - name: CMake configure
         run: >
           cmake -B build
-          -G "Visual Studio 17 2022" -A x64
+          -G "Visual Studio 17 2022" -A ${{ matrix.arch }}
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
 
       # ── Build ──────────────────────────────────────────
@@ -50,7 +56,7 @@ jobs:
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
-          PATH: ${{ github.workspace }}/build/vcpkg_installed/x64-windows/bin;${{ env.PATH }}
+          PATH: ${{ github.workspace }}/build/vcpkg_installed/${{ matrix.triplet }}/bin;${{ env.PATH }}
         working-directory: ${{ github.workspace }}
         run: |
           $testRunner = "build/${{ matrix.config }}/test_runner.exe"
