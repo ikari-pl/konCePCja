@@ -322,30 +322,37 @@ function loadRoms() {
   }).catch(function(){});
 }
 
-// ── Live preview ──
-var previewTimer = null;
+// ── Live preview (WebSocket) ──
+var previewWs = null;
 var previewSized = false;
 function togglePreview(on) {
   if (on) {
-    refreshPreview();
-    previewTimer = setInterval(refreshPreview, 200);
-  } else {
-    if (previewTimer) clearInterval(previewTimer);
-    previewTimer = null;
-  }
-}
-function refreshPreview() {
-  var img = document.getElementById('preview-img');
-  img.src = '/preview.bmp?t=' + Date.now();
-  // Size the image at 50% of native resolution (retina-friendly: all pixels preserved)
-  if (!previewSized) {
-    fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
-      if (s.screen_w && s.screen_h) {
-        img.style.width = Math.round(s.screen_w / 2) + 'px';
-        img.style.height = Math.round(s.screen_h / 2) + 'px';
-        previewSized = true;
+    if (previewWs) return; // already connected
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    previewWs = new WebSocket(proto + '//' + location.host + '/ws/preview');
+    previewWs.binaryType = 'blob';
+    previewWs.onmessage = function(ev) {
+      var img = document.getElementById('preview-img');
+      var url = URL.createObjectURL(ev.data);
+      img.onload = function() { URL.revokeObjectURL(url); };
+      img.src = url;
+      // Size at 50% of native resolution on first frame
+      if (!previewSized) {
+        fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
+          if (s.screen_w && s.screen_h) {
+            img.style.width = Math.round(s.screen_w / 2) + 'px';
+            img.style.height = Math.round(s.screen_h / 2) + 'px';
+            previewSized = true;
+          }
+        }).catch(function(){});
       }
-    }).catch(function(){});
+    };
+    previewWs.onclose = function() {
+      previewWs = null;
+      document.getElementById('preview-toggle').checked = false;
+    };
+  } else {
+    if (previewWs) { previewWs.close(); previewWs = null; }
   }
 }
 

@@ -55,6 +55,71 @@ extern byte *memmap_ROM[256];
 
 M4HttpServer g_m4_http;
 
+// ── Minimal SHA-1 (RFC 3174) ─────────────────────────────
+// Only used for WebSocket handshake (one hash per connection).
+
+static void sha1(const uint8_t* msg, size_t len, uint8_t out[20]) {
+   uint32_t h0=0x67452301, h1=0xEFCDAB89, h2=0x98BADCFE, h3=0x10325476, h4=0xC3D2E1F0;
+   size_t padded_len = ((len + 8) / 64 + 1) * 64;
+   std::vector<uint8_t> buf(padded_len, 0);
+   memcpy(buf.data(), msg, len);
+   buf[len] = 0x80;
+   uint64_t bits = static_cast<uint64_t>(len) * 8;
+   for (int i = 0; i < 8; i++) buf[padded_len - 1 - i] = static_cast<uint8_t>(bits >> (i * 8));
+
+   auto rotl = [](uint32_t v, int n) -> uint32_t { return (v << n) | (v >> (32 - n)); };
+
+   for (size_t chunk = 0; chunk < padded_len; chunk += 64) {
+      uint32_t w[80];
+      for (int i = 0; i < 16; i++)
+         w[i] = (static_cast<uint32_t>(buf[chunk+i*4])<<24) | (static_cast<uint32_t>(buf[chunk+i*4+1])<<16)
+              | (static_cast<uint32_t>(buf[chunk+i*4+2])<<8)  |  static_cast<uint32_t>(buf[chunk+i*4+3]);
+      for (int i = 16; i < 80; i++)
+         w[i] = rotl(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+
+      uint32_t a=h0, b=h1, c=h2, d=h3, e=h4;
+      for (int i = 0; i < 80; i++) {
+         uint32_t f, k;
+         if      (i < 20) { f = (b & c) | (~b & d);          k = 0x5A827999; }
+         else if (i < 40) { f = b ^ c ^ d;                   k = 0x6ED9EBA1; }
+         else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+         else              { f = b ^ c ^ d;                   k = 0xCA62C1D6; }
+         uint32_t tmp = rotl(a, 5) + f + e + k + w[i];
+         e = d; d = c; c = rotl(b, 30); b = a; a = tmp;
+      }
+      h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;
+   }
+   for (int i = 0; i < 4; i++) { out[i]    = static_cast<uint8_t>(h0 >> (24-i*8));
+                                  out[4+i]  = static_cast<uint8_t>(h1 >> (24-i*8));
+                                  out[8+i]  = static_cast<uint8_t>(h2 >> (24-i*8));
+                                  out[12+i] = static_cast<uint8_t>(h3 >> (24-i*8));
+                                  out[16+i] = static_cast<uint8_t>(h4 >> (24-i*8)); }
+}
+
+static std::string base64_encode(const uint8_t* data, size_t len) {
+   static const char* t = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+   std::string r;
+   for (size_t i = 0; i < len; i += 3) {
+      uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+      if (i+1 < len) n |= static_cast<uint32_t>(data[i+1]) << 8;
+      if (i+2 < len) n |= static_cast<uint32_t>(data[i+2]);
+      r += t[(n >> 18) & 63]; r += t[(n >> 12) & 63];
+      r += (i+1 < len) ? t[(n >> 6) & 63] : '=';
+      r += (i+2 < len) ? t[n & 63] : '=';
+   }
+   return r;
+}
+
+// Build WebSocket accept key from client's Sec-WebSocket-Key
+static std::string ws_accept_key(const std::string& client_key) {
+   std::string concat = client_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+   uint8_t hash[20];
+   sha1(reinterpret_cast<const uint8_t*>(concat.data()), concat.size(), hash);
+   return base64_encode(hash, 20);
+}
+
+// ws_send_binary is defined after sock_t (see below)
+
 // ── Platform socket helpers ──────────────────────────────
 
 #ifdef _WIN32
@@ -77,6 +142,30 @@ static int sock_recv(sock_t s, void* buf, int len) {
    return static_cast<int>(::read(s, buf, static_cast<size_t>(len)));
 }
 #endif
+
+// Send a WebSocket binary frame (opcode 0x02)
+static bool ws_send_binary(sock_t fd, const void* data, size_t len) {
+   uint8_t header[10];
+   int hlen = 0;
+   header[0] = 0x82; // FIN + opcode binary
+   if (len < 126) {
+      header[1] = static_cast<uint8_t>(len);
+      hlen = 2;
+   } else if (len < 65536) {
+      header[1] = 126;
+      header[2] = static_cast<uint8_t>((len >> 8) & 0xFF);
+      header[3] = static_cast<uint8_t>(len & 0xFF);
+      hlen = 4;
+   } else {
+      header[1] = 127;
+      for (int i = 0; i < 8; i++)
+         header[2 + i] = static_cast<uint8_t>((len >> ((7-i)*8)) & 0xFF);
+      hlen = 10;
+   }
+   if (sock_send(fd, header, hlen) < 0) return false;
+   if (len > 0 && sock_send(fd, data, static_cast<int>(len)) < 0) return false;
+   return true;
+}
 
 // ── URL decoding ─────────────────────────────────────────
 
@@ -209,6 +298,16 @@ bool M4HttpServer::parse_request(const std::string& raw, HttpRequest& req) {
                if (qp != std::string::npos) req.boundary = req.boundary.substr(0, qp);
             }
          }
+      }
+      // Detect WebSocket upgrade
+      if (lower_line == "upgrade: websocket") {
+         req.is_websocket_upgrade = true;
+      }
+      if (lower_line.substr(0, 22) == "sec-websocket-key: ") {
+         req.websocket_key = hline.substr(19);
+         // Trim trailing whitespace
+         while (!req.websocket_key.empty() && req.websocket_key.back() <= ' ')
+            req.websocket_key.pop_back();
       }
    }
 
@@ -1136,6 +1235,35 @@ void M4HttpServer::run() {
       // Parse and handle
       HttpRequest req;
       if (parse_request(raw, req)) {
+         // WebSocket upgrade for live preview
+         if (req.is_websocket_upgrade && req.path == "/ws/preview"
+             && !req.websocket_key.empty()) {
+            std::string accept = ws_accept_key(req.websocket_key);
+            std::string handshake =
+               "HTTP/1.1 101 Switching Protocols\r\n"
+               "Upgrade: websocket\r\n"
+               "Connection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+            sock_send(client, handshake.data(), static_cast<int>(handshake.size()));
+            LOG_INFO("M4 HTTP: WebSocket preview client connected");
+            while (running.load()) {
+               if (back_surface && back_surface->pixels) {
+                  HttpResponse frame = handle_preview(req);
+                  if (!frame.body.empty()) {
+                     if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
+                        break;
+                  }
+               }
+               std::this_thread::sleep_for(std::chrono::milliseconds(200));
+               u_long avail = 0;
+               ioctlsocket(client, FIONREAD, &avail);
+               if (avail > 0) break;
+            }
+            LOG_INFO("M4 HTTP: WebSocket preview client disconnected");
+            close_sock(client);
+            continue;
+         }
+
          HttpResponse resp = handle_request(req);
          std::string response_str = format_response(resp);
 
@@ -1279,6 +1407,52 @@ void M4HttpServer::run() {
 
       HttpRequest req;
       if (parse_request(raw, req)) {
+         // WebSocket upgrade for live preview
+         if (req.is_websocket_upgrade && req.path == "/ws/preview"
+             && !req.websocket_key.empty()) {
+            // Send 101 Switching Protocols
+            std::string accept = ws_accept_key(req.websocket_key);
+            std::string handshake =
+               "HTTP/1.1 101 Switching Protocols\r\n"
+               "Upgrade: websocket\r\n"
+               "Connection: Upgrade\r\n"
+               "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
+            sock_send(client, handshake.data(), static_cast<int>(handshake.size()));
+
+            LOG_INFO("M4 HTTP: WebSocket preview client connected");
+
+            // Push BMP frames at ~5fps until client disconnects or server stops
+            while (running.load()) {
+               if (back_surface && back_surface->pixels) {
+                  HttpResponse frame = handle_preview(req);
+                  if (!frame.body.empty()) {
+                     if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
+                        break; // client disconnected
+                  }
+               }
+               // ~5fps: sleep 200ms between frames
+               std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+               // Check for incoming close frame (non-blocking peek)
+               char peek_buf[2];
+#ifdef _WIN32
+               u_long avail = 0;
+               ioctlsocket(client, FIONREAD, &avail);
+               if (avail > 0) break; // client sent something (likely close)
+#else
+               int flags = fcntl(client, F_GETFL, 0);
+               fcntl(client, F_SETFL, flags | O_NONBLOCK);
+               ssize_t pn = ::read(client, peek_buf, sizeof(peek_buf));
+               fcntl(client, F_SETFL, flags); // restore
+               if (pn == 0) break; // client closed
+               // pn < 0 with EAGAIN is normal (no data)
+#endif
+            }
+            LOG_INFO("M4 HTTP: WebSocket preview client disconnected");
+            close_sock(client);
+            continue;
+         }
+
          HttpResponse resp = handle_request(req);
          std::string response_str = format_response(resp);
 

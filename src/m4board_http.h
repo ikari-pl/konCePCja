@@ -61,6 +61,8 @@ private:
       int content_length = 0;
       std::string content_type;
       std::string boundary;     // multipart boundary
+      bool is_websocket_upgrade = false;
+      std::string websocket_key; // Sec-WebSocket-Key header
    };
 
    struct HttpResponse {
