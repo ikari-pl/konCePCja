@@ -95,6 +95,13 @@ getopt_long(int argc, char *const argv[], const char *optstring,
 {
     int i;
 
+    /* Handle optind=0 reset (used by argparse.cpp's parseArguments) */
+    if (optind == 0) {
+        optind = 1;
+        optarg = NULL;
+        sp = 1;
+    }
+
     if (optind >= argc)
         return -1;
 

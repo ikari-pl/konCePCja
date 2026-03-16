@@ -41,7 +41,6 @@ jobs:
           cmake -B build
           -G "Visual Studio 17 2022" -A x64
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
-          -DCMAKE_BUILD_TYPE=${{ matrix.config }}
 
       # ── Build ──────────────────────────────────────────
       - name: Build
@@ -52,6 +51,7 @@ jobs:
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
+          PATH: ${{ github.workspace }}/build/vcpkg_installed/x64-windows/bin;${{ env.PATH }}
         working-directory: ${{ github.workspace }}
         run: |
           $testRunner = "build/${{ matrix.config }}/test_runner.exe"

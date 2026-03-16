@@ -2,8 +2,7 @@
  * msvc_compat.h — MSVC portability shim
  *
  * Provides POSIX-ish functions that MSVC lacks but the codebase uses.
- * This header is force-included via /FI in the CMake MSVC build,
- * and explicitly included from koncepcja.h under _MSC_VER.
+ * Included from koncepcja.h under _MSC_VER.
  *
  * It is a no-op on GCC/Clang.
  */
@@ -30,8 +29,7 @@
 /* POSIX-to-MSVC function name mappings.
  * We do NOT #define access/getcwd as macros — that poisons Windows SDK
  * headers (stdlib.h, intrin.h) which use these names internally.
- * Instead, call sites must use _access/_getcwd on MSVC, or use the
- * wrapper macros below which are scoped to our project code only. */
+ * Instead, call sites must use _access/_getcwd on MSVC. */
 
 /* S_ISDIR / S_ISREG — MSVC's <sys/stat.h> doesn't define the POSIX macros */
 #include <sys/stat.h>

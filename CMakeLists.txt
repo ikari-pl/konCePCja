@@ -203,11 +203,22 @@ if(WIN32)
 endif()
 
 # ── Test executable ──────────────────────────────────────
-# googletest from vendored submodule
+# googletest: use local directory if present, otherwise fetch from GitHub
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-add_subdirectory(googletest EXCLUDE_FROM_ALL)
+if(EXISTS "${CMAKE_SOURCE_DIR}/googletest/CMakeLists.txt")
+    add_subdirectory(googletest EXCLUDE_FROM_ALL)
+else()
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG        main
+        GIT_SHALLOW    TRUE
+    )
+    FetchContent_MakeAvailable(googletest)
+endif()
 
 file(GLOB TEST_SOURCES CONFIGURE_DEPENDS test/*.cpp)
 
