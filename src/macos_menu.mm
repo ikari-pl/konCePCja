@@ -229,6 +229,7 @@ void koncpc_order_viewports_above_main() {
 // ── Dock icon ──────────────────────────────────────────────
 
 static NSImage* g_base_icon = nil;
+static NSImage* g_crt_overlay = nil;  // optional translucent CRT shine overlay
 
 void koncpc_set_dock_icon(const char* png_path) {
   @autoreleasepool {
@@ -237,6 +238,12 @@ void koncpc_set_dock_icon(const char* png_path) {
     g_base_icon = [[NSImage alloc] initWithContentsOfFile:path];
     if (g_base_icon) {
       [NSApp setApplicationIconImage:g_base_icon];
+    }
+    // Try to load optional CRT overlay (translucent PNG with monitor shine)
+    NSString* overlayPath = [[path stringByDeletingLastPathComponent]
+      stringByAppendingPathComponent:@"crt-overlay.png"];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:overlayPath]) {
+      g_crt_overlay = [[NSImage alloc] initWithContentsOfFile:overlayPath];
     }
   }
 }
@@ -257,7 +264,21 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
     CGContextRelease(ctx);
     if (!cgScreen) return;
 
-    // Composite: base icon + small CPC screen inset in bottom-right corner
+    // Composite: base icon with CPC screen aligned to the monitor in the logo.
+    // The koncepcja-logo.png shows a CPC computer with a monitor. We draw the
+    // live emulator screen exactly where the monitor screen is in the icon.
+    //
+    // Screen region in the 1010x759 logo (proportional coordinates):
+    //   x=0.158, y_from_top=0.049, w=0.607, h=0.544
+    // In Cocoa coords (y=0 at bottom): y = 1.0 - 0.049 - 0.544 = 0.407
+    //
+    // When the user provides a custom overlay PNG with CRT shine, it will be
+    // drawn on top of the screen image (see g_crt_overlay below).
+    static constexpr CGFloat kScreenX = 0.158;
+    static constexpr CGFloat kScreenY = 0.407; // Cocoa y (from bottom)
+    static constexpr CGFloat kScreenW = 0.607;
+    static constexpr CGFloat kScreenH = 0.544;
+
     NSSize iconSize = [g_base_icon size];
     NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
     [composite lockFocus];
@@ -268,27 +289,26 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
                   operation:NSCompositingOperationSourceOver
                    fraction:1.0];
 
-    // Draw CPC screen inset: 42% of icon size, bottom-right corner
-    CGFloat insetW = iconSize.width * 0.42;
-    CGFloat insetH = insetW * ((CGFloat)h / (CGFloat)w); // preserve aspect ratio
-    CGFloat margin = iconSize.width * 0.02;
-    NSRect insetRect = NSMakeRect(
-      iconSize.width - insetW - margin,
-      margin,
-      insetW, insetH);
+    // Draw CPC screen aligned to the monitor position
+    NSRect screenRect = NSMakeRect(
+      iconSize.width * kScreenX,
+      iconSize.height * kScreenY,
+      iconSize.width * kScreenW,
+      iconSize.height * kScreenH);
 
-    // Shadow behind the inset
-    [[NSColor colorWithWhite:0.0 alpha:0.6] set];
-    NSBezierPath* shadow = [NSBezierPath bezierPathWithRoundedRect:
-      NSInsetRect(insetRect, -2, -2) xRadius:3 yRadius:3];
-    [shadow fill];
-
-    // Draw the CPC screen
     NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
-    [screenImg drawInRect:insetRect
+    [screenImg drawInRect:screenRect
                  fromRect:NSZeroRect
                 operation:NSCompositingOperationSourceOver
                  fraction:1.0];
+
+    // Draw CRT overlay (translucent PNG with CRT curve shine) on top
+    if (g_crt_overlay) {
+      [g_crt_overlay drawInRect:screenRect
+                       fromRect:NSZeroRect
+                      operation:NSCompositingOperationSourceOver
+                       fraction:1.0];
+    }
 
     [composite unlockFocus];
     CGImageRelease(cgScreen);
