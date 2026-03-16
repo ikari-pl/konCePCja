@@ -30,6 +30,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <sstream>
@@ -167,6 +168,34 @@ static bool ws_send_binary(sock_t fd, const void* data, size_t len) {
    return true;
 }
 
+// ── JSON string escaping ─────────────────────────────────
+
+static std::string json_escape(const std::string& s) {
+   std::string out;
+   out.reserve(s.size());
+   for (unsigned char c : s) {
+      switch (c) {
+         case '"':  out += "\\\""; break;
+         case '\\': out += "\\\\"; break;
+         case '\b': out += "\\b";  break;
+         case '\f': out += "\\f";  break;
+         case '\n': out += "\\n";  break;
+         case '\r': out += "\\r";  break;
+         case '\t': out += "\\t";  break;
+         default:
+            if (c < 0x20) {
+               char buf[8];
+               snprintf(buf, sizeof(buf), "\\u%04x", c);
+               out += buf;
+            } else {
+               out += static_cast<char>(c);
+            }
+            break;
+      }
+   }
+   return out;
+}
+
 // ── URL decoding ─────────────────────────────────────────
 
 std::string M4HttpServer::url_decode(const std::string& str) {
@@ -213,6 +242,23 @@ std::string M4HttpServer::get_query_param(const std::string& query, const std::s
       pos = amp + 1;
    }
    return "";
+}
+
+// Check whether a query string contains a specific key (exact match, not substring).
+static bool has_query_key(const std::string& query, const std::string& key) {
+   size_t pos = 0;
+   while (pos < query.size()) {
+      size_t eq = query.find('=', pos);
+      size_t amp = query.find('&', pos);
+      if (amp == std::string::npos) amp = query.size();
+      if (eq != std::string::npos && eq < amp) {
+         if (query.substr(pos, eq - pos) == key) return true;
+      } else {
+         if (query.substr(pos, amp - pos) == key) return true;
+      }
+      pos = amp + 1;
+   }
+   return false;
 }
 
 std::string M4HttpServer::mime_type_for(const std::string& path) {
@@ -552,25 +598,36 @@ M4HttpServer::HttpResponse M4HttpServer::handle_upload(const HttpRequest& req) {
    return resp;
 }
 
+// Strip quotes and control characters from a filename to prevent command injection
+// when building autotype commands.
+static std::string sanitize_run_filename(const std::string& s) {
+   std::string out;
+   out.reserve(s.size());
+   for (unsigned char c : s) {
+      if (c == '"' || c == '\'' || c < 0x20 || c == 0x7f) continue;
+      out += static_cast<char>(c);
+   }
+   return out;
+}
+
 M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& req) {
    HttpResponse resp;
 
    // config.cgi handles multiple actions via query params (matching real M4)
-   // ?ls=<path>  — list directory (returns dir.txt content)
-   // ?cd=<path>  — change CPC working directory
-   // ?cd2=<path> — alias for cd (used by some tools)
-   // ?run=<path> — remote run (alias)
+   // Specific handlers are checked before the catch-all "ls" to avoid
+   // substring matches (e.g. ?mkdir=/pulsar matching "ls").
+   //
+   // ?cd=<path>   — change CPC working directory
+   // ?cd2=<path>  — alias for cd (used by some tools)
    // ?run2=<path> — remote run file on CPC
-   // ?rm=<path>  — delete file
+   // ?run=<cmd>   — run a BASIC command
+   // ?rm=<path>   — delete file
    // ?mkdir=<name> — create directory
-
-   // ls: list directory, change the web browsing dir
-   std::string ls_path = get_query_param(req.query_string, "ls");
-   if (req.query_string.find("ls") != std::string::npos) {
-      resp.body = build_dir_txt(ls_path.empty() ? "/" : ls_path);
-      resp.content_type = "text/plain; charset=utf-8";
-      return resp;
-   }
+   // ?cres        — CPC reset
+   // ?mres        — M4 reset
+   // ?chlt        — CPC pause/halt toggle
+   // ?cnmi        — trigger NMI / hack menu
+   // ?ls=<path>   — list directory (catch-all, checked last)
 
    // cd: change the CPC's M4 working directory
    std::string cd_path = get_query_param(req.query_string, "cd");
@@ -589,19 +646,19 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
       return resp;
    }
 
-   // run / run2: remote execute file on CPC
+   // run2: remote execute file on CPC
    std::string run_path = get_query_param(req.query_string, "run2");
-   if (run_path.empty()) run_path = get_query_param(req.query_string, "run");
    if (!run_path.empty()) {
-      // Extract filename from path for RUN command
-      auto fname = std::filesystem::path(run_path).filename().string();
+      // Extract filename from path for RUN command, stripping dangerous chars
+      auto fname = sanitize_run_filename(
+         std::filesystem::path(run_path).filename().string());
       if (!fname.empty()) {
          // First, ensure we're on the SD
          std::string cmd = "|sd\n";
          // Navigate to the directory containing the file
          auto dir = std::filesystem::path(run_path).parent_path().generic_string();
          if (!dir.empty() && dir != "/" && dir != ".") {
-            cmd += "|cd,\"" + dir + "\"\n";
+            cmd += "|cd,\"" + sanitize_run_filename(dir) + "\"\n";
          }
          cmd += "run\"" + fname + "\"\n";
          g_autotype_queue.enqueue(cmd);
@@ -673,29 +730,30 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
    }
 
    // CPC control commands (matching real M4 control.shtml forms)
+   // Use has_query_key() for exact key match to avoid substring collisions.
    // ?cres — CPC reset
-   if (req.query_string.find("cres") != std::string::npos) {
+   if (has_query_key(req.query_string, "cres")) {
       pending_reset.store(true);
       resp.body = "OK CPC reset queued";
       resp.content_type = "text/plain";
       return resp;
    }
    // ?mres — M4 reset (reset M4 board state)
-   if (req.query_string.find("mres") != std::string::npos) {
+   if (has_query_key(req.query_string, "mres")) {
       pending_reset.store(true); // resets the whole CPC including M4
       resp.body = "OK M4 reset queued";
       resp.content_type = "text/plain";
       return resp;
    }
    // ?chlt — CPC pause/halt toggle
-   if (req.query_string.find("chlt") != std::string::npos) {
+   if (has_query_key(req.query_string, "chlt")) {
       pending_pause_toggle.store(true);
       resp.body = "OK pause toggle queued";
       resp.content_type = "text/plain";
       return resp;
    }
    // ?cnmi — trigger NMI / hack menu (deferred to main thread)
-   if (req.query_string.find("cnmi") != std::string::npos) {
+   if (has_query_key(req.query_string, "cnmi")) {
       pending_nmi.store(true);
       if (CPC.mf2) {
          resp.body = "NMI triggered (Multiface II)";
@@ -705,6 +763,7 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
       resp.content_type = "text/plain";
       return resp;
    }
+
    // ?run=<cmd> — run a BASIC command (different from run2 which is a file path)
    std::string run_cmd = get_query_param(req.query_string, "run");
    if (!run_cmd.empty()) {
@@ -712,6 +771,15 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
       LOG_INFO("M4 HTTP: remote command: " << run_cmd);
       resp.body = "OK running command";
       resp.content_type = "text/plain";
+      return resp;
+   }
+
+   // ls: list directory — catch-all, checked last to avoid substring matches
+   // (e.g. ?mkdir=/pulsar previously matched "ls" via .find())
+   if (has_query_key(req.query_string, "ls")) {
+      std::string ls_path = get_query_param(req.query_string, "ls");
+      resp.body = build_dir_txt(ls_path.empty() ? "/" : ls_path);
+      resp.content_type = "text/plain; charset=utf-8";
       return resp;
    }
 
@@ -731,14 +799,14 @@ M4HttpServer::HttpResponse M4HttpServer::handle_status(const HttpRequest&) {
    std::ostringstream json;
    json << "{\n"
         << "  \"enabled\": " << (g_m4board.enabled ? "true" : "false") << ",\n"
-        << "  \"sd_path\": \"" << g_m4board.sd_root_path << "\",\n"
-        << "  \"current_dir\": \"" << g_m4board.current_dir << "\",\n"
+        << "  \"sd_path\": \"" << json_escape(g_m4board.sd_root_path) << "\",\n"
+        << "  \"current_dir\": \"" << json_escape(g_m4board.current_dir) << "\",\n"
         << "  \"open_files\": " << open_files << ",\n"
         << "  \"cmd_count\": " << g_m4board.cmd_count << ",\n"
         << "  \"network\": " << (g_m4board.network_enabled ? "true" : "false") << ",\n"
         << "  \"paused\": " << (CPC.paused ? "true" : "false") << ",\n"
         << "  \"http_port\": " << actual_port.load() << ",\n"
-        << "  \"bind_ip\": \"" << bind_ip_ << "\",\n"
+        << "  \"bind_ip\": \"" << json_escape(bind_ip_) << "\",\n"
         << "  \"screen_w\": " << (back_surface ? back_surface->w : 0) << ",\n"
         << "  \"screen_h\": " << (back_surface ? back_surface->h : 0) << ",\n"
         << "  \"version\": \"koncepcja-m4\"\n"
@@ -908,20 +976,10 @@ M4HttpServer::HttpResponse M4HttpServer::handle_roms_api(const HttpRequest&) {
       bool loaded = (memmap_ROM[i] != nullptr);
       std::string id;
       if (loaded) id = rom_identify(memmap_ROM[i]);
-      // Escape quotes in strings for JSON safety
-      auto esc_json = [](const std::string& s) {
-         std::string out;
-         for (char c : s) {
-            if (c == '"') out += "\\\"";
-            else if (c == '\\') out += "\\\\";
-            else out += c;
-         }
-         return out;
-      };
       json << "  {\"slot\": " << i
            << ", \"loaded\": " << (loaded ? "true" : "false")
-           << ", \"file\": \"" << esc_json(CPC.rom_file[i]) << "\""
-           << ", \"name\": \"" << esc_json(id) << "\""
+           << ", \"file\": \"" << json_escape(CPC.rom_file[i]) << "\""
+           << ", \"name\": \"" << json_escape(id) << "\""
            << "}";
    }
    json << "\n]\n";
@@ -960,29 +1018,40 @@ M4HttpServer::HttpResponse M4HttpServer::handle_request(const HttpRequest& req) 
       return resp;
    }
 
-   // GET routes
+   // GET and HEAD routes — HEAD uses the same handlers but suppresses the body.
    if (req.method == "GET" || req.method == "HEAD") {
+      HttpResponse resp;
       // All HTML pages served from the same SPA — JS handles navigation
       if (req.path == "/" || req.path == "/index.html" || req.path == "/index.shtml"
           || req.path == "/files.shtml" || req.path == "/roms.shtml"
           || req.path == "/control.shtml" || req.path == "/settings.shtml"
           || req.path == "/upload.html") {
-         return handle_index(req);
+         resp = handle_index(req);
+      } else if (req.path == "/files") {
+         resp = handle_files_api(req);
+      } else if (req.path == "/download") {
+         resp = handle_download(req);
+      } else if (req.path == "/config.cgi") {
+         resp = handle_config_cgi(req);
+      } else if (req.path == "/status") {
+         resp = handle_status(req);
+      } else if (req.path == "/preview.bmp") {
+         resp = handle_preview(req);
+      } else if (req.path == "/roms.json") {
+         resp = handle_roms_api(req);
+      } else if (req.path.size() >= 4 && req.path.substr(0, 4) == "/sd/") {
+         // /sd/* — serve files from SD card
+         resp = handle_sd_file(req);
+      } else {
+         // Static assets (CSS, JS, images)
+         resp = handle_static(req);
       }
-      if (req.path == "/files") return handle_files_api(req);
-      if (req.path == "/download") return handle_download(req);
-      if (req.path == "/config.cgi") return handle_config_cgi(req);
-      if (req.path == "/status") return handle_status(req);
-      if (req.path == "/preview.bmp") return handle_preview(req);
-      if (req.path == "/roms.json") return handle_roms_api(req);
 
-      // /sd/* — serve files from SD card
-      if (req.path.size() >= 4 && req.path.substr(0, 4) == "/sd/") {
-         return handle_sd_file(req);
+      // HEAD — suppress response body but keep Content-Length accurate
+      if (req.method == "HEAD") {
+         resp.head_request = true;
       }
-
-      // Static assets (CSS, JS, images)
-      return handle_static(req);
+      return resp;
    }
 
    HttpResponse resp;
@@ -1013,7 +1082,9 @@ std::string M4HttpServer::format_response(const HttpResponse& resp) {
       }
       out << "Content-Length: " << resp.body.size() << "\r\n";
       out << "\r\n";
-      out << resp.body;
+      if (!resp.head_request) {
+         out << resp.body;
+      }
    } else {
       out << "Content-Type: " << resp.content_type << "\r\n";
       // File size for Content-Length
@@ -1022,7 +1093,7 @@ std::string M4HttpServer::format_response(const HttpResponse& resp) {
          out << "Content-Length: " << size << "\r\n";
       } catch (...) {}
       out << "\r\n";
-      // Body will be sent by the caller reading the file
+      // Body will be sent by the caller reading the file (suppressed for HEAD)
    }
    return out.str();
 }
@@ -1030,7 +1101,7 @@ std::string M4HttpServer::format_response(const HttpResponse& resp) {
 // ── Port forwarding ──────────────────────────────────────
 
 void M4HttpServer::set_port_mapping(uint16_t cpc_port, uint16_t host_port, bool user_override) {
-   std::lock_guard<std::mutex> lock(port_mutex);
+   std::lock_guard<std::mutex> lock(port_mutex_);
    for (auto& m : port_mappings_) {
       if (m.cpc_port == cpc_port) {
          m.host_port = host_port;
@@ -1042,7 +1113,7 @@ void M4HttpServer::set_port_mapping(uint16_t cpc_port, uint16_t host_port, bool 
 }
 
 void M4HttpServer::remove_port_mapping(uint16_t cpc_port) {
-   std::lock_guard<std::mutex> lock(port_mutex);
+   std::lock_guard<std::mutex> lock(port_mutex_);
    port_mappings_.erase(
       std::remove_if(port_mappings_.begin(), port_mappings_.end(),
          [cpc_port](const M4PortMapping& m) { return m.cpc_port == cpc_port; }),
@@ -1051,7 +1122,7 @@ void M4HttpServer::remove_port_mapping(uint16_t cpc_port) {
 }
 
 uint16_t M4HttpServer::resolve_host_port(uint16_t cpc_port) {
-   std::lock_guard<std::mutex> lock(port_mutex);
+   std::lock_guard<std::mutex> lock(port_mutex_);
    for (const auto& m : port_mappings_) {
       if (m.cpc_port == cpc_port) return m.host_port;
    }
@@ -1101,6 +1172,7 @@ void M4HttpServer::start(int port, const std::string& bind_ip) {
    if (running.load()) return;
    configured_port_ = port;
    bind_ip_ = bind_ip;
+   actual_port.store(0);
    running.store(true);
    server_thread = std::thread(&M4HttpServer::run, this);
 }
@@ -1117,7 +1189,11 @@ void M4HttpServer::stop() {
 
 void M4HttpServer::run() {
    WSADATA wsa;
-   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return;
+   if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+      running.store(false);
+      actual_port.store(0);
+      return;
+   }
 
    // Validate bind IP — on Windows, loopback aliases need admin.
    // Probe with an ephemeral port; fall back to 127.0.0.1 on WSAEADDRNOTAVAIL.
@@ -1140,7 +1216,12 @@ void M4HttpServer::run() {
    }
 
    sock_t server_fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-   if (server_fd == BAD_SOCK) { WSACleanup(); return; }
+   if (server_fd == BAD_SOCK) {
+      WSACleanup();
+      running.store(false);
+      actual_port.store(0);
+      return;
+   }
 
    int opt = 1;
    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
@@ -1163,12 +1244,16 @@ void M4HttpServer::run() {
                 << "-" << (configured_port_ + 9));
       closesocket(server_fd);
       WSACleanup();
+      running.store(false);
+      actual_port.store(0);
       return;
    }
 
    if (listen(server_fd, 4) == SOCKET_ERROR) {
       closesocket(server_fd);
       WSACleanup();
+      running.store(false);
+      actual_port.store(0);
       return;
    }
 
@@ -1269,8 +1354,8 @@ void M4HttpServer::run() {
 
          sock_send(client, response_str.data(), static_cast<int>(response_str.size()));
 
-         // If file download, stream the file
-         if (resp.send_file) {
+         // If file download, stream the file (suppressed for HEAD)
+         if (resp.send_file && !resp.head_request) {
             FILE* f = fopen(resp.file_path.c_str(), "rb");
             if (f) {
                char fbuf[8192];
@@ -1320,7 +1405,11 @@ void M4HttpServer::run() {
    }
 
    sock_t server_fd = ::socket(AF_INET, SOCK_STREAM, 0);
-   if (server_fd < 0) return;
+   if (server_fd < 0) {
+      running.store(false);
+      actual_port.store(0);
+      return;
+   }
 
    int opt = 1;
    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -1341,11 +1430,15 @@ void M4HttpServer::run() {
       LOG_ERROR("M4 HTTP: could not bind to ports " << configured_port_
                 << "-" << (configured_port_ + 9));
       ::close(server_fd);
+      running.store(false);
+      actual_port.store(0);
       return;
    }
 
    if (listen(server_fd, 4) < 0) {
       ::close(server_fd);
+      running.store(false);
+      actual_port.store(0);
       return;
    }
 
@@ -1458,7 +1551,8 @@ void M4HttpServer::run() {
 
          sock_send(client, response_str.data(), static_cast<int>(response_str.size()));
 
-         if (resp.send_file) {
+         // Stream file body (suppressed for HEAD)
+         if (resp.send_file && !resp.head_request) {
             FILE* f = fopen(resp.file_path.c_str(), "rb");
             if (f) {
                char fbuf[8192];

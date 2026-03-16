@@ -3672,7 +3672,7 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 usage: m4 http [start|stop|status]\n";
     }
     if (parts[1] == "ports") {
-      const auto& mappings = g_m4_http.port_mappings();
+      auto mappings = g_m4_http.get_port_mappings_snapshot();
       if (mappings.empty()) return "OK count=0\n";
       std::ostringstream oss;
       oss << "OK count=" << mappings.size();
@@ -3687,9 +3687,15 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "port" && parts.size() >= 3) {
       if (parts[2] == "set" && parts.size() >= 5) {
         try {
-          uint16_t cpc_port = static_cast<uint16_t>(std::stoul(parts[3]));
-          uint16_t host_port = static_cast<uint16_t>(std::stoul(parts[4]));
-          g_m4_http.set_port_mapping(cpc_port, host_port, true);
+          unsigned long cpc_val = std::stoul(parts[3]);
+          unsigned long host_val = std::stoul(parts[4]);
+          if (cpc_val < 1 || cpc_val > 65535)
+            return "ERR 400 cpc port out of range (1-65535)\n";
+          if (host_val < 1 || host_val > 65535)
+            return "ERR 400 host port out of range (1-65535)\n";
+          g_m4_http.set_port_mapping(
+            static_cast<uint16_t>(cpc_val),
+            static_cast<uint16_t>(host_val), true);
           return "OK\n";
         } catch (const std::exception& e) {
           return std::string("ERR 400 ") + e.what() + "\n";
@@ -3697,8 +3703,10 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[2] == "del" && parts.size() >= 4) {
         try {
-          uint16_t cpc_port = static_cast<uint16_t>(std::stoul(parts[3]));
-          g_m4_http.remove_port_mapping(cpc_port);
+          unsigned long cpc_val = std::stoul(parts[3]);
+          if (cpc_val < 1 || cpc_val > 65535)
+            return "ERR 400 port out of range (1-65535)\n";
+          g_m4_http.remove_port_mapping(static_cast<uint16_t>(cpc_val));
           return "OK\n";
         } catch (const std::exception& e) {
           return std::string("ERR 400 ") + e.what() + "\n";

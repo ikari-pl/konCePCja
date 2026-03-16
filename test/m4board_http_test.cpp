@@ -401,9 +401,38 @@ TEST(M4PortMappingTest, RemoveMapping) {
 // ── URL decode tests ──
 
 TEST(M4HttpUrlDecode, BasicDecoding) {
-   // Access url_decode via a test instance
-   // Since it's static, we can test it indirectly through the request handling
-   // For now, test the port mapping which exercises other code paths
+   // Exercise URL decoding indirectly via the config.cgi mkdir handler,
+   // which decodes the query param value before using it.
+   // Create temp SD dir and configure M4 board
+   auto sd_dir = std::filesystem::temp_directory_path() / "m4_urldecode_test";
+   std::filesystem::remove_all(sd_dir);
+   std::filesystem::create_directories(sd_dir);
+
+   g_m4board.enabled = true;
+   g_m4board.sd_root_path = sd_dir.string();
+   g_m4board.current_dir = "/";
+
+   M4HttpServer server;
+   static std::mt19937 rng(std::random_device{}());
+   int base = 30000 + static_cast<int>(rng() % 20000);
+   server.start(base, "127.0.0.1");
+   for (int i = 0; i < 100 && server.port() == 0; i++) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+   }
+   int port = server.port();
+   ASSERT_GT(port, 0);
+
+   // URL-encoded space: %20
+   auto resp = http_get(port, "/config.cgi?mkdir=/hello%20world");
+   ASSERT_FALSE(resp.empty());
+   EXPECT_EQ(200, extract_status(resp));
+   // The directory should be created with a decoded name
+   EXPECT_TRUE(std::filesystem::is_directory(sd_dir / "hello world"));
+
+   server.stop();
+   g_m4board.enabled = false;
+   g_m4board.sd_root_path.clear();
+   std::filesystem::remove_all(sd_dir);
 }
 
 TEST(M4HttpServerTest, StopWithoutStart) {
@@ -418,7 +447,9 @@ TEST(M4HttpServerTest, DoubleStart) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
    }
    EXPECT_TRUE(server.is_running());
-   server.start(19081); // Should be no-op
-   EXPECT_EQ(server.port(), server.port()); // Same port
+   int first_port = server.port();
+   EXPECT_GT(first_port, 0);
+   server.start(19081); // Should be no-op — already running
+   EXPECT_EQ(first_port, server.port()); // Port unchanged
    server.stop();
 }

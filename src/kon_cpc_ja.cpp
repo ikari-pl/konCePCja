@@ -2332,16 +2332,23 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
    conf.setIntValue("peripheral", "m4_http_port", CPC.m4_http_port);
    conf.setStringValue("peripheral", "m4_bind_ip", CPC.m4_bind_ip);
-   // Save port mappings
+   // Save port mappings and clear stale keys
    {
-      const auto& mappings = g_m4_http.port_mappings();
-      for (size_t i = 0; i < mappings.size() && i < 16; i++) {
+      auto mappings = g_m4_http.get_port_mappings_snapshot();
+      size_t count = mappings.size() < 16 ? mappings.size() : 16;
+      for (size_t i = 0; i < count; i++) {
          char key[32], val[64];
          snprintf(key, sizeof(key), "m4_port_map_%zu", i);
          snprintf(val, sizeof(val), "%d:%d:%d",
                   mappings[i].cpc_port, mappings[i].host_port,
                   mappings[i].user_override ? 1 : 0);
          conf.setStringValue("peripheral", key, val);
+      }
+      // Clear remaining keys up to 15 to remove stale entries
+      for (size_t i = count; i < 16; i++) {
+         char key[32];
+         snprintf(key, sizeof(key), "m4_port_map_%zu", i);
+         conf.setStringValue("peripheral", key, "");
       }
    }
 

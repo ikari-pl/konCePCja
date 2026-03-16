@@ -2153,7 +2153,7 @@ static void imgui_render_options()
           ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
           ImGui::TableHeadersRow();
 
-          const auto& mappings = g_m4_http.port_mappings();
+          auto mappings = g_m4_http.get_port_mappings_snapshot();
           for (size_t mi = 0; mi < mappings.size(); mi++) {
             const auto& pm = mappings[mi];
             ImGui::PushID(static_cast<int>(mi));

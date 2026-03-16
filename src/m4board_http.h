@@ -45,6 +45,11 @@ public:
    // Port forwarding table
    std::vector<M4PortMapping>& port_mappings() { return port_mappings_; }
    const std::vector<M4PortMapping>& port_mappings() const { return port_mappings_; }
+   // Thread-safe snapshot for UI/IPC threads that iterate mappings
+   std::vector<M4PortMapping> get_port_mappings_snapshot() const {
+      std::lock_guard<std::mutex> lock(port_mutex_);
+      return port_mappings_;
+   }
    void set_port_mapping(uint16_t cpc_port, uint16_t host_port, bool user_override = true);
    void remove_port_mapping(uint16_t cpc_port);
    uint16_t resolve_host_port(uint16_t cpc_port); // returns host port for CPC port
@@ -73,6 +78,7 @@ private:
       std::string content_encoding; // "gzip" if pre-compressed
       bool send_file = false;
       std::string file_path;
+      bool head_request = false; // suppress body in format_response
    };
 
    bool parse_request(const std::string& raw, HttpRequest& req);
@@ -104,7 +110,7 @@ private:
    std::thread server_thread;
 
    // Port forwarding
-   std::mutex port_mutex;
+   mutable std::mutex port_mutex_;
    std::vector<M4PortMapping> port_mappings_;
 
 public:
