@@ -2090,7 +2090,7 @@ static void imgui_render_options()
         ImGui::TextDisabled("HTTP Server");
 
         int http_port = CPC.m4_http_port;
-        ImGui::SetNextItemWidth(80.0f);
+        ImGui::SetNextItemWidth(140.0f);
         if (ImGui::InputInt("HTTP Port##m4http", &http_port, 1, 100)) {
           if (http_port < 1024) http_port = 1024;
           if (http_port > 65535) http_port = 65535;
