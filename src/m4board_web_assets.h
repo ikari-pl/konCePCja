@@ -32,6 +32,7 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
   </nav>
   <span id="status-led" class="led led-off"></span>
 </div>
+<div id="toast-container"></div>
 
 <!-- ═══ FILES PAGE ═══ -->
 <div id="page-files" class="page">
@@ -151,7 +152,8 @@ function goBack() {
 }
 
 function doCdOnCpc() {
-  fetch('/config.cgi?cd=' + encodeURIComponent(currDir));
+  fetch('/config.cgi?cd=' + encodeURIComponent(currDir))
+    .then(function() { showToast('CPC directory set to ' + currDir); });
 }
 
 function loadDir(path, skipHistory) {
@@ -254,16 +256,29 @@ uploadArea.ondrop = function(e) {
 // ── Control page ──
 function ctrlAction(action) {
   fetch('/config.cgi?' + action + '=1').then(function(r) { return r.text(); }).then(function(t) {
-    alert(t);
+    showToast(t);
   });
+}
+function showToast(msg) {
+  var el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(function() { el.classList.add('show'); }, 10);
+  setTimeout(function() {
+    el.classList.remove('show');
+    setTimeout(function() { el.remove(); }, 300);
+  }, 3000);
 }
 function doRunCmd() {
   var cmd = document.getElementById('run-cmd').value.trim();
-  if (cmd) fetch('/config.cgi?run=' + encodeURIComponent(cmd));
+  if (cmd) fetch('/config.cgi?run=' + encodeURIComponent(cmd))
+    .then(function(r) { return r.text(); }).then(function(t) { showToast(t); });
 }
 function doCdCmd() {
   var path = document.getElementById('cd-path').value.trim();
-  if (path) fetch('/config.cgi?cd2=' + encodeURIComponent(path));
+  if (path) fetch('/config.cgi?cd2=' + encodeURIComponent(path))
+    .then(function(r) { return r.text(); }).then(function(t) { showToast(t); });
 }
 
 // ── Settings page ──
@@ -392,6 +407,18 @@ body {
 .upload-area .link { color: #88c0d0; cursor: pointer; text-decoration: underline; }
 #upload-status p { font-size: 12px; color: #a3be8c; margin-top: 4px; }
 .loading { text-align: center; padding: 40px; color: #888; }
+#toast-container {
+  position: fixed; bottom: 20px; right: 20px; z-index: 9999;
+  display: flex; flex-direction: column-reverse; gap: 8px;
+}
+.toast {
+  background: #16213e; color: #a3be8c; border: 1px solid #0f3460;
+  border-left: 3px solid #a3be8c; padding: 10px 16px; border-radius: 4px;
+  font-size: 13px; opacity: 0; transform: translateX(40px);
+  transition: opacity 0.3s, transform 0.3s; max-width: 360px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.toast.show { opacity: 1; transform: translateX(0); }
 )CSS";
 
 static const uint8_t* m4_web_stylesheet_css =

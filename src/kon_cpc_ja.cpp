@@ -4107,6 +4107,8 @@ int koncpc_main (int argc, char **argv)
             video_display();
             video_take_pending_window_screenshot();
          }
+         // Drain HTTP deferred actions even while paused (otherwise resume won't work)
+         if (g_m4_http.is_running()) g_m4_http.drain_pending();
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
       }
 

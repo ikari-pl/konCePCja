@@ -2,6 +2,8 @@
 #include "m4board_http.h"
 #include "disk.h"
 #include "disk_file_editor.h"
+#include "z80.h"
+#include "koncepcja.h"
 #include "log.h"
 #include <cctype>
 #include <chrono>
@@ -2085,9 +2087,16 @@ static void cmd_netaccept()
 static void cmd_nmi()
 {
    // Trigger NMI (Non-Maskable Interrupt) — on real hardware this opens the
-   // Hack Menu / Multiface-like debugger. In emulation, log it.
-   // If we had Multiface emulation active, we'd trigger MF2_STOP here.
-   LOG_INFO("M4: C_NMI triggered (no-op — Multiface/Hack menu not connected)");
+   // Hack Menu / Multiface-like debugger. We call z80_mf2stop() which issues
+   // RST 0x0066 (the Z80 NMI vector) and pages in the Multiface ROM.
+   extern t_CPC CPC;
+   extern dword dwMF2Flags;
+   if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
+      z80_mf2stop();
+      LOG_INFO("M4: C_NMI triggered Multiface stop");
+   } else {
+      LOG_INFO("M4: C_NMI — Multiface not loaded or already active");
+   }
    respond_ok();
 }
 

@@ -108,6 +108,7 @@ public:
    // These ensure thread-unsafe CPC operations happen on the main thread.
    std::atomic<bool> pending_reset{false};
    std::atomic<bool> pending_pause_toggle{false};
+   std::atomic<bool> pending_nmi{false};
 };
 
 extern M4HttpServer g_m4_http;

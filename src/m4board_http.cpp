@@ -25,6 +25,7 @@
 #include "log.h"
 #include "autotype.h"
 #include "koncepcja.h"
+#include "z80.h"
 
 #include <algorithm>
 #include <cstring>
@@ -590,9 +591,10 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
       resp.content_type = "text/plain";
       return resp;
    }
-   // ?cnmi — trigger NMI / hack menu
+   // ?cnmi — trigger NMI / hack menu (deferred to main thread)
    if (req.query_string.find("cnmi") != std::string::npos) {
-      resp.body = "OK NMI (not connected in emulation)";
+      pending_nmi.store(true);
+      resp.body = "OK NMI triggered";
       resp.content_type = "text/plain";
       return resp;
    }
@@ -844,6 +846,8 @@ uint16_t M4HttpServer::resolve_host_port(uint16_t cpc_port) {
 
 // ── Deferred action drain (called from main loop) ────────
 
+extern dword dwMF2Flags;
+
 void M4HttpServer::drain_pending() {
    if (pending_reset.exchange(false)) {
       emulator_reset();
@@ -852,6 +856,14 @@ void M4HttpServer::drain_pending() {
    if (pending_pause_toggle.exchange(false)) {
       CPC.paused = !CPC.paused;
       LOG_INFO("M4 HTTP: " << (CPC.paused ? "paused" : "resumed"));
+   }
+   if (pending_nmi.exchange(false)) {
+      if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
+         z80_mf2stop();
+         LOG_INFO("M4 HTTP: NMI/Multiface triggered");
+      } else if (!CPC.mf2) {
+         LOG_INFO("M4 HTTP: NMI requested but Multiface not loaded (enable in Options)");
+      }
    }
 }
 
