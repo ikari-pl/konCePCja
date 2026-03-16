@@ -27,13 +27,10 @@
 #define W_OK 2
 #endif
 
-#ifndef access
-#define access _access
-#endif
-
-#ifndef getcwd
-#define getcwd _getcwd
-#endif
+/* Use inline wrappers instead of macros to avoid poisoning
+   Windows SDK headers (stdlib.h uses 'access' internally). */
+static inline int access(const char* path, int mode) { return _access(path, mode); }
+static inline char* getcwd(char* buf, int size) { return _getcwd(buf, size); }
 
 /* ── strcasecmp / strncasecmp ───────────────────────────── */
 #include <string.h>  /* _stricmp, _strnicmp */
