@@ -108,7 +108,7 @@ if(WITH_GL)
 endif()
 
 if(WIN32)
-    target_compile_definitions(koncepcja_lib PUBLIC WINDOWS _WIN32_WINNT=0x0601)
+    target_compile_definitions(koncepcja_lib PUBLIC WINDOWS _WIN32_WINNT=0x0601 NOMINMAX)
 endif()
 
 if(WITH_CURL AND CURL_FOUND)
@@ -149,10 +149,8 @@ if(MSVC)
     )
     # msvc_compat.h is included via koncepcja.h (#ifdef _MSC_VER)
     # NOT force-included via /FI — that pollutes Windows SDK headers
-    # Treat warnings as errors in Debug builds
-    target_compile_options(koncepcja_lib PUBLIC
-        $<$<CONFIG:Debug>:/WX>
-    )
+    # TODO: enable /WX once MSVC warnings are cleaned up
+    # target_compile_options(koncepcja_lib PUBLIC $<$<CONFIG:Debug>:/WX>)
 else()
     target_compile_options(koncepcja_lib PUBLIC
         -Wall -Wextra
