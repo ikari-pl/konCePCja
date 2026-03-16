@@ -1,6 +1,10 @@
 #include "argparse.h"
 
+#ifdef _MSC_VER
+#include "compat/getopt.h"
+#else
 #include <getopt.h>
+#endif
 #include <iostream>
 #include <fstream>
 #include <map>

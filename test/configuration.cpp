@@ -3,7 +3,9 @@
 #include "slotshandler.h"
 #include "configuration.h"
 #include <stdlib.h>
+#ifndef _MSC_VER
 #include <unistd.h>
+#endif
 #include <fstream>
 #include <cstring>
 #include <errno.h>
@@ -45,10 +47,18 @@ class ConfigurationTest : public testing::Test
   private:
     void createTmpFile(std::string &filename)
     {
+#ifdef _MSC_VER
+      char tmpFilename[L_tmpnam_s];
+      tmpnam_s(tmpFilename, sizeof(tmpFilename));
+      FILE* f = fopen(tmpFilename, "w");
+      ASSERT_NE(f, nullptr);
+      fclose(f);
+#else
       char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
       int fd = mkstemp(tmpFilename);
       ASSERT_GE(fd, 0);
       close(fd);
+#endif
       filename = tmpFilename;
     }
 };
@@ -120,6 +130,8 @@ TEST_F(ConfigurationTest, saveToFileAndMore)
   ASSERT_EQ(expectedConfig, buffer.str());
 }
 
+#ifndef _MSC_VER
+// POSIX-only: chmod with S_IRUSR/S_IRGRP/S_IROTH not available on MSVC
 TEST_F(ConfigurationTest, saveToNonWritableFile)
 {
   // Make a non-writable config file
@@ -134,6 +146,7 @@ TEST_F(ConfigurationTest, saveToNonWritableFile)
   ASSERT_EQ(0, chmod(configFileName.c_str(), S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH));
   EXPECT_TRUE(configuration_.saveToFile(getTmpFilename(0)));
 }
+#endif
 
 // TODO(cpitrat): test about every value in conf ?
 TEST_F(ConfigurationTest, loadConfigurationWithValidContent)

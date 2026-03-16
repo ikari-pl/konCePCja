@@ -2,8 +2,7 @@ name: MacOS build
 
 on:
   push:
-    branches:
-      - '**'
+    branches: [master]
   pull_request:
   release:
     types: [published]

@@ -4,7 +4,11 @@
 #include <cstring>
 #include <sstream>
 #include <string>
+#ifdef _MSC_VER
+#include "compat/msvc_compat.h"
+#else
 #include <strings.h>
+#endif
 
 namespace stringutils
 {
@@ -34,13 +38,12 @@ namespace stringutils
 
   std::string trim(const std::string& s, char c)
   {
+    if (s.empty()) return "";
     auto b = s.begin();
-    auto e = s.end();
-    e--;
-    while(*b == c) b++;
-    while(*e == c) e--;
-    if(e++ >= b) return std::string(b, e);
-    return "";
+    auto e = s.end() - 1;
+    while(b <= e && *b == c) b++;
+    while(e >= b && *e == c) e--;
+    return (b <= e + 1) ? std::string(b, e + 1) : "";
   }
 
   std::string lower(const std::string& s)

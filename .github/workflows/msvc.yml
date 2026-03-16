@@ -1,0 +1,71 @@
+name: MSVC build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  release:
+    types: [published]
+
+jobs:
+  msvc-build:
+    name: MSVC (${{ matrix.arch }}-${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config: [Release, Debug]
+        arch: [x64, Win32]
+        include:
+          - arch: x64
+            triplet: x64-windows
+          - arch: Win32
+            triplet: x86-windows
+
+    env:
+      VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # ── GoogleTest (not a submodule — cloned by Makefile) ──
+      - name: Clone GoogleTest
+        run: git clone --depth 1 --branch v1.15.2 https://github.com/google/googletest.git
+
+      # ── vcpkg (cached) ─────────────────────────────────
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '4b77da7fed37817f124936239197833469f1b9a8'  # 2026.03.14
+
+      # ── Configure ──────────────────────────────────────
+      - name: CMake configure
+        run: >
+          cmake -B build
+          -G "Visual Studio 17 2022" -A ${{ matrix.arch }}
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+      # ── Build ──────────────────────────────────────────
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} -j 4
+
+      # ── Test ───────────────────────────────────────────
+      - name: Run tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          PATH: ${{ github.workspace }}/build/vcpkg_installed/${{ matrix.triplet }}/bin;${{ env.PATH }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          $testRunner = "build/${{ matrix.config }}/test_runner.exe"
+          if (!(Test-Path $testRunner)) {
+            $testRunner = "build/test/${{ matrix.config }}/test_runner.exe"
+          }
+          if (!(Test-Path $testRunner)) {
+            # Fall back to searching
+            $testRunner = (Get-ChildItem -Path build -Recurse -Filter test_runner.exe | Select-Object -First 1).FullName
+          }
+          Write-Host "Running: $testRunner"
+          & $testRunner --gtest_shuffle

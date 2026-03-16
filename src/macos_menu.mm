@@ -3,6 +3,7 @@
 #include "keyboard.h"
 #include "imgui.h"
 #include "SDL3/SDL.h"
+#include <memory>
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
@@ -224,4 +225,117 @@ void koncpc_order_viewports_above_main() {
       [ns orderFront:nil];
     }
   }
+}
+
+// ── Dock icon ──────────────────────────────────────────────
+
+static NSImage* g_icon_overlay = nil;  // CRT overlay (translucent screen area)
+static NSImage* g_static_icon = nil;   // static logo shown at startup / fallback
+static std::atomic<bool> g_icon_update_in_flight{false};
+
+// Screen region in 850x759 icon (proportional coordinates)
+static constexpr CGFloat kScreenX = 0.2141;
+static constexpr CGFloat kScreenY = 0.4800;
+static constexpr CGFloat kScreenW = 0.4918;
+static constexpr CGFloat kScreenH = 0.4350;
+
+void koncpc_set_dock_icon(const char* png_path) {
+  @autoreleasepool {
+    if (!png_path) return;
+    NSString* path = [NSString stringWithUTF8String:png_path];
+
+    // Load the CRT overlay (koncepcja-icon.png — translucent screen area)
+    g_icon_overlay = [[NSImage alloc] initWithContentsOfFile:path];
+
+    // Load the static logo (koncepcja-logo.png — shown before live preview starts)
+    NSString* logoPath = [[path stringByDeletingLastPathComponent]
+      stringByAppendingPathComponent:@"koncepcja-logo.png"];
+    g_static_icon = [[NSImage alloc] initWithContentsOfFile:logoPath];
+
+    // Set the static logo as the initial Dock icon
+    NSImage* initial = g_static_icon ? g_static_icon : g_icon_overlay;
+    if (initial) {
+      // Center in a square canvas
+      NSSize sz = [initial size];
+      CGFloat side = fmax(sz.width, sz.height);
+      NSImage* sq = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
+      [sq lockFocus];
+      [initial drawInRect:NSMakeRect((side - sz.width)/2, (side - sz.height)/2, sz.width, sz.height)
+                 fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+      [sq unlockFocus];
+      [NSApp setApplicationIconImage:sq];
+    }
+  }
+}
+
+void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surface_h,
+                                     int pitch, int vis_x, int vis_y, int vis_w, int vis_h) {
+  (void)surface_w; (void)surface_h;
+  if (!pixels || vis_w <= 0 || vis_h <= 0 || !g_icon_overlay) return;
+
+  // Skip if a previous update is still in flight (don't queue up work)
+  if (g_icon_update_in_flight.exchange(true)) return;
+
+  // Copy visible pixels for async use
+  size_t row_bytes = static_cast<size_t>(vis_w) * 4;
+  size_t buf_size = static_cast<size_t>(vis_h) * row_bytes;
+  std::shared_ptr<uint8_t> px(new uint8_t[buf_size], std::default_delete<uint8_t[]>());
+  const uint8_t* src = static_cast<const uint8_t*>(pixels);
+  for (int y = 0; y < vis_h; y++) {
+    memcpy(px.get() + y * row_bytes,
+           src + (vis_y + y) * pitch + vis_x * 4,
+           row_bytes);
+  }
+
+  int w = vis_w, h = vis_h;
+
+  // All Cocoa drawing (lockFocus, setApplicationIconImage) must happen on
+  // the main thread. The pixel copy above is the only work on the emulation
+  // thread. The in-flight guard ensures we don't queue up frames.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+      CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+      CGContextRef ctx = CGBitmapContextCreate(
+        px.get(), (size_t)w, (size_t)h, 8, row_bytes,
+        cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+      CGColorSpaceRelease(cs);
+      if (!ctx) { g_icon_update_in_flight.store(false); return; }
+
+      CGImageRef cgScreen = CGBitmapContextCreateImage(ctx);
+      CGContextRelease(ctx);
+      if (!cgScreen) { g_icon_update_in_flight.store(false); return; }
+
+      // Square canvas with centered icon
+      NSSize iconSize = [g_icon_overlay size];
+      CGFloat side = fmax(iconSize.width, iconSize.height);
+      CGFloat ox = (side - iconSize.width) / 2;
+      CGFloat oy = (side - iconSize.height) / 2;
+
+      NSImage* composite = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
+      [composite lockFocus];
+
+      // 1. Live CPC screen
+      CGFloat pad_x = iconSize.width * 0.005;
+      CGFloat pad_y = iconSize.height * 0.005;
+      NSRect screenRect = NSMakeRect(
+        ox + iconSize.width * kScreenX - pad_x,
+        oy + iconSize.height * kScreenY - pad_y,
+        iconSize.width * kScreenW + pad_x * 2,
+        iconSize.height * kScreenH + pad_y * 2);
+      NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
+      [screenImg drawInRect:screenRect fromRect:NSZeroRect
+                  operation:NSCompositingOperationSourceOver fraction:1.0];
+
+      // 2. CRT overlay on top
+      NSRect iconRect = NSMakeRect(ox, oy, iconSize.width, iconSize.height);
+      [g_icon_overlay drawInRect:iconRect fromRect:NSZeroRect
+                       operation:NSCompositingOperationSourceOver fraction:1.0];
+
+      [composite unlockFocus];
+      CGImageRelease(cgScreen);
+
+      [NSApp setApplicationIconImage:composite];
+      g_icon_update_in_flight.store(false);
+    }
+  });
 }
