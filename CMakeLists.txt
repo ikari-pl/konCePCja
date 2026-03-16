@@ -147,10 +147,8 @@ if(MSVC)
         /wd4201 /wd4244 /wd4267 /wd4100
         /utf-8
     )
-    # Force-include the MSVC compat header for all translation units
-    target_compile_options(koncepcja_lib PUBLIC
-        /FI${CMAKE_SOURCE_DIR}/src/compat/msvc_compat.h
-    )
+    # msvc_compat.h is included via koncepcja.h (#ifdef _MSC_VER)
+    # NOT force-included via /FI — that pollutes Windows SDK headers
     # Treat warnings as errors in Debug builds
     target_compile_options(koncepcja_lib PUBLIC
         $<$<CONFIG:Debug>:/WX>
