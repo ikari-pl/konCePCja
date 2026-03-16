@@ -282,30 +282,36 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
     static constexpr CGFloat kScreenW = 0.4918;
     static constexpr CGFloat kScreenH = 0.3860;
 
+    // Use a square canvas — macOS Dock icons are always square.
+    // Center the non-square icon (850x759) within a square.
     NSSize iconSize = [g_base_icon size];
-    NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
+    CGFloat side = fmax(iconSize.width, iconSize.height);
+    CGFloat ox = (side - iconSize.width) / 2;   // horizontal offset to center
+    CGFloat oy = (side - iconSize.height) / 2;  // vertical offset to center
+
+    NSImage* composite = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
     [composite lockFocus];
 
-    // 1. Draw live CPC screen into the monitor area.
-    //    Slightly oversized (+2% each edge) to ensure the CPC output
-    //    fills the entire monitor with no transparent gaps at edges.
+    // Screen rect within the centered icon
     CGFloat pad_x = iconSize.width * 0.005;
     CGFloat pad_y = iconSize.height * 0.005;
     NSRect screenRect = NSMakeRect(
-      iconSize.width * kScreenX - pad_x,
-      iconSize.height * kScreenY - pad_y,
+      ox + iconSize.width * kScreenX - pad_x,
+      oy + iconSize.height * kScreenY - pad_y,
       iconSize.width * kScreenW + pad_x * 2,
       iconSize.height * kScreenH + pad_y * 2);
 
+    // 1. Draw live CPC screen into the monitor area
     NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
     [screenImg drawInRect:screenRect
                  fromRect:NSZeroRect
                 operation:NSCompositingOperationSourceOver
                  fraction:1.0];
 
-    // 2. Draw icon on top — opaque body frames the screen,
-    //    translucent screen area adds CRT glass shine
-    [g_base_icon drawInRect:NSMakeRect(0, 0, iconSize.width, iconSize.height)
+    // 2. Draw icon on top — centered in the square canvas.
+    //    Opaque body frames the screen, translucent screen area adds CRT shine.
+    NSRect iconRect = NSMakeRect(ox, oy, iconSize.width, iconSize.height);
+    [g_base_icon drawInRect:iconRect
                    fromRect:NSZeroRect
                   operation:NSCompositingOperationSourceOver
                    fraction:1.0];
