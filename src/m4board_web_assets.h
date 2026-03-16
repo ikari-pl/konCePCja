@@ -1,9 +1,8 @@
 /* konCePCja - Amstrad CPC Emulator
    M4 Board — Embedded web assets
 
-   These are served by the M4 HTTP server. The original M4 Board
-   firmware uses lwIP httpd with SSI; this is a modern single-page
-   replacement that communicates via the same REST-like endpoints.
+   Single-page app matching the real M4 Board's four pages:
+   Files, Roms, Control, Settings — plus the same REST endpoints.
 
    Compatible with: cpcxfer, M4 Board Android app, web browsers.
 */
@@ -20,23 +19,27 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>M4 Board — konCePCja</title>
+<title>konCePCja M4 Board</title>
 <link rel="stylesheet" href="/stylesheet.css">
 </head>
 <body>
 <div class="topbar">
-  <h1>M4 Board</h1>
+  <h1>konCePCja M4 Board</h1>
   <nav>
-    <a href="/" class="btn active">Files</a>
-    <a href="/status" class="btn">Status</a>
+    <a href="#" onclick="showPage('files')" class="btn" id="nav-files">Files</a>
+    <a href="#" onclick="showPage('control')" class="btn" id="nav-control">Control</a>
+    <a href="#" onclick="showPage('settings')" class="btn" id="nav-settings">Settings</a>
   </nav>
   <span id="status-led" class="led led-off"></span>
 </div>
 
+<!-- ═══ FILES PAGE ═══ -->
+<div id="page-files" class="page">
 <div class="container">
   <div class="toolbar">
     <span id="current-dir">/</span>
     <div class="toolbar-right">
+      <button onclick="doCdOnCpc()" class="btn btn-sm btn-accent" title="Set CPC working directory to match">CD on CPC</button>
       <button onclick="goBack()" class="btn btn-sm">Back</button>
       <button onclick="refresh()" class="btn btn-sm">Refresh</button>
       <button onclick="showMkdir()" class="btn btn-sm">New Folder</button>
@@ -44,7 +47,8 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
   </div>
 
   <div id="mkdir-form" style="display:none" class="inline-form">
-    <input type="text" id="mkdir-name" placeholder="Folder name">
+    <input type="text" id="mkdir-name" placeholder="Folder name"
+      onkeydown="if(event.key==='Enter')doMkdir()">
     <button onclick="doMkdir()" class="btn btn-sm">Create</button>
     <button onclick="hideMkdir()" class="btn btn-sm">Cancel</button>
   </div>
@@ -59,8 +63,77 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
     <div id="upload-status"></div>
   </div>
 </div>
+</div>
+
+<!-- ═══ CONTROL PAGE ═══ -->
+<div id="page-control" class="page" style="display:none">
+<div class="container">
+  <div class="section">
+    <h2>CPC Control</h2>
+    <div class="control-grid">
+      <button onclick="ctrlAction('cres')" class="btn btn-lg">CPC Reset</button>
+      <button onclick="ctrlAction('chlt')" class="btn btn-lg">Pause / Resume</button>
+      <button onclick="ctrlAction('mres')" class="btn btn-lg">M4 Reset</button>
+      <button onclick="ctrlAction('cnmi')" class="btn btn-lg">Hack Menu (NMI)</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Remote Run</h2>
+    <div class="inline-form">
+      <input type="text" id="run-cmd" placeholder='e.g. run"game' onkeydown="if(event.key==='Enter')doRunCmd()">
+      <button onclick="doRunCmd()" class="btn">Run</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Change Directory (on CPC)</h2>
+    <div class="inline-form">
+      <input type="text" id="cd-path" placeholder="e.g. /games/" onkeydown="if(event.key==='Enter')doCdCmd()">
+      <button onclick="doCdCmd()" class="btn">CD</button>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ═══ SETTINGS PAGE ═══ -->
+<div id="page-settings" class="page" style="display:none">
+<div class="container">
+  <div class="section">
+    <h2>Status</h2>
+    <table class="info-table" id="status-table">
+      <tr><td>Loading...</td></tr>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>About</h2>
+    <table class="info-table">
+      <tr><td>Emulator</td><td id="info-version">konCePCja</td></tr>
+      <tr><td>HTTP Server</td><td id="info-http"></td></tr>
+      <tr><td>Network</td><td>Emulated (host bridged)</td></tr>
+    </table>
+    <p class="note">WiFi/NTP/SSID settings are not applicable in emulation.<br>
+    Network, ROM, and peripheral settings are managed via the emulator's Options dialog.</p>
+  </div>
+</div>
+</div>
 
 <script>
+// ── Page navigation ──
+var activePage = 'files';
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(function(p) { p.style.display = 'none'; });
+  document.querySelectorAll('.topbar .btn').forEach(function(b) { b.classList.remove('active'); });
+  var el = document.getElementById('page-' + name);
+  if (el) el.style.display = '';
+  var nav = document.getElementById('nav-' + name);
+  if (nav) nav.classList.add('active');
+  activePage = name;
+  if (name === 'settings') refreshStatus();
+}
+
+// ── Files page ──
 var currDir = '/';
 var dirHistory = [];
 
@@ -77,6 +150,10 @@ function goBack() {
   }
 }
 
+function doCdOnCpc() {
+  fetch('/config.cgi?cd=' + encodeURIComponent(currDir));
+}
+
 function loadDir(path, skipHistory) {
   if (!skipHistory && path !== currDir) dirHistory.push(currDir);
   var xhr = new XMLHttpRequest();
@@ -90,8 +167,7 @@ function loadDir(path, skipHistory) {
       renderFiles(lines.filter(function(l) { return l.length > 0; }));
     }
   };
-  var encoded = encodeURIComponent(path);
-  xhr.open('GET', '/config.cgi?ls=' + encoded, true);
+  xhr.open('GET', '/config.cgi?ls=' + encodeURIComponent(path), true);
   xhr.send();
 }
 
@@ -115,21 +191,21 @@ function renderFiles(lines) {
     var dpath = currDir + dirs[d].name;
     html += '<tr class="dir"><td><a href="#" onclick="loadDir(\'' + escAttr(dpath) + '/\');return false">'
           + esc(dirs[d].name) + '/</a></td><td></td><td></td>'
-          + '<td><a href="#" onclick="doDelete(\'' + escAttr(dpath) + '\');return false" class="del">Delete</a></td></tr>';
+          + '<td><a href="#" onclick="doDelete(\'' + escAttr(dpath) + '\');return false" class="del">Del</a></td></tr>';
   }
   for (var k = 0; k < dsks.length; k++) {
     var kpath = currDir + dsks[k].name;
     html += '<tr class="dsk"><td><a href="#" onclick="loadDir(\'' + escAttr(kpath) + '/\');return false">'
           + esc(dsks[k].name) + '</a></td><td>' + fmtSize(dsks[k].size) + '</td>'
           + '<td><a href="#" onclick="doRun(\'' + escAttr(kpath) + '\');return false" class="run">Run</a></td>'
-          + '<td><a href="#" onclick="doDelete(\'' + escAttr(kpath) + '\');return false" class="del">Delete</a></td></tr>';
+          + '<td><a href="#" onclick="doDelete(\'' + escAttr(kpath) + '\');return false" class="del">Del</a></td></tr>';
   }
   for (var f = 0; f < files.length; f++) {
     var fpath = currDir + files[f].name;
     html += '<tr><td><a href="/sd' + encURI(fpath) + '">' + esc(files[f].name) + '</a></td>'
           + '<td>' + fmtSize(files[f].size) + '</td>'
           + '<td><a href="#" onclick="doRun(\'' + escAttr(fpath) + '\');return false" class="run">Run</a></td>'
-          + '<td><a href="#" onclick="doDelete(\'' + escAttr(fpath) + '\');return false" class="del">Delete</a></td></tr>';
+          + '<td><a href="#" onclick="doDelete(\'' + escAttr(fpath) + '\');return false" class="del">Del</a></td></tr>';
   }
   html += '</tbody></table>';
   document.getElementById('file-list').innerHTML = html;
@@ -138,12 +214,10 @@ function renderFiles(lines) {
 function doRun(path) {
   fetch('/config.cgi?run2=' + encodeURIComponent(path));
 }
-
 function doDelete(path) {
   if (!confirm('Delete ' + path + '?')) return;
   fetch('/config.cgi?rm=' + encodeURIComponent(path)).then(function() { refresh(); });
 }
-
 function showMkdir() { document.getElementById('mkdir-form').style.display = 'flex'; }
 function hideMkdir() { document.getElementById('mkdir-form').style.display = 'none'; }
 function doMkdir() {
@@ -155,7 +229,6 @@ function doMkdir() {
     refresh();
   });
 }
-
 function uploadFiles(files) {
   var status = document.getElementById('upload-status');
   for (var i = 0; i < files.length; i++) {
@@ -174,12 +247,43 @@ var uploadArea = document.getElementById('upload-area');
 uploadArea.ondragover = function(e) { e.preventDefault(); this.classList.add('hover'); };
 uploadArea.ondragleave = function() { this.classList.remove('hover'); };
 uploadArea.ondrop = function(e) {
-  e.preventDefault();
-  this.classList.remove('hover');
+  e.preventDefault(); this.classList.remove('hover');
   uploadFiles(e.dataTransfer.files);
 };
 
-// Poll status LED
+// ── Control page ──
+function ctrlAction(action) {
+  fetch('/config.cgi?' + action + '=1').then(function(r) { return r.text(); }).then(function(t) {
+    alert(t);
+  });
+}
+function doRunCmd() {
+  var cmd = document.getElementById('run-cmd').value.trim();
+  if (cmd) fetch('/config.cgi?run=' + encodeURIComponent(cmd));
+}
+function doCdCmd() {
+  var path = document.getElementById('cd-path').value.trim();
+  if (path) fetch('/config.cgi?cd2=' + encodeURIComponent(path));
+}
+
+// ── Settings page ──
+function refreshStatus() {
+  fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
+    var html = '';
+    html += '<tr><td>M4 Board</td><td>' + (s.enabled ? 'Enabled' : 'Disabled') + '</td></tr>';
+    html += '<tr><td>SD Path</td><td>' + esc(s.sd_path || '(none)') + '</td></tr>';
+    html += '<tr><td>Current Dir</td><td>' + esc(s.current_dir) + '</td></tr>';
+    html += '<tr><td>Open Files</td><td>' + s.open_files + '/4</td></tr>';
+    html += '<tr><td>Commands</td><td>' + s.cmd_count + '</td></tr>';
+    html += '<tr><td>Network</td><td>' + (s.network ? 'On' : 'Off') + '</td></tr>';
+    html += '<tr><td>CPC</td><td>' + (s.paused ? 'Paused' : 'Running') + '</td></tr>';
+    document.getElementById('status-table').innerHTML = html;
+    document.getElementById('info-http').textContent = s.bind_ip + ':' + s.http_port;
+    document.getElementById('info-version').textContent = s.version;
+  }).catch(function(){});
+}
+
+// ── Poll status LED ──
 setInterval(function() {
   fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
     var led = document.getElementById('status-led');
@@ -187,7 +291,7 @@ setInterval(function() {
   }).catch(function(){});
 }, 5000);
 
-// Helpers
+// ── Helpers ──
 function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function escAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
 function encURI(s) { return encodeURI(s).replace(/#/g, '%23'); }
@@ -198,7 +302,8 @@ function fmtSize(b) {
   return (b/1048576).toFixed(1) + ' MB';
 }
 
-// Initial load
+// ── Init ──
+showPage('files');
 loadDir('/');
 </script>
 </body>
@@ -231,24 +336,38 @@ body {
 .btn:hover { background: #1a4a7e; }
 .btn.active { background: #e94560; border-color: #e94560; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-lg { padding: 10px 24px; font-size: 15px; min-width: 160px; }
+.btn-accent { background: #2e7d32; border-color: #388e3c; }
+.btn-accent:hover { background: #388e3c; }
 .led { width: 10px; height: 10px; border-radius: 50%; margin-left: auto; }
 .led-on { background: #4eff4e; box-shadow: 0 0 6px #4eff4e; }
 .led-off { background: #444; }
 .container { max-width: 960px; margin: 20px auto; padding: 0 20px; }
+.section { margin-bottom: 24px; }
+.section h2 { font-size: 15px; color: #88c0d0; margin-bottom: 10px;
+  border-bottom: 1px solid #0f3460; padding-bottom: 4px; }
 .toolbar {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 12px; padding: 8px 12px; background: #16213e;
   border-radius: 4px; font-family: monospace; font-size: 14px; color: #88c0d0;
 }
-.toolbar-right { display: flex; gap: 6px; }
+.toolbar-right { display: flex; gap: 6px; flex-wrap: wrap; }
 .inline-form {
   display: flex; gap: 8px; margin-bottom: 12px; padding: 8px 12px;
-  background: #16213e; border-radius: 4px;
+  background: #16213e; border-radius: 4px; align-items: center;
 }
-.inline-form input {
-  flex: 1; padding: 4px 8px; background: #0d1b2a; border: 1px solid #1a3a6e;
-  color: #e0e0e0; border-radius: 3px; font-size: 13px;
+.inline-form input[type="text"] {
+  flex: 1; padding: 6px 10px; background: #0d1b2a; border: 1px solid #1a3a6e;
+  color: #e0e0e0; border-radius: 3px; font-size: 14px;
 }
+.control-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px; margin-bottom: 16px;
+}
+.info-table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+.info-table td { padding: 5px 10px; border-bottom: 1px solid #0d1b2a; }
+.info-table td:first-child { color: #888; width: 140px; }
+.note { font-size: 12px; color: #666; margin-top: 8px; }
 .file-list { margin-bottom: 16px; }
 .file-list table { width: 100%; border-collapse: collapse; }
 .file-list th {
@@ -264,7 +383,7 @@ body {
 .file-list .run { color: #a3be8c; font-size: 12px; }
 .file-list .del { color: #bf616a; font-size: 12px; }
 .file-list td:nth-child(2) { width: 80px; text-align: right; color: #888; font-size: 12px; }
-.file-list td:nth-child(3), .file-list td:nth-child(4) { width: 60px; text-align: center; }
+.file-list td:nth-child(3), .file-list td:nth-child(4) { width: 50px; text-align: center; }
 .upload-area {
   border: 2px dashed #1a3a6e; border-radius: 6px; padding: 24px;
   text-align: center; color: #888; transition: all 0.2s;

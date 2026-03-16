@@ -568,6 +568,44 @@ M4HttpServer::HttpResponse M4HttpServer::handle_config_cgi(const HttpRequest& re
       return resp;
    }
 
+   // CPC control commands (matching real M4 control.shtml forms)
+   // ?cres — CPC reset
+   if (req.query_string.find("cres") != std::string::npos) {
+      pending_reset.store(true);
+      resp.body = "OK CPC reset queued";
+      resp.content_type = "text/plain";
+      return resp;
+   }
+   // ?mres — M4 reset (reset M4 board state)
+   if (req.query_string.find("mres") != std::string::npos) {
+      pending_reset.store(true); // resets the whole CPC including M4
+      resp.body = "OK M4 reset queued";
+      resp.content_type = "text/plain";
+      return resp;
+   }
+   // ?chlt — CPC pause/halt toggle
+   if (req.query_string.find("chlt") != std::string::npos) {
+      pending_pause_toggle.store(true);
+      resp.body = "OK pause toggle queued";
+      resp.content_type = "text/plain";
+      return resp;
+   }
+   // ?cnmi — trigger NMI / hack menu
+   if (req.query_string.find("cnmi") != std::string::npos) {
+      resp.body = "OK NMI (not connected in emulation)";
+      resp.content_type = "text/plain";
+      return resp;
+   }
+   // ?run=<cmd> — run a BASIC command (different from run2 which is a file path)
+   std::string run_cmd = get_query_param(req.query_string, "run");
+   if (!run_cmd.empty()) {
+      g_autotype_queue.enqueue(run_cmd + "\n");
+      LOG_INFO("M4 HTTP: remote command: " << run_cmd);
+      resp.body = "OK running command";
+      resp.content_type = "text/plain";
+      return resp;
+   }
+
    resp.status = 400; resp.status_text = "Bad Request";
    resp.body = "Unknown config.cgi action";
    resp.content_type = "text/plain";
@@ -708,22 +746,17 @@ M4HttpServer::HttpResponse M4HttpServer::handle_request(const HttpRequest& req) 
 
    // GET routes
    if (req.method == "GET" || req.method == "HEAD") {
+      // All HTML pages served from the same SPA — JS handles navigation
       if (req.path == "/" || req.path == "/index.html" || req.path == "/index.shtml"
-          || req.path == "/files.shtml") {
+          || req.path == "/files.shtml" || req.path == "/roms.shtml"
+          || req.path == "/control.shtml" || req.path == "/settings.shtml"
+          || req.path == "/upload.html") {
          return handle_index(req);
       }
       if (req.path == "/files") return handle_files_api(req);
       if (req.path == "/download") return handle_download(req);
       if (req.path == "/config.cgi") return handle_config_cgi(req);
       if (req.path == "/status") return handle_status(req);
-      if (req.path == "/roms" || req.path == "/roms.shtml") {
-         // ROM management page — not implemented yet, redirect to index
-         HttpResponse resp;
-         resp.status = 302; resp.status_text = "Found";
-         resp.body = "ROM management not yet implemented";
-         return resp;
-      }
-      if (req.path == "/upload.html") return handle_index(req);
 
       // /sd/* — serve files from SD card
       if (req.path.size() >= 4 && req.path.substr(0, 4) == "/sd/") {
