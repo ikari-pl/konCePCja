@@ -2337,7 +2337,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
       auto mappings = g_m4_http.get_port_mappings_snapshot();
       size_t count = mappings.size() < 16 ? mappings.size() : 16;
       for (size_t i = 0; i < count; i++) {
-         char key[32], val[64];
+         char key[48], val[64];
          snprintf(key, sizeof(key), "m4_port_map_%zu", i);
          snprintf(val, sizeof(val), "%d:%d:%d",
                   mappings[i].cpc_port, mappings[i].host_port,
