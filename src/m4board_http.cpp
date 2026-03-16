@@ -303,8 +303,8 @@ bool M4HttpServer::parse_request(const std::string& raw, HttpRequest& req) {
       if (lower_line == "upgrade: websocket") {
          req.is_websocket_upgrade = true;
       }
-      if (lower_line.substr(0, 22) == "sec-websocket-key: ") {
-         req.websocket_key = hline.substr(19);
+      if (lower_line.substr(0, 20) == "sec-websocket-key: ") {
+         req.websocket_key = hline.substr(20);
          // Trim trailing whitespace
          while (!req.websocket_key.empty() && req.websocket_key.back() <= ' ')
             req.websocket_key.pop_back();

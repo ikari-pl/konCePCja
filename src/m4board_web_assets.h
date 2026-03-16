@@ -30,10 +30,19 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
     <a href="#" onclick="showPage('roms')" class="btn" id="nav-roms">Roms</a>
     <a href="#" onclick="showPage('control')" class="btn" id="nav-control">Control</a>
     <a href="#" onclick="showPage('settings')" class="btn" id="nav-settings">Settings</a>
+    <a href="#" onclick="togglePreviewOverlay()" class="btn btn-preview" id="nav-preview">Screen</a>
   </nav>
   <span id="status-led" class="led led-off"></span>
 </div>
 <div id="toast-container"></div>
+
+<!-- Floating preview overlay (visible on all pages when enabled) -->
+<div id="preview-overlay" class="preview-overlay" style="display:none">
+  <img id="preview-img" alt="" class="preview-img">
+  <div class="preview-controls">
+    <label class="preview-toggle-label"><input type="checkbox" id="preview-toggle" onchange="togglePreview(this.checked)"> Live</label>
+  </div>
+</div>
 
 <!-- ═══ FILES PAGE ═══ -->
 <div id="page-files" class="page">
@@ -114,16 +123,6 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
 <!-- ═══ SETTINGS PAGE ═══ -->
 <div id="page-settings" class="page" style="display:none">
 <div class="container">
-  <div class="section">
-    <h2>Live Preview</h2>
-    <div class="preview-container">
-      <img id="preview-img" alt="CPC Screen" class="preview-img">
-    </div>
-    <div style="margin-top:8px">
-      <label><input type="checkbox" id="preview-toggle" onchange="togglePreview(this.checked)"> Auto-refresh (~5 fps)</label>
-    </div>
-  </div>
-
   <div class="section">
     <h2>Status</h2>
     <table class="info-table" id="status-table">
@@ -325,9 +324,22 @@ function loadRoms() {
 // ── Live preview (WebSocket) ──
 var previewWs = null;
 var previewSized = false;
+function togglePreviewOverlay() {
+  var overlay = document.getElementById('preview-overlay');
+  if (overlay.style.display === 'none') {
+    overlay.style.display = '';
+    togglePreview(true);
+    document.getElementById('preview-toggle').checked = true;
+  } else {
+    togglePreview(false);
+    overlay.style.display = 'none';
+  }
+}
 function togglePreview(on) {
   if (on) {
-    if (previewWs) return; // already connected
+    if (previewWs) return;
+    var overlay = document.getElementById('preview-overlay');
+    overlay.style.display = '';
     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     previewWs = new WebSocket(proto + '//' + location.host + '/ws/preview');
     previewWs.binaryType = 'blob';
@@ -336,24 +348,32 @@ function togglePreview(on) {
       var url = URL.createObjectURL(ev.data);
       img.onload = function() { URL.revokeObjectURL(url); };
       img.src = url;
-      // Size at 50% of native resolution on first frame
-      if (!previewSized) {
-        fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
-          if (s.screen_w && s.screen_h) {
-            img.style.width = Math.round(s.screen_w / 2) + 'px';
-            img.style.height = Math.round(s.screen_h / 2) + 'px';
-            previewSized = true;
-          }
-        }).catch(function(){});
-      }
+      if (!previewSized) sizePreview();
     };
     previewWs.onclose = function() {
       previewWs = null;
       document.getElementById('preview-toggle').checked = false;
+      // Show a blank placeholder on disconnect
+      var img = document.getElementById('preview-img');
+      img.removeAttribute('src');
+      img.alt = 'Disconnected';
+    };
+    previewWs.onerror = function() {
+      if (previewWs) { previewWs.close(); previewWs = null; }
     };
   } else {
     if (previewWs) { previewWs.close(); previewWs = null; }
   }
+}
+function sizePreview() {
+  fetch('/status').then(function(r) { return r.json(); }).then(function(s) {
+    if (s.screen_w && s.screen_h) {
+      var img = document.getElementById('preview-img');
+      img.style.width = Math.round(s.screen_w / 2) + 'px';
+      img.style.height = Math.round(s.screen_h / 2) + 'px';
+      previewSized = true;
+    }
+  }).catch(function(){});
 }
 
 // ── Settings page ──
@@ -491,10 +511,24 @@ body {
 .dot-on { color: #a3be8c; }
 .dot-off { color: #555; }
 .rom-name { color: #88c0d0; }
-.preview-container { background: #000; border-radius: 4px; padding: 4px;
-  display: inline-block; }
-.preview-img { max-width: 100%; height: auto; image-rendering: pixelated;
-  display: block; }
+.btn-preview { background: #2e4a1e; border-color: #3a5e26; }
+.btn-preview:hover { background: #3a5e26; }
+.preview-overlay {
+  position: fixed; bottom: 16px; right: 16px; z-index: 100;
+  background: #000; border: 1px solid #0f3460; border-radius: 6px;
+  overflow: visible; box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  transition: opacity 0.2s;
+}
+.preview-overlay:hover { opacity: 0.25; }
+.preview-overlay .preview-controls {
+  position: absolute; top: -24px; right: 0; z-index: 101;
+}
+.preview-toggle-label {
+  font-size: 11px; color: #888; background: rgba(22,33,62,0.9);
+  padding: 2px 8px; border-radius: 3px 3px 0 0; cursor: pointer;
+  border: 1px solid #0f3460; border-bottom: none;
+}
+.preview-img { display: block; image-rendering: pixelated; border-radius: 6px; }
 #toast-container {
   position: fixed; bottom: 20px; right: 20px; z-index: 9999;
   display: flex; flex-direction: column-reverse; gap: 8px;
