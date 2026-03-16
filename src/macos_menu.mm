@@ -278,9 +278,9 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
     //   Image coords: (182,83) to (600,376)
     //   Cocoa: x=0.214, y=0.505, w=0.492, h=0.386
     static constexpr CGFloat kScreenX = 0.2141;
-    static constexpr CGFloat kScreenY = 0.5046; // Cocoa y (from bottom)
+    static constexpr CGFloat kScreenY = 0.4800; // pushed down slightly
     static constexpr CGFloat kScreenW = 0.4918;
-    static constexpr CGFloat kScreenH = 0.3860;
+    static constexpr CGFloat kScreenH = 0.4350; // taller to fill monitor vertically
 
     // Use a square canvas — macOS Dock icons are always square.
     // Center the non-square icon (850x759) within a square.
