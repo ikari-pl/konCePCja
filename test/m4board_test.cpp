@@ -1004,3 +1004,120 @@ TEST_F(M4BoardTest, ActivityTracksNewCommands) {
    send_command(C_SDWRITE, {0, 0, 0, 0, 1});
    EXPECT_EQ(g_m4board.last_op, M4Board::LastOp::WRITE);
 }
+
+// ── New M4 commands (v1.0.9+ / v2.0.5+) ──
+
+static constexpr uint16_t C_NMI         = 0x431D;
+static constexpr uint16_t C_UPGRADE     = 0x4327;
+static constexpr uint16_t C_COPYBUF     = 0x4329;
+static constexpr uint16_t C_COPYFILE    = 0x432A;
+static constexpr uint16_t C_NETRSSI     = 0x4337;
+static constexpr uint16_t C_NETBIND     = 0x4338;
+static constexpr uint16_t C_NETLISTEN   = 0x4339;
+static constexpr uint16_t C_NETACCEPT   = 0x433A;
+static constexpr uint16_t C_GETNETWORK  = 0x433B;
+static constexpr uint16_t C_WIFIPOW     = 0x433C;
+static constexpr uint16_t C_ROMLOW      = 0x433D;
+static constexpr uint16_t C_ROMCP       = 0x43FC;
+
+TEST_F(M4BoardTest, NmiReturnsOk)
+{
+   send_command(C_NMI);
+   EXPECT_EQ(g_m4board.response[0], 0x00); // M4_OK
+}
+
+TEST_F(M4BoardTest, WifiPowerToggle)
+{
+   g_m4board.network_enabled = true;
+   send_command(C_WIFIPOW, {0}); // OFF
+   EXPECT_FALSE(g_m4board.network_enabled);
+   send_command(C_WIFIPOW, {1}); // ON
+   EXPECT_TRUE(g_m4board.network_enabled);
+}
+
+TEST_F(M4BoardTest, UpgradeNoOp)
+{
+   send_command(C_UPGRADE);
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+}
+
+TEST_F(M4BoardTest, NetRssiReturnsMaxSignal)
+{
+   g_m4board.network_enabled = true;
+   send_command(C_NETRSSI);
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   EXPECT_EQ(g_m4board.response[3], 0); // 0 = max signal
+}
+
+TEST_F(M4BoardTest, GetNetworkReturnsStruct)
+{
+   g_m4board.network_enabled = true;
+   send_command(C_GETNETWORK);
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   EXPECT_GE(g_m4board.response_len, 3 + 140);
+   // Check device name starts with "koncepcja"
+   const char* name = reinterpret_cast<const char*>(g_m4board.response + 3);
+   EXPECT_EQ(std::string(name).substr(0, 9), "koncepcja");
+   // Check IP is 127.0.0.1
+   EXPECT_EQ(g_m4board.response[3 + 112], 127);
+   EXPECT_EQ(g_m4board.response[3 + 115], 1);
+}
+
+TEST_F(M4BoardTest, CopyFileSuccess)
+{
+   // Create source file
+   {
+      std::ofstream f(temp_dir / "source.txt");
+      f << "copy me";
+   }
+   // Build command: "source.txt\0dest.txt\0"
+   std::vector<uint8_t> data;
+   for (char c : std::string("source.txt")) data.push_back(static_cast<uint8_t>(c));
+   data.push_back(0);
+   for (char c : std::string("dest.txt")) data.push_back(static_cast<uint8_t>(c));
+   data.push_back(0);
+   send_command(C_COPYFILE, data);
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   EXPECT_EQ(g_m4board.response[3], 0); // success
+   // Verify dest file exists with same content
+   std::ifstream ifs(temp_dir / "dest.txt");
+   ASSERT_TRUE(ifs.good());
+   std::string content((std::istreambuf_iterator<char>(ifs)),
+                       std::istreambuf_iterator<char>());
+   EXPECT_EQ(content, "copy me");
+}
+
+TEST_F(M4BoardTest, CopyFileMissingSource)
+{
+   std::vector<uint8_t> data;
+   for (char c : std::string("nonexistent.txt")) data.push_back(static_cast<uint8_t>(c));
+   data.push_back(0);
+   for (char c : std::string("dest.txt")) data.push_back(static_cast<uint8_t>(c));
+   data.push_back(0);
+   send_command(C_COPYFILE, data);
+   EXPECT_EQ(g_m4board.response[0], 0xFF); // error
+}
+
+TEST_F(M4BoardTest, CopybufEmptyBuffer)
+{
+   // COPYBUF with no prior HTTPGETMEM — should return empty/zero
+   send_command(C_COPYBUF, {0, 0, 0, 16}); // offset=0, size=16
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+}
+
+TEST_F(M4BoardTest, RomlowNoOp)
+{
+   send_command(C_ROMLOW, {0}); // mode 0 = system lower ROM
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   send_command(C_ROMLOW, {1}); // mode 1 = ROM board
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+   send_command(C_ROMLOW, {2}); // mode 2 = hack menu
+   EXPECT_EQ(g_m4board.response[0], 0x00);
+}
+
+TEST_F(M4BoardTest, RomcpWithoutRomReturnsError)
+{
+   // No ROM loaded — should return error
+   send_command(C_ROMCP, {0, 0, 0, 0, 0x10, 0, 0, 0x10});
+   EXPECT_EQ(g_m4board.response[0], 0xFF); // error
+}

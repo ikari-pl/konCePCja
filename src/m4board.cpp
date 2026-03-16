@@ -76,10 +76,18 @@ static constexpr uint16_t C_NETCLOSE    = 0x4333;
 static constexpr uint16_t C_NETSEND     = 0x4334;
 static constexpr uint16_t C_NETRECV     = 0x4335;
 static constexpr uint16_t C_NETHOSTIP   = 0x4336;
+static constexpr uint16_t C_NMI         = 0x431D;
+static constexpr uint16_t C_UPGRADE     = 0x4327;
+static constexpr uint16_t C_COPYBUF     = 0x4329;
+static constexpr uint16_t C_COPYFILE    = 0x432A;
 static constexpr uint16_t C_NETRSSI     = 0x4337;
 static constexpr uint16_t C_NETBIND     = 0x4338;
 static constexpr uint16_t C_NETLISTEN   = 0x4339;
 static constexpr uint16_t C_NETACCEPT   = 0x433A;
+static constexpr uint16_t C_GETNETWORK  = 0x433B;
+static constexpr uint16_t C_WIFIPOW     = 0x433C;
+static constexpr uint16_t C_ROMLOW      = 0x433D;
+static constexpr uint16_t C_ROMCP       = 0x43FC;
 static constexpr uint16_t C_ROMWRITE    = 0x43FD;
 static constexpr uint16_t C_CONFIG      = 0x43FE;
 
@@ -2072,6 +2080,222 @@ static void cmd_netaccept()
    g_m4board.response_len = 4;
 }
 
+// ── NMI / Debug ─────────────────────────────────
+
+static void cmd_nmi()
+{
+   // Trigger NMI (Non-Maskable Interrupt) — on real hardware this opens the
+   // Hack Menu / Multiface-like debugger. In emulation, log it.
+   // If we had Multiface emulation active, we'd trigger MF2_STOP here.
+   LOG_INFO("M4: C_NMI triggered (no-op — Multiface/Hack menu not connected)");
+   respond_ok();
+}
+
+// ── WiFi power ──────────────────────────────────
+
+static void cmd_wifipow()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, power]
+   // power: 0 = OFF, 1 = ON
+   if (g_m4board.cmd_buf.size() < 4) { respond_ok(); return; }
+   bool on = (g_m4board.cmd_buf[3] != 0);
+   g_m4board.network_enabled = on;
+   LOG_INFO("M4: C_WIFIPOW " << (on ? "ON" : "OFF"));
+   respond_ok();
+}
+
+// ── Firmware upgrade ────────────────────────────
+
+static void cmd_upgrade()
+{
+   // No-op in emulation — there's no real firmware to upgrade.
+   LOG_DEBUG("M4: C_UPGRADE (no-op in emulation)");
+   respond_ok();
+}
+
+// ── Internal buffer copy (from HTTPGETMEM result) ──
+
+static void cmd_copybuf()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, offset_hi, offset_lo, size_hi, size_lo]
+   // Copies from the internal buffer (last C_HTTPGETMEM response data at offset 5+)
+   // into the response buffer. This lets CPC software read large HTTP downloads
+   // in chunks.
+   if (g_m4board.cmd_buf.size() < 7) { respond_error(); return; }
+   uint16_t offset = (static_cast<uint16_t>(g_m4board.cmd_buf[3]) << 8) |
+                      static_cast<uint16_t>(g_m4board.cmd_buf[4]);
+   uint16_t size   = (static_cast<uint16_t>(g_m4board.cmd_buf[5]) << 8) |
+                      static_cast<uint16_t>(g_m4board.cmd_buf[6]);
+
+   // The "internal buffer" in our implementation IS the response buffer
+   // (HTTPGETMEM writes data at response[5]). The CPC reads it via COPYBUF
+   // with an offset into that data region.
+   // Since our response buffer is only 1.5KB, clamp the copy.
+   int data_start = 5 + static_cast<int>(offset);
+   int available = g_m4board.response_len - data_start;
+   if (available < 0) available = 0;
+   int copy_size = std::min(static_cast<int>(size), available);
+   copy_size = std::min(copy_size, M4Board::RESPONSE_SIZE - 4);
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   // Data copied in-place (it's already in the response buffer at offset 5+offset)
+   // Move it to response[3]+ for the CPC to read
+   if (copy_size > 0 && data_start < g_m4board.response_len) {
+      memmove(g_m4board.response + 3, g_m4board.response + data_start,
+              static_cast<size_t>(copy_size));
+   }
+   g_m4board.response_len = 3 + copy_size;
+   LOG_DEBUG("M4: C_COPYBUF offset=" << offset << " size=" << size
+             << " copied=" << copy_size);
+}
+
+// ── File copy on SD card ────────────────────────
+
+static void cmd_copyfile()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, srcfile\0destfile\0]
+   // Returns response[3] = 0 (OK) or error string
+   if (g_m4board.sd_root_path.empty()) { respond_error("No SD path"); return; }
+
+   // Extract two null-terminated strings
+   std::string src = extract_string(g_m4board.cmd_buf, 3);
+   size_t src_end = 3 + src.size() + 1; // past the null terminator
+   std::string dst;
+   if (src_end < g_m4board.cmd_buf.size()) {
+      dst = extract_string(g_m4board.cmd_buf, static_cast<int>(src_end));
+   }
+   if (src.empty() || dst.empty()) {
+      respond_error("Missing src or dest filename");
+      return;
+   }
+
+   // Resolve both paths with traversal protection
+   auto root = std::filesystem::weakly_canonical(g_m4board.sd_root_path);
+   try {
+      auto src_full = std::filesystem::weakly_canonical(
+         root / g_m4board.current_dir.substr(1) / src);
+      auto dst_full = std::filesystem::weakly_canonical(
+         root / g_m4board.current_dir.substr(1) / dst);
+
+      // Traversal check
+      auto src_rel = src_full.lexically_normal().lexically_relative(root.lexically_normal());
+      auto dst_rel = dst_full.lexically_normal().lexically_relative(root.lexically_normal());
+      if ((!src_rel.empty() && *src_rel.begin() == "..") ||
+          (!dst_rel.empty() && *dst_rel.begin() == "..")) {
+         respond_error("Path traversal blocked");
+         return;
+      }
+
+      if (!std::filesystem::exists(src_full)) {
+         respond_error("Source not found");
+         return;
+      }
+
+      std::filesystem::copy_file(src_full, dst_full,
+         std::filesystem::copy_options::overwrite_existing);
+
+      LOG_INFO("M4: C_COPYFILE " << src << " -> " << dst);
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0; // success
+      g_m4board.response_len = 4;
+   } catch (const std::filesystem::filesystem_error& e) {
+      respond_error(e.what());
+   }
+}
+
+// ── Get network configuration ───────────────────
+
+static void cmd_getnetwork()
+{
+   // Returns the network config structure (140 bytes):
+   //   char name[16], ssid[32], password[64], ip[4], nm[4], gw[4],
+   //   dns1[4], dns2[4], dhcp[4], timezone[4]
+   // We fill in sensible emulator-side values.
+   memset(g_m4board.response + 3, 0, 140);
+
+   // Device name
+   const char* name = "koncepcja-m4";
+   strncpy(reinterpret_cast<char*>(g_m4board.response + 3), name, 15);
+
+   // SSID
+   const char* ssid = "emulated";
+   strncpy(reinterpret_cast<char*>(g_m4board.response + 3 + 16), ssid, 31);
+
+   // IP: 127.0.0.1 (loopback)
+   g_m4board.response[3 + 112] = 127;
+   g_m4board.response[3 + 113] = 0;
+   g_m4board.response[3 + 114] = 0;
+   g_m4board.response[3 + 115] = 1;
+
+   // Netmask: 255.0.0.0
+   g_m4board.response[3 + 116] = 255;
+
+   // DHCP: 1 (enabled)
+   g_m4board.response[3 + 132] = 1;
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response_len = 3 + 140;
+   LOG_DEBUG("M4: C_GETNETWORK returned config struct");
+}
+
+// ── ROM commands ────────────────────────────────
+
+static void cmd_romlow()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, mode]
+   // mode: 0 = system lower ROM, 1 = lower ROM from ROM board, 2 = hack menu
+   // In emulation, we don't have separate lower ROM sources — just log it.
+   int mode = (g_m4board.cmd_buf.size() >= 4) ? g_m4board.cmd_buf[3] : 0;
+   LOG_INFO("M4: C_ROMLOW mode=" << mode << " (no-op in emulation)");
+   respond_ok();
+}
+
+static void cmd_romcp()
+{
+   // Protocol: [size, cmd_lo, cmd_hi, dest_hi, dest_lo, src_bank, src_hi, src_lo,
+   //            dest_bank, size_hi, size_lo]
+   // Copies data within the M4 ROM RAM. In emulation, the ROM is managed by
+   // the emulator directly, but we can honour copies within our ROM buffer.
+   if (g_m4board.cmd_buf.size() < 11) { respond_error(); return; }
+
+   uint16_t dest_off = (static_cast<uint16_t>(g_m4board.cmd_buf[3]) << 8) |
+                         static_cast<uint16_t>(g_m4board.cmd_buf[4]);
+   // src_bank = cmd_buf[5] (0 = M4 ROM)
+   uint16_t src_off  = (static_cast<uint16_t>(g_m4board.cmd_buf[6]) << 8) |
+                         static_cast<uint16_t>(g_m4board.cmd_buf[7]);
+   // dest_bank = cmd_buf[8]
+   uint16_t size     = (static_cast<uint16_t>(g_m4board.cmd_buf[9]) << 8) |
+                         static_cast<uint16_t>(g_m4board.cmd_buf[10]);
+
+   // We only support bank 0 (M4 ROM) — ROM is 16KB
+   extern byte* memmap_ROM[];
+   byte* rom = memmap_ROM[g_m4board.rom_slot];
+   if (!rom) {
+      LOG_DEBUG("M4: C_ROMCP — no ROM loaded in slot " << g_m4board.rom_slot);
+      respond_error();
+      return;
+   }
+
+   // Clamp to 16KB ROM size
+   if (src_off + size > 0x4000 || dest_off + size > 0x4000) {
+      LOG_ERROR("M4: C_ROMCP out of bounds (src=0x" << std::hex << src_off
+                << " dst=0x" << dest_off << " size=" << std::dec << size << ")");
+      respond_error();
+      return;
+   }
+
+   memmove(rom + dest_off, rom + src_off, size);
+   LOG_DEBUG("M4: C_ROMCP 0x" << std::hex << src_off << " -> 0x" << dest_off
+             << " size=" << std::dec << size);
+   respond_ok();
+}
+
 // ── ROM Management ──────────────────────────────
 
 static void cmd_romsupdate()
@@ -2353,6 +2577,14 @@ void m4board_execute()
       case C_NETBIND:     cmd_netbind(); break;
       case C_NETLISTEN:   cmd_netlisten(); break;
       case C_NETACCEPT:   cmd_netaccept(); break;
+      case C_GETNETWORK:  cmd_getnetwork(); break;
+      case C_WIFIPOW:     cmd_wifipow(); break;
+      case C_NMI:         cmd_nmi(); break;
+      case C_UPGRADE:     cmd_upgrade(); break;
+      case C_COPYBUF:     cmd_copybuf(); break;
+      case C_COPYFILE:    cmd_copyfile(); g_m4board.last_op = M4Board::LastOp::WRITE; break;
+      case C_ROMLOW:      cmd_romlow(); break;
+      case C_ROMCP:       cmd_romcp(); break;
       case C_ROMSUPDATE:  cmd_romsupdate(); break;
       case C_CONFIG:      cmd_config(); break;
       case C_ROMWRITE:    cmd_romwrite(); break;
