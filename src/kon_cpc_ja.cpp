@@ -3324,9 +3324,9 @@ int koncpc_main (int argc, char **argv)
 #ifdef __APPLE__
       koncpc_setup_macos_menu();
       koncpc_disable_app_nap();
-      // Set the Dock icon from the logo PNG (fixes generic icon when running outside .app)
+      // Set the Dock icon (fixes generic icon when running outside .app bundle)
       {
-         std::string icon_path = CPC.resources_path + "/koncepcja-logo.png";
+         std::string icon_path = CPC.resources_path + "/koncepcja-icon.png";
          koncpc_set_dock_icon(icon_path.c_str());
       }
 #endif

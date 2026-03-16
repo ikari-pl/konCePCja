@@ -239,9 +239,11 @@ void koncpc_set_dock_icon(const char* png_path) {
     if (g_base_icon) {
       [NSApp setApplicationIconImage:g_base_icon];
     }
-    // Try to load optional CRT overlay (translucent PNG with monitor shine)
+    // Try to load optional CRT overlay (translucent PNG with CRT curve shine).
+    // Should be the same dimensions as the icon, with transparency everywhere
+    // except the monitor screen area where it adds a subtle CRT glass reflection.
     NSString* overlayPath = [[path stringByDeletingLastPathComponent]
-      stringByAppendingPathComponent:@"crt-overlay.png"];
+      stringByAppendingPathComponent:@"koncepcja-icon-crt-overlay.png"];
     if ([[NSFileManager defaultManager] fileExistsAtPath:overlayPath]) {
       g_crt_overlay = [[NSImage alloc] initWithContentsOfFile:overlayPath];
     }
@@ -268,16 +270,14 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
     // The koncepcja-logo.png shows a CPC computer with a monitor. We draw the
     // live emulator screen exactly where the monitor screen is in the icon.
     //
-    // Screen region in the 1010x759 logo (proportional coordinates):
-    //   x=0.158, y_from_top=0.049, w=0.607, h=0.544
-    // In Cocoa coords (y=0 at bottom): y = 1.0 - 0.049 - 0.544 = 0.407
-    //
-    // When the user provides a custom overlay PNG with CRT shine, it will be
-    // drawn on top of the screen image (see g_crt_overlay below).
-    static constexpr CGFloat kScreenX = 0.158;
-    static constexpr CGFloat kScreenY = 0.407; // Cocoa y (from bottom)
-    static constexpr CGFloat kScreenW = 0.607;
-    static constexpr CGFloat kScreenH = 0.544;
+    // Screen region in the 850x759 icon (proportional coordinates).
+    // Source coords (y from bottom): (182,676) to (600,383)
+    // → image coords: (182,83) to (600,376)
+    // → Cocoa proportional: x=0.214, y=0.505, w=0.492, h=0.386
+    static constexpr CGFloat kScreenX = 0.2141;
+    static constexpr CGFloat kScreenY = 0.5046; // Cocoa y (from bottom)
+    static constexpr CGFloat kScreenW = 0.4918;
+    static constexpr CGFloat kScreenH = 0.3860;
 
     NSSize iconSize = [g_base_icon size];
     NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
