@@ -4,7 +4,6 @@
 #include "imgui.h"
 #include "SDL3/SDL.h"
 #include <memory>
-#include <mach/mach_time.h>
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
@@ -233,21 +232,12 @@ void koncpc_order_viewports_above_main() {
 static NSImage* g_icon_overlay = nil;  // CRT overlay (translucent screen area)
 static NSImage* g_static_icon = nil;   // static logo shown at startup / fallback
 static std::atomic<bool> g_icon_update_in_flight{false};
-static std::atomic<bool> g_icon_preview_disabled{false}; // auto-disabled if too slow
-static uint64_t g_icon_last_time_ns = 0;       // last update duration
-static int g_icon_slow_count = 0;              // consecutive slow updates
 
 // Screen region in 850x759 icon (proportional coordinates)
 static constexpr CGFloat kScreenX = 0.2141;
 static constexpr CGFloat kScreenY = 0.4800;
 static constexpr CGFloat kScreenW = 0.4918;
 static constexpr CGFloat kScreenH = 0.4350;
-
-static uint64_t nanos_now() {
-  static mach_timebase_info_data_t tb = {0, 0};
-  if (tb.denom == 0) mach_timebase_info(&tb);
-  return mach_absolute_time() * tb.numer / tb.denom;
-}
 
 void koncpc_set_dock_icon(const char* png_path) {
   @autoreleasepool {
@@ -283,9 +273,6 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
   (void)surface_w; (void)surface_h;
   if (!pixels || vis_w <= 0 || vis_h <= 0 || !g_icon_overlay) return;
 
-  // Skip if preview was auto-disabled due to being too slow
-  if (g_icon_preview_disabled.load(std::memory_order_relaxed)) return;
-
   // Skip if a previous update is still in flight (don't queue up work)
   if (g_icon_update_in_flight.exchange(true)) return;
 
@@ -303,7 +290,6 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
   int w = vis_w, h = vis_h;
 
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-    uint64_t t0 = nanos_now();
     @autoreleasepool {
       CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
       CGContextRef ctx = CGBitmapContextCreate(
@@ -348,29 +334,6 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
       dispatch_async(dispatch_get_main_queue(), ^{
         [NSApp setApplicationIconImage:composite];
         g_icon_update_in_flight.store(false);
-
-        // Measure time and auto-disable if consistently too slow (>8ms)
-        uint64_t elapsed_ns = nanos_now() - t0;
-        g_icon_last_time_ns = elapsed_ns;
-        if (elapsed_ns > 8000000) { // >8ms
-          g_icon_slow_count++;
-          if (g_icon_slow_count >= 5) {
-            g_icon_preview_disabled.store(true);
-            // Fall back to static logo
-            if (g_static_icon) {
-              NSSize sz = [g_static_icon size];
-              CGFloat s = fmax(sz.width, sz.height);
-              NSImage* sq = [[NSImage alloc] initWithSize:NSMakeSize(s, s)];
-              [sq lockFocus];
-              [g_static_icon drawInRect:NSMakeRect((s-sz.width)/2,(s-sz.height)/2,sz.width,sz.height)
-                               fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
-              [sq unlockFocus];
-              [NSApp setApplicationIconImage:sq];
-            }
-          }
-        } else {
-          g_icon_slow_count = 0; // reset on a fast update
-        }
       });
     }
   });
