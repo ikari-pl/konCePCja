@@ -3324,7 +3324,9 @@ int koncpc_main (int argc, char **argv)
 #ifdef __APPLE__
       koncpc_setup_macos_menu();
       koncpc_disable_app_nap();
-      // Set the Dock icon (fixes generic icon when running outside .app bundle)
+      // Set the Dock icon (fixes generic icon when running outside .app bundle).
+      // koncepcja-icon.png serves as both the icon and CRT overlay — its screen
+      // area is translucent (~alpha 40) so the live CPC screen shows through.
       {
          std::string icon_path = CPC.resources_path + "/koncepcja-icon.png";
          koncpc_set_dock_icon(icon_path.c_str());

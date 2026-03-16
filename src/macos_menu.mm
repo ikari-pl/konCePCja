@@ -228,8 +228,7 @@ void koncpc_order_viewports_above_main() {
 
 // ── Dock icon ──────────────────────────────────────────────
 
-static NSImage* g_base_icon = nil;
-static NSImage* g_crt_overlay = nil;  // optional translucent CRT shine overlay
+static NSImage* g_base_icon = nil;  // the single icon file — also serves as CRT overlay
 
 void koncpc_set_dock_icon(const char* png_path) {
   @autoreleasepool {
@@ -238,14 +237,6 @@ void koncpc_set_dock_icon(const char* png_path) {
     g_base_icon = [[NSImage alloc] initWithContentsOfFile:path];
     if (g_base_icon) {
       [NSApp setApplicationIconImage:g_base_icon];
-    }
-    // Load the CRT overlay — same image but narrower (850 vs 1010px), with
-    // translucent CRT shine in the screen area and opaque CPC body elsewhere.
-    // When composited, it's stretched to match the base icon width.
-    NSString* overlayPath = [[path stringByDeletingLastPathComponent]
-      stringByAppendingPathComponent:@"koncepcja-icon.png"];
-    if ([[NSFileManager defaultManager] fileExistsAtPath:overlayPath]) {
-      g_crt_overlay = [[NSImage alloc] initWithContentsOfFile:overlayPath];
     }
   }
 }
@@ -266,14 +257,15 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
     CGContextRelease(ctx);
     if (!cgScreen) return;
 
-    // Composite: base icon with CPC screen aligned to the monitor in the logo.
-    // The koncepcja-logo.png shows a CPC computer with a monitor. We draw the
-    // live emulator screen exactly where the monitor screen is in the icon.
+    // Composite: live CPC screen + icon overlay.
+    // koncepcja-icon.png (850x759) has a translucent screen area (~alpha 40)
+    // and opaque CPC body. We draw the live screen FIRST, then the icon ON TOP.
+    // The opaque body frames the screen; the translucent area adds CRT shine.
     //
-    // Screen region in the 850x759 icon (proportional coordinates).
-    // Source coords (y from bottom): (182,676) to (600,383)
-    // → image coords: (182,83) to (600,376)
-    // → Cocoa proportional: x=0.214, y=0.505, w=0.492, h=0.386
+    // Screen region in 850x759 (proportional coordinates):
+    //   Source coords (y from bottom): (182,676) to (600,383)
+    //   Image coords: (182,83) to (600,376)
+    //   Cocoa: x=0.214, y=0.505, w=0.492, h=0.386
     static constexpr CGFloat kScreenX = 0.2141;
     static constexpr CGFloat kScreenY = 0.5046; // Cocoa y (from bottom)
     static constexpr CGFloat kScreenW = 0.4918;
@@ -283,13 +275,7 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
     NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
     [composite lockFocus];
 
-    // Draw base icon
-    [g_base_icon drawInRect:NSMakeRect(0, 0, iconSize.width, iconSize.height)
-                   fromRect:NSZeroRect
-                  operation:NSCompositingOperationSourceOver
-                   fraction:1.0];
-
-    // Draw CPC screen aligned to the monitor position
+    // 1. Draw live CPC screen into the monitor area
     NSRect screenRect = NSMakeRect(
       iconSize.width * kScreenX,
       iconSize.height * kScreenY,
@@ -302,15 +288,12 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
                 operation:NSCompositingOperationSourceOver
                  fraction:1.0];
 
-    // Draw CRT overlay stretched to full icon size — the overlay is narrower
-    // than the base icon but Cocoa scales it to fit. The screen area has
-    // translucent CRT shine (~alpha 40), the body is opaque, outside is transparent.
-    if (g_crt_overlay) {
-      [g_crt_overlay drawInRect:NSMakeRect(0, 0, iconSize.width, iconSize.height)
-                       fromRect:NSZeroRect
-                      operation:NSCompositingOperationSourceOver
-                       fraction:1.0];
-    }
+    // 2. Draw icon on top — opaque body frames the screen,
+    //    translucent screen area adds CRT glass shine
+    [g_base_icon drawInRect:NSMakeRect(0, 0, iconSize.width, iconSize.height)
+                   fromRect:NSZeroRect
+                  operation:NSCompositingOperationSourceOver
+                   fraction:1.0];
 
     [composite unlockFocus];
     CGImageRelease(cgScreen);
