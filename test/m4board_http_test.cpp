@@ -41,7 +41,8 @@ static std::string http_get(int port, const std::string& path) {
    char buf[4096];
    // Set read timeout
    timeval tv{2, 0};
-   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+              reinterpret_cast<const char*>(&tv), sizeof(tv));
 
    while (true) {
       ssize_t n = ::read(fd, buf, sizeof(buf));
@@ -78,7 +79,8 @@ static std::string http_post(int port, const std::string& path,
    std::string response;
    char buf[4096];
    timeval tv{2, 0};
-   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+              reinterpret_cast<const char*>(&tv), sizeof(tv));
 
    while (true) {
       ssize_t n = ::read(fd, buf, sizeof(buf));
@@ -315,7 +317,8 @@ TEST_F(M4HttpTest, MethodNotAllowed) {
    (void)::write(fd, req.c_str(), req.size());
    char buf[4096];
    timeval tv{2, 0};
-   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+              reinterpret_cast<const char*>(&tv), sizeof(tv));
    ssize_t n = ::read(fd, buf, sizeof(buf));
    ::close(fd);
    ASSERT_GT(n, 0);

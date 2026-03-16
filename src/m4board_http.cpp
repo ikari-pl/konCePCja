@@ -38,7 +38,9 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#ifdef _MSC_VER
 #pragma comment(lib, "ws2_32.lib")
+#endif
 #else
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -49,7 +51,6 @@
 #endif
 
 extern t_CPC CPC;
-extern void emulator_reset();
 extern AutoTypeQueue g_autotype_queue;
 extern SDL_Surface *back_surface;
 extern byte *memmap_ROM[256];
