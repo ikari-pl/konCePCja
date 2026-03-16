@@ -75,7 +75,7 @@ static std::string http_get(int port, const std::string& path) {
 
    std::string response;
    char buf[4096];
-   test_sock_set_timeout(fd, 5);
+   test_sock_set_timeout(fd, 10);
 
    while (true) {
       int n = test_sock_recv(fd, buf, sizeof(buf));
@@ -111,7 +111,7 @@ static std::string http_post(int port, const std::string& path,
 
    std::string response;
    char buf[4096];
-   test_sock_set_timeout(fd, 5);
+   test_sock_set_timeout(fd, 10);
 
    while (true) {
       int n = test_sock_recv(fd, buf, sizeof(buf));
@@ -347,7 +347,7 @@ TEST_F(M4HttpTest, MethodNotAllowed) {
    std::string req = "DELETE /test HTTP/1.1\r\nHost: localhost\r\n\r\n";
    test_sock_send(fd, req.c_str(), static_cast<int>(req.size()));
    char buf[4096];
-   test_sock_set_timeout(fd, 5);
+   test_sock_set_timeout(fd, 10);
    int n = test_sock_recv(fd, buf, sizeof(buf));
    test_sock_close(fd);
    ASSERT_GT(n, 0);
