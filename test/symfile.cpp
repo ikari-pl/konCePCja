@@ -28,7 +28,7 @@ class SymfileTest : public testing::Test
 #else
       char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
       int fd = mkstemp(tmpFilename);
-      if (fd <= 0) return "";
+      if (fd < 0) return "";
       close(fd);
 #endif
       tmpFilenames_.push_back(tmpFilename);
