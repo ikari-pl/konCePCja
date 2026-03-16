@@ -1,4 +1,5 @@
 #include "m4board.h"
+#include "m4board_http.h"
 #include "disk.h"
 #include "disk_file_editor.h"
 #include "log.h"
@@ -75,6 +76,10 @@ static constexpr uint16_t C_NETCLOSE    = 0x4333;
 static constexpr uint16_t C_NETSEND     = 0x4334;
 static constexpr uint16_t C_NETRECV     = 0x4335;
 static constexpr uint16_t C_NETHOSTIP   = 0x4336;
+static constexpr uint16_t C_NETRSSI     = 0x4337;
+static constexpr uint16_t C_NETBIND     = 0x4338;
+static constexpr uint16_t C_NETLISTEN   = 0x4339;
+static constexpr uint16_t C_NETACCEPT   = 0x433A;
 static constexpr uint16_t C_ROMWRITE    = 0x43FD;
 static constexpr uint16_t C_CONFIG      = 0x43FE;
 
@@ -1591,6 +1596,10 @@ static void m4_close_all_sockets()
          g_m4board.sockets[i] = M4Board::INVALID_SOCK;
       }
    }
+   // Mark all port mappings as inactive
+   for (auto& m : g_m4_http.port_mappings()) {
+      m.active = false;
+   }
 }
 
 static void cmd_netsocket()
@@ -1709,6 +1718,27 @@ static void cmd_netclose()
    int slot = g_m4board.cmd_buf[3];
    if (slot >= 0 && slot < M4Board::MAX_SOCKETS &&
        g_m4board.sockets[slot] != M4Board::INVALID_SOCK) {
+      // Check if this socket was bound to a port — mark mapping as inactive
+      struct sockaddr_in local_addr = {};
+#ifdef _WIN32
+      int addr_len = sizeof(local_addr);
+#else
+      socklen_t addr_len = sizeof(local_addr);
+#endif
+      if (getsockname(g_m4board.sockets[slot],
+                      reinterpret_cast<struct sockaddr*>(&local_addr), &addr_len) == 0) {
+         uint16_t bound_port = ntohs(local_addr.sin_port);
+         if (bound_port > 0) {
+            for (auto& m : g_m4_http.port_mappings()) {
+               if (m.host_port == bound_port && m.active) {
+                  m.active = false;
+                  LOG_DEBUG("M4: port mapping CPC " << m.cpc_port
+                            << " -> host " << m.host_port << " now inactive");
+                  break;
+               }
+            }
+         }
+      }
       sock_close(g_m4board.sockets[slot]);
       g_m4board.sockets[slot] = M4Board::INVALID_SOCK;
       LOG_DEBUG("M4: C_NETCLOSE slot " << slot);
@@ -1852,6 +1882,194 @@ static void cmd_nethostip()
    LOG_DEBUG("M4: C_NETHOSTIP resolved " << hostname << " -> "
             << (int)g_m4board.response[4] << "." << (int)g_m4board.response[5] << "."
             << (int)g_m4board.response[6] << "." << (int)g_m4board.response[7]);
+}
+
+// ── Server sockets (bind/listen/accept) with port forwarding ──
+
+static void cmd_netrssi()
+{
+   // RSSI = WiFi signal strength. No real WiFi in emulation — return max signal.
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0; // 0 = max signal (31 = fail)
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netbind()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+#ifdef _WIN32
+   ensure_winsock_init();
+#endif
+   // Protocol: [size, cmd_lo, cmd_hi, socket, ip0, ip1, ip2, ip3, port_hi, port_lo]
+   if (g_m4board.cmd_buf.size() < 10) { respond_error(); return; }
+
+   int slot = g_m4board.cmd_buf[3];
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   uint16_t cpc_port = (static_cast<uint16_t>(g_m4board.cmd_buf[8]) << 8) |
+                        static_cast<uint16_t>(g_m4board.cmd_buf[9]);
+
+   // Port forwarding: resolve the CPC port to a host port.
+   // The table may have a user override (e.g. CPC 80 → host 8080).
+   // If no mapping exists, try the CPC port directly; if occupied, scan upward.
+   uint16_t host_port = g_m4_http.resolve_host_port(cpc_port);
+
+   int opt = 1;
+   setsockopt(g_m4board.sockets[slot], SOL_SOCKET, SO_REUSEADDR,
+              reinterpret_cast<const char*>(&opt), sizeof(opt));
+
+   struct sockaddr_in addr = {};
+   addr.sin_family = AF_INET;
+   // Bind to the configured M4 bind IP (same as HTTP server)
+   // CPC IP bytes are ignored — we always bind to the emulator's configured IP
+   inet_pton(AF_INET, g_m4_http.bind_ip().c_str(), &addr.sin_addr);
+
+   // Try the resolved port first; if occupied, scan up to +9
+   int bound_port = 0;
+   for (int p = host_port; p < host_port + 10; p++) {
+      addr.sin_port = htons(static_cast<uint16_t>(p));
+      if (bind(g_m4board.sockets[slot],
+               reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+         bound_port = p;
+         break;
+      }
+   }
+
+   if (bound_port == 0) {
+      LOG_ERROR("M4: C_NETBIND failed — no port available near " << host_port
+                << " (CPC requested " << cpc_port << ")");
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   // Record in the port forwarding table (auto-assigned if not a user override)
+   bool was_user = (g_m4_http.resolve_host_port(cpc_port) != cpc_port);
+   g_m4_http.set_port_mapping(cpc_port, static_cast<uint16_t>(bound_port), was_user);
+   // Mark active
+   for (auto& m : g_m4_http.port_mappings()) {
+      if (m.cpc_port == cpc_port) {
+         m.active = true;
+         break;
+      }
+   }
+
+   LOG_INFO("M4: C_NETBIND slot " << slot << " CPC port " << cpc_port
+            << " -> host port " << bound_port
+            << (was_user ? " (user override)" : " (auto)"));
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0; // success
+   g_m4board.response_len = 4;
+}
+
+static void cmd_netlisten()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, socket]
+   if (g_m4board.cmd_buf.size() < 4) { respond_error(); return; }
+
+   int slot = g_m4board.cmd_buf[3];
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   int result = listen(g_m4board.sockets[slot], 1);
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = (result == 0) ? 0 : 0xFF;
+   g_m4board.response_len = 4;
+   if (result == 0) {
+      LOG_INFO("M4: C_NETLISTEN slot " << slot << " listening");
+   } else {
+      LOG_ERROR("M4: C_NETLISTEN failed for slot " << slot);
+   }
+}
+
+static void cmd_netaccept()
+{
+   if (!g_m4board.network_enabled) { respond_error(); return; }
+   // Protocol: [size, cmd_lo, cmd_hi, socket]
+   // The real M4 firmware uses non-blocking accept — returns immediately.
+   // If no connection pending, response[3] = 4 (waiting/accept in progress).
+   // If a client connected, it replaces the listening socket with the accepted one
+   // and returns response[3] = 0 (success).
+   if (g_m4board.cmd_buf.size() < 4) { respond_error(); return; }
+
+   int slot = g_m4board.cmd_buf[3];
+   if (slot < 0 || slot >= M4Board::MAX_SOCKETS ||
+       g_m4board.sockets[slot] == M4Board::INVALID_SOCK) {
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 0xFF;
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   // Set non-blocking so accept() returns immediately if no client waiting
+   sock_set_nonblocking(g_m4board.sockets[slot]);
+
+   struct sockaddr_in peer = {};
+#ifdef _WIN32
+   int plen = sizeof(peer);
+#else
+   socklen_t plen = sizeof(peer);
+#endif
+   M4Board::socket_t client = accept(g_m4board.sockets[slot],
+      reinterpret_cast<struct sockaddr*>(&peer), &plen);
+
+   if (client == M4Board::INVALID_SOCK) {
+      // No client waiting — return "accept in progress"
+      g_m4board.response[0] = M4_OK;
+      g_m4board.response[1] = 0;
+      g_m4board.response[2] = 0;
+      g_m4board.response[3] = 4; // status: waiting for incoming
+      g_m4board.response_len = 4;
+      return;
+   }
+
+   // Got a client! Replace the listening socket with the connected one.
+   // (The real M4 firmware does this — the CPC doesn't have enough slots
+   // for separate listen + connected sockets.)
+   sock_close(g_m4board.sockets[slot]);
+   g_m4board.sockets[slot] = client;
+   sock_set_nonblocking(client);
+
+   uint32_t peer_ip = ntohl(peer.sin_addr.s_addr);
+   LOG_INFO("M4: C_NETACCEPT slot " << slot << " accepted from "
+            << ((peer_ip >> 24) & 0xFF) << "."
+            << ((peer_ip >> 16) & 0xFF) << "."
+            << ((peer_ip >> 8) & 0xFF) << "."
+            << (peer_ip & 0xFF) << ":" << ntohs(peer.sin_port));
+
+   g_m4board.response[0] = M4_OK;
+   g_m4board.response[1] = 0;
+   g_m4board.response[2] = 0;
+   g_m4board.response[3] = 0; // success
+   g_m4board.response_len = 4;
 }
 
 // ── ROM Management ──────────────────────────────
@@ -2131,6 +2349,10 @@ void m4board_execute()
       case C_NETSEND:     cmd_netsend(); break;
       case C_NETRECV:     cmd_netrecv(); break;
       case C_NETHOSTIP:   cmd_nethostip(); break;
+      case C_NETRSSI:     cmd_netrssi(); break;
+      case C_NETBIND:     cmd_netbind(); break;
+      case C_NETLISTEN:   cmd_netlisten(); break;
+      case C_NETACCEPT:   cmd_netaccept(); break;
       case C_ROMSUPDATE:  cmd_romsupdate(); break;
       case C_CONFIG:      cmd_config(); break;
       case C_ROMWRITE:    cmd_romwrite(); break;

@@ -837,6 +837,7 @@ void M4HttpServer::start(int port, const std::string& bind_ip) {
 void M4HttpServer::stop() {
    running.store(false);
    if (server_thread.joinable()) server_thread.join();
+   actual_port.store(0);
 }
 
 // ── Server thread ────────────────────────────────────────

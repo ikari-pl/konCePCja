@@ -4,6 +4,7 @@
 #include <cstring>
 #include <thread>
 #include <chrono>
+#include <random>
 #include "m4board.h"
 #include "m4board_http.h"
 
@@ -123,8 +124,11 @@ protected:
       g_m4board.sd_root_path = sd_dir_.string();
       g_m4board.current_dir = "/";
 
-      // Start HTTP server on a high port to avoid conflicts
-      g_m4_http.start(18080, "127.0.0.1");
+      // Start HTTP server on a random high port to avoid TIME_WAIT conflicts
+      // when multiple tests run in rapid succession
+      static std::mt19937 rng(std::random_device{}());
+      int base = 30000 + static_cast<int>(rng() % 20000);
+      g_m4_http.start(base, "127.0.0.1");
       // Wait for server to bind (port() > 0 means the socket is ready)
       for (int i = 0; i < 100 && g_m4_http.port() == 0; i++) {
          std::this_thread::sleep_for(std::chrono::milliseconds(20));
