@@ -13,7 +13,7 @@ extern t_CPC CPC;
 extern t_PSG PSG;
 extern SDL_Surface *back_surface;
 extern dword dwXScale;
-extern byte *membank_config[8][4];
+extern t_MemBankConfig membank_config;
 
 asic_t asic;
 

@@ -19,10 +19,18 @@ class SymfileTest : public testing::Test
   protected:
     std::string createTmpFile()
     {
+#ifdef _MSC_VER
+      char tmpFilename[L_tmpnam_s];
+      tmpnam_s(tmpFilename, sizeof(tmpFilename));
+      FILE* f = fopen(tmpFilename, "w");
+      if (!f) return "";
+      fclose(f);
+#else
       char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
       int fd = mkstemp(tmpFilename);
       if (fd <= 0) return "";
       close(fd);
+#endif
       tmpFilenames_.push_back(tmpFilename);
       return tmpFilename;
     }
