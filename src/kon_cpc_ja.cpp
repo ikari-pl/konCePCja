@@ -3324,6 +3324,11 @@ int koncpc_main (int argc, char **argv)
 #ifdef __APPLE__
       koncpc_setup_macos_menu();
       koncpc_disable_app_nap();
+      // Set the Dock icon from the logo PNG (fixes generic icon when running outside .app)
+      {
+         std::string icon_path = CPC.resources_path + "/koncepcja-logo.png";
+         koncpc_set_dock_icon(icon_path.c_str());
+      }
 #endif
       topbar_height_px = imgui_topbar_height();
       video_set_topbar(nullptr, topbar_height_px);
@@ -3981,6 +3986,14 @@ int koncpc_main (int argc, char **argv)
 
             // M4 HTTP server — drain deferred actions (reset, pause toggle)
             if (g_m4_http.is_running()) g_m4_http.drain_pending();
+
+#ifdef __APPLE__
+            // Update Dock icon with CPC screen preview (~1fps)
+            if (back_surface && (dwFrameCountOverall % 50) == 0) {
+               koncpc_update_dock_icon_preview(
+                  back_surface->pixels, back_surface->w, back_surface->h, back_surface->pitch);
+            }
+#endif
 
             // YM register recording: capture PSG state once per VBL
             if (g_ym_recorder.is_recording()) {

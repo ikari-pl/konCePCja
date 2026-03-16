@@ -225,3 +225,74 @@ void koncpc_order_viewports_above_main() {
     }
   }
 }
+
+// ── Dock icon ──────────────────────────────────────────────
+
+static NSImage* g_base_icon = nil;
+
+void koncpc_set_dock_icon(const char* png_path) {
+  @autoreleasepool {
+    if (!png_path) return;
+    NSString* path = [NSString stringWithUTF8String:png_path];
+    g_base_icon = [[NSImage alloc] initWithContentsOfFile:path];
+    if (g_base_icon) {
+      [NSApp setApplicationIconImage:g_base_icon];
+    }
+  }
+}
+
+void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch) {
+  @autoreleasepool {
+    if (!pixels || w <= 0 || h <= 0 || !g_base_icon) return;
+
+    // Create CGImage from RGBA pixel data
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+      const_cast<void*>(pixels), (size_t)w, (size_t)h, 8, (size_t)pitch,
+      cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return;
+
+    CGImageRef cgScreen = CGBitmapContextCreateImage(ctx);
+    CGContextRelease(ctx);
+    if (!cgScreen) return;
+
+    // Composite: base icon + small CPC screen inset in bottom-right corner
+    NSSize iconSize = [g_base_icon size];
+    NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
+    [composite lockFocus];
+
+    // Draw base icon
+    [g_base_icon drawInRect:NSMakeRect(0, 0, iconSize.width, iconSize.height)
+                   fromRect:NSZeroRect
+                  operation:NSCompositingOperationSourceOver
+                   fraction:1.0];
+
+    // Draw CPC screen inset: 42% of icon size, bottom-right corner
+    CGFloat insetW = iconSize.width * 0.42;
+    CGFloat insetH = insetW * ((CGFloat)h / (CGFloat)w); // preserve aspect ratio
+    CGFloat margin = iconSize.width * 0.02;
+    NSRect insetRect = NSMakeRect(
+      iconSize.width - insetW - margin,
+      margin,
+      insetW, insetH);
+
+    // Shadow behind the inset
+    [[NSColor colorWithWhite:0.0 alpha:0.6] set];
+    NSBezierPath* shadow = [NSBezierPath bezierPathWithRoundedRect:
+      NSInsetRect(insetRect, -2, -2) xRadius:3 yRadius:3];
+    [shadow fill];
+
+    // Draw the CPC screen
+    NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
+    [screenImg drawInRect:insetRect
+                 fromRect:NSZeroRect
+                operation:NSCompositingOperationSourceOver
+                 fraction:1.0];
+
+    [composite unlockFocus];
+    CGImageRelease(cgScreen);
+
+    [NSApp setApplicationIconImage:composite];
+  }
+}
