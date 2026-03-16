@@ -241,21 +241,32 @@ void koncpc_set_dock_icon(const char* png_path) {
   }
 }
 
-void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch) {
+void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surface_h,
+                                     int pitch, int vis_x, int vis_y, int vis_w, int vis_h) {
   @autoreleasepool {
-    if (!pixels || w <= 0 || h <= 0 || !g_base_icon) return;
+    if (!pixels || vis_w <= 0 || vis_h <= 0 || !g_base_icon) return;
 
-    // Create CGImage from RGBA pixel data
+    // Create CGImage from full RGBA surface, then crop to visible area
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGContextRef ctx = CGBitmapContextCreate(
-      const_cast<void*>(pixels), (size_t)w, (size_t)h, 8, (size_t)pitch,
+      const_cast<void*>(pixels), (size_t)surface_w, (size_t)surface_h, 8, (size_t)pitch,
       cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
     CGColorSpaceRelease(cs);
     if (!ctx) return;
 
-    CGImageRef cgScreen = CGBitmapContextCreateImage(ctx);
+    CGImageRef cgFull = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);
+    if (!cgFull) return;
+
+    // Crop to visible CPC screen area (CGImage y=0 is bottom, but
+    // CGBitmapContext flips it, so vis_y from top works directly)
+    CGRect cropRect = CGRectMake(vis_x, vis_y, vis_w, vis_h);
+    CGImageRef cgScreen = CGImageCreateWithImageInRect(cgFull, cropRect);
+    CGImageRelease(cgFull);
     if (!cgScreen) return;
+
+    int w = vis_w;
+    int h = vis_h;
 
     // Composite: live CPC screen + icon overlay.
     // koncepcja-icon.png (850x759) has a translucent screen area (~alpha 40)
@@ -275,12 +286,16 @@ void koncpc_update_dock_icon_preview(const void* pixels, int w, int h, int pitch
     NSImage* composite = [[NSImage alloc] initWithSize:iconSize];
     [composite lockFocus];
 
-    // 1. Draw live CPC screen into the monitor area
+    // 1. Draw live CPC screen into the monitor area.
+    //    Slightly oversized (+2% each edge) to ensure the CPC output
+    //    fills the entire monitor with no transparent gaps at edges.
+    CGFloat pad_x = iconSize.width * 0.005;
+    CGFloat pad_y = iconSize.height * 0.005;
     NSRect screenRect = NSMakeRect(
-      iconSize.width * kScreenX,
-      iconSize.height * kScreenY,
-      iconSize.width * kScreenW,
-      iconSize.height * kScreenH);
+      iconSize.width * kScreenX - pad_x,
+      iconSize.height * kScreenY - pad_y,
+      iconSize.width * kScreenW + pad_x * 2,
+      iconSize.height * kScreenH + pad_y * 2);
 
     NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
     [screenImg drawInRect:screenRect
