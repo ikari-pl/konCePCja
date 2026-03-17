@@ -161,19 +161,21 @@ dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
 
 // Work time accounting — total non-sleep time from the previous frame.
-// Used by speed limiter to avoid oversleeping (subtracts this from sleep target).
-static uint64_t lastFrameWorkTicks = 0;  // perf-counter ticks of non-sleep work last frame
+// Measured as: (display_end - prev_display_end) - sleep_between.
+// Used by speed limiter to avoid oversleeping.
+static uint64_t lastFrameWorkTicks = 0;
+static uint64_t prevDisplayEnd = 0;      // timestamp at end of previous video_display()
+static uint64_t curFrameSleepTicks = 0;  // sleep time accumulated since last display end
 
-// Frame timing measurement
-static uint64_t frameTimeAccum = 0;  // accumulated frame times for averaging
+// Frame timing measurement (1-second reporting window)
+static uint64_t frameTimeAccum = 0;
 static uint64_t frameTimeMin = UINT64_MAX;
 static uint64_t frameTimeMax = 0;
 static uint64_t displayTimeAccum = 0;
-static uint64_t sleepTimeAccum = 0;  // total speed limiter sleep time (1-second window)
-static uint64_t z80TimeAccum = 0;    // total z80_execute() time (across all calls per frame)
-static uint64_t curFrameSleepTicks = 0; // sleep time within current frame only
+static uint64_t sleepTimeAccum = 0;
+static uint64_t z80TimeAccum = 0;
 static uint32_t frameTimeSamples = 0;
-static uint64_t lastFrameStart = 0;  // perf counter at start of previous frame
+static uint64_t lastFrameStart = 0;  // perf counter at EC_FRAME_COMPLETE (for frame-to-frame stats)
 
 dword osd_timing;
 std::string osd_message;
@@ -2046,6 +2048,8 @@ void update_timings()
    perfTicksTarget = now + perfTicksOffset;
    perfTicksTargetFPS = now + perfFreq; // 1 second from now
    lastFrameWorkTicks = 0;
+   prevDisplayEnd = 0;
+   curFrameSleepTicks = 0;
    LOG_VERBOSE("Timing: perfFreq=" << perfFreq << " perfTicksOffset=" << perfTicksOffset
                << " (" << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
                << " speed_ratio=" << speed_ratio);
@@ -4053,8 +4057,6 @@ int koncpc_main (int argc, char **argv)
                   if (elapsed > frameTimeMax) frameTimeMax = elapsed;
                   frameTimeSamples++;
                }
-               // Reset per-frame sleep counter for the new frame
-               curFrameSleepTicks = 0;
                lastFrameStart = now;
             }
 
@@ -4205,17 +4207,19 @@ int koncpc_main (int argc, char **argv)
             if (!g_headless) {
               uint64_t displayStart = SDL_GetPerformanceCounter();
               video_display();
-              uint64_t displayElapsed = SDL_GetPerformanceCounter() - displayStart;
-              displayTimeAccum += displayElapsed;
+              uint64_t displayEnd = SDL_GetPerformanceCounter();
+              displayTimeAccum += displayEnd - displayStart;
 
-              // Compute total work time this frame = frame time - sleep time.
-              // Used by speed limiter next frame to avoid oversleeping.
-              if (lastFrameStart > 0) {
-                 uint64_t frameTotal = SDL_GetPerformanceCounter() - lastFrameStart;
+              // Compute work time = (display_end - prev_display_end) - sleep_between.
+              // This captures z80 + overhead + display — everything the limiter must budget for.
+              if (prevDisplayEnd > 0) {
+                 uint64_t frameTotal = displayEnd - prevDisplayEnd;
                  lastFrameWorkTicks = (frameTotal > curFrameSleepTicks)
                      ? frameTotal - curFrameSleepTicks
                      : 0;
               }
+              prevDisplayEnd = displayEnd;
+              curFrameSleepTicks = 0; // reset for next frame
 
               video_take_pending_window_screenshot();
             }
