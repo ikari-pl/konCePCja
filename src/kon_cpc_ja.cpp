@@ -160,7 +160,9 @@ static uint64_t perfTicksTargetFPS; // next 1-second FPS sample point
 dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
 
-// (Speed limiter sleep is now post-frame — no prediction needed)
+// Speed limiter: wake-to-wake measurement for exact frame pacing.
+// Records timestamp after each sleep; next sleep = target_period - (now - last_wake).
+static uint64_t limiterWakeTime = 0;
 
 // Frame timing measurement (1-second reporting window)
 static uint64_t frameTimeAccum = 0;
@@ -2042,6 +2044,7 @@ void update_timings()
    uint64_t now = SDL_GetPerformanceCounter();
    perfTicksTarget = now + perfTicksOffset;
    perfTicksTargetFPS = now + perfFreq; // 1 second from now
+   limiterWakeTime = 0;
    LOG_VERBOSE("Timing: perfFreq=" << perfFreq << " perfTicksOffset=" << perfTicksOffset
                << " (" << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
                << " speed_ratio=" << speed_ratio);
@@ -3944,8 +3947,25 @@ int koncpc_main (int argc, char **argv)
             frameTimeSamples = 0;
          }
 
-         // Speed limiter moved to post-display (EC_FRAME_COMPLETE) for accuracy.
-         // No predictive sleep here — we sleep after knowing the actual work time.
+         if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
+            // Wake-to-wake pacing: measure actual work since last wake, sleep remainder.
+            uint64_t sleepStart = SDL_GetPerformanceCounter();
+            if (limiterWakeTime > 0) {
+               uint64_t workTime = sleepStart - limiterWakeTime;
+               if (workTime < perfTicksOffset) {
+                  uint64_t remaining = perfTicksOffset - workTime;
+                  uint64_t remaining_ms = (remaining * 1000) / perfFreq;
+                  if (remaining_ms > 2) {
+                     SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
+                  }
+                  uint64_t deadline = limiterWakeTime + perfTicksOffset;
+                  while (SDL_GetPerformanceCounter() < deadline) { SDL_Delay(0); }
+               }
+            }
+            uint64_t slept = SDL_GetPerformanceCounter() - sleepStart;
+            sleepTimeAccum += slept;
+            limiterWakeTime = SDL_GetPerformanceCounter();
+         }
 
          dword dwOffset = CPC.scr_pos - CPC.scr_base; // offset in current surface row
          if (VDU.scrln > 0) {
@@ -4173,26 +4193,6 @@ int koncpc_main (int argc, char **argv)
               video_take_pending_window_screenshot();
             }
 
-            // Post-frame speed limiter: sleep for remaining frame budget.
-            // All work is done, so we know exactly how much time is left.
-            if (CPC.limit_speed) {
-              uint64_t sleepStart = SDL_GetPerformanceCounter();
-              if (sleepStart < perfTicksTarget) {
-                 uint64_t remaining_ticks = perfTicksTarget - sleepStart;
-                 uint64_t remaining_ms = (remaining_ticks * 1000) / perfFreq;
-                 if (remaining_ms > 2) {
-                    SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
-                 }
-                 while (SDL_GetPerformanceCounter() < perfTicksTarget) { SDL_Delay(0); }
-              }
-              sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
-              perfTicksTarget += perfTicksOffset;
-              // If we fell behind, don't try to catch up
-              uint64_t now = SDL_GetPerformanceCounter();
-              if (perfTicksTarget < now) {
-                 perfTicksTarget = now + perfTicksOffset;
-              }
-            }
 
             if (g_take_screenshot) {
               dumpScreen();
