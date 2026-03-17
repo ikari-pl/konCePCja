@@ -168,6 +168,8 @@ static uint64_t frameTimeAccum = 0;  // accumulated frame times for averaging
 static uint64_t frameTimeMin = UINT64_MAX;
 static uint64_t frameTimeMax = 0;
 static uint64_t displayTimeAccum = 0;
+static uint64_t sleepTimeAccum = 0;  // total speed limiter sleep time
+static uint64_t z80TimeAccum = 0;    // total z80_execute() time (across all calls per frame)
 static uint32_t frameTimeSamples = 0;
 static uint64_t lastFrameStart = 0;  // perf counter at start of previous frame
 
@@ -3920,16 +3922,6 @@ int koncpc_main (int argc, char **argv)
       if (!CPC.paused) { // run the emulation, as long as the user doesn't pause it
          uint64_t perfNow = SDL_GetPerformanceCounter();
 
-         // Measure frame-to-frame time
-         if (lastFrameStart > 0) {
-            uint64_t elapsed = perfNow - lastFrameStart;
-            frameTimeAccum += elapsed;
-            if (elapsed < frameTimeMin) frameTimeMin = elapsed;
-            if (elapsed > frameTimeMax) frameTimeMax = elapsed;
-            frameTimeSamples++;
-         }
-         lastFrameStart = perfNow;
-
          if (perfNow >= perfTicksTargetFPS) { // update FPS counter every second
             dwFPS = dwFrameCount;
             dwFrameCount = 0;
@@ -3942,11 +3934,15 @@ int koncpc_main (int argc, char **argv)
                imgui_state.frame_time_min_us = static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
                imgui_state.frame_time_max_us = static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
                imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum) / frameTimeSamples * ticksToUs);
+               imgui_state.sleep_time_avg_us = static_cast<float>(static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
+               imgui_state.z80_time_avg_us = static_cast<float>(static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
             }
             frameTimeAccum = 0;
             frameTimeMin = UINT64_MAX;
             frameTimeMax = 0;
             displayTimeAccum = 0;
+            sleepTimeAccum = 0;
+            z80TimeAccum = 0;
             frameTimeSamples = 0;
          }
 
@@ -3957,7 +3953,8 @@ int koncpc_main (int argc, char **argv)
                if (displayTimeSmoothed > 0 && sleepTarget > displayTimeSmoothed) {
                   sleepTarget -= displayTimeSmoothed;
                }
-               perfNow = SDL_GetPerformanceCounter();
+               uint64_t sleepStart = SDL_GetPerformanceCounter();
+               perfNow = sleepStart;
                if (perfNow < sleepTarget) {
                   // Convert remaining time to ms for coarse sleep
                   uint64_t remaining_ticks = sleepTarget - perfNow;
@@ -3968,6 +3965,7 @@ int koncpc_main (int argc, char **argv)
                   // Spin-wait with perf counter for sub-ms precision
                   while (SDL_GetPerformanceCounter() < sleepTarget) { SDL_Delay(0); }
                }
+               sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
                perfTicksTarget += perfTicksOffset; // accumulator: next frame exactly N ticks later
                // If we fell behind (e.g. slow frame), don't try to catch up
                perfNow = SDL_GetPerformanceCounter();
@@ -3985,7 +3983,11 @@ int koncpc_main (int argc, char **argv)
          }
          CPC.scr_pos = CPC.scr_base + dwOffset; // update current rendering position
 
-         iExitCondition = z80_execute(); // run the emulation until an exit condition is met
+         {
+            uint64_t z80Start = SDL_GetPerformanceCounter();
+            iExitCondition = z80_execute(); // run the emulation until an exit condition is met
+            z80TimeAccum += SDL_GetPerformanceCounter() - z80Start;
+         }
 
          // Sample tape level into waveform ring buffer (sub-frame rate)
          if (CPC.tape_motor && CPC.tape_play_button) {
@@ -4033,6 +4035,19 @@ int koncpc_main (int argc, char **argv)
          if (iExitCondition == EC_FRAME_COMPLETE) { // emulation finished rendering a complete frame?
             dwFrameCountOverall++;
             dwFrameCount++;
+
+            // Measure frame-to-frame time (only on actual completed frames)
+            {
+               uint64_t now = SDL_GetPerformanceCounter();
+               if (lastFrameStart > 0) {
+                  uint64_t elapsed = now - lastFrameStart;
+                  frameTimeAccum += elapsed;
+                  if (elapsed < frameTimeMin) frameTimeMin = elapsed;
+                  if (elapsed > frameTimeMax) frameTimeMax = elapsed;
+                  frameTimeSamples++;
+               }
+               lastFrameStart = now;
+            }
 
             // Check --exit-after condition
             if (g_exit_mode == EXIT_FRAMES && dwFrameCountOverall >= g_exit_target) {
@@ -4161,13 +4176,15 @@ int koncpc_main (int argc, char **argv)
                }
                std::string fpsText;
                if (CPC.scr_fps) {
-                  char chStr[64];
+                  char chStr[128];
                   int pct = static_cast<int>(dwFPS) * 100 / static_cast<int>(1000.0 / FRAME_PERIOD_MS);
-                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%% [%.1f/%.1f/%.1fms dsp:%.1fms]",
+                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%% f:%.1f/%.1f/%.1f z:%.1f s:%.1f d:%.1f",
                      static_cast<int>(dwFPS), pct,
                      imgui_state.frame_time_min_us / 1000.0f,
                      imgui_state.frame_time_avg_us / 1000.0f,
                      imgui_state.frame_time_max_us / 1000.0f,
+                     imgui_state.z80_time_avg_us / 1000.0f,
+                     imgui_state.sleep_time_avg_us / 1000.0f,
                      imgui_state.display_time_avg_us / 1000.0f);
                   fpsText = chStr;
                }
