@@ -160,16 +160,18 @@ static uint64_t perfTicksTargetFPS; // next 1-second FPS sample point
 dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
 
-// Display time accounting — smoothed average of video_display() duration
-static uint64_t displayTimeSmoothed = 0; // in perf-counter ticks, EMA
+// Work time accounting — total non-sleep time from the previous frame.
+// Used by speed limiter to avoid oversleeping (subtracts this from sleep target).
+static uint64_t lastFrameWorkTicks = 0;  // perf-counter ticks of non-sleep work last frame
 
 // Frame timing measurement
 static uint64_t frameTimeAccum = 0;  // accumulated frame times for averaging
 static uint64_t frameTimeMin = UINT64_MAX;
 static uint64_t frameTimeMax = 0;
 static uint64_t displayTimeAccum = 0;
-static uint64_t sleepTimeAccum = 0;  // total speed limiter sleep time
+static uint64_t sleepTimeAccum = 0;  // total speed limiter sleep time (1-second window)
 static uint64_t z80TimeAccum = 0;    // total z80_execute() time (across all calls per frame)
+static uint64_t curFrameSleepTicks = 0; // sleep time within current frame only
 static uint32_t frameTimeSamples = 0;
 static uint64_t lastFrameStart = 0;  // perf counter at start of previous frame
 
@@ -2043,7 +2045,7 @@ void update_timings()
    uint64_t now = SDL_GetPerformanceCounter();
    perfTicksTarget = now + perfTicksOffset;
    perfTicksTargetFPS = now + perfFreq; // 1 second from now
-   displayTimeSmoothed = 0;
+   lastFrameWorkTicks = 0;
    LOG_VERBOSE("Timing: perfFreq=" << perfFreq << " perfTicksOffset=" << perfTicksOffset
                << " (" << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
                << " speed_ratio=" << speed_ratio);
@@ -3948,10 +3950,11 @@ int koncpc_main (int argc, char **argv)
 
          if (CPC.limit_speed) { // limit to original CPC speed?
             if (iExitCondition == EC_CYCLE_COUNT) {
-               // Subtract smoothed display time from sleep target so we don't oversleep
+               // Subtract previous frame's work time from sleep target to avoid oversleeping.
+               // Work time = everything that happens after sleep (z80 + overhead + display).
                uint64_t sleepTarget = perfTicksTarget;
-               if (displayTimeSmoothed > 0 && sleepTarget > displayTimeSmoothed) {
-                  sleepTarget -= displayTimeSmoothed;
+               if (lastFrameWorkTicks > 0 && sleepTarget > lastFrameWorkTicks) {
+                  sleepTarget -= lastFrameWorkTicks;
                }
                uint64_t sleepStart = SDL_GetPerformanceCounter();
                perfNow = sleepStart;
@@ -3965,7 +3968,11 @@ int koncpc_main (int argc, char **argv)
                   // Spin-wait with perf counter for sub-ms precision
                   while (SDL_GetPerformanceCounter() < sleepTarget) { SDL_Delay(0); }
                }
-               sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
+               {
+                  uint64_t slept = SDL_GetPerformanceCounter() - sleepStart;
+                  sleepTimeAccum += slept;
+                  curFrameSleepTicks += slept;
+               }
                perfTicksTarget += perfTicksOffset; // accumulator: next frame exactly N ticks later
                // If we fell behind (e.g. slow frame), don't try to catch up
                perfNow = SDL_GetPerformanceCounter();
@@ -4046,6 +4053,8 @@ int koncpc_main (int argc, char **argv)
                   if (elapsed > frameTimeMax) frameTimeMax = elapsed;
                   frameTimeSamples++;
                }
+               // Reset per-frame sleep counter for the new frame
+               curFrameSleepTicks = 0;
                lastFrameStart = now;
             }
 
@@ -4197,11 +4206,17 @@ int koncpc_main (int argc, char **argv)
               uint64_t displayStart = SDL_GetPerformanceCounter();
               video_display();
               uint64_t displayElapsed = SDL_GetPerformanceCounter() - displayStart;
-              // Exponential moving average (alpha ~= 1/8 for smooth tracking)
-              displayTimeSmoothed = displayTimeSmoothed
-                  ? displayTimeSmoothed - (displayTimeSmoothed >> 3) + (displayElapsed >> 3)
-                  : displayElapsed;
               displayTimeAccum += displayElapsed;
+
+              // Compute total work time this frame = frame time - sleep time.
+              // Used by speed limiter next frame to avoid oversleeping.
+              if (lastFrameStart > 0) {
+                 uint64_t frameTotal = SDL_GetPerformanceCounter() - lastFrameStart;
+                 lastFrameWorkTicks = (frameTotal > curFrameSleepTicks)
+                     ? frameTotal - curFrameSleepTicks
+                     : 0;
+              }
+
               video_take_pending_window_screenshot();
             }
 

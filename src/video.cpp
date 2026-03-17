@@ -268,9 +268,6 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  // ViewportsEnable is managed dynamically per-frame (adaptive viewports).
-  // Start with it enabled so ImGui initializes multi-viewport platform support,
-  // then per-frame logic in direct_flip/swscale_blit toggles it based on devtools state.
   io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
@@ -330,16 +327,6 @@ void direct_flip(video_plugin* t)
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
                   GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
 
-  // Adaptive ViewportsEnable: only create platform windows when devtools is shown.
-  // Each floating viewport triggers an extra SDL_GL_SwapWindow (5-15ms on macOS).
-  {
-    ImGuiIO& io = ImGui::GetIO();
-    if (imgui_state.show_devtools)
-      io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-    else
-      io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
-  }
-
   // Start ImGui frame
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL3_NewFrame();
@@ -370,15 +357,23 @@ void direct_flip(video_plugin* t)
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
 
-  // Multi-viewport: update and render platform windows
+  // Multi-viewport: update and render platform windows.
+  // Skip the expensive platform window update/render when devtools is closed —
+  // avoids extra GL context switches and SDL_GL_SwapWindow calls for floating windows.
   ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-    ImGui::UpdatePlatformWindows();
-    koncpc_order_viewports_above_main();
-    ImGui::RenderPlatformWindowsDefault();
-    SDL_GL_MakeCurrent(backup_window, backup_context);
+    if (imgui_state.show_devtools) {
+      SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
+      SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
+      ImGui::UpdatePlatformWindows();
+      koncpc_order_viewports_above_main();
+      ImGui::RenderPlatformWindowsDefault();
+      SDL_GL_MakeCurrent(backup_window, backup_context);
+    } else {
+      // Still call UpdatePlatformWindows to let ImGui clean up any
+      // platform windows that were created before devtools was closed
+      ImGui::UpdatePlatformWindows();
+    }
   }
 
   SDL_GL_SwapWindow(mainSDLWindow);
@@ -1198,7 +1193,6 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  // ViewportsEnable managed dynamically per-frame (adaptive viewports)
   io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
@@ -1280,15 +1274,6 @@ void swscale_blit(video_plugin* t)
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
                   GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
 
-  // Adaptive ViewportsEnable: only create platform windows when devtools is shown.
-  {
-    ImGuiIO& io = ImGui::GetIO();
-    if (imgui_state.show_devtools)
-      io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-    else
-      io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
-  }
-
   // Start ImGui frame
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL3_NewFrame();
@@ -1318,15 +1303,19 @@ void swscale_blit(video_plugin* t)
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
 
-  // Multi-viewport: update and render platform windows
+  // Multi-viewport: skip expensive platform window update when devtools is closed
   ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-    ImGui::UpdatePlatformWindows();
-    koncpc_order_viewports_above_main();
-    ImGui::RenderPlatformWindowsDefault();
-    SDL_GL_MakeCurrent(backup_window, backup_context);
+    if (imgui_state.show_devtools) {
+      SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
+      SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
+      ImGui::UpdatePlatformWindows();
+      koncpc_order_viewports_above_main();
+      ImGui::RenderPlatformWindowsDefault();
+      SDL_GL_MakeCurrent(backup_window, backup_context);
+    } else {
+      ImGui::UpdatePlatformWindows();
+    }
   }
 
   SDL_GL_SwapWindow(mainSDLWindow);
