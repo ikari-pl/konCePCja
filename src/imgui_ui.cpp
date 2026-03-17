@@ -6,6 +6,7 @@
 #include "menu_actions.h"
 #include "workspace_layout.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -60,6 +61,7 @@ ImGuiUIState imgui_state;
 // Forward declarations
 static void imgui_render_menubar();
 static void imgui_render_topbar();
+static void imgui_render_statusbar();
 static void imgui_render_menu();
 static void imgui_render_options();
 static void imgui_render_devtools();
@@ -75,6 +77,8 @@ static int s_main_topbar_h = 25;
 static int s_devtools_bar_h = 0;
 static ImVec2 s_layout_btn_pos;  // set in topbar, read in layout dropdown
 static bool s_topbar_height_dirty = false; // defer SDL_SetWindowSize to after render
+static int s_statusbar_h = 0;
+static bool s_bottombar_height_dirty = false; // defer SDL_SetWindowSize to after render
 
 // ─────────────────────────────────────────────────
 // SDL3 file dialog callback
@@ -371,6 +375,7 @@ void imgui_render_ui()
   workspace_render_cpc_screen();
   imgui_render_menubar();
   imgui_render_topbar();
+  imgui_render_statusbar();
   if (imgui_state.show_menu)        imgui_render_menu();
   if (imgui_state.show_options)     imgui_render_options();
   if (imgui_state.show_devtools)    imgui_render_devtools();
@@ -477,7 +482,7 @@ void imgui_render_ui()
     s_topbar_height_dirty = true;
   }
 
-  // Apply deferred topbar resize AFTER all ImGui rendering is complete.
+  // Apply deferred topbar/bottombar resize AFTER all ImGui rendering is complete.
   // Calling SDL_SetWindowSize during the render loop causes macOS to shift
   // window coordinates mid-frame, breaking button click detection.
   if (s_topbar_height_dirty) {
@@ -486,6 +491,12 @@ void imgui_render_ui()
       video_set_topbar(nullptr, total);
     }
     s_topbar_height_dirty = false;
+  }
+  if (s_bottombar_height_dirty) {
+    if (s_statusbar_h != video_get_bottombar_height()) {
+      video_set_bottombar(s_statusbar_h);
+    }
+    s_bottombar_height_dirty = false;
   }
 
   // Keyboard capture policy:
@@ -831,7 +842,7 @@ static void imgui_render_menubar()
       g_devtools_ui.toggle_window("memory_hex");
     }
     if (ImGui::MenuItem("DevTools", "Shift+F2")) {
-      imgui_state.show_devtools = true;
+      imgui_state.show_devtools = !imgui_state.show_devtools;
     }
     if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
       koncpc_menu_action(KONCPC_VKBD);
@@ -909,468 +920,7 @@ static void imgui_render_topbar()
         CPC.paused = true;
       }
     }
-    // Drive activity LEDs
-    {
-      float frameH = ImGui::GetFrameHeight();
-      for (int drv = 0; drv < 2; drv++) {
-        bool active = drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
-        t_drive& drive = drv == 0 ? driveA : driveB;
-        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
-        const char* driveLabel = drv == 0 ? "A:" : "B:";
-
-        ImGui::SameLine(0, 12.0f);
-
-        // Build display name (use pointer into existing string to avoid allocation)
-        const char* displayName;
-        if (drive.tracks) {
-          auto pos = driveFile.find_last_of("/\\");
-          displayName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1 : driveFile.c_str();
-        } else {
-          displayName = "(no disk)";
-        }
-
-        // Push unique ID per drive to avoid conflicts
-        ImGui::PushID(drv);
-
-        ImGui::BeginGroup();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(driveLabel);
-        ImGui::SameLine(0, 2.0f);
-
-        // Draw LED
-        ImVec2 cursor = ImGui::GetCursorScreenPos();
-        float ledW = 16.0f, ledH = 8.0f;
-        float yOff = (frameH - ledH) * 0.5f;
-        ImVec2 p0(cursor.x, cursor.y + yOff);
-        ImVec2 p1(p0.x + ledW, p0.y + ledH);
-
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        if (active) {
-          // Active: bright red #FF0000
-          dl->AddRectFilled(p0, p1, IM_COL32(255, 0, 0, 255));
-          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(255, 100, 100, 255));
-          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(255, 100, 100, 255));
-          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(160, 0, 0, 255));
-          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(160, 0, 0, 255));
-        } else {
-          // Inactive: dark red
-          dl->AddRectFilled(p0, p1, IM_COL32(80, 0, 0, 255));
-          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(110, 20, 20, 255));
-          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(110, 20, 20, 255));
-          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(40, 0, 0, 255));
-          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(40, 0, 0, 255));
-        }
-
-        ImGui::Dummy(ImVec2(ledW, frameH));
-        ImGui::SameLine(0, 4.0f);
-
-        // Show track number when disk is loaded
-        if (drive.tracks) {
-          char trkStr[8];
-          snprintf(trkStr, sizeof(trkStr), "T%02d", (int)drive.current_track);
-          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-          ImGui::AlignTextToFramePadding();
-          ImGui::TextUnformatted(trkStr);
-          ImGui::PopStyleColor();
-          ImGui::SameLine(0, 4.0f);
-        }
-
-        // Show filename or "(no disk)" as clickable text
-        ImGui::PushStyleColor(ImGuiCol_Text, drive.tracks
-          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(displayName);
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-
-        // Click on the whole group (label + LED + filename)
-        if (ImGui::IsItemClicked()) {
-          if (drive.tracks) {
-            // Ask to confirm eject
-            imgui_state.eject_confirm_drive = drv;
-          } else {
-            // Load disk
-            static const SDL_DialogFileFilter disk_filters[] = {
-              { "Disk Images", "dsk;ipf;raw;zip" }
-            };
-            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED : FileDialogAction::LoadDiskB_LED;
-            SDL_ShowOpenFileDialog(file_dialog_callback,
-              reinterpret_cast<void*>(static_cast<intptr_t>(act)),
-              mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(), false);
-          }
-        }
-
-        ImGui::PopID();
-      }
-    }
-
-    // M4 Board activity LED (green, only shown when M4 is enabled)
-    if (g_m4board.enabled) {
-      float frameH = ImGui::GetFrameHeight();
-      bool active = g_m4board.activity_frames > 0;
-
-      ImGui::SameLine(0, 12.0f);
-      ImGui::BeginGroup();
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted("M4:");
-      ImGui::SameLine(0, 2.0f);
-
-      ImVec2 cursor = ImGui::GetCursorScreenPos();
-      float ledW = 16.0f, ledH = 8.0f;
-      float yOff = (frameH - ledH) * 0.5f;
-      ImVec2 p0(cursor.x, cursor.y + yOff);
-      ImVec2 p1(p0.x + ledW, p0.y + ledH);
-
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      if (active) {
-        // Active: bright green
-        dl->AddRectFilled(p0, p1, IM_COL32(0, 255, 0, 255));
-        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(100, 255, 100, 255));
-        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(100, 255, 100, 255));
-        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 160, 0, 255));
-        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 160, 0, 255));
-      } else {
-        // Inactive: dark green
-        dl->AddRectFilled(p0, p1, IM_COL32(0, 80, 0, 255));
-        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(20, 110, 20, 255));
-        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(20, 110, 20, 255));
-        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 40, 0, 255));
-        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 40, 0, 255));
-      }
-
-      ImGui::Dummy(ImVec2(ledW, frameH));
-
-      // Show container name if inside a DSK
-      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
-        ImGui::SameLine(0, 4.0f);
-        auto fname = std::filesystem::path(g_m4board.container_host_path).filename().string();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(fname.c_str());
-        ImGui::PopStyleColor();
-      }
-
-      ImGui::EndGroup();
-    }
-
-    // Eject confirmation popup (rendered inside topbar window)
-    if (imgui_state.eject_confirm_drive >= 0) {
-      ImGui::OpenPopup("Eject Disk?");
-    }
-    if (ImGui::BeginPopupModal("Eject Disk?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-      int drv = imgui_state.eject_confirm_drive;
-      const char* name = drv == 0 ? "A" : "B";
-      ImGui::Text("Eject disk from drive %s?", name);
-      ImGui::Spacing();
-      if (ImGui::Button("Eject", ImVec2(80, 0))) {
-        t_drive& drive = drv == 0 ? driveA : driveB;
-        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
-        dsk_eject(&drive);
-        driveFile.clear();
-        imgui_state.eject_confirm_drive = -1;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        imgui_state.eject_confirm_drive = -1;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    } else {
-      imgui_state.eject_confirm_drive = -1;
-    }
-
-    // ── Tape waveform oscilloscope ──
-    {
-      bool tape_loaded = !pbTapeImage.empty();
-      bool tape_playing = tape_loaded && CPC.tape_motor && CPC.tape_play_button;
-
-      // Reset state when tape is ejected
-      if (!tape_loaded) {
-        imgui_state.tape_decoded_head = 0;
-        memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
-      }
-
-      // Sampling happens in kon_cpc_ja.cpp main loop (sub-frame rate)
-
-      ImGui::SameLine(0, 12);
-      ImGui::AlignTextToFramePadding();
-      float frameH = ImGui::GetFrameHeight();
-
-      ImU32 color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
-      ImU32 color_dim    = IM_COL32(0x00, 0x40, 0x20, 0xFF);
-      ImU32 label_color  = tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-
-      // Update current block index from pbTapeBlock pointer (skip if unchanged)
-      static byte* last_pbTapeBlock = nullptr;
-      if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
-        last_pbTapeBlock = pbTapeBlock;
-        for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
-          if (imgui_state.tape_block_offsets[i] == pbTapeBlock) {
-            imgui_state.tape_current_block = i;
-            break;
-          }
-          // pbTapeBlock may be past last known offset (between blocks)
-          if (imgui_state.tape_block_offsets[i] > pbTapeBlock) {
-            imgui_state.tape_current_block = i > 0 ? i - 1 : 0;
-            break;
-          }
-        }
-      }
-
-      // ── TAPE label ──
-      ImGui::PushStyleColor(ImGuiCol_Text, label_color);
-      ImGui::TextUnformatted("TAPE");
-      ImGui::PopStyleColor();
-
-      // ── Filename (clickable when no tape → load) ──
-      ImGui::SameLine(0, 4);
-      {
-        // Use pointer into existing string to avoid allocation
-        const char* tapeName;
-        if (tape_loaded && !CPC.tape.file.empty()) {
-          auto pos = CPC.tape.file.find_last_of("/\\");
-          tapeName = (pos != std::string::npos) ? CPC.tape.file.c_str() + pos + 1 : CPC.tape.file.c_str();
-        } else {
-          tapeName = "(no tape)";
-        }
-        ImGui::PushStyleColor(ImGuiCol_Text, tape_loaded
-          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(tapeName);
-        ImGui::PopStyleColor();
-        if (!tape_loaded && ImGui::IsItemClicked()) {
-          static const SDL_DialogFileFilter tape_filters[] = {
-            { "Tape Images", "cdt;voc;zip" }
-          };
-          SDL_ShowOpenFileDialog(file_dialog_callback,
-            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape_LED)),
-            mainSDLWindow, tape_filters, 1, CPC.current_tape_path.c_str(), false);
-        }
-      }
-
-      // ── Transport buttons (gray SmallButtons) ──
-      ImGui::SameLine(0, 6);
-      {
-        // Gray button style
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
-
-        bool at_start = !tape_loaded || imgui_state.tape_current_block <= 0;
-        bool at_end = !tape_loaded || imgui_state.tape_block_offsets.empty();
-        bool is_playing = tape_loaded && CPC.tape_play_button;
-
-        // |◀ Prev block
-        ImGui::BeginDisabled(at_start);
-        if (ImGui::SmallButton("\xe2\x97\x80##prev")) { // ◀
-          int prev = imgui_state.tape_current_block - 1;
-          if (prev >= 0 && prev < (int)imgui_state.tape_block_offsets.size()) {
-            pbTapeBlock = imgui_state.tape_block_offsets[prev];
-            iTapeCycleCount = 0;
-            CPC.tape_play_button = 0;
-            Tape_GetNextBlock();
-            imgui_state.tape_current_block = prev;
-          }
-        }
-        { // Draw bar on left side of prev button
-          ImVec2 rmin = ImGui::GetItemRectMin();
-          ImVec2 rmax = ImGui::GetItemRectMax();
-          float bx = rmin.x + ImGui::GetStyle().FramePadding.x - 1.0f;
-          float pad = (rmax.y - rmin.y) * 0.15f;
-          ImU32 barCol = at_start ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
-        }
-        ImGui::EndDisabled();
-
-        ImGui::SameLine(0, 2);
-
-        // ▶ Play
-        if (is_playing) {
-          // Highlight play button green when playing
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.35f, 0.18f, 1.0f));
-          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.45f, 0.25f, 1.0f));
-          ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.25f, 0.12f, 1.0f));
-        }
-        ImGui::BeginDisabled(!tape_loaded || is_playing);
-        if (ImGui::SmallButton("\xe2\x96\xb6##play")) { // ▶
-          CPC.tape_play_button = 0x10;
-        }
-        ImGui::EndDisabled();
-        if (is_playing) ImGui::PopStyleColor(3);
-
-        ImGui::SameLine(0, 2);
-
-        // ⏹ Stop
-        ImGui::BeginDisabled(!is_playing);
-        if (ImGui::SmallButton("\xe2\x96\xa0##stop")) { // ■
-          CPC.tape_play_button = 0;
-        }
-        ImGui::EndDisabled();
-
-        ImGui::SameLine(0, 2);
-
-        // ▷| Next block
-        ImGui::BeginDisabled(at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1);
-        if (ImGui::SmallButton("\xe2\x96\xb6##next")) { // ▶
-          int next = imgui_state.tape_current_block + 1;
-          if (next < (int)imgui_state.tape_block_offsets.size()) {
-            pbTapeBlock = imgui_state.tape_block_offsets[next];
-            iTapeCycleCount = 0;
-            CPC.tape_play_button = 0;
-            Tape_GetNextBlock();
-            imgui_state.tape_current_block = next;
-          }
-        }
-        { // Draw bar on right side of next button
-          ImVec2 rmin = ImGui::GetItemRectMin();
-          ImVec2 rmax = ImGui::GetItemRectMax();
-          float bx = rmax.x - ImGui::GetStyle().FramePadding.x + 1.0f;
-          float pad = (rmax.y - rmin.y) * 0.15f;
-          bool dis = at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1;
-          ImU32 barCol = dis ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
-        }
-        ImGui::EndDisabled();
-
-        ImGui::SameLine(0, 2);
-
-        // ⏏ Eject
-        ImGui::BeginDisabled(!tape_loaded);
-        if (ImGui::SmallButton("\xe2\x8f\x8f##eject")) { // ⏏
-          imgui_state.eject_confirm_tape = true;
-        }
-        ImGui::EndDisabled();
-
-        ImGui::PopStyleColor(3); // gray button style
-      }
-
-      // ── Block counter ──
-      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
-        ImGui::SameLine(0, 4);
-        char blockStr[32];
-        snprintf(blockStr, sizeof(blockStr), "%d/%d",
-          imgui_state.tape_current_block + 1,
-          (int)imgui_state.tape_block_offsets.size());
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(blockStr);
-        ImGui::PopStyleColor();
-      }
-
-      ImGui::SameLine(0, 4);
-      float waveW = 100.0f;
-      ImVec2 cursor = ImGui::GetCursorScreenPos();
-      // Vertically center the waveform box
-      float yOff = (frameH - frameH * 0.8f) * 0.5f;
-      ImVec2 p0(cursor.x, cursor.y + yOff);
-      float boxH = frameH * 0.8f;
-      ImVec2 p1(p0.x + waveW, p0.y + boxH);
-
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(p0, p1, IM_COL32(0x10, 0x10, 0x10, 0xFF));
-      dl->AddRect(p0, p1, tape_playing ? IM_COL32(0x00, 0x80, 0x40, 0x80) : IM_COL32(0x00, 0x30, 0x18, 0x60));
-
-      ImU32 wave_color = tape_playing ? color_active : color_dim;
-      constexpr int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
-      float stepX = waveW / static_cast<float>(N - 1);
-      int mode = imgui_state.tape_wave_mode;
-
-      float yBot = p1.y - 2.0f;
-      float yTop = p0.y + 2.0f;
-
-      auto yForSample = [&](byte val) -> float {
-        return val ? yTop : yBot;
-      };
-
-      int oldest = imgui_state.tape_wave_head;
-
-      if (mode == 0) {
-        // ── Pulse (sub-frame scrolling waveform) ──
-        // Build step waveform as polyline for batched drawing
-        ImVec2 points[N * 2 + 2]; // Max: 2 points per sample + start
-        int nPoints = 0;
-
-        float prevY = yForSample(imgui_state.tape_wave_buf[oldest]);
-        points[nPoints++] = ImVec2(p0.x, prevY); // Start point
-
-        for (int i = 1; i < N; i++) {
-          int idx = (oldest + i) % N;
-          float curX = p0.x + i * stepX;
-          float curY = yForSample(imgui_state.tape_wave_buf[idx]);
-          if (curY != prevY) {
-            // Level change: add horizontal endpoint, then vertical step
-            points[nPoints++] = ImVec2(curX, prevY);
-            points[nPoints++] = ImVec2(curX, curY);
-            prevY = curY;
-          }
-        }
-        // Final horizontal endpoint
-        points[nPoints++] = ImVec2(p1.x, prevY);
-
-        dl->AddPolyline(points, nPoints, wave_color, 0, 1.0f);
-      } else {
-        // ── Decoded bits (green 1px bars from Tape_ReadDataBit) ──
-        int dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
-        int dHead = imgui_state.tape_decoded_head;
-        int visCount = static_cast<int>(waveW); // 1px per bit
-        if (visCount > dN) visCount = dN;
-        // Walk oldest→newest for the last visCount samples
-        int startIdx = (dHead - visCount + dN) % dN;
-        ImU32 col_one  = tape_playing ? IM_COL32(0x00, 0xFF, 0x80, 0xFF) : IM_COL32(0x00, 0x44, 0x00, 0xFF);
-        ImU32 col_zero = tape_playing ? IM_COL32(0x00, 0x44, 0x00, 0xFF) : IM_COL32(0x00, 0x18, 0x00, 0xFF);
-        for (int i = 0; i < visCount; i++) {
-          int idx = (startIdx + i) % dN;
-          float x = p0.x + (waveW - visCount) + i;
-          ImU32 c = imgui_state.tape_decoded_buf[idx] ? col_one : col_zero;
-          dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + 1.0f, p1.y), c);
-        }
-      }
-
-      // Mode label overlay (top-right corner of waveform box)
-      {
-        const char* modeLabel = (mode == 0) ? "RAW" : "BITS";
-        ImVec2 labelSize = ImGui::CalcTextSize(modeLabel);
-        ImVec2 labelPos(p1.x - labelSize.x - 2.0f, p0.y + 1.0f);
-        dl->AddText(labelPos, IM_COL32(0x80, 0x80, 0x80, 0xA0), modeLabel);
-      }
-
-      // Advance cursor past the waveform box; click cycles mode (2 modes now)
-      ImGui::Dummy(ImVec2(waveW, frameH));
-      if (ImGui::IsItemClicked()) {
-        imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
-      }
-      if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Click to cycle waveform mode (RAW pulse / decoded BITS)");
-      }
-    }
-
-    // Tape eject confirmation popup
-    if (imgui_state.eject_confirm_tape) {
-      ImGui::OpenPopup("Eject Tape?");
-    }
-    if (ImGui::BeginPopupModal("Eject Tape?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-      ImGui::TextUnformatted("Eject tape?");
-      ImGui::Spacing();
-      if (ImGui::Button("Eject", ImVec2(80, 0))) {
-        tape_eject();
-        CPC.tape.file.clear();
-        imgui_state.tape_block_offsets.clear();
-        imgui_state.tape_current_block = 0;
-        imgui_state.eject_confirm_tape = false;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        imgui_state.eject_confirm_tape = false;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::EndPopup();
-    } else {
-      imgui_state.eject_confirm_tape = false;
-    }
+    // (Tape waveform moved to bottom status bar)
 
     // ── Layout dropdown ──
     // Uses a state-flag + standalone window instead of ImGui popup,
@@ -1583,6 +1133,531 @@ static void imgui_render_topbar()
     ImGui::End();
     ImGui::PopStyleVar(2);
   }
+}
+
+// ─────────────────────────────────────────────────
+// Marquee text helper: scrolls text horizontally within a fixed-width box
+// when text is wider than boxW. Uses ping-pong with pause at start/end.
+// ─────────────────────────────────────────────────
+static void imgui_marquee_text(const char* text, float boxW)
+{
+  float textW = ImGui::CalcTextSize(text).x;
+  if (textW <= boxW) {
+    ImGui::TextUnformatted(text);
+    return;
+  }
+  // Ping-pong scroll with 20px pause at each end
+  float overflow = textW - boxW;
+  float range = overflow + 40.0f; // 20px pause at start + 20px pause at end
+  float t = fmodf(static_cast<float>(ImGui::GetTime()) * 30.0f, range * 2.0f);
+  float scroll = t < range ? t : range * 2.0f - t;
+  scroll = fmaxf(0.0f, scroll - 20.0f); // pause at start
+
+  ImVec2 pos = ImGui::GetCursorScreenPos();
+  float lineH = ImGui::GetTextLineHeight();
+  ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + lineH), true);
+  ImGui::SetCursorScreenPos(ImVec2(pos.x - scroll, pos.y));
+  ImGui::TextUnformatted(text);
+  ImGui::PopClipRect();
+  // Advance cursor past the box
+  ImGui::SetCursorScreenPos(ImVec2(pos.x + boxW, pos.y));
+  ImGui::Dummy(ImVec2(0, lineH));
+}
+
+// ─────────────────────────────────────────────────
+// Bottom Status Bar
+// ─────────────────────────────────────────────────
+
+static void imgui_render_statusbar()
+{
+  float bar_height = 22.0f;
+  float pad_y = 2.0f;
+
+  ImGuiViewport* vp = ImGui::GetMainViewport();
+  float bar_y = vp->Pos.y + vp->Size.y - bar_height;
+
+  ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
+  ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, pad_y));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
+
+  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                           ImGuiWindowFlags_NoDocking |
+                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+
+  if (ImGui::Begin("##statusbar", nullptr, flags)) {
+    // Track statusbar height for bottombar layout
+    int h = static_cast<int>(ImGui::GetWindowSize().y);
+    if (h != s_statusbar_h) { s_statusbar_h = h; s_bottombar_height_dirty = true; }
+
+    // ── Drive activity LEDs ──
+    {
+      float frameH = ImGui::GetFrameHeight();
+      for (int drv = 0; drv < 2; drv++) {
+        bool active = drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+        t_drive& drive = drv == 0 ? driveA : driveB;
+        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        const char* driveLabel = drv == 0 ? "A:" : "B:";
+
+        if (drv > 0) ImGui::SameLine(0, 12.0f);
+
+        // Build display name
+        const char* fullName;
+        if (drive.tracks) {
+          auto pos = driveFile.find_last_of("/\\");
+          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1 : driveFile.c_str();
+        } else {
+          fullName = "(no disk)";
+        }
+
+        // Push unique ID per drive to avoid conflicts
+        ImGui::PushID(100 + drv); // offset IDs to avoid clashes with topbar
+
+        ImGui::BeginGroup();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(driveLabel);
+        ImGui::SameLine(0, 2.0f);
+
+        // Draw LED
+        ImVec2 cursor = ImGui::GetCursorScreenPos();
+        float ledW = 16.0f, ledH = 8.0f;
+        float yOff = (frameH - ledH) * 0.5f;
+        ImVec2 p0(cursor.x, cursor.y + yOff);
+        ImVec2 p1(p0.x + ledW, p0.y + ledH);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (active) {
+          // Active: bright red #FF0000
+          dl->AddRectFilled(p0, p1, IM_COL32(255, 0, 0, 255));
+          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(255, 100, 100, 255));
+          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(255, 100, 100, 255));
+          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(160, 0, 0, 255));
+          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(160, 0, 0, 255));
+        } else {
+          // Inactive: dark red
+          dl->AddRectFilled(p0, p1, IM_COL32(80, 0, 0, 255));
+          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(110, 20, 20, 255));
+          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(110, 20, 20, 255));
+          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(40, 0, 0, 255));
+          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(40, 0, 0, 255));
+        }
+
+        ImGui::Dummy(ImVec2(ledW, frameH));
+        ImGui::SameLine(0, 4.0f);
+
+        // Show track number when disk is loaded
+        if (drive.tracks) {
+          char trkStr[8];
+          snprintf(trkStr, sizeof(trkStr), "T%02d", (int)drive.current_track);
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted(trkStr);
+          ImGui::PopStyleColor();
+          ImGui::SameLine(0, 4.0f);
+        }
+
+        // Show filename or "(no disk)" with marquee scrolling
+        ImGui::PushStyleColor(ImGuiCol_Text, drive.tracks
+          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(fullName, 120.0f);
+        ImGui::PopStyleColor();
+        ImGui::EndGroup();
+
+        // Click on the whole group (label + LED + filename)
+        if (ImGui::IsItemClicked()) {
+          if (drive.tracks) {
+            // Ask to confirm eject
+            imgui_state.eject_confirm_drive = drv;
+          } else {
+            // Load disk
+            static const SDL_DialogFileFilter disk_filters[] = {
+              { "Disk Images", "dsk;ipf;raw;zip" }
+            };
+            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED : FileDialogAction::LoadDiskB_LED;
+            SDL_ShowOpenFileDialog(file_dialog_callback,
+              reinterpret_cast<void*>(static_cast<intptr_t>(act)),
+              mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(), false);
+          }
+        }
+
+        ImGui::PopID();
+      }
+    }
+
+    // ── M4 Board activity LED (green, only shown when M4 is enabled) ──
+    if (g_m4board.enabled) {
+      float frameH = ImGui::GetFrameHeight();
+      bool active = g_m4board.activity_frames > 0;
+
+      ImGui::SameLine(0, 12.0f);
+      ImGui::BeginGroup();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("M4:");
+      ImGui::SameLine(0, 2.0f);
+
+      ImVec2 cursor = ImGui::GetCursorScreenPos();
+      float ledW = 16.0f, ledH = 8.0f;
+      float yOff = (frameH - ledH) * 0.5f;
+      ImVec2 p0(cursor.x, cursor.y + yOff);
+      ImVec2 p1(p0.x + ledW, p0.y + ledH);
+
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      if (active) {
+        // Active: bright green
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 255, 0, 255));
+        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(100, 255, 100, 255));
+        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(100, 255, 100, 255));
+        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 160, 0, 255));
+        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 160, 0, 255));
+      } else {
+        // Inactive: dark green
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 80, 0, 255));
+        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(20, 110, 20, 255));
+        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(20, 110, 20, 255));
+        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 40, 0, 255));
+        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 40, 0, 255));
+      }
+
+      ImGui::Dummy(ImVec2(ledW, frameH));
+
+      // Show container name if inside a DSK (with marquee scrolling)
+      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
+        ImGui::SameLine(0, 4.0f);
+        auto fname = std::filesystem::path(g_m4board.container_host_path).filename().string();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(fname.c_str(), 120.0f);
+        ImGui::PopStyleColor();
+      }
+
+      ImGui::EndGroup();
+    }
+
+    // ── Separator ──
+    ImGui::SameLine(0, 12.0f);
+    {
+      ImVec2 cursor = ImGui::GetCursorScreenPos();
+      float frameH = ImGui::GetFrameHeight();
+      ImGui::GetWindowDrawList()->AddLine(
+        ImVec2(cursor.x, cursor.y + 2.0f),
+        ImVec2(cursor.x, cursor.y + frameH - 2.0f),
+        IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
+      ImGui::Dummy(ImVec2(1.0f, frameH));
+    }
+
+    // ── TAPE section ──
+    {
+      bool tape_loaded = !pbTapeImage.empty();
+      bool tape_playing = tape_loaded && CPC.tape_motor && CPC.tape_play_button;
+
+      ImGui::SameLine(0, 8.0f);
+      ImGui::AlignTextToFramePadding();
+
+      ImU32 color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
+      ImU32 label_color  = tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+
+      // ── TAPE label ──
+      ImGui::PushStyleColor(ImGuiCol_Text, label_color);
+      ImGui::TextUnformatted("TAPE");
+      ImGui::PopStyleColor();
+
+      // ── Filename (clickable when no tape → load) ──
+      ImGui::SameLine(0, 4);
+      {
+        const char* fullTapeName;
+        if (tape_loaded && !CPC.tape.file.empty()) {
+          auto pos = CPC.tape.file.find_last_of("/\\");
+          fullTapeName = (pos != std::string::npos) ? CPC.tape.file.c_str() + pos + 1 : CPC.tape.file.c_str();
+        } else {
+          fullTapeName = "(no tape)";
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, tape_loaded
+          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(fullTapeName, 120.0f);
+        ImGui::PopStyleColor();
+        if (!tape_loaded && ImGui::IsItemClicked()) {
+          static const SDL_DialogFileFilter tape_filters[] = {
+            { "Tape Images", "cdt;voc;zip" }
+          };
+          SDL_ShowOpenFileDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape_LED)),
+            mainSDLWindow, tape_filters, 1, CPC.current_tape_path.c_str(), false);
+        }
+      }
+
+      // ── Transport buttons (gray SmallButtons) ──
+      ImGui::SameLine(0, 6);
+      {
+        // Gray button style
+        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+
+        bool at_start = !tape_loaded || imgui_state.tape_current_block <= 0;
+        bool at_end = !tape_loaded || imgui_state.tape_block_offsets.empty();
+        bool is_playing = tape_loaded && CPC.tape_play_button;
+
+        // |◀ Prev block
+        ImGui::BeginDisabled(at_start);
+        if (ImGui::SmallButton("\xe2\x97\x80##sb_prev")) { // ◀
+          int prev = imgui_state.tape_current_block - 1;
+          if (prev >= 0 && prev < (int)imgui_state.tape_block_offsets.size()) {
+            pbTapeBlock = imgui_state.tape_block_offsets[prev];
+            iTapeCycleCount = 0;
+            CPC.tape_play_button = 0;
+            Tape_GetNextBlock();
+            imgui_state.tape_current_block = prev;
+          }
+        }
+        { // Draw bar on left side of prev button
+          ImVec2 rmin = ImGui::GetItemRectMin();
+          ImVec2 rmax = ImGui::GetItemRectMax();
+          float bx = rmin.x + ImGui::GetStyle().FramePadding.x - 1.0f;
+          float pad = (rmax.y - rmin.y) * 0.15f;
+          ImU32 barCol = at_start ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine(0, 2);
+
+        // ▶ Play
+        if (is_playing) {
+          // Highlight play button green when playing
+          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.35f, 0.18f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.45f, 0.25f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.25f, 0.12f, 1.0f));
+        }
+        ImGui::BeginDisabled(!tape_loaded || is_playing);
+        if (ImGui::SmallButton("\xe2\x96\xb6##sb_play")) { // ▶
+          CPC.tape_play_button = 0x10;
+        }
+        ImGui::EndDisabled();
+        if (is_playing) ImGui::PopStyleColor(3);
+
+        ImGui::SameLine(0, 2);
+
+        // ⏹ Stop
+        ImGui::BeginDisabled(!is_playing);
+        if (ImGui::SmallButton("\xe2\x96\xa0##sb_stop")) { // ■
+          CPC.tape_play_button = 0;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine(0, 2);
+
+        // ▷| Next block
+        ImGui::BeginDisabled(at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1);
+        if (ImGui::SmallButton("\xe2\x96\xb6##sb_next")) { // ▶
+          int next = imgui_state.tape_current_block + 1;
+          if (next < (int)imgui_state.tape_block_offsets.size()) {
+            pbTapeBlock = imgui_state.tape_block_offsets[next];
+            iTapeCycleCount = 0;
+            CPC.tape_play_button = 0;
+            Tape_GetNextBlock();
+            imgui_state.tape_current_block = next;
+          }
+        }
+        { // Draw bar on right side of next button
+          ImVec2 rmin = ImGui::GetItemRectMin();
+          ImVec2 rmax = ImGui::GetItemRectMax();
+          float bx = rmax.x - ImGui::GetStyle().FramePadding.x + 1.0f;
+          float pad = (rmax.y - rmin.y) * 0.15f;
+          bool dis = at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1;
+          ImU32 barCol = dis ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine(0, 2);
+
+        // ⏏ Eject
+        ImGui::BeginDisabled(!tape_loaded);
+        if (ImGui::SmallButton("\xe2\x8f\x8f##sb_eject")) { // ⏏
+          imgui_state.eject_confirm_tape = true;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::PopStyleColor(3); // gray button style
+      }
+
+      // ── Block counter ──
+      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
+        ImGui::SameLine(0, 4);
+        char blockStr[32];
+        snprintf(blockStr, sizeof(blockStr), "%d/%d",
+          imgui_state.tape_current_block + 1,
+          (int)imgui_state.tape_block_offsets.size());
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(blockStr);
+        ImGui::PopStyleColor();
+      }
+
+      // ── Tape waveform oscilloscope ──
+      {
+        // Reset state when tape is ejected
+        if (!tape_loaded) {
+          imgui_state.tape_decoded_head = 0;
+          memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
+        }
+
+        // Update current block index from pbTapeBlock pointer
+        static byte* last_pbTapeBlock = nullptr;
+        if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
+          last_pbTapeBlock = pbTapeBlock;
+          for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
+            if (imgui_state.tape_block_offsets[i] == pbTapeBlock) {
+              imgui_state.tape_current_block = i;
+              break;
+            }
+            if (imgui_state.tape_block_offsets[i] > pbTapeBlock) {
+              imgui_state.tape_current_block = i > 0 ? i - 1 : 0;
+              break;
+            }
+          }
+        }
+
+        ImGui::SameLine(0, 4);
+        float frameH = ImGui::GetFrameHeight();
+        ImU32 color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
+        ImU32 color_dim    = IM_COL32(0x00, 0x40, 0x20, 0xFF);
+
+        float waveW = 100.0f;
+        ImVec2 cursor = ImGui::GetCursorScreenPos();
+        float yOff = (frameH - frameH * 0.8f) * 0.5f;
+        ImVec2 p0(cursor.x, cursor.y + yOff);
+        float boxH = frameH * 0.8f;
+        ImVec2 p1(p0.x + waveW, p0.y + boxH);
+
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(p0, p1, IM_COL32(0x10, 0x10, 0x10, 0xFF));
+        dl->AddRect(p0, p1, tape_playing ? IM_COL32(0x00, 0x80, 0x40, 0x80) : IM_COL32(0x00, 0x30, 0x18, 0x60));
+
+        ImU32 wave_color = tape_playing ? color_active : color_dim;
+        constexpr int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
+        float stepX = waveW / static_cast<float>(N - 1);
+        int mode = imgui_state.tape_wave_mode;
+
+        float yBot = p1.y - 2.0f;
+        float yTop = p0.y + 2.0f;
+        auto yForSample = [&](byte val) -> float { return val ? yTop : yBot; };
+        int oldest = imgui_state.tape_wave_head;
+
+        if (mode == 0) {
+          ImVec2 points[N * 2 + 2];
+          int nPoints = 0;
+          float prevY = yForSample(imgui_state.tape_wave_buf[oldest]);
+          points[nPoints++] = ImVec2(p0.x, prevY);
+          for (int i = 1; i < N; i++) {
+            int idx = (oldest + i) % N;
+            float curX = p0.x + i * stepX;
+            float curY = yForSample(imgui_state.tape_wave_buf[idx]);
+            if (curY != prevY) {
+              points[nPoints++] = ImVec2(curX, prevY);
+              points[nPoints++] = ImVec2(curX, curY);
+              prevY = curY;
+            }
+          }
+          points[nPoints++] = ImVec2(p1.x, prevY);
+          dl->AddPolyline(points, nPoints, wave_color, 0, 1.0f);
+        } else {
+          int dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
+          int dHead = imgui_state.tape_decoded_head;
+          int visCount = static_cast<int>(waveW);
+          if (visCount > dN) visCount = dN;
+          int startIdx = (dHead - visCount + dN) % dN;
+          ImU32 col_one  = tape_playing ? IM_COL32(0x00, 0xFF, 0x80, 0xFF) : IM_COL32(0x00, 0x44, 0x00, 0xFF);
+          ImU32 col_zero = tape_playing ? IM_COL32(0x00, 0x44, 0x00, 0xFF) : IM_COL32(0x00, 0x18, 0x00, 0xFF);
+          for (int i = 0; i < visCount; i++) {
+            int idx = (startIdx + i) % dN;
+            float x = p0.x + (waveW - visCount) + i;
+            ImU32 c = imgui_state.tape_decoded_buf[idx] ? col_one : col_zero;
+            dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + 1.0f, p1.y), c);
+          }
+        }
+
+        {
+          const char* modeLabel = (mode == 0) ? "RAW" : "BITS";
+          ImVec2 labelSize = ImGui::CalcTextSize(modeLabel);
+          ImVec2 labelPos(p1.x - labelSize.x - 2.0f, p0.y + 1.0f);
+          dl->AddText(labelPos, IM_COL32(0x80, 0x80, 0x80, 0xA0), modeLabel);
+        }
+
+        ImGui::Dummy(ImVec2(waveW, frameH));
+        if (ImGui::IsItemClicked()) {
+          imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
+        }
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("Click to cycle waveform mode (RAW pulse / decoded BITS)");
+        }
+      }
+    }
+
+    // ── Eject Disk confirmation popup ──
+    if (imgui_state.eject_confirm_drive >= 0) {
+      ImGui::OpenPopup("Eject Disk?##sb");
+    }
+    if (ImGui::BeginPopupModal("Eject Disk?##sb", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      int drv = imgui_state.eject_confirm_drive;
+      const char* name = drv == 0 ? "A" : "B";
+      ImGui::Text("Eject disk from drive %s?", name);
+      ImGui::Spacing();
+      if (ImGui::Button("Eject", ImVec2(80, 0))) {
+        t_drive& drive = drv == 0 ? driveA : driveB;
+        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        dsk_eject(&drive);
+        driveFile.clear();
+        imgui_state.eject_confirm_drive = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        imgui_state.eject_confirm_drive = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    } else {
+      imgui_state.eject_confirm_drive = -1;
+    }
+
+    // ── Eject Tape confirmation popup ──
+    if (imgui_state.eject_confirm_tape) {
+      ImGui::OpenPopup("Eject Tape?##sb");
+    }
+    if (ImGui::BeginPopupModal("Eject Tape?##sb", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted("Eject tape?");
+      ImGui::Spacing();
+      if (ImGui::Button("Eject", ImVec2(80, 0))) {
+        tape_eject();
+        CPC.tape.file.clear();
+        imgui_state.tape_block_offsets.clear();
+        imgui_state.tape_current_block = 0;
+        imgui_state.eject_confirm_tape = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        imgui_state.eject_confirm_tape = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    } else {
+      imgui_state.eject_confirm_tape = false;
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(4);
 }
 
 // ─────────────────────────────────────────────────
