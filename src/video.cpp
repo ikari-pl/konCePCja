@@ -99,7 +99,7 @@ int devtools_cpc_height = 0;
 
 SDL_Surface* topbar_surface = nullptr;
 int topbar_height = 0;
-static int bottombar_height = 0;
+static int bottombar_height = 22;  // default status bar height, refined dynamically
 
 extern t_CPC CPC;
 extern video_plugin* vid_plugin;
