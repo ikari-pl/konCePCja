@@ -39,10 +39,11 @@ void workspace_render_dockspace()
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
 
-    // Get topbar height to offset below it
+    // Get topbar/bottombar height to offset below/above them
     int topbar_h = video_get_topbar_height();
+    int bottombar_h = video_get_bottombar_height();
     ImVec2 pos(vp->Pos.x, vp->Pos.y + topbar_h);
-    ImVec2 size(vp->Size.x, vp->Size.y - topbar_h);
+    ImVec2 size(vp->Size.x, vp->Size.y - topbar_h - bottombar_h);
 
     ImGui::SetNextWindowPos(pos);
     ImGui::SetNextWindowSize(size);
@@ -191,11 +192,12 @@ void workspace_apply_preset(WorkspacePreset preset)
     ImGui::DockBuilderRemoveNode(DOCKSPACE_ID);
     ImGui::DockBuilderAddNode(DOCKSPACE_ID, ImGuiDockNodeFlags_DockSpace);
 
-    // Size the dockspace to match the main viewport (minus topbar)
+    // Size the dockspace to match the main viewport (minus topbar/bottombar)
     ImGuiViewport* vp = ImGui::GetMainViewport();
     int topbar_h = video_get_topbar_height();
+    int bottombar_h = video_get_bottombar_height();
     ImGui::DockBuilderSetNodeSize(DOCKSPACE_ID,
-        ImVec2(vp->Size.x, vp->Size.y - topbar_h));
+        ImVec2(vp->Size.x, vp->Size.y - topbar_h - bottombar_h));
     ImGui::DockBuilderSetNodePos(DOCKSPACE_ID,
         ImVec2(vp->Pos.x, vp->Pos.y + topbar_h));
 
