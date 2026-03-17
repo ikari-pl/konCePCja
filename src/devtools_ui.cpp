@@ -304,6 +304,18 @@ void DevToolsUI::render_registers()
 // Debug Window 2: Disassembly
 // -----------------------------------------------
 
+void DevToolsUI::disasm_cache_record_pc()
+{
+  word pc = z80.PC.w.l;
+  if (disasm_cache_.count(pc)) return; // already cached
+  DisassembledCode dc;
+  std::vector<dword> eps;
+  auto line = disassemble_one(pc, dc, eps);
+  int len = line.Size();
+  if (len <= 0) len = 1;
+  disasm_cache_[pc] = { line.instruction_, static_cast<uint8_t>(len) };
+}
+
 void DevToolsUI::render_disassembly()
 {
   ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
@@ -344,12 +356,21 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
-  // Disassemble ~48 instructions starting a few lines before center
-  word start_addr = center_pc - 16;
+  // Invalidate cache on banking change
+  extern t_GateArray GateArray;
+  byte cur_banking = GateArray.RAM_config ^ GateArray.ROM_config;
+  if (cur_banking != disasm_cache_banking_) {
+    disasm_cache_.clear();
+    disasm_cache_banking_ = cur_banking;
+  }
+
+  // Record current PC into the execution-trace cache
+  disasm_cache_record_pc();
+
+  // Build display lines by walking forward from start_addr.
+  // Cache hits are instant; misses disassemble and cache the result.
   constexpr int NUM_LINES = 48;
 
-  DisassembledCode dummy_dc;
-  std::vector<dword> dummy_eps;
   struct DisasmEntry {
     word addr;
     std::string text;
@@ -359,7 +380,11 @@ void DevToolsUI::render_disassembly()
   std::vector<DisasmEntry> lines;
   lines.reserve(NUM_LINES);
 
+  word start_addr = center_pc - 16;
   word addr = start_addr;
+  DisassembledCode dummy_dc;
+  std::vector<dword> dummy_eps;
+
   for (int i = 0; i < NUM_LINES; i++) {
     DisasmEntry entry;
     entry.addr = addr;
@@ -382,11 +407,21 @@ void DevToolsUI::render_disassembly()
       if (line_bytes <= 0) line_bytes = 1;
       addr = (addr + line_bytes) & 0xFFFF;
     } else {
-      auto line = disassemble_one(addr, dummy_dc, dummy_eps);
-      entry.text = line.instruction_;
-      int len = line.Size();
-      if (len <= 0) len = 1;
-      addr = (addr + len) & 0xFFFF;
+      // Check execution-trace cache first
+      auto it = disasm_cache_.find(addr);
+      if (it != disasm_cache_.end()) {
+        entry.text = it->second.text;
+        int len = it->second.length;
+        if (len <= 0) len = 1;
+        addr = (addr + len) & 0xFFFF;
+      } else {
+        // Cache miss — disassemble (but don't cache: we only cache PC-visited addrs)
+        auto line = disassemble_one(addr, dummy_dc, dummy_eps);
+        entry.text = line.instruction_;
+        int len = line.Size();
+        if (len <= 0) len = 1;
+        addr = (addr + len) & 0xFFFF;
+      }
     }
     lines.push_back(std::move(entry));
   }

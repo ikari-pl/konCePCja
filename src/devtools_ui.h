@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <cstdint>
 #include "types.h"
 #include "disk_file_editor.h"
@@ -55,6 +56,20 @@ private:
     char disasm_goto_addr_[8] = "";
     int disasm_goto_value_ = -1;
     bool disasm_scroll_pending_ = false;
+
+    // Execution-trace disassembly cache: only caches addresses PC has visited.
+    // Gives stable, jitter-free display + O(1) lookup for hot code paths.
+    struct CachedInsn {
+      std::string text;   // disassembled instruction text
+      uint8_t length = 0; // instruction length in bytes (1-4)
+    };
+    std::unordered_map<word, CachedInsn> disasm_cache_;
+    byte disasm_cache_banking_ = 0xFF; // last seen RAM_config, invalidate on change
+
+    // Record current PC into the cache (called each frame from render)
+    void disasm_cache_record_pc();
+    // Invalidate cache (banking change, reset, memory write)
+    void disasm_cache_clear() { disasm_cache_.clear(); }
 
     char memhex_goto_addr_[8] = "";
     int memhex_goto_value_ = -1;
