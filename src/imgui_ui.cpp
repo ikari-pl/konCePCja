@@ -1274,7 +1274,7 @@ static void imgui_render_topbar()
       dl->AddRect(p0, p1, tape_playing ? IM_COL32(0x00, 0x80, 0x40, 0x80) : IM_COL32(0x00, 0x30, 0x18, 0x60));
 
       ImU32 wave_color = tape_playing ? color_active : color_dim;
-      int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
+      constexpr int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
       float stepX = waveW / static_cast<float>(N - 1);
       int mode = imgui_state.tape_wave_mode;
 

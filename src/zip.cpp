@@ -4,7 +4,11 @@
 #include <windows.h>
 #endif
 #include <cstring>
+#ifdef _MSC_VER
+#include "compat/msvc_compat.h"
+#else
 #include <strings.h>
+#endif
 #include <zlib.h>
 #include <errno.h>
 #include <cstdio>

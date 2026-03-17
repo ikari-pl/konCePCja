@@ -26,7 +26,11 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef _MSC_VER
+#include "compat/msvc_compat.h"
+#else
 #include <unistd.h>
+#endif
 #include <string>
 #include <vector>
 #include "types.h"
@@ -95,11 +99,21 @@ constexpr int MAX_ROM_SLOTS = 32;
 
 #define DEFAULT_VIDEO_PLUGIN 0
 
-#ifdef _WIN32
-// As opposed to ms_struct, needs to be explicit on Windows
+#ifdef _MSC_VER
+// MSVC: use #pragma pack around the struct instead of a per-field attribute.
+// Wrap struct definitions with PACK_BEGIN / PACK_END.
+#define ATTR_PACKED
+#define PACK_BEGIN __pragma(pack(push, 1))
+#define PACK_END   __pragma(pack(pop))
+#elif defined(_WIN32)
+// MinGW: As opposed to ms_struct, needs to be explicit on Windows
 #define ATTR_PACKED __attribute__((packed, gcc_struct))
+#define PACK_BEGIN
+#define PACK_END
 #else
 #define ATTR_PACKED __attribute__((packed))
+#define PACK_BEGIN
+#define PACK_END
 #endif
 
 typedef struct {
@@ -428,14 +442,14 @@ typedef struct {
          unsigned char PortA;
          unsigned char PortB;
       };
-      struct {
+      PACK_BEGIN struct {
          unsigned short TonA;
          unsigned short TonB;
          unsigned short TonC;
          unsigned char _noise, _mixer, _ampa, _ampb, _ampc;
          unsigned short Envelope;
          unsigned char _envtype, _porta, portb;
-      } ATTR_PACKED;
+      } ATTR_PACKED PACK_END;
    } RegisterAY;
    int AmplitudeEnv;
    bool FirstPeriod;

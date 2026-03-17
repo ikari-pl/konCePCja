@@ -1,7 +1,9 @@
 // Caprice 32
 // File IO functions
 
+#ifndef _MSC_VER
 #include <dirent.h>
+#endif
 #include <string>
 #include <vector>
 

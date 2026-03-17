@@ -659,11 +659,15 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "regs") {
       // Pack register state and hash it
-      struct __attribute__((packed)) {
+      PACK_BEGIN struct
+#ifndef _MSC_VER
+      __attribute__((packed))
+#endif
+      {
         word AF, BC, DE, HL, IX, IY, SP, PC;
         word AFx, BCx, DEx, HLx;
         byte I, R, IM, IFF1, IFF2;
-      } packed;
+      } PACK_END packed;
       packed.AF = z80.AF.w.l; packed.BC = z80.BC.w.l;
       packed.DE = z80.DE.w.l; packed.HL = z80.HL.w.l;
       packed.IX = z80.IX.w.l; packed.IY = z80.IY.w.l;

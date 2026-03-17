@@ -10,6 +10,9 @@
 #include "targetver.h"
 
 #define WIN32_LEAN_AND_MEAN             // Exclude rarely-used stuff from Windows headers
+#ifndef NOMINMAX
+#define NOMINMAX                        // Prevent min/max macros from <windows.h>
+#endif
 
 // Windows specific
 #include <windows.h>
@@ -20,8 +23,11 @@
 #include <io.h>
 #include <direct.h>
 
+#ifndef _MSC_VER
+// MINGW doesn't provide _lrotl/_lrotr — define them as macros
 #define _lrotl(x,n) (((x) << (n)) | ((x) >> (sizeof(x)*8-(n))))
 #define _lrotr(x,n) (((x) >> (n)) | ((x) << (sizeof(x)*8-(n))))
+#endif
 
 #else
 
@@ -48,7 +54,9 @@ typedef const char *LPCTSTR;
 #include <stdio.h>
 #include <assert.h>
 #include <vector>
+#ifndef _MSC_VER
 #include <dirent.h>
+#endif
 
 #define INTEL
 #define MAX_FILENAMELEN (MAX_PATH*2)
@@ -89,7 +97,9 @@ typedef const char *LPCTSTR;
 #include "CapsFDCEmulator.h"
 #include "CapsFormatMFM.h"
 
+#ifndef _MSC_VER
 #define __assume(cond) do { if (!(cond)) __builtin_unreachable(); } while (0)
+#endif
 
 #ifndef WINDOWS
 #define _access access

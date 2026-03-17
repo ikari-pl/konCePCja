@@ -4,7 +4,7 @@
 #include "koncepcja.h"
 #include <vector>
 
-extern byte *membank_config[8][4];
+extern t_MemBankConfig membank_config;
 extern byte *membank_write[4];
 extern t_GateArray GateArray;
 

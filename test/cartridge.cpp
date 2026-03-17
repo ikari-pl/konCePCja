@@ -4,7 +4,7 @@
 #include "errors.h"
 
 extern byte* pbGPBuffer;
-extern byte* pbCartridgeImage;
+extern std::unique_ptr<byte[]> pbCartridgeImage;
 
 class Cartridge : public testing::Test {
    public:
