@@ -160,9 +160,6 @@ static uint64_t perfTicksTargetFPS; // next 1-second FPS sample point
 dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
 
-// Speed limiter: wake-to-wake measurement for exact frame pacing.
-// Records timestamp after each sleep; next sleep = target_period - (now - last_wake).
-static uint64_t limiterWakeTime = 0;
 
 // Frame timing measurement (1-second reporting window)
 static uint64_t frameTimeAccum = 0;
@@ -2044,7 +2041,6 @@ void update_timings()
    uint64_t now = SDL_GetPerformanceCounter();
    perfTicksTarget = now + perfTicksOffset;
    perfTicksTargetFPS = now + perfFreq; // 1 second from now
-   limiterWakeTime = 0;
    LOG_VERBOSE("Timing: perfFreq=" << perfFreq << " perfTicksOffset=" << perfTicksOffset
                << " (" << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
                << " speed_ratio=" << speed_ratio);
@@ -3948,23 +3944,25 @@ int koncpc_main (int argc, char **argv)
          }
 
          if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
-            // Wake-to-wake pacing: measure actual work since last wake, sleep remainder.
+            // Absolute deadline: sleep until perfTicksTarget, then advance by one frame.
+            // Multiple EC_CYCLE_COUNTs may fire per frame (audio-driven cycle boundaries);
+            // only the first one sleeps — subsequent ones see the deadline already passed.
             uint64_t sleepStart = SDL_GetPerformanceCounter();
-            if (limiterWakeTime > 0) {
-               uint64_t workTime = sleepStart - limiterWakeTime;
-               if (workTime < perfTicksOffset) {
-                  uint64_t remaining = perfTicksOffset - workTime;
-                  uint64_t remaining_ms = (remaining * 1000) / perfFreq;
-                  if (remaining_ms > 2) {
-                     SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
-                  }
-                  uint64_t deadline = limiterWakeTime + perfTicksOffset;
-                  while (SDL_GetPerformanceCounter() < deadline) { SDL_Delay(0); }
+            if (sleepStart < perfTicksTarget) {
+               uint64_t remaining_ticks = perfTicksTarget - sleepStart;
+               uint64_t remaining_ms = (remaining_ticks * 1000) / perfFreq;
+               if (remaining_ms > 2) {
+                  SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
                }
+               while (SDL_GetPerformanceCounter() < perfTicksTarget) { SDL_Delay(0); }
             }
-            uint64_t slept = SDL_GetPerformanceCounter() - sleepStart;
-            sleepTimeAccum += slept;
-            limiterWakeTime = SDL_GetPerformanceCounter();
+            sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
+            perfTicksTarget += perfTicksOffset;
+            // If we fell behind, don't try to catch up
+            uint64_t now = SDL_GetPerformanceCounter();
+            if (perfTicksTarget < now) {
+               perfTicksTarget = now + perfTicksOffset;
+            }
          }
 
          dword dwOffset = CPC.scr_pos - CPC.scr_base; // offset in current surface row
