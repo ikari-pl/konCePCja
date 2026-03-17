@@ -152,9 +152,24 @@ static int topbar_height_px = 24;
 extern t_CPC CPC;
 SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 
-dword dwTicks, dwTicksOffset, dwTicksTarget, dwTicksTargetFPS;
+// High-resolution timing using SDL_GetPerformanceCounter (nanosecond-class)
+static uint64_t perfFreq;          // SDL_GetPerformanceFrequency() — ticks per second
+static uint64_t perfTicksOffset;   // frame period in perf-counter ticks
+static uint64_t perfTicksTarget;   // next frame deadline in perf-counter ticks
+static uint64_t perfTicksTargetFPS; // next 1-second FPS sample point
 dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
+
+// Display time accounting — smoothed average of video_display() duration
+static uint64_t displayTimeSmoothed = 0; // in perf-counter ticks, EMA
+
+// Frame timing measurement
+static uint64_t frameTimeAccum = 0;  // accumulated frame times for averaging
+static uint64_t frameTimeMin = UINT64_MAX;
+static uint64_t frameTimeMax = 0;
+static uint64_t displayTimeAccum = 0;
+static uint32_t frameTimeSamples = 0;
+static uint64_t lastFrameStart = 0;  // perf counter at start of previous frame
 
 dword osd_timing;
 std::string osd_message;
@@ -2019,12 +2034,17 @@ void joysticks_shutdown ()
 
 void update_timings()
 {
-   dwTicksOffset = static_cast<int>(FRAME_PERIOD_MS / (CPC.speed/CPC_BASE_FREQUENCY_MHZ));
-   dwTicksTarget = SDL_GetTicks();
-   dwTicksTargetFPS = dwTicksTarget;
-   dwTicksTarget += dwTicksOffset;
-   // These are only used for frames timing if sound is disabled. Otherwise timing is controlled by the PSG.
-   LOG_VERBOSE("Timing: First frame at " << dwTicksTargetFPS << " - next frame in " << dwTicksOffset << " ( " << FRAME_PERIOD_MS << "/(" << CPC.speed << "/" << CPC_BASE_FREQUENCY_MHZ << ") ) at " << dwTicksTarget);
+   perfFreq = SDL_GetPerformanceFrequency();
+   // Frame period in perf-counter ticks: (FRAME_PERIOD_MS / 1000) * freq / speed_ratio
+   double speed_ratio = CPC.speed / CPC_BASE_FREQUENCY_MHZ;
+   perfTicksOffset = static_cast<uint64_t>((FRAME_PERIOD_MS / 1000.0) * perfFreq / speed_ratio);
+   uint64_t now = SDL_GetPerformanceCounter();
+   perfTicksTarget = now + perfTicksOffset;
+   perfTicksTargetFPS = now + perfFreq; // 1 second from now
+   displayTimeSmoothed = 0;
+   LOG_VERBOSE("Timing: perfFreq=" << perfFreq << " perfTicksOffset=" << perfTicksOffset
+               << " (" << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
+               << " speed_ratio=" << speed_ratio);
 }
 
 // Recalculate emulation speed (to verify, seems to work reasonably well)
@@ -3898,28 +3918,61 @@ int koncpc_main (int argc, char **argv)
       }
 
       if (!CPC.paused) { // run the emulation, as long as the user doesn't pause it
-         dwTicks = SDL_GetTicks();
-         if (dwTicks >= dwTicksTargetFPS) { // update FPS counter?
+         uint64_t perfNow = SDL_GetPerformanceCounter();
+
+         // Measure frame-to-frame time
+         if (lastFrameStart > 0) {
+            uint64_t elapsed = perfNow - lastFrameStart;
+            frameTimeAccum += elapsed;
+            if (elapsed < frameTimeMin) frameTimeMin = elapsed;
+            if (elapsed > frameTimeMax) frameTimeMax = elapsed;
+            frameTimeSamples++;
+         }
+         lastFrameStart = perfNow;
+
+         if (perfNow >= perfTicksTargetFPS) { // update FPS counter every second
             dwFPS = dwFrameCount;
             dwFrameCount = 0;
-            dwTicksTargetFPS = dwTicks + 1000; // prep counter for the next run
+            perfTicksTargetFPS = perfNow + perfFreq; // next sample in 1 second
+
+            // Publish frame timing stats (use double to avoid integer division precision loss)
+            if (frameTimeSamples > 0) {
+               double ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
+               imgui_state.frame_time_avg_us = static_cast<float>(static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
+               imgui_state.frame_time_min_us = static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
+               imgui_state.frame_time_max_us = static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
+               imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum) / frameTimeSamples * ticksToUs);
+            }
+            frameTimeAccum = 0;
+            frameTimeMin = UINT64_MAX;
+            frameTimeMax = 0;
+            displayTimeAccum = 0;
+            frameTimeSamples = 0;
          }
 
          if (CPC.limit_speed) { // limit to original CPC speed?
             if (iExitCondition == EC_CYCLE_COUNT) {
-               dwTicks = SDL_GetTicks();
-               if (dwTicks < dwTicksTarget) { // limit speed ?
-                  dword remaining = dwTicksTarget - dwTicks;
-                  if (remaining > 2) {
-                     SDL_Delay(remaining - 2); // sleep most of the wait, leave 2ms for spin
-                  }
-                  while (SDL_GetTicks() < dwTicksTarget) { SDL_Delay(0); } // spin-wait for precision
+               // Subtract smoothed display time from sleep target so we don't oversleep
+               uint64_t sleepTarget = perfTicksTarget;
+               if (displayTimeSmoothed > 0 && sleepTarget > displayTimeSmoothed) {
+                  sleepTarget -= displayTimeSmoothed;
                }
-               dwTicksTarget += dwTicksOffset; // accumulator: next frame exactly N ms later
+               perfNow = SDL_GetPerformanceCounter();
+               if (perfNow < sleepTarget) {
+                  // Convert remaining time to ms for coarse sleep
+                  uint64_t remaining_ticks = sleepTarget - perfNow;
+                  uint64_t remaining_ms = (remaining_ticks * 1000) / perfFreq;
+                  if (remaining_ms > 2) {
+                     SDL_Delay(static_cast<Uint32>(remaining_ms - 2)); // sleep most, leave 2ms for spin
+                  }
+                  // Spin-wait with perf counter for sub-ms precision
+                  while (SDL_GetPerformanceCounter() < sleepTarget) { SDL_Delay(0); }
+               }
+               perfTicksTarget += perfTicksOffset; // accumulator: next frame exactly N ticks later
                // If we fell behind (e.g. slow frame), don't try to catch up
-               dwTicks = SDL_GetTicks();
-               if (dwTicksTarget < dwTicks) {
-                  dwTicksTarget = dwTicks + dwTicksOffset;
+               perfNow = SDL_GetPerformanceCounter();
+               if (perfTicksTarget < perfNow) {
+                  perfTicksTarget = perfNow + perfTicksOffset;
                }
             }
          }
@@ -4108,8 +4161,14 @@ int koncpc_main (int argc, char **argv)
                }
                std::string fpsText;
                if (CPC.scr_fps) {
-                  char chStr[15];
-                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS), static_cast<int>(dwFPS) * 100 / (1000 / static_cast<int>(FRAME_PERIOD_MS)));
+                  char chStr[64];
+                  int pct = static_cast<int>(dwFPS) * 100 / static_cast<int>(1000.0 / FRAME_PERIOD_MS);
+                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%% [%.1f/%.1f/%.1fms dsp:%.1fms]",
+                     static_cast<int>(dwFPS), pct,
+                     imgui_state.frame_time_min_us / 1000.0f,
+                     imgui_state.frame_time_avg_us / 1000.0f,
+                     imgui_state.frame_time_max_us / 1000.0f,
+                     imgui_state.display_time_avg_us / 1000.0f);
                   fpsText = chStr;
                }
                imgui_state.topbar_fps = fpsText;
@@ -4118,7 +4177,14 @@ int koncpc_main (int argc, char **argv)
             }
             asic_draw_sprites();
             if (!g_headless) {
+              uint64_t displayStart = SDL_GetPerformanceCounter();
               video_display();
+              uint64_t displayElapsed = SDL_GetPerformanceCounter() - displayStart;
+              // Exponential moving average (alpha ~= 1/8 for smooth tracking)
+              displayTimeSmoothed = displayTimeSmoothed
+                  ? displayTimeSmoothed - (displayTimeSmoothed >> 3) + (displayElapsed >> 3)
+                  : displayElapsed;
+              displayTimeAccum += displayElapsed;
               video_take_pending_window_screenshot();
             }
 

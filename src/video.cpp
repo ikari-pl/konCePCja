@@ -268,6 +268,9 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  // ViewportsEnable is managed dynamically per-frame (adaptive viewports).
+  // Start with it enabled so ImGui initializes multi-viewport platform support,
+  // then per-frame logic in direct_flip/swscale_blit toggles it based on devtools state.
   io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
@@ -326,6 +329,16 @@ void direct_flip(video_plugin* t)
   glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
                   GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
+
+  // Adaptive ViewportsEnable: only create platform windows when devtools is shown.
+  // Each floating viewport triggers an extra SDL_GL_SwapWindow (5-15ms on macOS).
+  {
+    ImGuiIO& io = ImGui::GetIO();
+    if (imgui_state.show_devtools)
+      io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    else
+      io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+  }
 
   // Start ImGui frame
   ImGui_ImplOpenGL3_NewFrame();
@@ -1185,6 +1198,7 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+  // ViewportsEnable managed dynamically per-frame (adaptive viewports)
   io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
@@ -1265,6 +1279,15 @@ void swscale_blit(video_plugin* t)
   glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
                   GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
+
+  // Adaptive ViewportsEnable: only create platform windows when devtools is shown.
+  {
+    ImGuiIO& io = ImGui::GetIO();
+    if (imgui_state.show_devtools)
+      io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    else
+      io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+  }
 
   // Start ImGui frame
   ImGui_ImplOpenGL3_NewFrame();
