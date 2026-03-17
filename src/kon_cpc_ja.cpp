@@ -169,6 +169,8 @@ static uint64_t displayTimeAccum = 0;
 static uint64_t sleepTimeAccum = 0;
 static uint64_t z80TimeAccum = 0;
 static uint32_t frameTimeSamples = 0;
+static uint32_t cycleCountPerSec = 0;  // EC_CYCLE_COUNT events per second
+static uint32_t cycleCountAccum = 0;
 static uint64_t lastFrameStart = 0;  // perf counter at EC_FRAME_COMPLETE (for frame-to-frame stats)
 
 dword osd_timing;
@@ -3941,8 +3943,37 @@ int koncpc_main (int argc, char **argv)
             sleepTimeAccum = 0;
             z80TimeAccum = 0;
             frameTimeSamples = 0;
+            cycleCountPerSec = cycleCountAccum;
+            cycleCountAccum = 0;
+
+            // Log frame timing stats to file for offline analysis
+            {
+               static FILE* timing_log = nullptr;
+               static int log_seconds = 0;
+               if (!timing_log) {
+                  timing_log = fopen("timing_log.csv", "w");
+                  if (timing_log) fprintf(timing_log, "sec,fps,f_min,f_avg,f_max,z80,sleep,display,cc,frames\n");
+               }
+               if (timing_log && log_seconds < 60) {
+                  fprintf(timing_log, "%d,%u,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%u,%u\n",
+                     log_seconds, static_cast<unsigned>(dwFPS),
+                     imgui_state.frame_time_min_us / 1000.0f,
+                     imgui_state.frame_time_avg_us / 1000.0f,
+                     imgui_state.frame_time_max_us / 1000.0f,
+                     imgui_state.z80_time_avg_us / 1000.0f,
+                     imgui_state.sleep_time_avg_us / 1000.0f,
+                     imgui_state.display_time_avg_us / 1000.0f,
+                     cycleCountPerSec,
+                     static_cast<unsigned>(dwFPS));
+                  fflush(timing_log);
+                  log_seconds++;
+               }
+            }
          }
 
+         if (iExitCondition == EC_CYCLE_COUNT) {
+            cycleCountAccum++;
+         }
          if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
             // Absolute deadline: sleep until perfTicksTarget, then advance by one frame.
             // Multiple EC_CYCLE_COUNTs may fire per frame (audio-driven cycle boundaries);
@@ -4168,14 +4199,15 @@ int koncpc_main (int argc, char **argv)
                if (CPC.scr_fps) {
                   char chStr[128];
                   int pct = static_cast<int>(dwFPS) * 100 / static_cast<int>(1000.0 / FRAME_PERIOD_MS);
-                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%% f:%.1f/%.1f/%.1f z:%.1f s:%.1f d:%.1f",
+                  snprintf(chStr, sizeof(chStr), "%3dFPS %3d%% f:%.1f/%.1f/%.1f z:%.1f s:%.1f d:%.1f cc:%u",
                      static_cast<int>(dwFPS), pct,
                      imgui_state.frame_time_min_us / 1000.0f,
                      imgui_state.frame_time_avg_us / 1000.0f,
                      imgui_state.frame_time_max_us / 1000.0f,
                      imgui_state.z80_time_avg_us / 1000.0f,
                      imgui_state.sleep_time_avg_us / 1000.0f,
-                     imgui_state.display_time_avg_us / 1000.0f);
+                     imgui_state.display_time_avg_us / 1000.0f,
+                     cycleCountPerSec);
                   fpsText = chStr;
                }
                imgui_state.topbar_fps = fpsText;
