@@ -66,10 +66,20 @@ private:
     std::unordered_map<word, CachedInsn> disasm_cache_;
     byte disasm_cache_banking_ = 0xFF; // last seen RAM_config, invalidate on change
 
-    // Record current PC into the cache (called each frame from render)
+    // PC history ring buffer — records every PC value for stable backward walk
+    static constexpr int DISASM_PC_HISTORY_SIZE = 64;
+    word disasm_pc_history_[DISASM_PC_HISTORY_SIZE] = {};
+    int disasm_pc_history_head_ = 0;
+    int disasm_pc_history_count_ = 0;
+
+    // Record current PC into the cache + history (called each frame from render)
     void disasm_cache_record_pc();
     // Invalidate cache (banking change, reset, memory write)
-    void disasm_cache_clear() { disasm_cache_.clear(); }
+    void disasm_cache_clear() {
+      disasm_cache_.clear();
+      disasm_pc_history_count_ = 0;
+      disasm_pc_history_head_ = 0;
+    }
 
     char memhex_goto_addr_[8] = "";
     int memhex_goto_value_ = -1;

@@ -307,7 +307,19 @@ void DevToolsUI::render_registers()
 void DevToolsUI::disasm_cache_record_pc()
 {
   word pc = z80.PC.w.l;
-  if (disasm_cache_.count(pc)) return; // already cached
+
+  // Push into PC history ring buffer (always, even if instruction is cached)
+  // Skip if same as last entry (avoid filling the buffer with repeated PCs when paused)
+  int prev_idx = (disasm_pc_history_head_ - 1 + DISASM_PC_HISTORY_SIZE) % DISASM_PC_HISTORY_SIZE;
+  if (disasm_pc_history_count_ == 0 || disasm_pc_history_[prev_idx] != pc) {
+    disasm_pc_history_[disasm_pc_history_head_] = pc;
+    disasm_pc_history_head_ = (disasm_pc_history_head_ + 1) % DISASM_PC_HISTORY_SIZE;
+    if (disasm_pc_history_count_ < DISASM_PC_HISTORY_SIZE)
+      disasm_pc_history_count_++;
+  }
+
+  // Cache the disassembled instruction at PC
+  if (disasm_cache_.count(pc)) return;
   DisassembledCode dc;
   std::vector<dword> eps;
   auto line = disassemble_one(pc, dc, eps);
@@ -367,8 +379,6 @@ void DevToolsUI::render_disassembly()
   // Record current PC into the execution-trace cache
   disasm_cache_record_pc();
 
-  // Build display lines by walking forward from start_addr.
-  // Cache hits are instant; misses disassemble and cache the result.
   constexpr int NUM_LINES = 48;
 
   struct DisasmEntry {
@@ -380,7 +390,9 @@ void DevToolsUI::render_disassembly()
   std::vector<DisasmEntry> lines;
   lines.reserve(NUM_LINES);
 
+  // Start a few instructions before center_pc so it appears in the upper portion.
   word start_addr = center_pc - 16;
+
   word addr = start_addr;
   DisassembledCode dummy_dc;
   std::vector<dword> dummy_eps;
@@ -431,9 +443,31 @@ void DevToolsUI::render_disassembly()
   // ROM detection: when read and write banks differ for a slot, ROM is overlaid
   extern byte *membank_read[4], *membank_write[4];
 
+  // Sticky bank header: shows what's mapped at the current PC slot.
+  // Displayed above the scrolling list so it's always visible.
+  {
+    word pc_slot = (center_pc >> 14) & 3;
+    bool pc_in_rom = (membank_read[pc_slot] != membank_write[pc_slot]);
+    char bank_hdr[64];
+    if (pc_in_rom) {
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: %s",
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF,
+               pc_slot == 0 ? "Lower ROM" : "Upper ROM");
+    } else if (pc_slot == 1 && GateArray.RAM_bank > 0) {
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (expansion bank %d)",
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, GateArray.RAM_bank);
+    } else {
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (bank %d)",
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, pc_slot);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text,
+      pc_in_rom ? ImVec4(0.7f, 0.5f, 0.8f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+    ImGui::TextUnformatted(bank_hdr);
+    ImGui::PopStyleColor();
+  }
+
   if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
     int scroll_to_idx = -1;
-    word prev_slot = 0xFF;  // reset each frame for bank boundary detection
 
     for (int i = 0; i < static_cast<int>(lines.size()); i++) {
       const auto& entry = lines[i];
@@ -441,36 +475,6 @@ void DevToolsUI::render_disassembly()
       bool is_bp = false;
       for (const auto& bp : breakpoints) {
         if (bp.address == entry.addr && bp.type != EPHEMERAL) { is_bp = true; break; }
-      }
-
-      // --- Bank boundary separator ---
-      word cur_slot = (entry.addr >> 14) & 3;
-      if (cur_slot != prev_slot) {
-        prev_slot = cur_slot;
-        const char* bank_label = "?";
-        bool slot_is_rom = (membank_read[cur_slot] != membank_write[cur_slot]);
-        static char bank_label_buf[48];
-        if (slot_is_rom) {
-          if (cur_slot == 0)
-            bank_label = "Lower ROM";
-          else
-            bank_label = "Upper ROM";
-        } else {
-          if (cur_slot == 1 && GateArray.RAM_bank > 0) {
-            snprintf(bank_label_buf, sizeof(bank_label_buf),
-                     "RAM (expansion bank %d)", GateArray.RAM_bank);
-            bank_label = bank_label_buf;
-          } else {
-            snprintf(bank_label_buf, sizeof(bank_label_buf),
-                     "RAM (bank %d)", cur_slot);
-            bank_label = bank_label_buf;
-          }
-        }
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-        ImGui::Separator();
-        ImGui::Text("\xe2\x94\x80\xe2\x94\x80 %04X: %s \xe2\x94\x80\xe2\x94\x80",
-                    cur_slot * 0x4000, bank_label);
-        ImGui::PopStyleColor();
       }
 
       // --- ROM background tint (dark purple, matching memory hex viewer) ---
@@ -588,7 +592,7 @@ void DevToolsUI::render_disassembly()
 
       if (style_colors_pushed > 0) ImGui::PopStyleColor(style_colors_pushed);
 
-      // Follow PC: scroll to keep PC visible (using SetScrollHereY in-place)
+      // Follow PC: scroll to keep PC visible
       if (is_pc && disasm_follow_pc_) {
         ImGui::SetScrollHereY(0.3f);
       }
