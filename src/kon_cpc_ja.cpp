@@ -160,12 +160,7 @@ static uint64_t perfTicksTargetFPS; // next 1-second FPS sample point
 dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
 
-// Work time accounting — total non-sleep time from the previous frame.
-// Measured as: (display_end - prev_display_end) - sleep_between.
-// Used by speed limiter to avoid oversleeping.
-static uint64_t lastFrameWorkTicks = 0;
-static uint64_t prevDisplayEnd = 0;      // timestamp at end of previous video_display()
-static uint64_t curFrameSleepTicks = 0;  // sleep time accumulated since last display end
+// (Speed limiter sleep is now post-frame — no prediction needed)
 
 // Frame timing measurement (1-second reporting window)
 static uint64_t frameTimeAccum = 0;
@@ -2047,9 +2042,6 @@ void update_timings()
    uint64_t now = SDL_GetPerformanceCounter();
    perfTicksTarget = now + perfTicksOffset;
    perfTicksTargetFPS = now + perfFreq; // 1 second from now
-   lastFrameWorkTicks = 0;
-   prevDisplayEnd = 0;
-   curFrameSleepTicks = 0;
    LOG_VERBOSE("Timing: perfFreq=" << perfFreq << " perfTicksOffset=" << perfTicksOffset
                << " (" << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
                << " speed_ratio=" << speed_ratio);
@@ -3952,39 +3944,8 @@ int koncpc_main (int argc, char **argv)
             frameTimeSamples = 0;
          }
 
-         if (CPC.limit_speed) { // limit to original CPC speed?
-            if (iExitCondition == EC_CYCLE_COUNT) {
-               // Subtract previous frame's work time from sleep target to avoid oversleeping.
-               // Work time = everything that happens after sleep (z80 + overhead + display).
-               uint64_t sleepTarget = perfTicksTarget;
-               if (lastFrameWorkTicks > 0 && sleepTarget > lastFrameWorkTicks) {
-                  sleepTarget -= lastFrameWorkTicks;
-               }
-               uint64_t sleepStart = SDL_GetPerformanceCounter();
-               perfNow = sleepStart;
-               if (perfNow < sleepTarget) {
-                  // Convert remaining time to ms for coarse sleep
-                  uint64_t remaining_ticks = sleepTarget - perfNow;
-                  uint64_t remaining_ms = (remaining_ticks * 1000) / perfFreq;
-                  if (remaining_ms > 2) {
-                     SDL_Delay(static_cast<Uint32>(remaining_ms - 2)); // sleep most, leave 2ms for spin
-                  }
-                  // Spin-wait with perf counter for sub-ms precision
-                  while (SDL_GetPerformanceCounter() < sleepTarget) { SDL_Delay(0); }
-               }
-               {
-                  uint64_t slept = SDL_GetPerformanceCounter() - sleepStart;
-                  sleepTimeAccum += slept;
-                  curFrameSleepTicks += slept;
-               }
-               perfTicksTarget += perfTicksOffset; // accumulator: next frame exactly N ticks later
-               // If we fell behind (e.g. slow frame), don't try to catch up
-               perfNow = SDL_GetPerformanceCounter();
-               if (perfTicksTarget < perfNow) {
-                  perfTicksTarget = perfNow + perfTicksOffset;
-               }
-            }
-         }
+         // Speed limiter moved to post-display (EC_FRAME_COMPLETE) for accuracy.
+         // No predictive sleep here — we sleep after knowing the actual work time.
 
          dword dwOffset = CPC.scr_pos - CPC.scr_base; // offset in current surface row
          if (VDU.scrln > 0) {
@@ -4209,19 +4170,28 @@ int koncpc_main (int argc, char **argv)
               video_display();
               uint64_t displayEnd = SDL_GetPerformanceCounter();
               displayTimeAccum += displayEnd - displayStart;
-
-              // Compute work time = (display_end - prev_display_end) - sleep_between.
-              // This captures z80 + overhead + display — everything the limiter must budget for.
-              if (prevDisplayEnd > 0) {
-                 uint64_t frameTotal = displayEnd - prevDisplayEnd;
-                 lastFrameWorkTicks = (frameTotal > curFrameSleepTicks)
-                     ? frameTotal - curFrameSleepTicks
-                     : 0;
-              }
-              prevDisplayEnd = displayEnd;
-              curFrameSleepTicks = 0; // reset for next frame
-
               video_take_pending_window_screenshot();
+            }
+
+            // Post-frame speed limiter: sleep for remaining frame budget.
+            // All work is done, so we know exactly how much time is left.
+            if (CPC.limit_speed) {
+              uint64_t sleepStart = SDL_GetPerformanceCounter();
+              if (sleepStart < perfTicksTarget) {
+                 uint64_t remaining_ticks = perfTicksTarget - sleepStart;
+                 uint64_t remaining_ms = (remaining_ticks * 1000) / perfFreq;
+                 if (remaining_ms > 2) {
+                    SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
+                 }
+                 while (SDL_GetPerformanceCounter() < perfTicksTarget) { SDL_Delay(0); }
+              }
+              sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
+              perfTicksTarget += perfTicksOffset;
+              // If we fell behind, don't try to catch up
+              uint64_t now = SDL_GetPerformanceCounter();
+              if (perfTicksTarget < now) {
+                 perfTicksTarget = now + perfTicksOffset;
+              }
             }
 
             if (g_take_screenshot) {
