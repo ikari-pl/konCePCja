@@ -36,12 +36,12 @@ struct ImGuiUIState {
   bool drive_b_led = false;
 
   // Frame timing measurement (updated each second, values in microseconds)
-  float frame_time_avg_us = 0.0f;   // average frame-to-frame time
-  float frame_time_min_us = 0.0f;   // min frame time this second
-  float frame_time_max_us = 0.0f;   // max frame time this second
-  float display_time_avg_us = 0.0f; // average video_display() time
-  float sleep_time_avg_us = 0.0f;   // average speed limiter sleep time
-  float z80_time_avg_us = 0.0f;     // average z80_execute() time per frame (sum of all calls)
+  float frame_time_avg_us = 0.0f;
+  float frame_time_min_us = 0.0f;
+  float frame_time_max_us = 0.0f;
+  float display_time_avg_us = 0.0f;
+  float sleep_time_avg_us = 0.0f;
+  float z80_time_avg_us = 0.0f;
 
   // Options dialog state
   t_CPC old_cpc_settings;
