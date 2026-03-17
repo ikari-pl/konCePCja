@@ -264,6 +264,7 @@ void koncpc_set_dock_icon(const char* png_path) {
                  fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
       [sq unlockFocus];
       [NSApp setApplicationIconImage:sq];
+      [sq release];
     }
   }
 }
@@ -335,6 +336,12 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
       CGImageRelease(cgScreen);
 
       [NSApp setApplicationIconImage:composite];
+
+      // Manual retain/release — no ARC in this project.
+      // Without these, each update leaks ~3MB (two NSImages at 850x850).
+      [screenImg release];
+      [composite release];
+
       g_icon_update_in_flight.store(false);
     }
   });

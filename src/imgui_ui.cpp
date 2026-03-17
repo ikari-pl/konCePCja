@@ -32,6 +32,7 @@
 #include "drive_sounds.h"
 #include "symbiface.h"
 #include "m4board.h"
+#include "m4board_http.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 
@@ -1776,81 +1777,7 @@ static void imgui_render_options()
       bool m4 = g_m4board.enabled;
       if (ImGui::Checkbox("M4 Board", &m4)) { g_m4board.enabled = m4; }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(
-          "M4 Board — Virtual WiFi/SD expansion\n\n"
-          "Set a host directory as the virtual SD card, then reset.\n\n"
-          "RSX commands (type in BASIC after reset):\n"
-          "  |SD            Switch to SD card (CAT/LOAD/SAVE work)\n"
-          "  |DISC          Switch back to disc drive\n"
-          "  |DIR           List SD directory\n"
-          "  |CD,\"path\"     Change directory\n"
-          "  |ERA,\"file\"    Delete file\n"
-          "  |REN,\"new\",\"old\" Rename file\n"
-          "  |MKDIR,\"dir\"   Create directory\n\n"
-          "After |SD, standard BASIC commands work:\n"
-          "  CAT  LOAD\"file\"  SAVE\"file\"  RUN\"file\""
-        );
-      }
-
-      if (m4) {
-        ImGui::Indent();
-        // SD card path display + browse button
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
-        char sd_buf[512];
-        snprintf(sd_buf, sizeof(sd_buf), "%s", g_m4board.sd_root_path.c_str());
-        ImGui::InputText("##m4sd", sd_buf, sizeof(sd_buf), ImGuiInputTextFlags_ReadOnly);
-        ImGui::SameLine();
-        if (ImGui::Button("Browse##m4sd")) {
-          const char* default_loc = g_m4board.sd_root_path.empty()
-            ? nullptr : g_m4board.sd_root_path.c_str();
-          SDL_ShowOpenFolderDialog(file_dialog_callback,
-            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SelectM4SDFolder)),
-            mainSDLWindow, default_loc, false);
-        }
-        if (g_m4board.sd_root_path.empty()) {
-          ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "No SD directory set");
-        }
-
-        // ROM slot selector
-        int slot = g_m4board.rom_slot;
-        ImGui::SetNextItemWidth(80.0f);
-        if (ImGui::InputInt("ROM Slot##m4", &slot, 1, 1)) {
-          if (slot < 0) slot = 0;
-          if (slot > 31) slot = 31;
-          g_m4board.rom_slot = slot;
-        }
-
-        // M4 Status display
-        ImGui::Separator();
-        ImGui::TextDisabled("M4 Status");
-
-        // Activity LED + current directory
-        bool active = g_m4board.activity_frames > 0;
-        ImVec4 led_color = active ? ImVec4(0.2f, 0.9f, 0.2f, 1.0f)
-                                  : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
-        ImGui::TextColored(led_color, "%s", active ? "SD Active" : "SD Idle");
-        ImGui::SameLine(0, 16);
-        ImGui::TextDisabled("Dir: %s", g_m4board.current_dir.c_str());
-
-        // Open files count + last filename
-        int open_count = 0;
-        for (int i = 0; i < 4; i++) {
-          if (g_m4board.open_files[i]) open_count++;
-        }
-        ImGui::Text("Open files: %d/4", open_count);
-        if (!g_m4board.last_filename.empty()) {
-          ImGui::SameLine(0, 16);
-          ImGui::TextDisabled("Last: %s", g_m4board.last_filename.c_str());
-        }
-
-        // Command count
-        if (g_m4board.cmd_count > 0) {
-          ImGui::Text("Commands: %d", g_m4board.cmd_count);
-        }
-
-        // activity_frames is decremented in the main emulation loop (EC_FRAME_COMPLETE)
-
-        ImGui::Unindent();
+        ImGui::SetTooltip("M4 Board — Virtual WiFi/SD expansion.\nSee the M4 Board tab for full settings.");
       }
 
       ImGui::EndTabItem();
@@ -2075,6 +2002,216 @@ static void imgui_render_options()
       ImGui::EndTabItem();
     }
 
+    // ── M4 Board Tab ──
+    if (ImGui::BeginTabItem("M4 Board")) {
+      bool m4_en = g_m4board.enabled;
+      if (ImGui::Checkbox("Enable M4 Board", &m4_en)) { g_m4board.enabled = m4_en; }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+          "M4 Board — Virtual WiFi/SD expansion\n\n"
+          "Set a host directory as the virtual SD card, then reset.\n\n"
+          "RSX commands (type in BASIC after reset):\n"
+          "  |SD            Switch to SD card\n"
+          "  |DISC          Switch back to disc drive\n"
+          "  |DIR           List SD directory\n"
+          "  |CD,\"path\"     Change directory\n"
+          "  |ERA,\"file\"    Delete file\n"
+          "  |REN,\"new\",\"old\" Rename file\n"
+          "  |MKDIR,\"dir\"   Create directory\n\n"
+          "After |SD, standard BASIC commands work:\n"
+          "  CAT  LOAD\"file\"  SAVE\"file\"  RUN\"file\""
+        );
+      }
+
+      if (m4_en) {
+        // ── SD Card ──
+        ImGui::Separator();
+        ImGui::TextDisabled("SD Card");
+
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
+        char sd_buf[512];
+        snprintf(sd_buf, sizeof(sd_buf), "%s", g_m4board.sd_root_path.c_str());
+        ImGui::InputText("##m4sd", sd_buf, sizeof(sd_buf), ImGuiInputTextFlags_ReadOnly);
+        ImGui::SameLine();
+        if (ImGui::Button("Browse##m4sd")) {
+          const char* default_loc = g_m4board.sd_root_path.empty()
+            ? nullptr : g_m4board.sd_root_path.c_str();
+          SDL_ShowOpenFolderDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SelectM4SDFolder)),
+            mainSDLWindow, default_loc, false);
+        }
+        if (g_m4board.sd_root_path.empty()) {
+          ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "No SD directory set");
+        }
+
+        int slot = g_m4board.rom_slot;
+        ImGui::SetNextItemWidth(80.0f);
+        if (ImGui::InputInt("ROM Slot##m4", &slot, 1, 1)) {
+          if (slot < 0) slot = 0;
+          if (slot > 31) slot = 31;
+          g_m4board.rom_slot = slot;
+        }
+
+        // ── Status ──
+        ImGui::Separator();
+        ImGui::TextDisabled("Status");
+
+        bool active = g_m4board.activity_frames > 0;
+        ImVec4 led_color = active ? ImVec4(0.2f, 0.9f, 0.2f, 1.0f)
+                                  : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);
+        ImGui::TextColored(led_color, "%s", active ? "SD Active" : "SD Idle");
+        ImGui::SameLine(0, 16);
+        ImGui::TextDisabled("Dir: %s", g_m4board.current_dir.c_str());
+
+        int open_count = 0;
+        for (int i = 0; i < 4; i++) {
+          if (g_m4board.open_files[i]) open_count++;
+        }
+        ImGui::Text("Open files: %d/4", open_count);
+        if (!g_m4board.last_filename.empty()) {
+          ImGui::SameLine(0, 16);
+          ImGui::TextDisabled("Last: %s", g_m4board.last_filename.c_str());
+        }
+        if (g_m4board.cmd_count > 0) {
+          ImGui::Text("Commands: %d", g_m4board.cmd_count);
+        }
+
+        // Network status
+        ImGui::Text("Network: %s", g_m4board.network_enabled ? "enabled" : "disabled");
+        ImGui::SameLine(0, 16);
+        int sock_count = 0;
+        for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
+          if (g_m4board.sockets[i] != M4Board::INVALID_SOCK) sock_count++;
+        }
+        ImGui::TextDisabled("Sockets: %d/%d", sock_count, M4Board::MAX_SOCKETS);
+
+        // ── HTTP Server ──
+        ImGui::Separator();
+        ImGui::TextDisabled("HTTP Server");
+
+        int http_port = CPC.m4_http_port;
+        ImGui::SetNextItemWidth(140.0f);
+        if (ImGui::InputInt("HTTP Port##m4http", &http_port, 1, 100)) {
+          if (http_port < 1024) http_port = 1024;
+          if (http_port > 65535) http_port = 65535;
+          CPC.m4_http_port = http_port;
+        }
+
+        char ip_buf[64];
+        snprintf(ip_buf, sizeof(ip_buf), "%s", CPC.m4_bind_ip.c_str());
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
+        if (ImGui::InputText("Bind IP##m4ip", ip_buf, sizeof(ip_buf))) {
+          CPC.m4_bind_ip = ip_buf;
+        }
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip(
+            "IP address to bind the HTTP server to.\n\n"
+            "127.0.0.1 — localhost only (default)\n"
+            "0.0.0.0   — all interfaces (LAN-accessible)\n"
+            "127.0.0.2 — dedicated loopback address:\n"
+            "  macOS: works without root\n"
+            "  Linux: needs: sudo ip addr add 127.0.0.2/8 dev lo\n"
+            "  Windows: needs admin\n"
+            "Falls back to 127.0.0.1 if the address is unavailable."
+          );
+        }
+
+        if (g_m4_http.is_running()) {
+          ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f),
+            "Listening on %s:%d", g_m4_http.bind_ip().c_str(), g_m4_http.port());
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Stop##m4http")) {
+            g_m4_http.stop();
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Open in Browser##m4http")) {
+            char url[128];
+            snprintf(url, sizeof(url), "http://%s:%d/",
+                     g_m4_http.bind_ip().c_str(), g_m4_http.port());
+            SDL_OpenURL(url);
+          }
+        } else {
+          ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "HTTP server stopped");
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Start##m4http")) {
+            g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+          }
+        }
+
+        // ── Port Forwarding ──
+        ImGui::Separator();
+        ImGui::TextDisabled("Port Forwarding");
+        ImGui::TextWrapped("When CPC software binds a port (C_NETBIND), the emulator maps it "
+          "to a host port. User overrides (white) are persisted; auto-assigned (gray) are not.");
+
+        if (ImGui::BeginTable("##m4ports", 5,
+              ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+          ImGui::TableSetupColumn("CPC Port", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+          ImGui::TableSetupColumn("Host Port", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+          ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+          ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+          ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableHeadersRow();
+
+          auto mappings = g_m4_http.get_port_mappings_snapshot();
+          for (size_t mi = 0; mi < mappings.size(); mi++) {
+            const auto& pm = mappings[mi];
+            ImGui::PushID(static_cast<int>(mi));
+            ImGui::TableNextRow();
+            ImVec4 color = pm.user_override ? ImVec4(1,1,1,1) : ImVec4(0.6f,0.6f,0.6f,1);
+
+            ImGui::TableNextColumn();
+            ImGui::TextColored(color, "%d", pm.cpc_port);
+
+            ImGui::TableNextColumn();
+            ImGui::TextColored(color, "%d", pm.host_port);
+
+            ImGui::TableNextColumn();
+            ImGui::TextColored(pm.active ? ImVec4(0.2f,0.9f,0.2f,1) : ImVec4(0.5f,0.5f,0.5f,1),
+              "%s", pm.active ? "active" : "idle");
+
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", pm.user_override ? "user" : "auto");
+
+            ImGui::TableNextColumn();
+            if (!pm.description.empty()) {
+              ImGui::TextDisabled("%s", pm.description.c_str());
+            }
+            if (pm.user_override) {
+              ImGui::SameLine();
+              if (ImGui::SmallButton("X")) {
+                g_m4_http.remove_port_mapping(pm.cpc_port);
+              }
+              if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove user override");
+            }
+            ImGui::PopID();
+          }
+          ImGui::EndTable();
+        }
+
+        // Add manual mapping row
+        static int new_cpc_port = 80, new_host_port = 8080;
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputInt("##newcpc", &new_cpc_port, 0, 0);
+        ImGui::SameLine();
+        ImGui::TextDisabled("->");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::InputInt("##newhost", &new_host_port, 0, 0);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Add Mapping")) {
+          if (new_cpc_port > 0 && new_cpc_port <= 65535 &&
+              new_host_port > 0 && new_host_port <= 65535) {
+            g_m4_http.set_port_mapping(
+              static_cast<uint16_t>(new_cpc_port),
+              static_cast<uint16_t>(new_host_port), true);
+          }
+        }
+      }
+
+      ImGui::EndTabItem();
+    }
+
     ImGui::EndTabBar();
   }
 
@@ -2091,6 +2228,15 @@ static void imgui_render_options()
         CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
         g_m4board.enabled != old_m4_enabled) {
       emulator_init();
+    }
+    // Start/stop M4 HTTP server based on M4 enabled state
+    // Only auto-start when M4 was just enabled (not on every Save),
+    // so that a manual "Stop" in the UI stays effective.
+    if (g_m4board.enabled && !old_m4_enabled &&
+        !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
+      g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+    } else if (!g_m4board.enabled && g_m4_http.is_running()) {
+      g_m4_http.stop();
     }
     update_cpc_speed();
     video_set_palette();

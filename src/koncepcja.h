@@ -45,7 +45,7 @@ class InputMapper;
 //#define DEBUG_TAPE
 //#define DEBUG_Z80
 
-#define VERSION_STRING "v5.3.0"
+#define VERSION_STRING "v5.4.0"
 
 #ifndef _MAX_PATH
  #ifdef _POSIX_PATH_MAX
@@ -323,6 +323,10 @@ class t_CPC {
    std::vector<std::string> mru_tapes;
    std::vector<std::string> mru_snaps;
    std::vector<std::string> mru_carts;
+
+   // M4 Board HTTP server config
+   int m4_http_port = 8080;
+   std::string m4_bind_ip = "127.0.0.1";
 
    class InputMapper *InputMapper;
 };

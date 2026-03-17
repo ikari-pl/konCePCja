@@ -64,6 +64,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "drive_sounds.h"
 #include "symbiface.h"
 #include "m4board.h"
+#include "m4board_http.h"
 #include "io_dispatch.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
@@ -2190,6 +2191,21 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    g_m4board.enabled = conf.getIntValue("peripheral", "m4board", 0) & 1;
    g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
    g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 6);
+   CPC.m4_http_port = conf.getIntValue("peripheral", "m4_http_port", 8080);
+   CPC.m4_bind_ip = conf.getStringValue("peripheral", "m4_bind_ip", "127.0.0.1");
+   // Load port mappings (m4_port_map_N = cpc_port:host_port:user_override)
+   for (int i = 0; i < 16; i++) {
+      char key[32];
+      snprintf(key, sizeof(key), "m4_port_map_%d", i);
+      std::string val = conf.getStringValue("peripheral", key, "");
+      if (val.empty()) break;
+      // Parse "cpc:host:override"
+      uint16_t cpc_port = 0, host_port = 0;
+      int user_override = 0;
+      if (sscanf(val.c_str(), "%hu:%hu:%d", &cpc_port, &host_port, &user_override) >= 2) {
+         g_m4_http.set_port_mapping(cpc_port, host_port, user_override != 0);
+      }
+   }
    {
       std::string ide_path = conf.getStringValue("peripheral", "ide_master", "");
       if (!ide_path.empty() && g_symbiface.enabled) {
@@ -2316,6 +2332,27 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("peripheral", "m4board", g_m4board.enabled ? 1 : 0);
    conf.setStringValue("peripheral", "m4_sd_path", g_m4board.sd_root_path);
    conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
+   conf.setIntValue("peripheral", "m4_http_port", CPC.m4_http_port);
+   conf.setStringValue("peripheral", "m4_bind_ip", CPC.m4_bind_ip);
+   // Save port mappings and clear stale keys
+   {
+      auto mappings = g_m4_http.get_port_mappings_snapshot();
+      size_t count = mappings.size() < 16 ? mappings.size() : 16;
+      for (size_t i = 0; i < count; i++) {
+         char key[48], val[64];
+         snprintf(key, sizeof(key), "m4_port_map_%zu", i);
+         snprintf(val, sizeof(val), "%d:%d:%d",
+                  mappings[i].cpc_port, mappings[i].host_port,
+                  mappings[i].user_override ? 1 : 0);
+         conf.setStringValue("peripheral", key, val);
+      }
+      // Clear remaining keys up to 15 to remove stale entries
+      for (size_t i = count; i < 16; i++) {
+         char key[32];
+         snprintf(key, sizeof(key), "m4_port_map_%zu", i);
+         conf.setStringValue("peripheral", key, "");
+      }
+   }
 
    conf.setStringValue("control", "kbd_layout", CPC.kbd_layout);
 
@@ -2666,6 +2703,7 @@ void doCleanUp ()
    dsk_eject(&driveB);
    tape_eject();
 
+   g_m4_http.stop();
    symbiface_cleanup();
    m4board_cleanup();
    joysticks_shutdown();
@@ -3241,6 +3279,8 @@ int koncpc_main (int argc, char **argv)
    // Telnet console — CPC text mirror on IPC+1
    g_telnet.start();
 
+   // M4 Board HTTP server — started later after config is loaded (see below)
+
    #ifndef APP_PATH
    if(getcwd(chAppPath, sizeof(chAppPath)-1) == nullptr) {
       fprintf(stderr, "getcwd failed: %s\n", strerror(errno));
@@ -3293,6 +3333,13 @@ int koncpc_main (int argc, char **argv)
 #ifdef __APPLE__
       koncpc_setup_macos_menu();
       koncpc_disable_app_nap();
+      // Set the Dock icon (fixes generic icon when running outside .app bundle).
+      // koncepcja-icon.png serves as both the icon and CRT overlay — its screen
+      // area is translucent (~alpha 40) so the live CPC screen shows through.
+      {
+         std::string icon_path = CPC.resources_path + "/koncepcja-icon.png";
+         koncpc_set_dock_icon(icon_path.c_str());
+      }
 #endif
       topbar_height_px = imgui_topbar_height();
       video_set_topbar(nullptr, topbar_height_px);
@@ -3327,6 +3374,11 @@ int koncpc_main (int argc, char **argv)
 
    // Really load the various drives, if needed
    loadSlots();
+
+   // M4 Board HTTP server — start after config is loaded and M4 is initialized
+   if (g_m4board.enabled && !g_m4board.sd_root_path.empty()) {
+      g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+   }
 
    // Fill the buffer with autocmd if provided
    virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
@@ -3943,6 +3995,19 @@ int koncpc_main (int argc, char **argv)
             // M4 Board activity LED countdown (1 per frame at 50fps)
             if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
 
+            // M4 HTTP server — drain deferred actions (reset, pause toggle)
+            if (g_m4_http.is_running()) g_m4_http.drain_pending();
+
+#ifdef __APPLE__
+            // Update Dock icon with CPC screen preview (~5fps)
+            // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT * scale
+            if (back_surface && (dwFrameCountOverall % 10) == 0) {
+               koncpc_update_dock_icon_preview(
+                  back_surface->pixels, back_surface->w, back_surface->h, back_surface->pitch,
+                  0, 0, back_surface->w, back_surface->h);
+            }
+#endif
+
             // YM register recording: capture PSG state once per VBL
             if (g_ym_recorder.is_recording()) {
                g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
@@ -4068,6 +4133,8 @@ int koncpc_main (int argc, char **argv)
             video_display();
             video_take_pending_window_screenshot();
          }
+         // Drain HTTP deferred actions even while paused (otherwise resume won't work)
+         if (g_m4_http.is_running()) g_m4_http.drain_pending();
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
       }
 
@@ -4098,6 +4165,7 @@ int koncpc_main (int argc, char **argv)
       }
    }
 
+   g_m4_http.stop();
    g_telnet.stop();
    g_ipc->stop();
    return 0;
