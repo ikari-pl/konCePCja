@@ -2088,7 +2088,8 @@ static void cmd_nmi()
 {
    // Trigger NMI (Non-Maskable Interrupt) — on real hardware this opens the
    // Hack Menu / Multiface-like debugger. We call z80_mf2stop() which issues
-   // RST 0x0066 (the Z80 NMI vector) and pages in the Multiface ROM.
+   // RST 0x0066 (the Z80 NMI vector) and sets the MF2 flags (it does NOT
+   // page in the Multiface ROM itself — that happens when the NMI handler runs).
    extern t_CPC CPC;
    extern dword dwMF2Flags;
    if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {

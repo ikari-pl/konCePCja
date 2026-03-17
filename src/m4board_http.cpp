@@ -344,6 +344,9 @@ bool M4HttpServer::parse_request(const std::string& raw, HttpRequest& req) {
                auto qp = req.boundary.find('"');
                if (qp != std::string::npos) req.boundary = req.boundary.substr(0, qp);
             }
+            // Trim trailing parameters (e.g. "; charset=utf-8")
+            auto semi = req.boundary.find(';');
+            if (semi != std::string::npos) req.boundary = req.boundary.substr(0, semi);
          }
       }
       // Detect WebSocket upgrade
@@ -1149,18 +1152,13 @@ void M4HttpServer::drain_pending() {
       if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
          z80_mf2stop();
          LOG_INFO("M4 HTTP: NMI triggered — Multiface II stop");
+      } else if (CPC.mf2) {
+         // Multiface is loaded but already active — skip
+         LOG_INFO("M4 HTTP: NMI ignored — Multiface II already active");
       } else {
-         // On the real M4, this pages in NMIROM.BIN (the M4 Hack Menu).
-         // We don't have a separate M4 NMI ROM, so we trigger the Multiface
-         // if available, or just issue the raw Z80 NMI.
-         if (!CPC.mf2) {
-            LOG_INFO("M4 HTTP: NMI triggered — no Multiface loaded, "
-                     "issuing raw Z80 NMI to vector 0x0066");
-         }
-         // Issue raw NMI regardless — z80_mf2stop sets MF2 flags but the
-         // RST 0x0066 is the actual NMI. If no handler is installed at 0x0066,
-         // the CPC will likely crash (same as real hardware with no NMI ROM).
-         z80_mf2stop();
+         // No Multiface loaded; don't call z80_mf2stop() as it would set
+         // MF2 flags on a non-existent Multiface.
+         LOG_INFO("M4 HTTP: NMI ignored — no Multiface II loaded");
       }
    }
 }
@@ -1539,6 +1537,7 @@ void M4HttpServer::run() {
                ssize_t pn = ::read(client, peek_buf, sizeof(peek_buf));
                fcntl(client, F_SETFL, flags); // restore
                if (pn == 0) break; // client closed
+               if (pn > 0) break;  // client sent data (likely close frame)
                // pn < 0 with EAGAIN is normal (no data)
 #endif
             }

@@ -2230,7 +2230,10 @@ static void imgui_render_options()
       emulator_init();
     }
     // Start/stop M4 HTTP server based on M4 enabled state
-    if (g_m4board.enabled && !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
+    // Only auto-start when M4 was just enabled (not on every Save),
+    // so that a manual "Stop" in the UI stays effective.
+    if (g_m4board.enabled && !old_m4_enabled &&
+        !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
       g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
     } else if (!g_m4board.enabled && g_m4_http.is_running()) {
       g_m4_http.stop();
