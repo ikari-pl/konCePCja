@@ -344,10 +344,12 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
-  // Disassemble ~48 instructions starting well before center
-  // Use a larger offset so SetScrollHereY(0.3f) has enough content above PC
-  word start_addr = center_pc - 64;
-  constexpr int NUM_LINES = 48;
+  // Disassemble from a 16-byte aligned address before center_pc.
+  // Alignment ensures start_addr only changes every 16 bytes of PC movement,
+  // keeping the instruction list stable (no re-alignment jitter from
+  // variable-length Z80 instructions).
+  word start_addr = (center_pc - 96) & 0xFFF0;
+  constexpr int NUM_LINES = 64;
 
   DisassembledCode dummy_dc;
   std::vector<dword> dummy_eps;
