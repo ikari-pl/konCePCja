@@ -344,9 +344,9 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
-  // Disassemble ~48 instructions starting a few lines before center
-  // Use a small offset so the target appears near the top 1/3 of the view
-  word start_addr = center_pc - 16;
+  // Disassemble ~48 instructions starting well before center
+  // Use a larger offset so SetScrollHereY(0.3f) has enough content above PC
+  word start_addr = center_pc - 64;
   constexpr int NUM_LINES = 48;
 
   DisassembledCode dummy_dc;
@@ -394,8 +394,12 @@ void DevToolsUI::render_disassembly()
 
   const auto& breakpoints = z80_list_breakpoints_ref();
 
+  // ROM detection: when read and write banks differ for a slot, ROM is overlaid
+  extern byte *membank_read[4], *membank_write[4];
+
   if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
     int scroll_to_idx = -1;
+    word prev_slot = 0xFF;  // reset each frame for bank boundary detection
 
     for (int i = 0; i < static_cast<int>(lines.size()); i++) {
       const auto& entry = lines[i];
@@ -403,6 +407,48 @@ void DevToolsUI::render_disassembly()
       bool is_bp = false;
       for (const auto& bp : breakpoints) {
         if (bp.address == entry.addr && bp.type != EPHEMERAL) { is_bp = true; break; }
+      }
+
+      // --- Bank boundary separator ---
+      word cur_slot = (entry.addr >> 14) & 3;
+      if (cur_slot != prev_slot) {
+        prev_slot = cur_slot;
+        const char* bank_label = "?";
+        bool slot_is_rom = (membank_read[cur_slot] != membank_write[cur_slot]);
+        static char bank_label_buf[48];
+        if (slot_is_rom) {
+          if (cur_slot == 0)
+            bank_label = "Lower ROM";
+          else
+            bank_label = "Upper ROM";
+        } else {
+          if (cur_slot == 1 && GateArray.RAM_bank > 0) {
+            snprintf(bank_label_buf, sizeof(bank_label_buf),
+                     "RAM (expansion bank %d)", GateArray.RAM_bank);
+            bank_label = bank_label_buf;
+          } else {
+            snprintf(bank_label_buf, sizeof(bank_label_buf),
+                     "RAM (bank %d)", cur_slot);
+            bank_label = bank_label_buf;
+          }
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+        ImGui::Separator();
+        ImGui::Text("\xe2\x94\x80\xe2\x94\x80 %04X: %s \xe2\x94\x80\xe2\x94\x80",
+                    cur_slot * 0x4000, bank_label);
+        ImGui::PopStyleColor();
+      }
+
+      // --- ROM background tint (dark purple, matching memory hex viewer) ---
+      int slot = (entry.addr >> 14) & 3;
+      bool in_rom = (membank_read[slot] != membank_write[slot]);
+      if (in_rom) {
+        ImVec2 rpos = ImGui::GetCursorScreenPos();
+        float row_h = ImGui::GetTextLineHeightWithSpacing();
+        float row_w = ImGui::GetContentRegionAvail().x;
+        ImGui::GetWindowDrawList()->AddRectFilled(
+          rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
+          IM_COL32(60, 20, 60, 80));
       }
 
       // Symbol label above the instruction
@@ -419,7 +465,7 @@ void DevToolsUI::render_disassembly()
                is_bp ? kBreakpointMarker : " ",
                entry.addr, entry.text.c_str());
 
-      // Color: green for PC, red for breakpoint, amber for data area
+      // Color: green for PC, red for breakpoint, amber for data area, purple for ROM
       int style_colors_pushed = 0;
       if (entry.is_data_area && !is_pc && !is_bp) {
         // Subtle amber background for data area lines
@@ -431,6 +477,9 @@ void DevToolsUI::render_disassembly()
         style_colors_pushed = 1;
       } else if (is_bp) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        style_colors_pushed = 1;
+      } else if (in_rom) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.5f, 0.8f, 1.0f));
         style_colors_pushed = 1;
       }
 
