@@ -136,37 +136,37 @@ static int extract_status(const std::string& response) {
    catch (...) { return 0; }
 }
 
-// ── Test fixture ──
+// ── Shared server environment ──
+// One server for the entire test suite — avoids 25+ start/stop cycles
+// with TIME_WAIT port exhaustion on slow CI runners (Win32).
 
-class M4HttpTest : public ::testing::Test {
-protected:
+static std::filesystem::path g_test_sd_dir;
+static int g_test_port = 0;
+
+class M4HttpEnvironment : public ::testing::Environment {
+public:
    void SetUp() override {
-      // Create a temp SD directory
-      sd_dir_ = std::filesystem::temp_directory_path() / "m4http_test";
-      std::filesystem::remove_all(sd_dir_);
-      std::filesystem::create_directories(sd_dir_);
+      g_test_sd_dir = std::filesystem::temp_directory_path() / "m4http_test";
+      std::filesystem::remove_all(g_test_sd_dir);
+      std::filesystem::create_directories(g_test_sd_dir);
 
-      // Create some test files
-      std::ofstream(sd_dir_ / "test.bas") << "10 PRINT \"HELLO\"\n20 GOTO 10\n";
-      std::ofstream(sd_dir_ / "game.dsk"); // empty file
-      std::filesystem::create_directories(sd_dir_ / "games");
-      std::ofstream(sd_dir_ / "games" / "demo.bin") << std::string(256, 'X');
+      // Create baseline test files
+      std::ofstream(g_test_sd_dir / "test.bas") << "10 PRINT \"HELLO\"\n20 GOTO 10\n";
+      std::ofstream(g_test_sd_dir / "game.dsk"); // empty file
+      std::filesystem::create_directories(g_test_sd_dir / "games");
+      std::ofstream(g_test_sd_dir / "games" / "demo.bin") << std::string(256, 'X');
 
-      // Configure M4 board
       g_m4board.enabled = true;
-      g_m4board.sd_root_path = sd_dir_.string();
+      g_m4board.sd_root_path = g_test_sd_dir.string();
       g_m4board.current_dir = "/";
 
-      // Start HTTP server on a random high port to avoid TIME_WAIT conflicts
-      // when multiple tests run in rapid succession
       static std::mt19937 rng(std::random_device{}());
       int base = 30000 + static_cast<int>(rng() % 20000);
       g_m4_http.start(base, "127.0.0.1");
-      // Wait for server to bind (port() > 0 means the socket is ready)
       for (int i = 0; i < 200 && g_m4_http.port() == 0; i++) {
          std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
-      port_ = g_m4_http.port();
+      g_test_port = g_m4_http.port();
    }
 
    void TearDown() override {
@@ -174,7 +174,26 @@ protected:
       g_m4board.enabled = false;
       g_m4board.sd_root_path.clear();
       g_m4board.current_dir = "/";
-      std::filesystem::remove_all(sd_dir_);
+      std::filesystem::remove_all(g_test_sd_dir);
+   }
+};
+
+// Register the environment — GoogleTest owns the pointer
+static auto* g_http_env [[maybe_unused]] =
+   ::testing::AddGlobalTestEnvironment(new M4HttpEnvironment);
+
+class M4HttpTest : public ::testing::Test {
+protected:
+   void SetUp() override {
+      port_ = g_test_port;
+      sd_dir_ = g_test_sd_dir;
+      // Reset state that other test suites (M4BoardTest etc.) may have modified
+      g_m4board.enabled = true;
+      g_m4board.sd_root_path = g_test_sd_dir.string();
+      g_m4board.current_dir = "/";
+      g_m4_http.pending_reset.store(false);
+      g_m4_http.pending_pause_toggle.store(false);
+      g_m4_http.pending_nmi.store(false);
    }
 
    std::filesystem::path sd_dir_;
@@ -294,6 +313,8 @@ TEST_F(M4HttpTest, Upload) {
    std::string content((std::istreambuf_iterator<char>(ifs)),
                        std::istreambuf_iterator<char>());
    EXPECT_EQ("Hello from upload!", content);
+   ifs.close();
+   std::filesystem::remove(file_path); // cleanup
 }
 
 TEST_F(M4HttpTest, ConfigCgiDelete) {
@@ -312,6 +333,7 @@ TEST_F(M4HttpTest, ConfigCgiMkdir) {
    ASSERT_FALSE(resp.empty());
    EXPECT_EQ(200, extract_status(resp));
    EXPECT_TRUE(std::filesystem::is_directory(sd_dir_ / "newdir"));
+   std::filesystem::remove(sd_dir_ / "newdir"); // cleanup
 }
 
 TEST_F(M4HttpTest, ResetQueuesDeferred) {
