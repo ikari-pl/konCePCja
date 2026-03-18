@@ -35,6 +35,14 @@ struct ImGuiUIState {
   bool drive_a_led = false;
   bool drive_b_led = false;
 
+  // Frame timing measurement (updated each second, values in microseconds)
+  float frame_time_avg_us = 0.0f;
+  float frame_time_min_us = 0.0f;
+  float frame_time_max_us = 0.0f;
+  float display_time_avg_us = 0.0f;
+  float sleep_time_avg_us = 0.0f;
+  float z80_time_avg_us = 0.0f;
+
   // Options dialog state
   t_CPC old_cpc_settings;
 

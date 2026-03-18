@@ -190,23 +190,36 @@ void DevToolsUI::render()
     dex_prefill_pending_ = true;
   prev_disasm_export = show_disasm_export_;
 
-  if (show_registers_)         render_registers();
-  if (show_disassembly_)       render_disassembly();
-  if (show_memory_hex_)        render_memory_hex();
-  if (show_stack_)             render_stack();
-  if (show_breakpoints_)       render_breakpoints();
-  if (show_symbols_)           render_symbols();
-  if (show_silicon_disc_)      render_silicon_disc();
-  if (show_asic_)              render_asic();
-  if (show_disc_tools_)        render_disc_tools();
-  if (show_data_areas_)        render_data_areas();
-  if (show_disasm_export_)     render_disasm_export();
-  if (show_session_recording_) render_session_recording();
-  if (show_gfx_finder_)       render_gfx_finder();
-  if (show_video_state_)       render_video_state();
-  if (show_audio_state_)       render_audio_state();
-  if (show_recording_controls_) render_recording_controls();
-  if (show_assembler_)          render_assembler();
+  static const uint64_t freq = SDL_GetPerformanceFrequency();
+  auto time_window = [&](int idx, const char* name, bool shown, auto fn) {
+    window_timings_[idx].name = name;
+    if (shown) {
+      uint64_t t0 = SDL_GetPerformanceCounter();
+      fn();
+      window_timings_[idx].last_us = static_cast<float>(
+          (SDL_GetPerformanceCounter() - t0) * 1000000.0 / freq);
+    } else {
+      window_timings_[idx].last_us = 0.0f;
+    }
+  };
+
+  time_window( 0, "Registers",    show_registers_,         [&]{ render_registers(); });
+  time_window( 1, "Disassembly",  show_disassembly_,       [&]{ render_disassembly(); });
+  time_window( 2, "Memory Hex",   show_memory_hex_,        [&]{ render_memory_hex(); });
+  time_window( 3, "Stack",        show_stack_,             [&]{ render_stack(); });
+  time_window( 4, "Breakpoints",  show_breakpoints_,       [&]{ render_breakpoints(); });
+  time_window( 5, "Symbols",      show_symbols_,           [&]{ render_symbols(); });
+  time_window( 6, "Silicon Disc", show_silicon_disc_,      [&]{ render_silicon_disc(); });
+  time_window( 7, "ASIC",         show_asic_,              [&]{ render_asic(); });
+  time_window( 8, "Disc Tools",   show_disc_tools_,        [&]{ render_disc_tools(); });
+  time_window( 9, "Data Areas",   show_data_areas_,        [&]{ render_data_areas(); });
+  time_window(10, "Disasm Export", show_disasm_export_,     [&]{ render_disasm_export(); });
+  time_window(11, "Session Rec",  show_session_recording_, [&]{ render_session_recording(); });
+  time_window(12, "GFX Finder",   show_gfx_finder_,       [&]{ render_gfx_finder(); });
+  time_window(13, "Video State",  show_video_state_,       [&]{ render_video_state(); });
+  time_window(14, "Audio State",  show_audio_state_,       [&]{ render_audio_state(); });
+  time_window(15, "Recording",    show_recording_controls_,[&]{ render_recording_controls(); });
+  time_window(16, "Assembler",    show_assembler_,         [&]{ render_assembler(); });
 }
 
 // -----------------------------------------------
