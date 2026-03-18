@@ -178,7 +178,7 @@ static BreakpointHitHook g_breakpoint_hit_hook = nullptr;
 static TxtOutputHook g_txt_output_hook = nullptr;
 static uint16_t g_txt_output_hook_addr = 0;
 static uint16_t g_txt_output_hook_addr2 = 0;  // secondary (ROM internal) hook address
-static bool g_txt_hook_suppress = false;       // prevent double-fire (BB5A → 13FE)
+static int g_txt_hook_suppress = 0;  // countdown: prevent double-fire (BB5A → 13FE)
 static TxtOutputHook g_bdos_output_hook = nullptr;
 static byte SZ[256]; // zero and sign flags
 static byte SZ_BIT[256]; // zero, sign and parity/overflow (=zero) flags for BIT opcode
@@ -1170,13 +1170,16 @@ int z80_execute()
       if (g_txt_output_hook) {
          if (_PC == g_txt_output_hook_addr) {
             g_txt_output_hook(_A);
-            g_txt_hook_suppress = true;  // suppress addr2 for this call chain (BB5A → 13FE)
+            // Mark that we just fired addr1, so if addr2 fires within the next
+            // ~100 instructions (same call chain), we skip it.
+            g_txt_hook_suppress = 100;
          } else if (_PC == g_txt_output_hook_addr2 && !(GateArray.ROM_config & 0x04)) {
-            if (!g_txt_hook_suppress) {
+            if (g_txt_hook_suppress == 0) {
                g_txt_output_hook(_A);  // ROM-internal call, not via jump block
             }
-            g_txt_hook_suppress = false;
+            g_txt_hook_suppress = 0;
          }
+         if (g_txt_hook_suppress > 0) g_txt_hook_suppress--;
       }
       if (g_bdos_output_hook && _PC == 0x0005 && _C == 2) {
          g_bdos_output_hook(_E);
