@@ -37,7 +37,7 @@ public:
     size_t asm_source_buf_size() const { return sizeof(asm_source_shadow_); }
     void asm_set_source(const char* text);  // IPC write path
 
-    // Returns the array of all window key strings (16 entries).
+    // Returns the array of all window key strings (NUM_WINDOWS entries).
     static const char* const* all_window_keys(int* count);
 
 private:

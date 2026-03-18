@@ -1724,6 +1724,7 @@ void cpc_pause()
 void cpc_resume()
 {
    CPC.paused = false;
+   lastFrameStart = 0; // reset so first frame after resume isn't measured as huge
    audio_resume();
 }
 
