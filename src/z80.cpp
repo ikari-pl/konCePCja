@@ -177,6 +177,8 @@ uint64_t g_tstate_counter = 0;
 static BreakpointHitHook g_breakpoint_hit_hook = nullptr;
 static TxtOutputHook g_txt_output_hook = nullptr;
 static uint16_t g_txt_output_hook_addr = 0;
+static uint16_t g_txt_output_hook_addr2 = 0;  // secondary (ROM internal) hook address
+static bool g_txt_hook_suppress = false;       // prevent double-fire (BB5A → 13FE)
 static TxtOutputHook g_bdos_output_hook = nullptr;
 static byte SZ[256]; // zero and sign flags
 static byte SZ_BIT[256]; // zero, sign and parity/overflow (=zero) flags for BIT opcode
@@ -1068,10 +1070,11 @@ void z80_set_breakpoint_hit_hook(BreakpointHitHook hook)
    g_breakpoint_hit_hook = hook;
 }
 
-void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address)
+void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address, uint16_t address2)
 {
    g_txt_output_hook = hook;
    g_txt_output_hook_addr = address;
+   g_txt_output_hook_addr2 = address2;
 }
 
 void z80_set_bdos_output_hook(TxtOutputHook hook)
@@ -1164,8 +1167,16 @@ int z80_execute()
 
       ipc_check_pc_events(_PC);
 
-      if (g_txt_output_hook && _PC == g_txt_output_hook_addr) {
-         g_txt_output_hook(_A);
+      if (g_txt_output_hook) {
+         if (_PC == g_txt_output_hook_addr) {
+            g_txt_output_hook(_A);
+            g_txt_hook_suppress = true;  // suppress addr2 for this call chain (BB5A → 13FE)
+         } else if (_PC == g_txt_output_hook_addr2 && !(GateArray.ROM_config & 0x04)) {
+            if (!g_txt_hook_suppress) {
+               g_txt_output_hook(_A);  // ROM-internal call, not via jump block
+            }
+            g_txt_hook_suppress = false;
+         }
       }
       if (g_bdos_output_hook && _PC == 0x0005 && _C == 2) {
          g_bdos_output_hook(_E);

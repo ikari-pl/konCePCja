@@ -202,7 +202,7 @@ void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 // TXT_OUTPUT hook — fires when PC hits the given address, passing the A register.
 // Used by the telnet console to mirror CPC text output.
 using TxtOutputHook = void(*)(uint8_t ch);
-void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address);
+void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address, uint16_t address2 = 0);
 
 // CP/M BDOS hook — fires when PC == 0x0005 and C == 2 (C_WRITE), passing E register.
 // Used by the telnet console to capture CP/M console output.
