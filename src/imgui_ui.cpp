@@ -2589,6 +2589,30 @@ static void imgui_render_devtools()
       CPC.paused = !CPC.paused;
     }
 
+    // ── Per-window render timing ──
+    {
+      ImGui::SameLine(0, 16.0f);
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+      float total_us = 0;
+      const auto* timings = g_devtools_ui.window_timings();
+      for (int i = 0; i < DevToolsUI::NUM_WINDOWS; i++) {
+        if (timings[i].last_us > 0.01f) total_us += timings[i].last_us;
+      }
+      char buf[32];
+      snprintf(buf, sizeof(buf), "dt:%.1fms", total_us / 1000.0f);
+      ImGui::TextUnformatted(buf);
+      if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        for (int i = 0; i < DevToolsUI::NUM_WINDOWS; i++) {
+          if (timings[i].last_us > 0.01f && timings[i].name) {
+            ImGui::Text("%-14s %6.0f us", timings[i].name, timings[i].last_us);
+          }
+        }
+        ImGui::EndTooltip();
+      }
+      ImGui::PopStyleColor();
+    }
+
     // ── Sync devtools bar height ──
     {
       int h = static_cast<int>(ImGui::GetWindowSize().y);
