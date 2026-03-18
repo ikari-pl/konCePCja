@@ -959,6 +959,7 @@ static void imgui_render_topbar()
     // Position below the Layout button
     ImGui::SetNextWindowPos(s_layout_btn_pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(220, 0));  // auto-height
+    ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 
     ImGuiWindowFlags dd_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
@@ -1668,10 +1669,11 @@ static void imgui_render_statusbar()
 
 static void imgui_render_menu()
 {
-  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGuiViewport* mvp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
   ImGui::SetNextWindowSize(ImVec2(260, 0));
+  ImGui::SetNextWindowViewport(mvp->ID);
 
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize |
                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
@@ -1788,10 +1790,10 @@ static void imgui_render_options()
     first_open = false;
   }
 
-  ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGuiViewport* mvp = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_Appearing);
-
+  ImGui::SetNextWindowViewport(mvp->ID);
 
   bool open = true;
   if (!ImGui::Begin("Options", &open, ImGuiWindowFlags_NoCollapse)) {
@@ -2631,7 +2633,7 @@ static void imgui_render_devtools()
 static void imgui_render_memory_tool()
 {
   ImGui::SetNextWindowSize(ImVec2(400, 340), ImGuiCond_FirstUseEver);
-
+  ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 
   bool open = true;
   if (!ImGui::Begin("Memory Tool", &open, ImGuiWindowFlags_NoCollapse)) {
@@ -2768,7 +2770,7 @@ static void imgui_render_vkeyboard()
 {
   bool open = true;
   ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
-
+  ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 
   if (!ImGui::Begin("CPC 6128 Keyboard", &open, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();
