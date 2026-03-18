@@ -357,14 +357,18 @@ void direct_flip(video_plugin* t)
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
 
-  // Multi-viewport: update and render platform windows
+  // Multi-viewport: update and render platform windows.
+  // Skip the expensive platform window update/render when devtools is closed —
+  // avoids extra GL context switches and SDL_GL_SwapWindow calls for floating windows.
   ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
-    koncpc_order_viewports_above_main();
-    ImGui::RenderPlatformWindowsDefault();
+    if (imgui_state.show_devtools) {
+      koncpc_order_viewports_above_main();
+      ImGui::RenderPlatformWindowsDefault();
+    }
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
 
@@ -1295,14 +1299,17 @@ void swscale_blit(video_plugin* t)
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
 
-  // Multi-viewport: update and render platform windows
+  // Multi-viewport: always update platform windows (for cleanup), but only
+  // render them when devtools is shown (avoids extra GL swaps for floating windows).
   ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
-    koncpc_order_viewports_above_main();
-    ImGui::RenderPlatformWindowsDefault();
+    if (imgui_state.show_devtools) {
+      koncpc_order_viewports_above_main();
+      ImGui::RenderPlatformWindowsDefault();
+    }
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
 

@@ -895,6 +895,7 @@ static void imgui_render_topbar()
   ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -1178,6 +1179,7 @@ static void imgui_render_statusbar()
 
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport, don't spawn platform window
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -2469,6 +2471,7 @@ static void imgui_render_devtools()
 
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 0));  // auto-height
+  ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 2));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
