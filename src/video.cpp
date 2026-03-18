@@ -357,14 +357,19 @@ void direct_flip(video_plugin* t)
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
 
-  // Multi-viewport: update and render platform windows
+  // Multi-viewport: update and render platform windows.
+  // Only render when there are actual platform viewports (floating devtools, popups, submenus).
+  // When only the main viewport exists (Viewports.Size == 1), skip — saves GL context
+  // switches and SDL_GL_SwapWindow calls that block on macOS compositor.
   ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
-    koncpc_order_viewports_above_main();
-    ImGui::RenderPlatformWindowsDefault();
+    if (ImGui::GetPlatformIO().Viewports.Size > 1) {
+      koncpc_order_viewports_above_main();
+      ImGui::RenderPlatformWindowsDefault();
+    }
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
 
@@ -1295,14 +1300,16 @@ void swscale_blit(video_plugin* t)
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
 
-  // Multi-viewport: update and render platform windows
+  // Multi-viewport: render platform windows only when they exist
   ImGuiIO& io = ImGui::GetIO();
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
     SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
     ImGui::UpdatePlatformWindows();
-    koncpc_order_viewports_above_main();
-    ImGui::RenderPlatformWindowsDefault();
+    if (ImGui::GetPlatformIO().Viewports.Size > 1) {
+      koncpc_order_viewports_above_main();
+      ImGui::RenderPlatformWindowsDefault();
+    }
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
 
