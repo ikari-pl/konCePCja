@@ -956,10 +956,17 @@ static void imgui_render_topbar()
 
   // ── Layout dropdown window (rendered outside topbar) ──
   if (imgui_state.show_layout_dropdown) {
-    // Position below the Layout button
-    ImGui::SetNextWindowPos(s_layout_btn_pos, ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(220, 0));  // auto-height
-    ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+    // Position below the Layout button, clamped to stay within the main viewport
+    {
+      ImGuiViewport* mvp = ImGui::GetMainViewport();
+      float dd_w = 220.0f;
+      float x = s_layout_btn_pos.x;
+      float right_edge = mvp->Pos.x + mvp->Size.x;
+      if (x + dd_w > right_edge) x = right_edge - dd_w;
+      ImGui::SetNextWindowPos(ImVec2(x, s_layout_btn_pos.y), ImGuiCond_Always);
+      ImGui::SetNextWindowSize(ImVec2(dd_w, 0));
+      ImGui::SetNextWindowViewport(mvp->ID);
+    }
 
     ImGuiWindowFlags dd_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
