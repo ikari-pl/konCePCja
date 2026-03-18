@@ -1077,6 +1077,31 @@ void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address, uint16_t addr
    g_txt_output_hook_addr2 = address2;
 }
 
+uint16_t z80_find_rom_txt_output()
+{
+   // Scan lower ROM for the boot string print loop:
+   //   7E       LD A,(HL)
+   //   23       INC HL
+   //   B7       OR A
+   //   C8       RET Z
+   //   CD xx xx CALL TXT_OUTPUT
+   //   18 F7    JR loop_start
+   extern byte *pbROMlo;
+   if (!pbROMlo) return 0;
+   static const byte pattern[] = {0x7E, 0x23, 0xB7, 0xC8, 0xCD};
+   static const byte suffix[]  = {0x18, 0xF7};
+   for (int i = 0; i < 0x3FFF - 8; i++) {
+      if (memcmp(pbROMlo + i, pattern, 5) == 0 &&
+          memcmp(pbROMlo + i + 7, suffix, 2) == 0) {
+         uint16_t addr = pbROMlo[i + 5] | (pbROMlo[i + 6] << 8);
+         LOG_INFO("ROM TXT_OUTPUT detected at &" << std::hex << addr << " (print loop at ROM &" << i << ")");
+         return addr;
+      }
+   }
+   LOG_INFO("ROM TXT_OUTPUT not found in lower ROM — telnet will only capture jump block calls");
+   return 0;
+}
+
 void z80_set_bdos_output_hook(TxtOutputHook hook)
 {
    g_bdos_output_hook = hook;

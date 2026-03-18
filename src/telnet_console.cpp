@@ -143,7 +143,11 @@ void TelnetConsole::start(int base_port)
    running.store(true);
    output_head.store(0);
    output_tail.store(0);
-   z80_set_txt_output_hook(&txt_output_hook, 0xBB5A, 0x13FE);  // &BB5A=jump block, &13FE=ROM internal (6128 v3)
+   // &BB5A = firmware jump block (stable across all CPC models).
+   // Second address = ROM-internal TXT_OUTPUT, found by scanning for the
+   // boot string print loop: LD A,(HL); INC HL; OR A; RET Z; CALL xxxx; JR loop
+   uint16_t rom_txt_output = z80_find_rom_txt_output();
+   z80_set_txt_output_hook(&txt_output_hook, 0xBB5A, rom_txt_output);
    z80_set_bdos_output_hook(&txt_output_hook);  // CP/M: BDOS C_WRITE (C=2, char in E)
    server_thread = std::thread(&TelnetConsole::run, this);
 }
