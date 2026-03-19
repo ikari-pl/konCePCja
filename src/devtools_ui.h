@@ -64,7 +64,8 @@ private:
       uint8_t length = 0; // instruction length in bytes (1-4)
     };
     std::unordered_map<word, CachedInsn> disasm_cache_;
-    byte disasm_cache_banking_ = 0xFF; // last seen RAM_config, invalidate on change
+    byte disasm_cache_ram_config_ = 0xFF;  // last seen RAM_config
+    byte disasm_cache_rom_config_ = 0xFF;  // last seen ROM_config
 
     // PC history ring buffer — records every PC value for stable backward walk
     static constexpr int DISASM_PC_HISTORY_SIZE = 64;
@@ -79,6 +80,8 @@ private:
       disasm_cache_.clear();
       disasm_pc_history_count_ = 0;
       disasm_pc_history_head_ = 0;
+      disasm_cache_ram_config_ = 0xFF;
+      disasm_cache_rom_config_ = 0xFF;
     }
 
     char memhex_goto_addr_[8] = "";

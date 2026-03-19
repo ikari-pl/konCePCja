@@ -368,12 +368,12 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
-  // Invalidate cache on banking change
+  // Invalidate cache on banking change (track each config separately to avoid XOR collisions)
   extern t_GateArray GateArray;
-  byte cur_banking = GateArray.RAM_config ^ GateArray.ROM_config;
-  if (cur_banking != disasm_cache_banking_) {
+  if (GateArray.RAM_config != disasm_cache_ram_config_ || GateArray.ROM_config != disasm_cache_rom_config_) {
     disasm_cache_.clear();
-    disasm_cache_banking_ = cur_banking;
+    disasm_cache_ram_config_ = GateArray.RAM_config;
+    disasm_cache_rom_config_ = GateArray.ROM_config;
   }
 
   // Record current PC into the execution-trace cache
@@ -450,9 +450,11 @@ void DevToolsUI::render_disassembly()
     bool pc_in_rom = (membank_read[pc_slot] != membank_write[pc_slot]);
     char bank_hdr[64];
     if (pc_in_rom) {
+      const char* rom_name = (pc_slot == 0) ? "Lower ROM"
+                           : (pc_slot == 3) ? "Upper ROM"
+                           : "ROM";  // expansion ROM in unusual slot
       snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: %s",
-               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF,
-               pc_slot == 0 ? "Lower ROM" : "Upper ROM");
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, rom_name);
     } else if (pc_slot == 1 && GateArray.RAM_bank > 0) {
       snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (expansion bank %d)",
                pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, GateArray.RAM_bank);

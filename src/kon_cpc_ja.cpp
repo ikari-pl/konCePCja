@@ -3999,7 +3999,7 @@ int koncpc_main (int argc, char **argv)
             if (g_m4_http.is_running()) g_m4_http.drain_pending();
 
 #ifdef __APPLE__
-            // Update Dock icon with CPC screen preview (~5fps)
+            // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
             // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT * scale
             if (back_surface && (dwFrameCountOverall % 50) == 0) {
                koncpc_update_dock_icon_preview(
