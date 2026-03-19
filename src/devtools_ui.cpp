@@ -317,6 +317,30 @@ void DevToolsUI::render_registers()
 // Debug Window 2: Disassembly
 // -----------------------------------------------
 
+void DevToolsUI::disasm_cache_record_pc()
+{
+  word pc = z80.PC.w.l;
+
+  // Push into PC history ring buffer (always, even if instruction is cached)
+  // Skip if same as last entry (avoid filling the buffer with repeated PCs when paused)
+  int prev_idx = (disasm_pc_history_head_ - 1 + DISASM_PC_HISTORY_SIZE) % DISASM_PC_HISTORY_SIZE;
+  if (disasm_pc_history_count_ == 0 || disasm_pc_history_[prev_idx] != pc) {
+    disasm_pc_history_[disasm_pc_history_head_] = pc;
+    disasm_pc_history_head_ = (disasm_pc_history_head_ + 1) % DISASM_PC_HISTORY_SIZE;
+    if (disasm_pc_history_count_ < DISASM_PC_HISTORY_SIZE)
+      disasm_pc_history_count_++;
+  }
+
+  // Cache the disassembled instruction at PC
+  if (disasm_cache_.count(pc)) return;
+  DisassembledCode dc;
+  std::vector<dword> eps;
+  auto line = disassemble_one(pc, dc, eps);
+  int len = line.Size();
+  if (len <= 0) len = 1;
+  disasm_cache_[pc] = { line.instruction_, static_cast<uint8_t>(len) };
+}
+
 void DevToolsUI::render_disassembly()
 {
   ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
@@ -357,13 +381,19 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
-  // Disassemble ~48 instructions starting a few lines before center
-  // Use a small offset so the target appears near the top 1/3 of the view
-  word start_addr = center_pc - 16;
+  // Invalidate cache on banking change (track each config separately to avoid XOR collisions)
+  extern t_GateArray GateArray;
+  if (GateArray.RAM_config != disasm_cache_ram_config_ || GateArray.ROM_config != disasm_cache_rom_config_) {
+    disasm_cache_.clear();
+    disasm_cache_ram_config_ = GateArray.RAM_config;
+    disasm_cache_rom_config_ = GateArray.ROM_config;
+  }
+
+  // Record current PC into the execution-trace cache
+  disasm_cache_record_pc();
+
   constexpr int NUM_LINES = 48;
 
-  DisassembledCode dummy_dc;
-  std::vector<dword> dummy_eps;
   struct DisasmEntry {
     word addr;
     std::string text;
@@ -373,7 +403,13 @@ void DevToolsUI::render_disassembly()
   std::vector<DisasmEntry> lines;
   lines.reserve(NUM_LINES);
 
+  // Start a few instructions before center_pc so it appears in the upper portion.
+  word start_addr = center_pc - 16;
+
   word addr = start_addr;
+  DisassembledCode dummy_dc;
+  std::vector<dword> dummy_eps;
+
   for (int i = 0; i < NUM_LINES; i++) {
     DisasmEntry entry;
     entry.addr = addr;
@@ -396,16 +432,54 @@ void DevToolsUI::render_disassembly()
       if (line_bytes <= 0) line_bytes = 1;
       addr = (addr + line_bytes) & 0xFFFF;
     } else {
-      auto line = disassemble_one(addr, dummy_dc, dummy_eps);
-      entry.text = line.instruction_;
-      int len = line.Size();
-      if (len <= 0) len = 1;
-      addr = (addr + len) & 0xFFFF;
+      // Check execution-trace cache first
+      auto it = disasm_cache_.find(addr);
+      if (it != disasm_cache_.end()) {
+        entry.text = it->second.text;
+        int len = it->second.length;
+        if (len <= 0) len = 1;
+        addr = (addr + len) & 0xFFFF;
+      } else {
+        // Cache miss — disassemble (but don't cache: we only cache PC-visited addrs)
+        auto line = disassemble_one(addr, dummy_dc, dummy_eps);
+        entry.text = line.instruction_;
+        int len = line.Size();
+        if (len <= 0) len = 1;
+        addr = (addr + len) & 0xFFFF;
+      }
     }
     lines.push_back(std::move(entry));
   }
 
   const auto& breakpoints = z80_list_breakpoints_ref();
+
+  // ROM detection: when read and write banks differ for a slot, ROM is overlaid
+  extern byte *membank_read[4], *membank_write[4];
+
+  // Sticky bank header: shows what's mapped at the current PC slot.
+  // Displayed above the scrolling list so it's always visible.
+  {
+    word pc_slot = (center_pc >> 14) & 3;
+    bool pc_in_rom = (membank_read[pc_slot] != membank_write[pc_slot]);
+    char bank_hdr[64];
+    if (pc_in_rom) {
+      const char* rom_name = (pc_slot == 0) ? "Lower ROM"
+                           : (pc_slot == 3) ? "Upper ROM"
+                           : "ROM";  // expansion ROM in unusual slot
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: %s",
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, rom_name);
+    } else if (pc_slot == 1 && GateArray.RAM_bank > 0) {
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (expansion bank %d)",
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, GateArray.RAM_bank);
+    } else {
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (bank %d)",
+               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, pc_slot);
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text,
+      pc_in_rom ? ImVec4(0.7f, 0.5f, 0.8f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+    ImGui::TextUnformatted(bank_hdr);
+    ImGui::PopStyleColor();
+  }
 
   if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
     int scroll_to_idx = -1;
@@ -416,6 +490,18 @@ void DevToolsUI::render_disassembly()
       bool is_bp = false;
       for (const auto& bp : breakpoints) {
         if (bp.address == entry.addr && bp.type != EPHEMERAL) { is_bp = true; break; }
+      }
+
+      // --- ROM background tint (dark purple, matching memory hex viewer) ---
+      int slot = (entry.addr >> 14) & 3;
+      bool in_rom = (membank_read[slot] != membank_write[slot]);
+      if (in_rom) {
+        ImVec2 rpos = ImGui::GetCursorScreenPos();
+        float row_h = ImGui::GetTextLineHeightWithSpacing();
+        float row_w = ImGui::GetContentRegionAvail().x;
+        ImGui::GetWindowDrawList()->AddRectFilled(
+          rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
+          IM_COL32(60, 20, 60, 80));
       }
 
       // Symbol label above the instruction
@@ -432,7 +518,7 @@ void DevToolsUI::render_disassembly()
                is_bp ? kBreakpointMarker : " ",
                entry.addr, entry.text.c_str());
 
-      // Color: green for PC, red for breakpoint, amber for data area
+      // Color: green for PC, red for breakpoint, amber for data area, purple for ROM
       int style_colors_pushed = 0;
       if (entry.is_data_area && !is_pc && !is_bp) {
         // Subtle amber background for data area lines
@@ -444,6 +530,9 @@ void DevToolsUI::render_disassembly()
         style_colors_pushed = 1;
       } else if (is_bp) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+        style_colors_pushed = 1;
+      } else if (in_rom) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.5f, 0.8f, 1.0f));
         style_colors_pushed = 1;
       }
 
@@ -518,7 +607,7 @@ void DevToolsUI::render_disassembly()
 
       if (style_colors_pushed > 0) ImGui::PopStyleColor(style_colors_pushed);
 
-      // Follow PC: scroll to keep PC visible (using SetScrollHereY in-place)
+      // Follow PC: scroll to keep PC visible
       if (is_pc && disasm_follow_pc_) {
         ImGui::SetScrollHereY(0.3f);
       }
