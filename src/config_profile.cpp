@@ -105,6 +105,7 @@ std::string ConfigProfileManager::load(const std::string& name) {
     CPC.model = p.model;
     CPC.ram_size = p.ram_size;
     CPC.speed = p.speed;
+    CPC.frameskip = p.frameskip;
     CPC.scr_scale = p.scr_scale;
     CPC.scr_oglscanlines = p.scr_scanlines;
     CPC.snd_enabled = p.snd_enabled;
@@ -130,6 +131,7 @@ std::string ConfigProfileManager::save(const std::string& name) {
     p.model = CPC.model;
     p.ram_size = CPC.ram_size;
     p.speed = CPC.speed;
+    p.frameskip = CPC.frameskip;
     p.scr_scale = CPC.scr_scale;
     p.scr_scanlines = CPC.scr_oglscanlines;
     p.snd_enabled = CPC.snd_enabled;
@@ -169,6 +171,7 @@ std::string ConfigProfileManager::write_profile(const std::string& path, const C
     f << "model = " << p.model << "\n";
     f << "ram_size = " << p.ram_size << "\n";
     f << "speed = " << p.speed << "\n";
+    f << "frameskip = " << p.frameskip << "\n";
     f << "[display]\n";
     f << "scale = " << p.scr_scale << "\n";
     f << "scanlines = " << p.scr_scanlines << "\n";
@@ -224,6 +227,7 @@ std::string ConfigProfileManager::read_profile(const std::string& path, ConfigPr
         if (key == "model") p.model = val;
         else if (key == "ram_size") p.ram_size = val;
         else if (key == "speed") p.speed = val;
+        else if (key == "frameskip") p.frameskip = val;
         else if (key == "scale") p.scr_scale = val;
         else if (key == "scanlines") p.scr_scanlines = val;
         else if (key == "enabled") p.snd_enabled = val;

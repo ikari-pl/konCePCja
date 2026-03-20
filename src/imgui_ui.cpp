@@ -1835,6 +1835,14 @@ static void imgui_render_options()
         CPC.limit_speed = limit ? 1 : 0;
       }
 
+      bool frameskip = CPC.frameskip != 0;
+      if (ImGui::Checkbox("Auto Frameskip", &frameskip)) {
+        CPC.frameskip = frameskip ? 1 : 0;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Skip rendering frames when emulation falls behind 100%% speed.");
+      }
+
       int speed = static_cast<int>(CPC.speed);
       if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING, MAX_SPEED_SETTING)) {
         CPC.speed = speed;

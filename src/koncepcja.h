@@ -216,6 +216,8 @@ class t_CPC {
    unsigned int ram_size;
    unsigned int speed;
    unsigned int limit_speed;
+   unsigned int frameskip;
+   bool skip_rendering;
    bool paused;
    unsigned int auto_pause;
    unsigned int boot_time;

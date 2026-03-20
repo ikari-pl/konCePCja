@@ -3961,8 +3961,23 @@ int koncpc_main (int argc, char **argv)
             // If we fell behind, allow catch-up (next frames will have shorter/no sleep).
             // Only reset if more than 3 frames behind to prevent audio bursting.
             uint64_t now = SDL_GetPerformanceCounter();
-            if (perfTicksTarget + 3 * perfTicksOffset < now) {
-               perfTicksTarget = now + perfTicksOffset;
+            
+            static int consecutive_skips = 0;
+            if (CPC.frameskip && now > perfTicksTarget) {
+               if (consecutive_skips < 5) {
+                  CPC.skip_rendering = true;
+                  consecutive_skips++;
+               } else {
+                  CPC.skip_rendering = false;
+                  consecutive_skips = 0;
+                  perfTicksTarget = now + perfTicksOffset;
+               }
+            } else {
+               CPC.skip_rendering = false;
+               consecutive_skips = 0;
+               if (perfTicksTarget + 3 * perfTicksOffset < now) {
+                  perfTicksTarget = now + perfTicksOffset;
+               }
             }
          }
 
@@ -4177,12 +4192,16 @@ int koncpc_main (int argc, char **argv)
                imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
                imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
             }
-            asic_draw_sprites();
+            if (!CPC.skip_rendering) {
+               asic_draw_sprites();
+            }
             if (!g_headless) {
-              uint64_t displayStart = SDL_GetPerformanceCounter();
-              video_display();
-              uint64_t displayEnd = SDL_GetPerformanceCounter();
-              displayTimeAccum += displayEnd - displayStart;
+              if (!CPC.skip_rendering) {
+                uint64_t displayStart = SDL_GetPerformanceCounter();
+                video_display();
+                uint64_t displayEnd = SDL_GetPerformanceCounter();
+                displayTimeAccum += displayEnd - displayStart;
+              }
               video_take_pending_window_screenshot();
             }
 

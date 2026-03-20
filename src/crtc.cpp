@@ -1074,7 +1074,7 @@ void render32bpp_doubleY()
 void crtc_cycle(int repeat_count)
 {
    while (repeat_count) {
-      if (VDU.flag_drawing) { // are we within the rendering area?
+      if (VDU.flag_drawing && !CPC.skip_rendering) { // are we within the rendering area?
          if (HorzChar < HorzMax) { // below horizontal cut-off?
             if (flags1.combined != LastPreRend) {
                set_prerender(); // change pre-renderer if necessary
