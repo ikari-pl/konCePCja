@@ -56,6 +56,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "stringutils.h"
 #include "zip.h"
 #include "keyboard.h"
+#include "keyboard_manager.h"
 #include "trace.h"
 #include "wav_recorder.h"
 #include "amdrum.h"
@@ -602,6 +603,7 @@ byte z80_IN_handler (reg_pair port)
                         }
                         ret_val &= io_fire_kbd_read_hooks(CPC.keyboard_line & 0x0f);
                         g_keyboard_scanned = true; // signal autotype that firmware has scanned
+                        g_keyboard_manager.notify_scanned(CPC.keyboard_line & 0x0f);
                         LOG_DEBUG("PPI read from portA (keyboard_line): " << CPC.keyboard_line << " - " << static_cast<int>(ret_val));
                      } else if (PSG.reg_select == 15) { // PSG port B?
                         if ((PSG.RegisterAY.Index[7] & 0x80)) { // port B in output mode?
@@ -2137,6 +2139,13 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    if (CPC.keyboard > MAX_ROM_MODS) {
       CPC.keyboard = 0;
    }
+   
+   int ksm = conf.getIntValue("system", "keyboard_support_mode", 0);
+   if (ksm < 0 || ksm >= static_cast<int>(KeyboardSupportMode::Last)) {
+       ksm = 0;
+   }
+   CPC.keyboard_support_mode = static_cast<KeyboardSupportMode>(ksm);
+
    {
       int joy_emu_val = conf.getIntValue("system", "joystick_emulation", 0);
       if (joy_emu_val < 0 || joy_emu_val >= static_cast<int>(JoystickEmulation::Last)) {
@@ -2306,6 +2315,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("system", "printer", CPC.printer);
    conf.setIntValue("system", "mf2", CPC.mf2);
    conf.setIntValue("system", "keyboard", CPC.keyboard);
+   conf.setIntValue("system", "keyboard_support_mode", static_cast<int>(CPC.keyboard_support_mode));
    conf.setIntValue("system", "boot_time", CPC.boot_time);
    conf.setIntValue("system", "joystick_emulation", static_cast<int>(CPC.joystick_emulation));
    conf.setIntValue("system", "joysticks", CPC.joysticks);
@@ -3959,12 +3969,15 @@ int koncpc_main (int argc, char **argv)
             sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
             perfTicksTarget += perfTicksOffset;
             // If we fell behind, allow catch-up (next frames will have shorter/no sleep).
-            // Only reset if more than 3 frames behind to prevent audio bursting.
+            // Frameskip: skip rendering for up to MAX_CONSECUTIVE_SKIPS frames to let
+            // the Z80 catch up. After that, reset the deadline to prevent runaway skipping.
+            // When not skipping (or frameskip disabled), reset if >3 frames behind.
             uint64_t now = SDL_GetPerformanceCounter();
-            
+
+            static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
             static int consecutive_skips = 0;
             if (CPC.frameskip && now > perfTicksTarget) {
-               if (consecutive_skips < 5) {
+               if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
                   CPC.skip_rendering = true;
                   consecutive_skips++;
                } else {
@@ -3979,6 +3992,9 @@ int koncpc_main (int argc, char **argv)
                   perfTicksTarget = now + perfTicksOffset;
                }
             }
+         } else {
+            // Speed limiter not active — ensure rendering is never stuck off.
+            CPC.skip_rendering = false;
          }
 
          dword dwOffset = CPC.scr_pos - CPC.scr_base; // offset in current surface row
@@ -4041,6 +4057,8 @@ int koncpc_main (int argc, char **argv)
          if (iExitCondition == EC_FRAME_COMPLETE) { // emulation finished rendering a complete frame?
             dwFrameCountOverall++;
             dwFrameCount++;
+
+            g_keyboard_manager.update(keyboard_matrix, dwFrameCountOverall);
 
             // Measure frame-to-frame time (only on actual completed frames)
             {
