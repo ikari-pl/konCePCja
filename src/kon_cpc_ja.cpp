@@ -3953,6 +3953,8 @@ int koncpc_main (int argc, char **argv)
             frameTimeSamples = 0;
          }
 
+         static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
+         static int consecutive_skips = 0;
          if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
             // Absolute deadline: sleep until perfTicksTarget, then advance by one frame.
             // Multiple EC_CYCLE_COUNTs may fire per frame (audio-driven cycle boundaries);
@@ -3973,9 +3975,6 @@ int koncpc_main (int argc, char **argv)
             // the Z80 catch up. After that, reset the deadline to prevent runaway skipping.
             // When not skipping (or frameskip disabled), reset if >3 frames behind.
             uint64_t now = SDL_GetPerformanceCounter();
-
-            static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
-            static int consecutive_skips = 0;
             if (CPC.frameskip && now > perfTicksTarget) {
                if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
                   CPC.skip_rendering = true;
@@ -3995,6 +3994,7 @@ int koncpc_main (int argc, char **argv)
          } else {
             // Speed limiter not active — ensure rendering is never stuck off.
             CPC.skip_rendering = false;
+            consecutive_skips = 0;
          }
 
          dword dwOffset = CPC.scr_pos - CPC.scr_base; // offset in current surface row
