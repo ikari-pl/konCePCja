@@ -1,4 +1,5 @@
 #include "keyboard_manager.h"
+#include "keyboard.h"  // for applyKeypressDirect
 
 extern t_CPC CPC;
 
