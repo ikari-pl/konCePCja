@@ -1701,26 +1701,37 @@ void InputMapper::CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancod
 
 InputMapper::InputMapper(t_CPC *CPC): CPC(CPC) { }
 
+#include "keyboard_manager.h"
+extern dword dwFrameCountOverall;
+
+void applyKeypressDirect(CPCScancode cpc_key, byte keyboard_matrix[], bool pressed, bool release_modifiers) {
+    if (pressed) {
+        keyboard_matrix[static_cast<byte>(cpc_key) >> 4] &= ~bit_values[static_cast<byte>(cpc_key) & 7]; // key is being held down
+        if (cpc_key & MOD_CPC_SHIFT) { // CPC SHIFT key required?
+            keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7]; // key needs to be SHIFTed
+        } else {
+            keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7]; // make sure key is unSHIFTed
+        }
+        if (cpc_key & MOD_CPC_CTRL) { // CPC CONTROL key required?
+            keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7]; // CONTROL key is held down
+        } else {
+            keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7]; // make sure CONTROL key is released
+        }
+    } else {
+        keyboard_matrix[static_cast<byte>(cpc_key) >> 4] |= bit_values[static_cast<byte>(cpc_key) & 7]; // key has been released
+        if (release_modifiers) {
+            keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7]; // make sure key is unSHIFTed
+            keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7]; // make sure CONTROL key is not held down
+        }
+    }
+}
+
 void applyKeypress(CPCScancode cpc_key, byte keyboard_matrix[], bool pressed, bool release_modifiers) {
     if ((!CPC.paused) && (static_cast<byte>(cpc_key) != 0xff)) {
         if (pressed) {
-            keyboard_matrix[static_cast<byte>(cpc_key) >> 4] &= ~bit_values[static_cast<byte>(cpc_key) & 7]; // key is being held down
-            if (cpc_key & MOD_CPC_SHIFT) { // CPC SHIFT key required?
-                keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7]; // key needs to be SHIFTed
-            } else {
-                keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7]; // make sure key is unSHIFTed
-            }
-            if (cpc_key & MOD_CPC_CTRL) { // CPC CONTROL key required?
-                keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7]; // CONTROL key is held down
-            } else {
-                keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7]; // make sure CONTROL key is released
-            }
+            g_keyboard_manager.handle_keydown(cpc_key, keyboard_matrix);
         } else {
-            keyboard_matrix[static_cast<byte>(cpc_key) >> 4] |= bit_values[static_cast<byte>(cpc_key) & 7]; // key has been released
-            if (release_modifiers) {
-              keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7]; // make sure key is unSHIFTed
-              keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7]; // make sure CONTROL key is not held down
-            }
+            g_keyboard_manager.handle_keyup(cpc_key, keyboard_matrix, release_modifiers, dwFrameCountOverall);
         }
     }
 }
