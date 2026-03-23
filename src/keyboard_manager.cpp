@@ -1,7 +1,6 @@
 #include "keyboard_manager.h"
 
 extern t_CPC CPC;
-void applyKeypressDirect(CPCScancode cpc_key, byte keyboard_matrix[], bool pressed, bool release_modifiers);
 
 KeyboardManager g_keyboard_manager;
 
@@ -38,7 +37,8 @@ void KeyboardManager::handle_keyup(CPCScancode scancode, byte keyboard_matrix[],
     if (CPC.keyboard_support_mode == KeyboardSupportMode::Direct) {
         release_key(scancode, keyboard_matrix, release_modifiers);
     } else if (CPC.keyboard_support_mode == KeyboardSupportMode::BufferedUntilRead) {
-        if (!key_needs_scan[scancode]) {
+        auto it2 = key_needs_scan.find(scancode);
+        if (it2 == key_needs_scan.end() || !it2->second) {
             release_key(scancode, keyboard_matrix, release_modifiers);
         } else {
             pending_releases.push_back({scancode, 0, release_modifiers});
@@ -69,7 +69,8 @@ void KeyboardManager::update(byte keyboard_matrix[], dword current_frame) {
     while (it != pending_releases.end()) {
         bool should_release = false;
         if (CPC.keyboard_support_mode == KeyboardSupportMode::BufferedUntilRead) {
-            if (!key_needs_scan[it->scancode]) {
+            auto found = key_needs_scan.find(it->scancode);
+            if (found == key_needs_scan.end() || !found->second) {
                 should_release = true;
             }
         } else if (CPC.keyboard_support_mode == KeyboardSupportMode::Min25ms) {

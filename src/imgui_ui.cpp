@@ -2080,7 +2080,7 @@ static void imgui_render_options()
       int ksm = static_cast<int>(CPC.keyboard_support_mode);
       const char* ksm_modes[] = { "Direct", "Buffered Until Read", "Min. 25ms" };
       int max_ksm = IM_ARRAYSIZE(ksm_modes);
-      if (static_cast<int>(CPC.keyboard_support_mode) >= max_ksm) ksm = 0;
+      if (ksm < 0 || ksm >= max_ksm) ksm = 0;
       if (ImGui::Combo("Keyboard Support Mode", &ksm, ksm_modes, max_ksm)) {
         CPC.keyboard_support_mode = static_cast<KeyboardSupportMode>(ksm);
       }

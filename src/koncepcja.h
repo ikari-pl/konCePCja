@@ -235,7 +235,7 @@ class t_CPC {
    unsigned int printer_port;
    unsigned int mf2;
    unsigned int keyboard;
-   KeyboardSupportMode keyboard_support_mode;
+   KeyboardSupportMode keyboard_support_mode = KeyboardSupportMode::Direct;
    JoystickEmulation joystick_emulation;
    unsigned int joysticks;
    unsigned int joystick_menu_button;
