@@ -46,7 +46,7 @@ void KeyboardManager::handle_keyup(CPCScancode scancode, byte keyboard_matrix[],
         } else {
             pending_releases.push_back({scancode, 0, release_modifiers});
         }
-    } else if (CPC.keyboard_support_mode == KeyboardSupportMode::Min25ms) {
+    } else if (CPC.keyboard_support_mode == KeyboardSupportMode::Min2Frames) {
         pending_releases.push_back({scancode, current_frame + 2, release_modifiers});
     }
 }
@@ -76,7 +76,7 @@ void KeyboardManager::update(byte keyboard_matrix[], dword current_frame) {
             if (found == key_needs_scan.end() || !found->second) {
                 should_release = true;
             }
-        } else if (CPC.keyboard_support_mode == KeyboardSupportMode::Min25ms) {
+        } else if (CPC.keyboard_support_mode == KeyboardSupportMode::Min2Frames) {
             if (current_frame >= it->release_frame) {
                 should_release = true;
             }

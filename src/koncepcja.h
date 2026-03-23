@@ -207,7 +207,7 @@ enum class JoystickEmulation {
 enum class KeyboardSupportMode {
   Direct = 0,
   BufferedUntilRead = 1,
-  Min25ms = 2,
+  Min2Frames = 2,
   Last = 3,
 };
 

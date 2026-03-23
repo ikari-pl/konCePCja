@@ -2131,6 +2131,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
       CPC.speed = DEF_SPEED_SETTING;
    }
    CPC.limit_speed = conf.getIntValue("system", "limit_speed", 1) & 1;
+   CPC.frameskip = conf.getIntValue("system", "frameskip", 0) & 1;
    CPC.auto_pause = conf.getIntValue("system", "auto_pause", 1) & 1;
    CPC.boot_time = conf.getIntValue("system", "boot_time", 5);
    CPC.printer = conf.getIntValue("system", "printer", 0) & 1;
@@ -2310,6 +2311,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
 
    conf.setIntValue("system", "ram_size", CPC.ram_size); // 128KB RAM
    conf.setIntValue("system", "limit_speed", CPC.limit_speed);
+   conf.setIntValue("system", "frameskip", CPC.frameskip);
    conf.setIntValue("system", "speed", CPC.speed); // original CPC speed
    conf.setIntValue("system", "auto_pause", CPC.auto_pause);
    conf.setIntValue("system", "printer", CPC.printer);

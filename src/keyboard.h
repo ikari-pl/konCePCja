@@ -293,10 +293,6 @@ class LineParsingResult {
     std::string sdl_key_name;
 };
 
-// CPCScancode is a hardware scancode.
-// cf. https://www.cpcwiki.eu/index.php/Programming:Keyboard_scanning#Hardware_scancode_table
-using CPCScancode = dword;
-
 class InputMapper {
   private:
     static const CPCScancode cpc_kbd[CPC_KEYBOARD_NUM][CPC_KEY_NUM];
