@@ -36,10 +36,12 @@ void KeyboardManager::handle_keyup(CPCScancode scancode, byte keyboard_matrix[],
     if (static_cast<byte>(scancode) == 0xff) return;
     
     if (CPC.keyboard_support_mode == KeyboardSupportMode::Direct) {
+        key_needs_scan.erase(scancode);
         release_key(scancode, keyboard_matrix, release_modifiers);
     } else if (CPC.keyboard_support_mode == KeyboardSupportMode::BufferedUntilRead) {
         auto it2 = key_needs_scan.find(scancode);
         if (it2 == key_needs_scan.end() || !it2->second) {
+            key_needs_scan.erase(scancode);
             release_key(scancode, keyboard_matrix, release_modifiers);
         } else {
             pending_releases.push_back({scancode, 0, release_modifiers});
@@ -83,6 +85,7 @@ void KeyboardManager::update(byte keyboard_matrix[], dword current_frame) {
         }
 
         if (should_release) {
+            key_needs_scan.erase(it->scancode);
             release_key(it->scancode, keyboard_matrix, it->release_modifiers);
             it = pending_releases.erase(it);
         } else {

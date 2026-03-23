@@ -3970,10 +3970,19 @@ int koncpc_main (int argc, char **argv)
             }
             sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
             perfTicksTarget += perfTicksOffset;
-            // If we fell behind, allow catch-up (next frames will have shorter/no sleep).
-            // Frameskip: skip rendering for up to MAX_CONSECUTIVE_SKIPS frames to let
-            // the Z80 catch up. After that, reset the deadline to prevent runaway skipping.
-            // When not skipping (or frameskip disabled), reset if >3 frames behind.
+            // Catch-up: if more than 3 frames behind, reset the deadline.
+            uint64_t now = SDL_GetPerformanceCounter();
+            if (!CPC.frameskip && perfTicksTarget + 3 * perfTicksOffset < now) {
+               perfTicksTarget = now + perfTicksOffset;
+            }
+         } else if (iExitCondition != EC_CYCLE_COUNT) {
+            // Speed limiter not active and not a mid-frame audio slice.
+            CPC.skip_rendering = false;
+            consecutive_skips = 0;
+         }
+
+         // Frameskip decision: only on frame boundaries to avoid mid-frame toggles.
+         if (iExitCondition == EC_FRAME_COMPLETE && CPC.limit_speed) {
             uint64_t now = SDL_GetPerformanceCounter();
             if (CPC.frameskip && now > perfTicksTarget) {
                if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
@@ -3987,12 +3996,8 @@ int koncpc_main (int argc, char **argv)
             } else {
                CPC.skip_rendering = false;
                consecutive_skips = 0;
-               if (perfTicksTarget + 3 * perfTicksOffset < now) {
-                  perfTicksTarget = now + perfTicksOffset;
-               }
             }
-         } else {
-            // Speed limiter not active — ensure rendering is never stuck off.
+         } else if (iExitCondition == EC_FRAME_COMPLETE && !CPC.limit_speed) {
             CPC.skip_rendering = false;
             consecutive_skips = 0;
          }
