@@ -17,11 +17,11 @@ https://github.com/ikari-pl/konCePCja
 
 konCePCja is a software emulator of the Amstrad CPC 8-bit home computer series, running on Linux, macOS and Windows. It faithfully imitates the CPC464, CPC664 and CPC6128 models, plus the CPC464+, CPC6128+ and GX4000 Plus Range machines. By recreating the operations of all hardware components at a low level, the emulator achieves a high degree of compatibility with original CPC software. Programs and games run unmodified at real-time or higher speeds, depending on the host environment.
 
-konCePCja is designed as an **IPC-controllable debugging tool** — every feature is accessible via a TCP text protocol, making it scriptable by automation pipelines, CI systems and LLM agents. The 16-window Dear ImGui DevTools UI is built on top of the same API.
+konCePCja is designed as an **IPC-controllable debugging tool** — every feature is accessible via a TCP text protocol, making it scriptable by automation pipelines, CI systems and LLM agents. The 18-window Dear ImGui DevTools UI is built on top of the same API.
 
 ## Changes vs Caprice32
 
-konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 776 tests across 83 suites.
+konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 831 tests across 88 suites.
 
 ### Platform & UI
   * SDL3 migration + macOS menu integration
@@ -30,6 +30,9 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **DevTools toolbar** — toggleable second topbar (F12) with dropdown menus and step/pause controls
   * **SDL_Renderer fallback** — automatic fallback to software rendering on systems without OpenGL
   * **Software scanlines** — configurable scanline intensity for all video backends (GL and software)
+  * **Auto frameskip** — skip rendering when emulation falls behind real-time speed
+  * **High-res speed limiter** — nanosecond-precision frame pacing with catch-up after compositor stalls
+  * **Bottom status bar** — drive LEDs, tape controls and filenames moved to a dedicated status bar
   * PNG logo + macOS icns icon
 
 ### IPC Automation
@@ -58,6 +61,7 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **Disassembly export** — export address ranges to source files with optional symbol labels
   * **Instruction trace** — ring-buffer Z80 execution trace with dump to file
   * **Memory bank viewer** — read through Z80 banking, write path, or raw physical banks
+  * **Disassembly improvements** — PC pinned at fixed position, ROM region color-coding, bank boundary markers at 16K boundaries
 
 ### Disc & Media Tools
   * **Disc file editor** — `disk ls/get/put/rm` for AMSDOS files on DSK images
@@ -78,7 +82,7 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **Video / Audio state** — live CRTC, Gate Array, PSG register viewers with audio oscilloscope
 
 ### Peripheral Expansions
-  * **M4 Board** — virtual filesystem with host directory backing, 39 firmware commands, 31 RSX commands, DSK container support and LED status
+  * **M4 Board** — virtual filesystem with host directory backing, 52 firmware commands, RSX commands, DSK container support, LED status and **embedded HTTP server** (web file browser, ROM management, CPC control, live video preview — compatible with `cpcxfer` and M4 Board Android app)
   * **Symbiface II** — IDE hard disc (ATA PIO with raw `.img` files), DS12887 RTC with NVRAM, PS/2 mouse
   * **Digiblaster** — printer port 8-bit DAC mixed into audio output
   * **AmDrum (Cheetah)** — 8-bit DAC on port `&FFxx`
@@ -112,11 +116,11 @@ See [docs/ipc-protocol.md](docs/ipc-protocol.md) for the full IPC command refere
   * WAV, YM and AVI recording
   * Software scanlines with configurable intensity
   * SDL_Renderer fallback for systems without OpenGL
-  * 8 peripheral expansions: M4 Board, Symbiface II, Digiblaster, AmDrum, SmartWatch, AMX Mouse, Phaser, drive/tape sounds
+  * 8 peripheral expansions: M4 Board (with HTTP server), Symbiface II, Digiblaster, AmDrum, SmartWatch, AMX Mouse, Phaser, drive/tape sounds
   * Custom disk formats
   * Printer support
   * Experimental Multiface 2 support (prefer the memory tool where possible)
-  * 776 unit tests across 83 test suites
+  * 831 unit tests across 88 test suites
 
 Something missing? Open an issue to suggest it.
 
