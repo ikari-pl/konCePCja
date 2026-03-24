@@ -369,6 +369,25 @@ void imgui_init_ui()
 
 void imgui_render_ui()
 {
+  // Reconcile ImGui mouse state with hardware — defense against stuck buttons.
+  // SDL's Cocoa_ReconcileMouseButtons() handles the SDL layer, but ImGui can
+  // also get stuck if events are dropped between SDL and ImGui (e.g. during
+  // viewport window z-reordering on macOS).
+  {
+    ImGuiIO& io = ImGui::GetIO();
+    float gx, gy;
+    SDL_MouseButtonFlags hw_buttons = SDL_GetGlobalMouseState(&gx, &gy);
+    for (int i = 0; i < 3; i++) {
+      // SDL button indices: 1=Left, 2=Middle, 3=Right → mask bits 0,1,2
+      // ImGui button indices: 0=Left, 1=Right, 2=Middle
+      static const int sdl_button[] = { SDL_BUTTON_LEFT, SDL_BUTTON_RIGHT, SDL_BUTTON_MIDDLE };
+      bool hw_down = (hw_buttons & SDL_BUTTON_MASK(sdl_button[i])) != 0;
+      if (io.MouseDown[i] && !hw_down) {
+        io.MouseDown[i] = false;
+      }
+    }
+  }
+
   process_pending_dialog();
   // Dockspace host must be rendered before other windows so they can dock into it
   workspace_render_dockspace();
@@ -2656,7 +2675,6 @@ static void imgui_render_devtools()
 static void imgui_render_memory_tool()
 {
   ImGui::SetNextWindowSize(ImVec2(400, 340), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 
   bool open = true;
   if (!ImGui::Begin("Memory Tool", &open, ImGuiWindowFlags_NoCollapse)) {
@@ -2793,7 +2811,6 @@ static void imgui_render_vkeyboard()
 {
   bool open = true;
   ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
 
   if (!ImGui::Begin("CPC 6128 Keyboard", &open, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();

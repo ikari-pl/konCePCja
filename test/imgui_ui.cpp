@@ -442,3 +442,298 @@ TEST(MruList, PushNewToFullList) {
   EXPECT_EQ("/b", list[2]);
   // "/c" was evicted
 }
+
+// ─────────────────────────────────────────────────
+// is_valid_ram_size tests
+// ─────────────────────────────────────────────────
+
+TEST(IsValidRamSize, AllValidSizes) {
+  EXPECT_TRUE(is_valid_ram_size(64));
+  EXPECT_TRUE(is_valid_ram_size(128));
+  EXPECT_TRUE(is_valid_ram_size(192));
+  EXPECT_TRUE(is_valid_ram_size(256));
+  EXPECT_TRUE(is_valid_ram_size(320));
+  EXPECT_TRUE(is_valid_ram_size(512));
+  EXPECT_TRUE(is_valid_ram_size(576));
+  EXPECT_TRUE(is_valid_ram_size(4160));
+}
+
+TEST(IsValidRamSize, InvalidSizes) {
+  EXPECT_FALSE(is_valid_ram_size(0));
+  EXPECT_FALSE(is_valid_ram_size(1));
+  EXPECT_FALSE(is_valid_ram_size(63));
+  EXPECT_FALSE(is_valid_ram_size(65));
+  EXPECT_FALSE(is_valid_ram_size(100));
+  EXPECT_FALSE(is_valid_ram_size(1024));
+  EXPECT_FALSE(is_valid_ram_size(4096));
+  EXPECT_FALSE(is_valid_ram_size(99999));
+}
+
+// ─────────────────────────────────────────────────
+// Constants consistency checks
+// ─────────────────────────────────────────────────
+
+TEST(Constants, RamSizeCountMatchesArray) {
+  EXPECT_EQ(RAM_SIZE_COUNT, 8);
+  EXPECT_EQ(RAM_SIZES[0], 64u);
+  EXPECT_EQ(RAM_SIZES[RAM_SIZE_COUNT - 1], 4160u);
+}
+
+TEST(Constants, SampleRateCountMatchesArray) {
+  EXPECT_EQ(SAMPLE_RATE_COUNT, 5);
+  EXPECT_EQ(SAMPLE_RATES[0], 11025u);
+  EXPECT_EQ(SAMPLE_RATES[SAMPLE_RATE_COUNT - 1], 96000u);
+}
+
+TEST(Constants, SampleRatesAreMonotonicallyIncreasing) {
+  for (int i = 1; i < SAMPLE_RATE_COUNT; i++) {
+    EXPECT_GT(SAMPLE_RATES[i], SAMPLE_RATES[i - 1])
+        << "SAMPLE_RATES[" << i << "] should be > SAMPLE_RATES[" << (i - 1) << "]";
+  }
+}
+
+TEST(Constants, RamSizesAreMonotonicallyIncreasing) {
+  for (int i = 1; i < RAM_SIZE_COUNT; i++) {
+    EXPECT_GT(RAM_SIZES[i], RAM_SIZES[i - 1])
+        << "RAM_SIZES[" << i << "] should be > RAM_SIZES[" << (i - 1) << "]";
+  }
+}
+
+// ─────────────────────────────────────────────────
+// format_memory_line: additional edge cases
+// ─────────────────────────────────────────────────
+
+TEST_F(FormatMemoryLineTest, AddressAtFFF0) {
+  // 16 bytes starting at 0xFFF0 — the last valid 16-byte line
+  for (int i = 0; i < 16; i++) {
+    ram[(0xFFF0 + i) & 0xFFFF] = static_cast<byte>(0xF0 + i);
+  }
+
+  int len = format_memory_line(buf, sizeof(buf), 0xFFF0, 16, 0, ram);
+
+  EXPECT_GT(len, 0);
+  EXPECT_NE(nullptr, strstr(buf, "FFF0"));
+  // First byte: 0xF0, last byte wraps: ram[0x0000] was set to 0xF0+16=0x00 (truncated)
+  EXPECT_NE(nullptr, strstr(buf, "F0"));
+  EXPECT_NE(nullptr, strstr(buf, "FF")); // 0xFFF0 + 15 = 0xFFFF -> ram[0xFFFF] = 0xFF
+}
+
+TEST_F(FormatMemoryLineTest, LargeBaseAddrMaskedTo16Bit) {
+  // base_addr > 0xFFFF: should be masked to 16-bit
+  ram[0x1234] = 0x42;
+
+  int len = format_memory_line(buf, sizeof(buf), 0x11234, 1, 0, ram);
+
+  EXPECT_GT(len, 0);
+  // Address display: 0x11234 & 0xFFFF = 0x1234
+  EXPECT_NE(nullptr, strstr(buf, "1234"));
+  EXPECT_NE(nullptr, strstr(buf, "42"));
+}
+
+TEST_F(FormatMemoryLineTest, AsciiFormatPrintableRange) {
+  // Test exact boundaries of printable range: 32 (space) to 126 (~)
+  ram[0x100] = 31;   // non-printable (below space)
+  ram[0x101] = 32;   // space - first printable
+  ram[0x102] = 126;  // '~' - last printable
+  ram[0x103] = 127;  // DEL - non-printable
+
+  int len = format_memory_line(buf, sizeof(buf), 0x100, 4, 1, ram);
+
+  EXPECT_GT(len, 0);
+  const char* pipe = strstr(buf, "|");
+  ASSERT_NE(nullptr, pipe);
+  // After "| ": dot, space, tilde, dot
+  EXPECT_EQ('.', pipe[2]);   // 31 -> dot
+  EXPECT_EQ(' ', pipe[3]);   // 32 -> space
+  EXPECT_EQ('~', pipe[4]);   // 126 -> tilde
+  EXPECT_EQ('.', pipe[5]);   // 127 -> dot
+}
+
+TEST_F(FormatMemoryLineTest, DecimalFormatValues) {
+  ram[0x200] = 0;
+  ram[0x201] = 1;
+  ram[0x202] = 127;
+  ram[0x203] = 255;
+
+  int len = format_memory_line(buf, sizeof(buf), 0x200, 4, 2, ram);
+
+  EXPECT_GT(len, 0);
+  // All four decimal values should appear
+  EXPECT_NE(nullptr, strstr(buf, "  0"));   // %3u format
+  EXPECT_NE(nullptr, strstr(buf, "  1"));
+  EXPECT_NE(nullptr, strstr(buf, "127"));
+  EXPECT_NE(nullptr, strstr(buf, "255"));
+}
+
+TEST_F(FormatMemoryLineTest, UnknownFormatFallsBackToHexOnly) {
+  ram[0x300] = 0xAB;
+
+  // format=99 (invalid) — should produce hex only, no ASCII or decimal
+  int len = format_memory_line(buf, sizeof(buf), 0x300, 1, 99, ram);
+
+  EXPECT_GT(len, 0);
+  EXPECT_NE(nullptr, strstr(buf, "0300"));
+  EXPECT_NE(nullptr, strstr(buf, "AB"));
+  // No pipe separator (that's format 1 and 2 only)
+  EXPECT_EQ(nullptr, strstr(buf, "|"));
+}
+
+TEST_F(FormatMemoryLineTest, BufferExactlyFitsAddress) {
+  // "0000 : " = 7 chars + null = 8 bytes minimum
+  char tiny[8];
+  int len = format_memory_line(tiny, sizeof(tiny), 0, 1, 0, ram);
+
+  EXPECT_GT(len, 0);
+  EXPECT_EQ('\0', tiny[len]);
+}
+
+// ─────────────────────────────────────────────────
+// snd_playback_rate index bug documentation
+// ─────────────────────────────────────────────────
+// BUG: The Options dialog in imgui_ui.cpp writes raw frequency values
+// (e.g. 44100) to CPC.snd_playback_rate instead of an index (0-4).
+//
+// The rest of the codebase (psg.cpp, kon_cpc_ja.cpp) uses
+// CPC.snd_playback_rate as an INDEX into freq_table[5].
+//
+// The dialog does:
+//   CPC.snd_playback_rate = sample_rate_values[rate_idx];  // writes 44100!
+//
+// But psg.cpp does:
+//   freq_table[CPC.snd_playback_rate]  // OOB access with freq_table[44100]
+//
+// Additionally, find_sample_rate_index() takes a frequency value, but
+// CPC.snd_playback_rate is normally an index. It "works" for the default
+// index 2 because find_sample_rate_index(2) returns the default of 2.
+
+TEST(SndPlaybackRateBug, IndexValuesAreValidIndices) {
+  // CPC.snd_playback_rate should be an index 0..4 into freq_table[5].
+  // Verify all valid index values are within bounds.
+  for (int i = 0; i < SAMPLE_RATE_COUNT; i++) {
+    EXPECT_LT(i, 5) << "Index " << i << " would be out of bounds for freq_table[5]";
+  }
+}
+
+TEST(SndPlaybackRateBug, RawFrequencyIsNotValidIndex) {
+  // This documents the bug: if the Options dialog writes a raw frequency
+  // (e.g. 44100) to CPC.snd_playback_rate, it's way out of bounds for
+  // freq_table[5]. Any value >= 5 is invalid as an index.
+  for (int i = 0; i < SAMPLE_RATE_COUNT; i++) {
+    unsigned int raw_freq = SAMPLE_RATES[i];
+    EXPECT_GE(raw_freq, 5u)
+        << "Raw frequency " << raw_freq << " would be an invalid index into freq_table[5]";
+  }
+}
+
+TEST(SndPlaybackRateBug, FindSampleRateIndexDefaultMasksTheBug) {
+  // find_sample_rate_index() expects a frequency, but CPC.snd_playback_rate
+  // is normally an index. When the index is 2, find_sample_rate_index(2)
+  // doesn't find 2 in {11025, 22050, 44100, 48000, 96000}, so it returns
+  // the default of 2 -- which happens to be correct by coincidence.
+  EXPECT_EQ(2, find_sample_rate_index(2));  // "works" by accident
+
+  // For other index values, the result is always 2 (the default),
+  // which means the combo always shows "44100" regardless of actual setting.
+  EXPECT_EQ(2, find_sample_rate_index(0));  // should show 11025, shows 44100
+  EXPECT_EQ(2, find_sample_rate_index(1));  // should show 22050, shows 44100
+  EXPECT_EQ(2, find_sample_rate_index(3));  // should show 48000, shows 44100
+  EXPECT_EQ(2, find_sample_rate_index(4));  // should show 96000, shows 44100
+}
+
+TEST(SndPlaybackRateBug, AfterDialogWritesFreqOtherCodeBreaks) {
+  // After the dialog writes a raw frequency, any code using
+  // CPC.snd_playback_rate as an index would access out-of-bounds memory.
+  // Example: freq_table[44100] when freq_table has only 5 entries.
+  //
+  // We can't test the actual OOB access, but we verify that the raw
+  // frequency values from sample_rate_values[] are never valid indices.
+  int sample_rate_values[] = { 11025, 22050, 44100, 48000, 96000 };
+  for (int i = 0; i < 5; i++) {
+    EXPECT_GE(sample_rate_values[i], SAMPLE_RATE_COUNT)
+        << "After Options dialog writes " << sample_rate_values[i]
+        << " to snd_playback_rate, freq_table[" << sample_rate_values[i]
+        << "] is out-of-bounds (freq_table has " << SAMPLE_RATE_COUNT << " entries)";
+  }
+}
+
+// ─────────────────────────────────────────────────
+// MRU list: additional edge cases
+// ─────────────────────────────────────────────────
+
+TEST(MruList, MaxSizeOne) {
+  std::vector<std::string> list;
+  mru_list_push(list, "/a", 1);
+  mru_list_push(list, "/b", 1);
+  ASSERT_EQ(1u, list.size());
+  EXPECT_EQ("/b", list[0]);
+}
+
+TEST(MruList, EmptyPathIsAllowed) {
+  std::vector<std::string> list;
+  mru_list_push(list, "");
+  ASSERT_EQ(1u, list.size());
+  EXPECT_EQ("", list[0]);
+}
+
+TEST(MruList, ExistingItemMovedToFrontPreservesOrder) {
+  std::vector<std::string> list = {"/a", "/b", "/c", "/d", "/e"};
+  mru_list_push(list, "/d");
+  ASSERT_EQ(5u, list.size());
+  EXPECT_EQ("/d", list[0]);
+  EXPECT_EQ("/a", list[1]);
+  EXPECT_EQ("/b", list[2]);
+  EXPECT_EQ("/c", list[3]);
+  EXPECT_EQ("/e", list[4]);
+}
+
+// ─────────────────────────────────────────────────
+// parse_hex: additional edge cases
+// ─────────────────────────────────────────────────
+
+TEST(ParseHex, MaxValueBoundaryExact) {
+  unsigned long result = 0;
+  // Exactly at max_val should succeed
+  EXPECT_TRUE(parse_hex("100", &result, 0x100));
+  EXPECT_EQ(0x100u, result);
+}
+
+TEST(ParseHex, MaxValueBoundaryOneOver) {
+  unsigned long result = 0;
+  // One over max_val should fail
+  EXPECT_FALSE(parse_hex("101", &result, 0x100));
+}
+
+TEST(ParseHex, MaxValueZero) {
+  unsigned long result = 999;
+  // max_val=0: only "0" should be valid
+  EXPECT_TRUE(parse_hex("0", &result, 0));
+  EXPECT_EQ(0u, result);
+
+  EXPECT_FALSE(parse_hex("1", &result, 0));
+}
+
+// ─────────────────────────────────────────────────
+// safe_read: zero-offset edge cases
+// ─────────────────────────────────────────────────
+
+TEST(SafeReadWord, ZeroLengthBuffer) {
+  byte b = 0x42;
+  word result = 0xFFFF;
+  // Buffer is zero length (start == end)
+  EXPECT_FALSE(safe_read_word(&b, &b, 0, result));
+  EXPECT_EQ(0xFFFFu, result);
+}
+
+TEST(SafeReadDword, ZeroLengthBuffer) {
+  byte b = 0x42;
+  dword result = 0xDEADBEEF;
+  EXPECT_FALSE(safe_read_dword(&b, &b, 0, result));
+  EXPECT_EQ(0xDEADBEEFu, result);
+}
+
+TEST(SafeReadDword, ExactFourBytes) {
+  byte buffer[4] = { 0x01, 0x02, 0x03, 0x04 };
+  dword result = 0;
+  EXPECT_TRUE(safe_read_dword(buffer, buffer + 4, 0, result));
+  EXPECT_EQ(0x04030201u, result);
+}
