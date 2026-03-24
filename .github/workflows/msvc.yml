@@ -15,12 +15,14 @@ jobs:
       fail-fast: false
       matrix:
         config: [Release, Debug]
-        arch: [x64, Win32]
+        arch: [x64, Win32, ARM64]
         include:
           - arch: x64
             triplet: x64-windows
           - arch: Win32
             triplet: x86-windows
+          - arch: ARM64
+            triplet: arm64-windows
 
     env:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
@@ -51,8 +53,9 @@ jobs:
       - name: Build
         run: cmake --build build --config ${{ matrix.config }} -j 4
 
-      # ── Test ───────────────────────────────────────────
+      # ── Test (skip ARM64 — can't run on x64 host) ─────
       - name: Run tests
+        if: matrix.arch != 'ARM64'
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
