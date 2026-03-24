@@ -3412,10 +3412,16 @@ int koncpc_main (int argc, char **argv)
       g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
    }
 
-   // Fill the buffer with autocmd if provided
-   virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
-   // Give some time to the CPC to start before sending any command
-   nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+   // Fill the buffer with autocmd if provided.
+   // Use AutoTypeQueue which supports WinAPE ~KEY~ syntax (e.g. ~ENTER~, ~PAUSE 50~).
+   // Prepend a boot delay so the CPC firmware is ready before typing starts.
+   if (!args.autocmd.empty()) {
+      std::string cmd = "~PAUSE " + std::to_string(CPC.boot_time) + "~" + args.autocmd;
+      auto err = g_autotype_queue.enqueue(cmd);
+      if (!err.empty()) {
+         LOG_ERROR("--autocmd parse error: " << err);
+      }
+   }
 
 // ----------------------------------------------------------------------------
 
