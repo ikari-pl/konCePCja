@@ -2924,7 +2924,7 @@ static void imgui_render_vkeyboard()
     if (cpc_key_down(cpc_key)) {
       ImVec2 rmin = ImGui::GetItemRectMin();
       ImVec2 rmax = ImGui::GetItemRectMax();
-      ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, IM_COL32(50, 120, 220, 100), 3.0f);
+      ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, IM_COL32(80, 180, 255, 180), 3.0f);
     }
   };
 
@@ -2945,7 +2945,11 @@ static void imgui_render_vkeyboard()
 
   // ── Key dispatch: render Button, emit keypress, highlight if held ──
   // vk() renders a single CPC key button with pressed-key overlay.
-  char fkey_emit[2] = { '\a', 0 };
+  // Helper to build a 2-byte "\a<CPC_KEY>" emit string from enum value
+  auto cpc_emit = [](byte cpc_key) -> std::string {
+    return std::string("\a") + static_cast<char>(cpc_key);
+  };
+
   auto vk = [&](const char* label, float w, const char* es, byte cpc_key) {
     if (ImGui::Button(label, ImVec2(w, H))) emit_key(es);
     highlight_if_pressed(cpc_key);
@@ -2956,28 +2960,28 @@ static void imgui_render_vkeyboard()
     if (ImGui::Button(label, ImVec2(w, H))) emit_key(es);
     highlight_if_pressed(cpc_key);
   };
-  // vk_fkey() — function key (emit via \a prefix)
-  auto vk_fkey = [&](const char* label, float w, byte cpc_key, bool end = false) {
-    fkey_emit[1] = static_cast<char>(cpc_key);
-    if (ImGui::Button(label, ImVec2(w, H))) emit_key(fkey_emit);
+  // vk_cpc() — emit CPC key by enum (no hardcoded hex)
+  auto vk_cpc = [&](const char* label, float w, byte cpc_key, bool end = false) {
+    std::string es = cpc_emit(cpc_key);
+    if (ImGui::Button(label, ImVec2(w, H))) emit_key(es.c_str());
     highlight_if_pressed(cpc_key);
     if (!end) ImGui::SameLine(0, S);
   };
 
   // ═══════════════════ ROW 0 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0));
-  vk("ESC", K, "\a\xbb", CPC_ESC);
+  vk("ESC", K, cpc_emit(CPC_ESC).c_str(), CPC_ESC);
   vk("!\n1", K, "1", CPC_1);      vk("\"\n2", K, "2", CPC_2);
   vk("#\n3", K, "3", CPC_3);      vk("$\n4", K, "4", CPC_4);
   vk("%\n5", K, "5", CPC_5);      vk("&\n6", K, "6", CPC_6);
   vk("'\n7", K, "7", CPC_7);      vk("(\n8", K, "8", CPC_8);
   vk(")\n9", K, "9", CPC_9);      vk("_\n0", K, "0", CPC_0);
   vk("=\n-", K, "-", CPC_MINUS);  vk("\xc2\xa3\n^", K, "^", CPC_POWER);
-  vk("CLR", K, "\a\xa5", CPC_CLR);
+  vk("CLR", K, cpc_emit(CPC_CLR).c_str(), CPC_CLR);
   vk_end("DEL", K, "\b", CPC_DEL);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0));
-  vk_fkey("F7", K, CPC_F7);  vk_fkey("F8", K, CPC_F8);  vk_fkey("F9", K, CPC_F9, true);
+  vk_cpc("F7", K, CPC_F7);  vk_cpc("F8", K, CPC_F8);  vk_cpc("F9", K, CPC_F9, true);
 
   // ═══════════════════ ROW 1 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW));
@@ -2999,7 +3003,7 @@ static void imgui_render_vkeyboard()
   highlight_if_pressed(CPC_RETURN);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW));
-  vk_fkey("F4", K, CPC_F4);  vk_fkey("F5", K, CPC_F5);  vk_fkey("F6", K, CPC_F6, true);
+  vk_cpc("F4", K, CPC_F4);  vk_cpc("F5", K, CPC_F5);  vk_cpc("F6", K, CPC_F6, true);
 
   // ═══════════════════ ROW 2 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 2));
@@ -3014,7 +3018,7 @@ static void imgui_render_vkeyboard()
   vk_end("}\n]", K, "]", CPC_RBRACKET);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 2));
-  vk_fkey("F1", K, CPC_F1);  vk_fkey("F2", K, CPC_F2);  vk_fkey("F3", K, CPC_F3, true);
+  vk_cpc("F1", K, CPC_F1);  vk_cpc("F2", K, CPC_F2);  vk_cpc("F3", K, CPC_F3, true);
 
   // ═══════════════════ ROW 3 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 3));
@@ -3037,8 +3041,8 @@ static void imgui_render_vkeyboard()
   highlight_if_pressed(CPC_RSHIFT);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 3));
-  vk_fkey("F0", K, CPC_F0);
-  vk("\xe2\x86\x91##up", K, "\a\xae", CPC_CUR_UP);
+  vk_cpc("F0", K, CPC_F0);
+  vk("\xe2\x86\x91##up", K, cpc_emit(CPC_CUR_UP).c_str(), CPC_CUR_UP);
   vk_end(".##np", K, ".", CPC_FPERIOD);
 
   // ═══════════════════ ROW 4 ═══════════════════
@@ -3047,7 +3051,7 @@ static void imgui_render_vkeyboard()
   if (ImGui::Button("CTRL", ImVec2(K*W_CTRL, H))) emit_key("\x01" "CTRL");
   if (ctrl_on) ImGui::PopStyleColor();
   highlight_if_pressed(CPC_CONTROL); ImGui::SameLine(0, S);
-  vk("COPY", K*W_COPY, "\a\xa9", CPC_COPY);
+  vk("COPY", K*W_COPY, cpc_emit(CPC_COPY).c_str(), CPC_COPY);
   float space_w = K * 8.0f;
   vk("SPACE", space_w, " ", CPC_SPACE);
   float enter_x = ImGui::GetCursorPosX();
@@ -3055,9 +3059,9 @@ static void imgui_render_vkeyboard()
   vk_end("ENTER", enter_w, "\n", CPC_ENTER);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 4));
-  vk("\xe2\x86\x90##left", K, "\a\xaf", CPC_CUR_LEFT);
-  vk("\xe2\x86\x93##down", K, "\a\xb0", CPC_CUR_DOWN);
-  vk_end("\xe2\x86\x92##right", K, "\a\xb1", CPC_CUR_RIGHT);
+  vk("\xe2\x86\x90##left", K, cpc_emit(CPC_CUR_LEFT).c_str(), CPC_CUR_LEFT);
+  vk("\xe2\x86\x93##down", K, cpc_emit(CPC_CUR_DOWN).c_str(), CPC_CUR_DOWN);
+  vk_end("\xe2\x86\x92##right", K, cpc_emit(CPC_CUR_RIGHT).c_str(), CPC_CUR_RIGHT);
 
   // Move cursor below keyboard for the rest
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 5 + S * 2));
