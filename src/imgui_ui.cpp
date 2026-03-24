@@ -1835,6 +1835,14 @@ static void imgui_render_options()
         CPC.limit_speed = limit ? 1 : 0;
       }
 
+      bool frameskip = CPC.frameskip != 0;
+      if (ImGui::Checkbox("Auto Frameskip", &frameskip)) {
+        CPC.frameskip = frameskip ? 1 : 0;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Skip rendering frames when emulation falls behind 100%% speed.\nOnly has an effect when 'Limit Speed' is enabled.");
+      }
+
       int speed = static_cast<int>(CPC.speed);
       if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING, MAX_SPEED_SETTING)) {
         CPC.speed = speed;
@@ -2067,6 +2075,14 @@ static void imgui_render_options()
       if (static_cast<int>(CPC.keyboard) >= max_langs) keyboard = 0;
       if (ImGui::Combo("CPC Language", &keyboard, cpc_langs, max_langs)) {
         CPC.keyboard = keyboard;
+      }
+
+      int ksm = static_cast<int>(CPC.keyboard_support_mode);
+      const char* ksm_modes[] = { "Direct", "Buffered Until Read", "Min. 2 Frames" };
+      int max_ksm = IM_ARRAYSIZE(ksm_modes);
+      if (ksm < 0 || ksm >= max_ksm) ksm = 0;
+      if (ImGui::Combo("Keyboard Support Mode", &ksm, ksm_modes, max_ksm)) {
+        CPC.keyboard_support_mode = static_cast<KeyboardSupportMode>(ksm);
       }
 
       bool joy_emu = CPC.joystick_emulation != JoystickEmulation::None;

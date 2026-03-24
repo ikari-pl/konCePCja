@@ -56,6 +56,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "stringutils.h"
 #include "zip.h"
 #include "keyboard.h"
+#include "keyboard_manager.h"
 #include "trace.h"
 #include "wav_recorder.h"
 #include "amdrum.h"
@@ -602,6 +603,7 @@ byte z80_IN_handler (reg_pair port)
                         }
                         ret_val &= io_fire_kbd_read_hooks(CPC.keyboard_line & 0x0f);
                         g_keyboard_scanned = true; // signal autotype that firmware has scanned
+                        g_keyboard_manager.notify_scanned(CPC.keyboard_line & 0x0f);
                         LOG_DEBUG("PPI read from portA (keyboard_line): " << CPC.keyboard_line << " - " << static_cast<int>(ret_val));
                      } else if (PSG.reg_select == 15) { // PSG port B?
                         if ((PSG.RegisterAY.Index[7] & 0x80)) { // port B in output mode?
@@ -2129,6 +2131,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
       CPC.speed = DEF_SPEED_SETTING;
    }
    CPC.limit_speed = conf.getIntValue("system", "limit_speed", 1) & 1;
+   CPC.frameskip = conf.getIntValue("system", "frameskip", 0) & 1;
    CPC.auto_pause = conf.getIntValue("system", "auto_pause", 1) & 1;
    CPC.boot_time = conf.getIntValue("system", "boot_time", 5);
    CPC.printer = conf.getIntValue("system", "printer", 0) & 1;
@@ -2137,6 +2140,13 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    if (CPC.keyboard > MAX_ROM_MODS) {
       CPC.keyboard = 0;
    }
+   
+   int ksm = conf.getIntValue("system", "keyboard_support_mode", 0);
+   if (ksm < 0 || ksm >= static_cast<int>(KeyboardSupportMode::Last)) {
+       ksm = 0;
+   }
+   CPC.keyboard_support_mode = static_cast<KeyboardSupportMode>(ksm);
+
    {
       int joy_emu_val = conf.getIntValue("system", "joystick_emulation", 0);
       if (joy_emu_val < 0 || joy_emu_val >= static_cast<int>(JoystickEmulation::Last)) {
@@ -2301,11 +2311,13 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
 
    conf.setIntValue("system", "ram_size", CPC.ram_size); // 128KB RAM
    conf.setIntValue("system", "limit_speed", CPC.limit_speed);
+   conf.setIntValue("system", "frameskip", CPC.frameskip);
    conf.setIntValue("system", "speed", CPC.speed); // original CPC speed
    conf.setIntValue("system", "auto_pause", CPC.auto_pause);
    conf.setIntValue("system", "printer", CPC.printer);
    conf.setIntValue("system", "mf2", CPC.mf2);
    conf.setIntValue("system", "keyboard", CPC.keyboard);
+   conf.setIntValue("system", "keyboard_support_mode", static_cast<int>(CPC.keyboard_support_mode));
    conf.setIntValue("system", "boot_time", CPC.boot_time);
    conf.setIntValue("system", "joystick_emulation", static_cast<int>(CPC.joystick_emulation));
    conf.setIntValue("system", "joysticks", CPC.joysticks);
@@ -3943,6 +3955,8 @@ int koncpc_main (int argc, char **argv)
             frameTimeSamples = 0;
          }
 
+         static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
+         static int consecutive_skips = 0;
          if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
             // Absolute deadline: sleep until perfTicksTarget, then advance by one frame.
             // Multiple EC_CYCLE_COUNTs may fire per frame (audio-driven cycle boundaries);
@@ -3958,12 +3972,36 @@ int koncpc_main (int argc, char **argv)
             }
             sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
             perfTicksTarget += perfTicksOffset;
-            // If we fell behind, allow catch-up (next frames will have shorter/no sleep).
-            // Only reset if more than 3 frames behind to prevent audio bursting.
+            // Catch-up: if more than 3 frames behind, reset the deadline.
             uint64_t now = SDL_GetPerformanceCounter();
-            if (perfTicksTarget + 3 * perfTicksOffset < now) {
+            if (!CPC.frameskip && perfTicksTarget + 3 * perfTicksOffset < now) {
                perfTicksTarget = now + perfTicksOffset;
             }
+         } else if (iExitCondition != EC_CYCLE_COUNT) {
+            // Speed limiter not active and not a mid-frame audio slice.
+            CPC.skip_rendering = false;
+            consecutive_skips = 0;
+         }
+
+         // Frameskip decision: only on frame boundaries to avoid mid-frame toggles.
+         if (iExitCondition == EC_FRAME_COMPLETE && CPC.limit_speed) {
+            uint64_t now = SDL_GetPerformanceCounter();
+            if (CPC.frameskip && now > perfTicksTarget) {
+               if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
+                  CPC.skip_rendering = true;
+                  consecutive_skips++;
+               } else {
+                  CPC.skip_rendering = false;
+                  consecutive_skips = 0;
+                  perfTicksTarget = now + perfTicksOffset;
+               }
+            } else {
+               CPC.skip_rendering = false;
+               consecutive_skips = 0;
+            }
+         } else if (iExitCondition == EC_FRAME_COMPLETE && !CPC.limit_speed) {
+            CPC.skip_rendering = false;
+            consecutive_skips = 0;
          }
 
          dword dwOffset = CPC.scr_pos - CPC.scr_base; // offset in current surface row
@@ -4026,6 +4064,8 @@ int koncpc_main (int argc, char **argv)
          if (iExitCondition == EC_FRAME_COMPLETE) { // emulation finished rendering a complete frame?
             dwFrameCountOverall++;
             dwFrameCount++;
+
+            g_keyboard_manager.update(keyboard_matrix, dwFrameCountOverall);
 
             // Measure frame-to-frame time (only on actual completed frames)
             {
@@ -4177,12 +4217,16 @@ int koncpc_main (int argc, char **argv)
                imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
                imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
             }
-            asic_draw_sprites();
+            if (!CPC.skip_rendering) {
+               asic_draw_sprites();
+            }
             if (!g_headless) {
-              uint64_t displayStart = SDL_GetPerformanceCounter();
-              video_display();
-              uint64_t displayEnd = SDL_GetPerformanceCounter();
-              displayTimeAccum += displayEnd - displayStart;
+              if (!CPC.skip_rendering) {
+                uint64_t displayStart = SDL_GetPerformanceCounter();
+                video_display();
+                uint64_t displayEnd = SDL_GetPerformanceCounter();
+                displayTimeAccum += displayEnd - displayStart;
+              }
               video_take_pending_window_screenshot();
             }
 

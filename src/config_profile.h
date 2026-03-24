@@ -6,6 +6,7 @@ struct ConfigProfile {
     unsigned int model = 2;
     unsigned int ram_size = 128;
     unsigned int speed = 4;
+    unsigned int frameskip = 0;
     unsigned int scr_scale = 2;
     unsigned int scr_scanlines = 0;
     unsigned int snd_enabled = 1;

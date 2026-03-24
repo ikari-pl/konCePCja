@@ -204,6 +204,13 @@ enum class JoystickEmulation {
   Last = 3,
 };
 
+enum class KeyboardSupportMode {
+  Direct = 0,
+  BufferedUntilRead = 1,
+  Min2Frames = 2,
+  Last = 3,
+};
+
 JoystickEmulation nextJoystickEmulation(JoystickEmulation current);
 std::string JoystickEmulationToString(JoystickEmulation value);
 
@@ -216,6 +223,8 @@ class t_CPC {
    unsigned int ram_size;
    unsigned int speed;
    unsigned int limit_speed;
+   unsigned int frameskip = 0;
+   bool skip_rendering = false;
    bool paused;
    unsigned int auto_pause;
    unsigned int boot_time;
@@ -226,6 +235,7 @@ class t_CPC {
    unsigned int printer_port;
    unsigned int mf2;
    unsigned int keyboard;
+   KeyboardSupportMode keyboard_support_mode = KeyboardSupportMode::Direct;
    JoystickEmulation joystick_emulation;
    unsigned int joysticks;
    unsigned int joystick_menu_button;
