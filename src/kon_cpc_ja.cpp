@@ -3601,10 +3601,11 @@ int koncpc_main (int argc, char **argv)
          // the virtual keyboard window from stealing physical keyboard input.
          {
            ImGuiIO& io = ImGui::GetIO();
-           bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT);
+           bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP);
+           bool is_text_event = (event.type == SDL_EVENT_TEXT_INPUT);
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
-           if ((is_key_event && !is_virtual_key && io.WantTextInput) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
+           if (((is_key_event && !is_virtual_key) && io.WantTextInput) || (is_text_event && io.WantTextInput) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
              continue;
            }
          }

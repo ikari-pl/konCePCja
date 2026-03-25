@@ -370,20 +370,20 @@ void imgui_init_ui()
 void imgui_render_ui()
 {
   // Reconcile ImGui mouse state with hardware — defense against stuck buttons.
-  // SDL's Cocoa_ReconcileMouseButtons() handles the SDL layer, but ImGui can
-  // also get stuck if events are dropped between SDL and ImGui (e.g. during
-  // viewport window z-reordering on macOS).
+  // Only poll hardware state when ImGui thinks a button is down, to avoid the
+  // overhead of SDL_GetGlobalMouseState() every frame (slow on X11).
   {
     ImGuiIO& io = ImGui::GetIO();
-    float gx, gy;
-    SDL_MouseButtonFlags hw_buttons = SDL_GetGlobalMouseState(&gx, &gy);
-    for (int i = 0; i < 3; i++) {
-      // SDL button indices: 1=Left, 2=Middle, 3=Right → mask bits 0,1,2
+    if (io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]) {
+      SDL_MouseButtonFlags hw_buttons = SDL_GetGlobalMouseState(nullptr, nullptr);
+      // SDL button indices: 1=Left, 2=Middle, 3=Right
       // ImGui button indices: 0=Left, 1=Right, 2=Middle
       static const int sdl_button[] = { SDL_BUTTON_LEFT, SDL_BUTTON_RIGHT, SDL_BUTTON_MIDDLE };
-      bool hw_down = (hw_buttons & SDL_BUTTON_MASK(sdl_button[i])) != 0;
-      if (io.MouseDown[i] && !hw_down) {
-        io.MouseDown[i] = false;
+      for (int i = 0; i < 3; i++) {
+        bool hw_down = (hw_buttons & SDL_BUTTON_MASK(sdl_button[i])) != 0;
+        if (io.MouseDown[i] && !hw_down) {
+          io.MouseDown[i] = false;
+        }
       }
     }
   }

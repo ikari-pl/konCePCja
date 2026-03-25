@@ -195,7 +195,7 @@ TEST_F(KeyboardManagerTest, Buffered_UpdateWithoutScanDoesNotRelease) {
     EXPECT_TRUE(is_pressed(matrix, KEY_A));  // Still pressed regardless of frame count
 }
 
-TEST_F(KeyboardManagerTest, Buffered_KeyupWithoutPriorKeydownReleasesImmediately) {
+TEST_F(KeyboardManagerTest, Buffered_KeyupAfterScanReleasesImmediately) {
     setMode(KeyboardSupportMode::BufferedUntilRead);
 
     // Press a key, scan its line, then release -- the key_needs_scan flag is cleared
@@ -612,15 +612,13 @@ TEST_F(KeyboardManagerTest, Direct_ReleaseModifiersFalse) {
     EXPECT_TRUE(is_released(matrix, KEY_A));
 }
 
-TEST_F(KeyboardManagerTest, Buffered_NotifyScanLineOutOfRange) {
+TEST_F(KeyboardManagerTest, Buffered_NotifyScanAllLinesReleasesKey) {
     setMode(KeyboardSupportMode::BufferedUntilRead);
 
-    // notify_scanned with valid line numbers should not crash
-    // Lines 0-15 are valid for the CPC keyboard matrix
+    // Press and release a key, then scan all 16 valid lines
     km.handle_keydown(KEY_A, matrix);
     km.handle_keyup(KEY_A, matrix, true, 0);
 
-    // Scan all valid lines
     for (int i = 0; i < 16; i++) {
         km.notify_scanned(i);
     }

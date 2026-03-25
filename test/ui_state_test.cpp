@@ -5,13 +5,16 @@
 extern t_CPC CPC;
 extern ImGuiUIState imgui_state;
 
-// close_menu() is static in imgui_ui.cpp — replicate its logic here for testing.
-// This tests the same state transitions the real close_menu() performs.
+// close_menu() is static in imgui_ui.cpp. These tests verify the expected
+// state transitions documented in its implementation: show_menu=false,
+// unpause unless options or quit_confirm is open.
 static void test_close_menu() {
     imgui_state.show_menu = false;
     if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
         CPC.paused = false;
     }
+    // NOTE: If close_menu() logic changes, update this helper AND add a
+    // regression test that exercises the real function via IPC or menu action.
 }
 
 class UIStateTest : public ::testing::Test {
