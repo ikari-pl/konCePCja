@@ -42,7 +42,10 @@ void usage(std::ostream &os, char *progPath, int errcode)
 
    os << "Usage: " << progname << " [options] <slotfile(s)>\n";
    os << "\nSupported options are:\n";
-   os << "   -a/--autocmd=<command>: execute command as soon as the emulator starts.\n";
+   os << "   -a/--autocmd=<command>: execute command after CPC boots (repeatable).\n";
+   os << "      Supports WinAPE ~KEY~ syntax: ~ENTER~, ~CLR~, ~PAUSE 50~, ~+SHIFT~, etc.\n";
+   os << "      Also accepts KONCPC_EXIT, KONCPC_WAITBREAK, KONCPC_RESET and other\n";
+   os << "      emulator commands (see docs/ipc-protocol.md for the full list).\n";
    os << "   -B/--exit-on-break:     exit with code 1 when a breakpoint is hit (instead of pausing).\n";
    os << "   -c/--cfg_file=<file>:   use <file> as the emulator configuration file instead of the default.\n";
    os << "   -E/--exit-after=<spec>: exit after N frames (e.g. 100f), seconds (5s), or milliseconds (3000ms).\n";
