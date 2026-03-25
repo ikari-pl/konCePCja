@@ -11,6 +11,7 @@ jobs:
   linux-build:
     name: Linux build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/install/lib/pkgconfig
       LD_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib

@@ -11,6 +11,7 @@ jobs:
   macos-build:
     name: MacOS build
     runs-on: macos-latest
+    timeout-minutes: 15
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/install/lib/pkgconfig
 

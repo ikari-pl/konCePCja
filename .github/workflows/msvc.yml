@@ -11,6 +11,7 @@ jobs:
   msvc-build:
     name: MSVC (${{ matrix.arch }}-${{ matrix.config }})
     runs-on: windows-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
