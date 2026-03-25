@@ -3413,13 +3413,21 @@ int koncpc_main (int argc, char **argv)
    }
 
    // Fill the buffer with autocmd if provided.
-   // Use AutoTypeQueue which supports WinAPE ~KEY~ syntax (e.g. ~ENTER~, ~PAUSE 50~).
-   // Prepend a boot delay so the CPC firmware is ready before typing starts.
+   // Two paths:
+   // - If the string contains ~KEY~ syntax (tilde-delimited), use AutoTypeQueue
+   //   which parses ~ENTER~, ~PAUSE 50~, etc.
+   // - Otherwise, use StringToEvents which handles \a (CPC keys) and \f (emulator
+   //   commands like KONCPC_WAITBREAK/KONCPC_EXIT) from replaceKoncpcKeys().
    if (!args.autocmd.empty()) {
-      std::string cmd = "~PAUSE " + std::to_string(CPC.boot_time) + "~" + args.autocmd;
-      auto err = g_autotype_queue.enqueue(cmd);
-      if (!err.empty()) {
-         LOG_ERROR("--autocmd parse error: " << err);
+      if (args.autocmd.find('~') != std::string::npos) {
+         std::string cmd = "~PAUSE " + std::to_string(CPC.boot_time) + "~" + args.autocmd;
+         auto err = g_autotype_queue.enqueue(cmd);
+         if (!err.empty()) {
+            LOG_ERROR("--autocmd parse error: " << err);
+         }
+      } else {
+         virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
+         nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
       }
    }
 
