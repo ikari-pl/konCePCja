@@ -34,7 +34,7 @@ TEST_F(AutoTypeTest, BasicText) {
   EXPECT_EQ(err, "");
   // H E L L O = 5 chars, each CHAR_PRESS_RELEASE
   EXPECT_EQ(queue.remaining(), 5u);
-  auto& actions = queue.actions();
+  auto actions = queue.actions();
   EXPECT_EQ(actions[0].type, AutoTypeAction::CHAR_PRESS_RELEASE);
   EXPECT_EQ(actions[0].cpc_key, static_cast<uint16_t>(CPC_H));
   EXPECT_EQ(actions[1].cpc_key, static_cast<uint16_t>(CPC_E));
@@ -47,7 +47,7 @@ TEST_F(AutoTypeTest, LowercaseText) {
   auto err = queue.enqueue("abc");
   EXPECT_EQ(err, "");
   EXPECT_EQ(queue.remaining(), 3u);
-  auto& actions = queue.actions();
+  auto actions = queue.actions();
   EXPECT_EQ(actions[0].cpc_key, static_cast<uint16_t>(CPC_a));
   EXPECT_EQ(actions[1].cpc_key, static_cast<uint16_t>(CPC_b));
   EXPECT_EQ(actions[2].cpc_key, static_cast<uint16_t>(CPC_c));
@@ -57,7 +57,7 @@ TEST_F(AutoTypeTest, SpecialKeyReturn) {
   auto err = queue.enqueue("~RETURN~");
   EXPECT_EQ(err, "");
   EXPECT_EQ(queue.remaining(), 1u);
-  auto& actions = queue.actions();
+  auto actions = queue.actions();
   EXPECT_EQ(actions[0].type, AutoTypeAction::CHAR_PRESS_RELEASE);
   EXPECT_EQ(actions[0].cpc_key, static_cast<uint16_t>(CPC_RETURN));
 }
@@ -128,7 +128,7 @@ TEST_F(AutoTypeTest, MixedRunQuote) {
   auto err = queue.enqueue("RUN\"~RETURN~");
   EXPECT_EQ(err, "");
   EXPECT_EQ(queue.remaining(), 5u);  // R U N " RETURN
-  auto& a = queue.actions();
+  auto a = queue.actions();
   EXPECT_EQ(a[0].cpc_key, static_cast<uint16_t>(CPC_R));
   EXPECT_EQ(a[1].cpc_key, static_cast<uint16_t>(CPC_U));
   EXPECT_EQ(a[2].cpc_key, static_cast<uint16_t>(CPC_N));

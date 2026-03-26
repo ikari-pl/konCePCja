@@ -35,8 +35,11 @@ public:
   // Clear queue
   void clear();
 
-  // Access internal queue for testing
-  const std::deque<AutoTypeAction>& actions() const { return queue_; }
+  // Access internal queue for testing — returns a copy for thread safety
+  std::deque<AutoTypeAction> actions() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return queue_;
+  }
 
   // Thread safety: enqueue() may be called from IPC, HTTP, or telnet threads.
   // tick() runs on the main thread. The mutex serializes all access.

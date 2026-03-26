@@ -904,7 +904,11 @@ M4HttpServer::HttpResponse M4HttpServer::handle_static(const HttpRequest& req) {
 // avoiding direct back_surface access from the HTTP thread.
 
 void M4HttpServer::update_preview_snapshot() {
-   if (!back_surface || !back_surface->pixels) return;
+   if (!back_surface || !back_surface->pixels) {
+      std::lock_guard<std::mutex> lock(preview_mutex_);
+      preview_bmp_.clear();  // clear stale snapshot
+      return;
+   }
 
    int w = back_surface->w;
    int h = back_surface->h;
@@ -1153,8 +1157,14 @@ void M4HttpServer::drain_pending() {
       CPC.paused = !CPC.paused;
       LOG_INFO("M4 HTTP: " << (CPC.paused ? "paused" : "resumed"));
    }
-   // Update preview snapshot for the HTTP thread (thread-safe via mutex)
-   update_preview_snapshot();
+   // Update preview snapshot for the HTTP thread (~5fps, only when server is running)
+   {
+      static int preview_frame_counter = 0;
+      if (running.load() && ++preview_frame_counter >= 10) {  // every 10 frames = ~5fps at 50Hz
+         preview_frame_counter = 0;
+         update_preview_snapshot();
+      }
+   }
 
    if (pending_nmi.exchange(false)) {
       if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
