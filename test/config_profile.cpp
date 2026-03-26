@@ -136,6 +136,34 @@ TEST_F(ConfigProfileTest, ReadProfileWithComments) {
     EXPECT_EQ(p.snd_volume, 50u);
 }
 
+TEST_F(ConfigProfileTest, FrameskipRoundTrip) {
+    ConfigProfile p;
+    p.frameskip = 1;
+
+    std::string path = (test_dir_ / "frameskip.kpf").string();
+    EXPECT_EQ(ConfigProfileManager::write_profile(path, p), "");
+
+    ConfigProfile q;
+    EXPECT_EQ(ConfigProfileManager::read_profile(path, q), "");
+
+    EXPECT_EQ(q.frameskip, 1u);
+}
+
+TEST_F(ConfigProfileTest, FrameskipDefaultValue) {
+    // Write a profile that does not contain a frameskip line
+    std::string path = (test_dir_ / "no_frameskip.kpf").string();
+    {
+        std::ofstream f(path);
+        f << "[general]\n";
+        f << "model = 2\n";
+        f << "ram_size = 128\n";
+    }
+
+    ConfigProfile p;
+    EXPECT_EQ(ConfigProfileManager::read_profile(path, p), "");
+    EXPECT_EQ(p.frameskip, 0u);
+}
+
 TEST_F(ConfigProfileTest, ReadNonexistentFile) {
     ConfigProfile p;
     auto err = ConfigProfileManager::read_profile("/nonexistent/path.kpf", p);

@@ -3412,10 +3412,24 @@ int koncpc_main (int argc, char **argv)
       g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
    }
 
-   // Fill the buffer with autocmd if provided
-   virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
-   // Give some time to the CPC to start before sending any command
-   nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+   // Fill the buffer with autocmd if provided.
+   // Two paths:
+   // - If the string contains ~KEY~ syntax (tilde-delimited), use AutoTypeQueue
+   //   which parses ~ENTER~, ~PAUSE 50~, etc.
+   // - Otherwise, use StringToEvents which handles \a (CPC keys) and \f (emulator
+   //   commands like KONCPC_WAITBREAK/KONCPC_EXIT) from replaceKoncpcKeys().
+   if (!args.autocmd.empty()) {
+      if (args.autocmd.find('~') != std::string::npos) {
+         std::string cmd = "~PAUSE " + std::to_string(CPC.boot_time) + "~" + args.autocmd;
+         auto err = g_autotype_queue.enqueue(cmd);
+         if (!err.empty()) {
+            LOG_ERROR("--autocmd parse error: " << err);
+         }
+      } else {
+         virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
+         nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+      }
+   }
 
 // ----------------------------------------------------------------------------
 
@@ -3590,12 +3604,16 @@ int koncpc_main (int argc, char **argv)
 
          // If ImGui wants input, skip emulator processing.
          // Exception: virtual keyboard events (windowID=0) always reach the emulator.
+         // Only block keyboard when a text input widget is active (WantTextInput),
+         // not when any ImGui window has focus (WantCaptureKeyboard). This prevents
+         // the virtual keyboard window from stealing physical keyboard input.
          {
            ImGuiIO& io = ImGui::GetIO();
-           bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP || event.type == SDL_EVENT_TEXT_INPUT);
+           bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP);
+           bool is_text_event = (event.type == SDL_EVENT_TEXT_INPUT);
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
-           if ((is_key_event && !is_virtual_key && io.WantCaptureKeyboard) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
+           if (((is_key_event && !is_virtual_key) && io.WantTextInput) || (is_text_event && io.WantTextInput) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
              continue;
            }
          }
