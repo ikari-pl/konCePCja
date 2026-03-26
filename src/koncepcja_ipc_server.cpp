@@ -1080,6 +1080,7 @@ std::string handle_command(const std::string& line) {
       byte v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
       z80_write_mem(static_cast<word>(addr + (i/2)), v);
     }
+    g_devtools_ui.disasm_cache_clear();
     return ok_with_context();
   }
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "fill") {
@@ -1095,6 +1096,7 @@ std::string handle_command(const std::string& line) {
     for (unsigned int i = 0; i < len; i++) {
       z80_write_mem(static_cast<word>(addr + i), pattern[i % pattern.size()]);
     }
+    g_devtools_ui.disasm_cache_clear();
     return ok_with_context();
   }
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {

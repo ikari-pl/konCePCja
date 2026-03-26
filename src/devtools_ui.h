@@ -41,6 +41,16 @@ public:
     // Returns the array of all window key strings (NUM_WINDOWS entries).
     static const char* const* all_window_keys(int* count);
 
+    // Invalidate disassembly cache (call after memory writes, banking changes, reset)
+    void disasm_cache_clear() {
+      disasm_cache_.clear();
+      disasm_pc_history_count_ = 0;
+      disasm_pc_history_head_ = 0;
+      disasm_cache_ram_config_ = 0xFF;
+      disasm_cache_rom_config_ = 0xFF;
+      symtable_dirty_ = true;
+    }
+
 private:
     WindowTiming window_timings_[NUM_WINDOWS] = {};
 
@@ -85,14 +95,6 @@ private:
 
     // Record current PC into the cache + history (called each frame from render)
     void disasm_cache_record_pc();
-    // Invalidate cache (banking change, reset, memory write)
-    void disasm_cache_clear() {
-      disasm_cache_.clear();
-      disasm_pc_history_count_ = 0;
-      disasm_pc_history_head_ = 0;
-      disasm_cache_ram_config_ = 0xFF;
-      disasm_cache_rom_config_ = 0xFF;
-    }
 
     char memhex_goto_addr_[8] = "";
     int memhex_goto_value_ = -1;
@@ -102,6 +104,9 @@ private:
     int memhex_highlight_frames_ = 0;   // remaining frames of highlight
 
     char symtable_filter_[64] = "";
+    std::string symtable_filter_cached_;  // last filter used for cached results
+    std::vector<std::pair<word, std::string>> symtable_cached_;
+    bool symtable_dirty_ = true;         // force rebuild on next render
 
     // Session Recording state
     char sr_path_[256] = "";

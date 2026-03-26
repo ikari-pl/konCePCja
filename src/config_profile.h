@@ -15,6 +15,7 @@ struct ConfigProfile {
     unsigned int snd_stereo = 1;
     unsigned int snd_volume = 80;
     unsigned int joystick_emulation = 0;
+    unsigned int keyboard_support_mode = 0;
 };
 
 class ConfigProfileManager {
