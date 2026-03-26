@@ -898,72 +898,77 @@ M4HttpServer::HttpResponse M4HttpServer::handle_static(const HttpRequest& req) {
    return resp;
 }
 
-// ── Live preview (BMP from back_surface) ─────────────────
+// ── Live preview (BMP snapshot, thread-safe) ─────────────
+// update_preview_snapshot() is called from the main thread each frame
+// (in drain_pending). handle_preview() returns the cached BMP under a mutex,
+// avoiding direct back_surface access from the HTTP thread.
 
-M4HttpServer::HttpResponse M4HttpServer::handle_preview(const HttpRequest&) {
-   HttpResponse resp;
+void M4HttpServer::update_preview_snapshot() {
+   if (!back_surface || !back_surface->pixels) return;
 
-   if (!back_surface || !back_surface->pixels) {
-      resp.status = 503; resp.status_text = "Service Unavailable";
-      resp.body = "No video surface";
-      return resp;
-   }
-
-   // Read dimensions — these don't change after init
    int w = back_surface->w;
    int h = back_surface->h;
    int pitch = back_surface->pitch;
    int bpp = 4; // RGBA32
 
-   // Encode as BMP (simple, no dependencies, fast)
-   // BMP = 14-byte file header + 40-byte DIB header + pixel data (bottom-up, BGR, padded)
-   int row_size = ((w * 3 + 3) / 4) * 4; // padded to 4 bytes
+   int row_size = ((w * 3 + 3) / 4) * 4;
    int pixel_data_size = row_size * h;
    int file_size = 14 + 40 + pixel_data_size;
 
-   std::string bmp;
-   bmp.resize(static_cast<size_t>(file_size));
-   char* p = &bmp[0];
+   std::vector<uint8_t> bmp(static_cast<size_t>(file_size));
+   uint8_t* p = bmp.data();
 
-   // File header (14 bytes)
-   p[0] = 'B'; p[1] = 'M';
-   auto write32 = [](char* dst, uint32_t v) {
-      dst[0] = static_cast<char>(v & 0xFF);
-      dst[1] = static_cast<char>((v >> 8) & 0xFF);
-      dst[2] = static_cast<char>((v >> 16) & 0xFF);
-      dst[3] = static_cast<char>((v >> 24) & 0xFF);
+   auto write32 = [](uint8_t* dst, uint32_t v) {
+      dst[0] = static_cast<uint8_t>(v & 0xFF);
+      dst[1] = static_cast<uint8_t>((v >> 8) & 0xFF);
+      dst[2] = static_cast<uint8_t>((v >> 16) & 0xFF);
+      dst[3] = static_cast<uint8_t>((v >> 24) & 0xFF);
    };
-   write32(p + 2, static_cast<uint32_t>(file_size));
-   write32(p + 6, 0); // reserved
-   write32(p + 10, 14 + 40); // pixel data offset
 
-   // DIB header (BITMAPINFOHEADER, 40 bytes)
-   write32(p + 14, 40); // header size
+   p[0] = 'B'; p[1] = 'M';
+   write32(p + 2, static_cast<uint32_t>(file_size));
+   write32(p + 6, 0);
+   write32(p + 10, 14 + 40);
+   write32(p + 14, 40);
    write32(p + 18, static_cast<uint32_t>(w));
    write32(p + 22, static_cast<uint32_t>(h));
-   p[26] = 1; p[27] = 0; // planes = 1
-   p[28] = 24; p[29] = 0; // bits per pixel = 24
-   write32(p + 30, 0); // compression = BI_RGB
+   p[26] = 1; p[27] = 0;
+   p[28] = 24; p[29] = 0;
+   write32(p + 30, 0);
    write32(p + 34, static_cast<uint32_t>(pixel_data_size));
-   write32(p + 38, 2835); // h pixels per meter (~72 DPI)
-   write32(p + 42, 2835); // v pixels per meter
-   write32(p + 46, 0); // colors in palette
-   write32(p + 50, 0); // important colors
+   write32(p + 38, 2835);
+   write32(p + 42, 2835);
+   write32(p + 46, 0);
+   write32(p + 50, 0);
 
-   // Pixel data — BMP is bottom-up, BGR order
    const uint8_t* src = static_cast<const uint8_t*>(back_surface->pixels);
    for (int y = h - 1; y >= 0; y--) {
       const uint8_t* row = src + y * pitch;
-      char* dst_row = p + 54 + (h - 1 - y) * row_size;
+      uint8_t* dst_row = p + 54 + (h - 1 - y) * row_size;
       for (int x = 0; x < w; x++) {
-         // Source is RGBA32 (R at offset 0, G at 1, B at 2, A at 3)
-         dst_row[x * 3 + 0] = static_cast<char>(row[x * bpp + 2]); // B
-         dst_row[x * 3 + 1] = static_cast<char>(row[x * bpp + 1]); // G
-         dst_row[x * 3 + 2] = static_cast<char>(row[x * bpp + 0]); // R
+         dst_row[x * 3 + 0] = row[x * bpp + 2]; // B
+         dst_row[x * 3 + 1] = row[x * bpp + 1]; // G
+         dst_row[x * 3 + 2] = row[x * bpp + 0]; // R
       }
    }
 
-   resp.body = std::move(bmp);
+   {
+      std::lock_guard<std::mutex> lock(preview_mutex_);
+      preview_bmp_ = std::move(bmp);
+   }
+}
+
+M4HttpServer::HttpResponse M4HttpServer::handle_preview(const HttpRequest&) {
+   HttpResponse resp;
+
+   std::lock_guard<std::mutex> lock(preview_mutex_);
+   if (preview_bmp_.empty()) {
+      resp.status = 503; resp.status_text = "Service Unavailable";
+      resp.body = "No video surface";
+      return resp;
+   }
+
+   resp.body.assign(reinterpret_cast<const char*>(preview_bmp_.data()), preview_bmp_.size());
    resp.content_type = "image/bmp";
    return resp;
 }
@@ -1148,6 +1153,9 @@ void M4HttpServer::drain_pending() {
       CPC.paused = !CPC.paused;
       LOG_INFO("M4 HTTP: " << (CPC.paused ? "paused" : "resumed"));
    }
+   // Update preview snapshot for the HTTP thread (thread-safe via mutex)
+   update_preview_snapshot();
+
    if (pending_nmi.exchange(false)) {
       if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
          z80_mf2stop();
@@ -1331,12 +1339,10 @@ void M4HttpServer::run() {
             sock_send(client, handshake.data(), static_cast<int>(handshake.size()));
             LOG_INFO("M4 HTTP: WebSocket preview client connected");
             while (running.load()) {
-               if (back_surface && back_surface->pixels) {
-                  HttpResponse frame = handle_preview(req);
-                  if (!frame.body.empty()) {
-                     if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
-                        break;
-                  }
+               HttpResponse frame = handle_preview(req);
+               if (!frame.body.empty()) {
+                  if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
+                     break;
                }
                std::this_thread::sleep_for(std::chrono::milliseconds(200));
                u_long avail = 0;
@@ -1515,12 +1521,10 @@ void M4HttpServer::run() {
 
             // Push BMP frames at ~5fps until client disconnects or server stops
             while (running.load()) {
-               if (back_surface && back_surface->pixels) {
-                  HttpResponse frame = handle_preview(req);
-                  if (!frame.body.empty()) {
-                     if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
-                        break; // client disconnected
-                  }
+               HttpResponse frame = handle_preview(req);
+               if (!frame.body.empty()) {
+                  if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
+                     break; // client disconnected
                }
                // ~5fps: sleep 200ms between frames
                std::this_thread::sleep_for(std::chrono::milliseconds(200));

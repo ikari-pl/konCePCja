@@ -4,6 +4,7 @@
 #include <deque>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 
 struct AutoTypeAction {
   enum Type { CHAR_PRESS_RELEASE, KEY_PRESS, KEY_RELEASE, PAUSE };
@@ -36,6 +37,10 @@ public:
 
   // Access internal queue for testing
   const std::deque<AutoTypeAction>& actions() const { return queue_; }
+
+  // Thread safety: enqueue() may be called from IPC, HTTP, or telnet threads.
+  // tick() runs on the main thread. The mutex serializes all access.
+  mutable std::mutex mutex_;
 
 private:
   std::deque<AutoTypeAction> queue_;

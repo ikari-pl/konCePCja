@@ -21,6 +21,7 @@ static int resolve_key_name(const std::string& name) {
 }
 
 std::string AutoTypeQueue::enqueue(const std::string& text) {
+  std::lock_guard<std::mutex> lock(mutex_);
   std::deque<AutoTypeAction> parsed;
 
   for (size_t i = 0; i < text.size(); ) {
@@ -116,6 +117,7 @@ std::string AutoTypeQueue::enqueue(const std::string& text) {
 }
 
 bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
+  std::lock_guard<std::mutex> lock(mutex_);
   // Handle pending release from previous CHAR_PRESS_RELEASE
   if (awaiting_release_) {
     apply_key(pending_release_key_, false);
@@ -172,14 +174,17 @@ bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
 }
 
 bool AutoTypeQueue::is_active() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   return !queue_.empty() || awaiting_release_ || pause_counter_ > 0 || inter_char_pause_;
 }
 
 size_t AutoTypeQueue::remaining() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   return queue_.size();
 }
 
 void AutoTypeQueue::clear() {
+  std::lock_guard<std::mutex> lock(mutex_);
   queue_.clear();
   pause_counter_ = 0;
   awaiting_release_ = false;
