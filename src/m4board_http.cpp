@@ -1350,7 +1350,7 @@ void M4HttpServer::run() {
             LOG_INFO("M4 HTTP: WebSocket preview client connected");
             while (running.load()) {
                HttpResponse frame = handle_preview(req);
-               if (!frame.body.empty()) {
+               if (frame.status == 200 && !frame.body.empty()) {
                   if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
                      break;
                }
@@ -1532,7 +1532,7 @@ void M4HttpServer::run() {
             // Push BMP frames at ~5fps until client disconnects or server stops
             while (running.load()) {
                HttpResponse frame = handle_preview(req);
-               if (!frame.body.empty()) {
+               if (frame.status == 200 && !frame.body.empty()) {
                   if (!ws_send_binary(client, frame.body.data(), frame.body.size()))
                      break; // client disconnected
                }
