@@ -68,7 +68,7 @@ static void imgui_render_devtools();
 static void imgui_render_memory_tool();
 static void imgui_render_vkeyboard();
 
-static void close_menu();
+// Declared in imgui_ui.h — close menu and unpause unless a dialog is open
 static void mru_push(std::vector<std::string>& list, const std::string& path);
 
 // Height tracking for stacked menubar + topbar + devtools bar
@@ -117,7 +117,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
-      if (action == FileDialogAction::LoadDiskA) close_menu();
+      if (action == FileDialogAction::LoadDiskA) imgui_close_menu();
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
@@ -128,7 +128,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
-      if (action == FileDialogAction::LoadDiskB) close_menu();
+      if (action == FileDialogAction::LoadDiskB) imgui_close_menu();
       break;
     case FileDialogAction::SaveDiskA:
       if (dsk_save(path, &driveA) == 0)
@@ -152,7 +152,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load snapshot: " + fname);
       CPC.current_snap_path = dir;
-      close_menu();
+      imgui_close_menu();
       break;
     case FileDialogAction::SaveSnapshot:
       if (snapshot_save(path) == 0)
@@ -170,7 +170,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      close_menu();
+      imgui_close_menu();
       break;
     case FileDialogAction::LoadTape_LED:
       CPC.tape.file = path;
@@ -191,7 +191,7 @@ static void process_pending_dialog()
         imgui_toast_error("Failed to load cartridge: " + fname);
       CPC.current_cart_path = dir;
       emulator_reset();
-      close_menu();
+      imgui_close_menu();
       break;
     case FileDialogAction::LoadROM:
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS)
@@ -575,11 +575,11 @@ void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGu
 // Helper: close menu and resume emulation
 // ─────────────────────────────────────────────────
 
-static void close_menu()
+void imgui_close_menu()
 {
   imgui_state.show_menu = false;
   // Don't clear show_options/show_about/show_quit_confirm here —
-  // they may have just been set by the menu action that triggered close_menu().
+  // they may have just been set by the menu action that triggered imgui_close_menu().
   // Each dialog is responsible for clearing its own flag on close.
   // Only unpause if no dialog is keeping the emulator paused.
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
@@ -1544,9 +1544,13 @@ static void imgui_render_statusbar()
         // Also re-scan when the block offsets table changes (new tape loaded).
         static byte* last_pbTapeBlock = nullptr;
         static size_t last_block_count = 0;
-        bool tape_changed = (imgui_state.tape_block_offsets.size() != last_block_count);
-        if (tape_changed) {
+        static const byte* last_tape_base = nullptr;
+        // Detect new tape: block count changed OR tape image base address changed
+        // (covers reallocation to same size)
+        const byte* tape_base = pbTapeImage.empty() ? nullptr : &pbTapeImage[0];
+        if (imgui_state.tape_block_offsets.size() != last_block_count || tape_base != last_tape_base) {
           last_block_count = imgui_state.tape_block_offsets.size();
+          last_tape_base = tape_base;
           last_pbTapeBlock = nullptr;  // force re-scan
         }
         if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
@@ -1716,16 +1720,16 @@ static void imgui_render_menu()
 
   bool menu_open = true;
   if (!ImGui::Begin("konCePCja", &menu_open, flags)) {
-    if (!menu_open) close_menu();
+    if (!menu_open) imgui_close_menu();
     ImGui::End();
     return;
   }
-  if (!menu_open) { close_menu(); ImGui::End(); return; }
+  if (!menu_open) { imgui_close_menu(); ImGui::End(); return; }
 
   // Keyboard shortcuts within pause menu
   bool action = false;
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { close_menu(); ImGui::End(); return; }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { imgui_close_menu(); ImGui::End(); return; }
     if (ImGui::IsKeyPressed(ImGuiKey_R)) { emulator_reset(); action = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_Q)) { imgui_state.show_quit_confirm = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_A)) { imgui_state.show_about = true; }
@@ -1758,7 +1762,7 @@ static void imgui_render_menu()
 
   ImGui::End();
 
-  if (action) close_menu();
+  if (action) imgui_close_menu();
 
   // --- About popup ---
   if (imgui_state.show_about) {
@@ -2060,8 +2064,9 @@ static void imgui_render_options()
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) { CPC.snd_enabled = snd ? 1 : 0; }
 
+      static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
       int rate_idx = static_cast<int>(CPC.snd_playback_rate);
-      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) rate_idx = 2;
+      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) rate_idx = kDefaultSampleRateIndex;
       if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates, IM_ARRAYSIZE(sample_rates))) {
         CPC.snd_playback_rate = rate_idx;  // store index (0-4), not raw frequency
       }
