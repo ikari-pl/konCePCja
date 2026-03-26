@@ -2424,12 +2424,6 @@ static void imgui_render_options()
 
 // Format memory line into stack buffer - zero heap allocations
 // Buffer size: 512 bytes handles up to 64 bytes/line with all formats
-// Delegates to the testable version in imgui_ui_testable.h, passing pbRAM.
-static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr,
-                              int bytes_per_line, int format)
-{
-  return format_memory_line(buf, buf_size, base_addr, bytes_per_line, format, pbRAM);
-}
 
 // Shared poke input UI with proper validation
 // Returns true if poke was executed
@@ -2741,7 +2735,7 @@ static void imgui_render_memory_tool()
         if (!show) continue;
 
         char line[512];
-        format_memory_line(line, sizeof(line), base, bpl, 0);
+        format_memory_line(line, sizeof(line), base, bpl, 0, pbRAM);
         ImGui::TextUnformatted(line);
       }
     } else {
@@ -2752,7 +2746,7 @@ static void imgui_render_memory_tool()
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
           unsigned int base = i * bpl;
           char line[512];
-          format_memory_line(line, sizeof(line), base, bpl, 0);
+          format_memory_line(line, sizeof(line), base, bpl, 0, pbRAM);
           ImGui::TextUnformatted(line);
         }
       }
