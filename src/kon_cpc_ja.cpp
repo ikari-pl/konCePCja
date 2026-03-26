@@ -3604,16 +3604,34 @@ int koncpc_main (int argc, char **argv)
 
          // If ImGui wants input, skip emulator processing.
          // Exception: virtual keyboard events (windowID=0) always reach the emulator.
-         // Only block keyboard when a text input widget is active (WantTextInput),
-         // not when any ImGui window has focus (WantCaptureKeyboard). This prevents
-         // the virtual keyboard window from stealing physical keyboard input.
+         //
+         // Use WantCaptureKeyboard (blocks when menus, dropdowns, or any ImGui
+         // window has focus) OR WantTextInput (blocks when a text field is active).
+         // Special case: when the virtual keyboard is the only UI open, it shouldn't
+         // block physical keys — it only uses mouse clicks. We detect this by checking
+         // if WantCaptureKeyboard is set but no menu/modal/text input is active.
          {
            ImGuiIO& io = ImGui::GetIO();
            bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP);
            bool is_text_event = (event.type == SDL_EVENT_TEXT_INPUT);
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
-           if (((is_key_event && !is_virtual_key) && io.WantTextInput) || (is_text_event && io.WantTextInput) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
+
+           bool imgui_wants_kbd = io.WantCaptureKeyboard;
+           // If the vkeyboard is open but no menu, modal, text field, or other
+           // keyboard-consuming UI is active, let physical keys reach the CPC.
+           // The vkeyboard only uses mouse clicks — it shouldn't steal keyboard.
+           if (imgui_wants_kbd && imgui_state.show_vkeyboard &&
+               !io.WantTextInput &&
+               !imgui_state.show_menu && !imgui_state.show_options &&
+               !imgui_state.show_about && !imgui_state.show_quit_confirm &&
+               !imgui_state.show_layout_dropdown &&
+               !g_command_palette.is_open() &&
+               !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) {
+             imgui_wants_kbd = false;
+           }
+
+           if (((is_key_event && !is_virtual_key) && imgui_wants_kbd) || (is_text_event && imgui_wants_kbd) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
              continue;
            }
          }
