@@ -49,6 +49,7 @@ protected:
         }
         // Create a fresh KeyboardManager for each test
         km = KeyboardManager();
+        CPC.keyboard_support_mode = KeyboardSupportMode::Direct;
     }
 
     void setMode(KeyboardSupportMode mode) {
