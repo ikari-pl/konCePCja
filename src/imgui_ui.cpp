@@ -1540,8 +1540,15 @@ static void imgui_render_statusbar()
           memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
         }
 
-        // Update current block index from pbTapeBlock pointer
+        // Update current block index from pbTapeBlock pointer.
+        // Also re-scan when the block offsets table changes (new tape loaded).
         static byte* last_pbTapeBlock = nullptr;
+        static size_t last_block_count = 0;
+        bool tape_changed = (imgui_state.tape_block_offsets.size() != last_block_count);
+        if (tape_changed) {
+          last_block_count = imgui_state.tape_block_offsets.size();
+          last_pbTapeBlock = nullptr;  // force re-scan
+        }
         if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
           last_pbTapeBlock = pbTapeBlock;
           for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
@@ -1790,7 +1797,6 @@ static void imgui_render_menu()
 static const char* video_plugins[] = { "Direct (SDL)", "Software Scaling" };
 static const char* scale_items[] = { "1x", "2x", "3x", "4x" };
 static const char* sample_rates[] = { "11025", "22050", "44100", "48000", "96000" };
-static int sample_rate_values[] = { 11025, 22050, 44100, 48000, 96000 };
 static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
 static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)" };
 static int ram_size_values[] = { 64, 128, 192, 256, 320, 512, 576, 4160 };
@@ -1958,7 +1964,7 @@ static void imgui_render_options()
           }
 
           // Unload button (slots 0-1 are system ROMs, protected)
-          ImGui::TableSetColumnIndex(3);
+          ImGui::TableSetColumnIndex(4);
           if (i < 2) {
             ImGui::TextDisabled("system");
           } else if (loaded) {
@@ -2054,9 +2060,10 @@ static void imgui_render_options()
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) { CPC.snd_enabled = snd ? 1 : 0; }
 
-      int rate_idx = find_sample_rate_index(CPC.snd_playback_rate);
+      int rate_idx = static_cast<int>(CPC.snd_playback_rate);
+      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) rate_idx = 2;
       if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates, IM_ARRAYSIZE(sample_rates))) {
-        CPC.snd_playback_rate = sample_rate_values[rate_idx];
+        CPC.snd_playback_rate = rate_idx;  // store index (0-4), not raw frequency
       }
 
       bool stereo = CPC.snd_stereo != 0;
@@ -2417,55 +2424,11 @@ static void imgui_render_options()
 
 // Format memory line into stack buffer - zero heap allocations
 // Buffer size: 512 bytes handles up to 64 bytes/line with all formats
+// Delegates to the testable version in imgui_ui_testable.h, passing pbRAM.
 static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr,
                               int bytes_per_line, int format)
 {
-  if (buf_size == 0) return 0;
-
-  int offset = 0;
-  int remaining = static_cast<int>(buf_size);
-
-  // Helper to safely advance after snprintf (clamps to remaining space)
-  auto advance = [&](int written) {
-    if (written < 0) return false;
-    int actual = (written < remaining) ? written : remaining - 1;
-    offset += actual;
-    remaining -= actual;
-    return remaining > 1;
-  };
-
-  // Address
-  if (!advance(snprintf(buf + offset, remaining, "%04X : ", base_addr))) {
-    buf[offset] = '\0';
-    return offset;
-  }
-
-  // Hex bytes
-  for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
-    if (!advance(snprintf(buf + offset, remaining, "%02X ", pbRAM[(base_addr + j) & 0xFFFF])))
-      break;
-  }
-
-  // Extended formats
-  if (format == 1 && remaining > 1) { // Hex & char
-    if (advance(snprintf(buf + offset, remaining, " | "))) {
-      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
-        byte b = pbRAM[(base_addr + j) & 0xFFFF];
-        buf[offset++] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
-        remaining--;
-      }
-    }
-  } else if (format == 2 && remaining > 1) { // Hex & u8
-    if (advance(snprintf(buf + offset, remaining, " | "))) {
-      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
-        if (!advance(snprintf(buf + offset, remaining, "%3u ", pbRAM[(base_addr + j) & 0xFFFF])))
-          break;
-      }
-    }
-  }
-
-  buf[offset] = '\0';
-  return offset;
+  return format_memory_line(buf, buf_size, base_addr, bytes_per_line, format, pbRAM);
 }
 
 // Shared poke input UI with proper validation
