@@ -1545,12 +1545,16 @@ static void imgui_render_statusbar()
         static byte* last_pbTapeBlock = nullptr;
         static size_t last_block_count = 0;
         static const byte* last_tape_base = nullptr;
-        // Detect new tape: block count changed OR tape image base address changed
-        // (covers reallocation to same size)
+        static byte* last_block0 = nullptr;
+        // Detect new tape: base pointer, block count, or first block address changed.
         const byte* tape_base = pbTapeImage.empty() ? nullptr : &pbTapeImage[0];
-        if (imgui_state.tape_block_offsets.size() != last_block_count || tape_base != last_tape_base) {
-          last_block_count = imgui_state.tape_block_offsets.size();
+        byte* block0 = imgui_state.tape_block_offsets.empty() ? nullptr : imgui_state.tape_block_offsets[0];
+        if (tape_base != last_tape_base ||
+            imgui_state.tape_block_offsets.size() != last_block_count ||
+            block0 != last_block0) {
           last_tape_base = tape_base;
+          last_block_count = imgui_state.tape_block_offsets.size();
+          last_block0 = block0;
           last_pbTapeBlock = nullptr;  // force re-scan
         }
         if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
@@ -2066,7 +2070,10 @@ static void imgui_render_options()
 
       static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
       int rate_idx = static_cast<int>(CPC.snd_playback_rate);
-      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) rate_idx = kDefaultSampleRateIndex;
+      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
+        rate_idx = kDefaultSampleRateIndex;
+        CPC.snd_playback_rate = rate_idx;  // fix invalid value immediately
+      }
       if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates, IM_ARRAYSIZE(sample_rates))) {
         CPC.snd_playback_rate = rate_idx;  // store index (0-4), not raw frequency
       }

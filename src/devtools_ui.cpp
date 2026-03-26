@@ -381,6 +381,10 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
+  // Drain deferred cache invalidation (set from IPC/HTTP threads)
+  if (disasm_cache_pending_clear_.load()) {
+    disasm_cache_clear();
+  }
   // Invalidate cache on banking change (track each config separately to avoid XOR collisions)
   extern t_GateArray GateArray;
   if (GateArray.RAM_config != disasm_cache_ram_config_ || GateArray.ROM_config != disasm_cache_rom_config_) {

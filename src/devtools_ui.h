@@ -5,6 +5,7 @@
 #include <vector>
 #include <unordered_map>
 #include <cstdint>
+#include <atomic>
 #include "types.h"
 #include "disk_file_editor.h"
 #include "disk_sector_editor.h"
@@ -41,7 +42,14 @@ public:
     // Returns the array of all window key strings (NUM_WINDOWS entries).
     static const char* const* all_window_keys(int* count);
 
-    // Invalidate disassembly cache (call after memory writes, banking changes, reset)
+    // Request cache invalidation — safe to call from any thread.
+    // Actual clearing happens on the next render() call (main thread).
+    void disasm_cache_invalidate() { disasm_cache_pending_clear_.store(true); }
+
+    // Mark symbol table cache as stale — safe to call from any thread.
+    void symtable_mark_dirty() { symtable_dirty_ = true; }
+
+    // Immediate cache clear — MAIN THREAD ONLY.
     void disasm_cache_clear() {
       disasm_cache_.clear();
       disasm_pc_history_count_ = 0;
@@ -49,6 +57,7 @@ public:
       disasm_cache_ram_config_ = 0xFF;
       disasm_cache_rom_config_ = 0xFF;
       symtable_dirty_ = true;
+      disasm_cache_pending_clear_.store(false);
     }
 
 private:
@@ -84,6 +93,7 @@ private:
       uint8_t length = 0; // instruction length in bytes (1-4)
     };
     std::unordered_map<word, CachedInsn> disasm_cache_;
+    std::atomic<bool> disasm_cache_pending_clear_{false};  // set from any thread, drained in render()
     byte disasm_cache_ram_config_ = 0xFF;  // last seen RAM_config
     byte disasm_cache_rom_config_ = 0xFF;  // last seen ROM_config
 
@@ -106,7 +116,7 @@ private:
     char symtable_filter_[64] = "";
     std::string symtable_filter_cached_;  // last filter used for cached results
     std::vector<std::pair<word, std::string>> symtable_cached_;
-    bool symtable_dirty_ = true;         // force rebuild on next render
+    std::atomic<bool> symtable_dirty_{true};  // set from any thread, drained in render
 
     // Session Recording state
     char sr_path_[256] = "";
