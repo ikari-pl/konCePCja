@@ -3605,11 +3605,10 @@ int koncpc_main (int argc, char **argv)
          // If ImGui wants input, skip emulator processing.
          // Exception: virtual keyboard events (windowID=0) always reach the emulator.
          //
-         // Use WantCaptureKeyboard (blocks when menus, dropdowns, or any ImGui
-         // window has focus) OR WantTextInput (blocks when a text field is active).
-         // Special case: when the virtual keyboard is the only UI open, it shouldn't
-         // block physical keys — it only uses mouse clicks. We detect this by checking
-         // if WantCaptureKeyboard is set but no menu/modal/text input is active.
+         // WantCaptureKeyboard blocks when menus, dropdowns, devtools, or any ImGui
+         // window has focus. Special case: the virtual keyboard only uses mouse clicks,
+         // so when it's the sole reason WantCaptureKeyboard is set, let physical keys
+         // reach the CPC. Any other UI (menus, text fields, devtools) takes priority.
          {
            ImGuiIO& io = ImGui::GetIO();
            bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP);
@@ -3617,17 +3616,18 @@ int koncpc_main (int argc, char **argv)
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
 
+           // Check if any keyboard-consuming UI is active (besides the vkeyboard).
+           bool any_kbd_ui = io.WantTextInput
+               || imgui_state.show_menu || imgui_state.show_options
+               || imgui_state.show_about || imgui_state.show_quit_confirm
+               || imgui_state.show_memory_tool || imgui_state.show_layout_dropdown
+               || imgui_state.show_devtools
+               || g_command_palette.is_open()
+               || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+
+           // Block keyboard for ImGui unless ONLY the vkeyboard has focus.
            bool imgui_wants_kbd = io.WantCaptureKeyboard;
-           // If the vkeyboard is open but no menu, modal, text field, or other
-           // keyboard-consuming UI is active, let physical keys reach the CPC.
-           // The vkeyboard only uses mouse clicks — it shouldn't steal keyboard.
-           if (imgui_wants_kbd && imgui_state.show_vkeyboard &&
-               !io.WantTextInput &&
-               !imgui_state.show_menu && !imgui_state.show_options &&
-               !imgui_state.show_about && !imgui_state.show_quit_confirm &&
-               !imgui_state.show_layout_dropdown &&
-               !g_command_palette.is_open() &&
-               !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) {
+           if (imgui_wants_kbd && imgui_state.show_vkeyboard && !any_kbd_ui) {
              imgui_wants_kbd = false;
            }
 
