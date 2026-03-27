@@ -109,11 +109,12 @@ std::string ConfigProfileManager::load(const std::string& name) {
     CPC.scr_scale = p.scr_scale;
     CPC.scr_oglscanlines = p.scr_scanlines;
     CPC.snd_enabled = p.snd_enabled;
-    CPC.snd_playback_rate = p.snd_playback_rate;
+    CPC.snd_playback_rate = (p.snd_playback_rate <= 4) ? p.snd_playback_rate : 2;
     CPC.snd_bits = p.snd_bits;
     CPC.snd_stereo = p.snd_stereo;
     CPC.snd_volume = p.snd_volume;
     CPC.joystick_emulation = static_cast<JoystickEmulation>(p.joystick_emulation);
+    CPC.keyboard_support_mode = static_cast<KeyboardSupportMode>(p.keyboard_support_mode);
 
     current_name_ = name;
     return "";
@@ -140,6 +141,7 @@ std::string ConfigProfileManager::save(const std::string& name) {
     p.snd_stereo = CPC.snd_stereo;
     p.snd_volume = CPC.snd_volume;
     p.joystick_emulation = static_cast<unsigned int>(CPC.joystick_emulation);
+    p.keyboard_support_mode = static_cast<unsigned int>(CPC.keyboard_support_mode);
 
     auto err = write_profile(profile_path(name), p);
     if (!err.empty()) return err;
@@ -183,6 +185,7 @@ std::string ConfigProfileManager::write_profile(const std::string& path, const C
     f << "volume = " << p.snd_volume << "\n";
     f << "[input]\n";
     f << "joystick = " << p.joystick_emulation << "\n";
+    f << "keyboard_mode = " << p.keyboard_support_mode << "\n";
 
     if (!f.good()) return "write error";
     return "";
@@ -236,6 +239,7 @@ std::string ConfigProfileManager::read_profile(const std::string& path, ConfigPr
         else if (key == "stereo") p.snd_stereo = val;
         else if (key == "volume") p.snd_volume = val;
         else if (key == "joystick") p.joystick_emulation = val;
+        else if (key == "keyboard_mode") p.keyboard_support_mode = val;
     }
     return "";
 }

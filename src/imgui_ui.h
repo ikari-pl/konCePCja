@@ -112,6 +112,7 @@ extern ImGuiUIState imgui_state;
 void imgui_init_ui();
 void imgui_render_ui();
 int imgui_topbar_height();
+void imgui_close_menu();
 
 // Toast notifications
 void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);

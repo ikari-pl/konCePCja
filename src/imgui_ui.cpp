@@ -68,7 +68,7 @@ static void imgui_render_devtools();
 static void imgui_render_memory_tool();
 static void imgui_render_vkeyboard();
 
-static void close_menu();
+// Declared in imgui_ui.h — close menu and unpause unless a dialog is open
 static void mru_push(std::vector<std::string>& list, const std::string& path);
 
 // Height tracking for stacked menubar + topbar + devtools bar
@@ -117,7 +117,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
-      if (action == FileDialogAction::LoadDiskA) close_menu();
+      if (action == FileDialogAction::LoadDiskA) imgui_close_menu();
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
@@ -128,7 +128,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
-      if (action == FileDialogAction::LoadDiskB) close_menu();
+      if (action == FileDialogAction::LoadDiskB) imgui_close_menu();
       break;
     case FileDialogAction::SaveDiskA:
       if (dsk_save(path, &driveA) == 0)
@@ -152,7 +152,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load snapshot: " + fname);
       CPC.current_snap_path = dir;
-      close_menu();
+      imgui_close_menu();
       break;
     case FileDialogAction::SaveSnapshot:
       if (snapshot_save(path) == 0)
@@ -170,7 +170,7 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      close_menu();
+      imgui_close_menu();
       break;
     case FileDialogAction::LoadTape_LED:
       CPC.tape.file = path;
@@ -191,7 +191,7 @@ static void process_pending_dialog()
         imgui_toast_error("Failed to load cartridge: " + fname);
       CPC.current_cart_path = dir;
       emulator_reset();
-      close_menu();
+      imgui_close_menu();
       break;
     case FileDialogAction::LoadROM:
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS)
@@ -575,11 +575,11 @@ void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGu
 // Helper: close menu and resume emulation
 // ─────────────────────────────────────────────────
 
-static void close_menu()
+void imgui_close_menu()
 {
   imgui_state.show_menu = false;
   // Don't clear show_options/show_about/show_quit_confirm here —
-  // they may have just been set by the menu action that triggered close_menu().
+  // they may have just been set by the menu action that triggered imgui_close_menu().
   // Each dialog is responsible for clearing its own flag on close.
   // Only unpause if no dialog is keeping the emulator paused.
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
@@ -1540,8 +1540,23 @@ static void imgui_render_statusbar()
           memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
         }
 
-        // Update current block index from pbTapeBlock pointer
+        // Update current block index from pbTapeBlock pointer.
+        // Also re-scan when the block offsets table changes (new tape loaded).
         static byte* last_pbTapeBlock = nullptr;
+        static size_t last_block_count = 0;
+        static const byte* last_tape_base = nullptr;
+        static byte* last_block0 = nullptr;
+        // Detect new tape: base pointer, block count, or first block address changed.
+        const byte* tape_base = pbTapeImage.empty() ? nullptr : &pbTapeImage[0];
+        byte* block0 = imgui_state.tape_block_offsets.empty() ? nullptr : imgui_state.tape_block_offsets[0];
+        if (tape_base != last_tape_base ||
+            imgui_state.tape_block_offsets.size() != last_block_count ||
+            block0 != last_block0) {
+          last_tape_base = tape_base;
+          last_block_count = imgui_state.tape_block_offsets.size();
+          last_block0 = block0;
+          last_pbTapeBlock = nullptr;  // force re-scan
+        }
         if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
           last_pbTapeBlock = pbTapeBlock;
           for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
@@ -1709,16 +1724,16 @@ static void imgui_render_menu()
 
   bool menu_open = true;
   if (!ImGui::Begin("konCePCja", &menu_open, flags)) {
-    if (!menu_open) close_menu();
+    if (!menu_open) imgui_close_menu();
     ImGui::End();
     return;
   }
-  if (!menu_open) { close_menu(); ImGui::End(); return; }
+  if (!menu_open) { imgui_close_menu(); ImGui::End(); return; }
 
   // Keyboard shortcuts within pause menu
   bool action = false;
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { close_menu(); ImGui::End(); return; }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { imgui_close_menu(); ImGui::End(); return; }
     if (ImGui::IsKeyPressed(ImGuiKey_R)) { emulator_reset(); action = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_Q)) { imgui_state.show_quit_confirm = true; }
     if (ImGui::IsKeyPressed(ImGuiKey_A)) { imgui_state.show_about = true; }
@@ -1751,7 +1766,7 @@ static void imgui_render_menu()
 
   ImGui::End();
 
-  if (action) close_menu();
+  if (action) imgui_close_menu();
 
   // --- About popup ---
   if (imgui_state.show_about) {
@@ -1790,7 +1805,6 @@ static void imgui_render_menu()
 static const char* video_plugins[] = { "Direct (SDL)", "Software Scaling" };
 static const char* scale_items[] = { "1x", "2x", "3x", "4x" };
 static const char* sample_rates[] = { "11025", "22050", "44100", "48000", "96000" };
-static int sample_rate_values[] = { 11025, 22050, 44100, 48000, 96000 };
 static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
 static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)" };
 static int ram_size_values[] = { 64, 128, 192, 256, 320, 512, 576, 4160 };
@@ -1958,7 +1972,7 @@ static void imgui_render_options()
           }
 
           // Unload button (slots 0-1 are system ROMs, protected)
-          ImGui::TableSetColumnIndex(3);
+          ImGui::TableSetColumnIndex(4);
           if (i < 2) {
             ImGui::TextDisabled("system");
           } else if (loaded) {
@@ -2054,9 +2068,14 @@ static void imgui_render_options()
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) { CPC.snd_enabled = snd ? 1 : 0; }
 
-      int rate_idx = find_sample_rate_index(CPC.snd_playback_rate);
+      static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
+      int rate_idx = static_cast<int>(CPC.snd_playback_rate);
+      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
+        rate_idx = kDefaultSampleRateIndex;
+        CPC.snd_playback_rate = rate_idx;  // fix invalid value immediately
+      }
       if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates, IM_ARRAYSIZE(sample_rates))) {
-        CPC.snd_playback_rate = sample_rate_values[rate_idx];
+        CPC.snd_playback_rate = rate_idx;  // store index (0-4), not raw frequency
       }
 
       bool stereo = CPC.snd_stereo != 0;
@@ -2417,56 +2436,6 @@ static void imgui_render_options()
 
 // Format memory line into stack buffer - zero heap allocations
 // Buffer size: 512 bytes handles up to 64 bytes/line with all formats
-static int format_memory_line(char* buf, size_t buf_size, unsigned int base_addr,
-                              int bytes_per_line, int format)
-{
-  if (buf_size == 0) return 0;
-
-  int offset = 0;
-  int remaining = static_cast<int>(buf_size);
-
-  // Helper to safely advance after snprintf (clamps to remaining space)
-  auto advance = [&](int written) {
-    if (written < 0) return false;
-    int actual = (written < remaining) ? written : remaining - 1;
-    offset += actual;
-    remaining -= actual;
-    return remaining > 1;
-  };
-
-  // Address
-  if (!advance(snprintf(buf + offset, remaining, "%04X : ", base_addr))) {
-    buf[offset] = '\0';
-    return offset;
-  }
-
-  // Hex bytes
-  for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
-    if (!advance(snprintf(buf + offset, remaining, "%02X ", pbRAM[(base_addr + j) & 0xFFFF])))
-      break;
-  }
-
-  // Extended formats
-  if (format == 1 && remaining > 1) { // Hex & char
-    if (advance(snprintf(buf + offset, remaining, " | "))) {
-      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
-        byte b = pbRAM[(base_addr + j) & 0xFFFF];
-        buf[offset++] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
-        remaining--;
-      }
-    }
-  } else if (format == 2 && remaining > 1) { // Hex & u8
-    if (advance(snprintf(buf + offset, remaining, " | "))) {
-      for (int j = 0; j < bytes_per_line && remaining > 1; j++) {
-        if (!advance(snprintf(buf + offset, remaining, "%3u ", pbRAM[(base_addr + j) & 0xFFFF])))
-          break;
-      }
-    }
-  }
-
-  buf[offset] = '\0';
-  return offset;
-}
 
 // Shared poke input UI with proper validation
 // Returns true if poke was executed
@@ -2778,7 +2747,7 @@ static void imgui_render_memory_tool()
         if (!show) continue;
 
         char line[512];
-        format_memory_line(line, sizeof(line), base, bpl, 0);
+        format_memory_line(line, sizeof(line), base, bpl, 0, pbRAM);
         ImGui::TextUnformatted(line);
       }
     } else {
@@ -2789,7 +2758,7 @@ static void imgui_render_memory_tool()
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
           unsigned int base = i * bpl;
           char line[512];
-          format_memory_line(line, sizeof(line), base, bpl, 0);
+          format_memory_line(line, sizeof(line), base, bpl, 0, pbRAM);
           ImGui::TextUnformatted(line);
         }
       }

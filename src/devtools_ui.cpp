@@ -381,6 +381,10 @@ void DevToolsUI::render_disassembly()
     center_pc = static_cast<word>(disasm_goto_value_);
   }
 
+  // Drain deferred cache invalidation (set from IPC/HTTP threads)
+  if (disasm_cache_pending_clear_.load()) {
+    disasm_cache_clear();
+  }
   // Invalidate cache on banking change (track each config separately to avoid XOR collisions)
   extern t_GateArray GateArray;
   if (GateArray.RAM_config != disasm_cache_ram_config_ || GateArray.ROM_config != disasm_cache_rom_config_) {
@@ -1338,7 +1342,14 @@ void DevToolsUI::render_breakpoints()
 
 void DevToolsUI::render_symbols()
 {
-  auto syms = g_symfile.listSymbols(symtable_filter_);
+  // Cache the filtered symbol list — only rebuild when filter changes or marked dirty
+  std::string current_filter(symtable_filter_);
+  if (symtable_dirty_ || current_filter != symtable_filter_cached_) {
+    symtable_cached_ = g_symfile.listSymbols(symtable_filter_);
+    symtable_filter_cached_ = current_filter;
+    symtable_dirty_ = false;
+  }
+  const auto& syms = symtable_cached_;
 
   char title[64];
   snprintf(title, sizeof(title), "Symbols (%d)###SymbolTable", static_cast<int>(syms.size()));
@@ -1360,6 +1371,7 @@ void DevToolsUI::render_symbols()
       for (const auto& [addr, name] : loaded.Symbols()) {
         g_symfile.addSymbol(addr, name);
       }
+      symtable_dirty_ = true;
     }
   }
   ImGui::SameLine();
@@ -1385,6 +1397,7 @@ void DevToolsUI::render_symbols()
     unsigned long addr;
     if (parse_hex(sym_addr_, &addr, 0xFFFF) && sym_name_[0] != '\0') {
       g_symfile.addSymbol(static_cast<word>(addr), sym_name_);
+      symtable_dirty_ = true;
       sym_addr_[0] = '\0';
       sym_name_[0] = '\0';
     }
@@ -1424,6 +1437,7 @@ void DevToolsUI::render_symbols()
       ImGui::PushID(static_cast<int>(addr));
       if (ImGui::SmallButton("X")) {
         g_symfile.delSymbol(name);
+        symtable_dirty_ = true;
       }
       ImGui::PopID();
     }

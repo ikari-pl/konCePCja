@@ -1080,6 +1080,7 @@ std::string handle_command(const std::string& line) {
       byte v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
       z80_write_mem(static_cast<word>(addr + (i/2)), v);
     }
+    g_devtools_ui.disasm_cache_invalidate();
     return ok_with_context();
   }
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "fill") {
@@ -1095,6 +1096,7 @@ std::string handle_command(const std::string& line) {
     for (unsigned int i = 0; i < len; i++) {
       z80_write_mem(static_cast<word>(addr + i), pattern[i % pattern.size()]);
     }
+    g_devtools_ui.disasm_cache_invalidate();
     return ok_with_context();
   }
   if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
@@ -2202,6 +2204,7 @@ std::string handle_command(const std::string& line) {
         g_symfile.addSymbol(addr, name);
         count++;
       }
+      g_devtools_ui.symtable_mark_dirty();
       char buf[32];
       snprintf(buf, sizeof(buf), "OK loaded=%d\n", count);
       return std::string(buf);
@@ -2209,10 +2212,12 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "add" && parts.size() >= 4) {
       unsigned int addr = parse_number(parts[2]);
       g_symfile.addSymbol(static_cast<word>(addr), parts[3]);
+      g_devtools_ui.symtable_mark_dirty();
       return "OK\n";
     }
     if (parts[1] == "del" && parts.size() >= 3) {
       g_symfile.delSymbol(parts[2]);
+      g_devtools_ui.symtable_mark_dirty();
       return "OK\n";
     }
     if (parts[1] == "list") {

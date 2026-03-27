@@ -5,17 +5,7 @@
 extern t_CPC CPC;
 extern ImGuiUIState imgui_state;
 
-// close_menu() is static in imgui_ui.cpp. These tests verify the expected
-// state transitions documented in its implementation: show_menu=false,
-// unpause unless options or quit_confirm is open.
-static void test_close_menu() {
-    imgui_state.show_menu = false;
-    if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
-        CPC.paused = false;
-    }
-    // NOTE: If close_menu() logic changes, update this helper AND add a
-    // regression test that exercises the real function via IPC or menu action.
-}
+// Uses the real imgui_close_menu() — no duplication of logic.
 
 class UIStateTest : public ::testing::Test {
 protected:
@@ -44,7 +34,7 @@ TEST_F(UIStateTest, OpeningMenuSetsFlag) {
 TEST_F(UIStateTest, ClosingMenuClearsFlagAndUnpauses) {
     imgui_state.show_menu = true;
     CPC.paused = true;
-    test_close_menu();
+    imgui_close_menu();
     EXPECT_FALSE(imgui_state.show_menu);
     EXPECT_FALSE(CPC.paused);
 }
@@ -53,7 +43,7 @@ TEST_F(UIStateTest, ClosingMenuWithOptionsOpenStaysPaused) {
     imgui_state.show_menu = true;
     imgui_state.show_options = true;
     CPC.paused = true;
-    test_close_menu();
+    imgui_close_menu();
     EXPECT_FALSE(imgui_state.show_menu);
     EXPECT_TRUE(CPC.paused);  // options keeps it paused
 }
@@ -62,7 +52,7 @@ TEST_F(UIStateTest, ClosingMenuWithQuitConfirmStaysPaused) {
     imgui_state.show_menu = true;
     imgui_state.show_quit_confirm = true;
     CPC.paused = true;
-    test_close_menu();
+    imgui_close_menu();
     EXPECT_FALSE(imgui_state.show_menu);
     EXPECT_TRUE(CPC.paused);  // quit dialog keeps it paused
 }
@@ -327,7 +317,7 @@ TEST_F(UIStateTest, MenuAndOptionsCanBothBeOpen) {
     imgui_state.show_options = true;
     CPC.paused = true;
     // Closing menu while options is open should stay paused
-    test_close_menu();
+    imgui_close_menu();
     EXPECT_FALSE(imgui_state.show_menu);
     EXPECT_TRUE(imgui_state.show_options);
     EXPECT_TRUE(CPC.paused);

@@ -42,9 +42,10 @@ public:
    bool is_running() const { return running.load(); }
    const std::string& bind_ip() const { return bind_ip_; }
 
-   // Port forwarding table
+   // Port forwarding table.
+   // MAIN THREAD ONLY — for iteration/mutation from Z80 I/O handlers.
+   // HTTP/IPC threads must use get_port_mappings_snapshot() instead.
    std::vector<M4PortMapping>& port_mappings() { return port_mappings_; }
-   const std::vector<M4PortMapping>& port_mappings() const { return port_mappings_; }
    // Thread-safe snapshot for UI/IPC threads that iterate mappings
    std::vector<M4PortMapping> get_port_mappings_snapshot() const {
       std::lock_guard<std::mutex> lock(port_mutex_);
@@ -113,7 +114,14 @@ private:
    mutable std::mutex port_mutex_;
    std::vector<M4PortMapping> port_mappings_;
 
+   // Surface snapshot for preview — updated by main thread, read by HTTP thread.
+   mutable std::mutex preview_mutex_;
+   std::vector<uint8_t> preview_bmp_;  // BMP-encoded snapshot
+
 public:
+   // Called from main thread to update the preview snapshot.
+   void update_preview_snapshot();
+
    // Deferred actions — set by HTTP thread, consumed by main loop.
    // These ensure thread-unsafe CPC operations happen on the main thread.
    std::atomic<bool> pending_reset{false};
