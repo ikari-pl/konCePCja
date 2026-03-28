@@ -1680,8 +1680,7 @@ int audio_init ()
    CPC.snd_buffersize = sample_frames * SDL_AUDIO_FRAMESIZE(desired);
    pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize);      // front (SDL reads)
    pbSndBufferBack = std::make_unique<byte[]>(CPC.snd_buffersize);  // back (PSG writes)
-   memset(pbSndBuffer.get(), 0, CPC.snd_buffersize);
-   memset(pbSndBufferBack.get(), 0, CPC.snd_buffersize);
+   // make_unique<byte[]>(N) value-initializes (zero-fills), no memset needed
    pbSndBufferEnd = pbSndBufferBack.get() + CPC.snd_buffersize;
    CPC.snd_bufferptr = pbSndBufferBack.get();
    CPC.snd_ready = true;
