@@ -518,23 +518,27 @@ void imgui_render_ui()
     s_bottombar_height_dirty = false;
   }
 
-  // Keyboard capture policy:
-  // In docked mode, the emulator receives keyboard input only when the
-  // CPC Screen tab is the focused/active window.  Clicking on any devtools
-  // window (including text fields) naturally routes keyboard to ImGui.
-  // In classic mode, keyboard goes to the emulator unless a GUI window is open.
-  bool any_modal_gui = imgui_state.show_menu || imgui_state.show_options ||
-                       imgui_state.show_memory_tool || imgui_state.show_vkeyboard ||
-                       g_command_palette.is_open();
-  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-    if (!any_modal_gui && imgui_state.cpc_screen_focused) {
-      ImGui::GetIO().WantCaptureKeyboard = false;
-    }
-  } else {
-    bool any_gui_open = any_modal_gui || imgui_state.show_devtools ||
-                        g_devtools_ui.any_window_open();
-    if (!any_gui_open) {
-      ImGui::GetIO().WantCaptureKeyboard = false;
+  // Keyboard capture policy: let physical keys reach the CPC when no
+  // keyboard-consuming UI is active.
+  // - Classic mode: keys go to CPC unless any UI window is open.
+  //   Uses imgui_any_keyboard_ui_active() (same as event filter).
+  // - Docked mode: devtools are always visible as docked tabs, so we
+  //   only block on modal UI / text input. CPC screen gets keyboard
+  //   when focused, even with devtools docked alongside.
+  {
+    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+      bool modal_ui = ImGui::GetIO().WantTextInput
+          || imgui_state.show_menu || imgui_state.show_options
+          || imgui_state.show_about || imgui_state.show_quit_confirm
+          || g_command_palette.is_open()
+          || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+      if (!modal_ui && imgui_state.cpc_screen_focused) {
+        ImGui::GetIO().WantCaptureKeyboard = false;
+      }
+    } else {
+      if (!imgui_any_keyboard_ui_active()) {
+        ImGui::GetIO().WantCaptureKeyboard = false;
+      }
     }
   }
 }
@@ -570,6 +574,22 @@ void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level)
 void imgui_toast_info(const std::string& message)    { imgui_toast(message, ImGuiUIState::ToastLevel::Info); }
 void imgui_toast_success(const std::string& message) { imgui_toast(message, ImGuiUIState::ToastLevel::Success); }
 void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGuiUIState::ToastLevel::Error); }
+
+// ─────────────────────────────────────────────────
+// Keyboard routing: single source of truth
+// ─────────────────────────────────────────────────
+
+bool imgui_any_keyboard_ui_active()
+{
+  ImGuiIO& io = ImGui::GetIO();
+  return io.WantTextInput
+      || imgui_state.show_menu || imgui_state.show_options
+      || imgui_state.show_about || imgui_state.show_quit_confirm
+      || imgui_state.show_memory_tool || imgui_state.show_layout_dropdown
+      || imgui_state.show_devtools || g_devtools_ui.any_window_open()
+      || g_command_palette.is_open()
+      || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+}
 
 // ─────────────────────────────────────────────────
 // Helper: close menu and resume emulation
@@ -901,9 +921,7 @@ static void imgui_render_menubar()
 
 int imgui_topbar_height()
 {
-  // Menu bar + button bar (21) + 2px padding top + 2px padding bottom = ~44px.
-  // Dynamic sync (lines below) corrects if ImGui expands beyond this.
-  return static_cast<int>(s_menubar_h) + 25;
+  return static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
 }
 
 static void imgui_render_topbar()
@@ -934,11 +952,9 @@ static void imgui_render_topbar()
     }
     bool menu_pressed = ImGui::Button("Pause (F1)");
     if (menu_pressed) {
-      if (!CPC.scr_gui_is_currently_on) {
-        imgui_state.show_menu = true;
-        imgui_state.menu_just_opened = true;
-        CPC.paused = true;
-      }
+      imgui_state.show_menu = true;
+      imgui_state.menu_just_opened = true;
+      CPC.paused = true;
     }
     // (Tape waveform moved to bottom status bar)
 

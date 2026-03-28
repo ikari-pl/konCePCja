@@ -272,7 +272,6 @@ class t_CPC {
    void (*scr_prerenderbord)();
    void (*scr_prerendersync)();
    bool scr_is_ogl;
-   bool scr_gui_is_currently_on;
 
    int devtools_scale;
    unsigned int devtools_max_stack_size;
