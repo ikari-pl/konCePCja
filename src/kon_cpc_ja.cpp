@@ -1632,10 +1632,11 @@ static void audio_push_buffer(const byte* data, int len)
       if (queued == 0) {
          audio_underrun_count++;
          LOG_DEBUG("Audio UNDERRUN: queue empty, interval " << interval_ms << "ms");
-      } else if (queued < len) {
+      } else if (queued < len / 2) {
+         // Below half a buffer (~11ms) — real danger of audible artifact
          audio_near_underrun_count++;
-         LOG_DEBUG("Audio near-underrun: queue " << queued << "B (< " << len
-                   << "B buffer), interval " << interval_ms << "ms");
+         LOG_DEBUG("Audio near-underrun: queue " << queued << "B (< " << len / 2
+                   << "B), interval " << interval_ms << "ms");
       }
    }
    audio_queue_sum_bytes += queued;
@@ -4328,11 +4329,12 @@ int koncpc_main (int argc, char **argv)
                    int queued = SDL_GetAudioStreamQueued(audio_stream);
                    if (queued < audio_queue_min_bytes)
                       audio_queue_min_bytes = static_cast<float>(queued);
-                   if (queued < static_cast<int>(CPC.snd_buffersize) && audio_push_count > 0) {
+                   int half_buf = static_cast<int>(CPC.snd_buffersize) / 2;
+                   if (queued < half_buf && audio_push_count > 0) {
                       audio_near_underrun_count++;
                       double display_ms = static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
                       LOG_DEBUG("Audio near-underrun after display: queue "
-                                << queued << "B, display took " << display_ms << "ms");
+                                << queued << "B (< " << half_buf << "B), display took " << display_ms << "ms");
                    }
                 }
               }
