@@ -16,6 +16,7 @@
 #include "z80.h"
 #include "log.h"
 
+#include <algorithm>
 #include <cstring>
 
 #ifdef _WIN32

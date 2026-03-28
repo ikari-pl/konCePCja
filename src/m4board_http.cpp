@@ -1393,10 +1393,12 @@ void M4HttpServer::run() {
                ioctlsocket(client, FIONREAD, &avail);
                if (avail >= 2) {
                   char ws_peek[2];
-                  int pn = sock_recv(client, ws_peek, 2);
+                  int pn = ::recv(client, ws_peek, 2, MSG_PEEK);  // peek without consuming
                   if (pn <= 0) break;
                   uint8_t opcode = static_cast<uint8_t>(ws_peek[0]) & 0x0F;
                   if (opcode == 0x8) break; // close frame
+                  // Consume the peeked bytes for non-close frames (ping/pong)
+                  ::recv(client, ws_peek, 2, 0);
                }
             }
             LOG_INFO("M4 HTTP: WebSocket preview client disconnected");
@@ -1590,22 +1592,22 @@ void M4HttpServer::run() {
                u_long avail = 0;
                ioctlsocket(client, FIONREAD, &avail);
                if (avail >= 2) {
-                  int pn = sock_recv(client, peek_buf, 2);
-                  if (pn <= 0) break; // connection closed
+                  int pn = ::recv(client, peek_buf, 2, MSG_PEEK);  // peek without consuming
+                  if (pn <= 0) break;
                   uint8_t opcode = static_cast<uint8_t>(peek_buf[0]) & 0x0F;
                   if (opcode == 0x8) break; // close frame
-                  // 0x9 = ping, 0xA = pong — ignore and continue
+                  // Consume non-close frames (ping/pong)
+                  ::recv(client, peek_buf, 2, 0);
                }
 #else
-               int flags = fcntl(client, F_GETFL, 0);
-               fcntl(client, F_SETFL, flags | O_NONBLOCK);
-               ssize_t pn = ::read(client, peek_buf, sizeof(peek_buf));
-               fcntl(client, F_SETFL, flags); // restore
+               // Non-blocking peek using MSG_PEEK | MSG_DONTWAIT — doesn't consume data
+               ssize_t pn = ::recv(client, peek_buf, sizeof(peek_buf), MSG_PEEK | MSG_DONTWAIT);
                if (pn == 0) break; // client closed connection
                if (pn >= 2) {
                   uint8_t opcode = static_cast<uint8_t>(peek_buf[0]) & 0x0F;
                   if (opcode == 0x8) break; // close frame
-                  // ignore ping/pong/other
+                  // Consume the peeked bytes for non-close frames
+                  ::recv(client, peek_buf, sizeof(peek_buf), MSG_DONTWAIT);
                } else if (pn == 1) {
                   // Partial frame header — likely close, break to be safe
                   break;
