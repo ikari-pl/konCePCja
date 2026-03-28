@@ -55,6 +55,8 @@ extern AutoTypeQueue g_autotype_queue;
 extern SDL_Surface *back_surface;
 extern byte *memmap_ROM[256];
 
+static constexpr int MAX_REQ = 256 * 1024;  // max HTTP request body size
+
 M4HttpServer g_m4_http;
 
 // ── Minimal SHA-1 (RFC 3174) ─────────────────────────────
@@ -129,7 +131,15 @@ using sock_t = SOCKET;
 static constexpr sock_t BAD_SOCK = INVALID_SOCKET;
 static void close_sock(sock_t s) { closesocket(s); }
 static int sock_send(sock_t s, const void* buf, int len) {
-   return ::send(s, static_cast<const char*>(buf), len, 0);
+   const char* p = static_cast<const char*>(buf);
+   int remaining = len;
+   while (remaining > 0) {
+      int n = ::send(s, p, remaining, 0);
+      if (n <= 0) return n;
+      p += n;
+      remaining -= n;
+   }
+   return len;
 }
 static int sock_recv(sock_t s, void* buf, int len) {
    return ::recv(s, static_cast<char*>(buf), len, 0);
@@ -138,7 +148,20 @@ static int sock_recv(sock_t s, void* buf, int len) {
 using sock_t = int;
 static void close_sock(sock_t s) { ::close(s); }
 static int sock_send(sock_t s, const void* buf, int len) {
-   return static_cast<int>(::write(s, buf, static_cast<size_t>(len)));
+   const char* p = static_cast<const char*>(buf);
+   int remaining = len;
+   while (remaining > 0) {
+#ifdef __APPLE__
+      // macOS doesn't support MSG_NOSIGNAL; SO_NOSIGPIPE is set per-socket instead.
+      int n = static_cast<int>(::send(s, p, static_cast<size_t>(remaining), 0));
+#else
+      int n = static_cast<int>(::send(s, p, static_cast<size_t>(remaining), MSG_NOSIGNAL));
+#endif
+      if (n <= 0) return n;
+      p += n;
+      remaining -= n;
+   }
+   return len;
 }
 static int sock_recv(sock_t s, void* buf, int len) {
    return static_cast<int>(::read(s, buf, static_cast<size_t>(len)));
@@ -329,8 +352,10 @@ bool M4HttpServer::parse_request(const std::string& raw, HttpRequest& req) {
       std::string lower_line = hline;
       for (auto& c : lower_line) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       if (lower_line.substr(0, 16) == "content-length: ") {
-         try { req.content_length = std::stoi(hline.substr(16)); }
-         catch (...) { req.content_length = 0; }
+         try {
+            int cl = std::stoi(hline.substr(16));
+            req.content_length = (cl > 0 && cl <= MAX_REQ) ? cl : 0;
+         } catch (...) { req.content_length = 0; }
       }
       if (lower_line.substr(0, 14) == "content-type: ") {
          req.content_type = hline.substr(14);
@@ -525,6 +550,11 @@ M4HttpServer::HttpResponse M4HttpServer::handle_upload(const HttpRequest& req) {
    }
    disp_start += 10; // skip 'filename="'
    size_t disp_end = req.body.find('"', disp_start);
+   if (disp_end == std::string::npos) {
+      resp.status = 400; resp.status_text = "Bad Request";
+      resp.body = "Malformed filename in upload";
+      return resp;
+   }
    std::string filename = req.body.substr(disp_start, disp_end - disp_start);
 
    // The real M4 uses the filename as a full path (e.g., "/games/test.bas")
@@ -808,11 +838,11 @@ M4HttpServer::HttpResponse M4HttpServer::handle_status(const HttpRequest&) {
         << "  \"open_files\": " << open_files << ",\n"
         << "  \"cmd_count\": " << g_m4board.cmd_count << ",\n"
         << "  \"network\": " << (g_m4board.network_enabled ? "true" : "false") << ",\n"
-        << "  \"paused\": " << (CPC.paused ? "true" : "false") << ",\n"
+        << "  \"paused\": " << (snapshot_paused.load() ? "true" : "false") << ",\n"
         << "  \"http_port\": " << actual_port.load() << ",\n"
         << "  \"bind_ip\": \"" << json_escape(bind_ip_) << "\",\n"
-        << "  \"screen_w\": " << (back_surface ? back_surface->w : 0) << ",\n"
-        << "  \"screen_h\": " << (back_surface ? back_surface->h : 0) << ",\n"
+        << "  \"screen_w\": " << snapshot_screen_w.load() << ",\n"
+        << "  \"screen_h\": " << snapshot_screen_h.load() << ",\n"
         << "  \"version\": \"koncepcja-m4\"\n"
         << "}\n";
 
@@ -986,9 +1016,10 @@ M4HttpServer::HttpResponse M4HttpServer::handle_roms_api(const HttpRequest&) {
    json << "[\n";
    for (int i = 0; i < MAX_ROM_SLOTS; i++) {
       if (i > 0) json << ",\n";
-      bool loaded = (memmap_ROM[i] != nullptr);
+      byte* rom_ptr = memmap_ROM[i];  // snapshot pointer (may be freed by main thread)
+      bool loaded = (rom_ptr != nullptr);
       std::string id;
-      if (loaded) id = rom_identify(memmap_ROM[i]);
+      if (loaded) id = rom_identify(rom_ptr);
       json << "  {\"slot\": " << i
            << ", \"loaded\": " << (loaded ? "true" : "false")
            << ", \"file\": \"" << json_escape(CPC.rom_file[i]) << "\""
@@ -1149,6 +1180,11 @@ uint16_t M4HttpServer::resolve_host_port(uint16_t cpc_port) {
 extern dword dwMF2Flags;
 
 void M4HttpServer::drain_pending() {
+   // Update status snapshots for thread-safe reads from HTTP handlers
+   snapshot_paused.store(CPC.paused);
+   snapshot_screen_w.store(back_surface ? back_surface->w : 0);
+   snapshot_screen_h.store(back_surface ? back_surface->h : 0);
+
    if (pending_reset.exchange(false)) {
       emulator_reset();
       LOG_INFO("M4 HTTP: reset executed");
@@ -1291,8 +1327,6 @@ void M4HttpServer::run() {
       sock_t client = accept(server_fd, reinterpret_cast<sockaddr*>(&peer), &plen);
       if (client == BAD_SOCK) continue;
 
-      // Read request (up to 256KB for uploads)
-      static constexpr int MAX_REQ = 256 * 1024;
       std::string raw;
       raw.reserve(4096);
 
@@ -1357,7 +1391,15 @@ void M4HttpServer::run() {
                std::this_thread::sleep_for(std::chrono::milliseconds(200));
                u_long avail = 0;
                ioctlsocket(client, FIONREAD, &avail);
-               if (avail > 0) break;
+               if (avail >= 2) {
+                  char ws_peek[2];
+                  int pn = ::recv(client, ws_peek, 2, MSG_PEEK);  // peek without consuming
+                  if (pn <= 0) break;
+                  uint8_t opcode = static_cast<uint8_t>(ws_peek[0]) & 0x0F;
+                  if (opcode == 0x8) break; // close frame
+                  // Consume the peeked bytes for non-close frames (ping/pong)
+                  ::recv(client, ws_peek, 2, 0);
+               }
             }
             LOG_INFO("M4 HTTP: WebSocket preview client disconnected");
             close_sock(client);
@@ -1473,13 +1515,15 @@ void M4HttpServer::run() {
       socklen_t plen = sizeof(peer);
       sock_t client = accept(server_fd, reinterpret_cast<sockaddr*>(&peer), &plen);
       if (client < 0) continue;
+#ifdef __APPLE__
+      int nosigpipe = 1;
+      setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
 
       // Set a read timeout
       timeval recv_tv{5, 0}; // 5 seconds
       setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &recv_tv, sizeof(recv_tv));
 
-      // Read request (up to 256KB for uploads)
-      static constexpr int MAX_REQ = 256 * 1024;
       std::string raw;
       raw.reserve(4096);
       char buf[4096];
@@ -1539,20 +1583,36 @@ void M4HttpServer::run() {
                // ~5fps: sleep 200ms between frames
                std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-               // Check for incoming close frame (non-blocking peek)
+               // Check for incoming WebSocket frames (non-blocking).
+               // Only break on close frame (opcode 0x8) or connection reset.
+               // Ping frames (0x9) are ignored — browser rarely sends them
+               // but a compliant client might.
                char peek_buf[2];
 #ifdef _WIN32
                u_long avail = 0;
                ioctlsocket(client, FIONREAD, &avail);
-               if (avail > 0) break; // client sent something (likely close)
+               if (avail >= 2) {
+                  int pn = ::recv(client, peek_buf, 2, MSG_PEEK);  // peek without consuming
+                  if (pn <= 0) break;
+                  uint8_t opcode = static_cast<uint8_t>(peek_buf[0]) & 0x0F;
+                  if (opcode == 0x8) break; // close frame
+                  // Consume non-close frames (ping/pong)
+                  ::recv(client, peek_buf, 2, 0);
+               }
 #else
-               int flags = fcntl(client, F_GETFL, 0);
-               fcntl(client, F_SETFL, flags | O_NONBLOCK);
-               ssize_t pn = ::read(client, peek_buf, sizeof(peek_buf));
-               fcntl(client, F_SETFL, flags); // restore
-               if (pn == 0) break; // client closed
-               if (pn > 0) break;  // client sent data (likely close frame)
-               // pn < 0 with EAGAIN is normal (no data)
+               // Non-blocking peek using MSG_PEEK | MSG_DONTWAIT — doesn't consume data
+               ssize_t pn = ::recv(client, peek_buf, sizeof(peek_buf), MSG_PEEK | MSG_DONTWAIT);
+               if (pn == 0) break; // client closed connection
+               if (pn >= 2) {
+                  uint8_t opcode = static_cast<uint8_t>(peek_buf[0]) & 0x0F;
+                  if (opcode == 0x8) break; // close frame
+                  // Consume the peeked bytes for non-close frames
+                  ::recv(client, peek_buf, sizeof(peek_buf), MSG_DONTWAIT);
+               } else if (pn == 1) {
+                  // Partial frame header — likely close, break to be safe
+                  break;
+               }
+               // pn < 0 with EAGAIN is normal (no data available)
 #endif
             }
             LOG_INFO("M4 HTTP: WebSocket preview client disconnected");

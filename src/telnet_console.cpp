@@ -16,6 +16,7 @@
 #include "z80.h"
 #include "log.h"
 
+#include <algorithm>
 #include <cstring>
 
 #ifdef _WIN32
@@ -237,7 +238,11 @@ void TelnetConsole::run()
             client_connected.store(false);
          } else {
             std::lock_guard<std::mutex> lock(input_mutex);
-            pending_input.append(buf, static_cast<size_t>(n));
+            static constexpr size_t MAX_PENDING_INPUT = 4096;
+            size_t space = (pending_input.size() < MAX_PENDING_INPUT)
+               ? MAX_PENDING_INPUT - pending_input.size() : 0;
+            if (space > 0)
+               pending_input.append(buf, std::min(static_cast<size_t>(n), space));
          }
       }
 
@@ -359,7 +364,11 @@ void TelnetConsole::run()
             client_connected.store(false);
          } else {
             std::lock_guard<std::mutex> lock(input_mutex);
-            pending_input.append(buf, static_cast<size_t>(n));
+            static constexpr size_t MAX_PENDING_INPUT = 4096;
+            size_t space = (pending_input.size() < MAX_PENDING_INPUT)
+               ? MAX_PENDING_INPUT - pending_input.size() : 0;
+            if (space > 0)
+               pending_input.append(buf, std::min(static_cast<size_t>(n), space));
          }
       }
 
