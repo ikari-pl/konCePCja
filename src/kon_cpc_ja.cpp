@@ -1608,10 +1608,10 @@ void printer_stop ()
 // ── Audio diagnostics ──
 static uint64_t audio_last_push_tick = 0;   // perf counter of last push
 static int audio_underrun_count = 0;        // underruns: queue was empty
-static int audio_near_underrun_count = 0;   // near-underruns: queue < 1 buffer
+static int audio_near_underrun_count = 0;   // near-underruns: queue < half buffer
 static int audio_push_count = 0;            // pushes this reporting period
 static double audio_queue_sum_bytes = 0;    // sum of queue depths (for average)
-static float audio_queue_min_bytes = 1e9f;  // min queue depth this period
+static int audio_queue_min_bytes = INT_MAX; // min queue depth this period
 static uint64_t audio_push_interval_max = 0; // longest gap between pushes (perf ticks)
 
 // Push completed audio buffer into SDL stream (called from main loop on EC_SOUND_BUFFER).
@@ -1620,30 +1620,29 @@ static void audio_push_buffer(const byte* data, int len)
 {
    if (!audio_stream || !CPC.snd_ready || len <= 0) return;
 
+   uint64_t now = SDL_GetPerformanceCounter();
+
    // Measure queue depth BEFORE pushing.
-   // - queued == 0: SDL ran completely dry (hard underrun, audible gap)
-   // - queued < len: SDL had less than one buffer left (near-underrun, may click)
    int queued = SDL_GetAudioStreamQueued(audio_stream);
+   if (queued < 0) queued = 0; // SDL error — treat as empty
+
    if (audio_push_count > 0) {
       double interval_ms = audio_last_push_tick > 0
-         ? static_cast<double>(SDL_GetPerformanceCounter() - audio_last_push_tick)
-           * 1000.0 / SDL_GetPerformanceFrequency()
+         ? static_cast<double>(now - audio_last_push_tick) * 1000.0 / perfFreq
          : 0.0;
       if (queued == 0) {
          audio_underrun_count++;
          LOG_DEBUG("Audio UNDERRUN: queue empty, interval " << interval_ms << "ms");
       } else if (queued < len / 2) {
-         // Below half a buffer (~11ms) — real danger of audible artifact
          audio_near_underrun_count++;
          LOG_DEBUG("Audio near-underrun: queue " << queued << "B (< " << len / 2
                    << "B), interval " << interval_ms << "ms");
       }
    }
    audio_queue_sum_bytes += queued;
-   if (queued < audio_queue_min_bytes) audio_queue_min_bytes = static_cast<float>(queued);
+   if (queued < audio_queue_min_bytes) audio_queue_min_bytes = queued;
 
    // Measure push interval
-   uint64_t now = SDL_GetPerformanceCounter();
    if (audio_last_push_tick > 0) {
       uint64_t interval = now - audio_last_push_tick;
       if (interval > audio_push_interval_max) audio_push_interval_max = interval;
@@ -1651,7 +1650,10 @@ static void audio_push_buffer(const byte* data, int len)
    audio_last_push_tick = now;
    audio_push_count++;
 
-   SDL_PutAudioStreamData(audio_stream, data, len);
+   if (!SDL_PutAudioStreamData(audio_stream, data, len)) {
+      LOG_DEBUG("Audio: SDL_PutAudioStreamData failed");
+      return;
+   }
    if (g_wav_recorder.is_recording()) {
       g_wav_recorder.write_samples(data, static_cast<uint32_t>(len));
    }
@@ -1700,7 +1702,6 @@ int audio_init ()
       LOG_ERROR("Could not open audio: " << SDL_GetError());
       return 1;
    }
-   SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
 
    LOG_VERBOSE("Audio: Desired: Freq: " << desired.freq << ", Format: " << desired.format << ", Channels: " << static_cast<int>(desired.channels) << ", Frames: " << sample_frames);
 
@@ -1711,12 +1712,14 @@ int audio_init ()
 
    // Pre-buffer 2 silent buffers (~46ms at 44100Hz) so the SDL queue has
    // enough margin to absorb occasional compositor stalls (~69ms observed).
+   // Done BEFORE resuming the device so SDL doesn't start draining immediately.
    {
       std::vector<byte> silence(CPC.snd_buffersize, 0);
       for (int i = 0; i < 2; i++) {
          SDL_PutAudioStreamData(audio_stream, silence.data(), static_cast<int>(CPC.snd_buffersize));
       }
    }
+   SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
    CPC.snd_ready = true;
    LOG_VERBOSE("Audio: Sound buffer ready");
 
@@ -4024,7 +4027,11 @@ int koncpc_main (int argc, char **argv)
             imgui_state.audio_underruns = audio_underrun_count;
             imgui_state.audio_near_underruns = audio_near_underrun_count;
             imgui_state.audio_pushes = audio_push_count;
-            if (audio_push_count > 0) {
+            if (audio_push_count == 0) {
+               imgui_state.audio_queue_avg_ms = 0;
+               imgui_state.audio_queue_min_ms = 0;
+               imgui_state.audio_push_interval_max_us = 0;
+            } else if (audio_push_count > 0) {
                // Convert queue depth from bytes to milliseconds
                double avg_bytes = audio_queue_sum_bytes / audio_push_count;
                int frame_size = CPC.snd_stereo ? 4 : 2;  // 16-bit stereo=4, mono=2
@@ -4032,7 +4039,7 @@ int koncpc_main (int argc, char **argv)
                int sample_rate = freq_table[CPC.snd_playback_rate];
                double bytes_per_ms = sample_rate * frame_size / 1000.0;
                imgui_state.audio_queue_avg_ms = static_cast<float>(avg_bytes / bytes_per_ms);
-               imgui_state.audio_queue_min_ms = audio_queue_min_bytes / static_cast<float>(bytes_per_ms);
+               imgui_state.audio_queue_min_ms = static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
                imgui_state.audio_push_interval_max_us = static_cast<float>(
                   static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
             }
@@ -4040,7 +4047,7 @@ int koncpc_main (int argc, char **argv)
             audio_near_underrun_count = 0;
             audio_push_count = 0;
             audio_queue_sum_bytes = 0;
-            audio_queue_min_bytes = 1e9f;
+            audio_queue_min_bytes = INT_MAX;
             audio_push_interval_max = 0;
          }
 
@@ -4327,8 +4334,9 @@ int koncpc_main (int argc, char **argv)
                 // Check audio queue after display (GL viewport stalls drain it)
                 if (audio_stream && CPC.snd_ready) {
                    int queued = SDL_GetAudioStreamQueued(audio_stream);
+                   if (queued < 0) queued = 0;
                    if (queued < audio_queue_min_bytes)
-                      audio_queue_min_bytes = static_cast<float>(queued);
+                      audio_queue_min_bytes = queued;
                    int half_buf = static_cast<int>(CPC.snd_buffersize) / 2;
                    if (queued < half_buf && audio_push_count > 0) {
                       audio_near_underrun_count++;
