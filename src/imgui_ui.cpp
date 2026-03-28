@@ -1185,27 +1185,32 @@ static void imgui_render_topbar()
 // ─────────────────────────────────────────────────
 static void imgui_marquee_text(const char* text, float boxW)
 {
-  float textW = ImGui::CalcTextSize(text).x;
-  if (textW <= boxW) {
-    ImGui::TextUnformatted(text);
-    return;
-  }
-  // Ping-pong scroll with 20px pause at each end
-  float overflow = textW - boxW;
-  float range = overflow + 40.0f; // 20px pause at start + 20px pause at end
-  float t = fmodf(static_cast<float>(ImGui::GetTime()) * 30.0f, range * 2.0f);
-  float scroll = t < range ? t : range * 2.0f - t;
-  scroll = fmaxf(0.0f, scroll - 20.0f); // pause at start
-
   ImVec2 pos = ImGui::GetCursorScreenPos();
   float lineH = ImGui::GetTextLineHeight();
+  float textW = ImGui::CalcTextSize(text).x;
+
+  if (textW <= boxW) {
+    // Fits — render normally but reserve exactly boxW for consistent layout
+    ImGui::GetWindowDrawList()->AddText(pos, ImGui::GetColorU32(ImGuiCol_Text), text);
+    ImGui::Dummy(ImVec2(boxW, lineH));
+    return;
+  }
+
+  // Ping-pong scroll with 20px pause at each end
+  float overflow = textW - boxW;
+  float range = overflow + 40.0f;
+  float t = fmodf(static_cast<float>(ImGui::GetTime()) * 30.0f, range * 2.0f);
+  float scroll = t < range ? t : range * 2.0f - t;
+  scroll = fmaxf(0.0f, scroll - 20.0f);
+
+  // Draw text via draw list (no layout side-effects) with clipping
   ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + lineH), true);
-  ImGui::SetCursorScreenPos(ImVec2(pos.x - scroll, pos.y));
-  ImGui::TextUnformatted(text);
+  ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x - scroll, pos.y),
+                                      ImGui::GetColorU32(ImGuiCol_Text), text);
   ImGui::PopClipRect();
-  // Advance cursor past the box
-  ImGui::SetCursorScreenPos(ImVec2(pos.x + boxW, pos.y));
-  ImGui::Dummy(ImVec2(0, lineH));
+
+  // Reserve exactly boxW — consistent layout regardless of scroll position
+  ImGui::Dummy(ImVec2(boxW, lineH));
 }
 
 // Draw a beveled LED indicator (16x8 px) with active/inactive state.
