@@ -41,6 +41,14 @@ extern byte bTapeLevel;
 
 #define TAPE_VOLUME 32
 
+// Check if PSG buffer is full and wrap the write pointer.
+inline void psg_check_buffer_wrap() {
+   if (CPC.snd_bufferptr >= pbSndBufferEnd) {
+      CPC.snd_bufferptr = pbSndBuffer.get();
+      PSG.buffer_full = 1;
+   }
+}
+
 // Amplitude table (c)Hacker KAY
 word Amplitudes_AY[16] = {
    0, 836, 1212, 1773, 2619, 3875, 5397, 8823,
@@ -491,10 +499,7 @@ void Synthesizer_Stereo16()
    CPC.snd_bufferptr += 4;
    Left_Chan = 0;
    Right_Chan = Left_Chan;
-   if (CPC.snd_bufferptr >= pbSndBufferEnd) {
-      CPC.snd_bufferptr = pbSndBuffer.get();
-      PSG.buffer_full = 1;
-   }
+   psg_check_buffer_wrap();
 }
 
 
@@ -516,10 +521,7 @@ void Synthesizer_Stereo8()
    CPC.snd_bufferptr += 2;
    Left_Chan = 0;
    Right_Chan = Left_Chan;
-   if (CPC.snd_bufferptr >= pbSndBufferEnd) {
-      CPC.snd_bufferptr = pbSndBuffer.get();
-      PSG.buffer_full = 1;
-   }
+   psg_check_buffer_wrap();
 }
 
 
@@ -633,10 +635,7 @@ void Synthesizer_Mono16()
    *reinterpret_cast<word *>(CPC.snd_bufferptr) = static_cast<word>(m_out); // write to mixing buffer
    CPC.snd_bufferptr += 2;
    Left_Chan = 0;
-   if (CPC.snd_bufferptr >= pbSndBufferEnd) {
-      CPC.snd_bufferptr = pbSndBuffer.get();
-      PSG.buffer_full = 1;
-   }
+   psg_check_buffer_wrap();
 }
 
 
@@ -654,10 +653,7 @@ void Synthesizer_Mono8()
    *reinterpret_cast<byte *>(CPC.snd_bufferptr) = 128 + Left_Chan / Tick_Counter; // write to mixing buffer
    CPC.snd_bufferptr++;
    Left_Chan = 0;
-   if (CPC.snd_bufferptr >= pbSndBufferEnd) {
-      CPC.snd_bufferptr = pbSndBuffer.get();
-      PSG.buffer_full = 1;
-   }
+   psg_check_buffer_wrap();
 }
 
 

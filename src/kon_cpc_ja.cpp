@@ -179,7 +179,8 @@ std::string lastSavedSnapshot;
 
 dword dwBreakPoint, dwTrace, dwMF2ExitAddr;
 dword dwMF2Flags = 0;
-std::unique_ptr<byte[]> pbSndBuffer;
+// Audio buffer: PSG writes samples here, pushed to SDL stream on EC_SOUND_BUFFER.
+std::unique_ptr<byte[]> pbSndBuffer;      // PSG write buffer
 byte *pbGPBuffer = nullptr;
 byte *pbSndBufferEnd = nullptr;
 byte *pbSndStream = nullptr;
@@ -1604,32 +1605,20 @@ void printer_stop ()
 
 
 
-void audio_update([[maybe_unused]] void *userdata, SDL_AudioStream *stream, int additional_amount, [[maybe_unused]] int total_amount)
+// Push completed audio buffer into SDL stream (called from main loop on EC_SOUND_BUFFER).
+// SDL handles internal queuing and feeds the hardware at the correct rate.
+static void audio_push_buffer(const byte* data, int len)
 {
-  if (CPC.snd_ready) {
-    int len = additional_amount;
-    if (len > static_cast<int>(CPC.snd_buffersize)) len = static_cast<int>(CPC.snd_buffersize);
-    if (len > 0) {
-      if (CPC.paused) {
-        // Send silence when paused to avoid buzzing from looped last buffer
-        static std::vector<byte> silence;
-        if (static_cast<int>(silence.size()) < len) silence.resize(len, 0);
-        SDL_PutAudioStreamData(stream, silence.data(), len);
-      } else {
-        SDL_PutAudioStreamData(stream, pbSndBuffer.get(), len);
-        if (g_wav_recorder.is_recording()) {
-          g_wav_recorder.write_samples(pbSndBuffer.get(), static_cast<uint32_t>(len));
-        }
-        if (g_avi_recorder.is_recording()) {
-          g_avi_recorder.capture_audio_samples(
-             reinterpret_cast<const int16_t*>(pbSndBuffer.get()),
-             static_cast<size_t>(len) / sizeof(int16_t));
-        }
-      }
-    }
-  } else {
-    LOG_VERBOSE("Audio: audio_update: skipping audio: sound buffer not ready");
-  }
+   if (!audio_stream || !CPC.snd_ready || len <= 0) return;
+   SDL_PutAudioStreamData(audio_stream, data, len);
+   if (g_wav_recorder.is_recording()) {
+      g_wav_recorder.write_samples(data, static_cast<uint32_t>(len));
+   }
+   if (g_avi_recorder.is_recording()) {
+      g_avi_recorder.capture_audio_samples(
+         reinterpret_cast<const int16_t*>(data),
+         static_cast<size_t>(len) / sizeof(int16_t));
+   }
 }
 
 
@@ -1665,7 +1654,7 @@ int audio_init ()
    snprintf(frames_hint, sizeof(frames_hint), "%d", sample_frames);
    SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, frames_hint);
 
-   audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired, audio_update, nullptr);
+   audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &desired, nullptr, nullptr);
    if (audio_stream == nullptr) {
       LOG_ERROR("Could not open audio: " << SDL_GetError());
       return 1;
@@ -1677,7 +1666,6 @@ int audio_init ()
    CPC.snd_buffersize = sample_frames * SDL_AUDIO_FRAMESIZE(desired);
    pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize);
    pbSndBufferEnd = pbSndBuffer.get() + CPC.snd_buffersize;
-   memset(pbSndBuffer.get(), 0, CPC.snd_buffersize);
    CPC.snd_bufferptr = pbSndBuffer.get();
    CPC.snd_ready = true;
    LOG_VERBOSE("Audio: Sound buffer ready");
@@ -4059,6 +4047,14 @@ int koncpc_main (int argc, char **argv)
             imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
             imgui_state.tape_wave_head = (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
 
+         }
+
+         // Audio push: PSG finished filling the back buffer — push it to SDL.
+         if (iExitCondition == EC_SOUND_BUFFER) {
+            if (!CPC.paused) {
+               audio_push_buffer(pbSndBuffer.get(), static_cast<int>(CPC.snd_buffersize));
+            }
+            CPC.snd_bufferptr = pbSndBuffer.get(); // reset write position
          }
 
          if (iExitCondition == EC_BREAKPOINT) {
