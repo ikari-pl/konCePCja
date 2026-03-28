@@ -833,11 +833,11 @@ M4HttpServer::HttpResponse M4HttpServer::handle_status(const HttpRequest&) {
         << "  \"open_files\": " << open_files << ",\n"
         << "  \"cmd_count\": " << g_m4board.cmd_count << ",\n"
         << "  \"network\": " << (g_m4board.network_enabled ? "true" : "false") << ",\n"
-        << "  \"paused\": " << (CPC.paused ? "true" : "false") << ",\n"
+        << "  \"paused\": " << (snapshot_paused.load() ? "true" : "false") << ",\n"
         << "  \"http_port\": " << actual_port.load() << ",\n"
         << "  \"bind_ip\": \"" << json_escape(bind_ip_) << "\",\n"
-        << "  \"screen_w\": " << (back_surface ? back_surface->w : 0) << ",\n"
-        << "  \"screen_h\": " << (back_surface ? back_surface->h : 0) << ",\n"
+        << "  \"screen_w\": " << snapshot_screen_w.load() << ",\n"
+        << "  \"screen_h\": " << snapshot_screen_h.load() << ",\n"
         << "  \"version\": \"koncepcja-m4\"\n"
         << "}\n";
 
@@ -1175,6 +1175,11 @@ uint16_t M4HttpServer::resolve_host_port(uint16_t cpc_port) {
 extern dword dwMF2Flags;
 
 void M4HttpServer::drain_pending() {
+   // Update status snapshots for thread-safe reads from HTTP handlers
+   snapshot_paused.store(CPC.paused);
+   snapshot_screen_w.store(back_surface ? back_surface->w : 0);
+   snapshot_screen_h.store(back_surface ? back_surface->h : 0);
+
    if (pending_reset.exchange(false)) {
       emulator_reset();
       LOG_INFO("M4 HTTP: reset executed");
@@ -1381,7 +1386,13 @@ void M4HttpServer::run() {
                std::this_thread::sleep_for(std::chrono::milliseconds(200));
                u_long avail = 0;
                ioctlsocket(client, FIONREAD, &avail);
-               if (avail > 0) break;
+               if (avail >= 2) {
+                  char ws_peek[2];
+                  int pn = sock_recv(client, ws_peek, 2);
+                  if (pn <= 0) break;
+                  uint8_t opcode = static_cast<uint8_t>(ws_peek[0]) & 0x0F;
+                  if (opcode == 0x8) break; // close frame
+               }
             }
             LOG_INFO("M4 HTTP: WebSocket preview client disconnected");
             close_sock(client);
@@ -1561,20 +1572,36 @@ void M4HttpServer::run() {
                // ~5fps: sleep 200ms between frames
                std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-               // Check for incoming close frame (non-blocking peek)
+               // Check for incoming WebSocket frames (non-blocking).
+               // Only break on close frame (opcode 0x8) or connection reset.
+               // Ping frames (0x9) are ignored — browser rarely sends them
+               // but a compliant client might.
                char peek_buf[2];
 #ifdef _WIN32
                u_long avail = 0;
                ioctlsocket(client, FIONREAD, &avail);
-               if (avail > 0) break; // client sent something (likely close)
+               if (avail >= 2) {
+                  int pn = sock_recv(client, peek_buf, 2);
+                  if (pn <= 0) break; // connection closed
+                  uint8_t opcode = static_cast<uint8_t>(peek_buf[0]) & 0x0F;
+                  if (opcode == 0x8) break; // close frame
+                  // 0x9 = ping, 0xA = pong — ignore and continue
+               }
 #else
                int flags = fcntl(client, F_GETFL, 0);
                fcntl(client, F_SETFL, flags | O_NONBLOCK);
                ssize_t pn = ::read(client, peek_buf, sizeof(peek_buf));
                fcntl(client, F_SETFL, flags); // restore
-               if (pn == 0) break; // client closed
-               if (pn > 0) break;  // client sent data (likely close frame)
-               // pn < 0 with EAGAIN is normal (no data)
+               if (pn == 0) break; // client closed connection
+               if (pn >= 2) {
+                  uint8_t opcode = static_cast<uint8_t>(peek_buf[0]) & 0x0F;
+                  if (opcode == 0x8) break; // close frame
+                  // ignore ping/pong/other
+               } else if (pn == 1) {
+                  // Partial frame header — likely close, break to be safe
+                  break;
+               }
+               // pn < 0 with EAGAIN is normal (no data available)
 #endif
             }
             LOG_INFO("M4 HTTP: WebSocket preview client disconnected");

@@ -118,6 +118,11 @@ private:
    mutable std::mutex preview_mutex_;
    std::vector<uint8_t> preview_bmp_;  // BMP-encoded snapshot
 
+   // Status snapshots — written by main thread in drain_pending(), read by HTTP thread.
+   std::atomic<bool> snapshot_paused{false};
+   std::atomic<int> snapshot_screen_w{0};
+   std::atomic<int> snapshot_screen_h{0};
+
 public:
    // Called from main thread to update the preview snapshot.
    void update_preview_snapshot();
