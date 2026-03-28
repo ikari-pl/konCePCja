@@ -180,13 +180,12 @@ std::string lastSavedSnapshot;
 dword dwBreakPoint, dwTrace, dwMF2ExitAddr;
 dword dwMF2Flags = 0;
 // Double-buffered audio: PSG writes into the back buffer, SDL reads from the front.
-// Swapped atomically when PSG finishes filling a buffer (EC_SOUND_BUFFER).
+// Swapped under audio lock when PSG finishes filling a buffer (EC_SOUND_BUFFER).
 std::unique_ptr<byte[]> pbSndBuffer;      // front buffer — read by SDL callback
 std::unique_ptr<byte[]> pbSndBufferBack;  // back buffer — written by PSG
 byte *pbGPBuffer = nullptr;
-byte *pbSndBufferEnd = nullptr;           // end of back buffer (PSG wrap boundary)
+byte *pbSndBufferEnd = nullptr;
 byte *pbSndStream = nullptr;
-static std::atomic<bool> snd_buffer_swapped{false}; // set on swap, cleared after callback reads
 byte *membank_read[4], *membank_write[4], *memmap_ROM[256];
 byte *pbRAM = nullptr;
 byte *pbRAMbuffer = nullptr;
@@ -1685,7 +1684,6 @@ int audio_init ()
    memset(pbSndBufferBack.get(), 0, CPC.snd_buffersize);
    pbSndBufferEnd = pbSndBufferBack.get() + CPC.snd_buffersize;
    CPC.snd_bufferptr = pbSndBufferBack.get();
-   snd_buffer_swapped.store(false);
    CPC.snd_ready = true;
    LOG_VERBOSE("Audio: Sound buffer ready");
 
@@ -4069,10 +4067,13 @@ int koncpc_main (int argc, char **argv)
          }
 
          // Audio double-buffer swap: PSG finished filling the back buffer.
-         // Copy back→front so the SDL callback reads a complete, stable frame.
-         if (iExitCondition == EC_SOUND_BUFFER) {
-            memcpy(pbSndBuffer.get(), pbSndBufferBack.get(), CPC.snd_buffersize);
-            snd_buffer_swapped.store(true, std::memory_order_release);
+         // Lock the audio stream so the callback can't read mid-swap.
+         if (iExitCondition == EC_SOUND_BUFFER && audio_stream) {
+            SDL_LockAudioStream(audio_stream);
+            pbSndBuffer.swap(pbSndBufferBack);
+            SDL_UnlockAudioStream(audio_stream);
+            pbSndBufferEnd = pbSndBufferBack.get() + CPC.snd_buffersize;
+            CPC.snd_bufferptr = pbSndBufferBack.get();
          }
 
          if (iExitCondition == EC_BREAKPOINT) {
