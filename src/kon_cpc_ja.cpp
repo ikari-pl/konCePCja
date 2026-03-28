@@ -3840,7 +3840,7 @@ int koncpc_main (int argc, char **argv)
               {
                 SDL_WindowID main_wid = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
                 bool on_main = (event.motion.windowID == main_wid);
-                bool over_topbar = on_main && event.motion.y < topbar_height_px;
+                bool over_topbar = on_main && event.motion.y < imgui_topbar_height();
                 static bool topbar_cursor_visible = false;
                 if (over_topbar && !topbar_cursor_visible) {
                   set_cursor_visibility(true);
