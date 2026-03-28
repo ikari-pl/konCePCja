@@ -2645,10 +2645,14 @@ static void imgui_render_devtools()
     // ── Audio diagnostics ──
     ImGui::SameLine(0, 8.0f);
     {
-      bool has_underruns = imgui_state.audio_underruns > 0;
-      ImGui::PushStyleColor(ImGuiCol_Text, has_underruns
-        ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)    // red if underruns
-        : ImVec4(0.4f, 0.4f, 0.4f, 1.0f));   // gray if healthy
+      ImVec4 snd_color;
+      if (imgui_state.audio_underruns > 0)
+        snd_color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);    // red: hard underrun
+      else if (imgui_state.audio_near_underruns > 0)
+        snd_color = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);    // yellow: near-underrun
+      else
+        snd_color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);    // gray: healthy
+      ImGui::PushStyleColor(ImGuiCol_Text, snd_color);
       char abuf[32];
       snprintf(abuf, sizeof(abuf), "snd:%.0fms", imgui_state.audio_queue_avg_ms);
       ImGui::TextUnformatted(abuf);
@@ -2659,6 +2663,7 @@ static void imgui_render_devtools()
         ImGui::Text("Push interval max: %.0f us", imgui_state.audio_push_interval_max_us);
         ImGui::Text("Pushes/sec: %d", imgui_state.audio_pushes);
         ImGui::Text("Underruns/sec: %d", imgui_state.audio_underruns);
+        ImGui::Text("Near-underruns/sec: %d", imgui_state.audio_near_underruns);
         ImGui::EndTooltip();
       }
       ImGui::PopStyleColor();

@@ -45,6 +45,7 @@ struct ImGuiUIState {
 
   // Audio diagnostics (updated each second)
   int audio_underruns = 0;           // times SDL queue was empty when we pushed
+  int audio_near_underruns = 0;      // times queue was below 1 buffer
   int audio_pushes = 0;              // total pushes this second
   float audio_queue_avg_ms = 0.0f;   // average queue depth in ms
   float audio_queue_min_ms = 0.0f;   // minimum queue depth in ms

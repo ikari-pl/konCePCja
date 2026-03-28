@@ -1607,7 +1607,8 @@ void printer_stop ()
 
 // ── Audio diagnostics ──
 static uint64_t audio_last_push_tick = 0;   // perf counter of last push
-static int audio_underrun_count = 0;        // underruns this reporting period
+static int audio_underrun_count = 0;        // underruns: queue was empty
+static int audio_near_underrun_count = 0;   // near-underruns: queue < 1 buffer
 static int audio_push_count = 0;            // pushes this reporting period
 static double audio_queue_sum_bytes = 0;    // sum of queue depths (for average)
 static float audio_queue_min_bytes = 1e9f;  // min queue depth this period
@@ -1619,16 +1620,23 @@ static void audio_push_buffer(const byte* data, int len)
 {
    if (!audio_stream || !CPC.snd_ready || len <= 0) return;
 
-   // Measure queue depth BEFORE pushing — if 0, SDL ran dry (underrun)
+   // Measure queue depth BEFORE pushing.
+   // - queued == 0: SDL ran completely dry (hard underrun, audible gap)
+   // - queued < len: SDL had less than one buffer left (near-underrun, may click)
    int queued = SDL_GetAudioStreamQueued(audio_stream);
-   if (queued == 0 && audio_push_count > 0) {
-      audio_underrun_count++;
-      LOG_DEBUG("Audio underrun: SDL queue empty at push #" << audio_push_count
-                << ", interval since last push: "
-                << (audio_last_push_tick > 0
-                    ? static_cast<double>(SDL_GetPerformanceCounter() - audio_last_push_tick)
-                      * 1000.0 / SDL_GetPerformanceFrequency()
-                    : 0.0) << " ms");
+   if (audio_push_count > 0) {
+      double interval_ms = audio_last_push_tick > 0
+         ? static_cast<double>(SDL_GetPerformanceCounter() - audio_last_push_tick)
+           * 1000.0 / SDL_GetPerformanceFrequency()
+         : 0.0;
+      if (queued == 0) {
+         audio_underrun_count++;
+         LOG_DEBUG("Audio UNDERRUN: queue empty, interval " << interval_ms << "ms");
+      } else if (queued < len) {
+         audio_near_underrun_count++;
+         LOG_DEBUG("Audio near-underrun: queue " << queued << "B (< " << len
+                   << "B buffer), interval " << interval_ms << "ms");
+      }
    }
    audio_queue_sum_bytes += queued;
    if (queued < audio_queue_min_bytes) audio_queue_min_bytes = static_cast<float>(queued);
@@ -4004,6 +4012,7 @@ int koncpc_main (int argc, char **argv)
 
             // Publish audio diagnostics
             imgui_state.audio_underruns = audio_underrun_count;
+            imgui_state.audio_near_underruns = audio_near_underrun_count;
             imgui_state.audio_pushes = audio_push_count;
             if (audio_push_count > 0) {
                // Convert queue depth from bytes to milliseconds
@@ -4018,6 +4027,7 @@ int koncpc_main (int argc, char **argv)
                   static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
             }
             audio_underrun_count = 0;
+            audio_near_underrun_count = 0;
             audio_push_count = 0;
             audio_queue_sum_bytes = 0;
             audio_queue_min_bytes = 1e9f;
