@@ -179,10 +179,14 @@ std::string lastSavedSnapshot;
 
 dword dwBreakPoint, dwTrace, dwMF2ExitAddr;
 dword dwMF2Flags = 0;
-std::unique_ptr<byte[]> pbSndBuffer;
+// Double-buffered audio: PSG writes into the back buffer, SDL reads from the front.
+// Swapped atomically when PSG finishes filling a buffer (EC_SOUND_BUFFER).
+std::unique_ptr<byte[]> pbSndBuffer;      // front buffer — read by SDL callback
+std::unique_ptr<byte[]> pbSndBufferBack;  // back buffer — written by PSG
 byte *pbGPBuffer = nullptr;
-byte *pbSndBufferEnd = nullptr;
+byte *pbSndBufferEnd = nullptr;           // end of back buffer (PSG wrap boundary)
 byte *pbSndStream = nullptr;
+static std::atomic<bool> snd_buffer_swapped{false}; // set on swap, cleared after callback reads
 byte *membank_read[4], *membank_write[4], *memmap_ROM[256];
 byte *pbRAM = nullptr;
 byte *pbRAMbuffer = nullptr;
@@ -1675,10 +1679,13 @@ int audio_init ()
    LOG_VERBOSE("Audio: Desired: Freq: " << desired.freq << ", Format: " << desired.format << ", Channels: " << static_cast<int>(desired.channels) << ", Frames: " << sample_frames);
 
    CPC.snd_buffersize = sample_frames * SDL_AUDIO_FRAMESIZE(desired);
-   pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize);
-   pbSndBufferEnd = pbSndBuffer.get() + CPC.snd_buffersize;
+   pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize);      // front (SDL reads)
+   pbSndBufferBack = std::make_unique<byte[]>(CPC.snd_buffersize);  // back (PSG writes)
    memset(pbSndBuffer.get(), 0, CPC.snd_buffersize);
-   CPC.snd_bufferptr = pbSndBuffer.get();
+   memset(pbSndBufferBack.get(), 0, CPC.snd_buffersize);
+   pbSndBufferEnd = pbSndBufferBack.get() + CPC.snd_buffersize;
+   CPC.snd_bufferptr = pbSndBufferBack.get();
+   snd_buffer_swapped.store(false);
    CPC.snd_ready = true;
    LOG_VERBOSE("Audio: Sound buffer ready");
 
@@ -4059,6 +4066,13 @@ int koncpc_main (int argc, char **argv)
             imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
             imgui_state.tape_wave_head = (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
 
+         }
+
+         // Audio double-buffer swap: PSG finished filling the back buffer.
+         // Copy back→front so the SDL callback reads a complete, stable frame.
+         if (iExitCondition == EC_SOUND_BUFFER) {
+            memcpy(pbSndBuffer.get(), pbSndBufferBack.get(), CPC.snd_buffersize);
+            snd_buffer_swapped.store(true, std::memory_order_release);
          }
 
          if (iExitCondition == EC_BREAKPOINT) {
