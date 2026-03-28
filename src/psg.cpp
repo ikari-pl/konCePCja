@@ -35,7 +35,7 @@ extern t_CPC CPC;
 extern t_PSG PSG;
 extern dword freq_table[];
 
-extern std::unique_ptr<byte[]> pbSndBufferBack;
+extern std::unique_ptr<byte[]> pbSndBuffer;
 extern byte *pbSndBufferEnd;
 extern byte bTapeLevel;
 
@@ -44,7 +44,7 @@ extern byte bTapeLevel;
 // Check if PSG buffer is full and wrap the write pointer.
 inline void psg_check_buffer_wrap() {
    if (CPC.snd_bufferptr >= pbSndBufferEnd) {
-      CPC.snd_bufferptr = pbSndBufferBack.get();
+      CPC.snd_bufferptr = pbSndBuffer.get();
       PSG.buffer_full = 1;
    }
 }
