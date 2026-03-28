@@ -151,7 +151,12 @@ static int sock_send(sock_t s, const void* buf, int len) {
    const char* p = static_cast<const char*>(buf);
    int remaining = len;
    while (remaining > 0) {
-      int n = static_cast<int>(::write(s, p, static_cast<size_t>(remaining)));
+#ifdef __APPLE__
+      // macOS doesn't support MSG_NOSIGNAL; SO_NOSIGPIPE is set per-socket instead.
+      int n = static_cast<int>(::send(s, p, static_cast<size_t>(remaining), 0));
+#else
+      int n = static_cast<int>(::send(s, p, static_cast<size_t>(remaining), MSG_NOSIGNAL));
+#endif
       if (n <= 0) return n;
       p += n;
       remaining -= n;
@@ -1508,6 +1513,10 @@ void M4HttpServer::run() {
       socklen_t plen = sizeof(peer);
       sock_t client = accept(server_fd, reinterpret_cast<sockaddr*>(&peer), &plen);
       if (client < 0) continue;
+#ifdef __APPLE__
+      int nosigpipe = 1;
+      setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
 
       // Set a read timeout
       timeval recv_tv{5, 0}; // 5 seconds
