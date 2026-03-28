@@ -519,17 +519,24 @@ void imgui_render_ui()
   }
 
   // Keyboard capture policy: let physical keys reach the CPC when no
-  // keyboard-consuming UI is active. Uses imgui_any_keyboard_ui_active()
-  // (single source of truth, also used by the event filter in kon_cpc_ja.cpp).
-  // The virtual keyboard is excluded — it only uses mouse clicks.
+  // keyboard-consuming UI is active.
+  // - Classic mode: keys go to CPC unless any UI window is open.
+  //   Uses imgui_any_keyboard_ui_active() (same as event filter).
+  // - Docked mode: devtools are always visible as docked tabs, so we
+  //   only block on modal UI / text input. CPC screen gets keyboard
+  //   when focused, even with devtools docked alongside.
   {
-    bool any_ui = imgui_any_keyboard_ui_active();
     if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-      if (!any_ui && imgui_state.cpc_screen_focused) {
+      bool modal_ui = ImGui::GetIO().WantTextInput
+          || imgui_state.show_menu || imgui_state.show_options
+          || imgui_state.show_about || imgui_state.show_quit_confirm
+          || g_command_palette.is_open()
+          || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+      if (!modal_ui && imgui_state.cpc_screen_focused) {
         ImGui::GetIO().WantCaptureKeyboard = false;
       }
     } else {
-      if (!any_ui) {
+      if (!imgui_any_keyboard_ui_active()) {
         ImGui::GetIO().WantCaptureKeyboard = false;
       }
     }
