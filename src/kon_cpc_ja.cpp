@@ -4322,6 +4322,19 @@ int koncpc_main (int argc, char **argv)
                 video_display();
                 uint64_t displayEnd = SDL_GetPerformanceCounter();
                 displayTimeAccum += displayEnd - displayStart;
+
+                // Check audio queue after display (GL viewport stalls drain it)
+                if (audio_stream && CPC.snd_ready) {
+                   int queued = SDL_GetAudioStreamQueued(audio_stream);
+                   if (queued < audio_queue_min_bytes)
+                      audio_queue_min_bytes = static_cast<float>(queued);
+                   if (queued < static_cast<int>(CPC.snd_buffersize) && audio_push_count > 0) {
+                      audio_near_underrun_count++;
+                      double display_ms = static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
+                      LOG_DEBUG("Audio near-underrun after display: queue "
+                                << queued << "B, display took " << display_ms << "ms");
+                   }
+                }
               }
               video_take_pending_window_screenshot();
             }
