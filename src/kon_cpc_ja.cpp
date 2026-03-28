@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <climits>
 #include <iostream>
 #include <sstream>
 #include <chrono>
