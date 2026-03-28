@@ -1185,14 +1185,17 @@ static void imgui_render_topbar()
 // ─────────────────────────────────────────────────
 static void imgui_marquee_text(const char* text, float boxW)
 {
+  // AlignTextToFramePadding is called by the caller — capture position AFTER alignment.
   ImVec2 pos = ImGui::GetCursorScreenPos();
+  float frameH = ImGui::GetFrameHeight();
   float lineH = ImGui::GetTextLineHeight();
+  float textY = pos.y + (frameH - lineH) * 0.5f;  // vertically center text in frame
   float textW = ImGui::CalcTextSize(text).x;
+  ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
 
   if (textW <= boxW) {
-    // Fits — render normally but reserve exactly boxW for consistent layout
-    ImGui::GetWindowDrawList()->AddText(pos, ImGui::GetColorU32(ImGuiCol_Text), text);
-    ImGui::Dummy(ImVec2(boxW, lineH));
+    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, textY), color, text);
+    ImGui::Dummy(ImVec2(boxW, frameH));
     return;
   }
 
@@ -1203,14 +1206,11 @@ static void imgui_marquee_text(const char* text, float boxW)
   float scroll = t < range ? t : range * 2.0f - t;
   scroll = fmaxf(0.0f, scroll - 20.0f);
 
-  // Draw text via draw list (no layout side-effects) with clipping
-  ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + lineH), true);
-  ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x - scroll, pos.y),
-                                      ImGui::GetColorU32(ImGuiCol_Text), text);
+  ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + frameH), true);
+  ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x - scroll, textY), color, text);
   ImGui::PopClipRect();
 
-  // Reserve exactly boxW — consistent layout regardless of scroll position
-  ImGui::Dummy(ImVec2(boxW, lineH));
+  ImGui::Dummy(ImVec2(boxW, frameH));
 }
 
 // Draw a beveled LED indicator (16x8 px) with active/inactive state.
