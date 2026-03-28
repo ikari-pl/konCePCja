@@ -2642,6 +2642,28 @@ static void imgui_render_devtools()
       ImGui::PopStyleColor();
     }
 
+    // ── Audio diagnostics ──
+    ImGui::SameLine(0, 8.0f);
+    {
+      bool has_underruns = imgui_state.audio_underruns > 0;
+      ImGui::PushStyleColor(ImGuiCol_Text, has_underruns
+        ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)    // red if underruns
+        : ImVec4(0.4f, 0.4f, 0.4f, 1.0f));   // gray if healthy
+      char abuf[32];
+      snprintf(abuf, sizeof(abuf), "snd:%.0fms", imgui_state.audio_queue_avg_ms);
+      ImGui::TextUnformatted(abuf);
+      if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::Text("Audio queue avg: %.1f ms", imgui_state.audio_queue_avg_ms);
+        ImGui::Text("Audio queue min: %.1f ms", imgui_state.audio_queue_min_ms);
+        ImGui::Text("Push interval max: %.0f us", imgui_state.audio_push_interval_max_us);
+        ImGui::Text("Pushes/sec: %d", imgui_state.audio_pushes);
+        ImGui::Text("Underruns/sec: %d", imgui_state.audio_underruns);
+        ImGui::EndTooltip();
+      }
+      ImGui::PopStyleColor();
+    }
+
     // ── Sync devtools bar height ──
     {
       int h = static_cast<int>(ImGui::GetWindowSize().y);

@@ -43,6 +43,13 @@ struct ImGuiUIState {
   float sleep_time_avg_us = 0.0f;
   float z80_time_avg_us = 0.0f;
 
+  // Audio diagnostics (updated each second)
+  int audio_underruns = 0;           // times SDL queue was empty when we pushed
+  int audio_pushes = 0;              // total pushes this second
+  float audio_queue_avg_ms = 0.0f;   // average queue depth in ms
+  float audio_queue_min_ms = 0.0f;   // minimum queue depth in ms
+  float audio_push_interval_max_us = 0.0f; // longest gap between pushes
+
   // Options dialog state
   t_CPC old_cpc_settings;
 

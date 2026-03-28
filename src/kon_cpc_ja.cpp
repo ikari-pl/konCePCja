@@ -1605,11 +1605,43 @@ void printer_stop ()
 
 
 
+// ── Audio diagnostics ──
+static uint64_t audio_last_push_tick = 0;   // perf counter of last push
+static int audio_underrun_count = 0;        // underruns this reporting period
+static int audio_push_count = 0;            // pushes this reporting period
+static double audio_queue_sum_bytes = 0;    // sum of queue depths (for average)
+static float audio_queue_min_bytes = 1e9f;  // min queue depth this period
+static uint64_t audio_push_interval_max = 0; // longest gap between pushes (perf ticks)
+
 // Push completed audio buffer into SDL stream (called from main loop on EC_SOUND_BUFFER).
 // SDL handles internal queuing and feeds the hardware at the correct rate.
 static void audio_push_buffer(const byte* data, int len)
 {
    if (!audio_stream || !CPC.snd_ready || len <= 0) return;
+
+   // Measure queue depth BEFORE pushing — if 0, SDL ran dry (underrun)
+   int queued = SDL_GetAudioStreamQueued(audio_stream);
+   if (queued == 0 && audio_push_count > 0) {
+      audio_underrun_count++;
+      LOG_DEBUG("Audio underrun: SDL queue empty at push #" << audio_push_count
+                << ", interval since last push: "
+                << (audio_last_push_tick > 0
+                    ? static_cast<double>(SDL_GetPerformanceCounter() - audio_last_push_tick)
+                      * 1000.0 / SDL_GetPerformanceFrequency()
+                    : 0.0) << " ms");
+   }
+   audio_queue_sum_bytes += queued;
+   if (queued < audio_queue_min_bytes) audio_queue_min_bytes = static_cast<float>(queued);
+
+   // Measure push interval
+   uint64_t now = SDL_GetPerformanceCounter();
+   if (audio_last_push_tick > 0) {
+      uint64_t interval = now - audio_last_push_tick;
+      if (interval > audio_push_interval_max) audio_push_interval_max = interval;
+   }
+   audio_last_push_tick = now;
+   audio_push_count++;
+
    SDL_PutAudioStreamData(audio_stream, data, len);
    if (g_wav_recorder.is_recording()) {
       g_wav_recorder.write_samples(data, static_cast<uint32_t>(len));
@@ -3969,6 +4001,27 @@ int koncpc_main (int argc, char **argv)
             sleepTimeAccum = 0;
             z80TimeAccum = 0;
             frameTimeSamples = 0;
+
+            // Publish audio diagnostics
+            imgui_state.audio_underruns = audio_underrun_count;
+            imgui_state.audio_pushes = audio_push_count;
+            if (audio_push_count > 0) {
+               // Convert queue depth from bytes to milliseconds
+               double avg_bytes = audio_queue_sum_bytes / audio_push_count;
+               int frame_size = CPC.snd_stereo ? 4 : 2;  // 16-bit stereo=4, mono=2
+               if (CPC.snd_bits == 0) frame_size /= 2;    // 8-bit halves it
+               int sample_rate = freq_table[CPC.snd_playback_rate];
+               double bytes_per_ms = sample_rate * frame_size / 1000.0;
+               imgui_state.audio_queue_avg_ms = static_cast<float>(avg_bytes / bytes_per_ms);
+               imgui_state.audio_queue_min_ms = audio_queue_min_bytes / static_cast<float>(bytes_per_ms);
+               imgui_state.audio_push_interval_max_us = static_cast<float>(
+                  static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
+            }
+            audio_underrun_count = 0;
+            audio_push_count = 0;
+            audio_queue_sum_bytes = 0;
+            audio_queue_min_bytes = 1e9f;
+            audio_push_interval_max = 0;
          }
 
          static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
