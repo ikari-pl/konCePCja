@@ -114,6 +114,12 @@ void imgui_render_ui();
 int imgui_topbar_height();
 void imgui_close_menu();
 
+// Returns true when any keyboard-consuming UI is active (menus, dialogs,
+// text fields, popups, devtools). Single source of truth — used by both
+// the keyboard capture policy in imgui_ui.cpp and the event filter in
+// kon_cpc_ja.cpp. Does NOT include the virtual keyboard (mouse-only).
+bool imgui_any_keyboard_ui_active();
+
 // Toast notifications
 void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);
 

@@ -902,7 +902,7 @@ void glscale_flip([[maybe_unused]] video_plugin* t)
   eglEnable(GL_TEXTURE_2D);
   eglBindTexture(GL_TEXTURE_2D,screen_texnum);
   
-  if (CPC.scr_remanency && !CPC.scr_gui_is_currently_on)
+  if (CPC.scr_remanency)
   {
     /* draw again using the old texture */
     eglBegin(GL_QUADS);

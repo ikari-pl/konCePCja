@@ -1933,7 +1933,6 @@ int video_init ()
    CPC.scr_line_offs = CPC.scr_bps * dwYScale;
    CPC.scr_pos =
    CPC.scr_base = static_cast<byte *>(back_surface->pixels); // memory address of back buffer
-   CPC.scr_gui_is_currently_on = false;
 
    crtc_init();
 
@@ -3341,7 +3340,6 @@ int koncpc_main (int argc, char **argv)
       CPC.scr_bps = back_surface->pitch;
       CPC.scr_line_offs = CPC.scr_bps * dwYScale;
       CPC.scr_pos = CPC.scr_base = static_cast<byte *>(back_surface->pixels);
-      CPC.scr_gui_is_currently_on = false;
       crtc_init();
       // No audio in headless mode
       CPC.snd_enabled = 0;
@@ -3604,18 +3602,12 @@ int koncpc_main (int argc, char **argv)
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
 
-           // Check if any keyboard-consuming UI is active (besides the vkeyboard).
-           bool any_kbd_ui = io.WantTextInput
-               || imgui_state.show_menu || imgui_state.show_options
-               || imgui_state.show_about || imgui_state.show_quit_confirm
-               || imgui_state.show_memory_tool || imgui_state.show_layout_dropdown
-               || imgui_state.show_devtools
-               || g_command_palette.is_open()
-               || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
-
            // Block keyboard for ImGui unless ONLY the vkeyboard has focus.
+           // imgui_any_keyboard_ui_active() is the single source of truth
+           // (defined in imgui_ui.cpp, also used by the capture policy there).
            bool imgui_wants_kbd = io.WantCaptureKeyboard;
-           if (imgui_wants_kbd && imgui_state.show_vkeyboard && !any_kbd_ui) {
+           if (imgui_wants_kbd && imgui_state.show_vkeyboard
+               && !imgui_any_keyboard_ui_active()) {
              imgui_wants_kbd = false;
            }
 
@@ -3853,7 +3845,7 @@ int koncpc_main (int argc, char **argv)
                 if (over_topbar && !topbar_cursor_visible) {
                   set_cursor_visibility(true);
                   topbar_cursor_visible = true;
-                } else if (!over_topbar && topbar_cursor_visible && !CPC.scr_gui_is_currently_on && !CPC.phazer_emulation) {
+                } else if (!over_topbar && topbar_cursor_visible && !CPC.phazer_emulation) {
                   set_cursor_visibility(false);
                   topbar_cursor_visible = false;
                 }
