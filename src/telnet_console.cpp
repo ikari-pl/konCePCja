@@ -237,7 +237,8 @@ void TelnetConsole::run()
             client_connected.store(false);
          } else {
             std::lock_guard<std::mutex> lock(input_mutex);
-            pending_input.append(buf, static_cast<size_t>(n));
+            if (pending_input.size() < 4096)  // cap to prevent unbounded growth
+               pending_input.append(buf, static_cast<size_t>(n));
          }
       }
 
@@ -359,7 +360,8 @@ void TelnetConsole::run()
             client_connected.store(false);
          } else {
             std::lock_guard<std::mutex> lock(input_mutex);
-            pending_input.append(buf, static_cast<size_t>(n));
+            if (pending_input.size() < 4096)  // cap to prevent unbounded growth
+               pending_input.append(buf, static_cast<size_t>(n));
          }
       }
 

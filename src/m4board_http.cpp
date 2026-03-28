@@ -55,6 +55,8 @@ extern AutoTypeQueue g_autotype_queue;
 extern SDL_Surface *back_surface;
 extern byte *memmap_ROM[256];
 
+static constexpr int MAX_REQ = 256 * 1024;  // max HTTP request body size
+
 M4HttpServer g_m4_http;
 
 // ── Minimal SHA-1 (RFC 3174) ─────────────────────────────
@@ -129,7 +131,15 @@ using sock_t = SOCKET;
 static constexpr sock_t BAD_SOCK = INVALID_SOCKET;
 static void close_sock(sock_t s) { closesocket(s); }
 static int sock_send(sock_t s, const void* buf, int len) {
-   return ::send(s, static_cast<const char*>(buf), len, 0);
+   const char* p = static_cast<const char*>(buf);
+   int remaining = len;
+   while (remaining > 0) {
+      int n = ::send(s, p, remaining, 0);
+      if (n <= 0) return n;
+      p += n;
+      remaining -= n;
+   }
+   return len;
 }
 static int sock_recv(sock_t s, void* buf, int len) {
    return ::recv(s, static_cast<char*>(buf), len, 0);
@@ -138,7 +148,15 @@ static int sock_recv(sock_t s, void* buf, int len) {
 using sock_t = int;
 static void close_sock(sock_t s) { ::close(s); }
 static int sock_send(sock_t s, const void* buf, int len) {
-   return static_cast<int>(::write(s, buf, static_cast<size_t>(len)));
+   const char* p = static_cast<const char*>(buf);
+   int remaining = len;
+   while (remaining > 0) {
+      int n = static_cast<int>(::write(s, p, static_cast<size_t>(remaining)));
+      if (n <= 0) return n;
+      p += n;
+      remaining -= n;
+   }
+   return len;
 }
 static int sock_recv(sock_t s, void* buf, int len) {
    return static_cast<int>(::read(s, buf, static_cast<size_t>(len)));
@@ -329,8 +347,10 @@ bool M4HttpServer::parse_request(const std::string& raw, HttpRequest& req) {
       std::string lower_line = hline;
       for (auto& c : lower_line) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       if (lower_line.substr(0, 16) == "content-length: ") {
-         try { req.content_length = std::stoi(hline.substr(16)); }
-         catch (...) { req.content_length = 0; }
+         try {
+            int cl = std::stoi(hline.substr(16));
+            req.content_length = (cl > 0 && cl <= MAX_REQ) ? cl : 0;
+         } catch (...) { req.content_length = 0; }
       }
       if (lower_line.substr(0, 14) == "content-type: ") {
          req.content_type = hline.substr(14);
@@ -525,6 +545,11 @@ M4HttpServer::HttpResponse M4HttpServer::handle_upload(const HttpRequest& req) {
    }
    disp_start += 10; // skip 'filename="'
    size_t disp_end = req.body.find('"', disp_start);
+   if (disp_end == std::string::npos) {
+      resp.status = 400; resp.status_text = "Bad Request";
+      resp.body = "Malformed filename in upload";
+      return resp;
+   }
    std::string filename = req.body.substr(disp_start, disp_end - disp_start);
 
    // The real M4 uses the filename as a full path (e.g., "/games/test.bas")
@@ -986,9 +1011,10 @@ M4HttpServer::HttpResponse M4HttpServer::handle_roms_api(const HttpRequest&) {
    json << "[\n";
    for (int i = 0; i < MAX_ROM_SLOTS; i++) {
       if (i > 0) json << ",\n";
-      bool loaded = (memmap_ROM[i] != nullptr);
+      byte* rom_ptr = memmap_ROM[i];  // snapshot pointer (may be freed by main thread)
+      bool loaded = (rom_ptr != nullptr);
       std::string id;
-      if (loaded) id = rom_identify(memmap_ROM[i]);
+      if (loaded) id = rom_identify(rom_ptr);
       json << "  {\"slot\": " << i
            << ", \"loaded\": " << (loaded ? "true" : "false")
            << ", \"file\": \"" << json_escape(CPC.rom_file[i]) << "\""
@@ -1291,8 +1317,6 @@ void M4HttpServer::run() {
       sock_t client = accept(server_fd, reinterpret_cast<sockaddr*>(&peer), &plen);
       if (client == BAD_SOCK) continue;
 
-      // Read request (up to 256KB for uploads)
-      static constexpr int MAX_REQ = 256 * 1024;
       std::string raw;
       raw.reserve(4096);
 
@@ -1478,8 +1502,6 @@ void M4HttpServer::run() {
       timeval recv_tv{5, 0}; // 5 seconds
       setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &recv_tv, sizeof(recv_tv));
 
-      // Read request (up to 256KB for uploads)
-      static constexpr int MAX_REQ = 256 * 1024;
       std::string raw;
       raw.reserve(4096);
       char buf[4096];
