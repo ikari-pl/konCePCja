@@ -109,7 +109,7 @@ std::string ConfigProfileManager::load(const std::string& name) {
     CPC.scr_scale = p.scr_scale;
     CPC.scr_oglscanlines = p.scr_scanlines;
     CPC.snd_enabled = p.snd_enabled;
-    CPC.snd_playback_rate = p.snd_playback_rate;
+    CPC.snd_playback_rate = (p.snd_playback_rate <= 4) ? p.snd_playback_rate : 2;
     CPC.snd_bits = p.snd_bits;
     CPC.snd_stereo = p.snd_stereo;
     CPC.snd_volume = p.snd_volume;
