@@ -3604,16 +3604,34 @@ int koncpc_main (int argc, char **argv)
 
          // If ImGui wants input, skip emulator processing.
          // Exception: virtual keyboard events (windowID=0) always reach the emulator.
-         // Only block keyboard when a text input widget is active (WantTextInput),
-         // not when any ImGui window has focus (WantCaptureKeyboard). This prevents
-         // the virtual keyboard window from stealing physical keyboard input.
+         //
+         // WantCaptureKeyboard blocks when menus, dropdowns, devtools, or any ImGui
+         // window has focus. Special case: the virtual keyboard only uses mouse clicks,
+         // so when it's the sole reason WantCaptureKeyboard is set, let physical keys
+         // reach the CPC. Any other UI (menus, text fields, devtools) takes priority.
          {
            ImGuiIO& io = ImGui::GetIO();
            bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP);
            bool is_text_event = (event.type == SDL_EVENT_TEXT_INPUT);
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
-           if (((is_key_event && !is_virtual_key) && io.WantTextInput) || (is_text_event && io.WantTextInput) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
+
+           // Check if any keyboard-consuming UI is active (besides the vkeyboard).
+           bool any_kbd_ui = io.WantTextInput
+               || imgui_state.show_menu || imgui_state.show_options
+               || imgui_state.show_about || imgui_state.show_quit_confirm
+               || imgui_state.show_memory_tool || imgui_state.show_layout_dropdown
+               || imgui_state.show_devtools
+               || g_command_palette.is_open()
+               || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+
+           // Block keyboard for ImGui unless ONLY the vkeyboard has focus.
+           bool imgui_wants_kbd = io.WantCaptureKeyboard;
+           if (imgui_wants_kbd && imgui_state.show_vkeyboard && !any_kbd_ui) {
+             imgui_wants_kbd = false;
+           }
+
+           if (((is_key_event && !is_virtual_key) && imgui_wants_kbd) || (is_text_event && imgui_wants_kbd) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
              continue;
            }
          }
