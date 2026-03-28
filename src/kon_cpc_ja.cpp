@@ -1708,14 +1708,13 @@ int audio_init ()
    pbSndBufferEnd = pbSndBuffer.get() + CPC.snd_buffersize;
    CPC.snd_bufferptr = pbSndBuffer.get();
 
-   // Pre-buffer 3 silent buffers (~69ms at 44100Hz) so the SDL queue has
-   // enough safety margin to absorb compositor stalls without underrunning.
+   // Pre-buffer 2 silent buffers (~46ms at 44100Hz) so the SDL queue has
+   // enough margin to absorb occasional compositor stalls (~69ms observed).
    {
       std::vector<byte> silence(CPC.snd_buffersize, 0);
-      for (int i = 0; i < 3; i++) {
+      for (int i = 0; i < 2; i++) {
          SDL_PutAudioStreamData(audio_stream, silence.data(), static_cast<int>(CPC.snd_buffersize));
       }
-      LOG_VERBOSE("Audio: Pre-buffered " << 3 * CPC.snd_buffersize << " bytes of silence");
    }
    CPC.snd_ready = true;
    LOG_VERBOSE("Audio: Sound buffer ready");
