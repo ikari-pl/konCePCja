@@ -22,32 +22,9 @@ extern bool Ton_EnA, Ton_EnB, Ton_EnC;
 extern bool Noise_EnA, Noise_EnB, Noise_EnC;
 extern bool Envelope_EnA, Envelope_EnB, Envelope_EnC;
 
-// Union types matching psg.cpp definitions
-union TNoise {
-   struct {
-      word Low;
-      word Val;
-   };
-   dword Seed;
-};
+#include "psg_types.h"
 extern TNoise Noise;
-
-union TCounter {
-   struct {
-      word Lo;
-      word Hi;
-   };
-   dword Re;
-};
 extern TCounter Ton_Counter_A, Ton_Counter_B, Ton_Counter_C, Noise_Counter;
-
-union TEnvelopeCounter {
-   struct {
-      dword Lo;
-      dword Hi;
-   };
-   int64_t Re;
-};
 extern TEnvelopeCounter Envelope_Counter;
 
 extern byte Ton_A, Ton_B, Ton_C;
