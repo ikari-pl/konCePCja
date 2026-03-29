@@ -339,8 +339,6 @@ TEST_F(PsgRegisterTest, InvalidRegisterNumber_Ignored) {
   // Registers 14 and 15 (PortA, PortB) are not handled by SetAYRegister
   // Writing to them should not crash; they fall through the switch
   memset(&PSG.RegisterAY, 0xAA, sizeof(PSG.RegisterAY));
-  byte saved[16];
-  memcpy(saved, PSG.RegisterAY.Index, 16);
 
   SetAYRegister(14, 0x55);
   SetAYRegister(15, 0x55);
