@@ -1185,27 +1185,56 @@ static void imgui_render_topbar()
 // ─────────────────────────────────────────────────
 static void imgui_marquee_text(const char* text, float boxW)
 {
+  // AlignTextToFramePadding is called by the caller — capture position AFTER alignment.
+  ImVec2 pos = ImGui::GetCursorScreenPos();
+  float frameH = ImGui::GetFrameHeight();
+  float lineH = ImGui::GetTextLineHeight();
+  float textY = pos.y + (frameH - lineH) * 0.5f;  // vertically center text in frame
   float textW = ImGui::CalcTextSize(text).x;
+  ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+
   if (textW <= boxW) {
-    ImGui::TextUnformatted(text);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x, textY), color, text);
+    ImGui::Dummy(ImVec2(boxW, frameH));
     return;
   }
+
   // Ping-pong scroll with 20px pause at each end
   float overflow = textW - boxW;
-  float range = overflow + 40.0f; // 20px pause at start + 20px pause at end
+  float range = overflow + 40.0f;
   float t = fmodf(static_cast<float>(ImGui::GetTime()) * 30.0f, range * 2.0f);
   float scroll = t < range ? t : range * 2.0f - t;
-  scroll = fmaxf(0.0f, scroll - 20.0f); // pause at start
+  scroll = fmaxf(0.0f, scroll - 20.0f);
 
-  ImVec2 pos = ImGui::GetCursorScreenPos();
-  float lineH = ImGui::GetTextLineHeight();
-  ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + lineH), true);
-  ImGui::SetCursorScreenPos(ImVec2(pos.x - scroll, pos.y));
-  ImGui::TextUnformatted(text);
+  ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + frameH), true);
+  ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x - scroll, textY), color, text);
   ImGui::PopClipRect();
-  // Advance cursor past the box
-  ImGui::SetCursorScreenPos(ImVec2(pos.x + boxW, pos.y));
-  ImGui::Dummy(ImVec2(0, lineH));
+
+  ImGui::Dummy(ImVec2(boxW, frameH));
+}
+
+// Draw a beveled LED indicator (16x8 px) with active/inactive state.
+// r,g,b are the base color channel values (e.g. 255,0,0 for red).
+static void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active,
+                            int r, int g, int b)
+{
+  if (active) {
+    dl->AddRectFilled(p0, p1, IM_COL32(r, g, b, 255));
+    ImU32 hi = IM_COL32(std::min(255, r + 100), std::min(255, g + 100), std::min(255, b + 100), 255);
+    ImU32 lo = IM_COL32(r * 63 / 100, g * 63 / 100, b * 63 / 100, 255);
+    dl->AddLine(p0, ImVec2(p1.x, p0.y), hi);
+    dl->AddLine(p0, ImVec2(p0.x, p1.y), hi);
+    dl->AddLine(ImVec2(p0.x, p1.y), p1, lo);
+    dl->AddLine(ImVec2(p1.x, p0.y), p1, lo);
+  } else {
+    dl->AddRectFilled(p0, p1, IM_COL32(r / 3, g / 3, b / 3, 255));
+    ImU32 hi = IM_COL32(r / 3 + 30, g / 3 + 30, b / 3 + 30, 255);
+    ImU32 lo = IM_COL32(r / 6, g / 6, b / 6, 255);
+    dl->AddLine(p0, ImVec2(p1.x, p0.y), hi);
+    dl->AddLine(p0, ImVec2(p0.x, p1.y), hi);
+    dl->AddLine(ImVec2(p0.x, p1.y), p1, lo);
+    dl->AddLine(ImVec2(p1.x, p0.y), p1, lo);
+  }
 }
 
 // ─────────────────────────────────────────────────
@@ -1275,22 +1304,7 @@ static void imgui_render_statusbar()
         ImVec2 p0(cursor.x, cursor.y + yOff);
         ImVec2 p1(p0.x + ledW, p0.y + ledH);
 
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        if (active) {
-          // Active: bright red #FF0000
-          dl->AddRectFilled(p0, p1, IM_COL32(255, 0, 0, 255));
-          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(255, 100, 100, 255));
-          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(255, 100, 100, 255));
-          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(160, 0, 0, 255));
-          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(160, 0, 0, 255));
-        } else {
-          // Inactive: dark red
-          dl->AddRectFilled(p0, p1, IM_COL32(80, 0, 0, 255));
-          dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(110, 20, 20, 255));
-          dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(110, 20, 20, 255));
-          dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(40, 0, 0, 255));
-          dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(40, 0, 0, 255));
-        }
+        draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 255, 0, 0);
 
         ImGui::Dummy(ImVec2(ledW, frameH));
         ImGui::SameLine(0, 4.0f);
@@ -1353,32 +1367,24 @@ static void imgui_render_statusbar()
       ImVec2 p0(cursor.x, cursor.y + yOff);
       ImVec2 p1(p0.x + ledW, p0.y + ledH);
 
-      ImDrawList* dl = ImGui::GetWindowDrawList();
-      if (active) {
-        // Active: bright green
-        dl->AddRectFilled(p0, p1, IM_COL32(0, 255, 0, 255));
-        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(100, 255, 100, 255));
-        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(100, 255, 100, 255));
-        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 160, 0, 255));
-        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 160, 0, 255));
-      } else {
-        // Inactive: dark green
-        dl->AddRectFilled(p0, p1, IM_COL32(0, 80, 0, 255));
-        dl->AddLine(p0, ImVec2(p1.x, p0.y), IM_COL32(20, 110, 20, 255));
-        dl->AddLine(p0, ImVec2(p0.x, p1.y), IM_COL32(20, 110, 20, 255));
-        dl->AddLine(ImVec2(p0.x, p1.y), p1, IM_COL32(0, 40, 0, 255));
-        dl->AddLine(ImVec2(p1.x, p0.y), p1, IM_COL32(0, 40, 0, 255));
-      }
+      draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 0, 255, 0);
 
       ImGui::Dummy(ImVec2(ledW, frameH));
 
       // Show container name if inside a DSK (with marquee scrolling)
       if (g_m4board.container_type != M4Board::ContainerType::NONE) {
         ImGui::SameLine(0, 4.0f);
-        auto fname = std::filesystem::path(g_m4board.container_host_path).filename().string();
+        // Cache the container filename — only changes on container open/close.
+        static std::string cached_path;
+        static std::string cached_fname;
+        if (g_m4board.container_host_path != cached_path) {
+          cached_path = g_m4board.container_host_path;
+          auto pos = cached_path.find_last_of("/\\");
+          cached_fname = (pos != std::string::npos) ? cached_path.substr(pos + 1) : cached_path;
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(fname.c_str(), 120.0f);
+        imgui_marquee_text(cached_fname.c_str(), 120.0f);
         ImGui::PopStyleColor();
       }
 
@@ -1664,30 +1670,33 @@ static void imgui_render_statusbar()
     }
 
     // ── Eject Disk confirmation popup ──
+    // Latch the drive index when opening the popup — the popup may not
+    // open until the next frame, and eject_confirm_drive could be reset
+    // by the else branch before BeginPopupModal succeeds.
+    static int popup_eject_drive = -1;
     if (imgui_state.eject_confirm_drive >= 0) {
+      popup_eject_drive = imgui_state.eject_confirm_drive;
+      imgui_state.eject_confirm_drive = -1;
       ImGui::OpenPopup("Eject Disk?##sb");
     }
     if (ImGui::BeginPopupModal("Eject Disk?##sb", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-      int drv = imgui_state.eject_confirm_drive;
-      const char* name = drv == 0 ? "A" : "B";
+      const char* name = popup_eject_drive == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
       ImGui::Spacing();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
-        t_drive& drive = drv == 0 ? driveA : driveB;
-        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        t_drive& drive = popup_eject_drive == 0 ? driveA : driveB;
+        auto& driveFile = popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         dsk_eject(&drive);
         driveFile.clear();
-        imgui_state.eject_confirm_drive = -1;
+        popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();
       }
       ImGui::SameLine();
       if (ImGui::Button("Cancel", ImVec2(80, 0))) {
-        imgui_state.eject_confirm_drive = -1;
+        popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();
       }
       ImGui::EndPopup();
-    } else {
-      imgui_state.eject_confirm_drive = -1;
     }
 
     // ── Eject Tape confirmation popup ──
