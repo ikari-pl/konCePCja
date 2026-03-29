@@ -1627,8 +1627,8 @@ static void audio_push_buffer(const byte* data, int len)
    int queued = SDL_GetAudioStreamQueued(audio_stream);
    if (queued < 0) queued = 0; // SDL error — treat as empty
 
-   // Detect underruns (skip the very first push after a stats reset —
-   // a low queue at that point is expected, not an underrun).
+   // Detect underruns (skip if we have no previous push timestamp to
+   // compute an interval from — e.g. the very first push after init).
    if (audio_last_push_tick > 0) {
       double interval_ms = static_cast<double>(now - audio_last_push_tick) * 1000.0 / perfFreq;
       if (queued == 0) {
@@ -1646,7 +1646,7 @@ static void audio_push_buffer(const byte* data, int len)
 
    // Push to SDL — only update timing/count on success
    if (!SDL_PutAudioStreamData(audio_stream, data, len)) {
-      LOG_DEBUG("Audio: SDL_PutAudioStreamData failed");
+      LOG_DEBUG("Audio: SDL_PutAudioStreamData failed: " << SDL_GetError());
       return;
    }
 
