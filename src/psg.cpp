@@ -71,30 +71,10 @@ bool Ton_EnA, Ton_EnB, Ton_EnC, Noise_EnA, Noise_EnB, Noise_EnC;
 bool Envelope_EnA, Envelope_EnB, Envelope_EnC;
 void (*Case_EnvType)();
 
-union TCounter {
-   struct {
-      word Lo;
-      word Hi;
-   };
-   dword Re;
-};
+#include "psg_types.h"
 TCounter Ton_Counter_A, Ton_Counter_B, Ton_Counter_C, Noise_Counter;
-
-union TNoise {
-   struct {
-      word Low;
-      word Val;
-   };
-   dword Seed;
-} Noise;
-
-union TEnvelopeCounter {
-   struct {
-      dword Lo;
-      dword Hi;
-   };
-   int64_t Re;
-} Envelope_Counter;
+TNoise Noise;
+TEnvelopeCounter Envelope_Counter;
 byte Ton_A, Ton_B, Ton_C;
 
 int Level_AR[32], Level_AL[32], Level_BR[32], Level_BL[32], Level_CR[32], Level_CL[32];
@@ -726,7 +706,7 @@ void Calculate_Level_Tables()
       Level_CR[i] = static_cast<int>(rint(Level_CR[i] * k));
    }
    if (!CPC.snd_bits) { // 8 bits per sample?
-      LevelTape = -static_cast<int>(rint((TAPE_VOLUME / 2) * k));
+      LevelTape = -static_cast<int>(rint((TAPE_VOLUME / 2.0) * k));
    }
    else {
       LevelTape = -static_cast<int>(rint((TAPE_VOLUME * 128) * k));
