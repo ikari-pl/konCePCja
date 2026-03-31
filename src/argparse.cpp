@@ -31,6 +31,7 @@ const struct option long_options[] =
    {"version",       no_argument, nullptr, 'V'},
    {"help",          no_argument, nullptr, 'h'},
    {"verbose",       no_argument, nullptr, 'v'},
+   {"debug",         no_argument, nullptr, 'D'},
    {nullptr, 0, nullptr, 0},
 };
 
@@ -57,6 +58,7 @@ void usage(std::ostream &os, char *progPath, int errcode)
    os << "   -s/--sym_file=<file>:   use <file> as a source of symbols and entry points for disassembling in developers' tools.\n";
    os << "   -V/--version:           outputs version and exit\n";
    os << "   -v/--verbose:           be talkative\n";
+   os << "   -D/--debug:             show frame timing and audio diagnostics in DevTools bar\n";
    os << "\nslotfiles is an optional list of files giving the content of the various CPC ports.\n";
    os << "Ports files are identified by their extension. Supported formats are .dsk (disk), .cdt or .voc (tape), .cpr (cartridge), .sna (snapshot), or .zip (archive containing one or more of the supported ports files).\n";
    os << "\nExample: " << progname << " sorcery.dsk\n";
@@ -185,6 +187,9 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
             args.symFilePath = optarg;
             break;
 
+         case 'D':
+            args.debug = true;
+            break;
          case 'v':
             log_verbose = true;
             break;

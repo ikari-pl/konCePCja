@@ -137,6 +137,7 @@ video_plugin* vid_plugin;
 
 static bool g_take_screenshot = false;
 bool g_headless = false;
+bool g_debug = false;
 static bool g_exit_on_break = false;
 static enum { EXIT_NONE, EXIT_FRAMES, EXIT_MS } g_exit_mode = EXIT_NONE;
 static dword g_exit_target = 0;
@@ -1848,37 +1849,19 @@ int video_set_palette ()
 
 void video_set_style ()
 {
-   if (vid_plugin->half_pixels)
-   {
-      dwXScale = 1;
-      dwYScale = 1;
-   }
-   else
-   {
-      dwXScale = 2;
-      dwYScale = 2;
-   }
+   // Always render at native Mode 2 width (768px). dwXScale=2 selects full
+   // ModeMap tables in crtc_init(). dwYScale controls scanline doubling only.
+   dwXScale = 2;
+   dwYScale = vid_plugin->half_pixels ? 1 : 2;
    CPC.dwYScale = dwYScale;
-   switch (dwXScale) {
-      case 1:
-         if (CPC.model > 2) {
-            CPC.scr_prerendernorm = prerender_normal_half_plus;
-         } else {
-            CPC.scr_prerendernorm = prerender_normal_half;
-         }
-         CPC.scr_prerenderbord = prerender_border_half;
-         CPC.scr_prerendersync = prerender_sync_half;
-         break;
-      case 2:
-         if (CPC.model > 2) {
-            CPC.scr_prerendernorm = prerender_normal_plus;
-         } else {
-            CPC.scr_prerendernorm = prerender_normal;
-         }
-         CPC.scr_prerenderbord = prerender_border;
-         CPC.scr_prerendersync = prerender_sync;
-         break;
+
+   if (CPC.model > 2) {
+      CPC.scr_prerendernorm = prerender_normal_plus;
+   } else {
+      CPC.scr_prerendernorm = prerender_normal;
    }
+   CPC.scr_prerenderbord = prerender_border;
+   CPC.scr_prerendersync = prerender_sync;
 
    switch(CPC.scr_bpp)
    {
@@ -3315,6 +3298,7 @@ int koncpc_main (int argc, char **argv)
    }
    parseArguments(argc, argv, slot_list, args);
    g_headless = args.headless;
+   g_debug = args.debug;
    g_exit_on_break = args.exitOnBreak;
 
    // Parse --exit-after spec: Nf (frames), Ns (seconds), Nms (milliseconds)

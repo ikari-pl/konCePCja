@@ -283,16 +283,10 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
     return nullptr;
   }
 
-  int surface_width, surface_height;
-  if (scale > 1) {
-    t->half_pixels = 0;
-    surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
-  } else {
-    t->half_pixels = 1;
-    surface_width = CPC_VISIBLE_SCR_WIDTH;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT;
-  }
+  // Always render at native Mode 2 width. Y doubling for scale > 1.
+  int surface_width = CPC_RENDER_WIDTH;
+  int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT;
+  t->half_pixels = (scale <= 1) ? 1 : 0;  // controls dwYScale in video_set_style
   vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
 
@@ -432,16 +426,9 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
     return nullptr;
   }
 
-  int surface_width, surface_height;
-  if (scale > 1) {
-    t->half_pixels = 0;
-    surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
-  } else {
-    t->half_pixels = 1;
-    surface_width = CPC_VISIBLE_SCR_WIDTH;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT;
-  }
+  int surface_width = CPC_RENDER_WIDTH;
+  int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT;
+  t->half_pixels = (scale <= 1) ? 1 : 0;
   vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) { sdlr_close(); return nullptr; }
 
@@ -543,16 +530,10 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
     return nullptr;
   }
 
-  int surface_width, surface_height;
-  if (scale < 4) {
-    t->half_pixels = 1;
-    surface_width = CPC_VISIBLE_SCR_WIDTH;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT;
-  } else {
-    t->half_pixels = 0;
-    surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
-  }
+  // Software scaling plugins: render at native width, filter produces 2× output.
+  int surface_width = CPC_RENDER_WIDTH;
+  int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT;
+  t->half_pixels = (scale <= 1) ? 1 : 0;
   vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
   if (!vid) { sdlr_close(); return nullptr; }
 
@@ -634,8 +615,8 @@ void sdlr_swscale_close()
 /* ------------------------------------------------------------------------------------ */
 SDL_Surface* headless_init(video_plugin* t, int /*scale*/, bool /*fs*/)
 {
-  t->half_pixels = 1;
-  int surface_width = CPC_VISIBLE_SCR_WIDTH;
+  t->half_pixels = 1;  // dwYScale=1 for headless
+  int surface_width = CPC_RENDER_WIDTH;
   int surface_height = CPC_VISIBLE_SCR_HEIGHT;
   vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
@@ -719,25 +700,17 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
 
   GLint max_texsize;
   eglGetIntegerv(GL_MAX_TEXTURE_SIZE,&max_texsize);
-  if (max_texsize<1024) {
-      printf("Your OpenGL implementation doesn't support 1024x1024 textures: max size = %d\n", max_texsize);
-      t->half_pixels = 1;
-   }
-  if (max_texsize<512) {
-    fprintf(stderr, "Your OpenGL implementation doesn't support 512x512 textures\n");
+  // Native render width (768) requires 1024 texture
+  t->half_pixels = (scale <= 1) ? 1 : 0;
+  if (max_texsize < 1024) {
+    fprintf(stderr, "Your OpenGL implementation doesn't support 1024x1024 textures (max=%d)\n", max_texsize);
     return nullptr;
   }
 
-   unsigned int original_width, original_height, tex_size;
-   if (t->half_pixels) {
-      tex_size = 512;
-      original_width = CPC_VISIBLE_SCR_WIDTH;
-      original_height = CPC_VISIBLE_SCR_HEIGHT;
-   } else {
-      tex_size = 1024;
-      original_width = CPC_VISIBLE_SCR_WIDTH * 2;
-      original_height = CPC_VISIBLE_SCR_HEIGHT * 2;
-   }
+   // Always use 1024 texture — 768-wide surface requires it
+   unsigned int tex_size = 1024;
+   unsigned int original_width = CPC_RENDER_WIDTH;
+   unsigned int original_height = t->half_pixels ? CPC_VISIBLE_SCR_HEIGHT : CPC_VISIBLE_SCR_HEIGHT * 2;
 
   compute_scale(t, original_width, original_height);
 
@@ -1010,12 +983,9 @@ void glscale_close()
  */
 static void compute_rects(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels)
 {
-  int surface_width = CPC_VISIBLE_SCR_WIDTH*4;
-  int surface_height = CPC_VISIBLE_SCR_HEIGHT*4;
-  if (half_pixels) {
-    surface_width = CPC_VISIBLE_SCR_WIDTH*2;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT*2;
-  }
+  // Software scaling filter output is 2× the render surface
+  int surface_width = CPC_RENDER_WIDTH * 2;
+  int surface_height = half_pixels ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT * 4;
   /* initialise the source rect to full source */
   src->x=0;
   src->y=0;
@@ -1204,16 +1174,9 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
     return nullptr;
   }
 
-  int surface_width, surface_height;
-  if (scale < 4) {
-    t->half_pixels = 1;
-    surface_width = CPC_VISIBLE_SCR_WIDTH;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT;
-  } else {
-    t->half_pixels = 0;
-    surface_width = CPC_VISIBLE_SCR_WIDTH * 2;
-    surface_height = CPC_VISIBLE_SCR_HEIGHT * 2;
-  }
+  int surface_width = CPC_RENDER_WIDTH;
+  int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT;
+  t->half_pixels = (scale <= 1) ? 1 : 0;
   vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
   if (!vid) return nullptr;
 
