@@ -150,7 +150,7 @@ TEST_F(ComputeRectsTest, BiggerPub)
   {
     pub = CreateSurface(CPC_RENDER_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
     scaled = CreateSurface(2*CPC_RENDER_WIDTH - offset, 4*CPC_VISIBLE_SCR_HEIGHT - offset);
-    Uint8 half_pixels = 1;
+    Uint8 half_pixels = 0;
 
     compute_rects_for_tests(&src, &dst, half_pixels);
 

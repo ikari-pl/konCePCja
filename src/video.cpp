@@ -700,10 +700,10 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
 
   GLint max_texsize;
   eglGetIntegerv(GL_MAX_TEXTURE_SIZE,&max_texsize);
-  // Native render width (768) requires 1024 texture — no fallback to half_pixels
+  // Native render width (768) requires 1024 texture
   t->half_pixels = (scale <= 1) ? 1 : 0;
-  if (max_texsize<512) {
-    fprintf(stderr, "Your OpenGL implementation doesn't support 512x512 textures\n");
+  if (max_texsize < 1024) {
+    fprintf(stderr, "Your OpenGL implementation doesn't support 1024x1024 textures (max=%d)\n", max_texsize);
     return nullptr;
   }
 
