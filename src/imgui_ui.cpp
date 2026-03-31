@@ -2651,6 +2651,32 @@ static void imgui_render_devtools()
       ImGui::PopStyleColor();
     }
 
+    // ── Frame timing breakdown ──
+    ImGui::SameLine(0, 8.0f);
+    {
+      float total_ms = imgui_state.frame_time_avg_us / 1000.0f;
+      float budget_pct = total_ms / 20.0f * 100.0f;  // 20ms = 50fps budget
+      ImVec4 ft_color = budget_pct > 90.0f
+        ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)    // red: >90% budget used
+        : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);   // gray: healthy
+      ImGui::PushStyleColor(ImGuiCol_Text, ft_color);
+      char ftbuf[32];
+      snprintf(ftbuf, sizeof(ftbuf), "frame:%.1fms", total_ms);
+      ImGui::TextUnformatted(ftbuf);
+      if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::Text("Frame time avg: %.1f ms (%.0f%% of 20ms budget)", total_ms, budget_pct);
+        ImGui::Text("Frame time min: %.1f ms", imgui_state.frame_time_min_us / 1000.0f);
+        ImGui::Text("Frame time max: %.1f ms", imgui_state.frame_time_max_us / 1000.0f);
+        ImGui::Separator();
+        ImGui::Text("Z80 emulation:  %.1f ms", imgui_state.z80_time_avg_us / 1000.0f);
+        ImGui::Text("Display/GL:     %.1f ms", imgui_state.display_time_avg_us / 1000.0f);
+        ImGui::Text("Sleep (limiter):%.1f ms", imgui_state.sleep_time_avg_us / 1000.0f);
+        ImGui::EndTooltip();
+      }
+      ImGui::PopStyleColor();
+    }
+
     // ── Audio diagnostics ──
     ImGui::SameLine(0, 8.0f);
     {
