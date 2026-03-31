@@ -137,6 +137,7 @@ video_plugin* vid_plugin;
 
 static bool g_take_screenshot = false;
 bool g_headless = false;
+bool g_debug = false;
 static bool g_exit_on_break = false;
 static enum { EXIT_NONE, EXIT_FRAMES, EXIT_MS } g_exit_mode = EXIT_NONE;
 static dword g_exit_target = 0;
@@ -3297,6 +3298,7 @@ int koncpc_main (int argc, char **argv)
    }
    parseArguments(argc, argv, slot_list, args);
    g_headless = args.headless;
+   g_debug = args.debug;
    g_exit_on_break = args.exitOnBreak;
 
    // Parse --exit-after spec: Nf (frames), Ns (seconds), Nms (milliseconds)

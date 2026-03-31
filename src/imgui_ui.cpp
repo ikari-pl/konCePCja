@@ -2651,7 +2651,9 @@ static void imgui_render_devtools()
       ImGui::PopStyleColor();
     }
 
-    // ── Frame timing breakdown ──
+    // ── Frame timing + audio diagnostics (--debug only) ──
+    extern bool g_debug;
+    if (g_debug) {
     ImGui::SameLine(0, 8.0f);
     {
       float total_ms = imgui_state.frame_time_avg_us / 1000.0f;
@@ -2703,6 +2705,8 @@ static void imgui_render_devtools()
       }
       ImGui::PopStyleColor();
     }
+
+    } // g_debug
 
     // ── Sync devtools bar height ──
     {

@@ -18,6 +18,7 @@ class CapriceArgs
       bool headless = false;
       std::string exitAfter;       // e.g. "100f", "5s", "3000ms"
       bool exitOnBreak = false;
+      bool debug = false;
 };
 
 std::string replaceKoncpcKeys(std::string command);
