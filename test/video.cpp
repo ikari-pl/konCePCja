@@ -14,16 +14,12 @@ class ComputeRectsTest : public testing::Test {
     void ExpectFullSrc(bool half_pixels) {
       EXPECT_EQ(src.x, 0);
       EXPECT_EQ(src.y, 0);
-      if (half_pixels)
-      {
-        EXPECT_EQ(src.w, CPC_VISIBLE_SCR_WIDTH);
-        // The -4 corresponds to the 'src->h-=2*2' in video.cpp when dh <= 0
+      // Width is always CPC_RENDER_WIDTH (768) — native Mode 2 resolution
+      EXPECT_EQ(src.w, CPC_RENDER_WIDTH);
+      // The -4 corresponds to the 'src->h-=2*2' in video.cpp when dh <= 0
+      if (half_pixels) {
         EXPECT_EQ(src.h, CPC_VISIBLE_SCR_HEIGHT-4);
-      }
-      else
-      {
-        EXPECT_EQ(src.w, CPC_VISIBLE_SCR_WIDTH*2);
-        // The -4 corresponds to the 'src->h-=2*2' in video.cpp when dh <= 0
+      } else {
         EXPECT_EQ(src.h, CPC_VISIBLE_SCR_HEIGHT*2-4);
       }
     }
@@ -65,8 +61,8 @@ class ComputeRectsTest : public testing::Test {
 
 TEST_F(ComputeRectsTest, DefaultSizeHalfPixels)
 {
-  pub = CreateSurface(CPC_VISIBLE_SCR_WIDTH, CPC_VISIBLE_SCR_HEIGHT);
-  scaled = CreateSurface(2*CPC_VISIBLE_SCR_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
+  pub = CreateSurface(CPC_RENDER_WIDTH, CPC_VISIBLE_SCR_HEIGHT);
+  scaled = CreateSurface(2*CPC_RENDER_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
   Uint8 half_pixels = 1;
 
   compute_rects_for_tests(&src, &dst, half_pixels);
@@ -80,8 +76,8 @@ TEST_F(ComputeRectsTest, BiggerVidHalfPixels)
 {
   for (auto offset : { 1, 2, 3, 10, 17, 50, 100, 101 })
   {
-    pub = CreateSurface(CPC_VISIBLE_SCR_WIDTH, CPC_VISIBLE_SCR_HEIGHT);
-    scaled = CreateSurface(2*CPC_VISIBLE_SCR_WIDTH + offset, 2*CPC_VISIBLE_SCR_HEIGHT + offset);
+    pub = CreateSurface(CPC_RENDER_WIDTH, CPC_VISIBLE_SCR_HEIGHT);
+    scaled = CreateSurface(2*CPC_RENDER_WIDTH + offset, 2*CPC_VISIBLE_SCR_HEIGHT + offset);
     Uint8 half_pixels = 1;
 
     compute_rects_for_tests(&src, &dst, half_pixels);
@@ -89,7 +85,7 @@ TEST_F(ComputeRectsTest, BiggerVidHalfPixels)
     ExpectFullSrc(half_pixels);
     EXPECT_EQ(dst.x, offset/2);
     EXPECT_EQ(dst.y, offset/2);
-    EXPECT_EQ(dst.w, 2*CPC_VISIBLE_SCR_WIDTH);
+    EXPECT_EQ(dst.w, 2*CPC_RENDER_WIDTH);
     EXPECT_EQ(dst.h, 2*CPC_VISIBLE_SCR_HEIGHT);
     ExpectValid();
   }
@@ -97,17 +93,18 @@ TEST_F(ComputeRectsTest, BiggerVidHalfPixels)
 
 TEST_F(ComputeRectsTest, BiggerPubHalfPixels)
 {
-  for (auto offset : { 1, 2, 3, 10, 17, 50, 100, 101, CPC_VISIBLE_SCR_WIDTH, CPC_VISIBLE_SCR_WIDTH+10 })
+  // Offsets must be small enough that scaled surface dimensions stay positive
+  for (auto offset : { 1, 2, 3, 10, 17, 50, 100, 101, 200, 300 })
   {
-    pub = CreateSurface(CPC_VISIBLE_SCR_WIDTH, CPC_VISIBLE_SCR_HEIGHT);
-    scaled = CreateSurface(2*CPC_VISIBLE_SCR_WIDTH - offset, 2*CPC_VISIBLE_SCR_HEIGHT - offset);
+    pub = CreateSurface(CPC_RENDER_WIDTH, CPC_VISIBLE_SCR_HEIGHT);
+    scaled = CreateSurface(2*CPC_RENDER_WIDTH - offset, 2*CPC_VISIBLE_SCR_HEIGHT - offset);
     Uint8 half_pixels = 1;
 
     compute_rects_for_tests(&src, &dst, half_pixels);
 
     EXPECT_EQ(src.x, (offset+1)/4);
     EXPECT_EQ(src.y, (offset+1)/4);
-    EXPECT_EQ(src.w, CPC_VISIBLE_SCR_WIDTH - (offset+1)/2);
+    EXPECT_EQ(src.w, CPC_RENDER_WIDTH - (offset+1)/2);
     // TODO: There is obviously a problem if offset/2 < 4 compared to when offset = 0 (where we have -4 here)
     EXPECT_EQ(src.h, CPC_VISIBLE_SCR_HEIGHT - (offset+1)/2);
     ExpectRectMatchesSurface(&dst, scaled);
@@ -117,8 +114,8 @@ TEST_F(ComputeRectsTest, BiggerPubHalfPixels)
 
 TEST_F(ComputeRectsTest, DefaultSize)
 {
-  pub = CreateSurface(2*CPC_VISIBLE_SCR_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
-  scaled = CreateSurface(4*CPC_VISIBLE_SCR_WIDTH, 4*CPC_VISIBLE_SCR_HEIGHT);
+  pub = CreateSurface(CPC_RENDER_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
+  scaled = CreateSurface(2*CPC_RENDER_WIDTH, 4*CPC_VISIBLE_SCR_HEIGHT);
   Uint8 half_pixels = 0;
 
   compute_rects_for_tests(&src, &dst, half_pixels);
@@ -132,8 +129,8 @@ TEST_F(ComputeRectsTest, BiggerVid)
 {
   for (auto offset : { 1, 2, 3, 10, 17, 50, 100, 101 })
   {
-    pub = CreateSurface(2*CPC_VISIBLE_SCR_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
-    scaled = CreateSurface(4*CPC_VISIBLE_SCR_WIDTH + offset, 4*CPC_VISIBLE_SCR_HEIGHT + offset);
+    pub = CreateSurface(CPC_RENDER_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
+    scaled = CreateSurface(2*CPC_RENDER_WIDTH + offset, 4*CPC_VISIBLE_SCR_HEIGHT + offset);
     Uint8 half_pixels = 0;
 
     compute_rects_for_tests(&src, &dst, half_pixels);
@@ -141,7 +138,7 @@ TEST_F(ComputeRectsTest, BiggerVid)
     ExpectFullSrc(half_pixels);
     EXPECT_EQ(dst.x, offset/2);
     EXPECT_EQ(dst.y, offset/2);
-    EXPECT_EQ(dst.w, 4*CPC_VISIBLE_SCR_WIDTH);
+    EXPECT_EQ(dst.w, 2*CPC_RENDER_WIDTH);
     EXPECT_EQ(dst.h, 4*CPC_VISIBLE_SCR_HEIGHT);
     ExpectValid();
   }
@@ -149,17 +146,17 @@ TEST_F(ComputeRectsTest, BiggerVid)
 
 TEST_F(ComputeRectsTest, BiggerPub)
 {
-  for (auto offset : { 1, 2, 3, 10, 17, 50, 100, 101, CPC_VISIBLE_SCR_WIDTH, CPC_VISIBLE_SCR_WIDTH+10 })
+  for (auto offset : { 1, 2, 3, 10, 17, 50, 100, 101, 200, 300 })
   {
-    pub = CreateSurface(2*CPC_VISIBLE_SCR_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
-    scaled = CreateSurface(4*CPC_VISIBLE_SCR_WIDTH - offset, 4*CPC_VISIBLE_SCR_HEIGHT - offset);
+    pub = CreateSurface(CPC_RENDER_WIDTH, 2*CPC_VISIBLE_SCR_HEIGHT);
+    scaled = CreateSurface(2*CPC_RENDER_WIDTH - offset, 4*CPC_VISIBLE_SCR_HEIGHT - offset);
     Uint8 half_pixels = 1;
 
     compute_rects_for_tests(&src, &dst, half_pixels);
 
     EXPECT_EQ(src.x, (offset+1)/4);
     EXPECT_EQ(src.y, (offset+1)/4);
-    EXPECT_EQ(src.w, 2*CPC_VISIBLE_SCR_WIDTH - (offset+1)/2);
+    EXPECT_EQ(src.w, CPC_RENDER_WIDTH - (offset+1)/2);
     // TODO: There is obviously a problem if offset/2 < 4 compared to when offset = 0 (where we have -4 here)
     EXPECT_EQ(src.h, 2*CPC_VISIBLE_SCR_HEIGHT - (offset+1)/2);
     ExpectRectMatchesSurface(&dst, scaled);

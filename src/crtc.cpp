@@ -1399,31 +1399,20 @@ const char* crtc_type_manufacturer(unsigned char crtc_type)
 
 void crtc_init()
 {
-   if (dwXScale == 1) {
-      ModeMaps[0] = M0hMap;
-      ModeMaps[1] = M1hMap;
-      ModeMaps[2] = M2hMap;
-      ModeMaps[3] = M3hMap;
-   } else {
-      ModeMaps[0] = M0Map;
-      ModeMaps[1] = M1Map;
-      ModeMaps[2] = M2Map;
-      ModeMaps[3] = M3Map;
-   }
+   // Always use full-width ModeMap tables (768px native render width).
+   // Mode 2 pixels are 1:1, Mode 1 pixels are 2px wide, Mode 0 are 4px wide.
+   ModeMaps[0] = M0Map;
+   ModeMaps[1] = M1Map;
+   ModeMaps[2] = M2Map;
+   ModeMaps[3] = M3Map;
    ModeMap = ModeMaps[0];
    for (int l = 0; l < 0x7400; l++) {
       int j = l << 1; // actual address
       MAXlate[l] = (j & 0x7FE) | ((j & 0x6000) << 1);
    }
 
-   int Wid;
-   if (dwXScale == 1) {
-      Wid = 8;
-      PosShift = 5;
-   } else {
-      Wid = 16;
-      PosShift = 4;
-   }
+   int Wid = 16;     // 16 palette indices per CRTC character (2 bytes × 8 pixels/byte)
+   PosShift = 4;
    for (int i = 0; i < 48; i++) {
       HorzPix[i] = Wid;
    }

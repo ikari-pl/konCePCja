@@ -61,7 +61,8 @@ class InputMapper;
 
 #define CPC_SCR_WIDTH 1024 // max width
 #define CPC_SCR_HEIGHT 312 // max height
-#define CPC_VISIBLE_SCR_WIDTH 384 // visible width: 4+40+4 * 8
+#define CPC_VISIBLE_SCR_WIDTH 384 // display width for window sizing: (4+40+4) * 8
+#define CPC_RENDER_WIDTH 768       // native render width: (4+40+4) * 16 (Mode 2 pixel-accurate)
 #define CPC_VISIBLE_SCR_HEIGHT 270
 
 // Emulation speed range

@@ -1848,37 +1848,19 @@ int video_set_palette ()
 
 void video_set_style ()
 {
-   if (vid_plugin->half_pixels)
-   {
-      dwXScale = 1;
-      dwYScale = 1;
-   }
-   else
-   {
-      dwXScale = 2;
-      dwYScale = 2;
-   }
+   // Always render at native Mode 2 width (768px). dwXScale=2 selects full
+   // ModeMap tables in crtc_init(). dwYScale controls scanline doubling only.
+   dwXScale = 2;
+   dwYScale = vid_plugin->half_pixels ? 1 : 2;
    CPC.dwYScale = dwYScale;
-   switch (dwXScale) {
-      case 1:
-         if (CPC.model > 2) {
-            CPC.scr_prerendernorm = prerender_normal_half_plus;
-         } else {
-            CPC.scr_prerendernorm = prerender_normal_half;
-         }
-         CPC.scr_prerenderbord = prerender_border_half;
-         CPC.scr_prerendersync = prerender_sync_half;
-         break;
-      case 2:
-         if (CPC.model > 2) {
-            CPC.scr_prerendernorm = prerender_normal_plus;
-         } else {
-            CPC.scr_prerendernorm = prerender_normal;
-         }
-         CPC.scr_prerenderbord = prerender_border;
-         CPC.scr_prerendersync = prerender_sync;
-         break;
+
+   if (CPC.model > 2) {
+      CPC.scr_prerendernorm = prerender_normal_plus;
+   } else {
+      CPC.scr_prerendernorm = prerender_normal;
    }
+   CPC.scr_prerenderbord = prerender_border;
+   CPC.scr_prerendersync = prerender_sync;
 
    switch(CPC.scr_bpp)
    {
