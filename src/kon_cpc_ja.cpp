@@ -1995,6 +1995,13 @@ void video_display ()
    vid_plugin->flip(vid_plugin);
 }
 
+// Phase B: floating viewports + window swap. Call after pushing audio.
+static void video_display_b()
+{
+   if (vid_plugin->flip_b)
+      vid_plugin->flip_b(vid_plugin);
+}
+
 
 
 int joysticks_init ()
@@ -4317,7 +4324,22 @@ int koncpc_main (int argc, char **argv)
             if (!g_headless) {
               if (!CPC.skip_rendering) {
                 uint64_t displayStart = SDL_GetPerformanceCounter();
-                video_display();
+
+                video_display(); // phase A: texture upload + ImGui render (~3ms)
+
+                // Push any partial audio buffer accumulated since the last EC_SOUND_BUFFER.
+                // This tops up the audio queue before the expensive phase B stall
+                // (floating viewports + GL context switches, 0-60ms).
+                {
+                   int partial = static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
+                   if (!CPC.paused && partial > 0) {
+                      audio_push_buffer(pbSndBuffer.get(), partial);
+                      CPC.snd_bufferptr = pbSndBuffer.get();
+                   }
+                }
+
+                video_display_b(); // phase B: floating viewports + window swap
+
                 uint64_t displayEnd = SDL_GetPerformanceCounter();
                 displayTimeAccum += displayEnd - displayStart;
 
@@ -4350,6 +4372,7 @@ int koncpc_main (int argc, char **argv)
       else { // We are paused — still render ImGui UI overlay
          if (!g_headless) {
             video_display();
+            video_display_b();
             video_take_pending_window_screenshot();
          }
          // Drain HTTP deferred actions even while paused (otherwise resume won't work)
@@ -4379,6 +4402,7 @@ int koncpc_main (int argc, char **argv)
          }
          
          video_display(); // Force update UI
+         video_display_b();
          g_repaint_done.store(true);
          g_repaint_pending.store(false);
       }

@@ -137,7 +137,7 @@ void video_get_cpc_size(int& w, int& h) {
   else     { w = 0; h = 0; }
 }
 
-// Called from direct_flip() and swscale_blit() to capture the current frame
+// Called from direct_flip_a() and swscale_blit_a() to capture the current frame
 static void video_capture_if_pending() {
   std::string wss_path;
   {
@@ -314,7 +314,9 @@ void direct_setpal(SDL_Color* c)
   }
 }
 
-void direct_flip(video_plugin* t)
+// Phase A: CPC framebuffer upload + ImGui render + main viewport (~3ms).
+// Called first so audio can be pushed before the expensive phase B.
+void direct_flip_a(video_plugin* t)
 {
   // Upload CPC framebuffer to GL texture
   glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
@@ -350,7 +352,12 @@ void direct_flip(video_plugin* t)
 
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
+}
 
+// Phase B: floating ImGui viewports + window swap (0-60ms depending on viewport count).
+// Runs after audio push so GL stalls don't starve the audio queue.
+void direct_flip_b([[maybe_unused]] video_plugin* t)
+{
   // Multi-viewport: update and render platform windows.
   // Only render when there are actual platform viewports (floating devtools, popups, submenus).
   // When only the main viewport exists (Viewports.Size == 1), skip — saves GL context
@@ -1217,10 +1224,11 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   return pub;
 }
 
-// Common code to all software plugin to display the vid surface after it's been computed.
-void swscale_blit(video_plugin* t)
+// Phase A: common software-scaler blit + ImGui render + main viewport.
+// SDL_Renderer path handles everything itself (including the swap) and returns early.
+void swscale_blit_a(video_plugin* t)
 {
-  // Dispatch to SDL_Renderer path if active
+  // Dispatch to SDL_Renderer path if active — it handles the full render+swap itself.
   if (using_sdl_renderer) {
     sdlr_swscale_blit(t);
     return;
@@ -1262,6 +1270,13 @@ void swscale_blit(video_plugin* t)
 
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
+}
+
+// Phase B: floating ImGui viewports + window swap.
+// SDL_Renderer path already completed everything in swscale_blit_a — return early.
+void swscale_blit_b([[maybe_unused]] video_plugin* t)
+{
+  if (using_sdl_renderer) return;
 
   // Multi-viewport: render platform windows only when they exist
   ImGuiIO& io = ImGui::GetIO();
@@ -1562,7 +1577,7 @@ void seagle_flip(video_plugin* t)
      static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -1608,7 +1623,7 @@ void scale2x_flip([[maybe_unused]] video_plugin* t)
      static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -1815,7 +1830,7 @@ void ascale2x_flip([[maybe_unused]] video_plugin* t)
       static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 
@@ -1862,7 +1877,7 @@ void tv2x_flip([[maybe_unused]] video_plugin* t)
       static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -1905,7 +1920,7 @@ void swbilin_flip([[maybe_unused]] video_plugin* t)
       static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -1995,7 +2010,7 @@ void swbicub_flip([[maybe_unused]] video_plugin* t)
       static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -2046,7 +2061,7 @@ void dotmat_flip([[maybe_unused]] video_plugin* t)
       static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
   if (SDL_MUSTLOCK(scaled))
     SDL_UnlockSurface(scaled);
-  swscale_blit(t);
+  swscale_blit_a(t);
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -2055,33 +2070,33 @@ void dotmat_flip([[maybe_unused]] video_plugin* t)
 
 video_plugin video_headless_plugin()
 {
-  return {"Headless", true, headless_init, headless_setpal, headless_flip, headless_close, 1, 0, 0, 0, 0, 0, 0};
+  return {"Headless", true, headless_init, headless_setpal, headless_flip, headless_close, 1, 0, 0, 0, 0, 0, 0, nullptr};
 }
 
 std::vector<video_plugin> video_plugin_list =
 {
   // Hardware flip version are the same as software ones since switch to SDL2. Kept for compatibility of config, would be nice to not display them in the UI.
-  /* Name                     Hidden Init func      Palette func     Flip func      Close func      Half size  X, Y offsets   X, Y scale  width, height */
-  {"Direct",                  false, direct_init,   direct_setpal,   direct_flip,   direct_close,   1,         0, 0,          0, 0, 0, 0 },
-  {"Direct double",           true,  direct_init,   direct_setpal,   direct_flip,   direct_close,   0,         0, 0,          0, 0, 0, 0 },
-  {"Half size",               true,  direct_init,   direct_setpal,   direct_flip,   direct_close,   1,         0, 0,          0, 0, 0, 0 },
-  {"Double size",             true,  direct_init,   direct_setpal,   direct_flip,   direct_close,   0,         0, 0,          0, 0, 0, 0 },
-  {"Super eagle",             false, swscale_init,  swscale_setpal,  seagle_flip,   swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Scale2x",                 false, swscale_init,  swscale_setpal,  scale2x_flip,  swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Advanced Scale2x",        false, swscale_init,  swscale_setpal,  ascale2x_flip, swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"TV 2x",                   false, swscale_init,  swscale_setpal,  tv2x_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Software bilinear",       false, swscale_init,  swscale_setpal,  swbilin_flip,  swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Software bicubic",        false, swscale_init,  swscale_setpal,  swbicub_flip,  swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Dot matrix",              false, swscale_init,  swscale_setpal,  dotmat_flip,   swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+  /* Name                     Hidden Init func      Palette func     Flip func (phase A)  Close func      Half size  X, Y offsets   X, Y scale  width, height  Flip B (phase B: viewports+swap) */
+  {"Direct",                  false, direct_init,   direct_setpal,   direct_flip_a,   direct_close,   1,         0, 0,          0, 0, 0, 0,  direct_flip_b },
+  {"Direct double",           true,  direct_init,   direct_setpal,   direct_flip_a,   direct_close,   0,         0, 0,          0, 0, 0, 0,  direct_flip_b },
+  {"Half size",               true,  direct_init,   direct_setpal,   direct_flip_a,   direct_close,   1,         0, 0,          0, 0, 0, 0,  direct_flip_b },
+  {"Double size",             true,  direct_init,   direct_setpal,   direct_flip_a,   direct_close,   0,         0, 0,          0, 0, 0, 0,  direct_flip_b },
+  {"Super eagle",             false, swscale_init,  swscale_setpal,  seagle_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
+  {"Scale2x",                 false, swscale_init,  swscale_setpal,  scale2x_flip,    swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
+  {"Advanced Scale2x",        false, swscale_init,  swscale_setpal,  ascale2x_flip,   swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
+  {"TV 2x",                   false, swscale_init,  swscale_setpal,  tv2x_flip,       swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
+  {"Software bilinear",       false, swscale_init,  swscale_setpal,  swbilin_flip,    swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
+  {"Software bicubic",        false, swscale_init,  swscale_setpal,  swbicub_flip,    swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
+  {"Dot matrix",              false, swscale_init,  swscale_setpal,  dotmat_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
 #ifdef HAVE_GL
-  {"OpenGL scaling",          false, glscale_init,  glscale_setpal,  glscale_flip,  glscale_close,  0,         0, 0,          0, 0, 0, 0 },
+  {"OpenGL scaling",          false, glscale_init,  glscale_setpal,  glscale_flip,    glscale_close,  0,         0, 0,          0, 0, 0, 0,  nullptr },
 #endif
   /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
-     No OpenGL context required; no multi-viewport support. */
-  {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,     1,         0, 0,          0, 0, 0, 0 },
-  {"Super eagle (SDL)",       false, sdlr_swscale_init,  swscale_setpal,  seagle_flip,   sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Scale2x (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  scale2x_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
-  {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  sdlr_swscale_close,  1,         0, 0,          0, 0, 0, 0 },
+     No OpenGL context required; no multi-viewport support. flip_b is null. */
+  {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,          1,  0, 0,  0, 0, 0, 0,  nullptr },
+  {"Super eagle (SDL)",       false, sdlr_swscale_init,  swscale_setpal,  seagle_flip,   sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
+  {"Scale2x (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  scale2x_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
+  {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
+  {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
+  {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
 };

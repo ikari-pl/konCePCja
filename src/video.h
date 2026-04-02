@@ -49,6 +49,11 @@ typedef struct video_plugin
   float x_scale, y_scale;
   /* width & height of the surface to display */
   int width, height;
+
+  /* Second phase of flip: renders floating ImGui viewports and swaps the window.
+     Runs after audio push so the 30-60ms stall doesn't starve the audio queue.
+     Null for SDL_Renderer, headless, and non-ImGui GL plugins. */
+  void (*flip_b)(video_plugin* t);
 }
 video_plugin;
 
