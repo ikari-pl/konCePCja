@@ -1467,8 +1467,6 @@ void InputMapper::init()
     CPCkeysFromSDLkeysym[mapping.second] = mapping.first;
   }
 
-  // Ctrl+[ → ESC (standard terminal convention: Ctrl+[ = 0x1B)
-  CPCkeysFromSDLkeysym[SDLK_LEFTBRACKET | MOD_PC_CTRL] = CPC_ESC;
 
   for (const auto &mapping : CPCkeysFromChars) {
     if (SDLkeysymFromCPCkeys.count(mapping.second) != 0) {
@@ -1493,6 +1491,13 @@ CPCScancode InputMapper::CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod) 
     // Ignore sticky modifiers (MOD_PC_NUM and MOD_PC_CAPS)
 
     auto cpc_key = CPCkeysFromSDLkeysym.find(sdl_key);
+    // Ctrl+key fallback: if no explicit Ctrl+key mapping, try the base key.
+    // The Ctrl key itself is pressed separately via its own KEY_DOWN event,
+    // so the CPC sees Control+key in the matrix and the firmware produces
+    // the correct control character (e.g. Ctrl+[ → 0x1B).
+    if (cpc_key == CPCkeysFromSDLkeysym.end() && (sdl_key & MOD_PC_CTRL)) {
+        cpc_key = CPCkeysFromSDLkeysym.find(sdl_key & ~MOD_PC_CTRL);
+    }
     // TODO(sebhz) magic numbers are bad. Get rid of the 0xff.
     if (cpc_key == CPCkeysFromSDLkeysym.end()) return 0xff;
 
