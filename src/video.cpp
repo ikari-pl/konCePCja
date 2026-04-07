@@ -57,6 +57,26 @@
 #include <GL/gl.h>
 #endif
 
+// GL 2.0+/3.0+ types and constants needed by CRT shaders.
+// On macOS, <OpenGL/gl3.h> provides these. On Windows/Linux with GL 1.1
+// headers only, we define them here.
+#ifndef GL_FRAGMENT_SHADER
+typedef char GLchar;
+typedef ptrdiff_t GLsizeiptr;
+#define GL_FRAGMENT_SHADER                0x8B30
+#define GL_VERTEX_SHADER                  0x8B31
+#define GL_COMPILE_STATUS                 0x8B81
+#define GL_LINK_STATUS                    0x8B82
+#define GL_INFO_LOG_LENGTH                0x8B84
+#define GL_ARRAY_BUFFER                   0x8892
+#define GL_STATIC_DRAW                    0x88E4
+#define GL_TEXTURE0                       0x84C0
+#define GL_FRAMEBUFFER                    0x8D40
+#define GL_COLOR_ATTACHMENT0              0x8CE0
+#define GL_FRAMEBUFFER_COMPLETE           0x8CD5
+#define GL_CLAMP_TO_EDGE                  0x812F
+#endif
+
 SDL_Window* mainSDLWindow = nullptr;
 SDL_Renderer* renderer = nullptr;
 SDL_Texture* texture = nullptr;
@@ -69,9 +89,7 @@ static SDL_Texture* cpc_sdl_texture = nullptr;
 // Which ImGui rendering backend is active
 static bool using_sdl_renderer = false;
 // CRT FBO texture (non-zero when CRT shader plugin is active, declared in CRT section)
-#ifdef __APPLE__
 static GLuint crt_fbo_tex = 0;
-#endif
 
 // Returns path for imgui.ini in the same directory as koncepcja.cfg.
 // Uses a static string so the c_str() pointer remains valid for io.IniFilename.
@@ -133,10 +151,8 @@ void video_request_window_screenshot(const std::string& path) {
 uintptr_t video_get_cpc_texture() {
   if (cpc_sdl_texture)
     return reinterpret_cast<uintptr_t>(cpc_sdl_texture);
-#ifdef __APPLE__
   if (crt_fbo_tex)
     return static_cast<uintptr_t>(crt_fbo_tex);
-#endif
   return static_cast<uintptr_t>(cpc_gl_texture);
 }
 
@@ -436,9 +452,64 @@ void direct_close()
 // a shader program + FBO.  crt_flip_a() renders CPC→FBO with the CRT shader,
 // then feeds the FBO texture to ImGui's AddImage.  flip_b is shared with direct.
 
-#ifdef __APPLE__
-// macOS: <OpenGL/gl3.h> provides all GL 3.2 Core functions directly.
-// Other platforms: TODO — needs a GL 2.0+ loader (SDL_GL_GetProcAddress).
+// Portable GL 2.0+/3.0+ function loader for CRT shaders.
+// On macOS, <OpenGL/gl3.h> provides these as direct symbols.
+// On Windows/Linux, loaded via SDL_GL_GetProcAddress at runtime.
+static struct CrtGL {
+    GLuint (*CreateShader)(GLenum) = nullptr;
+    void   (*ShaderSource)(GLuint, GLsizei, const GLchar* const*, const GLint*) = nullptr;
+    void   (*CompileShader)(GLuint) = nullptr;
+    void   (*GetShaderiv)(GLuint, GLenum, GLint*) = nullptr;
+    void   (*GetShaderInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*) = nullptr;
+    void   (*DeleteShader)(GLuint) = nullptr;
+    GLuint (*CreateProgram)() = nullptr;
+    void   (*AttachShader)(GLuint, GLuint) = nullptr;
+    void   (*LinkProgram)(GLuint) = nullptr;
+    void   (*GetProgramiv)(GLuint, GLenum, GLint*) = nullptr;
+    void   (*GetProgramInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*) = nullptr;
+    void   (*UseProgram)(GLuint) = nullptr;
+    void   (*DeleteProgram)(GLuint) = nullptr;
+    GLint  (*GetUniformLocation)(GLuint, const GLchar*) = nullptr;
+    void   (*Uniform1i)(GLint, GLint) = nullptr;
+    void   (*Uniform1f)(GLint, GLfloat) = nullptr;
+    void   (*Uniform2f)(GLint, GLfloat, GLfloat) = nullptr;
+    GLint  (*GetAttribLocation)(GLuint, const GLchar*) = nullptr;
+    void   (*EnableVertexAttribArray)(GLuint) = nullptr;
+    void   (*VertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*) = nullptr;
+    void   (*GenVertexArrays)(GLsizei, GLuint*) = nullptr;
+    void   (*BindVertexArray)(GLuint) = nullptr;
+    void   (*DeleteVertexArrays)(GLsizei, const GLuint*) = nullptr;
+    void   (*GenBuffers)(GLsizei, GLuint*) = nullptr;
+    void   (*BindBuffer)(GLenum, GLuint) = nullptr;
+    void   (*BufferData)(GLenum, GLsizeiptr, const void*, GLenum) = nullptr;
+    void   (*DeleteBuffers)(GLsizei, const GLuint*) = nullptr;
+    void   (*GenFramebuffers)(GLsizei, GLuint*) = nullptr;
+    void   (*BindFramebuffer)(GLenum, GLuint) = nullptr;
+    void   (*FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint) = nullptr;
+    void   (*DeleteFramebuffers)(GLsizei, const GLuint*) = nullptr;
+    GLenum (*CheckFramebufferStatus)(GLenum) = nullptr;
+    void   (*ActiveTexture)(GLenum) = nullptr;
+
+    bool load() {
+        #define CRT_LOAD(name) \
+            name = reinterpret_cast<decltype(name)>(SDL_GL_GetProcAddress("gl" #name)); \
+            if (!name) { LOG_ERROR("CRT: failed to load gl" #name); return false; }
+        CRT_LOAD(CreateShader) CRT_LOAD(ShaderSource) CRT_LOAD(CompileShader)
+        CRT_LOAD(GetShaderiv) CRT_LOAD(GetShaderInfoLog) CRT_LOAD(DeleteShader)
+        CRT_LOAD(CreateProgram) CRT_LOAD(AttachShader) CRT_LOAD(LinkProgram)
+        CRT_LOAD(GetProgramiv) CRT_LOAD(GetProgramInfoLog) CRT_LOAD(UseProgram)
+        CRT_LOAD(DeleteProgram) CRT_LOAD(GetUniformLocation)
+        CRT_LOAD(Uniform1i) CRT_LOAD(Uniform1f) CRT_LOAD(Uniform2f)
+        CRT_LOAD(GetAttribLocation) CRT_LOAD(EnableVertexAttribArray)
+        CRT_LOAD(VertexAttribPointer)
+        CRT_LOAD(GenVertexArrays) CRT_LOAD(BindVertexArray) CRT_LOAD(DeleteVertexArrays)
+        CRT_LOAD(GenBuffers) CRT_LOAD(BindBuffer) CRT_LOAD(BufferData) CRT_LOAD(DeleteBuffers)
+        CRT_LOAD(GenFramebuffers) CRT_LOAD(BindFramebuffer) CRT_LOAD(FramebufferTexture2D)
+        CRT_LOAD(DeleteFramebuffers) CRT_LOAD(CheckFramebufferStatus) CRT_LOAD(ActiveTexture)
+        #undef CRT_LOAD
+        return true;
+    }
+} gl3;
 
 static int crt_tier = -1;   // 0=Basic, 1=Full, 2=Lottes; -1=inactive
 static GLuint crt_program = 0;
@@ -698,16 +769,16 @@ void main() {
 // ── Shader compilation ─────────────────────────────────────────────────────
 
 static GLuint crt_compile(GLenum type, const char* src) {
-    GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
-    glCompileShader(s);
+    GLuint s = gl3.CreateShader(type);
+    gl3.ShaderSource(s, 1, &src, nullptr);
+    gl3.CompileShader(s);
     GLint ok = 0;
-    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    gl3.GetShaderiv(s, GL_COMPILE_STATUS, &ok);
     if (!ok) {
         char buf[512];
-        glGetShaderInfoLog(s, sizeof(buf), nullptr, buf);
+        gl3.GetShaderInfoLog(s, sizeof(buf), nullptr, buf);
         LOG_ERROR("CRT shader compile: " << buf);
-        glDeleteShader(s);
+        gl3.DeleteShader(s);
         return 0;
     }
     return s;
@@ -717,20 +788,20 @@ static GLuint crt_link(const char* vert_src, const char* frag_src) {
     GLuint vs = crt_compile(GL_VERTEX_SHADER, vert_src);
     if (!vs) return 0;
     GLuint fs = crt_compile(GL_FRAGMENT_SHADER, frag_src);
-    if (!fs) { glDeleteShader(vs); return 0; }
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
-    glDeleteShader(vs);
-    glDeleteShader(fs);
+    if (!fs) { gl3.DeleteShader(vs); return 0; }
+    GLuint prog = gl3.CreateProgram();
+    gl3.AttachShader(prog, vs);
+    gl3.AttachShader(prog, fs);
+    gl3.LinkProgram(prog);
+    gl3.DeleteShader(vs);
+    gl3.DeleteShader(fs);
     GLint ok = 0;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    gl3.GetProgramiv(prog, GL_LINK_STATUS, &ok);
     if (!ok) {
         char buf[512];
-        glGetProgramInfoLog(prog, sizeof(buf), nullptr, buf);
+        gl3.GetProgramInfoLog(prog, sizeof(buf), nullptr, buf);
         LOG_ERROR("CRT program link: " << buf);
-        glDeleteProgram(prog);
+        gl3.DeleteProgram(prog);
         return 0;
     }
     return prog;
@@ -741,7 +812,7 @@ static GLuint crt_link(const char* vert_src, const char* frag_src) {
 static void crt_ensure_fbo(int w, int h) {
     if (w == crt_fbo_w && h == crt_fbo_h && crt_fbo) return;
     if (w <= 0 || h <= 0) return;
-    if (crt_fbo) { glDeleteFramebuffers(1, &crt_fbo); crt_fbo = 0; }
+    if (crt_fbo) { gl3.DeleteFramebuffers(1, &crt_fbo); crt_fbo = 0; }
     if (crt_fbo_tex) { glDeleteTextures(1, &crt_fbo_tex); crt_fbo_tex = 0; }
     glGenTextures(1, &crt_fbo_tex);
     glBindTexture(GL_TEXTURE_2D, crt_fbo_tex);
@@ -750,14 +821,14 @@ static void crt_ensure_fbo(int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glGenFramebuffers(1, &crt_fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, crt_fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, crt_fbo_tex, 0);
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    gl3.GenFramebuffers(1, &crt_fbo);
+    gl3.BindFramebuffer(GL_FRAMEBUFFER, crt_fbo);
+    gl3.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, crt_fbo_tex, 0);
+    GLenum status = gl3.CheckFramebufferStatus(GL_FRAMEBUFFER);
     if (status != GL_FRAMEBUFFER_COMPLETE) {
         LOG_ERROR("CRT FBO incomplete: 0x" << std::hex << status);
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl3.BindFramebuffer(GL_FRAMEBUFFER, 0);
     crt_fbo_w = w;
     crt_fbo_h = h;
 }
@@ -767,6 +838,11 @@ static void crt_ensure_fbo(int w, int h) {
 // Set up CRT shader resources WITHOUT creating window/GL/ImGui.
 // Used by both full init (crt_init_common) and lightweight switch.
 static bool crt_setup_resources(int tier) {
+    if (!gl3.load()) {
+        LOG_ERROR("CRT: failed to load GL3 function pointers");
+        return false;
+    }
+
     crt_tier = tier;
     const char* frag = (tier == 0) ? crt_frag_basic
                      : (tier == 1) ? crt_frag_full
@@ -779,15 +855,15 @@ static bool crt_setup_resources(int tier) {
     }
 
     // Uniform locations
-    crt_u_texture    = glGetUniformLocation(crt_program, "uTexture");
-    crt_u_input_size = glGetUniformLocation(crt_program, "uInputSize");
-    crt_u_output_size = glGetUniformLocation(crt_program, "uOutputSize");
+    crt_u_texture    = gl3.GetUniformLocation(crt_program, "uTexture");
+    crt_u_input_size = gl3.GetUniformLocation(crt_program, "uInputSize");
+    crt_u_output_size = gl3.GetUniformLocation(crt_program, "uOutputSize");
     if (tier == 1) {
-        crt_u_curvature = glGetUniformLocation(crt_program, "uCurvature");
-        crt_u_scanline  = glGetUniformLocation(crt_program, "uScanline");
-        crt_u_mask      = glGetUniformLocation(crt_program, "uMask");
-        crt_u_bloom     = glGetUniformLocation(crt_program, "uBloom");
-        crt_u_vignette  = glGetUniformLocation(crt_program, "uVignette");
+        crt_u_curvature = gl3.GetUniformLocation(crt_program, "uCurvature");
+        crt_u_scanline  = gl3.GetUniformLocation(crt_program, "uScanline");
+        crt_u_mask      = gl3.GetUniformLocation(crt_program, "uMask");
+        crt_u_bloom     = gl3.GetUniformLocation(crt_program, "uBloom");
+        crt_u_vignette  = gl3.GetUniformLocation(crt_program, "uVignette");
     }
 
     // Fullscreen quad (position + texcoord) — reuse if already created
@@ -798,19 +874,19 @@ static bool crt_setup_resources(int tier) {
             -1.f,  1.f,  0.f, 0.f,
              1.f,  1.f,  1.f, 0.f,
         };
-        glGenVertexArrays(1, &crt_vao);
-        glGenBuffers(1, &crt_vbo);
-        glBindVertexArray(crt_vao);
-        glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
-        GLint aPos = glGetAttribLocation(crt_program, "aPos");
-        GLint aTex = glGetAttribLocation(crt_program, "aTexCoord");
-        glEnableVertexAttribArray(aPos);
-        glVertexAttribPointer(aPos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
-        glEnableVertexAttribArray(aTex);
-        glVertexAttribPointer(aTex, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+        gl3.GenVertexArrays(1, &crt_vao);
+        gl3.GenBuffers(1, &crt_vbo);
+        gl3.BindVertexArray(crt_vao);
+        gl3.BindBuffer(GL_ARRAY_BUFFER, crt_vbo);
+        gl3.BufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        GLint aPos = gl3.GetAttribLocation(crt_program, "aPos");
+        GLint aTex = gl3.GetAttribLocation(crt_program, "aTexCoord");
+        gl3.EnableVertexAttribArray(aPos);
+        gl3.VertexAttribPointer(aPos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+        gl3.EnableVertexAttribArray(aTex);
+        gl3.VertexAttribPointer(aTex, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
                               reinterpret_cast<void*>(2 * sizeof(float)));
-        glBindVertexArray(0);
+        gl3.BindVertexArray(0);
     }
 
     // CPC texture filtering: LINEAR for Basic/Full, NEAREST for Lottes
@@ -823,10 +899,10 @@ static bool crt_setup_resources(int tier) {
 
 // Tear down CRT shader resources WITHOUT destroying window/GL/ImGui.
 static void crt_teardown_resources() {
-    if (crt_program) { glDeleteProgram(crt_program); crt_program = 0; }
-    if (crt_vao) { glDeleteVertexArrays(1, &crt_vao); crt_vao = 0; }
-    if (crt_vbo) { glDeleteBuffers(1, &crt_vbo); crt_vbo = 0; }
-    if (crt_fbo) { glDeleteFramebuffers(1, &crt_fbo); crt_fbo = 0; }
+    if (crt_program) { gl3.DeleteProgram(crt_program); crt_program = 0; }
+    if (crt_vao) { gl3.DeleteVertexArrays(1, &crt_vao); crt_vao = 0; }
+    if (crt_vbo) { gl3.DeleteBuffers(1, &crt_vbo); crt_vbo = 0; }
+    if (crt_fbo) { gl3.DeleteFramebuffers(1, &crt_fbo); crt_fbo = 0; }
     if (crt_fbo_tex) { glDeleteTextures(1, &crt_fbo_tex); crt_fbo_tex = 0; }
     crt_fbo_w = crt_fbo_h = 0;
     crt_tier = -1;
@@ -887,34 +963,34 @@ void crt_flip_a(video_plugin* t) {
     crt_ensure_fbo(fbo_w, fbo_h);
 
     // Render CPC through CRT shader into FBO
-    glBindFramebuffer(GL_FRAMEBUFFER, crt_fbo);
+    gl3.BindFramebuffer(GL_FRAMEBUFFER, crt_fbo);
     glViewport(0, 0, crt_fbo_w, crt_fbo_h);
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    glUseProgram(crt_program);
-    glActiveTexture(GL_TEXTURE0);
+    gl3.UseProgram(crt_program);
+    gl3.ActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
-    glUniform1i(crt_u_texture, 0);
+    gl3.Uniform1i(crt_u_texture, 0);
     // Pass true CPC resolution, not doubled surface size.
     // At scale>1 the surface is 768×540 (doubled scanlines) but the CPC
     // only has 270 unique scanlines.  Using the real count prevents moiré
     // from the shader's beam/scanline profile beating against the doubling.
     int cpc_h = t->half_pixels ? vid->h : vid->h / 2;
-    glUniform2f(crt_u_input_size, static_cast<float>(vid->w), static_cast<float>(cpc_h));
-    glUniform2f(crt_u_output_size, static_cast<float>(crt_fbo_w), static_cast<float>(crt_fbo_h));
+    gl3.Uniform2f(crt_u_input_size, static_cast<float>(vid->w), static_cast<float>(cpc_h));
+    gl3.Uniform2f(crt_u_output_size, static_cast<float>(crt_fbo_w), static_cast<float>(crt_fbo_h));
     if (crt_tier == 1) {
-        glUniform1f(crt_u_curvature, 0.22f);
-        glUniform1f(crt_u_scanline, 0.7f);
-        glUniform1f(crt_u_mask, 0.7f);
-        glUniform1f(crt_u_bloom, 0.15f);
-        glUniform1f(crt_u_vignette, 0.4f);
+        gl3.Uniform1f(crt_u_curvature, 0.22f);
+        gl3.Uniform1f(crt_u_scanline, 0.7f);
+        gl3.Uniform1f(crt_u_mask, 0.7f);
+        gl3.Uniform1f(crt_u_bloom, 0.15f);
+        gl3.Uniform1f(crt_u_vignette, 0.4f);
     }
-    glBindVertexArray(crt_vao);
+    gl3.BindVertexArray(crt_vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-    glUseProgram(0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl3.BindVertexArray(0);
+    gl3.UseProgram(0);
+    gl3.BindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // ImGui frame — use CRT FBO texture positioned like Direct
     ImGui_ImplOpenGL3_NewFrame();
@@ -966,13 +1042,6 @@ bool video_try_lightweight_switch() {
     video_set_palette();
     return true;
 }
-
-#else // !__APPLE__
-
-// Non-macOS stub: CRT shaders not available, always fall back to full reinit.
-bool video_try_lightweight_switch() { return false; }
-
-#endif // __APPLE__
 
 /* ------------------------------------------------------------------------------------ */
 /* SDL_Renderer video plugin (D3D11 on Windows, no OpenGL required) ------------------- */
@@ -2675,12 +2744,10 @@ std::vector<video_plugin> video_plugin_list =
 #ifdef HAVE_GL
   {"OpenGL scaling",          false, glscale_init,  glscale_setpal,  glscale_flip,    glscale_close,  0,         0, 0,          0, 0, 0, 0,  nullptr },
 #endif
-#ifdef __APPLE__
-  /* CRT shader plugins — require GL 3.2 Core (macOS via gl3.h). */
+  /* CRT shader plugins — require GL 3.2 Core (loaded via SDL_GL_GetProcAddress). */
   {"CRT Basic",               false, crt_basic_init,  direct_setpal,  crt_flip_a,  crt_close,  1,  0, 0,  0, 0, 0, 0,  direct_flip_b },
   {"CRT Full",                false, crt_full_init,   direct_setpal,  crt_flip_a,  crt_close,  1,  0, 0,  0, 0, 0, 0,  direct_flip_b },
   {"CRT Lottes",              false, crt_lottes_init, direct_setpal,  crt_flip_a,  crt_close,  1,  0, 0,  0, 0, 0, 0,  direct_flip_b },
-#endif
   /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
      No OpenGL context required; no multi-viewport support. flip_b is null. */
   {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,          1,  0, 0,  0, 0, 0, 0,  nullptr },
