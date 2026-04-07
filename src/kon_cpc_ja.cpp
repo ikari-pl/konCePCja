@@ -1989,6 +1989,7 @@ int video_init ()
          int new_h = CPC.scr_crt_aspect
                    ? static_cast<int>(new_w * 3.f / 4.f)
                    : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+         new_h += video_get_topbar_height() + video_get_bottombar_height();
          SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
       }
    }
