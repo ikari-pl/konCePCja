@@ -368,8 +368,16 @@ void direct_setpal(SDL_Color* c)
 // Called first so audio can be pushed before the expensive phase B.
 void direct_flip_a(video_plugin* t)
 {
-  // Upload CPC framebuffer to GL texture
+  // Recompute display area each frame (handles window resize, 4:3 aspect)
+  compute_scale(t, vid->w, vid->h);
+
+  // Update texture filtering: LINEAR for 4:3 stretch, NEAREST for square pixels
+  GLenum filter = CPC.scr_crt_aspect ? GL_LINEAR : GL_NEAREST;
   glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+
+  // Upload CPC framebuffer to GL texture
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
                   GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
 
@@ -1109,6 +1117,13 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
 
 void sdlr_flip(video_plugin* t)
 {
+  // Recompute display area each frame (handles window resize, 4:3 aspect)
+  compute_scale(t, vid->w, vid->h);
+
+  // Update texture filtering: LINEAR for 4:3 stretch, NEAREST for square pixels
+  SDL_SetTextureScaleMode(cpc_sdl_texture,
+      CPC.scr_crt_aspect ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST);
+
   // Upload CPC framebuffer to SDL texture
   SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
 

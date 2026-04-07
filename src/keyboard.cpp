@@ -1467,6 +1467,9 @@ void InputMapper::init()
     CPCkeysFromSDLkeysym[mapping.second] = mapping.first;
   }
 
+  // Ctrl+[ → ESC (standard terminal convention: Ctrl+[ = 0x1B)
+  CPCkeysFromSDLkeysym[SDLK_LEFTBRACKET | MOD_PC_CTRL] = CPC_ESC;
+
   for (const auto &mapping : CPCkeysFromChars) {
     if (SDLkeysymFromCPCkeys.count(mapping.second) != 0) {
       PCKey sdl_moddedkey = SDLkeysymFromCPCkeys[mapping.second];

@@ -1912,6 +1912,9 @@ static void imgui_render_options()
       if (ImGui::Checkbox("Printer Capture", &printer)) {
         CPC.printer = printer ? 1 : 0;
       }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Saves CPC printer output to:\n%s", CPC.printer_file.c_str());
+      }
 
       bool sw = g_smartwatch.enabled;
       if (ImGui::Checkbox("SmartWatch RTC", &sw)) { g_smartwatch.enabled = sw; }
