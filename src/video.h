@@ -73,6 +73,10 @@ int video_get_bottombar_height();
 
 video_plugin video_headless_plugin();
 
+// Lightweight video plugin switch (Direct ↔ CRT) without window/GL/ImGui teardown.
+// Returns true if handled; false if full reinit is needed.
+bool video_try_lightweight_switch();
+
 // CPC framebuffer texture/size for docked workspace mode.
 // Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to ImTextureID.
 uintptr_t video_get_cpc_texture();

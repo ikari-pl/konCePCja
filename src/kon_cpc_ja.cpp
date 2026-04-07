@@ -1926,7 +1926,9 @@ int video_init ()
    vid_plugin=&video_plugin_list[CPC.scr_style];
    LOG_DEBUG("video_init: vid_plugin = " << vid_plugin->name)
 
-   back_surface=vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
+   // Always init at scale=2 for best surface quality (768×540, doubled scanlines).
+   // The actual display size is controlled by scr_scale via compute_scale.
+   back_surface=vid_plugin->init(vid_plugin, 2, CPC.scr_window==0);
 
    if (!back_surface) {
       // OpenGL may be unavailable (e.g. Intel HD 3000 only exposes GL 1.1).
@@ -1937,7 +1939,7 @@ int video_init ()
          if (std::string(video_plugin_list[i].name).find("(SDL)") != std::string::npos) {
             vid_plugin = &video_plugin_list[i];
             LOG_INFO("Falling back to: " << vid_plugin->name);
-            back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, CPC.scr_window==0);
+            back_surface = vid_plugin->init(vid_plugin, 2, CPC.scr_window==0);
             if (back_surface) {
                CPC.scr_style = static_cast<int>(i);
                break;
@@ -1977,6 +1979,19 @@ int video_init ()
    CPC.scr_base = static_cast<byte *>(back_surface->pixels); // memory address of back buffer
 
    crtc_init();
+
+   // Resize window to match user's chosen scale (init always creates at 2x)
+   if (CPC.scr_scale > 0 && mainSDLWindow) {
+      static const float sf[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
+      if (CPC.scr_scale < sizeof(sf)/sizeof(sf[0])) {
+         float f = sf[CPC.scr_scale];
+         int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
+         int new_h = CPC.scr_crt_aspect
+                   ? static_cast<int>(new_w * 3.f / 4.f)
+                   : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+         SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
+      }
+   }
 
       return 0;
 }
@@ -2211,6 +2226,7 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
 
    CPC.scr_scale = conf.getIntValue("video", "scr_scale", 2);
    CPC.scr_preserve_aspect_ratio = conf.getIntValue("video", "scr_preserve_aspect_ratio", 1);
+   CPC.scr_crt_aspect = conf.getIntValue("video", "scr_crt_aspect", 1);
    CPC.scr_style = conf.getIntValue("video", "scr_style", 1);
    if (CPC.scr_style >= video_plugin_list.size()) {
       CPC.scr_style = DEFAULT_VIDEO_PLUGIN;
@@ -2363,6 +2379,7 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
 
    conf.setIntValue("video", "scr_scale", CPC.scr_scale);
    conf.setIntValue("video", "scr_preserve_aspect_ratio", CPC.scr_preserve_aspect_ratio);
+   conf.setIntValue("video", "scr_crt_aspect", CPC.scr_crt_aspect);
    conf.setIntValue("video", "scr_style", CPC.scr_style);
    conf.setIntValue("video", "scr_oglfilter", CPC.scr_oglfilter);
    conf.setIntValue("video", "scr_oglscanlines", CPC.scr_oglscanlines);
@@ -3372,7 +3389,7 @@ int koncpc_main (int argc, char **argv)
       // In headless mode, force the headless video plugin (offscreen surface only)
       static video_plugin hp = video_headless_plugin();
       vid_plugin = &hp;
-      back_surface = vid_plugin->init(vid_plugin, CPC.scr_scale, false);
+      back_surface = vid_plugin->init(vid_plugin, 2, false);
       if (!back_surface) {
          fprintf(stderr, "headless video_init() failed. Aborting.\n");
          _exit(-1);
@@ -4378,6 +4395,39 @@ int koncpc_main (int argc, char **argv)
          // Drain HTTP deferred actions even while paused (otherwise resume won't work)
          if (g_m4_http.is_running()) g_m4_http.drain_pending();
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+      }
+
+      // Deferred video plugin switch (triggered by Options combo).
+      // Lightweight path swaps CRT resources only; full path tears down window/GL.
+      if (imgui_state.video_reinit_pending) {
+         imgui_state.video_reinit_pending = false;
+         if (!video_try_lightweight_switch()) {
+            // Full reinit — preserve window geometry so bars don't shrink the image
+            int saved_w = 0, saved_h = 0, saved_x = 0, saved_y = 0;
+            if (mainSDLWindow) {
+               SDL_GetWindowSize(mainSDLWindow, &saved_w, &saved_h);
+               SDL_GetWindowPosition(mainSDLWindow, &saved_x, &saved_y);
+            }
+            audio_pause();
+            SDL_Delay(20);
+            video_shutdown();
+            if (video_init()) {
+               fprintf(stderr, "video_init() failed after plugin change. Aborting.\n");
+               cleanExit(-1);
+            }
+            // Only restore window geometry if the output size didn't change
+            // (i.e. only the plugin changed, not scale/fullscreen)
+            bool size_changed = (CPC.scr_scale != imgui_state.old_cpc_settings.scr_scale)
+                             || (CPC.scr_window != imgui_state.old_cpc_settings.scr_window);
+            if (saved_w > 0 && mainSDLWindow && !size_changed) {
+               SDL_SetWindowSize(mainSDLWindow, saved_w, saved_h);
+               SDL_SetWindowPosition(mainSDLWindow, saved_x, saved_y);
+            }
+#ifdef __APPLE__
+            koncpc_setup_macos_menu();
+#endif
+            audio_resume();
+         }
       }
 
       // Handle IPC "repaint" — re-render frame from RAM without Z80 advancement

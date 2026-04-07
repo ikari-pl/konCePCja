@@ -68,6 +68,10 @@ static GLuint cpc_gl_texture = 0;
 static SDL_Texture* cpc_sdl_texture = nullptr;
 // Which ImGui rendering backend is active
 static bool using_sdl_renderer = false;
+// CRT FBO texture (non-zero when CRT shader plugin is active, declared in CRT section)
+#ifdef __APPLE__
+static GLuint crt_fbo_tex = 0;
+#endif
 
 // Returns path for imgui.ini in the same directory as koncepcja.cfg.
 // Uses a static string so the c_str() pointer remains valid for io.IniFilename.
@@ -129,6 +133,10 @@ void video_request_window_screenshot(const std::string& path) {
 uintptr_t video_get_cpc_texture() {
   if (cpc_sdl_texture)
     return reinterpret_cast<uintptr_t>(cpc_sdl_texture);
+#ifdef __APPLE__
+  if (crt_fbo_tex)
+    return static_cast<uintptr_t>(crt_fbo_tex);
+#endif
   return static_cast<uintptr_t>(cpc_gl_texture);
 }
 
@@ -211,20 +219,46 @@ void compute_scale(video_plugin* t, int w, int h)
     win_height = devtools_cpc_height;
   }
   if (CPC.scr_preserve_aspect_ratio != 0) {
-    float win_x_scale, win_y_scale;
-    win_x_scale = w/static_cast<float>(win_width);
-    win_y_scale = h/static_cast<float>(win_height);
-    float scale = max(win_x_scale, win_y_scale);
-    t->width=w/scale;
-    t->height=h/scale;
-    float x_offset = 0.5*(win_width-t->width);
-    float y_offset = 0.5*(win_height-t->height);
+    // Fixed scale (1x-4x): display at exact pixel multiple, centered.
+    // Fit (scr_scale=0): fill available space preserving aspect ratio.
+    int disp_w, disp_h;
+    // Scale factor table: index 0 = Fit (unused here), 1+ = fixed multipliers
+    static const float scale_factors[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
+    // Target aspect ratio: 4:3 for CRT monitors, or raw pixel ratio
+    float target_aspect = CPC.scr_crt_aspect
+        ? (4.f / 3.f)
+        : (static_cast<float>(w) / h);
+    if (CPC.scr_scale > 0 && CPC.scr_scale < sizeof(scale_factors)/sizeof(scale_factors[0])) {
+      // Fixed scale: exact pixel multiple. If window is smaller, image is
+      // cropped (centered) — never scaled down.  Options resizes the window
+      // to fit when the user picks a new scale.
+      float sf = scale_factors[CPC.scr_scale];
+      disp_w = static_cast<int>(CPC_RENDER_WIDTH * sf);
+      disp_h = static_cast<int>(disp_w / target_aspect);
+    } else {
+      // Fit window: fill available space preserving target aspect ratio.
+      float win_aspect = static_cast<float>(win_width) / win_height;
+      if (win_aspect > target_aspect) {
+        // Window wider than target — height-limited
+        disp_h = win_height;
+        disp_w = static_cast<int>(win_height * target_aspect);
+      } else {
+        // Window taller than target — width-limited
+        disp_w = win_width;
+        disp_h = static_cast<int>(win_width / target_aspect);
+      }
+    }
+    t->width = disp_w;
+    t->height = disp_h;
+    // Center in available area — offset can be negative (cropping)
+    float x_offset = 0.5f * (win_width - t->width);
+    float y_offset = 0.5f * (win_height - t->height);
     if (devtools_panel_width > 0) x_offset = 0;
-    if (topbar_height > 0) y_offset = static_cast<float>(topbar_height);
-    t->x_offset=x_offset;
-    t->y_offset=y_offset;
-    t->x_scale=scale;
-    t->y_scale=scale;
+    if (topbar_height > 0) y_offset += static_cast<float>(topbar_height);
+    t->x_offset = x_offset;
+    t->y_offset = y_offset;
+    t->x_scale = w / static_cast<float>(disp_w);
+    t->y_scale = h / static_cast<float>(disp_h);
   } else {
     t->x_offset=0;
     t->y_offset=0;
@@ -248,7 +282,7 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
   mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
-      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
@@ -391,6 +425,551 @@ void direct_close()
 }
 
 /* ------------------------------------------------------------------------------------ */
+/* CRT shader plugins (GL 3.2 Core required) ----------------------------------------- */
+/* ------------------------------------------------------------------------------------ */
+// CRT shader plugins apply post-processing to the CPC framebuffer:
+//   Basic  — barrel distortion + scanlines + RGB phosphor mask
+//   Full   — Basic + bloom + vignette + configurable parameters
+//   Lottes — Timothy Lottes' CRT shader (public domain) with Gaussian beam profile
+//
+// Architecture: direct_init() creates the GL 3.2 context + ImGui, then CRT adds
+// a shader program + FBO.  crt_flip_a() renders CPC→FBO with the CRT shader,
+// then feeds the FBO texture to ImGui's AddImage.  flip_b is shared with direct.
+
+#ifdef __APPLE__
+// macOS: <OpenGL/gl3.h> provides all GL 3.2 Core functions directly.
+// Other platforms: TODO — needs a GL 2.0+ loader (SDL_GL_GetProcAddress).
+
+static int crt_tier = -1;   // 0=Basic, 1=Full, 2=Lottes; -1=inactive
+static GLuint crt_program = 0;
+static GLuint crt_vao = 0, crt_vbo = 0;
+static GLuint crt_fbo = 0;  // crt_fbo_tex declared at file top for video_get_cpc_texture()
+static int crt_fbo_w = 0, crt_fbo_h = 0;
+
+// Uniform locations
+static GLint crt_u_texture = -1, crt_u_input_size = -1, crt_u_output_size = -1;
+// Full-tier tunables
+static GLint crt_u_curvature = -1, crt_u_scanline = -1, crt_u_mask = -1;
+static GLint crt_u_bloom = -1, crt_u_vignette = -1;
+
+// ── GLSL sources ───────────────────────────────────────────────────────────
+
+static const char* crt_vert_src = R"(
+#version 150
+in vec2 aPos;
+in vec2 aTexCoord;
+out vec2 vTexCoord;
+void main() {
+    gl_Position = vec4(aPos, 0.0, 1.0);
+    vTexCoord = aTexCoord;
+}
+)";
+
+static const char* crt_frag_basic = R"(
+#version 150
+in vec2 vTexCoord;
+out vec4 fragColor;
+uniform sampler2D uTexture;
+uniform vec2 uInputSize;
+uniform vec2 uOutputSize;
+
+vec2 barrel(vec2 uv, float k) {
+    vec2 cc = uv - 0.5;
+    float dist = dot(cc, cc);
+    return uv + cc * dist * k;
+}
+
+void main() {
+    vec2 uv = barrel(vTexCoord, 0.22);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    vec3 col = texture(uTexture, uv).rgb;
+
+    // Scanlines tied to source resolution
+    float scanline = sin(uv.y * uInputSize.y * 3.14159265) * 0.5 + 0.5;
+    col *= mix(1.0, scanline, 0.35);
+
+    // RGB phosphor mask at output pixel density
+    vec2 outPos = uv * uOutputSize;
+    float m = mod(outPos.x, 3.0);
+    vec3 mask = vec3(
+        m < 1.0 ? 1.0 : 0.75,
+        (m >= 1.0 && m < 2.0) ? 1.0 : 0.75,
+        m >= 2.0 ? 1.0 : 0.75);
+    col *= mask;
+    col *= 1.3;
+    fragColor = vec4(col, 1.0);
+}
+)";
+
+static const char* crt_frag_full = R"(
+#version 150
+in vec2 vTexCoord;
+out vec4 fragColor;
+uniform sampler2D uTexture;
+uniform vec2 uInputSize;
+uniform vec2 uOutputSize;
+uniform float uCurvature;
+uniform float uScanline;
+uniform float uMask;
+uniform float uBloom;
+uniform float uVignette;
+
+vec2 barrel(vec2 uv, float k) {
+    vec2 cc = uv - 0.5;
+    float dist = dot(cc, cc);
+    return uv + cc * dist * k;
+}
+
+vec3 sampleBloom(vec2 uv) {
+    vec2 t = 1.0 / uInputSize;
+    vec3 s = vec3(0.0);
+    s += texture(uTexture, uv + vec2(-t.x, 0.0)).rgb * 0.15;
+    s += texture(uTexture, uv + vec2( t.x, 0.0)).rgb * 0.15;
+    s += texture(uTexture, uv + vec2(0.0, -t.y)).rgb * 0.15;
+    s += texture(uTexture, uv + vec2(0.0,  t.y)).rgb * 0.15;
+    s += texture(uTexture, uv + vec2(-t.x,-t.y)).rgb * 0.1;
+    s += texture(uTexture, uv + vec2( t.x,-t.y)).rgb * 0.1;
+    s += texture(uTexture, uv + vec2(-t.x, t.y)).rgb * 0.1;
+    s += texture(uTexture, uv + vec2( t.x, t.y)).rgb * 0.1;
+    return s;
+}
+
+void main() {
+    vec2 uv = barrel(vTexCoord, uCurvature);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    vec3 col = texture(uTexture, uv).rgb;
+
+    // Bloom
+    col = mix(col, col + sampleBloom(uv), uBloom);
+
+    // Gaussian-weighted scanlines
+    float scanY = uv.y * uInputSize.y;
+    float sl = 0.5 + 0.5 * cos(scanY * 3.14159265 * 2.0);
+    sl = pow(sl, 0.5);
+    col *= mix(1.0, sl, uScanline * 0.5);
+
+    // Slot mask (6-pixel pattern with vertical shift)
+    vec2 outPos = uv * uOutputSize;
+    float mx = mod(outPos.x, 6.0);
+    float my = mod(outPos.y, 2.0);
+    vec3 mask;
+    if (my < 1.0) {
+        mask = vec3(mx < 2.0 ? 1.0 : 0.7,
+                    (mx >= 2.0 && mx < 4.0) ? 1.0 : 0.7,
+                    mx >= 4.0 ? 1.0 : 0.7);
+    } else {
+        mask = vec3((mx >= 3.0 && mx < 5.0) ? 0.7 : 1.0,
+                    (mx < 1.0 || mx >= 5.0) ? 0.7 : 1.0,
+                    (mx >= 1.0 && mx < 3.0) ? 0.7 : 1.0);
+    }
+    col *= mix(vec3(1.0), mask, uMask);
+
+    // Vignette
+    vec2 vig = vTexCoord * (1.0 - vTexCoord);
+    float vigF = pow(vig.x * vig.y * 15.0, 0.25);
+    col *= mix(1.0, vigF, uVignette);
+
+    col *= 1.4;
+    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+}
+)";
+
+// Based on Timothy Lottes' CRT shader (public domain).
+// Adapted for GLSL 1.50 / GL 3.2 Core.
+static const char* crt_frag_lottes = R"(
+#version 150
+in vec2 vTexCoord;
+out vec4 fragColor;
+uniform sampler2D uTexture;
+uniform vec2 uInputSize;
+uniform vec2 uOutputSize;
+
+const float warpX = 0.031;
+const float warpY = 0.041;
+const float hardScan = -8.0;
+const float hardPix = -3.0;
+const float maskDark = 0.5;
+const float maskLight = 1.5;
+
+vec2 warp(vec2 pos) {
+    pos = pos * 2.0 - 1.0;
+    pos *= vec2(1.0 + pos.y * pos.y * warpX,
+                1.0 + pos.x * pos.x * warpY);
+    return pos * 0.5 + 0.5;
+}
+
+float toLinear1(float c) {
+    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+vec3 toLinear(vec3 c) {
+    return vec3(toLinear1(c.r), toLinear1(c.g), toLinear1(c.b));
+}
+float toSrgb1(float c) {
+    return (c < 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0/2.4) - 0.055;
+}
+vec3 toSrgb(vec3 c) {
+    return vec3(toSrgb1(c.r), toSrgb1(c.g), toSrgb1(c.b));
+}
+
+vec3 fetch(vec2 pos, vec2 off) {
+    pos = (floor(pos * uInputSize + off) + 0.5) / uInputSize;
+    if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0)
+        return vec3(0.0);
+    return toLinear(texture(uTexture, pos).rgb);
+}
+
+vec2 dist(vec2 pos) {
+    pos = pos * uInputSize;
+    return -(fract(pos) - 0.5);
+}
+
+float gaus(float pos, float scale) {
+    return exp2(scale * pos * pos);
+}
+
+vec3 horz3(vec2 pos, float off) {
+    vec3 b = fetch(pos, vec2(-1.0, off));
+    vec3 c = fetch(pos, vec2( 0.0, off));
+    vec3 d = fetch(pos, vec2( 1.0, off));
+    float dst = dist(pos).x;
+    float wb = gaus(dst - 1.0, hardPix);
+    float wc = gaus(dst + 0.0, hardPix);
+    float wd = gaus(dst + 1.0, hardPix);
+    return (b * wb + c * wc + d * wd) / (wb + wc + wd);
+}
+
+vec3 horz5(vec2 pos, float off) {
+    vec3 a = fetch(pos, vec2(-2.0, off));
+    vec3 b = fetch(pos, vec2(-1.0, off));
+    vec3 c = fetch(pos, vec2( 0.0, off));
+    vec3 d = fetch(pos, vec2( 1.0, off));
+    vec3 e = fetch(pos, vec2( 2.0, off));
+    float dst = dist(pos).x;
+    float wa = gaus(dst - 2.0, hardPix);
+    float wb = gaus(dst - 1.0, hardPix);
+    float wc = gaus(dst + 0.0, hardPix);
+    float wd = gaus(dst + 1.0, hardPix);
+    float we = gaus(dst + 2.0, hardPix);
+    return (a*wa + b*wb + c*wc + d*wd + e*we) / (wa+wb+wc+wd+we);
+}
+
+float scan(vec2 pos, float off) {
+    return gaus(dist(pos).y + off, hardScan);
+}
+
+vec3 tri(vec2 pos) {
+    vec3 a = horz3(pos, -1.0);
+    vec3 b = horz5(pos,  0.0);
+    vec3 c = horz3(pos,  1.0);
+    float wa = scan(pos, -1.0);
+    float wb = scan(pos,  0.0);
+    float wc = scan(pos,  1.0);
+    return a * wa + b * wb + c * wc;
+}
+
+vec3 shadowMask(vec2 pos) {
+    pos.x += pos.y * 3.0;
+    vec3 m = vec3(maskDark);
+    pos.x = fract(pos.x / 6.0);
+    if (pos.x < 0.333)      m.r = maskLight;
+    else if (pos.x < 0.666) m.g = maskLight;
+    else                     m.b = maskLight;
+    return m;
+}
+
+void main() {
+    vec2 pos = warp(vTexCoord);
+    if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0) {
+        fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    vec3 col = tri(pos);
+    col *= shadowMask(gl_FragCoord.xy);
+    fragColor = vec4(toSrgb(col), 1.0);
+}
+)";
+
+// ── Shader compilation ─────────────────────────────────────────────────────
+
+static GLuint crt_compile(GLenum type, const char* src) {
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, &src, nullptr);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char buf[512];
+        glGetShaderInfoLog(s, sizeof(buf), nullptr, buf);
+        LOG_ERROR("CRT shader compile: " << buf);
+        glDeleteShader(s);
+        return 0;
+    }
+    return s;
+}
+
+static GLuint crt_link(const char* vert_src, const char* frag_src) {
+    GLuint vs = crt_compile(GL_VERTEX_SHADER, vert_src);
+    if (!vs) return 0;
+    GLuint fs = crt_compile(GL_FRAGMENT_SHADER, frag_src);
+    if (!fs) { glDeleteShader(vs); return 0; }
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glLinkProgram(prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char buf[512];
+        glGetProgramInfoLog(prog, sizeof(buf), nullptr, buf);
+        LOG_ERROR("CRT program link: " << buf);
+        glDeleteProgram(prog);
+        return 0;
+    }
+    return prog;
+}
+
+// ── FBO management ─────────────────────────────────────────────────────────
+
+static void crt_ensure_fbo(int w, int h) {
+    if (w == crt_fbo_w && h == crt_fbo_h && crt_fbo) return;
+    if (w <= 0 || h <= 0) return;
+    if (crt_fbo) { glDeleteFramebuffers(1, &crt_fbo); crt_fbo = 0; }
+    if (crt_fbo_tex) { glDeleteTextures(1, &crt_fbo_tex); crt_fbo_tex = 0; }
+    glGenTextures(1, &crt_fbo_tex);
+    glBindTexture(GL_TEXTURE_2D, crt_fbo_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, &crt_fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, crt_fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, crt_fbo_tex, 0);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LOG_ERROR("CRT FBO incomplete: 0x" << std::hex << status);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    crt_fbo_w = w;
+    crt_fbo_h = h;
+}
+
+// ── Init / flip / close ────────────────────────────────────────────────────
+
+// Set up CRT shader resources WITHOUT creating window/GL/ImGui.
+// Used by both full init (crt_init_common) and lightweight switch.
+static bool crt_setup_resources(int tier) {
+    crt_tier = tier;
+    const char* frag = (tier == 0) ? crt_frag_basic
+                     : (tier == 1) ? crt_frag_full
+                     :               crt_frag_lottes;
+    crt_program = crt_link(crt_vert_src, frag);
+    if (!crt_program) {
+        LOG_ERROR("CRT shader failed");
+        crt_tier = -1;
+        return false;
+    }
+
+    // Uniform locations
+    crt_u_texture    = glGetUniformLocation(crt_program, "uTexture");
+    crt_u_input_size = glGetUniformLocation(crt_program, "uInputSize");
+    crt_u_output_size = glGetUniformLocation(crt_program, "uOutputSize");
+    if (tier == 1) {
+        crt_u_curvature = glGetUniformLocation(crt_program, "uCurvature");
+        crt_u_scanline  = glGetUniformLocation(crt_program, "uScanline");
+        crt_u_mask      = glGetUniformLocation(crt_program, "uMask");
+        crt_u_bloom     = glGetUniformLocation(crt_program, "uBloom");
+        crt_u_vignette  = glGetUniformLocation(crt_program, "uVignette");
+    }
+
+    // Fullscreen quad (position + texcoord) — reuse if already created
+    if (!crt_vao) {
+        float quad[] = {
+            -1.f, -1.f,  0.f, 1.f,
+             1.f, -1.f,  1.f, 1.f,
+            -1.f,  1.f,  0.f, 0.f,
+             1.f,  1.f,  1.f, 0.f,
+        };
+        glGenVertexArrays(1, &crt_vao);
+        glGenBuffers(1, &crt_vbo);
+        glBindVertexArray(crt_vao);
+        glBindBuffer(GL_ARRAY_BUFFER, crt_vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        GLint aPos = glGetAttribLocation(crt_program, "aPos");
+        GLint aTex = glGetAttribLocation(crt_program, "aTexCoord");
+        glEnableVertexAttribArray(aPos);
+        glVertexAttribPointer(aPos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(aTex);
+        glVertexAttribPointer(aTex, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                              reinterpret_cast<void*>(2 * sizeof(float)));
+        glBindVertexArray(0);
+    }
+
+    // CPC texture filtering: LINEAR for Basic/Full, NEAREST for Lottes
+    glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+    GLenum filter = (tier == 2) ? GL_NEAREST : GL_LINEAR;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    return true;
+}
+
+// Tear down CRT shader resources WITHOUT destroying window/GL/ImGui.
+static void crt_teardown_resources() {
+    if (crt_program) { glDeleteProgram(crt_program); crt_program = 0; }
+    if (crt_vao) { glDeleteVertexArrays(1, &crt_vao); crt_vao = 0; }
+    if (crt_vbo) { glDeleteBuffers(1, &crt_vbo); crt_vbo = 0; }
+    if (crt_fbo) { glDeleteFramebuffers(1, &crt_fbo); crt_fbo = 0; }
+    if (crt_fbo_tex) { glDeleteTextures(1, &crt_fbo_tex); crt_fbo_tex = 0; }
+    crt_fbo_w = crt_fbo_h = 0;
+    crt_tier = -1;
+    if (cpc_gl_texture) {
+        glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+}
+
+// Full init: window/GL/ImGui + CRT resources
+static SDL_Surface* crt_init_common(video_plugin* t, int scale, bool fs, int tier) {
+    SDL_Surface* surf = direct_init(t, scale, fs);
+    if (!surf) return nullptr;
+    if (!crt_setup_resources(tier))
+        LOG_ERROR("CRT shader failed — falling back to Direct");
+    return surf;
+}
+
+SDL_Surface* crt_basic_init(video_plugin* t, int scale, bool fs)  { return crt_init_common(t, scale, fs, 0); }
+SDL_Surface* crt_full_init(video_plugin* t, int scale, bool fs)   { return crt_init_common(t, scale, fs, 1); }
+SDL_Surface* crt_lottes_init(video_plugin* t, int scale, bool fs) { return crt_init_common(t, scale, fs, 2); }
+
+// Determine CRT tier for a plugin (-1 if not a CRT plugin).
+static int crt_tier_for_plugin(const video_plugin* p) {
+    if (p->init == crt_basic_init)  return 0;
+    if (p->init == crt_full_init)   return 1;
+    if (p->init == crt_lottes_init) return 2;
+    return -1;
+}
+
+// Check if a plugin uses the direct_init GL context (Direct or CRT family).
+static bool is_direct_family(const video_plugin* p) {
+    return p->init == direct_init
+        || p->init == crt_basic_init
+        || p->init == crt_full_init
+        || p->init == crt_lottes_init;
+}
+
+void crt_flip_a(video_plugin* t) {
+    // Upload CPC framebuffer
+    glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
+                    GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
+
+    // If shader init failed, fall back to direct rendering
+    if (crt_tier < 0) {
+        direct_flip_a(t);
+        return;
+    }
+
+    // Recompute display area each frame (handles window resize)
+    compute_scale(t, vid->w, vid->h);
+
+    // FBO matches the CPC display area, not the full window
+    int fbo_w = max(1, t->width);
+    int fbo_h = max(1, t->height);
+    crt_ensure_fbo(fbo_w, fbo_h);
+
+    // Render CPC through CRT shader into FBO
+    glBindFramebuffer(GL_FRAMEBUFFER, crt_fbo);
+    glViewport(0, 0, crt_fbo_w, crt_fbo_h);
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glUseProgram(crt_program);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
+    glUniform1i(crt_u_texture, 0);
+    // Pass true CPC resolution, not doubled surface size.
+    // At scale>1 the surface is 768×540 (doubled scanlines) but the CPC
+    // only has 270 unique scanlines.  Using the real count prevents moiré
+    // from the shader's beam/scanline profile beating against the doubling.
+    int cpc_h = t->half_pixels ? vid->h : vid->h / 2;
+    glUniform2f(crt_u_input_size, static_cast<float>(vid->w), static_cast<float>(cpc_h));
+    glUniform2f(crt_u_output_size, static_cast<float>(crt_fbo_w), static_cast<float>(crt_fbo_h));
+    if (crt_tier == 1) {
+        glUniform1f(crt_u_curvature, 0.22f);
+        glUniform1f(crt_u_scanline, 0.7f);
+        glUniform1f(crt_u_mask, 0.7f);
+        glUniform1f(crt_u_bloom, 0.15f);
+        glUniform1f(crt_u_vignette, 0.4f);
+    }
+    glBindVertexArray(crt_vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // ImGui frame — use CRT FBO texture positioned like Direct
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+
+    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::GetBackgroundDrawList(vp)->AddImage(
+            static_cast<ImTextureID>(crt_fbo_tex),
+            ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+            ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height),
+            ImVec2(0, 1), ImVec2(1, 0));  // flip Y (FBO is bottom-up)
+    }
+
+    imgui_render_ui();
+    ImGui::Render();
+
+    int display_w, display_h;
+    SDL_GetWindowSizeInPixels(mainSDLWindow, &display_w, &display_h);
+    glViewport(0, 0, display_w, display_h);
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    video_capture_if_pending();
+}
+
+void crt_close() {
+    crt_teardown_resources();
+    direct_close();
+}
+
+// Lightweight switch between direct-family plugins (Direct ↔ CRT).
+// Swaps CRT resources and function pointers without touching window/GL/ImGui.
+// Returns true if handled; false if full reinit is needed.
+bool video_try_lightweight_switch() {
+    video_plugin* new_plugin = &video_plugin_list[CPC.scr_style];
+    if (!is_direct_family(vid_plugin) || !is_direct_family(new_plugin))
+        return false;
+
+    crt_teardown_resources();
+    int tier = crt_tier_for_plugin(new_plugin);
+    if (tier >= 0 && !crt_setup_resources(tier))
+        LOG_ERROR("CRT shader failed — falling back to Direct");
+
+    vid_plugin = new_plugin;
+    compute_scale(vid_plugin, vid->w, vid->h);
+    video_set_palette();
+    return true;
+}
+
+#endif // __APPLE__
+
+/* ------------------------------------------------------------------------------------ */
 /* SDL_Renderer video plugin (D3D11 on Windows, no OpenGL required) ------------------- */
 /* ------------------------------------------------------------------------------------ */
 void sdlr_close();
@@ -399,7 +978,7 @@ void sdlr_swscale_close();
 SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
 {
   mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
-      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
@@ -505,7 +1084,7 @@ void sdlr_close()
 SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
 {
   mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
-      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
@@ -677,7 +1256,7 @@ SDL_Surface* glscale_init(video_plugin* t, int scale, bool fs)
     return nullptr;
   }
 
-  int width = CPC_VISIBLE_SCR_WIDTH*scale;
+  int width = CPC_RENDER_WIDTH*scale;
   int height = CPC_VISIBLE_SCR_HEIGHT*scale;
   SDL_CreateWindowAndRenderer("konCePCja", width, height, (fs?SDL_WINDOW_FULLSCREEN:0) | SDL_WINDOW_OPENGL, &mainSDLWindow, &renderer);
   if (!mainSDLWindow || !renderer) return nullptr;
@@ -1056,7 +1635,7 @@ void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int s
   devtools_panel_surface_width = surface->w;
   devtools_panel_surface_height = surface->h;
   devtools_cpc_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale;
-  int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
+  int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(devtools_cpc_height + topbar_height + bottombar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
@@ -1071,7 +1650,7 @@ void video_clear_devtools_panel()
   devtools_panel_surface_height = 0;
   devtools_cpc_height = 0;
   if (mainSDLWindow) {
-    int win_width = CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale;
+    int win_width = CPC_RENDER_WIDTH * CPC.scr_scale;
     int win_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale + topbar_height + bottombar_height;
     SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   }
@@ -1083,7 +1662,7 @@ void video_set_topbar(SDL_Surface* surface, int height)
   if (!mainSDLWindow) return;
   topbar_surface = surface;
   topbar_height = height;
-  int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
+  int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height + bottombar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
@@ -1094,7 +1673,7 @@ void video_clear_topbar()
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
-    int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
+    int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
     int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + bottombar_height, devtools_panel_height);
     SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   }
@@ -1130,7 +1709,7 @@ void video_set_bottombar(int height)
 {
   if (!mainSDLWindow) return;
   bottombar_height = height;
-  int win_width = static_cast<int>(CPC_VISIBLE_SCR_WIDTH * CPC.scr_scale) + devtools_panel_width;
+  int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
   int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height + bottombar_height, devtools_panel_height);
   SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
@@ -1151,7 +1730,7 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
   mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
-      CPC_VISIBLE_SCR_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+      CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
@@ -2090,6 +2669,12 @@ std::vector<video_plugin> video_plugin_list =
   {"Dot matrix",              false, swscale_init,  swscale_setpal,  dotmat_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
 #ifdef HAVE_GL
   {"OpenGL scaling",          false, glscale_init,  glscale_setpal,  glscale_flip,    glscale_close,  0,         0, 0,          0, 0, 0, 0,  nullptr },
+#endif
+#ifdef __APPLE__
+  /* CRT shader plugins — require GL 3.2 Core (macOS via gl3.h). */
+  {"CRT Basic",               false, crt_basic_init,  direct_setpal,  crt_flip_a,  crt_close,  1,  0, 0,  0, 0, 0, 0,  direct_flip_b },
+  {"CRT Full",                false, crt_full_init,   direct_setpal,  crt_flip_a,  crt_close,  1,  0, 0,  0, 0, 0, 0,  direct_flip_b },
+  {"CRT Lottes",              false, crt_lottes_init, direct_setpal,  crt_flip_a,  crt_close,  1,  0, 0,  0, 0, 0, 0,  direct_flip_b },
 #endif
   /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
      No OpenGL context required; no multi-viewport support. flip_b is null. */

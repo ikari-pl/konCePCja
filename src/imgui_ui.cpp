@@ -1826,9 +1826,8 @@ static void imgui_render_menu()
 // Options
 // ─────────────────────────────────────────────────
 
-// Video plugin names (mirrors CapriceOptions)
-static const char* video_plugins[] = { "Direct (SDL)", "Software Scaling" };
-static const char* scale_items[] = { "1x", "2x", "3x", "4x" };
+// No hardcoded video plugin list — combo is built dynamically from video_plugin_list.
+static const char* scale_items[] = { "Fit window", "1x", "1.5x", "2x", "3x" };
 static const char* sample_rates[] = { "11025", "22050", "44100", "48000", "96000" };
 static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
 static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)" };
@@ -2027,18 +2026,69 @@ static void imgui_render_options()
 
     // ── Video Tab ──
     if (ImGui::BeginTabItem("Video")) {
-      int plugin = static_cast<int>(CPC.scr_style);
-      if (ImGui::Combo("Video Plugin", &plugin, video_plugins, IM_ARRAYSIZE(video_plugins))) {
-        CPC.scr_style = plugin;
-      }
-
-      int scale = static_cast<int>(CPC.scr_scale) - 1;
-      if (scale < 0) scale = 0;
-      if (ImGui::Combo("Scale", &scale, scale_items, IM_ARRAYSIZE(scale_items))) {
-        CPC.scr_scale = scale + 1;
+      // Build combo dynamically from video_plugin_list, skipping hidden entries.
+      // Group plugins by type with section headers.
+      const char* preview = video_plugin_list[CPC.scr_style].name;
+      if (ImGui::BeginCombo("Video Plugin", preview)) {
+        const char* prev_group = nullptr;
+        for (size_t i = 0; i < video_plugin_list.size(); i++) {
+          if (video_plugin_list[i].hidden) continue;
+          // Determine group from plugin name
+          const char* name = video_plugin_list[i].name;
+          const char* group;
+          if (strncmp(name, "CRT", 3) == 0)
+            group = "GPU — CRT Shaders";
+          else if (strcmp(name, "Direct") == 0 || strcmp(name, "Direct (SDL)") == 0
+                   || strcmp(name, "OpenGL scaling") == 0)
+            group = "GPU — Direct";
+          else
+            group = "CPU — Software Scalers";
+          if (!prev_group || strcmp(prev_group, group) != 0) {
+            if (prev_group) ImGui::Spacing();
+            ImGui::SeparatorText(group);
+            prev_group = group;
+          }
+          bool selected = (static_cast<int>(i) == static_cast<int>(CPC.scr_style));
+          if (ImGui::Selectable(video_plugin_list[i].name, selected)) {
+            CPC.scr_style = static_cast<int>(i);
+            imgui_state.video_reinit_pending = true;
+          }
+          if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Window size multiplier (1x = 384x270)");
+        ImGui::SetTooltip("GPU plugins render on the graphics card (fast).\nCPU plugins compute pixels in software (slow at high res).");
+      }
+
+      // Scale combo: 0 = Fit window, 1-4 = 1x-4x
+      // scr_scale 0 means "fit window" (no fixed multiplier).
+      int scale_idx = static_cast<int>(CPC.scr_scale);
+      if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
+      if (ImGui::Combo("Scale", &scale_idx, scale_items, IM_ARRAYSIZE(scale_items))) {
+        CPC.scr_scale = scale_idx;
+        // Resize window to fit the chosen scale (+ bars)
+        if (scale_idx > 0 && mainSDLWindow) {
+          static const float sf[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
+          float f = (scale_idx < static_cast<int>(sizeof(sf)/sizeof(sf[0]))) ? sf[scale_idx] : 1.f;
+          int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
+          int new_h = CPC.scr_crt_aspect
+                    ? static_cast<int>(new_w * 3.f / 4.f)
+                    : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+          new_h += video_get_topbar_height() + video_get_bottombar_height();
+          SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
+        }
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Fit window: CPC image fills available space.\n1x-4x: fixed pixel size (cropped if window is smaller).");
+      }
+
+      bool crt_aspect = CPC.scr_crt_aspect != 0;
+      if (ImGui::Checkbox("CRT aspect ratio (4:3)", &crt_aspect)) {
+        CPC.scr_crt_aspect = crt_aspect ? 1 : 0;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Stretch to 4:3 like a real CPC monitor.\nOff = square pixels (768:270 raw ratio).");
       }
 
       bool colour = CPC.scr_tube == 0;
@@ -2414,9 +2464,13 @@ static void imgui_render_options()
   }
   ImGui::SameLine();
   if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+    unsigned int prev_style = CPC.scr_style;
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
     g_m4board.enabled = old_m4_enabled;
+    // Revert video plugin if it was changed live
+    if (CPC.scr_style != prev_style)
+      imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;
@@ -2441,9 +2495,12 @@ static void imgui_render_options()
 
   if (!open) {
     // Window closed via X button — treat as Cancel
+    unsigned int prev_style = CPC.scr_style;
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
     g_m4board.enabled = old_m4_enabled;
+    if (CPC.scr_style != prev_style)
+      imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
     CPC.paused = false;
     first_open = true;
