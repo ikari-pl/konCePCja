@@ -967,6 +967,11 @@ bool video_try_lightweight_switch() {
     return true;
 }
 
+#else // !__APPLE__
+
+// Non-macOS stub: CRT shaders not available, always fall back to full reinit.
+bool video_try_lightweight_switch() { return false; }
+
 #endif // __APPLE__
 
 /* ------------------------------------------------------------------------------------ */
