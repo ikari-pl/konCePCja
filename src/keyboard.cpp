@@ -1491,19 +1491,23 @@ CPCScancode InputMapper::CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod) 
     // Ignore sticky modifiers (MOD_PC_NUM and MOD_PC_CAPS)
 
     auto cpc_key = CPCkeysFromSDLkeysym.find(sdl_key);
-    // Ctrl+key fallback: if no explicit Ctrl+key mapping, try the base key.
-    // The Ctrl key itself is pressed separately via its own KEY_DOWN event,
-    // so the CPC sees Control+key in the matrix and the firmware produces
-    // the correct control character (e.g. Ctrl+[ → 0x1B).
+    // Ctrl+key fallback: if no explicit Ctrl+key mapping, look up the base key
+    // and add MOD_CPC_CTRL to the scancode.  applyKeypressDirect will then keep
+    // the CPC Control key pressed in the matrix (without MOD_CPC_CTRL it would
+    // explicitly release Control, defeating the combination).
+    bool ctrl_fallback = false;
     if (cpc_key == CPCkeysFromSDLkeysym.end() && (sdl_key & MOD_PC_CTRL)) {
         cpc_key = CPCkeysFromSDLkeysym.find(sdl_key & ~MOD_PC_CTRL);
+        ctrl_fallback = true;
     }
     // TODO(sebhz) magic numbers are bad. Get rid of the 0xff.
     if (cpc_key == CPCkeysFromSDLkeysym.end()) return 0xff;
 
     if (cpc_key->second & MOD_EMU_KEY)
         return cpc_key->second;
-    return cpc_kbd[CPC->keyboard][cpc_key->second];
+    CPCScancode sc = cpc_kbd[CPC->keyboard][cpc_key->second];
+    if (ctrl_fallback) sc |= MOD_CPC_CTRL;
+    return sc;
 }
 
 CapriceKey InputMapper::CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod) {
