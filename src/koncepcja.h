@@ -45,7 +45,7 @@ class InputMapper;
 //#define DEBUG_TAPE
 //#define DEBUG_Z80
 
-#define VERSION_STRING "v5.5.0"
+#define VERSION_STRING "v5.6.0"
 
 #ifndef _MAX_PATH
  #ifdef _POSIX_PATH_MAX
@@ -261,6 +261,7 @@ class t_CPC {
    unsigned int scr_window;
    unsigned int scr_bpp;        // bits per pixel of the SDL back_surface
    unsigned int scr_preserve_aspect_ratio;
+   unsigned int scr_crt_aspect; // 1 = force 4:3 CRT monitor aspect ratio (default)
    dword dwYScale;              // Y scale (i.e. number of lines in SDL back_surface per CPC line)
    unsigned int scr_bps;        // bytes per line in the SDL back_surface
    unsigned int scr_line_offs;  // bytes per CPC line in the SDL back_surface (2*scr_bps if doubling Y)

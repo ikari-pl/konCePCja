@@ -27,6 +27,9 @@ struct ImGuiUIState {
   bool show_about = false;
   bool show_quit_confirm = false;
 
+  // Deferred video reinit (set in Options, handled after ImGui frame)
+  bool video_reinit_pending = false;
+
   // Menu was just opened (for first-frame focus)
   bool menu_just_opened = false;
 

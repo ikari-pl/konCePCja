@@ -49,6 +49,11 @@ typedef struct video_plugin
   float x_scale, y_scale;
   /* width & height of the surface to display */
   int width, height;
+
+  /* Second phase of flip: renders floating ImGui viewports and swaps the window.
+     Runs after audio push so the 30-60ms stall doesn't starve the audio queue.
+     Null for SDL_Renderer, headless, and non-ImGui GL plugins. */
+  void (*flip_b)(video_plugin* t);
 }
 video_plugin;
 
@@ -67,6 +72,10 @@ void video_set_bottombar(int height);
 int video_get_bottombar_height();
 
 video_plugin video_headless_plugin();
+
+// Lightweight video plugin switch (Direct ↔ CRT) without window/GL/ImGui teardown.
+// Returns true if handled; false if full reinit is needed.
+bool video_try_lightweight_switch();
 
 // CPC framebuffer texture/size for docked workspace mode.
 // Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to ImTextureID.
