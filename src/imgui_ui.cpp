@@ -117,7 +117,6 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
-      if (action == FileDialogAction::LoadDiskA) imgui_close_menu();
       break;
     case FileDialogAction::LoadDiskB:
     case FileDialogAction::LoadDiskB_LED:
@@ -128,7 +127,6 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load disk: " + fname);
       CPC.current_dsk_path = dir;
-      if (action == FileDialogAction::LoadDiskB) imgui_close_menu();
       break;
     case FileDialogAction::SaveDiskA:
       if (dsk_save(path, &driveA) == 0)
@@ -152,7 +150,6 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load snapshot: " + fname);
       CPC.current_snap_path = dir;
-      imgui_close_menu();
       break;
     case FileDialogAction::SaveSnapshot:
       if (snapshot_save(path) == 0)
@@ -170,7 +167,6 @@ static void process_pending_dialog()
       } else
         imgui_toast_error("Failed to load tape: " + fname);
       CPC.current_tape_path = dir;
-      imgui_close_menu();
       break;
     case FileDialogAction::LoadTape_LED:
       CPC.tape.file = path;
@@ -191,7 +187,6 @@ static void process_pending_dialog()
         imgui_toast_error("Failed to load cartridge: " + fname);
       CPC.current_cart_path = dir;
       emulator_reset();
-      imgui_close_menu();
       break;
     case FileDialogAction::LoadROM:
       if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS)
@@ -205,11 +200,12 @@ static void process_pending_dialog()
       break;
   }
 
-  // Clear ImGui focus so keyboard events reach the emulator immediately.
-  // SetWindowFocus(NULL) alone doesn't clear WantCaptureKeyboard — native
-  // file dialogs can leave it stuck, blocking all CPC keyboard input.
+  // Always close the menu after any file dialog completes.
+  // For status bar LED actions, show_menu is already false (no-op).
+  // For Options sub-dialogs, imgui_close_menu() skips unpause while
+  // show_options is still true.
+  imgui_close_menu();
   ImGui::SetWindowFocus(NULL);
-  ImGui::GetIO().WantCaptureKeyboard = false;
 }
 
 // ─────────────────────────────────────────────────
@@ -521,29 +517,9 @@ void imgui_render_ui()
     s_bottombar_height_dirty = false;
   }
 
-  // Keyboard capture policy: let physical keys reach the CPC when no
-  // keyboard-consuming UI is active.
-  // - Classic mode: keys go to CPC unless any UI window is open.
-  //   Uses imgui_any_keyboard_ui_active() (same as event filter).
-  // - Docked mode: devtools are always visible as docked tabs, so we
-  //   only block on modal UI / text input. CPC screen gets keyboard
-  //   when focused, even with devtools docked alongside.
-  {
-    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-      bool modal_ui = ImGui::GetIO().WantTextInput
-          || imgui_state.show_menu || imgui_state.show_options
-          || imgui_state.show_about || imgui_state.show_quit_confirm
-          || g_command_palette.is_open()
-          || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
-      if (!modal_ui && imgui_state.cpc_screen_focused) {
-        ImGui::GetIO().WantCaptureKeyboard = false;
-      }
-    } else {
-      if (!imgui_any_keyboard_ui_active()) {
-        ImGui::GetIO().WantCaptureKeyboard = false;
-      }
-    }
-  }
+  // Keyboard routing is handled at the SDL event level in kon_cpc_ja.cpp
+  // using imgui_any_keyboard_ui_active() as the single source of truth.
+  // No WantCaptureKeyboard override needed here.
 }
 
 // ─────────────────────────────────────────────────

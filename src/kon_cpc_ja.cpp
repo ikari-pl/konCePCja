@@ -3429,20 +3429,7 @@ int koncpc_main (int argc, char **argv)
 #endif
       topbar_height_px = imgui_topbar_height();
       video_set_topbar(nullptr, topbar_height_px);
-      // Re-resize window now that topbar height is known (video_init runs
-      // before topbar setup, so its resize used topbar_height=0).
-      if (CPC.scr_scale > 0 && mainSDLWindow) {
-         static const float sf[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
-         if (CPC.scr_scale < sizeof(sf)/sizeof(sf[0])) {
-            float f = sf[CPC.scr_scale];
-            int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-            int new_h = CPC.scr_crt_aspect
-                      ? static_cast<int>(new_w * 3.f / 4.f)
-                      : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
-            new_h += video_get_topbar_height() + video_get_bottombar_height();
-            SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
-         }
-      }
+      // video_set_topbar handles the window resize using compute_window_size()
       mouse_init();
 
       if (audio_init()) {
@@ -3684,14 +3671,12 @@ int koncpc_main (int argc, char **argv)
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
 
-           // Block keyboard for ImGui unless ONLY the vkeyboard has focus.
-           // imgui_any_keyboard_ui_active() is the single source of truth
-           // (defined in imgui_ui.cpp, also used by the capture policy there).
-           bool imgui_wants_kbd = io.WantCaptureKeyboard;
-           if (imgui_wants_kbd && imgui_state.show_vkeyboard
-               && !imgui_any_keyboard_ui_active()) {
-             imgui_wants_kbd = false;
-           }
+           // Use our own policy, not ImGui's WantCaptureKeyboard — ImGui's
+           // NewFrame() sets it based on internal focus state which can stay
+           // stuck after native file dialogs or menu interactions.
+           // imgui_any_keyboard_ui_active() checks actual dialog/menu/devtools
+           // state and is the single source of truth.
+           bool imgui_wants_kbd = imgui_any_keyboard_ui_active();
 
            if (((is_key_event && !is_virtual_key) && imgui_wants_kbd) || (is_text_event && imgui_wants_kbd) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
              continue;

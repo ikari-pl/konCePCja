@@ -1715,6 +1715,26 @@ void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels)
   compute_rects(src, dst, half_pixels);
 }
 
+// Scale factor table shared with compute_scale and Options combo.
+static const float video_scale_factors[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
+static const int video_scale_factors_count = sizeof(video_scale_factors) / sizeof(video_scale_factors[0]);
+
+// Compute window dimensions for the current scale + bars + 4:3 aspect.
+// For Fit mode (scr_scale=0), returns false (don't resize — keep user's window).
+static bool compute_window_size(int& out_w, int& out_h) {
+  float f;
+  if (CPC.scr_scale > 0 && static_cast<int>(CPC.scr_scale) < video_scale_factors_count)
+    f = video_scale_factors[CPC.scr_scale];
+  else
+    return false;  // Fit mode — don't resize
+  out_w = static_cast<int>(CPC_RENDER_WIDTH * f) + devtools_panel_width;
+  int cpc_h = CPC.scr_crt_aspect
+            ? static_cast<int>(CPC_RENDER_WIDTH * f * 3.f / 4.f)
+            : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+  out_h = max(cpc_h + topbar_height + bottombar_height, devtools_panel_height);
+  return true;
+}
+
 void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int scale)
 {
   if (!mainSDLWindow || !surface) return;
@@ -1723,10 +1743,11 @@ void video_set_devtools_panel(SDL_Surface* surface, int width, int height, int s
   devtools_panel_height = height * scale;
   devtools_panel_surface_width = surface->w;
   devtools_panel_surface_height = surface->h;
-  devtools_cpc_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale;
-  int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
-  int win_height = max(devtools_cpc_height + topbar_height + bottombar_height, devtools_panel_height);
-  SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  int w, h;
+  if (compute_window_size(w, h)) {
+    devtools_cpc_height = h - topbar_height - bottombar_height;
+    SDL_SetWindowSize(mainSDLWindow, w, h);
+  }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -1739,9 +1760,9 @@ void video_clear_devtools_panel()
   devtools_panel_surface_height = 0;
   devtools_cpc_height = 0;
   if (mainSDLWindow) {
-    int win_width = CPC_RENDER_WIDTH * CPC.scr_scale;
-    int win_height = CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale + topbar_height + bottombar_height;
-    SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+    int w, h;
+    if (compute_window_size(w, h))
+      SDL_SetWindowSize(mainSDLWindow, w, h);
   }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
@@ -1751,9 +1772,9 @@ void video_set_topbar(SDL_Surface* surface, int height)
   if (!mainSDLWindow) return;
   topbar_surface = surface;
   topbar_height = height;
-  int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
-  int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height + bottombar_height, devtools_panel_height);
-  SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  int w, h;
+  if (compute_window_size(w, h))
+    SDL_SetWindowSize(mainSDLWindow, w, h);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -1762,9 +1783,9 @@ void video_clear_topbar()
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
-    int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
-    int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + bottombar_height, devtools_panel_height);
-    SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+    int w, h;
+    if (compute_window_size(w, h))
+      SDL_SetWindowSize(mainSDLWindow, w, h);
   }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
@@ -1798,9 +1819,9 @@ void video_set_bottombar(int height)
 {
   if (!mainSDLWindow) return;
   bottombar_height = height;
-  int win_width = static_cast<int>(CPC_RENDER_WIDTH * CPC.scr_scale) + devtools_panel_width;
-  int win_height = max(static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * CPC.scr_scale) + topbar_height + bottombar_height, devtools_panel_height);
-  SDL_SetWindowSize(mainSDLWindow, win_width, win_height);
+  int w, h;
+  if (compute_window_size(w, h))
+    SDL_SetWindowSize(mainSDLWindow, w, h);
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
