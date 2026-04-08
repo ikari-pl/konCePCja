@@ -205,8 +205,11 @@ static void process_pending_dialog()
       break;
   }
 
-  // Clear ImGui focus so keyboard events reach the emulator immediately
+  // Clear ImGui focus so keyboard events reach the emulator immediately.
+  // SetWindowFocus(NULL) alone doesn't clear WantCaptureKeyboard — native
+  // file dialogs can leave it stuck, blocking all CPC keyboard input.
   ImGui::SetWindowFocus(NULL);
+  ImGui::GetIO().WantCaptureKeyboard = false;
 }
 
 // ─────────────────────────────────────────────────
