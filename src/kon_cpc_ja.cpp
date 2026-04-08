@@ -3429,6 +3429,20 @@ int koncpc_main (int argc, char **argv)
 #endif
       topbar_height_px = imgui_topbar_height();
       video_set_topbar(nullptr, topbar_height_px);
+      // Re-resize window now that topbar height is known (video_init runs
+      // before topbar setup, so its resize used topbar_height=0).
+      if (CPC.scr_scale > 0 && mainSDLWindow) {
+         static const float sf[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
+         if (CPC.scr_scale < sizeof(sf)/sizeof(sf[0])) {
+            float f = sf[CPC.scr_scale];
+            int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
+            int new_h = CPC.scr_crt_aspect
+                      ? static_cast<int>(new_w * 3.f / 4.f)
+                      : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+            new_h += video_get_topbar_height() + video_get_bottombar_height();
+            SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
+         }
+      }
       mouse_init();
 
       if (audio_init()) {
