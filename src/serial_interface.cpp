@@ -2,6 +2,7 @@
 
 #include "serial_interface.h"
 #include "io_dispatch.h"
+#include "log.h"
 #include "plotter.h"
 #include <cstdio>
 #include <cstring>
@@ -777,67 +778,47 @@ SIRomManager::SIRomManager()
 
 SIRomManager::~SIRomManager() {}
 
+// SI ROM image loaded from rom/serial.rom at runtime.
+// Source: src/si_rom.asm — rebuild with:
+//   z80asm -o src/si_rom.bin src/si_rom.asm
+//   dd if=src/si_rom.bin of=rom/serial.rom bs=16384 count=1 conv=sync
+
 void SIRomManager::load(byte** rom_map, const std::string& rom_path) {
     if (rom_slot_ < 0 || rom_slot_ >= 32) {
         return;
     }
 
-    // Check if ROM already loaded
+    // Check if ROM already loaded in this slot
     if (rom_map[rom_slot_] != nullptr) {
         loaded_ = true;
         auto_loaded_ = false;
         return;
     }
 
-    // Search for SI ROM in standard locations
-    static const char* rom_names[] = { "si_rom.bin", "SI_ROM.BIN", nullptr };
-    std::string found_path;
-
+    // Try loading SI ROM file
+    static const char* rom_names[] = { "serial.rom", "SERIAL.ROM", "si_rom.bin", "SI_ROM.BIN", nullptr };
     for (int i = 0; rom_names[i]; i++) {
         std::string candidate = rom_path + "/" + rom_names[i];
         if (std::filesystem::exists(candidate)) {
-            found_path = candidate;
-            break;
+            FILE* fp = fopen(candidate.c_str(), "rb");
+            if (fp) {
+                byte* rom_data = new byte[16384];
+                memset(rom_data, 0xFF, 16384);
+                size_t nread = fread(rom_data, 1, 16384, fp);
+                fclose(fp);
+                if (nread >= 128 && rom_data[0] <= 0x02) {
+                    rom_map[rom_slot_] = rom_data;
+                    loaded_ = true;
+                    auto_loaded_ = true;
+                    return;
+                }
+                delete[] rom_data;
+            }
         }
     }
 
-    if (found_path.empty()) {
-        // No ROM file found - SI will work without firmware
-        loaded_ = false;
-        auto_loaded_ = false;
-        return;
-    }
-
-    FILE* fp = fopen(found_path.c_str(), "rb");
-    if (!fp) {
-        loaded_ = false;
-        auto_loaded_ = false;
-        return;
-    }
-
-    byte* rom_data = new byte[16384];
-    memset(rom_data, 0xFF, 16384);
-    size_t read = fread(rom_data, 1, 16384, fp);
-    fclose(fp);
-
-    if (read < 128) {
-        delete[] rom_data;
-        loaded_ = false;
-        auto_loaded_ = false;
-        return;
-    }
-
-    // Valid ROM: byte 0 should be 0x00, 0x01, or 0x02
-    if (rom_data[0] > 0x02) {
-        delete[] rom_data;
-        loaded_ = false;
-        auto_loaded_ = false;
-        return;
-    }
-
-    rom_map[rom_slot_] = rom_data;
-    loaded_ = true;
-    auto_loaded_ = true;
+    // No ROM file found — serial interface has no expansion ROM
+    LOG_INFO("Serial interface ROM not found in " << rom_path);
 }
 
 void SIRomManager::unload(byte** rom_map) {

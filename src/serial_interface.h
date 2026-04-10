@@ -379,7 +379,7 @@ public:
     bool is_loaded() const { return loaded_; }
     bool is_auto_loaded() const { return auto_loaded_; }
 
-    static constexpr int DEFAULT_SLOT = 7;
+    static constexpr int DEFAULT_SLOT = 2;
 
 private:
     int rom_slot_;
