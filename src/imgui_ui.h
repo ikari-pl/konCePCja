@@ -26,6 +26,8 @@ struct ImGuiUIState {
   bool show_vkeyboard = false;
   bool show_about = false;
   bool show_quit_confirm = false;
+  bool show_serial_terminal = false;
+  bool show_plotter_preview = false;
 
   // Deferred video reinit (set in Options, handled after ImGui frame)
   bool video_reinit_pending = false;
@@ -142,5 +144,12 @@ void tape_scan_blocks();
 void imgui_toast_info(const std::string& message);
 void imgui_toast_success(const std::string& message);
 void imgui_toast_error(const std::string& message);
+
+// Serial Terminal window
+void imgui_render_serial_terminal();
+void serial_terminal_feed_byte(uint8_t byte);
+
+// Plotter Preview window
+void imgui_render_plotter_preview();
 
 #endif // IMGUI_UI_H

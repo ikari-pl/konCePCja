@@ -67,6 +67,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "symbiface.h"
 #include "m4board.h"
 #include "m4board_http.h"
+#include "serial_interface.h"
 #include "io_dispatch.h"
 #include "ym_recorder.h"
 #include "avi_recorder.h"
@@ -2300,6 +2301,23 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
       }
    }
 
+   // Serial Interface config
+   {
+      SerialConfig scfg;
+      scfg.enabled = conf.getIntValue("peripheral", "serial_enabled", 0) != 0;
+      scfg.backend_type = static_cast<SerialBackendType>(
+         conf.getIntValue("peripheral", "serial_backend", 0));
+      scfg.input_file = conf.getStringValue("peripheral", "serial_input_file", "");
+      scfg.output_file = conf.getStringValue("peripheral", "serial_output_file", "");
+      scfg.device_path = conf.getStringValue("peripheral", "serial_device", "");
+      scfg.tcp_host = conf.getStringValue("peripheral", "serial_tcp_host", "127.0.0.1");
+      scfg.tcp_port = static_cast<uint16_t>(
+         conf.getIntValue("peripheral", "serial_tcp_port", 23));
+      scfg.baud_rate = conf.getIntValue("peripheral", "serial_baud", 9600);
+      g_serial_interface.set_config(scfg);
+      g_serial_interface.apply_config();
+   }
+
    CPC.kbd_layout = conf.getStringValue("control", "kbd_layout", "keymap_us.map");
 
    CPC.max_tracksize = conf.getIntValue("file", "max_track_size", 6144-154);
@@ -2420,6 +2438,20 @@ bool saveConfiguration (t_CPC &CPC, const std::string& configFilename)
    conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
    conf.setIntValue("peripheral", "m4_http_port", CPC.m4_http_port);
    conf.setStringValue("peripheral", "m4_bind_ip", CPC.m4_bind_ip);
+
+   // Serial Interface config
+   {
+      auto cfg = g_serial_interface.get_config();
+      conf.setIntValue("peripheral", "serial_enabled", cfg.enabled ? 1 : 0);
+      conf.setIntValue("peripheral", "serial_backend", static_cast<int>(cfg.backend_type));
+      conf.setStringValue("peripheral", "serial_input_file", cfg.input_file);
+      conf.setStringValue("peripheral", "serial_output_file", cfg.output_file);
+      conf.setStringValue("peripheral", "serial_device", cfg.device_path);
+      conf.setStringValue("peripheral", "serial_tcp_host", cfg.tcp_host);
+      conf.setIntValue("peripheral", "serial_tcp_port", cfg.tcp_port);
+      conf.setIntValue("peripheral", "serial_baud", cfg.baud_rate);
+   }
+
    // Save port mappings and clear stale keys
    {
       auto mappings = g_m4_http.get_port_mappings_snapshot();
