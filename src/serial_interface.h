@@ -37,9 +37,15 @@ public:
     // Reset
     void reset();
 
-    // Connect a callback for received bytes
+    // Connect a callback for transmitted bytes (Z80 → backend)
     using RxCallback = std::function<void(uint8_t byte)>;
     void set_rx_callback(RxCallback cb) { rx_callback_ = cb; }
+
+    // Connect a poll callback for incoming data (backend → DART rx_fifo).
+    // Called when the Z80 reads the status register, so data appears
+    // "just in time" — matches real DART behavior.
+    using RxPollCallback = std::function<void()>;
+    void set_rx_poll(RxPollCallback cb) { rx_poll_ = cb; }
 
     // Check if interrupt is pending
     bool has_interrupt() const { return interrupt_pending_; }
@@ -116,8 +122,10 @@ private:
     bool interrupt_pending_ = false;
     uint8_t interrupt_vector_ = 0;
 
-    // Rx callback
+    // Rx callback (Z80 → backend)
     RxCallback rx_callback_;
+    // Rx poll (backend → rx_fifo, called on status read)
+    RxPollCallback rx_poll_;
 
     // Internal helpers
     uint8_t read_rr(int reg);
@@ -416,7 +424,8 @@ public:
 
 private:
     bool open_ = false;
-    bool xon_pending_ = true;  // XON sent at init, re-armed after each byte
+    bool xon_pending_ = true;   // XON flow control, re-armed after each byte
+    bool enq_pending_ = false;  // ENQ received, respond with ACK on next recv()
     class HpglPlotter* plotter_ = nullptr;
 };
 

@@ -97,31 +97,35 @@ void Z80Dart::reset() {
 }
 
 uint8_t Z80Dart::read(uint8_t port) {
-    // Determine channel and register from port
-    // $FADC = Channel A Data
-    // $FADD = Channel A Control (RR0-RR2)
-    // $FADE = Channel B Data
-    // $FADF = Channel B Control (RR0-RR2)
-    
+    // Z80 DART port mapping (active on Amstrad Serial Interface):
+    //   Bit 0 = B/~A: 0 = Channel A, 1 = Channel B
+    //   Bit 1 = C/~D: 0 = Data,      1 = Control
+    //
+    //   $FADC (00) = Channel A Data
+    //   $FADD (01) = Channel B Data
+    //   $FADE (10) = Channel A Control (RR0 by default)
+    //   $FADF (11) = Channel B Control (RR0 by default)
+
     int reg = port & 0x03;
-    
+
     switch (reg) {
-        case 0x00:  // Data register
-            return read_rr(0);  // Read RR0 status
-            
-        case 0x01:  // Control register (maps to RR0-RR2)
-            return read_rr(0);
-            
-        case 0x02:  // Channel B special case
-            if (!channel_a_) {
-                return rr2_;  // Return Channel B's interrupt vector
+        case 0x00:  // Channel A Data — read received byte
+        case 0x01:  // Channel B Data
+        {
+            uint8_t val = 0;
+            if (!rx_fifo_.empty()) {
+                val = rx_fifo_.front();
+                rx_fifo_.pop();
+                update_interrupts();
             }
-            return read_rr(1);  // RR1
-            
-        case 0x03:  // Control
-            return read_rr(0);  // RR0
+            return val;
+        }
+
+        case 0x02:  // Channel A Control — return RR0 (default register pointer)
+        case 0x03:  // Channel B Control
+            return read_rr(0);
     }
-    
+
     return 0xFF;
 }
 
@@ -131,6 +135,9 @@ uint8_t Z80Dart::read_rr(int reg) {
     
     switch (reg) {
         case 0:  // RR0 - Status
+            // Poll backend for incoming data before reporting status.
+            // This ensures RX_AVAILABLE is up-to-date when the Z80 checks.
+            if (rx_poll_) rx_poll_();
             val = rr0_[ch];
             // Update TX empty status
             if (tx_buffer_empty_) val |= RR0_TX_BUFFER_EMPTY;
@@ -884,11 +891,18 @@ void SerialInterface::apply_config() {
     if (backend) {
         backend->open();
         
-        // Connect DART to backend + mirror to serial terminal
+        // Connect DART TX to backend + mirror to serial terminal
         dart.set_rx_callback([this](uint8_t byte) {
             if (backend) backend->send(byte);
             extern void serial_terminal_feed_byte(uint8_t byte);
             serial_terminal_feed_byte(byte);
+        });
+
+        // Poll backend for incoming data on DART status reads
+        dart.set_rx_poll([this]() {
+            if (backend && backend->has_data()) {
+                dart.enqueue_rx(backend->recv());
+            }
         });
         
         // Set manual baud rate if configured
@@ -926,18 +940,26 @@ void PlotterBackend::close() {
 
 void PlotterBackend::send(uint8_t byte) {
     if (plotter_ && open_) {
-        plotter_->feed_byte(byte & 0x7F);  // HP-GL is 7-bit ASCII
+        if (byte == 0x05) {             // ENQ — handshake query
+            enq_pending_ = true;        // respond with ACK on next recv()
+        } else {
+            plotter_->feed_byte(byte & 0x7F);  // HP-GL is 7-bit ASCII
+        }
         xon_pending_ = true;  // re-arm flow control after each byte
     }
 }
 
 bool PlotterBackend::has_data() const {
-    return xon_pending_;
+    return enq_pending_ || xon_pending_;
 }
 
 uint8_t PlotterBackend::recv() {
+    if (enq_pending_) {
+        enq_pending_ = false;
+        return 0x06;  // ACK — plotter ready
+    }
     xon_pending_ = false;
-    return 0x11;  // XON — plotter ready for more data
+    return 0x11;      // XON — ready for more data
 }
 
 std::string PlotterBackend::status() const {

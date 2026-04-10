@@ -1512,6 +1512,11 @@ int emulator_init ()
    // Auto-load M4 Board ROM if enabled and slot is free
    m4board_load_rom(memmap_ROM, CPC.rom_path, CPC.resources_path);
 
+   // Auto-load Serial Interface ROM if enabled and slot is free
+   if (g_serial_interface.get_config().enabled) {
+      g_si_rom.load(memmap_ROM, CPC.rom_path);
+   }
+
    // Register peripheral I/O handlers and core hooks
    io_dispatch_init();
 
@@ -1531,6 +1536,7 @@ void emulator_shutdown ()
    delete [] pbMF2ROM;
    pbMF2ROM = nullptr;
    pbMF2ROMbackup = nullptr;
+   g_si_rom.unload(memmap_ROM); // free auto-loaded SI ROM before general cleanup
    m4board_unload_rom(memmap_ROM); // free auto-loaded M4 ROM before general cleanup
    for (iRomNum = 2; iRomNum < MAX_ROM_SLOTS; iRomNum++) // loop for ROMs 2-31
    {
