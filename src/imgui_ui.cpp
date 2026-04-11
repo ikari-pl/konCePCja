@@ -198,6 +198,12 @@ static void process_pending_dialog()
       g_m4board.sd_root_path = path;
       if (g_m4board.enabled) emulator_init();
       break;
+    case FileDialogAction::SavePlotterSVG:
+      if (g_plotter.export_svg(path))
+        imgui_toast_success("SVG exported to " + fname);
+      else
+        imgui_toast_error("Failed to export SVG");
+      break;
     default:
       break;
   }
@@ -3574,32 +3580,14 @@ void imgui_render_plotter_preview() {
 
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 180.0f);
     if (ImGui::SmallButton("Export SVG...")) {
-        ImGui::OpenPopup("##svg_export_path");
+        static const SDL_DialogFileFilter filters[] = { { "SVG files", "svg" } };
+        SDL_ShowSaveFileDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SavePlotterSVG)),
+            mainSDLWindow, filters, 1, "plotter_output.svg");
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear")) {
         g_plotter.clear();
-    }
-
-    // SVG export popup
-    static char svg_path[512] = "plotter_output.svg";
-    if (ImGui::BeginPopup("##svg_export_path")) {
-        ImGui::Text("Export to SVG:");
-        ImGui::SetNextItemWidth(350.0f);
-        ImGui::InputText("##svgpath", svg_path, sizeof(svg_path));
-        if (ImGui::Button("Export")) {
-            if (g_plotter.export_svg(svg_path)) {
-                imgui_toast_success("SVG exported to " + std::string(svg_path));
-            } else {
-                imgui_toast_error("Failed to export SVG");
-            }
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
     }
 
     ImGui::Separator();

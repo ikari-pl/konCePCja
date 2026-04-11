@@ -14,7 +14,8 @@ enum class FileDialogAction {
   LoadROM,
   LoadDiskA_LED, LoadDiskB_LED,
   LoadTape_LED,
-  SelectM4SDFolder
+  SelectM4SDFolder,
+  SavePlotterSVG
 };
 
 struct ImGuiUIState {
