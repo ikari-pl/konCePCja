@@ -561,13 +561,26 @@ void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGu
 bool imgui_any_keyboard_ui_active()
 {
   ImGuiIO& io = ImGui::GetIO();
-  return io.WantTextInput
-      || imgui_state.show_menu || imgui_state.show_options
+
+  // In docked mode the CPC Screen window tracks focus explicitly.
+  // When it's focused, keyboard always routes to the CPC regardless of
+  // which other panels are open.
+  if (imgui_state.cpc_screen_focused) return false;
+
+  // A text-input widget is actively focused — must go to ImGui.
+  if (io.WantTextInput) return true;
+
+  // Modal-ish overlays that pause emulation or require text interaction.
+  return imgui_state.show_menu || imgui_state.show_options
       || imgui_state.show_about || imgui_state.show_quit_confirm
-      || imgui_state.show_memory_tool || imgui_state.show_layout_dropdown
-      || imgui_state.show_devtools || g_devtools_ui.any_window_open()
+      || imgui_state.show_layout_dropdown
       || g_command_palette.is_open()
       || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+
+  // NOTE: show_devtools / g_devtools_ui.any_window_open() intentionally
+  // NOT included. Debugger panels being visible does not block keyboard —
+  // the CPC must remain interactive while the debugger is observing.
+  // Specific text fields in devtools set WantTextInput when focused.
 }
 
 // ─────────────────────────────────────────────────

@@ -1651,6 +1651,25 @@ static void audio_push_buffer(const byte* data, int len)
       return;
    }
 
+   // Maintain minimum queue depth to absorb macOS compositor stalls
+   // (observed up to ~70ms). Target: 4 frames = 80ms headroom.
+   // Top-up with silence so the hardware never runs dry mid-stall.
+   // Adds at most 80ms audio latency — acceptable for emulation.
+   {
+      const int target_bytes = len * 4;
+      int queued_now = SDL_GetAudioStreamQueued(audio_stream);
+      if (queued_now >= 0 && queued_now < target_bytes) {
+         static std::vector<byte> silence_frame;
+         if (static_cast<int>(silence_frame.size()) != len)
+            silence_frame.assign(static_cast<size_t>(len), 0);
+         int deficit = target_bytes - queued_now;
+         while (deficit >= len) {
+            SDL_PutAudioStreamData(audio_stream, silence_frame.data(), len);
+            deficit -= len;
+         }
+      }
+   }
+
    // Measure push interval (after successful push)
    if (audio_last_push_tick > 0) {
       uint64_t interval = now - audio_last_push_tick;
