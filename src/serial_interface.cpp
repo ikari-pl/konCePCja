@@ -1,5 +1,22 @@
 /* konCePCja — Serial Interface Implementation */
 
+// winsock2.h MUST come before any other include on Windows.
+// <filesystem> (and other standard headers) drag in <windows.h> which includes
+// <winsock.h> (v1). If winsock2.h arrives later, its guards prevent the v2
+// definitions from being re-processed, leaving the TU with v1 structs and
+// corrupt Winsock runtime state in Debug builds.
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#ifdef _MSC_VER
+#pragma comment(lib, "ws2_32.lib")
+#endif
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0   // socket is already non-blocking; flag 0 is equivalent
+#endif
+typedef int ssize_t;
+#endif
+
 #include "serial_interface.h"
 #include "io_dispatch.h"
 #include "log.h"
@@ -651,17 +668,10 @@ void NullModemBackend::disconnect_peer() {
 
 // TCP Socket Backend Implementation
 #ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-// MSG_DONTWAIT doesn't exist on Windows; socket is already non-blocking so flag 0 works.
-#ifndef MSG_DONTWAIT
-#define MSG_DONTWAIT 0
-#endif
-typedef int ssize_t;
-static inline void tcp_sock_close(int s)   { closesocket(s); }
+static inline void tcp_sock_close(int s)      { closesocket(s); }
 static inline void tcp_set_nonblocking(int s) { u_long m = 1; ioctlsocket(s, FIONBIO, &m); }
-static inline int  tcp_conn_inprogress()   { return WSAEWOULDBLOCK; }
-static inline int  tcp_last_error()        { return WSAGetLastError(); }
+static inline int  tcp_conn_inprogress()      { return WSAEWOULDBLOCK; }
+static inline int  tcp_last_error()           { return WSAGetLastError(); }
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -670,10 +680,10 @@ static inline int  tcp_last_error()        { return WSAGetLastError(); }
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
-static inline void tcp_sock_close(int s)   { ::close(s); }
+static inline void tcp_sock_close(int s)      { ::close(s); }
 static inline void tcp_set_nonblocking(int s) { int f = fcntl(s, F_GETFL, 0); fcntl(s, F_SETFL, f | O_NONBLOCK); }
-static inline int  tcp_conn_inprogress()   { return EINPROGRESS; }
-static inline int  tcp_last_error()        { return errno; }
+static inline int  tcp_conn_inprogress()      { return EINPROGRESS; }
+static inline int  tcp_last_error()           { return errno; }
 #endif
 
 TcpSocketBackend::TcpSocketBackend(const std::string& host, uint16_t port)
