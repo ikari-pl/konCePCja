@@ -39,9 +39,11 @@
 #endif
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <math.h>
 #include <memory>
 #include <iostream>
+#include <unordered_map>
 #include "savepng.h"
 
 #include "imgui.h"
@@ -75,6 +77,7 @@ typedef ptrdiff_t GLsizeiptr;
 #define GL_COLOR_ATTACHMENT0              0x8CE0
 #define GL_FRAMEBUFFER_COMPLETE           0x8CD5
 #define GL_CLAMP_TO_EDGE                  0x812F
+#define GL_FRAMEBUFFER_BINDING            0x8CA6
 #endif
 
 SDL_Window* mainSDLWindow = nullptr;
@@ -160,6 +163,19 @@ void video_get_cpc_size(int& w, int& h) {
   if (vid) { w = vid->w; h = vid->h; }
   else     { w = 0; h = 0; }
 }
+
+bool video_is_sdl_renderer() { return using_sdl_renderer; }
+
+// ── Offscreen texture cache (implementation follows gl3 struct below) ──────
+
+struct OffscreenEntry {
+    GLuint fbo = 0;
+    GLuint tex = 0;
+    int    w   = 0;
+    int    h   = 0;
+    size_t dirty = ~size_t(0);
+};
+static std::unordered_map<std::string, OffscreenEntry> g_offscreen_cache;
 
 // Called from direct_flip_a() and swscale_blit_a() to capture the current frame
 static void video_capture_if_pending() {
@@ -518,6 +534,94 @@ static struct CrtGL {
         return true;
     }
 } gl3;
+
+// ── video_offscreen_texture ────────────────────────────────────────────────
+// Defined here so it can access the file-local `gl3` function table.
+
+uintptr_t video_offscreen_texture(
+    const char* key, int canvas_w, int canvas_h, size_t dirty_marker,
+    const std::function<void(ImDrawList*, int, int)>& draw_fn)
+{
+    if (using_sdl_renderer) return 0;
+    if (canvas_w <= 0 || canvas_h <= 0) return 0;
+
+    // Lazily load GL3 function pointers (reuses the CRT-shader table).
+    if (!gl3.GenFramebuffers && !gl3.load()) return 0;
+
+    auto& e = g_offscreen_cache[key];
+
+    const bool size_changed = (canvas_w != e.w || canvas_h != e.h);
+    if (!size_changed && e.dirty == dirty_marker && e.tex)
+        return static_cast<uintptr_t>(e.tex);
+
+    // (Re-)create FBO + texture when dimensions change.
+    if (size_changed || !e.fbo) {
+        if (e.fbo) { gl3.DeleteFramebuffers(1, &e.fbo); e.fbo = 0; }
+        if (e.tex) { glDeleteTextures(1, &e.tex);       e.tex = 0; }
+
+        glGenTextures(1, &e.tex);
+        glBindTexture(GL_TEXTURE_2D, e.tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, canvas_w, canvas_h, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+        gl3.GenFramebuffers(1, &e.fbo);
+        gl3.BindFramebuffer(GL_FRAMEBUFFER, e.fbo);
+        gl3.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  GL_TEXTURE_2D, e.tex, 0);
+        GLenum status = gl3.CheckFramebufferStatus(GL_FRAMEBUFFER);
+        gl3.BindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            LOG_ERROR("video_offscreen_texture: FBO '" << key
+                      << "' incomplete (0x" << std::hex << status << ")");
+            gl3.DeleteFramebuffers(1, &e.fbo); e.fbo = 0;
+            glDeleteTextures(1, &e.tex);       e.tex = 0;
+            return 0;
+        }
+        e.w = canvas_w;
+        e.h = canvas_h;
+        e.dirty = ~size_t(0); // force redraw at new size
+    }
+
+    // Build ImDrawList with caller-supplied content.
+    ImDrawList draw_list(ImGui::GetDrawListSharedData());
+    draw_list.PushClipRect(ImVec2(0, 0),
+                           ImVec2(static_cast<float>(canvas_w),
+                                  static_cast<float>(canvas_h)));
+    draw_list.PushTextureID(ImGui::GetIO().Fonts->TexID);
+    draw_fn(&draw_list, canvas_w, canvas_h);
+
+    // Wrap in ImDrawData for the OpenGL3 backend.
+    ImDrawData draw_data;
+    draw_data.Valid            = true;
+    draw_data.CmdLists.push_back(&draw_list);
+    draw_data.CmdListsCount    = 1;
+    draw_data.TotalVtxCount    = draw_list.VtxBuffer.Size;
+    draw_data.TotalIdxCount    = draw_list.IdxBuffer.Size;
+    draw_data.DisplayPos       = ImVec2(0, 0);
+    draw_data.DisplaySize      = ImVec2(static_cast<float>(canvas_w),
+                                        static_cast<float>(canvas_h));
+    draw_data.FramebufferScale = ImVec2(1, 1);
+
+    // Render into the FBO (save/restore framebuffer binding and viewport).
+    GLint prev_fbo = 0;
+    GLint prev_viewport[4] = {};
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetIntegerv(GL_VIEWPORT, prev_viewport);
+    gl3.BindFramebuffer(GL_FRAMEBUFFER, e.fbo);
+    glViewport(0, 0, canvas_w, canvas_h);
+    ImGui_ImplOpenGL3_RenderDrawData(&draw_data);
+    gl3.BindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
+    glViewport(prev_viewport[0], prev_viewport[1],
+               prev_viewport[2], prev_viewport[3]);
+
+    e.dirty = dirty_marker;
+    return static_cast<uintptr_t>(e.tex);
+}
 
 static int crt_tier = -1;   // 0=Basic, 1=Full, 2=Lottes; -1=inactive
 static GLuint crt_program = 0;

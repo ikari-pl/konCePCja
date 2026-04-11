@@ -21,10 +21,13 @@
 
 #include "SDL3/SDL.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 #include <atomic>
 #include <mutex>
+
+struct ImDrawList;
 
 typedef struct video_plugin
 {
@@ -81,6 +84,18 @@ bool video_try_lightweight_switch();
 // Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to ImTextureID.
 uintptr_t video_get_cpc_texture();
 void video_get_cpc_size(int& w, int& h);
+
+// Returns true if the SDL_Renderer backend is active (no GL FBO support).
+bool video_is_sdl_renderer();
+
+// Renders an ImDrawList into a cached off-screen texture via the OpenGL3 backend.
+// Only re-renders when dirty_marker changes or canvas dimensions change.
+// draw_fn receives a ready-to-use ImDrawList plus the FBO canvas dimensions.
+// Returns the GL texture ID as uintptr_t, or 0 if GL is unavailable.
+// Display with ImVec2(0,1)/ImVec2(1,0) UV (FBO is stored bottom-up in GL).
+uintptr_t video_offscreen_texture(
+    const char* key, int canvas_w, int canvas_h, size_t dirty_marker,
+    const std::function<void(ImDrawList*, int, int)>& draw_fn);
 
 // Request a window screenshot (CPC display + ImGui overlay).
 // Sets path; capture happens on the next rendered frame.

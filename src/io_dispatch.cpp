@@ -99,6 +99,9 @@ extern void drive_sounds_register_hooks();
 // MF2 registration is done by kon_cpc_ja.cpp (uses file-local globals)
 extern void mf2_register_io();
 
+// Serial interface registration
+extern void serial_interface_register_io();
+
 void io_dispatch_init()
 {
    io_dispatch_clear();
@@ -109,6 +112,9 @@ void io_dispatch_init()
    m4board_register_io();
    phazer_register_io();
    mf2_register_io();
+
+   // Serial interface (AMSIf)
+   serial_interface_register_io();
 
    // Core hooks
    amx_mouse_register_hooks();

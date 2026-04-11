@@ -59,6 +59,8 @@
 #include "silicon_disc.h"
 #include "m4board.h"
 #include "m4board_http.h"
+#include "serial_interface.h"
+#include "plotter.h"
 #include "devtools_ui.h"
 #include "z80_assembler.h"
 #include "video.h"
@@ -477,6 +479,14 @@ void init_command_registry() {
     "  status: Show enabled/disabled and allocation.\n"
     "  clear:  Zero all contents.\n"
     "  save/load: Persist to/from file.");
+
+  register_command("plotter", "HARDWARE",
+    "plotter status | plotter export [path] | plotter clear",
+    "HP-GL plotter emulation",
+    "Query and control the HP 7470A plotter emulation.\n"
+    "  status: Show pen position, pen up/down, selected pen, segment count.\n"
+    "  export: Export current drawing to SVG (default: plotter_output.svg).\n"
+    "  clear:  Clear all drawn segments.");
 
   register_command("m4", "HARDWARE",
     "m4 status | m4 ls | m4 cd <path> | m4 reset | m4 wifi [0|1] | m4 http [start|stop|status] | m4 ports | m4 port set/del <cpc> [host]",
@@ -3044,6 +3054,122 @@ std::string handle_command(const std::string& line) {
       return "ERR 500 load-failed\n";
     }
     return "ERR 400 usage: sdisc (status|clear|save|load) [path]\n";
+  }
+
+  // --- Serial Interface commands ---
+  if (cmd == "serial") {
+    if (parts.size() < 2) {
+      return "ERR 400 usage: serial (status|send|send_string|config)\n";
+    }
+    if (parts[1] == "status") {
+      auto cfg = g_serial_interface.get_config();
+      std::stringstream ss;
+      ss << "OK enabled=" << (cfg.enabled ? 1 : 0)
+         << " backend=" << static_cast<int>(cfg.backend_type)
+         << " tx_empty=" << (g_serial_interface.dart.tx_empty() ? 1 : 0)
+         << " rx_available=" << (g_serial_interface.dart.rx_available() ? 1 : 0)
+         << " baud=" << cfg.baud_rate;
+      if (g_serial_interface.backend) {
+        ss << " backend_name=" << g_serial_interface.backend->name();
+        ss << " backend_status=" << g_serial_interface.backend->status();
+      }
+      ss << "\n";
+      return ss.str();
+    }
+    if (parts[1] == "send" && parts.size() >= 3) {
+      try {
+        int byte = parse_int(parts[2]);
+        if (byte < 0 || byte > 255) {
+          return "ERR 400 byte must be 0-255\n";
+        }
+        g_serial_interface.dart.enqueue_rx(static_cast<uint8_t>(byte));
+        return "OK sent byte " + parts[2] + "\n";
+      } catch (const std::exception&) {
+        return "ERR 400 bad-byte\n";
+      }
+    }
+    if (parts[1] == "send_string" && parts.size() >= 3) {
+      size_t pos = line.find("send_string ");
+      if (pos == std::string::npos) return "ERR 400 bad-args\n";
+      std::string str = line.substr(pos + 12);
+      for (char c : str) {
+        g_serial_interface.dart.enqueue_rx(static_cast<uint8_t>(c));
+      }
+      return "OK sent " + std::to_string(str.size()) + " bytes\n";
+    }
+    if (parts[1] == "config") {
+      if (parts.size() == 3 && parts[2] == "get") {
+        auto cfg = g_serial_interface.get_config();
+        std::stringstream ss;
+        ss << "OK enabled=" << (cfg.enabled ? 1 : 0)
+           << " backend=" << static_cast<int>(cfg.backend_type)
+           << " device=" << cfg.device_path
+           << " tcp_host=" << cfg.tcp_host
+           << " tcp_port=" << cfg.tcp_port
+           << " baud=" << cfg.baud_rate << "\n";
+        return ss.str();
+      }
+      if (parts.size() >= 5 && parts[2] == "set") {
+        if (parts[3] == "enabled") {
+          auto cfg = g_serial_interface.get_config();
+          cfg.enabled = (parse_int(parts[4]) != 0);
+          g_serial_interface.set_config(cfg);
+          g_serial_interface.apply_config();
+          return "OK\n";
+        }
+        if (parts[3] == "backend") {
+          auto cfg = g_serial_interface.get_config();
+          cfg.backend_type = static_cast<SerialBackendType>(parse_int(parts[4]));
+          g_serial_interface.set_config(cfg);
+          g_serial_interface.apply_config();
+          return "OK (reset to apply backend change)\n";
+        }
+        if (parts[3] == "baud") {
+          auto cfg = g_serial_interface.get_config();
+          cfg.baud_rate = parse_int(parts[4]);
+          g_serial_interface.set_config(cfg);
+          g_serial_interface.apply_config();
+          return "OK\n";
+        }
+        return "ERR 400 unknown serial config key\n";
+      }
+      return "ERR 400 usage: serial config (get|set key value)\n";
+    }
+    return "ERR 400 usage: serial (status|send|send_string|config)\n";
+  }
+
+  // --- Plotter commands ---
+  if (cmd == "plotter") {
+    if (parts.size() < 2) {
+      return "ERR 400 usage: plotter (status|export [path]|clear)\n";
+    }
+    if (parts[1] == "status") {
+      std::stringstream ss;
+      ss << "OK pen=" << g_plotter.selected_pen()
+         << " pen_down=" << (g_plotter.pen_down() ? 1 : 0)
+         << " x=" << g_plotter.pen_x()
+         << " y=" << g_plotter.pen_y()
+         << " segments=" << g_plotter.segments().size()
+         << "\n";
+      return ss.str();
+    }
+    if (parts[1] == "export") {
+      std::string path = (parts.size() >= 3) ? parts[2] : "plotter_output.svg";
+      // Reject path traversal and absolute paths
+      if (std::filesystem::path(path).is_absolute() ||
+          path.find("..") != std::string::npos) {
+        return "ERR 403 path-traversal-rejected\n";
+      }
+      if (g_plotter.export_svg(path)) {
+        return "OK exported to " + path + "\n";
+      }
+      return "ERR 500 export-failed\n";
+    }
+    if (parts[1] == "clear") {
+      g_plotter.clear();
+      return "OK\n";
+    }
+    return "ERR 400 usage: plotter (status|export [path]|clear)\n";
   }
 
   // --- Enhanced search command (with wildcard support) ---

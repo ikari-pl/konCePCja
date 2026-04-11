@@ -23,6 +23,7 @@
 #include "types.h"
 #include "crtc.h"
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -207,6 +208,15 @@ void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address);
 // CP/M BDOS hook — fires when PC == 0x0005 and C == 2 (C_WRITE), passing E register.
 // Used by the telnet console to capture CP/M console output.
 void z80_set_bdos_output_hook(TxtOutputHook hook);
+
+// CP/M BDOS serial hooks — fired at PC == 0x0005.
+//   Out: C == 5 (L_WRITE), called with byte in E.  BDOS call proceeds normally after.
+//   In:  C == 3 (A_READ).  Called with no args; return value placed in A, BDOS call
+//        is suppressed (RET simulated).  Avoids blocking in BIOS AUXIN on plain CPC.
+using BdosSerialOutHook = std::function<void(uint8_t)>;
+using BdosSerialInHook  = std::function<uint8_t()>;
+void z80_set_bdos_serial_out_hook(BdosSerialOutHook hook);
+void z80_set_bdos_serial_in_hook(BdosSerialInHook hook);
 
 // Handle main z80 instructions.
 void z80_execute_instruction();

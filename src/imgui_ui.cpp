@@ -34,6 +34,8 @@
 #include "symbiface.h"
 #include "m4board.h"
 #include "m4board_http.h"
+#include "serial_interface.h"
+#include "plotter.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_dialog.h>
 
@@ -195,6 +197,12 @@ static void process_pending_dialog()
     case FileDialogAction::SelectM4SDFolder:
       g_m4board.sd_root_path = path;
       if (g_m4board.enabled) emulator_init();
+      break;
+    case FileDialogAction::SavePlotterSVG:
+      if (g_plotter.export_svg(path))
+        imgui_toast_success("SVG exported to " + fname);
+      else
+        imgui_toast_error("Failed to export SVG");
       break;
     default:
       break;
@@ -360,6 +368,10 @@ void imgui_init_ui()
       []() { g_devtools_ui.toggle_window("recording_controls"); });
   g_command_palette.register_command("Assembler", "Z80 assembler IDE", "",
       []() { g_devtools_ui.toggle_window("assembler"); });
+  g_command_palette.register_command("Serial Terminal", "Show serial terminal window", "F3",
+      []() { imgui_state.show_serial_terminal = !imgui_state.show_serial_terminal; });
+  g_command_palette.register_command("Plotter Preview", "HP-GL plotter output preview and SVG export", "",
+      []() { imgui_state.show_plotter_preview = !imgui_state.show_plotter_preview; });
 }
 
 // ─────────────────────────────────────────────────
@@ -396,6 +408,8 @@ void imgui_render_ui()
   imgui_render_statusbar();
   if (imgui_state.show_menu)        imgui_render_menu();
   if (imgui_state.show_options)     imgui_render_options();
+  if (imgui_state.show_serial_terminal) imgui_render_serial_terminal();
+  if (imgui_state.show_plotter_preview) imgui_render_plotter_preview();
   if (imgui_state.show_devtools)    imgui_render_devtools();
   if (imgui_state.show_memory_tool) imgui_render_memory_tool();
   if (imgui_state.show_vkeyboard)   imgui_render_vkeyboard();
@@ -855,7 +869,6 @@ static void imgui_render_menubar()
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
     if (ImGui::MenuItem("Memory Tool")) {
-      // Open the DevTools Memory Hex window (superset of legacy Memory Tool)
       imgui_state.show_devtools = true;
       g_devtools_ui.toggle_window("memory_hex");
     }
@@ -868,6 +881,45 @@ static void imgui_render_menubar()
     if (ImGui::MenuItem("MF2 Stop", "F6")) {
       koncpc_menu_action(KONCPC_MF2STOP);
     }
+    ImGui::EndMenu();
+  }
+
+  // ── Window ──
+  if (ImGui::BeginMenu("Window")) {
+    ImGui::MenuItem("DevTools Toolbar", "Shift+F2", &imgui_state.show_devtools);
+    ImGui::MenuItem("Virtual Keyboard", "Shift+F1", &imgui_state.show_vkeyboard);
+    ImGui::MenuItem("Serial Terminal",  nullptr,     &imgui_state.show_serial_terminal);
+    ImGui::MenuItem("Plotter Preview",  nullptr,     &imgui_state.show_plotter_preview);
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Debug Windows");
+    ImGui::MenuItem("Registers",          nullptr, g_devtools_ui.window_ptr("registers"));
+    ImGui::MenuItem("Disassembly",        nullptr, g_devtools_ui.window_ptr("disassembly"));
+    ImGui::MenuItem("Memory Hex",         nullptr, g_devtools_ui.window_ptr("memory_hex"));
+    ImGui::MenuItem("Stack",              nullptr, g_devtools_ui.window_ptr("stack"));
+    ImGui::MenuItem("Breakpoints",        nullptr, g_devtools_ui.window_ptr("breakpoints"));
+    ImGui::MenuItem("Symbols",            nullptr, g_devtools_ui.window_ptr("symbols"));
+    ImGui::MenuItem("Assembler",          nullptr, g_devtools_ui.window_ptr("assembler"));
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Hardware");
+    ImGui::MenuItem("Video State",        nullptr, g_devtools_ui.window_ptr("video_state"));
+    ImGui::MenuItem("Audio State",        nullptr, g_devtools_ui.window_ptr("audio_state"));
+    ImGui::MenuItem("ASIC Registers",     nullptr, g_devtools_ui.window_ptr("asic"));
+    ImGui::MenuItem("Silicon Disc",       nullptr, g_devtools_ui.window_ptr("silicon_disc"));
+    ImGui::MenuItem("Disc Tools",         nullptr, g_devtools_ui.window_ptr("disc_tools"));
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Analysis");
+    ImGui::MenuItem("GFX Finder",         nullptr, g_devtools_ui.window_ptr("gfx_finder"));
+    ImGui::MenuItem("Data Areas",         nullptr, g_devtools_ui.window_ptr("data_areas"));
+    ImGui::MenuItem("Disasm Export",      nullptr, g_devtools_ui.window_ptr("disasm_export"));
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Recording");
+    ImGui::MenuItem("Session Recording",  nullptr, g_devtools_ui.window_ptr("session_recording"));
+    ImGui::MenuItem("Recording Controls", nullptr, g_devtools_ui.window_ptr("recording_controls"));
+
     ImGui::EndMenu();
   }
 
@@ -2409,6 +2461,171 @@ static void imgui_render_options()
       ImGui::EndTabItem();
     }
 
+    // ── Serial Interface Tab ──
+    if (ImGui::BeginTabItem("Serial Interface")) {
+      SerialConfig cfg = g_serial_interface.get_config();
+      bool serial_en = cfg.enabled;
+      
+      if (ImGui::Checkbox("Enable Serial Interface", &serial_en)) {
+        cfg.enabled = serial_en;
+        g_serial_interface.set_config(cfg);
+        g_serial_interface.apply_config();
+      }
+      
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+          "Serial Interface — AMSIf-compatible serial port emulation\n\n"
+          "Emulates Z80 DART (Z8470) and Intel 8253 at ports $FADx/$FBDx.\n"
+          "Supports backends: file, host serial, null modem, TCP, plotter.\n"
+          "Plotter: use GSX driver DDHP7470.PRL on CPC to output SVG."
+        );
+      }
+      
+      ImGui::Separator();
+      
+      // Backend type selection
+      const char* backend_types[] = { "Null", "File", "Host Serial", "Null Modem", "TCP Socket", "HP-GL Plotter" };
+      int current_backend = static_cast<int>(cfg.backend_type);
+      ImGui::SetNextItemWidth(150.0f);
+      if (ImGui::Combo("Backend", &current_backend, backend_types, IM_ARRAYSIZE(backend_types))) {
+        cfg.backend_type = static_cast<SerialBackendType>(current_backend);
+        g_serial_interface.set_config(cfg);
+      }
+      
+      // Backend-specific options
+      ImGui::Spacing();
+      ImGui::TextDisabled("Connection Settings");
+      
+      switch (cfg.backend_type) {
+        case SerialBackendType::File: {
+          char input_buf[256] = {};
+          char output_buf[256] = {};
+          snprintf(input_buf, sizeof(input_buf), "%s", cfg.input_file.c_str());
+          snprintf(output_buf, sizeof(output_buf), "%s", cfg.output_file.c_str());
+          
+          ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+          if (ImGui::InputText("Input File##serial", input_buf, sizeof(input_buf))) {
+            cfg.input_file = input_buf;
+          }
+          ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+          if (ImGui::InputText("Output File##serial", output_buf, sizeof(output_buf))) {
+            cfg.output_file = output_buf;
+          }
+          break;
+        }
+        
+        case SerialBackendType::HostSerial: {
+          char device_buf[256] = {};
+          snprintf(device_buf, sizeof(device_buf), "%s", cfg.device_path.c_str());
+          
+          ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 100.0f);
+          if (ImGui::InputText("Device##serial", device_buf, sizeof(device_buf))) {
+            cfg.device_path = device_buf;
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("List Ports##serial")) {
+            auto ports = HostSerialBackend::list_ports();
+            if (ports.empty()) {
+              ImGui::OpenPopup("No Serial Ports");
+            } else {
+              ImGui::OpenPopup("Select Serial Port");
+            }
+          }
+          
+          // Port selection popup
+          if (ImGui::BeginPopup("Select Serial Port")) {
+            auto ports = HostSerialBackend::list_ports();
+            for (const auto& port : ports) {
+              if (ImGui::Selectable(port.c_str())) {
+                cfg.device_path = port;
+              }
+            }
+            ImGui::EndPopup();
+          }
+          if (ImGui::BeginPopup("No Serial Ports")) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "No serial ports found");
+            ImGui::EndPopup();
+          }
+          break;
+        }
+        
+        case SerialBackendType::TcpSocket: {
+          char host_buf[256] = {};
+          snprintf(host_buf, sizeof(host_buf), "%s", cfg.tcp_host.c_str());
+          
+          ImGui::SetNextItemWidth(200.0f);
+          if (ImGui::InputText("Host##serial", host_buf, sizeof(host_buf))) {
+            cfg.tcp_host = host_buf;
+          }
+          ImGui::SameLine();
+          int port = cfg.tcp_port;
+          ImGui::SetNextItemWidth(80.0f);
+          if (ImGui::InputInt("Port##serial", &port, 1, 100)) {
+            if (port < 1) port = 1;
+            if (port > 65535) port = 65535;
+            cfg.tcp_port = static_cast<uint16_t>(port);
+          }
+          break;
+        }
+        
+        case SerialBackendType::NullModem:
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Loopback mode - connect two emulated instances");
+          break;
+          
+        case SerialBackendType::Null:
+        default:
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "All data is dropped (null backend)");
+          break;
+          
+        case SerialBackendType::Plotter:
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "HP 7470A plotter - outputs SVG");
+          ImGui::Text("Enable and use GSX driver + DDHP7470.PRL on CPC.");
+          break;
+      }
+      
+      // Common settings
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::TextDisabled("Serial Settings");
+      
+      const char* baud_items = "300\01200\02400\04800\09600\019200\038400\057600\0115200";
+      int baud_idx = 4; // default 9600
+      int baud = cfg.baud_rate;
+      const int baud_rates[] = { 300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200 };
+      for (int i = 0; i < 9; i++) {
+        if (baud_rates[i] == baud) {
+          baud_idx = i;
+          break;
+        }
+      }
+      ImGui::SetNextItemWidth(120.0f);
+      if (ImGui::Combo("Baud Rate##serial", &baud_idx, baud_items)) {
+        cfg.baud_rate = baud_rates[baud_idx];
+      }
+      
+      // Apply button
+      ImGui::Spacing();
+      if (ImGui::Button("Apply Changes##serial")) {
+        g_serial_interface.set_config(cfg);
+        g_serial_interface.apply_config();
+      }
+      
+      // Status
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::TextDisabled("Status");
+      if (g_serial_interface.backend) {
+        ImGui::Text("Backend: %s", g_serial_interface.backend->name().c_str());
+        ImGui::Text("Status: %s", g_serial_interface.backend->status().c_str());
+        ImGui::Text("TX Empty: %s", g_serial_interface.dart.tx_empty() ? "Yes" : "No");
+        ImGui::Text("RX Available: %s", g_serial_interface.dart.rx_available() ? "Yes" : "No");
+      } else {
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Serial interface disabled");
+      }
+      
+      ImGui::EndTabItem();
+    }
+
     ImGui::EndTabBar();
   }
 
@@ -3187,5 +3404,325 @@ static void imgui_render_vkeyboard()
   if (!open) imgui_state.show_vkeyboard = false;
 
   ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Serial Terminal Window
+// ─────────────────────────────────────────────────
+
+struct SerialTerminalState {
+    static constexpr int BUFFER_SIZE = 4096;
+    std::vector<uint8_t> tx_buffer;
+    std::vector<uint8_t> rx_buffer;
+    bool auto_scroll = true;
+    bool show_hex = true;
+    bool show_ascii = true;
+    bool wrap_lines = true;
+    uint8_t filter_byte = 0;
+    bool use_filter = false;
+    char input_buf[256] = "";
+};
+
+static SerialTerminalState s_serial_term;
+
+static void render_hex_line(const uint8_t* data, int len) {
+    char hex[64] = {};
+    char ascii[17] = {};
+    int j = 0;
+    for (int i = 0; i < len && i < 16; i++) {
+        snprintf(hex + j, sizeof(hex) - j, "%02X ", data[i]);
+        j += 3;
+        ascii[i] = (data[i] >= 32 && data[i] < 127) ? data[i] : '.';
+    }
+    ascii[len < 16 ? len : 16] = '\0';
+    ImGui::Text("%-48s %s", hex, ascii);
+}
+
+void serial_terminal_feed_byte(uint8_t byte) {
+    if (s_serial_term.rx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
+        s_serial_term.rx_buffer.push_back(byte);
+    }
+}
+
+void imgui_render_serial_terminal() {
+    ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Serial Terminal", &imgui_state.show_serial_terminal)) {
+        ImGui::End();
+        return;
+    }
+    
+    // Status bar
+    ImGui::Text("DART: TX=%s RX=%s | Backend: %s",
+        g_serial_interface.dart.tx_empty() ? "Empty" : "Busy",
+        g_serial_interface.dart.rx_available() ? "Data" : "Empty",
+        g_serial_interface.backend ? g_serial_interface.backend->name().c_str() : "None");
+    
+    ImGui::Separator();
+    
+    // Controls
+    ImGui::Checkbox("Auto-scroll", &s_serial_term.auto_scroll);
+    ImGui::SameLine();
+    ImGui::Checkbox("Hex", &s_serial_term.show_hex);
+    ImGui::SameLine();
+    ImGui::Checkbox("ASCII", &s_serial_term.show_ascii);
+    ImGui::SameLine();
+    ImGui::Checkbox("Wrap", &s_serial_term.wrap_lines);
+    ImGui::SameLine();
+    
+    ImGui::PushButtonRepeat(true);
+    if (ImGui::SmallButton("Clear")) {
+        s_serial_term.rx_buffer.clear();
+        s_serial_term.tx_buffer.clear();
+    }
+    ImGui::PopButtonRepeat();
+    
+    ImGui::Separator();
+    
+    // Data is fed via serial_terminal_feed_byte() from the DART TX callback
+    // (see apply_config in serial_interface.cpp) — no direct backend polling here.
+    
+    // Data display
+    {
+        ImGui::BeginChild("##serial_data", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 30), true);
+        
+        // Display RX buffer
+        if (s_serial_term.show_hex) {
+            int line_start = 0;
+            while (line_start < (int)s_serial_term.rx_buffer.size()) {
+                int line_len = std::min(16, (int)s_serial_term.rx_buffer.size() - line_start);
+                render_hex_line(&s_serial_term.rx_buffer[line_start], line_len);
+                line_start += 16;
+            }
+        }
+        
+        if (s_serial_term.show_ascii) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("ASCII View:");
+            std::string ascii_str;
+            for (uint8_t b : s_serial_term.rx_buffer) {
+                char c = (b >= 32 && b < 127) ? b : '.';
+                ascii_str += c;
+            }
+            ImGui::TextWrapped("%s", ascii_str.c_str());
+        }
+        
+        if (s_serial_term.auto_scroll) {
+            ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
+    }
+    
+    // Input area
+    ImGui::Separator();
+    ImGui::Text("TX Buffer: %zu bytes", s_serial_term.tx_buffer.size());
+    
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
+    if (ImGui::InputText("##serial_input", s_serial_term.input_buf, sizeof(s_serial_term.input_buf),
+        ImGuiInputTextFlags_EnterReturnsTrue)) {
+        // Send input
+        for (const char* p = s_serial_term.input_buf; *p; p++) {
+            if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
+                s_serial_term.tx_buffer.push_back(*p);
+                // Send to backend
+                if (g_serial_interface.backend) {
+                    // This would send to the DART, which then calls backend->send()
+                    g_serial_interface.dart.enqueue_rx(*p); // Echo locally for now
+                }
+            }
+        }
+        s_serial_term.input_buf[0] = '\0';
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Send", ImVec2(60, 0))) {
+        for (const char* p = s_serial_term.input_buf; *p; p++) {
+            if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
+                s_serial_term.tx_buffer.push_back(*p);
+            }
+        }
+        s_serial_term.input_buf[0] = '\0';
+    }
+    
+    ImGui::SameLine();
+    if (ImGui::SmallButton("0D")) {
+        strncat(s_serial_term.input_buf, "\r", sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("0A")) {
+        strncat(s_serial_term.input_buf, "\n", sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("1B")) {
+        strncat(s_serial_term.input_buf, "\x1B", sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+    }
+
+    ImGui::End();
+}
+
+// ─────────────────────────────────────────────────
+// Plotter Preview Window
+// ─────────────────────────────────────────────────
+
+void imgui_render_plotter_preview() {
+    ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Plotter Preview", &imgui_state.show_plotter_preview)) {
+        ImGui::End();
+        return;
+    }
+
+    const auto& segments = g_plotter.segments();
+
+    // Toolbar
+    ImGui::Text("Segments: %zu | Pen: %d %s | Pos: %.0f, %.0f",
+        segments.size(),
+        g_plotter.selected_pen(),
+        g_plotter.pen_down() ? "DOWN" : "UP",
+        g_plotter.pen_x(), g_plotter.pen_y());
+
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 180.0f);
+    if (ImGui::SmallButton("Export SVG...")) {
+        static const SDL_DialogFileFilter filters[] = { { "SVG files", "svg" } };
+        SDL_ShowSaveFileDialog(file_dialog_callback,
+            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SavePlotterSVG)),
+            mainSDLWindow, filters, 1, "plotter_output.svg");
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear")) {
+        g_plotter.clear();
+    }
+
+    ImGui::Separator();
+
+    // Drawing canvas
+    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+    ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+    if (canvas_size.x < 50.0f) canvas_size.x = 50.0f;
+    if (canvas_size.y < 50.0f) canvas_size.y = 50.0f;
+
+    // Aspect ratio of HP 7470A paper (A4 landscape)
+    float paper_aspect = static_cast<float>(HPGL_MAX_X) / HPGL_MAX_Y;
+    float canvas_aspect = canvas_size.x / canvas_size.y;
+    float scale, ox, oy;
+    if (canvas_aspect > paper_aspect) {
+        scale = canvas_size.y / HPGL_MAX_Y;
+        ox = canvas_pos.x + (canvas_size.x - HPGL_MAX_X * scale) * 0.5f;
+        oy = canvas_pos.y;
+    } else {
+        scale = canvas_size.x / HPGL_MAX_X;
+        ox = canvas_pos.x;
+        oy = canvas_pos.y + (canvas_size.y - HPGL_MAX_Y * scale) * 0.5f;
+    }
+    // FBO-relative offsets (same values minus canvas_pos origin).
+    const float fbo_ox = ox - canvas_pos.x;
+    const float fbo_oy = oy - canvas_pos.y;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    // Try to render segments into a cached FBO texture (only redraws when
+    // segment count or canvas size changes — avoids per-frame iteration).
+    const int canvas_w = static_cast<int>(canvas_size.x);
+    const int canvas_h = static_cast<int>(canvas_size.y);
+    uintptr_t fbo_tex = video_offscreen_texture("plotter", canvas_w, canvas_h,
+        segments.size(),
+        [&segments, fbo_ox, fbo_oy, scale](ImDrawList* fdl, int /*w*/, int /*h*/) {
+            const ImVec2 fp0(fbo_ox, fbo_oy);
+            const ImVec2 fp1(fbo_ox + HPGL_MAX_X * scale, fbo_oy + HPGL_MAX_Y * scale);
+            fdl->AddRectFilled(fp0, fp1, IM_COL32(255, 255, 255, 255));
+            fdl->AddRect(fp0, fp1, IM_COL32(180, 180, 180, 255));
+
+            auto pen_col = [](int pen) -> ImU32 {
+                return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
+            };
+            for (const auto& seg : segments) {
+                ImU32 col = pen_col(seg.pen);
+                switch (seg.type) {
+                    case PlotPrimitive::Line: {
+                        ImVec2 a(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        ImVec2 b(fbo_ox + seg.x2 * scale, fbo_oy + (HPGL_MAX_Y - seg.y2) * scale);
+                        fdl->AddLine(a, b, col, 1.5f);
+                        break;
+                    }
+                    case PlotPrimitive::Circle: {
+                        ImVec2 c(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        fdl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
+                        break;
+                    }
+                    case PlotPrimitive::Arc: {
+                        ImVec2 c(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        float sa = -seg.start_angle * (3.14159265f / 180.0f);
+                        float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
+                        if (sa > ea) std::swap(sa, ea);
+                        fdl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
+                        fdl->PathStroke(col, 0, 1.5f);
+                        break;
+                    }
+                    case PlotPrimitive::Label: {
+                        ImVec2 pos(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        fdl->AddText(pos, col, seg.text.c_str());
+                        break;
+                    }
+                }
+            }
+        });
+
+    if (fbo_tex) {
+        // Display the cached texture (Y-flipped UV: FBO is stored bottom-up in GL).
+        dl->AddImage(static_cast<ImTextureID>(fbo_tex),
+                     canvas_pos,
+                     ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
+                     ImVec2(0, 1), ImVec2(1, 0));
+    } else {
+        // SDL_Renderer fallback: draw per-frame (no FBO support).
+        ImVec2 p0(ox, oy);
+        ImVec2 p1(ox + HPGL_MAX_X * scale, oy + HPGL_MAX_Y * scale);
+        dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
+        dl->AddRect(p0, p1, IM_COL32(180, 180, 180, 255));
+
+        auto pen_col = [](int pen) -> ImU32 {
+            return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
+        };
+        for (const auto& seg : segments) {
+            ImU32 col = pen_col(seg.pen);
+            switch (seg.type) {
+                case PlotPrimitive::Line: {
+                    ImVec2 a(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    ImVec2 b(ox + seg.x2 * scale, oy + (HPGL_MAX_Y - seg.y2) * scale);
+                    dl->AddLine(a, b, col, 1.5f);
+                    break;
+                }
+                case PlotPrimitive::Circle: {
+                    ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    dl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
+                    break;
+                }
+                case PlotPrimitive::Arc: {
+                    ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    float sa = -seg.start_angle * (3.14159265f / 180.0f);
+                    float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
+                    if (sa > ea) std::swap(sa, ea);
+                    dl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
+                    dl->PathStroke(col, 0, 1.5f);
+                    break;
+                }
+                case PlotPrimitive::Label: {
+                    ImVec2 pos(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    dl->AddText(pos, col, seg.text.c_str());
+                    break;
+                }
+            }
+        }
+    }
+
+    // Current pen position indicator
+    if (g_plotter.selected_pen() > 0) {
+        ImVec2 pp(ox + g_plotter.pen_x() * scale,
+                  oy + (HPGL_MAX_Y - g_plotter.pen_y()) * scale);
+        ImU32 pc = g_plotter.pen_down() ? IM_COL32(0, 180, 0, 255) : IM_COL32(100, 100, 255, 255);
+        dl->AddCircleFilled(pp, 3.0f, pc);
+    }
+
+    // Reserve canvas space for scrolling/interaction
+    ImGui::Dummy(canvas_size);
+
+    ImGui::End();
 }
 
