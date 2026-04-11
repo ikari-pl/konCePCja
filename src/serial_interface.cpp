@@ -4,6 +4,7 @@
 #include "io_dispatch.h"
 #include "log.h"
 #include "plotter.h"
+#include "z80.h"
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -858,6 +859,8 @@ void SerialInterface::apply_config() {
     serial_interface_enabled = config_.enabled;
 
     if (!config_.enabled) {
+        z80_set_bdos_serial_out_hook(nullptr);
+        z80_set_bdos_serial_in_hook(nullptr);
         return;
     }
     
@@ -909,6 +912,24 @@ void SerialInterface::apply_config() {
         if (config_.baud_rate > 0) {
             timer.set_manual_baud(config_.baud_rate);
         }
+
+        // For the plotter backend, intercept BDOS L_WRITE (C=5) and A_READ (C=3)
+        // at the emulator level — equivalent to what the real AMSIf BIOS patch did.
+        // Both hooks simulate RET, bypassing BDOS/BIOS entirely.
+        // C=5: route byte to PlotterBackend (avoids BIOS LIST → Centronics "not ready").
+        // C=3: return queued plotter response (ENQ→ACK, OS;→"0\r", OD;→dimensions).
+        if (config_.backend_type == SerialBackendType::Plotter) {
+            z80_set_bdos_serial_out_hook([this](uint8_t byte) {
+                if (backend) backend->send(byte);
+            });
+            z80_set_bdos_serial_in_hook([this]() -> uint8_t {
+                if (backend && backend->has_data()) return backend->recv();
+                return 0x11; // XON fallback
+            });
+        } else {
+            z80_set_bdos_serial_out_hook(nullptr);
+            z80_set_bdos_serial_in_hook(nullptr);
+        }
     }
 }
 
@@ -939,18 +960,52 @@ void PlotterBackend::close() {
 }
 
 void PlotterBackend::send(uint8_t byte) {
-    if (plotter_ && open_) {
-        if (byte == 0x05) {             // ENQ — handshake query
-            enq_pending_ = true;        // respond with ACK on next recv()
-        } else {
-            plotter_->feed_byte(byte & 0x7F);  // HP-GL is 7-bit ASCII
-        }
-        xon_pending_ = true;  // re-arm flow control after each byte
+    if (!open_) return;
+
+    if (byte == 0x05) {             // ENQ — handshake query
+        enq_pending_ = true;        // respond with ACK on next recv()
+        return;
+    }
+
+    if (plotter_) plotter_->feed_byte(byte & 0x7F);  // HP-GL is 7-bit ASCII
+
+    // Accumulate for query command detection
+    char c = static_cast<char>(byte & 0x7F);
+    cmd_buf_ += c;
+
+    if (c == ';' || c == ':' || c == '\r' || c == '\n') {
+        process_command();
+        cmd_buf_.clear();
+    }
+    if (cmd_buf_.size() > 64) cmd_buf_.clear();  // safety: discard runaway partial cmds
+}
+
+void PlotterBackend::process_command() {
+    // Uppercase and strip whitespace for matching
+    std::string cmd;
+    for (char c : cmd_buf_) {
+        if (c >= 'a' && c <= 'z') cmd += static_cast<char>(c - 32);
+        else if (static_cast<uint8_t>(c) > ' ') cmd += c;
+    }
+
+    // OS; — Output Status: plotter responds with decimal status then '\r'
+    // 0 = ready, no errors.
+    if (cmd.size() >= 2 && cmd[0] == 'O' && cmd[1] == 'S') {
+        for (uint8_t b : {(uint8_t)'0', (uint8_t)'\r'}) response_queue_.push(b);
+    }
+    // OD; — Output Digitize/Dimensions: plotter responds with coordinates then '\r'
+    // HP 7470A plottable area: 0,0 to 10300,7650 (0.025mm/unit → 257×191mm ≈ A4)
+    else if (cmd.size() >= 2 && cmd[0] == 'O' && cmd[1] == 'D') {
+        for (char c : std::string("0,0,10300,7650\r")) response_queue_.push(static_cast<uint8_t>(c));
+    }
+    // OI; — Output Identification: returns model string
+    else if (cmd.size() >= 2 && cmd[0] == 'O' && cmd[1] == 'I') {
+        for (char c : std::string("7470A\r")) response_queue_.push(static_cast<uint8_t>(c));
     }
 }
 
 bool PlotterBackend::has_data() const {
-    return enq_pending_ || xon_pending_;
+    return enq_pending_ || !response_queue_.empty();
 }
 
 uint8_t PlotterBackend::recv() {
@@ -958,8 +1013,12 @@ uint8_t PlotterBackend::recv() {
         enq_pending_ = false;
         return 0x06;  // ACK — plotter ready
     }
-    xon_pending_ = false;
-    return 0x11;      // XON — ready for more data
+    if (!response_queue_.empty()) {
+        uint8_t b = response_queue_.front();
+        response_queue_.pop();
+        return b;
+    }
+    return 0x00;
 }
 
 std::string PlotterBackend::status() const {

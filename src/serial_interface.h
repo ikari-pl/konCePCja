@@ -424,9 +424,12 @@ public:
 
 private:
     bool open_ = false;
-    bool xon_pending_ = true;   // XON flow control, re-armed after each byte
-    bool enq_pending_ = false;  // ENQ received, respond with ACK on next recv()
+    bool enq_pending_ = false;      // ENQ received, respond with ACK on next recv()
+    std::string cmd_buf_;           // Accumulates HP-GL bytes until command terminator
+    std::queue<uint8_t> response_queue_;  // Queued response bytes (OS;/OD; replies)
     class HpglPlotter* plotter_ = nullptr;
+
+    void process_command();         // Called on ';', ':', '\r', '\n' in cmd_buf_
 };
 
 #endif // SERIAL_INTERFACE_H
