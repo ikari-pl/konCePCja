@@ -14,6 +14,22 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+// Escape special XML characters so label text doesn't break SVG output
+static std::string xml_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '&':  out += "&amp;";  break;
+            case '<':  out += "&lt;";   break;
+            case '>':  out += "&gt;";   break;
+            case '"':  out += "&quot;"; break;
+            default:   out += c;        break;
+        }
+    }
+    return out;
+}
+
 HpglPlotter g_plotter;
 
 HpglPlotter::HpglPlotter() {
@@ -59,7 +75,12 @@ void HpglPlotter::feed_byte(uint8_t byte) {
         return;
     }
 
-    // Accumulate command bytes; semicolon terminates
+    // Accumulate command bytes; semicolon terminates.
+    // NOTE: real HP-GL also terminates a command when the next two-letter
+    // mnemonic begins (letter-terminator mode). That is not implemented here;
+    // drivers that omit semicolons between commands (e.g. "PA0,0LBFoo\x03")
+    // will misparse. The DDHP7470.PRL driver emits properly ';'-terminated
+    // commands so this is sufficient for V1.
     if (c == ';') {
         if (!cmd_buf_.empty()) {
             process_command(cmd_buf_);
@@ -352,8 +373,14 @@ void HpglPlotter::cmd_DI(const std::vector<float>& p) {
 
 void HpglPlotter::cmd_SC(const std::vector<float>& p) {
     if (p.size() >= 4) {
-        sc_xmin_ = p[0]; sc_xmax_ = p[1];
-        sc_ymin_ = p[2]; sc_ymax_ = p[3];
+        float xmin = p[0], xmax = p[1], ymin = p[2], ymax = p[3];
+        // Reject degenerate ranges — division by (xmax-xmin) or (ymax-ymin) would be undefined
+        if (xmax == xmin || ymax == ymin) {
+            LOG_ERROR("HP-GL: SC command has zero-range axis, ignoring");
+            return;
+        }
+        sc_xmin_ = xmin; sc_xmax_ = xmax;
+        sc_ymin_ = ymin; sc_ymax_ = ymax;
         scaling_active_ = true;
     } else {
         scaling_active_ = false;
@@ -461,7 +488,7 @@ bool HpglPlotter::export_svg(const std::string& path) const {
                                "font-family=\"monospace\" font-size=\"%.1f\" "
                                "fill=\"%s\" stroke=\"none\">%s</text>\n",
                             seg.x1, HPGL_MAX_Y - seg.y1, font_size,
-                            pen_color(pen), seg.text.c_str());
+                            pen_color(pen), xml_escape(seg.text).c_str());
                     break;
                 }
             }

@@ -248,7 +248,8 @@ private:
     mutable int lookahead_ = -1;  // buffered byte for peek, -1 = empty
 };
 
-// Host serial backend (POSIX /dev/tty.* on macOS/Linux)
+// Host serial backend (POSIX /dev/tty.* on macOS/Linux only)
+#ifndef _WIN32
 class HostSerialBackend : public SerialBackend {
 public:
     explicit HostSerialBackend(const std::string& device_path);
@@ -273,6 +274,23 @@ private:
     int fd_ = -1;
     int original_flags_ = 0;
 };
+#else
+// Windows stub — termios/POSIX serial not available on Win32
+class HostSerialBackend : public SerialBackend {
+public:
+    explicit HostSerialBackend(const std::string&) {}
+    bool open() override { return false; }
+    void close() override {}
+    bool is_open() const override { return false; }
+    void send(uint8_t) override {}
+    bool has_data() const override { return false; }
+    uint8_t recv() override { return 0; }
+    bool connected() const override { return false; }
+    std::string name() const override { return "HostSerial"; }
+    std::string status() const override { return "not supported on Windows"; }
+    static std::vector<std::string> list_ports() { return {}; }
+};
+#endif
 
 // Null modem backend (loopback between two instances)
 class NullModemBackend : public SerialBackend {
@@ -325,7 +343,7 @@ private:
     uint16_t port_;
     int sockfd_ = -1;
     bool connected_ = false;
-    std::vector<uint8_t> rx_buffer_;
+    mutable std::vector<uint8_t> rx_buffer_;
     mutable std::mutex rx_mutex_;
 };
 

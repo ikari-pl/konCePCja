@@ -607,12 +607,17 @@ uintptr_t video_offscreen_texture(
                                         static_cast<float>(canvas_h));
     draw_data.FramebufferScale = ImVec2(1, 1);
 
-    // Render into the FBO (save/restore the current framebuffer binding).
+    // Render into the FBO (save/restore framebuffer binding and viewport).
     GLint prev_fbo = 0;
+    GLint prev_viewport[4] = {};
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+    glGetIntegerv(GL_VIEWPORT, prev_viewport);
     gl3.BindFramebuffer(GL_FRAMEBUFFER, e.fbo);
+    glViewport(0, 0, canvas_w, canvas_h);
     ImGui_ImplOpenGL3_RenderDrawData(&draw_data);
     gl3.BindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
+    glViewport(prev_viewport[0], prev_viewport[1],
+               prev_viewport[2], prev_viewport[3]);
 
     e.dirty = dirty_marker;
     return static_cast<uintptr_t>(e.tex);

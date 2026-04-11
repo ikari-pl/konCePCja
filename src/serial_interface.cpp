@@ -465,20 +465,13 @@ std::string FileBackend::status() const {
     return s.empty() ? "No files configured" : s;
 }
 
-// Host Serial Backend Implementation
-#ifdef __APPLE__
+// Host Serial Backend Implementation (POSIX only — not available on Windows)
+#ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <dirent.h>
-#elif defined(__linux__)
-#include <fcntl.h>
-#include <unistd.h>
-#include <termios.h>
-#include <sys/ioctl.h>
-#include <dirent.h>
-#endif
 
 HostSerialBackend::HostSerialBackend(const std::string& device_path)
     : device_path_(device_path), fd_(-1), original_flags_(0) {}
@@ -582,6 +575,7 @@ std::vector<std::string> HostSerialBackend::list_ports() {
 #endif
     return ports;
 }
+#endif // _WIN32
 
 // Null Modem Backend Implementation
 NullModemBackend::NullModemBackend() : open_(false), peer_(nullptr) {}
@@ -737,6 +731,15 @@ void TcpSocketBackend::send(uint8_t byte) {
 
 bool TcpSocketBackend::has_data() const {
     if (!connected_) return false;
+    // Drain any pending socket data into rx_buffer_ first (socket is non-blocking).
+    if (sockfd_ >= 0) {
+        uint8_t buf[256];
+        ssize_t n;
+        while ((n = ::recv(sockfd_, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
+            std::lock_guard<std::mutex> lock(rx_mutex_);
+            rx_buffer_.insert(rx_buffer_.end(), buf, buf + n);
+        }
+    }
     std::lock_guard<std::mutex> lock(rx_mutex_);
     return !rx_buffer_.empty();
 }
@@ -922,22 +925,10 @@ void SerialInterface::apply_config() {
         // C=6 (D_CIO, E=$FF): XON/XOFF poll — handled in z80.cpp, always returns $11.
         if (config_.backend_type == SerialBackendType::Plotter) {
             z80_set_bdos_serial_out_hook([this](uint8_t byte) {
-                fprintf(stderr, "[BDOS4/5] 0x%02X '%c'\n", byte, (byte >= 0x20 && byte < 0x7F) ? (char)byte : '.');
                 if (backend) backend->send(byte);
             });
             z80_set_bdos_serial_in_hook([this]() -> uint8_t {
-                extern t_z80regs z80;
-                uint16_t sp = z80.SP.w.l;
-                uint8_t lo = z80_cpu_read_mem(sp);
-                uint8_t hi = z80_cpu_read_mem((uint16_t)(sp + 1));
-                uint16_t ret_addr = (uint16_t)(lo | (hi << 8));
-                uint8_t r = (backend && backend->has_data()) ? backend->recv() : 0x00;
-                static uint16_t last_ret = 0xFFFF;
-                if (ret_addr != last_ret) {
-                    fprintf(stderr, "[BDOS3] ret=$%04X -> 0x%02X\n", ret_addr, r);
-                    last_ret = ret_addr;
-                }
-                return r;
+                return (backend && backend->has_data()) ? backend->recv() : 0x00;
             });
         } else {
             z80_set_bdos_serial_out_hook(nullptr);

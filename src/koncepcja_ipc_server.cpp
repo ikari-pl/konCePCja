@@ -3155,6 +3155,11 @@ std::string handle_command(const std::string& line) {
     }
     if (parts[1] == "export") {
       std::string path = (parts.size() >= 3) ? parts[2] : "plotter_output.svg";
+      // Reject path traversal and absolute paths
+      if (std::filesystem::path(path).is_absolute() ||
+          path.find("..") != std::string::npos) {
+        return "ERR 403 path-traversal-rejected\n";
+      }
       if (g_plotter.export_svg(path)) {
         return "OK exported to " + path + "\n";
       }
