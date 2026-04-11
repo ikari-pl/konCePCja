@@ -650,7 +650,19 @@ void NullModemBackend::disconnect_peer() {
 }
 
 // TCP Socket Backend Implementation
-#ifdef __APPLE__
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+// MSG_DONTWAIT doesn't exist on Windows; socket is already non-blocking so flag 0 works.
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0
+#endif
+typedef int ssize_t;
+static inline void tcp_sock_close(int s)   { closesocket(s); }
+static inline void tcp_set_nonblocking(int s) { u_long m = 1; ioctlsocket(s, FIONBIO, &m); }
+static inline int  tcp_conn_inprogress()   { return WSAEWOULDBLOCK; }
+static inline int  tcp_last_error()        { return WSAGetLastError(); }
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -658,14 +670,10 @@ void NullModemBackend::disconnect_peer() {
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
-#elif defined(__linux__)
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-#include <unistd.h>
-#include <fcntl.h>
+static inline void tcp_sock_close(int s)   { ::close(s); }
+static inline void tcp_set_nonblocking(int s) { int f = fcntl(s, F_GETFL, 0); fcntl(s, F_SETFL, f | O_NONBLOCK); }
+static inline int  tcp_conn_inprogress()   { return EINPROGRESS; }
+static inline int  tcp_last_error()        { return errno; }
 #endif
 
 TcpSocketBackend::TcpSocketBackend(const std::string& host, uint16_t port)
@@ -678,14 +686,14 @@ TcpSocketBackend::~TcpSocketBackend() {
 bool TcpSocketBackend::open() {
     if (connected_) return true;
 
-    sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
+    sockfd_ = static_cast<int>(socket(AF_INET, SOCK_STREAM, 0));
     if (sockfd_ < 0) {
         return false;
     }
 
     struct hostent* server = gethostbyname(host_.c_str());
     if (server == nullptr) {
-        ::close(sockfd_);
+        tcp_sock_close(sockfd_);
         sockfd_ = -1;
         return false;
     }
@@ -696,12 +704,11 @@ bool TcpSocketBackend::open() {
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
     serv_addr.sin_port = htons(port_);
 
-    int flags = fcntl(sockfd_, F_GETFL, 0);
-    fcntl(sockfd_, F_SETFL, flags | O_NONBLOCK);
+    tcp_set_nonblocking(sockfd_);
 
     if (::connect(sockfd_, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        if (errno != EINPROGRESS) {
-            ::close(sockfd_);
+        if (tcp_last_error() != tcp_conn_inprogress()) {
+            tcp_sock_close(sockfd_);
             sockfd_ = -1;
             return false;
         }
@@ -713,7 +720,7 @@ bool TcpSocketBackend::open() {
 
 void TcpSocketBackend::close() {
     if (sockfd_ >= 0) {
-        ::close(sockfd_);
+        tcp_sock_close(sockfd_);
         sockfd_ = -1;
     }
     {
@@ -725,7 +732,7 @@ void TcpSocketBackend::close() {
 
 void TcpSocketBackend::send(uint8_t byte) {
     if (connected_ && sockfd_ >= 0) {
-        ::send(sockfd_, &byte, 1, 0);
+        ::send(sockfd_, reinterpret_cast<const char*>(&byte), 1, 0);
     }
 }
 
@@ -735,7 +742,7 @@ bool TcpSocketBackend::has_data() const {
     if (sockfd_ >= 0) {
         uint8_t buf[256];
         ssize_t n;
-        while ((n = ::recv(sockfd_, buf, sizeof(buf), MSG_DONTWAIT)) > 0) {
+        while ((n = ::recv(sockfd_, reinterpret_cast<char*>(buf), static_cast<int>(sizeof(buf)), MSG_DONTWAIT)) > 0) {
             std::lock_guard<std::mutex> lock(rx_mutex_);
             rx_buffer_.insert(rx_buffer_.end(), buf, buf + n);
         }
@@ -758,7 +765,7 @@ uint8_t TcpSocketBackend::recv() {
 
     if (sockfd_ >= 0) {
         uint8_t buf[256];
-        ssize_t n = ::recv(sockfd_, buf, sizeof(buf), 0);
+        ssize_t n = ::recv(sockfd_, reinterpret_cast<char*>(buf), static_cast<int>(sizeof(buf)), 0);
         if (n > 0) {
             std::lock_guard<std::mutex> lock(rx_mutex_);
             for (ssize_t i = 0; i < n; i++) {
