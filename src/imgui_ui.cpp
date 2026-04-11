@@ -301,12 +301,6 @@ void imgui_init_ui()
   c[ImGuiCol_SliderGrabActive]= ImVec4(0.650f, 0.520f, 0.130f, 1.00f);
   c[ImGuiCol_Separator]       = ImVec4(0.300f, 0.300f, 0.350f, 0.50f);
 
-  // When viewports are enabled, platform windows should not have rounded corners
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    style.WindowRounding = 0.0f;
-    c[ImGuiCol_WindowBg].w = 1.0f;
-  }
-
   // Register command palette entries from menu actions
   g_command_palette.clear_commands();
   for (const auto& ma : koncpc_menu_actions()) {

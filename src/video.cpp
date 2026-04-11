@@ -49,7 +49,6 @@
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "imgui_ui.h"
-#include "macos_menu.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
@@ -318,7 +317,6 @@ SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
@@ -412,26 +410,9 @@ void direct_flip_a(video_plugin* t)
   video_capture_if_pending();
 }
 
-// Phase B: floating ImGui viewports + window swap (0-60ms depending on viewport count).
-// Runs after audio push so GL stalls don't starve the audio queue.
+// Phase B: window swap.
 void direct_flip_b([[maybe_unused]] video_plugin* t)
 {
-  // Multi-viewport: update and render platform windows.
-  // Only render when there are actual platform viewports (floating devtools, popups, submenus).
-  // When only the main viewport exists (Viewports.Size == 1), skip — saves GL context
-  // switches and SDL_GL_SwapWindow calls that block on macOS compositor.
-  ImGuiIO& io = ImGui::GetIO();
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-    ImGui::UpdatePlatformWindows();
-    if (ImGui::GetPlatformIO().Viewports.Size > 1) {
-      koncpc_order_viewports_above_main();
-      ImGui::RenderPlatformWindowsDefault();
-    }
-    SDL_GL_MakeCurrent(backup_window, backup_context);
-  }
-
   SDL_GL_SwapWindow(mainSDLWindow);
 }
 
@@ -1077,7 +1058,6 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  // ViewportsEnable not supported by SDL_Renderer backend
   ImGui::StyleColorsDark();
   imgui_init_ui();
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
@@ -1856,7 +1836,6 @@ SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
   io.IniFilename = imgui_ini_path();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
   ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
@@ -1961,25 +1940,11 @@ void swscale_blit_a(video_plugin* t)
   video_capture_if_pending();
 }
 
-// Phase B: floating ImGui viewports + window swap.
+// Phase B: window swap.
 // SDL_Renderer path already completed everything in swscale_blit_a — return early.
 void swscale_blit_b([[maybe_unused]] video_plugin* t)
 {
   if (using_sdl_renderer) return;
-
-  // Multi-viewport: render platform windows only when they exist
-  ImGuiIO& io = ImGui::GetIO();
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-    ImGui::UpdatePlatformWindows();
-    if (ImGui::GetPlatformIO().Viewports.Size > 1) {
-      koncpc_order_viewports_above_main();
-      ImGui::RenderPlatformWindowsDefault();
-    }
-    SDL_GL_MakeCurrent(backup_window, backup_context);
-  }
-
   SDL_GL_SwapWindow(mainSDLWindow);
 }
 
