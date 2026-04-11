@@ -95,7 +95,7 @@ LDFLAGS += -Wl,-rpath,@executable_path/$(SDL_VENDOR_BUILD)/lib
 endif
 endif
 endif
-IPATHS = -Isrc/ $(CAPS_INCLUDES) -Ivendor/imgui -Ivendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
+IPATHS = -Isrc/ $(CAPS_INCLUDES) -isystem vendor/imgui -isystem vendor/imgui/backends `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`
 LIBS = $(PKG_SDL_LIBS) `pkg-config --libs freetype2` `pkg-config --libs libpng` `pkg-config --libs zlib`
 ifeq ($(PLATFORM),windows)
 LIBS += -lws2_32 -lopengl32 -luuid -lwinmm
@@ -202,7 +202,9 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 
 .PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean
 
-WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls
+WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
+# Tier 1: always-errors even in release (undefined behavior / security critical)
+WARN_AS_ERRORS = -Werror=return-type -Werror=format-security -Werror=implicit-fallthrough
 COMMON_CFLAGS += -std=c++17 $(IPATHS)
 DEBUG_FLAGS = -Werror -g -O0 -DDEBUG
 RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions
@@ -241,7 +243,7 @@ endif
 # gtest doesn't build with warnings flags, hence the COMMON_CFLAGS
 # WARN_SUPPRESS and CFLAGS come last so platform defaults and user overrides
 # can disable specific warnings triggered by vendor code
-ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS) $(WARN_SUPPRESS) $(CFLAGS)
+ALL_CFLAGS=$(COMMON_CFLAGS) $(WARNINGS) $(WARN_AS_ERRORS) $(WARN_SUPPRESS) $(CFLAGS)
 
 ####################################
 ### Coverage support
