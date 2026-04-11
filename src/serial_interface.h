@@ -424,9 +424,8 @@ public:
 
 private:
     bool open_ = false;
-    bool enq_pending_ = false;      // ENQ received, respond with ACK on next recv()
     std::string cmd_buf_;           // Accumulates HP-GL bytes until command terminator
-    std::queue<uint8_t> response_queue_;  // Queued response bytes (OS;/OD; replies)
+    std::queue<uint8_t> response_queue_;  // Queued response bytes (ENQ/OS;/OD; replies)
     class HpglPlotter* plotter_ = nullptr;
 
     void process_command();         // Called on ';', ':', '\r', '\n' in cmd_buf_

@@ -3623,48 +3623,103 @@ void imgui_render_plotter_preview() {
         ox = canvas_pos.x;
         oy = canvas_pos.y + (canvas_size.y - HPGL_MAX_Y * scale) * 0.5f;
     }
+    // FBO-relative offsets (same values minus canvas_pos origin).
+    const float fbo_ox = ox - canvas_pos.x;
+    const float fbo_oy = oy - canvas_pos.y;
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Paper background
-    ImVec2 p0(ox, oy);
-    ImVec2 p1(ox + HPGL_MAX_X * scale, oy + HPGL_MAX_Y * scale);
-    dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
-    dl->AddRect(p0, p1, IM_COL32(180, 180, 180, 255));
+    // Try to render segments into a cached FBO texture (only redraws when
+    // segment count or canvas size changes — avoids per-frame iteration).
+    const int canvas_w = static_cast<int>(canvas_size.x);
+    const int canvas_h = static_cast<int>(canvas_size.y);
+    uintptr_t fbo_tex = video_offscreen_texture("plotter", canvas_w, canvas_h,
+        segments.size(),
+        [&segments, fbo_ox, fbo_oy, scale](ImDrawList* fdl, int /*w*/, int /*h*/) {
+            const ImVec2 fp0(fbo_ox, fbo_oy);
+            const ImVec2 fp1(fbo_ox + HPGL_MAX_X * scale, fbo_oy + HPGL_MAX_Y * scale);
+            fdl->AddRectFilled(fp0, fp1, IM_COL32(255, 255, 255, 255));
+            fdl->AddRect(fp0, fp1, IM_COL32(180, 180, 180, 255));
 
-    // Pen colors: 1=black, 2=red
-    auto pen_col = [](int pen) -> ImU32 {
-        return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
-    };
+            auto pen_col = [](int pen) -> ImU32 {
+                return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
+            };
+            for (const auto& seg : segments) {
+                ImU32 col = pen_col(seg.pen);
+                switch (seg.type) {
+                    case PlotPrimitive::Line: {
+                        ImVec2 a(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        ImVec2 b(fbo_ox + seg.x2 * scale, fbo_oy + (HPGL_MAX_Y - seg.y2) * scale);
+                        fdl->AddLine(a, b, col, 1.5f);
+                        break;
+                    }
+                    case PlotPrimitive::Circle: {
+                        ImVec2 c(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        fdl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
+                        break;
+                    }
+                    case PlotPrimitive::Arc: {
+                        ImVec2 c(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        float sa = -seg.start_angle * (3.14159265f / 180.0f);
+                        float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
+                        if (sa > ea) std::swap(sa, ea);
+                        fdl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
+                        fdl->PathStroke(col, 0, 1.5f);
+                        break;
+                    }
+                    case PlotPrimitive::Label: {
+                        ImVec2 pos(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+                        fdl->AddText(pos, col, seg.text.c_str());
+                        break;
+                    }
+                }
+            }
+        });
 
-    // Draw segments (Y flipped: HP-GL Y-up → screen Y-down)
-    for (const auto& seg : segments) {
-        ImU32 col = pen_col(seg.pen);
-        switch (seg.type) {
-            case PlotPrimitive::Line: {
-                ImVec2 a(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                ImVec2 b(ox + seg.x2 * scale, oy + (HPGL_MAX_Y - seg.y2) * scale);
-                dl->AddLine(a, b, col, 1.5f);
-                break;
-            }
-            case PlotPrimitive::Circle: {
-                ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                dl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
-                break;
-            }
-            case PlotPrimitive::Arc: {
-                ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                float sa = -seg.start_angle * (3.14159265f / 180.0f);
-                float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
-                if (sa > ea) std::swap(sa, ea);
-                dl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
-                dl->PathStroke(col, 0, 1.5f);
-                break;
-            }
-            case PlotPrimitive::Label: {
-                ImVec2 pos(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                dl->AddText(pos, col, seg.text.c_str());
-                break;
+    if (fbo_tex) {
+        // Display the cached texture (Y-flipped UV: FBO is stored bottom-up in GL).
+        dl->AddImage(static_cast<ImTextureID>(fbo_tex),
+                     canvas_pos,
+                     ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
+                     ImVec2(0, 1), ImVec2(1, 0));
+    } else {
+        // SDL_Renderer fallback: draw per-frame (no FBO support).
+        ImVec2 p0(ox, oy);
+        ImVec2 p1(ox + HPGL_MAX_X * scale, oy + HPGL_MAX_Y * scale);
+        dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
+        dl->AddRect(p0, p1, IM_COL32(180, 180, 180, 255));
+
+        auto pen_col = [](int pen) -> ImU32 {
+            return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
+        };
+        for (const auto& seg : segments) {
+            ImU32 col = pen_col(seg.pen);
+            switch (seg.type) {
+                case PlotPrimitive::Line: {
+                    ImVec2 a(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    ImVec2 b(ox + seg.x2 * scale, oy + (HPGL_MAX_Y - seg.y2) * scale);
+                    dl->AddLine(a, b, col, 1.5f);
+                    break;
+                }
+                case PlotPrimitive::Circle: {
+                    ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    dl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
+                    break;
+                }
+                case PlotPrimitive::Arc: {
+                    ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    float sa = -seg.start_angle * (3.14159265f / 180.0f);
+                    float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
+                    if (sa > ea) std::swap(sa, ea);
+                    dl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
+                    dl->PathStroke(col, 0, 1.5f);
+                    break;
+                }
+                case PlotPrimitive::Label: {
+                    ImVec2 pos(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+                    dl->AddText(pos, col, seg.text.c_str());
+                    break;
+                }
             }
         }
     }

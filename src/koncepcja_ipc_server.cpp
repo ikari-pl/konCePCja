@@ -60,6 +60,7 @@
 #include "m4board.h"
 #include "m4board_http.h"
 #include "serial_interface.h"
+#include "plotter.h"
 #include "devtools_ui.h"
 #include "z80_assembler.h"
 #include "video.h"
@@ -478,6 +479,14 @@ void init_command_registry() {
     "  status: Show enabled/disabled and allocation.\n"
     "  clear:  Zero all contents.\n"
     "  save/load: Persist to/from file.");
+
+  register_command("plotter", "HARDWARE",
+    "plotter status | plotter export [path] | plotter clear",
+    "HP-GL plotter emulation",
+    "Query and control the HP 7470A plotter emulation.\n"
+    "  status: Show pen position, pen up/down, selected pen, segment count.\n"
+    "  export: Export current drawing to SVG (default: plotter_output.svg).\n"
+    "  clear:  Clear all drawn segments.");
 
   register_command("m4", "HARDWARE",
     "m4 status | m4 ls | m4 cd <path> | m4 reset | m4 wifi [0|1] | m4 http [start|stop|status] | m4 ports | m4 port set/del <cpc> [host]",
@@ -3127,6 +3136,35 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 usage: serial config (get|set key value)\n";
     }
     return "ERR 400 usage: serial (status|send|send_string|config)\n";
+  }
+
+  // --- Plotter commands ---
+  if (cmd == "plotter") {
+    if (parts.size() < 2) {
+      return "ERR 400 usage: plotter (status|export [path]|clear)\n";
+    }
+    if (parts[1] == "status") {
+      std::stringstream ss;
+      ss << "OK pen=" << g_plotter.selected_pen()
+         << " pen_down=" << (g_plotter.pen_down() ? 1 : 0)
+         << " x=" << g_plotter.pen_x()
+         << " y=" << g_plotter.pen_y()
+         << " segments=" << g_plotter.segments().size()
+         << "\n";
+      return ss.str();
+    }
+    if (parts[1] == "export") {
+      std::string path = (parts.size() >= 3) ? parts[2] : "plotter_output.svg";
+      if (g_plotter.export_svg(path)) {
+        return "OK exported to " + path + "\n";
+      }
+      return "ERR 500 export-failed\n";
+    }
+    if (parts[1] == "clear") {
+      g_plotter.clear();
+      return "OK\n";
+    }
+    return "ERR 400 usage: plotter (status|export [path]|clear)\n";
   }
 
   // --- Enhanced search command (with wildcard support) ---

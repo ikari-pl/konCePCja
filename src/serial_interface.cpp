@@ -913,18 +913,31 @@ void SerialInterface::apply_config() {
             timer.set_manual_baud(config_.baud_rate);
         }
 
-        // For the plotter backend, intercept BDOS L_WRITE (C=5) and A_READ (C=3)
-        // at the emulator level — equivalent to what the real AMSIf BIOS patch did.
-        // Both hooks simulate RET, bypassing BDOS/BIOS entirely.
-        // C=5: route byte to PlotterBackend (avoids BIOS LIST → Centronics "not ready").
-        // C=3: return queued plotter response (ENQ→ACK, OS;→"0\r", OD;→dimensions).
+        // For the plotter backend, intercept BDOS serial calls at the emulator level —
+        // equivalent to what the real AMSIf BIOS patch did.  All hooks simulate RET,
+        // bypassing BDOS/BIOS entirely.
+        // C=4 (PUNCH/AUX-OUT): HP-GL data from GSX drivers (e.g. DDHP7470.PRL).
+        // C=5 (L_WRITE/LIST): CR/LF terminators from same drivers.
+        // C=3 (A_READ/AUX-IN): plotter responses (ENQ→ACK, OS;→"16\r", OD;→dimensions).
+        // C=6 (D_CIO, E=$FF): XON/XOFF poll — handled in z80.cpp, always returns $11.
         if (config_.backend_type == SerialBackendType::Plotter) {
             z80_set_bdos_serial_out_hook([this](uint8_t byte) {
+                fprintf(stderr, "[BDOS4/5] 0x%02X '%c'\n", byte, (byte >= 0x20 && byte < 0x7F) ? (char)byte : '.');
                 if (backend) backend->send(byte);
             });
             z80_set_bdos_serial_in_hook([this]() -> uint8_t {
-                if (backend && backend->has_data()) return backend->recv();
-                return 0x11; // XON fallback
+                extern t_z80regs z80;
+                uint16_t sp = z80.SP.w.l;
+                uint8_t lo = z80_cpu_read_mem(sp);
+                uint8_t hi = z80_cpu_read_mem((uint16_t)(sp + 1));
+                uint16_t ret_addr = (uint16_t)(lo | (hi << 8));
+                uint8_t r = (backend && backend->has_data()) ? backend->recv() : 0x00;
+                static uint16_t last_ret = 0xFFFF;
+                if (ret_addr != last_ret) {
+                    fprintf(stderr, "[BDOS3] ret=$%04X -> 0x%02X\n", ret_addr, r);
+                    last_ret = ret_addr;
+                }
+                return r;
             });
         } else {
             z80_set_bdos_serial_out_hook(nullptr);
@@ -962,8 +975,11 @@ void PlotterBackend::close() {
 void PlotterBackend::send(uint8_t byte) {
     if (!open_) return;
 
-    if (byte == 0x05) {             // ENQ — handshake query
-        enq_pending_ = true;        // respond with ACK on next recv()
+    if (byte == 0x05) {             // ENQ — buffer-space query
+        // HP 7470A responds with available buffer space as decimal + CR.
+        // The driver reads this via the same BDOS3 read-until-CR loop used for OS;/OD;.
+        // Our emulated plotter has unlimited capacity — report maximum (128 bytes free).
+        for (char c : std::string("128\r")) response_queue_.push(static_cast<uint8_t>(c));
         return;
     }
 
@@ -989,9 +1005,11 @@ void PlotterBackend::process_command() {
     }
 
     // OS; — Output Status: plotter responds with decimal status then '\r'
-    // 0 = ready, no errors.
+    // HP 7470A status bits: bit4=Ready(16), bit3=Initialized(8). After power-on/IN:
+    // first call returns 24 (Ready+Initialized), subsequent calls return 16 (Ready).
+    // DDHP7470.PRL reads OS; response until it gets CR, checking for non-error status.
     if (cmd.size() >= 2 && cmd[0] == 'O' && cmd[1] == 'S') {
-        for (uint8_t b : {(uint8_t)'0', (uint8_t)'\r'}) response_queue_.push(b);
+        for (char c : std::string("16\r")) response_queue_.push(static_cast<uint8_t>(c));
     }
     // OD; — Output Digitize/Dimensions: plotter responds with coordinates then '\r'
     // HP 7470A plottable area: 0,0 to 10300,7650 (0.025mm/unit → 257×191mm ≈ A4)
@@ -1005,14 +1023,10 @@ void PlotterBackend::process_command() {
 }
 
 bool PlotterBackend::has_data() const {
-    return enq_pending_ || !response_queue_.empty();
+    return !response_queue_.empty();
 }
 
 uint8_t PlotterBackend::recv() {
-    if (enq_pending_) {
-        enq_pending_ = false;
-        return 0x06;  // ACK — plotter ready
-    }
     if (!response_queue_.empty()) {
         uint8_t b = response_queue_.front();
         response_queue_.pop();

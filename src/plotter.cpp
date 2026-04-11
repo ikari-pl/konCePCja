@@ -6,7 +6,6 @@
 
 #include "plotter.h"
 #include "log.h"
-#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -68,8 +67,19 @@ void HpglPlotter::feed_byte(uint8_t byte) {
         }
     } else if (c >= 0x20 || c == '\r' || c == '\n') {
         // Skip control chars except CR/LF (used in some drivers as whitespace)
-        if (c != '\r' && c != '\n')
+        if (c != '\r' && c != '\n') {
             cmd_buf_ += c;
+            // LB (Label) has no ';' terminator — label text follows the two-letter mnemonic
+            // directly, terminated by the label terminator (default ETX=0x03).
+            // Switch to label mode as soon as the mnemonic is complete.
+            if (cmd_buf_.size() == 2 &&
+                toupper((unsigned char)cmd_buf_[0]) == 'L' &&
+                toupper((unsigned char)cmd_buf_[1]) == 'B') {
+                in_label_ = true;
+                label_buf_.clear();
+                cmd_buf_.clear();
+            }
+        }
     }
 }
 

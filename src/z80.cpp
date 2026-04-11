@@ -178,6 +178,8 @@ static BreakpointHitHook g_breakpoint_hit_hook = nullptr;
 static TxtOutputHook g_txt_output_hook = nullptr;
 static uint16_t g_txt_output_hook_addr = 0;
 static TxtOutputHook g_bdos_output_hook = nullptr;
+static BdosSerialOutHook g_bdos_serial_out_hook;
+static BdosSerialInHook  g_bdos_serial_in_hook;
 static byte SZ[256]; // zero and sign flags
 static byte SZ_BIT[256]; // zero, sign and parity/overflow (=zero) flags for BIT opcode
 static byte SZP[256]; // zero, sign and parity flags
@@ -1079,6 +1081,9 @@ void z80_set_bdos_output_hook(TxtOutputHook hook)
    g_bdos_output_hook = hook;
 }
 
+void z80_set_bdos_serial_out_hook(BdosSerialOutHook hook) { g_bdos_serial_out_hook = hook; }
+void z80_set_bdos_serial_in_hook(BdosSerialInHook hook)   { g_bdos_serial_in_hook  = hook; }
+
 void z80_reset()
 {
    z80 = t_z80regs();
@@ -1171,7 +1176,32 @@ int z80_execute()
          g_bdos_output_hook(_E);
       }
 
-      z80_execute_instruction();
+      bool skip_insn = false;
+      if (_PC == 0x0005) {
+         if (g_bdos_serial_out_hook && (_C == 5 || _C == 4)) {
+            // C=5 (L_WRITE / LIST) and C=4 (PUNCH / AUX-OUT) both route serial output.
+            // GSX drivers (e.g. DDHP7470.PRL) use C=4 for HP-GL data, C=5 only for CR/LF.
+            g_bdos_serial_out_hook(_E);
+            // Simulate RET: skip BDOS/BIOS entirely (Centronics "not ready" aborts otherwise)
+            _A = _E;  // both functions return the char in A on success
+            uint8_t lo = read_mem(_SP++);
+            uint8_t hi = read_mem(_SP++);
+            _PC = lo | (hi << 8);
+            skip_insn = true;
+         }
+         if (g_bdos_serial_in_hook && _C == 3) {
+            _A = g_bdos_serial_in_hook();
+            // Simulate RET: pop return address off the stack
+            uint8_t lo = read_mem(_SP++);
+            uint8_t hi = read_mem(_SP++);
+            _PC = lo | (hi << 8);
+            skip_insn = true;
+         }
+      }
+
+      if (!skip_insn) {
+         z80_execute_instruction();
+      }
 
       z80_wait_states
 
