@@ -72,7 +72,7 @@ extern t_GateArray GateArray;
 extern t_PSG PSG;
 extern SDL_Surface *back_surface;
 extern byte *pbRAM;
-extern byte keyboard_matrix[16];
+extern std::atomic<byte> keyboard_matrix[16];
 extern t_drive driveA;
 extern t_drive driveB;
 extern t_FDC FDC;
@@ -187,24 +187,24 @@ static std::string err_with_context(int code, const std::string& msg) {
 // Direct keyboard matrix manipulation that works even when CPC.paused is true.
 // applyKeypress() refuses to act when paused, but IPC input commands need to
 // set keys before resuming emulation for frame stepping.
-static void ipc_apply_keypress(CPCScancode cpc_key, byte keyboard_matrix[], bool pressed) {
+static void ipc_apply_keypress(CPCScancode cpc_key, std::atomic<byte> keyboard_matrix[], bool pressed) {
     if (static_cast<byte>(cpc_key) == 0xff) return;
     if (pressed) {
-        keyboard_matrix[static_cast<byte>(cpc_key) >> 4] &= ~bit_values[static_cast<byte>(cpc_key) & 7];
+        keyboard_matrix[static_cast<byte>(cpc_key) >> 4].fetch_and(~bit_values[static_cast<byte>(cpc_key) & 7], std::memory_order_relaxed);
         if (cpc_key & MOD_CPC_SHIFT) {
-            keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7];
+            keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7], std::memory_order_relaxed);
         } else {
-            keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
+            keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7], std::memory_order_relaxed);
         }
         if (cpc_key & MOD_CPC_CTRL) {
-            keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7];
+            keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7], std::memory_order_relaxed);
         } else {
-            keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+            keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7], std::memory_order_relaxed);
         }
     } else {
-        keyboard_matrix[static_cast<byte>(cpc_key) >> 4] |= bit_values[static_cast<byte>(cpc_key) & 7];
-        keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
-        keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+        keyboard_matrix[static_cast<byte>(cpc_key) >> 4].fetch_or(bit_values[static_cast<byte>(cpc_key) & 7], std::memory_order_relaxed);
+        keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7], std::memory_order_relaxed);
+        keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7], std::memory_order_relaxed);
     }
 }
 

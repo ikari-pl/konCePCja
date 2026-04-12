@@ -325,7 +325,7 @@ void imgui_init_ui()
     g_command_palette.register_command(
         title, "", shortcut,
         [action_key]() {
-          extern byte keyboard_matrix[];
+          extern std::atomic<byte> keyboard_matrix[];
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, true);
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, false);
         });
@@ -3224,12 +3224,12 @@ static void imgui_render_vkeyboard()
   // Helper: check if a CPC key is currently pressed in the keyboard matrix.
   // CPC_KEYS enum values are NOT matrix positions — must convert via scancode table.
   auto cpc_key_down = [](byte cpc_key) -> bool {
-    extern byte keyboard_matrix[];
+    extern std::atomic<byte> keyboard_matrix[];
     extern byte bit_values[];
     CPCScancode sc = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
     byte row = static_cast<byte>(sc >> 4);
     byte bit = static_cast<byte>(sc & 7);
-    return row < 16 && !(keyboard_matrix[row] & bit_values[bit]);
+    return row < 16 && !(keyboard_matrix[row].load(std::memory_order_relaxed) & bit_values[bit]);
   };
   // Helper: draw blue overlay on last ImGui item if CPC key is pressed
   auto highlight_if_pressed = [&](byte cpc_key) {

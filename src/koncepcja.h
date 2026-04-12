@@ -20,6 +20,7 @@
 #define KONCEPCJA_H
 
 #include <array>
+#include <atomic>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,7 +227,7 @@ class t_CPC {
    unsigned int limit_speed;
    unsigned int frameskip = 0;
    bool skip_rendering = false;
-   bool paused;
+   bool paused = false;
    unsigned int auto_pause;
    unsigned int boot_time;
    unsigned int keyboard_line;

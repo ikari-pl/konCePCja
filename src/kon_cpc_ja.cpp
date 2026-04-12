@@ -197,7 +197,7 @@ byte *pbExpansionROM = nullptr;
 byte *pbMF2ROMbackup = nullptr;
 byte *pbMF2ROM = nullptr;
 std::vector<byte> pbTapeImage;
-byte keyboard_matrix[16];
+std::atomic<byte> keyboard_matrix[16];
 
 std::list<SDL_Event> virtualKeyboardEvents;
 dword nextVirtualEventFrameCount, dwFrameCountOverall = 0;
@@ -601,9 +601,9 @@ byte z80_IN_handler (reg_pair port)
                   if (PSG.reg_select < 16) { // within valid range?
                      if (PSG.reg_select == 14) { // PSG port A?
                         if (!(PSG.RegisterAY.Index[7] & 0x40)) { // port A in input mode?
-                           ret_val = keyboard_matrix[CPC.keyboard_line & 0x0f]; // read keyboard matrix node status
+                           ret_val = keyboard_matrix[CPC.keyboard_line & 0x0f].load(std::memory_order_relaxed); // read keyboard matrix node status
                         } else {
-                           ret_val = PSG.RegisterAY.Index[14] & (keyboard_matrix[CPC.keyboard_line & 0x0f]); // return last value w/ logic AND of input
+                           ret_val = PSG.RegisterAY.Index[14] & (keyboard_matrix[CPC.keyboard_line & 0x0f].load(std::memory_order_relaxed)); // return last value w/ logic AND of input
                         }
                         ret_val &= io_fire_kbd_read_hooks(CPC.keyboard_line & 0x0f);
                         g_keyboard_scanned = true; // signal autotype that firmware has scanned
@@ -1292,7 +1292,7 @@ void emulator_reset ()
 
 // CPC
    CPC.cycle_count = CYCLE_COUNT_INIT;
-   memset(keyboard_matrix, 0xff, sizeof(keyboard_matrix)); // clear CPC keyboard matrix
+   for (auto& row : keyboard_matrix) row.store(0xff, std::memory_order_relaxed); // clear CPC keyboard matrix
    CPC.tape_motor = 0;
    CPC.tape_play_button = 0;
    CPC.printer_port = 0xff;
@@ -3328,7 +3328,7 @@ std::map<SDL_Scancode, std::string> scancode_names = {
     {SDL_SCANCODE_COUNT, "SDL_SCANCODE_COUNT"},
 };
 
-static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event, byte keyboard_matrix[], bool pressed) {
+static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event, std::atomic<byte> keyboard_matrix[], bool pressed) {
    if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
       if (event.button == 1)
          applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1), keyboard_matrix, pressed);
@@ -4281,11 +4281,12 @@ int koncpc_main (int argc, char **argv)
                static uint8_t prev_matrix[16] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
                                                    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
                for (int row = 0; row < 16; row++) {
-                  if (keyboard_matrix[row] != prev_matrix[row]) {
+                  byte cur = keyboard_matrix[row].load(std::memory_order_relaxed);
+                  if (cur != prev_matrix[row]) {
                      // Encode as row in high byte, value in low byte
-                     uint16_t data = static_cast<uint16_t>((row << 8) | keyboard_matrix[row]);
+                     uint16_t data = static_cast<uint16_t>((row << 8) | cur);
                      g_session.record_event(SessionEventType::KEY_DOWN, data);
-                     prev_matrix[row] = keyboard_matrix[row];
+                     prev_matrix[row] = cur;
                   }
                }
                g_session.record_frame_sync();
@@ -4297,7 +4298,7 @@ int koncpc_main (int argc, char **argv)
                while (g_session.next_event(evt)) {
                   if (evt.type == SessionEventType::KEY_DOWN) {
                      int row = (evt.data >> 8) & 0x0F;
-                     keyboard_matrix[row] = static_cast<byte>(evt.data & 0xFF);
+                     keyboard_matrix[row].store(static_cast<byte>(evt.data & 0xFF), std::memory_order_relaxed);
                   }
                }
                if (!g_session.advance_frame()) {
@@ -4325,21 +4326,21 @@ int koncpc_main (int argc, char **argv)
                      // Direct matrix manipulation (same as ipc_apply_keypress)
                      if (static_cast<byte>(scancode) == 0xff) return;
                      if (pressed) {
-                        keyboard_matrix[static_cast<byte>(scancode) >> 4] &= ~bit_values[static_cast<byte>(scancode) & 7];
+                        keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(~bit_values[static_cast<byte>(scancode) & 7], std::memory_order_relaxed);
                         if (scancode & MOD_CPC_SHIFT) {
-                           keyboard_matrix[0x25 >> 4] &= ~bit_values[0x25 & 7];
+                           keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7], std::memory_order_relaxed);
                         } else {
-                           keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
+                           keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7], std::memory_order_relaxed);
                         }
                         if (scancode & MOD_CPC_CTRL) {
-                           keyboard_matrix[0x27 >> 4] &= ~bit_values[0x27 & 7];
+                           keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7], std::memory_order_relaxed);
                         } else {
-                           keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+                           keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7], std::memory_order_relaxed);
                         }
                      } else {
-                        keyboard_matrix[static_cast<byte>(scancode) >> 4] |= bit_values[static_cast<byte>(scancode) & 7];
-                        keyboard_matrix[0x25 >> 4] |= bit_values[0x25 & 7];
-                        keyboard_matrix[0x27 >> 4] |= bit_values[0x27 & 7];
+                        keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(bit_values[static_cast<byte>(scancode) & 7], std::memory_order_relaxed);
+                        keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7], std::memory_order_relaxed);
+                        keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7], std::memory_order_relaxed);
                      }
                   });
                }
