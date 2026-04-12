@@ -156,6 +156,16 @@ static int topbar_height_px = 24;
 extern t_CPC CPC;
 SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 
+// Emulation/render thread split (P1.2a)
+// g_emu_paused: authoritative pause flag shared between threads.
+// cpc_pause()/cpc_resume() keep CPC.paused and g_emu_paused in sync.
+// Z80 thread reads g_emu_paused; render thread reads it for the paused-overlay path.
+std::atomic<bool> g_emu_paused{false};
+// Set true when main() wants the Z80 thread to exit cleanly.
+static std::atomic<bool> g_z80_thread_quit{false};
+// Frame handoff: Z80 signals after asic_draw_sprites(); render signals after Phase A.
+FrameSignal g_frame_signal;
+
 // High-resolution timing using SDL_GetPerformanceCounter (nanosecond-class)
 static uint64_t perfFreq;          // SDL_GetPerformanceFrequency() — ticks per second
 static uint64_t perfTicksOffset;   // frame period in perf-counter ticks
@@ -165,11 +175,14 @@ dword dwFPS, dwFrameCount;
 dword dwXScale, dwYScale;
 
 
-// Frame timing measurement (1-second reporting window)
+// Frame timing measurement (1-second reporting window).
+// frameTimeAccum/z80TimeAccum/sleepTimeAccum are Z80-thread-only (no atomic needed).
+// displayTimeAccum is written by the render thread and read+reset by the Z80 thread's
+// FPS publisher — use atomic to avoid a data race.
 static uint64_t frameTimeAccum = 0;
 static uint64_t frameTimeMin = UINT64_MAX;
 static uint64_t frameTimeMax = 0;
-static uint64_t displayTimeAccum = 0;
+static std::atomic<uint64_t> displayTimeAccum{0};
 static uint64_t sleepTimeAccum = 0;
 static uint64_t z80TimeAccum = 0;
 static uint32_t frameTimeSamples = 0;
@@ -1776,11 +1789,13 @@ void cpc_pause()
 {
    audio_pause();
    CPC.paused = true;
+   g_emu_paused.store(true, std::memory_order_relaxed);
 }
 
 void cpc_resume()
 {
    CPC.paused = false;
+   g_emu_paused.store(false, std::memory_order_relaxed);
    lastFrameStart = 0; // reset so first frame after resume isn't measured as huge
    audio_resume();
 }
@@ -3337,6 +3352,329 @@ static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event, std:
    }
 }
 
+// Z80 emulation thread — runs z80_execute() and handles all emulation side effects.
+// Used only in non-headless (GUI) mode; headless runs the original single-threaded path.
+//
+// At EC_FRAME_COMPLETE:
+//   1. Completes per-frame work (autotype, session, IPC, etc.)
+//   2. Calls asic_draw_sprites() — finalises back_surface pixels
+//   3. Calls g_frame_signal.signal_ready() — hands back_surface to render thread
+//   4. Blocks in g_frame_signal.wait_consumed() while render does Phase A (~3ms)
+//   5. Immediately starts the next frame on return — concurrent with render's Phase B
+static void z80_thread_main()
+{
+   dword iExitCondition = EC_FRAME_COMPLETE;
+   static int consecutive_skips = 0;
+
+   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
+      if (g_emu_paused.load(std::memory_order_relaxed)) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+         continue;
+      }
+
+      // FPS counter: publish stats once per second
+      {
+         uint64_t perfNow = SDL_GetPerformanceCounter();
+         if (perfNow >= perfTicksTargetFPS) {
+            dwFPS = dwFrameCount;
+            dwFrameCount = 0;
+            perfTicksTargetFPS = perfNow + perfFreq;
+
+            if (frameTimeSamples > 0) {
+               double ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
+               imgui_state.frame_time_avg_us = static_cast<float>(static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
+               imgui_state.frame_time_min_us = static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
+               imgui_state.frame_time_max_us = static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
+               imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum.exchange(0, std::memory_order_relaxed)) / frameTimeSamples * ticksToUs);
+               imgui_state.sleep_time_avg_us = static_cast<float>(static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
+               imgui_state.z80_time_avg_us = static_cast<float>(static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
+            }
+            frameTimeAccum = 0;
+            frameTimeMin = UINT64_MAX;
+            frameTimeMax = 0;
+            sleepTimeAccum = 0;
+            z80TimeAccum = 0;
+            frameTimeSamples = 0;
+
+            imgui_state.audio_underruns = audio_underrun_count;
+            imgui_state.audio_near_underruns = audio_near_underrun_count;
+            imgui_state.audio_pushes = audio_push_count;
+            if (audio_push_count == 0) {
+               imgui_state.audio_queue_avg_ms = 0;
+               imgui_state.audio_queue_min_ms = 0;
+               imgui_state.audio_push_interval_max_us = 0;
+            } else {
+               double avg_bytes = audio_queue_sum_bytes / audio_push_count;
+               int frame_size = CPC.snd_stereo ? 4 : 2;
+               if (CPC.snd_bits == 0) frame_size /= 2;
+               int sample_rate = freq_table[CPC.snd_playback_rate];
+               double bytes_per_ms = sample_rate * frame_size / 1000.0;
+               imgui_state.audio_queue_avg_ms = static_cast<float>(avg_bytes / bytes_per_ms);
+               imgui_state.audio_queue_min_ms = static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
+               imgui_state.audio_push_interval_max_us = static_cast<float>(
+                  static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
+            }
+            audio_underrun_count = 0;
+            audio_near_underrun_count = 0;
+            audio_push_count = 0;
+            audio_queue_sum_bytes = 0;
+            audio_queue_min_bytes = INT_MAX;
+            audio_push_interval_max = 0;
+         }
+      }
+
+      // Speed limiter: spin/sleep until deadline on audio-driven cycle boundaries
+      static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
+      if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
+         uint64_t sleepStart = SDL_GetPerformanceCounter();
+         if (sleepStart < perfTicksTarget) {
+            uint64_t remaining_ticks = perfTicksTarget - sleepStart;
+            uint64_t remaining_ms = (remaining_ticks * 1000) / perfFreq;
+            if (remaining_ms > 2) {
+               SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
+            }
+            while (SDL_GetPerformanceCounter() < perfTicksTarget) { SDL_Delay(0); }
+         }
+         sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
+         perfTicksTarget += perfTicksOffset;
+         uint64_t now = SDL_GetPerformanceCounter();
+         if (!CPC.frameskip && perfTicksTarget + 3 * perfTicksOffset < now) {
+            perfTicksTarget = now + perfTicksOffset;
+         }
+      } else if (iExitCondition != EC_CYCLE_COUNT) {
+         CPC.skip_rendering = false;
+         consecutive_skips = 0;
+      }
+
+      // Frameskip decision at frame boundaries
+      if (iExitCondition == EC_FRAME_COMPLETE && CPC.limit_speed) {
+         uint64_t now = SDL_GetPerformanceCounter();
+         if (CPC.frameskip && now > perfTicksTarget) {
+            if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
+               CPC.skip_rendering = true;
+               consecutive_skips++;
+            } else {
+               CPC.skip_rendering = false;
+               consecutive_skips = 0;
+               perfTicksTarget = now + perfTicksOffset;
+            }
+         } else {
+            CPC.skip_rendering = false;
+            consecutive_skips = 0;
+         }
+      } else if (iExitCondition == EC_FRAME_COMPLETE && !CPC.limit_speed) {
+         CPC.skip_rendering = false;
+         consecutive_skips = 0;
+      }
+
+      // Update screen buffer base pointer for this frame's scanline
+      {
+         dword dwOffset = CPC.scr_pos - CPC.scr_base;
+         if (VDU.scrln > 0) {
+            CPC.scr_base = static_cast<byte *>(back_surface->pixels) + (VDU.scrln * CPC.scr_line_offs);
+         } else {
+            CPC.scr_base = static_cast<byte *>(back_surface->pixels);
+         }
+         CPC.scr_pos = CPC.scr_base + dwOffset;
+      }
+
+      {
+         uint64_t z80Start = SDL_GetPerformanceCounter();
+         iExitCondition = z80_execute();
+         z80TimeAccum += SDL_GetPerformanceCounter() - z80Start;
+      }
+
+      // Tape wave sample (sub-frame resolution, render thread reads this under condvar)
+      if (CPC.tape_motor && CPC.tape_play_button) {
+         imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
+         imgui_state.tape_wave_head = (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
+      }
+
+      // Audio: PSG filled buffer — push to SDL
+      if (iExitCondition == EC_SOUND_BUFFER) {
+         if (!g_emu_paused.load(std::memory_order_relaxed)) {
+            audio_push_buffer(pbSndBuffer.get(), static_cast<int>(CPC.snd_buffersize));
+         }
+         CPC.snd_bufferptr = pbSndBuffer.get();
+      }
+
+      // Breakpoint / step
+      if (iExitCondition == EC_BREAKPOINT) {
+         if (z80.breakpoint_reached || z80.watchpoint_reached) {
+            g_trace.dump_if_crash();
+            if (g_exit_on_break) {
+               cleanExit(1, false);
+            }
+            imgui_state.show_devtools = true;
+            cpc_pause();
+            z80.step_in = 0;
+            z80.step_out = 0;
+            z80.step_out_addresses.clear();
+         } else if (z80.step_in >= 2) {
+            cpc_pause();
+            z80.step_in = 0;
+            z80.step_out = 0;
+            z80.step_out_addresses.clear();
+         } else {
+            z80.break_point = 0xffffffff;
+            z80.trace = 1;
+            if (breakPointsToSkipBeforeProceedingWithVirtualEvents > 0) {
+               breakPointsToSkipBeforeProceedingWithVirtualEvents--;
+               LOG_DEBUG("Decremented breakpoint skip counter to " << breakPointsToSkipBeforeProceedingWithVirtualEvents);
+            }
+         }
+      } else {
+         if (z80.break_point == 0xffffffff) {
+            LOG_DEBUG("Rearming EC_BREAKPOINT.");
+            z80.break_point = 0;
+         }
+      }
+
+      if (iExitCondition == EC_FRAME_COMPLETE) {
+         dwFrameCountOverall++;
+         dwFrameCount++;
+
+         g_keyboard_manager.update(keyboard_matrix, dwFrameCountOverall);
+
+         // Frame-to-frame timing
+         {
+            uint64_t now = SDL_GetPerformanceCounter();
+            if (lastFrameStart > 0) {
+               uint64_t elapsed = now - lastFrameStart;
+               frameTimeAccum += elapsed;
+               if (elapsed < frameTimeMin) frameTimeMin = elapsed;
+               if (elapsed > frameTimeMax) frameTimeMax = elapsed;
+               frameTimeSamples++;
+            }
+            lastFrameStart = now;
+         }
+
+         // Exit-after checks (--exit-after N frames or N ms)
+         if (g_exit_mode == EXIT_FRAMES && dwFrameCountOverall >= g_exit_target) {
+            cleanExit(0, false);
+         }
+         if (g_exit_mode == EXIT_MS && (SDL_GetTicks() - g_exit_start_ticks) >= g_exit_target) {
+            cleanExit(0, false);
+         }
+
+         ipc_check_vbl_events();
+
+         if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
+
+         if (g_ym_recorder.is_recording()) {
+            g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
+         }
+
+         // AVI video capture — reads back_surface; must be before signal_ready()
+         if (!CPC.skip_rendering && g_avi_recorder.is_recording()) {
+            g_avi_recorder.capture_video_frame(
+               static_cast<const uint8_t*>(back_surface->pixels),
+               back_surface->w, back_surface->h, back_surface->pitch);
+         }
+
+         // Session recording: keyboard snapshot per frame
+         if (g_session.state() == SessionState::RECORDING) {
+            static uint8_t prev_matrix[16] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+                                               0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+            for (int row = 0; row < 16; row++) {
+               byte cur = keyboard_matrix[row].load(std::memory_order_relaxed);
+               if (cur != prev_matrix[row]) {
+                  g_session.record_event(SessionEventType::KEY_DOWN,
+                     static_cast<uint16_t>((row << 8) | cur));
+                  prev_matrix[row] = cur;
+               }
+            }
+            g_session.record_frame_sync();
+         }
+
+         // Session playback: replay frame events
+         if (g_session.state() == SessionState::PLAYING) {
+            SessionEvent evt;
+            while (g_session.next_event(evt)) {
+               if (evt.type == SessionEventType::KEY_DOWN) {
+                  int row = (evt.data >> 8) & 0x0F;
+                  keyboard_matrix[row].store(static_cast<byte>(evt.data & 0xFF),
+                     std::memory_order_relaxed);
+               }
+            }
+            if (!g_session.advance_frame()) { /* recording finished */ }
+         }
+
+         // Auto-type: drain queue, synchronized with CPC keyboard scans
+         if (g_autotype_queue.is_active()) {
+            bool do_tick = false;
+            if (g_keyboard_scanned) {
+               g_keyboard_scanned = false;
+               g_keyboard_scan_timeout = 0;
+               do_tick = true;
+            } else if (++g_keyboard_scan_timeout >= kAutotypeScanTimeoutFrames) {
+               g_keyboard_scan_timeout = 0;
+               do_tick = true;
+            }
+            if (do_tick) {
+               g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
+                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
+                     static_cast<CPC_KEYS>(cpc_key));
+                  if (static_cast<byte>(scancode) == 0xff) return;
+                  if (pressed) {
+                     keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
+                        ~bit_values[static_cast<byte>(scancode) & 7], std::memory_order_relaxed);
+                     if (scancode & MOD_CPC_SHIFT)
+                        keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7], std::memory_order_relaxed);
+                     else
+                        keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7], std::memory_order_relaxed);
+                     if (scancode & MOD_CPC_CTRL)
+                        keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7], std::memory_order_relaxed);
+                     else
+                        keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7], std::memory_order_relaxed);
+                  } else {
+                     keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
+                        bit_values[static_cast<byte>(scancode) & 7], std::memory_order_relaxed);
+                     keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7], std::memory_order_relaxed);
+                     keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7], std::memory_order_relaxed);
+                  }
+               });
+            }
+         }
+
+         g_telnet.drain_input();
+
+         // IPC frame step
+         if (g_ipc->frame_step_active.load()) {
+            int remaining = g_ipc->frame_step_remaining.fetch_sub(1) - 1;
+            if (remaining <= 0) {
+               cpc_pause();
+               g_ipc->notify_frame_step_done();
+            }
+         }
+
+         // Drive LED state and FPS text — written before signal_ready() so the condvar's
+         // happens-before ensures render thread sees them after wait_ready() returns.
+         imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
+         imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
+         if (CPC.scr_fps) {
+            char chStr[15];
+            snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%",
+               static_cast<int>(dwFPS),
+               static_cast<int>(dwFPS) * 100 / static_cast<int>(1000.0 / FRAME_PERIOD_MS));
+            imgui_state.topbar_fps = chStr;
+         } else {
+            imgui_state.topbar_fps.clear();
+         }
+
+         // Finalise back_surface (ASIC sprites must be drawn before handoff to render)
+         if (!CPC.skip_rendering) {
+            asic_draw_sprites();
+         }
+
+         // Hand back_surface to render thread; block until Phase A (texture upload) done.
+         // Phase B (SDL_GL_SwapWindow, 0-60ms) runs concurrently with the next Z80 frame.
+         g_frame_signal.signal_ready(CPC.skip_rendering);
+         g_frame_signal.wait_consumed();
+      }
+   }
+}
+
 int koncpc_main (int argc, char **argv)
 {
 #ifdef _WIN32
@@ -3533,6 +3871,13 @@ int koncpc_main (int argc, char **argv)
 
    g_exit_start_ticks = SDL_GetTicks();
    iExitCondition = EC_FRAME_COMPLETE;
+
+   // Spawn Z80 emulation thread for non-headless mode.
+   // The render loop (below) becomes render-only; the Z80 thread signals each
+   // completed frame via g_frame_signal so Phase A/B can overlap with the next frame.
+   if (!g_headless) {
+      std::thread(z80_thread_main).detach();
+   }
 
    dword nextMouseReset = 0;
    // Whether this loop of emulation should release the joystick axis for mouse emulation.
@@ -4049,7 +4394,76 @@ int koncpc_main (int argc, char **argv)
                cleanExit(0);
          }
       }
-      if (!CPC.paused) { // run the emulation, as long as the user doesn't pause it
+      // ---- Non-headless: Z80 thread (z80_thread_main) handles emulation ----
+      // Render thread waits for frame signal, does Phase A, releases Z80, then Phase B.
+      if (!g_headless) {
+         if (g_emu_paused.load(std::memory_order_relaxed)) {
+            // Paused overlay: render ImGui without waiting for a frame signal
+            video_display();
+            video_display_b();
+            video_take_pending_window_screenshot();
+            if (g_m4_http.is_running()) g_m4_http.drain_pending();
+            std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+         } else {
+            bool skip = g_frame_signal.wait_ready();
+            if (!skip) {
+               // OSD text — render thread owns osd_message/osd_timing, no race
+               if (SDL_GetTicks() < osd_timing) {
+                  print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs,
+                        osd_message.c_str(), true);
+               }
+               uint64_t displayStart = SDL_GetPerformanceCounter();
+               video_display(); // Phase A: texture upload + ImGui render (~3ms)
+               // Partial audio push before Phase B stall
+               {
+                  int partial = static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
+                  if (!g_emu_paused.load() && partial > 0) {
+                     audio_push_buffer(pbSndBuffer.get(), partial);
+                     CPC.snd_bufferptr = pbSndBuffer.get();
+                  }
+               }
+               g_frame_signal.signal_consumed(); // Z80 starts next frame concurrently
+               // Main-thread-only housekeeping (after releasing back_surface to Z80)
+               if (g_m4_http.is_running()) g_m4_http.drain_pending();
+#ifdef __APPLE__
+               if (back_surface && (dwFrameCountOverall % 50) == 0) {
+                  koncpc_update_dock_icon_preview(
+                     back_surface->pixels, back_surface->w, back_surface->h,
+                     back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
+               }
+#endif
+               video_display_b(); // Phase B: 0-60ms, Z80 runs concurrently!
+               uint64_t displayEnd = SDL_GetPerformanceCounter();
+               displayTimeAccum.fetch_add(displayEnd - displayStart, std::memory_order_relaxed);
+               if (audio_stream && CPC.snd_ready) {
+                  int queued = SDL_GetAudioStreamQueued(audio_stream);
+                  if (queued < 0) queued = 0;
+                  if (queued < audio_queue_min_bytes) audio_queue_min_bytes = queued;
+                  if (queued < static_cast<int>(CPC.snd_buffersize) / 2 && audio_push_count > 0) {
+                     double display_ms = static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
+                     LOG_DEBUG("Audio low queue after display: " << queued
+                               << "B, display took " << display_ms << "ms");
+                  }
+               }
+               video_take_pending_window_screenshot();
+               if (g_take_screenshot) {
+                  dumpScreen();
+                  g_take_screenshot = false;
+               }
+            } else {
+               // Skipped frame: service screenshot requests before releasing Z80
+               video_take_pending_window_screenshot();
+               if (g_take_screenshot) {
+                  dumpScreen();
+                  g_take_screenshot = false;
+               }
+               g_frame_signal.signal_consumed();
+            }
+         }
+      }
+
+      // ---- Headless: original single-threaded emulation (unchanged) ----
+      if (g_headless && !CPC.paused) { // run the emulation
          uint64_t perfNow = SDL_GetPerformanceCounter();
 
          if (perfNow >= perfTicksTargetFPS) { // update FPS counter every second
@@ -4063,14 +4477,14 @@ int koncpc_main (int argc, char **argv)
                imgui_state.frame_time_avg_us = static_cast<float>(static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
                imgui_state.frame_time_min_us = static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
                imgui_state.frame_time_max_us = static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
-               imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum) / frameTimeSamples * ticksToUs);
+               imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum.load(std::memory_order_relaxed)) / frameTimeSamples * ticksToUs);
                imgui_state.sleep_time_avg_us = static_cast<float>(static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
                imgui_state.z80_time_avg_us = static_cast<float>(static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
             }
             frameTimeAccum = 0;
             frameTimeMin = UINT64_MAX;
             frameTimeMax = 0;
-            displayTimeAccum = 0;
+            displayTimeAccum.store(0, std::memory_order_relaxed);
             sleepTimeAccum = 0;
             z80TimeAccum = 0;
             frameTimeSamples = 0;
@@ -4397,7 +4811,7 @@ int koncpc_main (int argc, char **argv)
                 video_display_b(); // phase B: floating viewports + window swap
 
                 uint64_t displayEnd = SDL_GetPerformanceCounter();
-                displayTimeAccum += displayEnd - displayStart;
+                displayTimeAccum.fetch_add(displayEnd - displayStart, std::memory_order_relaxed);
 
                 // Check audio queue after display (GL viewport stalls drain it)
                 // Sample audio queue depth after display — catches GL stalls.
@@ -4425,12 +4839,7 @@ int koncpc_main (int argc, char **argv)
             }
          }
       }
-      else { // We are paused — still render ImGui UI overlay
-         if (!g_headless) {
-            video_display();
-            video_display_b();
-            video_take_pending_window_screenshot();
-         }
+      else if (g_headless) { // Headless paused: sleep (non-headless handled above)
          // Drain HTTP deferred actions even while paused (otherwise resume won't work)
          if (g_m4_http.is_running()) g_m4_http.drain_pending();
          std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));

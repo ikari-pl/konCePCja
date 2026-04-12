@@ -563,7 +563,7 @@ void DevToolsUI::render_disassembly()
         if (!entry.is_data_area) {
           if (ImGui::MenuItem("Run to here")) {
             z80_add_breakpoint_ephemeral(entry.addr);
-            CPC.paused = false;
+            cpc_resume();
           }
           if (ImGui::MenuItem("Set PC here")) {
             z80.PC.w.l = entry.addr;

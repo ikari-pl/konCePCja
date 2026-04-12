@@ -334,7 +334,7 @@ void imgui_init_ui()
   g_command_palette.register_command("Pause / Resume", "Toggle emulation pause", "Pause",
       []() {
         extern t_CPC CPC;
-        CPC.paused = !CPC.paused;
+        if (CPC.paused) cpc_resume(); else cpc_pause();
       });
   g_command_palette.register_command("DevTools", "Open developer tools", "Shift+F2",
       []() { imgui_state.show_devtools = !imgui_state.show_devtools; });
@@ -502,7 +502,7 @@ void imgui_render_ui()
     if (ImGui::Button("No", ImVec2(80, 0))) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
-        CPC.paused = false;
+        cpc_resume();
       }
     }
     ImGui::EndPopup();
@@ -596,7 +596,7 @@ void imgui_close_menu()
   // Each dialog is responsible for clearing its own flag on close.
   // Only unpause if no dialog is keeping the emulator paused.
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
-    CPC.paused = false;
+    cpc_resume();
   }
 }
 
@@ -735,7 +735,7 @@ static void imgui_render_menubar()
     }
     if (ImGui::MenuItem("Quit", "F10")) {
       imgui_state.show_quit_confirm = true;
-      CPC.paused = true;
+      cpc_pause();
     }
     ImGui::EndMenu();
   }
@@ -985,7 +985,7 @@ static void imgui_render_topbar()
     if (menu_pressed) {
       imgui_state.show_menu = true;
       imgui_state.menu_just_opened = true;
-      CPC.paused = true;
+      cpc_pause();
     }
     // (Tape waveform moved to bottom status bar)
 
@@ -2655,7 +2655,7 @@ static void imgui_render_options()
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
   if (ImGui::IsItemHovered()) {
@@ -2671,7 +2671,7 @@ static void imgui_render_options()
     if (CPC.scr_style != prev_style)
       imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
   ImGui::SameLine();
@@ -2685,7 +2685,7 @@ static void imgui_render_options()
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
   if (ImGui::IsItemHovered()) {
@@ -2701,7 +2701,7 @@ static void imgui_render_options()
     if (CPC.scr_style != prev_style)
       imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
 
@@ -2843,7 +2843,7 @@ static void imgui_render_devtools()
 
     // ── Step/Pause controls ──
     // Capture paused state once so BeginDisabled/EndDisabled stay balanced
-    // even when a button handler sets CPC.paused = false mid-frame.
+    // even when a button handler calls cpc_resume() mid-frame.
     ImGui::SameLine(0, 12.0f);
     bool was_paused = CPC.paused;
     if (!was_paused) ImGui::BeginDisabled();
@@ -2851,7 +2851,7 @@ static void imgui_render_devtools()
       z80.step_in = 1;
       z80.step_out = 0;
       z80.step_out_addresses.clear();
-      CPC.paused = false;
+      cpc_resume();
     }
     if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (enters CALLs)"); }
     ImGui::SameLine();
@@ -2862,10 +2862,10 @@ static void imgui_render_devtools()
       word pc = z80.PC.w.l;
       if (z80_is_call_or_rst(pc)) {
         z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
-        CPC.paused = false;
+        cpc_resume();
       } else {
         z80.step_in = 1;
-        CPC.paused = false;
+        cpc_resume();
       }
     }
     if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)"); }
@@ -2874,13 +2874,13 @@ static void imgui_render_devtools()
       z80.step_out = 1;
       z80.step_out_addresses.clear();
       z80.step_in = 0;
-      CPC.paused = false;
+      cpc_resume();
     }
     if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Run until the current subroutine returns"); }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {
-      CPC.paused = !CPC.paused;
+      if (CPC.paused) cpc_resume(); else cpc_pause();
     }
 
     // ── Per-window render timing ──

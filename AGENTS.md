@@ -398,6 +398,11 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 - **Track string lengths explicitly** — When packing strings into fixed-width fields (like ATA IDENTIFY), compute `strlen` once and bounds-check per-character access. Don't rely on null-terminator proximity to short-circuit evaluation.
 - **Path traversal protection** — Any user-supplied path (IPC, M4 virtual FS) must be validated: reject `..`, absolute paths, and symlink escapes.
 
+## CI / Merging
+
+- **NEVER merge a PR with failing CI checks.** Fix failures first.
+- **Auto-merge** (`gh pr merge --auto`) triggers only when **all CI checks pass AND all review comment threads are resolved**. A PR that is green on CI but has unresolved threads will stay blocked. Always resolve open threads before expecting auto-merge to fire.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.

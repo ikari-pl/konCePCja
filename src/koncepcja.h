@@ -21,6 +21,8 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -493,6 +495,51 @@ typedef struct {
 } t_VDU;
 
 using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
+
+// Frame synchronization between Z80 emulation thread and render (main) thread.
+// Protocol:
+//   Z80 calls signal_ready() after writing back_surface (asic_draw_sprites done).
+//   Render calls wait_ready(), does Phase A (texture upload), then signal_consumed().
+//   Z80 is blocked in wait_consumed() during Phase A; on return it starts the next
+//   frame immediately — concurrently with Phase B (SDL_GL_SwapWindow, 0-60ms).
+struct FrameSignal {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool ready{false};
+    bool consumed{true};
+    bool skip_render{false}; // set by Z80 before signal_ready; render reads after wait_ready
+
+    // Z80 thread: back_surface is complete; signal render to upload and release us.
+    void signal_ready(bool skip = false) {
+        std::lock_guard<std::mutex> lock(mtx);
+        skip_render = skip;
+        ready = true;
+        consumed = false;
+        cv.notify_one();
+    }
+    // Z80 thread: block until render has finished Phase A (texture upload).
+    void wait_consumed() {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [this]{ return consumed; });
+    }
+    // Render thread: block until Z80 signals a frame is ready; returns skip_render.
+    bool wait_ready() {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [this]{ return ready; });
+        ready = false;
+        return skip_render;
+    }
+    // Render thread: Phase A done — release Z80 to start next frame.
+    void signal_consumed() {
+        std::lock_guard<std::mutex> lock(mtx);
+        consumed = true;
+        cv.notify_one();
+    }
+};
+
+// Emulation/render thread synchronization — see kon_cpc_ja.cpp
+extern std::atomic<bool> g_emu_paused;   // true while Z80 thread is halted
+extern FrameSignal       g_frame_signal; // back_surface handoff between threads
 
 // kon_cpc_ja.cpp
 void set_osd_message(const std::string& message, uint32_t for_milliseconds = 1000);
