@@ -2769,7 +2769,7 @@ void showGui()
 {
    imgui_state.show_menu = true;
    imgui_state.menu_just_opened = true;
-   CPC.paused = true;
+   cpc_pause(); // keep CPC.paused and g_emu_paused in sync
 }
 
 // TODO: Dedupe with the version in CapriceDevTools
