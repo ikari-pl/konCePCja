@@ -28,15 +28,15 @@ enum class PlotPrimitive {
 };
 
 struct PlotSegment {
-    PlotPrimitive type;
-    int pen;            // 1 or 2
-    float x1, y1;       // start or center (plotter units)
-    float x2, y2;       // end (for lines)
-    float radius;        // for circles/arcs
-    float start_angle;   // for arcs (degrees)
-    float sweep_angle;   // for arcs (degrees)
-    std::string text;    // for labels
-    int line_type;       // 0=solid, 1-6=patterns
+    PlotPrimitive type  = PlotPrimitive::Line;
+    int pen             = 1;       // 1 or 2
+    float x1 = 0, y1 = 0;         // start or center (plotter units)
+    float x2 = 0, y2 = 0;         // end (for lines)
+    float radius        = 0.0f;    // for circles/arcs
+    float start_angle   = 0.0f;    // for arcs (degrees)
+    float sweep_angle   = 0.0f;    // for arcs (degrees)
+    std::string text;              // for labels
+    int line_type       = 0;       // 0=solid, 1-6=patterns
 };
 
 class HpglPlotter {
