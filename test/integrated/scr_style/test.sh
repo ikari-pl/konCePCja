@@ -29,7 +29,7 @@ run_with_timeout() {
   local seconds="$1"; shift
   "$@" &
   local child=$!
-  ( sleep "$seconds" && kill -KILL -"$child" 2>/dev/null ) &
+  ( sleep "$seconds" && kill -9 "$child" 2>/dev/null ) &
   local watchdog=$!
   wait "$child" 2>/dev/null
   local status=$?
