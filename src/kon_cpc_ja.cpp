@@ -163,6 +163,12 @@ SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 std::atomic<bool> g_emu_paused{false};
 // Set true when main() wants the Z80 thread to exit cleanly.
 static std::atomic<bool> g_z80_thread_quit{false};
+// Handle for the Z80 emulation thread (non-headless mode only). Stored so
+// doCleanUp() can join it instead of letting it run past global destruction.
+static std::thread g_z80_thread;
+// Protects the imgui_state stats fields written by the Z80 thread and read by
+// the render thread (frame_time_avg_us, z80_time_avg_us, audio_*, etc.).
+std::mutex g_imgui_stats_mutex;
 // True when the Z80 thread is NOT inside z80_execute() (i.e. safe to touch Z80 state
 // from another thread).  Starts true because the thread hasn't spawned yet.
 std::atomic<bool> g_z80_quiescent{true};
@@ -2857,6 +2863,20 @@ void doCleanUp ()
    dsk_eject(&driveB);
    tape_eject();
 
+   // Signal Z80 thread to exit and join it before tearing down SDL/audio/video.
+   // Guard against self-join: cleanExit() can be called from the Z80 thread itself
+   // (e.g. via a virtual-event handler), in which case we detach instead.
+   if (g_z80_thread.joinable()) {
+      g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      cpc_resume();                     // wake from pause sleep if paused
+      g_frame_signal.signal_consumed(); // unblock if stuck in wait_consumed()
+      if (std::this_thread::get_id() != g_z80_thread.get_id()) {
+         g_z80_thread.join();
+      } else {
+         g_z80_thread.detach(); // called from Z80 thread — _exit() handles the rest
+      }
+   }
+
    g_m4_http.stop();
    symbiface_cleanup();
    m4board_cleanup();
@@ -3399,46 +3419,49 @@ static void z80_thread_main()
             dwFrameCount = 0;
             perfTicksTargetFPS = perfNow + perfFreq;
 
-            if (frameTimeSamples > 0) {
-               double ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
-               imgui_state.frame_time_avg_us = static_cast<float>(static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
-               imgui_state.frame_time_min_us = static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
-               imgui_state.frame_time_max_us = static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
-               imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum.exchange(0, std::memory_order_relaxed)) / frameTimeSamples * ticksToUs);
-               imgui_state.sleep_time_avg_us = static_cast<float>(static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
-               imgui_state.z80_time_avg_us = static_cast<float>(static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
-            }
-            frameTimeAccum = 0;
-            frameTimeMin = UINT64_MAX;
-            frameTimeMax = 0;
-            sleepTimeAccum = 0;
-            z80TimeAccum = 0;
-            frameTimeSamples = 0;
+            {
+               std::lock_guard<std::mutex> stats_lock(g_imgui_stats_mutex);
+               if (frameTimeSamples > 0) {
+                  double ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
+                  imgui_state.frame_time_avg_us = static_cast<float>(static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
+                  imgui_state.frame_time_min_us = static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
+                  imgui_state.frame_time_max_us = static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
+                  imgui_state.display_time_avg_us = static_cast<float>(static_cast<double>(displayTimeAccum.exchange(0, std::memory_order_relaxed)) / frameTimeSamples * ticksToUs);
+                  imgui_state.sleep_time_avg_us = static_cast<float>(static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
+                  imgui_state.z80_time_avg_us = static_cast<float>(static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
+               }
+               frameTimeAccum = 0;
+               frameTimeMin = UINT64_MAX;
+               frameTimeMax = 0;
+               sleepTimeAccum = 0;
+               z80TimeAccum = 0;
+               frameTimeSamples = 0;
 
-            imgui_state.audio_underruns = audio_underrun_count;
-            imgui_state.audio_near_underruns = audio_near_underrun_count;
-            imgui_state.audio_pushes = audio_push_count;
-            if (audio_push_count == 0) {
-               imgui_state.audio_queue_avg_ms = 0;
-               imgui_state.audio_queue_min_ms = 0;
-               imgui_state.audio_push_interval_max_us = 0;
-            } else {
-               double avg_bytes = audio_queue_sum_bytes / audio_push_count;
-               int frame_size = CPC.snd_stereo ? 4 : 2;
-               if (CPC.snd_bits == 0) frame_size /= 2;
-               int sample_rate = freq_table[CPC.snd_playback_rate];
-               double bytes_per_ms = sample_rate * frame_size / 1000.0;
-               imgui_state.audio_queue_avg_ms = static_cast<float>(avg_bytes / bytes_per_ms);
-               imgui_state.audio_queue_min_ms = static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
-               imgui_state.audio_push_interval_max_us = static_cast<float>(
-                  static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
-            }
-            audio_underrun_count = 0;
-            audio_near_underrun_count = 0;
-            audio_push_count = 0;
-            audio_queue_sum_bytes = 0;
-            audio_queue_min_bytes = INT_MAX;
-            audio_push_interval_max = 0;
+               imgui_state.audio_underruns = audio_underrun_count;
+               imgui_state.audio_near_underruns = audio_near_underrun_count;
+               imgui_state.audio_pushes = audio_push_count;
+               if (audio_push_count == 0) {
+                  imgui_state.audio_queue_avg_ms = 0;
+                  imgui_state.audio_queue_min_ms = 0;
+                  imgui_state.audio_push_interval_max_us = 0;
+               } else {
+                  double avg_bytes = audio_queue_sum_bytes / audio_push_count;
+                  int frame_size = CPC.snd_stereo ? 4 : 2;
+                  if (CPC.snd_bits == 0) frame_size /= 2;
+                  int sample_rate = freq_table[CPC.snd_playback_rate];
+                  double bytes_per_ms = sample_rate * frame_size / 1000.0;
+                  imgui_state.audio_queue_avg_ms = static_cast<float>(avg_bytes / bytes_per_ms);
+                  imgui_state.audio_queue_min_ms = static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
+                  imgui_state.audio_push_interval_max_us = static_cast<float>(
+                     static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
+               }
+               audio_underrun_count = 0;
+               audio_near_underrun_count = 0;
+               audio_push_count = 0;
+               audio_queue_sum_bytes = 0;
+               audio_queue_min_bytes = INT_MAX;
+               audio_push_interval_max = 0;
+            } // g_imgui_stats_mutex
          }
       }
 
@@ -3901,7 +3924,7 @@ int koncpc_main (int argc, char **argv)
    // The render loop (below) becomes render-only; the Z80 thread signals each
    // completed frame via g_frame_signal so Phase A/B can overlap with the next frame.
    if (!g_headless) {
-      std::thread(z80_thread_main).detach();
+      g_z80_thread = std::thread(z80_thread_main);
    }
 
    dword nextMouseReset = 0;
@@ -4431,6 +4454,10 @@ int koncpc_main (int argc, char **argv)
             std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
          } else {
             bool skip = g_frame_signal.wait_ready();
+            // Capture frame counter while Z80 is blocked in wait_consumed() —
+            // safe to read without atomics here; after signal_consumed() the Z80
+            // runs concurrently and may increment it during Phase B.
+            dword frame_count_snap = dwFrameCountOverall;
             if (!skip) {
                // OSD text — render thread owns osd_message/osd_timing, no race
                if (SDL_GetTicks() < osd_timing) {
@@ -4451,7 +4478,7 @@ int koncpc_main (int argc, char **argv)
                // Main-thread-only housekeeping (after releasing back_surface to Z80)
                if (g_m4_http.is_running()) g_m4_http.drain_pending();
 #ifdef __APPLE__
-               if (back_surface && (dwFrameCountOverall % 50) == 0) {
+               if (back_surface && (frame_count_snap % 50) == 0) {
                   koncpc_update_dock_icon_preview(
                      back_surface->pixels, back_surface->w, back_surface->h,
                      back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
