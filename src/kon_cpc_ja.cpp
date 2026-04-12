@@ -4454,10 +4454,6 @@ int koncpc_main (int argc, char **argv)
             std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
          } else {
             bool skip = g_frame_signal.wait_ready();
-            // Capture frame counter while Z80 is blocked in wait_consumed() —
-            // safe to read without atomics here; after signal_consumed() the Z80
-            // runs concurrently and may increment it during Phase B.
-            dword frame_count_snap = dwFrameCountOverall;
             if (!skip) {
                // OSD text — render thread owns osd_message/osd_timing, no race
                if (SDL_GetTicks() < osd_timing) {
@@ -4478,6 +4474,9 @@ int koncpc_main (int argc, char **argv)
                // Main-thread-only housekeeping (after releasing back_surface to Z80)
                if (g_m4_http.is_running()) g_m4_http.drain_pending();
 #ifdef __APPLE__
+               // Capture while Z80 is still blocked (between signal_consumed and next
+               // wait_ready) — safe without atomics due to condvar happens-before.
+               dword frame_count_snap = dwFrameCountOverall;
                if (back_surface && (frame_count_snap % 50) == 0) {
                   koncpc_update_dock_icon_preview(
                      back_surface->pixels, back_surface->w, back_surface->h,
