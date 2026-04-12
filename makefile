@@ -204,7 +204,7 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
 # Tier 1: always-errors even in release (undefined behavior / security critical)
-WARN_AS_ERRORS = -Werror=return-type -Werror=format-security -Werror=implicit-fallthrough
+WARN_AS_ERRORS = -Werror=return-type -Werror=format-security -Werror=implicit-fallthrough -Werror=uninitialized -Werror=array-bounds
 COMMON_CFLAGS += -std=c++17 $(IPATHS)
 DEBUG_FLAGS = -Werror -g -O0 -DDEBUG
 RELEASE_FLAGS = -O2 -funroll-loops -ffast-math -fomit-frame-pointer -finline-functions
