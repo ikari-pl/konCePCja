@@ -21,15 +21,20 @@ then
   SED=sed
 fi
 
-# Detect a timeout command (gtimeout from GNU coreutils on macOS, timeout on Linux)
-if [ -z "$TIMEOUT_CMD" ]
-then
-  if command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="gtimeout 20"
-  elif command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD="timeout 20"
-  fi
-fi
+# Pure-bash timeout: run_with_timeout <seconds> <cmd> [args...]
+# Kills the process after N seconds. Works without external timeout/gtimeout.
+run_with_timeout() {
+  local seconds="$1"; shift
+  "$@" &
+  local child=$!
+  ( sleep "$seconds" && kill "$child" 2>/dev/null ) &
+  local watchdog=$!
+  wait "$child" 2>/dev/null
+  local status=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null
+  return $status
+}
 
 rm -rvf ${OUTPUT_DIR}
 mkdir -p ${OUTPUT_DIR}
@@ -44,7 +49,7 @@ rc=0
 for style in `seq 0 $last_plugin`
 do
   $SED -i "s/^scr_style=.*$/scr_style=${style}/" koncepcja.cfg || rc=2
-  $TIMEOUT_CMD $KONCPCDIR/koncepcja -c koncepcja.cfg -a "print #8,\"style=${style}\"" -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
+  run_with_timeout 20 $KONCPCDIR/koncepcja -c koncepcja.cfg -a "print #8,\"style=${style}\"" -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
 
   mv ${OUTPUT_DIR}/printer.dat ${OUTPUT_DIR}/printer.dat.${style}
   if ! $DIFF ${OUTPUT_DIR}/printer.dat.${style} model/printer.dat.${style} >> "${LOGFILE}"
