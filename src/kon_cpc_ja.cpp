@@ -163,6 +163,8 @@ SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 std::atomic<bool> g_emu_paused{false};
 // Set true when main() wants the Z80 thread to exit cleanly.
 static std::atomic<bool> g_z80_thread_quit{false};
+// Exit code to use when the Z80 thread requests quit via SDL_EVENT_QUIT.
+static std::atomic<int> g_z80_requested_exit_code{0};
 // Handle for the Z80 emulation thread (non-headless mode only). Stored so
 // doCleanUp() can join it instead of letting it run past global destruction.
 static std::thread g_z80_thread;
@@ -2899,6 +2901,21 @@ void cleanExit(int returnCode, bool askIfUnsaved)
    if (!g_headless && askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
      return;
    }
+
+   // If we are on the Z80 thread, we must not call doCleanUp() directly: the
+   // render (main) thread may be concurrently inside video_display_b() using
+   // SDL resources.  Instead, signal the Z80 loop to exit and push SDL_EVENT_QUIT
+   // so the render thread handles orderly teardown when it is next safe to do so.
+   if (g_z80_thread.joinable() &&
+       std::this_thread::get_id() == g_z80_thread.get_id()) {
+      g_z80_requested_exit_code.store(returnCode, std::memory_order_relaxed);
+      g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      SDL_Event qe = {};
+      qe.type = SDL_EVENT_QUIT;
+      SDL_PushEvent(&qe);
+      return; // Z80 thread loop exits on next iteration via g_z80_thread_quit
+   }
+
    doCleanUp();
    _exit(returnCode);
 }
@@ -4439,7 +4456,7 @@ int koncpc_main (int argc, char **argv)
               break;
 
             case SDL_EVENT_QUIT:
-               cleanExit(0);
+               cleanExit(g_z80_requested_exit_code.load(std::memory_order_relaxed));
          }
       }
       // ---- Non-headless: Z80 thread (z80_thread_main) handles emulation ----
