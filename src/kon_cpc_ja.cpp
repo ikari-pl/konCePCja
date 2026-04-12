@@ -163,6 +163,9 @@ SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 std::atomic<bool> g_emu_paused{false};
 // Set true when main() wants the Z80 thread to exit cleanly.
 static std::atomic<bool> g_z80_thread_quit{false};
+// True when the Z80 thread is NOT inside z80_execute() (i.e. safe to touch Z80 state
+// from another thread).  Starts true because the thread hasn't spawned yet.
+std::atomic<bool> g_z80_quiescent{true};
 // Frame handoff: Z80 signals after asic_draw_sprites(); render signals after Phase A.
 FrameSignal g_frame_signal;
 
@@ -1800,6 +1803,18 @@ void cpc_resume()
    audio_resume();
 }
 
+void cpc_pause_and_wait()
+{
+   cpc_pause();
+   // Spin until the Z80 thread has exited z80_execute() and entered its sleep loop.
+   // g_z80_quiescent is set true by z80_thread_main before sleeping, false before
+   // entering z80_execute().  In headless mode the Z80 runs on the calling thread,
+   // so g_z80_quiescent stays true and we return immediately.
+   while (!g_z80_quiescent.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+   }
+}
+
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
   if (index < 0 || index >= 34) return;
   if (!back_surface) return;
@@ -3368,9 +3383,13 @@ static void z80_thread_main()
 
    while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
       if (g_emu_paused.load(std::memory_order_relaxed)) {
+         // Mark quiescent so cpc_pause_and_wait() callers know we are safe to inspect.
+         g_z80_quiescent.store(true, std::memory_order_release);
          std::this_thread::sleep_for(std::chrono::milliseconds(1));
          continue;
       }
+      // About to enter z80_execute() — mark non-quiescent.
+      g_z80_quiescent.store(false, std::memory_order_release);
 
       // FPS counter: publish stats once per second
       {
@@ -3507,11 +3526,17 @@ static void z80_thread_main()
             }
             imgui_state.show_devtools = true;
             cpc_pause();
+            // Mid-frame pause: the render thread may be waiting in wait_ready() for a
+            // frame that will never arrive (we stopped before EC_FRAME_COMPLETE).
+            // Send a skip signal so it unblocks, calls signal_consumed(), then sees
+            // g_emu_paused=true and shows the paused overlay on its next iteration.
+            g_frame_signal.signal_ready(true);
             z80.step_in = 0;
             z80.step_out = 0;
             z80.step_out_addresses.clear();
          } else if (z80.step_in >= 2) {
             cpc_pause();
+            g_frame_signal.signal_ready(true); // same: unblock render thread
             z80.step_in = 0;
             z80.step_out = 0;
             z80.step_out_addresses.clear();

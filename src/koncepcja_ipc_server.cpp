@@ -704,7 +704,7 @@ std::string handle_command(const std::string& line) {
   }
   if (cmd == "reset") {
     bool was_paused = CPC.paused;
-    if (!was_paused) cpc_pause();
+    if (!was_paused) cpc_pause_and_wait();
     emulator_reset();
     bool no_resume = false;
     for (size_t i = 1; i < parts.size(); i++) {
@@ -770,7 +770,7 @@ std::string handle_command(const std::string& line) {
     }
     if (ext == ".sna") {
       bool was_paused = CPC.paused;
-      if (!was_paused) cpc_pause();
+      if (!was_paused) cpc_pause_and_wait();
       CPC.snapshot.file = path;
       CPC.snapshot.zip_index = 0;
       int rc = file_load(CPC.snapshot);
@@ -1020,14 +1020,17 @@ std::string handle_command(const std::string& line) {
     if (parts[1] == "save") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
       if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-      if (snapshot_save(parts[2]) == 0) return ok_with_context();
-      return "ERR 500 snapshot-save\n";
+      bool was_paused = CPC.paused;
+      if (!was_paused) cpc_pause_and_wait();
+      int rc = snapshot_save(parts[2]);
+      if (!was_paused) cpc_resume();
+      return rc == 0 ? ok_with_context() : "ERR 500 snapshot-save\n";
     }
     if (parts[1] == "load") {
       if (parts.size() < 3) return "ERR 400 bad-args\n";
       if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
       bool was_paused = CPC.paused;
-      if (!was_paused) cpc_pause();
+      if (!was_paused) cpc_pause_and_wait();
       int rc = snapshot_load(parts[2]);
       if (!was_paused) cpc_resume();
       return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
@@ -1546,7 +1549,7 @@ std::string handle_command(const std::string& line) {
   }
   if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
   if (cmd == "step") {
-    cpc_pause();
+    cpc_pause_and_wait(); // ensure Z80 thread is not inside z80_execute() before touching state
     // "step in [N]" or "step [N]" — single-step instructions
     if (parts.size() == 1 || (parts.size() >= 2 && (parts[1] == "in" || std::isdigit(static_cast<unsigned char>(parts[1][0]))))) {
       int count = 1;
@@ -3559,7 +3562,7 @@ std::string handle_command(const std::string& line) {
       // Load the embedded snapshot to restore state
       {
         bool was_paused = CPC.paused;
-        if (!was_paused) cpc_pause();
+        if (!was_paused) cpc_pause_and_wait();
         int rc = snapshot_load(snap_path);
         if (!was_paused) cpc_resume();
         if (rc != 0) {
