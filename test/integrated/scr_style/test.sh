@@ -22,12 +22,14 @@ then
 fi
 
 # Pure-bash timeout: run_with_timeout <seconds> <cmd> [args...]
-# Kills the process after N seconds. Works without external timeout/gtimeout.
+# Kills the process group with SIGKILL after N seconds.
+# Using SIGKILL (-KILL) and targeting the process group (-$child) ensures
+# that SDL/subprocess signal handlers cannot defer or ignore the kill.
 run_with_timeout() {
   local seconds="$1"; shift
   "$@" &
   local child=$!
-  ( sleep "$seconds" && kill "$child" 2>/dev/null ) &
+  ( sleep "$seconds" && kill -KILL -"$child" 2>/dev/null ) &
   local watchdog=$!
   wait "$child" 2>/dev/null
   local status=$?
