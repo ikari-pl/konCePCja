@@ -46,7 +46,10 @@ src/
 ## Building
 
 ```bash
-# macOS
+# macOS (preferred — use the wrapper script to avoid command-substitution prompts)
+scripts/build-macos.sh
+
+# macOS (manual)
 make -j$(nproc) ARCH=macos
 
 # Linux
