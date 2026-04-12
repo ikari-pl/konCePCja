@@ -4500,6 +4500,15 @@ int koncpc_main (int argc, char **argv)
                      back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
                }
 #endif
+               // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread),
+               // skip video_display_b() which hangs indefinitely for OpenGL
+               // styles (7-19).  signal_consumed() was already sent so the Z80
+               // loop has seen the quit flag and will exit; on the next main-loop
+               // iteration SDL_EVENT_QUIT will reach the event handler above and
+               // doCleanUp() will join the (already-exited) Z80 thread cleanly.
+               if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
+                  continue;
+               }
                video_display_b(); // Phase B: 0-60ms, Z80 runs concurrently!
                uint64_t displayEnd = SDL_GetPerformanceCounter();
                displayTimeAccum.fetch_add(displayEnd - displayStart, std::memory_order_relaxed);
