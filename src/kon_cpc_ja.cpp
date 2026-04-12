@@ -1656,16 +1656,19 @@ static void audio_push_buffer(const byte* data, int len)
    // Top-up with silence so the hardware never runs dry mid-stall.
    // Adds at most 80ms audio latency — acceptable for emulation.
    {
-      const int target_bytes = len * 4;
+      // Use snd_buffersize (one full CPC frame) as the chunk unit, not the
+      // current push size which can be a small partial frame at end-of-frame.
+      const int frame_bytes = static_cast<int>(CPC.snd_buffersize);
+      const int target_bytes = frame_bytes * 4; // ~80ms at 50Hz
       int queued_now = SDL_GetAudioStreamQueued(audio_stream);
       if (queued_now >= 0 && queued_now < target_bytes) {
          static std::vector<byte> silence_frame;
-         if (static_cast<int>(silence_frame.size()) != len)
-            silence_frame.assign(static_cast<size_t>(len), 0);
+         if (static_cast<int>(silence_frame.size()) != frame_bytes)
+            silence_frame.assign(static_cast<size_t>(frame_bytes), 0);
          int deficit = target_bytes - queued_now;
-         while (deficit >= len) {
-            SDL_PutAudioStreamData(audio_stream, silence_frame.data(), len);
-            deficit -= len;
+         while (deficit >= frame_bytes) {
+            SDL_PutAudioStreamData(audio_stream, silence_frame.data(), frame_bytes);
+            deficit -= frame_bytes;
          }
       }
    }
