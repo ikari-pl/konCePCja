@@ -4491,12 +4491,8 @@ int koncpc_main (int argc, char **argv)
                   print(static_cast<byte *>(back_surface->pixels) + CPC.scr_line_offs,
                         osd_message.c_str(), true);
                }
-               static int s_diag_frame = 0;
-               bool s_diag = (++s_diag_frame <= 8);
-               if (s_diag) { fprintf(stderr, "[DIAG] frame %d: PhaseA start (style=%d)\n", s_diag_frame, CPC.scr_style); fflush(stderr); }
                uint64_t displayStart = SDL_GetPerformanceCounter();
                video_display(); // Phase A: texture upload + ImGui render (~3ms)
-               if (s_diag) { fprintf(stderr, "[DIAG] frame %d: PhaseA done\n", s_diag_frame); fflush(stderr); }
                // Partial audio push before Phase B stall
                {
                   int partial = static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
@@ -4527,9 +4523,7 @@ int koncpc_main (int argc, char **argv)
                if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
                   continue;
                }
-               if (s_diag) { fprintf(stderr, "[DIAG] frame %d: PhaseB start\n", s_diag_frame); fflush(stderr); }
                video_display_b(); // Phase B: 0-60ms, Z80 runs concurrently!
-               if (s_diag) { fprintf(stderr, "[DIAG] frame %d: PhaseB done\n", s_diag_frame); fflush(stderr); }
                uint64_t displayEnd = SDL_GetPerformanceCounter();
                displayTimeAccum.fetch_add(displayEnd - displayStart, std::memory_order_relaxed);
                if (audio_stream && CPC.snd_ready) {

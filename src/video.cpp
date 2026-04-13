@@ -432,10 +432,6 @@ void direct_flip_a(video_plugin* t)
 // Runs after audio push so GL stalls don't starve the audio queue.
 void direct_flip_b([[maybe_unused]] video_plugin* t)
 {
-  static int s_diag = 0;
-  bool diag = (++s_diag <= 8);
-  if (diag) { fprintf(stderr, "[DIAG] direct_flip_b #%d enter\n", s_diag); fflush(stderr); }
-
   // Multi-viewport: update and render platform windows.
   // Only render when there are actual platform viewports (floating devtools, popups, submenus).
   // When only the main viewport exists (Viewports.Size == 1), skip — saves GL context
@@ -452,9 +448,7 @@ void direct_flip_b([[maybe_unused]] video_plugin* t)
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
 
-  if (diag) { fprintf(stderr, "[DIAG] direct_flip_b #%d: before SwapWindow\n", s_diag); fflush(stderr); }
   SDL_GL_SwapWindow(mainSDLWindow);
-  if (diag) { fprintf(stderr, "[DIAG] direct_flip_b #%d: after SwapWindow\n", s_diag); fflush(stderr); }
 }
 
 void direct_close()
@@ -1061,10 +1055,6 @@ static bool is_direct_family(const video_plugin* p) {
 }
 
 void crt_flip_a(video_plugin* t) {
-    static int s_diag = 0;
-    bool diag = (++s_diag <= 8);
-    if (diag) { fprintf(stderr, "[DIAG] crt_flip_a #%d enter (tier=%d)\n", s_diag, crt_tier); fflush(stderr); }
-
     // Upload CPC framebuffer
     glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
@@ -1072,9 +1062,7 @@ void crt_flip_a(video_plugin* t) {
 
     // If shader init failed, fall back to direct rendering
     if (crt_tier < 0) {
-        if (diag) { fprintf(stderr, "[DIAG] crt_flip_a #%d: fallback to direct_flip_a\n", s_diag); fflush(stderr); }
         direct_flip_a(t);
-        if (diag) { fprintf(stderr, "[DIAG] crt_flip_a #%d: fallback done\n", s_diag); fflush(stderr); }
         return;
     }
 
@@ -1141,7 +1129,6 @@ void crt_flip_a(video_plugin* t) {
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
     video_capture_if_pending();
-    if (diag) { fprintf(stderr, "[DIAG] crt_flip_a #%d exit\n", s_diag); fflush(stderr); }
 }
 
 void crt_close() {
@@ -1367,10 +1354,6 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs)
 
 void sdlr_swscale_blit(video_plugin* t)
 {
-  static int s_diag = 0;
-  bool diag = (++s_diag <= 8);
-  if (diag) { fprintf(stderr, "[DIAG] sdlr_swscale_blit #%d enter\n", s_diag); fflush(stderr); }
-
   SDL_BlitSurface(scaled, nullptr, vid, nullptr);
 
   SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
@@ -1396,9 +1379,7 @@ void sdlr_swscale_blit(video_plugin* t)
 
   video_capture_if_pending();
 
-  if (diag) { fprintf(stderr, "[DIAG] sdlr_swscale_blit #%d: before RenderPresent\n", s_diag); fflush(stderr); }
   SDL_RenderPresent(renderer);
-  if (diag) { fprintf(stderr, "[DIAG] sdlr_swscale_blit #%d: after RenderPresent\n", s_diag); fflush(stderr); }
 }
 
 void sdlr_swscale_close()
