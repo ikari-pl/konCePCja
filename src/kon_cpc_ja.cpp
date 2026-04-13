@@ -2858,15 +2858,15 @@ void doCleanUp ()
 #ifdef _WIN32
    timeEndPeriod(1);
 #endif
-   emulator_shutdown();
-
-   dsk_eject(&driveA);
-   dsk_eject(&driveB);
-   tape_eject();
-
-   // Signal Z80 thread to exit and join it before tearing down SDL/audio/video.
-   // Guard against self-join: cleanExit() can be called from the Z80 thread itself
-   // (e.g. via a virtual-event handler), in which case we detach instead.
+   // Stop the Z80 thread BEFORE freeing any state it touches.
+   // emulator_shutdown() frees pbRAM/pbROM/MF2ROM and dsk_eject frees disk
+   // buffers — the Z80 thread reads from all of these from its own stack, so
+   // they must outlive the join.  Also, the Z80 thread writes to pfoPrinter
+   // until it exits, so printer_stop() must follow the join.
+   //
+   // Guard against self-join: cleanExit() can be called from the Z80 thread
+   // itself (e.g. via a virtual-event handler), in which case we detach
+   // instead.
    if (g_z80_thread.joinable()) {
       g_z80_thread_quit.store(true, std::memory_order_relaxed);
       cpc_resume();                     // wake from pause sleep if paused
@@ -2878,11 +2878,11 @@ void doCleanUp ()
       }
    }
 
-   // printer_stop() must come after the Z80 thread is joined: the Z80 thread
-   // writes to pfoPrinter (fputc in the printer port handler) up until it exits.
-   // Closing the file before join creates a use-after-free of the FILE* on the
-   // Z80 thread, which manifests as truncated printer output (style 11 regression).
    printer_stop();
+   emulator_shutdown();
+   dsk_eject(&driveA);
+   dsk_eject(&driveB);
+   tape_eject();
 
    g_m4_http.stop();
    symbiface_cleanup();
