@@ -47,9 +47,24 @@ cd "$TSTDIR"
 nb_plugins=`$KONCPCDIR/koncepcja -V | grep "Number of video plugins available: " | cut -d : -f 2 | xargs`
 let last_plugin=${nb_plugins}-1
 
+# CRT Basic (12) and CRT Full (13) hang on GitHub Actions macOS runners:
+# their fragment shaders stall the headless software Metal renderer, even
+# though all three CRT tiers (including Lottes/14) run fine on real hardware.
+# Skip them on macOS CI only.  See beads-f1p for follow-up.
+SKIP_STYLES=""
+if [ "$(uname -s)" = "Darwin" ] && [ -n "$CI" ]; then
+  SKIP_STYLES="12 13"
+fi
+
 rc=0
 for style in `seq 0 $last_plugin`
 do
+  for skip in $SKIP_STYLES; do
+    if [ "$style" = "$skip" ]; then
+      echo " -- skipping scr_style=${style} (known macOS CI hang)"
+      continue 2
+    fi
+  done
   $SED -i "s/^scr_style=.*$/scr_style=${style}/" koncepcja.cfg || rc=2
   run_with_timeout 20 $KONCPCDIR/koncepcja -c koncepcja.cfg -a "print #8,\"style=${style}\"" -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
 
