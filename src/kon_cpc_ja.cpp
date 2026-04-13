@@ -4470,7 +4470,16 @@ int koncpc_main (int argc, char **argv)
             if (g_m4_http.is_running()) g_m4_http.drain_pending();
             std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
          } else {
-            bool skip = g_frame_signal.wait_ready();
+            // Poll for the Z80 frame signal, pumping SDL events between attempts.
+            // On macOS+Metal the Cocoa run loop must stay alive for CADisplayLink
+            // and drawable-completion callbacks to fire; a bare condvar wait starves
+            // it, causing SDL_RenderPresent / SDL_GL_SwapWindow to hang indefinitely
+            // for video styles that spend time in Phase A before the GPU call
+            // (CRT Basic/Full with GL shaders, SDL swscale with pixel filters).
+            bool skip = false;
+            while (!g_frame_signal.try_wait_ready_for(1, skip)) {
+                SDL_PumpEvents(); // keep macOS/Metal run loop alive
+            }
             if (!skip) {
                // OSD text — render thread owns osd_message/osd_timing, no race
                if (SDL_GetTicks() < osd_timing) {

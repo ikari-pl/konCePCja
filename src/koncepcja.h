@@ -529,6 +529,19 @@ struct FrameSignal {
         ready = false;
         return skip_render;
     }
+    // Render thread: timed wait — returns true (and consumes the signal) if ready within
+    // timeout_ms, false if not.  Used by the render loop to interleave event pumping with
+    // waiting, keeping the macOS/Metal Cocoa run loop alive between Z80 frames.
+    bool try_wait_ready_for(int timeout_ms, bool& skip_out) {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                        [this]{ return ready; })) {
+            ready = false;
+            skip_out = skip_render;
+            return true;
+        }
+        return false;
+    }
     // Render thread: Phase A done — release Z80 to start next frame.
     void signal_consumed() {
         std::lock_guard<std::mutex> lock(mtx);
