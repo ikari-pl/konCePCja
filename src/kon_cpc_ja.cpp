@@ -2858,25 +2858,46 @@ void doCleanUp ()
 #ifdef _WIN32
    timeEndPeriod(1);
 #endif
-   // Stop the Z80 thread BEFORE freeing any state it touches.
-   // emulator_shutdown() frees pbRAM/pbROM/MF2ROM and dsk_eject frees disk
-   // buffers — the Z80 thread reads from all of these from its own stack, so
-   // they must outlive the join.  Also, the Z80 thread writes to pfoPrinter
-   // until it exits, so printer_stop() must follow the join.
+   // Shutdown ordering — three constraints that together force this dance:
    //
-   // Guard against self-join: cleanExit() can be called from the Z80 thread
-   // itself (e.g. via a virtual-event handler), in which case we detach
-   // instead.
-   if (g_z80_thread.joinable()) {
-      g_z80_thread_quit.store(true, std::memory_order_relaxed);
-      cpc_resume();              // wake from pause sleep if paused
-      g_frame_signal.abort();    // permanently release Z80 from wait_consumed
-                                 // and prevent re-entry on next signal_ready
-      if (std::this_thread::get_id() != g_z80_thread.get_id()) {
-         g_z80_thread.join();
-      } else {
-         g_z80_thread.detach(); // called from Z80 thread — _exit() handles the rest
+   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside
+   //     z80_execute() and z80_OUT_handler.  Freeing those before the thread
+   //     stops causes a segfault (KERN_INVALID_ADDRESS in z80_OUT_handler).
+   //  2. Z80 thread writes pfoPrinter from the printer-port hook until its
+   //     very last instruction.  Closing the file before the thread stops
+   //     truncates final printer output (style 11 regression).
+   //  3. Setting g_z80_thread_quit alone is not enough: the Z80 may be deep
+   //     inside z80_execute() and won't observe the flag until it returns
+   //     at the next frame/sound boundary.  On macOS CI this can take long
+   //     enough to hit the 15-minute job timeout.
+   //
+   // Solution: pause-and-wait FIRST, but ONLY if the quit flag isn't already
+   // set.  When KONCPC_EXIT is processed inside the Z80 thread, cleanExit()
+   // sets g_z80_thread_quit and pushes SDL_EVENT_QUIT before returning; by
+   // the time the render thread reaches doCleanUp(), the Z80 has typically
+   // already exited its loop.  In that case cpc_pause_and_wait() would block
+   // forever (it spins until g_z80_quiescent goes true, which the now-dead
+   // Z80 thread will never set).  Skip it and join directly.
+   //
+   // For the "render thread initiated quit" path (e.g. SDL_QUIT from the
+   // window close button or F10 menu), the Z80 is still actively running
+   // inside z80_execute() and we DO need cpc_pause_and_wait() to bring it to
+   // a safe boundary first.
+   if (g_z80_thread.joinable() &&
+       std::this_thread::get_id() != g_z80_thread.get_id()) {
+      if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
+         cpc_pause_and_wait(); // Z80 now sleeping outside z80_execute()
+         g_z80_thread_quit.store(true, std::memory_order_relaxed);
+         cpc_resume();
       }
+      g_frame_signal.abort(); // belt-and-suspenders for any pending wait_consumed
+      g_z80_thread.join();
+   } else if (g_z80_thread.joinable()) {
+      // Self-join from the Z80 thread itself — can't pause-wait, just signal
+      // and detach; _exit() in the caller handles the rest.
+      g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      g_frame_signal.abort();
+      g_z80_thread.detach();
    }
 
    printer_stop();
