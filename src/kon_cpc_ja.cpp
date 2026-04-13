@@ -3739,10 +3739,8 @@ static void z80_thread_main()
 
          // Hand back_surface to render thread; block until Phase A (texture upload) done.
          // Phase B (SDL_GL_SwapWindow, 0-60ms) runs concurrently with the next Z80 frame.
-         { static int s_zd = 0; if (++s_zd <= 8) { fprintf(stderr, "[DIAG] Z80 signal_ready #%d (skip=%d)\n", s_zd, (int)CPC.skip_rendering); fflush(stderr); } }
          g_frame_signal.signal_ready(CPC.skip_rendering);
          g_frame_signal.wait_consumed();
-         { static int s_zw = 0; if (++s_zw <= 8) { fprintf(stderr, "[DIAG] Z80 wait_consumed done #%d\n", s_zw); fflush(stderr); } }
       }
    }
 }
