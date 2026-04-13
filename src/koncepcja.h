@@ -508,24 +508,29 @@ struct FrameSignal {
     bool ready{false};
     bool consumed{true};
     bool skip_render{false}; // set by Z80 before signal_ready; render reads after wait_ready
+    bool aborted{false};     // set by doCleanUp to permanently release both threads
 
     // Z80 thread: back_surface is complete; signal render to upload and release us.
+    // Once aborted (during shutdown), signal_ready is a no-op so 'consumed' stays
+    // sticky-true and wait_consumed returns immediately on the next loop iteration.
     void signal_ready(bool skip = false) {
         std::lock_guard<std::mutex> lock(mtx);
+        if (aborted) return;
         skip_render = skip;
         ready = true;
         consumed = false;
         cv.notify_one();
     }
-    // Z80 thread: block until render has finished Phase A (texture upload).
+    // Z80 thread: block until render has finished Phase A (texture upload), OR
+    // until shutdown aborts the signal.
     void wait_consumed() {
         std::unique_lock<std::mutex> lock(mtx);
-        cv.wait(lock, [this]{ return consumed; });
+        cv.wait(lock, [this]{ return consumed || aborted; });
     }
     // Render thread: block until Z80 signals a frame is ready; returns skip_render.
     bool wait_ready() {
         std::unique_lock<std::mutex> lock(mtx);
-        cv.wait(lock, [this]{ return ready; });
+        cv.wait(lock, [this]{ return ready || aborted; });
         ready = false;
         return skip_render;
     }
@@ -535,7 +540,8 @@ struct FrameSignal {
     bool try_wait_ready_for(int timeout_ms, bool& skip_out) {
         std::unique_lock<std::mutex> lock(mtx);
         if (cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                        [this]{ return ready; })) {
+                        [this]{ return ready || aborted; })) {
+            if (aborted) return false;
             ready = false;
             skip_out = skip_render;
             return true;
@@ -547,6 +553,16 @@ struct FrameSignal {
         std::lock_guard<std::mutex> lock(mtx);
         consumed = true;
         cv.notify_one();
+    }
+    // Shutdown: permanently release both threads from any current/future wait.
+    // After this call, signal_ready is a no-op and both wait_* methods return
+    // immediately.  Used by doCleanUp to break the Z80↔render handshake before
+    // joining the Z80 thread.
+    void abort() {
+        std::lock_guard<std::mutex> lock(mtx);
+        aborted = true;
+        consumed = true; // unblock any current wait_consumed
+        cv.notify_all();
     }
 };
 

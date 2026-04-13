@@ -2869,8 +2869,9 @@ void doCleanUp ()
    // instead.
    if (g_z80_thread.joinable()) {
       g_z80_thread_quit.store(true, std::memory_order_relaxed);
-      cpc_resume();                     // wake from pause sleep if paused
-      g_frame_signal.signal_consumed(); // unblock if stuck in wait_consumed()
+      cpc_resume();              // wake from pause sleep if paused
+      g_frame_signal.abort();    // permanently release Z80 from wait_consumed
+                                 // and prevent re-entry on next signal_ready
       if (std::this_thread::get_id() != g_z80_thread.get_id()) {
          g_z80_thread.join();
       } else {
