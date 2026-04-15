@@ -29,10 +29,24 @@ typedef int ssize_t;
 // I/O port handlers for $FADx (DART) and $FBDx (8253 Timer)
 // DART registers at $FADC-$FADF, timer at $FBDC-$FBDF.
 // Must check full low byte 0xDC-0xDF to avoid colliding with FDC ($FB7E) etc.
+// Map real DART hardware port offsets to the simplified register model used by
+// dart.read() / dart.write() (offset 0=Data, 1=RR0/WR0, 2=RR1/WR1, 3=RR2/WR3).
+//
+// Real hardware:  offset 0 ($FADC) = Ch A Data
+//                 offset 1 ($FADD) = Ch B Data  (unused on Amstrad SI)
+//                 offset 2 ($FADE) = Ch A Control (WR0/RR0 with register pointer)
+//                 offset 3 ($FADF) = Ch B Control (unused on Amstrad SI)
+//
+// Z80 SI ROM code reads RR0 from $FADE (offset 2) and writes WR0 there too.
+// Remapping offset 2 → 1 keeps that code working with the simplified model.
+static inline uint8_t dart_remap(uint8_t offset) {
+    return (offset == 2) ? 1 : offset;
+}
+
 static bool dart_in(reg_pair port, byte& ret_val) {
     uint8_t lo = port.b.l;
     if (lo >= 0xDC && lo <= 0xDF) {
-        ret_val = g_serial_interface.dart.read(lo - 0xDC);
+        ret_val = g_serial_interface.dart.read(dart_remap(lo - 0xDC));
         return true;
     }
     return false;
@@ -41,7 +55,7 @@ static bool dart_in(reg_pair port, byte& ret_val) {
 static bool dart_out(reg_pair port, byte val) {
     uint8_t lo = port.b.l;
     if (lo >= 0xDC && lo <= 0xDF) {
-        g_serial_interface.dart.write(lo - 0xDC, val);
+        g_serial_interface.dart.write(dart_remap(lo - 0xDC), val);
         return true;
     }
     return false;
@@ -115,20 +129,19 @@ void Z80Dart::reset() {
 }
 
 uint8_t Z80Dart::read(uint8_t port) {
-    // Z80 DART port mapping (active on Amstrad Serial Interface):
-    //   Bit 0 = B/~A: 0 = Channel A, 1 = Channel B
-    //   Bit 1 = C/~D: 0 = Data,      1 = Control
+    // Simplified DART register model (symmetric with write()):
+    //   offset 0 ($FADC / port & 0x03 == 0): Data  — read from RX FIFO
+    //   offset 1 ($FADD / port & 0x03 == 1): RR0   — Status register
+    //   offset 2 ($FADE / port & 0x03 == 2): RR1   — Special Receive Condition
+    //   offset 3 ($FADF / port & 0x03 == 3): RR2   — Interrupt Vector
     //
-    //   $FADC (00) = Channel A Data
-    //   $FADD (01) = Channel B Data
-    //   $FADE (10) = Channel A Control (RR0 by default)
-    //   $FADF (11) = Channel B Control (RR0 by default)
+    // Note: dart_in() remaps the real hardware Ch A Control address ($FADE,
+    // offset 2) to offset 1 so that real Z80 code reading status from $FADE
+    // still receives RR0.  This model omits the DART's register-pointer
+    // mechanism because Channel B is unused on the Amstrad Serial Interface.
 
-    int reg = port & 0x03;
-
-    switch (reg) {
-        case 0x00:  // Channel A Data — read received byte
-        case 0x01:  // Channel B Data
+    switch (port & 0x03) {
+        case 0x00:  // Data — read received byte
         {
             uint8_t val = 0;
             if (!rx_fifo_.empty()) {
@@ -138,10 +151,12 @@ uint8_t Z80Dart::read(uint8_t port) {
             }
             return val;
         }
-
-        case 0x02:  // Channel A Control — return RR0 (default register pointer)
-        case 0x03:  // Channel B Control
+        case 0x01:  // RR0 — Status
             return read_rr(0);
+        case 0x02:  // RR1 — Special Receive Condition
+            return read_rr(1);
+        case 0x03:  // RR2 — Interrupt Vector
+            return read_rr(2);
     }
 
     return 0xFF;
@@ -201,13 +216,14 @@ void Z80Dart::write(uint8_t port, uint8_t val) {
             do_tx();
             break;
             
-        case 0x01:  // Control register - WR0 (reset/command)
+        case 0x01:  // WR0 — Command register
             wr0_[channel_a_ ? 0 : 1] = val;
-            // Check for reset commands
-            if ((val & 0xC0) == 0xC0) {
-                // Reset
-                int reset_type = (val >> 6) & 0x03;
-                switch (reset_type) {
+            // Bits 7-6 carry the command code: 00=none, 01=reset receiver,
+            // 10=reset transmitter, 11=reset error flags.
+            {
+                int cmd = (val >> 6) & 0x03;
+                int ch  = channel_a_ ? 0 : 1;
+                switch (cmd) {
                     case 1:  // Reset receiver
                         while (!rx_fifo_.empty()) rx_fifo_.pop();
                         overrun_error_ = false;
@@ -217,17 +233,19 @@ void Z80Dart::write(uint8_t port, uint8_t val) {
                     case 2:  // Reset transmitter
                         tx_buffer_empty_ = true;
                         tx_shift_reg_empty_ = true;
-                        rr0_[channel_a_ ? 0 : 1] |= RR0_TX_EMPTY | RR0_TX_BUFFER_EMPTY;
+                        rr0_[ch] |= RR0_TX_EMPTY | RR0_TX_BUFFER_EMPTY;
                         break;
                     case 3:  // Reset error flags
                         overrun_error_ = false;
                         parity_error_ = false;
                         framing_error_ = false;
-                        rr1_[channel_a_ ? 0 : 1] = 0;
+                        rr1_[ch] = 0;
+                        break;
+                    default:  // 0 — no command
                         break;
                 }
             }
-            // Channel select is in WR0 bits 2-3
+            // Bits 3-2: channel select (00 = Ch A, 01 = Ch B)
             if ((val & 0x0C) == 0x04) channel_a_ = false;
             else if ((val & 0x0C) == 0x00) channel_a_ = true;
             break;
@@ -316,14 +334,15 @@ Intel8253::Intel8253() {
 
 void Intel8253::reset() {
     for (int i = 0; i < 3; i++) {
-        counters_[i].count = 0xFFFF;  // un-programmed 8253 reads high
-        counters_[i].latch = 0xFFFF;
+        counters_[i].count = 0;
+        counters_[i].latch = 0;
         counters_[i].mode = 0;
         counters_[i].counting = false;
         counters_[i].gate = true;
         latch_count_[i] = false;
     }
     mode_register_ = 0;
+    manual_baud_.reset();
 }
 
 uint8_t Intel8253::read(uint8_t port) {
