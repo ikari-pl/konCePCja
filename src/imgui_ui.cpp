@@ -325,7 +325,7 @@ void imgui_init_ui()
     g_command_palette.register_command(
         title, "", shortcut,
         [action_key]() {
-          extern byte keyboard_matrix[];
+          extern std::atomic<byte> keyboard_matrix[];
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, true);
           applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, false);
         });
@@ -334,7 +334,7 @@ void imgui_init_ui()
   g_command_palette.register_command("Pause / Resume", "Toggle emulation pause", "Pause",
       []() {
         extern t_CPC CPC;
-        CPC.paused = !CPC.paused;
+        if (g_emu_paused.load(std::memory_order_relaxed)) cpc_resume(); else cpc_pause();
       });
   g_command_palette.register_command("DevTools", "Open developer tools", "Shift+F2",
       []() { imgui_state.show_devtools = !imgui_state.show_devtools; });
@@ -502,7 +502,7 @@ void imgui_render_ui()
     if (ImGui::Button("No", ImVec2(80, 0))) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
-        CPC.paused = false;
+        cpc_resume();
       }
     }
     ImGui::EndPopup();
@@ -612,7 +612,7 @@ void imgui_close_menu()
   // Each dialog is responsible for clearing its own flag on close.
   // Only unpause if no dialog is keeping the emulator paused.
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
-    CPC.paused = false;
+    cpc_resume();
   }
 }
 
@@ -751,7 +751,7 @@ static void imgui_render_menubar()
     }
     if (ImGui::MenuItem("Quit", "F10")) {
       imgui_state.show_quit_confirm = true;
-      CPC.paused = true;
+      cpc_pause();
     }
     ImGui::EndMenu();
   }
@@ -1001,7 +1001,7 @@ static void imgui_render_topbar()
     if (menu_pressed) {
       imgui_state.show_menu = true;
       imgui_state.menu_just_opened = true;
-      CPC.paused = true;
+      cpc_pause();
     }
     // (Tape waveform moved to bottom status bar)
 
@@ -2671,7 +2671,7 @@ static void imgui_render_options()
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
   if (ImGui::IsItemHovered()) {
@@ -2687,7 +2687,7 @@ static void imgui_render_options()
     if (CPC.scr_style != prev_style)
       imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
   ImGui::SameLine();
@@ -2701,7 +2701,7 @@ static void imgui_render_options()
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
   if (ImGui::IsItemHovered()) {
@@ -2717,7 +2717,7 @@ static void imgui_render_options()
     if (CPC.scr_style != prev_style)
       imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
-    CPC.paused = false;
+    cpc_resume();
     first_open = true;
   }
 
@@ -2859,15 +2859,16 @@ static void imgui_render_devtools()
 
     // ── Step/Pause controls ──
     // Capture paused state once so BeginDisabled/EndDisabled stay balanced
-    // even when a button handler sets CPC.paused = false mid-frame.
+    // even when a button handler calls cpc_resume() mid-frame.
     ImGui::SameLine(0, 12.0f);
-    bool was_paused = CPC.paused;
+    // Use the atomic flag — CPC.paused is a plain bool written by the Z80 thread.
+    bool was_paused = g_emu_paused.load(std::memory_order_relaxed);
     if (!was_paused) ImGui::BeginDisabled();
     if (ImGui::Button("Step In"))  {
       z80.step_in = 1;
       z80.step_out = 0;
       z80.step_out_addresses.clear();
-      CPC.paused = false;
+      cpc_resume();
     }
     if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (enters CALLs)"); }
     ImGui::SameLine();
@@ -2878,10 +2879,10 @@ static void imgui_render_devtools()
       word pc = z80.PC.w.l;
       if (z80_is_call_or_rst(pc)) {
         z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
-        CPC.paused = false;
+        cpc_resume();
       } else {
         z80.step_in = 1;
-        CPC.paused = false;
+        cpc_resume();
       }
     }
     if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)"); }
@@ -2890,13 +2891,13 @@ static void imgui_render_devtools()
       z80.step_out = 1;
       z80.step_out_addresses.clear();
       z80.step_in = 0;
-      CPC.paused = false;
+      cpc_resume();
     }
     if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Run until the current subroutine returns"); }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button(CPC.paused ? "Resume" : "Pause")) {
-      CPC.paused = !CPC.paused;
+    if (ImGui::Button(was_paused ? "Resume" : "Pause")) {
+      if (was_paused) cpc_resume(); else cpc_pause();
     }
 
     // ── Per-window render timing ──
@@ -2926,31 +2927,47 @@ static void imgui_render_devtools()
     // ── Frame timing + audio diagnostics (--debug only) ──
     extern bool g_debug;
     if (g_debug) {
+    // Snapshot stats under the mutex — Z80 thread writes these once/second.
+    // Take the snapshot first, then render from it (never hold the mutex during ImGui calls).
+    float s_frame_avg_ms, s_frame_min_ms, s_frame_max_ms;
+    float s_z80_ms, s_disp_ms, s_sleep_ms;
+    int   s_underruns, s_near_underruns, s_pushes;
+    float s_queue_avg_ms, s_queue_min_ms, s_push_interval_max_us;
+    {
+      std::lock_guard<std::mutex> stats_lock(g_imgui_stats_mutex);
+      s_frame_avg_ms         = imgui_state.frame_time_avg_us / 1000.0f;
+      s_frame_min_ms         = imgui_state.frame_time_min_us / 1000.0f;
+      s_frame_max_ms         = imgui_state.frame_time_max_us / 1000.0f;
+      s_z80_ms               = imgui_state.z80_time_avg_us   / 1000.0f;
+      s_disp_ms              = imgui_state.display_time_avg_us / 1000.0f;
+      s_sleep_ms             = imgui_state.sleep_time_avg_us / 1000.0f;
+      s_underruns            = imgui_state.audio_underruns;
+      s_near_underruns       = imgui_state.audio_near_underruns;
+      s_pushes               = imgui_state.audio_pushes;
+      s_queue_avg_ms         = imgui_state.audio_queue_avg_ms;
+      s_queue_min_ms         = imgui_state.audio_queue_min_ms;
+      s_push_interval_max_us = imgui_state.audio_push_interval_max_us;
+    }
+
     ImGui::SameLine(0, 8.0f);
     {
-      float total_ms = imgui_state.frame_time_avg_us / 1000.0f;
-      float budget_pct = total_ms / 20.0f * 100.0f;  // 20ms = 50fps budget
+      float budget_pct = s_frame_avg_ms / 20.0f * 100.0f;  // 20ms = 50fps budget
       ImVec4 ft_color = budget_pct > 90.0f
         ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)    // red: >90% budget used
         : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);   // gray: healthy
       ImGui::PushStyleColor(ImGuiCol_Text, ft_color);
       char ftbuf[32];
-      snprintf(ftbuf, sizeof(ftbuf), "frame:%.1fms", total_ms);
+      snprintf(ftbuf, sizeof(ftbuf), "frame:%.1fms", s_frame_avg_ms);
       ImGui::TextUnformatted(ftbuf);
       if (ImGui::IsItemHovered()) {
-        float min_ms = imgui_state.frame_time_min_us / 1000.0f;
-        float max_ms = imgui_state.frame_time_max_us / 1000.0f;
-        float z80_ms = imgui_state.z80_time_avg_us / 1000.0f;
-        float disp_ms = imgui_state.display_time_avg_us / 1000.0f;
-        float sleep_ms = imgui_state.sleep_time_avg_us / 1000.0f;
-        float work_ms = total_ms - sleep_ms;
+        float work_ms = s_frame_avg_ms - s_sleep_ms;
         ImGui::BeginTooltip();
-        ImGui::Text("Frame time avg: %.1f ms (work: %.1f ms, sleep: %.1f ms)", total_ms, work_ms, sleep_ms);
-        ImGui::Text("Frame time min: %.1f ms  max: %.1f ms", min_ms, max_ms);
+        ImGui::Text("Frame time avg: %.1f ms (work: %.1f ms, sleep: %.1f ms)", s_frame_avg_ms, work_ms, s_sleep_ms);
+        ImGui::Text("Frame time min: %.1f ms  max: %.1f ms", s_frame_min_ms, s_frame_max_ms);
         ImGui::Separator();
-        ImGui::Text("Z80 emulation:  %.1f ms", z80_ms);
-        ImGui::Text("Display/GL:     %.1f ms", disp_ms);
-        ImGui::Text("Sleep (limiter):%.1f ms", sleep_ms);
+        ImGui::Text("Z80 emulation:  %.1f ms", s_z80_ms);
+        ImGui::Text("Display/GL:     %.1f ms", s_disp_ms);
+        ImGui::Text("Sleep (limiter):%.1f ms", s_sleep_ms);
         ImGui::EndTooltip();
       }
       ImGui::PopStyleColor();
@@ -2960,24 +2977,24 @@ static void imgui_render_devtools()
     ImGui::SameLine(0, 8.0f);
     {
       ImVec4 snd_color;
-      if (imgui_state.audio_underruns > 0)
+      if (s_underruns > 0)
         snd_color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);    // red: hard underrun
-      else if (imgui_state.audio_near_underruns > 0)
+      else if (s_near_underruns > 0)
         snd_color = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);    // yellow: near-underrun
       else
         snd_color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);    // gray: healthy
       ImGui::PushStyleColor(ImGuiCol_Text, snd_color);
       char abuf[32];
-      snprintf(abuf, sizeof(abuf), "snd:%.0fms", imgui_state.audio_queue_avg_ms);
+      snprintf(abuf, sizeof(abuf), "snd:%.0fms", s_queue_avg_ms);
       ImGui::TextUnformatted(abuf);
       if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
-        ImGui::Text("Audio queue avg: %.1f ms", imgui_state.audio_queue_avg_ms);
-        ImGui::Text("Audio queue min: %.1f ms", imgui_state.audio_queue_min_ms);
-        ImGui::Text("Push interval max: %.0f us", imgui_state.audio_push_interval_max_us);
-        ImGui::Text("Pushes/sec: %d", imgui_state.audio_pushes);
-        ImGui::Text("Underruns/sec: %d", imgui_state.audio_underruns);
-        ImGui::Text("Near-underruns/sec: %d", imgui_state.audio_near_underruns);
+        ImGui::Text("Audio queue avg: %.1f ms", s_queue_avg_ms);
+        ImGui::Text("Audio queue min: %.1f ms", s_queue_min_ms);
+        ImGui::Text("Push interval max: %.0f us", s_push_interval_max_us);
+        ImGui::Text("Pushes/sec: %d", s_pushes);
+        ImGui::Text("Underruns/sec: %d", s_underruns);
+        ImGui::Text("Near-underruns/sec: %d", s_near_underruns);
         ImGui::EndTooltip();
       }
       ImGui::PopStyleColor();
@@ -3240,12 +3257,12 @@ static void imgui_render_vkeyboard()
   // Helper: check if a CPC key is currently pressed in the keyboard matrix.
   // CPC_KEYS enum values are NOT matrix positions — must convert via scancode table.
   auto cpc_key_down = [](byte cpc_key) -> bool {
-    extern byte keyboard_matrix[];
+    extern std::atomic<byte> keyboard_matrix[];
     extern byte bit_values[];
     CPCScancode sc = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
     byte row = static_cast<byte>(sc >> 4);
     byte bit = static_cast<byte>(sc & 7);
-    return row < 16 && !(keyboard_matrix[row] & bit_values[bit]);
+    return row < 16 && !(keyboard_matrix[row].load(std::memory_order_relaxed) & bit_values[bit]);
   };
   // Helper: draw blue overlay on last ImGui item if CPC key is pressed
   auto highlight_if_pressed = [&](byte cpc_key) {

@@ -46,7 +46,10 @@ src/
 ## Building
 
 ```bash
-# macOS
+# macOS (preferred — use the wrapper script to avoid command-substitution prompts)
+scripts/build-macos.sh
+
+# macOS (manual)
 make -j$(nproc) ARCH=macos
 
 # Linux
@@ -157,6 +160,71 @@ echo "run" | nc localhost 6543
 echo "wait pc 0xC000 30000" | nc localhost 6543  # Wait for game entry
 echo "screenshot /tmp/game.bmp" | nc localhost 6543
 ```
+
+### Automated IPC Testing
+
+Automated tests live in `test/integrated/ipc_harness.py`.  Run them against a
+running emulator:
+
+```bash
+# Start emulator in the background (headless)
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./koncepcja &
+python3 test/integrated/ipc_harness.py
+kill %1
+```
+
+The harness provides two classes:
+
+- **`KoncepcjaIPC`** — thin client, one TCP connection per command (the server
+  closes after each response).  All methods return `(bool, str)` or `bool`.
+- **`EmulatorRunner`** — context manager that launches and tears down the
+  emulator process, waits for the IPC port to come up.
+
+#### Key patterns
+
+**Always pause before touching Z80 state.**  `reg set`, `mem write`, `step in`,
+`snapshot save/load` all call `cpc_pause_and_wait()` internally (which spins
+until the Z80 thread exits `z80_execute()`).  From the test side, call
+`ipc.pause()` first anyway — it keeps intent explicit and the server is
+idempotent on double-pause.
+
+**Use `wait bp <timeout_ms>` as a deadlock detector.**  This command blocks
+until a breakpoint fires *or* the timeout expires.  If it times out when a
+breakpoint *should* have fired, the Z80 thread is stuck (deadlocked).  5 000 ms
+is a safe budget for 0x0038 (RST 38h — fires every ~50 ms of real CPC time).
+
+```python
+ok, resp = ipc.wait_bp(timeout_ms=5000)
+assert ok, f"Z80 thread deadlock or BP never reached: {resp}"
+```
+
+**After EC_BREAKPOINT, call `signal_ready(true)` to unblock the render thread.**
+A breakpoint mid-frame skips EC_FRAME_COMPLETE, so the render thread would block
+in `wait_ready()` forever.  The fix lives in `kon_cpc_ja.cpp`; the IPC test
+(`test_breakpoint_pause_step_resume`) catches regressions.
+
+**`SDL_VIDEODRIVER=dummy` triggers headless mode on macOS.**  OpenGL init fails
+under the offscreen/dummy SDL driver, so the emulator falls back to headless and
+runs single-threaded.  The IPC protocol is identical in both modes.
+`KoncepcjaIPC.is_threaded()` probes this by sending `devtools` (fails in
+headless, succeeds in GUI mode).
+
+**Snapshot round-trip pattern.**  Pause → read reference bytes → `snapshot save`
+→ corrupt bytes → `snapshot load` → verify bytes restored.  This catches state
+corruption from missing quiescence guards around snapshot I/O.
+
+**Rapid pause/resume stress.**  20+ alternating `pause`/`run` commands without
+a gap.  A single deadlock or condvar misuse shows up as a `send_command` timeout.
+Tune `KoncepcjaIPC(timeout=5.0)` if the machine is slow.
+
+#### Adding new tests
+
+1. Add a `test_<name>()` function that returns `True`/`False`.
+2. Append it to the `tests` list in `main()`.
+3. Use `EmulatorRunner` as a context manager — it cleans up the process even on
+   exception.
+4. If the test exercises a threaded-only path, gate it with `ipc.is_threaded()`
+   and skip (return `True`) in headless mode.
 
 ## Telnet Console
 
@@ -397,6 +465,11 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 ### String & Buffer Safety
 - **Track string lengths explicitly** — When packing strings into fixed-width fields (like ATA IDENTIFY), compute `strlen` once and bounds-check per-character access. Don't rely on null-terminator proximity to short-circuit evaluation.
 - **Path traversal protection** — Any user-supplied path (IPC, M4 virtual FS) must be validated: reject `..`, absolute paths, and symlink escapes.
+
+## CI / Merging
+
+- **NEVER merge a PR with failing CI checks.** Fix failures first.
+- **Auto-merge** (`gh pr merge --auto`) triggers only when **all CI checks pass AND all review comment threads are resolved**. A PR that is green on CI but has unresolved threads will stay blocked. Always resolve open threads before expecting auto-merge to fire.
 
 ## Landing the Plane (Session Completion)
 

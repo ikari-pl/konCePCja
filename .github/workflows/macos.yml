@@ -21,7 +21,7 @@ jobs:
           submodules: true
       - uses: actions/setup-node@v4
       - run: brew update
-      - run: brew install freetype zlib libpng gnu-sed cmake
+      - run: brew install freetype zlib libpng gnu-sed cmake coreutils
 
       - name: Apply SDL patches
         run: |

@@ -400,7 +400,7 @@ GMOCK_DIR = googletest/googlemock/
 $(GTEST_DIR)/src/gtest-all.cc: googletest
 $(GMOCK_DIR)/src/gmock-all.cc: googletest
 
-$(TEST_DEPENDS): $(OBJDIR)/%.d: %.cpp
+$(TEST_DEPENDS): $(OBJDIR)/%.d: %.cpp googletest
 	@echo Computing dependencies for $<
 	@mkdir -p `dirname $@`
 	@$(CXX) -MM $(BUILD_FLAGS) $(TEST_CFLAGS) $< | { sed 's#^[^:]*\.o[ :]*#$(OBJDIR)/$*.o $(OBJDIR)/$*.d : #g' ; echo "%.h:;" ; echo "" ; } > $@
