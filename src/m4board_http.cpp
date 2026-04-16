@@ -1190,7 +1190,7 @@ void M4HttpServer::drain_pending() {
       LOG_INFO("M4 HTTP: reset executed");
    }
    if (pending_pause_toggle.exchange(false)) {
-      CPC.paused = !CPC.paused;
+      if (CPC.paused) cpc_resume(); else cpc_pause();
       LOG_INFO("M4 HTTP: " << (CPC.paused ? "paused" : "resumed"));
    }
    // Update preview snapshot for the HTTP thread (~5fps, only when server is running)

@@ -11,7 +11,7 @@ KeyboardManager::KeyboardManager() {
     }
 }
 
-void KeyboardManager::handle_keydown(CPCScancode scancode, byte keyboard_matrix[]) {
+void KeyboardManager::handle_keydown(CPCScancode scancode, std::atomic<byte> keyboard_matrix[]) {
     if (static_cast<byte>(scancode) == 0xff) return;
     
     auto it = pending_releases.begin();
@@ -32,7 +32,7 @@ void KeyboardManager::handle_keydown(CPCScancode scancode, byte keyboard_matrix[
     }
 }
 
-void KeyboardManager::handle_keyup(CPCScancode scancode, byte keyboard_matrix[], bool release_modifiers, dword current_frame) {
+void KeyboardManager::handle_keyup(CPCScancode scancode, std::atomic<byte> keyboard_matrix[], bool release_modifiers, dword current_frame) {
     if (static_cast<byte>(scancode) == 0xff) return;
     
     if (CPC.keyboard_support_mode == KeyboardSupportMode::Direct) {
@@ -65,7 +65,7 @@ void KeyboardManager::notify_scanned(int line) {
     }
 }
 
-void KeyboardManager::update(byte keyboard_matrix[], dword current_frame) {
+void KeyboardManager::update(std::atomic<byte> keyboard_matrix[], dword current_frame) {
     if (pending_releases.empty()) return;
     
     auto it = pending_releases.begin();
@@ -94,6 +94,6 @@ void KeyboardManager::update(byte keyboard_matrix[], dword current_frame) {
     }
 }
 
-void KeyboardManager::release_key(CPCScancode scancode, byte keyboard_matrix[], bool release_modifiers) {
+void KeyboardManager::release_key(CPCScancode scancode, std::atomic<byte> keyboard_matrix[], bool release_modifiers) {
     applyKeypressDirect(scancode, keyboard_matrix, false, release_modifiers);
 }

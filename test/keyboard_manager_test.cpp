@@ -29,14 +29,14 @@ static int scancode_line(CPCScancode sc) { return static_cast<byte>(sc) >> 4; }
 static int scancode_bit(CPCScancode sc)  { return static_cast<byte>(sc) & 7; }
 
 // Helper: check if a key is pressed (bit CLEARED) in the matrix
-static bool is_pressed(byte keyboard_matrix[], CPCScancode sc) {
+static bool is_pressed(std::atomic<byte> keyboard_matrix[], CPCScancode sc) {
     int line = scancode_line(sc);
     int bit  = scancode_bit(sc);
-    return (keyboard_matrix[line] & bit_values[bit]) == 0;
+    return (keyboard_matrix[line].load(std::memory_order_relaxed) & bit_values[bit]) == 0;
 }
 
 // Helper: check if a key is released (bit SET) in the matrix
-static bool is_released(byte keyboard_matrix[], CPCScancode sc) {
+static bool is_released(std::atomic<byte> keyboard_matrix[], CPCScancode sc) {
     return !is_pressed(keyboard_matrix, sc);
 }
 
@@ -45,7 +45,7 @@ protected:
     void SetUp() override {
         // Initialize matrix to all released (0xFF)
         for (int i = 0; i < 16; i++) {
-            matrix[i] = 0xFF;
+            matrix[i].store(0xFF, std::memory_order_relaxed);
         }
         // Create a fresh KeyboardManager for each test
         km = KeyboardManager();
@@ -55,7 +55,7 @@ protected:
         CPC.keyboard_support_mode = mode;
     }
 
-    byte matrix[16];
+    std::atomic<byte> matrix[16];
     KeyboardManager km;
 };
 

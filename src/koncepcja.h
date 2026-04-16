@@ -20,6 +20,9 @@
 #define KONCEPCJA_H
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,7 +229,7 @@ class t_CPC {
    unsigned int limit_speed;
    unsigned int frameskip = 0;
    bool skip_rendering = false;
-   bool paused;
+   bool paused = false;
    unsigned int auto_pause;
    unsigned int boot_time;
    unsigned int keyboard_line;
@@ -493,6 +496,86 @@ typedef struct {
 
 using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
 
+// Frame synchronization between Z80 emulation thread and render (main) thread.
+// Protocol:
+//   Z80 calls signal_ready() after writing back_surface (asic_draw_sprites done).
+//   Render calls wait_ready(), does Phase A (texture upload), then signal_consumed().
+//   Z80 is blocked in wait_consumed() during Phase A; on return it starts the next
+//   frame immediately — concurrently with Phase B (SDL_GL_SwapWindow, 0-60ms).
+struct FrameSignal {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool ready{false};
+    bool consumed{true};
+    bool skip_render{false}; // set by Z80 before signal_ready; render reads after wait_ready
+    bool aborted{false};     // set by doCleanUp to permanently release both threads
+
+    // Z80 thread: back_surface is complete; signal render to upload and release us.
+    // Once aborted (during shutdown), signal_ready is a no-op so 'consumed' stays
+    // sticky-true and wait_consumed returns immediately on the next loop iteration.
+    void signal_ready(bool skip = false) {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (aborted) return;
+        skip_render = skip;
+        ready = true;
+        consumed = false;
+        cv.notify_one();
+    }
+    // Z80 thread: block until render has finished Phase A (texture upload), OR
+    // until shutdown aborts the signal.
+    void wait_consumed() {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [this]{ return consumed || aborted; });
+    }
+    // Render thread: block until Z80 signals a frame is ready; returns skip_render.
+    bool wait_ready() {
+        std::unique_lock<std::mutex> lock(mtx);
+        cv.wait(lock, [this]{ return ready || aborted; });
+        ready = false;
+        return skip_render;
+    }
+    // Render thread: timed wait — returns true (and consumes the signal) if ready within
+    // timeout_ms, false if not.  Used by the render loop to interleave event pumping with
+    // waiting, keeping the macOS/Metal Cocoa run loop alive between Z80 frames.
+    bool try_wait_ready_for(int timeout_ms, bool& skip_out) {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                        [this]{ return ready || aborted; })) {
+            if (aborted) return false;
+            ready = false;
+            skip_out = skip_render;
+            return true;
+        }
+        return false;
+    }
+    // Render thread: Phase A done — release Z80 to start next frame.
+    void signal_consumed() {
+        std::lock_guard<std::mutex> lock(mtx);
+        consumed = true;
+        cv.notify_one();
+    }
+    // Shutdown: permanently release both threads from any current/future wait.
+    // After this call, signal_ready is a no-op and both wait_* methods return
+    // immediately.  Used by doCleanUp to break the Z80↔render handshake before
+    // joining the Z80 thread.
+    void abort() {
+        std::lock_guard<std::mutex> lock(mtx);
+        aborted = true;
+        consumed = true; // unblock any current wait_consumed
+        cv.notify_all();
+    }
+};
+
+// Emulation/render thread synchronization — see kon_cpc_ja.cpp
+extern std::atomic<bool> g_emu_paused;       // true while Z80 thread is halted
+extern std::atomic<bool> g_z80_quiescent;    // true when Z80 thread is NOT inside z80_execute()
+extern FrameSignal       g_frame_signal;     // back_surface handoff between threads
+// Protects imgui_state stats fields written by Z80 thread, read by render thread.
+// Lock before reading/writing: frame_time_*_us, z80_time_avg_us, display_time_avg_us,
+// sleep_time_avg_us, audio_underruns, audio_near_underruns, audio_pushes,
+// audio_queue_*_ms, audio_push_interval_max_us.
+extern std::mutex        g_imgui_stats_mutex;
+
 // kon_cpc_ja.cpp
 void set_osd_message(const std::string& message, uint32_t for_milliseconds = 1000);
 void koncpc_queue_virtual_keys(const std::string& text);
@@ -504,6 +587,10 @@ bool driveAltered();
 void emulator_reset();
 void cpc_pause();
 void cpc_resume();
+// cpc_pause() + spin until the Z80 thread is not inside z80_execute().
+// Use this before touching Z80 state (registers, memory) from a non-Z80 thread.
+// No-op in headless mode (single-threaded; cpc_pause() is sufficient).
+void cpc_pause_and_wait();
 void bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);
 void dumpScreen();
