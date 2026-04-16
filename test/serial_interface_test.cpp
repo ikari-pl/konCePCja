@@ -295,9 +295,11 @@ TEST_F(Intel8253Test, ReadInvalidPort) {
 class SerialBackendTest : public testing::Test {
 protected:
     void TearDown() override {
-        // Clean up any test files
-        std::filesystem::remove(test_input_path_);
-        std::filesystem::remove(test_output_path_);
+        // Use error_code overload — on Windows a file left open by a
+        // FileBackend without explicit close() would throw "file in use".
+        std::error_code ec;
+        std::filesystem::remove(test_input_path_, ec);
+        std::filesystem::remove(test_output_path_, ec);
     }
 
     // Use temp_directory_path() — /tmp doesn't exist on MINGW/Windows.
@@ -608,9 +610,10 @@ TEST_F(SIRomManagerTest, InvalidSlotDoesNothing) {
 }
 
 // ─────────────────────────────────────────────────
-// Host Serial Backend Tests
+// Host Serial Backend Tests (POSIX only — stub on Windows always fails open())
 // ─────────────────────────────────────────────────
 
+#ifndef _WIN32
 class HostSerialBackendTest : public testing::Test {
 protected:
     void TearDown() override {
@@ -670,6 +673,7 @@ TEST_F(HostSerialBackendTest, DoubleOpenIsOK) {
     EXPECT_TRUE(backend.open());
     EXPECT_TRUE(backend.open());
 }
+#endif // !_WIN32
 
 // ─────────────────────────────────────────────────
 // Null Modem Backend Tests
