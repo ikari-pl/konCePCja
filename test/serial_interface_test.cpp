@@ -21,10 +21,16 @@
 
 class Z80DartTest : public testing::Test {
 protected:
+    // Logical register offsets (simplified DART model, see serial_interface.cpp).
+    static constexpr uint8_t DATA = 0;  // RX/TX data
+    static constexpr uint8_t WR0  = 1;  // Command / RR0 status
+    static constexpr uint8_t WR1  = 2;  // Interrupt enable / RR1
+    static constexpr uint8_t WR2  = 3;  // Interrupt vector / RR2
+
     void SetUp() override {
         dart = Z80Dart();
     }
-    
+
     Z80Dart dart;
 };
 
@@ -42,9 +48,8 @@ TEST_F(Z80DartTest, Reset_InitialState) {
 }
 
 TEST_F(Z80DartTest, Read_RR0_InitialStatus) {
-    // Read RR0 on Channel A (default)
-    uint8_t status = dart.read(0x0D); // Control port
-    
+    uint8_t status = dart.read(WR0);
+
     // Should have TX empty and CTS bits set
     EXPECT_TRUE(status & 0x04);  // TX Empty
     EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
@@ -54,115 +59,85 @@ TEST_F(Z80DartTest, Read_RR0_InitialStatus) {
 TEST_F(Z80DartTest, Write_Data_TriggersCallback) {
     bool callback_called = false;
     uint8_t received_byte = 0;
-    
+
     dart.set_rx_callback([&](uint8_t byte) {
         callback_called = true;
         received_byte = byte;
     });
-    
-    // Write a byte to data port
-    dart.write(0x0C, 0x42);  // 'B'
-    
+
+    dart.write(DATA, 0x42);  // 'B'
+
     EXPECT_TRUE(callback_called);
     EXPECT_EQ(received_byte, 0x42);
 }
 
 TEST_F(Z80DartTest, Write_Data_SetsTxBufferFull) {
-    // First, read status - TX buffer should be empty
-    uint8_t status = dart.read(0x0D);
+    uint8_t status = dart.read(WR0);
     EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
-    
-    // Write data
-    dart.write(0x0C, 0x55);
-    
+
+    dart.write(DATA, 0x55);
+
     // After write, TX buffer should still be empty (TX complete is fast)
     // In real hardware this would be baud-rate dependent
 }
 
 TEST_F(Z80DartTest, ChannelSelect_A) {
-    // Select Channel A via WR0
-    dart.write(0x0D, 0x00);  // WR0 with channel A select (bits 2-3 = 00)
-    
-    // Write to channel A
-    dart.write(0x0C, 0xAA);
-    
-    // Verify by reading status
-    uint8_t status = dart.read(0x0D);
+    dart.write(WR0, 0x00);  // Channel A select (bits 2-3 = 00)
+    dart.write(DATA, 0xAA);
+
+    uint8_t status = dart.read(WR0);
     EXPECT_TRUE(status & 0x04);  // TX Empty (transmit complete)
 }
 
 TEST_F(Z80DartTest, ResetReceiver_ClearsFIFO) {
-    // Enqueue some bytes (via internal method simulation)
-    // In real scenario, we'd need to inject bytes
-    
-    // Reset receiver
-    dart.write(0x0D, 0x40);  // WR0 reset receiver command (bits 6-7 = 01)
-    
-    // FIFO should be empty
+    dart.write(WR0, 0x40);  // Reset receiver (bits 6-7 = 01)
     EXPECT_FALSE(dart.rx_available());
 }
 
 TEST_F(Z80DartTest, ResetTransmitter_ClearsTxBuffer) {
-    // Write some data
-    dart.write(0x0C, 0x12);
-    
-    // Reset transmitter
-    dart.write(0x0D, 0x80);  // WR0 reset transmitter command (bits 6-7 = 10)
-    
-    // TX should be empty and ready
-    uint8_t status = dart.read(0x0D);
+    dart.write(DATA, 0x12);
+    dart.write(WR0, 0x80);  // Reset transmitter (bits 6-7 = 10)
+
+    uint8_t status = dart.read(WR0);
     EXPECT_TRUE(status & 0x04);  // TX Empty
     EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
 }
 
 TEST_F(Z80DartTest, ResetErrorFlags_ClearsErrorBits) {
-    // Write error reset command
-    dart.write(0x0D, 0xC0);  // WR0 reset error flags (bits 6-7 = 11)
-    
-    // Read RR1 to verify errors cleared
-    uint8_t rr1 = dart.read(0x0E);
-    EXPECT_EQ(rr1, 0x00);  // No errors
+    dart.write(WR0, 0xC0);  // Reset error flags (bits 6-7 = 11)
+
+    uint8_t rr1 = dart.read(WR1);  // RR1
+    EXPECT_EQ(rr1, 0x00);
 }
 
 TEST_F(Z80DartTest, WR1_InterruptEnable) {
-    // Write interrupt enable to WR1 (Channel A)
-    // 0x03 = bit 1: TX interrupt enable
-    // With TX buffer empty and TX interrupt enabled, interrupt fires
-    dart.write(0x0E, 0x02);  // Enable TX interrupt only
-    
+    dart.write(WR1, 0x02);  // Enable TX interrupt only
+
     // TX buffer is empty after reset, so TX interrupt fires
     EXPECT_TRUE(dart.has_interrupt());
-    
-    // Reset to clear interrupt
+
     dart.reset();
     EXPECT_FALSE(dart.has_interrupt());
-    
+
     // Now write data - TX interrupt should still fire when buffer empties
-    dart.write(0x0C, 0x42);
+    dart.write(DATA, 0x42);
     EXPECT_FALSE(dart.has_interrupt());  // TX in progress
 }
 
 TEST_F(Z80DartTest, InterruptVector_Default) {
     uint8_t vec = dart.get_interrupt_vector();
-    // Default vector should be set
     EXPECT_EQ(vec, 0x00);
 }
 
 TEST_F(Z80DartTest, MultipleChannelSelects) {
-    // Select channel A explicitly
-    dart.write(0x0D, 0x00);  // Channel A
-    
-    // Select channel B
-    dart.write(0x0D, 0x04);  // Channel B (bits 2-3 = 01)
-    
-    // Data port for B
-    dart.write(0x0E, 0xBB);
+    dart.write(WR0, 0x00);  // Channel A
+    dart.write(WR0, 0x04);  // Channel B (bits 2-3 = 01)
+    dart.write(WR1, 0xBB);  // Data to channel B's WR1
 }
 
 TEST_F(Z80DartTest, StatusBits_Comprehensive) {
-    uint8_t status = dart.read(0x0D);
-    
-    // All expected bits should be present
+    uint8_t status = dart.read(WR0);
+
     EXPECT_TRUE(status & 0x04);  // TX Empty
     EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
     EXPECT_TRUE(status & 0x20);  // CTS
@@ -174,10 +149,16 @@ TEST_F(Z80DartTest, StatusBits_Comprehensive) {
 
 class Intel8253Test : public testing::Test {
 protected:
+    // Logical register offsets for the 8253 timer.
+    static constexpr uint8_t CTR0 = 0;  // Counter 0 (baud rate)
+    static constexpr uint8_t CTR1 = 1;  // Counter 1
+    static constexpr uint8_t CTR2 = 2;  // Counter 2
+    static constexpr uint8_t MODE = 3;  // Mode/command register
+
     void SetUp() override {
         timer = Intel8253();
     }
-    
+
     Intel8253 timer;
 };
 
@@ -198,51 +179,45 @@ TEST_F(Intel8253Test, ReadCounter_InvalidChannel) {
 }
 
 TEST_F(Intel8253Test, WriteCounter0_SetsCount) {
-    timer.write(0x0C, 0x12);  // Counter 0, LSB only
+    timer.write(CTR0, 0x12);
     EXPECT_EQ(timer.read_counter(0), 0x12);
 }
 
 TEST_F(Intel8253Test, WriteCounter1_SetsCount) {
-    timer.write(0x0D, 0x34);  // Counter 1
+    timer.write(CTR1, 0x34);
     EXPECT_EQ(timer.read_counter(1), 0x34);
 }
 
 TEST_F(Intel8253Test, WriteCounter2_SetsCount) {
-    timer.write(0x0E, 0x56);  // Counter 2
+    timer.write(CTR2, 0x56);
     EXPECT_EQ(timer.read_counter(2), 0x56);
 }
 
 TEST_F(Intel8253Test, ModeRegister_Write) {
-    timer.write(0x0F, 0x12);  // Mode register
-    
-    // Read doesn't affect counter state
+    timer.write(MODE, 0x12);
+
+    // Mode write doesn't affect counter state
     EXPECT_EQ(timer.read_counter(0), 0);
 }
 
 TEST_F(Intel8253Test, LatchCommand_Counters) {
-    // Set counter value
-    timer.write(0x0C, 0x99);
-    
-    // Latch count command (counter 0)
-    timer.write(0x0F, 0x00);  // Latch counter 0
-    
-    // Read should return latched value
-    uint8_t val = timer.read(0x0C);
+    timer.write(CTR0, 0x99);
+    timer.write(MODE, 0x00);  // Latch counter 0
+
+    uint8_t val = timer.read(CTR0);
     EXPECT_EQ(val, 0x99);
 }
 
 TEST_F(Intel8253Test, LatchAllCounters) {
-    timer.write(0x0C, 0x11);
-    timer.write(0x0D, 0x22);
-    timer.write(0x0E, 0x33);
-    
-    // Latch all
-    timer.write(0x0F, 0xC0);  // Latch all counters command
-    
-    // Reads should return latched values
-    EXPECT_EQ(timer.read(0x0C), 0x11);
-    EXPECT_EQ(timer.read(0x0D), 0x22);
-    EXPECT_EQ(timer.read(0x0E), 0x33);
+    timer.write(CTR0, 0x11);
+    timer.write(CTR1, 0x22);
+    timer.write(CTR2, 0x33);
+
+    timer.write(MODE, 0xC0);  // Latch all counters
+
+    EXPECT_EQ(timer.read(CTR0), 0x11);
+    EXPECT_EQ(timer.read(CTR1), 0x22);
+    EXPECT_EQ(timer.read(CTR2), 0x33);
 }
 
 TEST_F(Intel8253Test, ManualBaud_SetsAndClears) {
@@ -260,31 +235,26 @@ TEST_F(Intel8253Test, BaudCallback_NotCalledWithoutManualBaud) {
     timer.set_baud_callback([&](uint16_t) {
         callback_called = true;
     });
-    
-    // Set counter value - should trigger callback
-    timer.write(0x0C, 0x40);
-    
+
+    timer.write(CTR0, 0x40);  // Should trigger callback
     EXPECT_TRUE(callback_called);
 }
 
 TEST_F(Intel8253Test, BaudCallback_NotCalledWithManualBaud) {
     bool callback_called = false;
-    
+
     timer.set_manual_baud(9600);
     timer.set_baud_callback([&](uint16_t) {
         callback_called = true;
     });
-    
-    // Change counter - should NOT trigger callback
-    timer.write(0x0C, 0x40);
-    
+
+    timer.write(CTR0, 0x40);  // Should NOT trigger callback
     EXPECT_FALSE(callback_called);
 }
 
 TEST_F(Intel8253Test, ReadInvalidPort) {
-    // Port 3 is mode register, not a counter
-    // Should return counter value (0 in reset state)
-    uint8_t val = timer.read(0x03);
+    // Mode register is write-only; reading it returns 0
+    uint8_t val = timer.read(MODE);
     EXPECT_EQ(val, 0);
 }
 
