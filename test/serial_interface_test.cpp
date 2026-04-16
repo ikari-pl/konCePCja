@@ -299,9 +299,10 @@ protected:
         std::filesystem::remove(test_input_path_);
         std::filesystem::remove(test_output_path_);
     }
-    
-    std::string test_input_path_ = "/tmp/serial_test_input.bin";
-    std::string test_output_path_ = "/tmp/serial_test_output.bin";
+
+    // Use temp_directory_path() — /tmp doesn't exist on MINGW/Windows.
+    std::string test_input_path_  = (std::filesystem::temp_directory_path() / "serial_test_input.bin").string();
+    std::string test_output_path_ = (std::filesystem::temp_directory_path() / "serial_test_output.bin").string();
 };
 
 TEST_F(SerialBackendTest, NullBackend_BasicOperations) {
@@ -505,7 +506,7 @@ TEST_F(SIRomManagerTest, LoadWithNoRomFile) {
 
 TEST_F(SIRomManagerTest, LoadWithValidRomFile) {
     // Create a test ROM file with valid header
-    std::string test_rom_path = "/tmp/si_rom.bin";
+    std::string test_rom_path = (std::filesystem::temp_directory_path() / "si_rom.bin").string();
     FILE* fp = fopen(test_rom_path.c_str(), "wb");
     ASSERT_NE(fp, nullptr);
     
@@ -520,22 +521,22 @@ TEST_F(SIRomManagerTest, LoadWithValidRomFile) {
     }
     fclose(fp);
     
-    rom_manager_.load(rom_map_, "/tmp");
-    
+    rom_manager_.load(rom_map_, std::filesystem::temp_directory_path().string());
+
     EXPECT_TRUE(rom_manager_.is_loaded());
     EXPECT_TRUE(rom_manager_.is_auto_loaded());
     EXPECT_NE(rom_map_[rom_manager_.get_slot()], nullptr);
-    
+
     // Verify ROM data
     EXPECT_EQ(rom_map_[rom_manager_.get_slot()][0], 0x01);
-    
+
     // Clean up
     std::filesystem::remove(test_rom_path);
 }
 
 TEST_F(SIRomManagerTest, UnloadRemovesRom) {
     // First load a ROM
-    std::string test_rom_path = "/tmp/si_rom.bin";
+    std::string test_rom_path = (std::filesystem::temp_directory_path() / "si_rom.bin").string();
     FILE* fp = fopen(test_rom_path.c_str(), "wb");
     ASSERT_NE(fp, nullptr);
     
@@ -545,9 +546,9 @@ TEST_F(SIRomManagerTest, UnloadRemovesRom) {
     }
     fclose(fp);
     
-    rom_manager_.load(rom_map_, "/tmp");
+    rom_manager_.load(rom_map_, std::filesystem::temp_directory_path().string());
     ASSERT_TRUE(rom_manager_.is_loaded());
-    
+
     // Unload
     rom_manager_.unload(rom_map_);
     
@@ -596,12 +597,13 @@ TEST_F(SIRomManagerTest, LoadWithExistingRomDoesNotOverwrite) {
 }
 
 TEST_F(SIRomManagerTest, InvalidSlotDoesNothing) {
+    std::string tmp = std::filesystem::temp_directory_path().string();
     rom_manager_.set_slot(-1);
-    rom_manager_.load(rom_map_, "/tmp");
+    rom_manager_.load(rom_map_, tmp);
     EXPECT_FALSE(rom_manager_.is_loaded());
-    
+
     rom_manager_.set_slot(32);
-    rom_manager_.load(rom_map_, "/tmp");
+    rom_manager_.load(rom_map_, tmp);
     EXPECT_FALSE(rom_manager_.is_loaded());
 }
 
