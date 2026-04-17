@@ -226,6 +226,7 @@ public:
 class FileBackend : public SerialBackend {
 public:
     FileBackend(const std::string& input_path, const std::string& output_path);
+    ~FileBackend() override { close(); }
 
     bool open() override;
     void close() override;
