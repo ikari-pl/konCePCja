@@ -60,9 +60,6 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
         info.address_mode_v   = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         info.address_mode_w   = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         g_gpu.linear_sampler  = SDL_CreateGPUSampler(g_gpu.device, &info);
-        if (!g_gpu.linear_sampler) {
-            LOG_ERROR("Failed to create linear sampler: " << SDL_GetError());
-        }
     }
     {
         SDL_GPUSamplerCreateInfo info{};
@@ -72,14 +69,13 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
         info.address_mode_v   = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         info.address_mode_w   = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
         g_gpu.nearest_sampler = SDL_CreateGPUSampler(g_gpu.device, &info);
-        if (!g_gpu.nearest_sampler) {
-            LOG_ERROR("Failed to create nearest sampler: " << SDL_GetError());
-        }
     }
 
     // ── 5. Create CPC framebuffer texture ─────────────────────────────
     // RGBA8, dimensions match the CPU-side render surface (768×540 at scale=2).
     // Usage: sampled in the blit pass, written by texture upload copy pass.
+    // Note: SDL3 GPU has no COPY_DST flag — UploadToGPUTexture works on any
+    // texture regardless of usage flags (see SDL_render_gpu.c for precedent).
     {
         SDL_GPUTextureCreateInfo info{};
         info.type                  = SDL_GPU_TEXTURETYPE_2D;
@@ -91,9 +87,6 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
         info.usage                 = SDL_GPU_TEXTUREUSAGE_SAMPLER
                                    | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
         g_gpu.cpc_texture = SDL_CreateGPUTexture(g_gpu.device, &info);
-        if (!g_gpu.cpc_texture) {
-            LOG_ERROR("Failed to create CPC GPU texture: " << SDL_GetError());
-        }
         g_gpu.cpc_tex_w = fb_w;
         g_gpu.cpc_tex_h = fb_h;
     }
@@ -104,9 +97,14 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
         info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
         info.size  = fb_w * fb_h * 4;   // RGBA8 = 4 bytes/pixel
         g_gpu.cpc_upload = SDL_CreateGPUTransferBuffer(g_gpu.device, &info);
-        if (!g_gpu.cpc_upload) {
-            LOG_ERROR("Failed to create CPC transfer buffer: " << SDL_GetError());
-        }
+    }
+
+    // ── Verify all mandatory resources were created ───────────────────
+    if (!g_gpu.linear_sampler || !g_gpu.nearest_sampler ||
+        !g_gpu.cpc_texture   || !g_gpu.cpc_upload) {
+        LOG_ERROR("GPU resource creation failed — rolling back");
+        video_gpu_shutdown();
+        return false;
     }
 
     g_gpu.initialized = true;
@@ -118,9 +116,8 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
 
 void video_gpu_shutdown()
 {
-    if (!g_gpu.initialized) return;
-
-    // Release resources in reverse creation order.
+    // No `initialized` guard — this function doubles as cleanup after a
+    // partially-failed init.  All branches null-check before releasing.
     if (g_gpu.device) {
         if (g_gpu.cpc_upload) {
             SDL_ReleaseGPUTransferBuffer(g_gpu.device, g_gpu.cpc_upload);
