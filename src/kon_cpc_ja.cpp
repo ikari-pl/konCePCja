@@ -51,6 +51,7 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "disk.h"
 #include "tape.h"
 #include "video.h"
+#include "video_gpu.h"
 #include "z80.h"
 #include "configuration.h"
 #include "memutils.h"
@@ -2028,6 +2029,17 @@ int video_init ()
       }
    }
 
+   // Phase 2 scaffold: initialize GPU device alongside GL path.
+   // Does not affect rendering — plugins still use GL.  Passes the CPC
+   // framebuffer dimensions so the GPU texture/transfer buffer match.
+   if (mainSDLWindow && back_surface) {
+      if (!video_gpu_init(mainSDLWindow,
+                          static_cast<uint32_t>(back_surface->w),
+                          static_cast<uint32_t>(back_surface->h))) {
+         LOG_INFO("GPU device init skipped (no backend available)");
+      }
+   }
+
    {
       const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
       CPC.scr_bpp = fmt ? fmt->bits_per_pixel : 0; // bit depth of the surface
@@ -2068,6 +2080,7 @@ int video_init ()
 
 void video_shutdown ()
 {
+   video_gpu_shutdown();   // safe no-op if not initialized
    vid_plugin->close();
 }
 
