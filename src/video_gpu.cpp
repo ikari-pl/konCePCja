@@ -82,6 +82,16 @@ bool create_blit_shaders(const char* driver) {
     g_gpu.blit_fragment_shader = SDL_CreateGPUShader(g_gpu.device, &fsi);
     if (!g_gpu.blit_vertex_shader || !g_gpu.blit_fragment_shader) {
         LOG_ERROR("SDL_CreateGPUShader failed: " << SDL_GetError());
+        // Release whichever shader did succeed so g_gpu stays in a
+        // consistent "no blit shaders" state (both null).
+        if (g_gpu.blit_vertex_shader) {
+            SDL_ReleaseGPUShader(g_gpu.device, g_gpu.blit_vertex_shader);
+            g_gpu.blit_vertex_shader = nullptr;
+        }
+        if (g_gpu.blit_fragment_shader) {
+            SDL_ReleaseGPUShader(g_gpu.device, g_gpu.blit_fragment_shader);
+            g_gpu.blit_fragment_shader = nullptr;
+        }
         return false;
     }
     return true;
