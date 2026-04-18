@@ -140,13 +140,39 @@ TEST_F(VideoGpuTest, ShutdownWithoutInitIsSafe) {
     EXPECT_FALSE(g_gpu.initialized);
 }
 
-TEST_F(VideoGpuTest, BlitPipelineIsNullUntilPhase3) {
+// Only Metal currently has a shader blob shipped (MSL source).  Vulkan
+// and D3D12 blob arrays stay empty until a follow-up populates them, so
+// the pipeline is expected to be null on those backends.
+static bool backend_has_blit_blob() {
+    if (!g_gpu.device) return false;
+    const char* drv = SDL_GetGPUDeviceDriver(g_gpu.device);
+    return drv && std::strcmp(drv, "metal") == 0;
+}
+
+TEST_F(VideoGpuTest, BlitShadersCreated) {
     SDL_Window* w = make_test_window();
     if (!w) GTEST_SKIP() << "Cannot create window (headless)";
     TRY_GPU_INIT(w, 768, 540);
 
-    // Phase 2 creates no pipelines — that's Phase 3's job.
-    EXPECT_EQ(g_gpu.blit_pipeline, nullptr);
+    if (!backend_has_blit_blob()) {
+        GTEST_SKIP() << "Backend has no blit shader blob yet";
+    }
+    EXPECT_NE(g_gpu.blit_vertex_shader,   nullptr);
+    EXPECT_NE(g_gpu.blit_fragment_shader, nullptr);
+
+    video_gpu_shutdown();
+    SDL_DestroyWindow(w);
+}
+
+TEST_F(VideoGpuTest, BlitPipelineCreated) {
+    SDL_Window* w = make_test_window();
+    if (!w) GTEST_SKIP() << "Cannot create window (headless)";
+    TRY_GPU_INIT(w, 768, 540);
+
+    if (!backend_has_blit_blob()) {
+        GTEST_SKIP() << "Backend has no blit shader blob yet";
+    }
+    EXPECT_NE(g_gpu.blit_pipeline, nullptr);
 
     video_gpu_shutdown();
     SDL_DestroyWindow(w);

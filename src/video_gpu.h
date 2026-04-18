@@ -28,8 +28,13 @@ struct GpuState {
     uint32_t                 cpc_tex_w       = 0;
     uint32_t                 cpc_tex_h       = 0;
 
-    // Pipelines (nullptr until Phase 3 provides shader blobs)
-    SDL_GPUGraphicsPipeline* blit_pipeline   = nullptr;
+    // Passthrough blit shaders + pipeline.  Created in video_gpu_init()
+    // when the backend has a shader format we ship blobs for (Metal: MSL
+    // source; Vulkan/D3D12: populated in a follow-up after SPIRV/DXBC
+    // blob compilation).  Null on backends without blobs yet.
+    SDL_GPUShader*           blit_vertex_shader   = nullptr;
+    SDL_GPUShader*           blit_fragment_shader = nullptr;
+    SDL_GPUGraphicsPipeline* blit_pipeline        = nullptr;
 
     // Per-frame command buffer (stashed by flip_a, submitted by flip_b).
     // Not used until Phase 4 wires plugins to the GPU path.

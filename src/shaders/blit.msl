@@ -1,0 +1,37 @@
+// konCePCja — passthrough blit shader (Metal Shading Language source)
+//
+// Used by all direct/swscale family plugins in the SDL3 GPU render path.
+// Samples the CPC framebuffer texture and writes it to the swapchain.
+//
+// Fullscreen-triangle trick: the vertex shader generates positions from
+// the vertex ID alone, so no vertex buffer is needed.  The fragment shader
+// samples at the UV passed through from the vertex stage.
+//
+// SDL_GPU consumes this as raw MSL source (SDL_GPU_SHADERFORMAT_MSL) —
+// Metal compiles it on-device at SDL_CreateGPUShader() time.  No offline
+// compilation or metallib generation required.
+
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+vertex VSOut vert_main(uint vid [[vertex_id]]) {
+    VSOut o;
+    // vid=0 → xy=(0,0) → clip (-1,-1) uv (0,1)
+    // vid=1 → xy=(2,0) → clip ( 3,-1) uv (2,1)
+    // vid=2 → xy=(0,2) → clip (-1, 3) uv (0,-1)
+    float2 xy = float2(float((vid << 1) & 2), float(vid & 2));
+    o.position = float4(xy * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(xy.x, 1.0 - xy.y);  // flip Y: SDL_GPU uses top-left origin
+    return o;
+}
+
+fragment float4 frag_main(VSOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler smp [[sampler(0)]]) {
+    return tex.sample(smp, in.uv);
+}
