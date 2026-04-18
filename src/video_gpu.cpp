@@ -7,11 +7,117 @@
 
 #include "video_gpu.h"
 #include "log.h"
+#include "shaders/blit_shaders.h"
 
 #include <SDL3/SDL.h>
 #include <cstring>
 
 GpuState g_gpu;
+
+namespace {
+
+// Create the blit vertex + fragment shaders for the active backend.
+// On Metal: pass MSL source directly (SDL compiles on device).
+// On Vulkan/D3D12: pass pre-compiled SPIRV/DXBC blobs — but these are
+// currently empty placeholders, so shader creation is skipped and the
+// blit pipeline stays nullptr on those backends.
+// Returns true if both shaders were created; false if the backend has
+// no blob yet (non-fatal — plugins will fall back to the GL path until
+// blobs are populated in a follow-up).
+bool create_blit_shaders(const char* driver) {
+    SDL_GPUShaderCreateInfo vsi{};
+    vsi.stage               = SDL_GPU_SHADERSTAGE_VERTEX;
+    vsi.num_samplers        = 0;
+    vsi.num_uniform_buffers = 0;
+    vsi.num_storage_buffers = 0;
+    vsi.num_storage_textures = 0;
+
+    SDL_GPUShaderCreateInfo fsi{};
+    fsi.stage               = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    fsi.num_samplers        = 1;   // single CPC framebuffer texture
+    fsi.num_uniform_buffers = 0;
+    fsi.num_storage_buffers = 0;
+    fsi.num_storage_textures = 0;
+
+    if (driver && std::strcmp(driver, "metal") == 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        vsi.code       = reinterpret_cast<const Uint8*>(kBlitMSLSource);
+        vsi.code_size  = std::strlen(kBlitMSLSource);
+        vsi.entrypoint = "vert_main";
+
+        fsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        fsi.code       = reinterpret_cast<const Uint8*>(kBlitMSLSource);
+        fsi.code_size  = std::strlen(kBlitMSLSource);
+        fsi.entrypoint = "frag_main";
+    } else if (driver && std::strcmp(driver, "vulkan") == 0
+               && kBlitVertexSPIRVSize > 0 && kBlitFragmentSPIRVSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        vsi.code       = kBlitVertexSPIRV;
+        vsi.code_size  = kBlitVertexSPIRVSize;
+        vsi.entrypoint = "main";
+
+        fsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        fsi.code       = kBlitFragmentSPIRV;
+        fsi.code_size  = kBlitFragmentSPIRVSize;
+        fsi.entrypoint = "main";
+    } else if (driver && std::strcmp(driver, "direct3d12") == 0
+               && kBlitVertexDXBCSize > 0 && kBlitFragmentDXBCSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        vsi.code       = kBlitVertexDXBC;
+        vsi.code_size  = kBlitVertexDXBCSize;
+        vsi.entrypoint = "main";
+
+        fsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        fsi.code       = kBlitFragmentDXBC;
+        fsi.code_size  = kBlitFragmentDXBCSize;
+        fsi.entrypoint = "main";
+    } else {
+        LOG_INFO("No blit shader blob available for driver '"
+                 << (driver ? driver : "(null)")
+                 << "' — blit pipeline will be skipped");
+        return false;
+    }
+
+    g_gpu.blit_vertex_shader   = SDL_CreateGPUShader(g_gpu.device, &vsi);
+    g_gpu.blit_fragment_shader = SDL_CreateGPUShader(g_gpu.device, &fsi);
+    if (!g_gpu.blit_vertex_shader || !g_gpu.blit_fragment_shader) {
+        LOG_ERROR("SDL_CreateGPUShader failed: " << SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+// Create the passthrough blit graphics pipeline.  Requires shaders to
+// already exist in g_gpu.  Renders a fullscreen triangle with no vertex
+// buffer; one color target matching the swapchain format.
+bool create_blit_pipeline() {
+    if (!g_gpu.blit_vertex_shader || !g_gpu.blit_fragment_shader) return false;
+
+    SDL_GPUColorTargetDescription color_target{};
+    color_target.format = g_gpu.swapchain_fmt;
+    // No blending — passthrough writes the CPC framebuffer's pixels directly.
+
+    SDL_GPUGraphicsPipelineTargetInfo target_info{};
+    target_info.num_color_targets         = 1;
+    target_info.color_target_descriptions = &color_target;
+    target_info.has_depth_stencil_target  = false;
+
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader   = g_gpu.blit_vertex_shader;
+    info.fragment_shader = g_gpu.blit_fragment_shader;
+    info.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.target_info     = target_info;
+    // vertex_input_state left zero — no VB, fullscreen triangle from vertex ID
+
+    g_gpu.blit_pipeline = SDL_CreateGPUGraphicsPipeline(g_gpu.device, &info);
+    if (!g_gpu.blit_pipeline) {
+        LOG_ERROR("SDL_CreateGPUGraphicsPipeline failed: " << SDL_GetError());
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
 
 bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
 {
@@ -107,6 +213,16 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h)
         return false;
     }
 
+    // ── 7. Blit shaders + pipeline ────────────────────────────────────
+    // Non-fatal if the backend has no blob yet — plugins will fall back
+    // to the GL path on those platforms.  On Metal (the dev target), a
+    // failure here is a shader source bug and should be treated as one.
+    if (create_blit_shaders(driver)) {
+        if (!create_blit_pipeline()) {
+            LOG_ERROR("Blit pipeline creation failed — continuing without it");
+        }
+    }
+
     g_gpu.initialized = true;
     LOG_INFO("GPU scaffolding initialized ("
              << fb_w << "×" << fb_h << ", "
@@ -127,6 +243,12 @@ void video_gpu_shutdown()
         }
         if (g_gpu.blit_pipeline) {
             SDL_ReleaseGPUGraphicsPipeline(g_gpu.device, g_gpu.blit_pipeline);
+        }
+        if (g_gpu.blit_fragment_shader) {
+            SDL_ReleaseGPUShader(g_gpu.device, g_gpu.blit_fragment_shader);
+        }
+        if (g_gpu.blit_vertex_shader) {
+            SDL_ReleaseGPUShader(g_gpu.device, g_gpu.blit_vertex_shader);
         }
         if (g_gpu.nearest_sampler) {
             SDL_ReleaseGPUSampler(g_gpu.device, g_gpu.nearest_sampler);
