@@ -2029,16 +2029,10 @@ int video_init ()
       }
    }
 
-   // Phase 2 scaffold: initialize GPU device alongside GL path.
-   // Does not affect rendering — plugins still use GL.  Passes the CPC
-   // framebuffer dimensions so the GPU texture/transfer buffer match.
-   if (mainSDLWindow && back_surface) {
-      if (!video_gpu_init(mainSDLWindow,
-                          static_cast<uint32_t>(back_surface->w),
-                          static_cast<uint32_t>(back_surface->h))) {
-         LOG_INFO("GPU device init skipped (no backend available)");
-      }
-   }
+   // Phase 4: the GPU device is initialised inside gpu_direct_init() (the
+   // "Direct (GPU)" plugin) — only when that plugin is selected.  Other
+   // plugins never touch the GPU device.  video_shutdown() still calls
+   // video_gpu_shutdown() as a safety net (no-op when device is null).
 
    {
       const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(back_surface->format);
@@ -2080,8 +2074,12 @@ int video_init ()
 
 void video_shutdown ()
 {
-   video_gpu_shutdown();   // safe no-op if not initialized
+   // Plugin close must run first so the GPU plugin can tear down ImGui
+   // SDLGPU3 and other device-dependent state before the GPU device
+   // itself is destroyed.  For non-GPU plugins the order is irrelevant
+   // (video_gpu_shutdown is a no-op when the device was never created).
    vid_plugin->close();
+   video_gpu_shutdown();   // safety net — idempotent no-op after plugin close
 }
 
 
