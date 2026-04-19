@@ -348,8 +348,8 @@ fragment float4 frag_main(VSOut in [[stage_in]],
 
     // Gaussian-weighted scanlines
     float scanY = uv.y * u.input_size.y;
-    float sl = 0.5 + 0.5 * cos(scanY * 3.14159265 * 2.0);
-    sl = pow(sl, 0.5);
+    float sl = 0.5 + 0.5 * cos(scanY * M_PI_F * 2.0);
+    sl = sqrt(sl);   // equivalent to pow(sl, 0.5), but cheaper on MSL
     col *= mix(1.0, sl, kScanline * 0.5);
 
     // Slot mask (6-pixel pattern with vertical shift)
