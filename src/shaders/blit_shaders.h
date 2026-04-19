@@ -218,3 +218,61 @@ inline constexpr std::uint8_t kBlitVertexDXBC[]   = {0};
 inline constexpr std::uint8_t kBlitFragmentDXBC[] = {0};
 inline constexpr std::size_t  kBlitVertexDXBCSize   = 0;
 inline constexpr std::size_t  kBlitFragmentDXBCSize = 0;
+
+// ── CRT Basic (Metal): raw MSL source ─────────────────────────────────
+// Port of crt_frag_basic from video.cpp.  Uniforms passed via
+// SDL_PushGPUFragmentUniformData at slot 0; layout:
+//   struct CrtBasicUniforms { float input_size[2]; float output_size[2]; }
+// SPIRV/DXBC versions pending; on non-Metal backends the CRT Basic (GPU)
+// plugin returns nullptr from init and video_init falls through.
+inline constexpr const char* kCrtBasicMSLSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct CrtBasicUniforms {
+    float2 input_size;
+    float2 output_size;
+};
+
+vertex VSOut vert_main(uint vid [[vertex_id]]) {
+    VSOut o;
+    float2 xy = float2(float((vid << 1) & 2), float(vid & 2));
+    o.position = float4(xy * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(xy.x, 1.0 - xy.y);
+    return o;
+}
+
+static float2 barrel(float2 uv, float k) {
+    float2 cc = uv - 0.5;
+    float dist = dot(cc, cc);
+    return uv + cc * dist * k;
+}
+
+fragment float4 frag_main(VSOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler smp [[sampler(0)]],
+                          constant CrtBasicUniforms& u [[buffer(0)]])
+{
+    float2 uv = barrel(in.uv, 0.22);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    float3 col = tex.sample(smp, uv).rgb;
+    float scanline = sin(uv.y * u.input_size.y * 3.14159265) * 0.5 + 0.5;
+    col *= mix(1.0, scanline, 0.35);
+    float2 outPos = uv * u.output_size;
+    float m = fmod(outPos.x, 3.0);
+    float3 mask = float3(
+        m < 1.0 ? 1.0 : 0.75,
+        (m >= 1.0 && m < 2.0) ? 1.0 : 0.75,
+        m >= 2.0 ? 1.0 : 0.75);
+    col *= mask;
+    col *= 1.3;
+    return float4(col, 1.0);
+}
+)MSL";

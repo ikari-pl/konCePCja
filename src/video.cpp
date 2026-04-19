@@ -51,6 +51,7 @@
 #include "imgui_ui.h"
 #include "macos_menu.h"
 #include "video_gpu.h"
+#include "shaders/blit_shaders.h"
 #include <cstring>
 
 #ifdef __APPLE__
@@ -671,6 +672,209 @@ void gpu_direct_close()
     if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
     video_gpu_shutdown();               // destroys device, samplers, texture…
     if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
+}
+
+/* ------------------------------------------------------------------------------------ */
+/* "CRT Basic (GPU)" plugin — SDL3 GPU path (P1.2b Phase 6b) --------------------------- */
+/* ------------------------------------------------------------------------------------ */
+//
+// GPU variant of CRT Basic.  Single-pass: instead of blit_pipeline, the
+// main render pass binds a CRT shader pipeline that samples the CPC
+// texture through barrel distortion, scanline mixing, and an RGB
+// phosphor mask.  Uniforms (input_size, output_size) pushed per frame.
+//
+// MSL source only; SPIRV/DXBC deferred.  On non-Metal backends the
+// init returns nullptr and video_init falls through.
+
+struct CrtBasicUniforms {
+    float input_size[2];
+    float output_size[2];
+};
+
+static SDL_GPUShader*           g_crt_basic_vertex_shader   = nullptr;
+static SDL_GPUShader*           g_crt_basic_fragment_shader = nullptr;
+static SDL_GPUGraphicsPipeline* g_crt_basic_pipeline        = nullptr;
+
+static bool create_crt_basic_pipeline()
+{
+    if (!g_gpu.device) return false;
+    const char* driver = SDL_GetGPUDeviceDriver(g_gpu.device);
+    if (!driver || std::strcmp(driver, "metal") != 0) return false;  // Metal only for now
+
+    SDL_GPUShaderCreateInfo vsi{};
+    vsi.stage               = SDL_GPU_SHADERSTAGE_VERTEX;
+    vsi.format              = SDL_GPU_SHADERFORMAT_MSL;
+    vsi.code                = reinterpret_cast<const Uint8*>(kCrtBasicMSLSource);
+    vsi.code_size           = std::strlen(kCrtBasicMSLSource);
+    vsi.entrypoint          = "vert_main";
+
+    SDL_GPUShaderCreateInfo fsi{};
+    fsi.stage               = SDL_GPU_SHADERSTAGE_FRAGMENT;
+    fsi.format              = SDL_GPU_SHADERFORMAT_MSL;
+    fsi.code                = reinterpret_cast<const Uint8*>(kCrtBasicMSLSource);
+    fsi.code_size           = std::strlen(kCrtBasicMSLSource);
+    fsi.entrypoint          = "frag_main";
+    fsi.num_samplers        = 1;
+    fsi.num_uniform_buffers = 1;
+
+    g_crt_basic_vertex_shader   = SDL_CreateGPUShader(g_gpu.device, &vsi);
+    g_crt_basic_fragment_shader = SDL_CreateGPUShader(g_gpu.device, &fsi);
+    if (!g_crt_basic_vertex_shader || !g_crt_basic_fragment_shader) {
+        LOG_ERROR("CRT Basic (GPU) shader create failed: " << SDL_GetError());
+        if (g_crt_basic_vertex_shader)   { SDL_ReleaseGPUShader(g_gpu.device, g_crt_basic_vertex_shader);   g_crt_basic_vertex_shader   = nullptr; }
+        if (g_crt_basic_fragment_shader) { SDL_ReleaseGPUShader(g_gpu.device, g_crt_basic_fragment_shader); g_crt_basic_fragment_shader = nullptr; }
+        return false;
+    }
+
+    SDL_GPUColorTargetDescription color_target{};
+    color_target.format = g_gpu.swapchain_fmt;
+
+    SDL_GPUGraphicsPipelineTargetInfo target_info{};
+    target_info.num_color_targets         = 1;
+    target_info.color_target_descriptions = &color_target;
+    target_info.has_depth_stencil_target  = false;
+
+    SDL_GPUGraphicsPipelineCreateInfo info{};
+    info.vertex_shader   = g_crt_basic_vertex_shader;
+    info.fragment_shader = g_crt_basic_fragment_shader;
+    info.primitive_type  = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    info.target_info     = target_info;
+
+    g_crt_basic_pipeline = SDL_CreateGPUGraphicsPipeline(g_gpu.device, &info);
+    if (!g_crt_basic_pipeline) {
+        LOG_ERROR("CRT Basic (GPU) pipeline create failed: " << SDL_GetError());
+        SDL_ReleaseGPUShader(g_gpu.device, g_crt_basic_vertex_shader);   g_crt_basic_vertex_shader   = nullptr;
+        SDL_ReleaseGPUShader(g_gpu.device, g_crt_basic_fragment_shader); g_crt_basic_fragment_shader = nullptr;
+        return false;
+    }
+    return true;
+}
+
+static void destroy_crt_basic_pipeline()
+{
+    if (!g_gpu.device) return;
+    if (g_crt_basic_pipeline)        { SDL_ReleaseGPUGraphicsPipeline(g_gpu.device, g_crt_basic_pipeline); g_crt_basic_pipeline = nullptr; }
+    if (g_crt_basic_fragment_shader) { SDL_ReleaseGPUShader(g_gpu.device, g_crt_basic_fragment_shader); g_crt_basic_fragment_shader = nullptr; }
+    if (g_crt_basic_vertex_shader)   { SDL_ReleaseGPUShader(g_gpu.device, g_crt_basic_vertex_shader);   g_crt_basic_vertex_shader   = nullptr; }
+}
+
+static SDL_Surface* crt_basic_gpu_init(video_plugin* t, int scale, bool fs)
+{
+    SDL_Surface* surf = gpu_direct_init(t, scale, fs);  // reuses Phase 4 setup
+    if (!surf) return nullptr;
+    if (!create_crt_basic_pipeline()) {
+        gpu_direct_close();
+        return nullptr;
+    }
+    LOG_INFO("CRT Basic (GPU) plugin active");
+    return surf;
+}
+
+static void crt_basic_gpu_flip_a(video_plugin* t)
+{
+    compute_scale(t, vid->w, vid->h);
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_gpu.device);
+    if (!cmd) return;
+
+    // 1. Upload CPC framebuffer (identical to gpu_flip_a).
+    const uint32_t row_bytes = g_gpu.cpc_tex_w * 4;
+    void* dst = SDL_MapGPUTransferBuffer(g_gpu.device, g_gpu.cpc_upload, /*cycle=*/true);
+    if (dst) {
+        if (static_cast<uint32_t>(vid->pitch) == row_bytes) {
+            std::memcpy(dst, vid->pixels, row_bytes * g_gpu.cpc_tex_h);
+        } else {
+            auto* d = static_cast<uint8_t*>(dst);
+            auto* s = static_cast<const uint8_t*>(vid->pixels);
+            for (uint32_t y = 0; y < g_gpu.cpc_tex_h; ++y)
+                std::memcpy(d + y * row_bytes, s + y * vid->pitch, row_bytes);
+        }
+        SDL_UnmapGPUTransferBuffer(g_gpu.device, g_gpu.cpc_upload);
+
+        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureTransferInfo src_info{};
+        src_info.transfer_buffer = g_gpu.cpc_upload;
+        src_info.pixels_per_row  = g_gpu.cpc_tex_w;
+        src_info.rows_per_layer  = g_gpu.cpc_tex_h;
+        SDL_GPUTextureRegion dst_region{};
+        dst_region.texture = g_gpu.cpc_texture;
+        dst_region.w = g_gpu.cpc_tex_w;
+        dst_region.h = g_gpu.cpc_tex_h;
+        dst_region.d = 1;
+        SDL_UploadToGPUTexture(copy, &src_info, &dst_region, /*cycle=*/true);
+        SDL_EndGPUCopyPass(copy);
+    }
+
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    imgui_render_ui();
+    ImGui::Render();
+    ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+
+    SDL_GPUTexture* swap_tex = nullptr;
+    Uint32 sw = 0, sh = 0;
+    bool have_swap = SDL_AcquireGPUSwapchainTexture(cmd, mainSDLWindow, &swap_tex, &sw, &sh)
+                     && swap_tex != nullptr;
+
+    if (have_swap) {
+        SDL_GPUColorTargetInfo tgt{};
+        tgt.texture     = swap_tex;
+        tgt.load_op     = SDL_GPU_LOADOP_CLEAR;
+        tgt.store_op    = SDL_GPU_STOREOP_STORE;
+        tgt.cycle       = false;
+        tgt.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &tgt, 1, nullptr);
+
+        if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+            SDL_GPUViewport vp{};
+            vp.x = static_cast<float>(t->x_offset);
+            vp.y = static_cast<float>(t->y_offset);
+            vp.w = static_cast<float>(t->width);
+            vp.h = static_cast<float>(t->height);
+            vp.max_depth = 1.0f;
+            SDL_SetGPUViewport(pass, &vp);
+
+            SDL_BindGPUGraphicsPipeline(pass, g_crt_basic_pipeline);
+            SDL_GPUTextureSamplerBinding binding{};
+            binding.texture = g_gpu.cpc_texture;
+            binding.sampler = g_gpu.linear_sampler;
+            SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+
+            // Push uniforms.  input_size is CPC resolution (half the
+            // surface height because scanlines are doubled); output_size
+            // drives the RGB phosphor mask cell period.
+            CrtBasicUniforms uni{};
+            uni.input_size[0]  = static_cast<float>(vid->w);
+            uni.input_size[1]  = static_cast<float>(t->half_pixels ? vid->h : vid->h / 2);
+            uni.output_size[0] = static_cast<float>(t->width);
+            uni.output_size[1] = static_cast<float>(t->height);
+            SDL_PushGPUFragmentUniformData(cmd, 0, &uni, sizeof(uni));
+
+            SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+
+            SDL_GPUViewport full{};
+            full.w = static_cast<float>(sw);
+            full.h = static_cast<float>(sh);
+            full.max_depth = 1.0f;
+            SDL_SetGPUViewport(pass, &full);
+        }
+
+        ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+        SDL_EndGPURenderPass(pass);
+    }
+
+    video_capture_if_pending();
+    SDL_SubmitGPUCommandBuffer(cmd);
+    g_gpu.pending_cmd = nullptr;
+}
+
+static void crt_basic_gpu_close()
+{
+    if (g_gpu.device) SDL_WaitForGPUIdle(g_gpu.device);
+    destroy_crt_basic_pipeline();
+    gpu_direct_close();
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -3010,4 +3214,7 @@ std::vector<video_plugin> video_plugin_list =
   {"Software bilinear (GPU)", false, swscale_gpu_init,   swscale_setpal,  swbilin_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
   {"Software bicubic (GPU)",  false, swscale_gpu_init,   swscale_setpal,  swbicub_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
   {"Dot matrix (GPU)",        false, swscale_gpu_init,   swscale_setpal,  dotmat_gpu_flip,    swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  /* CRT Basic (GPU) — SDL3 GPU port of the CRT Basic shader (P1.2b Phase 6b).
+     Metal only today; SPIRV/DXBC ports deferred. */
+  {"CRT Basic (GPU)",         false, crt_basic_gpu_init, direct_setpal,   crt_basic_gpu_flip_a, crt_basic_gpu_close, 1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
 };
