@@ -50,8 +50,11 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdlrenderer3.h"
+#include "imgui_impl_sdlgpu3.h"
 #include "imgui_ui.h"
 #include "macos_menu.h"
+#include "video_gpu.h"
+#include <cstring>
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
@@ -462,6 +465,235 @@ void direct_close()
   if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
   if (glcontext) { SDL_GL_DestroyContext(glcontext); glcontext = nullptr; }
   if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
+}
+
+/* ------------------------------------------------------------------------------------ */
+/* "Direct (GPU)" plugin — SDL3 GPU path, additive (P1.2b Phase 4) --------------------- */
+/* ------------------------------------------------------------------------------------ */
+// A self-contained GPU variant of the Direct plugin.  Completely isolated
+// from direct_init / direct_flip_a / direct_flip_b / direct_close above:
+// no shared state, no dispatcher, no renaming.  Activated only when the
+// new plugin entry (added at the end of video_plugin_list) is selected
+// AND g_gpu.blit_pipeline is available (Metal today; Vulkan/D3D12 once
+// Phase 3b ships shader blobs).
+//
+// On non-GPU-capable backends gpu_direct_init returns nullptr and
+// video_init falls through its existing SDL_Renderer / headless chain.
+//
+// Design notes — these avoid the crash/deadlock failures from the first
+// Phase 4 attempt:
+//   - Command buffer is submitted in Phase A (gpu_flip_a).  The render
+//     loop's "skip video_display_b() on quit" optimisation therefore
+//     cannot leak an unsubmitted buffer.
+//   - Multi-viewport is DISABLED (ImGuiConfigFlags_ViewportsEnable off).
+//     imgui_impl_sdlgpu3 registers no platform handlers, so secondary
+//     windows would not render correctly.  Floating devtools stays
+//     docked for now; full viewport support is a follow-up.
+//   - Non-blocking swapchain acquire — never blocks the render thread.
+
+SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs)
+{
+    mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
+        CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+        (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+    if (!mainSDLWindow) return nullptr;
+
+    const int surface_width  = CPC_RENDER_WIDTH;
+    const int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2
+                                            : CPC_VISIBLE_SCR_HEIGHT;
+    t->half_pixels = (scale <= 1) ? 1 : 0;
+
+    if (!video_gpu_init(mainSDLWindow,
+                        static_cast<uint32_t>(surface_width),
+                        static_cast<uint32_t>(surface_height))
+        || g_gpu.blit_pipeline == nullptr) {
+        video_gpu_shutdown();
+        SDL_DestroyWindow(mainSDLWindow);
+        mainSDLWindow = nullptr;
+        return nullptr;
+    }
+
+    // ImGui — SDLGPU3 backend, viewports DISABLED (see design note above).
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename  = imgui_ini_path();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard
+                    | ImGuiConfigFlags_DockingEnable;
+    // Intentionally NO ImGuiConfigFlags_ViewportsEnable.
+    ImGui::StyleColorsDark();
+    imgui_init_ui();
+    ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
+    ImGui_ImplSDLGPU3_InitInfo init_info{};
+    init_info.Device               = g_gpu.device;
+    init_info.ColorTargetFormat    = g_gpu.swapchain_fmt;
+    init_info.MSAASamples          = SDL_GPU_SAMPLECOUNT_1;
+    init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    init_info.PresentMode          = SDL_GPU_PRESENTMODE_VSYNC;
+    if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        video_gpu_shutdown();
+        SDL_DestroyWindow(mainSDLWindow);
+        mainSDLWindow = nullptr;
+        return nullptr;
+    }
+
+    vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
+    if (!vid) {
+        ImGui_ImplSDLGPU3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        video_gpu_shutdown();
+        SDL_DestroyWindow(mainSDLWindow);
+        mainSDLWindow = nullptr;
+        return nullptr;
+    }
+    {
+        const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(vid->format);
+        SDL_Palette* pal = SDL_GetSurfacePalette(vid);
+        SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(fmt, pal, 0, 0, 0));
+    }
+    compute_scale(t, surface_width, surface_height);
+    LOG_INFO("Direct (GPU) plugin active — device created, blit pipeline ready");
+    return vid;
+}
+
+void gpu_flip_a(video_plugin* t)
+{
+    compute_scale(t, vid->w, vid->h);
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_gpu.device);
+    if (!cmd) return;   // device lost or OOM — drop the frame
+
+    // 1. Upload CPC framebuffer via transfer buffer (cycle=true on both).
+    const uint32_t row_bytes = g_gpu.cpc_tex_w * 4;
+    void* dst = SDL_MapGPUTransferBuffer(g_gpu.device, g_gpu.cpc_upload, /*cycle=*/true);
+    if (dst) {
+        if (static_cast<uint32_t>(vid->pitch) == row_bytes) {
+            std::memcpy(dst, vid->pixels, row_bytes * g_gpu.cpc_tex_h);
+        } else {
+            auto* d = static_cast<uint8_t*>(dst);
+            auto* s = static_cast<const uint8_t*>(vid->pixels);
+            for (uint32_t y = 0; y < g_gpu.cpc_tex_h; ++y) {
+                std::memcpy(d + y * row_bytes, s + y * vid->pitch, row_bytes);
+            }
+        }
+        SDL_UnmapGPUTransferBuffer(g_gpu.device, g_gpu.cpc_upload);
+
+        SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureTransferInfo src_info{};
+        src_info.transfer_buffer = g_gpu.cpc_upload;
+        src_info.offset          = 0;
+        src_info.pixels_per_row  = g_gpu.cpc_tex_w;
+        src_info.rows_per_layer  = g_gpu.cpc_tex_h;
+
+        SDL_GPUTextureRegion dst_region{};
+        dst_region.texture = g_gpu.cpc_texture;
+        dst_region.w = g_gpu.cpc_tex_w;
+        dst_region.h = g_gpu.cpc_tex_h;
+        dst_region.d = 1;
+        SDL_UploadToGPUTexture(copy, &src_info, &dst_region, /*cycle=*/true);
+        SDL_EndGPUCopyPass(copy);
+    }
+
+    // 2. ImGui frame + CPC background image for Classic layout.
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::GetBackgroundDrawList(vp)->AddImage(
+            reinterpret_cast<ImTextureID>(g_gpu.cpc_texture),
+            ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
+            ImVec2(vp->Pos.x + t->x_offset + t->width,
+                   vp->Pos.y + t->y_offset + t->height));
+    }
+    imgui_render_ui();
+    ImGui::Render();
+
+    // 3. CRITICAL: PrepareDrawData must precede BeginGPURenderPass.
+    ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+
+    // 4. NON-BLOCKING swapchain acquire.  Null return = minimised / resizing;
+    //    skip the render pass but still submit the copy pass so the GPU
+    //    keeps draining.
+    SDL_GPUTexture* swap_tex = nullptr;
+    Uint32 sw = 0, sh = 0;
+    bool have_swap = SDL_AcquireGPUSwapchainTexture(cmd, mainSDLWindow,
+                                                    &swap_tex, &sw, &sh)
+                     && swap_tex != nullptr;
+
+    if (have_swap) {
+        SDL_GPUColorTargetInfo tgt{};
+        tgt.texture     = swap_tex;
+        tgt.load_op     = SDL_GPU_LOADOP_CLEAR;
+        tgt.store_op    = SDL_GPU_STOREOP_STORE;
+        tgt.cycle       = false;
+        tgt.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &tgt, 1, nullptr);
+
+        if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
+            SDL_GPUViewport vp{};
+            vp.x = static_cast<float>(t->x_offset);
+            vp.y = static_cast<float>(t->y_offset);
+            vp.w = static_cast<float>(t->width);
+            vp.h = static_cast<float>(t->height);
+            vp.max_depth = 1.0f;
+            SDL_SetGPUViewport(pass, &vp);
+
+            SDL_BindGPUGraphicsPipeline(pass, g_gpu.blit_pipeline);
+            SDL_GPUTextureSamplerBinding binding{};
+            binding.texture = g_gpu.cpc_texture;
+            binding.sampler = CPC.scr_crt_aspect ? g_gpu.linear_sampler
+                                                  : g_gpu.nearest_sampler;
+            SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
+            SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+
+            // Reset viewport to full swapchain so ImGui renders everywhere.
+            SDL_GPUViewport full{};
+            full.w = static_cast<float>(sw);
+            full.h = static_cast<float>(sh);
+            full.max_depth = 1.0f;
+            SDL_SetGPUViewport(pass, &full);
+        }
+
+        ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+        SDL_EndGPURenderPass(pass);
+    }
+
+    // 5. CPU-side capture (reads vid->pixels, backend-agnostic).
+    video_capture_if_pending();
+
+    // 6. SUBMIT IN PHASE A — avoids the quit-skip leak from the first attempt.
+    SDL_SubmitGPUCommandBuffer(cmd);
+    g_gpu.pending_cmd = nullptr;
+}
+
+void gpu_flip_b([[maybe_unused]] video_plugin* t)
+{
+    // Intentionally empty for the GPU plugin:
+    //   - Command buffer was already submitted in gpu_flip_a.
+    //   - ImGui multi-viewport is disabled, so no per-viewport work needed.
+    // The render loop's "skip on quit" optimisation is therefore harmless.
+}
+
+void gpu_direct_close()
+{
+    // Teardown order is critical — see the plan's teardown-order table.
+    // INVARIANT: no pending_cmd exists here (submitted in gpu_flip_a).
+
+    if (g_gpu.device) SDL_WaitForGPUIdle(g_gpu.device);
+
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplSDLGPU3_Shutdown();   // releases bd state, still needs device
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+    }
+    if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
+    video_gpu_shutdown();               // destroys device, samplers, texture…
+    if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
 }
 
 /* ------------------------------------------------------------------------------------ */
@@ -2896,4 +3128,8 @@ std::vector<video_plugin> video_plugin_list =
   {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
   {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
   {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
+  /* Direct (GPU) — SDL3 GPU path (Metal today; Vulkan/D3D12 after shader blob compilation).
+     Returns nullptr from init on backends without a working blit pipeline, falling
+     through video_init()'s SDL_Renderer chain.  See P1.2b Phase 4 for design notes. */
+  {"Direct (GPU)",            false, gpu_direct_init,    direct_setpal,   gpu_flip_a,    gpu_direct_close,    1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
 };
