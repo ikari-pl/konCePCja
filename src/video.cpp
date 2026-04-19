@@ -3174,13 +3174,24 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs)
         return nullptr;
     }
 
-    // Sanity-check 16 bpp format (matches swscale_init)
+    // Sanity-check 16 bpp format (matches swscale_init).  Full rollback
+    // on failure: every resource created above must be released before
+    // returning nullptr, matching the error paths earlier in this init.
     {
         const SDL_PixelFormatDetails* s_fmt = SDL_GetPixelFormatDetails(scaled->format);
         const SDL_PixelFormatDetails* p_fmt = SDL_GetPixelFormatDetails(pub->format);
         if (!s_fmt || s_fmt->bits_per_pixel != 16 ||
             !p_fmt || p_fmt->bits_per_pixel != 16) {
             LOG_ERROR(t->name << ": SDL didn't return 16 bpp surfaces");
+            SDL_DestroySurface(pub);    pub    = nullptr;
+            SDL_DestroySurface(scaled); scaled = nullptr;
+            SDL_DestroySurface(vid);    vid    = nullptr;
+            ImGui_ImplSDLGPU3_Shutdown();
+            ImGui_ImplSDL3_Shutdown();
+            ImGui::DestroyContext();
+            video_gpu_shutdown();
+            SDL_DestroyWindow(mainSDLWindow);
+            mainSDLWindow = nullptr;
             return nullptr;
         }
     }
