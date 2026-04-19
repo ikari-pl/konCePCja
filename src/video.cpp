@@ -3091,6 +3091,211 @@ void dotmat_flip([[maybe_unused]] video_plugin* t)
 }
 
 /* ------------------------------------------------------------------------------------ */
+/* GPU variants of the swscale family (P1.2b Phase 5) --------------------------------- */
+/* ------------------------------------------------------------------------------------ */
+//
+// Same CPU-side pixel filters as their GL counterparts (scale2x_flip etc.),
+// but the final blit + ImGui render happens through the SDL_GPU path built
+// in Phase 4 rather than OpenGL.  This requires the GPU blit pipeline, so
+// activation falls back to SDL_Renderer on backends without shader blobs
+// (same semantics as Direct (GPU)).
+//
+// The CPU filter functions (filter_scale2x, filter_seagle, etc.) are reused
+// verbatim — they only touch the `scaled` / `pub` SDL surfaces and don't
+// care which renderer displays the result.
+
+static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs)
+{
+    mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
+        CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
+        (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+    if (!mainSDLWindow) return nullptr;
+
+    const int surface_width  = CPC_RENDER_WIDTH;
+    const int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2
+                                            : CPC_VISIBLE_SCR_HEIGHT;
+    t->half_pixels = (scale <= 1) ? 1 : 0;
+
+    // swscale surfaces are 2x the base CPC size — the CPU filter upscales.
+    const uint32_t gpu_tex_w = static_cast<uint32_t>(surface_width  * 2);
+    const uint32_t gpu_tex_h = static_cast<uint32_t>(surface_height * 2);
+
+    if (!video_gpu_init(mainSDLWindow, gpu_tex_w, gpu_tex_h)
+        || g_gpu.blit_pipeline == nullptr) {
+        video_gpu_shutdown();
+        SDL_DestroyWindow(mainSDLWindow);
+        mainSDLWindow = nullptr;
+        return nullptr;
+    }
+
+    // ImGui SDLGPU3 backend — viewports disabled (see Phase 4 rationale).
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.IniFilename  = imgui_ini_path();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard
+                    | ImGuiConfigFlags_DockingEnable;
+    ImGui::StyleColorsDark();
+    imgui_init_ui();
+    ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
+    ImGui_ImplSDLGPU3_InitInfo init_info{};
+    init_info.Device               = g_gpu.device;
+    init_info.ColorTargetFormat    = g_gpu.swapchain_fmt;
+    init_info.MSAASamples          = SDL_GPU_SAMPLECOUNT_1;
+    init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    init_info.PresentMode          = SDL_GPU_PRESENTMODE_VSYNC;
+    if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        video_gpu_shutdown();
+        SDL_DestroyWindow(mainSDLWindow);
+        mainSDLWindow = nullptr;
+        return nullptr;
+    }
+
+    // Same three surfaces as swscale_init:
+    //   vid    — RGBA32, 2x — the CPU-side upload buffer the GPU reads from
+    //   scaled — RGB565, 2x — what the CPU filter writes into
+    //   pub    — RGB565, 1x — the surface returned to the CPC (half size)
+    vid    = SDL_CreateSurface(gpu_tex_w, gpu_tex_h, SDL_PIXELFORMAT_RGBA32);
+    scaled = SDL_CreateSurface(gpu_tex_w, gpu_tex_h, SDL_PIXELFORMAT_RGB565);
+    pub    = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGB565);
+
+    if (!vid || !scaled || !pub) {
+        if (pub)    { SDL_DestroySurface(pub);    pub    = nullptr; }
+        if (scaled) { SDL_DestroySurface(scaled); scaled = nullptr; }
+        if (vid)    { SDL_DestroySurface(vid);    vid    = nullptr; }
+        ImGui_ImplSDLGPU3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        video_gpu_shutdown();
+        SDL_DestroyWindow(mainSDLWindow);
+        mainSDLWindow = nullptr;
+        return nullptr;
+    }
+
+    // Sanity-check 16 bpp format (matches swscale_init)
+    {
+        const SDL_PixelFormatDetails* s_fmt = SDL_GetPixelFormatDetails(scaled->format);
+        const SDL_PixelFormatDetails* p_fmt = SDL_GetPixelFormatDetails(pub->format);
+        if (!s_fmt || s_fmt->bits_per_pixel != 16 ||
+            !p_fmt || p_fmt->bits_per_pixel != 16) {
+            LOG_ERROR(t->name << ": SDL didn't return 16 bpp surfaces");
+            return nullptr;
+        }
+    }
+    {
+        const SDL_PixelFormatDetails* v_fmt = SDL_GetPixelFormatDetails(vid->format);
+        SDL_Palette* v_pal = SDL_GetSurfacePalette(vid);
+        SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(v_fmt, v_pal, 0, 0, 0));
+    }
+    compute_scale(t, surface_width, surface_height);
+    LOG_INFO(t->name << ": GPU swscale plugin active");
+    return pub;  // swscale plugins hand the CPC the half-sized `pub` surface
+}
+
+// GPU variant of swscale_blit_a: convert scaled(16bpp) → vid(RGBA32) via
+// SDL_BlitSurface, then reuse gpu_flip_a (Phase 4) to upload + render +
+// submit.  gpu_flip_a uses g_gpu.cpc_tex_{w,h} which match the 2x surface
+// dims we gave video_gpu_init above.
+static void swscale_gpu_blit_a(video_plugin* t)
+{
+    SDL_BlitSurface(scaled, nullptr, vid, nullptr);
+    gpu_flip_a(t);
+}
+
+static void swscale_gpu_close()
+{
+    if (g_gpu.device) SDL_WaitForGPUIdle(g_gpu.device);
+
+    if (ImGui::GetCurrentContext()) {
+        ImGui_ImplSDLGPU3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+    }
+    if (scaled) { SDL_DestroySurface(scaled); scaled = nullptr; }
+    if (pub)    { SDL_DestroySurface(pub);    pub    = nullptr; }
+    if (vid)    { SDL_DestroySurface(vid);    vid    = nullptr; }
+    video_gpu_shutdown();
+    if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
+}
+
+// Per-filter Phase A functions — each runs its CPU filter into `scaled`,
+// then hands off to swscale_gpu_blit_a.  The filter setup is copied
+// verbatim from the matching GL flip to keep the additive pattern
+// (the existing GL flip functions are untouched).
+
+static void seagle_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_supereagle(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                      static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+static void scale2x_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_scale2x(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                   static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+static void ascale2x_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_ascale2x(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                    static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+static void tv2x_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_tv2x(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+static void swbilin_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_bilinear(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                    static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+static void swbicub_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_bicubic(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                   static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+static void dotmat_gpu_flip(video_plugin* t)
+{
+    if (SDL_MUSTLOCK(scaled)) SDL_LockSurface(scaled);
+    SDL_Rect src, dst; compute_rects(&src, &dst, t->half_pixels);
+    filter_dotmatrix(static_cast<Uint8*>(pub->pixels) + (2*src.x+src.y*pub->pitch) + (pub->pitch), pub->pitch,
+                     static_cast<Uint8*>(scaled->pixels) + (2*dst.x+dst.y*scaled->pitch), scaled->pitch, src.w, src.h);
+    if (SDL_MUSTLOCK(scaled)) SDL_UnlockSurface(scaled);
+    swscale_gpu_blit_a(t);
+}
+
+/* ------------------------------------------------------------------------------------ */
 /* End of video plugins --------------------------------------------------------------- */
 /* ------------------------------------------------------------------------------------ */
 
@@ -3133,4 +3338,14 @@ std::vector<video_plugin> video_plugin_list =
      Returns nullptr from init on backends without a working blit pipeline, falling
      through video_init()'s SDL_Renderer chain.  See P1.2b Phase 4 for design notes. */
   {"Direct (GPU)",            false, gpu_direct_init,    direct_setpal,   gpu_flip_a,    gpu_direct_close,    1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  /* GPU variants of the swscale family — P1.2b Phase 5.  Same CPU filters as
+     their GL counterparts, but upload + composite via SDL_GPU.  Fall back to
+     SDL_Renderer chain when no blit pipeline is available. */
+  {"Super eagle (GPU)",       false, swscale_gpu_init,   swscale_setpal,  seagle_gpu_flip,    swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  {"Scale2x (GPU)",           false, swscale_gpu_init,   swscale_setpal,  scale2x_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  {"Advanced Scale2x (GPU)",  false, swscale_gpu_init,   swscale_setpal,  ascale2x_gpu_flip,  swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  {"TV 2x (GPU)",             false, swscale_gpu_init,   swscale_setpal,  tv2x_gpu_flip,      swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  {"Software bilinear (GPU)", false, swscale_gpu_init,   swscale_setpal,  swbilin_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  {"Software bicubic (GPU)",  false, swscale_gpu_init,   swscale_setpal,  swbicub_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
+  {"Dot matrix (GPU)",        false, swscale_gpu_init,   swscale_setpal,  dotmat_gpu_flip,    swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
 };
