@@ -159,6 +159,10 @@ uintptr_t video_get_cpc_texture() {
     return reinterpret_cast<uintptr_t>(cpc_sdl_texture);
   if (crt_fbo_tex)
     return static_cast<uintptr_t>(crt_fbo_tex);
+  // GPU plugin active — ImGui's SDLGPU3 backend accepts SDL_GPUTexture* as
+  // an ImTextureID for Docked-mode ImGui::Image() calls on the CPC Screen.
+  if (g_gpu.cpc_texture)
+    return reinterpret_cast<uintptr_t>(g_gpu.cpc_texture);
   return static_cast<uintptr_t>(cpc_gl_texture);
 }
 
@@ -597,18 +601,15 @@ void gpu_flip_a(video_plugin* t)
         SDL_EndGPUCopyPass(copy);
     }
 
-    // 2. ImGui frame + CPC background image for Classic layout.
+    // 2. ImGui frame.  Unlike the GL path, we do NOT push the CPC image
+    //    into the ImGui background draw list for Classic mode — the
+    //    manual blit below (step 5) is the authoritative path because it
+    //    picks the right sampler (linear vs nearest) per scr_crt_aspect.
+    //    For Docked mode the CPC Screen ImGui window pulls the texture
+    //    via video_get_cpc_texture() and renders it with ImGui::Image().
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
-    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
-        ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGui::GetBackgroundDrawList(vp)->AddImage(
-            reinterpret_cast<ImTextureID>(g_gpu.cpc_texture),
-            ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-            ImVec2(vp->Pos.x + t->x_offset + t->width,
-                   vp->Pos.y + t->y_offset + t->height));
-    }
     imgui_render_ui();
     ImGui::Render();
 
