@@ -254,6 +254,34 @@ void init_command_registry() {
       return "OK koncepcja-" VERSION_STRING " port=" + std::to_string(p) + "\n";
     });
 
+  register_command("metrics", "CORE", "metrics",
+    "Get current performance / timing metrics",
+    "Returns the timing counters the render thread updates once per second:\n"
+    "  frame_time_avg_us   — full frame wall-clock (Z80 + render)\n"
+    "  display_time_avg_us — Phase A wall-clock (framebuffer upload + ImGui render)\n"
+    "  z80_time_avg_us     — Z80 execution wall-clock\n"
+    "  sleep_time_avg_us   — idle sleep between frames\n"
+    "  audio_queue_avg_ms  — avg SDL audio queue depth over the last second\n"
+    "  audio_queue_min_ms  — min SDL audio queue depth (underrun indicator)\n"
+    "  audio_underruns     — actual underrun count since last sample\n"
+    "  audio_near_underruns — near-underrun count (queue < 1 buffer)\n"
+    "Used by Phase 8 perf verification to compare GPU vs GL plugin timing.",
+    [](const auto&, const auto&) {
+      std::lock_guard<std::mutex> lock(g_imgui_stats_mutex);
+      std::ostringstream oss;
+      oss << "OK "
+          << "frame_time_avg_us=" << imgui_state.frame_time_avg_us
+          << " display_time_avg_us=" << imgui_state.display_time_avg_us
+          << " z80_time_avg_us=" << imgui_state.z80_time_avg_us
+          << " sleep_time_avg_us=" << imgui_state.sleep_time_avg_us
+          << " audio_queue_avg_ms=" << imgui_state.audio_queue_avg_ms
+          << " audio_queue_min_ms=" << imgui_state.audio_queue_min_ms
+          << " audio_underruns=" << imgui_state.audio_underruns
+          << " audio_near_underruns=" << imgui_state.audio_near_underruns
+          << "\n";
+      return oss.str();
+    });
+
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
     "Terminates the emulator process immediately. An optional integer exit code can be provided.");
 
