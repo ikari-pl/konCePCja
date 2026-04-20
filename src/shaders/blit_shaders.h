@@ -276,3 +276,104 @@ fragment float4 frag_main(VSOut in [[stage_in]],
     return float4(col, 1.0);
 }
 )MSL";
+
+// ── CRT Full (Metal): raw MSL source ──────────────────────────────────
+// Port of crt_frag_full from video.cpp.  Adds bloom + vignette + slot
+// mask + curvature knobs on top of Basic.  The GL path took 5 uniforms
+// (curvature, scanline, mask, bloom, vignette) but always passed the
+// same hard-coded values — so this port inlines those as constants.
+// Uniforms struct layout identical to CRT Basic: { float2 input_size;
+// float2 output_size; }
+inline constexpr const char* kCrtFullMSLSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct CrtFullUniforms {
+    float2 input_size;
+    float2 output_size;
+};
+
+constant float kCurvature = 0.22;
+constant float kScanline  = 0.7;
+constant float kMask      = 0.7;
+constant float kBloom     = 0.15;
+constant float kVignette  = 0.4;
+
+vertex VSOut vert_main(uint vid [[vertex_id]]) {
+    VSOut o;
+    float2 xy = float2(float((vid << 1) & 2), float(vid & 2));
+    o.position = float4(xy * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(xy.x, 1.0 - xy.y);
+    return o;
+}
+
+static float2 barrel(float2 uv, float k) {
+    float2 cc = uv - 0.5;
+    float dist = dot(cc, cc);
+    return uv + cc * dist * k;
+}
+
+static float3 sampleBloom(texture2d<float> tex, sampler smp, float2 uv, float2 input_size) {
+    float2 t = 1.0 / input_size;
+    float3 s = float3(0.0);
+    s += tex.sample(smp, uv + float2(-t.x, 0.0)).rgb * 0.15;
+    s += tex.sample(smp, uv + float2( t.x, 0.0)).rgb * 0.15;
+    s += tex.sample(smp, uv + float2( 0.0,-t.y)).rgb * 0.15;
+    s += tex.sample(smp, uv + float2( 0.0, t.y)).rgb * 0.15;
+    s += tex.sample(smp, uv + float2(-t.x,-t.y)).rgb * 0.10;
+    s += tex.sample(smp, uv + float2( t.x,-t.y)).rgb * 0.10;
+    s += tex.sample(smp, uv + float2(-t.x, t.y)).rgb * 0.10;
+    s += tex.sample(smp, uv + float2( t.x, t.y)).rgb * 0.10;
+    return s;
+}
+
+fragment float4 frag_main(VSOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler smp [[sampler(0)]],
+                          constant CrtFullUniforms& u [[buffer(0)]])
+{
+    float2 uv = barrel(in.uv, kCurvature);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    float3 col = tex.sample(smp, uv).rgb;
+
+    // Bloom
+    col = mix(col, col + sampleBloom(tex, smp, uv, u.input_size), kBloom);
+
+    // Gaussian-weighted scanlines
+    float scanY = uv.y * u.input_size.y;
+    float sl = 0.5 + 0.5 * cos(scanY * M_PI_F * 2.0);
+    sl = sqrt(sl);   // equivalent to pow(sl, 0.5), but cheaper on MSL
+    col *= mix(1.0, sl, kScanline * 0.5);
+
+    // Slot mask (6-pixel pattern with vertical shift)
+    float2 outPos = uv * u.output_size;
+    float mx = fmod(outPos.x, 6.0);
+    float my = fmod(outPos.y, 2.0);
+    float3 mask;
+    if (my < 1.0) {
+        mask = float3(mx < 2.0 ? 1.0 : 0.7,
+                      (mx >= 2.0 && mx < 4.0) ? 1.0 : 0.7,
+                      mx >= 4.0 ? 1.0 : 0.7);
+    } else {
+        mask = float3((mx >= 3.0 && mx < 5.0) ? 0.7 : 1.0,
+                      (mx < 1.0 || mx >= 5.0) ? 0.7 : 1.0,
+                      (mx >= 1.0 && mx < 3.0) ? 0.7 : 1.0);
+    }
+    col *= mix(float3(1.0), mask, kMask);
+
+    // Vignette
+    float2 vig = in.uv * (1.0 - in.uv);
+    float vigF = pow(vig.x * vig.y * 15.0, 0.25);
+    col *= mix(1.0, vigF, kVignette);
+
+    col *= 1.4;
+    return float4(clamp(col, 0.0, 1.0), 1.0);
+}
+)MSL";
