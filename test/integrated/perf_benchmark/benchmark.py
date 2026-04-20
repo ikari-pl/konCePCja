@@ -26,13 +26,12 @@ SAMPLE_SECONDS = 10
 
 
 def send_ipc(cmd: str, port: int = 6543, timeout: float = 5.0) -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    sock.connect(("localhost", port))
-    sock.sendall((cmd + "\n").encode())
-    resp = sock.recv(65536).decode().strip()
-    sock.close()
-    return resp
+    # Line-buffered read via makefile(); a single recv() is not
+    # guaranteed to return the full response on a TCP stream.
+    with socket.create_connection(("localhost", port), timeout=timeout) as sock:
+        sock.sendall((cmd + "\n").encode())
+        with sock.makefile("r", encoding="utf-8") as f:
+            return f.readline().strip()
 
 
 def wait_for_ipc(port: int, timeout: float = 15.0) -> bool:

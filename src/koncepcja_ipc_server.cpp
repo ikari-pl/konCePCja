@@ -267,19 +267,31 @@ void init_command_registry() {
     "  audio_near_underruns — near-underrun count (queue < 1 buffer)\n"
     "Used by Phase 8 perf verification to compare GPU vs GL plugin timing.",
     [](const auto&, const auto&) {
-      std::lock_guard<std::mutex> lock(g_imgui_stats_mutex);
-      std::ostringstream oss;
-      oss << "OK "
-          << "frame_time_avg_us=" << imgui_state.frame_time_avg_us
-          << " display_time_avg_us=" << imgui_state.display_time_avg_us
-          << " z80_time_avg_us=" << imgui_state.z80_time_avg_us
-          << " sleep_time_avg_us=" << imgui_state.sleep_time_avg_us
-          << " audio_queue_avg_ms=" << imgui_state.audio_queue_avg_ms
-          << " audio_queue_min_ms=" << imgui_state.audio_queue_min_ms
-          << " audio_underruns=" << imgui_state.audio_underruns
-          << " audio_near_underruns=" << imgui_state.audio_near_underruns
-          << "\n";
-      return oss.str();
+      // Snapshot under the lock, format outside — avoids holding the
+      // mutex during string formatting and keeps the render thread
+      // unblocked.
+      float f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min;
+      int underruns, near_underruns;
+      {
+        std::lock_guard<std::mutex> lock(g_imgui_stats_mutex);
+        f_avg          = imgui_state.frame_time_avg_us;
+        d_avg          = imgui_state.display_time_avg_us;
+        z_avg          = imgui_state.z80_time_avg_us;
+        s_avg          = imgui_state.sleep_time_avg_us;
+        aq_avg         = imgui_state.audio_queue_avg_ms;
+        aq_min         = imgui_state.audio_queue_min_ms;
+        underruns      = imgui_state.audio_underruns;
+        near_underruns = imgui_state.audio_near_underruns;
+      }
+      char buf[512];
+      std::snprintf(buf, sizeof(buf),
+          "OK frame_time_avg_us=%.1f display_time_avg_us=%.1f "
+          "z80_time_avg_us=%.1f sleep_time_avg_us=%.1f "
+          "audio_queue_avg_ms=%.1f audio_queue_min_ms=%.1f "
+          "audio_underruns=%d audio_near_underruns=%d\n",
+          f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min,
+          underruns, near_underruns);
+      return std::string(buf);
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
