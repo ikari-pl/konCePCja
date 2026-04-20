@@ -377,3 +377,144 @@ fragment float4 frag_main(VSOut in [[stage_in]],
     return float4(clamp(col, 0.0, 1.0), 1.0);
 }
 )MSL";
+
+// ── CRT Lottes (Metal): raw MSL source ─────────────────────────────────
+// Port of crt_frag_lottes from video.cpp.  Timothy Lottes' CRT shader
+// (public domain) — uses a Gaussian beam profile, sRGB-linear light
+// blending, curvature warp, and a slot/phosphor mask.  Samples 3-5
+// neighbouring input pixels per output pixel for the horizontal kernel,
+// weighted by scan/pix Gaussians.  Uniforms match CRT Basic/Full:
+// { float2 input_size; float2 output_size; }.
+inline constexpr const char* kCrtLottesMSLSource = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct CrtLottesUniforms {
+    float2 input_size;
+    float2 output_size;
+};
+
+constant float kWarpX     = 0.031;
+constant float kWarpY     = 0.041;
+constant float kHardScan  = -8.0;
+constant float kHardPix   = -3.0;
+constant float kMaskDark  = 0.5;
+constant float kMaskLight = 1.5;
+
+vertex VSOut vert_main(uint vid [[vertex_id]]) {
+    VSOut o;
+    float2 xy = float2(float((vid << 1) & 2), float(vid & 2));
+    o.position = float4(xy * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(xy.x, 1.0 - xy.y);
+    return o;
+}
+
+static float2 warp(float2 pos) {
+    pos = pos * 2.0 - 1.0;
+    pos *= float2(1.0 + pos.y * pos.y * kWarpX,
+                  1.0 + pos.x * pos.x * kWarpY);
+    return pos * 0.5 + 0.5;
+}
+
+static float toLinear1(float c) {
+    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+static float3 toLinear(float3 c) {
+    return float3(toLinear1(c.r), toLinear1(c.g), toLinear1(c.b));
+}
+static float toSrgb1(float c) {
+    return (c < 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+static float3 toSrgb(float3 c) {
+    return float3(toSrgb1(c.r), toSrgb1(c.g), toSrgb1(c.b));
+}
+
+static float3 fetch_pix(texture2d<float> tex, sampler smp,
+                        float2 pos, float2 off, float2 input_size) {
+    pos = (floor(pos * input_size + off) + 0.5) / input_size;
+    if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0)
+        return float3(0.0);
+    return toLinear(tex.sample(smp, pos).rgb);
+}
+
+static float2 pix_dist(float2 pos, float2 input_size) {
+    pos = pos * input_size;
+    return -(fract(pos) - 0.5);
+}
+
+static float gaus(float pos, float scale) {
+    return exp2(scale * pos * pos);
+}
+
+static float3 horz3(texture2d<float> tex, sampler smp,
+                    float2 pos, float off, float2 input_size) {
+    float3 b = fetch_pix(tex, smp, pos, float2(-1.0, off), input_size);
+    float3 c = fetch_pix(tex, smp, pos, float2( 0.0, off), input_size);
+    float3 d = fetch_pix(tex, smp, pos, float2( 1.0, off), input_size);
+    float dst = pix_dist(pos, input_size).x;
+    float wb = gaus(dst - 1.0, kHardPix);
+    float wc = gaus(dst + 0.0, kHardPix);
+    float wd = gaus(dst + 1.0, kHardPix);
+    return (b * wb + c * wc + d * wd) / (wb + wc + wd);
+}
+
+static float3 horz5(texture2d<float> tex, sampler smp,
+                    float2 pos, float off, float2 input_size) {
+    float3 a = fetch_pix(tex, smp, pos, float2(-2.0, off), input_size);
+    float3 b = fetch_pix(tex, smp, pos, float2(-1.0, off), input_size);
+    float3 c = fetch_pix(tex, smp, pos, float2( 0.0, off), input_size);
+    float3 d = fetch_pix(tex, smp, pos, float2( 1.0, off), input_size);
+    float3 e = fetch_pix(tex, smp, pos, float2( 2.0, off), input_size);
+    float dst = pix_dist(pos, input_size).x;
+    float wa = gaus(dst - 2.0, kHardPix);
+    float wb = gaus(dst - 1.0, kHardPix);
+    float wc = gaus(dst + 0.0, kHardPix);
+    float wd = gaus(dst + 1.0, kHardPix);
+    float we = gaus(dst + 2.0, kHardPix);
+    return (a*wa + b*wb + c*wc + d*wd + e*we) / (wa+wb+wc+wd+we);
+}
+
+static float scan_weight(float2 pos, float off, float2 input_size) {
+    return gaus(pix_dist(pos, input_size).y + off, kHardScan);
+}
+
+static float3 tri_sample(texture2d<float> tex, sampler smp,
+                         float2 pos, float2 input_size) {
+    float3 a = horz3(tex, smp, pos, -1.0, input_size);
+    float3 b = horz5(tex, smp, pos,  0.0, input_size);
+    float3 c = horz3(tex, smp, pos,  1.0, input_size);
+    float wa = scan_weight(pos, -1.0, input_size);
+    float wb = scan_weight(pos,  0.0, input_size);
+    float wc = scan_weight(pos,  1.0, input_size);
+    return a * wa + b * wb + c * wc;
+}
+
+static float3 shadowMask(float2 pos) {
+    pos.x += pos.y * 3.0;
+    float3 m = float3(kMaskDark);
+    pos.x = fract(pos.x / 6.0);
+    if (pos.x < 0.333)      m.r = kMaskLight;
+    else if (pos.x < 0.666) m.g = kMaskLight;
+    else                    m.b = kMaskLight;
+    return m;
+}
+
+fragment float4 frag_main(VSOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler smp [[sampler(0)]],
+                          constant CrtLottesUniforms& u [[buffer(0)]])
+{
+    float2 pos = warp(in.uv);
+    if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    float3 col = tri_sample(tex, smp, pos, u.input_size);
+    col *= shadowMask(in.position.xy);
+    return float4(toSrgb(col), 1.0);
+}
+)MSL";
