@@ -254,6 +254,46 @@ void init_command_registry() {
       return "OK koncepcja-" VERSION_STRING " port=" + std::to_string(p) + "\n";
     });
 
+  register_command("metrics", "CORE", "metrics",
+    "Get current performance / timing metrics",
+    "Returns the timing counters the render thread updates once per second:\n"
+    "  frame_time_avg_us   — full frame wall-clock (Z80 + render)\n"
+    "  display_time_avg_us — Phase A wall-clock (framebuffer upload + ImGui render)\n"
+    "  z80_time_avg_us     — Z80 execution wall-clock\n"
+    "  sleep_time_avg_us   — idle sleep between frames\n"
+    "  audio_queue_avg_ms  — avg SDL audio queue depth over the last second\n"
+    "  audio_queue_min_ms  — min SDL audio queue depth (underrun indicator)\n"
+    "  audio_underruns     — actual underrun count since last sample\n"
+    "  audio_near_underruns — near-underrun count (queue < 1 buffer)\n"
+    "Used by Phase 8 perf verification to compare GPU vs GL plugin timing.",
+    [](const auto&, const auto&) {
+      // Snapshot under the lock, format outside — avoids holding the
+      // mutex during string formatting and keeps the render thread
+      // unblocked.
+      float f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min;
+      int underruns, near_underruns;
+      {
+        std::lock_guard<std::mutex> lock(g_imgui_stats_mutex);
+        f_avg          = imgui_state.frame_time_avg_us;
+        d_avg          = imgui_state.display_time_avg_us;
+        z_avg          = imgui_state.z80_time_avg_us;
+        s_avg          = imgui_state.sleep_time_avg_us;
+        aq_avg         = imgui_state.audio_queue_avg_ms;
+        aq_min         = imgui_state.audio_queue_min_ms;
+        underruns      = imgui_state.audio_underruns;
+        near_underruns = imgui_state.audio_near_underruns;
+      }
+      char buf[512];
+      std::snprintf(buf, sizeof(buf),
+          "OK frame_time_avg_us=%.1f display_time_avg_us=%.1f "
+          "z80_time_avg_us=%.1f sleep_time_avg_us=%.1f "
+          "audio_queue_avg_ms=%.1f audio_queue_min_ms=%.1f "
+          "audio_underruns=%d audio_near_underruns=%d\n",
+          f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min,
+          underruns, near_underruns);
+      return std::string(buf);
+    });
+
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
     "Terminates the emulator process immediately. An optional integer exit code can be provided.");
 
