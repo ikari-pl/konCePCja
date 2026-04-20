@@ -49,5 +49,5 @@ void main() {
         m >= 2.0 ? 1.0 : 0.75);
     col *= mask;
     col *= 1.3;
-    out_color = vec4(col, 1.0);
+    out_color = vec4(clamp(col, 0.0, 1.0), 1.0);
 }

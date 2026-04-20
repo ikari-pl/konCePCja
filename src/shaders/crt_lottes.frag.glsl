@@ -121,5 +121,5 @@ void main() {
     }
     vec3 col = tri_sample(pos, u.input_size);
     col *= shadowMask(gl_FragCoord.xy);
-    out_color = vec4(toSrgb(col), 1.0);
+    out_color = vec4(toSrgb(clamp(col, 0.0, 1.0)), 1.0);
 }

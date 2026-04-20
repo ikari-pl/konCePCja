@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"VERT_BODY=$(xxd -i < blobs/blit.vert.spv); FRAG_BODY=$(xxd -i < blobs/blit.frag.spv); cat > /tmp/shaders_new.h <<'HEAD'\\n// konCePCja — embedded shader blobs for the passthrough blit pipel...",
+  "error": "Exit code 1\nmv: cannot move '/tmp/shaders_new.h' to 'src/shaders/blit_shaders.h': No such file or directory\nwc: src/shaders/blit_shaders.h: No such file or directory",
+  "timestamp": "2026-04-19T14:39:43.254Z",
+  "retry_count": 1
+}
