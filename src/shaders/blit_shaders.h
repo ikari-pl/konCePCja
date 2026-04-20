@@ -11,6 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 
+// CRT fragment-shader SPIRV blobs (Basic/Full/Lottes) live in a
+// separate header to keep this file focused on the blit pipeline.
+#include "crt_spirv_blobs.h"
+
 // ── Metal (macOS): raw MSL source ─────────────────────────────────────
 inline constexpr const char* kBlitMSLSource = R"MSL(
 #include <metal_stdlib>

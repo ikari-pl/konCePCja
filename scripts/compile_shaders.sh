@@ -23,9 +23,12 @@ mkdir -p "$OUT"
 
 echo "==> SPIRV (Vulkan)"
 if command -v glslangValidator >/dev/null; then
-    glslangValidator -V "$SHADERS/blit.vert.glsl" -o "$OUT/blit.vert.spv"
-    glslangValidator -V "$SHADERS/blit.frag.glsl" -o "$OUT/blit.frag.spv"
-    echo "    ok: $OUT/blit.vert.spv, $OUT/blit.frag.spv"
+    glslangValidator -V "$SHADERS/blit.vert.glsl"        -o "$OUT/blit.vert.spv"
+    glslangValidator -V "$SHADERS/blit.frag.glsl"        -o "$OUT/blit.frag.spv"
+    glslangValidator -V "$SHADERS/crt_basic.frag.glsl"   -o "$OUT/crt_basic.frag.spv"
+    glslangValidator -V "$SHADERS/crt_full.frag.glsl"    -o "$OUT/crt_full.frag.spv"
+    glslangValidator -V "$SHADERS/crt_lottes.frag.glsl"  -o "$OUT/crt_lottes.frag.spv"
+    echo "    ok: blit.{vert,frag}.spv, crt_{basic,full,lottes}.frag.spv"
 else
     echo "    skip: glslangValidator not installed"
 fi
