@@ -11,6 +11,10 @@
 #include <cstddef>
 #include <cstdint>
 
+// CRT fragment-shader SPIRV blobs (Basic/Full/Lottes) live in a
+// separate header to keep this file focused on the blit pipeline.
+#include "crt_spirv_blobs.h"
+
 // ── Metal (macOS): raw MSL source ─────────────────────────────────────
 inline constexpr const char* kBlitMSLSource = R"MSL(
 #include <metal_stdlib>
@@ -273,7 +277,7 @@ fragment float4 frag_main(VSOut in [[stage_in]],
         m >= 2.0 ? 1.0 : 0.75);
     col *= mask;
     col *= 1.3;
-    return float4(col, 1.0);
+    return float4(clamp(col, 0.0, 1.0), 1.0);
 }
 )MSL";
 
@@ -515,6 +519,6 @@ fragment float4 frag_main(VSOut in [[stage_in]],
     }
     float3 col = tri_sample(tex, smp, pos, u.input_size);
     col *= shadowMask(in.position.xy);
-    return float4(toSrgb(col), 1.0);
+    return float4(toSrgb(clamp(col, 0.0, 1.0)), 1.0);
 }
 )MSL";

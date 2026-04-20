@@ -699,23 +699,40 @@ static bool create_crt_basic_pipeline()
 {
     if (!g_gpu.device) return false;
     const char* driver = SDL_GetGPUDeviceDriver(g_gpu.device);
-    if (!driver || std::strcmp(driver, "metal") != 0) return false;  // Metal only for now
+    if (!driver) return false;
 
     SDL_GPUShaderCreateInfo vsi{};
     vsi.stage               = SDL_GPU_SHADERSTAGE_VERTEX;
-    vsi.format              = SDL_GPU_SHADERFORMAT_MSL;
-    vsi.code                = reinterpret_cast<const Uint8*>(kCrtBasicMSLSource);
-    vsi.code_size           = std::strlen(kCrtBasicMSLSource);
-    vsi.entrypoint          = "vert_main";
 
     SDL_GPUShaderCreateInfo fsi{};
     fsi.stage               = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    fsi.format              = SDL_GPU_SHADERFORMAT_MSL;
-    fsi.code                = reinterpret_cast<const Uint8*>(kCrtBasicMSLSource);
-    fsi.code_size           = std::strlen(kCrtBasicMSLSource);
-    fsi.entrypoint          = "frag_main";
     fsi.num_samplers        = 1;
     fsi.num_uniform_buffers = 1;
+
+    if (std::strcmp(driver, "metal") == 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        vsi.code       = reinterpret_cast<const Uint8*>(kCrtBasicMSLSource);
+        vsi.code_size  = std::strlen(kCrtBasicMSLSource);
+        vsi.entrypoint = "vert_main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        fsi.code       = reinterpret_cast<const Uint8*>(kCrtBasicMSLSource);
+        fsi.code_size  = std::strlen(kCrtBasicMSLSource);
+        fsi.entrypoint = "frag_main";
+    } else if (std::strcmp(driver, "vulkan") == 0
+               && kBlitVertexSPIRVSize > 0 && kCrtBasicFragmentSPIRVSize > 0) {
+        // Reuses the blit vertex shader — both emit v_uv at location 0 from
+        // a gl_VertexIndex-driven fullscreen triangle.
+        vsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        vsi.code       = kBlitVertexSPIRV;
+        vsi.code_size  = kBlitVertexSPIRVSize;
+        vsi.entrypoint = "main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        fsi.code       = kCrtBasicFragmentSPIRV;
+        fsi.code_size  = kCrtBasicFragmentSPIRVSize;
+        fsi.entrypoint = "main";
+    } else {
+        return false;  // no shader blob available for this backend
+    }
 
     g_crt_basic_vertex_shader   = SDL_CreateGPUShader(g_gpu.device, &vsi);
     g_crt_basic_fragment_shader = SDL_CreateGPUShader(g_gpu.device, &fsi);
@@ -894,23 +911,38 @@ static bool create_crt_full_pipeline()
 {
     if (!g_gpu.device) return false;
     const char* driver = SDL_GetGPUDeviceDriver(g_gpu.device);
-    if (!driver || std::strcmp(driver, "metal") != 0) return false;
+    if (!driver) return false;
 
     SDL_GPUShaderCreateInfo vsi{};
     vsi.stage               = SDL_GPU_SHADERSTAGE_VERTEX;
-    vsi.format              = SDL_GPU_SHADERFORMAT_MSL;
-    vsi.code                = reinterpret_cast<const Uint8*>(kCrtFullMSLSource);
-    vsi.code_size           = std::strlen(kCrtFullMSLSource);
-    vsi.entrypoint          = "vert_main";
 
     SDL_GPUShaderCreateInfo fsi{};
     fsi.stage               = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    fsi.format              = SDL_GPU_SHADERFORMAT_MSL;
-    fsi.code                = reinterpret_cast<const Uint8*>(kCrtFullMSLSource);
-    fsi.code_size           = std::strlen(kCrtFullMSLSource);
-    fsi.entrypoint          = "frag_main";
     fsi.num_samplers        = 1;
     fsi.num_uniform_buffers = 1;
+
+    if (std::strcmp(driver, "metal") == 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        vsi.code       = reinterpret_cast<const Uint8*>(kCrtFullMSLSource);
+        vsi.code_size  = std::strlen(kCrtFullMSLSource);
+        vsi.entrypoint = "vert_main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        fsi.code       = reinterpret_cast<const Uint8*>(kCrtFullMSLSource);
+        fsi.code_size  = std::strlen(kCrtFullMSLSource);
+        fsi.entrypoint = "frag_main";
+    } else if (std::strcmp(driver, "vulkan") == 0
+               && kBlitVertexSPIRVSize > 0 && kCrtFullFragmentSPIRVSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        vsi.code       = kBlitVertexSPIRV;
+        vsi.code_size  = kBlitVertexSPIRVSize;
+        vsi.entrypoint = "main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        fsi.code       = kCrtFullFragmentSPIRV;
+        fsi.code_size  = kCrtFullFragmentSPIRVSize;
+        fsi.entrypoint = "main";
+    } else {
+        return false;
+    }
 
     g_crt_full_vertex_shader   = SDL_CreateGPUShader(g_gpu.device, &vsi);
     g_crt_full_fragment_shader = SDL_CreateGPUShader(g_gpu.device, &fsi);
@@ -1090,23 +1122,38 @@ static bool create_crt_lottes_pipeline()
 {
     if (!g_gpu.device) return false;
     const char* driver = SDL_GetGPUDeviceDriver(g_gpu.device);
-    if (!driver || std::strcmp(driver, "metal") != 0) return false;
+    if (!driver) return false;
 
     SDL_GPUShaderCreateInfo vsi{};
     vsi.stage               = SDL_GPU_SHADERSTAGE_VERTEX;
-    vsi.format              = SDL_GPU_SHADERFORMAT_MSL;
-    vsi.code                = reinterpret_cast<const Uint8*>(kCrtLottesMSLSource);
-    vsi.code_size           = std::strlen(kCrtLottesMSLSource);
-    vsi.entrypoint          = "vert_main";
 
     SDL_GPUShaderCreateInfo fsi{};
     fsi.stage               = SDL_GPU_SHADERSTAGE_FRAGMENT;
-    fsi.format              = SDL_GPU_SHADERFORMAT_MSL;
-    fsi.code                = reinterpret_cast<const Uint8*>(kCrtLottesMSLSource);
-    fsi.code_size           = std::strlen(kCrtLottesMSLSource);
-    fsi.entrypoint          = "frag_main";
     fsi.num_samplers        = 1;
     fsi.num_uniform_buffers = 1;
+
+    if (std::strcmp(driver, "metal") == 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        vsi.code       = reinterpret_cast<const Uint8*>(kCrtLottesMSLSource);
+        vsi.code_size  = std::strlen(kCrtLottesMSLSource);
+        vsi.entrypoint = "vert_main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_MSL;
+        fsi.code       = reinterpret_cast<const Uint8*>(kCrtLottesMSLSource);
+        fsi.code_size  = std::strlen(kCrtLottesMSLSource);
+        fsi.entrypoint = "frag_main";
+    } else if (std::strcmp(driver, "vulkan") == 0
+               && kBlitVertexSPIRVSize > 0 && kCrtLottesFragmentSPIRVSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        vsi.code       = kBlitVertexSPIRV;
+        vsi.code_size  = kBlitVertexSPIRVSize;
+        vsi.entrypoint = "main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
+        fsi.code       = kCrtLottesFragmentSPIRV;
+        fsi.code_size  = kCrtLottesFragmentSPIRVSize;
+        fsi.entrypoint = "main";
+    } else {
+        return false;
+    }
 
     g_crt_lottes_vertex_shader   = SDL_CreateGPUShader(g_gpu.device, &vsi);
     g_crt_lottes_fragment_shader = SDL_CreateGPUShader(g_gpu.device, &fsi);
