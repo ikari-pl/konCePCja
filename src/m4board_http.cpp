@@ -1285,21 +1285,39 @@ void M4HttpServer::run() {
    inet_pton(AF_INET, bind_ip_.c_str(), &addr.sin_addr);
 
    int bound_port = 0;
-   for (int p = configured_port_; p < configured_port_ + 10; p++) {
-      addr.sin_port = htons(static_cast<uint16_t>(p));
+   if (configured_port_ <= 0) {
+      addr.sin_port = 0;
       if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR) {
-         bound_port = p;
-         break;
+         sockaddr_in sin{};
+         int sinlen = sizeof(sin);
+         if (getsockname(server_fd, reinterpret_cast<sockaddr*>(&sin), &sinlen) != SOCKET_ERROR)
+            bound_port = static_cast<int>(ntohs(sin.sin_port));
       }
-   }
-   if (bound_port == 0) {
-      LOG_ERROR("M4 HTTP: could not bind to ports " << configured_port_
-                << "-" << (configured_port_ + 9));
-      closesocket(server_fd);
-      WSACleanup();
-      running.store(false);
-      actual_port.store(0);
-      return;
+      if (bound_port == 0) {
+         LOG_ERROR("M4 HTTP: could not bind to an ephemeral port (port<=0)");
+         closesocket(server_fd);
+         WSACleanup();
+         running.store(false);
+         actual_port.store(0);
+         return;
+      }
+   } else {
+      for (int p = configured_port_; p < configured_port_ + 10; p++) {
+         addr.sin_port = htons(static_cast<uint16_t>(p));
+         if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != SOCKET_ERROR) {
+            bound_port = p;
+            break;
+         }
+      }
+      if (bound_port == 0) {
+         LOG_ERROR("M4 HTTP: could not bind to ports " << configured_port_
+                   << "-" << (configured_port_ + 9));
+         closesocket(server_fd);
+         WSACleanup();
+         running.store(false);
+         actual_port.store(0);
+         return;
+      }
    }
 
    if (listen(server_fd, 4) == SOCKET_ERROR) {
@@ -1476,20 +1494,37 @@ void M4HttpServer::run() {
    inet_pton(AF_INET, bind_ip_.c_str(), &addr.sin_addr);
 
    int bound_port = 0;
-   for (int p = configured_port_; p < configured_port_ + 10; p++) {
-      addr.sin_port = htons(static_cast<uint16_t>(p));
+   if (configured_port_ <= 0) {
+      addr.sin_port = 0;
       if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-         bound_port = p;
-         break;
+         sockaddr_in sin{};
+         socklen_t sinlen = sizeof(sin);
+         if (getsockname(server_fd, reinterpret_cast<sockaddr*>(&sin), &sinlen) == 0)
+            bound_port = static_cast<int>(ntohs(sin.sin_port));
       }
-   }
-   if (bound_port == 0) {
-      LOG_ERROR("M4 HTTP: could not bind to ports " << configured_port_
-                << "-" << (configured_port_ + 9));
-      ::close(server_fd);
-      running.store(false);
-      actual_port.store(0);
-      return;
+      if (bound_port == 0) {
+         LOG_ERROR("M4 HTTP: could not bind to an ephemeral port (port<=0)");
+         ::close(server_fd);
+         running.store(false);
+         actual_port.store(0);
+         return;
+      }
+   } else {
+      for (int p = configured_port_; p < configured_port_ + 10; p++) {
+         addr.sin_port = htons(static_cast<uint16_t>(p));
+         if (bind(server_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+            bound_port = p;
+            break;
+         }
+      }
+      if (bound_port == 0) {
+         LOG_ERROR("M4 HTTP: could not bind to ports " << configured_port_
+                   << "-" << (configured_port_ + 9));
+         ::close(server_fd);
+         running.store(false);
+         actual_port.store(0);
+         return;
+      }
    }
 
    if (listen(server_fd, 4) < 0) {
