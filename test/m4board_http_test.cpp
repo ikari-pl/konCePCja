@@ -4,7 +4,7 @@
 #include <cstring>
 #include <thread>
 #include <chrono>
-#include <random>
+#include <stdexcept>
 #include "m4board.h"
 #include "m4board_http.h"
 
@@ -139,6 +139,7 @@ static int extract_status(const std::string& response) {
 // ── Shared server environment ──
 // One server for the entire test suite — avoids 25+ start/stop cycles
 // with TIME_WAIT port exhaustion on slow CI runners (Win32).
+// Port 0 = OS-assigned ephemeral (avoids collisions with parallel jobs on CI).
 
 static std::filesystem::path g_test_sd_dir;
 static int g_test_port = 0;
@@ -160,13 +161,16 @@ public:
       g_m4board.sd_root_path = g_test_sd_dir.string();
       g_m4board.current_dir = "/";
 
-      static std::mt19937 rng(std::random_device{}());
-      int base = 30000 + static_cast<int>(rng() % 20000);
-      g_m4_http.start(base, "127.0.0.1");
-      for (int i = 0; i < 200 && g_m4_http.port() == 0; i++) {
+      g_m4_http.start(0, "127.0.0.1");
+      for (int i = 0; i < 300 && g_m4_http.port() == 0; i++) {
          std::this_thread::sleep_for(std::chrono::milliseconds(20));
       }
       g_test_port = g_m4_http.port();
+      if (g_test_port <= 0) {
+         g_m4_http.stop();
+         throw std::runtime_error(
+            "M4 HTTP test server never published a port (bind/listen failed?)");
+      }
    }
 
    void TearDown() override {
@@ -467,9 +471,7 @@ TEST(M4HttpUrlDecode, BasicDecoding) {
    g_m4board.current_dir = "/";
 
    M4HttpServer server;
-   static std::mt19937 rng(std::random_device{}());
-   int base = 30000 + static_cast<int>(rng() % 20000);
-   server.start(base, "127.0.0.1");
+   server.start(0, "127.0.0.1");
    for (int i = 0; i < 100 && server.port() == 0; i++) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
    }
@@ -496,7 +498,7 @@ TEST(M4HttpServerTest, StopWithoutStart) {
 
 TEST(M4HttpServerTest, DoubleStart) {
    M4HttpServer server;
-   server.start(19080);
+   server.start(0);
    for (int i = 0; i < 100 && server.port() == 0; i++) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
    }
