@@ -3098,8 +3098,15 @@ std::vector<video_plugin> video_plugin_list =
   /* Legacy GL CRT shader plugins (CRT Basic, CRT Full, CRT Lottes) used
      to live here at indices 11-13.  Removed in Phase 7b; the GPU variants
      below (indices 25-27 after the shift) cover all three tiers on both
-     Metal and Vulkan.  Users with scr_style=11..13 in their config will
-     now see plugin-index-out-of-range handling in init_video(). */
+     Metal and Vulkan.
+     Config migration note: the vector now has 28 entries, so indices 11
+     through 27 silently refer to DIFFERENT plugins than before the shift
+     — a user whose config had scr_style=11..13 (old CRT GL plugins) will
+     now load whichever plugin sits at the same index today (Direct (SDL)
+     / Super eagle (SDL) / Scale2x (SDL) respectively).  Only scr_style
+     values ≥28 now trigger the index-out-of-range fallback in
+     init_video().  A proper scr_style remap on config load is a
+     follow-up item tracked separately. */
   /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
      No OpenGL context required; no multi-viewport support. flip_b is null. */
   {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,          1,  0, 0,  0, 0, 0, 0,  nullptr },
