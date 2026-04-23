@@ -84,6 +84,66 @@ extern byte *pbROMhi;
 
 extern byte bit_values[];
 
+// LLM configuration
+LlmConfig g_llm_config;
+
+// LlmAgent implementation
+LlmAgent::LlmAgent(const LlmConfig& config) : config_(config) {}
+
+std::string LlmAgent::format_z80_context(const AiDebugContext& context) {
+  std::ostringstream oss;
+  oss << "=== Z80 Debug Context ===\n";
+  if (!context.registers.empty()) oss << "Registers: " << context.registers << "\n";
+  if (!context.current_instruction.empty()) oss << "Current Instruction: " << context.current_instruction << "\n";
+  if (!context.memory_dump.empty()) oss << "Memory Dump: " << context.memory_dump << "\n";
+  if (!context.disassembly.empty()) oss << "Disassembly: " << context.disassembly << "\n";
+  if (!context.symbol_info.empty()) oss << "Symbols: " << context.symbol_info << "\n";
+  if (!context.call_stack.empty()) oss << "Call Stack: " << context.call_stack << "\n";
+  if (!context.last_error.empty()) oss << "Last Error: " << context.last_error << "\n";
+  if (!context.ai_assisted_analysis.empty()) oss << "AI Analysis: " << context.ai_assisted_analysis << "\n";
+  return oss.str();
+}
+
+std::string LlmAgent::call_api(const std::string& prompt) {
+  if (!config_.enabled || config_.api_key.empty()) {
+    return "ERR LLM not configured. Use 'llm enable <api_key>'.\n";
+  }
+  
+  return "OK LLM analysis (mock - implement API call to configured provider)\n";
+}
+
+std::string LlmAgent::analyze_z80_state(const AiDebugContext& context) {
+  std::ostringstream prompt;
+  prompt << "Analyze this Z80 CPU state for an Amstrad CPC emulator:\n";
+  prompt << format_z80_context(context);
+  prompt << "\nProvide insights about potential issues or anomalies.";
+  return call_api(prompt.str());
+}
+
+std::string LlmAgent::suggest_breakpoint(const AiDebugContext& context) {
+  std::ostringstream prompt;
+  prompt << "Based on this Z80 execution context:\n";
+  prompt << format_z80_context(context);
+  prompt << "\nSuggest optimal breakpoints for debugging.";
+  return call_api(prompt.str());
+}
+
+std::string LlmAgent::explain_behavior(const AiDebugContext& context) {
+  std::ostringstream prompt;
+  prompt << "Explain the behavior of this Z80 code:\n";
+  prompt << format_z80_context(context);
+  prompt << "\nWhat does this code do and what are its side effects?";
+  return call_api(prompt.str());
+}
+
+std::string LlmAgent::debug_strategy(const AiDebugContext& context) {
+  std::ostringstream prompt;
+  prompt << "Develop a debugging strategy for:\n";
+  prompt << format_z80_context(context);
+  prompt << "\nSuggest step-by-step approach to identify the issue.";
+  return call_api(prompt.str());
+}
+
 // Parse a number from an IPC argument string.
 // Accepts CPC-style hex prefixes ($, &, #), C-style 0x, bare decimal,
 // and bare hex as fallback (e.g. "C004" → 0xC004).
@@ -315,6 +375,100 @@ void init_command_registry() {
   register_command("load", "CORE", "load <file>", "Load a .DSK, .SNA, or .CPR file",
     "Loads a media or state file. Supports Disk Images (.DSK), Snapshots (.SNA), and Cartridges (.CPR). "
     "The file type is determined by the extension. For disks, it loads into Drive A.");
+
+  register_command("llm", "AI", "llm enable|disable|analyze|debug", "LLM integration for Z80 debugging",
+    "Enable/disable LLM integration and use AI for Z80 analysis.\n"
+    "  enable <api_key> <model> [base_url] - Enable with API key, model, and optional base URL\n"
+    "  disable - Disable LLM integration\n"
+    "  analyze <prompt> - Analyze Z80 state with AI\n"
+    "  debug <prompt> - Get AI debugging suggestions\n"
+    "Supports any OpenAI-compatible API (OpenRouter, Anthropic, etc.)",
+    [](const std::vector<std::string>& parts, const std::string& line) -> std::string {
+      if (parts.size() < 2) {
+        return "ERR missing command for llm. Try 'help llm'.\n";
+      }
+      const std::string& subcmd = parts[1];
+      
+      if (subcmd == "enable") {
+        if (parts.size() < 4) {
+          return "ERR llm enable <api_key> <model> [base_url]\n";
+        }
+        g_llm_config.api_key = parts[2];
+        g_llm_config.model = parts[3];
+        g_llm_config.base_url = (parts.size() > 4) ? parts[4] : "https://api.openai.com/v1";
+        g_llm_config.enabled = true;
+        return "OK LLM enabled\n";
+      }
+      
+      if (subcmd == "disable") {
+        g_llm_config.enabled = false;
+        return "OK LLM disabled\n";
+      }
+      
+      if (subcmd == "analyze" || subcmd == "debug") {
+        if (!g_llm_config.enabled) {
+          return "ERR LLM not enabled. Use 'llm enable <api_key> <model>'.\n";
+        }
+        LlmAgent agent(g_llm_config);
+        AiDebugContext ctx;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "AF=0x%04X BC=0x%04X DE=0x%04X HL=0x%04X",
+                 z80.AF.w.l, z80.BC.w.l, z80.DE.w.l, z80.HL.w.l);
+        ctx.registers = buf;
+        std::string result = agent.analyze_z80_state(ctx);
+        return "OK " + result + "\n";
+      }
+      
+      return "ERR unknown llm subcommand: " + subcmd + "\n";
+    });
+
+  register_command("ai-analyze", "AI", "ai-analyze", "Analyze current Z80 state with AI",
+    "Analyzes the current Z80 CPU state, memory, and execution context using the configured LLM to provide insights.",
+    [](const std::vector<std::string>&, const std::string&) -> std::string {
+      if (!g_llm_config.enabled) {
+        return "ERR LLM not enabled. Use 'llm enable <api_key> <model>'.\n";
+      }
+      LlmAgent agent(g_llm_config);
+      AiDebugContext ctx;
+      char buf[64];
+      snprintf(buf, sizeof(buf), "AF=0x%04X BC=0x%04X DE=0x%04X HL=0x%04X PC=0x%04X",
+               z80.AF.w.l, z80.BC.w.l, z80.DE.w.l, z80.HL.w.l, z80.PC.w.l);
+      ctx.registers = buf;
+      std::string result = agent.analyze_z80_state(ctx);
+      return "OK " + result + "\n";
+    });
+
+  register_command("ai-suggest", "AI", "ai-suggest", "Suggest debugging strategy",
+    "Uses AI to suggest debugging strategies, breakpoints, or analysis approaches for the current execution context.",
+    [](const std::vector<std::string>&, const std::string&) -> std::string {
+      if (!g_llm_config.enabled) {
+        return "ERR LLM not enabled. Use 'llm enable <api_key> <model>'.\n";
+      }
+      LlmAgent agent(g_llm_config);
+      AiDebugContext ctx;
+      char buf[64];
+      snprintf(buf, sizeof(buf), "AF=0x%04X BC=0x%04X DE=0x%04X HL=0x%04X PC=0x%04X",
+               z80.AF.w.l, z80.BC.w.l, z80.DE.w.l, z80.HL.w.l, z80.PC.w.l);
+      ctx.registers = buf;
+      std::string result = agent.debug_strategy(ctx);
+      return "OK " + result + "\n";
+    });
+
+  register_command("ai-explain", "AI", "ai-explain <addr>", "Explain code behavior",
+    "Uses AI to explain the behavior of code at a specific address.",
+    [](const std::vector<std::string>& parts, const std::string&) -> std::string {
+      if (!g_llm_config.enabled) {
+        return "ERR LLM not enabled. Use 'llm enable <api_key> <model>'.\n";
+      }
+      if (parts.size() < 2) {
+        return "ERR ai-explain requires an address\n";
+      }
+      LlmAgent agent(g_llm_config);
+      AiDebugContext ctx;
+      ctx.current_instruction = "Analyzing address: " + parts[1];
+      std::string result = agent.explain_behavior(ctx);
+      return "OK " + result + "\n";
+    });
 
   register_command("regs", "DEBUG", "regs", "Get all Z80 and core hardware registers",
     "Returns a comprehensive list of all Z80 registers (AF, BC, HL, etc.), alternate registers, "
@@ -639,7 +793,7 @@ std::string handle_command(const std::string& line) {
     oss << "OK available commands (usage: help <command>):\n"
         << "  Protocol: persistent connections, ';' chains commands, 'disconnect' closes.\n"
         << "  Numbers: 0x, $, &, # hex prefixes accepted (e.g. $C000, &4000, #BB5A).\n";
-    static const std::vector<std::string> order = {"CORE", "DEBUG", "HARDWARE", "INPUT", "MEDIA", "TOOLS"};
+    static const std::vector<std::string> order = {"CORE", "DEBUG", "AI", "HARDWARE", "INPUT", "MEDIA", "TOOLS"};
     for (const auto& cat : order) {
       if (categories.find(cat) == categories.end()) continue;
       oss << "  " << std::setw(10) << std::left << (cat + ":") << " ";

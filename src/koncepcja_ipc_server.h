@@ -7,6 +7,46 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <functional>
+
+// AI/LLM integration for enhanced Z80 debugging
+struct LlmConfig {
+  std::string api_key;
+  std::string model;
+  std::string base_url;
+  int max_tokens = 4096;
+  double temperature = 0.7;
+  bool enabled = false;
+};
+
+struct AiDebugContext {
+  std::string current_instruction;
+  std::string registers;
+  std::string memory_dump;
+  std::string disassembly;
+  std::string symbol_info;
+  std::string call_stack;
+  std::string last_error;
+  std::string execution_context;
+  std::string ai_assisted_analysis;
+};
+
+class LlmAgent {
+public:
+  LlmAgent(const LlmConfig& config);
+  std::string analyze_z80_state(const AiDebugContext& context);
+  std::string suggest_breakpoint(const AiDebugContext& context);
+  std::string explain_behavior(const AiDebugContext& context);
+  std::string debug_strategy(const AiDebugContext& context);
+  
+private:
+  LlmConfig config_;
+  std::string call_api(const std::string& prompt);
+  std::string format_z80_context(const AiDebugContext& context);
+};
+
+// Global LLM config instance
+extern LlmConfig g_llm_config;
 
 // Event trigger types
 enum class EventTrigger { PC, MEM_WRITE, VBL };
