@@ -32,6 +32,7 @@ class M4HttpServer {
 public:
    ~M4HttpServer();
 
+   // port <= 0: bind an ephemeral TCP port; use port() after the server thread starts.
    void start(int port = 8080, const std::string& bind_ip = "127.0.0.1");
    void stop();
 
