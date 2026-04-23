@@ -2923,15 +2923,15 @@ void doCleanUp ()
    //     observes g_emu_paused there.  If SDL_QUIT is processed while the Z80
    //     is in wait_consumed(), pause_and_wait would spin forever.  Abort the
    //     frame handshake after cpc_pause() so wait_consumed() returns and the
-   //     Z80 thread can reach the quiescent paused branch.
+   //     Z80 thread can reach the quiescent paused branch.  Then
+   //     cpc_pause_and_wait() matches the usual quiescence spin (same as the
+   //     loop inside that helper — abort must come first or it would deadlock).
    if (g_z80_thread.joinable() &&
        std::this_thread::get_id() != g_z80_thread.get_id()) {
       if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
          cpc_pause();
          g_frame_signal.abort(); // unblock Z80 if stuck in wait_consumed()
-         while (!g_z80_quiescent.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
-         }
+         cpc_pause_and_wait();
          g_z80_thread_quit.store(true, std::memory_order_relaxed);
          cpc_resume();
       }
