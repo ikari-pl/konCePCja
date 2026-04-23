@@ -47,20 +47,13 @@ cd "$TSTDIR"
 nb_plugins=`$KONCPCDIR/koncepcja -V | grep "Number of video plugins available: " | cut -d : -f 2 | xargs`
 let last_plugin=${nb_plugins}-1
 
-# CRT Basic and CRT Full hang on GitHub Actions macOS runners: their
-# fragment shaders stall the headless software Metal renderer (Apple's
-# GL-compatibility layer), even though all three CRT tiers run fine on
-# real hardware.  Historical skip list was "12 13" under the assumption
-# HAVE_GL was defined (pushing glscale to 11 and CRT Basic to 12); in
-# current builds HAVE_GL is off, CRT Basic is at 11 and CRT Full at 12.
-# Skip both index ranges (11-13) so the list stays correct regardless
-# of the HAVE_GL state.  CRT Lottes at 13/14 also goes through the same
-# GL-compat path and is skipped defensively.  See beads-f1p for the
-# follow-up investigation.
+# No macOS CI skip list anymore.  The original skips (11-14) were for
+# the legacy GL CRT plugins whose fragment shaders stalled the GitHub
+# Actions macOS software Metal renderer.  Phase 7b deleted those three
+# plugins; CRT Basic / Full / Lottes now live as GPU plugins (native
+# Metal or SPIRV/Vulkan), and the headless macOS runners don't exercise
+# a shader path that can hang.  See beads-f1p history for context.
 SKIP_STYLES=""
-if [ "$(uname -s)" = "Darwin" ] && [ -n "$CI" ]; then
-  SKIP_STYLES="11 12 13 14"
-fi
 
 rc=0
 for style in `seq 0 $last_plugin`
