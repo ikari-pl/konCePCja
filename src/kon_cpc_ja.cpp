@@ -2914,12 +2914,24 @@ void doCleanUp ()
    //
    // For the "render thread initiated quit" path (e.g. SDL_QUIT from the
    // window close button or F10 menu), the Z80 is still actively running
-   // inside z80_execute() and we DO need cpc_pause_and_wait() to bring it to
-   // a safe boundary first.
+   // inside z80_execute() and we DO need pause+quiescence before join.
+   //
+   //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
+   //     g_z80_quiescent=false before z80_execute() and only re-enters the
+   //     paused/quiescent branch at the top of its loop.  After EC_FRAME_COMPLETE
+   //     it calls signal_ready() then blocks in wait_consumed() — it never
+   //     observes g_emu_paused there.  If SDL_QUIT is processed while the Z80
+   //     is in wait_consumed(), pause_and_wait would spin forever.  Abort the
+   //     frame handshake after cpc_pause() so wait_consumed() returns and the
+   //     Z80 thread can reach the quiescent paused branch.  Then
+   //     cpc_pause_and_wait() matches the usual quiescence spin (same as the
+   //     loop inside that helper — abort must come first or it would deadlock).
    if (g_z80_thread.joinable() &&
        std::this_thread::get_id() != g_z80_thread.get_id()) {
       if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
-         cpc_pause_and_wait(); // Z80 now sleeping outside z80_execute()
+         cpc_pause();
+         g_frame_signal.abort(); // unblock Z80 if stuck in wait_consumed()
+         cpc_pause_and_wait();
          g_z80_thread_quit.store(true, std::memory_order_relaxed);
          cpc_resume();
       }
