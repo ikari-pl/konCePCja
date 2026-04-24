@@ -166,6 +166,11 @@ std::atomic<bool> g_emu_paused{false};
 static std::atomic<bool> g_z80_thread_quit{false};
 // Exit code to use when the Z80 thread requests quit via SDL_EVENT_QUIT.
 static std::atomic<int> g_z80_requested_exit_code{0};
+// Captured at the top of koncpc_main() so cleanExit() can tell whether it's
+// running on the main (render) thread vs. an auxiliary thread (IPC / HTTP /
+// telnet).  Only the main thread owns SDL teardown; anything else must push
+// SDL_EVENT_QUIT and let the main loop handle the teardown.
+static std::thread::id g_main_thread_id{};
 // Handle for the Z80 emulation thread (non-headless mode only). Stored so
 // doCleanUp() can join it instead of letting it run past global destruction.
 static std::thread g_z80_thread;
@@ -2307,6 +2312,33 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    CPC.scr_preserve_aspect_ratio = conf.getIntValue("video", "scr_preserve_aspect_ratio", 1);
    CPC.scr_crt_aspect = conf.getIntValue("video", "scr_crt_aspect", 1);
    CPC.scr_style = conf.getIntValue("video", "scr_style", 1);
+   // Phase 7b scr_style remap — the old CRT GPU plugins used to sit at
+   // indices 28/29/30 (past the pre-deletion position of the legacy GL
+   // CRT plugins at 11-13).  After Phase 7b the vector is 28 entries
+   // long, so 28-30 are now strictly out-of-range and the only reason
+   // a config references them is that it was saved pre-Phase-7b.
+   //
+   // Remap those three indices to the new CRT GPU positions (25/26/27).
+   // We intentionally do NOT remap 11/12/13: those are legal indices in
+   // the post-7b table (Direct (SDL) / Super eagle (SDL) / Scale2x (SDL))
+   // and a user may have selected them deliberately via the UI — without
+   // a config-version field we cannot tell old from new there.  Same
+   // reasoning for 14-27.  Users with an old config pointing at a
+   // now-deleted legacy GL CRT plugin will fall back to whatever sits at
+   // those indices today; a one-time manual reselect is accepted.
+   {
+      unsigned int s = CPC.scr_style;
+      unsigned int remapped = s;
+      if      (s == 28) remapped = 25;  // old CRT Basic (GPU) -> CRT Basic (GPU)
+      else if (s == 29) remapped = 26;  // old CRT Full  (GPU) -> CRT Full  (GPU)
+      else if (s == 30) remapped = 27;  // old CRT Lottes(GPU) -> CRT Lottes(GPU)
+      if (remapped != s && remapped < video_plugin_list.size()) {
+         LOG_INFO("scr_style=" << s << " is obsolete after Phase 7b — "
+                  "remapped to " << remapped << " ("
+                  << video_plugin_list[remapped].name << ")");
+         CPC.scr_style = remapped;
+      }
+   }
    if (CPC.scr_style >= video_plugin_list.size()) {
       CPC.scr_style = DEFAULT_VIDEO_PLUGIN;
       LOG_ERROR("Unsupported video plugin specified - defaulting to plugin " << video_plugin_list[DEFAULT_VIDEO_PLUGIN].name);
@@ -2970,24 +3002,50 @@ void doCleanUp ()
 
 void cleanExit(int returnCode, bool askIfUnsaved)
 {
-   if (!g_headless && askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
-     return;
-   }
+   // Only the main (render) thread is allowed to run SDL_Quit(): it's the
+   // thread that owns the video subsystem and lives inside SDL_PumpEvents().
+   // Any other thread calling doCleanUp() directly races with the pump loop
+   // and can segfault at PC=0 when SDL nulls the video driver's PumpEvents
+   // function pointer out from under it.  Macos UI ops (the confirm-quit
+   // dialog below) are also main-thread-only.  So we check the thread FIRST,
+   // before any UI, and route off-main callers through SDL_EVENT_QUIT:
+   //
+   //   - Z80 thread  → push SDL_EVENT_QUIT; loop exits via g_z80_thread_quit
+   //   - IPC / HTTP / telnet / any other aux thread  → push SDL_EVENT_QUIT
+   //   - Main thread → safe to run the confirm dialog + doCleanUp() + _exit()
+   //
+   // The render thread's SDL_EVENT_QUIT handler calls cleanExit() recursively,
+   // at which point we land in the main-thread branch and do the real
+   // teardown (including the confirm dialog if askIfUnsaved was set — the
+   // returnCode carries through via g_z80_requested_exit_code).
+   //
+   // `is_not_main` is framed defensively: if g_main_thread_id hasn't been
+   // captured yet (early-init path), we *assume* we're on main.  That
+   // preserves the pre-fix behaviour during startup and keeps us from
+   // infinitely pushing SDL_EVENT_QUIT to ourselves before the main loop
+   // has a chance to spin.
+   const auto tid          = std::this_thread::get_id();
+   const bool is_z80_self  = g_z80_thread.joinable() && tid == g_z80_thread.get_id();
+   const bool is_not_main  = (g_main_thread_id != std::thread::id{})
+                             && (tid != g_main_thread_id);
 
-   // If we are on the Z80 thread, we must not call doCleanUp() directly: the
-   // render (main) thread may be concurrently inside video_display_b() using
-   // SDL resources.  Instead, signal the Z80 loop to exit and push SDL_EVENT_QUIT
-   // so the render thread handles orderly teardown when it is next safe to do so.
-   if (g_z80_thread.joinable() &&
-       std::this_thread::get_id() == g_z80_thread.get_id()) {
+   if (is_z80_self || is_not_main) {
       g_z80_requested_exit_code.store(returnCode, std::memory_order_relaxed);
-      g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      if (is_z80_self) {
+         // Z80 self-quit also has to break its own loop.  Aux threads don't
+         // need this bit — the main thread handles shutdown orchestration.
+         g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      }
       SDL_Event qe = {};
       qe.type = SDL_EVENT_QUIT;
       SDL_PushEvent(&qe);
-      return; // Z80 thread loop exits on next iteration via g_z80_thread_quit
+      return;
    }
 
+   // Main thread (or early-init pre-capture): safe to prompt and tear down.
+   if (!g_headless && askIfUnsaved && driveAltered() && !userConfirmsQuitWithoutSaving()) {
+     return;
+   }
    doCleanUp();
    _exit(returnCode);
 }
@@ -3814,6 +3872,13 @@ static void z80_thread_main()
 
 int koncpc_main (int argc, char **argv)
 {
+   // Remember the main thread — cleanExit() uses this to route IPC/HTTP/
+   // telnet-initiated quits through SDL_EVENT_QUIT instead of letting an
+   // auxiliary thread call SDL_Quit() while the main thread is mid-
+   // SDL_PumpEvents (which crashes when the video subsystem is torn down
+   // out from under it).
+   g_main_thread_id = std::this_thread::get_id();
+
 #ifdef _WIN32
    // Set Windows timer resolution to 1ms for accurate SDL_Delay() in the speed limiter.
    // Without this, SDL_Delay(1) actually sleeps ~15.6ms (default 64Hz timer).
