@@ -5,6 +5,7 @@
 #else
 #include <getopt.h>
 #endif
+#include <iomanip>
 #include <iostream>
 #include <fstream>
 #include <map>
@@ -25,6 +26,7 @@ const struct option long_options[] =
    {"exit-on-break", no_argument, nullptr, 'B'},
    {"headless",      no_argument, nullptr, 'H'},
    {"inject",        required_argument, nullptr, 'i'},
+   {"list-plugins",  no_argument, nullptr, 'L'},
    {"offset",        required_argument, nullptr, 'o'},
    {"override",      required_argument, nullptr, 'O'},
    {"sym_file",      required_argument, nullptr, 's'},
@@ -53,6 +55,7 @@ void usage(std::ostream &os, char *progPath, int errcode)
    os << "   -H/--headless:          run without display or audio (IPC and emulation only).\n";
    os << "   -h/--help:              shows this help\n";
    os << "   -i/--inject=<file>:     inject a binary in memory after the CPC startup finishes\n";
+   os << "   -L/--list-plugins:      list all video plugins (index: name) and exit\n";
    os << "   -o/--offset=<address>:  offset at which to inject the binary provided with -i (default: 0x6000)\n";
    os << "   -O/--override:          override an option from the config. Can be repeated. (example: -O system.model=3)\n";
    os << "   -s/--sym_file=<file>:   use <file> as a source of symbols and entry points for disassembling in developers' tools.\n";
@@ -117,7 +120,7 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
 
    optind = 0; // To please test framework, when this function is called multiple times !
    while(true) {
-      c = getopt_long (argc, argv, "a:Bc:E:Hhi:o:O:s:vV",
+      c = getopt_long (argc, argv, "a:Bc:E:Hhi:Lo:O:s:vV",
                        long_options, &option_index);
       // Logs before processing of the -v will not be visible.
       LOG_DEBUG("Next option: " << c << "(" << static_cast<char>(c) << ")");
@@ -182,6 +185,23 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
               }
               break;
             }
+
+         case 'L':
+            // List all video plugins (index: name) and exit.  Helps users
+            // recover from scr_style index shifts after plugin-list edits
+            // (e.g. Phase 7b removed the legacy GL CRT plugins, shifting
+            // every plugin after them down by three slots).
+            {
+               size_t last = video_plugin_list.empty() ? 0 : video_plugin_list.size() - 1;
+               int width = 1;
+               for (size_t v = last; v >= 10; v /= 10) ++width;
+               for (size_t i = 0; i < video_plugin_list.size(); ++i) {
+                  std::cout << std::setw(width) << i << ": "
+                            << video_plugin_list[i].name << '\n';
+               }
+            }
+            exit(0);
+            break;
 
          case 's':
             args.symFilePath = optarg;
