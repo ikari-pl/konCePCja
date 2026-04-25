@@ -191,9 +191,14 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
             // recover from scr_style index shifts after plugin-list edits
             // (e.g. Phase 7b removed the legacy GL CRT plugins, shifting
             // every plugin after them down by three slots).
-            for (size_t i = 0; i < video_plugin_list.size(); ++i) {
-               std::cout << std::setw(2) << i << ": "
-                         << video_plugin_list[i].name << '\n';
+            {
+               size_t last = video_plugin_list.empty() ? 0 : video_plugin_list.size() - 1;
+               int width = 1;
+               for (size_t v = last; v >= 10; v /= 10) ++width;
+               for (size_t i = 0; i < video_plugin_list.size(); ++i) {
+                  std::cout << std::setw(width) << i << ": "
+                            << video_plugin_list[i].name << '\n';
+               }
             }
             exit(0);
             break;
