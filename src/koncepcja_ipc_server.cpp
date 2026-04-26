@@ -4,6 +4,8 @@
 #include "gfx_finder.h"
 #include "search_engine.h"
 #include "imgui_ui.h"
+// `video.h` (defining video_plugin_list) is already included via the
+// project-internal include block below.
 
 #include <cstring>
 #include <string>
@@ -292,6 +294,35 @@ void init_command_registry() {
           f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min,
           underruns, near_underruns);
       return std::string(buf);
+    });
+
+  register_command("plugins", "CORE", "plugins",
+    "List available video plugins (one per line: idx=I name=...)",
+    "Returns the current video-plugin table — the same data the CLI -L flag\n"
+    "prints — over IPC for tools and scripts that need it programmatically.\n"
+    "Useful when an automation needs to map a config's scr_style value to\n"
+    "a human-readable plugin name, e.g. after a Phase-7-style index shift.\n"
+    "Format:\n"
+    "    OK count=N\n"
+    "    idx=I name=...    (× N)",
+    [](const auto&, const auto&) {
+      // Stack buffer keyed off plugin-list size: 28 plugins × ~64 bytes per
+      // line is ~1.8 KiB, so 4 KiB has ample headroom for any realistic
+      // plugin-table growth.  snprintf return-value handling treats any
+      // negative or truncating result as "stop appending" so the buffer
+      // stays nul-terminated.
+      char buf[4096];
+      size_t pos = 0;
+      const size_t cap = sizeof(buf);
+      int n = std::snprintf(buf, cap, "OK count=%zu\n", video_plugin_list.size());
+      if (n > 0 && static_cast<size_t>(n) < cap) pos = static_cast<size_t>(n);
+      for (size_t i = 0; i < video_plugin_list.size() && pos + 1 < cap; ++i) {
+        n = std::snprintf(buf + pos, cap - pos,
+                          "idx=%zu name=%s\n", i, video_plugin_list[i].name);
+        if (n <= 0 || static_cast<size_t>(n) >= cap - pos) break;
+        pos += static_cast<size_t>(n);
+      }
+      return std::string(buf, pos);
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
