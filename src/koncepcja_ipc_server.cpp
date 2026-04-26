@@ -4,7 +4,8 @@
 #include "gfx_finder.h"
 #include "search_engine.h"
 #include "imgui_ui.h"
-#include "video.h"   // video_plugin_list (for the "plugins" IPC command)
+// `video.h` (defining video_plugin_list) is already included via the
+// project-internal include block below.
 
 #include <cstring>
 #include <string>
@@ -296,21 +297,34 @@ void init_command_registry() {
     });
 
   register_command("plugins", "CORE", "plugins",
-    "List available video plugins (one per line: index name)",
+    "List available video plugins (one per line: idx=I name=...)",
     "Returns the current video-plugin table — the same data the CLI -L flag\n"
     "prints — over IPC for tools and scripts that need it programmatically.\n"
-    "Each line is `<index> <name>'; useful when an automation needs to map\n"
-    "a config's scr_style value to a human-readable plugin name, e.g. after\n"
-    "a Phase-7-style index shift.\n"
-    "Format: 'OK count=N' on the first line, then one 'idx=I name=...' line\n"
-    "per plugin.",
+    "Useful when an automation needs to map a config's scr_style value to\n"
+    "a human-readable plugin name, e.g. after a Phase-7-style index shift.\n"
+    "Format:\n"
+    "    OK count=N\n"
+    "    idx=I name=...    (× N)",
     [](const auto&, const auto&) {
-      std::string out = "OK count=" + std::to_string(video_plugin_list.size()) + "\n";
+      // Stack buffer keyed off plugin-list size: 28 plugins × ~64 bytes per
+      // line is ~1.8 KiB, so 4 KiB has ample headroom for any realistic
+      // plugin-table growth.  snprintf truncation is safe — len_remaining
+      // bounds every write.
+      char buf[4096];
+      char* p   = buf;
+      size_t r  = sizeof(buf);
+      auto append = [&](const char* fmt, auto... args) {
+        int n = std::snprintf(p, r, fmt, args...);
+        if (n < 0) return;
+        size_t w = (static_cast<size_t>(n) >= r) ? (r - 1) : static_cast<size_t>(n);
+        p += w;
+        r -= w;
+      };
+      append("OK count=%zu\n", video_plugin_list.size());
       for (size_t i = 0; i < video_plugin_list.size(); ++i) {
-        out += "idx=" + std::to_string(i)
-             + " name=" + video_plugin_list[i].name + "\n";
+        append("idx=%zu name=%s\n", i, video_plugin_list[i].name);
       }
-      return out;
+      return std::string(buf);
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
