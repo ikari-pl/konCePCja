@@ -4,6 +4,7 @@
 #include "gfx_finder.h"
 #include "search_engine.h"
 #include "imgui_ui.h"
+#include "video.h"   // video_plugin_list (for the "plugins" IPC command)
 
 #include <cstring>
 #include <string>
@@ -292,6 +293,24 @@ void init_command_registry() {
           f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min,
           underruns, near_underruns);
       return std::string(buf);
+    });
+
+  register_command("plugins", "CORE", "plugins",
+    "List available video plugins (one per line: index name)",
+    "Returns the current video-plugin table — the same data the CLI -L flag\n"
+    "prints — over IPC for tools and scripts that need it programmatically.\n"
+    "Each line is `<index> <name>'; useful when an automation needs to map\n"
+    "a config's scr_style value to a human-readable plugin name, e.g. after\n"
+    "a Phase-7-style index shift.\n"
+    "Format: 'OK count=N' on the first line, then one 'idx=I name=...' line\n"
+    "per plugin.",
+    [](const auto&, const auto&) {
+      std::string out = "OK count=" + std::to_string(video_plugin_list.size()) + "\n";
+      for (size_t i = 0; i < video_plugin_list.size(); ++i) {
+        out += "idx=" + std::to_string(i)
+             + " name=" + video_plugin_list[i].name + "\n";
+      }
+      return out;
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
