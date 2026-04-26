@@ -308,23 +308,21 @@ void init_command_registry() {
     [](const auto&, const auto&) {
       // Stack buffer keyed off plugin-list size: 28 plugins × ~64 bytes per
       // line is ~1.8 KiB, so 4 KiB has ample headroom for any realistic
-      // plugin-table growth.  snprintf truncation is safe — len_remaining
-      // bounds every write.
+      // plugin-table growth.  snprintf return-value handling treats any
+      // negative or truncating result as "stop appending" so the buffer
+      // stays nul-terminated.
       char buf[4096];
-      char* p   = buf;
-      size_t r  = sizeof(buf);
-      auto append = [&](const char* fmt, auto... args) {
-        int n = std::snprintf(p, r, fmt, args...);
-        if (n < 0) return;
-        size_t w = (static_cast<size_t>(n) >= r) ? (r - 1) : static_cast<size_t>(n);
-        p += w;
-        r -= w;
-      };
-      append("OK count=%zu\n", video_plugin_list.size());
-      for (size_t i = 0; i < video_plugin_list.size(); ++i) {
-        append("idx=%zu name=%s\n", i, video_plugin_list[i].name);
+      size_t pos = 0;
+      const size_t cap = sizeof(buf);
+      int n = std::snprintf(buf, cap, "OK count=%zu\n", video_plugin_list.size());
+      if (n > 0 && static_cast<size_t>(n) < cap) pos = static_cast<size_t>(n);
+      for (size_t i = 0; i < video_plugin_list.size() && pos + 1 < cap; ++i) {
+        n = std::snprintf(buf + pos, cap - pos,
+                          "idx=%zu name=%s\n", i, video_plugin_list[i].name);
+        if (n <= 0 || static_cast<size_t>(n) >= cap - pos) break;
+        pos += static_cast<size_t>(n);
       }
-      return std::string(buf);
+      return std::string(buf, pos);
     });
 
   register_command("quit", "CORE", "quit [code]", "Exit the emulator with optional exit code",
