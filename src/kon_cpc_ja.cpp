@@ -4106,8 +4106,16 @@ int koncpc_main (int argc, char **argv)
          CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(key, mod);
          if (!(scancode & MOD_EMU_KEY)) {
             LOG_DEBUG("The virtual event is a keypress (not a command), so introduce a pause.");
-            nextVirtualEventFrameCount = dwFrameCountOverall
-               + ((evtype == SDL_EVENT_KEY_DOWN || evtype == SDL_EVENT_KEY_UP)?1:0);
+            // After a KEY_UP, wait an extra frame before the next event so the
+            // CPC firmware key-scan sees a clean "released" cycle between the
+            // release and the next press.  Without this, two adjacent identical
+            // characters (e.g. "ll" in "CALL") collapse into a single registered
+            // keypress because both scans land on the "pressed" state.  Mirrors
+            // the inter_char_pause_ logic in AutoTypeQueue::tick().
+            int gap = 0;
+            if (evtype == SDL_EVENT_KEY_DOWN) gap = 1;
+            else if (evtype == SDL_EVENT_KEY_UP) gap = 2;
+            nextVirtualEventFrameCount = dwFrameCountOverall + gap;
          }
 
          // In headless mode, directly process keyboard events
