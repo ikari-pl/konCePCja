@@ -33,14 +33,20 @@ CRT_BLOBS = [
 
 
 def emit_array(name: str, data: bytes) -> str:
-    """Format a byte sequence as `alignas(4) inline constexpr ... = { ... };`."""
+    """Format a byte sequence as `alignas(4) inline constexpr ... = { ... };`.
+
+    For missing blobs, emit a 1-byte sentinel array with a 0-valued
+    `_size` constant.  Consumers must check `_size` first — sizeof(array)
+    is 1 (not 0) because zero-length arrays aren't standard C++.
+    """
     if not data:
         return (
             f"// {name}: empty placeholder — DXBC blob not yet generated.\n"
             f"// The Windows CI workflow (.github/workflows/shader-blobs.yml)\n"
             f"// runs fxc.exe and commits the populated bytes back to this header.\n"
-            f"alignas(4) inline constexpr std::uint8_t {name}[] = {{ 0x00 }};\n"
-            f"inline constexpr std::size_t {name}_size = 0;  // empty marker\n"
+            f"// Consumers MUST check {name}_size before reading the array.\n"
+            f"alignas(4) inline constexpr std::uint8_t {name}[1] = {{ 0x00 }};\n"
+            f"inline constexpr std::size_t {name}_size = 0;\n"
         )
     rows = []
     for i in range(0, len(data), 12):
@@ -55,14 +61,14 @@ def emit_array(name: str, data: bytes) -> str:
     )
 
 
-def write_header(path: pathlib.Path, guard: str, blobs: list[tuple[str, str]]) -> None:
+def render_header(guard: str, blobs: list[tuple[str, str]]) -> str:
     sections = []
     for blob_name, array_name in blobs:
         blob_path = BLOBS / blob_name
         data = blob_path.read_bytes() if blob_path.exists() else b""
         sections.append(f"// === {blob_name} ===\n{emit_array(array_name, data)}")
     body = "\n".join(sections)
-    header = (
+    return (
         "// konCePCja — DXBC bytecode blobs (D3D12 backend).\n"
         "//\n"
         "// GENERATED FILE — do not hand-edit.  Regenerate via:\n"
@@ -84,8 +90,12 @@ def write_header(path: pathlib.Path, guard: str, blobs: list[tuple[str, str]]) -
         f"{body}"
         f"#endif  // {guard}\n"
     )
-    path.write_text(header)
-    print(f"  wrote {path.relative_to(ROOT)} ({sum(1 for _ in body.splitlines())} body lines)")
+
+
+def write_header(path: pathlib.Path, guard: str, blobs: list[tuple[str, str]]) -> None:
+    text = render_header(guard, blobs)
+    path.write_text(text)
+    print(f"  wrote {path.relative_to(ROOT)} ({text.count(chr(10))} lines)")
 
 
 def main(argv: list[str]) -> int:
@@ -103,13 +113,9 @@ def main(argv: list[str]) -> int:
     ]
 
     if args.check:
-        # Generate to memory, compare, complain.
         any_diff = False
         for path, guard, blobs in targets:
-            tmp = path.with_suffix(".regen")
-            write_header(tmp, guard, blobs)
-            new = tmp.read_text()
-            tmp.unlink()
+            new = render_header(guard, blobs)
             cur = path.read_text() if path.exists() else ""
             if new != cur:
                 print(f"DIFF: {path.relative_to(ROOT)} — re-run scripts/blob_to_header.py")

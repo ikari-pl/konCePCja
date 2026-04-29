@@ -36,19 +36,26 @@ fi
 echo "==> DXBC (D3D12)"
 # SM 5_1: fxc/dxc profile that supports register-space syntax.  Plain
 # 5_0 errors with X3721 on `register(..., space2)`.
+# Format: "<profile>:<source>:<output>"
+DXBC_JOBS=(
+    "vs_5_1:blit.vert.hlsl:blit.vert.dxbc"
+    "ps_5_1:blit.frag.hlsl:blit.frag.dxbc"
+    "ps_5_1:crt_basic.frag.hlsl:crt_basic.frag.dxbc"
+    "ps_5_1:crt_full.frag.hlsl:crt_full.frag.dxbc"
+    "ps_5_1:crt_lottes.frag.hlsl:crt_lottes.frag.dxbc"
+)
 if command -v dxc >/dev/null; then
-    dxc -T vs_5_1 -E main "$SHADERS/blit.vert.hlsl"        -Fo "$OUT/blit.vert.dxbc"
-    dxc -T ps_5_1 -E main "$SHADERS/blit.frag.hlsl"        -Fo "$OUT/blit.frag.dxbc"
-    dxc -T ps_5_1 -E main "$SHADERS/crt_basic.frag.hlsl"   -Fo "$OUT/crt_basic.frag.dxbc"
-    dxc -T ps_5_1 -E main "$SHADERS/crt_full.frag.hlsl"    -Fo "$OUT/crt_full.frag.dxbc"
-    dxc -T ps_5_1 -E main "$SHADERS/crt_lottes.frag.hlsl"  -Fo "$OUT/crt_lottes.frag.dxbc"
+    for job in "${DXBC_JOBS[@]}"; do
+        IFS=: read -r prof src dst <<< "$job"
+        dxc -T "$prof" -E main "$SHADERS/$src" -Fo "$OUT/$dst"
+    done
     echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 elif command -v fxc >/dev/null; then
-    fxc //T vs_5_1 //E main "$SHADERS/blit.vert.hlsl"        //Fo "$OUT/blit.vert.dxbc"
-    fxc //T ps_5_1 //E main "$SHADERS/blit.frag.hlsl"        //Fo "$OUT/blit.frag.dxbc"
-    fxc //T ps_5_1 //E main "$SHADERS/crt_basic.frag.hlsl"   //Fo "$OUT/crt_basic.frag.dxbc"
-    fxc //T ps_5_1 //E main "$SHADERS/crt_full.frag.hlsl"    //Fo "$OUT/crt_full.frag.dxbc"
-    fxc //T ps_5_1 //E main "$SHADERS/crt_lottes.frag.hlsl"  //Fo "$OUT/crt_lottes.frag.dxbc"
+    for job in "${DXBC_JOBS[@]}"; do
+        IFS=: read -r prof src dst <<< "$job"
+        # Double-slash escapes /T, /E, /Fo through msys/git-bash path translation.
+        fxc //T "$prof" //E main "$SHADERS/$src" //Fo "$OUT/$dst"
+    done
     echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 else
     echo "    skip: neither dxc nor fxc installed"
