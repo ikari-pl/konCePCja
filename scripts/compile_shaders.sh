@@ -34,19 +34,21 @@ else
 fi
 
 echo "==> DXBC (D3D12)"
+# SM 5_1: fxc/dxc profile that supports register-space syntax.  Plain
+# 5_0 errors with X3721 on `register(..., space2)`.
 if command -v dxc >/dev/null; then
-    dxc -T vs_5_0 -E main "$SHADERS/blit.vert.hlsl"        -Fo "$OUT/blit.vert.dxbc"
-    dxc -T ps_5_0 -E main "$SHADERS/blit.frag.hlsl"        -Fo "$OUT/blit.frag.dxbc"
-    dxc -T ps_5_0 -E main "$SHADERS/crt_basic.frag.hlsl"   -Fo "$OUT/crt_basic.frag.dxbc"
-    dxc -T ps_5_0 -E main "$SHADERS/crt_full.frag.hlsl"    -Fo "$OUT/crt_full.frag.dxbc"
-    dxc -T ps_5_0 -E main "$SHADERS/crt_lottes.frag.hlsl"  -Fo "$OUT/crt_lottes.frag.dxbc"
+    dxc -T vs_5_1 -E main "$SHADERS/blit.vert.hlsl"        -Fo "$OUT/blit.vert.dxbc"
+    dxc -T ps_5_1 -E main "$SHADERS/blit.frag.hlsl"        -Fo "$OUT/blit.frag.dxbc"
+    dxc -T ps_5_1 -E main "$SHADERS/crt_basic.frag.hlsl"   -Fo "$OUT/crt_basic.frag.dxbc"
+    dxc -T ps_5_1 -E main "$SHADERS/crt_full.frag.hlsl"    -Fo "$OUT/crt_full.frag.dxbc"
+    dxc -T ps_5_1 -E main "$SHADERS/crt_lottes.frag.hlsl"  -Fo "$OUT/crt_lottes.frag.dxbc"
     echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 elif command -v fxc >/dev/null; then
-    fxc //T vs_5_0 //E main "$SHADERS/blit.vert.hlsl"        //Fo "$OUT/blit.vert.dxbc"
-    fxc //T ps_5_0 //E main "$SHADERS/blit.frag.hlsl"        //Fo "$OUT/blit.frag.dxbc"
-    fxc //T ps_5_0 //E main "$SHADERS/crt_basic.frag.hlsl"   //Fo "$OUT/crt_basic.frag.dxbc"
-    fxc //T ps_5_0 //E main "$SHADERS/crt_full.frag.hlsl"    //Fo "$OUT/crt_full.frag.dxbc"
-    fxc //T ps_5_0 //E main "$SHADERS/crt_lottes.frag.hlsl"  //Fo "$OUT/crt_lottes.frag.dxbc"
+    fxc //T vs_5_1 //E main "$SHADERS/blit.vert.hlsl"        //Fo "$OUT/blit.vert.dxbc"
+    fxc //T ps_5_1 //E main "$SHADERS/blit.frag.hlsl"        //Fo "$OUT/blit.frag.dxbc"
+    fxc //T ps_5_1 //E main "$SHADERS/crt_basic.frag.hlsl"   //Fo "$OUT/crt_basic.frag.dxbc"
+    fxc //T ps_5_1 //E main "$SHADERS/crt_full.frag.hlsl"    //Fo "$OUT/crt_full.frag.dxbc"
+    fxc //T ps_5_1 //E main "$SHADERS/crt_lottes.frag.hlsl"  //Fo "$OUT/crt_lottes.frag.dxbc"
     echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 else
     echo "    skip: neither dxc nor fxc installed"

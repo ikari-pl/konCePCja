@@ -72,12 +72,15 @@ jobs:
           New-Item -ItemType Directory -Force -Path $blobs | Out-Null
 
           # (source, target_profile, output_blob)
+          # SM 5_1: fxc-compilable profile that supports register-space syntax
+          # (`register(t0, space2)`).  SDL_GPU's DXBC format expects 5_1.
+          # Plain 5_0 errors with X3721 on `space2`.
           $jobs = @(
-            @{ src='src/shaders/blit.vert.hlsl';        prof='vs_5_0'; out='blit.vert.dxbc' },
-            @{ src='src/shaders/blit.frag.hlsl';        prof='ps_5_0'; out='blit.frag.dxbc' },
-            @{ src='src/shaders/crt_basic.frag.hlsl';   prof='ps_5_0'; out='crt_basic.frag.dxbc' },
-            @{ src='src/shaders/crt_full.frag.hlsl';    prof='ps_5_0'; out='crt_full.frag.dxbc' },
-            @{ src='src/shaders/crt_lottes.frag.hlsl';  prof='ps_5_0'; out='crt_lottes.frag.dxbc' }
+            @{ src='src/shaders/blit.vert.hlsl';        prof='vs_5_1'; out='blit.vert.dxbc' },
+            @{ src='src/shaders/blit.frag.hlsl';        prof='ps_5_1'; out='blit.frag.dxbc' },
+            @{ src='src/shaders/crt_basic.frag.hlsl';   prof='ps_5_1'; out='crt_basic.frag.dxbc' },
+            @{ src='src/shaders/crt_full.frag.hlsl';    prof='ps_5_1'; out='crt_full.frag.dxbc' },
+            @{ src='src/shaders/crt_lottes.frag.hlsl';  prof='ps_5_1'; out='crt_lottes.frag.dxbc' }
           )
           foreach ($j in $jobs) {
             Write-Host "Compiling $($j.src) ($($j.prof)) → $($j.out)"
