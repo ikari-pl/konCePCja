@@ -35,18 +35,21 @@ CRT_BLOBS = [
 def emit_array(name: str, data: bytes) -> str:
     """Format a byte sequence as `alignas(4) inline constexpr ... = { ... };`.
 
-    For missing blobs, emit a 1-byte sentinel array with a 0-valued
-    `_size` constant.  Consumers must check `_size` first — sizeof(array)
-    is 1 (not 0) because zero-length arrays aren't standard C++.
+    Naming convention matches the SPIRV header: `kFooDXBC[]` for the
+    array, `kFooDXBCSize` for the byte count.  For missing blobs, emit
+    a 1-byte sentinel array with `Size = 0` (consumers MUST check Size
+    before reading; sizeof(array) is 1 in that case because zero-length
+    arrays aren't standard C++).
     """
+    size_name = f"{name}Size"
     if not data:
         return (
             f"// {name}: empty placeholder — DXBC blob not yet generated.\n"
             f"// The Windows CI workflow (.github/workflows/shader-blobs.yml)\n"
             f"// runs fxc.exe and commits the populated bytes back to this header.\n"
-            f"// Consumers MUST check {name}_size before reading the array.\n"
+            f"// Consumers MUST check {size_name} before reading the array.\n"
             f"alignas(4) inline constexpr std::uint8_t {name}[1] = {{ 0x00 }};\n"
-            f"inline constexpr std::size_t {name}_size = 0;\n"
+            f"inline constexpr std::size_t {size_name} = 0;\n"
         )
     rows = []
     for i in range(0, len(data), 12):
@@ -57,7 +60,7 @@ def emit_array(name: str, data: bytes) -> str:
         f"alignas(4) inline constexpr std::uint8_t {name}[] = {{\n"
         f"    {body}\n"
         f"}};\n"
-        f"inline constexpr std::size_t {name}_size = sizeof({name});\n"
+        f"inline constexpr std::size_t {size_name} = sizeof({name});\n"
     )
 
 

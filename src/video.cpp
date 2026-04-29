@@ -726,6 +726,16 @@ static bool create_crt_basic_pipeline()
         fsi.code       = kCrtBasicFragmentSPIRV;
         fsi.code_size  = kCrtBasicFragmentSPIRVSize;
         fsi.entrypoint = "main";
+    } else if (std::strcmp(driver, "direct3d12") == 0
+               && kBlitVertexDXBCSize > 0 && kCrtBasicFragmentDXBCSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        vsi.code       = kBlitVertexDXBC;
+        vsi.code_size  = kBlitVertexDXBCSize;
+        vsi.entrypoint = "main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        fsi.code       = kCrtBasicFragmentDXBC;
+        fsi.code_size  = kCrtBasicFragmentDXBCSize;
+        fsi.entrypoint = "main";
     } else {
         return false;  // no shader blob available for this backend
     }
@@ -935,6 +945,16 @@ static bool create_crt_full_pipeline()
         fsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
         fsi.code       = kCrtFullFragmentSPIRV;
         fsi.code_size  = kCrtFullFragmentSPIRVSize;
+        fsi.entrypoint = "main";
+    } else if (std::strcmp(driver, "direct3d12") == 0
+               && kBlitVertexDXBCSize > 0 && kCrtFullFragmentDXBCSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        vsi.code       = kBlitVertexDXBC;
+        vsi.code_size  = kBlitVertexDXBCSize;
+        vsi.entrypoint = "main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        fsi.code       = kCrtFullFragmentDXBC;
+        fsi.code_size  = kCrtFullFragmentDXBCSize;
         fsi.entrypoint = "main";
     } else {
         return false;
@@ -1146,6 +1166,16 @@ static bool create_crt_lottes_pipeline()
         fsi.format     = SDL_GPU_SHADERFORMAT_SPIRV;
         fsi.code       = kCrtLottesFragmentSPIRV;
         fsi.code_size  = kCrtLottesFragmentSPIRVSize;
+        fsi.entrypoint = "main";
+    } else if (std::strcmp(driver, "direct3d12") == 0
+               && kBlitVertexDXBCSize > 0 && kCrtLottesFragmentDXBCSize > 0) {
+        vsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        vsi.code       = kBlitVertexDXBC;
+        vsi.code_size  = kBlitVertexDXBCSize;
+        vsi.entrypoint = "main";
+        fsi.format     = SDL_GPU_SHADERFORMAT_DXBC;
+        fsi.code       = kCrtLottesFragmentDXBC;
+        fsi.code_size  = kCrtLottesFragmentDXBCSize;
         fsi.entrypoint = "main";
     } else {
         return false;
