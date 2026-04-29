@@ -34,22 +34,40 @@ else
 fi
 
 echo "==> DXBC (D3D12)"
+# SM 5_1: fxc/dxc profile that supports register-space syntax.  Plain
+# 5_0 errors with X3721 on `register(..., space2)`.
+# Format: "<profile>:<source>:<output>"
+DXBC_JOBS=(
+    "vs_5_1:blit.vert.hlsl:blit.vert.dxbc"
+    "ps_5_1:blit.frag.hlsl:blit.frag.dxbc"
+    "ps_5_1:crt_basic.frag.hlsl:crt_basic.frag.dxbc"
+    "ps_5_1:crt_full.frag.hlsl:crt_full.frag.dxbc"
+    "ps_5_1:crt_lottes.frag.hlsl:crt_lottes.frag.dxbc"
+)
 if command -v dxc >/dev/null; then
-    dxc -T vs_5_0 -E main "$SHADERS/blit.vert.hlsl" -Fo "$OUT/blit.vert.dxbc"
-    dxc -T ps_5_0 -E main "$SHADERS/blit.frag.hlsl" -Fo "$OUT/blit.frag.dxbc"
-    echo "    ok: $OUT/blit.vert.dxbc, $OUT/blit.frag.dxbc"
+    for job in "${DXBC_JOBS[@]}"; do
+        IFS=: read -r prof src dst <<< "$job"
+        dxc -T "$prof" -E main "$SHADERS/$src" -Fo "$OUT/$dst"
+    done
+    echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 elif command -v fxc >/dev/null; then
-    fxc /T vs_5_0 /E main "$SHADERS/blit.vert.hlsl" /Fo "$OUT/blit.vert.dxbc"
-    fxc /T ps_5_0 /E main "$SHADERS/blit.frag.hlsl" /Fo "$OUT/blit.frag.dxbc"
-    echo "    ok: $OUT/blit.vert.dxbc, $OUT/blit.frag.dxbc"
+    for job in "${DXBC_JOBS[@]}"; do
+        IFS=: read -r prof src dst <<< "$job"
+        # Double-slash escapes /T, /E, /Fo through msys/git-bash path translation.
+        fxc //T "$prof" //E main "$SHADERS/$src" //Fo "$OUT/$dst"
+    done
+    echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 else
     echo "    skip: neither dxc nor fxc installed"
 fi
 
-# Converting the blob files into the C array literals in blit_shaders.h
-# is a manual step — run xxd or a Python one-liner, then paste into the
-# header:
-#   xxd -i < blit.vert.spv  # produces `0xHH, 0xHH, ...` output
+# Regenerate the embedded blob C++ headers from whatever blobs we have.
+# Missing blobs become empty placeholders (the runtime treats them as
+# "DXBC not available" and falls back).
 echo
-echo "==> Next: update src/shaders/blit_shaders.h with the new blob bytes."
-echo "    Suggested: xxd -i < $OUT/blit.vert.spv"
+echo "==> Regenerating C++ headers"
+if command -v python3 >/dev/null; then
+    python3 "$(dirname "$0")/blob_to_header.py"
+else
+    echo "    skip: python3 not installed — re-run blob_to_header.py manually"
+fi
