@@ -35,21 +35,30 @@ fi
 
 echo "==> DXBC (D3D12)"
 if command -v dxc >/dev/null; then
-    dxc -T vs_5_0 -E main "$SHADERS/blit.vert.hlsl" -Fo "$OUT/blit.vert.dxbc"
-    dxc -T ps_5_0 -E main "$SHADERS/blit.frag.hlsl" -Fo "$OUT/blit.frag.dxbc"
-    echo "    ok: $OUT/blit.vert.dxbc, $OUT/blit.frag.dxbc"
+    dxc -T vs_5_0 -E main "$SHADERS/blit.vert.hlsl"        -Fo "$OUT/blit.vert.dxbc"
+    dxc -T ps_5_0 -E main "$SHADERS/blit.frag.hlsl"        -Fo "$OUT/blit.frag.dxbc"
+    dxc -T ps_5_0 -E main "$SHADERS/crt_basic.frag.hlsl"   -Fo "$OUT/crt_basic.frag.dxbc"
+    dxc -T ps_5_0 -E main "$SHADERS/crt_full.frag.hlsl"    -Fo "$OUT/crt_full.frag.dxbc"
+    dxc -T ps_5_0 -E main "$SHADERS/crt_lottes.frag.hlsl"  -Fo "$OUT/crt_lottes.frag.dxbc"
+    echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 elif command -v fxc >/dev/null; then
-    fxc /T vs_5_0 /E main "$SHADERS/blit.vert.hlsl" /Fo "$OUT/blit.vert.dxbc"
-    fxc /T ps_5_0 /E main "$SHADERS/blit.frag.hlsl" /Fo "$OUT/blit.frag.dxbc"
-    echo "    ok: $OUT/blit.vert.dxbc, $OUT/blit.frag.dxbc"
+    fxc //T vs_5_0 //E main "$SHADERS/blit.vert.hlsl"        //Fo "$OUT/blit.vert.dxbc"
+    fxc //T ps_5_0 //E main "$SHADERS/blit.frag.hlsl"        //Fo "$OUT/blit.frag.dxbc"
+    fxc //T ps_5_0 //E main "$SHADERS/crt_basic.frag.hlsl"   //Fo "$OUT/crt_basic.frag.dxbc"
+    fxc //T ps_5_0 //E main "$SHADERS/crt_full.frag.hlsl"    //Fo "$OUT/crt_full.frag.dxbc"
+    fxc //T ps_5_0 //E main "$SHADERS/crt_lottes.frag.hlsl"  //Fo "$OUT/crt_lottes.frag.dxbc"
+    echo "    ok: blit.{vert,frag}.dxbc, crt_{basic,full,lottes}.frag.dxbc"
 else
     echo "    skip: neither dxc nor fxc installed"
 fi
 
-# Converting the blob files into the C array literals in blit_shaders.h
-# is a manual step — run xxd or a Python one-liner, then paste into the
-# header:
-#   xxd -i < blit.vert.spv  # produces `0xHH, 0xHH, ...` output
+# Regenerate the embedded blob C++ headers from whatever blobs we have.
+# Missing blobs become empty placeholders (the runtime treats them as
+# "DXBC not available" and falls back).
 echo
-echo "==> Next: update src/shaders/blit_shaders.h with the new blob bytes."
-echo "    Suggested: xxd -i < $OUT/blit.vert.spv"
+echo "==> Regenerating C++ headers"
+if command -v python3 >/dev/null; then
+    python3 "$(dirname "$0")/blob_to_header.py"
+else
+    echo "    skip: python3 not installed — re-run blob_to_header.py manually"
+fi

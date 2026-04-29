@@ -1,0 +1,117 @@
+name: Shader Blobs
+
+# Auto-compile HLSL shaders to DXBC on a Windows runner and commit
+# the resulting C++ headers back to the PR branch.  Triggered by edits
+# to src/shaders/*.hlsl on PRs and on direct pushes to feature
+# branches that change those files.
+#
+# The blobs live at:
+#   src/shaders/blit_dxbc_blobs.h
+#   src/shaders/crt_dxbc_blobs.h
+# and are consumed by SDL_GPU's D3D12 backend on Windows.  Other
+# platforms ignore them.
+
+on:
+  pull_request:
+    paths:
+      - 'src/shaders/**.hlsl'
+      - 'scripts/blob_to_header.py'
+      - '.github/workflows/shader-blobs.yml'
+  push:
+    branches-ignore:
+      - master
+    paths:
+      - 'src/shaders/**.hlsl'
+      - 'scripts/blob_to_header.py'
+
+permissions:
+  contents: write     # auto-commit needs write access on PR head branch
+
+jobs:
+  compile-dxbc:
+    name: Compile HLSL → DXBC and regenerate C++ headers
+    runs-on: windows-latest
+    # Skip auto-commits triggered by this workflow itself, otherwise we'd
+    # loop.  The marker is the bot's commit message prefix below.
+    if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
+
+    steps:
+      - name: Check out PR branch (with write token)
+        uses: actions/checkout@v4
+        with:
+          # PRs from forks: actions/checkout uses GITHUB_TOKEN (read-only
+          # for forks).  Auto-commit will be skipped — maintainer can
+          # rebuild locally and push.
+          ref: ${{ github.head_ref || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Locate fxc.exe (Windows SDK)
+        id: fxc
+        shell: pwsh
+        run: |
+          # fxc.exe ships with the Windows 10 SDK; runners have it.
+          $candidates = @(
+            "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\fxc.exe",
+            "C:\Program Files\Windows Kits\10\bin\*\x64\fxc.exe"
+          )
+          $fxc = Get-ChildItem -Path $candidates -ErrorAction SilentlyContinue |
+                 Sort-Object FullName -Descending |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $fxc) {
+            Write-Error "fxc.exe not found on this runner"
+            exit 1
+          }
+          Write-Host "Using fxc: $fxc"
+          "fxc=$fxc" >> $env:GITHUB_OUTPUT
+
+      - name: Compile HLSL → DXBC
+        shell: pwsh
+        run: |
+          $fxc = "${{ steps.fxc.outputs.fxc }}"
+          $blobs = "src/shaders/blobs"
+          New-Item -ItemType Directory -Force -Path $blobs | Out-Null
+
+          # (source, target_profile, output_blob)
+          $jobs = @(
+            @{ src='src/shaders/blit.vert.hlsl';        prof='vs_5_0'; out='blit.vert.dxbc' },
+            @{ src='src/shaders/blit.frag.hlsl';        prof='ps_5_0'; out='blit.frag.dxbc' },
+            @{ src='src/shaders/crt_basic.frag.hlsl';   prof='ps_5_0'; out='crt_basic.frag.dxbc' },
+            @{ src='src/shaders/crt_full.frag.hlsl';    prof='ps_5_0'; out='crt_full.frag.dxbc' },
+            @{ src='src/shaders/crt_lottes.frag.hlsl';  prof='ps_5_0'; out='crt_lottes.frag.dxbc' }
+          )
+          foreach ($j in $jobs) {
+            Write-Host "Compiling $($j.src) ($($j.prof)) → $($j.out)"
+            & $fxc /nologo /T $j.prof /E main $j.src /Fo "$blobs/$($j.out)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "fxc failed on $($j.src) (exit $LASTEXITCODE)"
+              exit 1
+            }
+          }
+
+      - name: Regenerate C++ headers
+        shell: pwsh
+        run: |
+          python scripts/blob_to_header.py
+
+      - name: Diff check
+        id: diff
+        shell: pwsh
+        run: |
+          git diff --name-only -- src/shaders/blit_dxbc_blobs.h src/shaders/crt_dxbc_blobs.h |
+            Tee-Object -Variable changed
+          if ($changed) {
+            "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+            Write-Host "No header changes; nothing to commit."
+          }
+
+      - name: Commit and push regenerated headers
+        if: steps.diff.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: pwsh
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/shaders/blit_dxbc_blobs.h src/shaders/crt_dxbc_blobs.h
+          git commit -m "chore(shaders): regenerate DXBC blobs from HLSL sources"
+          git push origin HEAD:${{ github.head_ref }}
