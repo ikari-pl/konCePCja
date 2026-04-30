@@ -179,7 +179,7 @@ alignas(4) inline constexpr std::uint8_t kCrtBasicFragmentDXBC[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
-inline constexpr std::size_t kCrtBasicFragmentDXBC_size = sizeof(kCrtBasicFragmentDXBC);
+inline constexpr std::size_t kCrtBasicFragmentDXBCSize = sizeof(kCrtBasicFragmentDXBC);
 
 // === crt_full.frag.dxbc ===
 alignas(4) inline constexpr std::uint8_t kCrtFullFragmentDXBC[] = {
@@ -489,7 +489,7 @@ alignas(4) inline constexpr std::uint8_t kCrtFullFragmentDXBC[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
-inline constexpr std::size_t kCrtFullFragmentDXBC_size = sizeof(kCrtFullFragmentDXBC);
+inline constexpr std::size_t kCrtFullFragmentDXBCSize = sizeof(kCrtFullFragmentDXBC);
 
 // === crt_lottes.frag.dxbc ===
 alignas(4) inline constexpr std::uint8_t kCrtLottesFragmentDXBC[] = {
@@ -1263,5 +1263,5 @@ alignas(4) inline constexpr std::uint8_t kCrtLottesFragmentDXBC[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00
 };
-inline constexpr std::size_t kCrtLottesFragmentDXBC_size = sizeof(kCrtLottesFragmentDXBC);
+inline constexpr std::size_t kCrtLottesFragmentDXBCSize = sizeof(kCrtLottesFragmentDXBC);
 #endif  // KON_CPC_JA_CRT_DXBC_BLOBS_H

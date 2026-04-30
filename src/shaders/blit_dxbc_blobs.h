@@ -83,7 +83,7 @@ alignas(4) inline constexpr std::uint8_t kBlitVertexDXBC[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
-inline constexpr std::size_t kBlitVertexDXBC_size = sizeof(kBlitVertexDXBC);
+inline constexpr std::size_t kBlitVertexDXBCSize = sizeof(kBlitVertexDXBC);
 
 // === blit.frag.dxbc ===
 alignas(4) inline constexpr std::uint8_t kBlitFragmentDXBC[] = {
@@ -146,5 +146,5 @@ alignas(4) inline constexpr std::uint8_t kBlitFragmentDXBC[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
-inline constexpr std::size_t kBlitFragmentDXBC_size = sizeof(kBlitFragmentDXBC);
+inline constexpr std::size_t kBlitFragmentDXBCSize = sizeof(kBlitFragmentDXBC);
 #endif  // KON_CPC_JA_BLIT_DXBC_BLOBS_H
