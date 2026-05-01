@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.21)
-project(koncepcja VERSION 5.8.0 LANGUAGES C CXX)
+
+# Read version from the top-level VERSION file (single source of truth,
+# also consumed by the makefile build).  No more two-file edits per bump.
+file(READ "${CMAKE_SOURCE_DIR}/VERSION" KONCPC_VERSION_RAW)
+string(STRIP "${KONCPC_VERSION_RAW}" KONCPC_VERSION)
+project(koncepcja VERSION ${KONCPC_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,6 +106,10 @@ target_link_libraries(koncepcja_lib PUBLIC
 if(GIT_HASH)
     target_compile_definitions(koncepcja_lib PUBLIC HASH="${GIT_HASH}")
 endif()
+
+# Bake the version into the binary.  Same compile-define pattern the
+# makefile uses (see KONCPC_VERSION above).
+target_compile_definitions(koncepcja_lib PUBLIC KONCPC_VERSION_STRING="v${PROJECT_VERSION}")
 
 if(WIN32)
     target_compile_definitions(koncepcja_lib PUBLIC WINDOWS _WIN32_WINNT=0x0601 NOMINMAX)

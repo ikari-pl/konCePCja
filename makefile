@@ -152,6 +152,14 @@ GIT_HASH = $(shell git rev-parse --verify HEAD)
 COMMON_CFLAGS += -DHASH=\"$(GIT_HASH)\"
 endif
 
+# Single source of truth for the binary version string.  Mirror the same
+# value in CMakeLists.txt's project(... VERSION) — that one drives CPack
+# / installer metadata.  See chore: keep-version-in-sync if it ever drifts.
+KONCPC_VERSION := $(shell cat VERSION 2>/dev/null)
+ifneq ($(KONCPC_VERSION),)
+COMMON_CFLAGS += -DKONCPC_VERSION_STRING=\"v$(KONCPC_VERSION)\"
+endif
+
 ifdef APP_PATH
 COMMON_CFLAGS += -DAPP_PATH=\"$(APP_PATH)\"
 else
