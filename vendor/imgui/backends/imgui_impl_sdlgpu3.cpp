@@ -75,14 +75,27 @@ struct ImGui_ImplSDLGPU3_Data
 // in Renderer_RenderWindow and submitted in Renderer_SwapBuffers — splitting
 // across the two callbacks lets ImGui's per-viewport draw flow work without
 // any change at the application layer.
+//
+// Each viewport owns its own FrameData (vertex/index/transfer buffers).
+// Sharing a single FrameData across main + sub-viewports caused sub windows
+// to render black: PrepareDrawData uploads with cycle=true so SDL rotates
+// staging buffers, but the device-side SDL_GPUBuffer pointer stored in
+// FrameData::VertexBuffer is shared, and BindGPUVertexBuffer in a later
+// command buffer reads whichever physical storage SDL last bound — racing
+// with main's still-in-flight cmd.  Per-viewport FrameData fully isolates
+// the upload + bind path.
 struct ImGui_ImplSDLGPU3_ViewportData
 {
-    SDL_GPUCommandBuffer*  CmdBuf        = nullptr;
-    bool                   ClaimedForGPU = false;
+    SDL_GPUCommandBuffer*       CmdBuf        = nullptr;
+    bool                        ClaimedForGPU = false;
+    ImGui_ImplSDLGPU3_FrameData FrameData;
 };
 
 // Forward Declarations
 static void ImGui_ImplSDLGPU3_DestroyFrameData();
+static void ImGui_ImplSDLGPU3_ReleaseFrameDataBuffers(SDL_GPUDevice* device, ImGui_ImplSDLGPU3_FrameData* fd);
+static void ImGui_ImplSDLGPU3_PrepareDrawDataImpl(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer, ImGui_ImplSDLGPU3_FrameData* fd);
+static void ImGui_ImplSDLGPU3_RenderDrawDataImpl(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass, SDL_GPUGraphicsPipeline* pipeline, ImGui_ImplSDLGPU3_FrameData* fd);
 static void ImGui_ImplSDLGPU3_InitMultiViewportSupport();
 static void ImGui_ImplSDLGPU3_ShutdownMultiViewportSupport();
 
@@ -167,7 +180,9 @@ static void CreateOrResizeBuffers(SDL_GPUBuffer** buffer, SDL_GPUTransferBuffer*
 // SDL_GPU doesn't allow copy passes to occur while a render or compute pass is bound!
 // The only way to allow a user to supply their own RenderPass (to render to a texture instead of the window for example),
 // is to split the upload part of ImGui_ImplSDLGPU3_RenderDrawData() to another function that needs to be called by the user before rendering.
-void ImGui_ImplSDLGPU3_PrepareDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer)
+// konCePCja: split out the upload body so per-viewport renderer hooks can
+// pass their own FrameData instead of sharing bd->MainWindowFrameData.
+static void ImGui_ImplSDLGPU3_PrepareDrawDataImpl(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer, ImGui_ImplSDLGPU3_FrameData* fd)
 {
     // Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     int fb_width = (int)(draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
@@ -184,7 +199,6 @@ void ImGui_ImplSDLGPU3_PrepareDrawData(ImDrawData* draw_data, SDL_GPUCommandBuff
 
     ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
     ImGui_ImplSDLGPU3_InitInfo* v = &bd->InitInfo;
-    ImGui_ImplSDLGPU3_FrameData* fd = &bd->MainWindowFrameData;
 
     uint32_t vertex_size = draw_data->TotalVtxCount * sizeof(ImDrawVert);
     uint32_t index_size  = draw_data->TotalIdxCount * sizeof(ImDrawIdx);
@@ -228,7 +242,16 @@ void ImGui_ImplSDLGPU3_PrepareDrawData(ImDrawData* draw_data, SDL_GPUCommandBuff
     SDL_EndGPUCopyPass(copy_pass);
 }
 
-void ImGui_ImplSDLGPU3_RenderDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass, SDL_GPUGraphicsPipeline* pipeline)
+// Public wrapper — main viewport uses bd->MainWindowFrameData.
+void ImGui_ImplSDLGPU3_PrepareDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer)
+{
+    ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
+    ImGui_ImplSDLGPU3_PrepareDrawDataImpl(draw_data, command_buffer, &bd->MainWindowFrameData);
+}
+
+// konCePCja: split out the draw body so per-viewport renderer hooks can
+// pass their own FrameData (matching the per-viewport upload above).
+static void ImGui_ImplSDLGPU3_RenderDrawDataImpl(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass, SDL_GPUGraphicsPipeline* pipeline, ImGui_ImplSDLGPU3_FrameData* fd)
 {
     // Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
     int fb_width = (int)(draw_data->DisplaySize.x * draw_data->FramebufferScale.x);
@@ -237,7 +260,6 @@ void ImGui_ImplSDLGPU3_RenderDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffe
         return;
 
     ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
-    ImGui_ImplSDLGPU3_FrameData* fd = &bd->MainWindowFrameData;
 
     if (pipeline == nullptr)
         pipeline = bd->Pipeline;
@@ -317,6 +339,25 @@ void ImGui_ImplSDLGPU3_RenderDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffe
     // We perform a call to SDL_SetGPUScissor() to set back a full viewport which is likely to fix things for 99% users but technically this is not perfect. (See github #4644)
     SDL_Rect scissor_rect { 0, 0, fb_width, fb_height };
     SDL_SetGPUScissor(render_pass, &scissor_rect);
+}
+
+// Public wrapper — main viewport uses bd->MainWindowFrameData.
+void ImGui_ImplSDLGPU3_RenderDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer, SDL_GPURenderPass* render_pass, SDL_GPUGraphicsPipeline* pipeline)
+{
+    ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
+    ImGui_ImplSDLGPU3_RenderDrawDataImpl(draw_data, command_buffer, render_pass, pipeline, &bd->MainWindowFrameData);
+}
+
+// konCePCja: shared helper used by both DestroyFrameData (for the main FrameData)
+// and Renderer_DestroyWindow (for per-viewport FrameData).
+static void ImGui_ImplSDLGPU3_ReleaseFrameDataBuffers(SDL_GPUDevice* device, ImGui_ImplSDLGPU3_FrameData* fd)
+{
+    if (fd->VertexBuffer)         { SDL_ReleaseGPUBuffer(device, fd->VertexBuffer);                 fd->VertexBuffer = nullptr; }
+    if (fd->IndexBuffer)          { SDL_ReleaseGPUBuffer(device, fd->IndexBuffer);                  fd->IndexBuffer = nullptr; }
+    if (fd->VertexTransferBuffer) { SDL_ReleaseGPUTransferBuffer(device, fd->VertexTransferBuffer); fd->VertexTransferBuffer = nullptr; }
+    if (fd->IndexTransferBuffer)  { SDL_ReleaseGPUTransferBuffer(device, fd->IndexTransferBuffer);  fd->IndexTransferBuffer = nullptr; }
+    fd->VertexBufferSize = 0;
+    fd->IndexBufferSize  = 0;
 }
 
 static void ImGui_ImplSDLGPU3_DestroyTexture(ImTextureData* tex)
@@ -713,6 +754,16 @@ void ImGui_ImplSDLGPU3_NewFrame()
 //   application's gpu_flip_a path, not by these hooks.  We only claim and
 //   render SECONDARY viewports here.
 
+// konCePCja: imgui_impl_sdl3 stores SDL_WindowID (an integer) in
+// viewport->PlatformHandle (changed in 2024-08-19), NOT the SDL_Window*.
+// PlatformHandleRaw is the OS native handle (HWND / NSWindow*) — also
+// not what we want.  Look up the SDL_Window* via SDL_GetWindowFromID.
+static SDL_Window* GetViewportSDLWindow(ImGuiViewport* viewport)
+{
+    SDL_WindowID id = (SDL_WindowID)(intptr_t)viewport->PlatformHandle;
+    return id ? SDL_GetWindowFromID(id) : nullptr;
+}
+
 static void ImGui_ImplSDLGPU3_CreateWindow(ImGuiViewport* viewport)
 {
     ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
@@ -721,7 +772,7 @@ static void ImGui_ImplSDLGPU3_CreateWindow(ImGuiViewport* viewport)
     auto* vd = IM_NEW(ImGui_ImplSDLGPU3_ViewportData)();
     viewport->RendererUserData = vd;
 
-    SDL_Window* window = (SDL_Window*)viewport->PlatformHandle;
+    SDL_Window* window = GetViewportSDLWindow(viewport);
     if (window != nullptr)
     {
         if (SDL_ClaimWindowForGPUDevice(bd->InitInfo.Device, window))
@@ -756,9 +807,15 @@ static void ImGui_ImplSDLGPU3_DestroyWindow(ImGuiViewport* viewport)
             SDL_SubmitGPUCommandBuffer(vd->CmdBuf);
             vd->CmdBuf = nullptr;
         }
+        if (bd != nullptr)
+        {
+            // Release per-viewport vertex/index/transfer buffers before
+            // releasing the window claim — buffers belong to the device.
+            ImGui_ImplSDLGPU3_ReleaseFrameDataBuffers(bd->InitInfo.Device, &vd->FrameData);
+        }
         if (vd->ClaimedForGPU && bd != nullptr)
         {
-            SDL_Window* window = (SDL_Window*)viewport->PlatformHandle;
+            SDL_Window* window = GetViewportSDLWindow(viewport);
             if (window != nullptr)
                 SDL_ReleaseWindowFromGPUDevice(bd->InitInfo.Device, window);
         }
@@ -777,7 +834,7 @@ static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
 {
     ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
     auto* vd = (ImGui_ImplSDLGPU3_ViewportData*)viewport->RendererUserData;
-    SDL_Window* window = (SDL_Window*)viewport->PlatformHandle;
+    SDL_Window* window = GetViewportSDLWindow(viewport);
     if (bd == nullptr || vd == nullptr || window == nullptr || !vd->ClaimedForGPU)
         return;
 
@@ -786,8 +843,10 @@ static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
         return;
 
     // PrepareDrawData MUST precede BeginGPURenderPass — it issues its own
-    // copy pass for vertex/index uploads.
-    ImGui_ImplSDLGPU3_PrepareDrawData(viewport->DrawData, cmd);
+    // copy pass for vertex/index uploads.  We pass the viewport's OWN
+    // FrameData so this upload doesn't race the main viewport's still-
+    // in-flight cmd buffer (see ViewportData comment for details).
+    ImGui_ImplSDLGPU3_PrepareDrawDataImpl(viewport->DrawData, cmd, &vd->FrameData);
 
     SDL_GPUTexture* swap_tex = nullptr;
     Uint32 sw = 0, sh = 0;
@@ -805,7 +864,7 @@ static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
         tgt.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
 
         SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &tgt, 1, nullptr);
-        ImGui_ImplSDLGPU3_RenderDrawData(viewport->DrawData, cmd, pass);
+        ImGui_ImplSDLGPU3_RenderDrawDataImpl(viewport->DrawData, cmd, pass, /*pipeline=*/nullptr, &vd->FrameData);
         SDL_EndGPURenderPass(pass);
     }
 
