@@ -176,6 +176,30 @@ void koncpc_activate_app() {
   });
 }
 
+// Restore mainSDLWindow's content view as firstResponder so AppKit routes
+// key events to [SDLContentView keyDown:] (and from there into SDL's
+// event queue) instead of the NSApplication menu bar.  Used after native
+// sheet dialogs (NSOpenPanel, NSSavePanel) where the sheet steals
+// firstResponder and AppKit doesn't auto-restore it on dismiss — bug
+// reproduces every time the user goes Menu → Media → Load Disk A.
+extern SDL_Window* mainSDLWindow;
+void koncpc_restore_keyboard_focus() {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    @autoreleasepool {
+      if (!mainSDLWindow) return;
+      NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
+          SDL_GetWindowProperties(mainSDLWindow),
+          SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+      if (!nswin) return;
+      [nswin makeKeyAndOrderFront:nil];
+      NSView* contentView = [nswin contentView];
+      if (contentView) {
+        [nswin makeFirstResponder:contentView];
+      }
+    }
+  });
+}
+
 extern SDL_Window* mainSDLWindow;
 
 static NSWindow* nswindow_from_viewport(ImGuiViewport* vp) {
