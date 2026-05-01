@@ -38,6 +38,7 @@
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_sdlgpu3.h"
 #include "imgui_impl_sdlgpu3_shaders.h"
+#include <SDL3/SDL_log.h>   // konCePCja: SDL_Log on viewport claim failure
 
 // SDL_GPU Data
 
@@ -729,6 +730,14 @@ static void ImGui_ImplSDLGPU3_CreateWindow(ImGuiViewport* viewport)
             SDL_SetGPUSwapchainParameters(bd->InitInfo.Device, window,
                                           bd->InitInfo.SwapchainComposition,
                                           bd->InitInfo.PresentMode);
+        }
+        else
+        {
+            // Log so platform-specific claim failures are debuggable.  ClaimedForGPU
+            // stays false; Renderer_RenderWindow then skips this viewport silently
+            // rather than crashing on a missing swapchain.
+            SDL_Log("[ImGui_ImplSDLGPU3] SDL_ClaimWindowForGPUDevice failed for viewport ID %u: %s",
+                    (unsigned)viewport->ID, SDL_GetError());
         }
     }
 }
