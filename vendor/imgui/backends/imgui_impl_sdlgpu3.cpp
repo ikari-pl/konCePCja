@@ -38,6 +38,7 @@
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_sdlgpu3.h"
 #include "imgui_impl_sdlgpu3_shaders.h"
+#include <SDL3/SDL_log.h>   // konCePCja: SDL_Log on viewport claim failure
 
 // SDL_GPU Data
 
@@ -68,8 +69,22 @@ struct ImGui_ImplSDLGPU3_Data
     ImGui_ImplSDLGPU3_FrameData  MainWindowFrameData;
 };
 
+// konCePCja addition: per-viewport renderer state for multi-viewport mode.
+// One instance lives in viewport->RendererUserData for each ImGui viewport
+// (main + every floating window the user dragged out).  CmdBuf is acquired
+// in Renderer_RenderWindow and submitted in Renderer_SwapBuffers — splitting
+// across the two callbacks lets ImGui's per-viewport draw flow work without
+// any change at the application layer.
+struct ImGui_ImplSDLGPU3_ViewportData
+{
+    SDL_GPUCommandBuffer*  CmdBuf        = nullptr;
+    bool                   ClaimedForGPU = false;
+};
+
 // Forward Declarations
 static void ImGui_ImplSDLGPU3_DestroyFrameData();
+static void ImGui_ImplSDLGPU3_InitMultiViewportSupport();
+static void ImGui_ImplSDLGPU3_ShutdownMultiViewportSupport();
 
 //-----------------------------------------------------------------------------
 // FUNCTIONS
@@ -633,6 +648,14 @@ bool ImGui_ImplSDLGPU3_Init(ImGui_ImplSDLGPU3_InitInfo* info)
 
     bd->InitInfo = *info;
 
+    // konCePCja addition: register per-viewport renderer hooks when the app
+    // turned on ImGuiConfigFlags_ViewportsEnable.  Upstream ImGui 1.92.6 ships
+    // the Platform_* side (imgui_impl_sdl3) but leaves Renderer_* unimplemented
+    // for SDL_GPU.  Without these hooks any popped-out floating window has no
+    // swapchain claim and cannot render.
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+        ImGui_ImplSDLGPU3_InitMultiViewportSupport();
+
     return true;
 }
 
@@ -642,6 +665,11 @@ void ImGui_ImplSDLGPU3_Shutdown()
     IM_ASSERT(bd != nullptr && "No renderer backend to shutdown, or already shutdown?");
     ImGuiIO& io = ImGui::GetIO();
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+
+    // konCePCja addition: tear down per-viewport renderer state BEFORE
+    // releasing device objects — DestroyPlatformWindows() calls back into
+    // Renderer_DestroyWindow which expects the device to still be live.
+    ImGui_ImplSDLGPU3_ShutdownMultiViewportSupport();
 
     ImGui_ImplSDLGPU3_DestroyDeviceObjects();
 
@@ -659,6 +687,159 @@ void ImGui_ImplSDLGPU3_NewFrame()
 
     if (!bd->TexSamplerLinear)
         ImGui_ImplSDLGPU3_CreateDeviceObjects();
+}
+
+//-----------------------------------------------------------------------------
+// MULTI-VIEWPORT / PLATFORM INTERFACE SUPPORT (konCePCja addition)
+//-----------------------------------------------------------------------------
+// Implements the renderer-side half of ImGui's multi-viewport feature for
+// SDL_GPU.  Upstream's imgui_impl_sdlgpu3 (1.92.6) leaves these hooks empty.
+// Each ImGui viewport is backed by an SDL_Window created by the platform
+// backend (imgui_impl_sdl3); the renderer hooks below claim that window for
+// the GPU device, then per-frame acquire its swapchain texture and submit
+// a command buffer that draws viewport->DrawData onto it.
+//
+// SAFETY NOTES:
+// - Renderer_RenderWindow acquires the cmd buffer + records the draw.
+//   Renderer_SwapBuffers submits it.  Splitting matches ImGui's expected
+//   per-viewport call order (Platform_Render → Renderer_Render →
+//   Platform_Swap → Renderer_Swap).
+// - PrepareDrawData reuses bd->MainWindowFrameData for vertex/index uploads.
+//   We rely on cycle=true semantics inside SDL's GPU buffer rotation so
+//   sequential per-viewport renders don't race.  If visual artefacts appear
+//   under heavy multi-viewport load, switch to per-viewport FrameData.
+// - The main viewport (ImGui::GetMainViewport()) is rendered by the
+//   application's gpu_flip_a path, not by these hooks.  We only claim and
+//   render SECONDARY viewports here.
+
+static void ImGui_ImplSDLGPU3_CreateWindow(ImGuiViewport* viewport)
+{
+    ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
+    IM_ASSERT(bd != nullptr);
+
+    auto* vd = IM_NEW(ImGui_ImplSDLGPU3_ViewportData)();
+    viewport->RendererUserData = vd;
+
+    SDL_Window* window = (SDL_Window*)viewport->PlatformHandle;
+    if (window != nullptr)
+    {
+        if (SDL_ClaimWindowForGPUDevice(bd->InitInfo.Device, window))
+        {
+            vd->ClaimedForGPU = true;
+            // Match swapchain composition / present mode the user picked at Init.
+            SDL_SetGPUSwapchainParameters(bd->InitInfo.Device, window,
+                                          bd->InitInfo.SwapchainComposition,
+                                          bd->InitInfo.PresentMode);
+        }
+        else
+        {
+            // Log so platform-specific claim failures are debuggable.  ClaimedForGPU
+            // stays false; Renderer_RenderWindow then skips this viewport silently
+            // rather than crashing on a missing swapchain.
+            SDL_Log("[ImGui_ImplSDLGPU3] SDL_ClaimWindowForGPUDevice failed for viewport ID %u: %s",
+                    (unsigned)viewport->ID, SDL_GetError());
+        }
+    }
+}
+
+static void ImGui_ImplSDLGPU3_DestroyWindow(ImGuiViewport* viewport)
+{
+    ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
+    auto* vd = (ImGui_ImplSDLGPU3_ViewportData*)viewport->RendererUserData;
+    if (vd != nullptr)
+    {
+        if (vd->CmdBuf != nullptr)
+        {
+            // ImGui aborted between Render and Swap (e.g. window destroyed
+            // mid-frame).  Submit so the cmd buffer doesn't leak.
+            SDL_SubmitGPUCommandBuffer(vd->CmdBuf);
+            vd->CmdBuf = nullptr;
+        }
+        if (vd->ClaimedForGPU && bd != nullptr)
+        {
+            SDL_Window* window = (SDL_Window*)viewport->PlatformHandle;
+            if (window != nullptr)
+                SDL_ReleaseWindowFromGPUDevice(bd->InitInfo.Device, window);
+        }
+        IM_DELETE(vd);
+    }
+    viewport->RendererUserData = nullptr;
+}
+
+static void ImGui_ImplSDLGPU3_SetWindowSize(ImGuiViewport*, ImVec2)
+{
+    // SDL_GPU swapchains auto-resize on the next AcquireGPUSwapchainTexture.
+    // No explicit work needed here.
+}
+
+static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
+{
+    ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
+    auto* vd = (ImGui_ImplSDLGPU3_ViewportData*)viewport->RendererUserData;
+    SDL_Window* window = (SDL_Window*)viewport->PlatformHandle;
+    if (bd == nullptr || vd == nullptr || window == nullptr || !vd->ClaimedForGPU)
+        return;
+
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(bd->InitInfo.Device);
+    if (cmd == nullptr)
+        return;
+
+    // PrepareDrawData MUST precede BeginGPURenderPass — it issues its own
+    // copy pass for vertex/index uploads.
+    ImGui_ImplSDLGPU3_PrepareDrawData(viewport->DrawData, cmd);
+
+    SDL_GPUTexture* swap_tex = nullptr;
+    Uint32 sw = 0, sh = 0;
+    bool have_swap = SDL_AcquireGPUSwapchainTexture(cmd, window, &swap_tex, &sw, &sh)
+                     && swap_tex != nullptr;
+
+    if (have_swap)
+    {
+        SDL_GPUColorTargetInfo tgt = {};
+        tgt.texture     = swap_tex;
+        tgt.load_op     = (viewport->Flags & ImGuiViewportFlags_NoRendererClear)
+                          ? SDL_GPU_LOADOP_LOAD : SDL_GPU_LOADOP_CLEAR;
+        tgt.store_op    = SDL_GPU_STOREOP_STORE;
+        tgt.cycle       = false;     // swapchain manages its own cycling
+        tgt.clear_color = {0.0f, 0.0f, 0.0f, 1.0f};
+
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &tgt, 1, nullptr);
+        ImGui_ImplSDLGPU3_RenderDrawData(viewport->DrawData, cmd, pass);
+        SDL_EndGPURenderPass(pass);
+    }
+
+    // Stash for SwapBuffers — submit happens there to match ImGui's
+    // expected per-viewport callback order.
+    vd->CmdBuf = cmd;
+}
+
+static void ImGui_ImplSDLGPU3_SwapBuffers(ImGuiViewport* viewport, void*)
+{
+    auto* vd = (ImGui_ImplSDLGPU3_ViewportData*)viewport->RendererUserData;
+    if (vd != nullptr && vd->CmdBuf != nullptr)
+    {
+        SDL_SubmitGPUCommandBuffer(vd->CmdBuf);
+        vd->CmdBuf = nullptr;
+    }
+}
+
+static void ImGui_ImplSDLGPU3_InitMultiViewportSupport()
+{
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    platform_io.Renderer_CreateWindow  = ImGui_ImplSDLGPU3_CreateWindow;
+    platform_io.Renderer_DestroyWindow = ImGui_ImplSDLGPU3_DestroyWindow;
+    platform_io.Renderer_SetWindowSize = ImGui_ImplSDLGPU3_SetWindowSize;
+    platform_io.Renderer_RenderWindow  = ImGui_ImplSDLGPU3_RenderWindow;
+    platform_io.Renderer_SwapBuffers   = ImGui_ImplSDLGPU3_SwapBuffers;
+}
+
+static void ImGui_ImplSDLGPU3_ShutdownMultiViewportSupport()
+{
+    // ImGui::DestroyPlatformWindows() walks every secondary viewport and
+    // calls Platform_DestroyWindow + Renderer_DestroyWindow on each — that's
+    // where our DestroyWindow hook releases the GPU device claim.  Calling
+    // it BEFORE ClearRendererHandlers ensures the hook is still live.
+    ImGui::DestroyPlatformWindows();
 }
 
 #endif // #ifndef IMGUI_DISABLE

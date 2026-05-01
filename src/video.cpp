@@ -280,10 +280,10 @@ void direct_setpal(SDL_Color* c)
 //   - Command buffer is submitted in Phase A (gpu_flip_a).  The render
 //     loop's "skip video_display_b() on quit" optimisation therefore
 //     cannot leak an unsubmitted buffer.
-//   - Multi-viewport is DISABLED (ImGuiConfigFlags_ViewportsEnable off).
-//     imgui_impl_sdlgpu3 registers no platform handlers, so secondary
-//     windows would not render correctly.  Floating devtools stays
-//     docked for now; full viewport support is a follow-up.
+//   - Multi-viewport ENABLED — secondary windows are rendered by the
+//     renderer hooks we added to imgui_impl_sdlgpu3.cpp (ClaimWindowForGPU
+//     in Renderer_CreateWindow, AcquireSwapchain+RenderDrawData+Submit in
+//     Renderer_RenderWindow / Renderer_SwapBuffers).
 //   - Non-blocking swapchain acquire — never blocks the render thread.
 
 SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs)
@@ -308,14 +308,19 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs)
         return nullptr;
     }
 
-    // ImGui — SDLGPU3 backend, viewports DISABLED (see design note above).
+    // ImGui — SDLGPU3 backend with multi-viewport ENABLED.  The renderer
+    // hooks live in vendor/imgui/backends/imgui_impl_sdlgpu3.cpp; they
+    // claim each secondary window for g_gpu.device on creation and submit
+    // a per-viewport command buffer on render.  ImGui_ImplSDLGPU3_Init
+    // checks io.ConfigFlags after we set the flag and registers the
+    // hooks itself, so order matters: set flags BEFORE Init.
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename  = imgui_ini_path();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard
-                    | ImGuiConfigFlags_DockingEnable;
-    // Intentionally NO ImGuiConfigFlags_ViewportsEnable.
+                    | ImGuiConfigFlags_DockingEnable
+                    | ImGuiConfigFlags_ViewportsEnable;
     ImGui::StyleColorsDark();
     imgui_init_ui();
     ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
@@ -461,6 +466,15 @@ void gpu_flip_a(video_plugin* t)
     // 6. SUBMIT IN PHASE A — avoids the quit-skip leak from the first attempt.
     SDL_SubmitGPUCommandBuffer(cmd);
     g_gpu.pending_cmd = nullptr;
+
+    // 7. Multi-viewport: render every secondary ImGui window.  The renderer
+    //    hooks in imgui_impl_sdlgpu3.cpp acquire + submit one command buffer
+    //    per viewport.  RenderPlatformWindowsDefault skips the main viewport
+    //    (already rendered above) so there's no double-render race.
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 }
 
 void gpu_flip_b([[maybe_unused]] video_plugin* t)
@@ -709,6 +723,11 @@ static void crt_basic_gpu_flip_a(video_plugin* t)
     video_capture_if_pending();
     SDL_SubmitGPUCommandBuffer(cmd);
     g_gpu.pending_cmd = nullptr;
+
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 }
 
 static void crt_basic_gpu_close()
@@ -927,6 +946,11 @@ static void crt_full_gpu_flip_a(video_plugin* t)
     video_capture_if_pending();
     SDL_SubmitGPUCommandBuffer(cmd);
     g_gpu.pending_cmd = nullptr;
+
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 }
 
 static void crt_full_gpu_close()
@@ -1148,6 +1172,11 @@ static void crt_lottes_gpu_flip_a(video_plugin* t)
     video_capture_if_pending();
     SDL_SubmitGPUCommandBuffer(cmd);
     g_gpu.pending_cmd = nullptr;
+
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 }
 
 static void crt_lottes_gpu_close()
