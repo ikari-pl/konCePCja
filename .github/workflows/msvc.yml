@@ -73,3 +73,54 @@ jobs:
           }
           Write-Host "Running: $testRunner"
           & $testRunner --gtest_shuffle
+
+      # ── Package (Release builds across all architectures) ─────────────
+      # Skip Debug (~3x larger, slower, not for end users).  Win32 stays
+      # in — this is a retro emulator and our users include people on 32-bit
+      # Windows / older hardware.  Bundles koncepcja.exe with the runtime
+      # DLLs from vcpkg so users don't need vcpkg installed.
+      - name: Package Windows release
+        if: matrix.config == 'Release'
+        shell: pwsh
+        run: |
+          $stageName = "koncepcja-windows-${{ matrix.arch }}"
+          $stage = "release/$stageName"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          $exe = Get-ChildItem -Path build -Recurse -Filter koncepcja.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "koncepcja.exe not found under build/"
+            exit 1
+          }
+          Copy-Item $exe.FullName $stage
+
+          $vcpkgBin = "build/vcpkg_installed/${{ matrix.triplet }}/bin"
+          if (Test-Path $vcpkgBin) {
+            Get-ChildItem -Path $vcpkgBin -Filter *.dll | Copy-Item -Destination $stage
+          }
+
+          # Include koncepcja.cfg.tmpl as a starter config so users have one
+          if (Test-Path koncepcja.cfg.tmpl) {
+            Copy-Item koncepcja.cfg.tmpl "$stage/koncepcja.cfg"
+          }
+
+          $zipPath = "release/$stageName.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zipPath -Force
+          Write-Host "Packaged $zipPath"
+          Get-Item $zipPath | Select-Object Name, Length
+
+      # ── Upload as CI artifact (always, for PR/branch builds) ──
+      - name: Upload Windows artifact
+        if: matrix.config == 'Release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: koncepcja-windows-${{ matrix.arch }}
+          path: release/koncepcja-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+      # ── Attach to GitHub Release (only on tagged release events) ──
+      - name: Publish release
+        if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && matrix.config == 'Release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/koncepcja-windows-${{ matrix.arch }}.zip
