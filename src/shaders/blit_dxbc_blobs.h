@@ -1,6 +1,6 @@
-// konCePCja — DXBC bytecode blobs (D3D12 backend).
+// konCePCja â€” DXBC bytecode blobs (D3D12 backend).
 //
-// GENERATED FILE — do not hand-edit.  Regenerate via:
+// GENERATED FILE â€” do not hand-edit.  Regenerate via:
 //   scripts/compile_shaders.sh && scripts/blob_to_header.py
 //
 // The .github/workflows/shader-blobs.yml Windows CI job runs fxc.exe
