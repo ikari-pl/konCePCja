@@ -72,7 +72,7 @@ do
   # the printer file ends up empty.  This was the recurring macOS CI
   # flake on PRs #101/103/107/108/109/110.  See dsk/test.sh which uses
   # the same pattern.
-  run_with_timeout 20 $KONCPCDIR/koncepcja -c koncepcja.cfg \
+  run_with_timeout 20 "$KONCPCDIR/koncepcja" -c koncepcja.cfg \
       -a "print #8,\"style=${style}\"" \
       -a "call 0" \
       -a KONCPC_WAITBREAK \
