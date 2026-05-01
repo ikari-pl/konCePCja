@@ -1,20 +1,20 @@
 name: Shader Blobs
 
-# Auto-compile HLSL shaders to DXBC on a Windows runner and commit
-# the resulting C++ headers back to the PR branch.  Triggered by edits
-# to src/shaders/*.hlsl on PRs and on direct pushes to feature
-# branches that change those files.
+# Auto-compile shader sources to bytecode and commit the resulting C++
+# headers back to the PR branch.  Two parallel jobs:
 #
-# The blobs live at:
-#   src/shaders/blit_dxbc_blobs.h
-#   src/shaders/crt_dxbc_blobs.h
-# and are consumed by SDL_GPU's D3D12 backend on Windows.  Other
-# platforms ignore them.
+#   compile-dxbc   — Windows runner, fxc.exe on .hlsl   → blit_dxbc_blobs.h, crt_dxbc_blobs.h
+#   compile-spirv  — Linux  runner, glslangValidator on .glsl → blit_spirv_blobs.h, crt_spirv_blobs.h
+#
+# DXBC is consumed by SDL_GPU's D3D12 backend on Windows; SPIRV by its
+# Vulkan backend on Linux (and Windows where preferred).  Each platform
+# ignores blobs it cannot consume.
 
 on:
   pull_request:
     paths:
       - 'src/shaders/**.hlsl'
+      - 'src/shaders/**.glsl'
       - 'scripts/blob_to_header.py'
       - '.github/workflows/shader-blobs.yml'
   push:
@@ -22,6 +22,7 @@ on:
       - master
     paths:
       - 'src/shaders/**.hlsl'
+      - 'src/shaders/**.glsl'
       - 'scripts/blob_to_header.py'
 
 permissions:
@@ -91,10 +92,13 @@ jobs:
             }
           }
 
-      - name: Regenerate C++ headers
+      - name: Regenerate C++ headers (DXBC only)
         shell: pwsh
         run: |
-          python scripts/blob_to_header.py
+          # --format dxbc so this Windows job doesn't touch SPIRV headers
+          # (no .spv files exist on this runner — they'd be overwritten as
+          # empty placeholders, racing the Linux compile-spirv job).
+          python scripts/blob_to_header.py --format dxbc
 
       - name: Diff check
         id: diff
@@ -117,4 +121,74 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/shaders/blit_dxbc_blobs.h src/shaders/crt_dxbc_blobs.h
           git commit -m "chore(shaders): regenerate DXBC blobs from HLSL sources"
+          git push origin HEAD:${{ github.head_ref }}
+
+  compile-spirv:
+    name: Compile GLSL → SPIRV and regenerate C++ headers
+    runs-on: ubuntu-latest
+    # Same anti-loop guard as compile-dxbc — skip when this workflow's own
+    # auto-commit triggers another run.
+    if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
+
+    steps:
+      - name: Check out PR branch (with write token)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install glslang-tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y glslang-tools
+
+      - name: Compile GLSL → SPIRV
+        run: |
+          set -euo pipefail
+          mkdir -p src/shaders/blobs
+
+          # glslangValidator -V emits SPIR-V 1.0 by default; SDL_GPU's
+          # Vulkan backend accepts that.  Profile is auto-detected from
+          # the shader's #version directive (450 in our sources).
+          jobs=(
+            "src/shaders/blit.vert.glsl:blit.vert.spv"
+            "src/shaders/blit.frag.glsl:blit.frag.spv"
+            "src/shaders/crt_basic.frag.glsl:crt_basic.frag.spv"
+            "src/shaders/crt_full.frag.glsl:crt_full.frag.spv"
+            "src/shaders/crt_lottes.frag.glsl:crt_lottes.frag.spv"
+          )
+          for j in "${jobs[@]}"; do
+            IFS=":" read -r src out <<< "$j"
+            echo "Compiling $src -> $out"
+            glslangValidator -V "$src" -o "src/shaders/blobs/$out"
+          done
+
+      - name: Regenerate C++ headers (SPIRV only)
+        run: |
+          # --format spirv so this Linux job doesn't touch DXBC headers
+          # (no .dxbc files on this runner; they'd be overwritten as
+          # empty placeholders, racing the Windows compile-dxbc job).
+          python3 scripts/blob_to_header.py --format spirv
+
+      - name: Diff check
+        id: diff
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only -- \
+            src/shaders/blit_spirv_blobs.h src/shaders/crt_spirv_blobs.h)
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No header changes; nothing to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push regenerated headers
+        if: steps.diff.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/shaders/blit_spirv_blobs.h src/shaders/crt_spirv_blobs.h
+          git commit -m "chore(shaders): regenerate SPIRV blobs from GLSL sources"
           git push origin HEAD:${{ github.head_ref }}

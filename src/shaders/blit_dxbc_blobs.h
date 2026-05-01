@@ -1,14 +1,16 @@
-// konCePCja — DXBC bytecode blobs (D3D12 backend).
+// konCePCja â€” DXBC bytecode blobs (D3D12 backend).
 //
-// GENERATED FILE — do not hand-edit.  Regenerate via:
+// GENERATED FILE â€” do not hand-edit.  Regenerate via:
 //   scripts/compile_shaders.sh && scripts/blob_to_header.py
 //
-// The .github/workflows/shader-blobs.yml Windows CI job runs both
+// The .github/workflows/shader-blobs.yml Windows CI job runs fxc.exe
 // automatically when src/shaders/*.hlsl is touched and commits the
 // result back to the PR branch.
 //
-// alignas(4): SDL_GPU's D3D12 backend may treat the blob as
-// 32-bit-aligned bytecode.  Match the SPIRV header convention.
+// alignas(4): SDL_GPU may treat the blob as 32-bit-aligned
+// bytecode.  Vulkan SPIR-V is a 32-bit-word stream; D3D12 DXBC
+// objects benefit from the same alignment on strict-alignment
+// architectures (ARM Linux / ARM Windows).
 
 #ifndef KON_CPC_JA_BLIT_DXBC_BLOBS_H
 #define KON_CPC_JA_BLIT_DXBC_BLOBS_H
