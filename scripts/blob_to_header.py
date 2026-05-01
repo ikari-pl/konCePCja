@@ -30,6 +30,15 @@ class Format:
     workflow_note: str  # one-line CI workflow description for the file header
 
 
+@dataclass(frozen=True)
+class Target:
+    """One generated header file, paired with its source blob list and format."""
+    path: pathlib.Path
+    guard: str
+    blobs: list[tuple[str, str]]
+    fmt: "Format"
+
+
 DXBC = Format(
     label="DXBC",
     backend="D3D12",
@@ -74,6 +83,11 @@ CRT_SPIRV_BLOBS = [
 ]
 
 
+def _comment_block(text: str) -> str:
+    """Prefix every line of `text` with `// ` so it embeds cleanly inside a header."""
+    return "\n".join(f"// {line}" for line in text.split("\n"))
+
+
 def emit_array(name: str, data: bytes, fmt: Format) -> str:
     """Format a byte sequence as `alignas(4) inline constexpr ... = { ... };`.
 
@@ -87,7 +101,7 @@ def emit_array(name: str, data: bytes, fmt: Format) -> str:
     if not data:
         return (
             f"// {name}: empty placeholder — {fmt.label} blob not yet generated.\n"
-            f"// {fmt.workflow_note.replace(chr(10), chr(10) + '// ')}\n"
+            f"{_comment_block(fmt.workflow_note)}\n"
             f"// Consumers MUST check {size_name} before reading the array.\n"
             f"alignas(4) inline constexpr std::uint8_t {name}[1] = {{ 0x00 }};\n"
             f"inline constexpr std::size_t {size_name} = 0;\n"
@@ -118,7 +132,7 @@ def render_header(guard: str, blobs: list[tuple[str, str]], fmt: Format) -> str:
         "// GENERATED FILE — do not hand-edit.  Regenerate via:\n"
         "//   scripts/compile_shaders.sh && scripts/blob_to_header.py\n"
         "//\n"
-        f"// {fmt.workflow_note.replace(chr(10), chr(10) + '// ')}\n"
+        f"{_comment_block(fmt.workflow_note)}\n"
         "//\n"
         "// alignas(4): SDL_GPU may treat the blob as 32-bit-aligned\n"
         "// bytecode.  Vulkan SPIR-V is a 32-bit-word stream; D3D12 DXBC\n"
@@ -136,12 +150,12 @@ def render_header(guard: str, blobs: list[tuple[str, str]], fmt: Format) -> str:
     )
 
 
-def write_header(
-    path: pathlib.Path, guard: str, blobs: list[tuple[str, str]], fmt: Format
-) -> None:
-    text = render_header(guard, blobs, fmt)
-    path.write_text(text)
-    print(f"  wrote {path.relative_to(ROOT)} ({text.count(chr(10))} lines)")
+def write_header(target: "Target") -> None:
+    text = render_header(target.guard, target.blobs, target.fmt)
+    # Explicit utf-8 + LF newlines so a Windows runner doesn't write CRLF
+    # cp1252 garbage that breaks downstream readers (em-dash → 0x97 etc.).
+    target.path.write_text(text, encoding="utf-8", newline="\n")
+    print(f"  wrote {target.path.relative_to(ROOT)} ({text.count(chr(10))} lines)")
 
 
 def main(argv: list[str]) -> int:
@@ -166,33 +180,40 @@ def main(argv: list[str]) -> int:
     )
     args = parser.parse_args(argv)
 
-    # (output_path, header_guard, blob_table, format)
     all_targets = [
-        (HEADER_DIR / "blit_dxbc_blobs.h",  "KON_CPC_JA_BLIT_DXBC_BLOBS_H",  BLIT_DXBC_BLOBS,  DXBC),
-        (HEADER_DIR / "crt_dxbc_blobs.h",   "KON_CPC_JA_CRT_DXBC_BLOBS_H",   CRT_DXBC_BLOBS,   DXBC),
-        (HEADER_DIR / "blit_spirv_blobs.h", "KON_CPC_JA_BLIT_SPIRV_BLOBS_H", BLIT_SPIRV_BLOBS, SPIRV),
-        (HEADER_DIR / "crt_spirv_blobs.h",  "KON_CPC_JA_CRT_SPIRV_BLOBS_H",  CRT_SPIRV_BLOBS,  SPIRV),
+        Target(HEADER_DIR / "blit_dxbc_blobs.h",  "KON_CPC_JA_BLIT_DXBC_BLOBS_H",  BLIT_DXBC_BLOBS,  DXBC),
+        Target(HEADER_DIR / "crt_dxbc_blobs.h",   "KON_CPC_JA_CRT_DXBC_BLOBS_H",   CRT_DXBC_BLOBS,   DXBC),
+        Target(HEADER_DIR / "blit_spirv_blobs.h", "KON_CPC_JA_BLIT_SPIRV_BLOBS_H", BLIT_SPIRV_BLOBS, SPIRV),
+        Target(HEADER_DIR / "crt_spirv_blobs.h",  "KON_CPC_JA_CRT_SPIRV_BLOBS_H",  CRT_SPIRV_BLOBS,  SPIRV),
     ]
     if args.format == "dxbc":
-        targets = [t for t in all_targets if t[3] is DXBC]
+        targets = [t for t in all_targets if t.fmt is DXBC]
     elif args.format == "spirv":
-        targets = [t for t in all_targets if t[3] is SPIRV]
+        targets = [t for t in all_targets if t.fmt is SPIRV]
     else:
         targets = all_targets
 
     if args.check:
         any_diff = False
-        for path, guard, blobs, fmt in targets:
-            new = render_header(guard, blobs, fmt)
-            cur = path.read_text() if path.exists() else ""
+        for t in targets:
+            new = render_header(t.guard, t.blobs, t.fmt)
+            # Read as bytes + utf-8 decode with replace — Windows pwsh
+            # auto-commits headers can land in cp1252 if the Tee-Object
+            # diff step doesn't go through UTF-8 stdio.  We compare byte
+            # streams: if either side decodes differently from utf-8 we
+            # treat the file as stale and regenerate.
+            try:
+                cur = t.path.read_text(encoding="utf-8") if t.path.exists() else ""
+            except UnicodeDecodeError:
+                cur = ""  # non-UTF-8 on disk → forces a regenerate
             if new != cur:
-                print(f"DIFF: {path.relative_to(ROOT)} — re-run scripts/blob_to_header.py")
+                print(f"DIFF: {t.path.relative_to(ROOT)} — re-run scripts/blob_to_header.py")
                 any_diff = True
         return 1 if any_diff else 0
 
     BLOBS.mkdir(parents=True, exist_ok=True)
-    for path, guard, blobs, fmt in targets:
-        write_header(path, guard, blobs, fmt)
+    for t in targets:
+        write_header(t)
     return 0
 
 
