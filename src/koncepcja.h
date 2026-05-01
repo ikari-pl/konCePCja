@@ -48,7 +48,15 @@ class InputMapper;
 //#define DEBUG_TAPE
 //#define DEBUG_Z80
 
-#define VERSION_STRING "v5.8.0"
+// Version is injected by the build system from the top-level VERSION
+// file (CMake: target_compile_definitions; makefile: KONCPC_VERSION).
+// The fallback below is only hit by IDE/static-analysis passes that
+// don't go through the build flags.
+#ifdef KONCPC_VERSION_STRING
+#define VERSION_STRING KONCPC_VERSION_STRING
+#else
+#define VERSION_STRING "v0.0.0-unknown"
+#endif
 
 #ifndef _MAX_PATH
  #ifdef _POSIX_PATH_MAX
