@@ -683,7 +683,6 @@ bool ImGui_ImplSDLGPU3_Init(ImGui_ImplSDLGPU3_InitInfo* info)
     io.BackendRendererName = "imgui_impl_sdlgpu3";
     io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;  // We can honor the ImDrawCmd::VtxOffset field, allowing for large meshes.
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;   // We can honor ImGuiPlatformIO::Textures[] requests during render.
-    io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;  // konCePCja: per-viewport renderer hooks installed below when ConfigFlags_ViewportsEnable is set.
 
     IM_ASSERT(info->Device != nullptr);
     IM_ASSERT(info->ColorTargetFormat != SDL_GPU_TEXTUREFORMAT_INVALID);
@@ -694,9 +693,15 @@ bool ImGui_ImplSDLGPU3_Init(ImGui_ImplSDLGPU3_InitInfo* info)
     // turned on ImGuiConfigFlags_ViewportsEnable.  Upstream ImGui 1.92.6 ships
     // the Platform_* side (imgui_impl_sdl3) but leaves Renderer_* unimplemented
     // for SDL_GPU.  Without these hooks any popped-out floating window has no
-    // swapchain claim and cannot render.
+    // swapchain claim and cannot render.  Tie the RendererHasViewports flag to
+    // the hook installation so they cannot disagree — if the app toggles
+    // ViewportsEnable on later without re-Init'ing, ImGui core won't see a
+    // capability we haven't actually wired up.
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasViewports;
         ImGui_ImplSDLGPU3_InitMultiViewportSupport();
+    }
 
     return true;
 }
