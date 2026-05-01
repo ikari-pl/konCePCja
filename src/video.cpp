@@ -3112,27 +3112,23 @@ video_plugin video_headless_plugin()
 
 std::vector<video_plugin> video_plugin_list =
 {
-  // Hardware flip version are the same as software ones since switch to SDL2. Kept for compatibility of config, would be nice to not display them in the UI.
-  /* Name                     Hidden Init func      Palette func     Flip func (phase A)  Close func      Half size  X, Y offsets   X, Y scale  width, height  Flip B (phase B: viewports+swap) */
-  {"Direct",                  false, direct_init,   direct_setpal,   direct_flip_a,   direct_close,   1,         0, 0,          0, 0, 0, 0,  direct_flip_b },
-  {"Direct double",           true,  direct_init,   direct_setpal,   direct_flip_a,   direct_close,   0,         0, 0,          0, 0, 0, 0,  direct_flip_b },
-  {"Half size",               true,  direct_init,   direct_setpal,   direct_flip_a,   direct_close,   1,         0, 0,          0, 0, 0, 0,  direct_flip_b },
-  {"Double size",             true,  direct_init,   direct_setpal,   direct_flip_a,   direct_close,   0,         0, 0,          0, 0, 0, 0,  direct_flip_b },
-  {"Super eagle",             false, swscale_init,  swscale_setpal,  seagle_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  {"Scale2x",                 false, swscale_init,  swscale_setpal,  scale2x_flip,    swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  {"Advanced Scale2x",        false, swscale_init,  swscale_setpal,  ascale2x_flip,   swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  {"TV 2x",                   false, swscale_init,  swscale_setpal,  tv2x_flip,       swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  {"Software bilinear",       false, swscale_init,  swscale_setpal,  swbilin_flip,    swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  {"Software bicubic",        false, swscale_init,  swscale_setpal,  swbicub_flip,    swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  {"Dot matrix",              false, swscale_init,  swscale_setpal,  dotmat_flip,     swscale_close,  1,         0, 0,          0, 0, 0, 0,  swscale_blit_b },
-  /* Legacy GL CRT shader plugins (CRT Basic, CRT Full, CRT Lottes) used
-     to live here at indices 11-13.  Removed in Phase 7b; the GPU variants
-     below (indices 25-27 after the shift) cover all three tiers on both
-     Metal and Vulkan.
-     Config migration: scr_style values 11/12/13 (old GL CRT) and 28/29/30
-     (old-position GPU CRT) are remapped to the new GPU CRT plugins at
-     25/26/27 on config load (see kon_cpc_ja.cpp init_video()).  Indices
-     14-27 stay untouched since new configs also use that range. */
+  // Phase 7c.1b: GL plugins deleted.  The "Direct" / swscale family entries
+  // below now point at the SDL3 GPU implementations (formerly named "Direct
+  // (GPU)" / "Super eagle (GPU)" / etc.).  Names kept short so existing UI
+  // labels and external references (scripts, configs) continue to work.
+  // Hardware flip variants are the same as software ones since switch to SDL2.
+  /* Name                     Hidden Init func          Palette func     Flip func (phase A)    Close func           Half size  X, Y offsets   X, Y scale  width, height  Flip B (phase B: viewports+swap) */
+  {"Direct",                  false, gpu_direct_init,    direct_setpal,   gpu_flip_a,            gpu_direct_close,    1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Direct double",           true,  gpu_direct_init,    direct_setpal,   gpu_flip_a,            gpu_direct_close,    0,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Half size",               true,  gpu_direct_init,    direct_setpal,   gpu_flip_a,            gpu_direct_close,    1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Double size",             true,  gpu_direct_init,    direct_setpal,   gpu_flip_a,            gpu_direct_close,    0,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Super eagle",             false, swscale_gpu_init,   swscale_setpal,  seagle_gpu_flip,       swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Scale2x",                 false, swscale_gpu_init,   swscale_setpal,  scale2x_gpu_flip,      swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Advanced Scale2x",        false, swscale_gpu_init,   swscale_setpal,  ascale2x_gpu_flip,     swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"TV 2x",                   false, swscale_gpu_init,   swscale_setpal,  tv2x_gpu_flip,         swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Software bilinear",       false, swscale_gpu_init,   swscale_setpal,  swbilin_gpu_flip,      swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Software bicubic",        false, swscale_gpu_init,   swscale_setpal,  swbicub_gpu_flip,      swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
+  {"Dot matrix",              false, swscale_gpu_init,   swscale_setpal,  dotmat_gpu_flip,       swscale_gpu_close,   1,         0, 0,          0, 0, 0, 0,  gpu_flip_b },
   /* SDL_Renderer plugins — use D3D11 on Windows, Metal on macOS, GL on Linux.
      No OpenGL context required; no multi-viewport support. flip_b is null. */
   {"Direct (SDL)",            false, sdlr_init,          direct_setpal,   sdlr_flip,     sdlr_close,          1,  0, 0,  0, 0, 0, 0,  nullptr },
@@ -3141,30 +3137,8 @@ std::vector<video_plugin> video_plugin_list =
   {"TV 2x (SDL)",             false, sdlr_swscale_init,  swscale_setpal,  tv2x_flip,     sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
   {"Bilinear (SDL)",          false, sdlr_swscale_init,  swscale_setpal,  swbilin_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
   {"Bicubic (SDL)",           false, sdlr_swscale_init,  swscale_setpal,  swbicub_flip,  sdlr_swscale_close,  1,  0, 0,  0, 0, 0, 0,  nullptr },
-  /* Direct (GPU) — SDL3 GPU path (Metal today; Vulkan/D3D12 after shader blob compilation).
-     Returns nullptr from init on backends without a working blit pipeline, falling
-     through video_init()'s SDL_Renderer chain.  See P1.2b Phase 4 for design notes. */
-  {"Direct (GPU)",            false, gpu_direct_init,    direct_setpal,   gpu_flip_a,    gpu_direct_close,    1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  /* GPU variants of the swscale family — P1.2b Phase 5.  Same CPU filters as
-     their GL counterparts, but upload + composite via SDL_GPU.  Fall back to
-     SDL_Renderer chain when no blit pipeline is available. */
-  {"Super eagle (GPU)",       false, swscale_gpu_init,   swscale_setpal,  seagle_gpu_flip,    swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  {"Scale2x (GPU)",           false, swscale_gpu_init,   swscale_setpal,  scale2x_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  {"Advanced Scale2x (GPU)",  false, swscale_gpu_init,   swscale_setpal,  ascale2x_gpu_flip,  swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  {"TV 2x (GPU)",             false, swscale_gpu_init,   swscale_setpal,  tv2x_gpu_flip,      swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  {"Software bilinear (GPU)", false, swscale_gpu_init,   swscale_setpal,  swbilin_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  {"Software bicubic (GPU)",  false, swscale_gpu_init,   swscale_setpal,  swbicub_gpu_flip,   swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  {"Dot matrix (GPU)",        false, swscale_gpu_init,   swscale_setpal,  dotmat_gpu_flip,    swscale_gpu_close, 1,  0, 0,  0, 0, 0, 0,  gpu_flip_b },
-  /* CRT Basic (GPU) — SDL3 GPU port of the CRT Basic shader (P1.2b Phase 6b).
-     Metal only today; SPIRV/DXBC ports deferred. */
-  {"CRT Basic (GPU)",         false, crt_basic_gpu_init, direct_setpal,   crt_basic_gpu_flip_a, crt_basic_gpu_close, 1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
-  /* CRT Full (GPU) — SDL3 GPU port of the CRT Full shader (Phase 6c).
-     Adds bloom + vignette + slot mask; parameter knobs inlined as MSL
-     constants since the GL path never varied them at runtime. */
-  {"CRT Full (GPU)",          false, crt_full_gpu_init,  direct_setpal,   crt_full_gpu_flip_a,  crt_full_gpu_close,  1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
-  /* CRT Lottes (GPU) — SDL3 GPU port of Timothy Lottes' CRT shader (Phase 6d).
-     Gaussian beam profile + sRGB-linear blending + curvature warp + slot
-     mask.  Heaviest of the three CRT tiers (11 texture fetches per output
-     pixel).  Metal only today; SPIRV/DXBC deferred. */
-  {"CRT Lottes (GPU)",        false, crt_lottes_gpu_init, direct_setpal,  crt_lottes_gpu_flip_a, crt_lottes_gpu_close, 1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
+  /* CRT (GPU) — SDL3 GPU CRT shader plugins.  Metal + Vulkan + D3D12 backends. */
+  {"CRT Basic",               false, crt_basic_gpu_init, direct_setpal,   crt_basic_gpu_flip_a,  crt_basic_gpu_close, 1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
+  {"CRT Full",                false, crt_full_gpu_init,  direct_setpal,   crt_full_gpu_flip_a,   crt_full_gpu_close,  1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
+  {"CRT Lottes",              false, crt_lottes_gpu_init, direct_setpal,  crt_lottes_gpu_flip_a, crt_lottes_gpu_close,1, 0, 0, 0, 0, 0, 0, gpu_flip_b },
 };

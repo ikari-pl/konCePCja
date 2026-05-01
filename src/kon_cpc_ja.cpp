@@ -2312,28 +2312,32 @@ void loadConfiguration (t_CPC &CPC, const std::string& configFilename)
    CPC.scr_preserve_aspect_ratio = conf.getIntValue("video", "scr_preserve_aspect_ratio", 1);
    CPC.scr_crt_aspect = conf.getIntValue("video", "scr_crt_aspect", 1);
    CPC.scr_style = conf.getIntValue("video", "scr_style", 1);
-   // Phase 7b scr_style remap — the old CRT GPU plugins used to sit at
-   // indices 28/29/30 (past the pre-deletion position of the legacy GL
-   // CRT plugins at 11-13).  After Phase 7b the vector is 28 entries
-   // long, so 28-30 are now strictly out-of-range and the only reason
-   // a config references them is that it was saved pre-Phase-7b.
+   // Phase 7c.1b scr_style remap — GL plugins removed and their slots
+   // (0-10) replaced in-place by the SDL3 GPU implementations.  The old
+   // explicit "(GPU)"-suffixed entries that used to sit at 17-27 are
+   // gone; the CRT (GPU) trio moved to the freed 17-19 indices.  The
+   // SDL_Renderer plugins at 11-16 are unchanged.
    //
-   // Remap those three indices to the new CRT GPU positions (25/26/27).
-   // We intentionally do NOT remap 11/12/13: those are legal indices in
-   // the post-7b table (Direct (SDL) / Super eagle (SDL) / Scale2x (SDL))
-   // and a user may have selected them deliberately via the UI — without
-   // a config-version field we cannot tell old from new there.  Same
-   // reasoning for 14-27.  Users with an old config pointing at a
-   // now-deleted legacy GL CRT plugin will fall back to whatever sits at
-   // those indices today; a one-time manual reselect is accepted.
+   // Pre-Phase-7b configs may also reference 28/29/30 (the old CRT GPU
+   // positions before Phase 7b shifted them down to 25/26/27).
+   //
+   // Remap table:
+   //   17        -> 0   (old Direct (GPU)            -> Direct)
+   //   18..24    -> 4..10 (old swscale (GPU) family  -> swscale)
+   //   25..27    -> 17..19 (old CRT (GPU) trio       -> CRT)
+   //   28..30    -> 17..19 (pre-7b CRT (GPU) trio    -> CRT)
+   //
+   // Indices 0-16 in older configs already point at the right plugin
+   // (just GPU-backed now instead of GL-backed) so no remap needed.
    {
       unsigned int s = CPC.scr_style;
       unsigned int remapped = s;
-      if      (s == 28) remapped = 25;  // old CRT Basic (GPU) -> CRT Basic (GPU)
-      else if (s == 29) remapped = 26;  // old CRT Full  (GPU) -> CRT Full  (GPU)
-      else if (s == 30) remapped = 27;  // old CRT Lottes(GPU) -> CRT Lottes(GPU)
+      if      (s == 17) remapped = 0;   // old Direct (GPU)           -> Direct
+      else if (s >= 18 && s <= 24) remapped = s - 14; // old swscale (GPU) -> swscale (4..10)
+      else if (s >= 25 && s <= 27) remapped = s - 8;  // old CRT (GPU)    -> CRT (17..19)
+      else if (s >= 28 && s <= 30) remapped = s - 11; // pre-7b CRT (GPU) -> CRT (17..19)
       if (remapped != s && remapped < video_plugin_list.size()) {
-         LOG_INFO("scr_style=" << s << " is obsolete after Phase 7b — "
+         LOG_INFO("scr_style=" << s << " is obsolete after Phase 7c.1b — "
                   "remapped to " << remapped << " ("
                   << video_plugin_list[remapped].name << ")");
          CPC.scr_style = remapped;
