@@ -74,12 +74,13 @@ jobs:
           Write-Host "Running: $testRunner"
           & $testRunner --gtest_shuffle
 
-      # ── Package (Release x64 + ARM64 only) ─────────────
-      # Skip Debug (~3x larger, slower, not for end users) and Win32 (32-bit
-      # is legacy; modern Windows is 64-bit).  Bundles koncepcja.exe with
-      # the runtime DLLs from vcpkg so users don't need vcpkg installed.
+      # ── Package (Release builds across all architectures) ─────────────
+      # Skip Debug (~3x larger, slower, not for end users).  Win32 stays
+      # in — this is a retro emulator and our users include people on 32-bit
+      # Windows / older hardware.  Bundles koncepcja.exe with the runtime
+      # DLLs from vcpkg so users don't need vcpkg installed.
       - name: Package Windows release
-        if: matrix.config == 'Release' && matrix.arch != 'Win32'
+        if: matrix.config == 'Release'
         shell: pwsh
         run: |
           $stageName = "koncepcja-windows-${{ matrix.arch }}"
@@ -110,7 +111,7 @@ jobs:
 
       # ── Upload as CI artifact (always, for PR/branch builds) ──
       - name: Upload Windows artifact
-        if: matrix.config == 'Release' && matrix.arch != 'Win32'
+        if: matrix.config == 'Release'
         uses: actions/upload-artifact@v4
         with:
           name: koncepcja-windows-${{ matrix.arch }}
@@ -119,7 +120,7 @@ jobs:
 
       # ── Attach to GitHub Release (only on tagged release events) ──
       - name: Publish release
-        if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && matrix.config == 'Release' && matrix.arch != 'Win32'
+        if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v') && matrix.config == 'Release'
         uses: softprops/action-gh-release@v2
         with:
           files: release/koncepcja-windows-${{ matrix.arch }}.zip
