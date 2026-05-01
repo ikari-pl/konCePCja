@@ -6,7 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Options ──────────────────────────────────────────────
-option(WITH_GL    "Enable OpenGL rendering"   ON)
 option(WITH_CURL  "Enable libcurl (M4 HTTP)"  OFF)
 option(WITH_JPEG  "Enable libjpeg (AVI rec)"  OFF)
 
@@ -65,7 +64,6 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdlrenderer3.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdlgpu3.cpp
 )
@@ -104,10 +102,6 @@ if(GIT_HASH)
     target_compile_definitions(koncepcja_lib PUBLIC HASH="${GIT_HASH}")
 endif()
 
-if(WITH_GL)
-    target_compile_definitions(koncepcja_lib PUBLIC WITH_GL)
-endif()
-
 if(WIN32)
     target_compile_definitions(koncepcja_lib PUBLIC WINDOWS _WIN32_WINNT=0x0601 NOMINMAX)
 endif()
@@ -124,17 +118,12 @@ endif()
 
 # ── Platform-specific linking ────────────────────────────
 if(WIN32)
-    target_link_libraries(koncepcja_lib PUBLIC ws2_32 opengl32 winmm)
+    target_link_libraries(koncepcja_lib PUBLIC ws2_32 winmm)
 elseif(APPLE)
     find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
-    find_library(OPENGL_FRAMEWORK OpenGL REQUIRED)
-    target_link_libraries(koncepcja_lib PUBLIC ${COCOA_FRAMEWORK} ${OPENGL_FRAMEWORK})
-    target_compile_definitions(koncepcja_lib PUBLIC GL_SILENCE_DEPRECATION)
-else()
-    # Linux
-    find_package(OpenGL REQUIRED)
-    target_link_libraries(koncepcja_lib PUBLIC OpenGL::GL)
+    target_link_libraries(koncepcja_lib PUBLIC ${COCOA_FRAMEWORK})
 endif()
+# (Linux: no platform link flags — SDL_GPU's Vulkan backend doesn't need OpenGL.)
 
 # ── Compiler flags ───────────────────────────────────────
 if(MSVC)
