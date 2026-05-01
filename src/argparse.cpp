@@ -16,7 +16,6 @@
 #include "stringutils.h"
 #include "log.h"
 #include "video.h"
-#include "glfuncs.h"  // For HAVE_GL
 
 const struct option long_options[] =
 {
@@ -233,9 +232,6 @@ void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, 
 
             // Flags
             std::cout << "Compiled with:"
-#ifdef HAVE_GL
-                      << " HAVE_GL"
-#endif
 #ifdef DEBUG
                       << " DEBUG"
 #endif

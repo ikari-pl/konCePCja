@@ -33,19 +33,16 @@
 #include "video.h"
 #include "koncepcja.h"
 #include "log.h"
-#include "glfuncs.h"
 #include <algorithm>
 #include <atomic>
 #include <functional>
 #include <math.h>
 #include <memory>
 #include <iostream>
-#include <unordered_map>
 #include "savepng.h"
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
-#include "imgui_impl_opengl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "imgui_impl_sdlgpu3.h"
 #include "imgui_ui.h"
@@ -54,40 +51,10 @@
 #include "shaders/blit_shaders.h"
 #include <cstring>
 
-#ifdef __APPLE__
-#include <OpenGL/gl3.h>
-#else
-#include <GL/gl.h>
-#endif
-
-// GL 2.0+/3.0+ types and constants needed by CRT shaders.
-// On macOS, <OpenGL/gl3.h> provides these. On Windows/Linux with GL 1.1
-// headers only, we define them here.
-#ifndef GL_FRAGMENT_SHADER
-typedef char GLchar;
-typedef ptrdiff_t GLsizeiptr;
-#define GL_FRAGMENT_SHADER                0x8B30
-#define GL_VERTEX_SHADER                  0x8B31
-#define GL_COMPILE_STATUS                 0x8B81
-#define GL_LINK_STATUS                    0x8B82
-#define GL_INFO_LOG_LENGTH                0x8B84
-#define GL_ARRAY_BUFFER                   0x8892
-#define GL_STATIC_DRAW                    0x88E4
-#define GL_TEXTURE0                       0x84C0
-#define GL_FRAMEBUFFER                    0x8D40
-#define GL_COLOR_ATTACHMENT0              0x8CE0
-#define GL_FRAMEBUFFER_COMPLETE           0x8CD5
-#define GL_CLAMP_TO_EDGE                  0x812F
-#define GL_FRAMEBUFFER_BINDING            0x8CA6
-#endif
-
 SDL_Window* mainSDLWindow = nullptr;
 SDL_Renderer* renderer = nullptr;
 SDL_Texture* texture = nullptr;
-SDL_GLContext glcontext;
 
-// OpenGL texture for CPC framebuffer (used by OpenGL3/ImGui rendering path)
-static GLuint cpc_gl_texture = 0;
 // SDL texture for CPC framebuffer (used by SDL_Renderer/D3D rendering path)
 static SDL_Texture* cpc_sdl_texture = nullptr;
 // Which ImGui rendering backend is active
@@ -147,9 +114,8 @@ void video_request_window_screenshot(const std::string& path) {
 }
 
 // Returns the CPC screen texture as an opaque ImTextureID-compatible value.
-// The actual type is backend-dependent: GL texture ID for OpenGL backends,
-// SDL_Texture* cast to uintptr_t for SDL_Renderer backends.
-// Callers should only use the returned value as an ImTextureID.
+// The actual type is backend-dependent: SDL_Texture* for SDL_Renderer plugins,
+// SDL_GPUTexture* for SDL3 GPU plugins.  Callers only use it as an ImTextureID.
 uintptr_t video_get_cpc_texture() {
   if (cpc_sdl_texture)
     return reinterpret_cast<uintptr_t>(cpc_sdl_texture);
@@ -157,7 +123,7 @@ uintptr_t video_get_cpc_texture() {
   // an ImTextureID for Docked-mode ImGui::Image() calls on the CPC Screen.
   if (g_gpu.cpc_texture)
     return reinterpret_cast<uintptr_t>(g_gpu.cpc_texture);
-  return static_cast<uintptr_t>(cpc_gl_texture);
+  return 0;
 }
 
 void video_get_cpc_size(int& w, int& h) {
@@ -167,16 +133,18 @@ void video_get_cpc_size(int& w, int& h) {
 
 bool video_is_sdl_renderer() { return using_sdl_renderer; }
 
-// ── Offscreen texture cache (implementation follows gl3 struct below) ──────
-
-struct OffscreenEntry {
-    GLuint fbo = 0;
-    GLuint tex = 0;
-    int    w   = 0;
-    int    h   = 0;
-    size_t dirty = ~size_t(0);
-};
-static std::unordered_map<std::string, OffscreenEntry> g_offscreen_cache;
+// Offscreen FBO-into-texture rendering used to be backed by an OpenGL
+// FBO cache (see Phase 7c.1b deletion).  After the GL plugins were
+// removed there's no GL context to host an FBO, so this entry point
+// is a stub returning 0 — callers (imgui_ui.cpp plotter canvas) have
+// a per-frame ImDrawList fallback for the case where no FBO texture
+// is available.
+uintptr_t video_offscreen_texture(
+    const char* /*key*/, int /*canvas_w*/, int /*canvas_h*/, size_t /*dirty_marker*/,
+    const std::function<void(ImDrawList*, int, int)>& /*draw_fn*/)
+{
+    return 0;
+}
 
 // Called from direct_flip_a() and swscale_blit_a() to capture the current frame
 static void video_capture_if_pending() {
@@ -284,74 +252,6 @@ void compute_scale(video_plugin* t, int w, int h)
 /* ------------------------------------------------------------------------------------ */
 /* Half size video plugin ------------------------------------------------------------- */
 /* ------------------------------------------------------------------------------------ */
-SDL_Surface* direct_init(video_plugin* t, int scale, bool fs)
-{
-  // Create OpenGL window
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-
-  mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
-      CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
-      (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-  if (!mainSDLWindow) return nullptr;
-
-  glcontext = SDL_GL_CreateContext(mainSDLWindow);
-  if (!glcontext) return nullptr;
-  SDL_GL_MakeCurrent(mainSDLWindow, glcontext);
-  // Disable vsync: the emulator's own speed limiter handles frame pacing.
-  // Vsync causes SDL_GL_SwapWindow to block when macOS throttles background apps,
-  // which prevents IPC screenshot capture from working.
-  // macOS forces compositor-level vsync anyway, so no tearing in practice.
-  SDL_GL_SetSwapInterval(0);
-
-  // Initialize Dear ImGui
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = imgui_ini_path();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-  ImGui::StyleColorsDark();
-  imgui_init_ui();
-  ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
-  if (!ImGui_ImplOpenGL3_Init("#version 150")) {
-    // OpenGL loader failed (e.g. driver only exposes GL 1.1)
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-    SDL_GL_DestroyContext(glcontext);
-    glcontext = nullptr;
-    SDL_DestroyWindow(mainSDLWindow);
-    mainSDLWindow = nullptr;
-    return nullptr;
-  }
-
-  // Always render at native Mode 2 width. Y doubling for scale > 1.
-  int surface_width = CPC_RENDER_WIDTH;
-  int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT;
-  t->half_pixels = (scale <= 1) ? 1 : 0;  // controls dwYScale in video_set_style
-  vid = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
-  if (!vid) return nullptr;
-
-  // Create GL texture for CPC framebuffer
-  glGenTextures(1, &cpc_gl_texture);
-  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, surface_width, surface_height, 0,
-               GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-
-  {
-    const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(vid->format);
-    SDL_Palette* pal = SDL_GetSurfacePalette(vid);
-    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(fmt, pal, 0, 0, 0));
-  }
-  compute_scale(t, surface_width, surface_height);
-  return vid;
-}
 
 void direct_setpal(SDL_Color* c)
 {
@@ -360,89 +260,7 @@ void direct_setpal(SDL_Color* c)
   }
 }
 
-// Phase A: CPC framebuffer upload + ImGui render + main viewport (~3ms).
-// Called first so audio can be pushed before the expensive phase B.
-void direct_flip_a(video_plugin* t)
-{
-  // Recompute display area each frame (handles window resize, 4:3 aspect)
-  compute_scale(t, vid->w, vid->h);
 
-  // Update texture filtering: LINEAR for 4:3 stretch, NEAREST for square pixels
-  GLenum filter = CPC.scr_crt_aspect ? GL_LINEAR : GL_NEAREST;
-  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-
-  // Upload CPC framebuffer to GL texture
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
-                  GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
-
-  // Start ImGui frame
-  ImGui_ImplOpenGL3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-
-  // Draw CPC framebuffer as background image via ImGui (classic mode only;
-  // in docked mode the CPC Screen window handles its own ImGui::Image())
-  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::GetBackgroundDrawList(vp)->AddImage(
-        static_cast<ImTextureID>(cpc_gl_texture),
-        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-        ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
-  }
-
-  // Render all ImGui windows
-  imgui_render_ui();
-  ImGui::Render();
-
-  // GL clear and render
-  int display_w, display_h;
-  SDL_GetWindowSizeInPixels(mainSDLWindow, &display_w, &display_h);
-  glViewport(0, 0, display_w, display_h);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-  // Capture screenshot (emulator screen only)
-  video_capture_if_pending();
-}
-
-// Phase B: floating ImGui viewports + window swap (0-60ms depending on viewport count).
-// Runs after audio push so GL stalls don't starve the audio queue.
-void direct_flip_b([[maybe_unused]] video_plugin* t)
-{
-  // Multi-viewport: update and render platform windows.
-  // Only render when there are actual platform viewports (floating devtools, popups, submenus).
-  // When only the main viewport exists (Viewports.Size == 1), skip — saves GL context
-  // switches and SDL_GL_SwapWindow calls that block on macOS compositor.
-  ImGuiIO& io = ImGui::GetIO();
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-    ImGui::UpdatePlatformWindows();
-    if (ImGui::GetPlatformIO().Viewports.Size > 1) {
-      koncpc_order_viewports_above_main();
-      ImGui::RenderPlatformWindowsDefault();
-    }
-    SDL_GL_MakeCurrent(backup_window, backup_context);
-  }
-
-  SDL_GL_SwapWindow(mainSDLWindow);
-}
-
-void direct_close()
-{
-  if (ImGui::GetCurrentContext()) {
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-  }
-  if (cpc_gl_texture) { glDeleteTextures(1, &cpc_gl_texture); cpc_gl_texture = 0; }
-  if (vid) { SDL_DestroySurface(vid); vid = nullptr; }
-  if (glcontext) { SDL_GL_DestroyContext(glcontext); glcontext = nullptr; }
-  if (mainSDLWindow) { SDL_DestroyWindow(mainSDLWindow); mainSDLWindow = nullptr; }
-}
 
 /* ------------------------------------------------------------------------------------ */
 /* "Direct (GPU)" plugin — SDL3 GPU path, additive (P1.2b Phase 4) --------------------- */
@@ -1339,160 +1157,7 @@ static void crt_lottes_gpu_close()
     gpu_direct_close();
 }
 
-/* ------------------------------------------------------------------------------------ */
-/* GL 3.2 function loader + offscreen texture cache ---------------------------------- */
-/* ------------------------------------------------------------------------------------ */
-// Portable GL 2.0+/3.0+ function loader used by video_offscreen_texture()
-// for devtools panel rendering.  Originally introduced for the legacy CRT
-// shader plugins (removed in Phase 7b); kept here because devtools-style
-// ImGui-into-FBO rendering still needs these symbols on non-Apple GL
-// contexts where they're not direct symbols.
-//
-// On macOS, <OpenGL/gl3.h> provides these as direct symbols.
-// On Windows/Linux, loaded via SDL_GL_GetProcAddress at runtime.
-static struct CrtGL {
-    GLuint (*CreateShader)(GLenum) = nullptr;
-    void   (*ShaderSource)(GLuint, GLsizei, const GLchar* const*, const GLint*) = nullptr;
-    void   (*CompileShader)(GLuint) = nullptr;
-    void   (*GetShaderiv)(GLuint, GLenum, GLint*) = nullptr;
-    void   (*GetShaderInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*) = nullptr;
-    void   (*DeleteShader)(GLuint) = nullptr;
-    GLuint (*CreateProgram)() = nullptr;
-    void   (*AttachShader)(GLuint, GLuint) = nullptr;
-    void   (*LinkProgram)(GLuint) = nullptr;
-    void   (*GetProgramiv)(GLuint, GLenum, GLint*) = nullptr;
-    void   (*GetProgramInfoLog)(GLuint, GLsizei, GLsizei*, GLchar*) = nullptr;
-    void   (*UseProgram)(GLuint) = nullptr;
-    void   (*DeleteProgram)(GLuint) = nullptr;
-    GLint  (*GetUniformLocation)(GLuint, const GLchar*) = nullptr;
-    void   (*Uniform1i)(GLint, GLint) = nullptr;
-    void   (*Uniform1f)(GLint, GLfloat) = nullptr;
-    void   (*Uniform2f)(GLint, GLfloat, GLfloat) = nullptr;
-    GLint  (*GetAttribLocation)(GLuint, const GLchar*) = nullptr;
-    void   (*EnableVertexAttribArray)(GLuint) = nullptr;
-    void   (*VertexAttribPointer)(GLuint, GLint, GLenum, GLboolean, GLsizei, const void*) = nullptr;
-    void   (*GenVertexArrays)(GLsizei, GLuint*) = nullptr;
-    void   (*BindVertexArray)(GLuint) = nullptr;
-    void   (*DeleteVertexArrays)(GLsizei, const GLuint*) = nullptr;
-    void   (*GenBuffers)(GLsizei, GLuint*) = nullptr;
-    void   (*BindBuffer)(GLenum, GLuint) = nullptr;
-    void   (*BufferData)(GLenum, GLsizeiptr, const void*, GLenum) = nullptr;
-    void   (*DeleteBuffers)(GLsizei, const GLuint*) = nullptr;
-    void   (*GenFramebuffers)(GLsizei, GLuint*) = nullptr;
-    void   (*BindFramebuffer)(GLenum, GLuint) = nullptr;
-    void   (*FramebufferTexture2D)(GLenum, GLenum, GLenum, GLuint, GLint) = nullptr;
-    void   (*DeleteFramebuffers)(GLsizei, const GLuint*) = nullptr;
-    GLenum (*CheckFramebufferStatus)(GLenum) = nullptr;
-    void   (*ActiveTexture)(GLenum) = nullptr;
 
-    bool load() {
-        #define CRT_LOAD(name) \
-            name = reinterpret_cast<decltype(name)>(SDL_GL_GetProcAddress("gl" #name)); \
-            if (!name) { LOG_ERROR("CRT: failed to load gl" #name); return false; }
-        CRT_LOAD(CreateShader) CRT_LOAD(ShaderSource) CRT_LOAD(CompileShader)
-        CRT_LOAD(GetShaderiv) CRT_LOAD(GetShaderInfoLog) CRT_LOAD(DeleteShader)
-        CRT_LOAD(CreateProgram) CRT_LOAD(AttachShader) CRT_LOAD(LinkProgram)
-        CRT_LOAD(GetProgramiv) CRT_LOAD(GetProgramInfoLog) CRT_LOAD(UseProgram)
-        CRT_LOAD(DeleteProgram) CRT_LOAD(GetUniformLocation)
-        CRT_LOAD(Uniform1i) CRT_LOAD(Uniform1f) CRT_LOAD(Uniform2f)
-        CRT_LOAD(GetAttribLocation) CRT_LOAD(EnableVertexAttribArray)
-        CRT_LOAD(VertexAttribPointer)
-        CRT_LOAD(GenVertexArrays) CRT_LOAD(BindVertexArray) CRT_LOAD(DeleteVertexArrays)
-        CRT_LOAD(GenBuffers) CRT_LOAD(BindBuffer) CRT_LOAD(BufferData) CRT_LOAD(DeleteBuffers)
-        CRT_LOAD(GenFramebuffers) CRT_LOAD(BindFramebuffer) CRT_LOAD(FramebufferTexture2D)
-        CRT_LOAD(DeleteFramebuffers) CRT_LOAD(CheckFramebufferStatus) CRT_LOAD(ActiveTexture)
-        #undef CRT_LOAD
-        return true;
-    }
-} gl3;
-
-// ── video_offscreen_texture ────────────────────────────────────────────────
-// Defined here so it can access the file-local `gl3` function table.
-
-uintptr_t video_offscreen_texture(
-    const char* key, int canvas_w, int canvas_h, size_t dirty_marker,
-    const std::function<void(ImDrawList*, int, int)>& draw_fn)
-{
-    if (using_sdl_renderer) return 0;
-    if (canvas_w <= 0 || canvas_h <= 0) return 0;
-
-    // Lazily load GL3 function pointers (reuses the CRT-shader table).
-    if (!gl3.GenFramebuffers && !gl3.load()) return 0;
-
-    auto& e = g_offscreen_cache[key];
-
-    const bool size_changed = (canvas_w != e.w || canvas_h != e.h);
-    if (!size_changed && e.dirty == dirty_marker && e.tex)
-        return static_cast<uintptr_t>(e.tex);
-
-    // (Re-)create FBO + texture when dimensions change.
-    if (size_changed || !e.fbo) {
-        if (e.fbo) { gl3.DeleteFramebuffers(1, &e.fbo); e.fbo = 0; }
-        if (e.tex) { glDeleteTextures(1, &e.tex);       e.tex = 0; }
-
-        glGenTextures(1, &e.tex);
-        glBindTexture(GL_TEXTURE_2D, e.tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, canvas_w, canvas_h, 0,
-                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        gl3.GenFramebuffers(1, &e.fbo);
-        gl3.BindFramebuffer(GL_FRAMEBUFFER, e.fbo);
-        gl3.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                  GL_TEXTURE_2D, e.tex, 0);
-        GLenum status = gl3.CheckFramebufferStatus(GL_FRAMEBUFFER);
-        gl3.BindFramebuffer(GL_FRAMEBUFFER, 0);
-
-        if (status != GL_FRAMEBUFFER_COMPLETE) {
-            LOG_ERROR("video_offscreen_texture: FBO '" << key
-                      << "' incomplete (0x" << std::hex << status << ")");
-            gl3.DeleteFramebuffers(1, &e.fbo); e.fbo = 0;
-            glDeleteTextures(1, &e.tex);       e.tex = 0;
-            return 0;
-        }
-        e.w = canvas_w;
-        e.h = canvas_h;
-        e.dirty = ~size_t(0); // force redraw at new size
-    }
-
-    // Build ImDrawList with caller-supplied content.
-    ImDrawList draw_list(ImGui::GetDrawListSharedData());
-    draw_list.PushClipRect(ImVec2(0, 0),
-                           ImVec2(static_cast<float>(canvas_w),
-                                  static_cast<float>(canvas_h)));
-    draw_list.PushTextureID(ImGui::GetIO().Fonts->TexID);
-    draw_fn(&draw_list, canvas_w, canvas_h);
-
-    // Wrap in ImDrawData for the OpenGL3 backend.
-    ImDrawData draw_data;
-    draw_data.Valid            = true;
-    draw_data.CmdLists.push_back(&draw_list);
-    draw_data.CmdListsCount    = 1;
-    draw_data.TotalVtxCount    = draw_list.VtxBuffer.Size;
-    draw_data.TotalIdxCount    = draw_list.IdxBuffer.Size;
-    draw_data.DisplayPos       = ImVec2(0, 0);
-    draw_data.DisplaySize      = ImVec2(static_cast<float>(canvas_w),
-                                        static_cast<float>(canvas_h));
-    draw_data.FramebufferScale = ImVec2(1, 1);
-
-    // Render into the FBO (save/restore framebuffer binding and viewport).
-    GLint prev_fbo = 0;
-    GLint prev_viewport[4] = {};
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
-    glGetIntegerv(GL_VIEWPORT, prev_viewport);
-    gl3.BindFramebuffer(GL_FRAMEBUFFER, e.fbo);
-    glViewport(0, 0, canvas_w, canvas_h);
-    ImGui_ImplOpenGL3_RenderDrawData(&draw_data);
-    gl3.BindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fbo));
-    glViewport(prev_viewport[0], prev_viewport[1],
-               prev_viewport[2], prev_viewport[3]);
-
-    e.dirty = dirty_marker;
-    return static_cast<uintptr_t>(e.tex);
-}
 
 
 // Previously: lightweight Direct ↔ CRT switch without re-creating the
@@ -1962,157 +1627,18 @@ int video_get_bottombar_height()
   return bottombar_height;
 }
 
-SDL_Surface* swscale_init(video_plugin* t, int scale, bool fs)
-{
-  // Create OpenGL window
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
-  mainSDLWindow = SDL_CreateWindow("konCePCja " VERSION_STRING,
-      CPC_RENDER_WIDTH * scale, CPC_VISIBLE_SCR_HEIGHT * scale,
-      (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
-  if (!mainSDLWindow) return nullptr;
-
-  glcontext = SDL_GL_CreateContext(mainSDLWindow);
-  if (!glcontext) return nullptr;
-  SDL_GL_MakeCurrent(mainSDLWindow, glcontext);
-  SDL_GL_SetSwapInterval(0);
-
-  // Initialize Dear ImGui
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = imgui_ini_path();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-  ImGui::StyleColorsDark();
-  imgui_init_ui();
-  ImGui_ImplSDL3_InitForOpenGL(mainSDLWindow, glcontext);
-  if (!ImGui_ImplOpenGL3_Init("#version 150")) {
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-    SDL_GL_DestroyContext(glcontext);
-    glcontext = nullptr;
-    SDL_DestroyWindow(mainSDLWindow);
-    mainSDLWindow = nullptr;
-    return nullptr;
-  }
-
-  int surface_width = CPC_RENDER_WIDTH;
-  int surface_height = (scale > 1) ? CPC_VISIBLE_SCR_HEIGHT * 2 : CPC_VISIBLE_SCR_HEIGHT;
-  t->half_pixels = (scale <= 1) ? 1 : 0;
-  vid = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGBA32);
-  if (!vid) return nullptr;
-
-  // Create GL texture for CPC framebuffer (swscale uses 2x surfaces)
-  glGenTextures(1, &cpc_gl_texture);
-  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, surface_width * 2, surface_height * 2, 0,
-               GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-
-  scaled = SDL_CreateSurface(surface_width*2, surface_height*2, SDL_PIXELFORMAT_RGB565);
-  if (!scaled) return nullptr;
-  {
-    const SDL_PixelFormatDetails* s_fmt = SDL_GetPixelFormatDetails(scaled->format);
-    if (!s_fmt || s_fmt->bits_per_pixel != 16)
-    {
-      LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(s_fmt ? s_fmt->bits_per_pixel : 0) << " bpp one.");
-      return nullptr;
-    }
-  }
-  {
-    const SDL_PixelFormatDetails* v_fmt = SDL_GetPixelFormatDetails(vid->format);
-    SDL_Palette* v_pal = SDL_GetSurfacePalette(vid);
-    SDL_FillSurfaceRect(vid, nullptr, SDL_MapRGB(v_fmt, v_pal, 0, 0, 0));
-  }
-  compute_scale(t, surface_width, surface_height);
-  pub = SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGB565);
-  {
-    const SDL_PixelFormatDetails* p_fmt = SDL_GetPixelFormatDetails(pub->format);
-    if (!p_fmt || p_fmt->bits_per_pixel != 16)
-    {
-      LOG_ERROR(t->name << ": SDL didn't return a 16 bpp surface but a " << static_cast<int>(p_fmt ? p_fmt->bits_per_pixel : 0) << " bpp one.");
-      return nullptr;
-    }
-  }
-
-  return pub;
-}
-
-// Phase A: common software-scaler blit + ImGui render + main viewport.
-// SDL_Renderer path handles everything itself (including the swap) and returns early.
+// Phase A: common software-scaler blit — only SDL_Renderer plugins reach
+// this entry point now (the GL swscale plugins were deleted in Phase 7c.1b;
+// the GPU swscale plugins use seagle_gpu_flip / scale2x_gpu_flip / etc.
+// which call gpu_flip_a directly).
 void swscale_blit_a(video_plugin* t)
 {
-  // Dispatch to SDL_Renderer path if active — it handles the full render+swap itself.
   if (using_sdl_renderer) {
     sdlr_swscale_blit(t);
-    return;
   }
-
-  // Blit to convert from 16bpp to RGBA32 for GL upload
-  SDL_BlitSurface(scaled, nullptr, vid, nullptr);
-
-  // Upload CPC framebuffer to GL texture
-  glBindTexture(GL_TEXTURE_2D, cpc_gl_texture);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vid->w, vid->h,
-                  GL_RGBA, GL_UNSIGNED_BYTE, vid->pixels);
-
-  // Start ImGui frame
-  ImGui_ImplOpenGL3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-
-  // Draw CPC framebuffer as background image via ImGui (classic mode only)
-  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::GetBackgroundDrawList(vp)->AddImage(
-        static_cast<ImTextureID>(cpc_gl_texture),
-        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-        ImVec2(vp->Pos.x + t->x_offset + t->width, vp->Pos.y + t->y_offset + t->height));
-  }
-
-  // Render all ImGui windows
-  imgui_render_ui();
-  ImGui::Render();
-
-  // GL clear and render
-  int display_w, display_h;
-  SDL_GetWindowSizeInPixels(mainSDLWindow, &display_w, &display_h);
-  glViewport(0, 0, display_w, display_h);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(GL_COLOR_BUFFER_BIT);
-  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-  // Capture screenshot (emulator screen only)
-  video_capture_if_pending();
-}
-
-// Phase B: floating ImGui viewports + window swap.
-// SDL_Renderer path already completed everything in swscale_blit_a — return early.
-void swscale_blit_b([[maybe_unused]] video_plugin* t)
-{
-  if (using_sdl_renderer) return;
-
-  // Multi-viewport: render platform windows only when they exist
-  ImGuiIO& io = ImGui::GetIO();
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    SDL_Window* backup_window = SDL_GL_GetCurrentWindow();
-    SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-    ImGui::UpdatePlatformWindows();
-    if (ImGui::GetPlatformIO().Viewports.Size > 1) {
-      koncpc_order_viewports_above_main();
-      ImGui::RenderPlatformWindowsDefault();
-    }
-    SDL_GL_MakeCurrent(backup_window, backup_context);
-  }
-
-  SDL_GL_SwapWindow(mainSDLWindow);
+  // No else branch — the GL upload + ImGui render path was deleted in
+  // Phase 7c.1b along with the corresponding GL plugins.
 }
 
 void swscale_setpal(SDL_Color* c)
@@ -2125,15 +1651,6 @@ void swscale_setpal(SDL_Color* c)
   }
 }
 
-void swscale_close()
-{
-  if (using_sdl_renderer)
-    sdlr_close();
-  else
-    direct_close();
-  if (scaled) { SDL_DestroySurface(scaled); scaled = nullptr; }
-  if (pub) { SDL_DestroySurface(pub); pub = nullptr; }
-}
 
 /* ------------------------------------------------------------------------------------ */
 /* Super eagle video plugin ----------------------------------------------------------- */
