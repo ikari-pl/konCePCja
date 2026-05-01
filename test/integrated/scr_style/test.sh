@@ -65,7 +65,18 @@ do
     fi
   done
   $SED -i "s/^scr_style=.*$/scr_style=${style}/" koncepcja.cfg || rc=2
-  run_with_timeout 20 $KONCPCDIR/koncepcja -c koncepcja.cfg -a "print #8,\"style=${style}\"" -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
+  # Autocmd sequencing: print first, then `call 0` + KONCPC_WAITBREAK to
+  # synchronize on the resulting PC=0 break before KONCPC_EXIT.  Without
+  # the break gate, KONCPC_EXIT fires the same frame the autocmd queue
+  # finishes typing — BASIC has not yet executed the queued PRINT and
+  # the printer file ends up empty.  This was the recurring macOS CI
+  # flake on PRs #101/103/107/108/109/110.  See dsk/test.sh which uses
+  # the same pattern.
+  run_with_timeout 20 $KONCPCDIR/koncepcja -c koncepcja.cfg \
+      -a "print #8,\"style=${style}\"" \
+      -a "call 0" \
+      -a KONCPC_WAITBREAK \
+      -a KONCPC_EXIT >> "${LOGFILE}" 2>&1
 
   mv ${OUTPUT_DIR}/printer.dat ${OUTPUT_DIR}/printer.dat.${style}
   if ! $DIFF ${OUTPUT_DIR}/printer.dat.${style} model/printer.dat.${style} >> "${LOGFILE}"
