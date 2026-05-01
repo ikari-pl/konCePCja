@@ -5,6 +5,7 @@
 #include "command_palette.h"
 #include "menu_actions.h"
 #include "workspace_layout.h"
+#include "macos_menu.h"  // koncpc_restore_keyboard_focus
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -88,6 +89,24 @@ static bool s_bottombar_height_dirty = false; // defer SDL_SetWindowSize to afte
 
 static void SDLCALL file_dialog_callback(void *userdata, const char * const *filelist, int /*filter*/)
 {
+  // After the dialog dismisses (whether the user picked a file or
+  // cancelled), restore keyboard routing to the emulator.
+  //
+  // The hard part is OS-level: on macOS SDL_ShowOpenFileDialog runs as
+  // an NSOpenPanel sheet attached to the parent NSWindow.  When the
+  // sheet dismisses, AppKit doesn't always restore the SDL content view
+  // as the window's firstResponder — keystrokes then route to the
+  // NSApplication menu bar instead of [SDLContentView keyDown:], so
+  // SDL never enqueues a SDL_EVENT_KEY_DOWN.  No ImGui-level gating
+  // matters because the event never arrives.  SDL_RaiseWindow calls
+  // [window makeKeyAndOrderFront:] which forces firstResponder back to
+  // the SDL view.
+  //
+  // Then in Docked mode also tell the workspace renderer to refocus
+  // the CPC Screen panel so cpc_screen_focused becomes true again.
+  koncpc_restore_keyboard_focus();   // macOS: Cocoa makeFirstResponder; no-op elsewhere
+  imgui_state.request_cpc_screen_focus = true;
+
   auto action = static_cast<FileDialogAction>(reinterpret_cast<intptr_t>(userdata));
   if (!filelist || !filelist[0]) return; // cancelled or error
   imgui_state.pending_dialog = action;

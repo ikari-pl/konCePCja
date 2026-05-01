@@ -4,6 +4,11 @@ void koncpc_setup_macos_menu();
 void koncpc_disable_app_nap();
 void koncpc_enable_app_nap();
 void koncpc_activate_app();
+// Restore the SDL view as firstResponder of mainSDLWindow.  Call after
+// dismissing a native sheet/dialog (NSOpenPanel etc.) — AppKit doesn't
+// always reset firstResponder, leaving keystrokes routed to the menu
+// bar instead of [SDLContentView keyDown:].
+void koncpc_restore_keyboard_focus();
 void koncpc_order_viewports_above_main();
 // Dock icon: set the app icon from the bundled PNG, optionally with a live CPC screen inset
 void koncpc_set_dock_icon(const char* png_path);
@@ -14,6 +19,7 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
 inline void koncpc_disable_app_nap() {}
 inline void koncpc_enable_app_nap() {}
 inline void koncpc_activate_app() {}
+inline void koncpc_restore_keyboard_focus() {}
 inline void koncpc_order_viewports_above_main() {}
 inline void koncpc_set_dock_icon(const char*) {}
 inline void koncpc_update_dock_icon_preview(const void*, int, int, int, int, int, int, int) {}
