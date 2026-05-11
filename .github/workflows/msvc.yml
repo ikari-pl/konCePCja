@@ -99,9 +99,21 @@ jobs:
             Get-ChildItem -Path $vcpkgBin -Filter *.dll | Copy-Item -Destination $stage
           }
 
-          # Include koncepcja.cfg.tmpl as a starter config so users have one
+          # ROM files are required to boot — without them emulator_init() aborts.
+          if (Test-Path rom) {
+            Copy-Item -Recurse rom "$stage/rom"
+          }
+          if (Test-Path resources) {
+            Copy-Item -Recurse resources "$stage/resources"
+          }
+          if (Test-Path licenses) {
+            Copy-Item -Recurse licenses "$stage/licenses"
+          }
+
+          # Strip the __SHARE_PATH__ placeholder so paths resolve relative to the exe.
           if (Test-Path koncepcja.cfg.tmpl) {
-            Copy-Item koncepcja.cfg.tmpl "$stage/koncepcja.cfg"
+            (Get-Content koncepcja.cfg.tmpl) -replace '__SHARE_PATH__/?', '' |
+              Set-Content "$stage/koncepcja.cfg"
           }
 
           $zipPath = "release/$stageName.zip"
