@@ -74,6 +74,12 @@ IUiHost& ui_host() {
     return *expected;
 }
 
+IUiHost* install_ui_host(IUiHost* host) {
+    IUiHost* prev = g_current_host.exchange(host ? host : &null_host_singleton(),
+                                            std::memory_order_acq_rel);
+    return prev ? prev : &null_host_singleton();
+}
+
 UiHostOverride::UiHostOverride(IUiHost* test_host) {
     // Snapshot the current host before installing the override.  If
     // nobody has called ui_host() yet, fall back to the null host so
