@@ -23,6 +23,7 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_ui.h"
 
+#include <cstdio>
 #include <SDL3/SDL_events.h>
 
 namespace {

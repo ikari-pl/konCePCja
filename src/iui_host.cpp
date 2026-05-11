@@ -39,25 +39,38 @@ class NullUiHost final : public IUiHost {
     }
 };
 
-// Process-wide default.  Constructed on first use (avoids static-init
-// ordering pitfalls — `ui_host()` may be called from any TU's init).
+// Process-wide null-host default.  Function-local static so that the
+// first caller's thread-safe init (guaranteed by C++11 [stmt.dcl]/4)
+// is the moment the singleton becomes valid — no dependence on
+// translation-unit order.
 NullUiHost& null_host_singleton() {
     static NullUiHost instance;
     return instance;
 }
 
-// Currently installed host.  Atomic because it's read/written from the
-// main (render) thread AND the Z80 thread — the latter can emit toasts
-// from emulation side-effects (e.g. tape autoload errors).  Starts as
-// nullptr and is lazily initialised to the null host on first ui_host()
-// call.  After that, swaps go through UiHostOverride which uses atomic
-// load/store as well.
-std::atomic<IUiHost*> g_current_host{nullptr};
+// Currently installed host.  Returned by a function-local static
+// accessor to dodge the static-initialization-order fiasco — if a TU
+// somewhere (e.g. imgui_ui_host.cpp's AutoInstaller) calls
+// install_ui_host() from its file-scope constructor, that constructor
+// can run before iui_host.cpp's namespace-scope dynamic init would
+// have, and a plain `std::atomic<IUiHost*> g_current_host{nullptr};`
+// could be re-zeroed afterwards, wiping the install.  Wrapping in a
+// function-local static defers initialisation to the first call,
+// which is guaranteed thread-safe and ordered.
+//
+// Still atomic because it's read/written from the main (render)
+// thread AND the Z80 thread — the latter can emit toasts from
+// emulation side-effects (e.g. tape autoload errors).
+std::atomic<IUiHost*>& host_atomic() {
+    static std::atomic<IUiHost*> instance{nullptr};
+    return instance;
+}
 
 } // namespace
 
 IUiHost& ui_host() {
-    IUiHost* h = g_current_host.load(std::memory_order_acquire);
+    auto& atom = host_atomic();
+    IUiHost* h = atom.load(std::memory_order_acquire);
     if (h) {
         return *h;
     }
@@ -65,9 +78,9 @@ IUiHost& ui_host() {
     // concurrent first-callers race-free converge on the same pointer.
     IUiHost* expected = nullptr;
     IUiHost* desired  = &null_host_singleton();
-    if (g_current_host.compare_exchange_strong(expected, desired,
-                                               std::memory_order_acq_rel,
-                                               std::memory_order_acquire)) {
+    if (atom.compare_exchange_strong(expected, desired,
+                                     std::memory_order_acq_rel,
+                                     std::memory_order_acquire)) {
         return *desired;
     }
     // Lost the race — `expected` now holds the winner.
@@ -75,24 +88,25 @@ IUiHost& ui_host() {
 }
 
 IUiHost* install_ui_host(IUiHost* host) {
-    IUiHost* prev = g_current_host.exchange(host ? host : &null_host_singleton(),
-                                            std::memory_order_acq_rel);
+    IUiHost* prev = host_atomic().exchange(host ? host : &null_host_singleton(),
+                                           std::memory_order_acq_rel);
     return prev ? prev : &null_host_singleton();
 }
 
 UiHostOverride::UiHostOverride(IUiHost* test_host) {
+    auto& atom = host_atomic();
     // Snapshot the current host before installing the override.  If
     // nobody has called ui_host() yet, fall back to the null host so
     // the destructor restores a sensible value rather than nullptr.
-    IUiHost* prev = g_current_host.load(std::memory_order_acquire);
+    IUiHost* prev = atom.load(std::memory_order_acquire);
     if (!prev) {
         prev = &null_host_singleton();
     }
     previous_ = prev;
-    g_current_host.store(test_host ? test_host : &null_host_singleton(),
-                         std::memory_order_release);
+    atom.store(test_host ? test_host : &null_host_singleton(),
+               std::memory_order_release);
 }
 
 UiHostOverride::~UiHostOverride() {
-    g_current_host.store(previous_, std::memory_order_release);
+    host_atomic().store(previous_, std::memory_order_release);
 }
