@@ -10,6 +10,7 @@
 
 #include "iui_host.h"
 
+#include <atomic>
 #include <cstdio>
 
 namespace {
@@ -30,7 +31,6 @@ class NullUiHost final : public IUiHost {
         switch (level) {
             case UiToastLevel::Info:    tag = "info";    break;
             case UiToastLevel::Success: tag = "success"; break;
-            case UiToastLevel::Warning: tag = "warning"; break;
             case UiToastLevel::Error:   tag = "error";   break;
         }
         // stderr is intentional — toasts in headless mode are diagnostics,
@@ -46,26 +46,47 @@ NullUiHost& null_host_singleton() {
     return instance;
 }
 
-// Currently installed host.  Starts as the null host; the modern-UI
-// startup path will swap in the real one via UiHostOverride (or a
-// follow-up install_ui_host() helper).  Never null after first call
-// to ui_host().
-IUiHost* g_current_host = nullptr;
+// Currently installed host.  Atomic because it's read/written from the
+// main (render) thread AND the Z80 thread — the latter can emit toasts
+// from emulation side-effects (e.g. tape autoload errors).  Starts as
+// nullptr and is lazily initialised to the null host on first ui_host()
+// call.  After that, swaps go through UiHostOverride which uses atomic
+// load/store as well.
+std::atomic<IUiHost*> g_current_host{nullptr};
 
 } // namespace
 
 IUiHost& ui_host() {
-    if (!g_current_host) {
-        g_current_host = &null_host_singleton();
+    IUiHost* h = g_current_host.load(std::memory_order_acquire);
+    if (h) {
+        return *h;
     }
-    return *g_current_host;
+    // Lazy init: try to publish the null host as the default.  CAS so
+    // concurrent first-callers race-free converge on the same pointer.
+    IUiHost* expected = nullptr;
+    IUiHost* desired  = &null_host_singleton();
+    if (g_current_host.compare_exchange_strong(expected, desired,
+                                               std::memory_order_acq_rel,
+                                               std::memory_order_acquire)) {
+        return *desired;
+    }
+    // Lost the race — `expected` now holds the winner.
+    return *expected;
 }
 
-UiHostOverride::UiHostOverride(IUiHost* test_host)
-    : previous_(g_current_host ? g_current_host : &null_host_singleton()) {
-    g_current_host = test_host ? test_host : &null_host_singleton();
+UiHostOverride::UiHostOverride(IUiHost* test_host) {
+    // Snapshot the current host before installing the override.  If
+    // nobody has called ui_host() yet, fall back to the null host so
+    // the destructor restores a sensible value rather than nullptr.
+    IUiHost* prev = g_current_host.load(std::memory_order_acquire);
+    if (!prev) {
+        prev = &null_host_singleton();
+    }
+    previous_ = prev;
+    g_current_host.store(test_host ? test_host : &null_host_singleton(),
+                         std::memory_order_release);
 }
 
 UiHostOverride::~UiHostOverride() {
-    g_current_host = previous_;
+    g_current_host.store(previous_, std::memory_order_release);
 }

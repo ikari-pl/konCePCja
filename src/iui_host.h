@@ -40,14 +40,15 @@
 
 union SDL_Event;
 
-// Severity for `toast()`.  Matches ImGuiUIState::ToastLevel value-for-value
-// so wrapping the existing toast helpers is a zero-cost cast — but we don't
-// pull in imgui_ui.h here, so headless TUs don't grow an ImGui dependency.
+// Severity for `toast()`.  Values match ImGuiUIState::ToastLevel
+// (defined in src/imgui_ui.h:110) one-for-one so wrapping the existing
+// toast helpers is a zero-cost cast — but we don't pull in imgui_ui.h
+// here, so headless TUs don't grow an ImGui dependency.  Keep this in
+// sync if the underlying enum gains a new level.
 enum class UiToastLevel {
     Info    = 0,
     Success = 1,
-    Warning = 2,
-    Error   = 3,
+    Error   = 2,
 };
 
 class IUiHost {
