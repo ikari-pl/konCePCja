@@ -4210,44 +4210,44 @@ int koncpc_main (int argc, char **argv)
              if (ext == ".dsk" || ext == ".ipf" || ext == ".raw") {
                CPC.driveA.file = drop_path;
                if (file_load(CPC.driveA) == 0) {
-                 imgui_toast_success("Drive A: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
                  imgui_mru_push(CPC.mru_disks, drop_path);
                } else
-                 imgui_toast_error("Failed to load disk: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Error, "Failed to load disk: " + drop_fname);
              } else if (ext == ".cdt" || ext == ".voc") {
                CPC.tape.file = drop_path;
                if (file_load(CPC.tape) == 0) {
-                 imgui_toast_success("Tape loaded: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Success, "Tape loaded: " + drop_fname);
                  imgui_mru_push(CPC.mru_tapes, drop_path);
                  tape_scan_blocks();
                } else
-                 imgui_toast_error("Failed to load tape: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Error, "Failed to load tape: " + drop_fname);
              } else if (ext == ".sna") {
                CPC.snapshot.file = drop_path;
                if (file_load(CPC.snapshot) == 0) {
-                 imgui_toast_success("Snapshot loaded: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Success, "Snapshot loaded: " + drop_fname);
                  imgui_mru_push(CPC.mru_snaps, drop_path);
                } else
-                 imgui_toast_error("Failed to load snapshot: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Error, "Failed to load snapshot: " + drop_fname);
              } else if (ext == ".cpr") {
                CPC.cartridge.file = drop_path;
                if (file_load(CPC.cartridge) == 0) {
-                 imgui_toast_success("Cartridge loaded: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Success, "Cartridge loaded: " + drop_fname);
                  imgui_mru_push(CPC.mru_carts, drop_path);
                  emulator_reset();
                } else {
-                 imgui_toast_error("Failed to load cartridge: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Error, "Failed to load cartridge: " + drop_fname);
                }
              } else if (ext == ".zip") {
                // Try as disk first (most common zip content)
                CPC.driveA.file = drop_path;
                if (file_load(CPC.driveA) == 0) {
-                 imgui_toast_success("Drive A: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
                  imgui_mru_push(CPC.mru_disks, drop_path);
                } else
-                 imgui_toast_error("Unsupported ZIP content: " + drop_fname);
+                 ui_host().toast(UiToastLevel::Error, "Unsupported ZIP content: " + drop_fname);
              } else {
-               imgui_toast_error("Unknown file type: " + drop_fname);
+               ui_host().toast(UiToastLevel::Error, "Unknown file type: " + drop_fname);
              }
            }
            continue;
