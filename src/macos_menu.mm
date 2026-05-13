@@ -1,7 +1,9 @@
 #import <Cocoa/Cocoa.h>
 #include "menu_actions.h"
 #include "keyboard.h"
+#ifdef KONCPC_MODERN_UI
 #include "imgui.h"
+#endif
 #include "SDL3/SDL.h"
 #include <memory>
 
@@ -202,6 +204,7 @@ void koncpc_restore_keyboard_focus() {
 
 extern SDL_Window* mainSDLWindow;
 
+#ifdef KONCPC_MODERN_UI
 static NSWindow* nswindow_from_viewport(ImGuiViewport* vp) {
   SDL_WindowID wid = (SDL_WindowID)(uintptr_t)vp->PlatformHandle;
   SDL_Window* sdlWin = SDL_GetWindowFromID(wid);
@@ -250,6 +253,12 @@ void koncpc_order_viewports_above_main() {
     }
   }
 }
+#else  // !KONCPC_MODERN_UI
+// Headless build has no ImGui viewports — function is a stub.  Header
+// declaration (macos_menu.h) stays unchanged so callers don't need a
+// build-flag guard at every callsite.
+void koncpc_order_viewports_above_main() {}
+#endif // KONCPC_MODERN_UI
 
 // ── Dock icon ──────────────────────────────────────────────
 

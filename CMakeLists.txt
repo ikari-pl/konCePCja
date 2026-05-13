@@ -14,6 +14,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(WITH_CURL  "Enable libcurl (M4 HTTP)"  OFF)
 option(WITH_JPEG  "Enable libjpeg (AVI rec)"  OFF)
 
+# Modern UI gate (P1.5.1 step 4).  ON = the current ImGui + SDL_GPU
+# build.  OFF = exclude UI-only sources from compilation, leaving the
+# core ready for a future headless main (P1.5.2) to wire up.  OFF is
+# an in-progress state: kon_cpc_ja.cpp still references imgui_state
+# from imgui_ui.h, so a full link with OFF will fail until P1.5.2
+# splits that header.  Defaulting ON keeps every existing build
+# (CI matrix, distro packages, local dev) bit-identical to today.
+option(KONCPC_BUILD_MODERN_UI "Build the ImGui + SDL_GPU modern UI" ON)
+
 # ── Git hash ─────────────────────────────────────────────
 execute_process(
     COMMAND git rev-parse --verify HEAD
@@ -61,17 +70,43 @@ else()
     enable_language(OBJCXX)
 endif()
 
+# ── UI-only source files (P1.5.1 step 4) ─────────────────
+# Files that have hard dependencies on Dear ImGui and/or the modern
+# UI widgets.  When KONCPC_BUILD_MODERN_UI=OFF these are excluded
+# from the library so the headless variant doesn't drag in ImGui
+# transitively.  Vendored ImGui itself is handled separately below.
+#
+# Keep in sync if a new UI-only TU is added; CI catches inclusion
+# regressions because the modern build still compiles them as today.
+# Keep this list in sync with MODERN_UI_FILES in the makefile.
+set(MODERN_UI_FILES
+    imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout
+    video TextEditor LanguageDefinitions
+)
+list(JOIN MODERN_UI_FILES "|" MODERN_UI_FILES_JOINED)
+set(MODERN_UI_SOURCES_REGEX "src/(${MODERN_UI_FILES_JOINED})\\.cpp$")
+
+if(NOT KONCPC_BUILD_MODERN_UI)
+    message(STATUS "KONCPC_BUILD_MODERN_UI=OFF — excluding modern UI sources from koncepcja_lib")
+    message(STATUS "  Note: full link will fail until P1.5.2 lands a headless main and an ImGui-free imgui_ui.h split.")
+    list(FILTER APP_SOURCES EXCLUDE REGEX "${MODERN_UI_SOURCES_REGEX}")
+endif()
+
 # ── Vendored ImGui sources ───────────────────────────────
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/vendor/imgui)
-set(IMGUI_SOURCES
-    ${IMGUI_DIR}/imgui.cpp
-    ${IMGUI_DIR}/imgui_draw.cpp
-    ${IMGUI_DIR}/imgui_tables.cpp
-    ${IMGUI_DIR}/imgui_widgets.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_sdlrenderer3.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_sdlgpu3.cpp
-)
+if(KONCPC_BUILD_MODERN_UI)
+    set(IMGUI_SOURCES
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_sdlrenderer3.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_sdlgpu3.cpp
+    )
+else()
+    set(IMGUI_SOURCES "")
+endif()
 
 # ── Capsimg include directories ──────────────────────────
 set(CAPSIMG_INCLUDES
@@ -110,6 +145,13 @@ endif()
 # Bake the version into the binary.  Same compile-define pattern the
 # makefile uses (see KONCPC_VERSION above).
 target_compile_definitions(koncepcja_lib PUBLIC KONCPC_VERSION_STRING="v${PROJECT_VERSION}")
+
+# Modern-UI guard define (P1.5.1 step 4).  Source files that have
+# optional ImGui paths (currently: macos_menu.mm) check this to skip
+# ImGui-only code in headless builds.
+if(KONCPC_BUILD_MODERN_UI)
+    target_compile_definitions(koncepcja_lib PUBLIC KONCPC_MODERN_UI)
+endif()
 
 if(WIN32)
     target_compile_definitions(koncepcja_lib PUBLIC WINDOWS _WIN32_WINNT=0x0601 NOMINMAX)

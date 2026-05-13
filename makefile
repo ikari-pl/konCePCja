@@ -192,11 +192,28 @@ ifeq ($(ARCH),macos)
 MM_SOURCES:=$(shell find $(SRCDIR) -name \*.mm)
 endif
 HEADERS:=$(shell find $(SRCDIR) -name \*.h)
+
+# Modern UI gate (P1.5.1 step 4).  KONCPC_MODERN_UI=1 (default) builds the
+# Dear ImGui + SDL_GPU UI as today.  =0 excludes UI-only sources so the
+# core can compile without the modern UI — used by the future headless
+# build (P1.5.2).  Mirror in CMakeLists.txt (KONCPC_BUILD_MODERN_UI).
+KONCPC_MODERN_UI ?= 1
+# Keep this list in sync with MODERN_UI_FILES in CMakeLists.txt.
+MODERN_UI_FILES := imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout video TextEditor LanguageDefinitions
+MODERN_UI_SOURCES := $(addprefix $(SRCDIR)/,$(addsuffix .cpp,$(MODERN_UI_FILES)))
+ifeq ($(KONCPC_MODERN_UI),1)
+COMMON_CFLAGS += -DKONCPC_MODERN_UI
+IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp vendor/imgui/backends/imgui_impl_sdlgpu3.cpp
+else
+$(info KONCPC_MODERN_UI=0 — excluding modern UI sources.  Full link will fail until P1.5.2 lands a headless main and an ImGui-free imgui_ui.h split.)
+SOURCES := $(filter-out $(MODERN_UI_SOURCES),$(SOURCES))
+IMGUI_SOURCES :=
+endif
+
 DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 MM_DEPENDS:=$(foreach file,$(MM_SOURCES:.mm=.d),$(shell echo "$(OBJDIR)/$(file)"))
 OBJECTS_CPP:=$(DEPENDS:.d=.o)
 OBJECTS_MM:=$(MM_DEPENDS:.d=.o)
-IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp vendor/imgui/backends/imgui_impl_sdlgpu3.cpp
 IMGUI_OBJECTS:=$(foreach file,$(IMGUI_SOURCES:.cpp=.o),$(OBJDIR)/$(file))
 
 OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM) $(IMGUI_OBJECTS)
