@@ -83,8 +83,18 @@ class IUiHost {
 //   - Headless build (P1.5.2)   → returns the null host.
 // The pointer is non-owning; the host lives for the duration of the
 // process.  Safe to call before any UI init — null host responds with
-// safe defaults until the modern host is initialised.
+// safe defaults until the modern host is installed.
 IUiHost& ui_host();
+
+// Install a concrete IUiHost as the process-wide implementation.  The
+// caller retains ownership; the host pointer must outlive any call to
+// ui_host() that returns it.  Passing nullptr restores the null host.
+// Returns the previously installed host (or null host if first call).
+//
+// Use from production code — for example, the modern-UI build installs
+// an ImGuiUiHost via a static constructor in src/imgui_ui_host.cpp.
+// Tests should prefer UiHostOverride (below) for scoped install/restore.
+IUiHost* install_ui_host(IUiHost* host);
 
 // Test-only: install a custom host for unit tests.  Restores the
 // previous host when the returned scope-guard is destroyed.  No-op

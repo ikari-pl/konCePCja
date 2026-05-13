@@ -77,9 +77,14 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8
 #include "memory_bus.h"
 #include "io_bus.h"
 
-#include "imgui.h"
-#include "imgui_impl_sdl3.h"
+// imgui.h / imgui_impl_sdl3.h are intentionally NOT included here.
+// The main loop talks to the UI through IUiHost only (P1.5.1).
+// imgui_ui.h is still included because the global `imgui_state` struct
+// (telemetry / flag bus) is defined there and is a public data
+// contract — see iui_host.h header for why imgui_state stays free-
+// standing instead of being absorbed into the host interface.
 #include "imgui_ui.h"
+#include "iui_host.h"
 #include "command_palette.h"
 #include "menu_actions.h"
 
@@ -4186,8 +4191,11 @@ int koncpc_main (int argc, char **argv)
            }
          }
 
-         // Feed event to Dear ImGui
-         ImGui_ImplSDL3_ProcessEvent(&event);
+         // Feed event to the UI host (Dear ImGui in modern builds, no-op
+         // in headless).  Was a direct ImGui_ImplSDL3_ProcessEvent call —
+         // routed through IUiHost in P1.5.1 so the main loop doesn't
+         // depend on ImGui at the boundary.
+         ui_host().process_event(event);
 
          // ── Drag-and-drop file loading ──
          if (event.type == SDL_EVENT_DROP_FILE) {
@@ -4254,28 +4262,27 @@ int koncpc_main (int argc, char **argv)
            }
          }
 
-         // If ImGui wants input, skip emulator processing.
+         // If the UI wants input, skip emulator processing.
          // Exception: virtual keyboard events (windowID=0) always reach the emulator.
          //
-         // WantCaptureKeyboard blocks when menus, dropdowns, devtools, or any ImGui
-         // window has focus. Special case: the virtual keyboard only uses mouse clicks,
-         // so when it's the sole reason WantCaptureKeyboard is set, let physical keys
-         // reach the CPC. Any other UI (menus, text fields, devtools) takes priority.
+         // Keyboard policy uses ui_host().any_keyboard_ui_active() rather than
+         // ImGui's WantCaptureKeyboard — the latter is set by ImGui::NewFrame()
+         // based on internal focus state that can stay stuck after native file
+         // dialogs or menu interactions.  any_keyboard_ui_active() checks the
+         // actual dialog/menu/devtools state and is the single source of truth.
+         // Mouse policy still routes through wants_capture_mouse(), which mirrors
+         // ImGui's WantCaptureMouse — that one isn't subject to the same stuck-
+         // focus pathology.
          {
-           ImGuiIO& io = ImGui::GetIO();
+           IUiHost& ui = ui_host();
            bool is_key_event = (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP);
            bool is_text_event = (event.type == SDL_EVENT_TEXT_INPUT);
            bool is_mouse_event_imgui = (event.type == SDL_EVENT_MOUSE_MOTION || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP || event.type == SDL_EVENT_MOUSE_WHEEL);
            bool is_virtual_key = is_key_event && event.key.windowID == 0;
 
-           // Use our own policy, not ImGui's WantCaptureKeyboard — ImGui's
-           // NewFrame() sets it based on internal focus state which can stay
-           // stuck after native file dialogs or menu interactions.
-           // imgui_any_keyboard_ui_active() checks actual dialog/menu/devtools
-           // state and is the single source of truth.
-           bool imgui_wants_kbd = imgui_any_keyboard_ui_active();
+           bool ui_wants_kbd = ui.any_keyboard_ui_active();
 
-           if (((is_key_event && !is_virtual_key) && imgui_wants_kbd) || (is_text_event && imgui_wants_kbd) || (is_mouse_event_imgui && io.WantCaptureMouse)) {
+           if (((is_key_event && !is_virtual_key) && ui_wants_kbd) || (is_text_event && ui_wants_kbd) || (is_mouse_event_imgui && ui.wants_capture_mouse())) {
              continue;
            }
          }
