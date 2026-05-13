@@ -78,9 +78,13 @@ endif()
 #
 # Keep in sync if a new UI-only TU is added; CI catches inclusion
 # regressions because the modern build still compiles them as today.
-set(MODERN_UI_SOURCES_REGEX
-    "src/(imgui_ui|imgui_ui_host|devtools_ui|command_palette|workspace_layout|video|TextEditor|LanguageDefinitions)\\.cpp$"
+# Keep this list in sync with MODERN_UI_FILES in the makefile.
+set(MODERN_UI_FILES
+    imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout
+    video TextEditor LanguageDefinitions
 )
+list(JOIN MODERN_UI_FILES "|" MODERN_UI_FILES_JOINED)
+set(MODERN_UI_SOURCES_REGEX "src/(${MODERN_UI_FILES_JOINED})\\.cpp$")
 
 if(NOT KONCPC_BUILD_MODERN_UI)
     message(STATUS "KONCPC_BUILD_MODERN_UI=OFF — excluding modern UI sources from koncepcja_lib")

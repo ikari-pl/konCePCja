@@ -198,7 +198,9 @@ HEADERS:=$(shell find $(SRCDIR) -name \*.h)
 # core can compile without the modern UI — used by the future headless
 # build (P1.5.2).  Mirror in CMakeLists.txt (KONCPC_BUILD_MODERN_UI).
 KONCPC_MODERN_UI ?= 1
-MODERN_UI_SOURCES := $(SRCDIR)/imgui_ui.cpp $(SRCDIR)/imgui_ui_host.cpp $(SRCDIR)/devtools_ui.cpp $(SRCDIR)/command_palette.cpp $(SRCDIR)/workspace_layout.cpp $(SRCDIR)/video.cpp $(SRCDIR)/TextEditor.cpp $(SRCDIR)/LanguageDefinitions.cpp
+# Keep this list in sync with MODERN_UI_FILES in CMakeLists.txt.
+MODERN_UI_FILES := imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout video TextEditor LanguageDefinitions
+MODERN_UI_SOURCES := $(addprefix $(SRCDIR)/,$(addsuffix .cpp,$(MODERN_UI_FILES)))
 ifeq ($(KONCPC_MODERN_UI),1)
 COMMON_CFLAGS += -DKONCPC_MODERN_UI
 IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp vendor/imgui/backends/imgui_impl_sdlgpu3.cpp
