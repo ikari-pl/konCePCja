@@ -76,6 +76,13 @@ class IUiHost {
     // Show a transient toast message to the user.  On NullUiHost this
     // logs to stderr so headless runs still surface diagnostics.
     virtual void toast(UiToastLevel level, const std::string& message) = 0;
+
+    // -- Layout query ---------------------------------------------------
+    // Pixel height of the modern UI's top bar (menu + status row).  The
+    // CPC framebuffer renders below it, so the main loop subtracts this
+    // when computing mouse-over-topbar regions.  Returns 0 on NullUiHost
+    // so headless callers see the full window as the CPC viewport.
+    virtual int topbar_height() const = 0;
 };
 
 // Returns a process-wide singleton chosen at build time:

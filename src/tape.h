@@ -33,4 +33,9 @@ int  Tape_ReadDataBit();
 int  Tape_ReadSampleDataBit();
 void Tape_GetCycleCount();
 
+// Walk the loaded TZX/CDT image and rebuild imgui_state.tape_block_offsets;
+// resets tape_current_block to 0.  Pure tape-format walker (no ImGui), kept
+// here rather than in imgui_ui.cpp so the headless build can call it.
+void tape_scan_blocks();
+
 #endif

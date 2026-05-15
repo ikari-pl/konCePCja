@@ -4014,7 +4014,7 @@ int koncpc_main (int argc, char **argv)
          koncpc_set_dock_icon(icon_path.c_str());
       }
 #endif
-      topbar_height_px = imgui_topbar_height();
+      topbar_height_px = ui_host().topbar_height();
       video_set_topbar(nullptr, topbar_height_px);
       // video_set_topbar handles the window resize using compute_window_size()
       mouse_init();
@@ -4511,7 +4511,7 @@ int koncpc_main (int argc, char **argv)
               {
                 SDL_WindowID main_wid = mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
                 bool on_main = (event.motion.windowID == main_wid);
-                bool over_topbar = on_main && event.motion.y < imgui_topbar_height();
+                bool over_topbar = on_main && event.motion.y < ui_host().topbar_height();
                 static bool topbar_cursor_visible = false;
                 if (over_topbar && !topbar_cursor_visible) {
                   set_cursor_visibility(true);

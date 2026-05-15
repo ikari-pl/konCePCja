@@ -82,6 +82,13 @@ void ImGuiUiHost::toast(UiToastLevel level, const std::string& message) {
     imgui_toast(message, to_imgui_toast_level(level));
 }
 
+int ImGuiUiHost::topbar_height() const {
+    // imgui_topbar_height() lives in imgui_ui.cpp and caches the live
+    // menubar+statusbar measurements.  Safe pre-init: returns 0 before
+    // the first frame.
+    return imgui_topbar_height();
+}
+
 // -- Install at startup ----------------------------------------------
 //
 // A file-scope global + static-init pair replaces the NullUiHost default
