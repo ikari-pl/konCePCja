@@ -701,8 +701,11 @@ void tape_scan_blocks()
         break;
     }
 
-    // Validate we won't advance past end
-    if (p + block_size > end) goto done;
+    // Validate we won't advance past end.  Compare against remaining
+    // distance instead of `p + block_size > end`: block_size comes from
+    // a malformed TZX header and `p + block_size` could wrap on 32-bit
+    // targets where pointer arithmetic isn't ULP-safe.
+    if (block_size > static_cast<size_t>(end - p)) goto done;
     p += block_size;
   }
 done:;
