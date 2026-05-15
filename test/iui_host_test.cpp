@@ -40,6 +40,8 @@ class RecordingHost final : public IUiHost {
     bool wants_capture_keyboard() const override { return want_kbd; }
     bool wants_capture_mouse()    const override { return want_mouse; }
     bool any_keyboard_ui_active() const override { return kbd_ui_open; }
+    int  topbar_height_returned = 0;
+    int  topbar_height() const override { return topbar_height_returned; }
     void toast(UiToastLevel level, const std::string& message) override {
         if (record_toast_payloads) {
             last_toasts.emplace_back(level, message);
@@ -57,6 +59,25 @@ TEST(IUiHostTest, NullHostIsDefault) {
     EXPECT_FALSE(ui_host().wants_capture_keyboard());
     EXPECT_FALSE(ui_host().wants_capture_mouse());
     EXPECT_FALSE(ui_host().any_keyboard_ui_active());
+    // NOTE: not asserting topbar_height() == 0 here because modern-UI test
+    // builds install ImGuiUiHost via static-init, and its topbar_height()
+    // returns the live ImGui menubar measurement (≥19px default).  See the
+    // separate NullHostTopbarHeightIsZero test which forces NullUiHost.
+}
+
+TEST(IUiHostTest, NullHostTopbarHeightIsZero) {
+    // Explicit null-host scope: headless mode has no top bar, so the
+    // CPC viewport must span the full window.  Tests should not depend
+    // on what static-init left as the process-wide default.
+    UiHostOverride scope(nullptr);  // nullptr → null host
+    EXPECT_EQ(0, ui_host().topbar_height());
+}
+
+TEST(IUiHostTest, OverrideReportsTopbarHeight) {
+    RecordingHost recorder;
+    recorder.topbar_height_returned = 42;
+    UiHostOverride scope(&recorder);
+    EXPECT_EQ(42, ui_host().topbar_height());
 }
 
 TEST(IUiHostTest, NullHostSwallowsEventsAndToasts) {

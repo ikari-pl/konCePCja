@@ -21,4 +21,5 @@ class ImGuiUiHost final : public IUiHost {
     bool wants_capture_mouse()    const override;
     bool any_keyboard_ui_active() const override;
     void toast(UiToastLevel level, const std::string& message) override;
+    int topbar_height() const override;
 };

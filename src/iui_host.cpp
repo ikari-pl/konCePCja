@@ -26,6 +26,9 @@ class NullUiHost final : public IUiHost {
     bool wants_capture_mouse()    const override { return false; }
     bool any_keyboard_ui_active() const override { return false; }
 
+    // No top bar in headless — CPC viewport occupies the full window region.
+    int topbar_height() const override { return 0; }
+
     void toast(UiToastLevel level, const std::string& message) override {
         const char* tag = "info";
         switch (level) {
