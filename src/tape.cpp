@@ -627,8 +627,14 @@ void tape_scan_blocks()
     imgui_state.tape_block_offsets.push_back(p);
 
     // Calculate block size with bounds checking
-    // Same size logic as Tape_BlockDone + Tape_GetNextBlock
-    size_t block_size = 0;
+    // Same size logic as Tape_BlockDone + Tape_GetNextBlock.
+    //
+    // `block_size` is uint64_t (not size_t) because on 32-bit targets —
+    // e.g. the Win32 MSVC CI configuration — size_t is uint32_t, and
+    // `static_cast<size_t>(d) + N` would still wrap when `d` is near
+    // UINT32_MAX in a malformed TZX file.  Using uint64_t guarantees the
+    // addition is wide enough on every supported host.
+    uint64_t block_size = 0;
     word w; dword d;
 
     switch (*p) {
@@ -686,11 +692,12 @@ void tape_scan_blocks()
         break;
       case 0x35: // Custom info
         if (!safe_read_dword(p, end, 0x11, d)) goto done;
-        // Promote to size_t BEFORE adding the header bytes; `d` is dword
-        // (uint32_t) and a malformed file with d near UINT32_MAX would
-        // wrap the addition in 32-bit, slipping past the bounds check
-        // below.  Same pattern applied to the default case.
-        block_size = static_cast<size_t>(d) + 0x14 + 1;
+        // Promote to uint64_t BEFORE adding the header bytes.  `d` is
+        // dword (uint32_t); on 32-bit hosts size_t is also uint32_t, so
+        // `static_cast<size_t>(d) + 0x14 + 1` would still wrap when d
+        // is near UINT32_MAX in a malformed file.  uint64_t is always
+        // wide enough.  Same pattern applied to the default case.
+        block_size = static_cast<uint64_t>(d) + 0x14 + 1;
         break;
       case 0x40: // Snapshot
         if (!safe_read_dword(p, end, 0x02, d)) goto done;
@@ -701,17 +708,19 @@ void tape_scan_blocks()
         break;
       default: // Unknown block with 4-byte length
         if (!safe_read_dword(p, end, 0x01, d)) goto done;
-        // Promote before adding (see case 0x35 above).
-        block_size = static_cast<size_t>(d) + 4 + 1;
+        // Promote to uint64_t before adding (see case 0x35 above).
+        block_size = static_cast<uint64_t>(d) + 4 + 1;
         break;
     }
 
     // Validate we won't advance past end.  Compare against remaining
     // distance instead of `p + block_size > end`: block_size comes from
     // a malformed TZX header and `p + block_size` could wrap on 32-bit
-    // targets where pointer arithmetic isn't ULP-safe.
-    if (block_size > static_cast<size_t>(end - p)) goto done;
-    p += block_size;
+    // targets where pointer arithmetic isn't ULP-safe.  block_size is
+    // uint64_t; promote `(end - p)` (ptrdiff_t) to uint64_t so the
+    // comparison happens in 64-bit on every host.
+    if (block_size > static_cast<uint64_t>(end - p)) goto done;
+    p += static_cast<size_t>(block_size);  // safe: bounded by check above
   }
 done:;
 }
