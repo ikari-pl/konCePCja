@@ -686,7 +686,11 @@ void tape_scan_blocks()
         break;
       case 0x35: // Custom info
         if (!safe_read_dword(p, end, 0x11, d)) goto done;
-        block_size = d + 0x14 + 1;
+        // Promote to size_t BEFORE adding the header bytes; `d` is dword
+        // (uint32_t) and a malformed file with d near UINT32_MAX would
+        // wrap the addition in 32-bit, slipping past the bounds check
+        // below.  Same pattern applied to the default case.
+        block_size = static_cast<size_t>(d) + 0x14 + 1;
         break;
       case 0x40: // Snapshot
         if (!safe_read_dword(p, end, 0x02, d)) goto done;
@@ -697,7 +701,8 @@ void tape_scan_blocks()
         break;
       default: // Unknown block with 4-byte length
         if (!safe_read_dword(p, end, 0x01, d)) goto done;
-        block_size = d + 4 + 1;
+        // Promote before adding (see case 0x35 above).
+        block_size = static_cast<size_t>(d) + 4 + 1;
         break;
     }
 
