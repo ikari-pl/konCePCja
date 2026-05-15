@@ -59,7 +59,9 @@ extern byte *pbTapeBlock;
 extern int iTapeCycleCount;
 extern dword dwTapeZeroPulseCycles;
 
-ImGuiUIState imgui_state;
+// `imgui_state` singleton lives in src/imgui_state.cpp so the symbol is
+// present in both MODERN_UI=ON and OFF builds — the core writes telemetry
+// into it from headless TUs that don't link imgui_ui.cpp.
 
 // Forward declarations
 static void imgui_render_menubar();
