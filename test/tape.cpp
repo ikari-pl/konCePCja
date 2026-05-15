@@ -2,7 +2,7 @@
 #include <vector>
 #include "koncepcja.h"
 #include "tape.h"
-#include "imgui_ui.h"
+#include "imgui_state.h"
 
 // External globals from tape.cpp
 extern byte bTapeLevel;

@@ -3,7 +3,7 @@
 #include "autotype.h"
 #include "gfx_finder.h"
 #include "search_engine.h"
-#include "imgui_ui.h"
+#include "imgui_state.h"
 // `video.h` (defining video_plugin_list) is already included via the
 // project-internal include block below.
 

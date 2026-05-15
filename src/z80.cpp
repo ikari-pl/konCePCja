@@ -30,7 +30,7 @@
 #include "tape.h"
 #include "z80.h"
 #include "asic.h"
-#include "imgui_ui.h"
+#include "imgui_state.h"
 #include "trace.h"
 #include "koncepcja_ipc_server.h"
 #include "expr_parser.h"

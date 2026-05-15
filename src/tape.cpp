@@ -25,7 +25,7 @@
 #include "koncepcja.h"
 #include "tape.h"
 #include "z80.h"
-#include "imgui_ui.h"
+#include "imgui_state.h"
 
 #define TAPE_PILOT_STAGE 1
 #define TAPE_SYNC_STAGE 2
