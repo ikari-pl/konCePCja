@@ -75,7 +75,7 @@ byte HorzPix[49];
 // RendPos pointers and corrupt them. See the bounds guard in crtc_cycle(). (beads-33f)
 static constexpr int REND_BUFF_USABLE = 800;
 static constexpr int REND_BUFF_MARGIN = 64;
-byte RendBuff[REND_BUFF_USABLE + REND_BUFF_MARGIN];
+alignas(dword) byte RendBuff[REND_BUFF_USABLE + REND_BUFF_MARGIN]; // cast to dword* in (pre)render
 byte *RendWid, *RendOut;
 dword *RendStart, *RendPos;
 
@@ -1090,7 +1090,7 @@ void crtc_cycle(int repeat_count)
          // 4-dword prerender write inside the usable RendBuff region. (beads-33f)
          if (HorzChar < HorzMax
              && RendWid < &HorzPix[sizeof(HorzPix)]
-             && RendPos <= reinterpret_cast<dword *>(&RendBuff[REND_BUFF_USABLE]) - 4) { // below horizontal cut-off?
+             && reinterpret_cast<byte *>(RendPos) <= &RendBuff[REND_BUFF_USABLE - 16]) { // below horizontal cut-off? (-16 = one 4-dword prerender write)
             if (flags1.combined != LastPreRend) {
                set_prerender(); // change pre-renderer if necessary
             }
