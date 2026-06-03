@@ -21,6 +21,7 @@
 */
 
 #include <math.h>
+#include <iterator> // std::end
 
 #include "koncepcja.h"
 #include "crtc.h"
@@ -75,6 +76,7 @@ byte HorzPix[49];
 // RendPos pointers and corrupt them. See the bounds guard in crtc_cycle(). (beads-33f)
 static constexpr int REND_BUFF_USABLE = 800;
 static constexpr int REND_BUFF_MARGIN = 64;
+static constexpr int MAX_PRERENDER_WRITE_BYTES = 16; // a full prerender writes 4 dwords
 alignas(dword) byte RendBuff[REND_BUFF_USABLE + REND_BUFF_MARGIN]; // cast to dword* in (pre)render
 byte *RendWid, *RendOut;
 dword *RendStart, *RendPos;
@@ -1089,8 +1091,8 @@ void crtc_cycle(int repeat_count)
          // RendWid must stay within HorzPix, and RendPos must leave room for one full
          // 4-dword prerender write inside the usable RendBuff region. (beads-33f)
          if (HorzChar < HorzMax
-             && RendWid < &HorzPix[sizeof(HorzPix)]
-             && reinterpret_cast<byte *>(RendPos) <= &RendBuff[REND_BUFF_USABLE - 16]) { // below horizontal cut-off? (-16 = one 4-dword prerender write)
+             && RendWid < std::end(HorzPix)
+             && reinterpret_cast<byte *>(RendPos) <= &RendBuff[REND_BUFF_USABLE - MAX_PRERENDER_WRITE_BYTES]) { // below horizontal cut-off?
             if (flags1.combined != LastPreRend) {
                set_prerender(); // change pre-renderer if necessary
             }
