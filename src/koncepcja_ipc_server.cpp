@@ -3596,14 +3596,25 @@ std::string handle_command(const std::string& line) {
       }
     }
     if (parts[1] == "palette") {
-      // gfx palette — show current palette as RGBA hex
+      // gfx palette — show current palette as #RRGGBBAA hex.
+      // gfx_get_palette_rgba() packs each colour little-endian as
+      // (r | g<<8 | b<<16 | a<<24), which is correct for the SDL RGBA32
+      // surface used by `gfx decode`. Printing that uint32 with %08X, however,
+      // emits it big-end-first (#AABBGGRR), transposing the red and blue
+      // channels in the text. Unpack the bytes and print them in true
+      // R,G,B,A order so the hex matches what the screen actually renders.
       uint32_t palette[16];
       gfx_get_palette_rgba(palette, 16);
       std::ostringstream resp;
       resp << "OK\n";
       for (int i = 0; i < 16; i++) {
+        uint32_t c = palette[i];
+        unsigned r =  c        & 0xFF;
+        unsigned g = (c >>  8) & 0xFF;
+        unsigned b = (c >> 16) & 0xFF;
+        unsigned a = (c >> 24) & 0xFF;
         char buf[32];
-        snprintf(buf, sizeof(buf), "%2d: #%08X\n", i, palette[i]);
+        snprintf(buf, sizeof(buf), "%2d: #%02X%02X%02X%02X\n", i, r, g, b, a);
         resp << buf;
       }
       return resp.str();
