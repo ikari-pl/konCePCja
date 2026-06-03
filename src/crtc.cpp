@@ -68,7 +68,14 @@ byte PosShift, HorzChar, HorzMax;
 dword *ModeMaps[4];
 dword *ModeMap;
 byte HorzPix[49];
-byte RendBuff[800];
+// Logical render width: 49 CRTC chars × 16 bytes, rendered from RendStart=&RendBuff[16].
+// REND_BUFF_MARGIN is slack so that even a bounded prerender overrun (e.g. a CRTC
+// program that stretches a scanline until the byte-wide HorzChar counter wraps before
+// a monitor HSYNC resets RendPos) cannot reach the adjacent RendWid/RendOut/RendStart/
+// RendPos pointers and corrupt them. See the bounds guard in crtc_cycle(). (beads-33f)
+static constexpr int REND_BUFF_USABLE = 800;
+static constexpr int REND_BUFF_MARGIN = 64;
+byte RendBuff[REND_BUFF_USABLE + REND_BUFF_MARGIN];
 byte *RendWid, *RendOut;
 dword *RendStart, *RendPos;
 
@@ -1075,7 +1082,15 @@ void crtc_cycle(int repeat_count)
 {
    while (repeat_count) {
       if (VDU.flag_drawing && !CPC.skip_rendering) { // are we within the rendering area?
-         if (HorzChar < HorzMax) { // below horizontal cut-off?
+         // HorzChar < HorzMax caps a normal scanline to 48/49 chars, but HorzChar is a
+         // byte: a CRTC program can stretch a scanline past 256 char-cycles before the
+         // monitor HSYNC resets RendPos, wrapping HorzChar back under HorzMax so rendering
+         // resumes with the buffers already full. The pointer guards below are wrap-immune:
+         // RendWid must stay within HorzPix, and RendPos must leave room for one full
+         // 4-dword prerender write inside the usable RendBuff region. (beads-33f)
+         if (HorzChar < HorzMax
+             && RendWid < &HorzPix[sizeof(HorzPix)]
+             && RendPos <= reinterpret_cast<dword *>(&RendBuff[REND_BUFF_USABLE]) - 4) { // below horizontal cut-off?
             if (flags1.combined != LastPreRend) {
                set_prerender(); // change pre-renderer if necessary
             }
