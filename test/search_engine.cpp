@@ -1,5 +1,7 @@
-#include <gtest/gtest.h>
 #include "search_engine.h"
+
+#include <gtest/gtest.h>
+
 #include <cstring>
 #include <vector>
 
@@ -76,7 +78,7 @@ TEST(SearchEngineAsm, AsmModeReturnsEmptyFromGenericSearch) {
   // ASM mode requires z80 disassembly; the generic search_memory returns empty
   auto m = mem({0x3E, 0x00, 0xC9});
   auto results = search_memory(m.data(), m.size(), "ld a,#00", SearchMode::ASM);
-  EXPECT_TRUE(results.empty()); // ASM is handled by IPC server directly
+  EXPECT_TRUE(results.empty());  // ASM is handled by IPC server directly
 }
 
 // --- Edge cases ---
@@ -89,7 +91,8 @@ TEST(SearchEngineEdge, EmptyPatternReturnsEmpty) {
 
 TEST(SearchEngineEdge, PatternLongerThanMemory) {
   auto m = mem({0xAA});
-  auto results = search_memory(m.data(), m.size(), "AA BB CC DD EE", SearchMode::HEX);
+  auto results =
+      search_memory(m.data(), m.size(), "AA BB CC DD EE", SearchMode::HEX);
   EXPECT_TRUE(results.empty());
 }
 
@@ -120,4 +123,4 @@ TEST(FuzzyScore, NoMatchReturnsZero) {
   EXPECT_EQ(score, 0);
 }
 
-} // namespace
+}  // namespace

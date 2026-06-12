@@ -6,19 +6,16 @@
    value to &FF00-&FFFF sets the DAC output level.
 */
 
-#ifndef AMDRUM_H
-#define AMDRUM_H
+#pragma once
 
 #include "types.h"
 
 struct AmDrum {
-   bool enabled = false;
-   byte dac_value = 128;  // 128 = silence (unsigned midpoint)
+  bool enabled = false;
+  byte dac_value = 128;  // 128 = silence (unsigned midpoint)
 };
 
 extern AmDrum g_amdrum;
 
 void amdrum_reset();
 void amdrum_register_io();
-
-#endif

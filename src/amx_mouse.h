@@ -16,21 +16,22 @@
      Bit 6: Fire3  (LOW = middle button pressed)
 */
 
-#ifndef AMX_MOUSE_H
-#define AMX_MOUSE_H
+#pragma once
 
-#include "types.h"
 #include <cstdint>
 
+#include "types.h"
+
 struct AMXMouse {
-   bool enabled = false;
-   float accum_x = 0;        // sub-pixel accumulator X (float for SDL3 deltas)
-   float accum_y = 0;        // sub-pixel accumulator Y
-   int mickey_x = 0;         // whole-pixel mickeys pending for CPC
-   int mickey_y = 0;
-   uint8_t buttons = 0;      // SDL button state (not CPC-inverted)
-   bool row9_selected = false;   // true when CPC is selecting row 9
-   bool row9_was_deselected = false; // set when row deselected, cleared on reselect
+  bool enabled = false;
+  float accum_x = 0;  // sub-pixel accumulator X (float for SDL3 deltas)
+  float accum_y = 0;  // sub-pixel accumulator Y
+  int mickey_x = 0;   // whole-pixel mickeys pending for CPC
+  int mickey_y = 0;
+  uint8_t buttons = 0;         // SDL button state (not CPC-inverted)
+  bool row9_selected = false;  // true when CPC is selecting row 9
+  bool row9_was_deselected =
+      false;  // set when row deselected, cleared on reselect
 };
 
 extern AMXMouse g_amx_mouse;
@@ -40,5 +41,3 @@ void amx_mouse_update(float dx, float dy, uint32_t sdl_buttons);
 void amx_mouse_row_select(int line);
 byte amx_mouse_get_row9();
 void amx_mouse_register_hooks();
-
-#endif

@@ -537,5 +537,5 @@ found by a reviewer should become a test**, so it can't regress.
 
 ---
 
-*konCePCja: 58 PRs, 774 tests, 80+ IPC commands, 6 phases of development,
-17 DevTools windows, and still learning.*
+*konCePCja: 58+ PRs, 1,119 tests, 80+ IPC commands, 7+ phases of development,
+18 DevTools windows, and still learning.*

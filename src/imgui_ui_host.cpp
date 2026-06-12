@@ -19,12 +19,13 @@
 
 #include "imgui_ui_host.h"
 
+#include <SDL3/SDL_events.h>
+
+#include <cstdio>
+
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_ui.h"
-
-#include <cstdio>
-#include <SDL3/SDL_events.h>
 
 namespace {
 
@@ -33,60 +34,69 @@ namespace {
 // (UiToastLevel was deliberately defined to match) — this switch is
 // just defensive in case either enum gains members later.
 ImGuiUIState::ToastLevel to_imgui_toast_level(UiToastLevel level) {
-    switch (level) {
-        case UiToastLevel::Info:    return ImGuiUIState::ToastLevel::Info;
-        case UiToastLevel::Success: return ImGuiUIState::ToastLevel::Success;
-        case UiToastLevel::Error:   return ImGuiUIState::ToastLevel::Error;
-    }
-    return ImGuiUIState::ToastLevel::Info;
+  switch (level) {
+    case UiToastLevel::Info:
+      return ImGuiUIState::ToastLevel::Info;
+    case UiToastLevel::Success:
+      return ImGuiUIState::ToastLevel::Success;
+    case UiToastLevel::Error:
+      return ImGuiUIState::ToastLevel::Error;
+  }
+  return ImGuiUIState::ToastLevel::Info;
 }
 
-} // namespace
+}  // namespace
 
 void ImGuiUiHost::process_event(const SDL_Event& ev) {
-    if (!ImGui::GetCurrentContext()) {
-        return;  // Pre-init: drop the event.  The main loop's emulator
-                 // dispatch still runs below this call in kon_cpc_ja.cpp.
-    }
-    ImGui_ImplSDL3_ProcessEvent(&ev);
+  if (!ImGui::GetCurrentContext()) {
+    return;  // Pre-init: drop the event.  The main loop's emulator
+             // dispatch still runs below this call in kon_cpc_ja.cpp.
+  }
+  ImGui_ImplSDL3_ProcessEvent(&ev);
 }
 
 bool ImGuiUiHost::wants_capture_keyboard() const {
-    if (!ImGui::GetCurrentContext()) return false;
-    return ImGui::GetIO().WantCaptureKeyboard;
+  if (!ImGui::GetCurrentContext()) return false;
+  return ImGui::GetIO().WantCaptureKeyboard;
 }
 
 bool ImGuiUiHost::wants_capture_mouse() const {
-    if (!ImGui::GetCurrentContext()) return false;
-    return ImGui::GetIO().WantCaptureMouse;
+  if (!ImGui::GetCurrentContext()) return false;
+  return ImGui::GetIO().WantCaptureMouse;
 }
 
 bool ImGuiUiHost::any_keyboard_ui_active() const {
-    if (!ImGui::GetCurrentContext()) return false;
-    return imgui_any_keyboard_ui_active();
+  if (!ImGui::GetCurrentContext()) return false;
+  return imgui_any_keyboard_ui_active();
 }
 
 void ImGuiUiHost::toast(UiToastLevel level, const std::string& message) {
-    if (!ImGui::GetCurrentContext()) {
-        // No UI to show on — fall through to stderr like NullUiHost.
-        // Otherwise diagnostics during cold startup vanish silently.
-        const char* tag = "info";
-        switch (level) {
-            case UiToastLevel::Info:    tag = "info";    break;
-            case UiToastLevel::Success: tag = "success"; break;
-            case UiToastLevel::Error:   tag = "error";   break;
-        }
-        std::fprintf(stderr, "[toast/%s] %s\n", tag, message.c_str());
-        return;
+  if (!ImGui::GetCurrentContext()) {
+    // No UI to show on — fall through to stderr like NullUiHost.
+    // Otherwise diagnostics during cold startup vanish silently.
+    const char* tag = "info";
+    switch (level) {
+      case UiToastLevel::Info:
+        tag = "info";
+        break;
+      case UiToastLevel::Success:
+        tag = "success";
+        break;
+      case UiToastLevel::Error:
+        tag = "error";
+        break;
     }
-    imgui_toast(message, to_imgui_toast_level(level));
+    std::fprintf(stderr, "[toast/%s] %s\n", tag, message.c_str());
+    return;
+  }
+  imgui_toast(message, to_imgui_toast_level(level));
 }
 
 int ImGuiUiHost::topbar_height() const {
-    // imgui_topbar_height() lives in imgui_ui.cpp and caches the live
-    // menubar+statusbar measurements.  Safe pre-init: returns 0 before
-    // the first frame.
-    return imgui_topbar_height();
+  // imgui_topbar_height() lives in imgui_ui.cpp and caches the live
+  // menubar+statusbar measurements.  Safe pre-init: returns 0 before
+  // the first frame.
+  return imgui_topbar_height();
 }
 
 // -- Install at startup ----------------------------------------------
@@ -102,7 +112,7 @@ int ImGuiUiHost::topbar_height() const {
 namespace {
 ImGuiUiHost g_imgui_host_instance;
 struct AutoInstaller {
-    AutoInstaller() { install_ui_host(&g_imgui_host_instance); }
+  AutoInstaller() { install_ui_host(&g_imgui_host_instance); }
 };
 [[maybe_unused]] AutoInstaller g_auto_installer;
-} // namespace
+}  // namespace

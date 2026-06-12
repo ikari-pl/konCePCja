@@ -1,7 +1,9 @@
 #include "autotype.h"
-#include "cpc_key_tables.h"
+
 #include <cctype>
 #include <cstdlib>
+
+#include "cpc_key_tables.h"
 
 AutoTypeQueue g_autotype_queue;
 
@@ -9,7 +11,8 @@ AutoTypeQueue g_autotype_queue;
 // Returns -1 if not found.
 static int resolve_key_name(const std::string& name) {
   std::string upper = name;
-  for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  for (auto& c : upper)
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
   auto it = cpc_key_names().find(upper);
   if (it != cpc_key_names().end()) return static_cast<int>(it->second);
   // Single char: try char map
@@ -24,7 +27,7 @@ std::string AutoTypeQueue::enqueue(const std::string& text) {
   std::lock_guard<std::mutex> lock(mutex_);
   std::deque<AutoTypeAction> parsed;
 
-  for (size_t i = 0; i < text.size(); ) {
+  for (size_t i = 0; i < text.size();) {
     if (text[i] == '~') {
       // Check for literal tilde: ~~
       if (i + 1 < text.size() && text[i + 1] == '~') {
@@ -71,7 +74,8 @@ std::string AutoTypeQueue::enqueue(const std::string& text) {
           return "unknown key: " + key_name;
         }
         AutoTypeAction a;
-        a.type = press ? AutoTypeAction::KEY_PRESS : AutoTypeAction::KEY_RELEASE;
+        a.type =
+            press ? AutoTypeAction::KEY_PRESS : AutoTypeAction::KEY_RELEASE;
         a.cpc_key = static_cast<uint16_t>(key);
         a.pause_frames = 0;
         parsed.push_back(a);
@@ -175,7 +179,8 @@ bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
 
 bool AutoTypeQueue::is_active() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return !queue_.empty() || awaiting_release_ || pause_counter_ > 0 || inter_char_pause_;
+  return !queue_.empty() || awaiting_release_ || pause_counter_ > 0 ||
+         inter_char_pause_;
 }
 
 size_t AutoTypeQueue::remaining() const {

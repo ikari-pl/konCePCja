@@ -1,71 +1,67 @@
-#include <gtest/gtest.h>
 #include "symfile.h"
+
+#include <gtest/gtest.h>
 
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <string>
 
-class SymfileTest : public testing::Test
-{
-  public:
-    void TearDown()
-    {
-      for(auto f : tmpFilenames_)
-      {
-        ASSERT_EQ(0, unlink(f.c_str()));
-      }
+class SymfileTest : public testing::Test {
+ public:
+  void TearDown() {
+    for (auto f : tmpFilenames_) {
+      ASSERT_EQ(0, unlink(f.c_str()));
     }
-  protected:
-    std::string createTmpFile()
-    {
+  }
+
+ protected:
+  std::string createTmpFile() {
 #ifdef _MSC_VER
-      char tmpFilename[L_tmpnam_s];
-      tmpnam_s(tmpFilename, sizeof(tmpFilename));
-      FILE* f = fopen(tmpFilename, "w");
-      if (!f) return "";
-      fclose(f);
+    char tmpFilename[L_tmpnam_s];
+    tmpnam_s(tmpFilename, sizeof(tmpFilename));
+    FILE* f = fopen(tmpFilename, "w");
+    if (!f) return "";
+    fclose(f);
 #else
-      char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
-      int fd = mkstemp(tmpFilename);
-      if (fd < 0) return "";
-      close(fd);
+    char tmpFilename[] = "test/.koncepcja_tmp_XXXXXX";
+    int fd = mkstemp(tmpFilename);
+    if (fd < 0) return "";
+    close(fd);
 #endif
-      tmpFilenames_.push_back(tmpFilename);
-      return tmpFilename;
-    }
+    tmpFilenames_.push_back(tmpFilename);
+    return tmpFilename;
+  }
 
-    std::string readWholeFile(const std::string& filename)
-    {
-      std::ifstream is(filename);
-      if (is.bad()) return "**bad stream after open**";
-      if (is.fail()) return "**fail stream after open**";
-      is.seekg(0, is.end);
-      int length = is.tellg();
-      is.seekg(0, is.beg);
-      char * buffer = new char [length+1];
-      is.read(buffer, length);
-      if (is.bad()) return "**bad stream after read**";
-      // For some reason, the stream from the tmp file is failed after read on Windows
-      // It seems that length has an invalid value.
-      if (is.fail()) length = is.gcount();
-      buffer[length] = 0;
-      is.close();
-      return std::string(buffer, length);
-    }
+  std::string readWholeFile(const std::string& filename) {
+    std::ifstream is(filename);
+    if (is.bad()) return "**bad stream after open**";
+    if (is.fail()) return "**fail stream after open**";
+    is.seekg(0, is.end);
+    int length = is.tellg();
+    is.seekg(0, is.beg);
+    char* buffer = new char[length + 1];
+    is.read(buffer, length);
+    if (is.bad()) return "**bad stream after read**";
+    // For some reason, the stream from the tmp file is failed after read on
+    // Windows It seems that length has an invalid value.
+    if (is.fail()) length = is.gcount();
+    buffer[length] = 0;
+    is.close();
+    return std::string(buffer, length);
+  }
 
-    std::vector<std::string> tmpFilenames_;
+  std::vector<std::string> tmpFilenames_;
 };
 
-TEST_F(SymfileTest, parseSymfile)
-{
+TEST_F(SymfileTest, parseSymfile) {
   Symfile symfile("test/symfile/example.sym");
 
   std::vector<word> expected_breakpoints = {0x4042};
   std::vector<word> expected_entrypoints = {0x1729};
   std::map<word, std::string> expected_symbols = {
-    {0x4005, "hello_world"},
-    {0x4012, "foo_bar"},
+      {0x4005, "hello_world"},
+      {0x4012, "foo_bar"},
   };
 
   ASSERT_EQ(expected_breakpoints, symfile.Breakpoints());
@@ -73,8 +69,7 @@ TEST_F(SymfileTest, parseSymfile)
   ASSERT_EQ(expected_symbols, symfile.Symbols());
 }
 
-TEST_F(SymfileTest, saveSymfile)
-{
+TEST_F(SymfileTest, saveSymfile) {
   Symfile symfile;
   symfile.addBreakpoint(0x1234);
   symfile.addBreakpoint(0x1235);

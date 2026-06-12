@@ -25,11 +25,11 @@
 
 extern t_z80regs z80;
 extern t_CPC CPC;
-extern byte *membank_read[4];
-extern byte *membank_write[4];
-extern byte *memmap_ROM[256];
-extern byte *pbExpansionROM;
-extern byte *pbROMhi;
+extern byte* membank_read[4];
+extern byte* membank_write[4];
+extern byte* memmap_ROM[256];
+extern byte* pbExpansionROM;
+extern byte* pbROMhi;
 extern t_GateArray GateArray;
 
 namespace {
@@ -104,7 +104,8 @@ std::string send_command(const std::string& command) {
 }
 
 // Create a valid CPC ROM file (16K, type byte 0x01 = background ROM)
-std::string create_test_rom(const std::filesystem::path& dir, const std::string& name, byte type_byte = 0x01) {
+std::string create_test_rom(const std::filesystem::path& dir,
+                            const std::string& name, byte type_byte = 0x01) {
   auto path = dir / name;
   std::vector<byte> rom(16384, 0x00);
   rom[0] = type_byte;
@@ -114,7 +115,8 @@ std::string create_test_rom(const std::filesystem::path& dir, const std::string&
     rom[i] = static_cast<byte>(i & 0xFF);
   }
   std::ofstream ofs(path.string(), std::ios::binary);
-  ofs.write(reinterpret_cast<const char*>(rom.data()), static_cast<std::streamsize>(rom.size()));
+  ofs.write(reinterpret_cast<const char*>(rom.data()),
+            static_cast<std::streamsize>(rom.size()));
   ofs.close();
   return path.string();
 }
@@ -199,11 +201,14 @@ TEST_F(RomSlotsTest, RomListShowsLoadedSlot) {
 
 TEST_F(RomSlotsTest, RomLoadSlot0to31) {
   for (int slot : {2, 7, 15, 16, 24, 31}) {
-    auto rom_path = create_test_rom(tmp_dir, "rom_slot_" + std::to_string(slot) + ".rom");
-    auto resp = send_command("rom load " + std::to_string(slot) + " " + rom_path);
+    auto rom_path =
+        create_test_rom(tmp_dir, "rom_slot_" + std::to_string(slot) + ".rom");
+    auto resp =
+        send_command("rom load " + std::to_string(slot) + " " + rom_path);
     EXPECT_EQ(resp, "OK\n") << "Failed loading slot " << slot;
     EXPECT_NE(memmap_ROM[slot], nullptr) << "ROM data null for slot " << slot;
-    EXPECT_EQ(CPC.rom_file[slot], rom_path) << "rom_file wrong for slot " << slot;
+    EXPECT_EQ(CPC.rom_file[slot], rom_path)
+        << "rom_file wrong for slot " << slot;
   }
 }
 
@@ -228,7 +233,8 @@ TEST_F(RomSlotsTest, RomLoadInvalidRom) {
   auto path = tmp_dir / "bad.rom";
   std::vector<byte> bad_rom(16384, 0xFF);
   std::ofstream ofs(path.string(), std::ios::binary);
-  ofs.write(reinterpret_cast<const char*>(bad_rom.data()), static_cast<std::streamsize>(bad_rom.size()));
+  ofs.write(reinterpret_cast<const char*>(bad_rom.data()),
+            static_cast<std::streamsize>(bad_rom.size()));
   ofs.close();
   auto resp = send_command("rom load 10 " + path.string());
   EXPECT_TRUE(resp.find("ERR 400 not-a-valid-rom") != std::string::npos);
@@ -257,9 +263,11 @@ TEST_F(RomSlotsTest, RomUnloadSlot) {
 
 TEST_F(RomSlotsTest, RomUnloadRejectsSystemSlots) {
   auto resp = send_command("rom unload 0");
-  EXPECT_TRUE(resp.find("ERR 400 cannot-unload-system-rom") != std::string::npos);
+  EXPECT_TRUE(resp.find("ERR 400 cannot-unload-system-rom") !=
+              std::string::npos);
   resp = send_command("rom unload 1");
-  EXPECT_TRUE(resp.find("ERR 400 cannot-unload-system-rom") != std::string::npos);
+  EXPECT_TRUE(resp.find("ERR 400 cannot-unload-system-rom") !=
+              std::string::npos);
 }
 
 TEST_F(RomSlotsTest, RomUnloadEmptySlotIsOk) {

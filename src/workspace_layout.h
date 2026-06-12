@@ -1,5 +1,4 @@
-#ifndef WORKSPACE_LAYOUT_H
-#define WORKSPACE_LAYOUT_H
+#pragma once
 
 #include <string>
 #include <vector>
@@ -33,5 +32,3 @@ bool workspace_delete_layout(const std::string& name);
 
 // Return sorted list of saved layout names (stems only, no extension).
 std::vector<std::string> workspace_list_layouts();
-
-#endif // WORKSPACE_LAYOUT_H

@@ -29,6 +29,4 @@ int32_t DebugTimerManager::timer_stop(int32_t id, uint64_t tstate) {
   return static_cast<int32_t>(us);
 }
 
-void DebugTimerManager::clear() {
-  timers_.clear();
-}
+void DebugTimerManager::clear() { timers_.clear(); }

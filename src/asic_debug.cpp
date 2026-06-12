@@ -1,24 +1,23 @@
 #include "asic_debug.h"
-#include "asic.h"
-#include "koncepcja.h"
 
 #include <cstdio>
 #include <sstream>
 
+#include "asic.h"
+#include "koncepcja.h"
+
 extern t_CRTC CRTC;
-extern byte *pbRegisterPage;
+extern byte* pbRegisterPage;
 
 std::string asic_dump_dma() {
   std::ostringstream out;
   for (int c = 0; c < NB_DMA_CHANNELS; c++) {
-    const dma_channel &ch = asic.dma.ch[c];
+    const dma_channel& ch = asic.dma.ch[c];
     char buf[128];
     snprintf(buf, sizeof(buf),
              "ch%d: addr=%04X prescaler=%02X enabled=%d pause=%d loop_count=%d",
-             c, ch.source_address, ch.prescaler,
-             ch.enabled ? 1 : 0,
-             (ch.pause_ticks > 0) ? 1 : 0,
-             ch.loops);
+             c, ch.source_address, ch.prescaler, ch.enabled ? 1 : 0,
+             (ch.pause_ticks > 0) ? 1 : 0, ch.loops);
     if (c > 0) out << "\n";
     out << buf;
   }
@@ -27,17 +26,14 @@ std::string asic_dump_dma() {
 
 std::string asic_dump_dma_channel(int channel) {
   if (channel < 0 || channel >= NB_DMA_CHANNELS) return "";
-  const dma_channel &ch = asic.dma.ch[channel];
+  const dma_channel& ch = asic.dma.ch[channel];
   char buf[256];
   snprintf(buf, sizeof(buf),
            "ch%d: addr=%04X loop_addr=%04X prescaler=%02X enabled=%d "
            "interrupt=%d pause=%d tick_cycles=%02X loop_count=%d",
            channel, ch.source_address, ch.loop_address, ch.prescaler,
-           ch.enabled ? 1 : 0,
-           ch.interrupt ? 1 : 0,
-           (ch.pause_ticks > 0) ? 1 : 0,
-           ch.tick_cycles,
-           ch.loops);
+           ch.enabled ? 1 : 0, ch.interrupt ? 1 : 0,
+           (ch.pause_ticks > 0) ? 1 : 0, ch.tick_cycles, ch.loops);
   return std::string(buf);
 }
 
@@ -45,8 +41,7 @@ std::string asic_dump_sprites() {
   std::ostringstream out;
   for (int i = 0; i < 16; i++) {
     char buf[64];
-    snprintf(buf, sizeof(buf), "spr%d: x=%d y=%d mag_x=%d mag_y=%d",
-             i,
+    snprintf(buf, sizeof(buf), "spr%d: x=%d y=%d mag_x=%d mag_y=%d", i,
              static_cast<int>(asic.sprites_x[i]),
              static_cast<int>(asic.sprites_y[i]),
              static_cast<int>(asic.sprites_mag_x[i]),
@@ -65,10 +60,8 @@ std::string asic_dump_sprite(int index) {
   int my = static_cast<int>(asic.sprites_mag_y[index]);
   bool enabled = (mx > 0 && my > 0);
   snprintf(buf, sizeof(buf), "spr%d: x=%d y=%d mag_x=%d mag_y=%d enabled=%d",
-           index,
-           static_cast<int>(asic.sprites_x[index]),
-           static_cast<int>(asic.sprites_y[index]),
-           mx, my, enabled ? 1 : 0);
+           index, static_cast<int>(asic.sprites_x[index]),
+           static_cast<int>(asic.sprites_y[index]), mx, my, enabled ? 1 : 0);
   out << buf << "\n";
   // 16x16 pixel data as hex (each pixel is a 4-bit palette index)
   // In asic.sprites[id][x][y], color+16 is stored for non-zero (transparent=0)
@@ -97,14 +90,12 @@ std::string asic_dump_interrupts() {
 
   // DMA interrupts: per-channel interrupt flags
   snprintf(buf, sizeof(buf), "\ndma_interrupt: ch0=%d ch1=%d ch2=%d",
-           asic.dma.ch[0].interrupt ? 1 : 0,
-           asic.dma.ch[1].interrupt ? 1 : 0,
+           asic.dma.ch[0].interrupt ? 1 : 0, asic.dma.ch[1].interrupt ? 1 : 0,
            asic.dma.ch[2].interrupt ? 1 : 0);
   out << buf;
 
   // Interrupt vector
-  snprintf(buf, sizeof(buf), "\ninterrupt_vector: %02X",
-           asic.interrupt_vector);
+  snprintf(buf, sizeof(buf), "\ninterrupt_vector: %02X", asic.interrupt_vector);
   out << buf;
 
   // DCSR: reconstruct from channel state (enabled bits 0-2, interrupt bits 6-4)
@@ -130,7 +121,7 @@ std::string asic_dump_palette() {
   for (int i = 0; i < 32; i++) {
     int offset = kPaletteRegisterOffset + (i * 2);
     byte rb = pbRegisterPage ? pbRegisterPage[offset] : 0;
-    byte g  = pbRegisterPage ? pbRegisterPage[offset + 1] : 0;
+    byte g = pbRegisterPage ? pbRegisterPage[offset + 1] : 0;
     int r_val = (rb >> 4) & 0x0F;
     int g_val = g & 0x0F;
     int b_val = rb & 0x0F;

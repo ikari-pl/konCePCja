@@ -1,5 +1,5 @@
-#ifndef _SDL_SAVEPNG
-#define _SDL_SAVEPNG
+#pragma once
+
 /*
  * SDL_SavePNG -- libpng-based SDL_Surface writer.
  *
@@ -9,17 +9,16 @@
  * See https://github.com/driedfruit/SDL_SavePNG
  */
 #include <SDL3/SDL_video.h>
+
 #include <string>
 
 /*
  * Save an SDL_Surface as a PNG file.
- * 
+ *
  * surface - the SDL_Surface structure containing the image to be saved
  * file - the filename to save to
  *
  * Returns 0 success or -1 on failure, the error message is then retrievable
  * via SDL_GetError().
  */
-extern int SDL_SavePNG(SDL_Surface *surface, const std::string& file);
-
-#endif
+extern int SDL_SavePNG(SDL_Surface* surface, const std::string& file);

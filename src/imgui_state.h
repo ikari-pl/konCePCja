@@ -1,5 +1,4 @@
-#ifndef IMGUI_STATE_H
-#define IMGUI_STATE_H
+#pragma once
 
 // Headless-safe data side of the modern UI.
 //
@@ -23,18 +22,25 @@
 // which is unconditionally compiled into `koncepcja_lib` (both MODERN_UI
 // ON and OFF), so the symbol is always resolvable.
 
+#include <deque>
 #include <string>
 #include <vector>
-#include <deque>
+
 #include "koncepcja.h"
 
 enum class FileDialogAction {
   None,
-  LoadDiskA, LoadDiskB, SaveDiskA, SaveDiskB,
-  LoadSnapshot, SaveSnapshot,
-  LoadTape, LoadCartridge,
+  LoadDiskA,
+  LoadDiskB,
+  SaveDiskA,
+  SaveDiskB,
+  LoadSnapshot,
+  SaveSnapshot,
+  LoadTape,
+  LoadCartridge,
   LoadROM,
-  LoadDiskA_LED, LoadDiskB_LED,
+  LoadDiskA_LED,
+  LoadDiskB_LED,
   LoadTape_LED,
   SelectM4SDFolder,
   SavePlotterSVG
@@ -72,12 +78,12 @@ struct ImGuiUIState {
   float z80_time_avg_us = 0.0f;
 
   // Audio diagnostics (updated each second)
-  int audio_underruns = 0;           // times SDL queue was empty when we pushed
-  int audio_near_underruns = 0;      // times queue was below 1 buffer
-  int audio_pushes = 0;              // total pushes this second
-  float audio_queue_avg_ms = 0.0f;   // average queue depth in ms
-  float audio_queue_min_ms = 0.0f;   // minimum queue depth in ms
-  float audio_push_interval_max_us = 0.0f; // longest gap between pushes
+  int audio_underruns = 0;          // times SDL queue was empty when we pushed
+  int audio_near_underruns = 0;     // times queue was below 1 buffer
+  int audio_pushes = 0;             // total pushes this second
+  float audio_queue_avg_ms = 0.0f;  // average queue depth in ms
+  float audio_queue_min_ms = 0.0f;  // minimum queue depth in ms
+  float audio_push_interval_max_us = 0.0f;  // longest gap between pushes
 
   // Options dialog state
   t_CPC old_cpc_settings;
@@ -92,7 +98,7 @@ struct ImGuiUIState {
   int mem_filter_value = -1;
 
   // Eject confirmation
-  int eject_confirm_drive = -1; // -1=none, 0=A, 1=B
+  int eject_confirm_drive = -1;  // -1=none, 0=A, 1=B
   bool eject_confirm_tape = false;
 
   // Tape block index (built on tape load)
@@ -106,23 +112,24 @@ struct ImGuiUIState {
 
   // Tape waveform oscilloscope
   static constexpr int TAPE_WAVE_SAMPLES = 128;
-  byte tape_wave_buf[TAPE_WAVE_SAMPLES] = {};   // raw pulse level
-  int  tape_wave_head = 0;
+  byte tape_wave_buf[TAPE_WAVE_SAMPLES] = {};  // raw pulse level
+  int tape_wave_head = 0;
 
-  int  tape_wave_mode = 0; // 0=pulse, 1=decoded
+  int tape_wave_mode = 0;  // 0=pulse, 1=decoded
 
   // Decoded bits ring buffer (written by Tape_ReadDataBit)
   static constexpr int TAPE_DECODED_SAMPLES = 200;
   byte tape_decoded_buf[TAPE_DECODED_SAMPLES] = {};
-  int  tape_decoded_head = 0;
+  int tape_decoded_head = 0;
 
   // Virtual keyboard state
-  bool vkeyboard_caps_lock = false;      // CAPS LOCK - sticky toggle
-  bool vkeyboard_shift_next = false;     // SHIFT - one-shot, clears after 1 char
-  bool vkeyboard_ctrl_next = false;      // CTRL - one-shot, clears after 1 char
+  bool vkeyboard_caps_lock = false;   // CAPS LOCK - sticky toggle
+  bool vkeyboard_shift_next = false;  // SHIFT - one-shot, clears after 1 char
+  bool vkeyboard_ctrl_next = false;   // CTRL - one-shot, clears after 1 char
 
   // Docked mode: CPC Screen focus tracking for keyboard routing
-  bool cpc_screen_focused = false;       // true when CPC Screen tab is the focused window
+  bool cpc_screen_focused =
+      false;  // true when CPC Screen tab is the focused window
   bool request_cpc_screen_focus = false;  // set by event loop on app focus gain
 
   // Layout dropdown (topbar)
@@ -133,16 +140,13 @@ struct ImGuiUIState {
   struct Toast {
     std::string message;
     ToastLevel level = ToastLevel::Info;
-    float timer = 0.0f;       // seconds remaining
-    float initial = 0.0f;     // initial duration (for fade calc)
+    float timer = 0.0f;    // seconds remaining
+    float initial = 0.0f;  // initial duration (for fade calc)
   };
-  std::deque<Toast> toasts;   // rendered bottom-up, newest last
+  std::deque<Toast> toasts;  // rendered bottom-up, newest last
   static constexpr int MAX_TOASTS = 4;
   static constexpr float TOAST_DURATION = 3.5f;
   static constexpr float TOAST_FADE_TIME = 0.5f;
-
 };
 
 extern ImGuiUIState imgui_state;
-
-#endif // IMGUI_STATE_H

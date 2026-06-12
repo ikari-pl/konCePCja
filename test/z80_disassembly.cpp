@@ -1,17 +1,16 @@
-#include <gtest/gtest.h>
 #include "z80_disassembly.h"
-#include "koncepcja.h"
 
+#include <gtest/gtest.h>
+
+#include "koncepcja.h"
 #include "z80_macros.h"
 
-extern byte *membank_read[4];
+extern byte* membank_read[4];
 extern t_CPC CPC;
 
-namespace
-{
+namespace {
 
-TEST(DisassembledLine, Comparisons)
-{
+TEST(DisassembledLine, Comparisons) {
   DisassembledLine l1(1, 0, "nop");
   DisassembledLine l1_identical(1, 0, "nop");
   DisassembledLine l1bis(1, 0xc9, "ret");
@@ -26,8 +25,7 @@ TEST(DisassembledLine, Comparisons)
   EXPECT_TRUE(l1 == l1_identical);
 }
 
-TEST(Z80DisassemblyTest, DisassembleNOPRET)
-{
+TEST(Z80DisassemblyTest, DisassembleNOPRET) {
   byte membank0[2] = {0, 0xc9};
 
   CPC.resources_path = "resources";
@@ -42,9 +40,9 @@ TEST(Z80DisassemblyTest, DisassembleNOPRET)
   EXPECT_EQ(want.lines, code.lines);
 }
 
-TEST(Z80DisassemblyTest, DisassembleDecALoop)
-{
-  byte membank0[10] = { 0x00, 0x00, 0x00, 0x3E, 0x10, 0x3D, 0xC2, 0x5, 0x0, 0xC9 };
+TEST(Z80DisassemblyTest, DisassembleDecALoop) {
+  byte membank0[10] = {0x00, 0x00, 0x00, 0x3E, 0x10,
+                       0x3D, 0xC2, 0x5,  0x0,  0xC9};
 
   CPC.resources_path = "resources";
   membank_read[0] = membank0;
@@ -60,9 +58,9 @@ TEST(Z80DisassemblyTest, DisassembleDecALoop)
   EXPECT_EQ(want.lines, code.lines);
 }
 
-TEST(Z80DisassemblyTest, SqrtRoutine)
-{
-  byte membank0[16] = { 0x21, 0x64, 0x00, 0x11, 0x01, 0x00, 0xAF, 0x3D, 0xED, 0x52, 0x13, 0x13, 0x3C, 0x30, 0xF9, 0xC9 };
+TEST(Z80DisassemblyTest, SqrtRoutine) {
+  byte membank0[16] = {0x21, 0x64, 0x00, 0x11, 0x01, 0x00, 0xAF, 0x3D,
+                       0xED, 0x52, 0x13, 0x13, 0x3C, 0x30, 0xF9, 0xC9};
 
   CPC.resources_path = "resources";
   membank_read[0] = membank0;
@@ -84,9 +82,9 @@ TEST(Z80DisassemblyTest, SqrtRoutine)
   EXPECT_EQ(want.lines, code.lines);
 }
 
-TEST(Z80DisassemblyTest, DisassembleOne)
-{
-  byte membank0[16] = { 0x21, 0x64, 0x00, 0x11, 0x01, 0x00, 0xAF, 0x3D, 0xED, 0x52, 0x13, 0x13, 0x3C, 0x30, 0xF9, 0xC9 };
+TEST(Z80DisassemblyTest, DisassembleOne) {
+  byte membank0[16] = {0x21, 0x64, 0x00, 0x11, 0x01, 0x00, 0xAF, 0x3D,
+                       0xED, 0x52, 0x13, 0x13, 0x3C, 0x30, 0xF9, 0xC9};
 
   CPC.resources_path = "resources";
   membank_read[0] = membank0;
@@ -101,9 +99,9 @@ TEST(Z80DisassemblyTest, DisassembleOne)
   EXPECT_EQ(DisassembledLine(13, 0x30F9, "jr nc,$f9  ; $0008"), line);
 }
 
-TEST(Z80DisassemblyTest, LineAt)
-{
-  byte membank0[16] = { 0x21, 0x64, 0x00, 0x11, 0x01, 0x00, 0xAF, 0x3D, 0xED, 0x52, 0x13, 0x13, 0x3C, 0x30, 0xF9, 0xC9 };
+TEST(Z80DisassemblyTest, LineAt) {
+  byte membank0[16] = {0x21, 0x64, 0x00, 0x11, 0x01, 0x00, 0xAF, 0x3D,
+                       0xED, 0x52, 0x13, 0x13, 0x3C, 0x30, 0xF9, 0xC9};
 
   CPC.resources_path = "resources";
   membank_read[0] = membank0;
@@ -115,4 +113,4 @@ TEST(Z80DisassemblyTest, LineAt)
   EXPECT_EQ(DisassembledLine(10, 0x13, "inc de"), code.LineAt(10).value());
 }
 
-}
+}  // namespace

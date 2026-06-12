@@ -15,11 +15,11 @@
 #include "iui_host.h"
 
 class ImGuiUiHost final : public IUiHost {
-  public:
-    void process_event(const SDL_Event& ev) override;
-    bool wants_capture_keyboard() const override;
-    bool wants_capture_mouse()    const override;
-    bool any_keyboard_ui_active() const override;
-    void toast(UiToastLevel level, const std::string& message) override;
-    int topbar_height() const override;
+ public:
+  void process_event(const SDL_Event& ev) override;
+  bool wants_capture_keyboard() const override;
+  bool wants_capture_mouse() const override;
+  bool any_keyboard_ui_active() const override;
+  void toast(UiToastLevel level, const std::string& message) override;
+  int topbar_height() const override;
 };

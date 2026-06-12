@@ -1,9 +1,10 @@
-#include <gtest/gtest.h>
 #include "stringutils.h"
+
+#include <gtest/gtest.h>
+
 #include <string>
 
-TEST(StringUtils, SplitOnEmptyStringReturnsEmptyVector)
-{
+TEST(StringUtils, SplitOnEmptyStringReturnsEmptyVector) {
   std::string toSplit = "";
 
   std::vector<std::string> result = stringutils::split(toSplit, ',');
@@ -11,8 +12,7 @@ TEST(StringUtils, SplitOnEmptyStringReturnsEmptyVector)
   ASSERT_EQ(0, result.size());
 }
 
-TEST(StringUtils, SplitOnStringWithoutDelimiterReturnsOneElement)
-{
+TEST(StringUtils, SplitOnStringWithoutDelimiterReturnsOneElement) {
   std::string toSplit = "a string;without comma.";
 
   std::vector<std::string> result = stringutils::split(toSplit, ',');
@@ -21,8 +21,7 @@ TEST(StringUtils, SplitOnStringWithoutDelimiterReturnsOneElement)
   ASSERT_EQ(toSplit, result[0]);
 }
 
-TEST(StringUtils, SplitOnComma)
-{
+TEST(StringUtils, SplitOnComma) {
   std::string toSplit = "value1,value2,value3";
 
   std::vector<std::string> result = stringutils::split(toSplit, ',');
@@ -33,8 +32,7 @@ TEST(StringUtils, SplitOnComma)
   ASSERT_EQ("value3", result[2]);
 }
 
-TEST(StringUtils, SplitOnColon)
-{
+TEST(StringUtils, SplitOnColon) {
   std::string toSplit = "v1:v2:v3:v4:v5";
 
   std::vector<std::string> result = stringutils::split(toSplit, ':');
@@ -47,8 +45,7 @@ TEST(StringUtils, SplitOnColon)
   ASSERT_EQ("v5", result[4]);
 }
 
-TEST(StringUtils, SplitWithEmpty)
-{
+TEST(StringUtils, SplitWithEmpty) {
   std::string toSplit = "value1,,value3";
 
   std::vector<std::string> result = stringutils::split(toSplit, ',');
@@ -59,19 +56,18 @@ TEST(StringUtils, SplitWithEmpty)
   ASSERT_EQ("value3", result[2]);
 }
 
-TEST(StringUtils, SplitWithEmptyIgnore)
-{
+TEST(StringUtils, SplitWithEmptyIgnore) {
   std::string toSplit = "value1,,value3";
 
-  std::vector<std::string> result = stringutils::split(toSplit, ',', /*ignore_empty=*/true);
+  std::vector<std::string> result =
+      stringutils::split(toSplit, ',', /*ignore_empty=*/true);
 
   ASSERT_EQ(2, result.size());
   ASSERT_EQ("value1", result[0]);
   ASSERT_EQ("value3", result[1]);
 }
 
-TEST(StringUtils, TrimCharNotPresentInString)
-{
+TEST(StringUtils, TrimCharNotPresentInString) {
   std::string toTrim = "a test string";
 
   auto result = stringutils::trim(toTrim, '"');
@@ -79,8 +75,7 @@ TEST(StringUtils, TrimCharNotPresentInString)
   ASSERT_EQ(toTrim, result);
 }
 
-TEST(StringUtils, TrimCharPresentInMiddleOfStringOnly)
-{
+TEST(StringUtils, TrimCharPresentInMiddleOfStringOnly) {
   std::string toTrim = "a test string";
 
   auto result = stringutils::trim(toTrim, ' ');
@@ -88,8 +83,7 @@ TEST(StringUtils, TrimCharPresentInMiddleOfStringOnly)
   ASSERT_EQ(toTrim, result);
 }
 
-TEST(StringUtils, TrimCharAtBeginningOfString)
-{
+TEST(StringUtils, TrimCharAtBeginningOfString) {
   std::string toTrim = "--a test string";
 
   auto result = stringutils::trim(toTrim, '-');
@@ -97,8 +91,7 @@ TEST(StringUtils, TrimCharAtBeginningOfString)
   ASSERT_EQ("a test string", result);
 }
 
-TEST(StringUtils, TrimCharAtEndOfString)
-{
+TEST(StringUtils, TrimCharAtEndOfString) {
   std::string toTrim = "a test string--";
 
   auto result = stringutils::trim(toTrim, '-');
@@ -106,8 +99,7 @@ TEST(StringUtils, TrimCharAtEndOfString)
   ASSERT_EQ("a test string", result);
 }
 
-TEST(StringUtils, TrimCharOccuringMultipleTimesInString)
-{
+TEST(StringUtils, TrimCharOccuringMultipleTimesInString) {
   std::string toTrim = "\"a \"test\" string\"";
 
   auto result = stringutils::trim(toTrim, '"');
@@ -115,8 +107,7 @@ TEST(StringUtils, TrimCharOccuringMultipleTimesInString)
   ASSERT_EQ("a \"test\" string", result);
 }
 
-TEST(StringUtils, TrimStringWithOnlyOneCharAndTwoDelimitors)
-{
+TEST(StringUtils, TrimStringWithOnlyOneCharAndTwoDelimitors) {
   std::string toTrim = "\"a\"";
 
   auto result = stringutils::trim(toTrim, '"');
@@ -124,8 +115,7 @@ TEST(StringUtils, TrimStringWithOnlyOneCharAndTwoDelimitors)
   ASSERT_EQ("a", result);
 }
 
-TEST(StringUtils, TrimStringWithOnlyTwoDelimitors)
-{
+TEST(StringUtils, TrimStringWithOnlyTwoDelimitors) {
   std::string toTrim = "\"\"";
 
   auto result = stringutils::trim(toTrim, '"');
@@ -133,8 +123,7 @@ TEST(StringUtils, TrimStringWithOnlyTwoDelimitors)
   ASSERT_EQ("", result);
 }
 
-TEST(StringUtils, TrimStringWithOnlyOneDelimitor)
-{
+TEST(StringUtils, TrimStringWithOnlyOneDelimitor) {
   std::string toTrim = "\"";
 
   auto result = stringutils::trim(toTrim, '"');
@@ -142,8 +131,7 @@ TEST(StringUtils, TrimStringWithOnlyOneDelimitor)
   ASSERT_EQ("", result);
 }
 
-TEST(StringUtils, LowerOnEmptyString)
-{
+TEST(StringUtils, LowerOnEmptyString) {
   std::string toLower = "";
 
   auto result = stringutils::lower(toLower);
@@ -151,8 +139,7 @@ TEST(StringUtils, LowerOnEmptyString)
   ASSERT_EQ("", result);
 }
 
-TEST(StringUtils, LowerOnUpperCaseString)
-{
+TEST(StringUtils, LowerOnUpperCaseString) {
   std::string toLower = "ABCDEF";
 
   auto result = stringutils::lower(toLower);
@@ -160,8 +147,7 @@ TEST(StringUtils, LowerOnUpperCaseString)
   ASSERT_EQ("abcdef", result);
 }
 
-TEST(StringUtils, LowerOnLowerCaseString)
-{
+TEST(StringUtils, LowerOnLowerCaseString) {
   std::string toLower = "ghijkl";
 
   auto result = stringutils::lower(toLower);
@@ -169,8 +155,7 @@ TEST(StringUtils, LowerOnLowerCaseString)
   ASSERT_EQ("ghijkl", result);
 }
 
-TEST(StringUtils, UpperOnEmptyString)
-{
+TEST(StringUtils, UpperOnEmptyString) {
   std::string toUpper = "";
 
   auto result = stringutils::upper(toUpper);
@@ -178,8 +163,7 @@ TEST(StringUtils, UpperOnEmptyString)
   ASSERT_EQ("", result);
 }
 
-TEST(StringUtils, UpperOnUpperCaseString)
-{
+TEST(StringUtils, UpperOnUpperCaseString) {
   std::string toUpper = "ABCDEF";
 
   auto result = stringutils::upper(toUpper);
@@ -187,8 +171,7 @@ TEST(StringUtils, UpperOnUpperCaseString)
   ASSERT_EQ("ABCDEF", result);
 }
 
-TEST(StringUtils, UpperOnLowerCaseString)
-{
+TEST(StringUtils, UpperOnLowerCaseString) {
   std::string toUpper = "ghijkl";
 
   auto result = stringutils::upper(toUpper);
@@ -196,18 +179,20 @@ TEST(StringUtils, UpperOnLowerCaseString)
   ASSERT_EQ("GHIJKL", result);
 }
 
-TEST(StringUtils, Replace)
-{
-  ASSERT_EQ("NothingToReplace", stringutils::replace("NothingToReplace", "NotFound", "Something"));
-  ASSERT_EQ("SomethingToReplace", stringutils::replace("SomethingFoo", "Foo", "ToReplace"));
-  ASSERT_EQ("ReplaceOnlyOnce", stringutils::replace("ReplaceOnceOnce", "Once", "Only"));
+TEST(StringUtils, Replace) {
+  ASSERT_EQ("NothingToReplace",
+            stringutils::replace("NothingToReplace", "NotFound", "Something"));
+  ASSERT_EQ("SomethingToReplace",
+            stringutils::replace("SomethingFoo", "Foo", "ToReplace"));
+  ASSERT_EQ("ReplaceOnlyOnce",
+            stringutils::replace("ReplaceOnceOnce", "Once", "Only"));
   ASSERT_EQ("EmptySearch", stringutils::replace("Search", "", "Empty"));
-  ASSERT_EQ("EmptyReplace", stringutils::replace("EmptyReplaceWorks", "Works", ""));
+  ASSERT_EQ("EmptyReplace",
+            stringutils::replace("EmptyReplaceWorks", "Works", ""));
   ASSERT_EQ("", stringutils::replace("", "EmptyString", "Nothing"));
 }
 
-TEST(StringUtils, SplitPathOnUnix)
-{
+TEST(StringUtils, SplitPathOnUnix) {
   std::string path = "/usr/bin/koncepcja";
   std::string dirname, filename;
 
@@ -217,8 +202,7 @@ TEST(StringUtils, SplitPathOnUnix)
   ASSERT_EQ("koncepcja", filename);
 }
 
-TEST(StringUtils, SplitPathOnUnixWithExtension)
-{
+TEST(StringUtils, SplitPathOnUnixWithExtension) {
   std::string path = "/home/user/koncepcja/disk/test.dsk";
   std::string dirname, filename;
 
@@ -228,8 +212,7 @@ TEST(StringUtils, SplitPathOnUnixWithExtension)
   ASSERT_EQ("test.dsk", filename);
 }
 
-TEST(StringUtils, SplitPathOnUnixWithSpaces)
-{
+TEST(StringUtils, SplitPathOnUnixWithSpaces) {
   std::string path = "/home/user name/koncepcja/disk/test disk.dsk";
   std::string dirname, filename;
 
@@ -239,8 +222,7 @@ TEST(StringUtils, SplitPathOnUnixWithSpaces)
   ASSERT_EQ("test disk.dsk", filename);
 }
 
-TEST(StringUtils, SplitPathOnUnixWithBackslash)
-{
+TEST(StringUtils, SplitPathOnUnixWithBackslash) {
   std::string path = "/home/user\\ name/koncepcja/disk/test\\ disk.dsk";
   std::string dirname, filename;
 
@@ -250,8 +232,7 @@ TEST(StringUtils, SplitPathOnUnixWithBackslash)
   ASSERT_EQ("test\\ disk.dsk", filename);
 }
 
-TEST(StringUtils, SplitPathWithoutDelimiter)
-{
+TEST(StringUtils, SplitPathWithoutDelimiter) {
   std::string path = "filename";
   std::string dirname, filename;
 
@@ -261,8 +242,7 @@ TEST(StringUtils, SplitPathWithoutDelimiter)
   ASSERT_EQ("filename", filename);
 }
 
-TEST(StringUtils, SplitPathOnWindows)
-{
+TEST(StringUtils, SplitPathOnWindows) {
   std::string path = "C:\\Users\\username\\koncepcja\\disk\\test.dsk";
   std::string dirname, filename;
 
@@ -275,8 +255,7 @@ TEST(StringUtils, SplitPathOnWindows)
 // This basically doesn't work but it's how it used to be implemented
 // It should be OK as long as people don't mix slash and backslashes
 // TODO(cpitrat): Could be nice (and easy) to fix though.
-TEST(StringUtils, SplitInvalidPathOnWindowsWithSlash)
-{
+TEST(StringUtils, SplitInvalidPathOnWindowsWithSlash) {
   std::string path = "C:\\Users\\username\\koncepcja/disk\\test.dsk";
   std::string dirname, filename;
 
@@ -285,4 +264,3 @@ TEST(StringUtils, SplitInvalidPathOnWindowsWithSlash)
   ASSERT_EQ("C:\\Users\\username\\koncepcja/", dirname);
   ASSERT_EQ("disk\\test.dsk", filename);
 }
-

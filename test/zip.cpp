@@ -1,5 +1,7 @@
-#include <gtest/gtest.h>
 #include "zip.h"
+
+#include <gtest/gtest.h>
+
 #include "errors.h"
 
 /*
@@ -12,8 +14,7 @@
  *     - hello.dsk
  */
 
-TEST(Zip, DirOnFileWithNoMatchingEntry)
-{
+TEST(Zip, DirOnFileWithNoMatchingEntry) {
   zip::t_zip_info file_infos;
   file_infos.filename = "test/zip/test1.zip";
   file_infos.extensions = ".zzz";
@@ -26,8 +27,7 @@ TEST(Zip, DirOnFileWithNoMatchingEntry)
   ASSERT_EQ(0, file_infos.filesOffsets.size());
 }
 
-TEST(Zip, DirOnFileWithOneExtensionAndMultipleEntries)
-{
+TEST(Zip, DirOnFileWithOneExtensionAndMultipleEntries) {
   zip::t_zip_info file_infos;
   file_infos.filename = "test/zip/test1.zip";
   file_infos.extensions = ".dsk";
@@ -42,8 +42,7 @@ TEST(Zip, DirOnFileWithOneExtensionAndMultipleEntries)
   ASSERT_EQ(1862, file_infos.filesOffsets[1].second);
 }
 
-TEST(Zip, DirOnFileWithMultipleExtensions)
-{
+TEST(Zip, DirOnFileWithMultipleExtensions) {
   zip::t_zip_info file_infos;
   file_infos.filename = "test/zip/test1.zip";
   file_infos.extensions = ".dsk.txt";
@@ -57,9 +56,8 @@ TEST(Zip, DirOnFileWithMultipleExtensions)
   ASSERT_EQ("disk/hello.dsk", file_infos.filesOffsets[2].first);
 }
 
-TEST(Zip, ExtractOnFileWithMultipleEntries)
-{
-  FILE *file;
+TEST(Zip, ExtractOnFileWithMultipleEntries) {
+  FILE* file;
   // Retrieve offset
   zip::t_zip_info file_infos;
   file_infos.filename = "test/zip/test1.zip";
@@ -74,6 +72,7 @@ TEST(Zip, ExtractOnFileWithMultipleEntries)
   char buffer[256];
   size_t r = fread(buffer, 1, 256, file);
   buffer[r] = 0;
-  ASSERT_STREQ("This file is a sample zip file used by konCePCja tests.\n", buffer);
+  ASSERT_STREQ("This file is a sample zip file used by konCePCja tests.\n",
+               buffer);
   ASSERT_EQ(0, fclose(file));
 }

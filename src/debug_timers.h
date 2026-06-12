@@ -1,5 +1,4 @@
-#ifndef DEBUG_TIMERS_H
-#define DEBUG_TIMERS_H
+#pragma once
 
 #include <cstdint>
 #include <map>
@@ -15,7 +14,7 @@ struct DebugTimer {
 };
 
 class DebugTimerManager {
-public:
+ public:
   // Start a timer. Returns 0 (for use in expressions).
   int32_t timer_start(int32_t id, uint64_t tstate);
 
@@ -28,10 +27,8 @@ public:
   // Access timers for listing.
   const std::map<int32_t, DebugTimer>& timers() const { return timers_; }
 
-private:
+ private:
   std::map<int32_t, DebugTimer> timers_;
 };
 
 extern DebugTimerManager g_debug_timers;
-
-#endif

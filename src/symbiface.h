@@ -21,73 +21,73 @@
 
    PS/2 Mouse status byte format (from CPCWiki SYMBiFACE_II:PS/2_mouse):
      Bits 7-6 (mm): 00=no data, 01=X offset, 10=Y offset, 11=buttons/scroll
-     Bits 5-0 (D):  signed 6-bit offset (modes 01/10), or button/scroll data (mode 11)
-     Mode 11, D[5]=0: D[0]=left, D[1]=right, D[2]=middle, D[3]=fwd, D[4]=back
-     Mode 11, D[5]=1: D[0-4]=scroll wheel offset (signed)
-     Read repeatedly until mm=00 (no more data).
+     Bits 5-0 (D):  signed 6-bit offset (modes 01/10), or button/scroll data
+   (mode 11) Mode 11, D[5]=0: D[0]=left, D[1]=right, D[2]=middle, D[3]=fwd,
+   D[4]=back Mode 11, D[5]=1: D[0-4]=scroll wheel offset (signed) Read
+   repeatedly until mm=00 (no more data).
 */
 
-#ifndef SYMBIFACE_H
-#define SYMBIFACE_H
+#pragma once
+
+#include <cstdint>
+#include <cstdio>
+#include <string>
 
 #include "types.h"
-#include <string>
-#include <cstdio>
-#include <cstdint>
 
 // ── IDE (ATA PIO) ──────────────────────────────
 struct IDE_Device {
-   FILE* image = nullptr;
-   bool present = false;
-   std::string image_path;
+  FILE* image = nullptr;
+  bool present = false;
+  std::string image_path;
 
-   // ATA register file
-   uint8_t error = 0;        // read: error, write: features
-   uint8_t features = 0;
-   uint8_t sector_count = 0;
-   uint8_t lba_low = 0;      // sector number
-   uint8_t lba_mid = 0;      // cylinder low
-   uint8_t lba_high = 0;     // cylinder high
-   uint8_t drive_head = 0;   // bit 4: drive select, bits 3-0: head
-   uint8_t status = 0;       // bit 7: BSY, bit 6: DRDY, bit 3: DRQ, bit 0: ERR
-   uint8_t command = 0;
+  // ATA register file
+  uint8_t error = 0;  // read: error, write: features
+  uint8_t features = 0;
+  uint8_t sector_count = 0;
+  uint8_t lba_low = 0;     // sector number
+  uint8_t lba_mid = 0;     // cylinder low
+  uint8_t lba_high = 0;    // cylinder high
+  uint8_t drive_head = 0;  // bit 4: drive select, bits 3-0: head
+  uint8_t status = 0;      // bit 7: BSY, bit 6: DRDY, bit 3: DRQ, bit 0: ERR
+  uint8_t command = 0;
 
-   // Data transfer state
-   uint8_t sector_buf[512] = {};
-   int buf_pos = 0;          // current byte position in sector_buf
-   bool data_ready = false;  // sector_buf has data for reading
-   bool write_pending = false; // sector_buf waiting to be written
+  // Data transfer state
+  uint8_t sector_buf[512] = {};
+  int buf_pos = 0;             // current byte position in sector_buf
+  bool data_ready = false;     // sector_buf has data for reading
+  bool write_pending = false;  // sector_buf waiting to be written
 
-   uint32_t total_sectors = 0;  // size in 512-byte sectors
+  uint32_t total_sectors = 0;  // size in 512-byte sectors
 };
 
 // ── RTC (DS12887) ──────────────────────────────
 struct SF2_RTC {
-   uint8_t address_reg = 0;       // selected register
-   uint8_t cmos_ram[50] = {};     // 50 bytes of CMOS NVRAM
+  uint8_t address_reg = 0;    // selected register
+  uint8_t cmos_ram[50] = {};  // 50 bytes of CMOS NVRAM
 };
 
 // ── PS/2 Mouse (multiplexed FIFO protocol) ───
 struct SF2_Mouse {
-   static constexpr int FIFO_SIZE = 64;
-   uint8_t fifo[FIFO_SIZE] = {};
-   int head = 0;             // write position (main thread)
-   int tail = 0;             // read position (Z80 I/O read)
-   uint8_t last_buttons = 0; // previous button state (for change detection)
-   float accum_x = 0.0f;     // sub-pixel accumulator X
-   float accum_y = 0.0f;     // sub-pixel accumulator Y
+  static constexpr int FIFO_SIZE = 64;
+  uint8_t fifo[FIFO_SIZE] = {};
+  int head = 0;              // write position (main thread)
+  int tail = 0;              // read position (Z80 I/O read)
+  uint8_t last_buttons = 0;  // previous button state (for change detection)
+  float accum_x = 0.0f;      // sub-pixel accumulator X
+  float accum_y = 0.0f;      // sub-pixel accumulator Y
 };
 
 // ── Master struct ──────────────────────────────
 struct Symbiface {
-   bool enabled = false;
+  bool enabled = false;
 
-   IDE_Device ide_master;
-   IDE_Device ide_slave;
-   int active_drive = 0;  // 0=master, 1=slave
+  IDE_Device ide_master;
+  IDE_Device ide_slave;
+  int active_drive = 0;  // 0=master, 1=slave
 
-   SF2_RTC rtc;
-   SF2_Mouse mouse;
+  SF2_RTC rtc;
+  SF2_Mouse mouse;
 };
 
 extern Symbiface g_symbiface;
@@ -111,5 +111,3 @@ void symbiface_mouse_update(float dx, float dy, uint32_t sdl_buttons);
 
 // I/O dispatch registration
 void symbiface_register_io();
-
-#endif

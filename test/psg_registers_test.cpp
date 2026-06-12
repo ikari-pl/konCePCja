@@ -137,10 +137,12 @@ TEST_F(PsgRegisterTest, EnvelopeShape_TriggersReset) {
   PSG.AmplitudeEnv = 15;
   Envelope_Counter.Hi = 999;
 
-  SetAYRegister(13, 0);  // shape 0: attack bit clear -> AmplitudeEnv starts at 32
+  SetAYRegister(13,
+                0);  // shape 0: attack bit clear -> AmplitudeEnv starts at 32
   EXPECT_TRUE(PSG.FirstPeriod);
   EXPECT_EQ(Envelope_Counter.Hi, 0u);
-  // Value is masked to 4 bits, shape 0 has attack bit (bit 2) clear -> AmplitudeEnv = 32
+  // Value is masked to 4 bits, shape 0 has attack bit (bit 2) clear ->
+  // AmplitudeEnv = 32
   EXPECT_EQ(PSG.AmplitudeEnv, 32);
   EXPECT_EQ(PSG.RegisterAY.EnvType, 0);
 }
@@ -187,12 +189,12 @@ TEST_F(PsgRegisterTest, Mixer_SelectiveToneNoise) {
   // 0x26 = 0b00_100_110: bits 1,2 set (tone B/C off), bit 5 set (noise C off)
   // bits 0,3,4 clear (tone A on, noise A on, noise B on)
   SetAYRegister(7, 0x26);
-  EXPECT_TRUE(Ton_EnA);    // bit 0 clear
-  EXPECT_FALSE(Ton_EnB);   // bit 1 set
-  EXPECT_FALSE(Ton_EnC);   // bit 2 set
-  EXPECT_TRUE(Noise_EnA);  // bit 3 clear
-  EXPECT_TRUE(Noise_EnB);  // bit 4 clear
-  EXPECT_FALSE(Noise_EnC); // bit 5 set
+  EXPECT_TRUE(Ton_EnA);     // bit 0 clear
+  EXPECT_FALSE(Ton_EnB);    // bit 1 set
+  EXPECT_FALSE(Ton_EnC);    // bit 2 set
+  EXPECT_TRUE(Noise_EnA);   // bit 3 clear
+  EXPECT_TRUE(Noise_EnB);   // bit 4 clear
+  EXPECT_FALSE(Noise_EnC);  // bit 5 set
 }
 
 // ─────────────────────────────────────────────────
@@ -251,9 +253,9 @@ TEST_F(PsgRegisterTest, ResetAYChipEmulation_CountersZeroed) {
 
 TEST_F(PsgRegisterTest, CalculateLevelTables_NonZeroValues) {
   // Set up minimal CPC config for level table calculation
-  CPC.snd_bits = 1;       // 16-bit
-  CPC.snd_stereo = 1;     // stereo
-  CPC.snd_volume = 80;    // audible volume
+  CPC.snd_bits = 1;     // 16-bit
+  CPC.snd_stereo = 1;   // stereo
+  CPC.snd_volume = 80;  // audible volume
 
   // Set channel indices (as InitAY does)
   Index_AL = 255;
@@ -285,8 +287,8 @@ TEST_F(PsgRegisterTest, CalculateLevelTables_NonZeroValues) {
 // ─────────────────────────────────────────────────
 
 TEST_F(PsgRegisterTest, InitAYCounterVars_SetsLoopCountInit) {
-  CPC.speed = 4;             // default speed
-  CPC.snd_playback_rate = 2; // index 2 = 44100 Hz
+  CPC.speed = 4;              // default speed
+  CPC.snd_playback_rate = 2;  // index 2 = 44100 Hz
   LoopCountInit = 0;
 
   InitAYCounterVars();

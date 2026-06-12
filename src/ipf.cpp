@@ -8,17 +8,18 @@
 #include <unistd.h>
 #endif
 
-#include "koncepcja.h"
+#include <memory>
+#include <string>
+
+#include "CapsLib.h"
 #include "disk.h"
 #include "errors.h"
 #include "fileutils.h"
-#include "memutils.h"
 #include "ipf.h"
+#include "koncepcja.h"
 #include "log.h"
+#include "memutils.h"
 #include "slotshandler.h"
-#include "CapsLib.h"
-#include <string>
-#include <memory>
 
 extern t_CPC CPC;
 
@@ -31,30 +32,25 @@ static byte abDecoded[0x200000];  // 2MB
 static word s_wCRC;
 
 static struct CapsTrackInfoT1 cti;
-static dword dwLockFlags = DI_LOCK_UPDATEFD|DI_LOCK_TYPE;
+static dword dwLockFlags = DI_LOCK_UPDATEFD | DI_LOCK_TYPE;
 
 // CRC-16 CCITT, for track level header and data checksums
-static void Crc (byte b_)
-{
-   static word awCRC[256];
+static void Crc(byte b_) {
+  static word awCRC[256];
 
-   if (!awCRC[1])
-   {
-      for (int i = 0 ; i < 256 ; i++)
-      {
-         word w = i << 8;
-         for (int j = 0 ; j < 8 ; j++)
-             w = (w << 1) ^ ((w & 0x8000) ? 0x1021 : 0);
-         awCRC[i] = w;
-      }
-   }
+  if (!awCRC[1]) {
+    for (int i = 0; i < 256; i++) {
+      word w = i << 8;
+      for (int j = 0; j < 8; j++) w = (w << 1) ^ ((w & 0x8000) ? 0x1021 : 0);
+      awCRC[i] = w;
+    }
+  }
 
-   s_wCRC = (s_wCRC << 8) ^ awCRC[((s_wCRC >> 8) ^ b_) & 0xff];
+  s_wCRC = (s_wCRC << 8) ^ awCRC[((s_wCRC >> 8) ^ b_) & 0xff];
 }
 
 // Read an MFM byte from the track
-static byte ReadByte ()
-{
+static byte ReadByte() {
   byte b;
 
   // Convert bit position to byte offset+shift, and advance by 8 MFM bits
@@ -65,12 +61,13 @@ static byte ReadByte ()
   if (!uShift)
     b = cti.trackbuf[uOffset];
   else
-    b = (cti.trackbuf[uOffset] << uShift) | (cti.trackbuf[uOffset+1] >> (8 - uShift));
+    b = (cti.trackbuf[uOffset] << uShift) |
+        (cti.trackbuf[uOffset + 1] >> (8 - uShift));
 
   // Track wrapped?
-  if (uPos >= cti.tracklen)
-  {
-    // Add the remaining bits from the start of the track (assumes cti.tracklen >= 8)
+  if (uPos >= cti.tracklen) {
+    // Add the remaining bits from the start of the track (assumes cti.tracklen
+    // >= 8)
     unsigned int uWrapBits = uPos - cti.tracklen;
     b &= ~(((1 << uWrapBits)) - 1);
     b |= cti.trackbuf[0] >> (8 - uWrapBits);
@@ -83,20 +80,21 @@ static byte ReadByte ()
 }
 
 // Read an MFM word from the track
-static word ReadWord ()
-{
+static word ReadWord() {
   uLastPos = uPos;
 
   // Read 16 bits of interleaved MFM clock and data bits
   byte b1 = ReadByte(), b2 = ReadByte();
 
   // Extract the clock bits
-  byte bClock =((b1 << 0) & 0x80) | ((b1 << 1) & 0x40) | ((b1 << 2) & 0x20) | ((b1 << 3) & 0x10) |
-         ((b2 >> 4) & 0x08) | ((b2 >> 3) & 0x04) | ((b2 >> 2) & 0x02) | ((b2 >> 1) & 0x01);
+  byte bClock = ((b1 << 0) & 0x80) | ((b1 << 1) & 0x40) | ((b1 << 2) & 0x20) |
+                ((b1 << 3) & 0x10) | ((b2 >> 4) & 0x08) | ((b2 >> 3) & 0x04) |
+                ((b2 >> 2) & 0x02) | ((b2 >> 1) & 0x01);
 
   // Extract the data bits
-  byte bData = ((b1 << 1) & 0x80) | ((b1 << 2) & 0x40) | ((b1 << 3) & 0x20) | ((b1 << 4) & 0x10) |
-         ((b2 >> 3) & 0x08) | ((b2 >> 2) & 0x04) | ((b2 >> 1) & 0x02) | ((b2 >> 0) & 0x01);
+  byte bData = ((b1 << 1) & 0x80) | ((b1 << 2) & 0x40) | ((b1 << 3) & 0x20) |
+               ((b1 << 4) & 0x10) | ((b2 >> 3) & 0x08) | ((b2 >> 2) & 0x04) |
+               ((b2 >> 1) & 0x02) | ((b2 >> 0) & 0x01);
 
   // Calculate the expected clock bits for the data byte
   byte bGoodClock = 0;
@@ -120,15 +118,11 @@ static word ReadWord ()
 }
 
 // Read a data byte, discarding the clock bits
-static byte ReadDataByte()
-{
-  return ReadWord() & 0xff;
-}
+static byte ReadDataByte() { return ReadWord() & 0xff; }
 
 // Process the MFM track data to extract sector headers and data fields
-static void ReadTrack (t_track *pt_)
-{
-  t_sector *ps = nullptr;
+static void ReadTrack(t_track* pt_) {
+  t_sector* ps = nullptr;
   unsigned int uHeaderOffset = 0;
 
   // Initialise scanning state
@@ -143,13 +137,17 @@ static void ReadTrack (t_track *pt_)
   else if (pt_->data && !(cti.type & CTIT_FLAG_FLAKEY))
     return;
 
-  // Loop until end of track, completing sectors that spanning the track wrapping point
-  while (!fWrapped || ps)
-  {
+  // Loop until end of track, completing sectors that spanning the track
+  // wrapping point
+  while (!fWrapped || ps) {
     byte bAM;
 
     // Continue iff we find 3xA1 with missing clock bits
-    if (ReadWord() != 0x04a1) { uPos -= 15; uDecoded--; continue; }  // advance by 1 bit on mismatches, discard decoded byte
+    if (ReadWord() != 0x04a1) {
+      uPos -= 15;
+      uDecoded--;
+      continue;
+    }  // advance by 1 bit on mismatches, discard decoded byte
     if (ReadWord() != 0x04a1) continue;
     if (ReadWord() != 0x04a1) continue;
 
@@ -157,13 +155,11 @@ static void ReadTrack (t_track *pt_)
     s_wCRC = 0xcdb4;
     Crc(bAM = ReadDataByte());
 
-    switch (bAM)
-    {
+    switch (bAM) {
       case 0xfe:  // id address mark
       {
         // Check we've room for another sector
-        if (pt_->sectors >= DSK_SECTORMAX)
-          continue;
+        if (pt_->sectors >= DSK_SECTORMAX) continue;
 
         // Allocate new sector
         ps = &pt_->sector[pt_->sectors++];
@@ -177,8 +173,7 @@ static void ReadTrack (t_track *pt_)
         Crc(ReadDataByte());
 
         // If the header CRC is bad we ignore it
-        if (s_wCRC)
-        {
+        if (s_wCRC) {
           pt_->sectors--;
           ps = nullptr;
           continue;
@@ -189,39 +184,39 @@ static void ReadTrack (t_track *pt_)
         continue;
       }
 
-      case 0xfb: case 0xfa:  // data address mark (+alt)
-      case 0xf8: case 0xf9:  // data address mark with control mark (+alt)
+      case 0xfb:
+      case 0xfa:  // data address mark (+alt)
+      case 0xf8:
+      case 0xf9:  // data address mark with control mark (+alt)
       {
         // Remember where the data started and the wrap status
         unsigned int uDataPos = uPos;
         bool fDataWrapped = fWrapped;
 
         // Ignore the data field if there's no associated header
-        if (!ps)
-          continue;
+        if (!ps) continue;
 
         // Check the byte distance between header and data fields
         unsigned int uOffset = (uLastPos - uHeaderOffset) >> 4;
 
         // If it's too close or too far, the data isn't accessible
-        if (uOffset < 32 || uOffset >= 64)
-        {
+        if (uOffset < 32 || uOffset >= 64) {
           ps->flags[1] &= ~0x01;  // no data
           ps = nullptr;
           continue;
         }
 
         // Flag the control mark if the DAM indicates one
-        if (bAM == 0xf8 || bAM == 0xf9)
-          ps->flags[1] |= 0x40;
+        if (bAM == 0xf8 || bAM == 0xf9) ps->flags[1] |= 0x40;
 
         // Set the data position in the buffer and sector size
         ps->setData(abDecoded + uDecoded);
-        unsigned int sector_size = (ps->CHRN[3] <= 7) ? (128 << ps->CHRN[3]) : 0x8000;
+        unsigned int sector_size =
+            (ps->CHRN[3] <= 7) ? (128 << ps->CHRN[3]) : 0x8000;
         ps->setSizes(sector_size, sector_size);
 
         // Decode and CRC the data field
-        for (unsigned int u = 0 ; u < ps->getTotalSize() ; u++)
+        for (unsigned int u = 0; u < ps->getTotalSize(); u++)
           Crc(ReadDataByte());
 
         // Include data CRC bytes
@@ -229,25 +224,24 @@ static void ReadTrack (t_track *pt_)
         Crc(ReadDataByte());
 
         // Bad CRC?
-        if (s_wCRC)
-        {
+        if (s_wCRC) {
           // Flag a data CRC error
           ps->flags[0] |= 0x20;
           ps->flags[1] |= 0x20;
         }
 
-        // To allow for read-track protections, overread the first data field to 4K
-        if (pt_->sectors == 1 && ps->getTotalSize() < 4096)
-        {
-          for (unsigned int u = 0 ; u < (4096 - ps->getTotalSize()) ; u++)
+        // To allow for read-track protections, overread the first data field to
+        // 4K
+        if (pt_->sectors == 1 && ps->getTotalSize() < 4096) {
+          for (unsigned int u = 0; u < (4096 - ps->getTotalSize()); u++)
             Crc(ReadDataByte());
         }
 
         // Sector complete
         ps = nullptr;
 
-        // Step back up to just after the data position to check for more address marks
-        // as sectors could be overlapping
+        // Step back up to just after the data position to check for more
+        // address marks as sectors could be overlapping
         uPos = uDataPos;
         fWrapped = fDataWrapped;
         continue;
@@ -256,34 +250,33 @@ static void ReadTrack (t_track *pt_)
   }
 
   // Data buffer not allocated yet?
-  if (!pt_->data)
-  {
-    // Allocate enough for the full decoded size, allowing for expanded overlapping sectors
+  if (!pt_->data) {
+    // Allocate enough for the full decoded size, allowing for expanded
+    // overlapping sectors
     memcpy(pt_->data = new byte[uDecoded], abDecoded, pt_->size = uDecoded);
-    auto offset = (pt_->data-abDecoded);
+    auto offset = (pt_->data - abDecoded);
 
     // Set the sector data pointers for the new buffer
-    for (unsigned int u = 0 ; u < pt_->sectors ; u++)
-      pt_->sector[u].setData(pt_->sector[u].getDataForWrite()+offset);
+    for (unsigned int u = 0; u < pt_->sectors; u++)
+      pt_->sector[u].setData(pt_->sector[u].getDataForWrite() + offset);
   }
 }
 
 // Track hook, called each disk rotation to allow flakey data to be updated
-void ipf_track_hook (t_drive *drive)
-{
+void ipf_track_hook(t_drive* drive) {
   byte cyl = drive->current_track, head = drive->current_side;
   long id = drive->ipf_id;
 
-  // Re-lock and update the track (note: don't use CAPSUnlockTrack() first as it resets the flakey data RNG!)
+  // Re-lock and update the track (note: don't use CAPSUnlockTrack() first as it
+  // resets the flakey data RNG!)
   cti.type = 1;
-  if (CAPSLockTrack(reinterpret_cast<CapsTrackInfo*>(&cti), id, cyl, head, dwLockFlags) == imgeOk)
-  {
-    t_track *pt = &drive->track[cyl][head];
+  if (CAPSLockTrack(reinterpret_cast<CapsTrackInfo*>(&cti), id, cyl, head,
+                    dwLockFlags) == imgeOk) {
+    t_track* pt = &drive->track[cyl][head];
 
     if (!cti.tracklen)
       memset(pt, 0, sizeof(*pt));
-    else
-    {
+    else {
       // Convert track length to bits if supported
       if (!(dwLockFlags & DI_LOCK_TRKBIT)) cti.tracklen <<= 3;
 
@@ -293,31 +286,34 @@ void ipf_track_hook (t_drive *drive)
 }
 
 // Eject hook, for additional disk image clean-up
-void ipf_eject_hook (t_drive *drive)
-{
+void ipf_eject_hook(t_drive* drive) {
   long id = drive->ipf_id;
 
   CAPSUnlockImage(id);
   CAPSRemImage(id);
   CAPSExit();
-  drive->altered = false; // discard modifications
+  drive->altered = false;  // discard modifications
   drive->eject_hook = nullptr;
 }
 
-int ipf_load (FILE *pfileIn, t_drive *drive)
-{
-  // IPF library needs a filename to be provided so we have to create a new temporary file.
-  // This file is not deleted.
-  // TODO(cpitrat): register the file for cleanup somewhere (e.g: at caprice exit)
-  FILE *pfileOut = nullptr;
+int ipf_load(FILE* pfileIn, t_drive* drive) {
+  // IPF library needs a filename to be provided so we have to create a new
+  // temporary file. This file is not deleted.
+  // TODO(cpitrat): register the file for cleanup somewhere (e.g: at caprice
+  // exit)
+  FILE* pfileOut = nullptr;
   char tmpFilePath[256] = {};
 #ifdef _MSC_VER
   // MSVC doesn't have mkstemp; use _mktemp_s + fopen
-  std::vector<std::string> prefixes = { ".", std::string(getenv("TEMP") ? getenv("TEMP") : ".") };
-  for (const auto &prefix : prefixes) {
-    snprintf(tmpFilePath, sizeof(tmpFilePath), "%s\\.koncpc_tmp_XXXXXX", prefix.c_str());
+  std::vector<std::string> prefixes = {
+      ".", std::string(getenv("TEMP") ? getenv("TEMP") : ".")};
+  for (const auto& prefix : prefixes) {
+    snprintf(tmpFilePath, sizeof(tmpFilePath), "%s\\.koncpc_tmp_XXXXXX",
+             prefix.c_str());
     if (_mktemp_s(tmpFilePath, strlen(tmpFilePath) + 1) != 0) {
-      LOG_ERROR("Couldn't load IPF file: Couldn't generate temporary file name in " << prefix << ": " << strerror(errno));
+      LOG_ERROR(
+          "Couldn't load IPF file: Couldn't generate temporary file name in "
+          << prefix << ": " << strerror(errno));
       continue;
     }
     LOG_DEBUG("Using temporary file: " << tmpFilePath);
@@ -327,12 +323,14 @@ int ipf_load (FILE *pfileIn, t_drive *drive)
     }
   }
 #else
-  std::vector<std::string> prefixes = { "/tmp", "." };
-  for (const auto &prefix : prefixes) {
-    snprintf(tmpFilePath, sizeof(tmpFilePath), "%s/.koncpc_tmp_XXXXXX", prefix.c_str());
+  std::vector<std::string> prefixes = {"/tmp", "."};
+  for (const auto& prefix : prefixes) {
+    snprintf(tmpFilePath, sizeof(tmpFilePath), "%s/.koncpc_tmp_XXXXXX",
+             prefix.c_str());
     int fd = mkstemp(tmpFilePath);
     if (fd == -1) {
-      LOG_ERROR("Couldn't load IPF file: Couldn't create temporary file in " << prefix << ": " << strerror(errno));
+      LOG_ERROR("Couldn't load IPF file: Couldn't create temporary file in "
+                << prefix << ": " << strerror(errno));
       continue;
     }
     LOG_DEBUG("Using temporary file: " << tmpFilePath);
@@ -357,45 +355,44 @@ int ipf_load (FILE *pfileIn, t_drive *drive)
 }
 
 // Attempt to load the supplied file as an IPF disk image
-int ipf_load (const std::string &filename, t_drive *drive)
-{
+int ipf_load(const std::string& filename, t_drive* drive) {
   char sz[4];
   long id = -1;
   struct CapsImageInfo cii;
-  struct CapsVersionInfo vi = { 0, 0, 0, 0 };
+  struct CapsVersionInfo vi = {0, 0, 0, 0};
 
   dsk_eject(drive);
 
-  FILE *f = fopen(filename.c_str(), "rb");
-  if (!f)
-    {
+  FILE* f = fopen(filename.c_str(), "rb");
+  if (!f) {
     LOG_ERROR("Couldn't open file: " << filename);
     return ERR_DSK_INVALID;
-    }
+  }
 
-  auto closure  = [&]() { fclose(f); };
+  auto closure = [&]() { fclose(f); };
   memutils::scope_exit<decltype(closure)> cs(closure);
 
   // Check for IPF file signature
-  if (!fread(sz, 4, 1, f) || memcmp(sz, "CAPS", sizeof(sz)))
-  {
+  if (!fread(sz, 4, 1, f) || memcmp(sz, "CAPS", sizeof(sz))) {
     LOG_ERROR("Wrong IPF header in: " << filename);
     return ERR_DSK_INVALID;
   }
 
   // Check that the DLL supports the CapsTrackInfoT1 structure we need
-  if (CAPSGetVersionInfo(&vi, 0) != imgeOk || vi.release < 4) // compatible DLL?
+  if (CAPSGetVersionInfo(&vi, 0) != imgeOk ||
+      vi.release < 4)  // compatible DLL?
   {
-    LOG_ERROR("IPF shared library is too old. Requiring version >=4. Please upgrade it");
+    LOG_ERROR(
+        "IPF shared library is too old. Requiring version >=4. Please upgrade "
+        "it");
     return ERR_DSK_INVALID;
   }
 
   // Use bit lengths if available
-  dwLockFlags |= vi.flag & (DI_LOCK_OVLBIT|DI_LOCK_TRKBIT);
+  dwLockFlags |= vi.flag & (DI_LOCK_OVLBIT | DI_LOCK_TRKBIT);
 
   // Initialise the library
-  if (CAPSInit() != imgeOk)
-  {
+  if (CAPSInit() != imgeOk) {
     LOG_ERROR("IPF shared library initialisation failed!");
     return ERR_DSK_INVALID;
   }
@@ -404,8 +401,7 @@ int ipf_load (const std::string &filename, t_drive *drive)
   id = CAPSAddImage();
 
   // Attach the IPF file to the container
-  if (CAPSLockImage(id, const_cast<char*>(filename.c_str())) != imgeOk)
-  {
+  if (CAPSLockImage(id, const_cast<char*>(filename.c_str())) != imgeOk) {
     CAPSRemImage(id);
     CAPSExit();
     LOG_ERROR("Couldn't lock image: " << filename);
@@ -413,8 +409,7 @@ int ipf_load (const std::string &filename, t_drive *drive)
   }
 
   // Get details about the contents of the image
-  if (CAPSGetImageInfo(&cii, id) != imgeOk)
-  {
+  if (CAPSGetImageInfo(&cii, id) != imgeOk) {
     CAPSRemImage(id);
     CAPSExit();
     LOG_ERROR("Couldn't get image info: " << filename);
@@ -422,28 +417,29 @@ int ipf_load (const std::string &filename, t_drive *drive)
   }
 
   // Set up the internal drive details
-  drive->tracks = cii.maxcylinder+1;
+  drive->tracks = cii.maxcylinder + 1;
   drive->sides = cii.maxhead;
   drive->altered = false;
   drive->track_hook = ipf_track_hook;
   drive->eject_hook = ipf_eject_hook;
 
   // Load all tracks from the image
-  for (byte cyl = static_cast<byte>(cii.mincylinder); cyl <= cii.maxcylinder ; cyl++)
-  {
-    for (byte head = static_cast<byte>(cii.minhead); head <= cii.maxhead ; head++)
-    {
+  for (byte cyl = static_cast<byte>(cii.mincylinder); cyl <= cii.maxcylinder;
+       cyl++) {
+    for (byte head = static_cast<byte>(cii.minhead); head <= cii.maxhead;
+         head++) {
       cti.type = 1;
-      if (CAPSLockTrack(reinterpret_cast<CapsTrackInfo*>(&cti), id, cyl, head, dwLockFlags) != imgeOk)
-      {
-        LOG_ERROR("Failed to lock IPF track, please upgrade IPF shared library.");
+      if (CAPSLockTrack(reinterpret_cast<CapsTrackInfo*>(&cti), id, cyl, head,
+                        dwLockFlags) != imgeOk) {
+        LOG_ERROR(
+            "Failed to lock IPF track, please upgrade IPF shared library.");
         CAPSUnlockImage(id);
         CAPSRemImage(id);
         CAPSExit();
         return ERR_DSK_INVALID;
       }
 
-      t_track *pt = &drive->track[cyl][head];
+      t_track* pt = &drive->track[cyl][head];
 
       if (!cti.tracklen)
         memset(pt, 0, sizeof(*pt));

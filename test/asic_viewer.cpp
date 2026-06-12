@@ -4,7 +4,7 @@
 #include "asic_debug.h"
 #include "koncepcja.h"
 
-extern byte *pbRegisterPage;
+extern byte* pbRegisterPage;
 extern t_CRTC CRTC;
 
 namespace {
@@ -27,10 +27,10 @@ class AsicViewerTest : public testing::Test {
     pbRegisterPage = nullptr;
   }
 
-  static byte *reg_page_;
+  static byte* reg_page_;
 };
 
-byte *AsicViewerTest::reg_page_ = nullptr;
+byte* AsicViewerTest::reg_page_ = nullptr;
 
 // --- asic_dump_dma_channel tests ---
 
@@ -85,10 +85,12 @@ TEST_F(AsicViewerTest, SpriteInRange) {
   asic.sprites_mag_y[0] = 1;
 
   std::string result = asic_dump_sprite(0);
-  EXPECT_NE(result.find("spr0: x=100 y=200 mag_x=2 mag_y=1 enabled=1"), std::string::npos);
+  EXPECT_NE(result.find("spr0: x=100 y=200 mag_x=2 mag_y=1 enabled=1"),
+            std::string::npos);
   // Header line + 16 rows of pixel data = 16 newlines
   int newlines = 0;
-  for (char c : result) if (c == '\n') newlines++;
+  for (char c : result)
+    if (c == '\n') newlines++;
   EXPECT_EQ(newlines, 16);
 }
 
