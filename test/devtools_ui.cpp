@@ -1,5 +1,6 @@
-#include <gtest/gtest.h>
 #include "devtools_ui.h"
+
+#include <gtest/gtest.h>
 
 // -----------------------------------------------
 // DevToolsUI toggle/is_open tests
@@ -75,17 +76,18 @@ TEST(DevToolsUI, WindowPtrNullForUnknown) {
 TEST(DevToolsUI, AllWindowNames) {
   DevToolsUI dt;
   const char* names[] = {
-    "registers", "disassembly", "memory_hex",
-    "stack", "breakpoints", "symbols",
-    "session_recording", "gfx_finder", "silicon_disc",
-    "asic", "disc_tools", "data_areas", "disasm_export",
-    "video_state", "audio_state"
-  };
+      "registers",     "disassembly", "memory_hex",        "stack",
+      "breakpoints",   "symbols",     "session_recording", "gfx_finder",
+      "silicon_disc",  "asic",        "disc_tools",        "data_areas",
+      "disasm_export", "video_state", "audio_state"};
   for (const char* name : names) {
-    EXPECT_FALSE(dt.is_window_open(name)) << "Window " << name << " should start closed";
-    EXPECT_NE(dt.window_ptr(name), nullptr) << "Window " << name << " should have valid ptr";
+    EXPECT_FALSE(dt.is_window_open(name))
+        << "Window " << name << " should start closed";
+    EXPECT_NE(dt.window_ptr(name), nullptr)
+        << "Window " << name << " should have valid ptr";
     dt.toggle_window(name);
-    EXPECT_TRUE(dt.is_window_open(name)) << "Window " << name << " should be open after toggle";
+    EXPECT_TRUE(dt.is_window_open(name))
+        << "Window " << name << " should be open after toggle";
   }
   EXPECT_TRUE(dt.any_window_open());
 }

@@ -5,8 +5,8 @@
 
 #include <gtest/gtest.h>
 
-#include "koncepcja.h"
 #include "disk.h"
+#include "koncepcja.h"
 
 extern t_CPC CPC;
 extern t_FDC FDC;
@@ -14,8 +14,8 @@ extern t_drive driveA;
 extern t_drive driveB;
 
 // FDC-internal globals defined in fdc.cpp
-extern t_drive *active_drive;
-extern t_track *active_track;
+extern t_drive* active_drive;
+extern t_track* active_track;
 extern dword read_status_delay;
 
 class FdcTest : public testing::Test {

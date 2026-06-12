@@ -1,13 +1,15 @@
 #include "z80_disassembly.h"
+
 #include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <sstream>
 #include <string>
+
+#include "log.h"
 #include "z80.h"
 #include "z80_opcode_table.h"
-#include "log.h"
 
 extern t_z80regs z80;
 #include "z80_macros.h"
@@ -16,10 +18,10 @@ extern t_z80regs z80;
 // Preserves the existing disassemble_one() lookup logic exactly.
 namespace {
 struct OpCode {
-    int value_;
-    int length_;
-    int argsize_;
-    std::string instruction_;
+  int value_;
+  int length_;
+  int argsize_;
+  std::string instruction_;
 };
 
 std::map<int, OpCode> build_opcodes_from_master_table() {
@@ -29,13 +31,14 @@ std::map<int, OpCode> build_opcodes_from_master_table() {
     const auto& op = g_z80_opcodes[i];
     int key = z80_opcode_to_legacy_key(op);
     // length = number of prefix+opcode bytes (excluding operand bytes)
-    int prefix_len = static_cast<int>(op.length) - static_cast<int>(op.operand_bytes);
+    int prefix_len =
+        static_cast<int>(op.length) - static_cast<int>(op.operand_bytes);
     int nbargs = static_cast<int>(op.operand_bytes);
     result[key] = OpCode{key, prefix_len, nbargs, std::string(op.mnemonic)};
   }
   return result;
 }
-} // anonymous namespace
+}  // anonymous namespace
 
 uint64_t DisassembledCode::hash() const {
   uint64_t h = 0;
@@ -56,25 +59,24 @@ std::optional<DisassembledLine> DisassembledCode::LineAt(word address) const {
   return {};
 }
 
-std::ostream& operator<<(std::ostream& os, const DisassembledLine& line)
-{
+std::ostream& operator<<(std::ostream& os, const DisassembledLine& line) {
   os << std::setfill('0') << std::setw(4) << std::hex << line.address_ << ": ";
-  os << std::setfill(' ') << std::setw(8) << line.opcode_ << " " << line.instruction_;
+  os << std::setfill(' ') << std::setw(8) << line.opcode_ << " "
+     << line.instruction_;
   return os;
 }
 
-std::ostream& operator<<(std::ostream& os, const DisassembledCode& code)
-{
-  for (const auto& line : code.lines)
-  {
+std::ostream& operator<<(std::ostream& os, const DisassembledCode& code) {
+  for (const auto& line : code.lines) {
     os << line << std::endl;
   }
   return os;
 }
 
-DisassembledLine::DisassembledLine(word address, uint64_t opcode, std::string&& instruction, int64_t ref_address) :
-      address_(address), opcode_(opcode), instruction_(instruction)
-{
+DisassembledLine::DisassembledLine(word address, uint64_t opcode,
+                                   std::string&& instruction,
+                                   int64_t ref_address)
+    : address_(address), opcode_(opcode), instruction_(instruction) {
   if (ref_address >= 0) {
     ref_address_ = ref_address;
     std::ostringstream oss;
@@ -83,8 +85,7 @@ DisassembledLine::DisassembledLine(word address, uint64_t opcode, std::string&& 
   }
 }
 
-int DisassembledLine::Size() const
-{
+int DisassembledLine::Size() const {
   if (opcode_ < 0x100) return 1;
   if (opcode_ < 0x10000) return 2;
   if (opcode_ < 0x1000000) return 3;
@@ -100,27 +101,29 @@ bool operator<(const DisassembledLine& l, const DisassembledLine& r) {
 }
 
 bool operator==(const DisassembledLine& l, const DisassembledLine& r) {
-  return l.address_ == r.address_ && l.opcode_ == r.opcode_ && l.instruction_ == r.instruction_;
+  return l.address_ == r.address_ && l.opcode_ == r.opcode_ &&
+         l.instruction_ == r.instruction_;
 }
 
-void add_if_new(word address, const DisassembledCode& result, std::vector<dword>& to_disassemble_from, const std::string& why, word from)
-{
+void add_if_new(word address, const DisassembledCode& result,
+                std::vector<dword>& to_disassemble_from, const std::string& why,
+                word from) {
   DisassembledLine fakeLine(address, 0, "");
   if (result.lines.count(fakeLine) == 0) {
     to_disassemble_from.push_back(address);
-    LOG_VERBOSE("Adding " << std::hex << address << " from " << why << " at " << from);
+    LOG_VERBOSE("Adding " << std::hex << address << " from " << why << " at "
+                          << from);
   }
 }
 
-void append_address(std::string& instruction, word address)
-{
+void append_address(std::string& instruction, word address) {
   std::ostringstream oss;
   oss << "  ; $" << std::hex << std::setw(4) << std::setfill('0') << address;
   instruction += oss.str();
 }
 
-DisassembledLine disassemble_one(dword start_address, DisassembledCode& result, std::vector<dword>& called_points)
-{
+DisassembledLine disassemble_one(dword start_address, DisassembledCode& result,
+                                 std::vector<dword>& called_points) {
   static auto opcode_to_instructions = build_opcodes_from_master_table();
   uint64_t opcode = 0;
   word pos = start_address;
@@ -149,40 +152,46 @@ DisassembledLine disassemble_one(dword start_address, DisassembledCode& result, 
         auto op = z80_read_mem(pos++);
         opcode = (opcode << 8) + op;
         std::ostringstream oss;
-        oss << "$" << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(op);
+        oss << "$" << std::hex << std::setw(2) << std::setfill('0')
+            << static_cast<int>(op);
         instruction.replace(instruction.find('*'), 1, oss.str());
         if (instruction.rfind("jr", 0) == 0 ||
             instruction.rfind("djnz", 0) == 0) {
           word address = pos + static_cast<int8_t>(op);
           append_address(instruction, address);
-          add_if_new(address, result, called_points, instruction, start_address);
+          add_if_new(address, result, called_points, instruction,
+                     start_address);
           ref_address = address;
         }
         if (instruction.rfind("rst", 0) == 0) {
           // RST instruction is of the form rst xxh where xx can be 00, 08,
           // 10, 18, 20, 28, 30 or 38
-          word address = std::stol(instruction.substr(4,2), nullptr, 16);
+          word address = std::stol(instruction.substr(4, 2), nullptr, 16);
           append_address(instruction, address);
-          add_if_new(address, result, called_points, instruction, start_address);
+          add_if_new(address, result, called_points, instruction,
+                     start_address);
           ref_address = address;
         }
       }
       // TODO: Detect inconsistencies (overlapping instructions). This
       // requires checking the instructions before and after the newly
       // emplaced one.
-      return DisassembledLine(start_address, opcode, std::move(instruction), ref_address);
+      return DisassembledLine(start_address, opcode, std::move(instruction),
+                              ref_address);
     }
   }
-  LOG_VERBOSE("No opcode found at " << std::hex << start_address << " for " << opcode << " from " << start_address);
+  LOG_VERBOSE("No opcode found at " << std::hex << start_address << " for "
+                                    << opcode << " from " << start_address);
   uint64_t value = z80_read_mem(start_address);
   std::ostringstream oss;
   oss << "db $" << std::hex << value;
   return DisassembledLine(start_address, value, oss.str());
 }
 
-// We use a dword for pos to allow to check if we're reaching the end of the memory
-void disassemble_from(dword pos, DisassembledCode& result, std::vector<dword>& to_disassemble_from)
-{
+// We use a dword for pos to allow to check if we're reaching the end of the
+// memory
+void disassemble_from(dword pos, DisassembledCode& result,
+                      std::vector<dword>& to_disassemble_from) {
   while (pos <= 0xFFFF) {
     auto line = disassemble_one(pos, result, to_disassemble_from);
     pos += line.Size();
@@ -201,15 +210,16 @@ void disassemble_from(dword pos, DisassembledCode& result, std::vector<dword>& t
 //    - Stop on ret (but not conditional ones), reti, retn (and more?)
 //  - Also disassemble starting at a given entry point
 //  - Detect inconsistencies
-//    - When inserting an instruction, verify it doesn't overlap with the one before or after
+//    - When inserting an instruction, verify it doesn't overlap with the one
+//    before or after
 //  - On inconsistency with already disassembled code:
 //    - From PC, it's probably a bug in the disassembler?
 //    - From entry point, it's probably a bad entry point?
-DisassembledCode disassemble(const std::vector<word>& entry_points)
-{
+DisassembledCode disassemble(const std::vector<word>& entry_points) {
   DisassembledCode code;
-  std::vector<dword> to_disassemble_from(entry_points.begin(), entry_points.end());
-  //to_disassemble_from.push_back(_PC);
+  std::vector<dword> to_disassemble_from(entry_points.begin(),
+                                         entry_points.end());
+  // to_disassemble_from.push_back(_PC);
   while (!to_disassemble_from.empty()) {
     auto next_pos = to_disassemble_from.back();
     to_disassemble_from.pop_back();

@@ -1,10 +1,11 @@
+#include "asic_debug.h"
+
 #include <gtest/gtest.h>
 
 #include "asic.h"
-#include "asic_debug.h"
 #include "koncepcja.h"
 
-extern byte *pbRegisterPage;
+extern byte* pbRegisterPage;
 extern t_CRTC CRTC;
 
 namespace {
@@ -33,18 +34,24 @@ class AsicDebugTest : public testing::Test {
     }
   }
 
-  static byte *reg_page_;
+  static byte* reg_page_;
   static bool reg_page_allocated_;
 };
 
-byte *AsicDebugTest::reg_page_ = nullptr;
+byte* AsicDebugTest::reg_page_ = nullptr;
 bool AsicDebugTest::reg_page_allocated_ = false;
 
 TEST_F(AsicDebugTest, DmaDumpAfterReset) {
   std::string result = asic_dump_dma();
-  EXPECT_NE(result.find("ch0: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"), std::string::npos);
-  EXPECT_NE(result.find("ch1: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"), std::string::npos);
-  EXPECT_NE(result.find("ch2: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"), std::string::npos);
+  EXPECT_NE(
+      result.find("ch0: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"),
+      std::string::npos);
+  EXPECT_NE(
+      result.find("ch1: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"),
+      std::string::npos);
+  EXPECT_NE(
+      result.find("ch2: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"),
+      std::string::npos);
 }
 
 TEST_F(AsicDebugTest, DmaDumpWithState) {
@@ -58,9 +65,15 @@ TEST_F(AsicDebugTest, DmaDumpWithState) {
   asic.dma.ch[2].enabled = true;
 
   std::string result = asic_dump_dma();
-  EXPECT_NE(result.find("ch0: addr=1234 prescaler=0A enabled=1 pause=1 loop_count=3"), std::string::npos);
-  EXPECT_NE(result.find("ch1: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"), std::string::npos);
-  EXPECT_NE(result.find("ch2: addr=ABCD prescaler=00 enabled=1 pause=0 loop_count=0"), std::string::npos);
+  EXPECT_NE(
+      result.find("ch0: addr=1234 prescaler=0A enabled=1 pause=1 loop_count=3"),
+      std::string::npos);
+  EXPECT_NE(
+      result.find("ch1: addr=0000 prescaler=00 enabled=0 pause=0 loop_count=0"),
+      std::string::npos);
+  EXPECT_NE(
+      result.find("ch2: addr=ABCD prescaler=00 enabled=1 pause=0 loop_count=0"),
+      std::string::npos);
 }
 
 TEST_F(AsicDebugTest, SpritesDumpAfterReset) {
@@ -79,13 +92,16 @@ TEST_F(AsicDebugTest, SpritesDumpWithPositions) {
   asic.sprites_y[15] = 512;
 
   std::string result = asic_dump_sprites();
-  EXPECT_NE(result.find("spr0: x=100 y=200 mag_x=2 mag_y=4"), std::string::npos);
-  EXPECT_NE(result.find("spr15: x=-32 y=512 mag_x=0 mag_y=0"), std::string::npos);
+  EXPECT_NE(result.find("spr0: x=100 y=200 mag_x=2 mag_y=4"),
+            std::string::npos);
+  EXPECT_NE(result.find("spr15: x=-32 y=512 mag_x=0 mag_y=0"),
+            std::string::npos);
 }
 
 TEST_F(AsicDebugTest, InterruptsDumpAfterReset) {
   std::string result = asic_dump_interrupts();
-  EXPECT_NE(result.find("raster_interrupt: line=0 enabled=0"), std::string::npos);
+  EXPECT_NE(result.find("raster_interrupt: line=0 enabled=0"),
+            std::string::npos);
   EXPECT_NE(result.find("dma_interrupt: ch0=0 ch1=0 ch2=0"), std::string::npos);
   // Interrupt vector after reset has D0=1
   EXPECT_NE(result.find("interrupt_vector: 01"), std::string::npos);
@@ -101,7 +117,8 @@ TEST_F(AsicDebugTest, InterruptsDumpWithState) {
   asic.interrupt_vector = 0xF8;
 
   std::string result = asic_dump_interrupts();
-  EXPECT_NE(result.find("raster_interrupt: line=42 enabled=1"), std::string::npos);
+  EXPECT_NE(result.find("raster_interrupt: line=42 enabled=1"),
+            std::string::npos);
   EXPECT_NE(result.find("dma_interrupt: ch0=1 ch1=0 ch2=1"), std::string::npos);
   EXPECT_NE(result.find("interrupt_vector: F8"), std::string::npos);
   // DCSR: ch1 enabled=bit1, ch2 enabled=bit2, ch0 int=bit6, ch2 int=bit4
@@ -120,27 +137,31 @@ TEST_F(AsicDebugTest, PaletteDumpAllZeros) {
 TEST_F(AsicDebugTest, PaletteDumpWithColors) {
   // Set pen0 to R=F, G=0, B=0 => even byte = 0xF0, odd byte = 0x00
   int offset = 0x2400;
-  pbRegisterPage[offset] = 0xF0;     // R=F, B=0
-  pbRegisterPage[offset + 1] = 0x00; // G=0
+  pbRegisterPage[offset] = 0xF0;      // R=F, B=0
+  pbRegisterPage[offset + 1] = 0x00;  // G=0
 
   // Set pen1 to R=0, G=F, B=0 => even byte = 0x00, odd byte = 0x0F
-  pbRegisterPage[offset + 2] = 0x00; // R=0, B=0
-  pbRegisterPage[offset + 3] = 0x0F; // G=F
+  pbRegisterPage[offset + 2] = 0x00;  // R=0, B=0
+  pbRegisterPage[offset + 3] = 0x0F;  // G=F
 
   // Set pen2 to R=0, G=0, B=F => even byte = 0x0F, odd byte = 0x00
-  pbRegisterPage[offset + 4] = 0x0F; // R=0, B=F
-  pbRegisterPage[offset + 5] = 0x00; // G=0
+  pbRegisterPage[offset + 4] = 0x0F;  // R=0, B=F
+  pbRegisterPage[offset + 5] = 0x00;  // G=0
 
   // Set ink0 (entry 16) to white R=F, G=F, B=F => even = 0xFF, odd = 0x0F
   int ink0_offset = offset + (16 * 2);
-  pbRegisterPage[ink0_offset] = 0xFF;     // R=F, B=F
-  pbRegisterPage[ink0_offset + 1] = 0x0F; // G=F
+  pbRegisterPage[ink0_offset] = 0xFF;      // R=F, B=F
+  pbRegisterPage[ink0_offset + 1] = 0x0F;  // G=F
 
   std::string result = asic_dump_palette();
-  EXPECT_NE(result.find("pen0=00F0"), std::string::npos);  // 0GRB: 0=0, G=0, R=F, B=0
-  EXPECT_NE(result.find("pen1=0F00"), std::string::npos);  // 0GRB: 0=0, G=F, R=0, B=0
-  EXPECT_NE(result.find("pen2=000F"), std::string::npos);  // 0GRB: 0=0, G=0, R=0, B=F
-  EXPECT_NE(result.find("ink0=0FFF"), std::string::npos);  // 0GRB: 0=0, G=F, R=F, B=F
+  EXPECT_NE(result.find("pen0=00F0"),
+            std::string::npos);  // 0GRB: 0=0, G=0, R=F, B=0
+  EXPECT_NE(result.find("pen1=0F00"),
+            std::string::npos);  // 0GRB: 0=0, G=F, R=0, B=0
+  EXPECT_NE(result.find("pen2=000F"),
+            std::string::npos);  // 0GRB: 0=0, G=0, R=0, B=F
+  EXPECT_NE(result.find("ink0=0FFF"),
+            std::string::npos);  // 0GRB: 0=0, G=F, R=F, B=F
 }
 
 TEST_F(AsicDebugTest, PaletteDumpNullRegPage) {

@@ -16,35 +16,37 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
-#ifndef VIDEO_H
-#define VIDEO_H
+#pragma once
 
-#include "SDL3/SDL.h"
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <atomic>
-#include <mutex>
+
+#include "SDL3/SDL.h"
 
 struct ImDrawList;
 
-typedef struct video_plugin
-{
+typedef struct video_plugin {
   /* the user-displayed name of this plugin */
   const char* name;
   /* whether the plugin should be hidden from UI (i.e. is deprecated) */
   bool hidden;
-  /* initializes the video plugin ; returns the surface that you must draw into, nullptr in the (unlikely ;) event of a failure */
+  /* initializes the video plugin ; returns the surface that you must draw into,
+   * nullptr in the (unlikely ;) event of a failure */
   SDL_Surface* (*init)(video_plugin* t, int scale, bool fs);
 
   void (*set_palette)(SDL_Color* c);
-  /* "flips" the video surface. Note that this might not always do a real flip */
+  /* "flips" the video surface. Note that this might not always do a real flip
+   */
   void (*flip)(video_plugin* t);
   /* closes the plugin */
   void (*close)();
 
-  /* this plugin wants : 0 half sized pixels (320x200 screen)/1 full sized pixels (640x200 screen)*/
+  /* this plugin wants : 0 half sized pixels (320x200 screen)/1 full sized
+   * pixels (640x200 screen)*/
   Uint8 half_pixels;
 
   /* mouse offset/scaling info */
@@ -53,19 +55,18 @@ typedef struct video_plugin
   /* width & height of the surface to display */
   int width, height;
 
-  /* Second phase of flip: renders floating ImGui viewports and swaps the window.
-     Runs after audio push so the 30-60ms stall doesn't starve the audio queue.
-     Null for SDL_Renderer, headless, and non-ImGui GL plugins. */
+  /* Second phase of flip: renders floating ImGui viewports and swaps the
+     window. Runs after audio push so the 30-60ms stall doesn't starve the audio
+     queue. Null for SDL_Renderer, headless, and non-ImGui GL plugins. */
   void (*flip_b)(video_plugin* t);
-}
-video_plugin;
+} video_plugin;
 
 extern std::vector<video_plugin> video_plugin_list;
 
 /* Only exposed for testing purposes. Do not use. */
 void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels);
 
-int renderer_bpp(SDL_Renderer *sdl_renderer);
+int renderer_bpp(SDL_Renderer* sdl_renderer);
 
 void video_set_topbar(SDL_Surface* surface, int height);
 void video_clear_topbar();
@@ -76,23 +77,25 @@ int video_get_bottombar_height();
 
 video_plugin video_headless_plugin();
 
-// Lightweight video plugin switch (Direct ↔ CRT) without window/GL/ImGui teardown.
-// Returns true if handled; false if full reinit is needed.
+// Lightweight video plugin switch (Direct ↔ CRT) without window/GL/ImGui
+// teardown. Returns true if handled; false if full reinit is needed.
 bool video_try_lightweight_switch();
 
 // CPC framebuffer texture/size for docked workspace mode.
-// Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to ImTextureID.
+// Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to
+// ImTextureID.
 uintptr_t video_get_cpc_texture();
 void video_get_cpc_size(int& w, int& h);
 
 // Returns true if the SDL_Renderer backend is active (no GL FBO support).
 bool video_is_sdl_renderer();
 
-// Renders an ImDrawList into a cached off-screen texture via the OpenGL3 backend.
-// Only re-renders when dirty_marker changes or canvas dimensions change.
-// draw_fn receives a ready-to-use ImDrawList plus the FBO canvas dimensions.
-// Returns the GL texture ID as uintptr_t, or 0 if GL is unavailable.
-// Display with ImVec2(0,1)/ImVec2(1,0) UV (FBO is stored bottom-up in GL).
+// Renders an ImDrawList into a cached off-screen texture via the OpenGL3
+// backend. Only re-renders when dirty_marker changes or canvas dimensions
+// change. draw_fn receives a ready-to-use ImDrawList plus the FBO canvas
+// dimensions. Returns the GL texture ID as uintptr_t, or 0 if GL is
+// unavailable. Display with ImVec2(0,1)/ImVec2(1,0) UV (FBO is stored bottom-up
+// in GL).
 uintptr_t video_offscreen_texture(
     const char* key, int canvas_w, int canvas_h, size_t dirty_marker,
     const std::function<void(ImDrawList*, int, int)>& draw_fn);
@@ -108,5 +111,3 @@ extern std::atomic<bool> g_repaint_done;
 extern std::mutex g_repaint_mutex;
 extern std::string g_repaint_screenshot_path;
 extern std::string g_repaint_error;
-
-#endif

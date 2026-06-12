@@ -9,17 +9,16 @@
    4. If matched, next 64 reads (A2=1) return BCD time via D0
 */
 
-#ifndef SMARTWATCH_H
-#define SMARTWATCH_H
+#pragma once
 
 #include "types.h"
 
 struct SmartWatch {
-   bool enabled = false;
-   enum State { IDLE, MATCHING, READING } state = IDLE;
-   int bit_index = 0;           // 0-63
-   uint64_t shift_reg = 0;      // accumulated pattern bits
-   uint8_t rtc_data[8] = {};    // BCD time snapshot (filled on match)
+  bool enabled = false;
+  enum State { IDLE, MATCHING, READING } state = IDLE;
+  int bit_index = 0;         // 0-63
+  uint64_t shift_reg = 0;    // accumulated pattern bits
+  uint8_t rtc_data[8] = {};  // BCD time snapshot (filled on match)
 };
 
 extern SmartWatch g_smartwatch;
@@ -30,5 +29,3 @@ void smartwatch_reset();
 // addr = full 16-bit Z80 address, rom_byte = normal ROM data.
 // Returns the (possibly modified) byte to deliver to Z80.
 byte smartwatch_rom_read(word addr, byte rom_byte);
-
-#endif

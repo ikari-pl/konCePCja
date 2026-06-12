@@ -1,17 +1,19 @@
 #include <gtest/gtest.h>
-#include "koncepcja.h"
-#include "configuration.h"
+
 #include <cstring>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "configuration.h"
+#include "koncepcja.h"
+
 extern t_CPC CPC;
 extern t_GateArray GateArray;
-extern byte *pbRAM;
-extern byte *membank_read[4];
-extern byte *membank_write[4];
+extern byte* pbRAM;
+extern byte* membank_read[4];
+extern byte* membank_write[4];
 extern t_MemBankConfig membank_config;
 
 class RamExpansionTest : public testing::Test {
@@ -37,7 +39,9 @@ class RamExpansionTest : public testing::Test {
 };
 
 TEST_F(RamExpansionTest, DefaultRamSizeIs128K) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_default.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_default.cfg")
+          .string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=2\n";
@@ -49,7 +53,8 @@ TEST_F(RamExpansionTest, DefaultRamSizeIs128K) {
 }
 
 TEST_F(RamExpansionTest, RamSize64K) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_64.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_64.cfg").string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=0\nram_size=64\n";
@@ -61,7 +66,8 @@ TEST_F(RamExpansionTest, RamSize64K) {
 }
 
 TEST_F(RamExpansionTest, RamSize256K) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_256.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_256.cfg").string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=2\nram_size=256\n";
@@ -73,7 +79,8 @@ TEST_F(RamExpansionTest, RamSize256K) {
 }
 
 TEST_F(RamExpansionTest, RamSize512K) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_512.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_512.cfg").string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=2\nram_size=512\n";
@@ -85,7 +92,8 @@ TEST_F(RamExpansionTest, RamSize512K) {
 }
 
 TEST_F(RamExpansionTest, RamSize4160K_Yarek) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_4160.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_4160.cfg").string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=2\nram_size=4160\n";
@@ -97,7 +105,9 @@ TEST_F(RamExpansionTest, RamSize4160K_Yarek) {
 }
 
 TEST_F(RamExpansionTest, InvalidRamSizeDefaultsTo128) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_invalid.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_invalid.cfg")
+          .string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=2\nram_size=999\n";
@@ -109,7 +119,9 @@ TEST_F(RamExpansionTest, InvalidRamSizeDefaultsTo128) {
 }
 
 TEST_F(RamExpansionTest, CPC6128MinRamIs128K) {
-  std::string tmpfile = (std::filesystem::temp_directory_path() / "ram_test_6128_64.cfg").string();
+  std::string tmpfile =
+      (std::filesystem::temp_directory_path() / "ram_test_6128_64.cfg")
+          .string();
   {
     std::ofstream f(tmpfile);
     f << "[system]\nmodel=2\nram_size=64\n";
@@ -245,7 +257,7 @@ TEST_F(RamExpansionTest, InitBanking_Bank0_PointsToBase) {
 TEST_F(RamExpansionTest, InitBanking_Config4to7_MapsExpansionToSlot1) {
   if (!pbRAM) GTEST_SKIP() << "pbRAM not allocated";
   ga_init_banking(membank_config, 0);
-  byte *expansion_base = pbRAM + (0 + 1) * 65536;
+  byte* expansion_base = pbRAM + (0 + 1) * 65536;
   EXPECT_EQ(expansion_base + 0 * 16384, membank_config[4][1]);
   EXPECT_EQ(expansion_base + 1 * 16384, membank_config[5][1]);
   EXPECT_EQ(expansion_base + 2 * 16384, membank_config[6][1]);

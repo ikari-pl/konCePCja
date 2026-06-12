@@ -1,8 +1,9 @@
+#include "drive_status.h"
+
 #include <gtest/gtest.h>
 
-#include "koncepcja.h"
 #include "disk.h"
-#include "drive_status.h"
+#include "koncepcja.h"
 
 extern t_CPC CPC;
 extern t_FDC FDC;
@@ -47,8 +48,8 @@ TEST_F(DriveStatusTest, EmulatorStatusPaused) {
 TEST_F(DriveStatusTest, DriveStatusNoDisc) {
   auto s = drive_status_summary();
   EXPECT_EQ(s,
-    "driveA: motor=0 track=0 side=0 image= wp=0\n"
-    "driveB: motor=0 track=0 side=0 image= wp=0");
+            "driveA: motor=0 track=0 side=0 image= wp=0\n"
+            "driveB: motor=0 track=0 side=0 image= wp=0");
 }
 
 TEST_F(DriveStatusTest, DriveStatusWithDisc) {
@@ -62,37 +63,39 @@ TEST_F(DriveStatusTest, DriveStatusWithDisc) {
 
   auto s = drive_status_summary();
   EXPECT_EQ(s,
-    "driveA: motor=1 track=12 side=0 image=game.dsk wp=0\n"
-    "driveB: motor=1 track=0 side=0 image= wp=0");
+            "driveA: motor=1 track=12 side=0 image=game.dsk wp=0\n"
+            "driveB: motor=1 track=0 side=0 image= wp=0");
 }
 
 TEST_F(DriveStatusTest, MotorStateReporting) {
   FDC.motor = 0;
   auto s = drive_status_summary();
   EXPECT_EQ(s,
-    "driveA: motor=0 track=0 side=0 image= wp=0\n"
-    "driveB: motor=0 track=0 side=0 image= wp=0");
+            "driveA: motor=0 track=0 side=0 image= wp=0\n"
+            "driveB: motor=0 track=0 side=0 image= wp=0");
 
   FDC.motor = 1;
   s = drive_status_summary();
   EXPECT_EQ(s,
-    "driveA: motor=1 track=0 side=0 image= wp=0\n"
-    "driveB: motor=1 track=0 side=0 image= wp=0");
+            "driveA: motor=1 track=0 side=0 image= wp=0\n"
+            "driveB: motor=1 track=0 side=0 image= wp=0");
 }
 
 TEST_F(DriveStatusTest, WriteProtectedFlag) {
   driveA.write_protected = 1;
   auto s = drive_status_summary();
   EXPECT_EQ(s,
-    "driveA: motor=0 track=0 side=0 image= wp=1\n"
-    "driveB: motor=0 track=0 side=0 image= wp=0");
+            "driveA: motor=0 track=0 side=0 image= wp=1\n"
+            "driveB: motor=0 track=0 side=0 image= wp=0");
 }
 
 TEST_F(DriveStatusTest, DetailedDriveStatusNoDisc) {
   auto s = drive_status_detailed();
   EXPECT_EQ(s,
-    "drive=A motor=0 track=0 side=0 tracks=0 sides=0 image= write_protected=0 altered=0\n"
-    "drive=B motor=0 track=0 side=0 tracks=0 sides=0 image= write_protected=0 altered=0");
+            "drive=A motor=0 track=0 side=0 tracks=0 sides=0 image= "
+            "write_protected=0 altered=0\n"
+            "drive=B motor=0 track=0 side=0 tracks=0 sides=0 image= "
+            "write_protected=0 altered=0");
 }
 
 TEST_F(DriveStatusTest, DetailedDriveStatusWithDisc) {
@@ -107,8 +110,10 @@ TEST_F(DriveStatusTest, DetailedDriveStatusWithDisc) {
 
   auto s = drive_status_detailed();
   EXPECT_EQ(s,
-    "drive=A motor=1 track=5 side=1 tracks=40 sides=2 image=roland.dsk write_protected=1 altered=1\n"
-    "drive=B motor=1 track=0 side=0 tracks=0 sides=0 image= write_protected=0 altered=0");
+            "drive=A motor=1 track=5 side=1 tracks=40 sides=2 image=roland.dsk "
+            "write_protected=1 altered=1\n"
+            "drive=B motor=1 track=0 side=0 tracks=0 sides=0 image= "
+            "write_protected=0 altered=0");
 }
 
 TEST_F(DriveStatusTest, DetailedBothDrives) {

@@ -1,13 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <string>
+
 #include "koncepcja.h"
 #include "slotshandler.h"
-#include <string>
 
 extern t_drive driveA;
 
-TEST(SlotHandlerTest, slotsInitializedWithProperDriveTypes)
-{
+TEST(SlotHandlerTest, slotsInitializedWithProperDriveTypes) {
   t_CPC CPC;
 
   ASSERT_EQ(DRIVE::DSK_A, CPC.driveA.drive);
@@ -17,8 +17,7 @@ TEST(SlotHandlerTest, slotsInitializedWithProperDriveTypes)
   ASSERT_EQ(DRIVE::CARTRIDGE, CPC.cartridge.drive);
 }
 
-TEST(SlotHandlerTest, fillSlotsNoArg)
-{
+TEST(SlotHandlerTest, fillSlotsNoArg) {
   std::vector<std::string> slot_list;
   t_CPC CPC;
 
@@ -35,9 +34,8 @@ TEST(SlotHandlerTest, fillSlotsNoArg)
   ASSERT_EQ("", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneLocalDskFile)
-{
-  std::vector<std::string> slot_list = { "./test.dsk"};
+TEST(SlotHandlerTest, fillSlotsOneLocalDskFile) {
+  std::vector<std::string> slot_list = {"./test.dsk"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -51,12 +49,10 @@ TEST(SlotHandlerTest, fillSlotsOneLocalDskFile)
   ASSERT_EQ("", CPC.tape.file);
   ASSERT_EQ("", CPC.snap_path);
   ASSERT_EQ("", CPC.snapshot.file);
-
 }
 
-TEST(SlotHandlerTest, fillSlotsTwoDskFiles)
-{
-  std::vector<std::string> slot_list = { "/tmp/foo.dsk", "/var/bar.dsk"};
+TEST(SlotHandlerTest, fillSlotsTwoDskFiles) {
+  std::vector<std::string> slot_list = {"/tmp/foo.dsk", "/var/bar.dsk"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -72,9 +68,8 @@ TEST(SlotHandlerTest, fillSlotsTwoDskFiles)
   ASSERT_EQ("", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneLocalCdtFile)
-{
-  std::vector<std::string> slot_list = { "./test.cdt"};
+TEST(SlotHandlerTest, fillSlotsOneLocalCdtFile) {
+  std::vector<std::string> slot_list = {"./test.cdt"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -90,9 +85,8 @@ TEST(SlotHandlerTest, fillSlotsOneLocalCdtFile)
   ASSERT_EQ("", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneLocalVocFile)
-{
-  std::vector<std::string> slot_list = { "./test.voc"};
+TEST(SlotHandlerTest, fillSlotsOneLocalVocFile) {
+  std::vector<std::string> slot_list = {"./test.voc"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -108,9 +102,8 @@ TEST(SlotHandlerTest, fillSlotsOneLocalVocFile)
   ASSERT_EQ("", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneLocalSnaFile)
-{
-  std::vector<std::string> slot_list = { "./test.sna"};
+TEST(SlotHandlerTest, fillSlotsOneLocalSnaFile) {
+  std::vector<std::string> slot_list = {"./test.sna"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -126,9 +119,8 @@ TEST(SlotHandlerTest, fillSlotsOneLocalSnaFile)
   ASSERT_EQ("./test.sna", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneCprFile)
-{
-  std::vector<std::string> slot_list = { "./test.cpr"};
+TEST(SlotHandlerTest, fillSlotsOneCprFile) {
+  std::vector<std::string> slot_list = {"./test.cpr"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -144,9 +136,8 @@ TEST(SlotHandlerTest, fillSlotsOneCprFile)
   ASSERT_EQ("", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneZippedCprFile)
-{
-  std::vector<std::string> slot_list = { "test/cartridge/testplus.zip"};
+TEST(SlotHandlerTest, fillSlotsOneZippedCprFile) {
+  std::vector<std::string> slot_list = {"test/cartridge/testplus.zip"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -162,12 +153,12 @@ TEST(SlotHandlerTest, fillSlotsOneZippedCprFile)
   ASSERT_EQ("", CPC.snapshot.file);
 }
 
-unsigned int checksum(const t_drive* drive)
-{
+unsigned int checksum(const t_drive* drive) {
   unsigned int checksum = 0;
   for (unsigned int track = 0; track < drive->tracks; track++) {
     for (unsigned int side = 0; side <= drive->sides; side++) {
-      for (unsigned int byte = 0; byte < drive->track[track][side].size; byte++) {
+      for (unsigned int byte = 0; byte < drive->track[track][side].size;
+           byte++) {
         checksum += drive->track[track][side].data[byte];
       }
     }
@@ -175,9 +166,8 @@ unsigned int checksum(const t_drive* drive)
   return checksum;
 }
 
-TEST(SlotHandlerTest, fillSlotsDiskAZipMultipleFiles)
-{
-  std::vector<std::string> slot_list = { "test/zip/test1.zip"};
+TEST(SlotHandlerTest, fillSlotsDiskAZipMultipleFiles) {
+  std::vector<std::string> slot_list = {"test/zip/test1.zip"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -218,9 +208,9 @@ TEST(SlotHandlerTest, fillSlotsDiskAZipMultipleFiles)
   ASSERT_NE(checksum1, checksum2);
 }
 
-TEST(SlotHandlerTest, fillSlotsOneFileOfEachKind)
-{
-  std::vector<std::string> slot_list = { "/tmp/foo.dsk", "/var/bar.cdt", "/usr/test.sna", "/home/cart.cpr" };
+TEST(SlotHandlerTest, fillSlotsOneFileOfEachKind) {
+  std::vector<std::string> slot_list = {"/tmp/foo.dsk", "/var/bar.cdt",
+                                        "/usr/test.sna", "/home/cart.cpr"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -236,9 +226,11 @@ TEST(SlotHandlerTest, fillSlotsOneFileOfEachKind)
   ASSERT_EQ("/usr/test.sna", CPC.snapshot.file);
 }
 
-TEST(SlotHandlerTest, fillSlotsManyFilesOfEachKind)
-{
-  std::vector<std::string> slot_list = { "rom/system.cpr", "/tmp/foo.dsk", "/var/test.dsk", "/tmp/other.dsk", "/var/bar.cdt", "/tmp/test.voc", "/usr/test.sna", "/tmp/other.sna", "test/test.cpr" };
+TEST(SlotHandlerTest, fillSlotsManyFilesOfEachKind) {
+  std::vector<std::string> slot_list = {
+      "rom/system.cpr", "/tmp/foo.dsk",   "/var/test.dsk",
+      "/tmp/other.dsk", "/var/bar.cdt",   "/tmp/test.voc",
+      "/usr/test.sna",  "/tmp/other.sna", "test/test.cpr"};
   t_CPC CPC;
 
   fillSlots(slot_list, CPC);
@@ -252,11 +244,9 @@ TEST(SlotHandlerTest, fillSlotsManyFilesOfEachKind)
   ASSERT_EQ("/var/bar.cdt", CPC.tape.file);
   ASSERT_EQ("", CPC.snap_path);
   ASSERT_EQ("/usr/test.sna", CPC.snapshot.file);
-
 }
 
-TEST(SlotHandlerTest, serializeDiskFormat)
-{
+TEST(SlotHandlerTest, serializeDiskFormat) {
   t_disk_format fmt;
   fmt.label = "test";
   fmt.tracks = 42;
@@ -279,8 +269,7 @@ TEST(SlotHandlerTest, serializeDiskFormat)
   ASSERT_EQ("test,42,2,4,1,82,229,193,198,194,199,195,200,196,201", result);
 }
 
-TEST(SlotHandlerTest, serializeUnnamedDiskFormatReturnsEmptyString)
-{
+TEST(SlotHandlerTest, serializeUnnamedDiskFormatReturnsEmptyString) {
   t_disk_format fmt;
   fmt.tracks = 42;
   fmt.sides = 2;

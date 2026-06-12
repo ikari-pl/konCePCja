@@ -12,7 +12,7 @@ struct CommandEntry {
 };
 
 class CommandPalette {
-public:
+ public:
   void open();
   void close();
   bool is_open() const;
@@ -26,13 +26,15 @@ public:
 
   // Register a command
   void register_command(const std::string& name, const std::string& description,
-                        const std::string& shortcut, std::function<void()> action);
+                        const std::string& shortcut,
+                        std::function<void()> action);
 
   // Clear all registered commands
   void clear_commands();
 
   // Get filtered commands based on query (for testing)
-  std::vector<const CommandEntry*> filter_commands(const std::string& query) const;
+  std::vector<const CommandEntry*> filter_commands(
+      const std::string& query) const;
 
   // Execute IPC command and return response (for testing)
   using IpcHandler = std::function<std::string(const std::string&)>;
@@ -42,9 +44,9 @@ public:
   // Access commands (for testing)
   const std::vector<CommandEntry>& commands() const { return commands_; }
 
-private:
+ private:
   bool open_ = false;
-  int mode_ = 0; // 0 = Commands, 1 = IPC
+  int mode_ = 0;  // 0 = Commands, 1 = IPC
   char input_buf_[512] = {};
   int selected_index_ = 0;
   bool focus_input_ = false;

@@ -1,9 +1,10 @@
 #include "command_palette.h"
-#include "search_engine.h"
-#include "imgui.h"
 
 #include <algorithm>
 #include <cstring>
+
+#include "imgui.h"
+#include "search_engine.h"
 
 CommandPalette g_command_palette;
 
@@ -16,13 +17,9 @@ void CommandPalette::open() {
   ipc_history_pos_ = -1;
 }
 
-void CommandPalette::close() {
-  open_ = false;
-}
+void CommandPalette::close() { open_ = false; }
 
-bool CommandPalette::is_open() const {
-  return open_;
-}
+bool CommandPalette::is_open() const { return open_; }
 
 void CommandPalette::toggle() {
   if (open_)
@@ -47,16 +44,17 @@ bool CommandPalette::handle_key(int keycode, bool ctrl, bool cmd) {
   return false;
 }
 
-void CommandPalette::register_command(const std::string& name, const std::string& description,
-                                      const std::string& shortcut, std::function<void()> action) {
+void CommandPalette::register_command(const std::string& name,
+                                      const std::string& description,
+                                      const std::string& shortcut,
+                                      std::function<void()> action) {
   commands_.push_back({name, description, shortcut, std::move(action)});
 }
 
-void CommandPalette::clear_commands() {
-  commands_.clear();
-}
+void CommandPalette::clear_commands() { commands_.clear(); }
 
-std::vector<const CommandEntry*> CommandPalette::filter_commands(const std::string& query) const {
+std::vector<const CommandEntry*> CommandPalette::filter_commands(
+    const std::string& query) const {
   std::vector<std::pair<int, const CommandEntry*>> scored;
   for (const auto& cmd : commands_) {
     int name_score = search_detail::fuzzy_score(query, cmd.name);
@@ -94,14 +92,12 @@ void CommandPalette::render() {
 
   float palette_w = std::min(600.0f, display_size.x * 0.8f);
   float palette_h = std::min(400.0f, display_size.y * 0.7f);
-  ImVec2 pos((display_size.x - palette_w) * 0.5f,
-             display_size.y * 0.15f);
+  ImVec2 pos((display_size.x - palette_w) * 0.5f, display_size.y * 0.15f);
   ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
   ImGui::SetNextWindowSize(ImVec2(palette_w, palette_h), ImGuiCond_Always);
 
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-                           ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoMove |
+                           ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                            ImGuiWindowFlags_NoScrollbar;
 
   ImGui::GetBackgroundDrawList()->AddRectFilled(
@@ -136,21 +132,22 @@ void CommandPalette::render() {
       ImGui::SetKeyboardFocusHere();
       focus_input_ = false;
     }
-    bool enter_pressed = ImGui::InputText("##CmdSearch", input_buf_, sizeof(input_buf_),
-                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    bool enter_pressed =
+        ImGui::InputText("##CmdSearch", input_buf_, sizeof(input_buf_),
+                         ImGuiInputTextFlags_EnterReturnsTrue);
 
     auto filtered = filter_commands(input_buf_);
 
     if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
-      selected_index_ = std::min(selected_index_ + 1,
-                                  static_cast<int>(filtered.size()) - 1);
+      selected_index_ =
+          std::min(selected_index_ + 1, static_cast<int>(filtered.size()) - 1);
     }
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
       selected_index_ = std::max(selected_index_ - 1, 0);
     }
 
-    if (enter_pressed && !filtered.empty() &&
-        selected_index_ >= 0 && selected_index_ < static_cast<int>(filtered.size())) {
+    if (enter_pressed && !filtered.empty() && selected_index_ >= 0 &&
+        selected_index_ < static_cast<int>(filtered.size())) {
       auto action = filtered[static_cast<size_t>(selected_index_)]->action;
       close();
       if (action) action();
@@ -197,7 +194,8 @@ void CommandPalette::render() {
     }
 
     ImGuiInputTextFlags ipc_flags = ImGuiInputTextFlags_EnterReturnsTrue;
-    bool ipc_enter = ImGui::InputText("##IpcInput", ipc_input_buf_, sizeof(ipc_input_buf_), ipc_flags);
+    bool ipc_enter = ImGui::InputText("##IpcInput", ipc_input_buf_,
+                                      sizeof(ipc_input_buf_), ipc_flags);
 
     if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) && !ipc_history_.empty()) {
       if (ipc_history_pos_ < 0) {
@@ -237,7 +235,8 @@ void CommandPalette::render() {
     ImGui::BeginChild("##IpcOutput", ImVec2(0, 0), ImGuiChildFlags_Borders);
     for (const auto& line : ipc_output_lines_) {
       if (line.size() > 1 && line[0] == '>') {
-        ImGui::TextColored(ImVec4(0.541f, 0.416f, 0.063f, 1.0f), "%s", line.c_str());
+        ImGui::TextColored(ImVec4(0.541f, 0.416f, 0.063f, 1.0f), "%s",
+                           line.c_str());
       } else {
         ImGui::TextWrapped("%s", line.c_str());
       }

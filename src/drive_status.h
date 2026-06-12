@@ -1,5 +1,4 @@
-#ifndef DRIVE_STATUS_H
-#define DRIVE_STATUS_H
+#pragma once
 
 #include <string>
 
@@ -11,5 +10,3 @@ std::string drive_status_detailed();
 
 // Overall emulator state line (paused, model, speed)
 std::string emulator_status_summary();
-
-#endif

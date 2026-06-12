@@ -1,0 +1,35 @@
+---
+Checks: >
+  -*,
+  modernize-*,
+  performance-*,
+  misc-*,
+  readability-*,
+  -misc-definitions-in-headers,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion,
+  -modernize-avoid-c-arrays,
+  -modernize-deprecated-headers,
+  -modernize-make-unique,
+  -modernize-use-auto,
+  -modernize-use-default-member-init,
+  -modernize-use-equals-delete,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  -modernize-use-using,
+  -performance-unnecessary-value-param,
+  -readability-avoid-const-params-in-decls,
+  -readability-braces-around-statements,
+  -readability-convert-member-functions-to-static,
+  -readability-function-size,
+  -readability-implicit-bool-cast,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-qualified-auto,
+  -readability-uppercase-literal-suffix,
+  -readability-use-anyofallof
+
+HeaderFilterRegex: 'src/.*\.h$'
+
+WarningsAsErrors: ''

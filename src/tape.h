@@ -16,26 +16,23 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
-#ifndef TAPE_H
-#define TAPE_H
+#pragma once
 
 #define TAPE_LEVEL_LOW 0
 #define TAPE_LEVEL_HIGH 0x80
 
 void Tape_UpdateLevel();
 void Tape_Rewind();
-int  Tape_GetNextBlock();
+int Tape_GetNextBlock();
 void Tape_BlockDone();
 
 // Internal functions exposed for testing
 void Tape_SwitchLevel();
-int  Tape_ReadDataBit();
-int  Tape_ReadSampleDataBit();
+int Tape_ReadDataBit();
+int Tape_ReadSampleDataBit();
 void Tape_GetCycleCount();
 
 // Walk the loaded TZX/CDT image and rebuild imgui_state.tape_block_offsets;
 // resets tape_current_block to 0.  Pure tape-format walker (no ImGui), kept
 // here rather than in imgui_ui.cpp so the headless build can call it.
 void tape_scan_blocks();
-
-#endif

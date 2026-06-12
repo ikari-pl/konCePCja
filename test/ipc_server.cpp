@@ -21,14 +21,14 @@
 
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
-#include "z80.h"
 #include "symfile.h"
+#include "z80.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
 extern SDL_Surface* back_surface;
-extern byte *membank_read[4];
-extern byte *membank_write[4];
+extern byte* membank_read[4];
+extern byte* membank_write[4];
 
 namespace {
 
@@ -36,9 +36,9 @@ constexpr size_t kBankSize = 16 * 1024;
 
 // Debug-surface commands now return "OK [context]\n" instead of bare "OK\n".
 // This helper checks that a response starts with "OK " or is exactly "OK\n".
-#define EXPECT_OK(resp) \
+#define EXPECT_OK(resp)                                         \
   EXPECT_TRUE((resp).substr(0, 3) == "OK " || (resp) == "OK\n") \
-    << "Expected OK response, got: " << (resp)
+      << "Expected OK response, got: " << (resp)
 
 // Forward-declare the server so send_command can query its actual port
 static KoncepcjaIpcServer* g_test_server = nullptr;
@@ -216,7 +216,8 @@ TEST_F(IpcServerTest, WaitVblCompletes) {
 
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
-  auto screenshotPath = (std::filesystem::temp_directory_path() / "kaprys_test.png").string();
+  auto screenshotPath =
+      (std::filesystem::temp_directory_path() / "kaprys_test.png").string();
   auto resp = send_command("screenshot " + screenshotPath);
   EXPECT_EQ(resp, "ERR 503 no-surface\n");
 }
@@ -326,7 +327,8 @@ TEST_F(IpcServerTest, StepOverDoesNotDescendIntoCall) {
 }
 
 TEST_F(IpcServerTest, StepToCommand) {
-  // Write NOP at 0x0000, step to 0x0001 should work immediately via ephemeral bp
+  // Write NOP at 0x0000, step to 0x0001 should work immediately via ephemeral
+  // bp
   z80.PC.w.l = 0x0000;
   z80_write_mem(0x0000, 0x00);
   // step to on a paused emulator won't actually run; check command is accepted
@@ -407,7 +409,8 @@ TEST_F(IpcServerTest, MemFindWildcard) {
 TEST_F(IpcServerTest, UnknownCommandReturns404WithSuggestion) {
   auto resp = send_command("totype hello");
   EXPECT_TRUE(resp.find("ERR 404") != std::string::npos) << resp;
-  EXPECT_TRUE(resp.find("autotype") != std::string::npos) << resp; // "Did you mean..."
+  EXPECT_TRUE(resp.find("autotype") != std::string::npos)
+      << resp;  // "Did you mean..."
 }
 
 TEST_F(IpcServerTest, UnknownCommandReturns404NoSuggestionForGarbage) {

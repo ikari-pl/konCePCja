@@ -1,51 +1,35 @@
-# Creating a new major release
+# Creating a new release
 
-Update the version in koncepcja.h:
-
-```
-$ vi src/koncepcja.h
-(...)
-#define VERSION_STRING "vX.Y.0"
-(...)
-```
-
-And commit the change:
+Update the version in the `VERSION` file:
 
 ```
-$ git commit -m "Create version vX.Y.0"
+$ echo "X.Y.Z" > VERSION
 ```
 
-Tag the release and delete the latest tag:
+Commit and tag:
 
 ```
-$ git tag vX.Y.0
-$ git tag -d latest
-```
-
-Push the result:
-
-```
+$ git add VERSION
+$ git commit -m "Release vX.Y.Z"
+$ git tag vX.Y.Z
 $ git push --tags
 ```
 
-Delete the latest release from github, it will be recreated by the next push.
-It's probably a good idea to immediately trigger a build by pushing a dummy change.
+GitHub Actions will build and package for Linux, macOS (with notarization) and Windows (MSVC) automatically on tag push. The release artifacts appear on the GitHub Releases page.
 
-# Creating a new minor release
+# Creating a minor release
 
-Create a branch from the existing tag and switch to it:
+Create a branch from the existing tag:
 
 ```
-$ git checkout -b vX.Y vX.Y.0
+$ git checkout -b vX.Y vX.Y.Z
 ```
 
-Do the required modifications and then tag it. Push the result:
+Apply fixes, then tag and push:
+
 ```
-$ git tag vX.Y.0
-$ git push
+$ git tag vX.Y.Z
+$ git push --tags
 ```
 
-Verify that appveyor releases it properly.
-
-Delete the latest release from github, it will be recreated by the next push.
-It's probably a good idea to immediately trigger a build by pushing a dummy change.
+Verify the GitHub Actions workflows complete successfully on the release page.

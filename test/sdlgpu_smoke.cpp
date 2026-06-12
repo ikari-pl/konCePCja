@@ -10,10 +10,10 @@
 // null and the tests are SKIPPED rather than failed — the presence of the API
 // surface alone is what Phase 1 guarantees.
 
-#include <gtest/gtest.h>
-
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
+#include <gtest/gtest.h>
+
 #include <cstring>
 
 namespace {
@@ -27,19 +27,15 @@ class SdlGpuSmokeTest : public ::testing::Test {
     // just bumps the refcount.
     SDL_Init(SDL_INIT_VIDEO);
   }
-  static void TearDownTestSuite() {
-    SDL_Quit();
-  }
+  static void TearDownTestSuite() { SDL_Quit(); }
 };
 
 // Sanity: the header exposes a non-INVALID shader format enum.
 TEST_F(SdlGpuSmokeTest, ShaderFormatEnumExists) {
   // At least one of the three real backend formats must be defined as a
   // non-zero bit so device creation can request it.
-  Uint32 any_format = SDL_GPU_SHADERFORMAT_SPIRV
-                    | SDL_GPU_SHADERFORMAT_MSL
-                    | SDL_GPU_SHADERFORMAT_DXIL
-                    | SDL_GPU_SHADERFORMAT_METALLIB;
+  Uint32 any_format = SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL |
+                      SDL_GPU_SHADERFORMAT_DXIL | SDL_GPU_SHADERFORMAT_METALLIB;
   EXPECT_NE(0u, any_format);
 }
 
@@ -50,10 +46,8 @@ TEST_F(SdlGpuSmokeTest, CreateAndDestroyDevice) {
   // (Metal) or DXIL (D3D12). On CI headless runners the call may return null
   // if no suitable driver is present — that's a SKIP, not a failure.
   SDL_GPUDevice* device = SDL_CreateGPUDevice(
-      SDL_GPU_SHADERFORMAT_SPIRV
-        | SDL_GPU_SHADERFORMAT_MSL
-        | SDL_GPU_SHADERFORMAT_METALLIB
-        | SDL_GPU_SHADERFORMAT_DXIL,
+      SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL |
+          SDL_GPU_SHADERFORMAT_METALLIB | SDL_GPU_SHADERFORMAT_DXIL,
       /*debug_mode=*/false,
       /*name=*/nullptr);
 
@@ -63,13 +57,13 @@ TEST_F(SdlGpuSmokeTest, CreateAndDestroyDevice) {
   }
 
   const char* driver = SDL_GetGPUDeviceDriver(device);
-  ASSERT_NE(nullptr, driver) << "Created a GPU device but it has no driver name";
+  ASSERT_NE(nullptr, driver)
+      << "Created a GPU device but it has no driver name";
 
   // Accept any of the three known drivers.
-  const bool known_driver =
-      std::strcmp(driver, "metal") == 0 ||
-      std::strcmp(driver, "vulkan") == 0 ||
-      std::strcmp(driver, "direct3d12") == 0;
+  const bool known_driver = std::strcmp(driver, "metal") == 0 ||
+                            std::strcmp(driver, "vulkan") == 0 ||
+                            std::strcmp(driver, "direct3d12") == 0;
   EXPECT_TRUE(known_driver) << "Unexpected GPU driver name: " << driver;
 
   // Supported shader format query must not crash and must return at least one
@@ -81,17 +75,15 @@ TEST_F(SdlGpuSmokeTest, CreateAndDestroyDevice) {
   SDL_DestroyGPUDevice(device);
 }
 
-// Repeat create/destroy to catch leaks and state left behind between lifecycles.
-// If a backend leaks a command pool, the second Create typically fails.
+// Repeat create/destroy to catch leaks and state left behind between
+// lifecycles. If a backend leaks a command pool, the second Create typically
+// fails.
 TEST_F(SdlGpuSmokeTest, DeviceLifecycleRepeats) {
   for (int i = 0; i < 5; ++i) {
     SDL_GPUDevice* device = SDL_CreateGPUDevice(
-        SDL_GPU_SHADERFORMAT_SPIRV
-          | SDL_GPU_SHADERFORMAT_MSL
-          | SDL_GPU_SHADERFORMAT_METALLIB
-          | SDL_GPU_SHADERFORMAT_DXIL,
-        false,
-        nullptr);
+        SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL |
+            SDL_GPU_SHADERFORMAT_METALLIB | SDL_GPU_SHADERFORMAT_DXIL,
+        false, nullptr);
     if (device == nullptr) {
       GTEST_SKIP() << "Backend unavailable: " << SDL_GetError();
     }
@@ -105,12 +97,9 @@ TEST_F(SdlGpuSmokeTest, DeviceLifecycleRepeats) {
 // that the memory-mapping path exists and doesn't crash.
 TEST_F(SdlGpuSmokeTest, TransferBufferMapRoundTrip) {
   SDL_GPUDevice* device = SDL_CreateGPUDevice(
-      SDL_GPU_SHADERFORMAT_SPIRV
-        | SDL_GPU_SHADERFORMAT_MSL
-        | SDL_GPU_SHADERFORMAT_METALLIB
-        | SDL_GPU_SHADERFORMAT_DXIL,
-      false,
-      nullptr);
+      SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL |
+          SDL_GPU_SHADERFORMAT_METALLIB | SDL_GPU_SHADERFORMAT_DXIL,
+      false, nullptr);
   if (device == nullptr) {
     GTEST_SKIP() << "Backend unavailable: " << SDL_GetError();
   }
@@ -120,7 +109,8 @@ TEST_F(SdlGpuSmokeTest, TransferBufferMapRoundTrip) {
   tb_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
   tb_info.size = kBytes;
   SDL_GPUTransferBuffer* tbuf = SDL_CreateGPUTransferBuffer(device, &tb_info);
-  ASSERT_NE(nullptr, tbuf) << "CreateGPUTransferBuffer failed: " << SDL_GetError();
+  ASSERT_NE(nullptr, tbuf) << "CreateGPUTransferBuffer failed: "
+                           << SDL_GetError();
 
   // cycle=true: we're about to write into the buffer and SDL should not wait
   // for any prior upload to complete (there is none in this test, so cycle is

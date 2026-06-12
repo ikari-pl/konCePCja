@@ -21,3 +21,11 @@ imgui.ini
 coverage.profdata
 coverage.profraw
 resources/roms/
+
+# Agent state files
+.omc/
+
+# Test artifacts
+test/integrated/test.log
+src/test_file.tmp
+.cache/
