@@ -28,3 +28,4 @@ resources/roms/
 # Test artifacts
 test/integrated/test.log
 src/test_file.tmp
+.cache/

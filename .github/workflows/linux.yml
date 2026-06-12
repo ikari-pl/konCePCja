@@ -64,7 +64,7 @@ jobs:
         run: make -j 3 clang-tidy
       - name: Check clang-format
         run: |
-          pip install clang-format
+          pip install --break-system-packages clang-format
           make clang-format
       # Disabled for now as this is failing for unknown reasons.
       #- run: make -j 3 deb_pkg VERSION=99.99.0 REVISION=1
