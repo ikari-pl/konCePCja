@@ -14,9 +14,11 @@
 #include "m4board_http.h"
 #include "z80.h"
 #ifdef _WIN32
-#include <iphlpapi.h>
+/* clang-format off */
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
+/* clang-format on */
 #ifdef _MSC_VER
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
