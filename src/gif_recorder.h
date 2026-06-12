@@ -8,6 +8,9 @@
 
 class GifRecorder {
  public:
+  ~GifRecorder() {
+    if (recording) abort();
+  }
   // Begin recording frames for an animated GIF.
   // delay_cs: inter-frame delay in centiseconds (default 2 = 50fps CPC timing)
   bool begin(int width, int height, int delay_cs = 2);

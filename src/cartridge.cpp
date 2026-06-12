@@ -139,8 +139,11 @@ int cpr_load(FILE* pfile) {
                CARTRIDGE_PAGE_SIZE - chunkKept);
       } else if (chunkKept < chunkSize) {
         LOG_DEBUG("This chunk is bigger than the max allowed size !!!");
-        if (fseek(pfile, chunkSize - chunkKept, SEEK_CUR) !=
-            0) {  // skip excessive chunk content
+        long to_skip =
+            static_cast<long>((static_cast<size_t>(chunkSize) + 1) & ~1) -
+            chunkKept;
+        if (fseek(pfile, to_skip, SEEK_CUR) !=
+            0) {  // skip excessive chunk content + RIFF pad byte
           LOG_DEBUG("Failed skipping excessive chunk content");
           return ERR_CPR_INVALID;
         }

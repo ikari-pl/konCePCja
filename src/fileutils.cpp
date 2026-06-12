@@ -47,7 +47,7 @@ bool is_directory(std::string filepath) {
 std::vector<std::string> listDirectory(std::string& directory) {
   std::vector<std::string> s;
 
-  if (directory[directory.size() - 1] != '/') {
+  if (!directory.empty() && directory.back() != '/') {
     directory += "/";
   }
 #ifdef _MSC_VER

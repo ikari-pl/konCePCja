@@ -151,7 +151,10 @@ void asic_dma_cycle() {
     int addr = (channel.source_address & 0x3FFF);
     word instruction = 0;
     instruction |= membank_config[GateArray.RAM_config & 7][bank][addr];
-    instruction |= membank_config[GateArray.RAM_config & 7][bank][addr + 1]
+    word next_addr = channel.source_address + 1;
+    int next_bank = ((next_addr & 0xC000) >> 14);
+    int next_offset = (next_addr & 0x3FFF);
+    instruction |= membank_config[GateArray.RAM_config & 7][next_bank][next_offset]
                    << 8;
     LOG_DEBUG("DMA [" << c << "] instruction " << std::hex << instruction
                       << " from " << channel.source_address << std::dec);
