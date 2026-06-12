@@ -154,8 +154,8 @@ void asic_dma_cycle() {
     word next_addr = channel.source_address + 1;
     int next_bank = ((next_addr & 0xC000) >> 14);
     int next_offset = (next_addr & 0x3FFF);
-    instruction |= membank_config[GateArray.RAM_config & 7][next_bank][next_offset]
-                   << 8;
+    instruction |=
+        membank_config[GateArray.RAM_config & 7][next_bank][next_offset] << 8;
     LOG_DEBUG("DMA [" << c << "] instruction " << std::hex << instruction
                       << " from " << channel.source_address << std::dec);
     int opcode = ((instruction & 0x7000) >> 12);
