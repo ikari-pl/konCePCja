@@ -10,7 +10,7 @@ on:
 jobs:
   msvc-build:
     name: MSVC (${{ matrix.arch }}-${{ matrix.config }})
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     strategy:
       fail-fast: false
