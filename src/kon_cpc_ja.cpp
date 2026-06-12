@@ -30,8 +30,10 @@
 #endif
 
 #ifdef _WIN32
-#include <timeapi.h>
+// clang-format off — timeapi.h depends on windows.h
 #include <windows.h>
+#include <timeapi.h>
+// clang-format on
 #endif
 
 #include "SDL3/SDL.h"
