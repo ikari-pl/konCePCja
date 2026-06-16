@@ -190,4 +190,26 @@ TEST_F(AsicTest, AsicDMACycleWriteBackDCSR) {
   EXPECT_EQ(1, *(membank_write[1] + 0x2c0f));
 }
 
+TEST_F(AsicTest, AsicDMABankBoundaryRead) {
+  // When source_address is at 0x3FFF (last byte of bank 0), the instruction
+  // spans two banks: low byte from bank 0 offset 0x3FFF, high byte from
+  // bank 1 offset 0x0000. Before the fix, addr+1=0x4000 was OOB.
+  std::vector<byte> bank0(0x4000, 0);
+  std::vector<byte> bank1(0x4000, 0);
+  bank0[0x3FFF] = 0x34;  // low byte of instruction
+  bank1[0x0000] = 0x12;  // high byte of instruction (LOAD R4, 0x12)
+  membank_config[0][0] = &bank0[0];
+  membank_config[0][1] = &bank1[0];
+  std::vector<byte> write_bank(0x4000, 0);
+  membank_write[1] = &write_bank[0];
+
+  GateArray.RAM_config = 0;
+  asic_reset();
+  asic.dma.ch[0].enabled = true;
+  asic.dma.ch[0].source_address = 0x3FFF;
+
+  // Should not crash and should read instruction 0x1234 across bank boundary
+  asic_dma_cycle();
+}
+
 }  // namespace

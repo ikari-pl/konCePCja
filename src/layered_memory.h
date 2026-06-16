@@ -11,13 +11,16 @@
 // global accessors and MemoryBus. It just forwards calls.
 struct LayeredMemory {
   // Direct debug view (old IPC behavior):
-  // - read: SmartWatch on upper ROM, no watchpoints
-  // - write: raw MemoryBus, no watchpoints
+  // - read: SmartWatch on upper ROM, no watchpoints, no MF2/ASIC
+  // - write: raw MemoryBus, no watchpoints, no MF2/ASIC
   inline byte read_direct(word addr) const { return z80_read_mem(addr); }
 
   inline void write_direct(word addr, byte v) const { z80_write_mem(addr, v); }
 
-  // CPU view: full layering (watchpoints + SmartWatch/MF2/ASIC + bus).
+  // CPU view: full device layering without watchpoints.
+  // - read: SmartWatch on upper ROM, raw bus otherwise
+  // - write: MF2 RAM redirect + ASIC register page + bus + IPC events
+  // Safe for IPC and UI — won't trigger watchpoint hits.
   inline byte read_cpu(word addr) const { return z80_cpu_read_mem(addr); }
 
   inline void write_cpu(word addr, byte v) const { z80_cpu_write_mem(addr, v); }
