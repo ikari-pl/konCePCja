@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 #include "asic.h"
 #include "koncepcja.h"
 #include "layered_memory.h"

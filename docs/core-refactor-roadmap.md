@@ -44,7 +44,3 @@ We aim for **Option B** then **Option C** as a **sequence**: B centralizes the l
 - Lives on `CpcMachine` as `g_machine.memory` (`src/cpc_machine.h:24`).
 - `read_cpu()`/`write_cpu()` provide full device layering (SmartWatch/MF2/ASIC) without watchpoints.
 - Callers can migrate from `z80_cpu_read_mem`/`z80_cpu_write_mem` to `g_machine.memory.read_cpu()`/`write_cpu()` as cleanup.
-
-- A small wrapper that holds a `MemoryBus&` and optional hooks (SmartWatch, watchpoints, MF2, ASIC) and exposes `read(addr)` / `write(addr, val)`.
-- Could live on `CpcMachine` so tools take a machine and get consistent memory semantics.
-- Sets up for multiple machines or testing with a different bus/layers.
