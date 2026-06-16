@@ -1083,19 +1083,7 @@ void z80_write_mem(word addr, byte val) { write_mem_no_watchpoint(addr, val); }
 byte z80_cpu_read_mem(word addr) { return read_mem_no_watchpoint(addr); }
 
 void z80_cpu_write_mem(word addr, byte val) {
-  // CPU view: MF2 RAM redirect + ASIC register page + bus + IPC events
-  // (same as write_mem() but without watchpoint checking)
-  if ((dwMF2Flags & MF2_ACTIVE) && pbMF2ROM && addr >= 0x2000 &&
-      addr < 0x4000) {
-    pbMF2ROM[addr] = val;
-    ipc_check_mem_write_events(addr, val);
-    return;
-  }
-  if (GateArray.registerPageOn) {
-    if (!asic_register_page_write(addr, val)) return;
-  }
   write_mem_no_watchpoint(addr, val);
-  ipc_check_mem_write_events(addr, val);
 }
 
 byte z80_read_mem_via_write_bank(word addr) {
