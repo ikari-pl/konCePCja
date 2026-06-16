@@ -1,11 +1,10 @@
-#include "z80.h"
-
 #include <gtest/gtest.h>
 
 #include "asic.h"
 #include "koncepcja.h"
 #include "layered_memory.h"
 #include "memory_bus.h"
+#include "z80.h"
 
 extern byte* membank_read[4];
 extern byte* membank_write[4];
