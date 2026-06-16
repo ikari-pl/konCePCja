@@ -1,27 +1,23 @@
-#include <gtest/gtest.h>
-
 #include "disk.h"
 
-namespace
-{
+#include <gtest/gtest.h>
 
-class SectorReadTest : public testing::Test
-{
-  public:
-    SectorReadTest()
-    {
-      data[0] = 1;
-      data[512] = 2;
-      sector.setData(data);
-    }
+namespace {
 
-  protected:
-    t_sector sector;
-    unsigned char data[1024] = {0};
+class SectorReadTest : public testing::Test {
+ public:
+  SectorReadTest() {
+    data[0] = 1;
+    data[512] = 2;
+    sector.setData(data);
+  }
+
+ protected:
+  t_sector sector;
+  unsigned char data[1024] = {0};
 };
 
-TEST_F(SectorReadTest, NormalSector)
-{
+TEST_F(SectorReadTest, NormalSector) {
   sector.setSizes(1024, 1024);
 
   unsigned char* read1 = sector.getDataForRead();
@@ -31,22 +27,21 @@ TEST_F(SectorReadTest, NormalSector)
   ASSERT_EQ(1, read2[0]);
 }
 
-TEST_F(SectorReadTest, WeakSector)
-{
+TEST_F(SectorReadTest, WeakSector) {
   sector.setSizes(512, 1024);
 
   unsigned char* read1 = sector.getDataForRead();
   unsigned char* read2 = sector.getDataForRead();
 
-  // There's no reason to force a given order as long as 2 consecutive reads return 2 different versions
+  // There's no reason to force a given order as long as 2 consecutive reads
+  // return 2 different versions
   ASSERT_NE(read1[0], read2[0]);
   // And the value is one of the 2 provided
   ASSERT_TRUE(read1[0] == 1 || read1[0] == 2);
   ASSERT_TRUE(read2[0] == 1 || read2[0] == 2);
 }
 
-TEST_F(SectorReadTest, LongSector)
-{
+TEST_F(SectorReadTest, LongSector) {
   // Should work just as a normal sector of size 512
   sector.setSizes(1024, 512);
 
@@ -68,7 +63,8 @@ TEST(ChrnToString, AllZeros) {
 }
 
 TEST(ChrnToString, StandardFormat) {
-  unsigned char chrn[4] = {1, 0, 0xC1, 2}; // Track 1, Side 0, Sector ID 0xC1, Size 2 (512 bytes)
+  unsigned char chrn[4] = {
+      1, 0, 0xC1, 2};  // Track 1, Side 0, Sector ID 0xC1, Size 2 (512 bytes)
   EXPECT_EQ("1-0-193-2", chrn_to_string(chrn));
 }
 
@@ -119,10 +115,10 @@ TEST(SectorTest, GetDataForWriteReturnsBasePointer) {
 TEST(SectorTest, MultipleWeakReadsReturnDifferentVersions) {
   t_sector sector;
   unsigned char data[1024] = {0};
-  data[0] = 0xAA;     // Version 0
-  data[512] = 0xBB;   // Version 1
+  data[0] = 0xAA;    // Version 0
+  data[512] = 0xBB;  // Version 1
   sector.setData(data);
-  sector.setSizes(512, 1024); // 2 weak versions
+  sector.setSizes(512, 1024);  // 2 weak versions
 
   // After 2 reads, we should have seen both versions
   unsigned char* read1 = sector.getDataForRead();
@@ -135,19 +131,19 @@ TEST(SectorTest, MultipleWeakReadsReturnDifferentVersions) {
 TEST(SectorTest, CycleThroughAllWeakVersions) {
   t_sector sector;
   unsigned char data[1536] = {0};
-  data[0] = 1;        // Version 0
-  data[512] = 2;      // Version 1
-  data[1024] = 3;     // Version 2
+  data[0] = 1;     // Version 0
+  data[512] = 2;   // Version 1
+  data[1024] = 3;  // Version 2
   sector.setData(data);
-  sector.setSizes(512, 1536); // 3 weak versions
+  sector.setSizes(512, 1536);  // 3 weak versions
 
   // After 3 reads, we should cycle back
   unsigned char* r1 = sector.getDataForRead();
   unsigned char* r2 = sector.getDataForRead();
   unsigned char* r3 = sector.getDataForRead();
-  unsigned char* r4 = sector.getDataForRead(); // Should cycle back
+  unsigned char* r4 = sector.getDataForRead();  // Should cycle back
 
-  EXPECT_EQ(r1, r4); // Same version after cycling
+  EXPECT_EQ(r1, r4);  // Same version after cycling
 }
 
 // ─────────────────────────────────────────────────
@@ -195,7 +191,7 @@ TEST(DiskFormatTest, AmstradDataFormat) {
   format.tracks = 40;
   format.sides = 1;
   format.sectors = 9;
-  format.sector_size = 2; // N=2 means 512 bytes
+  format.sector_size = 2;  // N=2 means 512 bytes
   format.gap3_length = 0x4E;
   format.filler_byte = 0xE5;
 
@@ -211,10 +207,10 @@ TEST(DiskFormatTest, AmstradDataFormat) {
 
 TEST(DskConstants, MaximumValues) {
   // Verify DSK format constraints
-  EXPECT_EQ(8192, DSK_BPTMAX);       // Max bytes per track
-  EXPECT_EQ(102, DSK_TRACKMAX);      // Max tracks
-  EXPECT_EQ(2, DSK_SIDEMAX);         // Max sides
-  EXPECT_EQ(29, DSK_SECTORMAX);      // Max sectors per track
+  EXPECT_EQ(8192, DSK_BPTMAX);   // Max bytes per track
+  EXPECT_EQ(102, DSK_TRACKMAX);  // Max tracks
+  EXPECT_EQ(2, DSK_SIDEMAX);     // Max sides
+  EXPECT_EQ(29, DSK_SECTORMAX);  // Max sectors per track
 }
 
 TEST(DskConstants, FdcDirections) {
@@ -234,16 +230,18 @@ TEST(DskConstants, FdcPhases) {
 
 TEST(DskHeaderTest, SizeCheck) {
   // DSK header should be 256 bytes
-  // id(34) + unused1(14) + tracks(1) + sides(1) + unused2(2) + track_size(204) = 256
+  // id(34) + unused1(14) + tracks(1) + sides(1) + unused2(2) + track_size(204)
+  // = 256
   t_DSK_header header = {};
   EXPECT_EQ(256u, sizeof(header));
 }
 
 TEST(TrackHeaderTest, SizeCheck) {
-  // Track header: id(12) + unused1(4) + track(1) + side(1) + unused2(2) + bps(1) + sectors(1) + gap3(1) + filler(1) + sector(29*8)
-  // = 12 + 4 + 1 + 1 + 2 + 1 + 1 + 1 + 1 + 232 = 256
+  // Track header: id(12) + unused1(4) + track(1) + side(1) + unused2(2) +
+  // bps(1) + sectors(1) + gap3(1) + filler(1) + sector(29*8) = 12 + 4 + 1 + 1 +
+  // 2 + 1 + 1 + 1 + 1 + 232 = 256
   t_track_header header = {};
   EXPECT_EQ(256u, sizeof(header));
 }
 
-}
+}  // namespace

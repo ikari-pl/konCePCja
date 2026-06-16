@@ -1,38 +1,38 @@
 #include "devtools_ui.h"
-#include "TextEditor.h"
-#include "imgui_ui_testable.h"
-#include "imgui.h"
+
 #include <cstdio>
-#include <cstring>
-#include <string>
-#include <vector>
-
-#include "koncepcja.h"
-#include "z80.h"
-#include "z80_disassembly.h"
-#include "symfile.h"
-#include "session_recording.h"
-#include "gfx_finder.h"
-#include "silicon_disc.h"
-#include "asic.h"
-#include "disk.h"
-#include "disk_file_editor.h"
-#include "disk_sector_editor.h"
-#include "disk_format.h"
-#include "data_areas.h"
-#include "z80_assembler.h"
-#include "expr_parser.h"
-#include "imgui_ui.h"
-#include "wav_recorder.h"
-#include "ym_recorder.h"
-#include "avi_recorder.h"
-
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <vector>
+
 #include "SDL3/SDL.h"
+#include "TextEditor.h"
+#include "asic.h"
+#include "avi_recorder.h"
+#include "data_areas.h"
+#include "disk.h"
+#include "disk_file_editor.h"
+#include "disk_format.h"
+#include "disk_sector_editor.h"
+#include "expr_parser.h"
+#include "gfx_finder.h"
+#include "imgui.h"
+#include "imgui_ui.h"
+#include "imgui_ui_testable.h"
+#include "koncepcja.h"
 #include "portable-file-dialogs.h"
+#include "session_recording.h"
+#include "silicon_disc.h"
+#include "symfile.h"
+#include "wav_recorder.h"
+#include "ym_recorder.h"
+#include "z80.h"
+#include "z80_assembler.h"
+#include "z80_disassembly.h"
 #include "z80_opcode_table.h"
 
 extern SDL_Window* mainSDLWindow;
@@ -47,8 +47,7 @@ extern t_CRTC CRTC;
 extern t_PSG PSG;
 
 // Reject paths containing ".." to prevent path traversal
-static bool has_path_traversal(const char* path)
-{
+static bool has_path_traversal(const char* path) {
   for (const auto& comp : std::filesystem::path(path)) {
     if (comp == "..") return true;
   }
@@ -67,85 +66,77 @@ DevToolsUI::~DevToolsUI() = default;
 // Name-to-pointer mapping helpers
 // -----------------------------------------------
 
-bool* DevToolsUI::window_ptr(const std::string& name)
-{
-  if (name == "registers")          return &show_registers_;
-  if (name == "disassembly")        return &show_disassembly_;
-  if (name == "memory_hex")         return &show_memory_hex_;
-  if (name == "stack")              return &show_stack_;
-  if (name == "breakpoints")        return &show_breakpoints_;
-  if (name == "symbols")            return &show_symbols_;
-  if (name == "session_recording")  return &show_session_recording_;
-  if (name == "gfx_finder")         return &show_gfx_finder_;
-  if (name == "silicon_disc")       return &show_silicon_disc_;
-  if (name == "asic")               return &show_asic_;
-  if (name == "disc_tools")         return &show_disc_tools_;
-  if (name == "data_areas")         return &show_data_areas_;
-  if (name == "disasm_export")      return &show_disasm_export_;
-  if (name == "video_state")        return &show_video_state_;
-  if (name == "audio_state")        return &show_audio_state_;
+bool* DevToolsUI::window_ptr(const std::string& name) {
+  if (name == "registers") return &show_registers_;
+  if (name == "disassembly") return &show_disassembly_;
+  if (name == "memory_hex") return &show_memory_hex_;
+  if (name == "stack") return &show_stack_;
+  if (name == "breakpoints") return &show_breakpoints_;
+  if (name == "symbols") return &show_symbols_;
+  if (name == "session_recording") return &show_session_recording_;
+  if (name == "gfx_finder") return &show_gfx_finder_;
+  if (name == "silicon_disc") return &show_silicon_disc_;
+  if (name == "asic") return &show_asic_;
+  if (name == "disc_tools") return &show_disc_tools_;
+  if (name == "data_areas") return &show_data_areas_;
+  if (name == "disasm_export") return &show_disasm_export_;
+  if (name == "video_state") return &show_video_state_;
+  if (name == "audio_state") return &show_audio_state_;
   if (name == "recording_controls") return &show_recording_controls_;
-  if (name == "assembler")          return &show_assembler_;
+  if (name == "assembler") return &show_assembler_;
   return nullptr;
 }
 
-void DevToolsUI::toggle_window(const std::string& name)
-{
+void DevToolsUI::toggle_window(const std::string& name) {
   bool* p = window_ptr(name);
   if (!p) return;
   *p = !*p;
   // Pre-fill disasm export address range from current disassembly view
-  if (name == "disasm_export" && *p)
-    dex_prefill_pending_ = true;
+  if (name == "disasm_export" && *p) dex_prefill_pending_ = true;
 }
 
-bool DevToolsUI::is_window_open(const std::string& name) const
-{
-  if (name == "registers")          return show_registers_;
-  if (name == "disassembly")        return show_disassembly_;
-  if (name == "memory_hex")         return show_memory_hex_;
-  if (name == "stack")              return show_stack_;
-  if (name == "breakpoints")        return show_breakpoints_;
-  if (name == "symbols")            return show_symbols_;
-  if (name == "session_recording")  return show_session_recording_;
-  if (name == "gfx_finder")         return show_gfx_finder_;
-  if (name == "silicon_disc")       return show_silicon_disc_;
-  if (name == "asic")               return show_asic_;
-  if (name == "disc_tools")         return show_disc_tools_;
-  if (name == "data_areas")         return show_data_areas_;
-  if (name == "disasm_export")      return show_disasm_export_;
-  if (name == "video_state")        return show_video_state_;
-  if (name == "audio_state")        return show_audio_state_;
+bool DevToolsUI::is_window_open(const std::string& name) const {
+  if (name == "registers") return show_registers_;
+  if (name == "disassembly") return show_disassembly_;
+  if (name == "memory_hex") return show_memory_hex_;
+  if (name == "stack") return show_stack_;
+  if (name == "breakpoints") return show_breakpoints_;
+  if (name == "symbols") return show_symbols_;
+  if (name == "session_recording") return show_session_recording_;
+  if (name == "gfx_finder") return show_gfx_finder_;
+  if (name == "silicon_disc") return show_silicon_disc_;
+  if (name == "asic") return show_asic_;
+  if (name == "disc_tools") return show_disc_tools_;
+  if (name == "data_areas") return show_data_areas_;
+  if (name == "disasm_export") return show_disasm_export_;
+  if (name == "video_state") return show_video_state_;
+  if (name == "audio_state") return show_audio_state_;
   if (name == "recording_controls") return show_recording_controls_;
-  if (name == "assembler")          return show_assembler_;
+  if (name == "assembler") return show_assembler_;
   return false;
 }
 
-bool DevToolsUI::any_window_open() const
-{
+bool DevToolsUI::any_window_open() const {
   return show_registers_ || show_disassembly_ || show_memory_hex_ ||
          show_stack_ || show_breakpoints_ || show_symbols_ ||
-         show_session_recording_ || show_gfx_finder_ ||
-         show_silicon_disc_ || show_asic_ || show_disc_tools_ ||
-         show_data_areas_ || show_disasm_export_ ||
-         show_video_state_ || show_audio_state_ ||
+         show_session_recording_ || show_gfx_finder_ || show_silicon_disc_ ||
+         show_asic_ || show_disc_tools_ || show_data_areas_ ||
+         show_disasm_export_ || show_video_state_ || show_audio_state_ ||
          show_recording_controls_ || show_assembler_;
 }
 
-const char* const* DevToolsUI::all_window_keys(int* count)
-{
+const char* const* DevToolsUI::all_window_keys(int* count) {
   static const char* keys[] = {
-    "registers", "disassembly", "memory_hex", "stack", "breakpoints",
-    "symbols", "session_recording", "gfx_finder", "silicon_disc",
-    "asic", "disc_tools", "data_areas", "disasm_export",
-    "video_state", "audio_state", "recording_controls", "assembler"
-  };
+      "registers",     "disassembly", "memory_hex",        "stack",
+      "breakpoints",   "symbols",     "session_recording", "gfx_finder",
+      "silicon_disc",  "asic",        "disc_tools",        "data_areas",
+      "disasm_export", "video_state", "audio_state",       "recording_controls",
+      "assembler"};
   *count = 17;
   return keys;
 }
 
-void DevToolsUI::navigate_disassembly(word addr)
-{
+void DevToolsUI::navigate_disassembly(word addr) {
   show_disassembly_ = true;
   disasm_follow_pc_ = false;
   disasm_goto_value_ = addr;
@@ -153,8 +144,7 @@ void DevToolsUI::navigate_disassembly(word addr)
   snprintf(disasm_goto_addr_, sizeof(disasm_goto_addr_), "%04X", addr);
 }
 
-void DevToolsUI::navigate_to(word addr, NavTarget target)
-{
+void DevToolsUI::navigate_to(word addr, NavTarget target) {
   switch (target) {
     case NavTarget::DISASM:
       navigate_disassembly(addr);
@@ -169,8 +159,7 @@ void DevToolsUI::navigate_to(word addr, NavTarget target)
   }
 }
 
-void DevToolsUI::navigate_memory(word addr)
-{
+void DevToolsUI::navigate_memory(word addr) {
   show_memory_hex_ = true;
   memhex_goto_value_ = addr;
   snprintf(memhex_goto_addr_, sizeof(memhex_goto_addr_), "%04X", addr);
@@ -182,12 +171,10 @@ void DevToolsUI::navigate_memory(word addr)
 // Main render dispatch
 // -----------------------------------------------
 
-void DevToolsUI::render()
-{
+void DevToolsUI::render() {
   // Detect disasm_export opening via MenuItem (bypasses toggle_window)
   static bool prev_disasm_export = false;
-  if (show_disasm_export_ && !prev_disasm_export)
-    dex_prefill_pending_ = true;
+  if (show_disasm_export_ && !prev_disasm_export) dex_prefill_pending_ = true;
   prev_disasm_export = show_disasm_export_;
 
   static const uint64_t freq = SDL_GetPerformanceFrequency();
@@ -203,31 +190,38 @@ void DevToolsUI::render()
     }
   };
 
-  time_window( 0, "Registers",    show_registers_,         [&]{ render_registers(); });
-  time_window( 1, "Disassembly",  show_disassembly_,       [&]{ render_disassembly(); });
-  time_window( 2, "Memory Hex",   show_memory_hex_,        [&]{ render_memory_hex(); });
-  time_window( 3, "Stack",        show_stack_,             [&]{ render_stack(); });
-  time_window( 4, "Breakpoints",  show_breakpoints_,       [&]{ render_breakpoints(); });
-  time_window( 5, "Symbols",      show_symbols_,           [&]{ render_symbols(); });
-  time_window( 6, "Silicon Disc", show_silicon_disc_,      [&]{ render_silicon_disc(); });
-  time_window( 7, "ASIC",         show_asic_,              [&]{ render_asic(); });
-  time_window( 8, "Disc Tools",   show_disc_tools_,        [&]{ render_disc_tools(); });
-  time_window( 9, "Data Areas",   show_data_areas_,        [&]{ render_data_areas(); });
-  time_window(10, "Disasm Export", show_disasm_export_,     [&]{ render_disasm_export(); });
-  time_window(11, "Session Rec",  show_session_recording_, [&]{ render_session_recording(); });
-  time_window(12, "GFX Finder",   show_gfx_finder_,       [&]{ render_gfx_finder(); });
-  time_window(13, "Video State",  show_video_state_,       [&]{ render_video_state(); });
-  time_window(14, "Audio State",  show_audio_state_,       [&]{ render_audio_state(); });
-  time_window(15, "Recording",    show_recording_controls_,[&]{ render_recording_controls(); });
-  time_window(16, "Assembler",    show_assembler_,         [&]{ render_assembler(); });
+  time_window(0, "Registers", show_registers_, [&] { render_registers(); });
+  time_window(1, "Disassembly", show_disassembly_,
+              [&] { render_disassembly(); });
+  time_window(2, "Memory Hex", show_memory_hex_, [&] { render_memory_hex(); });
+  time_window(3, "Stack", show_stack_, [&] { render_stack(); });
+  time_window(4, "Breakpoints", show_breakpoints_,
+              [&] { render_breakpoints(); });
+  time_window(5, "Symbols", show_symbols_, [&] { render_symbols(); });
+  time_window(6, "Silicon Disc", show_silicon_disc_,
+              [&] { render_silicon_disc(); });
+  time_window(7, "ASIC", show_asic_, [&] { render_asic(); });
+  time_window(8, "Disc Tools", show_disc_tools_, [&] { render_disc_tools(); });
+  time_window(9, "Data Areas", show_data_areas_, [&] { render_data_areas(); });
+  time_window(10, "Disasm Export", show_disasm_export_,
+              [&] { render_disasm_export(); });
+  time_window(11, "Session Rec", show_session_recording_,
+              [&] { render_session_recording(); });
+  time_window(12, "GFX Finder", show_gfx_finder_, [&] { render_gfx_finder(); });
+  time_window(13, "Video State", show_video_state_,
+              [&] { render_video_state(); });
+  time_window(14, "Audio State", show_audio_state_,
+              [&] { render_audio_state(); });
+  time_window(15, "Recording", show_recording_controls_,
+              [&] { render_recording_controls(); });
+  time_window(16, "Assembler", show_assembler_, [&] { render_assembler(); });
 }
 
 // -----------------------------------------------
 // Debug Window 1: Registers
 // -----------------------------------------------
 
-void DevToolsUI::render_registers()
-{
+void DevToolsUI::render_registers() {
   ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(620, 60), ImGuiCond_FirstUseEver);
 
@@ -240,12 +234,13 @@ void DevToolsUI::render_registers()
 
   bool locked = !CPC.paused;
   ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
-    (locked ? ImGuiInputTextFlags_ReadOnly : 0);
+                                  (locked ? ImGuiInputTextFlags_ReadOnly : 0);
 
   auto RegField16 = [&](const char* label, reg_pair& rp) {
     unsigned short val = rp.w.l;
     ImGui::SetNextItemWidth(60);
-    if (ImGui::InputScalar(label, ImGuiDataType_U16, &val, nullptr, nullptr, "%04X", hex_flags)) {
+    if (ImGui::InputScalar(label, ImGuiDataType_U16, &val, nullptr, nullptr,
+                           "%04X", hex_flags)) {
       if (!locked) rp.w.l = val;
     }
   };
@@ -253,25 +248,38 @@ void DevToolsUI::render_registers()
   auto RegField8 = [&](const char* label, byte& val) {
     ImGui::SetNextItemWidth(40);
     unsigned char v = val;
-    if (ImGui::InputScalar(label, ImGuiDataType_U8, &v, nullptr, nullptr, "%02X", hex_flags)) {
+    if (ImGui::InputScalar(label, ImGuiDataType_U8, &v, nullptr, nullptr,
+                           "%02X", hex_flags)) {
       if (!locked) val = v;
     }
   };
 
   // Main registers in two columns
   ImGui::Columns(2, "regs_main", false);
-  RegField16("AF", z80.AF); ImGui::NextColumn();
-  RegField16("AF'", z80.AFx); ImGui::NextColumn();
-  RegField16("BC", z80.BC); ImGui::NextColumn();
-  RegField16("BC'", z80.BCx); ImGui::NextColumn();
-  RegField16("DE", z80.DE); ImGui::NextColumn();
-  RegField16("DE'", z80.DEx); ImGui::NextColumn();
-  RegField16("HL", z80.HL); ImGui::NextColumn();
-  RegField16("HL'", z80.HLx); ImGui::NextColumn();
-  RegField16("IX", z80.IX); ImGui::NextColumn();
-  RegField16("IY", z80.IY); ImGui::NextColumn();
-  RegField16("SP", z80.SP); ImGui::NextColumn();
-  RegField16("PC", z80.PC); ImGui::NextColumn();
+  RegField16("AF", z80.AF);
+  ImGui::NextColumn();
+  RegField16("AF'", z80.AFx);
+  ImGui::NextColumn();
+  RegField16("BC", z80.BC);
+  ImGui::NextColumn();
+  RegField16("BC'", z80.BCx);
+  ImGui::NextColumn();
+  RegField16("DE", z80.DE);
+  ImGui::NextColumn();
+  RegField16("DE'", z80.DEx);
+  ImGui::NextColumn();
+  RegField16("HL", z80.HL);
+  ImGui::NextColumn();
+  RegField16("HL'", z80.HLx);
+  ImGui::NextColumn();
+  RegField16("IX", z80.IX);
+  ImGui::NextColumn();
+  RegField16("IY", z80.IY);
+  ImGui::NextColumn();
+  RegField16("SP", z80.SP);
+  ImGui::NextColumn();
+  RegField16("PC", z80.PC);
+  ImGui::NextColumn();
   ImGui::Columns(1);
 
   ImGui::Spacing();
@@ -282,29 +290,36 @@ void DevToolsUI::render_registers()
   // Interrupt state
   ImGui::Spacing();
   ImGui::Separator();
-  ImGui::Text("IFF1: %d  IFF2: %d  IM: %d  HALT: %d",
-              z80.IFF1, z80.IFF2, z80.IM, z80.HALT);
-  ImGui::Text("T-states: %llu", static_cast<unsigned long long>(g_tstate_counter));
+  ImGui::Text("IFF1: %d  IFF2: %d  IM: %d  HALT: %d", z80.IFF1, z80.IFF2,
+              z80.IM, z80.HALT);
+  ImGui::Text("T-states: %llu",
+              static_cast<unsigned long long>(g_tstate_counter));
 
   // Flags
   ImGui::Spacing();
   ImGui::Separator();
   ImGui::Text("Flags");
   byte f = z80.AF.b.l;
-  bool s = f & Sflag, zf = f & Zflag, h = f & Hflag, pv = f & Pflag, n = f & Nflag, cf = f & Cflag;
-  ImGui::Checkbox("S", &s);   ImGui::SameLine();
-  ImGui::Checkbox("Z", &zf);  ImGui::SameLine();
-  ImGui::Checkbox("H", &h);   ImGui::SameLine();
-  ImGui::Checkbox("P/V", &pv); ImGui::SameLine();
-  ImGui::Checkbox("N", &n);   ImGui::SameLine();
+  bool s = f & Sflag, zf = f & Zflag, h = f & Hflag, pv = f & Pflag,
+       n = f & Nflag, cf = f & Cflag;
+  ImGui::Checkbox("S", &s);
+  ImGui::SameLine();
+  ImGui::Checkbox("Z", &zf);
+  ImGui::SameLine();
+  ImGui::Checkbox("H", &h);
+  ImGui::SameLine();
+  ImGui::Checkbox("P/V", &pv);
+  ImGui::SameLine();
+  ImGui::Checkbox("N", &n);
+  ImGui::SameLine();
   ImGui::Checkbox("C", &cf);
   if (!locked) {
     byte new_f = 0;
-    if (s)  new_f |= Sflag;
+    if (s) new_f |= Sflag;
     if (zf) new_f |= Zflag;
-    if (h)  new_f |= Hflag;
+    if (h) new_f |= Hflag;
     if (pv) new_f |= Pflag;
-    if (n)  new_f |= Nflag;
+    if (n) new_f |= Nflag;
     if (cf) new_f |= Cflag;
     z80.AF.b.l = new_f | (f & Xflags);
   }
@@ -317,16 +332,18 @@ void DevToolsUI::render_registers()
 // Debug Window 2: Disassembly
 // -----------------------------------------------
 
-void DevToolsUI::disasm_cache_record_pc()
-{
+void DevToolsUI::disasm_cache_record_pc() {
   word pc = z80.PC.w.l;
 
   // Push into PC history ring buffer (always, even if instruction is cached)
-  // Skip if same as last entry (avoid filling the buffer with repeated PCs when paused)
-  int prev_idx = (disasm_pc_history_head_ - 1 + DISASM_PC_HISTORY_SIZE) % DISASM_PC_HISTORY_SIZE;
+  // Skip if same as last entry (avoid filling the buffer with repeated PCs when
+  // paused)
+  int prev_idx = (disasm_pc_history_head_ - 1 + DISASM_PC_HISTORY_SIZE) %
+                 DISASM_PC_HISTORY_SIZE;
   if (disasm_pc_history_count_ == 0 || disasm_pc_history_[prev_idx] != pc) {
     disasm_pc_history_[disasm_pc_history_head_] = pc;
-    disasm_pc_history_head_ = (disasm_pc_history_head_ + 1) % DISASM_PC_HISTORY_SIZE;
+    disasm_pc_history_head_ =
+        (disasm_pc_history_head_ + 1) % DISASM_PC_HISTORY_SIZE;
     if (disasm_pc_history_count_ < DISASM_PC_HISTORY_SIZE)
       disasm_pc_history_count_++;
   }
@@ -338,11 +355,10 @@ void DevToolsUI::disasm_cache_record_pc()
   auto line = disassemble_one(pc, dc, eps);
   int len = line.Size();
   if (len <= 0) len = 1;
-  disasm_cache_[pc] = { line.instruction_, static_cast<uint8_t>(len) };
+  disasm_cache_[pc] = {line.instruction_, static_cast<uint8_t>(len)};
 }
 
-void DevToolsUI::render_disassembly()
-{
+void DevToolsUI::render_disassembly() {
   ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(10, 60), ImGuiCond_FirstUseEver);
 
@@ -358,9 +374,9 @@ void DevToolsUI::render_disassembly()
     ImGui::Checkbox("Follow PC", &disasm_follow_pc_);
     ImGui::Separator();
     ImGui::SetNextItemWidth(60);
-    if (ImGui::InputText("Goto", disasm_goto_addr_,
-        sizeof(disasm_goto_addr_),
-        ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+    if (ImGui::InputText("Goto", disasm_goto_addr_, sizeof(disasm_goto_addr_),
+                         ImGuiInputTextFlags_CharsHexadecimal |
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
       unsigned long addr;
       if (parse_hex(disasm_goto_addr_, &addr, 0xFFFF)) {
         disasm_goto_value_ = static_cast<int>(addr);
@@ -371,7 +387,8 @@ void DevToolsUI::render_disassembly()
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Click lines to toggle breakpoints. Right-click for more options.");
+      ImGui::SetTooltip(
+          "Click lines to toggle breakpoints. Right-click for more options.");
     ImGui::EndMenuBar();
   }
 
@@ -385,9 +402,11 @@ void DevToolsUI::render_disassembly()
   if (disasm_cache_pending_clear_.load()) {
     disasm_cache_clear();
   }
-  // Invalidate cache on banking change (track each config separately to avoid XOR collisions)
+  // Invalidate cache on banking change (track each config separately to avoid
+  // XOR collisions)
   extern t_GateArray GateArray;
-  if (GateArray.RAM_config != disasm_cache_ram_config_ || GateArray.ROM_config != disasm_cache_rom_config_) {
+  if (GateArray.RAM_config != disasm_cache_ram_config_ ||
+      GateArray.ROM_config != disasm_cache_rom_config_) {
     disasm_cache_.clear();
     disasm_cache_ram_config_ = GateArray.RAM_config;
     disasm_cache_rom_config_ = GateArray.ROM_config;
@@ -407,7 +426,8 @@ void DevToolsUI::render_disassembly()
   std::vector<DisasmEntry> lines;
   lines.reserve(NUM_LINES);
 
-  // Start a few instructions before center_pc so it appears in the upper portion.
+  // Start a few instructions before center_pc so it appears in the upper
+  // portion.
   word start_addr = center_pc - 16;
 
   word addr = start_addr;
@@ -444,7 +464,8 @@ void DevToolsUI::render_disassembly()
         if (len <= 0) len = 1;
         addr = (addr + len) & 0xFFFF;
       } else {
-        // Cache miss — disassemble (but don't cache: we only cache PC-visited addrs)
+        // Cache miss — disassemble (but don't cache: we only cache PC-visited
+        // addrs)
         auto line = disassemble_one(addr, dummy_dc, dummy_eps);
         entry.text = line.instruction_;
         int len = line.Size();
@@ -468,10 +489,11 @@ void DevToolsUI::render_disassembly()
     char bank_hdr[64];
     if (pc_in_rom) {
       const char* rom_name = (pc_slot == 0) ? "Lower ROM"
-                           : (pc_slot == 3) ? "Upper ROM"
-                           : "ROM";  // expansion ROM in unusual slot
-      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: %s",
-               pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, rom_name);
+                             : (pc_slot == 3)
+                                 ? "Upper ROM"
+                                 : "ROM";  // expansion ROM in unusual slot
+      snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: %s", pc_slot * 0x4000,
+               pc_slot * 0x4000 + 0x3FFF, rom_name);
     } else if (pc_slot == 1 && GateArray.RAM_bank > 0) {
       snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (expansion bank %d)",
                pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, GateArray.RAM_bank);
@@ -479,13 +501,15 @@ void DevToolsUI::render_disassembly()
       snprintf(bank_hdr, sizeof(bank_hdr), "%04X-%04X: RAM (bank %d)",
                pc_slot * 0x4000, pc_slot * 0x4000 + 0x3FFF, pc_slot);
     }
-    ImGui::PushStyleColor(ImGuiCol_Text,
-      pc_in_rom ? ImVec4(0.7f, 0.5f, 0.8f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, pc_in_rom
+                                             ? ImVec4(0.7f, 0.5f, 0.8f, 1.0f)
+                                             : ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
     ImGui::TextUnformatted(bank_hdr);
     ImGui::PopStyleColor();
   }
 
-  if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+  if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0),
+                        ImGuiChildFlags_Borders)) {
     int scroll_to_idx = -1;
 
     for (int i = 0; i < static_cast<int>(lines.size()); i++) {
@@ -493,7 +517,10 @@ void DevToolsUI::render_disassembly()
       bool is_pc = (entry.addr == z80.PC.w.l);
       bool is_bp = false;
       for (const auto& bp : breakpoints) {
-        if (bp.address == entry.addr && bp.type != EPHEMERAL) { is_bp = true; break; }
+        if (bp.address == entry.addr && bp.type != EPHEMERAL) {
+          is_bp = true;
+          break;
+        }
       }
 
       // --- ROM background tint (dark purple, matching memory hex viewer) ---
@@ -504,8 +531,8 @@ void DevToolsUI::render_disassembly()
         float row_h = ImGui::GetTextLineHeightWithSpacing();
         float row_w = ImGui::GetContentRegionAvail().x;
         ImGui::GetWindowDrawList()->AddRectFilled(
-          rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
-          IM_COL32(60, 20, 60, 80));
+            rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
+            IM_COL32(60, 20, 60, 80));
       }
 
       // Symbol label above the instruction
@@ -516,17 +543,19 @@ void DevToolsUI::render_disassembly()
       }
 
       // Build display text
-      static constexpr const char* kBreakpointMarker = "\xe2\x97\x8f"; // Unicode ●
+      static constexpr const char* kBreakpointMarker =
+          "\xe2\x97\x8f";  // Unicode ●
       char label[256];
       snprintf(label, sizeof(label), "%s %04X  %s",
-               is_bp ? kBreakpointMarker : " ",
-               entry.addr, entry.text.c_str());
+               is_bp ? kBreakpointMarker : " ", entry.addr, entry.text.c_str());
 
-      // Color: green for PC, red for breakpoint, amber for data area, purple for ROM
+      // Color: green for PC, red for breakpoint, amber for data area, purple
+      // for ROM
       int style_colors_pushed = 0;
       if (entry.is_data_area && !is_pc && !is_bp) {
         // Subtle amber background for data area lines
-        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.25f, 0.20f, 0.05f, 0.5f));
+        ImGui::PushStyleColor(ImGuiCol_Header,
+                              ImVec4(0.25f, 0.20f, 0.05f, 0.5f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.75f, 0.45f, 1.0f));
         style_colors_pushed = 2;
       } else if (is_pc) {
@@ -553,7 +582,8 @@ void DevToolsUI::render_disassembly()
         if (entry.is_data_area)
           ImGui::SetTooltip("Data area | Right-click: edit/remove");
         else
-          ImGui::SetTooltip("Click: toggle breakpoint | Right-click: more options");
+          ImGui::SetTooltip(
+              "Click: toggle breakpoint | Right-click: more options");
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       }
 
@@ -572,8 +602,8 @@ void DevToolsUI::render_disassembly()
         if (ImGui::MenuItem("Goto this address")) {
           disasm_goto_value_ = entry.addr;
           disasm_follow_pc_ = false;
-          snprintf(disasm_goto_addr_, sizeof(disasm_goto_addr_),
-                   "%04X", entry.addr);
+          snprintf(disasm_goto_addr_, sizeof(disasm_goto_addr_), "%04X",
+                   entry.addr);
         }
         if (ImGui::MenuItem("View in Memory")) {
           navigate_to(entry.addr, NavTarget::MEMORY);
@@ -584,10 +614,12 @@ void DevToolsUI::render_disassembly()
             // Pre-fill the Data Areas mark form and open the window
             snprintf(da_start_, sizeof(da_start_), "%04X", ctx_da->start);
             snprintf(da_end_, sizeof(da_end_), "%04X", ctx_da->end);
-            da_type_ = (ctx_da->type == DataType::BYTES) ? 0 :
-                       (ctx_da->type == DataType::WORDS) ? 1 : 2;
+            da_type_ = (ctx_da->type == DataType::BYTES)   ? 0
+                       : (ctx_da->type == DataType::WORDS) ? 1
+                                                           : 2;
             if (!ctx_da->label.empty())
-              snprintf(da_label_, sizeof(da_label_), "%s", ctx_da->label.c_str());
+              snprintf(da_label_, sizeof(da_label_), "%s",
+                       ctx_da->label.c_str());
             else
               da_label_[0] = '\0';
             show_data_areas_ = true;
@@ -626,7 +658,8 @@ void DevToolsUI::render_disassembly()
     // One-shot scroll to goto target
     if (disasm_scroll_pending_ && scroll_to_idx >= 0) {
       float item_height = ImGui::GetTextLineHeightWithSpacing();
-      ImGui::SetScrollY(scroll_to_idx * item_height - ImGui::GetWindowHeight() * 0.3f);
+      ImGui::SetScrollY(scroll_to_idx * item_height -
+                        ImGui::GetWindowHeight() * 0.3f);
       disasm_scroll_pending_ = false;
     }
   }
@@ -640,8 +673,7 @@ void DevToolsUI::render_disassembly()
 // Debug Window 3: Memory Hex Dump
 // -----------------------------------------------
 
-void DevToolsUI::render_memory_hex()
-{
+void DevToolsUI::render_memory_hex() {
   ImGui::SetNextWindowSize(ImVec2(520, 400), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(460, 60), ImGuiCond_FirstUseEver);
 
@@ -656,8 +688,9 @@ void DevToolsUI::render_memory_hex()
   if (ImGui::BeginMenuBar()) {
     ImGui::SetNextItemWidth(60);
     if (ImGui::InputText("Goto##memhex", memhex_goto_addr_,
-        sizeof(memhex_goto_addr_),
-        ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+                         sizeof(memhex_goto_addr_),
+                         ImGuiInputTextFlags_CharsHexadecimal |
+                             ImGuiInputTextFlags_EnterReturnsTrue)) {
       unsigned long addr;
       if (parse_hex(memhex_goto_addr_, &addr, 0xFFFF)) {
         memhex_goto_value_ = static_cast<int>(addr);
@@ -674,21 +707,26 @@ void DevToolsUI::render_memory_hex()
     ImGui::Separator();
     ImGui::Checkbox("CPU view", &memhex_cpu_view_);
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("When enabled, reads go through the full CPU view (watchpoints, SmartWatch, MF2/ASIC).\n"
-                        "When disabled, reads use the direct debugger view (SmartWatch only, no watchpoints).");
+      ImGui::SetTooltip(
+          "When enabled, reads go through the full CPU view (watchpoints, "
+          "SmartWatch, MF2/ASIC).\n"
+          "When disabled, reads use the direct debugger view (SmartWatch only, "
+          "no watchpoints).");
     }
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Right-click for navigation options.\nDouble-click a byte to edit.");
+      ImGui::SetTooltip(
+          "Right-click for navigation options.\nDouble-click a byte to edit.");
     ImGui::EndMenuBar();
   }
 
   // ── Search bar ──
   {
     ImGui::SetNextItemWidth(120);
-    bool do_search = ImGui::InputText("Find##mh", memhex_search_, sizeof(memhex_search_),
-        ImGuiInputTextFlags_EnterReturnsTrue);
+    bool do_search =
+        ImGui::InputText("Find##mh", memhex_search_, sizeof(memhex_search_),
+                         ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     if (ImGui::SmallButton(memhex_search_hex_ ? "Hex" : "ASCII")) {
       memhex_search_hex_ = !memhex_search_hex_;
@@ -701,18 +739,21 @@ void DevToolsUI::render_memory_hex()
     do_search |= ImGui::SmallButton("Go##mhsearch");
     ImGui::SameLine();
     if (ImGui::SmallButton("<##mhprev") && !memhex_matches_.empty()) {
-      memhex_match_idx_ = (memhex_match_idx_ - 1 + static_cast<int>(memhex_matches_.size())) %
-                           static_cast<int>(memhex_matches_.size());
+      memhex_match_idx_ =
+          (memhex_match_idx_ - 1 + static_cast<int>(memhex_matches_.size())) %
+          static_cast<int>(memhex_matches_.size());
       memhex_goto_value_ = memhex_matches_[memhex_match_idx_];
     }
     ImGui::SameLine();
     if (ImGui::SmallButton(">##mhnext") && !memhex_matches_.empty()) {
-      memhex_match_idx_ = (memhex_match_idx_ + 1) % static_cast<int>(memhex_matches_.size());
+      memhex_match_idx_ =
+          (memhex_match_idx_ + 1) % static_cast<int>(memhex_matches_.size());
       memhex_goto_value_ = memhex_matches_[memhex_match_idx_];
     }
     if (!memhex_matches_.empty()) {
       ImGui::SameLine();
-      ImGui::Text("%d/%d", memhex_match_idx_ + 1, static_cast<int>(memhex_matches_.size()));
+      ImGui::Text("%d/%d", memhex_match_idx_ + 1,
+                  static_cast<int>(memhex_matches_.size()));
     }
 
     if (do_search && memhex_search_[0]) {
@@ -727,7 +768,11 @@ void DevToolsUI::render_memory_hex()
           char* end;
           unsigned long v = strtoul(p, &end, 16);
           if (end == p) break;
-          if (v > 0xFF) { pattern.clear(); imgui_toast_error("Hex byte > FF"); break; }
+          if (v > 0xFF) {
+            pattern.clear();
+            imgui_toast_error("Hex byte > FF");
+            break;
+          }
           pattern.push_back(static_cast<byte>(v));
           p = end;
         }
@@ -746,7 +791,10 @@ void DevToolsUI::render_memory_hex()
           for (int j = 0; j < plen; j++) {
             word sa = static_cast<word>(addr + j);
             byte m = memhex_cpu_view_ ? z80_cpu_read_mem(sa) : z80_read_mem(sa);
-            if (m != pattern[j]) { match = false; break; }
+            if (m != pattern[j]) {
+              match = false;
+              break;
+            }
           }
           if (match) memhex_matches_.push_back(static_cast<word>(addr));
         }
@@ -768,12 +816,14 @@ void DevToolsUI::render_memory_hex()
   int search_plen = 0;
   if (!memhex_matches_.empty() && memhex_search_[0]) {
     if (memhex_search_hex_) {
-      for (const char* sp = memhex_search_; *sp; ) {
+      for (const char* sp = memhex_search_; *sp;) {
         while (*sp == ' ') sp++;
         if (!*sp) break;
-        char* se; strtoul(sp, &se, 16);
+        char* se;
+        strtoul(sp, &se, 16);
         if (se == sp) break;
-        search_plen++; sp = se;
+        search_plen++;
+        sp = se;
       }
     } else {
       search_plen = static_cast<int>(strlen(memhex_search_));
@@ -793,7 +843,8 @@ void DevToolsUI::render_memory_hex()
       memhex_goto_value_ = -1;
     }
 
-    // ROM detection: when read and write banks differ for a slot, ROM is overlaid
+    // ROM detection: when read and write banks differ for a slot, ROM is
+    // overlaid
     extern byte *membank_read[4], *membank_write[4];
 
     while (clipper.Step()) {
@@ -810,13 +861,14 @@ void DevToolsUI::render_memory_hex()
           float row_h = ImGui::GetTextLineHeightWithSpacing();
           float row_w = ImGui::GetContentRegionAvail().x;
           ImGui::GetWindowDrawList()->AddRectFilled(
-            rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
-            IM_COL32(60, 20, 60, 80));
+              rpos, ImVec2(rpos.x + row_w, rpos.y + row_h),
+              IM_COL32(60, 20, 60, 80));
         }
 
         // Address
         if (in_rom) {
-          ImGui::TextColored(ImVec4(0.7f, 0.5f, 0.8f, 1.0f), "%04X:", base_addr & 0xFFFF);
+          ImGui::TextColored(ImVec4(0.7f, 0.5f, 0.8f, 1.0f),
+                             "%04X:", base_addr & 0xFFFF);
         } else {
           ImGui::Text("%04X:", base_addr & 0xFFFF);
         }
@@ -831,7 +883,8 @@ void DevToolsUI::render_memory_hex()
           // Check watchpoint highlighting
           bool wp_r = false, wp_w = false;
           for (const auto& wp : watchpoints) {
-            if (wp.length > 0 && a >= wp.address && a < wp.address + wp.length) {
+            if (wp.length > 0 && a >= wp.address &&
+                a < wp.address + wp.length) {
               if (wp.type == READ || wp.type == READWRITE) wp_r = true;
               if (wp.type == WRITE || wp.type == READWRITE) wp_w = true;
             }
@@ -839,11 +892,14 @@ void DevToolsUI::render_memory_hex()
 
           bool colored = wp_r || wp_w;
           if (wp_r && wp_w) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.2f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(1.0f, 1.0f, 0.2f, 1.0f));
           } else if (wp_w) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
           } else if (wp_r) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
           }
 
           // Inline editing or display
@@ -861,14 +917,17 @@ void DevToolsUI::render_memory_hex()
                 ImGui::SetKeyboardFocusHere();
                 // Don't clear yet — give InputText one frame to activate
               }
-              ImGuiInputTextFlags eflags = ImGuiInputTextFlags_CharsHexadecimal |
-                                           ImGuiInputTextFlags_EnterReturnsTrue |
-                                           ImGuiInputTextFlags_AutoSelectAll;
-              bool committed = ImGui::InputText("##mhedit", memhex_edit_buf_,
-                                                sizeof(memhex_edit_buf_), eflags);
+              ImGuiInputTextFlags eflags =
+                  ImGuiInputTextFlags_CharsHexadecimal |
+                  ImGuiInputTextFlags_EnterReturnsTrue |
+                  ImGuiInputTextFlags_AutoSelectAll;
+              bool committed =
+                  ImGui::InputText("##mhedit", memhex_edit_buf_,
+                                   sizeof(memhex_edit_buf_), eflags);
               ImGui::PopStyleVar();
 
-              // Clear the focus request AFTER InputText has had a chance to use it
+              // Clear the focus request AFTER InputText has had a chance to use
+              // it
               memhex_edit_focus_ = false;
 
               if (committed) {
@@ -889,21 +948,23 @@ void DevToolsUI::render_memory_hex()
                 ImVec2 tpos = ImGui::GetCursorScreenPos();
                 ImVec2 tsz = ImGui::CalcTextSize(hex_label);
                 ImGui::GetWindowDrawList()->AddRectFilled(
-                  tpos, ImVec2(tpos.x + tsz.x, tpos.y + tsz.y),
-                  IM_COL32(40, 80, 220, 180));
+                    tpos, ImVec2(tpos.x + tsz.x, tpos.y + tsz.y),
+                    IM_COL32(40, 80, 220, 180));
               }
               ImGui::Text("%s", hex_label);
 
               if (ImGui::IsItemClicked(0)) {
                 memhex_sel_addr_ = static_cast<int>(a);
               }
-              // Start editing: double-click OR type while selected (not on ROM cells)
+              // Start editing: double-click OR type while selected (not on ROM
+              // cells)
               bool start_edit = false;
               if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
                 start_edit = true;
               if (is_selected) {
                 // Any hex digit typed while selected → start editing
-                for (ImGuiKey k = ImGuiKey_0; k <= ImGuiKey_9; k = static_cast<ImGuiKey>(k + 1)) {
+                for (ImGuiKey k = ImGuiKey_0; k <= ImGuiKey_9;
+                     k = static_cast<ImGuiKey>(k + 1)) {
                   if (ImGui::IsKeyPressed(k)) {
                     memhex_edit_buf_[0] = '0' + (k - ImGuiKey_0);
                     memhex_edit_buf_[1] = '\0';
@@ -911,7 +972,8 @@ void DevToolsUI::render_memory_hex()
                     break;
                   }
                 }
-                for (ImGuiKey k = ImGuiKey_A; k <= ImGuiKey_F; k = static_cast<ImGuiKey>(k + 1)) {
+                for (ImGuiKey k = ImGuiKey_A; k <= ImGuiKey_F;
+                     k = static_cast<ImGuiKey>(k + 1)) {
                   if (ImGui::IsKeyPressed(k)) {
                     memhex_edit_buf_[0] = 'A' + (k - ImGuiKey_A);
                     memhex_edit_buf_[1] = '\0';
@@ -922,34 +984,43 @@ void DevToolsUI::render_memory_hex()
               }
               if (start_edit && !in_rom) {
                 memhex_edit_addr_ = static_cast<int>(a);
-                if (memhex_edit_buf_[0] == '\0') // double-click: prefill
-                  snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", val);
+                if (memhex_edit_buf_[0] == '\0')  // double-click: prefill
+                  snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X",
+                           val);
                 memhex_edit_focus_ = true;
               }
             }
           }
 
           // Flash-highlight the navigation target byte
-          if (memhex_highlight_frames_ > 0 && a == static_cast<word>(memhex_highlight_addr_)) {
+          if (memhex_highlight_frames_ > 0 &&
+              a == static_cast<word>(memhex_highlight_addr_)) {
             float alpha = static_cast<float>(memhex_highlight_frames_) / 90.0f;
             ImVec2 rmin = ImGui::GetItemRectMin();
             ImVec2 rmax = ImGui::GetItemRectMax();
             ImGui::GetWindowDrawList()->AddRectFilled(
-              rmin, rmax,
-              ImGui::ColorConvertFloat4ToU32(ImVec4(1.0f, 0.8f, 0.0f, 0.5f * alpha)));
+                rmin, rmax,
+                ImGui::ColorConvertFloat4ToU32(
+                    ImVec4(1.0f, 0.8f, 0.0f, 0.5f * alpha)));
           }
 
-          // Search match highlighting (yellow background, O(log N) via sorted matches)
+          // Search match highlighting (yellow background, O(log N) via sorted
+          // matches)
           if (search_plen > 0 && !memhex_matches_.empty()) {
             // Find first match whose start + plen > a (i.e. could contain a)
-            word range_start = (a >= static_cast<word>(search_plen - 1)) ? a - (search_plen - 1) : 0;
-            auto it = std::lower_bound(memhex_matches_.begin(), memhex_matches_.end(), range_start);
-            if (it != memhex_matches_.end() && a >= *it && a < *it + search_plen) {
+            word range_start = (a >= static_cast<word>(search_plen - 1))
+                                   ? a - (search_plen - 1)
+                                   : 0;
+            auto it = std::lower_bound(memhex_matches_.begin(),
+                                       memhex_matches_.end(), range_start);
+            if (it != memhex_matches_.end() && a >= *it &&
+                a < *it + search_plen) {
               ImVec2 rmin = ImGui::GetItemRectMin();
               ImVec2 rmax = ImGui::GetItemRectMax();
               bool is_current = (memhex_match_idx_ >= 0 &&
-                  memhex_matches_[memhex_match_idx_] == *it);
-              ImU32 hcol = is_current ? IM_COL32(255, 200, 0, 100) : IM_COL32(200, 200, 0, 60);
+                                 memhex_matches_[memhex_match_idx_] == *it);
+              ImU32 hcol = is_current ? IM_COL32(255, 200, 0, 100)
+                                      : IM_COL32(200, 200, 0, 60);
               ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, hcol);
             }
           }
@@ -962,8 +1033,9 @@ void DevToolsUI::render_memory_hex()
         char ascii[33];
         int asc_len = bytes_per_row < 32 ? bytes_per_row : 32;
         for (int col = 0; col < asc_len; col++) {
-          byte b = memhex_cpu_view_ ? z80_cpu_read_mem((base_addr + col) & 0xFFFF)
-                                    : z80_read_mem((base_addr + col) & 0xFFFF);
+          byte b = memhex_cpu_view_
+                       ? z80_cpu_read_mem((base_addr + col) & 0xFFFF)
+                       : z80_read_mem((base_addr + col) & 0xFFFF);
           ascii[col] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
         }
         ascii[asc_len] = '\0';
@@ -980,7 +1052,8 @@ void DevToolsUI::render_memory_hex()
       ImVec2 win_pos = ImGui::GetWindowPos();
       ImVec2 content_min = ImGui::GetWindowContentRegionMin();
       float scroll = ImGui::GetScrollY();
-      int row = static_cast<int>((click_pos.y - win_pos.y - content_min.y + scroll) / item_height);
+      int row = static_cast<int>(
+          (click_pos.y - win_pos.y - content_min.y + scroll) / item_height);
       if (row < 0) row = 0;
       if (row >= total_rows) row = total_rows - 1;
       word ctx_addr = static_cast<word>((row * bytes_per_row) & 0xFFFF);
@@ -988,7 +1061,8 @@ void DevToolsUI::render_memory_hex()
       ImGui::TextDisabled("%04X", ctx_addr);
       ImGui::Separator();
       if (ImGui::MenuItem("Edit byte")) {
-        byte v = memhex_cpu_view_ ? z80_cpu_read_mem(ctx_addr) : z80_read_mem(ctx_addr);
+        byte v = memhex_cpu_view_ ? z80_cpu_read_mem(ctx_addr)
+                                  : z80_read_mem(ctx_addr);
         memhex_edit_addr_ = static_cast<int>(ctx_addr);
         snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", v);
         memhex_edit_focus_ = true;
@@ -1014,8 +1088,7 @@ void DevToolsUI::render_memory_hex()
 // Debug Window 4: Stack
 // -----------------------------------------------
 
-void DevToolsUI::render_stack()
-{
+void DevToolsUI::render_stack() {
   ImGui::SetNextWindowSize(ImVec2(260, 400), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(460, 440), ImGuiCond_FirstUseEver);
 
@@ -1030,7 +1103,8 @@ void DevToolsUI::render_stack()
   ImGui::Text("SP = %04X", sp);
   ImGui::Separator();
 
-  if (ImGui::BeginChild("##stack_entries", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+  if (ImGui::BeginChild("##stack_entries", ImVec2(0, 0),
+                        ImGuiChildFlags_Borders)) {
     constexpr int MAX_DEPTH = 32;
     for (int i = 0; i < MAX_DEPTH; i++) {
       word addr = (sp + i * 2) & 0xFFFF;
@@ -1064,13 +1138,14 @@ void DevToolsUI::render_stack()
         line = std::string(prefix) + sym;
       } else {
         char buf[48];
-        snprintf(buf, sizeof(buf), "SP+%02X: %04X%s",
-                 i * 2, value, is_ret_addr ? "  [call]" : "");
+        snprintf(buf, sizeof(buf), "SP+%02X: %04X%s", i * 2, value,
+                 is_ret_addr ? "  [call]" : "");
         line = buf;
       }
 
       // Double-click navigates disassembly
-      if (ImGui::Selectable(line.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
+      if (ImGui::Selectable(line.c_str(), false,
+                            ImGuiSelectableFlags_AllowDoubleClick)) {
         if (ImGui::IsMouseDoubleClicked(0)) {
           navigate_disassembly(value);
         }
@@ -1093,8 +1168,7 @@ void DevToolsUI::render_stack()
 // Debug Window 5: Breakpoint / Watchpoint List
 // -----------------------------------------------
 
-void DevToolsUI::render_breakpoints()
-{
+void DevToolsUI::render_breakpoints() {
   ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(10, 540), ImGuiCond_FirstUseEver);
 
@@ -1121,13 +1195,16 @@ void DevToolsUI::render_breakpoints()
   for (const auto& bp : bps) {
     if (bp.type != EPHEMERAL) bp_visible++;
   }
-  ImGui::Text("BP: %d  |  WP: %zu  |  IO: %zu", bp_visible, wps.size(), iobps.size());
+  ImGui::Text("BP: %d  |  WP: %zu  |  IO: %zu", bp_visible, wps.size(),
+              iobps.size());
   ImGui::Separator();
 
   if (ImGui::BeginTable("bpwp_table", 5,
-      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable)) {
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_Resizable)) {
     ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 50);
-    ImGui::TableSetupColumn("Address/Port", ImGuiTableColumnFlags_WidthFixed, 100);
+    ImGui::TableSetupColumn("Address/Port", ImGuiTableColumnFlags_WidthFixed,
+                            100);
     ImGui::TableSetupColumn("Condition", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed, 40);
     ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 20);
@@ -1148,10 +1225,12 @@ void DevToolsUI::render_breakpoints()
         ImGui::PushStyleColor(ImGuiCol_Text, kLinkColor);
         char bp_label[80];
         if (!sym.empty())
-          snprintf(bp_label, sizeof(bp_label), "%04X %s", bp.address, sym.c_str());
+          snprintf(bp_label, sizeof(bp_label), "%04X %s", bp.address,
+                   sym.c_str());
         else
           snprintf(bp_label, sizeof(bp_label), "%04X", bp.address);
-        if (ImGui::Selectable(bp_label, false, ImGuiSelectableFlags_DontClosePopups))
+        if (ImGui::Selectable(bp_label, false,
+                              ImGuiSelectableFlags_DontClosePopups))
           navigate_to(bp.address, NavTarget::DISASM);
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("Click to show in Disassembly");
@@ -1176,8 +1255,9 @@ void DevToolsUI::render_breakpoints()
       const auto& wp = wps[i];
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      const char* wp_type = (wp.type == READ) ? "WP/R" :
-                            (wp.type == WRITE) ? "WP/W" : "WP/RW";
+      const char* wp_type = (wp.type == READ)    ? "WP/R"
+                            : (wp.type == WRITE) ? "WP/W"
+                                                 : "WP/RW";
       ImGui::Text("%s", wp_type);
       ImGui::TableSetColumnIndex(1);
       ImGui::PushID(1000 + static_cast<int>(i));
@@ -1185,10 +1265,13 @@ void DevToolsUI::render_breakpoints()
         ImGui::PushStyleColor(ImGuiCol_Text, kLinkColor);
         char wp_label[32];
         if (wp.length > 1)
-          snprintf(wp_label, sizeof(wp_label), "%04X+%d", static_cast<word>(wp.address), wp.length);
+          snprintf(wp_label, sizeof(wp_label), "%04X+%d",
+                   static_cast<word>(wp.address), wp.length);
         else
-          snprintf(wp_label, sizeof(wp_label), "%04X", static_cast<word>(wp.address));
-        if (ImGui::Selectable(wp_label, false, ImGuiSelectableFlags_DontClosePopups))
+          snprintf(wp_label, sizeof(wp_label), "%04X",
+                   static_cast<word>(wp.address));
+        if (ImGui::Selectable(wp_label, false,
+                              ImGuiSelectableFlags_DontClosePopups))
           navigate_to(static_cast<word>(wp.address), NavTarget::MEMORY);
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("Click to show in Memory Hex");
@@ -1213,8 +1296,9 @@ void DevToolsUI::render_breakpoints()
       const auto& iobp = iobps[i];
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      const char* dir_str = (iobp.dir == IO_IN) ? "IO/IN" :
-                            (iobp.dir == IO_OUT) ? "IO/OUT" : "IO/RW";
+      const char* dir_str = (iobp.dir == IO_IN)    ? "IO/IN"
+                            : (iobp.dir == IO_OUT) ? "IO/OUT"
+                                                   : "IO/RW";
       ImGui::Text("%s", dir_str);
       ImGui::TableSetColumnIndex(1);
       ImGui::Text("%04X/%04X", iobp.port, iobp.mask);
@@ -1236,7 +1320,8 @@ void DevToolsUI::render_breakpoints()
 
   // Add Breakpoint form
   ImGui::Spacing();
-  if (ImGui::CollapsingHeader("Add Breakpoint", ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Add Breakpoint",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::SetNextItemWidth(60);
     ImGui::InputText("Addr##bp", bp_addr_, sizeof(bp_addr_),
                      ImGuiInputTextFlags_CharsHexadecimal);
@@ -1244,7 +1329,8 @@ void DevToolsUI::render_breakpoints()
     ImGui::SetNextItemWidth(180);
     ImGui::InputText("Condition##bp", bp_cond_, sizeof(bp_cond_));
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("e.g. A==0x42, (HL)>0x100, BC==DE\nLeave empty for unconditional");
+      ImGui::SetTooltip(
+          "e.g. A==0x42, (HL)>0x100, BC==DE\nLeave empty for unconditional");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(40);
     ImGui::InputText("Pass##bp", bp_pass_, sizeof(bp_pass_),
@@ -1270,12 +1356,13 @@ void DevToolsUI::render_breakpoints()
               goto bp_form_end;
             }
           }
-          z80_add_breakpoint_cond(static_cast<word>(addr), std::move(cond), cond_str, pass);
+          z80_add_breakpoint_cond(static_cast<word>(addr), std::move(cond),
+                                  cond_str, pass);
         }
         bp_addr_[0] = bp_cond_[0] = bp_pass_[0] = '\0';
       }
     }
-    bp_form_end:;
+  bp_form_end:;
   }
 
   // Add Watchpoint form
@@ -1289,16 +1376,18 @@ void DevToolsUI::render_breakpoints()
                      ImGuiInputTextFlags_CharsDecimal);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80);
-    const char* wp_types[] = { "Read", "Write", "R/W" };
+    const char* wp_types[] = {"Read", "Write", "R/W"};
     ImGui::Combo("Type##wp", &wp_type_, wp_types, 3);
     ImGui::SameLine();
     if (ImGui::Button("Add WP")) {
       unsigned long addr;
       if (parse_hex(wp_addr_, &addr, 0xFFFF)) {
         long len_val = std::strtol(wp_len_, nullptr, 10);
-        int len = (len_val > 0 && len_val <= 0xFFFF) ? static_cast<int>(len_val) : 1;
-        WatchpointType wt = (wp_type_ == 0) ? READ :
-                            (wp_type_ == 1) ? WRITE : READWRITE;
+        int len =
+            (len_val > 0 && len_val <= 0xFFFF) ? static_cast<int>(len_val) : 1;
+        WatchpointType wt = (wp_type_ == 0)   ? READ
+                            : (wp_type_ == 1) ? WRITE
+                                              : READWRITE;
         z80_add_watchpoint(static_cast<word>(addr), static_cast<word>(len), wt);
         wp_addr_[0] = '\0';
       }
@@ -1316,17 +1405,18 @@ void DevToolsUI::render_breakpoints()
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80);
-    const char* iobp_dirs[] = { "IN", "OUT", "Both" };
+    const char* iobp_dirs[] = {"IN", "OUT", "Both"};
     ImGui::Combo("Dir##iobp", &iobp_dir_, iobp_dirs, 3);
     ImGui::SameLine();
     if (ImGui::Button("Add IOBP")) {
       unsigned long port, mask;
       if (parse_hex(iobp_port_, &port, 0xFFFF) &&
           parse_hex(iobp_mask_, &mask, 0xFFFF)) {
-        IOBreakpointDir dir = (iobp_dir_ == 0) ? IO_IN :
-                              (iobp_dir_ == 1) ? IO_OUT : IO_BOTH;
-        z80_add_io_breakpoint(static_cast<word>(port),
-                              static_cast<word>(mask), dir);
+        IOBreakpointDir dir = (iobp_dir_ == 0)   ? IO_IN
+                              : (iobp_dir_ == 1) ? IO_OUT
+                                                 : IO_BOTH;
+        z80_add_io_breakpoint(static_cast<word>(port), static_cast<word>(mask),
+                              dir);
         iobp_port_[0] = '\0';
       }
     }
@@ -1340,9 +1430,9 @@ void DevToolsUI::render_breakpoints()
 // Debug Window 6: Symbol Table Viewer
 // -----------------------------------------------
 
-void DevToolsUI::render_symbols()
-{
-  // Cache the filtered symbol list — only rebuild when filter changes or marked dirty
+void DevToolsUI::render_symbols() {
+  // Cache the filtered symbol list — only rebuild when filter changes or marked
+  // dirty
   std::string current_filter(symtable_filter_);
   if (symtable_dirty_ || current_filter != symtable_filter_cached_) {
     symtable_cached_ = g_symfile.listSymbols(symtable_filter_);
@@ -1352,7 +1442,8 @@ void DevToolsUI::render_symbols()
   const auto& syms = symtable_cached_;
 
   char title[64];
-  snprintf(title, sizeof(title), "Symbols (%d)###SymbolTable", static_cast<int>(syms.size()));
+  snprintf(title, sizeof(title), "Symbols (%d)###SymbolTable",
+           static_cast<int>(syms.size()));
 
   ImGui::SetNextWindowSize(ImVec2(340, 400), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(ImVec2(520, 540), ImGuiCond_FirstUseEver);
@@ -1410,8 +1501,9 @@ void DevToolsUI::render_symbols()
   ImGui::Separator();
 
   if (ImGui::BeginTable("sym_table", 3,
-      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable |
-      ImGuiTableFlags_ScrollY)) {
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_Resizable |
+                            ImGuiTableFlags_ScrollY)) {
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 60);
     ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
@@ -1421,7 +1513,8 @@ void DevToolsUI::render_symbols()
     for (const auto& [addr, name] : syms) {
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      if (ImGui::Selectable(nullptr, false, ImGuiSelectableFlags_SpanAllColumns)) {
+      if (ImGui::Selectable(nullptr, false,
+                            ImGuiSelectableFlags_SpanAllColumns)) {
         // Navigate disassembly to this address
         navigate_disassembly(addr);
       }
@@ -1453,8 +1546,7 @@ void DevToolsUI::render_symbols()
 // Debug Window 7: Silicon Disc
 // -----------------------------------------------
 
-void DevToolsUI::render_silicon_disc()
-{
+void DevToolsUI::render_silicon_disc() {
   ImGui::SetNextWindowSize(ImVec2(380, 280), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -1467,7 +1559,8 @@ void DevToolsUI::render_silicon_disc()
   ImGui::Checkbox("Enabled", &g_silicon_disc.enabled);
   ImGui::Separator();
 
-  // Bank usage bars (% non-zero bytes per 64K bank) — cached to avoid 256K scan every frame
+  // Bank usage bars (% non-zero bytes per 64K bank) — cached to avoid 256K scan
+  // every frame
   if (g_silicon_disc.data) {
     if (sd_usage_dirty_) {
       for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
@@ -1476,13 +1569,15 @@ void DevToolsUI::render_silicon_disc()
         for (size_t i = 0; i < SILICON_DISC_BANK_SIZE; i++) {
           if (ptr[i] != 0) used++;
         }
-        sd_bank_usage_[bank] = static_cast<float>(used) / SILICON_DISC_BANK_SIZE;
+        sd_bank_usage_[bank] =
+            static_cast<float>(used) / SILICON_DISC_BANK_SIZE;
       }
       sd_usage_dirty_ = false;
     }
     for (int bank = 0; bank < SILICON_DISC_BANKS; bank++) {
       char overlay[32];
-      snprintf(overlay, sizeof(overlay), "Bank %d: %d%% used", bank + SILICON_DISC_FIRST_BANK,
+      snprintf(overlay, sizeof(overlay), "Bank %d: %d%% used",
+               bank + SILICON_DISC_FIRST_BANK,
                static_cast<int>(sd_bank_usage_[bank] * 100));
       ImGui::ProgressBar(sd_bank_usage_[bank], ImVec2(-1, 0), overlay);
     }
@@ -1493,12 +1588,11 @@ void DevToolsUI::render_silicon_disc()
 
   ImGui::Separator();
   ImGui::SetNextItemWidth(-1);
-  ImGui::InputTextWithHint("##sdpath", "File path for save/load...",
-                           sd_path_, sizeof(sd_path_));
+  ImGui::InputTextWithHint("##sdpath", "File path for save/load...", sd_path_,
+                           sizeof(sd_path_));
 
   if (ImGui::Button("Save")) {
-    if (sd_path_[0] != '\0')
-      silicon_disc_save(g_silicon_disc, sd_path_);
+    if (sd_path_[0] != '\0') silicon_disc_save(g_silicon_disc, sd_path_);
   }
   ImGui::SameLine();
   if (ImGui::Button("Load")) {
@@ -1521,8 +1615,7 @@ void DevToolsUI::render_silicon_disc()
 // Debug Window 8: ASIC Register Viewer
 // -----------------------------------------------
 
-void DevToolsUI::render_asic()
-{
+void DevToolsUI::render_asic() {
   ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -1532,13 +1625,15 @@ void DevToolsUI::render_asic()
     return;
   }
 
-  ImGui::Text("Lock state: %s (pos %d)", asic.locked ? "Locked" : "Unlocked", asic.lockSeqPos);
+  ImGui::Text("Lock state: %s (pos %d)", asic.locked ? "Locked" : "Unlocked",
+              asic.lockSeqPos);
   ImGui::Separator();
 
   // Sprites
   if (ImGui::CollapsingHeader("Sprites", ImGuiTreeNodeFlags_DefaultOpen)) {
     if (ImGui::BeginTable("asic_sprites", 5,
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_SizingFixedFit)) {
       ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 20);
       ImGui::TableSetupColumn("X", ImGuiTableColumnFlags_WidthFixed, 50);
       ImGui::TableSetupColumn("Y", ImGuiTableColumnFlags_WidthFixed, 50);
@@ -1574,11 +1669,12 @@ void DevToolsUI::render_asic()
       ImGui::TextColored(dma_ch.enabled ? ImVec4(0.2f, 1.0f, 0.2f, 1.0f)
                                         : ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
                          "%s", dma_ch.enabled ? "ENABLED" : "disabled");
-      ImGui::Text("  Addr: %04X  Loop: %04X  Prescaler: %d  Pause: %d  Loops: %d",
-                  dma_ch.source_address, dma_ch.loop_address,
-                  dma_ch.prescaler, dma_ch.pause_ticks, dma_ch.loops);
-      ImGui::Text("  IRQ: %s  Tick cycles: %d",
-                  dma_ch.interrupt ? "yes" : "no", dma_ch.tick_cycles);
+      ImGui::Text(
+          "  Addr: %04X  Loop: %04X  Prescaler: %d  Pause: %d  Loops: %d",
+          dma_ch.source_address, dma_ch.loop_address, dma_ch.prescaler,
+          dma_ch.pause_ticks, dma_ch.loops);
+      ImGui::Text("  IRQ: %s  Tick cycles: %d", dma_ch.interrupt ? "yes" : "no",
+                  dma_ch.tick_cycles);
       ImGui::PopID();
     }
   }
@@ -1593,7 +1689,8 @@ void DevToolsUI::render_asic()
       float b = static_cast<float>(colours_rgb[hw_color][2]);
       ImVec4 col(r, g, b, 1.0f);
       ImGui::PushID(i);
-      ImGui::ColorButton("##ink", col, ImGuiColorEditFlags_NoTooltip, ImVec2(sz, sz));
+      ImGui::ColorButton("##ink", col, ImGuiColorEditFlags_NoTooltip,
+                         ImVec2(sz, sz));
       ImGui::PopID();
       if (i < 16) ImGui::SameLine();
     }
@@ -1602,7 +1699,8 @@ void DevToolsUI::render_asic()
 
   // Interrupts & scroll
   if (ImGui::CollapsingHeader("Interrupts & Scroll")) {
-    ImGui::Text("Raster interrupt: %s", asic.raster_interrupt ? "enabled" : "disabled");
+    ImGui::Text("Raster interrupt: %s",
+                asic.raster_interrupt ? "enabled" : "disabled");
     ImGui::Text("Interrupt vector: %02X", asic.interrupt_vector);
     ImGui::Text("H-Scroll: %d  V-Scroll: %d", asic.hscroll, asic.vscroll);
     ImGui::Text("Extend border: %s", asic.extend_border ? "yes" : "no");
@@ -1622,8 +1720,7 @@ void DevToolsUI::render_asic()
 // Debug Window 9: Disc Tools
 // -----------------------------------------------
 
-void DevToolsUI::render_disc_tools()
-{
+void DevToolsUI::render_disc_tools() {
   ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -1634,7 +1731,7 @@ void DevToolsUI::render_disc_tools()
   }
 
   // Drive selector
-  const char* drives[] = { "Drive A", "Drive B" };
+  const char* drives[] = {"Drive A", "Drive B"};
   ImGui::SetNextItemWidth(100);
   if (ImGui::Combo("Drive", &dt_drive_, drives, 2)) {
     dt_files_dirty_ = true;
@@ -1683,46 +1780,51 @@ void DevToolsUI::render_disc_tools()
     // Import button
     if (ImGui::Button("Import File...")) {
       dt_dialog_drive_ = dt_drive_;  // capture drive at dialog-open time
-      static const SDL_DialogFileFilter filters[] = { { "All files", "*" } };
+      static const SDL_DialogFileFilter filters[] = {{"All files", "*"}};
       SDL_ShowOpenFileDialog(
-        [](void* ud, const char* const* filelist, int) {
-          if (!filelist || !filelist[0]) return;
-          auto* self = static_cast<DevToolsUI*>(ud);
-          std::string host_path(filelist[0]);
-          t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+          [](void* ud, const char* const* filelist, int) {
+            if (!filelist || !filelist[0]) return;
+            auto* self = static_cast<DevToolsUI*>(ud);
+            std::string host_path(filelist[0]);
+            t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
 
-          // Read host file
-          std::ifstream f(host_path, std::ios::binary);
-          if (!f) { imgui_toast_error("Cannot open: " + host_path); return; }
-          std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
-                                     std::istreambuf_iterator<char>());
+            // Read host file
+            std::ifstream f(host_path, std::ios::binary);
+            if (!f) {
+              imgui_toast_error("Cannot open: " + host_path);
+              return;
+            }
+            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
+                                      std::istreambuf_iterator<char>());
 
-          // Convert filename to CPC 8.3
-          auto fname = std::filesystem::path(host_path).filename().string();
-          std::string cpc_name = disk_to_cpc_filename(fname);
-          if (cpc_name.empty()) {
-            imgui_toast_error("Cannot convert filename: " + fname);
-            return;
-          }
+            // Convert filename to CPC 8.3
+            auto fname = std::filesystem::path(host_path).filename().string();
+            std::string cpc_name = disk_to_cpc_filename(fname);
+            if (cpc_name.empty()) {
+              imgui_toast_error("Cannot convert filename: " + fname);
+              return;
+            }
 
-          std::string err = disk_write_file(d, cpc_name, data, false);
-          if (err.empty()) {
-            imgui_toast_success("Imported: " + fname);
-            self->dt_files_dirty_ = true;
-          } else {
-            imgui_toast_error("Import failed: " + err);
-          }
-        },
-        this, mainSDLWindow, filters, 1, nullptr, false);
+            std::string err = disk_write_file(d, cpc_name, data, false);
+            if (err.empty()) {
+              imgui_toast_success("Imported: " + fname);
+              self->dt_files_dirty_ = true;
+            } else {
+              imgui_toast_error("Import failed: " + err);
+            }
+          },
+          this, mainSDLWindow, filters, 1, nullptr, false);
     }
 
     if (!dt_file_error_.empty()) {
-      ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_file_error_.c_str());
+      ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s",
+                         dt_file_error_.c_str());
     }
 
     if (ImGui::BeginTable("dt_files", 5,
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
-        ImVec2(0, 200))) {
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_ScrollY,
+                          ImVec2(0, 200))) {
       ImGui::TableSetupScrollFreeze(0, 1);
       ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
       ImGui::TableSetupColumn("Size", ImGuiTableColumnFlags_WidthFixed, 60);
@@ -1748,25 +1850,29 @@ void DevToolsUI::render_disc_tools()
           dt_export_display_ = fe.display_name;
           dt_dialog_drive_ = dt_drive_;  // capture drive at dialog-open time
           // Show save dialog
-          static const SDL_DialogFileFilter ef[] = { { "All files", "*" } };
+          static const SDL_DialogFileFilter ef[] = {{"All files", "*"}};
           SDL_ShowSaveFileDialog(
-            [](void* ud, const char* const* filelist, int) {
-              if (!filelist || !filelist[0]) return;
-              auto* self = static_cast<DevToolsUI*>(ud);
-              t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
-              std::string err;
-              auto data = disk_read_file(d, self->dt_export_filename_, err);
-              if (!err.empty()) {
-                imgui_toast_error("Export failed: " + err);
-                return;
-              }
-              std::ofstream f(filelist[0], std::ios::binary);
-              if (!f) { imgui_toast_error("Cannot write: " + std::string(filelist[0])); return; }
-              f.write(reinterpret_cast<const char*>(data.data()),
-                      static_cast<std::streamsize>(data.size()));
-              imgui_toast_success("Exported: " + self->dt_export_display_);
-            },
-            this, mainSDLWindow, ef, 1, fe.display_name.c_str());
+              [](void* ud, const char* const* filelist, int) {
+                if (!filelist || !filelist[0]) return;
+                auto* self = static_cast<DevToolsUI*>(ud);
+                t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+                std::string err;
+                auto data = disk_read_file(d, self->dt_export_filename_, err);
+                if (!err.empty()) {
+                  imgui_toast_error("Export failed: " + err);
+                  return;
+                }
+                std::ofstream f(filelist[0], std::ios::binary);
+                if (!f) {
+                  imgui_toast_error("Cannot write: " +
+                                    std::string(filelist[0]));
+                  return;
+                }
+                f.write(reinterpret_cast<const char*>(data.data()),
+                        static_cast<std::streamsize>(data.size()));
+                imgui_toast_success("Exported: " + self->dt_export_display_);
+              },
+              this, mainSDLWindow, ef, 1, fe.display_name.c_str());
         }
         ImGui::PopID();
         ImGui::TableSetColumnIndex(4);
@@ -1793,18 +1899,19 @@ void DevToolsUI::render_disc_tools()
 
     ImGui::SameLine();
     if (ImGui::Button("List Sectors")) {
-      dt_sector_cache_ = disk_sector_info(drv, static_cast<unsigned>(dt_track_),
-                                           static_cast<unsigned>(dt_side_),
-                                           dt_sector_error_);
+      dt_sector_cache_ =
+          disk_sector_info(drv, static_cast<unsigned>(dt_track_),
+                           static_cast<unsigned>(dt_side_), dt_sector_error_);
     }
 
     if (!dt_sector_error_.empty()) {
-      ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_sector_error_.c_str());
+      ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s",
+                         dt_sector_error_.c_str());
     }
 
     if (!dt_sector_cache_.empty()) {
       if (ImGui::BeginTable("dt_sectors", 5,
-          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+                            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
         ImGui::TableSetupColumn("C", ImGuiTableColumnFlags_WidthFixed, 25);
         ImGui::TableSetupColumn("H", ImGuiTableColumnFlags_WidthFixed, 25);
         ImGui::TableSetupColumn("R", ImGuiTableColumnFlags_WidthFixed, 30);
@@ -1814,11 +1921,16 @@ void DevToolsUI::render_disc_tools()
 
         for (const auto& si : dt_sector_cache_) {
           ImGui::TableNextRow();
-          ImGui::TableSetColumnIndex(0); ImGui::Text("%02X", si.C);
-          ImGui::TableSetColumnIndex(1); ImGui::Text("%02X", si.H);
-          ImGui::TableSetColumnIndex(2); ImGui::Text("%02X", si.R);
-          ImGui::TableSetColumnIndex(3); ImGui::Text("%02X", si.N);
-          ImGui::TableSetColumnIndex(4); ImGui::Text("%u", si.size);
+          ImGui::TableSetColumnIndex(0);
+          ImGui::Text("%02X", si.C);
+          ImGui::TableSetColumnIndex(1);
+          ImGui::Text("%02X", si.H);
+          ImGui::TableSetColumnIndex(2);
+          ImGui::Text("%02X", si.R);
+          ImGui::TableSetColumnIndex(3);
+          ImGui::Text("%02X", si.N);
+          ImGui::TableSetColumnIndex(4);
+          ImGui::Text("%u", si.size);
         }
         ImGui::EndTable();
       }
@@ -1832,32 +1944,36 @@ void DevToolsUI::render_disc_tools()
     if (ImGui::Button("Read Sector")) {
       unsigned long sid;
       if (parse_hex(dt_sector_id_, &sid, 0xFF)) {
-        dt_sector_data_ = disk_sector_read(drv, static_cast<unsigned>(dt_track_),
-                                            static_cast<unsigned>(dt_side_),
-                                            static_cast<uint8_t>(sid),
-                                            dt_sector_read_error_);
+        dt_sector_data_ =
+            disk_sector_read(drv, static_cast<unsigned>(dt_track_),
+                             static_cast<unsigned>(dt_side_),
+                             static_cast<uint8_t>(sid), dt_sector_read_error_);
       }
     }
 
     if (!dt_sector_read_error_.empty()) {
-      ImGui::TextColored(ImVec4(1,0.3f,0.3f,1), "%s", dt_sector_read_error_.c_str());
+      ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "%s",
+                         dt_sector_read_error_.c_str());
     }
 
     // Hex dump of read sector
     if (!dt_sector_data_.empty()) {
       ImGui::Text("Sector data (%zu bytes):", dt_sector_data_.size());
-      if (ImGui::BeginChild("##secdata", ImVec2(0, 150), ImGuiChildFlags_Borders)) {
+      if (ImGui::BeginChild("##secdata", ImVec2(0, 150),
+                            ImGuiChildFlags_Borders)) {
         for (size_t off = 0; off < dt_sector_data_.size(); off += 16) {
           ImGui::Text("%04X:", static_cast<unsigned>(off));
           ImGui::SameLine();
-          for (size_t col = 0; col < 16 && off + col < dt_sector_data_.size(); col++) {
+          for (size_t col = 0; col < 16 && off + col < dt_sector_data_.size();
+               col++) {
             ImGui::SameLine();
             ImGui::Text("%02X", dt_sector_data_[off + col]);
           }
           // ASCII
           ImGui::SameLine();
           char ascii[17] = {};
-          for (size_t col = 0; col < 16 && off + col < dt_sector_data_.size(); col++) {
+          for (size_t col = 0; col < 16 && off + col < dt_sector_data_.size();
+               col++) {
             uint8_t b = dt_sector_data_[off + col];
             ascii[col] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
           }
@@ -1876,8 +1992,7 @@ void DevToolsUI::render_disc_tools()
 // Debug Window 10: Data Areas
 // -----------------------------------------------
 
-void DevToolsUI::render_data_areas()
-{
+void DevToolsUI::render_data_areas() {
   ImGui::SetNextWindowSize(ImVec2(560, 350), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -1893,8 +2008,7 @@ void DevToolsUI::render_data_areas()
   if (ImGui::IsItemHovered())
     ImGui::SetTooltip("Marked regions appear as db/dw/text in Disasm Export");
   ImGui::SameLine();
-  if (ImGui::SmallButton("Open Disasm Export"))
-    show_disasm_export_ = true;
+  if (ImGui::SmallButton("Open Disasm Export")) show_disasm_export_ = true;
   ImGui::SameLine();
   {
     auto areas_tmp = g_data_areas.list();
@@ -1912,7 +2026,9 @@ void DevToolsUI::render_data_areas()
       show_disasm_export_ = true;
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("Open Disasm Export pre-filled with the bounding range of all data areas");
+      ImGui::SetTooltip(
+          "Open Disasm Export pre-filled with the bounding range of all data "
+          "areas");
     if (!has_areas) ImGui::EndDisabled();
   }
   ImGui::Separator();
@@ -1927,7 +2043,7 @@ void DevToolsUI::render_data_areas()
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(80);
-  const char* da_types[] = { "Bytes", "Words", "Text" };
+  const char* da_types[] = {"Bytes", "Words", "Text"};
   ImGui::Combo("Type##da", &da_type_, da_types, 3);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(100);
@@ -1935,9 +2051,11 @@ void DevToolsUI::render_data_areas()
   ImGui::SameLine();
   if (ImGui::Button("Mark")) {
     unsigned long s, e;
-    if (parse_hex(da_start_, &s, 0xFFFF) && parse_hex(da_end_, &e, 0xFFFF) && s <= e) {
-      DataType dt = (da_type_ == 0) ? DataType::BYTES :
-                    (da_type_ == 1) ? DataType::WORDS : DataType::TEXT;
+    if (parse_hex(da_start_, &s, 0xFFFF) && parse_hex(da_end_, &e, 0xFFFF) &&
+        s <= e) {
+      DataType dt = (da_type_ == 0)   ? DataType::BYTES
+                    : (da_type_ == 1) ? DataType::WORDS
+                                      : DataType::TEXT;
       g_data_areas.mark(static_cast<uint16_t>(s), static_cast<uint16_t>(e), dt,
                         da_label_[0] ? da_label_ : "");
       da_start_[0] = '\0';
@@ -1950,7 +2068,8 @@ void DevToolsUI::render_data_areas()
   // List data areas in a table
   auto areas = g_data_areas.list();
   if (ImGui::BeginTable("da_table", 5,
-      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY)) {
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                            ImGuiTableFlags_ScrollY)) {
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("Start", ImGuiTableColumnFlags_WidthFixed, 50);
     ImGui::TableSetupColumn("End", ImGuiTableColumnFlags_WidthFixed, 50);
@@ -1967,7 +2086,8 @@ void DevToolsUI::render_data_areas()
         ImGui::PushStyleColor(ImGuiCol_Text, kLinkColor);
         char da_label_id[8];
         snprintf(da_label_id, sizeof(da_label_id), "%04X", da.start);
-        if (ImGui::Selectable(da_label_id, false, ImGuiSelectableFlags_DontClosePopups))
+        if (ImGui::Selectable(da_label_id, false,
+                              ImGuiSelectableFlags_DontClosePopups))
           navigate_to(da.start, NavTarget::DISASM);
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("Click to show in Disassembly");
@@ -1978,8 +2098,9 @@ void DevToolsUI::render_data_areas()
       ImGui::TableSetColumnIndex(1);
       ImGui::Text("%04X", da.end);
       ImGui::TableSetColumnIndex(2);
-      const char* type_str = (da.type == DataType::BYTES) ? "Bytes" :
-                             (da.type == DataType::WORDS) ? "Words" : "Text";
+      const char* type_str = (da.type == DataType::BYTES)   ? "Bytes"
+                             : (da.type == DataType::WORDS) ? "Words"
+                                                            : "Text";
       ImGui::Text("%s", type_str);
       ImGui::TableSetColumnIndex(3);
       if (!da.label.empty()) ImGui::TextUnformatted(da.label.c_str());
@@ -1994,8 +2115,9 @@ void DevToolsUI::render_data_areas()
 
   ImGui::Spacing();
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-  ImGui::TextWrapped("These markers affect Disasm Export output (db/dw/text directives) "
-                     "and appear with distinct highlighting in the Disassembly view.");
+  ImGui::TextWrapped(
+      "These markers affect Disasm Export output (db/dw/text directives) "
+      "and appear with distinct highlighting in the Disassembly view.");
   ImGui::PopStyleColor();
 
   if (!open) show_data_areas_ = false;
@@ -2006,12 +2128,14 @@ void DevToolsUI::render_data_areas()
 // Debug Window 11: Disassembly Export
 // -----------------------------------------------
 
-void DevToolsUI::render_disasm_export()
-{
+void DevToolsUI::render_disasm_export() {
   // Pre-fill address range from current disassembly view on first open
   if (dex_prefill_pending_) {
-    word start = disasm_follow_pc_ ? z80.PC.w.l
-               : (disasm_goto_value_ >= 0 ? static_cast<word>(disasm_goto_value_) : z80.PC.w.l);
+    word start =
+        disasm_follow_pc_
+            ? z80.PC.w.l
+            : (disasm_goto_value_ >= 0 ? static_cast<word>(disasm_goto_value_)
+                                       : z80.PC.w.l);
     word end = start + 0xFF;
     snprintf(dex_start_, sizeof(dex_start_), "%04X", start);
     snprintf(dex_end_, sizeof(dex_end_), "%04X", end);
@@ -2040,26 +2164,44 @@ void DevToolsUI::render_disasm_export()
   // Data areas summary within selected range
   {
     unsigned long s_addr, e_addr;
-    if (parse_hex(dex_start_, &s_addr, 0xFFFF) && parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
+    if (parse_hex(dex_start_, &s_addr, 0xFFFF) &&
+        parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
       auto all_areas = g_data_areas.list();
       int byte_count = 0, word_count = 0, text_count = 0;
       for (const auto& a : all_areas) {
         if (a.end >= s_addr && a.start <= e_addr) {
           switch (a.type) {
-            case DataType::BYTES: byte_count++; break;
-            case DataType::WORDS: word_count++; break;
-            case DataType::TEXT:  text_count++; break;
+            case DataType::BYTES:
+              byte_count++;
+              break;
+            case DataType::WORDS:
+              word_count++;
+              break;
+            case DataType::TEXT:
+              text_count++;
+              break;
           }
         }
       }
       int total = byte_count + word_count + text_count;
       if (total > 0) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.8f, 1.0f, 1.0f));
-        std::string summary = std::to_string(total) + " data area" + (total > 1 ? "s" : "") + " in range (";
+        std::string summary = std::to_string(total) + " data area" +
+                              (total > 1 ? "s" : "") + " in range (";
         bool first = true;
-        if (byte_count > 0) { summary += std::to_string(byte_count) + " bytes"; first = false; }
-        if (word_count > 0) { if (!first) summary += ", "; summary += std::to_string(word_count) + " words"; first = false; }
-        if (text_count > 0) { if (!first) summary += ", "; summary += std::to_string(text_count) + " text"; }
+        if (byte_count > 0) {
+          summary += std::to_string(byte_count) + " bytes";
+          first = false;
+        }
+        if (word_count > 0) {
+          if (!first) summary += ", ";
+          summary += std::to_string(word_count) + " words";
+          first = false;
+        }
+        if (text_count > 0) {
+          if (!first) summary += ", ";
+          summary += std::to_string(text_count) + " text";
+        }
         summary += ")";
         ImGui::TextUnformatted(summary.c_str());
         ImGui::PopStyleColor();
@@ -2074,11 +2216,11 @@ void DevToolsUI::render_disasm_export()
   if (ImGui::Button("Export")) {
     unsigned long start_addr, end_addr;
     if (parse_hex(dex_start_, &start_addr, 0xFFFF) &&
-        parse_hex(dex_end_, &end_addr, 0xFFFF) &&
-        start_addr <= end_addr) {
+        parse_hex(dex_end_, &end_addr, 0xFFFF) && start_addr <= end_addr) {
       std::ostringstream oss;
       char hexbuf[32];
-      snprintf(hexbuf, sizeof(hexbuf), "$%04X", static_cast<unsigned>(start_addr));
+      snprintf(hexbuf, sizeof(hexbuf), "$%04X",
+               static_cast<unsigned>(start_addr));
       oss << "; Disassembly export from konCePCja\n";
       oss << "org " << hexbuf << "\n\n";
 
@@ -2103,8 +2245,8 @@ void DevToolsUI::render_disasm_export()
           for (int mi = 0; mi < buf_len; mi++)
             membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
           int line_bytes = 0;
-          std::string formatted = g_data_areas.format_at(pos, membuf,
-                                                          buf_len, &line_bytes);
+          std::string formatted =
+              g_data_areas.format_at(pos, membuf, buf_len, &line_bytes);
           oss << "  " << formatted << "\n";
           if (line_bytes == 0) line_bytes = 1;
           unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
@@ -2138,7 +2280,8 @@ void DevToolsUI::render_disasm_export()
           if (f) {
             f << result;
             f.close();
-            dex_status_ = "Exported " + std::to_string(result.size()) + " bytes to " + dex_path_;
+            dex_status_ = "Exported " + std::to_string(result.size()) +
+                          " bytes to " + dex_path_;
           } else {
             dex_status_ = "Error: cannot write to " + std::string(dex_path_);
           }
@@ -2168,15 +2311,18 @@ void DevToolsUI::render_disasm_export()
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80);
-    const char* mark_types[] = { "Bytes", "Words", "Text" };
+    const char* mark_types[] = {"Bytes", "Words", "Text"};
     ImGui::Combo("##dexmarktype", &dex_mark_type_, mark_types, 3);
     ImGui::SameLine();
     if (ImGui::Button("Mark##dex")) {
       unsigned long ms, me;
-      if (parse_hex(dex_mark_start_, &ms, 0xFFFF) && parse_hex(dex_mark_end_, &me, 0xFFFF) && ms <= me) {
-        DataType dt = (dex_mark_type_ == 0) ? DataType::BYTES :
-                      (dex_mark_type_ == 1) ? DataType::WORDS : DataType::TEXT;
-        g_data_areas.mark(static_cast<uint16_t>(ms), static_cast<uint16_t>(me), dt);
+      if (parse_hex(dex_mark_start_, &ms, 0xFFFF) &&
+          parse_hex(dex_mark_end_, &me, 0xFFFF) && ms <= me) {
+        DataType dt = (dex_mark_type_ == 0)   ? DataType::BYTES
+                      : (dex_mark_type_ == 1) ? DataType::WORDS
+                                              : DataType::TEXT;
+        g_data_areas.mark(static_cast<uint16_t>(ms), static_cast<uint16_t>(me),
+                          dt);
         dex_mark_start_[0] = '\0';
         dex_mark_end_[0] = '\0';
       }
@@ -2187,7 +2333,8 @@ void DevToolsUI::render_disasm_export()
   // Inline preview
   {
     unsigned long s_addr, e_addr;
-    if (parse_hex(dex_start_, &s_addr, 0xFFFF) && parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
+    if (parse_hex(dex_start_, &s_addr, 0xFFFF) &&
+        parse_hex(dex_end_, &e_addr, 0xFFFF) && s_addr <= e_addr) {
       ImGui::Separator();
       ImGui::Text("Preview:");
       ImGui::BeginChild("##dex_preview", ImVec2(0, 0), ImGuiChildFlags_Borders);
@@ -2209,7 +2356,8 @@ void DevToolsUI::render_disasm_export()
           for (int mi = 0; mi < buf_len; mi++)
             membuf[mi] = z80_read_mem(static_cast<word>(pos + mi));
           int line_bytes = 0;
-          std::string formatted = g_data_areas.format_at(pos, membuf, buf_len, &line_bytes);
+          std::string formatted =
+              g_data_areas.format_at(pos, membuf, buf_len, &line_bytes);
           ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.9f, 0.6f, 1.0f));
           ImGui::Text("%04X  %s", pos, formatted.c_str());
           ImGui::PopStyleColor();
@@ -2242,8 +2390,7 @@ void DevToolsUI::render_disasm_export()
 // Debug Window 12: Session Recording
 // -----------------------------------------------
 
-void DevToolsUI::render_session_recording()
-{
+void DevToolsUI::render_session_recording() {
   ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -2273,8 +2420,9 @@ void DevToolsUI::render_session_recording()
                        "Status: Playing (%u / %u frames)",
                        g_session.frame_count(), g_session.total_frames());
     float progress = g_session.total_frames() > 0
-        ? static_cast<float>(g_session.frame_count()) / g_session.total_frames()
-        : 0.0f;
+                         ? static_cast<float>(g_session.frame_count()) /
+                               g_session.total_frames()
+                         : 0.0f;
     ImGui::ProgressBar(progress, ImVec2(-1, 0));
   }
 
@@ -2344,8 +2492,7 @@ void DevToolsUI::render_session_recording()
 // Debug Window 13: Graphics Finder
 // -----------------------------------------------
 
-void DevToolsUI::render_gfx_finder()
-{
+void DevToolsUI::render_gfx_finder() {
   ImGui::SetNextWindowSize(ImVec2(500, 500), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -2378,7 +2525,7 @@ void DevToolsUI::render_gfx_finder()
   if (gfx_height_ > 256) gfx_height_ = 256;
 
   ImGui::SetNextItemWidth(80);
-  const char* modes[] = { "Mode 0", "Mode 1", "Mode 2" };
+  const char* modes[] = {"Mode 0", "Mode 1", "Mode 2"};
   ImGui::Combo("Mode##gfx", &gfx_mode_, modes, 3);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(80);
@@ -2408,8 +2555,8 @@ void DevToolsUI::render_gfx_finder()
 
   // Decode
   gfx_pixels_.clear();
-  gfx_pixel_width_ = gfx_decode(mem_buf.data(), mem_buf.size(), params,
-                                  palette, gfx_pixels_);
+  gfx_pixel_width_ =
+      gfx_decode(mem_buf.data(), mem_buf.size(), params, palette, gfx_pixels_);
 
   ImGui::Separator();
 
@@ -2423,7 +2570,8 @@ void DevToolsUI::render_gfx_finder()
     float b = ((rgba >> 16) & 0xFF) / 255.0f;
     ImVec4 col(r, g, b, 1.0f);
     ImGui::PushID(i);
-    if (ImGui::ColorButton("##pal", col, ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16))) {
+    if (ImGui::ColorButton("##pal", col, ImGuiColorEditFlags_NoTooltip,
+                           ImVec2(16, 16))) {
       gfx_paint_color_ = i;
     }
     ImGui::PopID();
@@ -2454,8 +2602,8 @@ void DevToolsUI::render_gfx_finder()
         int ppb = (gfx_mode_ == 0) ? 2 : (gfx_mode_ == 1) ? 4 : 8;
         int byte_col = mx / ppb;
         size_t byte_offset = static_cast<size_t>(my) * gfx_width_ + byte_col;
-        if (gfx_paint(mem_buf.data(), mem_buf.size(), params,
-                      mx, my, static_cast<uint8_t>(gfx_paint_color_))) {
+        if (gfx_paint(mem_buf.data(), mem_buf.size(), params, mx, my,
+                      static_cast<uint8_t>(gfx_paint_color_))) {
           z80_write_mem(static_cast<word>((base_addr + byte_offset) & 0xFFFF),
                         mem_buf[byte_offset]);
         }
@@ -2491,10 +2639,11 @@ void DevToolsUI::render_gfx_finder()
   ImGui::InputTextWithHint("##gfxexport", "Export path (.bmp)...",
                            gfx_export_path_, sizeof(gfx_export_path_));
   ImGui::SameLine();
-  if (ImGui::Button("Export BMP") && gfx_pixel_width_ > 0 && !gfx_pixels_.empty()) {
+  if (ImGui::Button("Export BMP") && gfx_pixel_width_ > 0 &&
+      !gfx_pixels_.empty()) {
     if (gfx_export_path_[0] != '\0') {
-      gfx_export_bmp(gfx_export_path_, gfx_pixels_.data(),
-                     gfx_pixel_width_, gfx_height_);
+      gfx_export_bmp(gfx_export_path_, gfx_pixels_.data(), gfx_pixel_width_,
+                     gfx_height_);
     }
   }
 
@@ -2506,8 +2655,7 @@ void DevToolsUI::render_gfx_finder()
 // Debug Window 14: Video State
 // -----------------------------------------------
 
-void DevToolsUI::render_video_state()
-{
+void DevToolsUI::render_video_state() {
   ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -2522,18 +2670,18 @@ void DevToolsUI::render_video_state()
   ImGui::Text("CRTC Registers");
   ImGui::Separator();
   const char* crtc_names[] = {
-    "R0: H Total", "R1: H Displayed", "R2: H Sync Pos", "R3: Sync Widths",
-    "R4: V Total", "R5: V Total Adj", "R6: V Displayed", "R7: V Sync Pos",
-    "R8: Interlace", "R9: Max Raster", "R10: Cursor Start", "R11: Cursor End",
-    "R12: Start Addr H", "R13: Start Addr L", "R14: Cursor H", "R15: Cursor L",
-    "R16: LPEN H", "R17: LPEN L"
-  };
+      "R0: H Total",       "R1: H Displayed",   "R2: H Sync Pos",
+      "R3: Sync Widths",   "R4: V Total",       "R5: V Total Adj",
+      "R6: V Displayed",   "R7: V Sync Pos",    "R8: Interlace",
+      "R9: Max Raster",    "R10: Cursor Start", "R11: Cursor End",
+      "R12: Start Addr H", "R13: Start Addr L", "R14: Cursor H",
+      "R15: Cursor L",     "R16: LPEN H",       "R17: LPEN L"};
 
   for (int i = 0; i < 18; i++) {
     unsigned char val = CRTC.registers[i];
     ImGui::SetNextItemWidth(50);
-    ImGui::InputScalar(crtc_names[i], ImGuiDataType_U8, &val, nullptr, nullptr, "%02X",
-                       ImGuiInputTextFlags_ReadOnly);
+    ImGui::InputScalar(crtc_names[i], ImGuiDataType_U8, &val, nullptr, nullptr,
+                       "%02X", ImGuiInputTextFlags_ReadOnly);
   }
 
   ImGui::Spacing();
@@ -2553,9 +2701,9 @@ void DevToolsUI::render_video_state()
 // -----------------------------------------------
 
 // Draw a single oscilloscope channel strip
-static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCapture& scope,
-                             int chan_idx, float width, float height)
-{
+static void draw_scope_strip(const char* label, ImU32 color,
+                             const PsgScopeCapture& scope, int chan_idx,
+                             float width, float height) {
   ImGui::Text("%s", label);
   ImGui::SameLine(20.0f);
 
@@ -2570,9 +2718,15 @@ static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCaptu
   for (int i = 0; i < PsgScopeCapture::SIZE; i++) {
     int v;
     switch (chan_idx) {
-      case 0: v = scope.buf[i].chan_a; break;
-      case 1: v = scope.buf[i].chan_b; break;
-      default: v = scope.buf[i].chan_c; break;
+      case 0:
+        v = scope.buf[i].chan_a;
+        break;
+      case 1:
+        v = scope.buf[i].chan_b;
+        break;
+      default:
+        v = scope.buf[i].chan_c;
+        break;
     }
     if (v < 0) v = -v;
     if (v > peak) peak = v;
@@ -2591,9 +2745,15 @@ static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCaptu
     int idx = (scope.head + i) % N;
     int v;
     switch (chan_idx) {
-      case 0: v = scope.buf[idx].chan_a; break;
-      case 1: v = scope.buf[idx].chan_b; break;
-      default: v = scope.buf[idx].chan_c; break;
+      case 0:
+        v = scope.buf[idx].chan_a;
+        break;
+      case 1:
+        v = scope.buf[idx].chan_b;
+        break;
+      default:
+        v = scope.buf[idx].chan_c;
+        break;
     }
     return (float)v / (float)peak;
   };
@@ -2618,8 +2778,7 @@ static void draw_scope_strip(const char* label, ImU32 color, const PsgScopeCaptu
   ImGui::Dummy(ImVec2(width, height));
 }
 
-void DevToolsUI::render_audio_state()
-{
+void DevToolsUI::render_audio_state() {
   ImGui::SetNextWindowSize(ImVec2(420, 600), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -2634,31 +2793,41 @@ void DevToolsUI::render_audio_state()
   ImGui::Text("PSG (AY-3-8912) Registers");
   ImGui::Separator();
 
-  if (ImGui::BeginTable("##psg_state", 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
+  if (ImGui::BeginTable("##psg_state", 4,
+                        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg)) {
     ImGui::TableSetupColumn("Channel");
     ImGui::TableSetupColumn("Tone Freq");
     ImGui::TableSetupColumn("Volume");
     ImGui::TableSetupColumn("Tone/Noise");
     ImGui::TableHeadersRow();
 
-    auto row = [](const char* ch, unsigned short tone, unsigned char amp, bool tone_on, bool noise_on) {
+    auto row = [](const char* ch, unsigned short tone, unsigned char amp,
+                  bool tone_on, bool noise_on) {
       ImGui::TableNextRow();
-      ImGui::TableNextColumn(); ImGui::Text("%s", ch);
-      ImGui::TableNextColumn(); ImGui::Text("%d", tone & 0xFFF);
-      ImGui::TableNextColumn(); ImGui::Text("%d", amp & 0x1F);
-      ImGui::TableNextColumn(); ImGui::Text("%s/%s", tone_on ? "ON" : "off", noise_on ? "ON" : "off");
+      ImGui::TableNextColumn();
+      ImGui::Text("%s", ch);
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", tone & 0xFFF);
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", amp & 0x1F);
+      ImGui::TableNextColumn();
+      ImGui::Text("%s/%s", tone_on ? "ON" : "off", noise_on ? "ON" : "off");
     };
 
     byte mixer = PSG.RegisterAY.Mixer;
-    row("A", PSG.RegisterAY.TonA, PSG.RegisterAY.AmplitudeA, !(mixer & 1), !(mixer & 8));
-    row("B", PSG.RegisterAY.TonB, PSG.RegisterAY.AmplitudeB, !(mixer & 2), !(mixer & 16));
-    row("C", PSG.RegisterAY.TonC, PSG.RegisterAY.AmplitudeC, !(mixer & 4), !(mixer & 32));
+    row("A", PSG.RegisterAY.TonA, PSG.RegisterAY.AmplitudeA, !(mixer & 1),
+        !(mixer & 8));
+    row("B", PSG.RegisterAY.TonB, PSG.RegisterAY.AmplitudeB, !(mixer & 2),
+        !(mixer & 16));
+    row("C", PSG.RegisterAY.TonC, PSG.RegisterAY.AmplitudeC, !(mixer & 4),
+        !(mixer & 32));
     ImGui::EndTable();
   }
 
   ImGui::Spacing();
   ImGui::Text("Noise Freq: %d", PSG.RegisterAY.Noise & 0x1F);
-  ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope, PSG.RegisterAY.EnvType);
+  ImGui::Text("Envelope: %d (Type: %d)", PSG.RegisterAY.Envelope,
+              PSG.RegisterAY.EnvType);
 
   // ── Waveforms (per-channel oscilloscope) ──
   ImGui::Spacing();
@@ -2667,11 +2836,14 @@ void DevToolsUI::render_audio_state()
     if (waveW < 100.0f) waveW = 100.0f;
     float stripH = 40.0f;
 
-    draw_scope_strip("A", IM_COL32(0xFF, 0x40, 0x40, 0xFF), g_psg_scope, 0, waveW, stripH);
+    draw_scope_strip("A", IM_COL32(0xFF, 0x40, 0x40, 0xFF), g_psg_scope, 0,
+                     waveW, stripH);
     ImGui::Spacing();
-    draw_scope_strip("B", IM_COL32(0x40, 0xFF, 0x40, 0xFF), g_psg_scope, 1, waveW, stripH);
+    draw_scope_strip("B", IM_COL32(0x40, 0xFF, 0x40, 0xFF), g_psg_scope, 1,
+                     waveW, stripH);
     ImGui::Spacing();
-    draw_scope_strip("C", IM_COL32(0x40, 0x80, 0xFF, 0xFF), g_psg_scope, 2, waveW, stripH);
+    draw_scope_strip("C", IM_COL32(0x40, 0x80, 0xFF, 0xFF), g_psg_scope, 2,
+                     waveW, stripH);
   }
 
   // ── Envelope visualization ──
@@ -2711,21 +2883,20 @@ void DevToolsUI::render_audio_state()
 // Debug Window 16: Recording Controls
 // -----------------------------------------------
 
-static std::string format_size(uint64_t bytes)
-{
+static std::string format_size(uint64_t bytes) {
   char buf[32];
   if (bytes >= 1048576) {
     snprintf(buf, sizeof(buf), "%.1f MB", bytes / 1048576.0);
   } else if (bytes >= 1024) {
     snprintf(buf, sizeof(buf), "%.1f KB", bytes / 1024.0);
   } else {
-    snprintf(buf, sizeof(buf), "%llu B", static_cast<unsigned long long>(bytes));
+    snprintf(buf, sizeof(buf), "%llu B",
+             static_cast<unsigned long long>(bytes));
   }
   return buf;
 }
 
-void DevToolsUI::render_recording_controls()
-{
+void DevToolsUI::render_recording_controls() {
   ImGui::SetNextWindowSize(ImVec2(420, 400), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -2737,18 +2908,24 @@ void DevToolsUI::render_recording_controls()
 
   ImGui::TextDisabled("(?)");
   if (ImGui::IsItemHovered())
-    ImGui::SetTooltip("Records audio/video output to files.\nWAV = raw PCM audio, YM = PSG music, AVI = MJPEG video+audio.");
+    ImGui::SetTooltip(
+        "Records audio/video output to files.\nWAV = raw PCM audio, YM = PSG "
+        "music, AVI = MJPEG video+audio.");
   ImGui::Separator();
 
   // Audio config from CPC state
-  unsigned int sample_rate = SAMPLE_RATES[CPC.snd_playback_rate < SAMPLE_RATE_COUNT ? CPC.snd_playback_rate : 2];
+  unsigned int sample_rate =
+      SAMPLE_RATES[CPC.snd_playback_rate < SAMPLE_RATE_COUNT
+                       ? CPC.snd_playback_rate
+                       : 2];
   uint16_t bits = CPC.snd_bits ? 16 : 8;
   uint16_t channels = CPC.snd_stereo ? 2 : 1;
 
   // --- WAV ---
   if (ImGui::CollapsingHeader("WAV Audio", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::SetNextItemWidth(-80);
-    ImGui::InputTextWithHint("##wavpath", "WAV file path...", rc_wav_path_, sizeof(rc_wav_path_));
+    ImGui::InputTextWithHint("##wavpath", "WAV file path...", rc_wav_path_,
+                             sizeof(rc_wav_path_));
     ImGui::SameLine();
     if (g_wav_recorder.is_recording()) {
       if (ImGui::Button("Stop##wav")) {
@@ -2756,13 +2933,15 @@ void DevToolsUI::render_recording_controls()
         rc_status_ = "WAV stopped (" + format_size(written) + " written)";
       }
       ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-                         "Recording (%uHz, %d-bit %s)",
-                         sample_rate, bits, channels == 2 ? "stereo" : "mono");
-      ImGui::Text("Written: %s", format_size(g_wav_recorder.bytes_written()).c_str());
+                         "Recording (%uHz, %d-bit %s)", sample_rate, bits,
+                         channels == 2 ? "stereo" : "mono");
+      ImGui::Text("Written: %s",
+                  format_size(g_wav_recorder.bytes_written()).c_str());
     } else {
       if (ImGui::Button("Record##wav")) {
         if (rc_wav_path_[0] != '\0') {
-          std::string err = g_wav_recorder.start(rc_wav_path_, sample_rate, bits, channels);
+          std::string err =
+              g_wav_recorder.start(rc_wav_path_, sample_rate, bits, channels);
           rc_status_ = err.empty() ? "WAV recording started" : err;
         } else {
           rc_status_ = "Error: no WAV path specified";
@@ -2775,7 +2954,8 @@ void DevToolsUI::render_recording_controls()
   // --- YM ---
   if (ImGui::CollapsingHeader("YM Music", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::SetNextItemWidth(-80);
-    ImGui::InputTextWithHint("##ympath", "YM file path...", rc_ym_path_, sizeof(rc_ym_path_));
+    ImGui::InputTextWithHint("##ympath", "YM file path...", rc_ym_path_,
+                             sizeof(rc_ym_path_));
     ImGui::SameLine();
     if (g_ym_recorder.is_recording()) {
       if (ImGui::Button("Stop##ym")) {
@@ -2784,8 +2964,7 @@ void DevToolsUI::render_recording_controls()
       }
       uint32_t fc = g_ym_recorder.frame_count();
       ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-                         "Recording (%u frames, %.1fs)",
-                         fc, fc / 50.0f);
+                         "Recording (%u frames, %.1fs)", fc, fc / 50.0f);
     } else {
       if (ImGui::Button("Record##ym")) {
         if (rc_ym_path_[0] != '\0') {
@@ -2802,7 +2981,8 @@ void DevToolsUI::render_recording_controls()
   // --- AVI ---
   if (ImGui::CollapsingHeader("AVI Video", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::SetNextItemWidth(-80);
-    ImGui::InputTextWithHint("##avipath", "AVI file path...", rc_avi_path_, sizeof(rc_avi_path_));
+    ImGui::InputTextWithHint("##avipath", "AVI file path...", rc_avi_path_,
+                             sizeof(rc_avi_path_));
     ImGui::SameLine();
     if (g_avi_recorder.is_recording()) {
       if (ImGui::Button("Stop##avi")) {
@@ -2811,15 +2991,15 @@ void DevToolsUI::render_recording_controls()
       }
       uint32_t fc = g_avi_recorder.frame_count();
       ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-                         "Recording (%u frames, %s)",
-                         fc, format_size(g_avi_recorder.bytes_written()).c_str());
+                         "Recording (%u frames, %s)", fc,
+                         format_size(g_avi_recorder.bytes_written()).c_str());
     } else {
       ImGui::SetNextItemWidth(120);
       ImGui::SliderInt("Quality##avi", &rc_avi_quality_, 1, 100);
       if (ImGui::Button("Record##avi")) {
         if (rc_avi_path_[0] != '\0') {
           std::string err = g_avi_recorder.start(rc_avi_path_, rc_avi_quality_,
-                                                  sample_rate, channels, bits);
+                                                 sample_rate, channels, bits);
           rc_status_ = err.empty() ? "AVI recording started" : err;
         } else {
           rc_status_ = "Error: no AVI path specified";
@@ -2859,18 +3039,17 @@ void DevToolsUI::render_recording_controls()
 
 // Uppercase a string in-place (returns same ref)
 static std::string& asm_upper(std::string& s) {
-  for (auto& c : s) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+  for (auto& c : s)
+    c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
   return s;
 }
 
 // Check if a word is a Z80 register name (for operand uppercasing)
 static bool asm_is_register(const std::string& w) {
-  static const char* regs[] = {
-    "A","B","C","D","E","H","L","F","I","R",
-    "AF","BC","DE","HL","SP","IX","IY",
-    "AF'","IXH","IXL","IYH","IYL",
-    nullptr
-  };
+  static const char* regs[] = {"A",   "B",   "C",   "D",   "E",    "H",
+                               "L",   "F",   "I",   "R",   "AF",   "BC",
+                               "DE",  "HL",  "SP",  "IX",  "IY",   "AF'",
+                               "IXH", "IXL", "IYH", "IYL", nullptr};
   std::string u = w;
   asm_upper(u);
   for (const char** r = regs; *r; ++r)
@@ -2887,12 +3066,11 @@ static std::string asm_upper_registers(const std::string& ops) {
     // Collect an alphanumeric+apostrophe token
     if (isalpha(static_cast<unsigned char>(ops[i]))) {
       size_t start = i;
-      while (i < ops.size() && (isalnum(static_cast<unsigned char>(ops[i]))
-                                || ops[i] == '\'' || ops[i] == '_'))
+      while (i < ops.size() && (isalnum(static_cast<unsigned char>(ops[i])) ||
+                                ops[i] == '\'' || ops[i] == '_'))
         ++i;
       std::string token = ops.substr(start, i - start);
-      if (asm_is_register(token))
-        asm_upper(token);
+      if (asm_is_register(token)) asm_upper(token);
       result += token;
     } else {
       result += ops[i++];
@@ -2903,10 +3081,10 @@ static std::string asm_upper_registers(const std::string& ops) {
 
 // ── IPC compatibility for TextEditor ──
 
-// Ensure the TextEditor exists (lazy creation to avoid ImGui context crash at static init)
+// Ensure the TextEditor exists (lazy creation to avoid ImGui context crash at
+// static init)
 static TextEditor& ensure_editor(std::unique_ptr<TextEditor>& ptr) {
-  if (!ptr)
-    ptr = std::make_unique<TextEditor>();
+  if (!ptr) ptr = std::make_unique<TextEditor>();
   return *ptr;
 }
 
@@ -2924,7 +3102,8 @@ void DevToolsUI::asm_set_source(const char* text) {
   ed.SetText(text ? text : "");
 }
 
-// Format one line into Maxam columns: label@0, mnemonic@16, operands@24, comment@40
+// Format one line into Maxam columns: label@0, mnemonic@16, operands@24,
+// comment@40
 static std::string asm_format_line(const std::string& line) {
   if (line.empty()) return line;
   // Pure comment — leave untouched
@@ -2942,11 +3121,13 @@ static std::string asm_format_line(const std::string& line) {
   char quote_char = 0;
   for (size_t j = 0; j < work.size(); ++j) {
     if (!in_quote && (work[j] == '\'' || work[j] == '"')) {
-      in_quote = true; quote_char = work[j];
+      in_quote = true;
+      quote_char = work[j];
     } else if (in_quote && work[j] == quote_char) {
       in_quote = false;
     } else if (!in_quote && work[j] == ';') {
-      semi = j; break;
+      semi = j;
+      break;
     }
   }
   if (semi != std::string::npos) {
@@ -2965,9 +3146,9 @@ static std::string asm_format_line(const std::string& line) {
     while (end < work.size() && !isspace(static_cast<unsigned char>(work[end])))
       ++end;
     label = work.substr(pos, end - pos);
-    // Strip trailing colon from label (it's a label marker, not part of the name)
-    if (!label.empty() && label.back() == ':')
-      label.pop_back();
+    // Strip trailing colon from label (it's a label marker, not part of the
+    // name)
+    if (!label.empty() && label.back() == ':') label.pop_back();
     pos = end;
   }
   // Skip whitespace
@@ -2988,18 +3169,21 @@ static std::string asm_format_line(const std::string& line) {
   if (pos < work.size()) {
     operands = work.substr(pos);
     // Trim trailing whitespace
-    while (!operands.empty() && (operands.back() == ' ' || operands.back() == '\t'))
+    while (!operands.empty() &&
+           (operands.back() == ' ' || operands.back() == '\t'))
       operands.pop_back();
   }
 
-  // If we only got a label but no mnemonic, and it looks like a mnemonic keyword, treat it as one
+  // If we only got a label but no mnemonic, and it looks like a mnemonic
+  // keyword, treat it as one
   if (!label.empty() && mnemonic.empty()) {
     std::string upper_label = label;
     asm_upper(upper_label);
     if (z80_is_mnemonic_keyword(upper_label) || upper_label == "ORG" ||
-        upper_label == "EQU" || upper_label == "DEFL" || upper_label == "DEFB" ||
-        upper_label == "DB" || upper_label == "DEFW" || upper_label == "DW" ||
-        upper_label == "DEFS" || upper_label == "DS" || upper_label == "END") {
+        upper_label == "EQU" || upper_label == "DEFL" ||
+        upper_label == "DEFB" || upper_label == "DB" || upper_label == "DEFW" ||
+        upper_label == "DW" || upper_label == "DEFS" || upper_label == "DS" ||
+        upper_label == "END") {
       mnemonic = label;
       label.clear();
     }
@@ -3033,15 +3217,14 @@ static std::string asm_format_line(const std::string& line) {
   }
 
   // Trim trailing whitespace
-  while (!out.empty() && out.back() == ' ')
-    out.pop_back();
+  while (!out.empty() && out.back() == ' ') out.pop_back();
 
   return out;
 }
 
 // Helper: run assemble/check, optionally prepending org directive
-static std::string asm_build_source_with_org(const char* source, const char* org_addr)
-{
+static std::string asm_build_source_with_org(const char* source,
+                                             const char* org_addr) {
   // Check if source already has an org on the first non-empty/non-comment line
   std::istringstream ss(source);
   std::string line;
@@ -3052,7 +3235,8 @@ static std::string asm_build_source_with_org(const char* source, const char* org
     if (line[nsp] == ';') continue;          // pure comment
     // Check if this line starts with org (possibly after a label)
     std::string upper_line = line;
-    for (auto& c : upper_line) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+    for (auto& c : upper_line)
+      c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
     if (upper_line.find("ORG") != std::string::npos) {
       has_org = true;
     }
@@ -3064,8 +3248,7 @@ static std::string asm_build_source_with_org(const char* source, const char* org
   return source;
 }
 
-void DevToolsUI::render_assembler()
-{
+void DevToolsUI::render_assembler() {
   ImGui::SetNextWindowSize(ImVec2(700, 550), ImGuiCond_FirstUseEver);
   bool open = true;
   if (!ImGui::Begin("Assembler##devtools", &open)) {
@@ -3077,7 +3260,8 @@ void DevToolsUI::render_assembler()
 
   // Initialize editor on first use
   if (!asm_editor_initialized_) {
-    ed.SetCustomLanguageDefinition(&TextEditor::LanguageDefinition::Z80Assembly());
+    ed.SetCustomLanguageDefinition(
+        &TextEditor::LanguageDefinition::Z80Assembly());
     ed.SetPalette(TextEditor::PaletteId::Dark);
     ed.SetShowWhitespacesEnabled(false);
     ed.SetTabSize(8);
@@ -3090,11 +3274,10 @@ void DevToolsUI::render_assembler()
     return asm_build_source_with_org(text.c_str(), asm_org_addr_);
   };
 
-  auto source_len = [&]() -> size_t {
-    return ed.GetText().size();
-  };
+  auto source_len = [&]() -> size_t { return ed.GetText().size(); };
 
-  // ── Toolbar Row 1: Assemble/Check/Clear/Format ... Browse/Path/Load/Save ... Ref ──
+  // ── Toolbar Row 1: Assemble/Check/Clear/Format ... Browse/Path/Load/Save ...
+  // Ref ──
   if (ImGui::Button("Assemble")) {
     size_t orig_len = source_len();
     std::string src = get_source();
@@ -3102,19 +3285,21 @@ void DevToolsUI::render_assembler()
     asm_errors_ = r.errors;
     // Adjust line numbers if we prepended org
     if (src.size() > orig_len && !asm_errors_.empty()) {
-      for (auto& e : asm_errors_) if (e.line > 0) --e.line;
+      for (auto& e : asm_errors_)
+        if (e.line > 0) --e.line;
     }
     if (r.success) {
       char buf[128];
-      snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X",
-               r.bytes_written, r.start_addr, r.end_addr);
+      snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X", r.bytes_written,
+               r.start_addr, r.end_addr);
       asm_status_ = buf;
       for (auto& [name, addr] : r.symbols) {
         g_symfile.addSymbol(addr, name);
       }
     } else {
       char buf[64];
-      snprintf(buf, sizeof(buf), "%d error(s)", static_cast<int>(r.errors.size()));
+      snprintf(buf, sizeof(buf), "%d error(s)",
+               static_cast<int>(r.errors.size()));
       asm_status_ = buf;
     }
   }
@@ -3125,7 +3310,8 @@ void DevToolsUI::render_assembler()
     AsmResult r = g_assembler.check(src);
     asm_errors_ = r.errors;
     if (src.size() > orig_len && !asm_errors_.empty()) {
-      for (auto& e : asm_errors_) if (e.line > 0) --e.line;
+      for (auto& e : asm_errors_)
+        if (e.line > 0) --e.line;
     }
     if (r.success) {
       char buf[128];
@@ -3134,7 +3320,8 @@ void DevToolsUI::render_assembler()
       asm_status_ = buf;
     } else {
       char buf[64];
-      snprintf(buf, sizeof(buf), "%d error(s)", static_cast<int>(r.errors.size()));
+      snprintf(buf, sizeof(buf), "%d error(s)",
+               static_cast<int>(r.errors.size()));
       asm_status_ = buf;
     }
   }
@@ -3161,8 +3348,10 @@ void DevToolsUI::render_assembler()
   // File operations with browse buttons
   ImGui::SameLine(0, 16.0f);
   if (ImGui::Button("...##asm_open")) {
-    auto result = pfd::open_file("Open Assembly Source", asm_path_,
-      {"Z80 Assembly", "*.asm *.z80 *.s", "All Files", "*"}).result();
+    auto result =
+        pfd::open_file("Open Assembly Source", asm_path_,
+                       {"Z80 Assembly", "*.asm *.z80 *.s", "All Files", "*"})
+            .result();
     if (!result.empty()) {
       snprintf(asm_path_, sizeof(asm_path_), "%s", result[0].c_str());
       // Auto-load
@@ -3170,7 +3359,7 @@ void DevToolsUI::render_assembler()
         std::ifstream f(asm_path_);
         if (f.good()) {
           std::string content((std::istreambuf_iterator<char>(f)),
-                               std::istreambuf_iterator<char>());
+                              std::istreambuf_iterator<char>());
           ed.SetText(content);
           asm_status_ = "Loaded " + std::to_string(content.size()) + " bytes";
           asm_errors_.clear();
@@ -3189,7 +3378,7 @@ void DevToolsUI::render_assembler()
       std::ifstream f(asm_path_);
       if (f.good()) {
         std::string content((std::istreambuf_iterator<char>(f)),
-                             std::istreambuf_iterator<char>());
+                            std::istreambuf_iterator<char>());
         ed.SetText(content);
         asm_status_ = "Loaded " + std::to_string(content.size()) + " bytes";
         asm_errors_.clear();
@@ -3202,8 +3391,10 @@ void DevToolsUI::render_assembler()
   if (ImGui::Button("Save")) {
     if (asm_path_[0] == '\0') {
       // No path set — open Save dialog
-      auto result = pfd::save_file("Save Assembly Source", "",
-        {"Z80 Assembly", "*.asm *.z80 *.s", "All Files", "*"}).result();
+      auto result =
+          pfd::save_file("Save Assembly Source", "",
+                         {"Z80 Assembly", "*.asm *.z80 *.s", "All Files", "*"})
+              .result();
       if (!result.empty())
         snprintf(asm_path_, sizeof(asm_path_), "%s", result.c_str());
     }
@@ -3223,8 +3414,7 @@ void DevToolsUI::render_assembler()
   }
 
   ImGui::SameLine(0, 16.0f);
-  if (ImGui::Button("? Ref"))
-    show_asm_reference_ = !show_asm_reference_;
+  if (ImGui::Button("? Ref")) show_asm_reference_ = !show_asm_reference_;
 
   // ── Row 2: Origin address, Format hint, status ──
   ImGui::Text("Origin:");
@@ -3241,9 +3431,11 @@ void DevToolsUI::render_assembler()
     bool is_error = asm_status_.find("error") != std::string::npos ||
                     asm_status_.find("Error") != std::string::npos;
     if (is_error)
-      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", asm_status_.c_str());
+      ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+                         asm_status_.c_str());
     else
-      ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", asm_status_.c_str());
+      ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s",
+                         asm_status_.c_str());
   }
 
   // ── Source editor (syntax-highlighted) ──
@@ -3254,7 +3446,8 @@ void DevToolsUI::render_assembler()
   // is focused.  Pass this to the TextEditor so it knows to accept keyboard
   // input even when focus is on the parent rather than the child.
   bool asm_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);
-  bool was_focused = ed.Render("##asm_editor", asm_focused, ImVec2(-1.0f, editor_height));
+  bool was_focused =
+      ed.Render("##asm_editor", asm_focused, ImVec2(-1.0f, editor_height));
 
   // Auto-format previous line on Enter (Maxam-style column alignment)
   {
@@ -3268,8 +3461,7 @@ void DevToolsUI::render_assembler()
       int prev = asm_prev_cursor_line_;
       if (prev >= 0 && prev < static_cast<int>(lines.size())) {
         std::string formatted = asm_format_line(lines[prev]);
-        if (formatted != lines[prev])
-          ed.ReplaceLine(prev, formatted);
+        if (formatted != lines[prev]) ed.ReplaceLine(prev, formatted);
       }
     }
     asm_prev_cursor_line_ = cur_line;
@@ -3282,8 +3474,7 @@ void DevToolsUI::render_assembler()
   // go through that path.  We call SDL directly when the editor has focus.
   if (was_focused || asm_focused) {
     SDL_Window* w = SDL_GetKeyboardFocus();
-    if (w && !SDL_TextInputActive(w))
-      SDL_StartTextInput(w);
+    if (w && !SDL_TextInputActive(w)) SDL_StartTextInput(w);
   }
 
   // Error list
@@ -3317,8 +3508,7 @@ void DevToolsUI::render_assembler()
 // Assembly Reference Window
 // -----------------------------------------------
 
-void DevToolsUI::render_asm_reference()
-{
+void DevToolsUI::render_asm_reference() {
   ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Assembly Reference##devtools", &show_asm_reference_)) {
     ImGui::End();
@@ -3326,31 +3516,36 @@ void DevToolsUI::render_asm_reference()
   }
 
   if (ImGui::BeginTabBar("##asm_ref_tabs")) {
-
     // ── Tab 1: Quick Cheat Sheet ──
     if (ImGui::BeginTabItem("Cheat Sheet")) {
-      ImGui::TextWrapped("Syntax quick reference for the konCePCja Z80 assembler.");
+      ImGui::TextWrapped(
+          "Syntax quick reference for the konCePCja Z80 assembler.");
       ImGui::Separator();
 
-      if (ImGui::CollapsingHeader("Directives", ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (ImGui::CollapsingHeader("Directives",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BulletText("ORG addr     - Set assembly origin address");
-        ImGui::BulletText("EQU / DEFL   - Define constant / reassignable symbol");
+        ImGui::BulletText(
+            "EQU / DEFL   - Define constant / reassignable symbol");
         ImGui::BulletText("DEFB / DB    - Define byte(s): DB 1,2,3,'A'");
         ImGui::BulletText("DEFW / DW    - Define word(s): DW &C000");
         ImGui::BulletText("DEFS / DS    - Reserve N bytes: DS 10 or DS 10,&FF");
         ImGui::BulletText("END          - End of source (optional)");
       }
 
-      if (ImGui::CollapsingHeader("Number Formats", ImGuiTreeNodeFlags_DefaultOpen)) {
+      if (ImGui::CollapsingHeader("Number Formats",
+                                  ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BulletText("&FF  #FF  $FF  0xFF  FFh  - Hexadecimal");
         ImGui::BulletText("%%10110011               - Binary");
         ImGui::BulletText("123                      - Decimal");
         ImGui::BulletText("'A'                      - Character literal");
-        ImGui::BulletText("$                        - Current PC (program counter)");
+        ImGui::BulletText(
+            "$                        - Current PC (program counter)");
       }
 
       if (ImGui::CollapsingHeader("Operators")) {
-        ImGui::BulletText("+  -  *  /  %%  - Arithmetic (left-to-right, Maxam compat)");
+        ImGui::BulletText(
+            "+  -  *  /  %%  - Arithmetic (left-to-right, Maxam compat)");
         ImGui::BulletText("&  |  ^  ~     - Bitwise AND, OR, XOR, NOT");
         ImGui::BulletText("<<  >>         - Shift left, shift right");
       }
@@ -3381,7 +3576,6 @@ void DevToolsUI::render_asm_reference()
 
     // ── Tab 2: Instruction Reference ──
     if (ImGui::BeginTabItem("Instructions")) {
-
       // Build grouped instruction cache on first use
       struct InstrEntry {
         std::string mnemonic;
@@ -3403,14 +3597,17 @@ void DevToolsUI::render_asm_reference()
           // Extract mnemonic keyword (first word before space or operand)
           std::string mn = op.mnemonic;
           size_t sp = mn.find(' ');
-          std::string keyword = (sp != std::string::npos) ? mn.substr(0, sp) : mn;
+          std::string keyword =
+              (sp != std::string::npos) ? mn.substr(0, sp) : mn;
           // Uppercase keyword
-          for (auto& c : keyword) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+          for (auto& c : keyword)
+            c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
 
           InstrEntry ie;
           // Uppercase the full mnemonic for display
           ie.mnemonic = op.mnemonic;
-          for (auto& c : ie.mnemonic) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+          for (auto& c : ie.mnemonic)
+            c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
           ie.length = op.length;
           ie.t_states = op.t_states;
           ie.t_extra = op.t_states_extra;
@@ -3421,33 +3618,40 @@ void DevToolsUI::render_asm_reference()
           groups.push_back({key, std::move(entries)});
         }
         std::sort(groups.begin(), groups.end(),
-                  [](const InstrGroup& a, const InstrGroup& b) { return a.name < b.name; });
+                  [](const InstrGroup& a, const InstrGroup& b) {
+                    return a.name < b.name;
+                  });
       }
 
-      ImGui::TextDisabled("%d groups, %d total instructions", static_cast<int>(groups.size()), g_z80_opcode_count);
+      ImGui::TextDisabled("%d groups, %d total instructions",
+                          static_cast<int>(groups.size()), g_z80_opcode_count);
       ImGui::Separator();
 
       // Filter
       static char instr_filter[32] = "";
       ImGui::SetNextItemWidth(200.0f);
-      ImGui::InputTextWithHint("##instr_filter", "Filter...", instr_filter, sizeof(instr_filter));
+      ImGui::InputTextWithHint("##instr_filter", "Filter...", instr_filter,
+                               sizeof(instr_filter));
 
       std::string filter_upper;
       if (instr_filter[0]) {
         filter_upper = instr_filter;
-        for (auto& c : filter_upper) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+        for (auto& c : filter_upper)
+          c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
       }
 
       ImGui::BeginChild("##instr_list", ImVec2(0, 0));
       for (auto& grp : groups) {
         // Apply filter
-        if (!filter_upper.empty() && grp.name.find(filter_upper) == std::string::npos)
+        if (!filter_upper.empty() &&
+            grp.name.find(filter_upper) == std::string::npos)
           continue;
 
         if (ImGui::CollapsingHeader(grp.name.c_str())) {
           if (ImGui::BeginTable("##instr_tbl", 4,
-              ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
-              ImGuiTableFlags_SizingStretchProp)) {
+                                ImGuiTableFlags_BordersInnerV |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("Mnemonic", 0, 3.0f);
             ImGui::TableSetupColumn("Bytes", 0, 0.8f);
             ImGui::TableSetupColumn("T-states", 0, 1.0f);

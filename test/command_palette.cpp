@@ -1,19 +1,24 @@
-#include <gtest/gtest.h>
 #include "command_palette.h"
-#include "search_engine.h"
+
+#include <gtest/gtest.h>
+
 #include <string>
 #include <vector>
+
+#include "search_engine.h"
 
 namespace {
 
 class CommandPaletteTest : public testing::Test {
-protected:
+ protected:
   void SetUp() override {
     palette_.clear_commands();
     palette_.register_command("Pause", "Pause emulation", "F5", []() {});
     palette_.register_command("Reset", "Reset the CPC", "F5", []() {});
-    palette_.register_command("DevTools", "Open developer tools", "Shift+F2", []() {});
-    palette_.register_command("Fullscreen", "Toggle fullscreen mode", "F2", []() {});
+    palette_.register_command("DevTools", "Open developer tools", "Shift+F2",
+                              []() {});
+    palette_.register_command("Fullscreen", "Toggle fullscreen mode", "F2",
+                              []() {});
     palette_.register_command("Screenshot", "Take a screenshot", "F3", []() {});
   }
 
@@ -65,4 +70,4 @@ TEST_F(CommandPaletteTest, IpcModeSendsCommandAndReturnsResponse) {
   EXPECT_EQ(palette_.execute_ipc("bad"), "ERR unknown\n");
 }
 
-} // namespace
+}  // namespace

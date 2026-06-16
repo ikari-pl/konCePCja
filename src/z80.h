@@ -16,18 +16,18 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
-#ifndef Z80_H
-#define Z80_H
+#pragma once
 
-#include "SDL3/SDL.h"
-#include "types.h"
-#include "crtc.h"
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "SDL3/SDL.h"
+#include "crtc.h"
 #include "expr_parser.h"
+#include "types.h"
 
 // A pair of register really only needs a word (16 bits).
 // So in practice, b.h2, b.h3 and w.h should never be used (there's an
@@ -38,25 +38,33 @@
 // unreachable address).
 typedef union {
 #if SDL_BYTEORDER == SDL_LIL_ENDIAN
-   struct { byte l, h, h2, h3; } b;
-   struct { word l, h; } w;
+  struct {
+    byte l, h, h2, h3;
+  } b;
+  struct {
+    word l, h;
+  } w;
 #else
-   struct { byte h3, h2, h, l; } b;
-   struct { word h, l; } w;
+  struct {
+    byte h3, h2, h, l;
+  } b;
+  struct {
+    word h, l;
+  } w;
 #endif
-   dword d;
-}  reg_pair;
+  dword d;
+} reg_pair;
 
-#define Sflag  0x80 // sign flag
-#define Zflag  0x40 // zero flag
-#define Hflag  0x10 // halfcarry flag
-#define Pflag  0x04 // parity flag
-#define Vflag  0x04 // overflow flag
-#define Nflag  0x02 // negative flag
-#define Cflag  0x01 // carry flag
-#define Xflags 0x28 // bit 5 & 3 flags
-#define X1flag 0x20 // bit 5 - unused flag
-#define X2flag 0x28 // bit 3 - unused flag
+#define Sflag 0x80   // sign flag
+#define Zflag 0x40   // zero flag
+#define Hflag 0x10   // halfcarry flag
+#define Pflag 0x04   // parity flag
+#define Vflag 0x04   // overflow flag
+#define Nflag 0x02   // negative flag
+#define Cflag 0x01   // carry flag
+#define Xflags 0x28  // bit 5 & 3 flags
+#define X1flag 0x20  // bit 5 - unused flag
+#define X2flag 0x28  // bit 3 - unused flag
 
 enum BreakpointType {
   NORMAL = 0,
@@ -65,14 +73,15 @@ enum BreakpointType {
 };
 
 struct Breakpoint {
-  Breakpoint(word val, BreakpointType type = NORMAL) : address(val), type(type) {};
+  Breakpoint(word val, BreakpointType type = NORMAL)
+      : address(val), type(type) {};
 
   dword address;
   BreakpointType type;
   std::unique_ptr<ExprNode> condition;  // nullptr = unconditional
-  int pass_count = 0;   // break only after this many hits
+  int pass_count = 0;                   // break only after this many hits
   int hit_count = 0;
-  std::string condition_str; // original condition text for display
+  std::string condition_str;  // original condition text for display
 };
 
 enum WatchpointType {
@@ -84,9 +93,9 @@ enum WatchpointType {
 struct Watchpoint {
   Watchpoint(word val, WatchpointType t) : address(val), type(t) {};
   dword address;
-  word length = 1;                        // range: addr..addr+length-1
+  word length = 1;  // range: addr..addr+length-1
   WatchpointType type;
-  std::unique_ptr<ExprNode> condition;    // nullptr = unconditional
+  std::unique_ptr<ExprNode> condition;  // nullptr = unconditional
   std::string condition_str;
   int pass_count = 0;
   int hit_count = 0;
@@ -103,45 +112,69 @@ struct IOBreakpoint {
 };
 
 class t_z80regs {
-  public:
-   t_z80regs() {
-     AF.d = 0;  BC.d = 0;  DE.d = 0;  HL.d = 0;  PC.d = 0; SP.d = 0;
-     AFx.d = 0; BCx.d = 0; DEx.d = 0; HLx.d = 0; IX.d = 0; IY.d = 0;
-     I = 0; R = 0; Rb7 = 0; IFF1 = 0; IFF2 = 0; IM = 0; HALT = 0;
-     EI_issued = 0; int_pending = 0;
-     watchpoint_reached = 0; breakpoint_reached = 0;
-     watchpoint_addr = 0; watchpoint_value = 0; watchpoint_old = 0;
-     step_in = 0; step_out = 0;
-     break_point = 0; trace = 0;
-   };
+ public:
+  t_z80regs() {
+    AF.d = 0;
+    BC.d = 0;
+    DE.d = 0;
+    HL.d = 0;
+    PC.d = 0;
+    SP.d = 0;
+    AFx.d = 0;
+    BCx.d = 0;
+    DEx.d = 0;
+    HLx.d = 0;
+    IX.d = 0;
+    IY.d = 0;
+    I = 0;
+    R = 0;
+    Rb7 = 0;
+    IFF1 = 0;
+    IFF2 = 0;
+    IM = 0;
+    HALT = 0;
+    EI_issued = 0;
+    int_pending = 0;
+    watchpoint_reached = 0;
+    breakpoint_reached = 0;
+    watchpoint_addr = 0;
+    watchpoint_value = 0;
+    watchpoint_old = 0;
+    step_in = 0;
+    step_out = 0;
+    break_point = 0;
+    trace = 0;
+  };
 
-   reg_pair AF, BC, DE, HL, PC, SP, AFx, BCx, DEx, HLx, IX, IY;
-   byte I, R, Rb7, IFF1, IFF2, IM, HALT, EI_issued, int_pending;
-   byte watchpoint_reached;
-   byte breakpoint_reached;
-   word watchpoint_addr;    // address that triggered
-   byte watchpoint_value;   // value being read/written
-   byte watchpoint_old;     // previous value at address
-   byte step_in;
-   byte step_out;
-   std::vector<word> step_out_addresses;
-   dword break_point, trace;
+  reg_pair AF, BC, DE, HL, PC, SP, AFx, BCx, DEx, HLx, IX, IY;
+  byte I, R, Rb7, IFF1, IFF2, IM, HALT, EI_issued, int_pending;
+  byte watchpoint_reached;
+  byte breakpoint_reached;
+  word watchpoint_addr;   // address that triggered
+  byte watchpoint_value;  // value being read/written
+  byte watchpoint_old;    // previous value at address
+  byte step_in;
+  byte step_out;
+  std::vector<word> step_out_addresses;
+  dword break_point, trace;
 };
 
+inline constexpr dword Z80_BREAKPOINT_NONE = 0xFFFFFFFF;
 
-// IPC signal to break out of z80_execute (separate from t_z80regs to keep it copyable)
+// IPC signal to break out of z80_execute (separate from t_z80regs to keep it
+// copyable)
 extern std::atomic<bool> z80_stop_requested;
 
-#define EC_BREAKPOINT      10
-#define EC_TRACE           20
-#define EC_FRAME_COMPLETE  30
-#define EC_CYCLE_COUNT     40
-#define EC_SOUND_BUFFER    50
-#define EC_STOP_REQUESTED  60
-
+#define EC_BREAKPOINT 10
+#define EC_TRACE 20
+#define EC_FRAME_COMPLETE 30
+#define EC_CYCLE_COUNT 40
+#define EC_SOUND_BUFFER 50
+#define EC_STOP_REQUESTED 60
 
 // Direct memory access used by IPC and tools:
-// - z80_read_mem / z80_write_mem: SmartWatch on read, raw bus on write (no watchpoints).
+// - z80_read_mem / z80_write_mem: SmartWatch on read, raw bus on write (no
+// watchpoints).
 byte z80_read_mem(word addr);
 void z80_write_mem(word addr, byte val);
 byte z80_read_mem_via_write_bank(word addr);
@@ -153,8 +186,8 @@ byte z80_cpu_read_mem(word addr);
 void z80_cpu_write_mem(word addr, byte val);
 
 // TODO: put declaration or definition of these two methods somewhere else !!!
-byte z80_IN_handler(reg_pair port); // not provided by Z80.c
-void z80_OUT_handler(reg_pair port, byte val); // not provided by Z80.c
+byte z80_IN_handler(reg_pair port);             // not provided by Z80.c
+void z80_OUT_handler(reg_pair port, byte val);  // not provided by Z80.c
 
 void z80_reset();
 void z80_init_tables();
@@ -200,21 +233,23 @@ extern uint64_t g_tstate_counter;
 typedef void (*BreakpointHitHook)(word pc, bool watchpoint);
 void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 
-// TXT_OUTPUT hook — fires when PC hits the given address, passing the A register.
-// Used by the telnet console to mirror CPC text output.
-using TxtOutputHook = void(*)(uint8_t ch);
+// TXT_OUTPUT hook — fires when PC hits the given address, passing the A
+// register. Used by the telnet console to mirror CPC text output.
+using TxtOutputHook = void (*)(uint8_t ch);
 void z80_set_txt_output_hook(TxtOutputHook hook, uint16_t address);
 
-// CP/M BDOS hook — fires when PC == 0x0005 and C == 2 (C_WRITE), passing E register.
-// Used by the telnet console to capture CP/M console output.
+// CP/M BDOS hook — fires when PC == 0x0005 and C == 2 (C_WRITE), passing E
+// register. Used by the telnet console to capture CP/M console output.
 void z80_set_bdos_output_hook(TxtOutputHook hook);
 
 // CP/M BDOS serial hooks — fired at PC == 0x0005.
-//   Out: C == 5 (L_WRITE), called with byte in E.  BDOS call proceeds normally after.
-//   In:  C == 3 (A_READ).  Called with no args; return value placed in A, BDOS call
-//        is suppressed (RET simulated).  Avoids blocking in BIOS AUXIN on plain CPC.
+//   Out: C == 5 (L_WRITE), called with byte in E.  BDOS call proceeds normally
+//   after. In:  C == 3 (A_READ).  Called with no args; return value placed in
+//   A, BDOS call
+//        is suppressed (RET simulated).  Avoids blocking in BIOS AUXIN on plain
+//        CPC.
 using BdosSerialOutHook = std::function<void(uint8_t)>;
-using BdosSerialInHook  = std::function<uint8_t()>;
+using BdosSerialInHook = std::function<uint8_t()>;
 void z80_set_bdos_serial_out_hook(BdosSerialOutHook hook);
 void z80_set_bdos_serial_in_hook(BdosSerialInHook hook);
 
@@ -238,5 +273,3 @@ void z80_execute_pfx_fd_instruction();
 
 // Handle prefixed IY bit instructions.
 void z80_execute_pfx_fdcb_instruction();
-
-#endif

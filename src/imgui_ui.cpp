@@ -1,44 +1,46 @@
 #include "imgui_ui.h"
-#include "devtools_ui.h"
-#include "imgui_ui_testable.h"
-#include "imgui.h"
-#include "command_palette.h"
-#include "menu_actions.h"
-#include "workspace_layout.h"
-#include "macos_menu.h"  // koncpc_restore_keyboard_focus
+
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_dialog.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 
+#include "amdrum.h"
+#include "amx_mouse.h"
+#include "command_palette.h"
+#include "crtc.h"
+#include "devtools_ui.h"
+#include "disk.h"
+#include "drive_sounds.h"
+#include "imgui.h"
+#include "imgui_ui_testable.h"
+#include "keyboard.h"
 #include "koncepcja.h"
 #include "log.h"
-#include "crtc.h"
-#include "rom_identify.h"
-#include "keyboard.h"
-#include "z80.h"
-#include "z80_disassembly.h"
-#include "slotshandler.h"
-#include "disk.h"
-#include "tape.h"
-#include "video.h"
-#include "symfile.h"
-#include "amdrum.h"
-#include "smartwatch.h"
-#include "amx_mouse.h"
-#include "drive_sounds.h"
-#include "symbiface.h"
 #include "m4board.h"
 #include "m4board_http.h"
-#include "serial_interface.h"
+#include "macos_menu.h"  // koncpc_restore_keyboard_focus
+#include "menu_actions.h"
 #include "plotter.h"
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_dialog.h>
+#include "rom_identify.h"
+#include "serial_interface.h"
+#include "slotshandler.h"
+#include "smartwatch.h"
+#include "symbiface.h"
+#include "symfile.h"
+#include "tape.h"
+#include "video.h"
+#include "workspace_layout.h"
+#include "z80.h"
+#include "z80_disassembly.h"
 
 extern SDL_Window* mainSDLWindow;
 extern t_CPC CPC;
@@ -48,14 +50,14 @@ extern t_GateArray GateArray;
 extern t_PSG PSG;
 extern t_drive driveA;
 extern t_drive driveB;
-extern byte *pbRAM;
-extern byte *memmap_ROM[256];
-extern byte *pbExpansionROM;
-extern byte *pbROMhi;
+extern byte* pbRAM;
+extern byte* memmap_ROM[256];
+extern byte* pbExpansionROM;
+extern byte* pbROMhi;
 extern byte bTapeLevel;
 extern std::vector<byte> pbTapeImage;
-extern byte *pbTapeImageEnd;
-extern byte *pbTapeBlock;
+extern byte* pbTapeImageEnd;
+extern byte* pbTapeBlock;
 extern int iTapeCycleCount;
 extern dword dwTapeZeroPulseCycles;
 
@@ -77,20 +79,23 @@ static void imgui_render_vkeyboard();
 static void mru_push(std::vector<std::string>& list, const std::string& path);
 
 // Height tracking for stacked menubar + topbar + devtools bar
-static float s_menubar_h = 19.0f; // ImGui main menu bar default height
+static float s_menubar_h = 19.0f;  // ImGui main menu bar default height
 static int s_main_topbar_h = 25;
 static int s_devtools_bar_h = 0;
 static ImVec2 s_layout_btn_pos;  // set in topbar, read in layout dropdown
-static bool s_topbar_height_dirty = false; // defer SDL_SetWindowSize to after render
+static bool s_topbar_height_dirty =
+    false;  // defer SDL_SetWindowSize to after render
 static int s_statusbar_h = 0;
-static bool s_bottombar_height_dirty = false; // defer SDL_SetWindowSize to after render
+static bool s_bottombar_height_dirty =
+    false;  // defer SDL_SetWindowSize to after render
 
 // ─────────────────────────────────────────────────
 // SDL3 file dialog callback
 // ─────────────────────────────────────────────────
 
-static void SDLCALL file_dialog_callback(void *userdata, const char * const *filelist, int /*filter*/)
-{
+static void SDLCALL file_dialog_callback(void* userdata,
+                                         const char* const* filelist,
+                                         int /*filter*/) {
   // After the dialog dismisses (whether the user picked a file or
   // cancelled), restore keyboard routing to the emulator.
   //
@@ -106,17 +111,18 @@ static void SDLCALL file_dialog_callback(void *userdata, const char * const *fil
   //
   // Then in Docked mode also tell the workspace renderer to refocus
   // the CPC Screen panel so cpc_screen_focused becomes true again.
-  koncpc_restore_keyboard_focus();   // macOS: Cocoa makeFirstResponder; no-op elsewhere
+  koncpc_restore_keyboard_focus();  // macOS: Cocoa makeFirstResponder; no-op
+                                    // elsewhere
   imgui_state.request_cpc_screen_focus = true;
 
-  auto action = static_cast<FileDialogAction>(reinterpret_cast<intptr_t>(userdata));
-  if (!filelist || !filelist[0]) return; // cancelled or error
+  auto action =
+      static_cast<FileDialogAction>(reinterpret_cast<intptr_t>(userdata));
+  if (!filelist || !filelist[0]) return;  // cancelled or error
   imgui_state.pending_dialog = action;
   imgui_state.pending_dialog_result = filelist[0];
 }
 
-static void process_pending_dialog()
-{
+static void process_pending_dialog() {
   if (imgui_state.pending_dialog == FileDialogAction::None) return;
 
   FileDialogAction action = imgui_state.pending_dialog;
@@ -241,8 +247,7 @@ static void process_pending_dialog()
 // Theme setup
 // ─────────────────────────────────────────────────
 
-void imgui_init_ui()
-{
+void imgui_init_ui() {
   // Merge transport symbol glyphs from system font into default font
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->AddFontDefault();
@@ -252,20 +257,22 @@ void imgui_init_ui()
   io.ConfigWindowsMoveFromTitleBarOnly = true;
 
 #if defined(__APPLE__) || defined(_WIN32)
-  // Merge a system symbol font for transport control glyphs (play/stop/eject etc.)
+  // Merge a system symbol font for transport control glyphs (play/stop/eject
+  // etc.)
   {
     ImFontConfig merge_cfg;
     merge_cfg.MergeMode = true;
     merge_cfg.PixelSnapH = true;
     static const ImWchar symbol_ranges[] = {
-      0x23CF, 0x23CF, // ⏏
-      0x25A0, 0x25A0, // ■
-      0x25B6, 0x25B6, // ▶
-      0x25C0, 0x25C0, // ◀
-      0,
+        0x23CF, 0x23CF,  // ⏏
+        0x25A0, 0x25A0,  // ■
+        0x25B6, 0x25B6,  // ▶
+        0x25C0, 0x25C0,  // ◀
+        0,
     };
 #ifdef __APPLE__
-    io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf", 13.0f, &merge_cfg, symbol_ranges);
+    io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Apple Symbols.ttf",
+                                 13.0f, &merge_cfg, symbol_ranges);
 #elif defined(_WIN32)
     {
       std::filesystem::path fonts_dir = "C:\\Windows\\Fonts";
@@ -273,10 +280,12 @@ void imgui_init_ui()
         fonts_dir = std::filesystem::path(sys_root) / "Fonts";
       }
       // Try Segoe UI Symbol first, then Segoe UI Emoji, then Arial Unicode MS
-      const char* candidates[] = { "seguisym.ttf", "seguiemj.ttf", "ARIALUNI.TTF" };
+      const char* candidates[] = {"seguisym.ttf", "seguiemj.ttf",
+                                  "ARIALUNI.TTF"};
       for (const char* name : candidates) {
         auto path = (fonts_dir / name).string();
-        if (io.Fonts->AddFontFromFileTTF(path.c_str(), 13.0f, &merge_cfg, symbol_ranges))
+        if (io.Fonts->AddFontFromFileTTF(path.c_str(), 13.0f, &merge_cfg,
+                                         symbol_ranges))
           break;
       }
     }
@@ -298,39 +307,40 @@ void imgui_init_ui()
 
   ImVec4* c = style.Colors;
   // Background: 0x1A1A1E
-  c[ImGuiCol_WindowBg]        = ImVec4(0.102f, 0.102f, 0.118f, 1.00f);
-  c[ImGuiCol_PopupBg]         = ImVec4(0.120f, 0.120f, 0.140f, 0.95f);
-  c[ImGuiCol_ChildBg]         = ImVec4(0.090f, 0.090f, 0.105f, 1.00f);
+  c[ImGuiCol_WindowBg] = ImVec4(0.102f, 0.102f, 0.118f, 1.00f);
+  c[ImGuiCol_PopupBg] = ImVec4(0.120f, 0.120f, 0.140f, 0.95f);
+  c[ImGuiCol_ChildBg] = ImVec4(0.090f, 0.090f, 0.105f, 1.00f);
   // Text: 0xF0F0F0
-  c[ImGuiCol_Text]            = ImVec4(0.941f, 0.941f, 0.941f, 1.00f);
-  c[ImGuiCol_TextDisabled]    = ImVec4(0.500f, 0.500f, 0.500f, 1.00f);
+  c[ImGuiCol_Text] = ImVec4(0.941f, 0.941f, 0.941f, 1.00f);
+  c[ImGuiCol_TextDisabled] = ImVec4(0.500f, 0.500f, 0.500f, 1.00f);
   // Accent amber: 0x8A6A10
-  c[ImGuiCol_Header]          = ImVec4(0.541f, 0.416f, 0.063f, 0.40f);
-  c[ImGuiCol_HeaderHovered]   = ImVec4(0.541f, 0.416f, 0.063f, 0.60f);
-  c[ImGuiCol_HeaderActive]    = ImVec4(0.541f, 0.416f, 0.063f, 0.80f);
-  c[ImGuiCol_Button]          = ImVec4(0.541f, 0.416f, 0.063f, 0.45f);
-  c[ImGuiCol_ButtonHovered]   = ImVec4(0.600f, 0.480f, 0.100f, 0.70f);
-  c[ImGuiCol_ButtonActive]    = ImVec4(0.650f, 0.520f, 0.130f, 0.90f);
+  c[ImGuiCol_Header] = ImVec4(0.541f, 0.416f, 0.063f, 0.40f);
+  c[ImGuiCol_HeaderHovered] = ImVec4(0.541f, 0.416f, 0.063f, 0.60f);
+  c[ImGuiCol_HeaderActive] = ImVec4(0.541f, 0.416f, 0.063f, 0.80f);
+  c[ImGuiCol_Button] = ImVec4(0.541f, 0.416f, 0.063f, 0.45f);
+  c[ImGuiCol_ButtonHovered] = ImVec4(0.600f, 0.480f, 0.100f, 0.70f);
+  c[ImGuiCol_ButtonActive] = ImVec4(0.650f, 0.520f, 0.130f, 0.90f);
   // Selection blue: 0x3D5AFE
-  c[ImGuiCol_Tab]                  = ImVec4(0.240f, 0.353f, 0.996f, 0.30f);
-  c[ImGuiCol_TabHovered]           = ImVec4(0.240f, 0.353f, 0.996f, 0.60f);
-  c[ImGuiCol_TabSelected]          = ImVec4(0.240f, 0.353f, 0.996f, 0.80f);
-  c[ImGuiCol_TabSelectedOverline]  = ImVec4(0.240f, 0.353f, 0.996f, 1.00f);
+  c[ImGuiCol_Tab] = ImVec4(0.240f, 0.353f, 0.996f, 0.30f);
+  c[ImGuiCol_TabHovered] = ImVec4(0.240f, 0.353f, 0.996f, 0.60f);
+  c[ImGuiCol_TabSelected] = ImVec4(0.240f, 0.353f, 0.996f, 0.80f);
+  c[ImGuiCol_TabSelectedOverline] = ImVec4(0.240f, 0.353f, 0.996f, 1.00f);
   // Frame/border
-  c[ImGuiCol_FrameBg]         = ImVec4(0.160f, 0.160f, 0.180f, 1.00f);
-  c[ImGuiCol_FrameBgHovered]  = ImVec4(0.200f, 0.200f, 0.230f, 1.00f);
-  c[ImGuiCol_FrameBgActive]   = ImVec4(0.240f, 0.240f, 0.280f, 1.00f);
-  c[ImGuiCol_Border]          = ImVec4(0.300f, 0.300f, 0.350f, 0.50f);
-  c[ImGuiCol_TitleBg]         = ImVec4(0.080f, 0.080f, 0.100f, 1.00f);
-  c[ImGuiCol_TitleBgActive]   = ImVec4(0.120f, 0.120f, 0.150f, 1.00f);
-  c[ImGuiCol_ScrollbarBg]     = ImVec4(0.080f, 0.080f, 0.100f, 0.60f);
-  c[ImGuiCol_ScrollbarGrab]   = ImVec4(0.300f, 0.300f, 0.350f, 0.80f);
-  c[ImGuiCol_CheckMark]       = ImVec4(0.541f, 0.416f, 0.063f, 1.00f);
-  c[ImGuiCol_SliderGrab]      = ImVec4(0.541f, 0.416f, 0.063f, 0.80f);
-  c[ImGuiCol_SliderGrabActive]= ImVec4(0.650f, 0.520f, 0.130f, 1.00f);
-  c[ImGuiCol_Separator]       = ImVec4(0.300f, 0.300f, 0.350f, 0.50f);
+  c[ImGuiCol_FrameBg] = ImVec4(0.160f, 0.160f, 0.180f, 1.00f);
+  c[ImGuiCol_FrameBgHovered] = ImVec4(0.200f, 0.200f, 0.230f, 1.00f);
+  c[ImGuiCol_FrameBgActive] = ImVec4(0.240f, 0.240f, 0.280f, 1.00f);
+  c[ImGuiCol_Border] = ImVec4(0.300f, 0.300f, 0.350f, 0.50f);
+  c[ImGuiCol_TitleBg] = ImVec4(0.080f, 0.080f, 0.100f, 1.00f);
+  c[ImGuiCol_TitleBgActive] = ImVec4(0.120f, 0.120f, 0.150f, 1.00f);
+  c[ImGuiCol_ScrollbarBg] = ImVec4(0.080f, 0.080f, 0.100f, 0.60f);
+  c[ImGuiCol_ScrollbarGrab] = ImVec4(0.300f, 0.300f, 0.350f, 0.80f);
+  c[ImGuiCol_CheckMark] = ImVec4(0.541f, 0.416f, 0.063f, 1.00f);
+  c[ImGuiCol_SliderGrab] = ImVec4(0.541f, 0.416f, 0.063f, 0.80f);
+  c[ImGuiCol_SliderGrabActive] = ImVec4(0.650f, 0.520f, 0.130f, 1.00f);
+  c[ImGuiCol_Separator] = ImVec4(0.300f, 0.300f, 0.350f, 0.50f);
 
-  // When viewports are enabled, platform windows should not have rounded corners
+  // When viewports are enabled, platform windows should not have rounded
+  // corners
   if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
     style.WindowRounding = 0.0f;
     c[ImGuiCol_WindowBg].w = 1.0f;
@@ -339,78 +349,103 @@ void imgui_init_ui()
   // Register command palette entries from menu actions
   g_command_palette.clear_commands();
   for (const auto& ma : koncpc_menu_actions()) {
-    if (ma.title[0] == '\0') continue; // skip empty entries
+    if (ma.title[0] == '\0') continue;  // skip empty entries
     std::string title = ma.title;
     std::string shortcut = ma.shortcut ? ma.shortcut : "";
     KONCPC_KEYS action_key = ma.action;
-    g_command_palette.register_command(
-        title, "", shortcut,
-        [action_key]() {
-          extern std::atomic<byte> keyboard_matrix[];
-          applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, true);
-          applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix, false);
-        });
+    g_command_palette.register_command(title, "", shortcut, [action_key]() {
+      extern std::atomic<byte> keyboard_matrix[];
+      applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix,
+                    true);
+      applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix,
+                    false);
+    });
   }
   // Extra commands
-  g_command_palette.register_command("Pause / Resume", "Toggle emulation pause", "Pause",
-      []() {
+  g_command_palette.register_command(
+      "Pause / Resume", "Toggle emulation pause", "Pause", []() {
         extern t_CPC CPC;
-        if (g_emu_paused.load(std::memory_order_relaxed)) cpc_resume(); else cpc_pause();
+        if (g_emu_paused.load(std::memory_order_relaxed))
+          cpc_resume();
+        else
+          cpc_pause();
       });
-  g_command_palette.register_command("DevTools", "Open developer tools", "Shift+F2",
+  g_command_palette.register_command(
+      "DevTools", "Open developer tools", "Shift+F2",
       []() { imgui_state.show_devtools = !imgui_state.show_devtools; });
-  g_command_palette.register_command("Registers", "Show CPU registers", "",
+  g_command_palette.register_command(
+      "Registers", "Show CPU registers", "",
       []() { g_devtools_ui.toggle_window("registers"); });
-  g_command_palette.register_command("Disassembly", "Show disassembly view", "",
+  g_command_palette.register_command(
+      "Disassembly", "Show disassembly view", "",
       []() { g_devtools_ui.toggle_window("disassembly"); });
-  g_command_palette.register_command("Memory Hex", "Show memory hex view", "",
+  g_command_palette.register_command(
+      "Memory Hex", "Show memory hex view", "",
       []() { g_devtools_ui.toggle_window("memory_hex"); });
-  g_command_palette.register_command("Stack", "Show stack window", "",
-      []() { g_devtools_ui.toggle_window("stack"); });
-  g_command_palette.register_command("Breakpoints", "Show breakpoint list", "",
+  g_command_palette.register_command("Stack", "Show stack window", "", []() {
+    g_devtools_ui.toggle_window("stack");
+  });
+  g_command_palette.register_command(
+      "Breakpoints", "Show breakpoint list", "",
       []() { g_devtools_ui.toggle_window("breakpoints"); });
-  g_command_palette.register_command("Symbol Table", "Show symbol table", "",
+  g_command_palette.register_command(
+      "Symbol Table", "Show symbol table", "",
       []() { g_devtools_ui.toggle_window("symbols"); });
-  g_command_palette.register_command("Session Recording", "Show session recording controls", "",
+  g_command_palette.register_command(
+      "Session Recording", "Show session recording controls", "",
       []() { g_devtools_ui.toggle_window("session_recording"); });
-  g_command_palette.register_command("Graphics Finder", "Show graphics finder/tile viewer", "",
+  g_command_palette.register_command(
+      "Graphics Finder", "Show graphics finder/tile viewer", "",
       []() { g_devtools_ui.toggle_window("gfx_finder"); });
-  g_command_palette.register_command("Silicon Disc", "Show Silicon Disc panel", "",
+  g_command_palette.register_command(
+      "Silicon Disc", "Show Silicon Disc panel", "",
       []() { g_devtools_ui.toggle_window("silicon_disc"); });
-  g_command_palette.register_command("ASIC Registers", "Show ASIC register viewer", "",
+  g_command_palette.register_command(
+      "ASIC Registers", "Show ASIC register viewer", "",
       []() { g_devtools_ui.toggle_window("asic"); });
-  g_command_palette.register_command("Disc Tools", "Show disc file/sector tools", "",
+  g_command_palette.register_command(
+      "Disc Tools", "Show disc file/sector tools", "",
       []() { g_devtools_ui.toggle_window("disc_tools"); });
-  g_command_palette.register_command("Data Areas", "Show data area manager", "",
+  g_command_palette.register_command(
+      "Data Areas", "Show data area manager", "",
       []() { g_devtools_ui.toggle_window("data_areas"); });
-  g_command_palette.register_command("Disasm Export", "Export disassembly to file", "",
+  g_command_palette.register_command(
+      "Disasm Export", "Export disassembly to file", "",
       []() { g_devtools_ui.toggle_window("disasm_export"); });
-  g_command_palette.register_command("Recording Controls", "WAV/YM/AVI recording start/stop", "",
+  g_command_palette.register_command(
+      "Recording Controls", "WAV/YM/AVI recording start/stop", "",
       []() { g_devtools_ui.toggle_window("recording_controls"); });
-  g_command_palette.register_command("Assembler", "Z80 assembler IDE", "",
+  g_command_palette.register_command(
+      "Assembler", "Z80 assembler IDE", "",
       []() { g_devtools_ui.toggle_window("assembler"); });
-  g_command_palette.register_command("Serial Terminal", "Show serial terminal window", "F3",
-      []() { imgui_state.show_serial_terminal = !imgui_state.show_serial_terminal; });
-  g_command_palette.register_command("Plotter Preview", "HP-GL plotter output preview and SVG export", "",
-      []() { imgui_state.show_plotter_preview = !imgui_state.show_plotter_preview; });
+  g_command_palette.register_command(
+      "Serial Terminal", "Show serial terminal window", "F3", []() {
+        imgui_state.show_serial_terminal = !imgui_state.show_serial_terminal;
+      });
+  g_command_palette.register_command(
+      "Plotter Preview", "HP-GL plotter output preview and SVG export", "",
+      []() {
+        imgui_state.show_plotter_preview = !imgui_state.show_plotter_preview;
+      });
 }
 
 // ─────────────────────────────────────────────────
 // Main dispatcher
 // ─────────────────────────────────────────────────
 
-void imgui_render_ui()
-{
+void imgui_render_ui() {
   // Reconcile ImGui mouse state with hardware — defense against stuck buttons.
   // Only poll hardware state when ImGui thinks a button is down, to avoid the
   // overhead of SDL_GetGlobalMouseState() every frame (slow on X11).
   {
     ImGuiIO& io = ImGui::GetIO();
     if (io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]) {
-      SDL_MouseButtonFlags hw_buttons = SDL_GetGlobalMouseState(nullptr, nullptr);
+      SDL_MouseButtonFlags hw_buttons =
+          SDL_GetGlobalMouseState(nullptr, nullptr);
       // SDL button indices: 1=Left, 2=Middle, 3=Right
       // ImGui button indices: 0=Left, 1=Right, 2=Middle
-      static const int sdl_button[] = { SDL_BUTTON_LEFT, SDL_BUTTON_RIGHT, SDL_BUTTON_MIDDLE };
+      static const int sdl_button[] = {SDL_BUTTON_LEFT, SDL_BUTTON_RIGHT,
+                                       SDL_BUTTON_MIDDLE};
       for (int i = 0; i < 3; i++) {
         bool hw_down = (hw_buttons & SDL_BUTTON_MASK(sdl_button[i])) != 0;
         if (io.MouseDown[i] && !hw_down) {
@@ -421,19 +456,20 @@ void imgui_render_ui()
   }
 
   process_pending_dialog();
-  // Dockspace host must be rendered before other windows so they can dock into it
+  // Dockspace host must be rendered before other windows so they can dock into
+  // it
   workspace_render_dockspace();
   workspace_render_cpc_screen();
   imgui_render_menubar();
   imgui_render_topbar();
   imgui_render_statusbar();
-  if (imgui_state.show_menu)        imgui_render_menu();
-  if (imgui_state.show_options)     imgui_render_options();
+  if (imgui_state.show_menu) imgui_render_menu();
+  if (imgui_state.show_options) imgui_render_options();
   if (imgui_state.show_serial_terminal) imgui_render_serial_terminal();
   if (imgui_state.show_plotter_preview) imgui_render_plotter_preview();
-  if (imgui_state.show_devtools)    imgui_render_devtools();
+  if (imgui_state.show_devtools) imgui_render_devtools();
   if (imgui_state.show_memory_tool) imgui_render_memory_tool();
-  if (imgui_state.show_vkeyboard)   imgui_render_vkeyboard();
+  if (imgui_state.show_vkeyboard) imgui_render_vkeyboard();
   // Phase 2 debug windows (extracted to DevToolsUI)
   g_devtools_ui.render();
   g_command_palette.render();
@@ -442,12 +478,13 @@ void imgui_render_ui()
   {
     ImGuiIO& io = ImGui::GetIO();
     float dt = io.DeltaTime;
-    float yOffset = 40.0f; // bottom margin
+    float yOffset = 40.0f;  // bottom margin
     float xMargin = 16.0f;
     float maxWidth = 360.0f;
 
     // Tick timers and remove expired
-    for (auto it = imgui_state.toasts.begin(); it != imgui_state.toasts.end(); ) {
+    for (auto it = imgui_state.toasts.begin();
+         it != imgui_state.toasts.end();) {
       it->timer -= dt;
       if (it->timer <= 0.0f) {
         it = imgui_state.toasts.erase(it);
@@ -474,23 +511,24 @@ void imgui_render_ui()
       ImU32 bgCol, borderCol, textCol;
       switch (t.level) {
         case ImGuiUIState::ToastLevel::Success:
-          bgCol     = IM_COL32(0x10, 0x30, 0x18, static_cast<int>(210 * alpha));
+          bgCol = IM_COL32(0x10, 0x30, 0x18, static_cast<int>(210 * alpha));
           borderCol = IM_COL32(0x20, 0x90, 0x40, static_cast<int>(200 * alpha));
-          textCol   = IM_COL32(0x80, 0xFF, 0x80, static_cast<int>(255 * alpha));
+          textCol = IM_COL32(0x80, 0xFF, 0x80, static_cast<int>(255 * alpha));
           break;
         case ImGuiUIState::ToastLevel::Error:
-          bgCol     = IM_COL32(0x30, 0x10, 0x10, static_cast<int>(210 * alpha));
+          bgCol = IM_COL32(0x30, 0x10, 0x10, static_cast<int>(210 * alpha));
           borderCol = IM_COL32(0x90, 0x20, 0x20, static_cast<int>(200 * alpha));
-          textCol   = IM_COL32(0xFF, 0x80, 0x80, static_cast<int>(255 * alpha));
+          textCol = IM_COL32(0xFF, 0x80, 0x80, static_cast<int>(255 * alpha));
           break;
-        default: // Info
-          bgCol     = IM_COL32(0x18, 0x18, 0x20, static_cast<int>(210 * alpha));
+        default:  // Info
+          bgCol = IM_COL32(0x18, 0x18, 0x20, static_cast<int>(210 * alpha));
           borderCol = IM_COL32(0x50, 0x50, 0x70, static_cast<int>(200 * alpha));
-          textCol   = IM_COL32(0xD0, 0xD0, 0xD0, static_cast<int>(255 * alpha));
+          textCol = IM_COL32(0xD0, 0xD0, 0xD0, static_cast<int>(255 * alpha));
           break;
       }
 
-      ImVec2 textSize = ImGui::CalcTextSize(t.message.c_str(), nullptr, false, maxWidth - 16.0f);
+      ImVec2 textSize = ImGui::CalcTextSize(t.message.c_str(), nullptr, false,
+                                            maxWidth - 16.0f);
       float boxW = textSize.x + 16.0f;
       float boxH = textSize.y + 12.0f;
 
@@ -508,12 +546,14 @@ void imgui_render_ui()
     }
   }
 
-  // --- Quit confirmation popup (rendered here so it works regardless of show_menu) ---
+  // --- Quit confirmation popup (rendered here so it works regardless of
+  // show_menu) ---
   if (imgui_state.show_quit_confirm) {
     ImGui::OpenPopup("Confirm Quit");
     imgui_state.show_quit_confirm = false;
   }
-  if (ImGui::BeginPopupModal("Confirm Quit", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal("Confirm Quit", nullptr,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("Are you sure you want to quit?");
     ImGui::Spacing();
     if (ImGui::Button("Yes", ImVec2(80, 0))) {
@@ -535,11 +575,12 @@ void imgui_render_ui()
     s_topbar_height_dirty = true;
   }
 
-  // Apply deferred topbar/bottombar resize AFTER all ImGui rendering is complete.
-  // Calling SDL_SetWindowSize during the render loop causes macOS to shift
-  // window coordinates mid-frame, breaking button click detection.
+  // Apply deferred topbar/bottombar resize AFTER all ImGui rendering is
+  // complete. Calling SDL_SetWindowSize during the render loop causes macOS to
+  // shift window coordinates mid-frame, breaking button click detection.
   if (s_topbar_height_dirty) {
-    int total = static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
+    int total =
+        static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
     if (total != video_get_topbar_height()) {
       video_set_topbar(nullptr, total);
     }
@@ -573,45 +614,51 @@ void imgui_mru_push(std::vector<std::string>& list, const std::string& path) {
 // Toast notification API
 // ─────────────────────────────────────────────────
 
-void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level)
-{
+void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level) {
   // Cap queue size
-  while (static_cast<int>(imgui_state.toasts.size()) >= ImGuiUIState::MAX_TOASTS) {
+  while (static_cast<int>(imgui_state.toasts.size()) >=
+         ImGuiUIState::MAX_TOASTS) {
     imgui_state.toasts.pop_front();
   }
-  float duration = (level == ImGuiUIState::ToastLevel::Error)
-    ? ImGuiUIState::TOAST_DURATION * 1.5f   // errors stay longer
-    : ImGuiUIState::TOAST_DURATION;
+  float duration =
+      (level == ImGuiUIState::ToastLevel::Error)
+          ? ImGuiUIState::TOAST_DURATION * 1.5f  // errors stay longer
+          : ImGuiUIState::TOAST_DURATION;
   imgui_state.toasts.push_back({message, level, duration, duration});
 }
 
-void imgui_toast_info(const std::string& message)    { imgui_toast(message, ImGuiUIState::ToastLevel::Info); }
-void imgui_toast_success(const std::string& message) { imgui_toast(message, ImGuiUIState::ToastLevel::Success); }
-void imgui_toast_error(const std::string& message)   { imgui_toast(message, ImGuiUIState::ToastLevel::Error); }
+void imgui_toast_info(const std::string& message) {
+  imgui_toast(message, ImGuiUIState::ToastLevel::Info);
+}
+void imgui_toast_success(const std::string& message) {
+  imgui_toast(message, ImGuiUIState::ToastLevel::Success);
+}
+void imgui_toast_error(const std::string& message) {
+  imgui_toast(message, ImGuiUIState::ToastLevel::Error);
+}
 
 // ─────────────────────────────────────────────────
 // Keyboard routing: single source of truth
 // ─────────────────────────────────────────────────
 
-bool imgui_any_keyboard_ui_active()
-{
+bool imgui_any_keyboard_ui_active() {
   ImGuiIO& io = ImGui::GetIO();
 
   // Modal dialogs and popups always intercept keyboard, even when the CPC
   // screen has focus — otherwise dialogs (quit confirm, options, etc.) are
   // unreachable after the user clicked into the CPC Screen panel.
-  if (imgui_state.show_menu || imgui_state.show_options
-      || imgui_state.show_about || imgui_state.show_quit_confirm
-      || imgui_state.show_layout_dropdown
-      || g_command_palette.is_open()
-      || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup))
+  if (imgui_state.show_menu || imgui_state.show_options ||
+      imgui_state.show_about || imgui_state.show_quit_confirm ||
+      imgui_state.show_layout_dropdown || g_command_palette.is_open() ||
+      ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup))
     return true;
 
   // A text-input widget is actively focused — must go to ImGui.
   if (io.WantTextInput) return true;
 
   // In docked mode the CPC Screen window tracks focus explicitly.
-  // When it's focused (and no modal/text-input is active), keyboard goes to CPC.
+  // When it's focused (and no modal/text-input is active), keyboard goes to
+  // CPC.
   if (imgui_state.cpc_screen_focused) return false;
 
   // NOTE: show_devtools / g_devtools_ui.any_window_open() intentionally
@@ -625,13 +672,12 @@ bool imgui_any_keyboard_ui_active()
 // Helper: close menu and resume emulation
 // ─────────────────────────────────────────────────
 
-void imgui_close_menu()
-{
+void imgui_close_menu() {
   imgui_state.show_menu = false;
   // Don't clear show_options/show_about/show_quit_confirm here —
-  // they may have just been set by the menu action that triggered imgui_close_menu().
-  // Each dialog is responsible for clearing its own flag on close.
-  // Only unpause if no dialog is keeping the emulator paused.
+  // they may have just been set by the menu action that triggered
+  // imgui_close_menu(). Each dialog is responsible for clearing its own flag on
+  // close. Only unpause if no dialog is keeping the emulator paused.
   if (!imgui_state.show_options && !imgui_state.show_quit_confirm) {
     cpc_resume();
   }
@@ -644,12 +690,14 @@ void imgui_close_menu()
 // Main Menu Bar
 // ─────────────────────────────────────────────────
 
-static void imgui_render_menubar()
-{
+static void imgui_render_menubar() {
   if (!ImGui::BeginMainMenuBar()) return;
 
   float h = ImGui::GetWindowSize().y;
-  if (h != s_menubar_h) { s_menubar_h = h; s_topbar_height_dirty = true; }
+  if (h != s_menubar_h) {
+    s_menubar_h = h;
+    s_topbar_height_dirty = true;
+  }
 
   // ── Emulator ──
   if (ImGui::BeginMenu("Emulator")) {
@@ -683,41 +731,55 @@ static void imgui_render_menubar()
   // ── Media ──
   if (ImGui::BeginMenu("Media")) {
     if (ImGui::MenuItem("Load Disk A...")) {
-      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
-      SDL_ShowOpenFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
-        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+      static const SDL_DialogFileFilter filters[] = {
+          {"Disk Images", "dsk;ipf;raw;zip"}};
+      SDL_ShowOpenFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
+          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
     }
     if (ImGui::MenuItem("Load Disk B...")) {
-      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk;ipf;raw;zip" } };
-      SDL_ShowOpenFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
-        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+      static const SDL_DialogFileFilter filters[] = {
+          {"Disk Images", "dsk;ipf;raw;zip"}};
+      SDL_ShowOpenFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
+          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
     }
     if (ImGui::MenuItem("Save Disk A...", nullptr, false, driveA.tracks != 0)) {
-      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
-      SDL_ShowSaveFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
-        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+      static const SDL_DialogFileFilter filters[] = {{"Disk Images", "dsk"}};
+      SDL_ShowSaveFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
+          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
     }
     if (ImGui::MenuItem("Save Disk B...", nullptr, false, driveB.tracks != 0)) {
-      static const SDL_DialogFileFilter filters[] = { { "Disk Images", "dsk" } };
-      SDL_ShowSaveFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
-        mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+      static const SDL_DialogFileFilter filters[] = {{"Disk Images", "dsk"}};
+      SDL_ShowSaveFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
+          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna;zip" } };
-      SDL_ShowOpenFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
-        mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
+      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna;zip"}};
+      SDL_ShowOpenFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
+          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
     }
     if (ImGui::MenuItem("Save Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = { { "Snapshots", "sna" } };
-      SDL_ShowSaveFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
-        mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
+      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna"}};
+      SDL_ShowSaveFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
+          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
     }
     if (ImGui::MenuItem("Quick Save Snapshot", "Shift+F3")) {
       koncpc_menu_action(KONCPC_SNAPSHOT);
@@ -727,10 +789,13 @@ static void imgui_render_menubar()
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
-      static const SDL_DialogFileFilter filters[] = { { "Tape Images", "cdt;voc;zip" } };
-      SDL_ShowOpenFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape)),
-        mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
+      static const SDL_DialogFileFilter filters[] = {
+          {"Tape Images", "cdt;voc;zip"}};
+      SDL_ShowOpenFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::LoadTape)),
+          mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
     }
     if (ImGui::MenuItem("Tape Play/Stop", "F4", false, !pbTapeImage.empty())) {
       koncpc_menu_action(KONCPC_TAPEPLAY);
@@ -743,10 +808,12 @@ static void imgui_render_menubar()
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Cartridge...")) {
-      static const SDL_DialogFileFilter filters[] = { { "Cartridges", "cpr;zip" } };
-      SDL_ShowOpenFileDialog(file_dialog_callback,
-        reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
-        mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
+      static const SDL_DialogFileFilter filters[] = {{"Cartridges", "cpr;zip"}};
+      SDL_ShowOpenFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
+          mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
     }
 
     // ── Open Recent submenu ──
@@ -754,44 +821,60 @@ static void imgui_render_menubar()
                        !CPC.mru_snaps.empty() || !CPC.mru_carts.empty();
     ImGui::Separator();
     if (ImGui::BeginMenu("Open Recent", has_any_mru)) {
-      auto render_mru_section = [&](const char* label, std::vector<std::string>& list,
-                                    auto load_fn) {
-        if (!list.empty() && ImGui::BeginMenu(label)) {
-          for (int i = 0; i < static_cast<int>(list.size()); i++) {
-            auto item_fname = std::filesystem::path(list[i]).filename().string();
-            ImGui::PushID(i);
-            if (ImGui::MenuItem(item_fname.c_str())) {
-              load_fn(list[i]);
+      auto render_mru_section =
+          [&](const char* label, std::vector<std::string>& list, auto load_fn) {
+            if (!list.empty() && ImGui::BeginMenu(label)) {
+              for (int i = 0; i < static_cast<int>(list.size()); i++) {
+                auto item_fname =
+                    std::filesystem::path(list[i]).filename().string();
+                ImGui::PushID(i);
+                if (ImGui::MenuItem(item_fname.c_str())) {
+                  load_fn(list[i]);
+                }
+                if (ImGui::IsItemHovered())
+                  ImGui::SetTooltip("%s", list[i].c_str());
+                ImGui::PopID();
+              }
+              ImGui::EndMenu();
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", list[i].c_str());
-            ImGui::PopID();
-          }
-          ImGui::EndMenu();
-        }
-      };
+          };
       render_mru_section("Disks", CPC.mru_disks, [](const std::string& p) {
         CPC.driveA.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.driveA) == 0) { imgui_toast_success("Drive A: " + f); mru_push(CPC.mru_disks, p); }
-        else imgui_toast_error("Failed: " + f);
+        if (file_load(CPC.driveA) == 0) {
+          imgui_toast_success("Drive A: " + f);
+          mru_push(CPC.mru_disks, p);
+        } else
+          imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Tapes", CPC.mru_tapes, [](const std::string& p) {
         CPC.tape.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.tape) == 0) { imgui_toast_success("Tape: " + f); tape_scan_blocks(); mru_push(CPC.mru_tapes, p); }
-        else imgui_toast_error("Failed: " + f);
+        if (file_load(CPC.tape) == 0) {
+          imgui_toast_success("Tape: " + f);
+          tape_scan_blocks();
+          mru_push(CPC.mru_tapes, p);
+        } else
+          imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Snapshots", CPC.mru_snaps, [](const std::string& p) {
         CPC.snapshot.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.snapshot) == 0) { imgui_toast_success("Snapshot: " + f); mru_push(CPC.mru_snaps, p); }
-        else imgui_toast_error("Failed: " + f);
+        if (file_load(CPC.snapshot) == 0) {
+          imgui_toast_success("Snapshot: " + f);
+          mru_push(CPC.mru_snaps, p);
+        } else
+          imgui_toast_error("Failed: " + f);
       });
       render_mru_section("Cartridges", CPC.mru_carts, [](const std::string& p) {
         CPC.cartridge.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.cartridge) == 0) { imgui_toast_success("Cartridge: " + f); emulator_reset(); mru_push(CPC.mru_carts, p); }
-        else imgui_toast_error("Failed: " + f);
+        if (file_load(CPC.cartridge) == 0) {
+          imgui_toast_success("Cartridge: " + f);
+          emulator_reset();
+          mru_push(CPC.mru_carts, p);
+        } else
+          imgui_toast_error("Failed: " + f);
       });
       ImGui::Separator();
       if (ImGui::MenuItem("Clear Recent")) {
@@ -827,48 +910,68 @@ static void imgui_render_menubar()
   // ── Window ──
   if (ImGui::BeginMenu("Window")) {
     ImGui::MenuItem("DevTools Toolbar", "Shift+F2", &imgui_state.show_devtools);
-    ImGui::MenuItem("Virtual Keyboard", "Shift+F1", &imgui_state.show_vkeyboard);
-    ImGui::MenuItem("Serial Terminal",  nullptr,     &imgui_state.show_serial_terminal);
-    ImGui::MenuItem("Plotter Preview",  nullptr,     &imgui_state.show_plotter_preview);
+    ImGui::MenuItem("Virtual Keyboard", "Shift+F1",
+                    &imgui_state.show_vkeyboard);
+    ImGui::MenuItem("Serial Terminal", nullptr,
+                    &imgui_state.show_serial_terminal);
+    ImGui::MenuItem("Plotter Preview", nullptr,
+                    &imgui_state.show_plotter_preview);
 
     ImGui::Separator();
     ImGui::TextDisabled("Debug Windows");
-    ImGui::MenuItem("Registers",          nullptr, g_devtools_ui.window_ptr("registers"));
-    ImGui::MenuItem("Disassembly",        nullptr, g_devtools_ui.window_ptr("disassembly"));
-    ImGui::MenuItem("Memory Hex",         nullptr, g_devtools_ui.window_ptr("memory_hex"));
-    ImGui::MenuItem("Stack",              nullptr, g_devtools_ui.window_ptr("stack"));
-    ImGui::MenuItem("Breakpoints",        nullptr, g_devtools_ui.window_ptr("breakpoints"));
-    ImGui::MenuItem("Symbols",            nullptr, g_devtools_ui.window_ptr("symbols"));
-    ImGui::MenuItem("Assembler",          nullptr, g_devtools_ui.window_ptr("assembler"));
+    ImGui::MenuItem("Registers", nullptr,
+                    g_devtools_ui.window_ptr("registers"));
+    ImGui::MenuItem("Disassembly", nullptr,
+                    g_devtools_ui.window_ptr("disassembly"));
+    ImGui::MenuItem("Memory Hex", nullptr,
+                    g_devtools_ui.window_ptr("memory_hex"));
+    ImGui::MenuItem("Stack", nullptr, g_devtools_ui.window_ptr("stack"));
+    ImGui::MenuItem("Breakpoints", nullptr,
+                    g_devtools_ui.window_ptr("breakpoints"));
+    ImGui::MenuItem("Symbols", nullptr, g_devtools_ui.window_ptr("symbols"));
+    ImGui::MenuItem("Assembler", nullptr,
+                    g_devtools_ui.window_ptr("assembler"));
 
     ImGui::Separator();
     ImGui::TextDisabled("Hardware");
-    ImGui::MenuItem("Video State",        nullptr, g_devtools_ui.window_ptr("video_state"));
-    ImGui::MenuItem("Audio State",        nullptr, g_devtools_ui.window_ptr("audio_state"));
-    ImGui::MenuItem("ASIC Registers",     nullptr, g_devtools_ui.window_ptr("asic"));
-    ImGui::MenuItem("Silicon Disc",       nullptr, g_devtools_ui.window_ptr("silicon_disc"));
-    ImGui::MenuItem("Disc Tools",         nullptr, g_devtools_ui.window_ptr("disc_tools"));
+    ImGui::MenuItem("Video State", nullptr,
+                    g_devtools_ui.window_ptr("video_state"));
+    ImGui::MenuItem("Audio State", nullptr,
+                    g_devtools_ui.window_ptr("audio_state"));
+    ImGui::MenuItem("ASIC Registers", nullptr,
+                    g_devtools_ui.window_ptr("asic"));
+    ImGui::MenuItem("Silicon Disc", nullptr,
+                    g_devtools_ui.window_ptr("silicon_disc"));
+    ImGui::MenuItem("Disc Tools", nullptr,
+                    g_devtools_ui.window_ptr("disc_tools"));
 
     ImGui::Separator();
     ImGui::TextDisabled("Analysis");
-    ImGui::MenuItem("GFX Finder",         nullptr, g_devtools_ui.window_ptr("gfx_finder"));
-    ImGui::MenuItem("Data Areas",         nullptr, g_devtools_ui.window_ptr("data_areas"));
-    ImGui::MenuItem("Disasm Export",      nullptr, g_devtools_ui.window_ptr("disasm_export"));
+    ImGui::MenuItem("GFX Finder", nullptr,
+                    g_devtools_ui.window_ptr("gfx_finder"));
+    ImGui::MenuItem("Data Areas", nullptr,
+                    g_devtools_ui.window_ptr("data_areas"));
+    ImGui::MenuItem("Disasm Export", nullptr,
+                    g_devtools_ui.window_ptr("disasm_export"));
 
     ImGui::Separator();
     ImGui::TextDisabled("Recording");
-    ImGui::MenuItem("Session Recording",  nullptr, g_devtools_ui.window_ptr("session_recording"));
-    ImGui::MenuItem("Recording Controls", nullptr, g_devtools_ui.window_ptr("recording_controls"));
+    ImGui::MenuItem("Session Recording", nullptr,
+                    g_devtools_ui.window_ptr("session_recording"));
+    ImGui::MenuItem("Recording Controls", nullptr,
+                    g_devtools_ui.window_ptr("recording_controls"));
 
     ImGui::EndMenu();
   }
 
   // ── Options ──
   if (ImGui::BeginMenu("Options")) {
-    if (ImGui::MenuItem("Joystick Emulation", "F7", CPC.joystick_emulation != JoystickEmulation::None)) {
+    if (ImGui::MenuItem("Joystick Emulation", "F7",
+                        CPC.joystick_emulation != JoystickEmulation::None)) {
       koncpc_menu_action(KONCPC_JOY);
     }
-    if (ImGui::MenuItem("Phazer Emulation", "Shift+F7", static_cast<bool>(CPC.phazer_emulation))) {
+    if (ImGui::MenuItem("Phazer Emulation", "Shift+F7",
+                        static_cast<bool>(CPC.phazer_emulation))) {
       koncpc_menu_action(KONCPC_PHAZER);
     }
     if (ImGui::MenuItem("Speed Limit", "F9", CPC.limit_speed != 0)) {
@@ -890,15 +993,218 @@ static void imgui_render_menubar()
 // Top Bar
 // ─────────────────────────────────────────────────
 
-int imgui_topbar_height()
-{
+int imgui_topbar_height() {
   return static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
 }
 
-static void imgui_render_topbar()
-{
+static void render_layout_dropdown() {
+  if (!imgui_state.show_layout_dropdown) return;
+
+  // Position below the Layout button, clamped to stay within the main viewport
+  {
+    ImGuiViewport* mvp = ImGui::GetMainViewport();
+    float dd_w = 220.0f;
+    float x = s_layout_btn_pos.x;
+    float right_edge = mvp->Pos.x + mvp->Size.x;
+    if (x + dd_w > right_edge) x = right_edge - dd_w;
+    ImGui::SetNextWindowPos(ImVec2(x, s_layout_btn_pos.y), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(dd_w, 0));
+    ImGui::SetNextWindowViewport(mvp->ID);
+  }
+
+  ImGuiWindowFlags dd_flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
+
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+  if (ImGui::Begin("##LayoutDropdown", nullptr, dd_flags)) {
+    // Close when clicking outside
+    if (!ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+        ImGui::IsMouseClicked(0)) {
+      imgui_state.show_layout_dropdown = false;
+    }
+
+    // Mode selection
+    if (ImGui::RadioButton(
+            "Classic Mode",
+            CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic)) {
+      CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
+      imgui_state.show_layout_dropdown = false;
+    }
+    if (ImGui::RadioButton(
+            "Docked Mode",
+            CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked)) {
+      if (CPC.workspace_layout != t_CPC::WorkspaceLayoutMode::Docked) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
+        workspace_request_initial_preset();
+      }
+      imgui_state.show_layout_dropdown = false;
+    }
+    ImGui::Separator();
+
+    // Preset layouts
+    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+      if (ImGui::MenuItem("Apply Debug Layout")) {
+        workspace_apply_preset(WorkspacePreset::Debug);
+        imgui_state.show_layout_dropdown = false;
+      }
+      if (ImGui::MenuItem("Apply IDE Layout")) {
+        workspace_apply_preset(WorkspacePreset::IDE);
+        imgui_state.show_layout_dropdown = false;
+      }
+      if (ImGui::MenuItem("Apply Hardware Layout")) {
+        workspace_apply_preset(WorkspacePreset::Hardware);
+        imgui_state.show_layout_dropdown = false;
+      }
+    } else {
+      if (ImGui::MenuItem("Debug")) {
+        g_devtools_ui.toggle_window("registers");
+        g_devtools_ui.toggle_window("disassembly");
+        g_devtools_ui.toggle_window("stack");
+        g_devtools_ui.toggle_window("breakpoints");
+        imgui_state.show_layout_dropdown = false;
+      }
+      if (ImGui::MenuItem("Memory")) {
+        g_devtools_ui.toggle_window("memory_hex");
+        g_devtools_ui.toggle_window("symbols");
+        g_devtools_ui.toggle_window("data_areas");
+        imgui_state.show_layout_dropdown = false;
+      }
+      if (ImGui::MenuItem("Hardware")) {
+        g_devtools_ui.toggle_window("video_state");
+        g_devtools_ui.toggle_window("audio_state");
+        g_devtools_ui.toggle_window("asic");
+        g_devtools_ui.toggle_window("silicon_disc");
+        imgui_state.show_layout_dropdown = false;
+      }
+    }
+
+    // Custom saved layouts
+    ImGui::Separator();
+    {
+      static bool open_save_popup = false;
+      if (ImGui::MenuItem("Save Layout...")) open_save_popup = true;
+
+      auto layouts = workspace_list_layouts();
+
+      if (ImGui::BeginMenu("Load Layout")) {
+        if (layouts.empty()) {
+          ImGui::MenuItem("No saved layouts", nullptr, false, false);
+        } else {
+          for (auto& l : layouts) {
+            if (ImGui::MenuItem(l.c_str())) {
+              workspace_load_layout(l);
+              imgui_state.show_layout_dropdown = false;
+            }
+          }
+        }
+        ImGui::EndMenu();
+      }
+
+      if (ImGui::BeginMenu("Delete Layout")) {
+        if (layouts.empty()) {
+          ImGui::MenuItem("No saved layouts", nullptr, false, false);
+        } else {
+          for (auto& l : layouts) {
+            if (ImGui::MenuItem(l.c_str())) workspace_delete_layout(l);
+          }
+        }
+        ImGui::EndMenu();
+      }
+
+      // Deferred popup open
+      if (open_save_popup) {
+        ImGui::OpenPopup("Save Layout##popup");
+        open_save_popup = false;
+      }
+    }
+
+    // CPC Screen scale (only in docked mode)
+    if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
+      ImGui::Separator();
+      ImGui::TextUnformatted("CPC Screen Scale");
+      if (ImGui::RadioButton("Fit",
+                             CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit))
+        CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
+      if (ImGui::RadioButton("1x",
+                             CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))
+        CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
+      if (ImGui::RadioButton("2x",
+                             CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))
+        CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
+      if (ImGui::RadioButton("3x",
+                             CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))
+        CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
+    }
+
+    // Save Layout popup (modal, so it won't have focus issues)
+    {
+      static char save_name[64] = "";
+      static std::string save_error;
+      if (ImGui::BeginPopup("Save Layout##popup")) {
+        ImGui::TextUnformatted("Layout Name:");
+        bool enter_pressed =
+            ImGui::InputText("##save_name", save_name, sizeof(save_name),
+                             ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
+
+        if (!save_error.empty()) {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+          ImGui::TextUnformatted(save_error.c_str());
+          ImGui::PopStyleColor();
+        }
+
+        bool do_save = enter_pressed || ImGui::Button("Save");
+        ImGui::SameLine();
+        bool do_cancel = ImGui::Button("Cancel");
+
+        if (do_save) {
+          std::string name(save_name);
+          while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+          while (!name.empty() && name.back() == ' ') name.pop_back();
+
+          bool valid = !name.empty();
+          if (valid) {
+            for (char c : name) {
+              if (c == '/' || c == '\\' || c == '\0') {
+                valid = false;
+                break;
+              }
+            }
+          }
+          if (valid && (name == "." || name == "..")) valid = false;
+
+          if (!valid) {
+            save_error = "Invalid name";
+          } else if (workspace_save_layout(name)) {
+            save_name[0] = '\0';
+            save_error.clear();
+            ImGui::CloseCurrentPopup();
+            imgui_state.show_layout_dropdown = false;
+          } else {
+            save_error = "Save failed";
+          }
+        }
+        if (do_cancel) {
+          save_name[0] = '\0';
+          save_error.clear();
+          ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+      }
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleVar(2);
+}
+
+static void imgui_render_topbar() {
   float pad_y = 2.0f;
-  float bar_height = 25.0f; // topbar window only (not including menu bar)
+  float bar_height = 25.0f;  // topbar window only (not including menu bar)
 
   ImGuiViewport* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
@@ -908,24 +1214,37 @@ static void imgui_render_topbar()
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.094f, 0.094f, 0.094f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                        ImVec4(0.094f, 0.094f, 0.094f, 1.0f));
 
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoDocking |
-                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav;
 
   if (ImGui::Begin("##topbar", nullptr, flags)) {
     {
       int h = static_cast<int>(ImGui::GetWindowSize().y);
-      if (h != s_main_topbar_h) { s_main_topbar_h = h; s_topbar_height_dirty = true; }
+      if (h != s_main_topbar_h) {
+        s_main_topbar_h = h;
+        s_topbar_height_dirty = true;
+      }
     }
-    bool menu_pressed = ImGui::Button("Pause (F1)");
-    if (menu_pressed) {
-      imgui_state.show_menu = true;
-      imgui_state.menu_just_opened = true;
-      cpc_pause();
+    // Label reflects live pause state (atomic flag — CPC.paused is written by
+    // the Z80 thread). When paused, the button resumes; when running, it opens
+    // the F1 menu and pauses, exactly as before.
+    const bool is_paused = g_emu_paused.load(std::memory_order_relaxed);
+    if (ImGui::Button(is_paused ? "Resume (Esc)" : "Pause (F1)")) {
+      if (is_paused) {
+        cpc_resume();
+        imgui_state.show_menu = false;
+      } else {
+        imgui_state.show_menu = true;
+        imgui_state.menu_just_opened = true;
+        cpc_pause();
+      }
     }
     // (Tape waveform moved to bottom status bar)
 
@@ -938,7 +1257,8 @@ static void imgui_render_topbar()
       float fps_w = 0.0f;
       if (!imgui_state.topbar_fps.empty())
         fps_w = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x + 16.0f;
-      float btn_w = ImGui::CalcTextSize("Layout").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+      float btn_w = ImGui::CalcTextSize("Layout").x +
+                    ImGui::GetStyle().FramePadding.x * 2.0f;
       ImGui::SameLine(ImGui::GetWindowWidth() - fps_w - btn_w - 12.0f);
 
       if (ImGui::Button("Layout")) {
@@ -961,206 +1281,21 @@ static void imgui_render_topbar()
   ImGui::PopStyleVar(4);
 
   // ── Layout dropdown window (rendered outside topbar) ──
-  if (imgui_state.show_layout_dropdown) {
-    // Position below the Layout button, clamped to stay within the main viewport
-    {
-      ImGuiViewport* mvp = ImGui::GetMainViewport();
-      float dd_w = 220.0f;
-      float x = s_layout_btn_pos.x;
-      float right_edge = mvp->Pos.x + mvp->Size.x;
-      if (x + dd_w > right_edge) x = right_edge - dd_w;
-      ImGui::SetNextWindowPos(ImVec2(x, s_layout_btn_pos.y), ImGuiCond_Always);
-      ImGui::SetNextWindowSize(ImVec2(dd_w, 0));
-      ImGui::SetNextWindowViewport(mvp->ID);
-    }
-
-    ImGuiWindowFlags dd_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                                ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-    if (ImGui::Begin("##LayoutDropdown", nullptr, dd_flags)) {
-      // Close when clicking outside
-      if (!ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
-          ImGui::IsMouseClicked(0)) {
-        imgui_state.show_layout_dropdown = false;
-      }
-
-      // Mode selection
-      if (ImGui::RadioButton("Classic Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic)) {
-        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Classic;
-        imgui_state.show_layout_dropdown = false;
-      }
-      if (ImGui::RadioButton("Docked Mode", CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked)) {
-        if (CPC.workspace_layout != t_CPC::WorkspaceLayoutMode::Docked) {
-          CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
-          workspace_request_initial_preset();
-        }
-        imgui_state.show_layout_dropdown = false;
-      }
-      ImGui::Separator();
-
-      // Preset layouts
-      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-        if (ImGui::MenuItem("Apply Debug Layout")) {
-          workspace_apply_preset(WorkspacePreset::Debug);
-          imgui_state.show_layout_dropdown = false;
-        }
-        if (ImGui::MenuItem("Apply IDE Layout")) {
-          workspace_apply_preset(WorkspacePreset::IDE);
-          imgui_state.show_layout_dropdown = false;
-        }
-        if (ImGui::MenuItem("Apply Hardware Layout")) {
-          workspace_apply_preset(WorkspacePreset::Hardware);
-          imgui_state.show_layout_dropdown = false;
-        }
-      } else {
-        if (ImGui::MenuItem("Debug")) {
-          g_devtools_ui.toggle_window("registers");
-          g_devtools_ui.toggle_window("disassembly");
-          g_devtools_ui.toggle_window("stack");
-          g_devtools_ui.toggle_window("breakpoints");
-          imgui_state.show_layout_dropdown = false;
-        }
-        if (ImGui::MenuItem("Memory")) {
-          g_devtools_ui.toggle_window("memory_hex");
-          g_devtools_ui.toggle_window("symbols");
-          g_devtools_ui.toggle_window("data_areas");
-          imgui_state.show_layout_dropdown = false;
-        }
-        if (ImGui::MenuItem("Hardware")) {
-          g_devtools_ui.toggle_window("video_state");
-          g_devtools_ui.toggle_window("audio_state");
-          g_devtools_ui.toggle_window("asic");
-          g_devtools_ui.toggle_window("silicon_disc");
-          imgui_state.show_layout_dropdown = false;
-        }
-      }
-
-      // Custom saved layouts
-      ImGui::Separator();
-      {
-        static bool open_save_popup = false;
-        if (ImGui::MenuItem("Save Layout..."))
-          open_save_popup = true;
-
-        auto layouts = workspace_list_layouts();
-
-        if (ImGui::BeginMenu("Load Layout")) {
-          if (layouts.empty()) {
-            ImGui::MenuItem("No saved layouts", nullptr, false, false);
-          } else {
-            for (auto& l : layouts) {
-              if (ImGui::MenuItem(l.c_str())) {
-                workspace_load_layout(l);
-                imgui_state.show_layout_dropdown = false;
-              }
-            }
-          }
-          ImGui::EndMenu();
-        }
-
-        if (ImGui::BeginMenu("Delete Layout")) {
-          if (layouts.empty()) {
-            ImGui::MenuItem("No saved layouts", nullptr, false, false);
-          } else {
-            for (auto& l : layouts) {
-              if (ImGui::MenuItem(l.c_str()))
-                workspace_delete_layout(l);
-            }
-          }
-          ImGui::EndMenu();
-        }
-
-        // Deferred popup open
-        if (open_save_popup) {
-          ImGui::OpenPopup("Save Layout##popup");
-          open_save_popup = false;
-        }
-      }
-
-      // CPC Screen scale (only in docked mode)
-      if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Docked) {
-        ImGui::Separator();
-        ImGui::TextUnformatted("CPC Screen Scale");
-        if (ImGui::RadioButton("Fit",  CPC.cpc_screen_scale == t_CPC::ScreenScale::Fit)) CPC.cpc_screen_scale = t_CPC::ScreenScale::Fit;
-        if (ImGui::RadioButton("1x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X1))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X1;
-        if (ImGui::RadioButton("2x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X2))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X2;
-        if (ImGui::RadioButton("3x",   CPC.cpc_screen_scale == t_CPC::ScreenScale::X3))  CPC.cpc_screen_scale = t_CPC::ScreenScale::X3;
-      }
-
-      // Save Layout popup (modal, so it won't have focus issues)
-      {
-        static char save_name[64] = "";
-        static std::string save_error;
-        if (ImGui::BeginPopup("Save Layout##popup")) {
-          ImGui::TextUnformatted("Layout Name:");
-          bool enter_pressed = ImGui::InputText("##save_name", save_name, sizeof(save_name),
-              ImGuiInputTextFlags_EnterReturnsTrue);
-          if (ImGui::IsWindowAppearing())
-            ImGui::SetKeyboardFocusHere(-1);
-
-          if (!save_error.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-            ImGui::TextUnformatted(save_error.c_str());
-            ImGui::PopStyleColor();
-          }
-
-          bool do_save = enter_pressed || ImGui::Button("Save");
-          ImGui::SameLine();
-          bool do_cancel = ImGui::Button("Cancel");
-
-          if (do_save) {
-            std::string name(save_name);
-            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
-            while (!name.empty() && name.back() == ' ') name.pop_back();
-
-            bool valid = !name.empty();
-            if (valid) {
-              for (char c : name) {
-                if (c == '/' || c == '\\' || c == '\0') { valid = false; break; }
-              }
-            }
-            if (valid && (name == "." || name == "..")) valid = false;
-
-            if (!valid) {
-              save_error = "Invalid name";
-            } else if (workspace_save_layout(name)) {
-              save_name[0] = '\0';
-              save_error.clear();
-              ImGui::CloseCurrentPopup();
-              imgui_state.show_layout_dropdown = false;
-            } else {
-              save_error = "Save failed";
-            }
-          }
-          if (do_cancel) {
-            save_name[0] = '\0';
-            save_error.clear();
-            ImGui::CloseCurrentPopup();
-          }
-
-          ImGui::EndPopup();
-        }
-      }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-  }
+  render_layout_dropdown();
 }
 
 // ─────────────────────────────────────────────────
 // Marquee text helper: scrolls text horizontally within a fixed-width box
 // when text is wider than boxW. Uses ping-pong with pause at start/end.
 // ─────────────────────────────────────────────────
-static void imgui_marquee_text(const char* text, float boxW)
-{
-  // AlignTextToFramePadding is called by the caller — capture position AFTER alignment.
+static void imgui_marquee_text(const char* text, float boxW) {
+  // AlignTextToFramePadding is called by the caller — capture position AFTER
+  // alignment.
   ImVec2 pos = ImGui::GetCursorScreenPos();
   float frameH = ImGui::GetFrameHeight();
   float lineH = ImGui::GetTextLineHeight();
-  float textY = pos.y + (frameH - lineH) * 0.5f;  // vertically center text in frame
+  float textY =
+      pos.y + (frameH - lineH) * 0.5f;  // vertically center text in frame
   float textW = ImGui::CalcTextSize(text).x;
   ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
 
@@ -1178,7 +1313,8 @@ static void imgui_marquee_text(const char* text, float boxW)
   scroll = fmaxf(0.0f, scroll - 20.0f);
 
   ImGui::PushClipRect(pos, ImVec2(pos.x + boxW, pos.y + frameH), true);
-  ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x - scroll, textY), color, text);
+  ImGui::GetWindowDrawList()->AddText(ImVec2(pos.x - scroll, textY), color,
+                                      text);
   ImGui::PopClipRect();
 
   ImGui::Dummy(ImVec2(boxW, frameH));
@@ -1187,11 +1323,11 @@ static void imgui_marquee_text(const char* text, float boxW)
 // Draw a beveled LED indicator (16x8 px) with active/inactive state.
 // r,g,b are the base color channel values (e.g. 255,0,0 for red).
 static void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active,
-                            int r, int g, int b)
-{
+                            int r, int g, int b) {
   if (active) {
     dl->AddRectFilled(p0, p1, IM_COL32(r, g, b, 255));
-    ImU32 hi = IM_COL32(std::min(255, r + 100), std::min(255, g + 100), std::min(255, b + 100), 255);
+    ImU32 hi = IM_COL32(std::min(255, r + 100), std::min(255, g + 100),
+                        std::min(255, b + 100), 255);
     ImU32 lo = IM_COL32(r * 63 / 100, g * 63 / 100, b * 63 / 100, 255);
     dl->AddLine(p0, ImVec2(p1.x, p0.y), hi);
     dl->AddLine(p0, ImVec2(p0.x, p1.y), hi);
@@ -1212,8 +1348,7 @@ static void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active,
 // Bottom Status Bar
 // ─────────────────────────────────────────────────
 
-static void imgui_render_statusbar()
-{
+static void imgui_render_statusbar() {
   float bar_height = 22.0f;
   float pad_y = 2.0f;
 
@@ -1222,29 +1357,35 @@ static void imgui_render_statusbar()
 
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
-  ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport, don't spawn platform window
+  ImGui::SetNextWindowViewport(
+      vp->ID);  // keep on main viewport, don't spawn platform window
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
 
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoDocking |
-                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav;
 
   if (ImGui::Begin("##statusbar", nullptr, flags)) {
     // Track statusbar height for bottombar layout
     int h = static_cast<int>(ImGui::GetWindowSize().y);
-    if (h != s_statusbar_h) { s_statusbar_h = h; s_bottombar_height_dirty = true; }
+    if (h != s_statusbar_h) {
+      s_statusbar_h = h;
+      s_bottombar_height_dirty = true;
+    }
 
     // ── Drive activity LEDs ──
     {
       float frameH = ImGui::GetFrameHeight();
       for (int drv = 0; drv < 2; drv++) {
-        bool active = drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+        bool active =
+            drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
         t_drive& drive = drv == 0 ? driveA : driveB;
         auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
         const char* driveLabel = drv == 0 ? "A:" : "B:";
@@ -1255,13 +1396,14 @@ static void imgui_render_statusbar()
         const char* fullName;
         if (drive.tracks) {
           auto pos = driveFile.find_last_of("/\\");
-          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1 : driveFile.c_str();
+          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1
+                                                : driveFile.c_str();
         } else {
           fullName = "(no disk)";
         }
 
         // Push unique ID per drive to avoid conflicts
-        ImGui::PushID(100 + drv); // offset IDs to avoid clashes with topbar
+        ImGui::PushID(100 + drv);  // offset IDs to avoid clashes with topbar
 
         ImGui::BeginGroup();
         ImGui::AlignTextToFramePadding();
@@ -1284,7 +1426,8 @@ static void imgui_render_statusbar()
         if (drive.tracks) {
           char trkStr[8];
           snprintf(trkStr, sizeof(trkStr), "T%02d", (int)drive.current_track);
-          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_Text,
+                                ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
           ImGui::AlignTextToFramePadding();
           ImGui::TextUnformatted(trkStr);
           ImGui::PopStyleColor();
@@ -1292,9 +1435,9 @@ static void imgui_render_statusbar()
         }
 
         // Show filename or "(no disk)" with marquee scrolling
-        ImGui::PushStyleColor(ImGuiCol_Text, drive.tracks
-          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              drive.tracks ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+                                           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
         imgui_marquee_text(fullName, 120.0f);
         ImGui::PopStyleColor();
@@ -1308,12 +1451,14 @@ static void imgui_render_statusbar()
           } else {
             // Load disk
             static const SDL_DialogFileFilter disk_filters[] = {
-              { "Disk Images", "dsk;ipf;raw;zip" }
-            };
-            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED : FileDialogAction::LoadDiskB_LED;
-            SDL_ShowOpenFileDialog(file_dialog_callback,
-              reinterpret_cast<void*>(static_cast<intptr_t>(act)),
-              mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(), false);
+                {"Disk Images", "dsk;ipf;raw;zip"}};
+            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED
+                                : FileDialogAction::LoadDiskB_LED;
+            SDL_ShowOpenFileDialog(
+                file_dialog_callback,
+                reinterpret_cast<void*>(static_cast<intptr_t>(act)),
+                mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(),
+                false);
           }
         }
 
@@ -1351,7 +1496,9 @@ static void imgui_render_statusbar()
         if (g_m4board.container_host_path != cached_path) {
           cached_path = g_m4board.container_host_path;
           auto pos = cached_path.find_last_of("/\\");
-          cached_fname = (pos != std::string::npos) ? cached_path.substr(pos + 1) : cached_path;
+          cached_fname = (pos != std::string::npos)
+                             ? cached_path.substr(pos + 1)
+                             : cached_path;
         }
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
@@ -1368,9 +1515,9 @@ static void imgui_render_statusbar()
       ImVec2 cursor = ImGui::GetCursorScreenPos();
       float frameH = ImGui::GetFrameHeight();
       ImGui::GetWindowDrawList()->AddLine(
-        ImVec2(cursor.x, cursor.y + 2.0f),
-        ImVec2(cursor.x, cursor.y + frameH - 2.0f),
-        IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
+          ImVec2(cursor.x, cursor.y + 2.0f),
+          ImVec2(cursor.x, cursor.y + frameH - 2.0f),
+          IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
       ImGui::Dummy(ImVec2(1.0f, frameH));
     }
 
@@ -1383,7 +1530,8 @@ static void imgui_render_statusbar()
       ImGui::AlignTextToFramePadding();
 
       ImU32 color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
-      ImU32 label_color  = tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+      ImU32 label_color =
+          tape_playing ? color_active : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
 
       // ── TAPE label ──
       ImGui::PushStyleColor(ImGuiCol_Text, label_color);
@@ -1396,23 +1544,26 @@ static void imgui_render_statusbar()
         const char* fullTapeName;
         if (tape_loaded && !CPC.tape.file.empty()) {
           auto pos = CPC.tape.file.find_last_of("/\\");
-          fullTapeName = (pos != std::string::npos) ? CPC.tape.file.c_str() + pos + 1 : CPC.tape.file.c_str();
+          fullTapeName = (pos != std::string::npos)
+                             ? CPC.tape.file.c_str() + pos + 1
+                             : CPC.tape.file.c_str();
         } else {
           fullTapeName = "(no tape)";
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, tape_loaded
-          ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              tape_loaded ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+                                          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
         imgui_marquee_text(fullTapeName, 120.0f);
         ImGui::PopStyleColor();
         if (!tape_loaded && ImGui::IsItemClicked()) {
           static const SDL_DialogFileFilter tape_filters[] = {
-            { "Tape Images", "cdt;voc;zip" }
-          };
+              {"Tape Images", "cdt;voc;zip"}};
           SDL_ShowOpenFileDialog(file_dialog_callback,
-            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadTape_LED)),
-            mainSDLWindow, tape_filters, 1, CPC.current_tape_path.c_str(), false);
+                                 reinterpret_cast<void*>(static_cast<intptr_t>(
+                                     FileDialogAction::LoadTape_LED)),
+                                 mainSDLWindow, tape_filters, 1,
+                                 CPC.current_tape_path.c_str(), false);
         }
       }
 
@@ -1420,9 +1571,12 @@ static void imgui_render_statusbar()
       ImGui::SameLine(0, 6);
       {
         // Gray button style
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,  ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,   ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImVec4(0.20f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                              ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                              ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
 
         bool at_start = !tape_loaded || imgui_state.tape_current_block <= 0;
         bool at_end = !tape_loaded || imgui_state.tape_block_offsets.empty();
@@ -1430,7 +1584,7 @@ static void imgui_render_statusbar()
 
         // |◀ Prev block
         ImGui::BeginDisabled(at_start);
-        if (ImGui::SmallButton("\xe2\x97\x80##sb_prev")) { // ◀
+        if (ImGui::SmallButton("\xe2\x97\x80##sb_prev")) {  // ◀
           int prev = imgui_state.tape_current_block - 1;
           if (prev >= 0 && prev < (int)imgui_state.tape_block_offsets.size()) {
             pbTapeBlock = imgui_state.tape_block_offsets[prev];
@@ -1440,13 +1594,15 @@ static void imgui_render_statusbar()
             imgui_state.tape_current_block = prev;
           }
         }
-        { // Draw bar on left side of prev button
+        {  // Draw bar on left side of prev button
           ImVec2 rmin = ImGui::GetItemRectMin();
           ImVec2 rmax = ImGui::GetItemRectMax();
           float bx = rmin.x + ImGui::GetStyle().FramePadding.x - 1.0f;
           float pad = (rmax.y - rmin.y) * 0.15f;
-          ImU32 barCol = at_start ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
+          ImU32 barCol = at_start ? IM_COL32(0x50, 0x50, 0x50, 0xFF)
+                                  : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+          ImGui::GetWindowDrawList()->AddLine(
+              ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
         }
         ImGui::EndDisabled();
 
@@ -1455,12 +1611,15 @@ static void imgui_render_statusbar()
         // ▶ Play
         if (is_playing) {
           // Highlight play button green when playing
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.35f, 0.18f, 1.0f));
-          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.45f, 0.25f, 1.0f));
-          ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.25f, 0.12f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_Button,
+                                ImVec4(0.0f, 0.35f, 0.18f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                ImVec4(0.0f, 0.45f, 0.25f, 1.0f));
+          ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                                ImVec4(0.0f, 0.25f, 0.12f, 1.0f));
         }
         ImGui::BeginDisabled(!tape_loaded || is_playing);
-        if (ImGui::SmallButton("\xe2\x96\xb6##sb_play")) { // ▶
+        if (ImGui::SmallButton("\xe2\x96\xb6##sb_play")) {  // ▶
           CPC.tape_play_button = 0x10;
         }
         ImGui::EndDisabled();
@@ -1470,7 +1629,7 @@ static void imgui_render_statusbar()
 
         // ⏹ Stop
         ImGui::BeginDisabled(!is_playing);
-        if (ImGui::SmallButton("\xe2\x96\xa0##sb_stop")) { // ■
+        if (ImGui::SmallButton("\xe2\x96\xa0##sb_stop")) {  // ■
           CPC.tape_play_button = 0;
         }
         ImGui::EndDisabled();
@@ -1478,8 +1637,10 @@ static void imgui_render_statusbar()
         ImGui::SameLine(0, 2);
 
         // ▷| Next block
-        ImGui::BeginDisabled(at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1);
-        if (ImGui::SmallButton("\xe2\x96\xb6##sb_next")) { // ▶
+        ImGui::BeginDisabled(
+            at_end || imgui_state.tape_current_block >=
+                          (int)imgui_state.tape_block_offsets.size() - 1);
+        if (ImGui::SmallButton("\xe2\x96\xb6##sb_next")) {  // ▶
           int next = imgui_state.tape_current_block + 1;
           if (next < (int)imgui_state.tape_block_offsets.size()) {
             pbTapeBlock = imgui_state.tape_block_offsets[next];
@@ -1489,14 +1650,18 @@ static void imgui_render_statusbar()
             imgui_state.tape_current_block = next;
           }
         }
-        { // Draw bar on right side of next button
+        {  // Draw bar on right side of next button
           ImVec2 rmin = ImGui::GetItemRectMin();
           ImVec2 rmax = ImGui::GetItemRectMax();
           float bx = rmax.x - ImGui::GetStyle().FramePadding.x + 1.0f;
           float pad = (rmax.y - rmin.y) * 0.15f;
-          bool dis = at_end || imgui_state.tape_current_block >= (int)imgui_state.tape_block_offsets.size() - 1;
-          ImU32 barCol = dis ? IM_COL32(0x50, 0x50, 0x50, 0xFF) : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
-          ImGui::GetWindowDrawList()->AddLine(ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
+          bool dis =
+              at_end || imgui_state.tape_current_block >=
+                            (int)imgui_state.tape_block_offsets.size() - 1;
+          ImU32 barCol = dis ? IM_COL32(0x50, 0x50, 0x50, 0xFF)
+                             : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
+          ImGui::GetWindowDrawList()->AddLine(
+              ImVec2(bx, rmin.y + pad), ImVec2(bx, rmax.y - pad), barCol, 2.0f);
         }
         ImGui::EndDisabled();
 
@@ -1504,12 +1669,12 @@ static void imgui_render_statusbar()
 
         // ⏏ Eject
         ImGui::BeginDisabled(!tape_loaded);
-        if (ImGui::SmallButton("\xe2\x8f\x8f##sb_eject")) { // ⏏
+        if (ImGui::SmallButton("\xe2\x8f\x8f##sb_eject")) {  // ⏏
           imgui_state.eject_confirm_tape = true;
         }
         ImGui::EndDisabled();
 
-        ImGui::PopStyleColor(3); // gray button style
+        ImGui::PopStyleColor(3);  // gray button style
       }
 
       // ── Block counter ──
@@ -1517,8 +1682,8 @@ static void imgui_render_statusbar()
         ImGui::SameLine(0, 4);
         char blockStr[32];
         snprintf(blockStr, sizeof(blockStr), "%d/%d",
-          imgui_state.tape_current_block + 1,
-          (int)imgui_state.tape_block_offsets.size());
+                 imgui_state.tape_current_block + 1,
+                 (int)imgui_state.tape_block_offsets.size());
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(blockStr);
@@ -1530,7 +1695,8 @@ static void imgui_render_statusbar()
         // Reset state when tape is ejected
         if (!tape_loaded) {
           imgui_state.tape_decoded_head = 0;
-          memset(imgui_state.tape_decoded_buf, 0, sizeof(imgui_state.tape_decoded_buf));
+          memset(imgui_state.tape_decoded_buf, 0,
+                 sizeof(imgui_state.tape_decoded_buf));
         }
 
         // Update current block index from pbTapeBlock pointer.
@@ -1539,9 +1705,12 @@ static void imgui_render_statusbar()
         static size_t last_block_count = 0;
         static const byte* last_tape_base = nullptr;
         static byte* last_block0 = nullptr;
-        // Detect new tape: base pointer, block count, or first block address changed.
+        // Detect new tape: base pointer, block count, or first block address
+        // changed.
         const byte* tape_base = pbTapeImage.empty() ? nullptr : &pbTapeImage[0];
-        byte* block0 = imgui_state.tape_block_offsets.empty() ? nullptr : imgui_state.tape_block_offsets[0];
+        byte* block0 = imgui_state.tape_block_offsets.empty()
+                           ? nullptr
+                           : imgui_state.tape_block_offsets[0];
         if (tape_base != last_tape_base ||
             imgui_state.tape_block_offsets.size() != last_block_count ||
             block0 != last_block0) {
@@ -1550,7 +1719,8 @@ static void imgui_render_statusbar()
           last_block0 = block0;
           last_pbTapeBlock = nullptr;  // force re-scan
         }
-        if (tape_loaded && !imgui_state.tape_block_offsets.empty() && pbTapeBlock != last_pbTapeBlock) {
+        if (tape_loaded && !imgui_state.tape_block_offsets.empty() &&
+            pbTapeBlock != last_pbTapeBlock) {
           last_pbTapeBlock = pbTapeBlock;
           for (int i = 0; i < (int)imgui_state.tape_block_offsets.size(); i++) {
             if (imgui_state.tape_block_offsets[i] == pbTapeBlock) {
@@ -1567,7 +1737,7 @@ static void imgui_render_statusbar()
         ImGui::SameLine(0, 4);
         float frameH = ImGui::GetFrameHeight();
         ImU32 color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
-        ImU32 color_dim    = IM_COL32(0x00, 0x40, 0x20, 0xFF);
+        ImU32 color_dim = IM_COL32(0x00, 0x40, 0x20, 0xFF);
 
         float waveW = 100.0f;
         ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -1578,7 +1748,9 @@ static void imgui_render_statusbar()
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(p0, p1, IM_COL32(0x10, 0x10, 0x10, 0xFF));
-        dl->AddRect(p0, p1, tape_playing ? IM_COL32(0x00, 0x80, 0x40, 0x80) : IM_COL32(0x00, 0x30, 0x18, 0x60));
+        dl->AddRect(p0, p1,
+                    tape_playing ? IM_COL32(0x00, 0x80, 0x40, 0x80)
+                                 : IM_COL32(0x00, 0x30, 0x18, 0x60));
 
         ImU32 wave_color = tape_playing ? color_active : color_dim;
         constexpr int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
@@ -1613,8 +1785,10 @@ static void imgui_render_statusbar()
           int visCount = static_cast<int>(waveW);
           if (visCount > dN) visCount = dN;
           int startIdx = (dHead - visCount + dN) % dN;
-          ImU32 col_one  = tape_playing ? IM_COL32(0x00, 0xFF, 0x80, 0xFF) : IM_COL32(0x00, 0x44, 0x00, 0xFF);
-          ImU32 col_zero = tape_playing ? IM_COL32(0x00, 0x44, 0x00, 0xFF) : IM_COL32(0x00, 0x18, 0x00, 0xFF);
+          ImU32 col_one = tape_playing ? IM_COL32(0x00, 0xFF, 0x80, 0xFF)
+                                       : IM_COL32(0x00, 0x44, 0x00, 0xFF);
+          ImU32 col_zero = tape_playing ? IM_COL32(0x00, 0x44, 0x00, 0xFF)
+                                        : IM_COL32(0x00, 0x18, 0x00, 0xFF);
           for (int i = 0; i < visCount; i++) {
             int idx = (startIdx + i) % dN;
             float x = p0.x + (waveW - visCount) + i;
@@ -1635,7 +1809,8 @@ static void imgui_render_statusbar()
           imgui_state.tape_wave_mode = (imgui_state.tape_wave_mode + 1) % 2;
         }
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("Click to cycle waveform mode (RAW pulse / decoded BITS)");
+          ImGui::SetTooltip(
+              "Click to cycle waveform mode (RAW pulse / decoded BITS)");
         }
       }
     }
@@ -1650,13 +1825,15 @@ static void imgui_render_statusbar()
       imgui_state.eject_confirm_drive = -1;
       ImGui::OpenPopup("Eject Disk?##sb");
     }
-    if (ImGui::BeginPopupModal("Eject Disk?##sb", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Eject Disk?##sb", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
       const char* name = popup_eject_drive == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
       ImGui::Spacing();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
         t_drive& drive = popup_eject_drive == 0 ? driveA : driveB;
-        auto& driveFile = popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
+        auto& driveFile =
+            popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         dsk_eject(&drive);
         driveFile.clear();
         popup_eject_drive = -1;
@@ -1674,7 +1851,8 @@ static void imgui_render_statusbar()
     if (imgui_state.eject_confirm_tape) {
       ImGui::OpenPopup("Eject Tape?##sb");
     }
-    if (ImGui::BeginPopupModal("Eject Tape?##sb", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal("Eject Tape?##sb", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextUnformatted("Eject tape?");
       ImGui::Spacing();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
@@ -1704,19 +1882,18 @@ static void imgui_render_statusbar()
 // Menu
 // ─────────────────────────────────────────────────
 
-static void imgui_render_menu()
-{
+static void imgui_render_menu() {
   ImGuiViewport* mvp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
+                          ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
   ImGui::SetNextWindowSize(ImVec2(260, 0));
   ImGui::SetNextWindowViewport(mvp->ID);
 
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoDocking |
-                           ImGuiWindowFlags_AlwaysAutoResize;
-
+  ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+      ImGuiWindowFlags_AlwaysAutoResize;
 
   bool menu_open = true;
   if (!ImGui::Begin("konCePCja", &menu_open, flags)) {
@@ -1724,21 +1901,40 @@ static void imgui_render_menu()
     ImGui::End();
     return;
   }
-  if (!menu_open) { imgui_close_menu(); ImGui::End(); return; }
+  if (!menu_open) {
+    imgui_close_menu();
+    ImGui::End();
+    return;
+  }
 
   // Keyboard shortcuts within pause menu
   bool action = false;
   if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { imgui_close_menu(); ImGui::End(); return; }
-    if (ImGui::IsKeyPressed(ImGuiKey_R)) { emulator_reset(); action = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_Q)) { imgui_state.show_quit_confirm = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_A)) { imgui_state.show_about = true; }
-    if (ImGui::IsKeyPressed(ImGuiKey_F5)) { emulator_reset(); action = true; }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      imgui_close_menu();
+      ImGui::End();
+      return;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_R)) {
+      emulator_reset();
+      action = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Q)) {
+      imgui_state.show_quit_confirm = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_A)) {
+      imgui_state.show_about = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_F5)) {
+      emulator_reset();
+      action = true;
+    }
   }
 
   float bw = ImGui::GetContentRegionAvail().x;
 
-  ImGui::TextWrapped("Emulation paused. Use the menu bar above for all actions.");
+  ImGui::TextWrapped(
+      "Emulation paused. Use the menu bar above for all actions.");
   ImGui::Spacing();
 
   // Enable keyboard navigation for this window (arrows/tab cycle buttons)
@@ -1769,7 +1965,8 @@ static void imgui_render_menu()
     ImGui::OpenPopup("About konCePCja");
     imgui_state.show_about = false;
   }
-  if (ImGui::BeginPopupModal("About konCePCja", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal("About konCePCja", nullptr,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("konCePCja %s", VERSION_STRING);
     ImGui::Separator();
     ImGui::Text("Amstrad CPC Emulator");
@@ -1787,34 +1984,35 @@ static void imgui_render_menu()
     ImGui::BulletText("Ctrl+K - Command Palette");
 #endif
     ImGui::Spacing();
-    if (ImGui::Button("OK", ImVec2(120, 0))) { ImGui::CloseCurrentPopup(); }
+    if (ImGui::Button("OK", ImVec2(120, 0))) {
+      ImGui::CloseCurrentPopup();
+    }
     ImGui::EndPopup();
   }
-
 }
 
 // ─────────────────────────────────────────────────
 // Options
 // ─────────────────────────────────────────────────
 
-// No hardcoded video plugin list — combo is built dynamically from video_plugin_list.
-static const char* scale_items[] = { "Fit window", "1x", "1.5x", "2x", "3x" };
-static const char* sample_rates[] = { "11025", "22050", "44100", "48000", "96000" };
-static const char* cpc_models[] = { "CPC 464", "CPC 664", "CPC 6128", "6128+" };
-static const char* ram_sizes[] = { "64 KB", "128 KB", "192 KB", "256 KB", "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)" };
-static int ram_size_values[] = { 64, 128, 192, 256, 320, 512, 576, 4160 };
+// No hardcoded video plugin list — combo is built dynamically from
+// video_plugin_list.
+static const char* scale_items[] = {"Fit window", "1x", "1.5x", "2x", "3x"};
+static const char* sample_rates[] = {"11025", "22050", "44100", "48000",
+                                     "96000"};
+static const char* cpc_models[] = {"CPC 464", "CPC 664", "CPC 6128", "6128+"};
+static const char* ram_sizes[] = {
+    "64 KB",  "128 KB", "192 KB", "256 KB",
+    "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)"};
+static int ram_size_values[] = {64, 128, 192, 256, 320, 512, 576, 4160};
 
 static const char* crtc_type_labels[] = {
-  "Type 0 - HD6845S (Hitachi)",
-  "Type 1 - UM6845R (UMC)",
-  "Type 2 - MC6845 (Motorola)",
-  "Type 3 - AMS40489 (Amstrad ASIC)"
-};
+    "Type 0 - HD6845S (Hitachi)", "Type 1 - UM6845R (UMC)",
+    "Type 2 - MC6845 (Motorola)", "Type 3 - AMS40489 (Amstrad ASIC)"};
 
 // find_ram_index and find_sample_rate_index moved to imgui_ui_testable.h
 
-static void imgui_render_options()
-{
+static void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
   static bool old_m4_enabled = false;
@@ -1826,13 +2024,17 @@ static void imgui_render_options()
   }
 
   ImGuiViewport* mvp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
+                          ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_Appearing);
   ImGui::SetNextWindowViewport(mvp->ID);
 
   bool open = true;
   if (!ImGui::Begin("Options", &open, ImGuiWindowFlags_NoCollapse)) {
-    if (!open) { imgui_state.show_options = false; first_open = true; }
+    if (!open) {
+      imgui_state.show_options = false;
+      first_open = true;
+    }
     ImGui::End();
     return;
   }
@@ -1841,21 +2043,26 @@ static void imgui_render_options()
     // ── General Tab ──
     if (ImGui::BeginTabItem("General")) {
       int model = static_cast<int>(CPC.model);
-      if (ImGui::Combo("CPC Model", &model, cpc_models, IM_ARRAYSIZE(cpc_models))) {
+      if (ImGui::Combo("CPC Model", &model, cpc_models,
+                       IM_ARRAYSIZE(cpc_models))) {
         CPC.model = model;
       }
 
       int ram_idx = find_ram_index(CPC.ram_size);
-      if (ImGui::Combo("RAM Size", &ram_idx, ram_sizes, IM_ARRAYSIZE(ram_sizes))) {
+      if (ImGui::Combo("RAM Size", &ram_idx, ram_sizes,
+                       IM_ARRAYSIZE(ram_sizes))) {
         CPC.ram_size = ram_size_values[ram_idx];
       }
 
       int crtc = static_cast<int>(CRTC.crtc_type);
-      if (ImGui::Combo("CRTC Type", &crtc, crtc_type_labels, IM_ARRAYSIZE(crtc_type_labels))) {
+      if (ImGui::Combo("CRTC Type", &crtc, crtc_type_labels,
+                       IM_ARRAYSIZE(crtc_type_labels))) {
         CRTC.crtc_type = static_cast<unsigned char>(crtc);
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Auto-set by CPC Model on reset.\nOverride for compatibility testing.");
+        ImGui::SetTooltip(
+            "Auto-set by CPC Model on reset.\nOverride for compatibility "
+            "testing.");
       }
 
       bool limit = CPC.limit_speed != 0;
@@ -1868,15 +2075,19 @@ static void imgui_render_options()
         CPC.frameskip = frameskip ? 1 : 0;
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Skip rendering frames when emulation falls behind 100%% speed.\nOnly has an effect when 'Limit Speed' is enabled.");
+        ImGui::SetTooltip(
+            "Skip rendering frames when emulation falls behind 100%% "
+            "speed.\nOnly has an effect when 'Limit Speed' is enabled.");
       }
 
       int speed = static_cast<int>(CPC.speed);
-      if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING, MAX_SPEED_SETTING)) {
+      if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING,
+                           MAX_SPEED_SETTING)) {
         CPC.speed = speed;
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("CPU clock speed in MHz (default: 4).\nHigher = faster emulation.");
+        ImGui::SetTooltip(
+            "CPU clock speed in MHz (default: 4).\nHigher = faster emulation.");
       }
 
       bool printer = CPC.printer != 0;
@@ -1884,25 +2095,38 @@ static void imgui_render_options()
         CPC.printer = printer ? 1 : 0;
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Saves CPC printer output to:\n%s", CPC.printer_file.c_str());
+        ImGui::SetTooltip("Saves CPC printer output to:\n%s",
+                          CPC.printer_file.c_str());
       }
 
       bool sw = g_smartwatch.enabled;
-      if (ImGui::Checkbox("SmartWatch RTC", &sw)) { g_smartwatch.enabled = sw; }
+      if (ImGui::Checkbox("SmartWatch RTC", &sw)) {
+        g_smartwatch.enabled = sw;
+      }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Dobbertin SmartWatch (DS1216) in upper ROM socket.\nProvides real-time clock via host system time.");
+        ImGui::SetTooltip(
+            "Dobbertin SmartWatch (DS1216) in upper ROM socket.\nProvides "
+            "real-time clock via host system time.");
       }
 
       bool sf2 = g_symbiface.enabled;
-      if (ImGui::Checkbox("Symbiface II", &sf2)) { g_symbiface.enabled = sf2; }
+      if (ImGui::Checkbox("Symbiface II", &sf2)) {
+        g_symbiface.enabled = sf2;
+      }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Symbiface II expansion (IDE + RTC + PS/2 Mouse).\nConfigure IDE images in config file.");
+        ImGui::SetTooltip(
+            "Symbiface II expansion (IDE + RTC + PS/2 Mouse).\nConfigure IDE "
+            "images in config file.");
       }
 
       bool m4 = g_m4board.enabled;
-      if (ImGui::Checkbox("M4 Board", &m4)) { g_m4board.enabled = m4; }
+      if (ImGui::Checkbox("M4 Board", &m4)) {
+        g_m4board.enabled = m4;
+      }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("M4 Board — Virtual WiFi/SD expansion.\nSee the M4 Board tab for full settings.");
+        ImGui::SetTooltip(
+            "M4 Board — Virtual WiFi/SD expansion.\nSee the M4 Board tab for "
+            "full settings.");
       }
 
       ImGui::EndTabItem();
@@ -1912,12 +2136,19 @@ static void imgui_render_options()
     if (ImGui::BeginTabItem("ROMs")) {
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
-      if (ImGui::BeginTable("rom_slots", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthFixed, 16.0f);
-        ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed, 34.0f);
-        ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("##unload", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+      if (ImGui::BeginTable(
+              "rom_slots", 5,
+              ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("##status", ImGuiTableColumnFlags_WidthFixed,
+                                16.0f);
+        ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthFixed,
+                                34.0f);
+        ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthStretch,
+                                1.0f);
+        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch,
+                                1.0f);
+        ImGui::TableSetupColumn("##unload", ImGuiTableColumnFlags_WidthFixed,
+                                24.0f);
         ImGui::TableHeadersRow();
 
         for (int i = 0; i < MAX_ROM_SLOTS; i++) {
@@ -1928,7 +2159,8 @@ static void imgui_render_options()
 
           // Status dot
           ImGui::TableSetColumnIndex(0);
-          ImVec4 dot_color = loaded ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
+          ImVec4 dot_color = loaded ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f)
+                                    : ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
           ImGui::TextColored(dot_color, loaded ? "●" : "○");
 
           // Slot number
@@ -1941,20 +2173,27 @@ static void imgui_render_options()
           if (CPC.rom_file[i].empty()) {
             display = "(empty)";
           } else if (CPC.rom_file[i] == "DEFAULT") {
-            display = (CPC.model == 0) ? "(default - none)" : "amsdos.rom (default)";
+            display =
+                (CPC.model == 0) ? "(default - none)" : "amsdos.rom (default)";
           } else {
             // Show just the filename, not the full path
             size_t sep = CPC.rom_file[i].find_last_of("/\\");
-            display = (sep != std::string::npos) ? CPC.rom_file[i].substr(sep + 1) : CPC.rom_file[i];
+            display = (sep != std::string::npos)
+                          ? CPC.rom_file[i].substr(sep + 1)
+                          : CPC.rom_file[i];
           }
-          if (display.length() > 24) display = "..." + display.substr(display.length() - 21);
+          if (display.length() > 24)
+            display = "..." + display.substr(display.length() - 21);
 
           if (ImGui::Selectable(display.c_str())) {
-            static const SDL_DialogFileFilter filters[] = { { "ROM files", "rom;bin" } };
+            static const SDL_DialogFileFilter filters[] = {
+                {"ROM files", "rom;bin"}};
             imgui_state.pending_rom_slot = i;
-            SDL_ShowOpenFileDialog(file_dialog_callback,
-              reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::LoadROM)),
-              mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
+            SDL_ShowOpenFileDialog(
+                file_dialog_callback,
+                reinterpret_cast<void*>(
+                    static_cast<intptr_t>(FileDialogAction::LoadROM)),
+                mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
           }
           if (!CPC.rom_file[i].empty() && ImGui::IsItemHovered()) {
             ImGui::SetTooltip("%s", CPC.rom_file[i].c_str());
@@ -1965,7 +2204,8 @@ static void imgui_render_options()
           if (loaded) {
             std::string id = rom_identify(memmap_ROM[i]);
             if (!id.empty()) {
-              ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "%s", id.c_str());
+              ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f), "%s",
+                                 id.c_str());
             }
           }
 
@@ -2000,8 +2240,8 @@ static void imgui_render_options()
 
     // ── Video Tab ──
     if (ImGui::BeginTabItem("Video")) {
-      // Build combo dynamically from video_plugin_list, skipping hidden entries.
-      // Group plugins by type with section headers.
+      // Build combo dynamically from video_plugin_list, skipping hidden
+      // entries. Group plugins by type with section headers.
       const char* preview = video_plugin_list[CPC.scr_style].name;
       if (ImGui::BeginCombo("Video Plugin", preview)) {
         const char* prev_group = nullptr;
@@ -2012,8 +2252,9 @@ static void imgui_render_options()
           const char* group;
           if (strncmp(name, "CRT", 3) == 0)
             group = "GPU — CRT Shaders";
-          else if (strcmp(name, "Direct") == 0 || strcmp(name, "Direct (SDL)") == 0
-                   || strcmp(name, "OpenGL scaling") == 0)
+          else if (strcmp(name, "Direct") == 0 ||
+                   strcmp(name, "Direct (SDL)") == 0 ||
+                   strcmp(name, "OpenGL scaling") == 0)
             group = "GPU — Direct";
           else
             group = "CPU — Software Scalers";
@@ -2022,7 +2263,8 @@ static void imgui_render_options()
             ImGui::SeparatorText(group);
             prev_group = group;
           }
-          bool selected = (static_cast<int>(i) == static_cast<int>(CPC.scr_style));
+          bool selected =
+              (static_cast<int>(i) == static_cast<int>(CPC.scr_style));
           if (ImGui::Selectable(video_plugin_list[i].name, selected)) {
             CPC.scr_style = static_cast<int>(i);
             imgui_state.video_reinit_pending = true;
@@ -2032,29 +2274,36 @@ static void imgui_render_options()
         ImGui::EndCombo();
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("GPU plugins render on the graphics card (fast).\nCPU plugins compute pixels in software (slow at high res).");
+        ImGui::SetTooltip(
+            "GPU plugins render on the graphics card (fast).\nCPU plugins "
+            "compute pixels in software (slow at high res).");
       }
 
       // Scale combo: 0 = Fit window, 1-4 = 1x-4x
       // scr_scale 0 means "fit window" (no fixed multiplier).
       int scale_idx = static_cast<int>(CPC.scr_scale);
       if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
-      if (ImGui::Combo("Scale", &scale_idx, scale_items, IM_ARRAYSIZE(scale_items))) {
+      if (ImGui::Combo("Scale", &scale_idx, scale_items,
+                       IM_ARRAYSIZE(scale_items))) {
         CPC.scr_scale = scale_idx;
         // Resize window to fit the chosen scale (+ bars)
         if (scale_idx > 0 && mainSDLWindow) {
-          static const float sf[] = { 0.f, 1.f, 1.5f, 2.f, 3.f };
-          float f = (scale_idx < static_cast<int>(sizeof(sf)/sizeof(sf[0]))) ? sf[scale_idx] : 1.f;
+          static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
+          float f = (scale_idx < static_cast<int>(sizeof(sf) / sizeof(sf[0])))
+                        ? sf[scale_idx]
+                        : 1.f;
           int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
           int new_h = CPC.scr_crt_aspect
-                    ? static_cast<int>(new_w * 3.f / 4.f)
-                    : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+                          ? static_cast<int>(new_w * 3.f / 4.f)
+                          : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
           new_h += video_get_topbar_height() + video_get_bottombar_height();
           SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
         }
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Fit window: CPC image fills available space.\n1x-4x: fixed pixel size (cropped if window is smaller).");
+        ImGui::SetTooltip(
+            "Fit window: CPC image fills available space.\n1x-4x: fixed pixel "
+            "size (cropped if window is smaller).");
       }
 
       bool crt_aspect = CPC.scr_crt_aspect != 0;
@@ -2062,13 +2311,19 @@ static void imgui_render_options()
         CPC.scr_crt_aspect = crt_aspect ? 1 : 0;
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Stretch to 4:3 like a real CPC monitor.\nOff = square pixels (768:270 raw ratio).");
+        ImGui::SetTooltip(
+            "Stretch to 4:3 like a real CPC monitor.\nOff = square pixels "
+            "(768:270 raw ratio).");
       }
 
       bool colour = CPC.scr_tube == 0;
-      if (ImGui::RadioButton("Colour", colour)) { CPC.scr_tube = 0; }
+      if (ImGui::RadioButton("Colour", colour)) {
+        CPC.scr_tube = 0;
+      }
       ImGui::SameLine();
-      if (ImGui::RadioButton("Mono (Green)", !colour)) { CPC.scr_tube = 1; }
+      if (ImGui::RadioButton("Mono (Green)", !colour)) {
+        CPC.scr_tube = 1;
+      }
 
       int intensity = static_cast<int>(CPC.scr_intensity);
       if (ImGui::SliderInt("Intensity", &intensity, 5, 15)) {
@@ -2076,7 +2331,8 @@ static void imgui_render_options()
         video_set_palette();
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("CRT phosphor brightness.\nHigher = brighter colours.");
+        ImGui::SetTooltip(
+            "CRT phosphor brightness.\nHigher = brighter colours.");
       }
 
       bool scanlines = CPC.scr_scanlines != 0;
@@ -2096,17 +2352,22 @@ static void imgui_render_options()
       }
 
       bool fps = CPC.scr_fps != 0;
-      if (ImGui::Checkbox("Show FPS", &fps)) { CPC.scr_fps = fps ? 1 : 0; }
+      if (ImGui::Checkbox("Show FPS", &fps)) {
+        CPC.scr_fps = fps ? 1 : 0;
+      }
 
       bool fullscreen = CPC.scr_window == 0;
-      if (ImGui::Checkbox("Fullscreen", &fullscreen)) { CPC.scr_window = fullscreen ? 0 : 1; }
+      if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
+        CPC.scr_window = fullscreen ? 0 : 1;
+      }
 
       bool aspect = CPC.scr_preserve_aspect_ratio != 0;
       if (ImGui::Checkbox("Preserve Aspect Ratio", &aspect)) {
         CPC.scr_preserve_aspect_ratio = aspect ? 1 : 0;
       }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("When off, the CPC screen stretches\nto fill the entire window.");
+        ImGui::SetTooltip(
+            "When off, the CPC screen stretches\nto fill the entire window.");
       }
 
       ImGui::EndTabItem();
@@ -2115,41 +2376,64 @@ static void imgui_render_options()
     // ── Audio Tab ──
     if (ImGui::BeginTabItem("Audio")) {
       bool snd = CPC.snd_enabled != 0;
-      if (ImGui::Checkbox("Enable Sound", &snd)) { CPC.snd_enabled = snd ? 1 : 0; }
+      if (ImGui::Checkbox("Enable Sound", &snd)) {
+        CPC.snd_enabled = snd ? 1 : 0;
+      }
 
       static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
       int rate_idx = static_cast<int>(CPC.snd_playback_rate);
-      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
+      if (rate_idx < 0 ||
+          rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
         rate_idx = kDefaultSampleRateIndex;
         CPC.snd_playback_rate = rate_idx;  // fix invalid value immediately
       }
-      if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates, IM_ARRAYSIZE(sample_rates))) {
-        CPC.snd_playback_rate = rate_idx;  // store index (0-4), not raw frequency
+      if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates,
+                       IM_ARRAYSIZE(sample_rates))) {
+        CPC.snd_playback_rate =
+            rate_idx;  // store index (0-4), not raw frequency
       }
 
       bool stereo = CPC.snd_stereo != 0;
-      if (ImGui::RadioButton("Mono", !stereo)) { CPC.snd_stereo = 0; }
+      if (ImGui::RadioButton("Mono", !stereo)) {
+        CPC.snd_stereo = 0;
+      }
       ImGui::SameLine();
-      if (ImGui::RadioButton("Stereo", stereo)) { CPC.snd_stereo = 1; }
+      if (ImGui::RadioButton("Stereo", stereo)) {
+        CPC.snd_stereo = 1;
+      }
 
       bool bits16 = CPC.snd_bits != 0;
-      if (ImGui::RadioButton("8-bit", !bits16)) { CPC.snd_bits = 0; }
+      if (ImGui::RadioButton("8-bit", !bits16)) {
+        CPC.snd_bits = 0;
+      }
       ImGui::SameLine();
-      if (ImGui::RadioButton("16-bit", bits16)) { CPC.snd_bits = 1; }
+      if (ImGui::RadioButton("16-bit", bits16)) {
+        CPC.snd_bits = 1;
+      }
 
       int vol = static_cast<int>(CPC.snd_volume);
-      if (ImGui::SliderInt("Volume", &vol, 0, 100)) { CPC.snd_volume = vol; }
+      if (ImGui::SliderInt("Volume", &vol, 0, 100)) {
+        CPC.snd_volume = vol;
+      }
 
       ImGui::Separator();
       ImGui::Text("Peripherals");
       bool pp = CPC.snd_pp_device != 0;
-      if (ImGui::Checkbox("Digiblaster", &pp)) { CPC.snd_pp_device = pp ? 1 : 0; }
+      if (ImGui::Checkbox("Digiblaster", &pp)) {
+        CPC.snd_pp_device = pp ? 1 : 0;
+      }
       bool amdrum = g_amdrum.enabled;
-      if (ImGui::Checkbox("AmDrum", &amdrum)) { g_amdrum.enabled = amdrum; }
+      if (ImGui::Checkbox("AmDrum", &amdrum)) {
+        g_amdrum.enabled = amdrum;
+      }
       bool disk_snd = g_drive_sounds.disk_enabled;
-      if (ImGui::Checkbox("Disk Drive Sounds", &disk_snd)) { g_drive_sounds.disk_enabled = disk_snd; }
+      if (ImGui::Checkbox("Disk Drive Sounds", &disk_snd)) {
+        g_drive_sounds.disk_enabled = disk_snd;
+      }
       bool tape_snd = g_drive_sounds.tape_enabled;
-      if (ImGui::Checkbox("Tape Sounds", &tape_snd)) { g_drive_sounds.tape_enabled = tape_snd; }
+      if (ImGui::Checkbox("Tape Sounds", &tape_snd)) {
+        g_drive_sounds.tape_enabled = tape_snd;
+      }
 
       ImGui::EndTabItem();
     }
@@ -2157,7 +2441,7 @@ static void imgui_render_options()
     // ── Input Tab ──
     if (ImGui::BeginTabItem("Input")) {
       int keyboard = static_cast<int>(CPC.keyboard);
-      const char* cpc_langs[] = { "English", "French", "Spanish" };
+      const char* cpc_langs[] = {"English", "French", "Spanish"};
       int max_langs = IM_ARRAYSIZE(cpc_langs);
       if (static_cast<int>(CPC.keyboard) >= max_langs) keyboard = 0;
       if (ImGui::Combo("CPC Language", &keyboard, cpc_langs, max_langs)) {
@@ -2165,7 +2449,8 @@ static void imgui_render_options()
       }
 
       int ksm = static_cast<int>(CPC.keyboard_support_mode);
-      const char* ksm_modes[] = { "Direct", "Buffered Until Read", "Min. 2 Frames" };
+      const char* ksm_modes[] = {"Direct", "Buffered Until Read",
+                                 "Min. 2 Frames"};
       int max_ksm = IM_ARRAYSIZE(ksm_modes);
       if (ksm < 0 || ksm >= max_ksm) ksm = 0;
       if (ImGui::Combo("Keyboard Support Mode", &ksm, ksm_modes, max_ksm)) {
@@ -2174,7 +2459,8 @@ static void imgui_render_options()
 
       bool joy_emu = CPC.joystick_emulation != JoystickEmulation::None;
       if (ImGui::Checkbox("Joystick Emulation", &joy_emu)) {
-        CPC.joystick_emulation = joy_emu ? JoystickEmulation::Keyboard : JoystickEmulation::None;
+        CPC.joystick_emulation =
+            joy_emu ? JoystickEmulation::Keyboard : JoystickEmulation::None;
       }
 
       bool joysticks = CPC.joysticks != 0;
@@ -2183,9 +2469,13 @@ static void imgui_render_options()
       }
 
       bool amx = g_amx_mouse.enabled;
-      if (ImGui::Checkbox("AMX Mouse", &amx)) { g_amx_mouse.enabled = amx; }
+      if (ImGui::Checkbox("AMX Mouse", &amx)) {
+        g_amx_mouse.enabled = amx;
+      }
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("AMX Mouse on joystick port.\nMaps host mouse to CPC joystick directions + buttons.");
+        ImGui::SetTooltip(
+            "AMX Mouse on joystick port.\nMaps host mouse to CPC joystick "
+            "directions + buttons.");
       }
 
       ImGui::EndTabItem();
@@ -2194,22 +2484,23 @@ static void imgui_render_options()
     // ── M4 Board Tab ──
     if (ImGui::BeginTabItem("M4 Board")) {
       bool m4_en = g_m4board.enabled;
-      if (ImGui::Checkbox("Enable M4 Board", &m4_en)) { g_m4board.enabled = m4_en; }
+      if (ImGui::Checkbox("Enable M4 Board", &m4_en)) {
+        g_m4board.enabled = m4_en;
+      }
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
-          "M4 Board — Virtual WiFi/SD expansion\n\n"
-          "Set a host directory as the virtual SD card, then reset.\n\n"
-          "RSX commands (type in BASIC after reset):\n"
-          "  |SD            Switch to SD card\n"
-          "  |DISC          Switch back to disc drive\n"
-          "  |DIR           List SD directory\n"
-          "  |CD,\"path\"     Change directory\n"
-          "  |ERA,\"file\"    Delete file\n"
-          "  |REN,\"new\",\"old\" Rename file\n"
-          "  |MKDIR,\"dir\"   Create directory\n\n"
-          "After |SD, standard BASIC commands work:\n"
-          "  CAT  LOAD\"file\"  SAVE\"file\"  RUN\"file\""
-        );
+            "M4 Board — Virtual WiFi/SD expansion\n\n"
+            "Set a host directory as the virtual SD card, then reset.\n\n"
+            "RSX commands (type in BASIC after reset):\n"
+            "  |SD            Switch to SD card\n"
+            "  |DISC          Switch back to disc drive\n"
+            "  |DIR           List SD directory\n"
+            "  |CD,\"path\"     Change directory\n"
+            "  |ERA,\"file\"    Delete file\n"
+            "  |REN,\"new\",\"old\" Rename file\n"
+            "  |MKDIR,\"dir\"   Create directory\n\n"
+            "After |SD, standard BASIC commands work:\n"
+            "  CAT  LOAD\"file\"  SAVE\"file\"  RUN\"file\"");
       }
 
       if (m4_en) {
@@ -2220,17 +2511,22 @@ static void imgui_render_options()
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
         char sd_buf[512];
         snprintf(sd_buf, sizeof(sd_buf), "%s", g_m4board.sd_root_path.c_str());
-        ImGui::InputText("##m4sd", sd_buf, sizeof(sd_buf), ImGuiInputTextFlags_ReadOnly);
+        ImGui::InputText("##m4sd", sd_buf, sizeof(sd_buf),
+                         ImGuiInputTextFlags_ReadOnly);
         ImGui::SameLine();
         if (ImGui::Button("Browse##m4sd")) {
           const char* default_loc = g_m4board.sd_root_path.empty()
-            ? nullptr : g_m4board.sd_root_path.c_str();
-          SDL_ShowOpenFolderDialog(file_dialog_callback,
-            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SelectM4SDFolder)),
-            mainSDLWindow, default_loc, false);
+                                        ? nullptr
+                                        : g_m4board.sd_root_path.c_str();
+          SDL_ShowOpenFolderDialog(
+              file_dialog_callback,
+              reinterpret_cast<void*>(
+                  static_cast<intptr_t>(FileDialogAction::SelectM4SDFolder)),
+              mainSDLWindow, default_loc, false);
         }
         if (g_m4board.sd_root_path.empty()) {
-          ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "No SD directory set");
+          ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                             "No SD directory set");
         }
 
         int slot = g_m4board.rom_slot;
@@ -2266,7 +2562,8 @@ static void imgui_render_options()
         }
 
         // Network status
-        ImGui::Text("Network: %s", g_m4board.network_enabled ? "enabled" : "disabled");
+        ImGui::Text("Network: %s",
+                    g_m4board.network_enabled ? "enabled" : "disabled");
         ImGui::SameLine(0, 16);
         int sock_count = 0;
         for (int i = 0; i < M4Board::MAX_SOCKETS; i++) {
@@ -2294,20 +2591,20 @@ static void imgui_render_options()
         }
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip(
-            "IP address to bind the HTTP server to.\n\n"
-            "127.0.0.1 — localhost only (default)\n"
-            "0.0.0.0   — all interfaces (LAN-accessible)\n"
-            "127.0.0.2 — dedicated loopback address:\n"
-            "  macOS: works without root\n"
-            "  Linux: needs: sudo ip addr add 127.0.0.2/8 dev lo\n"
-            "  Windows: needs admin\n"
-            "Falls back to 127.0.0.1 if the address is unavailable."
-          );
+              "IP address to bind the HTTP server to.\n\n"
+              "127.0.0.1 — localhost only (default)\n"
+              "0.0.0.0   — all interfaces (LAN-accessible)\n"
+              "127.0.0.2 — dedicated loopback address:\n"
+              "  macOS: works without root\n"
+              "  Linux: needs: sudo ip addr add 127.0.0.2/8 dev lo\n"
+              "  Windows: needs admin\n"
+              "Falls back to 127.0.0.1 if the address is unavailable.");
         }
 
         if (g_m4_http.is_running()) {
           ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.2f, 1.0f),
-            "Listening on %s:%d", g_m4_http.bind_ip().c_str(), g_m4_http.port());
+                             "Listening on %s:%d", g_m4_http.bind_ip().c_str(),
+                             g_m4_http.port());
           ImGui::SameLine();
           if (ImGui::SmallButton("Stop##m4http")) {
             g_m4_http.stop();
@@ -2320,7 +2617,8 @@ static void imgui_render_options()
             SDL_OpenURL(url);
           }
         } else {
-          ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "HTTP server stopped");
+          ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                             "HTTP server stopped");
           ImGui::SameLine();
           if (ImGui::SmallButton("Start##m4http")) {
             g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
@@ -2330,15 +2628,22 @@ static void imgui_render_options()
         // ── Port Forwarding ──
         ImGui::Separator();
         ImGui::TextDisabled("Port Forwarding");
-        ImGui::TextWrapped("When CPC software binds a port (C_NETBIND), the emulator maps it "
-          "to a host port. User overrides (white) are persisted; auto-assigned (gray) are not.");
+        ImGui::TextWrapped(
+            "When CPC software binds a port (C_NETBIND), the emulator maps it "
+            "to a host port. User overrides (white) are persisted; "
+            "auto-assigned (gray) are not.");
 
         if (ImGui::BeginTable("##m4ports", 5,
-              ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-          ImGui::TableSetupColumn("CPC Port", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-          ImGui::TableSetupColumn("Host Port", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-          ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed, 50.0f);
-          ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 50.0f);
+                              ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_SizingFixedFit)) {
+          ImGui::TableSetupColumn("CPC Port", ImGuiTableColumnFlags_WidthFixed,
+                                  70.0f);
+          ImGui::TableSetupColumn("Host Port", ImGuiTableColumnFlags_WidthFixed,
+                                  70.0f);
+          ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthFixed,
+                                  50.0f);
+          ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed,
+                                  50.0f);
           ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
           ImGui::TableHeadersRow();
 
@@ -2347,7 +2652,8 @@ static void imgui_render_options()
             const auto& pm = mappings[mi];
             ImGui::PushID(static_cast<int>(mi));
             ImGui::TableNextRow();
-            ImVec4 color = pm.user_override ? ImVec4(1,1,1,1) : ImVec4(0.6f,0.6f,0.6f,1);
+            ImVec4 color = pm.user_override ? ImVec4(1, 1, 1, 1)
+                                            : ImVec4(0.6f, 0.6f, 0.6f, 1);
 
             ImGui::TableNextColumn();
             ImGui::TextColored(color, "%d", pm.cpc_port);
@@ -2356,8 +2662,9 @@ static void imgui_render_options()
             ImGui::TextColored(color, "%d", pm.host_port);
 
             ImGui::TableNextColumn();
-            ImGui::TextColored(pm.active ? ImVec4(0.2f,0.9f,0.2f,1) : ImVec4(0.5f,0.5f,0.5f,1),
-              "%s", pm.active ? "active" : "idle");
+            ImGui::TextColored(pm.active ? ImVec4(0.2f, 0.9f, 0.2f, 1)
+                                         : ImVec4(0.5f, 0.5f, 0.5f, 1),
+                               "%s", pm.active ? "active" : "idle");
 
             ImGui::TableNextColumn();
             ImGui::TextDisabled("%s", pm.user_override ? "user" : "auto");
@@ -2371,7 +2678,8 @@ static void imgui_render_options()
               if (ImGui::SmallButton("X")) {
                 g_m4_http.remove_port_mapping(pm.cpc_port);
               }
-              if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove user override");
+              if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Remove user override");
             }
             ImGui::PopID();
           }
@@ -2389,11 +2697,11 @@ static void imgui_render_options()
         ImGui::InputInt("##newhost", &new_host_port, 0, 0);
         ImGui::SameLine();
         if (ImGui::SmallButton("Add Mapping")) {
-          if (new_cpc_port > 0 && new_cpc_port <= 65535 &&
-              new_host_port > 0 && new_host_port <= 65535) {
-            g_m4_http.set_port_mapping(
-              static_cast<uint16_t>(new_cpc_port),
-              static_cast<uint16_t>(new_host_port), true);
+          if (new_cpc_port > 0 && new_cpc_port <= 65535 && new_host_port > 0 &&
+              new_host_port <= 65535) {
+            g_m4_http.set_port_mapping(static_cast<uint16_t>(new_cpc_port),
+                                       static_cast<uint16_t>(new_host_port),
+                                       true);
           }
         }
       }
@@ -2405,61 +2713,68 @@ static void imgui_render_options()
     if (ImGui::BeginTabItem("Serial Interface")) {
       SerialConfig cfg = g_serial_interface.get_config();
       bool serial_en = cfg.enabled;
-      
+
       if (ImGui::Checkbox("Enable Serial Interface", &serial_en)) {
         cfg.enabled = serial_en;
         g_serial_interface.set_config(cfg);
         g_serial_interface.apply_config();
       }
-      
+
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
-          "Serial Interface — AMSIf-compatible serial port emulation\n\n"
-          "Emulates Z80 DART (Z8470) and Intel 8253 at ports $FADx/$FBDx.\n"
-          "Supports backends: file, host serial, null modem, TCP, plotter.\n"
-          "Plotter: use GSX driver DDHP7470.PRL on CPC to output SVG."
-        );
+            "Serial Interface — AMSIf-compatible serial port emulation\n\n"
+            "Emulates Z80 DART (Z8470) and Intel 8253 at ports $FADx/$FBDx.\n"
+            "Supports backends: file, host serial, null modem, TCP, plotter.\n"
+            "Plotter: use GSX driver DDHP7470.PRL on CPC to output SVG.");
       }
-      
+
       ImGui::Separator();
-      
+
       // Backend type selection
-      const char* backend_types[] = { "Null", "File", "Host Serial", "Null Modem", "TCP Socket", "HP-GL Plotter" };
+      const char* backend_types[] = {"Null",        "File",
+                                     "Host Serial", "Null Modem",
+                                     "TCP Socket",  "HP-GL Plotter"};
       int current_backend = static_cast<int>(cfg.backend_type);
       ImGui::SetNextItemWidth(150.0f);
-      if (ImGui::Combo("Backend", &current_backend, backend_types, IM_ARRAYSIZE(backend_types))) {
+      if (ImGui::Combo("Backend", &current_backend, backend_types,
+                       IM_ARRAYSIZE(backend_types))) {
         cfg.backend_type = static_cast<SerialBackendType>(current_backend);
         g_serial_interface.set_config(cfg);
       }
-      
+
       // Backend-specific options
       ImGui::Spacing();
       ImGui::TextDisabled("Connection Settings");
-      
+
       switch (cfg.backend_type) {
         case SerialBackendType::File: {
           char input_buf[256] = {};
           char output_buf[256] = {};
           snprintf(input_buf, sizeof(input_buf), "%s", cfg.input_file.c_str());
-          snprintf(output_buf, sizeof(output_buf), "%s", cfg.output_file.c_str());
-          
+          snprintf(output_buf, sizeof(output_buf), "%s",
+                   cfg.output_file.c_str());
+
           ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-          if (ImGui::InputText("Input File##serial", input_buf, sizeof(input_buf))) {
+          if (ImGui::InputText("Input File##serial", input_buf,
+                               sizeof(input_buf))) {
             cfg.input_file = input_buf;
           }
           ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-          if (ImGui::InputText("Output File##serial", output_buf, sizeof(output_buf))) {
+          if (ImGui::InputText("Output File##serial", output_buf,
+                               sizeof(output_buf))) {
             cfg.output_file = output_buf;
           }
           break;
         }
-        
+
         case SerialBackendType::HostSerial: {
           char device_buf[256] = {};
-          snprintf(device_buf, sizeof(device_buf), "%s", cfg.device_path.c_str());
-          
+          snprintf(device_buf, sizeof(device_buf), "%s",
+                   cfg.device_path.c_str());
+
           ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 100.0f);
-          if (ImGui::InputText("Device##serial", device_buf, sizeof(device_buf))) {
+          if (ImGui::InputText("Device##serial", device_buf,
+                               sizeof(device_buf))) {
             cfg.device_path = device_buf;
           }
           ImGui::SameLine();
@@ -2471,7 +2786,7 @@ static void imgui_render_options()
               ImGui::OpenPopup("Select Serial Port");
             }
           }
-          
+
           // Port selection popup
           if (ImGui::BeginPopup("Select Serial Port")) {
             auto ports = HostSerialBackend::list_ports();
@@ -2483,16 +2798,17 @@ static void imgui_render_options()
             ImGui::EndPopup();
           }
           if (ImGui::BeginPopup("No Serial Ports")) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "No serial ports found");
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                               "No serial ports found");
             ImGui::EndPopup();
           }
           break;
         }
-        
+
         case SerialBackendType::TcpSocket: {
           char host_buf[256] = {};
           snprintf(host_buf, sizeof(host_buf), "%s", cfg.tcp_host.c_str());
-          
+
           ImGui::SetNextItemWidth(200.0f);
           if (ImGui::InputText("Host##serial", host_buf, sizeof(host_buf))) {
             cfg.tcp_host = host_buf;
@@ -2507,31 +2823,36 @@ static void imgui_render_options()
           }
           break;
         }
-        
+
         case SerialBackendType::NullModem:
-          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Loopback mode - connect two emulated instances");
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                             "Loopback mode - connect two emulated instances");
           break;
-          
+
         case SerialBackendType::Null:
         default:
-          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "All data is dropped (null backend)");
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                             "All data is dropped (null backend)");
           break;
-          
+
         case SerialBackendType::Plotter:
-          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "HP 7470A plotter - outputs SVG");
+          ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                             "HP 7470A plotter - outputs SVG");
           ImGui::Text("Enable and use GSX driver + DDHP7470.PRL on CPC.");
           break;
       }
-      
+
       // Common settings
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::TextDisabled("Serial Settings");
-      
-      const char* baud_items = "300\01200\02400\04800\09600\019200\038400\057600\0115200";
-      int baud_idx = 4; // default 9600
+
+      const char* baud_items =
+          "300\01200\02400\04800\09600\019200\038400\057600\0115200";
+      int baud_idx = 4;  // default 9600
       int baud = cfg.baud_rate;
-      const int baud_rates[] = { 300, 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200 };
+      const int baud_rates[] = {300,   1200,  2400,  4800,  9600,
+                                19200, 38400, 57600, 115200};
       for (int i = 0; i < 9; i++) {
         if (baud_rates[i] == baud) {
           baud_idx = i;
@@ -2542,14 +2863,14 @@ static void imgui_render_options()
       if (ImGui::Combo("Baud Rate##serial", &baud_idx, baud_items)) {
         cfg.baud_rate = baud_rates[baud_idx];
       }
-      
+
       // Apply button
       ImGui::Spacing();
       if (ImGui::Button("Apply Changes##serial")) {
         g_serial_interface.set_config(cfg);
         g_serial_interface.apply_config();
       }
-      
+
       // Status
       ImGui::Spacing();
       ImGui::Separator();
@@ -2557,12 +2878,15 @@ static void imgui_render_options()
       if (g_serial_interface.backend) {
         ImGui::Text("Backend: %s", g_serial_interface.backend->name().c_str());
         ImGui::Text("Status: %s", g_serial_interface.backend->status().c_str());
-        ImGui::Text("TX Empty: %s", g_serial_interface.dart.tx_empty() ? "Yes" : "No");
-        ImGui::Text("RX Available: %s", g_serial_interface.dart.rx_available() ? "Yes" : "No");
+        ImGui::Text("TX Empty: %s",
+                    g_serial_interface.dart.tx_empty() ? "Yes" : "No");
+        ImGui::Text("RX Available: %s",
+                    g_serial_interface.dart.rx_available() ? "Yes" : "No");
       } else {
-        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Serial interface disabled");
+        ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
+                           "Serial interface disabled");
       }
-      
+
       ImGui::EndTabItem();
     }
 
@@ -2608,8 +2932,7 @@ static void imgui_render_options()
     CRTC.crtc_type = old_crtc_type;
     g_m4board.enabled = old_m4_enabled;
     // Revert video plugin if it was changed live
-    if (CPC.scr_style != prev_style)
-      imgui_state.video_reinit_pending = true;
+    if (CPC.scr_style != prev_style) imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
     cpc_resume();
     first_open = true;
@@ -2629,7 +2952,8 @@ static void imgui_render_options()
     first_open = true;
   }
   if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("Apply changes for this session only\n(not saved to config file)");
+    ImGui::SetTooltip(
+        "Apply changes for this session only\n(not saved to config file)");
   }
 
   if (!open) {
@@ -2638,8 +2962,7 @@ static void imgui_render_options()
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
     g_m4board.enabled = old_m4_enabled;
-    if (CPC.scr_style != prev_style)
-      imgui_state.video_reinit_pending = true;
+    if (CPC.scr_style != prev_style) imgui_state.video_reinit_pending = true;
     imgui_state.show_options = false;
     cpc_resume();
     first_open = true;
@@ -2654,23 +2977,22 @@ static void imgui_render_options()
 
 // parse_hex, safe_read_word/dword moved to imgui_ui_testable.h
 
-
 // Format memory line into stack buffer - zero heap allocations
 // Buffer size: 512 bytes handles up to 64 bytes/line with all formats
 
 // Shared poke input UI with proper validation
 // Returns true if poke was executed
-static bool ui_poke_input(char* addr_buf, size_t addr_size,
-                          char* val_buf, size_t val_size,
-                          const char* id_suffix)
-{
+static bool ui_poke_input(char* addr_buf, size_t addr_size, char* val_buf,
+                          size_t val_size, const char* id_suffix) {
   ImGui::PushID(id_suffix);
 
   ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Addr", addr_buf, addr_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::InputText("Addr", addr_buf, addr_size,
+                   ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   ImGui::SetNextItemWidth(40);
-  ImGui::InputText("Val", val_buf, val_size, ImGuiInputTextFlags_CharsHexadecimal);
+  ImGui::InputText("Val", val_buf, val_size,
+                   ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
 
   bool poked = false;
@@ -2685,11 +3007,9 @@ static bool ui_poke_input(char* addr_buf, size_t addr_size,
   return poked;
 }
 
-
 static bool devtools_first_open = true;
 
-static void imgui_render_devtools()
-{
+static void imgui_render_devtools() {
   // Auto-open core windows on first DevTools open
   if (devtools_first_open) {
     if (!g_devtools_ui.any_window_open()) {
@@ -2705,55 +3025,66 @@ static void imgui_render_devtools()
 
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 0));  // auto-height
-  ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport
+  ImGui::SetNextWindowViewport(vp->ID);             // keep on main viewport
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 2));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 1.0f));
 
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoDocking |
-                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
-                           ImGuiWindowFlags_AlwaysAutoResize;
+  ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+      ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize;
 
   if (ImGui::Begin("##devtools_bar", nullptr, flags)) {
     // ── Window dropdown buttons ──
     if (ImGui::Button("CPU")) ImGui::OpenPopup("##dt_cpu");
     if (ImGui::BeginPopup("##dt_cpu")) {
-      ImGui::MenuItem("Registers",         nullptr, g_devtools_ui.window_ptr("registers"));
-      ImGui::MenuItem("Disassembly",       nullptr, g_devtools_ui.window_ptr("disassembly"));
-      ImGui::MenuItem("Stack",             nullptr, g_devtools_ui.window_ptr("stack"));
-      ImGui::MenuItem("Breakpoints/WP/IO", nullptr, g_devtools_ui.window_ptr("breakpoints"));
+      ImGui::MenuItem("Registers", nullptr,
+                      g_devtools_ui.window_ptr("registers"));
+      ImGui::MenuItem("Disassembly", nullptr,
+                      g_devtools_ui.window_ptr("disassembly"));
+      ImGui::MenuItem("Stack", nullptr, g_devtools_ui.window_ptr("stack"));
+      ImGui::MenuItem("Breakpoints/WP/IO", nullptr,
+                      g_devtools_ui.window_ptr("breakpoints"));
       ImGui::EndPopup();
     }
 
     ImGui::SameLine();
     if (ImGui::Button("Memory")) ImGui::OpenPopup("##dt_mem");
     if (ImGui::BeginPopup("##dt_mem")) {
-      ImGui::MenuItem("Memory Hex",  nullptr, g_devtools_ui.window_ptr("memory_hex"));
-      ImGui::MenuItem("Data Areas",  nullptr, g_devtools_ui.window_ptr("data_areas"));
-      ImGui::MenuItem("Symbols",     nullptr, g_devtools_ui.window_ptr("symbols"));
+      ImGui::MenuItem("Memory Hex", nullptr,
+                      g_devtools_ui.window_ptr("memory_hex"));
+      ImGui::MenuItem("Data Areas", nullptr,
+                      g_devtools_ui.window_ptr("data_areas"));
+      ImGui::MenuItem("Symbols", nullptr, g_devtools_ui.window_ptr("symbols"));
       ImGui::EndPopup();
     }
 
     ImGui::SameLine();
     if (ImGui::Button("Hardware")) ImGui::OpenPopup("##dt_hw");
     if (ImGui::BeginPopup("##dt_hw")) {
-      ImGui::MenuItem("Video State",    nullptr, g_devtools_ui.window_ptr("video_state"));
-      ImGui::MenuItem("Audio State",    nullptr, g_devtools_ui.window_ptr("audio_state"));
-      ImGui::MenuItem("ASIC Registers", nullptr, g_devtools_ui.window_ptr("asic"));
-      ImGui::MenuItem("Silicon Disc",   nullptr, g_devtools_ui.window_ptr("silicon_disc"));
+      ImGui::MenuItem("Video State", nullptr,
+                      g_devtools_ui.window_ptr("video_state"));
+      ImGui::MenuItem("Audio State", nullptr,
+                      g_devtools_ui.window_ptr("audio_state"));
+      ImGui::MenuItem("ASIC Registers", nullptr,
+                      g_devtools_ui.window_ptr("asic"));
+      ImGui::MenuItem("Silicon Disc", nullptr,
+                      g_devtools_ui.window_ptr("silicon_disc"));
       ImGui::EndPopup();
     }
 
     ImGui::SameLine();
     if (ImGui::Button("Media")) ImGui::OpenPopup("##dt_media");
     if (ImGui::BeginPopup("##dt_media")) {
-      ImGui::MenuItem("Disc Tools",      nullptr, g_devtools_ui.window_ptr("disc_tools"));
-      ImGui::MenuItem("Graphics Finder", nullptr, g_devtools_ui.window_ptr("gfx_finder"));
+      ImGui::MenuItem("Disc Tools", nullptr,
+                      g_devtools_ui.window_ptr("disc_tools"));
+      ImGui::MenuItem("Graphics Finder", nullptr,
+                      g_devtools_ui.window_ptr("gfx_finder"));
       ImGui::EndPopup();
     }
 
@@ -2763,9 +3094,12 @@ static void imgui_render_devtools()
     ImGui::SameLine();
     if (ImGui::Button("Export")) ImGui::OpenPopup("##dt_export");
     if (ImGui::BeginPopup("##dt_export")) {
-      ImGui::MenuItem("Disasm Export",      nullptr, g_devtools_ui.window_ptr("disasm_export"));
-      ImGui::MenuItem("Session Recording",  nullptr, g_devtools_ui.window_ptr("session_recording"));
-      ImGui::MenuItem("Recording Controls", nullptr, g_devtools_ui.window_ptr("recording_controls"));
+      ImGui::MenuItem("Disasm Export", nullptr,
+                      g_devtools_ui.window_ptr("disasm_export"));
+      ImGui::MenuItem("Session Recording", nullptr,
+                      g_devtools_ui.window_ptr("session_recording"));
+      ImGui::MenuItem("Recording Controls", nullptr,
+                      g_devtools_ui.window_ptr("recording_controls"));
       ImGui::EndPopup();
     }
 
@@ -2774,10 +3108,9 @@ static void imgui_render_devtools()
     {
       ImVec2 cur = ImGui::GetCursorScreenPos();
       float h = ImGui::GetFrameHeight();
-      ImGui::GetWindowDrawList()->AddLine(
-          ImVec2(cur.x, cur.y + 2.0f),
-          ImVec2(cur.x, cur.y + h - 2.0f),
-          IM_COL32(128, 128, 128, 128), 1.0f);
+      ImGui::GetWindowDrawList()->AddLine(ImVec2(cur.x, cur.y + 2.0f),
+                                          ImVec2(cur.x, cur.y + h - 2.0f),
+                                          IM_COL32(128, 128, 128, 128), 1.0f);
       ImGui::Dummy(ImVec2(1.0f, h));
     }
 
@@ -2785,16 +3118,19 @@ static void imgui_render_devtools()
     // Capture paused state once so BeginDisabled/EndDisabled stay balanced
     // even when a button handler calls cpc_resume() mid-frame.
     ImGui::SameLine(0, 12.0f);
-    // Use the atomic flag — CPC.paused is a plain bool written by the Z80 thread.
+    // Use the atomic flag — CPC.paused is a plain bool written by the Z80
+    // thread.
     bool was_paused = g_emu_paused.load(std::memory_order_relaxed);
     if (!was_paused) ImGui::BeginDisabled();
-    if (ImGui::Button("Step In"))  {
+    if (ImGui::Button("Step In")) {
       z80.step_in = 1;
       z80.step_out = 0;
       z80.step_out_addresses.clear();
       cpc_resume();
     }
-    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (enters CALLs)"); }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Execute one instruction (enters CALLs)");
+    }
     ImGui::SameLine();
     if (ImGui::Button("Step Over")) {
       z80.step_in = 0;
@@ -2809,7 +3145,9 @@ static void imgui_render_devtools()
         cpc_resume();
       }
     }
-    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)"); }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)");
+    }
     ImGui::SameLine();
     if (ImGui::Button("Step Out")) {
       z80.step_out = 1;
@@ -2817,11 +3155,16 @@ static void imgui_render_devtools()
       z80.step_in = 0;
       cpc_resume();
     }
-    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Run until the current subroutine returns"); }
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("Run until the current subroutine returns");
+    }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(was_paused ? "Resume" : "Pause")) {
-      if (was_paused) cpc_resume(); else cpc_pause();
+      if (was_paused)
+        cpc_resume();
+      else
+        cpc_pause();
     }
 
     // ── Per-window render timing ──
@@ -2851,85 +3194,93 @@ static void imgui_render_devtools()
     // ── Frame timing + audio diagnostics (--debug only) ──
     extern bool g_debug;
     if (g_debug) {
-    // Snapshot stats under the mutex — Z80 thread writes these once/second.
-    // Take the snapshot first, then render from it (never hold the mutex during ImGui calls).
-    float s_frame_avg_ms, s_frame_min_ms, s_frame_max_ms;
-    float s_z80_ms, s_disp_ms, s_sleep_ms;
-    int   s_underruns, s_near_underruns, s_pushes;
-    float s_queue_avg_ms, s_queue_min_ms, s_push_interval_max_us;
-    {
-      std::lock_guard<std::mutex> stats_lock(g_imgui_stats_mutex);
-      s_frame_avg_ms         = imgui_state.frame_time_avg_us / 1000.0f;
-      s_frame_min_ms         = imgui_state.frame_time_min_us / 1000.0f;
-      s_frame_max_ms         = imgui_state.frame_time_max_us / 1000.0f;
-      s_z80_ms               = imgui_state.z80_time_avg_us   / 1000.0f;
-      s_disp_ms              = imgui_state.display_time_avg_us / 1000.0f;
-      s_sleep_ms             = imgui_state.sleep_time_avg_us / 1000.0f;
-      s_underruns            = imgui_state.audio_underruns;
-      s_near_underruns       = imgui_state.audio_near_underruns;
-      s_pushes               = imgui_state.audio_pushes;
-      s_queue_avg_ms         = imgui_state.audio_queue_avg_ms;
-      s_queue_min_ms         = imgui_state.audio_queue_min_ms;
-      s_push_interval_max_us = imgui_state.audio_push_interval_max_us;
-    }
-
-    ImGui::SameLine(0, 8.0f);
-    {
-      float budget_pct = s_frame_avg_ms / 20.0f * 100.0f;  // 20ms = 50fps budget
-      ImVec4 ft_color = budget_pct > 90.0f
-        ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)    // red: >90% budget used
-        : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);   // gray: healthy
-      ImGui::PushStyleColor(ImGuiCol_Text, ft_color);
-      char ftbuf[32];
-      snprintf(ftbuf, sizeof(ftbuf), "frame:%.1fms", s_frame_avg_ms);
-      ImGui::TextUnformatted(ftbuf);
-      if (ImGui::IsItemHovered()) {
-        float work_ms = s_frame_avg_ms - s_sleep_ms;
-        ImGui::BeginTooltip();
-        ImGui::Text("Frame time avg: %.1f ms (work: %.1f ms, sleep: %.1f ms)", s_frame_avg_ms, work_ms, s_sleep_ms);
-        ImGui::Text("Frame time min: %.1f ms  max: %.1f ms", s_frame_min_ms, s_frame_max_ms);
-        ImGui::Separator();
-        ImGui::Text("Z80 emulation:  %.1f ms", s_z80_ms);
-        ImGui::Text("Display/GL:     %.1f ms", s_disp_ms);
-        ImGui::Text("Sleep (limiter):%.1f ms", s_sleep_ms);
-        ImGui::EndTooltip();
+      // Snapshot stats under the mutex — Z80 thread writes these once/second.
+      // Take the snapshot first, then render from it (never hold the mutex
+      // during ImGui calls).
+      float s_frame_avg_ms, s_frame_min_ms, s_frame_max_ms;
+      float s_z80_ms, s_disp_ms, s_sleep_ms;
+      int s_underruns, s_near_underruns, s_pushes;
+      float s_queue_avg_ms, s_queue_min_ms, s_push_interval_max_us;
+      {
+        std::lock_guard<std::mutex> stats_lock(g_imgui_stats_mutex);
+        s_frame_avg_ms = imgui_state.frame_time_avg_us / 1000.0f;
+        s_frame_min_ms = imgui_state.frame_time_min_us / 1000.0f;
+        s_frame_max_ms = imgui_state.frame_time_max_us / 1000.0f;
+        s_z80_ms = imgui_state.z80_time_avg_us / 1000.0f;
+        s_disp_ms = imgui_state.display_time_avg_us / 1000.0f;
+        s_sleep_ms = imgui_state.sleep_time_avg_us / 1000.0f;
+        s_underruns = imgui_state.audio_underruns;
+        s_near_underruns = imgui_state.audio_near_underruns;
+        s_pushes = imgui_state.audio_pushes;
+        s_queue_avg_ms = imgui_state.audio_queue_avg_ms;
+        s_queue_min_ms = imgui_state.audio_queue_min_ms;
+        s_push_interval_max_us = imgui_state.audio_push_interval_max_us;
       }
-      ImGui::PopStyleColor();
-    }
 
-    // ── Audio diagnostics ──
-    ImGui::SameLine(0, 8.0f);
-    {
-      ImVec4 snd_color;
-      if (s_underruns > 0)
-        snd_color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);    // red: hard underrun
-      else if (s_near_underruns > 0)
-        snd_color = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);    // yellow: near-underrun
-      else
-        snd_color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);    // gray: healthy
-      ImGui::PushStyleColor(ImGuiCol_Text, snd_color);
-      char abuf[32];
-      snprintf(abuf, sizeof(abuf), "snd:%.0fms", s_queue_avg_ms);
-      ImGui::TextUnformatted(abuf);
-      if (ImGui::IsItemHovered()) {
-        ImGui::BeginTooltip();
-        ImGui::Text("Audio queue avg: %.1f ms", s_queue_avg_ms);
-        ImGui::Text("Audio queue min: %.1f ms", s_queue_min_ms);
-        ImGui::Text("Push interval max: %.0f us", s_push_interval_max_us);
-        ImGui::Text("Pushes/sec: %d", s_pushes);
-        ImGui::Text("Underruns/sec: %d", s_underruns);
-        ImGui::Text("Near-underruns/sec: %d", s_near_underruns);
-        ImGui::EndTooltip();
+      ImGui::SameLine(0, 8.0f);
+      {
+        float budget_pct =
+            s_frame_avg_ms / 20.0f * 100.0f;  // 20ms = 50fps budget
+        ImVec4 ft_color =
+            budget_pct > 90.0f
+                ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f)   // red: >90% budget used
+                : ImVec4(0.4f, 0.4f, 0.4f, 1.0f);  // gray: healthy
+        ImGui::PushStyleColor(ImGuiCol_Text, ft_color);
+        char ftbuf[32];
+        snprintf(ftbuf, sizeof(ftbuf), "frame:%.1fms", s_frame_avg_ms);
+        ImGui::TextUnformatted(ftbuf);
+        if (ImGui::IsItemHovered()) {
+          float work_ms = s_frame_avg_ms - s_sleep_ms;
+          ImGui::BeginTooltip();
+          ImGui::Text("Frame time avg: %.1f ms (work: %.1f ms, sleep: %.1f ms)",
+                      s_frame_avg_ms, work_ms, s_sleep_ms);
+          ImGui::Text("Frame time min: %.1f ms  max: %.1f ms", s_frame_min_ms,
+                      s_frame_max_ms);
+          ImGui::Separator();
+          ImGui::Text("Z80 emulation:  %.1f ms", s_z80_ms);
+          ImGui::Text("Display/GL:     %.1f ms", s_disp_ms);
+          ImGui::Text("Sleep (limiter):%.1f ms", s_sleep_ms);
+          ImGui::EndTooltip();
+        }
+        ImGui::PopStyleColor();
       }
-      ImGui::PopStyleColor();
-    }
 
-    } // g_debug
+      // ── Audio diagnostics ──
+      ImGui::SameLine(0, 8.0f);
+      {
+        ImVec4 snd_color;
+        if (s_underruns > 0)
+          snd_color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f);  // red: hard underrun
+        else if (s_near_underruns > 0)
+          snd_color = ImVec4(1.0f, 0.8f, 0.2f, 1.0f);  // yellow: near-underrun
+        else
+          snd_color = ImVec4(0.4f, 0.4f, 0.4f, 1.0f);  // gray: healthy
+        ImGui::PushStyleColor(ImGuiCol_Text, snd_color);
+        char abuf[32];
+        snprintf(abuf, sizeof(abuf), "snd:%.0fms", s_queue_avg_ms);
+        ImGui::TextUnformatted(abuf);
+        if (ImGui::IsItemHovered()) {
+          ImGui::BeginTooltip();
+          ImGui::Text("Audio queue avg: %.1f ms", s_queue_avg_ms);
+          ImGui::Text("Audio queue min: %.1f ms", s_queue_min_ms);
+          ImGui::Text("Push interval max: %.0f us", s_push_interval_max_us);
+          ImGui::Text("Pushes/sec: %d", s_pushes);
+          ImGui::Text("Underruns/sec: %d", s_underruns);
+          ImGui::Text("Near-underruns/sec: %d", s_near_underruns);
+          ImGui::EndTooltip();
+        }
+        ImGui::PopStyleColor();
+      }
+
+    }  // g_debug
 
     // ── Sync devtools bar height ──
     {
       int h = static_cast<int>(ImGui::GetWindowSize().y);
-      if (h != s_devtools_bar_h) { s_devtools_bar_h = h; s_topbar_height_dirty = true; }
+      if (h != s_devtools_bar_h) {
+        s_devtools_bar_h = h;
+        s_topbar_height_dirty = true;
+      }
     }
   }
   ImGui::End();
@@ -2941,8 +3292,7 @@ static void imgui_render_devtools()
 // Memory Tool
 // ─────────────────────────────────────────────────
 
-static void imgui_render_memory_tool()
-{
+static void imgui_render_memory_tool() {
   ImGui::SetNextWindowSize(ImVec2(400, 340), ImGuiCond_FirstUseEver);
 
   bool open = true;
@@ -2954,11 +3304,13 @@ static void imgui_render_memory_tool()
 
   // Poke
   ui_poke_input(imgui_state.mem_poke_addr, sizeof(imgui_state.mem_poke_addr),
-                imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val), "mt");
+                imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val),
+                "mt");
 
   // Display address
   ImGui::SetNextItemWidth(50);
-  ImGui::InputText("Display##mt", imgui_state.mem_display_addr, sizeof(imgui_state.mem_display_addr),
+  ImGui::InputText("Display##mt", imgui_state.mem_display_addr,
+                   sizeof(imgui_state.mem_display_addr),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Go##mt")) {
@@ -2971,10 +3323,12 @@ static void imgui_render_memory_tool()
   }
 
   // Bytes per line
-  const char* bpl_items[] = { "1", "4", "8", "16", "32", "64" };
-  int bpl_values[] = { 1, 4, 8, 16, 32, 64 };
+  const char* bpl_items[] = {"1", "4", "8", "16", "32", "64"};
+  int bpl_values[] = {1, 4, 8, 16, 32, 64};
   int bpl_idx = 3;
-  for (int i = 0; i < 6; i++) { if (bpl_values[i] == imgui_state.mem_bytes_per_line) bpl_idx = i; }
+  for (int i = 0; i < 6; i++) {
+    if (bpl_values[i] == imgui_state.mem_bytes_per_line) bpl_idx = i;
+  }
   ImGui::SetNextItemWidth(60);
   if (ImGui::Combo("Bytes/Line##mt", &bpl_idx, bpl_items, 6)) {
     imgui_state.mem_bytes_per_line = bpl_values[bpl_idx];
@@ -2982,7 +3336,8 @@ static void imgui_render_memory_tool()
 
   // Filter
   ImGui::SetNextItemWidth(40);
-  ImGui::InputText("Filter Byte##mt", imgui_state.mem_filter_val, sizeof(imgui_state.mem_filter_val),
+  ImGui::InputText("Filter Byte##mt", imgui_state.mem_filter_val,
+                   sizeof(imgui_state.mem_filter_val),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
   if (ImGui::Button("Filter##mt")) {
@@ -2998,9 +3353,11 @@ static void imgui_render_memory_tool()
   if (ImGui::Button("Dump to stdout##mt")) {
     int bpl = imgui_state.mem_bytes_per_line;
     for (unsigned int i = 0; i < 65536u / bpl; i++) {
-      std::cout << std::uppercase << std::setfill('0') << std::setw(4) << std::hex << i * bpl << " : ";
+      std::cout << std::uppercase << std::setfill('0') << std::setw(4)
+                << std::hex << i * bpl << " : ";
       for (int j = 0; j < bpl; j++) {
-        std::cout << std::setw(2) << static_cast<unsigned int>(pbRAM[i * bpl + j]) << " ";
+        std::cout << std::setw(2)
+                  << static_cast<unsigned int>(pbRAM[i * bpl + j]) << " ";
       }
       std::cout << "\n";
     }
@@ -3013,35 +3370,49 @@ static void imgui_render_memory_tool()
     ImGui::Text("[FILTER: %02X]", imgui_state.mem_filter_value & 0xFF);
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    if (ImGui::SmallButton("Clear##mtclear")) { imgui_state.mem_filter_value = -1; }
+    if (ImGui::SmallButton("Clear##mtclear")) {
+      imgui_state.mem_filter_value = -1;
+    }
   } else if (imgui_state.mem_display_value >= 0) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
     ImGui::Text("[DISPLAY: %04X]", imgui_state.mem_display_value & 0xFFFF);
     ImGui::PopStyleColor();
     ImGui::SameLine();
-    if (ImGui::SmallButton("Clear##mtclear")) { imgui_state.mem_display_value = -1; }
+    if (ImGui::SmallButton("Clear##mtclear")) {
+      imgui_state.mem_display_value = -1;
+    }
   }
 
   // Hex dump
   if (ImGui::BeginChild("##mtmem", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
     int bpl = imgui_state.mem_bytes_per_line;
     int total_lines = 65536 / bpl;
-    bool filtering = imgui_state.mem_filter_value >= 0 && imgui_state.mem_filter_value <= 255;
-    bool displaying = imgui_state.mem_display_value >= 0 && imgui_state.mem_display_value <= 0xFFFF;
+    bool filtering = imgui_state.mem_filter_value >= 0 &&
+                     imgui_state.mem_filter_value <= 255;
+    bool displaying = imgui_state.mem_display_value >= 0 &&
+                      imgui_state.mem_display_value <= 0xFFFF;
 
     if (filtering || displaying) {
       // Can't use clipper with filtering — iterate all
       for (int i = 0; i < total_lines; i++) {
         unsigned int base = i * bpl;
         bool show = false;
-        if (!filtering && !displaying) { show = true; }
+        if (!filtering && !displaying) {
+          show = true;
+        }
         if (displaying) {
-          if (base <= static_cast<unsigned int>(imgui_state.mem_display_value) &&
-              static_cast<unsigned int>(imgui_state.mem_display_value) < base + bpl) show = true;
+          if (base <=
+                  static_cast<unsigned int>(imgui_state.mem_display_value) &&
+              static_cast<unsigned int>(imgui_state.mem_display_value) <
+                  base + bpl)
+            show = true;
         }
         if (filtering) {
           for (int j = 0; j < bpl; j++) {
-            if (pbRAM[(base + j) & 0xFFFF] == imgui_state.mem_filter_value) { show = true; break; }
+            if (pbRAM[(base + j) & 0xFFFF] == imgui_state.mem_filter_value) {
+              show = true;
+              break;
+            }
           }
         }
         if (!show) continue;
@@ -3076,8 +3447,7 @@ static void imgui_render_memory_tool()
 // Main keyboard left, numeric keypad (F0-F9) right, cursor keys below numpad
 // ─────────────────────────────────────────────────
 
-static void imgui_render_vkeyboard()
-{
+static void imgui_render_vkeyboard() {
   bool open = true;
   ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
 
@@ -3088,10 +3458,10 @@ static void imgui_render_vkeyboard()
   }
 
   // Key dimensions
-  const float K = 28.0f;   // standard key width
-  const float H = 32.0f;   // key height (taller for two-line labels)
-  const float S = 2.0f;    // spacing
-  const float ROW = H + S; // row height
+  const float K = 28.0f;    // standard key width
+  const float H = 32.0f;    // key height (taller for two-line labels)
+  const float S = 2.0f;     // spacing
+  const float ROW = H + S;  // row height
 
   // CPC brown/tan key color
   ImVec4 key_color(0.55f, 0.45f, 0.30f, 1.0f);
@@ -3105,18 +3475,17 @@ static void imgui_render_vkeyboard()
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
 
   bool caps_on = imgui_state.vkeyboard_caps_lock;
-  bool shift_on = imgui_state.vkeyboard_shift_next || caps_on;  // either gives shift effect
+  bool shift_on =
+      imgui_state.vkeyboard_shift_next || caps_on;  // either gives shift effect
   bool ctrl_on = imgui_state.vkeyboard_ctrl_next;
 
   // Shift mapping for non-letter keys
   static const std::map<char, char> shift_map = {
-    {'1', '!'}, {'2', '"'}, {'3', '#'}, {'4', '$'}, {'5', '%'},
-    {'6', '&'}, {'7', '\''}, {'8', '('}, {'9', ')'}, {'0', '_'},
-    {'-', '='}, {'^', '\xa3'},  // £ in Latin-1
-    {';', '+'}, {':', '*'}, {'[', '{'}, {']', '}'},
-    {',', '<'}, {'.', '>'}, {'/', '?'}, {'\\', '`'},
-    {'@', '|'}
-  };
+      {'1', '!'}, {'2', '"'},    {'3', '#'},  {'4', '$'}, {'5', '%'},
+      {'6', '&'}, {'7', '\''},   {'8', '('},  {'9', ')'}, {'0', '_'},
+      {'-', '='}, {'^', '\xa3'},  // £ in Latin-1
+      {';', '+'}, {':', '*'},    {'[', '{'},  {']', '}'}, {',', '<'},
+      {'.', '>'}, {'/', '?'},    {'\\', '`'}, {'@', '|'}};
 
   // Helper to emit a key - sends directly to emulator
   auto emit_key = [&](const char* text) {
@@ -3124,17 +3493,23 @@ static void imgui_render_vkeyboard()
     std::string to_send = text;
 
     // SHIFT toggle (one-shot)
-    if (strcmp(text, "\x01" "SHIFT") == 0) {
+    if (strcmp(text,
+               "\x01"
+               "SHIFT") == 0) {
       imgui_state.vkeyboard_shift_next = !imgui_state.vkeyboard_shift_next;
       return;
     }
     // CAPS LOCK toggle (sticky)
-    if (strcmp(text, "\x01" "CAPS") == 0) {
+    if (strcmp(text,
+               "\x01"
+               "CAPS") == 0) {
       imgui_state.vkeyboard_caps_lock = !imgui_state.vkeyboard_caps_lock;
       return;
     }
     // CTRL toggle (one-shot)
-    if (strcmp(text, "\x01" "CTRL") == 0) {
+    if (strcmp(text,
+               "\x01"
+               "CTRL") == 0) {
       imgui_state.vkeyboard_ctrl_next = !imgui_state.vkeyboard_ctrl_next;
       return;
     }
@@ -3170,40 +3545,54 @@ static void imgui_render_vkeyboard()
   // Modifier status line
   ImGui::Text("Modifiers:");
   ImGui::SameLine();
-  if (caps_on)  { ImGui::TextColored(ImVec4(0,1,0.5f,1), "[CAPS]"); ImGui::SameLine(); }
-  if (imgui_state.vkeyboard_shift_next) { ImGui::TextColored(ImVec4(0.5f,1,0,1), "[SHIFT]"); ImGui::SameLine(); }
-  if (ctrl_on)  { ImGui::TextColored(ImVec4(1,0.5f,0,1), "[CTRL]"); ImGui::SameLine(); }
+  if (caps_on) {
+    ImGui::TextColored(ImVec4(0, 1, 0.5f, 1), "[CAPS]");
+    ImGui::SameLine();
+  }
+  if (imgui_state.vkeyboard_shift_next) {
+    ImGui::TextColored(ImVec4(0.5f, 1, 0, 1), "[SHIFT]");
+    ImGui::SameLine();
+  }
+  if (ctrl_on) {
+    ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "[CTRL]");
+    ImGui::SameLine();
+  }
   ImGui::NewLine();
 
   float x0 = ImGui::GetCursorPosX();
   float y0 = ImGui::GetCursorPosY();
 
   // Helper: check if a CPC key is currently pressed in the keyboard matrix.
-  // CPC_KEYS enum values are NOT matrix positions — must convert via scancode table.
+  // CPC_KEYS enum values are NOT matrix positions — must convert via scancode
+  // table.
   auto cpc_key_down = [](byte cpc_key) -> bool {
     extern std::atomic<byte> keyboard_matrix[];
     extern byte bit_values[];
-    CPCScancode sc = CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
+    CPCScancode sc =
+        CPC.InputMapper->CPCscancodeFromCPCkey(static_cast<CPC_KEYS>(cpc_key));
     byte row = static_cast<byte>(sc >> 4);
     byte bit = static_cast<byte>(sc & 7);
-    return row < 16 && !(keyboard_matrix[row].load(std::memory_order_relaxed) & bit_values[bit]);
+    return row < 16 && !(keyboard_matrix[row].load(std::memory_order_relaxed) &
+                         bit_values[bit]);
   };
   // Helper: draw blue overlay on last ImGui item if CPC key is pressed
   auto highlight_if_pressed = [&](byte cpc_key) {
     if (cpc_key_down(cpc_key)) {
       ImVec2 rmin = ImGui::GetItemRectMin();
       ImVec2 rmax = ImGui::GetItemRectMax();
-      ImGui::GetWindowDrawList()->AddRectFilled(rmin, rmax, IM_COL32(80, 180, 255, 180), 3.0f);
+      ImGui::GetWindowDrawList()->AddRectFilled(
+          rmin, rmax, IM_COL32(80, 180, 255, 180), 3.0f);
     }
   };
 
   // Width multipliers for special keys
-  const float W_TAB    = 1.3f;
-  const float W_CAPS   = 1.4f;
+  const float W_TAB = 1.3f;
+  const float W_CAPS = 1.4f;
   const float W_LSHIFT = 1.9f;
-  const float W_CTRL   = 1.5f;
-  const float W_COPY   = 1.6f;
-  // RETURN, right SHIFT, ENTER widths calculated dynamically to align right edges
+  const float W_CTRL = 1.5f;
+  const float W_COPY = 1.6f;
+  // RETURN, right SHIFT, ENTER widths calculated dynamically to align right
+  // edges
 
   // Calculate main keyboard right edge: 15 standard keys + ESC in row 0
   // ESC 1 2 3 4 5 6 7 8 9 0 - ^/£ CLR DEL = 15 keys
@@ -3230,7 +3619,8 @@ static void imgui_render_vkeyboard()
     highlight_if_pressed(cpc_key);
   };
   // vk_cpc() — emit CPC key by enum (no hardcoded hex)
-  auto vk_cpc = [&](const char* label, float w, byte cpc_key, bool end = false) {
+  auto vk_cpc = [&](const char* label, float w, byte cpc_key,
+                    bool end = false) {
     std::string es = cpc_emit(cpc_key);
     if (ImGui::Button(label, ImVec2(w, H))) emit_key(es.c_str());
     highlight_if_pressed(cpc_key);
@@ -3240,72 +3630,115 @@ static void imgui_render_vkeyboard()
   // ═══════════════════ ROW 0 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0));
   vk("ESC", K, cpc_emit(CPC_ESC).c_str(), CPC_ESC);
-  vk("!\n1", K, "1", CPC_1);      vk("\"\n2", K, "2", CPC_2);
-  vk("#\n3", K, "3", CPC_3);      vk("$\n4", K, "4", CPC_4);
-  vk("%\n5", K, "5", CPC_5);      vk("&\n6", K, "6", CPC_6);
-  vk("'\n7", K, "7", CPC_7);      vk("(\n8", K, "8", CPC_8);
-  vk(")\n9", K, "9", CPC_9);      vk("_\n0", K, "0", CPC_0);
-  vk("=\n-", K, "-", CPC_MINUS);  vk("\xc2\xa3\n^", K, "^", CPC_POWER);
+  vk("!\n1", K, "1", CPC_1);
+  vk("\"\n2", K, "2", CPC_2);
+  vk("#\n3", K, "3", CPC_3);
+  vk("$\n4", K, "4", CPC_4);
+  vk("%\n5", K, "5", CPC_5);
+  vk("&\n6", K, "6", CPC_6);
+  vk("'\n7", K, "7", CPC_7);
+  vk("(\n8", K, "8", CPC_8);
+  vk(")\n9", K, "9", CPC_9);
+  vk("_\n0", K, "0", CPC_0);
+  vk("=\n-", K, "-", CPC_MINUS);
+  vk("\xc2\xa3\n^", K, "^", CPC_POWER);
   vk("CLR", K, cpc_emit(CPC_CLR).c_str(), CPC_CLR);
   vk_end("DEL", K, "\b", CPC_DEL);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0));
-  vk_cpc("F7", K, CPC_F7);  vk_cpc("F8", K, CPC_F8);  vk_cpc("F9", K, CPC_F9, true);
+  vk_cpc("F7", K, CPC_F7);
+  vk_cpc("F8", K, CPC_F8);
+  vk_cpc("F9", K, CPC_F9, true);
 
   // ═══════════════════ ROW 1 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW));
-  vk("TAB", K*W_TAB, "\t", CPC_TAB);
-  vk("Q", K, "q", CPC_Q);  vk("W", K, "w", CPC_W);  vk("E", K, "e", CPC_E);
-  vk("R", K, "r", CPC_R);  vk("T", K, "t", CPC_T);  vk("Y", K, "y", CPC_Y);
-  vk("U", K, "u", CPC_U);  vk("I", K, "i", CPC_I);  vk("O", K, "o", CPC_O);
+  vk("TAB", K * W_TAB, "\t", CPC_TAB);
+  vk("Q", K, "q", CPC_Q);
+  vk("W", K, "w", CPC_W);
+  vk("E", K, "e", CPC_E);
+  vk("R", K, "r", CPC_R);
+  vk("T", K, "t", CPC_T);
+  vk("Y", K, "y", CPC_Y);
+  vk("U", K, "u", CPC_U);
+  vk("I", K, "i", CPC_I);
+  vk("O", K, "o", CPC_O);
   vk("P", K, "p", CPC_P);
-  vk("|\n@", K, "@", CPC_AT);  vk("{\n[", K, "[", CPC_LBRACKET);
+  vk("|\n@", K, "@", CPC_AT);
+  vk("{\n[", K, "[", CPC_LBRACKET);
   // RETURN upper part — fills to main_end_x
   float ret_x = ImGui::GetCursorPosX();
   float ret_w = main_end_x - ret_x;
   vk_end("RETURN##1", ret_w, "\n", CPC_RETURN);
   // RETURN lower part (L-shape into row 2)
-  float ret2_x = x0 + K*W_CAPS + S + 12*(K + S);
+  float ret2_x = x0 + K * W_CAPS + S + 12 * (K + S);
   float ret2_w = main_end_x - ret2_x;
   ImGui::SetCursorPos(ImVec2(ret2_x, y0 + ROW + H));
   if (ImGui::Button("##ret2", ImVec2(ret2_w, ROW))) emit_key("\n");
   highlight_if_pressed(CPC_RETURN);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW));
-  vk_cpc("F4", K, CPC_F4);  vk_cpc("F5", K, CPC_F5);  vk_cpc("F6", K, CPC_F6, true);
+  vk_cpc("F4", K, CPC_F4);
+  vk_cpc("F5", K, CPC_F5);
+  vk_cpc("F6", K, CPC_F6, true);
 
   // ═══════════════════ ROW 2 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 2));
   if (caps_on) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
-  if (ImGui::Button("CAPS\nLOCK", ImVec2(K*W_CAPS, H))) emit_key("\x01" "CAPS");
+  if (ImGui::Button("CAPS\nLOCK", ImVec2(K * W_CAPS, H)))
+    emit_key(
+        "\x01"
+        "CAPS");
   if (caps_on) ImGui::PopStyleColor();
-  highlight_if_pressed(CPC_CAPSLOCK); ImGui::SameLine(0, S);
-  vk("A", K, "a", CPC_A);  vk("S", K, "s", CPC_S);  vk("D", K, "d", CPC_D);
-  vk("F", K, "f", CPC_F);  vk("G", K, "g", CPC_G);  vk("H", K, "h", CPC_H);
-  vk("J", K, "j", CPC_J);  vk("K", K, "k", CPC_K);  vk("L", K, "l", CPC_L);
-  vk("+\n;", K, ";", CPC_SEMICOLON);  vk("*\n:", K, ":", CPC_COLON);
+  highlight_if_pressed(CPC_CAPSLOCK);
+  ImGui::SameLine(0, S);
+  vk("A", K, "a", CPC_A);
+  vk("S", K, "s", CPC_S);
+  vk("D", K, "d", CPC_D);
+  vk("F", K, "f", CPC_F);
+  vk("G", K, "g", CPC_G);
+  vk("H", K, "h", CPC_H);
+  vk("J", K, "j", CPC_J);
+  vk("K", K, "k", CPC_K);
+  vk("L", K, "l", CPC_L);
+  vk("+\n;", K, ";", CPC_SEMICOLON);
+  vk("*\n:", K, ":", CPC_COLON);
   vk_end("}\n]", K, "]", CPC_RBRACKET);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 2));
-  vk_cpc("F1", K, CPC_F1);  vk_cpc("F2", K, CPC_F2);  vk_cpc("F3", K, CPC_F3, true);
+  vk_cpc("F1", K, CPC_F1);
+  vk_cpc("F2", K, CPC_F2);
+  vk_cpc("F3", K, CPC_F3, true);
 
   // ═══════════════════ ROW 3 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 3));
   bool shift_highlight = imgui_state.vkeyboard_shift_next;
   if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
-  if (ImGui::Button("SHIFT##L", ImVec2(K*W_LSHIFT, H))) emit_key("\x01" "SHIFT");
+  if (ImGui::Button("SHIFT##L", ImVec2(K * W_LSHIFT, H)))
+    emit_key(
+        "\x01"
+        "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
-  highlight_if_pressed(CPC_LSHIFT); ImGui::SameLine(0, S);
-  vk("Z", K, "z", CPC_Z);  vk("X", K, "x", CPC_X);  vk("C", K, "c", CPC_C);
-  vk("V", K, "v", CPC_V);  vk("B", K, "b", CPC_B);  vk("N", K, "n", CPC_N);
+  highlight_if_pressed(CPC_LSHIFT);
+  ImGui::SameLine(0, S);
+  vk("Z", K, "z", CPC_Z);
+  vk("X", K, "x", CPC_X);
+  vk("C", K, "c", CPC_C);
+  vk("V", K, "v", CPC_V);
+  vk("B", K, "b", CPC_B);
+  vk("N", K, "n", CPC_N);
   vk("M", K, "m", CPC_M);
-  vk("<\n,", K, ",", CPC_COMMA);    vk(">\n.##main", K, ".", CPC_PERIOD);
-  vk("?\n/", K, "/", CPC_SLASH);    vk("`\n\\", K, "\\", CPC_BACKSLASH);
+  vk("<\n,", K, ",", CPC_COMMA);
+  vk(">\n.##main", K, ".", CPC_PERIOD);
+  vk("?\n/", K, "/", CPC_SLASH);
+  vk("`\n\\", K, "\\", CPC_BACKSLASH);
   // Right SHIFT — fills to main_end_x
   float rshift_x = ImGui::GetCursorPosX();
   float rshift_w = main_end_x - rshift_x;
   if (shift_highlight) ImGui::PushStyleColor(ImGuiCol_Button, mod_on_color);
-  if (ImGui::Button("SHIFT##R", ImVec2(rshift_w, H))) emit_key("\x01" "SHIFT");
+  if (ImGui::Button("SHIFT##R", ImVec2(rshift_w, H)))
+    emit_key(
+        "\x01"
+        "SHIFT");
   if (shift_highlight) ImGui::PopStyleColor();
   highlight_if_pressed(CPC_RSHIFT);
   // Numpad
@@ -3316,11 +3749,16 @@ static void imgui_render_vkeyboard()
 
   // ═══════════════════ ROW 4 ═══════════════════
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 4));
-  if (ctrl_on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 1.0f));
-  if (ImGui::Button("CTRL", ImVec2(K*W_CTRL, H))) emit_key("\x01" "CTRL");
+  if (ctrl_on)
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.6f, 0.4f, 0.2f, 1.0f));
+  if (ImGui::Button("CTRL", ImVec2(K * W_CTRL, H)))
+    emit_key(
+        "\x01"
+        "CTRL");
   if (ctrl_on) ImGui::PopStyleColor();
-  highlight_if_pressed(CPC_CONTROL); ImGui::SameLine(0, S);
-  vk("COPY", K*W_COPY, cpc_emit(CPC_COPY).c_str(), CPC_COPY);
+  highlight_if_pressed(CPC_CONTROL);
+  ImGui::SameLine(0, S);
+  vk("COPY", K * W_COPY, cpc_emit(CPC_COPY).c_str(), CPC_COPY);
   float space_w = K * 8.0f;
   vk("SPACE", space_w, " ", CPC_SPACE);
   float enter_x = ImGui::GetCursorPosX();
@@ -3330,7 +3768,8 @@ static void imgui_render_vkeyboard()
   ImGui::SetCursorPos(ImVec2(np_x, y0 + ROW * 4));
   vk("\xe2\x86\x90##left", K, cpc_emit(CPC_CUR_LEFT).c_str(), CPC_CUR_LEFT);
   vk("\xe2\x86\x93##down", K, cpc_emit(CPC_CUR_DOWN).c_str(), CPC_CUR_DOWN);
-  vk_end("\xe2\x86\x92##right", K, cpc_emit(CPC_CUR_RIGHT).c_str(), CPC_CUR_RIGHT);
+  vk_end("\xe2\x86\x92##right", K, cpc_emit(CPC_CUR_RIGHT).c_str(),
+         CPC_CUR_RIGHT);
 
   // Move cursor below keyboard for the rest
   ImGui::SetCursorPos(ImVec2(x0, y0 + ROW * 5 + S * 2));
@@ -3357,7 +3796,6 @@ static void imgui_render_vkeyboard()
   ImGui::SameLine();
   if (ImGui::SmallButton("|b")) emit_key("|b\n");
 
-
   if (!open) imgui_state.show_vkeyboard = false;
 
   ImGui::End();
@@ -3368,151 +3806,164 @@ static void imgui_render_vkeyboard()
 // ─────────────────────────────────────────────────
 
 struct SerialTerminalState {
-    static constexpr int BUFFER_SIZE = 4096;
-    std::vector<uint8_t> tx_buffer;
-    std::vector<uint8_t> rx_buffer;
-    bool auto_scroll = true;
-    bool show_hex = true;
-    bool show_ascii = true;
-    bool wrap_lines = true;
-    uint8_t filter_byte = 0;
-    bool use_filter = false;
-    char input_buf[256] = "";
+  static constexpr int BUFFER_SIZE = 4096;
+  std::vector<uint8_t> tx_buffer;
+  std::vector<uint8_t> rx_buffer;
+  bool auto_scroll = true;
+  bool show_hex = true;
+  bool show_ascii = true;
+  bool wrap_lines = true;
+  uint8_t filter_byte = 0;
+  bool use_filter = false;
+  char input_buf[256] = "";
 };
 
 static SerialTerminalState s_serial_term;
 
 static void render_hex_line(const uint8_t* data, int len) {
-    char hex[64] = {};
-    char ascii[17] = {};
-    int j = 0;
-    for (int i = 0; i < len && i < 16; i++) {
-        snprintf(hex + j, sizeof(hex) - j, "%02X ", data[i]);
-        j += 3;
-        ascii[i] = (data[i] >= 32 && data[i] < 127) ? data[i] : '.';
-    }
-    ascii[len < 16 ? len : 16] = '\0';
-    ImGui::Text("%-48s %s", hex, ascii);
+  char hex[64] = {};
+  char ascii[17] = {};
+  int j = 0;
+  for (int i = 0; i < len && i < 16; i++) {
+    snprintf(hex + j, sizeof(hex) - j, "%02X ", data[i]);
+    j += 3;
+    ascii[i] = (data[i] >= 32 && data[i] < 127) ? data[i] : '.';
+  }
+  ascii[len < 16 ? len : 16] = '\0';
+  ImGui::Text("%-48s %s", hex, ascii);
 }
 
 void serial_terminal_feed_byte(uint8_t byte) {
-    if (s_serial_term.rx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
-        s_serial_term.rx_buffer.push_back(byte);
-    }
+  if (s_serial_term.rx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
+    s_serial_term.rx_buffer.push_back(byte);
+  }
 }
 
 void imgui_render_serial_terminal() {
-    ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Serial Terminal", &imgui_state.show_serial_terminal)) {
-        ImGui::End();
-        return;
-    }
-    
-    // Status bar
-    ImGui::Text("DART: TX=%s RX=%s | Backend: %s",
-        g_serial_interface.dart.tx_empty() ? "Empty" : "Busy",
-        g_serial_interface.dart.rx_available() ? "Data" : "Empty",
-        g_serial_interface.backend ? g_serial_interface.backend->name().c_str() : "None");
-    
-    ImGui::Separator();
-    
-    // Controls
-    ImGui::Checkbox("Auto-scroll", &s_serial_term.auto_scroll);
-    ImGui::SameLine();
-    ImGui::Checkbox("Hex", &s_serial_term.show_hex);
-    ImGui::SameLine();
-    ImGui::Checkbox("ASCII", &s_serial_term.show_ascii);
-    ImGui::SameLine();
-    ImGui::Checkbox("Wrap", &s_serial_term.wrap_lines);
-    ImGui::SameLine();
-    
-    ImGui::PushButtonRepeat(true);
-    if (ImGui::SmallButton("Clear")) {
-        s_serial_term.rx_buffer.clear();
-        s_serial_term.tx_buffer.clear();
-    }
-    ImGui::PopButtonRepeat();
-    
-    ImGui::Separator();
-    
-    // Data is fed via serial_terminal_feed_byte() from the DART TX callback
-    // (see apply_config in serial_interface.cpp) — no direct backend polling here.
-    
-    // Data display
-    {
-        ImGui::BeginChild("##serial_data", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 30), true);
-        
-        // Display RX buffer
-        if (s_serial_term.show_hex) {
-            int line_start = 0;
-            while (line_start < (int)s_serial_term.rx_buffer.size()) {
-                int line_len = std::min(16, (int)s_serial_term.rx_buffer.size() - line_start);
-                render_hex_line(&s_serial_term.rx_buffer[line_start], line_len);
-                line_start += 16;
-            }
-        }
-        
-        if (s_serial_term.show_ascii) {
-            ImGui::Spacing();
-            ImGui::TextDisabled("ASCII View:");
-            std::string ascii_str;
-            for (uint8_t b : s_serial_term.rx_buffer) {
-                char c = (b >= 32 && b < 127) ? b : '.';
-                ascii_str += c;
-            }
-            ImGui::TextWrapped("%s", ascii_str.c_str());
-        }
-        
-        if (s_serial_term.auto_scroll) {
-            ImGui::SetScrollHereY(1.0f);
-        }
-        ImGui::EndChild();
-    }
-    
-    // Input area
-    ImGui::Separator();
-    ImGui::Text("TX Buffer: %zu bytes", s_serial_term.tx_buffer.size());
-    
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
-    if (ImGui::InputText("##serial_input", s_serial_term.input_buf, sizeof(s_serial_term.input_buf),
-        ImGuiInputTextFlags_EnterReturnsTrue)) {
-        // Send input
-        for (const char* p = s_serial_term.input_buf; *p; p++) {
-            if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
-                s_serial_term.tx_buffer.push_back(*p);
-                // Send to backend
-                if (g_serial_interface.backend) {
-                    // This would send to the DART, which then calls backend->send()
-                    g_serial_interface.dart.enqueue_rx(*p); // Echo locally for now
-                }
-            }
-        }
-        s_serial_term.input_buf[0] = '\0';
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Send", ImVec2(60, 0))) {
-        for (const char* p = s_serial_term.input_buf; *p; p++) {
-            if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
-                s_serial_term.tx_buffer.push_back(*p);
-            }
-        }
-        s_serial_term.input_buf[0] = '\0';
-    }
-    
-    ImGui::SameLine();
-    if (ImGui::SmallButton("0D")) {
-        strncat(s_serial_term.input_buf, "\r", sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("0A")) {
-        strncat(s_serial_term.input_buf, "\n", sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("1B")) {
-        strncat(s_serial_term.input_buf, "\x1B", sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+  ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("Serial Terminal", &imgui_state.show_serial_terminal)) {
+    ImGui::End();
+    return;
+  }
+
+  // Status bar
+  ImGui::Text("DART: TX=%s RX=%s | Backend: %s",
+              g_serial_interface.dart.tx_empty() ? "Empty" : "Busy",
+              g_serial_interface.dart.rx_available() ? "Data" : "Empty",
+              g_serial_interface.backend
+                  ? g_serial_interface.backend->name().c_str()
+                  : "None");
+
+  ImGui::Separator();
+
+  // Controls
+  ImGui::Checkbox("Auto-scroll", &s_serial_term.auto_scroll);
+  ImGui::SameLine();
+  ImGui::Checkbox("Hex", &s_serial_term.show_hex);
+  ImGui::SameLine();
+  ImGui::Checkbox("ASCII", &s_serial_term.show_ascii);
+  ImGui::SameLine();
+  ImGui::Checkbox("Wrap", &s_serial_term.wrap_lines);
+  ImGui::SameLine();
+
+  ImGui::PushButtonRepeat(true);
+  if (ImGui::SmallButton("Clear")) {
+    s_serial_term.rx_buffer.clear();
+    s_serial_term.tx_buffer.clear();
+  }
+  ImGui::PopButtonRepeat();
+
+  ImGui::Separator();
+
+  // Data is fed via serial_terminal_feed_byte() from the DART TX callback
+  // (see apply_config in serial_interface.cpp) — no direct backend polling
+  // here.
+
+  // Data display
+  {
+    ImGui::BeginChild("##serial_data",
+                      ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 30),
+                      true);
+
+    // Display RX buffer
+    if (s_serial_term.show_hex) {
+      int line_start = 0;
+      while (line_start < (int)s_serial_term.rx_buffer.size()) {
+        int line_len =
+            std::min(16, (int)s_serial_term.rx_buffer.size() - line_start);
+        render_hex_line(&s_serial_term.rx_buffer[line_start], line_len);
+        line_start += 16;
+      }
     }
 
-    ImGui::End();
+    if (s_serial_term.show_ascii) {
+      ImGui::Spacing();
+      ImGui::TextDisabled("ASCII View:");
+      std::string ascii_str;
+      for (uint8_t b : s_serial_term.rx_buffer) {
+        char c = (b >= 32 && b < 127) ? b : '.';
+        ascii_str += c;
+      }
+      ImGui::TextWrapped("%s", ascii_str.c_str());
+    }
+
+    if (s_serial_term.auto_scroll) {
+      ImGui::SetScrollHereY(1.0f);
+    }
+    ImGui::EndChild();
+  }
+
+  // Input area
+  ImGui::Separator();
+  ImGui::Text("TX Buffer: %zu bytes", s_serial_term.tx_buffer.size());
+
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80.0f);
+  if (ImGui::InputText("##serial_input", s_serial_term.input_buf,
+                       sizeof(s_serial_term.input_buf),
+                       ImGuiInputTextFlags_EnterReturnsTrue)) {
+    // Send input
+    for (const char* p = s_serial_term.input_buf; *p; p++) {
+      if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
+        s_serial_term.tx_buffer.push_back(*p);
+        // Send to backend
+        if (g_serial_interface.backend) {
+          // This would send to the DART, which then calls backend->send()
+          g_serial_interface.dart.enqueue_rx(*p);  // Echo locally for now
+        }
+      }
+    }
+    s_serial_term.input_buf[0] = '\0';
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Send", ImVec2(60, 0))) {
+    for (const char* p = s_serial_term.input_buf; *p; p++) {
+      if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
+        s_serial_term.tx_buffer.push_back(*p);
+      }
+    }
+    s_serial_term.input_buf[0] = '\0';
+  }
+
+  ImGui::SameLine();
+  if (ImGui::SmallButton("0D")) {
+    strncat(
+        s_serial_term.input_buf, "\r",
+        sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("0A")) {
+    strncat(
+        s_serial_term.input_buf, "\n",
+        sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("1B")) {
+    strncat(
+        s_serial_term.input_buf, "\x1B",
+        sizeof(s_serial_term.input_buf) - strlen(s_serial_term.input_buf) - 1);
+  }
+
+  ImGui::End();
 }
 
 // ─────────────────────────────────────────────────
@@ -3520,166 +3971,174 @@ void imgui_render_serial_terminal() {
 // ─────────────────────────────────────────────────
 
 void imgui_render_plotter_preview() {
-    ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Plotter Preview", &imgui_state.show_plotter_preview)) {
-        ImGui::End();
-        return;
-    }
+  ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("Plotter Preview", &imgui_state.show_plotter_preview)) {
+    ImGui::End();
+    return;
+  }
 
-    const auto& segments = g_plotter.segments();
+  const auto& segments = g_plotter.segments();
 
-    // Toolbar
-    ImGui::Text("Segments: %zu | Pen: %d %s | Pos: %.0f, %.0f",
-        segments.size(),
-        g_plotter.selected_pen(),
-        g_plotter.pen_down() ? "DOWN" : "UP",
-        g_plotter.pen_x(), g_plotter.pen_y());
+  // Toolbar
+  ImGui::Text("Segments: %zu | Pen: %d %s | Pos: %.0f, %.0f", segments.size(),
+              g_plotter.selected_pen(), g_plotter.pen_down() ? "DOWN" : "UP",
+              g_plotter.pen_x(), g_plotter.pen_y());
 
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 180.0f);
-    if (ImGui::SmallButton("Export SVG...")) {
-        static const SDL_DialogFileFilter filters[] = { { "SVG files", "svg" } };
-        SDL_ShowSaveFileDialog(file_dialog_callback,
-            reinterpret_cast<void*>(static_cast<intptr_t>(FileDialogAction::SavePlotterSVG)),
-            mainSDLWindow, filters, 1, "plotter_output.svg");
-    }
-    ImGui::SameLine();
-    if (ImGui::SmallButton("Clear")) {
-        g_plotter.clear();
-    }
+  ImGui::SameLine(ImGui::GetContentRegionAvail().x - 180.0f);
+  if (ImGui::SmallButton("Export SVG...")) {
+    static const SDL_DialogFileFilter filters[] = {{"SVG files", "svg"}};
+    SDL_ShowSaveFileDialog(file_dialog_callback,
+                           reinterpret_cast<void*>(static_cast<intptr_t>(
+                               FileDialogAction::SavePlotterSVG)),
+                           mainSDLWindow, filters, 1, "plotter_output.svg");
+  }
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Clear")) {
+    g_plotter.clear();
+  }
 
-    ImGui::Separator();
+  ImGui::Separator();
 
-    // Drawing canvas
-    ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
-    ImVec2 canvas_size = ImGui::GetContentRegionAvail();
-    if (canvas_size.x < 50.0f) canvas_size.x = 50.0f;
-    if (canvas_size.y < 50.0f) canvas_size.y = 50.0f;
+  // Drawing canvas
+  ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+  ImVec2 canvas_size = ImGui::GetContentRegionAvail();
+  if (canvas_size.x < 50.0f) canvas_size.x = 50.0f;
+  if (canvas_size.y < 50.0f) canvas_size.y = 50.0f;
 
-    // Aspect ratio of HP 7470A paper (A4 landscape)
-    float paper_aspect = static_cast<float>(HPGL_MAX_X) / HPGL_MAX_Y;
-    float canvas_aspect = canvas_size.x / canvas_size.y;
-    float scale, ox, oy;
-    if (canvas_aspect > paper_aspect) {
-        scale = canvas_size.y / HPGL_MAX_Y;
-        ox = canvas_pos.x + (canvas_size.x - HPGL_MAX_X * scale) * 0.5f;
-        oy = canvas_pos.y;
-    } else {
-        scale = canvas_size.x / HPGL_MAX_X;
-        ox = canvas_pos.x;
-        oy = canvas_pos.y + (canvas_size.y - HPGL_MAX_Y * scale) * 0.5f;
-    }
-    // FBO-relative offsets (same values minus canvas_pos origin).
-    const float fbo_ox = ox - canvas_pos.x;
-    const float fbo_oy = oy - canvas_pos.y;
+  // Aspect ratio of HP 7470A paper (A4 landscape)
+  float paper_aspect = static_cast<float>(HPGL_MAX_X) / HPGL_MAX_Y;
+  float canvas_aspect = canvas_size.x / canvas_size.y;
+  float scale, ox, oy;
+  if (canvas_aspect > paper_aspect) {
+    scale = canvas_size.y / HPGL_MAX_Y;
+    ox = canvas_pos.x + (canvas_size.x - HPGL_MAX_X * scale) * 0.5f;
+    oy = canvas_pos.y;
+  } else {
+    scale = canvas_size.x / HPGL_MAX_X;
+    ox = canvas_pos.x;
+    oy = canvas_pos.y + (canvas_size.y - HPGL_MAX_Y * scale) * 0.5f;
+  }
+  // FBO-relative offsets (same values minus canvas_pos origin).
+  const float fbo_ox = ox - canvas_pos.x;
+  const float fbo_oy = oy - canvas_pos.y;
 
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    // Try to render segments into a cached FBO texture (only redraws when
-    // segment count or canvas size changes — avoids per-frame iteration).
-    const int canvas_w = static_cast<int>(canvas_size.x);
-    const int canvas_h = static_cast<int>(canvas_size.y);
-    uintptr_t fbo_tex = video_offscreen_texture("plotter", canvas_w, canvas_h,
-        segments.size(),
-        [&segments, fbo_ox, fbo_oy, scale](ImDrawList* fdl, int /*w*/, int /*h*/) {
-            const ImVec2 fp0(fbo_ox, fbo_oy);
-            const ImVec2 fp1(fbo_ox + HPGL_MAX_X * scale, fbo_oy + HPGL_MAX_Y * scale);
-            fdl->AddRectFilled(fp0, fp1, IM_COL32(255, 255, 255, 255));
-            fdl->AddRect(fp0, fp1, IM_COL32(180, 180, 180, 255));
-
-            auto pen_col = [](int pen) -> ImU32 {
-                return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
-            };
-            for (const auto& seg : segments) {
-                ImU32 col = pen_col(seg.pen);
-                switch (seg.type) {
-                    case PlotPrimitive::Line: {
-                        ImVec2 a(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
-                        ImVec2 b(fbo_ox + seg.x2 * scale, fbo_oy + (HPGL_MAX_Y - seg.y2) * scale);
-                        fdl->AddLine(a, b, col, 1.5f);
-                        break;
-                    }
-                    case PlotPrimitive::Circle: {
-                        ImVec2 c(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
-                        fdl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
-                        break;
-                    }
-                    case PlotPrimitive::Arc: {
-                        ImVec2 c(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
-                        float sa = -seg.start_angle * (3.14159265f / 180.0f);
-                        float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
-                        if (sa > ea) std::swap(sa, ea);
-                        fdl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
-                        fdl->PathStroke(col, 0, 1.5f);
-                        break;
-                    }
-                    case PlotPrimitive::Label: {
-                        ImVec2 pos(fbo_ox + seg.x1 * scale, fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
-                        fdl->AddText(pos, col, seg.text.c_str());
-                        break;
-                    }
-                }
-            }
-        });
-
-    if (fbo_tex) {
-        // Display the cached texture (Y-flipped UV: FBO is stored bottom-up in GL).
-        dl->AddImage(static_cast<ImTextureID>(fbo_tex),
-                     canvas_pos,
-                     ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
-                     ImVec2(0, 1), ImVec2(1, 0));
-    } else {
-        // SDL_Renderer fallback: draw per-frame (no FBO support).
-        ImVec2 p0(ox, oy);
-        ImVec2 p1(ox + HPGL_MAX_X * scale, oy + HPGL_MAX_Y * scale);
-        dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
-        dl->AddRect(p0, p1, IM_COL32(180, 180, 180, 255));
+  // Try to render segments into a cached FBO texture (only redraws when
+  // segment count or canvas size changes — avoids per-frame iteration).
+  const int canvas_w = static_cast<int>(canvas_size.x);
+  const int canvas_h = static_cast<int>(canvas_size.y);
+  uintptr_t fbo_tex = video_offscreen_texture(
+      "plotter", canvas_w, canvas_h, segments.size(),
+      [&segments, fbo_ox, fbo_oy, scale](ImDrawList* fdl, int /*w*/,
+                                         int /*h*/) {
+        const ImVec2 fp0(fbo_ox, fbo_oy);
+        const ImVec2 fp1(fbo_ox + HPGL_MAX_X * scale,
+                         fbo_oy + HPGL_MAX_Y * scale);
+        fdl->AddRectFilled(fp0, fp1, IM_COL32(255, 255, 255, 255));
+        fdl->AddRect(fp0, fp1, IM_COL32(180, 180, 180, 255));
 
         auto pen_col = [](int pen) -> ImU32 {
-            return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
+          return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
         };
         for (const auto& seg : segments) {
-            ImU32 col = pen_col(seg.pen);
-            switch (seg.type) {
-                case PlotPrimitive::Line: {
-                    ImVec2 a(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                    ImVec2 b(ox + seg.x2 * scale, oy + (HPGL_MAX_Y - seg.y2) * scale);
-                    dl->AddLine(a, b, col, 1.5f);
-                    break;
-                }
-                case PlotPrimitive::Circle: {
-                    ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                    dl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
-                    break;
-                }
-                case PlotPrimitive::Arc: {
-                    ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                    float sa = -seg.start_angle * (3.14159265f / 180.0f);
-                    float ea = -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
-                    if (sa > ea) std::swap(sa, ea);
-                    dl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
-                    dl->PathStroke(col, 0, 1.5f);
-                    break;
-                }
-                case PlotPrimitive::Label: {
-                    ImVec2 pos(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
-                    dl->AddText(pos, col, seg.text.c_str());
-                    break;
-                }
+          ImU32 col = pen_col(seg.pen);
+          switch (seg.type) {
+            case PlotPrimitive::Line: {
+              ImVec2 a(fbo_ox + seg.x1 * scale,
+                       fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+              ImVec2 b(fbo_ox + seg.x2 * scale,
+                       fbo_oy + (HPGL_MAX_Y - seg.y2) * scale);
+              fdl->AddLine(a, b, col, 1.5f);
+              break;
             }
+            case PlotPrimitive::Circle: {
+              ImVec2 c(fbo_ox + seg.x1 * scale,
+                       fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+              fdl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
+              break;
+            }
+            case PlotPrimitive::Arc: {
+              ImVec2 c(fbo_ox + seg.x1 * scale,
+                       fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+              float sa = -seg.start_angle * (3.14159265f / 180.0f);
+              float ea =
+                  -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
+              if (sa > ea) std::swap(sa, ea);
+              fdl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
+              fdl->PathStroke(col, 0, 1.5f);
+              break;
+            }
+            case PlotPrimitive::Label: {
+              ImVec2 pos(fbo_ox + seg.x1 * scale,
+                         fbo_oy + (HPGL_MAX_Y - seg.y1) * scale);
+              fdl->AddText(pos, col, seg.text.c_str());
+              break;
+            }
+          }
         }
+      });
+
+  if (fbo_tex) {
+    // Display the cached texture (Y-flipped UV: FBO is stored bottom-up in GL).
+    dl->AddImage(
+        static_cast<ImTextureID>(fbo_tex), canvas_pos,
+        ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
+        ImVec2(0, 1), ImVec2(1, 0));
+  } else {
+    // SDL_Renderer fallback: draw per-frame (no FBO support).
+    ImVec2 p0(ox, oy);
+    ImVec2 p1(ox + HPGL_MAX_X * scale, oy + HPGL_MAX_Y * scale);
+    dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 255));
+    dl->AddRect(p0, p1, IM_COL32(180, 180, 180, 255));
+
+    auto pen_col = [](int pen) -> ImU32 {
+      return (pen == 2) ? IM_COL32(200, 0, 0, 255) : IM_COL32(0, 0, 0, 255);
+    };
+    for (const auto& seg : segments) {
+      ImU32 col = pen_col(seg.pen);
+      switch (seg.type) {
+        case PlotPrimitive::Line: {
+          ImVec2 a(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+          ImVec2 b(ox + seg.x2 * scale, oy + (HPGL_MAX_Y - seg.y2) * scale);
+          dl->AddLine(a, b, col, 1.5f);
+          break;
+        }
+        case PlotPrimitive::Circle: {
+          ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+          dl->AddCircle(c, seg.radius * scale, col, 64, 1.5f);
+          break;
+        }
+        case PlotPrimitive::Arc: {
+          ImVec2 c(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+          float sa = -seg.start_angle * (3.14159265f / 180.0f);
+          float ea =
+              -(seg.start_angle + seg.sweep_angle) * (3.14159265f / 180.0f);
+          if (sa > ea) std::swap(sa, ea);
+          dl->PathArcTo(c, seg.radius * scale, sa, ea, 64);
+          dl->PathStroke(col, 0, 1.5f);
+          break;
+        }
+        case PlotPrimitive::Label: {
+          ImVec2 pos(ox + seg.x1 * scale, oy + (HPGL_MAX_Y - seg.y1) * scale);
+          dl->AddText(pos, col, seg.text.c_str());
+          break;
+        }
+      }
     }
+  }
 
-    // Current pen position indicator
-    if (g_plotter.selected_pen() > 0) {
-        ImVec2 pp(ox + g_plotter.pen_x() * scale,
-                  oy + (HPGL_MAX_Y - g_plotter.pen_y()) * scale);
-        ImU32 pc = g_plotter.pen_down() ? IM_COL32(0, 180, 0, 255) : IM_COL32(100, 100, 255, 255);
-        dl->AddCircleFilled(pp, 3.0f, pc);
-    }
+  // Current pen position indicator
+  if (g_plotter.selected_pen() > 0) {
+    ImVec2 pp(ox + g_plotter.pen_x() * scale,
+              oy + (HPGL_MAX_Y - g_plotter.pen_y()) * scale);
+    ImU32 pc = g_plotter.pen_down() ? IM_COL32(0, 180, 0, 255)
+                                    : IM_COL32(100, 100, 255, 255);
+    dl->AddCircleFilled(pp, 3.0f, pc);
+  }
 
-    // Reserve canvas space for scrolling/interaction
-    ImGui::Dummy(canvas_size);
+  // Reserve canvas space for scrolling/interaction
+  ImGui::Dummy(canvas_size);
 
-    ImGui::End();
+  ImGui::End();
 }
-

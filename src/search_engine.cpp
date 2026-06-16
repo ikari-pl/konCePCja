@@ -31,7 +31,8 @@ std::vector<PatternElement> compile_hex_pattern(const std::string& pattern) {
             // Skip invalid hex
             continue;
           }
-          result.push_back({PatternElement::LITERAL, static_cast<uint8_t>(val)});
+          result.push_back(
+              {PatternElement::LITERAL, static_cast<uint8_t>(val)});
         }
       }
       // Handle odd-length token (single trailing char)
@@ -55,7 +56,8 @@ std::vector<PatternElement> compile_text_pattern(const std::string& pattern,
       if (case_insensitive) {
         // Store uppercase version; matching will compare case-insensitively
         result.push_back({PatternElement::LITERAL,
-                          static_cast<uint8_t>(std::toupper(static_cast<unsigned char>(c)))});
+                          static_cast<uint8_t>(
+                              std::toupper(static_cast<unsigned char>(c)))});
       } else {
         result.push_back({PatternElement::LITERAL, static_cast<uint8_t>(c)});
       }
@@ -68,10 +70,8 @@ std::vector<PatternElement> compile_text_pattern(const std::string& pattern,
 // pat_idx = current position in compiled pattern
 // mem_pos = current position in memory
 static bool match_recursive(const std::vector<PatternElement>& compiled,
-                            size_t pat_idx,
-                            const uint8_t* mem, size_t mem_size,
-                            size_t mem_pos, size_t start,
-                            size_t& match_end,
+                            size_t pat_idx, const uint8_t* mem, size_t mem_size,
+                            size_t mem_pos, size_t start, size_t& match_end,
                             bool case_insensitive) {
   while (pat_idx < compiled.size()) {
     const auto& elem = compiled[pat_idx];
@@ -80,7 +80,8 @@ static bool match_recursive(const std::vector<PatternElement>& compiled,
       uint8_t mem_val = mem[mem_pos];
       uint8_t pat_val = elem.value;
       if (case_insensitive) {
-        mem_val = static_cast<uint8_t>(std::toupper(static_cast<unsigned char>(mem_val)));
+        mem_val = static_cast<uint8_t>(
+            std::toupper(static_cast<unsigned char>(mem_val)));
       }
       if (mem_val != pat_val) return false;
       mem_pos++;
@@ -89,7 +90,7 @@ static bool match_recursive(const std::vector<PatternElement>& compiled,
       if (mem_pos >= mem_size) return false;
       mem_pos++;
       pat_idx++;
-    } else { // ANY_MANY
+    } else {  // ANY_MANY
       pat_idx++;
       // If * is the last element, match everything remaining
       if (pat_idx >= compiled.size()) {
@@ -101,9 +102,8 @@ static bool match_recursive(const std::vector<PatternElement>& compiled,
       size_t max_skip = std::min(mem_size - mem_pos, static_cast<size_t>(256));
       for (size_t skip = 0; skip <= max_skip; skip++) {
         size_t try_end = 0;
-        if (match_recursive(compiled, pat_idx, mem, mem_size,
-                            mem_pos + skip, start, try_end,
-                            case_insensitive)) {
+        if (match_recursive(compiled, pat_idx, mem, mem_size, mem_pos + skip,
+                            start, try_end, case_insensitive)) {
           match_end = try_end;
           return true;
         }
@@ -124,8 +124,8 @@ bool match_pattern(const std::vector<PatternElement>& compiled,
   }
 
   size_t match_end = 0;
-  if (match_recursive(compiled, 0, mem, mem_size, offset, offset,
-                       match_end, case_insensitive)) {
+  if (match_recursive(compiled, 0, mem, mem_size, offset, offset, match_end,
+                      case_insensitive)) {
     match_len = match_end - offset;
     return true;
   }
@@ -133,16 +133,19 @@ bool match_pattern(const std::vector<PatternElement>& compiled,
 }
 
 int fuzzy_score(const std::string& query, const std::string& text) {
-  if (query.empty()) return 1; // Empty query matches everything with minimal score
+  if (query.empty())
+    return 1;  // Empty query matches everything with minimal score
 
   // Convert both to lowercase for case-insensitive matching
   std::string lq, lt;
   lq.reserve(query.size());
   lt.reserve(text.size());
   for (char c : query)
-    lq.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    lq.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
   for (char c : text)
-    lt.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    lt.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
 
   // Check if all query characters appear in order in text
   size_t qi = 0;
@@ -153,10 +156,11 @@ int fuzzy_score(const std::string& query, const std::string& text) {
   for (size_t ti = 0; ti < lt.size() && qi < lq.size(); ti++) {
     if (lt[ti] == lq[qi]) {
       if (first_match == std::string::npos) first_match = ti;
-      score += 10; // Base score per matched character
-      if (prev_matched) score += 5; // Consecutive match bonus
-      if (ti == 0 || lt[ti - 1] == ' ' || lt[ti - 1] == '_' || lt[ti - 1] == '-') {
-        score += 10; // Word boundary bonus
+      score += 10;                   // Base score per matched character
+      if (prev_matched) score += 5;  // Consecutive match bonus
+      if (ti == 0 || lt[ti - 1] == ' ' || lt[ti - 1] == '_' ||
+          lt[ti - 1] == '-') {
+        score += 10;  // Word boundary bonus
       }
       prev_matched = true;
       qi++;
@@ -180,7 +184,7 @@ int fuzzy_score(const std::string& query, const std::string& text) {
   return score;
 }
 
-} // namespace search_detail
+}  // namespace search_detail
 
 // Build hex context string for a match
 static std::string hex_context(const uint8_t* mem, size_t offset, size_t len) {
@@ -194,8 +198,8 @@ static std::string hex_context(const uint8_t* mem, size_t offset, size_t len) {
 }
 
 std::vector<SearchResult> search_memory(const uint8_t* mem, size_t mem_size,
-                                        const std::string& pattern, SearchMode mode,
-                                        size_t max_results) {
+                                        const std::string& pattern,
+                                        SearchMode mode, size_t max_results) {
   std::vector<SearchResult> results;
   if (!mem || mem_size == 0 || pattern.empty()) return results;
 
@@ -203,9 +207,11 @@ std::vector<SearchResult> search_memory(const uint8_t* mem, size_t mem_size,
     auto compiled = search_detail::compile_hex_pattern(pattern);
     if (compiled.empty()) return results;
 
-    for (size_t addr = 0; addr < mem_size && results.size() < max_results; addr++) {
+    for (size_t addr = 0; addr < mem_size && results.size() < max_results;
+         addr++) {
       size_t match_len = 0;
-      if (search_detail::match_pattern(compiled, mem, mem_size, addr, match_len)) {
+      if (search_detail::match_pattern(compiled, mem, mem_size, addr,
+                                       match_len)) {
         SearchResult r;
         r.address = static_cast<uint16_t>(addr);
         r.matched_bytes.assign(mem + addr, mem + addr + match_len);
@@ -217,9 +223,11 @@ std::vector<SearchResult> search_memory(const uint8_t* mem, size_t mem_size,
     auto compiled = search_detail::compile_text_pattern(pattern, true);
     if (compiled.empty()) return results;
 
-    for (size_t addr = 0; addr < mem_size && results.size() < max_results; addr++) {
+    for (size_t addr = 0; addr < mem_size && results.size() < max_results;
+         addr++) {
       size_t match_len = 0;
-      if (search_detail::match_pattern(compiled, mem, mem_size, addr, match_len, true)) {
+      if (search_detail::match_pattern(compiled, mem, mem_size, addr, match_len,
+                                       true)) {
         SearchResult r;
         r.address = static_cast<uint16_t>(addr);
         r.matched_bytes.assign(mem + addr, mem + addr + match_len);

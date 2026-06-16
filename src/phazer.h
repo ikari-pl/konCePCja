@@ -1,31 +1,27 @@
-#ifndef PHAZER_H
-#define PHAZER_H
+#pragma once
 
 #include <string>
 
 class PhazerType {
-  public: 
-    enum Value
-    {
-      None = 0,
-      AmstradMagnumPhaser = 1,
-      TrojanLightPhazer = 2,
-      LastPhazerType,
-    };
-    PhazerType() = default;
-    constexpr PhazerType(Value val) : value(val) { }
+ public:
+  enum Value {
+    None = 0,
+    AmstradMagnumPhaser = 1,
+    TrojanLightPhazer = 2,
+    LastPhazerType,
+  };
+  PhazerType() = default;
+  constexpr PhazerType(Value val) : value(val) {}
 
-    std::string ToString();
-    PhazerType Next();
-    operator Value() const { return value; };
+  std::string ToString();
+  PhazerType Next();
+  operator Value() const { return value; };
 
-    // if(phazer_type)
-    operator bool() const { return value != None; };
+  // if(phazer_type)
+  operator bool() const { return value != None; };
 
-  private:
-    Value value;
+ private:
+  Value value;
 };
 
 void phazer_register_io();
-
-#endif

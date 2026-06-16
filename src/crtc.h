@@ -16,33 +16,32 @@
    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
-#ifndef CRTC_H
-#define CRTC_H
+#pragma once
 
 #include "types.h"
 
 // The next 4 bytes must remain together
 typedef union {
-   dword combined;
-   struct {
-      byte monVSYNC;
-      byte inHSYNC;
-      union {
-         word combined;
-         struct {
-            byte DISPTIMG;
-            byte HDSPTIMG;
-         };
-      } dt;
-   };
+  dword combined;
+  struct {
+    byte monVSYNC;
+    byte inHSYNC;
+    union {
+      word combined;
+      struct {
+        byte DISPTIMG;
+        byte HDSPTIMG;
+      };
+    } dt;
+  };
 } t_flags1;
 // The next two bytes must remain together
 typedef union {
-   word combined;
-   struct {
-      byte NewDISPTIMG;
-      byte NewHDSPTIMG;
-   };
+  word combined;
+  struct {
+    byte NewDISPTIMG;
+    byte NewHDSPTIMG;
+  };
 } t_new_dt;
 
 void update_skew();
@@ -66,7 +65,8 @@ void video_repaint_from_ram();
 unsigned char crtc_type_for_model(unsigned int cpc_model);
 const char* crtc_type_chip_name(unsigned char crtc_type);
 const char* crtc_type_manufacturer(unsigned char crtc_type);
-dword shiftLittleEndianDwordTriplet(dword val1, dword val2, dword val3, unsigned int byteShift);
+dword shiftLittleEndianDwordTriplet(dword val1, dword val2, dword val3,
+                                    unsigned int byteShift);
 
 void render8bpp();
 void render8bpp_doubleY();
@@ -76,5 +76,3 @@ void render24bpp();
 void render24bpp_doubleY();
 void render32bpp();
 void render32bpp_doubleY();
-
-#endif

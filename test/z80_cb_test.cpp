@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
-#include "z80.h"
-#include "koncepcja.h"
 
+#include "koncepcja.h"
+#include "z80.h"
 #include "z80_macros.h"
 
-extern byte *membank_read[4];
+extern byte* membank_read[4];
 extern t_z80regs z80;
 
 namespace {
@@ -16,7 +16,7 @@ class Z80CBTest : public testing::Test {
  protected:
   // Helper: place a CB-prefixed instruction and execute it.
   // membank0 must outlive the call (caller owns it).
-  void execCB(byte *membank0, byte cb_opcode) {
+  void execCB(byte* membank0, byte cb_opcode) {
     membank0[0] = 0xCB;
     membank0[1] = cb_opcode;
     _PC = 0;
@@ -38,15 +38,15 @@ TEST_F(Z80CBTest, RLC_B_Basic) {
   // Rotate left: bit 7 (1) goes to carry and bit 0
   // Result: 0000 1011 = 0x0B
   EXPECT_EQ(0x0B, _B);
-  EXPECT_TRUE(_F & Cflag);    // bit 7 was 1
-  EXPECT_FALSE(_F & Zflag);   // result non-zero
-  EXPECT_FALSE(_F & Nflag);   // N always cleared
-  EXPECT_FALSE(_F & Hflag);   // H always cleared
+  EXPECT_TRUE(_F & Cflag);   // bit 7 was 1
+  EXPECT_FALSE(_F & Zflag);  // result non-zero
+  EXPECT_FALSE(_F & Nflag);  // N always cleared
+  EXPECT_FALSE(_F & Hflag);  // H always cleared
 }
 
 TEST_F(Z80CBTest, RLC_B_CarryClear) {
   byte mem[2];
-  _B = 0x01;  // 0000 0001
+  _B = 0x01;   // 0000 0001
   _F = Cflag;  // pre-existing carry should be replaced
   execCB(mem, 0x00);
   // Result: 0000 0010 = 0x02, old bit 7 was 0
@@ -77,7 +77,7 @@ TEST_F(Z80CBTest, RRC_B_Basic) {
   // Rotate right: bit 0 (1) goes to carry and bit 7
   // Result: 1100 0010 = 0xC2
   EXPECT_EQ(0xC2, _B);
-  EXPECT_TRUE(_F & Cflag);    // bit 0 was 1
+  EXPECT_TRUE(_F & Cflag);  // bit 0 was 1
   EXPECT_FALSE(_F & Zflag);
 }
 
@@ -108,25 +108,25 @@ TEST_F(Z80CBTest, RRC_B_Zero) {
 
 TEST_F(Z80CBTest, RL_B_CarryInAndOut) {
   byte mem[2];
-  _B = 0x80;  // 1000 0000
+  _B = 0x80;   // 1000 0000
   _F = Cflag;  // carry is set
   execCB(mem, 0x10);
   // bit 7 -> carry (set), old carry -> bit 0
   // Result: 0000 0001 = 0x01
   EXPECT_EQ(0x01, _B);
-  EXPECT_TRUE(_F & Cflag);   // bit 7 was 1
+  EXPECT_TRUE(_F & Cflag);  // bit 7 was 1
   EXPECT_FALSE(_F & Zflag);
 }
 
 TEST_F(Z80CBTest, RL_B_NoCarry) {
   byte mem[2];
   _B = 0x40;  // 0100 0000
-  _F = 0;      // no carry in
+  _F = 0;     // no carry in
   execCB(mem, 0x10);
   // Result: 1000 0000 = 0x80, bit 7 was 0
   EXPECT_EQ(0x80, _B);
   EXPECT_FALSE(_F & Cflag);
-  EXPECT_TRUE(_F & Sflag);   // result has bit 7 set
+  EXPECT_TRUE(_F & Sflag);  // result has bit 7 set
 }
 
 TEST_F(Z80CBTest, RL_B_Zero) {
@@ -145,20 +145,20 @@ TEST_F(Z80CBTest, RL_B_Zero) {
 
 TEST_F(Z80CBTest, RR_B_CarryInAndOut) {
   byte mem[2];
-  _B = 0x01;  // 0000 0001
+  _B = 0x01;   // 0000 0001
   _F = Cflag;  // carry is set
   execCB(mem, 0x18);
   // bit 0 -> carry (set), old carry -> bit 7
   // Result: 1000 0000 = 0x80
   EXPECT_EQ(0x80, _B);
-  EXPECT_TRUE(_F & Cflag);   // bit 0 was 1
-  EXPECT_TRUE(_F & Sflag);   // bit 7 set in result
+  EXPECT_TRUE(_F & Cflag);  // bit 0 was 1
+  EXPECT_TRUE(_F & Sflag);  // bit 7 set in result
 }
 
 TEST_F(Z80CBTest, RR_B_NoCarry) {
   byte mem[2];
   _B = 0x02;  // 0000 0010
-  _F = 0;      // no carry in
+  _F = 0;     // no carry in
   execCB(mem, 0x18);
   // Result: 0000 0001 = 0x01, bit 0 was 0
   EXPECT_EQ(0x01, _B);
@@ -299,14 +299,14 @@ TEST_F(Z80CBTest, SRL_B_HighBitCleared) {
 
 TEST_F(Z80CBTest, BIT0_B_BitSet) {
   byte mem[2];
-  _B = 0x01;  // bit 0 is set
+  _B = 0x01;   // bit 0 is set
   _F = Cflag;  // carry should be preserved
   execCB(mem, 0x40);
   // Z flag cleared (bit is set), H flag set, carry preserved
   EXPECT_FALSE(_F & Zflag);
   EXPECT_TRUE(_F & Hflag);
-  EXPECT_TRUE(_F & Cflag);   // carry preserved
-  EXPECT_EQ(0x01, _B);       // register unchanged
+  EXPECT_TRUE(_F & Cflag);  // carry preserved
+  EXPECT_EQ(0x01, _B);      // register unchanged
 }
 
 TEST_F(Z80CBTest, BIT0_B_BitClear) {
@@ -331,7 +331,7 @@ TEST_F(Z80CBTest, BIT7_B_BitSet) {
   _F = 0;
   execCB(mem, 0x78);
   EXPECT_FALSE(_F & Zflag);
-  EXPECT_TRUE(_F & Sflag);   // BIT 7 sets S flag when bit is set
+  EXPECT_TRUE(_F & Sflag);  // BIT 7 sets S flag when bit is set
   EXPECT_TRUE(_F & Hflag);
   EXPECT_EQ(0x80, _B);
 }
@@ -344,7 +344,7 @@ TEST_F(Z80CBTest, BIT7_B_BitClear) {
   EXPECT_TRUE(_F & Zflag);
   EXPECT_FALSE(_F & Sflag);
   EXPECT_TRUE(_F & Hflag);
-  EXPECT_TRUE(_F & Cflag);   // carry preserved
+  EXPECT_TRUE(_F & Cflag);  // carry preserved
   EXPECT_EQ(0x7F, _B);
 }
 

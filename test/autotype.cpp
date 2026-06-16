@@ -1,7 +1,10 @@
-#include <gtest/gtest.h>
-#include <vector>
-#include <utility>
 #include "autotype.h"
+
+#include <gtest/gtest.h>
+
+#include <utility>
+#include <vector>
+
 #include "keyboard.h"
 
 // Record of key apply calls for testing
@@ -11,7 +14,7 @@ struct KeyCall {
 };
 
 class AutoTypeTest : public ::testing::Test {
-protected:
+ protected:
   AutoTypeQueue queue;
   std::vector<KeyCall> calls;
 
@@ -195,7 +198,9 @@ TEST_F(AutoTypeTest, EnqueueAppendsToExisting) {
 
 TEST_F(AutoTypeTest, UnmappableCharsSkipped) {
   // Tilde is not in the CPC char map; other unmappable chars should be skipped
-  auto err = queue.enqueue("a\x01" "b");  // 0x01 is not mappable
+  auto err = queue.enqueue(
+      "a\x01"
+      "b");  // 0x01 is not mappable
   EXPECT_EQ(err, "");
   EXPECT_EQ(queue.remaining(), 2u);  // only 'a' and 'b'
 }
@@ -217,10 +222,10 @@ TEST_F(AutoTypeTest, TickCharPressRelease) {
   ASSERT_EQ(calls.size(), 1u);
   EXPECT_EQ(calls[0].cpc_key, static_cast<uint16_t>(CPC_A));
   EXPECT_FALSE(calls[0].pressed);
-  EXPECT_TRUE(queue.is_active()); // active during pause frame
+  EXPECT_TRUE(queue.is_active());  // active during pause frame
 
   // Frame 3: pause frame
-  EXPECT_FALSE(queue.tick(recorder())); // now finished
+  EXPECT_FALSE(queue.tick(recorder()));  // now finished
   EXPECT_FALSE(queue.is_active());
 }
 
@@ -409,6 +414,6 @@ TEST_F(AutoTypeTest, ClrKey) {
 TEST_F(AutoTypeTest, PauseOneFrame) {
   queue.enqueue("~PAUSE 1~");
   // The pause counts this frame, so only 1 frame
-  EXPECT_TRUE(queue.tick(recorder()));  // pause frame (counter = 0 after -1)
-  EXPECT_FALSE(queue.tick(recorder())); // queue empty
+  EXPECT_TRUE(queue.tick(recorder()));   // pause frame (counter = 0 after -1)
+  EXPECT_FALSE(queue.tick(recorder()));  // queue empty
 }

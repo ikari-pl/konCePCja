@@ -1,5 +1,4 @@
-#ifndef ASIC_DEBUG_H
-#define ASIC_DEBUG_H
+#pragma once
 
 #include <string>
 
@@ -10,5 +9,3 @@ std::string asic_dump_sprite(int index);
 std::string asic_dump_interrupts();
 std::string asic_dump_palette();
 std::string asic_dump_all();
-
-#endif

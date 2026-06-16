@@ -1,24 +1,25 @@
 #pragma once
 
-#include <string>
-#include <deque>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
+#include <string>
 
 struct AutoTypeAction {
   enum Type { CHAR_PRESS_RELEASE, KEY_PRESS, KEY_RELEASE, PAUSE };
   Type type;
-  uint16_t cpc_key;       // CPC_KEYS enum value
-  int pause_frames;       // for PAUSE type
+  uint16_t cpc_key;  // CPC_KEYS enum value
+  int pause_frames;  // for PAUSE type
 };
 
 // Callback type for applying a key press/release.
-// Parameters: cpc_key (CPC_KEYS enum value), pressed (true=press, false=release)
+// Parameters: cpc_key (CPC_KEYS enum value), pressed (true=press,
+// false=release)
 using AutoTypeKeyFunc = std::function<void(uint16_t cpc_key, bool pressed)>;
 
 class AutoTypeQueue {
-public:
+ public:
   // Parse WinAPE ~KEY~ syntax into action queue.
   // Returns empty string on success, error message on failure.
   std::string enqueue(const std::string& text);
@@ -45,7 +46,7 @@ public:
   // tick() runs on the main thread. The mutex serializes all access.
   mutable std::mutex mutex_;
 
-private:
+ private:
   std::deque<AutoTypeAction> queue_;
   int pause_counter_ = 0;
   // For CHAR_PRESS_RELEASE: press on one frame, release on next

@@ -21,7 +21,7 @@ konCePCja is designed as an **IPC-controllable debugging tool** — every featur
 
 ## Changes vs Caprice32
 
-konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 831 tests across 88 suites.
+konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 1,119 tests across 107 suites.
 
 ### Platform & UI
   * SDL3 migration + macOS menu integration

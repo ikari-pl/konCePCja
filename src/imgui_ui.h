@@ -1,5 +1,4 @@
-#ifndef IMGUI_UI_H
-#define IMGUI_UI_H
+#pragma once
 
 // Modern-UI public surface — function declarations for the ImGui +
 // SDL_GPU build.  When KONCPC_BUILD_MODERN_UI=OFF the implementations
@@ -26,9 +25,12 @@ void imgui_close_menu();
 bool imgui_any_keyboard_ui_active();
 
 // Toast notifications
-void imgui_toast(const std::string& message, ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);
+void imgui_toast(
+    const std::string& message,
+    ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);
 
-// MRU (recent files) helper — pushes path to front, deduplicates, caps at MRU_MAX
+// MRU (recent files) helper — pushes path to front, deduplicates, caps at
+// MRU_MAX
 void imgui_mru_push(std::vector<std::string>& list, const std::string& path);
 
 // tape_scan_blocks() moved to tape.h (callable from headless builds).
@@ -43,5 +45,3 @@ void serial_terminal_feed_byte(uint8_t byte);
 
 // Plotter Preview window
 void imgui_render_plotter_preview();
-
-#endif // IMGUI_UI_H

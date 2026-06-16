@@ -193,6 +193,11 @@ MM_SOURCES:=$(shell find $(SRCDIR) -name \*.mm)
 endif
 HEADERS:=$(shell find $(SRCDIR) -name \*.h)
 
+# Vendored / third-party files — excluded from clang-format and clang-tidy
+VENDORED_EXCLUDE := src/capsimg/% src/TextEditor.cpp src/LanguageDefinitions.cpp src/TextEditor.h src/argparse.cpp src/argparse.h src/msf_gif.h src/portable-file-dialogs.h src/compat/% src/m4board_web_assets.h
+FORMAT_SOURCES := $(filter-out $(VENDORED_EXCLUDE),$(SOURCES))
+FORMAT_HEADERS := $(filter-out $(VENDORED_EXCLUDE),$(HEADERS))
+
 # Modern UI gate (P1.5.1 step 4).  KONCPC_MODERN_UI=1 (default) builds the
 # Dear ImGui + SDL_GPU UI as today.  =0 excludes UI-only sources so the
 # core can compile without the modern UI — used by the future headless
@@ -490,14 +495,14 @@ macos_bundle: all
 	for i in 1 2 3; do hdiutil create -volname konCePCja-$(VERSION) -srcfolder $(BUNDLE_DIR) -ov -format UDZO release/koncepcja-macos-bundle/konCePCja.dmg && break || sleep 5; done
 
 clang-tidy:
-	if $(CLANG_TIDY) -checks=-*,$(CLANG_CHECKS) $(SOURCES) -header-filter=src/* -- $(COMMON_CFLAGS) | grep "."; then false; fi
+	if $(CLANG_TIDY) $(FORMAT_SOURCES) -header-filter=src/* -- $(COMMON_CFLAGS) | grep "."; then false; fi
 	./tools/check_includes.sh
 
 clang-format:
-	./tools/check_clang_format.sh $(CLANG_FORMAT) "-style=Google" $(SOURCES) $(TEST_SOURCES) $(HEADERS) $(TEST_HEADERS)
+	./tools/check_clang_format.sh $(CLANG_FORMAT) "-style=Google" $(FORMAT_SOURCES) $(TEST_SOURCES) $(FORMAT_HEADERS) $(TEST_HEADERS)
 
 fix-clang-format:
-	$(CLANG_FORMAT) -style=Google -i $(SOURCES) $(TEST_SOURCES) $(HEADERS) $(TEST_HEADERS)
+	$(CLANG_FORMAT) -style=Google -i $(FORMAT_SOURCES) $(TEST_SOURCES) $(FORMAT_HEADERS) $(TEST_HEADERS)
 
 doxygen:
 	doxygen doxygen.cfg

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+
 #include "imgui_ui_testable.h"
 
 // ─────────────────────────────────────────────────
@@ -46,7 +47,7 @@ TEST(ParseHex, ValidHexZero) {
 TEST(ParseHex, ExceedsMaxValue) {
   unsigned long result = 0;
   EXPECT_FALSE(parse_hex("10000", &result, 0xFFFF));
-  EXPECT_EQ(0u, result); // unchanged on failure
+  EXPECT_EQ(0u, result);  // unchanged on failure
 }
 
 TEST(ParseHex, InvalidCharacters) {
@@ -62,20 +63,20 @@ TEST(ParseHex, InvalidTrailingSpace) {
 TEST(ParseHex, InvalidLeadingSpace) {
   unsigned long result = 0;
   // strtoul skips leading whitespace, but we check *end != '\0'
-  // Actually strtoul does skip leading whitespace, so " 1234" would parse as 1234
-  // Let's verify the actual behavior
+  // Actually strtoul does skip leading whitespace, so " 1234" would parse as
+  // 1234 Let's verify the actual behavior
 }
 
 TEST(ParseHex, EmptyString) {
   unsigned long result = 999;
   EXPECT_FALSE(parse_hex("", &result, 0xFFFF));
-  EXPECT_EQ(999u, result); // unchanged on failure
+  EXPECT_EQ(999u, result);  // unchanged on failure
 }
 
 TEST(ParseHex, NullString) {
   unsigned long result = 999;
   EXPECT_FALSE(parse_hex(nullptr, &result, 0xFFFF));
-  EXPECT_EQ(999u, result); // unchanged on failure
+  EXPECT_EQ(999u, result);  // unchanged on failure
 }
 
 TEST(ParseHex, SingleDigit) {
@@ -95,21 +96,21 @@ TEST(ParseHex, LargeValue32Bit) {
 // ─────────────────────────────────────────────────
 
 TEST(SafeReadWord, ValidRead) {
-  byte buffer[] = { 0x34, 0x12 }; // little-endian: 0x1234
+  byte buffer[] = {0x34, 0x12};  // little-endian: 0x1234
   word result = 0;
   EXPECT_TRUE(safe_read_word(buffer, buffer + sizeof(buffer), 0, result));
   EXPECT_EQ(0x1234u, result);
 }
 
 TEST(SafeReadWord, ValidReadWithOffset) {
-  byte buffer[] = { 0x00, 0x34, 0x12, 0x00 };
+  byte buffer[] = {0x00, 0x34, 0x12, 0x00};
   word result = 0;
   EXPECT_TRUE(safe_read_word(buffer, buffer + sizeof(buffer), 1, result));
   EXPECT_EQ(0x1234u, result);
 }
 
 TEST(SafeReadWord, ReadAtBoundary) {
-  byte buffer[] = { 0x00, 0x00, 0x34, 0x12 };
+  byte buffer[] = {0x00, 0x00, 0x34, 0x12};
   word result = 0;
   // offset 2 + sizeof(word)=2 = 4, which is exactly end
   EXPECT_TRUE(safe_read_word(buffer, buffer + 4, 2, result));
@@ -117,48 +118,48 @@ TEST(SafeReadWord, ReadAtBoundary) {
 }
 
 TEST(SafeReadWord, ReadPastEnd) {
-  byte buffer[] = { 0x34, 0x12 };
+  byte buffer[] = {0x34, 0x12};
   word result = 0xFFFF;
   EXPECT_FALSE(safe_read_word(buffer, buffer + sizeof(buffer), 1, result));
-  EXPECT_EQ(0xFFFFu, result); // unchanged on failure
+  EXPECT_EQ(0xFFFFu, result);  // unchanged on failure
 }
 
 TEST(SafeReadWord, ReadPastEndWithOffset) {
-  byte buffer[] = { 0x00, 0x34 };
+  byte buffer[] = {0x00, 0x34};
   word result = 0xFFFF;
   // offset 1 + sizeof(word)=2 = 3 > 2 (end)
   EXPECT_FALSE(safe_read_word(buffer, buffer + 2, 1, result));
 }
 
 TEST(SafeReadWord, EmptyBuffer) {
-  byte buffer[] = { 0x00 };
+  byte buffer[] = {0x00};
   word result = 0xFFFF;
   EXPECT_FALSE(safe_read_word(buffer, buffer, 0, result));
 }
 
 TEST(SafeReadDword, ValidRead) {
-  byte buffer[] = { 0x78, 0x56, 0x34, 0x12 }; // little-endian: 0x12345678
+  byte buffer[] = {0x78, 0x56, 0x34, 0x12};  // little-endian: 0x12345678
   dword result = 0;
   EXPECT_TRUE(safe_read_dword(buffer, buffer + sizeof(buffer), 0, result));
   EXPECT_EQ(0x12345678u, result);
 }
 
 TEST(SafeReadDword, ValidReadWithOffset) {
-  byte buffer[] = { 0x00, 0x78, 0x56, 0x34, 0x12, 0x00 };
+  byte buffer[] = {0x00, 0x78, 0x56, 0x34, 0x12, 0x00};
   dword result = 0;
   EXPECT_TRUE(safe_read_dword(buffer, buffer + sizeof(buffer), 1, result));
   EXPECT_EQ(0x12345678u, result);
 }
 
 TEST(SafeReadDword, ReadPastEnd) {
-  byte buffer[] = { 0x78, 0x56, 0x34 }; // only 3 bytes
+  byte buffer[] = {0x78, 0x56, 0x34};  // only 3 bytes
   dword result = 0xDEADBEEF;
   EXPECT_FALSE(safe_read_dword(buffer, buffer + sizeof(buffer), 0, result));
-  EXPECT_EQ(0xDEADBEEFu, result); // unchanged on failure
+  EXPECT_EQ(0xDEADBEEFu, result);  // unchanged on failure
 }
 
 TEST(SafeReadDword, ReadAtBoundary) {
-  byte buffer[] = { 0x00, 0x78, 0x56, 0x34, 0x12 };
+  byte buffer[] = {0x00, 0x78, 0x56, 0x34, 0x12};
   dword result = 0;
   // offset 1 + sizeof(dword)=4 = 5, which is exactly end
   EXPECT_TRUE(safe_read_dword(buffer, buffer + 5, 1, result));
@@ -169,44 +170,28 @@ TEST(SafeReadDword, ReadAtBoundary) {
 // find_ram_index tests
 // ─────────────────────────────────────────────────
 
-TEST(FindRamIndex, Find64KB) {
-  EXPECT_EQ(0, find_ram_index(64));
-}
+TEST(FindRamIndex, Find64KB) { EXPECT_EQ(0, find_ram_index(64)); }
 
-TEST(FindRamIndex, Find128KB) {
-  EXPECT_EQ(1, find_ram_index(128));
-}
+TEST(FindRamIndex, Find128KB) { EXPECT_EQ(1, find_ram_index(128)); }
 
-TEST(FindRamIndex, Find192KB) {
-  EXPECT_EQ(2, find_ram_index(192));
-}
+TEST(FindRamIndex, Find192KB) { EXPECT_EQ(2, find_ram_index(192)); }
 
-TEST(FindRamIndex, Find256KB) {
-  EXPECT_EQ(3, find_ram_index(256));
-}
+TEST(FindRamIndex, Find256KB) { EXPECT_EQ(3, find_ram_index(256)); }
 
-TEST(FindRamIndex, Find320KB) {
-  EXPECT_EQ(4, find_ram_index(320));
-}
+TEST(FindRamIndex, Find320KB) { EXPECT_EQ(4, find_ram_index(320)); }
 
-TEST(FindRamIndex, Find512KB) {
-  EXPECT_EQ(5, find_ram_index(512));
-}
+TEST(FindRamIndex, Find512KB) { EXPECT_EQ(5, find_ram_index(512)); }
 
-TEST(FindRamIndex, Find576KB) {
-  EXPECT_EQ(6, find_ram_index(576));
-}
+TEST(FindRamIndex, Find576KB) { EXPECT_EQ(6, find_ram_index(576)); }
 
-TEST(FindRamIndex, Find4160KB) {
-  EXPECT_EQ(7, find_ram_index(4160));
-}
+TEST(FindRamIndex, Find4160KB) { EXPECT_EQ(7, find_ram_index(4160)); }
 
 TEST(FindRamIndex, InvalidValue) {
-  EXPECT_EQ(2, find_ram_index(999)); // defaults to index 2 (192 KB)
+  EXPECT_EQ(2, find_ram_index(999));  // defaults to index 2 (192 KB)
 }
 
 TEST(FindRamIndex, ZeroValue) {
-  EXPECT_EQ(2, find_ram_index(0)); // defaults to index 2 (192 KB)
+  EXPECT_EQ(2, find_ram_index(0));  // defaults to index 2 (192 KB)
 }
 
 // ─────────────────────────────────────────────────
@@ -234,11 +219,11 @@ TEST(FindSampleRateIndex, Find96000) {
 }
 
 TEST(FindSampleRateIndex, InvalidValue) {
-  EXPECT_EQ(2, find_sample_rate_index(999)); // defaults to 44100 (index 2)
+  EXPECT_EQ(2, find_sample_rate_index(999));  // defaults to 44100 (index 2)
 }
 
 TEST(FindSampleRateIndex, ZeroValue) {
-  EXPECT_EQ(2, find_sample_rate_index(0)); // defaults to 44100 (index 2)
+  EXPECT_EQ(2, find_sample_rate_index(0));  // defaults to 44100 (index 2)
 }
 
 // ─────────────────────────────────────────────────
@@ -246,7 +231,7 @@ TEST(FindSampleRateIndex, ZeroValue) {
 // ─────────────────────────────────────────────────
 
 class FormatMemoryLineTest : public ::testing::Test {
-protected:
+ protected:
   static constexpr size_t RAM_SIZE = 65536;
   byte ram[RAM_SIZE];
   char buf[512];
@@ -277,7 +262,7 @@ TEST_F(FormatMemoryLineTest, HexOnlyFormat) {
 TEST_F(FormatMemoryLineTest, HexPlusAsciiFormat) {
   ram[0x2000] = 'H';
   ram[0x2001] = 'i';
-  ram[0x2002] = 0x00; // non-printable
+  ram[0x2002] = 0x00;  // non-printable
   ram[0x2003] = '!';
 
   int len = format_memory_line(buf, sizeof(buf), 0x2000, 4, 1, ram);
@@ -304,7 +289,7 @@ TEST_F(FormatMemoryLineTest, HexPlusDecimalFormat) {
 
 TEST_F(FormatMemoryLineTest, AddressWraparound) {
   ram[0xFFFF] = 0xAA;
-  ram[0x0000] = 0xBB; // wraps around
+  ram[0x0000] = 0xBB;  // wraps around
 
   int len = format_memory_line(buf, sizeof(buf), 0xFFFF, 2, 0, ram);
 
@@ -370,10 +355,10 @@ TEST_F(FormatMemoryLineTest, SixteenBytes) {
 }
 
 TEST_F(FormatMemoryLineTest, NonPrintableAscii) {
-  ram[0x5000] = 0x01; // SOH - non-printable
-  ram[0x5001] = 0x1F; // US - non-printable
-  ram[0x5002] = 0x7F; // DEL - non-printable
-  ram[0x5003] = 0x20; // Space - printable
+  ram[0x5000] = 0x01;  // SOH - non-printable
+  ram[0x5001] = 0x1F;  // US - non-printable
+  ram[0x5002] = 0x7F;  // DEL - non-printable
+  ram[0x5003] = 0x20;  // Space - printable
 
   int len = format_memory_line(buf, sizeof(buf), 0x5000, 4, 1, ram);
 
@@ -488,7 +473,8 @@ TEST(Constants, SampleRateCountMatchesArray) {
 TEST(Constants, SampleRatesAreMonotonicallyIncreasing) {
   for (int i = 1; i < SAMPLE_RATE_COUNT; i++) {
     EXPECT_GT(SAMPLE_RATES[i], SAMPLE_RATES[i - 1])
-        << "SAMPLE_RATES[" << i << "] should be > SAMPLE_RATES[" << (i - 1) << "]";
+        << "SAMPLE_RATES[" << i << "] should be > SAMPLE_RATES[" << (i - 1)
+        << "]";
   }
 }
 
@@ -513,9 +499,11 @@ TEST_F(FormatMemoryLineTest, AddressAtFFF0) {
 
   EXPECT_GT(len, 0);
   EXPECT_NE(nullptr, strstr(buf, "FFF0"));
-  // First byte: 0xF0, last byte wraps: ram[0x0000] was set to 0xF0+16=0x00 (truncated)
+  // First byte: 0xF0, last byte wraps: ram[0x0000] was set to 0xF0+16=0x00
+  // (truncated)
   EXPECT_NE(nullptr, strstr(buf, "F0"));
-  EXPECT_NE(nullptr, strstr(buf, "FF")); // 0xFFF0 + 15 = 0xFFFF -> ram[0xFFFF] = 0xFF
+  EXPECT_NE(nullptr,
+            strstr(buf, "FF"));  // 0xFFF0 + 15 = 0xFFFF -> ram[0xFFFF] = 0xFF
 }
 
 TEST_F(FormatMemoryLineTest, LargeBaseAddrMaskedTo16Bit) {
@@ -543,10 +531,10 @@ TEST_F(FormatMemoryLineTest, AsciiFormatPrintableRange) {
   const char* pipe = strstr(buf, "|");
   ASSERT_NE(nullptr, pipe);
   // After "| ": dot, space, tilde, dot
-  EXPECT_EQ('.', pipe[2]);   // 31 -> dot
-  EXPECT_EQ(' ', pipe[3]);   // 32 -> space
-  EXPECT_EQ('~', pipe[4]);   // 126 -> tilde
-  EXPECT_EQ('.', pipe[5]);   // 127 -> dot
+  EXPECT_EQ('.', pipe[2]);  // 31 -> dot
+  EXPECT_EQ(' ', pipe[3]);  // 32 -> space
+  EXPECT_EQ('~', pipe[4]);  // 126 -> tilde
+  EXPECT_EQ('.', pipe[5]);  // 127 -> dot
 }
 
 TEST_F(FormatMemoryLineTest, DecimalFormatValues) {
@@ -559,7 +547,7 @@ TEST_F(FormatMemoryLineTest, DecimalFormatValues) {
 
   EXPECT_GT(len, 0);
   // All four decimal values should appear
-  EXPECT_NE(nullptr, strstr(buf, "  0"));   // %3u format
+  EXPECT_NE(nullptr, strstr(buf, "  0"));  // %3u format
   EXPECT_NE(nullptr, strstr(buf, "  1"));
   EXPECT_NE(nullptr, strstr(buf, "127"));
   EXPECT_NE(nullptr, strstr(buf, "255"));
@@ -610,7 +598,8 @@ TEST(SndPlaybackRateBug, IndexValuesAreValidIndices) {
   // CPC.snd_playback_rate should be an index 0..4 into freq_table[5].
   // Verify all valid index values are within bounds.
   for (int i = 0; i < SAMPLE_RATE_COUNT; i++) {
-    EXPECT_LT(i, 5) << "Index " << i << " would be out of bounds for freq_table[5]";
+    EXPECT_LT(i, 5) << "Index " << i
+                    << " would be out of bounds for freq_table[5]";
   }
 }
 
@@ -620,8 +609,8 @@ TEST(SndPlaybackRateBug, RawFrequencyIsNotValidIndex) {
   // freq_table[5]. Any value >= 5 is invalid as an index.
   for (int i = 0; i < SAMPLE_RATE_COUNT; i++) {
     unsigned int raw_freq = SAMPLE_RATES[i];
-    EXPECT_GE(raw_freq, 5u)
-        << "Raw frequency " << raw_freq << " would be an invalid index into freq_table[5]";
+    EXPECT_GE(raw_freq, 5u) << "Raw frequency " << raw_freq
+                            << " would be an invalid index into freq_table[5]";
   }
 }
 
@@ -647,12 +636,13 @@ TEST(SndPlaybackRateBug, AfterDialogWritesFreqOtherCodeBreaks) {
   //
   // We can't test the actual OOB access, but we verify that the raw
   // frequency values from sample_rate_values[] are never valid indices.
-  int sample_rate_values[] = { 11025, 22050, 44100, 48000, 96000 };
+  int sample_rate_values[] = {11025, 22050, 44100, 48000, 96000};
   for (int i = 0; i < 5; i++) {
     EXPECT_GE(sample_rate_values[i], SAMPLE_RATE_COUNT)
         << "After Options dialog writes " << sample_rate_values[i]
         << " to snd_playback_rate, freq_table[" << sample_rate_values[i]
-        << "] is out-of-bounds (freq_table has " << SAMPLE_RATE_COUNT << " entries)";
+        << "] is out-of-bounds (freq_table has " << SAMPLE_RATE_COUNT
+        << " entries)";
   }
 }
 
@@ -732,7 +722,7 @@ TEST(SafeReadDword, ZeroLengthBuffer) {
 }
 
 TEST(SafeReadDword, ExactFourBytes) {
-  byte buffer[4] = { 0x01, 0x02, 0x03, 0x04 };
+  byte buffer[4] = {0x01, 0x02, 0x03, 0x04};
   dword result = 0;
   EXPECT_TRUE(safe_read_dword(buffer, buffer + 4, 0, result));
   EXPECT_EQ(0x04030201u, result);

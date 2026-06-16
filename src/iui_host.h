@@ -46,43 +46,43 @@ union SDL_Event;
 // here, so headless TUs don't grow an ImGui dependency.  Keep this in
 // sync if the underlying enum gains a new level.
 enum class UiToastLevel {
-    Info    = 0,
-    Success = 1,
-    Error   = 2,
+  Info = 0,
+  Success = 1,
+  Error = 2,
 };
 
 class IUiHost {
-  public:
-    virtual ~IUiHost() = default;
+ public:
+  virtual ~IUiHost() = default;
 
-    // -- Event input ----------------------------------------------------
-    // Called once per SDL_PollEvent.  The host decides whether the event
-    // is consumed by UI widgets (modal dialogs, text input, etc.).
-    virtual void process_event(const SDL_Event& ev) = 0;
+  // -- Event input ----------------------------------------------------
+  // Called once per SDL_PollEvent.  The host decides whether the event
+  // is consumed by UI widgets (modal dialogs, text input, etc.).
+  virtual void process_event(const SDL_Event& ev) = 0;
 
-    // -- Query (input-capture state) ------------------------------------
-    // True when the UI wants to swallow keyboard / mouse input — main
-    // loop must NOT forward those events to the CPC.  Mirrors
-    // ImGui::GetIO().WantCaptureKeyboard / WantCaptureMouse.
-    virtual bool wants_capture_keyboard() const = 0;
-    virtual bool wants_capture_mouse() const = 0;
+  // -- Query (input-capture state) ------------------------------------
+  // True when the UI wants to swallow keyboard / mouse input — main
+  // loop must NOT forward those events to the CPC.  Mirrors
+  // ImGui::GetIO().WantCaptureKeyboard / WantCaptureMouse.
+  virtual bool wants_capture_keyboard() const = 0;
+  virtual bool wants_capture_mouse() const = 0;
 
-    // True when any UI element with a focused text/input field is active
-    // (modal text input, command palette, address bar in devtools, etc.).
-    // Today this is the existing free function `imgui_any_keyboard_ui_active()`.
-    virtual bool any_keyboard_ui_active() const = 0;
+  // True when any UI element with a focused text/input field is active
+  // (modal text input, command palette, address bar in devtools, etc.).
+  // Today this is the existing free function `imgui_any_keyboard_ui_active()`.
+  virtual bool any_keyboard_ui_active() const = 0;
 
-    // -- Feedback (best-effort) -----------------------------------------
-    // Show a transient toast message to the user.  On NullUiHost this
-    // logs to stderr so headless runs still surface diagnostics.
-    virtual void toast(UiToastLevel level, const std::string& message) = 0;
+  // -- Feedback (best-effort) -----------------------------------------
+  // Show a transient toast message to the user.  On NullUiHost this
+  // logs to stderr so headless runs still surface diagnostics.
+  virtual void toast(UiToastLevel level, const std::string& message) = 0;
 
-    // -- Layout query ---------------------------------------------------
-    // Pixel height of the modern UI's top bar (menu + status row).  The
-    // CPC framebuffer renders below it, so the main loop subtracts this
-    // when computing mouse-over-topbar regions.  Returns 0 on NullUiHost
-    // so headless callers see the full window as the CPC viewport.
-    virtual int topbar_height() const = 0;
+  // -- Layout query ---------------------------------------------------
+  // Pixel height of the modern UI's top bar (menu + status row).  The
+  // CPC framebuffer renders below it, so the main loop subtracts this
+  // when computing mouse-over-topbar regions.  Returns 0 on NullUiHost
+  // so headless callers see the full window as the CPC viewport.
+  virtual int topbar_height() const = 0;
 };
 
 // Returns a process-wide singleton chosen at build time:
@@ -107,11 +107,12 @@ IUiHost* install_ui_host(IUiHost* host);
 // previous host when the returned scope-guard is destroyed.  No-op
 // outside tests (the prod factory is statically chosen).
 class UiHostOverride {
-  public:
-    explicit UiHostOverride(IUiHost* test_host);
-    ~UiHostOverride();
-    UiHostOverride(const UiHostOverride&) = delete;
-    UiHostOverride& operator=(const UiHostOverride&) = delete;
-  private:
-    IUiHost* previous_;
+ public:
+  explicit UiHostOverride(IUiHost* test_host);
+  ~UiHostOverride();
+  UiHostOverride(const UiHostOverride&) = delete;
+  UiHostOverride& operator=(const UiHostOverride&) = delete;
+
+ private:
+  IUiHost* previous_;
 };

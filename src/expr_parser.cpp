@@ -1,19 +1,33 @@
 #include "expr_parser.h"
-#include "z80.h"
-#include "koncepcja.h"
-#include "debug_timers.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <algorithm>
+
+#include "debug_timers.h"
+#include "koncepcja.h"
+#include "z80.h"
 
 // ─── Tokenizer ──────────────────────────────────────────────────────
 
 enum class TokenType {
-  NUMBER, IDENT, LPAREN, RPAREN, COMMA,
-  PLUS, MINUS, STAR, SLASH,
-  LT, LE, GT, GE, EQ, NE,
-  END, ERROR,
+  NUMBER,
+  IDENT,
+  LPAREN,
+  RPAREN,
+  COMMA,
+  PLUS,
+  MINUS,
+  STAR,
+  SLASH,
+  LT,
+  LE,
+  GT,
+  GE,
+  EQ,
+  NE,
+  END,
+  ERROR,
 };
 
 struct Token {
@@ -23,7 +37,7 @@ struct Token {
 };
 
 class Tokenizer {
-public:
+ public:
   explicit Tokenizer(const std::string& input) : src(input), pos(0) {}
 
   Token next() {
@@ -33,29 +47,59 @@ public:
     char ch = src[pos];
 
     // Parentheses and comma
-    if (ch == '(') { pos++; return {TokenType::LPAREN, 0, {}}; }
-    if (ch == ')') { pos++; return {TokenType::RPAREN, 0, {}}; }
-    if (ch == ',') { pos++; return {TokenType::COMMA, 0, {}}; }
-    if (ch == '+') { pos++; return {TokenType::PLUS, 0, {}}; }
-    if (ch == '-') { pos++; return {TokenType::MINUS, 0, {}}; }
-    if (ch == '*') { pos++; return {TokenType::STAR, 0, {}}; }
-    if (ch == '/') { pos++; return {TokenType::SLASH, 0, {}}; }
+    if (ch == '(') {
+      pos++;
+      return {TokenType::LPAREN, 0, {}};
+    }
+    if (ch == ')') {
+      pos++;
+      return {TokenType::RPAREN, 0, {}};
+    }
+    if (ch == ',') {
+      pos++;
+      return {TokenType::COMMA, 0, {}};
+    }
+    if (ch == '+') {
+      pos++;
+      return {TokenType::PLUS, 0, {}};
+    }
+    if (ch == '-') {
+      pos++;
+      return {TokenType::MINUS, 0, {}};
+    }
+    if (ch == '*') {
+      pos++;
+      return {TokenType::STAR, 0, {}};
+    }
+    if (ch == '/') {
+      pos++;
+      return {TokenType::SLASH, 0, {}};
+    }
 
     // Comparison operators
     if (ch == '<') {
       pos++;
-      if (pos < src.size() && src[pos] == '=') { pos++; return {TokenType::LE, 0, {}}; }
-      if (pos < src.size() && src[pos] == '>') { pos++; return {TokenType::NE, 0, {}}; }
+      if (pos < src.size() && src[pos] == '=') {
+        pos++;
+        return {TokenType::LE, 0, {}};
+      }
+      if (pos < src.size() && src[pos] == '>') {
+        pos++;
+        return {TokenType::NE, 0, {}};
+      }
       return {TokenType::LT, 0, {}};
     }
     if (ch == '>') {
       pos++;
-      if (pos < src.size() && src[pos] == '=') { pos++; return {TokenType::GE, 0, {}}; }
+      if (pos < src.size() && src[pos] == '=') {
+        pos++;
+        return {TokenType::GE, 0, {}};
+      }
       return {TokenType::GT, 0, {}};
     }
     if (ch == '=') {
       pos++;
-      if (pos < src.size() && src[pos] == '=') pos++; // accept both = and ==
+      if (pos < src.size() && src[pos] == '=') pos++;  // accept both = and ==
       return {TokenType::EQ, 0, {}};
     }
     if (ch == '!' && pos + 1 < src.size() && src[pos + 1] == '=') {
@@ -68,7 +112,8 @@ public:
       pos++;
       return parse_hex();
     }
-    if (ch == '0' && pos + 1 < src.size() && (src[pos + 1] == 'x' || src[pos + 1] == 'X')) {
+    if (ch == '0' && pos + 1 < src.size() &&
+        (src[pos + 1] == 'x' || src[pos + 1] == 'X')) {
       pos += 2;
       return parse_hex();
     }
@@ -81,7 +126,8 @@ public:
     }
 
     // Identifier (register, variable, keyword, function name)
-    if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_' || ch == '\'') {
+    if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_' ||
+        ch == '\'') {
       return parse_ident();
     }
 
@@ -93,21 +139,26 @@ public:
     return err;
   }
 
-private:
+ private:
   const std::string& src;
   size_t pos;
 
   void skip_ws() {
-    while (pos < src.size() && std::isspace(static_cast<unsigned char>(src[pos]))) pos++;
+    while (pos < src.size() &&
+           std::isspace(static_cast<unsigned char>(src[pos])))
+      pos++;
   }
 
   Token parse_hex() {
     size_t start = pos;
-    while (pos < src.size() && std::isxdigit(static_cast<unsigned char>(src[pos]))) pos++;
+    while (pos < src.size() &&
+           std::isxdigit(static_cast<unsigned char>(src[pos])))
+      pos++;
     if (pos == start) return {TokenType::ERROR, 0, "expected hex digits"};
     Token t;
     t.type = TokenType::NUMBER;
-    t.num_value = static_cast<int32_t>(std::stoul(src.substr(start, pos - start), nullptr, 16));
+    t.num_value = static_cast<int32_t>(
+        std::stoul(src.substr(start, pos - start), nullptr, 16));
     return t;
   }
 
@@ -117,16 +168,20 @@ private:
     if (pos == start) return {TokenType::ERROR, 0, "expected binary digits"};
     Token t;
     t.type = TokenType::NUMBER;
-    t.num_value = static_cast<int32_t>(std::stoul(src.substr(start, pos - start), nullptr, 2));
+    t.num_value = static_cast<int32_t>(
+        std::stoul(src.substr(start, pos - start), nullptr, 2));
     return t;
   }
 
   Token parse_decimal() {
     size_t start = pos;
-    while (pos < src.size() && std::isdigit(static_cast<unsigned char>(src[pos]))) pos++;
+    while (pos < src.size() &&
+           std::isdigit(static_cast<unsigned char>(src[pos])))
+      pos++;
     Token t;
     t.type = TokenType::NUMBER;
-    t.num_value = static_cast<int32_t>(std::stoul(src.substr(start, pos - start), nullptr, 10));
+    t.num_value = static_cast<int32_t>(
+        std::stoul(src.substr(start, pos - start), nullptr, 10));
     return t;
   }
 
@@ -148,13 +203,16 @@ private:
 // ─── Parser (recursive descent) ─────────────────────────────────────
 
 class Parser {
-public:
+ public:
   explicit Parser(const std::string& input) : tok(input) {}
 
   std::unique_ptr<ExprNode> parse(std::string& error) {
     advance();
     auto node = parse_or_expr();
-    if (!node) { error = err; return nullptr; }
+    if (!node) {
+      error = err;
+      return nullptr;
+    }
     if (cur.type != TokenType::END) {
       error = "unexpected token after expression";
       return nullptr;
@@ -162,7 +220,7 @@ public:
     return node;
   }
 
-private:
+ private:
   Tokenizer tok;
   Token cur;
   std::string err;
@@ -183,7 +241,8 @@ private:
     return n;
   }
   static std::unique_ptr<ExprNode> make_binop(BinaryOp op,
-      std::unique_ptr<ExprNode> lhs, std::unique_ptr<ExprNode> rhs) {
+                                              std::unique_ptr<ExprNode> lhs,
+                                              std::unique_ptr<ExprNode> rhs) {
     auto n = std::make_unique<ExprNode>();
     n->type = ExprNodeType::BINARY_OP;
     n->op = op;
@@ -198,7 +257,7 @@ private:
     return n;
   }
   static std::unique_ptr<ExprNode> make_func(const std::string& name,
-      std::unique_ptr<ExprNode> arg) {
+                                             std::unique_ptr<ExprNode> arg) {
     auto n = std::make_unique<ExprNode>();
     n->type = ExprNodeType::FUNCTION_CALL;
     n->name = name;
@@ -260,13 +319,26 @@ private:
     BinaryOp op;
     bool found = true;
     switch (cur.type) {
-      case TokenType::LT: op = BinaryOp::LT; break;
-      case TokenType::LE: op = BinaryOp::LE; break;
-      case TokenType::EQ: op = BinaryOp::EQ; break;
-      case TokenType::GE: op = BinaryOp::GE; break;
-      case TokenType::GT: op = BinaryOp::GT; break;
-      case TokenType::NE: op = BinaryOp::NE; break;
-      default: found = false;
+      case TokenType::LT:
+        op = BinaryOp::LT;
+        break;
+      case TokenType::LE:
+        op = BinaryOp::LE;
+        break;
+      case TokenType::EQ:
+        op = BinaryOp::EQ;
+        break;
+      case TokenType::GE:
+        op = BinaryOp::GE;
+        break;
+      case TokenType::GT:
+        op = BinaryOp::GT;
+        break;
+      case TokenType::NE:
+        op = BinaryOp::NE;
+        break;
+      default:
+        found = false;
     }
     if (found) {
       advance();
@@ -282,7 +354,8 @@ private:
     auto node = parse_mul_expr();
     if (!node) return nullptr;
     while (cur.type == TokenType::PLUS || cur.type == TokenType::MINUS) {
-      BinaryOp op = (cur.type == TokenType::PLUS) ? BinaryOp::ADD : BinaryOp::SUB;
+      BinaryOp op =
+          (cur.type == TokenType::PLUS) ? BinaryOp::ADD : BinaryOp::SUB;
       advance();
       auto rhs = parse_mul_expr();
       if (!rhs) return nullptr;
@@ -297,10 +370,14 @@ private:
     if (!node) return nullptr;
     while (true) {
       BinaryOp op;
-      if (cur.type == TokenType::STAR) op = BinaryOp::MUL;
-      else if (cur.type == TokenType::SLASH) op = BinaryOp::DIV;
-      else if (cur.type == TokenType::IDENT && lower(cur.str_value) == "mod") op = BinaryOp::MOD;
-      else break;
+      if (cur.type == TokenType::STAR)
+        op = BinaryOp::MUL;
+      else if (cur.type == TokenType::SLASH)
+        op = BinaryOp::DIV;
+      else if (cur.type == TokenType::IDENT && lower(cur.str_value) == "mod")
+        op = BinaryOp::MOD;
+      else
+        break;
       advance();
       auto rhs = parse_unary();
       if (!rhs) return nullptr;
@@ -374,7 +451,8 @@ private:
 
 // ─── Public API: parse ──────────────────────────────────────────────
 
-std::unique_ptr<ExprNode> expr_parse(const std::string& input, std::string& error) {
+std::unique_ptr<ExprNode> expr_parse(const std::string& input,
+                                     std::string& error) {
   Parser p(input);
   return p.parse(error);
 }
@@ -382,14 +460,15 @@ std::unique_ptr<ExprNode> expr_parse(const std::string& input, std::string& erro
 // ─── Evaluator ──────────────────────────────────────────────────────
 
 // Resolve a register variable name to its value (case-insensitive)
-static int32_t resolve_variable(const std::string& name, const ExprContext& ctx) {
+static int32_t resolve_variable(const std::string& name,
+                                const ExprContext& ctx) {
   if (!ctx.z80) return 0;
   const t_z80regs& z = *ctx.z80;
 
   // Normalize to lowercase for uniform matching
   std::string n = name;
   std::transform(n.begin(), n.end(), n.begin(),
-                 [](unsigned char c){ return std::tolower(c); });
+                 [](unsigned char c) { return std::tolower(c); });
 
   // 8-bit registers
   if (n == "a") return z.AF.b.h;
@@ -436,11 +515,12 @@ static int32_t resolve_variable(const std::string& name, const ExprContext& ctx)
   if (n == "previous") return ctx.previous;
   if (n == "mode") return ctx.mode;
 
-  return 0; // unknown variable
+  return 0;  // unknown variable
 }
 
 // Resolve a function call
-static int32_t resolve_function(const std::string& name, int32_t arg, const ExprContext& ctx) {
+static int32_t resolve_function(const std::string& name, int32_t arg,
+                                const ExprContext& ctx) {
   if (name == "peek") {
     return z80_read_mem(static_cast<word>(arg));
   }
@@ -502,20 +582,34 @@ int32_t expr_eval(const ExprNode* node, const ExprContext& ctx) {
       int32_t lv = expr_eval(node->left.get(), ctx);
       int32_t rv = expr_eval(node->right.get(), ctx);
       switch (node->op) {
-        case BinaryOp::ADD: return lv + rv;
-        case BinaryOp::SUB: return lv - rv;
-        case BinaryOp::MUL: return lv * rv;
-        case BinaryOp::DIV: return rv == 0 ? 0 : lv / rv;
-        case BinaryOp::MOD: return rv == 0 ? 0 : lv % rv;
-        case BinaryOp::AND: return lv & rv;
-        case BinaryOp::OR:  return lv | rv;
-        case BinaryOp::XOR: return lv ^ rv;
-        case BinaryOp::LT:  return lv < rv  ? -1 : 0;
-        case BinaryOp::LE:  return lv <= rv ? -1 : 0;
-        case BinaryOp::EQ:  return lv == rv ? -1 : 0;
-        case BinaryOp::GE:  return lv >= rv ? -1 : 0;
-        case BinaryOp::GT:  return lv > rv  ? -1 : 0;
-        case BinaryOp::NE:  return lv != rv ? -1 : 0;
+        case BinaryOp::ADD:
+          return lv + rv;
+        case BinaryOp::SUB:
+          return lv - rv;
+        case BinaryOp::MUL:
+          return lv * rv;
+        case BinaryOp::DIV:
+          return rv == 0 ? 0 : lv / rv;
+        case BinaryOp::MOD:
+          return rv == 0 ? 0 : lv % rv;
+        case BinaryOp::AND:
+          return lv & rv;
+        case BinaryOp::OR:
+          return lv | rv;
+        case BinaryOp::XOR:
+          return lv ^ rv;
+        case BinaryOp::LT:
+          return lv < rv ? -1 : 0;
+        case BinaryOp::LE:
+          return lv <= rv ? -1 : 0;
+        case BinaryOp::EQ:
+          return lv == rv ? -1 : 0;
+        case BinaryOp::GE:
+          return lv >= rv ? -1 : 0;
+        case BinaryOp::GT:
+          return lv > rv ? -1 : 0;
+        case BinaryOp::NE:
+          return lv != rv ? -1 : 0;
       }
       return 0;
     }
@@ -527,20 +621,34 @@ int32_t expr_eval(const ExprNode* node, const ExprContext& ctx) {
 
 static const char* binop_str(BinaryOp op) {
   switch (op) {
-    case BinaryOp::ADD: return "+";
-    case BinaryOp::SUB: return "-";
-    case BinaryOp::MUL: return "*";
-    case BinaryOp::DIV: return "/";
-    case BinaryOp::MOD: return " mod ";
-    case BinaryOp::AND: return " and ";
-    case BinaryOp::OR:  return " or ";
-    case BinaryOp::XOR: return " xor ";
-    case BinaryOp::LT:  return "<";
-    case BinaryOp::LE:  return "<=";
-    case BinaryOp::EQ:  return "=";
-    case BinaryOp::GE:  return ">=";
-    case BinaryOp::GT:  return ">";
-    case BinaryOp::NE:  return "<>";
+    case BinaryOp::ADD:
+      return "+";
+    case BinaryOp::SUB:
+      return "-";
+    case BinaryOp::MUL:
+      return "*";
+    case BinaryOp::DIV:
+      return "/";
+    case BinaryOp::MOD:
+      return " mod ";
+    case BinaryOp::AND:
+      return " and ";
+    case BinaryOp::OR:
+      return " or ";
+    case BinaryOp::XOR:
+      return " xor ";
+    case BinaryOp::LT:
+      return "<";
+    case BinaryOp::LE:
+      return "<=";
+    case BinaryOp::EQ:
+      return "=";
+    case BinaryOp::GE:
+      return ">=";
+    case BinaryOp::GT:
+      return ">";
+    case BinaryOp::NE:
+      return "<>";
   }
   return "?";
 }
@@ -551,7 +659,8 @@ std::string expr_to_string(const ExprNode* node) {
     case ExprNodeType::LITERAL: {
       char buf[16];
       if (node->value < 0 || node->value > 255) {
-        snprintf(buf, sizeof(buf), "#%X", static_cast<unsigned>(node->value) & 0xFFFFFFFF);
+        snprintf(buf, sizeof(buf), "#%X",
+                 static_cast<unsigned>(node->value) & 0xFFFFFFFF);
       } else {
         snprintf(buf, sizeof(buf), "%d", node->value);
       }
@@ -562,8 +671,7 @@ std::string expr_to_string(const ExprNode* node) {
     case ExprNodeType::UNARY_NOT:
       return "not " + expr_to_string(node->left.get());
     case ExprNodeType::BINARY_OP:
-      return "(" + expr_to_string(node->left.get()) +
-             binop_str(node->op) +
+      return "(" + expr_to_string(node->left.get()) + binop_str(node->op) +
              expr_to_string(node->right.get()) + ")";
     case ExprNodeType::FUNCTION_CALL:
       return node->name + "(" + expr_to_string(node->arg.get()) + ")";

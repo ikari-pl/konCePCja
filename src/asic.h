@@ -7,11 +7,11 @@
     - http://www.cpcwiki.eu/index.php/Arnold_V_Specs_Revised
 */
 
-#ifndef ASIC_H
-#define ASIC_H
+#pragma once
+
+#include <stdint.h>
 
 #include "types.h"
-#include <stdint.h>
 
 #define NB_DMA_CHANNELS 3
 
@@ -50,7 +50,7 @@ struct asic_t {
 };
 
 extern asic_t asic;
-extern byte *pbRegisterPage;
+extern byte* pbRegisterPage;
 
 void asic_set_palette();
 void asic_reset();
@@ -58,5 +58,3 @@ void asic_poke_lock_sequence(byte val);
 void asic_dma_cycle();
 bool asic_register_page_write(word addr, byte val);
 void asic_draw_sprites();
-
-#endif
