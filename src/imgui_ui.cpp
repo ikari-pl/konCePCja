@@ -1253,13 +1253,16 @@ static void imgui_render_topbar() {
     // because popups from the fixed topbar close immediately in docked
     // mode due to focus interactions with the dockspace.
     {
-      // Right-align before FPS counter
-      float fps_w = 0.0f;
-      if (!imgui_state.topbar_fps.empty())
-        fps_w = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x + 16.0f;
+      // Right-align before rightmost element (PAUSED or FPS counter)
+      float right_w = 0.0f;
+      if (is_paused) {
+        right_w = ImGui::CalcTextSize("PAUSED").x + 16.0f;
+      } else if (!imgui_state.topbar_fps.empty()) {
+        right_w = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x + 16.0f;
+      }
       float btn_w = ImGui::CalcTextSize("Layout").x +
                     ImGui::GetStyle().FramePadding.x * 2.0f;
-      ImGui::SameLine(ImGui::GetWindowWidth() - fps_w - btn_w - 12.0f);
+      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f);
 
       if (ImGui::Button("Layout")) {
         imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
