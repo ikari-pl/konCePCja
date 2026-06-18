@@ -1269,7 +1269,14 @@ static void imgui_render_topbar() {
       s_layout_btn_pos.y = ImGui::GetItemRectMax().y + 2.0f;
     }
 
-    if (!imgui_state.topbar_fps.empty()) {
+    if (is_paused) {
+      float pause_width = ImGui::CalcTextSize("PAUSED").x;
+      ImGui::SameLine(ImGui::GetWindowWidth() - pause_width - 8);
+      ImGui::AlignTextToFramePadding();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+      ImGui::TextUnformatted("PAUSED");
+      ImGui::PopStyleColor();
+    } else if (!imgui_state.topbar_fps.empty()) {
       float fps_width = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x;
       ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
       ImGui::AlignTextToFramePadding();
