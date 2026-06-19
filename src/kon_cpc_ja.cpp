@@ -4654,8 +4654,15 @@ int koncpc_main(int argc, char** argv) {
                                 (log_verbose ? "on" : "off"));
                 break;
               case KONCPC_DELAY:
+                // Autocmd pacing commands: delegate to the canonical handler
+                // (same as every other command above).  These were left as
+                // no-op stubs in the KEY_UP->KEY_DOWN refactor, which made
+                // `-a KONCPC_WAITBREAK` do nothing in non-headless mode, so a
+                // following `-a KONCPC_EXIT` fired before the program ran.
+                koncpc_menu_action(KONCPC_DELAY);
                 break;
               case KONCPC_WAITBREAK:
+                koncpc_menu_action(KONCPC_WAITBREAK);
                 break;
               default:
                 break;
