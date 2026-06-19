@@ -20,6 +20,7 @@ class DevToolsUI {
   ~DevToolsUI();
   void render();
   void toggle_window(const std::string& name);
+  void close_all_windows();
 
   // Per-window render timing (microseconds, updated each frame)
   static constexpr int NUM_WINDOWS = 17;
