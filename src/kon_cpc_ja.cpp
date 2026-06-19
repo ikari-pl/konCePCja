@@ -51,8 +51,11 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g,
 #include "autotype.h"
 #include "avi_recorder.h"
 #include "configuration.h"
+#include "cpc_key_tables.h"
 #include "cpc_machine.h"
 #include "crtc.h"
+#include "data_areas.h"
+#include "devtools_ui.h"
 #include "disk.h"
 #include "drive_sounds.h"
 #include "io_bus.h"
@@ -2834,6 +2837,13 @@ void koncpc_menu_action(int action) {
 
     case KONCPC_DEVTOOLS: {
       imgui_state.show_devtools = !imgui_state.show_devtools;
+      log_verbose = imgui_state.show_devtools;
+      if (imgui_state.show_devtools) {
+        set_osd_message("Debug mode: on");
+      } else {
+        g_devtools_ui.close_all_windows();
+        set_osd_message("Debug mode: off");
+      }
       break;
     }
 
@@ -2963,11 +2973,17 @@ void koncpc_menu_action(int action) {
                       (CPC.scr_fps ? "on" : "off"));
       break;
 
-    case KONCPC_SPEED:
-      CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-      set_osd_message(std::string("Limit speed: ") +
-                      (CPC.limit_speed ? "on" : "off"));
+    case KONCPC_SPEED: {
+      static uint64_t last_speed_toggle = 0;
+      uint64_t now = SDL_GetPerformanceCounter();
+      if (now - last_speed_toggle > SDL_GetPerformanceFrequency() / 10) {
+        CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+        set_osd_message(std::string("Limit speed: ") +
+                        (CPC.limit_speed ? "on" : "off"));
+        last_speed_toggle = now;
+      }
       break;
+    }
 
     case KONCPC_DEBUG:
       log_verbose = !log_verbose;
@@ -4368,9 +4384,16 @@ int koncpc_main(int argc, char** argv) {
                 CPC.tape_play_button = CPC.tape_play_button ? 0 : 0x10;
               }
               break;
-            case KONCPC_SPEED:
-              CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+            case KONCPC_SPEED: {
+              static uint64_t last_speed_toggle = 0;
+              uint64_t now = SDL_GetPerformanceCounter();
+              if (now - last_speed_toggle >
+                  SDL_GetPerformanceFrequency() * 3 / 10) {
+                CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+                last_speed_toggle = now;
+              }
               break;
+            }
             case KONCPC_DEBUG:
               log_verbose = !log_verbose;
               break;
@@ -4543,31 +4566,27 @@ int koncpc_main(int argc, char** argv) {
               << " - CPC scancode: " << scancode);
           if (!(scancode & MOD_EMU_KEY)) {
             applyKeypress(scancode, keyboard_matrix, true);
-          }
-        } break;
-
-        case SDL_EVENT_KEY_UP: {
-          CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(
-              event.key.key, static_cast<SDL_Keymod>(event.key.mod));
-          if (!(scancode & MOD_EMU_KEY)) {
-            applyKeypress(scancode, keyboard_matrix, false);
-          } else if (!event.key.repeat) {  // ignore key repeat for commands
+          } else if (!event.key.repeat) {
+            // Emulator commands: fire on initial KEY_DOWN (not repeat, not
+            // KEY_UP). One physical press = one command, no debounce needed.
             switch (scancode) {
-              case KONCPC_GUI: {
+              case KONCPC_GUI:
                 showGui();
                 break;
-              }
-
-              case KONCPC_VKBD: {
+              case KONCPC_VKBD:
                 showVKeyboard();
                 break;
-              }
-
               case KONCPC_DEVTOOLS: {
                 imgui_state.show_devtools = !imgui_state.show_devtools;
+                log_verbose = imgui_state.show_devtools;
+                if (imgui_state.show_devtools) {
+                  set_osd_message("Debug mode: on");
+                } else {
+                  g_devtools_ui.close_all_windows();
+                  set_osd_message("Debug mode: off");
+                }
                 break;
               }
-
               case KONCPC_FULLSCRN:
                 audio_pause();
                 SDL_Delay(20);
@@ -4582,152 +4601,73 @@ int koncpc_main(int argc, char** argv) {
 #endif
                 audio_resume();
                 break;
-
               case KONCPC_SCRNSHOT:
-                // Delay taking the screenshot to ensure the frame is complete.
-                g_take_screenshot = true;
+                koncpc_menu_action(KONCPC_SCRNSHOT);
                 break;
-
-              case KONCPC_DELAY:
-                // Reuse boot_time as it is a reasonable wait time for Plus
-                // transition between the F1/F2 nag screen and the command line.
-                // TODO: Support an argument to KONCPC_DELAY in autocmd instead.
-                LOG_VERBOSE("Take into account KONCPC_DELAY");
-                nextVirtualEventFrameCount =
-                    dwFrameCountOverall + CPC.boot_time;
-                break;
-
-              case KONCPC_WAITBREAK:
-                breakPointsToSkipBeforeProceedingWithVirtualEvents++;
-                LOG_INFO("Will skip "
-                         << breakPointsToSkipBeforeProceedingWithVirtualEvents
-                         << " before processing more virtual events.");
-                LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point
-                                                              << ").");
-                z80.break_point = 0;
-                break;
-
               case KONCPC_SNAPSHOT:
-                dumpSnapshot();
+                koncpc_menu_action(KONCPC_SNAPSHOT);
                 break;
-
               case KONCPC_LD_SNAP:
-                loadSnapshot();
+                koncpc_menu_action(KONCPC_LD_SNAP);
                 break;
-
               case KONCPC_TAPEPLAY:
-                LOG_VERBOSE("Request to play tape");
-                Tape_Rewind();
-                if (!pbTapeImage.empty()) {
-                  if (CPC.tape_play_button) {
-                    LOG_VERBOSE("Play button released");
-                    CPC.tape_play_button = 0;
-                  } else {
-                    LOG_VERBOSE("Play button pushed");
-                    CPC.tape_play_button = 0x10;
-                  }
-                }
-                set_osd_message(std::string("Play tape: ") +
-                                (CPC.tape_play_button ? "on" : "off"));
+                koncpc_menu_action(KONCPC_TAPEPLAY);
                 break;
-
               case KONCPC_MF2STOP:
-                if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
-                  reg_pair port;
-
-                  // Set mode to activate ROM_config
-                  // port.b.h = 0x40;
-                  // z80_OUT_handler(port, 128);
-
-                  // Attempt to load MF2 in lower ROM (can fail if lower ROM is
-                  // not active)
-                  port.b.h = 0xfe;
-                  port.b.l = 0xe8;
-                  dwMF2Flags &= ~MF2_INVISIBLE;
-                  z80_OUT_handler(port, 0);
-
-                  // Stop execution if load succeeded
-                  if (dwMF2Flags & MF2_ACTIVE) {
-                    z80_mf2stop();
-                  }
-                }
+                koncpc_menu_action(KONCPC_MF2STOP);
                 break;
-
               case KONCPC_RESET:
-                LOG_VERBOSE("User requested emulator reset");
-                emulator_reset();
+                koncpc_menu_action(KONCPC_RESET);
                 break;
-
               case KONCPC_JOY:
-                CPC.joystick_emulation =
-                    nextJoystickEmulation(CPC.joystick_emulation);
-                CPC.InputMapper->set_joystick_emulation();
-                SDL_SetWindowRelativeMouseMode(
-                    mainSDLWindow,
-                    CPC.joystick_emulation == JoystickEmulation::Mouse);
-                set_osd_message(
-                    std::string("Joystick emulation: ") +
-                    JoystickEmulationToString(CPC.joystick_emulation));
+                koncpc_menu_action(KONCPC_JOY);
                 break;
-
               case KONCPC_PHAZER:
-                CPC.phazer_emulation = CPC.phazer_emulation.Next();
-                if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
-                mouse_init();
-                set_osd_message(std::string("Phazer emulation: ") +
-                                CPC.phazer_emulation.ToString());
+                koncpc_menu_action(KONCPC_PHAZER);
                 break;
-
               case KONCPC_PASTE:
-                set_osd_message("Pasting...");
-                {
-                  auto content = std::string(SDL_GetClipboardText());
-                  LOG_VERBOSE("Pasting '" << content << "'");
-                  auto newEvents = CPC.InputMapper->StringToEvents(content);
-                  virtualKeyboardEvents.splice(virtualKeyboardEvents.end(),
-                                               newEvents);
-                  nextVirtualEventFrameCount = dwFrameCountOverall;
-                  break;
-                }
-
-              case KONCPC_EXIT:
-                cleanExit(0);
+                koncpc_menu_action(KONCPC_PASTE);
                 break;
-
+              case KONCPC_EXIT:
+                koncpc_menu_action(KONCPC_EXIT);
+                break;
+              case KONCPC_SPEED: {
+                static uint64_t last_speed_toggle = 0;
+                uint64_t now = SDL_GetPerformanceCounter();
+                if (now - last_speed_toggle >
+                    SDL_GetPerformanceFrequency() * 3 / 10) {  // 300ms debounce
+                  CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+                  set_osd_message(std::string("Limit speed: ") +
+                                  (CPC.limit_speed ? "on" : "off"));
+                  last_speed_toggle = now;
+                }
+                break;
+              }
               case KONCPC_FPS:
-                CPC.scr_fps =
-                    CPC.scr_fps ? 0 : 1;  // toggle fps display on or off
+                CPC.scr_fps = CPC.scr_fps ? 0 : 1;
                 set_osd_message(std::string("Performances info: ") +
                                 (CPC.scr_fps ? "on" : "off"));
                 break;
-
-              case KONCPC_SPEED:
-                CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-                set_osd_message(std::string("Limit speed: ") +
-                                (CPC.limit_speed ? "on" : "off"));
-                break;
-
               case KONCPC_DEBUG:
                 log_verbose = !log_verbose;
-#ifdef DEBUG
-                dwDebugFlag = dwDebugFlag ? 0 : 1;
-#endif
-#ifdef DEBUG_CRTC
-                if (dwDebugFlag) {
-                  for (int n = 0; n < 14; n++) {
-                    fprintf(pfoDebug, "%02x = %02x\r\n", n, CRTC.registers[n]);
-                  }
-                }
-#endif
                 set_osd_message(std::string("Debug mode: ") +
                                 (log_verbose ? "on" : "off"));
                 break;
-
-              case KONCPC_NEXTDISKA:
-                CPC.driveA.zip_index += 1;
-                file_load(CPC.driveA);
+              case KONCPC_DELAY:
+                break;
+              case KONCPC_WAITBREAK:
+                break;
+              default:
                 break;
             }
+          }
+        } break;
+
+        case SDL_EVENT_KEY_UP: {
+          CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(
+              event.key.key, static_cast<SDL_Keymod>(event.key.mod));
+          if (!(scancode & MOD_EMU_KEY)) {
+            applyKeypress(scancode, keyboard_matrix, false);
           }
         } break;
 

@@ -1,11 +1,11 @@
 #import <Cocoa/Cocoa.h>
-#include "menu_actions.h"
 #include "keyboard.h"
+#include "menu_actions.h"
 #ifdef KONCPC_MODERN_UI
 #include "imgui.h"
 #endif
-#include "SDL3/SDL.h"
 #include <memory>
+#include "SDL3/SDL.h"
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
@@ -19,71 +19,101 @@ extern "C" void koncpc_menu_action(int action);
 }
 @end
 
-static void applyShortcut(NSMenuItem *item, const char *shortcut) {
+static void applyShortcut(NSMenuItem* item, const char* shortcut) {
   if (!shortcut || !shortcut[0]) return;
-  NSString *s = [NSString stringWithUTF8String:shortcut];
-  NSString *upper = [s uppercaseString];
+  NSString* s = [NSString stringWithUTF8String:shortcut];
+  NSString* upper = [s uppercaseString];
   NSEventModifierFlags mods = 0;
   if ([upper containsString:@"SHIFT+"]) mods |= NSEventModifierFlagShift;
-  if ([upper containsString:@"CMD+"] || [upper containsString:@"COMMAND+"]) mods |= NSEventModifierFlagCommand;
-  if ([upper containsString:@"ALT+"] || [upper containsString:@"OPTION+"]) mods |= NSEventModifierFlagOption;
-  if ([upper containsString:@"CTRL+"] || [upper containsString:@"CONTROL+"]) mods |= NSEventModifierFlagControl;
+  if ([upper containsString:@"CMD+"] || [upper containsString:@"COMMAND+"])
+    mods |= NSEventModifierFlagCommand;
+  if ([upper containsString:@"ALT+"] || [upper containsString:@"OPTION+"])
+    mods |= NSEventModifierFlagOption;
+  if ([upper containsString:@"CTRL+"] || [upper containsString:@"CONTROL+"])
+    mods |= NSEventModifierFlagControl;
 
   // Extract the key part after all modifiers (everything after the last '+')
   NSRange lastPlus = [upper rangeOfString:@"+" options:NSBackwardsSearch];
-  NSString *keyPart = (lastPlus.location != NSNotFound)
-    ? [upper substringFromIndex:lastPlus.location + 1]
-    : upper;
+  NSString* keyPart =
+      (lastPlus.location != NSNotFound) ? [upper substringFromIndex:lastPlus.location + 1] : upper;
 
   unichar key = 0;
   if ([keyPart hasPrefix:@"F"] && [keyPart length] >= 2) {
     NSInteger fn = [[keyPart substringFromIndex:1] integerValue];
     switch (fn) {
-      case 1: key = NSF1FunctionKey; break;
-      case 2: key = NSF2FunctionKey; break;
-      case 3: key = NSF3FunctionKey; break;
-      case 4: key = NSF4FunctionKey; break;
-      case 5: key = NSF5FunctionKey; break;
-      case 6: key = NSF6FunctionKey; break;
-      case 7: key = NSF7FunctionKey; break;
-      case 8: key = NSF8FunctionKey; break;
-      case 9: key = NSF9FunctionKey; break;
-      case 10: key = NSF10FunctionKey; break;
-      case 11: key = NSF11FunctionKey; break;
-      case 12: key = NSF12FunctionKey; break;
-      default: break;
+      case 1:
+        key = NSF1FunctionKey;
+        break;
+      case 2:
+        key = NSF2FunctionKey;
+        break;
+      case 3:
+        key = NSF3FunctionKey;
+        break;
+      case 4:
+        key = NSF4FunctionKey;
+        break;
+      case 5:
+        key = NSF5FunctionKey;
+        break;
+      case 6:
+        key = NSF6FunctionKey;
+        break;
+      case 7:
+        key = NSF7FunctionKey;
+        break;
+      case 8:
+        key = NSF8FunctionKey;
+        break;
+      case 9:
+        key = NSF9FunctionKey;
+        break;
+      case 10:
+        key = NSF10FunctionKey;
+        break;
+      case 11:
+        key = NSF11FunctionKey;
+        break;
+      case 12:
+        key = NSF12FunctionKey;
+        break;
+      default:
+        break;
     }
   } else if ([keyPart isEqualToString:@"PAUSE"]) {
     key = NSPauseFunctionKey;
   }
 
   if (key) {
-    NSString *ke = [NSString stringWithCharacters:&key length:1];
+    NSString* ke = [NSString stringWithCharacters:&key length:1];
     [item setKeyEquivalent:ke];
     [item setKeyEquivalentModifierMask:mods];
   }
 }
 
 static const MenuAction* find_menu_action(KONCPC_KEYS action) {
-  for (const auto &entry : koncpc_menu_actions()) {
+  for (const auto& entry : koncpc_menu_actions()) {
     if (entry.action == action) return &entry;
   }
   return nullptr;
 }
 
-static void add_menu_group(NSMenu *mainMenu, KoncepcjaMenuTarget *target, NSString *title, std::initializer_list<KONCPC_KEYS> actions) {
-  for (NSMenuItem *item in [mainMenu itemArray]) {
+static void add_menu_group(NSMenu* mainMenu, KoncepcjaMenuTarget* target, NSString* title,
+                           std::initializer_list<KONCPC_KEYS> actions) {
+  for (NSMenuItem* item in [mainMenu itemArray]) {
     if ([[item title] isEqualToString:title]) return;
   }
 
-  NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
-  NSMenu *submenu = [[NSMenu alloc] initWithTitle:title];
+  NSMenuItem* menuItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+  NSMenu* submenu = [[NSMenu alloc] initWithTitle:title];
 
   for (KONCPC_KEYS action : actions) {
-    const MenuAction *entry = find_menu_action(action);
+    const MenuAction* entry = find_menu_action(action);
     if (!entry) continue;
-    NSString *itemTitle = [NSString stringWithUTF8String:entry->title];
-    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:itemTitle action:@selector(menuAction:) keyEquivalent:@""];
+    NSString* itemTitle = [NSString stringWithUTF8String:entry->title];
+    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:itemTitle
+                                                  action:@selector(menuAction:)
+                                           keyEquivalent:@""];
     [item setTarget:target];
     [item setTag:static_cast<NSInteger>(entry->action)];
     applyShortcut(item, entry->shortcut);
@@ -94,45 +124,48 @@ static void add_menu_group(NSMenu *mainMenu, KoncepcjaMenuTarget *target, NSStri
   [mainMenu addItem:menuItem];
 }
 
-static void koncpc_install_emulator_menu(NSMenu *mainMenu) {
+static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   if (!mainMenu) return;
 
-  KoncepcjaMenuTarget *target = [[KoncepcjaMenuTarget alloc] init];
+  KoncepcjaMenuTarget* target = [[KoncepcjaMenuTarget alloc] init];
 
-  add_menu_group(mainMenu, target, @"Emulator", {
-    KONCPC_GUI,
-    KONCPC_FULLSCRN,
-    KONCPC_RESET,
-    KONCPC_EXIT,
-  });
+  add_menu_group(mainMenu, target, @"Emulator",
+                 {
+                     KONCPC_GUI,
+                     KONCPC_FULLSCRN,
+                     KONCPC_RESET,
+                     KONCPC_EXIT,
+                 });
 
-  add_menu_group(mainMenu, target, @"Media", {
-    KONCPC_TAPEPLAY,
-    KONCPC_MF2STOP,
-    KONCPC_NEXTDISKA,
-  });
+  add_menu_group(mainMenu, target, @"Media",
+                 {
+                     KONCPC_TAPEPLAY,
+                     KONCPC_MF2STOP,
+                     KONCPC_NEXTDISKA,
+                 });
 
-  add_menu_group(mainMenu, target, @"Tools", {
-    KONCPC_VKBD,
-    KONCPC_DEVTOOLS,
-    KONCPC_SCRNSHOT,
-    KONCPC_SNAPSHOT,
-    KONCPC_LD_SNAP,
-    KONCPC_PASTE,
-  });
+  add_menu_group(mainMenu, target, @"Tools",
+                 {
+                     KONCPC_VKBD,
+                     KONCPC_DEVTOOLS,
+                     KONCPC_SCRNSHOT,
+                     KONCPC_SNAPSHOT,
+                     KONCPC_LD_SNAP,
+                     KONCPC_PASTE,
+                 });
 
-  add_menu_group(mainMenu, target, @"Options", {
-    KONCPC_JOY,
-    KONCPC_PHAZER,
-    KONCPC_FPS,
-    KONCPC_SPEED,
-    KONCPC_DEBUG,
-    KONCPC_DELAY,
-    KONCPC_WAITBREAK,
-  });
+  add_menu_group(mainMenu, target, @"Options",
+                 {
+                     KONCPC_JOY,
+                     KONCPC_PHAZER,
+                     KONCPC_FPS,
+                     KONCPC_SPEED,
+                     KONCPC_DELAY,
+                     KONCPC_WAITBREAK,
+                 });
 }
 
-extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSMenu *mainMenu) {
+extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSMenu* mainMenu) {
   @autoreleasepool {
     koncpc_install_emulator_menu(mainMenu);
   }
@@ -153,9 +186,9 @@ static id<NSObject> g_app_nap_activity = nil;
 void koncpc_disable_app_nap() {
   @autoreleasepool {
     if (!g_app_nap_activity) {
-      g_app_nap_activity = [[NSProcessInfo processInfo]
-          beginActivityWithOptions:NSActivityUserInitiated
-          reason:@"Screenshot capture in progress"];
+      g_app_nap_activity =
+          [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated
+                                                         reason:@"Screenshot capture in progress"];
     }
   }
 }
@@ -190,8 +223,7 @@ void koncpc_restore_keyboard_focus() {
     @autoreleasepool {
       if (!mainSDLWindow) return;
       NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
-          SDL_GetWindowProperties(mainSDLWindow),
-          SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+          SDL_GetWindowProperties(mainSDLWindow), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
       if (!nswin) return;
       [nswin makeKeyAndOrderFront:nil];
       NSView* contentView = [nswin contentView];
@@ -209,9 +241,8 @@ static NSWindow* nswindow_from_viewport(ImGuiViewport* vp) {
   SDL_WindowID wid = (SDL_WindowID)(uintptr_t)vp->PlatformHandle;
   SDL_Window* sdlWin = SDL_GetWindowFromID(wid);
   if (!sdlWin) return nil;
-  return (__bridge NSWindow*)SDL_GetPointerProperty(
-      SDL_GetWindowProperties(sdlWin),
-      SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+  return (__bridge NSWindow*)SDL_GetPointerProperty(SDL_GetWindowProperties(sdlWin),
+                                                    SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
 }
 
 void koncpc_order_viewports_above_main() {
@@ -226,8 +257,7 @@ void koncpc_order_viewports_above_main() {
   if (!mainSDLWindow) return;
 
   NSWindow* mainNS = (__bridge NSWindow*)SDL_GetPointerProperty(
-      SDL_GetWindowProperties(mainSDLWindow),
-      SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+      SDL_GetWindowProperties(mainSDLWindow), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
   if (!mainNS) return;
   NSInteger mainNum = [mainNS windowNumber];
 
@@ -253,12 +283,12 @@ void koncpc_order_viewports_above_main() {
     }
   }
 }
-#else  // !KONCPC_MODERN_UI
+#else   // !KONCPC_MODERN_UI
 // Headless build has no ImGui viewports — function is a stub.  Header
 // declaration (macos_menu.h) stays unchanged so callers don't need a
 // build-flag guard at every callsite.
 void koncpc_order_viewports_above_main() {}
-#endif // KONCPC_MODERN_UI
+#endif  // KONCPC_MODERN_UI
 
 // ── Dock icon ──────────────────────────────────────────────
 
@@ -282,7 +312,7 @@ void koncpc_set_dock_icon(const char* png_path) {
 
     // Load the static logo (koncepcja-logo.png — shown before live preview starts)
     NSString* logoPath = [[path stringByDeletingLastPathComponent]
-      stringByAppendingPathComponent:@"koncepcja-logo.png"];
+        stringByAppendingPathComponent:@"koncepcja-logo.png"];
     g_static_icon = [[NSImage alloc] initWithContentsOfFile:logoPath];
 
     // Set the static logo as the initial Dock icon
@@ -293,8 +323,11 @@ void koncpc_set_dock_icon(const char* png_path) {
       CGFloat side = fmax(sz.width, sz.height);
       NSImage* sq = [[NSImage alloc] initWithSize:NSMakeSize(side, side)];
       [sq lockFocus];
-      [initial drawInRect:NSMakeRect((side - sz.width)/2, (side - sz.height)/2, sz.width, sz.height)
-                 fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+      [initial
+          drawInRect:NSMakeRect((side - sz.width) / 2, (side - sz.height) / 2, sz.width, sz.height)
+            fromRect:NSZeroRect
+           operation:NSCompositingOperationSourceOver
+            fraction:1.0];
       [sq unlockFocus];
       [NSApp setApplicationIconImage:sq];
       [sq release];
@@ -302,9 +335,10 @@ void koncpc_set_dock_icon(const char* png_path) {
   }
 }
 
-void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surface_h,
-                                     int pitch, int vis_x, int vis_y, int vis_w, int vis_h) {
-  (void)surface_w; (void)surface_h;
+void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surface_h, int pitch,
+                                     int vis_x, int vis_y, int vis_w, int vis_h) {
+  (void)surface_w;
+  (void)surface_h;
   if (!pixels || vis_w <= 0 || vis_h <= 0 || !g_icon_overlay) return;
 
   // Skip if a previous update is still in flight (don't queue up work)
@@ -316,9 +350,7 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
   std::shared_ptr<uint8_t> px(new uint8_t[buf_size], std::default_delete<uint8_t[]>());
   const uint8_t* src = static_cast<const uint8_t*>(pixels);
   for (int y = 0; y < vis_h; y++) {
-    memcpy(px.get() + y * row_bytes,
-           src + (vis_y + y) * pitch + vis_x * 4,
-           row_bytes);
+    memcpy(px.get() + y * row_bytes, src + (vis_y + y) * pitch + vis_x * 4, row_bytes);
   }
 
   int w = vis_w, h = vis_h;
@@ -328,15 +360,21 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0), ^{
     @autoreleasepool {
       CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-      CGContextRef ctx = CGBitmapContextCreate(
-        px.get(), (size_t)w, (size_t)h, 8, row_bytes,
-        cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+      CGContextRef ctx =
+          CGBitmapContextCreate(px.get(), (size_t)w, (size_t)h, 8, row_bytes, cs,
+                                kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
       CGColorSpaceRelease(cs);
-      if (!ctx) { g_icon_update_in_flight.store(false); return; }
+      if (!ctx) {
+        g_icon_update_in_flight.store(false);
+        return;
+      }
 
       CGImageRef cgScreen = CGBitmapContextCreateImage(ctx);
       CGContextRelease(ctx);
-      if (!cgScreen) { g_icon_update_in_flight.store(false); return; }
+      if (!cgScreen) {
+        g_icon_update_in_flight.store(false);
+        return;
+      }
 
       // Square canvas with centered icon
       NSSize iconSize = [g_icon_overlay size];
@@ -351,18 +389,20 @@ void koncpc_update_dock_icon_preview(const void* pixels, int surface_w, int surf
       CGFloat pad_x = iconSize.width * 0.005;
       CGFloat pad_y = iconSize.height * 0.005;
       NSRect screenRect = NSMakeRect(
-        ox + iconSize.width * kScreenX - pad_x,
-        oy + iconSize.height * kScreenY - pad_y,
-        iconSize.width * kScreenW + pad_x * 2,
-        iconSize.height * kScreenH + pad_y * 2);
+          ox + iconSize.width * kScreenX - pad_x, oy + iconSize.height * kScreenY - pad_y,
+          iconSize.width * kScreenW + pad_x * 2, iconSize.height * kScreenH + pad_y * 2);
       NSImage* screenImg = [[NSImage alloc] initWithCGImage:cgScreen size:NSMakeSize(w, h)];
-      [screenImg drawInRect:screenRect fromRect:NSZeroRect
-                  operation:NSCompositingOperationSourceOver fraction:1.0];
+      [screenImg drawInRect:screenRect
+                   fromRect:NSZeroRect
+                  operation:NSCompositingOperationSourceOver
+                   fraction:1.0];
 
       // 2. CRT overlay on top
       NSRect iconRect = NSMakeRect(ox, oy, iconSize.width, iconSize.height);
-      [g_icon_overlay drawInRect:iconRect fromRect:NSZeroRect
-                       operation:NSCompositingOperationSourceOver fraction:1.0];
+      [g_icon_overlay drawInRect:iconRect
+                        fromRect:NSZeroRect
+                       operation:NSCompositingOperationSourceOver
+                        fraction:1.0];
 
       [composite unlockFocus];
       CGImageRelease(cgScreen);
