@@ -371,8 +371,10 @@ void imgui_init_ui() {
           cpc_pause();
       });
   g_command_palette.register_command(
-      "DevTools", "Open developer tools", "Shift+F2",
-      []() { imgui_state.show_devtools = !imgui_state.show_devtools; });
+      "DevTools", "Open developer tools", "Shift+F2", []() {
+        imgui_state.show_devtools = !imgui_state.show_devtools;
+        if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
+      });
   g_command_palette.register_command(
       "Registers", "Show CPU registers", "",
       []() { g_devtools_ui.toggle_window("registers"); });
@@ -897,6 +899,7 @@ static void imgui_render_menubar() {
     }
     if (ImGui::MenuItem("DevTools", "Shift+F2")) {
       imgui_state.show_devtools = !imgui_state.show_devtools;
+      if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
     }
     if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
       koncpc_menu_action(KONCPC_VKBD);
@@ -909,7 +912,10 @@ static void imgui_render_menubar() {
 
   // ── Window ──
   if (ImGui::BeginMenu("Window")) {
-    ImGui::MenuItem("DevTools Toolbar", "Shift+F2", &imgui_state.show_devtools);
+    if (ImGui::MenuItem("DevTools Toolbar", "Shift+F2",
+                        &imgui_state.show_devtools)) {
+      if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
+    }
     ImGui::MenuItem("Virtual Keyboard", "Shift+F1",
                     &imgui_state.show_vkeyboard);
     ImGui::MenuItem("Serial Terminal", nullptr,
@@ -1057,27 +1063,6 @@ static void render_layout_dropdown() {
       }
       if (ImGui::MenuItem("Apply Hardware Layout")) {
         workspace_apply_preset(WorkspacePreset::Hardware);
-        imgui_state.show_layout_dropdown = false;
-      }
-    } else {
-      if (ImGui::MenuItem("Debug")) {
-        g_devtools_ui.toggle_window("registers");
-        g_devtools_ui.toggle_window("disassembly");
-        g_devtools_ui.toggle_window("stack");
-        g_devtools_ui.toggle_window("breakpoints");
-        imgui_state.show_layout_dropdown = false;
-      }
-      if (ImGui::MenuItem("Memory")) {
-        g_devtools_ui.toggle_window("memory_hex");
-        g_devtools_ui.toggle_window("symbols");
-        g_devtools_ui.toggle_window("data_areas");
-        imgui_state.show_layout_dropdown = false;
-      }
-      if (ImGui::MenuItem("Hardware")) {
-        g_devtools_ui.toggle_window("video_state");
-        g_devtools_ui.toggle_window("audio_state");
-        g_devtools_ui.toggle_window("asic");
-        g_devtools_ui.toggle_window("silicon_disc");
         imgui_state.show_layout_dropdown = false;
       }
     }

@@ -125,6 +125,26 @@ bool DevToolsUI::any_window_open() const {
          show_recording_controls_ || show_assembler_;
 }
 
+void DevToolsUI::close_all_windows() {
+  show_registers_ = false;
+  show_disassembly_ = false;
+  show_memory_hex_ = false;
+  show_stack_ = false;
+  show_breakpoints_ = false;
+  show_symbols_ = false;
+  show_session_recording_ = false;
+  show_gfx_finder_ = false;
+  show_silicon_disc_ = false;
+  show_asic_ = false;
+  show_disc_tools_ = false;
+  show_data_areas_ = false;
+  show_disasm_export_ = false;
+  show_video_state_ = false;
+  show_audio_state_ = false;
+  show_recording_controls_ = false;
+  show_assembler_ = false;
+}
+
 const char* const* DevToolsUI::all_window_keys(int* count) {
   static const char* keys[] = {
       "registers",     "disassembly", "memory_hex",        "stack",
