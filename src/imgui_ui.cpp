@@ -1065,16 +1065,6 @@ static void render_layout_dropdown() {
         workspace_apply_preset(WorkspacePreset::Hardware);
         imgui_state.show_layout_dropdown = false;
       }
-    } else {
-      if (ImGui::MenuItem("Debug")) {
-        imgui_state.show_layout_dropdown = false;
-      }
-      if (ImGui::MenuItem("Memory")) {
-        imgui_state.show_layout_dropdown = false;
-      }
-      if (ImGui::MenuItem("Hardware")) {
-        imgui_state.show_layout_dropdown = false;
-      }
     }
 
     // Custom saved layouts
