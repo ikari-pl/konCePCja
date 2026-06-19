@@ -2833,7 +2833,7 @@ void koncpc_menu_action(int action) {
     }
 
     case KONCPC_DEVTOOLS: {
-      imgui_state.show_devtools = true;
+      imgui_state.show_devtools = !imgui_state.show_devtools;
       break;
     }
 
@@ -4331,7 +4331,7 @@ int koncpc_main(int argc, char** argv) {
         if (evtype == SDL_EVENT_KEY_DOWN)
           gap = 1;
         else if (evtype == SDL_EVENT_KEY_UP)
-          gap = 2;
+          gap = 3;
         nextVirtualEventFrameCount = dwFrameCountOverall + gap;
       }
 
@@ -4551,7 +4551,7 @@ int koncpc_main(int argc, char** argv) {
               event.key.key, static_cast<SDL_Keymod>(event.key.mod));
           if (!(scancode & MOD_EMU_KEY)) {
             applyKeypress(scancode, keyboard_matrix, false);
-          } else {  // process emulator specific keys
+          } else if (!event.key.repeat) {  // ignore key repeat for commands
             switch (scancode) {
               case KONCPC_GUI: {
                 showGui();
@@ -4564,7 +4564,7 @@ int koncpc_main(int argc, char** argv) {
               }
 
               case KONCPC_DEVTOOLS: {
-                imgui_state.show_devtools = true;
+                imgui_state.show_devtools = !imgui_state.show_devtools;
                 break;
               }
 
