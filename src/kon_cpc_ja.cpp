@@ -150,6 +150,7 @@ video_plugin* vid_plugin;
 static bool g_take_screenshot = false;
 bool g_headless = false;
 bool g_debug = false;
+bool g_log_fps = false;  // --fps: log once-per-second FPS to stdout
 static bool g_exit_on_break = false;
 static enum { EXIT_NONE, EXIT_FRAMES, EXIT_MS } g_exit_mode = EXIT_NONE;
 static dword g_exit_target = 0;
@@ -3810,10 +3811,10 @@ static void z80_thread_main() {
         dwFrameCount = 0;
         perfTicksTargetFPS = perfNow + perfFreq;
 
-        // Opt-in once-per-second FPS log (run with --debug/-v) — a passive,
-        // tail-able steady-FPS readout that doesn't perturb the emulation the
-        // way an IPC `wait vbl` probe does.
-        if (g_debug) {
+        // Opt-in once-per-second FPS log (run with --fps, or --debug) — a
+        // passive, tail-able steady-FPS readout that doesn't perturb the
+        // emulation the way an IPC `wait vbl` probe does.
+        if (g_log_fps || g_debug) {
           printf(
               "[fps] %3u FPS  %3u%% speed\n", dwFPS,
               dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS));
@@ -4192,6 +4193,7 @@ int koncpc_main(int argc, char** argv) {
   parseArguments(argc, argv, slot_list, args);
   g_headless = args.headless;
   g_debug = args.debug;
+  g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
 
   // Parse --exit-after spec: Nf (frames), Ns (seconds), Nms (milliseconds)
