@@ -10,7 +10,8 @@
 // interview: App / Machine / Edit / Media / View / Tools / Window.
 enum class MenuGroup {
   None = 0,  // not shown in a menu (scripting-only / the F1 trigger itself)
-  App,       // application menu (named konCePCja): About, Settings, Reset, Quit
+  App,       // application menu (named konCePCja): About, Settings, Quit
+  Machine,   // the emulated machine: Reset + deep-links to the Settings tabs
   Edit,      // Paste, ...
   Media,     // disks, tapes, cartridges, snapshots
   View,      // display actions: Fullscreen, Screenshot, Show FPS

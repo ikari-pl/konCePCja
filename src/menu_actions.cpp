@@ -17,7 +17,7 @@ const std::vector<MenuAction>& koncpc_menu_actions() {
       {KONCPC_SNAPSHOT, "Quick Save Snapshot", "", false, MenuGroup::Media},
       {KONCPC_TAPEPLAY, "Tape Play/Stop", "", false, MenuGroup::Media},
       {KONCPC_LD_SNAP, "Quick Load Snapshot", "", false, MenuGroup::Media},
-      {KONCPC_RESET, "Reset", "", false, MenuGroup::App},
+      {KONCPC_RESET, "Reset", "", false, MenuGroup::Machine},
       {KONCPC_NEXTDISKA, "Next Disk in Archive", "", false, MenuGroup::Media},
       {KONCPC_MF2STOP, "Multiface II Stop", "", false, MenuGroup::Tools},
       {KONCPC_JOY, "Joystick Emulation", "", true, MenuGroup::Input},

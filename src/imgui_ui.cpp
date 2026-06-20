@@ -89,6 +89,22 @@ static int s_statusbar_h = 0;
 static bool s_bottombar_height_dirty =
     false;  // defer SDL_SetWindowSize to after render
 
+// Deep-link target for the Settings/Options window.  A Machine-menu item sets
+// this, then imgui_render_options() selects the matching tab for exactly one
+// frame (via ImGuiTabItemFlags_SetSelected) and resets it back to None so the
+// user can click other tabs freely afterward.  Order mirrors the tab bar.
+enum class OptionsTab {
+  None = 0,
+  General,
+  ROMs,
+  Video,
+  Audio,
+  Input,
+  M4,
+  Serial,
+};
+static OptionsTab s_pending_options_tab = OptionsTab::None;
+
 // ─────────────────────────────────────────────────
 // SDL3 file dialog callback
 // ─────────────────────────────────────────────────
@@ -787,11 +803,32 @@ static void imgui_render_menubar() {
     }
     if (ImGui::MenuItem("Settings...")) {
       imgui_state.show_options = true;
+      s_pending_options_tab = OptionsTab::General;
     }
     ImGui::Separator();
-    RenderMenuItem(KONCPC_RESET);
-    ImGui::Separator();
     RenderMenuItem(KONCPC_EXIT);
+    ImGui::EndMenu();
+  }
+
+  // ── Machine ── deep-links straight to a Settings tab + Reset.  Each item
+  // opens the Options window and asks it to select that tab for one frame.
+  if (ImGui::BeginMenu("Machine")) {
+    const auto settings_tab = [](const char* label, OptionsTab tab) {
+      if (ImGui::MenuItem(label)) {
+        imgui_state.show_options = true;
+        s_pending_options_tab = tab;
+      }
+    };
+    settings_tab("System...", OptionsTab::General);
+    settings_tab("ROMs...", OptionsTab::ROMs);
+    settings_tab("Video...", OptionsTab::Video);
+    settings_tab("Audio...", OptionsTab::Audio);
+    settings_tab("Input Mapping...", OptionsTab::Input);
+    ImGui::Separator();
+    settings_tab("M4 Board...", OptionsTab::M4);
+    settings_tab("Serial Interface...", OptionsTab::Serial);
+    ImGui::Separator();
+    RenderMenuItem(KONCPC_RESET);
     ImGui::EndMenu();
   }
 
@@ -2201,7 +2238,10 @@ static void imgui_render_options() {
 
   if (ImGui::BeginTabBar("OptionsTabs")) {
     // ── General Tab ──
-    if (ImGui::BeginTabItem("General")) {
+    if (ImGui::BeginTabItem("General", nullptr,
+                            s_pending_options_tab == OptionsTab::General
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       int model = static_cast<int>(CPC.model);
       if (ImGui::Combo("CPC Model", &model, cpc_models,
                        IM_ARRAYSIZE(cpc_models))) {
@@ -2293,7 +2333,10 @@ static void imgui_render_options() {
     }
 
     // ── ROMs Tab ──
-    if (ImGui::BeginTabItem("ROMs")) {
+    if (ImGui::BeginTabItem("ROMs", nullptr,
+                            s_pending_options_tab == OptionsTab::ROMs
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
       if (ImGui::BeginTable(
@@ -2399,7 +2442,10 @@ static void imgui_render_options() {
     }
 
     // ── Video Tab ──
-    if (ImGui::BeginTabItem("Video")) {
+    if (ImGui::BeginTabItem("Video", nullptr,
+                            s_pending_options_tab == OptionsTab::Video
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       // Build combo dynamically from video_plugin_list, skipping hidden
       // entries. Group plugins by type with section headers.
       const char* preview = video_plugin_list[CPC.scr_style].name;
@@ -2534,7 +2580,10 @@ static void imgui_render_options() {
     }
 
     // ── Audio Tab ──
-    if (ImGui::BeginTabItem("Audio")) {
+    if (ImGui::BeginTabItem("Audio", nullptr,
+                            s_pending_options_tab == OptionsTab::Audio
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) {
         CPC.snd_enabled = snd ? 1 : 0;
@@ -2599,7 +2648,10 @@ static void imgui_render_options() {
     }
 
     // ── Input Tab ──
-    if (ImGui::BeginTabItem("Input")) {
+    if (ImGui::BeginTabItem("Input", nullptr,
+                            s_pending_options_tab == OptionsTab::Input
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       int keyboard = static_cast<int>(CPC.keyboard);
       const char* cpc_langs[] = {"English", "French", "Spanish"};
       int max_langs = IM_ARRAYSIZE(cpc_langs);
@@ -2642,7 +2694,10 @@ static void imgui_render_options() {
     }
 
     // ── M4 Board Tab ──
-    if (ImGui::BeginTabItem("M4 Board")) {
+    if (ImGui::BeginTabItem("M4 Board", nullptr,
+                            s_pending_options_tab == OptionsTab::M4
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       bool m4_en = g_m4board.enabled;
       if (ImGui::Checkbox("Enable M4 Board", &m4_en)) {
         g_m4board.enabled = m4_en;
@@ -2870,7 +2925,10 @@ static void imgui_render_options() {
     }
 
     // ── Serial Interface Tab ──
-    if (ImGui::BeginTabItem("Serial Interface")) {
+    if (ImGui::BeginTabItem("Serial Interface", nullptr,
+                            s_pending_options_tab == OptionsTab::Serial
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       SerialConfig cfg = g_serial_interface.get_config();
       bool serial_en = cfg.enabled;
 
@@ -3052,6 +3110,8 @@ static void imgui_render_options() {
 
     ImGui::EndTabBar();
   }
+  // Deep-link consumed: the target tab (if any) has been selected this frame.
+  s_pending_options_tab = OptionsTab::None;
 
   ImGui::Separator();
   ImGui::Spacing();
