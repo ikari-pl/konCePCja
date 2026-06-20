@@ -1327,12 +1327,9 @@ static void imgui_render_topbar() {
     }
 
     // ── Right status cluster: Layout button + (PAUSED | FPS) ──
-    // beads-ptu: group the Layout button and the status readout so they read as
-    // one right-aligned status zone, with a faint leading divider.
-    // ── Layout dropdown ──
-    // Uses a state-flag + standalone window instead of ImGui popup,
-    // because popups from the fixed topbar close immediately in docked
-    // mode due to focus interactions with the dockspace.
+    // Uses a state-flag + standalone window instead of ImGui popup, because
+    // popups from the fixed topbar close immediately in docked mode due to
+    // focus interactions with the dockspace.
     {
       // Right-align before rightmost element (PAUSED or FPS counter)
       float right_w = 0.0f;
@@ -1343,42 +1340,28 @@ static void imgui_render_topbar() {
       }
       float btn_w = ImGui::CalcTextSize("Layout").x +
                     ImGui::GetStyle().FramePadding.x * 2.0f;
-      // Reserve room for the leading divider + spacing (8px).
-      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f - 8.0f);
+      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f);
 
-      // Leading vertical separator marking the start of the status zone.
-      {
-        ImVec2 sc = ImGui::GetCursorScreenPos();
-        float frameH = ImGui::GetFrameHeight();
-        ImGui::GetWindowDrawList()->AddLine(
-            ImVec2(sc.x, sc.y + 3.0f), ImVec2(sc.x, sc.y + frameH - 3.0f),
-            IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
-        ImGui::Dummy(ImVec2(1.0f, frameH));
-        ImGui::SameLine(0, 8.0f);
-      }
-
-      ImGui::BeginGroup();
       if (ImGui::Button("Layout")) {
         imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
       }
       // Remember button position for dropdown window placement
       s_layout_btn_pos = ImGui::GetItemRectMin();
       s_layout_btn_pos.y = ImGui::GetItemRectMax().y + 2.0f;
+    }
 
-      if (is_paused) {
-        float pause_width = ImGui::CalcTextSize("PAUSED").x;
-        ImGui::SameLine(ImGui::GetWindowWidth() - pause_width - 8);
-        ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
-        ImGui::TextUnformatted("PAUSED");
-        ImGui::PopStyleColor();
-      } else if (!fps_display.empty()) {
-        float fps_width = ImGui::CalcTextSize(fps_display.c_str()).x;
-        ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(fps_display.c_str());
-      }
-      ImGui::EndGroup();
+    if (is_paused) {
+      float pause_width = ImGui::CalcTextSize("PAUSED").x;
+      ImGui::SameLine(ImGui::GetWindowWidth() - pause_width - 8);
+      ImGui::AlignTextToFramePadding();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+      ImGui::TextUnformatted("PAUSED");
+      ImGui::PopStyleColor();
+    } else if (!fps_display.empty()) {
+      float fps_width = ImGui::CalcTextSize(fps_display.c_str()).x;
+      ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(fps_display.c_str());
     }
 
     // beads-sxd: subtle bottom separator so the native title bar, menu bar, and

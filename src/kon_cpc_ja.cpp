@@ -3810,6 +3810,16 @@ static void z80_thread_main() {
         dwFrameCount = 0;
         perfTicksTargetFPS = perfNow + perfFreq;
 
+        // Opt-in once-per-second FPS log (run with --debug/-v) — a passive,
+        // tail-able steady-FPS readout that doesn't perturb the emulation the
+        // way an IPC `wait vbl` probe does.
+        if (g_debug) {
+          printf(
+              "[fps] %3u FPS  %3u%% speed\n", dwFPS,
+              dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS));
+          fflush(stdout);
+        }
+
         {
           std::lock_guard<std::mutex> stats_lock(g_imgui_stats_mutex);
           if (frameTimeSamples > 0) {
