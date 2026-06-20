@@ -1,10 +1,12 @@
 #include "keyboard.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "fileutils.h"
 #include "koncepcja.h"
@@ -1549,6 +1551,43 @@ std::string InputMapper::CPCkeyToString(const CapriceKey cpc_key) {
     }
   }
   return "UNMAPPED(" + std::to_string(cpc_key) + ")";
+}
+
+namespace {
+// Format one host PCKey (modifier in the high dword, SDL keysym in the low) as
+// a readable accelerator string, e.g. "Shift+F2", "F5", "Pause".
+std::string format_pckey(PCKey pckey) {
+  SDL_Keycode key = static_cast<SDL_Keycode>(pckey & BITMASK_NOMOD);
+  PCKey mod = pckey >> BITSHIFT_MOD;
+  std::string s;
+  if (mod & SDL_KMOD_CTRL) s += "Ctrl+";
+  if (mod & SDL_KMOD_SHIFT) s += "Shift+";
+  const char* name = SDL_GetKeyName(key);
+  s += (name != nullptr && *name != '\0') ? name : "?";
+  return s;
+}
+}  // namespace
+
+std::string InputMapper::shortcutForAction(CapriceKey action) const {
+  std::vector<std::string> parts;
+  for (const auto& [pckey, capkey] : CPCkeysFromSDLkeysym) {
+    if (capkey == action) parts.push_back(format_pckey(pckey));
+  }
+  std::sort(parts.begin(), parts.end());
+  parts.erase(std::unique(parts.begin(), parts.end()), parts.end());
+  std::string out;
+  for (size_t i = 0; i < parts.size(); ++i) {
+    if (i != 0) out += " / ";
+    out += parts[i];
+  }
+  return out;
+}
+
+// Keystone helper: derive an action's shortcut DISPLAY string from the live
+// binding map, so every surface's hint stays truthful automatically.
+std::string koncpc_action_shortcut(KONCPC_KEYS action) {
+  if (CPC.InputMapper == nullptr) return "";
+  return CPC.InputMapper->shortcutForAction(static_cast<CapriceKey>(action));
 }
 
 std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {

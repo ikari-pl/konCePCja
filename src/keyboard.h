@@ -337,4 +337,13 @@ class InputMapper {
                                    bool& release);
   std::list<SDL_Event> StringToEvents(std::string toTranslate);
   void set_joystick_emulation();
+  // Human-readable host shortcut(s) currently bound to an emulator command,
+  // derived from the live binding map so menu/UI hints can never drift from the
+  // real keys.  Returns e.g. "F5", "Shift+F2 / F12", or "" if unbound.
+  std::string shortcutForAction(CapriceKey action) const;
 };
+
+// Keystone helper: the single source of truth for an action's shortcut DISPLAY
+// string, derived from the real binding (not hand-typed per surface).  Every
+// menu/topbar/popup/command-palette surface renders hints via this.
+std::string koncpc_action_shortcut(KONCPC_KEYS action);

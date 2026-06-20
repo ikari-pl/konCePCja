@@ -124,3 +124,26 @@ TEST_F(InputMapperTest, Keymapping) {
             CPC.InputMapper->CPCscancodeFromKeysym(
                 static_cast<SDL_Keycode>(241), SDL_KMOD_LSHIFT));
 }
+
+// Keystone: shortcut display strings are derived from the live binding map, so
+// menu/UI hints can never drift from the real keys.
+TEST_F(InputMapperTest, ShortcutForActionDerivesFromBindings) {
+  CPC.kbd_layout = "keymap_us.map";
+  CPC.keyboard = 0;
+  CPC.InputMapper->init();
+
+  // Single-binding emulator commands.
+  EXPECT_EQ("F5", CPC.InputMapper->shortcutForAction(KONCPC_RESET));
+  EXPECT_EQ("F10", CPC.InputMapper->shortcutForAction(KONCPC_EXIT));
+  EXPECT_EQ("F8", CPC.InputMapper->shortcutForAction(KONCPC_FPS));
+
+  // DevTools' real key after the US keymap loads is F12 (the keymap entry
+  // overwrites the base Shift+F2 binding in the forward map).  The derived
+  // string reports the TRUE binding — this is exactly why menu labels that
+  // still say "Shift+F2" are wrong and must render from this helper instead.
+  EXPECT_EQ("F12", CPC.InputMapper->shortcutForAction(KONCPC_DEVTOOLS));
+
+  // The free-function wrapper used by every UI surface agrees.
+  EXPECT_EQ(CPC.InputMapper->shortcutForAction(KONCPC_RESET),
+            koncpc_action_shortcut(KONCPC_RESET));
+}
