@@ -692,6 +692,46 @@ void imgui_close_menu() {
 // Main Menu Bar
 // ─────────────────────────────────────────────────
 
+// Live toggle state for a toggle-kind action (drives menu checkmarks across the
+// ImGui menus and the native macOS menu).  This is the GUI-side half of the
+// action registry — menu_actions.cpp holds the labels, the binding map holds
+// the shortcuts, and this reads the live emulator/UI state.
+bool koncpc_action_is_active(KONCPC_KEYS action) {
+  switch (action) {
+    case KONCPC_FPS:
+      return CPC.scr_fps != 0;
+    case KONCPC_SPEED:
+      return CPC.limit_speed != 0;
+    case KONCPC_JOY:
+      return CPC.joystick_emulation != JoystickEmulation::None;
+    case KONCPC_PHAZER:
+      return static_cast<bool>(CPC.phazer_emulation);
+    case KONCPC_DEVTOOLS:
+      return imgui_state.show_devtools;
+    case KONCPC_DEBUG:
+      return log_verbose;
+    default:
+      return false;
+  }
+}
+
+// Render one ImGui menu item for an action, pulling its canonical label,
+// derived shortcut hint and live checkmark from the single source of truth, and
+// routing the click through the one koncpc_menu_action() sink.  Every
+// emulator-command menu item should go through here so labels/shortcuts can
+// never drift.
+static bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
+  const MenuAction* meta = koncpc_find_action(action);
+  if (meta == nullptr) return false;
+  std::string sc = koncpc_action_shortcut(action);
+  const char* shortcut = sc.empty() ? nullptr : sc.c_str();
+  bool clicked =
+      ImGui::MenuItem(meta->title, shortcut,
+                      meta->toggle && koncpc_action_is_active(action), enabled);
+  if (clicked) koncpc_menu_action(action);
+  return clicked;
+}
+
 static void imgui_render_menubar() {
   if (!ImGui::BeginMainMenuBar()) return;
 
