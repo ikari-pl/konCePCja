@@ -456,6 +456,11 @@ void imgui_render_ui() {
   // Dockspace host must be rendered before other windows so they can dock into
   // it
   workspace_render_dockspace();
+  // TODO(beads-34s): add a small dark host gutter / 1px inner bezel around the
+  // emulated CPC screen so it doesn't touch the topbar/status bar. The screen
+  // texture/quad is drawn in workspace_render_cpc_screen()
+  // (workspace_layout.cpp), which is outside this file's edit scope — handle it
+  // there.
   workspace_render_cpc_screen();
   imgui_render_menubar();
   imgui_render_topbar();
@@ -846,6 +851,11 @@ static void imgui_render_menubar() {
               static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
           mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
     }
+    // beads-5aa: group the default-slot quick snapshot actions so their labels
+    // (which read like speed adjectives in isolation) are clearly about the
+    // default slot. Canonical labels live in menu_actions.cpp (not edited).
+    ImGui::Separator();
+    ImGui::TextDisabled("Default slot");
     RenderMenuItem(KONCPC_SNAPSHOT);
     RenderMenuItem(KONCPC_LD_SNAP);
     ImGui::Separator();
@@ -951,12 +961,22 @@ static void imgui_render_menubar() {
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
     RenderMenuItem(KONCPC_DEVTOOLS);
+    // beads-qnf: surface the Cmd+K command palette (previously only mentioned
+    // in the About box) as a discoverable menu entry.
+    if (ImGui::MenuItem("Command Palette...", "Cmd+K")) {
+      g_command_palette.open();
+    }
     if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
       koncpc_menu_action(KONCPC_VKBD);
     }
     if (ImGui::MenuItem("MF2 Stop", "F6")) {
       koncpc_menu_action(KONCPC_MF2STOP);
     }
+    // beads-41p: developer/diagnostics group — Verbose Logging moved here from
+    // the Options menu (where it sat among player toggles).
+    ImGui::Separator();
+    ImGui::TextDisabled("Diagnostics");
+    RenderMenuItem(KONCPC_DEBUG);
     ImGui::EndMenu();
   }
 
@@ -1022,7 +1042,8 @@ static void imgui_render_menubar() {
     RenderMenuItem(KONCPC_PHAZER);
     RenderMenuItem(KONCPC_SPEED);
     RenderMenuItem(KONCPC_FPS);
-    RenderMenuItem(KONCPC_DEBUG);
+    // beads-41p: KONCPC_DEBUG (Verbose Logging) relocated to Tools >
+    // Diagnostics.
     ImGui::EndMenu();
   }
 
@@ -1255,6 +1276,17 @@ static void imgui_render_topbar() {
     // the Z80 thread). When paused, the button resumes; when running, it opens
     // the F1 menu and pauses, exactly as before.
     const bool is_paused = g_emu_paused.load(std::memory_order_relaxed);
+    // beads-uvo: reserve the gold/amber accent for the PAUSED state. While
+    // running, the Pause button gets a flat neutral fill so the gold only
+    // means "something is halted"; when paused, the Resume button keeps the
+    // theme's gold so the call-to-action stands out.
+    if (!is_paused) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.20f, 0.23f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.28f, 0.28f, 0.32f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                            ImVec4(0.34f, 0.34f, 0.38f, 1.0f));
+    }
     if (ImGui::Button(is_paused ? "Resume (Esc)" : "Pause (F1)")) {
       if (is_paused) {
         cpc_resume();
@@ -1265,8 +1297,38 @@ static void imgui_render_topbar() {
         cpc_pause();
       }
     }
+    if (!is_paused) ImGui::PopStyleColor(3);
     // (Tape waveform moved to bottom status bar)
 
+    // beads-rwc: reformat the run-on FPS string ("50FPS 100%") produced by the
+    // emulator core into "50 FPS · 100%" (space + middle-dot separator) for
+    // legibility. Done here at the display site because the producer lives in
+    // another translation unit.
+    std::string fps_display;
+    if (!imgui_state.topbar_fps.empty()) {
+      const std::string& raw = imgui_state.topbar_fps;
+      size_t fpos = raw.find("FPS");
+      if (fpos != std::string::npos) {
+        // Left part = digits before "FPS"; right part = remainder after "FPS".
+        std::string left = raw.substr(0, fpos);
+        std::string right = raw.substr(fpos + 3);
+        // Trim surrounding spaces from both halves.
+        auto trim = [](std::string& s) {
+          size_t a = s.find_first_not_of(' ');
+          size_t b = s.find_last_not_of(' ');
+          s = (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1);
+        };
+        trim(left);
+        trim(right);
+        fps_display = left + " FPS \xc2\xb7 " + right;  // U+00B7 middle dot
+      } else {
+        fps_display = raw;
+      }
+    }
+
+    // ── Right status cluster: Layout button + (PAUSED | FPS) ──
+    // beads-ptu: group the Layout button and the status readout so they read as
+    // one right-aligned status zone, with a faint leading divider.
     // ── Layout dropdown ──
     // Uses a state-flag + standalone window instead of ImGui popup,
     // because popups from the fixed topbar close immediately in docked
@@ -1276,33 +1338,59 @@ static void imgui_render_topbar() {
       float right_w = 0.0f;
       if (is_paused) {
         right_w = ImGui::CalcTextSize("PAUSED").x + 16.0f;
-      } else if (!imgui_state.topbar_fps.empty()) {
-        right_w = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x + 16.0f;
+      } else if (!fps_display.empty()) {
+        right_w = ImGui::CalcTextSize(fps_display.c_str()).x + 16.0f;
       }
       float btn_w = ImGui::CalcTextSize("Layout").x +
                     ImGui::GetStyle().FramePadding.x * 2.0f;
-      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f);
+      // Reserve room for the leading divider + spacing (8px).
+      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f - 8.0f);
 
+      // Leading vertical separator marking the start of the status zone.
+      {
+        ImVec2 sc = ImGui::GetCursorScreenPos();
+        float frameH = ImGui::GetFrameHeight();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(sc.x, sc.y + 3.0f), ImVec2(sc.x, sc.y + frameH - 3.0f),
+            IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
+        ImGui::Dummy(ImVec2(1.0f, frameH));
+        ImGui::SameLine(0, 8.0f);
+      }
+
+      ImGui::BeginGroup();
       if (ImGui::Button("Layout")) {
         imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
       }
       // Remember button position for dropdown window placement
       s_layout_btn_pos = ImGui::GetItemRectMin();
       s_layout_btn_pos.y = ImGui::GetItemRectMax().y + 2.0f;
+
+      if (is_paused) {
+        float pause_width = ImGui::CalcTextSize("PAUSED").x;
+        ImGui::SameLine(ImGui::GetWindowWidth() - pause_width - 8);
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
+        ImGui::TextUnformatted("PAUSED");
+        ImGui::PopStyleColor();
+      } else if (!fps_display.empty()) {
+        float fps_width = ImGui::CalcTextSize(fps_display.c_str()).x;
+        ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(fps_display.c_str());
+      }
+      ImGui::EndGroup();
     }
 
-    if (is_paused) {
-      float pause_width = ImGui::CalcTextSize("PAUSED").x;
-      ImGui::SameLine(ImGui::GetWindowWidth() - pause_width - 8);
-      ImGui::AlignTextToFramePadding();
-      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
-      ImGui::TextUnformatted("PAUSED");
-      ImGui::PopStyleColor();
-    } else if (!imgui_state.topbar_fps.empty()) {
-      float fps_width = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x;
-      ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(imgui_state.topbar_fps.c_str());
+    // beads-sxd: subtle bottom separator so the native title bar, menu bar, and
+    // topbar don't merge into one undifferentiated dark band. Drawn 1px lighter
+    // than the topbar background at the bottom edge of the window.
+    {
+      ImVec2 wp = ImGui::GetWindowPos();
+      ImVec2 ws = ImGui::GetWindowSize();
+      float yb = wp.y + ws.y - 0.5f;
+      ImGui::GetWindowDrawList()->AddLine(
+          ImVec2(wp.x, yb), ImVec2(wp.x + ws.x, yb),
+          IM_COL32(0x2A, 0x2A, 0x2E, 0xFF), 1.0f);
     }
   }
   ImGui::End();
@@ -1842,6 +1930,19 @@ static void imgui_render_statusbar() {
               "Click to cycle waveform mode (RAW pulse / decoded BITS)");
         }
       }
+    }
+
+    // ── First-run empty-state hint ──
+    // beads-mng: when no media is loaded anywhere, show an unobtrusive,
+    // right-aligned dim hint so a fresh launch isn't a blank dead-end.
+    if (driveA.tracks == 0 && driveB.tracks == 0 && pbTapeImage.empty()) {
+      const char* hint = "Drop a .dsk/.cdt or press F1 to load";
+      float hint_w = ImGui::CalcTextSize(hint).x;
+      ImGui::SameLine(ImGui::GetWindowWidth() - hint_w - 10.0f);
+      ImGui::AlignTextToFramePadding();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+      ImGui::TextUnformatted(hint);
+      ImGui::PopStyleColor();
     }
 
     // ── Eject Disk confirmation popup ──

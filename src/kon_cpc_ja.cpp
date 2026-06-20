@@ -1500,6 +1500,16 @@ void emulator_reset() {
     memcpy(pbMF2ROM, pbMF2ROMbackup,
            8192);  // copy the MF2 ROM to its proper place
   }
+
+  // The first reset happens during emulator_init() (boot), where an OSD
+  // message would be wrong / premature. Suppress feedback on that very first
+  // call; every subsequent (user-initiated) reset shows confirmation.
+  static bool first_reset = true;
+  if (first_reset) {
+    first_reset = false;
+  } else {
+    set_osd_message("Machine reset");
+  }
 }
 
 int input_init() {
@@ -3070,6 +3080,7 @@ void dumpScreen() {
   LOG_INFO("Dumping screen to " + dumpPath);
   if (!dumpScreenTo(dumpPath)) {
     LOG_ERROR("Could not write screenshot file to " + dumpPath);
+    set_osd_message("Screenshot failed");
   } else {
     set_osd_message("Captured " + dumpFile);
   }
@@ -3089,6 +3100,7 @@ void dumpSnapshot() {
   LOG_INFO("Dumping machine snapshot to " + dumpPath);
   if (snapshot_save(dumpPath)) {
     LOG_ERROR("Could not write machine snapshot to " + dumpPath);
+    set_osd_message("Snapshot save failed");
   } else {
     set_osd_message("Snapshotted " + dumpFile);
   }
@@ -3100,6 +3112,9 @@ void loadSnapshot() {
   LOG_INFO("Loading snapshot from " + lastSavedSnapshot);
   if (snapshot_load(lastSavedSnapshot)) {
     LOG_ERROR("Could not load machine snapshot from " + lastSavedSnapshot);
+    std::string dirname, filename;
+    stringutils::splitPath(lastSavedSnapshot, dirname, filename);
+    set_osd_message("Snapshot load failed: " + filename);
   } else {
     std::string dirname, filename;
     stringutils::splitPath(lastSavedSnapshot, dirname, filename);

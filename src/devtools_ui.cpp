@@ -200,6 +200,45 @@ void DevToolsUI::navigate_memory(word addr) {
 }
 
 // -----------------------------------------------
+// Default window layout (beads-a34 / beads-pv7)
+// -----------------------------------------------
+
+// The "core debugging window set": auto-opened on first F12 and docked by the
+// Debug workspace preset.  Defined once here so the two paths can't drift
+// (beads-igq).
+const char* const* DevToolsUI::core_debug_window_keys() {
+  static const char* const keys[] = {"registers",   "disassembly", "stack",
+                                     "breakpoints", "memory_hex",  nullptr};
+  return keys;
+}
+
+void DevToolsUI::open_core_debug_windows() {
+  for (const char* const* k = core_debug_window_keys(); *k; ++k) {
+    if (!is_window_open(*k)) toggle_window(*k);
+  }
+}
+
+void DevToolsUI::apply_default_window_layout(int stagger, float w, float h) {
+  // Stagger windows in a few columns so they don't cascade onto one origin
+  // and don't march off the bottom-right edge with 17 windows.  Coordinates
+  // are relative to the viewport work area (below the menubar/topbar), not
+  // magic screen pixels, so the default layout follows the UI chrome.
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const int kCols = 4;
+  const float kStepX = 60.0f;
+  const float kStepY = 36.0f;
+  int col = stagger % kCols;
+  int row = stagger / kCols;
+  ImVec2 pos(vp->WorkPos.x + 20.0f + col * 230.0f + row * kStepX,
+             vp->WorkPos.y + 20.0f + row * kStepY + col * kStepY);
+
+  ImGuiCond cond =
+      reset_positions_pending_ ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+  ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(pos, cond);
+}
+
+// -----------------------------------------------
 // Main render dispatch
 // -----------------------------------------------
 
@@ -247,6 +286,11 @@ void DevToolsUI::render() {
   time_window(15, "Recording", show_recording_controls_,
               [&] { render_recording_controls(); });
   time_window(16, "Assembler", show_assembler_, [&] { render_assembler(); });
+
+  // The reset-positions request lasts exactly one frame: every window's
+  // apply_default_window_layout() has now run with ImGuiCond_Always
+  // (beads-pv7).
+  reset_positions_pending_ = false;
 }
 
 // -----------------------------------------------
@@ -254,8 +298,7 @@ void DevToolsUI::render() {
 // -----------------------------------------------
 
 void DevToolsUI::render_registers() {
-  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(620, 60), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(0, 340, 420);
 
   bool open = true;
   if (!ImGui::Begin("Registers", &open)) {
@@ -426,8 +469,7 @@ void DevToolsUI::disasm_cache_record_pc() {
 }
 
 void DevToolsUI::render_disassembly() {
-  ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(10, 60), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(1, 440, 500);
 
   bool open = true;
   if (!ImGui::Begin("Disassembly", &open, ImGuiWindowFlags_MenuBar)) {
@@ -789,8 +831,7 @@ void DevToolsUI::render_disassembly() {
 // -----------------------------------------------
 
 void DevToolsUI::render_memory_hex() {
-  ImGui::SetNextWindowSize(ImVec2(520, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(460, 60), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(2, 520, 400);
 
   bool open = true;
   if (!ImGui::Begin("Memory Hex", &open, ImGuiWindowFlags_MenuBar)) {
@@ -1204,8 +1245,7 @@ void DevToolsUI::render_memory_hex() {
 // -----------------------------------------------
 
 void DevToolsUI::render_stack() {
-  ImGui::SetNextWindowSize(ImVec2(260, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(460, 440), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(3, 260, 400);
 
   bool open = true;
   if (!ImGui::Begin("Stack", &open)) {
@@ -1286,8 +1326,7 @@ void DevToolsUI::render_stack() {
 // -----------------------------------------------
 
 void DevToolsUI::render_breakpoints() {
-  ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(10, 540), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(4, 500, 300);
 
   bool open = true;
   if (!ImGui::Begin("Breakpoints & Watchpoints & IO###BPWindow", &open)) {
@@ -1590,8 +1629,7 @@ void DevToolsUI::render_symbols() {
   snprintf(title, sizeof(title), "Symbols (%d)###SymbolTable",
            static_cast<int>(syms.size()));
 
-  ImGui::SetNextWindowSize(ImVec2(340, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(520, 540), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(5, 340, 400);
 
   bool open = true;
   if (!ImGui::Begin(title, &open)) {
@@ -1692,7 +1730,7 @@ void DevToolsUI::render_symbols() {
 // -----------------------------------------------
 
 void DevToolsUI::render_silicon_disc() {
-  ImGui::SetNextWindowSize(ImVec2(380, 280), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(6, 380, 280);
 
   bool open = true;
   if (!ImGui::Begin("Silicon Disc", &open)) {
@@ -1761,7 +1799,7 @@ void DevToolsUI::render_silicon_disc() {
 // -----------------------------------------------
 
 void DevToolsUI::render_asic() {
-  ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(7, 520, 500);
 
   bool open = true;
   if (!ImGui::Begin("ASIC Registers", &open)) {
@@ -1866,7 +1904,7 @@ void DevToolsUI::render_asic() {
 // -----------------------------------------------
 
 void DevToolsUI::render_disc_tools() {
-  ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(8, 520, 500);
 
   bool open = true;
   if (!ImGui::Begin("Disc Tools", &open)) {
@@ -2138,7 +2176,7 @@ void DevToolsUI::render_disc_tools() {
 // -----------------------------------------------
 
 void DevToolsUI::render_data_areas() {
-  ImGui::SetNextWindowSize(ImVec2(560, 350), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(9, 560, 350);
 
   bool open = true;
   if (!ImGui::Begin("Data Areas", &open)) {
@@ -2287,7 +2325,7 @@ void DevToolsUI::render_disasm_export() {
     dex_prefill_pending_ = false;
   }
 
-  ImGui::SetNextWindowSize(ImVec2(420, 450), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(10, 420, 450);
 
   bool open = true;
   if (!ImGui::Begin("Disassembly Export", &open)) {
@@ -2536,7 +2574,7 @@ void DevToolsUI::render_disasm_export() {
 // -----------------------------------------------
 
 void DevToolsUI::render_session_recording() {
-  ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(11, 400, 200);
 
   bool open = true;
   if (!ImGui::Begin("Session Recording", &open)) {
@@ -2638,7 +2676,7 @@ void DevToolsUI::render_session_recording() {
 // -----------------------------------------------
 
 void DevToolsUI::render_gfx_finder() {
-  ImGui::SetNextWindowSize(ImVec2(500, 500), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(12, 500, 500);
 
   bool open = true;
   if (!ImGui::Begin("Graphics Finder", &open)) {
@@ -2801,7 +2839,7 @@ void DevToolsUI::render_gfx_finder() {
 // -----------------------------------------------
 
 void DevToolsUI::render_video_state() {
-  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(13, 340, 420);
 
   bool open = true;
   if (!ImGui::Begin("Video State", &open)) {
@@ -2924,7 +2962,7 @@ static void draw_scope_strip(const char* label, ImU32 color,
 }
 
 void DevToolsUI::render_audio_state() {
-  ImGui::SetNextWindowSize(ImVec2(420, 600), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(14, 420, 600);
 
   bool open = true;
   if (!ImGui::Begin("Audio State", &open)) {
@@ -3042,7 +3080,7 @@ static std::string format_size(uint64_t bytes) {
 }
 
 void DevToolsUI::render_recording_controls() {
-  ImGui::SetNextWindowSize(ImVec2(420, 400), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(15, 420, 400);
 
   bool open = true;
   if (!ImGui::Begin("Recording Controls", &open)) {
@@ -3394,7 +3432,7 @@ static std::string asm_build_source_with_org(const char* source,
 }
 
 void DevToolsUI::render_assembler() {
-  ImGui::SetNextWindowSize(ImVec2(700, 550), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(16, 700, 550);
   bool open = true;
   if (!ImGui::Begin("Assembler##devtools", &open)) {
     ImGui::End();

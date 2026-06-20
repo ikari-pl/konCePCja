@@ -43,6 +43,21 @@ class DevToolsUI {
   // Returns the array of all window key strings (NUM_WINDOWS entries).
   static const char* const* all_window_keys(int* count);
 
+  // Returns the "core debugging window set" — the windows that DevTools
+  // auto-opens on first F12 and that the Debug workspace preset docks.
+  // Single source of truth so the auto-open path and the preset can't drift
+  // (beads-igq).  Array is null-terminated and static.
+  static const char* const* core_debug_window_keys();
+
+  // Open the core debugging window set (registers/disassembly/stack/...).
+  // Safe to call repeatedly — only opens windows that are currently closed.
+  void open_core_debug_windows();
+
+  // Re-apply the default staggered window positions on the next frame, so a
+  // user whose floating windows have drifted off-screen can recover them
+  // (beads-pv7).  The next render() uses ImGuiCond_Always for one frame.
+  void reset_window_positions() { reset_positions_pending_ = true; }
+
   // Request cache invalidation — safe to call from any thread.
   // Actual clearing happens on the next render() call (main thread).
   void disasm_cache_invalidate() { disasm_cache_pending_clear_.store(true); }
@@ -63,6 +78,17 @@ class DevToolsUI {
 
  private:
   WindowTiming window_timings_[NUM_WINDOWS] = {};
+
+  // Default-position layout (beads-a34 / beads-pv7).  Each window declares its
+  // default size and a stagger index; positions are computed relative to the
+  // main viewport's work area so they respect the menubar/topbar and never
+  // cascade onto a single origin.  When reset_positions_pending_ is set the
+  // next render forces ImGuiCond_Always for one frame to recover drifted
+  // windows.
+  bool reset_positions_pending_ = false;
+  // Apply size + staggered default position for the window currently being
+  // begun.  `stagger` is the window's slot index (see render() dispatch order).
+  void apply_default_window_layout(int stagger, float w, float h);
 
   bool show_registers_ = false;
   bool show_disassembly_ = false;

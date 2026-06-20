@@ -235,11 +235,9 @@ void workspace_apply_preset(WorkspacePreset preset) {
       ImGui::DockBuilderDockWindow("Breakpoints & Watchpoints & IO###BPWindow",
                                    bottom);
 
-      ensure_window_open("registers");
-      ensure_window_open("disassembly");
-      ensure_window_open("stack");
-      ensure_window_open("breakpoints");
-      ensure_window_open("memory_hex");
+      // Open the core debugging window set — same list the F12 auto-open path
+      // uses, so the two can't drift (beads-igq).
+      g_devtools_ui.open_core_debug_windows();
       break;
     }
 
