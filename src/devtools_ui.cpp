@@ -1,5 +1,6 @@
 #include "devtools_ui.h"
 
+#include <cfloat>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -56,6 +57,17 @@ static bool has_path_traversal(const char* path) {
 
 // Consistent link color for all navigable addresses
 static constexpr ImVec4 kLinkColor(0.4f, 0.8f, 1.0f, 1.0f);
+
+// Small colored chip showing whether the emulated machine is running or
+// paused. Rendered at the top of detachable debug windows so a user with a
+// floating window can tell at a glance if the machine is live. (beads-rj4)
+static void render_run_state_chip() {
+  if (!g_emu_paused.load()) {
+    ImGui::TextColored(ImVec4(0.3f, 0.85f, 0.3f, 1.0f), "RUNNING");
+  } else {
+    ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "PAUSED");
+  }
+}
 
 DevToolsUI g_devtools_ui;
 
@@ -252,17 +264,41 @@ void DevToolsUI::render_registers() {
     return;
   }
 
+  render_run_state_chip();  // beads-rj4
+  ImGui::Separator();
+
   bool locked = !CPC.paused;
   ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
                                   (locked ? ImGuiInputTextFlags_ReadOnly : 0);
 
+  // beads-pra: make the disabled state visible while running.
+  if (locked) {
+    ImGui::TextDisabled("(pause to edit registers)");
+  }
+  ImGui::BeginDisabled(locked);
+
+  // beads-9a9: right-click context menu on a 16-bit register field to jump to
+  // its current value in the Memory or Disassembly view.
+  auto RegContextMenu = [&](const char* id, word value) {
+    if (ImGui::BeginPopupContextItem(id)) {
+      if (ImGui::MenuItem("View in Memory"))
+        navigate_to(value, NavTarget::MEMORY);
+      if (ImGui::MenuItem("View in Disassembly"))
+        navigate_to(value, NavTarget::DISASM);
+      ImGui::EndPopup();
+    }
+  };
+
   auto RegField16 = [&](const char* label, reg_pair& rp) {
     unsigned short val = rp.w.l;
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputScalar(label, ImGuiDataType_U16, &val, nullptr, nullptr,
                            "%04X", hex_flags)) {
       if (!locked) rp.w.l = val;
     }
+    // Context menu uses the live register value (rp.w.l), so it stays correct
+    // even while the field is disabled and editing is blocked.
+    RegContextMenu(label, rp.w.l);
   };
 
   auto RegField8 = [&](const char* label, byte& val) {
@@ -274,38 +310,47 @@ void DevToolsUI::render_registers() {
     }
   };
 
-  // Main registers in two columns
-  ImGui::Columns(2, "regs_main", false);
-  RegField16("AF", z80.AF);
-  ImGui::NextColumn();
-  RegField16("AF'", z80.AFx);
-  ImGui::NextColumn();
-  RegField16("BC", z80.BC);
-  ImGui::NextColumn();
-  RegField16("BC'", z80.BCx);
-  ImGui::NextColumn();
-  RegField16("DE", z80.DE);
-  ImGui::NextColumn();
-  RegField16("DE'", z80.DEx);
-  ImGui::NextColumn();
-  RegField16("HL", z80.HL);
-  ImGui::NextColumn();
-  RegField16("HL'", z80.HLx);
-  ImGui::NextColumn();
-  RegField16("IX", z80.IX);
-  ImGui::NextColumn();
-  RegField16("IY", z80.IY);
-  ImGui::NextColumn();
-  RegField16("SP", z80.SP);
-  ImGui::NextColumn();
-  RegField16("PC", z80.PC);
-  ImGui::NextColumn();
-  ImGui::Columns(1);
+  // beads-083: main / shadow register pairs in a stretch-prop table so the
+  // grid reflows when the window is widened.
+  if (ImGui::BeginTable("regs", 2, ImGuiTableFlags_SizingStretchProp)) {
+    auto reg_row = [&](const char* main_label, reg_pair& main_rp,
+                       const char* shadow_label, reg_pair& shadow_rp) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      RegField16(main_label, main_rp);
+      ImGui::TableSetColumnIndex(1);
+      RegField16(shadow_label, shadow_rp);
+    };
+    // Main vs shadow (AF/AF' ...) pairs.
+    reg_row("AF", z80.AF, "AF'", z80.AFx);
+    reg_row("BC", z80.BC, "BC'", z80.BCx);
+    reg_row("DE", z80.DE, "DE'", z80.DEx);
+    reg_row("HL", z80.HL, "HL'", z80.HLx);
+    ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  // Index / stack / program registers (no shadow counterparts).
+  if (ImGui::BeginTable("regs_idx", 2, ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    RegField16("IX", z80.IX);
+    ImGui::TableSetColumnIndex(1);
+    RegField16("IY", z80.IY);
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    RegField16("SP", z80.SP);
+    ImGui::TableSetColumnIndex(1);
+    RegField16("PC", z80.PC);
+    ImGui::EndTable();
+  }
 
   ImGui::Spacing();
   RegField8("I", z80.I);
   ImGui::SameLine();
   RegField8("R", z80.R);
+
+  ImGui::EndDisabled();  // beads-pra: re-enable read-only info below
 
   // Interrupt state
   ImGui::Spacing();
@@ -322,6 +367,7 @@ void DevToolsUI::render_registers() {
   byte f = z80.AF.b.l;
   bool s = f & Sflag, zf = f & Zflag, h = f & Hflag, pv = f & Pflag,
        n = f & Nflag, cf = f & Cflag;
+  ImGui::BeginDisabled(locked);  // beads-pra: flags editable only when paused
   ImGui::Checkbox("S", &s);
   ImGui::SameLine();
   ImGui::Checkbox("Z", &zf);
@@ -333,6 +379,7 @@ void DevToolsUI::render_registers() {
   ImGui::Checkbox("N", &n);
   ImGui::SameLine();
   ImGui::Checkbox("C", &cf);
+  ImGui::EndDisabled();
   if (!locked) {
     byte new_f = 0;
     if (s) new_f |= Sflag;
@@ -411,6 +458,11 @@ void DevToolsUI::render_disassembly() {
           "Click lines to toggle breakpoints. Right-click for more options.");
     ImGui::EndMenuBar();
   }
+
+  render_run_state_chip();  // beads-rj4
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
 
   // Determine the center address
   word center_pc = z80.PC.w.l;
@@ -528,9 +580,17 @@ void DevToolsUI::render_disassembly() {
     ImGui::PopStyleColor();
   }
 
+  // beads-5nd: track which line is selected (selection is separate from
+  // breakpoint toggling). Plain left-click on a line selects it; the leading
+  // gutter toggles a breakpoint. Persisted across frames via static.
+  static int disasm_selected_addr = -1;
+
   if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0),
                         ImGuiChildFlags_Borders)) {
     int scroll_to_idx = -1;
+
+    // Fixed-width gutter so rows never reflow whether or not a BP marker shows.
+    const float gutter_w = ImGui::GetFrameHeight();
 
     for (int i = 0; i < static_cast<int>(lines.size()); i++) {
       const auto& entry = lines[i];
@@ -562,12 +622,41 @@ void DevToolsUI::render_disassembly() {
         ImGui::PopStyleColor();
       }
 
-      // Build display text
+      // Build display text (the breakpoint marker lives in the gutter column,
+      // so the main label is reflow-free regardless of BP state).
       static constexpr const char* kBreakpointMarker =
           "\xe2\x97\x8f";  // Unicode ●
       char label[256];
-      snprintf(label, sizeof(label), "%s %04X  %s",
-               is_bp ? kBreakpointMarker : " ", entry.addr, entry.text.c_str());
+      snprintf(label, sizeof(label), "%04X  %s", entry.addr,
+               entry.text.c_str());
+
+      // --- Breakpoint gutter (beads-5nd) ---
+      // A narrow leading Selectable. Clicking it toggles a breakpoint without
+      // selecting the line. Only meaningful for code (not data areas).
+      ImGui::PushID(i);
+      ImVec2 gutter_pos = ImGui::GetCursorScreenPos();
+      bool gutter_clicked =
+          ImGui::Selectable("##bpgutter", false, ImGuiSelectableFlags_None,
+                            ImVec2(gutter_w, ImGui::GetTextLineHeight()));
+      if (!entry.is_data_area && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(is_bp ? "Click: remove breakpoint"
+                                : "Click: add breakpoint");
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+      }
+      if (gutter_clicked && !entry.is_data_area) {
+        if (is_bp)
+          z80_del_breakpoint(entry.addr);
+        else
+          z80_add_breakpoint(entry.addr);
+      }
+      if (is_bp) {
+        ImVec2 tsz = ImGui::CalcTextSize(kBreakpointMarker);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(gutter_pos.x + (gutter_w - tsz.x) * 0.5f, gutter_pos.y),
+            IM_COL32(255, 77, 77, 255), kBreakpointMarker);
+      }
+      ImGui::PopID();
+      ImGui::SameLine(0.0f, 4.0f);
 
       // Color: green for PC, red for breakpoint, amber for data area, purple
       // for ROM
@@ -589,9 +678,14 @@ void DevToolsUI::render_disassembly() {
         style_colors_pushed = 1;
       }
 
-      if (ImGui::Selectable(label, is_pc || entry.is_data_area)) {
-        if (!entry.is_data_area) {
-          // Left click: toggle breakpoint (not meaningful for data areas)
+      bool is_selected = (static_cast<int>(entry.addr) == disasm_selected_addr);
+      if (ImGui::Selectable(label,
+                            is_pc || entry.is_data_area || is_selected)) {
+        // beads-5nd: plain left-click only selects the line. Ctrl-click is a
+        // convenience shortcut that also toggles the breakpoint (mirrors the
+        // gutter).
+        disasm_selected_addr = static_cast<int>(entry.addr);
+        if (!entry.is_data_area && ImGui::GetIO().KeyCtrl) {
           if (is_bp)
             z80_del_breakpoint(entry.addr);
           else
@@ -603,7 +697,8 @@ void DevToolsUI::render_disassembly() {
           ImGui::SetTooltip("Data area | Right-click: edit/remove");
         else
           ImGui::SetTooltip(
-              "Click: toggle breakpoint | Right-click: more options");
+              "Click: select | Gutter / Ctrl+click: toggle breakpoint | "
+              "Right-click: more options");
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       }
 
@@ -1119,8 +1214,10 @@ void DevToolsUI::render_stack() {
     return;
   }
 
+  render_run_state_chip();  // beads-rj4
+  ImGui::SameLine();
   word sp = z80.SP.w.l;
-  ImGui::Text("SP = %04X", sp);
+  ImGui::Text("| SP = %04X", sp);
   ImGui::Separator();
 
   if (ImGui::BeginChild("##stack_entries", ImVec2(0, 0),
@@ -1205,6 +1302,34 @@ void DevToolsUI::render_breakpoints() {
   if (ImGui::Button("Clear All WPs")) z80_clear_watchpoints();
   ImGui::SameLine();
   if (ImGui::Button("Clear All IOBPs")) z80_clear_io_breakpoints();
+
+  // beads-w38: quick inline "add breakpoint by address" row. Accepts a hex
+  // address or a known symbol name (resolved via the symbol file).
+  {
+    static char quick_bp_addr[16] = "";
+    auto add_quick_bp = [&]() {
+      if (quick_bp_addr[0] == '\0') return;
+      unsigned long addr;
+      word sym_addr = 0;
+      if (parse_hex(quick_bp_addr, &addr, 0xFFFF)) {
+        z80_add_breakpoint(static_cast<word>(addr));
+        quick_bp_addr[0] = '\0';
+      } else if (g_symfile.lookupName(quick_bp_addr, sym_addr) == 0) {
+        // Symbol name resolved to an address.
+        z80_add_breakpoint(sym_addr);
+        quick_bp_addr[0] = '\0';
+      } else {
+        imgui_toast_error("Bad breakpoint address/symbol");
+      }
+    };
+    ImGui::SetNextItemWidth(90);
+    if (ImGui::InputText("##quickbp", quick_bp_addr, sizeof(quick_bp_addr),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+      add_quick_bp();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hex address or symbol name");
+    ImGui::SameLine();
+    if (ImGui::Button("Add BP##quick")) add_quick_bp();
+  }
 
   const auto& bps = z80_list_breakpoints_ref();
   const auto& wps = z80_list_watchpoints_ref();

@@ -551,13 +551,24 @@ void imgui_render_ui() {
   }
   if (ImGui::BeginPopupModal("Confirm Quit", nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Are you sure you want to quit?");
+    // P0: warn about unsaved disk changes here, since this GUI quit path passes
+    // askIfUnsaved=false to cleanExit() and so skips the native unsaved-disk
+    // guard that the OS window-close path enforces (beads-bgs).
+    if (driveAltered()) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                         "You have unsaved changes to a disk.");
+      ImGui::TextUnformatted("Quit anyway? Those changes will be lost.");
+    } else {
+      ImGui::TextUnformatted("Are you sure you want to quit?");
+    }
     ImGui::Spacing();
-    if (ImGui::Button("Yes", ImVec2(80, 0))) {
+    if (ImGui::Button("Quit", ImVec2(90, 0))) {
       cleanExit(0, false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("No", ImVec2(80, 0))) {
+    bool cancel = ImGui::Button("Cancel", ImVec2(90, 0));
+    ImGui::SetItemDefaultFocus();  // focus the safe button by default
+    if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
         cpc_resume();
@@ -725,6 +736,34 @@ static bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
                       meta->toggle && koncpc_action_is_active(action), enabled);
   if (clicked) koncpc_menu_action(action);
   return clicked;
+}
+
+// Shared debugger step actions, so the DevTools toolbar buttons and the
+// keyboard shortcuts invoke identical behavior (beads-fa5).
+static void dbg_step_in() {
+  z80.step_in = 1;
+  z80.step_out = 0;
+  z80.step_out_addresses.clear();
+  cpc_resume();
+}
+static void dbg_step_over() {
+  z80.step_in = 0;
+  z80.step_out = 0;
+  z80.step_out_addresses.clear();
+  word pc = z80.PC.w.l;
+  if (z80_is_call_or_rst(pc)) {
+    z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
+    cpc_resume();
+  } else {
+    z80.step_in = 1;
+    cpc_resume();
+  }
+}
+static void dbg_step_out() {
+  z80.step_out = 1;
+  z80.step_out_addresses.clear();
+  z80.step_in = 0;
+  cpc_resume();
 }
 
 static void imgui_render_menubar() {
@@ -1923,8 +1962,7 @@ static void imgui_render_menu() {
 
   float bw = ImGui::GetContentRegionAvail().x;
 
-  ImGui::TextWrapped(
-      "Emulation paused. Use the menu bar above for all actions.");
+  ImGui::TextDisabled("PAUSED");
   ImGui::Spacing();
 
   // Enable keyboard navigation for this window (arrows/tab cycle buttons)
@@ -1935,14 +1973,54 @@ static void imgui_render_menu() {
   if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
     action = true;
   }
-  if (ImGui::Button("Reset (F5/R)", ImVec2(bw, 0))) {
+
+  // Quick-load actions — same handlers as the Media menu, so F1 is a real hub
+  // rather than a dead-end that points back at the menu bar.
+  ImGui::Separator();
+  if (ImGui::Button("Load Disk...", ImVec2(bw, 0))) {
+    static const SDL_DialogFileFilter f[] = {
+        {"Disk Images", "dsk;ipf;raw;zip"}};
+    SDL_ShowOpenFileDialog(
+        file_dialog_callback,
+        reinterpret_cast<void*>(
+            static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
+        mainSDLWindow, f, 1, CPC.current_dsk_path.c_str(), false);
+    action = true;
+  }
+  if (ImGui::Button("Load Tape...", ImVec2(bw, 0))) {
+    static const SDL_DialogFileFilter f[] = {{"Tape Images", "cdt;voc;zip"}};
+    SDL_ShowOpenFileDialog(
+        file_dialog_callback,
+        reinterpret_cast<void*>(
+            static_cast<intptr_t>(FileDialogAction::LoadTape)),
+        mainSDLWindow, f, 1, CPC.current_dsk_path.c_str(), false);
+    action = true;
+  }
+  if (ImGui::Button("Load Snapshot...", ImVec2(bw, 0))) {
+    static const SDL_DialogFileFilter f[] = {{"Snapshots", "sna;zip"}};
+    SDL_ShowOpenFileDialog(
+        file_dialog_callback,
+        reinterpret_cast<void*>(
+            static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
+        mainSDLWindow, f, 1, CPC.current_snap_path.c_str(), false);
+    action = true;
+  }
+  if (ImGui::Button("Options...", ImVec2(bw, 0))) {
+    imgui_state.show_options = true;
+  }
+
+  ImGui::Separator();
+  std::string reset_lbl =
+      "Reset (" + koncpc_action_shortcut(KONCPC_RESET) + ")";
+  if (ImGui::Button(reset_lbl.c_str(), ImVec2(bw, 0))) {
     emulator_reset();
     action = true;
   }
-  if (ImGui::Button("About (A)", ImVec2(bw, 0))) {
+  if (ImGui::Button("About", ImVec2(bw, 0))) {
     imgui_state.show_about = true;
   }
-  if (ImGui::Button("Quit (Q)", ImVec2(bw, 0))) {
+  std::string quit_lbl = "Quit (" + koncpc_action_shortcut(KONCPC_EXIT) + ")";
+  if (ImGui::Button(quit_lbl.c_str(), ImVec2(bw, 0))) {
     imgui_state.show_quit_confirm = true;
   }
 
@@ -1963,11 +2041,14 @@ static void imgui_render_menu() {
     ImGui::Text("Based on Caprice32 by Ulrich Doewich");
     ImGui::Spacing();
     ImGui::Text("Shortcuts:");
-    ImGui::BulletText("F1 - Menu");
-    ImGui::BulletText("Shift+F2 - DevTools");
-    ImGui::BulletText("F5 - Reset");
-    ImGui::BulletText("F10 - Quit");
-    ImGui::BulletText("F3 - Screenshot");
+    ImGui::BulletText("%s - Menu", koncpc_action_shortcut(KONCPC_GUI).c_str());
+    ImGui::BulletText("%s - DevTools",
+                      koncpc_action_shortcut(KONCPC_DEVTOOLS).c_str());
+    ImGui::BulletText("%s - Reset",
+                      koncpc_action_shortcut(KONCPC_RESET).c_str());
+    ImGui::BulletText("%s - Quit", koncpc_action_shortcut(KONCPC_EXIT).c_str());
+    ImGui::BulletText("%s - Screenshot",
+                      koncpc_action_shortcut(KONCPC_SCRNSHOT).c_str());
 #ifdef __APPLE__
     ImGui::BulletText("Cmd+K - Command Palette");
 #else
@@ -3112,41 +3193,19 @@ static void imgui_render_devtools() {
     // thread.
     bool was_paused = g_emu_paused.load(std::memory_order_relaxed);
     if (!was_paused) ImGui::BeginDisabled();
-    if (ImGui::Button("Step In")) {
-      z80.step_in = 1;
-      z80.step_out = 0;
-      z80.step_out_addresses.clear();
-      cpc_resume();
-    }
+    if (ImGui::Button("Step In")) dbg_step_in();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction (enters CALLs)");
+      ImGui::SetTooltip("Execute one instruction, entering CALLs (F7)");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Over")) {
-      z80.step_in = 0;
-      z80.step_out = 0;
-      z80.step_out_addresses.clear();
-      word pc = z80.PC.w.l;
-      if (z80_is_call_or_rst(pc)) {
-        z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
-        cpc_resume();
-      } else {
-        z80.step_in = 1;
-        cpc_resume();
-      }
-    }
+    if (ImGui::Button("Step Over")) dbg_step_over();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)");
+      ImGui::SetTooltip("Execute one instruction, over CALLs/RSTs (Shift+F7)");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Out")) {
-      z80.step_out = 1;
-      z80.step_out_addresses.clear();
-      z80.step_in = 0;
-      cpc_resume();
-    }
+    if (ImGui::Button("Step Out")) dbg_step_out();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Run until the current subroutine returns");
+      ImGui::SetTooltip("Run until the current subroutine returns (Shift+F11)");
     }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -3155,6 +3214,29 @@ static void imgui_render_devtools() {
         cpc_resume();
       else
         cpc_pause();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run / halt the CPU (F5)");
+
+    // Keyboard shortcuts for the debugger inner loop.  Active only when an
+    // ImGui (DevTools) window holds keyboard focus and no text field is being
+    // edited; the emulator skips these keys then (any_keyboard_ui_active), so
+    // there is no conflict with the F-key emulator commands (beads-fa5).
+    {
+      ImGuiIO& io = ImGui::GetIO();
+      if (io.WantCaptureKeyboard && !io.WantTextInput) {
+        if (was_paused) {
+          if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F7))
+            dbg_step_over();
+          else if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F11))
+            dbg_step_out();
+          else if (ImGui::IsKeyPressed(ImGuiKey_F7, false))
+            dbg_step_in();
+          else if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
+            cpc_resume();
+        } else if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+          cpc_pause();
+        }
+      }
     }
 
     // ── Per-window render timing ──
