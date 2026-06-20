@@ -243,7 +243,18 @@ byte* pbExpansionROM = nullptr;
 byte* pbMF2ROMbackup = nullptr;
 byte* pbMF2ROM = nullptr;
 std::vector<byte> pbTapeImage;
+// `keyboard_matrix` is the pending/authoritative key state: every writer (main
+// thread SDL/virtual keys, IPC thread, Z80-thread autotype) mutates it.
+// `keyboard_matrix_live` is the snapshot the CPC firmware actually scans; the
+// Z80 thread copies pending->live once per frame, before z80_execute(), so the
+// firmware never observes a partially-applied (multi-line) keypress.
+// `g_kbd_matrix_mutex` makes each writer's key+shift+ctrl write sequence atomic
+// with respect to that snapshot copy — without it, a scan could read a shifted
+// key's digit line before its SHIFT line and decode the unshifted glyph
+// (e.g. '1'->'&' on shifted-digit layouts).  See beads-2qg / beads-d1n.
 std::atomic<byte> keyboard_matrix[16];
+std::atomic<byte> keyboard_matrix_live[16];
+std::mutex g_kbd_matrix_mutex;
 
 std::list<SDL_Event> virtualKeyboardEvents;
 dword nextVirtualEventFrameCount, dwFrameCountOverall = 0;
@@ -612,13 +623,15 @@ byte z80_IN_handler(reg_pair port) {
               if (PSG.reg_select == 14) {      // PSG port A?
                 if (!(PSG.RegisterAY.Index[7] &
                       0x40)) {  // port A in input mode?
-                  ret_val = keyboard_matrix[CPC.keyboard_line & 0x0f].load(
+                  // Read the per-frame snapshot, not the pending matrix, so a
+                  // shifted key is always scanned with its SHIFT line set.
+                  ret_val = keyboard_matrix_live[CPC.keyboard_line & 0x0f].load(
                       std::memory_order_relaxed);  // read keyboard matrix node
                                                    // status
                 } else {
                   ret_val =
                       PSG.RegisterAY.Index[14] &
-                      (keyboard_matrix[CPC.keyboard_line & 0x0f].load(
+                      (keyboard_matrix_live[CPC.keyboard_line & 0x0f].load(
                           std::memory_order_relaxed));  // return last value w/
                                                         // logic AND of input
                 }
@@ -1419,6 +1432,8 @@ void emulator_reset() {
   CPC.cycle_count = CYCLE_COUNT_INIT;
   for (auto& row : keyboard_matrix)
     row.store(0xff, std::memory_order_relaxed);  // clear CPC keyboard matrix
+  for (auto& row : keyboard_matrix_live)
+    row.store(0xff, std::memory_order_relaxed);  // and its per-frame snapshot
   CPC.tape_motor = 0;
   CPC.tape_play_button = 0;
   CPC.printer_port = 0xff;
@@ -3717,6 +3732,22 @@ static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event,
   }
 }
 
+// Publish a consistent snapshot of the pending keyboard matrix into the live
+// matrix that the CPC firmware actually scans.  Called once per frame, before
+// z80_execute(), on whichever thread runs the emulation (the Z80 thread in GUI
+// mode, the main thread in headless mode).  Holding g_kbd_matrix_mutex makes
+// the 16-byte copy atomic with respect to any in-progress key+shift write on
+// the main/IPC threads, so the firmware never scans a shifted key without its
+// SHIFT line set ('1'->'&' on shifted-digit layouts).  See beads-2qg / beads-d1n.
+static void publish_keyboard_snapshot() {
+  std::lock_guard<std::mutex> matrix_lock(g_kbd_matrix_mutex);
+  for (int i = 0; i < 16; i++) {
+    keyboard_matrix_live[i].store(
+        keyboard_matrix[i].load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+  }
+}
+
 // Z80 emulation thread — runs z80_execute() and handles all emulation side
 // effects. Used only in non-headless (GUI) mode; headless runs the original
 // single-threaded path.
@@ -3744,6 +3775,10 @@ static void z80_thread_main() {
     }
     // About to enter z80_execute() — mark non-quiescent.
     g_z80_quiescent.store(false, std::memory_order_release);
+
+    // Publish a consistent snapshot of the pending keyboard state for this
+    // frame's firmware scan (see publish_keyboard_snapshot).
+    publish_keyboard_snapshot();
 
     // FPS counter: publish stats once per second
     {
@@ -5081,6 +5116,10 @@ int koncpc_main(int argc, char** argv) {
       }
       CPC.scr_pos =
           CPC.scr_base + dwOffset;  // update current rendering position
+
+      // Headless runs single-threaded, but the firmware still scans the live
+      // matrix — refresh it from pending each frame (uncontended here).
+      publish_keyboard_snapshot();
 
       {
         uint64_t z80Start = SDL_GetPerformanceCounter();

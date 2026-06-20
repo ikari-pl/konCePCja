@@ -1734,6 +1734,11 @@ extern dword dwFrameCountOverall;
 void applyKeypressDirect(CPCScancode cpc_key,
                          std::atomic<byte> keyboard_matrix[], bool pressed,
                          bool release_modifiers) {
+  // Hold the matrix mutex across the whole key+shift+ctrl write sequence so the
+  // per-frame snapshot copy (Z80 thread) cannot observe a half-applied keypress
+  // — otherwise a shifted key's digit line could be scanned before its SHIFT
+  // line, decoding the unshifted glyph ('1'->'&').  See beads-2qg / beads-d1n.
+  std::lock_guard<std::mutex> matrix_lock(g_kbd_matrix_mutex);
   if (pressed) {
     keyboard_matrix[static_cast<byte>(cpc_key) >> 4].fetch_and(
         ~bit_values[static_cast<byte>(cpc_key) & 7],
