@@ -351,8 +351,8 @@ void imgui_init_ui() {
   for (const auto& ma : koncpc_menu_actions()) {
     if (ma.title[0] == '\0') continue;  // skip empty entries
     std::string title = ma.title;
-    std::string shortcut = ma.shortcut ? ma.shortcut : "";
     KONCPC_KEYS action_key = ma.action;
+    std::string shortcut = koncpc_action_shortcut(action_key);
     g_command_palette.register_command(title, "", shortcut, [action_key]() {
       extern std::atomic<byte> keyboard_matrix[];
       applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix,
@@ -369,11 +369,6 @@ void imgui_init_ui() {
           cpc_resume();
         else
           cpc_pause();
-      });
-  g_command_palette.register_command(
-      "DevTools", "Open developer tools", "Shift+F2", []() {
-        imgui_state.show_devtools = !imgui_state.show_devtools;
-        if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
       });
   g_command_palette.register_command(
       "Registers", "Show CPU registers", "",
@@ -747,26 +742,15 @@ static void imgui_render_menubar() {
       imgui_state.show_options = true;
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Fullscreen", "F2")) {
-      koncpc_menu_action(KONCPC_FULLSCRN);
-    }
-    if (ImGui::MenuItem("Screenshot", "F3")) {
-      koncpc_menu_action(KONCPC_SCRNSHOT);
-    }
-    if (ImGui::MenuItem("Paste", "F11")) {
-      koncpc_menu_action(KONCPC_PASTE);
-    }
+    RenderMenuItem(KONCPC_FULLSCRN);
+    RenderMenuItem(KONCPC_SCRNSHOT);
+    RenderMenuItem(KONCPC_PASTE);
     ImGui::Separator();
-    if (ImGui::MenuItem("Reset", "F5")) {
-      emulator_reset();
-    }
+    RenderMenuItem(KONCPC_RESET);
     if (ImGui::MenuItem("About...")) {
       imgui_state.show_about = true;
     }
-    if (ImGui::MenuItem("Quit", "F10")) {
-      imgui_state.show_quit_confirm = true;
-      cpc_pause();
-    }
+    RenderMenuItem(KONCPC_EXIT);
     ImGui::EndMenu();
   }
 
@@ -823,12 +807,8 @@ static void imgui_render_menubar() {
               static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
           mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
     }
-    if (ImGui::MenuItem("Quick Save Snapshot", "Shift+F3")) {
-      koncpc_menu_action(KONCPC_SNAPSHOT);
-    }
-    if (ImGui::MenuItem("Quick Load Snapshot", "Shift+F4")) {
-      koncpc_menu_action(KONCPC_LD_SNAP);
-    }
+    RenderMenuItem(KONCPC_SNAPSHOT);
+    RenderMenuItem(KONCPC_LD_SNAP);
     ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
       static const SDL_DialogFileFilter filters[] = {
@@ -839,9 +819,7 @@ static void imgui_render_menubar() {
               static_cast<intptr_t>(FileDialogAction::LoadTape)),
           mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
     }
-    if (ImGui::MenuItem("Tape Play/Stop", "F4", false, !pbTapeImage.empty())) {
-      koncpc_menu_action(KONCPC_TAPEPLAY);
-    }
+    RenderMenuItem(KONCPC_TAPEPLAY, !pbTapeImage.empty());
     if (ImGui::MenuItem("Eject Tape", nullptr, false, !pbTapeImage.empty())) {
       tape_eject();
       CPC.tape.file.clear();
@@ -933,14 +911,7 @@ static void imgui_render_menubar() {
 
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
-    if (ImGui::MenuItem("Memory Tool")) {
-      imgui_state.show_devtools = true;
-      g_devtools_ui.toggle_window("memory_hex");
-    }
-    if (ImGui::MenuItem("DevTools", "Shift+F2")) {
-      imgui_state.show_devtools = !imgui_state.show_devtools;
-      if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
-    }
+    RenderMenuItem(KONCPC_DEVTOOLS);
     if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
       koncpc_menu_action(KONCPC_VKBD);
     }
@@ -952,10 +923,6 @@ static void imgui_render_menubar() {
 
   // ── Window ──
   if (ImGui::BeginMenu("Window")) {
-    if (ImGui::MenuItem("DevTools Toolbar", "Shift+F2",
-                        &imgui_state.show_devtools)) {
-      if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
-    }
     ImGui::MenuItem("Virtual Keyboard", "Shift+F1",
                     &imgui_state.show_vkeyboard);
     ImGui::MenuItem("Serial Terminal", nullptr,
@@ -1012,23 +979,11 @@ static void imgui_render_menubar() {
 
   // ── Options ──
   if (ImGui::BeginMenu("Options")) {
-    if (ImGui::MenuItem("Joystick Emulation", "F7",
-                        CPC.joystick_emulation != JoystickEmulation::None)) {
-      koncpc_menu_action(KONCPC_JOY);
-    }
-    if (ImGui::MenuItem("Phazer Emulation", "Shift+F7",
-                        static_cast<bool>(CPC.phazer_emulation))) {
-      koncpc_menu_action(KONCPC_PHAZER);
-    }
-    if (ImGui::MenuItem("Speed Limit", "F9", CPC.limit_speed != 0)) {
-      koncpc_menu_action(KONCPC_SPEED);
-    }
-    if (ImGui::MenuItem("Show FPS", "F8", CPC.scr_fps != 0)) {
-      koncpc_menu_action(KONCPC_FPS);
-    }
-    if (ImGui::MenuItem("Verbose Logging", "F12", log_verbose)) {
-      koncpc_menu_action(KONCPC_DEBUG);
-    }
+    RenderMenuItem(KONCPC_JOY);
+    RenderMenuItem(KONCPC_PHAZER);
+    RenderMenuItem(KONCPC_SPEED);
+    RenderMenuItem(KONCPC_FPS);
+    RenderMenuItem(KONCPC_DEBUG);
     ImGui::EndMenu();
   }
 

@@ -17,79 +17,17 @@ extern "C" void koncpc_menu_action(int action);
   NSInteger action = [sender tag];
   koncpc_menu_action(static_cast<int>(action));
 }
-@end
-
-static void applyShortcut(NSMenuItem* item, const char* shortcut) {
-  if (!shortcut || !shortcut[0]) return;
-  NSString* s = [NSString stringWithUTF8String:shortcut];
-  NSString* upper = [s uppercaseString];
-  NSEventModifierFlags mods = 0;
-  if ([upper containsString:@"SHIFT+"]) mods |= NSEventModifierFlagShift;
-  if ([upper containsString:@"CMD+"] || [upper containsString:@"COMMAND+"])
-    mods |= NSEventModifierFlagCommand;
-  if ([upper containsString:@"ALT+"] || [upper containsString:@"OPTION+"])
-    mods |= NSEventModifierFlagOption;
-  if ([upper containsString:@"CTRL+"] || [upper containsString:@"CONTROL+"])
-    mods |= NSEventModifierFlagControl;
-
-  // Extract the key part after all modifiers (everything after the last '+')
-  NSRange lastPlus = [upper rangeOfString:@"+" options:NSBackwardsSearch];
-  NSString* keyPart =
-      (lastPlus.location != NSNotFound) ? [upper substringFromIndex:lastPlus.location + 1] : upper;
-
-  unichar key = 0;
-  if ([keyPart hasPrefix:@"F"] && [keyPart length] >= 2) {
-    NSInteger fn = [[keyPart substringFromIndex:1] integerValue];
-    switch (fn) {
-      case 1:
-        key = NSF1FunctionKey;
-        break;
-      case 2:
-        key = NSF2FunctionKey;
-        break;
-      case 3:
-        key = NSF3FunctionKey;
-        break;
-      case 4:
-        key = NSF4FunctionKey;
-        break;
-      case 5:
-        key = NSF5FunctionKey;
-        break;
-      case 6:
-        key = NSF6FunctionKey;
-        break;
-      case 7:
-        key = NSF7FunctionKey;
-        break;
-      case 8:
-        key = NSF8FunctionKey;
-        break;
-      case 9:
-        key = NSF9FunctionKey;
-        break;
-      case 10:
-        key = NSF10FunctionKey;
-        break;
-      case 11:
-        key = NSF11FunctionKey;
-        break;
-      case 12:
-        key = NSF12FunctionKey;
-        break;
-      default:
-        break;
-    }
-  } else if ([keyPart isEqualToString:@"PAUSE"]) {
-    key = NSPauseFunctionKey;
+// Queried by AppKit each time the menu opens, so toggle items show a live
+// checkmark from the single source of truth instead of no state at all.
+- (BOOL)validateMenuItem:(NSMenuItem*)item {
+  const MenuAction* entry = koncpc_find_action(static_cast<KONCPC_KEYS>([item tag]));
+  if (entry != nullptr && entry->toggle) {
+    [item setState:koncpc_action_is_active(entry->action) ? NSControlStateValueOn
+                                                          : NSControlStateValueOff];
   }
-
-  if (key) {
-    NSString* ke = [NSString stringWithCharacters:&key length:1];
-    [item setKeyEquivalent:ke];
-    [item setKeyEquivalentModifierMask:mods];
-  }
+  return YES;
 }
+@end
 
 static const MenuAction* find_menu_action(KONCPC_KEYS action) {
   for (const auto& entry : koncpc_menu_actions()) {
@@ -111,12 +49,18 @@ static void add_menu_group(NSMenu* mainMenu, KoncepcjaMenuTarget* target, NSStri
     const MenuAction* entry = find_menu_action(action);
     if (!entry) continue;
     NSString* itemTitle = [NSString stringWithUTF8String:entry->title];
+    // Show the real shortcut as TEXT only (no keyEquivalent): SDL owns every
+    // key, so registering an AppKit accelerator here would double-fire the
+    // action.  The hint is derived from the live binding, so it can't drift.
+    std::string sc = koncpc_action_shortcut(entry->action);
+    if (!sc.empty()) {
+      itemTitle = [itemTitle stringByAppendingFormat:@"  (%s)", sc.c_str()];
+    }
     NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:itemTitle
                                                   action:@selector(menuAction:)
                                            keyEquivalent:@""];
     [item setTarget:target];
     [item setTag:static_cast<NSInteger>(entry->action)];
-    applyShortcut(item, entry->shortcut);
     [submenu addItem:item];
   }
 
