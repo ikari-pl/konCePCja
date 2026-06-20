@@ -6,27 +6,30 @@
 // One canonical label per action, shared by the native menu, ImGui menus, the
 // F1 popup and the command palette.
 const std::vector<MenuAction>& koncpc_menu_actions() {
+  // {action, canonical label, shortcut(derived, empty), toggle, canonical
+  // group}
   static const std::vector<MenuAction> actions = {
-      {KONCPC_GUI, "Menu", "", false},
-      {KONCPC_VKBD, "Virtual Keyboard", "", false},
-      {KONCPC_FULLSCRN, "Fullscreen", "", false},
-      {KONCPC_DEVTOOLS, "DevTools", "", true},
-      {KONCPC_SCRNSHOT, "Screenshot", "", false},
-      {KONCPC_SNAPSHOT, "Save Snapshot", "", false},
-      {KONCPC_TAPEPLAY, "Tape Play/Stop", "", false},
-      {KONCPC_LD_SNAP, "Load Snapshot", "", false},
-      {KONCPC_RESET, "Reset", "", false},
-      {KONCPC_NEXTDISKA, "Next A: Disk in ZIP", "", false},
-      {KONCPC_MF2STOP, "MF2 Stop", "", false},
-      {KONCPC_JOY, "Joystick Emulation", "", true},
-      {KONCPC_PHAZER, "Phazer Emulation", "", true},
-      {KONCPC_FPS, "Show FPS", "", true},
-      {KONCPC_SPEED, "Limit Speed", "", true},
-      {KONCPC_DEBUG, "Verbose Logging", "", true},
-      {KONCPC_EXIT, "Quit", "", false},
-      {KONCPC_PASTE, "Paste", "", false},
-      {KONCPC_DELAY, "Delay", "", false},
-      {KONCPC_WAITBREAK, "Wait Break", "", false},
+      {KONCPC_GUI, "Menu", "", false, MenuGroup::None},
+      {KONCPC_VKBD, "Virtual Keyboard", "", false, MenuGroup::Window},
+      {KONCPC_FULLSCRN, "Fullscreen", "", false, MenuGroup::View},
+      {KONCPC_DEVTOOLS, "DevTools", "", true, MenuGroup::Tools},
+      {KONCPC_SCRNSHOT, "Screenshot", "", false, MenuGroup::View},
+      {KONCPC_SNAPSHOT, "Quick Save Snapshot", "", false, MenuGroup::Media},
+      {KONCPC_TAPEPLAY, "Tape Play/Stop", "", false, MenuGroup::Media},
+      {KONCPC_LD_SNAP, "Quick Load Snapshot", "", false, MenuGroup::Media},
+      {KONCPC_RESET, "Reset", "", false, MenuGroup::Machine},
+      {KONCPC_NEXTDISKA, "Next Disk in Archive", "", false, MenuGroup::Media},
+      {KONCPC_MF2STOP, "Multiface II Stop", "", false, MenuGroup::Tools},
+      {KONCPC_JOY, "Joystick Emulation", "", true, MenuGroup::View},
+      {KONCPC_PHAZER, "Light Gun (Magnum Phaser)", "", true, MenuGroup::View},
+      {KONCPC_FPS, "Show FPS", "", true, MenuGroup::View},
+      {KONCPC_SPEED, "Limit Speed", "", true, MenuGroup::View},
+      {KONCPC_DEBUG, "Verbose Logging", "", true, MenuGroup::Tools},
+      {KONCPC_EXIT, "Quit", "", false, MenuGroup::App},
+      {KONCPC_PASTE, "Paste", "", false, MenuGroup::Edit},
+      // Scripting-only autocmd primitives — not user-facing menu items (F9).
+      {KONCPC_DELAY, "Delay", "", false, MenuGroup::None},
+      {KONCPC_WAITBREAK, "Wait Break", "", false, MenuGroup::None},
   };
   return actions;
 }

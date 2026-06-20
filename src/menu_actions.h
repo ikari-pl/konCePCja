@@ -4,6 +4,21 @@
 
 #include "keyboard.h"
 
+// Canonical top-level menu placement.  Every surface (in-window ImGui menu bar
+// AND the native macOS menu bar) renders FROM this, so the two bars can never
+// again diverge in grouping (sweep-two F2).  Taxonomy chosen in the sweep-two
+// interview: App / Machine / Edit / Media / View / Tools / Window.
+enum class MenuGroup {
+  None = 0,  // not shown in a menu (scripting-only / the F1 trigger itself)
+  App,       // macOS application menu: About, Settings, Quit
+  Machine,   // the emulated machine: Reset, ...
+  Edit,      // Paste, ...
+  Media,     // disks, tapes, cartridges, snapshots
+  View,      // run-time toggles + view actions: Limit Speed, FPS, Fullscreen...
+  Tools,     // DevTools, Command Palette, Multiface II, Diagnostics
+  Window,    // tool/debug windows, virtual keyboard
+};
+
 // Single source of truth for an emulator action's UI metadata.  The shortcut
 // hint is NOT stored here — it is derived from the live binding via
 // koncpc_action_shortcut() so labels can never drift from the real keys.
@@ -12,7 +27,8 @@ struct MenuAction {
   const char* title;     // ONE canonical label, used by every surface
   const char* shortcut;  // DEPRECATED/transitional; always "" — use
                          // koncpc_action_shortcut(action) for the real hint
-  bool toggle;  // true => the action flips a state shown as a checkmark
+  bool toggle;      // true => the action flips a state shown as a checkmark
+  MenuGroup group;  // canonical menu placement, shared by every surface
 };
 
 const std::vector<MenuAction>& koncpc_menu_actions();
