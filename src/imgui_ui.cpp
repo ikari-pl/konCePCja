@@ -3263,6 +3263,27 @@ static void imgui_render_devtools() {
     ImGui::SameLine();
     if (ImGui::Button("ASM")) g_devtools_ui.toggle_window("assembler");
 
+    // Layout controls reachable from where the windows are (beads-p0e/pv7):
+    // a rescue for windows that drifted off-screen in Classic mode, plus the
+    // docking presets that were previously only in the topbar Layout dropdown.
+    ImGui::SameLine();
+    if (ImGui::Button("Layout")) ImGui::OpenPopup("##dt_layout");
+    if (ImGui::BeginPopup("##dt_layout")) {
+      if (ImGui::MenuItem("Reset Window Positions")) {
+        g_devtools_ui.reset_window_positions();
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Apply Debug Layout")) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
+        workspace_apply_preset(WorkspacePreset::Debug);
+      }
+      if (ImGui::MenuItem("Apply IDE Layout")) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
+        workspace_apply_preset(WorkspacePreset::IDE);
+      }
+      ImGui::EndPopup();
+    }
+
     ImGui::SameLine();
     if (ImGui::Button("Export")) ImGui::OpenPopup("##dt_export");
     if (ImGui::BeginPopup("##dt_export")) {
