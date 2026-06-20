@@ -278,6 +278,13 @@ dword freq_table[MAX_FREQ_ENTRIES] = {11025, 22050, 44100, 48000, 96000};
 void set_osd_message(const std::string& message, uint32_t for_milliseconds) {
   osd_timing = SDL_GetTicks() + for_milliseconds;
   osd_message = " " + message;
+  // Unify feedback channels (beads-49l): in GUI mode also surface the message
+  // as a toast, so the same action gives consistent feedback whether it was
+  // triggered by a shortcut/menu (this OSD path) or a file dialog (which
+  // toasts directly).  Headless keeps the OSD-only behavior.
+  if (!g_headless) {
+    ui_host().toast(UiToastLevel::Info, message);
+  }
 }
 
 double colours_rgb[32][3] = {
