@@ -780,21 +780,24 @@ static void imgui_render_menubar() {
     s_topbar_height_dirty = true;
   }
 
-  // ── Emulator ──
-  if (ImGui::BeginMenu("Emulator")) {
-    if (ImGui::MenuItem("Options...")) {
+  // ── konCePCja ──
+  if (ImGui::BeginMenu("konCePCja")) {
+    if (ImGui::MenuItem("About konCePCja")) {
+      imgui_state.show_about = true;
+    }
+    if (ImGui::MenuItem("Settings...")) {
       imgui_state.show_options = true;
     }
     ImGui::Separator();
-    RenderMenuItem(KONCPC_FULLSCRN);
-    RenderMenuItem(KONCPC_SCRNSHOT);
-    RenderMenuItem(KONCPC_PASTE);
-    ImGui::Separator();
     RenderMenuItem(KONCPC_RESET);
-    if (ImGui::MenuItem("About...")) {
-      imgui_state.show_about = true;
-    }
+    ImGui::Separator();
     RenderMenuItem(KONCPC_EXIT);
+    ImGui::EndMenu();
+  }
+
+  // ── Edit ──
+  if (ImGui::BeginMenu("Edit")) {
+    RenderMenuItem(KONCPC_PASTE);
     ImGui::EndMenu();
   }
 
@@ -835,30 +838,6 @@ static void imgui_render_menubar() {
           mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Load Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
-          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
-    }
-    if (ImGui::MenuItem("Save Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
-          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
-    }
-    // beads-5aa: group the default-slot quick snapshot actions so their labels
-    // (which read like speed adjectives in isolation) are clearly about the
-    // default slot. Canonical labels live in menu_actions.cpp (not edited).
-    ImGui::Separator();
-    ImGui::TextDisabled("Default slot");
-    RenderMenuItem(KONCPC_SNAPSHOT);
-    RenderMenuItem(KONCPC_LD_SNAP);
-    ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
       static const SDL_DialogFileFilter filters[] = {
           {"Tape Images", "cdt;voc;zip"}};
@@ -884,6 +863,30 @@ static void imgui_render_menubar() {
               static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
           mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
     }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Load Snapshot...")) {
+      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna;zip"}};
+      SDL_ShowOpenFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
+          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
+    }
+    if (ImGui::MenuItem("Save Snapshot...")) {
+      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna"}};
+      SDL_ShowSaveFileDialog(
+          file_dialog_callback,
+          reinterpret_cast<void*>(
+              static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
+          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
+    }
+    // beads-5aa: group the default-slot quick snapshot actions so their labels
+    // (which read like speed adjectives in isolation) are clearly about the
+    // default slot. Canonical labels live in menu_actions.cpp (not edited).
+    RenderMenuItem(KONCPC_SNAPSHOT);
+    RenderMenuItem(KONCPC_LD_SNAP);
+    ImGui::Separator();
+    RenderMenuItem(KONCPC_NEXTDISKA);
 
     // ── Open Recent submenu ──
     bool has_any_mru = !CPC.mru_disks.empty() || !CPC.mru_tapes.empty() ||
@@ -958,25 +961,38 @@ static void imgui_render_menubar() {
     ImGui::EndMenu();
   }
 
+  // ── View ──
+  if (ImGui::BeginMenu("View")) {
+    RenderMenuItem(KONCPC_FULLSCRN);
+    RenderMenuItem(KONCPC_SCRNSHOT);
+    RenderMenuItem(KONCPC_FPS);
+    ImGui::EndMenu();
+  }
+
+  // ── Input ──
+  if (ImGui::BeginMenu("Input")) {
+    RenderMenuItem(KONCPC_JOY);
+    RenderMenuItem(KONCPC_PHAZER);
+    RenderMenuItem(KONCPC_SPEED);
+    ImGui::EndMenu();
+  }
+
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
     RenderMenuItem(KONCPC_DEVTOOLS);
     // beads-qnf: surface the Cmd+K command palette (previously only mentioned
     // in the About box) as a discoverable menu entry.
-    if (ImGui::MenuItem("Command Palette...", "Cmd+K")) {
+    if (ImGui::MenuItem("Command Palette", "Cmd+K")) {
       g_command_palette.open();
     }
-    if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
-      koncpc_menu_action(KONCPC_VKBD);
-    }
-    if (ImGui::MenuItem("MF2 Stop", "F6")) {
-      koncpc_menu_action(KONCPC_MF2STOP);
-    }
+    RenderMenuItem(KONCPC_MF2STOP);
     // beads-41p: developer/diagnostics group — Verbose Logging moved here from
     // the Options menu (where it sat among player toggles).
     ImGui::Separator();
-    ImGui::TextDisabled("Diagnostics");
-    RenderMenuItem(KONCPC_DEBUG);
+    if (ImGui::BeginMenu("Diagnostics")) {
+      RenderMenuItem(KONCPC_DEBUG);
+      ImGui::EndMenu();
+    }
     ImGui::EndMenu();
   }
 
@@ -1033,17 +1049,6 @@ static void imgui_render_menubar() {
     ImGui::MenuItem("Recording Controls", nullptr,
                     g_devtools_ui.window_ptr("recording_controls"));
 
-    ImGui::EndMenu();
-  }
-
-  // ── Options ──
-  if (ImGui::BeginMenu("Options")) {
-    RenderMenuItem(KONCPC_JOY);
-    RenderMenuItem(KONCPC_PHAZER);
-    RenderMenuItem(KONCPC_SPEED);
-    RenderMenuItem(KONCPC_FPS);
-    // beads-41p: KONCPC_DEBUG (Verbose Logging) relocated to Tools >
-    // Diagnostics.
     ImGui::EndMenu();
   }
 

@@ -10,11 +10,11 @@
 // interview: App / Machine / Edit / Media / View / Tools / Window.
 enum class MenuGroup {
   None = 0,  // not shown in a menu (scripting-only / the F1 trigger itself)
-  App,       // macOS application menu: About, Settings, Quit
-  Machine,   // the emulated machine: Reset, ...
+  App,       // application menu (named konCePCja): About, Settings, Reset, Quit
   Edit,      // Paste, ...
   Media,     // disks, tapes, cartridges, snapshots
-  View,      // run-time toggles + view actions: Limit Speed, FPS, Fullscreen...
+  View,      // display actions: Fullscreen, Screenshot, Show FPS
+  Input,     // input/emulation toggles: Joystick, Light Gun, Limit Speed
   Tools,     // DevTools, Command Palette, Multiface II, Diagnostics
   Window,    // tool/debug windows, virtual keyboard
 };
