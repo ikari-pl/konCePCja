@@ -3738,7 +3738,7 @@ static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event,
 // mode, the main thread in headless mode).  Holding g_kbd_matrix_mutex makes
 // the 16-byte copy atomic with respect to any in-progress key+shift write on
 // the main/IPC threads, so the firmware never scans a shifted key without its
-// SHIFT line set ('1'->'&' on shifted-digit layouts).  See beads-2qg / beads-d1n.
+// SHIFT line set ('1'->'&' on shifted-digit layouts).  See beads-2qg/d1n.
 static void publish_keyboard_snapshot() {
   std::lock_guard<std::mutex> matrix_lock(g_kbd_matrix_mutex);
   for (int i = 0; i < 16; i++) {

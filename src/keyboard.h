@@ -11,9 +11,10 @@
 #include "types.h"
 
 // Double-buffered CPC keyboard matrix (see kon_cpc_ja.cpp for rationale).
-// keyboard_matrix       = pending/authoritative state written by all key sources
-// keyboard_matrix_live  = per-frame snapshot the firmware scans (Z80 thread)
-// g_kbd_matrix_mutex     = serialises a writer's multi-line keypress vs the snapshot
+//   keyboard_matrix      - pending state written by all key sources
+//   keyboard_matrix_live - per-frame snapshot the firmware scans (Z80 thread)
+//   g_kbd_matrix_mutex    - makes a writer's multi-line keypress atomic vs the
+//                           snapshot copy
 extern std::atomic<byte> keyboard_matrix[16];
 extern std::atomic<byte> keyboard_matrix_live[16];
 extern std::mutex g_kbd_matrix_mutex;
