@@ -787,6 +787,23 @@ static void dbg_step_out() {
   cpc_resume();
 }
 
+// Apply a window-scale choice (0 = Fit window, 1..4 = 1x/1.5x/2x/3x): set
+// CPC.scr_scale and resize the SDL window to match.  Shared by the Settings
+// Video tab's Scale combo and the View > Scale menu so the two can't drift.
+static void apply_scr_scale(int scale_idx) {
+  if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
+  CPC.scr_scale = scale_idx;
+  if (scale_idx > 0 && mainSDLWindow) {
+    static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
+    float f = sf[scale_idx];
+    int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
+    int new_h = CPC.scr_crt_aspect ? static_cast<int>(new_w * 3.f / 4.f)
+                                   : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+    new_h += video_get_topbar_height() + video_get_bottombar_height();
+    SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
+  }
+}
+
 static void imgui_render_menubar() {
   if (!ImGui::BeginMainMenuBar()) return;
 
@@ -1001,6 +1018,51 @@ static void imgui_render_menubar() {
   // ── View ──
   if (ImGui::BeginMenu("View")) {
     RenderMenuItem(KONCPC_FULLSCRN);
+
+    // Scale ▸ — window scale factor (mirrors Settings ▸ Video ▸ Scale, same
+    // apply path via apply_scr_scale).  Checkmark on the current factor.
+    if (ImGui::BeginMenu("Scale")) {
+      static const char* kScaleLabels[] = {"Fit window", "1x", "1.5x", "2x",
+                                           "3x"};
+      for (int i = 0; i < IM_ARRAYSIZE(kScaleLabels); i++) {
+        if (ImGui::MenuItem(kScaleLabels[i], nullptr, CPC.scr_scale == i)) {
+          apply_scr_scale(i);
+        }
+      }
+      ImGui::EndMenu();
+    }
+
+    // Renderer ▸ — video plugin (mirrors Settings ▸ Video ▸ Video Plugin),
+    // grouped GPU/CPU exactly like the combo so the two stay in sync.
+    if (ImGui::BeginMenu("Renderer")) {
+      const char* prev_group = nullptr;
+      for (size_t i = 0; i < video_plugin_list.size(); i++) {
+        if (video_plugin_list[i].hidden) continue;
+        const char* name = video_plugin_list[i].name;
+        const char* group;
+        if (strncmp(name, "CRT", 3) == 0)
+          group = "GPU — CRT Shaders";
+        else if (strcmp(name, "Direct") == 0 ||
+                 strcmp(name, "Direct (SDL)") == 0 ||
+                 strcmp(name, "OpenGL scaling") == 0)
+          group = "GPU — Direct";
+        else
+          group = "CPU — Software Scalers";
+        if (!prev_group || strcmp(prev_group, group) != 0) {
+          ImGui::SeparatorText(group);
+          prev_group = group;
+        }
+        bool selected =
+            (static_cast<int>(i) == static_cast<int>(CPC.scr_style));
+        if (ImGui::MenuItem(name, nullptr, selected)) {
+          CPC.scr_style = static_cast<int>(i);
+          imgui_state.video_reinit_pending = true;
+        }
+      }
+      ImGui::EndMenu();
+    }
+
+    ImGui::Separator();
     RenderMenuItem(KONCPC_SCRNSHOT);
     RenderMenuItem(KONCPC_FPS);
     ImGui::EndMenu();
@@ -2491,20 +2553,7 @@ static void imgui_render_options() {
       if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
       if (ImGui::Combo("Scale", &scale_idx, scale_items,
                        IM_ARRAYSIZE(scale_items))) {
-        CPC.scr_scale = scale_idx;
-        // Resize window to fit the chosen scale (+ bars)
-        if (scale_idx > 0 && mainSDLWindow) {
-          static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
-          float f = (scale_idx < static_cast<int>(sizeof(sf) / sizeof(sf[0])))
-                        ? sf[scale_idx]
-                        : 1.f;
-          int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-          int new_h = CPC.scr_crt_aspect
-                          ? static_cast<int>(new_w * 3.f / 4.f)
-                          : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
-          new_h += video_get_topbar_height() + video_get_bottombar_height();
-          SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
-        }
+        apply_scr_scale(scale_idx);
       }
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
