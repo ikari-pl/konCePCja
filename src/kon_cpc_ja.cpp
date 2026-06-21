@@ -2196,6 +2196,13 @@ int video_init() {
   // plugins never touch the GPU device.  video_shutdown() still calls
   // video_gpu_shutdown() as a safety net (no-op when device is null).
 
+  // Triple-buffer the CPC frame so the Z80 thread never blocks on render.  Only
+  // the threaded (GUI) path uses the ring; the headless fallback is
+  // single-threaded and keeps writing the plugin's single surface directly.
+  if (!g_headless) {
+    back_surface = video_ring_init(back_surface);
+  }
+
   {
     const SDL_PixelFormatDetails* fmt =
         SDL_GetPixelFormatDetails(back_surface->format);
@@ -2238,6 +2245,8 @@ void video_shutdown() {
   // SDLGPU3 and other device-dependent state before the GPU device
   // itself is destroyed.  For non-GPU plugins the order is irrelevant
   // (video_gpu_shutdown is a no-op when the device was never created).
+  video_ring_shutdown();  // free ring write buffers before the plugin frees its
+                          // front-end surface (restyle re-allocates the ring)
   vid_plugin->close();
   video_gpu_shutdown();  // safety net — idempotent no-op after plugin close
 }
@@ -3067,8 +3076,12 @@ void loadBreakpoints() {
 }
 
 bool dumpScreenTo(const std::string& path) {
-  if (!back_surface) return false;
-  if (SDL_SavePNG(back_surface, path)) {
+  // Read the displayed (published) frame, not the Z80's live write buffer.
+  // Falls back to back_surface in headless mode (ring inactive → null).
+  SDL_Surface* surf = video_render_surface();
+  if (!surf) surf = back_surface;
+  if (!surf) return false;
+  if (SDL_SavePNG(surf, path)) {
     LOG_ERROR("Could not write screenshot file to " + path);
     return false;
   }
@@ -4161,18 +4174,23 @@ static void z80_thread_main() {
         imgui_state.topbar_fps.clear();
       }
 
-      // Finalise back_surface (ASIC sprites must be drawn before handoff to
-      // render)
+      // Finalise the write buffer (ASIC sprites must be drawn before publish)
+      // then publish it to the ring and advance back_surface to a free buffer.
+      // The Z80 keeps writing the new buffer; the render thread reads the
+      // published one.  On a skipped frame nothing is published (the previous
+      // frame stays current) and the same write buffer is reused next frame.
       if (!CPC.skip_rendering) {
         asic_draw_sprites();
+        back_surface = video_ring_publish();
       }
 
-      // Hand back_surface to render thread; block until Phase A (texture
-      // upload) done. Phase B (SDL_GL_SwapWindow, 0-60ms) runs concurrently
-      // with the next Z80 frame.
-      g_frame_signal.signal_ready(CPC.skip_rendering);
+      // Wake the render thread (it reads the latest published buffer) WITHOUT
+      // blocking: the triple-buffer ring gives the Z80 a free buffer to write,
+      // so it never waits for render.  render-wait now measures ~0 (the
+      // coupling this refactor removes).  The render thread reads
+      // g_ring_published and drops intermediate frames if it falls behind.
       uint64_t render_wait_t0 = SDL_GetPerformanceCounter();
-      g_frame_signal.wait_consumed();
+      g_frame_signal.signal_ready(CPC.skip_rendering);
       s_render_wait_accum += SDL_GetPerformanceCounter() - render_wait_t0;
     }
   }
@@ -4960,9 +4978,14 @@ int koncpc_main(int argc, char** argv) {
           // Frame handshake untouched; fall through to the next main-loop
           // iteration so SDL events (window close, etc.) get processed.
         } else if (!skip) {
-          // OSD text — render thread owns osd_message/osd_timing, no race
+          // Copy the latest published frame into the surface the flip reads.
+          video_ring_present();
+          // OSD text — render thread owns osd_message/osd_timing, no race.
+          // Write onto the presented frame (video_render_surface()), not the
+          // Z80's live write buffer.
           if (SDL_GetTicks() < osd_timing) {
-            print(static_cast<byte*>(back_surface->pixels) + CPC.scr_line_offs,
+            print(static_cast<byte*>(video_render_surface()->pixels) +
+                      CPC.scr_line_offs,
                   osd_message.c_str(), true);
           }
           uint64_t displayStart = SDL_GetPerformanceCounter();
@@ -4981,14 +5004,14 @@ int koncpc_main(int argc, char** argv) {
           // Main-thread-only housekeeping (after releasing back_surface to Z80)
           if (g_m4_http.is_running()) g_m4_http.drain_pending();
 #ifdef __APPLE__
-          // Capture while Z80 is still blocked (between signal_consumed and
-          // next wait_ready) — safe without atomics due to condvar
-          // happens-before.
+          // Dock preview reads the just-presented frame (render-thread-private
+          // after video_ring_present's copy), NOT the Z80's live write buffer.
           dword frame_count_snap = dwFrameCountOverall;
-          if (back_surface && (frame_count_snap % 50) == 0) {
+          SDL_Surface* preview_surf = video_render_surface();
+          if (preview_surf && (frame_count_snap % 50) == 0) {
             koncpc_update_dock_icon_preview(
-                back_surface->pixels, back_surface->w, back_surface->h,
-                back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
+                preview_surf->pixels, preview_surf->w, preview_surf->h,
+                preview_surf->pitch, 0, 0, preview_surf->w, preview_surf->h);
           }
 #endif
           // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread),

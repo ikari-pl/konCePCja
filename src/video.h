@@ -124,6 +124,21 @@ bool video_load_rgba_thumbnail(const std::string& path,
                                std::vector<unsigned char>& rgba, int& w,
                                int& h);
 
+// ── Triple-buffered CPC frame ring (decouples Z80 from render thread) ────────
+// Allocate the ring around the plugin's front-end surface (the Z80's write
+// target).  Returns the Z80's initial write surface (assign to back_surface).
+SDL_Surface* video_ring_init(SDL_Surface* frontend);
+// Z80 thread: publish the current write buffer, advance to a free buffer, and
+// return the new write surface (assign to back_surface).
+SDL_Surface* video_ring_publish();
+// Render thread: lease + copy the latest published buffer into the front-end
+// surface the flip reads.  Call before OSD text + video_display().
+void video_ring_present();
+// The displayed front-end surface (for OSD text, screenshots, dock preview).
+SDL_Surface* video_render_surface();
+// Free the ring's write buffers (called from video_shutdown / restyle).
+void video_ring_shutdown();
+
 // Request a window screenshot (CPC display + ImGui overlay).
 // Sets path; capture happens on the next rendered frame.
 void video_request_window_screenshot(const std::string& path);

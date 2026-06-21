@@ -100,6 +100,101 @@ static int bottombar_height = 0;
 extern t_CPC CPC;
 extern video_plugin* vid_plugin;
 
+// ── Triple-buffered CPC frame ring (decouples Z80 from render) ───────────────
+// One writer (Z80 thread) and one reader (render thread).  The Z80 renders each
+// frame into its private write buffer (back_surface == g_cpc_ring[g_ring_write])
+// and publishes it without blocking.  The render thread copies the latest
+// published buffer into the plugin's stable front-end surface (g_frontend, i.e.
+// the `vid`/`pub` surface every flip already reads) and uploads as before.  The
+// copy is a sub-millisecond same-format blit on the render thread — never on the
+// Z80 critical path — so emulation pacing is untouched.  Three buffers guarantee
+// the Z80 always has a free buffer to write that is neither published nor leased
+// by the render thread, so it never overwrites a frame being read.
+static SDL_Surface* g_frontend = nullptr;        // plugin CPC source = copy dest
+static SDL_Surface* g_cpc_ring[3] = {nullptr, nullptr, nullptr};
+static std::atomic<int> g_ring_published{0};     // latest complete frame index
+static std::atomic<int> g_ring_lease{0};         // index the render thread reads
+static int g_ring_write = 0;                      // Z80-thread-private write index
+static bool g_ring_active = false;
+
+// Called once from video_init() after the plugin's surface exists.  `frontend`
+// is the plugin's CPC source surface (the Z80's historical write target).  We
+// keep it as the render-private copy destination and allocate three matching
+// write buffers.  Returns the Z80's initial write surface.
+SDL_Surface* video_ring_init(SDL_Surface* frontend) {
+  video_ring_shutdown();  // free any prior ring (restyle path)
+  if (!frontend) return frontend;
+  g_frontend = frontend;
+  SDL_Palette* pal = SDL_GetSurfacePalette(frontend);
+  for (int i = 0; i < 3; ++i) {
+    g_cpc_ring[i] =
+        SDL_CreateSurface(frontend->w, frontend->h, frontend->format);
+    if (!g_cpc_ring[i]) {
+      LOG_ERROR("video_ring_init: SDL_CreateSurface failed: " << SDL_GetError());
+      // Degrade gracefully to single-buffer: free any partial ring but keep
+      // g_frontend so video_render_surface() stays valid (== back_surface).
+      for (int j = 0; j < 3; ++j) {
+        if (g_cpc_ring[j]) {
+          SDL_DestroySurface(g_cpc_ring[j]);
+          g_cpc_ring[j] = nullptr;
+        }
+      }
+      g_ring_active = false;
+      return frontend;
+    }
+    if (pal) SDL_SetSurfacePalette(g_cpc_ring[i], pal);
+  }
+  g_ring_write = 0;
+  g_ring_published.store(0, std::memory_order_relaxed);
+  g_ring_lease.store(0, std::memory_order_relaxed);
+  g_ring_active = true;
+  return g_cpc_ring[0];
+}
+
+// Z80 thread, at frame boundary: publish the just-written buffer and advance to
+// a free buffer (one that is neither published nor render-leased).  Returns the
+// new write surface; the caller assigns back_surface to it.
+SDL_Surface* video_ring_publish() {
+  if (!g_ring_active) return g_frontend;
+  int w = g_ring_write;
+  g_ring_published.store(w, std::memory_order_release);
+  int lease = g_ring_lease.load(std::memory_order_acquire);
+  int next = w;
+  for (int i = 0; i < 3; ++i) {
+    if (i != w && i != lease) {
+      next = i;
+      break;
+    }
+  }
+  g_ring_write = next;
+  return g_cpc_ring[next];
+}
+
+// Render thread, before the flip: take a read-lease on the latest published
+// buffer and copy it into the stable front-end surface the flip reads.
+void video_ring_present() {
+  if (!g_ring_active) return;
+  int p = g_ring_published.load(std::memory_order_acquire);
+  g_ring_lease.store(p, std::memory_order_release);
+  SDL_BlitSurface(g_cpc_ring[p], nullptr, g_frontend, nullptr);
+}
+
+// The surface the render thread should read/write for the displayed frame
+// (OSD text, screenshots, dock preview, thumbnails).  Equals the plugin's
+// front-end surface, now holding the most-recently-presented frame.
+SDL_Surface* video_render_surface() { return g_frontend; }
+
+void video_ring_shutdown() {
+  for (int i = 0; i < 3; ++i) {
+    if (g_cpc_ring[i]) {
+      SDL_DestroySurface(g_cpc_ring[i]);
+      g_cpc_ring[i] = nullptr;
+    }
+  }
+  g_frontend = nullptr;
+  g_ring_active = false;
+}
+
 // Window screenshot: set a pending path for capture by the main thread.
 // The capture happens in direct_flip() after ImGui is rendered.
 #include <mutex>
