@@ -568,12 +568,15 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  // IMMEDIATE, not VSYNC: a vsync-locked Metal swapchain acquire blocks for
-  // hundreds of ms to seconds over remote desktop (no real refresh), and ImGui
-  // viewport windows inherit this mode — the dominant cause of the multi-second
-  // UI stalls. Emulation is paced by the wall-clock limiter, not present, so
-  // vsync isn't needed for timing. (To be made configurable: video.vsync.)
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
+  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -2748,12 +2751,15 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  // IMMEDIATE, not VSYNC: a vsync-locked Metal swapchain acquire blocks for
-  // hundreds of ms to seconds over remote desktop (no real refresh), and ImGui
-  // viewport windows inherit this mode — the dominant cause of the multi-second
-  // UI stalls. Emulation is paced by the wall-clock limiter, not present, so
-  // vsync isn't needed for timing. (To be made configurable: video.vsync.)
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
+  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
