@@ -4312,6 +4312,27 @@ bool render_one_frame() {
   return false;
 }
 
+// Phase 2: present the latest published frame from a native-menu tracking
+// driver (macos_menu.mm CFRunLoopTimer in NSEventTrackingRunLoopMode).  A native
+// NSMenu suspends the main loop, but the Z80 keeps producing frames (decoupled),
+// so this tick just copies the newest published buffer to the screen — NO event
+// pump, NO blocking wait, NO sleep (the tracking run loop owns event dispatch).
+// Re-entrancy-guarded: video_display() may spin the run loop internally, which
+// could re-fire the timer; the guard turns that into a no-op so we never start a
+// second ImGui frame on top of an in-flight one.
+void koncpc_render_tracking_tick() {
+  if (g_headless) return;
+  static bool s_in_tick = false;  // main-thread only
+  if (s_in_tick) return;
+  s_in_tick = true;
+  if (!g_emu_paused.load(std::memory_order_relaxed)) {
+    video_ring_present();  // newest published frame → the surface flip reads
+  }
+  video_display();    // Phase A: upload + ImGui (incl. viewport windows)
+  video_display_b();  // Phase B
+  s_in_tick = false;
+}
+
 int koncpc_main(int argc, char** argv) {
   // Remember the main thread — cleanExit() uses this to route IPC/HTTP/
   // telnet-initiated quits through SDL_EVENT_QUIT instead of letting an

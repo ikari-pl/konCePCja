@@ -406,11 +406,64 @@ extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSM
   }
 }
 
+// ── Live display while a native menu is open (Phase 2) ──────────────────────
+// A native NSMenu runs a modal tracking loop in NSEventTrackingRunLoopMode on
+// the main thread, suspending our main render loop — so the display would freeze
+// while a menu is held open.  The Z80 keeps running (decoupled from render), so
+// we register a repeating CFRunLoopTimer IN THAT MODE whose callback presents
+// the latest emulated frame.  Started on NSMenuDidBeginTracking, stopped on
+// NSMenuDidEndTracking; a depth counter handles nested submenus.
+void koncpc_render_tracking_tick();  // defined in kon_cpc_ja.cpp
+
+static int g_menu_track_depth = 0;             // nested begin/end (submenus)
+static CFRunLoopTimerRef g_track_timer = NULL;  // live only during tracking
+
+static void koncpc_track_timer_cb(CFRunLoopTimerRef, void*) {
+  koncpc_render_tracking_tick();
+}
+
+static void koncpc_menu_track_begin() {
+  if (g_menu_track_depth++ != 0) return;  // already inside a tracking session
+  if (g_track_timer) return;
+  // ~60 Hz tick; the ring present is cheap and idempotent if no new frame.
+  g_track_timer = CFRunLoopTimerCreate(
+      kCFAllocatorDefault, CFAbsoluteTimeGetCurrent(), 1.0 / 60.0, 0, 0,
+      koncpc_track_timer_cb, NULL);
+  CFRunLoopAddTimer(CFRunLoopGetCurrent(), g_track_timer,
+                    (__bridge CFStringRef)NSEventTrackingRunLoopMode);
+}
+
+static void koncpc_menu_track_end() {
+  if (g_menu_track_depth > 0) g_menu_track_depth--;
+  if (g_menu_track_depth != 0) return;  // still inside a nested submenu
+  if (g_track_timer) {
+    CFRunLoopTimerInvalidate(g_track_timer);
+    CFRelease(g_track_timer);
+    g_track_timer = NULL;
+  }
+}
+
+static void koncpc_register_menu_tracking_observers() {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
+    [nc addObserverForName:NSMenuDidBeginTrackingNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification*) { koncpc_menu_track_begin(); }];
+    [nc addObserverForName:NSMenuDidEndTrackingNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification*) { koncpc_menu_track_end(); }];
+  });
+}
+
 void koncpc_setup_macos_menu() {
   @autoreleasepool {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
     koncpc_install_emulator_menu([NSApp mainMenu]);
+    koncpc_register_menu_tracking_observers();
   }
 }
 
