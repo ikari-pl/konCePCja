@@ -3787,6 +3787,9 @@ static void publish_keyboard_snapshot() {
 static void z80_thread_main() {
   dword iExitCondition = EC_FRAME_COMPLETE;
   static int consecutive_skips = 0;
+  // U1 baseline: ticks per second the Z80 spends blocked in wait_consumed()
+  // waiting for the render thread — the coupling this refactor removes.
+  static uint64_t s_render_wait_accum = 0;
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
@@ -3811,13 +3814,26 @@ static void z80_thread_main() {
         dwFrameCount = 0;
         perfTicksTargetFPS = perfNow + perfFreq;
 
+        // U1 baseline: average time/frame the Z80 was blocked in
+        // wait_consumed() waiting for render, and the % of wall-clock spent
+        // blocked. Both fall to ~0 once the Z80 no longer waits on render.
+        double render_wait_ms =
+            dwFPS ? static_cast<double>(s_render_wait_accum) * 1000.0 /
+                        static_cast<double>(perfFreq) / dwFPS
+                  : 0.0;
+        double render_wait_pct = static_cast<double>(s_render_wait_accum) *
+                                 100.0 / static_cast<double>(perfFreq);
+        s_render_wait_accum = 0;
+
         // Opt-in once-per-second FPS log (run with --fps, or --debug) — a
         // passive, tail-able steady-FPS readout that doesn't perturb the
         // emulation the way an IPC `wait vbl` probe does.
         if (g_log_fps || g_debug) {
           printf(
-              "[fps] %3u FPS  %3u%% speed\n", dwFPS,
-              dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS));
+              "[fps] %3u FPS  %3u%% speed  | render-wait %.1f ms/f (%2.0f%%)\n",
+              dwFPS,
+              dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS),
+              render_wait_ms, render_wait_pct);
           fflush(stdout);
         }
 
@@ -4155,7 +4171,9 @@ static void z80_thread_main() {
       // upload) done. Phase B (SDL_GL_SwapWindow, 0-60ms) runs concurrently
       // with the next Z80 frame.
       g_frame_signal.signal_ready(CPC.skip_rendering);
+      uint64_t render_wait_t0 = SDL_GetPerformanceCounter();
       g_frame_signal.wait_consumed();
+      s_render_wait_accum += SDL_GetPerformanceCounter() - render_wait_t0;
     }
   }
 }
