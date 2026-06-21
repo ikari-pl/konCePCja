@@ -4195,6 +4195,123 @@ static void z80_thread_main() {
   }
 }
 
+// One iteration of the GUI render path (non-headless).  Pulls the latest
+// published frame and presents it (or shows the paused overlay), pumping SDL
+// events while waiting so the macOS run loop stays alive.  Extracted so it can
+// be driven both from the main loop and (Phase 2) from a CADisplayLink/run-loop
+// tick during native-menu tracking.  Returns true if the caller should skip the
+// rest of its loop iteration (the quit path, which must not run the deferred
+// video-reinit check).
+bool render_one_frame() {
+  if (g_emu_paused.load(std::memory_order_relaxed)) {
+    // Paused overlay: render ImGui without waiting for a frame signal
+    video_display();
+    video_display_b();
+    video_take_pending_window_screenshot();
+    if (g_m4_http.is_running()) g_m4_http.drain_pending();
+    std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+    return false;
+  }
+  // Poll for the Z80 frame signal, pumping SDL events between attempts.
+  // On macOS+Metal the Cocoa run loop must stay alive for CADisplayLink
+  // and drawable-completion callbacks to fire; a bare condvar wait
+  // starves it, causing SDL_RenderPresent / SDL_GL_SwapWindow to hang
+  // indefinitely for video styles that spend time in Phase A before the
+  // GPU call (CRT Basic/Full with GL shaders, SDL swscale with pixel
+  // filters).
+  bool skip = false;
+  while (!g_frame_signal.try_wait_ready_for(1, skip)) {
+    SDL_PumpEvents();  // keep macOS/Metal run loop alive
+    // Escape hatch: if the emulator got paused (e.g. focus loss /
+    // auto_pause, IPC pause) or a quit was requested while we were
+    // waiting, the Z80 thread stops producing frames and this loop
+    // would spin forever — SDL_PumpEvents() only enqueues events, so
+    // the window-close handler (SDL_PollEvent at the top of the loop)
+    // never runs and the app looks frozen.  Bail to the outer loop,
+    // which re-reads g_emu_paused and takes the paused-overlay branch
+    // that both pumps AND polls events.
+    if (g_emu_paused.load(std::memory_order_relaxed) ||
+        g_z80_thread_quit.load(std::memory_order_relaxed)) {
+      return false;
+    }
+  }
+  if (skip) {
+    // Skipped frame: nothing to present this time; just service pending
+    // screenshot requests.  (No handshake to release — the ring decoupled
+    // the Z80 from render.)
+    video_take_pending_window_screenshot();
+    if (g_take_screenshot) {
+      dumpScreen();
+      g_take_screenshot = false;
+    }
+    return false;
+  }
+  // Copy the latest published frame into the surface the flip reads.
+  video_ring_present();
+  // OSD text — render thread owns osd_message/osd_timing, no race.
+  // Write onto the presented frame (video_render_surface()), not the
+  // Z80's live write buffer.
+  if (SDL_GetTicks() < osd_timing) {
+    print(static_cast<byte*>(video_render_surface()->pixels) + CPC.scr_line_offs,
+          osd_message.c_str(), true);
+  }
+  uint64_t displayStart = SDL_GetPerformanceCounter();
+  video_display();  // Phase A: texture upload + ImGui render (~3ms)
+  // Partial audio push before Phase B stall
+  {
+    int partial = static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
+    if (!g_emu_paused.load() && partial > 0) {
+      audio_push_buffer(pbSndBuffer.get(), partial);
+      CPC.snd_bufferptr = pbSndBuffer.get();
+    }
+  }
+  // (The Z80 never waited on us — the ring decoupled the threads — so there is
+  // nothing to release here; it has been producing frames the whole time.)
+  // Main-thread-only housekeeping
+  if (g_m4_http.is_running()) g_m4_http.drain_pending();
+#ifdef __APPLE__
+  // Dock preview reads the just-presented frame (render-thread-private
+  // after video_ring_present's copy), NOT the Z80's live write buffer.
+  dword frame_count_snap = dwFrameCountOverall;
+  SDL_Surface* preview_surf = video_render_surface();
+  if (preview_surf && (frame_count_snap % 50) == 0) {
+    koncpc_update_dock_icon_preview(preview_surf->pixels, preview_surf->w,
+                                    preview_surf->h, preview_surf->pitch, 0, 0,
+                                    preview_surf->w, preview_surf->h);
+  }
+#endif
+  // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread), skip
+  // video_display_b() which hangs indefinitely for OpenGL styles (7-19).  The
+  // Z80 loop has seen the quit flag and will exit; on the next main-loop
+  // iteration SDL_EVENT_QUIT will reach the event handler and doCleanUp() joins
+  // the (already-exited) Z80 thread.  Signal the caller to skip its tail.
+  if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
+    return true;
+  }
+  video_display_b();  // Phase B: 0-60ms, Z80 runs concurrently!
+  uint64_t displayEnd = SDL_GetPerformanceCounter();
+  displayTimeAccum.fetch_add(displayEnd - displayStart,
+                             std::memory_order_relaxed);
+  if (audio_stream && CPC.snd_ready) {
+    int queued = SDL_GetAudioStreamQueued(audio_stream);
+    if (queued < 0) queued = 0;
+    if (queued < audio_queue_min_bytes) audio_queue_min_bytes = queued;
+    if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
+        audio_push_count > 0) {
+      double display_ms =
+          static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
+      LOG_DEBUG("Audio low queue after display: " << queued << "B, display took "
+                                                  << display_ms << "ms");
+    }
+  }
+  video_take_pending_window_screenshot();
+  if (g_take_screenshot) {
+    dumpScreen();
+    g_take_screenshot = false;
+  }
+  return false;
+}
+
 int koncpc_main(int argc, char** argv) {
   // Remember the main thread — cleanExit() uses this to route IPC/HTTP/
   // telnet-initiated quits through SDL_EVENT_QUIT instead of letting an
@@ -4937,122 +5054,10 @@ int koncpc_main(int argc, char** argv) {
     // Render thread waits for frame signal, does Phase A, releases Z80, then
     // Phase B.
     if (!g_headless) {
-      if (g_emu_paused.load(std::memory_order_relaxed)) {
-        // Paused overlay: render ImGui without waiting for a frame signal
-        video_display();
-        video_display_b();
-        video_take_pending_window_screenshot();
-        if (g_m4_http.is_running()) g_m4_http.drain_pending();
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(POLL_INTERVAL_MS));
-      } else {
-        // Poll for the Z80 frame signal, pumping SDL events between attempts.
-        // On macOS+Metal the Cocoa run loop must stay alive for CADisplayLink
-        // and drawable-completion callbacks to fire; a bare condvar wait
-        // starves it, causing SDL_RenderPresent / SDL_GL_SwapWindow to hang
-        // indefinitely for video styles that spend time in Phase A before the
-        // GPU call (CRT Basic/Full with GL shaders, SDL swscale with pixel
-        // filters).
-        bool skip = false;
-        bool paused_break = false;
-        while (!g_frame_signal.try_wait_ready_for(1, skip)) {
-          SDL_PumpEvents();  // keep macOS/Metal run loop alive
-          // Escape hatch: if the emulator got paused (e.g. focus loss /
-          // auto_pause, IPC pause) or a quit was requested while we were
-          // waiting, the Z80 thread stops producing frames and this loop
-          // would spin forever — SDL_PumpEvents() only enqueues events, so
-          // the window-close handler (SDL_PollEvent at the top of the loop)
-          // never runs and the app looks frozen.  Bail to the outer loop,
-          // which re-reads g_emu_paused and takes the paused-overlay branch
-          // that both pumps AND polls events.
-          if (g_emu_paused.load(std::memory_order_relaxed) ||
-              g_z80_thread_quit.load(std::memory_order_relaxed)) {
-            paused_break = true;
-            break;
-          }
-        }
-        if (paused_break) {
-          // Frame handshake untouched; fall through to the next main-loop
-          // iteration so SDL events (window close, etc.) get processed.
-        } else if (!skip) {
-          // Copy the latest published frame into the surface the flip reads.
-          video_ring_present();
-          // OSD text — render thread owns osd_message/osd_timing, no race.
-          // Write onto the presented frame (video_render_surface()), not the
-          // Z80's live write buffer.
-          if (SDL_GetTicks() < osd_timing) {
-            print(static_cast<byte*>(video_render_surface()->pixels) +
-                      CPC.scr_line_offs,
-                  osd_message.c_str(), true);
-          }
-          uint64_t displayStart = SDL_GetPerformanceCounter();
-          video_display();  // Phase A: texture upload + ImGui render (~3ms)
-          // Partial audio push before Phase B stall
-          {
-            int partial =
-                static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
-            if (!g_emu_paused.load() && partial > 0) {
-              audio_push_buffer(pbSndBuffer.get(), partial);
-              CPC.snd_bufferptr = pbSndBuffer.get();
-            }
-          }
-          // (The Z80 never waited on us — the ring decoupled the threads — so
-          // there is nothing to release here; it has been producing frames the
-          // whole time.)
-          // Main-thread-only housekeeping
-          if (g_m4_http.is_running()) g_m4_http.drain_pending();
-#ifdef __APPLE__
-          // Dock preview reads the just-presented frame (render-thread-private
-          // after video_ring_present's copy), NOT the Z80's live write buffer.
-          dword frame_count_snap = dwFrameCountOverall;
-          SDL_Surface* preview_surf = video_render_surface();
-          if (preview_surf && (frame_count_snap % 50) == 0) {
-            koncpc_update_dock_icon_preview(
-                preview_surf->pixels, preview_surf->w, preview_surf->h,
-                preview_surf->pitch, 0, 0, preview_surf->w, preview_surf->h);
-          }
-#endif
-          // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread),
-          // skip video_display_b() which hangs indefinitely for OpenGL
-          // styles (7-19).  The Z80 loop has seen the quit flag and will exit;
-          // on the next main-loop iteration SDL_EVENT_QUIT will reach the event
-          // handler above and doCleanUp() joins the (already-exited) Z80 thread.
-          if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
-            continue;
-          }
-          video_display_b();  // Phase B: 0-60ms, Z80 runs concurrently!
-          uint64_t displayEnd = SDL_GetPerformanceCounter();
-          displayTimeAccum.fetch_add(displayEnd - displayStart,
-                                     std::memory_order_relaxed);
-          if (audio_stream && CPC.snd_ready) {
-            int queued = SDL_GetAudioStreamQueued(audio_stream);
-            if (queued < 0) queued = 0;
-            if (queued < audio_queue_min_bytes) audio_queue_min_bytes = queued;
-            if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
-                audio_push_count > 0) {
-              double display_ms =
-                  static_cast<double>(displayEnd - displayStart) * 1000.0 /
-                  perfFreq;
-              LOG_DEBUG("Audio low queue after display: "
-                        << queued << "B, display took " << display_ms << "ms");
-            }
-          }
-          video_take_pending_window_screenshot();
-          if (g_take_screenshot) {
-            dumpScreen();
-            g_take_screenshot = false;
-          }
-        } else {
-          // Skipped frame: nothing to present this time; just service pending
-          // screenshot requests.  (No handshake to release — the ring decoupled
-          // the Z80 from render.)
-          video_take_pending_window_screenshot();
-          if (g_take_screenshot) {
-            dumpScreen();
-            g_take_screenshot = false;
-          }
-        }
-      }
+      // One render iteration (extracted so a Phase-2 menu-tracking driver can
+      // call it too).  Returns true on the quit path → skip the rest of the
+      // loop body (the deferred video-reinit check below).
+      if (render_one_frame()) continue;
     }
 
     // ---- Headless: original single-threaded emulation (unchanged) ----
