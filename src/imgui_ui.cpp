@@ -29,6 +29,7 @@
 #include "m4board_http.h"
 #include "macos_menu.h"  // koncpc_restore_keyboard_focus
 #include "menu_actions.h"
+#include "menu_bridge.h"
 #include "plotter.h"
 #include "rom_identify.h"
 #include "serial_interface.h"
@@ -804,6 +805,184 @@ static void apply_scr_scale(int scale_idx) {
   }
 }
 
+// ─────────────────────────────────────────────────
+// Shared menu bridge (menu_bridge.h) — single source for the NON-KONCPC menu
+// items consumed by BOTH the in-window ImGui bar and the native macOS bar.
+// ─────────────────────────────────────────────────
+
+const std::vector<SettingsTabItem>& koncpc_settings_tab_items() {
+  // Order + separators mirror the Machine menu in the taxonomy.
+  static const std::vector<SettingsTabItem> items = {
+      {"System...", static_cast<int>(OptionsTab::General), false},
+      {"ROMs...", static_cast<int>(OptionsTab::ROMs), false},
+      {"Video...", static_cast<int>(OptionsTab::Video), false},
+      {"Audio...", static_cast<int>(OptionsTab::Audio), false},
+      {"Input Mapping...", static_cast<int>(OptionsTab::Input), false},
+      {"M4 Board...", static_cast<int>(OptionsTab::M4), true},
+      {"Serial Interface...", static_cast<int>(OptionsTab::Serial), false},
+  };
+  return items;
+}
+
+const std::vector<WindowMenuItem>& koncpc_window_menu_items() {
+  // 3 specials + the 17 devtools windows, grouped exactly like the in-window
+  // Window menu (separator_before reproduces the section breaks).
+  static const std::vector<WindowMenuItem> items = {
+      {"Virtual Keyboard", "$vkbd", false},
+      {"Serial Terminal", "$serial", false},
+      {"Plotter Preview", "$plotter", false},
+      // Debug Windows
+      {"Registers", "registers", true},
+      {"Disassembly", "disassembly", false},
+      {"Memory Hex", "memory_hex", false},
+      {"Stack", "stack", false},
+      {"Breakpoints", "breakpoints", false},
+      {"Symbols", "symbols", false},
+      {"Assembler", "assembler", false},
+      // Hardware
+      {"Video State", "video_state", true},
+      {"Audio State", "audio_state", false},
+      {"ASIC Registers", "asic", false},
+      {"Silicon Disc", "silicon_disc", false},
+      {"Disc Tools", "disc_tools", false},
+      // Analysis
+      {"GFX Finder", "gfx_finder", true},
+      {"Data Areas", "data_areas", false},
+      {"Disasm Export", "disasm_export", false},
+      // Recording
+      {"Session Recording", "session_recording", true},
+      {"Recording Controls", "recording_controls", false},
+  };
+  return items;
+}
+
+const std::vector<const char*>& koncpc_scale_labels() {
+  static const std::vector<const char*> labels = {"Fit window", "1x", "1.5x",
+                                                  "2x", "3x"};
+  return labels;
+}
+
+extern "C" void koncpc_show_about_dialog() { imgui_state.show_about = true; }
+
+extern "C" void koncpc_open_settings_tab(int tab) {
+  imgui_state.show_options = true;
+  s_pending_options_tab = static_cast<OptionsTab>(tab);
+}
+
+extern "C" void koncpc_open_command_palette() { g_command_palette.open(); }
+
+extern "C" void koncpc_request_file_dialog(int action) {
+  // Single source for the per-action filters + default paths.  Same callback
+  // (which restores keyboard focus) used by every loader/saver.
+  auto fda = static_cast<FileDialogAction>(action);
+  auto ud = reinterpret_cast<void*>(static_cast<intptr_t>(action));
+  switch (fda) {
+    case FileDialogAction::LoadDiskA: {
+      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk;ipf;raw;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::LoadDiskB: {
+      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk;ipf;raw;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::SaveDiskA: {
+      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk"}};
+      SDL_ShowSaveFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str());
+      break;
+    }
+    case FileDialogAction::SaveDiskB: {
+      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk"}};
+      SDL_ShowSaveFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str());
+      break;
+    }
+    case FileDialogAction::LoadTape: {
+      static const SDL_DialogFileFilter f[] = {{"Tape Images", "cdt;voc;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_tape_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::LoadCartridge: {
+      static const SDL_DialogFileFilter f[] = {{"Cartridges", "cpr;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_cart_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::LoadSnapshot: {
+      static const SDL_DialogFileFilter f[] = {{"Snapshots", "sna;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_snap_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::SaveSnapshot: {
+      static const SDL_DialogFileFilter f[] = {{"Snapshots", "sna"}};
+      SDL_ShowSaveFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_snap_path.c_str());
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+extern "C" void koncpc_window_toggle(const char* key) {
+  if (key == nullptr) return;
+  if (strcmp(key, "$vkbd") == 0) {
+    imgui_state.show_vkeyboard = !imgui_state.show_vkeyboard;
+  } else if (strcmp(key, "$serial") == 0) {
+    imgui_state.show_serial_terminal = !imgui_state.show_serial_terminal;
+  } else if (strcmp(key, "$plotter") == 0) {
+    imgui_state.show_plotter_preview = !imgui_state.show_plotter_preview;
+  } else {
+    g_devtools_ui.toggle_window(key);
+  }
+}
+
+extern "C" bool koncpc_window_is_open(const char* key) {
+  if (key == nullptr) return false;
+  if (strcmp(key, "$vkbd") == 0) return imgui_state.show_vkeyboard;
+  if (strcmp(key, "$serial") == 0) return imgui_state.show_serial_terminal;
+  if (strcmp(key, "$plotter") == 0) return imgui_state.show_plotter_preview;
+  bool* p = g_devtools_ui.window_ptr(key);
+  return p != nullptr && *p;
+}
+
+extern "C" void koncpc_set_scale(int idx) { apply_scr_scale(idx); }
+extern "C" int koncpc_current_scale() { return CPC.scr_scale; }
+
+extern "C" void koncpc_set_renderer(int plugin_idx) {
+  CPC.scr_style = plugin_idx;
+  imgui_state.video_reinit_pending = true;
+}
+extern "C" int koncpc_current_renderer() { return static_cast<int>(CPC.scr_style); }
+
+extern "C" int koncpc_renderer_count() {
+  return static_cast<int>(video_plugin_list.size());
+}
+extern "C" const char* koncpc_renderer_name(int i) {
+  if (i < 0 || i >= static_cast<int>(video_plugin_list.size())) return "";
+  return video_plugin_list[i].name;
+}
+extern "C" bool koncpc_renderer_hidden(int i) {
+  if (i < 0 || i >= static_cast<int>(video_plugin_list.size())) return true;
+  return video_plugin_list[i].hidden;
+}
+extern "C" const char* koncpc_renderer_group(int i) {
+  // Single source for the GPU/CPU grouping used by both menu bars.
+  if (i < 0 || i >= static_cast<int>(video_plugin_list.size())) return "";
+  const char* name = video_plugin_list[i].name;
+  if (strncmp(name, "CRT", 3) == 0) return "GPU — CRT Shaders";
+  if (strcmp(name, "Direct") == 0 || strcmp(name, "Direct (SDL)") == 0 ||
+      strcmp(name, "OpenGL scaling") == 0)
+    return "GPU — Direct";
+  return "CPU — Software Scalers";
+}
+
 static void imgui_render_menubar() {
   if (!ImGui::BeginMainMenuBar()) return;
 
@@ -816,11 +995,10 @@ static void imgui_render_menubar() {
   // ── konCePCja ──
   if (ImGui::BeginMenu("konCePCja")) {
     if (ImGui::MenuItem("About konCePCja")) {
-      imgui_state.show_about = true;
+      koncpc_show_about_dialog();
     }
     if (ImGui::MenuItem("Settings...")) {
-      imgui_state.show_options = true;
-      s_pending_options_tab = OptionsTab::General;
+      koncpc_open_settings_tab(static_cast<int>(OptionsTab::General));
     }
     ImGui::Separator();
     RenderMenuItem(KONCPC_EXIT);
@@ -829,21 +1007,14 @@ static void imgui_render_menubar() {
 
   // ── Machine ── deep-links straight to a Settings tab + Reset.  Each item
   // opens the Options window and asks it to select that tab for one frame.
+  // The tab list is single-sourced via koncpc_settings_tab_items().
   if (ImGui::BeginMenu("Machine")) {
-    const auto settings_tab = [](const char* label, OptionsTab tab) {
-      if (ImGui::MenuItem(label)) {
-        imgui_state.show_options = true;
-        s_pending_options_tab = tab;
+    for (const SettingsTabItem& it : koncpc_settings_tab_items()) {
+      if (it.separator_before) ImGui::Separator();
+      if (ImGui::MenuItem(it.label)) {
+        koncpc_open_settings_tab(it.tab);
       }
-    };
-    settings_tab("System...", OptionsTab::General);
-    settings_tab("ROMs...", OptionsTab::ROMs);
-    settings_tab("Video...", OptionsTab::Video);
-    settings_tab("Audio...", OptionsTab::Audio);
-    settings_tab("Input Mapping...", OptionsTab::Input);
-    ImGui::Separator();
-    settings_tab("M4 Board...", OptionsTab::M4);
-    settings_tab("Serial Interface...", OptionsTab::Serial);
+    }
     ImGui::Separator();
     RenderMenuItem(KONCPC_RESET);
     ImGui::EndMenu();
@@ -855,51 +1026,23 @@ static void imgui_render_menubar() {
     ImGui::EndMenu();
   }
 
-  // ── Media ──
+  // ── Media ── (loaders/savers single-sourced via koncpc_request_file_dialog)
   if (ImGui::BeginMenu("Media")) {
     if (ImGui::MenuItem("Load Disk A...")) {
-      static const SDL_DialogFileFilter filters[] = {
-          {"Disk Images", "dsk;ipf;raw;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadDiskA));
     }
     if (ImGui::MenuItem("Load Disk B...")) {
-      static const SDL_DialogFileFilter filters[] = {
-          {"Disk Images", "dsk;ipf;raw;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadDiskB));
     }
     if (ImGui::MenuItem("Save Disk A...", nullptr, false, driveA.tracks != 0)) {
-      static const SDL_DialogFileFilter filters[] = {{"Disk Images", "dsk"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskA));
     }
     if (ImGui::MenuItem("Save Disk B...", nullptr, false, driveB.tracks != 0)) {
-      static const SDL_DialogFileFilter filters[] = {{"Disk Images", "dsk"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskB));
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
-      static const SDL_DialogFileFilter filters[] = {
-          {"Tape Images", "cdt;voc;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadTape)),
-          mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadTape));
     }
     RenderMenuItem(KONCPC_TAPEPLAY, !pbTapeImage.empty());
     if (ImGui::MenuItem("Eject Tape", nullptr, false, !pbTapeImage.empty())) {
@@ -910,29 +1053,17 @@ static void imgui_render_menubar() {
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Cartridge...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Cartridges", "cpr;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
-          mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
+      koncpc_request_file_dialog(
+          static_cast<int>(FileDialogAction::LoadCartridge));
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
-          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
+      koncpc_request_file_dialog(
+          static_cast<int>(FileDialogAction::LoadSnapshot));
     }
     if (ImGui::MenuItem("Save Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
-          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
+      koncpc_request_file_dialog(
+          static_cast<int>(FileDialogAction::SaveSnapshot));
     }
     // beads-5aa: group the default-slot quick snapshot actions so their labels
     // (which read like speed adjectives in isolation) are clearly about the
@@ -1020,43 +1151,31 @@ static void imgui_render_menubar() {
     RenderMenuItem(KONCPC_FULLSCRN);
 
     // Scale ▸ — window scale factor (mirrors Settings ▸ Video ▸ Scale, same
-    // apply path via apply_scr_scale).  Checkmark on the current factor.
+    // apply path via the bridge).  Checkmark on the current factor.
     if (ImGui::BeginMenu("Scale")) {
-      static const char* kScaleLabels[] = {"Fit window", "1x", "1.5x", "2x",
-                                           "3x"};
-      for (int i = 0; i < IM_ARRAYSIZE(kScaleLabels); i++) {
-        if (ImGui::MenuItem(kScaleLabels[i], nullptr, CPC.scr_scale == i)) {
-          apply_scr_scale(i);
+      const auto& labels = koncpc_scale_labels();
+      for (int i = 0; i < static_cast<int>(labels.size()); i++) {
+        if (ImGui::MenuItem(labels[i], nullptr, koncpc_current_scale() == i)) {
+          koncpc_set_scale(i);
         }
       }
       ImGui::EndMenu();
     }
 
     // Renderer ▸ — video plugin (mirrors Settings ▸ Video ▸ Video Plugin),
-    // grouped GPU/CPU exactly like the combo so the two stay in sync.
+    // grouped GPU/CPU via the bridge so the two stay in sync.
     if (ImGui::BeginMenu("Renderer")) {
       const char* prev_group = nullptr;
-      for (size_t i = 0; i < video_plugin_list.size(); i++) {
-        if (video_plugin_list[i].hidden) continue;
-        const char* name = video_plugin_list[i].name;
-        const char* group;
-        if (strncmp(name, "CRT", 3) == 0)
-          group = "GPU — CRT Shaders";
-        else if (strcmp(name, "Direct") == 0 ||
-                 strcmp(name, "Direct (SDL)") == 0 ||
-                 strcmp(name, "OpenGL scaling") == 0)
-          group = "GPU — Direct";
-        else
-          group = "CPU — Software Scalers";
+      for (int i = 0; i < koncpc_renderer_count(); i++) {
+        if (koncpc_renderer_hidden(i)) continue;
+        const char* group = koncpc_renderer_group(i);
         if (!prev_group || strcmp(prev_group, group) != 0) {
           ImGui::SeparatorText(group);
           prev_group = group;
         }
-        bool selected =
-            (static_cast<int>(i) == static_cast<int>(CPC.scr_style));
-        if (ImGui::MenuItem(name, nullptr, selected)) {
-          CPC.scr_style = static_cast<int>(i);
-          imgui_state.video_reinit_pending = true;
+        if (ImGui::MenuItem(koncpc_renderer_name(i), nullptr,
+                            koncpc_current_renderer() == i)) {
+          koncpc_set_renderer(i);
         }
       }
       ImGui::EndMenu();
@@ -1082,7 +1201,7 @@ static void imgui_render_menubar() {
     // beads-qnf: surface the Cmd+K command palette (previously only mentioned
     // in the About box) as a discoverable menu entry.
     if (ImGui::MenuItem("Command Palette", "Cmd+K")) {
-      g_command_palette.open();
+      koncpc_open_command_palette();
     }
     RenderMenuItem(KONCPC_MF2STOP);
     // beads-41p: developer/diagnostics group — Verbose Logging moved here from
@@ -1095,59 +1214,31 @@ static void imgui_render_menubar() {
     ImGui::EndMenu();
   }
 
-  // ── Window ──
+  // ── Window ── single-sourced via koncpc_window_menu_items().  The section
+  // labels under each separator are added here for the in-window bar's denser
+  // layout (the native bar shows the separators alone).
   if (ImGui::BeginMenu("Window")) {
-    ImGui::MenuItem("Virtual Keyboard", "Shift+F1",
-                    &imgui_state.show_vkeyboard);
-    ImGui::MenuItem("Serial Terminal", nullptr,
-                    &imgui_state.show_serial_terminal);
-    ImGui::MenuItem("Plotter Preview", nullptr,
-                    &imgui_state.show_plotter_preview);
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Debug Windows");
-    ImGui::MenuItem("Registers", nullptr,
-                    g_devtools_ui.window_ptr("registers"));
-    ImGui::MenuItem("Disassembly", nullptr,
-                    g_devtools_ui.window_ptr("disassembly"));
-    ImGui::MenuItem("Memory Hex", nullptr,
-                    g_devtools_ui.window_ptr("memory_hex"));
-    ImGui::MenuItem("Stack", nullptr, g_devtools_ui.window_ptr("stack"));
-    ImGui::MenuItem("Breakpoints", nullptr,
-                    g_devtools_ui.window_ptr("breakpoints"));
-    ImGui::MenuItem("Symbols", nullptr, g_devtools_ui.window_ptr("symbols"));
-    ImGui::MenuItem("Assembler", nullptr,
-                    g_devtools_ui.window_ptr("assembler"));
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Hardware");
-    ImGui::MenuItem("Video State", nullptr,
-                    g_devtools_ui.window_ptr("video_state"));
-    ImGui::MenuItem("Audio State", nullptr,
-                    g_devtools_ui.window_ptr("audio_state"));
-    ImGui::MenuItem("ASIC Registers", nullptr,
-                    g_devtools_ui.window_ptr("asic"));
-    ImGui::MenuItem("Silicon Disc", nullptr,
-                    g_devtools_ui.window_ptr("silicon_disc"));
-    ImGui::MenuItem("Disc Tools", nullptr,
-                    g_devtools_ui.window_ptr("disc_tools"));
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Analysis");
-    ImGui::MenuItem("GFX Finder", nullptr,
-                    g_devtools_ui.window_ptr("gfx_finder"));
-    ImGui::MenuItem("Data Areas", nullptr,
-                    g_devtools_ui.window_ptr("data_areas"));
-    ImGui::MenuItem("Disasm Export", nullptr,
-                    g_devtools_ui.window_ptr("disasm_export"));
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Recording");
-    ImGui::MenuItem("Session Recording", nullptr,
-                    g_devtools_ui.window_ptr("session_recording"));
-    ImGui::MenuItem("Recording Controls", nullptr,
-                    g_devtools_ui.window_ptr("recording_controls"));
-
+    static const char* kSectionLabel[] = {"Debug Windows", "Hardware",
+                                          "Analysis", "Recording"};
+    int section = 0;
+    bool first = true;
+    for (const WindowMenuItem& it : koncpc_window_menu_items()) {
+      if (it.separator_before) {
+        ImGui::Separator();
+        if (!first && section < IM_ARRAYSIZE(kSectionLabel)) {
+          ImGui::TextDisabled("%s", kSectionLabel[section]);
+          section++;
+        }
+      }
+      first = false;
+      // Virtual Keyboard keeps its discoverability hint; specials have no live
+      // toggle pointer, so route clicks through the bridge toggle.
+      const char* shortcut =
+          (strcmp(it.key, "$vkbd") == 0) ? "Shift+F1" : nullptr;
+      if (ImGui::MenuItem(it.label, shortcut, koncpc_window_is_open(it.key))) {
+        koncpc_window_toggle(it.key);
+      }
+    }
     ImGui::EndMenu();
   }
 

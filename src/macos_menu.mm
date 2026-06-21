@@ -1,112 +1,393 @@
 #import <Cocoa/Cocoa.h>
 #include "keyboard.h"
 #include "menu_actions.h"
+#include "menu_bridge.h"
+#include "imgui_state.h"  // FileDialogAction
 #ifdef KONCPC_MODERN_UI
 #include "imgui.h"
 #endif
 #include <memory>
+#include <string>
 #include "SDL3/SDL.h"
+
+extern "C" void koncpc_menu_action(int action);
+
+// ── Bridge-item dispatch ───────────────────────────────────────────────────
+//
+// The KONCPC_* command items route through menuAction:/[item tag]==action.
+// The NON-KONCPC items (Settings deep-links, Window toggles, View ▸ Scale /
+// Renderer, file dialogs, About, Command Palette) are single-sourced via
+// menu_bridge.h.  Each such item carries a packed tag: high nibble = kind,
+// low bits = payload — so one selector (bridgeAction:) routes them all and
+// validateMenuItem: can compute the live checkmark from the same bridge fns.
+enum BridgeKind {
+  BK_ABOUT = 1,
+  BK_SETTINGS,   // payload = OptionsTab int
+  BK_PALETTE,
+  BK_FILEDLG,    // payload = FileDialogAction int
+  BK_WINDOW,     // payload = index into koncpc_window_menu_items()
+  BK_SCALE,      // payload = scale index
+  BK_RENDERER,   // payload = video_plugin index
+};
+static inline NSInteger pack_bridge_tag(BridgeKind kind, int payload) {
+  return (static_cast<NSInteger>(kind) << 24) | (payload & 0x00FFFFFF);
+}
+static inline BridgeKind bridge_kind(NSInteger tag) {
+  return static_cast<BridgeKind>((tag >> 24) & 0xFF);
+}
+static inline int bridge_payload(NSInteger tag) {
+  return static_cast<int>(tag & 0x00FFFFFF);
+}
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
-
-extern "C" void koncpc_menu_action(int action);
 
 @implementation KoncepcjaMenuTarget
 - (void)menuAction:(id)sender {
   NSInteger action = [sender tag];
   koncpc_menu_action(static_cast<int>(action));
 }
+
+// Bridge items: route to the single-source entry points in menu_bridge.h.
+- (void)bridgeAction:(id)sender {
+  NSInteger tag = [sender tag];
+  int payload = bridge_payload(tag);
+  switch (bridge_kind(tag)) {
+    case BK_ABOUT:
+      koncpc_show_about_dialog();
+      break;
+    case BK_SETTINGS:
+      koncpc_open_settings_tab(payload);
+      break;
+    case BK_PALETTE:
+      koncpc_open_command_palette();
+      break;
+    case BK_FILEDLG:
+      koncpc_request_file_dialog(payload);
+      break;
+    case BK_WINDOW: {
+      const auto& items = koncpc_window_menu_items();
+      if (payload >= 0 && payload < static_cast<int>(items.size()))
+        koncpc_window_toggle(items[payload].key);
+      break;
+    }
+    case BK_SCALE:
+      koncpc_set_scale(payload);
+      break;
+    case BK_RENDERER:
+      koncpc_set_renderer(payload);
+      break;
+  }
+}
+
 // Queried by AppKit each time the menu opens, so toggle items show a live
 // checkmark from the single source of truth instead of no state at all.
 - (BOOL)validateMenuItem:(NSMenuItem*)item {
-  const MenuAction* entry = koncpc_find_action(static_cast<KONCPC_KEYS>([item tag]));
-  if (entry != nullptr && entry->toggle) {
-    [item setState:koncpc_action_is_active(entry->action) ? NSControlStateValueOn
-                                                          : NSControlStateValueOff];
+  SEL act = [item action];
+  if (act == @selector(menuAction:)) {
+    const MenuAction* entry = koncpc_find_action(static_cast<KONCPC_KEYS>([item tag]));
+    if (entry != nullptr && entry->toggle) {
+      [item setState:koncpc_action_is_active(entry->action) ? NSControlStateValueOn
+                                                            : NSControlStateValueOff];
+    }
+  } else if (act == @selector(bridgeAction:)) {
+    NSInteger tag = [item tag];
+    int payload = bridge_payload(tag);
+    bool on = false;
+    switch (bridge_kind(tag)) {
+      case BK_WINDOW: {
+        const auto& items = koncpc_window_menu_items();
+        if (payload >= 0 && payload < static_cast<int>(items.size()))
+          on = koncpc_window_is_open(items[payload].key);
+        break;
+      }
+      case BK_SCALE:
+        on = (koncpc_current_scale() == payload);
+        break;
+      case BK_RENDERER:
+        on = (koncpc_current_renderer() == payload);
+        break;
+      default:
+        break;
+    }
+    [item setState:on ? NSControlStateValueOn : NSControlStateValueOff];
   }
   return YES;
 }
 @end
 
-static const MenuAction* find_menu_action(KONCPC_KEYS action) {
-  for (const auto& entry : koncpc_menu_actions()) {
-    if (entry.action == action) return &entry;
+// Add a KONCPC_* command item to a submenu, label/placement/shortcut all from
+// the action registry.  Shortcut is shown as TEXT only (no keyEquivalent):
+// SDL owns every key, so an AppKit accelerator here would double-fire.
+static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
+                            const MenuAction* entry) {
+  NSString* itemTitle = [NSString stringWithUTF8String:entry->title];
+  std::string sc = koncpc_action_shortcut(entry->action);
+  if (!sc.empty()) {
+    itemTitle = [itemTitle stringByAppendingFormat:@"  (%s)", sc.c_str()];
   }
-  return nullptr;
+  NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:itemTitle
+                                                action:@selector(menuAction:)
+                                         keyEquivalent:@""];
+  [item setTarget:target];
+  [item setTag:static_cast<NSInteger>(entry->action)];
+  [submenu addItem:item];
 }
 
-static void add_menu_group(NSMenu* mainMenu, KoncepcjaMenuTarget* target, NSString* title,
-                           std::initializer_list<KONCPC_KEYS> actions) {
-  for (NSMenuItem* item in [mainMenu itemArray]) {
-    if ([[item title] isEqualToString:title]) return;
-  }
+// Add a bridge item (non-KONCPC).  No keyEquivalent — bridge items carry no
+// SDL shortcut.
+static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
+                                   NSString* title, BridgeKind kind, int payload) {
+  NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
+                                                action:@selector(bridgeAction:)
+                                         keyEquivalent:@""];
+  [item setTarget:target];
+  [item setTag:pack_bridge_tag(kind, payload)];
+  [submenu addItem:item];
+  return item;
+}
 
+// Append every registry action whose MenuGroup matches `group` to `submenu`,
+// so labels + placement come from menu_actions.cpp.
+static void add_group_actions(NSMenu* submenu, KoncepcjaMenuTarget* target,
+                              MenuGroup group) {
+  for (const MenuAction& entry : koncpc_menu_actions()) {
+    if (entry.group != group) continue;
+    add_action_item(submenu, target, &entry);
+  }
+}
+
+static NSMenu* make_submenu(NSMenu* mainMenu, NSString* title) {
   NSMenuItem* menuItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
   NSMenu* submenu = [[NSMenu alloc] initWithTitle:title];
-
-  for (KONCPC_KEYS action : actions) {
-    const MenuAction* entry = find_menu_action(action);
-    if (!entry) continue;
-    NSString* itemTitle = [NSString stringWithUTF8String:entry->title];
-    // Show the real shortcut as TEXT only (no keyEquivalent): SDL owns every
-    // key, so registering an AppKit accelerator here would double-fire the
-    // action.  The hint is derived from the live binding, so it can't drift.
-    std::string sc = koncpc_action_shortcut(entry->action);
-    if (!sc.empty()) {
-      itemTitle = [itemTitle stringByAppendingFormat:@"  (%s)", sc.c_str()];
-    }
-    NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:itemTitle
-                                                  action:@selector(menuAction:)
-                                           keyEquivalent:@""];
-    [item setTarget:target];
-    [item setTag:static_cast<NSInteger>(entry->action)];
-    [submenu addItem:item];
-  }
-
   [menuItem setSubmenu:submenu];
   [mainMenu addItem:menuItem];
+  return submenu;
+}
+
+// Submenu of an existing top-level menu matched by exact title, or nil.  Used
+// to REUSE AppKit's auto-created menus (the app menu + "Window") instead of
+// adding parallel duplicates.
+static NSMenu* find_top_menu(NSMenu* mainMenu, NSString* title) {
+  for (NSMenuItem* item in [mainMenu itemArray]) {
+    if ([[item title] isEqualToString:title]) return [item submenu];
+  }
+  return nil;
+}
+
+// Create a top-level submenu INSERTED at a given index, so our custom menus
+// land between the app menu and the (system) Window menu rather than after it.
+static NSMenu* insert_submenu(NSMenu* mainMenu, NSString* title, NSInteger idx) {
+  NSMenuItem* menuItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+  NSMenu* submenu = [[NSMenu alloc] initWithTitle:title];
+  [menuItem setSubmenu:submenu];
+  [mainMenu insertItem:menuItem atIndex:idx];
+  return submenu;
+}
+
+// Re-target AppKit's existing application menu (the bold one named after the
+// executable) so its About / Settings… / Quit items drive OUR dialogs and the
+// unsaved-changes quit guard, instead of adding a redundant parallel app menu.
+// Leaves their Cmd+, / Cmd+Q accelerators intact (host keys SDL doesn't own).
+static void wire_app_menu(NSMenu* appMenu, KoncepcjaMenuTarget* target) {
+  if (!appMenu) return;
+  int settings_tab = koncpc_settings_tab_items().front().tab;
+  for (NSMenuItem* it in [appMenu itemArray]) {
+    NSString* t = [it title];
+    if ([t hasPrefix:@"About"]) {
+      [it setTarget:target];
+      [it setAction:@selector(bridgeAction:)];
+      [it setTag:pack_bridge_tag(BK_ABOUT, 0)];
+    } else if ([t hasPrefix:@"Settings"] || [t hasPrefix:@"Preferences"]) {
+      [it setTarget:target];
+      [it setAction:@selector(bridgeAction:)];
+      [it setTag:pack_bridge_tag(BK_SETTINGS, settings_tab)];
+    } else if ([t hasPrefix:@"Quit"]) {
+      // Route Quit through KONCPC_EXIT so the unsaved-disk guard runs (F13).
+      [it setTarget:target];
+      [it setAction:@selector(menuAction:)];
+      [it setTag:static_cast<NSInteger>(KONCPC_EXIT)];
+    }
+  }
 }
 
 static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   if (!mainMenu) return;
 
+  // Idempotency guard: our first custom top-level menu is "Machine".
+  if (find_top_menu(mainMenu, @"Machine")) return;
+
   KoncepcjaMenuTarget* target = [[KoncepcjaMenuTarget alloc] init];
 
-  add_menu_group(mainMenu, target, @"Emulator",
-                 {
-                     KONCPC_GUI,
-                     KONCPC_FULLSCRN,
-                     KONCPC_RESET,
-                     KONCPC_EXIT,
-                 });
+  // ── App menu ── re-target AppKit's existing application menu (item 0) for
+  // About / Settings / Quit instead of adding a parallel "konCePCja" menu
+  // (which produced a duplicate app menu + wrong placement).
+  NSMenu* appMenu =
+      ([mainMenu numberOfItems] > 0) ? [[mainMenu itemAtIndex:0] submenu] : nil;
+  wire_app_menu(appMenu, target);
 
-  add_menu_group(mainMenu, target, @"Media",
-                 {
-                     KONCPC_TAPEPLAY,
-                     KONCPC_MF2STOP,
-                     KONCPC_NEXTDISKA,
-                 });
+  // Insert our custom menus BEFORE the system "Window" menu so it stays last
+  // and we don't add a second one.
+  NSInteger insertIdx = [mainMenu numberOfItems];
+  {
+    NSArray* items = [mainMenu itemArray];
+    for (NSInteger i = 0; i < static_cast<NSInteger>([items count]); i++) {
+      if ([[[items objectAtIndex:i] title] isEqualToString:@"Window"]) {
+        insertIdx = i;
+        break;
+      }
+    }
+  }
 
-  add_menu_group(mainMenu, target, @"Tools",
-                 {
-                     KONCPC_VKBD,
-                     KONCPC_DEVTOOLS,
-                     KONCPC_SCRNSHOT,
-                     KONCPC_SNAPSHOT,
-                     KONCPC_LD_SNAP,
-                     KONCPC_PASTE,
-                 });
+  // ── Machine ── 7 Settings deep-links + Reset.
+  {
+    NSMenu* m = insert_submenu(mainMenu, @"Machine", insertIdx++);
+    for (const SettingsTabItem& it : koncpc_settings_tab_items()) {
+      if (it.separator_before) [m addItem:[NSMenuItem separatorItem]];
+      add_bridge_item(m, target, [NSString stringWithUTF8String:it.label],
+                      BK_SETTINGS, it.tab);
+    }
+    [m addItem:[NSMenuItem separatorItem]];
+    if (const MenuAction* e = koncpc_find_action(KONCPC_RESET))
+      add_action_item(m, target, e);
+  }
 
-  add_menu_group(mainMenu, target, @"Options",
-                 {
-                     KONCPC_JOY,
-                     KONCPC_PHAZER,
-                     KONCPC_FPS,
-                     KONCPC_SPEED,
-                     KONCPC_DELAY,
-                     KONCPC_WAITBREAK,
-                 });
+  // ── Edit ──
+  {
+    NSMenu* m = insert_submenu(mainMenu, @"Edit", insertIdx++);
+    add_group_actions(m, target, MenuGroup::Edit);
+  }
+
+  // ── Media ── loaders/savers (bridge file dialogs) + KONCPC actions.
+  {
+    NSMenu* m = insert_submenu(mainMenu, @"Media", insertIdx++);
+    add_bridge_item(m, target, @"Load Disk A...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::LoadDiskA));
+    add_bridge_item(m, target, @"Load Disk B...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::LoadDiskB));
+    add_bridge_item(m, target, @"Save Disk A...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::SaveDiskA));
+    add_bridge_item(m, target, @"Save Disk B...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::SaveDiskB));
+    [m addItem:[NSMenuItem separatorItem]];
+    add_bridge_item(m, target, @"Load Tape...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::LoadTape));
+    if (const MenuAction* e = koncpc_find_action(KONCPC_TAPEPLAY))
+      add_action_item(m, target, e);
+    [m addItem:[NSMenuItem separatorItem]];
+    add_bridge_item(m, target, @"Load Cartridge...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::LoadCartridge));
+    [m addItem:[NSMenuItem separatorItem]];
+    add_bridge_item(m, target, @"Load Snapshot...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::LoadSnapshot));
+    add_bridge_item(m, target, @"Save Snapshot...", BK_FILEDLG,
+                    static_cast<int>(FileDialogAction::SaveSnapshot));
+    if (const MenuAction* e = koncpc_find_action(KONCPC_SNAPSHOT))
+      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_LD_SNAP))
+      add_action_item(m, target, e);
+    [m addItem:[NSMenuItem separatorItem]];
+    if (const MenuAction* e = koncpc_find_action(KONCPC_NEXTDISKA))
+      add_action_item(m, target, e);
+    // Open Recent (MRU) is in-window-only; intentionally skipped natively.
+  }
+
+  // ── View ── Fullscreen, Scale, Renderer, Screenshot, Show FPS.
+  {
+    NSMenu* m = insert_submenu(mainMenu, @"View", insertIdx++);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_FULLSCRN))
+      add_action_item(m, target, e);
+
+    // Scale ▸
+    NSMenuItem* scaleItem = [[NSMenuItem alloc] initWithTitle:@"Scale"
+                                                       action:nil
+                                                keyEquivalent:@""];
+    NSMenu* scaleMenu = [[NSMenu alloc] initWithTitle:@"Scale"];
+    {
+      const auto& labels = koncpc_scale_labels();
+      for (int i = 0; i < static_cast<int>(labels.size()); i++) {
+        add_bridge_item(scaleMenu, target,
+                        [NSString stringWithUTF8String:labels[i]], BK_SCALE, i);
+      }
+    }
+    [scaleItem setSubmenu:scaleMenu];
+    [m addItem:scaleItem];
+
+    // Renderer ▸ (grouped GPU/CPU via the bridge's group string)
+    NSMenuItem* rendItem = [[NSMenuItem alloc] initWithTitle:@"Renderer"
+                                                      action:nil
+                                               keyEquivalent:@""];
+    NSMenu* rendMenu = [[NSMenu alloc] initWithTitle:@"Renderer"];
+    {
+      const char* prev_group = nullptr;
+      for (int i = 0; i < koncpc_renderer_count(); i++) {
+        if (koncpc_renderer_hidden(i)) continue;
+        const char* group = koncpc_renderer_group(i);
+        if (!prev_group || strcmp(prev_group, group) != 0) {
+          NSMenuItem* hdr = [[NSMenuItem alloc]
+              initWithTitle:[NSString stringWithUTF8String:group]
+                     action:nil
+              keyEquivalent:@""];
+          [hdr setEnabled:NO];
+          [rendMenu addItem:hdr];
+          prev_group = group;
+        }
+        add_bridge_item(rendMenu, target,
+                        [NSString stringWithUTF8String:koncpc_renderer_name(i)],
+                        BK_RENDERER, i);
+      }
+    }
+    [rendItem setSubmenu:rendMenu];
+    [m addItem:rendItem];
+
+    [m addItem:[NSMenuItem separatorItem]];
+    if (const MenuAction* e = koncpc_find_action(KONCPC_SCRNSHOT))
+      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_FPS))
+      add_action_item(m, target, e);
+  }
+
+  // ── Input ── Joystick, Light Gun, Limit Speed (all MenuGroup::Input).
+  {
+    NSMenu* m = insert_submenu(mainMenu, @"Input", insertIdx++);
+    add_group_actions(m, target, MenuGroup::Input);
+  }
+
+  // ── Tools ── DevTools, Command Palette, Multiface II, Diagnostics ▸.
+  {
+    NSMenu* m = insert_submenu(mainMenu, @"Tools", insertIdx++);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_DEVTOOLS))
+      add_action_item(m, target, e);
+    add_bridge_item(m, target, @"Command Palette", BK_PALETTE, 0);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_MF2STOP))
+      add_action_item(m, target, e);
+    [m addItem:[NSMenuItem separatorItem]];
+    NSMenuItem* diagItem = [[NSMenuItem alloc] initWithTitle:@"Diagnostics"
+                                                      action:nil
+                                               keyEquivalent:@""];
+    NSMenu* diagMenu = [[NSMenu alloc] initWithTitle:@"Diagnostics"];
+    if (const MenuAction* e = koncpc_find_action(KONCPC_DEBUG))
+      add_action_item(diagMenu, target, e);
+    [diagItem setSubmenu:diagMenu];
+    [m addItem:diagItem];
+  }
+
+  // ── Window ── REUSE AppKit's existing Window menu (Minimize/Zoom/…) and
+  // append our 3 specials + 17 devtools windows (single-sourced list) after a
+  // separator, rather than adding a second "Window" menu.
+  {
+    NSMenu* m = find_top_menu(mainMenu, @"Window");
+    if (!m) m = make_submenu(mainMenu, @"Window");  // fallback if none yet
+    [m addItem:[NSMenuItem separatorItem]];
+    const auto& items = koncpc_window_menu_items();
+    for (int i = 0; i < static_cast<int>(items.size()); i++) {
+      if (items[i].separator_before && i != 0)
+        [m addItem:[NSMenuItem separatorItem]];
+      add_bridge_item(m, target,
+                      [NSString stringWithUTF8String:items[i].label], BK_WINDOW,
+                      i);
+    }
+  }
 }
 
 extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSMenu* mainMenu) {
