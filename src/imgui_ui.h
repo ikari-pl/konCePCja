@@ -16,6 +16,7 @@
 void imgui_init_ui();
 void imgui_render_ui();
 int imgui_topbar_height();
+void imgui_open_menu();
 void imgui_close_menu();
 
 // Returns true when any keyboard-consuming UI is active (menus, dialogs,

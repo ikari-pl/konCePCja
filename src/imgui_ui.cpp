@@ -706,6 +706,15 @@ bool imgui_any_keyboard_ui_active() {
 // Helper: close menu and resume emulation
 // ─────────────────────────────────────────────────
 
+void imgui_open_menu() {
+  // The one true "enter pause" path, shared by F1, the topbar Pause button and
+  // the native-menu pause: open the pause/session overlay AND pause the
+  // emulator (so the topbar swaps the FPS readout for "PAUSED").
+  imgui_state.show_menu = true;
+  imgui_state.menu_just_opened = true;
+  cpc_pause();
+}
+
 void imgui_close_menu() {
   imgui_state.show_menu = false;
   // Don't clear show_options/show_about/show_quit_confirm here —
@@ -1491,9 +1500,7 @@ static void imgui_render_topbar() {
         cpc_resume();
         imgui_state.show_menu = false;
       } else {
-        imgui_state.show_menu = true;
-        imgui_state.menu_just_opened = true;
-        cpc_pause();
+        imgui_open_menu();
       }
     }
     if (!is_paused) ImGui::PopStyleColor(3);
@@ -2214,6 +2221,31 @@ static std::string state_slot_png(int i) {
   return state_slots_dir() + "state" + std::to_string(i) + ".png";
 }
 
+// Raw RGBA thumbnail (".kthm") captured at save time for the pause-screen grid.
+static std::string state_slot_thumb(int i) {
+  return state_slots_dir() + "state" + std::to_string(i) + ".kthm";
+}
+
+// Per-slot thumbnail texture cache (slots 1..8 -> index 1..8; index 0 unused).
+// `sig` is the thumbnail file's last-write-time count, used to detect staleness.
+namespace {
+struct SlotThumb {
+  uintptr_t tex = 0;
+  std::string sig;
+};
+SlotThumb g_slot_thumb[9];
+
+// Free + clear a cached slot texture (e.g. before re-saving over it).
+void invalidate_slot_thumb(int i) {
+  if (i < 0 || i > 8) return;
+  if (g_slot_thumb[i].tex) {
+    video_free_rgba_texture(g_slot_thumb[i].tex);
+    g_slot_thumb[i].tex = 0;
+  }
+  g_slot_thumb[i].sig.clear();
+}
+}  // namespace
+
 static bool state_slot_exists(int i) {
   std::error_code ec;
   return std::filesystem::exists(state_slot_path(i), ec);
@@ -2247,6 +2279,10 @@ static void save_state_slot(int i) {
   int rc = snapshot_save(path);
   if (rc == 0) {
     video_request_window_screenshot(state_slot_png(i));
+    // Capture a small raw-RGBA thumbnail for the pause-screen grid, then drop
+    // the cached texture so the grid reloads the fresh image.
+    video_capture_cpc_thumbnail(state_slot_thumb(i), 160);
+    invalidate_slot_thumb(i);
     set_osd_message("Saved state " + std::to_string(i));
   } else {
     set_osd_message("Save state " + std::to_string(i) + " failed");
@@ -2270,6 +2306,13 @@ static void imgui_render_menu() {
   ImGui::SetNextWindowBgAlpha(0.85f);
   ImGui::SetNextWindowSize(ImVec2(360, 0));
   ImGui::SetNextWindowViewport(mvp->ID);
+
+  // Darken the emulator behind the overlay (the classic dimmed pause backdrop).
+  // Drawn on the background list so it sits over the CPC screen but under this
+  // window.
+  ImGui::GetBackgroundDrawList(mvp)->AddRectFilled(
+      mvp->Pos, ImVec2(mvp->Pos.x + mvp->Size.x, mvp->Pos.y + mvp->Size.y),
+      IM_COL32(0, 0, 0, 150));
 
   ImGuiWindowFlags flags =
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
@@ -2412,17 +2455,97 @@ static void imgui_render_menu() {
   const int kCols = 4;
   float spacing = ImGui::GetStyle().ItemSpacing.x;
   float cell_w = (bw - spacing * (kCols - 1)) / kCols;
+  // Every slot is one uniform 4:3 cell (4 wide : 3 tall): the thumbnail (or a
+  // dark "empty" fill) with the label centered on top — built in the loop.
+  float cell_h = cell_w * 3.0f / 4.0f;
+
+  // Return a cached/ refreshed thumbnail texture for slot i, or 0 if none.
+  auto slot_thumb_texture = [](int i) -> uintptr_t {
+    std::string tp = state_slot_thumb(i);
+    std::error_code ec;
+    if (!std::filesystem::exists(tp, ec)) {
+      invalidate_slot_thumb(i);
+      return 0;
+    }
+    auto wt = std::filesystem::last_write_time(tp, ec);
+    std::string sig =
+        ec ? std::string()
+           : std::to_string(
+                 static_cast<long long>(wt.time_since_epoch().count()));
+    if (g_slot_thumb[i].tex && g_slot_thumb[i].sig == sig) {
+      return g_slot_thumb[i].tex;  // cache hit
+    }
+    // Miss or stale: free old texture, reload from disk.
+    invalidate_slot_thumb(i);
+    std::vector<unsigned char> rgba;
+    int tw = 0, th = 0;
+    if (video_load_rgba_thumbnail(tp, rgba, tw, th)) {
+      uintptr_t tex = video_make_rgba_texture(rgba.data(), tw, th);
+      if (tex) {
+        g_slot_thumb[i].tex = tex;
+        g_slot_thumb[i].sig = sig;
+        return tex;
+      }
+    }
+    return 0;
+  };
+
   for (int i = 1; i <= 8; ++i) {
     bool exists = state_slot_exists(i);
     std::string when = exists ? state_slot_time(i) : std::string("Empty");
-    char label[64];
-    snprintf(label, sizeof(label), "%d\n%s##slot%d", i, when.c_str(), i);
-
-    // TODO v2: render stateN.png thumbnail here (beads)
+    uintptr_t thumb = exists ? slot_thumb_texture(i) : 0;
 
     bool disabled = (state_mode == 0 && !exists);
     if (disabled) ImGui::BeginDisabled();
-    if (ImGui::Button(label, ImVec2(cell_w, ImGui::GetTextLineHeight() * 3))) {
+
+    // Uniform 4:3 cell: an invisible button for hit-testing, then we paint the
+    // image (or empty fill) and the centered label on top via the draw list.
+    char id[16];
+    snprintf(id, sizeof(id), "##slot%d", i);
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(cell_w, cell_h));
+    bool hovered = ImGui::IsItemHovered();
+    ImVec2 p1(p0.x + cell_w, p0.y + cell_h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    if (thumb) {
+      dl->AddImage(static_cast<ImTextureID>(thumb), p0, p1);
+      // Scrim so the centered label stays readable over a bright frame.
+      dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 70));
+    } else {
+      dl->AddRectFilled(p0, p1, IM_COL32(28, 28, 34, 255));
+    }
+    dl->AddRect(p0, p1, hovered ? IM_COL32(120, 170, 255, 255)
+                                : IM_COL32(80, 80, 90, 255),
+                0.0f, 0, hovered ? 2.0f : 1.0f);
+
+    // Centered label (normal font): slot number, then the date and time on
+    // separate lines (or "Empty").
+    auto draw_centered = [&](const char* str, float cy) {
+      ImVec2 ts = ImGui::CalcTextSize(str);
+      ImVec2 tp(p0.x + (cell_w - ts.x) * 0.5f, cy);
+      dl->AddText(ImVec2(tp.x + 1, tp.y + 1), IM_COL32(0, 0, 0, 200), str);
+      dl->AddText(tp, IM_COL32(255, 255, 255, 255), str);
+    };
+    char num[8];
+    snprintf(num, sizeof(num), "%d", i);
+    std::string l_date = when, l_time;
+    if (exists) {
+      // when is "Mon DD HH:MM" — split the trailing time onto its own line.
+      size_t sp = when.find_last_of(' ');
+      if (sp != std::string::npos) {
+        l_date = when.substr(0, sp);
+        l_time = when.substr(sp + 1);
+      }
+    }
+    float lh = ImGui::GetTextLineHeight();
+    int nlines = l_time.empty() ? 2 : 3;
+    float y0 = p0.y + (cell_h - lh * nlines) * 0.5f;
+    draw_centered(num, y0);
+    draw_centered(l_date.c_str(), y0 + lh);
+    if (!l_time.empty()) draw_centered(l_time.c_str(), y0 + lh * 2.0f);
+
+    if (clicked) {
       if (state_mode == 1) {
         save_state_slot(i);
       } else if (exists) {

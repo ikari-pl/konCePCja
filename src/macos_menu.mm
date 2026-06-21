@@ -11,57 +11,14 @@
 #include <string>
 #include "SDL3/SDL.h"
 
-// ── Visible pause while a native menu is open ──────────────────────────────
-// A native NSMenu runs a modal event-tracking loop ON THE MAIN THREAD, which
-// suspends our hand-rolled main-thread render loop — so emulation would
-// silently stall at 0 FPS (the Z80 blocks in the frame handshake with nobody
-// to consume).  As a stopgap until the render present is driven from a
-// CVDisplayLink / common-mode run-loop tick (filed), we cleanly PAUSE the
-// emulator for the duration of any menu tracking: cpc_pause() stops audio
-// gracefully and flags g_emu_paused (an intentional pause), instead of a
-// frozen, audio-glitching 0-FPS stall.  Resumes automatically when the menu
-// closes.  Only the native bar triggers this; the in-window ImGui menu keeps
-// running (it's drawn inside our own loop).
-extern std::atomic<bool> g_emu_paused;
-void cpc_pause();
-void cpc_resume();
-
-// All touched only from AppKit notifications, which post on the main thread.
-static int g_menu_track_depth = 0;       // nested begin/end (submenus)
-static bool g_menu_caused_pause = false;  // did WE pause it (vs a manual pause)?
-
-static void koncpc_menu_track_begin() {
-  if (g_menu_track_depth++ != 0) return;  // already inside a tracking session
-  if (!g_emu_paused.load(std::memory_order_relaxed)) {
-    cpc_pause();  // non-blocking: audio_pause() + sets CPC.paused/g_emu_paused
-    g_menu_caused_pause = true;
-  }
-}
-
-static void koncpc_menu_track_end() {
-  if (g_menu_track_depth > 0) g_menu_track_depth--;
-  if (g_menu_track_depth != 0) return;  // still in a nested submenu
-  if (g_menu_caused_pause) {
-    cpc_resume();
-    g_menu_caused_pause = false;
-  }
-}
-
-// Register the begin/end-tracking observers exactly once.
-static void koncpc_register_menu_pause_observers() {
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
-    [nc addObserverForName:NSMenuDidBeginTrackingNotification
-                    object:nil
-                     queue:nil
-                usingBlock:^(NSNotification*) { koncpc_menu_track_begin(); }];
-    [nc addObserverForName:NSMenuDidEndTrackingNotification
-                    object:nil
-                     queue:nil
-                usingBlock:^(NSNotification*) { koncpc_menu_track_end(); }];
-  });
-}
+// NOTE: a native NSMenu runs a modal event-tracking loop ON THE MAIN THREAD,
+// which suspends our hand-rolled main-thread render loop while a menu is open —
+// so emulation stalls at ~0 FPS for the duration and, crucially, NOTHING can be
+// drawn during tracking.  Pausing on begin-tracking was tried and reverted: the
+// pause overlay could only render AFTER the menu closed, so it looked like
+// "closing the menu paused it."  The real fix is to keep presenting during
+// tracking via a CVDisplayLink / common-mode run-loop tick (filed); until then
+// the native menu simply freezes the frame while open, same as before.
 
 extern "C" void koncpc_menu_action(int action);
 
@@ -266,9 +223,6 @@ static void wire_app_menu(NSMenu* appMenu, KoncepcjaMenuTarget* target) {
 
 static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   if (!mainMenu) return;
-
-  // Pause emulation while any native menu is open (registered once).
-  koncpc_register_menu_pause_observers();
 
   // Idempotency guard: our first custom top-level menu is "Machine".
   if (find_top_menu(mainMenu, @"Machine")) return;
