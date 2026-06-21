@@ -2498,10 +2498,14 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   {
     unsigned int s = CPC.scr_style;
     unsigned int remapped = s;
-    if (s == 17)
-      remapped = 0;  // old Direct (GPU)           -> Direct
-    else if (s >= 18 && s <= 24)
-      remapped = s - 14;  // old swscale (GPU) -> swscale (4..10)
+    // Indices 0..19 are ALL valid CURRENT plugins (incl. the CRT shaders at
+    // 17/18/19), so never remap an in-range value — it is the user's real
+    // choice. Only migrate genuinely-stale configs whose index is out of the
+    // current range (>= 20), left over from the pre-7c.1b GL era. (Remapping
+    // in-range CRT indices silently swapped CRT Lottes for Scale2x and broke
+    // multi-viewport, since swscale plugins don't render detached windows.)
+    if (s >= 20 && s <= 24)
+      remapped = s - 14;  // old swscale (GPU) -> swscale (6..10)
     else if (s >= 25 && s <= 27)
       remapped = s - 8;  // old CRT (GPU)    -> CRT (17..19)
     else if (s >= 28 && s <= 30)
@@ -5509,7 +5513,13 @@ int koncpc_main(int argc, char** argv) {
           SDL_GetWindowSize(mainSDLWindow, &saved_w, &saved_h);
           SDL_GetWindowPosition(mainSDLWindow, &saved_x, &saved_y);
         }
+        // Quiesce the Z80 thread before tearing down video: video_shutdown()
+        // frees the triple-buffer ring, and the Z80 writes into / publishes
+        // those buffers (back_surface == a ring buffer). Freeing them while the
+        // Z80 runs is a use-after-free → segfault on renderer switch.
+        bool z80_was_paused = g_emu_paused.load(std::memory_order_relaxed);
         audio_pause();
+        cpc_pause_and_wait();
         SDL_Delay(20);
         video_shutdown();
         if (video_init()) {
@@ -5530,6 +5540,7 @@ int koncpc_main(int argc, char** argv) {
         koncpc_setup_macos_menu();
 #endif
         audio_resume();
+        if (!z80_was_paused) cpc_resume();
       }
     }
 
