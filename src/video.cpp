@@ -473,7 +473,12 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+  // IMMEDIATE, not VSYNC: a vsync-locked Metal swapchain acquire blocks for
+  // hundreds of ms to seconds over remote desktop (no real refresh), and ImGui
+  // viewport windows inherit this mode — the dominant cause of the multi-second
+  // UI stalls. Emulation is paced by the wall-clock limiter, not present, so
+  // vsync isn't needed for timing. (To be made configurable: video.vsync.)
+  init_info.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -2648,7 +2653,12 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+  // IMMEDIATE, not VSYNC: a vsync-locked Metal swapchain acquire blocks for
+  // hundreds of ms to seconds over remote desktop (no real refresh), and ImGui
+  // viewport windows inherit this mode — the dominant cause of the multi-second
+  // UI stalls. Emulation is paced by the wall-clock limiter, not present, so
+  // vsync isn't needed for timing. (To be made configurable: video.vsync.)
+  init_info.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
