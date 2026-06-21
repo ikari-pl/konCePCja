@@ -3181,26 +3181,20 @@ void doCleanUp() {
   //
   //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
   //     g_z80_quiescent=false before z80_execute() and only re-enters the
-  //     paused/quiescent branch at the top of its loop.  After
-  //     EC_FRAME_COMPLETE it calls signal_ready() then blocks in
-  //     wait_consumed() — it never observes g_emu_paused there.  If SDL_QUIT is
-  //     processed while the Z80 is in wait_consumed(), pause_and_wait would
-  //     spin forever.  Abort the frame handshake after cpc_pause() so
-  //     wait_consumed() returns and the Z80 thread can reach the quiescent
-  //     paused branch.  Then cpc_pause_and_wait() matches the usual quiescence
-  //     spin (same as the loop inside that helper — abort must come first or it
-  //     would deadlock).
+  //     paused/quiescent branch at the top of its loop.  abort() makes
+  //     signal_ready a no-op and releases the render thread's wait so neither
+  //     thread can be left spinning on the frame signal during teardown; then
+  //     cpc_pause_and_wait() drives the Z80 to its quiescent paused branch.
   if (g_z80_thread.joinable() &&
       std::this_thread::get_id() != g_z80_thread.get_id()) {
     if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
       cpc_pause();
-      g_frame_signal.abort();  // unblock Z80 if stuck in wait_consumed()
+      g_frame_signal.abort();  // make signal_ready a no-op + release render wait
       cpc_pause_and_wait();
       g_z80_thread_quit.store(true, std::memory_order_relaxed);
       cpc_resume();
     }
-    g_frame_signal
-        .abort();  // belt-and-suspenders for any pending wait_consumed
+    g_frame_signal.abort();  // belt-and-suspenders during teardown
     g_z80_thread.join();
   } else if (g_z80_thread.joinable()) {
     // Self-join from the Z80 thread itself — can't pause-wait, just signal
@@ -3795,18 +3789,17 @@ static void publish_keyboard_snapshot() {
 //
 // At EC_FRAME_COMPLETE:
 //   1. Completes per-frame work (autotype, session, IPC, etc.)
-//   2. Calls asic_draw_sprites() — finalises back_surface pixels
-//   3. Calls g_frame_signal.signal_ready() — hands back_surface to render
-//   thread
-//   4. Blocks in g_frame_signal.wait_consumed() while render does Phase A
-//   (~3ms)
-//   5. Immediately starts the next frame on return — concurrent with render's
-//   Phase B
+//   2. Calls asic_draw_sprites() — finalises the write buffer's pixels
+//   3. Calls video_ring_publish() — publishes the frame + advances back_surface
+//   4. Calls g_frame_signal.signal_ready() — wakes the render thread (no wait)
+//   5. Immediately starts the next frame — the render thread reads the latest
+//   published buffer independently and never blocks the Z80.
 static void z80_thread_main() {
   dword iExitCondition = EC_FRAME_COMPLETE;
   static int consecutive_skips = 0;
-  // U1 baseline: ticks per second the Z80 spends blocked in wait_consumed()
-  // waiting for the render thread — the coupling this refactor removes.
+  // Residual "render-wait" metric (from the U1 baseline): time the Z80 spends
+  // in signal_ready() — now just a mutex+notify, so the [fps] log reads ~0,
+  // confirming the decouple holds (it was 15-45% before the ring).
   static uint64_t s_render_wait_accum = 0;
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
@@ -4005,10 +3998,11 @@ static void z80_thread_main() {
         }
         imgui_state.show_devtools = true;
         cpc_pause();
-        // Mid-frame pause: the render thread may be waiting in wait_ready() for
-        // a frame that will never arrive (we stopped before EC_FRAME_COMPLETE).
-        // Send a skip signal so it unblocks, calls signal_consumed(), then sees
-        // g_emu_paused=true and shows the paused overlay on its next iteration.
+        // Mid-frame pause: the render thread may be waiting in
+        // try_wait_ready_for() for a frame that will never arrive (we stopped
+        // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
+        // sees g_emu_paused=true and shows the paused overlay on its next
+        // iteration.
         g_frame_signal.signal_ready(true);
         z80.step_in = 0;
         z80.step_out = 0;
@@ -4970,9 +4964,7 @@ int koncpc_main(int argc, char** argv) {
           // the window-close handler (SDL_PollEvent at the top of the loop)
           // never runs and the app looks frozen.  Bail to the outer loop,
           // which re-reads g_emu_paused and takes the paused-overlay branch
-          // that both pumps AND polls events.  No frame is pending here
-          // (try_wait_ready_for just returned false), so the Z80 thread is
-          // NOT blocked in wait_consumed() — we must NOT signal_consumed().
+          // that both pumps AND polls events.
           if (g_emu_paused.load(std::memory_order_relaxed) ||
               g_z80_thread_quit.load(std::memory_order_relaxed)) {
             paused_break = true;
@@ -5004,9 +4996,10 @@ int koncpc_main(int argc, char** argv) {
               CPC.snd_bufferptr = pbSndBuffer.get();
             }
           }
-          g_frame_signal
-              .signal_consumed();  // Z80 starts next frame concurrently
-          // Main-thread-only housekeeping (after releasing back_surface to Z80)
+          // (The Z80 never waited on us — the ring decoupled the threads — so
+          // there is nothing to release here; it has been producing frames the
+          // whole time.)
+          // Main-thread-only housekeeping
           if (g_m4_http.is_running()) g_m4_http.drain_pending();
 #ifdef __APPLE__
           // Dock preview reads the just-presented frame (render-thread-private
@@ -5021,10 +5014,9 @@ int koncpc_main(int argc, char** argv) {
 #endif
           // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread),
           // skip video_display_b() which hangs indefinitely for OpenGL
-          // styles (7-19).  signal_consumed() was already sent so the Z80
-          // loop has seen the quit flag and will exit; on the next main-loop
-          // iteration SDL_EVENT_QUIT will reach the event handler above and
-          // doCleanUp() will join the (already-exited) Z80 thread cleanly.
+          // styles (7-19).  The Z80 loop has seen the quit flag and will exit;
+          // on the next main-loop iteration SDL_EVENT_QUIT will reach the event
+          // handler above and doCleanUp() joins the (already-exited) Z80 thread.
           if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
             continue;
           }
@@ -5051,13 +5043,14 @@ int koncpc_main(int argc, char** argv) {
             g_take_screenshot = false;
           }
         } else {
-          // Skipped frame: service screenshot requests before releasing Z80
+          // Skipped frame: nothing to present this time; just service pending
+          // screenshot requests.  (No handshake to release — the ring decoupled
+          // the Z80 from render.)
           video_take_pending_window_screenshot();
           if (g_take_screenshot) {
             dumpScreen();
             g_take_screenshot = false;
           }
-          g_frame_signal.signal_consumed();
         }
       }
     }
