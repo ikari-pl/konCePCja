@@ -273,6 +273,11 @@ class t_CPC {
   unsigned int scr_intensity;
   unsigned int scr_remanency;
   unsigned int scr_window;
+  unsigned int scr_vsync;  // video.vsync: 1=VSYNC present (default), 0=MAILBOX/
+                           // IMMEDIATE on the MAIN window only (viewport windows
+                           // always stay VSYNC). Safe escape hatch for the
+                           // remote-desktop present stall; emulation pacing is
+                           // unaffected (decoupled from render).
   unsigned int scr_bpp;  // bits per pixel of the SDL back_surface
   unsigned int scr_preserve_aspect_ratio;
   unsigned int

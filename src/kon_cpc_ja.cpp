@@ -2477,6 +2477,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.scr_preserve_aspect_ratio =
       conf.getIntValue("video", "scr_preserve_aspect_ratio", 1);
   CPC.scr_crt_aspect = conf.getIntValue("video", "scr_crt_aspect", 1);
+  CPC.scr_vsync = conf.getIntValue("video", "vsync", 1);
   CPC.scr_style = conf.getIntValue("video", "scr_style", 1);
   // Phase 7c.1b scr_style remap — GL plugins removed and their slots
   // (0-10) replaced in-place by the SDL3 GPU implementations.  The old

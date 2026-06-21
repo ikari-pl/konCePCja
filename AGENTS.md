@@ -425,6 +425,11 @@ speed=4           # Clock speed MHz
 [video]
 scr_scale=2       # Window scale factor
 scr_style=1       # Rendering style (0-11)
+vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
+                  # window only (viewport/DevTools windows always stay VSYNC —
+                  # IMMEDIATE breaks their swapchains). Escape hatch for the
+                  # remote-desktop present stall; emulation pacing is unaffected
+                  # (decoupled from render), so FPS stays 50 either way.
 
 [sound]
 snd_enabled=1

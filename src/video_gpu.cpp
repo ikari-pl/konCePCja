@@ -358,3 +358,36 @@ void video_gpu_free_rgba_texture(uintptr_t tex) {
   if (!tex || !g_gpu.device) return;
   SDL_ReleaseGPUTexture(g_gpu.device, reinterpret_cast<SDL_GPUTexture*>(tex));
 }
+
+void video_gpu_set_main_present_mode(bool vsync) {
+  if (!g_gpu.device || !g_gpu.window) return;
+  // VSYNC is SDL's default after claiming the window, so vsync=1 is a no-op
+  // (identical to today).  Only switch the MAIN window when vsync is disabled.
+  if (vsync) return;
+  // Prefer MAILBOX (low-latency, tear-free) and fall back to IMMEDIATE; both
+  // avoid the vsync-locked Metal acquire stall over remote desktop.  Only the
+  // main window is touched — viewport swapchains stay VSYNC (see video.cpp).
+  SDL_GPUPresentMode mode = SDL_GPU_PRESENTMODE_VSYNC;
+  if (SDL_WindowSupportsGPUPresentMode(g_gpu.device, g_gpu.window,
+                                       SDL_GPU_PRESENTMODE_MAILBOX)) {
+    mode = SDL_GPU_PRESENTMODE_MAILBOX;
+  } else if (SDL_WindowSupportsGPUPresentMode(g_gpu.device, g_gpu.window,
+                                              SDL_GPU_PRESENTMODE_IMMEDIATE)) {
+    mode = SDL_GPU_PRESENTMODE_IMMEDIATE;
+  }
+  if (mode == SDL_GPU_PRESENTMODE_VSYNC) {
+    LOG_INFO(
+        "video.vsync=0 requested but no non-VSYNC present mode is supported — "
+        "staying on VSYNC");
+    return;
+  }
+  if (!SDL_SetGPUSwapchainParameters(g_gpu.device, g_gpu.window,
+                                     SDL_GPU_SWAPCHAINCOMPOSITION_SDR, mode)) {
+    LOG_ERROR("SDL_SetGPUSwapchainParameters failed: "
+              << SDL_GetError() << " — staying on VSYNC");
+    return;
+  }
+  LOG_INFO("Main-window present mode: "
+           << (mode == SDL_GPU_PRESENTMODE_MAILBOX ? "MAILBOX" : "IMMEDIATE")
+           << " (video.vsync=0)");
+}

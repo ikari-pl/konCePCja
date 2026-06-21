@@ -547,6 +547,10 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
+  // video.vsync escape hatch: switch the MAIN window off VSYNC when requested.
+  // Viewport windows keep VSYNC via init_info.PresentMode below.
+  video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
+
   // ImGui — SDLGPU3 backend with multi-viewport ENABLED.  The renderer
   // hooks live in vendor/imgui/backends/imgui_impl_sdlgpu3.cpp; they
   // claim each secondary window for g_gpu.device on creation and submit
@@ -2735,6 +2739,10 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
     mainSDLWindow = nullptr;
     return nullptr;
   }
+
+  // video.vsync escape hatch (main window only; this GPU path has viewports
+  // disabled, but the call is harmless and keeps both GPU inits consistent).
+  video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
 
   // ImGui SDLGPU3 backend — viewports disabled (see Phase 4 rationale).
   IMGUI_CHECKVERSION();

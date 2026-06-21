@@ -54,6 +54,13 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h);
 // Destroy all GPU resources in reverse order.  Safe to call if not initialized.
 void video_gpu_shutdown();
 
+// Set the MAIN window's present mode from the video.vsync config (true=VSYNC,
+// the default; false=MAILBOX/IMMEDIATE where supported, else VSYNC).  ImGui
+// viewport (secondary) windows are NOT touched — they keep VSYNC via the
+// backend's init_info.PresentMode because IMMEDIATE breaks their swapchains.
+// Call once after video_gpu_init() succeeds.
+void video_gpu_set_main_present_mode(bool vsync);
+
 // Create a standalone GPU texture from RGBA8 pixel data and upload it via a
 // one-off transfer buffer + copy pass.  Matches cpc_texture's format/usage so
 // ImGui_ImplSDLGPU3 accepts the result as an ImTextureID.  Returns the texture
