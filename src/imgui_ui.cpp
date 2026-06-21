@@ -4,10 +4,12 @@
 #include <SDL3/SDL_dialog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -20,6 +22,7 @@
 #include "devtools_ui.h"
 #include "disk.h"
 #include "drive_sounds.h"
+#include "fileutils.h"
 #include "imgui.h"
 #include "imgui_ui_testable.h"
 #include "keyboard.h"
@@ -61,6 +64,7 @@ extern byte* pbTapeImageEnd;
 extern byte* pbTapeBlock;
 extern int iTapeCycleCount;
 extern dword dwTapeZeroPulseCycles;
+extern dword dwFrameCountOverall;
 
 // `imgui_state` singleton lives in src/imgui_state.cpp so the symbol is
 // present in both MODERN_UI=ON and OFF builds — the core writes telemetry
@@ -2187,6 +2191,75 @@ static void imgui_render_statusbar() {
 }
 
 // ─────────────────────────────────────────────────
+// Save-state slot helpers (pause-menu state manager)
+// ─────────────────────────────────────────────────
+
+// Directory holding numbered save-state slots, derived from CPC.snap_path.
+// CPC.snap_path may or may not end in a separator, so normalise it.
+static std::string state_slots_dir() {
+  std::string base = CPC.snap_path;
+  if (base.empty()) base = ".";
+  if (base.back() != '/' && base.back() != '\\') base += '/';
+  std::string dir = base + "states/";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  return dir;
+}
+
+static std::string state_slot_path(int i) {
+  return state_slots_dir() + "state" + std::to_string(i) + ".sna";
+}
+
+static std::string state_slot_png(int i) {
+  return state_slots_dir() + "state" + std::to_string(i) + ".png";
+}
+
+static bool state_slot_exists(int i) {
+  std::error_code ec;
+  return std::filesystem::exists(state_slot_path(i), ec);
+}
+
+// Last-write time of a slot, formatted "MMM DD HH:MM", or "" if missing.
+static std::string state_slot_time(int i) {
+  std::error_code ec;
+  std::string path = state_slot_path(i);
+  if (!std::filesystem::exists(path, ec)) return "";
+  auto ftime = std::filesystem::last_write_time(path, ec);
+  if (ec) return "";
+  // Portable file_time -> system_clock conversion (avoids C++20 clock_cast).
+  auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      ftime - std::filesystem::file_time_type::clock::now() +
+      std::chrono::system_clock::now());
+  std::time_t tt = std::chrono::system_clock::to_time_t(sctp);
+  std::tm tm_buf{};
+#ifdef _WIN32
+  localtime_s(&tm_buf, &tt);
+#else
+  localtime_r(&tt, &tm_buf);
+#endif
+  char out[32];
+  if (std::strftime(out, sizeof(out), "%b %d %H:%M", &tm_buf) == 0) return "";
+  return out;
+}
+
+static void save_state_slot(int i) {
+  std::string path = state_slot_path(i);  // also creates the directory
+  int rc = snapshot_save(path);
+  if (rc == 0) {
+    video_request_window_screenshot(state_slot_png(i));
+    set_osd_message("Saved state " + std::to_string(i));
+  } else {
+    set_osd_message("Save state " + std::to_string(i) + " failed");
+  }
+}
+
+static void load_state_slot(int i) {
+  // snapshot_load pauses internally; we are already paused here.
+  snapshot_load(state_slot_path(i));
+  set_osd_message("Loaded state " + std::to_string(i));
+}
+
+// ─────────────────────────────────────────────────
 // Menu
 // ─────────────────────────────────────────────────
 
@@ -2195,7 +2268,7 @@ static void imgui_render_menu() {
   ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
                           ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
-  ImGui::SetNextWindowSize(ImVec2(260, 0));
+  ImGui::SetNextWindowSize(ImVec2(360, 0));
   ImGui::SetNextWindowViewport(mvp->ID);
 
   ImGuiWindowFlags flags =
@@ -2241,6 +2314,7 @@ static void imgui_render_menu() {
 
   float bw = ImGui::GetContentRegionAvail().x;
 
+  // ── Section 1: Transport ────────────────────────────────────────────
   ImGui::TextDisabled("PAUSED");
   ImGui::Spacing();
 
@@ -2252,55 +2326,113 @@ static void imgui_render_menu() {
   if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
     action = true;
   }
-
-  // Quick-load actions — same handlers as the Media menu, so F1 is a real hub
-  // rather than a dead-end that points back at the menu bar.
-  ImGui::Separator();
-  if (ImGui::Button("Load Disk...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter f[] = {
-        {"Disk Images", "dsk;ipf;raw;zip"}};
-    SDL_ShowOpenFileDialog(
-        file_dialog_callback,
-        reinterpret_cast<void*>(
-            static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
-        mainSDLWindow, f, 1, CPC.current_dsk_path.c_str(), false);
-    action = true;
-  }
-  if (ImGui::Button("Load Tape...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter f[] = {{"Tape Images", "cdt;voc;zip"}};
-    SDL_ShowOpenFileDialog(
-        file_dialog_callback,
-        reinterpret_cast<void*>(
-            static_cast<intptr_t>(FileDialogAction::LoadTape)),
-        mainSDLWindow, f, 1, CPC.current_dsk_path.c_str(), false);
-    action = true;
-  }
-  if (ImGui::Button("Load Snapshot...", ImVec2(bw, 0))) {
-    static const SDL_DialogFileFilter f[] = {{"Snapshots", "sna;zip"}};
-    SDL_ShowOpenFileDialog(
-        file_dialog_callback,
-        reinterpret_cast<void*>(
-            static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
-        mainSDLWindow, f, 1, CPC.current_snap_path.c_str(), false);
-    action = true;
-  }
-  if (ImGui::Button("Options...", ImVec2(bw, 0))) {
-    imgui_state.show_options = true;
+  {
+    float half = (bw - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    std::string reset_lbl =
+        "Reset (" + koncpc_action_shortcut(KONCPC_RESET) + ")";
+    if (ImGui::Button(reset_lbl.c_str(), ImVec2(half, 0))) {
+      emulator_reset();
+      action = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Screenshot", ImVec2(half, 0))) {
+      std::string dir = CPC.sdump_dir;
+      std::error_code ec;
+      if (dir.empty() || !std::filesystem::is_directory(dir, ec)) dir = ".";
+      std::string shot = dir + "/screenshot_" + getDateString() + ".png";
+      video_request_window_screenshot(shot);
+      set_osd_message("Screenshot saved");
+    }
   }
 
+  // ── Section 2: Status dashboard ─────────────────────────────────────
   ImGui::Separator();
-  std::string reset_lbl =
-      "Reset (" + koncpc_action_shortcut(KONCPC_RESET) + ")";
-  if (ImGui::Button(reset_lbl.c_str(), ImVec2(bw, 0))) {
-    emulator_reset();
-    action = true;
-  }
-  if (ImGui::Button("About", ImVec2(bw, 0))) {
-    imgui_state.show_about = true;
-  }
-  std::string quit_lbl = "Quit (" + koncpc_action_shortcut(KONCPC_EXIT) + ")";
-  if (ImGui::Button(quit_lbl.c_str(), ImVec2(bw, 0))) {
-    imgui_state.show_quit_confirm = true;
+  ImGui::TextDisabled("Status");
+  ImGui::Spacing();
+
+  auto basename_or_dash = [](const std::string& p) -> std::string {
+    if (p.empty()) return "—";
+    return std::filesystem::path(p).filename().string();
+  };
+
+  ImGui::Columns(2, "pause_status", false);
+  ImGui::Text("Disk A:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.driveA.file).c_str());
+  ImGui::NextColumn();
+  ImGui::Text("Disk B:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.driveB.file).c_str());
+  ImGui::NextColumn();
+  ImGui::Text("Tape:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.tape.file).c_str());
+  ImGui::NextColumn();
+  ImGui::Text("Cartridge:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.cartridge.file).c_str());
+  ImGui::NextColumn();
+
+  static const char* kModelNames[] = {"CPC 464", "CPC 664", "CPC 6128",
+                                      "6128+"};
+  const char* model_name =
+      (CPC.model < IM_ARRAYSIZE(kModelNames)) ? kModelNames[CPC.model] : "?";
+  ImGui::Text("Model:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", model_name);
+  ImGui::NextColumn();
+  ImGui::Text("RAM:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%u KB", CPC.ram_size);
+  ImGui::NextColumn();
+  ImGui::Text("CRTC:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", crtc_type_chip_name(CRTC.crtc_type));
+  ImGui::NextColumn();
+
+  // Uptime derived from the global frame counter (50 frames per second).
+  dword secs = dwFrameCountOverall / 50;
+  ImGui::Text("Uptime:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%u:%02u", secs / 60, secs % 60);
+  ImGui::NextColumn();
+  ImGui::Columns(1);
+
+  // ── Section 3: Save-state manager ───────────────────────────────────
+  ImGui::Separator();
+  ImGui::TextDisabled("Save States");
+  ImGui::Spacing();
+
+  static int state_mode = 0;  // 0 = Load, 1 = Save
+  ImGui::RadioButton("Load", &state_mode, 0);
+  ImGui::SameLine();
+  ImGui::RadioButton("Save", &state_mode, 1);
+  ImGui::Spacing();
+
+  const int kCols = 4;
+  float spacing = ImGui::GetStyle().ItemSpacing.x;
+  float cell_w = (bw - spacing * (kCols - 1)) / kCols;
+  for (int i = 1; i <= 8; ++i) {
+    bool exists = state_slot_exists(i);
+    std::string when = exists ? state_slot_time(i) : std::string("Empty");
+    char label[64];
+    snprintf(label, sizeof(label), "%d\n%s##slot%d", i, when.c_str(), i);
+
+    // TODO v2: render stateN.png thumbnail here (beads)
+
+    bool disabled = (state_mode == 0 && !exists);
+    if (disabled) ImGui::BeginDisabled();
+    if (ImGui::Button(label, ImVec2(cell_w, ImGui::GetTextLineHeight() * 3))) {
+      if (state_mode == 1) {
+        save_state_slot(i);
+      } else if (exists) {
+        load_state_slot(i);
+        action = true;
+      }
+    }
+    if (disabled) ImGui::EndDisabled();
+
+    if (i % kCols != 0 && i != 8) ImGui::SameLine();
   }
 
   ImGui::End();
