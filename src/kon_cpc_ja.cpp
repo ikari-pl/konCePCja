@@ -4259,16 +4259,12 @@ bool render_one_frame() {
   }
   uint64_t displayStart = SDL_GetPerformanceCounter();
   video_display();  // Phase A: texture upload + ImGui render (~3ms)
-  // Partial audio push before Phase B stall
-  {
-    int partial = static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
-    if (!g_emu_paused.load() && partial > 0) {
-      audio_push_buffer(pbSndBuffer.get(), partial);
-      CPC.snd_bufferptr = pbSndBuffer.get();
-    }
-  }
-  // (The Z80 never waited on us — the ring decoupled the threads — so there is
-  // nothing to release here; it has been producing frames the whole time.)
+  // NOTE: the old "partial audio push before the Phase B stall" lived here. It
+  // was safe only because the blocking handshake parked the Z80 during render;
+  // post-decouple the Z80 runs free and owns CPC.snd_bufferptr / pbSndBuffer,
+  // so touching them here would be a data race. It is also redundant — the Z80
+  // feeds the audio queue itself at a steady 50 Hz (EC_SOUND_BUFFER) and never
+  // stalls on present. Removed.
   // Main-thread-only housekeeping
   if (g_m4_http.is_running()) g_m4_http.drain_pending();
 #ifdef __APPLE__
