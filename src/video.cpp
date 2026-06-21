@@ -102,19 +102,20 @@ extern video_plugin* vid_plugin;
 
 // ── Triple-buffered CPC frame ring (decouples Z80 from render) ───────────────
 // One writer (Z80 thread) and one reader (render thread).  The Z80 renders each
-// frame into its private write buffer (back_surface == g_cpc_ring[g_ring_write])
-// and publishes it without blocking.  The render thread copies the latest
-// published buffer into the plugin's stable front-end surface (g_frontend, i.e.
-// the `vid`/`pub` surface every flip already reads) and uploads as before.  The
-// copy is a sub-millisecond same-format blit on the render thread — never on the
-// Z80 critical path — so emulation pacing is untouched.  Three buffers guarantee
-// the Z80 always has a free buffer to write that is neither published nor leased
-// by the render thread, so it never overwrites a frame being read.
-static SDL_Surface* g_frontend = nullptr;        // plugin CPC source = copy dest
+// frame into its private write buffer (back_surface ==
+// g_cpc_ring[g_ring_write]) and publishes it without blocking.  The render
+// thread copies the latest published buffer into the plugin's stable front-end
+// surface (g_frontend, i.e. the `vid`/`pub` surface every flip already reads)
+// and uploads as before.  The copy is a sub-millisecond same-format blit on the
+// render thread — never on the Z80 critical path — so emulation pacing is
+// untouched.  Three buffers guarantee the Z80 always has a free buffer to write
+// that is neither published nor leased by the render thread, so it never
+// overwrites a frame being read.
+static SDL_Surface* g_frontend = nullptr;  // plugin CPC source = copy dest
 static SDL_Surface* g_cpc_ring[3] = {nullptr, nullptr, nullptr};
-static std::atomic<int> g_ring_published{0};     // latest complete frame index
-static std::atomic<int> g_ring_lease{0};         // index the render thread reads
-static int g_ring_write = 0;                      // Z80-thread-private write index
+static std::atomic<int> g_ring_published{0};  // latest complete frame index
+static std::atomic<int> g_ring_lease{0};      // index the render thread reads
+static int g_ring_write = 0;                  // Z80-thread-private write index
 static bool g_ring_active = false;
 
 // Called once from video_init() after the plugin's surface exists.  `frontend`
@@ -130,7 +131,8 @@ SDL_Surface* video_ring_init(SDL_Surface* frontend) {
     g_cpc_ring[i] =
         SDL_CreateSurface(frontend->w, frontend->h, frontend->format);
     if (!g_cpc_ring[i]) {
-      LOG_ERROR("video_ring_init: SDL_CreateSurface failed: " << SDL_GetError());
+      LOG_ERROR(
+          "video_ring_init: SDL_CreateSurface failed: " << SDL_GetError());
       // Degrade gracefully to single-buffer: free any partial ring but keep
       // g_frontend so video_render_surface() stays valid (== back_surface).
       for (int j = 0; j < 3; ++j) {

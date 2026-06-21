@@ -307,7 +307,8 @@ uintptr_t video_gpu_make_rgba_texture(const unsigned char* rgba, int w, int h) {
   SDL_GPUTransferBufferCreateInfo binfo{};
   binfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
   binfo.size = bytes;
-  SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(g_gpu.device, &binfo);
+  SDL_GPUTransferBuffer* xfer =
+      SDL_CreateGPUTransferBuffer(g_gpu.device, &binfo);
   if (!xfer) {
     LOG_ERROR("video_gpu_make_rgba_texture: transfer buffer failed: "
               << SDL_GetError());

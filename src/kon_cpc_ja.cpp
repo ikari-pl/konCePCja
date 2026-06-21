@@ -3189,7 +3189,8 @@ void doCleanUp() {
       std::this_thread::get_id() != g_z80_thread.get_id()) {
     if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
       cpc_pause();
-      g_frame_signal.abort();  // make signal_ready a no-op + release render wait
+      g_frame_signal
+          .abort();  // make signal_ready a no-op + release render wait
       cpc_pause_and_wait();
       g_z80_thread_quit.store(true, std::memory_order_relaxed);
       cpc_resume();
@@ -4252,8 +4253,9 @@ bool render_one_frame() {
   // Write onto the presented frame (video_render_surface()), not the
   // Z80's live write buffer.
   if (SDL_GetTicks() < osd_timing) {
-    print(static_cast<byte*>(video_render_surface()->pixels) + CPC.scr_line_offs,
-          osd_message.c_str(), true);
+    print(
+        static_cast<byte*>(video_render_surface()->pixels) + CPC.scr_line_offs,
+        osd_message.c_str(), true);
   }
   uint64_t displayStart = SDL_GetPerformanceCounter();
   video_display();  // Phase A: texture upload + ImGui render (~3ms)
@@ -4300,8 +4302,8 @@ bool render_one_frame() {
         audio_push_count > 0) {
       double display_ms =
           static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
-      LOG_DEBUG("Audio low queue after display: " << queued << "B, display took "
-                                                  << display_ms << "ms");
+      LOG_DEBUG("Audio low queue after display: "
+                << queued << "B, display took " << display_ms << "ms");
     }
   }
   video_take_pending_window_screenshot();
@@ -4313,13 +4315,13 @@ bool render_one_frame() {
 }
 
 // Phase 2: present the latest published frame from a native-menu tracking
-// driver (macos_menu.mm CFRunLoopTimer in NSEventTrackingRunLoopMode).  A native
-// NSMenu suspends the main loop, but the Z80 keeps producing frames (decoupled),
-// so this tick just copies the newest published buffer to the screen — NO event
-// pump, NO blocking wait, NO sleep (the tracking run loop owns event dispatch).
-// Re-entrancy-guarded: video_display() may spin the run loop internally, which
-// could re-fire the timer; the guard turns that into a no-op so we never start a
-// second ImGui frame on top of an in-flight one.
+// driver (macos_menu.mm CFRunLoopTimer in NSEventTrackingRunLoopMode).  A
+// native NSMenu suspends the main loop, but the Z80 keeps producing frames
+// (decoupled), so this tick just copies the newest published buffer to the
+// screen — NO event pump, NO blocking wait, NO sleep (the tracking run loop
+// owns event dispatch). Re-entrancy-guarded: video_display() may spin the run
+// loop internally, which could re-fire the timer; the guard turns that into a
+// no-op so we never start a second ImGui frame on top of an in-flight one.
 void koncpc_render_tracking_tick() {
   if (g_headless) return;
   static bool s_in_tick = false;  // main-thread only
