@@ -53,3 +53,13 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h);
 
 // Destroy all GPU resources in reverse order.  Safe to call if not initialized.
 void video_gpu_shutdown();
+
+// Create a standalone GPU texture from RGBA8 pixel data and upload it via a
+// one-off transfer buffer + copy pass.  Matches cpc_texture's format/usage so
+// ImGui_ImplSDLGPU3 accepts the result as an ImTextureID.  Returns the texture
+// as uintptr_t, or 0 on failure (never throws).  Caller owns the texture and
+// must free it with video_gpu_free_rgba_texture().
+uintptr_t video_gpu_make_rgba_texture(const unsigned char* rgba, int w, int h);
+
+// Release a texture created by video_gpu_make_rgba_texture().  Null-safe.
+void video_gpu_free_rgba_texture(uintptr_t tex);

@@ -279,3 +279,82 @@ void video_gpu_shutdown() {
   g_gpu = GpuState{};  // zero all fields, initialized = false
   LOG_INFO("GPU scaffolding shut down");
 }
+
+uintptr_t video_gpu_make_rgba_texture(const unsigned char* rgba, int w, int h) {
+  if (!g_gpu.device || !rgba || w <= 0 || h <= 0) return 0;
+
+  const uint32_t uw = static_cast<uint32_t>(w);
+  const uint32_t uh = static_cast<uint32_t>(h);
+  const uint32_t bytes = uw * uh * 4;
+
+  // Match cpc_texture: RGBA8 UNORM, SAMPLER usage (ImGui_ImplSDLGPU3 samples
+  // it). COLOR_TARGET isn't needed for an upload-only thumbnail.
+  SDL_GPUTextureCreateInfo tinfo{};
+  tinfo.type = SDL_GPU_TEXTURETYPE_2D;
+  tinfo.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+  tinfo.width = uw;
+  tinfo.height = uh;
+  tinfo.layer_count_or_depth = 1;
+  tinfo.num_levels = 1;
+  tinfo.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+  SDL_GPUTexture* tex = SDL_CreateGPUTexture(g_gpu.device, &tinfo);
+  if (!tex) {
+    LOG_ERROR("video_gpu_make_rgba_texture: SDL_CreateGPUTexture failed: "
+              << SDL_GetError());
+    return 0;
+  }
+
+  SDL_GPUTransferBufferCreateInfo binfo{};
+  binfo.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+  binfo.size = bytes;
+  SDL_GPUTransferBuffer* xfer = SDL_CreateGPUTransferBuffer(g_gpu.device, &binfo);
+  if (!xfer) {
+    LOG_ERROR("video_gpu_make_rgba_texture: transfer buffer failed: "
+              << SDL_GetError());
+    SDL_ReleaseGPUTexture(g_gpu.device, tex);
+    return 0;
+  }
+
+  void* dst = SDL_MapGPUTransferBuffer(g_gpu.device, xfer, /*cycle=*/false);
+  if (!dst) {
+    LOG_ERROR("video_gpu_make_rgba_texture: map failed: " << SDL_GetError());
+    SDL_ReleaseGPUTransferBuffer(g_gpu.device, xfer);
+    SDL_ReleaseGPUTexture(g_gpu.device, tex);
+    return 0;
+  }
+  std::memcpy(dst, rgba, bytes);
+  SDL_UnmapGPUTransferBuffer(g_gpu.device, xfer);
+
+  SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_gpu.device);
+  if (!cmd) {
+    LOG_ERROR("video_gpu_make_rgba_texture: acquire cmd buffer failed: "
+              << SDL_GetError());
+    SDL_ReleaseGPUTransferBuffer(g_gpu.device, xfer);
+    SDL_ReleaseGPUTexture(g_gpu.device, tex);
+    return 0;
+  }
+
+  SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+  SDL_GPUTextureTransferInfo src_info{};
+  src_info.transfer_buffer = xfer;
+  src_info.offset = 0;
+  src_info.pixels_per_row = uw;
+  src_info.rows_per_layer = uh;
+  SDL_GPUTextureRegion dst_region{};
+  dst_region.texture = tex;
+  dst_region.w = uw;
+  dst_region.h = uh;
+  dst_region.d = 1;
+  SDL_UploadToGPUTexture(copy, &src_info, &dst_region, /*cycle=*/false);
+  SDL_EndGPUCopyPass(copy);
+  SDL_SubmitGPUCommandBuffer(cmd);
+
+  // The transfer buffer is no longer needed; keep the texture.
+  SDL_ReleaseGPUTransferBuffer(g_gpu.device, xfer);
+  return reinterpret_cast<uintptr_t>(tex);
+}
+
+void video_gpu_free_rgba_texture(uintptr_t tex) {
+  if (!tex || !g_gpu.device) return;
+  SDL_ReleaseGPUTexture(g_gpu.device, reinterpret_cast<SDL_GPUTexture*>(tex));
+}

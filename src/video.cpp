@@ -36,7 +36,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -138,6 +140,142 @@ void video_get_cpc_size(int& w, int& h) {
 }
 
 bool video_is_sdl_renderer() { return using_sdl_renderer; }
+
+// ── Save-state slot thumbnails ──────────────────────────────────────────────
+// A ".kthm" file is a 16-byte header followed by h*w*4 RGBA8 bytes:
+//   struct { char magic[4]="KTHM"; int32_t w; int32_t h; int32_t reserved; }
+// Stored little-endian (the only platforms we target are LE).
+
+namespace {
+constexpr char kThmMagic[4] = {'K', 'T', 'H', 'M'};
+constexpr int kThmMaxDim = 1024;
+
+struct ThmHeader {
+  char magic[4];
+  int32_t w;
+  int32_t h;
+  int32_t reserved;
+};
+}  // namespace
+
+uintptr_t video_make_rgba_texture(const unsigned char* rgba, int w, int h) {
+  if (!rgba || w <= 0 || h <= 0) return 0;
+
+  if (using_sdl_renderer && renderer) {
+    SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                         SDL_TEXTUREACCESS_STATIC, w, h);
+    if (!tex) {
+      LOG_ERROR("video_make_rgba_texture: SDL_CreateTexture failed: "
+                << SDL_GetError());
+      return 0;
+    }
+    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
+    if (!SDL_UpdateTexture(tex, nullptr, rgba, w * 4)) {
+      LOG_ERROR("video_make_rgba_texture: SDL_UpdateTexture failed: "
+                << SDL_GetError());
+      SDL_DestroyTexture(tex);
+      return 0;
+    }
+    return reinterpret_cast<uintptr_t>(tex);
+  }
+
+  if (g_gpu.device) {
+    return video_gpu_make_rgba_texture(rgba, w, h);
+  }
+
+  return 0;  // headless or no backend
+}
+
+void video_free_rgba_texture(uintptr_t tex) {
+  if (!tex) return;
+  if (using_sdl_renderer && renderer) {
+    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(tex));
+    return;
+  }
+  if (g_gpu.device) {
+    video_gpu_free_rgba_texture(tex);
+  }
+}
+
+bool video_capture_cpc_thumbnail(const std::string& path, int max_w) {
+  if (!vid || !vid->pixels || vid->w <= 0 || vid->h <= 0 || max_w <= 0) {
+    return false;
+  }
+
+  const int src_w = vid->w;
+  const int src_h = vid->h;
+  int dst_w = std::min(max_w, src_w);
+  if (dst_w < 1) dst_w = 1;
+  // Rasterize to the CPC's 4:3 monitor ratio rather than the raw (very wide,
+  // ~768:270) framebuffer aspect, so the preview matches how the screen
+  // actually looks and isn't vertically stretched in the 4:3 grid cell.  The
+  // downscale loop below samples each axis independently, so this just maps the
+  // raw frame into a 4:3 target.
+  int dst_h = dst_w * 3 / 4;
+  if (dst_h < 1) dst_h = 1;
+  if (dst_w > kThmMaxDim) dst_w = kThmMaxDim;
+  if (dst_h > kThmMaxDim) dst_h = kThmMaxDim;
+
+  // Nearest-neighbor downscale.  vid is RGBA32 (4 bytes/pixel) with pitch.
+  std::vector<unsigned char> out(static_cast<size_t>(dst_w) * dst_h * 4);
+  const auto* src = static_cast<const unsigned char*>(vid->pixels);
+  const int pitch = vid->pitch;
+  for (int y = 0; y < dst_h; ++y) {
+    int sy = static_cast<int>(static_cast<long long>(y) * src_h / dst_h);
+    if (sy >= src_h) sy = src_h - 1;
+    const unsigned char* srow = src + static_cast<size_t>(sy) * pitch;
+    unsigned char* drow = out.data() + static_cast<size_t>(y) * dst_w * 4;
+    for (int x = 0; x < dst_w; ++x) {
+      int sx = static_cast<int>(static_cast<long long>(x) * src_w / dst_w);
+      if (sx >= src_w) sx = src_w - 1;
+      std::memcpy(drow + x * 4, srow + sx * 4, 4);
+    }
+  }
+
+  ThmHeader hdr{};
+  std::memcpy(hdr.magic, kThmMagic, 4);
+  hdr.w = dst_w;
+  hdr.h = dst_h;
+  hdr.reserved = 0;
+
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  if (!f) {
+    LOG_ERROR("video_capture_cpc_thumbnail: cannot open " << path);
+    return false;
+  }
+  f.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+  f.write(reinterpret_cast<const char*>(out.data()),
+          static_cast<std::streamsize>(out.size()));
+  if (!f.good()) {
+    LOG_ERROR("video_capture_cpc_thumbnail: write failed for " << path);
+    return false;
+  }
+  return true;
+}
+
+bool video_load_rgba_thumbnail(const std::string& path,
+                               std::vector<unsigned char>& rgba, int& w,
+                               int& h) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return false;
+
+  ThmHeader hdr{};
+  f.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+  if (!f.good() || std::memcmp(hdr.magic, kThmMagic, 4) != 0) return false;
+  if (hdr.w < 1 || hdr.w > kThmMaxDim || hdr.h < 1 || hdr.h > kThmMaxDim) {
+    return false;
+  }
+
+  const size_t bytes = static_cast<size_t>(hdr.w) * hdr.h * 4;
+  rgba.resize(bytes);
+  f.read(reinterpret_cast<char*>(rgba.data()),
+         static_cast<std::streamsize>(bytes));
+  if (static_cast<size_t>(f.gcount()) != bytes) return false;
+
+  w = hdr.w;
+  h = hdr.h;
+  return true;
+}
 
 // Offscreen FBO-into-texture rendering used to be backed by an OpenGL
 // FBO cache (see Phase 7c.1b deletion).  After the GL plugins were

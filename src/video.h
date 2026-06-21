@@ -100,6 +100,30 @@ uintptr_t video_offscreen_texture(
     const char* key, int canvas_w, int canvas_h, size_t dirty_marker,
     const std::function<void(ImDrawList*, int, int)>& draw_fn);
 
+// ── Save-state slot thumbnails ──────────────────────────────────────────────
+// Backend-aware (SDL_GPU or SDL_Renderer) RGBA texture helpers + a raw
+// thumbnail capture/load pair used by the pause screen save-state grid.
+// No PNG decoder is involved: thumbnails are stored in a tiny ".kthm" raw
+// RGBA container so the code compiles identically on macOS/Linux/MINGW.
+
+// Create a GPU/Renderer texture from RGBA8 pixels.  Returns an ImTextureID-safe
+// handle as uintptr_t, or 0 on failure.  Must be called on the render thread.
+uintptr_t video_make_rgba_texture(const unsigned char* rgba, int w, int h);
+
+// Free a texture created by video_make_rgba_texture().  Null-safe.
+void video_free_rgba_texture(uintptr_t tex);
+
+// Downscale the live CPC framebuffer (nearest-neighbor) to <= max_w wide,
+// preserving aspect, and write it to `path` in the ".kthm" raw RGBA format.
+// Returns false on any error (never throws).
+bool video_capture_cpc_thumbnail(const std::string& path, int max_w);
+
+// Read a ".kthm" thumbnail back into `rgba` (validating magic + dims).
+// Returns false on mismatch or I/O error.
+bool video_load_rgba_thumbnail(const std::string& path,
+                               std::vector<unsigned char>& rgba, int& w,
+                               int& h);
+
 // Request a window screenshot (CPC display + ImGui overlay).
 // Sets path; capture happens on the next rendered frame.
 void video_request_window_screenshot(const std::string& path);
