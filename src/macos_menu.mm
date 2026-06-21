@@ -429,8 +429,14 @@ static void koncpc_menu_track_begin() {
   g_track_timer = CFRunLoopTimerCreate(
       kCFAllocatorDefault, CFAbsoluteTimeGetCurrent(), 1.0 / 60.0, 0, 0,
       koncpc_track_timer_cb, NULL);
-  CFRunLoopAddTimer(CFRunLoopGetCurrent(), g_track_timer,
-                    (__bridge CFStringRef)NSEventTrackingRunLoopMode);
+  if (g_track_timer) {
+    CFRunLoopAddTimer(CFRunLoopGetCurrent(), g_track_timer,
+                      (__bridge CFStringRef)NSEventTrackingRunLoopMode);
+  } else {
+    // Allocation failed (OOM) — undo the depth bump so begin/end stays balanced.
+    // The display just stays frozen during this menu, same as pre-U8.
+    g_menu_track_depth--;
+  }
 }
 
 static void koncpc_menu_track_end() {
