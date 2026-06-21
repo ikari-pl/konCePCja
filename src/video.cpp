@@ -108,14 +108,23 @@ extern video_plugin* vid_plugin;
 // surface (g_frontend, i.e. the `vid`/`pub` surface every flip already reads)
 // and uploads as before.  The copy is a sub-millisecond same-format blit on the
 // render thread — never on the Z80 critical path — so emulation pacing is
-// untouched.  Three buffers guarantee the Z80 always has a free buffer to write
-// that is neither published nor leased by the render thread, so it never
-// overwrites a frame being read.
+// untouched.
+//
+// Lock-free triple buffer: a single atomic `g_ring_shared` holds the published
+// index (low 2 bits) plus a DIRTY bit (a frame is waiting).  BOTH threads
+// atomically exchange against it, so {g_ring_write, g_ring_front, shared-index}
+// always stay a permutation of {0,1,2} — the producer's write index and the
+// consumer's read index are therefore always distinct, with no lock and no
+// read-then-claim TOCTOU window.  The DIRTY bit lets the consumer present
+// idempotently: re-presenting with no new frame re-blits g_ring_front (needed
+// by the macOS menu-tracking driver, which ticks faster than the Z80 produces).
+static constexpr int RING_INDEX_MASK = 0x3;
+static constexpr int RING_DIRTY = 0x4;
 static SDL_Surface* g_frontend = nullptr;  // plugin CPC source = copy dest
 static SDL_Surface* g_cpc_ring[3] = {nullptr, nullptr, nullptr};
-static std::atomic<int> g_ring_published{0};  // latest complete frame index
-static std::atomic<int> g_ring_lease{0};      // index the render thread reads
-static int g_ring_write = 0;                  // Z80-thread-private write index
+static std::atomic<int> g_ring_shared{2};  // published index | DIRTY
+static int g_ring_write = 0;  // Z80-thread-private write (back_surface) index
+static int g_ring_front = 1;  // render-thread-private last-read index
 static bool g_ring_active = false;
 
 // Called once from video_init() after the plugin's surface exists.  `frontend`
@@ -147,38 +156,37 @@ SDL_Surface* video_ring_init(SDL_Surface* frontend) {
     if (pal) SDL_SetSurfacePalette(g_cpc_ring[i], pal);
   }
   g_ring_write = 0;
-  g_ring_published.store(0, std::memory_order_relaxed);
-  g_ring_lease.store(0, std::memory_order_relaxed);
+  g_ring_front = 1;
+  g_ring_shared.store(2, std::memory_order_relaxed);  // permutation {0,1,2}
   g_ring_active = true;
   return g_cpc_ring[0];
 }
 
-// Z80 thread, at frame boundary: publish the just-written buffer and advance to
-// a free buffer (one that is neither published nor render-leased).  Returns the
-// new write surface; the caller assigns back_surface to it.
+// Z80 thread, at frame boundary: publish the just-written buffer (set DIRTY)
+// and take the previously-published buffer as the next write target.  The
+// atomic exchange keeps {write, front, shared} a permutation of {0,1,2}, so the
+// new write buffer is never the one the render thread holds.  Returns the new
+// write surface; the caller assigns back_surface to it.
 SDL_Surface* video_ring_publish() {
   if (!g_ring_active) return g_frontend;
-  int w = g_ring_write;
-  g_ring_published.store(w, std::memory_order_release);
-  int lease = g_ring_lease.load(std::memory_order_acquire);
-  int next = w;
-  for (int i = 0; i < 3; ++i) {
-    if (i != w && i != lease) {
-      next = i;
-      break;
-    }
-  }
-  g_ring_write = next;
-  return g_cpc_ring[next];
+  int prev = g_ring_shared.exchange(g_ring_write | RING_DIRTY,
+                                    std::memory_order_acq_rel);
+  g_ring_write = prev & RING_INDEX_MASK;
+  return g_cpc_ring[g_ring_write];
 }
 
-// Render thread, before the flip: take a read-lease on the latest published
-// buffer and copy it into the stable front-end surface the flip reads.
+// Render thread, before the flip: if a new frame was published (DIRTY), swap
+// our front buffer in for it (atomic exchange, clears DIRTY); then copy the
+// front buffer into the stable front-end surface the flip reads.  Idempotent —
+// calling it again with no new frame re-blits the same front buffer (no
+// tearing, no stale-buffer flicker for the menu-tracking driver).
 void video_ring_present() {
   if (!g_ring_active) return;
-  int p = g_ring_published.load(std::memory_order_acquire);
-  g_ring_lease.store(p, std::memory_order_release);
-  SDL_BlitSurface(g_cpc_ring[p], nullptr, g_frontend, nullptr);
+  if (g_ring_shared.load(std::memory_order_acquire) & RING_DIRTY) {
+    int prev = g_ring_shared.exchange(g_ring_front, std::memory_order_acq_rel);
+    g_ring_front = prev & RING_INDEX_MASK;
+  }
+  SDL_BlitSurface(g_cpc_ring[g_ring_front], nullptr, g_frontend, nullptr);
 }
 
 // The surface the render thread should read/write for the displayed frame
