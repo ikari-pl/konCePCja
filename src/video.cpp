@@ -306,6 +306,11 @@ bool video_capture_cpc_thumbnail(const std::string& path, int max_w) {
   if (!vid || !vid->pixels || vid->w <= 0 || vid->h <= 0 || max_w <= 0) {
     return false;
   }
+  // The downscale loop below indexes pixels as 4-byte RGBA; bail rather than
+  // read out of bounds if the back surface is ever not 32-bit.
+  if (SDL_BYTESPERPIXEL(vid->format) != 4) {
+    return false;
+  }
 
   const int src_w = vid->w;
   const int src_h = vid->h;

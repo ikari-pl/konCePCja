@@ -184,16 +184,22 @@ void parseArguments(int argc, char** argv, std::vector<std::string>& slot_list,
 
       case 'O': {
         std::string opt(optarg);
-        bool invalid = false;
+        // Validate both separators before slicing so we never index past a
+        // missing '=' / '.' (no reliance on npos+1 wraparound).
         auto key_value_separator = opt.find('=');
-        if (key_value_separator == std::string::npos) invalid = true;
-        std::string key = opt.substr(0, key_value_separator);
-        std::string value = opt.substr(key_value_separator + 1);
+        std::string key = key_value_separator == std::string::npos
+                              ? std::string()
+                              : opt.substr(0, key_value_separator);
         auto section_item_separator = key.find('.');
-        if (section_item_separator == std::string::npos) invalid = true;
+        if (key_value_separator == std::string::npos ||
+            section_item_separator == std::string::npos) {
+          LOG_ERROR("Couldn't parse override: '" << opt << "'");
+          break;
+        }
         std::string section = key.substr(0, section_item_separator);
         std::string item = key.substr(section_item_separator + 1);
-        if (invalid || section.empty() || item.empty()) {
+        std::string value = opt.substr(key_value_separator + 1);
+        if (section.empty() || item.empty()) {
           LOG_ERROR("Couldn't parse override: '" << opt << "'");
         } else {
           args.cfgOverrides[section][item] = value;
