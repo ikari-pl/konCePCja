@@ -126,6 +126,79 @@ TEST_F(AutoTypeTest, PauseLargeValue) {
   EXPECT_EQ(queue.actions()[0].pause_frames, 100);
 }
 
+// --- Legacy encoding (enqueue_legacy) tests ---
+// enqueue_legacy parses the -a autocmd / clipboard paste / IPC encoding that
+// replaceKoncpcKeys() produces: plain chars type themselves, '\a'+char is a CPC
+// special key code, '\f'+char is a KONCPC_* emulator command (low byte only;
+// MOD_EMU_KEY high bit re-added).  This replaces the old InputMapper
+// StringToEvents path.
+
+TEST_F(AutoTypeTest, LegacyPlainText) {
+  queue.enqueue_legacy("cat");
+  EXPECT_EQ(queue.remaining(), 3u);
+  auto actions = queue.actions();
+  EXPECT_EQ(actions[0].type, AutoTypeAction::CHAR_PRESS_RELEASE);
+  EXPECT_EQ(actions[0].cpc_key, static_cast<uint16_t>(CPC_c));
+  EXPECT_EQ(actions[1].cpc_key, static_cast<uint16_t>(CPC_a));
+  EXPECT_EQ(actions[2].cpc_key, static_cast<uint16_t>(CPC_t));
+}
+
+TEST_F(AutoTypeTest, LegacySpecialKey) {
+  // '\a' + a CPC key code byte -> that key, pressed+released as-is.
+  std::string input = "\a";
+  input += static_cast<char>(CPC_ESC);
+  queue.enqueue_legacy(input);
+  EXPECT_EQ(queue.remaining(), 1u);
+  auto actions = queue.actions();
+  EXPECT_EQ(actions[0].type, AutoTypeAction::CHAR_PRESS_RELEASE);
+  EXPECT_EQ(actions[0].cpc_key, static_cast<uint16_t>(CPC_ESC));
+}
+
+TEST_F(AutoTypeTest, LegacyCommandRestoresModEmuKey) {
+  // '\f' + the low byte of a KONCPC_* code -> COMMAND with MOD_EMU_KEY
+  // re-added. KONCPC_EXIT == MOD_EMU_KEY (0x1000); its low byte is 0x00 —
+  // exactly the case that regressed when the single-byte encoder dropped the
+  // high bit.
+  std::string input = "\f";
+  input += static_cast<char>(KONCPC_EXIT & 0xff);
+  queue.enqueue_legacy(input);
+  EXPECT_EQ(queue.remaining(), 1u);
+  auto actions = queue.actions();
+  EXPECT_EQ(actions[0].type, AutoTypeAction::COMMAND);
+  EXPECT_EQ(actions[0].cpc_key, static_cast<uint16_t>(KONCPC_EXIT));
+}
+
+// --- COMMAND tick / blocking behaviour ---
+
+TEST_F(AutoTypeTest, CommandTickInvokesCallbackAndBlocks) {
+  std::string input = "\f";
+  input += static_cast<char>(KONCPC_WAITBREAK & 0xff);
+  queue.enqueue_legacy(input);
+  queue.enqueue_legacy("x");  // must NOT drain while the queue is blocked
+
+  std::vector<uint16_t> cmds;
+  auto cmd_cb = [&](uint16_t cmd) -> bool {
+    cmds.push_back(cmd);
+    return cmd == KONCPC_WAITBREAK;  // WAITBREAK blocks until resume()
+  };
+
+  // First tick runs the COMMAND, which blocks the queue.
+  EXPECT_TRUE(queue.tick(recorder(), cmd_cb));
+  ASSERT_EQ(cmds.size(), 1u);
+  EXPECT_EQ(cmds[0], static_cast<uint16_t>(KONCPC_WAITBREAK));
+
+  // While blocked, ticks are no-ops: the pending 'x' must not be applied.
+  EXPECT_TRUE(queue.tick(recorder(), cmd_cb));
+  EXPECT_TRUE(calls.empty());
+
+  // resume() unblocks; the 'x' now types.
+  queue.resume();
+  queue.tick(recorder(), cmd_cb);
+  ASSERT_FALSE(calls.empty());
+  EXPECT_EQ(calls[0].cpc_key, static_cast<uint16_t>(CPC_x));
+  EXPECT_TRUE(calls[0].pressed);
+}
+
 TEST_F(AutoTypeTest, MixedRunQuote) {
   // RUN"<RETURN> is a common CPC command
   auto err = queue.enqueue("RUN\"~RETURN~");

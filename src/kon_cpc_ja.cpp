@@ -257,9 +257,7 @@ std::atomic<byte> keyboard_matrix[16];
 std::atomic<byte> keyboard_matrix_live[16];
 std::mutex g_kbd_matrix_mutex;
 
-std::list<SDL_Event> virtualKeyboardEvents;
-dword nextVirtualEventFrameCount, dwFrameCountOverall = 0;
-dword breakPointsToSkipBeforeProceedingWithVirtualEvents = 0;
+dword dwFrameCountOverall = 0;
 
 t_MemBankConfig membank_config;
 
@@ -2865,9 +2863,10 @@ void showVKeyboard() {
 }
 
 void koncpc_queue_virtual_keys(const std::string& text) {
-  auto newEvents = CPC.InputMapper->StringToEvents(text);
-  virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
-  nextVirtualEventFrameCount = dwFrameCountOverall;
+  // Single scan-synced path: feed the legacy \a/\f encoding into the
+  // AutoTypeQueue, which the Z80 thread drains in sync with the firmware's
+  // keyboard scans (speed-independent).
+  g_autotype_queue.enqueue_legacy(text);
 }
 
 void koncpc_menu_action(int action) {
@@ -2915,18 +2914,17 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_DELAY:
-      // Reuse boot_time as it is a reasonable wait time for Plus transition
-      // between the F1/F2 nag screen and the command line.
-      // TODO: Support an argument to KONCPC_DELAY in autocmd instead.
+      // Pause the autotype queue for boot_time frames — a reasonable wait for
+      // the Plus transition between the F1/F2 nag screen and the command line.
+      // Prefer the ~PAUSE n~ autocmd syntax for explicit control.
       LOG_VERBOSE("Take into account KONCPC_DELAY");
-      nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+      g_autotype_queue.enqueue("~PAUSE " + std::to_string(CPC.boot_time) + "~");
       break;
 
     case KONCPC_WAITBREAK:
-      breakPointsToSkipBeforeProceedingWithVirtualEvents++;
-      LOG_INFO("Will skip "
-               << breakPointsToSkipBeforeProceedingWithVirtualEvents
-               << " before processing more virtual events.");
+      // Arm a breakpoint; the autotype queue blocks (apply_cmd returns true)
+      // until it fires and the Z80 thread calls g_autotype_queue.resume().
+      LOG_INFO("Autotype: waiting for next breakpoint before continuing.");
       LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point << ").");
       z80.break_point = 0;
       break;
@@ -3004,9 +3002,7 @@ void koncpc_menu_action(int action) {
       {
         auto content = std::string(SDL_GetClipboardText());
         LOG_VERBOSE("Pasting '" << content << "'");
-        auto newEvents = CPC.InputMapper->StringToEvents(content);
-        virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
-        nextVirtualEventFrameCount = dwFrameCountOverall;
+        koncpc_queue_virtual_keys(content);
         break;
       }
 
@@ -3909,9 +3905,16 @@ static void z80_thread_main() {
       }
     }
 
-    // Speed limiter: spin/sleep until deadline on audio-driven cycle boundaries
+    // Speed limiter: spin/sleep until deadline on audio-driven cycle
+    // boundaries. Forced on while autotype is active so the Z80 stays at real
+    // time: the autotype is paced by the firmware's keyboard scans (with a
+    // frame-based timeout fallback), which is only meaningful at real-time
+    // speed — an uncapped Z80 would drain the queue during a busy CPU stretch
+    // (e.g. while BASIC executes a typed command) and drop the keys it isn't
+    // reading.
     static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
-    if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
+    const bool limit_now = CPC.limit_speed || g_autotype_queue.is_active();
+    if (limit_now && iExitCondition == EC_CYCLE_COUNT) {
       uint64_t sleepStart = SDL_GetPerformanceCounter();
       if (sleepStart < perfTicksTarget) {
         uint64_t remaining_ticks = perfTicksTarget - sleepStart;
@@ -3935,7 +3938,7 @@ static void z80_thread_main() {
     }
 
     // Frameskip decision at frame boundaries
-    if (iExitCondition == EC_FRAME_COMPLETE && CPC.limit_speed) {
+    if (iExitCondition == EC_FRAME_COMPLETE && limit_now) {
       uint64_t now = SDL_GetPerformanceCounter();
       if (CPC.frameskip && now > perfTicksTarget) {
         if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
@@ -4017,11 +4020,8 @@ static void z80_thread_main() {
       } else {
         z80.break_point = Z80_BREAKPOINT_NONE;
         z80.trace = 1;
-        if (breakPointsToSkipBeforeProceedingWithVirtualEvents > 0) {
-          breakPointsToSkipBeforeProceedingWithVirtualEvents--;
-          LOG_DEBUG("Decremented breakpoint skip counter to "
-                    << breakPointsToSkipBeforeProceedingWithVirtualEvents);
-        }
+        // Release an autotype KONCPC_WAITBREAK that was waiting for this break.
+        g_autotype_queue.resume();
       }
     } else {
       if (z80.break_point == Z80_BREAKPOINT_NONE) {
@@ -4115,36 +4115,43 @@ static void z80_thread_main() {
           do_tick = true;
         }
         if (do_tick) {
-          g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
-            CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
-                static_cast<CPC_KEYS>(cpc_key));
-            if (static_cast<byte>(scancode) == 0xff) return;
-            if (pressed) {
-              keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
-                  ~bit_values[static_cast<byte>(scancode) & 7],
-                  std::memory_order_relaxed);
-              if (scancode & MOD_CPC_SHIFT)
-                keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7],
-                                                     std::memory_order_relaxed);
-              else
-                keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
-                                                    std::memory_order_relaxed);
-              if (scancode & MOD_CPC_CTRL)
-                keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7],
-                                                     std::memory_order_relaxed);
-              else
-                keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
-                                                    std::memory_order_relaxed);
-            } else {
-              keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
-                  bit_values[static_cast<byte>(scancode) & 7],
-                  std::memory_order_relaxed);
-              keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
-                                                  std::memory_order_relaxed);
-              keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
-                                                  std::memory_order_relaxed);
-            }
-          });
+          g_autotype_queue.tick(
+              [](uint16_t cpc_key, bool pressed) {
+                CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
+                    static_cast<CPC_KEYS>(cpc_key));
+                if (static_cast<byte>(scancode) == 0xff) return;
+                if (pressed) {
+                  keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
+                      ~bit_values[static_cast<byte>(scancode) & 7],
+                      std::memory_order_relaxed);
+                  if (scancode & MOD_CPC_SHIFT)
+                    keyboard_matrix[0x25 >> 4].fetch_and(
+                        ~bit_values[0x25 & 7], std::memory_order_relaxed);
+                  else
+                    keyboard_matrix[0x25 >> 4].fetch_or(
+                        bit_values[0x25 & 7], std::memory_order_relaxed);
+                  if (scancode & MOD_CPC_CTRL)
+                    keyboard_matrix[0x27 >> 4].fetch_and(
+                        ~bit_values[0x27 & 7], std::memory_order_relaxed);
+                  else
+                    keyboard_matrix[0x27 >> 4].fetch_or(
+                        bit_values[0x27 & 7], std::memory_order_relaxed);
+                } else {
+                  keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
+                      bit_values[static_cast<byte>(scancode) & 7],
+                      std::memory_order_relaxed);
+                  keyboard_matrix[0x25 >> 4].fetch_or(
+                      bit_values[0x25 & 7], std::memory_order_relaxed);
+                  keyboard_matrix[0x27 >> 4].fetch_or(
+                      bit_values[0x27 & 7], std::memory_order_relaxed);
+                }
+              },
+              [](uint16_t cmd) -> bool {
+                koncpc_menu_action(static_cast<int>(cmd));
+                // KONCPC_WAITBREAK blocks the queue until the next breakpoint
+                // fires (the Z80 thread then calls g_autotype_queue.resume()).
+                return cmd == KONCPC_WAITBREAK;
+              });
         }
       }
 
@@ -4511,24 +4518,24 @@ int koncpc_main(int argc, char** argv) {
     g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
   }
 
-  // Fill the buffer with autocmd if provided.
-  // Two paths:
-  // - If the string contains ~KEY~ syntax (tilde-delimited), use AutoTypeQueue
-  //   which parses ~ENTER~, ~PAUSE 50~, etc.
-  // - Otherwise, use StringToEvents which handles \a (CPC keys) and \f
-  // (emulator
-  //   commands like KONCPC_WAITBREAK/KONCPC_EXIT) from replaceKoncpcKeys().
+  // Fill the autotype queue with the autocmd if provided.  A single
+  // scan-synced path drives all keyboard injection:
+  // - ~KEY~ syntax (tilde-delimited) is parsed by enqueue() (~ENTER~, ~PAUSE
+  //   50~, etc.).
+  // - The legacy \a (CPC keys) / \f (emulator commands like
+  //   KONCPC_WAITBREAK/KONCPC_EXIT, from replaceKoncpcKeys()) encoding is
+  //   parsed by enqueue_legacy().
   if (!args.autocmd.empty()) {
+    // Single scan-synced path for all autocmds: a boot-time delay, then the
+    // command — either ~KEY~ syntax or the legacy \a/\f encoding.
+    g_autotype_queue.enqueue("~PAUSE " + std::to_string(CPC.boot_time) + "~");
     if (args.autocmd.find('~') != std::string::npos) {
-      std::string cmd =
-          "~PAUSE " + std::to_string(CPC.boot_time) + "~" + args.autocmd;
-      auto err = g_autotype_queue.enqueue(cmd);
+      auto err = g_autotype_queue.enqueue(args.autocmd);
       if (!err.empty()) {
         LOG_ERROR("--autocmd parse error: " << err);
       }
     } else {
-      virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
-      nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+      g_autotype_queue.enqueue_legacy(args.autocmd);
     }
   }
 
@@ -4558,94 +4565,6 @@ int koncpc_main(int argc, char** argv) {
     if (!bin_loaded && dwFrameCountOverall > CPC.boot_time) {
       bin_loaded = true;
       if (!args.binFile.empty()) bin_load(args.binFile, args.binOffset);
-    }
-
-    if (!virtualKeyboardEvents.empty() &&
-        (nextVirtualEventFrameCount < dwFrameCountOverall) &&
-        (breakPointsToSkipBeforeProceedingWithVirtualEvents == 0)) {
-      auto nextVirtualEvent = &virtualKeyboardEvents.front();
-      if (!g_headless) SDL_PushEvent(nextVirtualEvent);
-
-      auto key = nextVirtualEvent->key.key;
-      auto mod = static_cast<SDL_Keymod>(nextVirtualEvent->key.mod);
-      auto evtype = nextVirtualEvent->key.type;
-      LOG_DEBUG("Inserted virtual event key=" << int(key) << " (" << evtype
-                                              << ")");
-
-      CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(key, mod);
-      if (!(scancode & MOD_EMU_KEY)) {
-        LOG_DEBUG(
-            "The virtual event is a keypress (not a command), so introduce a "
-            "pause.");
-        // After a KEY_UP, wait an extra frame before the next event so the
-        // CPC firmware key-scan sees a clean "released" cycle between the
-        // release and the next press.  Without this, two adjacent identical
-        // characters (e.g. "ll" in "CALL") collapse into a single registered
-        // keypress because both scans land on the "pressed" state.  Mirrors
-        // the inter_char_pause_ logic in AutoTypeQueue::tick().
-        int gap = 0;
-        if (evtype == SDL_EVENT_KEY_DOWN)
-          gap = 1;
-        else if (evtype == SDL_EVENT_KEY_UP)
-          gap = 3;
-        nextVirtualEventFrameCount = dwFrameCountOverall + gap;
-      }
-
-      // In headless mode, directly process keyboard events
-      if (g_headless) {
-        if (!(scancode & MOD_EMU_KEY)) {
-          bool press = (evtype == SDL_EVENT_KEY_DOWN);
-          applyKeypress(scancode, keyboard_matrix, press);
-        } else if (evtype == SDL_EVENT_KEY_DOWN) {
-          // Handle emulator commands (no SDL event loop in headless mode)
-          switch (scancode) {
-            case KONCPC_EXIT:
-              cleanExit(0);
-              break;
-            case KONCPC_RESET:
-              emulator_reset();
-              break;
-            case KONCPC_WAITBREAK:
-              breakPointsToSkipBeforeProceedingWithVirtualEvents++;
-              LOG_INFO("Will skip "
-                       << breakPointsToSkipBeforeProceedingWithVirtualEvents
-                       << " before processing more virtual events.");
-              z80.break_point = 0;
-              break;
-            case KONCPC_DELAY:
-              nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
-              break;
-            case KONCPC_SNAPSHOT:
-              dumpSnapshot();
-              break;
-            case KONCPC_TAPEPLAY:
-              Tape_Rewind();
-              if (!pbTapeImage.empty()) {
-                CPC.tape_play_button = CPC.tape_play_button ? 0 : 0x10;
-              }
-              break;
-            case KONCPC_SPEED: {
-              static uint64_t last_speed_toggle = 0;
-              uint64_t now = SDL_GetPerformanceCounter();
-              if (now - last_speed_toggle >
-                  SDL_GetPerformanceFrequency() * 3 / 10) {
-                CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-                last_speed_toggle = now;
-              }
-              break;
-            }
-            case KONCPC_DEBUG:
-              log_verbose = !log_verbose;
-              break;
-            default:
-              LOG_DEBUG("Ignoring emulator key " << scancode
-                                                 << " in headless mode");
-              break;
-          }
-        }
-      }
-
-      virtualKeyboardEvents.pop_front();
     }
 
     // Mouse-as-joystick: release all joystick axes periodically so they don't
@@ -5267,11 +5186,8 @@ int koncpc_main(int argc, char** argv) {
           z80.trace = 1;  // make sure we'll be here to rearm break point at the
                           // next z80 instruction.
 
-          if (breakPointsToSkipBeforeProceedingWithVirtualEvents > 0) {
-            breakPointsToSkipBeforeProceedingWithVirtualEvents--;
-            LOG_DEBUG("Decremented breakpoint skip counter to "
-                      << breakPointsToSkipBeforeProceedingWithVirtualEvents);
-          }
+          // Release an autotype KONCPC_WAITBREAK waiting for this break.
+          g_autotype_queue.resume();
         }
       } else {
         if (z80.break_point == Z80_BREAKPOINT_NONE) {
@@ -5389,39 +5305,44 @@ int koncpc_main(int argc, char** argv) {
             do_tick = true;
           }
           if (do_tick) {
-            g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
-              CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
-                  static_cast<CPC_KEYS>(cpc_key));
-              // Direct matrix manipulation (same as ipc_apply_keypress)
-              if (static_cast<byte>(scancode) == 0xff) return;
-              if (pressed) {
-                keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
-                    ~bit_values[static_cast<byte>(scancode) & 7],
-                    std::memory_order_relaxed);
-                if (scancode & MOD_CPC_SHIFT) {
-                  keyboard_matrix[0x25 >> 4].fetch_and(
-                      ~bit_values[0x25 & 7], std::memory_order_relaxed);
-                } else {
-                  keyboard_matrix[0x25 >> 4].fetch_or(
-                      bit_values[0x25 & 7], std::memory_order_relaxed);
-                }
-                if (scancode & MOD_CPC_CTRL) {
-                  keyboard_matrix[0x27 >> 4].fetch_and(
-                      ~bit_values[0x27 & 7], std::memory_order_relaxed);
-                } else {
-                  keyboard_matrix[0x27 >> 4].fetch_or(
-                      bit_values[0x27 & 7], std::memory_order_relaxed);
-                }
-              } else {
-                keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
-                    bit_values[static_cast<byte>(scancode) & 7],
-                    std::memory_order_relaxed);
-                keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
-                                                    std::memory_order_relaxed);
-                keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
-                                                    std::memory_order_relaxed);
-              }
-            });
+            g_autotype_queue.tick(
+                [](uint16_t cpc_key, bool pressed) {
+                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
+                      static_cast<CPC_KEYS>(cpc_key));
+                  // Direct matrix manipulation (same as ipc_apply_keypress)
+                  if (static_cast<byte>(scancode) == 0xff) return;
+                  if (pressed) {
+                    keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
+                        ~bit_values[static_cast<byte>(scancode) & 7],
+                        std::memory_order_relaxed);
+                    if (scancode & MOD_CPC_SHIFT) {
+                      keyboard_matrix[0x25 >> 4].fetch_and(
+                          ~bit_values[0x25 & 7], std::memory_order_relaxed);
+                    } else {
+                      keyboard_matrix[0x25 >> 4].fetch_or(
+                          bit_values[0x25 & 7], std::memory_order_relaxed);
+                    }
+                    if (scancode & MOD_CPC_CTRL) {
+                      keyboard_matrix[0x27 >> 4].fetch_and(
+                          ~bit_values[0x27 & 7], std::memory_order_relaxed);
+                    } else {
+                      keyboard_matrix[0x27 >> 4].fetch_or(
+                          bit_values[0x27 & 7], std::memory_order_relaxed);
+                    }
+                  } else {
+                    keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
+                        bit_values[static_cast<byte>(scancode) & 7],
+                        std::memory_order_relaxed);
+                    keyboard_matrix[0x25 >> 4].fetch_or(
+                        bit_values[0x25 & 7], std::memory_order_relaxed);
+                    keyboard_matrix[0x27 >> 4].fetch_or(
+                        bit_values[0x27 & 7], std::memory_order_relaxed);
+                  }
+                },
+                [](uint16_t cmd) -> bool {
+                  koncpc_menu_action(static_cast<int>(cmd));
+                  return cmd == KONCPC_WAITBREAK;
+                });
           }
         }
 

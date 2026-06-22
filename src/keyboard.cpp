@@ -1590,56 +1590,6 @@ std::string koncpc_action_shortcut(KONCPC_KEYS action) {
   return CPC.InputMapper->shortcutForAction(static_cast<CapriceKey>(action));
 }
 
-std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
-  std::list<SDL_Event> result;
-  bool escaped = false;
-  bool koncpc_cmd = false;
-  std::map<CapriceKey, PCKey>::iterator sdl_keysym;
-
-  for (auto c : toTranslate) {
-    if (c == '\a') {
-      // Escape prefix: next char is a special one
-      escaped = true;
-      continue;
-    }
-    if (c == '\f') {
-      // Emulator special command
-      koncpc_cmd = true;
-      continue;
-    }
-    SDL_Event key = {};  // zero-init so windowID=0 marks virtual events
-    if (escaped || koncpc_cmd) {
-      int keycode = static_cast<unsigned char>(c);
-      if (koncpc_cmd) {
-        keycode += MOD_EMU_KEY;
-      }
-      // Lookup the SDL key corresponding to this emulator command
-      sdl_keysym = SDLkeysymFromCPCkeys.find(keycode);
-      if (sdl_keysym != SDLkeysymFromCPCkeys.end()) {
-        key.key.key =
-            static_cast<SDL_Keycode>(sdl_keysym->second & BITMASK_NOMOD);
-        key.key.mod =
-            static_cast<SDL_Keymod>(sdl_keysym->second >> BITSHIFT_MOD);
-      }
-      escaped = false;
-      koncpc_cmd = false;
-    } else {
-      // key.key.keysym.scancode = ;
-      key.key.key = SDLkeysFromChars[c].first;
-      key.key.mod = SDLkeysFromChars[c].second;
-      // key.key.keysym.unicode = c;
-    }
-    key.type = SDL_EVENT_KEY_DOWN;
-    key.key.down = true;
-    result.push_back(key);
-
-    key.type = SDL_EVENT_KEY_UP;
-    key.key.down = false;
-    result.push_back(key);
-  }
-  return result;
-}
-
 void InputMapper::set_joystick_emulation() {
   // CPC joy key, CPC original key
   static int joy_layout[12][2] = {{CPC_J0_UP, CPC_CUR_UP},

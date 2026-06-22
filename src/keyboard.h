@@ -335,7 +335,6 @@ class InputMapper {
   CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
   void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode* cpc_key,
                                    bool& release);
-  std::list<SDL_Event> StringToEvents(std::string toTranslate);
   void set_joystick_emulation();
   // Human-readable host shortcut(s) currently bound to an emulator command,
   // derived from the live binding map so menu/UI hints can never drift from the
