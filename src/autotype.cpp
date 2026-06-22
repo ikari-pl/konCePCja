@@ -120,8 +120,11 @@ std::string AutoTypeQueue::enqueue(const std::string& text) {
   return "";
 }
 
-bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
+bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key,
+                         const AutoTypeCmdFunc& apply_cmd) {
   std::lock_guard<std::mutex> lock(mutex_);
+  // Blocked on a command (e.g. KONCPC_WAITBREAK) until resume() is called.
+  if (blocked_) return true;
   // Handle pending release from previous CHAR_PRESS_RELEASE
   if (awaiting_release_) {
     apply_key(pending_release_key_, false);
@@ -172,15 +175,67 @@ bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key) {
     case AutoTypeAction::PAUSE:
       pause_counter_ = action.pause_frames - 1;  // -1 because this frame counts
       return true;
+
+    case AutoTypeAction::COMMAND:
+      // Execute the emulator command (KONCPC_*). If it returns true the queue
+      // blocks until resume() (KONCPC_WAITBREAK waits for the next breakpoint).
+      if (apply_cmd && apply_cmd(action.cpc_key)) {
+        blocked_ = true;
+      }
+      return true;
   }
 
   return false;
 }
 
+void AutoTypeQueue::resume() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  blocked_ = false;
+}
+
+void AutoTypeQueue::enqueue_legacy(const std::string& text) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  bool escaped = false;  // '\a' — next char is a CPC special key code
+  bool command = false;  // '\f' — next char is a KONCPC_* command code
+  for (char c : text) {
+    if (c == '\a') {
+      escaped = true;
+      continue;
+    }
+    if (c == '\f') {
+      command = true;
+      continue;
+    }
+    AutoTypeAction a;
+    a.pause_frames = 0;
+    if (command) {
+      // The encoded byte is the KONCPC_* code's low byte; re-add MOD_EMU_KEY
+      // (the high bit the encoder dropped) to form the full command code, just
+      // as the legacy StringToEvents decoder did.
+      a.type = AutoTypeAction::COMMAND;
+      a.cpc_key =
+          static_cast<uint16_t>(static_cast<unsigned char>(c) | MOD_EMU_KEY);
+      command = false;
+    } else if (escaped) {
+      // The byte is already a CPC key code (CapriceKey), as encoded by the -a
+      // assembler's koncpc_specialkey().
+      a.type = AutoTypeAction::CHAR_PRESS_RELEASE;
+      a.cpc_key = static_cast<uint16_t>(static_cast<unsigned char>(c));
+    } else {
+      auto cit = cpc_char_to_key().find(c);
+      if (cit == cpc_char_to_key().end()) continue;  // skip unmappable
+      a.type = AutoTypeAction::CHAR_PRESS_RELEASE;
+      a.cpc_key = static_cast<uint16_t>(cit->second);
+    }
+    queue_.push_back(a);
+    escaped = false;
+  }
+}
+
 bool AutoTypeQueue::is_active() const {
   std::lock_guard<std::mutex> lock(mutex_);
   return !queue_.empty() || awaiting_release_ || pause_counter_ > 0 ||
-         inter_char_pause_;
+         inter_char_pause_ || blocked_;
 }
 
 size_t AutoTypeQueue::remaining() const {
@@ -195,4 +250,5 @@ void AutoTypeQueue::clear() {
   awaiting_release_ = false;
   pending_release_key_ = 0;
   inter_char_pause_ = false;
+  blocked_ = false;
 }

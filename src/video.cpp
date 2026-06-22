@@ -100,6 +100,111 @@ static int bottombar_height = 0;
 extern t_CPC CPC;
 extern video_plugin* vid_plugin;
 
+// ── Triple-buffered CPC frame ring (decouples Z80 from render) ───────────────
+// One writer (Z80 thread) and one reader (render thread).  The Z80 renders each
+// frame into its private write buffer (back_surface ==
+// g_cpc_ring[g_ring_write]) and publishes it without blocking.  The render
+// thread copies the latest published buffer into the plugin's stable front-end
+// surface (g_frontend, i.e. the `vid`/`pub` surface every flip already reads)
+// and uploads as before.  The copy is a sub-millisecond same-format blit on the
+// render thread — never on the Z80 critical path — so emulation pacing is
+// untouched.
+//
+// Lock-free triple buffer: a single atomic `g_ring_shared` holds the published
+// index (low 2 bits) plus a DIRTY bit (a frame is waiting).  BOTH threads
+// atomically exchange against it, so {g_ring_write, g_ring_front, shared-index}
+// always stay a permutation of {0,1,2} — the producer's write index and the
+// consumer's read index are therefore always distinct, with no lock and no
+// read-then-claim TOCTOU window.  The DIRTY bit lets the consumer present
+// idempotently: re-presenting with no new frame re-blits g_ring_front (needed
+// by the macOS menu-tracking driver, which ticks faster than the Z80 produces).
+static constexpr int RING_INDEX_MASK = 0x3;
+static constexpr int RING_DIRTY = 0x4;
+static SDL_Surface* g_frontend = nullptr;  // plugin CPC source = copy dest
+static SDL_Surface* g_cpc_ring[3] = {nullptr, nullptr, nullptr};
+static std::atomic<int> g_ring_shared{2};  // published index | DIRTY
+static int g_ring_write = 0;  // Z80-thread-private write (back_surface) index
+static int g_ring_front = 1;  // render-thread-private last-read index
+static bool g_ring_active = false;
+
+// Called once from video_init() after the plugin's surface exists.  `frontend`
+// is the plugin's CPC source surface (the Z80's historical write target).  We
+// keep it as the render-private copy destination and allocate three matching
+// write buffers.  Returns the Z80's initial write surface.
+SDL_Surface* video_ring_init(SDL_Surface* frontend) {
+  video_ring_shutdown();  // free any prior ring (restyle path)
+  if (!frontend) return frontend;
+  g_frontend = frontend;
+  SDL_Palette* pal = SDL_GetSurfacePalette(frontend);
+  for (int i = 0; i < 3; ++i) {
+    g_cpc_ring[i] =
+        SDL_CreateSurface(frontend->w, frontend->h, frontend->format);
+    if (!g_cpc_ring[i]) {
+      LOG_ERROR(
+          "video_ring_init: SDL_CreateSurface failed: " << SDL_GetError());
+      // Degrade gracefully to single-buffer: free any partial ring but keep
+      // g_frontend so video_render_surface() stays valid (== back_surface).
+      for (int j = 0; j < 3; ++j) {
+        if (g_cpc_ring[j]) {
+          SDL_DestroySurface(g_cpc_ring[j]);
+          g_cpc_ring[j] = nullptr;
+        }
+      }
+      g_ring_active = false;
+      return frontend;
+    }
+    if (pal) SDL_SetSurfacePalette(g_cpc_ring[i], pal);
+  }
+  g_ring_write = 0;
+  g_ring_front = 1;
+  g_ring_shared.store(2, std::memory_order_relaxed);  // permutation {0,1,2}
+  g_ring_active = true;
+  return g_cpc_ring[0];
+}
+
+// Z80 thread, at frame boundary: publish the just-written buffer (set DIRTY)
+// and take the previously-published buffer as the next write target.  The
+// atomic exchange keeps {write, front, shared} a permutation of {0,1,2}, so the
+// new write buffer is never the one the render thread holds.  Returns the new
+// write surface; the caller assigns back_surface to it.
+SDL_Surface* video_ring_publish() {
+  if (!g_ring_active) return g_frontend;
+  int prev = g_ring_shared.exchange(g_ring_write | RING_DIRTY,
+                                    std::memory_order_acq_rel);
+  g_ring_write = prev & RING_INDEX_MASK;
+  return g_cpc_ring[g_ring_write];
+}
+
+// Render thread, before the flip: if a new frame was published (DIRTY), swap
+// our front buffer in for it (atomic exchange, clears DIRTY); then copy the
+// front buffer into the stable front-end surface the flip reads.  Idempotent —
+// calling it again with no new frame re-blits the same front buffer (no
+// tearing, no stale-buffer flicker for the menu-tracking driver).
+void video_ring_present() {
+  if (!g_ring_active) return;
+  if (g_ring_shared.load(std::memory_order_acquire) & RING_DIRTY) {
+    int prev = g_ring_shared.exchange(g_ring_front, std::memory_order_acq_rel);
+    g_ring_front = prev & RING_INDEX_MASK;
+  }
+  SDL_BlitSurface(g_cpc_ring[g_ring_front], nullptr, g_frontend, nullptr);
+}
+
+// The surface the render thread should read/write for the displayed frame
+// (OSD text, screenshots, dock preview, thumbnails).  Equals the plugin's
+// front-end surface, now holding the most-recently-presented frame.
+SDL_Surface* video_render_surface() { return g_frontend; }
+
+void video_ring_shutdown() {
+  for (int i = 0; i < 3; ++i) {
+    if (g_cpc_ring[i]) {
+      SDL_DestroySurface(g_cpc_ring[i]);
+      g_cpc_ring[i] = nullptr;
+    }
+  }
+  g_frontend = nullptr;
+  g_ring_active = false;
+}
+
 // Window screenshot: set a pending path for capture by the main thread.
 // The capture happens in direct_flip() after ImGui is rendered.
 #include <mutex>
@@ -452,6 +557,10 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
+  // video.vsync escape hatch: switch the MAIN window off VSYNC when requested.
+  // Viewport windows keep VSYNC via init_info.PresentMode below.
+  video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
+
   // ImGui — SDLGPU3 backend with multi-viewport ENABLED.  The renderer
   // hooks live in vendor/imgui/backends/imgui_impl_sdlgpu3.cpp; they
   // claim each secondary window for g_gpu.device on creation and submit
@@ -473,6 +582,14 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
   init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();
@@ -2633,6 +2750,10 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
+  // video.vsync escape hatch (main window only; this GPU path has viewports
+  // disabled, but the call is harmless and keeps both GPU inits consistent).
+  video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
+
   // ImGui SDLGPU3 backend — viewports disabled (see Phase 4 rationale).
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -2648,6 +2769,14 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
   init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();

@@ -811,8 +811,9 @@ static void apply_scr_scale(int scale_idx) {
     static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
     float f = sf[scale_idx];
     int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-    int new_h = CPC.scr_crt_aspect ? static_cast<int>(new_w * 3.f / 4.f)
-                                   : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+    int new_h = CPC.scr_crt_aspect
+                    ? static_cast<int>(new_w * 3.f / 4.f)
+                    : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
     new_h += video_get_topbar_height() + video_get_bottombar_height();
     SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
   }
@@ -891,13 +892,15 @@ extern "C" void koncpc_request_file_dialog(int action) {
   auto ud = reinterpret_cast<void*>(static_cast<intptr_t>(action));
   switch (fda) {
     case FileDialogAction::LoadDiskA: {
-      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk;ipf;raw;zip"}};
+      static const SDL_DialogFileFilter f[] = {
+          {"Disk Images", "dsk;ipf;raw;zip"}};
       SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
                              CPC.current_dsk_path.c_str(), false);
       break;
     }
     case FileDialogAction::LoadDiskB: {
-      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk;ipf;raw;zip"}};
+      static const SDL_DialogFileFilter f[] = {
+          {"Disk Images", "dsk;ipf;raw;zip"}};
       SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
                              CPC.current_dsk_path.c_str(), false);
       break;
@@ -972,7 +975,9 @@ extern "C" void koncpc_set_renderer(int plugin_idx) {
   CPC.scr_style = plugin_idx;
   imgui_state.video_reinit_pending = true;
 }
-extern "C" int koncpc_current_renderer() { return static_cast<int>(CPC.scr_style); }
+extern "C" int koncpc_current_renderer() {
+  return static_cast<int>(CPC.scr_style);
+}
 
 extern "C" int koncpc_renderer_count() {
   return static_cast<int>(video_plugin_list.size());
@@ -2227,7 +2232,8 @@ static std::string state_slot_thumb(int i) {
 }
 
 // Per-slot thumbnail texture cache (slots 1..8 -> index 1..8; index 0 unused).
-// `sig` is the thumbnail file's last-write-time count, used to detect staleness.
+// `sig` is the thumbnail file's last-write-time count, used to detect
+// staleness.
 namespace {
 struct SlotThumb {
   uintptr_t tex = 0;
@@ -2468,10 +2474,9 @@ static void imgui_render_menu() {
       return 0;
     }
     auto wt = std::filesystem::last_write_time(tp, ec);
-    std::string sig =
-        ec ? std::string()
-           : std::to_string(
-                 static_cast<long long>(wt.time_since_epoch().count()));
+    std::string sig = ec ? std::string()
+                         : std::to_string(static_cast<long long>(
+                               wt.time_since_epoch().count()));
     if (g_slot_thumb[i].tex && g_slot_thumb[i].sig == sig) {
       return g_slot_thumb[i].tex;  // cache hit
     }
@@ -2515,9 +2520,10 @@ static void imgui_render_menu() {
     } else {
       dl->AddRectFilled(p0, p1, IM_COL32(28, 28, 34, 255));
     }
-    dl->AddRect(p0, p1, hovered ? IM_COL32(120, 170, 255, 255)
-                                : IM_COL32(80, 80, 90, 255),
-                0.0f, 0, hovered ? 2.0f : 1.0f);
+    dl->AddRect(
+        p0, p1,
+        hovered ? IM_COL32(120, 170, 255, 255) : IM_COL32(80, 80, 90, 255),
+        0.0f, 0, hovered ? 2.0f : 1.0f);
 
     // Centered label (normal font): slot number, then the date and time on
     // separate lines (or "Empty").

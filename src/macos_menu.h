@@ -1,6 +1,10 @@
 #pragma once
 #ifdef __APPLE__
 void koncpc_setup_macos_menu();
+// Present the latest emulated frame from the native-menu tracking driver.
+// Defined in kon_cpc_ja.cpp; called by the CFRunLoopTimer in macos_menu.mm so
+// the display keeps animating while a native NSMenu is held open.
+void koncpc_render_tracking_tick();
 void koncpc_disable_app_nap();
 void koncpc_enable_app_nap();
 void koncpc_activate_app();

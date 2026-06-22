@@ -273,7 +273,12 @@ class t_CPC {
   unsigned int scr_intensity;
   unsigned int scr_remanency;
   unsigned int scr_window;
-  unsigned int scr_bpp;  // bits per pixel of the SDL back_surface
+  unsigned int scr_vsync;  // video.vsync: 1=VSYNC present (default), 0=MAILBOX/
+                           // IMMEDIATE on the MAIN window only (viewport
+                           // windows always stay VSYNC). Safe escape hatch for
+                           // the remote-desktop present stall; emulation pacing
+                           // is unaffected (decoupled from render).
+  unsigned int scr_bpp;    // bits per pixel of the SDL back_surface
   unsigned int scr_preserve_aspect_ratio;
   unsigned int
       scr_crt_aspect;  // 1 = force 4:3 CRT monitor aspect ratio (default)
@@ -512,39 +517,29 @@ typedef struct {
 
 using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
 
-// Frame synchronization between Z80 emulation thread and render (main) thread.
-// Protocol:
-//   Z80 calls signal_ready() after writing back_surface (asic_draw_sprites
-//   done). Render calls wait_ready(), does Phase A (texture upload), then
-//   signal_consumed(). Z80 is blocked in wait_consumed() during Phase A; on
-//   return it starts the next frame immediately — concurrently with Phase B
-//   (SDL_GL_SwapWindow, 0-60ms).
+// Frame-ready notification from the Z80 emulation thread to the render (main)
+// thread.  Since the triple-buffer ring decoupled the two (the Z80 never waits
+// on render), this is now a pure one-way wake-up: the Z80 calls signal_ready()
+// after publishing a frame; the render thread waits on it (with a timeout so it
+// can keep pumping the macOS run loop) and then reads the latest published
+// buffer.  There is no back-pressure — the old consumed/wait_consumed handshake
+// was removed with the decouple.
 struct FrameSignal {
   std::mutex mtx;
   std::condition_variable cv;
   bool ready{false};
-  bool consumed{true};
   bool skip_render{
       false};  // set by Z80 before signal_ready; render reads after wait_ready
   bool aborted{false};  // set by doCleanUp to permanently release both threads
 
-  // Z80 thread: back_surface is complete; signal render to upload and release
-  // us. Once aborted (during shutdown), signal_ready is a no-op so 'consumed'
-  // stays sticky-true and wait_consumed returns immediately on the next loop
-  // iteration.
+  // Z80 thread: a new frame has been published; wake the render thread.  A
+  // no-op once aborted (during shutdown).
   void signal_ready(bool skip = false) {
     std::lock_guard<std::mutex> lock(mtx);
     if (aborted) return;
     skip_render = skip;
     ready = true;
-    consumed = false;
     cv.notify_one();
-  }
-  // Z80 thread: block until render has finished Phase A (texture upload), OR
-  // until shutdown aborts the signal.
-  void wait_consumed() {
-    std::unique_lock<std::mutex> lock(mtx);
-    cv.wait(lock, [this] { return consumed || aborted; });
   }
   // Render thread: block until Z80 signals a frame is ready; returns
   // skip_render.
@@ -569,20 +564,12 @@ struct FrameSignal {
     }
     return false;
   }
-  // Render thread: Phase A done — release Z80 to start next frame.
-  void signal_consumed() {
-    std::lock_guard<std::mutex> lock(mtx);
-    consumed = true;
-    cv.notify_one();
-  }
-  // Shutdown: permanently release both threads from any current/future wait.
-  // After this call, signal_ready is a no-op and both wait_* methods return
-  // immediately.  Used by doCleanUp to break the Z80↔render handshake before
-  // joining the Z80 thread.
+  // Shutdown: permanently release the render thread from any current/future
+  // wait.  After this call, signal_ready is a no-op and wait_* return
+  // immediately.  Used by doCleanUp before joining the Z80 thread.
   void abort() {
     std::lock_guard<std::mutex> lock(mtx);
     aborted = true;
-    consumed = true;  // unblock any current wait_consumed
     cv.notify_all();
   }
 };
