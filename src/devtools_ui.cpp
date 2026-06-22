@@ -232,8 +232,16 @@ void DevToolsUI::apply_default_window_layout(int stagger, float w, float h) {
   ImVec2 pos(vp->WorkPos.x + 20.0f + col * 230.0f + row * kStepX,
              vp->WorkPos.y + 20.0f + row * kStepY + col * kStepY);
 
-  ImGuiCond cond =
-      reset_positions_pending_ ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+  // Latch the reset per-window: clear this window's slot as it lays out, so a
+  // window that was closed when the reset was requested still resets when it
+  // is next opened (a single global flag would be cleared by the frame's end
+  // before the closed window ever ran its layout pass).
+  bool reset_this = false;
+  if (stagger >= 0 && stagger < NUM_WINDOWS) {
+    reset_this = reset_positions_pending_[stagger];
+    reset_positions_pending_[stagger] = false;
+  }
+  ImGuiCond cond = reset_this ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
   ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowPos(pos, cond);
 }
@@ -287,10 +295,9 @@ void DevToolsUI::render() {
               [&] { render_recording_controls(); });
   time_window(16, "Assembler", show_assembler_, [&] { render_assembler(); });
 
-  // The reset-positions request lasts exactly one frame: every window's
-  // apply_default_window_layout() has now run with ImGuiCond_Always
-  // (beads-pv7).
-  reset_positions_pending_ = false;
+  // Per-window reset latches are cleared inside apply_default_window_layout()
+  // as each window lays out, so no global clear is needed here — closed
+  // windows keep their pending reset until they are next opened (beads-pv7).
 }
 
 // -----------------------------------------------

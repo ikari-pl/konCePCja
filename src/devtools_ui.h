@@ -53,10 +53,14 @@ class DevToolsUI {
   // Safe to call repeatedly — only opens windows that are currently closed.
   void open_core_debug_windows();
 
-  // Re-apply the default staggered window positions on the next frame, so a
-  // user whose floating windows have drifted off-screen can recover them
-  // (beads-pv7).  The next render() uses ImGuiCond_Always for one frame.
-  void reset_window_positions() { reset_positions_pending_ = true; }
+  // Re-apply the default staggered window positions, so a user whose floating
+  // windows have drifted off-screen can recover them (beads-pv7).  Each
+  // window's reset is latched independently so a window that is currently
+  // closed still resets the next time it is opened (its layout code does not
+  // run while closed).
+  void reset_window_positions() {
+    for (bool& pending : reset_positions_pending_) pending = true;
+  }
 
   // Request cache invalidation — safe to call from any thread.
   // Actual clearing happens on the next render() call (main thread).
@@ -82,10 +86,12 @@ class DevToolsUI {
   // Default-position layout (beads-a34 / beads-pv7).  Each window declares its
   // default size and a stagger index; positions are computed relative to the
   // main viewport's work area so they respect the menubar/topbar and never
-  // cascade onto a single origin.  When reset_positions_pending_ is set the
-  // next render forces ImGuiCond_Always for one frame to recover drifted
-  // windows.
-  bool reset_positions_pending_ = false;
+  // cascade onto a single origin.  When a window's reset_positions_pending_
+  // slot is set, its next layout pass forces ImGuiCond_Always for one frame to
+  // recover the drifted window.  Per-window (not a single global flag) so a
+  // closed window — whose layout code does not run — still resets when
+  // reopened.
+  bool reset_positions_pending_[NUM_WINDOWS] = {};
   // Apply size + staggered default position for the window currently being
   // begun.  `stagger` is the window's slot index (see render() dispatch order).
   void apply_default_window_layout(int stagger, float w, float h);

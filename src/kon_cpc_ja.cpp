@@ -3017,13 +3017,16 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_SPEED: {
-      static uint64_t last_speed_toggle = 0;
+      // koncpc_menu_action() runs on the main thread and the IPC thread, so the
+      // debounce timestamp must be atomic to avoid a data race.
+      static std::atomic<uint64_t> last_speed_toggle{0};
       uint64_t now = SDL_GetPerformanceCounter();
-      if (now - last_speed_toggle > SDL_GetPerformanceFrequency() / 10) {
+      if (now - last_speed_toggle.load(std::memory_order_relaxed) >
+          SDL_GetPerformanceFrequency() / 10) {
         CPC.limit_speed = CPC.limit_speed ? 0 : 1;
         set_osd_message(std::string("Limit speed: ") +
                         (CPC.limit_speed ? "on" : "off"));
-        last_speed_toggle = now;
+        last_speed_toggle.store(now, std::memory_order_relaxed);
       }
       break;
     }

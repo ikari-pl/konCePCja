@@ -139,7 +139,7 @@ void parseArguments(int argc, char** argv, std::vector<std::string>& slot_list,
   optind = 0;  // To please test framework, when this function is called
                // multiple times !
   while (true) {
-    c = getopt_long(argc, argv, "a:Bc:E:Hhi:Lo:O:s:vV", long_options,
+    c = getopt_long(argc, argv, "a:Bc:DE:FHhi:Lo:O:s:vV", long_options,
                     &option_index);
     // Logs before processing of the -v will not be visible.
     LOG_DEBUG("Next option: " << c << "(" << static_cast<char>(c) << ")");
