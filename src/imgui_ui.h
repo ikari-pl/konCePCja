@@ -18,6 +18,10 @@ void imgui_render_ui();
 int imgui_topbar_height();
 void imgui_open_menu();
 void imgui_close_menu();
+// Free every cached save-state slot thumbnail GPU texture.  Must be called
+// before video_shutdown() (e.g. on a renderer switch) so stale texture handles
+// are never used or freed against a destroyed render device.
+void imgui_invalidate_slot_thumbs();
 
 // Returns true when any keyboard-consuming UI is active (menus, dialogs,
 // text fields, popups, devtools). Single source of truth — used by both

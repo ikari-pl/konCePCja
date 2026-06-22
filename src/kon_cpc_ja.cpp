@@ -5462,6 +5462,10 @@ int koncpc_main(int argc, char** argv) {
         bool z80_was_paused = g_emu_paused.load(std::memory_order_relaxed);
         audio_pause();
         cpc_pause_and_wait();
+        // Free cached save-state thumbnail textures while the OLD render device
+        // is still alive — video_shutdown() destroys it, leaving stale GPU
+        // handles that would be used/freed against a dead device on next use.
+        imgui_invalidate_slot_thumbs();
         SDL_Delay(20);
         video_shutdown();
         if (video_init()) {

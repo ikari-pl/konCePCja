@@ -2252,6 +2252,13 @@ void invalidate_slot_thumb(int i) {
 }
 }  // namespace
 
+// Public: free ALL cached slot thumbnail textures.  Called before
+// video_shutdown() on a renderer switch so the GPU handles are freed against
+// the live device and the grid reloads fresh textures from the new backend.
+void imgui_invalidate_slot_thumbs() {
+  for (int i = 0; i < 9; ++i) invalidate_slot_thumb(i);
+}
+
 static bool state_slot_exists(int i) {
   std::error_code ec;
   return std::filesystem::exists(state_slot_path(i), ec);
@@ -2271,9 +2278,9 @@ static std::string state_slot_time(int i) {
   std::time_t tt = std::chrono::system_clock::to_time_t(sctp);
   std::tm tm_buf{};
 #ifdef _WIN32
-  localtime_s(&tm_buf, &tt);
+  if (localtime_s(&tm_buf, &tt) != 0) return "";
 #else
-  localtime_r(&tt, &tm_buf);
+  if (localtime_r(&tt, &tm_buf) == nullptr) return "";
 #endif
   char out[32];
   if (std::strftime(out, sizeof(out), "%b %d %H:%M", &tm_buf) == 0) return "";
