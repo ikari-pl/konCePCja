@@ -1,10 +1,12 @@
 #include "keyboard.h"
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "fileutils.h"
 #include "koncepcja.h"
@@ -964,7 +966,7 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = {
     {KONCPC_SPEED, SDLK_F9},
     {KONCPC_EXIT, SDLK_F10},
     {KONCPC_PASTE, SDLK_F11},
-    {KONCPC_DEBUG, SDLK_F12},
+    {KONCPC_DEVTOOLS, SDLK_F12},
     {KONCPC_TAPEPLAY, SDLK_F4},
     {KONCPC_DELAY, SDLK_PAUSE},
     {KONCPC_WAITBREAK, SDLK_PAUSE | MOD_PC_SHIFT}};
@@ -1551,54 +1553,41 @@ std::string InputMapper::CPCkeyToString(const CapriceKey cpc_key) {
   return "UNMAPPED(" + std::to_string(cpc_key) + ")";
 }
 
-std::list<SDL_Event> InputMapper::StringToEvents(std::string toTranslate) {
-  std::list<SDL_Event> result;
-  bool escaped = false;
-  bool koncpc_cmd = false;
-  std::map<CapriceKey, PCKey>::iterator sdl_keysym;
+namespace {
+// Format one host PCKey (modifier in the high dword, SDL keysym in the low) as
+// a readable accelerator string, e.g. "Shift+F2", "F5", "Pause".
+std::string format_pckey(PCKey pckey) {
+  SDL_Keycode key = static_cast<SDL_Keycode>(pckey & BITMASK_NOMOD);
+  PCKey mod = pckey >> BITSHIFT_MOD;
+  std::string s;
+  if (mod & SDL_KMOD_CTRL) s += "Ctrl+";
+  if (mod & SDL_KMOD_SHIFT) s += "Shift+";
+  const char* name = SDL_GetKeyName(key);
+  s += (name != nullptr && *name != '\0') ? name : "?";
+  return s;
+}
+}  // namespace
 
-  for (auto c : toTranslate) {
-    if (c == '\a') {
-      // Escape prefix: next char is a special one
-      escaped = true;
-      continue;
-    }
-    if (c == '\f') {
-      // Emulator special command
-      koncpc_cmd = true;
-      continue;
-    }
-    SDL_Event key = {};  // zero-init so windowID=0 marks virtual events
-    if (escaped || koncpc_cmd) {
-      int keycode = static_cast<unsigned char>(c);
-      if (koncpc_cmd) {
-        keycode += MOD_EMU_KEY;
-      }
-      // Lookup the SDL key corresponding to this emulator command
-      sdl_keysym = SDLkeysymFromCPCkeys.find(keycode);
-      if (sdl_keysym != SDLkeysymFromCPCkeys.end()) {
-        key.key.key =
-            static_cast<SDL_Keycode>(sdl_keysym->second & BITMASK_NOMOD);
-        key.key.mod =
-            static_cast<SDL_Keymod>(sdl_keysym->second >> BITSHIFT_MOD);
-      }
-      escaped = false;
-      koncpc_cmd = false;
-    } else {
-      // key.key.keysym.scancode = ;
-      key.key.key = SDLkeysFromChars[c].first;
-      key.key.mod = SDLkeysFromChars[c].second;
-      // key.key.keysym.unicode = c;
-    }
-    key.type = SDL_EVENT_KEY_DOWN;
-    key.key.down = true;
-    result.push_back(key);
-
-    key.type = SDL_EVENT_KEY_UP;
-    key.key.down = false;
-    result.push_back(key);
+std::string InputMapper::shortcutForAction(CapriceKey action) const {
+  std::vector<std::string> parts;
+  for (const auto& [pckey, capkey] : CPCkeysFromSDLkeysym) {
+    if (capkey == action) parts.push_back(format_pckey(pckey));
   }
-  return result;
+  std::sort(parts.begin(), parts.end());
+  parts.erase(std::unique(parts.begin(), parts.end()), parts.end());
+  std::string out;
+  for (size_t i = 0; i < parts.size(); ++i) {
+    if (i != 0) out += " / ";
+    out += parts[i];
+  }
+  return out;
+}
+
+// Keystone helper: derive an action's shortcut DISPLAY string from the live
+// binding map, so every surface's hint stays truthful automatically.
+std::string koncpc_action_shortcut(KONCPC_KEYS action) {
+  if (CPC.InputMapper == nullptr) return "";
+  return CPC.InputMapper->shortcutForAction(static_cast<CapriceKey>(action));
 }
 
 void InputMapper::set_joystick_emulation() {
@@ -1734,6 +1723,11 @@ extern dword dwFrameCountOverall;
 void applyKeypressDirect(CPCScancode cpc_key,
                          std::atomic<byte> keyboard_matrix[], bool pressed,
                          bool release_modifiers) {
+  // Hold the matrix mutex across the whole key+shift+ctrl write sequence so the
+  // per-frame snapshot copy (Z80 thread) cannot observe a half-applied keypress
+  // — otherwise a shifted key's digit line could be scanned before its SHIFT
+  // line, decoding the unshifted glyph ('1'->'&').  See beads-2qg / beads-d1n.
+  std::lock_guard<std::mutex> matrix_lock(g_kbd_matrix_mutex);
   if (pressed) {
     keyboard_matrix[static_cast<byte>(cpc_key) >> 4].fetch_and(
         ~bit_values[static_cast<byte>(cpc_key) & 7],

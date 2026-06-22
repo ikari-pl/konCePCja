@@ -5,68 +5,90 @@
 #else
 #include <getopt.h>
 #endif
+#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <fstream>
 #include <map>
 #include <string>
+
 #include "SDL3/SDL.h"
-#include "koncepcja.h"
 #include "keyboard.h"
-#include "stringutils.h"
+#include "koncepcja.h"
 #include "log.h"
+#include "stringutils.h"
 #include "video.h"
 
-const struct option long_options[] =
-{
-   {"autocmd",       required_argument, nullptr, 'a'},
-   {"cfg_file",      required_argument, nullptr, 'c'},
-   {"exit-after",    required_argument, nullptr, 'E'},
-   {"exit-on-break", no_argument, nullptr, 'B'},
-   {"headless",      no_argument, nullptr, 'H'},
-   {"inject",        required_argument, nullptr, 'i'},
-   {"list-plugins",  no_argument, nullptr, 'L'},
-   {"offset",        required_argument, nullptr, 'o'},
-   {"override",      required_argument, nullptr, 'O'},
-   {"sym_file",      required_argument, nullptr, 's'},
-   {"version",       no_argument, nullptr, 'V'},
-   {"help",          no_argument, nullptr, 'h'},
-   {"verbose",       no_argument, nullptr, 'v'},
-   {"debug",         no_argument, nullptr, 'D'},
-   {nullptr, 0, nullptr, 0},
+const struct option long_options[] = {
+    {"autocmd", required_argument, nullptr, 'a'},
+    {"cfg_file", required_argument, nullptr, 'c'},
+    {"exit-after", required_argument, nullptr, 'E'},
+    {"exit-on-break", no_argument, nullptr, 'B'},
+    {"headless", no_argument, nullptr, 'H'},
+    {"inject", required_argument, nullptr, 'i'},
+    {"list-plugins", no_argument, nullptr, 'L'},
+    {"offset", required_argument, nullptr, 'o'},
+    {"override", required_argument, nullptr, 'O'},
+    {"sym_file", required_argument, nullptr, 's'},
+    {"version", no_argument, nullptr, 'V'},
+    {"help", no_argument, nullptr, 'h'},
+    {"verbose", no_argument, nullptr, 'v'},
+    {"debug", no_argument, nullptr, 'D'},
+    {"fps", no_argument, nullptr, 'F'},
+    {nullptr, 0, nullptr, 0},
 };
 
-void usage(std::ostream &os, char *progPath, int errcode)
-{
-   std::string progname, dirname;
+void usage(std::ostream& os, char* progPath, int errcode) {
+  std::string progname, dirname;
 
-   stringutils::splitPath(progPath, dirname, progname);
+  stringutils::splitPath(progPath, dirname, progname);
 
-   os << "Usage: " << progname << " [options] <slotfile(s)>\n";
-   os << "\nSupported options are:\n";
-   os << "   -a/--autocmd=<command>: execute command after CPC boots (repeatable).\n";
-   os << "      Supports WinAPE ~KEY~ syntax: ~ENTER~, ~CLR~, ~PAUSE 50~, ~+SHIFT~, etc.\n";
-   os << "      Also accepts KONCPC_EXIT, KONCPC_WAITBREAK, KONCPC_RESET and other\n";
-   os << "      emulator commands (see docs/ipc-protocol.md for the full list).\n";
-   os << "   -B/--exit-on-break:     exit with code 1 when a breakpoint is hit (instead of pausing).\n";
-   os << "   -c/--cfg_file=<file>:   use <file> as the emulator configuration file instead of the default.\n";
-   os << "   -E/--exit-after=<spec>: exit after N frames (e.g. 100f), seconds (5s), or milliseconds (3000ms).\n";
-   os << "   -H/--headless:          run without display or audio (IPC and emulation only).\n";
-   os << "   -h/--help:              shows this help\n";
-   os << "   -i/--inject=<file>:     inject a binary in memory after the CPC startup finishes\n";
-   os << "   -L/--list-plugins:      list all video plugins (index: name) and exit\n";
-   os << "   -o/--offset=<address>:  offset at which to inject the binary provided with -i (default: 0x6000)\n";
-   os << "   -O/--override:          override an option from the config. Can be repeated. (example: -O system.model=3)\n";
-   os << "   -s/--sym_file=<file>:   use <file> as a source of symbols and entry points for disassembling in developers' tools.\n";
-   os << "   -V/--version:           outputs version and exit\n";
-   os << "   -v/--verbose:           be talkative\n";
-   os << "   -D/--debug:             show frame timing and audio diagnostics in DevTools bar\n";
-   os << "\nslotfiles is an optional list of files giving the content of the various CPC ports.\n";
-   os << "Ports files are identified by their extension. Supported formats are .dsk (disk), .cdt or .voc (tape), .cpr (cartridge), .sna (snapshot), or .zip (archive containing one or more of the supported ports files).\n";
-   os << "\nExample: " << progname << " sorcery.dsk\n";
-   os << "\nPress F1 when the emulator is running to show the in-application option menu.\n";
-   os << "\nSee https://github.com/ikari/konCePCja or check the man page (man koncepcja) for more extensive information.\n";
-   exit(errcode);
+  os << "Usage: " << progname << " [options] <slotfile(s)>\n";
+  os << "\nSupported options are:\n";
+  os << "   -a/--autocmd=<command>: execute command after CPC boots "
+        "(repeatable).\n";
+  os << "      Supports WinAPE ~KEY~ syntax: ~ENTER~, ~CLR~, ~PAUSE 50~, "
+        "~+SHIFT~, etc.\n";
+  os << "      Also accepts KONCPC_EXIT, KONCPC_WAITBREAK, KONCPC_RESET and "
+        "other\n";
+  os << "      emulator commands (see docs/ipc-protocol.md for the full "
+        "list).\n";
+  os << "   -B/--exit-on-break:     exit with code 1 when a breakpoint is hit "
+        "(instead of pausing).\n";
+  os << "   -c/--cfg_file=<file>:   use <file> as the emulator configuration "
+        "file instead of the default.\n";
+  os << "   -E/--exit-after=<spec>: exit after N frames (e.g. 100f), seconds "
+        "(5s), or milliseconds (3000ms).\n";
+  os << "   -H/--headless:          run without display or audio (IPC and "
+        "emulation only).\n";
+  os << "   -h/--help:              shows this help\n";
+  os << "   -i/--inject=<file>:     inject a binary in memory after the CPC "
+        "startup finishes\n";
+  os << "   -L/--list-plugins:      list all video plugins (index: name) and "
+        "exit\n";
+  os << "   -o/--offset=<address>:  offset at which to inject the binary "
+        "provided with -i (default: 0x6000)\n";
+  os << "   -O/--override:          override an option from the config. Can be "
+        "repeated. (example: -O system.model=3)\n";
+  os << "   -s/--sym_file=<file>:   use <file> as a source of symbols and "
+        "entry points for disassembling in developers' tools.\n";
+  os << "   -V/--version:           outputs version and exit\n";
+  os << "   -v/--verbose:           be talkative\n";
+  os << "   -D/--debug:             show frame timing and audio diagnostics in "
+        "DevTools bar\n";
+  os << "   --fps:                  log once-per-second FPS to stdout (e.g. "
+        "'[fps] 50 FPS 100% speed')\n";
+  os << "\nslotfiles is an optional list of files giving the content of the "
+        "various CPC ports.\n";
+  os << "Ports files are identified by their extension. Supported formats are "
+        ".dsk (disk), .cdt or .voc (tape), .cpr (cartridge), .sna (snapshot), "
+        "or .zip (archive containing one or more of the supported ports "
+        "files).\n";
+  os << "\nExample: " << progname << " sorcery.dsk\n";
+  os << "\nPress F1 when the emulator is running to show the in-application "
+        "option menu.\n";
+  os << "\nSee https://github.com/ikari/konCePCja or check the man page (man "
+        "koncepcja) for more extensive information.\n";
+  exit(errcode);
 }
 
 std::string koncpc_keystroke(KONCPC_KEYS key) {
@@ -77,34 +99,31 @@ std::string cpc_keystroke(CPC_KEYS key) {
   return std::string("\a") + char(key);
 }
 
-std::string replaceKoncpcKeys(std::string command)
-{
+std::string replaceKoncpcKeys(std::string command) {
   static std::map<std::string, std::string> keyNames = {
-    { "KONCPC_EXIT", koncpc_keystroke(KONCPC_EXIT) },
-    { "KONCPC_FPS", koncpc_keystroke(KONCPC_FPS) },
-    { "KONCPC_FULLSCRN", koncpc_keystroke(KONCPC_FULLSCRN) },
-    { "KONCPC_GUI", koncpc_keystroke(KONCPC_GUI) },
-    { "KONCPC_VKBD", koncpc_keystroke(KONCPC_VKBD) },
-    { "KONCPC_JOY", koncpc_keystroke(KONCPC_JOY) },
-    { "KONCPC_PHAZER", koncpc_keystroke(KONCPC_PHAZER) },
-    { "KONCPC_MF2STOP", koncpc_keystroke(KONCPC_MF2STOP) },
-    { "KONCPC_RESET", koncpc_keystroke(KONCPC_RESET) },
-    { "KONCPC_SCRNSHOT", koncpc_keystroke(KONCPC_SCRNSHOT) },
-    { "KONCPC_SPEED", koncpc_keystroke(KONCPC_SPEED) },
-    { "KONCPC_TAPEPLAY", koncpc_keystroke(KONCPC_TAPEPLAY) },
-    { "KONCPC_DEBUG", koncpc_keystroke(KONCPC_DEBUG) },
-    { "KONCPC_WAITBREAK", koncpc_keystroke(KONCPC_WAITBREAK) },
-    { "KONCPC_DELAY", koncpc_keystroke(KONCPC_DELAY) },
-    { "KONCPC_PASTE", koncpc_keystroke(KONCPC_PASTE) },
-    { "KONCPC_DEVTOOLS", koncpc_keystroke(KONCPC_DEVTOOLS) },
-    { "CPC_F1", cpc_keystroke(CPC_F1) },
-    { "CPC_F2", cpc_keystroke(CPC_F2) },
+      {"KONCPC_EXIT", koncpc_keystroke(KONCPC_EXIT)},
+      {"KONCPC_FPS", koncpc_keystroke(KONCPC_FPS)},
+      {"KONCPC_FULLSCRN", koncpc_keystroke(KONCPC_FULLSCRN)},
+      {"KONCPC_GUI", koncpc_keystroke(KONCPC_GUI)},
+      {"KONCPC_VKBD", koncpc_keystroke(KONCPC_VKBD)},
+      {"KONCPC_JOY", koncpc_keystroke(KONCPC_JOY)},
+      {"KONCPC_PHAZER", koncpc_keystroke(KONCPC_PHAZER)},
+      {"KONCPC_MF2STOP", koncpc_keystroke(KONCPC_MF2STOP)},
+      {"KONCPC_RESET", koncpc_keystroke(KONCPC_RESET)},
+      {"KONCPC_SCRNSHOT", koncpc_keystroke(KONCPC_SCRNSHOT)},
+      {"KONCPC_SPEED", koncpc_keystroke(KONCPC_SPEED)},
+      {"KONCPC_TAPEPLAY", koncpc_keystroke(KONCPC_TAPEPLAY)},
+      {"KONCPC_DEBUG", koncpc_keystroke(KONCPC_DEBUG)},
+      {"KONCPC_WAITBREAK", koncpc_keystroke(KONCPC_WAITBREAK)},
+      {"KONCPC_DELAY", koncpc_keystroke(KONCPC_DELAY)},
+      {"KONCPC_PASTE", koncpc_keystroke(KONCPC_PASTE)},
+      {"KONCPC_DEVTOOLS", koncpc_keystroke(KONCPC_DEVTOOLS)},
+      {"CPC_F1", cpc_keystroke(CPC_F1)},
+      {"CPC_F2", cpc_keystroke(CPC_F2)},
   };
-  for (const auto& elt : keyNames)
-  {
+  for (const auto& elt : keyNames) {
     size_t pos;
-    while ((pos = command.find(elt.first)) != std::string::npos)
-    {
+    while ((pos = command.find(elt.first)) != std::string::npos) {
       command.replace(pos, elt.first.size(), elt.second);
       LOG_VERBOSE("Recognized keyword: " << elt.first);
     }
@@ -112,145 +131,154 @@ std::string replaceKoncpcKeys(std::string command)
   return command;
 }
 
-void parseArguments(int argc, char **argv, std::vector<std::string>& slot_list, CapriceArgs& args)
-{
-   int option_index = 0;
-   int c;
+void parseArguments(int argc, char** argv, std::vector<std::string>& slot_list,
+                    CapriceArgs& args) {
+  int option_index = 0;
+  int c;
 
-   optind = 0; // To please test framework, when this function is called multiple times !
-   while(true) {
-      c = getopt_long (argc, argv, "a:Bc:E:Hhi:Lo:O:s:vV",
-                       long_options, &option_index);
-      // Logs before processing of the -v will not be visible.
-      LOG_DEBUG("Next option: " << c << "(" << static_cast<char>(c) << ")");
+  optind = 0;  // To please test framework, when this function is called
+               // multiple times !
+  while (true) {
+    c = getopt_long(argc, argv, "a:Bc:DE:FHhi:Lo:O:s:vV", long_options,
+                    &option_index);
+    // Logs before processing of the -v will not be visible.
+    LOG_DEBUG("Next option: " << c << "(" << static_cast<char>(c) << ")");
 
-      /* Detect the end of the options. */
-      if (c == -1)
-         break;
+    /* Detect the end of the options. */
+    if (c == -1) break;
 
-      switch (c)
-      {
-         case 'a':
-            LOG_VERBOSE("Append to autocmd: " << optarg);
-            args.autocmd += replaceKoncpcKeys(optarg);
-            args.autocmd += "\n";
-            break;
+    switch (c) {
+      case 'a':
+        LOG_VERBOSE("Append to autocmd: " << optarg);
+        args.autocmd += replaceKoncpcKeys(optarg);
+        args.autocmd += "\n";
+        break;
 
-         case 'c':
-            args.cfgFilePath = optarg;
-            break;
+      case 'c':
+        args.cfgFilePath = optarg;
+        break;
 
-         case 'B':
-            args.exitOnBreak = true;
-            break;
+      case 'B':
+        args.exitOnBreak = true;
+        break;
 
-         case 'E':
-            args.exitAfter = optarg;
-            break;
+      case 'E':
+        args.exitAfter = optarg;
+        break;
 
-         case 'H':
-            args.headless = true;
-            break;
+      case 'H':
+        args.headless = true;
+        break;
 
-         case 'h':
-            usage(std::cout, argv[0], 0);
-            break;
+      case 'h':
+        usage(std::cout, argv[0], 0);
+        break;
 
-         case 'i':
-            args.binFile = optarg;
-            break;
+      case 'i':
+        args.binFile = optarg;
+        break;
 
-         case 'o':
-            args.binOffset = std::stol(optarg, nullptr, 0);
-            break;
+      case 'o':
+        args.binOffset = std::stol(optarg, nullptr, 0);
+        break;
 
-         case 'O':
-            {
-              std::string opt(optarg);
-              bool invalid = false;
-              auto key_value_separator = opt.find('=');
-              if (key_value_separator == std::string::npos) invalid = true;
-              std::string key = opt.substr(0, key_value_separator);
-              std::string value = opt.substr(key_value_separator+1);
-              auto section_item_separator = key.find('.');
-              if (section_item_separator == std::string::npos) invalid = true;
-              std::string section = key.substr(0, section_item_separator);
-              std::string item = key.substr(section_item_separator+1);
-              if (invalid || section.empty() || item.empty()) {
-                LOG_ERROR("Couldn't parse override: '" << opt << "'");
-              } else {
-                args.cfgOverrides[section][item] = value;
-                LOG_INFO("Override configuration: " << section << "." << item << " = " << value);
-              }
-              break;
-            }
+      case 'O': {
+        std::string opt(optarg);
+        // Validate both separators before slicing so we never index past a
+        // missing '=' / '.' (no reliance on npos+1 wraparound).
+        auto key_value_separator = opt.find('=');
+        std::string key = key_value_separator == std::string::npos
+                              ? std::string()
+                              : opt.substr(0, key_value_separator);
+        auto section_item_separator = key.find('.');
+        if (key_value_separator == std::string::npos ||
+            section_item_separator == std::string::npos) {
+          LOG_ERROR("Couldn't parse override: '" << opt << "'");
+          break;
+        }
+        std::string section = key.substr(0, section_item_separator);
+        std::string item = key.substr(section_item_separator + 1);
+        std::string value = opt.substr(key_value_separator + 1);
+        if (section.empty() || item.empty()) {
+          LOG_ERROR("Couldn't parse override: '" << opt << "'");
+        } else {
+          args.cfgOverrides[section][item] = value;
+          LOG_INFO("Override configuration: " << section << "." << item << " = "
+                                              << value);
+        }
+        break;
+      }
 
-         case 'L':
-            // List all video plugins (index: name) and exit.  Helps users
-            // recover from scr_style index shifts after plugin-list edits
-            // (e.g. Phase 7b removed the legacy GL CRT plugins, shifting
-            // every plugin after them down by three slots).
-            {
-               size_t last = video_plugin_list.empty() ? 0 : video_plugin_list.size() - 1;
-               int width = 1;
-               for (size_t v = last; v >= 10; v /= 10) ++width;
-               for (size_t i = 0; i < video_plugin_list.size(); ++i) {
-                  std::cout << std::setw(width) << i << ": "
-                            << video_plugin_list[i].name << '\n';
-               }
-            }
-            exit(0);
-            break;
+      case 'L':
+        // List all video plugins (index: name) and exit.  Helps users
+        // recover from scr_style index shifts after plugin-list edits
+        // (e.g. Phase 7b removed the legacy GL CRT plugins, shifting
+        // every plugin after them down by three slots).
+        {
+          size_t last =
+              video_plugin_list.empty() ? 0 : video_plugin_list.size() - 1;
+          int width = 1;
+          for (size_t v = last; v >= 10; v /= 10) ++width;
+          for (size_t i = 0; i < video_plugin_list.size(); ++i) {
+            std::cout << std::setw(width) << i << ": "
+                      << video_plugin_list[i].name << '\n';
+          }
+        }
+        exit(0);
+        break;
 
-         case 's':
-            args.symFilePath = optarg;
-            break;
+      case 's':
+        args.symFilePath = optarg;
+        break;
 
-         case 'D':
-            args.debug = true;
-            break;
-         case 'v':
-            log_verbose = true;
-            break;
+      case 'D':
+        args.debug = true;
+        break;
+      case 'F':
+        args.fps = true;
+        break;
+      case 'v':
+        log_verbose = true;
+        break;
 
-         case 'V':
-            // Version
-            std::cout << "konCePCja " << VERSION_STRING;
+      case 'V':
+        // Version
+        std::cout << "konCePCja " << VERSION_STRING;
 #ifdef HASH
-            std::cout << (std::string(HASH).empty()?"":"-"+std::string(HASH));
+        std::cout << (std::string(HASH).empty() ? "" : "-" + std::string(HASH));
 #endif
-            std::cout << "\n";
+        std::cout << "\n";
 
-            // APP_PATH
-            std::cout << "APP_PATH: ";
-            #ifdef APP_PATH
-            std::cout << APP_PATH;
-            #else
-            std::cout << "Not provided";
-            #endif
-            std::cout << std::endl;
+        // APP_PATH
+        std::cout << "APP_PATH: ";
+#ifdef APP_PATH
+        std::cout << APP_PATH;
+#else
+        std::cout << "Not provided";
+#endif
+        std::cout << std::endl;
 
-            // Flags
-            std::cout << "Compiled with:"
+        // Flags
+        std::cout << "Compiled with:"
 #ifdef DEBUG
-                      << " DEBUG"
+                  << " DEBUG"
 #endif
-                      << "\n";
+                  << "\n";
 
-            // Video plugins
-            std::cout << "Number of video plugins available: "
-                      << video_plugin_list.size() << std::endl;
-            exit(0);
-            break;
+        // Video plugins
+        std::cout << "Number of video plugins available: "
+                  << video_plugin_list.size() << std::endl;
+        exit(0);
+        break;
 
-         case '?':
-         default:
-            usage(std::cerr, argv[0], 1);
-            break;
-       }
-   }
+      case '?':
+      default:
+        usage(std::cerr, argv[0], 1);
+        break;
+    }
+  }
 
-   /* All remaining command line arguments will go to the slot content list */
-   slot_list.assign(argv+optind, argv+argc);
-   LOG_DEBUG("slot_list: " << stringutils::join(slot_list, ","))
+  /* All remaining command line arguments will go to the slot content list */
+  slot_list.assign(argv + optind, argv + argc);
+  LOG_DEBUG("slot_list: " << stringutils::join(slot_list, ","))
 }

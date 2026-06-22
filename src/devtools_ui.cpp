@@ -1,5 +1,6 @@
 #include "devtools_ui.h"
 
+#include <cfloat>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -56,6 +57,17 @@ static bool has_path_traversal(const char* path) {
 
 // Consistent link color for all navigable addresses
 static constexpr ImVec4 kLinkColor(0.4f, 0.8f, 1.0f, 1.0f);
+
+// Small colored chip showing whether the emulated machine is running or
+// paused. Rendered at the top of detachable debug windows so a user with a
+// floating window can tell at a glance if the machine is live. (beads-rj4)
+static void render_run_state_chip() {
+  if (!g_emu_paused.load()) {
+    ImGui::TextColored(ImVec4(0.3f, 0.85f, 0.3f, 1.0f), "RUNNING");
+  } else {
+    ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "PAUSED");
+  }
+}
 
 DevToolsUI g_devtools_ui;
 
@@ -188,6 +200,53 @@ void DevToolsUI::navigate_memory(word addr) {
 }
 
 // -----------------------------------------------
+// Default window layout (beads-a34 / beads-pv7)
+// -----------------------------------------------
+
+// The "core debugging window set": auto-opened on first F12 and docked by the
+// Debug workspace preset.  Defined once here so the two paths can't drift
+// (beads-igq).
+const char* const* DevToolsUI::core_debug_window_keys() {
+  static const char* const keys[] = {"registers",   "disassembly", "stack",
+                                     "breakpoints", "memory_hex",  nullptr};
+  return keys;
+}
+
+void DevToolsUI::open_core_debug_windows() {
+  for (const char* const* k = core_debug_window_keys(); *k; ++k) {
+    if (!is_window_open(*k)) toggle_window(*k);
+  }
+}
+
+void DevToolsUI::apply_default_window_layout(int stagger, float w, float h) {
+  // Stagger windows in a few columns so they don't cascade onto one origin
+  // and don't march off the bottom-right edge with 17 windows.  Coordinates
+  // are relative to the viewport work area (below the menubar/topbar), not
+  // magic screen pixels, so the default layout follows the UI chrome.
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const int kCols = 4;
+  const float kStepX = 60.0f;
+  const float kStepY = 36.0f;
+  int col = stagger % kCols;
+  int row = stagger / kCols;
+  ImVec2 pos(vp->WorkPos.x + 20.0f + col * 230.0f + row * kStepX,
+             vp->WorkPos.y + 20.0f + row * kStepY + col * kStepY);
+
+  // Latch the reset per-window: clear this window's slot as it lays out, so a
+  // window that was closed when the reset was requested still resets when it
+  // is next opened (a single global flag would be cleared by the frame's end
+  // before the closed window ever ran its layout pass).
+  bool reset_this = false;
+  if (stagger >= 0 && stagger < NUM_WINDOWS) {
+    reset_this = reset_positions_pending_[stagger];
+    reset_positions_pending_[stagger] = false;
+  }
+  ImGuiCond cond = reset_this ? ImGuiCond_Always : ImGuiCond_FirstUseEver;
+  ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowPos(pos, cond);
+}
+
+// -----------------------------------------------
 // Main render dispatch
 // -----------------------------------------------
 
@@ -235,6 +294,10 @@ void DevToolsUI::render() {
   time_window(15, "Recording", show_recording_controls_,
               [&] { render_recording_controls(); });
   time_window(16, "Assembler", show_assembler_, [&] { render_assembler(); });
+
+  // Per-window reset latches are cleared inside apply_default_window_layout()
+  // as each window lays out, so no global clear is needed here — closed
+  // windows keep their pending reset until they are next opened (beads-pv7).
 }
 
 // -----------------------------------------------
@@ -242,8 +305,7 @@ void DevToolsUI::render() {
 // -----------------------------------------------
 
 void DevToolsUI::render_registers() {
-  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(620, 60), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(0, 340, 420);
 
   bool open = true;
   if (!ImGui::Begin("Registers", &open)) {
@@ -252,17 +314,41 @@ void DevToolsUI::render_registers() {
     return;
   }
 
+  render_run_state_chip();  // beads-rj4
+  ImGui::Separator();
+
   bool locked = !CPC.paused;
   ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
                                   (locked ? ImGuiInputTextFlags_ReadOnly : 0);
 
+  // beads-pra: make the disabled state visible while running.
+  if (locked) {
+    ImGui::TextDisabled("(pause to edit registers)");
+  }
+  ImGui::BeginDisabled(locked);
+
+  // beads-9a9: right-click context menu on a 16-bit register field to jump to
+  // its current value in the Memory or Disassembly view.
+  auto RegContextMenu = [&](const char* id, word value) {
+    if (ImGui::BeginPopupContextItem(id)) {
+      if (ImGui::MenuItem("View in Memory"))
+        navigate_to(value, NavTarget::MEMORY);
+      if (ImGui::MenuItem("View in Disassembly"))
+        navigate_to(value, NavTarget::DISASM);
+      ImGui::EndPopup();
+    }
+  };
+
   auto RegField16 = [&](const char* label, reg_pair& rp) {
     unsigned short val = rp.w.l;
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputScalar(label, ImGuiDataType_U16, &val, nullptr, nullptr,
                            "%04X", hex_flags)) {
       if (!locked) rp.w.l = val;
     }
+    // Context menu uses the live register value (rp.w.l), so it stays correct
+    // even while the field is disabled and editing is blocked.
+    RegContextMenu(label, rp.w.l);
   };
 
   auto RegField8 = [&](const char* label, byte& val) {
@@ -274,38 +360,47 @@ void DevToolsUI::render_registers() {
     }
   };
 
-  // Main registers in two columns
-  ImGui::Columns(2, "regs_main", false);
-  RegField16("AF", z80.AF);
-  ImGui::NextColumn();
-  RegField16("AF'", z80.AFx);
-  ImGui::NextColumn();
-  RegField16("BC", z80.BC);
-  ImGui::NextColumn();
-  RegField16("BC'", z80.BCx);
-  ImGui::NextColumn();
-  RegField16("DE", z80.DE);
-  ImGui::NextColumn();
-  RegField16("DE'", z80.DEx);
-  ImGui::NextColumn();
-  RegField16("HL", z80.HL);
-  ImGui::NextColumn();
-  RegField16("HL'", z80.HLx);
-  ImGui::NextColumn();
-  RegField16("IX", z80.IX);
-  ImGui::NextColumn();
-  RegField16("IY", z80.IY);
-  ImGui::NextColumn();
-  RegField16("SP", z80.SP);
-  ImGui::NextColumn();
-  RegField16("PC", z80.PC);
-  ImGui::NextColumn();
-  ImGui::Columns(1);
+  // beads-083: main / shadow register pairs in a stretch-prop table so the
+  // grid reflows when the window is widened.
+  if (ImGui::BeginTable("regs", 2, ImGuiTableFlags_SizingStretchProp)) {
+    auto reg_row = [&](const char* main_label, reg_pair& main_rp,
+                       const char* shadow_label, reg_pair& shadow_rp) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      RegField16(main_label, main_rp);
+      ImGui::TableSetColumnIndex(1);
+      RegField16(shadow_label, shadow_rp);
+    };
+    // Main vs shadow (AF/AF' ...) pairs.
+    reg_row("AF", z80.AF, "AF'", z80.AFx);
+    reg_row("BC", z80.BC, "BC'", z80.BCx);
+    reg_row("DE", z80.DE, "DE'", z80.DEx);
+    reg_row("HL", z80.HL, "HL'", z80.HLx);
+    ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  // Index / stack / program registers (no shadow counterparts).
+  if (ImGui::BeginTable("regs_idx", 2, ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    RegField16("IX", z80.IX);
+    ImGui::TableSetColumnIndex(1);
+    RegField16("IY", z80.IY);
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    RegField16("SP", z80.SP);
+    ImGui::TableSetColumnIndex(1);
+    RegField16("PC", z80.PC);
+    ImGui::EndTable();
+  }
 
   ImGui::Spacing();
   RegField8("I", z80.I);
   ImGui::SameLine();
   RegField8("R", z80.R);
+
+  ImGui::EndDisabled();  // beads-pra: re-enable read-only info below
 
   // Interrupt state
   ImGui::Spacing();
@@ -322,6 +417,7 @@ void DevToolsUI::render_registers() {
   byte f = z80.AF.b.l;
   bool s = f & Sflag, zf = f & Zflag, h = f & Hflag, pv = f & Pflag,
        n = f & Nflag, cf = f & Cflag;
+  ImGui::BeginDisabled(locked);  // beads-pra: flags editable only when paused
   ImGui::Checkbox("S", &s);
   ImGui::SameLine();
   ImGui::Checkbox("Z", &zf);
@@ -333,6 +429,7 @@ void DevToolsUI::render_registers() {
   ImGui::Checkbox("N", &n);
   ImGui::SameLine();
   ImGui::Checkbox("C", &cf);
+  ImGui::EndDisabled();
   if (!locked) {
     byte new_f = 0;
     if (s) new_f |= Sflag;
@@ -379,8 +476,7 @@ void DevToolsUI::disasm_cache_record_pc() {
 }
 
 void DevToolsUI::render_disassembly() {
-  ImGui::SetNextWindowSize(ImVec2(440, 500), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(10, 60), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(1, 440, 500);
 
   bool open = true;
   if (!ImGui::Begin("Disassembly", &open, ImGuiWindowFlags_MenuBar)) {
@@ -411,6 +507,11 @@ void DevToolsUI::render_disassembly() {
           "Click lines to toggle breakpoints. Right-click for more options.");
     ImGui::EndMenuBar();
   }
+
+  render_run_state_chip();  // beads-rj4
+  ImGui::SameLine();
+  ImGui::TextDisabled("|");
+  ImGui::SameLine();
 
   // Determine the center address
   word center_pc = z80.PC.w.l;
@@ -528,9 +629,17 @@ void DevToolsUI::render_disassembly() {
     ImGui::PopStyleColor();
   }
 
+  // beads-5nd: track which line is selected (selection is separate from
+  // breakpoint toggling). Plain left-click on a line selects it; the leading
+  // gutter toggles a breakpoint. Persisted across frames via static.
+  static int disasm_selected_addr = -1;
+
   if (ImGui::BeginChild("##disasm_scroll", ImVec2(0, 0),
                         ImGuiChildFlags_Borders)) {
     int scroll_to_idx = -1;
+
+    // Fixed-width gutter so rows never reflow whether or not a BP marker shows.
+    const float gutter_w = ImGui::GetFrameHeight();
 
     for (int i = 0; i < static_cast<int>(lines.size()); i++) {
       const auto& entry = lines[i];
@@ -562,12 +671,41 @@ void DevToolsUI::render_disassembly() {
         ImGui::PopStyleColor();
       }
 
-      // Build display text
+      // Build display text (the breakpoint marker lives in the gutter column,
+      // so the main label is reflow-free regardless of BP state).
       static constexpr const char* kBreakpointMarker =
           "\xe2\x97\x8f";  // Unicode ●
       char label[256];
-      snprintf(label, sizeof(label), "%s %04X  %s",
-               is_bp ? kBreakpointMarker : " ", entry.addr, entry.text.c_str());
+      snprintf(label, sizeof(label), "%04X  %s", entry.addr,
+               entry.text.c_str());
+
+      // --- Breakpoint gutter (beads-5nd) ---
+      // A narrow leading Selectable. Clicking it toggles a breakpoint without
+      // selecting the line. Only meaningful for code (not data areas).
+      ImGui::PushID(i);
+      ImVec2 gutter_pos = ImGui::GetCursorScreenPos();
+      bool gutter_clicked =
+          ImGui::Selectable("##bpgutter", false, ImGuiSelectableFlags_None,
+                            ImVec2(gutter_w, ImGui::GetTextLineHeight()));
+      if (!entry.is_data_area && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(is_bp ? "Click: remove breakpoint"
+                                : "Click: add breakpoint");
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+      }
+      if (gutter_clicked && !entry.is_data_area) {
+        if (is_bp)
+          z80_del_breakpoint(entry.addr);
+        else
+          z80_add_breakpoint(entry.addr);
+      }
+      if (is_bp) {
+        ImVec2 tsz = ImGui::CalcTextSize(kBreakpointMarker);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(gutter_pos.x + (gutter_w - tsz.x) * 0.5f, gutter_pos.y),
+            IM_COL32(255, 77, 77, 255), kBreakpointMarker);
+      }
+      ImGui::PopID();
+      ImGui::SameLine(0.0f, 4.0f);
 
       // Color: green for PC, red for breakpoint, amber for data area, purple
       // for ROM
@@ -589,9 +727,14 @@ void DevToolsUI::render_disassembly() {
         style_colors_pushed = 1;
       }
 
-      if (ImGui::Selectable(label, is_pc || entry.is_data_area)) {
-        if (!entry.is_data_area) {
-          // Left click: toggle breakpoint (not meaningful for data areas)
+      bool is_selected = (static_cast<int>(entry.addr) == disasm_selected_addr);
+      if (ImGui::Selectable(label,
+                            is_pc || entry.is_data_area || is_selected)) {
+        // beads-5nd: plain left-click only selects the line. Ctrl-click is a
+        // convenience shortcut that also toggles the breakpoint (mirrors the
+        // gutter).
+        disasm_selected_addr = static_cast<int>(entry.addr);
+        if (!entry.is_data_area && ImGui::GetIO().KeyCtrl) {
           if (is_bp)
             z80_del_breakpoint(entry.addr);
           else
@@ -603,7 +746,8 @@ void DevToolsUI::render_disassembly() {
           ImGui::SetTooltip("Data area | Right-click: edit/remove");
         else
           ImGui::SetTooltip(
-              "Click: toggle breakpoint | Right-click: more options");
+              "Click: select | Gutter / Ctrl+click: toggle breakpoint | "
+              "Right-click: more options");
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       }
 
@@ -694,8 +838,7 @@ void DevToolsUI::render_disassembly() {
 // -----------------------------------------------
 
 void DevToolsUI::render_memory_hex() {
-  ImGui::SetNextWindowSize(ImVec2(520, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(460, 60), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(2, 520, 400);
 
   bool open = true;
   if (!ImGui::Begin("Memory Hex", &open, ImGuiWindowFlags_MenuBar)) {
@@ -1109,8 +1252,7 @@ void DevToolsUI::render_memory_hex() {
 // -----------------------------------------------
 
 void DevToolsUI::render_stack() {
-  ImGui::SetNextWindowSize(ImVec2(260, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(460, 440), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(3, 260, 400);
 
   bool open = true;
   if (!ImGui::Begin("Stack", &open)) {
@@ -1119,8 +1261,10 @@ void DevToolsUI::render_stack() {
     return;
   }
 
+  render_run_state_chip();  // beads-rj4
+  ImGui::SameLine();
   word sp = z80.SP.w.l;
-  ImGui::Text("SP = %04X", sp);
+  ImGui::Text("| SP = %04X", sp);
   ImGui::Separator();
 
   if (ImGui::BeginChild("##stack_entries", ImVec2(0, 0),
@@ -1189,8 +1333,7 @@ void DevToolsUI::render_stack() {
 // -----------------------------------------------
 
 void DevToolsUI::render_breakpoints() {
-  ImGui::SetNextWindowSize(ImVec2(500, 300), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(10, 540), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(4, 500, 300);
 
   bool open = true;
   if (!ImGui::Begin("Breakpoints & Watchpoints & IO###BPWindow", &open)) {
@@ -1205,6 +1348,34 @@ void DevToolsUI::render_breakpoints() {
   if (ImGui::Button("Clear All WPs")) z80_clear_watchpoints();
   ImGui::SameLine();
   if (ImGui::Button("Clear All IOBPs")) z80_clear_io_breakpoints();
+
+  // beads-w38: quick inline "add breakpoint by address" row. Accepts a hex
+  // address or a known symbol name (resolved via the symbol file).
+  {
+    static char quick_bp_addr[16] = "";
+    auto add_quick_bp = [&]() {
+      if (quick_bp_addr[0] == '\0') return;
+      unsigned long addr;
+      word sym_addr = 0;
+      if (parse_hex(quick_bp_addr, &addr, 0xFFFF)) {
+        z80_add_breakpoint(static_cast<word>(addr));
+        quick_bp_addr[0] = '\0';
+      } else if (g_symfile.lookupName(quick_bp_addr, sym_addr) == 0) {
+        // Symbol name resolved to an address.
+        z80_add_breakpoint(sym_addr);
+        quick_bp_addr[0] = '\0';
+      } else {
+        imgui_toast_error("Bad breakpoint address/symbol");
+      }
+    };
+    ImGui::SetNextItemWidth(90);
+    if (ImGui::InputText("##quickbp", quick_bp_addr, sizeof(quick_bp_addr),
+                         ImGuiInputTextFlags_EnterReturnsTrue))
+      add_quick_bp();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hex address or symbol name");
+    ImGui::SameLine();
+    if (ImGui::Button("Add BP##quick")) add_quick_bp();
+  }
 
   const auto& bps = z80_list_breakpoints_ref();
   const auto& wps = z80_list_watchpoints_ref();
@@ -1465,8 +1636,7 @@ void DevToolsUI::render_symbols() {
   snprintf(title, sizeof(title), "Symbols (%d)###SymbolTable",
            static_cast<int>(syms.size()));
 
-  ImGui::SetNextWindowSize(ImVec2(340, 400), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowPos(ImVec2(520, 540), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(5, 340, 400);
 
   bool open = true;
   if (!ImGui::Begin(title, &open)) {
@@ -1567,7 +1737,7 @@ void DevToolsUI::render_symbols() {
 // -----------------------------------------------
 
 void DevToolsUI::render_silicon_disc() {
-  ImGui::SetNextWindowSize(ImVec2(380, 280), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(6, 380, 280);
 
   bool open = true;
   if (!ImGui::Begin("Silicon Disc", &open)) {
@@ -1636,7 +1806,7 @@ void DevToolsUI::render_silicon_disc() {
 // -----------------------------------------------
 
 void DevToolsUI::render_asic() {
-  ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(7, 520, 500);
 
   bool open = true;
   if (!ImGui::Begin("ASIC Registers", &open)) {
@@ -1741,7 +1911,7 @@ void DevToolsUI::render_asic() {
 // -----------------------------------------------
 
 void DevToolsUI::render_disc_tools() {
-  ImGui::SetNextWindowSize(ImVec2(520, 500), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(8, 520, 500);
 
   bool open = true;
   if (!ImGui::Begin("Disc Tools", &open)) {
@@ -2013,7 +2183,7 @@ void DevToolsUI::render_disc_tools() {
 // -----------------------------------------------
 
 void DevToolsUI::render_data_areas() {
-  ImGui::SetNextWindowSize(ImVec2(560, 350), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(9, 560, 350);
 
   bool open = true;
   if (!ImGui::Begin("Data Areas", &open)) {
@@ -2162,7 +2332,7 @@ void DevToolsUI::render_disasm_export() {
     dex_prefill_pending_ = false;
   }
 
-  ImGui::SetNextWindowSize(ImVec2(420, 450), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(10, 420, 450);
 
   bool open = true;
   if (!ImGui::Begin("Disassembly Export", &open)) {
@@ -2411,7 +2581,7 @@ void DevToolsUI::render_disasm_export() {
 // -----------------------------------------------
 
 void DevToolsUI::render_session_recording() {
-  ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(11, 400, 200);
 
   bool open = true;
   if (!ImGui::Begin("Session Recording", &open)) {
@@ -2513,7 +2683,7 @@ void DevToolsUI::render_session_recording() {
 // -----------------------------------------------
 
 void DevToolsUI::render_gfx_finder() {
-  ImGui::SetNextWindowSize(ImVec2(500, 500), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(12, 500, 500);
 
   bool open = true;
   if (!ImGui::Begin("Graphics Finder", &open)) {
@@ -2676,7 +2846,7 @@ void DevToolsUI::render_gfx_finder() {
 // -----------------------------------------------
 
 void DevToolsUI::render_video_state() {
-  ImGui::SetNextWindowSize(ImVec2(340, 420), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(13, 340, 420);
 
   bool open = true;
   if (!ImGui::Begin("Video State", &open)) {
@@ -2799,7 +2969,7 @@ static void draw_scope_strip(const char* label, ImU32 color,
 }
 
 void DevToolsUI::render_audio_state() {
-  ImGui::SetNextWindowSize(ImVec2(420, 600), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(14, 420, 600);
 
   bool open = true;
   if (!ImGui::Begin("Audio State", &open)) {
@@ -2917,7 +3087,7 @@ static std::string format_size(uint64_t bytes) {
 }
 
 void DevToolsUI::render_recording_controls() {
-  ImGui::SetNextWindowSize(ImVec2(420, 400), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(15, 420, 400);
 
   bool open = true;
   if (!ImGui::Begin("Recording Controls", &open)) {
@@ -3269,7 +3439,7 @@ static std::string asm_build_source_with_org(const char* source,
 }
 
 void DevToolsUI::render_assembler() {
-  ImGui::SetNextWindowSize(ImVec2(700, 550), ImGuiCond_FirstUseEver);
+  apply_default_window_layout(16, 700, 550);
   bool open = true;
   if (!ImGui::Begin("Assembler##devtools", &open)) {
     ImGui::End();

@@ -4,10 +4,12 @@
 #include <SDL3/SDL_dialog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -20,6 +22,7 @@
 #include "devtools_ui.h"
 #include "disk.h"
 #include "drive_sounds.h"
+#include "fileutils.h"
 #include "imgui.h"
 #include "imgui_ui_testable.h"
 #include "keyboard.h"
@@ -29,6 +32,7 @@
 #include "m4board_http.h"
 #include "macos_menu.h"  // koncpc_restore_keyboard_focus
 #include "menu_actions.h"
+#include "menu_bridge.h"
 #include "plotter.h"
 #include "rom_identify.h"
 #include "serial_interface.h"
@@ -60,6 +64,7 @@ extern byte* pbTapeImageEnd;
 extern byte* pbTapeBlock;
 extern int iTapeCycleCount;
 extern dword dwTapeZeroPulseCycles;
+extern dword dwFrameCountOverall;
 
 // `imgui_state` singleton lives in src/imgui_state.cpp so the symbol is
 // present in both MODERN_UI=ON and OFF builds — the core writes telemetry
@@ -88,6 +93,22 @@ static bool s_topbar_height_dirty =
 static int s_statusbar_h = 0;
 static bool s_bottombar_height_dirty =
     false;  // defer SDL_SetWindowSize to after render
+
+// Deep-link target for the Settings/Options window.  A Machine-menu item sets
+// this, then imgui_render_options() selects the matching tab for exactly one
+// frame (via ImGuiTabItemFlags_SetSelected) and resets it back to None so the
+// user can click other tabs freely afterward.  Order mirrors the tab bar.
+enum class OptionsTab {
+  None = 0,
+  General,
+  ROMs,
+  Video,
+  Audio,
+  Input,
+  M4,
+  Serial,
+};
+static OptionsTab s_pending_options_tab = OptionsTab::None;
 
 // ─────────────────────────────────────────────────
 // SDL3 file dialog callback
@@ -351,8 +372,8 @@ void imgui_init_ui() {
   for (const auto& ma : koncpc_menu_actions()) {
     if (ma.title[0] == '\0') continue;  // skip empty entries
     std::string title = ma.title;
-    std::string shortcut = ma.shortcut ? ma.shortcut : "";
     KONCPC_KEYS action_key = ma.action;
+    std::string shortcut = koncpc_action_shortcut(action_key);
     g_command_palette.register_command(title, "", shortcut, [action_key]() {
       extern std::atomic<byte> keyboard_matrix[];
       applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix,
@@ -369,11 +390,6 @@ void imgui_init_ui() {
           cpc_resume();
         else
           cpc_pause();
-      });
-  g_command_palette.register_command(
-      "DevTools", "Open developer tools", "Shift+F2", []() {
-        imgui_state.show_devtools = !imgui_state.show_devtools;
-        if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
       });
   g_command_palette.register_command(
       "Registers", "Show CPU registers", "",
@@ -461,6 +477,11 @@ void imgui_render_ui() {
   // Dockspace host must be rendered before other windows so they can dock into
   // it
   workspace_render_dockspace();
+  // TODO(beads-34s): add a small dark host gutter / 1px inner bezel around the
+  // emulated CPC screen so it doesn't touch the topbar/status bar. The screen
+  // texture/quad is drawn in workspace_render_cpc_screen()
+  // (workspace_layout.cpp), which is outside this file's edit scope — handle it
+  // there.
   workspace_render_cpc_screen();
   imgui_render_menubar();
   imgui_render_topbar();
@@ -556,13 +577,24 @@ void imgui_render_ui() {
   }
   if (ImGui::BeginPopupModal("Confirm Quit", nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::Text("Are you sure you want to quit?");
+    // P0: warn about unsaved disk changes here, since this GUI quit path passes
+    // askIfUnsaved=false to cleanExit() and so skips the native unsaved-disk
+    // guard that the OS window-close path enforces (beads-bgs).
+    if (driveAltered()) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                         "You have unsaved changes to a disk.");
+      ImGui::TextUnformatted("Quit anyway? Those changes will be lost.");
+    } else {
+      ImGui::TextUnformatted("Are you sure you want to quit?");
+    }
     ImGui::Spacing();
-    if (ImGui::Button("Yes", ImVec2(80, 0))) {
+    if (ImGui::Button("Quit", ImVec2(90, 0))) {
       cleanExit(0, false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("No", ImVec2(80, 0))) {
+    bool cancel = ImGui::Button("Cancel", ImVec2(90, 0));
+    ImGui::SetItemDefaultFocus();  // focus the safe button by default
+    if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
         cpc_resume();
@@ -674,6 +706,15 @@ bool imgui_any_keyboard_ui_active() {
 // Helper: close menu and resume emulation
 // ─────────────────────────────────────────────────
 
+void imgui_open_menu() {
+  // The one true "enter pause" path, shared by F1, the topbar Pause button and
+  // the native-menu pause: open the pause/session overlay AND pause the
+  // emulator (so the topbar swaps the FPS readout for "PAUSED").
+  imgui_state.show_menu = true;
+  imgui_state.menu_just_opened = true;
+  cpc_pause();
+}
+
 void imgui_close_menu() {
   imgui_state.show_menu = false;
   // Don't clear show_options/show_about/show_quit_confirm here —
@@ -692,6 +733,274 @@ void imgui_close_menu() {
 // Main Menu Bar
 // ─────────────────────────────────────────────────
 
+// Live toggle state for a toggle-kind action (drives menu checkmarks across the
+// ImGui menus and the native macOS menu).  This is the GUI-side half of the
+// action registry — menu_actions.cpp holds the labels, the binding map holds
+// the shortcuts, and this reads the live emulator/UI state.
+bool koncpc_action_is_active(KONCPC_KEYS action) {
+  switch (action) {
+    case KONCPC_FPS:
+      return CPC.scr_fps != 0;
+    case KONCPC_SPEED:
+      return CPC.limit_speed != 0;
+    case KONCPC_JOY:
+      return CPC.joystick_emulation != JoystickEmulation::None;
+    case KONCPC_PHAZER:
+      return static_cast<bool>(CPC.phazer_emulation);
+    case KONCPC_DEVTOOLS:
+      return imgui_state.show_devtools;
+    case KONCPC_DEBUG:
+      return log_verbose;
+    default:
+      return false;
+  }
+}
+
+// Render one ImGui menu item for an action, pulling its canonical label,
+// derived shortcut hint and live checkmark from the single source of truth, and
+// routing the click through the one koncpc_menu_action() sink.  Every
+// emulator-command menu item should go through here so labels/shortcuts can
+// never drift.
+static bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
+  const MenuAction* meta = koncpc_find_action(action);
+  if (meta == nullptr) return false;
+  std::string sc = koncpc_action_shortcut(action);
+  const char* shortcut = sc.empty() ? nullptr : sc.c_str();
+  bool clicked =
+      ImGui::MenuItem(meta->title, shortcut,
+                      meta->toggle && koncpc_action_is_active(action), enabled);
+  if (clicked) koncpc_menu_action(action);
+  return clicked;
+}
+
+// Shared debugger step actions, so the DevTools toolbar buttons and the
+// keyboard shortcuts invoke identical behavior (beads-fa5).
+static void dbg_step_in() {
+  z80.step_in = 1;
+  z80.step_out = 0;
+  z80.step_out_addresses.clear();
+  cpc_resume();
+}
+static void dbg_step_over() {
+  z80.step_in = 0;
+  z80.step_out = 0;
+  z80.step_out_addresses.clear();
+  word pc = z80.PC.w.l;
+  if (z80_is_call_or_rst(pc)) {
+    z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
+    cpc_resume();
+  } else {
+    z80.step_in = 1;
+    cpc_resume();
+  }
+}
+static void dbg_step_out() {
+  z80.step_out = 1;
+  z80.step_out_addresses.clear();
+  z80.step_in = 0;
+  cpc_resume();
+}
+
+// Apply a window-scale choice (0 = Fit window, 1..4 = 1x/1.5x/2x/3x): set
+// CPC.scr_scale and resize the SDL window to match.  Shared by the Settings
+// Video tab's Scale combo and the View > Scale menu so the two can't drift.
+static void apply_scr_scale(int scale_idx) {
+  if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
+  CPC.scr_scale = scale_idx;
+  if (scale_idx > 0 && mainSDLWindow) {
+    static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
+    float f = sf[scale_idx];
+    int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
+    int new_h = CPC.scr_crt_aspect
+                    ? static_cast<int>(new_w * 3.f / 4.f)
+                    : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+    new_h += video_get_topbar_height() + video_get_bottombar_height();
+    SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Shared menu bridge (menu_bridge.h) — single source for the NON-KONCPC menu
+// items consumed by BOTH the in-window ImGui bar and the native macOS bar.
+// ─────────────────────────────────────────────────
+
+const std::vector<SettingsTabItem>& koncpc_settings_tab_items() {
+  // Order + separators mirror the Machine menu in the taxonomy.
+  static const std::vector<SettingsTabItem> items = {
+      {"System...", static_cast<int>(OptionsTab::General), false},
+      {"ROMs...", static_cast<int>(OptionsTab::ROMs), false},
+      {"Video...", static_cast<int>(OptionsTab::Video), false},
+      {"Audio...", static_cast<int>(OptionsTab::Audio), false},
+      {"Input Mapping...", static_cast<int>(OptionsTab::Input), false},
+      {"M4 Board...", static_cast<int>(OptionsTab::M4), true},
+      {"Serial Interface...", static_cast<int>(OptionsTab::Serial), false},
+  };
+  return items;
+}
+
+const std::vector<WindowMenuItem>& koncpc_window_menu_items() {
+  // 3 specials + the 17 devtools windows, grouped exactly like the in-window
+  // Window menu (separator_before reproduces the section breaks).
+  static const std::vector<WindowMenuItem> items = {
+      {"Virtual Keyboard", "$vkbd", false},
+      {"Serial Terminal", "$serial", false},
+      {"Plotter Preview", "$plotter", false},
+      // Debug Windows
+      {"Registers", "registers", true},
+      {"Disassembly", "disassembly", false},
+      {"Memory Hex", "memory_hex", false},
+      {"Stack", "stack", false},
+      {"Breakpoints", "breakpoints", false},
+      {"Symbols", "symbols", false},
+      {"Assembler", "assembler", false},
+      // Hardware
+      {"Video State", "video_state", true},
+      {"Audio State", "audio_state", false},
+      {"ASIC Registers", "asic", false},
+      {"Silicon Disc", "silicon_disc", false},
+      {"Disc Tools", "disc_tools", false},
+      // Analysis
+      {"GFX Finder", "gfx_finder", true},
+      {"Data Areas", "data_areas", false},
+      {"Disasm Export", "disasm_export", false},
+      // Recording
+      {"Session Recording", "session_recording", true},
+      {"Recording Controls", "recording_controls", false},
+  };
+  return items;
+}
+
+const std::vector<const char*>& koncpc_scale_labels() {
+  static const std::vector<const char*> labels = {"Fit window", "1x", "1.5x",
+                                                  "2x", "3x"};
+  return labels;
+}
+
+extern "C" void koncpc_show_about_dialog() { imgui_state.show_about = true; }
+
+extern "C" void koncpc_open_settings_tab(int tab) {
+  imgui_state.show_options = true;
+  s_pending_options_tab = static_cast<OptionsTab>(tab);
+}
+
+extern "C" void koncpc_open_command_palette() { g_command_palette.open(); }
+
+extern "C" void koncpc_request_file_dialog(int action) {
+  // Single source for the per-action filters + default paths.  Same callback
+  // (which restores keyboard focus) used by every loader/saver.
+  auto fda = static_cast<FileDialogAction>(action);
+  auto ud = reinterpret_cast<void*>(static_cast<intptr_t>(action));
+  switch (fda) {
+    case FileDialogAction::LoadDiskA: {
+      static const SDL_DialogFileFilter f[] = {
+          {"Disk Images", "dsk;ipf;raw;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::LoadDiskB: {
+      static const SDL_DialogFileFilter f[] = {
+          {"Disk Images", "dsk;ipf;raw;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::SaveDiskA: {
+      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk"}};
+      SDL_ShowSaveFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str());
+      break;
+    }
+    case FileDialogAction::SaveDiskB: {
+      static const SDL_DialogFileFilter f[] = {{"Disk Images", "dsk"}};
+      SDL_ShowSaveFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_dsk_path.c_str());
+      break;
+    }
+    case FileDialogAction::LoadTape: {
+      static const SDL_DialogFileFilter f[] = {{"Tape Images", "cdt;voc;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_tape_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::LoadCartridge: {
+      static const SDL_DialogFileFilter f[] = {{"Cartridges", "cpr;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_cart_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::LoadSnapshot: {
+      static const SDL_DialogFileFilter f[] = {{"Snapshots", "sna;zip"}};
+      SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_snap_path.c_str(), false);
+      break;
+    }
+    case FileDialogAction::SaveSnapshot: {
+      static const SDL_DialogFileFilter f[] = {{"Snapshots", "sna"}};
+      SDL_ShowSaveFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
+                             CPC.current_snap_path.c_str());
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+extern "C" void koncpc_window_toggle(const char* key) {
+  if (key == nullptr) return;
+  if (strcmp(key, "$vkbd") == 0) {
+    imgui_state.show_vkeyboard = !imgui_state.show_vkeyboard;
+  } else if (strcmp(key, "$serial") == 0) {
+    imgui_state.show_serial_terminal = !imgui_state.show_serial_terminal;
+  } else if (strcmp(key, "$plotter") == 0) {
+    imgui_state.show_plotter_preview = !imgui_state.show_plotter_preview;
+  } else {
+    g_devtools_ui.toggle_window(key);
+  }
+}
+
+extern "C" bool koncpc_window_is_open(const char* key) {
+  if (key == nullptr) return false;
+  if (strcmp(key, "$vkbd") == 0) return imgui_state.show_vkeyboard;
+  if (strcmp(key, "$serial") == 0) return imgui_state.show_serial_terminal;
+  if (strcmp(key, "$plotter") == 0) return imgui_state.show_plotter_preview;
+  bool* p = g_devtools_ui.window_ptr(key);
+  return p != nullptr && *p;
+}
+
+extern "C" void koncpc_set_scale(int idx) { apply_scr_scale(idx); }
+extern "C" int koncpc_current_scale() { return CPC.scr_scale; }
+
+extern "C" void koncpc_set_renderer(int plugin_idx) {
+  CPC.scr_style = plugin_idx;
+  imgui_state.video_reinit_pending = true;
+}
+extern "C" int koncpc_current_renderer() {
+  return static_cast<int>(CPC.scr_style);
+}
+
+extern "C" int koncpc_renderer_count() {
+  return static_cast<int>(video_plugin_list.size());
+}
+extern "C" const char* koncpc_renderer_name(int i) {
+  if (i < 0 || i >= static_cast<int>(video_plugin_list.size())) return "";
+  return video_plugin_list[i].name;
+}
+extern "C" bool koncpc_renderer_hidden(int i) {
+  if (i < 0 || i >= static_cast<int>(video_plugin_list.size())) return true;
+  return video_plugin_list[i].hidden;
+}
+extern "C" const char* koncpc_renderer_group(int i) {
+  // Single source for the GPU/CPU grouping used by both menu bars.
+  if (i < 0 || i >= static_cast<int>(video_plugin_list.size())) return "";
+  const char* name = video_plugin_list[i].name;
+  if (strncmp(name, "CRT", 3) == 0) return "GPU — CRT Shaders";
+  if (strcmp(name, "Direct") == 0 || strcmp(name, "Direct (SDL)") == 0 ||
+      strcmp(name, "OpenGL scaling") == 0)
+    return "GPU — Direct";
+  return "CPU — Software Scalers";
+}
+
 static void imgui_render_menubar() {
   if (!ImGui::BeginMainMenuBar()) return;
 
@@ -701,107 +1010,59 @@ static void imgui_render_menubar() {
     s_topbar_height_dirty = true;
   }
 
-  // ── Emulator ──
-  if (ImGui::BeginMenu("Emulator")) {
-    if (ImGui::MenuItem("Options...")) {
-      imgui_state.show_options = true;
+  // ── konCePCja ──
+  if (ImGui::BeginMenu("konCePCja")) {
+    if (ImGui::MenuItem("About konCePCja")) {
+      koncpc_show_about_dialog();
+    }
+    if (ImGui::MenuItem("Settings...")) {
+      koncpc_open_settings_tab(static_cast<int>(OptionsTab::General));
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Fullscreen", "F2")) {
-      koncpc_menu_action(KONCPC_FULLSCRN);
-    }
-    if (ImGui::MenuItem("Screenshot", "F3")) {
-      koncpc_menu_action(KONCPC_SCRNSHOT);
-    }
-    if (ImGui::MenuItem("Paste", "F11")) {
-      koncpc_menu_action(KONCPC_PASTE);
-    }
-    ImGui::Separator();
-    if (ImGui::MenuItem("Reset", "F5")) {
-      emulator_reset();
-    }
-    if (ImGui::MenuItem("About...")) {
-      imgui_state.show_about = true;
-    }
-    if (ImGui::MenuItem("Quit", "F10")) {
-      imgui_state.show_quit_confirm = true;
-      cpc_pause();
-    }
+    RenderMenuItem(KONCPC_EXIT);
     ImGui::EndMenu();
   }
 
-  // ── Media ──
-  if (ImGui::BeginMenu("Media")) {
-    if (ImGui::MenuItem("Load Disk A...")) {
-      static const SDL_DialogFileFilter filters[] = {
-          {"Disk Images", "dsk;ipf;raw;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadDiskA)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
-    }
-    if (ImGui::MenuItem("Load Disk B...")) {
-      static const SDL_DialogFileFilter filters[] = {
-          {"Disk Images", "dsk;ipf;raw;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadDiskB)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str(), false);
-    }
-    if (ImGui::MenuItem("Save Disk A...", nullptr, false, driveA.tracks != 0)) {
-      static const SDL_DialogFileFilter filters[] = {{"Disk Images", "dsk"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveDiskA)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
-    }
-    if (ImGui::MenuItem("Save Disk B...", nullptr, false, driveB.tracks != 0)) {
-      static const SDL_DialogFileFilter filters[] = {{"Disk Images", "dsk"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveDiskB)),
-          mainSDLWindow, filters, 1, CPC.current_dsk_path.c_str());
+  // ── Machine ── deep-links straight to a Settings tab + Reset.  Each item
+  // opens the Options window and asks it to select that tab for one frame.
+  // The tab list is single-sourced via koncpc_settings_tab_items().
+  if (ImGui::BeginMenu("Machine")) {
+    for (const SettingsTabItem& it : koncpc_settings_tab_items()) {
+      if (it.separator_before) ImGui::Separator();
+      if (ImGui::MenuItem(it.label)) {
+        koncpc_open_settings_tab(it.tab);
+      }
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Load Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadSnapshot)),
-          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str(), false);
+    RenderMenuItem(KONCPC_RESET);
+    ImGui::EndMenu();
+  }
+
+  // ── Edit ──
+  if (ImGui::BeginMenu("Edit")) {
+    RenderMenuItem(KONCPC_PASTE);
+    ImGui::EndMenu();
+  }
+
+  // ── Media ── (loaders/savers single-sourced via koncpc_request_file_dialog)
+  if (ImGui::BeginMenu("Media")) {
+    if (ImGui::MenuItem("Load Disk A...")) {
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadDiskA));
     }
-    if (ImGui::MenuItem("Save Snapshot...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Snapshots", "sna"}};
-      SDL_ShowSaveFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::SaveSnapshot)),
-          mainSDLWindow, filters, 1, CPC.current_snap_path.c_str());
+    if (ImGui::MenuItem("Load Disk B...")) {
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadDiskB));
     }
-    if (ImGui::MenuItem("Quick Save Snapshot", "Shift+F3")) {
-      koncpc_menu_action(KONCPC_SNAPSHOT);
+    if (ImGui::MenuItem("Save Disk A...", nullptr, false, driveA.tracks != 0)) {
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskA));
     }
-    if (ImGui::MenuItem("Quick Load Snapshot", "Shift+F4")) {
-      koncpc_menu_action(KONCPC_LD_SNAP);
+    if (ImGui::MenuItem("Save Disk B...", nullptr, false, driveB.tracks != 0)) {
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskB));
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
-      static const SDL_DialogFileFilter filters[] = {
-          {"Tape Images", "cdt;voc;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadTape)),
-          mainSDLWindow, filters, 1, CPC.current_tape_path.c_str(), false);
+      koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadTape));
     }
-    if (ImGui::MenuItem("Tape Play/Stop", "F4", false, !pbTapeImage.empty())) {
-      koncpc_menu_action(KONCPC_TAPEPLAY);
-    }
+    RenderMenuItem(KONCPC_TAPEPLAY, !pbTapeImage.empty());
     if (ImGui::MenuItem("Eject Tape", nullptr, false, !pbTapeImage.empty())) {
       tape_eject();
       CPC.tape.file.clear();
@@ -810,13 +1071,25 @@ static void imgui_render_menubar() {
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Cartridge...")) {
-      static const SDL_DialogFileFilter filters[] = {{"Cartridges", "cpr;zip"}};
-      SDL_ShowOpenFileDialog(
-          file_dialog_callback,
-          reinterpret_cast<void*>(
-              static_cast<intptr_t>(FileDialogAction::LoadCartridge)),
-          mainSDLWindow, filters, 1, CPC.current_cart_path.c_str(), false);
+      koncpc_request_file_dialog(
+          static_cast<int>(FileDialogAction::LoadCartridge));
     }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Load Snapshot...")) {
+      koncpc_request_file_dialog(
+          static_cast<int>(FileDialogAction::LoadSnapshot));
+    }
+    if (ImGui::MenuItem("Save Snapshot...")) {
+      koncpc_request_file_dialog(
+          static_cast<int>(FileDialogAction::SaveSnapshot));
+    }
+    // beads-5aa: group the default-slot quick snapshot actions so their labels
+    // (which read like speed adjectives in isolation) are clearly about the
+    // default slot. Canonical labels live in menu_actions.cpp (not edited).
+    RenderMenuItem(KONCPC_SNAPSHOT);
+    RenderMenuItem(KONCPC_LD_SNAP);
+    ImGui::Separator();
+    RenderMenuItem(KONCPC_NEXTDISKA);
 
     // ── Open Recent submenu ──
     bool has_any_mru = !CPC.mru_disks.empty() || !CPC.mru_tapes.empty() ||
@@ -891,103 +1164,98 @@ static void imgui_render_menubar() {
     ImGui::EndMenu();
   }
 
+  // ── View ──
+  if (ImGui::BeginMenu("View")) {
+    RenderMenuItem(KONCPC_FULLSCRN);
+
+    // Scale ▸ — window scale factor (mirrors Settings ▸ Video ▸ Scale, same
+    // apply path via the bridge).  Checkmark on the current factor.
+    if (ImGui::BeginMenu("Scale")) {
+      const auto& labels = koncpc_scale_labels();
+      for (int i = 0; i < static_cast<int>(labels.size()); i++) {
+        if (ImGui::MenuItem(labels[i], nullptr, koncpc_current_scale() == i)) {
+          koncpc_set_scale(i);
+        }
+      }
+      ImGui::EndMenu();
+    }
+
+    // Renderer ▸ — video plugin (mirrors Settings ▸ Video ▸ Video Plugin),
+    // grouped GPU/CPU via the bridge so the two stay in sync.
+    if (ImGui::BeginMenu("Renderer")) {
+      const char* prev_group = nullptr;
+      for (int i = 0; i < koncpc_renderer_count(); i++) {
+        if (koncpc_renderer_hidden(i)) continue;
+        const char* group = koncpc_renderer_group(i);
+        if (!prev_group || strcmp(prev_group, group) != 0) {
+          ImGui::SeparatorText(group);
+          prev_group = group;
+        }
+        if (ImGui::MenuItem(koncpc_renderer_name(i), nullptr,
+                            koncpc_current_renderer() == i)) {
+          koncpc_set_renderer(i);
+        }
+      }
+      ImGui::EndMenu();
+    }
+
+    ImGui::Separator();
+    RenderMenuItem(KONCPC_SCRNSHOT);
+    RenderMenuItem(KONCPC_FPS);
+    ImGui::EndMenu();
+  }
+
+  // ── Input ──
+  if (ImGui::BeginMenu("Input")) {
+    RenderMenuItem(KONCPC_JOY);
+    RenderMenuItem(KONCPC_PHAZER);
+    RenderMenuItem(KONCPC_SPEED);
+    ImGui::EndMenu();
+  }
+
   // ── Tools ──
   if (ImGui::BeginMenu("Tools")) {
-    if (ImGui::MenuItem("Memory Tool")) {
-      imgui_state.show_devtools = true;
-      g_devtools_ui.toggle_window("memory_hex");
+    RenderMenuItem(KONCPC_DEVTOOLS);
+    // beads-qnf: surface the Cmd+K command palette (previously only mentioned
+    // in the About box) as a discoverable menu entry.
+    if (ImGui::MenuItem("Command Palette", "Cmd+K")) {
+      koncpc_open_command_palette();
     }
-    if (ImGui::MenuItem("DevTools", "Shift+F2")) {
-      imgui_state.show_devtools = !imgui_state.show_devtools;
-      if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
-    }
-    if (ImGui::MenuItem("Virtual Keyboard", "Shift+F1")) {
-      koncpc_menu_action(KONCPC_VKBD);
-    }
-    if (ImGui::MenuItem("MF2 Stop", "F6")) {
-      koncpc_menu_action(KONCPC_MF2STOP);
+    RenderMenuItem(KONCPC_MF2STOP);
+    // beads-41p: developer/diagnostics group — Verbose Logging moved here from
+    // the Options menu (where it sat among player toggles).
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Diagnostics")) {
+      RenderMenuItem(KONCPC_DEBUG);
+      ImGui::EndMenu();
     }
     ImGui::EndMenu();
   }
 
-  // ── Window ──
+  // ── Window ── single-sourced via koncpc_window_menu_items().  The section
+  // labels under each separator are added here for the in-window bar's denser
+  // layout (the native bar shows the separators alone).
   if (ImGui::BeginMenu("Window")) {
-    if (ImGui::MenuItem("DevTools Toolbar", "Shift+F2",
-                        &imgui_state.show_devtools)) {
-      if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
-    }
-    ImGui::MenuItem("Virtual Keyboard", "Shift+F1",
-                    &imgui_state.show_vkeyboard);
-    ImGui::MenuItem("Serial Terminal", nullptr,
-                    &imgui_state.show_serial_terminal);
-    ImGui::MenuItem("Plotter Preview", nullptr,
-                    &imgui_state.show_plotter_preview);
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Debug Windows");
-    ImGui::MenuItem("Registers", nullptr,
-                    g_devtools_ui.window_ptr("registers"));
-    ImGui::MenuItem("Disassembly", nullptr,
-                    g_devtools_ui.window_ptr("disassembly"));
-    ImGui::MenuItem("Memory Hex", nullptr,
-                    g_devtools_ui.window_ptr("memory_hex"));
-    ImGui::MenuItem("Stack", nullptr, g_devtools_ui.window_ptr("stack"));
-    ImGui::MenuItem("Breakpoints", nullptr,
-                    g_devtools_ui.window_ptr("breakpoints"));
-    ImGui::MenuItem("Symbols", nullptr, g_devtools_ui.window_ptr("symbols"));
-    ImGui::MenuItem("Assembler", nullptr,
-                    g_devtools_ui.window_ptr("assembler"));
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Hardware");
-    ImGui::MenuItem("Video State", nullptr,
-                    g_devtools_ui.window_ptr("video_state"));
-    ImGui::MenuItem("Audio State", nullptr,
-                    g_devtools_ui.window_ptr("audio_state"));
-    ImGui::MenuItem("ASIC Registers", nullptr,
-                    g_devtools_ui.window_ptr("asic"));
-    ImGui::MenuItem("Silicon Disc", nullptr,
-                    g_devtools_ui.window_ptr("silicon_disc"));
-    ImGui::MenuItem("Disc Tools", nullptr,
-                    g_devtools_ui.window_ptr("disc_tools"));
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Analysis");
-    ImGui::MenuItem("GFX Finder", nullptr,
-                    g_devtools_ui.window_ptr("gfx_finder"));
-    ImGui::MenuItem("Data Areas", nullptr,
-                    g_devtools_ui.window_ptr("data_areas"));
-    ImGui::MenuItem("Disasm Export", nullptr,
-                    g_devtools_ui.window_ptr("disasm_export"));
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Recording");
-    ImGui::MenuItem("Session Recording", nullptr,
-                    g_devtools_ui.window_ptr("session_recording"));
-    ImGui::MenuItem("Recording Controls", nullptr,
-                    g_devtools_ui.window_ptr("recording_controls"));
-
-    ImGui::EndMenu();
-  }
-
-  // ── Options ──
-  if (ImGui::BeginMenu("Options")) {
-    if (ImGui::MenuItem("Joystick Emulation", "F7",
-                        CPC.joystick_emulation != JoystickEmulation::None)) {
-      koncpc_menu_action(KONCPC_JOY);
-    }
-    if (ImGui::MenuItem("Phazer Emulation", "Shift+F7",
-                        static_cast<bool>(CPC.phazer_emulation))) {
-      koncpc_menu_action(KONCPC_PHAZER);
-    }
-    if (ImGui::MenuItem("Speed Limit", "F9", CPC.limit_speed != 0)) {
-      koncpc_menu_action(KONCPC_SPEED);
-    }
-    if (ImGui::MenuItem("Show FPS", "F8", CPC.scr_fps != 0)) {
-      koncpc_menu_action(KONCPC_FPS);
-    }
-    if (ImGui::MenuItem("Verbose Logging", "F12", log_verbose)) {
-      koncpc_menu_action(KONCPC_DEBUG);
+    static const char* kSectionLabel[] = {"Debug Windows", "Hardware",
+                                          "Analysis", "Recording"};
+    int section = 0;
+    bool first = true;
+    for (const WindowMenuItem& it : koncpc_window_menu_items()) {
+      if (it.separator_before) {
+        ImGui::Separator();
+        if (!first && section < IM_ARRAYSIZE(kSectionLabel)) {
+          ImGui::TextDisabled("%s", kSectionLabel[section]);
+          section++;
+        }
+      }
+      first = false;
+      // Virtual Keyboard keeps its discoverability hint; specials have no live
+      // toggle pointer, so route clicks through the bridge toggle.
+      const char* shortcut =
+          (strcmp(it.key, "$vkbd") == 0) ? "Shift+F1" : nullptr;
+      if (ImGui::MenuItem(it.label, shortcut, koncpc_window_is_open(it.key))) {
+        koncpc_window_toggle(it.key);
+      }
     }
     ImGui::EndMenu();
   }
@@ -1221,29 +1489,65 @@ static void imgui_render_topbar() {
     // the Z80 thread). When paused, the button resumes; when running, it opens
     // the F1 menu and pauses, exactly as before.
     const bool is_paused = g_emu_paused.load(std::memory_order_relaxed);
+    // beads-uvo: reserve the gold/amber accent for the PAUSED state. While
+    // running, the Pause button gets a flat neutral fill so the gold only
+    // means "something is halted"; when paused, the Resume button keeps the
+    // theme's gold so the call-to-action stands out.
+    if (!is_paused) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.20f, 0.23f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.28f, 0.28f, 0.32f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                            ImVec4(0.34f, 0.34f, 0.38f, 1.0f));
+    }
     if (ImGui::Button(is_paused ? "Resume (Esc)" : "Pause (F1)")) {
       if (is_paused) {
         cpc_resume();
         imgui_state.show_menu = false;
       } else {
-        imgui_state.show_menu = true;
-        imgui_state.menu_just_opened = true;
-        cpc_pause();
+        imgui_open_menu();
       }
     }
+    if (!is_paused) ImGui::PopStyleColor(3);
     // (Tape waveform moved to bottom status bar)
 
-    // ── Layout dropdown ──
-    // Uses a state-flag + standalone window instead of ImGui popup,
-    // because popups from the fixed topbar close immediately in docked
-    // mode due to focus interactions with the dockspace.
+    // beads-rwc: reformat the run-on FPS string ("50FPS 100%") produced by the
+    // emulator core into "50 FPS · 100%" (space + middle-dot separator) for
+    // legibility. Done here at the display site because the producer lives in
+    // another translation unit.
+    std::string fps_display;
+    if (!imgui_state.topbar_fps.empty()) {
+      const std::string& raw = imgui_state.topbar_fps;
+      size_t fpos = raw.find("FPS");
+      if (fpos != std::string::npos) {
+        // Left part = digits before "FPS"; right part = remainder after "FPS".
+        std::string left = raw.substr(0, fpos);
+        std::string right = raw.substr(fpos + 3);
+        // Trim surrounding spaces from both halves.
+        auto trim = [](std::string& s) {
+          size_t a = s.find_first_not_of(' ');
+          size_t b = s.find_last_not_of(' ');
+          s = (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1);
+        };
+        trim(left);
+        trim(right);
+        fps_display = left + " FPS \xc2\xb7 " + right;  // U+00B7 middle dot
+      } else {
+        fps_display = raw;
+      }
+    }
+
+    // ── Right status cluster: Layout button + (PAUSED | FPS) ──
+    // Uses a state-flag + standalone window instead of ImGui popup, because
+    // popups from the fixed topbar close immediately in docked mode due to
+    // focus interactions with the dockspace.
     {
       // Right-align before rightmost element (PAUSED or FPS counter)
       float right_w = 0.0f;
       if (is_paused) {
         right_w = ImGui::CalcTextSize("PAUSED").x + 16.0f;
-      } else if (!imgui_state.topbar_fps.empty()) {
-        right_w = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x + 16.0f;
+      } else if (!fps_display.empty()) {
+        right_w = ImGui::CalcTextSize(fps_display.c_str()).x + 16.0f;
       }
       float btn_w = ImGui::CalcTextSize("Layout").x +
                     ImGui::GetStyle().FramePadding.x * 2.0f;
@@ -1264,11 +1568,23 @@ static void imgui_render_topbar() {
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.2f, 1.0f));
       ImGui::TextUnformatted("PAUSED");
       ImGui::PopStyleColor();
-    } else if (!imgui_state.topbar_fps.empty()) {
-      float fps_width = ImGui::CalcTextSize(imgui_state.topbar_fps.c_str()).x;
+    } else if (!fps_display.empty()) {
+      float fps_width = ImGui::CalcTextSize(fps_display.c_str()).x;
       ImGui::SameLine(ImGui::GetWindowWidth() - fps_width - 8);
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(imgui_state.topbar_fps.c_str());
+      ImGui::TextUnformatted(fps_display.c_str());
+    }
+
+    // beads-sxd: subtle bottom separator so the native title bar, menu bar, and
+    // topbar don't merge into one undifferentiated dark band. Drawn 1px lighter
+    // than the topbar background at the bottom edge of the window.
+    {
+      ImVec2 wp = ImGui::GetWindowPos();
+      ImVec2 ws = ImGui::GetWindowSize();
+      float yb = wp.y + ws.y - 0.5f;
+      ImGui::GetWindowDrawList()->AddLine(
+          ImVec2(wp.x, yb), ImVec2(wp.x + ws.x, yb),
+          IM_COL32(0x2A, 0x2A, 0x2E, 0xFF), 1.0f);
     }
   }
   ImGui::End();
@@ -1810,6 +2126,19 @@ static void imgui_render_statusbar() {
       }
     }
 
+    // ── First-run empty-state hint ──
+    // beads-mng: when no media is loaded anywhere, show an unobtrusive,
+    // right-aligned dim hint so a fresh launch isn't a blank dead-end.
+    if (driveA.tracks == 0 && driveB.tracks == 0 && pbTapeImage.empty()) {
+      const char* hint = "Drop a .dsk/.cdt or press F1 to load";
+      float hint_w = ImGui::CalcTextSize(hint).x;
+      ImGui::SameLine(ImGui::GetWindowWidth() - hint_w - 10.0f);
+      ImGui::AlignTextToFramePadding();
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+      ImGui::TextUnformatted(hint);
+      ImGui::PopStyleColor();
+    }
+
     // ── Eject Disk confirmation popup ──
     // Latch the drive index when opening the popup — the popup may not
     // open until the next frame, and eject_confirm_drive could be reset
@@ -1874,6 +2203,112 @@ static void imgui_render_statusbar() {
 }
 
 // ─────────────────────────────────────────────────
+// Save-state slot helpers (pause-menu state manager)
+// ─────────────────────────────────────────────────
+
+// Directory holding numbered save-state slots, derived from CPC.snap_path.
+// CPC.snap_path may or may not end in a separator, so normalise it.
+static std::string state_slots_dir() {
+  std::string base = CPC.snap_path;
+  if (base.empty()) base = ".";
+  if (base.back() != '/' && base.back() != '\\') base += '/';
+  std::string dir = base + "states/";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  return dir;
+}
+
+static std::string state_slot_path(int i) {
+  return state_slots_dir() + "state" + std::to_string(i) + ".sna";
+}
+
+static std::string state_slot_png(int i) {
+  return state_slots_dir() + "state" + std::to_string(i) + ".png";
+}
+
+// Raw RGBA thumbnail (".kthm") captured at save time for the pause-screen grid.
+static std::string state_slot_thumb(int i) {
+  return state_slots_dir() + "state" + std::to_string(i) + ".kthm";
+}
+
+// Per-slot thumbnail texture cache (slots 1..8 -> index 1..8; index 0 unused).
+// `sig` is the thumbnail file's last-write-time count, used to detect
+// staleness.
+namespace {
+struct SlotThumb {
+  uintptr_t tex = 0;
+  std::string sig;
+};
+SlotThumb g_slot_thumb[9];
+
+// Free + clear a cached slot texture (e.g. before re-saving over it).
+void invalidate_slot_thumb(int i) {
+  if (i < 0 || i > 8) return;
+  if (g_slot_thumb[i].tex) {
+    video_free_rgba_texture(g_slot_thumb[i].tex);
+    g_slot_thumb[i].tex = 0;
+  }
+  g_slot_thumb[i].sig.clear();
+}
+}  // namespace
+
+// Public: free ALL cached slot thumbnail textures.  Called before
+// video_shutdown() on a renderer switch so the GPU handles are freed against
+// the live device and the grid reloads fresh textures from the new backend.
+void imgui_invalidate_slot_thumbs() {
+  for (int i = 0; i < 9; ++i) invalidate_slot_thumb(i);
+}
+
+static bool state_slot_exists(int i) {
+  std::error_code ec;
+  return std::filesystem::exists(state_slot_path(i), ec);
+}
+
+// Last-write time of a slot, formatted "MMM DD HH:MM", or "" if missing.
+static std::string state_slot_time(int i) {
+  std::error_code ec;
+  std::string path = state_slot_path(i);
+  if (!std::filesystem::exists(path, ec)) return "";
+  auto ftime = std::filesystem::last_write_time(path, ec);
+  if (ec) return "";
+  // Portable file_time -> system_clock conversion (avoids C++20 clock_cast).
+  auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      ftime - std::filesystem::file_time_type::clock::now() +
+      std::chrono::system_clock::now());
+  std::time_t tt = std::chrono::system_clock::to_time_t(sctp);
+  std::tm tm_buf{};
+#ifdef _WIN32
+  if (localtime_s(&tm_buf, &tt) != 0) return "";
+#else
+  if (localtime_r(&tt, &tm_buf) == nullptr) return "";
+#endif
+  char out[32];
+  if (std::strftime(out, sizeof(out), "%b %d %H:%M", &tm_buf) == 0) return "";
+  return out;
+}
+
+static void save_state_slot(int i) {
+  std::string path = state_slot_path(i);  // also creates the directory
+  int rc = snapshot_save(path);
+  if (rc == 0) {
+    video_request_window_screenshot(state_slot_png(i));
+    // Capture a small raw-RGBA thumbnail for the pause-screen grid, then drop
+    // the cached texture so the grid reloads the fresh image.
+    video_capture_cpc_thumbnail(state_slot_thumb(i), 160);
+    invalidate_slot_thumb(i);
+    set_osd_message("Saved state " + std::to_string(i));
+  } else {
+    set_osd_message("Save state " + std::to_string(i) + " failed");
+  }
+}
+
+static void load_state_slot(int i) {
+  // snapshot_load pauses internally; we are already paused here.
+  snapshot_load(state_slot_path(i));
+  set_osd_message("Loaded state " + std::to_string(i));
+}
+
+// ─────────────────────────────────────────────────
 // Menu
 // ─────────────────────────────────────────────────
 
@@ -1882,8 +2317,15 @@ static void imgui_render_menu() {
   ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
                           ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
-  ImGui::SetNextWindowSize(ImVec2(260, 0));
+  ImGui::SetNextWindowSize(ImVec2(360, 0));
   ImGui::SetNextWindowViewport(mvp->ID);
+
+  // Darken the emulator behind the overlay (the classic dimmed pause backdrop).
+  // Drawn on the background list so it sits over the CPC screen but under this
+  // window.
+  ImGui::GetBackgroundDrawList(mvp)->AddRectFilled(
+      mvp->Pos, ImVec2(mvp->Pos.x + mvp->Size.x, mvp->Pos.y + mvp->Size.y),
+      IM_COL32(0, 0, 0, 150));
 
   ImGuiWindowFlags flags =
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
@@ -1928,8 +2370,8 @@ static void imgui_render_menu() {
 
   float bw = ImGui::GetContentRegionAvail().x;
 
-  ImGui::TextWrapped(
-      "Emulation paused. Use the menu bar above for all actions.");
+  // ── Section 1: Transport ────────────────────────────────────────────
+  ImGui::TextDisabled("PAUSED");
   ImGui::Spacing();
 
   // Enable keyboard navigation for this window (arrows/tab cycle buttons)
@@ -1940,15 +2382,193 @@ static void imgui_render_menu() {
   if (ImGui::Button("Resume (Esc)", ImVec2(bw, 0))) {
     action = true;
   }
-  if (ImGui::Button("Reset (F5/R)", ImVec2(bw, 0))) {
-    emulator_reset();
-    action = true;
+  {
+    float half = (bw - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+    std::string reset_lbl =
+        "Reset (" + koncpc_action_shortcut(KONCPC_RESET) + ")";
+    if (ImGui::Button(reset_lbl.c_str(), ImVec2(half, 0))) {
+      emulator_reset();
+      action = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Screenshot", ImVec2(half, 0))) {
+      std::string dir = CPC.sdump_dir;
+      std::error_code ec;
+      if (dir.empty() || !std::filesystem::is_directory(dir, ec)) dir = ".";
+      std::string shot = dir + "/screenshot_" + getDateString() + ".png";
+      video_request_window_screenshot(shot);
+      set_osd_message("Screenshot saved");
+    }
   }
-  if (ImGui::Button("About (A)", ImVec2(bw, 0))) {
-    imgui_state.show_about = true;
-  }
-  if (ImGui::Button("Quit (Q)", ImVec2(bw, 0))) {
-    imgui_state.show_quit_confirm = true;
+
+  // ── Section 2: Status dashboard ─────────────────────────────────────
+  ImGui::Separator();
+  ImGui::TextDisabled("Status");
+  ImGui::Spacing();
+
+  auto basename_or_dash = [](const std::string& p) -> std::string {
+    if (p.empty()) return "—";
+    return std::filesystem::path(p).filename().string();
+  };
+
+  ImGui::Columns(2, "pause_status", false);
+  ImGui::Text("Disk A:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.driveA.file).c_str());
+  ImGui::NextColumn();
+  ImGui::Text("Disk B:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.driveB.file).c_str());
+  ImGui::NextColumn();
+  ImGui::Text("Tape:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.tape.file).c_str());
+  ImGui::NextColumn();
+  ImGui::Text("Cartridge:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", basename_or_dash(CPC.cartridge.file).c_str());
+  ImGui::NextColumn();
+
+  static const char* kModelNames[] = {"CPC 464", "CPC 664", "CPC 6128",
+                                      "6128+"};
+  const char* model_name =
+      (CPC.model < IM_ARRAYSIZE(kModelNames)) ? kModelNames[CPC.model] : "?";
+  ImGui::Text("Model:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", model_name);
+  ImGui::NextColumn();
+  ImGui::Text("RAM:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%u KB", CPC.ram_size);
+  ImGui::NextColumn();
+  ImGui::Text("CRTC:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", crtc_type_chip_name(CRTC.crtc_type));
+  ImGui::NextColumn();
+
+  // Uptime derived from the global frame counter (50 frames per second).
+  dword secs = dwFrameCountOverall / 50;
+  ImGui::Text("Uptime:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%u:%02u", secs / 60, secs % 60);
+  ImGui::NextColumn();
+  ImGui::Columns(1);
+
+  // ── Section 3: Save-state manager ───────────────────────────────────
+  ImGui::Separator();
+  ImGui::TextDisabled("Save States");
+  ImGui::Spacing();
+
+  static int state_mode = 0;  // 0 = Load, 1 = Save
+  ImGui::RadioButton("Load", &state_mode, 0);
+  ImGui::SameLine();
+  ImGui::RadioButton("Save", &state_mode, 1);
+  ImGui::Spacing();
+
+  const int kCols = 4;
+  float spacing = ImGui::GetStyle().ItemSpacing.x;
+  float cell_w = (bw - spacing * (kCols - 1)) / kCols;
+  // Every slot is one uniform 4:3 cell (4 wide : 3 tall): the thumbnail (or a
+  // dark "empty" fill) with the label centered on top — built in the loop.
+  float cell_h = cell_w * 3.0f / 4.0f;
+
+  // Return a cached/ refreshed thumbnail texture for slot i, or 0 if none.
+  auto slot_thumb_texture = [](int i) -> uintptr_t {
+    std::string tp = state_slot_thumb(i);
+    std::error_code ec;
+    if (!std::filesystem::exists(tp, ec)) {
+      invalidate_slot_thumb(i);
+      return 0;
+    }
+    auto wt = std::filesystem::last_write_time(tp, ec);
+    std::string sig = ec ? std::string()
+                         : std::to_string(static_cast<long long>(
+                               wt.time_since_epoch().count()));
+    if (g_slot_thumb[i].tex && g_slot_thumb[i].sig == sig) {
+      return g_slot_thumb[i].tex;  // cache hit
+    }
+    // Miss or stale: free old texture, reload from disk.
+    invalidate_slot_thumb(i);
+    std::vector<unsigned char> rgba;
+    int tw = 0, th = 0;
+    if (video_load_rgba_thumbnail(tp, rgba, tw, th)) {
+      uintptr_t tex = video_make_rgba_texture(rgba.data(), tw, th);
+      if (tex) {
+        g_slot_thumb[i].tex = tex;
+        g_slot_thumb[i].sig = sig;
+        return tex;
+      }
+    }
+    return 0;
+  };
+
+  for (int i = 1; i <= 8; ++i) {
+    bool exists = state_slot_exists(i);
+    std::string when = exists ? state_slot_time(i) : std::string("Empty");
+    uintptr_t thumb = exists ? slot_thumb_texture(i) : 0;
+
+    bool disabled = (state_mode == 0 && !exists);
+    if (disabled) ImGui::BeginDisabled();
+
+    // Uniform 4:3 cell: an invisible button for hit-testing, then we paint the
+    // image (or empty fill) and the centered label on top via the draw list.
+    char id[16];
+    snprintf(id, sizeof(id), "##slot%d", i);
+    ImVec2 p0 = ImGui::GetCursorScreenPos();
+    bool clicked = ImGui::InvisibleButton(id, ImVec2(cell_w, cell_h));
+    bool hovered = ImGui::IsItemHovered();
+    ImVec2 p1(p0.x + cell_w, p0.y + cell_h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    if (thumb) {
+      dl->AddImage(static_cast<ImTextureID>(thumb), p0, p1);
+      // Scrim so the centered label stays readable over a bright frame.
+      dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 70));
+    } else {
+      dl->AddRectFilled(p0, p1, IM_COL32(28, 28, 34, 255));
+    }
+    dl->AddRect(
+        p0, p1,
+        hovered ? IM_COL32(120, 170, 255, 255) : IM_COL32(80, 80, 90, 255),
+        0.0f, 0, hovered ? 2.0f : 1.0f);
+
+    // Centered label (normal font): slot number, then the date and time on
+    // separate lines (or "Empty").
+    auto draw_centered = [&](const char* str, float cy) {
+      ImVec2 ts = ImGui::CalcTextSize(str);
+      ImVec2 tp(p0.x + (cell_w - ts.x) * 0.5f, cy);
+      dl->AddText(ImVec2(tp.x + 1, tp.y + 1), IM_COL32(0, 0, 0, 200), str);
+      dl->AddText(tp, IM_COL32(255, 255, 255, 255), str);
+    };
+    char num[8];
+    snprintf(num, sizeof(num), "%d", i);
+    std::string l_date = when, l_time;
+    if (exists) {
+      // when is "Mon DD HH:MM" — split the trailing time onto its own line.
+      size_t sp = when.find_last_of(' ');
+      if (sp != std::string::npos) {
+        l_date = when.substr(0, sp);
+        l_time = when.substr(sp + 1);
+      }
+    }
+    float lh = ImGui::GetTextLineHeight();
+    int nlines = l_time.empty() ? 2 : 3;
+    float y0 = p0.y + (cell_h - lh * nlines) * 0.5f;
+    draw_centered(num, y0);
+    draw_centered(l_date.c_str(), y0 + lh);
+    if (!l_time.empty()) draw_centered(l_time.c_str(), y0 + lh * 2.0f);
+
+    if (clicked) {
+      if (state_mode == 1) {
+        save_state_slot(i);
+      } else if (exists) {
+        load_state_slot(i);
+        action = true;
+      }
+    }
+    if (disabled) ImGui::EndDisabled();
+
+    if (i % kCols != 0 && i != 8) ImGui::SameLine();
   }
 
   ImGui::End();
@@ -1968,11 +2588,14 @@ static void imgui_render_menu() {
     ImGui::Text("Based on Caprice32 by Ulrich Doewich");
     ImGui::Spacing();
     ImGui::Text("Shortcuts:");
-    ImGui::BulletText("F1 - Menu");
-    ImGui::BulletText("Shift+F2 - DevTools");
-    ImGui::BulletText("F5 - Reset");
-    ImGui::BulletText("F10 - Quit");
-    ImGui::BulletText("F3 - Screenshot");
+    ImGui::BulletText("%s - Menu", koncpc_action_shortcut(KONCPC_GUI).c_str());
+    ImGui::BulletText("%s - DevTools",
+                      koncpc_action_shortcut(KONCPC_DEVTOOLS).c_str());
+    ImGui::BulletText("%s - Reset",
+                      koncpc_action_shortcut(KONCPC_RESET).c_str());
+    ImGui::BulletText("%s - Quit", koncpc_action_shortcut(KONCPC_EXIT).c_str());
+    ImGui::BulletText("%s - Screenshot",
+                      koncpc_action_shortcut(KONCPC_SCRNSHOT).c_str());
 #ifdef __APPLE__
     ImGui::BulletText("Cmd+K - Command Palette");
 #else
@@ -2036,7 +2659,10 @@ static void imgui_render_options() {
 
   if (ImGui::BeginTabBar("OptionsTabs")) {
     // ── General Tab ──
-    if (ImGui::BeginTabItem("General")) {
+    if (ImGui::BeginTabItem("General", nullptr,
+                            s_pending_options_tab == OptionsTab::General
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       int model = static_cast<int>(CPC.model);
       if (ImGui::Combo("CPC Model", &model, cpc_models,
                        IM_ARRAYSIZE(cpc_models))) {
@@ -2128,7 +2754,10 @@ static void imgui_render_options() {
     }
 
     // ── ROMs Tab ──
-    if (ImGui::BeginTabItem("ROMs")) {
+    if (ImGui::BeginTabItem("ROMs", nullptr,
+                            s_pending_options_tab == OptionsTab::ROMs
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       ImGui::Text("Expansion ROM Slots:");
       ImGui::Spacing();
       if (ImGui::BeginTable(
@@ -2234,7 +2863,10 @@ static void imgui_render_options() {
     }
 
     // ── Video Tab ──
-    if (ImGui::BeginTabItem("Video")) {
+    if (ImGui::BeginTabItem("Video", nullptr,
+                            s_pending_options_tab == OptionsTab::Video
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       // Build combo dynamically from video_plugin_list, skipping hidden
       // entries. Group plugins by type with section headers.
       const char* preview = video_plugin_list[CPC.scr_style].name;
@@ -2280,20 +2912,7 @@ static void imgui_render_options() {
       if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
       if (ImGui::Combo("Scale", &scale_idx, scale_items,
                        IM_ARRAYSIZE(scale_items))) {
-        CPC.scr_scale = scale_idx;
-        // Resize window to fit the chosen scale (+ bars)
-        if (scale_idx > 0 && mainSDLWindow) {
-          static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
-          float f = (scale_idx < static_cast<int>(sizeof(sf) / sizeof(sf[0])))
-                        ? sf[scale_idx]
-                        : 1.f;
-          int new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-          int new_h = CPC.scr_crt_aspect
-                          ? static_cast<int>(new_w * 3.f / 4.f)
-                          : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
-          new_h += video_get_topbar_height() + video_get_bottombar_height();
-          SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
-        }
+        apply_scr_scale(scale_idx);
       }
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
@@ -2369,7 +2988,10 @@ static void imgui_render_options() {
     }
 
     // ── Audio Tab ──
-    if (ImGui::BeginTabItem("Audio")) {
+    if (ImGui::BeginTabItem("Audio", nullptr,
+                            s_pending_options_tab == OptionsTab::Audio
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) {
         CPC.snd_enabled = snd ? 1 : 0;
@@ -2434,7 +3056,10 @@ static void imgui_render_options() {
     }
 
     // ── Input Tab ──
-    if (ImGui::BeginTabItem("Input")) {
+    if (ImGui::BeginTabItem("Input", nullptr,
+                            s_pending_options_tab == OptionsTab::Input
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       int keyboard = static_cast<int>(CPC.keyboard);
       const char* cpc_langs[] = {"English", "French", "Spanish"};
       int max_langs = IM_ARRAYSIZE(cpc_langs);
@@ -2477,7 +3102,10 @@ static void imgui_render_options() {
     }
 
     // ── M4 Board Tab ──
-    if (ImGui::BeginTabItem("M4 Board")) {
+    if (ImGui::BeginTabItem("M4 Board", nullptr,
+                            s_pending_options_tab == OptionsTab::M4
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       bool m4_en = g_m4board.enabled;
       if (ImGui::Checkbox("Enable M4 Board", &m4_en)) {
         g_m4board.enabled = m4_en;
@@ -2705,7 +3333,10 @@ static void imgui_render_options() {
     }
 
     // ── Serial Interface Tab ──
-    if (ImGui::BeginTabItem("Serial Interface")) {
+    if (ImGui::BeginTabItem("Serial Interface", nullptr,
+                            s_pending_options_tab == OptionsTab::Serial
+                                ? ImGuiTabItemFlags_SetSelected
+                                : 0)) {
       SerialConfig cfg = g_serial_interface.get_config();
       bool serial_en = cfg.enabled;
 
@@ -2887,6 +3518,8 @@ static void imgui_render_options() {
 
     ImGui::EndTabBar();
   }
+  // Deep-link consumed: the target tab (if any) has been selected this frame.
+  s_pending_options_tab = OptionsTab::None;
 
   ImGui::Separator();
   ImGui::Spacing();
@@ -3086,6 +3719,27 @@ static void imgui_render_devtools() {
     ImGui::SameLine();
     if (ImGui::Button("ASM")) g_devtools_ui.toggle_window("assembler");
 
+    // Layout controls reachable from where the windows are (beads-p0e/pv7):
+    // a rescue for windows that drifted off-screen in Classic mode, plus the
+    // docking presets that were previously only in the topbar Layout dropdown.
+    ImGui::SameLine();
+    if (ImGui::Button("Layout")) ImGui::OpenPopup("##dt_layout");
+    if (ImGui::BeginPopup("##dt_layout")) {
+      if (ImGui::MenuItem("Reset Window Positions")) {
+        g_devtools_ui.reset_window_positions();
+      }
+      ImGui::Separator();
+      if (ImGui::MenuItem("Apply Debug Layout")) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
+        workspace_apply_preset(WorkspacePreset::Debug);
+      }
+      if (ImGui::MenuItem("Apply IDE Layout")) {
+        CPC.workspace_layout = t_CPC::WorkspaceLayoutMode::Docked;
+        workspace_apply_preset(WorkspacePreset::IDE);
+      }
+      ImGui::EndPopup();
+    }
+
     ImGui::SameLine();
     if (ImGui::Button("Export")) ImGui::OpenPopup("##dt_export");
     if (ImGui::BeginPopup("##dt_export")) {
@@ -3117,41 +3771,19 @@ static void imgui_render_devtools() {
     // thread.
     bool was_paused = g_emu_paused.load(std::memory_order_relaxed);
     if (!was_paused) ImGui::BeginDisabled();
-    if (ImGui::Button("Step In")) {
-      z80.step_in = 1;
-      z80.step_out = 0;
-      z80.step_out_addresses.clear();
-      cpc_resume();
-    }
+    if (ImGui::Button("Step In")) dbg_step_in();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction (enters CALLs)");
+      ImGui::SetTooltip("Execute one instruction, entering CALLs (F7)");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Over")) {
-      z80.step_in = 0;
-      z80.step_out = 0;
-      z80.step_out_addresses.clear();
-      word pc = z80.PC.w.l;
-      if (z80_is_call_or_rst(pc)) {
-        z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
-        cpc_resume();
-      } else {
-        z80.step_in = 1;
-        cpc_resume();
-      }
-    }
+    if (ImGui::Button("Step Over")) dbg_step_over();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction (skips over CALLs/RSTs)");
+      ImGui::SetTooltip("Execute one instruction, over CALLs/RSTs (Shift+F7)");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Out")) {
-      z80.step_out = 1;
-      z80.step_out_addresses.clear();
-      z80.step_in = 0;
-      cpc_resume();
-    }
+    if (ImGui::Button("Step Out")) dbg_step_out();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Run until the current subroutine returns");
+      ImGui::SetTooltip("Run until the current subroutine returns (Shift+F11)");
     }
     if (!was_paused) ImGui::EndDisabled();
     ImGui::SameLine();
@@ -3160,6 +3792,29 @@ static void imgui_render_devtools() {
         cpc_resume();
       else
         cpc_pause();
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run / halt the CPU (F5)");
+
+    // Keyboard shortcuts for the debugger inner loop.  Active only when an
+    // ImGui (DevTools) window holds keyboard focus and no text field is being
+    // edited; the emulator skips these keys then (any_keyboard_ui_active), so
+    // there is no conflict with the F-key emulator commands (beads-fa5).
+    {
+      ImGuiIO& io = ImGui::GetIO();
+      if (io.WantCaptureKeyboard && !io.WantTextInput) {
+        if (was_paused) {
+          if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F7))
+            dbg_step_over();
+          else if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F11))
+            dbg_step_out();
+          else if (ImGui::IsKeyPressed(ImGuiKey_F7, false))
+            dbg_step_in();
+          else if (ImGui::IsKeyPressed(ImGuiKey_F5, false))
+            cpc_resume();
+        } else if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) {
+          cpc_pause();
+        }
+      }
     }
 
     // ── Per-window render timing ──

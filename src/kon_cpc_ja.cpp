@@ -51,8 +51,11 @@ static inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g,
 #include "autotype.h"
 #include "avi_recorder.h"
 #include "configuration.h"
+#include "cpc_key_tables.h"
 #include "cpc_machine.h"
 #include "crtc.h"
+#include "data_areas.h"
+#include "devtools_ui.h"
 #include "disk.h"
 #include "drive_sounds.h"
 #include "io_bus.h"
@@ -147,6 +150,7 @@ video_plugin* vid_plugin;
 static bool g_take_screenshot = false;
 bool g_headless = false;
 bool g_debug = false;
+bool g_log_fps = false;  // --fps: log once-per-second FPS to stdout
 static bool g_exit_on_break = false;
 static enum { EXIT_NONE, EXIT_FRAMES, EXIT_MS } g_exit_mode = EXIT_NONE;
 static dword g_exit_target = 0;
@@ -240,11 +244,20 @@ byte* pbExpansionROM = nullptr;
 byte* pbMF2ROMbackup = nullptr;
 byte* pbMF2ROM = nullptr;
 std::vector<byte> pbTapeImage;
+// `keyboard_matrix` is the pending/authoritative key state: every writer (main
+// thread SDL/virtual keys, IPC thread, Z80-thread autotype) mutates it.
+// `keyboard_matrix_live` is the snapshot the CPC firmware actually scans; the
+// Z80 thread copies pending->live once per frame, before z80_execute(), so the
+// firmware never observes a partially-applied (multi-line) keypress.
+// `g_kbd_matrix_mutex` makes each writer's key+shift+ctrl write sequence atomic
+// with respect to that snapshot copy — without it, a scan could read a shifted
+// key's digit line before its SHIFT line and decode the unshifted glyph
+// (e.g. '1'->'&' on shifted-digit layouts).  See beads-2qg / beads-d1n.
 std::atomic<byte> keyboard_matrix[16];
+std::atomic<byte> keyboard_matrix_live[16];
+std::mutex g_kbd_matrix_mutex;
 
-std::list<SDL_Event> virtualKeyboardEvents;
-dword nextVirtualEventFrameCount, dwFrameCountOverall = 0;
-dword breakPointsToSkipBeforeProceedingWithVirtualEvents = 0;
+dword dwFrameCountOverall = 0;
 
 t_MemBankConfig membank_config;
 
@@ -264,6 +277,13 @@ dword freq_table[MAX_FREQ_ENTRIES] = {11025, 22050, 44100, 48000, 96000};
 void set_osd_message(const std::string& message, uint32_t for_milliseconds) {
   osd_timing = SDL_GetTicks() + for_milliseconds;
   osd_message = " " + message;
+  // Unify feedback channels (beads-49l): in GUI mode also surface the message
+  // as a toast, so the same action gives consistent feedback whether it was
+  // triggered by a shortcut/menu (this OSD path) or a file dialog (which
+  // toasts directly).  Headless keeps the OSD-only behavior.
+  if (!g_headless) {
+    ui_host().toast(UiToastLevel::Info, message);
+  }
 }
 
 double colours_rgb[32][3] = {
@@ -609,13 +629,15 @@ byte z80_IN_handler(reg_pair port) {
               if (PSG.reg_select == 14) {      // PSG port A?
                 if (!(PSG.RegisterAY.Index[7] &
                       0x40)) {  // port A in input mode?
-                  ret_val = keyboard_matrix[CPC.keyboard_line & 0x0f].load(
+                  // Read the per-frame snapshot, not the pending matrix, so a
+                  // shifted key is always scanned with its SHIFT line set.
+                  ret_val = keyboard_matrix_live[CPC.keyboard_line & 0x0f].load(
                       std::memory_order_relaxed);  // read keyboard matrix node
                                                    // status
                 } else {
                   ret_val =
                       PSG.RegisterAY.Index[14] &
-                      (keyboard_matrix[CPC.keyboard_line & 0x0f].load(
+                      (keyboard_matrix_live[CPC.keyboard_line & 0x0f].load(
                           std::memory_order_relaxed));  // return last value w/
                                                         // logic AND of input
                 }
@@ -1416,6 +1438,8 @@ void emulator_reset() {
   CPC.cycle_count = CYCLE_COUNT_INIT;
   for (auto& row : keyboard_matrix)
     row.store(0xff, std::memory_order_relaxed);  // clear CPC keyboard matrix
+  for (auto& row : keyboard_matrix_live)
+    row.store(0xff, std::memory_order_relaxed);  // and its per-frame snapshot
   CPC.tape_motor = 0;
   CPC.tape_play_button = 0;
   CPC.printer_port = 0xff;
@@ -1481,6 +1505,16 @@ void emulator_reset() {
   if ((pbMF2ROM) && (pbMF2ROMbackup)) {
     memcpy(pbMF2ROM, pbMF2ROMbackup,
            8192);  // copy the MF2 ROM to its proper place
+  }
+
+  // The first reset happens during emulator_init() (boot), where an OSD
+  // message would be wrong / premature. Suppress feedback on that very first
+  // call; every subsequent (user-initiated) reset shows confirmation.
+  static bool first_reset = true;
+  if (first_reset) {
+    first_reset = false;
+  } else {
+    set_osd_message("Machine reset");
   }
 }
 
@@ -2160,6 +2194,13 @@ int video_init() {
   // plugins never touch the GPU device.  video_shutdown() still calls
   // video_gpu_shutdown() as a safety net (no-op when device is null).
 
+  // Triple-buffer the CPC frame so the Z80 thread never blocks on render.  Only
+  // the threaded (GUI) path uses the ring; the headless fallback is
+  // single-threaded and keeps writing the plugin's single surface directly.
+  if (!g_headless) {
+    back_surface = video_ring_init(back_surface);
+  }
+
   {
     const SDL_PixelFormatDetails* fmt =
         SDL_GetPixelFormatDetails(back_surface->format);
@@ -2202,6 +2243,8 @@ void video_shutdown() {
   // SDLGPU3 and other device-dependent state before the GPU device
   // itself is destroyed.  For non-GPU plugins the order is irrelevant
   // (video_gpu_shutdown is a no-op when the device was never created).
+  video_ring_shutdown();  // free ring write buffers before the plugin frees its
+                          // front-end surface (restyle re-allocates the ring)
   vid_plugin->close();
   video_gpu_shutdown();  // safety net — idempotent no-op after plugin close
 }
@@ -2432,6 +2475,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.scr_preserve_aspect_ratio =
       conf.getIntValue("video", "scr_preserve_aspect_ratio", 1);
   CPC.scr_crt_aspect = conf.getIntValue("video", "scr_crt_aspect", 1);
+  CPC.scr_vsync = conf.getIntValue("video", "vsync", 1);
   CPC.scr_style = conf.getIntValue("video", "scr_style", 1);
   // Phase 7c.1b scr_style remap — GL plugins removed and their slots
   // (0-10) replaced in-place by the SDL3 GPU implementations.  The old
@@ -2453,10 +2497,14 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   {
     unsigned int s = CPC.scr_style;
     unsigned int remapped = s;
-    if (s == 17)
-      remapped = 0;  // old Direct (GPU)           -> Direct
-    else if (s >= 18 && s <= 24)
-      remapped = s - 14;  // old swscale (GPU) -> swscale (4..10)
+    // Indices 0..19 are ALL valid CURRENT plugins (incl. the CRT shaders at
+    // 17/18/19), so never remap an in-range value — it is the user's real
+    // choice. Only migrate genuinely-stale configs whose index is out of the
+    // current range (>= 20), left over from the pre-7c.1b GL era. (Remapping
+    // in-range CRT indices silently swapped CRT Lottes for Scale2x and broke
+    // multi-viewport, since swscale plugins don't render detached windows.)
+    if (s >= 20 && s <= 24)
+      remapped = s - 14;  // old swscale (GPU) -> swscale (6..10)
     else if (s >= 25 && s <= 27)
       remapped = s - 8;  // old CRT (GPU)    -> CRT (17..19)
     else if (s >= 28 && s <= 30)
@@ -2815,9 +2863,10 @@ void showVKeyboard() {
 }
 
 void koncpc_queue_virtual_keys(const std::string& text) {
-  auto newEvents = CPC.InputMapper->StringToEvents(text);
-  virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
-  nextVirtualEventFrameCount = dwFrameCountOverall;
+  // Single scan-synced path: feed the legacy \a/\f encoding into the
+  // AutoTypeQueue, which the Z80 thread drains in sync with the firmware's
+  // keyboard scans (speed-independent).
+  g_autotype_queue.enqueue_legacy(text);
 }
 
 void koncpc_menu_action(int action) {
@@ -2833,7 +2882,14 @@ void koncpc_menu_action(int action) {
     }
 
     case KONCPC_DEVTOOLS: {
-      imgui_state.show_devtools = true;
+      imgui_state.show_devtools = !imgui_state.show_devtools;
+      log_verbose = imgui_state.show_devtools;
+      if (imgui_state.show_devtools) {
+        set_osd_message("Debug mode: on");
+      } else {
+        g_devtools_ui.close_all_windows();
+        set_osd_message("Debug mode: off");
+      }
       break;
     }
 
@@ -2858,18 +2914,17 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_DELAY:
-      // Reuse boot_time as it is a reasonable wait time for Plus transition
-      // between the F1/F2 nag screen and the command line.
-      // TODO: Support an argument to KONCPC_DELAY in autocmd instead.
+      // Pause the autotype queue for boot_time frames — a reasonable wait for
+      // the Plus transition between the F1/F2 nag screen and the command line.
+      // Prefer the ~PAUSE n~ autocmd syntax for explicit control.
       LOG_VERBOSE("Take into account KONCPC_DELAY");
-      nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+      g_autotype_queue.enqueue("~PAUSE " + std::to_string(CPC.boot_time) + "~");
       break;
 
     case KONCPC_WAITBREAK:
-      breakPointsToSkipBeforeProceedingWithVirtualEvents++;
-      LOG_INFO("Will skip "
-               << breakPointsToSkipBeforeProceedingWithVirtualEvents
-               << " before processing more virtual events.");
+      // Arm a breakpoint; the autotype queue blocks (apply_cmd returns true)
+      // until it fires and the Z80 thread calls g_autotype_queue.resume().
+      LOG_INFO("Autotype: waiting for next breakpoint before continuing.");
       LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point << ").");
       z80.break_point = 0;
       break;
@@ -2947,9 +3002,7 @@ void koncpc_menu_action(int action) {
       {
         auto content = std::string(SDL_GetClipboardText());
         LOG_VERBOSE("Pasting '" << content << "'");
-        auto newEvents = CPC.InputMapper->StringToEvents(content);
-        virtualKeyboardEvents.splice(virtualKeyboardEvents.end(), newEvents);
-        nextVirtualEventFrameCount = dwFrameCountOverall;
+        koncpc_queue_virtual_keys(content);
         break;
       }
 
@@ -2963,11 +3016,20 @@ void koncpc_menu_action(int action) {
                       (CPC.scr_fps ? "on" : "off"));
       break;
 
-    case KONCPC_SPEED:
-      CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-      set_osd_message(std::string("Limit speed: ") +
-                      (CPC.limit_speed ? "on" : "off"));
+    case KONCPC_SPEED: {
+      // koncpc_menu_action() runs on the main thread and the IPC thread, so the
+      // debounce timestamp must be atomic to avoid a data race.
+      static std::atomic<uint64_t> last_speed_toggle{0};
+      uint64_t now = SDL_GetPerformanceCounter();
+      if (now - last_speed_toggle.load(std::memory_order_relaxed) >
+          SDL_GetPerformanceFrequency() / 10) {
+        CPC.limit_speed = CPC.limit_speed ? 0 : 1;
+        set_osd_message(std::string("Limit speed: ") +
+                        (CPC.limit_speed ? "on" : "off"));
+        last_speed_toggle.store(now, std::memory_order_relaxed);
+      }
       break;
+    }
 
     case KONCPC_DEBUG:
       log_verbose = !log_verbose;
@@ -3018,8 +3080,12 @@ void loadBreakpoints() {
 }
 
 bool dumpScreenTo(const std::string& path) {
-  if (!back_surface) return false;
-  if (SDL_SavePNG(back_surface, path)) {
+  // Read the displayed (published) frame, not the Z80's live write buffer.
+  // Falls back to back_surface in headless mode (ring inactive → null).
+  SDL_Surface* surf = video_render_surface();
+  if (!surf) surf = back_surface;
+  if (!surf) return false;
+  if (SDL_SavePNG(surf, path)) {
     LOG_ERROR("Could not write screenshot file to " + path);
     return false;
   }
@@ -3039,6 +3105,7 @@ void dumpScreen() {
   LOG_INFO("Dumping screen to " + dumpPath);
   if (!dumpScreenTo(dumpPath)) {
     LOG_ERROR("Could not write screenshot file to " + dumpPath);
+    set_osd_message("Screenshot failed");
   } else {
     set_osd_message("Captured " + dumpFile);
   }
@@ -3058,6 +3125,7 @@ void dumpSnapshot() {
   LOG_INFO("Dumping machine snapshot to " + dumpPath);
   if (snapshot_save(dumpPath)) {
     LOG_ERROR("Could not write machine snapshot to " + dumpPath);
+    set_osd_message("Snapshot save failed");
   } else {
     set_osd_message("Snapshotted " + dumpFile);
   }
@@ -3069,6 +3137,9 @@ void loadSnapshot() {
   LOG_INFO("Loading snapshot from " + lastSavedSnapshot);
   if (snapshot_load(lastSavedSnapshot)) {
     LOG_ERROR("Could not load machine snapshot from " + lastSavedSnapshot);
+    std::string dirname, filename;
+    stringutils::splitPath(lastSavedSnapshot, dirname, filename);
+    set_osd_message("Snapshot load failed: " + filename);
   } else {
     std::string dirname, filename;
     stringutils::splitPath(lastSavedSnapshot, dirname, filename);
@@ -3109,26 +3180,21 @@ void doCleanUp() {
   //
   //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
   //     g_z80_quiescent=false before z80_execute() and only re-enters the
-  //     paused/quiescent branch at the top of its loop.  After
-  //     EC_FRAME_COMPLETE it calls signal_ready() then blocks in
-  //     wait_consumed() — it never observes g_emu_paused there.  If SDL_QUIT is
-  //     processed while the Z80 is in wait_consumed(), pause_and_wait would
-  //     spin forever.  Abort the frame handshake after cpc_pause() so
-  //     wait_consumed() returns and the Z80 thread can reach the quiescent
-  //     paused branch.  Then cpc_pause_and_wait() matches the usual quiescence
-  //     spin (same as the loop inside that helper — abort must come first or it
-  //     would deadlock).
+  //     paused/quiescent branch at the top of its loop.  abort() makes
+  //     signal_ready a no-op and releases the render thread's wait so neither
+  //     thread can be left spinning on the frame signal during teardown; then
+  //     cpc_pause_and_wait() drives the Z80 to its quiescent paused branch.
   if (g_z80_thread.joinable() &&
       std::this_thread::get_id() != g_z80_thread.get_id()) {
     if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
       cpc_pause();
-      g_frame_signal.abort();  // unblock Z80 if stuck in wait_consumed()
+      g_frame_signal
+          .abort();  // make signal_ready a no-op + release render wait
       cpc_pause_and_wait();
       g_z80_thread_quit.store(true, std::memory_order_relaxed);
       cpc_resume();
     }
-    g_frame_signal
-        .abort();  // belt-and-suspenders for any pending wait_consumed
+    g_frame_signal.abort();  // belt-and-suspenders during teardown
     g_z80_thread.join();
   } else if (g_z80_thread.joinable()) {
     // Self-join from the Z80 thread itself — can't pause-wait, just signal
@@ -3701,22 +3767,40 @@ static void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event,
   }
 }
 
+// Publish a consistent snapshot of the pending keyboard matrix into the live
+// matrix that the CPC firmware actually scans.  Called once per frame, before
+// z80_execute(), on whichever thread runs the emulation (the Z80 thread in GUI
+// mode, the main thread in headless mode).  Holding g_kbd_matrix_mutex makes
+// the 16-byte copy atomic with respect to any in-progress key+shift write on
+// the main/IPC threads, so the firmware never scans a shifted key without its
+// SHIFT line set ('1'->'&' on shifted-digit layouts).  See beads-2qg/d1n.
+static void publish_keyboard_snapshot() {
+  std::lock_guard<std::mutex> matrix_lock(g_kbd_matrix_mutex);
+  for (int i = 0; i < 16; i++) {
+    keyboard_matrix_live[i].store(
+        keyboard_matrix[i].load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+  }
+}
+
 // Z80 emulation thread — runs z80_execute() and handles all emulation side
 // effects. Used only in non-headless (GUI) mode; headless runs the original
 // single-threaded path.
 //
 // At EC_FRAME_COMPLETE:
 //   1. Completes per-frame work (autotype, session, IPC, etc.)
-//   2. Calls asic_draw_sprites() — finalises back_surface pixels
-//   3. Calls g_frame_signal.signal_ready() — hands back_surface to render
-//   thread
-//   4. Blocks in g_frame_signal.wait_consumed() while render does Phase A
-//   (~3ms)
-//   5. Immediately starts the next frame on return — concurrent with render's
-//   Phase B
+//   2. Calls asic_draw_sprites() — finalises the write buffer's pixels
+//   3. Calls video_ring_publish() — publishes the frame + advances back_surface
+//   4. Calls g_frame_signal.signal_ready() — wakes the render thread (no wait)
+//   5. Immediately starts the next frame — the render thread reads the latest
+//   published buffer independently and never blocks the Z80.
 static void z80_thread_main() {
   dword iExitCondition = EC_FRAME_COMPLETE;
   static int consecutive_skips = 0;
+  // Residual "render-wait" metric (from the U1 baseline): time the Z80 spends
+  // in signal_ready() — now just a mutex+notify, so the [fps] log reads ~0,
+  // confirming the decouple holds (it was 15-45% before the ring).
+  static uint64_t s_render_wait_accum = 0;
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
@@ -3729,6 +3813,10 @@ static void z80_thread_main() {
     // About to enter z80_execute() — mark non-quiescent.
     g_z80_quiescent.store(false, std::memory_order_release);
 
+    // Publish a consistent snapshot of the pending keyboard state for this
+    // frame's firmware scan (see publish_keyboard_snapshot).
+    publish_keyboard_snapshot();
+
     // FPS counter: publish stats once per second
     {
       uint64_t perfNow = SDL_GetPerformanceCounter();
@@ -3736,6 +3824,29 @@ static void z80_thread_main() {
         dwFPS = dwFrameCount;
         dwFrameCount = 0;
         perfTicksTargetFPS = perfNow + perfFreq;
+
+        // U1 baseline: average time/frame the Z80 was blocked in
+        // wait_consumed() waiting for render, and the % of wall-clock spent
+        // blocked. Both fall to ~0 once the Z80 no longer waits on render.
+        double render_wait_ms =
+            dwFPS ? static_cast<double>(s_render_wait_accum) * 1000.0 /
+                        static_cast<double>(perfFreq) / dwFPS
+                  : 0.0;
+        double render_wait_pct = static_cast<double>(s_render_wait_accum) *
+                                 100.0 / static_cast<double>(perfFreq);
+        s_render_wait_accum = 0;
+
+        // Opt-in once-per-second FPS log (run with --fps, or --debug) — a
+        // passive, tail-able steady-FPS readout that doesn't perturb the
+        // emulation the way an IPC `wait vbl` probe does.
+        if (g_log_fps || g_debug) {
+          printf(
+              "[fps] %3u FPS  %3u%% speed  | render-wait %.1f ms/f (%2.0f%%)\n",
+              dwFPS,
+              dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS),
+              render_wait_ms, render_wait_pct);
+          fflush(stdout);
+        }
 
         {
           std::lock_guard<std::mutex> stats_lock(g_imgui_stats_mutex);
@@ -3797,9 +3908,16 @@ static void z80_thread_main() {
       }
     }
 
-    // Speed limiter: spin/sleep until deadline on audio-driven cycle boundaries
+    // Speed limiter: spin/sleep until deadline on audio-driven cycle
+    // boundaries. Forced on while autotype is active so the Z80 stays at real
+    // time: the autotype is paced by the firmware's keyboard scans (with a
+    // frame-based timeout fallback), which is only meaningful at real-time
+    // speed — an uncapped Z80 would drain the queue during a busy CPU stretch
+    // (e.g. while BASIC executes a typed command) and drop the keys it isn't
+    // reading.
     static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
-    if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
+    const bool limit_now = CPC.limit_speed || g_autotype_queue.is_active();
+    if (limit_now && iExitCondition == EC_CYCLE_COUNT) {
       uint64_t sleepStart = SDL_GetPerformanceCounter();
       if (sleepStart < perfTicksTarget) {
         uint64_t remaining_ticks = perfTicksTarget - sleepStart;
@@ -3823,7 +3941,7 @@ static void z80_thread_main() {
     }
 
     // Frameskip decision at frame boundaries
-    if (iExitCondition == EC_FRAME_COMPLETE && CPC.limit_speed) {
+    if (iExitCondition == EC_FRAME_COMPLETE && limit_now) {
       uint64_t now = SDL_GetPerformanceCounter();
       if (CPC.frameskip && now > perfTicksTarget) {
         if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
@@ -3887,10 +4005,11 @@ static void z80_thread_main() {
         }
         imgui_state.show_devtools = true;
         cpc_pause();
-        // Mid-frame pause: the render thread may be waiting in wait_ready() for
-        // a frame that will never arrive (we stopped before EC_FRAME_COMPLETE).
-        // Send a skip signal so it unblocks, calls signal_consumed(), then sees
-        // g_emu_paused=true and shows the paused overlay on its next iteration.
+        // Mid-frame pause: the render thread may be waiting in
+        // try_wait_ready_for() for a frame that will never arrive (we stopped
+        // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
+        // sees g_emu_paused=true and shows the paused overlay on its next
+        // iteration.
         g_frame_signal.signal_ready(true);
         z80.step_in = 0;
         z80.step_out = 0;
@@ -3904,11 +4023,8 @@ static void z80_thread_main() {
       } else {
         z80.break_point = Z80_BREAKPOINT_NONE;
         z80.trace = 1;
-        if (breakPointsToSkipBeforeProceedingWithVirtualEvents > 0) {
-          breakPointsToSkipBeforeProceedingWithVirtualEvents--;
-          LOG_DEBUG("Decremented breakpoint skip counter to "
-                    << breakPointsToSkipBeforeProceedingWithVirtualEvents);
-        }
+        // Release an autotype KONCPC_WAITBREAK that was waiting for this break.
+        g_autotype_queue.resume();
       }
     } else {
       if (z80.break_point == Z80_BREAKPOINT_NONE) {
@@ -4002,36 +4118,43 @@ static void z80_thread_main() {
           do_tick = true;
         }
         if (do_tick) {
-          g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
-            CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
-                static_cast<CPC_KEYS>(cpc_key));
-            if (static_cast<byte>(scancode) == 0xff) return;
-            if (pressed) {
-              keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
-                  ~bit_values[static_cast<byte>(scancode) & 7],
-                  std::memory_order_relaxed);
-              if (scancode & MOD_CPC_SHIFT)
-                keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7],
-                                                     std::memory_order_relaxed);
-              else
-                keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
-                                                    std::memory_order_relaxed);
-              if (scancode & MOD_CPC_CTRL)
-                keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7],
-                                                     std::memory_order_relaxed);
-              else
-                keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
-                                                    std::memory_order_relaxed);
-            } else {
-              keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
-                  bit_values[static_cast<byte>(scancode) & 7],
-                  std::memory_order_relaxed);
-              keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
-                                                  std::memory_order_relaxed);
-              keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
-                                                  std::memory_order_relaxed);
-            }
-          });
+          g_autotype_queue.tick(
+              [](uint16_t cpc_key, bool pressed) {
+                CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
+                    static_cast<CPC_KEYS>(cpc_key));
+                if (static_cast<byte>(scancode) == 0xff) return;
+                if (pressed) {
+                  keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
+                      ~bit_values[static_cast<byte>(scancode) & 7],
+                      std::memory_order_relaxed);
+                  if (scancode & MOD_CPC_SHIFT)
+                    keyboard_matrix[0x25 >> 4].fetch_and(
+                        ~bit_values[0x25 & 7], std::memory_order_relaxed);
+                  else
+                    keyboard_matrix[0x25 >> 4].fetch_or(
+                        bit_values[0x25 & 7], std::memory_order_relaxed);
+                  if (scancode & MOD_CPC_CTRL)
+                    keyboard_matrix[0x27 >> 4].fetch_and(
+                        ~bit_values[0x27 & 7], std::memory_order_relaxed);
+                  else
+                    keyboard_matrix[0x27 >> 4].fetch_or(
+                        bit_values[0x27 & 7], std::memory_order_relaxed);
+                } else {
+                  keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
+                      bit_values[static_cast<byte>(scancode) & 7],
+                      std::memory_order_relaxed);
+                  keyboard_matrix[0x25 >> 4].fetch_or(
+                      bit_values[0x25 & 7], std::memory_order_relaxed);
+                  keyboard_matrix[0x27 >> 4].fetch_or(
+                      bit_values[0x27 & 7], std::memory_order_relaxed);
+                }
+              },
+              [](uint16_t cmd) -> bool {
+                koncpc_menu_action(static_cast<int>(cmd));
+                // KONCPC_WAITBREAK blocks the queue until the next breakpoint
+                // fires (the Z80 thread then calls g_autotype_queue.resume()).
+                return cmd == KONCPC_WAITBREAK;
+              });
         }
       }
 
@@ -4061,19 +4184,161 @@ static void z80_thread_main() {
         imgui_state.topbar_fps.clear();
       }
 
-      // Finalise back_surface (ASIC sprites must be drawn before handoff to
-      // render)
+      // Finalise the write buffer (ASIC sprites must be drawn before publish)
+      // then publish it to the ring and advance back_surface to a free buffer.
+      // The Z80 keeps writing the new buffer; the render thread reads the
+      // published one.  On a skipped frame nothing is published (the previous
+      // frame stays current) and the same write buffer is reused next frame.
       if (!CPC.skip_rendering) {
         asic_draw_sprites();
+        back_surface = video_ring_publish();
       }
 
-      // Hand back_surface to render thread; block until Phase A (texture
-      // upload) done. Phase B (SDL_GL_SwapWindow, 0-60ms) runs concurrently
-      // with the next Z80 frame.
+      // Wake the render thread (it reads the latest published buffer) WITHOUT
+      // blocking: the triple-buffer ring gives the Z80 a free buffer to write,
+      // so it never waits for render.  render-wait now measures ~0 (the
+      // coupling this refactor removes).  The render thread reads
+      // g_ring_published and drops intermediate frames if it falls behind.
+      uint64_t render_wait_t0 = SDL_GetPerformanceCounter();
       g_frame_signal.signal_ready(CPC.skip_rendering);
-      g_frame_signal.wait_consumed();
+      s_render_wait_accum += SDL_GetPerformanceCounter() - render_wait_t0;
     }
   }
+}
+
+// One iteration of the GUI render path (non-headless).  Pulls the latest
+// published frame and presents it (or shows the paused overlay), pumping SDL
+// events while waiting so the macOS run loop stays alive.  Extracted so it can
+// be driven both from the main loop and (Phase 2) from a CADisplayLink/run-loop
+// tick during native-menu tracking.  Returns true if the caller should skip the
+// rest of its loop iteration (the quit path, which must not run the deferred
+// video-reinit check).
+bool render_one_frame() {
+  if (g_emu_paused.load(std::memory_order_relaxed)) {
+    // Paused overlay: render ImGui without waiting for a frame signal
+    video_display();
+    video_display_b();
+    video_take_pending_window_screenshot();
+    if (g_m4_http.is_running()) g_m4_http.drain_pending();
+    std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+    return false;
+  }
+  // Poll for the Z80 frame signal, pumping SDL events between attempts.
+  // On macOS+Metal the Cocoa run loop must stay alive for CADisplayLink
+  // and drawable-completion callbacks to fire; a bare condvar wait
+  // starves it, causing SDL_RenderPresent / SDL_GL_SwapWindow to hang
+  // indefinitely for video styles that spend time in Phase A before the
+  // GPU call (CRT Basic/Full with GL shaders, SDL swscale with pixel
+  // filters).
+  bool skip = false;
+  while (!g_frame_signal.try_wait_ready_for(1, skip)) {
+    SDL_PumpEvents();  // keep macOS/Metal run loop alive
+    // Escape hatch: if the emulator got paused (e.g. focus loss /
+    // auto_pause, IPC pause) or a quit was requested while we were
+    // waiting, the Z80 thread stops producing frames and this loop
+    // would spin forever — SDL_PumpEvents() only enqueues events, so
+    // the window-close handler (SDL_PollEvent at the top of the loop)
+    // never runs and the app looks frozen.  Bail to the outer loop,
+    // which re-reads g_emu_paused and takes the paused-overlay branch
+    // that both pumps AND polls events.
+    if (g_emu_paused.load(std::memory_order_relaxed) ||
+        g_z80_thread_quit.load(std::memory_order_relaxed)) {
+      return false;
+    }
+  }
+  if (skip) {
+    // Skipped frame: nothing to present this time; just service pending
+    // screenshot requests.  (No handshake to release — the ring decoupled
+    // the Z80 from render.)
+    video_take_pending_window_screenshot();
+    if (g_take_screenshot) {
+      dumpScreen();
+      g_take_screenshot = false;
+    }
+    return false;
+  }
+  // Copy the latest published frame into the surface the flip reads.
+  video_ring_present();
+  // OSD text — render thread owns osd_message/osd_timing, no race.
+  // Write onto the presented frame (video_render_surface()), not the
+  // Z80's live write buffer.
+  if (SDL_GetTicks() < osd_timing) {
+    print(
+        static_cast<byte*>(video_render_surface()->pixels) + CPC.scr_line_offs,
+        osd_message.c_str(), true);
+  }
+  uint64_t displayStart = SDL_GetPerformanceCounter();
+  video_display();  // Phase A: texture upload + ImGui render (~3ms)
+  // NOTE: the old "partial audio push before the Phase B stall" lived here. It
+  // was safe only because the blocking handshake parked the Z80 during render;
+  // post-decouple the Z80 runs free and owns CPC.snd_bufferptr / pbSndBuffer,
+  // so touching them here would be a data race. It is also redundant — the Z80
+  // feeds the audio queue itself at a steady 50 Hz (EC_SOUND_BUFFER) and never
+  // stalls on present. Removed.
+  // Main-thread-only housekeeping
+  if (g_m4_http.is_running()) g_m4_http.drain_pending();
+#ifdef __APPLE__
+  // Dock preview reads the just-presented frame (render-thread-private
+  // after video_ring_present's copy), NOT the Z80's live write buffer.
+  dword frame_count_snap = dwFrameCountOverall;
+  SDL_Surface* preview_surf = video_render_surface();
+  if (preview_surf && (frame_count_snap % 50) == 0) {
+    koncpc_update_dock_icon_preview(preview_surf->pixels, preview_surf->w,
+                                    preview_surf->h, preview_surf->pitch, 0, 0,
+                                    preview_surf->w, preview_surf->h);
+  }
+#endif
+  // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread), skip
+  // video_display_b() which hangs indefinitely for OpenGL styles (7-19).  The
+  // Z80 loop has seen the quit flag and will exit; on the next main-loop
+  // iteration SDL_EVENT_QUIT will reach the event handler and doCleanUp() joins
+  // the (already-exited) Z80 thread.  Signal the caller to skip its tail.
+  if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
+    return true;
+  }
+  video_display_b();  // Phase B: 0-60ms, Z80 runs concurrently!
+  uint64_t displayEnd = SDL_GetPerformanceCounter();
+  displayTimeAccum.fetch_add(displayEnd - displayStart,
+                             std::memory_order_relaxed);
+  if (audio_stream && CPC.snd_ready) {
+    int queued = SDL_GetAudioStreamQueued(audio_stream);
+    if (queued < 0) queued = 0;
+    if (queued < audio_queue_min_bytes) audio_queue_min_bytes = queued;
+    if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
+        audio_push_count > 0) {
+      double display_ms =
+          static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
+      LOG_DEBUG("Audio low queue after display: "
+                << queued << "B, display took " << display_ms << "ms");
+    }
+  }
+  video_take_pending_window_screenshot();
+  if (g_take_screenshot) {
+    dumpScreen();
+    g_take_screenshot = false;
+  }
+  return false;
+}
+
+// Phase 2: present the latest published frame from a native-menu tracking
+// driver (macos_menu.mm CFRunLoopTimer in NSEventTrackingRunLoopMode).  A
+// native NSMenu suspends the main loop, but the Z80 keeps producing frames
+// (decoupled), so this tick just copies the newest published buffer to the
+// screen — NO event pump, NO blocking wait, NO sleep (the tracking run loop
+// owns event dispatch). Re-entrancy-guarded: video_display() may spin the run
+// loop internally, which could re-fire the timer; the guard turns that into a
+// no-op so we never start a second ImGui frame on top of an in-flight one.
+void koncpc_render_tracking_tick() {
+  if (g_headless) return;
+  static bool s_in_tick = false;  // main-thread only
+  if (s_in_tick) return;
+  s_in_tick = true;
+  if (!g_emu_paused.load(std::memory_order_relaxed)) {
+    video_ring_present();  // newest published frame → the surface flip reads
+  }
+  video_display();    // Phase A: upload + ImGui (incl. viewport windows)
+  video_display_b();  // Phase B
+  s_in_tick = false;
 }
 
 int koncpc_main(int argc, char** argv) {
@@ -4109,6 +4374,7 @@ int koncpc_main(int argc, char** argv) {
   parseArguments(argc, argv, slot_list, args);
   g_headless = args.headless;
   g_debug = args.debug;
+  g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
 
   // Parse --exit-after spec: Nf (frames), Ns (seconds), Nms (milliseconds)
@@ -4255,24 +4521,24 @@ int koncpc_main(int argc, char** argv) {
     g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
   }
 
-  // Fill the buffer with autocmd if provided.
-  // Two paths:
-  // - If the string contains ~KEY~ syntax (tilde-delimited), use AutoTypeQueue
-  //   which parses ~ENTER~, ~PAUSE 50~, etc.
-  // - Otherwise, use StringToEvents which handles \a (CPC keys) and \f
-  // (emulator
-  //   commands like KONCPC_WAITBREAK/KONCPC_EXIT) from replaceKoncpcKeys().
+  // Fill the autotype queue with the autocmd if provided.  A single
+  // scan-synced path drives all keyboard injection:
+  // - ~KEY~ syntax (tilde-delimited) is parsed by enqueue() (~ENTER~, ~PAUSE
+  //   50~, etc.).
+  // - The legacy \a (CPC keys) / \f (emulator commands like
+  //   KONCPC_WAITBREAK/KONCPC_EXIT, from replaceKoncpcKeys()) encoding is
+  //   parsed by enqueue_legacy().
   if (!args.autocmd.empty()) {
+    // Single scan-synced path for all autocmds: a boot-time delay, then the
+    // command — either ~KEY~ syntax or the legacy \a/\f encoding.
+    g_autotype_queue.enqueue("~PAUSE " + std::to_string(CPC.boot_time) + "~");
     if (args.autocmd.find('~') != std::string::npos) {
-      std::string cmd =
-          "~PAUSE " + std::to_string(CPC.boot_time) + "~" + args.autocmd;
-      auto err = g_autotype_queue.enqueue(cmd);
+      auto err = g_autotype_queue.enqueue(args.autocmd);
       if (!err.empty()) {
         LOG_ERROR("--autocmd parse error: " << err);
       }
     } else {
-      virtualKeyboardEvents = CPC.InputMapper->StringToEvents(args.autocmd);
-      nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
+      g_autotype_queue.enqueue_legacy(args.autocmd);
     }
   }
 
@@ -4302,87 +4568,6 @@ int koncpc_main(int argc, char** argv) {
     if (!bin_loaded && dwFrameCountOverall > CPC.boot_time) {
       bin_loaded = true;
       if (!args.binFile.empty()) bin_load(args.binFile, args.binOffset);
-    }
-
-    if (!virtualKeyboardEvents.empty() &&
-        (nextVirtualEventFrameCount < dwFrameCountOverall) &&
-        (breakPointsToSkipBeforeProceedingWithVirtualEvents == 0)) {
-      auto nextVirtualEvent = &virtualKeyboardEvents.front();
-      if (!g_headless) SDL_PushEvent(nextVirtualEvent);
-
-      auto key = nextVirtualEvent->key.key;
-      auto mod = static_cast<SDL_Keymod>(nextVirtualEvent->key.mod);
-      auto evtype = nextVirtualEvent->key.type;
-      LOG_DEBUG("Inserted virtual event key=" << int(key) << " (" << evtype
-                                              << ")");
-
-      CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(key, mod);
-      if (!(scancode & MOD_EMU_KEY)) {
-        LOG_DEBUG(
-            "The virtual event is a keypress (not a command), so introduce a "
-            "pause.");
-        // After a KEY_UP, wait an extra frame before the next event so the
-        // CPC firmware key-scan sees a clean "released" cycle between the
-        // release and the next press.  Without this, two adjacent identical
-        // characters (e.g. "ll" in "CALL") collapse into a single registered
-        // keypress because both scans land on the "pressed" state.  Mirrors
-        // the inter_char_pause_ logic in AutoTypeQueue::tick().
-        int gap = 0;
-        if (evtype == SDL_EVENT_KEY_DOWN)
-          gap = 1;
-        else if (evtype == SDL_EVENT_KEY_UP)
-          gap = 2;
-        nextVirtualEventFrameCount = dwFrameCountOverall + gap;
-      }
-
-      // In headless mode, directly process keyboard events
-      if (g_headless) {
-        if (!(scancode & MOD_EMU_KEY)) {
-          bool press = (evtype == SDL_EVENT_KEY_DOWN);
-          applyKeypress(scancode, keyboard_matrix, press);
-        } else if (evtype == SDL_EVENT_KEY_DOWN) {
-          // Handle emulator commands (no SDL event loop in headless mode)
-          switch (scancode) {
-            case KONCPC_EXIT:
-              cleanExit(0);
-              break;
-            case KONCPC_RESET:
-              emulator_reset();
-              break;
-            case KONCPC_WAITBREAK:
-              breakPointsToSkipBeforeProceedingWithVirtualEvents++;
-              LOG_INFO("Will skip "
-                       << breakPointsToSkipBeforeProceedingWithVirtualEvents
-                       << " before processing more virtual events.");
-              z80.break_point = 0;
-              break;
-            case KONCPC_DELAY:
-              nextVirtualEventFrameCount = dwFrameCountOverall + CPC.boot_time;
-              break;
-            case KONCPC_SNAPSHOT:
-              dumpSnapshot();
-              break;
-            case KONCPC_TAPEPLAY:
-              Tape_Rewind();
-              if (!pbTapeImage.empty()) {
-                CPC.tape_play_button = CPC.tape_play_button ? 0 : 0x10;
-              }
-              break;
-            case KONCPC_SPEED:
-              CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-              break;
-            case KONCPC_DEBUG:
-              log_verbose = !log_verbose;
-              break;
-            default:
-              LOG_DEBUG("Ignoring emulator key " << scancode
-                                                 << " in headless mode");
-              break;
-          }
-        }
-      }
-
-      virtualKeyboardEvents.pop_front();
     }
 
     // Mouse-as-joystick: release all joystick axes periodically so they don't
@@ -4543,31 +4728,27 @@ int koncpc_main(int argc, char** argv) {
               << " - CPC scancode: " << scancode);
           if (!(scancode & MOD_EMU_KEY)) {
             applyKeypress(scancode, keyboard_matrix, true);
-          }
-        } break;
-
-        case SDL_EVENT_KEY_UP: {
-          CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(
-              event.key.key, static_cast<SDL_Keymod>(event.key.mod));
-          if (!(scancode & MOD_EMU_KEY)) {
-            applyKeypress(scancode, keyboard_matrix, false);
-          } else {  // process emulator specific keys
+          } else if (!event.key.repeat) {
+            // Emulator commands: fire on initial KEY_DOWN (not repeat, not
+            // KEY_UP). One physical press = one command, no debounce needed.
             switch (scancode) {
-              case KONCPC_GUI: {
+              case KONCPC_GUI:
                 showGui();
                 break;
-              }
-
-              case KONCPC_VKBD: {
+              case KONCPC_VKBD:
                 showVKeyboard();
                 break;
-              }
-
               case KONCPC_DEVTOOLS: {
-                imgui_state.show_devtools = true;
+                imgui_state.show_devtools = !imgui_state.show_devtools;
+                log_verbose = imgui_state.show_devtools;
+                if (imgui_state.show_devtools) {
+                  set_osd_message("Debug mode: on");
+                } else {
+                  g_devtools_ui.close_all_windows();
+                  set_osd_message("Debug mode: off");
+                }
                 break;
               }
-
               case KONCPC_FULLSCRN:
                 audio_pause();
                 SDL_Delay(20);
@@ -4582,152 +4763,74 @@ int koncpc_main(int argc, char** argv) {
 #endif
                 audio_resume();
                 break;
-
               case KONCPC_SCRNSHOT:
-                // Delay taking the screenshot to ensure the frame is complete.
-                g_take_screenshot = true;
+                koncpc_menu_action(KONCPC_SCRNSHOT);
                 break;
-
-              case KONCPC_DELAY:
-                // Reuse boot_time as it is a reasonable wait time for Plus
-                // transition between the F1/F2 nag screen and the command line.
-                // TODO: Support an argument to KONCPC_DELAY in autocmd instead.
-                LOG_VERBOSE("Take into account KONCPC_DELAY");
-                nextVirtualEventFrameCount =
-                    dwFrameCountOverall + CPC.boot_time;
-                break;
-
-              case KONCPC_WAITBREAK:
-                breakPointsToSkipBeforeProceedingWithVirtualEvents++;
-                LOG_INFO("Will skip "
-                         << breakPointsToSkipBeforeProceedingWithVirtualEvents
-                         << " before processing more virtual events.");
-                LOG_VERBOSE("Setting z80.break_point=0 (was " << z80.break_point
-                                                              << ").");
-                z80.break_point = 0;
-                break;
-
               case KONCPC_SNAPSHOT:
-                dumpSnapshot();
+                koncpc_menu_action(KONCPC_SNAPSHOT);
                 break;
-
               case KONCPC_LD_SNAP:
-                loadSnapshot();
+                koncpc_menu_action(KONCPC_LD_SNAP);
                 break;
-
               case KONCPC_TAPEPLAY:
-                LOG_VERBOSE("Request to play tape");
-                Tape_Rewind();
-                if (!pbTapeImage.empty()) {
-                  if (CPC.tape_play_button) {
-                    LOG_VERBOSE("Play button released");
-                    CPC.tape_play_button = 0;
-                  } else {
-                    LOG_VERBOSE("Play button pushed");
-                    CPC.tape_play_button = 0x10;
-                  }
-                }
-                set_osd_message(std::string("Play tape: ") +
-                                (CPC.tape_play_button ? "on" : "off"));
+                koncpc_menu_action(KONCPC_TAPEPLAY);
                 break;
-
               case KONCPC_MF2STOP:
-                if (CPC.mf2 && !(dwMF2Flags & MF2_ACTIVE)) {
-                  reg_pair port;
-
-                  // Set mode to activate ROM_config
-                  // port.b.h = 0x40;
-                  // z80_OUT_handler(port, 128);
-
-                  // Attempt to load MF2 in lower ROM (can fail if lower ROM is
-                  // not active)
-                  port.b.h = 0xfe;
-                  port.b.l = 0xe8;
-                  dwMF2Flags &= ~MF2_INVISIBLE;
-                  z80_OUT_handler(port, 0);
-
-                  // Stop execution if load succeeded
-                  if (dwMF2Flags & MF2_ACTIVE) {
-                    z80_mf2stop();
-                  }
-                }
+                koncpc_menu_action(KONCPC_MF2STOP);
                 break;
-
               case KONCPC_RESET:
-                LOG_VERBOSE("User requested emulator reset");
-                emulator_reset();
+                koncpc_menu_action(KONCPC_RESET);
                 break;
-
               case KONCPC_JOY:
-                CPC.joystick_emulation =
-                    nextJoystickEmulation(CPC.joystick_emulation);
-                CPC.InputMapper->set_joystick_emulation();
-                SDL_SetWindowRelativeMouseMode(
-                    mainSDLWindow,
-                    CPC.joystick_emulation == JoystickEmulation::Mouse);
-                set_osd_message(
-                    std::string("Joystick emulation: ") +
-                    JoystickEmulationToString(CPC.joystick_emulation));
+                koncpc_menu_action(KONCPC_JOY);
                 break;
-
               case KONCPC_PHAZER:
-                CPC.phazer_emulation = CPC.phazer_emulation.Next();
-                if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
-                mouse_init();
-                set_osd_message(std::string("Phazer emulation: ") +
-                                CPC.phazer_emulation.ToString());
+                koncpc_menu_action(KONCPC_PHAZER);
                 break;
-
               case KONCPC_PASTE:
-                set_osd_message("Pasting...");
-                {
-                  auto content = std::string(SDL_GetClipboardText());
-                  LOG_VERBOSE("Pasting '" << content << "'");
-                  auto newEvents = CPC.InputMapper->StringToEvents(content);
-                  virtualKeyboardEvents.splice(virtualKeyboardEvents.end(),
-                                               newEvents);
-                  nextVirtualEventFrameCount = dwFrameCountOverall;
-                  break;
-                }
-
-              case KONCPC_EXIT:
-                cleanExit(0);
+                koncpc_menu_action(KONCPC_PASTE);
                 break;
-
+              case KONCPC_EXIT:
+                koncpc_menu_action(KONCPC_EXIT);
+                break;
+              case KONCPC_SPEED:
+                // Delegate to the canonical handler (atomic debounce + OSD),
+                // like the surrounding cases — key repeats are already filtered
+                // by the outer guard, so no duplicate logic is needed here.
+                koncpc_menu_action(KONCPC_SPEED);
+                break;
               case KONCPC_FPS:
-                CPC.scr_fps =
-                    CPC.scr_fps ? 0 : 1;  // toggle fps display on or off
+                CPC.scr_fps = CPC.scr_fps ? 0 : 1;
                 set_osd_message(std::string("Performances info: ") +
                                 (CPC.scr_fps ? "on" : "off"));
                 break;
-
-              case KONCPC_SPEED:
-                CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-                set_osd_message(std::string("Limit speed: ") +
-                                (CPC.limit_speed ? "on" : "off"));
-                break;
-
               case KONCPC_DEBUG:
                 log_verbose = !log_verbose;
-#ifdef DEBUG
-                dwDebugFlag = dwDebugFlag ? 0 : 1;
-#endif
-#ifdef DEBUG_CRTC
-                if (dwDebugFlag) {
-                  for (int n = 0; n < 14; n++) {
-                    fprintf(pfoDebug, "%02x = %02x\r\n", n, CRTC.registers[n]);
-                  }
-                }
-#endif
                 set_osd_message(std::string("Debug mode: ") +
                                 (log_verbose ? "on" : "off"));
                 break;
-
-              case KONCPC_NEXTDISKA:
-                CPC.driveA.zip_index += 1;
-                file_load(CPC.driveA);
+              case KONCPC_DELAY:
+                // Autocmd pacing commands: delegate to the canonical handler
+                // (same as every other command above).  These were left as
+                // no-op stubs in the KEY_UP->KEY_DOWN refactor, which made
+                // `-a KONCPC_WAITBREAK` do nothing in non-headless mode, so a
+                // following `-a KONCPC_EXIT` fired before the program ran.
+                koncpc_menu_action(KONCPC_DELAY);
+                break;
+              case KONCPC_WAITBREAK:
+                koncpc_menu_action(KONCPC_WAITBREAK);
+                break;
+              default:
                 break;
             }
+          }
+        } break;
+
+        case SDL_EVENT_KEY_UP: {
+          CPCScancode scancode = CPC.InputMapper->CPCscancodeFromKeysym(
+              event.key.key, static_cast<SDL_Keymod>(event.key.mod));
+          if (!(scancode & MOD_EMU_KEY)) {
+            applyKeypress(scancode, keyboard_matrix, false);
           }
         } break;
 
@@ -4886,118 +4989,10 @@ int koncpc_main(int argc, char** argv) {
     // Render thread waits for frame signal, does Phase A, releases Z80, then
     // Phase B.
     if (!g_headless) {
-      if (g_emu_paused.load(std::memory_order_relaxed)) {
-        // Paused overlay: render ImGui without waiting for a frame signal
-        video_display();
-        video_display_b();
-        video_take_pending_window_screenshot();
-        if (g_m4_http.is_running()) g_m4_http.drain_pending();
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(POLL_INTERVAL_MS));
-      } else {
-        // Poll for the Z80 frame signal, pumping SDL events between attempts.
-        // On macOS+Metal the Cocoa run loop must stay alive for CADisplayLink
-        // and drawable-completion callbacks to fire; a bare condvar wait
-        // starves it, causing SDL_RenderPresent / SDL_GL_SwapWindow to hang
-        // indefinitely for video styles that spend time in Phase A before the
-        // GPU call (CRT Basic/Full with GL shaders, SDL swscale with pixel
-        // filters).
-        bool skip = false;
-        bool paused_break = false;
-        while (!g_frame_signal.try_wait_ready_for(1, skip)) {
-          SDL_PumpEvents();  // keep macOS/Metal run loop alive
-          // Escape hatch: if the emulator got paused (e.g. focus loss /
-          // auto_pause, IPC pause) or a quit was requested while we were
-          // waiting, the Z80 thread stops producing frames and this loop
-          // would spin forever — SDL_PumpEvents() only enqueues events, so
-          // the window-close handler (SDL_PollEvent at the top of the loop)
-          // never runs and the app looks frozen.  Bail to the outer loop,
-          // which re-reads g_emu_paused and takes the paused-overlay branch
-          // that both pumps AND polls events.  No frame is pending here
-          // (try_wait_ready_for just returned false), so the Z80 thread is
-          // NOT blocked in wait_consumed() — we must NOT signal_consumed().
-          if (g_emu_paused.load(std::memory_order_relaxed) ||
-              g_z80_thread_quit.load(std::memory_order_relaxed)) {
-            paused_break = true;
-            break;
-          }
-        }
-        if (paused_break) {
-          // Frame handshake untouched; fall through to the next main-loop
-          // iteration so SDL events (window close, etc.) get processed.
-        } else if (!skip) {
-          // OSD text — render thread owns osd_message/osd_timing, no race
-          if (SDL_GetTicks() < osd_timing) {
-            print(static_cast<byte*>(back_surface->pixels) + CPC.scr_line_offs,
-                  osd_message.c_str(), true);
-          }
-          uint64_t displayStart = SDL_GetPerformanceCounter();
-          video_display();  // Phase A: texture upload + ImGui render (~3ms)
-          // Partial audio push before Phase B stall
-          {
-            int partial =
-                static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
-            if (!g_emu_paused.load() && partial > 0) {
-              audio_push_buffer(pbSndBuffer.get(), partial);
-              CPC.snd_bufferptr = pbSndBuffer.get();
-            }
-          }
-          g_frame_signal
-              .signal_consumed();  // Z80 starts next frame concurrently
-          // Main-thread-only housekeeping (after releasing back_surface to Z80)
-          if (g_m4_http.is_running()) g_m4_http.drain_pending();
-#ifdef __APPLE__
-          // Capture while Z80 is still blocked (between signal_consumed and
-          // next wait_ready) — safe without atomics due to condvar
-          // happens-before.
-          dword frame_count_snap = dwFrameCountOverall;
-          if (back_surface && (frame_count_snap % 50) == 0) {
-            koncpc_update_dock_icon_preview(
-                back_surface->pixels, back_surface->w, back_surface->h,
-                back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
-          }
-#endif
-          // If quit was requested (e.g. KONCPC_EXIT from the Z80 thread),
-          // skip video_display_b() which hangs indefinitely for OpenGL
-          // styles (7-19).  signal_consumed() was already sent so the Z80
-          // loop has seen the quit flag and will exit; on the next main-loop
-          // iteration SDL_EVENT_QUIT will reach the event handler above and
-          // doCleanUp() will join the (already-exited) Z80 thread cleanly.
-          if (g_z80_thread_quit.load(std::memory_order_relaxed)) {
-            continue;
-          }
-          video_display_b();  // Phase B: 0-60ms, Z80 runs concurrently!
-          uint64_t displayEnd = SDL_GetPerformanceCounter();
-          displayTimeAccum.fetch_add(displayEnd - displayStart,
-                                     std::memory_order_relaxed);
-          if (audio_stream && CPC.snd_ready) {
-            int queued = SDL_GetAudioStreamQueued(audio_stream);
-            if (queued < 0) queued = 0;
-            if (queued < audio_queue_min_bytes) audio_queue_min_bytes = queued;
-            if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
-                audio_push_count > 0) {
-              double display_ms =
-                  static_cast<double>(displayEnd - displayStart) * 1000.0 /
-                  perfFreq;
-              LOG_DEBUG("Audio low queue after display: "
-                        << queued << "B, display took " << display_ms << "ms");
-            }
-          }
-          video_take_pending_window_screenshot();
-          if (g_take_screenshot) {
-            dumpScreen();
-            g_take_screenshot = false;
-          }
-        } else {
-          // Skipped frame: service screenshot requests before releasing Z80
-          video_take_pending_window_screenshot();
-          if (g_take_screenshot) {
-            dumpScreen();
-            g_take_screenshot = false;
-          }
-          g_frame_signal.signal_consumed();
-        }
-      }
+      // One render iteration (extracted so a Phase-2 menu-tracking driver can
+      // call it too).  Returns true on the quit path → skip the rest of the
+      // loop body (the deferred video-reinit check below).
+      if (render_one_frame()) continue;
     }
 
     // ---- Headless: original single-threaded emulation (unchanged) ----
@@ -5135,6 +5130,10 @@ int koncpc_main(int argc, char** argv) {
       CPC.scr_pos =
           CPC.scr_base + dwOffset;  // update current rendering position
 
+      // Headless runs single-threaded, but the firmware still scans the live
+      // matrix — refresh it from pending each frame (uncontended here).
+      publish_keyboard_snapshot();
+
       {
         uint64_t z80Start = SDL_GetPerformanceCounter();
         iExitCondition =
@@ -5184,11 +5183,8 @@ int koncpc_main(int argc, char** argv) {
           z80.trace = 1;  // make sure we'll be here to rearm break point at the
                           // next z80 instruction.
 
-          if (breakPointsToSkipBeforeProceedingWithVirtualEvents > 0) {
-            breakPointsToSkipBeforeProceedingWithVirtualEvents--;
-            LOG_DEBUG("Decremented breakpoint skip counter to "
-                      << breakPointsToSkipBeforeProceedingWithVirtualEvents);
-          }
+          // Release an autotype KONCPC_WAITBREAK waiting for this break.
+          g_autotype_queue.resume();
         }
       } else {
         if (z80.break_point == Z80_BREAKPOINT_NONE) {
@@ -5306,39 +5302,44 @@ int koncpc_main(int argc, char** argv) {
             do_tick = true;
           }
           if (do_tick) {
-            g_autotype_queue.tick([](uint16_t cpc_key, bool pressed) {
-              CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
-                  static_cast<CPC_KEYS>(cpc_key));
-              // Direct matrix manipulation (same as ipc_apply_keypress)
-              if (static_cast<byte>(scancode) == 0xff) return;
-              if (pressed) {
-                keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
-                    ~bit_values[static_cast<byte>(scancode) & 7],
-                    std::memory_order_relaxed);
-                if (scancode & MOD_CPC_SHIFT) {
-                  keyboard_matrix[0x25 >> 4].fetch_and(
-                      ~bit_values[0x25 & 7], std::memory_order_relaxed);
-                } else {
-                  keyboard_matrix[0x25 >> 4].fetch_or(
-                      bit_values[0x25 & 7], std::memory_order_relaxed);
-                }
-                if (scancode & MOD_CPC_CTRL) {
-                  keyboard_matrix[0x27 >> 4].fetch_and(
-                      ~bit_values[0x27 & 7], std::memory_order_relaxed);
-                } else {
-                  keyboard_matrix[0x27 >> 4].fetch_or(
-                      bit_values[0x27 & 7], std::memory_order_relaxed);
-                }
-              } else {
-                keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
-                    bit_values[static_cast<byte>(scancode) & 7],
-                    std::memory_order_relaxed);
-                keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
-                                                    std::memory_order_relaxed);
-                keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
-                                                    std::memory_order_relaxed);
-              }
-            });
+            g_autotype_queue.tick(
+                [](uint16_t cpc_key, bool pressed) {
+                  CPCScancode scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
+                      static_cast<CPC_KEYS>(cpc_key));
+                  // Direct matrix manipulation (same as ipc_apply_keypress)
+                  if (static_cast<byte>(scancode) == 0xff) return;
+                  if (pressed) {
+                    keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
+                        ~bit_values[static_cast<byte>(scancode) & 7],
+                        std::memory_order_relaxed);
+                    if (scancode & MOD_CPC_SHIFT) {
+                      keyboard_matrix[0x25 >> 4].fetch_and(
+                          ~bit_values[0x25 & 7], std::memory_order_relaxed);
+                    } else {
+                      keyboard_matrix[0x25 >> 4].fetch_or(
+                          bit_values[0x25 & 7], std::memory_order_relaxed);
+                    }
+                    if (scancode & MOD_CPC_CTRL) {
+                      keyboard_matrix[0x27 >> 4].fetch_and(
+                          ~bit_values[0x27 & 7], std::memory_order_relaxed);
+                    } else {
+                      keyboard_matrix[0x27 >> 4].fetch_or(
+                          bit_values[0x27 & 7], std::memory_order_relaxed);
+                    }
+                  } else {
+                    keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
+                        bit_values[static_cast<byte>(scancode) & 7],
+                        std::memory_order_relaxed);
+                    keyboard_matrix[0x25 >> 4].fetch_or(
+                        bit_values[0x25 & 7], std::memory_order_relaxed);
+                    keyboard_matrix[0x27 >> 4].fetch_or(
+                        bit_values[0x27 & 7], std::memory_order_relaxed);
+                  }
+                },
+                [](uint16_t cmd) -> bool {
+                  koncpc_menu_action(static_cast<int>(cmd));
+                  return cmd == KONCPC_WAITBREAK;
+                });
           }
         }
 
@@ -5448,7 +5449,17 @@ int koncpc_main(int argc, char** argv) {
           SDL_GetWindowSize(mainSDLWindow, &saved_w, &saved_h);
           SDL_GetWindowPosition(mainSDLWindow, &saved_x, &saved_y);
         }
+        // Quiesce the Z80 thread before tearing down video: video_shutdown()
+        // frees the triple-buffer ring, and the Z80 writes into / publishes
+        // those buffers (back_surface == a ring buffer). Freeing them while the
+        // Z80 runs is a use-after-free → segfault on renderer switch.
+        bool z80_was_paused = g_emu_paused.load(std::memory_order_relaxed);
         audio_pause();
+        cpc_pause_and_wait();
+        // Free cached save-state thumbnail textures while the OLD render device
+        // is still alive — video_shutdown() destroys it, leaving stale GPU
+        // handles that would be used/freed against a dead device on next use.
+        imgui_invalidate_slot_thumbs();
         SDL_Delay(20);
         video_shutdown();
         if (video_init()) {
@@ -5469,6 +5480,7 @@ int koncpc_main(int argc, char** argv) {
         koncpc_setup_macos_menu();
 #endif
         audio_resume();
+        if (!z80_was_paused) cpc_resume();
       }
     }
 

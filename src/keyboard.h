@@ -1,12 +1,23 @@
 #pragma once
 
+#include <atomic>
 #include <list>
 #include <map>
+#include <mutex>
 #include <string>
 
 #include "SDL3/SDL.h"
 #include "koncepcja.h"
 #include "types.h"
+
+// Double-buffered CPC keyboard matrix (see kon_cpc_ja.cpp for rationale).
+//   keyboard_matrix      - pending state written by all key sources
+//   keyboard_matrix_live - per-frame snapshot the firmware scans (Z80 thread)
+//   g_kbd_matrix_mutex    - makes a writer's multi-line keypress atomic vs the
+//                           snapshot copy
+extern std::atomic<byte> keyboard_matrix[16];
+extern std::atomic<byte> keyboard_matrix_live[16];
+extern std::mutex g_kbd_matrix_mutex;
 
 #define MOD_CPC_SHIFT (0x01 << 8)
 #define MOD_CPC_CTRL (0x02 << 8)
@@ -324,6 +335,14 @@ class InputMapper {
   CPCScancode CPCscancodeFromJoystickButton(SDL_JoyButtonEvent jbutton);
   void CPCscancodeFromJoystickAxis(SDL_JoyAxisEvent jaxis, CPCScancode* cpc_key,
                                    bool& release);
-  std::list<SDL_Event> StringToEvents(std::string toTranslate);
   void set_joystick_emulation();
+  // Human-readable host shortcut(s) currently bound to an emulator command,
+  // derived from the live binding map so menu/UI hints can never drift from the
+  // real keys.  Returns e.g. "F5", "Shift+F2 / F12", or "" if unbound.
+  std::string shortcutForAction(CapriceKey action) const;
 };
+
+// Keystone helper: the single source of truth for an action's shortcut DISPLAY
+// string, derived from the real binding (not hand-typed per surface).  Every
+// menu/topbar/popup/command-palette surface renders hints via this.
+std::string koncpc_action_shortcut(KONCPC_KEYS action);

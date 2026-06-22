@@ -71,25 +71,28 @@ bool ImGuiUiHost::any_keyboard_ui_active() const {
 }
 
 void ImGuiUiHost::toast(UiToastLevel level, const std::string& message) {
-  if (!ImGui::GetCurrentContext()) {
-    // No UI to show on — fall through to stderr like NullUiHost.
-    // Otherwise diagnostics during cold startup vanish silently.
-    const char* tag = "info";
-    switch (level) {
-      case UiToastLevel::Info:
-        tag = "info";
-        break;
-      case UiToastLevel::Success:
-        tag = "success";
-        break;
-      case UiToastLevel::Error:
-        tag = "error";
-        break;
-    }
-    std::fprintf(stderr, "[toast/%s] %s\n", tag, message.c_str());
-    return;
+  const char* tag = "info";
+  switch (level) {
+    case UiToastLevel::Info:
+      tag = "info";
+      break;
+    case UiToastLevel::Success:
+      tag = "success";
+      break;
+    case UiToastLevel::Error:
+      tag = "error";
+      break;
   }
-  imgui_toast(message, to_imgui_toast_level(level));
+  // Error toasts ALWAYS mirror to stderr — a GUI-only error is invisible to
+  // logs, headless runs, and CI, and can't be diagnosed after the fact.
+  // Without an ImGui context (cold startup) every level mirrors so early
+  // diagnostics aren't lost either.
+  if (level == UiToastLevel::Error || !ImGui::GetCurrentContext()) {
+    std::fprintf(stderr, "[toast/%s] %s\n", tag, message.c_str());
+  }
+  if (ImGui::GetCurrentContext()) {
+    imgui_toast(message, to_imgui_toast_level(level));
+  }
 }
 
 int ImGuiUiHost::topbar_height() const {

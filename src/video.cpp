@@ -36,7 +36,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -98,6 +100,111 @@ static int bottombar_height = 0;
 extern t_CPC CPC;
 extern video_plugin* vid_plugin;
 
+// ── Triple-buffered CPC frame ring (decouples Z80 from render) ───────────────
+// One writer (Z80 thread) and one reader (render thread).  The Z80 renders each
+// frame into its private write buffer (back_surface ==
+// g_cpc_ring[g_ring_write]) and publishes it without blocking.  The render
+// thread copies the latest published buffer into the plugin's stable front-end
+// surface (g_frontend, i.e. the `vid`/`pub` surface every flip already reads)
+// and uploads as before.  The copy is a sub-millisecond same-format blit on the
+// render thread — never on the Z80 critical path — so emulation pacing is
+// untouched.
+//
+// Lock-free triple buffer: a single atomic `g_ring_shared` holds the published
+// index (low 2 bits) plus a DIRTY bit (a frame is waiting).  BOTH threads
+// atomically exchange against it, so {g_ring_write, g_ring_front, shared-index}
+// always stay a permutation of {0,1,2} — the producer's write index and the
+// consumer's read index are therefore always distinct, with no lock and no
+// read-then-claim TOCTOU window.  The DIRTY bit lets the consumer present
+// idempotently: re-presenting with no new frame re-blits g_ring_front (needed
+// by the macOS menu-tracking driver, which ticks faster than the Z80 produces).
+static constexpr int RING_INDEX_MASK = 0x3;
+static constexpr int RING_DIRTY = 0x4;
+static SDL_Surface* g_frontend = nullptr;  // plugin CPC source = copy dest
+static SDL_Surface* g_cpc_ring[3] = {nullptr, nullptr, nullptr};
+static std::atomic<int> g_ring_shared{2};  // published index | DIRTY
+static int g_ring_write = 0;  // Z80-thread-private write (back_surface) index
+static int g_ring_front = 1;  // render-thread-private last-read index
+static bool g_ring_active = false;
+
+// Called once from video_init() after the plugin's surface exists.  `frontend`
+// is the plugin's CPC source surface (the Z80's historical write target).  We
+// keep it as the render-private copy destination and allocate three matching
+// write buffers.  Returns the Z80's initial write surface.
+SDL_Surface* video_ring_init(SDL_Surface* frontend) {
+  video_ring_shutdown();  // free any prior ring (restyle path)
+  if (!frontend) return frontend;
+  g_frontend = frontend;
+  SDL_Palette* pal = SDL_GetSurfacePalette(frontend);
+  for (int i = 0; i < 3; ++i) {
+    g_cpc_ring[i] =
+        SDL_CreateSurface(frontend->w, frontend->h, frontend->format);
+    if (!g_cpc_ring[i]) {
+      LOG_ERROR(
+          "video_ring_init: SDL_CreateSurface failed: " << SDL_GetError());
+      // Degrade gracefully to single-buffer: free any partial ring but keep
+      // g_frontend so video_render_surface() stays valid (== back_surface).
+      for (int j = 0; j < 3; ++j) {
+        if (g_cpc_ring[j]) {
+          SDL_DestroySurface(g_cpc_ring[j]);
+          g_cpc_ring[j] = nullptr;
+        }
+      }
+      g_ring_active = false;
+      return frontend;
+    }
+    if (pal) SDL_SetSurfacePalette(g_cpc_ring[i], pal);
+  }
+  g_ring_write = 0;
+  g_ring_front = 1;
+  g_ring_shared.store(2, std::memory_order_relaxed);  // permutation {0,1,2}
+  g_ring_active = true;
+  return g_cpc_ring[0];
+}
+
+// Z80 thread, at frame boundary: publish the just-written buffer (set DIRTY)
+// and take the previously-published buffer as the next write target.  The
+// atomic exchange keeps {write, front, shared} a permutation of {0,1,2}, so the
+// new write buffer is never the one the render thread holds.  Returns the new
+// write surface; the caller assigns back_surface to it.
+SDL_Surface* video_ring_publish() {
+  if (!g_ring_active) return g_frontend;
+  int prev = g_ring_shared.exchange(g_ring_write | RING_DIRTY,
+                                    std::memory_order_acq_rel);
+  g_ring_write = prev & RING_INDEX_MASK;
+  return g_cpc_ring[g_ring_write];
+}
+
+// Render thread, before the flip: if a new frame was published (DIRTY), swap
+// our front buffer in for it (atomic exchange, clears DIRTY); then copy the
+// front buffer into the stable front-end surface the flip reads.  Idempotent —
+// calling it again with no new frame re-blits the same front buffer (no
+// tearing, no stale-buffer flicker for the menu-tracking driver).
+void video_ring_present() {
+  if (!g_ring_active) return;
+  if (g_ring_shared.load(std::memory_order_acquire) & RING_DIRTY) {
+    int prev = g_ring_shared.exchange(g_ring_front, std::memory_order_acq_rel);
+    g_ring_front = prev & RING_INDEX_MASK;
+  }
+  SDL_BlitSurface(g_cpc_ring[g_ring_front], nullptr, g_frontend, nullptr);
+}
+
+// The surface the render thread should read/write for the displayed frame
+// (OSD text, screenshots, dock preview, thumbnails).  Equals the plugin's
+// front-end surface, now holding the most-recently-presented frame.
+SDL_Surface* video_render_surface() { return g_frontend; }
+
+void video_ring_shutdown() {
+  for (int i = 0; i < 3; ++i) {
+    if (g_cpc_ring[i]) {
+      SDL_DestroySurface(g_cpc_ring[i]);
+      g_cpc_ring[i] = nullptr;
+    }
+  }
+  g_frontend = nullptr;
+  g_ring_active = false;
+}
+
 // Window screenshot: set a pending path for capture by the main thread.
 // The capture happens in direct_flip() after ImGui is rendered.
 #include <mutex>
@@ -138,6 +245,147 @@ void video_get_cpc_size(int& w, int& h) {
 }
 
 bool video_is_sdl_renderer() { return using_sdl_renderer; }
+
+// ── Save-state slot thumbnails ──────────────────────────────────────────────
+// A ".kthm" file is a 16-byte header followed by h*w*4 RGBA8 bytes:
+//   struct { char magic[4]="KTHM"; int32_t w; int32_t h; int32_t reserved; }
+// Stored little-endian (the only platforms we target are LE).
+
+namespace {
+constexpr char kThmMagic[4] = {'K', 'T', 'H', 'M'};
+constexpr int kThmMaxDim = 1024;
+
+struct ThmHeader {
+  char magic[4];
+  int32_t w;
+  int32_t h;
+  int32_t reserved;
+};
+}  // namespace
+
+uintptr_t video_make_rgba_texture(const unsigned char* rgba, int w, int h) {
+  if (!rgba || w <= 0 || h <= 0) return 0;
+
+  if (using_sdl_renderer && renderer) {
+    SDL_Texture* tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                         SDL_TEXTUREACCESS_STATIC, w, h);
+    if (!tex) {
+      LOG_ERROR("video_make_rgba_texture: SDL_CreateTexture failed: "
+                << SDL_GetError());
+      return 0;
+    }
+    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
+    if (!SDL_UpdateTexture(tex, nullptr, rgba, w * 4)) {
+      LOG_ERROR("video_make_rgba_texture: SDL_UpdateTexture failed: "
+                << SDL_GetError());
+      SDL_DestroyTexture(tex);
+      return 0;
+    }
+    return reinterpret_cast<uintptr_t>(tex);
+  }
+
+  if (g_gpu.device) {
+    return video_gpu_make_rgba_texture(rgba, w, h);
+  }
+
+  return 0;  // headless or no backend
+}
+
+void video_free_rgba_texture(uintptr_t tex) {
+  if (!tex) return;
+  if (using_sdl_renderer && renderer) {
+    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(tex));
+    return;
+  }
+  if (g_gpu.device) {
+    video_gpu_free_rgba_texture(tex);
+  }
+}
+
+bool video_capture_cpc_thumbnail(const std::string& path, int max_w) {
+  if (!vid || !vid->pixels || vid->w <= 0 || vid->h <= 0 || max_w <= 0) {
+    return false;
+  }
+  // The downscale loop below indexes pixels as 4-byte RGBA; bail rather than
+  // read out of bounds if the back surface is ever not 32-bit.
+  if (SDL_BYTESPERPIXEL(vid->format) != 4) {
+    return false;
+  }
+
+  const int src_w = vid->w;
+  const int src_h = vid->h;
+  int dst_w = std::min(max_w, src_w);
+  if (dst_w < 1) dst_w = 1;
+  // Rasterize to the CPC's 4:3 monitor ratio rather than the raw (very wide,
+  // ~768:270) framebuffer aspect, so the preview matches how the screen
+  // actually looks and isn't vertically stretched in the 4:3 grid cell.  The
+  // downscale loop below samples each axis independently, so this just maps the
+  // raw frame into a 4:3 target.
+  int dst_h = dst_w * 3 / 4;
+  if (dst_h < 1) dst_h = 1;
+  if (dst_w > kThmMaxDim) dst_w = kThmMaxDim;
+  if (dst_h > kThmMaxDim) dst_h = kThmMaxDim;
+
+  // Nearest-neighbor downscale.  vid is RGBA32 (4 bytes/pixel) with pitch.
+  std::vector<unsigned char> out(static_cast<size_t>(dst_w) * dst_h * 4);
+  const auto* src = static_cast<const unsigned char*>(vid->pixels);
+  const int pitch = vid->pitch;
+  for (int y = 0; y < dst_h; ++y) {
+    int sy = static_cast<int>(static_cast<long long>(y) * src_h / dst_h);
+    if (sy >= src_h) sy = src_h - 1;
+    const unsigned char* srow = src + static_cast<size_t>(sy) * pitch;
+    unsigned char* drow = out.data() + static_cast<size_t>(y) * dst_w * 4;
+    for (int x = 0; x < dst_w; ++x) {
+      int sx = static_cast<int>(static_cast<long long>(x) * src_w / dst_w);
+      if (sx >= src_w) sx = src_w - 1;
+      std::memcpy(drow + x * 4, srow + sx * 4, 4);
+    }
+  }
+
+  ThmHeader hdr{};
+  std::memcpy(hdr.magic, kThmMagic, 4);
+  hdr.w = dst_w;
+  hdr.h = dst_h;
+  hdr.reserved = 0;
+
+  std::ofstream f(path, std::ios::binary | std::ios::trunc);
+  if (!f) {
+    LOG_ERROR("video_capture_cpc_thumbnail: cannot open " << path);
+    return false;
+  }
+  f.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+  f.write(reinterpret_cast<const char*>(out.data()),
+          static_cast<std::streamsize>(out.size()));
+  if (!f.good()) {
+    LOG_ERROR("video_capture_cpc_thumbnail: write failed for " << path);
+    return false;
+  }
+  return true;
+}
+
+bool video_load_rgba_thumbnail(const std::string& path,
+                               std::vector<unsigned char>& rgba, int& w,
+                               int& h) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) return false;
+
+  ThmHeader hdr{};
+  f.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+  if (!f.good() || std::memcmp(hdr.magic, kThmMagic, 4) != 0) return false;
+  if (hdr.w < 1 || hdr.w > kThmMaxDim || hdr.h < 1 || hdr.h > kThmMaxDim) {
+    return false;
+  }
+
+  const size_t bytes = static_cast<size_t>(hdr.w) * hdr.h * 4;
+  rgba.resize(bytes);
+  f.read(reinterpret_cast<char*>(rgba.data()),
+         static_cast<std::streamsize>(bytes));
+  if (static_cast<size_t>(f.gcount()) != bytes) return false;
+
+  w = hdr.w;
+  h = hdr.h;
+  return true;
+}
 
 // Offscreen FBO-into-texture rendering used to be backed by an OpenGL
 // FBO cache (see Phase 7c.1b deletion).  After the GL plugins were
@@ -314,6 +562,10 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
+  // video.vsync escape hatch: switch the MAIN window off VSYNC when requested.
+  // Viewport windows keep VSYNC via init_info.PresentMode below.
+  video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
+
   // ImGui — SDLGPU3 backend with multi-viewport ENABLED.  The renderer
   // hooks live in vendor/imgui/backends/imgui_impl_sdlgpu3.cpp; they
   // claim each secondary window for g_gpu.device on creation and submit
@@ -335,6 +587,14 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
   init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();
@@ -2495,6 +2755,10 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
+  // video.vsync escape hatch (main window only; this GPU path has viewports
+  // disabled, but the call is harmless and keeps both GPU inits consistent).
+  video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
+
   // ImGui SDLGPU3 backend — viewports disabled (see Phase 4 rationale).
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -2510,6 +2774,14 @@ static SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
   init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
   init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
   init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
   if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
     ImGui_ImplSDL3_Shutdown();

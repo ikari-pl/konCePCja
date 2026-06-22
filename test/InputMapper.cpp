@@ -16,84 +16,6 @@ class InputMapperTest : public testing::Test {
   }
 };
 
-TEST_F(InputMapperTest, StringToEventsSimpleString) {
-  CPC.kbd_layout = "keymap_us.map";
-  CPC.keyboard = 0;
-  CPC.InputMapper->init();
-
-  std::string input = "cat";
-
-  auto tmp = CPC.InputMapper->StringToEvents(input);
-  std::vector<SDL_Event> result(tmp.begin(), tmp.end());
-
-  ASSERT_EQ(6, result.size());
-
-  // Result must be an alternance of key down / key up
-  for (int i = 0; i < 3; ++i) {
-    ASSERT_EQ(SDL_EVENT_KEY_DOWN, result[2 * i].key.type);
-    ASSERT_TRUE(result[2 * i].key.down);
-    ASSERT_EQ(SDL_EVENT_KEY_UP, result[2 * i + 1].key.type);
-    ASSERT_FALSE(result[2 * i + 1].key.down);
-  }
-  // Only keys without modifier
-  for (int i = 0; i < 6; ++i) {
-    ASSERT_EQ(SDL_KMOD_NONE, result[i].key.mod);
-  }
-  // Keys correspond to the input string
-  ASSERT_EQ(SDLK_C, result[0].key.key);
-  ASSERT_EQ(SDLK_C, result[1].key.key);
-  ASSERT_EQ(SDLK_A, result[2].key.key);
-  ASSERT_EQ(SDLK_A, result[3].key.key);
-  ASSERT_EQ(SDLK_T, result[4].key.key);
-  ASSERT_EQ(SDLK_T, result[5].key.key);
-}
-
-TEST_F(InputMapperTest, StringToEventsWithEscapedChar) {
-  CPC.kbd_layout = "keymap_us.map";
-  CPC.keyboard = 0;
-  CPC.InputMapper->init();
-
-  std::string input = "run\"s\btest\n";
-
-  auto tmp = CPC.InputMapper->StringToEvents(input);
-  std::vector<SDL_Event> result(tmp.begin(), tmp.end());
-
-  ASSERT_EQ(22, result.size());
-
-  ASSERT_EQ(SDLK_N, result[5].key.key);
-  // On US keyboard, " is on ' key with shift pressed
-  ASSERT_EQ(SDLK_APOSTROPHE, result[6].key.key);
-  ASSERT_EQ(SDLK_S, result[9].key.key);
-  ASSERT_EQ(SDLK_BACKSPACE, result[10].key.key);
-  ASSERT_EQ(SDLK_T, result[19].key.key);
-  ASSERT_EQ(SDLK_RETURN, result[20].key.key);
-}
-
-TEST_F(InputMapperTest, StringToEventsWithSpecialChar) {
-  CPC.kbd_layout = "keymap_us.map";
-  CPC.keyboard = 0;
-  CPC.InputMapper->init();
-
-  std::string input = "\a";
-  input += CPC_ESC;
-
-  auto tmp = CPC.InputMapper->StringToEvents(input);
-  std::vector<SDL_Event> result(tmp.begin(), tmp.end());
-
-  ASSERT_EQ(2, result.size());
-
-  // First key event is pressing ESCAPE
-  ASSERT_EQ(SDLK_ESCAPE, result[0].key.key);
-  ASSERT_EQ(SDL_KMOD_NONE, result[0].key.mod);
-  ASSERT_EQ(SDL_EVENT_KEY_DOWN, result[0].key.type);
-  ASSERT_TRUE(result[0].key.down);
-  // Second key event is releasing ESCAPE
-  ASSERT_EQ(SDLK_ESCAPE, result[0].key.key);
-  ASSERT_EQ(SDL_KMOD_NONE, result[1].key.mod);
-  ASSERT_EQ(SDL_EVENT_KEY_UP, result[1].key.type);
-  ASSERT_FALSE(result[1].key.down);
-}
-
 TEST_F(InputMapperTest, Keymapping) {
   CPC.kbd_layout = "keymap_us.map";
   CPC.keyboard = 0;
@@ -123,4 +45,27 @@ TEST_F(InputMapperTest, Keymapping) {
   ASSERT_EQ(0x35 | MOD_CPC_SHIFT,
             CPC.InputMapper->CPCscancodeFromKeysym(
                 static_cast<SDL_Keycode>(241), SDL_KMOD_LSHIFT));
+}
+
+// Keystone: shortcut display strings are derived from the live binding map, so
+// menu/UI hints can never drift from the real keys.
+TEST_F(InputMapperTest, ShortcutForActionDerivesFromBindings) {
+  CPC.kbd_layout = "keymap_us.map";
+  CPC.keyboard = 0;
+  CPC.InputMapper->init();
+
+  // Single-binding emulator commands.
+  EXPECT_EQ("F5", CPC.InputMapper->shortcutForAction(KONCPC_RESET));
+  EXPECT_EQ("F10", CPC.InputMapper->shortcutForAction(KONCPC_EXIT));
+  EXPECT_EQ("F8", CPC.InputMapper->shortcutForAction(KONCPC_FPS));
+
+  // DevTools' real key after the US keymap loads is F12 (the keymap entry
+  // overwrites the base Shift+F2 binding in the forward map).  The derived
+  // string reports the TRUE binding — this is exactly why menu labels that
+  // still say "Shift+F2" are wrong and must render from this helper instead.
+  EXPECT_EQ("F12", CPC.InputMapper->shortcutForAction(KONCPC_DEVTOOLS));
+
+  // The free-function wrapper used by every UI surface agrees.
+  EXPECT_EQ(CPC.InputMapper->shortcutForAction(KONCPC_RESET),
+            koncpc_action_shortcut(KONCPC_RESET));
 }

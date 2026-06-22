@@ -196,6 +196,9 @@ static void ipc_apply_keypress(CPCScancode cpc_key,
                                std::atomic<byte> keyboard_matrix[],
                                bool pressed) {
   if (static_cast<byte>(cpc_key) == 0xff) return;
+  // Same matrix mutex as applyKeypressDirect: keep the key+shift+ctrl writes
+  // atomic vs the Z80-thread snapshot copy.  See beads-2qg / beads-d1n.
+  std::lock_guard<std::mutex> matrix_lock(g_kbd_matrix_mutex);
   if (pressed) {
     keyboard_matrix[static_cast<byte>(cpc_key) >> 4].fetch_and(
         ~bit_values[static_cast<byte>(cpc_key) & 7], std::memory_order_relaxed);
