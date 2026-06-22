@@ -4793,18 +4793,12 @@ int koncpc_main(int argc, char** argv) {
               case KONCPC_EXIT:
                 koncpc_menu_action(KONCPC_EXIT);
                 break;
-              case KONCPC_SPEED: {
-                static uint64_t last_speed_toggle = 0;
-                uint64_t now = SDL_GetPerformanceCounter();
-                if (now - last_speed_toggle >
-                    SDL_GetPerformanceFrequency() * 3 / 10) {  // 300ms debounce
-                  CPC.limit_speed = CPC.limit_speed ? 0 : 1;
-                  set_osd_message(std::string("Limit speed: ") +
-                                  (CPC.limit_speed ? "on" : "off"));
-                  last_speed_toggle = now;
-                }
+              case KONCPC_SPEED:
+                // Delegate to the canonical handler (atomic debounce + OSD),
+                // like the surrounding cases — key repeats are already filtered
+                // by the outer guard, so no duplicate logic is needed here.
+                koncpc_menu_action(KONCPC_SPEED);
                 break;
-              }
               case KONCPC_FPS:
                 CPC.scr_fps = CPC.scr_fps ? 0 : 1;
                 set_osd_message(std::string("Performances info: ") +
