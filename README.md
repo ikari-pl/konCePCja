@@ -39,12 +39,21 @@ konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) wit
   * **IPC protocol** — TCP server on port 6543 for remote control by scripts and LLM agents
   * **Telnet console** — persistent TCP text terminal on port 6544, mirrors CPC output and accepts keyboard input (`nc localhost 6544`)
   * **Headless mode** (`--headless`) — run without a window for CI and automation
-  * **Input replay** — type text, press keys and control joysticks over IPC
+  * **Input replay** — type text, press keys, drive joysticks and the mouse over IPC
   * **Auto-Type** — `autotype` command with WinAPE `~KEY~` syntax for scripted keyboard input
   * **Frame stepping** — advance exact frame counts for deterministic testing
   * **Exit control** — `--exit-after`, `--exit-on-break` and `quit` for scripted runs
   * **Hash commands** — CRC32 of VRAM, memory ranges and registers for CI assertions
   * **Event system** — fire IPC commands on PC match, memory write or VBL interval
+
+For example, type and run a BASIC program over the IPC socket:
+
+```bash
+echo 'input type "10 print \"hello\""' | nc -w 2 localhost 6543
+echo 'input key RETURN'                | nc -w 2 localhost 6543
+echo 'autotype "run~RETURN~"'          | nc -w 2 localhost 6543   # ~KEY~ via autotype
+echo 'input mouse move 10 -4'          | nc -w 2 localhost 6543   # needs a mouse device
+```
 
 ### Debugger
   * **Breakpoints** with conditional expressions (`if A > #10 and peek(HL) = #C9`) and pass counts

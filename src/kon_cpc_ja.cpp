@@ -4220,6 +4220,7 @@ bool render_one_frame() {
     video_display_b();
     video_take_pending_window_screenshot();
     if (g_m4_http.is_running()) g_m4_http.drain_pending();
+    ipc_drain_input();
     std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
     return false;
   }
@@ -4277,6 +4278,7 @@ bool render_one_frame() {
   // stalls on present. Removed.
   // Main-thread-only housekeeping
   if (g_m4_http.is_running()) g_m4_http.drain_pending();
+  ipc_drain_input();
 #ifdef __APPLE__
   // Dock preview reads the just-presented frame (render-thread-private
   // after video_ring_present's copy), NOT the Z80's live write buffer.
@@ -5232,6 +5234,9 @@ int koncpc_main(int argc, char** argv) {
         // M4 HTTP server — drain deferred actions (reset, pause toggle)
         if (g_m4_http.is_running()) g_m4_http.drain_pending();
 
+        // IPC mouse input — flush staged deltas/buttons into the devices
+        ipc_drain_input();
+
 #ifdef __APPLE__
         // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
         // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT * scale
@@ -5434,6 +5439,7 @@ int koncpc_main(int argc, char** argv) {
       // Drain HTTP deferred actions even while paused (otherwise resume won't
       // work)
       if (g_m4_http.is_running()) g_m4_http.drain_pending();
+      ipc_drain_input();
       std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
     }
 

@@ -47,6 +47,7 @@
 #include "disk_format.h"
 #include "disk_sector_editor.h"
 #include "drive_status.h"
+#include "amx_mouse.h"
 #include "expr_parser.h"
 #include "gif_recorder.h"
 #include "imgui_ui_testable.h"
@@ -60,6 +61,7 @@
 #include "session_recording.h"
 #include "silicon_disc.h"
 #include "slotshandler.h"
+#include "symbiface.h"
 #include "symfile.h"
 #include "trace.h"
 #include "video.h"
@@ -224,6 +226,35 @@ static void ipc_apply_keypress(CPCScancode cpc_key,
     keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
                                         std::memory_order_relaxed);
   }
+}
+
+// Mouse input staging.  IPC commands run on the server thread, but the mouse
+// devices (AMX, Symbiface PS/2) keep non-atomic accumulators that the main
+// thread reads.  So instead of poking them directly, IPC accumulates relative
+// deltas + the current button mask here, and ipc_drain_input() (called once per
+// frame on the main thread) flushes them through the same amx_mouse_update() /
+// symbiface_mouse_update() entry points SDL uses.  Mirrors the deferral pattern
+// used by g_m4_http.drain_pending() and g_repaint_pending.
+namespace {
+struct IpcMousePending {
+  std::atomic<int32_t> dx{0};
+  std::atomic<int32_t> dy{0};
+  std::atomic<uint32_t> buttons{0};  // SDL button mask (Left=1, Middle=2, Right=4)
+  std::atomic<bool> dirty{false};
+};
+IpcMousePending g_ipc_mouse;
+}  // namespace
+
+// Drained once per frame on the main thread.  Safe no-op when no mouse input is
+// pending or no mouse device is enabled.
+void ipc_drain_input() {
+  if (!g_ipc_mouse.dirty.exchange(false, std::memory_order_acquire)) return;
+  auto dx = static_cast<float>(g_ipc_mouse.dx.exchange(0, std::memory_order_relaxed));
+  auto dy = static_cast<float>(g_ipc_mouse.dy.exchange(0, std::memory_order_relaxed));
+  uint32_t buttons = g_ipc_mouse.buttons.load(std::memory_order_relaxed);
+  // Feed whichever device(s) are active; SDL feeds both the same way.
+  if (g_amx_mouse.enabled) amx_mouse_update(dx, dy, buttons);
+  if (g_symbiface.enabled) symbiface_mouse_update(dx, dy, buttons);
 }
 
 static bool has_path_traversal(const std::string& path) {
@@ -466,12 +497,26 @@ void init_command_registry() {
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
   register_command(
-      "input", "INPUT", "input key <scan> | input type <text>",
+      "input", "INPUT",
+      "input keydown|keyup|key <name> | input type <text> | "
+      "input joy <0|1> <dir> | input mouse <move|button|buttons> ...",
       "Simulate user input",
-      "Injects keyboard events directly into the emulated hardware.\n"
-      "  key: Toggles a specific CPC scancode.\n"
-      "  type: Automatically types a string of text. Supports WinAPE syntax "
-      "(e.g., ~RETURN~).");
+      "Injects keyboard/joystick/mouse events directly into the emulated "
+      "hardware.\n"
+      "  <name> is a friendly key name (RETURN, SPACE, ESC, F1, UP, ...) or a "
+      "single character (a, A, 1). See the cpc_key_names table.\n"
+      "  keydown: Presses and holds <name> (matrix bit stays set).\n"
+      "  keyup:   Releases <name>.\n"
+      "  key:     Taps <name> (press, hold 2 frames, release).\n"
+      "  type:    Types a literal string. Only mapped characters are emitted; "
+      "WinAPE ~KEY~ syntax is NOT supported here -- use the 'autotype' command "
+      "for that.\n"
+      "  joy:     Sets joystick <0|1> direction <dir> (U/D/L/R/F1/F2, or 0 to "
+      "release all). Prefix <dir> with '-' to release a single direction.\n"
+      "  mouse:   Drives the AMX/Symbiface mouse. 'move <dx> <dy>' feeds "
+      "relative motion; 'button <L|M|R> <down|up>' sets one button; "
+      "'buttons <mask>' sets the whole SDL button mask. Requires a mouse "
+      "device to be enabled.");
 
   register_command(
       "disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>",
@@ -2239,10 +2284,55 @@ std::string handle_command(const std::string& line) {
         ipc_apply_keypress(scancode, keyboard_matrix, !release);
         return "OK\n";
       }
-      return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy)\n";
+      if (parts[1] == "mouse" && parts.size() >= 3) {
+        // Mouse input is staged here and flushed on the main thread by
+        // ipc_drain_input() — see the IpcMousePending comment above.
+        if (!g_amx_mouse.enabled && !g_symbiface.enabled)
+          return "ERR 409 no-mouse-device (enable AMX or Symbiface mouse)\n";
+        if (parts[2] == "move" && parts.size() >= 5) {
+          g_ipc_mouse.dx.fetch_add(parse_int(parts[3]),
+                                   std::memory_order_relaxed);
+          g_ipc_mouse.dy.fetch_add(parse_int(parts[4]),
+                                   std::memory_order_relaxed);
+          g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          return "OK\n";
+        }
+        if (parts[2] == "button" && parts.size() >= 5) {
+          std::string btn = parts[3];
+          for (auto& c : btn)
+            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+          uint32_t bit = 0;
+          if (btn == "L" || btn == "LEFT")
+            bit = 1u;  // SDL_BUTTON_LMASK
+          else if (btn == "M" || btn == "MIDDLE")
+            bit = 2u;  // SDL_BUTTON_MMASK
+          else if (btn == "R" || btn == "RIGHT")
+            bit = 4u;  // SDL_BUTTON_RMASK
+          else
+            return "ERR 400 bad-button (L|M|R)\n";
+          if (parts[4] == "down")
+            g_ipc_mouse.buttons.fetch_or(bit, std::memory_order_relaxed);
+          else if (parts[4] == "up")
+            g_ipc_mouse.buttons.fetch_and(~bit, std::memory_order_relaxed);
+          else
+            return "ERR 400 bad-button-state (down|up)\n";
+          g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          return "OK\n";
+        }
+        if (parts[2] == "buttons" && parts.size() >= 4) {
+          g_ipc_mouse.buttons.store(
+              static_cast<uint32_t>(parse_int(parts[3])),
+              std::memory_order_relaxed);
+          g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          return "OK\n";
+        }
+        return "ERR 400 bad-mouse-cmd (move <dx> <dy> | button <L|M|R> "
+               "<down|up> | buttons <mask>)\n";
+      }
+      return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy|mouse)\n";
     }
     if (cmd == "input")
-      return "ERR 400 usage: input (keydown|keyup|key|type|joy)\n";
+      return "ERR 400 usage: input (keydown|keyup|key|type|joy|mouse)\n";
 
     if (cmd == "wait" && parts.size() >= 2) {
       auto timeout_ms = std::chrono::milliseconds(5000);

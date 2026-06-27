@@ -533,6 +533,55 @@ def test_step_in_accuracy():
         return True
 
 
+def test_mouse_input():
+    """IPC mouse input: device gating + full command surface.
+
+    Verifies the 'input mouse' command layer:
+      - rejected when no mouse device is enabled,
+      - move/button/buttons accepted once the AMX mouse is enabled,
+      - malformed sub-commands are rejected.
+    Actual pointer motion is exercised by the SDL path; this asserts the IPC
+    contract (which is all the server is responsible for).
+    """
+    print("Running mouse input test...")
+
+    # 1. No mouse device -> commands rejected.
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ok, resp = emu.ipc.send_command('input mouse move 5 5')
+        if ok:
+            print(f"FAIL: expected ERR with no mouse device, got OK: {resp!r}")
+            return False
+        print(f"  no-device rejected as expected: {resp.strip()}")
+
+    # 2. AMX mouse enabled -> full surface works, bad args rejected.
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'input.amx_mouse=1'):
+            print("FAIL: Could not start emulator with AMX mouse")
+            return False
+
+        checks = [
+            ('input mouse move 10 -4', True),
+            ('input mouse button L down', True),
+            ('input mouse button R up', True),
+            ('input mouse buttons 0', True),
+            ('input mouse button X down', False),  # bad button
+            ('input mouse wiggle', False),         # bad sub-command
+            ('input mouse move 1', False),         # missing dy
+        ]
+        for cmd, want_ok in checks:
+            ok, resp = emu.ipc.send_command(cmd)
+            if ok != want_ok:
+                print(f"FAIL: {cmd!r} -> ok={ok} (wanted {want_ok}): {resp.strip()}")
+                return False
+            print(f"  {cmd!r} -> {resp.strip()}")
+
+        print("PASS: mouse input test")
+        return True
+
+
 def main():
     """Run all IPC tests."""
     print("=" * 50)
@@ -548,6 +597,7 @@ def main():
         test_snapshot_round_trip,
         test_rapid_pause_resume,
         test_step_in_accuracy,
+        test_mouse_input,
     ]
 
     passed = 0
