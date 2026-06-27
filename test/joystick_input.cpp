@@ -10,10 +10,10 @@ extern byte bit_values[8];
 
 // Joysticks are read through the keyboard matrix: joystick 0 occupies row 9 and
 // joystick 1 occupies row 6 (active-low — a pressed direction/fire CLEARS its
-// bit). The IPC `input joy <n> <dir>` command resolves CPC_J0_*/CPC_J1_* via the
-// InputMapper to these scancodes and pokes the matrix exactly like a keypress.
-// These tests pin both halves of that path: the CPC_KEYS -> scancode mapping,
-// and that applying a scancode toggles the expected matrix bit.
+// bit). The IPC `input joy <n> <dir>` command resolves CPC_J0_*/CPC_J1_* via
+// the InputMapper to these scancodes and pokes the matrix exactly like a
+// keypress. These tests pin both halves of that path: the CPC_KEYS -> scancode
+// mapping, and that applying a scancode toggles the expected matrix bit.
 class JoystickInputTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -32,7 +32,8 @@ class JoystickInputTest : public ::testing::Test {
   bool is_pressed(CPCScancode sc) {
     int line = static_cast<byte>(sc) >> 4;
     int bit = static_cast<byte>(sc) & 7;
-    return (matrix[line].load(std::memory_order_relaxed) & bit_values[bit]) == 0;
+    return (matrix[line].load(std::memory_order_relaxed) & bit_values[bit]) ==
+           0;
   }
 
   std::atomic<byte> matrix[16];

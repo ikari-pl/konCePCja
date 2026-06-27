@@ -36,6 +36,7 @@
 #endif
 
 #include "SDL3/SDL.h"
+#include "amx_mouse.h"
 #include "asic_debug.h"
 #include "avi_recorder.h"
 #include "config_profile.h"
@@ -48,7 +49,6 @@
 #include "disk_format.h"
 #include "disk_sector_editor.h"
 #include "drive_status.h"
-#include "amx_mouse.h"
 #include "expr_parser.h"
 #include "gif_recorder.h"
 #include "imgui_ui_testable.h"
