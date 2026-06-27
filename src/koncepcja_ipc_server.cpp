@@ -18,6 +18,7 @@
 #include <functional>
 #include <iomanip>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -237,24 +238,40 @@ static void ipc_apply_keypress(CPCScancode cpc_key,
 // used by g_m4_http.drain_pending() and g_repaint_pending.
 namespace {
 struct IpcMousePending {
-  std::atomic<int32_t> dx{0};
-  std::atomic<int32_t> dy{0};
-  std::atomic<uint32_t> buttons{0};  // SDL button mask (Left=1, Middle=2, Right=4)
-  std::atomic<bool> dirty{false};
+  std::mutex mutex;  // guards the dx/dy/buttons group as one snapshot
+  int32_t dx{0};
+  int32_t dy{0};
+  uint32_t buttons{0};  // SDL button mask (Left=1, Middle=2, Right=4)
+  std::atomic<bool> dirty{false};  // fast-path: skip the lock when idle
 };
 IpcMousePending g_ipc_mouse;
 }  // namespace
 
 // Drained once per frame on the main thread.  Safe no-op when no mouse input is
-// pending or no mouse device is enabled.
+// pending or no mouse device is enabled.  The lock is held only to copy the
+// dx/dy/buttons group into a local snapshot and reset the accumulators, so dx
+// and dy can never come from different updates (no shearing); the device
+// updates run unlocked.
 void ipc_drain_input() {
-  if (!g_ipc_mouse.dirty.exchange(false, std::memory_order_acquire)) return;
-  auto dx = static_cast<float>(g_ipc_mouse.dx.exchange(0, std::memory_order_relaxed));
-  auto dy = static_cast<float>(g_ipc_mouse.dy.exchange(0, std::memory_order_relaxed));
-  uint32_t buttons = g_ipc_mouse.buttons.load(std::memory_order_relaxed);
+  if (!g_ipc_mouse.dirty.load(std::memory_order_acquire)) return;
+  int32_t dx = 0;
+  int32_t dy = 0;
+  uint32_t buttons = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_ipc_mouse.mutex);
+    if (!g_ipc_mouse.dirty.load(std::memory_order_relaxed)) return;
+    dx = g_ipc_mouse.dx;
+    dy = g_ipc_mouse.dy;
+    buttons = g_ipc_mouse.buttons;
+    g_ipc_mouse.dx = 0;
+    g_ipc_mouse.dy = 0;
+    g_ipc_mouse.dirty.store(false, std::memory_order_relaxed);
+  }
+  auto f_dx = static_cast<float>(dx);
+  auto f_dy = static_cast<float>(dy);
   // Feed whichever device(s) are active; SDL feeds both the same way.
-  if (g_amx_mouse.enabled) amx_mouse_update(dx, dy, buttons);
-  if (g_symbiface.enabled) symbiface_mouse_update(dx, dy, buttons);
+  if (g_amx_mouse.enabled) amx_mouse_update(f_dx, f_dy, buttons);
+  if (g_symbiface.enabled) symbiface_mouse_update(f_dx, f_dy, buttons);
 }
 
 static bool has_path_traversal(const std::string& path) {
@@ -2290,10 +2307,9 @@ std::string handle_command(const std::string& line) {
         if (!g_amx_mouse.enabled && !g_symbiface.enabled)
           return "ERR 409 no-mouse-device (enable AMX or Symbiface mouse)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
-          g_ipc_mouse.dx.fetch_add(parse_int(parts[3]),
-                                   std::memory_order_relaxed);
-          g_ipc_mouse.dy.fetch_add(parse_int(parts[4]),
-                                   std::memory_order_relaxed);
+          std::lock_guard<std::mutex> lock(g_ipc_mouse.mutex);
+          g_ipc_mouse.dx += parse_int(parts[3]);
+          g_ipc_mouse.dy += parse_int(parts[4]);
           g_ipc_mouse.dirty.store(true, std::memory_order_release);
           return "OK\n";
         }
@@ -2310,19 +2326,21 @@ std::string handle_command(const std::string& line) {
             bit = 4u;  // SDL_BUTTON_RMASK
           else
             return "ERR 400 bad-button (L|M|R)\n";
-          if (parts[4] == "down")
-            g_ipc_mouse.buttons.fetch_or(bit, std::memory_order_relaxed);
-          else if (parts[4] == "up")
-            g_ipc_mouse.buttons.fetch_and(~bit, std::memory_order_relaxed);
-          else
-            return "ERR 400 bad-button-state (down|up)\n";
-          g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          {
+            std::lock_guard<std::mutex> lock(g_ipc_mouse.mutex);
+            if (parts[4] == "down")
+              g_ipc_mouse.buttons |= bit;
+            else if (parts[4] == "up")
+              g_ipc_mouse.buttons &= ~bit;
+            else
+              return "ERR 400 bad-button-state (down|up)\n";
+            g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          }
           return "OK\n";
         }
         if (parts[2] == "buttons" && parts.size() >= 4) {
-          g_ipc_mouse.buttons.store(
-              static_cast<uint32_t>(parse_int(parts[3])),
-              std::memory_order_relaxed);
+          std::lock_guard<std::mutex> lock(g_ipc_mouse.mutex);
+          g_ipc_mouse.buttons = static_cast<uint32_t>(parse_int(parts[3]));
           g_ipc_mouse.dirty.store(true, std::memory_order_release);
           return "OK\n";
         }
