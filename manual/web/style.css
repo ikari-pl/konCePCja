@@ -1,0 +1,99 @@
+/* konCePCja manual — web theme. Mirrors the PDF typography for the HTML build.
+   Fonts are the same free set committed under ../fonts/ (served alongside the
+   HTML). Palette matches template.typ. */
+
+@font-face {
+  font-family: "Rokkitt";
+  src: url("fonts/Rokkitt%5Bwght%5D.ttf") format("truetype");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face { font-family: "Schola"; src: url("fonts/texgyreschola-regular.otf"); font-weight: normal; font-style: normal; font-display: swap; }
+@font-face { font-family: "Schola"; src: url("fonts/texgyreschola-bold.otf"); font-weight: bold; font-style: normal; }
+@font-face { font-family: "Schola"; src: url("fonts/texgyreschola-italic.otf"); font-weight: normal; font-style: italic; }
+@font-face { font-family: "Schola"; src: url("fonts/texgyreschola-bolditalic.otf"); font-weight: bold; font-style: italic; }
+@font-face { font-family: "OCRB"; src: url("fonts/OCRB.otf"); font-display: swap; }
+
+:root {
+  --amstrad-red: #C41230;
+  --amstrad-blue: #1B3A5C;
+  --amstrad-grey: #4A4A4A;
+  --rule-grey: #999999;
+  --code-bg: #F5F3EE;
+}
+
+body {
+  font-family: "Schola", Georgia, "Century Schoolbook", serif;
+  color: #1a1a1a;
+  max-width: 46rem;
+  margin: 2.5rem auto;
+  padding: 0 1.25rem;
+  line-height: 1.55;
+  font-size: 1.05rem;
+}
+
+/* Typst maps heading levels down one (= chapter -> h2, == section -> h3). */
+h1, h2, h3, h4, h5 { font-family: "Rokkitt", "Rockwell", sans-serif; line-height: 1.15; }
+h1 { color: var(--amstrad-red); font-size: 2.2rem; border-bottom: 3px solid var(--amstrad-red); padding-bottom: .2em; }
+h2 { color: var(--amstrad-red); font-size: 1.7rem; border-bottom: 2px solid var(--amstrad-red); padding-bottom: .15em; margin-top: 2.6rem; }   /* chapters */
+h3 { font-size: 1.3rem; border-bottom: 1px solid var(--rule-grey); padding-bottom: .1em; margin-top: 1.8rem; }                                  /* sections */
+h4 { font-size: 1.1rem; color: var(--amstrad-grey); margin-top: 1.4rem; }                                                                       /* subsections */
+
+/* Table of contents */
+.toc { background: var(--code-bg); border: 1px solid #e6e2d8; border-radius: 6px; padding: 1em 1.5em; margin: 1.5rem 0 2.5rem; }
+.toc > h2 { font-family: "Rokkitt", sans-serif; font-size: 1.25rem; color: var(--amstrad-grey); border: none; margin: 0 0 .5em; padding: 0; }
+.toc a { text-decoration: none; color: var(--amstrad-blue); }
+.toc a:hover { text-decoration: underline; }
+.toc-l1 { margin-top: .55em; }
+.toc-l1 a { font-weight: bold; color: var(--amstrad-red); }
+.toc-l2 { margin-left: 1.6em; font-size: .95em; }
+
+p { margin: .7em 0; }
+a { color: var(--amstrad-blue); }
+
+code, pre, kbd { font-family: "OCRB", "Courier New", monospace; }
+pre {
+  background: var(--code-bg);
+  border: 1px solid #e6e2d8;
+  border-radius: 4px;
+  padding: .85em 1em;
+  overflow-x: auto;
+  font-size: .9em;
+  line-height: 1.4;
+}
+code { background: var(--code-bg); padding: 0 .25em; border-radius: 2px; font-size: .92em; }
+pre code { background: none; padding: 0; }
+
+/* konCePCja element macros */
+code.cmd, code.ipc-cmd, code.cfg, code.reg { background: var(--code-bg); }
+code.port { color: var(--amstrad-blue); background: none; font-weight: 600; }
+kbd.fkey {
+  font-family: "OCRB", monospace;
+  font-size: .82em;
+  border: 1px solid var(--rule-grey);
+  border-radius: 3px;
+  background: var(--code-bg);
+  padding: .08em .45em;
+  box-shadow: 0 1px 0 var(--rule-grey);
+  white-space: nowrap;
+}
+.menu-path { font-style: italic; }
+.menu-path .sep { color: var(--rule-grey); font-style: normal; }
+
+/* Images: Typst emits native width/height attrs; override height so the aspect
+   ratio is preserved instead of stretching to the pixel height. */
+img { max-width: 100%; height: auto; }
+figure { margin: 1.6em 0; text-align: center; }
+figure img { display: block; margin: 0 auto; border: 1px solid #e6e2d8; border-radius: 4px; }
+figcaption { font-size: .9em; color: var(--amstrad-grey); font-style: italic; margin-top: .5em; }
+/* SVG line-art figures shouldn't get the screenshot border/background. */
+figure img[src$=".svg"], img[src*="svg+xml"] { border: none; }
+
+table { border-collapse: collapse; width: 100%; margin: 1.1em 0; font-size: .95em; }
+th, td { border: 1px solid var(--rule-grey); padding: .4em .6em; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); font-family: "Rokkitt", sans-serif; }
+
+/* Index */
+.manual-index { columns: 2; column-gap: 2rem; }
+.manual-index .idx-letter { font-family: "Rokkitt", sans-serif; font-weight: bold; font-size: 1.2em; break-after: avoid; margin-top: .6em; }
+.manual-index ul { list-style: none; padding: 0; margin: 0 0 .6em 0; }

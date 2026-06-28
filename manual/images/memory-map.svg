@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="620" height="412" viewBox="0 0 620 412" font-family="Helvetica, Arial, sans-serif">
+<rect width="620" height="412" fill="white"/>
+<rect x="170" y="50" width="240" height="78" fill="#DCE6F0" stroke="#4A4A4A" stroke-width="1.5"/>
+<text x="290.0" y="85.0" text-anchor="middle" font-size="16" font-weight="bold" fill="#4A4A4A">RAM</text>
+<text x="290.0" y="105.0" text-anchor="middle" font-size="12" fill="#1B3A5C">or Upper ROM</text>
+<text x="158" y="55" text-anchor="end" font-size="12" fill="#4A4A4A" font-family="monospace">&amp;FFFF</text>
+<rect x="170" y="128" width="240" height="78" fill="#F5F3EE" stroke="#4A4A4A" stroke-width="1.5"/>
+<text x="290.0" y="163.0" text-anchor="middle" font-size="16" font-weight="bold" fill="#4A4A4A">RAM</text>
+<text x="158" y="133" text-anchor="end" font-size="12" fill="#4A4A4A" font-family="monospace">&amp;BFFF</text>
+<rect x="170" y="206" width="240" height="78" fill="#F5F3EE" stroke="#4A4A4A" stroke-width="1.5"/>
+<text x="290.0" y="241.0" text-anchor="middle" font-size="16" font-weight="bold" fill="#4A4A4A">RAM</text>
+<text x="158" y="211" text-anchor="end" font-size="12" fill="#4A4A4A" font-family="monospace">&amp;7FFF</text>
+<rect x="170" y="284" width="240" height="78" fill="#DCE6F0" stroke="#4A4A4A" stroke-width="1.5"/>
+<text x="290.0" y="319.0" text-anchor="middle" font-size="16" font-weight="bold" fill="#4A4A4A">RAM</text>
+<text x="290.0" y="339.0" text-anchor="middle" font-size="12" fill="#1B3A5C">or Lower ROM</text>
+<text x="158" y="289" text-anchor="end" font-size="12" fill="#4A4A4A" font-family="monospace">&amp;3FFF</text>
+<text x="158" y="367" text-anchor="end" font-size="12" fill="#4A4A4A" font-family="monospace">&amp;0000</text>
+<path d="M424 56 h10 v66 h-10" fill="none" stroke="#C41230" stroke-width="2"/>
+<text x="440" y="87.0" font-size="12" font-weight="bold" fill="#C41230">Upper ROM</text>
+<text x="440" y="103.0" font-size="10.5" fill="#4A4A4A">AMSDOS / expansion ROM</text>
+<path d="M424 290 h10 v66 h-10" fill="none" stroke="#C41230" stroke-width="2"/>
+<text x="440" y="321.0" font-size="12" font-weight="bold" fill="#C41230">Lower ROM</text>
+<text x="440" y="337.0" font-size="10.5" fill="#4A4A4A">BASIC (cartridge on Plus)</text>
+<text x="290.0" y="28" text-anchor="middle" font-size="14" font-weight="bold" fill="#C41230">Z80 address space (64 KB)</text>
+<text x="310.0" y="394" text-anchor="middle" font-size="11" fill="#4A4A4A">ROM reads overlay RAM; writes always reach the RAM underneath.</text>
+</svg>
