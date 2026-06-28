@@ -25,3 +25,4 @@
 #include "chapters/ch09_ipc.typ"
 #include "chapters/ch10_telnet.typ"
 #include "chapters/ch11_m4.typ"
+#include "chapters/ch12_recording.typ"

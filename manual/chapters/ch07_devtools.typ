@@ -68,12 +68,24 @@ recording (Chapter 12). The integrated Z80 assembler has its own chapter
 
 == Graphics finder
 
-// [U7-STUB] document gfx_finder from src/gfx_finder.{cpp,h}
+#idx("graphics finder")The graphics finder decodes raw memory as CPC pixels, so
+you can locate sprites, fonts, and screen data by eye. Point it at an address,
+set the screen mode (0, 1, or 2) and the width in bytes, and it renders that
+region as a zoomable image. It can also encode edits back into memory, making it
+a simple in-memory pixel editor.
 
 == Memory search
 
-// [U7-STUB] document the memory search engine from src/search_engine.{cpp,h}
+#idx("memory search")The memory search tool scans the full address space for a
+pattern. You can search for #emph[hex] byte sequences, #emph[text] strings, or
+#emph[assembly] (matching decoded instructions), with wildcards for unknown
+bytes. Each hit is reported with its address and surrounding context --- the
+disassembled instruction for an assembly search, or a hex dump otherwise.
 
 == Pokes
 
-// [U7-STUB] document the pokes / cheats system from src/pokes.{cpp,h}
+#idx("pokes")The pokes system applies game cheats from `.pok` files. A poke file
+lists named cheats (for example "infinite lives"), each a set of memory writes.
+Apply a cheat to patch the running game and un-apply it to restore the original
+bytes. Where a cheat needs a value you choose --- a number of lives, say ---
+konCePCja prompts you for it.

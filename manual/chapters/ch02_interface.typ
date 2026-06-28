@@ -63,8 +63,17 @@ Press #fkey[F3] to save a PNG screenshot of the current CPC display.
 
 == Command palette
 
-// [U7-STUB] document from src/command_palette.{cpp,h}
+#idx("command palette")For quick access to any action without hunting through
+menus, press #fkey[Ctrl+K] (or #fkey[Cmd+K] on macOS) to open the command
+palette. Start typing and it filters a searchable list of every command --- each
+shown with its description and keyboard shortcut --- and runs the one you choose.
+It is the fastest route to a feature whose menu location you have forgotten.
 
 == Configuration profiles
 
-// [U7-STUB] document from src/config_profile.{cpp,h}
+#idx("configuration profiles")A configuration profile is a named bundle of
+machine settings --- model, RAM size, clock speed, frame-skip, screen scale and
+scanlines, the sound options, and the joystick and keyboard modes. Save the
+current settings as a named profile and switch between profiles in one step,
+rather than changing options one at a time. This is convenient for keeping, say,
+a "464 with tape" setup and a "6128+ with sound" setup side by side.

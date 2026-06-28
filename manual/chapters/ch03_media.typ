@@ -50,7 +50,16 @@ state with #fkey[Shift+F3]; load one through #menu-path("File", "Load") or on th
 command line. Snapshots are ideal for resuming a game exactly where you left it,
 or for sharing a precise machine state.
 
-== Archives and protected formats
+== ZIP archives
 
-// [U7-STUB] ZIP archive loading — document from src/zip.cpp, src/slotshandler.cpp
-// [U7-STUB] IPF copy-protected disc format — document from src/ipf.h
+#idx("ZIP archive")Much CPC software is distributed as `.zip` archives.
+konCePCja can open a ZIP directly: it reads the archive's directory, finds a file
+with a recognised CPC extension (`.dsk`, `.cdt`, or `.sna`) inside, and loads it
+--- so you do not have to unpack downloads by hand before running them.
+
+== IPF discs
+
+#idx("IPF")Some heavily copy-protected discs are preserved in the `.ipf`
+(Interchangeable Preservation Format) rather than `.dsk`. konCePCja loads `.ipf`
+images into a drive just like ordinary disc images, reproducing the original
+protection so the software runs as it did from the real disc.
