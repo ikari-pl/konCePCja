@@ -682,6 +682,29 @@
 #let arg(name) = text(font: body-font, size: 10.5pt)[‹#name›]
 #let opt(body) = text(font: body-font)[\[#body\]]
 
+// konCePCja-specific inline element macros (emulator manual). Modelled on the
+// cmd/arg/kw family above; code-font variants for the recurring technical
+// element types the outline needs, plus a keycap and a menu-path renderer.
+// #ipc-cmd[]  — IPC protocol command literal, e.g. #ipc-cmd[mem read 0x4000 16]
+// #cfg-key[]  — config option key, e.g. #cfg-key[system.model]
+// #port[]     — I/O port address, e.g. #port[&FD06]
+// #reg[]      — Z80 register, e.g. #reg[HL]
+// #fkey[]     — physical function-key cap, e.g. #fkey[F12]
+// #menu-path[]— menu navigation path, e.g. #menu-path("Settings", "Video")
+#let ipc-cmd(body) = box(inset: (x: 1pt), text(font: code-font, weight: "semibold", tracking: code-tracking)[#body])
+#let cfg-key(body) = text(font: code-font, tracking: code-tracking)[#body]
+#let port(body) = text(font: code-font, fill: amstrad-blue, tracking: code-tracking)[#body]
+#let reg(body) = text(font: code-font, weight: "semibold", tracking: code-tracking)[#body]
+#let fkey(body) = box(
+  inset: (x: 4pt, y: 0.5pt),
+  outset: (y: 2pt),
+  radius: 2pt,
+  stroke: 0.5pt + rule-grey,
+  fill: code-bg,
+  text(font: code-font, size: 0.85em)[#body],
+)
+#let menu-path(..items) = items.pos().map(part => text(font: body-font, style: "italic")[#part]).join(text(fill: rule-grey)[ › ])
+
 // Chapter part heading ("Part 1: Setting Up ....")
 // pagebreak unless it's the first part right after a chapter heading
 // Emits a level-2 heading (outlined: false) so it's queryable for TOC page numbers

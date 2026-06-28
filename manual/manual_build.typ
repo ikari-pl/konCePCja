@@ -11,6 +11,8 @@
   edition: "First Edition, 2026",
 )
 
+#include "chapters/front_matter.typ"
+
 = konCePCja User Manual
 
 #intro[
