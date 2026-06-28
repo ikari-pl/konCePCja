@@ -1,0 +1,56 @@
+name: Deploy manual & homepage to GitHub Pages
+
+# Builds the Typst manual (HTML) and the homepage into manual/site/ and
+# publishes it to GitHub Pages. Enable once in the repo:
+#   Settings → Pages → Build and deployment → Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'manual/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; cancel in-progress runs for newer pushes.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The manual uses Typst's experimental HTML export (target(), html.elem,
+      # --features html). Developed against Typst 0.15; "latest" tracks the
+      # current release — pin typst-version here if a future release regresses.
+      - name: Install Typst
+        uses: typst-community/setup-typst@v4
+        with:
+          typst-version: latest
+
+      - name: Build site (manual HTML + homepage)
+        run: make -C manual site
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: manual/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -147,19 +147,38 @@ See `OUTLINE.md` for the full table of contents. High-level chapters:
 
 ```bash
 make            # builds koncepcja_manual.pdf
+make html       # builds koncepcja_manual.html (cross-linked, web-themed)
+make site       # assembles site/ for GitHub Pages (homepage + manual + assets)
 make watch      # rebuild on every save
 make clean
 ```
 
 The toolchain and all fonts are self-contained under `fonts/` (free fonts only;
 see `fonts/LICENSES.md`), so the build is reproducible with no external font
-setup. Requires [Typst](https://typst.app/) 0.12+.
+setup. Requires [Typst](https://typst.app/) 0.13+ (HTML export uses the
+experimental `--features html`).
+
+### Web homepage and GitHub Pages
+
+`web/index.html` is a standalone landing page styled as an 80s home-computer
+magazine ad-article. `make site` assembles a flat, deployable `site/` directory:
+
+```
+site/
+├── index.html              — the homepage (asset paths flattened)
+├── koncepcja_manual.html   — the manual (images inlined; fonts from fonts/)
+├── fonts/                  — bundled fonts
+└── images/                 — logo + screenshots used by the homepage
+```
+
+Deployment is automated by `.github/workflows/pages.yml`, which builds the site
+and publishes it on every push to `master` that touches `manual/**`. To enable
+it once, set **Settings → Pages → Source** to **GitHub Actions** in the repo.
 
 ## Status
 
-**Drafted (first edition).** All 12 chapters and 6 appendices plus a dynamic
-index are written and build to a ~39-page PDF. Content is harvested from the
-project docs and source; figures use the ported CPC keyboard generator and
-existing screenshots. Next steps: deeper figures, a proofreading pass, and the
-Polish edition (deferred). See `OUTLINE.md` for the structure and
-`TYPOGRAPHY.md` for the typesetting specification.
+**First edition — complete.** All 12 chapters and 6 appendices plus a dynamic
+index, with 20 figures (diagrams, source SVGs, and real emulator screenshots of
+every developer-tools window). Builds to a PDF, a cross-linked HTML, and a
+deployable Pages site with the magazine-style homepage. See `OUTLINE.md` for the
+structure and `TYPOGRAPHY.md` for the typesetting specification.
