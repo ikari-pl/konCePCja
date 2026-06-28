@@ -11,6 +11,8 @@
   testing. This chapter is the working reference.
 ]
 
+#figure(image("../images/topology.svg", width: 92%), caption: [konCePCja exposes three TCP services; this chapter covers the IPC interface on port 6543])
+
 == Connecting
 
 #idx("IPC")The server listens on #port[localhost:6543]. The protocol is plain

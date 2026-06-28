@@ -48,6 +48,8 @@ resolution. All three use 80 bytes per scan line:
   [2], [640 × 200], [2 inks], [High-resolution text and word processing],
 )
 
+#figure(image("../images/screen-modes.svg", width: 92%), caption: [The three modes trade colour for resolution; pixels widen from mode 2 to mode 0])
+
 Switch modes from BASIC with #cmd[MODE 0], #cmd[MODE 1], or #cmd[MODE 2]. A mode
 can even be changed partway down the screen for split-screen effects.
 
