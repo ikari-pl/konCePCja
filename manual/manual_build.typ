@@ -11,6 +11,11 @@
   edition: "First Edition, 2026",
 )
 
+// HTML build only: inline the web theme (PDF build ignores this branch).
+#context if target() == "html" {
+  html.elem("style", read("web/style.css"))
+}
+
 #include "chapters/front_matter.typ"
 // Chapters in order; numbering follows include order. Ch12 (recording) is added
 // in U7, and U9 confirms the final ordering.

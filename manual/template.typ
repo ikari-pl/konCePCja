@@ -693,19 +693,41 @@
 // #reg[]      — Z80 register, e.g. #reg[HL]
 // #fkey[]     — physical function-key cap, e.g. #fkey[F12]
 // #menu-path[]— menu navigation path, e.g. #menu-path("Settings", "Video")
-#let ipc-cmd(body) = box(inset: (x: 1pt), text(font: code-font, weight: "semibold", tracking: code-tracking)[#body])
-#let cfg-key(body) = text(font: code-font, tracking: code-tracking)[#body]
-#let port(body) = text(font: code-font, fill: amstrad-blue, tracking: code-tracking)[#body]
-#let reg(body) = text(font: code-font, weight: "semibold", tracking: code-tracking)[#body]
-#let fkey(body) = box(
-  inset: (x: 4pt, y: 0.5pt),
-  outset: (y: 2pt),
-  radius: 2pt,
-  stroke: 0.5pt + rule-grey,
-  fill: code-bg,
-  text(font: code-font, size: 0.85em)[#body],
-)
-#let menu-path(..items) = items.pos().map(part => text(font: body-font, style: "italic")[#part]).join(text(fill: rule-grey)[ › ])
+// Each macro is target-aware: in the PDF (paged) build it renders with the
+// styled-text/box version; in the HTML build it emits a classed semantic element
+// (web/style.css styles the classes). See KTD: one source, two presentations.
+#let ipc-cmd(body) = context {
+  if target() == "html" { html.elem("code", attrs: (class: "ipc-cmd"), body) }
+  else { box(inset: (x: 1pt), text(font: code-font, weight: "semibold", tracking: code-tracking)[#body]) }
+}
+#let cfg-key(body) = context {
+  if target() == "html" { html.elem("code", attrs: (class: "cfg"), body) }
+  else { text(font: code-font, tracking: code-tracking)[#body] }
+}
+#let port(body) = context {
+  if target() == "html" { html.elem("code", attrs: (class: "port"), body) }
+  else { text(font: code-font, fill: amstrad-blue, tracking: code-tracking)[#body] }
+}
+#let reg(body) = context {
+  if target() == "html" { html.elem("code", attrs: (class: "reg"), body) }
+  else { text(font: code-font, weight: "semibold", tracking: code-tracking)[#body] }
+}
+#let fkey(body) = context {
+  if target() == "html" { html.elem("kbd", attrs: (class: "fkey"), body) }
+  else {
+    box(inset: (x: 4pt, y: 0.5pt), outset: (y: 2pt), radius: 2pt,
+        stroke: 0.5pt + rule-grey, fill: code-bg, text(font: code-font, size: 0.85em)[#body])
+  }
+}
+#let menu-path(..items) = context {
+  if target() == "html" {
+    html.elem("span", attrs: (class: "menu-path"),
+      items.pos().map(part => html.elem("span", part))
+        .join(html.elem("span", attrs: (class: "sep"), [ › ])))
+  } else {
+    items.pos().map(part => text(font: body-font, style: "italic")[#part]).join(text(fill: rule-grey)[ › ])
+  }
+}
 
 // Chapter part heading ("Part 1: Setting Up ....")
 // pagebreak unless it's the first part right after a chapter heading
