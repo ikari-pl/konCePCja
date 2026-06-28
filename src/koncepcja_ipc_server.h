@@ -88,3 +88,8 @@ class KoncepcjaIpcServer {
 void ipc_check_pc_events(uint16_t pc);
 void ipc_check_mem_write_events(uint16_t addr, uint8_t val);
 void ipc_check_vbl_events();
+
+// Flush staged IPC input (mouse deltas/buttons) into the emulated devices.
+// MUST be called once per frame on the main thread — the IPC server thread only
+// accumulates; this applies. Cheap no-op when nothing is pending.
+void ipc_drain_input();

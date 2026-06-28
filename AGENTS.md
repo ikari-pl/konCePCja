@@ -147,6 +147,22 @@ echo "help" | nc localhost 6543
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
 | `devtools` | Open DevTools window | `devtools` → `OK` |
+| `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
+| `input keyup <name>` | Release a key | `input keyup SHIFT` |
+| `input key <name>` | Tap a key (press, hold 2 frames, release) | `input key RETURN` |
+| `input type <text>` | Type literal text (mapped chars only, no `~KEY~`) | `input type 'mode 1'` |
+| `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |
+| `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |
+| `input mouse button <L\|M\|R> <down\|up>` | Press/release a mouse button | `input mouse button L down` |
+| `input mouse buttons <mask>` | Set whole SDL button mask (L=1,M=2,R=4) | `input mouse buttons 0` |
+| `autotype <text>` | Queue text via AutoTypeQueue (supports WinAPE `~KEY~`) | `autotype 'run"game~RETURN~'` |
+| `autotype status` | Show pending queue length | `autotype status` |
+| `autotype clear` | Cancel pending input | `autotype clear` |
+
+`<name>` is a friendly key name (`RETURN`, `SPACE`, `ESC`, `F1`, `UP`, ...) or a
+single character (`a`, `A`, `1`). For multi-line entry or special keys inside a
+string, use `autotype` with `~KEY~` tokens — `input type` does **not** interpret
+them.
 
 ### Scripting Example
 
