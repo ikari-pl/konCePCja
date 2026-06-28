@@ -26,3 +26,12 @@
 #include "chapters/ch10_telnet.typ"
 #include "chapters/ch11_m4.typ"
 #include "chapters/ch12_recording.typ"
+
+// Appendices
+#include "chapters/appendix_a_keys.typ"
+#include "chapters/appendix_b_ipc.typ"
+#include "chapters/appendix_c_config.typ"
+#include "chapters/appendix_d_formats.typ"
+#include "chapters/appendix_e_hardware.typ"
+#include "chapters/appendix_f_glossary.typ"
+#include "chapters/appendix_g_index.typ"
