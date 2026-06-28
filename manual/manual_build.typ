@@ -12,22 +12,4 @@
 )
 
 #include "chapters/front_matter.typ"
-
-= konCePCja User Manual
-
-#intro[
-  This is a build-system smoke test for the konCePCja manual. The body text is
-  set in TeX Gyre Schola, headings in Rokkitt, and inline code such as
-  `mem read 0x4000 16` in Skala OCR B. If this page renders with those three
-  faces and no fallback warnings, the toolchain fork (U1) is complete.
-]
-
-== A second-level heading
-
-Ordinary paragraph text to exercise the body face and justification. The CPC
-is an 8-bit machine built around a Z80A CPU.
-
-```
-10 PRINT "HELLO, CPC"
-20 GOTO 10
-```
+#include "chapters/ch01_getting_started.typ"

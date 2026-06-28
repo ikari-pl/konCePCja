@@ -48,9 +48,8 @@
   ]
 ]
 
-// ─── About this manual ──────────────────────────────────────────────
-#page[
-  #text(font: heading-font, size: 18pt, weight: "bold")[About This Manual]
+// ─── About this manual (flows on its own page; pre-chapter, so no footer) ──
+#text(font: heading-font, size: 18pt, weight: "bold")[About This Manual]
   #v(8pt)
 
   This manual is a guide to using konCePCja, from first launch through to its
@@ -67,4 +66,3 @@
   Conventions used throughout: function keys appear as #fkey[F12]; menu paths as
   #menu-path("Settings", "Video"); configuration keys as #cfg-key[system.model];
   I/O ports as #port[\&FD06]; and Z80 registers as #reg[HL].
-]
