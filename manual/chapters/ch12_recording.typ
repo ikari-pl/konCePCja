@@ -6,8 +6,21 @@
 #intro[
   konCePCja can capture what happens on the emulated machine in several formats:
   video, animated images, chiptune audio, and complete replayable sessions. This
-  chapter covers each.
+  chapter covers each, and when to reach for which.
 ]
+
+The recording controls live in the developer tools (#fkey[F12]); single
+screenshots and frame dumps also have function-key shortcuts (#fkey[F3] for a
+screenshot). At a glance:
+
+#table(
+  columns: (auto, auto, 1fr), stroke: 0.4pt + rule-grey, inset: 5pt,
+  [*Format*], [*Output*], [*Best for*],
+  [AVI], [`.avi` (video + audio)], [Full gameplay or demo capture with sound],
+  [GIF / PNG], [`.gif` or numbered `.png`], [Short clips, documentation, sharing a moment],
+  [YM], [`.ym` chiptune], [Preserving the music exactly as the PSG plays it],
+  [Session], [input + state log], [Deterministic replay, bug reports, regression tests],
+)
 
 == AVI video recording
 
