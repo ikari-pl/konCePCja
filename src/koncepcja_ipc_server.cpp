@@ -338,10 +338,10 @@ void init_command_registry() {
       });
 
   register_command(
-      "gui", "CORE", "gui",
-      "Report whether this instance has a GUI window",
+      "gui", "CORE", "gui", "Report whether this instance has a GUI window",
       "Returns 'gui=1' for a windowed instance, 'gui=0' for a headless one\n"
-      "(started with --headless or running under a dummy/offscreen SDL driver).\n"
+      "(started with --headless or running under a dummy/offscreen SDL "
+      "driver).\n"
       "Lets a client discover, before driving an instance, whether it can see\n"
       "the screen — useful when several emulators share the host and a tool\n"
       "must pick the windowed one.",
