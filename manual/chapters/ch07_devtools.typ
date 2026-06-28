@@ -89,3 +89,31 @@ lists named cheats (for example "infinite lives"), each a set of memory writes.
 Apply a cheat to patch the running game and un-apply it to restore the original
 bytes. Where a cheat needs a value you choose --- a number of lives, say ---
 konCePCja prompts you for it.
+
+== A debugging session
+
+To see how the windows work together, here is a typical investigation --- finding
+where a program writes to the screen.
+
+First, pause the machine (the menu, or #ipc-cmd[pause] over IPC) and open the
+disassembly and memory windows. Suppose you want to catch every write to screen
+memory, which lives at #port[\&C000]. Add a #emph[watchpoint] on that range, set
+to trigger on writes:
+
+```
+wp add 0xC000 0x4000 w
+```
+
+Resume. The moment the program writes to the screen, emulation pauses, the
+registers window shows the exact #reg[PC] of the writing instruction, and the
+disassembly window centres on it. The stack window shows who called the routine.
+From there you can single-step (#fkey[F12] tools, or #ipc-cmd[step]) to watch the
+write happen byte by byte, edit a register or memory value to test a hypothesis,
+and set a permanent breakpoint to return to this spot later.
+
+The same loop --- pause, set a breakpoint or watchpoint, run, inspect, step ---
+is the heart of debugging on the CPC. Conditional breakpoints (Chapter 9) narrow
+it further: break only when a register holds a particular value, or only on the
+hundredth time a routine runs. Everything available in these windows is also
+available over the IPC interface, so an investigation you do by hand can be turned
+into a repeatable script.
