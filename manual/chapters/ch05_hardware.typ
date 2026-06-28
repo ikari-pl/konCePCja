@@ -35,6 +35,10 @@ expansion) is reached by #emph[bank switching]: a control register pages 16 KB
 blocks of the extra RAM into the #port[\&4000]--#port[\&7FFF] window (and others),
 so the 8-bit Z80 can use far more than 64 KB.
 
+#figure(image("../images/bank-switching.svg", width: 100%), caption: [Bank switching: the control register pages 16 KB blocks of the extra RAM in and out of the address space the Z80 sees, while the screen can be shown from a different bank than the one being drawn into])
+
+The seven standard banking configurations (selected by writing #port[\&C0]--#port[\&C7] to the Gate Array's RAM-config register at #port[\&7Fxx]) rearrange which physical 16 KB blocks appear in each window. The most common use is double-buffering: draw the next frame into a hidden bank, then page it into the screen window in one write, so the display never tears. The developer tools' memory viewer (Chapter 7) always shows the currently-paged view; to inspect a bank that is not currently visible, page it in first.
+
 == Screen modes
 
 #idx("screen mode")The CPC has three screen modes, each trading colour for

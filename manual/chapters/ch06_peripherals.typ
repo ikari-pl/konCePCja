@@ -10,6 +10,8 @@
   configuration (Chapter 4) or the menu, and is listed here with the I/O it uses.
 ]
 
+#figure(image("../images/back-connectors.svg", width: 100%), caption: [The sockets on the back of a real CPC. The peripherals in this chapter attach here: sound DACs and the SmartWatch through the expansion socket, the AMX mouse on the joystick socket, and the Symbiface II and M4 boards on the expansion socket])
+
 == Enabling a peripheral
 
 #idx("peripherals, enabling")Peripherals are off by default. Most are switched on
