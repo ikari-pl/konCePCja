@@ -7,7 +7,7 @@ The CPC keyboard differs from a modern PC keyboard in a few places. Most keys ma
 directly; the table below lists the ones worth knowing. When a key has no obvious
 host equivalent, use the virtual keyboard (#fkey[Shift+F1]).
 
-#figure(image("../images/keyboard-layout.svg", width: 100%), caption: [The Amstrad CPC keyboard layout])
+#figure(image("../images/keyboard-labels.svg", width: 100%), caption: [The Amstrad CPC keyboard, with the joystick directions on the keypad])
 
 #table(
   columns: (auto, 1fr),

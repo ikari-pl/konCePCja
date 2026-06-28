@@ -16,6 +16,8 @@
 CPC display. Core windows open automatically the first time you press #fkey[F12];
 the rest are reached from the DevTools toolbar.
 
+#figure(image("../images/emulator-devtools.png", width: 95%), caption: [The developer tools in action: the toolbar across the top, with the live stack window over the running CPC display])
+
 == Z80 registers
 
 #idx("registers window")The registers window shows the live Z80 register file ---

@@ -42,6 +42,10 @@
     nor endorsed by, the trademark holders.
 
     #v(6pt)
+    Illustrations, diagrams, and screenshots © 2026 Cezar "ikari" Pokorski,
+    #link("https://ikari.press")[ikari.press].
+
+    #v(6pt)
     Font credits: Rokkitt (OFL), TeX Gyre Schola (GUST), OCR-B by Matthew Skala,
     JuliaMono (OFL), Cascadia Code (OFL), and "Amstrad CPC correct" by Damien
     Guard (CC-BY-SA 3.0). See `manual/fonts/LICENSES.md`.
