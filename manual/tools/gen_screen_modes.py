@@ -63,7 +63,7 @@ def main():
              f'fill="{GREY}">All three modes use 80 bytes per scan line — colour is traded for resolution.</text>')
     p.append('</svg>')
     out = os.path.join(os.path.dirname(__file__), '..', 'images', 'screen-modes.svg')
-    with open(out, 'w') as f:
+    with open(out, 'w', encoding='utf-8') as f:
         f.write('\n'.join(p))
     print(f"Written to {out}")
 

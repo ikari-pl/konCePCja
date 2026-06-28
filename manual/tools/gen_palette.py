@@ -58,7 +58,7 @@ def main():
 
     p.append('</svg>')
     out = os.path.join(os.path.dirname(__file__), '..', 'images', 'palette.svg')
-    with open(out, 'w') as f:
+    with open(out, 'w', encoding='utf-8') as f:
         f.write('\n'.join(p))
     print(f"Written to {out}")
 
