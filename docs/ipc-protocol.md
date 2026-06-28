@@ -277,6 +277,11 @@ Single characters work directly: `A`-`Z`, `a`-`z`, `0`-`9`, punctuation.
 | `input key <key>` | Tap: press, hold 2 frames, release. Blocks. |
 | `input type "<text>"` | Type each character with 2-frame hold and 1-frame gap. Handles uppercase (auto-SHIFT). Blocks. |
 | `input joy <n> <dir>` | Joystick N (0 or 1). Directions: `U`/`UP` `D`/`DOWN` `L`/`LEFT` `R`/`RIGHT` `F`/`F1`/`FIRE1` `F2`/`FIRE2`. Prefix `-` to release. `0` releases all. |
+| `input mouse move <dx> <dy>` | Relative mouse motion (mickeys) fed to the AMX/Symbiface mouse. Requires a mouse device enabled (`input.amx_mouse=1` or `peripheral.symbiface=1`), else `ERR 409`. |
+| `input mouse button <L\|M\|R> <down\|up>` | Press/release one mouse button. |
+| `input mouse buttons <mask>` | Set the whole SDL button mask at once (Left=1, Middle=2, Right=4). |
+
+> **Note:** `input type` emits only mapped characters — it does *not* interpret WinAPE `~KEY~` tokens. Use the `autotype` command for special keys, holds, and multi-line entry.
 
 ### Example: Type and run a BASIC program
 
