@@ -28,6 +28,30 @@
       .join())
 }
 
+// HTML build only: auto-link every "Chapter N" / "Appendix X" reference in the
+// prose to that chapter/appendix heading anchor, with computer precision. The
+// Nth level-1 heading is Chapter N; appendices A–G follow the 12 chapters. The
+// PDF build leaves the text untouched.
+#let _num-chapters = 12
+#let _xref-href(txt) = {
+  let l1 = query(heading).enumerate().filter(p => p.at(1).level == 1).map(p => p.at(0))
+  let parts = txt.split(" ")
+  let j = if parts.at(0) == "Chapter" {
+    int(parts.at(1)) - 1
+  } else {
+    _num-chapters + (str.to-unicode(parts.at(1)) - str.to-unicode("A"))
+  }
+  if j >= 0 and j < l1.len() { "#sec-" + str(l1.at(j) + 1) } else { none }
+}
+#show regex("Chapter \d+|Appendix [A-G]\b"): it => context {
+  if target() != "html" {
+    it
+  } else {
+    let href = _xref-href(it.text)
+    if href == none { it } else { html.elem("a", attrs: (href: href), it.text) }
+  }
+}
+
 #include "chapters/front_matter.typ"
 // Chapters in order; numbering follows include order. Ch12 (recording) is added
 // in U7, and U9 confirms the final ordering.
