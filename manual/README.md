@@ -143,7 +143,23 @@ See `OUTLINE.md` for the full table of contents. High-level chapters:
 
 ---
 
+## Building
+
+```bash
+make            # builds koncepcja_manual.pdf
+make watch      # rebuild on every save
+make clean
+```
+
+The toolchain and all fonts are self-contained under `fonts/` (free fonts only;
+see `fonts/LICENSES.md`), so the build is reproducible with no external font
+setup. Requires [Typst](https://typst.app/) 0.12+.
+
 ## Status
 
-**Planning phase.** No chapter content has been written yet. See `OUTLINE.md` for
-the planned structure and `TYPOGRAPHY.md` for the typesetting specification.
+**Drafted (first edition).** All 12 chapters and 6 appendices plus a dynamic
+index are written and build to a ~39-page PDF. Content is harvested from the
+project docs and source; figures use the ported CPC keyboard generator and
+existing screenshots. Next steps: deeper figures, a proofreading pass, and the
+Polish edition (deferred). See `OUTLINE.md` for the structure and
+`TYPOGRAPHY.md` for the typesetting specification.
