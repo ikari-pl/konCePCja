@@ -32,10 +32,21 @@ body {
   font-size: 1.05rem;
 }
 
-h1, h2, h3, h4 { font-family: "Rokkitt", "Rockwell", sans-serif; line-height: 1.15; }
-h1 { color: var(--amstrad-red); border-bottom: 2px solid var(--amstrad-red); padding-bottom: .2em; margin-top: 2.5rem; }
-h2 { border-bottom: 1px solid var(--rule-grey); padding-bottom: .15em; margin-top: 2rem; }
-h3 { color: var(--amstrad-grey); }
+/* Typst maps heading levels down one (= chapter -> h2, == section -> h3). */
+h1, h2, h3, h4, h5 { font-family: "Rokkitt", "Rockwell", sans-serif; line-height: 1.15; }
+h1 { color: var(--amstrad-red); font-size: 2.2rem; border-bottom: 3px solid var(--amstrad-red); padding-bottom: .2em; }
+h2 { color: var(--amstrad-red); font-size: 1.7rem; border-bottom: 2px solid var(--amstrad-red); padding-bottom: .15em; margin-top: 2.6rem; }   /* chapters */
+h3 { font-size: 1.3rem; border-bottom: 1px solid var(--rule-grey); padding-bottom: .1em; margin-top: 1.8rem; }                                  /* sections */
+h4 { font-size: 1.1rem; color: var(--amstrad-grey); margin-top: 1.4rem; }                                                                       /* subsections */
+
+/* Table of contents */
+.toc { background: var(--code-bg); border: 1px solid #e6e2d8; border-radius: 6px; padding: 1em 1.5em; margin: 1.5rem 0 2.5rem; }
+.toc > h2 { font-family: "Rokkitt", sans-serif; font-size: 1.25rem; color: var(--amstrad-grey); border: none; margin: 0 0 .5em; padding: 0; }
+.toc a { text-decoration: none; color: var(--amstrad-blue); }
+.toc a:hover { text-decoration: underline; }
+.toc-l1 { margin-top: .55em; }
+.toc-l1 a { font-weight: bold; color: var(--amstrad-red); }
+.toc-l2 { margin-left: 1.6em; font-size: .95em; }
 
 p { margin: .7em 0; }
 a { color: var(--amstrad-blue); }

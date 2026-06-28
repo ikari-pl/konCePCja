@@ -362,6 +362,20 @@
     block(above: 12pt, below: 6pt)[#it.body]
   }
 
+  // HTML build only: defined after the paged level rules above so it wins, this
+  // replaces every heading with an anchored semantic <hN id="sec-K"> — making
+  // the single-page web build fully cross-linkable. In the PDF build it returns
+  // the heading unchanged, so the paged level rules render it as before.
+  show heading: it => context {
+    if target() == "html" {
+      counter("html-head").step()
+      context {
+        let n = counter("html-head").get().first()
+        html.elem("h" + str(calc.min(it.level + 1, 6)), attrs: (id: "sec-" + str(n)), it.body)
+      }
+    } else { it }
+  }
+
   // Footnote: inline raw should track the (smaller) footnote text size
   // rather than getting pinned to body code-size by the global rule below.
   // Using 1em scales with whatever set text(...) the footnote.entry inherits.

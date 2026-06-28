@@ -11,9 +11,21 @@
   edition: "First Edition, 2026",
 )
 
-// HTML build only: inline the web theme (PDF build ignores this branch).
+// HTML build only: inline the web theme + a linked table of contents. The
+// heading ids (sec-N) are assigned in document order by the broad heading rule
+// in template.typ, so enumerate()+1 matches each heading's anchor. (PDF build
+// ignores this whole branch.)
 #context if target() == "html" {
   html.elem("style", read("web/style.css"))
+  html.elem("h1", "konCePCja User Manual")
+  let heads = query(heading)
+  html.elem("nav", attrs: (class: "toc"),
+    html.elem("h2", "Contents") +
+    heads.enumerate()
+      .filter(((i, h)) => h.level <= 2)
+      .map(((i, h)) => html.elem("div", attrs: (class: "toc-l" + str(h.level)),
+        html.elem("a", attrs: (href: "#sec-" + str(i + 1)), h.body)))
+      .join())
 }
 
 #include "chapters/front_matter.typ"
