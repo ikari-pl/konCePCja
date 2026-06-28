@@ -243,6 +243,10 @@ struct IpcMousePending {
   int32_t dy{0};
   uint32_t buttons{0};  // SDL button mask (Left=1, Middle=2, Right=4)
   std::atomic<bool> dirty{false};  // fast-path: skip the lock when idle
+  // Published by the main thread each frame so the IPC thread can gate the
+  // "no mouse device" error without reading the peripherals' plain-bool enabled
+  // flags cross-thread (those flags are written on the main thread).
+  std::atomic<bool> device_active{false};
 };
 IpcMousePending g_ipc_mouse;
 }  // namespace
@@ -253,6 +257,10 @@ IpcMousePending g_ipc_mouse;
 // and dy can never come from different updates (no shearing); the device
 // updates run unlocked.
 void ipc_drain_input() {
+  // Publish device-enabled state for the IPC thread's gate (read of the plain
+  // bool flags is safe here — this runs on the main thread that writes them).
+  g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
+                                  std::memory_order_relaxed);
   if (!g_ipc_mouse.dirty.load(std::memory_order_acquire)) return;
   int32_t dx = 0;
   int32_t dy = 0;
@@ -2304,7 +2312,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "mouse" && parts.size() >= 3) {
         // Mouse input is staged here and flushed on the main thread by
         // ipc_drain_input() — see the IpcMousePending comment above.
-        if (!g_amx_mouse.enabled && !g_symbiface.enabled)
+        if (!g_ipc_mouse.device_active.load(std::memory_order_relaxed))
           return "ERR 409 no-mouse-device (enable AMX or Symbiface mouse)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
           std::lock_guard<std::mutex> lock(g_ipc_mouse.mutex);
