@@ -23,6 +23,30 @@ run"game
 konCePCja reads and writes both standard and extended `.dsk` images. Write
 protection is honoured, so software that checks for it behaves correctly.
 
+#idx("DSK format")A *standard* `.dsk` stores decoded sector data --- every sector
+on a track the same size, no gaps or sync marks. An *extended* `.dsk` (EDSK) adds
+variable sector sizes and per-sector status bytes, which lets it reproduce
+deliberately malformed sectors and most copy protection. konCePCja picks the
+right reader automatically from the file's header.
+
+The 3-inch discs themselves come in a few standard layouts, all 40 tracks,
+single-sided, 512-byte sectors:
+
+#table(
+  columns: (auto, auto, auto, auto, 1fr),
+  stroke: 0.4pt + rule-grey,
+  inset: 5pt,
+  align: (left, center, center, center, left),
+  [*Format*], [*Sectors/track*], [*First sector ID*], [*Capacity*], [*Notes*],
+  [DATA], [9], [#port[\&C1]], [178 KB], [The usual format for software and your own files],
+  [SYSTEM], [9], [#port[\&41]], [169 KB], [Reserves tracks 0--1 for a CP/M boot loader],
+  [IBM], [8], [#port[\&01]], [160 KB], [CP/M-compatible 8-sector layout],
+)
+
+You rarely need to think about which is which --- AMSDOS reads all three --- but it
+explains why a "180 KB" disc holds a little less once formatted, and why the
+disc tools (Chapter 7) report sectors numbered from #port[\&C1] rather than 1.
+
 == Tape
 
 #idx("tape")On a 464 (or any machine with the tape firmware), select the tape,

@@ -15,6 +15,13 @@
 runs continuously; you interact with it by typing (the host keyboard maps to the
 CPC keyboard) and through the menu and function keys described below.
 
+#figure(image("../images/main-display.png", width: 90%), caption: [The main window: the toolbar across the top --- the menu button, the drive and tape status, transport controls, and the speed indicator --- above the live CPC display (here running a short BASIC colour demo)])
+
+Along the top of the window is a toolbar: the #menu-path("Menu (F1)") button,
+the status of each disc drive and the tape, transport controls for tape playback,
+and a speed indicator showing the current frame rate and emulation speed. It stays
+visible while the machine runs, so the drive and tape state are always in view.
+
 == The menu bar
 
 Press #fkey[F1] to open the in-emulator menu, which pauses emulation while it is

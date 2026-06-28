@@ -13,9 +13,12 @@
 == Overview
 
 #idx("M4 Board")The emulated M4 Board exposes a host directory to the CPC as a
-storage device through a command/response protocol. A path-traversal guard keeps
-CPC software confined to that directory. The board is compatible with the
-`cpcxfer` tool and the M4 Board Android app.
+storage device through a command/response protocol. CPC software builds a command
+by writing its bytes one at a time to #port[\&FE00], then writes #port[\&FC00] to
+execute it; the board places its reply in a ROM overlay at #port[\&E800] for the
+CPC to read back. A path-traversal guard keeps CPC software confined to the host
+directory it is given. The board is compatible with the `cpcxfer` tool and the M4
+Board Android app.
 
 == The web file manager
 
@@ -29,7 +32,24 @@ http://localhost:8080/status    # JSON status
 
 From the browser you can list directories, upload and delete files, create
 folders, and remotely run a file on the CPC. The endpoints mirror the real M4
-Board's `config.cgi` interface, so existing M4 tooling works unchanged.
+Board's `config.cgi` interface, so existing M4 tooling works unchanged:
+
+#table(
+  columns: (auto, 1fr),
+  stroke: 0.4pt + rule-grey,
+  inset: 5pt,
+  [*Request*], [*Action*],
+  [`GET /`], [The file-browser web page],
+  [`GET /config.cgi?ls=<path>`], [List a directory],
+  [`GET /config.cgi?cd=<path>`], [Change the CPC's current directory],
+  [`GET /config.cgi?run2=<path>`], [Run a file on the CPC],
+  [`GET /config.cgi?rm=<path>`], [Delete a file],
+  [`GET /config.cgi?mkdir=<path>`], [Create a directory],
+  [`GET /sd/<path>`], [Download a file from the virtual SD card],
+  [`GET /status`], [Status as JSON],
+  [`POST /`], [Upload a file (multipart form)],
+  [`POST /reset` / `POST /pause`], [Reset or pause the CPC (deferred to the main thread)],
+)
 
 == Controlling it over IPC
 
