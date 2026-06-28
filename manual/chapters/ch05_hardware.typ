@@ -4,58 +4,118 @@
 = Emulated Hardware
 
 #intro[
-  konCePCja emulates the complete Amstrad CPC hardware: the Z80 processor and
-  every custom chip around it. You do not need to understand any of this to use
-  the emulator, but the developer tools (Chapter 7) expose all of it, so this
-  chapter names the parts and what each one does.
+  konCePCja emulates the complete Amstrad CPC: the Z80 processor and every custom
+  chip around it. You do not need any of this to play games, but the developer
+  tools (Chapter 7) expose all of it, and understanding the machine helps when
+  you write or debug CPC code. This chapter covers both the system as a whole ---
+  its memory, screen modes, and I/O --- and the individual chips.
 ]
 
-== Z80A CPU
+== The processor
 
-#idx("Z80")The CPC is built around a Zilog Z80A running at 4 MHz. konCePCja
-implements the full documented and undocumented instruction set. The developer
-tools can set execution breakpoints and memory watchpoints on it, single-step,
-and disassemble; see Chapter 7.
+#idx("Z80")At the centre is a Zilog Z80A running at 4 MHz. konCePCja implements
+the full documented and undocumented instruction set, including the shadow
+register bank and the interrupt modes. The developer tools can breakpoint, step,
+and disassemble it (Chapter 7).
 
-== Gate Array
+== The memory map
 
-#idx("Gate Array")The Gate Array is Amstrad's custom video and memory controller.
-It holds the colour palette, selects the screen mode (0, 1, or 2), banks the
-upper and lower ROMs in and out of the address space, and generates the
-50 Hz raster interrupt that drives the machine.
+#idx("memory map")The Z80 sees a 64 KB address space, divided into four 16 KB
+banks. Two of those banks can show ROM instead of RAM:
 
-== CRTC
+```
+  &0000-&3FFF   RAM, or the Lower ROM (BASIC) when paged in
+  &4000-&7FFF   RAM (always)
+  &8000-&BFFF   RAM (always)
+  &C000-&FFFF   RAM, or the Upper ROM (AMSDOS / expansion) when paged in
+```
 
-#idx("CRTC")The Cathode Ray Tube Controller generates the video timing. The CPC
-was shipped with several CRTC variants over its life, and konCePCja emulates all
-four types --- the HD6845S (type 0), UM6845R (type 1), MC6845 (type 2), and the
-AMS40489 (type 3) found in the Plus machines --- each with its own
-register-level behaviour. Software that depends on a specific CRTC quirk runs
+#idx("ROM paging")ROM is an #emph[overlay]: when a ROM is paged in, reads from
+its range return ROM, but writes still go to the RAM underneath. This is how the
+firmware lives at #port[\&0000] and #port[\&C000] while the program's variables
+occupy the same addresses in RAM.
+
+#idx("RAM banking")The 6128's extra 64 KB (and the up-to-4 MB Yarek-style
+expansion) is reached by #emph[bank switching]: a control register pages 16 KB
+blocks of the extra RAM into the #port[\&4000]--#port[\&7FFF] window (and others),
+so the 8-bit Z80 can use far more than 64 KB.
+
+== Screen modes
+
+#idx("screen mode")The CPC has three screen modes, each trading colour for
+resolution. All three use 80 bytes per scan line:
+
+#table(
+  columns: (auto, auto, auto, 1fr), stroke: 0.4pt + rule-grey, inset: 5pt,
+  [*Mode*], [*Resolution*], [*Colours*], [*Typical use*],
+  [0], [160 × 200], [16 inks], [Games --- chunky, colourful pixels],
+  [1], [320 × 200], [4 inks], [The default --- text and general use],
+  [2], [640 × 200], [2 inks], [High-resolution text and word processing],
+)
+
+Switch modes from BASIC with #cmd[MODE 0], #cmd[MODE 1], or #cmd[MODE 2]. A mode
+can even be changed partway down the screen for split-screen effects.
+
+== Colour and the palette
+
+#idx("palette")The CPC can show 27 distinct hardware colours. Each mode draws
+from a palette of #emph[inks] --- 16 in mode 0, 4 in mode 1, 2 in mode 2 --- and
+any ink can be assigned any of the 27 colours, plus a separate border colour.
+Changing an ink updates every pixel drawn in that ink at once, which is the basis
+of many colour-cycling effects. The Plus machines widen this to 4096 colours.
+
+== I/O ports
+
+#idx("I/O ports")The custom chips are reached through Z80 `OUT` and `IN`
+instructions. Because the CPC decodes I/O addresses only partially, each device
+responds to a range of ports identified by the upper address bits:
+
+#table(
+  columns: (auto, 1fr), stroke: 0.4pt + rule-grey, inset: 5pt,
+  [*Port range*], [*Device*],
+  [#port[\&7Fxx]], [Gate Array (mode, palette, ROM paging) and RAM banking],
+  [#port[\&BCxx]--#port[\&BFxx]], [CRTC register select, write, and read],
+  [#port[\&DFxx]], [Upper-ROM bank select],
+  [#port[\&EFxx]], [Printer port],
+  [#port[\&F4xx]--#port[\&F7xx]], [PPI 8255 (keyboard, PSG control, tape)],
+  [#port[\&FB7E]--#port[\&FB7F]], [Floppy disc controller],
+)
+
+Note that the Gate Array is write-only --- software cannot read back the current
+mode or palette and must remember what it set. The developer tools, however, show
+the live state directly (Chapter 7).
+
+== Interrupts and timing
+
+#idx("interrupt")The display refreshes at 50 Hz. The Gate Array raises a Z80
+interrupt every 52 CRTC scan lines --- six times per frame, every ~3 milliseconds
+--- which the firmware uses for the keyboard scan, sound, and timing. Because the
+interrupt is tied to the raster position, demo code can synchronise palette and
+mode changes to exact points on the screen.
+
+== The custom chips
+
+#idx("Gate Array")*Gate Array.* Amstrad's custom video and memory controller ---
+it holds the palette, selects the screen mode, pages the ROMs, and generates the
+raster interrupt described above.
+
+#idx("CRTC")*CRTC.* The Cathode Ray Tube Controller generates video timing. The
+CPC shipped with several variants, and konCePCja emulates all four types --- the
+HD6845S (0), UM6845R (1), MC6845 (2), and the AMS40489 (3) in the Plus machines
+--- each with its own register-level quirks, so timing-sensitive software runs
 correctly when the matching type is selected.
 
-== PPI 8255
+#idx("PPI")*PPI 8255.* The general-purpose I/O chip: it reads the keyboard matrix,
+controls the PSG, and drives the cassette motor.
 
-#idx("PPI")The Programmable Peripheral Interface is the machine's general-purpose
-I/O chip. It reads the keyboard matrix, controls the PSG sound chip, and drives
-the cassette motor relay.
+#idx("PSG")*PSG AY-3-8912.* Three channels of square-wave tone plus a noise
+generator and a hardware envelope generator. Its state is visible in the audio
+developer tools and can be captured to a YM file (Chapter 12).
 
-== PSG AY-3-8912
+#idx("FDC")*FDC uPD765A.* The floppy disc controller, reading and writing both
+standard and extended `.dsk` images, including copy-protected formats.
 
-#idx("PSG")The Programmable Sound Generator provides three channels of square-wave
-tone plus a noise generator and a hardware envelope generator. Its register state
-is visible in the audio developer tools and can be captured to a YM chiptune file
-(Chapter 12).
-
-== FDC uPD765A
-
-#idx("FDC")The NEC uPD765A Floppy Disc Controller drives the 3-inch disc system.
-konCePCja reads and writes both standard and extended `.dsk` disc images,
-including copy-protected formats.
-
-== ASIC (CPC 6128+ only)
-
-#idx("ASIC")On the Plus machines (#cfg-key[system.model] `= 3`) the discrete Gate
-Array and CRTC are replaced by a single ASIC that adds hardware sprites, an
-enhanced 4096-colour palette, programmable raster interrupts, and DMA-driven
-sound channels. These features are inspected through the ASIC developer-tools
-window.
+#idx("ASIC")*ASIC.* On the 6128+ (#cfg-key[system.model] `= 3`) a single ASIC
+replaces the Gate Array and CRTC and adds hardware sprites, the 4096-colour
+palette, programmable raster interrupts, and DMA sound channels, all inspectable
+through the ASIC developer-tools window.

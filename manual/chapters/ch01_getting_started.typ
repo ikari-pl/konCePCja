@@ -186,3 +186,51 @@ resumes instantly. Load one from the command line or via
 konCePCja can also open a `.zip` archive containing CPC media (DSK, CDT, or SNA)
 and load the appropriate file from inside it, so you do not have to unpack
 downloads by hand.
+
+== Command-line options
+
+#idx("command-line options")Run #cmd[koncepcja --help] for the full list. The
+options you will reach for most:
+
+#table(
+  columns: (auto, 1fr), stroke: 0.4pt + rule-grey, inset: 5pt,
+  [*Option*], [*Effect*],
+  [`-a`, `--autocmd=<cmd>`], [Run a BASIC command once the CPC has booted],
+  [`-c`, `--cfg_file=<file>`], [Use a specific configuration file],
+  [`-i`, `--inject=<file>`], [Inject a binary into memory after boot],
+  [`-o`, `--offset=<addr>`], [Injection address (default #port[0x6000])],
+  [`-O`, `--override=<opt=val>`], [Override one config option (repeatable)],
+  [`-s`, `--sym_file=<file>`], [Load symbols for the disassembler],
+  [`-v`, `--verbose`], [Verbose logging],
+  [`-V`, `--version`], [Show the version and exit],
+)
+
+So, for example, to boot a 6128+, inject a loader at #port[0x4000], and auto-run
+a disc:
+
+```
+./koncepcja -O system.model=3 -i loader.bin -o 0x4000 -a 'run"game' game.dsk
+```
+
+== Troubleshooting
+
+#idx("troubleshooting")*The build fails immediately, complaining about SDL.* You
+almost certainly cloned without submodules. Either re-clone with
+#cmd[git clone --recurse-submodules], or fetch them in place with
+#cmd[git submodule update --init --recursive], then build the vendored SDL3 as
+shown above (or install your distribution's `libsdl3-dev`).
+
+*On macOS, a crash dialog mentions "reopening windows" at startup.* This is
+stale macOS saved-application state, not a konCePCja bug. Clear it:
+
+```
+rm -rf ~/Library/Saved\ Application\ State/*koncepcja*
+```
+
+*The window is black or OpenGL fails to start.* Build or run with
+`WITHOUT_GL=TRUE` for the software-render fallback; this also lets konCePCja run
+on machines and remote sessions without a usable GPU.
+
+*A disc or tape image is rejected.* Malformed images are refused rather than
+crashing the emulator; run with #cmd[--verbose] and look for an `ERROR` line
+naming the problem.
