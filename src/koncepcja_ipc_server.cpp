@@ -88,6 +88,8 @@ extern byte* pbExpansionROM;
 extern byte* pbROMhi;
 
 // Key tables are in cpc_key_tables.h (shared with autotype.cpp)
+// g_headless (declared in koncepcja.h) is true when running without a window
+// (offscreen/dummy SDL or --headless); the 'gui' IPC command reports it.
 
 extern byte bit_values[];
 
@@ -332,7 +334,19 @@ void init_command_registry() {
       [](const auto&, const auto&) {
         int p = g_ipc_instance ? g_ipc_instance->port() : 0;
         return "OK koncepcja-" VERSION_STRING " port=" + std::to_string(p) +
-               "\n";
+               " gui=" + (g_headless ? "0" : "1") + "\n";
+      });
+
+  register_command(
+      "gui", "CORE", "gui", "Report whether this instance has a GUI window",
+      "Returns 'gui=1' for a windowed instance, 'gui=0' for a headless one\n"
+      "(started with --headless or running under a dummy/offscreen SDL "
+      "driver).\n"
+      "Lets a client discover, before driving an instance, whether it can see\n"
+      "the screen — useful when several emulators share the host and a tool\n"
+      "must pick the windowed one.",
+      [](const auto&, const auto&) {
+        return std::string("OK gui=") + (g_headless ? "0" : "1") + "\n";
       });
 
   register_command(
@@ -3488,8 +3502,9 @@ std::string handle_command(const std::string& line) {
       if (parts.size() >= 2 && parts[1] == "drives") {
         return "OK " + drive_status_detailed() + "\n";
       }
-      return "OK " + emulator_status_summary() + "\n" + drive_status_summary() +
-             "\n";
+      return "OK " + emulator_status_summary() +
+             " gui=" + (g_headless ? "0" : "1") + "\n" +
+             drive_status_summary() + "\n";
     }
 
     // --- Config commands ---
