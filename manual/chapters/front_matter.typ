@@ -7,8 +7,10 @@
 
 // ─── Title page ─────────────────────────────────────────────────────
 #page(header: none, footer: none, margin: (top: 30mm, bottom: 20mm, inside: 25mm, outside: outside-margin))[
-  #v(1.6in)
+  #v(0.7in)
   #align(center)[
+    #image("../images/koncepcja-logo.png", width: 46%)
+    #v(14pt)
     #text(font: heading-font, size: 40pt, weight: "bold", fill: amstrad-red)[konCePCja]
     #v(10pt)
     #line(length: 60%, stroke: 1.5pt + amstrad-red)
