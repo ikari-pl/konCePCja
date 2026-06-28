@@ -21,6 +21,8 @@ referenced before they are defined. Errors are reported with line numbers, and
 the symbol table from a successful assembly is available for inspection and for
 the disassembler.
 
+#figure(image("../images/devtools-assembler.png", width: 80%), caption: [The assembler window with a short example assembled to #port[\&4000]: source on the left with syntax highlighting, and the toolbar to assemble, check, format, load, and save])
+
 == Syntax
 
 The assembler accepts standard Z80 mnemonics, labels, directives, and an

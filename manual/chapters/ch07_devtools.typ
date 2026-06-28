@@ -54,6 +54,8 @@ counts), memory watchpoints, and I/O breakpoints on port reads and writes. When
 one fires, emulation pauses and the registers and disassembly update to the
 breakpoint location.
 
+#figure(image("../images/devtools-breakpoints.png", width: 70%), caption: [The breakpoints window, with execution, watchpoint, and I/O-breakpoint sections and a hit counter per entry])
+
 == Symbols
 
 Load a symbol file (with #cmd[--sym_file]) to show labels in the disassembler and
@@ -64,6 +66,10 @@ to refer to addresses by name.
 #idx("video state")Dedicated windows expose the live state of the video hardware
 (Gate Array palette, CRTC registers, screen mode) and the audio hardware (the
 three PSG channels, the envelope generator, and any active DAC peripherals).
+
+#figure(image("../images/devtools-video-state.png", width: 48%), caption: [The video-state window: the full CRTC register file (R0--R17) and the Gate Array's mode, ROM/RAM configuration, and selected pen])
+
+#figure(image("../images/devtools-audio-state.png", width: 48%), caption: [The audio-state window: the three PSG channels with tone, volume, and noise settings, plus live waveform and envelope displays])
 
 == Other windows
 
@@ -79,6 +85,8 @@ you can locate sprites, fonts, and screen data by eye. Point it at an address,
 set the screen mode (0, 1, or 2) and the width in bytes, and it renders that
 region as a zoomable image. It can also encode edits back into memory, making it
 a simple in-memory pixel editor.
+
+#figure(image("../images/devtools-gfx-finder.png", width: 55%), caption: [The graphics finder: an address, screen mode, and byte-width, a paint palette, and the decoded pixels --- here showing screen memory at #port[\&C000]])
 
 == Memory search
 

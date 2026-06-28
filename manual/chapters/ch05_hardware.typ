@@ -122,3 +122,5 @@ standard and extended `.dsk` images, including copy-protected formats.
 replaces the Gate Array and CRTC and adds hardware sprites, the 4096-colour
 palette, programmable raster interrupts, and DMA sound channels, all inspectable
 through the ASIC developer-tools window.
+
+#figure(image("../images/devtools-asic.png", width: 48%), caption: [The ASIC window (6128+): the sixteen hardware sprites, the three DMA sound channels, and the lock state, with the palette and raster-interrupt controls below])
