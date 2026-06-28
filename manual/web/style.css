@@ -80,6 +80,15 @@ kbd.fkey {
 .menu-path { font-style: italic; }
 .menu-path .sep { color: var(--rule-grey); font-style: normal; }
 
+/* Images: Typst emits native width/height attrs; override height so the aspect
+   ratio is preserved instead of stretching to the pixel height. */
+img { max-width: 100%; height: auto; }
+figure { margin: 1.6em 0; text-align: center; }
+figure img { display: block; margin: 0 auto; border: 1px solid #e6e2d8; border-radius: 4px; }
+figcaption { font-size: .9em; color: var(--amstrad-grey); font-style: italic; margin-top: .5em; }
+/* SVG line-art figures shouldn't get the screenshot border/background. */
+figure img[src$=".svg"], img[src*="svg+xml"] { border: none; }
+
 table { border-collapse: collapse; width: 100%; margin: 1.1em 0; font-size: .95em; }
 th, td { border: 1px solid var(--rule-grey); padding: .4em .6em; text-align: left; vertical-align: top; }
 th { background: var(--code-bg); font-family: "Rokkitt", sans-serif; }

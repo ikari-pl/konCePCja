@@ -23,12 +23,7 @@ and disassemble it (Chapter 7).
 #idx("memory map")The Z80 sees a 64 KB address space, divided into four 16 KB
 banks. Two of those banks can show ROM instead of RAM:
 
-```
-  &0000-&3FFF   RAM, or the Lower ROM (BASIC) when paged in
-  &4000-&7FFF   RAM (always)
-  &8000-&BFFF   RAM (always)
-  &C000-&FFFF   RAM, or the Upper ROM (AMSDOS / expansion) when paged in
-```
+#figure(image("../images/memory-map.svg", width: 78%), caption: [The 64 KB address space: four 16 KB banks, with the Lower and Upper ROMs overlaying RAM])
 
 #idx("ROM paging")ROM is an #emph[overlay]: when a ROM is paged in, reads from
 its range return ROM, but writes still go to the RAM underneath. This is how the

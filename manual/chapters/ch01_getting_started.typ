@@ -132,6 +132,8 @@ Ready
 machine is waiting for a BASIC command. This is a fully working CPC: type
 #cmd[PRINT "HELLO"] and press #fkey[RETURN] to see it respond.
 
+#figure(image("../images/main-display.png", width: 78%), caption: [konCePCja at the Locomotive BASIC 1.1 prompt, ready for input])
+
 Press #fkey[F1] at any time to open the in-emulator menu (it pauses emulation),
 or #fkey[F12] to open the developer tools. The complete function-key reference
 is in Chapter 2.

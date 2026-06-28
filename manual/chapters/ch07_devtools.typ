@@ -31,10 +31,14 @@ runs and can be edited while paused.
 around the program counter, follows jumps and calls, and shows symbol labels when
 a symbol file is loaded. Breakpoints can be toggled directly in the listing.
 
+#figure(image("../images/devtools-disassembly.png", width: 75%), caption: [The disassembly window])
+
 == Memory hex viewer
 
 #idx("memory viewer")A hex/ASCII viewer over the full 64 KB address space, with
 search and direct editing (poke).
+
+#figure(image("../images/devtools-memory.png", width: 75%), caption: [The memory hex viewer])
 
 == Stack
 
