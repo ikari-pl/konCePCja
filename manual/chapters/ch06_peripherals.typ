@@ -10,6 +10,22 @@
   configuration (Chapter 4) or the menu, and is listed here with the I/O it uses.
 ]
 
+== Enabling a peripheral
+
+#idx("peripherals, enabling")Peripherals are off by default. Most are switched on
+with a configuration key (Chapter 4): for a single session use the #cmd[-O]
+override, or set it in #cfg-key[koncepcja.cfg] to make it permanent. For example,
+to start with both the AMX mouse and the Symbiface II board active:
+
+```
+./koncepcja -O input.amx_mouse=1 -O peripheral.symbiface=1 game.dsk
+```
+
+The light gun (phaser) is toggled at runtime with its function key instead. Each
+section below names the I/O ports its device uses --- which the developer tools
+(Chapter 7) can watch with an I/O breakpoint when you are debugging peripheral
+software.
+
 == Digiblaster
 
 #idx("Digiblaster")A simple 8-bit digital-to-analogue converter on the printer
