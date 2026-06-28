@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 
-# Read version from the top-level VERSION file (single source of truth,
-# also consumed by the makefile build).  No more two-file edits per bump.
-file(READ "${CMAKE_SOURCE_DIR}/VERSION" KONCPC_VERSION_RAW)
+# Read version from the top-level version.txt (single source of truth, also
+# consumed by the makefile build and managed by release-please).  No more
+# two-file edits per bump.
+file(READ "${CMAKE_SOURCE_DIR}/version.txt" KONCPC_VERSION_RAW)
 string(STRIP "${KONCPC_VERSION_RAW}" KONCPC_VERSION)
 project(koncepcja VERSION ${KONCPC_VERSION} LANGUAGES C CXX)
 

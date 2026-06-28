@@ -1,0 +1,32 @@
+name: release-please
+
+# Post-merge release automation (Conventional Commits).
+# On every push to master, release-please inspects the commits since the last
+# release and — ONLY if there is something releasable (feat / fix / perf /
+# breaking) — opens or updates a "release PR" that bumps version.txt + the
+# CHANGELOG. Chore/docs/test/ci/style/refactor-only ranges produce no release.
+# Merging that release PR creates the vX.Y.Z tag and the GitHub release.
+#
+# Note: requires "Allow GitHub Actions to create and approve pull requests"
+# (Settings → Actions → General → Workflow permissions) so the default
+# GITHUB_TOKEN can open the release PR.
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
