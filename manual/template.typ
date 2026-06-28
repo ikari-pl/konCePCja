@@ -97,7 +97,9 @@
 // in Chapter 3. Disable this when the target chapter hasn't been
 // translated/included yet (e.g. Polish edition while ch3 is a stub) — the
 // keywords then render as plain inline code.
-#let kw-linking = state("kw-linking", true)
+// konCePCja: BASIC-keyword cross-linking is off by default — this manual has no
+// BASIC keyword reference chapter to link to (the <kw-NAME> targets don't exist).
+#let kw-linking = state("kw-linking", false)
 // When true, wrapped lines in raw blocks get a per-line hanging indent equal
 // to the width of the leading line-number prefix (digits + space). Each line
 // becomes its own paragraph so each gets its own measured indent.
