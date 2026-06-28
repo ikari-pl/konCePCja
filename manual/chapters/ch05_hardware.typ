@@ -61,6 +61,8 @@ any ink can be assigned any of the 27 colours, plus a separate border colour.
 Changing an ink updates every pixel drawn in that ink at once, which is the basis
 of many colour-cycling effects. The Plus machines widen this to 4096 colours.
 
+#figure(image("../images/palette.svg", width: 95%), caption: [The 27 hardware colours, with their firmware ink numbers])
+
 == I/O ports
 
 #idx("I/O ports")The custom chips are reached through Z80 `OUT` and `IN`
