@@ -1,0 +1,49 @@
+name: PR Title Lint
+
+# Enforces the Conventional-Commits convention documented in AGENTS.md.
+# Because PRs are squash-merged, the PR TITLE becomes the commit message that
+# lands on master and that release-please classifies to compute the next
+# version. A wrong/missing prefix would silently skip or mis-size a release,
+# so this gate fails the PR until the title is a valid Conventional Commit.
+#
+# To make it actually block merging, add "Validate PR title" to the branch's
+# required status checks (Settings → Branches → branch protection for master).
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with release-please-config.json changelog-sections.
+          types: |
+            feat
+            fix
+            perf
+            docs
+            chore
+            refactor
+            test
+            ci
+            style
+            build
+            revert
+          # Scopes are optional, e.g. feat(ipc): ...
+          requireScope: false
+          # Allow a single commit's message to be used as the title when a PR
+          # has exactly one commit (GitHub's default squash behaviour).
+          validateSingleCommit: false
