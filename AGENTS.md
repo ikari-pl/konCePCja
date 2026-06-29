@@ -487,6 +487,30 @@ Recurring patterns from code reviews. Follow these to avoid common pitfalls:
 - **Track string lengths explicitly** — When packing strings into fixed-width fields (like ATA IDENTIFY), compute `strlen` once and bounds-check per-character access. Don't rely on null-terminator proximity to short-circuit evaluation.
 - **Path traversal protection** — Any user-supplied path (IPC, M4 virtual FS) must be validated: reject `..`, absolute paths, and symlink escapes.
 
+## Commit & PR Conventions
+
+**All commit messages AND pull-request titles MUST follow [Conventional Commits](https://www.conventionalcommits.org):**
+
+```
+<type>(<optional scope>): <description>
+```
+
+Releases are automated by **release-please** (`.github/workflows/release-please.yml`), which reads these prefixes to compute the next version. **PRs are squash-merged, so the PR _title_ becomes the commit message release-please classifies** — the title must honestly reflect the change's impact, or the version bump will be wrong (or skipped).
+
+| Prefix | Meaning | Release effect |
+|--------|---------|----------------|
+| `feat:` | New user-facing capability | **minor** (x.**Y**.0) |
+| `fix:` / `perf:` | Bug fix / performance | **patch** (x.y.**Z**) |
+| `feat!:` / `fix!:`, or a `BREAKING CHANGE:` footer | Backwards-incompatible change | **major** (**X**.0.0) |
+| `docs:` `chore:` `refactor:` `test:` `ci:` `style:` `build:` | No user-facing change | **no release** |
+
+**Rules:**
+- Choose the prefix by the change's **actual impact, not its size**. A one-line change adding an IPC command is a `feat:`; a large internal refactor with no behaviour change is `refactor:`.
+- Never understate: a mislabeled `chore:` that actually adds a feature silently skips the version bump. When unsure between two levels, pick the higher one.
+- Mark breaking changes with `!` (e.g. `feat!:`) **or** a `BREAKING CHANGE:` footer — a renamed/removed IPC command, changed reply format, or config-incompatible change qualifies.
+- Use a scope when it sharpens intent: `feat(ipc):`, `fix(crtc):`, `chore(build):`.
+- This governs the **squash-merge title** above all else, since that is the only message that lands on `master`.
+
 ## CI / Merging
 
 - **NEVER merge a PR with failing CI checks.** Fix failures first.
