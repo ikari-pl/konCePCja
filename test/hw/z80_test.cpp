@@ -1,0 +1,153 @@
+/* z80_test.cpp — Round Z80-a: the cycle-stepped Z80 device on a board, validating
+ * final register/flag state and exact T-state totals for the 8-bit register/
+ * immediate group. (Per-T bus-trace vs FUSE is offset by the bus model's one-hop
+ * latency — see hw-spec §2 — so we check totals + final state here.)
+ */
+
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "hw/board.h"
+#include "hw/z80.h"
+
+namespace {
+
+constexpr uint8_t SF = 0x80, ZF = 0x40, YF = 0x20, HF = 0x10, XF = 0x08, PF = 0x04,
+                  NF = 0x02, CF = 0x01;
+
+/* RAM device (two-phase). */
+struct Ram {
+  uint8_t cells[0x10000];
+};
+void ram_tick(void* self, const Bus* in, Bus* out) {
+  Ram* ram = static_cast<Ram*>(self);
+  if (in->cpu.mreq && in->cpu.wr) {
+    ram->cells[in->cpu.addr] = in->cpu.data;
+  } else if (in->cpu.mreq && in->cpu.rd) {
+    out->cpu.data = ram->cells[in->cpu.addr];
+  }
+}
+void ram_reset(void*) {}
+size_t ram_size(const void*) { return sizeof(Ram); }
+void ram_save(const void* s, void* b) { std::memcpy(b, s, sizeof(Ram)); }
+void ram_load(void* s, const void* b) { std::memcpy(s, b, sizeof(Ram)); }
+Device ram_device(Ram* s) {
+  return Device{s, "ram", ram_tick, ram_reset, ram_size, ram_save, ram_load};
+}
+
+/* Clock that always enables the CPU: one Z80 T-state per board tick. */
+void clk_tick(void*, const Bus*, Bus* out) { out->clk.cpu = true; }
+void clk_reset(void*) {}
+size_t clk_size(const void*) { return 1; }
+void clk_save(const void*, void* b) { *static_cast<uint8_t*>(b) = 0; }
+void clk_load(void*, const void*) {}
+Device clock_device() {
+  static uint8_t dummy = 0;
+  return Device{&dummy, "clk", clk_tick, clk_reset, clk_size, clk_save, clk_load};
+}
+
+/* Run a program from 0x0000 until the Z80 halts (programs end with HALT 0x76).
+ * Returns the final architectural state, with tstates frozen at the HALT. */
+struct Rig {
+  std::unique_ptr<Ram> ram = std::make_unique<Ram>();
+  std::vector<uint8_t> z80mem = std::vector<uint8_t>(z80_state_size());
+  Board board;
+  Device zdev;
+};
+
+Z80Regs run(std::initializer_list<uint8_t> program) {
+  static Rig rig;  // reused; reset below
+  rig.ram = std::make_unique<Ram>();
+  std::memset(rig.ram->cells, 0, sizeof(Ram::cells));
+  size_t i = 0;
+  for (uint8_t b : program) rig.ram->cells[i++] = b;
+
+  rig.z80mem.assign(z80_state_size(), 0);
+  rig.zdev = z80_init(rig.z80mem.data());
+
+  board_init(&rig.board);
+  board_add(&rig.board, clock_device());
+  board_add(&rig.board, ram_device(rig.ram.get()));
+  board_add(&rig.board, rig.zdev);
+  board_reset(&rig.board);
+
+  Z80Regs r{};
+  for (int tick = 0; tick < 4000; ++tick) {
+    board_tick(&rig.board);
+    z80_peek(&rig.zdev, &r);
+    if (r.halted) break;
+  }
+  return r;
+}
+
+uint8_t lo(uint16_t v) { return static_cast<uint8_t>(v & 0xFF); }
+uint8_t hi(uint16_t v) { return static_cast<uint8_t>(v >> 8); }
+
+}  // namespace
+
+TEST(Z80a, NopTimingAndHalt) {
+  Z80Regs r = run({0x00, 0x76});  // NOP ; HALT
+  EXPECT_EQ(r.halted, 1);
+  EXPECT_EQ(r.pc, 0x0002);
+  EXPECT_EQ(r.tstates, 8u) << "NOP (4) + HALT M1 (4)";
+  EXPECT_FALSE(r.unimplemented);
+}
+
+TEST(Z80a, LoadImmediateTiming) {
+  Z80Regs r = run({0x3E, 0x12, 0x76});  // LD A,0x12 ; HALT
+  EXPECT_EQ(hi(r.af), 0x12) << "A loaded";
+  EXPECT_EQ(r.tstates, 11u) << "LD A,n (7) + HALT (4)";
+}
+
+TEST(Z80a, RegisterToRegister) {
+  Z80Regs r = run({0x3E, 0x55, 0x47, 0x76});  // LD A,0x55 ; LD B,A ; HALT
+  EXPECT_EQ(hi(r.af), 0x55);
+  EXPECT_EQ(hi(r.bc), 0x55) << "B = A";
+  EXPECT_EQ(r.tstates, 15u) << "7 + 4 + 4";
+}
+
+TEST(Z80a, AddSetsCarryZeroHalf) {
+  Z80Regs r = run({0x3E, 0xFF, 0xC6, 0x01, 0x76});  // LD A,0xFF ; ADD A,1 ; HALT
+  EXPECT_EQ(hi(r.af), 0x00) << "0xFF + 1 = 0x00";
+  EXPECT_EQ(lo(r.af), static_cast<uint8_t>(ZF | HF | CF)) << "Z,H,C set; S,N,P clear";
+}
+
+TEST(Z80a, SubOverflowAndSign) {
+  Z80Regs r = run({0x3E, 0x80, 0xD6, 0x01, 0x76});  // LD A,0x80 ; SUB 1 ; HALT
+  EXPECT_EQ(hi(r.af), 0x7F);
+  // 0x80-1=0x7F: S=0, Z=0, Y=1(0x20), H=1, X=1(0x08), P/V=1(overflow), N=1, C=0
+  EXPECT_EQ(lo(r.af), static_cast<uint8_t>(YF | HF | XF | PF | NF));
+}
+
+TEST(Z80a, CompareDoesNotChangeA) {
+  Z80Regs r = run({0x3E, 0x42, 0xFE, 0x42, 0x76});  // LD A,0x42 ; CP 0x42 ; HALT
+  EXPECT_EQ(hi(r.af), 0x42) << "CP leaves A unchanged";
+  EXPECT_TRUE(lo(r.af) & ZF) << "equal → Z set";
+  EXPECT_TRUE(lo(r.af) & NF) << "CP sets N";
+}
+
+TEST(Z80a, IncOverflowAndDecHalf) {
+  // XOR A first to clear carry (reset F is 0xFF; INC/DEC preserve carry).
+  Z80Regs ri = run({0xAF, 0x3E, 0x7F, 0x3C, 0x76});  // XOR A ; LD A,0x7F ; INC A ; HALT
+  EXPECT_EQ(hi(ri.af), 0x80);
+  EXPECT_EQ(lo(ri.af), static_cast<uint8_t>(SF | HF | PF)) << "INC 0x7F→0x80: S,H,P/V; N,C clear";
+
+  Z80Regs rd = run({0xAF, 0x06, 0x00, 0x05, 0x76});  // XOR A ; LD B,0 ; DEC B ; HALT
+  EXPECT_EQ(hi(rd.bc), 0xFF);
+  EXPECT_EQ(lo(rd.af), static_cast<uint8_t>(SF | YF | HF | XF | NF)) << "DEC 0→0xFF flags";
+}
+
+TEST(Z80a, XorAClearsToKnownState) {
+  Z80Regs r = run({0x3E, 0x5A, 0xAF, 0x76});  // LD A,0x5A ; XOR A ; HALT
+  EXPECT_EQ(hi(r.af), 0x00) << "XOR A = 0";
+  EXPECT_EQ(lo(r.af), static_cast<uint8_t>(ZF | PF)) << "Z + even parity; H,N,C clear";
+}
+
+TEST(Z80a, RefreshIncrements) {
+  Z80Regs r = run({0x00, 0x00, 0x00, 0x76});  // 3×NOP ; HALT
+  EXPECT_EQ(r.r & 0x7F, 4u) << "R bumped once per M1 (4 instructions incl. HALT)";
+}
