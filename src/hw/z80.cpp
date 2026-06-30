@@ -229,7 +229,123 @@ struct z80_state {
   // Dispatch the instruction step machine for the active prefix.
   void run_micro() {
     if (prefix == 0xCB) micro_cb();
+    else if (prefix == 0xED) micro_ed();
     else micro();
+  }
+
+  // --- ED-prefix helpers ---
+  void adc16(uint16_t val) {
+    wz.v = static_cast<uint16_t>(hl.v + 1);
+    const uint32_t res = static_cast<uint32_t>(hl.v) + val + ((f() & CF) ? 1u : 0u);
+    const uint16_t r16 = static_cast<uint16_t>(res);
+    uint8_t flags = static_cast<uint8_t>(((r16 >> 8) & (SF | YF | XF)) | (r16 == 0 ? ZF : 0));
+    if ((hl.v ^ val ^ r16) & 0x1000) flags |= HF;
+    if (res & 0x10000) flags |= CF;
+    if ((~(hl.v ^ val) & (hl.v ^ r16)) & 0x8000) flags |= PF;
+    hl.v = r16;
+    set_f(flags);
+  }
+  void sbc16(uint16_t val) {
+    wz.v = static_cast<uint16_t>(hl.v + 1);
+    const uint32_t res = static_cast<uint32_t>(hl.v) - val - ((f() & CF) ? 1u : 0u);
+    const uint16_t r16 = static_cast<uint16_t>(res);
+    uint8_t flags = static_cast<uint8_t>(((r16 >> 8) & (SF | YF | XF)) | (r16 == 0 ? ZF : 0) | NF);
+    if ((hl.v ^ val ^ r16) & 0x1000) flags |= HF;
+    if (res & 0x10000) flags |= CF;
+    if (((hl.v ^ val) & (hl.v ^ r16)) & 0x8000) flags |= PF;
+    hl.v = r16;
+    set_f(flags);
+  }
+  void neg() {
+    const uint8_t old = a();
+    const uint16_t res = static_cast<uint16_t>(0 - old);
+    const uint8_t r8 = static_cast<uint8_t>(res);
+    uint8_t flags = static_cast<uint8_t>((r8 & (SF | YF | XF)) | (r8 == 0 ? ZF : 0) | NF);
+    if (res & 0x100) flags |= CF;
+    if ((old ^ r8) & 0x10) flags |= HF;
+    if ((old & r8) & 0x80) flags |= PF;  // overflow iff old == 0x80
+    set_a(r8);
+    set_f(flags);
+  }
+  void ld_a_ir(uint8_t val) {  // LD A,I / LD A,R
+    set_a(val);
+    uint8_t flags = static_cast<uint8_t>((f() & CF) | sz53(val));
+    if (iff2) flags |= PF;  // P/V = IFF2
+    set_f(flags);
+  }
+
+  void micro_ed() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+    const uint8_t p = static_cast<uint8_t>(y >> 1);
+    const uint8_t qbit = static_cast<uint8_t>(y & 1);
+
+    if (x == 1) {
+      switch (z) {
+        case 2:  // SBC HL,rr (q=0) / ADC HL,rr (q=1) — 15T (4+4+7)
+          if (step == 0) { req_internal(7); return; }
+          if (qbit == 0) sbc16(get_rp(p)); else adc16(get_rp(p));
+          finish();
+          return;
+        case 4:  // NEG (all 8 encodings are NEG on NMOS)
+          neg();
+          finish();
+          return;
+        case 6: {  // IM
+          static const uint8_t kImTable[8] = {0, 0, 1, 2, 0, 0, 1, 2};
+          im = kImTable[y];
+          finish();
+          return;
+        }
+        case 7:  // LD I,A / R,A / A,I / A,R / RRD / RLD
+          switch (y) {
+            case 0:  // LD I,A (9T: + INTERNAL(1))
+              if (step == 0) { req_internal(1); return; }
+              i = a(); finish(); return;
+            case 1:  // LD R,A
+              if (step == 0) { req_internal(1); return; }
+              r = a(); finish(); return;
+            case 2:  // LD A,I
+              if (step == 0) { req_internal(1); return; }
+              ld_a_ir(i); finish(); return;
+            case 3:  // LD A,R
+              if (step == 0) { req_internal(1); return; }
+              ld_a_ir(r); finish(); return;
+            case 4:  // RRD — 18T (4+4+3+4+3)
+            case 5:  // RLD
+              if (step == 0) { req_read(hl.v); return; }
+              if (step == 1) { req_internal(4); return; }
+              if (step == 2) {
+                const uint8_t old = tmp;
+                uint8_t newhl = 0;
+                uint8_t newa = 0;
+                if (y == 4) {  // RRD
+                  newhl = static_cast<uint8_t>((a() << 4) | (old >> 4));
+                  newa = static_cast<uint8_t>((a() & 0xF0) | (old & 0x0F));
+                } else {  // RLD
+                  newhl = static_cast<uint8_t>((old << 4) | (a() & 0x0F));
+                  newa = static_cast<uint8_t>((a() & 0xF0) | (old >> 4));
+                }
+                set_a(newa);
+                set_f(static_cast<uint8_t>((f() & CF) | sz53p(newa)));
+                wz.v = static_cast<uint16_t>(hl.v + 1);
+                req_write(hl.v, newhl);
+                return;
+              }
+              finish();
+              return;
+            default:
+              break;
+          }
+          break;
+        default:
+          break;
+      }
+    }
+
+    unimplemented = true;
+    finish();
   }
 
   // --- CB-prefix helpers ---
@@ -458,8 +574,8 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
         case 4:
           out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
           out->cpu.rfsh = true;
-          if (z->prefix == 0 && z->opcode == 0xCB) {
-            z->prefix = 0xCB;  // fetch the CB opcode as a second M1, then dispatch
+          if (z->prefix == 0 && (z->opcode == 0xCB || z->opcode == 0xED)) {
+            z->prefix = z->opcode;  // fetch the prefixed opcode as a second M1
             z->mc = z80_state::MC::M1;
             z->t = 0;
           } else {

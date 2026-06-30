@@ -325,3 +325,45 @@ TEST(Z80c, BitFromHLTiming) {
   EXPECT_FALSE(lo(r.af) & ZF) << "bit 7 set → Z clear";
   EXPECT_EQ(r.tstates, 10u + 10u + 12u + 4u) << "BIT n,(HL) = 12T (4+4+3+1, no write)";
 }
+
+// ---- Round Z80-c (2/2): the ED prefix (NEG, 16-bit ADC/SBC, LD A,I/R, IM, RRD/RLD) ----
+
+TEST(Z80c, Neg) {
+  Z80Regs r = run({0x3E, 0x01, 0xED, 0x44, 0x76});  // LD A,1 ; NEG ; HALT
+  EXPECT_EQ(hi(r.af), 0xFF) << "0 - 1 = 0xFF";
+  EXPECT_TRUE(lo(r.af) & CF) << "NEG of nonzero sets carry";
+  EXPECT_TRUE(lo(r.af) & NF) << "NEG sets N";
+  EXPECT_EQ(r.tstates, 7u + 8u + 4u) << "NEG = 8T";
+
+  Z80Regs o = run({0x3E, 0x80, 0xED, 0x44, 0x76});  // LD A,0x80 ; NEG
+  EXPECT_EQ(hi(o.af), 0x80) << "NEG 0x80 = 0x80";
+  EXPECT_TRUE(lo(o.af) & PF) << "NEG 0x80 overflows → P/V set";
+}
+
+TEST(Z80c, Sbc16AndAdc16) {
+  // XOR A (clear carry) ; LD HL,5 ; LD DE,3 ; SBC HL,DE ; HALT
+  Z80Regs s = run({0xAF, 0x21, 0x05, 0x00, 0x11, 0x03, 0x00, 0xED, 0x52, 0x76});
+  EXPECT_EQ(s.hl, 0x0002u) << "5 - 3 = 2";
+  EXPECT_EQ(s.tstates, 4u + 10u + 10u + 15u + 4u) << "SBC HL,rr = 15T";
+
+  // XOR A ; LD HL,0x1000 ; LD DE,0x0234 ; ADC HL,DE ; HALT
+  Z80Regs a = run({0xAF, 0x21, 0x00, 0x10, 0x11, 0x34, 0x02, 0xED, 0x5A, 0x76});
+  EXPECT_EQ(a.hl, 0x1234u) << "0x1000 + 0x0234 = 0x1234";
+}
+
+TEST(Z80c, LoadAFromIAndIM) {
+  // LD A,0x42 ; LD I,A ; LD A,0 ; LD A,I ; HALT
+  Z80Regs r = run({0x3E, 0x42, 0xED, 0x47, 0x3E, 0x00, 0xED, 0x57, 0x76});
+  EXPECT_EQ(r.i, 0x42) << "I = A";
+  EXPECT_EQ(hi(r.af), 0x42) << "A = I";
+
+  Z80Regs m = run({0xED, 0x5E, 0x76});  // IM 2 ; HALT
+  EXPECT_EQ(m.im, 2) << "IM 2";
+}
+
+TEST(Z80c, Rrd) {
+  // LD HL,0x0040 ; LD (HL),0x12 ; LD A,0x34 ; RRD ; LD B,(HL) ; HALT
+  Z80Regs r = run({0x21, 0x40, 0x00, 0x36, 0x12, 0x3E, 0x34, 0xED, 0x67, 0x46, 0x76});
+  EXPECT_EQ(hi(r.af), 0x32) << "RRD: A = (A&0xF0) | ((HL)&0x0F) = 0x30|0x02";
+  EXPECT_EQ(hi(r.bc), 0x41) << "RRD: (HL) = (A_low<<4) | ((HL)>>4) = 0x41";
+}
