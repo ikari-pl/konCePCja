@@ -68,6 +68,50 @@ so device FSMs account for it.
 The CPU is therefore **not** the clock master: it gates on `clk.cpu` like any
 other chip, satisfying the "no privileged device" rule.
 
+### 3.1 Timing contract (the binding numbers)
+
+Everything timing-critical lives in one 1 µs window = **16 master cycles**,
+indexed by `clk.phase` 0..15. The Gate Array owns this schedule; every other
+device's correctness is defined relative to it. The Z80 FSM **must** be written
+against this table, not against assumptions.
+
+**Address-bus time-multiplexing (resolves "who drives `cpu.addr`").** The single
+`cpu.addr`/`cpu.data` bus is time-division-multiplexed within each µs. In any
+master cycle exactly one device drives it — so the single-driver invariant (§6)
+holds and there is no arbiter:
+
+| phase window | bus owner | activity |
+|---|---|---|
+| **video fetch** | Gate Array | GA drives `cpu.addr` = the CRTC video address (from `vid.ma`/`vid.ra`), asserts `mreq`+`rd`; RAM responds; GA latches `cpu.data` for pixel generation. |
+| **CPU access** | Z80 | CPU drives `cpu.addr`, runs its memory M-cycle; RAM responds. |
+| **idle/refresh** | Z80 (refresh) or none | DRAM refresh / bus idle. |
+
+The CPU and the video fetch are in **disjoint phases**, so they never both drive
+the bus in one master cycle.
+
+**WAIT / µs alignment.** `cpu.wait` is **not** request-driven; the Gate Array
+asserts it as a free-running function of `clk.phase`, to hold the Z80 until its
+next memory M-cycle can begin on the µs grid (this is *the* reason every CPC
+instruction takes a multiple of 4 T-states). The Z80 samples `cpu.wait` at the
+defined point of its T2 (and each inserted Tw). The reference schedule pins:
+
+- the phase at which a CPU M1/T1 may begin,
+- the `clk.phase` window in which the GA asserts `cpu.wait`,
+- the phase at which the Z80 samples `cpu.wait`,
+- the phases of the (up to two) GA video fetches per µs.
+
+> **Reference values are being locked against hardware docs + the golden master
+> and recorded here before the Z80 FSM is written.** The *structure* above is the
+> contract; the exact phase indices are the one remaining number to pin. Until
+> locked, no chip may hard-code a phase constant that is not in this table.
+
+**Producer/consumer phase skew.** Because the clock generator drives `clk` into
+`out`, consumers read it from `in` one master cycle later. A device that **both
+publishes and consumes** `clk.phase` (the real Gate Array does: it generates the
+phase *and* acts on it for WAIT/fetch) must drive its decisions from its own
+internal counter for the current cycle, and account for other devices observing
+that phase one master cycle later. State this offset explicitly in the GA entry.
+
 ---
 
 ## 4. The buses
@@ -169,6 +213,11 @@ Resolution is therefore implicit: a line keeps its resting value unless its owne
 assigns it (or, for `irq`, unless any source OR's it). A conformant build *may*
 add conflict detection (two assigners in one cycle = bug) behind a debug flag.
 
+**Validity qualifiers.** Address-style lines have no "driven" flag of their own,
+so their validity is gated by a strobe: `cpu.addr` is meaningful only while
+`cpu.mreq || cpu.iorq || cpu.rfsh` is asserted; `vid.ma`/`vid.ra` only while
+`clk.crtc` is asserted. A consumer must not act on a resting (0) address.
+
 ---
 
 ## 7. The tick algorithm
@@ -207,9 +256,31 @@ Two mechanisms, with defined roles:
 
 The whole-machine snapshot is the concatenation of each device's `save` blob,
 in board order, prefixed by a machine-level header (device count + names, for
-validation). Because devices serialize logical state (not pointers), snapshots
-are portable across hosts and implementations. The bus value itself is part of
-the machine snapshot (it carries in-flight signal state).
+validation). The bus value itself is part of the snapshot (it carries in-flight
+signal state). `board_save`/`board_load` are **(planned)** — not yet implemented;
+only per-device `save`/`load` exist today.
+
+For snapshots to be portable across hosts **and implementations** (the stated
+goal), the byte encoding is fixed, not host-native:
+
+- **Endianness: little-endian** for every multi-byte field.
+- **Field order: explicit**, documented per device in §12 (a C `memcpy` of a
+  struct is therefore *not* a conformant encoding unless the struct's layout
+  already matches the documented order — demo devices that `memcpy` POD are a
+  convenience, not the contract).
+- Each device blob begins with a **1-byte format version**; a reader that sees an
+  unknown version must **fail loudly** (not silently zero — the test stub's
+  zero-on-mismatch is test-only, not the contract).
+- Booleans serialize as one byte, `0`/`1`.
+
+## 9a. Non-bus outputs (video, audio)
+
+`tick` writes only into `Bus out`, which carries **inter-chip pin state only**.
+Outputs that are not bus signals — the Gate Array's RGB pixels, the PSG's audio
+samples — are emitted into **device-owned sinks reachable through `self`** (e.g.
+the GA owns a framebuffer, the PSG owns a sample ring), read out-of-band by the
+host. They are **never** added to the Bus. This needs no contract change; it is
+stated here so the decision is not made ad hoc inside the first chip.
 
 ---
 
@@ -262,6 +333,18 @@ clock enable it runs on, internal state, reset state, and conformance oracle.
 | R2 | **Two-phase synchronous** bus (sample committed → drive floated → commit); order-independent; per-hop latency | 2026-06-30 |
 | R3 | **Split buses** CpuBus + VidBus (+ Clocks) | 2026-06-30 |
 | — | Z80 FSM style: **micro-op sequences** | 2026-06-30 |
+| R4 | **Time-multiplexed shared address bus**: CPU and Gate-Array video fetch own `cpu.addr` in disjoint phases (§3.1) — no arbiter, single driver per cycle | 2026-06-30 |
+| R5 | Serialization is **little-endian, explicit field order, fail-loud on version mismatch** (§9) | 2026-06-30 |
+| R6 | **Non-bus outputs** (pixels, audio) via device-owned sinks in `self`, never the Bus (§9a) | 2026-06-30 |
 
 R1–R3 corrected the first foundation after review found a single ordered pass at
-4 MHz on a Z80-only bus could not make CPC timing emerge.
+4 MHz on a Z80-only bus could not make CPC timing emerge. R4–R6 close the binding
+contracts (timing/bus-mastering, serialization, non-bus output) the second review
+required before the first real chip.
+
+### Still to lock before the Z80 FSM
+
+The §3.1 timing **structure** is fixed; the exact `clk.phase` indices (T1 start,
+WAIT sample/assert window, the two video-fetch phases) are the one remaining
+number, to be pinned against hardware docs + the golden master and written into
+§3.1 before the Z80 device is implemented.
