@@ -224,119 +224,126 @@ struct z80_state {
     step = 0;
   }
 
-  // The instruction step machine. Called at each M-cycle boundary (step 0 = just
-  // after M1). Each branch either requests one M-cycle and returns, or finishes.
+  // The instruction step machine. Dispatched by the opcode's x field so each
+  // family is isolated and decode no longer depends on guard ORDER (important
+  // once CB/ED/DD/FD multiply the branches). Each handler requests one M-cycle
+  // and returns, or finish()es. Unmatched opcodes set `unimplemented`.
   void micro() {
     const uint8_t x = static_cast<uint8_t>(opcode >> 6);
     const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
     const uint8_t z = static_cast<uint8_t>(opcode & 7);
-
-    if (opcode == 0x00) { finish(); return; }                 // NOP
-    if (opcode == 0x76) { halted = true; finish(); return; }  // HALT
-
-    if (x == 1) {  // LD r,r' / r,(HL) / (HL),r
-      if (z == 6) {  // LD r,(HL)
-        if (step == 0) { req_read(hl.v); return; }
-        set_r(y, tmp);
-        finish();
-        return;
-      }
-      if (y == 6) {  // LD (HL),r
-        if (step == 0) { req_write(hl.v, get_r(z)); return; }
-        finish();
-        return;
-      }
-      set_r(y, get_r(z));  // LD r,r'
-      finish();
-      return;
-    }
-
-    if (x == 2) {  // ALU A,r / A,(HL)
-      if (z == 6) {
-        if (step == 0) { req_read(hl.v); return; }
-        alu(y, tmp);
-        finish();
-        return;
-      }
-      alu(y, get_r(z));
-      finish();
-      return;
-    }
-
-    if (x == 3 && z == 6) {  // ALU A,n
-      if (step == 0) { req_read(pc.v); pc.v = static_cast<uint16_t>(pc.v + 1); return; }
-      alu(y, tmp);
-      finish();
-      return;
-    }
-
-    if (x == 0 && z == 6) {  // LD r,n / LD (HL),n
-      if (step == 0) { req_read(pc.v); pc.v = static_cast<uint16_t>(pc.v + 1); return; }
-      if (y == 6) {  // LD (HL),n
-        if (step == 1) { req_write(hl.v, tmp); return; }
-        finish();
-        return;
-      }
-      set_r(y, tmp);  // LD r,n
-      finish();
-      return;
-    }
-
-    if (x == 0 && (z == 4 || z == 5)) {  // INC/DEC r / (HL)
-      if (y == 6) {                      // INC/DEC (HL): READ, INTERNAL(1), WRITE
-        if (step == 0) { req_read(hl.v); return; }
-        if (step == 1) { req_internal(1); return; }
-        if (step == 2) {
-          const uint8_t nv = (z == 4) ? inc8(tmp) : dec8(tmp);
-          req_write(hl.v, nv);
-          return;
+    switch (x) {
+      case 0: micro_x0(y, z); return;
+      case 1: micro_x1(y, z); return;
+      case 2:  // ALU A,r / A,(HL)
+        if (z == 6) {
+          if (step == 0) { req_read(hl.v); return; }
+          alu(y, tmp);
+        } else {
+          alu(y, get_r(z));
         }
         finish();
         return;
-      }
-      set_r(y, (z == 4) ? inc8(get_r(y)) : dec8(get_r(y)));
-      finish();
-      return;
-    }
-
-    // LD A,(BC|DE) / LD (BC|DE),A  (x=0, z=2, p<2). p=2,3 are the (nn) forms — later.
-    if (x == 0 && z == 2 && (y >> 1) < 2) {
-      const uint8_t p = static_cast<uint8_t>(y >> 1);  // 0=BC, 1=DE
-      const uint16_t rp = (p == 0) ? bc.v : de.v;
-      if (y & 1) {  // LD A,(rp)
-        if (step == 0) { req_read(rp); return; }
-        set_a(tmp);
-        wz.v = static_cast<uint16_t>(rp + 1);  // MEMPTR = rp+1
+      case 3:  // mostly control flow / prefixes (later); only ALU A,n so far
+        if (z == 6) {
+          if (step == 0) { req_read(pc.v); pcinc(); return; }
+          alu(y, tmp);
+          finish();
+          return;
+        }
+        unimplemented = true;
         finish();
         return;
-      }
-      // LD (rp),A
-      if (step == 0) { req_write(rp, a()); return; }
-      wz.set_hi(a());
-      wz.set_lo(static_cast<uint8_t>((rp & 0xFF) + 1));  // MEMPTR = (A<<8)|(low+1)
+      default:
+        return;
+    }
+  }
+
+  void micro_x1(uint8_t y, uint8_t z) {  // LD r,r' / r,(HL) / (HL),r ; HALT
+    if (y == 6 && z == 6) { halted = true; finish(); return; }  // HALT
+    if (z == 6) {                                               // LD r,(HL)
+      if (step == 0) { req_read(hl.v); return; }
+      set_r(y, tmp);
       finish();
       return;
     }
-
-    // LD rr,nn  (x=0, z=1, q=0)
-    if (x == 0 && z == 1 && (y & 1) == 0) {
-      if (step == 0) { req_read(pc.v); pcinc(); return; }   // low byte
-      if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }  // high byte
-      set_rp(static_cast<uint8_t>(y >> 1), static_cast<uint16_t>((tmp << 8) | tmpl));
+    if (y == 6) {  // LD (HL),r
+      if (step == 0) { req_write(hl.v, get_r(z)); return; }
       finish();
       return;
     }
+    set_r(y, get_r(z));  // LD r,r'
+    finish();
+  }
 
-    // INC/DEC rr  (x=0, z=3): 2 internal cycles, then ±1, no flags
-    if (x == 0 && z == 3) {
-      if (step == 0) { req_internal(2); return; }
-      const uint8_t p = static_cast<uint8_t>(y >> 1);
-      const uint16_t v = get_rp(p);
-      set_rp(p, static_cast<uint16_t>((y & 1) ? (v - 1) : (v + 1)));
-      finish();
-      return;
+  void micro_x0(uint8_t y, uint8_t z) {
+    const uint8_t p = static_cast<uint8_t>(y >> 1);
+    const uint8_t q = static_cast<uint8_t>(y & 1);
+    switch (z) {
+      case 0:  // NOP (y=0); DJNZ/JR/EX AF,AF' later
+        if (y == 0) { finish(); return; }
+        break;
+      case 1:  // LD rr,nn (q=0); ADD HL,rr (q=1) later
+        if (q == 0) {
+          if (step == 0) { req_read(pc.v); pcinc(); return; }
+          if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+          set_rp(p, static_cast<uint16_t>((tmp << 8) | tmpl));
+          finish();
+          return;
+        }
+        break;
+      case 2:  // LD A,(BC|DE) / LD (BC|DE),A (p<2); (nn) forms (p>=2) later
+        if (p < 2) {
+          const uint16_t rp = (p == 0) ? bc.v : de.v;
+          if (q == 1) {  // LD A,(rp)
+            if (step == 0) { req_read(rp); return; }
+            set_a(tmp);
+            wz.v = static_cast<uint16_t>(rp + 1);  // MEMPTR = rp+1
+            finish();
+            return;
+          }
+          if (step == 0) { req_write(rp, a()); return; }  // LD (rp),A
+          wz.set_hi(a());
+          wz.set_lo(static_cast<uint8_t>((rp & 0xFF) + 1));  // MEMPTR = (A<<8)|(low+1)
+          finish();
+          return;
+        }
+        break;
+      case 3:  // INC/DEC rr (no flags, INTERNAL(2))
+        if (step == 0) { req_internal(2); return; }
+        {
+          const uint16_t v = get_rp(p);
+          set_rp(p, static_cast<uint16_t>(q ? (v - 1) : (v + 1)));
+        }
+        finish();
+        return;
+      case 4:  // INC r/(HL)
+      case 5:  // DEC r/(HL)
+        if (y == 6) {  // INC/DEC (HL): READ, INTERNAL(1), WRITE
+          if (step == 0) { req_read(hl.v); return; }
+          if (step == 1) { req_internal(1); return; }
+          if (step == 2) { req_write(hl.v, (z == 4) ? inc8(tmp) : dec8(tmp)); return; }
+          finish();
+          return;
+        }
+        set_r(y, (z == 4) ? inc8(get_r(y)) : dec8(get_r(y)));
+        finish();
+        return;
+      case 6:  // LD r,n / LD (HL),n
+        if (step == 0) { req_read(pc.v); pcinc(); return; }
+        if (y == 6) {  // LD (HL),n
+          if (step == 1) { req_write(hl.v, tmp); return; }
+          finish();
+          return;
+        }
+        set_r(y, tmp);  // LD r,n
+        finish();
+        return;
+      case 7:  // RLCA/RRCA/.../DAA/CPL/SCF/CCF — later
+        break;
+      default:
+        break;
     }
-
     unimplemented = true;
     finish();
   }
@@ -452,6 +459,7 @@ void z80_reset(void* self) {
   z->mc = z80_state::MC::M1;
   z->t = z->step = 0;
   z->opcode = z->tmp = z->tmpl = z->halt_t = 0;
+  z->mc_addr = z->mc_wval = z->mc_ilen = 0;  // scratch: deterministic for snapshots
   z->unimplemented = false;
   z->tstates = 0;
 }

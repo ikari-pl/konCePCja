@@ -50,6 +50,18 @@ Device clock_device() {
   return Device{&dummy, "clk", clk_tick, clk_reset, clk_size, clk_save, clk_load};
 }
 
+/* Free-running WAIT generator: clk.cpu always on, cpu.wait asserted on alternate
+ * master cycles (NOT reactive to mreq — WAIT on the real GA is free-running). */
+void waitclk_tick(void* self, const Bus*, Bus* out) {
+  uint8_t* ctr = static_cast<uint8_t*>(self);
+  *ctr = static_cast<uint8_t>(*ctr + 1);
+  out->clk.cpu = true;
+  out->cpu.wait = (*ctr & 1) != 0;
+}
+Device waitclock_device(uint8_t* ctr) {
+  return Device{ctr, "waitclk", waitclk_tick, clk_reset, clk_size, clk_save, clk_load};
+}
+
 /* Run a program from 0x0000 until the Z80 halts (programs end with HALT 0x76).
  * Returns the final architectural state, with tstates frozen at the HALT. */
 struct Rig {
@@ -234,6 +246,34 @@ TEST(Z80b, LoadAFromBCSetsMemptr) {
   Z80Regs r = run({0x21, 0x40, 0x00, 0x36, 0x77, 0x01, 0x40, 0x00, 0x0A, 0x76});
   EXPECT_EQ(hi(r.af), 0x77) << "A = (BC)";
   EXPECT_EQ(r.wz, 0x0041u) << "MEMPTR = BC + 1";
+}
+
+TEST(Z80b, WaitStallExtendsMemoryCyclesNotState) {
+  // The CPC §3.1 WAIT contract: the GA stalls memory M-cycles. Final state must
+  // be identical to the no-wait run; only the T-state count grows.
+  auto ram = std::make_unique<Ram>();
+  std::memset(ram->cells, 0, sizeof(Ram::cells));
+  const uint8_t prog[] = {0x26, 0x00, 0x2E, 0x40, 0x36, 0xAB, 0x7E, 0x76};  // store + load
+  std::memcpy(ram->cells, prog, sizeof(prog));
+  std::vector<uint8_t> zmem(z80_state_size(), 0);
+  Device zdev = z80_init(zmem.data());
+  uint8_t wctr = 0;
+
+  Board board;
+  board_init(&board);
+  board_add(&board, waitclock_device(&wctr));
+  board_add(&board, ram_device(ram.get()));
+  board_add(&board, zdev);
+  board_reset(&board);
+
+  Z80Regs r{};
+  for (int i = 0; i < 8000; ++i) {
+    board_tick(&board);
+    z80_peek(&zdev, &r);
+    if (r.halted) break;
+  }
+  EXPECT_EQ(hi(r.af), 0xAB) << "value correct despite WAIT stalls (one latch, right byte)";
+  EXPECT_GT(r.tstates, 35u) << "WAIT inserted Tw cycles → more than the 35T no-wait total";
 }
 
 TEST(Z80b, StoreAToDESetsMemptr) {
