@@ -209,3 +209,36 @@ TEST(Z80b, DecHL) {
   Z80Regs r = run({0x26, 0x00, 0x2E, 0x40, 0x36, 0x00, 0x35, 0x7E, 0x76});
   EXPECT_EQ(hi(r.af), 0xFF) << "(HL): 0x00 → 0xFF";
 }
+
+TEST(Z80b, Load16BitImmediate) {
+  // LD BC,0x1234 ; LD SP,0xFFF0 ; HALT
+  Z80Regs r = run({0x01, 0x34, 0x12, 0x31, 0xF0, 0xFF, 0x76});
+  EXPECT_EQ(r.bc, 0x1234u);
+  EXPECT_EQ(r.sp, 0xFFF0u);
+  EXPECT_EQ(r.tstates, 10u + 10u + 4u) << "LD rr,nn = 10T each";
+}
+
+TEST(Z80b, Inc16AndDec16NoFlags) {
+  // LD BC,0x00FF ; INC BC ; HALT  → 0x0100, 6T for INC rr
+  Z80Regs ri = run({0x01, 0xFF, 0x00, 0x03, 0x76});
+  EXPECT_EQ(ri.bc, 0x0100u);
+  EXPECT_EQ(ri.tstates, 10u + 6u + 4u) << "INC rr = 6T (4+2 internal)";
+
+  // LD HL,0x0000 ; DEC HL ; HALT  → 0xFFFF
+  Z80Regs rd = run({0x21, 0x00, 0x00, 0x2B, 0x76});
+  EXPECT_EQ(rd.hl, 0xFFFFu);
+}
+
+TEST(Z80b, LoadAFromBCSetsMemptr) {
+  // LD HL,0x0040 ; LD (HL),0x77 ; LD BC,0x0040 ; LD A,(BC) ; HALT
+  Z80Regs r = run({0x21, 0x40, 0x00, 0x36, 0x77, 0x01, 0x40, 0x00, 0x0A, 0x76});
+  EXPECT_EQ(hi(r.af), 0x77) << "A = (BC)";
+  EXPECT_EQ(r.wz, 0x0041u) << "MEMPTR = BC + 1";
+}
+
+TEST(Z80b, StoreAToDESetsMemptr) {
+  // LD DE,0x0041 ; LD A,0x88 ; LD (DE),A ; LD HL,0x0041 ; LD A,0 ; LD A,(HL) ; HALT
+  Z80Regs r = run({0x11, 0x41, 0x00, 0x3E, 0x88, 0x12, 0x21, 0x41, 0x00, 0x3E, 0x00, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0x88) << "stored A to (DE), read it back";
+  EXPECT_EQ(r.wz, 0x8842u) << "MEMPTR = (A<<8) | ((E+1)&0xFF) = 0x8842";
+}

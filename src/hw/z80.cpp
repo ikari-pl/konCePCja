@@ -71,6 +71,7 @@ struct z80_state {
   uint8_t step = 0;      // micro-step within the instruction (post-fetch)
   uint8_t opcode = 0;
   uint8_t tmp = 0;       // last byte read
+  uint8_t tmpl = 0;      // low-byte latch (16-bit immediate assembly)
   uint8_t halt_t = 0;    // 4T HALT cadence sub-counter
   bool unimplemented = false;
 
@@ -109,6 +110,27 @@ struct z80_state {
     }
   }
   void bump_refresh() { r = static_cast<uint8_t>((r & 0x80) | ((r + 1) & 0x7F)); }
+  void pcinc() { pc.v = static_cast<uint16_t>(pc.v + 1); }
+
+  // 16-bit register pair by index (0=BC,1=DE,2=HL,3=SP).
+  uint16_t get_rp(uint8_t p) const {
+    switch (p) {
+      case 0: return bc.v;
+      case 1: return de.v;
+      case 2: return hl.v;
+      case 3: return sp.v;
+      default: return 0;
+    }
+  }
+  void set_rp(uint8_t p, uint16_t v) {
+    switch (p) {
+      case 0: bc.v = v; break;
+      case 1: de.v = v; break;
+      case 2: hl.v = v; break;
+      case 3: sp.v = v; break;
+      default: break;
+    }
+  }
 
   // --- ALU (flags validated against FUSE) ---
   void alu(uint8_t kind, uint8_t val) {
@@ -277,6 +299,44 @@ struct z80_state {
       return;
     }
 
+    // LD A,(BC|DE) / LD (BC|DE),A  (x=0, z=2, p<2). p=2,3 are the (nn) forms — later.
+    if (x == 0 && z == 2 && (y >> 1) < 2) {
+      const uint8_t p = static_cast<uint8_t>(y >> 1);  // 0=BC, 1=DE
+      const uint16_t rp = (p == 0) ? bc.v : de.v;
+      if (y & 1) {  // LD A,(rp)
+        if (step == 0) { req_read(rp); return; }
+        set_a(tmp);
+        wz.v = static_cast<uint16_t>(rp + 1);  // MEMPTR = rp+1
+        finish();
+        return;
+      }
+      // LD (rp),A
+      if (step == 0) { req_write(rp, a()); return; }
+      wz.set_hi(a());
+      wz.set_lo(static_cast<uint8_t>((rp & 0xFF) + 1));  // MEMPTR = (A<<8)|(low+1)
+      finish();
+      return;
+    }
+
+    // LD rr,nn  (x=0, z=1, q=0)
+    if (x == 0 && z == 1 && (y & 1) == 0) {
+      if (step == 0) { req_read(pc.v); pcinc(); return; }   // low byte
+      if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }  // high byte
+      set_rp(static_cast<uint8_t>(y >> 1), static_cast<uint16_t>((tmp << 8) | tmpl));
+      finish();
+      return;
+    }
+
+    // INC/DEC rr  (x=0, z=3): 2 internal cycles, then ±1, no flags
+    if (x == 0 && z == 3) {
+      if (step == 0) { req_internal(2); return; }
+      const uint8_t p = static_cast<uint8_t>(y >> 1);
+      const uint16_t v = get_rp(p);
+      set_rp(p, static_cast<uint16_t>((y & 1) ? (v - 1) : (v + 1)));
+      finish();
+      return;
+    }
+
     unimplemented = true;
     finish();
   }
@@ -391,7 +451,7 @@ void z80_reset(void* self) {
   z->halted = false;
   z->mc = z80_state::MC::M1;
   z->t = z->step = 0;
-  z->opcode = z->tmp = z->halt_t = 0;
+  z->opcode = z->tmp = z->tmpl = z->halt_t = 0;
   z->unimplemented = false;
   z->tstates = 0;
 }
