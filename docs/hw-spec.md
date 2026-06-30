@@ -118,9 +118,31 @@ the world advances via `crtc_cycle(Tstates>>2)`, `src/z80.cpp:1110-1141`). So:
 **Validation split:** the Z80's *internal* T-state timing is validated cycle-exact
 by **FUSE/jsmoo** (independent of the GA). The CPC per-µs instruction totals + the
 video address + the interrupt are validated by the **legacy golden master**. The
-sub-µs GA WAIT/fetch phase edges are **convention** — pin them only against an
-external cycle-exact reference (Bread80's GA signal analysis; not in our mirror).
-No chip may hard-code a phase constant that is not in this table.
+sub-µs GA WAIT/fetch phase edges are **convention**. No chip may hard-code a phase
+constant that is not in this table.
+
+#### The WAIT mechanism — HW-confirmed by Bread80's decapped-GA analysis
+
+Bread80's electronic analysis of the real Gate Array (bread80.com, "Understanding
+the … Gate Array Subsystem") pins the *mechanism* even though it gives no numbered
+0..15 table:
+
+- The GA runs a **16-step cycle** (one 16 MHz cycle per step) — confirms our phase
+  model directly.
+- **Video first, CPU after:** two video reads via DRAM **page mode** (two `/CAS`,
+  `/CCLK` toggling the address LSB between them), and **the CPU's RAM window follows
+  the second video `/CAS`**. So in phase terms the GA owns the early steps, the CPU
+  the later ones (the exact boundary is the remaining convention).
+- **The alignment rule (now exact and validatable):** *"three-clock-cycle M-states
+  get stretched to four."* Each Z80 **memory read/write M-cycle (normally 3 T) is
+  stretched to 4 T** by READY; the 4 T opcode-fetch M1 is unchanged. Summing M-cycles
+  each rounded to 4 T is exactly why every CPC instruction total is a multiple of 4 —
+  and it reconciles with the golden master's `cc_op[]` (e.g. `LD A,(HL)` = M1 4 T +
+  read 3→4 T = **8 T**, matching `cc_op`).
+
+So the Z80 FSM's WAIT contract is concrete: **insert one Tw into each 3 T memory
+M-cycle** (the GA holds `cpu.wait` for that T). This is observable and golden-master-
+validated; only the intra-µs *phase* at which the Tw lands stays convention.
 
 #### Interrupt timing (HW-pinned; golden master + Grimware agree exactly)
 
