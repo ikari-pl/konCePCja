@@ -165,11 +165,13 @@ TEST(Z80a, UnimplementedOpcodesAreFlagged) {
   // halts cleanly (the guard doesn't consume operand bytes).
   EXPECT_TRUE(run({0xC9, 0x76}).unimplemented) << "RET";
   EXPECT_TRUE(run({0xF3, 0x76}).unimplemented) << "DI";
-  EXPECT_TRUE(run({0x08, 0x76}).unimplemented) << "EX AF,AF'";
-  EXPECT_TRUE(run({0x07, 0x76}).unimplemented) << "RLCA";
+  EXPECT_TRUE(run({0xD9, 0x76}).unimplemented) << "EXX";
+  EXPECT_TRUE(run({0xE9, 0x76}).unimplemented) << "JP (HL)";
   // ...while implemented ops stay clean:
   EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B";
   EXPECT_FALSE(run({0x7E, 0x76}).unimplemented) << "LD A,(HL) (now implemented)";
+  EXPECT_FALSE(run({0x07, 0x76}).unimplemented) << "RLCA (now implemented)";
+  EXPECT_FALSE(run({0x08, 0x76}).unimplemented) << "EX AF,AF' (now implemented)";
 }
 
 TEST(Z80a, QClearedByNonFlagInstruction) {
@@ -412,4 +414,36 @@ TEST(Z80c, NegOfZero) {
   EXPECT_EQ(hi(r.af), 0x00);
   EXPECT_TRUE(lo(r.af) & ZF) << "NEG 0 = 0 → Z set";
   EXPECT_FALSE(lo(r.af) & CF) << "NEG 0 → no borrow, carry clear";
+}
+
+// ---- Unprefixed accumulator/misc: rotates, DAA, CPL, SCF/CCF, ADD HL,rr, EX ----
+
+TEST(Z80d, AccumulatorRotates) {
+  Z80Regs r = run({0x3E, 0x80, 0x07, 0x76});  // LD A,0x80 ; RLCA
+  EXPECT_EQ(hi(r.af), 0x01) << "RLCA 0x80 → 0x01";
+  EXPECT_TRUE(lo(r.af) & CF) << "carry = old bit 7";
+  EXPECT_EQ(r.tstates, 7u + 4u + 4u) << "RLCA = 4T";
+}
+
+TEST(Z80d, ScfCcfCplDaa) {
+  EXPECT_TRUE(lo(run({0x37, 0x76}).af) & CF) << "SCF sets carry";
+  Z80Regs ccf = run({0x37, 0x3F, 0x76});  // SCF ; CCF
+  EXPECT_FALSE(lo(ccf.af) & CF) << "CCF clears the just-set carry";
+  EXPECT_TRUE(lo(ccf.af) & HF) << "CCF: H = old carry";
+  Z80Regs cpl = run({0x3E, 0x0F, 0x2F, 0x76});  // LD A,0x0F ; CPL
+  EXPECT_EQ(hi(cpl.af), 0xF0) << "CPL = ~A";
+  EXPECT_TRUE((lo(cpl.af) & HF) && (lo(cpl.af) & NF)) << "CPL sets H,N";
+  // XOR A clears carry first (INC A preserves CF; reset F has it set), so DAA
+  // applies only the low-nibble +6 adjust, not the +0x60 high-nibble one.
+  Z80Regs daa = run({0xAF, 0x3E, 0x09, 0x3C, 0x27, 0x76});  // XOR A;LD A,9;INC A;DAA
+  EXPECT_EQ(hi(daa.af), 0x10) << "0x0A DAA → 0x10 (BCD adjust)";
+}
+
+TEST(Z80d, AddHL16AndExAf) {
+  Z80Regs r = run({0x21, 0x00, 0x10, 0x01, 0x34, 0x02, 0x09, 0x76});  // LD HL,0x1000;LD BC,0x0234;ADD HL,BC
+  EXPECT_EQ(r.hl, 0x1234u);
+  EXPECT_EQ(r.tstates, 10u + 10u + 11u + 4u) << "ADD HL,rr = 11T";
+  // LD A,0x11 ; EX AF,AF' ; LD A,0x22 ; EX AF,AF' → A back to 0x11
+  Z80Regs ex = run({0x3E, 0x11, 0x08, 0x3E, 0x22, 0x08, 0x76});
+  EXPECT_EQ(hi(ex.af), 0x11) << "EX AF,AF' swaps the alt set back";
 }

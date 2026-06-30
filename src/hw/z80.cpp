@@ -209,6 +209,60 @@ struct z80_state {
     return r8;
   }
 
+  // --- accumulator rotates (RLCA/RRCA/RLA/RRA): C from the shifted-out bit, H=N=0,
+  //     S/Z/P unchanged, X/Y from the result; not the CB rotate flags. ---
+  void acc_rot(uint8_t op) {  // op: 0=RLCA 1=RRCA 2=RLA 3=RRA
+    const uint8_t av = a();
+    const uint8_t oldc = (f() & CF) ? 1 : 0;
+    uint8_t carry = 0;
+    uint8_t na = 0;
+    switch (op) {
+      case 0: carry = static_cast<uint8_t>(av >> 7); na = static_cast<uint8_t>((av << 1) | carry); break;
+      case 1: carry = static_cast<uint8_t>(av & 1); na = static_cast<uint8_t>((av >> 1) | (carry << 7)); break;
+      case 2: carry = static_cast<uint8_t>(av >> 7); na = static_cast<uint8_t>((av << 1) | oldc); break;
+      case 3: carry = static_cast<uint8_t>(av & 1); na = static_cast<uint8_t>((av >> 1) | (oldc << 7)); break;
+      default: break;
+    }
+    set_a(na);
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | (na & (YF | XF)) | (carry ? CF : 0)));
+  }
+  void daa() {
+    const uint8_t av = a();
+    uint8_t correction = 0;
+    bool carry = (f() & CF) != 0;
+    if ((f() & HF) || (av & 0x0F) > 0x09) correction |= 0x06;
+    if (carry || av > 0x99) { correction |= 0x60; carry = true; }
+    const uint8_t na = (f() & NF) ? static_cast<uint8_t>(av - correction)
+                                  : static_cast<uint8_t>(av + correction);
+    uint8_t flags = static_cast<uint8_t>(sz53p(na) | (carry ? CF : 0) | (f() & NF));
+    flags |= static_cast<uint8_t>((av ^ na) & HF);  // half-carry from the adjust
+    set_a(na);
+    set_f(flags);
+  }
+  void cpl() {
+    set_a(static_cast<uint8_t>(~a()));
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF | CF)) | HF | NF | (a() & (YF | XF))));
+  }
+  // SCF/CCF: NMOS X/Y = ((Q ^ F) | A) & (YF|XF); Q is the prior committed latch.
+  uint8_t scf_ccf_xy() const {
+    return static_cast<uint8_t>(((q ^ f()) | a()) & (YF | XF));
+  }
+  void scf() { set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | CF | scf_ccf_xy())); }
+  void ccf() {
+    const uint8_t oldc = static_cast<uint8_t>(f() & CF);
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | (oldc ? 0 : CF) | (oldc ? HF : 0) | scf_ccf_xy()));
+  }
+  void add16(uint16_t val) {  // ADD HL,rr — H(bit11), C(bit15), N=0; SZP kept; WZ=HL+1
+    wz.v = static_cast<uint16_t>(hl.v + 1);
+    const uint32_t res = static_cast<uint32_t>(hl.v) + val;
+    const uint16_t r16 = static_cast<uint16_t>(res);
+    uint8_t flags = static_cast<uint8_t>((f() & (SF | ZF | PF)) | ((r16 >> 8) & (YF | XF)));
+    if ((hl.v ^ val ^ r16) & 0x1000) flags |= HF;
+    if (res & 0x10000) flags |= CF;
+    hl.v = r16;
+    set_f(flags);
+  }
+
   // --- M-cycle requests (set up the next cycle; the engine runs it) ---
   void req_read(uint16_t addr) { mc = MC::READ; t = 0; mc_addr = addr; }
   void req_write(uint16_t addr, uint8_t val) {
@@ -464,10 +518,17 @@ struct z80_state {
     const uint8_t p = static_cast<uint8_t>(y >> 1);
     const uint8_t q = static_cast<uint8_t>(y & 1);
     switch (z) {
-      case 0:  // NOP (y=0); DJNZ/JR/EX AF,AF' later
+      case 0:  // NOP (y=0); EX AF,AF' (y=1); DJNZ/JR (y>=2) later
         if (y == 0) { finish(); return; }
+        if (y == 1) {  // EX AF,AF'
+          const uint16_t tv = af.v;
+          af.v = af2.v;
+          af2.v = tv;
+          finish();
+          return;
+        }
         break;
-      case 1:  // LD rr,nn (q=0); ADD HL,rr (q=1) later
+      case 1:  // LD rr,nn (q=0) / ADD HL,rr (q=1)
         if (q == 0) {
           if (step == 0) { req_read(pc.v); pcinc(); return; }
           if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
@@ -475,7 +536,11 @@ struct z80_state {
           finish();
           return;
         }
-        break;
+        // ADD HL,rr — INTERNAL(7) then the add (11T total)
+        if (step == 0) { req_internal(7); return; }
+        add16(get_rp(p));
+        finish();
+        return;
       case 2:  // LD A,(BC|DE) / LD (BC|DE),A (p<2); (nn) forms (p>=2) later
         if (p < 2) {
           const uint16_t rp = (p == 0) ? bc.v : de.v;
@@ -523,8 +588,20 @@ struct z80_state {
         set_r(y, tmp);  // LD r,n
         finish();
         return;
-      case 7:  // RLCA/RRCA/.../DAA/CPL/SCF/CCF — later
-        break;
+      case 7:  // RLCA/RRCA/RLA/RRA/DAA/CPL/SCF/CCF
+        switch (y) {
+          case 0: acc_rot(0); break;
+          case 1: acc_rot(1); break;
+          case 2: acc_rot(2); break;
+          case 3: acc_rot(3); break;
+          case 4: daa(); break;
+          case 5: cpl(); break;
+          case 6: scf(); break;
+          case 7: ccf(); break;
+          default: break;
+        }
+        finish();
+        return;
       default:
         break;
     }
