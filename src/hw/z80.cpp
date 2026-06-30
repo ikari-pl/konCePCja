@@ -132,6 +132,39 @@ struct z80_state {
       default: break;
     }
   }
+  // PUSH/POP register-pair table (0=BC,1=DE,2=HL,3=AF) — AF replaces SP.
+  uint16_t get_rp2(uint8_t p) const {
+    switch (p) {
+      case 0: return bc.v;
+      case 1: return de.v;
+      case 2: return hl.v;
+      case 3: return af.v;
+      default: return 0;
+    }
+  }
+  void set_rp2(uint8_t p, uint16_t v) {
+    switch (p) {
+      case 0: bc.v = v; break;
+      case 1: de.v = v; break;
+      case 2: hl.v = v; break;
+      case 3: af.v = v; break;
+      default: break;
+    }
+  }
+  // Branch condition by octal y: NZ,Z,NC,C,PO,PE,P,M.
+  bool cond(uint8_t y) const {
+    switch (y) {
+      case 0: return (f() & ZF) == 0;
+      case 1: return (f() & ZF) != 0;
+      case 2: return (f() & CF) == 0;
+      case 3: return (f() & CF) != 0;
+      case 4: return (f() & PF) == 0;
+      case 5: return (f() & PF) != 0;
+      case 6: return (f() & SF) == 0;
+      case 7: return (f() & SF) != 0;
+      default: return false;
+    }
+  }
 
   // --- ALU (flags validated against FUSE) ---
   void alu(uint8_t kind, uint8_t val) {
@@ -482,17 +515,167 @@ struct z80_state {
         }
         finish();
         return;
-      case 3:  // mostly control flow / prefixes (later); only ALU A,n so far
-        if (z == 6) {
-          if (step == 0) { req_read(pc.v); pcinc(); return; }
-          alu(y, tmp);
+      case 3:  // control flow, stack, ALU A,n, prefixes
+        micro_x3(y, z);
+        return;
+      default:
+        return;
+    }
+  }
+
+  // x=3: RET cc / POP / JP / CALL / RST / PUSH / EX / DI-EI / ALU A,n.
+  // Stack writes push high byte first (to SP-1), then low (to SP-2). Ops with a
+  // 5T/6T M1 (PUSH, RST, RET cc, LD SP,HL) model the extra T as a leading
+  // INTERNAL — same totals and bus behaviour, no special-casing in the engine.
+  void micro_x3(uint8_t y, uint8_t z) {
+    const uint8_t p = static_cast<uint8_t>(y >> 1);
+    const uint8_t q = static_cast<uint8_t>(y & 1);
+    switch (z) {
+      case 0:  // RET cc — 5T M1 (decision), then POP pc if taken
+        if (step == 0) { req_internal(1); return; }
+        if (step == 1) {
+          if (!cond(y)) { finish(); return; }       // not taken: 5T
+          req_read(sp.v); sp.v++; return;
+        }
+        if (step == 2) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
+        pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+        finish();
+        return;
+      case 1:
+        if (q == 0) {  // POP rp2[p]
+          if (step == 0) { req_read(sp.v); sp.v++; return; }
+          if (step == 1) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
+          set_rp2(p, static_cast<uint16_t>((tmp << 8) | tmpl));
           finish();
           return;
         }
-        unimplemented = true;
+        switch (p) {
+          case 0:  // RET
+            if (step == 0) { req_read(sp.v); sp.v++; return; }
+            if (step == 1) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
+            pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+            finish();
+            return;
+          case 1: {  // EXX
+            const uint16_t b = bc.v, d = de.v, h = hl.v;
+            bc.v = bc2.v; de.v = de2.v; hl.v = hl2.v;
+            bc2.v = b; de2.v = d; hl2.v = h;
+            finish();
+            return;
+          }
+          case 2:  // JP (HL) — 4T, no WZ change
+            pc.v = hl.v;
+            finish();
+            return;
+          case 3:  // LD SP,HL — 6T (M1 + 2 internal)
+            if (step == 0) { req_internal(2); return; }
+            sp.v = hl.v;
+            finish();
+            return;
+          default:
+            return;
+        }
+      case 2:  // JP cc,nn — always reads nn, WZ=nn, jumps if cc
+        if (step == 0) { req_read(pc.v); pcinc(); return; }
+        if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+        wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+        if (cond(y)) pc.v = wz.v;
+        finish();
+        return;
+      case 3:
+        switch (y) {
+          case 0:  // JP nn
+            if (step == 0) { req_read(pc.v); pcinc(); return; }
+            if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+            pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+            finish();
+            return;
+          case 4:  // EX (SP),HL — 19T. Read the stack word, write HL there, then
+                   // load HL from the old word; WZ = new HL.
+            if (step == 0) { req_read(sp.v); return; }
+            if (step == 1) { tmpl = tmp; req_read(static_cast<uint16_t>(sp.v + 1)); return; }
+            if (step == 2) { req_internal(1); return; }
+            if (step == 3) { req_write(static_cast<uint16_t>(sp.v + 1), hl.hi()); return; }
+            if (step == 4) { req_write(sp.v, hl.lo()); return; }
+            if (step == 5) {
+              hl.set_lo(tmpl);
+              hl.set_hi(tmp);
+              wz.v = hl.v;
+              req_internal(2);
+              return;
+            }
+            finish();
+            return;
+          case 5: {  // EX DE,HL
+            const uint16_t t2 = de.v;
+            de.v = hl.v;
+            hl.v = t2;
+            finish();
+            return;
+          }
+          case 6:  // DI
+            iff1 = iff2 = 0;
+            finish();
+            return;
+          case 7:  // EI
+            iff1 = iff2 = 1;
+            finish();
+            return;
+          default:  // y=1 CB (at M1); y=2 OUT (n),A; y=3 IN A,(n) — IO, later
+            unimplemented = true;
+            finish();
+            return;
+        }
+      case 4:  // CALL cc,nn
+        if (step == 0) { req_read(pc.v); pcinc(); return; }
+        if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+        if (step == 2) {
+          wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+          if (!cond(y)) { finish(); return; }  // not taken: 10T
+          req_internal(1);
+          return;
+        }
+        if (step == 3) { sp.v--; req_write(sp.v, pc.hi()); return; }
+        if (step == 4) { sp.v--; req_write(sp.v, pc.lo()); return; }
+        pc.v = wz.v;
+        finish();
+        return;
+      case 5:
+        if (q == 0) {  // PUSH rp2[p] — 5T M1 + 2 writes
+          if (step == 0) { req_internal(1); return; }
+          if (step == 1) { sp.v--; req_write(sp.v, static_cast<uint8_t>(get_rp2(p) >> 8)); return; }
+          if (step == 2) { sp.v--; req_write(sp.v, static_cast<uint8_t>(get_rp2(p) & 0xFF)); return; }
+          finish();
+          return;
+        }
+        if (p == 0) {  // CALL nn
+          if (step == 0) { req_read(pc.v); pcinc(); return; }
+          if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+          if (step == 2) { wz.v = static_cast<uint16_t>((tmp << 8) | tmpl); req_internal(1); return; }
+          if (step == 3) { sp.v--; req_write(sp.v, pc.hi()); return; }
+          if (step == 4) { sp.v--; req_write(sp.v, pc.lo()); return; }
+          pc.v = wz.v;
+          finish();
+          return;
+        }
+        unimplemented = true;  // p=1 DD / p=3 FD (index prefix, later)
+        finish();
+        return;
+      case 6:  // ALU A,n
+        if (step == 0) { req_read(pc.v); pcinc(); return; }
+        alu(y, tmp);
+        finish();
+        return;
+      case 7:  // RST y*8 — 5T M1 + 2 writes
+        if (step == 0) { req_internal(1); return; }
+        if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
+        if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
+        pc.v = wz.v = static_cast<uint16_t>(y * 8);
         finish();
         return;
       default:
+        unimplemented = true;
+        finish();
         return;
     }
   }
@@ -518,7 +701,7 @@ struct z80_state {
     const uint8_t p = static_cast<uint8_t>(y >> 1);
     const uint8_t q = static_cast<uint8_t>(y & 1);
     switch (z) {
-      case 0:  // NOP (y=0); EX AF,AF' (y=1); DJNZ/JR (y>=2) later
+      case 0:  // NOP (y=0); EX AF,AF' (y=1); DJNZ (y=2); JR/JR cc (y>=3)
         if (y == 0) { finish(); return; }
         if (y == 1) {  // EX AF,AF'
           const uint16_t tv = af.v;
@@ -527,7 +710,30 @@ struct z80_state {
           finish();
           return;
         }
-        break;
+        if (y == 2) {  // DJNZ e — 5T M1, read displacement, branch if --B != 0
+          if (step == 0) { req_internal(1); return; }
+          if (step == 1) { req_read(pc.v); pcinc(); return; }
+          if (step == 2) {
+            bc.set_hi(static_cast<uint8_t>(bc.hi() - 1));
+            if (bc.hi() == 0) { finish(); return; }  // not taken: 8T
+            req_internal(5);
+            return;
+          }
+          pc.v = wz.v = static_cast<uint16_t>(pc.v + static_cast<int8_t>(tmp));
+          finish();
+          return;
+        }
+        // JR e (y=3) / JR cc,e (y=4..7 → NZ,Z,NC,C)
+        if (step == 0) { req_read(pc.v); pcinc(); return; }
+        if (step == 1) {
+          const bool take = (y == 3) || cond(static_cast<uint8_t>(y - 4));
+          if (!take) { finish(); return; }  // not taken: 7T
+          req_internal(5);
+          return;
+        }
+        pc.v = wz.v = static_cast<uint16_t>(pc.v + static_cast<int8_t>(tmp));
+        finish();
+        return;
       case 1:  // LD rr,nn (q=0) / ADD HL,rr (q=1)
         if (q == 0) {
           if (step == 0) { req_read(pc.v); pcinc(); return; }

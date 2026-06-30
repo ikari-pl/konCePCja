@@ -71,7 +71,7 @@ struct Rig {
   Device zdev;
 };
 
-Z80Regs run(std::initializer_list<uint8_t> program) {
+Z80Regs run(const std::vector<uint8_t>& program) {
   static Rig rig;  // reused; reset below
   rig.ram = std::make_unique<Ram>();
   std::memset(rig.ram->cells, 0, sizeof(Ram::cells));
@@ -94,6 +94,10 @@ Z80Regs run(std::initializer_list<uint8_t> program) {
     if (r.halted) break;
   }
   return r;
+}
+
+Z80Regs run(std::initializer_list<uint8_t> program) {
+  return run(std::vector<uint8_t>(program));
 }
 
 uint8_t lo(uint16_t v) { return static_cast<uint8_t>(v & 0xFF); }
@@ -163,15 +167,15 @@ TEST(Z80a, UnimplementedOpcodesAreFlagged) {
   // Opcodes not yet decoded (control flow / prefixes / 16-bit) must set
   // `unimplemented`, never silently compute garbage. Single-byte so [op, HALT]
   // halts cleanly (the guard doesn't consume operand bytes).
-  EXPECT_TRUE(run({0xC9, 0x76}).unimplemented) << "RET";
-  EXPECT_TRUE(run({0xF3, 0x76}).unimplemented) << "DI";
-  EXPECT_TRUE(run({0xD9, 0x76}).unimplemented) << "EXX";
-  EXPECT_TRUE(run({0xE9, 0x76}).unimplemented) << "JP (HL)";
+  EXPECT_TRUE(run({0xD3, 0x00, 0x76}).unimplemented) << "OUT (n),A (IO, not yet)";
+  EXPECT_TRUE(run({0xDB, 0x00, 0x76}).unimplemented) << "IN A,(n) (IO, not yet)";
+  EXPECT_TRUE(run({0xDD, 0x00, 0x76}).unimplemented) << "DD prefix (index, not yet)";
+  EXPECT_TRUE(run({0xFD, 0x00, 0x76}).unimplemented) << "FD prefix (index, not yet)";
   // ...while implemented ops stay clean:
   EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B";
-  EXPECT_FALSE(run({0x7E, 0x76}).unimplemented) << "LD A,(HL) (now implemented)";
-  EXPECT_FALSE(run({0x07, 0x76}).unimplemented) << "RLCA (now implemented)";
-  EXPECT_FALSE(run({0x08, 0x76}).unimplemented) << "EX AF,AF' (now implemented)";
+  EXPECT_FALSE(run({0xC9, 0x76}).unimplemented) << "RET (now implemented)";
+  EXPECT_FALSE(run({0xE9, 0x76}).unimplemented) << "JP (HL) (now implemented)";
+  EXPECT_FALSE(run({0xF3, 0x76}).unimplemented) << "DI (now implemented)";
 }
 
 TEST(Z80a, QClearedByNonFlagInstruction) {
@@ -446,4 +450,73 @@ TEST(Z80d, AddHL16AndExAf) {
   // LD A,0x11 ; EX AF,AF' ; LD A,0x22 ; EX AF,AF' → A back to 0x11
   Z80Regs ex = run({0x3E, 0x11, 0x08, 0x3E, 0x22, 0x08, 0x76});
   EXPECT_EQ(hi(ex.af), 0x11) << "EX AF,AF' swaps the alt set back";
+}
+
+// ---- Control flow: jumps, calls, returns, stack, RST, EX ----
+
+TEST(Z80e, JpAndJpHl) {
+  // LD A,0x11 ; JP 0x0007 ; LD A,0xFF (skipped) ; HALT@7
+  Z80Regs jp = run({0x3E, 0x11, 0xC3, 0x07, 0x00, 0x3E, 0xFF, 0x76});
+  EXPECT_EQ(hi(jp.af), 0x11) << "JP skipped the LD A,0xFF";
+  EXPECT_EQ(jp.wz, 0x0007u) << "JP sets WZ = target";
+  EXPECT_EQ(jp.tstates, 7u + 10u + 4u) << "JP nn = 10T";
+  // LD A,0x99 ; LD HL,0x0008 ; JP (HL) ; LD A,0x00 (skipped) ; HALT@8
+  Z80Regs jphl = run({0x3E, 0x99, 0x21, 0x08, 0x00, 0xE9, 0x3E, 0x00, 0x76});
+  EXPECT_EQ(hi(jphl.af), 0x99) << "JP (HL) jumped past LD A,0x00";
+}
+
+TEST(Z80e, JrTakenAndConditionalNotTaken) {
+  // LD A,0x22 ; JR +2 → HALT@6 (skips LD A,0xFF)
+  Z80Regs jr = run({0x3E, 0x22, 0x18, 0x02, 0x3E, 0xFF, 0x76});
+  EXPECT_EQ(hi(jr.af), 0x22) << "JR +2 skipped the LD A,0xFF";
+  EXPECT_EQ(jr.tstates, 7u + 12u + 4u) << "JR taken = 12T";
+  // XOR A (Z set) ; JR NZ,+2 (NOT taken) ; LD A,0xFF ; HALT
+  Z80Regs nz = run({0xAF, 0x20, 0x02, 0x3E, 0xFF, 0x76});
+  EXPECT_EQ(hi(nz.af), 0xFF) << "JR NZ not taken (Z set) → fell through to LD A,0xFF";
+}
+
+TEST(Z80e, DjnzLoop) {
+  // LD B,3 ; LD C,0 ; loop: INC C ; DJNZ loop ; HALT
+  Z80Regs r = run({0x06, 0x03, 0x0E, 0x00, 0x0C, 0x10, 0xFD, 0x76});
+  EXPECT_EQ(lo(r.bc), 0x03) << "C incremented once per DJNZ iteration";
+  EXPECT_EQ(hi(r.bc), 0x00) << "B counted down to 0";
+}
+
+TEST(Z80e, CallRetRoundTrip) {
+  // CALL 0x0006 ; HALT@3 ; pad ; 0x0006: LD A,0x55 ; RET
+  Z80Regs r = run({0xCD, 0x06, 0x00, 0x76, 0x00, 0x00, 0x3E, 0x55, 0xC9});
+  EXPECT_EQ(hi(r.af), 0x55) << "subroutine ran";
+  EXPECT_EQ(r.sp, 0xFFFFu) << "RET restored SP (CALL pushed, RET popped)";
+  EXPECT_EQ(r.tstates, 17u + 7u + 10u + 4u) << "CALL 17T + LD 7T + RET 10T + HALT 4T";
+  // CALL NZ when Z set → not taken, SP untouched
+  Z80Regs nt = run({0xAF, 0xC4, 0x08, 0x00, 0x76});
+  EXPECT_EQ(nt.sp, 0xFFFFu) << "CALL NZ not taken pushed nothing";
+}
+
+TEST(Z80e, PushPopAndExSp) {
+  // LD BC,0x1234 ; PUSH BC ; POP HL → HL=0x1234, SP restored
+  Z80Regs pp = run({0x01, 0x34, 0x12, 0xC5, 0xE1, 0x76});
+  EXPECT_EQ(pp.hl, 0x1234u) << "PUSH BC / POP HL transfers via the stack";
+  EXPECT_EQ(pp.sp, 0xFFFFu) << "push then pop balances SP";
+  // LD HL,0xAAAA ; PUSH HL ; LD HL,0xBBBB ; EX (SP),HL ; POP BC
+  Z80Regs ex = run({0x21, 0xAA, 0xAA, 0xE5, 0x21, 0xBB, 0xBB, 0xE3, 0xC1, 0x76});
+  EXPECT_EQ(ex.hl, 0xAAAAu) << "EX (SP),HL loaded HL from the stacked word";
+  EXPECT_EQ(ex.bc, 0xBBBBu) << "EX (SP),HL wrote HL onto the stack";
+}
+
+TEST(Z80e, RstAndExxExDeHl) {
+  // RST 0x10 → jumps to 0x0010 (HALT there)
+  std::vector<uint8_t> prog(0x11, 0x00);
+  prog[0] = 0xD7;   // RST 10h
+  prog[0x10] = 0x76;  // HALT
+  Z80Regs rst = run(prog);
+  EXPECT_EQ(rst.wz, 0x0010u) << "RST 10h sets PC/WZ = 0x0010";
+  EXPECT_EQ(rst.sp, 0xFFFDu) << "RST pushed the return address (2 bytes)";
+  // LD HL,0x1111 ; LD DE,0x2222 ; EX DE,HL
+  Z80Regs ex = run({0x21, 0x11, 0x11, 0x11, 0x22, 0x22, 0xEB, 0x76});
+  EXPECT_EQ(ex.hl, 0x2222u);
+  EXPECT_EQ(ex.de, 0x1111u);
+  // LD BC,0x0102 ; EXX → BC' holds it, BC reads the (zero) alt set
+  Z80Regs exx = run({0x01, 0x02, 0x01, 0xD9, 0x76});
+  EXPECT_EQ(exx.bc_, 0x0102u) << "EXX moved BC into the alternate set";
 }
