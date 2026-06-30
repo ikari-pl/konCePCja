@@ -1,27 +1,23 @@
 /* board_smoke_test.cpp — proves the device/bus/board foundation end-to-end with
- * two trivial devices, before any real chip exists.
+ * two trivial devices, before any real chip exists. A gtest translation unit (no
+ * main(); test/main.cpp owns it) so it links into test_runner and runs in CI.
  *
- *   c++ -std=c++17 -Wall -Wextra -Wconversion -Wshadow -I src/hw \
- *       test/hw/board_smoke_test.cpp src/hw/board.cpp -o /tmp/boardsmoke
- *
- * It demonstrates the whole model: a single Pins value threaded through devices
- * in bus order each tick, a memory device responding to mreq+rd/wr, the clock
- * advancing, and uniform per-device save/load.
+ * NOTE: this validates only the forward dataflow path. The hard properties the
+ * model must eventually guarantee — WAIT stall, multi-driver bus resolution,
+ * reset-via-pin — are intentionally NOT covered yet; they depend on the
+ * two-phase tick / bus-resolution decisions still being settled (see
+ * docs/plans/2026-06-30-cycle-exact-machine.md).
  */
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
+#include <memory>
 
-#include "board.h"
+#include <gtest/gtest.h>
+
+#include "hw/board.h"
 
 namespace {
-
-int failures = 0;
-void check(bool ok, const char* what) {
-  std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what);
-  if (!ok) ++failures;
-}
 
 /* ---- trivial RAM device: responds to memory reads/writes ---- */
 struct Ram {
@@ -57,25 +53,26 @@ size_t ticker_state_size(const void*) { return sizeof(Ticker); }
 void ticker_save(const void* self, void* buf) { std::memcpy(buf, self, sizeof(Ticker)); }
 void ticker_load(void* self, const void* buf) { std::memcpy(self, buf, sizeof(Ticker)); }
 Device ticker_device(Ticker* storage) {
-  return Device{storage,      "ticker",     ticker_tick, ticker_reset,
+  return Device{storage,           "ticker",    ticker_tick, ticker_reset,
                 ticker_state_size, ticker_save, ticker_load};
 }
 
 }  // namespace
 
-int main() {
-  static Ram ram_storage;        // caller-owned device state, off the stack
-  static Ticker ticker_storage;
+TEST(BoardFoundation, ForwardMemoryAccessClockAndSnapshot) {
+  auto ram = std::make_unique<Ram>();
+  auto ticker = std::make_unique<Ticker>();
 
   Board board;
   board_init(&board);
-  int ram_idx = board_add(&board, ram_device(&ram_storage));
-  int tick_idx = board_add(&board, ticker_device(&ticker_storage));
+  const int ram_idx = board_add(&board, ram_device(ram.get()));
+  const int tick_idx = board_add(&board, ticker_device(ticker.get()));
   board_reset(&board);
 
-  check(ram_idx == 0 && tick_idx == 1, "devices added in bus order");
-  check(board.count == 2, "board has 2 devices");
-  check(board.tstates == 0, "clock starts at 0");
+  EXPECT_EQ(ram_idx, 0) << "devices added in bus order";
+  EXPECT_EQ(tick_idx, 1);
+  EXPECT_EQ(board.count, 2);
+  EXPECT_EQ(board.tstates, 0u) << "clock starts at 0";
 
   // Memory WRITE transaction: drive addr+data, assert mreq+wr, tick once.
   board.pins = Pins{};
@@ -84,7 +81,7 @@ int main() {
   board.pins.mreq = true;
   board.pins.wr = true;
   board_tick(&board);
-  check(ram_storage.cells[0x1234] == 0xAB, "RAM latched a write transaction");
+  EXPECT_EQ(ram->cells[0x1234], 0xAB) << "RAM latched a write transaction";
 
   // Memory READ transaction: drive addr, assert mreq+rd, tick once.
   board.pins = Pins{};
@@ -92,19 +89,15 @@ int main() {
   board.pins.mreq = true;
   board.pins.rd = true;
   board_tick(&board);
-  check(board.pins.data == 0xAB, "RAM drove the data bus on read");
+  EXPECT_EQ(board.pins.data, 0xAB) << "RAM drove the data bus on read";
 
-  check(board.tstates == 2, "clock advanced one per board_tick");
-  check(ticker_storage.count == 2, "every device ticked once per T-state");
+  EXPECT_EQ(board.tstates, 2u) << "clock advanced one per board_tick";
+  EXPECT_EQ(ticker->count, 2u) << "every device ticked once per T-state";
 
   // Uniform save/load round-trip on a device.
   uint8_t buf[sizeof(Ticker)];
-  ticker_save(&ticker_storage, buf);
-  ticker_storage.count = 999;
-  ticker_load(&ticker_storage, buf);
-  check(ticker_storage.count == 2, "device save/load round-trips state");
-
-  std::printf("\n%s (%d failure%s)\n", failures == 0 ? "ALL PASS" : "FAILURES",
-              failures, failures == 1 ? "" : "s");
-  return failures == 0 ? 0 : 1;
+  ticker_save(ticker.get(), buf);
+  ticker->count = 999;
+  ticker_load(ticker.get(), buf);
+  EXPECT_EQ(ticker->count, 2u) << "device save/load round-trips state";
 }
