@@ -367,3 +367,49 @@ TEST(Z80c, Rrd) {
   EXPECT_EQ(hi(r.af), 0x32) << "RRD: A = (A&0xF0) | ((HL)&0x0F) = 0x30|0x02";
   EXPECT_EQ(hi(r.bc), 0x41) << "RRD: (HL) = (A_low<<4) | ((HL)>>4) = 0x41";
 }
+
+TEST(Z80c, Rld) {
+  // LD HL,0x0040 ; LD (HL),0x12 ; LD A,0x34 ; RLD ; LD B,(HL) ; HALT
+  Z80Regs r = run({0x21, 0x40, 0x00, 0x36, 0x12, 0x3E, 0x34, 0xED, 0x6F, 0x46, 0x76});
+  EXPECT_EQ(hi(r.af), 0x31) << "RLD: A = (A&0xF0) | ((HL)>>4) = 0x30|0x01";
+  EXPECT_EQ(hi(r.bc), 0x24) << "RLD: (HL) = ((HL)<<4) | (A&0x0F) = 0x24";
+}
+
+// ---- Z80-c hardening: the subtle flag paths the reviewer flagged ----
+
+TEST(Z80c, BitFromHLTakesXYFromMemptr) {
+  // Seed WZ via LD A,(BC) (WZ=BC+1=0x2800), then BIT 0,(HL): undoc X/Y come from
+  // WZ.hi (0x28), NOT from the tested value.
+  Z80Regs r = run({0x06, 0x27, 0x0E, 0xFF, 0x0A,        // LD B,0x27; LD C,0xFF; LD A,(BC) → WZ=0x2800
+                   0x21, 0x40, 0x00, 0x36, 0x01,        // LD HL,0x40; LD (HL),0x01
+                   0xCB, 0x46, 0x76});                  // BIT 0,(HL); HALT
+  EXPECT_EQ(r.wz, 0x2800u);
+  EXPECT_EQ(lo(r.af) & static_cast<uint8_t>(YF | XF), 0x28) << "BIT n,(HL): X/Y from WZ.hi";
+}
+
+TEST(Z80c, Adc16OverflowSignHalf) {
+  // XOR A ; LD HL,0x7FFF ; LD DE,1 ; ADC HL,DE → 0x8000
+  Z80Regs r = run({0xAF, 0x21, 0xFF, 0x7F, 0x11, 0x01, 0x00, 0xED, 0x5A, 0x76});
+  EXPECT_EQ(r.hl, 0x8000u);
+  EXPECT_TRUE(lo(r.af) & SF) << "0x8000 → S set";
+  EXPECT_TRUE(lo(r.af) & PF) << "0x7FFF+1 → signed overflow";
+  EXPECT_FALSE(lo(r.af) & CF) << "no 16-bit carry";
+}
+
+TEST(Z80c, SraAndSllShifts) {
+  // XOR A ; LD A,0x81 ; SRA A → 0xC0 (sign-extended), carry = old bit0
+  Z80Regs sra = run({0xAF, 0x3E, 0x81, 0xCB, 0x2F, 0x76});
+  EXPECT_EQ(hi(sra.af), 0xC0) << "SRA sign-extends bit 7";
+  EXPECT_TRUE(lo(sra.af) & CF);
+  // XOR A ; LD A,0x80 ; SLL A → 0x01 (bit0 forced to 1), carry = old bit7
+  Z80Regs sll = run({0xAF, 0x3E, 0x80, 0xCB, 0x37, 0x76});
+  EXPECT_EQ(hi(sll.af), 0x01) << "SLL forces bit 0";
+  EXPECT_TRUE(lo(sll.af) & CF);
+}
+
+TEST(Z80c, NegOfZero) {
+  Z80Regs r = run({0x3E, 0x00, 0xED, 0x44, 0x76});  // LD A,0 ; NEG
+  EXPECT_EQ(hi(r.af), 0x00);
+  EXPECT_TRUE(lo(r.af) & ZF) << "NEG 0 = 0 → Z set";
+  EXPECT_FALSE(lo(r.af) & CF) << "NEG 0 → no borrow, carry clear";
+}
