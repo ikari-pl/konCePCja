@@ -12,8 +12,9 @@
  *
  * No C++ types, no global state: the boundary is plain C so a formally-verified
  * SPARK/Ada core can `pragma Export` these entry points and `Import` the bus
- * callbacks (Convention => C). Identifiers are chosen to avoid Ada reserved
- * words (`in_`, `out_`) so a GNAT record can map them 1:1. The bus callbacks sit
+ * callbacks (Convention => C). The bus callbacks are named by what they access
+ * (`mem_read`/`mem_write`, `io_read`/`io_write`) — symmetric, and free of any
+ * C/Ada/Rust reserved word, so a GNAT record maps them 1:1. The callbacks sit
  * OUTSIDE a SPARK proof boundary — they are the environment the verified CPU
  * logic runs against.
  *
@@ -44,15 +45,15 @@ extern "C" {
  * the passage of time. `tick` is how a cycle-stepped core advances the rest of
  * the machine (gate array, CRTC, interrupt generation) in lockstep.
  *
- * `read`, `write`, `in_` and `out_` are REQUIRED (must be non-NULL). `tick` is
- * OPTIONAL (may be NULL) for callers that don't model time. */
+ * `mem_read`, `mem_write`, `io_read` and `io_write` are REQUIRED (must be
+ * non-NULL). `tick` is OPTIONAL (may be NULL) for callers that don't model time. */
 typedef struct z80core_bus {
   void* ctx;
-  uint8_t (*read)(void* ctx, uint16_t addr);            /* memory read  (required) */
-  void (*write)(void* ctx, uint16_t addr, uint8_t val); /* memory write (required) */
-  uint8_t (*in_)(void* ctx, uint16_t port);             /* I/O read     (required) */
-  void (*out_)(void* ctx, uint16_t port, uint8_t val);  /* I/O write    (required) */
-  void (*tick)(void* ctx, int32_t tstates);             /* advance N T-states (optional) */
+  uint8_t (*mem_read)(void* ctx, uint16_t addr);             /* memory read  (required) */
+  void (*mem_write)(void* ctx, uint16_t addr, uint8_t val);  /* memory write (required) */
+  uint8_t (*io_read)(void* ctx, uint16_t port);              /* I/O read     (required) */
+  void (*io_write)(void* ctx, uint16_t port, uint8_t val);   /* I/O write    (required) */
+  void (*tick)(void* ctx, int32_t tstates);                  /* advance N T-states (optional) */
 } z80core_bus;
 
 /* Canonical, language-neutral snapshot of ALL observable + internal CPU state.

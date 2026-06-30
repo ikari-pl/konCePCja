@@ -62,21 +62,21 @@ struct z80core_state {
     if (bus.tick) bus.tick(bus.ctx, t);
   }
   uint8_t read(uint16_t addr) {
-    uint8_t d = bus.read(bus.ctx, addr);
+    uint8_t d = bus.mem_read(bus.ctx, addr);
     tick(3);
     return d;
   }
   void write(uint16_t addr, uint8_t val) {
-    bus.write(bus.ctx, addr, val);
+    bus.mem_write(bus.ctx, addr, val);
     tick(3);
   }
   uint8_t in_port(uint16_t port) {
-    uint8_t d = bus.in_(bus.ctx, port);
+    uint8_t d = bus.io_read(bus.ctx, port);
     tick(4);
     return d;
   }
   void out_port(uint16_t port, uint8_t val) {
-    bus.out_(bus.ctx, port, val);
+    bus.io_write(bus.ctx, port, val);
     tick(4);
   }
 
@@ -85,7 +85,7 @@ struct z80core_state {
 
   // M1 opcode fetch: 4 T-states, advances PC, refreshes R.
   uint8_t fetch() {
-    uint8_t op = bus.read(bus.ctx, pc.v);
+    uint8_t op = bus.mem_read(bus.ctx, pc.v);
     pc.v = static_cast<uint16_t>(pc.v + 1);
     tick(4);
     bump_r();
@@ -97,7 +97,7 @@ namespace {
 
 bool bus_is_valid(const z80core_bus* bus) {
   // tick is optional; the four data-path callbacks are mandatory.
-  return bus && bus->read && bus->write && bus->in_ && bus->out_;
+  return bus && bus->mem_read && bus->mem_write && bus->io_read && bus->io_write;
 }
 
 }  // namespace
