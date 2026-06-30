@@ -147,6 +147,27 @@ TEST(Z80a, XorAClearsToKnownState) {
   EXPECT_EQ(lo(r.af), static_cast<uint8_t>(ZF | PF)) << "Z + even parity; H,N,C clear";
 }
 
+TEST(Z80a, UnimplementedHLOpsAreFlagged) {
+  // (HL) / memory-operand opcodes are not handled until Z80-b; they must set
+  // `unimplemented`, never silently compute garbage.
+  EXPECT_TRUE(run({0x86, 0x76}).unimplemented) << "ADD A,(HL)";
+  EXPECT_TRUE(run({0x34, 0x76}).unimplemented) << "INC (HL)";
+  EXPECT_TRUE(run({0x36, 0xAB, 0x76}).unimplemented) << "LD (HL),n";
+  EXPECT_TRUE(run({0x46, 0x76}).unimplemented) << "LD B,(HL)";
+  EXPECT_TRUE(run({0x70, 0x76}).unimplemented) << "LD (HL),B";
+  // ...while implemented ops stay clean:
+  EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B is implemented";
+}
+
+TEST(Z80a, QClearedByNonFlagInstruction) {
+  // Rak's Q must commit to 0 after an instruction that writes no flags (else the
+  // NMOS SCF/CCF formula breaks in Z80-e). Reset F is 0xFF, so the old init bug
+  // (qq = F) would leave Q = 0xFF. Run NOPs with no HALT so nothing re-commits Q.
+  // (HALT itself is a non-flag op and would also force Q=0, masking the bug.)
+  EXPECT_EQ(run({0x00}).q, 0u) << "Q=0 after NOP (init must clear, not copy F)";
+  EXPECT_EQ(run({0x3E, 0x55}).q, 0u) << "Q=0 after LD A,n then NOPs";
+}
+
 TEST(Z80a, RefreshIncrements) {
   Z80Regs r = run({0x00, 0x00, 0x00, 0x76});  // 3×NOP ; HALT
   EXPECT_EQ(r.r & 0x7F, 4u) << "R bumped once per M1 (4 instructions incl. HALT)";

@@ -56,6 +56,7 @@ struct z80_state {
   uint8_t t = 0;       // T-state within the current machine cycle (0 = not started)
   uint8_t opcode = 0;  // latched opcode
   uint8_t tmp = 0;     // latched operand byte
+  uint8_t halt_t = 0;  // sub-counter for the 4T HALT NOP cadence
   bool need_read = false;
   bool unimplemented = false;
 
@@ -183,15 +184,34 @@ struct z80_state {
     if (opcode == 0x00) return;        // NOP
     if (opcode == 0x76) { halted = true; return; }  // HALT
 
-    if (x == 1) {                      // LD r,r'  (6 = (HL) excluded this round)
-      if (y != 6 && z != 6) set_r(y, get_r(z));
+    // Index 6 = (HL): memory operand, not handled until Z80-b. Flag it rather
+    // than silently computing garbage (get_r(6)/set_r(6) would no-op).
+    if (x == 1) {  // LD r,r'
+      if (y == 6 || z == 6) { unimplemented = true; return; }
+      set_r(y, get_r(z));
       return;
     }
-    if (x == 2) { alu(y, get_r(z)); return; }            // ALU A,r
-    if (x == 3 && z == 6) { alu(y, tmp); return; }       // ALU A,n  (CB/D6/... immediates)
-    if (x == 0 && z == 6) { set_r(y, tmp); return; }     // LD r,n
-    if (x == 0 && z == 4) { set_r(y, inc8(get_r(y))); return; }  // INC r
-    if (x == 0 && z == 5) { set_r(y, dec8(get_r(y))); return; }  // DEC r
+    if (x == 2) {  // ALU A,r
+      if (z == 6) { unimplemented = true; return; }
+      alu(y, get_r(z));
+      return;
+    }
+    if (x == 3 && z == 6) { alu(y, tmp); return; }  // ALU A,n
+    if (x == 0 && z == 6) {                         // LD r,n
+      if (y == 6) { unimplemented = true; return; }  // LD (HL),n needs a write
+      set_r(y, tmp);
+      return;
+    }
+    if (x == 0 && z == 4) {  // INC r
+      if (y == 6) { unimplemented = true; return; }
+      set_r(y, inc8(get_r(y)));
+      return;
+    }
+    if (x == 0 && z == 5) {  // DEC r
+      if (y == 6) { unimplemented = true; return; }
+      set_r(y, dec8(get_r(y)));
+      return;
+    }
     unimplemented = true;
   }
 };
@@ -213,21 +233,30 @@ z80_state* self_of(void* self) { return static_cast<z80_state*>(self); }
 void z80_tick(void* self, const Bus* in, Bus* out) {
   z80_state* z = self_of(self);
 
-  // The CPU always drives its idea of the bus; default deasserted (out is already
-  // resting). We re-drive each tick; on non-enabled cycles we simply hold.
-  if (!in->clk.cpu) return;  // not our 4 MHz edge — hold (resting out is fine)
+  // Advance only on the 4 MHz CPU clock enable.
+  // TODO(z80-engine, before GA integration): drive-and-hold — re-drive the
+  // current M-cycle's owned lines (addr/mreq/rd) on EVERY master cycle, not just
+  // enabled ones, so a memory request stays stable across the 3-of-4 cycles where
+  // clk.cpu is low (real GA). Today sampling-at-T3 is correct only because the
+  // isolation test clock is contiguous (every tick enabled), which is exactly how
+  // the FUSE-validated rounds Z80-a..-e run. Also fold the single-`tmp`/`need_read`
+  // pair into an explicit per-instruction M-cycle list (docs/hardware/z80.md §9).
+  if (!in->clk.cpu) return;
 
-  if (z->halted) {  // refresh-spin until interrupts arrive (later round)
+  if (z->halted) {  // 4T NOP cadence: one R bump per 4 T-states (until interrupts)
     z->tstates++;
-    z->bump_refresh();
+    if (++z->halt_t >= 4) { z->halt_t = 0; z->bump_refresh(); }
     return;
   }
+
+  z->tstates++;  // count every executed T-state (so WAIT-inserted Tw count too)
 
   if (z->mc == z80_state::MC::M1) {
     z->t++;
     switch (z->t) {
       case 1:
-        z->qq = z->f();  // start-of-instruction Q scratch = current F
+        z->qq = 0;  // Q scratch CLEARED at instruction start; set only when F is
+                    // written (Rak). A non-flag instruction must commit Q=0.
         out->cpu.addr = z->pc.v;
         out->cpu.m1 = out->cpu.mreq = out->cpu.rd = true;
         z->pc.v = static_cast<uint16_t>(z->pc.v + 1);
@@ -246,7 +275,6 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
       case 4:
         out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
         out->cpu.rfsh = true;
-        z->tstates += 4;
         z->t = 0;
         if (z->need_read) {
           z->mc = z80_state::MC::READ;
@@ -276,7 +304,6 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
       break;
     case 3:
       z->tmp = in->cpu.data;
-      z->tstates += 3;
       z->t = 0;
       z->mc = z80_state::MC::M1;
       z->need_read = false;
