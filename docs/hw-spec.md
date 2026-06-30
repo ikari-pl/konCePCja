@@ -377,8 +377,12 @@ clock enable it runs on, internal state, reset state, and conformance oracle.
   `clk.phase` (master counter mod 16). Placeholder until the Gate Array.
 - **RAM** — responds to `mreq`+`rd`/`wr` on `addr`; drives `data` on read. (banking
   via the Gate Array later.)
-- *(planned)* ROM, Z80, Gate Array, CRTC (types 0–3), PPI 8255, PSG AY-3-8912,
-  FDC µPD765A.
+- **Z80 (CPC Z80A, NMOS)** — full implementation reference in
+  [`docs/hardware/z80.md`](hardware/z80.md): registers, M-cycles, octal decode,
+  MEMPTR/Q, interrupts, the 3 T→4 T WAIT stretch, FUSE/jsmoo verification.
+- *(planned)* ROM, Gate Array ([`hardware/gate-array.md`](hardware/gate-array.md)),
+  CRTC types 0–3 ([`hardware/crtc.md`](hardware/crtc.md)), PPI 8255, PSG AY-3-8912,
+  FDC µPD765A ([`hardware/floppy-disc-system.md`](hardware/floppy-disc-system.md)).
 
 ---
 
