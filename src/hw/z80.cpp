@@ -69,6 +69,7 @@ struct z80_state {
   uint8_t mc_wval = 0;   // value for WRITE
   uint8_t mc_ilen = 0;   // length for INTERNAL
   uint8_t step = 0;      // micro-step within the instruction (post-fetch)
+  uint8_t prefix = 0;    // active prefix byte (0xCB/0xED/...) or 0; cleared by finish()
   uint8_t opcode = 0;
   uint8_t tmp = 0;       // last byte read
   uint8_t tmpl = 0;      // low-byte latch (16-bit immediate assembly)
@@ -222,6 +223,73 @@ struct z80_state {
     mc = MC::M1;
     t = 0;
     step = 0;
+    prefix = 0;
+  }
+
+  // Dispatch the instruction step machine for the active prefix.
+  void run_micro() {
+    if (prefix == 0xCB) micro_cb();
+    else micro();
+  }
+
+  // --- CB-prefix helpers ---
+  // Rotate/shift (op 0..7: RLC RRC RL RR SLA SRA SLL SRL); sets SZ5H3PNC.
+  uint8_t cb_shift(uint8_t op, uint8_t val) {
+    const uint8_t oldc = (f() & CF) ? 1 : 0;
+    uint8_t carry = 0;
+    uint8_t res = 0;
+    switch (op) {
+      case 0: carry = static_cast<uint8_t>(val >> 7); res = static_cast<uint8_t>((val << 1) | carry); break;
+      case 1: carry = static_cast<uint8_t>(val & 1); res = static_cast<uint8_t>((val >> 1) | (carry << 7)); break;
+      case 2: carry = static_cast<uint8_t>(val >> 7); res = static_cast<uint8_t>((val << 1) | oldc); break;
+      case 3: carry = static_cast<uint8_t>(val & 1); res = static_cast<uint8_t>((val >> 1) | (oldc << 7)); break;
+      case 4: carry = static_cast<uint8_t>(val >> 7); res = static_cast<uint8_t>(val << 1); break;
+      case 5: carry = static_cast<uint8_t>(val & 1); res = static_cast<uint8_t>((val >> 1) | (val & 0x80)); break;
+      case 6: carry = static_cast<uint8_t>(val >> 7); res = static_cast<uint8_t>((val << 1) | 1); break;  // SLL (undoc)
+      case 7: carry = static_cast<uint8_t>(val & 1); res = static_cast<uint8_t>(val >> 1); break;
+      default: break;
+    }
+    set_f(static_cast<uint8_t>(sz53p(res) | (carry ? CF : 0)));
+    return res;
+  }
+  // BIT n,src — Z/P from the tested bit, H=1, N=0, S only from bit 7, C kept;
+  // undocumented X/Y come from `xy` (the register value, or WZ.hi for (HL)).
+  void cb_bit(uint8_t n, uint8_t val, uint8_t xy) {
+    const uint8_t bit = static_cast<uint8_t>(val & (1u << n));
+    uint8_t flags = static_cast<uint8_t>((f() & CF) | HF | (xy & (YF | XF)));
+    if (bit == 0) flags |= static_cast<uint8_t>(ZF | PF);
+    if (n == 7 && bit) flags |= SF;
+    set_f(flags);
+  }
+
+  void micro_cb() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+
+    if (z != 6) {  // register operand: rotate/BIT/RES/SET in one step (8T total)
+      const uint8_t val = get_r(z);
+      if (x == 0) set_r(z, cb_shift(y, val));
+      else if (x == 1) cb_bit(y, val, val);
+      else if (x == 2) set_r(z, static_cast<uint8_t>(val & ~(1u << y)));
+      else set_r(z, static_cast<uint8_t>(val | (1u << y)));
+      finish();
+      return;
+    }
+
+    // (HL): READ, INTERNAL(1), then BIT (12T) or write-back (15T).
+    if (step == 0) { req_read(hl.v); return; }
+    if (step == 1) { req_internal(1); return; }
+    if (step == 2) {
+      if (x == 1) { cb_bit(y, tmp, wz.hi()); finish(); return; }  // BIT (HL): X/Y from WZ
+      uint8_t res = 0;
+      if (x == 0) res = cb_shift(y, tmp);
+      else if (x == 2) res = static_cast<uint8_t>(tmp & ~(1u << y));
+      else res = static_cast<uint8_t>(tmp | (1u << y));
+      req_write(hl.v, res);
+      return;
+    }
+    finish();
   }
 
   // The instruction step machine. Dispatched by the opcode's x field so each
@@ -390,8 +458,14 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
         case 4:
           out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
           out->cpu.rfsh = true;
-          z->step = 0;
-          z->micro();  // begin instruction (requests first M-cycle, or finishes)
+          if (z->prefix == 0 && z->opcode == 0xCB) {
+            z->prefix = 0xCB;  // fetch the CB opcode as a second M1, then dispatch
+            z->mc = z80_state::MC::M1;
+            z->t = 0;
+          } else {
+            z->step = 0;
+            z->run_micro();  // begin instruction (by active prefix)
+          }
           break;
         default:
           break;
@@ -409,7 +483,7 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
         case 3:
           z->tmp = in->cpu.data;
           z->step++;
-          z->micro();
+          z->run_micro();
           break;
         default:
           break;
@@ -431,7 +505,7 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
           break;
         case 3:
           z->step++;
-          z->micro();
+          z->run_micro();
           break;
         default:
           break;
@@ -441,7 +515,7 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
     case z80_state::MC::INTERNAL:
       if (z->t >= z->mc_ilen) {
         z->step++;
-        z->micro();
+        z->run_micro();
       }
       break;
   }
@@ -458,7 +532,7 @@ void z80_reset(void* self) {
   z->halted = false;
   z->mc = z80_state::MC::M1;
   z->t = z->step = 0;
-  z->opcode = z->tmp = z->tmpl = z->halt_t = 0;
+  z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
   z->mc_addr = z->mc_wval = z->mc_ilen = 0;  // scratch: deterministic for snapshots
   z->unimplemented = false;
   z->tstates = 0;

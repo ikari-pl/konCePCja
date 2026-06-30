@@ -282,3 +282,46 @@ TEST(Z80b, StoreAToDESetsMemptr) {
   EXPECT_EQ(hi(r.af), 0x88) << "stored A to (DE), read it back";
   EXPECT_EQ(r.wz, 0x8842u) << "MEMPTR = (A<<8) | ((E+1)&0xFF) = 0x8842";
 }
+
+// ---- Round Z80-c: the CB prefix (rotates/shifts, BIT/RES/SET) ----
+
+TEST(Z80c, RlcRegisterAndDoubleM1Refresh) {
+  // LD A,0x85 ; RLC A ; HALT  → 0x0B, carry set; CB ops are 8T (two M1).
+  Z80Regs r = run({0x3E, 0x85, 0xCB, 0x07, 0x76});
+  EXPECT_EQ(hi(r.af), 0x0B) << "RLC 0x85 → 0x0B (bit7→bit0+carry)";
+  EXPECT_TRUE(lo(r.af) & CF) << "carry = old bit 7";
+  EXPECT_EQ(r.tstates, 7u + 8u + 4u) << "RLC r = 8T (M1 CB + M1 opcode)";
+  EXPECT_EQ(r.r & 0x7F, 4u) << "LD(1) + RLC(2, double-M1) + HALT(1) = 4 refreshes";
+}
+
+TEST(Z80c, BitRegister) {
+  // BIT 7,A with bit set → Z clear, S set
+  Z80Regs s = run({0x3E, 0x80, 0xCB, 0x7F, 0x76});
+  EXPECT_FALSE(lo(s.af) & ZF) << "bit 7 of 0x80 is set → Z clear";
+  EXPECT_TRUE(lo(s.af) & SF) << "BIT 7 with bit set → S set";
+  EXPECT_TRUE(lo(s.af) & HF) << "BIT always sets H";
+  // BIT 0,A with bit clear → Z set
+  Z80Regs c = run({0x3E, 0x80, 0xCB, 0x47, 0x76});
+  EXPECT_TRUE(lo(c.af) & ZF) << "bit 0 of 0x80 is clear → Z set";
+}
+
+TEST(Z80c, SetAndResRegister) {
+  Z80Regs rs = run({0x06, 0x00, 0xCB, 0xD8, 0x76});  // LD B,0 ; SET 3,B ; HALT
+  EXPECT_EQ(hi(rs.bc), 0x08) << "SET 3 → bit 3";
+  Z80Regs rr = run({0x06, 0xFF, 0xCB, 0x98, 0x76});  // LD B,0xFF ; RES 3,B ; HALT
+  EXPECT_EQ(hi(rr.bc), 0xF7) << "RES 3 → clear bit 3";
+}
+
+TEST(Z80c, RlcHLReadModifyWrite) {
+  // LD HL,0x0040 ; LD (HL),0x80 ; RLC (HL) ; LD A,(HL) ; HALT
+  Z80Regs r = run({0x21, 0x40, 0x00, 0x36, 0x80, 0xCB, 0x06, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0x01) << "RLC 0x80 → 0x01, written back to (HL)";
+  EXPECT_EQ(r.tstates, 10u + 10u + 15u + 7u + 4u) << "RLC (HL) = 15T (4+4+3+1+3)";
+}
+
+TEST(Z80c, BitFromHLTiming) {
+  // LD HL,0x0040 ; LD (HL),0x80 ; BIT 7,(HL) ; HALT
+  Z80Regs r = run({0x21, 0x40, 0x00, 0x36, 0x80, 0xCB, 0x7E, 0x76});
+  EXPECT_FALSE(lo(r.af) & ZF) << "bit 7 set → Z clear";
+  EXPECT_EQ(r.tstates, 10u + 10u + 12u + 4u) << "BIT n,(HL) = 12T (4+4+3+1, no write)";
+}
