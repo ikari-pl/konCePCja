@@ -123,8 +123,7 @@ struct Rig {
 
 Z80Regs run_core(const std::vector<uint8_t>& program, bool irq, int nmi_at) {
   static Rig rig;  // reused; reset below
-  rig.ram = std::make_unique<Ram>();
-  std::memset(rig.ram->cells, 0, sizeof(Ram::cells));
+  rig.ram = std::make_unique<Ram>();  // value-initialized → cells already zeroed
   size_t i = 0;
   for (uint8_t b : program) rig.ram->cells[i++] = b;
 
@@ -317,8 +316,7 @@ TEST(Z80b, LoadAFromBCSetsMemptr) {
 TEST(Z80b, WaitStallExtendsMemoryCyclesNotState) {
   // The CPC §3.1 WAIT contract: the GA stalls memory M-cycles. Final state must
   // be identical to the no-wait run; only the T-state count grows.
-  auto ram = std::make_unique<Ram>();
-  std::memset(ram->cells, 0, sizeof(Ram::cells));
+  auto ram = std::make_unique<Ram>();  // value-initialized → cells already zeroed
   const uint8_t prog[] = {0x26, 0x00, 0x2E, 0x40, 0x36, 0xAB, 0x7E, 0x76};  // store + load
   std::memcpy(ram->cells, prog, sizeof(prog));
   std::vector<uint8_t> zmem(z80_state_size(), 0);

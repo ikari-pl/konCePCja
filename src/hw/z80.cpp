@@ -88,7 +88,9 @@ struct z80_state {
   IndexReg index = IndexReg::HL;  // index-register selector; cleared by finish()
   uint16_t mem_addr = 0; // computed (IX/IY+d) effective address for index memory ops
   uint8_t opcode = 0;
-  uint8_t tmp = 0;       // last byte read
+  uint8_t tmp = 0;       // last byte read; set by READ and IO-read completions ONLY.
+                         // Survives WRITE and INTERNAL cycles unchanged — several
+                         // multi-step ops depend on this (EX (SP),HL, block I/O).
   uint8_t tmpl = 0;      // low-byte latch (16-bit immediate assembly)
   uint8_t halt_t = 0;    // 4T HALT cadence sub-counter
   bool unimplemented = false;
@@ -168,6 +170,10 @@ struct z80_state {
   }
   void bump_refresh() { r = static_cast<uint8_t>((r & 0x80) | ((r + 1) & 0x7F)); }
   void pcinc() { pc.v = static_cast<uint16_t>(pc.v + 1); }
+  // Assemble a 16-bit value from the two byte latches: `tmp` is the high byte
+  // (read last), `tmpl` the low byte (read first). Used by every nn-fetch,
+  // stack-pop, and vector read.
+  uint16_t assemble16() const { return static_cast<uint16_t>((tmp << 8) | tmpl); }
 
   // 16-bit register pair by index (0=BC,1=DE,2=HL,3=SP).
   uint16_t get_rp(uint8_t p) const {
@@ -400,7 +406,7 @@ struct z80_state {
     if (im == IntMode::IM2) {  // vector through (I<<8 | bus byte)
       if (step == 3) { mem_addr = static_cast<uint16_t>((i << 8) | int_vec); req_read(mem_addr); return; }
       if (step == 4) { tmpl = tmp; req_read(static_cast<uint16_t>(mem_addr + 1)); return; }
-      pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+      pc.v = wz.v = assemble16();
       servicing = Servicing::NONE;
       finish();
       return;
@@ -611,7 +617,7 @@ struct z80_state {
         case 3:  // LD (nn),rr / LD rr,(nn) — 20T. WZ as working pointer.
           if (step == 0) { req_read(pc.v); pcinc(); return; }
           if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
-          if (step == 2) wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);  // WZ = nn
+          if (step == 2) wz.v = assemble16();  // WZ = nn
           if (qbit == 0) {  // LD (nn),rr
             if (step == 2) { req_write(wz.v, static_cast<uint8_t>(get_rp(p) & 0xFF)); wz.v++; return; }
             if (step == 3) { req_write(wz.v, static_cast<uint8_t>(get_rp(p) >> 8)); return; }
@@ -621,7 +627,7 @@ struct z80_state {
           // LD rr,(nn)
           if (step == 2) { req_read(wz.v); wz.v++; return; }
           if (step == 3) { tmpl = tmp; req_read(wz.v); return; }
-          set_rp(p, static_cast<uint16_t>((tmp << 8) | tmpl));
+          set_rp(p, assemble16());
           finish();
           return;
         case 2:  // SBC HL,rr (q=0) / ADC HL,rr (q=1) — 15T (4+4+7)
@@ -636,7 +642,7 @@ struct z80_state {
         case 5:  // RETN (y even) / RETI (y odd) — pop PC, IFF1 = IFF2 (14T)
           if (step == 0) { req_read(sp.v); sp.v++; return; }
           if (step == 1) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
-          pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+          pc.v = wz.v = assemble16();
           iff1 = iff2;
           finish();
           return;
@@ -902,7 +908,7 @@ struct z80_state {
   // INTERNAL — same totals and bus behaviour, no special-casing in the engine.
   void micro_x3(uint8_t y, uint8_t z) {
     const uint8_t p = static_cast<uint8_t>(y >> 1);
-    const uint8_t q = static_cast<uint8_t>(y & 1);
+    const uint8_t qbit = static_cast<uint8_t>(y & 1);
     switch (z) {
       case 0:  // RET cc — 5T M1 (decision), then POP pc if taken
         if (step == 0) { req_internal(1); return; }
@@ -911,14 +917,14 @@ struct z80_state {
           req_read(sp.v); sp.v++; return;
         }
         if (step == 2) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
-        pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+        pc.v = wz.v = assemble16();
         finish();
         return;
       case 1:
-        if (q == 0) {  // POP rp2[p]
+        if (qbit == 0) {  // POP rp2[p]
           if (step == 0) { req_read(sp.v); sp.v++; return; }
           if (step == 1) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
-          set_rp2(p, static_cast<uint16_t>((tmp << 8) | tmpl));
+          set_rp2(p, assemble16());
           finish();
           return;
         }
@@ -926,7 +932,7 @@ struct z80_state {
           case 0:  // RET
             if (step == 0) { req_read(sp.v); sp.v++; return; }
             if (step == 1) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
-            pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+            pc.v = wz.v = assemble16();
             finish();
             return;
           case 1: {  // EXX
@@ -951,7 +957,7 @@ struct z80_state {
       case 2:  // JP cc,nn — always reads nn, WZ=nn, jumps if cc
         if (step == 0) { req_read(pc.v); pcinc(); return; }
         if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
-        wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+        wz.v = assemble16();
         if (cond(y)) pc.v = wz.v;
         finish();
         return;
@@ -960,7 +966,30 @@ struct z80_state {
           case 0:  // JP nn
             if (step == 0) { req_read(pc.v); pcinc(); return; }
             if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
-            pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+            pc.v = wz.v = assemble16();
+            finish();
+            return;
+          // (y=1 is the CB prefix, handled at M1 — see default below.)
+          case 2:  // OUT (n),A — port = (A<<8)|n; MEMPTR low=(n+1)&FF, high=A
+            if (step == 0) { req_read(pc.v); pcinc(); return; }
+            if (step == 1) {
+              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
+              wz.set_lo(static_cast<uint8_t>((tmp + 1) & 0xFF));
+              wz.set_hi(a());
+              req_io_write(port, a());
+              return;
+            }
+            finish();
+            return;
+          case 3:  // IN A,(n) — port = (A<<8)|n; MEMPTR = port+1
+            if (step == 0) { req_read(pc.v); pcinc(); return; }
+            if (step == 1) {
+              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
+              wz.v = static_cast<uint16_t>(port + 1);
+              req_io_read(port);
+              return;
+            }
+            set_a(tmp);
             finish();
             return;
           case 4:  // EX (SP),HL/IX/IY — 19T. Read the stack word, write the index
@@ -995,28 +1024,6 @@ struct z80_state {
             ei_delay = true;
             finish();
             return;
-          case 2:  // OUT (n),A — port = (A<<8)|n; MEMPTR low=(n+1)&FF, high=A
-            if (step == 0) { req_read(pc.v); pcinc(); return; }
-            if (step == 1) {
-              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
-              wz.set_lo(static_cast<uint8_t>((tmp + 1) & 0xFF));
-              wz.set_hi(a());
-              req_io_write(port, a());
-              return;
-            }
-            finish();
-            return;
-          case 3:  // IN A,(n) — port = (A<<8)|n; MEMPTR = port+1
-            if (step == 0) { req_read(pc.v); pcinc(); return; }
-            if (step == 1) {
-              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
-              wz.v = static_cast<uint16_t>(port + 1);
-              req_io_read(port);
-              return;
-            }
-            set_a(tmp);
-            finish();
-            return;
           default:  // y=1 is the CB prefix (handled at M1)
             unimplemented = true;
             finish();
@@ -1026,7 +1033,7 @@ struct z80_state {
         if (step == 0) { req_read(pc.v); pcinc(); return; }
         if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
         if (step == 2) {
-          wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+          wz.v = assemble16();
           if (!cond(y)) { finish(); return; }  // not taken: 10T
           req_internal(1);
           return;
@@ -1037,7 +1044,7 @@ struct z80_state {
         finish();
         return;
       case 5:
-        if (q == 0) {  // PUSH rp2[p] — 5T M1 + 2 writes
+        if (qbit == 0) {  // PUSH rp2[p] — 5T M1 + 2 writes
           if (step == 0) { req_internal(1); return; }
           if (step == 1) { sp.v--; req_write(sp.v, static_cast<uint8_t>(get_rp2(p) >> 8)); return; }
           if (step == 2) { sp.v--; req_write(sp.v, static_cast<uint8_t>(get_rp2(p) & 0xFF)); return; }
@@ -1047,7 +1054,7 @@ struct z80_state {
         if (p == 0) {  // CALL nn
           if (step == 0) { req_read(pc.v); pcinc(); return; }
           if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
-          if (step == 2) { wz.v = static_cast<uint16_t>((tmp << 8) | tmpl); req_internal(1); return; }
+          if (step == 2) { wz.v = assemble16(); req_internal(1); return; }
           if (step == 3) { sp.v--; req_write(sp.v, pc.hi()); return; }
           if (step == 4) { sp.v--; req_write(sp.v, pc.lo()); return; }
           pc.v = wz.v;
@@ -1095,7 +1102,7 @@ struct z80_state {
 
   void micro_x0(uint8_t y, uint8_t z) {
     const uint8_t p = static_cast<uint8_t>(y >> 1);
-    const uint8_t q = static_cast<uint8_t>(y & 1);
+    const uint8_t qbit = static_cast<uint8_t>(y & 1);
     switch (z) {
       case 0:  // NOP (y=0); EX AF,AF' (y=1); DJNZ (y=2); JR/JR cc (y>=3)
         if (y == 0) { finish(); return; }
@@ -1130,11 +1137,11 @@ struct z80_state {
         pc.v = wz.v = static_cast<uint16_t>(pc.v + static_cast<int8_t>(tmp));
         finish();
         return;
-      case 1:  // LD rr,nn (q=0) / ADD HL,rr (q=1)
-        if (q == 0) {
+      case 1:  // LD rr,nn (qbit=0) / ADD HL,rr (qbit=1)
+        if (qbit == 0) {
           if (step == 0) { req_read(pc.v); pcinc(); return; }
           if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
-          set_rp(p, static_cast<uint16_t>((tmp << 8) | tmpl));
+          set_rp(p, assemble16());
           finish();
           return;
         }
@@ -1146,7 +1153,7 @@ struct z80_state {
       case 2:  // LD A,(BC|DE) / LD (BC|DE),A (p<2); (nn) forms (p>=2) later
         if (p < 2) {
           const uint16_t rp = (p == 0) ? bc.v : de.v;
-          if (q == 1) {  // LD A,(rp)
+          if (qbit == 1) {  // LD A,(rp)
             if (step == 0) { req_read(rp); return; }
             set_a(tmp);
             wz.v = static_cast<uint16_t>(rp + 1);  // MEMPTR = rp+1
@@ -1163,21 +1170,21 @@ struct z80_state {
         // working address pointer (reads clobber `tmp`, never WZ).
         if (step == 0) { req_read(pc.v); pcinc(); return; }
         if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
-        if (step == 2) wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);  // WZ = nn
-        if (p == 2 && q == 0) {  // LD (nn),HL/IX/IY
+        if (step == 2) wz.v = assemble16();  // WZ = nn
+        if (p == 2 && qbit == 0) {  // LD (nn),HL/IX/IY
           if (step == 2) { req_write(wz.v, idx_l()); wz.v++; return; }
           if (step == 3) { req_write(wz.v, idx_h()); return; }  // WZ already nn+1
           finish();
           return;
         }
-        if (p == 2 && q == 1) {  // LD HL/IX/IY,(nn)
+        if (p == 2 && qbit == 1) {  // LD HL/IX/IY,(nn)
           if (step == 2) { req_read(wz.v); wz.v++; return; }
           if (step == 3) { set_idx_l(tmp); req_read(wz.v); return; }
           set_idx_h(tmp);
           finish();
           return;
         }
-        if (p == 3 && q == 0) {  // LD (nn),A — MEMPTR low=(nn+1)&FF, high=A
+        if (p == 3 && qbit == 0) {  // LD (nn),A — MEMPTR low=(nn+1)&FF, high=A
           if (step == 2) {
             req_write(wz.v, a());
             wz.set_lo(static_cast<uint8_t>((wz.v & 0xFF) + 1));
@@ -1187,7 +1194,7 @@ struct z80_state {
           finish();
           return;
         }
-        // p == 3 && q == 1: LD A,(nn)
+        // p == 3 && qbit == 1: LD A,(nn)
         if (step == 2) { req_read(wz.v); wz.v++; return; }
         set_a(tmp);
         finish();
@@ -1196,7 +1203,7 @@ struct z80_state {
         if (step == 0) { req_internal(2); return; }
         {
           const uint16_t v = get_rp(p);
-          set_rp(p, static_cast<uint16_t>(q ? (v - 1) : (v + 1)));
+          set_rp(p, static_cast<uint16_t>(qbit ? (v - 1) : (v + 1)));
         }
         finish();
         return;
