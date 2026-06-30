@@ -147,16 +147,17 @@ TEST(Z80a, XorAClearsToKnownState) {
   EXPECT_EQ(lo(r.af), static_cast<uint8_t>(ZF | PF)) << "Z + even parity; H,N,C clear";
 }
 
-TEST(Z80a, UnimplementedHLOpsAreFlagged) {
-  // (HL) / memory-operand opcodes are not handled until Z80-b; they must set
-  // `unimplemented`, never silently compute garbage.
-  EXPECT_TRUE(run({0x86, 0x76}).unimplemented) << "ADD A,(HL)";
-  EXPECT_TRUE(run({0x34, 0x76}).unimplemented) << "INC (HL)";
-  EXPECT_TRUE(run({0x36, 0xAB, 0x76}).unimplemented) << "LD (HL),n";
-  EXPECT_TRUE(run({0x46, 0x76}).unimplemented) << "LD B,(HL)";
-  EXPECT_TRUE(run({0x70, 0x76}).unimplemented) << "LD (HL),B";
+TEST(Z80a, UnimplementedOpcodesAreFlagged) {
+  // Opcodes not yet decoded (control flow / prefixes / 16-bit) must set
+  // `unimplemented`, never silently compute garbage. Single-byte so [op, HALT]
+  // halts cleanly (the guard doesn't consume operand bytes).
+  EXPECT_TRUE(run({0xC9, 0x76}).unimplemented) << "RET";
+  EXPECT_TRUE(run({0xF3, 0x76}).unimplemented) << "DI";
+  EXPECT_TRUE(run({0x08, 0x76}).unimplemented) << "EX AF,AF'";
+  EXPECT_TRUE(run({0x07, 0x76}).unimplemented) << "RLCA";
   // ...while implemented ops stay clean:
-  EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B is implemented";
+  EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B";
+  EXPECT_FALSE(run({0x7E, 0x76}).unimplemented) << "LD A,(HL) (now implemented)";
 }
 
 TEST(Z80a, QClearedByNonFlagInstruction) {
@@ -171,4 +172,40 @@ TEST(Z80a, QClearedByNonFlagInstruction) {
 TEST(Z80a, RefreshIncrements) {
   Z80Regs r = run({0x00, 0x00, 0x00, 0x76});  // 3×NOP ; HALT
   EXPECT_EQ(r.r & 0x7F, 4u) << "R bumped once per M1 (4 instructions incl. HALT)";
+}
+
+// ---- Round Z80-b: the (HL) memory-operand group (RAM scratch at 0x0040) ----
+// HL is set via 8-bit immediates (16-bit loads arrive in Z80-b-2).
+
+TEST(Z80b, StoreImmediateAndLoadFromHL) {
+  // LD H,0 ; LD L,0x40 ; LD (HL),0xAB ; LD A,(HL) ; HALT
+  Z80Regs r = run({0x26, 0x00, 0x2E, 0x40, 0x36, 0xAB, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0xAB) << "A = (HL) after storing 0xAB there";
+  EXPECT_EQ(r.tstates, 7u + 7u + 10u + 7u + 4u) << "7+7 (LD r,n) + 10 (LD (HL),n) + 7 (LD A,(HL)) + 4";
+}
+
+TEST(Z80b, StoreRegisterToHL) {
+  // LD H,0 ; LD L,0x40 ; LD A,0x99 ; LD (HL),A ; LD A,0 ; LD A,(HL) ; HALT
+  Z80Regs r = run({0x26, 0x00, 0x2E, 0x40, 0x3E, 0x99, 0x77, 0x3E, 0x00, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0x99) << "stored A to (HL), cleared A, read it back";
+}
+
+TEST(Z80b, AluFromHL) {
+  // LD H,0 ; LD L,0x40 ; LD (HL),0x05 ; LD A,0x03 ; ADD A,(HL) ; HALT
+  Z80Regs r = run({0x26, 0x00, 0x2E, 0x40, 0x36, 0x05, 0x3E, 0x03, 0x86, 0x76});
+  EXPECT_EQ(hi(r.af), 0x08) << "3 + (HL)=5 = 8";
+  EXPECT_FALSE(r.unimplemented);
+}
+
+TEST(Z80b, IncHLReadModifyWrite) {
+  // LD H,0 ; LD L,0x40 ; LD (HL),0x7F ; INC (HL) ; LD A,(HL) ; HALT
+  Z80Regs r = run({0x26, 0x00, 0x2E, 0x40, 0x36, 0x7F, 0x34, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0x80) << "(HL) read-modify-written 0x7F→0x80";
+  EXPECT_EQ(r.tstates, 7u + 7u + 10u + 11u + 7u + 4u) << "INC (HL) is 11T (4+3+1+3)";
+}
+
+TEST(Z80b, DecHL) {
+  // LD H,0 ; LD L,0x40 ; LD (HL),0x00 ; DEC (HL) ; LD A,(HL) ; HALT
+  Z80Regs r = run({0x26, 0x00, 0x2E, 0x40, 0x36, 0x00, 0x35, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0xFF) << "(HL): 0x00 → 0xFF";
 }
