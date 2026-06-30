@@ -489,14 +489,14 @@ struct z80_state {
       if (n & 0x02) flags |= YF;  // bit1 of n → YF
       if (n & 0x08) flags |= XF;  // bit3 of n → XF
       set_f(flags);
-      req_internal(2);
+      req_internal(2);  // LDI/LDD total: ED(4)+op(4)+rd(3)+wr(3)+2 = 16T
       return;
     }
     if (step == 3) {
       if (repeat && bc.v != 0) {
         pc.v = static_cast<uint16_t>(pc.v - 2);  // re-execute the ED-prefixed opcode
         wz.v = static_cast<uint16_t>(pc.v + 1);
-        req_internal(5);
+        req_internal(5);  // +5T loop-back penalty → 21T for the repeating iteration
         return;
       }
       finish();
