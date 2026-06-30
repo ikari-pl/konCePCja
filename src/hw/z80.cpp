@@ -71,6 +71,8 @@ struct z80_state {
   uint8_t mc_ilen = 0;   // length for INTERNAL
   uint8_t step = 0;      // micro-step within the instruction (post-fetch)
   uint8_t prefix = 0;    // active prefix byte (0xCB/0xED/...) or 0; cleared by finish()
+  uint8_t index = 0;     // index-register selector: 0=HL, 1=IX, 2=IY; cleared by finish()
+  uint16_t mem_addr = 0; // computed (IX/IY+d) effective address for index memory ops
   uint8_t opcode = 0;
   uint8_t tmp = 0;       // last byte read
   uint8_t tmpl = 0;      // low-byte latch (16-bit immediate assembly)
@@ -87,7 +89,30 @@ struct z80_state {
     af.set_lo(v);
     qq = v;  // F written → Q tracks it
   }
-  uint8_t get_r(uint8_t idx) const {
+  // The active index register (HL, or IX/IY under a DD/FD prefix) as a pair and
+  // as high/low halves.
+  uint16_t idx_hl() const { return index == 1 ? ix.v : index == 2 ? iy.v : hl.v; }
+  void set_idx_hl(uint16_t v) {
+    if (index == 1) ix.v = v;
+    else if (index == 2) iy.v = v;
+    else hl.v = v;
+  }
+  uint8_t idx_h() const { return index == 1 ? ix.hi() : index == 2 ? iy.hi() : hl.hi(); }
+  uint8_t idx_l() const { return index == 1 ? ix.lo() : index == 2 ? iy.lo() : hl.lo(); }
+  void set_idx_h(uint8_t v) {
+    if (index == 1) ix.set_hi(v);
+    else if (index == 2) iy.set_hi(v);
+    else hl.set_hi(v);
+  }
+  void set_idx_l(uint8_t v) {
+    if (index == 1) ix.set_lo(v);
+    else if (index == 2) iy.set_lo(v);
+    else hl.set_lo(v);
+  }
+  // Byte register by octal index. The index-aware form substitutes H/L → IXH/IXL
+  // under a DD/FD prefix; the _real form never does (used for the register
+  // operand of an (IX+d) instruction, which keeps the true H/L).
+  uint8_t get_r_real(uint8_t idx) const {
     switch (idx) {
       case 0: return bc.hi();
       case 1: return bc.lo();
@@ -99,7 +124,7 @@ struct z80_state {
       default: return 0;  // 6=(HL) never reaches here
     }
   }
-  void set_r(uint8_t idx, uint8_t v) {
+  void set_r_real(uint8_t idx, uint8_t v) {
     switch (idx) {
       case 0: bc.set_hi(v); break;
       case 1: bc.set_lo(v); break;
@@ -111,6 +136,16 @@ struct z80_state {
       default: break;  // 6=(HL) never reaches here
     }
   }
+  uint8_t get_r(uint8_t idx) const {
+    if (idx == 4) return idx_h();
+    if (idx == 5) return idx_l();
+    return get_r_real(idx);
+  }
+  void set_r(uint8_t idx, uint8_t v) {
+    if (idx == 4) { set_idx_h(v); return; }
+    if (idx == 5) { set_idx_l(v); return; }
+    set_r_real(idx, v);
+  }
   void bump_refresh() { r = static_cast<uint8_t>((r & 0x80) | ((r + 1) & 0x7F)); }
   void pcinc() { pc.v = static_cast<uint16_t>(pc.v + 1); }
 
@@ -119,7 +154,7 @@ struct z80_state {
     switch (p) {
       case 0: return bc.v;
       case 1: return de.v;
-      case 2: return hl.v;
+      case 2: return idx_hl();  // HL/IX/IY
       case 3: return sp.v;
       default: return 0;
     }
@@ -128,7 +163,7 @@ struct z80_state {
     switch (p) {
       case 0: bc.v = v; break;
       case 1: de.v = v; break;
-      case 2: hl.v = v; break;
+      case 2: set_idx_hl(v); break;
       case 3: sp.v = v; break;
       default: break;
     }
@@ -138,7 +173,7 @@ struct z80_state {
     switch (p) {
       case 0: return bc.v;
       case 1: return de.v;
-      case 2: return hl.v;
+      case 2: return idx_hl();  // HL/IX/IY
       case 3: return af.v;
       default: return 0;
     }
@@ -147,7 +182,7 @@ struct z80_state {
     switch (p) {
       case 0: bc.v = v; break;
       case 1: de.v = v; break;
-      case 2: hl.v = v; break;
+      case 2: set_idx_hl(v); break;
       case 3: af.v = v; break;
       default: break;
     }
@@ -286,14 +321,15 @@ struct z80_state {
     const uint8_t oldc = static_cast<uint8_t>(f() & CF);
     set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | (oldc ? 0 : CF) | (oldc ? HF : 0) | scf_ccf_xy()));
   }
-  void add16(uint16_t val) {  // ADD HL,rr — H(bit11), C(bit15), N=0; SZP kept; WZ=HL+1
-    wz.v = static_cast<uint16_t>(hl.v + 1);
-    const uint32_t res = static_cast<uint32_t>(hl.v) + val;
+  void add16(uint16_t val) {  // ADD HL/IX/IY,rr — H(bit11), C(bit15), N=0; SZP kept; WZ=dst+1
+    const uint16_t dst = idx_hl();
+    wz.v = static_cast<uint16_t>(dst + 1);
+    const uint32_t res = static_cast<uint32_t>(dst) + val;
     const uint16_t r16 = static_cast<uint16_t>(res);
     uint8_t flags = static_cast<uint8_t>((f() & (SF | ZF | PF)) | ((r16 >> 8) & (YF | XF)));
-    if ((hl.v ^ val ^ r16) & 0x1000) flags |= HF;
+    if ((dst ^ val ^ r16) & 0x1000) flags |= HF;
     if (res & 0x10000) flags |= CF;
-    hl.v = r16;
+    set_idx_hl(r16);
     set_f(flags);
   }
 
@@ -320,13 +356,18 @@ struct z80_state {
     t = 0;
     step = 0;
     prefix = 0;
+    index = 0;
   }
 
-  // Dispatch the instruction step machine for the active prefix.
+  // Dispatch the instruction step machine for the active prefix / index state.
   void run_micro() {
-    if (prefix == 0xCB) micro_cb();
-    else if (prefix == 0xED) micro_ed();
-    else micro();
+    if (prefix == 0xCB) { micro_cb(); return; }
+    if (prefix == 0xED) { micro_ed(); return; }
+    if (index != 0) {
+      if (opcode == 0xCB) { micro_ddcb(); return; }   // DDCB/FDCB
+      if (idx_uses_mem()) { micro_index(); return; }  // (IX/IY+d) memory ops
+    }
+    micro();  // index-aware register access happens inside the accessors
   }
 
   // --- ED-prefix helpers ---
@@ -643,6 +684,106 @@ struct z80_state {
     set_f(flags);
   }
 
+  // Does the current (DD/FD-prefixed) opcode use (HL) as a memory operand, i.e.
+  // does it need an (IX/IY+d) displacement fetch? (HALT is excluded.)
+  bool idx_uses_mem() const {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+    if (x == 1) return (z == 6) != (y == 6);  // LD r,(HL)/(HL),r (exactly one is (HL); not HALT)
+    if (x == 2) return z == 6;                                     // ALU A,(HL)
+    if (x == 0 && (z == 4 || z == 5 || z == 6)) return y == 6;     // INC/DEC/LD (HL)
+    return false;
+  }
+
+  // (IX/IY+d) memory instructions. All fetch the displacement, compute the
+  // effective address (also the MEMPTR), then run the op. The register operand
+  // keeps its TRUE H/L (get_r_real), never IXH/IXL.
+  void micro_index() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+
+    if (x == 0 && z == 6 && y == 6) {  // LD (IX+d),n — fetch d, fetch n, write (19T)
+      if (step == 0) { req_read(pc.v); pcinc(); return; }
+      if (step == 1) {
+        mem_addr = static_cast<uint16_t>(idx_hl() + static_cast<int8_t>(tmp));
+        wz.v = mem_addr;
+        req_read(pc.v); pcinc();
+        return;
+      }
+      if (step == 2) { tmpl = tmp; req_internal(2); return; }
+      if (step == 3) { req_write(mem_addr, tmpl); return; }
+      finish();
+      return;
+    }
+
+    // All other forms: fetch d, internal(5) for the address add, then the op.
+    if (step == 0) { req_read(pc.v); pcinc(); return; }
+    if (step == 1) {
+      mem_addr = static_cast<uint16_t>(idx_hl() + static_cast<int8_t>(tmp));
+      wz.v = mem_addr;
+      req_internal(5);
+      return;
+    }
+    if (x == 1) {
+      if (z == 6) {  // LD r,(IX+d) — y is the real destination register
+        if (step == 2) { req_read(mem_addr); return; }
+        set_r_real(y, tmp);
+        finish();
+        return;
+      }
+      // y == 6: LD (IX+d),r — z is the real source register
+      if (step == 2) { req_write(mem_addr, get_r_real(z)); return; }
+      finish();
+      return;
+    }
+    if (x == 2) {  // ALU A,(IX+d)
+      if (step == 2) { req_read(mem_addr); return; }
+      alu(y, tmp);
+      finish();
+      return;
+    }
+    // x == 0, z==4/5, y==6: INC/DEC (IX+d) — read, internal(1), write (23T)
+    if (step == 2) { req_read(mem_addr); return; }
+    if (step == 3) { req_internal(1); return; }
+    if (step == 4) { req_write(mem_addr, (z == 4) ? inc8(tmp) : dec8(tmp)); return; }
+    finish();
+  }
+
+  // DDCB/FDCB: `DD CB d op`. The displacement is fetched BEFORE the sub-opcode,
+  // both as plain memory reads (no M1). The op acts on (IX+d); for non-BIT it
+  // writes back AND (undocumented) copies the result into register z (real).
+  void micro_ddcb() {
+    if (step == 0) { req_read(pc.v); pcinc(); return; }  // displacement d
+    if (step == 1) {
+      mem_addr = static_cast<uint16_t>(idx_hl() + static_cast<int8_t>(tmp));
+      wz.v = mem_addr;
+      req_read(pc.v); pcinc();  // the CB sub-opcode (no M1/refresh)
+      return;
+    }
+    if (step == 2) { tmpl = tmp; req_internal(3); return; }  // save op; address-calc
+    if (step == 3) { req_read(mem_addr); return; }           // read (IX+d)
+    if (step == 4) {
+      const uint8_t cbx = static_cast<uint8_t>(tmpl >> 6);
+      const uint8_t cby = static_cast<uint8_t>((tmpl >> 3) & 7);
+      const uint8_t cbz = static_cast<uint8_t>(tmpl & 7);
+      if (cbx == 1) {  // BIT b,(IX+d): X/Y from the address high byte
+        cb_bit(cby, tmp, static_cast<uint8_t>(mem_addr >> 8));
+        finish();
+        return;
+      }
+      uint8_t res = 0;
+      if (cbx == 0) res = cb_shift(cby, tmp);
+      else if (cbx == 2) res = static_cast<uint8_t>(tmp & ~(1u << cby));
+      else res = static_cast<uint8_t>(tmp | (1u << cby));
+      if (cbz != 6) set_r_real(cbz, res);  // undoc: also store into register z
+      req_write(mem_addr, res);
+      return;
+    }
+    finish();
+  }
+
   void micro_cb() {
     const uint8_t x = static_cast<uint8_t>(opcode >> 6);
     const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
@@ -741,13 +882,13 @@ struct z80_state {
             finish();
             return;
           }
-          case 2:  // JP (HL) — 4T, no WZ change
-            pc.v = hl.v;
+          case 2:  // JP (HL/IX/IY) — 4T, no WZ change
+            pc.v = idx_hl();
             finish();
             return;
-          case 3:  // LD SP,HL — 6T (M1 + 2 internal)
+          case 3:  // LD SP,HL/IX/IY — 6T (M1 + 2 internal)
             if (step == 0) { req_internal(2); return; }
-            sp.v = hl.v;
+            sp.v = idx_hl();
             finish();
             return;
           default:
@@ -768,17 +909,17 @@ struct z80_state {
             pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
             finish();
             return;
-          case 4:  // EX (SP),HL — 19T. Read the stack word, write HL there, then
-                   // load HL from the old word; WZ = new HL.
+          case 4:  // EX (SP),HL/IX/IY — 19T. Read the stack word, write the index
+                   // reg there, then load it from the old word; WZ = new value.
             if (step == 0) { req_read(sp.v); return; }
             if (step == 1) { tmpl = tmp; req_read(static_cast<uint16_t>(sp.v + 1)); return; }
             if (step == 2) { req_internal(1); return; }
-            if (step == 3) { req_write(static_cast<uint16_t>(sp.v + 1), hl.hi()); return; }
-            if (step == 4) { req_write(sp.v, hl.lo()); return; }
+            if (step == 3) { req_write(static_cast<uint16_t>(sp.v + 1), idx_h()); return; }
+            if (step == 4) { req_write(sp.v, idx_l()); return; }
             if (step == 5) {
-              hl.set_lo(tmpl);
-              hl.set_hi(tmp);
-              wz.v = hl.v;
+              set_idx_l(tmpl);
+              set_idx_h(tmp);
+              wz.v = idx_hl();
               req_internal(2);
               return;
             }
@@ -968,16 +1109,16 @@ struct z80_state {
         if (step == 0) { req_read(pc.v); pcinc(); return; }
         if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
         if (step == 2) wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);  // WZ = nn
-        if (p == 2 && q == 0) {  // LD (nn),HL
-          if (step == 2) { req_write(wz.v, hl.lo()); wz.v++; return; }
-          if (step == 3) { req_write(wz.v, hl.hi()); return; }  // WZ already nn+1
+        if (p == 2 && q == 0) {  // LD (nn),HL/IX/IY
+          if (step == 2) { req_write(wz.v, idx_l()); wz.v++; return; }
+          if (step == 3) { req_write(wz.v, idx_h()); return; }  // WZ already nn+1
           finish();
           return;
         }
-        if (p == 2 && q == 1) {  // LD HL,(nn)
+        if (p == 2 && q == 1) {  // LD HL/IX/IY,(nn)
           if (step == 2) { req_read(wz.v); wz.v++; return; }
-          if (step == 3) { hl.set_lo(tmp); req_read(wz.v); return; }
-          hl.set_hi(tmp);
+          if (step == 3) { set_idx_l(tmp); req_read(wz.v); return; }
+          set_idx_h(tmp);
           finish();
           return;
         }
@@ -1089,13 +1230,23 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
         case 4:
           out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
           out->cpu.rfsh = true;
-          if (z->prefix == 0 && (z->opcode == 0xCB || z->opcode == 0xED)) {
-            z->prefix = z->opcode;  // fetch the prefixed opcode as a second M1
+          if (z->opcode == 0xDD || z->opcode == 0xFD) {
+            z->index = (z->opcode == 0xDD) ? 1 : 2;  // index selector; last DD/FD wins
+            z->prefix = 0;
+            z->mc = z80_state::MC::M1;  // fetch the real opcode as another M1
+            z->t = 0;
+          } else if (z->prefix == 0 && z->opcode == 0xED) {
+            z->prefix = 0xED;
+            z->index = 0;  // ED ignores a pending DD/FD
+            z->mc = z80_state::MC::M1;
+            z->t = 0;
+          } else if (z->prefix == 0 && z->opcode == 0xCB && z->index == 0) {
+            z->prefix = 0xCB;  // plain CB → fetch the sub-opcode as a second M1
             z->mc = z80_state::MC::M1;
             z->t = 0;
           } else {
             z->step = 0;
-            z->run_micro();  // begin instruction (by active prefix)
+            z->run_micro();  // begin instruction (DDCB/index/plain by active state)
           }
           break;
         default:
@@ -1192,6 +1343,8 @@ void z80_reset(void* self) {
   z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
   z->mc_addr = z->mc_wval = z->mc_ilen = 0;  // scratch: deterministic for snapshots
   z->mc_io_read = false;
+  z->index = 0;
+  z->mem_addr = 0;
   z->unimplemented = false;
   z->tstates = 0;
 }

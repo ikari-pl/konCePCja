@@ -192,17 +192,19 @@ TEST(Z80a, XorAClearsToKnownState) {
   EXPECT_EQ(lo(r.af), static_cast<uint8_t>(ZF | PF)) << "Z + even parity; H,N,C clear";
 }
 
-TEST(Z80a, UnimplementedOpcodesAreFlagged) {
-  // Opcodes not yet decoded (control flow / prefixes / 16-bit) must set
-  // `unimplemented`, never silently compute garbage. Single-byte so [op, HALT]
-  // halts cleanly (the guard doesn't consume operand bytes).
-  EXPECT_TRUE(run({0xDD, 0x00, 0x76}).unimplemented) << "DD prefix (index, not yet)";
-  EXPECT_TRUE(run({0xFD, 0x00, 0x76}).unimplemented) << "FD prefix (index, not yet)";
-  // ...while implemented ops stay clean:
-  EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B";
-  EXPECT_FALSE(run({0xED, 0xB0, 0x76}).unimplemented) << "LDIR (now implemented)";
-  EXPECT_FALSE(run({0xED, 0x4D, 0x76}).unimplemented) << "RETI (now implemented)";
-  EXPECT_FALSE(run({0xDB, 0x00, 0x76}).unimplemented) << "IN A,(n) (now implemented)";
+TEST(Z80a, EveryDefinedOpcodeIsDecoded) {
+  // The whole defined instruction set is decoded; only the genuinely-undefined
+  // ED-page opcodes (2-byte NOPs on real silicon) remain flagged. A clean op
+  // never silently computes garbage, and the decoder spans all five pages.
+  EXPECT_TRUE(run({0xED, 0x00, 0x76}).unimplemented) << "undefined ED opcode";
+  EXPECT_TRUE(run({0xED, 0xFF, 0x76}).unimplemented) << "undefined ED opcode";
+  // A sampling across every page stays clean:
+  EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "main: LD A,B";
+  EXPECT_FALSE(run({0xCB, 0x47, 0x76}).unimplemented) << "CB: BIT 0,A";
+  EXPECT_FALSE(run({0xED, 0xB0, 0x76}).unimplemented) << "ED: LDIR";
+  EXPECT_FALSE(run({0xDD, 0x09, 0x76}).unimplemented) << "DD: ADD IX,BC";
+  EXPECT_FALSE(run({0xFD, 0x21, 0x00, 0x00, 0x76}).unimplemented) << "FD: LD IY,nn";
+  EXPECT_FALSE(run({0xDD, 0xCB, 0x00, 0x46, 0x76}).unimplemented) << "DDCB: BIT 0,(IX+0)";
 }
 
 TEST(Z80a, QClearedByNonFlagInstruction) {
@@ -617,4 +619,53 @@ TEST(Z80g, RetiPopsLikeRet) {
   Z80Regs r = run({0xCD, 0x06, 0x00, 0x76, 0x00, 0x00, 0xED, 0x4D});
   EXPECT_EQ(r.sp, 0xFFFFu) << "RETI popped the return address";
   EXPECT_EQ(r.iff1, r.iff2) << "RETN/RETI restore IFF1 from IFF2";
+}
+
+// ---- DD/FD index prefix: IX/IY, (IX+d), DDCB ----
+
+TEST(Z80h, LoadIxAndPairOps) {
+  // DD 21 nn  LD IX,0x1234 ; DD 23 INC IX ; DD 09 ADD IX,BC (BC=1)
+  Z80Regs r = run({0xDD, 0x21, 0x34, 0x12, 0xDD, 0x23, 0x01, 0x01, 0x00,
+                   0xDD, 0x09, 0x76});
+  EXPECT_EQ(r.ix, 0x1236u) << "LD IX,nn (0x1234) + INC IX (0x1235) + ADD IX,BC(1) = 0x1236";
+  EXPECT_EQ(r.hl, 0x0000u) << "HL untouched — the prefix retargets IX only";
+  // FD 21 LD IY,0xBEEF
+  Z80Regs iy = run({0xFD, 0x21, 0xEF, 0xBE, 0x76});
+  EXPECT_EQ(r.tstates > 0, true);
+  EXPECT_EQ(iy.iy, 0xBEEFu) << "FD prefix selects IY";
+}
+
+TEST(Z80h, IxDisplacementLoadStore) {
+  // LD IX,0x4000 ; LD (IX+2),0x99 ; LD A,(IX+2) ; HALT
+  Z80Regs r = run({0xDD, 0x21, 0x00, 0x40, 0xDD, 0x36, 0x02, 0x99,
+                   0xDD, 0x7E, 0x02, 0x76});
+  EXPECT_EQ(hi(r.af), 0x99) << "LD (IX+d),n then LD A,(IX+d) round-trips";
+  EXPECT_EQ(r.wz, 0x4002u) << "WZ = the (IX+d) effective address";
+  // LD IX,0x4000 ; LD B,0x55 ; LD (IX+1),B ; LD C,(IX+1)
+  Z80Regs rb = run({0xDD, 0x21, 0x00, 0x40, 0x06, 0x55, 0xDD, 0x70, 0x01,
+                    0xDD, 0x4E, 0x01, 0x76});
+  EXPECT_EQ(lo(rb.bc), 0x55) << "LD (IX+d),B then LD C,(IX+d): register operand keeps real B/C";
+}
+
+TEST(Z80h, IxhHalfRegisterAndNegativeDisplacement) {
+  // DD 26 nn = LD IXH,0xAB (undocumented half-register), then LD A,IXH (DD 7C)
+  Z80Regs r = run({0xDD, 0x26, 0xAB, 0xDD, 0x7C, 0x76});
+  EXPECT_EQ(hi(r.af), 0xABu) << "LD IXH,n / LD A,IXH use the index high half, not H";
+  EXPECT_EQ(hi(r.hl), 0x00) << "real H is untouched";
+  // negative displacement: LD IX,0x4010 ; LD (IX-1),0x7E ; LD A,(IX-1)
+  Z80Regs neg = run({0xDD, 0x21, 0x10, 0x40, 0xDD, 0x36, 0xFF, 0x7E,
+                     0xDD, 0x7E, 0xFF, 0x76});
+  EXPECT_EQ(hi(neg.af), 0x7E) << "displacement is signed: (IX-1) addresses 0x400F";
+  EXPECT_EQ(neg.wz, 0x400Fu);
+}
+
+TEST(Z80h, DdcbBitSetAndRes) {
+  // LD IX,0x4000 ; LD (IX+0),0x00 ; SET 3,(IX+0) ; LD A,(IX+0)
+  Z80Regs set = run({0xDD, 0x21, 0x00, 0x40, 0xDD, 0x36, 0x00, 0x00,
+                     0xDD, 0xCB, 0x00, 0xDE, 0xDD, 0x7E, 0x00, 0x76});
+  EXPECT_EQ(hi(set.af), 0x08) << "SET 3,(IX+0) set bit 3";
+  // LD IX,0x4000 ; LD (IX+0),0xFF ; RES 0,(IX+0) ; LD A,(IX+0)
+  Z80Regs res = run({0xDD, 0x21, 0x00, 0x40, 0xDD, 0x36, 0x00, 0xFF,
+                     0xDD, 0xCB, 0x00, 0x86, 0xDD, 0x7E, 0x00, 0x76});
+  EXPECT_EQ(hi(res.af), 0xFE) << "RES 0,(IX+0) cleared bit 0";
 }
