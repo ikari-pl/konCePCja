@@ -90,20 +90,61 @@ The CPU and the video fetch are in **disjoint phases**, so they never both drive
 the bus in one master cycle.
 
 **WAIT / µs alignment.** `cpu.wait` is **not** request-driven; the Gate Array
-asserts it as a free-running function of `clk.phase`, to hold the Z80 until its
-next memory M-cycle can begin on the µs grid (this is *the* reason every CPC
-instruction takes a multiple of 4 T-states). The Z80 samples `cpu.wait` at the
-defined point of its T2 (and each inserted Tw). The reference schedule pins:
+asserts it as a free-running function of `clk.phase`, holding the Z80 until its
+memory M-cycle can begin in the CPU's slot of the µs grid. This is *the* reason
+every CPC instruction takes a multiple of 4 T-states (1 µs). The CPU gets RAM in
+**one of every four cycles**, giving an effective ~3.3 MHz. [cpcwiki Gate_Array
+"1 in 4 cycles"; `docs/hardware/gate-array.md:130-135`]
 
-- the phase at which a CPU M1/T1 may begin,
-- the `clk.phase` window in which the GA asserts `cpu.wait`,
-- the phase at which the Z80 samples `cpu.wait`,
-- the phases of the (up to two) GA video fetches per µs.
+#### What is pinned vs. convention — read this before coding the FSM
 
-> **Reference values are being locked against hardware docs + the golden master
-> and recorded here before the Z80 FSM is written.** The *structure* above is the
-> contract; the exact phase indices are the one remaining number to pin. Until
-> locked, no chip may hard-code a phase constant that is not in this table.
+The research (full sources in the device catalogue) found the per-µs **aggregate**
+is fully hardware-documented *and* matches the legacy golden master, but **no local
+source pins the exact phase index 0..15** of the fetches/CPU-slot/WAIT edges, and
+the **golden master has no sub-µs model** (its finest quantum is 1 µs; opcode
+timings are pre-stretched to multiples of 4 in `cc_op[]`, `src/z80.cpp:889`, and
+the world advances via `crtc_cycle(Tstates>>2)`, `src/z80.cpp:1110-1141`). So:
+
+| Quantity | Value | Status |
+|---|---|---|
+| master÷4 → PHI (4 MHz), ÷16 → CCLK (1 MHz) | fixed | **HW-pinned** |
+| video fetches per µs | **2 sequential** bytes (`addr`, `addr+1`), in the first ~½ µs | **HW-pinned** (golden master `crtc.cpp:945-948`) |
+| CPU RAM access | 1 of 4 cycles; instruction total rounds up to a multiple of 4 T-states | **HW-pinned + golden-master** |
+| split-raster mode latch | mid-character = **phase 8 (CPC)** / phase 4 (Plus) | **HW-pinned sub-µs** (the *only* one) |
+| exact phase of the 2 fetches | fetch0 ≈ phases 0–3, fetch1 ≈ 4–7 | **CONVENTION** — no source pins it |
+| exact CPU slot / WAIT-release phase | CPU ≈ phases 12–15; WAIT asserted ≈ 0–11 | **CONVENTION** |
+| phase the Z80 samples WAIT | entering its slot | **CONVENTION** |
+
+**Validation split:** the Z80's *internal* T-state timing is validated cycle-exact
+by **FUSE/jsmoo** (independent of the GA). The CPC per-µs instruction totals + the
+video address + the interrupt are validated by the **legacy golden master**. The
+sub-µs GA WAIT/fetch phase edges are **convention** — pin them only against an
+external cycle-exact reference (Bread80's GA signal analysis; not in our mirror).
+No chip may hard-code a phase constant that is not in this table.
+
+#### Interrupt timing (HW-pinned; golden master + Grimware agree exactly)
+
+The GA raises `cpu.irq` (/INT) by counting CRTC HSYNC falling edges in a 6-bit
+counter `R52`:
+
+- `R52++` on each HSYNC end (`crtc.cpp:796`); **at 52 → assert /INT, reset to 0**
+  → 312/52 = **6 INT/frame = 300 Hz** (`crtc.cpp:798-802`).
+- **Interrupt acknowledge:** when the Z80 accepts /INT, the GA does `R52 &= 0x1F`
+  (clears bit 5), so no INT can recur within 32 lines (`src/z80.cpp:1674`).
+- **VSYNC sync:** 2 HSYNCs after VSYNC begins, if `R52 >= 32` fire /INT; either way
+  reset `R52 = 0` (`crtc.cpp:764, 806-813`) — the "+2 line" offset.
+- First /INT of each frame at lines **2, 54, 106, 158, 210, 262** (the +2 form; a
+  doc inconsistency with a "0,52,…" listing is resolved in favour of the golden
+  master, which produces +2). RMR bit 4 clears pending INT + resets `R52`.
+- /INT pulse is **1.4 µs** wide on real hardware; the golden master models it as a
+  latched boolean, so pulse width is convention if modeled.
+
+#### CRTC → video address (HW-pinned, all three sources + golden master agree)
+
+The byte the GA fetches comes from MA/RA shuffled into a 16-bit address:
+`A15..A0 = MA13 MA12 · RA2 RA1 RA0 · MA9..MA0 · CCLK`; A0 = CCLK toggles to read
+the two consecutive bytes. MA10/MA11/RA3/RA4 are unconnected (the 2 KB stride).
+[`docs/hardware/crtc.md:374-401`; golden master `MAXlate[]` + `crtc.cpp:1171`.]
 
 **Producer/consumer phase skew.** Because the clock generator drives `clk` into
 `out`, consumers read it from `in` one master cycle later. A device that **both
@@ -336,15 +377,27 @@ clock enable it runs on, internal state, reset state, and conformance oracle.
 | R4 | **Time-multiplexed shared address bus**: CPU and Gate-Array video fetch own `cpu.addr` in disjoint phases (§3.1) — no arbiter, single driver per cycle | 2026-06-30 |
 | R5 | Serialization is **little-endian, explicit field order, fail-loud on version mismatch** (§9) | 2026-06-30 |
 | R6 | **Non-bus outputs** (pixels, audio) via device-owned sinks in `self`, never the Bus (§9a) | 2026-06-30 |
+| R7 | Timing research: per-µs aggregate **locked & golden-master-validated**; sub-µs phase indices are **documented convention** (only split-raster phase 8 is HW-pinned) — Z80 FSM unblocked | 2026-06-30 |
 
 R1–R3 corrected the first foundation after review found a single ordered pass at
 4 MHz on a Z80-only bus could not make CPC timing emerge. R4–R6 close the binding
 contracts (timing/bus-mastering, serialization, non-bus output) the second review
 required before the first real chip.
 
-### Still to lock before the Z80 FSM
+### Timing research outcome (R7) — the Z80 FSM is unblocked
 
-The §3.1 timing **structure** is fixed; the exact `clk.phase` indices (T1 start,
-WAIT sample/assert window, the two video-fetch phases) are the one remaining
-number, to be pinned against hardware docs + the golden master and written into
-§3.1 before the Z80 device is implemented.
+Research against `docs/hardware/gate-array.md` + `crtc.md`, the cpcwiki dumps, and
+the **legacy core as golden master** (2026-06-30) established:
+
+- the per-µs **aggregate** (2 video fetches, CPU 1-in-4 / µs-rounded instructions,
+  300 Hz interrupt with the `&0x1F` ack and +2-after-VSYNC offset, the MA/RA→addr
+  mapping) is **fully pinned and golden-master-validated** — now in §3.1;
+- the exact sub-µs **phase indices** are **not** pinned by any local source and are
+  **not validatable** against the golden master (it has no sub-µs model), so they
+  are recorded in §3.1 as **convention** (only the split-raster latch at phase 8 is
+  hardware-pinned). Pinning the true edges needs an external cycle-exact reference
+  (Bread80 GA signal analysis) — a deferred refinement, not a blocker.
+
+The Z80 FSM may therefore proceed: validate its **internal** T-state timing against
+FUSE/jsmoo, and its **CPC per-µs** behaviour against the golden master; treat the GA
+WAIT phase as the documented convention until/unless the external reference is added.
