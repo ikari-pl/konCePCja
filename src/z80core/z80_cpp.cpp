@@ -1,13 +1,15 @@
 /* z80_cpp.cpp — clean-room C++ implementation of the z80core.h contract.
  *
  * Round 1: skeleton — state, register file, lifecycle, snapshot/restore, and a
- * cycle-stepped fetch loop wired to the bus. Only NOP and HALT are decoded so
- * far; the full octal-decode instruction set lands in Round 2.
+ * cycle-stepped (per-M-cycle) fetch loop wired to the bus. Only NOP and HALT are
+ * decoded so far; the full octal-decode instruction set lands in Round 2.
  *
  * CLEAN-ROOM: written from the Zilog Z80 datasheet, Sean Young's "Undocumented
  * Z80 Documented" and the z80.info decode algorithm. The legacy z80.cpp is used
  * ONLY as a black-box oracle through the differential harness — no logic copied.
  */
+
+#include <new>
 
 #include "z80core.h"
 
@@ -19,11 +21,11 @@ struct Reg16 {
   uint16_t v = 0;
   uint8_t hi() const { return static_cast<uint8_t>(v >> 8); }
   uint8_t lo() const { return static_cast<uint8_t>(v & 0xFF); }
-  void set_hi(uint8_t h) {
-    v = static_cast<uint16_t>((static_cast<uint16_t>(h) << 8) | (v & 0x00FF));
+  void set_hi(uint8_t high) {
+    v = static_cast<uint16_t>((static_cast<uint16_t>(high) << 8) | (v & 0x00FF));
   }
-  void set_lo(uint8_t l) {
-    v = static_cast<uint16_t>((v & 0xFF00) | l);
+  void set_lo(uint8_t low) {
+    v = static_cast<uint16_t>((v & 0xFF00) | low);
   }
 };
 
@@ -34,22 +36,28 @@ struct z80core_state {
   z80core_bus bus;  // value copy of callbacks + ctx
 
   Reg16 af, bc, de, hl;      // main register file
-  Reg16 af2, bc2, de2, hl2;  // alternate set (AF', BC', DE', HL')
+  Reg16 af_, bc_, de_, hl_;  // alternate set (AF', BC', DE', HL')
   Reg16 ix, iy, sp, pc, wz;
   uint8_t i = 0, r = 0;
   uint8_t im = 0;
   uint8_t iff1 = 0, iff2 = 0;
+  uint8_t iff_delay = 0;  // 1 = maskable IRQ deferred one boundary after EI
   uint8_t q = 0;
   bool halted = false;
   uint64_t tstates = 0;
 
-  // Pending interrupt latches (serviced in Round 3+).
+  // Interrupt LINES — owned by the machine, re-asserted after a restore; not
+  // part of the serialized snapshot (see z80core.h).
   bool int_pending = false;
   uint8_t int_data = 0xFF;
   bool nmi_pending = false;
 
+  // Bring-up diagnostic: set when step() meets an opcode it cannot decode yet.
+  bool unimplemented = false;
+  uint8_t unimplemented_op = 0;
+
   // --- bus access with standard Z80 M-cycle timing ---
-  void tick(int t) {
+  void tick(int32_t t) {
     tstates += static_cast<uint64_t>(t);
     if (bus.tick) bus.tick(bus.ctx, t);
   }
@@ -68,7 +76,7 @@ struct z80core_state {
     return d;
   }
   void out_port(uint16_t port, uint8_t val) {
-    bus.out(bus.ctx, port, val);
+    bus.out_(bus.ctx, port, val);
     tick(4);
   }
 
@@ -85,10 +93,22 @@ struct z80core_state {
   }
 };
 
+namespace {
+
+bool bus_is_valid(const z80core_bus* bus) {
+  // tick is optional; the four data-path callbacks are mandatory.
+  return bus && bus->read && bus->write && bus->in_ && bus->out_;
+}
+
+}  // namespace
+
 extern "C" {
 
 z80core_state* z80core_create(const z80core_bus* bus) {
-  auto* cpu = new z80core_state();
+  if (!bus_is_valid(bus)) return nullptr;
+  // nothrow: never let a C++ exception escape across the C/Ada/Rust seam.
+  auto* cpu = new (std::nothrow) z80core_state();
+  if (!cpu) return nullptr;
   cpu->bus = *bus;
   z80core_reset(cpu);
   return cpu;
@@ -98,31 +118,40 @@ void z80core_destroy(z80core_state* cpu) { delete cpu; }
 
 void z80core_reset(z80core_state* cpu) {
   // Z80 RESET: PC=0, I=0, R=0, IM 0, interrupts disabled. AF and SP are formally
-  // undefined after reset; real chips and convention settle on 0xFFFF.
+  // undefined after reset; real chips and convention settle on 0xFFFF. The
+  // general registers (BC/DE/HL/IX/IY and the alternate set) are intentionally
+  // left untouched — a real RESET does not clear them.
   cpu->pc.v = 0x0000;
   cpu->i = 0;
   cpu->r = 0;
   cpu->im = 0;
   cpu->iff1 = 0;
   cpu->iff2 = 0;
+  cpu->iff_delay = 0;
   cpu->af.v = 0xFFFF;
   cpu->sp.v = 0xFFFF;
-  cpu->wz.v = 0;
+  cpu->wz.v = 0;  // MEMPTR reset value is undocumented; harness pins it vs oracle
   cpu->q = 0;
   cpu->halted = false;
   cpu->int_pending = false;
+  cpu->int_data = 0xFF;
   cpu->nmi_pending = false;
+  cpu->unimplemented = false;
+  cpu->unimplemented_op = 0;
 }
 
-int z80core_step(z80core_state* cpu) {
+int32_t z80core_step(z80core_state* cpu) {
   const uint64_t start = cpu->tstates;
+  cpu->unimplemented = false;
 
-  // While halted the CPU runs internal NOPs (refresh continues, PC frozen)
+  // While halted the CPU runs internal M1 cycles (refresh continues, PC frozen)
   // until an interrupt wakes it. Interrupt servicing arrives in Round 3.
+  // TODO(round3): a real halted M1 performs a discarded opcode fetch read; add
+  // it when the cycle-exact bus layer (FUSE bus-activity comparison) lands.
   if (cpu->halted) {
     cpu->tick(4);
     cpu->bump_r();
-    return static_cast<int>(cpu->tstates - start);
+    return static_cast<int32_t>(cpu->tstates - start);
   }
 
   const uint8_t op = cpu->fetch();
@@ -134,10 +163,14 @@ int z80core_step(z80core_state* cpu) {
       break;
     default:
       // Round 2 implements the full instruction set via octal x/y/z/p/q decode.
-      // Until then, undecoded opcodes behave as NOP so the skeleton runs.
+      // Until then, flag the opcode so the differential harness can stop at the
+      // FIRST unimplemented instruction rather than chasing a PC desync. The
+      // bytes already consumed (1) leave PC just past the opcode.
+      cpu->unimplemented = true;
+      cpu->unimplemented_op = op;
       break;
   }
-  return static_cast<int>(cpu->tstates - start);
+  return static_cast<int32_t>(cpu->tstates - start);
 }
 
 void z80core_irq(z80core_state* cpu, uint8_t bus_value) {
@@ -152,10 +185,10 @@ void z80core_snapshot(const z80core_state* cpu, z80core_regs* out) {
   out->bc = cpu->bc.v;
   out->de = cpu->de.v;
   out->hl = cpu->hl.v;
-  out->af_ = cpu->af2.v;
-  out->bc_ = cpu->bc2.v;
-  out->de_ = cpu->de2.v;
-  out->hl_ = cpu->hl2.v;
+  out->af_ = cpu->af_.v;
+  out->bc_ = cpu->bc_.v;
+  out->de_ = cpu->de_.v;
+  out->hl_ = cpu->hl_.v;
   out->ix = cpu->ix.v;
   out->iy = cpu->iy.v;
   out->sp = cpu->sp.v;
@@ -166,6 +199,7 @@ void z80core_snapshot(const z80core_state* cpu, z80core_regs* out) {
   out->im = cpu->im;
   out->iff1 = cpu->iff1;
   out->iff2 = cpu->iff2;
+  out->iff_delay = cpu->iff_delay;
   out->q = cpu->q;
   out->halted = cpu->halted ? 1 : 0;
   out->tstates = cpu->tstates;
@@ -176,10 +210,10 @@ void z80core_restore(z80core_state* cpu, const z80core_regs* in) {
   cpu->bc.v = in->bc;
   cpu->de.v = in->de;
   cpu->hl.v = in->hl;
-  cpu->af2.v = in->af_;
-  cpu->bc2.v = in->bc_;
-  cpu->de2.v = in->de_;
-  cpu->hl2.v = in->hl_;
+  cpu->af_.v = in->af_;
+  cpu->bc_.v = in->bc_;
+  cpu->de_.v = in->de_;
+  cpu->hl_.v = in->hl_;
   cpu->ix.v = in->ix;
   cpu->iy.v = in->iy;
   cpu->sp.v = in->sp;
@@ -190,9 +224,12 @@ void z80core_restore(z80core_state* cpu, const z80core_regs* in) {
   cpu->im = in->im;
   cpu->iff1 = in->iff1;
   cpu->iff2 = in->iff2;
+  cpu->iff_delay = in->iff_delay;
   cpu->q = in->q;
   cpu->halted = in->halted != 0;
   cpu->tstates = in->tstates;
+  // Interrupt lines are machine-owned; the caller re-asserts them via
+  // z80core_irq/nmi after restore (see z80core.h). Not touched here.
 }
 
 uint16_t z80core_get_reg(const z80core_state* cpu, z80core_reg_id id) {
@@ -201,10 +238,10 @@ uint16_t z80core_get_reg(const z80core_state* cpu, z80core_reg_id id) {
     case Z80CORE_BC: return cpu->bc.v;
     case Z80CORE_DE: return cpu->de.v;
     case Z80CORE_HL: return cpu->hl.v;
-    case Z80CORE_AF_: return cpu->af2.v;
-    case Z80CORE_BC_: return cpu->bc2.v;
-    case Z80CORE_DE_: return cpu->de2.v;
-    case Z80CORE_HL_: return cpu->hl2.v;
+    case Z80CORE_AF_: return cpu->af_.v;
+    case Z80CORE_BC_: return cpu->bc_.v;
+    case Z80CORE_DE_: return cpu->de_.v;
+    case Z80CORE_HL_: return cpu->hl_.v;
     case Z80CORE_IX: return cpu->ix.v;
     case Z80CORE_IY: return cpu->iy.v;
     case Z80CORE_SP: return cpu->sp.v;
@@ -222,10 +259,10 @@ void z80core_set_reg(z80core_state* cpu, z80core_reg_id id, uint16_t value) {
     case Z80CORE_BC: cpu->bc.v = value; break;
     case Z80CORE_DE: cpu->de.v = value; break;
     case Z80CORE_HL: cpu->hl.v = value; break;
-    case Z80CORE_AF_: cpu->af2.v = value; break;
-    case Z80CORE_BC_: cpu->bc2.v = value; break;
-    case Z80CORE_DE_: cpu->de2.v = value; break;
-    case Z80CORE_HL_: cpu->hl2.v = value; break;
+    case Z80CORE_AF_: cpu->af_.v = value; break;
+    case Z80CORE_BC_: cpu->bc_.v = value; break;
+    case Z80CORE_DE_: cpu->de_.v = value; break;
+    case Z80CORE_HL_: cpu->hl_.v = value; break;
     case Z80CORE_IX: cpu->ix.v = value; break;
     case Z80CORE_IY: cpu->iy.v = value; break;
     case Z80CORE_SP: cpu->sp.v = value; break;
@@ -236,6 +273,11 @@ void z80core_set_reg(z80core_state* cpu, z80core_reg_id id, uint16_t value) {
       cpu->r = static_cast<uint8_t>(value & 0xFF);
       break;
   }
+}
+
+int z80core_last_unimplemented(const z80core_state* cpu, uint8_t* opcode_out) {
+  if (opcode_out) *opcode_out = cpu->unimplemented_op;
+  return cpu->unimplemented ? 1 : 0;
 }
 
 const char* z80core_impl_name(void) { return "cpp-cleanroom"; }

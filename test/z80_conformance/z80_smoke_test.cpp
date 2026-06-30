@@ -32,7 +32,7 @@ void mem_write(void* ctx, uint16_t addr, uint8_t val) {
 }
 uint8_t io_read(void*, uint16_t) { return 0xFF; }
 void io_write(void*, uint16_t, uint8_t) {}
-void on_tick(void* ctx, int tstates) {
+void on_tick(void* ctx, int32_t tstates) {
   static_cast<FlatMem*>(ctx)->ticks += static_cast<uint64_t>(tstates);
 }
 
@@ -45,7 +45,7 @@ void check(bool ok, const char* what) {
 }  // namespace
 
 int main() {
-  FlatMem mem;
+  static FlatMem mem;  // 64 KB — keep it off the stack
   // Program: NOP ; NOP ; HALT
   mem.ram[0] = 0x00;
   mem.ram[1] = 0x00;
@@ -62,7 +62,9 @@ int main() {
   check(r.af == 0xFFFF, "reset: AF = 0xFFFF");
   check(r.sp == 0xFFFF, "reset: SP = 0xFFFF");
   check(r.im == 0 && r.iff1 == 0 && r.iff2 == 0, "reset: IM 0, interrupts off");
+  check(r.iff_delay == 0, "reset: no EI deferral pending");
   check(r.halted == 0, "reset: not halted");
+  check(z80core_last_unimplemented(cpu, nullptr) == 0, "reset: no unimplemented opcode");
 
   int t1 = z80core_step(cpu);  // NOP
   z80core_snapshot(cpu, &r);

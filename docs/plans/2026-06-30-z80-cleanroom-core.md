@@ -41,10 +41,13 @@ GNAT can `pragma Export` the entry points.
 
 ## Architecture: cycle-stepped behind the seam
 
-Advance one T-state at a time via `bus->tick`, because the CPC gate array derives
-display timing and interrupts from the CPU clock — cycle granularity is where
-accuracy lives. Decode via the octal `x/y/z/p/q` algorithm (z80.info), not a
-table.
+Report T-states to `bus->tick` per **machine cycle** (the core advances the rest
+of the machine after each bus access), because the CPC gate array derives display
+timing and interrupts from the CPU clock. Per-M-cycle granularity is sufficient to
+match the legacy Caprice32 oracle (which is itself not T-state-exact); finer
+sub-instruction (per-T-state) granularity is a future, ABI-compatible refinement
+should cycle-exact raster effects ever demand it. Decode via the octal
+`x/y/z/p/q` algorithm (z80.info), not a table.
 
 ## The oracle (three layers)
 
