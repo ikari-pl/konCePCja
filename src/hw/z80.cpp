@@ -62,11 +62,12 @@ struct z80_state {
 
   // Engine: the current machine cycle + a per-instruction step counter. micro()
   // is called at each M-cycle boundary to process the result and request the next.
-  enum class MC : uint8_t { M1, READ, WRITE, INTERNAL };
+  enum class MC : uint8_t { M1, READ, WRITE, INTERNAL, IO };
   MC mc = MC::M1;
   uint8_t t = 0;         // T-state within the current machine cycle
-  uint16_t mc_addr = 0;  // address for M1/READ/WRITE
-  uint8_t mc_wval = 0;   // value for WRITE
+  uint16_t mc_addr = 0;  // address/port for M1/READ/WRITE/IO
+  uint8_t mc_wval = 0;   // value for WRITE/IO write
+  bool mc_io_read = false;  // IO cycle direction (true=IN, false=OUT)
   uint8_t mc_ilen = 0;   // length for INTERNAL
   uint8_t step = 0;      // micro-step within the instruction (post-fetch)
   uint8_t prefix = 0;    // active prefix byte (0xCB/0xED/...) or 0; cleared by finish()
@@ -305,6 +306,14 @@ struct z80_state {
     mc_wval = val;
   }
   void req_internal(uint8_t len) { mc = MC::INTERNAL; t = 0; mc_ilen = len; }
+  void req_io_read(uint16_t port) { mc = MC::IO; t = 0; mc_addr = port; mc_io_read = true; }
+  void req_io_write(uint16_t port, uint8_t val) {
+    mc = MC::IO;
+    t = 0;
+    mc_addr = port;
+    mc_wval = val;
+    mc_io_read = false;
+  }
   void finish() {
     q = qq;
     mc = MC::M1;
@@ -370,6 +379,36 @@ struct z80_state {
 
     if (x == 1) {
       switch (z) {
+        case 0:  // IN r,(C)  (y=6 → IN (C): flags only). MEMPTR = BC+1
+          if (step == 0) { wz.v = static_cast<uint16_t>(bc.v + 1); req_io_read(bc.v); return; }
+          set_f(static_cast<uint8_t>((f() & CF) | sz53p(tmp)));  // SZ53P, H=N=0, C kept
+          if (y != 6) set_r(y, tmp);
+          finish();
+          return;
+        case 1:  // OUT (C),r  (y=6 → OUT (C),0). MEMPTR = BC+1
+          if (step == 0) {
+            req_io_write(bc.v, (y == 6) ? 0 : get_r(y));
+            wz.v = static_cast<uint16_t>(bc.v + 1);
+            return;
+          }
+          finish();
+          return;
+        case 3:  // LD (nn),rr / LD rr,(nn) — 20T. WZ as working pointer.
+          if (step == 0) { req_read(pc.v); pcinc(); return; }
+          if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+          if (step == 2) wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);  // WZ = nn
+          if (qbit == 0) {  // LD (nn),rr
+            if (step == 2) { req_write(wz.v, static_cast<uint8_t>(get_rp(p) & 0xFF)); wz.v++; return; }
+            if (step == 3) { req_write(wz.v, static_cast<uint8_t>(get_rp(p) >> 8)); return; }
+            finish();
+            return;
+          }
+          // LD rr,(nn)
+          if (step == 2) { req_read(wz.v); wz.v++; return; }
+          if (step == 3) { tmpl = tmp; req_read(wz.v); return; }
+          set_rp(p, static_cast<uint16_t>((tmp << 8) | tmpl));
+          finish();
+          return;
         case 2:  // SBC HL,rr (q=0) / ADC HL,rr (q=1) — 15T (4+4+7)
           if (step == 0) { req_internal(7); return; }
           if (qbit == 0) sbc16(get_rp(p)); else adc16(get_rp(p));
@@ -621,7 +660,29 @@ struct z80_state {
             iff1 = iff2 = 1;
             finish();
             return;
-          default:  // y=1 CB (at M1); y=2 OUT (n),A; y=3 IN A,(n) — IO, later
+          case 2:  // OUT (n),A — port = (A<<8)|n; MEMPTR low=(n+1)&FF, high=A
+            if (step == 0) { req_read(pc.v); pcinc(); return; }
+            if (step == 1) {
+              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
+              wz.set_lo(static_cast<uint8_t>((tmp + 1) & 0xFF));
+              wz.set_hi(a());
+              req_io_write(port, a());
+              return;
+            }
+            finish();
+            return;
+          case 3:  // IN A,(n) — port = (A<<8)|n; MEMPTR = port+1
+            if (step == 0) { req_read(pc.v); pcinc(); return; }
+            if (step == 1) {
+              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
+              wz.v = static_cast<uint16_t>(port + 1);
+              req_io_read(port);
+              return;
+            }
+            set_a(tmp);
+            finish();
+            return;
+          default:  // y=1 is the CB prefix (handled at M1)
             unimplemented = true;
             finish();
             return;
@@ -763,7 +824,39 @@ struct z80_state {
           finish();
           return;
         }
-        break;
+        // p>=2: absolute (nn) loads. Read the 16-bit operand, then use WZ as the
+        // working address pointer (reads clobber `tmp`, never WZ).
+        if (step == 0) { req_read(pc.v); pcinc(); return; }
+        if (step == 1) { tmpl = tmp; req_read(pc.v); pcinc(); return; }
+        if (step == 2) wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);  // WZ = nn
+        if (p == 2 && q == 0) {  // LD (nn),HL
+          if (step == 2) { req_write(wz.v, hl.lo()); wz.v++; return; }
+          if (step == 3) { req_write(wz.v, hl.hi()); return; }  // WZ already nn+1
+          finish();
+          return;
+        }
+        if (p == 2 && q == 1) {  // LD HL,(nn)
+          if (step == 2) { req_read(wz.v); wz.v++; return; }
+          if (step == 3) { hl.set_lo(tmp); req_read(wz.v); return; }
+          hl.set_hi(tmp);
+          finish();
+          return;
+        }
+        if (p == 3 && q == 0) {  // LD (nn),A — MEMPTR low=(nn+1)&FF, high=A
+          if (step == 2) {
+            req_write(wz.v, a());
+            wz.set_lo(static_cast<uint8_t>((wz.v & 0xFF) + 1));
+            wz.set_hi(a());
+            return;
+          }
+          finish();
+          return;
+        }
+        // p == 3 && q == 1: LD A,(nn)
+        if (step == 2) { req_read(wz.v); wz.v++; return; }
+        set_a(tmp);
+        finish();
+        return;
       case 3:  // INC/DEC rr (no flags, INTERNAL(2))
         if (step == 0) { req_internal(2); return; }
         {
@@ -917,6 +1010,32 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
         z->run_micro();
       }
       break;
+
+    case z80_state::MC::IO:
+      // 4 T-states: T1, T2, an always-present auto-wait Tw, then sample at T4.
+      switch (z->t) {
+        case 1:
+        case 2:
+        case 3:
+          out->cpu.addr = z->mc_addr;
+          out->cpu.iorq = true;
+          if (z->mc_io_read) {
+            out->cpu.rd = true;
+          } else {
+            out->cpu.wr = true;
+            out->cpu.data = z->mc_wval;
+          }
+          if (z->t == 3 && in->cpu.wait) z->t = 2;  // honor external wait too
+          break;
+        case 4:
+          if (z->mc_io_read) z->tmp = in->cpu.data;
+          z->step++;
+          z->run_micro();
+          break;
+        default:
+          break;
+      }
+      break;
   }
 }
 
@@ -933,6 +1052,7 @@ void z80_reset(void* self) {
   z->t = z->step = 0;
   z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
   z->mc_addr = z->mc_wval = z->mc_ilen = 0;  // scratch: deterministic for snapshots
+  z->mc_io_read = false;
   z->unimplemented = false;
   z->tstates = 0;
 }

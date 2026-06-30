@@ -62,10 +62,38 @@ Device waitclock_device(uint8_t* ctr) {
   return Device{ctr, "waitclk", waitclk_tick, clk_reset, clk_size, clk_save, clk_load};
 }
 
+/* I/O latch device: 256 ports keyed by the low address byte. Reads return a
+ * deterministic seed (port_low ^ 0xFF) until written; writes latch the value so
+ * an OUT followed by an IN of the same port reads it back — exercising both
+ * directions without exposing device state to the test. */
+struct IoDev {
+  uint8_t latch[256];
+};
+void io_tick(void* self, const Bus* in, Bus* out) {
+  IoDev* io = static_cast<IoDev*>(self);
+  const uint8_t port = static_cast<uint8_t>(in->cpu.addr & 0xFF);
+  if (in->cpu.iorq && in->cpu.wr) {
+    io->latch[port] = in->cpu.data;
+  } else if (in->cpu.iorq && in->cpu.rd) {
+    out->cpu.data = io->latch[port];
+  }
+}
+void io_reset(void* self) {
+  IoDev* io = static_cast<IoDev*>(self);
+  for (int i = 0; i < 256; ++i) io->latch[i] = static_cast<uint8_t>(i ^ 0xFF);
+}
+size_t io_size(const void*) { return sizeof(IoDev); }
+void io_save(const void* s, void* b) { std::memcpy(b, s, sizeof(IoDev)); }
+void io_load(void* s, const void* b) { std::memcpy(s, b, sizeof(IoDev)); }
+Device io_device(IoDev* s) {
+  return Device{s, "io", io_tick, io_reset, io_size, io_save, io_load};
+}
+
 /* Run a program from 0x0000 until the Z80 halts (programs end with HALT 0x76).
  * Returns the final architectural state, with tstates frozen at the HALT. */
 struct Rig {
   std::unique_ptr<Ram> ram = std::make_unique<Ram>();
+  std::unique_ptr<IoDev> io = std::make_unique<IoDev>();
   std::vector<uint8_t> z80mem = std::vector<uint8_t>(z80_state_size());
   Board board;
   Device zdev;
@@ -84,6 +112,7 @@ Z80Regs run(const std::vector<uint8_t>& program) {
   board_init(&rig.board);
   board_add(&rig.board, clock_device());
   board_add(&rig.board, ram_device(rig.ram.get()));
+  board_add(&rig.board, io_device(rig.io.get()));
   board_add(&rig.board, rig.zdev);
   board_reset(&rig.board);
 
@@ -167,13 +196,13 @@ TEST(Z80a, UnimplementedOpcodesAreFlagged) {
   // Opcodes not yet decoded (control flow / prefixes / 16-bit) must set
   // `unimplemented`, never silently compute garbage. Single-byte so [op, HALT]
   // halts cleanly (the guard doesn't consume operand bytes).
-  EXPECT_TRUE(run({0xD3, 0x00, 0x76}).unimplemented) << "OUT (n),A (IO, not yet)";
-  EXPECT_TRUE(run({0xDB, 0x00, 0x76}).unimplemented) << "IN A,(n) (IO, not yet)";
+  EXPECT_TRUE(run({0xED, 0xB0, 0x76}).unimplemented) << "LDIR (block op, not yet)";
+  EXPECT_TRUE(run({0xED, 0x4D, 0x76}).unimplemented) << "RETI (not yet)";
   EXPECT_TRUE(run({0xDD, 0x00, 0x76}).unimplemented) << "DD prefix (index, not yet)";
   EXPECT_TRUE(run({0xFD, 0x00, 0x76}).unimplemented) << "FD prefix (index, not yet)";
   // ...while implemented ops stay clean:
   EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B";
-  EXPECT_FALSE(run({0xC9, 0x76}).unimplemented) << "RET (now implemented)";
+  EXPECT_FALSE(run({0xDB, 0x00, 0x76}).unimplemented) << "IN A,(n) (now implemented)";
   EXPECT_FALSE(run({0xE9, 0x76}).unimplemented) << "JP (HL) (now implemented)";
   EXPECT_FALSE(run({0xF3, 0x76}).unimplemented) << "DI (now implemented)";
 }
@@ -519,4 +548,35 @@ TEST(Z80e, RstAndExxExDeHl) {
   // LD BC,0x0102 ; EXX → BC' holds it, BC reads the (zero) alt set
   Z80Regs exx = run({0x01, 0x02, 0x01, 0xD9, 0x76});
   EXPECT_EQ(exx.bc_, 0x0102u) << "EXX moved BC into the alternate set";
+}
+
+// ---- Absolute (nn) memory loads + I/O ----
+
+TEST(Z80f, AbsoluteMemoryLoads) {
+  // LD HL,0x1234 ; LD (0x4000),HL ; LD HL,0 ; LD HL,(0x4000)
+  Z80Regs hl = run({0x21, 0x34, 0x12, 0x22, 0x00, 0x40, 0x21, 0x00, 0x00,
+                    0x2A, 0x00, 0x40, 0x76});
+  EXPECT_EQ(hl.hl, 0x1234u) << "LD (nn),HL then LD HL,(nn) round-trips";
+  EXPECT_EQ(hl.wz, 0x4001u) << "WZ = nn+1";
+  // LD A,0x77 ; LD (0x4001),A ; LD A,0 ; LD A,(0x4001)
+  Z80Regs a = run({0x3E, 0x77, 0x32, 0x01, 0x40, 0x3E, 0x00, 0x3A, 0x01, 0x40, 0x76});
+  EXPECT_EQ(hi(a.af), 0x77) << "LD (nn),A then LD A,(nn) round-trips";
+  // LD BC,0xCAFE ; LD (0x4002),BC ; LD BC,0 ; LD BC,(0x4002)  (ED 43 / ED 4B)
+  Z80Regs bc = run({0x01, 0xFE, 0xCA, 0xED, 0x43, 0x02, 0x40, 0x01, 0x00, 0x00,
+                    0xED, 0x4B, 0x02, 0x40, 0x76});
+  EXPECT_EQ(bc.bc, 0xCAFEu) << "ED LD (nn),rr / LD rr,(nn) round-trips";
+}
+
+TEST(Z80f, InOutPortIO) {
+  // IN A,(0x55): latch seeds port 0x55 to 0x55^0xFF = 0xAA
+  Z80Regs in = run({0xDB, 0x55, 0x76});
+  EXPECT_EQ(hi(in.af), 0xAA) << "IN A,(n) reads the port latch";
+  // LD A,0x3C ; OUT (0x20),A ; LD A,0 ; IN A,(0x20) → 0x3C
+  Z80Regs rt = run({0x3E, 0x3C, 0xD3, 0x20, 0x3E, 0x00, 0xDB, 0x20, 0x76});
+  EXPECT_EQ(hi(rt.af), 0x3C) << "OUT (n),A then IN A,(n) round-trips through the latch";
+  EXPECT_EQ(rt.tstates, 7u + 11u + 7u + 11u + 4u) << "IN/OUT (n) = 11T each";
+  // LD BC,0x0042 ; LD A,9 ; OUT (C),A ; IN D,(C) → D=9
+  Z80Regs c = run({0x01, 0x42, 0x00, 0x3E, 0x09, 0xED, 0x79, 0xED, 0x50, 0x76});
+  EXPECT_EQ(hi(c.de), 0x09) << "OUT (C),A then IN D,(C) round-trips";
+  EXPECT_FALSE(lo(c.af) & ZF) << "IN r,(C) sets flags from the value (9 → not zero)";
 }
