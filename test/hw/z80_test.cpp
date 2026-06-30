@@ -717,6 +717,23 @@ TEST(Z80i, MaskableIm1) {
   EXPECT_EQ(r.iff1, 0) << "INT acceptance cleared IFF1";
 }
 
+TEST(Z80i, Im1AcceptanceTStatesAndRefresh) {
+  // Deterministic, loop-free path so the totals are exact:
+  //   IM1 (8T, 2 M1/refreshes) ; EI (4T,1) ; NOP (4T,1; ei_delay defers INT here)
+  //   ; <NOP slot> — INT accepted at this boundary ; handler@0x38: HALT.
+  // IM1 ack = 13T (1 ack refresh). Handler HALT M1 = 4T (1 refresh).
+  // Total = 8+4+4 (pre-INT) + 13 (ack) + 4 (HALT) = 33T. R = 2+1+1 +1 +1 = 6.
+  std::vector<uint8_t> prog(0x39, 0x00);
+  prog[0] = 0xED; prog[1] = 0x56;   // IM 1
+  prog[2] = 0xFB;                   // EI
+  prog[3] = 0x00;                   // NOP (the post-EI instruction; INT deferred)
+  prog[4] = 0x00;                   // NOP slot — INT is accepted at this fetch
+  prog[0x38] = 0x76;               // HALT
+  Z80Regs r = run_int(prog, /*irq=*/true);
+  EXPECT_EQ(r.tstates, 33u) << "IM1 acknowledge is 13T (a +1 here would mean 34)";
+  EXPECT_EQ(r.r & 0x7F, 6u) << "the INT acknowledge bumps R exactly once";
+}
+
 TEST(Z80i, MaskableIm2Vectors) {
   // Build a vector table entry at (I<<8 | 0xFF) pointing to the handler@0x0050.
   // The data bus floats to 0xFF during the ack (CPC behaviour), so vector=0xFF.

@@ -54,15 +54,22 @@ struct Reg16 {
 }  // namespace
 
 struct z80_state {
+  // Fixed-set state fields use enum class (project convention) so switches are
+  // compiler-checked and values can't be confused with unrelated integers.
+  enum class MC : uint8_t { M1, READ, WRITE, INTERNAL, IO };  // current machine cycle
+  enum class IndexReg : uint8_t { HL = 0, IX = 1, IY = 2 };   // active DD/FD selector
+  enum class Servicing : uint8_t { NONE = 0, NMI = 1, MASKABLE = 2 };  // interrupt sequence
+  enum class IntMode : uint8_t { IM0 = 0, IM1 = 1, IM2 = 2 };
+
   Reg16 af, bc, de, hl, af2, bc2, de2, hl2, ix, iy, sp, pc, wz;
-  uint8_t i = 0, r = 0, im = 0, iff1 = 0, iff2 = 0;
+  uint8_t i = 0, r = 0, iff1 = 0, iff2 = 0;
+  IntMode im = IntMode::IM0;
   uint8_t q = 0;   // committed flags-written latch (Rak's Q)
   uint8_t qq = 0;  // scratch: F whenever F is written this instruction (else 0)
   bool halted = false;
 
   // Engine: the current machine cycle + a per-instruction step counter. micro()
   // is called at each M-cycle boundary to process the result and request the next.
-  enum class MC : uint8_t { M1, READ, WRITE, INTERNAL, IO };
   MC mc = MC::M1;
   uint8_t t = 0;         // T-state within the current machine cycle
   uint16_t mc_addr = 0;  // address/port for M1/READ/WRITE/IO
@@ -74,11 +81,11 @@ struct z80_state {
   bool nmi_prev = false;     // previous NMI line level (rising-edge detect)
   bool nmi_pending = false;  // latched NMI awaiting an instruction boundary
   bool ei_delay = false;     // suppress INT for the one instruction after EI
-  uint8_t servicing = 0;     // 0=none, 1=NMI, 2=maskable INT (sequence active)
+  Servicing servicing = Servicing::NONE;  // active interrupt sequence, if any
   uint8_t int_vec = 0;       // data-bus byte latched at INT acknowledge (IM0/IM2)
   uint8_t step = 0;      // micro-step within the instruction (post-fetch)
   uint8_t prefix = 0;    // active prefix byte (0xCB/0xED/...) or 0; cleared by finish()
-  uint8_t index = 0;     // index-register selector: 0=HL, 1=IX, 2=IY; cleared by finish()
+  IndexReg index = IndexReg::HL;  // index-register selector; cleared by finish()
   uint16_t mem_addr = 0; // computed (IX/IY+d) effective address for index memory ops
   uint8_t opcode = 0;
   uint8_t tmp = 0;       // last byte read
@@ -98,22 +105,28 @@ struct z80_state {
   }
   // The active index register (HL, or IX/IY under a DD/FD prefix) as a pair and
   // as high/low halves.
-  uint16_t idx_hl() const { return index == 1 ? ix.v : index == 2 ? iy.v : hl.v; }
+  uint16_t idx_hl() const {
+    return index == IndexReg::IX ? ix.v : index == IndexReg::IY ? iy.v : hl.v;
+  }
   void set_idx_hl(uint16_t v) {
-    if (index == 1) ix.v = v;
-    else if (index == 2) iy.v = v;
+    if (index == IndexReg::IX) ix.v = v;
+    else if (index == IndexReg::IY) iy.v = v;
     else hl.v = v;
   }
-  uint8_t idx_h() const { return index == 1 ? ix.hi() : index == 2 ? iy.hi() : hl.hi(); }
-  uint8_t idx_l() const { return index == 1 ? ix.lo() : index == 2 ? iy.lo() : hl.lo(); }
+  uint8_t idx_h() const {
+    return index == IndexReg::IX ? ix.hi() : index == IndexReg::IY ? iy.hi() : hl.hi();
+  }
+  uint8_t idx_l() const {
+    return index == IndexReg::IX ? ix.lo() : index == IndexReg::IY ? iy.lo() : hl.lo();
+  }
   void set_idx_h(uint8_t v) {
-    if (index == 1) ix.set_hi(v);
-    else if (index == 2) iy.set_hi(v);
+    if (index == IndexReg::IX) ix.set_hi(v);
+    else if (index == IndexReg::IY) iy.set_hi(v);
     else hl.set_hi(v);
   }
   void set_idx_l(uint8_t v) {
-    if (index == 1) ix.set_lo(v);
-    else if (index == 2) iy.set_lo(v);
+    if (index == IndexReg::IX) ix.set_lo(v);
+    else if (index == IndexReg::IY) iy.set_lo(v);
     else hl.set_lo(v);
   }
   // Byte register by octal index. The index-aware form substitutes H/L → IXH/IXL
@@ -363,53 +376,48 @@ struct z80_state {
     t = 0;
     step = 0;
     prefix = 0;
-    index = 0;
+    index = IndexReg::HL;
   }
 
   // Interrupt-acceptance sequence (NMI or maskable INT). Entered at an
   // instruction boundary with `servicing` set; PC already points at the
   // instruction that will resume after RET[I/N].
   void micro_interrupt() {
-    if (servicing == 1) {  // NMI → 0x0066 (11T); IFF1 cleared, IFF2 preserved
-      if (step == 0) { req_internal(5); return; }
-      if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
-      if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
+    // Acceptance is dispatched from M1 T1, so one T-state is already counted (and
+    // the R refresh already bumped) by the engine before we get here. The leading
+    // INTERNAL therefore covers the REMAINDER of the acknowledge cycle: NMI ack is
+    // 5T (1 + 4), INT ack is 7T (1 + 6). Then the shared 2-byte PC push (3+3).
+    // Totals: NMI 11T, IM0/IM1 13T, IM2 19T.
+    if (step == 0) { req_internal(servicing == Servicing::NMI ? 4 : 6); return; }
+    if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }  // push PC high
+    if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }  // push PC low
+    if (servicing == Servicing::NMI) {  // → 0x0066; IFF1 already cleared, IFF2 preserved
       pc.v = wz.v = 0x0066;
-      servicing = 0;
+      servicing = Servicing::NONE;
       finish();
       return;
     }
-    if (im == 2) {  // IM2 — 19T: vector through (I<<8 | bus byte)
-      if (step == 0) { req_internal(7); return; }  // interrupt-ack + decision
-      if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
-      if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
-      if (step == 3) {
-        mem_addr = static_cast<uint16_t>((i << 8) | int_vec);
-        req_read(mem_addr);
-        return;
-      }
+    if (im == IntMode::IM2) {  // vector through (I<<8 | bus byte)
+      if (step == 3) { mem_addr = static_cast<uint16_t>((i << 8) | int_vec); req_read(mem_addr); return; }
       if (step == 4) { tmpl = tmp; req_read(static_cast<uint16_t>(mem_addr + 1)); return; }
       pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
-      servicing = 0;
+      servicing = Servicing::NONE;
       finish();
       return;
     }
-    // IM0/IM1 — RST to a fixed vector (13T). IM1 → 0x38; IM0 executes the bus
-    // opcode, which on the CPC (and typical hardware) is an RST.
-    if (step == 0) { req_internal(7); return; }
-    if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
-    if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
-    pc.v = wz.v = (im == 0) ? static_cast<uint16_t>(int_vec & 0x38) : 0x0038;
-    servicing = 0;
+    // IM0/IM1 — RST to a fixed vector. IM1 → 0x38; IM0 executes the bus opcode,
+    // which on the CPC (and typical hardware) is an RST.
+    pc.v = wz.v = (im == IntMode::IM0) ? static_cast<uint16_t>(int_vec & 0x38) : 0x0038;
+    servicing = Servicing::NONE;
     finish();
   }
 
   // Dispatch the instruction step machine for the active prefix / index state.
   void run_micro() {
-    if (servicing != 0) { micro_interrupt(); return; }
+    if (servicing != Servicing::NONE) { micro_interrupt(); return; }
     if (prefix == 0xCB) { micro_cb(); return; }
     if (prefix == 0xED) { micro_ed(); return; }
-    if (index != 0) {
+    if (index != IndexReg::HL) {
       if (opcode == 0xCB) { micro_ddcb(); return; }   // DDCB/FDCB
       if (idx_uses_mem()) { micro_index(); return; }  // (IX/IY+d) memory ops
     }
@@ -634,7 +642,7 @@ struct z80_state {
           return;
         case 6: {  // IM
           static const uint8_t kImTable[8] = {0, 0, 1, 2, 0, 0, 1, 2};
-          im = kImTable[y];
+          im = static_cast<IntMode>(kImTable[y]);
           finish();
           return;
         }
@@ -1253,6 +1261,7 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
   if (z->halted) {
     if (int_ready) {        // an accepted interrupt wakes the CPU; resume at M1
       z->halted = false;
+      z->halt_t = 0;        // clear the HALT refresh sub-counter for determinism
       z->mc = z80_state::MC::M1;
       z->t = 0;             // fall through to run M1 T1 (acceptance) this tick
     } else {
@@ -1272,21 +1281,25 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
           z->qq = 0;
           // Accept a pending interrupt only at a true instruction boundary
           // (prefix==0 && index==0 — never between a prefix and its opcode).
-          if (z->prefix == 0 && z->index == 0) {
+          if (z->prefix == 0 && z->index == z80_state::IndexReg::HL) {
             const bool was_ei = z->ei_delay;
             z->ei_delay = false;
+            // The interrupt/NMI acknowledge IS an M1 cycle: it performs one DRAM
+            // refresh, so R increments once per accepted interrupt.
             if (z->nmi_pending) {
               z->nmi_pending = false;
+              z->bump_refresh();
               z->iff1 = 0;  // NMI: IFF1 cleared, IFF2 preserved
-              z->servicing = 1;
+              z->servicing = z80_state::Servicing::NMI;
               z->step = 0;
               z->run_micro();  // issue the first sequence M-cycle
               break;
             }
             if (z->iff1 && in->cpu.irq && !was_ei) {
+              z->bump_refresh();
               z->iff1 = z->iff2 = 0;
               z->int_vec = in->cpu.data;  // latch the bus byte (IM0/IM2)
-              z->servicing = 2;
+              z->servicing = z80_state::Servicing::MASKABLE;
               z->step = 0;
               z->run_micro();
               break;
@@ -1311,16 +1324,16 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
           out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
           out->cpu.rfsh = true;
           if (z->opcode == 0xDD || z->opcode == 0xFD) {
-            z->index = (z->opcode == 0xDD) ? 1 : 2;  // index selector; last DD/FD wins
+            z->index = (z->opcode == 0xDD) ? z80_state::IndexReg::IX : z80_state::IndexReg::IY;  // index selector; last DD/FD wins
             z->prefix = 0;
             z->mc = z80_state::MC::M1;  // fetch the real opcode as another M1
             z->t = 0;
           } else if (z->prefix == 0 && z->opcode == 0xED) {
             z->prefix = 0xED;
-            z->index = 0;  // ED ignores a pending DD/FD
+            z->index = z80_state::IndexReg::HL;  // ED ignores a pending DD/FD
             z->mc = z80_state::MC::M1;
             z->t = 0;
-          } else if (z->prefix == 0 && z->opcode == 0xCB && z->index == 0) {
+          } else if (z->prefix == 0 && z->opcode == 0xCB && z->index == z80_state::IndexReg::HL) {
             z->prefix = 0xCB;  // plain CB → fetch the sub-opcode as a second M1
             z->mc = z80_state::MC::M1;
             z->t = 0;
@@ -1412,7 +1425,8 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
 void z80_reset(void* self) {
   z80_state* z = self_of(self);
   z->pc.v = 0;
-  z->i = z->r = z->im = z->iff1 = z->iff2 = 0;
+  z->i = z->r = z->iff1 = z->iff2 = 0;
+  z->im = z80_state::IntMode::IM0;
   z->af.v = 0xFFFF;
   z->sp.v = 0xFFFF;
   z->wz.v = 0;
@@ -1423,10 +1437,10 @@ void z80_reset(void* self) {
   z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
   z->mc_addr = z->mc_wval = z->mc_ilen = 0;  // scratch: deterministic for snapshots
   z->mc_io_read = false;
-  z->index = 0;
+  z->index = z80_state::IndexReg::HL;
   z->mem_addr = 0;
   z->nmi_prev = z->nmi_pending = z->ei_delay = false;
-  z->servicing = 0;
+  z->servicing = z80_state::Servicing::NONE;
   z->int_vec = 0;
   z->unimplemented = false;
   z->tstates = 0;
@@ -1457,7 +1471,7 @@ void z80_peek(const Device* dev, Z80Regs* out) {
   out->af_ = z->af2.v; out->bc_ = z->bc2.v; out->de_ = z->de2.v; out->hl_ = z->hl2.v;
   out->ix = z->ix.v;   out->iy = z->iy.v;   out->sp = z->sp.v;   out->pc = z->pc.v;
   out->wz = z->wz.v;
-  out->i = z->i; out->r = z->r; out->im = z->im;
+  out->i = z->i; out->r = z->r; out->im = static_cast<uint8_t>(z->im);
   out->iff1 = z->iff1; out->iff2 = z->iff2; out->q = z->q;
   out->halted = z->halted ? 1 : 0;
   out->tstates = z->tstates;
