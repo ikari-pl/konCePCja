@@ -646,10 +646,11 @@ TEST(Z80g, IniAndOuti) {
 }
 
 TEST(Z80g, RetiPopsLikeRet) {
-  // CALL 0x0006 ; HALT ; pad ; RETI
+  // CALL 0x0006 ; HALT ; pad ; RETI — verifies the POP-PC mechanics (the
+  // IFF1<-IFF2 restore is covered non-vacuously in Z80i.RetnRestoresIff).
   Z80Regs r = run({0xCD, 0x06, 0x00, 0x76, 0x00, 0x00, 0xED, 0x4D});
   EXPECT_EQ(r.sp, 0xFFFFu) << "RETI popped the return address";
-  EXPECT_EQ(r.iff1, r.iff2) << "RETN/RETI restore IFF1 from IFF2";
+  EXPECT_EQ(r.pc, 0x0004u) << "RETI returned to the instruction after CALL";
 }
 
 // ---- DD/FD index prefix: IX/IY, (IX+d), DDCB ----
@@ -660,9 +661,10 @@ TEST(Z80h, LoadIxAndPairOps) {
                    0xDD, 0x09, 0x76});
   EXPECT_EQ(r.ix, 0x1236u) << "LD IX,nn (0x1234) + INC IX (0x1235) + ADD IX,BC(1) = 0x1236";
   EXPECT_EQ(r.hl, 0x0000u) << "HL untouched — the prefix retargets IX only";
+  // Exact prefixed timing: LD IX,nn 14T + INC IX 10T + LD BC,nn 10T + ADD IX,BC 15T + HALT 4T
+  EXPECT_EQ(r.tstates, 14u + 10u + 10u + 15u + 4u) << "DD-prefixed timings (each +4 for the prefix M1)";
   // FD 21 LD IY,0xBEEF
   Z80Regs iy = run({0xFD, 0x21, 0xEF, 0xBE, 0x76});
-  EXPECT_EQ(r.tstates > 0, true);
   EXPECT_EQ(iy.iy, 0xBEEFu) << "FD prefix selects IY";
 }
 
@@ -770,4 +772,144 @@ TEST(Z80i, NmiWakesFromHalt) {
   prog[0x68] = 0x76;                       // HALT
   Z80Regs r = run_int(prog, /*irq=*/false, /*nmi_at=*/30);
   EXPECT_EQ(hi(r.af), 0x33) << "NMI woke the CPU out of HALT and ran the handler";
+}
+
+// ============================================================================
+// Z80j — review-driven coverage: taken conditional branches, undocumented
+// flag sources, D-variant block ops, IY/(IY+d)/FDCB, IM0, and the Q rule across
+// a prefix (locking in that DD/FD is transparent to the SCF/CCF Q latch).
+// ============================================================================
+
+TEST(Z80j, ConditionalReturnTaken) {
+  // XOR A (Z set) ; CALL 0x0006 ; HALT@4 ; pad ; 0x6: LD A,0x42 ; RET Z
+  Z80Regs r = run({0xAF, 0xCD, 0x06, 0x00, 0x76, 0x00, 0x3E, 0x42, 0xC8});
+  EXPECT_EQ(hi(r.af), 0x42) << "subroutine ran";
+  EXPECT_EQ(r.sp, 0xFFFFu) << "RET Z taken popped the return address";
+  EXPECT_EQ(r.tstates, 4u + 17u + 7u + 11u + 4u) << "RET cc taken = 11T";
+}
+
+TEST(Z80j, ConditionalCallAndJumpsTaken) {
+  // LD A,1 ; OR A (clears Z — LD alone doesn't, and reset F has Z set) ;
+  // CALL NZ,0x0008 ; HALT@6 ; pad ; LD A,0x42 ; RET
+  Z80Regs call = run({0x3E, 0x01, 0xB7, 0xC4, 0x08, 0x00, 0x76, 0x00, 0x3E, 0x42, 0xC9});
+  EXPECT_EQ(hi(call.af), 0x42) << "CALL NZ taken entered the subroutine";
+  EXPECT_EQ(call.sp, 0xFFFFu);
+  // XOR A (Z set) ; JR Z,+2 ; LD A,0xFF ; HALT@5 ; HALT@6
+  Z80Regs jr = run({0xAF, 0x28, 0x02, 0x3E, 0xFF, 0x76, 0x76});
+  EXPECT_EQ(hi(jr.af), 0x00) << "JR Z taken skipped LD A,0xFF";
+  EXPECT_EQ(jr.tstates, 4u + 12u + 4u) << "JR cc taken = 12T";
+  // XOR A (Z set) ; JP Z,0x0006 ; LD A,0xFF ; HALT@6
+  Z80Regs jp = run({0xAF, 0xCA, 0x06, 0x00, 0x3E, 0xFF, 0x76});
+  EXPECT_EQ(hi(jp.af), 0x00) << "JP Z taken skipped LD A,0xFF";
+  EXPECT_EQ(jp.wz, 0x0006u);
+}
+
+TEST(Z80j, LdirUndocumentedXYFlags) {
+  // n = A + transferred byte = 0x01 + 0x05 = 0x06 → YF (n bit1) set, XF (n bit3) clear.
+  // Source byte 0x05 sits at index 14 = 0x000E, so HL must be 0x000E.
+  Z80Regs r = run({0x3E, 0x01, 0x21, 0x0E, 0x00, 0x11, 0x00, 0x40, 0x01, 0x01, 0x00,
+                   0xED, 0xB0, 0x76, 0x05});
+  EXPECT_NE(lo(r.af) & YF, 0u) << "LDIR YF = bit 1 of (A + byte)";
+  EXPECT_EQ(lo(r.af) & XF, 0u) << "LDIR XF = bit 3 of (A + byte)";
+}
+
+TEST(Z80j, ScfUsesPriorInstructionQ) {
+  // LD A,0 ; CP 0x28 (writes F incl. YF|XF from operand; A stays 0; Q = that F) ; SCF.
+  // SCF X/Y = ((Q ^ F) | A) & 0x28; with Q==F and A==0 the term cancels → X/Y = 0.
+  // A regression using Q=0 would instead yield 0x28 — so this pins the Q source.
+  Z80Regs r = run({0x3E, 0x00, 0xFE, 0x28, 0x37, 0x76});
+  EXPECT_EQ(lo(r.af) & static_cast<uint8_t>(YF | XF), 0u)
+      << "SCF consumes the prior instruction's Q (cancels here), not 0";
+  EXPECT_TRUE(lo(r.af) & CF);
+}
+
+TEST(Z80j, QLatchIsTransparentAcrossPrefix) {
+  // Same as above but with a DD prefix before SCF. A DD/FD prefix is part of its
+  // own instruction and must NOT reset the Q latch — so DD SCF sees CP's Q just
+  // like plain SCF, and X/Y still cancel to 0. (If the prefix wrongly committed
+  // Q=0, this would read 0x28.)
+  Z80Regs r = run({0x3E, 0x00, 0xFE, 0x28, 0xDD, 0x37, 0x76});
+  EXPECT_EQ(lo(r.af) & static_cast<uint8_t>(YF | XF), 0u)
+      << "the DD prefix is transparent to the Q latch";
+}
+
+TEST(Z80j, DdcbCopiesResultIntoRegister) {
+  // DD CB 00 00 = RLC (IX+0) with z=0 → undocumented: result also stored into B.
+  // RLC 0x81 = 0x03 (carry from bit 7).
+  Z80Regs r = run({0xDD, 0x21, 0x00, 0x40, 0xDD, 0x36, 0x00, 0x81,
+                   0xDD, 0xCB, 0x00, 0x00, 0x78, 0x76});
+  EXPECT_EQ(hi(r.af), 0x03) << "LD A,B reads the DDCB result copied into B";
+  EXPECT_EQ(hi(r.bc), 0x03) << "DDCB z!=6 stores the result into register z (B)";
+  EXPECT_TRUE(lo(r.af) & CF) << "RLC 0x81 sets carry";
+}
+
+TEST(Z80j, DecrementingBlockOpAndIY) {
+  // LDD: (DE)<-(HL), then HL--, DE--, BC--.
+  Z80Regs ldd = run({0x21, 0x0D, 0x00, 0x11, 0x00, 0x40, 0x01, 0x01, 0x00,
+                     0xED, 0xA8, 0x76, 0x00, 0xBB});
+  EXPECT_EQ(ldd.hl, 0x000Cu) << "LDD decremented HL";
+  EXPECT_EQ(ldd.de, 0x3FFFu) << "LDD decremented DE";
+  EXPECT_EQ(ldd.bc, 0x0000u);
+  // (IY+d) load/store via the FD prefix.
+  Z80Regs iy = run({0xFD, 0x21, 0x00, 0x40, 0xFD, 0x36, 0x02, 0x99,
+                    0xFD, 0x7E, 0x02, 0x76});
+  EXPECT_EQ(hi(iy.af), 0x99) << "LD (IY+2),n then LD A,(IY+2)";
+  EXPECT_EQ(iy.wz, 0x4002u);
+  // FDCB: RES 0,(IY+0).
+  Z80Regs fdcb = run({0xFD, 0x21, 0x00, 0x40, 0xFD, 0x36, 0x00, 0xFF,
+                      0xFD, 0xCB, 0x00, 0x86, 0xFD, 0x7E, 0x00, 0x76});
+  EXPECT_EQ(hi(fdcb.af), 0xFE) << "FDCB RES 0,(IY+0)";
+}
+
+TEST(Z80j, BitAndCpUndocumentedSources) {
+  // BIT 0,A with A=0x28: Z set (bit 0 clear), X/Y from A → 0x28, H set.
+  Z80Regs bit = run({0x3E, 0x28, 0xCB, 0x47, 0x76});
+  EXPECT_TRUE(lo(bit.af) & ZF);
+  EXPECT_EQ(lo(bit.af) & static_cast<uint8_t>(YF | XF), 0x28) << "BIT r X/Y from the register value";
+  EXPECT_TRUE(lo(bit.af) & HF);
+  // CP 0x28 with A=0: X/Y come from the OPERAND (0x28), not the result (0xD8, bit5=0).
+  Z80Regs cp = run({0x3E, 0x00, 0xFE, 0x28, 0x76});
+  EXPECT_NE(lo(cp.af) & YF, 0u) << "CP X/Y from the operand, not the result";
+}
+
+TEST(Z80i, Im0VectorsViaBusRst) {
+  // IM 0 ; EI ; JR -2.  The CPC bus floats 0xFF → IM0 executes RST 0x38.
+  std::vector<uint8_t> prog(0x3B, 0x00);
+  prog[0] = 0xED; prog[1] = 0x46;          // IM 0
+  prog[2] = 0xFB;                          // EI
+  prog[3] = 0x18; prog[4] = 0xFE;          // JR -2
+  prog[0x38] = 0x3E; prog[0x39] = 0x42;    // LD A,0x42
+  prog[0x3A] = 0x76;                       // HALT
+  Z80Regs r = run_int(prog, /*irq=*/true);
+  EXPECT_EQ(hi(r.af), 0x42) << "IM0 executed RST 0x38 from the floating-0xFF bus";
+}
+
+TEST(Z80i, RetnRestoresIff) {
+  // EI (IFF1=IFF2=1) ; HALT.  NMI clears IFF1 (keeps IFF2=1), jumps 0x66 ; RETN
+  // copies IFF2 back into IFF1 ; returns to a second HALT.
+  std::vector<uint8_t> prog(0x68, 0x00);
+  prog[0] = 0xFB;                          // EI
+  prog[1] = 0x76;                          // HALT (woken by NMI)
+  prog[2] = 0x76;                          // HALT (RETN return target)
+  prog[0x66] = 0xED; prog[0x67] = 0x45;    // RETN
+  Z80Regs r = run_int(prog, /*irq=*/false, /*nmi_at=*/30);
+  EXPECT_EQ(r.iff1, 1) << "RETN restored IFF1 from IFF2 (NMI had cleared it)";
+  EXPECT_EQ(r.iff2, 1);
+}
+
+TEST(Z80i, InterruptBlockedBetweenPrefixAndOpcode) {
+  // A held IRQ must only be accepted at a true instruction boundary, never
+  // between a DD prefix and its opcode. IM1 ; EI ; then a tight loop built from a
+  // DD-prefixed op so a boundary recurs with index briefly set; the handler runs
+  // (proving acceptance still happens) and A is set — the point is it does not
+  // hang or mis-accept mid-prefix.
+  std::vector<uint8_t> prog(0x3B, 0x00);
+  prog[0] = 0xED; prog[1] = 0x56;          // IM 1
+  prog[2] = 0xFB;                          // EI
+  prog[3] = 0xDD; prog[4] = 0x23;          // INC IX (DD-prefixed)
+  prog[5] = 0x18; prog[6] = 0xFB;          // JR -5 → back to the DD INC IX
+  prog[0x38] = 0x3E; prog[0x39] = 0x42;    // LD A,0x42
+  prog[0x3A] = 0x76;                       // HALT
+  Z80Regs r = run_int(prog, /*irq=*/true);
+  EXPECT_EQ(hi(r.af), 0x42) << "INT accepted at a clean boundary around the DD-prefixed loop";
 }
