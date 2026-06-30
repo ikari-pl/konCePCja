@@ -196,15 +196,13 @@ TEST(Z80a, UnimplementedOpcodesAreFlagged) {
   // Opcodes not yet decoded (control flow / prefixes / 16-bit) must set
   // `unimplemented`, never silently compute garbage. Single-byte so [op, HALT]
   // halts cleanly (the guard doesn't consume operand bytes).
-  EXPECT_TRUE(run({0xED, 0xB0, 0x76}).unimplemented) << "LDIR (block op, not yet)";
-  EXPECT_TRUE(run({0xED, 0x4D, 0x76}).unimplemented) << "RETI (not yet)";
   EXPECT_TRUE(run({0xDD, 0x00, 0x76}).unimplemented) << "DD prefix (index, not yet)";
   EXPECT_TRUE(run({0xFD, 0x00, 0x76}).unimplemented) << "FD prefix (index, not yet)";
   // ...while implemented ops stay clean:
   EXPECT_FALSE(run({0x78, 0x76}).unimplemented) << "LD A,B";
+  EXPECT_FALSE(run({0xED, 0xB0, 0x76}).unimplemented) << "LDIR (now implemented)";
+  EXPECT_FALSE(run({0xED, 0x4D, 0x76}).unimplemented) << "RETI (now implemented)";
   EXPECT_FALSE(run({0xDB, 0x00, 0x76}).unimplemented) << "IN A,(n) (now implemented)";
-  EXPECT_FALSE(run({0xE9, 0x76}).unimplemented) << "JP (HL) (now implemented)";
-  EXPECT_FALSE(run({0xF3, 0x76}).unimplemented) << "DI (now implemented)";
 }
 
 TEST(Z80a, QClearedByNonFlagInstruction) {
@@ -579,4 +577,44 @@ TEST(Z80f, InOutPortIO) {
   Z80Regs c = run({0x01, 0x42, 0x00, 0x3E, 0x09, 0xED, 0x79, 0xED, 0x50, 0x76});
   EXPECT_EQ(hi(c.de), 0x09) << "OUT (C),A then IN D,(C) round-trips";
   EXPECT_FALSE(lo(c.af) & ZF) << "IN r,(C) sets flags from the value (9 → not zero)";
+}
+
+// ---- Block operations + RETN/RETI ----
+
+TEST(Z80g, Ldir) {
+  // LD HL,0x000F ; LD DE,0x4000 ; LD BC,3 ; LDIR ; LD A,(0x4002) ; HALT ; data
+  Z80Regs r = run({0x21, 0x0F, 0x00, 0x11, 0x00, 0x40, 0x01, 0x03, 0x00,
+                   0xED, 0xB0, 0x3A, 0x02, 0x40, 0x76, 0xAA, 0xBB, 0xCC});
+  EXPECT_EQ(hi(r.af), 0xCC) << "LDIR copied 3 bytes; last is 0xCC";
+  EXPECT_EQ(r.bc, 0x0000u) << "LDIR ran BC down to 0";
+  EXPECT_EQ(r.hl, 0x0012u) << "HL advanced past the source block";
+  EXPECT_EQ(r.de, 0x4003u) << "DE advanced past the dest block";
+}
+
+TEST(Z80g, Cpir) {
+  // LD A,0xCC ; LD HL,0x000F ; LD BC,3 ; CPIR ; HALT ; pad ; data AA BB CC
+  Z80Regs r = run({0x3E, 0xCC, 0x21, 0x0F, 0x00, 0x01, 0x03, 0x00, 0xED, 0xB1,
+                   0x76, 0x00, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0xCC});
+  EXPECT_TRUE(lo(r.af) & ZF) << "CPIR found 0xCC → Z set";
+  EXPECT_EQ(r.hl, 0x0012u) << "HL stopped just past the match";
+  EXPECT_EQ(r.bc, 0x0000u) << "BC exhausted exactly at the match";
+}
+
+TEST(Z80g, IniAndOuti) {
+  // INI: read port 0x42 (latch seed 0x42^0xFF=0xBD) into (0x4000); B 1→0
+  Z80Regs ini = run({0x21, 0x00, 0x40, 0x01, 0x42, 0x01, 0xED, 0xA2,
+                     0x3A, 0x00, 0x40, 0x76});
+  EXPECT_EQ(hi(ini.af), 0xBD) << "INI stored the input byte at (HL)";
+  EXPECT_EQ(hi(ini.bc), 0x00) << "INI decremented B";
+  // OUTI: (HL)=0x77 out to port (B-1=0,C=0x33); read it back with IN A,(0x33)
+  Z80Regs outi = run({0x21, 0x0C, 0x00, 0x01, 0x33, 0x01, 0xED, 0xA3,
+                      0xDB, 0x33, 0x76, 0x00, 0x77});
+  EXPECT_EQ(hi(outi.af), 0x77) << "OUTI wrote (HL) to the port; IN reads it back";
+}
+
+TEST(Z80g, RetiPopsLikeRet) {
+  // CALL 0x0006 ; HALT ; pad ; RETI
+  Z80Regs r = run({0xCD, 0x06, 0x00, 0x76, 0x00, 0x00, 0xED, 0x4D});
+  EXPECT_EQ(r.sp, 0xFFFFu) << "RETI popped the return address";
+  EXPECT_EQ(r.iff1, r.iff2) << "RETN/RETI restore IFF1 from IFF2";
 }

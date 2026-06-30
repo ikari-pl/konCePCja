@@ -370,6 +370,126 @@ struct z80_state {
     set_f(flags);
   }
 
+  // --- block operations (LDI/CPI/INI/OUTI families) ---
+  // `inc` = I-variant (++ pointers), else D-variant (--). `repeat` = R-variant
+  // (re-execute while the loop condition holds, costing an extra 5T INTERNAL).
+  // The undocumented X/Y flags come from a per-family scratch byte `n`.
+  void block_ld(bool inc, bool repeat) {  // LDI/LDD/LDIR/LDDR
+    if (step == 0) { req_read(hl.v); return; }
+    if (step == 1) { req_write(de.v, tmp); return; }
+    if (step == 2) {
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      de.v = static_cast<uint16_t>(de.v + d);
+      bc.v--;
+      const uint8_t n = static_cast<uint8_t>(a() + tmp);  // A + transferred byte
+      uint8_t flags = static_cast<uint8_t>(f() & (SF | ZF | CF));
+      if (bc.v != 0) flags |= PF;
+      if (n & 0x02) flags |= YF;  // bit1 of n → YF
+      if (n & 0x08) flags |= XF;  // bit3 of n → XF
+      set_f(flags);
+      req_internal(2);
+      return;
+    }
+    if (step == 3) {
+      if (repeat && bc.v != 0) {
+        pc.v = static_cast<uint16_t>(pc.v - 2);  // re-execute the ED-prefixed opcode
+        wz.v = static_cast<uint16_t>(pc.v + 1);
+        req_internal(5);
+        return;
+      }
+      finish();
+      return;
+    }
+    finish();  // step 4: after the loop's extra internal, re-fetch the opcode
+  }
+  void block_cp(bool inc, bool repeat) {  // CPI/CPD/CPIR/CPDR
+    if (step == 0) { req_read(hl.v); return; }
+    if (step == 1) {
+      const uint8_t val = tmp;
+      const uint8_t res = static_cast<uint8_t>(a() - val);
+      const bool hf = ((a() ^ val ^ res) & 0x10) != 0;
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      bc.v--;
+      wz.v = static_cast<uint16_t>(wz.v + d);
+      const uint8_t n = static_cast<uint8_t>(res - (hf ? 1 : 0));
+      uint8_t flags = static_cast<uint8_t>((f() & CF) | (res & SF) | NF);
+      if (res == 0) flags |= ZF;
+      if (hf) flags |= HF;
+      if (bc.v != 0) flags |= PF;
+      if (n & 0x02) flags |= YF;
+      if (n & 0x08) flags |= XF;
+      set_f(flags);
+      req_internal(5);
+      return;
+    }
+    if (step == 2) {
+      if (repeat && bc.v != 0 && (f() & ZF) == 0) {  // loop until match or BC==0
+        pc.v = static_cast<uint16_t>(pc.v - 2);
+        wz.v = static_cast<uint16_t>(pc.v + 1);
+        req_internal(5);
+        return;
+      }
+      finish();
+      return;
+    }
+    finish();  // step 3: after the loop's extra internal
+  }
+  void block_in(bool inc, bool repeat) {  // INI/IND/INIR/INDR
+    if (step == 0) { req_internal(1); return; }  // 5T M1
+    if (step == 1) {
+      wz.v = static_cast<uint16_t>(bc.v + (inc ? 1 : -1));
+      req_io_read(bc.v);  // IN with the original B in the port
+      return;
+    }
+    if (step == 2) { req_write(hl.v, tmp); return; }  // tmp survives the write
+    if (step == 3) {
+      const uint8_t val = tmp;
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      bc.set_hi(static_cast<uint8_t>(bc.hi() - 1));  // B-- after the input
+      const uint8_t bdec = bc.hi();
+      uint8_t flags = sz53(bdec);
+      if (val & 0x80) flags |= NF;
+      const uint16_t k = static_cast<uint16_t>(val) +
+                         (static_cast<uint8_t>(bc.lo() + d) & 0xFF);
+      if (k > 0xFF) flags |= static_cast<uint8_t>(HF | CF);
+      if (parity_even(static_cast<uint8_t>((k & 7) ^ bdec))) flags |= PF;
+      set_f(flags);
+      if (repeat && bdec != 0) { pc.v = static_cast<uint16_t>(pc.v - 2); req_internal(5); return; }
+      finish();
+      return;
+    }
+    finish();
+  }
+  void block_out(bool inc, bool repeat) {  // OUTI/OUTD/OTIR/OTDR
+    if (step == 0) { req_internal(1); return; }  // 5T M1
+    if (step == 1) { req_read(hl.v); return; }
+    if (step == 2) {
+      bc.set_hi(static_cast<uint8_t>(bc.hi() - 1));  // B-- before the output
+      wz.v = static_cast<uint16_t>(bc.v + (inc ? 1 : -1));
+      req_io_write(bc.v, tmp);  // OUT with the decremented B
+      return;
+    }
+    if (step == 3) {
+      const uint8_t val = tmp;
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      const uint8_t bdec = bc.hi();
+      uint8_t flags = sz53(bdec);
+      if (val & 0x80) flags |= NF;
+      const uint16_t k = static_cast<uint16_t>(val) + hl.lo();  // L after the move
+      if (k > 0xFF) flags |= static_cast<uint8_t>(HF | CF);
+      if (parity_even(static_cast<uint8_t>((k & 7) ^ bdec))) flags |= PF;
+      set_f(flags);
+      if (repeat && bdec != 0) { pc.v = static_cast<uint16_t>(pc.v - 2); req_internal(5); return; }
+      finish();
+      return;
+    }
+    finish();
+  }
+
   void micro_ed() {
     const uint8_t x = static_cast<uint8_t>(opcode >> 6);
     const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
@@ -416,6 +536,13 @@ struct z80_state {
           return;
         case 4:  // NEG (all 8 encodings are NEG on NMOS)
           neg();
+          finish();
+          return;
+        case 5:  // RETN (y even) / RETI (y odd) — pop PC, IFF1 = IFF2 (14T)
+          if (step == 0) { req_read(sp.v); sp.v++; return; }
+          if (step == 1) { tmpl = tmp; req_read(sp.v); sp.v++; return; }
+          pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+          iff1 = iff2;
           finish();
           return;
         case 6: {  // IM
@@ -467,6 +594,18 @@ struct z80_state {
           break;
         default:
           break;
+      }
+    }
+
+    if (x == 2 && z < 4 && y >= 4) {  // block ops: I/D variants (y4/5), R variants (y6/7)
+      const bool inc = (y == 4 || y == 6);
+      const bool repeat = (y >= 6);
+      switch (z) {
+        case 0: block_ld(inc, repeat); return;
+        case 1: block_cp(inc, repeat); return;
+        case 2: block_in(inc, repeat); return;
+        case 3: block_out(inc, repeat); return;
+        default: break;
       }
     }
 
