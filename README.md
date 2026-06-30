@@ -21,7 +21,7 @@ konCePCja is designed as an **IPC-controllable debugging tool** — every featur
 
 ## Changes vs Caprice32
 
-konCePCja is a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) with a WinAPE-class debugger, full IPC automation and a modern Dear ImGui interface. 1,119 tests across 107 suites.
+konCePCja began as a fork of [Caprice32](https://github.com/ColinPitrat/caprice32) and has grown into a largely new emulator. Since the early-2026 fork point, roughly **70% of the code is new** — 134 net-new source files, ~54k lines — built on top of Caprice32's proven GPLv2 emulation core (the Z80 opcode dispatch, gate array, CRTC, FDC and PSG logic), which makes up the remaining **~29%**. On that core it layers a WinAPE-class debugger, full IPC automation, an integrated Z80 assembler and a modern Dear ImGui interface, with 1,119 tests across 107 suites.
 
 ### Platform & UI
   * SDL3 migration + macOS menu integration
