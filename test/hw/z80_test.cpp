@@ -89,23 +89,46 @@ Device io_device(IoDev* s) {
   return Device{s, "io", io_tick, io_reset, io_size, io_save, io_load};
 }
 
+/* Interrupt-line driver: holds IRQ (level) and pulses NMI to a rising edge at a
+ * given board tick. `tick`/config are plain fields; reset only zeroes the tick. */
+struct IntLine {
+  bool irq;
+  int nmi_at;  // board tick at which NMI goes high (rising edge); <0 = never
+  int tick;
+};
+void intline_tick(void* self, const Bus*, Bus* out) {
+  IntLine* s = static_cast<IntLine*>(self);
+  if (s->irq) out->cpu.irq = true;                       // WIRED-OR level
+  if (s->nmi_at >= 0 && s->tick >= s->nmi_at) out->cpu.nmi = true;
+  s->tick++;
+}
+void intline_reset(void* self) { static_cast<IntLine*>(self)->tick = 0; }
+size_t intline_size(const void*) { return sizeof(IntLine); }
+void intline_save(const void* s, void* b) { std::memcpy(b, s, sizeof(IntLine)); }
+void intline_load(void* s, const void* b) { std::memcpy(s, b, sizeof(IntLine)); }
+Device intline_device(IntLine* s) {
+  return Device{s, "int", intline_tick, intline_reset, intline_size, intline_save, intline_load};
+}
+
 /* Run a program from 0x0000 until the Z80 halts (programs end with HALT 0x76).
  * Returns the final architectural state, with tstates frozen at the HALT. */
 struct Rig {
   std::unique_ptr<Ram> ram = std::make_unique<Ram>();
   std::unique_ptr<IoDev> io = std::make_unique<IoDev>();
+  IntLine il{false, -1, 0};
   std::vector<uint8_t> z80mem = std::vector<uint8_t>(z80_state_size());
   Board board;
   Device zdev;
 };
 
-Z80Regs run(const std::vector<uint8_t>& program) {
+Z80Regs run_core(const std::vector<uint8_t>& program, bool irq, int nmi_at) {
   static Rig rig;  // reused; reset below
   rig.ram = std::make_unique<Ram>();
   std::memset(rig.ram->cells, 0, sizeof(Ram::cells));
   size_t i = 0;
   for (uint8_t b : program) rig.ram->cells[i++] = b;
 
+  rig.il = IntLine{irq, nmi_at, 0};
   rig.z80mem.assign(z80_state_size(), 0);
   rig.zdev = z80_init(rig.z80mem.data());
 
@@ -113,6 +136,7 @@ Z80Regs run(const std::vector<uint8_t>& program) {
   board_add(&rig.board, clock_device());
   board_add(&rig.board, ram_device(rig.ram.get()));
   board_add(&rig.board, io_device(rig.io.get()));
+  board_add(&rig.board, intline_device(&rig.il));
   board_add(&rig.board, rig.zdev);
   board_reset(&rig.board);
 
@@ -120,13 +144,20 @@ Z80Regs run(const std::vector<uint8_t>& program) {
   for (int tick = 0; tick < 4000; ++tick) {
     board_tick(&rig.board);
     z80_peek(&rig.zdev, &r);
-    if (r.halted) break;
+    // Stop at HALT — but if an NMI edge is scheduled, run well past it first so a
+    // HALT meant to be *woken* by that NMI doesn't end the run prematurely.
+    if (r.halted && (nmi_at < 0 || tick > nmi_at + 80)) break;
   }
   return r;
 }
 
+Z80Regs run(const std::vector<uint8_t>& program) { return run_core(program, false, -1); }
 Z80Regs run(std::initializer_list<uint8_t> program) {
-  return run(std::vector<uint8_t>(program));
+  return run_core(std::vector<uint8_t>(program), false, -1);
+}
+// Run with IRQ held (level) and/or an NMI pulse at board tick `nmi_at`.
+Z80Regs run_int(const std::vector<uint8_t>& program, bool irq, int nmi_at = -1) {
+  return run_core(program, irq, nmi_at);
 }
 
 uint8_t lo(uint16_t v) { return static_cast<uint8_t>(v & 0xFF); }
@@ -668,4 +699,58 @@ TEST(Z80h, DdcbBitSetAndRes) {
   Z80Regs res = run({0xDD, 0x21, 0x00, 0x40, 0xDD, 0x36, 0x00, 0xFF,
                      0xDD, 0xCB, 0x00, 0x86, 0xDD, 0x7E, 0x00, 0x76});
   EXPECT_EQ(hi(res.af), 0xFE) << "RES 0,(IX+0) cleared bit 0";
+}
+
+// ---- Interrupts: IM1, IM2, NMI, HALT-wake, EI delay ----
+
+TEST(Z80i, MaskableIm1) {
+  // IM 1 ; EI ; JR -2 (loop) ; handler@0x38: LD A,0x42 ; HALT
+  std::vector<uint8_t> prog(0x3A, 0x00);
+  prog[0] = 0xED; prog[1] = 0x56;   // IM 1
+  prog[2] = 0xFB;                   // EI
+  prog[3] = 0x18; prog[4] = 0xFE;   // JR -2 (self loop)
+  prog[0x38] = 0x3E; prog[0x39] = 0x42;  // LD A,0x42
+  prog[0x3A] = 0x76;                // HALT
+  Z80Regs r = run_int(prog, /*irq=*/true);
+  EXPECT_EQ(hi(r.af), 0x42) << "IM1 vectored to 0x0038 and ran the handler";
+  EXPECT_EQ(r.sp, 0xFFFDu) << "INT pushed the 2-byte return address";
+  EXPECT_EQ(r.iff1, 0) << "INT acceptance cleared IFF1";
+}
+
+TEST(Z80i, MaskableIm2Vectors) {
+  // Build a vector table entry at (I<<8 | 0xFF) pointing to the handler@0x0050.
+  // The data bus floats to 0xFF during the ack (CPC behaviour), so vector=0xFF.
+  std::vector<uint8_t> prog(0x53, 0x00);
+  prog[0] = 0x21; prog[1] = 0x50; prog[2] = 0x00;  // LD HL,0x0050
+  prog[3] = 0x22; prog[4] = 0xFF; prog[5] = 0x90;  // LD (0x90FF),HL
+  prog[6] = 0x3E; prog[7] = 0x90;                  // LD A,0x90
+  prog[8] = 0xED; prog[9] = 0x47;                  // LD I,A  (I=0x90)
+  prog[10] = 0xED; prog[11] = 0x5E;                // IM 2
+  prog[12] = 0xFB;                                 // EI
+  prog[13] = 0x18; prog[14] = 0xFE;                // JR -2
+  prog[0x50] = 0x3E; prog[0x51] = 0x99;            // LD A,0x99
+  prog[0x52] = 0x76;                               // HALT
+  Z80Regs r = run_int(prog, /*irq=*/true);
+  EXPECT_EQ(hi(r.af), 0x99) << "IM2 read the table at (I<<8|0xFF) and jumped to the handler";
+}
+
+TEST(Z80i, NmiVectorsTo0066) {
+  // JR -2 (loop) ; handler@0x66: LD A,0x77 ; HALT.  NMI pulse mid-run.
+  std::vector<uint8_t> prog(0x69, 0x00);
+  prog[0] = 0x18; prog[1] = 0xFE;          // JR -2 (self loop)
+  prog[0x66] = 0x3E; prog[0x67] = 0x77;    // LD A,0x77
+  prog[0x68] = 0x76;                       // HALT
+  Z80Regs r = run_int(prog, /*irq=*/false, /*nmi_at=*/30);
+  EXPECT_EQ(hi(r.af), 0x77) << "NMI vectored to 0x0066 regardless of IFF1";
+  EXPECT_EQ(r.sp, 0xFFFDu) << "NMI pushed the return address";
+}
+
+TEST(Z80i, NmiWakesFromHalt) {
+  // HALT immediately ; NMI later wakes it → handler@0x66 sets A
+  std::vector<uint8_t> prog(0x69, 0x00);
+  prog[0] = 0x76;                          // HALT
+  prog[0x66] = 0x3E; prog[0x67] = 0x33;    // LD A,0x33
+  prog[0x68] = 0x76;                       // HALT
+  Z80Regs r = run_int(prog, /*irq=*/false, /*nmi_at=*/30);
+  EXPECT_EQ(hi(r.af), 0x33) << "NMI woke the CPU out of HALT and ran the handler";
 }

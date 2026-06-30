@@ -69,6 +69,13 @@ struct z80_state {
   uint8_t mc_wval = 0;   // value for WRITE/IO write
   bool mc_io_read = false;  // IO cycle direction (true=IN, false=OUT)
   uint8_t mc_ilen = 0;   // length for INTERNAL
+
+  // Interrupt state.
+  bool nmi_prev = false;     // previous NMI line level (rising-edge detect)
+  bool nmi_pending = false;  // latched NMI awaiting an instruction boundary
+  bool ei_delay = false;     // suppress INT for the one instruction after EI
+  uint8_t servicing = 0;     // 0=none, 1=NMI, 2=maskable INT (sequence active)
+  uint8_t int_vec = 0;       // data-bus byte latched at INT acknowledge (IM0/IM2)
   uint8_t step = 0;      // micro-step within the instruction (post-fetch)
   uint8_t prefix = 0;    // active prefix byte (0xCB/0xED/...) or 0; cleared by finish()
   uint8_t index = 0;     // index-register selector: 0=HL, 1=IX, 2=IY; cleared by finish()
@@ -359,8 +366,47 @@ struct z80_state {
     index = 0;
   }
 
+  // Interrupt-acceptance sequence (NMI or maskable INT). Entered at an
+  // instruction boundary with `servicing` set; PC already points at the
+  // instruction that will resume after RET[I/N].
+  void micro_interrupt() {
+    if (servicing == 1) {  // NMI → 0x0066 (11T); IFF1 cleared, IFF2 preserved
+      if (step == 0) { req_internal(5); return; }
+      if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
+      if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
+      pc.v = wz.v = 0x0066;
+      servicing = 0;
+      finish();
+      return;
+    }
+    if (im == 2) {  // IM2 — 19T: vector through (I<<8 | bus byte)
+      if (step == 0) { req_internal(7); return; }  // interrupt-ack + decision
+      if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
+      if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
+      if (step == 3) {
+        mem_addr = static_cast<uint16_t>((i << 8) | int_vec);
+        req_read(mem_addr);
+        return;
+      }
+      if (step == 4) { tmpl = tmp; req_read(static_cast<uint16_t>(mem_addr + 1)); return; }
+      pc.v = wz.v = static_cast<uint16_t>((tmp << 8) | tmpl);
+      servicing = 0;
+      finish();
+      return;
+    }
+    // IM0/IM1 — RST to a fixed vector (13T). IM1 → 0x38; IM0 executes the bus
+    // opcode, which on the CPC (and typical hardware) is an RST.
+    if (step == 0) { req_internal(7); return; }
+    if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }
+    if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }
+    pc.v = wz.v = (im == 0) ? static_cast<uint16_t>(int_vec & 0x38) : 0x0038;
+    servicing = 0;
+    finish();
+  }
+
   // Dispatch the instruction step machine for the active prefix / index state.
   void run_micro() {
+    if (servicing != 0) { micro_interrupt(); return; }
     if (prefix == 0xCB) { micro_cb(); return; }
     if (prefix == 0xED) { micro_ed(); return; }
     if (index != 0) {
@@ -936,8 +982,9 @@ struct z80_state {
             iff1 = iff2 = 0;
             finish();
             return;
-          case 7:  // EI
+          case 7:  // EI — enable, but defer INT acceptance until after the next op
             iff1 = iff2 = 1;
+            ei_delay = true;
             finish();
             return;
           case 2:  // OUT (n),A — port = (A<<8)|n; MEMPTR low=(n+1)&FF, high=A
@@ -1198,10 +1245,21 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
 
   if (!in->clk.cpu) return;  // advance only on the 4 MHz enable (drive-and-hold: TODO)
 
+  // NMI is edge-triggered: latch a rising edge until the next boundary.
+  if (in->cpu.nmi && !z->nmi_prev) z->nmi_pending = true;
+  z->nmi_prev = in->cpu.nmi;
+  const bool int_ready = z->nmi_pending || (z->iff1 && in->cpu.irq && !z->ei_delay);
+
   if (z->halted) {
-    z->tstates++;
-    if (++z->halt_t >= 4) { z->halt_t = 0; z->bump_refresh(); }
-    return;
+    if (int_ready) {        // an accepted interrupt wakes the CPU; resume at M1
+      z->halted = false;
+      z->mc = z80_state::MC::M1;
+      z->t = 0;             // fall through to run M1 T1 (acceptance) this tick
+    } else {
+      z->tstates++;
+      if (++z->halt_t >= 4) { z->halt_t = 0; z->bump_refresh(); }
+      return;
+    }
   }
 
   z->tstates++;  // one per executed T-state (WAIT Tw counts for free)
@@ -1212,6 +1270,28 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
       switch (z->t) {
         case 1:
           z->qq = 0;
+          // Accept a pending interrupt only at a true instruction boundary
+          // (prefix==0 && index==0 — never between a prefix and its opcode).
+          if (z->prefix == 0 && z->index == 0) {
+            const bool was_ei = z->ei_delay;
+            z->ei_delay = false;
+            if (z->nmi_pending) {
+              z->nmi_pending = false;
+              z->iff1 = 0;  // NMI: IFF1 cleared, IFF2 preserved
+              z->servicing = 1;
+              z->step = 0;
+              z->run_micro();  // issue the first sequence M-cycle
+              break;
+            }
+            if (z->iff1 && in->cpu.irq && !was_ei) {
+              z->iff1 = z->iff2 = 0;
+              z->int_vec = in->cpu.data;  // latch the bus byte (IM0/IM2)
+              z->servicing = 2;
+              z->step = 0;
+              z->run_micro();
+              break;
+            }
+          }
           z->mc_addr = z->pc.v;
           z->pc.v = static_cast<uint16_t>(z->pc.v + 1);
           out->cpu.addr = z->mc_addr;
@@ -1345,6 +1425,9 @@ void z80_reset(void* self) {
   z->mc_io_read = false;
   z->index = 0;
   z->mem_addr = 0;
+  z->nmi_prev = z->nmi_pending = z->ei_delay = false;
+  z->servicing = 0;
+  z->int_vec = 0;
   z->unimplemented = false;
   z->tstates = 0;
 }
