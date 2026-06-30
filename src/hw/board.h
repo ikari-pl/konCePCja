@@ -1,19 +1,17 @@
 /* board.h — the central scheduler: the bus fabric plus the device list.
  *
- * `board_tick` advances the whole machine by one T-state by threading a single
- * Pins value through every device in order. DEVICE ORDER IS THE WIRING: the Z80
- * runs first (driving address + control), then memory/peripherals respond on the
- * same bus value, so by the end of the tick the data lines reflect the access.
- * The exact order is the machine's topology and is documented where the board is
- * assembled (the CPC wiring), not here.
+ * THE SPEC IS docs/hw-spec.md §7. `board_tick` advances the whole machine by one
+ * 16 MHz master cycle using a two-phase synchronous update: every device reads
+ * the committed bus and drives the next (resting) bus; then the next bus is
+ * committed. Device ORDER DOES NOT AFFECT THE RESULT.
  */
 #ifndef KONCPC_HW_BOARD_H
 #define KONCPC_HW_BOARD_H
 
 #include <stdint.h>
 
+#include "buses.h"
 #include "device.h"
-#include "pins.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,20 +22,24 @@ enum { BOARD_MAX_DEVICES = 16 };
 typedef struct Board {
   Device dev[BOARD_MAX_DEVICES];  /* device views (state is caller-owned) */
   int count;
-  Pins pins;          /* current bus state                              */
-  uint64_t tstates;   /* cumulative T-states since power-on             */
+  Bus bus;                /* committed bus state                          */
+  uint64_t master_cycles; /* cumulative 16 MHz master cycles since power-on */
 } Board;
 
-/* Empty board: no devices, all lines deasserted, clock at zero. */
+/* The floating/resting bus: data pulled up to 0xFF, every line deasserted. */
+Bus bus_resting(void);
+
+/* Empty board: no devices, resting bus, clock at zero. */
 void board_init(Board* board);
 
-/* Append a device in bus order. Returns its index, or -1 if the board is full. */
+/* Append a device. Returns its index, or -1 if the board is full. (Order does
+ * not affect tick results; it only documents the wiring.) */
 int board_add(Board* board, Device device);
 
-/* Reset every device and deassert the bus; the clock keeps running. */
+/* Cold-boot every device and rest the bus; the clock keeps running. */
 void board_reset(Board* board);
 
-/* Advance the whole machine by one T-state. */
+/* Advance the whole machine by one 16 MHz master cycle. */
 void board_tick(Board* board);
 
 #ifdef __cplusplus

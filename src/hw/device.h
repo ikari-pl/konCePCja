@@ -1,41 +1,42 @@
 /* device.h — the ONE interface every chip on the bus implements.
  *
- * A Device is a small value type (a name + function pointers + a `self` pointer
- * to the device's own state). It owns no memory: the caller allocates the state
- * storage (stack, static, or BSS) sized by the module's `*_state_size()` free
- * function and hands it to the module's `*_init(void* storage)`, which returns a
- * ready Device view. No heap — which keeps the door open for a SPARK/Ada device
- * (dynamic allocation is hostile to formal proof) and makes save-states trivial.
+ * THE SPEC IS docs/hw-spec.md §5. A Device is a small value: a name, a `self`
+ * pointer to caller-owned state (no heap → SPARK-friendly), and function
+ * pointers. The Z80 is not special — it is a Device whose `tick` runs a CPU.
  *
- * The uniform shape means the Z80 is not special: it is a Device whose `tick`
- * happens to run a CPU; the Gate Array is a Device whose `tick` happens to drive
- * `wait` and video. The board treats them identically.
+ * TWO-PHASE TICK (the rule that makes device order irrelevant):
+ *   - read ONLY from `in` (the committed bus from the previous master cycle);
+ *   - `out` arrives in the resting/floating state — write ONLY the lines this
+ *     device drives;
+ *   - owned / tri-state lines (addr, data, mreq, hsync, …): ASSIGN;
+ *   - wired-OR lines (irq): OR in (`out->cpu.irq |= mine`);
+ *   - never read `out` (except to OR a wired-OR line).
+ * Signals therefore propagate one master cycle per hop (see spec §2).
  */
 #ifndef KONCPC_HW_DEVICE_H
 #define KONCPC_HW_DEVICE_H
 
 #include <stddef.h>
 
-#include "pins.h"
+#include "buses.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct Device {
-  void* self;        /* device state, owned by the caller (no heap)        */
+  void* self;        /* device state, caller-owned; must outlive the Board */
   const char* name;  /* stable identifier, e.g. "z80", "gate-array"        */
 
-  /* Advance the device by exactly one T-state. Reads the lines it observes
-   * from `pins`, drives the lines it owns, returns the updated bus. Pure in
-   * (self, pins) — no globals, no allocation. */
-  Pins (*tick)(void* self, Pins pins);
+  /* Advance one 16 MHz master cycle. See the two-phase rules above. */
+  void (*tick)(void* self, const Bus* in, Bus* out);
 
-  /* Re-initialise to power-on/reset state. */
+  /* Power-on / cold-boot initializer (the runtime reset sequence travels on
+   * cpu.reset instead — see spec §8). */
   void (*reset)(void* self);
 
-  /* Serialization: `state_size` bytes round-trip through save/load. Used by the
-   * board to snapshot/restore the whole machine uniformly. */
+  /* Serialization of LOGICAL state only (never raw pointers); blob begins with a
+   * 1-byte format version. `state_size` bytes round-trip through save/load. */
   size_t (*state_size)(const void* self);
   void (*save)(const void* self, void* buf);
   void (*load)(void* self, const void* buf);
