@@ -77,6 +77,12 @@ struct z80_state {
   bool mc_io_read = false;  // IO cycle direction (true=IN, false=OUT)
   uint8_t mc_ilen = 0;   // length for INTERNAL
 
+  // Drive-and-hold: what the CPU is driving on the bus, kept asserted across the
+  // ÷4 clock's idle master cycles so a transaction stays stable between T-state
+  // advances. `data` is re-driven only when `wr` is set (tristate on reads).
+  CpuBus held{};
+  bool held_valid = false;
+
   // Interrupt state.
   bool nmi_prev = false;     // previous NMI line level (rising-edge detect)
   bool nmi_pending = false;  // latched NMI awaiting an instruction boundary
@@ -1265,11 +1271,27 @@ z80_state* self_of(void* self) { return static_cast<z80_state*>(self); }
 void z80_tick(void* self, const Bus* in, Bus* out) {
   z80_state* z = self_of(self);
 
-  if (!in->clk.cpu) return;  // advance only on the 4 MHz enable (drive-and-hold: TODO)
-
-  // NMI is edge-triggered: latch a rising edge until the next boundary.
+  // NMI is edge-triggered — latch a rising edge every master cycle (even while
+  // clock-gated) so an edge between CPU ticks is not missed.
   if (in->cpu.nmi && !z->nmi_prev) z->nmi_pending = true;
   z->nmi_prev = in->cpu.nmi;
+
+  if (!in->clk.cpu) {
+    // Drive-and-hold: the CPU advances a T-state only on the 4 MHz enable; on the
+    // ÷4 clock's other master cycles it keeps its address + control lines asserted
+    // so a memory/IO transaction stays stable until the next advance. `data` is
+    // held only for writes — on reads the CPU tristates it so the responding
+    // device drives the byte (keeping the shared bus single-driver / order-free).
+    if (z->held_valid) {
+      out->cpu.addr = z->held.addr;
+      out->cpu.m1 = z->held.m1;   out->cpu.mreq = z->held.mreq; out->cpu.iorq = z->held.iorq;
+      out->cpu.rd = z->held.rd;   out->cpu.wr = z->held.wr;     out->cpu.rfsh = z->held.rfsh;
+      out->cpu.halt = z->held.halt; out->cpu.busak = z->held.busak;
+      if (z->held.wr) out->cpu.data = z->held.data;
+    }
+    return;
+  }
+
   const bool int_ready = z->nmi_pending || (z->iff1 && in->cpu.irq && !z->ei_delay);
 
   if (z->halted) {
@@ -1282,6 +1304,9 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
     } else {
       z->tstates++;
       if (++z->halt_t >= 4) { z->halt_t = 0; z->bump_refresh(); }
+      out->cpu.halt = true;  // HALT line stays asserted while halted
+      z->held = out->cpu;
+      z->held_valid = true;
       return;
     }
   }
@@ -1437,6 +1462,12 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
       }
       break;
   }
+
+  // Latch what we drove this T-state so drive-and-hold can re-assert it across
+  // the ÷4 clock's idle master cycles until the next advance.
+  out->cpu.halt = z->halted;
+  z->held = out->cpu;
+  z->held_valid = true;
 }
 
 void z80_reset(void* self) {
@@ -1459,6 +1490,8 @@ void z80_reset(void* self) {
   z->nmi_prev = z->nmi_pending = z->ei_delay = false;
   z->servicing = z80_state::Servicing::NONE;
   z->int_vec = 0;
+  z->held = CpuBus{};
+  z->held_valid = false;
   z->unimplemented = false;
   z->tstates = 0;
   z->instr_count = 0;
@@ -1519,6 +1552,8 @@ void z80_poke(const Device* dev, const Z80Regs* in) {
   z->nmi_prev = z->nmi_pending = z->ei_delay = false;
   z->servicing = z80_state::Servicing::NONE;
   z->int_vec = 0;
+  z->held = CpuBus{};
+  z->held_valid = false;
   z->unimplemented = false;
   z->tstates = 0;
   z->instr_count = 0;

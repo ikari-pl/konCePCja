@@ -62,6 +62,18 @@ Device waitclock_device(uint8_t* ctr) {
   return Device{ctr, "waitclk", waitclk_tick, clk_reset, clk_size, clk_save, clk_load};
 }
 
+/* Realistic ÷4 clock: clk.cpu enabled 1 master cycle in 4 (the Gate Array's 4 MHz
+ * enable within the 16 MHz fabric). Exercises the Z80's drive-and-hold path — the
+ * CPU must keep a memory transaction asserted across the 3 idle cycles. */
+void div4_tick(void* self, const Bus*, Bus* out) {
+  uint8_t* ctr = static_cast<uint8_t*>(self);
+  out->clk.cpu = (*ctr & 3) == 0;
+  *ctr = static_cast<uint8_t>(*ctr + 1);
+}
+Device div4_device(uint8_t* ctr) {
+  return Device{ctr, "div4", div4_tick, clk_reset, clk_size, clk_save, clk_load};
+}
+
 /* I/O latch device: 256 ports keyed by the low address byte. Reads return a
  * deterministic seed (port_low ^ 0xFF) until written; writes latch the value so
  * an OUT followed by an IN of the same port reads it back — exercising both
@@ -910,4 +922,50 @@ TEST(Z80i, InterruptBlockedBetweenPrefixAndOpcode) {
   prog[0x3A] = 0x76;                       // HALT
   Z80Regs r = run_int(prog, /*irq=*/true);
   EXPECT_EQ(hi(r.af), 0x42) << "INT accepted at a clean boundary around the DD-prefixed loop";
+}
+
+// ============================================================================
+// Z80k — drive-and-hold: the CPU must keep a bus transaction asserted across the
+// ÷4 clock's idle master cycles (GA integration prerequisite). Runs the Z80 with
+// a realistic 1-in-4 clock instead of the always-on test clock.
+// ============================================================================
+
+namespace {
+Z80Regs run_div4(const std::vector<uint8_t>& program) {
+  auto ram = std::make_unique<Ram>();
+  std::memset(ram->cells, 0, sizeof(Ram::cells));
+  for (size_t i = 0; i < program.size(); ++i) ram->cells[i] = program[i];
+  uint8_t ctr = 0;
+  std::vector<uint8_t> zmem(z80_state_size());
+  Device zdev = z80_init(zmem.data());
+  Board board;
+  board_init(&board);
+  board_add(&board, div4_device(&ctr));
+  board_add(&board, ram_device(ram.get()));
+  board_add(&board, zdev);
+  board_reset(&board);
+  Z80Regs r{};
+  for (int tick = 0; tick < 20000; ++tick) {
+    board_tick(&board);
+    z80_peek(&zdev, &r);
+    if (r.halted) break;
+  }
+  return r;
+}
+}  // namespace
+
+TEST(Z80k, MemoryReadHoldsAcrossDiv4Clock) {
+  // LD HL,0x0005 ; LD A,(HL) ; HALT ; data 0x99 @ 0x0005. Without drive-and-hold
+  // the read byte is lost after one master cycle and A would read 0xFF.
+  Z80Regs r = run_div4({0x21, 0x05, 0x00, 0x7E, 0x76, 0x99});
+  EXPECT_EQ(hi(r.af), 0x99) << "memory read survived the ÷4 clock's idle cycles";
+  // T-states advance only on the enable, so datasheet timing is preserved:
+  EXPECT_EQ(r.tstates, 10u + 7u + 4u) << "LD HL,nn(10) + LD A,(HL)(7) + HALT(4)";
+}
+
+TEST(Z80k, MemoryWriteHoldsAcrossDiv4Clock) {
+  // LD HL,0x0008 ; LD (HL),0x33 ; LD A,(HL) ; HALT — write data must stay driven
+  // through the idle cycles for the RAM to latch it; then read it back.
+  Z80Regs r = run_div4({0x21, 0x08, 0x00, 0x36, 0x33, 0x7E, 0x76});
+  EXPECT_EQ(hi(r.af), 0x33) << "write latched and read back across the ÷4 clock";
 }
