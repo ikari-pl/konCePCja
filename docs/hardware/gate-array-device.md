@@ -88,9 +88,10 @@ A 6-bit line counter, `sl_count` (legacy `GateArray.sl_count`), driven by HSYNC:
 - **Increment** `sl_count` on each rising `vid.hsync` (one per scanline).
 - **Fire** at `sl_count == 52`: assert the Z80 INT (`cpu.irq`), then `sl_count = 0`.
   312 lines/frame ÷ 52 = 6 interrupts per 50 Hz frame → **300 Hz**.
-- **Acknowledge**: when the Z80 accepts the INT, the GA does `sl_count &= 0x1F` —
-  clearing **bit 5**. The classic CPC behaviour that lets a long-delayed interrupt
-  still resynchronise.
+- **Acknowledge**: the Z80's real `m1`+`iorq` acknowledge cycle (the Z80's `MC::IOACK`)
+  makes the GA do `sl_count &= 0x1F` — clearing **bit 5** — and drop the INT line. The
+  classic CPC behaviour that lets a long-delayed interrupt still resynchronise. Wired
+  end to end (GateArray.EndToEndInterruptAcceptedAndAcknowledged).
 - **VSYNC resync**: on `vid.vsync` the GA arms `hs_count = 2`; after **2 more HSYNCs**
   it forces `sl_count = 0` (with the legacy "≥32 → also fire now" save-margin so an
   interrupt isn't skipped near the boundary). Keeps interrupts phase-locked to the
