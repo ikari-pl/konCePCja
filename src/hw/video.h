@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "device.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,6 +39,25 @@ int vid_px_per_char(uint8_t mode);
 void vid_render_frame(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
                       uint16_t ma_start, uint8_t r1, uint8_t r6, uint8_t r9,
                       uint8_t* fb);
+
+/* --- Live video Device ---
+ * Snoops the GA's palette/mode I/O and the CRTC's MA/RA/DISPEN/VSYNC on the bus,
+ * fetches video RAM through a back-channel to the memory Device, and packs the
+ * active display into the caller's framebuffer as the board runs. `frames` counts
+ * completed frames (VSYNC edges). */
+typedef struct VideoRegs {
+  uint8_t mode;
+  uint32_t frames;  /* completed frames */
+  int cur_row;      /* active line currently being filled */
+} VideoRegs;
+
+size_t video_state_size(void);
+Device video_init(void* storage);
+/* Point the renderer at the GA (palette/mode), the memory Device (video RAM), and
+ * a framebuffer (RGB, w*h*3). */
+void video_attach(const Device* vid, const Device* gate_array, const Device* mem,
+                  uint8_t* fb, int w, int h);
+void video_peek(const Device* vid, VideoRegs* out);
 
 #ifdef __cplusplus
 }

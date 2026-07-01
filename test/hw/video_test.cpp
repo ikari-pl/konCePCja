@@ -104,3 +104,79 @@ TEST(Video, RenderFrameColourBands) {
     std::fclose(f);
   }
 }
+
+// ---- Live video Device: GA + CRTC + memory + video on a board ----
+
+#include "hw/board.h"
+#include "hw/crtc.h"
+#include "hw/gate_array.h"
+#include "hw/memory.h"
+
+namespace {
+// Injects a scripted sequence of Gate Array register writes over the first ticks,
+// then idles — sets mode/palette on a running board without disturbing the clock.
+struct Injector { const uint8_t* seq; int len; int tick; };
+void inj_tick(void* self, const Bus*, Bus* out) {
+  Injector* j = static_cast<Injector*>(self);
+  if (j->tick < j->len) {
+    out->cpu.iorq = true; out->cpu.wr = true;
+    out->cpu.addr = 0x7F00; out->cpu.data = j->seq[j->tick];
+  }
+  j->tick++;
+}
+size_t inj_size(const void*) { return sizeof(Injector); }
+void inj_sl(const void*, void*) {}
+Device inj_device(Injector* j) {
+  return Device{j, "inj", inj_tick, [](void*){}, inj_size,
+                [](const void*, void*){}, [](void*, const void*){}};
+}
+}  // namespace
+
+TEST(Video, LiveDeviceMatchesStaticRender) {
+  // GA registers: mode 1, pens 0..3 → inks 20,12,18,11.
+  const uint8_t seq[] = {0x81, 0x00, 0x54, 0x01, 0x4C, 0x02, 0x52, 0x03, 0x4B};
+  const uint8_t ink[17] = {20, 12, 18, 11, 0};
+
+  std::vector<uint8_t> gmem(ga_state_size());   Device gdev = ga_init(gmem.data());
+  std::vector<uint8_t> cmem(crtc_state_size()); Device cdev = crtc_init(cmem.data());
+  std::vector<uint8_t> mmem(mem_state_size());  Device mdev = mem_init(mmem.data());
+  std::vector<uint8_t> vmem(video_state_size());Device vdev = video_init(vmem.data());
+  Injector inj{seq, static_cast<int>(sizeof(seq)), 0};
+
+  Board board;
+  board_init(&board);
+  board_add(&board, gdev);
+  board_add(&board, inj_device(&inj));
+  board_add(&board, cdev);
+  board_add(&board, mdev);
+  board_add(&board, vdev);
+  board_reset(&board);
+
+  const uint8_t std_regs[10] = {63, 40, 46, 0x8E, 38, 0, 25, 30, 0, 7};
+  for (uint8_t i = 0; i < 10; ++i) crtc_poke_reg(&cdev, i, std_regs[i]);
+  crtc_poke_reg(&cdev, 12, 0x30);
+
+  // A varied pattern across the screen RAM (0xC000-0xFFFF), mirrored locally so we
+  // can compute the reference render.
+  std::vector<uint8_t> ref_ram(0x10000, 0);
+  for (int a = 0xC000; a <= 0xFFFF; ++a) {
+    const uint8_t val = static_cast<uint8_t>((a * 31) & 0xFF);
+    mem_write_ram(&mdev, static_cast<uint16_t>(a), val);
+    ref_ram[a] = val;
+  }
+
+  const int w = 320, h = 200;
+  std::vector<uint8_t> fb(static_cast<size_t>(w) * h * 3, 0);
+  video_attach(&vdev, &gdev, &mdev, fb.data(), w, h);
+
+  VideoRegs vr{};
+  for (int tick = 0; tick < 1400000 && vr.frames < 3; ++tick) {  // a few frames
+    board_tick(&board);
+    video_peek(&vdev, &vr);
+  }
+  ASSERT_GE(vr.frames, 2u) << "the live renderer completed frames";
+
+  std::vector<uint8_t> ref(static_cast<size_t>(w) * h * 3, 0);
+  vid_render_frame(ref_ram.data(), 1, ink, 0x3000, 40, 25, 7, ref.data());
+  EXPECT_EQ(fb, ref) << "live board render matches the reference vid_render_frame";
+}
