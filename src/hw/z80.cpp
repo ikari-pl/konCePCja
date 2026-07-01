@@ -1316,6 +1316,17 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
 
   switch (z->mc) {
     case z80_state::MC::M1:
+      // GA µs-quantiser: an opcode fetch begins only on a 1 µs boundary (the phase
+      // the Gate Array publishes). Holding here until phase 0 pads each instruction
+      // to roundup(raw,4) = cc_op. With the always-on test clock phase is always 0,
+      // so this is a no-op there (raw timing preserved; FUSE unaffected).
+      if (z->t == 1 && in->clk.phase != 0) {
+        z->t = 0;                // consume a wait T-state, re-check next enable
+        out->cpu.halt = z->halted;
+        z->held = out->cpu;
+        z->held_valid = true;
+        return;
+      }
       switch (z->t) {
         case 1:
           z->qq = 0;

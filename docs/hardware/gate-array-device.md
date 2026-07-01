@@ -65,14 +65,19 @@ Confirmed against the legacy `cc_op[]` table (§6), decisive case:
 **Rule:** `cpc_time(instruction) = roundup(raw_z80_time, 4)`. The raw times are exactly
 what the Z80 device already produces and the FUSE suite validates at 100%.
 
-**Modelling in the Device:** the GA asserts `cpu.wait` during an M1 fetch while the CPU
-is not yet µs-aligned, releasing it on the boundary. Because prefix bytes (`DD`/`FD`/
-`CB`/`ED`) are themselves 4 T M1 cycles, they preserve alignment and the padding lands
-once, at the instruction's end — so multi-byte instructions also satisfy
-`roundup(raw, 4)`. (The Z80's M1 must consult `cpu.wait`; today only READ/WRITE/IO do.
-The GA slice adds that hook, mirroring the existing WAIT handling.)
+**Modelling in the Device (IMPLEMENTED, validated against cc_op):** the Z80's M1
+holds the opcode fetch until `clk.phase == 0` (the µs boundary the GA publishes on the
+clock bus). The trailing wait states pad each instruction to `roundup(raw, 4)`. Reading
+`clk.phase` directly — rather than a derived `cpu.wait` pulse — sidesteps the one-hop
+bus latency between "GA asserts wait" and "CPU samples it", and it is equivalent (the
+phase *is* what the GA's /WAIT is derived from). Key property: with the always-on test
+clock `phase` is always 0, so the hold is a no-op there — raw datasheet timing (and the
+1356-test FUSE suite) is unaffected; quantisation engages only under the real GA.
 
-Internal and I/O cycles are **not** independently aligned; only the fetch is.
+Because prefix bytes (`DD`/`FD`/`CB`/`ED`) are themselves 4 T M1 cycles, they preserve
+alignment and the padding lands once, at the instruction's end — so multi-byte
+instructions also satisfy `roundup(raw, 4)`. Internal and I/O cycles are **not**
+independently aligned; only the fetch is.
 
 ---
 
