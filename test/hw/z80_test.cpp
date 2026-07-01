@@ -167,7 +167,7 @@ uint8_t hi(uint16_t v) { return static_cast<uint8_t>(v >> 8); }
 TEST(Z80a, NopTimingAndHalt) {
   Z80Regs r = run({0x00, 0x76});  // NOP ; HALT
   EXPECT_EQ(r.halted, 1);
-  EXPECT_EQ(r.pc, 0x0002);
+  EXPECT_EQ(r.pc, 0x0001) << "PC points AT the HALT opcode while halted (matches FUSE)";
   EXPECT_EQ(r.tstates, 8u) << "NOP (4) + HALT M1 (4)";
   EXPECT_FALSE(r.unimplemented);
 }
@@ -648,7 +648,7 @@ TEST(Z80g, RetiPopsLikeRet) {
   // IFF1<-IFF2 restore is covered non-vacuously in Z80i.RetnRestoresIff).
   Z80Regs r = run({0xCD, 0x06, 0x00, 0x76, 0x00, 0x00, 0xED, 0x4D});
   EXPECT_EQ(r.sp, 0xFFFFu) << "RETI popped the return address";
-  EXPECT_EQ(r.pc, 0x0004u) << "RETI returned to the instruction after CALL";
+  EXPECT_EQ(r.pc, 0x0003u) << "RETI returned to 0x0003 (the HALT it then halts on)";
 }
 
 // ---- DD/FD index prefix: IX/IY, (IX+d), DDCB ----

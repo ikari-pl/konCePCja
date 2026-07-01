@@ -96,6 +96,7 @@ struct z80_state {
   bool unimplemented = false;
 
   uint64_t tstates = 0;
+  uint64_t instr_count = 0;  // completed instructions (one finish() each)
 
   // --- byte accessors via octal index (0=B..5=L, 7=A; 6=(HL) handled by micro) ---
   uint8_t a() const { return af.hi(); }
@@ -383,6 +384,7 @@ struct z80_state {
     step = 0;
     prefix = 0;
     index = IndexReg::HL;
+    instr_count++;  // one full instruction (or accepted interrupt) completed
   }
 
   // Interrupt-acceptance sequence (NMI or maskable INT). Entered at an
@@ -1084,7 +1086,12 @@ struct z80_state {
   }
 
   void micro_x1(uint8_t y, uint8_t z) {  // LD r,r' / r,(HL) / (HL),r ; HALT
-    if (y == 6 && z == 6) { halted = true; finish(); return; }  // HALT
+    if (y == 6 && z == 6) {  // HALT — PC points back AT the opcode while halted
+      halted = true;
+      pc.v = static_cast<uint16_t>(pc.v - 1);
+      finish();
+      return;
+    }
     if (z == 6) {                                               // LD r,(HL)
       if (step == 0) { req_read(hl.v); return; }
       set_r(y, tmp);
@@ -1269,6 +1276,7 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
     if (int_ready) {        // an accepted interrupt wakes the CPU; resume at M1
       z->halted = false;
       z->halt_t = 0;        // clear the HALT refresh sub-counter for determinism
+      z->pc.v = static_cast<uint16_t>(z->pc.v + 1);  // step past the HALT opcode
       z->mc = z80_state::MC::M1;
       z->t = 0;             // fall through to run M1 T1 (acceptance) this tick
     } else {
@@ -1330,8 +1338,10 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
         case 4:
           out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
           out->cpu.rfsh = true;
-          if (z->opcode == 0xDD || z->opcode == 0xFD) {
-            z->index = (z->opcode == 0xDD) ? z80_state::IndexReg::IX : z80_state::IndexReg::IY;  // index selector; last DD/FD wins
+          if (z->prefix == 0 && (z->opcode == 0xDD || z->opcode == 0xFD)) {
+            // DD/FD is a prefix only when none is active; after a CB/ED prefix the
+            // same byte is a sub-opcode (e.g. CB DD = SET 3,L, not a DD prefix).
+            z->index = (z->opcode == 0xDD) ? z80_state::IndexReg::IX : z80_state::IndexReg::IY;  // last DD/FD wins
             z->prefix = 0;
             z->mc = z80_state::MC::M1;  // fetch the real opcode as another M1
             z->t = 0;
@@ -1451,6 +1461,7 @@ void z80_reset(void* self) {
   z->int_vec = 0;
   z->unimplemented = false;
   z->tstates = 0;
+  z->instr_count = 0;
 }
 
 size_t z80_dev_state_size(const void*) { return sizeof(z80_state); }
@@ -1482,8 +1493,35 @@ void z80_peek(const Device* dev, Z80Regs* out) {
   out->iff1 = z->iff1; out->iff2 = z->iff2; out->q = z->q;
   out->halted = z->halted ? 1 : 0;
   out->tstates = z->tstates;
+  out->instr_count = z->instr_count;
   out->last_opcode = z->opcode;
   out->unimplemented = z->unimplemented ? 1 : 0;
+}
+
+void z80_poke(const Device* dev, const Z80Regs* in) {
+  z80_state* z = static_cast<z80_state*>(dev->self);
+  z->af.v = in->af;   z->bc.v = in->bc;   z->de.v = in->de;   z->hl.v = in->hl;
+  z->af2.v = in->af_; z->bc2.v = in->bc_; z->de2.v = in->de_; z->hl2.v = in->hl_;
+  z->ix.v = in->ix;   z->iy.v = in->iy;   z->sp.v = in->sp;   z->pc.v = in->pc;
+  z->wz.v = in->wz;
+  z->i = in->i; z->r = in->r; z->im = static_cast<z80_state::IntMode>(in->im & 3);
+  z->iff1 = in->iff1; z->iff2 = in->iff2;
+  z->halted = in->halted != 0;
+  // Fresh instruction boundary; Q latch starts cleared (no prior instruction).
+  z->q = z->qq = 0;
+  z->mc = z80_state::MC::M1;
+  z->t = z->step = 0;
+  z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
+  z->mc_addr = z->mc_wval = z->mc_ilen = 0;
+  z->mc_io_read = false;
+  z->index = z80_state::IndexReg::HL;
+  z->mem_addr = 0;
+  z->nmi_prev = z->nmi_pending = z->ei_delay = false;
+  z->servicing = z80_state::Servicing::NONE;
+  z->int_vec = 0;
+  z->unimplemented = false;
+  z->tstates = 0;
+  z->instr_count = 0;
 }
 
 }  // extern "C"
