@@ -3,12 +3,15 @@
  * (the real CRTC is a later component). */
 
 #include <cstdint>
+#include <cstring>
+#include <memory>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "hw/board.h"
 #include "hw/gate_array.h"
+#include "hw/z80.h"
 
 namespace {
 
@@ -121,4 +124,74 @@ TEST(GateArray, ModeRegisterBit4Rearms) {
   GateArrayRegs r = ga_step(rig, StepIn{.iorq = true, .wr = true, .addr = 0x7F00, .data = 0x90});
   EXPECT_EQ(r.irq, 0) << "mode-register bit 4 rearms/clears the interrupt";
   EXPECT_EQ(r.sl_count, 0);
+}
+
+// ---- End-to-end: GA fires the raster INT → Z80 accepts → GA sees the IORQ ack ----
+
+namespace {
+struct Ram2 { uint8_t cells[0x10000]; };
+void r2_tick(void* self, const Bus* in, Bus* out) {
+  Ram2* m = static_cast<Ram2*>(self);
+  if (in->cpu.mreq && in->cpu.wr) m->cells[in->cpu.addr] = in->cpu.data;
+  else if (in->cpu.mreq && in->cpu.rd) out->cpu.data = m->cells[in->cpu.addr];
+}
+size_t r2_size(const void*) { return sizeof(Ram2); }
+void r2_save(const void* s, void* b) { std::memcpy(b, s, sizeof(Ram2)); }
+void r2_load(void* s, const void* b) { std::memcpy(s, b, sizeof(Ram2)); }
+Device r2_device(Ram2* s) {
+  return Device{s, "ram", r2_tick, [](void*){}, r2_size, r2_save, r2_load};
+}
+// Fast synthetic HSYNC: a rising edge every 40 master cycles (period irrelevant to
+// the GA, which counts edges — this just reaches 52 lines quickly).
+struct HsyncGen { uint32_t ctr; };
+void hg_tick(void* self, const Bus*, Bus* out) {
+  HsyncGen* h = static_cast<HsyncGen*>(self);
+  out->vid.hsync = (h->ctr % 40) < 4;
+  h->ctr++;
+}
+size_t hg_size(const void*) { return sizeof(HsyncGen); }
+void hg_save(const void* s, void* b) { std::memcpy(b, s, sizeof(HsyncGen)); }
+void hg_load(void* s, const void* b) { std::memcpy(s, b, sizeof(HsyncGen)); }
+Device hg_device(HsyncGen* s) {
+  return Device{s, "hsync", hg_tick, [](void*){}, hg_size, hg_save, hg_load};
+}
+}  // namespace
+
+TEST(GateArray, EndToEndInterruptAcceptedAndAcknowledged) {
+  auto ram = std::make_unique<Ram2>();
+  std::memset(ram->cells, 0, sizeof(Ram2::cells));
+  // IM 1 ; EI ; JR -2 (loop) ; handler@0x38: LD A,0x42 ; HALT
+  const uint8_t prog[] = {0xED, 0x56, 0xFB, 0x18, 0xFE};
+  std::memcpy(ram->cells, prog, sizeof(prog));
+  ram->cells[0x38] = 0x3E; ram->cells[0x39] = 0x42; ram->cells[0x3A] = 0x76;
+
+  std::vector<uint8_t> gmem(ga_state_size());
+  Device gdev = ga_init(gmem.data());
+  HsyncGen hg{0};
+  std::vector<uint8_t> zmem(z80_state_size());
+  Device zdev = z80_init(zmem.data());
+
+  Board board;
+  board_init(&board);
+  board_add(&board, gdev);           // drives clk + irq
+  board_add(&board, hg_device(&hg)); // drives vid.hsync
+  board_add(&board, r2_device(ram.get()));
+  board_add(&board, zdev);
+  board_reset(&board);
+
+  Z80Regs r{};
+  GateArrayRegs g{};
+  bool ga_fired = false;
+  for (int tick = 0; tick < 200000; ++tick) {
+    board_tick(&board);
+    ga_peek(&gdev, &g);
+    if (g.irq) ga_fired = true;
+    z80_peek(&zdev, &r);
+    if (r.halted) break;
+  }
+  EXPECT_TRUE(ga_fired) << "the GA raised the raster interrupt";
+  EXPECT_EQ(r.halted, 1) << "the Z80 accepted it and reached the handler";
+  EXPECT_EQ(static_cast<uint8_t>(r.af >> 8), 0x42) << "handler ran (LD A,0x42)";
+  EXPECT_EQ(g.irq, 0) << "the GA cleared its INT line on seeing the Z80's IORQ ack";
+  EXPECT_EQ(r.iff1, 0) << "acceptance cleared IFF1";
 }

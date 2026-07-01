@@ -56,7 +56,7 @@ struct Reg16 {
 struct z80_state {
   // Fixed-set state fields use enum class (project convention) so switches are
   // compiler-checked and values can't be confused with unrelated integers.
-  enum class MC : uint8_t { M1, READ, WRITE, INTERNAL, IO };  // current machine cycle
+  enum class MC : uint8_t { M1, READ, WRITE, INTERNAL, IO, IOACK };  // current machine cycle
   enum class IndexReg : uint8_t { HL = 0, IX = 1, IY = 2 };   // active DD/FD selector
   enum class Servicing : uint8_t { NONE = 0, NMI = 1, MASKABLE = 2 };  // interrupt sequence
   enum class IntMode : uint8_t { IM0 = 0, IM1 = 1, IM2 = 2 };
@@ -383,6 +383,10 @@ struct z80_state {
     mc_wval = val;
     mc_io_read = false;
   }
+  // Interrupt/NMI acknowledge M-cycle of `len` T-states: drives the ack bus
+  // signature (INT: m1+iorq, the device supplies the vector; NMI: m1+mreq, a
+  // discarded dummy fetch) so the Gate Array sees it.
+  void req_ioack(uint8_t len) { mc = MC::IOACK; t = 0; mc_ilen = len; }
   void finish() {
     q = qq;
     mc = MC::M1;
@@ -402,7 +406,7 @@ struct z80_state {
     // INTERNAL therefore covers the REMAINDER of the acknowledge cycle: NMI ack is
     // 5T (1 + 4), INT ack is 7T (1 + 6). Then the shared 2-byte PC push (3+3).
     // Totals: NMI 11T, IM0/IM1 13T, IM2 19T.
-    if (step == 0) { req_internal(servicing == Servicing::NMI ? 4 : 6); return; }
+    if (step == 0) { req_ioack(servicing == Servicing::NMI ? 4 : 6); return; }  // ack cycle
     if (step == 1) { sp.v--; req_write(sp.v, pc.hi()); return; }  // push PC high
     if (step == 2) { sp.v--; req_write(sp.v, pc.lo()); return; }  // push PC low
     if (servicing == Servicing::NMI) {  // → 0x0066; IFF1 already cleared, IFF2 preserved
@@ -1349,8 +1353,7 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
             if (z->iff1 && in->cpu.irq && !was_ei) {
               z->bump_refresh();
               z->iff1 = z->iff2 = 0;
-              z->int_vec = in->cpu.data;  // latch the bus byte (IM0/IM2)
-              z->servicing = z80_state::Servicing::MASKABLE;
+              z->servicing = z80_state::Servicing::MASKABLE;  // vector latched in the ack cycle
               z->step = 0;
               z->run_micro();
               break;
@@ -1470,6 +1473,21 @@ void z80_tick(void* self, const Bus* in, Bus* out) {
           break;
         default:
           break;
+      }
+      break;
+
+    case z80_state::MC::IOACK:
+      // Interrupt/NMI acknowledge. INT drives m1+iorq (the interrupting device puts
+      // its vector on the data bus — the CPC floats 0xFF); NMI drives m1+mreq (a
+      // discarded dummy fetch). Runs mc_ilen T-states, then latches the vector.
+      out->cpu.addr = z->pc.v;
+      out->cpu.m1 = true;
+      if (z->servicing == z80_state::Servicing::MASKABLE) out->cpu.iorq = true;
+      else out->cpu.mreq = true;
+      if (z->t >= z->mc_ilen) {
+        if (z->servicing == z80_state::Servicing::MASKABLE) z->int_vec = in->cpu.data;
+        z->step++;
+        z->run_micro();
       }
       break;
   }
