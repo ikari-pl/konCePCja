@@ -64,12 +64,28 @@ int vid_render_line(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
       uint8_t pens[8];
       const int n = vid_decode(mode, ram[vid_byte_addr(ma, ra, k)], pens);
       for (int p = 0; p < n; ++p) {
-        vid_hw_rgb(ink[pens[p]], &out[px * 3], &out[px * 3 + 1], &out[px * 3 + 2]);
+        vid_hw_rgb(ink[pens[p]], &out[px * 3], &out[(px * 3) + 1], &out[(px * 3) + 2]);
         px++;
       }
     }
   }
   return px;
+}
+
+int vid_px_per_char(uint8_t mode) { return mode == 0 ? 4 : mode == 1 ? 8 : 16; }
+
+void vid_render_frame(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
+                      uint16_t ma_start, uint8_t r1, uint8_t r6, uint8_t r9,
+                      uint8_t* fb) {
+  const int width = r1 * vid_px_per_char(mode);
+  int y = 0;
+  for (uint8_t row = 0; row < r6; ++row) {
+    const uint16_t ma_base = static_cast<uint16_t>((ma_start + row * r1) & 0x3FFF);
+    for (uint8_t ra = 0; ra <= r9; ++ra) {
+      vid_render_line(ram, mode, ink, ma_base, ra, r1, fb + (static_cast<size_t>(y) * width * 3));
+      y++;
+    }
+  }
 }
 
 }  // extern "C"

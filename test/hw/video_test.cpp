@@ -2,11 +2,22 @@
  * palette, and an active-line render. Golden data. See docs/hardware/video-device.md. */
 
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "hw/video.h"
+
+namespace {
+// A mode-0 byte whose two pixels are both `pen` (4-bit): px0/px1 bits interleave as
+// b7b6=p3, b5b4=p2, b3b2=p1, b1b0=p0.
+uint8_t mode0_solid(uint8_t pen) {
+  const uint8_t p3 = (pen >> 3) & 1, p2 = (pen >> 2) & 1, p1 = (pen >> 1) & 1, p0 = pen & 1;
+  return static_cast<uint8_t>((p3 << 7) | (p3 << 6) | (p2 << 5) | (p2 << 4) |
+                              (p1 << 3) | (p1 << 2) | (p0 << 1) | p0);
+}
+}  // namespace
 
 TEST(Video, AddressMapping) {
   EXPECT_EQ(vid_byte_addr(0x3000, 0, 0), 0xC000) << "screen base MA 0x3000 → RAM 0xC000";
@@ -56,4 +67,40 @@ TEST(Video, RenderActiveLine) {
   EXPECT_EQ(out[9], 255); EXPECT_EQ(out[10], 0);  EXPECT_EQ(out[11], 0);   // px3 red
   // Next 4 (byte 1 = 0x00 → pens 0,0,0,0 → black):
   EXPECT_EQ(out[12], 0); EXPECT_EQ(out[13], 0); EXPECT_EQ(out[14], 0);     // px4 black
+}
+
+TEST(Video, RenderFrameColourBands) {
+  // Mode 0 (16 colours, 160x200). 40 chars/row; column c shows pen (c % 16), so the
+  // frame is 16 vertical colour bands. Distinct inks for the 16 pens.
+  const uint8_t ink[17] = {20, 4, 21, 6, 22, 18, 19, 11, 12, 24, 13, 14, 15, 10, 30, 2, 0};
+  std::vector<uint8_t> ram(0x10000, 0);
+  const uint8_t r0mode = 0, r1 = 40, r6 = 25, r9 = 7;
+  const uint16_t ma_start = 0x3000;
+  for (uint8_t row = 0; row < r6; ++row) {
+    const uint16_t ma_base = static_cast<uint16_t>(ma_start + row * r1);
+    for (uint8_t ra = 0; ra <= r9; ++ra)
+      for (uint8_t ch = 0; ch < r1; ++ch) {
+        const uint8_t byte = mode0_solid(static_cast<uint8_t>(ch % 16));
+        ram[vid_byte_addr(static_cast<uint16_t>(ma_base + ch), ra, 0)] = byte;
+        ram[vid_byte_addr(static_cast<uint16_t>(ma_base + ch), ra, 1)] = byte;
+      }
+  }
+  const int width = r1 * vid_px_per_char(r0mode);  // 40*4 = 160
+  const int height = r6 * (r9 + 1);                // 25*8 = 200
+  std::vector<uint8_t> fb(static_cast<size_t>(width) * height * 3, 0);
+  vid_render_frame(ram.data(), r0mode, ink, ma_start, r1, r6, r9, fb.data());
+
+  EXPECT_EQ(width, 160);
+  EXPECT_EQ(height, 200);
+  // Pixel 0 = pen 0 = ink 20 = black; pixels 8..9 (char 1) = pen 1 = ink 4 = {0,0,128}.
+  EXPECT_EQ(fb[0], 0); EXPECT_EQ(fb[1], 0); EXPECT_EQ(fb[2], 0);
+  const int px_ch1 = 4;  // char 1 starts at pixel 4 (4 px/char in mode 0)
+  EXPECT_EQ(fb[px_ch1 * 3 + 2], 128) << "char 1 = pen 1 = ink 4 = blue";
+
+  // Write a PPM artifact so the frame is viewable.
+  if (FILE* f = std::fopen("/tmp/cpc_frame.ppm", "wb")) {
+    std::fprintf(f, "P6\n%d %d\n255\n", width, height);
+    std::fwrite(fb.data(), 1, fb.size(), f);
+    std::fclose(f);
+  }
 }

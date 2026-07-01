@@ -28,6 +28,16 @@ void vid_hw_rgb(uint8_t colour, uint8_t* r, uint8_t* g, uint8_t* b);
 int vid_render_line(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
                     uint16_t ma_base, uint8_t ra, uint8_t chars, uint8_t* out);
 
+/* Displayed pixels per CRTC character (2 bytes): 4 / 8 / 16 for mode 0 / 1 / 2. */
+int vid_px_per_char(uint8_t mode);
+
+/* Render the full active display into `fb` (RGB, width*height*3 where
+ * width = r1 * vid_px_per_char(mode), height = r6 * (r9+1)). Static snapshot: the
+ * MA advances by r1 per character row, ra covers 0..r9. No mid-frame changes. */
+void vid_render_frame(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
+                      uint16_t ma_start, uint8_t r1, uint8_t r6, uint8_t r9,
+                      uint8_t* fb);
+
 #ifdef __cplusplus
 }
 #endif
