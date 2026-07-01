@@ -19,10 +19,16 @@ extern "C" {
 
 /* Introspection snapshot (tests / debugging). */
 typedef struct GateArrayRegs {
-  uint8_t phase;     /* 0..15 master-cycle phase in the 1 us window */
-  uint8_t sl_count;  /* 6-bit HSYNC line counter (raster interrupt) */
-  uint8_t hs_count;  /* VSYNC-resync HSYNC countdown (2,1,0) */
-  uint8_t irq;       /* 1 while the GA is asserting the Z80 INT line */
+  uint8_t phase;      /* 0..15 master-cycle phase in the 1 us window */
+  uint8_t sl_count;   /* 6-bit HSYNC line counter (raster interrupt) */
+  uint8_t hs_count;   /* VSYNC-resync HSYNC countdown (2,1,0) */
+  uint8_t irq;        /* 1 while the GA is asserting the Z80 INT line */
+  uint8_t pen;        /* currently selected pen (0..15, or 16 = border) */
+  uint8_t mode;       /* active screen mode 0..3 (latched at HSYNC) */
+  uint8_t req_mode;   /* requested mode (takes effect next HSYNC) */
+  uint8_t rom_config; /* mode/ROM register: bit2 lower-ROM dis, bit3 upper-ROM dis */
+  uint8_t ram_config; /* 6128 RAM banking (function 3) */
+  uint8_t ink[17];    /* hardware colour (0..31) per pen 0..15 + border (16) */
 } GateArrayRegs;
 
 size_t ga_state_size(void);

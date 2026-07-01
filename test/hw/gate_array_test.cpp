@@ -126,6 +126,35 @@ TEST(GateArray, ModeRegisterBit4Rearms) {
   EXPECT_EQ(r.sl_count, 0);
 }
 
+TEST(GateArray, RegisterSide) {
+  GaRig rig;
+  make_rig(rig);
+  auto io = [&](uint8_t data) {
+    return ga_step(rig, StepIn{.iorq = true, .wr = true, .addr = 0x7F00, .data = data});
+  };
+  // Pen select (fn 0, pen 5), then set ink (fn 1, colour 12) → ink[5] = 12.
+  io(0x05);
+  GateArrayRegs a = io(0x40 | 12);
+  EXPECT_EQ(a.pen, 5);
+  EXPECT_EQ(a.ink[5], 12);
+  // Border select (fn 0, bit 4) then ink 3 → ink[16] (border) = 3.
+  io(0x10);
+  GateArrayRegs b = io(0x40 | 3);
+  EXPECT_EQ(b.pen, 16);
+  EXPECT_EQ(b.ink[16], 3);
+  // Mode (fn 2, mode 2) is requested immediately, latched at the next HSYNC.
+  GateArrayRegs m = io(0x80 | 2);
+  EXPECT_EQ(m.req_mode, 2);
+  EXPECT_NE(m.mode, 2) << "mode not applied until HSYNC";
+  GateArrayRegs after_hs = hsync_pulse(rig);
+  EXPECT_EQ(after_hs.mode, 2) << "mode latched at the start of the line";
+  // ROM enable bits ride in the mode register; RAM banking is function 3.
+  GateArrayRegs rom = io(0x80 | 0x0C);  // upper+lower ROM disabled (bits 2,3)
+  EXPECT_EQ(rom.rom_config & 0x0C, 0x0C);
+  GateArrayRegs ram = io(0xC0 | 0x03);  // RAM config
+  EXPECT_EQ(ram.ram_config & 0x3F, 0x03);
+}
+
 // ---- End-to-end: GA fires the raster INT → Z80 accepts → GA sees the IORQ ack ----
 
 namespace {
