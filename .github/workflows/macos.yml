@@ -11,7 +11,9 @@ jobs:
   macos-build:
     name: MacOS build
     runs-on: macos-latest
-    timeout-minutes: 15
+    # Cold-cache builds (fresh repo / evicted cache) exceed 15; warm runs are
+    # far quicker — the cap only guards against runaways.
+    timeout-minutes: 45
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/install/lib/pkgconfig
 
