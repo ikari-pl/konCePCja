@@ -16,9 +16,10 @@ under the [konCePCja Source License 1.0.0](LICENSE.md) — a source-available
 license (based on PolyForm Internal Use 1.0.0 with an added Personal & Hobby Use
 grant) — rather than the GPLv2 of its origin.
 
-The private development repository is retained as the primary provenance
-record: it preserves the true authorship and dates of every step of the
-construction.
+The full development history — including the fork era — is preserved
+unrewritten in the provenance repository,
+[ikari-pl/koncepcja_v5](https://github.com/ikari-pl/koncepcja_v5): it records
+the true authorship and dates of every step of the construction.
 
 ## Third-party components (vendored, under their own licenses)
 
