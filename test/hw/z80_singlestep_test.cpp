@@ -1,18 +1,19 @@
 /* z80_singlestep_test.cpp — runs the SingleStepTests (jsmoo) Z80 corpus against
  * our Device. Where FUSE is single-instruction and carries no Q register and no
- * incoming-Q, SingleStepTests pins the FULL post-instruction state INCLUDING the
- * Q latch and sweeps the *incoming* Q — so it is the oracle for two things FUSE
- * cannot reach (beads-yjql):
+ * incoming-Q, SingleStepTests pins the FULL post-instruction state INCLUDING
+ * the Q latch and sweeps the *incoming* Q — so it is the oracle for two things
+ * FUSE cannot reach (beads-yjql):
  *   - the per-iteration undocumented flags of the repeating block-I/O ops
- *     (INIR/INDR/OTIR/OTDR — each SingleStep case is one iteration, i.e. exactly
- *     the mid-loop state an interrupt would sample), and
+ *     (INIR/INDR/OTIR/OTDR — each SingleStep case is one iteration, i.e.
+ * exactly the mid-loop state an interrupt would sample), and
  *   - SCF/CCF's dependence on the *previous* instruction's Q (§5).
  *
  * Corpus format (per opcode file, an array of cases): each case has `initial`
- * and `final` full-state objects (a,f,b,c,...,ix,iy,sp,pc,wz,i,r,im,iff1,iff2,q,
- * ram[[addr,val]]) and `ports` [[addr,val,"r"|"w"]]. We ignore the jsmoo-internal
- * `p` latch and per-T-state `cycles` (stripped from the vendored slice) and
- * compare architectural state + memory + port writes — a complete check.
+ * and `final` full-state objects
+ * (a,f,b,c,...,ix,iy,sp,pc,wz,i,r,im,iff1,iff2,q, ram[[addr,val]]) and `ports`
+ * [[addr,val,"r"|"w"]]. We ignore the jsmoo-internal `p` latch and per-T-state
+ * `cycles` (stripped from the vendored slice) and compare architectural state +
+ * memory + port writes — a complete check.
  *
  * Corpus lives in test/hw/sst/ as .json files (a trimmed, cycles-stripped
  * slice, MIT).
@@ -185,8 +186,13 @@ void pio_tick(void* self, const Bus* in, Bus* out) {
 size_t pio_size(const void*) { return 1; }
 void pio_save(const void*, void* b) { *static_cast<uint8_t*>(b) = 0; }
 Device pio_device(Pio* s) {
-  return Device{s,        "io",     pio_tick, [](void*) {},
-                pio_size, pio_save, [](void*, const void*) {}};
+  return Device{s,
+                "io",
+                pio_tick,
+                [](void*) {},
+                pio_size,
+                pio_save,
+                [](void*, const void*) {}};
 }
 
 void clk_tick(void*, const Bus*, Bus* out) { out->clk.cpu = true; }
@@ -194,8 +200,13 @@ size_t clk_size(const void*) { return 1; }
 void clk_save(const void*, void* b) { *static_cast<uint8_t*>(b) = 0; }
 Device clk_device() {
   static uint8_t d = 0;
-  return Device{&d,       "clk",    clk_tick, [](void*) {},
-                clk_size, clk_save, [](void*, const void*) {}};
+  return Device{&d,
+                "clk",
+                clk_tick,
+                [](void*) {},
+                clk_size,
+                clk_save,
+                [](void*, const void*) {}};
 }
 
 // -------------------------------------------------------------- runner ------
@@ -347,8 +358,8 @@ Result run_file(const std::filesystem::path& path, Ram* ram, Board* board,
       res.passed++;
     } else if (shown < 25) {
       const JVal* nm = tc.find("name");
-      std::fprintf(stderr, "SST FAIL %-12s:%s\n",
-                   nm ? nm->str.c_str() : "?", d.c_str());
+      std::fprintf(stderr, "SST FAIL %-12s:%s\n", nm ? nm->str.c_str() : "?",
+                   d.c_str());
       shown++;
     }
   }
@@ -366,8 +377,9 @@ std::filesystem::path corpus_dir() {
 TEST(Z80SingleStep, BlockOpsAndScfCcfQCorpus) {
   const std::filesystem::path dir = corpus_dir();
   if (dir.empty())
-    GTEST_SKIP() << "SingleStepTests corpus not found (test/hw/sst/*.json) — run "
-                    "scripts/fetch-z80-sst.sh";
+    GTEST_SKIP()
+        << "SingleStepTests corpus not found (test/hw/sst/*.json) — run "
+           "scripts/fetch-z80-sst.sh";
 
   std::vector<std::filesystem::path> files;
   for (const auto& ent : std::filesystem::directory_iterator(dir))

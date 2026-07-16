@@ -158,8 +158,9 @@ extern "C" {
 size_t mf2_state_size(void) { return sizeof(mf2_state); }
 
 Device mf2_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  mf2_state *f = new (storage) mf2_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  mf2_state* f = new (storage) mf2_state();
   return Device{f,        "mf2",   mf2_tick, mf2_dev_reset, mf2_dev_state_size,
                 mf2_save, mf2_load};
 }

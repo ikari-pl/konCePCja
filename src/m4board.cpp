@@ -7,8 +7,8 @@
 #include <ctime>
 #include <filesystem>
 
-#include "hw_views.h"
 #include "disk_file_editor.h"
+#include "hw_views.h"
 #include "koncepcja.h"
 #include "log.h"
 #include "m4board_http.h"
@@ -161,8 +161,7 @@ std::string resolve_path(const std::string& rel_path) {
 }  // namespace
 
 namespace {
-std::string extract_string(const std::vector<uint8_t>& buf,
-                                  size_t offset) {
+std::string extract_string(const std::vector<uint8_t>& buf, size_t offset) {
   std::string s;
   for (size_t i = offset; i < buf.size() && buf[i] != 0; i++) {
     s += static_cast<char>(buf[i]);
@@ -237,7 +236,7 @@ void container_exit() {
 
 namespace {
 bool container_enter_dsk(const std::string& host_path,
-                                const std::string& parent_dir) {
+                         const std::string& parent_dir) {
   auto* drive = new t_drive{};
   int const rc = dsk_load(host_path, drive);
   if (rc != 0) {
@@ -325,7 +324,9 @@ void cmd_cd() {
       respond_ok();
     } else {
       // Check if it's a DSK file — enter as container
-      // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
+      // clang-tidy FP — variable is mutated
+      // (out-param/compound-assign/loop/reference)
       std::string lower = path;
       for (auto& c : lower)
         c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
@@ -355,7 +356,8 @@ void dir_populate() {
 
   // Inside a DSK container — list CP/M directory entries
   if (in_container() && g_m4board.container_drive) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::string err;
     auto files = disk_list_files(g_m4board.container_drive, err);
     if (!err.empty()) {
@@ -394,8 +396,7 @@ void dir_populate() {
 // Convert a filename to AMSDOS 8.3 format: "FILENAME.EXT"
 // Returns 12 characters (8 + '.' + 3), space-padded, uppercase
 namespace {
-void format_amsdos_83(const std::string& name, bool is_dir,
-                             char out[12]) {
+void format_amsdos_83(const std::string& name, bool is_dir, char out[12]) {
   // Split on last '.' to separate name and extension
   std::string base, ext;
   size_t const dot = name.rfind('.');
@@ -513,8 +514,7 @@ void cmd_readdir() {
 // Try to open a file, searching case-insensitively and with CPC extensions.
 // CPC convention: RUN"TEST means search for TEST, TEST.BAS, TEST.BIN, etc.
 namespace {
-FILE* try_open_cpc(const std::string& dir_path,
-                          const std::string& filename) {
+FILE* try_open_cpc(const std::string& dir_path, const std::string& filename) {
   // Build list of names to try: exact, with extensions
   std::vector<std::string> candidates = {filename};
   // If no extension in the requested name, try common CPC extensions
@@ -537,7 +537,9 @@ FILE* try_open_cpc(const std::string& dir_path,
         for (auto& c : cand_upper)
           c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
         if (entry_upper == cand_upper) {
-          // NOLINTNEXTLINE(performance-inefficient-string-concatenation): one-shot path construction; operator+= would not improve this initializer
+          // NOLINTNEXTLINE(performance-inefficient-string-concatenation):
+          // one-shot path construction; operator+= would not improve this
+          // initializer
           std::string const full = dir_path + "/" + entry_name;
           FILE* fp = fopen(full.c_str(), "r+b");
           if (!fp) fp = fopen(full.c_str(), "rb");
@@ -913,13 +915,16 @@ void cmd_fsize() {
 
   // Inside a container — look up file size from CP/M directory
   if (in_container() && g_m4board.container_drive) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::string err;
     auto files = disk_list_files(g_m4board.container_drive, err);
     // Case-insensitive search
-    // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
+    // clang-tidy FP — variable is mutated
+    // (out-param/compound-assign/loop/reference)
     std::string upper = path;
-    for (auto &c : upper)
+    for (auto& c : upper)
       c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
     for (const auto& f : files) {
       std::string fu = f.display_name;
@@ -1117,8 +1122,7 @@ void cmd_rename() {
 #ifdef HAS_LIBCURL
 
 namespace {
-size_t curl_write_file(void* ptr, size_t size, size_t nmemb,
-                              void* userdata) {
+size_t curl_write_file(void* ptr, size_t size, size_t nmemb, void* userdata) {
   FILE* fp = static_cast<FILE*>(userdata);
   return fwrite(ptr, size, nmemb, fp);
 }
@@ -1229,7 +1233,8 @@ void cmd_httpget() {
 
 #else  // !HAS_LIBCURL
 
-// NOLINTNEXTLINE(misc-use-anonymous-namespace): file-scope static is intentional
+// NOLINTNEXTLINE(misc-use-anonymous-namespace): file-scope static is
+// intentional
 static void cmd_httpget() {
   respond_error("HTTP not available (no libcurl)");
   LOG_ERROR("M4 HTTPGET: libcurl not available at build time");
@@ -1249,8 +1254,7 @@ struct MemBuf {
 }  // namespace
 
 namespace {
-size_t curl_write_mem(void* ptr, size_t size, size_t nmemb,
-                             void* userdata) {
+size_t curl_write_mem(void* ptr, size_t size, size_t nmemb, void* userdata) {
   auto* buf = static_cast<MemBuf*>(userdata);
   size_t const total = size * nmemb;
   size_t const remain = buf->max_size - buf->data.size();
@@ -1338,7 +1342,8 @@ void cmd_httpgetmem() {
 
 #else  // !HAS_LIBCURL
 
-// NOLINTNEXTLINE(misc-use-anonymous-namespace): file-scope static is intentional
+// NOLINTNEXTLINE(misc-use-anonymous-namespace): file-scope static is
+// intentional
 static void cmd_httpgetmem() {
   respond_error("HTTP not available (no libcurl)");
 }
@@ -2976,8 +2981,7 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path,
   }
 
   // Search for the M4 ROM in standard locations
-  static const char* const rom_names[] = {"m4board.rom", "M4ROM.BIN",
-                                                nullptr};
+  static const char* const rom_names[] = {"m4board.rom", "M4ROM.BIN", nullptr};
   std::string found_path;
 
   for (int i = 0; rom_names[i]; i++) {

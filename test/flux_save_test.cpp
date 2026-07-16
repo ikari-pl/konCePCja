@@ -21,10 +21,10 @@
 #include <string>
 #include <vector>
 
+#include "hfe.h"  // hfe_to_scp
 #include "hw/board.h"
 #include "hw/fdc.h"
-#include "hw/flux.h"    // flux_scp_probe / flux_decode_track_rev
-#include "hfe.h"        // hfe_to_scp
+#include "hw/flux.h"        // flux_scp_probe / flux_decode_track_rev
 #include "hw/flux_synth.h"  // fluxsynth::amsdos_content / scp_from_sectors
 
 namespace {
@@ -149,9 +149,9 @@ std::vector<uint8_t> flux_sector(const std::vector<uint8_t>& scp, uint8_t cyl,
             0);
   for (int i = 0; i < track.count; i++)
     if (track.sec[i].chrn[2] == record)
-      return std::vector<uint8_t>(pay.begin() + track.sec[i].off,
-                                  pay.begin() + track.sec[i].off +
-                                      track.sec[i].len);
+      return std::vector<uint8_t>(
+          pay.begin() + track.sec[i].off,
+          pay.begin() + track.sec[i].off + track.sec[i].len);
   return {};
 }
 
@@ -300,7 +300,8 @@ TEST(FluxSave, FluxWriteThenSaveAsScpRoundTrips) {
   const std::vector<uint8_t> clean = flux_sector(out, 1, 0xC1);
   const std::vector<uint8_t> orig = flux_sector(disc.scp, 1, 0xC1);
   ASSERT_FALSE(orig.empty());
-  EXPECT_EQ(clean, orig) << "clean track exported verbatim from the pristine flux";
+  EXPECT_EQ(clean, orig)
+      << "clean track exported verbatim from the pristine flux";
 }
 
 // HFE export: the bytes decode (hfe_to_scp) back to the expected sectors.

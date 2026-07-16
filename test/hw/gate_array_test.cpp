@@ -141,11 +141,12 @@ TEST(GateArray, VsyncResyncFiresSaveMarginWhenCounterPast32) {
   GaRig rig;
   make_rig(rig);
   for (int i = 0; i < 40; ++i) hsync_pulse(rig);  // counter to 40 (>=32, <52)
-  EXPECT_EQ(ga_step(rig, StepIn{}).sl_count, 40) << "counter at 40, no fire yet";
-  ga_step(rig, StepIn{.vsync = true});   // VSYNC rising edge arms the resync
+  EXPECT_EQ(ga_step(rig, StepIn{}).sl_count, 40)
+      << "counter at 40, no fire yet";
+  ga_step(rig, StepIn{.vsync = true});  // VSYNC rising edge arms the resync
   ga_step(rig, StepIn{.vsync = false});
-  hsync_pulse(rig);                          // 1st HSYNC after VSYNC
-  GateArrayRegs after2 = hsync_pulse(rig);   // 2nd HSYNC → resync + save-margin
+  hsync_pulse(rig);                         // 1st HSYNC after VSYNC
+  GateArrayRegs after2 = hsync_pulse(rig);  // 2nd HSYNC → resync + save-margin
   EXPECT_EQ(after2.sl_count, 0) << "counter still resyncs to 0";
   EXPECT_EQ(after2.irq, 1)
       << "save-margin: counter was >=32 at the resync, so an interrupt fires";
@@ -209,7 +210,7 @@ TEST(GateArray, ModeLatchesPerScanlineForRasterSplit) {
   };
 
   // Band 1: select MODE 0 and latch it in with an HSYNC (top of a scanline).
-  io(0x80 | 0);            // fn 2, mode 0
+  io(0x80 | 0);  // fn 2, mode 0
   GateArrayRegs a = hsync_pulse(rig);
   EXPECT_EQ(a.mode, 0) << "MODE 0 latched at the scanline start";
 

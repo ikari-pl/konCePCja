@@ -54,8 +54,7 @@ void tally(void* ctx, const Z80Regs* r) {
 struct Rig {
   subcycle::Machine m;
   std::vector<uint8_t> fb = std::vector<uint8_t>(kFbLen, 0);
-  void boot(const std::vector<uint8_t>& rom,
-            subcycle::Machine::RunTier tier) {
+  void boot(const std::vector<uint8_t>& rom, subcycle::Machine::RunTier tier) {
     ASSERT_TRUE(m.build(rom.data(), rom.size()));
     m.attach_framebuffer(fb.data(), subcycle::kFbWidth, subcycle::kFbHeight);
     m.set_run_tier(tier);
@@ -86,7 +85,8 @@ void expect_one_fire_per_retire(subcycle::Machine::RunTier tier) {
   // allows the single trailing boundary the batch loop leaves unfired at the
   // very end of a capture (the next frame's prelude would pick it up, but the
   // run ends first). Pure per-cycle (Wake) hits `retires` exactly.
-  EXPECT_LE(sink.fires, retires) << "duplicate trace entries — hand-off double-fire";
+  EXPECT_LE(sink.fires, retires)
+      << "duplicate trace entries — hand-off double-fire";
   EXPECT_GE(sink.fires, retires - 1) << "missed instructions in the trace";
   // The hook saw genuine live CPU state, never a canned value: the instr_count
   // it was last handed is the machine's own, and its last PC is a real PC.

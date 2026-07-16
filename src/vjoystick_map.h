@@ -2,8 +2,8 @@
 // the gamepad/joystick input path.  Given a target CPC joystick (0 or 1) and a
 // bitmask of the directions/fires currently held, it returns the list of
 // CPC_J{n}_* keys that must be pressed into keyboard-matrix row 9 (joy 0) or
-// row 6 (joy 1).  Kept header-only and dependency-light so it can be unit tested
-// without ImGui or a live emulator (see test/vjoystick_map.cpp).
+// row 6 (joy 1).  Kept header-only and dependency-light so it can be unit
+// tested without ImGui or a live emulator (see test/vjoystick_map.cpp).
 #pragma once
 
 #include <array>
@@ -22,8 +22,8 @@ enum VJoyButton : std::uint8_t {
   VJOY_RIGHT = 1u << 3,
   VJOY_FIRE1 = 1u << 4,
   VJOY_FIRE2 = 1u << 5,
-  VJOY_ALL = VJOY_UP | VJOY_DOWN | VJOY_LEFT | VJOY_RIGHT | VJOY_FIRE1 |
-             VJOY_FIRE2,
+  VJOY_ALL =
+      VJOY_UP | VJOY_DOWN | VJOY_LEFT | VJOY_RIGHT | VJOY_FIRE1 | VJOY_FIRE2,
 };
 
 // Up to six CPC_KEYS to hold for the current frame.  Fixed-size array, no heap.

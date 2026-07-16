@@ -27,9 +27,9 @@
 #include "hw/board.h"
 #include "hw/crtc.h"
 #include "hw/fdc.h"
+#include "hw/light_gun.h"
 #include "hw/m4.h"
 #include "hw/mf2.h"
-#include "hw/light_gun.h"
 #include "hw/plotter_hp7470a.h"
 #include "hw/printer.h"
 #include "hw/probe.h"
@@ -82,8 +82,8 @@ class Machine {
   // Any caller-owned 16K ROM into an arbitrary upper-ROM slot (e.g. the M4).
   void attach_rom(int slot, const uint8_t* rom16k);
 
-  // Plus (6128+) cartridge: the parsed CPR image (caller-owned, 16K banks) drives
-  // the low/high ROM banking (RMR2 + ROM-select). No-op on models 0-2.
+  // Plus (6128+) cartridge: the parsed CPR image (caller-owned, 16K banks)
+  // drives the low/high ROM banking (RMR2 + ROM-select). No-op on models 0-2.
   void attach_cartridge(const uint8_t* image, size_t bytes);
 
   // Drive media — caller-owned buffers, parsed in place (see fdc.h). `unit`
@@ -243,10 +243,10 @@ class Machine {
   uint64_t master_cycle() const { return board_.master_cycles; }
 
   // Deterministic input-replay seam (record_replay.h): fn(ctx, master_cycle)
-  // fires at the top of every run_frame master-cycle iteration, BEFORE the tick,
-  // so a driver can apply queued input events at an exact cycle. At most one is
-  // installed; pass nullptr to clear. Kept a bare fn-pointer (no allocation, no
-  // per-cycle indirection when unset) to stay off the hot path.
+  // fires at the top of every run_frame master-cycle iteration, BEFORE the
+  // tick, so a driver can apply queued input events at an exact cycle. At most
+  // one is installed; pass nullptr to clear. Kept a bare fn-pointer (no
+  // allocation, no per-cycle indirection when unset) to stay off the hot path.
   // Per-instruction observation seam (debug tracing). Fired once at each
   // instruction boundary, on BOTH the batch (Fast) and per-cycle tier paths,
   // with the CPU's architectural state. Null by default → zero overhead; the
@@ -410,8 +410,7 @@ class Machine {
     if (plugged) {
       uint32_t divisor = baud ? 2000000u / (baud * 16u) : 13u;
       if (divisor == 0) divisor = 1;
-      plotter_hp7470a_set_baud_divisor(&pldev_,
-                                       static_cast<uint16_t>(divisor));
+      plotter_hp7470a_set_baud_divisor(&pldev_, static_cast<uint16_t>(divisor));
     }
   }
   void set_serial_card(bool plugged) { rs232_set_plugged(&rsdev_, plugged); }
@@ -437,7 +436,8 @@ class Machine {
   // buffers; the RTC clock and mouse packets are host-fed.
   const Device* symbiface() const { return &sfdev_; }
   void set_symbiface(bool plugged) { sf2_set_plugged(&sfdev_, plugged); }
-  // NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
+  // NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+  // cast or passed to a non-const callee
   void symbiface_attach_ide(int drive, uint8_t* img, size_t len) {
     sf2_ide_attach(&sfdev_, drive, img, len);
   }
@@ -459,8 +459,9 @@ class Machine {
   // at -O2). They read/write the machine's live state directly.
   void capture_tape_output();  // sample the cassette wires at the audio rate
   void feed_tape_line_in();    // clock one queued live line-in level in
-  void service_taps(const Bus& committed);  // fire firmware-vector taps this cycle
-  void accumulate_audio();     // one PSG sample + analog DACs + stereo emit
+  void service_taps(
+      const Bus& committed);  // fire firmware-vector taps this cycle
+  void accumulate_audio();    // one PSG sample + analog DACs + stereo emit
   void accumulate_audio_bulk(uint32_t k);  // k level-stable steps at once —
                                            // same arithmetic, boundary-exact
   // The master-cycle tick with every device called by hardcoded direct name
@@ -490,8 +491,8 @@ class Machine {
   Board board_{};
   bool built_ = false;
   // Set when KONCPC_ACTIVE manually pins the active-device count. It disables
-  // both automatic dormancy (recompose_active) and the soldered fast path, since
-  // an arbitrary manual prefix may drop a non-inert device.
+  // both automatic dormancy (recompose_active) and the soldered fast path,
+  // since an arbitrary manual prefix may drop a non-inert device.
   bool active_override_ = false;
 
   // Rebuild board_.tick_order/active_count to skip structurally-dormant devices
@@ -530,19 +531,19 @@ class Machine {
   // (Tier selection lives in tier_ below; Wake is the default.)
   uint32_t wake_mask_ = 0x3FF;  // bit n = device n uses its predicate (else it
                                 // stays awake every cycle) — the bisect hook
-  bool wake_valid_ = false;    // active set is the canonical core (recompose)
+  bool wake_valid_ = false;     // active set is the canonical core (recompose)
   // Transient scheduler shadows — wake-predicate state, NOT machine state.
   // wk_force_ wakes everything for one cycle; run_frame sets it each frame
   // start so host-side mutations between frames (pokes, key rows, snapshot
   // loads, deck buttons) can never be missed by a stale shadow.
   bool wk_force_ = true;
-  uint16_t wk_addr_ = 0;       // previous committed cpu.addr
-  uint8_t wk_flags_ = 0;       // previous committed cpu control-line pack
-  bool wk_motor_ = false;      // previous committed tape.motor
-  uint16_t wk_ay_ = 0;         // previous committed AY control pack (bdir/bc1/row)
-  uint8_t wk_ay_da_ = 0;       // previous committed ay.da
-  bool wk_z80_ran_ = true;     // Z80 ran last cycle (cpu lines may have moved;
-                               // starts true so the first cycle checks)
+  uint16_t wk_addr_ = 0;    // previous committed cpu.addr
+  uint8_t wk_flags_ = 0;    // previous committed cpu control-line pack
+  bool wk_motor_ = false;   // previous committed tape.motor
+  uint16_t wk_ay_ = 0;      // previous committed AY control pack (bdir/bc1/row)
+  uint8_t wk_ay_da_ = 0;    // previous committed ay.da
+  bool wk_z80_ran_ = true;  // Z80 ran last cycle (cpu lines may have moved;
+                            // starts true so the first cycle checks)
   bool wk_crtc_woke_ = false;  // CRTC ran last cycle (vid.* may have changed)
   // Two flags per pipeline device: *_woke_ arms the one-cycle publish rewake
   // and records only the CAUSED wake (arming it from the wake itself would
@@ -564,16 +565,17 @@ class Machine {
   uint64_t wk_ga_skip_ = 0;    // GA cycles synthesized since its last tick
   bool wk_fdc_quiet_ = false;  // fdc_quiet() as of its last tick / frame start
   uint64_t wk_fdc_skip_ = 0;   // FDC cycles skipped since its last tick
-  // RS232 + HP7470 plotter wake contract (the bit-serial pair). No skip counter:
-  // neither UART runs a free-running per-cycle counter while quiet (tx/rx timers
-  // reset on byte start; the plotter's input drain only runs while in_count > 0),
-  // so a quiet-skip is byte-identical with no advance() catch-up.
-  bool wk_serial_on_ = false;    // rs232/plotter plugged this frame (contract on)
+  // RS232 + HP7470 plotter wake contract (the bit-serial pair). No skip
+  // counter: neither UART runs a free-running per-cycle counter while quiet
+  // (tx/rx timers reset on byte start; the plotter's input drain only runs
+  // while in_count > 0), so a quiet-skip is byte-identical with no advance()
+  // catch-up.
+  bool wk_serial_on_ = false;  // rs232/plotter plugged this frame (contract on)
   bool wk_serial_quiet_ = true;  // rs232_quiet && plotter_quiet as of last tick
-  bool wk_serial_io_prev_ = false;  // serial I/O ran last cycle → self-rewake so
-                                    // the DART/PIT see the select strobe drop and
-                                    // reset their access edge (else only the
-                                    // first OUT of a burst registers).
+  bool wk_serial_io_prev_ = false;  // serial I/O ran last cycle → self-rewake
+                                    // so the DART/PIT see the select strobe
+                                    // drop and reset their access edge (else
+                                    // only the first OUT of a burst registers).
 
   // Number of devices the soldered fast path (tick_soldered) calls by name. The
   // fast tier is valid only when the board's device set matches this (see
@@ -599,17 +601,17 @@ class Machine {
   // the resumed per-cycle loop instead of double-counting it at the seam.
   uint64_t fs_audio_steps_ = 0;
   uint64_t fs_audio_accs_ = 0;
-  uint64_t fs_fdc_done_ = 0;    // FDC master-cycle cursor (rel)
-  uint64_t fs_prt_done_ = 0;    // printer master-cycle cursor (rel)
-  bool fs_fdc_hot_ = false;     // FDC left its quiet contract mid-frame
-  bool fs_cut_ = false;         // the frame-completing VSYNC rise was advanced
-  bool fs_asic_on_ = false;     // entry cache: the ASIC is plugged (Plus)
-  bool fs_bail_ = false;        // leave the frame to the per-cycle loop (a
-                                // mid-frame DMA enable — F7 scope note)
-  uint32_t fs_target_ = 0;      // video frames target this run
+  uint64_t fs_fdc_done_ = 0;  // FDC master-cycle cursor (rel)
+  uint64_t fs_prt_done_ = 0;  // printer master-cycle cursor (rel)
+  bool fs_fdc_hot_ = false;   // FDC left its quiet contract mid-frame
+  bool fs_cut_ = false;       // the frame-completing VSYNC rise was advanced
+  bool fs_asic_on_ = false;   // entry cache: the ASIC is plugged (Plus)
+  bool fs_bail_ = false;      // leave the frame to the per-cycle loop (a
+                              // mid-frame DMA enable — F7 scope note)
+  uint32_t fs_target_ = 0;    // video frames target this run
   uint32_t fast_frames_run_ = 0;  // frames the batch driver completed (an
                                   // engagement signal: tests + the tier UI)
-  uint32_t fs_frames_seen_ = 0; // frames at entry + eager-counted rises
+  uint32_t fs_frames_seen_ = 0;   // frames at entry + eager-counted rises
   // Views [fs_cells_, fs_chars_) live at [fs_pend_head_, fs_pend_tail_) of a
   // flat per-frame buffer (indices reset at frame entry; capacity grown, never
   // shrunk). The F8 profile showed vector resize() zero-init and erase-front
@@ -643,8 +645,7 @@ class Machine {
   static void fsb_mem_write(void* ctx, uint16_t addr, uint8_t val,
                             uint64_t now);
   static uint8_t fsb_io_read(void* ctx, uint16_t port, uint64_t now);
-  static void fsb_io_write(void* ctx, uint16_t port, uint8_t val,
-                           uint64_t now);
+  static void fsb_io_write(void* ctx, uint16_t port, uint8_t val, uint64_t now);
   static uint8_t fsb_int_ack(void* ctx, uint64_t now);
   // Run the frame's remainder under the Fast tier from a clean entry point.
   // Returns false (leaving state per-cycle-consistent) only if nothing ran.
@@ -658,8 +659,8 @@ class Machine {
   Tap taps_[4] = {};
   int tap_count_ = 0;
   // Edge state for the cheap console-tap path: taps fire on the rising edge of
-  // the M1 opcode-fetch strobe, checked directly on the committed bus instead of
-  // arming the per-cycle debug probe (see service_taps).
+  // the M1 opcode-fetch strobe, checked directly on the committed bus instead
+  // of arming the per-cycle debug probe (see service_taps).
   bool tap_prev_fetch_ = false;
 
   bool out_capture_ = false;
@@ -686,7 +687,7 @@ class Machine {
   void* cycle_hook_ctx_ = nullptr;
   InstrHook instr_hook_ = nullptr;  // per-instruction debug-trace seam
   void* instr_hook_ctx_ = nullptr;
-  uint64_t instr_hook_last_ = 0;    // last-seen instr_count (per-cycle edge)
+  uint64_t instr_hook_last_ = 0;  // last-seen instr_count (per-cycle edge)
 };
 
 }  // namespace subcycle

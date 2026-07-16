@@ -269,8 +269,8 @@ TEST(RecordReplayCorpus, ReplayIsDeterministic) {
     const std::vector<diffharness::NamedDevice> names =
         diffharness::board_devices(a);
     for (size_t i = 0; i < ha.size(); ++i)
-      EXPECT_EQ(ha[i], hb[i]) << "device '" << names[i].name
-                              << "' state hash is non-deterministic";
+      EXPECT_EQ(ha[i], hb[i])
+          << "device '" << names[i].name << "' state hash is non-deterministic";
   }
   EXPECT_EQ(diffharness::machine_state_hash(a),
             diffharness::machine_state_hash(b));

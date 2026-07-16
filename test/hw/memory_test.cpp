@@ -87,7 +87,7 @@ TEST(Memory, RamdisVetoesTheLateWriteAndYieldsReads) {
   rig.board.bus.cpu.wr = true;
   rig.board.bus.cpu.addr = 0x8000;
   rig.board.bus.cpu.data = 0xCD;
-  board_tick(&rig.board);           // access: latches the write
+  board_tick(&rig.board);  // access: latches the write
   rig.board.bus = bus_resting();
   rig.board.bus.cpu.ramdis = true;  // the commit cycle, but /RAMDIS is up
   board_tick(&rig.board);

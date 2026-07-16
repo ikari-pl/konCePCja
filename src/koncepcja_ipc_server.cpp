@@ -3,12 +3,12 @@
 #include "autotype.h"
 #include "gfx_finder.h"
 #include "hw/tape.h"
+#include "hw_views.h"
 #include "imgui_state.h"
 #include "log.h"
 #include "search_engine.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
-#include "hw_views.h"
 #include "tape_line_in.h"
 // `video.h` (defining video_plugin_list) is already included via the
 // project-internal include block below.
@@ -75,9 +75,9 @@
 #include "video_host.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
-#include "z80_view.h"
 #include "z80_assembler.h"
 #include "z80_disassembly.h"
+#include "z80_view.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -221,8 +221,7 @@ std::string err_with_context(int code, const std::string& msg) {
 // set keys before resuming emulation for frame stepping.
 namespace {
 void ipc_apply_keypress(CPCScancode cpc_key,
-                               std::atomic<byte> keyboard_matrix[],
-                               bool pressed) {
+                        std::atomic<byte> keyboard_matrix[], bool pressed) {
   if (static_cast<byte>(cpc_key) == 0xff) return;
   // Same matrix mutex as applyKeypressDirect: keep the key+shift+ctrl writes
   // atomic vs the Z80-thread snapshot copy.  See beads-2qg / beads-d1n.
@@ -507,7 +506,7 @@ void init_command_registry() {
                    "Policies: auto (Fast; Wake while the debugger is engaged "
                    "- the default), fast, wake, soldered, faithful. Reports "
                    "the effective tier and whether a KONCPC_TIER/KONCPC_WAKE "
-                   "env pin overrides the policy. Needs system.engine=1.");
+                   "env pin overrides the policy.");
 
   register_command("regs", "DEBUG", "regs",
                    "Get all Z80 and core hardware registers",
@@ -767,17 +766,17 @@ void init_command_registry() {
                    "register state.\n"
                    "Useful for deterministic regression testing.");
 
-  register_command("autotype", "INPUT",
-                   "autotype <text> | autotype status | autotype clear",
-                   "Queue text for keyboard injection",
-                   "Types text into the CPC using AutoTypeQueue. Supports "
-                   "WinAPE ~KEY~ syntax (e.g. ~ENTER~, ~CLR~).\n"
-                   "  EVERYTHING after 'autotype ' is typed VERBATIM, including "
-                   "any surrounding quotes or apostrophes -- do NOT wrap the "
-                   "text in quotes (e.g. use `autotype |cpm~RETURN~`, NOT "
-                   "`autotype '|cpm~RETURN~'`, or the quotes get typed too).\n"
-                   "  status: Show pending queue length.\n"
-                   "  clear:  Cancel pending input.");
+  register_command(
+      "autotype", "INPUT", "autotype <text> | autotype status | autotype clear",
+      "Queue text for keyboard injection",
+      "Types text into the CPC using AutoTypeQueue. Supports "
+      "WinAPE ~KEY~ syntax (e.g. ~ENTER~, ~CLR~).\n"
+      "  EVERYTHING after 'autotype ' is typed VERBATIM, including "
+      "any surrounding quotes or apostrophes -- do NOT wrap the "
+      "text in quotes (e.g. use `autotype |cpm~RETURN~`, NOT "
+      "`autotype '|cpm~RETURN~'`, or the quotes get typed too).\n"
+      "  status: Show pending queue length.\n"
+      "  clear:  Cancel pending input.");
 
   register_command(
       "status", "CORE", "status | status drives", "Emulator status summary",
@@ -1062,8 +1061,7 @@ std::string handle_command(const std::string& line) {
     }
 
     if (cmd == "tier") {
-      if (!subcycle_bridge_active())
-        return "ERROR tier: legacy engine active (system.engine=0)";
+      if (!subcycle_bridge_active()) return "ERROR tier: board not running";
       if (parts.size() >= 3 && parts[1] == "set") {
         BridgeTierPolicy pol;
         if (parts[2] == "auto")
@@ -1084,7 +1082,7 @@ std::string handle_command(const std::string& line) {
         return std::string("OK policy=") + parts[2];
       }
       static const char* const kPolicyNames[] = {"auto", "fast", "wake",
-                                                       "soldered", "faithful"};
+                                                 "soldered", "faithful"};
       const int pol = static_cast<int>(subcycle_bridge_tier_policy());
       return std::string("OK policy=") + kPolicyNames[pol] +
              " effective=" + subcycle_bridge_effective_tier_name() +
@@ -1469,11 +1467,15 @@ std::string handle_command(const std::string& line) {
       using RunTier = subcycle::Machine::RunTier;
       auto tier_name = [](RunTier t) {
         switch (t) {
-          case RunTier::Soldered: return "soldered";
-          case RunTier::Wake: return "wake";
-          case RunTier::Fast: return "fast";
+          case RunTier::Soldered:
+            return "soldered";
+          case RunTier::Wake:
+            return "wake";
+          case RunTier::Fast:
+            return "fast";
           case RunTier::Faithful:
-          default: return "faithful";
+          default:
+            return "faithful";
         }
       };
       auto report = [&]() {
@@ -1522,14 +1524,16 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "seek" && parts.size() >= 3) {
-        // tape seek <block> — jump the deck to the Nth scanned block (engine=1);
-        // the deck walks its own cdt to the ordinal. Applied on the Z80 thread
-        // at the frame boundary. Range-checked against the host block table.
+        // tape seek <block> — jump the deck to the Nth scanned block
+        // (engine=1); the deck walks its own cdt to the ordinal. Applied on the
+        // Z80 thread at the frame boundary. Range-checked against the host
+        // block table.
         if (!mach) return "ERR 409 subcycle-engine-only\n";
         if (imgui_state.tape_block_offsets.empty()) return "ERR 409 no-tape\n";
         try {
           const int blk = std::stoi(parts[2]);
-          const int nblk = static_cast<int>(imgui_state.tape_block_offsets.size());
+          const int nblk =
+              static_cast<int>(imgui_state.tape_block_offsets.size());
           if (blk < 0 || blk >= nblk) return "ERR 400 block-out-of-range\n";
           subcycle_bridge_request_tape_seek(static_cast<uint32_t>(blk));
           return ok_with_context();
@@ -1566,7 +1570,8 @@ std::string handle_command(const std::string& line) {
         if (parts.size() >= 3) {
           try {
             int vol = std::stoi(parts[2]);
-            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
+            // nested conditional kept intentionally; no clang-tidy auto-fix
             vol = vol < 0 ? 0 : (vol > 100 ? 100 : vol);
             tape_line_out_set_volume(vol / 100.0f);
           } catch (const std::invalid_argument&) {
@@ -1617,7 +1622,8 @@ std::string handle_command(const std::string& line) {
         if (parts[2] == "on") {
           int ch = 0;
           if (parts.size() >= 4)
-            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+            // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
+            // nested conditional kept intentionally; no clang-tidy auto-fix
             ch = parts[3] == "right" ? 1 : parts[3] == "mix" ? 2 : 0;
           if (!tape_line_in_start(ch)) return "ERR 503 no-recording-device\n";
           mach->tape_line_in(true);
@@ -1805,7 +1811,8 @@ std::string handle_command(const std::string& line) {
     if (cmd == "disasm" && parts.size() >= 2) {
       // disasm follow <addr> — recursive disassembly following jumps
       if (parts[1] == "follow" && parts.size() >= 3) {
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         unsigned int addr = parse_number(parts[2]);
         std::vector<word> const eps = {static_cast<word>(addr)};
         DisassembledCode const code = disassemble(eps);
@@ -1824,7 +1831,8 @@ std::string handle_command(const std::string& line) {
         std::ostringstream resp;
         resp << "OK";
         int found = 0;
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         DisassembledCode dummy;
         std::vector<dword> dummy_eps;
         for (unsigned int addr = 0; addr <= 0xFFFF && found < 100;) {
@@ -1869,7 +1877,8 @@ std::string handle_command(const std::string& line) {
         oss << "; Disassembly export from konCePCja\n";
         oss << "org " << buf << "\n\n";
 
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         DisassembledCode code;
         std::vector<dword> entry_points;
         word pos = static_cast<word>(start_addr);
@@ -1909,9 +1918,9 @@ std::string handle_command(const std::string& line) {
             }
             oss << "\n";
             if (line_bytes == 0) line_bytes = 1;
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-            unsigned int next =
-                static_cast<unsigned int>(pos) + line_bytes;
+            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
+            // is mutated (out-param/compound-assign/loop/reference)
+            unsigned int next = static_cast<unsigned int>(pos) + line_bytes;
             if (next > 0xFFFF || next > end_addr + 1u) break;
             pos = static_cast<word>(next);
           } else {
@@ -1980,7 +1989,8 @@ std::string handle_command(const std::string& line) {
         }
         std::ostringstream resp;
         resp << "OK\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         DisassembledCode code;
         std::vector<dword> entry_points;
         word pos = static_cast<word>(addr);
@@ -2065,7 +2075,8 @@ std::string handle_command(const std::string& line) {
           }
         }
         if (!cond_str.empty()) {
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           std::string err;
           auto ast = expr_parse(cond_str, err);
           if (!ast) return "ERR 400 bad-expr: " + err + "\n";
@@ -2170,7 +2181,8 @@ std::string handle_command(const std::string& line) {
           }
         }
         if (!cond_str.empty()) {
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           std::string err;
           auto ast = expr_parse(cond_str, err);
           if (!ast) return "ERR 400 bad-expr: " + err + "\n";
@@ -2476,9 +2488,11 @@ std::string handle_command(const std::string& line) {
       auto resolve_key =
           [](const std::string& name) -> std::pair<bool, CPCScancode> {
         // Try friendly short names first (case-insensitive)
-        // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization):
+        // clang-tidy FP — variable is mutated
+        // (out-param/compound-assign/loop/reference)
         std::string upper = name;
-        for (auto &c : upper)
+        for (auto& c : upper)
           c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         auto it = cpc_key_names().find(upper);
         if (it != cpc_key_names().end()) {
@@ -2944,7 +2958,8 @@ std::string handle_command(const std::string& line) {
           }
         }
         if (!cond_str.empty()) {
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           std::string err;
           auto ast = expr_parse(cond_str, err);
           if (!ast) return "ERR 400 bad-expr: " + err + "\n";
@@ -2998,7 +3013,8 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "load" && parts.size() >= 3) {
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
         Symfile const loaded(parts[2]);
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         int count = 0;
         for (const auto& [addr, name] : loaded.Symbols()) {
           g_symfile.addSymbol(addr, name);
@@ -3141,14 +3157,16 @@ std::string handle_command(const std::string& line) {
           pattern += parts[pi];
         }
         // Lowercase pattern for case-insensitive matching
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         std::string lower_pattern = pattern;
         for (auto& c : lower_pattern)
           c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         std::ostringstream resp;
         resp << "OK";
         int found = 0;
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         DisassembledCode dummy;
         std::vector<dword> dummy_eps;
         for (unsigned int addr = start; addr <= end && found < 32;) {
@@ -3197,7 +3215,8 @@ std::string handle_command(const std::string& line) {
       word const sp = z80.SP.w.l;
       std::ostringstream resp;
       resp << "OK depth=" << depth << "\n";
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       DisassembledCode dummy;
       std::vector<dword> dummy_eps;
       for (int i = 0; i < depth; i++) {
@@ -3214,7 +3233,8 @@ std::string handle_command(const std::string& line) {
           // Check 3, 2, 1 bytes back for CALL/RST
           bool is_ret_addr = false;
           for (int back = 3; back >= 1; back--) {
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
+            // is mutated (out-param/compound-assign/loop/reference)
             word check_addr = static_cast<word>(val - back);
             auto dline = disassemble_one(check_addr, dummy, dummy_eps);
             if (dline.Size() == back &&
@@ -3276,7 +3296,8 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "format") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk format <A|B> <format_name>\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
         std::string const err = disk_format_drive(drive, parts[3]);
         if (!err.empty()) return "ERR " + err + "\n";
@@ -3305,7 +3326,8 @@ std::string handle_command(const std::string& line) {
         if (parts.size() < 3) return "ERR 400 usage: disk ls <A|B>\n";
         t_drive* drv = resolve_drive(parts[2]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         std::string err;
         auto files = disk_list_files(drv, err);
         if (!err.empty()) return "ERR " + err + "\n";
@@ -3324,7 +3346,8 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 usage: disk cat <A|B> <filename>\n";
         t_drive* drv = resolve_drive(parts[2]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         std::string err;
         auto raw = disk_read_file(drv, parts[3], err);
         if (!err.empty()) return "ERR " + err + "\n";
@@ -3353,7 +3376,8 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 usage: disk get <A|B> <filename> <local_path>\n";
         t_drive* drv = resolve_drive(parts[2]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         std::string err;
         auto raw = disk_read_file(drv, parts[3], err);
         if (!err.empty()) return "ERR " + err + "\n";
@@ -3413,7 +3437,8 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 usage: disk info <A|B> <filename>\n";
         t_drive* drv = resolve_drive(parts[2]);
         if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         std::string err;
         auto raw = disk_read_file(drv, parts[3], err);
         if (!err.empty()) return "ERR " + err + "\n";
@@ -3461,16 +3486,18 @@ std::string handle_command(const std::string& line) {
                    "<sector_id>\n";
           t_drive* drv = sec_resolve_drive(parts[3]);
           if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk =
-              static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          unsigned int side =
-              static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           uint8_t sector_id =
               static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           std::string err;
           auto data = disk_sector_read(drv, trk, side, sector_id, err);
           if (!err.empty()) return "ERR " + err + "\n";
@@ -3491,12 +3518,12 @@ std::string handle_command(const std::string& line) {
                    "<sector_id> <hex_data>\n";
           t_drive* drv = sec_resolve_drive(parts[3]);
           if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk =
-              static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          unsigned int side =
-              static_cast<unsigned int>(parse_number(parts[5]));
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
           uint8_t const sector_id =
               static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
           // Parse hex data: remaining parts are space-separated hex bytes
@@ -3511,9 +3538,9 @@ std::string handle_command(const std::string& line) {
                   static_cast<uint8_t>(std::stoul(byte_str, nullptr, 16)));
             }
           }
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          std::string err =
-              disk_sector_write(drv, trk, side, sector_id, data);
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          std::string err = disk_sector_write(drv, trk, side, sector_id, data);
           if (!err.empty()) return "ERR " + err + "\n";
           return "OK\n";
         }
@@ -3523,13 +3550,14 @@ std::string handle_command(const std::string& line) {
             return "ERR 400 usage: disk sector info <drive> <track> <side>\n";
           t_drive* drv = sec_resolve_drive(parts[3]);
           if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk =
-              static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-          unsigned int side =
-              static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
+          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           std::string err;
           auto sectors = disk_sector_info(drv, trk, side, err);
           if (!err.empty()) return "ERR " + err + "\n";
@@ -4035,7 +4063,8 @@ std::string handle_command(const std::string& line) {
         return "ERR 400 usage: plotter (status|export [path]|clear)\n";
       }
       if (parts[1] == "status") {
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         std::stringstream ss;
         const PlotterViewStatus pv = plotter_view_status();
         ss << "OK pen=" << pv.pen << " pen_down=" << (pv.pen_down ? 1 : 0)
@@ -4091,14 +4120,16 @@ std::string handle_command(const std::string& line) {
 
       if (mode == SearchMode::ASM) {
         // ASM mode uses disassembly infrastructure directly
-        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization): copy is mutated after initialization (clang-tidy FP)
+        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization): copy is
+        // mutated after initialization (clang-tidy FP)
         std::string lower_pattern = pattern;
         for (auto& c : lower_pattern)
           c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         std::ostringstream resp;
         resp << "OK";
         int found = 0;
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         DisassembledCode dummy;
         std::vector<dword> dummy_eps;
         for (unsigned int addr = 0; addr <= 0xFFFF && found < 256;) {
@@ -4629,7 +4660,8 @@ std::string handle_command(const std::string& line) {
         // FS
         if (g_m4board.container_type != M4Board::ContainerType::NONE &&
             g_m4board.container_drive) {
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           std::string err;
           auto files = disk_list_files(g_m4board.container_drive, err);
           if (!err.empty()) return "ERR 500 " + err + "\n";
@@ -4808,9 +4840,11 @@ std::string handle_command(const std::string& line) {
 
     // Unknown command — find closest match for "did you mean?" suggestion
     {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       std::string suggestion;
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       size_t best_dist = SIZE_MAX;
       // Stack-based Levenshtein — command names are short (<20 chars)
       static constexpr size_t MAX_CMD_LEN = 32;
@@ -4828,7 +4862,8 @@ std::string handle_command(const std::string& line) {
             size_t const del = prev[j] + 1;
             size_t const ins = curr[j - 1] + 1, sub = prev[j - 1] + cost;
             curr[j] =
-                // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): compact min() selection kept intentionally
+                // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
+                // compact min() selection kept intentionally
                 del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
           }
           for (size_t j = 0; j <= m; j++) prev[j] = curr[j];
@@ -4901,7 +4936,8 @@ void KoncepcjaIpcServer::notify_frame_step_done() {
 }
 
 void KoncepcjaIpcServer::wait_frame_step_done() {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   std::unique_lock<std::mutex> lock(frame_step_mutex);
   frame_step_cv.wait(lock, [this] { return !frame_step_active.load(); });
 }
@@ -5213,7 +5249,8 @@ void KoncepcjaIpcServer::run() {
     // "disconnect", or idle timeout.
     std::string buffer;
     char buf[1024];
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     bool client_quit = false;
     while (running.load() && !client_quit) {
       fd_set cfds;

@@ -84,8 +84,7 @@ void seed_side(MemSide& side) {
   mem_load_lower_rom(&side.dev, lo.data(), lo.size());
   mem_load_upper_rom(&side.dev, hi.data(), hi.size());
   mem_attach_rom(&side.dev, 7, side.rom7.data());
-  mem_attach_expansion(&side.dev, side.expansion.data(),
-                       side.expansion.size());
+  mem_attach_expansion(&side.dev, side.expansion.data(), side.expansion.size());
   for (uint32_t a = 0; a < 0x10000; ++a)
     mem_write_ram(&side.dev, static_cast<uint16_t>(a),
                   static_cast<uint8_t>(0xA0 + (a >> 14)));
@@ -164,8 +163,8 @@ std::string diff_regs(const Z80Regs& a, const Z80Regs& b) {
   auto cmp = [&](const char* n, uint64_t g, uint64_t e) {
     if (g != e) {
       char buf[64];
-      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n,
-                    (unsigned long long)g, (unsigned long long)e);
+      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n, (unsigned long long)g,
+                    (unsigned long long)e);
       d += buf;
     }
   };

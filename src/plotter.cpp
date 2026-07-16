@@ -205,8 +205,8 @@ void HpglPlotter::process_command(const std::string& cmd) {
     cmd_IP(p);
   } else if (m0 == 'I' && m1 == 'W') {
     cmd_IW(p);
-  // Ignored commands: VS (velocity), PT, SL, SR, DR, CP, ES, TL, XT, YT,
-  // FT, RA, RR, and all query commands (OA, OC, OE, OF, OH, OP, OS)
+    // Ignored commands: VS (velocity), PT, SL, SR, DR, CP, ES, TL, XT, YT,
+    // FT, RA, RR, and all query commands (OA, OC, OE, OF, OH, OP, OS)
   } else {
     LOG_DEBUG("HP-GL: unknown command " << m0 << m1);
   }

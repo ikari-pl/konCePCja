@@ -27,7 +27,7 @@ int board_add(Board* board, Device device) {
   if (board->count >= BOARD_MAX_DEVICES) return -1;
   const int index = board->count;
   board->dev[index] = device;
-  board->tick_order[index] = index;    // identity until a recompose reorders it
+  board->tick_order[index] = index;  // identity until a recompose reorders it
   board->count += 1;
   board->active_count = board->count;  // all fitted + dispatched by default
   return index;

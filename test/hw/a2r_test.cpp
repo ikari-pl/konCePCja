@@ -1,10 +1,10 @@
-/* a2r_test.cpp — the Applesauce A2R3 → SCP transcoder (src/hw/a2r). A hand-built
- * minimal A2R with one side-0 timing capture is transcoded, then the emitted SCP
- * is inspected byte-for-byte: correct header (resolution 4 = 125 ns/tick, 2
- * revs), a TLUT slot pointing at a "TRK" data header, and flux intervals that
- * round-trip through A2R's accumulated-byte encoding into SCP big-endian words
- * — including a 0xFF-carry interval. The real-capture decode is exercised by the
- * flux harness in fdc_test.cpp (skip-if-absent). */
+/* a2r_test.cpp — the Applesauce A2R3 → SCP transcoder (src/hw/a2r). A
+ * hand-built minimal A2R with one side-0 timing capture is transcoded, then the
+ * emitted SCP is inspected byte-for-byte: correct header (resolution 4 = 125
+ * ns/tick, 2 revs), a TLUT slot pointing at a "TRK" data header, and flux
+ * intervals that round-trip through A2R's accumulated-byte encoding into SCP
+ * big-endian words — including a 0xFF-carry interval. The real-capture decode
+ * is exercised by the flux harness in fdc_test.cpp (skip-if-absent). */
 #include "hw/a2r.h"
 
 #include <gtest/gtest.h>
@@ -35,29 +35,29 @@ uint16_t rd16be(const uint8_t* p) {
 std::vector<uint8_t> make_a2r(uint32_t index_ticks,
                               const std::vector<uint8_t>& flux) {
   std::vector<uint8_t> rwcp;
-  rwcp.push_back(1);           // version
-  put32(rwcp, 125000);         // resolution: 125000 ps = 125 ns/tick
+  rwcp.push_back(1);               // version
+  put32(rwcp, 125000);             // resolution: 125000 ps = 125 ns/tick
   rwcp.insert(rwcp.end(), 11, 0);  // reserved
-  rwcp.push_back('C');         // capture mark
-  rwcp.push_back(1);           // type: timing
-  rwcp.push_back(0);           // location lo (0 = cyl 0, side 0)
-  rwcp.push_back(0);           // location hi
-  rwcp.push_back(1);           // num_index
-  put32(rwcp, index_ticks);    // index[0]
+  rwcp.push_back('C');             // capture mark
+  rwcp.push_back(1);               // type: timing
+  rwcp.push_back(0);               // location lo (0 = cyl 0, side 0)
+  rwcp.push_back(0);               // location hi
+  rwcp.push_back(1);               // num_index
+  put32(rwcp, index_ticks);        // index[0]
   put32(rwcp, static_cast<uint32_t>(flux.size()));  // data_len
   rwcp.insert(rwcp.end(), flux.begin(), flux.end());
-  rwcp.push_back('X');         // terminator
+  rwcp.push_back('X');  // terminator
 
   std::vector<uint8_t> a2r = {'A', '2', 'R', '3', 0xFF, 0x0A, 0x0D, 0x0A};
   const char* info = "INFO";
   a2r.insert(a2r.end(), info, info + 4);
   put32(a2r, 37);
-  a2r.push_back(1);                    // INFO version
-  a2r.insert(a2r.end(), 32, ' ');      // creator
-  a2r.push_back(2);                    // drive type: 3.5 DS 80trk
-  a2r.push_back(0);                    // write protected
-  a2r.push_back(1);                    // synchronized
-  a2r.push_back(0);                    // hard sector count (INFO body = 37 bytes)
+  a2r.push_back(1);                // INFO version
+  a2r.insert(a2r.end(), 32, ' ');  // creator
+  a2r.push_back(2);                // drive type: 3.5 DS 80trk
+  a2r.push_back(0);                // write protected
+  a2r.push_back(1);                // synchronized
+  a2r.push_back(0);                // hard sector count (INFO body = 37 bytes)
   const char* rw = "RWCP";
   a2r.insert(a2r.end(), rw, rw + 4);
   put32(a2r, static_cast<uint32_t>(rwcp.size()));
@@ -85,7 +85,8 @@ TEST(A2r, TranscodesFluxIntoAWellFormedScp) {
   ASSERT_GE(scp.size(), 0x2B0u);
   EXPECT_EQ(std::memcmp(scp.data(), "SCP", 3), 0);
   EXPECT_EQ(scp[0x05], 2) << "two revolutions per track";
-  EXPECT_EQ(scp[0x0B], 4) << "resolution 4 => 25*(4+1) = 125 ns/tick, matches A2R";
+  EXPECT_EQ(scp[0x0B], 4)
+      << "resolution 4 => 25*(4+1) = 125 ns/tick, matches A2R";
 
   // Track-lookup slot 0 (cyl 0, side 0) points at a "TRK" data header.
   const uint32_t toff = rd32(scp.data() + 0x10);
@@ -99,7 +100,8 @@ TEST(A2r, TranscodesFluxIntoAWellFormedScp) {
   const uint32_t index_time = rd32(scp.data() + toff + 4);
   const uint32_t words = rd32(scp.data() + toff + 8);
   const uint32_t doff = rd32(scp.data() + toff + 12);
-  EXPECT_EQ(index_time, 1000u) << "revolution length carried from the A2R index";
+  EXPECT_EQ(index_time, 1000u)
+      << "revolution length carried from the A2R index";
   EXPECT_EQ(words, 4u);
 
   const uint8_t* fw = scp.data() + toff + doff;

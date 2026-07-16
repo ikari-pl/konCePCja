@@ -14,9 +14,8 @@
 
 #include "savepng.h"
 
-#include <png.h>
-
 #include <SDL3/SDL.h>
+#include <png.h>
 
 #include <csetjmp>
 #include <memory>
@@ -51,7 +50,8 @@ void on_png_flush(png_structp /*unused*/) {}
 // RAII owner of the png_struct / png_info pair.
 class PngWriter {
  public:
-  // NOLINTNEXTLINE(modernize-use-equals-default): constructor has a member initializer; = default is not equivalent
+  // NOLINTNEXTLINE(modernize-use-equals-default): constructor has a member
+  // initializer; = default is not equivalent
   PngWriter()
       : png_(png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr,
                                      on_png_error, nullptr)) {
@@ -79,7 +79,8 @@ class PngWriter {
 // SDL_GetError().
 bool encode(png_structp png, png_infop info, SDL_IOStream* io, int width,
             int height, png_bytep* rows) {
-  // NOLINTNEXTLINE(modernize-avoid-setjmp-longjmp): libpng's error handling mandates setjmp/longjmp
+  // NOLINTNEXTLINE(modernize-avoid-setjmp-longjmp): libpng's error handling
+  // mandates setjmp/longjmp
   if (setjmp(png_jmpbuf(png)) != 0) return false;  // arrived via on_png_error
   png_set_write_fn(png, io, on_png_write, on_png_flush);
   png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGB_ALPHA,
@@ -93,8 +94,11 @@ bool encode(png_structp png, png_infop info, SDL_IOStream* io, int width,
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage,readability-non-const-parameter): external API consumed by other translation units/tests; internal linkage would break the link; pointer written through a cast or passed to a non-const callee
-int SDL_SavePNG(SDL_Surface* src, const std::string &file) {
+// NOLINTNEXTLINE(misc-use-internal-linkage,readability-non-const-parameter):
+// external API consumed by other translation units/tests; internal linkage
+// would break the link; pointer written through a cast or passed to a non-const
+// callee
+int SDL_SavePNG(SDL_Surface* src, const std::string& file) {
   if (src == nullptr) {
     SDL_SetError("SDL_SavePNG: surface must not be null");
     return -1;
@@ -108,7 +112,8 @@ int SDL_SavePNG(SDL_Surface* src, const std::string &file) {
   if (io == nullptr) return -1;  // SDL_GetError() set by SDL
 
   PngWriter const writer;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool encoded = false;
   if (writer.ok()) {
     // One row pointer per scanline into the converted surface (pitch-aware).
@@ -117,8 +122,8 @@ int SDL_SavePNG(SDL_Surface* src, const std::string &file) {
     for (int y = 0; y < rgba->h; y++)
       rows[static_cast<size_t>(y)] =
           pixels + (static_cast<size_t>(y) * static_cast<size_t>(rgba->pitch));
-    encoded = encode(writer.png(), writer.info(), io, rgba->w, rgba->h,
-                     rows.data());
+    encoded =
+        encode(writer.png(), writer.info(), io, rgba->w, rgba->h, rows.data());
   } else {
     SDL_SetError("SDL_SavePNG: libpng writer initialisation failed");
   }

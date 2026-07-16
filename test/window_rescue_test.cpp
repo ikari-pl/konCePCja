@@ -29,8 +29,8 @@ TEST(WindowRescue, FullyVisibleNoMove) {
   EXPECT_EQ(ny, -1);
 }
 
-// A window entirely to the right of the display is rescued, clamped so its right
-// edge sits on the display's right edge (x = 1920 - width).
+// A window entirely to the right of the display is rescued, clamped so its
+// right edge sits on the display's right edge (x = 1920 - width).
 TEST(WindowRescue, FullyRightIsClampedToRightEdge) {
   int nx = 0, ny = 0;
   EXPECT_TRUE(compute_onscreen_position(Rect{3000, 200, 800, 600}, &kPrimary, 1,
@@ -42,8 +42,8 @@ TEST(WindowRescue, FullyRightIsClampedToRightEdge) {
 // A window entirely above/left (negative origin) pins to the display origin.
 TEST(WindowRescue, NegativeOriginClampsToZero) {
   int nx = 5, ny = 5;
-  EXPECT_TRUE(compute_onscreen_position(Rect{-900, -700, 800, 600}, &kPrimary, 1,
-                                        48, nx, ny));
+  EXPECT_TRUE(compute_onscreen_position(Rect{-900, -700, 800, 600}, &kPrimary,
+                                        1, 48, nx, ny));
   EXPECT_EQ(nx, 0);
   EXPECT_EQ(ny, 0);
 }
@@ -72,8 +72,8 @@ TEST(WindowRescue, SliverBelowMinVisibleIsRescued) {
 TEST(WindowRescue, MinVisibleOneKeepsOnePixelOverlap) {
   int nx = -1, ny = -1;
   // 1px of the window's left edge remains over the display's right edge.
-  EXPECT_FALSE(compute_onscreen_position(Rect{1919, 100, 800, 200}, &kPrimary, 1,
-                                         1, nx, ny));
+  EXPECT_FALSE(compute_onscreen_position(Rect{1919, 100, 800, 200}, &kPrimary,
+                                         1, 1, nx, ny));
   EXPECT_EQ(nx, -1);
 }
 
@@ -109,7 +109,8 @@ TEST(WindowRescue, PicksNearestOfMultipleDisplays) {
 }
 
 // A window visible on the SECOND display is not moved even though it misses the
-// first (the visible-anywhere check must scan all displays, not just the first).
+// first (the visible-anywhere check must scan all displays, not just the
+// first).
 TEST(WindowRescue, VisibleOnSecondDisplayNoMove) {
   const Rect displays[2] = {{0, 0, 1920, 1080}, {1920, 0, 1920, 1080}};
   int nx = -1, ny = -1;

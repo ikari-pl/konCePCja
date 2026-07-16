@@ -257,13 +257,14 @@ void psg_reset(void* self) {
   uint8_t saved_matrix[16];
   std::memcpy(saved_matrix, p->key_matrix, sizeof(saved_matrix));
   // Value-init via placement-new — NOT `*p = psg_state{}`. The aggregate
-  // temporary `psg_state{}` leaves its interior alignment padding indeterminate,
-  // and because psg_state is trivially copyable the copy-assignment is a full-
-  // sizeof memcpy that would splat that garbage padding into the live struct.
-  // psg_save() memcpies the whole struct into the state-hash blob, so garbage
-  // padding makes the deterministic-replay hash non-deterministic (per-run).
-  // Value-initialization zero-inits the whole object (padding included) before
-  // applying the member initializers, keeping the save blob byte-stable.
+  // temporary `psg_state{}` leaves its interior alignment padding
+  // indeterminate, and because psg_state is trivially copyable the
+  // copy-assignment is a full- sizeof memcpy that would splat that garbage
+  // padding into the live struct. psg_save() memcpies the whole struct into the
+  // state-hash blob, so garbage padding makes the deterministic-replay hash
+  // non-deterministic (per-run). Value-initialization zero-inits the whole
+  // object (padding included) before applying the member initializers, keeping
+  // the save blob byte-stable.
   new (self) psg_state();
   std::memset(p->reg, 0, sizeof(p->reg));  // AY RES clears every register to 0
   p->noise_lfsr = 1;  // ...but the LFSR must not be all-zero
@@ -281,13 +282,14 @@ void psg_save(const void* self, void* buf) {
   std::memcpy(b + 1, self, sizeof(psg_state));
   // key_matrix is LIVE input (current key/joystick state), which psg_load
   // deliberately keeps rather than restore. It must therefore be excluded from
-  // the blob too — otherwise the blob is non-deterministic (depends on keys held
-  // at save time) and save/load are asymmetric. Zero it, matching load.
+  // the blob too — otherwise the blob is non-deterministic (depends on keys
+  // held at save time) and save/load are asymmetric. Zero it, matching load.
   std::memset(b + 1 + offsetof(psg_state, key_matrix), 0,
               sizeof(psg_state::key_matrix));
-  // scanned_rows is transient host bookkeeping (which rows the firmware read this
-  // frame, drained by the KeyboardManager relay) — same rationale as key_matrix:
-  // exclude it so the blob / state hashes stay deterministic across tiers.
+  // scanned_rows is transient host bookkeeping (which rows the firmware read
+  // this frame, drained by the KeyboardManager relay) — same rationale as
+  // key_matrix: exclude it so the blob / state hashes stay deterministic across
+  // tiers.
   std::memset(b + 1 + offsetof(psg_state, scanned_rows), 0,
               sizeof(psg_state::scanned_rows));
 }
@@ -420,7 +422,7 @@ void psg_batch_step(const Device* dev) {
 // per-step `++cnt >= period` comparison).
 namespace {
 uint32_t psg_event_in(uint32_t presc, uint32_t div, uint32_t cnt,
-                             uint32_t per) {
+                      uint32_t per) {
   const uint32_t ticks = per > cnt ? per - cnt : 1;
   return (presc - div) + ((ticks - 1) * presc);
 }
@@ -441,8 +443,8 @@ uint32_t psg_batch_quiet_steps(const Device* dev) {
   quiet = std::min(noise, quiet);
   const uint32_t env_per_raw =
       static_cast<uint32_t>(p->reg[11] | (p->reg[12] << 8));
-  const uint32_t env = psg_event_in(256, p->env_div, p->env_cnt,
-                                    env_per_raw ? env_per_raw : 1);
+  const uint32_t env =
+      psg_event_in(256, p->env_div, p->env_cnt, env_per_raw ? env_per_raw : 1);
   quiet = std::min(env, quiet);
   return quiet;
 }

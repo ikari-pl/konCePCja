@@ -54,17 +54,19 @@ bool Machine::build(const uint8_t* rom, size_t rom_len) {
   // The serial pair, appended last so every earlier device keeps its build
   // index (recompose_active's canonical-core check and the save_devices blob
   // order both key off it).
-  add(rsmem_, rsdev_, rs232_state_size, rs232_init);        // RS232 card
+  add(rsmem_, rsdev_, rs232_state_size, rs232_init);  // RS232 card
   add(plmem_, pldev_, plotter_hp7470a_state_size,
-      plotter_hp7470a_init);                                // HP 7470A
+      plotter_hp7470a_init);                                  // HP 7470A
   add(lgmem_, lgdev_, light_gun_state_size, light_gun_init);  // light gun
   board_reset(&board_);
-  // Measurement hook (config-driven-composition preview): KONCPC_ACTIVE=N limits
-  // board_tick to the first N devices. The rest stay constructed + in dev[] (so
-  // attach/UI/IPC keep working — unlike a compile-time strip), just undispatched.
+  // Measurement hook (config-driven-composition preview): KONCPC_ACTIVE=N
+  // limits board_tick to the first N devices. The rest stay constructed + in
+  // dev[] (so attach/UI/IPC keep working — unlike a compile-time strip), just
+  // undispatched.
   if (const char* e = std::getenv("KONCPC_ACTIVE")) {
     board_.active_count = std::atoi(e);
-    active_override_ = true;  // pins the set; disables auto-dormancy + fast tier
+    active_override_ =
+        true;  // pins the set; disables auto-dormancy + fast tier
   }
   // Wake tier (Gate B6) — THE DEFAULT dispatch, all predicates armed (0x3FF).
   // KONCPC_WAKE=<bitmask> overrides the mask for CKSUM bisecting (a clear bit
@@ -93,20 +95,23 @@ bool Machine::build(const uint8_t* rom, size_t rom_len) {
   }
   crtc_attach_asic(&cdev_, &adev_);  // Plus split screen (no-op on models 0-2)
   ga_attach_asic(&gdev_, &adev_);    // Plus PRI deference (no-op on models 0-2)
-  mem_attach_asic(&mdev_, &adev_);   // Plus RMR2 low-ROM remap gate (no-op sans cart)
+  mem_attach_asic(&mdev_,
+                  &adev_);  // Plus RMR2 low-ROM remap gate (no-op sans cart)
 
   mem_load_lower_rom(&mdev_, rom, 0x4000);           // OS at 0x0000
   mem_load_upper_rom(&mdev_, rom + 0x4000, 0x4000);  // BASIC at 0xC000
   xmem_.assign(0x10000, 0);  // 64K expansion: the machine is a real 128K 6128
   mem_attach_expansion(&mdev_, xmem_.data(), xmem_.size());
   built_ = true;
-  recompose_active();  // establish dormancy + wake-tier validity at construction
-                       // (refreshed every frame; this makes wake_active()
-                       // meaningful before the first run_frame too)
+  recompose_active();  // establish dormancy + wake-tier validity at
+                       // construction (refreshed every frame; this makes
+                       // wake_active() meaningful before the first run_frame
+                       // too)
   return true;
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
 void Machine::attach_framebuffer(uint8_t* fb, int w, int h) {
   video_attach(&vdev_, &gdev_, fb, w, h);
   // The video Device reads Plus state (12-bit palette + sprites) from the ASIC;
@@ -127,7 +132,8 @@ void Machine::attach_cartridge(const uint8_t* image, size_t bytes) {
   mem_load_cartridge(&mdev_, image, bytes);
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
 bool Machine::insert_disk(uint8_t* dsk, size_t len, uint8_t unit) {
   return fdc_attach_disk(&fdev_, dsk, len, unit) == 0;
 }
@@ -136,9 +142,10 @@ bool Machine::disk_dirty() const { return fdc_media_dirty(&fdev_) != 0; }
 void Machine::mark_disk_clean() { fdc_media_mark_clean(&fdev_); }
 
 bool Machine::insert_flux(const uint8_t* scp, size_t len) {
-  // Synthesize a writable DSK overlay from the flux so a flux-backed disc can be
-  // written (Stage 2): clean tracks still serve the rotating flux cache, written
-  // tracks serve this overlay. A generous cap covers a full 102-track DD disc
+  // Synthesize a writable DSK overlay from the flux so a flux-backed disc can
+  // be written (Stage 2): clean tracks still serve the rotating flux cache,
+  // written tracks serve this overlay. A generous cap covers a full 102-track
+  // DD disc
   // (~256 + ~8192 bytes/track); flux_scp_to_dsk shrinks it to the real size.
   constexpr size_t kOverlayCap = 0x100 + (102 * (0x100 + 8192));
   flux_dsk_.assign(kOverlayCap, 0);
@@ -165,7 +172,8 @@ void Machine::eject_tape() { tape_eject(&tdev_); }
 void Machine::tape_play_button(bool on) { tape_play(&tdev_, on ? 1 : 0); }
 void Machine::tape_rewind_deck() { tape_rewind(&tdev_); }
 void Machine::tape_seek(uint32_t block_ordinal) {
-  ::tape_seek(&tdev_, block_ordinal);  // ::-qualified: the free function, not this
+  ::tape_seek(&tdev_,
+              block_ordinal);  // ::-qualified: the free function, not this
 }
 int Machine::tape_drain_bits(uint8_t* out, int max) {
   return ::tape_drain_bits(&tdev_, out, max);
@@ -275,7 +283,8 @@ int16_t Machine::emit_sample(long acc, double& dc_x, double& dc_y) const {
       std::clamp<long>(static_cast<long>(dc_y), -32768, 32767));
 }
 
-// Live cassette wires for the host-side scope + drive-sound overlay (machine.h).
+// Live cassette wires for the host-side scope + drive-sound overlay
+// (machine.h).
 bool Machine::tape_motor() const { return board_.bus.tape.motor; }
 bool Machine::tape_read_level() const { return board_.bus.tape.rdata; }
 
@@ -302,16 +311,17 @@ void Machine::feed_tape_line_in() {
   tape_line_level(&tdev_, line_q_[line_q_pos_++] ? 1 : 0);
 }
 
-// Firmware-vector taps (telnet TXT_OUTPUT / BDOS): fire any tap whose address the
-// CPU fetches (M1 opcode read) this master cycle. Edge-detected directly on the
-// committed bus — a self-contained PC compare, NOT the debug probe. Routing taps
-// through the probe kept it live every master cycle even when only the always-on
-// console taps were set (~9 ms/f at Faithful — per-cycle observability for
-// nothing); firing the same fetch edge here leaves the probe dormant on a
-// tap-only machine and keeps Wake's quiet-pair elision available. The callback
-// reads architectural registers that hold the caller's values for the whole
-// instruction (A for TXT_OUTPUT, C+E for BDOS), so fetch-edge granularity is
-// exact — the same point the probe fired, and what the legacy engine used.
+// Firmware-vector taps (telnet TXT_OUTPUT / BDOS): fire any tap whose address
+// the CPU fetches (M1 opcode read) this master cycle. Edge-detected directly on
+// the committed bus — a self-contained PC compare, NOT the debug probe. Routing
+// taps through the probe kept it live every master cycle even when only the
+// always-on console taps were set (~9 ms/f at Faithful — per-cycle
+// observability for nothing); firing the same fetch edge here leaves the probe
+// dormant on a tap-only machine and keeps Wake's quiet-pair elision available.
+// The callback reads architectural registers that hold the caller's values for
+// the whole instruction (A for TXT_OUTPUT, C+E for BDOS), so fetch-edge
+// granularity is exact — the same point the probe fired, and what the legacy
+// engine used.
 void Machine::service_taps(const Bus& committed) {
   if (tap_count_ == 0) return;
   const bool fetch = committed.cpu.m1 && committed.cpu.mreq && committed.cpu.rd;
@@ -336,7 +346,7 @@ void Machine::accumulate_audio() { accumulate_audio_bulk(1); }
 void Machine::accumulate_audio_bulk(uint32_t k) {
   uint8_t lv[3];
   psg_levels(&sdev_, lv);
-  long addL = lv[0] + lv[1];  // channel A + B -> left
+  long addL = lv[0] + lv[1];        // channel A + B -> left
   long const addR = lv[2] + lv[1];  // channel C + B -> right
   // Analog-domain DACs (printer-device.md §3, amdrum-device.md §2): a DAC
   // swings like one PSG channel, mixed LEFT per the golden master. Their
@@ -689,20 +699,20 @@ void Machine::wake_slot(const Bus& cur, Bus& next) {
   if (wk_asic_on_) adev_.tick(adev_.self, in, &next);
   // RS232 + HP7470 plotter — the bit-serial pair, ticked as ONE unit (they
   // cross-couple through serial.txd/rxd, so whenever one transmits it is
-  // non-quiet and the other must be awake to sample the start edge). Awake while
-  // the CPU could select them ($FAxx/$FBxx iorq), while either UART is mid-frame
-  // or holds buffered work (wk_serial_quiet_ false), or on a forced wake.
-  // Quiet-skip is byte-identical: serial.txd/rxd stay at bus_resting()'s mark
-  // (the held idle level) and neither device runs a per-cycle counter while
-  // quiet. Dispatch order (rs232 then plotter) matches tick_soldered.
+  // non-quiet and the other must be awake to sample the start edge). Awake
+  // while the CPU could select them ($FAxx/$FBxx iorq), while either UART is
+  // mid-frame or holds buffered work (wk_serial_quiet_ false), or on a forced
+  // wake. Quiet-skip is byte-identical: serial.txd/rxd stay at bus_resting()'s
+  // mark (the held idle level) and neither device runs a per-cycle counter
+  // while quiet. Dispatch order (rs232 then plotter) matches tick_soldered.
   if (wk_serial_on_) {
     const uint8_t ser_hi = static_cast<uint8_t>(cur.cpu.addr >> 8);
     const bool serial_io = cur.cpu.iorq && (ser_hi == 0xFA || ser_hi == 0xFB);
     // Self-rewake one cycle past each serial access (wk_serial_io_prev_): the
-    // DART/PIT edge-detect their I/O select, so they need a tick with the strobe
-    // GONE to reset that edge — the same drive-then-latch self-rewake the PPI/MEM
-    // use. Without it only the FIRST OUT of a burst registers (trace: the DART
-    // never transmitted, plotter received 0 bytes).
+    // DART/PIT edge-detect their I/O select, so they need a tick with the
+    // strobe GONE to reset that edge — the same drive-then-latch self-rewake
+    // the PPI/MEM use. Without it only the FIRST OUT of a burst registers
+    // (trace: the DART never transmitted, plotter received 0 bytes).
     if (serial_io || wk_serial_io_prev_ || !wk_serial_quiet_ || forced) {
       rsdev_.tick(rsdev_.self, in, &next);
       pldev_.tick(pldev_.self, in, &next);
@@ -721,22 +731,54 @@ void Machine::wake_slot(const Bus& cur, Bus& next) {
 void Machine::tick_wake() {
   Bus next;  // rest-initialized by wake_slot before any drive
   switch (board_.bus.clk.phase & 0x0F) {
-    case 0: wake_slot<0>(board_.bus, next); break;
-    case 1: wake_slot<1>(board_.bus, next); break;
-    case 2: wake_slot<2>(board_.bus, next); break;
-    case 3: wake_slot<3>(board_.bus, next); break;
-    case 4: wake_slot<4>(board_.bus, next); break;
-    case 5: wake_slot<5>(board_.bus, next); break;
-    case 6: wake_slot<6>(board_.bus, next); break;
-    case 7: wake_slot<7>(board_.bus, next); break;
-    case 8: wake_slot<8>(board_.bus, next); break;
-    case 9: wake_slot<9>(board_.bus, next); break;
-    case 10: wake_slot<10>(board_.bus, next); break;
-    case 11: wake_slot<11>(board_.bus, next); break;
-    case 12: wake_slot<12>(board_.bus, next); break;
-    case 13: wake_slot<13>(board_.bus, next); break;
-    case 14: wake_slot<14>(board_.bus, next); break;
-    default: wake_slot<15>(board_.bus, next); break;
+    case 0:
+      wake_slot<0>(board_.bus, next);
+      break;
+    case 1:
+      wake_slot<1>(board_.bus, next);
+      break;
+    case 2:
+      wake_slot<2>(board_.bus, next);
+      break;
+    case 3:
+      wake_slot<3>(board_.bus, next);
+      break;
+    case 4:
+      wake_slot<4>(board_.bus, next);
+      break;
+    case 5:
+      wake_slot<5>(board_.bus, next);
+      break;
+    case 6:
+      wake_slot<6>(board_.bus, next);
+      break;
+    case 7:
+      wake_slot<7>(board_.bus, next);
+      break;
+    case 8:
+      wake_slot<8>(board_.bus, next);
+      break;
+    case 9:
+      wake_slot<9>(board_.bus, next);
+      break;
+    case 10:
+      wake_slot<10>(board_.bus, next);
+      break;
+    case 11:
+      wake_slot<11>(board_.bus, next);
+      break;
+    case 12:
+      wake_slot<12>(board_.bus, next);
+      break;
+    case 13:
+      wake_slot<13>(board_.bus, next);
+      break;
+    case 14:
+      wake_slot<14>(board_.bus, next);
+      break;
+    default:
+      wake_slot<15>(board_.bus, next);
+      break;
   }
   board_.bus = next;
   board_.master_cycles += 1;
@@ -762,68 +804,70 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
   Bus* cur = &bufa;
   Bus* nxt = &bufb;
   int n = 0;
-#define KONCPC_WAKE_SLOT(P)                       \
-  wake_slot<P>(*cur, *nxt);                       \
-  board_.master_cycles += 1;                      \
-  n++;                                            \
-  if (tap_count_ != 0) service_taps(*nxt);        \
-  if ((P) == 15) accumulate_audio();              \
-  {                                               \
-    const bool was = vsync_seen;                  \
-    vsync_seen = nxt->vid.vsync;                  \
-    if (vsync_seen || was) {                      \
-      video_peek(&vdev_, &vr);                    \
-      if (vr.frames >= target) {                  \
-        board_.bus = *nxt;                        \
-        return n;                                 \
-      }                                           \
-    }                                             \
-  }                                               \
-  {                                               \
-    Bus* flip = cur;                              \
-    cur = nxt;                                    \
-    nxt = flip;                                   \
+#define KONCPC_WAKE_SLOT(P)                \
+  wake_slot<P>(*cur, *nxt);                \
+  board_.master_cycles += 1;               \
+  n++;                                     \
+  if (tap_count_ != 0) service_taps(*nxt); \
+  if ((P) == 15) accumulate_audio();       \
+  {                                        \
+    const bool was = vsync_seen;           \
+    vsync_seen = nxt->vid.vsync;           \
+    if (vsync_seen || was) {               \
+      video_peek(&vdev_, &vr);             \
+      if (vr.frames >= target) {           \
+        board_.bus = *nxt;                 \
+        return n;                          \
+      }                                    \
+    }                                      \
+  }                                        \
+  {                                        \
+    Bus* flip = cur;                       \
+    cur = nxt;                             \
+    nxt = flip;                            \
   }
-// Quiet-pair elision — the Z80-slot-spacing payoff WITHOUT touching the Z80
-// core: at slots {2,3}, {6,7}, {10,11} every device is provably asleep on a
-// quiet µs (the Z80 last ran two slots ago so no line can move; no CPU I/O; no
-// AY WRITE state held; no publish/write-latch chains pending; deck idle; FDC
-// quiet; probe/ASIC off; away from VSYNC; every predicate armed). The two
-// commits those slots would produce are the identity holds plus the GA's pure
-// clock fields — and of those, only phase/cpu-enable//WAIT differ from what
-// the buffer already holds (crtc/psg enables and the fetch strobe are false on
-// both sides). So: patch three clock fields IN PLACE, book the skipped cycles
-// for the catch-up counters, and hand the SAME buffer to the next Z80 slot.
-// Pure scheduler algebra over the holds — the chips are untouched — enforced
-// byte-identical by the harness and CKSUM oracles. NEXTP is the next Z80 slot
-// (4/8/12, always a clk.cpu slot).
-  // Frame-constant eligibility, hoisted: on a composition where elision can
-  // never fire (Plus: the ASIC is a live every-cycle actor) the per-pair check
-  // collapses to one predictable branch.
-  const bool elide_base = wake_mask_ == 0x3FF && !wk_tape_live_ &&
-                          !wk_probe_on_ && !wk_asic_on_;
+  // Quiet-pair elision — the Z80-slot-spacing payoff WITHOUT touching the Z80
+  // core: at slots {2,3}, {6,7}, {10,11} every device is provably asleep on a
+  // quiet µs (the Z80 last ran two slots ago so no line can move; no CPU I/O;
+  // no AY WRITE state held; no publish/write-latch chains pending; deck idle;
+  // FDC quiet; probe/ASIC off; away from VSYNC; every predicate armed). The two
+  // commits those slots would produce are the identity holds plus the GA's pure
+  // clock fields — and of those, only phase/cpu-enable//WAIT differ from what
+  // the buffer already holds (crtc/psg enables and the fetch strobe are false
+  // on both sides). So: patch three clock fields IN PLACE, book the skipped
+  // cycles for the catch-up counters, and hand the SAME buffer to the next Z80
+  // slot. Pure scheduler algebra over the holds — the chips are untouched —
+  // enforced byte-identical by the harness and CKSUM oracles. NEXTP is the next
+  // Z80 slot (4/8/12, always a clk.cpu slot). Frame-constant eligibility,
+  // hoisted: on a composition where elision can never fire (Plus: the ASIC is a
+  // live every-cycle actor) the per-pair check collapses to one predictable
+  // branch.
+  const bool elide_base =
+      wake_mask_ == 0x3FF && !wk_tape_live_ && !wk_probe_on_ && !wk_asic_on_;
 #define KONCPC_ELIDABLE()                                                     \
   (elide_base && !cur->cpu.iorq && !(cur->ay.bdir && !cur->ay.bc1) &&         \
    !wk_z80_ran_ && !wk_crtc_woke_ && !wk_ppi_woke_ && !wk_psg_woke_ &&        \
    !wk_ppi_ran_ && !wk_psg_ran_ && !wk_mem_woke_ && !wk_tape_woke_ &&         \
-   wk_fdc_quiet_ && wk_serial_quiet_ && !wk_serial_io_prev_ &&                 \
-   !vsync_seen && !cur->vid.vsync)
-#define KONCPC_ELIDE_PAIR(NEXTP)                                              \
-  /* The GA's pure clock fields for the commit the next slot reads — the ONE  \
-   * shared definition (ga_clock_out), which also drives the video-fetch      \
-   * strobe when NEXTP is a fetch slot (12): the {10,11} pair's second commit \
-   * must carry ram.fetch/addr or the visible-12 fetch never happens. The     \
-   * crtc/psg enables it writes are false on both sides; every other field    \
-   * of the buffer is already the identity the two skipped holds would keep. */\
-  ga_clock_out((NEXTP), cur->vid.ma, cur->vid.ra, cur);                       \
-  board_.master_cycles += 2;                                                  \
-  wk_ga_skip_ += 2;                                                           \
-  wk_prt_skip_ += 2;                                                          \
-  wk_fdc_skip_ += 2;                                                          \
+   wk_fdc_quiet_ && wk_serial_quiet_ && !wk_serial_io_prev_ && !vsync_seen && \
+   !cur->vid.vsync)
+#define KONCPC_ELIDE_PAIR(NEXTP)                                               \
+  /* The GA's pure clock fields for the commit the next slot reads — the ONE \
+   * shared definition (ga_clock_out), which also drives the video-fetch       \
+   * strobe when NEXTP is a fetch slot (12): the {10,11} pair's second commit  \
+   * must carry ram.fetch/addr or the visible-12 fetch never happens. The      \
+   * crtc/psg enables it writes are false on both sides; every other field     \
+   * of the buffer is already the identity the two skipped holds would keep.   \
+   */                                                                          \
+  ga_clock_out((NEXTP), cur->vid.ma, cur->vid.ra, cur);                        \
+  board_.master_cycles += 2;                                                   \
+  wk_ga_skip_ += 2;                                                            \
+  wk_prt_skip_ += 2;                                                           \
+  wk_fdc_skip_ += 2;                                                           \
   n += 2;
   KONCPC_WAKE_SLOT(0)
   KONCPC_WAKE_SLOT(1)
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is
+  // produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
   if (KONCPC_ELIDABLE()) {
     KONCPC_ELIDE_PAIR(4)
   } else {
@@ -832,7 +876,8 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
   }
   KONCPC_WAKE_SLOT(4)
   KONCPC_WAKE_SLOT(5)
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is
+  // produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
   if (KONCPC_ELIDABLE()) {
     KONCPC_ELIDE_PAIR(8)
   } else {
@@ -841,7 +886,8 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
   }
   KONCPC_WAKE_SLOT(8)
   KONCPC_WAKE_SLOT(9)
-  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
+  // NOLINTNEXTLINE(readability-simplify-boolean-expr): boolean expression is
+  // produced by the wake-scheduler KONCPC_* macro; not rewritable at this site
   if (KONCPC_ELIDABLE()) {
     KONCPC_ELIDE_PAIR(12)
   } else {
@@ -877,11 +923,11 @@ int Machine::run_wake_us(VideoRegs& vr, uint32_t target, bool& vsync_seen) {
 void Machine::fs_advance_chars(uint64_t target) {
   if (target <= fs_chars_) return;
   // Frame-length guard: a real frame is VSYNC-cut well before kMaxFastChars.
-  // Overshooting it means no frame boundary is coming this batch (the post-reset
-  // no-VSYNC window, where a HALT with interrupts off free-runs the char clock).
-  // Clamp and raise fs_bail_ so the batch loop stops and the caller finishes the
-  // frame per-cycle — without this the walk below (and fs_audio_steps at the
-  // exit) run billions of iterations and exhaust memory.
+  // Overshooting it means no frame boundary is coming this batch (the
+  // post-reset no-VSYNC window, where a HALT with interrupts off free-runs the
+  // char clock). Clamp and raise fs_bail_ so the batch loop stops and the
+  // caller finishes the frame per-cycle — without this the walk below (and
+  // fs_audio_steps at the exit) run billions of iterations and exhaust memory.
   if (target > kMaxFastChars) {
     target = kMaxFastChars;
     fs_bail_ = true;
@@ -958,8 +1004,8 @@ void Machine::fs_audio_steps(uint64_t steps) {
     if (fs_audio_steps_ < steps && fs_audio_accs_ < fs_audio_steps_) {
       const uint32_t quiet = psg_batch_quiet_steps(&sdev_);
       const uint64_t want = steps - fs_audio_steps_;
-      const uint32_t m = static_cast<uint32_t>(
-          want < quiet - 1 ? want : quiet - 1);
+      const uint32_t m =
+          static_cast<uint32_t>(want < quiet - 1 ? want : quiet - 1);
       if (m > 0) {
         accumulate_audio_bulk(m);
         fs_audio_accs_ += m;
@@ -1021,7 +1067,7 @@ void Machine::fs_io_write_event(uint16_t port, uint8_t val, uint64_t rel_t1) {
   fs_audio_steps(j + 1);    // sound steps 0..j pre-op (an AY op with T1 in
                             // µs j takes effect at step j+1)
 
-  if ((port & 0x1000) == 0) {  // printer latch select (A12 = 0)
+  if ((port & 0x1000) == 0) {              // printer latch select (A12 = 0)
     const uint64_t at = (4 * rel_t1) + 2;  // one hop after the T1 drive
     if (at > fs_prt_done_) {
       printer_advance(&prtdev_, at - fs_prt_done_);
@@ -1083,12 +1129,12 @@ void Machine::fs_io_write_event(uint16_t port, uint8_t val, uint64_t rel_t1) {
   // Serial (DART $FAxx / 8253 $FBxx, low byte $DC-$DF) write under Fast. The
   // fast_pending gate never starts a batched frame with the pair non-quiet, so
   // the pair is idle here and a write can only START a transmission. Apply the
-  // I/O decode via the synthesized-bus double-tick (the second tick releases the
-  // access edge, like the FDC/printer), then BAIL: bit-serial shifting is not
-  // batchable, so the per-cycle remainder carries the byte out on the wake
+  // I/O decode via the synthesized-bus double-tick (the second tick releases
+  // the access edge, like the FDC/printer), then BAIL: bit-serial shifting is
+  // not batchable, so the per-cycle remainder carries the byte out on the wake
   // serial contract. (Only the first write of a burst reaches here — it bails
-  // the rest of the frame to per-cycle; subsequent frames stay per-cycle via the
-  // gate until the wire is quiet again.)
+  // the rest of the frame to per-cycle; subsequent frames stay per-cycle via
+  // the gate until the wire is quiet again.)
   if (wk_serial_on_ && ((port >> 8) == 0xFA || (port >> 8) == 0xFB) &&
       (port & 0xFF) >= 0xDC && (port & 0xFF) <= 0xDF) {
     Bus sin = bus_resting();
@@ -1142,8 +1188,8 @@ uint8_t Machine::fs_io_read_event(uint16_t port, uint64_t rel_sample) {
   }
   // Serial read under Fast: the pair is quiet (frame gate), so this is a status
   // / idle poll (e.g. RR0 TX-buffer-empty). Apply it via the double-tick — the
-  // idle tx/rx_advance are no-ops — and return the latched byte. No bail: a read
-  // starts no transmission.
+  // idle tx/rx_advance are no-ops — and return the latched byte. No bail: a
+  // read starts no transmission.
   if (wk_serial_on_ && ((port >> 8) == 0xFA || (port >> 8) == 0xFB) &&
       (port & 0xFF) >= 0xDC && (port & 0xFF) <= 0xDF) {
     Bus sin = bus_resting();
@@ -1224,8 +1270,7 @@ uint8_t Machine::fsb_int_ack(void* ctx, uint64_t now) {
   ga_batch_int_ack(&m->gdev_);
   // On a Plus the ASIC drives its IM2 vector and clears its sources on this
   // very cycle; the classic bus floats.
-  if (asic_vid_active(&m->adev_) != 0)
-    return asic_batch_int_ack(&m->adev_);
+  if (asic_vid_active(&m->adev_) != 0) return asic_batch_int_ack(&m->adev_);
   return 0xFF;
 }
 
@@ -1247,11 +1292,14 @@ bool Machine::run_frame_fast(VideoRegs& vr, uint32_t target) {
   fs_bail_ = false;
   fs_asic_on_ = asic_vid_active(&adev_) != 0;
   fs_fdc_hot_ = fdc_quiet(&fdev_) == 0;  // gate said quiet; stay honest
-  fs_irq_cache_ = fs_irq() ? 1 : 0;  // the boundary-0 poll (zero chars)
-  fs_irq_tmax_ = 0;                  // first real boundary computes a horizon
-  const Z80BatchIO bio{this,        &Machine::fsb_mem_read,
-                       &Machine::fsb_mem_write, &Machine::fsb_io_read,
-                       &Machine::fsb_io_write,  &Machine::fsb_int_ack};
+  fs_irq_cache_ = fs_irq() ? 1 : 0;      // the boundary-0 poll (zero chars)
+  fs_irq_tmax_ = 0;  // first real boundary computes a horizon
+  const Z80BatchIO bio{this,
+                       &Machine::fsb_mem_read,
+                       &Machine::fsb_mem_write,
+                       &Machine::fsb_io_read,
+                       &Machine::fsb_io_write,
+                       &Machine::fsb_int_ack};
 
   const long bound = kMasterPerFrame;  // instruction-count safety bound
   for (long guard = 0; guard < bound && !fs_cut_ && !fs_bail_; ++guard) {
@@ -1270,8 +1318,7 @@ bool Machine::run_frame_fast(VideoRegs& vr, uint32_t target) {
         const uint64_t hop = (iff1 != 0) ? 1 : 64;
         fs_advance_chars(fs_chars_ + hop);
         const uint64_t vis = (4 * (fs_chars_ - 1)) + 1;
-        if (vis > rel)
-          z80_batch_halt(&zdev_, static_cast<uint32_t>(vis - rel));
+        if (vis > rel) z80_batch_halt(&zdev_, static_cast<uint32_t>(vis - rel));
         continue;
       }
       // irq visible and serviceable: fall through — the wake consumes no time.
@@ -1385,7 +1432,8 @@ void Machine::recompose_active() {
   // call every master cycle. Everything else (the core chips, probe, tape,
   // printer) always ticks. Matched by state pointer, since board_.dev[] holds
   // copies of these Device views.
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   int n = 0;
   for (int i = 0; i < board_.count; ++i) {
     const void* s = board_.dev[i].self;
@@ -1465,14 +1513,16 @@ void Machine::recompose_active() {
   // serial dispatch, but (a) the fast_pending gate never starts a batched frame
   // with a byte in flight, and (b) the Fast I/O hooks apply serial accesses and
   // BAIL the moment a write could start a transmission, so the per-cycle
-  // remainder carries the bit shifting (fs_io_write_event). Net: idle frames run
-  // full Fast; only active transmission drops to per-cycle for that stretch.
+  // remainder carries the bit shifting (fs_io_write_event). Net: idle frames
+  // run full Fast; only active transmission drops to per-cycle for that
+  // stretch.
   fast_valid_ = wake_valid_;
 }
 
 void Machine::run_frame() {
   if (!built_) return;
-  recompose_active();  // frame-boundary: pick up any plug/unplug since last frame
+  recompose_active();  // frame-boundary: pick up any plug/unplug since last
+                       // frame
   audio_.clear();
   out_q_.clear();
   VideoRegs vr{};
@@ -1510,16 +1560,17 @@ void Machine::run_frame() {
     // instruction boundary (F8 — the GUI console taps are always armed, and
     // a tap-gated Fast tier could never engage there). A latched probe hit
     // still forces per-cycle until the host acks it.
-    fast_pending = deck.playing == 0 && deck.line_mode == 0 && !watch_probe &&
-                   probe_pending(&prdev_, nullptr) == 0 &&
-                   !out_capture_ && line_q_pos_ >= line_q_.size() &&
-                   cycle_hook_ == nullptr && !digiblaster_ &&
-                   fdc_quiet(&fdev_) != 0 && asic_dma_active(&adev_) == 0 &&
-                   // The serial pair has a Fast-path bail (fs_io_write_event),
-                   // but bit shifting itself is per-cycle: never START a batched
-                   // frame with a byte in flight or the plotter mid-drain.
-                   (!wk_serial_on_ || (rs232_quiet(&rsdev_) != 0 &&
-                                       plotter_hp7470a_quiet(&pldev_) != 0));
+    fast_pending =
+        deck.playing == 0 && deck.line_mode == 0 && !watch_probe &&
+        probe_pending(&prdev_, nullptr) == 0 && !out_capture_ &&
+        line_q_pos_ >= line_q_.size() && cycle_hook_ == nullptr &&
+        !digiblaster_ && fdc_quiet(&fdev_) != 0 &&
+        asic_dma_active(&adev_) == 0 &&
+        // The serial pair has a Fast-path bail (fs_io_write_event),
+        // but bit shifting itself is per-cycle: never START a batched
+        // frame with a byte in flight or the plotter mid-drain.
+        (!wk_serial_on_ ||
+         (rs232_quiet(&rsdev_) != 0 && plotter_hp7470a_quiet(&pldev_) != 0));
   }
   // Wake tier (Gate B6): frame-start is the one boundary where host-side state
   // can have changed under the scheduler (pokes, key rows, deck buttons,
@@ -1541,9 +1592,8 @@ void Machine::run_frame() {
     // Serial pair quiet snapshot: unplugged ⇒ always quiet (never blocks
     // elision); plugged ⇒ the real UART-idle state, so a byte in flight at
     // frame start keeps the pair (and elision) awake from slot 0.
-    wk_serial_quiet_ =
-        !wk_serial_on_ || (rs232_quiet(&rsdev_) != 0 &&
-                           plotter_hp7470a_quiet(&pldev_) != 0);
+    wk_serial_quiet_ = !wk_serial_on_ || (rs232_quiet(&rsdev_) != 0 &&
+                                          plotter_hp7470a_quiet(&pldev_) != 0);
   }
   bool vsync_seen = board_.bus.vid.vsync;
   // µs-chunk fast path (stage 3): eligible while the frame is quiet — no tape
@@ -1551,7 +1601,8 @@ void Machine::run_frame() {
   // modes need genuinely per-cycle attention and simply stay on the per-cycle
   // path below (taps are fine: the chunk drains them per slot).
   const bool chunk_ok = wake && !watch_probe && !out_capture_ &&
-                        line_q_pos_ >= line_q_.size() && cycle_hook_ == nullptr &&
+                        line_q_pos_ >= line_q_.size() &&
+                        cycle_hook_ == nullptr &&
                         instr_hook_ == nullptr;  // trace needs every retire
 #endif
   const long bound = kMasterPerFrame * 2;
@@ -1596,7 +1647,8 @@ void Machine::run_frame() {
       board_tick(&board_);  // Faithful tier: pluggable, observable, steppable
     }
 #endif
-    if (instr_hook_) {  // debug trace: fire once per per-cycle instruction retire
+    if (instr_hook_) {  // debug trace: fire once per per-cycle instruction
+                        // retire
       Z80Regs r;
       z80_peek(&zdev_, &r);
       if (r.instr_count != instr_hook_last_) {
@@ -1646,9 +1698,9 @@ void Machine::run_frame() {
 bool Machine::add_tap(uint16_t addr, TapFn fn, void* ctx) {
   if (tap_count_ >= 4 || fn == nullptr) return false;
   // Taps fire from service_taps' own fetch-edge check, not the debug probe — so
-  // installing one does NOT arm the per-cycle probe. Seed the edge state from the
-  // current bus so a tap added while an M1 fetch is on the wire cannot spuriously
-  // fire on the next cycle.
+  // installing one does NOT arm the per-cycle probe. Seed the edge state from
+  // the current bus so a tap added while an M1 fetch is on the wire cannot
+  // spuriously fire on the next cycle.
   tap_prev_fetch_ =
       board_.bus.cpu.m1 && board_.bus.cpu.mreq && board_.bus.cpu.rd;
   taps_[tap_count_++] = Tap{addr, fn, ctx};
@@ -1705,8 +1757,9 @@ void Machine::silicon_disc_load(const uint8_t* src, size_t len) {
   std::memcpy(xmem_.data() + kSiliconStart, src, n);
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
-void Machine::silicon_disc_save(uint8_t *dst, size_t len) const {
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
+void Machine::silicon_disc_save(uint8_t* dst, size_t len) const {
   if (dst == nullptr || xmem_.size() < kSiliconEnd) return;
   size_t const n = len < kSiliconSize ? len : kSiliconSize;
   std::memcpy(dst, xmem_.data() + kSiliconStart, n);
@@ -1743,7 +1796,8 @@ void Machine::poke_mem(uint16_t addr, uint8_t val) {
   mem_poke_cpu(&mdev_, addr, val);
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a free function taking a non-const pointer
+// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
+// free function taking a non-const pointer
 void Machine::step_instruction() {
   if (!built_) return;
   Z80Regs before{};

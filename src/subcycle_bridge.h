@@ -26,7 +26,8 @@ bool subcycle_bridge_active();
 
 // Take (read + clear) the keyboard rows the sub-cycle firmware READ this frame,
 // so the host relays them to its KeyboardManager as notify_scanned() (the
-// engine=1 equivalent of the legacy per-read notify — powers BufferedUntilRead).
+// engine=1 equivalent of the legacy per-read notify — powers
+// BufferedUntilRead).
 uint16_t subcycle_bridge_scanned_key_rows();
 
 /* Sub-cycle FDC drive activity LEDs: lit for the unit the last command selected
@@ -70,7 +71,8 @@ void subcycle_bridge_eject_tape();
 
 /* Deferred tape block-seek: the tape UI (render thread) requests a jump to the
  * Nth CDT block; the Z80 thread applies it at the next frame boundary (the deck
- * is live wiring). The deck walks its own cdt to the ordinal — layout-independent. */
+ * is live wiring). The deck walks its own cdt to the ordinal —
+ * layout-independent. */
 void subcycle_bridge_request_tape_seek(uint32_t block_ordinal);
 
 /* --- Debug view sync ---
@@ -107,9 +109,9 @@ enum class BridgeTierPolicy : std::uint8_t {
 void subcycle_bridge_set_tier_policy(BridgeTierPolicy policy);
 BridgeTierPolicy subcycle_bridge_tier_policy();
 // engine=1 CPU trace: attach/detach the per-instruction record hook that feeds
-// g_trace. No-op sink when the sub-cycle engine is inactive (legacy uses its own
-// z80.cpp call site). Setting the hook also suppresses the µs-chunk elision so
-// every retired instruction is captured under the per-cycle tiers.
+// g_trace. No-op sink when the sub-cycle engine is inactive (legacy uses its
+// own z80.cpp call site). Setting the hook also suppresses the µs-chunk elision
+// so every retired instruction is captured under the per-cycle tiers.
 void subcycle_bridge_set_instr_trace(bool on);
 // Nonzero when an env var pins the tier (the policy UI should say so).
 int subcycle_bridge_tier_env_pinned();

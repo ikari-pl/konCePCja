@@ -1,9 +1,9 @@
 /* hfe_write.cpp — see hfe_write.h. HFE v1 encoder (inverse of hfe.cpp) plus a
  * disk-level clean/dirty compositor. Pure functions, std::vector-owned out. */
 #include "hfe_write.h"
-#include <cstdint>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 
@@ -14,10 +14,10 @@ namespace {
 
 constexpr std::size_t kHeaderSize = 512;
 constexpr std::size_t kBlockSize = 512;
-constexpr std::size_t kSideChunk = 256;   // side-0 bytes per 512-B block
-constexpr uint16_t kCpcBitRate = 250;     // kbit/s -> 2 us cells (80 ticks)
-constexpr int kMaxCyls = 84;              // side-0 SCP slot space
-constexpr uint32_t kTicksPerCell = 80;    // 25 ns SCP ticks per 2 us bitcell
+constexpr std::size_t kSideChunk = 256;  // side-0 bytes per 512-B block
+constexpr uint16_t kCpcBitRate = 250;    // kbit/s -> 2 us cells (80 ticks)
+constexpr int kMaxCyls = 84;             // side-0 SCP slot space
+constexpr uint32_t kTicksPerCell = 80;   // 25 ns SCP ticks per 2 us bitcell
 
 void put16le(std::vector<uint8_t>& out, std::size_t offset, uint16_t value) {
   out[offset] = static_cast<uint8_t>(value & 0xFF);
@@ -132,7 +132,8 @@ t_mfm_rev reconstruct_rev(const ScpReader& reader, uint32_t toff) {
   auto emit = [&](int value) {
     if ((bit_count >> 3) >= rev.bits.size()) rev.bits.push_back(0);
     if (value)
-      rev.bits[bit_count >> 3] |= static_cast<uint8_t>(0x80u >> (bit_count & 7));
+      rev.bits[bit_count >> 3] |=
+          static_cast<uint8_t>(0x80u >> (bit_count & 7));
     bit_count++;
   };
   for (uint32_t i = 0; i < words; i++) {
@@ -167,21 +168,22 @@ int hfe_from_mfm_tracks(const std::vector<t_mfm_track>& cyls,
     if (!trk.empty() && trk[0].nbits != 0) any_present = true;
   if (!any_present) return HFE_E_GEOMETRY;
 
-  // Header (512 B, unused fields = 0xFF per spec convention) + zeroed LUT block.
+  // Header (512 B, unused fields = 0xFF per spec convention) + zeroed LUT
+  // block.
   out.assign(kHeaderSize, 0xFF);
   std::memcpy(out.data(), "HXCPICFE", 8);
-  out[0x08] = 0;                             // v1
+  out[0x08] = 0;  // v1
   out[0x09] = static_cast<uint8_t>(num_tracks);
-  out[0x0A] = 1;                             // one side
-  out[0x0B] = 0;                             // ISOIBM MFM encoding
+  out[0x0A] = 1;  // one side
+  out[0x0B] = 0;  // ISOIBM MFM encoding
   put16le(out, 0x0C, kCpcBitRate);
-  put16le(out, 0x0E, 300);                   // RPM (informational)
-  out[0x10] = 0x06;                          // CPC_DD_FLOPPYMODE
+  put16le(out, 0x0E, 300);  // RPM (informational)
+  out[0x10] = 0x06;         // CPC_DD_FLOPPYMODE
   out[0x11] = 0xFF;
-  put16le(out, 0x12, 1);                     // track LUT at block 1
+  put16le(out, 0x12, 1);  // track LUT at block 1
   out[0x14] = 0xFF;
   out[0x15] = 0xFF;
-  out.resize(2 * kBlockSize, 0x00);          // LUT block, zeroed
+  out.resize(2 * kBlockSize, 0x00);  // LUT block, zeroed
 
   uint16_t next_block = 2;
   for (std::size_t track = 0; track < num_tracks; track++) {
@@ -197,7 +199,8 @@ int hfe_from_mfm_tracks(const std::vector<t_mfm_track>& cyls,
       return HFE_E_GEOMETRY;
     }
     const std::vector<uint8_t> combined = interleave(side0_bytes(trk[0]));
-    const std::size_t byte_off = static_cast<std::size_t>(next_block) * kBlockSize;
+    const std::size_t byte_off =
+        static_cast<std::size_t>(next_block) * kBlockSize;
     const std::size_t blocks = (combined.size() + kBlockSize - 1) / kBlockSize;
     if (out.size() < byte_off + (blocks * kBlockSize))
       out.resize(byte_off + (blocks * kBlockSize), 0xFF);
@@ -238,7 +241,7 @@ int hfe_from_disk(const uint8_t* orig_scp, std::size_t orig_len,
 
     if (dirty) {
       if (has_synth) slot = synth[static_cast<std::size_t>(cyl)];  // resynth
-      continue;                                                    // else erased
+      continue;  // else erased
     }
 
     const uint32_t toff = reader.track_offset(cyl);

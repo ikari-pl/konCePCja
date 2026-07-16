@@ -35,16 +35,16 @@ constexpr CPCScancode kNoScancode = 0xff;
 // ------------------------------------------------------------------------
 
 constexpr std::array<CPCScancode, CPC_KEY_NUM> kEnglishLayout = {{
-    0x40,  // CPC_0
-    0x80,  // CPC_1
-    0x81,  // CPC_2
-    0x71,  // CPC_3
-    0x70,  // CPC_4
-    0x61,  // CPC_5
-    0x60,  // CPC_6
-    0x51,  // CPC_7
-    0x50,  // CPC_8
-    0x41,  // CPC_9
+    0x40,                  // CPC_0
+    0x80,                  // CPC_1
+    0x81,                  // CPC_2
+    0x71,                  // CPC_3
+    0x70,                  // CPC_4
+    0x61,                  // CPC_5
+    0x60,                  // CPC_6
+    0x51,                  // CPC_7
+    0x50,                  // CPC_8
+    0x41,                  // CPC_9
     0x85 | MOD_CPC_SHIFT,  // CPC_A
     0x66 | MOD_CPC_SHIFT,  // CPC_B
     0x76 | MOD_CPC_SHIFT,  // CPC_C
@@ -71,122 +71,122 @@ constexpr std::array<CPCScancode, CPC_KEY_NUM> kEnglishLayout = {{
     0x77 | MOD_CPC_SHIFT,  // CPC_X
     0x53 | MOD_CPC_SHIFT,  // CPC_Y
     0x87 | MOD_CPC_SHIFT,  // CPC_Z
-    0x85,  // CPC_a
-    0x66,  // CPC_b
-    0x76,  // CPC_c
-    0x75,  // CPC_d
-    0x72,  // CPC_e
-    0x65,  // CPC_f
-    0x64,  // CPC_g
-    0x54,  // CPC_h
-    0x43,  // CPC_i
-    0x55,  // CPC_j
-    0x45,  // CPC_k
-    0x44,  // CPC_l
-    0x46,  // CPC_m
-    0x56,  // CPC_n
-    0x42,  // CPC_o
-    0x33,  // CPC_p
-    0x83,  // CPC_q
-    0x62,  // CPC_r
-    0x74,  // CPC_s
-    0x63,  // CPC_t
-    0x52,  // CPC_u
-    0x67,  // CPC_v
-    0x73,  // CPC_w
-    0x77,  // CPC_x
-    0x53,  // CPC_y
-    0x87,  // CPC_z
-    0x85 | MOD_CPC_CTRL,  // CPC_CTRL_a
-    0x66 | MOD_CPC_CTRL,  // CPC_CTRL_b
-    0x76 | MOD_CPC_CTRL,  // CPC_CTRL_c
-    0x75 | MOD_CPC_CTRL,  // CPC_CTRL_d
-    0x72 | MOD_CPC_CTRL,  // CPC_CTRL_e
-    0x65 | MOD_CPC_CTRL,  // CPC_CTRL_f
-    0x64 | MOD_CPC_CTRL,  // CPC_CTRL_g
-    0x54 | MOD_CPC_CTRL,  // CPC_CTRL_h
-    0x43 | MOD_CPC_CTRL,  // CPC_CTRL_i
-    0x55 | MOD_CPC_CTRL,  // CPC_CTRL_j
-    0x45 | MOD_CPC_CTRL,  // CPC_CTRL_k
-    0x44 | MOD_CPC_CTRL,  // CPC_CTRL_l
-    0x46 | MOD_CPC_CTRL,  // CPC_CTRL_m
-    0x56 | MOD_CPC_CTRL,  // CPC_CTRL_n
-    0x42 | MOD_CPC_CTRL,  // CPC_CTRL_o
-    0x33 | MOD_CPC_CTRL,  // CPC_CTRL_p
-    0x83 | MOD_CPC_CTRL,  // CPC_CTRL_q
-    0x62 | MOD_CPC_CTRL,  // CPC_CTRL_r
-    0x74 | MOD_CPC_CTRL,  // CPC_CTRL_s
-    0x63 | MOD_CPC_CTRL,  // CPC_CTRL_t
-    0x52 | MOD_CPC_CTRL,  // CPC_CTRL_u
-    0x67 | MOD_CPC_CTRL,  // CPC_CTRL_v
-    0x73 | MOD_CPC_CTRL,  // CPC_CTRL_w
-    0x77 | MOD_CPC_CTRL,  // CPC_CTRL_x
-    0x53 | MOD_CPC_CTRL,  // CPC_CTRL_y
-    0x87 | MOD_CPC_CTRL,  // CPC_CTRL_z
-    0x40 | MOD_CPC_CTRL,  // CPC_CTRL_0
-    0x80 | MOD_CPC_CTRL,  // CPC_CTRL_1
-    0x81 | MOD_CPC_CTRL,  // CPC_CTRL_2
-    0x71 | MOD_CPC_CTRL,  // CPC_CTRL_3
-    0x70 | MOD_CPC_CTRL,  // CPC_CTRL_4
-    0x61 | MOD_CPC_CTRL,  // CPC_CTRL_5
-    0x60 | MOD_CPC_CTRL,  // CPC_CTRL_6
-    0x51 | MOD_CPC_CTRL,  // CPC_CTRL_7
-    0x50 | MOD_CPC_CTRL,  // CPC_CTRL_8
-    0x41 | MOD_CPC_CTRL,  // CPC_CTRL_9
-    0x00 | MOD_CPC_CTRL,  // CPC_CTRL_UP
-    0x02 | MOD_CPC_CTRL,  // CPC_CTRL_DOWN
-    0x10 | MOD_CPC_CTRL,  // CPC_CTRL_LEFT
-    0x01 | MOD_CPC_CTRL,  // CPC_CTRL_RIGHT
+    0x85,                  // CPC_a
+    0x66,                  // CPC_b
+    0x76,                  // CPC_c
+    0x75,                  // CPC_d
+    0x72,                  // CPC_e
+    0x65,                  // CPC_f
+    0x64,                  // CPC_g
+    0x54,                  // CPC_h
+    0x43,                  // CPC_i
+    0x55,                  // CPC_j
+    0x45,                  // CPC_k
+    0x44,                  // CPC_l
+    0x46,                  // CPC_m
+    0x56,                  // CPC_n
+    0x42,                  // CPC_o
+    0x33,                  // CPC_p
+    0x83,                  // CPC_q
+    0x62,                  // CPC_r
+    0x74,                  // CPC_s
+    0x63,                  // CPC_t
+    0x52,                  // CPC_u
+    0x67,                  // CPC_v
+    0x73,                  // CPC_w
+    0x77,                  // CPC_x
+    0x53,                  // CPC_y
+    0x87,                  // CPC_z
+    0x85 | MOD_CPC_CTRL,   // CPC_CTRL_a
+    0x66 | MOD_CPC_CTRL,   // CPC_CTRL_b
+    0x76 | MOD_CPC_CTRL,   // CPC_CTRL_c
+    0x75 | MOD_CPC_CTRL,   // CPC_CTRL_d
+    0x72 | MOD_CPC_CTRL,   // CPC_CTRL_e
+    0x65 | MOD_CPC_CTRL,   // CPC_CTRL_f
+    0x64 | MOD_CPC_CTRL,   // CPC_CTRL_g
+    0x54 | MOD_CPC_CTRL,   // CPC_CTRL_h
+    0x43 | MOD_CPC_CTRL,   // CPC_CTRL_i
+    0x55 | MOD_CPC_CTRL,   // CPC_CTRL_j
+    0x45 | MOD_CPC_CTRL,   // CPC_CTRL_k
+    0x44 | MOD_CPC_CTRL,   // CPC_CTRL_l
+    0x46 | MOD_CPC_CTRL,   // CPC_CTRL_m
+    0x56 | MOD_CPC_CTRL,   // CPC_CTRL_n
+    0x42 | MOD_CPC_CTRL,   // CPC_CTRL_o
+    0x33 | MOD_CPC_CTRL,   // CPC_CTRL_p
+    0x83 | MOD_CPC_CTRL,   // CPC_CTRL_q
+    0x62 | MOD_CPC_CTRL,   // CPC_CTRL_r
+    0x74 | MOD_CPC_CTRL,   // CPC_CTRL_s
+    0x63 | MOD_CPC_CTRL,   // CPC_CTRL_t
+    0x52 | MOD_CPC_CTRL,   // CPC_CTRL_u
+    0x67 | MOD_CPC_CTRL,   // CPC_CTRL_v
+    0x73 | MOD_CPC_CTRL,   // CPC_CTRL_w
+    0x77 | MOD_CPC_CTRL,   // CPC_CTRL_x
+    0x53 | MOD_CPC_CTRL,   // CPC_CTRL_y
+    0x87 | MOD_CPC_CTRL,   // CPC_CTRL_z
+    0x40 | MOD_CPC_CTRL,   // CPC_CTRL_0
+    0x80 | MOD_CPC_CTRL,   // CPC_CTRL_1
+    0x81 | MOD_CPC_CTRL,   // CPC_CTRL_2
+    0x71 | MOD_CPC_CTRL,   // CPC_CTRL_3
+    0x70 | MOD_CPC_CTRL,   // CPC_CTRL_4
+    0x61 | MOD_CPC_CTRL,   // CPC_CTRL_5
+    0x60 | MOD_CPC_CTRL,   // CPC_CTRL_6
+    0x51 | MOD_CPC_CTRL,   // CPC_CTRL_7
+    0x50 | MOD_CPC_CTRL,   // CPC_CTRL_8
+    0x41 | MOD_CPC_CTRL,   // CPC_CTRL_9
+    0x00 | MOD_CPC_CTRL,   // CPC_CTRL_UP
+    0x02 | MOD_CPC_CTRL,   // CPC_CTRL_DOWN
+    0x10 | MOD_CPC_CTRL,   // CPC_CTRL_LEFT
+    0x01 | MOD_CPC_CTRL,   // CPC_CTRL_RIGHT
     0x60 | MOD_CPC_SHIFT,  // CPC_AMPERSAND
     0x35 | MOD_CPC_SHIFT,  // CPC_ASTERISK
-    0x32,  // CPC_AT
+    0x32,                  // CPC_AT
     0x26 | MOD_CPC_SHIFT,  // CPC_BACKQUOTE
-    0x26,  // CPC_BACKSLASH
-    0x86,  // CPC_CAPSLOCK
-    0x20,  // CPC_CLR
-    0x35,  // CPC_COLON
-    0x47,  // CPC_COMMA
-    0x27,  // CPC_CONTROL
-    0x11,  // CPC_COPY
+    0x26,                  // CPC_BACKSLASH
+    0x86,                  // CPC_CAPSLOCK
+    0x20,                  // CPC_CLR
+    0x35,                  // CPC_COLON
+    0x47,                  // CPC_COMMA
+    0x27,                  // CPC_CONTROL
+    0x11,                  // CPC_COPY
     0x02 | MOD_CPC_SHIFT,  // CPC_CPY_DOWN
     0x10 | MOD_CPC_SHIFT,  // CPC_CPY_LEFT
     0x01 | MOD_CPC_SHIFT,  // CPC_CPY_RIGHT
     0x00 | MOD_CPC_SHIFT,  // CPC_CPY_UP
-    0x02,  // CPC_CUR_DOWN
-    0x10,  // CPC_CUR_LEFT
-    0x01,  // CPC_CUR_RIGHT
-    0x00,  // CPC_CUR_UP
-    0x02 | MOD_CPC_CTRL,  // CPC_CUR_ENDBL
-    0x10 | MOD_CPC_CTRL,  // CPC_CUR_HOMELN
-    0x01 | MOD_CPC_CTRL,  // CPC_CUR_ENDLN
-    0x00 | MOD_CPC_CTRL,  // CPC_CUR_HOMEBL
+    0x02,                  // CPC_CUR_DOWN
+    0x10,                  // CPC_CUR_LEFT
+    0x01,                  // CPC_CUR_RIGHT
+    0x00,                  // CPC_CUR_UP
+    0x02 | MOD_CPC_CTRL,   // CPC_CUR_ENDBL
+    0x10 | MOD_CPC_CTRL,   // CPC_CUR_HOMELN
+    0x01 | MOD_CPC_CTRL,   // CPC_CUR_ENDLN
+    0x00 | MOD_CPC_CTRL,   // CPC_CUR_HOMEBL
     0x81 | MOD_CPC_SHIFT,  // CPC_DBLQUOTE
-    0x97,  // CPC_DEL
+    0x97,                  // CPC_DEL
     0x70 | MOD_CPC_SHIFT,  // CPC_DOLLAR
-    0x06,  // CPC_ENTER
+    0x06,                  // CPC_ENTER
     0x31 | MOD_CPC_SHIFT,  // CPC_EQUAL
-    0x82,  // CPC_ESC
+    0x82,                  // CPC_ESC
     0x80 | MOD_CPC_SHIFT,  // CPC_EXCLAMATN
-    0x17,  // CPC_F0
-    0x15,  // CPC_F1
-    0x16,  // CPC_F2
-    0x05,  // CPC_F3
-    0x24,  // CPC_F4
-    0x14,  // CPC_F5
-    0x04,  // CPC_F6
-    0x12,  // CPC_F7
-    0x13,  // CPC_F8
-    0x03,  // CPC_F9
-    0x17 | MOD_CPC_CTRL,  // CPC_CTRL_F0
-    0x15 | MOD_CPC_CTRL,  // CPC_CTRL_F1
-    0x16 | MOD_CPC_CTRL,  // CPC_CTRL_F2
-    0x05 | MOD_CPC_CTRL,  // CPC_CTRL_F3
-    0x24 | MOD_CPC_CTRL,  // CPC_CTRL_F4
-    0x14 | MOD_CPC_CTRL,  // CPC_CTRL_F5
-    0x04 | MOD_CPC_CTRL,  // CPC_CTRL_F6
-    0x12 | MOD_CPC_CTRL,  // CPC_CTRL_F7
-    0x13 | MOD_CPC_CTRL,  // CPC_CTRL_F8
-    0x03 | MOD_CPC_CTRL,  // CPC_CTRL_F9
+    0x17,                  // CPC_F0
+    0x15,                  // CPC_F1
+    0x16,                  // CPC_F2
+    0x05,                  // CPC_F3
+    0x24,                  // CPC_F4
+    0x14,                  // CPC_F5
+    0x04,                  // CPC_F6
+    0x12,                  // CPC_F7
+    0x13,                  // CPC_F8
+    0x03,                  // CPC_F9
+    0x17 | MOD_CPC_CTRL,   // CPC_CTRL_F0
+    0x15 | MOD_CPC_CTRL,   // CPC_CTRL_F1
+    0x16 | MOD_CPC_CTRL,   // CPC_CTRL_F2
+    0x05 | MOD_CPC_CTRL,   // CPC_CTRL_F3
+    0x24 | MOD_CPC_CTRL,   // CPC_CTRL_F4
+    0x14 | MOD_CPC_CTRL,   // CPC_CTRL_F5
+    0x04 | MOD_CPC_CTRL,   // CPC_CTRL_F6
+    0x12 | MOD_CPC_CTRL,   // CPC_CTRL_F7
+    0x13 | MOD_CPC_CTRL,   // CPC_CTRL_F8
+    0x03 | MOD_CPC_CTRL,   // CPC_CTRL_F9
     0x17 | MOD_CPC_SHIFT,  // CPC_SHIFT_F0
     0x15 | MOD_CPC_SHIFT,  // CPC_SHIFT_F1
     0x16 | MOD_CPC_SHIFT,  // CPC_SHIFT_F2
@@ -197,53 +197,53 @@ constexpr std::array<CPCScancode, CPC_KEY_NUM> kEnglishLayout = {{
     0x12 | MOD_CPC_SHIFT,  // CPC_SHIFT_F7
     0x13 | MOD_CPC_SHIFT,  // CPC_SHIFT_F8
     0x03 | MOD_CPC_SHIFT,  // CPC_SHIFT_F9
-    0x07,  // CPC_FPERIOD
+    0x07,                  // CPC_FPERIOD
     0x37 | MOD_CPC_SHIFT,  // CPC_GREATER
     0x71 | MOD_CPC_SHIFT,  // CPC_HASH
-    0x21,  // CPC_LBRACKET
+    0x21,                  // CPC_LBRACKET
     0x21 | MOD_CPC_SHIFT,  // CPC_LCBRACE
     0x50 | MOD_CPC_SHIFT,  // CPC_LEFTPAREN
     0x47 | MOD_CPC_SHIFT,  // CPC_LESS
-    0x25,  // CPC_LSHIFT
-    0x31,  // CPC_MINUS
+    0x25,                  // CPC_LSHIFT
+    0x31,                  // CPC_MINUS
     0x61 | MOD_CPC_SHIFT,  // CPC_PERCENT
-    0x37,  // CPC_PERIOD
+    0x37,                  // CPC_PERIOD
     0x32 | MOD_CPC_SHIFT,  // CPC_PIPE
     0x34 | MOD_CPC_SHIFT,  // CPC_PLUS
     0x30 | MOD_CPC_SHIFT,  // CPC_POUND
-    0x30,  // CPC_POWER
+    0x30,                  // CPC_POWER
     0x36 | MOD_CPC_SHIFT,  // CPC_QUESTION
     0x51 | MOD_CPC_SHIFT,  // CPC_QUOTE
-    0x23,  // CPC_RBRACKET
+    0x23,                  // CPC_RBRACKET
     0x23 | MOD_CPC_SHIFT,  // CPC_RCBRACE
-    0x22,  // CPC_RETURN
+    0x22,                  // CPC_RETURN
     0x41 | MOD_CPC_SHIFT,  // CPC_RIGHTPAREN
-    0x25,  // CPC_RSHIFT
-    0x34,  // CPC_SEMICOLON
-    0x36,  // CPC_SLASH
-    0x57,  // CPC_SPACE
-    0x84,  // CPC_TAB
+    0x25,                  // CPC_RSHIFT
+    0x34,                  // CPC_SEMICOLON
+    0x36,                  // CPC_SLASH
+    0x57,                  // CPC_SPACE
+    0x84,                  // CPC_TAB
     0x40 | MOD_CPC_SHIFT,  // CPC_UNDERSCORE
-    0x90,  // CPC_J0_UP
-    0x91,  // CPC_J0_DOWN
-    0x92,  // CPC_J0_LEFT
-    0x93,  // CPC_J0_RIGHT
-    0x94,  // CPC_J0_FIRE1
-    0x95,  // CPC_J0_FIRE2
-    0x60,  // CPC_J1_UP
-    0x61,  // CPC_J1_DOWN
-    0x62,  // CPC_J1_LEFT
-    0x63,  // CPC_J1_RIGHT
-    0x64,  // CPC_J1_FIRE1
-    0x65,  // CPC_J1_FIRE2
-    0xff,  // CPC_ES_NTILDE
-    0xff,  // CPC_ES_nTILDE
-    0xff,  // CPC_ES_PESETA
-    0xff,  // CPC_FR_eACUTE
-    0xff,  // CPC_FR_eGRAVE
-    0xff,  // CPC_FR_cCEDIL
-    0xff,  // CPC_FR_aGRAVE
-    0xff,  // CPC_FR_uGRAVE
+    0x90,                  // CPC_J0_UP
+    0x91,                  // CPC_J0_DOWN
+    0x92,                  // CPC_J0_LEFT
+    0x93,                  // CPC_J0_RIGHT
+    0x94,                  // CPC_J0_FIRE1
+    0x95,                  // CPC_J0_FIRE2
+    0x60,                  // CPC_J1_UP
+    0x61,                  // CPC_J1_DOWN
+    0x62,                  // CPC_J1_LEFT
+    0x63,                  // CPC_J1_RIGHT
+    0x64,                  // CPC_J1_FIRE1
+    0x65,                  // CPC_J1_FIRE2
+    0xff,                  // CPC_ES_NTILDE
+    0xff,                  // CPC_ES_nTILDE
+    0xff,                  // CPC_ES_PESETA
+    0xff,                  // CPC_FR_eACUTE
+    0xff,                  // CPC_FR_eGRAVE
+    0xff,                  // CPC_FR_cCEDIL
+    0xff,                  // CPC_FR_aGRAVE
+    0xff,                  // CPC_FR_uGRAVE
 }};
 
 struct LayoutOverride {
@@ -362,39 +362,17 @@ const std::map<char, CPC_KEYS> InputMapper::CPCkeysFromChars = [] {
     m.emplace(static_cast<char>('0' + i), static_cast<CPC_KEYS>(CPC_0 + i));
   }
   constexpr std::pair<char, CPC_KEYS> punctuation[] = {
-      {'&', CPC_AMPERSAND},
-      {'#', CPC_HASH},
-      {'"', CPC_DBLQUOTE},
-      {'\'', CPC_QUOTE},
-      {'(', CPC_LEFTPAREN},
-      {'-', CPC_MINUS},
-      {'_', CPC_UNDERSCORE},
-      {')', CPC_RIGHTPAREN},
-      {'=', CPC_EQUAL},
-      {'*', CPC_ASTERISK},
-      {',', CPC_COMMA},
-      {';', CPC_SEMICOLON},
-      {':', CPC_COLON},
-      {'!', CPC_EXCLAMATN},
-      {'$', CPC_DOLLAR},
-      {'|', CPC_PIPE},
-      {'?', CPC_QUESTION},
-      {'.', CPC_PERIOD},
-      {'/', CPC_SLASH},
-      {' ', CPC_SPACE},
-      {'\n', CPC_RETURN},
-      {'+', CPC_PLUS},
-      {'%', CPC_PERCENT},
-      {'<', CPC_LESS},
-      {'>', CPC_GREATER},
-      {'[', CPC_LBRACKET},
-      {']', CPC_RBRACKET},
-      {'{', CPC_LCBRACE},
-      {'}', CPC_RCBRACE},
-      {'\\', CPC_BACKSLASH},
-      {'\b', CPC_DEL},
-      {'`', CPC_BACKQUOTE},
-      {'@', CPC_AT},
+      {'&', CPC_AMPERSAND},  {'#', CPC_HASH},       {'"', CPC_DBLQUOTE},
+      {'\'', CPC_QUOTE},     {'(', CPC_LEFTPAREN},  {'-', CPC_MINUS},
+      {'_', CPC_UNDERSCORE}, {')', CPC_RIGHTPAREN}, {'=', CPC_EQUAL},
+      {'*', CPC_ASTERISK},   {',', CPC_COMMA},      {';', CPC_SEMICOLON},
+      {':', CPC_COLON},      {'!', CPC_EXCLAMATN},  {'$', CPC_DOLLAR},
+      {'|', CPC_PIPE},       {'?', CPC_QUESTION},   {'.', CPC_PERIOD},
+      {'/', CPC_SLASH},      {' ', CPC_SPACE},      {'\n', CPC_RETURN},
+      {'+', CPC_PLUS},       {'%', CPC_PERCENT},    {'<', CPC_LESS},
+      {'>', CPC_GREATER},    {'[', CPC_LBRACKET},   {']', CPC_RBRACKET},
+      {'{', CPC_LCBRACE},    {'}', CPC_RCBRACE},    {'\\', CPC_BACKSLASH},
+      {'\b', CPC_DEL},       {'`', CPC_BACKQUOTE},  {'@', CPC_AT},
       {'^', CPC_POWER},
   };
   for (const auto& [c, key] : punctuation) m.emplace(c, key);
@@ -405,7 +383,8 @@ const std::map<char, CPC_KEYS> InputMapper::CPCkeysFromChars = [] {
 // .map layout file overrides them. Letter, digit, and keypad-function rows
 // are mechanical; the rest is explicit. Insertion keeps the FIRST binding
 // for a key (map semantics the layout loader relies on).
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = [] {
   std::map<CapriceKey, PCKey> m;
   for (int i = 0; i < 26; ++i) {
@@ -422,88 +401,88 @@ std::map<CapriceKey, PCKey> InputMapper::SDLkeysymFromCPCkeys_us = [] {
     m.emplace(CPC_CTRL_F0 + i, (PCKey{SDLK_KP_0} + i) | MOD_PC_CTRL);
     m.emplace(CPC_SHIFT_F0 + i, (PCKey{SDLK_KP_0} + i) | MOD_PC_SHIFT);
   }
-    m.emplace(CPC_CTRL_UP, SDLK_UP | MOD_PC_CTRL);
-    m.emplace(CPC_CTRL_DOWN, SDLK_DOWN | MOD_PC_CTRL);
-    m.emplace(CPC_CTRL_LEFT, SDLK_LEFT | MOD_PC_CTRL);
-    m.emplace(CPC_CTRL_RIGHT, SDLK_RIGHT | MOD_PC_CTRL);
-    m.emplace(CPC_AMPERSAND, SDLK_7 | MOD_PC_SHIFT);
-    m.emplace(CPC_ASTERISK, SDLK_8 | MOD_PC_SHIFT);
-    m.emplace(CPC_AT, SDLK_2 | MOD_PC_SHIFT);
-    m.emplace(CPC_BACKQUOTE, PCKey{SDLK_GRAVE});
-    m.emplace(CPC_BACKSLASH, PCKey{SDLK_BACKSLASH});
-    m.emplace(CPC_CAPSLOCK, PCKey{SDLK_CAPSLOCK});
-    m.emplace(CPC_CLR, PCKey{SDLK_DELETE});
-    m.emplace(CPC_COLON, SDLK_SEMICOLON | MOD_PC_SHIFT);
-    m.emplace(CPC_COMMA, PCKey{SDLK_COMMA});
-    m.emplace(CPC_CONTROL, PCKey{SDLK_LCTRL});
-    m.emplace(CPC_COPY, PCKey{SDLK_LALT});
-    m.emplace(CPC_CPY_DOWN, SDLK_DOWN | MOD_PC_SHIFT);
-    m.emplace(CPC_CPY_LEFT, SDLK_LEFT | MOD_PC_SHIFT);
-    m.emplace(CPC_CPY_RIGHT, SDLK_RIGHT | MOD_PC_SHIFT);
-    m.emplace(CPC_CPY_UP, SDLK_UP | MOD_PC_SHIFT);
-    m.emplace(CPC_CUR_DOWN, PCKey{SDLK_DOWN});
-    m.emplace(CPC_CUR_LEFT, PCKey{SDLK_LEFT});
-    m.emplace(CPC_CUR_RIGHT, PCKey{SDLK_RIGHT});
-    m.emplace(CPC_CUR_UP, PCKey{SDLK_UP});
-    m.emplace(CPC_CUR_HOMELN, PCKey{SDLK_HOME});
-    m.emplace(CPC_CUR_ENDLN, PCKey{SDLK_END});
-    m.emplace(CPC_CUR_HOMEBL, SDLK_HOME | MOD_PC_CTRL);
-    m.emplace(CPC_CUR_ENDBL, SDLK_END | MOD_PC_CTRL);
-    m.emplace(CPC_DBLQUOTE, SDLK_APOSTROPHE | MOD_PC_SHIFT);
-    m.emplace(CPC_DEL, PCKey{SDLK_BACKSPACE});
-    m.emplace(CPC_DOLLAR, SDLK_4 | MOD_PC_SHIFT);
-    m.emplace(CPC_ENTER, PCKey{SDLK_KP_ENTER});
-    m.emplace(CPC_EQUAL, PCKey{SDLK_EQUALS});
-    m.emplace(CPC_ESC, PCKey{SDLK_ESCAPE});
-    m.emplace(CPC_EXCLAMATN, SDLK_1 | MOD_PC_SHIFT);
-    m.emplace(CPC_FPERIOD, PCKey{SDLK_KP_PERIOD});
-    m.emplace(CPC_GREATER, SDLK_PERIOD | MOD_PC_SHIFT);
-    m.emplace(CPC_HASH, SDLK_3 | MOD_PC_SHIFT);
-    m.emplace(CPC_LBRACKET, PCKey{SDLK_LEFTBRACKET});
-    m.emplace(CPC_LCBRACE, SDLK_LEFTBRACKET | MOD_PC_SHIFT);
-    m.emplace(CPC_LEFTPAREN, SDLK_9 | MOD_PC_SHIFT);
-    m.emplace(CPC_LESS, SDLK_COMMA | MOD_PC_SHIFT);
-    m.emplace(CPC_LSHIFT, PCKey{SDLK_LSHIFT});
-    m.emplace(CPC_MINUS, PCKey{SDLK_MINUS});
-    m.emplace(CPC_PERCENT, SDLK_5 | MOD_PC_SHIFT);
-    m.emplace(CPC_PERIOD, PCKey{SDLK_PERIOD});
-    m.emplace(CPC_PIPE, SDLK_BACKSLASH | MOD_PC_SHIFT);
-    m.emplace(CPC_PLUS, SDLK_EQUALS | MOD_PC_SHIFT);
-    m.emplace(CPC_POUND, PCKey{0});
-    m.emplace(CPC_POWER, SDLK_6 | MOD_PC_SHIFT);
-    m.emplace(CPC_QUESTION, SDLK_SLASH | MOD_PC_SHIFT);
-    m.emplace(CPC_QUOTE, PCKey{SDLK_APOSTROPHE});
-    m.emplace(CPC_RBRACKET, PCKey{SDLK_RIGHTBRACKET});
-    m.emplace(CPC_RCBRACE, SDLK_RIGHTBRACKET | MOD_PC_SHIFT);
-    m.emplace(CPC_RETURN, PCKey{SDLK_RETURN});
-    m.emplace(CPC_RIGHTPAREN, SDLK_0 | MOD_PC_SHIFT);
-    m.emplace(CPC_RSHIFT, PCKey{SDLK_RSHIFT});
-    m.emplace(CPC_SEMICOLON, PCKey{SDLK_SEMICOLON});
-    m.emplace(CPC_SLASH, PCKey{SDLK_SLASH});
-    m.emplace(CPC_SPACE, PCKey{SDLK_SPACE});
-    m.emplace(CPC_TAB, PCKey{SDLK_TAB});
-    m.emplace(CPC_UNDERSCORE, SDLK_MINUS | MOD_PC_SHIFT);
-    m.emplace(KONCPC_GUI, PCKey{SDLK_F1});
-    m.emplace(KONCPC_VKBD, SDLK_F1 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_FULLSCRN, PCKey{SDLK_F2});
-    m.emplace(KONCPC_DEVTOOLS, SDLK_F2 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_SCRNSHOT, PCKey{SDLK_F3});
-    m.emplace(KONCPC_SNAPSHOT, SDLK_F3 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_LD_SNAP, SDLK_F4 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_RESET, PCKey{SDLK_F5});
-    m.emplace(KONCPC_NEXTDISKA, SDLK_F5 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_MF2STOP, PCKey{SDLK_F6});
-    m.emplace(KONCPC_VJOY, SDLK_F6 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_JOY, PCKey{SDLK_F7});
-    m.emplace(KONCPC_PHAZER, SDLK_F7 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_FPS, PCKey{SDLK_F8});
-    m.emplace(KONCPC_SPEED, PCKey{SDLK_F9});
-    m.emplace(KONCPC_TIER, SDLK_F9 | MOD_PC_SHIFT);
-    m.emplace(KONCPC_EXIT, PCKey{SDLK_F10});
-    m.emplace(KONCPC_PASTE, PCKey{SDLK_F11});
-    m.emplace(KONCPC_DEVTOOLS, PCKey{SDLK_F12});
-    m.emplace(KONCPC_TAPEPLAY, PCKey{SDLK_F4});
-    m.emplace(KONCPC_DELAY, PCKey{SDLK_PAUSE});
+  m.emplace(CPC_CTRL_UP, SDLK_UP | MOD_PC_CTRL);
+  m.emplace(CPC_CTRL_DOWN, SDLK_DOWN | MOD_PC_CTRL);
+  m.emplace(CPC_CTRL_LEFT, SDLK_LEFT | MOD_PC_CTRL);
+  m.emplace(CPC_CTRL_RIGHT, SDLK_RIGHT | MOD_PC_CTRL);
+  m.emplace(CPC_AMPERSAND, SDLK_7 | MOD_PC_SHIFT);
+  m.emplace(CPC_ASTERISK, SDLK_8 | MOD_PC_SHIFT);
+  m.emplace(CPC_AT, SDLK_2 | MOD_PC_SHIFT);
+  m.emplace(CPC_BACKQUOTE, PCKey{SDLK_GRAVE});
+  m.emplace(CPC_BACKSLASH, PCKey{SDLK_BACKSLASH});
+  m.emplace(CPC_CAPSLOCK, PCKey{SDLK_CAPSLOCK});
+  m.emplace(CPC_CLR, PCKey{SDLK_DELETE});
+  m.emplace(CPC_COLON, SDLK_SEMICOLON | MOD_PC_SHIFT);
+  m.emplace(CPC_COMMA, PCKey{SDLK_COMMA});
+  m.emplace(CPC_CONTROL, PCKey{SDLK_LCTRL});
+  m.emplace(CPC_COPY, PCKey{SDLK_LALT});
+  m.emplace(CPC_CPY_DOWN, SDLK_DOWN | MOD_PC_SHIFT);
+  m.emplace(CPC_CPY_LEFT, SDLK_LEFT | MOD_PC_SHIFT);
+  m.emplace(CPC_CPY_RIGHT, SDLK_RIGHT | MOD_PC_SHIFT);
+  m.emplace(CPC_CPY_UP, SDLK_UP | MOD_PC_SHIFT);
+  m.emplace(CPC_CUR_DOWN, PCKey{SDLK_DOWN});
+  m.emplace(CPC_CUR_LEFT, PCKey{SDLK_LEFT});
+  m.emplace(CPC_CUR_RIGHT, PCKey{SDLK_RIGHT});
+  m.emplace(CPC_CUR_UP, PCKey{SDLK_UP});
+  m.emplace(CPC_CUR_HOMELN, PCKey{SDLK_HOME});
+  m.emplace(CPC_CUR_ENDLN, PCKey{SDLK_END});
+  m.emplace(CPC_CUR_HOMEBL, SDLK_HOME | MOD_PC_CTRL);
+  m.emplace(CPC_CUR_ENDBL, SDLK_END | MOD_PC_CTRL);
+  m.emplace(CPC_DBLQUOTE, SDLK_APOSTROPHE | MOD_PC_SHIFT);
+  m.emplace(CPC_DEL, PCKey{SDLK_BACKSPACE});
+  m.emplace(CPC_DOLLAR, SDLK_4 | MOD_PC_SHIFT);
+  m.emplace(CPC_ENTER, PCKey{SDLK_KP_ENTER});
+  m.emplace(CPC_EQUAL, PCKey{SDLK_EQUALS});
+  m.emplace(CPC_ESC, PCKey{SDLK_ESCAPE});
+  m.emplace(CPC_EXCLAMATN, SDLK_1 | MOD_PC_SHIFT);
+  m.emplace(CPC_FPERIOD, PCKey{SDLK_KP_PERIOD});
+  m.emplace(CPC_GREATER, SDLK_PERIOD | MOD_PC_SHIFT);
+  m.emplace(CPC_HASH, SDLK_3 | MOD_PC_SHIFT);
+  m.emplace(CPC_LBRACKET, PCKey{SDLK_LEFTBRACKET});
+  m.emplace(CPC_LCBRACE, SDLK_LEFTBRACKET | MOD_PC_SHIFT);
+  m.emplace(CPC_LEFTPAREN, SDLK_9 | MOD_PC_SHIFT);
+  m.emplace(CPC_LESS, SDLK_COMMA | MOD_PC_SHIFT);
+  m.emplace(CPC_LSHIFT, PCKey{SDLK_LSHIFT});
+  m.emplace(CPC_MINUS, PCKey{SDLK_MINUS});
+  m.emplace(CPC_PERCENT, SDLK_5 | MOD_PC_SHIFT);
+  m.emplace(CPC_PERIOD, PCKey{SDLK_PERIOD});
+  m.emplace(CPC_PIPE, SDLK_BACKSLASH | MOD_PC_SHIFT);
+  m.emplace(CPC_PLUS, SDLK_EQUALS | MOD_PC_SHIFT);
+  m.emplace(CPC_POUND, PCKey{0});
+  m.emplace(CPC_POWER, SDLK_6 | MOD_PC_SHIFT);
+  m.emplace(CPC_QUESTION, SDLK_SLASH | MOD_PC_SHIFT);
+  m.emplace(CPC_QUOTE, PCKey{SDLK_APOSTROPHE});
+  m.emplace(CPC_RBRACKET, PCKey{SDLK_RIGHTBRACKET});
+  m.emplace(CPC_RCBRACE, SDLK_RIGHTBRACKET | MOD_PC_SHIFT);
+  m.emplace(CPC_RETURN, PCKey{SDLK_RETURN});
+  m.emplace(CPC_RIGHTPAREN, SDLK_0 | MOD_PC_SHIFT);
+  m.emplace(CPC_RSHIFT, PCKey{SDLK_RSHIFT});
+  m.emplace(CPC_SEMICOLON, PCKey{SDLK_SEMICOLON});
+  m.emplace(CPC_SLASH, PCKey{SDLK_SLASH});
+  m.emplace(CPC_SPACE, PCKey{SDLK_SPACE});
+  m.emplace(CPC_TAB, PCKey{SDLK_TAB});
+  m.emplace(CPC_UNDERSCORE, SDLK_MINUS | MOD_PC_SHIFT);
+  m.emplace(KONCPC_GUI, PCKey{SDLK_F1});
+  m.emplace(KONCPC_VKBD, SDLK_F1 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_FULLSCRN, PCKey{SDLK_F2});
+  m.emplace(KONCPC_DEVTOOLS, SDLK_F2 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_SCRNSHOT, PCKey{SDLK_F3});
+  m.emplace(KONCPC_SNAPSHOT, SDLK_F3 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_LD_SNAP, SDLK_F4 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_RESET, PCKey{SDLK_F5});
+  m.emplace(KONCPC_NEXTDISKA, SDLK_F5 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_MF2STOP, PCKey{SDLK_F6});
+  m.emplace(KONCPC_VJOY, SDLK_F6 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_JOY, PCKey{SDLK_F7});
+  m.emplace(KONCPC_PHAZER, SDLK_F7 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_FPS, PCKey{SDLK_F8});
+  m.emplace(KONCPC_SPEED, PCKey{SDLK_F9});
+  m.emplace(KONCPC_TIER, SDLK_F9 | MOD_PC_SHIFT);
+  m.emplace(KONCPC_EXIT, PCKey{SDLK_F10});
+  m.emplace(KONCPC_PASTE, PCKey{SDLK_F11});
+  m.emplace(KONCPC_DEVTOOLS, PCKey{SDLK_F12});
+  m.emplace(KONCPC_TAPEPLAY, PCKey{SDLK_F4});
+  m.emplace(KONCPC_DELAY, PCKey{SDLK_PAUSE});
   return m;
 }();
 
@@ -517,156 +496,88 @@ const std::map<const std::string, const CapriceKey>
 };
 
 #define SDL_NAMED_KEY(k) {#k, k},
-const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings =
-    {
-        SDL_NAMED_KEY(SDLK_BACKSPACE)
-        SDL_NAMED_KEY(SDLK_TAB)
-        SDL_NAMED_KEY(SDLK_CLEAR)
-        SDL_NAMED_KEY(SDLK_RETURN)
-        SDL_NAMED_KEY(SDLK_PAUSE)
-        SDL_NAMED_KEY(SDLK_ESCAPE)
-        SDL_NAMED_KEY(SDLK_SPACE)
-        SDL_NAMED_KEY(SDLK_EXCLAIM)
-        SDL_NAMED_KEY(SDLK_DBLAPOSTROPHE)
-        SDL_NAMED_KEY(SDLK_HASH)
-        SDL_NAMED_KEY(SDLK_DOLLAR)
-        SDL_NAMED_KEY(SDLK_AMPERSAND)
-        SDL_NAMED_KEY(SDLK_APOSTROPHE)
-        SDL_NAMED_KEY(SDLK_LEFTPAREN)
-        SDL_NAMED_KEY(SDLK_RIGHTPAREN)
-        SDL_NAMED_KEY(SDLK_ASTERISK)
-        SDL_NAMED_KEY(SDLK_PLUS)
-        SDL_NAMED_KEY(SDLK_COMMA)
-        SDL_NAMED_KEY(SDLK_MINUS)
-        SDL_NAMED_KEY(SDLK_PERIOD)
-        SDL_NAMED_KEY(SDLK_SLASH)
-        SDL_NAMED_KEY(SDLK_0)
-        SDL_NAMED_KEY(SDLK_1)
-        SDL_NAMED_KEY(SDLK_2)
-        SDL_NAMED_KEY(SDLK_3)
-        SDL_NAMED_KEY(SDLK_4)
-        SDL_NAMED_KEY(SDLK_5)
-        SDL_NAMED_KEY(SDLK_6)
-        SDL_NAMED_KEY(SDLK_7)
-        SDL_NAMED_KEY(SDLK_8)
-        SDL_NAMED_KEY(SDLK_9)
-        SDL_NAMED_KEY(SDLK_COLON)
-        SDL_NAMED_KEY(SDLK_SEMICOLON)
-        SDL_NAMED_KEY(SDLK_LESS)
-        SDL_NAMED_KEY(SDLK_EQUALS)
-        SDL_NAMED_KEY(SDLK_GREATER)
-        SDL_NAMED_KEY(SDLK_QUESTION)
-        SDL_NAMED_KEY(SDLK_AT)
-        SDL_NAMED_KEY(SDLK_LEFTBRACKET)
-        SDL_NAMED_KEY(SDLK_BACKSLASH)
-        SDL_NAMED_KEY(SDLK_RIGHTBRACKET)
-        SDL_NAMED_KEY(SDLK_CARET)
-        SDL_NAMED_KEY(SDLK_UNDERSCORE)
-        SDL_NAMED_KEY(SDLK_GRAVE)
-        SDL_NAMED_KEY(SDLK_A)
-        SDL_NAMED_KEY(SDLK_B)
-        SDL_NAMED_KEY(SDLK_C)
-        SDL_NAMED_KEY(SDLK_D)
-        SDL_NAMED_KEY(SDLK_E)
-        SDL_NAMED_KEY(SDLK_F)
-        SDL_NAMED_KEY(SDLK_G)
-        SDL_NAMED_KEY(SDLK_H)
-        SDL_NAMED_KEY(SDLK_I)
-        SDL_NAMED_KEY(SDLK_J)
-        SDL_NAMED_KEY(SDLK_K)
-        SDL_NAMED_KEY(SDLK_L)
-        SDL_NAMED_KEY(SDLK_M)
-        SDL_NAMED_KEY(SDLK_N)
-        SDL_NAMED_KEY(SDLK_O)
-        SDL_NAMED_KEY(SDLK_P)
-        SDL_NAMED_KEY(SDLK_Q)
-        SDL_NAMED_KEY(SDLK_R)
-        SDL_NAMED_KEY(SDLK_S)
-        SDL_NAMED_KEY(SDLK_T)
-        SDL_NAMED_KEY(SDLK_U)
-        SDL_NAMED_KEY(SDLK_V)
-        SDL_NAMED_KEY(SDLK_W)
-        SDL_NAMED_KEY(SDLK_X)
-        SDL_NAMED_KEY(SDLK_Y)
-        SDL_NAMED_KEY(SDLK_Z)
-        SDL_NAMED_KEY(SDLK_DELETE)
-        SDL_NAMED_KEY(SDLK_PERCENT)
-        SDL_NAMED_KEY(SDLK_KP_0)
-        SDL_NAMED_KEY(SDLK_KP_1)
-        SDL_NAMED_KEY(SDLK_KP_2)
-        SDL_NAMED_KEY(SDLK_KP_3)
-        SDL_NAMED_KEY(SDLK_KP_4)
-        SDL_NAMED_KEY(SDLK_KP_5)
-        SDL_NAMED_KEY(SDLK_KP_6)
-        SDL_NAMED_KEY(SDLK_KP_7)
-        SDL_NAMED_KEY(SDLK_KP_8)
-        SDL_NAMED_KEY(SDLK_KP_9)
-        SDL_NAMED_KEY(SDLK_KP_PERIOD)
-        SDL_NAMED_KEY(SDLK_KP_DIVIDE)
-        SDL_NAMED_KEY(SDLK_KP_MULTIPLY)
-        SDL_NAMED_KEY(SDLK_KP_MINUS)
-        SDL_NAMED_KEY(SDLK_KP_PLUS)
-        SDL_NAMED_KEY(SDLK_KP_ENTER)
-        SDL_NAMED_KEY(SDLK_KP_EQUALS)
-        SDL_NAMED_KEY(SDLK_UP)
-        SDL_NAMED_KEY(SDLK_DOWN)
-        SDL_NAMED_KEY(SDLK_RIGHT)
-        SDL_NAMED_KEY(SDLK_LEFT)
-        SDL_NAMED_KEY(SDLK_INSERT)
-        SDL_NAMED_KEY(SDLK_HOME)
-        SDL_NAMED_KEY(SDLK_END)
-        SDL_NAMED_KEY(SDLK_PAGEUP)
-        SDL_NAMED_KEY(SDLK_PAGEDOWN)
-        SDL_NAMED_KEY(SDLK_F1)
-        SDL_NAMED_KEY(SDLK_F2)
-        SDL_NAMED_KEY(SDLK_F3)
-        SDL_NAMED_KEY(SDLK_F4)
-        SDL_NAMED_KEY(SDLK_F5)
-        SDL_NAMED_KEY(SDLK_F6)
-        SDL_NAMED_KEY(SDLK_F7)
-        SDL_NAMED_KEY(SDLK_F8)
-        SDL_NAMED_KEY(SDLK_F9)
-        SDL_NAMED_KEY(SDLK_F10)
-        SDL_NAMED_KEY(SDLK_F11)
-        SDL_NAMED_KEY(SDLK_F12)
-        SDL_NAMED_KEY(SDLK_F13)
-        SDL_NAMED_KEY(SDLK_F14)
-        SDL_NAMED_KEY(SDLK_F15)
-        SDL_NAMED_KEY(SDLK_NUMLOCKCLEAR)
-        SDL_NAMED_KEY(SDLK_CAPSLOCK)
-        SDL_NAMED_KEY(SDLK_SCROLLLOCK)
-        SDL_NAMED_KEY(SDLK_RSHIFT)
-        SDL_NAMED_KEY(SDLK_LSHIFT)
-        SDL_NAMED_KEY(SDLK_RCTRL)
-        SDL_NAMED_KEY(SDLK_LCTRL)
-        SDL_NAMED_KEY(SDLK_RALT)
-        SDL_NAMED_KEY(SDLK_LALT)
-        SDL_NAMED_KEY(SDLK_LGUI)
-        SDL_NAMED_KEY(SDLK_RGUI)
-        SDL_NAMED_KEY(SDLK_MODE)
-        SDL_NAMED_KEY(SDLK_APPLICATION)
-        SDL_NAMED_KEY(SDLK_HELP)
-        SDL_NAMED_KEY(SDLK_PRINTSCREEN)
-        SDL_NAMED_KEY(SDLK_SYSREQ)
-        SDL_NAMED_KEY(SDLK_PAUSE)
-        SDL_NAMED_KEY(SDLK_MENU)
-        SDL_NAMED_KEY(SDLK_POWER)
-        SDL_NAMED_KEY(SDLK_UNDO)
-        // Keysyms SDL has no name for (national characters entered by
-        // keycode value).
-        {"SDLK_NTILDE", 241},
-        {"SDLK_UGRAVE", 249},
-        {"SDLK_CCEDIL", 231},
-        {"SDLK_CIRC", 0x40000000},
-        {"SDLK_ESZETT", 223},
-        {"SDLK_DEGREE", 186},
-        {"SDLK_INV_QUESTION", 161},
-        // Modifier names (MODE is AltGr / right Alt; left Alt is mapped to
-        // CPC_COPY, so it is not accepted as a modifier).
-        SDL_NAMED_KEY(MOD_PC_SHIFT)
-        SDL_NAMED_KEY(MOD_PC_CTRL)
-        SDL_NAMED_KEY(MOD_PC_MODE)
-};
+const std::map<const std::string, const PCKey> InputMapper::SDLkeysFromStrings = {
+    SDL_NAMED_KEY(SDLK_BACKSPACE) SDL_NAMED_KEY(SDLK_TAB) SDL_NAMED_KEY(
+        SDLK_CLEAR) SDL_NAMED_KEY(SDLK_RETURN) SDL_NAMED_KEY(SDLK_PAUSE)
+        SDL_NAMED_KEY(SDLK_ESCAPE) SDL_NAMED_KEY(SDLK_SPACE) SDL_NAMED_KEY(
+            SDLK_EXCLAIM) SDL_NAMED_KEY(SDLK_DBLAPOSTROPHE)
+            SDL_NAMED_KEY(SDLK_HASH) SDL_NAMED_KEY(SDLK_DOLLAR) SDL_NAMED_KEY(
+                SDLK_AMPERSAND) SDL_NAMED_KEY(SDLK_APOSTROPHE) SDL_NAMED_KEY(SDLK_LEFTPAREN)
+                SDL_NAMED_KEY(SDLK_RIGHTPAREN) SDL_NAMED_KEY(SDLK_ASTERISK) SDL_NAMED_KEY(SDLK_PLUS) SDL_NAMED_KEY(
+                    SDLK_COMMA) SDL_NAMED_KEY(SDLK_MINUS) SDL_NAMED_KEY(SDLK_PERIOD)
+                    SDL_NAMED_KEY(SDLK_SLASH) SDL_NAMED_KEY(
+                        SDLK_0) SDL_NAMED_KEY(SDLK_1) SDL_NAMED_KEY(SDLK_2)
+                        SDL_NAMED_KEY(SDLK_3) SDL_NAMED_KEY(
+                            SDLK_4) SDL_NAMED_KEY(SDLK_5) SDL_NAMED_KEY(SDLK_6)
+                            SDL_NAMED_KEY(SDLK_7) SDL_NAMED_KEY(
+                                SDLK_8) SDL_NAMED_KEY(SDLK_9) SDL_NAMED_KEY(SDLK_COLON)
+                                SDL_NAMED_KEY(SDLK_SEMICOLON) SDL_NAMED_KEY(SDLK_LESS) SDL_NAMED_KEY(
+                                    SDLK_EQUALS) SDL_NAMED_KEY(SDLK_GREATER) SDL_NAMED_KEY(SDLK_QUESTION)
+                                    SDL_NAMED_KEY(SDLK_AT) SDL_NAMED_KEY(SDLK_LEFTBRACKET) SDL_NAMED_KEY(
+                                        SDLK_BACKSLASH) SDL_NAMED_KEY(SDLK_RIGHTBRACKET)
+                                        SDL_NAMED_KEY(SDLK_CARET) SDL_NAMED_KEY(SDLK_UNDERSCORE) SDL_NAMED_KEY(
+                                            SDLK_GRAVE) SDL_NAMED_KEY(SDLK_A) SDL_NAMED_KEY(SDLK_B)
+                                            SDL_NAMED_KEY(SDLK_C) SDL_NAMED_KEY(
+                                                SDLK_D) SDL_NAMED_KEY(SDLK_E) SDL_NAMED_KEY(SDLK_F)
+                                                SDL_NAMED_KEY(SDLK_G) SDL_NAMED_KEY(
+                                                    SDLK_H) SDL_NAMED_KEY(SDLK_I) SDL_NAMED_KEY(SDLK_J)
+                                                    SDL_NAMED_KEY(SDLK_K) SDL_NAMED_KEY(
+                                                        SDLK_L) SDL_NAMED_KEY(SDLK_M)
+                                                        SDL_NAMED_KEY(SDLK_N) SDL_NAMED_KEY(
+                                                            SDLK_O) SDL_NAMED_KEY(SDLK_P)
+                                                            SDL_NAMED_KEY(SDLK_Q) SDL_NAMED_KEY(
+                                                                SDLK_R) SDL_NAMED_KEY(SDLK_S)
+                                                                SDL_NAMED_KEY(SDLK_T) SDL_NAMED_KEY(
+                                                                    SDLK_U) SDL_NAMED_KEY(SDLK_V)
+                                                                    SDL_NAMED_KEY(SDLK_W) SDL_NAMED_KEY(
+                                                                        SDLK_X) SDL_NAMED_KEY(SDLK_Y)
+                                                                        SDL_NAMED_KEY(
+                                                                            SDLK_Z)
+                                                                            SDL_NAMED_KEY(
+                                                                                SDLK_DELETE)
+                                                                                SDL_NAMED_KEY(
+                                                                                    SDLK_PERCENT)
+                                                                                    SDL_NAMED_KEY(
+                                                                                        SDLK_KP_0)
+                                                                                        SDL_NAMED_KEY(
+                                                                                            SDLK_KP_1)
+                                                                                            SDL_NAMED_KEY(
+                                                                                                SDLK_KP_2)
+                                                                                                SDL_NAMED_KEY(SDLK_KP_3) SDL_NAMED_KEY(SDLK_KP_4) SDL_NAMED_KEY(SDLK_KP_5) SDL_NAMED_KEY(SDLK_KP_6) SDL_NAMED_KEY(SDLK_KP_7) SDL_NAMED_KEY(SDLK_KP_8) SDL_NAMED_KEY(SDLK_KP_9) SDL_NAMED_KEY(SDLK_KP_PERIOD) SDL_NAMED_KEY(SDLK_KP_DIVIDE) SDL_NAMED_KEY(SDLK_KP_MULTIPLY) SDL_NAMED_KEY(SDLK_KP_MINUS) SDL_NAMED_KEY(SDLK_KP_PLUS) SDL_NAMED_KEY(SDLK_KP_ENTER) SDL_NAMED_KEY(SDLK_KP_EQUALS) SDL_NAMED_KEY(SDLK_UP) SDL_NAMED_KEY(SDLK_DOWN) SDL_NAMED_KEY(SDLK_RIGHT) SDL_NAMED_KEY(SDLK_LEFT) SDL_NAMED_KEY(SDLK_INSERT) SDL_NAMED_KEY(SDLK_HOME) SDL_NAMED_KEY(SDLK_END) SDL_NAMED_KEY(SDLK_PAGEUP) SDL_NAMED_KEY(
+                                                                                                    SDLK_PAGEDOWN)
+                                                                                                    SDL_NAMED_KEY(SDLK_F1) SDL_NAMED_KEY(SDLK_F2) SDL_NAMED_KEY(SDLK_F3) SDL_NAMED_KEY(SDLK_F4) SDL_NAMED_KEY(SDLK_F5) SDL_NAMED_KEY(SDLK_F6) SDL_NAMED_KEY(SDLK_F7) SDL_NAMED_KEY(SDLK_F8) SDL_NAMED_KEY(
+                                                                                                        SDLK_F9)
+                                                                                                        SDL_NAMED_KEY(
+                                                                                                            SDLK_F10) SDL_NAMED_KEY(SDLK_F11) SDL_NAMED_KEY(SDLK_F12) SDL_NAMED_KEY(SDLK_F13) SDL_NAMED_KEY(SDLK_F14) SDL_NAMED_KEY(SDLK_F15) SDL_NAMED_KEY(SDLK_NUMLOCKCLEAR) SDL_NAMED_KEY(SDLK_CAPSLOCK) SDL_NAMED_KEY(SDLK_SCROLLLOCK) SDL_NAMED_KEY(SDLK_RSHIFT) SDL_NAMED_KEY(SDLK_LSHIFT) SDL_NAMED_KEY(SDLK_RCTRL)
+                                                                                                            SDL_NAMED_KEY(SDLK_LCTRL) SDL_NAMED_KEY(SDLK_RALT) SDL_NAMED_KEY(SDLK_LALT) SDL_NAMED_KEY(
+                                                                                                                SDLK_LGUI) SDL_NAMED_KEY(SDLK_RGUI)
+                                                                                                                SDL_NAMED_KEY(SDLK_MODE) SDL_NAMED_KEY(
+                                                                                                                    SDLK_APPLICATION)
+                                                                                                                    SDL_NAMED_KEY(SDLK_HELP) SDL_NAMED_KEY(
+                                                                                                                        SDLK_PRINTSCREEN)
+                                                                                                                        SDL_NAMED_KEY(
+                                                                                                                            SDLK_SYSREQ)
+                                                                                                                            SDL_NAMED_KEY(
+                                                                                                                                SDLK_PAUSE)
+                                                                                                                                SDL_NAMED_KEY(
+                                                                                                                                    SDLK_MENU)
+                                                                                                                                    SDL_NAMED_KEY(
+                                                                                                                                        SDLK_POWER)
+                                                                                                                                        SDL_NAMED_KEY(
+                                                                                                                                            SDLK_UNDO)
+    // Keysyms SDL has no name for (national characters entered by
+    // keycode value).
+    {"SDLK_NTILDE", 241},
+    {"SDLK_UGRAVE", 249},
+    {"SDLK_CCEDIL", 231},
+    {"SDLK_CIRC", 0x40000000},
+    {"SDLK_ESZETT", 223},
+    {"SDLK_DEGREE", 186},
+    {"SDLK_INV_QUESTION", 161},
+    // Modifier names (MODE is AltGr / right Alt; left Alt is mapped to
+    // CPC_COPY, so it is not accepted as a modifier).
+    SDL_NAMED_KEY(MOD_PC_SHIFT) SDL_NAMED_KEY(MOD_PC_CTRL)
+        SDL_NAMED_KEY(MOD_PC_MODE)};
 #undef SDL_NAMED_KEY
 
 // Format of a line: CPC_xxx\tSDLK_Xxx\tMODIFIER
@@ -862,9 +773,9 @@ void InputMapper::set_joystick_emulation() {
   // Joystick-emulation remaps: host keys bound to these CPC keys drive the
   // digital joystick instead while the mode is active.
   static constexpr std::pair<CPC_KEYS, CPC_KEYS> joy_layout[] = {
-      {CPC_J0_UP, CPC_CUR_UP},      {CPC_J0_DOWN, CPC_CUR_DOWN},
-      {CPC_J0_LEFT, CPC_CUR_LEFT},  {CPC_J0_RIGHT, CPC_CUR_RIGHT},
-      {CPC_J0_FIRE1, CPC_z},        {CPC_J0_FIRE2, CPC_x},
+      {CPC_J0_UP, CPC_CUR_UP},     {CPC_J0_DOWN, CPC_CUR_DOWN},
+      {CPC_J0_LEFT, CPC_CUR_LEFT}, {CPC_J0_RIGHT, CPC_CUR_RIGHT},
+      {CPC_J0_FIRE1, CPC_z},       {CPC_J0_FIRE2, CPC_x},
   };
 
   for (const auto& [joy_key, cpc_key] : joy_layout) {
@@ -923,8 +834,8 @@ extern dword dwFrameCountOverall;
 namespace {
 
 // Presses (clears) or releases (sets) one matrix line.
-inline void set_matrix_line(std::atomic<byte> keyboard_matrix[],
-                            byte scancode, bool pressed) {
+inline void set_matrix_line(std::atomic<byte> keyboard_matrix[], byte scancode,
+                            bool pressed) {
   if (pressed) {
     keyboard_matrix[scancode >> 4].fetch_and(~bit_values[scancode & 7],
                                              std::memory_order_relaxed);

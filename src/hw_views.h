@@ -10,8 +10,8 @@
 
 #pragma once
 
-#include <string>
 #include <cstdint>
+#include <string>
 
 #include "types.h"
 
@@ -67,10 +67,10 @@ class t_sector {
   unsigned int getTotalSize() const { return total_size_; }
 
  private:
-  unsigned int size_;           // one version's size in bytes
-  unsigned char* data_;         // sector data (all versions, contiguous)
-  unsigned int total_size_;     // all versions together
-  unsigned int weak_versions_;  // number of stored versions (1 = normal)
+  unsigned int size_;               // one version's size in bytes
+  unsigned char* data_;             // sector data (all versions, contiguous)
+  unsigned int total_size_;         // all versions together
+  unsigned int weak_versions_;      // number of stored versions (1 = normal)
   unsigned int weak_read_version_;  // which version the next read returns
 };
 
@@ -87,11 +87,11 @@ struct t_drive {
   unsigned int sides;
   unsigned int current_side;
   unsigned int current_sector;
-  bool altered;                  // host image modified (needs write-back)
+  bool altered;  // host image modified (needs write-back)
   unsigned int write_protected;
-  unsigned int random_DEs;       // data-error sectors return random data
-  unsigned int flipped;          // access the reverse side
-  long ipf_id;                   // CAPS image id when loaded from IPF
+  unsigned int random_DEs;              // data-error sectors return random data
+  unsigned int flipped;                 // access the reverse side
+  long ipf_id;                          // CAPS image id when loaded from IPF
   void (*eject_hook)(struct t_drive*);  // eject callback (IPF CAPS unlock)
   t_track track[DSK_TRACKMAX][DSK_SIDEMAX];
 };
@@ -101,7 +101,7 @@ struct t_disk_format {
   unsigned int tracks{0};
   unsigned int sides{0};
   unsigned int sectors{0};
-  unsigned int sector_size{0};   // N value
+  unsigned int sector_size{0};  // N value
   unsigned int gap3_length{0};
   unsigned char filler_byte{0};
   unsigned char sector_ids[2][16]{{}};  // indices: side, sector

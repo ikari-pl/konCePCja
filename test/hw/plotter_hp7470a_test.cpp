@@ -3,6 +3,8 @@
  * end-to-end through the RS232 card on the same board (acid 2), XON/XOFF
  * thresholds, and a mid-plot snapshot. See docs/hardware/plotter-device.md. */
 
+#include "hw/plotter_hp7470a.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -11,13 +13,12 @@
 #include <vector>
 
 #include "hw/board.h"
-#include "hw/plotter_hp7470a.h"
 #include "hw/rs232.h"
 #include "plotter.h"  // the legacy oracle
 
 namespace {
 
-constexpr uint32_t BIT_TIME = 128;        // divisor 1
+constexpr uint32_t BIT_TIME = 128;  // divisor 1
 constexpr uint32_t BYTE_TIME = 10 * BIT_TIME;
 constexpr uint32_t DRAIN_TIME = 2 * BYTE_TIME;  // the device's service period
 
@@ -244,8 +245,7 @@ TEST(PlotterHp7470a, ParitySpaceSeparatedPairLosesSecondValue) {
 TEST(PlotterHp7470a, ParityEscSequencesShedTheirEsc) {
   // The GSX init preamble: ESC is a dropped control char on the oracle; the
   // printable remainder parses as unknown mnemonics and is ignored.
-  expect_parity(
-      "\x1b.I81;;17:\x1b.N;19:IN;SP1;PD;PA10,10;PU;");
+  expect_parity("\x1b.I81;;17:\x1b.N;19:IN;SP1;PD;PA10,10;PU;");
 }
 
 TEST(PlotterHp7470a, ParityScalingAndRelativeMoves) {
@@ -256,8 +256,8 @@ TEST(PlotterHp7470a, ParityScalingAndRelativeMoves) {
 
 TEST(PlotterHp7470a, ParityLabelsAndTerminators) {
   expect_parity(
-      "IN;SP1;LB\x03"                       // empty label: no segment
-      "PA100,200;LBabc def\x03"             // spaces inside label text
+      "IN;SP1;LB\x03"            // empty label: no segment
+      "PA100,200;LBabc def\x03"  // spaces inside label text
       "DT#;SI1,1;DI1,0.5;LBwith#SP2;LBpen2\x03;PU;");
 }
 

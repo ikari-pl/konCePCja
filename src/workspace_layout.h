@@ -1,7 +1,7 @@
 #pragma once
 
-#include <string>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 enum class WorkspacePreset : std::uint8_t { Debug, IDE, Hardware };

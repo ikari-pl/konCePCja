@@ -4,8 +4,8 @@
  *   "KryoFlux Stream File Documentation" Rev 1.1 (Jean Louis-Guerin /
  *   DrCoolZic, 2013-12-01, marked "Copyleft") plus this project's own specs
  *   docs/hardware/flux-formats-feasibility.md and flux-ingestion-contract.md.
- * No GPL reader and no SPS Decoder Library code was consulted. fluxfox (MIT) was
- * used only to cross-check numeric constants, never for code.
+ * No GPL reader and no SPS Decoder Library code was consulted. fluxfox (MIT)
+ * was used only to cross-check numeric constants, never for code.
  *
  * WHY A TRANSCODER, NOT A DECODER
  * -------------------------------
@@ -45,9 +45,9 @@
  *                = sck_ticks * 40000000 / sck_hz
  *
  * For the DEFAULT sck this is the EXACT rational 4375 / 2628, because
- *     40000000 / 24027428.571428  =  40000000 * 56 / 1345536000  =  4375 / 2628.
- * Worked example: a nominal 2 us DD flux interval is 2000 ns / (1e9/sck) =
- * ~48.05 sck ticks; 48 * 4375/2628 = 79.909 -> rounds to 80, and 80 * 25 ns =
+ *     40000000 / 24027428.571428  =  40000000 * 56 / 1345536000  =  4375 /
+ * 2628. Worked example: a nominal 2 us DD flux interval is 2000 ns / (1e9/sck)
+ * = ~48.05 sck ticks; 48 * 4375/2628 = 79.909 -> rounds to 80, and 80 * 25 ns =
  * 2000 ns = 2 us, exactly the decoder's nominal 80-tick half-cell. We round to
  * nearest and difference cumulative times (see kryoflux_stream.cpp) so the
  * per-revolution total stays drift-free.
@@ -62,10 +62,10 @@
 /* Error codes (negative). On any error the output is left empty. */
 enum : std::int8_t {
   KFSTREAM_E_TRUNCATED = -1, /* a flux/OOB block runs past the buffer end     */
-  KFSTREAM_E_NO_INDEX = -2,  /* < 2 index pulses -> no complete revolution     */
-  KFSTREAM_E_NO_FLUX = -3,   /* no flux transitions / no members               */
-  KFSTREAM_E_BAD_OOB = -4,   /* malformed OOB header (e.g. short Index block)   */
-  KFSTREAM_E_GEOMETRY = -5,  /* cyl/side maps outside the 168-slot SCP table    */
+  KFSTREAM_E_NO_INDEX = -2, /* < 2 index pulses -> no complete revolution     */
+  KFSTREAM_E_NO_FLUX = -3,  /* no flux transitions / no members               */
+  KFSTREAM_E_BAD_OOB = -4, /* malformed OOB header (e.g. short Index block)   */
+  KFSTREAM_E_GEOMETRY = -5, /* cyl/side maps outside the 168-slot SCP table */
 };
 
 /* Default KryoFlux clocks, in Hz (used unless a KFInfo block overrides sck). */
@@ -79,7 +79,8 @@ uint32_t kryoflux_sck_to_25ns(uint64_t sck_ticks, double sck_hz);
 /* One decoded revolution, expressed in SCP 25 ns ticks. `flux_25ns[k]` is the
  * interval from the previous transition (from the index pulse for k == 0) to
  * transition k; a value may exceed 0xFFFF (the SCP writer splits it into
- * 0x0000 carry words). `duration_25ns` is the index-to-index revolution time. */
+ * 0x0000 carry words). `duration_25ns` is the index-to-index revolution time.
+ */
 struct KryoFluxRev {
   std::vector<uint32_t> flux_25ns;
   uint32_t duration_25ns = 0;
@@ -87,8 +88,8 @@ struct KryoFluxRev {
 
 /* One decoded track (one stream / one .raw file). */
 struct KryoFluxTrack {
-  std::vector<KryoFluxRev> revs;             /* one entry per complete rev     */
-  double sck_hz = KFSTREAM_DEFAULT_SCK_HZ;   /* effective sck (KFInfo or def.)  */
+  std::vector<KryoFluxRev> revs;           /* one entry per complete rev     */
+  double sck_hz = KFSTREAM_DEFAULT_SCK_HZ; /* effective sck (KFInfo or def.)  */
 };
 
 /* Decode a SINGLE KryoFlux stream (one track) into per-revolution flux.

@@ -14,8 +14,9 @@
 #define KONCPC_HW_FDC_H
 
 #include <stddef.h>
-#include <cstdint>
 #include <stdint.h>
+
+#include <cstdint>
 
 #include "device.h"
 
@@ -85,7 +86,8 @@ void fdc_poke_mechanics(const Device* dev, uint8_t motor, uint8_t track_a,
  * flag below tells the host when the buffer diverged from its file. Returns 0
  * on success, -1 on a malformed image (drive left empty). Live wiring: persists
  * across reset and save/load, never serialized. */
-int fdc_attach_disk(const Device* dev, uint8_t* dsk, size_t len, uint8_t unit = 0);
+int fdc_attach_disk(const Device* dev, uint8_t* dsk, size_t len,
+                    uint8_t unit = 0);
 
 /* Nonzero when the attached DSK buffer has been mutated since attach (or the
  * last mark_clean). Persistence is the host's decision (docs §10). */
@@ -97,7 +99,8 @@ void fdc_media_mark_clean_unit(const Device* dev, uint8_t unit);
 /* How the medium behind a drive is backed (fdc_media.backing). SECTOR = a plain
  * DSK image; FLUX = a flux dump. A flux medium may still carry a writable DSK
  * overlay (fdc_attach_flux_writable): clean tracks serve the rotating flux
- * cache, tracks the FDC has written serve the overlay (docs flux-media.md §7). */
+ * cache, tracks the FDC has written serve the overlay (docs flux-media.md §7).
+ */
 enum FdcBacking : uint8_t { FDC_BACKING_SECTOR = 0, FDC_BACKING_FLUX = 1 };
 
 /* Attach a caller-owned SCP flux dump as drive A's medium (Stage 3). The FDC

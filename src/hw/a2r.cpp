@@ -22,7 +22,8 @@ uint16_t rd16(const uint8_t* p) {
 }
 uint32_t rd32(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+         (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 void wr32(std::vector<uint8_t>& v, size_t at, uint32_t x) {
   v[at] = static_cast<uint8_t>(x);
@@ -35,7 +36,7 @@ void put_be16(std::vector<uint8_t>& v, uint16_t x) {  // SCP flux words are BE
   v.push_back(static_cast<uint8_t>(x));
 }
 
-constexpr int kSlots = 168;   // SCP track-lookup-table entries
+constexpr int kSlots = 168;        // SCP track-lookup-table entries
 constexpr size_t kHdrEnd = 0x2B0;  // header (0x10) + TLUT (168*4)
 
 // One side-0 flux capture: where its flux bytes live in the A2R buffer and the
@@ -73,7 +74,8 @@ void emit_rev(const uint8_t* a2r, const Cap& cap, std::vector<uint8_t>& out,
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 int a2r_to_scp(const uint8_t* a2r, size_t len, std::vector<uint8_t>& out) {
   out.clear();
   if (a2r == nullptr || len < 8 || std::memcmp(a2r, "A2R3", 4) != 0)
@@ -127,13 +129,13 @@ int a2r_to_scp(const uint8_t* a2r, size_t len, std::vector<uint8_t>& out) {
   // SCP header + track-lookup table.
   out.assign(kHdrEnd, 0);
   std::memcpy(out.data(), "SCP", 3);
-  out[0x05] = 2;                                 // revolutions per track
-  out[0x06] = 0;                                 // start track
-  out[0x07] = static_cast<uint8_t>(max_slot);    // end track
-  out[0x08] = 0x01;                              // flags: index recorded
-  out[0x09] = 0;                                 // 16-bit cell width
-  out[0x0A] = 0;                                 // heads: both (side-0 filled)
-  out[0x0B] = 4;                                 // resolution: 125 ns/tick
+  out[0x05] = 2;                               // revolutions per track
+  out[0x06] = 0;                               // start track
+  out[0x07] = static_cast<uint8_t>(max_slot);  // end track
+  out[0x08] = 0x01;                            // flags: index recorded
+  out[0x09] = 0;                               // 16-bit cell width
+  out[0x0A] = 0;                               // heads: both (side-0 filled)
+  out[0x0B] = 4;                               // resolution: 125 ns/tick
 
   for (int s = 0; s <= max_slot; s++) {
     if (per_slot[s].empty()) continue;  // absent cylinder / odd (side-1) slot

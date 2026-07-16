@@ -35,11 +35,11 @@
  *   I(i)          = T(fi-1) + SampleCounter(i)          [absolute index time]
  *   rev i words   = { T(fi..fj-1) - I(i) } differenced  [fj = next index flux]
  *   rev i duration= I(i+1) - I(i)
- * The first word is thus (interval(fi) - SampleCounter(i)) = time from the index
- * to the first transition, exactly the SCP per-revolution convention. Documented
- * edge cases handled: an index before any flux (fi==0 -> previous time 0), an
- * index after the last flux (fi==nflux -> closes a revolution, opens none), and
- * flux-value overflow via stacked Ovl16 right before an index.
+ * The first word is thus (interval(fi) - SampleCounter(i)) = time from the
+ * index to the first transition, exactly the SCP per-revolution convention.
+ * Documented edge cases handled: an index before any flux (fi==0 -> previous
+ * time 0), an index after the last flux (fi==nflux -> closes a revolution,
+ * opens none), and flux-value overflow via stacked Ovl16 right before an index.
  */
 #include "kryoflux_stream.h"
 
@@ -50,13 +50,14 @@
 
 namespace {
 
-constexpr int kSlots = 168;         // SCP track-lookup-table entries
-constexpr size_t kHdrEnd = 0x2B0;   // header (0x10) + TLUT (168 * 4)
+constexpr int kSlots = 168;        // SCP track-lookup-table entries
+constexpr size_t kHdrEnd = 0x2B0;  // header (0x10) + TLUT (168 * 4)
 constexpr size_t kTlutOff = 0x10;
 
 uint32_t rd32le(const uint8_t* p) {
   return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-         (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+         (static_cast<uint32_t>(p[2]) << 16) |
+         (static_cast<uint32_t>(p[3]) << 24);
 }
 uint16_t rd16le(const uint8_t* p) {
   return static_cast<uint16_t>(p[0] | (p[1] << 8));
@@ -101,9 +102,9 @@ void parse_kfinfo(const uint8_t* body, size_t sz, double& sck_hz) {
 // effective sck. Returns 0 or a negative KFSTREAM_E_* code.
 int scan_stream(const uint8_t* data, size_t len, std::vector<Transition>& flux,
                 std::vector<IndexRec>& idx, double& sck_hz) {
-  uint64_t spos = 0;       // in-band stream position (flux/Nop bytes only)
-  uint32_t ovl = 0;        // pending Ovl16 count (each adds 0x10000)
-  uint64_t ovl_pos = 0;    // in-band position where the Ovl16 run began
+  uint64_t spos = 0;     // in-band stream position (flux/Nop bytes only)
+  uint32_t ovl = 0;      // pending Ovl16 count (each adds 0x10000)
+  uint64_t ovl_pos = 0;  // in-band position where the Ovl16 run began
   bool ovl_active = false;
 
   for (size_t off = 0; off < len;) {
@@ -187,8 +188,9 @@ size_t resolve_index(const std::vector<Transition>& flux, uint64_t sp) {
   return lo;
 }
 
-// Append one revolution's flux words to `out` as SCP big-endian words, splitting
-// any value > 0xFFFF into 0x0000 carry words. Returns the word count written.
+// Append one revolution's flux words to `out` as SCP big-endian words,
+// splitting any value > 0xFFFF into 0x0000 carry words. Returns the word count
+// written.
 uint32_t emit_flux_words(const std::vector<uint32_t>& flux_25ns,
                          std::vector<uint8_t>& out) {
   uint32_t n = 0;
@@ -217,12 +219,12 @@ int build_scp(const std::vector<std::pair<int, const KryoFluxTrack*>>& tracks,
   out.assign(kHdrEnd, 0);
   std::memcpy(out.data(), "SCP", 3);
   out[0x05] = static_cast<uint8_t>(nrevs > 255 ? 255 : nrevs);  // revolutions
-  out[0x06] = 0;                                    // start track
-  out[0x07] = static_cast<uint8_t>(max_slot);       // end track (slot)
-  out[0x08] = 0x01;                                 // flags: index recorded
-  out[0x09] = 0;                                    // 16-bit cell width
-  out[0x0A] = 0;                                    // heads: both (side-0 read)
-  out[0x0B] = 0;                                    // resolution: 25 ns / tick
+  out[0x06] = 0;                                                // start track
+  out[0x07] = static_cast<uint8_t>(max_slot);  // end track (slot)
+  out[0x08] = 0x01;                            // flags: index recorded
+  out[0x09] = 0;                               // 16-bit cell width
+  out[0x0A] = 0;                               // heads: both (side-0 read)
+  out[0x0B] = 0;                               // resolution: 25 ns / tick
 
   for (const auto& t : tracks) {
     const int slot = t.first;
@@ -260,7 +262,8 @@ uint32_t kryoflux_sck_to_25ns(uint64_t sck_ticks, double sck_hz) {
   return static_cast<uint32_t>(r);
 }
 
-int kryoflux_decode_stream(const uint8_t* data, size_t len, KryoFluxTrack& out) {
+int kryoflux_decode_stream(const uint8_t* data, size_t len,
+                           KryoFluxTrack& out) {
   out.revs.clear();
   out.sck_hz = KFSTREAM_DEFAULT_SCK_HZ;
   if (data == nullptr || len == 0) return KFSTREAM_E_NO_FLUX;

@@ -38,7 +38,7 @@ dword le32(const byte* p) {
   return v;
 }
 
-constexpr dword kEocdSig = 0x06054b50;   // PK\5\6 — end of central directory
+constexpr dword kEocdSig = 0x06054b50;     // PK\5\6 — end of central directory
 constexpr dword kCentralSig = 0x02014b50;  // PK\1\2 — central directory entry
 constexpr dword kLocalSig = 0x04034b50;    // PK\3\4 — local file header
 constexpr size_t kEocdLen = 22;            // fixed part, before the comment
@@ -182,8 +182,8 @@ int extract(const t_zip_info& zi, FILE** pfileOut) {
   }
   const word method = le16(hdr + 8);       // 0 = stored, 8 = deflate
   const dword comp_size = le32(hdr + 18);  // 0 with a data descriptor (bit 3)
-  const long data_off = static_cast<long>(zi.dwOffset) + 30 + le16(hdr + 26) +
-                        le16(hdr + 28);
+  const long data_off =
+      static_cast<long>(zi.dwOffset) + 30 + le16(hdr + 26) + le16(hdr + 28);
   if (fseek(in, data_off, SEEK_SET) != 0) {
     LOG_ERROR("Couldn't read zip file: " << zi.filename);
     return fail();
@@ -231,8 +231,7 @@ int extract(const t_zip_info& zi, FILE** pfileOut) {
         z.avail_out = static_cast<uInt>(obuf.size());
         status = inflate(&z, Z_NO_FLUSH);
         const size_t produced = obuf.size() - z.avail_out;
-        if (produced != 0 &&
-            fwrite(obuf.data(), produced, 1, *pfileOut) != 1) {
+        if (produced != 0 && fwrite(obuf.data(), produced, 1, *pfileOut) != 1) {
           LOG_ERROR("Couldn't unzip file: Couldn't write to output file");
           return fail();
         }

@@ -9,9 +9,8 @@
  * io_read over the board bus), so it proves promotion + image-vs-flux routing
  * end to end, not just the attach helper. The final case closes the loop:
  * export (scp_from_disk over the dirty map) then re-decode the flux — the
- * written track decodes to the written bytes, the clean track to the original. */
-
-#include "hw/fdc.h"
+ * written track decodes to the written bytes, the clean track to the original.
+ */
 
 #include <gtest/gtest.h>
 
@@ -19,10 +18,11 @@
 #include <cstring>
 #include <vector>
 
-#include "flux_synth.h"     // fluxsynth::amsdos_content / scp_from_sectors
+#include "flux_synth.h"  // fluxsynth::amsdos_content / scp_from_sectors
 #include "hw/board.h"
-#include "hw/flux.h"        // flux_scp_to_dsk / flux_decode_track_rev
-#include "scp_write.h"      // scp_from_disk (Stage-1 export encoder)
+#include "hw/fdc.h"
+#include "hw/flux.h"    // flux_scp_to_dsk / flux_decode_track_rev
+#include "scp_write.h"  // scp_from_disk (Stage-1 export encoder)
 
 namespace {
 
@@ -139,9 +139,8 @@ FluxDisc make_writable_flux(FluxRig& rig,
   FluxDisc d;
   d.scp = scp_from_sectors(content);
   d.dsk.assign(0x100 + 102 * (0x100 + 8192), 0);
-  const long dsk_len =
-      flux_scp_to_dsk(d.scp.data(), d.scp.size(), d.dsk.data(), d.dsk.size(),
-                      nullptr);
+  const long dsk_len = flux_scp_to_dsk(d.scp.data(), d.scp.size(), d.dsk.data(),
+                                       d.dsk.size(), nullptr);
   EXPECT_GT(dsk_len, 0) << "the synthetic flux must synthesize a standard DSK";
   d.dsk.resize(static_cast<size_t>(dsk_len > 0 ? dsk_len : 0));
   EXPECT_EQ(fdc_attach_flux_writable(&rig.dev, d.scp.data(), d.scp.size(),
@@ -310,18 +309,20 @@ TEST(FdcFluxWrite, ExportRoundTripsWrittenAndCleanTracks) {
   const uint8_t* pristine = fdc_media_flux_scp(&rig.dev, pristine_len);
   ASSERT_NE(pristine, nullptr);
 
-  const std::vector<uint8_t> out = scp_from_disk(pristine, pristine_len, image,
-                                                 img_len, dirty, ntracks);
+  const std::vector<uint8_t> out =
+      scp_from_disk(pristine, pristine_len, image, img_len, dirty, ntracks);
   ASSERT_FALSE(out.empty());
 
   // Written track 0 sector C3 decodes to the written bytes.
   const std::vector<uint8_t> exp0 = flux_sector(out, 0, 0xC3);
   ASSERT_EQ(exp0.size(), payload.size());
-  EXPECT_EQ(exp0, payload) << "exported flux carries the write on the dirty track";
+  EXPECT_EQ(exp0, payload)
+      << "exported flux carries the write on the dirty track";
 
   // Clean track 1 sector C1 decodes to its original content (verbatim splice).
   const std::vector<uint8_t> exp1 = flux_sector(out, 1, 0xC1);
   const std::vector<uint8_t> orig1 = flux_sector(disc.scp, 1, 0xC1);
   ASSERT_EQ(exp1.size(), orig1.size());
-  EXPECT_EQ(exp1, orig1) << "clean track exported verbatim from the pristine flux";
+  EXPECT_EQ(exp1, orig1)
+      << "clean track exported verbatim from the pristine flux";
 }

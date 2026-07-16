@@ -10,6 +10,8 @@
 // which is NOT part of the IPF decode path: mfm_encode, hfe, and the IPF
 // side-0 flux mirror all feed it to build in-memory SuperCard Pro containers.
 
+#include "ipf.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -18,7 +20,6 @@
 
 #include "errors.h"
 #include "hw_views.h"
-#include "ipf.h"
 #include "ipf_decode.h"
 #include "log.h"
 #include "slotshandler.h"  // dsk_eject
@@ -156,17 +157,17 @@ std::vector<uint8_t> scp_from_mfm_tracks(const std::vector<t_mfm_track>& cyls) {
   scp[3] = 0x19;  // creator/version byte — informational only
   scp[4] = 0x80;  // disk type: "other"
   scp[5] = static_cast<uint8_t>(revs);
-  scp[6] = 0;  // start track
+  scp[6] = 0;                                            // start track
   scp[7] = static_cast<uint8_t>((cyls.size() - 1) * 2);  // last side-0 slot
-  scp[8] = 0x01;   // flags: index-synced capture
-  scp[9] = 16;     // 16-bit bitcell words
-  scp[0x0a] = 0;   // both-heads slot layout (side-0 slots = cyl*2)
-  scp[0x0b] = 0;   // resolution: 25 ns
+  scp[8] = 0x01;  // flags: index-synced capture
+  scp[9] = 16;    // 16-bit bitcell words
+  scp[0x0a] = 0;  // both-heads slot layout (side-0 slots = cyl*2)
+  scp[0x0b] = 0;  // resolution: 25 ns
 
   for (size_t cyl = 0; cyl < cyls.size(); cyl++) {
     const t_mfm_track& trk = cyls[cyl];
-    if (trk.empty()) continue;             // absent slot = unformatted track
-    if (trk.size() != revs) return {};     // one revolution count per file
+    if (trk.empty()) continue;          // absent slot = unformatted track
+    if (trk.size() != revs) return {};  // one revolution count per file
     const uint32_t toff = static_cast<uint32_t>(scp.size());
     put_le32(scp, 0x10 + (4 * (cyl * 2)), toff);
     scp.push_back('T');

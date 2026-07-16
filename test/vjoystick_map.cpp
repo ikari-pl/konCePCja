@@ -1,6 +1,6 @@
-#include <gtest/gtest.h>
-
 #include "vjoystick_map.h"
+
+#include <gtest/gtest.h>
 
 // The virtual joystick (on-screen pad) and the gamepad/raw-joystick event path
 // both funnel through vjoy::vjoy_active_keys(): given the target CPC joystick

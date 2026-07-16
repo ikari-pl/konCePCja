@@ -338,8 +338,8 @@ std::string diff_regs(const Z80Regs& a, const Z80Regs& b) {
   auto cmp = [&](const char* n, uint64_t g, uint64_t e) {
     if (g != e) {
       char buf[64];
-      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n,
-                    (unsigned long long)g, (unsigned long long)e);
+      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n, (unsigned long long)g,
+                    (unsigned long long)e);
       d += buf;
     }
   };
@@ -370,14 +370,15 @@ std::string diff_regs(const Z80Regs& a, const Z80Regs& b) {
 
 // ---------------------------------------------------------------------------
 // Every case is asserted against the Bread80-confirmed cc tables. There is
-// deliberately NO "known mismatch" escape hatch (beads-v3ig): an earlier version
-// let an entry record the DUT's own output as the expected value — a self-bless
-// that had historically enshrined 18 wrong I/O timings (IN r,(C)/OUT (C),r at
-// 12 T instead of 16 T, OTIR at 28 T instead of 24 T). Those were real bugs,
-// since fixed (the GA now drives cpu.wait and MC::IO free-runs its T1). Any
-// future divergence from cc must be investigated and fixed — or, if cc itself is
-// ever shown wrong against an external hardware oracle, cc corrected WITH that
-// citation — never papered over by asserting whatever the sim happens to emit.
+// deliberately NO "known mismatch" escape hatch (beads-v3ig): an earlier
+// version let an entry record the DUT's own output as the expected value — a
+// self-bless that had historically enshrined 18 wrong I/O timings (IN r,(C)/OUT
+// (C),r at 12 T instead of 16 T, OTIR at 28 T instead of 24 T). Those were real
+// bugs, since fixed (the GA now drives cpu.wait and MC::IO free-runs its T1).
+// Any future divergence from cc must be investigated and fixed — or, if cc
+// itself is ever shown wrong against an external hardware oracle, cc corrected
+// WITH that citation — never papered over by asserting whatever the sim happens
+// to emit.
 // ---------------------------------------------------------------------------
 
 void run_all(const std::vector<SweepCase>& cases) {
@@ -399,8 +400,8 @@ void run_all(const std::vector<SweepCase>& cases) {
         << c.name << ": batch-mode T-total diverges from per-cycle";
     EXPECT_EQ(diff_regs(regs_batch, regs_pc), "")
         << c.name << ": batch-mode architectural state diverges";
-    EXPECT_EQ(
-        std::memcmp(ram_batch->cells, ram_pc->cells, sizeof(Ram::cells)), 0)
+    EXPECT_EQ(std::memcmp(ram_batch->cells, ram_pc->cells, sizeof(Ram::cells)),
+              0)
         << c.name << ": batch-mode memory diverges";
   }
 }

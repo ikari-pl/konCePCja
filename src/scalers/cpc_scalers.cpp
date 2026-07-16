@@ -164,8 +164,8 @@ void filter_ascale2x(Uint8* srcPtr, Uint32 srcPitch, Uint8* dstPtr,
 namespace {
 inline Uint16 eagle_corner(Uint16 c, Uint16 edgeA, Uint16 edgeB, Uint16 diag) {
   if (edgeA == edgeB) {
-    if (edgeA == diag) return edgeA;   // solid corner -> take it
-    return avg2(edgeA, c);             // partial edge -> antialias
+    if (edgeA == diag) return edgeA;  // solid corner -> take it
+    return avg2(edgeA, c);            // partial edge -> antialias
   }
   return c;
 }
@@ -262,11 +262,11 @@ void filter_bicubic(Uint8* srcPtr, Uint32 srcPitch, Uint8* dstPtr,
       const int dx = x * 2;
       const Uint16 c = s.at(x, y);
       // Horizontal half-sample between x and x+1.
-      const Uint16 hx = cr_half_px(s.at(x - 1, y), c, s.at(x + 1, y),
-                                   s.at(x + 2, y));
+      const Uint16 hx =
+          cr_half_px(s.at(x - 1, y), c, s.at(x + 1, y), s.at(x + 2, y));
       // Vertical half-sample between y and y+1.
-      const Uint16 vy = cr_half_px(s.at(x, y - 1), c, s.at(x, y + 1),
-                                   s.at(x, y + 2));
+      const Uint16 vy =
+          cr_half_px(s.at(x, y - 1), c, s.at(x, y + 1), s.at(x, y + 2));
       // Diagonal half-sample: cubic across the four vertical half-samples of
       // columns x-1..x+2 (separable order gives the same result at t=0.5).
       const Uint16 vy_m1 = cr_half_px(s.at(x - 1, y - 1), s.at(x - 1, y),

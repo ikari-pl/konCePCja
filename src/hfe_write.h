@@ -40,6 +40,7 @@ int hfe_from_mfm_tracks(const std::vector<t_mfm_track>& cyls,
 // negative HFE_E_* code; `out` is left empty on failure.
 int hfe_from_disk(const uint8_t* orig_scp, std::size_t orig_len,
                   const uint8_t* dsk, std::size_t dsk_len,
-                  const bool* track_dirty, int ntracks, std::vector<uint8_t>& out);
+                  const bool* track_dirty, int ntracks,
+                  std::vector<uint8_t>& out);
 
 #endif  // KONCPC_HFE_WRITE_H

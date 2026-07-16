@@ -49,11 +49,11 @@ inline int16_t clamp_i16(double v) {
 }
 }  // namespace
 
-// Generate procedural motor hum (looped) — fundamental + 2nd/3rd harmonic locked
-// to 2*f0 / 3*f0, plus broadband rumble.
+// Generate procedural motor hum (looped) — fundamental + 2nd/3rd harmonic
+// locked to 2*f0 / 3*f0, plus broadband rumble.
 namespace {
 void generate_motor_samples(std::vector<int16_t>& out,
-                                   const DriveSoundParams& p) {
+                            const DriveSoundParams& p) {
   int len = static_cast<int>(p.motor_len_s * GEN_RATE);
   len = std::max(len, 1);
   out.resize(len);
@@ -62,7 +62,8 @@ void generate_motor_samples(std::vector<int16_t>& out,
     double v = (sin(2 * M_PI * p.motor_f0 * t) * p.motor_a0) +
                (sin(2 * M_PI * 2 * p.motor_f0 * t) * p.motor_a1) +
                (sin(2 * M_PI * 3 * p.motor_f0 * t) * p.motor_a2);
-    // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator weak-bit/fuzz jitter, not security
+    // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator
+    // weak-bit/fuzz jitter, not security
     v += ((rand() / static_cast<double>(RAND_MAX)) - 0.5) * p.motor_rumble;
     out[i] = clamp_i16(v * p.motor_gain);
   }
@@ -72,7 +73,7 @@ void generate_motor_samples(std::vector<int16_t>& out,
 // Generate procedural seek click (one-shot) — decaying tone + mechanical noise.
 namespace {
 void generate_seek_samples(std::vector<int16_t>& out,
-                                  const DriveSoundParams& p) {
+                           const DriveSoundParams& p) {
   int len = static_cast<int>(p.seek_len_ms * GEN_RATE / 1000.0);
   len = std::max(len, 1);
   out.resize(len);
@@ -80,7 +81,8 @@ void generate_seek_samples(std::vector<int16_t>& out,
     double const t = static_cast<double>(i) / GEN_RATE;
     double const env = exp(-t * p.seek_decay);
     double v = sin(2 * M_PI * p.seek_freq * t) * env;
-    // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator weak-bit/fuzz jitter, not security
+    // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator
+    // weak-bit/fuzz jitter, not security
     v += ((rand() / static_cast<double>(RAND_MAX)) - 0.5) * p.seek_noise * env;
     out[i] = clamp_i16(v * p.seek_gain);
   }
@@ -91,13 +93,14 @@ void generate_seek_samples(std::vector<int16_t>& out,
 // low-pass: y[i] = (1-lpf)*x[i] + lpf*y[i-1].
 namespace {
 void generate_tape_samples(std::vector<int16_t>& out,
-                                  const DriveSoundParams& p) {
+                           const DriveSoundParams& p) {
   int len = static_cast<int>(p.tape_len_s * GEN_RATE);
   len = std::max(len, 1);
   out.resize(len);
   for (int i = 0; i < len; i++) {
     double const v =
-        // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for emulator weak-bit/fuzz jitter, not security
+        // NOLINTNEXTLINE(misc-predictable-rand): rand() is intentional for
+        // emulator weak-bit/fuzz jitter, not security
         ((rand() / static_cast<double>(RAND_MAX)) - 0.5) * p.tape_noise;
     out[i] = clamp_i16(v * p.tape_gain);
   }

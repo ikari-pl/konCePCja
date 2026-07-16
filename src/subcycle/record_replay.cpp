@@ -12,20 +12,23 @@ namespace {
 
 // Little-endian byte pushers/readers — explicit so the trace is byte-identical
 // on every CI target regardless of host endianness or struct padding.
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
-void put_u16(std::vector<uint8_t> *out, uint16_t v) {
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
+void put_u16(std::vector<uint8_t>* out, uint16_t v) {
   out->push_back(static_cast<uint8_t>(v & 0xFF));
   out->push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
-void put_u32(std::vector<uint8_t> *out, uint32_t v) {
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
+void put_u32(std::vector<uint8_t>* out, uint32_t v) {
   for (int i = 0; i < 4; ++i)
     out->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
 }
 
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
-void put_u64(std::vector<uint8_t> *out, uint64_t v) {
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
+void put_u64(std::vector<uint8_t>* out, uint64_t v) {
   for (int i = 0; i < 8; ++i)
     out->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
 }
@@ -88,10 +91,12 @@ std::vector<uint8_t> Recorder::serialize() const {
   return out;
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
-bool deserialize(const uint8_t *data, size_t len,
-                 // NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
-                 std::vector<InputEvent> *out) {
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool deserialize(const uint8_t* data, size_t len,
+                 // NOLINTNEXTLINE(readability-non-const-parameter): pointer
+                 // written through a cast or passed to a non-const callee
+                 std::vector<InputEvent>* out) {
   if (out == nullptr || data == nullptr || len < kHeaderBytes) return false;
   if (data[0] != kMagic[0] || data[1] != kMagic[1] || data[2] != kMagic[2] ||
       data[3] != kMagic[3])
@@ -131,7 +136,8 @@ bool save_trace(const char* path, const Recorder& recorder) {
   return static_cast<bool>(file);  // false if any write/flush failed
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 bool load_trace(const char* path, std::vector<InputEvent>* out) {
   if (path == nullptr || out == nullptr) return false;
   std::ifstream file(path, std::ios::binary);
@@ -182,7 +188,8 @@ void Player::apply_pending(subcycle::Machine& machine, uint64_t master_cycle) {
   }
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void apply_deterministic_device_set(subcycle::Machine& machine) {
   // Unplug the host-coupled peripherals (kHostCoupledDevices) so a replay is
   // reproducible from ROM + trace alone. Inert peripherals still hash from a
@@ -192,7 +199,8 @@ void apply_deterministic_device_set(subcycle::Machine& machine) {
   machine.set_m4(false);
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 bool run_corpus(subcycle::Machine& machine, const uint8_t* rom, size_t rom_len,
                 uint8_t* fb, int w, int h, Player& player, int frames) {
   if (!machine.build(rom, rom_len)) return false;

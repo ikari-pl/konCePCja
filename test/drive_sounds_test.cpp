@@ -110,18 +110,18 @@ TEST(DriveSounds, FromStringRejectsMalformed) {
   set_distinctive(g_drive_sounds.params);
   const float f0_before = g_drive_sounds.params.motor_f0;
 
-  drive_sounds_params_from_string("");             // empty
+  drive_sounds_params_from_string("");              // empty
   drive_sounds_params_from_string("not,a,tuning");  // wrong tag, too short
   drive_sounds_params_from_string("v1,1,2,3");      // right tag, too few fields
 
   EXPECT_FLOAT_EQ(g_drive_sounds.params.motor_f0, f0_before);
 }
 
-// Regenerate must bake buffers whose lengths follow the length knobs, and honour
-// the DriveSoundBuffer mask (only the selected buffer changes).
+// Regenerate must bake buffers whose lengths follow the length knobs, and
+// honour the DriveSoundBuffer mask (only the selected buffer changes).
 TEST(DriveSounds, RegenerateHonoursLengthsAndMask) {
   g_drive_sounds.params = DriveSoundParams{};
-  g_drive_sounds.params.motor_len_s = 0.5f;   // -> 22050
+  g_drive_sounds.params.motor_len_s = 0.5f;    // -> 22050
   g_drive_sounds.params.seek_len_ms = 100.0f;  // -> 4410
   g_drive_sounds.params.tape_len_s = 1.0f;     // -> 44100
   drive_sounds_regenerate(DS_ALL);

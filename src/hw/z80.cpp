@@ -140,7 +140,8 @@ struct z80_state {
   // The active index register (HL, or IX/IY under a DD/FD prefix) as a pair and
   // as high/low halves.
   uint16_t idx_hl() const {
-    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+    // conditional kept intentionally; no clang-tidy auto-fix
     return index == IndexReg::IX ? ix.v : index == IndexReg::IY ? iy.v : hl.v;
   }
   void set_idx_hl(uint16_t v) {
@@ -152,14 +153,16 @@ struct z80_state {
       hl.v = v;
   }
   uint8_t idx_h() const {
-    return index == IndexReg::IX   ? ix.hi()
-           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+    return index == IndexReg::IX ? ix.hi()
+           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
+           // nested conditional kept intentionally; no clang-tidy auto-fix
            : index == IndexReg::IY ? iy.hi()
                                    : hl.hi();
   }
   uint8_t idx_l() const {
-    return index == IndexReg::IX   ? ix.lo()
-           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+    return index == IndexReg::IX ? ix.lo()
+           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
+           // nested conditional kept intentionally; no clang-tidy auto-fix
            : index == IndexReg::IY ? iy.lo()
                                    : hl.lo();
   }
@@ -831,8 +834,10 @@ struct z80_state {
       if (parity_even(static_cast<uint8_t>((k & 7) ^ bdec))) flags |= PF;
       if (repeat && bdec != 0) {
         pc.v = static_cast<uint16_t>(pc.v - 2);  // rewind first: YF/XF need PCi
-        wz.v = static_cast<uint16_t>(pc.v + 1);  // repeat: MEMPTR = PC+1, not BC±1
-        set_f(blkio_corrected_f(val, k, bdec));  // Banks 2018: committed mid-loop F
+        wz.v =
+            static_cast<uint16_t>(pc.v + 1);  // repeat: MEMPTR = PC+1, not BC±1
+        set_f(blkio_corrected_f(val, k,
+                                bdec));  // Banks 2018: committed mid-loop F
         req_internal(5);
         return;
       }
@@ -870,8 +875,10 @@ struct z80_state {
       if (parity_even(static_cast<uint8_t>((k & 7) ^ bdec))) flags |= PF;
       if (repeat && bdec != 0) {
         pc.v = static_cast<uint16_t>(pc.v - 2);  // rewind first: YF/XF need PCi
-        wz.v = static_cast<uint16_t>(pc.v + 1);  // repeat: MEMPTR = PC+1, not BC±1
-        set_f(blkio_corrected_f(val, k, bdec));  // Banks 2018: committed mid-loop F
+        wz.v =
+            static_cast<uint16_t>(pc.v + 1);  // repeat: MEMPTR = PC+1, not BC±1
+        set_f(blkio_corrected_f(val, k,
+                                bdec));  // Banks 2018: committed mid-loop F
         req_internal(5);
         return;
       }
@@ -2453,8 +2460,8 @@ uint32_t z80_batch_step(const Device* dev, const Z80BatchIO* io, int irq,
   const bool was_ei = z->ei_delay;
   z->ei_delay = false;
   if (z->nmi_pending || (z->iff1 && irq != 0 && !was_ei)) {
-    e.align_mem();     // the acceptance tick is a memory-class M1 T1
-    z->tstates += 1;   // ...and costs that one T-state before the ack cycle
+    e.align_mem();    // the acceptance tick is a memory-class M1 T1
+    z->tstates += 1;  // ...and costs that one T-state before the ack cycle
     z->bump_refresh();
     if (z->nmi_pending) {
       z->nmi_pending = false;
@@ -2605,7 +2612,8 @@ void z80_poke(const Device* dev, const Z80Regs* in) {
   z->halted = in->halted != 0;
   // Fresh instruction boundary. Seed the committed Q latch from the snapshot so
   // an oracle can set the *prior* instruction's Q — SCF/CCF read it for their
-  // undocumented YF/XF (§5). The per-instruction scratch (qq) still starts clear.
+  // undocumented YF/XF (§5). The per-instruction scratch (qq) still starts
+  // clear.
   z->q = in->q;
   z->qq = 0;
   z->mc = z80_state::MC::M1;

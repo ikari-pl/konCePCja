@@ -129,8 +129,8 @@ void dart_ctrl_write(rs232_state* s, bool chan_a, uint8_t val) {
     *ptr = val & 0x07;
     const uint8_t cmd = (val >> 3) & 0x07;
     if (chan_a) {
-      if (cmd == 3) chan_a_reset(s);      // channel reset
-      if (cmd == 6) s->rr1_err = 0;       // error reset
+      if (cmd == 3) chan_a_reset(s);  // channel reset
+      if (cmd == 6) s->rr1_err = 0;   // error reset
     }
   } else {
     if (*ptr < 6) wr[*ptr] = val;
@@ -191,8 +191,8 @@ void pit_write(rs232_state* s, uint8_t offset, uint8_t val) {
 // edge only.
 uint8_t pit_read_peek(const rs232_state* s, uint8_t offset) {
   if (offset == 3) return 0;  // mode register is write-only
-  const uint16_t value = s->latched[offset] ? s->latch[offset]
-                                            : s->reload[offset];
+  const uint16_t value =
+      s->latched[offset] ? s->latch[offset] : s->reload[offset];
   const bool msb = s->rl_mode[offset] == 2 ||
                    (s->rl_mode[offset] == 3 && s->rd_toggle[offset] != 0);
   return static_cast<uint8_t>(msb ? value >> 8 : value & 0xFF);
@@ -264,8 +264,8 @@ void rx_advance(rs232_state* s, uint8_t rxd) {
       s->rx_cycle++;
       if (s->rx_cycle >= bt) {
         s->rx_cycle = 0;
-        s->rx_shift = static_cast<uint8_t>((s->rx_shift >> 1) |
-                                           (rxd ? 0x80u : 0u));
+        s->rx_shift =
+            static_cast<uint8_t>((s->rx_shift >> 1) | (rxd ? 0x80u : 0u));
         s->rx_bits++;
         if (s->rx_bits == 8) s->rx_phase = 3;
       }
@@ -379,15 +379,12 @@ extern "C" {
 size_t rs232_state_size(void) { return sizeof(rs232_state); }
 
 Device rs232_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  rs232_state *s = new (storage) rs232_state();
-  return Device{s,
-                "rs232",
-                rs232_tick,
-                rs232_dev_reset,
-                rs232_dev_state_size,
-                rs232_save,
-                rs232_load};
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  rs232_state* s = new (storage) rs232_state();
+  return Device{
+      s,          "rs232",   rs232_tick, rs232_dev_reset, rs232_dev_state_size,
+      rs232_save, rs232_load};
 }
 
 void rs232_peek(const Device* dev, Rs232Regs* out) {

@@ -114,7 +114,8 @@ TEST(Ppi, PortBReportsVsyncAndJumpers) {
   EXPECT_EQ(lo & 0x1E, 0x1E) << "default jumpers: id 7 + 50 Hz";
   EXPECT_EQ(lo & 0x20, 0x20)
       << "/EXP (bit 5) reads 1 with no expansion pulling it low "
-         "(cpcwiki/cpctech 8255: a device signals presence by driving /EXP low)";
+         "(cpcwiki/cpctech 8255: a device signals presence by driving /EXP "
+         "low)";
   EXPECT_EQ(lo & 0x40, 0x40) << "BUSY (bit 6) reads 1 when no printer is ready";
 }
 
@@ -127,7 +128,8 @@ TEST(Ppi, ResetStateIsAllInput0x9B) {
       << "8255 RESET: mode 0, all ports input; a regression to 0 (all-output) "
          "would make firmware read Port B / VSYNC as a dead latch";
   EXPECT_EQ(io_read(rig, 1, /*vsync=*/true) & 0x01, 0x01)
-      << "VSYNC visible on Port B at reset (defaults to input, no mode-set yet)";
+      << "VSYNC visible on Port B at reset (defaults to input, no mode-set "
+         "yet)";
 }
 
 TEST(Ppi, PortCBitSetResetTogglesTapeMotor) {

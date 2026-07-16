@@ -23,7 +23,7 @@
 namespace {
 
 constexpr uint8_t kLevelThreshold = 0x80;  // sample > threshold → line high
-constexpr uint32_t kZ80Hz = 3500000;   // TZX timings are Spectrum T-states
+constexpr uint32_t kZ80Hz = 3500000;       // TZX timings are Spectrum T-states
 constexpr uint32_t kLeaderPauseMs = 2000;
 constexpr size_t kDirectDataMax = 0x00ffffff;  // u24 length field
 
@@ -69,8 +69,10 @@ struct DirectRun {
     if (nsamples == 0) return true;
     if (nbits) packed.push_back(cur << (8 - nbits));  // pad toward the LSBs
     if (packed.size() > kDirectDataMax) {
-      LOG_ERROR("VOC import: sound run too long for one direct recording "
-                "block (" << packed.size() << " bytes packed)");
+      LOG_ERROR(
+          "VOC import: sound run too long for one direct recording "
+          "block ("
+          << packed.size() << " bytes packed)");
       return false;
     }
     out.push_back(0x15);
@@ -99,8 +101,8 @@ std::vector<uint8_t> voc_to_tzx(const uint8_t* data, size_t len) {
   }
   size_t off = rd_u16(data + 0x14);
   if (off < 26 || off > len) {
-    LOG_ERROR("VOC import: header data offset " << off
-              << " outside the file (" << len << " bytes)");
+    LOG_ERROR("VOC import: header data offset " << off << " outside the file ("
+                                                << len << " bytes)");
     return {};
   }
 
@@ -142,7 +144,7 @@ std::vector<uint8_t> voc_to_tzx(const uint8_t* data, size_t len) {
     off += 3;
     if (size > len - off) {
       LOG_ERROR("VOC import: block 0x" << static_cast<int>(type)
-                << " extends past end of file");
+                                       << " extends past end of file");
       return {};
     }
     const uint8_t* body = data + off;
@@ -150,8 +152,9 @@ std::vector<uint8_t> voc_to_tzx(const uint8_t* data, size_t len) {
     switch (type) {
       case 0x01: {  // sound data
         if (size < 2) {
-          LOG_ERROR("VOC import: sound data block too short for its "
-                    "rate/codec bytes");
+          LOG_ERROR(
+              "VOC import: sound data block too short for its "
+              "rate/codec bytes");
           return {};
         }
         if (body[1] != 0) {

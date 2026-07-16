@@ -288,8 +288,7 @@ Z80Regs run_fuse_batch(const FuseTest& in, Ram* ram, Device* zdev) {
     const uint32_t used =
         z80_batch_step(zdev, &bio, /*irq=*/0, /*vector=*/0xFF, /*grid=*/0);
     if (used == 0) {  // halted, no interrupt: burn exactly to the target
-      z80_batch_halt(zdev,
-                     static_cast<uint32_t>(in.end_tstates - r.tstates));
+      z80_batch_halt(zdev, static_cast<uint32_t>(in.end_tstates - r.tstates));
     }
   }
   z80_peek(zdev, &r);
@@ -413,7 +412,8 @@ void run_corpus(bool batch) {
                total ? 100.0 * passed / total : 0.0);
   ASSERT_EQ(total, 1356)
       << "FUSE corpus incomplete: expected the full 1356-test suite. A parser "
-         "stop or a truncated vendored corpus must not pass green — both counters "
+         "stop or a truncated vendored corpus must not pass green — both "
+         "counters "
          "would then agree at a smaller N and hide the gap.";
   EXPECT_EQ(passed, total)
       << "FUSE conformance failures (see stderr for the first 30)";

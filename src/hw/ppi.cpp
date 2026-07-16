@@ -32,11 +32,11 @@ bool portC_upper_input(const ppi_state* p) { return (p->control & 0x08) != 0; }
 // Port B status read: VSYNC is OR'd in live from the CRTC each read.
 uint8_t read_portB(const ppi_state* p, bool vsync, bool rdata) {
   // bit 5 = /EXP: the expansion signal reads 1 unless an expansion device pulls
-  // it low (cpcwiki/cpctech 8255 doc — a device signals presence by driving /EXP
-  // to 0). No expansion is modelled, so it is always 1. (jumpers holds the id +
-  // 50 Hz straps in bits 1..4.)
-  return static_cast<uint8_t>((vsync ? 0x01 : 0x00) | (p->jumpers & 0x1E) | 0x20 |
-                              (p->printer_ready ? 0x00 : 0x40) |
+  // it low (cpcwiki/cpctech 8255 doc — a device signals presence by driving
+  // /EXP to 0). No expansion is modelled, so it is always 1. (jumpers holds the
+  // id + 50 Hz straps in bits 1..4.)
+  return static_cast<uint8_t>((vsync ? 0x01 : 0x00) | (p->jumpers & 0x1E) |
+                              0x20 | (p->printer_ready ? 0x00 : 0x40) |
                               (rdata ? 0x80 : 0x00));
 }
 
@@ -171,8 +171,9 @@ extern "C" {
 size_t ppi_state_size(void) { return sizeof(ppi_state); }
 
 Device ppi_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  ppi_state *p = new (storage) ppi_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  ppi_state* p = new (storage) ppi_state();
   return Device{p,        "ppi",   ppi_tick, ppi_reset, ppi_dev_state_size,
                 ppi_save, ppi_load};
 }
@@ -189,6 +190,10 @@ void ppi_peek(const Device* dev, PpiRegs* out) {
 
 void ppi_set_jumpers(const Device* dev, uint8_t jumpers) {
   static_cast<ppi_state*>(dev->self)->jumpers = jumpers;
+}
+
+void ppi_set_printer_ready(const Device* dev, int ready) {
+  static_cast<ppi_state*>(dev->self)->printer_ready = ready != 0;
 }
 
 // The published line state as a value — exactly what ppi_tick drives each

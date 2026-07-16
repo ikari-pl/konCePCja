@@ -11,8 +11,8 @@
 
 #pragma once
 
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -83,7 +83,13 @@ struct M4Board {
 
   // Activity tracking for UI display
   int activity_frames = 0;  // countdown timer for LED (frames at 50fps)
-  enum class LastOp : std::uint8_t { NONE, READ, WRITE, DIR, CMD } last_op = LastOp::NONE;
+  enum class LastOp : std::uint8_t {
+    NONE,
+    READ,
+    WRITE,
+    DIR,
+    CMD
+  } last_op = LastOp::NONE;
   std::string last_filename;  // last opened file (for display)
   int cmd_count = 0;          // total commands processed
 };

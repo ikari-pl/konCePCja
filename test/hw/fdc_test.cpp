@@ -386,10 +386,10 @@ TEST(Fdc, ReadDataDeliversSectorAndResult) {
   EXPECT_EQ(r[1], 0x80) << "ST1: End of Cylinder";
   EXPECT_EQ(r[2], 0x00);
   EXPECT_EQ(r[3], 0x00);  // C
-  EXPECT_EQ(r[5], 0xC1)   // R = EOT — GOLDEN-MASTER DIVERGENCE A (docs §4b): the
-                          // datasheet's Table-2 rollover is for TC-terminated
-                          // reads; the CPC's EN path is unspecified + AMSDOS
-                          // never reads this R, so we keep the oracle's R=EOT.
+  EXPECT_EQ(r[5], 0xC1)  // R = EOT — GOLDEN-MASTER DIVERGENCE A (docs §4b): the
+                         // datasheet's Table-2 rollover is for TC-terminated
+                         // reads; the CPC's EN path is unspecified + AMSDOS
+                         // never reads this R, so we keep the oracle's R=EOT.
       << "R stays = EOT (divergence A, docs/hardware/fdc-device.md §4b)";
   EXPECT_EQ(r[6], 0x02);  // N
   EXPECT_EQ(io_read(rig, kMsr), 0x80);
@@ -1013,8 +1013,9 @@ TEST(FdcFlux, DecodesARealScpCaptureWhenProvided) {
   if (scp.empty()) scp = read_file("../test/hw/fixtures/real.scp");
   if (scp.empty()) scp = read_file("../test/hw/fixtures/real.a2r");
   if (scp.size() < 8)
-    GTEST_SKIP() << "no real flux fixture (set KONCEPCJA_REAL_SCP=<path> to a "
-                    "SuperCard Pro .scp or Applesauce .a2r of a DD CPC/IBM disc)";
+    GTEST_SKIP()
+        << "no real flux fixture (set KONCEPCJA_REAL_SCP=<path> to a "
+           "SuperCard Pro .scp or Applesauce .a2r of a DD CPC/IBM disc)";
 
   // Accept an Applesauce A2R flux capture: transcode it to SCP in memory so the
   // rest of the harness (and the whole flux pipeline) is unchanged.
@@ -1035,8 +1036,8 @@ TEST(FdcFlux, DecodesARealScpCaptureWhenProvided) {
   // Measure the capture's physical format from track-0, revolution-0 timing
   // (SCP TDH per rev: [index_time, flux_words, data_off], 25ns*(res+1) ticks).
   // This decoder targets 300 RPM / 250 kbit/s DD (a 2 us half-cell). An HD disc
-  // — e.g. PC-98 2HD at 360 RPM / 500 kbit/s — parses as a valid SCP but decodes
-  // to zero sectors: a SCOPE mismatch, not a decoder bug. Measure so an
+  // — e.g. PC-98 2HD at 360 RPM / 500 kbit/s — parses as a valid SCP but
+  // decodes to zero sectors: a SCOPE mismatch, not a decoder bug. Measure so an
   // out-of-scope disc SKIPs while a genuine DD-decode regression still FAILS.
   auto rd32le = [](const uint8_t* p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
@@ -1063,13 +1064,14 @@ TEST(FdcFlux, DecodesARealScpCaptureWhenProvided) {
   const long dsk_len =
       flux_scp_to_dsk(scp.data(), scp.size(), dsk.data(), dsk.size(), nullptr);
   if (dsk_len == FLUX_E_NO_SECTORS && !looks_dd)
-    GTEST_SKIP() << "out of scope for the DD decoder: measured " << rpm
-                 << " RPM, " << ticks_per_flux
-                 << " ticks/flux. This decoder targets ~300 RPM / 250 kbit/s DD "
-                    "(CPC 3\", PC/ST 720K, PC-98 2DD); HD captures (e.g. PC-98 "
-                    "2HD @ 360 RPM / 500 kbit/s) parse but decode to no sectors.";
-  ASSERT_GT(dsk_len, 0) << "the real capture decoded into a DSK (measured " << rpm
-                        << " RPM, " << ticks_per_flux << " ticks/flux)";
+    GTEST_SKIP()
+        << "out of scope for the DD decoder: measured " << rpm << " RPM, "
+        << ticks_per_flux
+        << " ticks/flux. This decoder targets ~300 RPM / 250 kbit/s DD "
+           "(CPC 3\", PC/ST 720K, PC-98 2DD); HD captures (e.g. PC-98 "
+           "2HD @ 360 RPM / 500 kbit/s) parse but decode to no sectors.";
+  ASSERT_GT(dsk_len, 0) << "the real capture decoded into a DSK (measured "
+                        << rpm << " RPM, " << ticks_per_flux << " ticks/flux)";
   EXPECT_TRUE(std::memcmp(dsk.data(), "MV - CPC", 8) == 0 ||
               std::memcmp(dsk.data(), "EXTENDED", 8) == 0)
       << "a well-formed DSK header";
@@ -1080,8 +1082,8 @@ TEST(FdcFlux, DecodesARealScpCaptureWhenProvided) {
   FluxTrack tk{};
   for (int c = 0; c < cyls && first_cyl < 0; ++c) {
     FluxTrack t{};
-    if (flux_decode_track_rev(scp.data(), scp.size(), static_cast<uint8_t>(c), 0,
-                              &t, payload.data(), payload.size()) == 0 &&
+    if (flux_decode_track_rev(scp.data(), scp.size(), static_cast<uint8_t>(c),
+                              0, &t, payload.data(), payload.size()) == 0 &&
         t.count > 0) {
       first_cyl = c;
       tk = t;

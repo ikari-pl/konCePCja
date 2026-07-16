@@ -10,8 +10,9 @@
 #define KONCPC_HW_PROBE_H
 
 #include <stddef.h>
-#include <cstdint>
 #include <stdint.h>
+
+#include <cstdint>
 
 #include "device.h"
 

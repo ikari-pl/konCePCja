@@ -34,20 +34,23 @@ struct mem_state {
   const uint8_t* roms[256] = {};  // caller-owned 16K expansion ROM images
 
   // Plus (6128+) cartridge banking. When `cart` is set (model 3), the lower and
-  // upper ROM windows read from the 16K cartridge banks instead of lower/upper_rom
-  // + roms[]. RMR2 (an ASIC mode-write) picks the low bank; ROM-select the high.
+  // upper ROM windows read from the 16K cartridge banks instead of
+  // lower/upper_rom
+  // + roms[]. RMR2 (an ASIC mode-write) picks the low bank; ROM-select the
+  // high.
   const uint8_t* cart = nullptr;  // caller-owned CPR image: cart_banks x 16K
   int cart_banks = 0;             // nonzero => Plus cartridge mode
-  uint8_t cart_lower = 0;         // low-ROM cartridge page (RMR2 & 7); boots at 0 = OS
-  // RMR2 membank field (bits 4-3): which 16K CPU slot the low-ROM page maps into
-  // — 0 = &0000-&3FFF, 1 = &4000-&7FFF, 2 = &8000-&BFFF (value 3 = register page,
-  // which pages the low ROM back to slot 0 and hands &4000 to the ASIC). The
-  // legacy Gate Array applies the low ROM at `lower_ROM_bank`, NOT always at slot
-  // 0 (kon_cpc_ja.cpp ga_memory_manager). Burnin' Rubber's RAM-LAM restart uses
-  // membank 2 to park the cartridge at &8000, leaving &0000-&3FFF as RAM.
+  uint8_t cart_lower = 0;  // low-ROM cartridge page (RMR2 & 7); boots at 0 = OS
+  // RMR2 membank field (bits 4-3): which 16K CPU slot the low-ROM page maps
+  // into — 0 = &0000-&3FFF, 1 = &4000-&7FFF, 2 = &8000-&BFFF (value 3 =
+  // register page, which pages the low ROM back to slot 0 and hands &4000 to
+  // the ASIC). The legacy Gate Array applies the low ROM at `lower_ROM_bank`,
+  // NOT always at slot 0 (kon_cpc_ja.cpp ga_memory_manager). Burnin' Rubber's
+  // RAM-LAM restart uses membank 2 to park the cartridge at &8000, leaving
+  // &0000-&3FFF as RAM.
   uint8_t cart_lower_slot = 0;
-  uint8_t cart_upper = 1;         // high-ROM bank (ROM-select map); boots = BASIC
-  const Device* asic = nullptr;   // read asic_unlocked() to gate RMR2
+  uint8_t cart_upper = 1;  // high-ROM bank (ROM-select map); boots = BASIC
+  const Device* asic = nullptr;  // read asic_unlocked() to gate RMR2
 
   // Fast-seam bank tables (memory.h §batch): CPU 16K slot → read source /
   // write target, rebuilt lazily after any banking-relevant change. A derived
@@ -74,7 +77,8 @@ bool lower_rom_serves(const mem_state* m, uint16_t addr) {
 }
 
 // Plus ROM-select -> upper-ROM cartridge bank (mirrors the legacy 6128+ map):
-// BASIC (bank 1) by default; AMSDOS (7) -> bank 3; ROM >= 128 -> its low 5 bits.
+// BASIC (bank 1) by default; AMSDOS (7) -> bank 3; ROM >= 128 -> its low 5
+// bits.
 uint8_t plus_upper_page(uint8_t sel) {
   if (sel == 7) return 3;
   if (sel >= 128) return sel & 31;
@@ -249,10 +253,10 @@ void mem_reset(void* self) {
   m->rom_config = 0;
   m->ram_config = 0;
   m->ram_ext = 0;
-  m->rom_select = 0;  // back to BASIC
+  m->rom_select = 0;       // back to BASIC
   m->cart_lower = 0;       // Plus: low ROM = cartridge bank 0 (OS)
   m->cart_lower_slot = 0;  // ...mapped at &0000-&3FFF (RMR2 membank 0)
-  m->cart_upper = 1;  // Plus: high ROM = cartridge bank 1 (BASIC)
+  m->cart_upper = 1;       // Plus: high ROM = cartridge bank 1 (BASIC)
   m->fast_dirty = 1;
 }
 
@@ -270,8 +274,11 @@ void mem_save(const void* self, void* buf) {
   b[0] = 1;
   std::memcpy(b + 1, self, sizeof(mem_state));
   // Zero the wiring-pointer fields in the blob (their host addresses are not
-  // logical state and would make the blob non-deterministic).
-  std::memset(b + 1 + offsetof(mem_state, expansion), 0, sizeof(uint8_t*));
+  // logical state and would make the blob non-deterministic). sizeof(void*):
+  // all object-pointer sizes are equal, and spelling the field's exact type
+  // (uint8_t*, matching the destination's) trips GCC's
+  // -Werror=sizeof-pointer-memaccess heuristic on a correct memset.
+  std::memset(b + 1 + offsetof(mem_state, expansion), 0, sizeof(void*));
   std::memset(b + 1 + offsetof(mem_state, roms), 0, sizeof(mem_state::roms));
   std::memset(b + 1 + offsetof(mem_state, cart), 0, sizeof(const uint8_t*));
   std::memset(b + 1 + offsetof(mem_state, asic), 0, sizeof(const Device*));
@@ -280,7 +287,8 @@ void mem_save(const void* self, void* buf) {
   std::memset(b + 1 + offsetof(mem_state, rd_bank), 0,
               sizeof(mem_state::rd_bank) + sizeof(mem_state::wr_bank));
   b[1 + offsetof(mem_state, fast_dirty)] = 1;
-  // Append the expansion RAM contents (logical state living behind the pointer).
+  // Append the expansion RAM contents (logical state living behind the
+  // pointer).
   if (m->expansion && m->expansion_len)
     std::memcpy(b + 1 + sizeof(mem_state), m->expansion, m->expansion_len);
 }
@@ -292,7 +300,8 @@ void mem_load(void* self, const void* buf) {
   mem_state* m = self_of(self);
   uint8_t* exp = m->expansion;
   const size_t exp_len = m->expansion_len;
-  const uint8_t* cart = m->cart;  // cartridge image + ASIC handle are live wiring
+  const uint8_t* cart =
+      m->cart;  // cartridge image + ASIC handle are live wiring
   const int cart_banks = m->cart_banks;
   const Device* asic = m->asic;
   const uint8_t* saved_roms[256];
@@ -360,8 +369,9 @@ void mem_load_cartridge(const Device* dev, const uint8_t* image, size_t bytes) {
   m->fast_dirty = 1;
 }
 
-// Intra-chip: the ASIC handle whose asic_unlocked() gates the RMR2 low-ROM remap
-// (the low-ROM bank select is invisible until the register page is knocked open).
+// Intra-chip: the ASIC handle whose asic_unlocked() gates the RMR2 low-ROM
+// remap (the low-ROM bank select is invisible until the register page is
+// knocked open).
 void mem_attach_asic(const Device* dev, const Device* asic) {
   static_cast<mem_state*>(dev->self)->asic = asic;
 }

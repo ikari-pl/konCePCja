@@ -1,7 +1,9 @@
 #include "imgui_ui.h"
+
 #include <cstdint>
-#include "subcycle_bridge.h"
+
 #include "subcycle/machine.h"
+#include "subcycle_bridge.h"
 
 // Speed Test (Run Tier menu): OpenPopup must fire outside the menu's ID
 // scope, so the click only raises this and the modal renders post-menu.
@@ -131,8 +133,7 @@ namespace {
 ImVec2 s_layout_btn_pos;  // set in topbar, read in layout dropdown
 }  // namespace
 namespace {
-bool s_topbar_height_dirty =
-    false;  // defer SDL_SetWindowSize to after render
+bool s_topbar_height_dirty = false;  // defer SDL_SetWindowSize to after render
 }  // namespace
 namespace {
 int s_statusbar_h = 0;
@@ -167,9 +168,8 @@ OptionsTab s_pending_options_tab = OptionsTab::None;
 // ─────────────────────────────────────────────────
 
 namespace {
-void SDLCALL file_dialog_callback(void* userdata,
-                                         const char* const* filelist,
-                                         int /*filter*/) {
+void SDLCALL file_dialog_callback(void* userdata, const char* const* filelist,
+                                  int /*filter*/) {
   // After the dialog dismisses (whether the user picked a file or
   // cancelled), restore keyboard routing to the emulator.
   //
@@ -205,7 +205,7 @@ void SDLCALL file_dialog_callback(void* userdata,
 // only, gated out of the menu when the bridge is inactive).
 namespace {
 void save_disk_to(int unit, SaveFormat fmt, const std::string& path,
-                         const std::string& fname) {
+                  const std::string& fname) {
   std::string err;
   bool ok = false;
   if (subcycle_bridge_active()) {
@@ -493,7 +493,6 @@ void imgui_init_ui() {
     KONCPC_KEYS const action_key = ma.action;
     std::string const shortcut = koncpc_action_shortcut(action_key);
     g_command_palette.register_command(title, "", shortcut, [action_key]() {
-      
       applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix,
                     true);
       applyKeypress(static_cast<CPCScancode>(action_key), keyboard_matrix,
@@ -503,7 +502,6 @@ void imgui_init_ui() {
   // Extra commands
   g_command_palette.register_command(
       "Pause / Resume", "Toggle emulation pause", "Pause", []() {
-        
         if (g_emu_paused.load(std::memory_order_relaxed))
           cpc_resume();
         else
@@ -739,14 +737,16 @@ void imgui_render_ui() {
                              ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextUnformatted("Create a blank disc in drive A:");
     ImGui::Spacing();
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     int backing = imgui_state.new_disk_flux ? 1 : 0;
     ImGui::RadioButton("Sector  (.dsk)", &backing, 0);
     ImGui::TextDisabled(
         "     Small, universal. No weak-bit / copy-protection capability.");
     ImGui::RadioButton("Flux  (.scp)", &backing, 1);
     ImGui::TextDisabled(
-        "     Larger. Preserves copy-protection on tracks you don't overwrite;");
+        "     Larger. Preserves copy-protection on tracks you don't "
+        "overwrite;");
     ImGui::TextDisabled(
         "     exports to real HxC/Gotek hardware (.hfe) and .scp.");
     imgui_state.new_disk_flux = backing == 1;
@@ -807,7 +807,8 @@ void mru_push(std::vector<std::string>& list, const std::string& path) {
 }
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void imgui_mru_push(std::vector<std::string>& list, const std::string& path) {
   mru_push(list, path);
 }
@@ -859,8 +860,9 @@ bool imgui_any_keyboard_ui_active() {
   if (io.WantTextInput) return true;
 
   // The Virtual Joystick, when it is the focused window, maps the host arrows +
-  // space onto the CPC joystick (see imgui_render_vjoystick) — so those keys must
-  // be kept away from the CPC keyboard. Only while it is focused (and only then).
+  // space onto the CPC joystick (see imgui_render_vjoystick) — so those keys
+  // must be kept away from the CPC keyboard. Only while it is focused (and only
+  // then).
   if (imgui_state.vjoystick_focused) return true;
 
   // In docked mode the CPC Screen window tracks focus explicitly.
@@ -1024,7 +1026,8 @@ void apply_scr_scale(int scale_idx) {
 // items consumed by BOTH the in-window ImGui bar and the native macOS bar.
 // ─────────────────────────────────────────────────
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 const std::vector<SettingsTabItem>& koncpc_settings_tab_items() {
   // Order + separators mirror the Machine menu in the taxonomy.
   static std::vector<SettingsTabItem> const items = {
@@ -1039,7 +1042,8 @@ const std::vector<SettingsTabItem>& koncpc_settings_tab_items() {
   return items;
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 const std::vector<WindowMenuItem>& koncpc_window_menu_items() {
   // 3 specials + the 17 devtools windows, grouped exactly like the in-window
   // Window menu (separator_before reproduces the section breaks).
@@ -1074,7 +1078,8 @@ const std::vector<WindowMenuItem>& koncpc_window_menu_items() {
   return items;
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 const std::vector<const char*>& koncpc_scale_labels() {
   static std::vector<const char*> const labels = {"Fit window", "1x", "1.5x",
                                                   "2x", "3x"};
@@ -1094,7 +1099,8 @@ extern "C" void koncpc_request_file_dialog(int action) {
   // Single source for the per-action filters + default paths.  Same callback
   // (which restores keyboard focus) used by every loader/saver.
   auto fda = static_cast<FileDialogAction>(action);
-  // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer reinterpret for hardware/opaque handles
+  // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer
+  // reinterpret for hardware/opaque handles
   auto ud = reinterpret_cast<void*>(static_cast<intptr_t>(action));
   switch (fda) {
     case FileDialogAction::LoadDiskA: {
@@ -1374,19 +1380,24 @@ void imgui_render_menubar() {
     // Under engine=1 the caps come from the sub-cycle FDC medium; on a legacy
     // engine=0 run they fall back to the driveA/driveB struct (sector-only).
     const bool engine_live = subcycle_bridge_active();
-    const FluxSaveCaps caps_a = engine_live ? flux_save_caps(0) : FluxSaveCaps{};
-    const FluxSaveCaps caps_b = engine_live ? flux_save_caps(1) : FluxSaveCaps{};
+    const FluxSaveCaps caps_a =
+        engine_live ? flux_save_caps(0) : FluxSaveCaps{};
+    const FluxSaveCaps caps_b =
+        engine_live ? flux_save_caps(1) : FluxSaveCaps{};
     const bool a_dsk = engine_live ? caps_a.can_dsk : (driveA.tracks != 0);
     const bool b_dsk = engine_live ? caps_b.can_dsk : (driveB.tracks != 0);
     if (ImGui::BeginMenu("Save Disk A", a_dsk || caps_a.can_scp)) {
       if (ImGui::MenuItem("As .dsk...", nullptr, false, a_dsk)) {
-        koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskA));
+        koncpc_request_file_dialog(
+            static_cast<int>(FileDialogAction::SaveDiskA));
       }
-      if (ImGui::MenuItem("As .scp (flux)...", nullptr, false, caps_a.can_scp)) {
+      if (ImGui::MenuItem("As .scp (flux)...", nullptr, false,
+                          caps_a.can_scp)) {
         koncpc_request_file_dialog(
             static_cast<int>(FileDialogAction::SaveDiskA_SCP));
       }
-      if (ImGui::MenuItem("As .hfe (flux)...", nullptr, false, caps_a.can_hfe)) {
+      if (ImGui::MenuItem("As .hfe (flux)...", nullptr, false,
+                          caps_a.can_hfe)) {
         koncpc_request_file_dialog(
             static_cast<int>(FileDialogAction::SaveDiskA_HFE));
       }
@@ -1577,11 +1588,13 @@ void imgui_render_menubar() {
   // labels under each separator are added here for the in-window bar's denser
   // layout (the native bar shows the separators alone).
   if (ImGui::BeginMenu("Window")) {
-    static const char* const kSectionLabel[] = {
-        "Debug Windows", "Hardware", "Analysis", "Recording"};
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    static const char* const kSectionLabel[] = {"Debug Windows", "Hardware",
+                                                "Analysis", "Recording"};
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     int section = 0;
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     bool first = true;
     for (const WindowMenuItem& it : koncpc_window_menu_items()) {
       if (it.separator_before) {
@@ -1594,10 +1607,11 @@ void imgui_render_menubar() {
       first = false;
       // Virtual Keyboard keeps its discoverability hint; specials have no live
       // toggle pointer, so route clicks through the bridge toggle.
-      const char* shortcut = (strcmp(it.key, "$vkbd") == 0)   ? "Shift+F1"
-                             // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): compact selection expression kept intentionally
-                             : (strcmp(it.key, "$vjoy") == 0) ? "Shift+F6"
-                                                              : nullptr;
+      const char* shortcut = nullptr;
+      if (strcmp(it.key, "$vkbd") == 0)
+        shortcut = "Shift+F1";
+      else if (strcmp(it.key, "$vjoy") == 0)
+        shortcut = "Shift+F6";
       if (ImGui::MenuItem(it.label, shortcut, koncpc_window_is_open(it.key))) {
         koncpc_window_toggle(it.key);
       }
@@ -1893,7 +1907,8 @@ void imgui_render_topbar() {
     // focus interactions with the dockspace.
     {
       // Right-align before rightmost element (PAUSED or FPS counter)
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       float right_w = 0.0f;
       if (is_paused) {
         right_w = ImGui::CalcTextSize("PAUSED").x + 16.0f;
@@ -1989,8 +2004,8 @@ void imgui_marquee_text(const char* text, float boxW) {
 // Draw a beveled LED indicator (16x8 px) with active/inactive state.
 // r,g,b are the base color channel values (e.g. 255,0,0 for red).
 namespace {
-void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active,
-                            int r, int g, int b) {
+void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active, int r,
+                     int g, int b) {
   if (active) {
     dl->AddRectFilled(p0, p1, IM_COL32(r, g, b, 255));
     ImU32 const hi = IM_COL32(std::min(255, r + 100), std::min(255, g + 100),
@@ -2127,7 +2142,8 @@ void imgui_render_statusbar() {
                                 : FileDialogAction::LoadDiskB_LED;
             SDL_ShowOpenFileDialog(
                 file_dialog_callback,
-                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer reinterpret for hardware/opaque handles
+                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+                // integer/pointer reinterpret for hardware/opaque handles
                 reinterpret_cast<void*>(static_cast<intptr_t>(act)),
                 mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(),
                 false);
@@ -2233,12 +2249,14 @@ void imgui_render_statusbar() {
         if (!tape_loaded && ImGui::IsItemClicked()) {
           static const SDL_DialogFileFilter tape_filters[] = {
               {"Tape Images", "cdt;voc;zip"}};
-          SDL_ShowOpenFileDialog(file_dialog_callback,
-                                 // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer reinterpret for hardware/opaque handles
-                                 reinterpret_cast<void*>(static_cast<intptr_t>(
-                                     FileDialogAction::LoadTape_LED)),
-                                 mainSDLWindow, tape_filters, 1,
-                                 CPC.current_tape_path.c_str(), false);
+          SDL_ShowOpenFileDialog(
+              file_dialog_callback,
+              // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+              // integer/pointer reinterpret for hardware/opaque handles
+              reinterpret_cast<void*>(
+                  static_cast<intptr_t>(FileDialogAction::LoadTape_LED)),
+              mainSDLWindow, tape_filters, 1, CPC.current_tape_path.c_str(),
+              false);
         }
       }
 
@@ -2268,8 +2286,8 @@ void imgui_render_statusbar() {
             CPC.tape_play_button = 0;
             imgui_state.tape_current_block = prev;
             // engine=1: the sub-cycle deck is a separate device — request the
-            // same block seek by ordinal (applied on the Z80 thread at the frame
-            // boundary; the deck walks its own cdt to that block).
+            // same block seek by ordinal (applied on the Z80 thread at the
+            // frame boundary; the deck walks its own cdt to that block).
             subcycle_bridge_request_tape_seek(static_cast<uint32_t>(prev));
           }
         }
@@ -2325,7 +2343,8 @@ void imgui_render_statusbar() {
           if (next < static_cast<int>(imgui_state.tape_block_offsets.size())) {
             CPC.tape_play_button = 0;
             imgui_state.tape_current_block = next;
-            // engine=1: mirror the seek onto the sub-cycle deck by ordinal (see Prev).
+            // engine=1: mirror the seek onto the sub-cycle deck by ordinal (see
+            // Prev).
             subcycle_bridge_request_tape_seek(static_cast<uint32_t>(next));
           }
         }
@@ -2460,10 +2479,12 @@ void imgui_render_statusbar() {
         // that signal. Persisted as [sound] tape_data_volume.
         if (ImGui::BeginPopupContextItem("##tape_scope_ctx")) {
           ImGui::TextUnformatted("Tape data sound");
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+          // mutated (out-param/compound-assign/loop/reference)
           float vol = tape_line_out_volume() * 100.0f;
           ImGui::SetNextItemWidth(140.0f);
-          if (ImGui::SliderFloat("##tape_data_vol", &vol, 0.0f, 100.0f, "%.0f%%"))
+          if (ImGui::SliderFloat("##tape_data_vol", &vol, 0.0f, 100.0f,
+                                 "%.0f%%"))
             tape_line_out_set_volume(vol / 100.0f);
           ImGui::EndPopup();
         }
@@ -2564,7 +2585,8 @@ std::string state_slots_dir() {
   if (base.empty()) base = ".";
   if (base.back() != '/' && base.back() != '\\') base += '/';
   std::string dir = base + "states/";
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   return dir;
@@ -2620,7 +2642,8 @@ void imgui_invalidate_slot_thumbs() {
 
 namespace {
 bool state_slot_exists(int i) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   std::error_code ec;
   return std::filesystem::exists(state_slot_path(i), ec);
 }
@@ -2629,7 +2652,8 @@ bool state_slot_exists(int i) {
 // Last-write time of a slot, formatted "MMM DD HH:MM", or "" if missing.
 namespace {
 std::string state_slot_time(int i) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   std::error_code ec;
   std::string const path = state_slot_path(i);
   if (!std::filesystem::exists(path, ec)) return "";
@@ -2697,13 +2721,15 @@ void imgui_render_menu() {
       mvp->Pos, ImVec2(mvp->Pos.x + mvp->Size.x, mvp->Pos.y + mvp->Size.y),
       IM_COL32(0, 0, 0, 150));
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   ImGuiWindowFlags flags =
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
       ImGuiWindowFlags_AlwaysAutoResize;
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool menu_open = true;
   if (!ImGui::Begin("konCePCja", &menu_open, flags)) {
     if (!menu_open) imgui_close_menu();
@@ -2765,7 +2791,8 @@ void imgui_render_menu() {
     ImGui::SameLine();
     if (ImGui::Button("Screenshot", ImVec2(half, 0))) {
       std::string dir = CPC.sdump_dir;
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       std::error_code ec;
       if (dir.empty() || !std::filesystem::is_directory(dir, ec)) dir = ".";
       std::string const shot = dir + "/screenshot_" + getDateString() + ".png";
@@ -2802,8 +2829,8 @@ void imgui_render_menu() {
   ImGui::TextDisabled("%s", basename_or_dash(CPC.cartridge.file).c_str());
   ImGui::NextColumn();
 
-  static const char* const kModelNames[] = {"CPC 464", "CPC 664",
-                                                  "CPC 6128", "6128+"};
+  static const char* const kModelNames[] = {"CPC 464", "CPC 664", "CPC 6128",
+                                            "6128+"};
   const char* model_name =
       (CPC.model < IM_ARRAYSIZE(kModelNames)) ? kModelNames[CPC.model] : "?";
   ImGui::Text("Model:");
@@ -2832,8 +2859,9 @@ void imgui_render_menu() {
   ImGui::TextDisabled("Save States");
   ImGui::Spacing();
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-  static int state_mode = 0; // 0 = Load, 1 = Save
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
+  static int state_mode = 0;  // 0 = Load, 1 = Save
   ImGui::RadioButton("Load", &state_mode, 0);
   ImGui::SameLine();
   ImGui::RadioButton("Save", &state_mode, 1);
@@ -2848,9 +2876,11 @@ void imgui_render_menu() {
 
   // Return a cached/ refreshed thumbnail texture for slot i, or 0 if none.
   auto slot_thumb_texture = [](int i) -> uintptr_t {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::string tp = state_slot_thumb(i);
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::error_code ec;
     if (!std::filesystem::exists(tp, ec)) {
       invalidate_slot_thumb(i);
@@ -2997,16 +3027,14 @@ namespace {
 const char* scale_items[] = {"Fit window", "1x", "1.5x", "2x", "3x"};
 }  // namespace
 namespace {
-const char* sample_rates[] = {"11025", "22050", "44100", "48000",
-                                     "96000"};
+const char* sample_rates[] = {"11025", "22050", "44100", "48000", "96000"};
 }  // namespace
 namespace {
 const char* cpc_models[] = {"CPC 464", "CPC 664", "CPC 6128", "6128+"};
 }  // namespace
 namespace {
-const char* ram_sizes[] = {
-    "64 KB",  "128 KB", "192 KB", "256 KB",
-    "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)"};
+const char* ram_sizes[] = {"64 KB",  "128 KB", "192 KB", "256 KB",
+                           "320 KB", "512 KB", "576 KB", "4160 KB (Yarek 4MB)"};
 }  // namespace
 namespace {
 int ram_size_values[] = {64, 128, 192, 256, 320, 512, 576, 4160};
@@ -3038,7 +3066,8 @@ void imgui_render_options() {
   ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_Appearing);
   ImGui::SetNextWindowViewport(mvp->ID);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool open = true;
   if (!ImGui::Begin("Options", &open, ImGuiWindowFlags_NoCollapse)) {
     if (!open) {
@@ -3055,27 +3084,30 @@ void imgui_render_options() {
                             s_pending_options_tab == OptionsTab::General
                                 ? ImGuiTabItemFlags_SetSelected
                                 : 0)) {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int model = static_cast<int>(CPC.model);
       if (ImGui::Combo("CPC Model", &model, cpc_models,
                        IM_ARRAYSIZE(cpc_models))) {
         CPC.model = model;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int ram_idx = find_ram_index(CPC.ram_size);
       if (ImGui::Combo("RAM Size", &ram_idx, ram_sizes,
                        IM_ARRAYSIZE(ram_sizes))) {
         CPC.ram_size = ram_size_values[ram_idx];
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int crtc = static_cast<int>(CRTC.crtc_type);
       if (ImGui::Combo("CRTC Type", &crtc, crtc_type_labels,
                        IM_ARRAYSIZE(crtc_type_labels))) {
         CRTC.crtc_type = static_cast<unsigned char>(crtc);
-          if (subcycle::Machine* m = subcycle_bridge_machine())
-            m->set_crtc_type(static_cast<uint8_t>(crtc));
+        if (subcycle::Machine* m = subcycle_bridge_machine())
+          m->set_crtc_type(static_cast<uint8_t>(crtc));
       }
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip(
@@ -3083,13 +3115,15 @@ void imgui_render_options() {
             "testing.");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool limit = CPC.limit_speed != 0;
       if (ImGui::Checkbox("Limit Speed", &limit)) {
         CPC.limit_speed = limit ? 1 : 0;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool frameskip = CPC.frameskip != 0;
       if (ImGui::Checkbox("Auto Frameskip", &frameskip)) {
         CPC.frameskip = frameskip ? 1 : 0;
@@ -3100,7 +3134,8 @@ void imgui_render_options() {
             "speed.\nOnly has an effect when 'Limit Speed' is enabled.");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int speed = static_cast<int>(CPC.speed);
       if (ImGui::SliderInt("Speed", &speed, MIN_SPEED_SETTING,
                            MAX_SPEED_SETTING)) {
@@ -3111,7 +3146,8 @@ void imgui_render_options() {
             "CPU clock speed in MHz (default: 4).\nHigher = faster emulation.");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool printer = CPC.printer != 0;
       if (ImGui::Checkbox("Printer Capture", &printer)) {
         CPC.printer = printer ? 1 : 0;
@@ -3121,7 +3157,8 @@ void imgui_render_options() {
                           CPC.printer_file.c_str());
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool sw = g_smartwatch.enabled;
       if (ImGui::Checkbox("SmartWatch RTC", &sw)) {
         g_smartwatch.enabled = sw;
@@ -3132,7 +3169,8 @@ void imgui_render_options() {
             "real-time clock via host system time.");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool sf2 = g_symbiface.enabled;
       if (ImGui::Checkbox("Symbiface II", &sf2)) {
         g_symbiface.enabled = sf2;
@@ -3143,7 +3181,8 @@ void imgui_render_options() {
             "images in config file.");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool m4 = g_m4board.enabled;
       if (ImGui::Checkbox("M4 Board", &m4)) {
         g_m4board.enabled = m4;
@@ -3219,7 +3258,8 @@ void imgui_render_options() {
             imgui_state.pending_rom_slot = i;
             SDL_ShowOpenFileDialog(
                 file_dialog_callback,
-                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer reinterpret for hardware/opaque handles
+                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+                // integer/pointer reinterpret for hardware/opaque handles
                 reinterpret_cast<void*>(
                     static_cast<intptr_t>(FileDialogAction::LoadROM)),
                 mainSDLWindow, filters, 1, CPC.rom_path.c_str(), false);
@@ -3325,7 +3365,8 @@ void imgui_render_options() {
             "size (cropped if window is smaller).");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool crt_aspect = CPC.scr_crt_aspect != 0;
       if (ImGui::Checkbox("CRT aspect ratio (4:3)", &crt_aspect)) {
         CPC.scr_crt_aspect = crt_aspect ? 1 : 0;
@@ -3345,7 +3386,8 @@ void imgui_render_options() {
         CPC.scr_tube = 1;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int intensity = static_cast<int>(CPC.scr_intensity);
       if (ImGui::SliderInt("Intensity", &intensity, 5, 15)) {
         CPC.scr_intensity = intensity;
@@ -3356,7 +3398,8 @@ void imgui_render_options() {
             "CRT phosphor brightness.\nHigher = brighter colours.");
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool scanlines = CPC.scr_scanlines != 0;
       if (ImGui::Checkbox("Scanlines", &scanlines)) {
         CPC.scr_scanlines = scanlines ? 1 : 0;
@@ -3366,7 +3409,8 @@ void imgui_render_options() {
         }
       }
       if (scanlines) {
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+        // mutated (out-param/compound-assign/loop/reference)
         int sl_intensity = static_cast<int>(CPC.scr_oglscanlines);
         if (ImGui::SliderInt("Scanline Intensity", &sl_intensity, 0, 100)) {
           CPC.scr_oglscanlines = sl_intensity;
@@ -3374,19 +3418,22 @@ void imgui_render_options() {
         }
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool fps = CPC.scr_fps != 0;
       if (ImGui::Checkbox("Show FPS", &fps)) {
         CPC.scr_fps = fps ? 1 : 0;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool fullscreen = CPC.scr_window == 0;
       if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
         CPC.scr_window = fullscreen ? 0 : 1;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool aspect = CPC.scr_preserve_aspect_ratio != 0;
       if (ImGui::Checkbox("Preserve Aspect Ratio", &aspect)) {
         CPC.scr_preserve_aspect_ratio = aspect ? 1 : 0;
@@ -3404,7 +3451,8 @@ void imgui_render_options() {
                             s_pending_options_tab == OptionsTab::Audio
                                 ? ImGuiTabItemFlags_SetSelected
                                 : 0)) {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) {
         CPC.snd_enabled = snd ? 1 : 0;
@@ -3412,8 +3460,10 @@ void imgui_render_options() {
 
       static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
       int rate_idx = static_cast<int>(CPC.snd_playback_rate);
-      // NOLINTNEXTLINE(readability-redundant-casting): cast guards the macro from a clang-tidy mis-fix
-      if (rate_idx < 0 || rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
+      // NOLINTNEXTLINE(readability-redundant-casting): cast guards the macro
+      // from a clang-tidy mis-fix
+      if (rate_idx < 0 ||
+          rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
         rate_idx = kDefaultSampleRateIndex;
         CPC.snd_playback_rate = rate_idx;  // fix invalid value immediately
       }
@@ -3441,7 +3491,8 @@ void imgui_render_options() {
         CPC.snd_bits = 1;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int vol = static_cast<int>(CPC.snd_volume);
       if (ImGui::SliderInt("Volume", &vol, 0, 100)) {
         CPC.snd_volume = vol;
@@ -3449,22 +3500,26 @@ void imgui_render_options() {
 
       ImGui::Separator();
       ImGui::Text("Peripherals");
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool pp = CPC.snd_pp_device != 0;
       if (ImGui::Checkbox("Digiblaster", &pp)) {
         CPC.snd_pp_device = pp ? 1 : 0;
       }
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool amdrum = g_amdrum.enabled;
       if (ImGui::Checkbox("AmDrum", &amdrum)) {
         g_amdrum.enabled = amdrum;
       }
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool disk_snd = g_drive_sounds.disk_enabled;
       if (ImGui::Checkbox("Disk Drive Sounds", &disk_snd)) {
         g_drive_sounds.disk_enabled = disk_snd;
       }
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool tape_snd = g_drive_sounds.tape_enabled;
       if (ImGui::Checkbox("Tape Sounds", &tape_snd)) {
         g_drive_sounds.tape_enabled = tape_snd;
@@ -3488,27 +3543,30 @@ void imgui_render_options() {
 
       int ksm = static_cast<int>(CPC.keyboard_support_mode);
       const char* const ksm_modes[] = {"Direct", "Buffered Until Read",
-                                             "Min. 2 Frames"};
+                                       "Min. 2 Frames"};
       int const max_ksm = IM_ARRAYSIZE(ksm_modes);
       if (ksm < 0 || ksm >= max_ksm) ksm = 0;
       if (ImGui::Combo("Keyboard Support Mode", &ksm, ksm_modes, max_ksm)) {
         CPC.keyboard_support_mode = static_cast<KeyboardSupportMode>(ksm);
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool joy_emu = CPC.joystick_emulation != JoystickEmulation::None;
       if (ImGui::Checkbox("Joystick Emulation", &joy_emu)) {
         CPC.joystick_emulation =
             joy_emu ? JoystickEmulation::Keyboard : JoystickEmulation::None;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool joysticks = CPC.joysticks != 0;
       if (ImGui::Checkbox("Use Real Joysticks", &joysticks)) {
         CPC.joysticks = joysticks ? 1 : 0;
       }
 
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool amx = g_amx_mouse.enabled;
       if (ImGui::Checkbox("AMX Mouse", &amx)) {
         g_amx_mouse.enabled = amx;
@@ -3527,7 +3585,8 @@ void imgui_render_options() {
                             s_pending_options_tab == OptionsTab::M4
                                 ? ImGuiTabItemFlags_SetSelected
                                 : 0)) {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool m4_en = g_m4board.enabled;
       if (ImGui::Checkbox("Enable M4 Board", &m4_en)) {
         g_m4board.enabled = m4_en;
@@ -3565,7 +3624,8 @@ void imgui_render_options() {
                                         : g_m4board.sd_root_path.c_str();
           SDL_ShowOpenFolderDialog(
               file_dialog_callback,
-              // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer reinterpret for hardware/opaque handles
+              // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+              // integer/pointer reinterpret for hardware/opaque handles
               reinterpret_cast<void*>(
                   static_cast<intptr_t>(FileDialogAction::SelectM4SDFolder)),
               mainSDLWindow, default_loc, false);
@@ -3733,9 +3793,11 @@ void imgui_render_options() {
         }
 
         // Add manual mapping row
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — &var passed to ImGui as a mutable in/out pointer
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — &var passed
+        // to ImGui as a mutable in/out pointer
         static int new_cpc_port = 80;
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — &var passed to ImGui as a mutable in/out pointer
+        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — &var passed
+        // to ImGui as a mutable in/out pointer
         static int new_host_port = 8080;
         ImGui::SetNextItemWidth(70.0f);
         ImGui::InputInt("##newcpc", &new_cpc_port, 0, 0);
@@ -3764,7 +3826,8 @@ void imgui_render_options() {
                                 ? ImGuiTabItemFlags_SetSelected
                                 : 0)) {
       SerialConfig cfg = g_serial_interface.get_config();
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       bool serial_en = cfg.enabled;
 
       if (ImGui::Checkbox("Enable Serial Interface", &serial_en)) {
@@ -3784,10 +3847,11 @@ void imgui_render_options() {
       ImGui::Separator();
 
       // Backend type selection
-      const char* const backend_types[] = {
-          "Null",       "File",       "Host Serial",
-          "Null Modem", "TCP Socket", "HP-GL Plotter"};
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      const char* const backend_types[] = {"Null",        "File",
+                                           "Host Serial", "Null Modem",
+                                           "TCP Socket",  "HP-GL Plotter"};
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       int current_backend = static_cast<int>(cfg.backend_type);
       ImGui::SetNextItemWidth(150.0f);
       if (ImGui::Combo("Backend", &current_backend, backend_types,
@@ -4044,9 +4108,10 @@ void imgui_render_options() {
 // Shared poke input UI with proper validation
 // Returns true if poke was executed
 namespace {
-bool ui_poke_input(char *addr_buf, size_t addr_size, char *val_buf,
-                   // NOLINTNEXTLINE(misc-unused-parameters): parameter retained for API/callback signature stability
-                   size_t val_size, const char *id_suffix) {
+bool ui_poke_input(char* addr_buf, size_t addr_size, char* val_buf,
+                   // NOLINTNEXTLINE(misc-unused-parameters): parameter retained
+                   // for API/callback signature stability
+                   size_t val_size, const char* id_suffix) {
   ImGui::PushID(id_suffix);
 
   ImGui::SetNextItemWidth(50);
@@ -4075,16 +4140,16 @@ namespace {
 bool devtools_first_open = true;
 }  // namespace
 
-// A live numeric readout for the devtools bar whose tooltip stays put instead of
-// flickering. Two causes are addressed:
+// A live numeric readout for the devtools bar whose tooltip stays put instead
+// of flickering. Two causes are addressed:
 //   1. The tooltip window is positioned at the cursor (BeginTooltipEx enforces
 //      MousePos + offset); near a screen edge ImGui flips it so it lands
 //      PARTIALLY UNDER THE POINTER. Once another window overlaps the item's
 //      position, a plain IsItemHovered() returns false ("obstructed by another
 //      window"), so the tooltip is skipped next frame, then reappears, then
-//      hides… — the flicker. ImGuiHoveredFlags_AllowWhenOverlappedByWindow keeps
-//      hover true while the cursor is inside the item's rect regardless of the
-//      tooltip drawn on top of it.
+//      hides… — the flicker. ImGuiHoveredFlags_AllowWhenOverlappedByWindow
+//      keeps hover true while the cursor is inside the item's rect regardless
+//      of the tooltip drawn on top of it.
 //   2. The value's text width changes frame-to-frame as digits come and go; the
 //      old TextUnformatted item rect jittered with it. We reserve a FIXED width
 //      sized to `widest` (font-independent), draw the text into it, and
@@ -4415,7 +4480,8 @@ namespace {
 void imgui_render_memory_tool() {
   ImGui::SetNextWindowSize(ImVec2(400, 340), ImGuiCond_FirstUseEver);
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool open = true;
   if (!ImGui::Begin("Memory Tool", &open, ImGuiWindowFlags_NoCollapse)) {
     if (!open) imgui_state.show_memory_tool = false;
@@ -4425,7 +4491,8 @@ void imgui_render_memory_tool() {
 
   // Poke
   ui_poke_input(imgui_state.mem_poke_addr, sizeof(imgui_state.mem_poke_addr),
-                imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val), "mt");
+                imgui_state.mem_poke_val, sizeof(imgui_state.mem_poke_val),
+                "mt");
 
   // Display address
   ImGui::SetNextItemWidth(50);
@@ -4570,7 +4637,8 @@ void imgui_render_memory_tool() {
 
 namespace {
 void imgui_render_vkeyboard() {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool open = true;
   ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
 
@@ -4959,11 +5027,12 @@ void imgui_render_vjoystick() {
     return;
   }
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool open = true;
   ImGui::SetNextWindowSize(ImVec2(250, 240), ImGuiCond_FirstUseEver);
-  // NoNav: arrow keys are read for the joystick (below), not consumed by ImGui's
-  // keyboard navigation between the d-pad buttons.
+  // NoNav: arrow keys are read for the joystick (below), not consumed by
+  // ImGui's keyboard navigation between the d-pad buttons.
   if (!ImGui::Begin("Virtual Joystick", &open,
                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoNav)) {
     imgui_state.vjoystick_focused = false;
@@ -4990,8 +5059,8 @@ void imgui_render_vjoystick() {
 
   // While THIS is the focused window, the host arrows + space also drive the
   // target joystick — and ONLY then (imgui_any_keyboard_ui_active() reports a
-  // focused vjoy window as keyboard-capturing, so these keys don't also reach the
-  // CPC keyboard). Compute the keyboard-held bits UP FRONT so the on-screen
+  // focused vjoy window as keyboard-capturing, so these keys don't also reach
+  // the CPC keyboard). Compute the keyboard-held bits UP FRONT so the on-screen
   // buttons can render as pressed too.
   const bool focused =
       ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -5005,9 +5074,9 @@ void imgui_render_vjoystick() {
     if (ImGui::IsKeyDown(ImGuiKey_Space)) kbd |= VJOY_FIRE1;
   }
 
-  // Collect held buttons: mouse (IsItemActive) OR keyboard (kbd). A button whose
-  // bits are all keyboard-held is drawn in the "active" colour so the press shows
-  // on screen.
+  // Collect held buttons: mouse (IsItemActive) OR keyboard (kbd). A button
+  // whose bits are all keyboard-held is drawn in the "active" colour so the
+  // press shows on screen.
   unsigned mask = 0;
   auto pad_btn = [&](const char* label, unsigned bit, float w, float h) {
     const bool forced = bit != 0 && (kbd & bit) == bit;
@@ -5178,7 +5247,8 @@ void imgui_render_serial_terminal() {
     if (s_serial_term.show_ascii) {
       ImGui::Spacing();
       ImGui::TextDisabled("ASCII View:");
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       std::string ascii_str;
       for (uint8_t const b : s_serial_term.rx_buffer) {
         char const c = (b >= 32 && b < 127) ? b : '.';
@@ -5267,11 +5337,13 @@ void imgui_render_plotter_preview() {
   ImGui::SameLine(ImGui::GetContentRegionAvail().x - 180.0f);
   if (ImGui::SmallButton("Export SVG...")) {
     static const SDL_DialogFileFilter filters[] = {{"SVG files", "svg"}};
-    SDL_ShowSaveFileDialog(file_dialog_callback,
-                           // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer/pointer reinterpret for hardware/opaque handles
-                           reinterpret_cast<void*>(static_cast<intptr_t>(
-                               FileDialogAction::SavePlotterSVG)),
-                           mainSDLWindow, filters, 1, "plotter_output.svg");
+    SDL_ShowSaveFileDialog(
+        file_dialog_callback,
+        // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+        // integer/pointer reinterpret for hardware/opaque handles
+        reinterpret_cast<void*>(
+            static_cast<intptr_t>(FileDialogAction::SavePlotterSVG)),
+        mainSDLWindow, filters, 1, "plotter_output.svg");
   }
   ImGui::SameLine();
   if (ImGui::SmallButton("Clear")) {

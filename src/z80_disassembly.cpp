@@ -12,7 +12,8 @@
 // and FD CB instructions the displacement byte precedes the final opcode byte,
 // so the old code keyed the table on the displacement and produced the wrong
 // mnemonic for any non-zero displacement. Output format for every other case
-// is preserved byte-for-byte (see test/z80_disassembly.cpp golden expectations).
+// is preserved byte-for-byte (see test/z80_disassembly.cpp golden
+// expectations).
 
 #include "z80_disassembly.h"
 
@@ -24,8 +25,8 @@
 #include <string_view>
 
 #include "log.h"
-#include "z80_view.h"
 #include "z80_opcode_table.h"
+#include "z80_view.h"
 
 extern t_z80regs z80;
 
@@ -39,10 +40,10 @@ constexpr int kMaxInstrLen = 4;
 // the caller emits a single `db` byte.
 struct RawInstr {
   const Z80Opcode* op = nullptr;  // matched table entry, or null (unknown)
-  byte length = 1;                // total bytes consumed (1 for the db fallback)
-  byte bytes[kMaxInstrLen] = {};  // instruction bytes in memory order
-  const byte* operands = nullptr; // start of the immediate/displacement run
-  byte operand_count = 0;         // number of operand bytes at `operands`
+  byte length = 1;  // total bytes consumed (1 for the db fallback)
+  byte bytes[kMaxInstrLen] = {};   // instruction bytes in memory order
+  const byte* operands = nullptr;  // start of the immediate/displacement run
+  byte operand_count = 0;          // number of operand bytes at `operands`
 };
 
 // Decode the prefix stream and look the opcode up in the master table. Reads
@@ -147,9 +148,7 @@ void append_target_comment(std::string& text, word address) {
 DisassembledLine::DisassembledLine(word address, uint64_t opcode,
                                    std::string&& instruction,
                                    int64_t ref_address)
-    : address_(address),
-      opcode_(opcode),
-      instruction_(std::move(instruction)) {
+    : address_(address), opcode_(opcode), instruction_(std::move(instruction)) {
   if (ref_address >= 0) {
     ref_address_ = static_cast<word>(ref_address);
     char buf[8];
@@ -185,9 +184,11 @@ std::ostream& operator<<(std::ostream& os, const DisassembledLine& line) {
 // ── DisassembledCode ────────────────────────────────────────────────────────
 
 uint64_t DisassembledCode::hash() const {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   uint64_t h = 0;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   int i = 0;
   for (const auto& line : lines) {
     h += i * (line.address_ + line.opcode_);
@@ -210,7 +211,8 @@ std::ostream& operator<<(std::ostream& os, const DisassembledCode& code) {
 
 // ── Disassembly core ────────────────────────────────────────────────────────
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 DisassembledLine disassemble_one(dword start_address, DisassembledCode& result,
                                  std::vector<dword>& called_points) {
   const word start = static_cast<word>(start_address);
@@ -232,8 +234,7 @@ DisassembledLine disassemble_one(dword start_address, DisassembledCode& result,
   // recorded for recursive following.
   const size_t word_pos = text.find("**");
   if (word_pos != std::string::npos) {
-    const word value = static_cast<word>(r.operands[0] |
-                                          (r.operands[1] << 8));
+    const word value = static_cast<word>(r.operands[0] | (r.operands[1] << 8));
     oi = 2;
     char buf[8];
     std::snprintf(buf, sizeof(buf), "$%04x", value);
@@ -266,7 +267,7 @@ DisassembledLine disassemble_one(dword start_address, DisassembledCode& result,
 // `pos` is a dword so we can detect running off the top of memory.
 namespace {
 void disassemble_from(dword pos, DisassembledCode& result,
-                             std::vector<dword>& to_disassemble_from) {
+                      std::vector<dword>& to_disassemble_from) {
   while (pos <= 0xFFFF) {
     auto line = disassemble_one(pos, result, to_disassemble_from);
     pos += line.Size();
@@ -277,7 +278,8 @@ void disassemble_from(dword pos, DisassembledCode& result,
 }
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 DisassembledCode disassemble(const std::vector<word>& entry_points) {
   DisassembledCode code;
   std::vector<dword> to_disassemble_from(entry_points.begin(),

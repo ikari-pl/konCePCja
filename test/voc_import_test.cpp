@@ -154,7 +154,7 @@ TEST(VocImport, TooShortForHeaderIsRejected) {
 TEST(VocImport, TruncatedSoundBlockIsRejected) {
   std::vector<uint8_t> voc = voc_header();
   voc.push_back(0x01);
-  push_u24(voc, 100);      // declares 100 payload bytes...
+  push_u24(voc, 100);        // declares 100 payload bytes...
   voc.push_back(kRate4kHz);  // ...but the file ends after two
   voc.push_back(0x00);
   EXPECT_TRUE(voc_to_tzx(voc.data(), voc.size()).empty());
@@ -162,8 +162,7 @@ TEST(VocImport, TruncatedSoundBlockIsRejected) {
 
 TEST(VocImport, NonPcmCodecIsRejected) {
   std::vector<uint8_t> voc = voc_header();
-  push_sound_block(voc, kRate4kHz, /*codec=*/1,
-                   std::vector<uint8_t>(8, 0xff));
+  push_sound_block(voc, kRate4kHz, /*codec=*/1, std::vector<uint8_t>(8, 0xff));
   voc.push_back(0x00);
   EXPECT_TRUE(voc_to_tzx(voc.data(), voc.size()).empty());
 }

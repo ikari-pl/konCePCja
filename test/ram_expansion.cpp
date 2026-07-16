@@ -242,9 +242,9 @@ TEST_F(RamExpansionTest, Yarek4MB_ExtBitsIgnoredForSmallRam) {
 }
 
 // NOTE: the legacy ga_init_banking() membank_config pointer-table tests
-// (InitBanking_Bank0_PointsToBase / InitBanking_Config4to7_MapsExpansionToSlot1)
-// were removed — they only ran on the legacy pbRAM global (which the unit-test
-// binary never allocates, so they always skipped) and are fully covered by the
-// clean-room memory device via the real banking I/O path:
-// test/hw/memory_test.cpp Config2MapsWholeExpansionBank (config 0 base) and
-// Configs4To7MapExpansionPagesIntoSlot1.
+// (InitBanking_Bank0_PointsToBase /
+// InitBanking_Config4to7_MapsExpansionToSlot1) were removed — they only ran on
+// the legacy pbRAM global (which the unit-test binary never allocates, so they
+// always skipped) and are fully covered by the clean-room memory device via the
+// real banking I/O path: test/hw/memory_test.cpp Config2MapsWholeExpansionBank
+// (config 0 base) and Configs4To7MapExpansionPagesIntoSlot1.

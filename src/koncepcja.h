@@ -4,12 +4,11 @@
 
 #pragma once
 
-#include <cstdint>
-#include <cstdio>
-
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
+#include <cstdio>
 #include <mutex>
 #ifdef _MSC_VER
 #include "compat/msvc_compat.h"
@@ -199,8 +198,6 @@ class t_CPC {
   t_CPC();
 
   unsigned int model;
-  unsigned int
-      engine;  // 0 = legacy core, 1 = sub-cycle board (subcycle_bridge)
   unsigned int jumpers;
   unsigned int ram_size;
   unsigned int speed;
@@ -499,7 +496,8 @@ struct FrameSignal {
   // Z80 thread: a new frame has been published; wake the render thread.  A
   // no-op once aborted (during shutdown).
   void signal_ready(bool skip = false) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::scoped_lock lock(mtx);
     if (aborted) return;
     skip_render = skip;
@@ -509,7 +507,8 @@ struct FrameSignal {
   // Render thread: block until Z80 signals a frame is ready; returns
   // skip_render.
   bool wait_ready() {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::unique_lock<std::mutex> lock(mtx);
     cv.wait(lock, [this] { return ready || aborted; });
     ready = false;
@@ -520,7 +519,8 @@ struct FrameSignal {
   // event pumping with waiting, keeping the macOS/Metal Cocoa run loop alive
   // between Z80 frames.
   bool try_wait_ready_for(int timeout_ms, bool& skip_out) {
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     std::unique_lock<std::mutex> lock(mtx);
     if (cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
                     [this] { return ready || aborted; })) {
@@ -589,6 +589,16 @@ void video_shutdown();
 void cleanExit(int returnCode, bool askIfUnsaved = true);
 
 extern bool g_headless;
+
+// The printer capture file ([printer] config; opened/closed by the host in
+// kon_cpc_ja.cpp). The engine=1 bridge drains the printer Device's
+// strobe-clocked bytes into it each frame.
+extern FILE* pfoPrinter;
+
+// Is an autotype KONCPC_WAITBREAK in flight (queued or currently blocking)?
+// The engine=1 bridge mirrors the legacy break-at-0 into the probe for
+// exactly this window (see subcycle_bridge_sync_probe).
+bool autotype_waitbreak_in_flight();
 
 // Return the path to the best (i.e: most specific) configuration file.
 // Priority order is:

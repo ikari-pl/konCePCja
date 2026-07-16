@@ -9,6 +9,7 @@
 #define KONCPC_HW_BOARD_H
 
 #include <stdint.h>
+
 #include <cstdint>
 
 #include "buses.h"
@@ -18,16 +19,17 @@
 extern "C" {
 #endif
 
-enum : std::uint8_t { BOARD_MAX_DEVICES = 24 };  // the full 6128+ machine fits 18; headroom
-
+enum : std::uint8_t {
+  BOARD_MAX_DEVICES = 24
+};  // the full 6128+ machine fits 18; headroom
 
 typedef struct Board {
   Device dev[BOARD_MAX_DEVICES]; /* device views (state is caller-owned) */
   int count;
-  /* Devices actually dispatched per tick (a prefix of dev[], <= count). Defaults
-   * to count. Unfitted trailing peripherals stay constructed + in dev[] (attach/
-   * UI/IPC keep working) but are excluded from board_tick — the runtime seed of
-   * config-driven composition. */
+  /* Devices actually dispatched per tick (a prefix of dev[], <= count).
+   * Defaults to count. Unfitted trailing peripherals stay constructed + in
+   * dev[] (attach/ UI/IPC keep working) but are excluded from board_tick — the
+   * runtime seed of config-driven composition. */
   int active_count;
   /* The dev[] indices dispatched each tick, in order — the first `active_count`
    * entries. Lets the active set be any SUBSET (not just a trailing prefix): a

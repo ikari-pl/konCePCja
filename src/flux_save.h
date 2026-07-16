@@ -48,8 +48,8 @@ struct FluxSaveCaps {
 // sector-backed disc). `err` is cleared on success.
 std::vector<uint8_t> flux_save_bytes_from_medium(
     const std::uint8_t* scp, std::size_t scp_len, const std::uint8_t* image,
-    std::size_t image_len, const bool* track_dirty, int ntracks,
-    SaveFormat fmt, std::string& err);
+    std::size_t image_len, const bool* track_dirty, int ntracks, SaveFormat fmt,
+    std::string& err);
 
 // Read the live medium of drive `unit` off a live FDC Device (unit 0 = A,
 // 1 = B) and delegate to flux_save_bytes_from_medium. Flux is drive-A-only, so
@@ -70,7 +70,8 @@ bool flux_write_file(const std::vector<uint8_t>& bytes, const std::string& path,
 // an empty caps) when the engine is inactive.
 
 // The bytes to write for drive `unit` in `fmt`, or {} + `err` on failure.
-std::vector<uint8_t> flux_save_bytes(int unit, SaveFormat fmt, std::string& err);
+std::vector<uint8_t> flux_save_bytes(int unit, SaveFormat fmt,
+                                     std::string& err);
 
 // Save drive `unit` to `path` as `fmt`. Returns true on success.
 bool flux_save_to_file(int unit, SaveFormat fmt, const std::string& path,

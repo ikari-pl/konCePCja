@@ -182,21 +182,24 @@ TEST(TapeAcid, FirmwareLoadsAndRunsAnAsciiProgramFromTheDeck) {
   // 3s of blank lead-in plus two 2000-baud records is ~9s of CPC time; give
   // it slack and stop the moment the program's own output appears.
   // While the firmware reads, the deck must drive the live cassette wires the
-  // engine=1 bridge mirrors back to the host tape scope/SFX (subcycle_bridge.cpp
-  // reads Machine::tape_motor / tape_read_level each frame). If either froze, the
-  // status-bar waveform, the procedural hiss, and the auto-armed data monitor
-  // would all go dark under engine=1 — the regression those accessors fix.
+  // engine=1 bridge mirrors back to the host tape scope/SFX
+  // (subcycle_bridge.cpp reads Machine::tape_motor / tape_read_level each
+  // frame). If either froze, the status-bar waveform, the procedural hiss, and
+  // the auto-armed data monitor would all go dark under engine=1 — the
+  // regression those accessors fix.
   bool ran = false;
   bool saw_motor = false, saw_rdata_toggle = false;
   const bool rd0 = m.tape_read_level();
-  std::vector<uint8_t> tape_bits;  // decoded bits the engine=1 BITS scope drains
-  uint32_t max_block = 0;          // the deck's own block ordinal, high-water
+  std::vector<uint8_t>
+      tape_bits;           // decoded bits the engine=1 BITS scope drains
+  uint32_t max_block = 0;  // the deck's own block ordinal, high-water
   for (int i = 0; i < 900 && !ran; ++i) {
     m.run_frame();
     if (m.tape_motor()) saw_motor = true;
     if (m.tape_read_level() != rd0) saw_rdata_toggle = true;
     uint8_t bit_buf[256];
-    const int nb = m.tape_drain_bits(bit_buf, static_cast<int>(sizeof(bit_buf)));
+    const int nb =
+        m.tape_drain_bits(bit_buf, static_cast<int>(sizeof(bit_buf)));
     tape_bits.insert(tape_bits.end(), bit_buf, bit_buf + nb);
     TapeRegs tr{};
     tape_peek(m.tape(), &tr);
@@ -209,15 +212,16 @@ TEST(TapeAcid, FirmwareLoadsAndRunsAnAsciiProgramFromTheDeck) {
                    << g_text.substr(g_text.size() > 400 ? g_text.size() - 400
                                                         : 0);
   EXPECT_TRUE(saw_motor)
-      << "Machine::tape_motor() never latched during a firmware tape read — the "
+      << "Machine::tape_motor() never latched during a firmware tape read — "
+         "the "
          "engine=1 bridge scope/SFX gate (CPC.tape_motor) would stay frozen";
   EXPECT_TRUE(saw_rdata_toggle)
       << "Machine::tape_read_level() never changed — the engine=1 bridge tape "
          "scope (bTapeLevel) would be a flat line";
 
   // Machine::tape_drain_bits feeds the scope's decoded-BITS view under engine=1
-  // (the legacy tape.cpp writer never runs here). Prove the drained bits are the
-  // REAL decoded data, not noise: reconstructing bytes at the right bit
+  // (the legacy tape.cpp writer never runs here). Prove the drained bits are
+  // the REAL decoded data, not noise: reconstructing bytes at the right bit
   // alignment must contain the loaded program text. (Bits dropped before the
   // drain steadied only shift the alignment, so try all 8.)
   EXPECT_FALSE(tape_bits.empty()) << "no decoded tape bits were drained";
@@ -237,9 +241,9 @@ TEST(TapeAcid, FirmwareLoadsAndRunsAnAsciiProgramFromTheDeck) {
       << tape_bits.size() << " bits drained)";
 
   // The deck's block ordinal must advance as it plays through the tape's blocks
-  // (pause + two records here). The engine=1 tape UI drives its block counter and
-  // Prev/Next enable-state off this ordinal; if it stayed 0 the counter would
-  // freeze and Prev would gray out mid-tape.
+  // (pause + two records here). The engine=1 tape UI drives its block counter
+  // and Prev/Next enable-state off this ordinal; if it stayed 0 the counter
+  // would freeze and Prev would gray out mid-tape.
   EXPECT_GT(max_block, 0u)
       << "deck block ordinal never advanced past 0 — the engine=1 tape counter "
          "and Prev/Next buttons would stay stuck at block 0";
@@ -264,7 +268,8 @@ TEST(TapeSeek, DeckWalksToBlockOrdinalAndIgnoresOutOfRange) {
 
   TapeRegs tr{};
   tape_peek(m.tape(), &tr);
-  EXPECT_EQ(tr.pos, 10u);  // attach rewinds to just past "ZXTape!\x1A" + version
+  EXPECT_EQ(tr.pos,
+            10u);  // attach rewinds to just past "ZXTape!\x1A" + version
   EXPECT_EQ(tr.block, 0u);
 
   // Jump to the data record (block 2): the walk lands on that block's header,

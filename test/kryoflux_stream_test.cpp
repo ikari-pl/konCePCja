@@ -60,7 +60,8 @@ void put_eof(std::vector<uint8_t>& s) {
 }
 
 uint32_t rd32le(const std::vector<uint8_t>& v, size_t at) {
-  return static_cast<uint32_t>(v[at]) | (static_cast<uint32_t>(v[at + 1]) << 8) |
+  return static_cast<uint32_t>(v[at]) |
+         (static_cast<uint32_t>(v[at + 1]) << 8) |
          (static_cast<uint32_t>(v[at + 2]) << 16) |
          (static_cast<uint32_t>(v[at + 3]) << 24);
 }
@@ -123,12 +124,12 @@ TEST(KryoFluxStream, ClockConversion) {
 TEST(KryoFluxStream, DecodesSingleRevAndOverflow) {
   std::vector<uint8_t> s;
   put_kfinfo_sck(s, "sck=40000000, ick=3003428.5714");
-  s.push_back(0x50);              // Flux1 -> 80,  spos 0
-  s.push_back(0x30);              // Flux1 -> 48,  spos 1
-  s.push_back(0x01);              // Flux2 hi,     spos 2
-  s.push_back(0x00);              // Flux2 lo -> 256
-  s.push_back(0x0B);              // Ovl16,        spos 4
-  s.push_back(0x10);              // Flux1 -> 0x10000+16 = 65552, spos 5
+  s.push_back(0x50);  // Flux1 -> 80,  spos 0
+  s.push_back(0x30);  // Flux1 -> 48,  spos 1
+  s.push_back(0x01);  // Flux2 hi,     spos 2
+  s.push_back(0x00);  // Flux2 lo -> 256
+  s.push_back(0x0B);  // Ovl16,        spos 4
+  s.push_back(0x10);  // Flux1 -> 0x10000+16 = 65552, spos 5
   put_index(s, 0, 0);
   put_index(s, 6, 20);
   put_eof(s);
@@ -143,15 +144,15 @@ TEST(KryoFluxStream, DecodesSingleRevAndOverflow) {
 
   // Now the SCP image, checked byte-region by byte-region.
   std::vector<uint8_t> scp;
-  ASSERT_EQ(kryoflux_stream_to_scp(s.data(), s.size(), /*cyl=*/0, /*side=*/0,
-                                   scp),
-            0);
+  ASSERT_EQ(
+      kryoflux_stream_to_scp(s.data(), s.size(), /*cyl=*/0, /*side=*/0, scp),
+      0);
   ASSERT_GE(scp.size(), 0x2B0u);
   EXPECT_EQ(std::string(scp.begin(), scp.begin() + 3), "SCP");
-  EXPECT_EQ(scp[0x05], 1);     // one revolution
-  EXPECT_EQ(scp[0x09], 0);     // 16-bit cells
-  EXPECT_EQ(scp[0x0A], 0);     // both heads (side 0 filled)
-  EXPECT_EQ(scp[0x0B], 0);     // resolution 0 -> 25 ns/tick
+  EXPECT_EQ(scp[0x05], 1);  // one revolution
+  EXPECT_EQ(scp[0x09], 0);  // 16-bit cells
+  EXPECT_EQ(scp[0x0A], 0);  // both heads (side 0 filled)
+  EXPECT_EQ(scp[0x0B], 0);  // resolution 0 -> 25 ns/tick
 
   // TLUT slot 0 (cyl0/side0) points at the first track, which starts at 0x2B0.
   const uint32_t toff = rd32le(scp, 0x10);
@@ -162,7 +163,7 @@ TEST(KryoFluxStream, DecodesSingleRevAndOverflow) {
   // One 12-byte revolution entry follows the 4-byte TDH id.
   const size_t e = toff + 4;
   EXPECT_EQ(rd32le(scp, e + 0), 65956u);  // duration (25 ns units)
-  EXPECT_EQ(rd32le(scp, e + 4), 5u);      // word count (with the overflow carry)
+  EXPECT_EQ(rd32le(scp, e + 4), 5u);  // word count (with the overflow carry)
   const uint32_t doff = rd32le(scp, e + 8);
   EXPECT_EQ(doff, 16u);  // 4 (TDH id) + 12 (one rev entry)
 
@@ -183,7 +184,8 @@ TEST(KryoFluxStream, DecodesSingleRevAndOverflow) {
 //    land exactly on the flux the middle index points at.
 //
 // sck=40000000 (identity). Six Flux1 blocks at spos 0..5:
-//   f0=0x64(100) f1=0x64(100) f2=0x64(100) f3=0x50(80) f4=0x64(100) f5=0x64(100)
+//   f0=0x64(100) f1=0x64(100) f2=0x64(100) f3=0x50(80) f4=0x64(100)
+//   f5=0x64(100)
 // Prefix: 100,200,300,380,480,580.
 // index0: SP=0  SC=0 -> fi=0, I0 = 0
 // index1: SP=3  SC=0 -> fi=3, I1 = T2 + 0 = 300   (the mid-buffer split)

@@ -149,8 +149,9 @@ extern "C" {
 size_t smartwatch_state_size(void) { return sizeof(sw_state); }
 
 Device smartwatch_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  sw_state *w = new (storage) sw_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  sw_state* w = new (storage) sw_state();
   return Device{w,       "smartwatch", sw_tick, sw_dev_reset, sw_dev_state_size,
                 sw_save, sw_load};
 }

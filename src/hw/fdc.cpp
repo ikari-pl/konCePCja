@@ -179,7 +179,7 @@ struct fdc_state {
   uint8_t fmt_ids[4 * kMaxSectors] = {0};  // FORMAT: collected C/H/R/N stream
   uint8_t fmt_pos = 0;                     // bytes of fmt_ids received
 
-  fdc_media media;  // live wiring — everything from here on is NOT serialized
+  fdc_media media;   // live wiring — everything from here on is NOT serialized
   fdc_media media1;  // drive B (unit 1) image; attach-wired, not yet read (§6)
 
   // Mechanical event ring (fdc.h): live telemetry for the audio bridge.
@@ -215,13 +215,13 @@ const fdc_media* sel_media(const fdc_state* f, uint8_t unit) {
 }
 
 bool drive_ready(const fdc_state* f, uint8_t unit) {
-  // Either drive can hold media now; ready = disc in + motor SPUN UP (docs §6/§7
-  // — the latch alone is not enough, the platter takes ~500 ms to reach speed;
-  // the one motor line spins whichever unit is selected).
-  if (unit > 1) return false;  // the CPC disc interface wires exactly two drives
+  // Either drive can hold media now; ready = disc in + motor SPUN UP (docs
+  // §6/§7 — the latch alone is not enough, the platter takes ~500 ms to reach
+  // speed; the one motor line spins whichever unit is selected).
+  if (unit > 1)
+    return false;  // the CPC disc interface wires exactly two drives
   const fdc_media* m = sel_media(f, unit);
-  const bool disc_in =
-      (m->image != nullptr || flux_backed(m)) && m->tracks > 0;
+  const bool disc_in = (m->image != nullptr || flux_backed(m)) && m->tracks > 0;
   return disc_in && f->motor_st == M_READY;
 }
 
@@ -306,7 +306,8 @@ fdc_track* head_track(fdc_state* f, uint8_t unit, uint8_t head) {
   if (unit > 1) return nullptr;
   fdc_media* m = sel_media(f, unit);
   const uint8_t t = f->track_pos[unit];
-  if (serve_from_flux(m, t)) {  // drive-A-only: media1 is never flux (sel_media)
+  if (serve_from_flux(m,
+                      t)) {  // drive-A-only: media1 is never flux (sel_media)
     if (t >= m->tracks) return nullptr;
     ensure_flux_cache(f);
     fdc_track* trk = &m->cache_trk[passing_rev(f)];
@@ -436,7 +437,8 @@ void start_sector(fdc_state* f, fdc_track* trk, bool to_cpu) {
     return;
   }
   const uint8_t sunit = f->cmd[C_UNIT] & 1;
-  f->from_flux = serve_from_flux(sel_media(f, sunit), f->track_pos[sunit]) ? 1 : 0;
+  f->from_flux =
+      serve_from_flux(sel_media(f, sunit), f->track_pos[sunit]) ? 1 : 0;
   if (!to_cpu) {
     // Writes are DSK-only (the dispatcher rejects flux with NW). Remember
     // where this sector's Track-Info ST2 byte lives so WRITE DELETED can set
@@ -612,12 +614,13 @@ void cmd_drive_status(fdc_state* f) {
   const fdc_media* m = sel_media(f, unit);
   // Disc present = a DSK overlay OR a flux dump; writable = an `image` overlay
   // exists (a plain read-only flux dump has none → write-protected).
-  const bool has_disc = (m->image != nullptr || flux_backed(m)) && m->tracks > 0;
+  const bool has_disc =
+      (m->image != nullptr || flux_backed(m)) && m->tracks > 0;
   const bool writable = m->image != nullptr && m->tracks > 0;
-  uint8_t st3 = f->cmd[C_UNIT] & 0x07;              // HD, US1, US0
-  if (!writable) st3 |= 0x40;                       // WP (also no disc)
+  uint8_t st3 = f->cmd[C_UNIT] & 0x07;                  // HD, US1, US0
+  if (!writable) st3 |= 0x40;                           // WP (also no disc)
   if (has_disc && f->motor_st == M_READY) st3 |= 0x20;  // RY
-  if (f->track_pos[unit] == 0) st3 |= 0x10;               // T0
+  if (f->track_pos[unit] == 0) st3 |= 0x10;             // T0
   f->res[R_ST0] = st3;  // single result byte = ST3
   enter_result(f);
 }
@@ -744,8 +747,8 @@ void cmd_write_data(fdc_state* f) {
     return;
   }
   if (sel_media(f, unit)->image == nullptr) {  // no writable overlay
-    f->res[R_ST0] |= 0x40;  // AT
-    f->res[R_ST1] |= 0x02;  // Not Writable
+    f->res[R_ST0] |= 0x40;                     // AT
+    f->res[R_ST1] |= 0x02;                     // Not Writable
     load_result_chrn(f);
     enter_result(f);
     return;
@@ -1228,8 +1231,9 @@ extern "C" {
 size_t fdc_state_size(void) { return sizeof(fdc_state); }
 
 Device fdc_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  fdc_state *f = new (storage) fdc_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  fdc_state* f = new (storage) fdc_state();
   return Device{f,        "fdc",   fdc_tick, fdc_dev_reset, fdc_dev_state_size,
                 fdc_save, fdc_load};
 }
@@ -1326,7 +1330,7 @@ int fdc_attach_flux(const Device* dev, const uint8_t* scp, size_t len) {
   const int cyls = flux_scp_cylinders(scp, len);
   const int revs = flux_scp_revolutions(scp, len);
   if (cyls <= 0 || revs <= 0) return -1;
-  f->media = fdc_media{};  // replaces any DSK attachment
+  f->media = fdc_media{};               // replaces any DSK attachment
   f->media.backing = FDC_BACKING_FLUX;  // read-only: no `image` overlay
   f->media.scp = scp;
   f->media.scp_len = len;
@@ -1347,7 +1351,8 @@ int fdc_attach_flux_writable(const Device* dev, const uint8_t* scp,
   // source for verbatim export of unwritten tracks.
   fdc_media* m = &f->media;
   if (!parse_dsk(m, dsk, dsk_len)) return -1;
-  m->backing = FDC_BACKING_FLUX;  // hybrid: overlay present, clean tracks = flux
+  m->backing =
+      FDC_BACKING_FLUX;  // hybrid: overlay present, clean tracks = flux
   m->scp = scp;
   m->scp_len = scp_len;
   const int rev_count = revs > 0 ? revs : 1;  // ≥1 revolution; a flux dump has

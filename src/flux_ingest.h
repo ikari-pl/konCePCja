@@ -33,7 +33,14 @@
 
 namespace flux {
 
-enum class Container : std::uint8_t { Unknown, Scp, Hfe, KryoFluxStream, A2R, Ipf };
+enum class Container : std::uint8_t {
+  Unknown,
+  Scp,
+  Hfe,
+  KryoFluxStream,
+  A2R,
+  Ipf
+};
 
 // Identify the container by MAGIC BYTES first; `ext_hint` (a lowercased
 // extension such as ".raw") only breaks the magic-less KryoFlux STREAM tie.

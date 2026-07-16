@@ -14,8 +14,9 @@
 #define KONCPC_HW_FLUX_H
 
 #include <stddef.h>
-#include <cstdint>
 #include <stdint.h>
+
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {

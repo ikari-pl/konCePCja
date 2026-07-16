@@ -32,20 +32,20 @@
 // instead and need no re-bake.
 struct DriveSoundParams {
   // Motor — looped spindle hum (fundamental + 2nd/3rd harmonic + rumble).
-  float motor_len_s = 1.0f;      // loop length, seconds
-  float motor_f0 = 43.6f;        // fundamental, Hz
-  float motor_a0 = 0.40f;        // fundamental amplitude
-  float motor_a1 = 0.67f;        // 2nd harmonic (2*f0) amplitude
-  float motor_a2 = 0.122f;       // 3rd harmonic (3*f0) amplitude
-  float motor_rumble = 0.243f;   // broadband rumble amount
-  float motor_gain = 1778.0f;    // → int16 scale
+  float motor_len_s = 1.0f;     // loop length, seconds
+  float motor_f0 = 43.6f;       // fundamental, Hz
+  float motor_a0 = 0.40f;       // fundamental amplitude
+  float motor_a1 = 0.67f;       // 2nd harmonic (2*f0) amplitude
+  float motor_a2 = 0.122f;      // 3rd harmonic (3*f0) amplitude
+  float motor_rumble = 0.243f;  // broadband rumble amount
+  float motor_gain = 1778.0f;   // → int16 scale
 
   // Seek — one-shot head-step click (decaying tone + mechanical noise).
-  float seek_len_ms = 69.0f;   // click length, ms
-  float seek_freq = 208.0f;    // tone, Hz
-  float seek_decay = 33.0f;    // envelope exp(-decay*t)
-  float seek_noise = 0.111f;   // mechanical noise amount
-  float seek_gain = 8000.0f;   // → int16 scale
+  float seek_len_ms = 69.0f;  // click length, ms
+  float seek_freq = 208.0f;   // tone, Hz
+  float seek_decay = 33.0f;   // envelope exp(-decay*t)
+  float seek_noise = 0.111f;  // mechanical noise amount
+  float seek_gain = 8000.0f;  // → int16 scale
 
   // Tape — looped hiss (white noise through a one-pole low-pass).
   float tape_len_s = 2.0f;    // loop length, seconds
@@ -87,16 +87,18 @@ struct DriveSounds {
   double motor_frac = 0.0;
   double tape_frac = 0.0;
 
-  int volume = 40;       // 0-100, applied live (no re-bake)
-  float pan_left = 0.80f;  // left-channel attenuation (right = 1.0), applied live
+  int volume = 40;  // 0-100, applied live (no re-bake)
+  float pan_left =
+      0.80f;  // left-channel attenuation (right = 1.0), applied live
 };
 
 extern DriveSounds g_drive_sounds;
 
 void drive_sounds_init(int target_sample_rate);
-// Re-bake the selected buffers (DriveSoundBuffer mask) from g_drive_sounds.params.
-// Thread-safe: holds the generator lock while swapping so the SDL audio thread
-// never reads a torn buffer. Playback positions are clamped to the new sizes.
+// Re-bake the selected buffers (DriveSoundBuffer mask) from
+// g_drive_sounds.params. Thread-safe: holds the generator lock while swapping
+// so the SDL audio thread never reads a torn buffer. Playback positions are
+// clamped to the new sizes.
 void drive_sounds_regenerate(unsigned which);
 int16_t drive_sounds_next_sample();
 // Render `frames` interleaved stereo (L,R) int16 samples of the current drive/

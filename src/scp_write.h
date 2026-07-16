@@ -30,8 +30,9 @@
 //   synthesized track repeats its single deterministic revolution to match.
 //
 // Returns an empty vector on unusable input (no DSK tracks and no original).
-std::vector<uint8_t> scp_from_disk(const uint8_t* orig_scp, std::size_t orig_len,
-                                   const uint8_t* dsk, std::size_t dsk_len,
-                                   const bool* track_dirty, int ntracks);
+std::vector<uint8_t> scp_from_disk(const uint8_t* orig_scp,
+                                   std::size_t orig_len, const uint8_t* dsk,
+                                   std::size_t dsk_len, const bool* track_dirty,
+                                   int ntracks);
 
 #endif  // KONCPC_SCP_WRITE_H

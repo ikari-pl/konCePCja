@@ -10,8 +10,9 @@
 #define KONCPC_HW_CRTC_H
 
 #include <stddef.h>
-#include <cstdint>
 #include <stdint.h>
+
+#include <cstdint>
 
 #include "device.h"
 

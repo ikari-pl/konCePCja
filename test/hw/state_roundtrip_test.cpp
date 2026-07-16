@@ -75,7 +75,8 @@ void expect_roundtrip(const Device& d, const std::function<void()>& mutate) {
 void expect_instance_independent(const Device& a, const Device& b) {
   std::vector<uint8_t> ba(a.state_size(a.self), 0x00);
   std::vector<uint8_t> bb(b.state_size(b.self), 0xFF);
-  ASSERT_EQ(ba.size(), bb.size()) << a.name << ": state_size differs by instance";
+  ASSERT_EQ(ba.size(), bb.size())
+      << a.name << ": state_size differs by instance";
   a.save(a.self, ba.data());
   b.save(b.self, bb.data());
   EXPECT_EQ(ba, bb) << a.name
@@ -87,11 +88,28 @@ void expect_instance_independent(const Device& a, const Device& b) {
 
 Z80Regs distinctive_regs() {
   Z80Regs r{};
-  r.af = 0x1234;  r.bc = 0x5678;  r.de = 0x9abc;  r.hl = 0xdef0;
-  r.af_ = 0x0f0f; r.bc_ = 0xf0f0; r.de_ = 0x1111; r.hl_ = 0x2222;
-  r.ix = 0x3333;  r.iy = 0x4444;  r.sp = 0xfffe;  r.pc = 0xa000;  r.wz = 0x0bad;
-  r.i = 0x7e;     r.r = 0x39;     r.im = 2;       r.iff1 = 1;     r.iff2 = 1;
-  r.q = 0x55;     r.halted = 0;   r.tstates = 123456; r.instr_count = 789;
+  r.af = 0x1234;
+  r.bc = 0x5678;
+  r.de = 0x9abc;
+  r.hl = 0xdef0;
+  r.af_ = 0x0f0f;
+  r.bc_ = 0xf0f0;
+  r.de_ = 0x1111;
+  r.hl_ = 0x2222;
+  r.ix = 0x3333;
+  r.iy = 0x4444;
+  r.sp = 0xfffe;
+  r.pc = 0xa000;
+  r.wz = 0x0bad;
+  r.i = 0x7e;
+  r.r = 0x39;
+  r.im = 2;
+  r.iff1 = 1;
+  r.iff2 = 1;
+  r.q = 0x55;
+  r.halted = 0;
+  r.tstates = 123456;
+  r.instr_count = 789;
   return r;
 }
 
@@ -138,7 +156,8 @@ void drive(const Device& vid, bool vs, bool hs) {
 }
 
 void mutate_beam(const Device& vid) {
-  drive(vid, /*vs=*/true, /*hs=*/false);  // vsync rise → frames++, beam_row reset
+  drive(vid, /*vs=*/true,
+        /*hs=*/false);  // vsync rise → frames++, beam_row reset
   for (int i = 0; i < 5; ++i) {
     drive(vid, false, /*hs=*/true);   // hsync rise → beam_row++
     drive(vid, false, /*hs=*/false);  // hsync fall → beam_col reset + refresh
@@ -166,7 +185,8 @@ TEST(StateRoundtrip, VideoInstanceIndependentExcludesWiring) {
 
 struct MemRig {
   std::vector<uint8_t> mem = std::vector<uint8_t>(mem_state_size(), 0);
-  std::vector<uint8_t> exp = std::vector<uint8_t>(128 * 1024, 0);  // 2×64K banks
+  std::vector<uint8_t> exp =
+      std::vector<uint8_t>(128 * 1024, 0);  // 2×64K banks
   Board board;
   Device dev = mem_init(mem.data());
   MemRig() {
@@ -232,8 +252,8 @@ TEST(StateRoundtrip, MemoryExpansionRamContentsSurviveLoad) {
 
 /* --- CRTC: register file + internal beam/sync counters (logical), plus an
  *     embedded ASIC Device* that is wiring. Each rig attaches its OWN asic
- *     (distinct address) so the instance-independence case proves the pointer is
- *     excluded — and keeps crtc_tick's guarded asic deref safe. crtc_save also
+ *     (distinct address) so the instance-independence case proves the pointer
+ * is excluded — and keeps crtc_tick's guarded asic deref safe. crtc_save also
  *     used to overflow its blob by the version byte (dev_state_size lacked the
  *     +1); state_size / dev_state_size were swapped. --- */
 
@@ -280,7 +300,8 @@ TEST(StateRoundtrip, CrtcInstanceIndependentExcludesAsicPointer) {
 /* --- Gate Array: a pointer-free POD device whose save() is a whole-struct
  *     memcpy. Registering it validates that the memcpy path is deterministic
  *     (no uninitialised padding diverges between two zero-backed instances) —
- *     the property the B3 differential harness relies on for every POD chip. --- */
+ *     the property the B3 differential harness relies on for every POD chip.
+ * --- */
 
 struct GaRig {
   std::vector<uint8_t> mem = std::vector<uint8_t>(ga_state_size(), 0);
@@ -390,7 +411,8 @@ TEST(StateRoundtrip, ProbeInstanceIndependent) {
   expect_instance_independent(a, b);
 }
 
-/* --- PPI 8255: register file mutated via the four I/O ports (&F4xx-&F7xx). --- */
+/* --- PPI 8255: register file mutated via the four I/O ports (&F4xx-&F7xx). ---
+ */
 
 void mutate_ppi(IoRig& rig) {
   rig.io_write(0xF700, 0x82);  // control: port A output, B input
@@ -506,8 +528,9 @@ TEST(StateRoundtrip, M4) {
   });
 }
 
-// AMX mouse: pointer-free POD; the plugged flag is enough to exercise the memcpy
-// path (padding determinism is the property under test for a POD device).
+// AMX mouse: pointer-free POD; the plugged flag is enough to exercise the
+// memcpy path (padding determinism is the property under test for a POD
+// device).
 TEST(StateRoundtrip, Amx) {
   check_device(amx_state_size(), amx_init,
                [](const Device& d) { amx_set_plugged(&d, 1); });
@@ -538,13 +561,15 @@ TEST(StateRoundtrip, FdcInstanceIndependent) {
   expect_instance_independent(a.dev, b.dev);
 }
 
-/* --- ASIC (6128+): the 17-byte unlock knock advances the lock state machine. --- */
+/* --- ASIC (6128+): the 17-byte unlock knock advances the lock state machine.
+ * --- */
 
 void mutate_asic(IoRig& rig) {
   asic_set_plugged(&rig.dev, 1);
   const uint8_t seq[17] = {0xFF, 0x00, 0xFF, 0x77, 0xB3, 0x51, 0xA8, 0xD4, 0x62,
                            0x39, 0x9C, 0x46, 0x2B, 0x15, 0x8A, 0xCD, 0x01};
-  for (uint8_t v : seq) rig.io_write(0xBC00, v);  // &BC00: where the knock lands
+  for (uint8_t v : seq)
+    rig.io_write(0xBC00, v);  // &BC00: where the knock lands
 }
 
 TEST(StateRoundtrip, AsicRoundTrips) {
@@ -560,10 +585,10 @@ TEST(StateRoundtrip, AsicInstanceIndependent) {
   expect_instance_independent(a.dev, b.dev);
 }
 
-/* --- Tape deck: attach a minimal CDT and play it, advancing the playback cursor
- *     (the serialized prefix). The CDT image is wiring behind the `cdt` pointer;
- *     the instance-independence case gives each deck its OWN CDT buffer (distinct
- *     address) to prove that pointer is excluded. --- */
+/* --- Tape deck: attach a minimal CDT and play it, advancing the playback
+ * cursor (the serialized prefix). The CDT image is wiring behind the `cdt`
+ * pointer; the instance-independence case gives each deck its OWN CDT buffer
+ * (distinct address) to prove that pointer is excluded. --- */
 
 std::vector<uint8_t> minimal_cdt() {
   std::vector<uint8_t> c = {'Z', 'X', 'T', 'a', 'p', 'e', '!', 0x1a, 1, 20};
@@ -599,7 +624,8 @@ TEST(StateRoundtrip, TapeInstanceIndependentExcludesCdtPointer) {
   std::vector<uint8_t> ma(tape_state_size(), 0), mb(tape_state_size(), 0);
   Device a = tape_init(ma.data());
   Device b = tape_init(mb.data());
-  const std::vector<uint8_t> ca = minimal_cdt(), cb = minimal_cdt();  // distinct
+  const std::vector<uint8_t> ca = minimal_cdt(),
+                             cb = minimal_cdt();  // distinct
   play_tape(a, ca);
   play_tape(b, cb);
   expect_instance_independent(a, b);

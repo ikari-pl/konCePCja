@@ -5,8 +5,8 @@
 
 #pragma once
 
-#include <string>
 #include <cstdint>
+#include <string>
 
 class PhazerType {
  public:

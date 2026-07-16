@@ -59,9 +59,9 @@ struct tape_state {
 
   // Decoded-bit observation ring for the host tape scope's BITS view. Placed
   // AFTER cdt/len — past the offsetof(cdt) save cut — so it is never serialized
-  // (pure host visualization). Each data bit the deck emits is recorded here and
-  // drained by tape_drain_bits. 256-entry; uint8_t indices wrap mod 256 and a
-  // full ring drops the oldest bit.
+  // (pure host visualization). Each data bit the deck emits is recorded here
+  // and drained by tape_drain_bits. 256-entry; uint8_t indices wrap mod 256 and
+  // a full ring drops the oldest bit.
   uint8_t bit_ring[256] = {};
   uint8_t bit_wr = 0;  // write index
   uint8_t bit_rd = 0;  // drain index
@@ -414,32 +414,49 @@ uint32_t tape_cdt_block_len(const uint8_t* cdt, uint32_t len, uint32_t pos) {
     return b24(off) | (static_cast<uint32_t>(b8(off + 3)) << 24);
   };
   switch (b8(pos)) {
-    case 0x10: return b16(pos + 0x03) + 0x04u + 1u;
-    case 0x11: return b24(pos + 0x10) + 0x12u + 1u;
-    case 0x12: return 4u + 1u;
+    case 0x10:
+      return b16(pos + 0x03) + 0x04u + 1u;
+    case 0x11:
+      return b24(pos + 0x10) + 0x12u + 1u;
+    case 0x12:
+      return 4u + 1u;
     case 0x13:
       return (b8(pos + 0x01) * 2u) + 1u + 1u;
-    case 0x14: return b24(pos + 0x08) + 0x0au + 1u;
-    case 0x15: return b24(pos + 0x06) + 0x08u + 1u;
-    case 0x20: return 2u + 1u;
-    case 0x21: return b8(pos + 0x01) + 1u + 1u;
-    case 0x22: return 1u;
-    case 0x30: return b8(pos + 0x01) + 1u + 1u;
-    case 0x31: return b8(pos + 0x02) + 2u + 1u;
-    case 0x32: return b16(pos + 0x01) + 2u + 1u;
+    case 0x14:
+      return b24(pos + 0x08) + 0x0au + 1u;
+    case 0x15:
+      return b24(pos + 0x06) + 0x08u + 1u;
+    case 0x20:
+      return 2u + 1u;
+    case 0x21:
+      return b8(pos + 0x01) + 1u + 1u;
+    case 0x22:
+      return 1u;
+    case 0x30:
+      return b8(pos + 0x01) + 1u + 1u;
+    case 0x31:
+      return b8(pos + 0x02) + 2u + 1u;
+    case 0x32:
+      return b16(pos + 0x01) + 2u + 1u;
     case 0x33:
       return (b8(pos + 0x01) * 3u) + 1u + 1u;
-    case 0x34: return 8u + 1u;
-    case 0x35: return b32(pos + 0x11) + 0x14u + 1u;
-    case 0x40: return b24(pos + 0x02) + 0x04u + 1u;
-    case 0x5A: return 9u + 1u;
-    default:   return b32(pos + 0x01) + 4u + 1u;  // unknown: 4-byte length
+    case 0x34:
+      return 8u + 1u;
+    case 0x35:
+      return b32(pos + 0x11) + 0x14u + 1u;
+    case 0x40:
+      return b24(pos + 0x02) + 0x04u + 1u;
+    case 0x5A:
+      return 9u + 1u;
+    default:
+      return b32(pos + 0x01) + 4u + 1u;  // unknown: 4-byte length
   }
 }
 
 Device tape_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  tape_state *t = new (storage) tape_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  tape_state* t = new (storage) tape_state();
   Device dev = {};
   dev.self = t;
   dev.name = "tape";
@@ -507,9 +524,9 @@ void tape_rewind(const Device* dev) {
 void tape_seek(const Device* dev, uint32_t block_ordinal) {
   tape_state* t = self_of(dev->self);
   if (t->cdt == nullptr) return;
-  // Walk the deck's OWN cdt from the first block, skipping `block_ordinal` blocks
-  // by size (layout-independent: the legacy pbTapeImage strips the 10-byte
-  // header, so a byte offset taken from it lands 10 bytes short here).
+  // Walk the deck's OWN cdt from the first block, skipping `block_ordinal`
+  // blocks by size (layout-independent: the legacy pbTapeImage strips the
+  // 10-byte header, so a byte offset taken from it lands 10 bytes short here).
   uint32_t pos = 10, blk = 0;  // 10 = past "ZXTape!\x1A" + version
   for (; blk < block_ordinal; ++blk) {
     if (pos >= t->len) break;
@@ -534,7 +551,8 @@ void tape_seek(const Device* dev, uint32_t block_ordinal) {
 int tape_drain_bits(const Device* dev, uint8_t* out, int max) {
   tape_state* t = self_of(dev->self);
   int count = 0;
-  while (t->bit_rd != t->bit_wr && count < max) out[count++] = t->bit_ring[t->bit_rd++];
+  while (t->bit_rd != t->bit_wr && count < max)
+    out[count++] = t->bit_ring[t->bit_rd++];
   return count;
 }
 

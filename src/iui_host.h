@@ -36,8 +36,8 @@
 
 #pragma once
 
-#include <string>
 #include <cstdint>
+#include <string>
 
 union SDL_Event;
 

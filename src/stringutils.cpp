@@ -9,13 +9,11 @@ namespace stringutils {
 namespace {
 
 inline char to_lower_ascii(char c) {
-  return static_cast<char>(
-      std::tolower(static_cast<unsigned char>(c)));
+  return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 }
 
 inline char to_upper_ascii(char c) {
-  return static_cast<char>(
-      std::toupper(static_cast<unsigned char>(c)));
+  return static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
 }
 
 }  // namespace
@@ -61,15 +59,13 @@ std::string trim(std::string_view s, char c) {
 
 std::string lower(std::string_view s) {
   std::string result(s);
-  std::transform(result.begin(), result.end(), result.begin(),
-                 to_lower_ascii);
+  std::transform(result.begin(), result.end(), result.begin(), to_lower_ascii);
   return result;
 }
 
 std::string upper(std::string_view s) {
   std::string result(s);
-  std::transform(result.begin(), result.end(), result.begin(),
-                 to_upper_ascii);
+  std::transform(result.begin(), result.end(), result.begin(), to_upper_ascii);
   return result;
 }
 

@@ -1,6 +1,6 @@
-#include "phazer_type.h"
-
 #include <gtest/gtest.h>
+
+#include "phazer_type.h"
 
 TEST(PhazerTest, Next) {
   PhazerType none(PhazerType::None);

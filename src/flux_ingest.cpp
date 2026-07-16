@@ -4,10 +4,10 @@
 
 #include <cstring>
 
-#include "hfe.h"             // hfe_to_scp
-#include "ipf.h"             // scp_from_mfm_tracks
-#include "ipf_decode.h"      // ipf::Image / ipf::Status / ipf::status_str
-#include "kryoflux_stream.h" // kryoflux_stream_to_scp
+#include "hfe.h"              // hfe_to_scp
+#include "ipf.h"              // scp_from_mfm_tracks
+#include "ipf_decode.h"       // ipf::Image / ipf::Status / ipf::status_str
+#include "kryoflux_stream.h"  // kryoflux_stream_to_scp
 #include "log.h"
 
 extern "C" {
@@ -98,7 +98,8 @@ std::vector<uint8_t> to_scp(const uint8_t* data, size_t len,
             "re-image as SPS/SCP/HFE");
         return {};
       }
-      LOG_ERROR("flux_ingest: IPF open failed: " << ipf::status_str(ipf_status));
+      LOG_ERROR(
+          "flux_ingest: IPF open failed: " << ipf::status_str(ipf_status));
       return {};
     }
 

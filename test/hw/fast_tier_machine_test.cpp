@@ -14,8 +14,6 @@
  *     of a boundary sample can shift by one).
  */
 
-#include "subcycle/machine.h"
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -23,6 +21,7 @@
 #include <vector>
 
 #include "hw/psg.h"
+#include "subcycle/machine.h"
 
 namespace {
 
@@ -55,8 +54,7 @@ struct Twin {
 void boot(Twin& t, const std::vector<uint8_t>& rom,
           subcycle::Machine::RunTier tier) {
   ASSERT_TRUE(t.m.build(rom.data(), rom.size()));
-  t.m.attach_framebuffer(t.fb.data(), subcycle::kFbWidth,
-                         subcycle::kFbHeight);
+  t.m.attach_framebuffer(t.fb.data(), subcycle::kFbWidth, subcycle::kFbHeight);
   t.m.set_run_tier(tier);
 }
 

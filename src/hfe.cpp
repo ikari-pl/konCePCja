@@ -52,7 +52,7 @@ uint16_t rd16le(const uint8_t* p) {
 
 constexpr size_t kHeaderSize = 512;
 constexpr size_t kBlockSize = 512;
-constexpr size_t kSideChunk = 256;  // bytes of one side per 512-B block
+constexpr size_t kSideChunk = 256;         // bytes of one side per 512-B block
 constexpr uint32_t kCpcTicksPerCell = 80;  // 2 us / 25 ns — see hfe.h
 // 168 SCP TLUT slots, side-0 uses only the even ones (slot = cyl*2) ->
 // at most 84 addressable cylinders. Matches ipf.cpp's kScpMaxCyls; real CPC
@@ -89,7 +89,8 @@ int hfe_to_scp(const uint8_t* hfe, size_t len, std::vector<uint8_t>& out) {
   if (hfe_ticks_per_cell(bit_rate) != kCpcTicksPerCell)
     return HFE_E_UNSUPPORTED;  // non-CPC-standard bitrate (see hfe.h)
 
-  const size_t lut_byte_off = static_cast<size_t>(track_list_offset) * kBlockSize;
+  const size_t lut_byte_off =
+      static_cast<size_t>(track_list_offset) * kBlockSize;
   const size_t lut_bytes_needed = static_cast<size_t>(number_of_track) * 4u;
   if (lut_byte_off + lut_bytes_needed > len) return HFE_E_TRUNCATED;
 
@@ -101,7 +102,8 @@ int hfe_to_scp(const uint8_t* hfe, size_t len, std::vector<uint8_t>& out) {
     const uint16_t trk_len = rd16le(hfe + entry_off + 2);
     if (trk_len == 0) continue;  // absent/unformatted track -> empty slot
 
-    const size_t trk_byte_off = static_cast<size_t>(trk_off_blocks) * kBlockSize;
+    const size_t trk_byte_off =
+        static_cast<size_t>(trk_off_blocks) * kBlockSize;
     if (trk_byte_off + trk_len > len) return HFE_E_TRUNCATED;
 
     // Extract side 0's bytes: the first up-to-256 bytes of every 512-byte

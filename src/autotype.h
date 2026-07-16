@@ -7,7 +7,13 @@
 #include <string>
 
 struct AutoTypeAction {
-  enum Type : std::uint8_t { CHAR_PRESS_RELEASE, KEY_PRESS, KEY_RELEASE, PAUSE, COMMAND };
+  enum Type : std::uint8_t {
+    CHAR_PRESS_RELEASE,
+    KEY_PRESS,
+    KEY_RELEASE,
+    PAUSE,
+    COMMAND
+  };
   Type type;
   uint16_t cpc_key;  // CPC_KEYS enum value; for COMMAND, the KONCPC_* code
   int pause_frames;  // for PAUSE type
@@ -45,6 +51,19 @@ class AutoTypeQueue {
   // Release a command-induced block (e.g. KONCPC_WAITBREAK once the breakpoint
   // fires) so tick() resumes draining the queue.
   void resume();
+
+  // Is the queue blocked on a command (KONCPC_WAITBREAK) awaiting resume()?
+  // The engine=1 bridge arms the legacy old-flavour breakpoint
+  // (z80.break_point) in the probe only while this is true, so a plain run
+  // never pays the debug-engaged tier drop for the always-rearmed break-at-0.
+  bool is_blocked() const;
+
+  // Is a COMMAND action with this KONCPC_* code still queued (not yet
+  // processed)? With is_blocked(), this spans a WAITBREAK's whole lifetime —
+  // the engine=1 bridge arms the break-at-0 mirror for that whole window, so
+  // a `call 0` that executes BEFORE the queue reaches the WAITBREAK still
+  // trips the probe (its hit is then latched for the WAITBREAK to consume).
+  bool has_pending_command(uint16_t koncpc_cmd) const;
 
   // Status
   bool is_active() const;

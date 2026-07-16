@@ -24,9 +24,9 @@ class KeyboardManager {
   void update(std::atomic<byte> keyboard_matrix[], dword current_frame);
   void notify_scanned(int line);
   // engine=1 variant: `read_value` is the published snapshot the firmware
-  // actually scanned for `line`. Confirm only keys that were PRESSED there, so a
-  // key set AFTER the frame-start publish (not in this scan) stays held until it
-  // is really seen — fixes the row-only false-confirm drop under engine=1.
+  // actually scanned for `line`. Confirm only keys that were PRESSED there, so
+  // a key set AFTER the frame-start publish (not in this scan) stays held until
+  // it is really seen — fixes the row-only false-confirm drop under engine=1.
   void notify_scanned(int line, byte read_value);
 
  private:

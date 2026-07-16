@@ -47,7 +47,7 @@ typedef union {
   dword d;
 } reg_pair;
 
-#define Sflag 0x80   // sign flag
+#define Sflag 0x80  // sign flag
 enum : std::uint8_t {
   Zflag = 0x40,   // zero flag
   Hflag = 0x10,   // halfcarry flag

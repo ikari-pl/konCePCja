@@ -101,7 +101,8 @@ TEST(HfeWrite, DiskLevelNewDiscDecodesBackToDskSectors) {
   const std::vector<uint8_t> dsk = fluxtest::build_standard_dsk(tracks);
 
   std::vector<uint8_t> hfe;
-  ASSERT_EQ(hfe_from_disk(nullptr, 0, dsk.data(), dsk.size(), nullptr, 0, hfe), 0);
+  ASSERT_EQ(hfe_from_disk(nullptr, 0, dsk.data(), dsk.size(), nullptr, 0, hfe),
+            0);
 
   std::vector<uint8_t> scp;
   ASSERT_EQ(hfe_to_scp(hfe.data(), hfe.size(), scp), 0);
@@ -117,7 +118,8 @@ TEST(HfeWrite, DiskLevelNewDiscDecodesBackToDskSectors) {
   for (std::size_t track = 0; track < original.size(); track++) {
     ASSERT_EQ(restored[track].size(), original[track].size());
     for (std::size_t sector = 0; sector < original[track].size(); sector++)
-      EXPECT_EQ(restored[track][sector].payload, original[track][sector].payload)
+      EXPECT_EQ(restored[track][sector].payload,
+                original[track][sector].payload)
           << "track " << track << " sector " << sector;
   }
 }

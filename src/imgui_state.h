@@ -22,8 +22,8 @@
 // which is unconditionally compiled into `koncepcja_lib` (both MODERN_UI
 // ON and OFF), so the symbol is always resolvable.
 
-#include <deque>
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -33,11 +33,11 @@ enum class FileDialogAction : std::uint8_t {
   None,
   LoadDiskA,
   LoadDiskB,
-  SaveDiskA,       // drive A → .dsk (the live FDC medium, not driveA)
-  SaveDiskB,       // drive B → .dsk (the live FDC medium, not driveB)
-  SaveDiskA_SCP,   // drive A → .scp flux (flux-backed disc only)
-  SaveDiskA_HFE,   // drive A → .hfe flux (flux-backed disc only)
-  NewDiskA,        // create a blank disc (Sector/Flux per new_disk_flux)
+  SaveDiskA,      // drive A → .dsk (the live FDC medium, not driveA)
+  SaveDiskB,      // drive B → .dsk (the live FDC medium, not driveB)
+  SaveDiskA_SCP,  // drive A → .scp flux (flux-backed disc only)
+  SaveDiskA_HFE,  // drive A → .hfe flux (flux-backed disc only)
+  NewDiskA,       // create a blank disc (Sector/Flux per new_disk_flux)
   LoadSnapshot,
   SaveSnapshot,
   LoadTape,
@@ -62,8 +62,8 @@ struct ImGuiUIState {
   bool show_quit_confirm = false;
   bool show_serial_terminal = false;
   bool show_plotter_preview = false;
-  bool show_new_disk = false;   // "New Disk…" backing-choice modal
-  bool new_disk_flux = false;   // its Sector/Flux radio (true = Flux)
+  bool show_new_disk = false;  // "New Disk…" backing-choice modal
+  bool new_disk_flux = false;  // its Sector/Flux radio (true = Flux)
 
   // Deferred video reinit (set in Options, handled after ImGui frame)
   bool video_reinit_pending = false;
@@ -136,12 +136,14 @@ struct ImGuiUIState {
 
   // Virtual joystick state
   enum class VJoyTarget : std::uint8_t { Joy0 = 0, Joy1 = 1 };
-  VJoyTarget vjoystick_target = VJoyTarget::Joy0;  // which CPC joystick to drive
-  unsigned vjoystick_held_mask = 0;  // matrix bits currently asserted by the vjoy
-  int vjoystick_held_target = 0;     // CPC joystick those bits belong to
-  bool vjoystick_focused = false;    // vjoy window is the focused one -> host
-                                     // arrows+space drive the joystick (and only
-                                     // then); also captures the CPC keyboard
+  VJoyTarget vjoystick_target =
+      VJoyTarget::Joy0;  // which CPC joystick to drive
+  unsigned vjoystick_held_mask =
+      0;                           // matrix bits currently asserted by the vjoy
+  int vjoystick_held_target = 0;   // CPC joystick those bits belong to
+  bool vjoystick_focused = false;  // vjoy window is the focused one -> host
+                                   // arrows+space drive the joystick (and only
+                                   // then); also captures the CPC keyboard
 
   // Docked mode: CPC Screen focus tracking for keyboard routing
   bool cpc_screen_focused =

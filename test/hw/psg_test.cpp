@@ -206,7 +206,7 @@ TEST(Psg, AmplitudeScalesToFiveBits) {
   // table Amplitudes_AY[0..15] spans. These are literal hardware values; a
   // impl that used 2V, 2V+2, or a lookup typo would miss the vector.
   static const uint8_t kFixedLevel[16] = {1,  3,  5,  7,  9,  11, 13, 15,
-                                           17, 19, 21, 23, 25, 27, 29, 31};
+                                          17, 19, 21, 23, 25, 27, 29, 31};
   PsgRig rig;
   make_psg(rig);
   ay_write(rig, 7, 0x3F);  // mixer: tone + noise disabled → steady DC level

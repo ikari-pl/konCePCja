@@ -76,9 +76,9 @@ struct Asm {
 void emit_prologue(Asm& a) {
   a.ld_bc(0x7F8C);  // GA fn2: both ROMs off (the RAM ISR at 0x38 must fetch)
   a.out_c_c();
-  const uint8_t regs[][2] = {{0, 63}, {1, 40}, {2, 46},  {3, 0x8E}, {4, 38},
-                             {5, 0},  {6, 25}, {7, 30},  {9, 7},    {12, 0x30},
-                             {13, 0}};
+  const uint8_t regs[][2] = {{0, 63}, {1, 40},    {2, 46}, {3, 0x8E},
+                             {4, 38}, {5, 0},     {6, 25}, {7, 30},
+                             {9, 7},  {12, 0x30}, {13, 0}};
   for (const auto& rv : regs) a.crtc_reg(rv[0], rv[1]);
   a.db({0xED, 0x56});  // IM 1
 }
@@ -241,8 +241,8 @@ struct FastChain {
     // Worst legal density is two edges per char (a same-char VSYNC + HSYNC
     // transition), so this can never truncate.
     std::vector<CrtcEdge> edges(static_cast<size_t>(n) * 2 + 4);
-    const int total =
-        crtc_advance_chars(crtc, n, edges.data(), static_cast<int>(edges.size()));
+    const int total = crtc_advance_chars(crtc, n, edges.data(),
+                                         static_cast<int>(edges.size()));
     ASSERT_LE(total, static_cast<int>(edges.size())) << "edge buffer overflow";
     for (int i = 0; i < total; ++i) {
       switch (edges[i].kind) {
@@ -293,8 +293,8 @@ uint8_t fc_int_ack(void* ctx, uint64_t now) {
   return 0xFF;  // the classic bus floats during the acknowledge
 }
 
-bool run_fast(const std::vector<uint8_t>& prog,
-              const std::vector<uint8_t>& isr, MemSide& mem, ChainState* out) {
+bool run_fast(const std::vector<uint8_t>& prog, const std::vector<uint8_t>& isr,
+              MemSide& mem, ChainState* out) {
   seed_mem(mem, prog, isr);
   std::vector<uint8_t> zmem(z80_state_size());
   Device zdev = z80_init(zmem.data());
@@ -350,8 +350,8 @@ std::string diff_regs(const Z80Regs& a, const Z80Regs& b) {
   auto cmp = [&](const char* n, uint64_t g, uint64_t e) {
     if (g != e) {
       char buf[64];
-      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n,
-                    (unsigned long long)g, (unsigned long long)e);
+      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n, (unsigned long long)g,
+                    (unsigned long long)e);
       d += buf;
     }
   };

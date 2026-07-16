@@ -30,8 +30,7 @@ byte bTapeLevel = TAPE_LEVEL_LOW;
 
 std::string chrn_to_string(unsigned char* chrn) {
   char buf[24];
-  snprintf(buf, sizeof(buf), "%d-%d-%d-%d", chrn[0], chrn[1], chrn[2],
-           chrn[3]);
+  snprintf(buf, sizeof(buf), "%d-%d-%d-%d", chrn[0], chrn[1], chrn[2], chrn[3]);
   return {buf};
 }
 
@@ -40,8 +39,8 @@ void t_sector::setSizes(unsigned int size, unsigned int total_size) {
   total_size_ = total_size;
   weak_read_version_ = 0;
   // Multiple stored versions mark a weak/random sector.
-  weak_versions_ = (size_ > 0 && size_ <= total_size_) ? total_size_ / size_
-                                                       : 1;
+  weak_versions_ =
+      (size_ > 0 && size_ <= total_size_) ? total_size_ / size_ : 1;
   LOG_DEBUG("weak_versions_ = " << weak_versions_ << " for "
                                 << chrn_to_string(CHRN));
 }

@@ -32,8 +32,9 @@ TEST(MfmEncodeCells, ByteExpansionAllOnesAndAllZeros) {
   // 0xFF: every data bit 1 -> clock always 0 -> cells 0101...0101 = 0x5555.
   EXPECT_EQ(mfm_expand_byte(0xFF, prev), 0x5555u);
   EXPECT_EQ(prev, 1);
-  // 0x00 following a 1 data bit: first clock 0 (prev=1), rest 1 -> 0010101010101010?
-  // prev=1: bit0 clock=(prev0&&cur0)? no ->0,data0; then prev=0: clock=1,data0...
+  // 0x00 following a 1 data bit: first clock 0 (prev=1), rest 1 ->
+  // 0010101010101010? prev=1: bit0 clock=(prev0&&cur0)? no ->0,data0; then
+  // prev=0: clock=1,data0...
   prev = 1;
   EXPECT_EQ(mfm_expand_byte(0x00, prev), 0x2AAAu)
       << "leading clock suppressed by the preceding 1 data bit";
@@ -47,7 +48,8 @@ TEST(MfmEncodeCells, DataHalfCellsAlwaysRecoverTheByte) {
   int prev = 0;
   for (int value = 0; value < 256; value++) {
     int local_prev = prev;
-    const uint16_t cells = mfm_expand_byte(static_cast<uint8_t>(value), local_prev);
+    const uint16_t cells =
+        mfm_expand_byte(static_cast<uint8_t>(value), local_prev);
     uint8_t decoded = 0;
     for (int k = 0; k < 8; k++)
       decoded = static_cast<uint8_t>((decoded << 1) |
@@ -167,8 +169,8 @@ TEST(MfmEncode, StandardDskRoundTripsSectorForSector) {
   ASSERT_GT(size, 0x100);
 
   const auto original = fluxtest::read_dsk(dsk.data(), dsk.size());
-  const auto restored = fluxtest::read_dsk(dsk_out.data(),
-                                           static_cast<std::size_t>(size));
+  const auto restored =
+      fluxtest::read_dsk(dsk_out.data(), static_cast<std::size_t>(size));
   ASSERT_EQ(restored.size(), original.size());
   for (std::size_t track = 0; track < original.size(); track++) {
     ASSERT_EQ(restored[track].size(), original[track].size())
@@ -178,7 +180,8 @@ TEST(MfmEncode, StandardDskRoundTripsSectorForSector) {
                             original[track][sector].chrn, 4),
                 0)
           << "track " << track << " sector " << sector << " CHRN";
-      EXPECT_EQ(restored[track][sector].payload, original[track][sector].payload)
+      EXPECT_EQ(restored[track][sector].payload,
+                original[track][sector].payload)
           << "track " << track << " sector " << sector << " payload";
     }
   }

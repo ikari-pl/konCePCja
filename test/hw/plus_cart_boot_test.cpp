@@ -8,13 +8,12 @@
 
 #include <gtest/gtest.h>
 
-#include <sstream>
-
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <sstream>
 #include <vector>
 
 #include "diff_harness.h"
@@ -70,13 +69,13 @@ std::vector<uint8_t> parse_cpr(const std::vector<uint8_t>& raw) {
 // cartridge menu and its firmware sweeps a wide PC range every frame. A frozen
 // one collapses to a HALT or a tight spin (the derail-to-low-memory signature).
 TEST(PlusCartBoot, ReachesMenuWithoutDerailing) {
-  std::vector<uint8_t> raw =
-      read_file("rom/system.cpr", "../rom/system.cpr");
+  std::vector<uint8_t> raw = read_file("rom/system.cpr", "../rom/system.cpr");
   if (raw.size() < 0x8000) GTEST_SKIP() << "rom/system.cpr not found";
   std::vector<uint8_t> cart = parse_cpr(raw);
   ASSERT_FALSE(cart.empty()) << "system.cpr is not a valid RIFF/AMS! container";
 
-  std::vector<uint8_t> amsdos = read_file("rom/amsdos.rom", "../rom/amsdos.rom");
+  std::vector<uint8_t> amsdos =
+      read_file("rom/amsdos.rom", "../rom/amsdos.rom");
   // cb00 is the OS (boots at 0x0000): a misparse that shifts it off 0x0000
   // sends the CPU into NOPs → garbage, the exact "big blue nothing" symptom.
   ASSERT_EQ(cart[0], 0x01) << "cb00[0] must be the OS boot opcode (LD BC,nn)";
@@ -99,7 +98,8 @@ TEST(PlusCartBoot, ReachesMenuWithoutDerailing) {
   const int kTotal = 250, kWindow = 40;
   for (int frame = 0; frame < kTotal; ++frame) {
     for (uint8_t row = 0; row < 16; ++row)
-      m.set_key_row(row, 0xFF);  // no keys pressed, as the GUI feeds every frame
+      m.set_key_row(row,
+                    0xFF);  // no keys pressed, as the GUI feeds every frame
     m.run_frame();
     if (first_paint < 0) {  // when did anything first hit the framebuffer?
       for (uint8_t v : fb)
@@ -148,28 +148,29 @@ TEST(PlusCartBoot, ReachesMenuWithoutDerailing) {
   EXPECT_GT(nonzero, 1000) << "the menu never painted (blank screen)";
 }
 
-
 // Thin integration smoke check (NOT the primary correctness guard — the
 // hardware invariants live in Device-level unit tests):
 //   - the RMR2 register-page mapping gate: asic_test.cpp
 //     RegisterPageNeedsRmr2MapNotJustUnlock,
 //   - the per-scanline mode latch (raster split): gate_array_test.cpp
 //     ModeLatchesPerScanlineForRasterSplit,
-//   - RMR2/mode gating + mode-0 decode: plus_rmr2_mode_test.cpp, video_test.cpp.
+//   - RMR2/mode gating + mode-0 decode: plus_rmr2_mode_test.cpp,
+//   video_test.cpp.
 //
 // This test proves the whole clean-room boots the real cartridge and the
-// Burnin' Rubber title SURVIVES: it used to render for ~2 s and then derail back
-// to the cartridge menu, because a bulk copy through &6xxx (while the register
-// page was RMR2-paged OUT) scribbled the ASIC DMA control, spuriously enabling
-// DMA whose INT flags corrupted the title's per-frame interrupt script. A
-// healthy title keeps its full-colour screen many seconds; a derail collapses it
-// to a near-blank menu.
+// Burnin' Rubber title SURVIVES: it used to render for ~2 s and then derail
+// back to the cartridge menu, because a bulk copy through &6xxx (while the
+// register page was RMR2-paged OUT) scribbled the ASIC DMA control, spuriously
+// enabling DMA whose INT flags corrupted the title's per-frame interrupt
+// script. A healthy title keeps its full-colour screen many seconds; a derail
+// collapses it to a near-blank menu.
 TEST(PlusCartBoot, BurninTitleHoldsWithoutDerailing) {
   std::vector<uint8_t> raw = read_file("rom/system.cpr", "../rom/system.cpr");
   if (raw.size() < 0x8000) GTEST_SKIP() << "rom/system.cpr not found";
   std::vector<uint8_t> cart = parse_cpr(raw);
   ASSERT_FALSE(cart.empty());
-  std::vector<uint8_t> amsdos = read_file("rom/amsdos.rom", "../rom/amsdos.rom");
+  std::vector<uint8_t> amsdos =
+      read_file("rom/amsdos.rom", "../rom/amsdos.rom");
 
   subcycle::Machine m;
   ASSERT_TRUE(m.build(cart.data(), 0x8000));
@@ -236,7 +237,8 @@ TEST(PlusCartBoot, BurninRaceStartsOnFireWithoutDerailing) {
   if (raw.size() < 0x8000) GTEST_SKIP() << "rom/system.cpr not found";
   std::vector<uint8_t> cart = parse_cpr(raw);
   ASSERT_FALSE(cart.empty());
-  std::vector<uint8_t> amsdos = read_file("rom/amsdos.rom", "../rom/amsdos.rom");
+  std::vector<uint8_t> amsdos =
+      read_file("rom/amsdos.rom", "../rom/amsdos.rom");
 
   subcycle::Machine m;
   ASSERT_TRUE(m.build(cart.data(), 0x8000));
@@ -273,8 +275,8 @@ TEST(PlusCartBoot, BurninRaceStartsOnFireWithoutDerailing) {
   for (int f = 0; f < 60; ++f) idle_frame();
   ASSERT_GT(distinct_colors(), 8) << "the title never painted";
 
-  // Press FIRE 1 (joystick 0 = keyboard matrix row 9; FIRE1 = bit 4, active-low)
-  // for ~10 frames, then release and let the race run.
+  // Press FIRE 1 (joystick 0 = keyboard matrix row 9; FIRE1 = bit 4,
+  // active-low) for ~10 frames, then release and let the race run.
   for (int f = 0; f < 10; ++f) {
     for (uint8_t r = 0; r < 16; ++r) m.set_key_row(r, 0xFF);
     m.set_key_row(9, 0xEF);  // FIRE1 pressed
@@ -310,7 +312,8 @@ TEST(PlusCartBoot, WakeTierMatchesFaithfulIncludingAudio) {
   if (raw.size() < 0x8000) GTEST_SKIP() << "rom/system.cpr not found";
   std::vector<uint8_t> cart = parse_cpr(raw);
   ASSERT_FALSE(cart.empty());
-  std::vector<uint8_t> amsdos = read_file("rom/amsdos.rom", "../rom/amsdos.rom");
+  std::vector<uint8_t> amsdos =
+      read_file("rom/amsdos.rom", "../rom/amsdos.rom");
 
   subcycle::Machine faithful, wake;
   std::vector<std::vector<uint8_t>> fbs(2);
@@ -367,7 +370,6 @@ TEST(PlusCartBoot, WakeTierMatchesFaithfulIncludingAudio) {
   for (int f = 0; f < 6; ++f) lockstep(1, 0xBF);    // F2: select the title
   for (int f = 0; f < 80; ++f) lockstep(0, 0xFF);   // title paints + music
 }
-
 
 // --- F7 (beads-3boi): the Plus under RunTier::Fast ------------------------
 // A Fast-tier machine boots the system cartridge, presses F2, and reaches the
@@ -428,8 +430,8 @@ TEST(PlusCartBoot, FastTierMatchesWakeIncludingAudio) {
       }
       ASSERT_EQ(fnv1a_fb(fast.fb.data(), kFbLen),
                 fnv1a_fb(wake.fb.data(), kFbLen))
-          << "Plus framebuffer diverged (phase row1=" << int(row1)
-          << ", frame " << f << ")";
+          << "Plus framebuffer diverged (phase row1=" << int(row1) << ", frame "
+          << f << ")";
     }
   };
   frames(150, 0xFF);  // boot → menu
