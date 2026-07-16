@@ -1314,8 +1314,7 @@ std::unordered_map<int, const Z80Opcode*> s_disasm_lookup;
 
 // Key = uppercase mnemonic pattern, value = matching entries
 namespace {
-std::unordered_map<std::string, std::vector<const Z80Opcode*>>
-    s_asm_lookup;
+std::unordered_map<std::string, std::vector<const Z80Opcode*>> s_asm_lookup;
 }  // namespace
 
 // Set of known mnemonic keywords (first word of each pattern, uppercased)

@@ -63,10 +63,18 @@ jobs:
       # continue-on-error once all warnings are fixed.
       - name: clang-tidy
         continue-on-error: true
-        run: make -j 3 clang-tidy
+        run: |
+          # Pinned: .clang-tidy uses ExcludeHeaderFilterRegex (a 19+ key);
+          # the runner's apt clang-tidy (18) fails to parse the config for
+          # EVERY translation unit — an endless per-TU error spew.
+          pip install --break-system-packages clang-tidy==22.1.8
+          make -j 3 clang-tidy
+
       - name: Check clang-format
         run: |
-          pip install --break-system-packages clang-format
+          # Pinned: the tree is formatted with exactly this version. An
+          # unpinned install drifts with pip and mass-flags the whole tree.
+          pip install --break-system-packages clang-format==22.1.8
           make clang-format
       # Disabled for now as this is failing for unknown reasons.
       #- run: make -j 3 deb_pkg VERSION=99.99.0 REVISION=1

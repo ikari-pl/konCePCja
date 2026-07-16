@@ -46,7 +46,8 @@ bool GifRecorder::end(const std::string& path) {
   if (!result.data) return false;
 
   std::ofstream ofs(path, std::ios::binary);
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   bool ok = false;
   if (ofs) {
     ofs.write(static_cast<const char*>(static_cast<const void*>(result.data)),

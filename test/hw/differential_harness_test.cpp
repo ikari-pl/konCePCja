@@ -151,7 +151,8 @@ TEST(DifferentialHarness, FaithfulMatchesSolderedTier) {
   // composition, so Fast does not degrade).
   ASSERT_TRUE(faithful.effective_run_tier() ==
               subcycle::Machine::RunTier::Faithful);
-  ASSERT_TRUE(fast.effective_run_tier() == subcycle::Machine::RunTier::Soldered);
+  ASSERT_TRUE(fast.effective_run_tier() ==
+              subcycle::Machine::RunTier::Soldered);
 
   constexpr int kFrames = 120;
   for (int frame = 0; frame < kFrames; ++frame) {
@@ -201,10 +202,10 @@ TEST(DifferentialHarness, FaithfulMatchesWakeTier) {
 // (a) stay active — NOT degrade to Faithful the way an uncontracted peripheral
 // does — and (b) remain observation-identical to Faithful every frame, incl.
 // the two extra devices' logical state. This is the guard for beads-ymdj: the
-// contract is what stops the plotter dragging the whole machine to Faithful (and
-// thence onto E-cores at ~18 FPS). Cold-boot exercises the QUIET path (the pair
-// idle end-to-end); the active bit-shifting path is covered by the machine-level
-// serial-pair tests.
+// contract is what stops the plotter dragging the whole machine to Faithful
+// (and thence onto E-cores at ~18 FPS). Cold-boot exercises the QUIET path (the
+// pair idle end-to-end); the active bit-shifting path is covered by the
+// machine-level serial-pair tests.
 TEST(DifferentialHarness, FaithfulMatchesWakeTier_SerialPlotter) {
   std::vector<uint8_t> rom = load_system_rom();
   if (rom.size() < 0x8000)

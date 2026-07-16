@@ -107,7 +107,8 @@ struct BlockDesc {
   uint32_t gap_offset = 0;  // relative to the Extra Data Block
   uint32_t cell_type = 0;
   uint32_t block_encoder = 0;
-  uint32_t block_flags = 0;  // bit0 ForwardGap, bit1 BackwardGap, bit2 DataInBit
+  uint32_t block_flags =
+      0;  // bit0 ForwardGap, bit1 BackwardGap, bit2 DataInBit
   uint32_t gap_default = 0;
   uint32_t data_offset = 0;  // relative to the Extra Data Block
 };

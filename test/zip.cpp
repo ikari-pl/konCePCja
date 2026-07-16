@@ -1,5 +1,3 @@
-#include "zip_archive.h"
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -8,6 +6,7 @@
 #include <vector>
 
 #include "errors.h"
+#include "zip_archive.h"
 
 /*
  * These tests are not really unit tests as they use files that can be found
@@ -133,24 +132,57 @@ TEST(Zip, ExtractsAStoredEntry) {
   const std::string payload = "stored payload";
   const std::string name = "file.dsk";
   std::vector<uint8_t> z;
-  auto le16 = [&](uint16_t v) { z.push_back(v & 0xFF); z.push_back(v >> 8); };
-  auto le32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) z.push_back((v >> (8 * i)) & 0xFF); };
+  auto le16 = [&](uint16_t v) {
+    z.push_back(v & 0xFF);
+    z.push_back(v >> 8);
+  };
+  auto le32 = [&](uint32_t v) {
+    for (int i = 0; i < 4; ++i) z.push_back((v >> (8 * i)) & 0xFF);
+  };
   // Local header (PK\3\4): method 0, sizes = payload, then name + data.
-  le32(0x04034b50); le16(20); le16(0); le16(0); le16(0); le16(0);
+  le32(0x04034b50);
+  le16(20);
+  le16(0);
+  le16(0);
+  le16(0);
+  le16(0);
   le32(0);  // crc (unchecked by the loader)
-  le32(payload.size()); le32(payload.size()); le16(name.size()); le16(0);
+  le32(payload.size());
+  le32(payload.size());
+  le16(name.size());
+  le16(0);
   z.insert(z.end(), name.begin(), name.end());
   z.insert(z.end(), payload.begin(), payload.end());
   const uint32_t cd_off = z.size();
   // Central directory entry (PK\1\2) pointing at local offset 0.
-  le32(0x02014b50); le16(20); le16(20); le16(0); le16(0); le16(0); le16(0);
-  le32(0); le32(payload.size()); le32(payload.size());
-  le16(name.size()); le16(0); le16(0); le16(0); le16(0); le32(0); le32(0);
+  le32(0x02014b50);
+  le16(20);
+  le16(20);
+  le16(0);
+  le16(0);
+  le16(0);
+  le16(0);
+  le32(0);
+  le32(payload.size());
+  le32(payload.size());
+  le16(name.size());
+  le16(0);
+  le16(0);
+  le16(0);
+  le16(0);
+  le32(0);
+  le32(0);
   z.insert(z.end(), name.begin(), name.end());
   const uint32_t cd_size = z.size() - cd_off;
   // EOCD (PK\5\6).
-  le32(0x06054b50); le16(0); le16(0); le16(1); le16(1);
-  le32(cd_size); le32(cd_off); le16(0);
+  le32(0x06054b50);
+  le16(0);
+  le16(0);
+  le16(1);
+  le16(1);
+  le32(cd_size);
+  le32(cd_off);
+  le16(0);
   {
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(z.data()),

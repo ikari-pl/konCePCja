@@ -10,8 +10,6 @@
 
 #include "ipf_decode.h"
 
-#include "flux_ingest.h"  // flux::to_scp — the unified dispatcher read path
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -19,6 +17,7 @@
 #include <cstring>
 #include <vector>
 
+#include "flux_ingest.h"  // flux::to_scp — the unified dispatcher read path
 #include "hw/flux.h"
 
 namespace {
@@ -53,8 +52,7 @@ std::vector<uint8_t> data_elem(ipf::DataType type,
   uint32_t size = static_cast<uint32_t>(sample.size());  // bytes (DataInBit=0)
   uint32_t width = (size > 0xFFFF) ? 3 : (size > 0xFF) ? 2 : 1;
   std::vector<uint8_t> e;
-  e.push_back(static_cast<uint8_t>((width << 5) |
-                                   static_cast<uint32_t>(type)));
+  e.push_back(static_cast<uint8_t>((width << 5) | static_cast<uint32_t>(type)));
   for (uint32_t i = 0; i < width; ++i)
     e.push_back(static_cast<uint8_t>(size >> (8 * (width - 1 - i))));
   put_bytes(e, sample);
@@ -75,8 +73,8 @@ std::vector<uint8_t> fuzzy_elem(uint32_t size_bytes) {
 // Gap elements (size always in bits).
 std::vector<uint8_t> gap_length(uint32_t len_bits) {
   std::vector<uint8_t> e;
-  e.push_back(static_cast<uint8_t>((1u << 5) |
-                                   static_cast<uint32_t>(ipf::GapKind::GapLength)));
+  e.push_back(static_cast<uint8_t>(
+      (1u << 5) | static_cast<uint32_t>(ipf::GapKind::GapLength)));
   e.push_back(static_cast<uint8_t>(len_bits >> 8));
   e.push_back(static_cast<uint8_t>(len_bits));
   // width 2 for values > 255; keep it 2 always for simplicity of the vector
@@ -101,7 +99,8 @@ std::vector<uint8_t> sync_sample() {  // 3x A1 (0x4489)
 std::vector<uint8_t> id_field(uint8_t c, uint8_t h, uint8_t r, uint8_t n) {
   std::vector<uint8_t> body = {0xFE, c, h, r, n};
   uint16_t crc = 0xFFFF;
-  for (uint8_t x : {0xA1, 0xA1, 0xA1}) crc = crc16(crc, static_cast<uint8_t>(x));
+  for (uint8_t x : {0xA1, 0xA1, 0xA1})
+    crc = crc16(crc, static_cast<uint8_t>(x));
   for (uint8_t x : body) crc = crc16(crc, x);
   body.push_back(static_cast<uint8_t>(crc >> 8));
   body.push_back(static_cast<uint8_t>(crc));
@@ -113,7 +112,8 @@ std::vector<uint8_t> data_field(const std::vector<uint8_t>& payload) {
   std::vector<uint8_t> body = {0xFB};
   put_bytes(body, payload);
   uint16_t crc = 0xFFFF;
-  for (uint8_t x : {0xA1, 0xA1, 0xA1}) crc = crc16(crc, static_cast<uint8_t>(x));
+  for (uint8_t x : {0xA1, 0xA1, 0xA1})
+    crc = crc16(crc, static_cast<uint8_t>(x));
   for (uint8_t x : body) crc = crc16(crc, x);
   body.push_back(static_cast<uint8_t>(crc >> 8));
   body.push_back(static_cast<uint8_t>(crc));
@@ -142,19 +142,19 @@ std::vector<uint8_t> caps_record() { return record("CAPS", {}); }
 std::vector<uint8_t> info_record(uint32_t encoder, uint32_t max_track,
                                  uint32_t max_side) {
   std::vector<uint8_t> p;
-  put_be32(p, 1);         // mediaType
-  put_be32(p, encoder);   // encoderType
-  put_be32(p, 1);         // encoderRev
-  put_be32(p, 1);         // fileKey
-  put_be32(p, 1);         // fileRev
-  put_be32(p, 0);         // origin
-  put_be32(p, 0);         // minTrack
-  put_be32(p, max_track); // maxTrack
-  put_be32(p, 0);         // minSide
-  put_be32(p, max_side);  // maxSide
-  put_be32(p, 0);         // creationDate
-  put_be32(p, 0);         // creationTime
-  put_be32(p, 4);         // platforms[0] = Amstrad CPC
+  put_be32(p, 1);          // mediaType
+  put_be32(p, encoder);    // encoderType
+  put_be32(p, 1);          // encoderRev
+  put_be32(p, 1);          // fileKey
+  put_be32(p, 1);          // fileRev
+  put_be32(p, 0);          // origin
+  put_be32(p, 0);          // minTrack
+  put_be32(p, max_track);  // maxTrack
+  put_be32(p, 0);          // minSide
+  put_be32(p, max_side);   // maxSide
+  put_be32(p, 0);          // creationDate
+  put_be32(p, 0);          // creationTime
+  put_be32(p, 4);          // platforms[0] = Amstrad CPC
   put_be32(p, 0);
   put_be32(p, 0);
   put_be32(p, 0);
@@ -176,7 +176,7 @@ std::vector<uint8_t> imge_record(uint32_t track, uint32_t side,
   put_be32(p, track);
   put_be32(p, side);
   put_be32(p, density);
-  put_be32(p, 1);  // signalType
+  put_be32(p, 1);                     // signalType
   put_be32(p, (track_bits + 7) / 8);  // trackBytes
   put_be32(p, start_bit_pos / 8);     // startBytePos
   put_be32(p, start_bit_pos);         // startBitPos
@@ -369,7 +369,7 @@ TEST(IpfDecode, Block10GaplessAccounts) {
   put_bytes(a, data_elem(ipf::DataType::Sync, sync_sample()));
   put_bytes(a, data_elem(ipf::DataType::Data,
                          {0xFE, 0x00, 0x00, 0x0B, 0x02, 0x25, 0xA4}));  // 7 B
-  put_bytes(a, data_elem(ipf::DataType::Gap, gap));                    // 28 B
+  put_bytes(a, data_elem(ipf::DataType::Gap, gap));                     // 28 B
   put_bytes(a, data_elem(ipf::DataType::Sync, sync_sample()));
   put_bytes(a, data_elem(ipf::DataType::Data,
                          {0xFB, 0, 0, 0, 0, 0, 0, 0, 0}));  // 9 B
@@ -388,15 +388,15 @@ TEST(IpfDecode, Block11BackwardLoopingGapAccounts) {
   // specifies only 2·(192+64)=512 of 2280 raw bits — the rest loops to fill.
   // Data accounting: 48 + 2·56 + 2·64 + 2·64 + 2·64 + 2·48 + 1696 = 2336.
   std::vector<uint8_t> a;
-  put_bytes(a, data_elem(ipf::DataType::Sync, sync_sample()));           // 48
+  put_bytes(a, data_elem(ipf::DataType::Sync, sync_sample()));  // 48
   put_bytes(a, data_elem(ipf::DataType::Data,
-                         {0xFE, 0x00, 0x00, 0x0C, 0x02, 0xBC, 0x33}));   // 7 B
+                         {0xFE, 0x00, 0x00, 0x0C, 0x02, 0xBC, 0x33}));  // 7 B
   put_bytes(a, data_elem(ipf::DataType::Gap, std::vector<uint8_t>(8, 0x4E)));
   put_bytes(a, data_elem(ipf::DataType::Data,
                          {0xD9, 0x23, 0x76, 0xC5, 0xE6, 0xD3, 0x31, 0xB2}));
   put_bytes(a, data_elem(ipf::DataType::Gap, std::vector<uint8_t>(8, 0x4E)));
   put_bytes(a, data_elem(ipf::DataType::Data,
-                         {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE}));          // 6 B
+                         {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFE}));  // 6 B
   put_bytes(a, data_elem(ipf::DataType::Sync,
                          std::vector<uint8_t>(212, 0x00)));  // 212 B verbatim
   a.push_back(0x00);
@@ -577,8 +577,8 @@ TEST(IpfDecode, RejectsHostileInput) {
   EXPECT_EQ(img.open(badmagic), Status::BadMagic);
 
   // CAPS header claiming a length that runs past EOF.
-  std::vector<uint8_t> overlong = {'C', 'A', 'P', 'S', 0, 0, 0xFF, 0xFF,
-                                   0,   0,   0,   0};
+  std::vector<uint8_t> overlong = {'C',  'A',  'P', 'S', 0, 0,
+                                   0xFF, 0xFF, 0,   0,   0, 0};
   EXPECT_EQ(img.open(overlong), Status::Truncated);
 
   // Valid CAPS record but corrupted CRC.
@@ -662,8 +662,8 @@ TEST(IpfDecode, ToleratesUnknownRecords) {
   auto ipf = build_single_block(block0_data_area(), {}, 8992, 0, 0, 0);
   // Append the IMGE + DATA from a freshly built single-block image (skip its
   // CAPS+INFO prefix — 12 + 96 bytes).
-  put_bytes(f, std::vector<uint8_t>(ipf.bytes.begin() + 12 + 96,
-                                    ipf.bytes.end()));
+  put_bytes(f,
+            std::vector<uint8_t>(ipf.bytes.begin() + 12 + 96, ipf.bytes.end()));
   ipf::Image img;
   EXPECT_EQ(img.open(f), Status::Ok);
   EXPECT_TRUE(img.has_track(0, 0));

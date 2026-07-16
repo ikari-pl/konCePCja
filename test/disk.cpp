@@ -1,6 +1,6 @@
-#include "hw_views.h"
-
 #include <gtest/gtest.h>
+
+#include "hw_views.h"
 
 namespace {
 

@@ -71,9 +71,9 @@ std::vector<PatternElement> compile_text_pattern(const std::string& pattern,
 // mem_pos = current position in memory
 namespace {
 bool match_recursive(const std::vector<PatternElement>& compiled,
-                            size_t pat_idx, const uint8_t* mem, size_t mem_size,
-                            size_t mem_pos, size_t start, size_t& match_end,
-                            bool case_insensitive) {
+                     size_t pat_idx, const uint8_t* mem, size_t mem_size,
+                     size_t mem_pos, size_t start, size_t& match_end,
+                     bool case_insensitive) {
   while (pat_idx < compiled.size()) {
     const auto& elem = compiled[pat_idx];
     if (elem.kind == PatternElement::LITERAL) {

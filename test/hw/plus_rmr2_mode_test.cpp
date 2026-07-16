@@ -1,18 +1,17 @@
 /* plus_rmr2_mode_test.cpp — the 6128+ RMR2 vs screen-mode disambiguation in the
  * Gate Array. On a Plus with the ASIC register page unlocked, a Gate-Array
  * function-2 write (A15=0/A14=1, data>>6==2) with bit5 (0x20) SET is the RMR2
- * low-ROM bank-remap register, NOT a screen-mode/ROM/interrupt write — the mode,
- * ROM config and the raster counter must all be left untouched. Only the memory
- * Device acts on it (remapping the low-ROM cartridge bank). This mirrors the
- * legacy z80_OUT_handler (case 2: `if (!asic.locked && (val & 0x20)) …RMR2…`).
+ * low-ROM bank-remap register, NOT a screen-mode/ROM/interrupt write — the
+ * mode, ROM config and the raster counter must all be left untouched. Only the
+ * memory Device acts on it (remapping the low-ROM cartridge bank). This mirrors
+ * the legacy z80_OUT_handler (case 2: `if (!asic.locked && (val & 0x20))
+ * …RMR2…`).
  *
  * Regression: Burnin' Rubber's raster handler builds a mode-1 fence band, then
- * emits RMR2 writes (data 0xB8/0xB0, bit5 set) for its music/ROM paging. Without
- * this gate the Gate Array mis-read those as mode-0 writes, clobbering the fence
- * back to mode 0 and — via their bit4 — resetting the raster-interrupt counter,
- * corrupting the whole per-band pipeline. */
-
-#include "hw/gate_array.h"
+ * emits RMR2 writes (data 0xB8/0xB0, bit5 set) for its music/ROM paging.
+ * Without this gate the Gate Array mis-read those as mode-0 writes, clobbering
+ * the fence back to mode 0 and — via their bit4 — resetting the
+ * raster-interrupt counter, corrupting the whole per-band pipeline. */
 
 #include <gtest/gtest.h>
 
@@ -21,6 +20,7 @@
 
 #include "hw/asic.h"
 #include "hw/board.h"
+#include "hw/gate_array.h"
 
 namespace {
 
@@ -102,14 +102,15 @@ TEST(PlusRmr2Mode, ModeWriteStillWorksWhenUnlocked) {
   unlock_asic(rig);
   ga_fn2_write(rig, 0x8D);  // bit5 clear, mode bits = 01
   hsync_pulse(rig);
-  EXPECT_EQ(peek(rig).mode, 1) << "0x8D must set mode 1 (bit5 clear = classic MRER)";
+  EXPECT_EQ(peek(rig).mode, 1)
+      << "0x8D must set mode 1 (bit5 clear = classic MRER)";
   ga_fn2_write(rig, 0x8C);  // bit5 clear, mode bits = 00
   hsync_pulse(rig);
   EXPECT_EQ(peek(rig).mode, 0) << "0x8C must set mode 0";
 }
 
-// THE REGRESSION: with the register page unlocked, a bit5-SET fn-2 write is RMR2
-// and must NOT change the screen mode.
+// THE REGRESSION: with the register page unlocked, a bit5-SET fn-2 write is
+// RMR2 and must NOT change the screen mode.
 TEST(PlusRmr2Mode, Rmr2WriteDoesNotClobberMode) {
   Rig rig;
   make_rig(rig);
@@ -140,7 +141,8 @@ TEST(PlusRmr2Mode, Rmr2WriteDoesNotRearmRasterCounter) {
   const uint8_t before = peek(rig).sl_count;
   ASSERT_GT(before, 0u);
 
-  ga_fn2_write(rig, 0xB8);  // bit5 set (RMR2) + bit4 set (would rearm if classic)
+  ga_fn2_write(rig,
+               0xB8);  // bit5 set (RMR2) + bit4 set (would rearm if classic)
   EXPECT_EQ(peek(rig).sl_count, before)
       << "an RMR2 write must not reset the raster-interrupt counter";
 }

@@ -155,10 +155,8 @@ INSTANTIATE_TEST_SUITE_P(
         DisasmCase{"ed_ld_abs", {0xED, 0x43, 0x00, 0x80}, "ld ($8000),bc", 4},
         // DD / FD prefix with displacement and immediate
         DisasmCase{"dd_ld_a_ixd", {0xDD, 0x7E, 0x04}, "ld a,(ix+$04)", 3},
-        DisasmCase{"dd_ld_ixd_imm",
-                   {0xDD, 0x36, 0x02, 0x99},
-                   "ld (ix+$02),$99",
-                   4},
+        DisasmCase{
+            "dd_ld_ixd_imm", {0xDD, 0x36, 0x02, 0x99}, "ld (ix+$02),$99", 4},
         DisasmCase{"fd_ld_a_iyd", {0xFD, 0x7E, 0xFB}, "ld a,(iy+$fb)", 3},
         DisasmCase{"dd_jp_ix", {0xDD, 0xE9}, "jp (ix)", 2},
         // DDCB / FDCB: displacement precedes the opcode byte.

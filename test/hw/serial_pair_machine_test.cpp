@@ -42,8 +42,7 @@ struct Rig {
 void boot(Rig& r, const std::vector<uint8_t>& rom,
           subcycle::Machine::RunTier tier) {
   ASSERT_TRUE(r.m.build(rom.data(), rom.size()));
-  r.m.attach_framebuffer(r.fb.data(), subcycle::kFbWidth,
-                         subcycle::kFbHeight);
+  r.m.attach_framebuffer(r.fb.data(), subcycle::kFbWidth, subcycle::kFbHeight);
   r.m.set_run_tier(tier);
 }
 
@@ -125,9 +124,10 @@ TEST(SerialPairMachine, PluggedPairStaysFastValidAndIdleRunsFast) {
   r.m.set_serial_plotter(true, 9600);
   r.m.run_frame();  // quiet at the frame boundary
   // The pair is fast-valid: it no longer degrades the tier at all. An idle
-  // frame runs full Fast (the serial is a no-op); a frame that actually starts a
-  // transmission bails to the per-cycle remainder internally (fs_io_write_event)
-  // — that path is covered by the plot-delivery tests below.
+  // frame runs full Fast (the serial is a no-op); a frame that actually starts
+  // a transmission bails to the per-cycle remainder internally
+  // (fs_io_write_event) — that path is covered by the plot-delivery tests
+  // below.
   EXPECT_EQ(r.m.effective_run_tier(), subcycle::Machine::RunTier::Fast)
       << "serial pair no longer caps the tier; a quiet frame runs Fast";
 
@@ -171,7 +171,8 @@ TEST(SerialPairMachine, Z80PlotsOverTheWireIdenticallyAcrossRequestedTiers) {
   EXPECT_FLOAT_EQ(segs[0].y2, 1000.0f);
 }
 
-// beads-q9kx — reproduce the CP/M-flow failure at MACHINE level, deterministically.
+// beads-q9kx — reproduce the CP/M-flow failure at MACHINE level,
+// deterministically.
 //
 // The GUI plugs the pair at 9600 baud, so set_serial_plotter sets the plotter's
 // DIP divisor to 2e6/(9600*16) = 13. But the DDHP7470.PRL driver emits every
@@ -179,8 +180,8 @@ TEST(SerialPairMachine, Z80PlotsOverTheWireIdenticallyAcrossRequestedTiers) {
 // RS232 TX runs at bit_time's unprogrammed default (div 1 → 128 master cycles
 // per bit) while the plotter samples at div 13 (1664 cycles/bit). The far end
 // mis-frames every byte: ZERO segments. This is the exact wire-rate mismatch
-// that yields "0 bytes reach plotter" in the live emulator, with no CP/M banking
-// in the way.
+// that yields "0 bytes reach plotter" in the live emulator, with no CP/M
+// banking in the way.
 TEST(SerialPairMachine, UnprogrammedBaudAt9600MisframesEverythingNoPlot) {
   std::vector<uint8_t> rom = load_rom();
   if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
@@ -188,13 +189,15 @@ TEST(SerialPairMachine, UnprogrammedBaudAt9600MisframesEverythingNoPlot) {
 
   Rig r;
   boot(r, rom, subcycle::Machine::RunTier::Fast);
-  r.m.set_serial_plotter(true, 9600);              // plotter DIP divisor = 13
-  for (int i = 0; i < 3; ++i) r.m.run_frame();     // settle the boot
-  inject_plot_program(r.m, kHpgl, /*divisor=*/0);  // 8253 left UNPROGRAMMED → div 1
+  r.m.set_serial_plotter(true, 9600);           // plotter DIP divisor = 13
+  for (int i = 0; i < 3; ++i) r.m.run_frame();  // settle the boot
+  inject_plot_program(r.m, kHpgl,
+                      /*divisor=*/0);  // 8253 left UNPROGRAMMED → div 1
   for (int f = 0; f < 8; ++f) r.m.run_frame();
 
   EXPECT_EQ(plotter_segment_count(r.m), 0u)
-      << "wire-rate mismatch (RS232 div 1 vs plotter div 13) must lose the plot";
+      << "wire-rate mismatch (RS232 div 1 vs plotter div 13) must lose the "
+         "plot";
 }
 
 // The fix criterion: when the TX side IS clocked to the plotter's rate (the SI
@@ -209,9 +212,10 @@ TEST(SerialPairMachine, MatchedBaudAt9600DeliversThePlot) {
 
   Rig r;
   boot(r, rom, subcycle::Machine::RunTier::Fast);
-  r.m.set_serial_plotter(true, 9600);               // plotter DIP divisor = 13
-  for (int i = 0; i < 3; ++i) r.m.run_frame();       // settle the boot
-  inject_plot_program(r.m, kHpgl, /*divisor=*/13);   // 8253 → div 13, matches plotter
+  r.m.set_serial_plotter(true, 9600);           // plotter DIP divisor = 13
+  for (int i = 0; i < 3; ++i) r.m.run_frame();  // settle the boot
+  inject_plot_program(r.m, kHpgl,
+                      /*divisor=*/13);  // 8253 → div 13, matches plotter
   for (int f = 0; f < 8; ++f) r.m.run_frame();
 
   ASSERT_GE(plotter_segment_count(r.m), 1u)

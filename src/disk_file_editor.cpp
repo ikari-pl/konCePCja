@@ -28,8 +28,8 @@ constexpr uint8_t CPM_DELETED_ENTRY = 0xE5;
 
 // Find sector data by sector ID within a track
 namespace {
-uint8_t* find_sector_data(t_drive* drive, unsigned int track,
-                                 unsigned int side, uint8_t sector_id) {
+uint8_t* find_sector_data(t_drive* drive, unsigned int track, unsigned int side,
+                          uint8_t sector_id) {
   if (track >= drive->tracks) return nullptr;
   if (side > drive->sides) return nullptr;
   t_track& trk = drive->track[track][side];
@@ -98,7 +98,7 @@ bool write_block(t_drive* drive, unsigned int block, const uint8_t* in) {
 // Read the entire directory (blocks 0-1, 2K, 64 entries of 32 bytes)
 namespace {
 bool read_directory(t_drive* drive,
-                           uint8_t dir[CPM_DIR_ENTRIES * CPM_DIR_ENTRY_SIZE]) {
+                    uint8_t dir[CPM_DIR_ENTRIES * CPM_DIR_ENTRY_SIZE]) {
   for (unsigned int b = 0; b < CPM_DIR_BLOCKS; b++) {
     if (!read_block(drive, b, dir + (b * CPM_BLOCK_SIZE))) return false;
   }
@@ -108,8 +108,8 @@ bool read_directory(t_drive* drive,
 
 // Write the entire directory back
 namespace {
-bool write_directory(
-    t_drive* drive, const uint8_t dir[CPM_DIR_ENTRIES * CPM_DIR_ENTRY_SIZE]) {
+bool write_directory(t_drive* drive,
+                     const uint8_t dir[CPM_DIR_ENTRIES * CPM_DIR_ENTRY_SIZE]) {
   for (unsigned int b = 0; b < CPM_DIR_BLOCKS; b++) {
     if (!write_block(drive, b, dir + (b * CPM_BLOCK_SIZE))) return false;
   }
@@ -185,8 +185,7 @@ bool same_file(const uint8_t* a, const uint8_t* b) {
 // Each extent covers up to 16K (128 records * 128 bytes).
 // The last extent's RC field tells how many records are actually used.
 namespace {
-uint32_t compute_file_size(const uint8_t dir[],
-                                  const uint8_t* first_entry) {
+uint32_t compute_file_size(const uint8_t dir[], const uint8_t* first_entry) {
   // Collect all extents for this file
   struct ExtentInfo {
     unsigned int extent_num;
@@ -302,7 +301,7 @@ std::vector<DiskFileEntry> disk_list_files(t_drive* drive, std::string& err) {
 // Get all blocks allocated to a file, in order, across all extents
 namespace {
 std::vector<uint8_t> get_file_blocks(const uint8_t dir[],
-                                            const uint8_t* first_entry) {
+                                     const uint8_t* first_entry) {
   struct ExtentData {
     unsigned int extent_num;
     std::vector<uint8_t> blocks;

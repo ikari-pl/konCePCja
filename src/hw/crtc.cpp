@@ -36,8 +36,8 @@ struct crtc_state {
       false;  // "vcc == R7 at the last check" — edge-detects VSYNC starts
   bool dispen = false;
   bool lpen_prev = false;  // previous cycle's LPEN strobe (edge detect)
-  uint16_t ma_row = 0;  // char-row base address
-  uint16_t ma = 0;      // current memory address
+  uint16_t ma_row = 0;     // char-row base address
+  uint16_t ma = 0;         // current memory address
 
   // Plus split screen (Amstrad Plus / ASIC "type-4"). The ASIC decodes
   // split_line/split_addr from &6800-&6803; the CRTC reads them via an attach
@@ -331,7 +331,8 @@ void crtc_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   apply_vscroll(c, &ma, &ra);  // Plus vertical soft scroll (fetch only)
   out->vid.ma = ma;
   out->vid.ra = ra;
-  out->vid.frame_line = c->scanline;  // shared raster ref: Plus split + ASIC PRI
+  out->vid.frame_line =
+      c->scanline;  // shared raster ref: Plus split + ASIC PRI
 }
 
 void crtc_reset(void* self) {
@@ -358,8 +359,9 @@ void crtc_save(const void* self, void* buf) {
   uint8_t* b = static_cast<uint8_t*>(buf);
   b[0] = 1;  // format version
   std::memcpy(b + 1, self, sizeof(crtc_state));
-  // The ASIC attachment is board wiring, not machine state — zero its pointer in
-  // the blob so the serialised bytes are deterministic (load keeps the live one).
+  // The ASIC attachment is board wiring, not machine state — zero its pointer
+  // in the blob so the serialised bytes are deterministic (load keeps the live
+  // one).
   std::memset(b + 1 + offsetof(crtc_state, asic), 0, sizeof(const Device*));
 }
 void crtc_load(void* self, const void* buf) {
@@ -486,7 +488,8 @@ int crtc_advance_view(const Device* dev, uint32_t chars, CrtcCharView* out) {
     // by construction — Crtc.AdvanceViewMatchesPerCycleTickCharForChar guards.
     if (!c->in_hsync && c->hcc < c->reg[0]) {
       uint32_t n = static_cast<uint32_t>(c->reg[0] - c->hcc);
-      if (hsync_width(c) != 0 && c->hcc <= c->reg[2] && c->reg[2] <= c->reg[0]) {
+      if (hsync_width(c) != 0 && c->hcc <= c->reg[2] &&
+          c->reg[2] <= c->reg[0]) {
         const uint32_t n_hs = static_cast<uint32_t>(c->reg[2] - c->hcc);
         n = std::min(n_hs, n);
       }
@@ -520,8 +523,7 @@ int crtc_advance_view(const Device* dev, uint32_t chars, CrtcCharView* out) {
         for (uint32_t k = 0; k < n; ++k) {
           const int hcc = hcc0 + static_cast<int>(k);
           CrtcCharView& view = out[i + k];
-          view.ma =
-              static_cast<uint16_t>((c->ma_row + hcc + ma_bump) & 0x3FFF);
+          view.ma = static_cast<uint16_t>((c->ma_row + hcc + ma_bump) & 0x3FFF);
           view.ra = ra_out;
           view.levels = static_cast<uint8_t>(
               base_levels |
@@ -587,8 +589,7 @@ uint32_t crtc_irq_horizon_chars(const Device* dev) {
         c->hsw >= width ? 1u : static_cast<uint32_t>(width - c->hsw);
     h = std::min(h_fall, h);
   } else if (c->hcc <= r2 && r2 <= r0 && width != 0) {
-    const uint32_t h_fall =
-        static_cast<uint32_t>(r2 - c->hcc) + 1u + width;
+    const uint32_t h_fall = static_cast<uint32_t>(r2 - c->hcc) + 1u + width;
     h = std::min(h_fall, h);
   }
   return h;

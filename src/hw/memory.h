@@ -60,13 +60,14 @@ void mem_attach_rom(const Device* dev, uint8_t n, const uint8_t* data);
 
 /* Plus (6128+) cartridge: overlay the low/high ROM windows with a parsed CPR
  * image (`bytes` = whole 16K banks, caller-owned, up to 32 banks). Enables
- * cartridge banking — low ROM = RMR2-selected bank (boots bank 0 = OS), high ROM
- * = ROM-select-mapped bank (boots bank 1 = BASIC). Live wiring; bytes < 16K (or
- * a non-Plus machine) leaves it a plain ROM box. */
+ * cartridge banking — low ROM = RMR2-selected bank (boots bank 0 = OS), high
+ * ROM = ROM-select-mapped bank (boots bank 1 = BASIC). Live wiring; bytes < 16K
+ * (or a non-Plus machine) leaves it a plain ROM box. */
 void mem_load_cartridge(const Device* dev, const uint8_t* image, size_t bytes);
 
 /* Wire the ASIC handle whose asic_unlocked() gates the RMR2 low-ROM remap. Live
- * wiring (like the attach_* above); no-op effect until a cartridge is loaded. */
+ * wiring (like the attach_* above); no-op effect until a cartridge is loaded.
+ */
 void mem_attach_asic(const Device* dev, const Device* asic);
 
 /* The CPU-VISIBLE view (debug peeks: what the Z80 would read/write at this

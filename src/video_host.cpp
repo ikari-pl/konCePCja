@@ -8,8 +8,6 @@
 
 #include "video_host.h"
 
-#include "scalers/cpc_scalers.h"
-
 #include <math.h>
 
 #include <algorithm>
@@ -30,6 +28,7 @@
 #include "log.h"
 #include "macos_menu.h"
 #include "savepng.h"
+#include "scalers/cpc_scalers.h"
 #include "shaders/blit_shaders.h"
 #include "video_gpu.h"
 
@@ -37,9 +36,6 @@ extern SDL_Window* mainSDLWindow;
 SDL_Window* mainSDLWindow = nullptr;
 namespace {
 SDL_Renderer* renderer = nullptr;
-}  // namespace
-namespace {
-SDL_Texture* texture = nullptr;
 }  // namespace
 
 // SDL texture for CPC framebuffer (used by SDL_Renderer/D3D rendering path)
@@ -74,27 +70,20 @@ SDL_Surface* vid = nullptr;
 }  // namespace
 // the video surface scaled with same format as pub
 extern SDL_Surface* scaled;
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 SDL_Surface* scaled = nullptr;
 // the video surface shown by the plugin to the application
 extern SDL_Surface* pub;
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 SDL_Surface* pub = nullptr;
 
-namespace {
-SDL_Surface* devtools_panel_surface = nullptr;
-}  // namespace
 namespace {
 int devtools_panel_width = 0;
 }  // namespace
 namespace {
 int devtools_panel_height = 0;
-}  // namespace
-namespace {
-int devtools_panel_surface_width = 0;
-}  // namespace
-namespace {
-int devtools_panel_surface_height = 0;
 }  // namespace
 namespace {
 int devtools_cpc_height = 0;
@@ -156,7 +145,8 @@ bool g_ring_active = false;
 // is the plugin's CPC source surface (the Z80's historical write target).  We
 // keep it as the render-private copy destination and allocate three matching
 // write buffers.  Returns the Z80's initial write surface.
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 SDL_Surface* video_ring_init(SDL_Surface* frontend) {
   video_ring_shutdown();  // free any prior ring (restyle path)
   if (!frontend) return frontend;
@@ -192,7 +182,8 @@ SDL_Surface* video_ring_init(SDL_Surface* frontend) {
 // atomic exchange keeps {write, front, shared} a permutation of {0,1,2}, so the
 // new write buffer is never the one the render thread holds.  Returns the new
 // write surface; the caller assigns back_surface to it.
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 SDL_Surface* video_ring_publish() {
   if (!g_ring_active) return g_frontend;
   int const prev = g_ring_shared.exchange(g_ring_write | RING_DIRTY,
@@ -219,7 +210,8 @@ void video_ring_present() {
 // The surface the render thread should read/write for the displayed frame
 // (OSD text, screenshots, dock preview, thumbnails).  Equals the plugin's
 // front-end surface, now holding the most-recently-presented frame.
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 SDL_Surface* video_render_surface() { return g_frontend; }
 
 // The most recently PUBLISHED frame — the Z80 thread's actual output —
@@ -229,7 +221,8 @@ SDL_Surface* video_render_surface() { return g_frontend; }
 // returned buffer becomes the writer's target again after its next publish,
 // so a capture can tear mid-frame at worst; pause the emulation first for an
 // exact frame.  Null when the ring is inactive (headless single-buffer).
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 SDL_Surface* video_ring_published_peek() {
   if (!g_ring_active) return nullptr;
   return g_cpc_ring[g_ring_shared.load(std::memory_order_acquire) &
@@ -340,7 +333,8 @@ uintptr_t video_make_rgba_texture(const unsigned char* rgba, int w, int h) {
 void video_free_rgba_texture(uintptr_t tex) {
   if (!tex) return;
   if (using_sdl_renderer && renderer) {
-    // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer->pointer for an opaque host handle
+    // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer->pointer
+    // for an opaque host handle
     SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(tex));
     return;
   }
@@ -410,7 +404,8 @@ bool video_capture_cpc_thumbnail(const std::string& path, int max_w) {
   return true;
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 bool video_load_rgba_thumbnail(const std::string& path,
                                std::vector<unsigned char>& rgba, int& w,
                                int& h) {
@@ -482,7 +477,8 @@ void video_take_pending_window_screenshot() {
 #endif
 
 // Returns a bpp compatible with the renderer
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 int renderer_bpp(SDL_Renderer* sdl_renderer) {
   (void)sdl_renderer;
   return 32;
@@ -601,9 +597,10 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   // HIGH_PIXEL_DENSITY: on a Retina display the GPU swapchain is created at the
   // full backing pixel size (2x) instead of macOS upscaling a low-res drawable,
   // so both ImGui and the CPC blit render crisply. The window size stays in
-  // logical points, so "1x" is the same physical size — just sharp. The CPC-blit
-  // viewport is scaled to the swapchain's pixel size in the flip below; ImGui
-  // handles its own framebuffer scale. (Point-space input mapping is unaffected.)
+  // logical points, so "1x" is the same physical size — just sharp. The
+  // CPC-blit viewport is scaled to the swapchain's pixel size in the flip
+  // below; ImGui handles its own framebuffer scale. (Point-space input mapping
+  // is unaffected.)
   mainSDLWindow =
       SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
                        CPC_VISIBLE_SCR_HEIGHT * scale,
@@ -771,8 +768,10 @@ void gpu_flip_a(video_plugin* t) {
       // sw==point width, making this a 1.0 no-op.
       int win_pt_w = 0, win_pt_h = 0;
       SDL_GetWindowSize(mainSDLWindow, &win_pt_w, &win_pt_h);
-      const float vp_ds_x = win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
-      const float vp_ds_y = win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
+      const float vp_ds_x =
+          win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
+      const float vp_ds_y =
+          win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
       vp.x = t->x_offset * vp_ds_x;
       vp.y = t->y_offset * vp_ds_y;
       vp.w = t->width * vp_ds_x;
@@ -1072,8 +1071,10 @@ void crt_basic_gpu_flip_a(video_plugin* t) {
       // sw==point width, making this a 1.0 no-op.
       int win_pt_w = 0, win_pt_h = 0;
       SDL_GetWindowSize(mainSDLWindow, &win_pt_w, &win_pt_h);
-      const float vp_ds_x = win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
-      const float vp_ds_y = win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
+      const float vp_ds_x =
+          win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
+      const float vp_ds_y =
+          win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
       vp.x = t->x_offset * vp_ds_x;
       vp.y = t->y_offset * vp_ds_y;
       vp.w = t->width * vp_ds_x;
@@ -1340,8 +1341,10 @@ void crt_full_gpu_flip_a(video_plugin* t) {
       // sw==point width, making this a 1.0 no-op.
       int win_pt_w = 0, win_pt_h = 0;
       SDL_GetWindowSize(mainSDLWindow, &win_pt_w, &win_pt_h);
-      const float vp_ds_x = win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
-      const float vp_ds_y = win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
+      const float vp_ds_x =
+          win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
+      const float vp_ds_y =
+          win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
       vp.x = t->x_offset * vp_ds_x;
       vp.y = t->y_offset * vp_ds_y;
       vp.w = t->width * vp_ds_x;
@@ -1608,8 +1611,10 @@ void crt_lottes_gpu_flip_a(video_plugin* t) {
       // sw==point width, making this a 1.0 no-op.
       int win_pt_w = 0, win_pt_h = 0;
       SDL_GetWindowSize(mainSDLWindow, &win_pt_w, &win_pt_h);
-      const float vp_ds_x = win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
-      const float vp_ds_y = win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
+      const float vp_ds_x =
+          win_pt_w > 0 ? static_cast<float>(sw) / win_pt_w : 1.0f;
+      const float vp_ds_y =
+          win_pt_h > 0 ? static_cast<float>(sh) / win_pt_h : 1.0f;
       vp.x = t->x_offset * vp_ds_x;
       vp.y = t->y_offset * vp_ds_y;
       vp.w = t->width * vp_ds_x;
@@ -2049,9 +2054,9 @@ void headless_close() {
  * Only exposed for testing purposes. Shouldn't be used outside of video.cpp
  */
 namespace {
-// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a cast or passed to a non-const callee
-void compute_rects(SDL_Rect *src, SDL_Rect *dst,
-                   Uint8 half_pixels) {
+// NOLINTNEXTLINE(readability-non-const-parameter): pointer written through a
+// cast or passed to a non-const callee
+void compute_rects(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels) {
   // Software scaling filter output is 2× the render surface
   int const surface_width = CPC_RENDER_WIDTH * 2;
   int const surface_height =
@@ -2100,7 +2105,8 @@ void compute_rects(SDL_Rect *src, SDL_Rect *dst,
 }
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels) {
   compute_rects(src, dst, half_pixels);
 }
@@ -2130,41 +2136,13 @@ bool compute_window_size(int& out_w, int& out_h) {
 }
 }  // namespace
 
-namespace {
-void video_set_devtools_panel(SDL_Surface* surface, int width,
-                                     int height, int scale) {
-  if (!mainSDLWindow || !surface) return;
-  devtools_panel_surface = surface;
-  devtools_panel_width = width * scale;
-  devtools_panel_height = height * scale;
-  devtools_panel_surface_width = surface->w;
-  devtools_panel_surface_height = surface->h;
-  int w, h;
-  if (compute_window_size(w, h)) {
-    devtools_cpc_height = h - topbar_height - bottombar_height;
-    SDL_SetWindowSize(mainSDLWindow, w, h);
-  }
-  if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
-}
-}  // namespace
+// The docked-devtools side panel setters/getters that used to live here died
+// with the legacy renderer integration — the ImGui viewport windows own that
+// surface now. The devtools_panel_* variables stay: compute_window_size still
+// folds them into the main-window geometry.
 
-namespace {
-void video_clear_devtools_panel() {
-  devtools_panel_surface = nullptr;
-  devtools_panel_width = 0;
-  devtools_panel_height = 0;
-  devtools_panel_surface_width = 0;
-  devtools_panel_surface_height = 0;
-  devtools_cpc_height = 0;
-  if (mainSDLWindow) {
-    int w, h;
-    if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
-  }
-  if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
-}
-}  // namespace
-
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void video_set_topbar(SDL_Surface* surface, int height) {
   if (!mainSDLWindow) return;
   topbar_surface = surface;
@@ -2183,26 +2161,6 @@ void video_clear_topbar() {
   }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
-
-namespace {
-int video_get_devtools_panel_width() { return devtools_panel_width; }
-}  // namespace
-
-namespace {
-int video_get_devtools_panel_height() { return devtools_panel_height; }
-}  // namespace
-
-namespace {
-int video_get_devtools_panel_surface_width() {
-  return devtools_panel_surface_width;
-}
-}  // namespace
-
-namespace {
-int video_get_devtools_panel_surface_height() {
-  return devtools_panel_surface_height;
-}
-}  // namespace
 
 int video_get_topbar_height() { return topbar_height; }
 
@@ -2733,7 +2691,8 @@ video_plugin video_headless_plugin() {
           nullptr};
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 std::vector<video_plugin> video_plugin_list = {
     // Phase 7c.1b: GL plugins deleted.  The "Direct" / swscale family entries
     // below now point at the SDL3 GPU implementations (formerly named "Direct
@@ -2790,4 +2749,12 @@ std::vector<video_plugin> video_plugin_list = {
     {"CRT Lottes", false, crt_lottes_gpu_init, direct_setpal,
      crt_lottes_gpu_flip_a, crt_lottes_gpu_close, 1, 0, 0, 0, 0, 0, 0,
      gpu_flip_b},
+    // SDL_Renderer fallbacks for the two styles the section above forgot —
+    // their flip kernels existed unreferenced (GCC -Werror=unused-function
+    // caught the gap). Appended at the END: scr_style indices are positional,
+    // inserting mid-table would shift every later style in existing configs.
+    {"Advanced Scale2x (SDL)", false, sdlr_swscale_init, swscale_setpal,
+     ascale2x_flip, sdlr_swscale_close, 1, 0, 0, 0, 0, 0, 0, nullptr},
+    {"Dot matrix (SDL)", false, sdlr_swscale_init, swscale_setpal, dotmat_flip,
+     sdlr_swscale_close, 1, 0, 0, 0, 0, 0, 0, nullptr},
 };

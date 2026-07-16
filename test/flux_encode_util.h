@@ -38,7 +38,8 @@ inline std::vector<uint8_t> make_payload(int track, int sector, std::size_t len,
   std::vector<uint8_t> data(len, 0);
   for (std::size_t i = 0; i < len; i++)
     data[i] = static_cast<uint8_t>(
-        ((track * 37) + (sector * 11) + (static_cast<int>(i) * 7) + salt) & 0xFF);
+        ((track * 37) + (sector * 11) + (static_cast<int>(i) * 7) + salt) &
+        0xFF);
   return data;
 }
 
@@ -81,9 +82,10 @@ inline std::vector<uint8_t> build_standard_dsk(
     for (std::size_t sec = 0; sec < sectors.size(); sec++) {
       uint8_t* sinfo = info + 0x18 + (8 * sec);
       std::memcpy(sinfo, sectors[sec].chrn, 4);
-      sinfo[4] = 0;                                          // ST1
+      sinfo[4] = 0;                                         // ST1
       sinfo[5] = (sectors[sec].dam == 0xF8) ? 0x40 : 0x00;  // ST2 control mark
-      const std::size_t len = static_cast<std::size_t>(128) << (sectors[sec].chrn[3] & 0x07);
+      const std::size_t len = static_cast<std::size_t>(128)
+                              << (sectors[sec].chrn[3] & 0x07);
       std::memcpy(info + data_off, sectors[sec].payload.data(),
                   sectors[sec].payload.size());
       data_off += len;
@@ -122,7 +124,8 @@ inline std::vector<std::vector<DecodedSector>> read_dsk(const uint8_t* dsk,
             info + 0x18 + (8 * static_cast<std::size_t>(sec));
         DecodedSector decoded;
         std::memcpy(decoded.chrn, sinfo, 4);
-        const std::size_t logical = static_cast<std::size_t>(128) << (sinfo[3] & 0x07);
+        const std::size_t logical = static_cast<std::size_t>(128)
+                                    << (sinfo[3] & 0x07);
         const std::size_t actual = extended ? get16le(sinfo + 6) : logical;
         if (off + data_off + logical <= len)
           decoded.payload.assign(info + data_off, info + data_off + logical);

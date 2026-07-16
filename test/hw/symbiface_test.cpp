@@ -150,7 +150,8 @@ TEST(Symbiface, MultiSectorWriteAndReadChain) {
   ASSERT_EQ(io_read(rig, 0xFD0F) & 0x08, 0x08) << "chained: DRQ for sector 2";
   for (int i = 0; i < 512; ++i)
     io_write(rig, 0xFD08, static_cast<uint8_t>(255 - i));  // sector 8 = 255-i
-  EXPECT_EQ(io_read(rig, 0xFD0F) & 0x08, 0x00) << "both sectors done: DRQ clear";
+  EXPECT_EQ(io_read(rig, 0xFD0F) & 0x08, 0x00)
+      << "both sectors done: DRQ clear";
   EXPECT_EQ(img[7 * 512 + 3], 3) << "sector 7 landed at LBA 7";
   EXPECT_EQ(img[8 * 512 + 3], static_cast<uint8_t>(252))
       << "sector 8 auto-advanced to LBA 8";

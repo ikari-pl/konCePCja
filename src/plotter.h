@@ -135,8 +135,7 @@ class HpglPlotter {
 // Free-function SVG writer over a segment list — shared by HpglPlotter and
 // the sub-cycle plotter Device's page (plotter_view.cpp).
 bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
-                                 float char_height_cm,
-                                 const std::string& path);
+                                 float char_height_cm, const std::string& path);
 
 // Global plotter instance
 extern HpglPlotter g_plotter;

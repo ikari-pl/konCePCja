@@ -119,15 +119,24 @@ uint32_t crc32(const uint8_t* data, size_t len) {
 
 const char* status_str(Status s) {
   switch (s) {
-    case Status::Ok: return "ok";
-    case Status::Truncated: return "truncated";
-    case Status::BadMagic: return "bad magic (not CAPS)";
-    case Status::BadCrc: return "bad record CRC";
-    case Status::BadRecord: return "malformed record";
-    case Status::UnsupportedEncoder: return "unsupported encoder (CAPS/1)";
-    case Status::BadGeometry: return "geometry out of bounds";
-    case Status::TooLarge: return "track too large";
-    case Status::DecodeError: return "decode inconsistency";
+    case Status::Ok:
+      return "ok";
+    case Status::Truncated:
+      return "truncated";
+    case Status::BadMagic:
+      return "bad magic (not CAPS)";
+    case Status::BadCrc:
+      return "bad record CRC";
+    case Status::BadRecord:
+      return "malformed record";
+    case Status::UnsupportedEncoder:
+      return "unsupported encoder (CAPS/1)";
+    case Status::BadGeometry:
+      return "geometry out of bounds";
+    case Status::TooLarge:
+      return "track too large";
+    case Status::DecodeError:
+      return "decode inconsistency";
   }
   return "unknown";
 }
@@ -201,7 +210,7 @@ Status Image::open(const uint8_t* data, size_t len) {
       if (encoder != 2u) {
         // v1: SPS encoder only (§1.2). CAPS encoder (1) is a Phase C item.
         LOG_ERROR("IPF: encoderType " << encoder
-                                       << " unsupported (v1 requires SPS=2)");
+                                      << " unsupported (v1 requires SPS=2)");
         return Status::UnsupportedEncoder;
       }
     } else if (std::memcmp(type, "IMGE", 4) == 0) {
@@ -239,10 +248,9 @@ Status Image::open(const uint8_t* data, size_t len) {
       size_t const extra_off = pos + kDataRecordLen;
       if (extra_off + extra_len > len) return Status::Truncated;
       // Extra Data Block CRC: plain CRC32, no field zeroing (§2.6/§6).
-      if (extra_len != 0 &&
-          crc32(base + extra_off, extra_len) != extra_crc) {
+      if (extra_len != 0 && crc32(base + extra_off, extra_len) != extra_crc) {
         LOG_ERROR("IPF: DATA extra-block CRC mismatch (dataKey " << data_key
-                                                                  << ")");
+                                                                 << ")");
         return Status::BadCrc;
       }
       DataRec dr;
@@ -265,12 +273,12 @@ Status Image::open(const uint8_t* data, size_t len) {
   // Geometry validation (§5.4b) — reject an out-of-bounds "floppy".
   if (info_.min_cyl > info_.max_cyl) {
     LOG_ERROR("IPF: minTrack " << info_.min_cyl << " > maxTrack "
-                                << info_.max_cyl);
+                               << info_.max_cyl);
     return Status::BadGeometry;
   }
   if (info_.max_cyl + 1 > DSK_TRACKMAX) {
     LOG_ERROR("IPF: maxTrack " << info_.max_cyl << " exceeds DSK_TRACKMAX "
-                                << DSK_TRACKMAX);
+                               << DSK_TRACKMAX);
     return Status::BadGeometry;
   }
   if (info_.min_head != 0) {
@@ -279,7 +287,7 @@ Status Image::open(const uint8_t* data, size_t len) {
   }
   if (info_.max_head + 1 > DSK_SIDEMAX) {
     LOG_ERROR("IPF: maxSide " << info_.max_head << " exceeds DSK_SIDEMAX "
-                               << DSK_SIDEMAX);
+                              << DSK_SIDEMAX);
     return Status::BadGeometry;
   }
 
@@ -422,7 +430,8 @@ bool build_gap_decoded(const BlockStreams& s, const BlockDesc& d, uint32_t need,
   if (mode == 0) {
     // Default fill: repeat gapDefault byte (MSB-first), fwd+bwd identical.
     for (uint32_t i = 0; i < need; ++i)
-      out.push_back(static_cast<uint8_t>((d.gap_default >> (7u - (i & 7u))) & 1u));
+      out.push_back(
+          static_cast<uint8_t>((d.gap_default >> (7u - (i & 7u))) & 1u));
     return true;
   }
 
@@ -436,8 +445,7 @@ bool build_gap_decoded(const BlockStreams& s, const BlockDesc& d, uint32_t need,
       if (e.kind == GapKind::GapLength) {
         uint32_t const len_bits = e.size;  // decoded bits to produce
         std::vector<uint8_t> sbits;
-        if (i + 1 < list.size() &&
-            list[i + 1].kind == GapKind::SampleLength) {
+        if (i + 1 < list.size() && list[i + 1].kind == GapKind::SampleLength) {
           sample_bits(list[i + 1].sample, list[i + 1].size, sbits);
           i += 2;
         } else {
@@ -502,14 +510,14 @@ bool build_gap_decoded(const BlockStreams& s, const BlockDesc& d, uint32_t need,
   for (size_t i = 0; i < fseq.size(); ++i) out[i] = fseq[i];
   for (uint32_t i = 0; i < mid; ++i)
     out[fseq.size() + i] = flast.empty() ? 0u : flast[i % flast.size()];
-  for (size_t i = 0; i < bseq.size(); ++i)
-    out[fseq.size() + mid + i] = bseq[i];
+  for (size_t i = 0; i < bseq.size(); ++i) out[fseq.size() + mid + i] = bseq[i];
   return true;
 }
 
 }  // namespace
 
-bool Image::parse_block_streams(int cyl, int head, std::vector<BlockDesc>& descs,
+bool Image::parse_block_streams(int cyl, int head,
+                                std::vector<BlockDesc>& descs,
                                 std::vector<BlockStreams>& streams) const {
   const ImgeRec* ir = find_imge(cyl, head);
   if (ir == nullptr || ir->block_count == 0) return false;
@@ -545,8 +553,8 @@ bool Image::decode_track(const ImgeRec& imge, const DataRec& data,
     return false;
   }
   if (imge.track_bits != 0 && imge.track_bits != track_bits) {
-    LOG_ERROR("IPF: IMGE trackBits " << imge.track_bits << " != dataBits+gapBits "
-                                      << track_bits);
+    LOG_ERROR("IPF: IMGE trackBits " << imge.track_bits
+                                     << " != dataBits+gapBits " << track_bits);
     return false;
   }
 
@@ -567,9 +575,9 @@ bool Image::decode_track(const ImgeRec& imge, const DataRec& data,
     sum_gap += d.gap_bits;
   }
   if (sum_data != imge.data_bits || sum_gap != imge.gap_bits) {
-    LOG_ERROR("IPF: block accounting mismatch (Σdata " << sum_data << " vs "
-              << imge.data_bits << ", Σgap " << sum_gap << " vs "
-              << imge.gap_bits << ")");
+    LOG_ERROR("IPF: block accounting mismatch (Σdata "
+              << sum_data << " vs " << imge.data_bits << ", Σgap " << sum_gap
+              << " vs " << imge.gap_bits << ")");
     return false;
   }
 
@@ -634,7 +642,8 @@ bool Image::decode_track(const ImgeRec& imge, const DataRec& data,
     return false;
   }
 
-  // Rotate to index alignment (§4.2 step 4): out[(i+startBitPos) % N] = built[i]
+  // Rotate to index alignment (§4.2 step 4): out[(i+startBitPos) % N] =
+  // built[i]
   out.bits.assign((track_bits + 7u) / 8u, 0);
   out.nbits = track_bits;
   uint32_t const start = imge.start_bit_pos % track_bits;
@@ -682,8 +691,7 @@ uint16_t crc16_ccitt_step(uint16_t crc, uint8_t b) {
     }
     init = true;
   }
-  return static_cast<uint16_t>((crc << 8) ^
-                               table[((crc >> 8) ^ b) & 0xFFu]);
+  return static_cast<uint16_t>((crc << 8) ^ table[((crc >> 8) ^ b) & 0xFFu]);
 }
 
 struct Scanner {
@@ -721,11 +729,10 @@ struct Scanner {
     last_pos = pos;
     uint8_t const b1 = read_byte();
     uint8_t const b2 = read_byte();
-    uint8_t clock =
-        static_cast<uint8_t>(((b1 << 0) & 0x80) | ((b1 << 1) & 0x40) |
-                             ((b1 << 2) & 0x20) | ((b1 << 3) & 0x10) |
-                             ((b2 >> 4) & 0x08) | ((b2 >> 3) & 0x04) |
-                             ((b2 >> 2) & 0x02) | ((b2 >> 1) & 0x01));
+    uint8_t clock = static_cast<uint8_t>(
+        ((b1 << 0) & 0x80) | ((b1 << 1) & 0x40) | ((b1 << 2) & 0x20) |
+        ((b1 << 3) & 0x10) | ((b2 >> 4) & 0x08) | ((b2 >> 3) & 0x04) |
+        ((b2 >> 2) & 0x02) | ((b2 >> 1) & 0x01));
     uint8_t const dat = static_cast<uint8_t>(
         ((b1 << 1) & 0x80) | ((b1 << 2) & 0x40) | ((b1 << 3) & 0x20) |
         ((b1 << 4) & 0x10) | ((b2 >> 3) & 0x08) | ((b2 >> 2) & 0x04) |
@@ -794,10 +801,14 @@ void scan_track(const CleanTrackMFM& mfm, std::vector<SectorTmp>& sectors,
     if (am == 0xfe) {  // ID address mark
       if (sectors.size() >= DSK_SECTORMAX) continue;
       SectorTmp st;
-      st.chrn[0] = sc.read_data_byte(); sc.crc_byte(st.chrn[0]);
-      st.chrn[1] = sc.read_data_byte(); sc.crc_byte(st.chrn[1]);
-      st.chrn[2] = sc.read_data_byte(); sc.crc_byte(st.chrn[2]);
-      st.chrn[3] = sc.read_data_byte(); sc.crc_byte(st.chrn[3]);
+      st.chrn[0] = sc.read_data_byte();
+      sc.crc_byte(st.chrn[0]);
+      st.chrn[1] = sc.read_data_byte();
+      sc.crc_byte(st.chrn[1]);
+      st.chrn[2] = sc.read_data_byte();
+      sc.crc_byte(st.chrn[2]);
+      st.chrn[3] = sc.read_data_byte();
+      sc.crc_byte(st.chrn[3]);
       sc.crc_byte(sc.read_data_byte());
       sc.crc_byte(sc.read_data_byte());
       if (sc.crc != 0) continue;  // bad header CRC ⇒ drop
@@ -827,7 +838,8 @@ void scan_track(const CleanTrackMFM& mfm, std::vector<SectorTmp>& sectors,
           (cur->chrn[3] <= 7) ? (128u << cur->chrn[3]) : 0x8000u;
       cur->size = sector_size;
 
-      for (uint32_t u = 0; u < sector_size; ++u) sc.crc_byte(sc.read_data_byte());
+      for (uint32_t u = 0; u < sector_size; ++u)
+        sc.crc_byte(sc.read_data_byte());
       sc.crc_byte(sc.read_data_byte());
       sc.crc_byte(sc.read_data_byte());
       if (sc.crc != 0) {
@@ -859,7 +871,8 @@ Status Image::fill_drive(t_drive* drive) {
   if (drive == nullptr) return Status::BadRecord;
   if (!open_) return Status::BadRecord;
 
-  // §5.4a: zero-based `sides` (== maxSide when minSide == 0, validated in open).
+  // §5.4a: zero-based `sides` (== maxSide when minSide == 0, validated in
+  // open).
   drive->tracks = static_cast<unsigned int>(info_.max_cyl + 1);
   drive->sides = static_cast<unsigned int>(info_.max_head - info_.min_head);
   drive->altered = false;

@@ -8,10 +8,10 @@
 
 #include <array>
 #include <cstdint>
-#include <set>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <set>
 #include <vector>
 
 namespace {
@@ -70,8 +70,8 @@ TEST(Video, ModeDecode0Hardware) {
   };
   EXPECT_EQ(pens0(0xF3), (std::pair<int, int>(13, 13)));  // fence fill = grey
   EXPECT_EQ(pens0(0x9F), (std::pair<int, int>(11, 14)));
-  EXPECT_EQ(pens0(0x08), (std::pair<int, int>(2, 0)));    // bit3 → pen bit1
-  EXPECT_EQ(pens0(0x20), (std::pair<int, int>(4, 0)));    // bit5 → pen bit2
+  EXPECT_EQ(pens0(0x08), (std::pair<int, int>(2, 0)));  // bit3 → pen bit1
+  EXPECT_EQ(pens0(0x20), (std::pair<int, int>(4, 0)));  // bit5 → pen bit2
   EXPECT_EQ(pens0(0x80), (std::pair<int, int>(1, 0)));
   EXPECT_EQ(pens0(0xAA), (std::pair<int, int>(15, 0)));
 }
@@ -109,15 +109,15 @@ TEST(VideoDecodeLut, MatchesScalarOverWholeDomain) {
   for (unsigned mode = 0; mode < 8; ++mode) {
     for (int byte = 0; byte < 256; ++byte) {
       uint8_t ref[8] = {0}, lut[8] = {0};
-      const int n_ref =
-          vid_decode(static_cast<uint8_t>(mode), static_cast<uint8_t>(byte), ref);
+      const int n_ref = vid_decode(static_cast<uint8_t>(mode),
+                                   static_cast<uint8_t>(byte), ref);
       const int n_lut = vid_decode_lut(static_cast<uint8_t>(mode),
                                        static_cast<uint8_t>(byte), lut);
-      ASSERT_EQ(n_lut, n_ref) << "count differs at mode " << mode << " byte "
-                              << byte;
+      ASSERT_EQ(n_lut, n_ref)
+          << "count differs at mode " << mode << " byte " << byte;
       for (int p = 0; p < n_ref; ++p)
-        ASSERT_EQ(lut[p], ref[p])
-            << "pen differs at mode " << mode << " byte " << byte << " px " << p;
+        ASSERT_EQ(lut[p], ref[p]) << "pen differs at mode " << mode << " byte "
+                                  << byte << " px " << p;
     }
   }
 }
@@ -132,11 +132,11 @@ TEST(Video, PaletteHardwareColoursAndDuplicates) {
     return std::array<uint8_t, 3>{r, g, b};
   };
   // The 5 duplicate pairs (same RGB, different index):
-  EXPECT_EQ(rgb(0), rgb(1));    // 0x00,0x01 → grey (128,128,128)
-  EXPECT_EQ(rgb(2), rgb(17));   // 0x02,0x11 → sea green (0,255,128)
-  EXPECT_EQ(rgb(3), rgb(9));    // 0x03,0x09 → pastel yellow (255,255,128)
-  EXPECT_EQ(rgb(4), rgb(16));   // 0x04,0x10 → blue (0,0,128)
-  EXPECT_EQ(rgb(5), rgb(8));    // 0x05,0x08 → magenta (255,0,128)
+  EXPECT_EQ(rgb(0), rgb(1));   // 0x00,0x01 → grey (128,128,128)
+  EXPECT_EQ(rgb(2), rgb(17));  // 0x02,0x11 → sea green (0,255,128)
+  EXPECT_EQ(rgb(3), rgb(9));   // 0x03,0x09 → pastel yellow (255,255,128)
+  EXPECT_EQ(rgb(4), rgb(16));  // 0x04,0x10 → blue (0,0,128)
+  EXPECT_EQ(rgb(5), rgb(8));   // 0x05,0x08 → magenta (255,0,128)
   EXPECT_EQ(rgb(0), (std::array<uint8_t, 3>{128, 128, 128}));
   EXPECT_EQ(rgb(11), (std::array<uint8_t, 3>{255, 255, 255})) << "bright white";
   EXPECT_EQ(rgb(20), (std::array<uint8_t, 3>{0, 0, 0})) << "black";
@@ -550,9 +550,9 @@ TEST(Video, PlusSpriteOverlapPriorityCull) {
     for (int x = 0; x < 16; ++x)
       bus_pgwrite(&board, static_cast<uint16_t>(0x4000 | (y << 4) | x),
                   x < 8 ? 1 : 0);
-  bus_pgwrite(&board, 0x6000 + 0, 10);    // sprite 0 X = 10 (crosses x=16)
+  bus_pgwrite(&board, 0x6000 + 0, 10);  // sprite 0 X = 10 (crosses x=16)
   bus_pgwrite(&board, 0x6000 + 1, 0x00);
-  bus_pgwrite(&board, 0x6000 + 2, 10);    // sprite 0 Y = 10
+  bus_pgwrite(&board, 0x6000 + 2, 10);  // sprite 0 Y = 10
   bus_pgwrite(&board, 0x6000 + 3, 0x00);
   bus_pgwrite(&board, 0x6000 + 4, 0x05);  // magnification 1×1
 
@@ -591,8 +591,10 @@ TEST(Video, PlusSpriteOverlapPriorityCull) {
   EXPECT_GT(yellow, 0) << "sprite 0 (higher priority) wins where it is opaque";
   // Sprite 1 shows through sprite 0's transparent right half: if the cull had
   // dropped the lower-priority candidate, this would be 0.
-  EXPECT_GT(green, 0) << "lower-priority sprite 1 falls through, not culled away";
-  // Each half is 8×16 = 128 px at mag 1; a cell-boundary clip would shrink them.
+  EXPECT_GT(green, 0)
+      << "lower-priority sprite 1 falls through, not culled away";
+  // Each half is 8×16 = 128 px at mag 1; a cell-boundary clip would shrink
+  // them.
   EXPECT_NEAR(yellow, 128, 40) << "opaque half rendered across the cell edge";
   EXPECT_NEAR(green, 128, 40) << "transparent half filled by the lower sprite";
 }

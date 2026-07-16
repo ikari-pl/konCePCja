@@ -63,8 +63,7 @@ size_t int_size(const void*) { return sizeof(IntLine); }
 void int_save(const void* s, void* b) { std::memcpy(b, s, sizeof(IntLine)); }
 void int_load(void* s, const void* b) { std::memcpy(s, b, sizeof(IntLine)); }
 Device int_device(IntLine* line) {
-  return Device{line,     "int",    int_tick, ino_reset,
-                int_size, int_save, int_load};
+  return Device{line, "int", int_tick, ino_reset, int_size, int_save, int_load};
 }
 
 constexpr uint16_t kProg = 0x0100;
@@ -172,8 +171,8 @@ std::string diff_regs(const Z80Regs& a, const Z80Regs& b) {
   auto cmp = [&](const char* n, uint64_t g, uint64_t e) {
     if (g != e) {
       char buf[64];
-      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n,
-                    (unsigned long long)g, (unsigned long long)e);
+      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n, (unsigned long long)g,
+                    (unsigned long long)e);
       d += buf;
     }
   };
@@ -327,8 +326,7 @@ TEST(Z80BatchInt, HaltedRefreshCadence) {
   std::vector<uint8_t> zmem_b(z80_state_size());
   Device zdev_b = z80_init(zmem_b.data());
   z80_poke(&zdev_b, &c.init);
-  const Z80BatchIO bio{ram_b.get(), bmem_read, bmem_write, bio_read,
-                       bio_write};
+  const Z80BatchIO bio{ram_b.get(), bmem_read, bmem_write, bio_read, bio_write};
   z80_batch_step(&zdev_b, &bio, 0, 0xFF, 1);  // the HALT instruction
   Z80Regs regs_b{};
   z80_peek(&zdev_b, &regs_b);

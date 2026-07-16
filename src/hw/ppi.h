@@ -37,18 +37,24 @@ void ppi_peek(const Device* dev, PpiRegs* out);
  * is 0x1E = Amstrad (id 7) + 50 Hz. Set before use to emulate other straps. */
 void ppi_set_jumpers(const Device* dev, uint8_t jumpers);
 
+/* Printer /BUSY input (Port B bit 6, 1 = busy). The host straps it READY when
+ * a virtual printer is attached ([printer] config) and leaves it busy
+ * otherwise — exactly like an unconnected Centronics connector. Default:
+ * busy (no printer). */
+void ppi_set_printer_ready(const Device* dev, int ready);
+
 /* --- Fast-tier batch seam (ppi-device.md §batch) ---
  *
  * The PPI is a pure event device between I/O accesses: its published lines
  * derive from the latches. The Fast scheduler applies each access as one
  * event and relays AY line changes to the PSG (psg_fast_lines). */
 typedef struct PpiAyLines {
-  uint8_t bdir, bc1;   /* AY bus control state (from Port C bits 7/6) */
-  uint8_t kbd_row;     /* selected keyboard row (Port C low nibble) */
-  uint8_t da;          /* what the PPI drives on the AY data bus: Port A's
-                          latch in output mode, else the floating 0xFF */
-  uint8_t tape_motor;  /* cassette relay (Port C bit 4) */
-  uint8_t tape_wdata;  /* cassette write line (Port C bit 5) */
+  uint8_t bdir, bc1;  /* AY bus control state (from Port C bits 7/6) */
+  uint8_t kbd_row;    /* selected keyboard row (Port C low nibble) */
+  uint8_t da;         /* what the PPI drives on the AY data bus: Port A's
+                         latch in output mode, else the floating 0xFF */
+  uint8_t tape_motor; /* cassette relay (Port C bit 4) */
+  uint8_t tape_wdata; /* cassette write line (Port C bit 5) */
 } PpiAyLines;
 
 /* The currently-published lines (entry/exit sync, and the read path). */

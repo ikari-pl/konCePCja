@@ -33,8 +33,6 @@
  * These are guards, not a reproduction: on a correct engine they are GREEN.
  */
 
-#include "subcycle/machine.h"
-
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -42,6 +40,7 @@
 #include <vector>
 
 #include "hw/z80.h"
+#include "subcycle/machine.h"
 
 namespace {
 
@@ -125,8 +124,8 @@ uint64_t arch_hash(subcycle::Machine& m, const std::vector<uint8_t>& fb) {
     for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ULL;
   };
   const Z80Regs r = m.regs();
-  const uint16_t words[] = {r.af, r.bc, r.de, r.hl, r.af_, r.bc_, r.de_,
-                            r.hl_, r.ix, r.iy, r.sp, r.pc, r.wz};
+  const uint16_t words[] = {r.af,  r.bc, r.de, r.hl, r.af_, r.bc_, r.de_,
+                            r.hl_, r.ix, r.iy, r.sp, r.pc,  r.wz};
   mix(words, sizeof(words));
   const uint8_t bytes[] = {r.i, r.r, r.im, r.iff1, r.iff2, r.q, r.halted};
   mix(bytes, sizeof(bytes));
@@ -195,8 +194,8 @@ TEST(IrqBankingInvariants, PerCycleTiersStayIdenticalUnderBankingChurn) {
 }
 
 // Invariant 2 — the same tier, same workload, twice, is identical. A fixed
-// cycle budget removes the real-time interrupt-timing jitter, so the live "3E FF
-// one run / 18 the next" garbage MUST NOT reappear here; if it does, the
+// cycle budget removes the real-time interrupt-timing jitter, so the live "3E
+// FF one run / 18 the next" garbage MUST NOT reappear here; if it does, the
 // non-determinism is in the engine, not the wall clock. (Architectural hash
 // only: save_devices() legitimately embeds the host-clock RTC — see arch_hash.)
 TEST(IrqBankingInvariants, BankingChurnIsDeterministicAcrossRuns) {

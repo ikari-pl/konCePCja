@@ -44,9 +44,7 @@ typedef int ssize_t;
 // Z80 SI ROM code reads RR0 from $FADE (offset 2) and writes WR0 there too.
 // Remapping offset 2 → 1 keeps that code working with the simplified model.
 namespace {
-inline uint8_t dart_remap(uint8_t offset) {
-  return (offset == 2) ? 1 : offset;
-}
+inline uint8_t dart_remap(uint8_t offset) { return (offset == 2) ? 1 : offset; }
 }  // namespace
 
 namespace {
@@ -98,7 +96,8 @@ namespace {
 bool serial_interface_enabled = false;
 }  // namespace
 
-void serial_interface_register_io() {  // NOLINT(misc-use-internal-linkage): registered from io_dispatch (cross-TU)
+void serial_interface_register_io() {  // NOLINT(misc-use-internal-linkage):
+                                       // registered from io_dispatch (cross-TU)
   io_register_in(0xFA, dart_in, &serial_interface_enabled,
                  "Serial Interface (DART)");
   io_register_out(0xFA, dart_out, &serial_interface_enabled,
@@ -161,7 +160,8 @@ uint8_t Z80Dart::read(uint8_t port) {
   switch (port & 0x03) {
     case 0x00:  // Data — read received byte
     {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+      // mutated (out-param/compound-assign/loop/reference)
       uint8_t val = 0;
       if (!rx_fifo_.empty()) {
         val = rx_fifo_.front();
@@ -876,8 +876,8 @@ void SIRomManager::load(byte** rom_map, const std::string& rom_path) {
   }
 
   // Try loading SI ROM file
-  static const char* const rom_names[] = {
-      "serial.rom", "SERIAL.ROM", "si_rom.bin", "SI_ROM.BIN", nullptr};
+  static const char* const rom_names[] = {"serial.rom", "SERIAL.ROM",
+                                          "si_rom.bin", "SI_ROM.BIN", nullptr};
   for (int i = 0; rom_names[i]; i++) {
     std::string const candidate = rom_path + "/" + rom_names[i];
     if (std::filesystem::exists(candidate)) {

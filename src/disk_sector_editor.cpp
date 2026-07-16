@@ -14,8 +14,8 @@ unsigned int sector_size_from_N(uint8_t N) { return 128u << N; }
 // Returns pointer to the t_sector, or nullptr if not found.
 // Note: drive->sides is zero-based (0=single-sided, 1=double-sided).
 namespace {
-t_sector* find_sector(t_drive* drive, unsigned int track,
-                             unsigned int side, uint8_t sector_id) {
+t_sector* find_sector(t_drive* drive, unsigned int track, unsigned int side,
+                      uint8_t sector_id) {
   if (!drive || drive->tracks == 0) return nullptr;
   if (track >= drive->tracks) return nullptr;
   if (side > drive->sides) return nullptr;

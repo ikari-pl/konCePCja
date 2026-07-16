@@ -11,8 +11,9 @@
 
 #pragma once
 
-#include "types.h"
 #include <cstdint>
+
+#include "types.h"
 
 struct SmartWatch {
   bool enabled = false;

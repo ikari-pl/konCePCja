@@ -83,7 +83,8 @@ int gfx_decode(const uint8_t* mem, size_t mem_size, const GfxViewParams& params,
   if (params.mode < 0 || params.mode > 2) return 0;
   if (params.width <= 0 || params.height <= 0) return 0;
 
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+  // conditional kept intentionally; no clang-tidy auto-fix
   int const ppb = (params.mode == 0) ? 2 : (params.mode == 1) ? 4 : 8;
   int const pixel_width = params.width * ppb;
   pixels_out.resize(static_cast<size_t>(pixel_width) * params.height);
@@ -211,7 +212,8 @@ bool gfx_paint(uint8_t* mem, size_t mem_size, const GfxViewParams& params,
                int x, int y, uint8_t color_index) {
   if (params.mode < 0 || params.mode > 2) return false;
 
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+  // conditional kept intentionally; no clang-tidy auto-fix
   int const ppb = (params.mode == 0) ? 2 : (params.mode == 1) ? 4 : 8;
   int const pixel_width = params.width * ppb;
   if (x < 0 || x >= pixel_width || y < 0 || y >= params.height) return false;

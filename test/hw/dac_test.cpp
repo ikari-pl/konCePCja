@@ -160,7 +160,7 @@ TEST(MachineDacs, CraftedWritesReachTheLatchesAndTheMixHearsThem) {
   // restating the formula: a step of 127 vs 64 (from the 128 mid-point) must
   // land near 127/64 ≈ 1.98× — a log or squared curve would miss the window.
   auto step_peak = [&](uint8_t latch_target) {
-    m.io_write(0xEF7E, 0x00);              // latch 0x80 = 128: DAC silence
+    m.io_write(0xEF7E, 0x00);                   // latch 0x80 = 128: DAC silence
     for (int i = 0; i < 8; ++i) m.run_frame();  // let the DC filter settle
     m.io_write(0xEF7E, latch_target ^ 0x80);    // the step under test
     return peak_frame();

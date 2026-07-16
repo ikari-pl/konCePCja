@@ -16,12 +16,12 @@ extern bool log_verbose;
 
 // NOLINTNEXTLINE(misc-macro-parentheses): `message` is deliberately
 // unparenthesised so call sites can chain `<<` inserters.
-#define LOG_TO(stream, level, message)                                    \
-  {                                                                       \
-    std::ostringstream koncpc_log_line_;                                  \
-    koncpc_log_line_ << (level) << " " << __FILE__ << ":" << __LINE__    \
-                     << " - " << message << "\n";                         \
-    (stream) << koncpc_log_line_.str() << std::flush;                     \
+#define LOG_TO(stream, level, message)                                         \
+  {                                                                            \
+    std::ostringstream koncpc_log_line_;                                       \
+    koncpc_log_line_ << (level) << " " << __FILE__ << ":" << __LINE__ << " - " \
+                     << message << "\n";                                       \
+    (stream) << koncpc_log_line_.str() << std::flush;                          \
   }
 
 #define LOG_ERROR(message) LOG_TO(std::cerr, "ERROR  ", message)

@@ -22,8 +22,8 @@ extern "C" {
  * order for the parity oracle). */
 typedef struct PlotSeg {
   uint8_t type;
-  uint8_t pen; /* 1 or 2 */
-  int8_t line_type; /* -1 solid, 0..6 patterns */
+  uint8_t pen;       /* 1 or 2 */
+  int8_t line_type;  /* -1 solid, 0..6 patterns */
   float x1, y1;      /* start or center (plotter units) */
   float x2, y2;      /* end, for lines */
   float radius;      /* circles/arcs */
@@ -33,11 +33,11 @@ typedef struct PlotSeg {
 } PlotSeg;
 
 typedef struct PlotterRegs {
-  float pen_x, pen_y;   /* carriage position, plotter units */
+  float pen_x, pen_y; /* carriage position, plotter units */
   uint8_t pen_down;
-  int8_t selected_pen;  /* 0 stowed, 1-2 active */
-  uint16_t buffer_fill; /* input buffer bytes waiting, 0..255 */
-  uint32_t page_rev;    /* bumps on every segment append / page clear */
+  int8_t selected_pen;   /* 0 stowed, 1-2 active */
+  uint16_t buffer_fill;  /* input buffer bytes waiting, 0..255 */
+  uint32_t page_rev;     /* bumps on every segment append / page clear */
   uint8_t page_overflow; /* the fixed segment store filled; drawing stopped */
   uint8_t flow_stopped;  /* XOFF sent, XON not yet */
   uint8_t plugged;

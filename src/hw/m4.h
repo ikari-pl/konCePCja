@@ -8,8 +8,9 @@
 #define KONCPC_HW_M4_H
 
 #include <stddef.h>
-#include <cstdint>
 #include <stdint.h>
+
+#include <cstdint>
 
 #include "device.h"
 
@@ -17,7 +18,11 @@
 extern "C" {
 #endif
 
-enum : std::uint16_t { M4_RESPONSE_SIZE = 0x600, M4_CONFIG_SIZE = 128, M4_FRAME_MAX = 4096 };
+enum : std::uint16_t {
+  M4_RESPONSE_SIZE = 0x600,
+  M4_CONFIG_SIZE = 128,
+  M4_FRAME_MAX = 4096
+};
 
 typedef struct M4Regs {
   uint8_t plugged;

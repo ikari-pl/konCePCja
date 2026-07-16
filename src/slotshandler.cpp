@@ -134,7 +134,8 @@ t_disk_format disk_format[MAX_DISK_FORMAT] = {
 // Parses the command-line file list and fills the matching CPC slots
 // (drive A first, then drive B for a second disk, tape, snapshot,
 // cartridge). Only the first file of each kind is kept.
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void fillSlots(std::vector<std::string> slot_list, t_CPC& CPC) {
   struct SlotTarget {
     t_slot& slot;
@@ -142,7 +143,8 @@ void fillSlots(std::vector<std::string> slot_list, t_CPC& CPC) {
     const char* description;
     bool filled = false;
   };
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   SlotTarget targets[] = {
       {CPC.driveA, ".dsk.ipf.raw.scp.hfe.a2r", "drive A disk"},
       {CPC.driveB, ".dsk.ipf.raw", "drive B disk"},
@@ -300,8 +302,8 @@ void dsk_eject(t_drive* drive) {
     }
   }
   dword const head_position =
-      drive->current_track;                    // save the drive head position
-  memset(drive, 0, sizeof(t_drive));           // clear drive info structure
+      drive->current_track;           // save the drive head position
+  memset(drive, 0, sizeof(t_drive));  // clear drive info structure
   drive->current_track = head_position;
 }
 
@@ -316,13 +318,12 @@ bool read_exact(FILE* pfile, byte* dst, size_t size) {
 // Standard images give every sector the same size and every track the same
 // data length (`track_size`); extended images store per-sector sizes in the
 // sector-info table and per-track lengths in the disk header.
-int dsk_load_track(FILE* pfile, t_track& track, dword track_size,
-                   bool extended, dword track_no, dword side_no) {
+int dsk_load_track(FILE* pfile, t_track& track, dword track_size, bool extended,
+                   dword track_no, dword side_no) {
   byte header[0x100];
   if (!read_exact(pfile, header, sizeof(header))) {
-    LOG_ERROR("Couldn't read DSK track header for track " << track_no
-                                                          << " side "
-                                                          << side_no);
+    LOG_ERROR("Couldn't read DSK track header for track "
+              << track_no << " side " << side_no);
     return ERR_DSK_INVALID;
   }
   if (memcmp(header, "Track-Info", 10) != 0) {
@@ -353,13 +354,13 @@ int dsk_load_track(FILE* pfile, t_track& track, dword track_size,
     dword const real_size = extended ? (0x80 << info[3]) : standard_size;
     dword const stored_size =
         extended ? (info[6] + (info[7] << 8)) : standard_size;
-    // NOLINTNEXTLINE(readability-suspicious-call-argument): argument order verified correct
+    // NOLINTNEXTLINE(readability-suspicious-call-argument): argument order
+    // verified correct
     s.setSizes(real_size, stored_size);
     s.setData(sector_data);
     sector_data += stored_size;
-    LOG_DEBUG("Sector " << sector << " size: " << stored_size
-                        << " real size: " << real_size
-                        << " CHRN: " << chrn_to_string(s.CHRN));
+    LOG_DEBUG("Sector " << sector << " size: " << stored_size << " real size: "
+                        << real_size << " CHRN: " << chrn_to_string(s.CHRN));
   }
 
   if (track_size > 0 && !read_exact(pfile, track.data, track_size)) {
@@ -408,8 +409,7 @@ int dsk_parse(FILE* pfile, t_drive* drive) {
 
   // Standard images: one track length for the whole disk. Extended images:
   // per-track lengths (in 256-byte units, header included) follow at 0x34.
-  const dword standard_track_size =
-      dsk_header[0x32] + (dsk_header[0x33] << 8);
+  const dword standard_track_size = dsk_header[0x32] + (dsk_header[0x33] << 8);
   const byte* track_size_table = dsk_header + 0x34;
 
   for (dword track = 0; track < drive->tracks; track++) {
@@ -455,7 +455,8 @@ int dsk_load(const std::string& filename, t_drive* drive) {
   return rc;  // dsk_load already ejected on error
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 int dsk_to_bytes(t_drive* drive, std::vector<uint8_t>& out) {
   // If there are no tracks, don't serialize
   if (drive->tracks == 0) {
@@ -564,8 +565,7 @@ int dsk_format(t_drive* drive, int iFormat) {
 
       byte* sector_data = dst.data;
       for (dword sector = 0; sector < sectors; sector++) {
-        const byte chrn[4] = {static_cast<byte>(track),
-                              static_cast<byte>(side),
+        const byte chrn[4] = {static_cast<byte>(track), static_cast<byte>(side),
                               fmt.sector_ids[side][sector],
                               static_cast<byte>(fmt.sector_size)};
         memcpy(dst.sector[sector].CHRN, chrn, 4);
@@ -879,10 +879,9 @@ int tape_insert_cdt(FILE* pfile) {
     while (pos < len) {
       const uint32_t sz = tape_cdt_block_len(pbTapeImage.data(), len, pos);
       if (sz == 0 || sz > len - pos) {
-        LOG_ERROR("CDT block 0x" << std::hex
-                                 << static_cast<int>(pbTapeImage[pos])
-                                 << std::dec
-                                 << " extends past end of file");
+        LOG_ERROR("CDT block 0x"
+                  << std::hex << static_cast<int>(pbTapeImage[pos]) << std::dec
+                  << " extends past end of file");
         tape_eject();
         return ERR_TAP_INVALID;
       }
@@ -1001,8 +1000,9 @@ int file_load(t_slot& slot) {
   int pos = slot.file.length() - 4;
   std::string extension = stringutils::lower(slot.file.substr(pos));
 
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-  FILE *file = nullptr;
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
+  FILE* file = nullptr;
   std::string zip_inner;  // inner filename when loading out of a zip
   if (extension == ".zip") {
     zip::t_zip_info zip_info;
@@ -1040,9 +1040,10 @@ int file_load(t_slot& slot) {
 
   for (const auto& loader : files_loader_list) {
     if (slot.drive != loader.drive || extension != loader.extension) continue;
-    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
+    // mutated (out-param/compound-assign/loop/reference)
     int ret = file ? loader.load_from_file(file)
-                         : loader.load_from_filename(slot.file);
+                   : loader.load_from_filename(slot.file);
     if (file) fclose(file);
 
     // Flux containers only use the loader above to fill the best-effort legacy
@@ -1086,8 +1087,8 @@ int file_load(t_slot& slot) {
         std::vector<uint8_t> scp =
             flux::to_scp(raw.data(), raw.size(), extension);
         if (scp.empty()) {
-          LOG_ERROR("subcycle engine: could not transcode "
-                    << slot.file << " into flux");
+          LOG_ERROR("subcycle engine: could not transcode " << slot.file
+                                                            << " into flux");
           // The flux medium IS the disk for the sub-cycle FDC — no flux, no
           // load. Surface the sector-view error if we had one, else generic.
           return ret != 0 ? ret : ERR_DSK_INVALID;

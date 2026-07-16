@@ -406,8 +406,9 @@ extern "C" {
 size_t sf2_state_size(void) { return sizeof(sf2_state); }
 
 Device sf2_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  sf2_state *f = new (storage) sf2_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  sf2_state* f = new (storage) sf2_state();
   return Device{
       f,        "symbiface", sf2_tick, sf2_dev_reset, sf2_dev_state_size,
       sf2_save, sf2_load};
@@ -458,14 +459,16 @@ void sf2_mouse_feed(const Device* dev, int dx, int dy, uint8_t buttons) {
   // relative to the host's screen-down-positive convention.
   int x = dx;
   while (x != 0) {
-    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+    // conditional kept intentionally; no clang-tidy auto-fix
     int const step = x > 31 ? 31 : (x < -32 ? -32 : x);
     fifo_push(f, static_cast<uint8_t>(0x40 | (step & 0x3F)));
     x -= step;
   }
   int y = -dy;
   while (y != 0) {
-    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+    // conditional kept intentionally; no clang-tidy auto-fix
     int const step = y > 31 ? 31 : (y < -32 ? -32 : y);
     fifo_push(f, static_cast<uint8_t>(0x80 | (step & 0x3F)));
     y -= step;

@@ -119,8 +119,8 @@ TEST(Tape, UnknownBlockLatchesErrorAndStops) {
   EXPECT_EQ(r.playing, 0) << "and stopped the deck";
 }
 
-// A 0x20 pause block with ms == 0 is the TZX "Stop the tape" marker: clean halt,
-// NOT an error (distinguishes it from the unknown-block path above).
+// A 0x20 pause block with ms == 0 is the TZX "Stop the tape" marker: clean
+// halt, NOT an error (distinguishes it from the unknown-block path above).
 TEST(Tape, StopBlockHaltsWithoutError) {
   std::vector<uint8_t> cdt = {'Z', 'X', 'T', 'a', 'p', 'e', '!', 0x1a, 1, 20};
   cdt.push_back(0x20);  // pause/stop
@@ -147,12 +147,12 @@ TEST(Tape, TurboBlockHonoursItsOwnTimings) {
   };
   std::vector<uint8_t> cdt = {'Z', 'X', 'T', 'a', 'p', 'e', '!', 0x1a, 1, 20};
   cdt.push_back(0x11);
-  w16(cdt, 2168);  // pilot pulse length
-  w16(cdt, 667);   // sync1
-  w16(cdt, 735);   // sync2
-  w16(cdt, 855);   // bit-0 pulse
-  w16(cdt, 1710);  // bit-1 pulse
-  w16(cdt, 200);   // pilot pulse count
+  w16(cdt, 2168);    // pilot pulse length
+  w16(cdt, 667);     // sync1
+  w16(cdt, 735);     // sync2
+  w16(cdt, 855);     // bit-0 pulse
+  w16(cdt, 1710);    // bit-1 pulse
+  w16(cdt, 200);     // pilot pulse count
   cdt.push_back(8);  // last-byte used bits
   w16(cdt, 0);       // pause after
   cdt.push_back(1);  // data length (3 bytes, little-endian)
@@ -229,16 +229,16 @@ TEST(Tape, PulseSequenceBlockEmitsEachExplicitPulse) {
   EXPECT_EQ(r.error, 0);
 }
 
-// A 0x14 pure-data block: straight into data bits (no pilot/sync). One 0xFF byte
-// → eight '1' bits, each a pulse pair of the bit-1 period.
+// A 0x14 pure-data block: straight into data bits (no pilot/sync). One 0xFF
+// byte → eight '1' bits, each a pulse pair of the bit-1 period.
 TEST(Tape, PureDataBlockClocksBitsWithoutAPilot) {
   std::vector<uint8_t> cdt = tzx_header();
   cdt.push_back(0x14);
-  w16(cdt, 855);      // bit-0 pulse
-  w16(cdt, 1710);     // bit-1 pulse
-  cdt.push_back(8);   // last-byte used bits
-  w16(cdt, 0);        // pause
-  cdt.push_back(1);   // data length = 1 (3 bytes LE)
+  w16(cdt, 855);     // bit-0 pulse
+  w16(cdt, 1710);    // bit-1 pulse
+  cdt.push_back(8);  // last-byte used bits
+  w16(cdt, 0);       // pause
+  cdt.push_back(1);  // data length = 1 (3 bytes LE)
   cdt.push_back(0);
   cdt.push_back(0);
   cdt.push_back(0xFF);  // 8 one-bits

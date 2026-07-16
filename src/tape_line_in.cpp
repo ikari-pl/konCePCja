@@ -36,9 +36,9 @@ Schmitt g_schmitt;
 
 SDL_AudioStream* g_out_stream = nullptr;
 int g_out_data_ch = 0;
-float g_out_gain = 0.0f;    // soft-start ramp 0 -> 1 over ~2 s
+float g_out_gain = 0.0f;     // soft-start ramp 0 -> 1 over ~2 s
 float g_out_volume = 0.35f;  // user level 0..1 ([sound] tape_data_volume)
-float g_out_lp = 0.0f;       // de-click one-pole state (rounds the square edges)
+float g_out_lp = 0.0f;  // de-click one-pole state (rounds the square edges)
 float g_carrier_phase = 0.0f;
 
 bool SDLCALL out_device_watch(void* userdata, SDL_Event* ev) {
@@ -96,12 +96,14 @@ void tape_line_out_disarm(subcycle::Machine& machine) {
 bool tape_line_out_active() { return g_out_stream != nullptr; }
 
 void tape_line_out_set_volume(float level) {
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+  // conditional kept intentionally; no clang-tidy auto-fix
   g_out_volume = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
 }
 float tape_line_out_volume() { return g_out_volume; }
 
-// Emulation speed, published by z80_thread_main (50 = realtime, higher = turbo).
+// Emulation speed, published by z80_thread_main (50 = realtime, higher =
+// turbo).
 extern std::uint32_t dwFPS;
 
 void tape_line_out_pump(subcycle::Machine& machine) {
@@ -109,31 +111,35 @@ void tape_line_out_pump(subcycle::Machine& machine) {
   const std::vector<uint8_t>& wires = machine.tape_out_samples();
   if (wires.empty()) return;
 
-  // Play the tape at the EMULATION's speed. The wires are sampled at 44.1 kHz of
-  // EMULATED time, so 1x is realtime; in turbo the emulation produces them N×
-  // faster than the 44.1 kHz sink drains. Decimate by the live speed (dwFPS/50)
-  // — keep ~every Nth sample — so the tone pitches up ×N with the emulation (a
-  // deck on fast-forward, as asked) AND the output naturally rate-matches
-  // ~44.1 kHz real, so there is no backlog. N≈1 at realtime leaves it untouched.
+  // Play the tape at the EMULATION's speed. The wires are sampled at 44.1 kHz
+  // of EMULATED time, so 1x is realtime; in turbo the emulation produces them
+  // N× faster than the 44.1 kHz sink drains. Decimate by the live speed
+  // (dwFPS/50) — keep ~every Nth sample — so the tone pitches up ×N with the
+  // emulation (a deck on fast-forward, as asked) AND the output naturally
+  // rate-matches ~44.1 kHz real, so there is no backlog. N≈1 at realtime leaves
+  // it untouched.
   const double speed = dwFPS > 50u ? dwFPS / 50.0 : 1.0;
 
   // Backstop: before dwFPS is first published (~1 s) speed reads 1, so cap the
   // queue at ~200 ms and drop the batch if it's already full — never backlog.
-  const int kMaxQueuedBytes =
-      g_rate * 2 * static_cast<int>(sizeof(int16_t)) / 5;  // stereo s16, ~200 ms
+  const int kMaxQueuedBytes = g_rate * 2 * static_cast<int>(sizeof(int16_t)) /
+                              5;  // stereo s16, ~200 ms
   if (SDL_GetAudioStreamQueued(g_out_stream) >= kMaxQueuedBytes) return;
 
   static std::vector<int16_t> frames;
   frames.clear();
   const float kCarrierStep = 2.0f * 3.14159265f * 19000.0f / 44100.0f;
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   static double decim_acc = 0.0;
   for (unsigned char const wire : wires) {
     decim_acc += 1.0;
-    if (decim_acc < speed) continue;  // decimate: skip until we've covered `speed`
+    if (decim_acc < speed)
+      continue;  // decimate: skip until we've covered `speed`
     decim_acc -= speed;
 
-    g_out_gain += (1.0f - g_out_gain) * 0.00002f;  // ~2 s soft-start (per emitted)
+    g_out_gain +=
+        (1.0f - g_out_gain) * 0.00002f;  // ~2 s soft-start (per emitted)
     const bool data = (wire & 1) != 0;
     const bool motor = (wire & 2) != 0;
     const float amp = 24000.0f * g_out_gain * g_out_volume;
@@ -204,7 +210,8 @@ void tape_line_in_pump(subcycle::Machine& machine) {
       const int16_t right = buf[(i * 2) + 1];
       const int16_t s =
           g_channel == 0 ? left
-          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+          // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator):
+          // nested conditional kept intentionally; no clang-tidy auto-fix
           : g_channel == 1
               ? right
               : static_cast<int16_t>((static_cast<int>(left) + right) / 2);

@@ -5,7 +5,8 @@
 // binding via koncpc_action_shortcut() so a label can never drift from its key.
 // One canonical label per action, shared by the native menu, ImGui menus, the
 // F1 popup and the command palette.
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 const std::vector<MenuAction>& koncpc_menu_actions() {
   // {action, canonical label, shortcut(derived, empty), toggle, canonical
   // group}

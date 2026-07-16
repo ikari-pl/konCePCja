@@ -3,17 +3,15 @@
  * readback/quirk behaviour lives with the hw CRTC Device tests
  * (test/hw/crtc_test.cpp, test/hw/crtc_quirks_test.cpp). */
 
-#include <gtest/gtest.h>
-
 #include "crtc_types.h"
+
+#include <gtest/gtest.h>
 
 TEST(CrtcTypes, DefaultTypeForCPC464) { EXPECT_EQ(0, crtc_type_for_model(0)); }
 
 TEST(CrtcTypes, DefaultTypeForCPC664) { EXPECT_EQ(0, crtc_type_for_model(1)); }
 
-TEST(CrtcTypes, DefaultTypeForCPC6128) {
-  EXPECT_EQ(1, crtc_type_for_model(2));
-}
+TEST(CrtcTypes, DefaultTypeForCPC6128) { EXPECT_EQ(1, crtc_type_for_model(2)); }
 
 TEST(CrtcTypes, DefaultTypeForPlus) { EXPECT_EQ(3, crtc_type_for_model(3)); }
 

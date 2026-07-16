@@ -3,13 +3,14 @@
  * bit-serial wire (exact framing, loopback). See
  * docs/hardware/rs232-device.md. */
 
+#include "hw/rs232.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <vector>
 
 #include "hw/board.h"
-#include "hw/rs232.h"
 
 namespace {
 
@@ -108,7 +109,7 @@ TEST(Rs232, StatusReadsReadyWhenIdle) {
 TEST(Rs232, PitDivisorRoundTripsThroughLatch) {
   SerialRig rig;
   make_rig(rig);
-  set_divisor(rig, 13);  // 9615 baud, the CP/M SIO default shape
+  set_divisor(rig, 13);           // 9615 baud, the CP/M SIO default shape
   io_write(rig, PIT_MODE, 0x00);  // counter-latch command for counter 0
   EXPECT_EQ(io_read(rig, PIT_CTR0), 13);  // LSB
   EXPECT_EQ(io_read(rig, PIT_CTR0), 0);   // MSB
@@ -133,8 +134,8 @@ TEST(Rs232, TxFramesExactBitTimesOnTheWire) {
   ASSERT_LT(waited, 4 * bit_time) << "start bit never appeared";
 
   // Expected 8N1 frame for 0x55, LSB first: start 0, 1,0,1,0,1,0,1,0, stop 1.
-  const bool expect[10] = {false, true, false, true, false,
-                           true,  false, true, false, true};
+  const bool expect[10] = {false, true,  false, true,  false,
+                           true,  false, true,  false, true};
   for (int bit = 0; bit < 10; bit++) {
     for (uint32_t i = 0; i < bit_time / 2; i++) rig.tick();
     EXPECT_EQ(rig.board.bus.serial.txd, expect[bit]) << "bit " << bit;

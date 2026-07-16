@@ -1,8 +1,7 @@
-#include "video_host.h"
-
 #include <gtest/gtest.h>
 
 #include "koncepcja.h"
+#include "video_host.h"
 
 extern SDL_Surface* pub;
 extern SDL_Surface* scaled;

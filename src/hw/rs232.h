@@ -15,13 +15,13 @@ extern "C" {
 #endif
 
 typedef struct Rs232Regs {
-  uint8_t wr[6];       /* DART ch A WR0–WR5 as last written */
-  uint8_t rr0;         /* computed status (spec §3)          */
-  uint8_t rr1;         /* all-sent + error bits              */
-  uint16_t divisor;    /* 8253 counter-0 reload (baud)       */
-  uint8_t fifo_depth;  /* RX FIFO fill, 0–3                  */
-  uint8_t tx_busy;     /* a TX frame is on the wire          */
-  uint8_t txd;         /* current wire levels                */
+  uint8_t wr[6];      /* DART ch A WR0–WR5 as last written */
+  uint8_t rr0;        /* computed status (spec §3)          */
+  uint8_t rr1;        /* all-sent + error bits              */
+  uint16_t divisor;   /* 8253 counter-0 reload (baud)       */
+  uint8_t fifo_depth; /* RX FIFO fill, 0–3                  */
+  uint8_t tx_busy;    /* a TX frame is on the wire          */
+  uint8_t txd;        /* current wire levels                */
   uint8_t rxd;
   uint8_t plugged;
 } Rs232Regs;

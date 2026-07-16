@@ -312,16 +312,16 @@ TEST(Crtc, AdvanceViewMatchesPerCycleTickCharForChar) {
     uint8_t regs[10];  // R0..R9
   };
   const Program programs[] = {
-      {0, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0, 7}},    // standard CPC
-      {1, {63, 40, 46, 0x00, 38, 0, 25, 30, 0, 7}},    // type 1, R3=0: no HSYNC
-      {2, {63, 40, 46, 0x00, 38, 0, 25, 30, 0, 7}},    // type 2, R3=0: width 16
-      {0, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0x10, 7}}, // skew 1
-      {3, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0x20, 7}}, // type 3, skew 2
-      {0, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0x30, 7}}, // skew 3: display off
-      {0, {40, 32, 46, 0x8E, 38, 0, 25, 30, 0, 7}},    // R2 > R0: HSYNC never
-      {0, {63, 40, 0, 0x8E, 38, 0, 25, 30, 0, 7}},     // R2 = 0: rise at HCC 0
-      {0, {3, 2, 1, 0x81, 38, 2, 25, 30, 0, 1}},       // tiny line, tight sync
-      {0, {63, 40, 46, 0x8E, 38, 0, 25, 0, 0, 7}},     // R7 = 0 VSYNC at top
+      {0, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0, 7}},  // standard CPC
+      {1, {63, 40, 46, 0x00, 38, 0, 25, 30, 0, 7}},  // type 1, R3=0: no HSYNC
+      {2, {63, 40, 46, 0x00, 38, 0, 25, 30, 0, 7}},  // type 2, R3=0: width 16
+      {0, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0x10, 7}},  // skew 1
+      {3, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0x20, 7}},  // type 3, skew 2
+      {0, {63, 40, 46, 0x8E, 38, 0, 25, 30, 0x30, 7}},  // skew 3: display off
+      {0, {40, 32, 46, 0x8E, 38, 0, 25, 30, 0, 7}},     // R2 > R0: HSYNC never
+      {0, {63, 40, 0, 0x8E, 38, 0, 25, 30, 0, 7}},      // R2 = 0: rise at HCC 0
+      {0, {3, 2, 1, 0x81, 38, 2, 25, 30, 0, 1}},        // tiny line, tight sync
+      {0, {63, 40, 46, 0x8E, 38, 0, 25, 0, 0, 7}},      // R7 = 0 VSYNC at top
   };
   for (const Program& prog : programs) {
     CrtcRig a;  // batch: crtc_advance_view in varying chunks
@@ -354,8 +354,10 @@ TEST(Crtc, AdvanceViewMatchesPerCycleTickCharForChar) {
         const CrtcRegs ref = crtc_char_tick(b);
         const CrtcCharView& view = views[k];
         const uint32_t at = done + k;
-        ASSERT_EQ(view.ma, ref.ma) << "type " << int(prog.type) << " char " << at;
-        ASSERT_EQ(view.ra, ref.ra) << "type " << int(prog.type) << " char " << at;
+        ASSERT_EQ(view.ma, ref.ma)
+            << "type " << int(prog.type) << " char " << at;
+        ASSERT_EQ(view.ra, ref.ra)
+            << "type " << int(prog.type) << " char " << at;
         ASSERT_EQ((view.levels & CRTC_LVL_HSYNC) != 0, ref.hsync != 0)
             << "type " << int(prog.type) << " char " << at;
         ASSERT_EQ((view.levels & CRTC_LVL_VSYNC) != 0, ref.vsync != 0)
@@ -414,19 +416,16 @@ TEST(Crtc, FastIoWriteMatchesPerCycleSnoop) {
   // 8 scanlines/row, 512 chars/row. vcc=4 at char 2048; hcc=50 at char 50;
   // ra=5 at char 320 (5 lines in, R9=7 so ra cycles 0..7).
   const std::vector<Scn> scenarios = {
-      {"R2 reposition mid-line",
-       {{5, 0xBC00, 2}, {6, 0xBD00, 20}}},
-      {"R7-hit starts VSYNC",
-       {{2048, 0xBC00, 7}, {2049, 0xBD00, 4}}},
+      {"R2 reposition mid-line", {{5, 0xBC00, 2}, {6, 0xBD00, 20}}},
+      {"R7-hit starts VSYNC", {{2048, 0xBC00, 7}, {2049, 0xBD00, 4}}},
       {"R7-hit no retrigger while in_vsync",
-       {{2048, 0xBC00, 7}, {2049, 0xBD00, 4}, {2050, 0xBC00, 7},
+       {{2048, 0xBC00, 7},
+        {2049, 0xBD00, 4},
+        {2050, 0xBC00, 7},
         {2051, 0xBD00, 4}}},
-      {"R0 below HCC mid-line stretch",
-       {{50, 0xBC00, 0}, {51, 0xBD00, 40}}},
-      {"R9 below RA raster wrap",
-       {{320, 0xBC00, 9}, {321, 0xBD00, 3}}},
-      {"non-CRTC port (A14 high) is a no-op",
-       {{100, 0xC000, 0xFF}}},
+      {"R0 below HCC mid-line stretch", {{50, 0xBC00, 0}, {51, 0xBD00, 40}}},
+      {"R9 below RA raster wrap", {{320, 0xBC00, 9}, {321, 0xBD00, 3}}},
+      {"non-CRTC port (A14 high) is a no-op", {{100, 0xC000, 0xFF}}},
       {"select-only write (&BC) leaves reg_select",
        {{10, 0xBC00, 3}, {11, 0xBD00, 0x55}}},
   };
@@ -462,10 +461,8 @@ TEST(Crtc, FastIoWriteMatchesPerCycleSnoop) {
         crtc_peek(&b.dev, &post);
         const uint8_t want_rise = (post.vsync && !pre_vs) ? 1 : 0;
         const uint8_t want_fall = (!post.vsync && pre_vs) ? 1 : 0;
-        EXPECT_EQ(batch_rise, want_rise)
-            << scn.name << " VSYNC rise @ " << k;
-        EXPECT_EQ(batch_fall, want_fall)
-            << scn.name << " VSYNC fall @ " << k;
+        EXPECT_EQ(batch_rise, want_rise) << scn.name << " VSYNC rise @ " << k;
+        EXPECT_EQ(batch_fall, want_fall) << scn.name << " VSYNC fall @ " << k;
       } else {
         CrtcCharView view{};
         crtc_advance_view(&a.dev, 1, &view);
@@ -496,14 +493,14 @@ TEST(Crtc, FastIoReadMatchesPerCycleBusDrive) {
   const uint8_t types[4] = {0, 1, 2, 3};
   // vcc=0 at char 0 (status bit 0); vcc=25 (=R6) at char 25*512=12800 (bit 1).
   const std::vector<Read> reads = {
-      {0, 0xBF00, 14},     // R14: readable on all types (>=12/>=14)
-      {0, 0xBF00, 12},     // R12: readable types 0/3; 0 (write-only) types 1/2
-      {0, 0xBF00, 31},     // R31: type 1 → 0xFF; others → 0
-      {0, 0xBE00, 14},     // &BExx fn2: type 3 reads reg; type 1 status; 0/2 float
-      {0, 0xBC00, 0xFF},   // &BC fn0: select — no drive, floats 0xFF
-      {0, 0xBD00, 0xFF},   // &BD fn1: write — no drive, floats 0xFF
-      {0, 0xC000, 0xFF},   // A14 high: not a CRTC port, floats 0xFF
-      {12800, 0xBE00, 14}, // type 1 status at vcc=25 (=R6) → bit 5 set (0x20)
+      {0, 0xBF00, 14},  // R14: readable on all types (>=12/>=14)
+      {0, 0xBF00, 12},  // R12: readable types 0/3; 0 (write-only) types 1/2
+      {0, 0xBF00, 31},  // R31: type 1 → 0xFF; others → 0
+      {0, 0xBE00, 14},  // &BExx fn2: type 3 reads reg; type 1 status; 0/2 float
+      {0, 0xBC00, 0xFF},    // &BC fn0: select — no drive, floats 0xFF
+      {0, 0xBD00, 0xFF},    // &BD fn1: write — no drive, floats 0xFF
+      {0, 0xC000, 0xFF},    // A14 high: not a CRTC port, floats 0xFF
+      {12800, 0xBE00, 14},  // type 1 status at vcc=25 (=R6) → bit 5 set (0x20)
   };
   for (const uint8_t type : types) {
     for (const Read& rd : reads) {
@@ -533,14 +530,14 @@ TEST(Crtc, FastIoReadMatchesPerCycleBusDrive) {
       const uint8_t pc_bus = crtc_io_read_bus(b, rd.port);
       if (batch_ret != 0) {
         EXPECT_EQ(batch_out, pc_bus)
-            << "type " << int(type) << " port " << std::hex << rd.port
-            << " @ " << std::dec << rd.at;
+            << "type " << int(type) << " port " << std::hex << rd.port << " @ "
+            << std::dec << rd.at;
       } else {
         // No drive: the bus floats (0xFF). A driven 0xFF (type 1 R31) is
         // reported via batch_ret != 0 above, so this branch is the true float.
         EXPECT_EQ(pc_bus, 0xFF)
-            << "type " << int(type) << " port " << std::hex << rd.port
-            << " @ " << std::dec << rd.at << " should float";
+            << "type " << int(type) << " port " << std::hex << rd.port << " @ "
+            << std::dec << rd.at << " should float";
       }
     }
   }
@@ -574,7 +571,8 @@ TEST(Crtc, AdvanceCharsEdgeStreamMatchesPerCycle) {
     make_crtc(a);
     make_crtc(b);
     for (auto* rig : {&a, &b}) {
-      for (uint8_t i = 0; i < 10; ++i) crtc_poke_reg(&rig->dev, i, prog.regs[i]);
+      for (uint8_t i = 0; i < 10; ++i)
+        crtc_poke_reg(&rig->dev, i, prog.regs[i]);
       crtc_set_type(&rig->dev, prog.type);
     }
     // Reference: per-cycle tick, record (char, kind) for each level transition,
@@ -591,13 +589,13 @@ TEST(Crtc, AdvanceCharsEdgeStreamMatchesPerCycle) {
       for (uint32_t k = 0; k < total; ++k) {
         const CrtcRegs r = crtc_char_tick(b);
         if (r.vsync != prev_vs)
-          ref.push_back({k, static_cast<uint8_t>(
-                                r.vsync ? CRTC_EDGE_VSYNC_RISE
-                                        : CRTC_EDGE_VSYNC_FALL)});
+          ref.push_back(
+              {k, static_cast<uint8_t>(r.vsync ? CRTC_EDGE_VSYNC_RISE
+                                               : CRTC_EDGE_VSYNC_FALL)});
         if (r.hsync != prev_hs)
-          ref.push_back({k, static_cast<uint8_t>(
-                                r.hsync ? CRTC_EDGE_HSYNC_RISE
-                                        : CRTC_EDGE_HSYNC_FALL)});
+          ref.push_back(
+              {k, static_cast<uint8_t>(r.hsync ? CRTC_EDGE_HSYNC_RISE
+                                               : CRTC_EDGE_HSYNC_FALL)});
         prev_hs = r.hsync;
         prev_vs = r.vsync;
       }
@@ -612,8 +610,8 @@ TEST(Crtc, AdvanceCharsEdgeStreamMatchesPerCycle) {
       // Worst legal density is two edges per char (a same-char VSYNC + HSYNC
       // transition), so n*2+4 can never truncate (crtc.h §batch).
       std::vector<CrtcEdge> buf(static_cast<size_t>(n) * 2 + 4);
-      const int produced =
-          crtc_advance_chars(&a.dev, n, buf.data(), static_cast<int>(buf.size()));
+      const int produced = crtc_advance_chars(&a.dev, n, buf.data(),
+                                              static_cast<int>(buf.size()));
       ASSERT_LE(produced, static_cast<int>(buf.size()))
           << "edge buffer overflow — type " << int(prog.type);
       for (int i = 0; i < produced; ++i) {
@@ -647,9 +645,9 @@ TEST(Crtc, LpenStrobeMatchesPerCycleLatch) {
   make_crtc(b);
   // A strobe-level sequence exercising rising (latch), held (no re-latch),
   // falling (re-arm), rising (re-latch), and quiet gaps.
-  const bool levels[] = {false, false, true,  true,  true,  false,
-                         true,  false, false, true,  true,  false,
-                         false, true,  false, true,  true,  true};
+  const bool levels[] = {false, false, true,  true, true, false,
+                         true,  false, false, true, true, false,
+                         false, true,  false, true, true, true};
   const int nlevels = static_cast<int>(sizeof(levels) / sizeof(levels[0]));
   const uint32_t total = 5000;
   for (uint32_t k = 0; k < total; ++k) {

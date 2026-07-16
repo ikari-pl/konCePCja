@@ -7,11 +7,11 @@
 #include <string>
 #include <vector>
 
-#include "hfe.h"          // HFE_E_* codes for the error string
-#include "hfe_write.h"    // hfe_from_disk
-#include "hw/device.h"    // Device
-#include "hw/fdc.h"       // fdc_media_* accessors
-#include "scp_write.h"  // scp_from_disk
+#include "hfe.h"              // HFE_E_* codes for the error string
+#include "hfe_write.h"        // hfe_from_disk
+#include "hw/device.h"        // Device
+#include "hw/fdc.h"           // fdc_media_* accessors
+#include "scp_write.h"        // scp_from_disk
 #include "subcycle_bridge.h"  // subcycle_bridge_fdc
 
 namespace {
@@ -47,9 +47,9 @@ std::vector<std::uint8_t> save_as_scp(const std::uint8_t* scp,
     err = "SCP export needs a flux-backed disc (this one is sector-backed)";
     return {};
   }
-  std::vector<std::uint8_t> out = scp_from_disk(
-      scp, scp_len, image, image_len, track_dirty,
-      effective_ntracks(track_dirty, ntracks));
+  std::vector<std::uint8_t> out =
+      scp_from_disk(scp, scp_len, image, image_len, track_dirty,
+                    effective_ntracks(track_dirty, ntracks));
   if (out.empty()) err = "SCP export failed (unusable flux/disk pairing)";
   return out;
 }
@@ -93,8 +93,8 @@ std::vector<std::uint8_t> save_as_hfe(const std::uint8_t* scp,
 
 std::vector<std::uint8_t> flux_save_bytes_from_medium(
     const std::uint8_t* scp, std::size_t scp_len, const std::uint8_t* image,
-    std::size_t image_len, const bool* track_dirty, int ntracks,
-    SaveFormat fmt, std::string& err) {
+    std::size_t image_len, const bool* track_dirty, int ntracks, SaveFormat fmt,
+    std::string& err) {
   err.clear();
   switch (fmt) {
     case SaveFormat::Dsk:
@@ -117,7 +117,8 @@ FluxSaveCaps flux_save_caps_dev(const Device* fdc, std::uint8_t unit) {
   const std::uint8_t* image = fdc_media_image_unit(fdc, unit, image_len);
   const std::uint8_t* scp = nullptr;
   std::size_t scp_len = 0;
-  if ((unit & 1u) == 0) scp = fdc_media_flux_scp(fdc, scp_len);  // flux = drive A
+  if ((unit & 1u) == 0)
+    scp = fdc_media_flux_scp(fdc, scp_len);  // flux = drive A
   const bool flux = medium_is_flux(scp, scp_len);
   caps.can_dsk = image != nullptr && image_len > 0;
   caps.can_scp = flux;
@@ -143,8 +144,8 @@ std::vector<std::uint8_t> flux_save_bytes_dev(const Device* fdc,
     scp = fdc_media_flux_scp(fdc, scp_len);
     track_dirty = fdc_media_track_dirty(fdc, ntracks);
   }
-  return flux_save_bytes_from_medium(scp, scp_len, image, image_len, track_dirty,
-                                     ntracks, fmt, err);
+  return flux_save_bytes_from_medium(scp, scp_len, image, image_len,
+                                     track_dirty, ntracks, fmt, err);
 }
 
 bool flux_write_file(const std::vector<std::uint8_t>& bytes,
@@ -158,8 +159,8 @@ bool flux_write_file(const std::vector<std::uint8_t>& bytes,
     err = "cannot open '" + path + "' for writing";
     return false;
   }
-  const bool wrote = std::fwrite(bytes.data(), 1, bytes.size(), file) ==
-                     bytes.size();
+  const bool wrote =
+      std::fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size();
   const bool flushed = std::fflush(file) == 0;
   const bool closed = std::fclose(file) == 0;
   if (!wrote || !flushed || !closed) {

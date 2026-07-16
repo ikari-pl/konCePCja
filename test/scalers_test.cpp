@@ -7,11 +7,11 @@
  * should, honour the EPX/bilinear rules, and clamp at the border without
  * reading out of bounds. All inputs synthetic.
  */
-#include "scalers/cpc_scalers.h"
-
 #include <gtest/gtest.h>
 
 #include <vector>
+
+#include "scalers/cpc_scalers.h"
 
 namespace {
 

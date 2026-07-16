@@ -52,9 +52,9 @@ typedef struct VidBus {
   bool dispen; /* display enable (border vs active) — CRTC drives */
   bool cursor; /* cursor match                  — CRTC drives */
   uint16_t frame_line; /* frame scanline, 0 = frame top — CRTC drives. The
-                        * single raster reference the Plus hardware split and the
-                        * ASIC programmable raster interrupt both count off (the
-                        * legacy shares one CRTC.sl_count for both). */
+                        * single raster reference the Plus hardware split and
+                        * the ASIC programmable raster interrupt both count off
+                        * (the legacy shares one CRTC.sl_count for both). */
 } VidBus;
 
 /* The RAM-side port: the Gate Array owns the DRAM address multiplexer (on the

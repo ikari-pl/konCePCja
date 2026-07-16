@@ -617,8 +617,7 @@ void on_receive_byte(plotter_state* s, uint8_t byte) {
   if (s->in_count < INBUF_SIZE) {
     s->inbuf[(s->in_head + s->in_count) % INBUF_SIZE] = byte;
     s->in_count++;
-    if (s->drain_cnt == 0)
-      s->drain_cnt = 10u * bit_time(s) * DRAIN_BYTE_TIMES;
+    if (s->drain_cnt == 0) s->drain_cnt = 10u * bit_time(s) * DRAIN_BYTE_TIMES;
   }
   // (a byte arriving at a full buffer is lost — the 7470A's overrun)
   if (!s->flow_stopped && in_free(s) < XOFF_BELOW_FREE) {
@@ -804,15 +803,12 @@ extern "C" {
 size_t plotter_hp7470a_state_size(void) { return sizeof(plotter_state); }
 
 Device plotter_hp7470a_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  plotter_state *s = new (storage) plotter_state();
-  return Device{s,
-                "plotter-hp7470a",
-                plt_tick,
-                plt_dev_reset,
-                plt_dev_state_size,
-                plt_save,
-                plt_load};
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  plotter_state* s = new (storage) plotter_state();
+  return Device{
+      s,        "plotter-hp7470a", plt_tick, plt_dev_reset, plt_dev_state_size,
+      plt_save, plt_load};
 }
 
 int plotter_hp7470a_quiet(const Device* dev) {

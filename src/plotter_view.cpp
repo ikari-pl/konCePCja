@@ -60,8 +60,7 @@ const std::vector<PlotSegment>& device_segments(const Device* dev) {
     s.start_angle = segs[i].start_angle;
     s.sweep_angle = segs[i].sweep_angle;
     s.line_type = segs[i].line_type;
-    s.text.assign(segs[i].text,
-                  strnlen(segs[i].text, sizeof(segs[i].text)));
+    s.text.assign(segs[i].text, strnlen(segs[i].text, sizeof(segs[i].text)));
     g_dev_cache.push_back(std::move(s));
   }
   g_dev_cache_rev = r.page_rev;
@@ -70,7 +69,8 @@ const std::vector<PlotSegment>& device_segments(const Device* dev) {
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 const std::vector<PlotSegment>& plotter_view_segments() {
   if (const Device* dev = live_device()) return device_segments(dev);
   return g_plotter.segments();

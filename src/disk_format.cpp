@@ -5,11 +5,11 @@
 #include <map>
 #include <utility>
 
-#include "flux_save.h"    // flux_write_file
-#include "ipf.h"          // scp_from_mfm_tracks, t_mfm_track
+#include "flux_save.h"  // flux_write_file
+#include "ipf.h"        // scp_from_mfm_tracks, t_mfm_track
 #include "koncepcja.h"
 #include "log.h"
-#include "mfm_encode.h"   // mfm_tracks_from_dsk
+#include "mfm_encode.h"  // mfm_tracks_from_dsk
 #include "slotshandler.h"
 
 extern t_drive driveA;
@@ -62,10 +62,11 @@ std::vector<std::string> disk_format_names() {
   return names;
 }
 
-// Write a formatted drive as a plain blank .dsk; optionally hand back the bytes.
+// Write a formatted drive as a plain blank .dsk; optionally hand back the
+// bytes.
 namespace {
 std::string create_sector_disk(const std::string& path, t_drive* drive,
-                                      std::vector<uint8_t>* out_bytes) {
+                               std::vector<uint8_t>* out_bytes) {
   if (out_bytes != nullptr) dsk_to_bytes(drive, *out_bytes);
   if (dsk_save(path, drive) != 0) return "write error for " + path;
   return "";
@@ -77,7 +78,7 @@ std::string create_sector_disk(const std::string& path, t_drive* drive,
 // gives a disc that preserves writes and can export to .scp/.hfe.
 namespace {
 std::string create_flux_disk(const std::string& path, t_drive* drive,
-                                    std::vector<uint8_t>* out_bytes) {
+                             std::vector<uint8_t>* out_bytes) {
   std::vector<uint8_t> dsk;
   if (dsk_to_bytes(drive, dsk) != 0) return "format error: no tracks to encode";
   const std::vector<t_mfm_track> tracks =

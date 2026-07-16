@@ -1,8 +1,8 @@
 #include "expr_parser.h"
-#include <cstdint>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 
 #include "debug_timers.h"
@@ -460,10 +460,12 @@ class Parser {
 
 // ─── Public API: parse ──────────────────────────────────────────────
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 std::unique_ptr<ExprNode> expr_parse(const std::string& input,
                                      std::string& error) {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   Parser p(input);
   return p.parse(error);
 }
@@ -472,13 +474,13 @@ std::unique_ptr<ExprNode> expr_parse(const std::string& input,
 
 // Resolve a register variable name to its value (case-insensitive)
 namespace {
-int32_t resolve_variable(const std::string& name,
-                                const ExprContext& ctx) {
+int32_t resolve_variable(const std::string& name, const ExprContext& ctx) {
   if (!ctx.z80) return 0;
   const t_z80regs& z = *ctx.z80;
 
   // Normalize to lowercase for uniform matching
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — std::transform writes in place
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — std::transform
+  // writes in place
   std::string n = name;
   std::transform(n.begin(), n.end(), n.begin(),
                  [](unsigned char c) { return std::tolower(c); });
@@ -535,7 +537,7 @@ int32_t resolve_variable(const std::string& name,
 // Resolve a function call
 namespace {
 int32_t resolve_function(const std::string& name, int32_t arg,
-                                const ExprContext& ctx) {
+                         const ExprContext& ctx) {
   if (name == "peek") {
     return z80_read_mem(static_cast<word>(arg));
   }

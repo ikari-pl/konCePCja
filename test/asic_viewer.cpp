@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "hw_views.h"
 #include "asic_debug.h"
+#include "hw_views.h"
 #include "koncepcja.h"
 
 extern byte* pbRegisterPage;
@@ -12,7 +12,7 @@ namespace {
 class AsicViewerTest : public testing::Test {
  protected:
   void SetUp() override {
-    asic = {};  // clear the view buffer
+    asic = {};                  // clear the view buffer
     asic.interrupt_vector = 1;  // power-on IM2 vector (hw asic default)
     memset(&CRTC, 0, sizeof(CRTC));
     if (!reg_page_) {

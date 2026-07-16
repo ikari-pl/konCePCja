@@ -235,9 +235,9 @@ TEST(Z80BlockIoFlags, InirMidLoopCommitsCorrectedFlags) {
   EXPECT_EQ(r.wz, 0x0001) << "MEMPTR = PC+1, not BC±1";
 }
 
-// OTIR (was FUSE edb3_1, realigned): AF=34ab BC=03e0 HL=1d7c, (HL)=0x9d, one 21T
-// iteration at PC=0 → corrected F=0x03 (PCH=0 clears YF/XF; the carry rule sets
-// HF/PF differently from the base formula), MEMPTR = PC+1.
+// OTIR (was FUSE edb3_1, realigned): AF=34ab BC=03e0 HL=1d7c, (HL)=0x9d, one
+// 21T iteration at PC=0 → corrected F=0x03 (PCH=0 clears YF/XF; the carry rule
+// sets HF/PF differently from the base formula), MEMPTR = PC+1.
 TEST(Z80BlockIoFlags, OtirMidLoopCommitsCorrectedFlags) {
   Rig rig(regs(0x34ab, 0x03e0, 0x1d7c, 0x0000), {0xED, 0xB3}, 0x00);
   rig.ram->cells[0x1d7c] = 0x9d;
@@ -269,8 +269,8 @@ TEST(Z80BlockIoFlags, IndrMidLoopCommitsCorrectedFlags) {
 // INIR at 0x2800 (PCH=0x28 → YF=1 XF=1), B=0x10 C=0x33, byte 0xD0 in.
 // bdec=0x0F, k = 0xD0+0x34 = 0x104 > 255 (hcf), byte.7=1 (NF).
 // Committed at T=21 AND seen in the ISR (Banks): SF=0, YF|XF from PCH=0x28 →
-//   0x28; NF; CF; HF = ((0x0F & 0xF) == 0) = 0; PF = parity(0x0B ^ ((0x0F-1)&7))
-//   = parity(0x0B ^ 6 = 0x0D) = odd → 0.                  = 0x2B.
+//   0x28; NF; CF; HF = ((0x0F & 0xF) == 0) = 0; PF = parity(0x0B ^
+//   ((0x0F-1)&7)) = parity(0x0B ^ 6 = 0x0D) = odd → 0.                  = 0x2B.
 TEST(Z80BlockIoFlags, InirInterruptedCarryN1Branch) {
   Rig rig(regs(0x0000, 0x1033, 0x4000, 0x2800, 0x8000, /*iff=*/1, /*im=*/1),
           {0xED, 0xB2}, /*io_in=*/0xD0, /*irq_at=*/5);
@@ -307,7 +307,8 @@ TEST(Z80BlockIoFlags, InirNmiInterruptedNoCarryBranch) {
 // OTIR at 0x0000, B=0x10 C=0x22, (HL=0x4081)=0x7F. HL→0x4082,
 // bdec=0x0F, k = 0x7F+0x82 = 0x101 > 255 (hcf), byte.7=0.
 // Committed at T=21 AND seen in the ISR (Banks): PCH=0 → YF=XF=0;
-//   HF = ((0x0F & 0xF) == 0xF) = 1; CF; PF = parity(0x0E ^ 0) = odd → 0. = 0x11.
+//   HF = ((0x0F & 0xF) == 0xF) = 1; CF; PF = parity(0x0E ^ 0) = odd → 0. =
+//   0x11.
 TEST(Z80BlockIoFlags, OtirInterruptedCarryN0Branch) {
   Rig rig(regs(0x0000, 0x1022, 0x4081, 0x0000, 0x8000, 1, 1), {0xED, 0xB3},
           0x00, /*irq_at=*/5);

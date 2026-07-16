@@ -12,9 +12,9 @@
  *
  * Framebuffer comparison point: the batch side renders every advanced char
  * (C = (B-1)/4 + 1 at the parked HALT's tstates B); the per-cycle board runs
- * on to master 16*C — the exact tick cell C-1 paints (phase 15 committed) — so both sides
- * have painted the same cells. The parked CPU state is recorded at the park
- * tick itself (the extension only lets the beam finish the last cell).
+ * on to master 16*C — the exact tick cell C-1 paints (phase 15 committed) — so
+ * both sides have painted the same cells. The parked CPU state is recorded at
+ * the park tick itself (the extension only lets the beam finish the last cell).
  *
  * Scenarios (all also assert Z80 regs/tstates + full RAM, and guard against
  * a vacuously-black framebuffer — screenshot-guard doctrine):
@@ -68,13 +68,13 @@ struct Asm {
   }
   size_t mark() const { return bytes.size(); }
   void jr_back(size_t target) {  // JR to an earlier mark
-    const int disp = static_cast<int>(target) -
-                     (static_cast<int>(bytes.size()) + 2);
+    const int disp =
+        static_cast<int>(target) - (static_cast<int>(bytes.size()) + 2);
     db({0x18, static_cast<uint8_t>(disp)});
   }
   void jr_nz_back(size_t target) {
-    const int disp = static_cast<int>(target) -
-                     (static_cast<int>(bytes.size()) + 2);
+    const int disp =
+        static_cast<int>(target) - (static_cast<int>(bytes.size()) + 2);
     db({0x20, static_cast<uint8_t>(disp)});
   }
 };
@@ -84,9 +84,9 @@ struct Asm {
 void emit_prologue(Asm& a, uint8_t fn2_mode) {
   a.ld_bc(static_cast<uint16_t>(0x7F00 | fn2_mode));  // fn2: mode + ROMs off
   a.out_c_c();
-  const uint8_t regs[][2] = {{0, 63}, {1, 40}, {2, 46},  {3, 0x8E}, {4, 38},
-                             {5, 0},  {6, 25}, {7, 30},  {9, 7},    {12, 0x30},
-                             {13, 0}};
+  const uint8_t regs[][2] = {{0, 63}, {1, 40},    {2, 46}, {3, 0x8E},
+                             {4, 38}, {5, 0},     {6, 25}, {7, 30},
+                             {9, 7},  {12, 0x30}, {13, 0}};
   for (const auto& rv : regs) a.crtc_reg(rv[0], rv[1]);
   const uint8_t inks[][2] = {
       {0x00, 0x54}, {0x01, 0x4A}, {0x02, 0x55}, {0x03, 0x5C}, {0x10, 0x41}};
@@ -140,7 +140,7 @@ std::vector<uint8_t> prog_band_split() {
 std::vector<uint8_t> isr_band_split() {
   Asm a;
   a.ld_bc(0x7F00);
-  a.db({0x3E, 0x10});        // LD A,0x10 — select the border
+  a.db({0x3E, 0x10});  // LD A,0x10 — select the border
   a.out_c_a();
   a.db({0x3A, 0x04, 0x90});  // LD A,(0x9004)
   a.db({0x3C});              // INC A
@@ -262,8 +262,8 @@ struct FastChain {
   Device* ga;
   Device* video;
   const uint8_t* vram = nullptr;
-  uint64_t chars_done = 0;      // eager CRTC+GA position
-  uint64_t cells_rendered = 0;  // lazy renderer position
+  uint64_t chars_done = 0;            // eager CRTC+GA position
+  uint64_t cells_rendered = 0;        // lazy renderer position
   std::vector<CrtcCharView> pending;  // views [cells_rendered, chars_done)
 
   static uint64_t chars_visible_at(uint64_t tstate) {
@@ -293,8 +293,7 @@ struct FastChain {
     if (cell_target <= cells_rendered) return;
     const size_t n = static_cast<size_t>(cell_target - cells_rendered);
     video_batch_cells(video, vram, pending.data(), static_cast<int>(n));
-    pending.erase(pending.begin(),
-                  pending.begin() + static_cast<long>(n));
+    pending.erase(pending.begin(), pending.begin() + static_cast<long>(n));
     cells_rendered = cell_target;
   }
 };
@@ -342,8 +341,8 @@ uint8_t fr_int_ack(void* ctx, uint64_t now) {
   return 0xFF;  // the classic bus floats during the acknowledge
 }
 
-bool run_fast(const std::vector<uint8_t>& prog,
-              const std::vector<uint8_t>& isr, MemSide& mem, RunResult* out) {
+bool run_fast(const std::vector<uint8_t>& prog, const std::vector<uint8_t>& isr,
+              MemSide& mem, RunResult* out) {
   seed_mem(mem, prog, isr);
   std::vector<uint8_t> zmem(z80_state_size());
   Device zdev = z80_init(zmem.data());
@@ -392,8 +391,8 @@ std::string diff_regs(const Z80Regs& a, const Z80Regs& b) {
   auto cmp = [&](const char* n, uint64_t g, uint64_t e) {
     if (g != e) {
       char buf[64];
-      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n,
-                    (unsigned long long)g, (unsigned long long)e);
+      std::snprintf(buf, sizeof buf, " %s=%llX!=%llX", n, (unsigned long long)g,
+                    (unsigned long long)e);
       d += buf;
     }
   };

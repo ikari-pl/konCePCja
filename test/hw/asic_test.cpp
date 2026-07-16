@@ -60,11 +60,11 @@ void send_unlock(AsicRig& rig) {
   for (uint8_t b : seq) knock(rig, b);
 }
 
-// RMR2: page the register page into &4000-&7FFF (on) or map a low-ROM bank / RAM
-// there instead (off). A Gate-Array fn-2 write (port &7Fxx, data 10xxxxxx) with
-// bit5 set; the membank field (bits 4-3) selects the map — value 3 = page on.
-// The unlock knock alone only ENABLES RMR2; the CPU must still page the register
-// page in before its writes reach the ASIC (asic-device.md).
+// RMR2: page the register page into &4000-&7FFF (on) or map a low-ROM bank /
+// RAM there instead (off). A Gate-Array fn-2 write (port &7Fxx, data 10xxxxxx)
+// with bit5 set; the membank field (bits 4-3) selects the map — value 3 = page
+// on. The unlock knock alone only ENABLES RMR2; the CPU must still page the
+// register page in before its writes reach the ASIC (asic-device.md).
 void map_page(AsicRig& rig, bool on) {
   rig.board.bus = bus_resting();
   rig.board.bus.cpu.iorq = true;
@@ -269,14 +269,14 @@ TEST(Asic, RegisterDecodeSpritesPaletteDma) {
 }
 
 // Regression (Burnin' Rubber title derail): the &4000-&7FFF register page is
-// overlaid only when the ASIC is BOTH unlocked AND paged in by RMR2 (its membank
-// field == 3). The unlock knock alone must NOT map it. Games unlock the ASIC to
-// use splits/palette but page the register page back OUT (RMR2 membank != 3, a
-// low-ROM bank / RAM there) to bulk-copy data through &6xxx into RAM. If the
-// overlay stayed live on unlock alone, that copy would scribble the ASIC DMA
-// control (&6C0F) — spuriously enabling DMA channels whose INT flags then add
-// extra raster interrupts, corrupting the title's per-frame interrupt script and
-// derailing the game back to the cartridge menu after ~2 s.
+// overlaid only when the ASIC is BOTH unlocked AND paged in by RMR2 (its
+// membank field == 3). The unlock knock alone must NOT map it. Games unlock the
+// ASIC to use splits/palette but page the register page back OUT (RMR2 membank
+// != 3, a low-ROM bank / RAM there) to bulk-copy data through &6xxx into RAM.
+// If the overlay stayed live on unlock alone, that copy would scribble the ASIC
+// DMA control (&6C0F) — spuriously enabling DMA channels whose INT flags then
+// add extra raster interrupts, corrupting the title's per-frame interrupt
+// script and derailing the game back to the cartridge menu after ~2 s.
 TEST(Asic, RegisterPageNeedsRmr2MapNotJustUnlock) {
   AsicRig rig;
   make_rig(rig);
@@ -288,12 +288,14 @@ TEST(Asic, RegisterPageNeedsRmr2MapNotJustUnlock) {
 
   // Unlocked-but-unmapped: a write to the DMA control address must fall through
   // to RAM and leave the ASIC DMA registers untouched (the copy-through case).
-  cpu_write(rig, 0x6C0F, 0x07);  // would enable all 3 channels IF it hit the page
+  cpu_write(rig, 0x6C0F,
+            0x07);  // would enable all 3 channels IF it hit the page
   uint8_t en0 = 1, en1 = 1, en2 = 1;
   asic_dma_regs(&rig.asic, 0, nullptr, nullptr, &en0);
   asic_dma_regs(&rig.asic, 1, nullptr, nullptr, &en1);
   asic_dma_regs(&rig.asic, 2, nullptr, nullptr, &en2);
-  EXPECT_EQ(en0, 0) << "channel 0 must NOT be enabled by an unmapped-page write";
+  EXPECT_EQ(en0, 0)
+      << "channel 0 must NOT be enabled by an unmapped-page write";
   EXPECT_EQ(en1, 0);
   EXPECT_EQ(en2, 0);
   EXPECT_EQ(cpu_read(rig, 0x6C0F), 0x07) << "the write fell through to RAM";
@@ -320,14 +322,14 @@ TEST(Asic, RegisterPageNeedsRmr2MapNotJustUnlock) {
 }
 
 // Regression (Burnin' Rubber race-start derail): the 6128+ RMR2 register has
-// TWO fields — bits 0-2 select the cartridge PAGE, bits 4-3 (membank) select the
-// 16K CPU SLOT the page maps into: 0=&0000, 1=&4000, 2=&8000 (3=register page).
-// The legacy Gate Array applies the low ROM at that slot, NOT always at &0000
-// (kon_cpc_ja.cpp ga_memory_manager: memory_set_read_bank(lower_ROM_bank, ...)).
-// Burnin' Rubber's RAM-LAM restart (RST 20h) does OUT 0xB6 (membank 2, page 6)
-// to park the cartridge at &8000, then reads a RET (0xC9) from RAM at &004E; if
-// the low ROM is forced to &0000 the CPU instead fetches cartridge data there
-// and runs off into a data table — a hard crash on race start.
+// TWO fields — bits 0-2 select the cartridge PAGE, bits 4-3 (membank) select
+// the 16K CPU SLOT the page maps into: 0=&0000, 1=&4000, 2=&8000 (3=register
+// page). The legacy Gate Array applies the low ROM at that slot, NOT always at
+// &0000 (kon_cpc_ja.cpp ga_memory_manager: memory_set_read_bank(lower_ROM_bank,
+// ...)). Burnin' Rubber's RAM-LAM restart (RST 20h) does OUT 0xB6 (membank 2,
+// page 6) to park the cartridge at &8000, then reads a RET (0xC9) from RAM at
+// &004E; if the low ROM is forced to &0000 the CPU instead fetches cartridge
+// data there and runs off into a data table — a hard crash on race start.
 TEST(Asic, Rmr2MembankSelectsLowRomSlot) {
   AsicRig rig;
   rig.mem = mem_init(rig.mmem.data());

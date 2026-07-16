@@ -40,7 +40,8 @@ void make_rig(GunRig& rig) {
   crtc_poke_reg(&rig.crtc, 13, 0x00);
 }
 
-// Advance one char, preserving cross-device bus lines (only re-assert clk.crtc).
+// Advance one char, preserving cross-device bus lines (only re-assert
+// clk.crtc).
 CrtcRegs tick(GunRig& rig) {
   rig.board.bus.clk.crtc = true;
   board_tick(&rig.board);

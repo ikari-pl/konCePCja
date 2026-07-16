@@ -2,10 +2,10 @@
  * and a whole-DSK -> per-cylinder bitcell adapter. Pure functions, caller /
  * std::vector owned buffers, fixed-size function-local scratch. */
 #include "mfm_encode.h"
-#include <cstdint>
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 
@@ -22,7 +22,8 @@ struct CellWriter {
 
   void cell(int bit_value) {
     if ((count >> 3) >= bits.size()) bits.push_back(0);
-    if (bit_value) bits[count >> 3] |= static_cast<uint8_t>(0x80u >> (count & 7));
+    if (bit_value)
+      bits[count >> 3] |= static_cast<uint8_t>(0x80u >> (count & 7));
     count++;
   }
 
@@ -32,16 +33,16 @@ struct CellWriter {
   }
 };
 
-constexpr uint8_t kGapByte = 0x4E;       // MFM gap filler
-constexpr uint8_t kSyncByte = 0x00;      // sync field (encodes to 0xAAAA cells)
-constexpr uint8_t kIdMark = 0xFE;        // ID address mark
-constexpr uint8_t kAoneByte = 0xA1;      // the sync byte the A1 cells encode
-constexpr int kAoneCount = 3;            // three A1 marks precede every field
-constexpr int kGap4aBytes = 80;          // post-index gap
-constexpr int kSyncBytes = 12;           // 12x 0x00 before each A1 run
-constexpr int kGap2Bytes = 22;           // ID-field -> data-field gap
-constexpr uint8_t kMaxSizeCode = 5;      // 128<<5 = 4096, the DD ceiling
-constexpr uint32_t kRevByteCells = 6250; // one DD revolution at 300 RPM
+constexpr uint8_t kGapByte = 0x4E;   // MFM gap filler
+constexpr uint8_t kSyncByte = 0x00;  // sync field (encodes to 0xAAAA cells)
+constexpr uint8_t kIdMark = 0xFE;    // ID address mark
+constexpr uint8_t kAoneByte = 0xA1;  // the sync byte the A1 cells encode
+constexpr int kAoneCount = 3;        // three A1 marks precede every field
+constexpr int kGap4aBytes = 80;      // post-index gap
+constexpr int kSyncBytes = 12;       // 12x 0x00 before each A1 run
+constexpr int kGap2Bytes = 22;       // ID-field -> data-field gap
+constexpr uint8_t kMaxSizeCode = 5;  // 128<<5 = 4096, the DD ceiling
+constexpr uint32_t kRevByteCells = 6250;  // one DD revolution at 300 RPM
 constexpr uint32_t kRevCells = kRevByteCells * 16u;
 
 // Emit one data byte as 16 MFM cells through the normal clock rule.
@@ -50,7 +51,8 @@ void put_byte(CellWriter& writer, uint8_t value, int& prev_data_bit) {
 }
 
 // Emit `repeat` copies of the same gap/sync byte.
-void put_fill(CellWriter& writer, uint8_t value, int repeat, int& prev_data_bit) {
+void put_fill(CellWriter& writer, uint8_t value, int repeat,
+              int& prev_data_bit) {
   for (int i = 0; i < repeat; i++) put_byte(writer, value, prev_data_bit);
 }
 
@@ -72,7 +74,8 @@ void put_crc(CellWriter& writer, uint16_t crc, int& prev_data_bit) {
 bool encode_sector(CellWriter& writer, const MfmSector& sector, uint8_t gap3,
                    int& prev_data_bit) {
   if (sector.size_code > kMaxSizeCode) return false;
-  const std::size_t payload_len = static_cast<std::size_t>(128) << sector.size_code;
+  const std::size_t payload_len = static_cast<std::size_t>(128)
+                                  << sector.size_code;
   if (sector.payload.size() != payload_len) return false;
 
   // ---- ID field: sync, 3x A1, IDAM, C H R N, CRC(A1 A1 A1 FE C H R N) ----
@@ -81,7 +84,7 @@ bool encode_sector(CellWriter& writer, const MfmSector& sector, uint8_t gap3,
   put_byte(writer, kIdMark, prev_data_bit);
 
   std::array<uint8_t, 8> id_crc_input = {
-      kAoneByte, kAoneByte, kAoneByte, kIdMark,
+      kAoneByte,  kAoneByte,   kAoneByte,     kIdMark,
       sector.cyl, sector.head, sector.sec_id, sector.size_code};
   put_byte(writer, sector.cyl, prev_data_bit);
   put_byte(writer, sector.head, prev_data_bit);
@@ -151,11 +154,12 @@ MfmTrackDesc parse_dsk_track(const uint8_t* dsk, std::size_t off,
     const uint8_t status2 = sinfo[5];
     sector.dam = (status2 & 0x40) ? 0xF8 : 0xFB;  // ST2 Control Mark -> deleted
 
-    const std::size_t logical_len =
-        static_cast<std::size_t>(128) << (sector.size_code & 0x07);
+    const std::size_t logical_len = static_cast<std::size_t>(128)
+                                    << (sector.size_code & 0x07);
     const std::size_t actual_len = extended ? rd16le(sinfo + 6) : logical_len;
 
-    if (off + data_rel + logical_len <= len && sector.size_code <= kMaxSizeCode) {
+    if (off + data_rel + logical_len <= len &&
+        sector.size_code <= kMaxSizeCode) {
       sector.payload.assign(info + data_rel, info + data_rel + logical_len);
       desc.sectors.push_back(std::move(sector));
     }
@@ -182,8 +186,10 @@ uint16_t mfm_expand_byte(uint8_t value, int& prev_data_bit) {
   for (int i = 7; i >= 0; i--) {
     const int data_bit = (value >> i) & 1;
     const int clock_bit = (prev_data_bit == 0 && data_bit == 0) ? 1 : 0;
-    cells = static_cast<uint16_t>((cells << 1) | static_cast<uint16_t>(clock_bit));
-    cells = static_cast<uint16_t>((cells << 1) | static_cast<uint16_t>(data_bit));
+    cells =
+        static_cast<uint16_t>((cells << 1) | static_cast<uint16_t>(clock_bit));
+    cells =
+        static_cast<uint16_t>((cells << 1) | static_cast<uint16_t>(data_bit));
     prev_data_bit = data_bit;
   }
   return cells;
@@ -225,7 +231,8 @@ std::vector<t_mfm_track> mfm_tracks_from_dsk(const uint8_t* dsk,
   // Byte length of each physical track block (index = cyl*sides + side), in
   // DSK order. Absent (extended, size 0) tracks contribute 0.
   auto block_len = [&](int track_index) -> std::size_t {
-    if (extended) return static_cast<std::size_t>(dsk[0x34 + track_index]) * 256u;
+    if (extended)
+      return static_cast<std::size_t>(dsk[0x34 + track_index]) * 256u;
     return std_track_size;
   };
 
@@ -234,7 +241,8 @@ std::vector<t_mfm_track> mfm_tracks_from_dsk(const uint8_t* dsk,
   // Running file offset of each physical track block (DSK order:
   // index = cyl*sides + side, starting right after the 0x100 disc header).
   const int total_tracks = num_cyls * num_sides;
-  std::vector<std::size_t> offsets(static_cast<std::size_t>(total_tracks) + 1, 0);
+  std::vector<std::size_t> offsets(static_cast<std::size_t>(total_tracks) + 1,
+                                   0);
   offsets[0] = kDskHeaderSize;
   for (int i = 0; i < total_tracks; i++)
     offsets[i + 1] = offsets[i] + block_len(i);
@@ -250,7 +258,8 @@ std::vector<t_mfm_track> mfm_tracks_from_dsk(const uint8_t* dsk,
 
     const MfmTrackDesc desc = parse_dsk_track(dsk, off, len, extended);
     t_mfm_rev rev = mfm_encode_track(desc);
-    if (rev.nbits != 0) cyls[static_cast<std::size_t>(cyl)].push_back(std::move(rev));
+    if (rev.nbits != 0)
+      cyls[static_cast<std::size_t>(cyl)].push_back(std::move(rev));
   }
 
   return cyls;

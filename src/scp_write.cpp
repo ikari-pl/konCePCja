@@ -4,9 +4,9 @@
  * New-disc path and the per-track synthesis of dirty tracks, so the flux-word
  * emitter (ipf.cpp push_flux_rev) is never re-implemented here. */
 #include "scp_write.h"
-#include <cstdint>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <utility>
 
@@ -93,9 +93,10 @@ bool read_scp(const uint8_t* scp, std::size_t len, ScpReader& reader) {
 }
 
 // Pull revolution `rev` of the track at `toff` out of the source SCP.
-bool extract_rev(const ScpReader& reader, uint32_t toff, int rev, FluxRev& out) {
-  const std::size_t tdh =
-      static_cast<std::size_t>(toff) + 4 + (12u * static_cast<std::size_t>(rev));
+bool extract_rev(const ScpReader& reader, uint32_t toff, int rev,
+                 FluxRev& out) {
+  const std::size_t tdh = static_cast<std::size_t>(toff) + 4 +
+                          (12u * static_cast<std::size_t>(rev));
   if (tdh + 12 > reader.len) return false;
   const uint8_t* entry = reader.base + tdh;
   const uint32_t words = rd32le(entry + 4);
@@ -160,7 +161,8 @@ std::vector<uint8_t> assemble(const std::vector<std::vector<FluxRev>>& cyl_revs,
       const FluxRev& flux = revlist[rev];
       const uint32_t data_off = static_cast<uint32_t>(scp.size()) - toff;
       scp.insert(scp.end(), flux.words.begin(), flux.words.end());
-      const std::size_t entry = tdh_base + (12u * static_cast<std::size_t>(rev));
+      const std::size_t entry =
+          tdh_base + (12u * static_cast<std::size_t>(rev));
       put_le32(scp, entry, flux.duration);
       put_le32(scp, entry + 4, static_cast<uint32_t>(flux.words.size() / 2));
       put_le32(scp, entry + 8, data_off);
@@ -205,9 +207,10 @@ bool resolve_cylinder(int cyl, const ScpReader& reader, uint8_t revs,
 
 }  // namespace
 
-std::vector<uint8_t> scp_from_disk(const uint8_t* orig_scp, std::size_t orig_len,
-                                   const uint8_t* dsk, std::size_t dsk_len,
-                                   const bool* track_dirty, int ntracks) {
+std::vector<uint8_t> scp_from_disk(const uint8_t* orig_scp,
+                                   std::size_t orig_len, const uint8_t* dsk,
+                                   std::size_t dsk_len, const bool* track_dirty,
+                                   int ntracks) {
   const bool have_orig =
       orig_scp != nullptr && orig_len > 0 && flux_scp_probe(orig_scp, orig_len);
 

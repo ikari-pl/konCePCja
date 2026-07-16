@@ -73,11 +73,11 @@ int vid_decode(uint8_t mode, uint8_t b, uint8_t pens_out[8]) {
 }
 
 int vid_decode_lut(uint8_t mode, uint8_t b, uint8_t pens_out[8]) {
-  // Same result as vid_decode(), read from a table built ONCE from it — so it is
-  // byte-identical by construction (VideoDecodeLut.MatchesScalar guards the
-  // accessor). vid_decode is pure in (mode, byte), so the whole domain (4 modes ×
-  // 256 bytes) folds into a ~9 KB table; the Fast-tier batch renderer (Gate B7)
-  // reads this instead of re-running the per-pixel bit-scatter, while the
+  // Same result as vid_decode(), read from a table built ONCE from it — so it
+  // is byte-identical by construction (VideoDecodeLut.MatchesScalar guards the
+  // accessor). vid_decode is pure in (mode, byte), so the whole domain (4 modes
+  // × 256 bytes) folds into a ~9 KB table; the Fast-tier batch renderer (Gate
+  // B7) reads this instead of re-running the per-pixel bit-scatter, while the
   // faithful per-cycle path keeps calling vid_decode. C++11 guarantees the
   // static-local table is built exactly once, thread-safely.
   struct DecodedByte {
@@ -96,8 +96,9 @@ int vid_decode_lut(uint8_t mode, uint8_t b, uint8_t pens_out[8]) {
         }
     }
   } lut;
-  // mode 0/1/3 are distinct; mode 2 and any mode > 3 share mode-2 decode, exactly
-  // mirroring vid_decode's default arm (the 2-bit mode register never exceeds 3).
+  // mode 0/1/3 are distinct; mode 2 and any mode > 3 share mode-2 decode,
+  // exactly mirroring vid_decode's default arm (the 2-bit mode register never
+  // exceeds 3).
   const DecodedByte& d = lut.e[mode > 3 ? 2 : mode][b];
   std::memcpy(pens_out, d.pens, sizeof(d.pens));
   return d.count;
@@ -130,7 +131,8 @@ int vid_render_line(const uint8_t* ram, uint8_t mode, const uint8_t* ink,
 
 int vid_px_per_char(uint8_t mode) {
   // Mode 3 shares mode 0's 160-pixel width (4 px/char); mode 1 is 8, mode 2 16.
-  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+  // conditional kept intentionally; no clang-tidy auto-fix
   return (mode == 0 || mode == 3) ? 4 : mode == 1 ? 8 : 16;
 }
 
@@ -279,7 +281,7 @@ void plus_refresh_line(video_state* v) {
   v->lc_n = 0;
   for (int i = 0; i < 16; ++i) {
     const int mx = v->spr_mx[i], my = v->spr_my[i];
-    if (mx == 0 || my == 0) continue;                // disabled
+    if (mx == 0 || my == 0) continue;  // disabled
     const int sy = v->spr_y[i];
     if (py < sy || py >= sy + (16 * my)) continue;  // scanline outside sprite
     const int sx = v->spr_x[i];
@@ -288,7 +290,8 @@ void plus_refresh_line(video_state* v) {
     v->lc_id[v->lc_n] = static_cast<int8_t>(i);
     v->lc_row[v->lc_n] = static_cast<int8_t>((py - sy) / my);
     v->lc_shift[v->lc_n] =
-        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+        // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+        // conditional kept intentionally; no clang-tidy auto-fix
         static_cast<int8_t>((mx == 4) ? 2 : (mx == 2 ? 1 : 0));
     v->lc_n++;
   }
@@ -411,7 +414,7 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
     return;
   }
   const VidDecodeLut& lut = vid_lut();
-  const uint8_t m = mode & 3;  // the GA latch is 2 bits wide
+  const uint8_t m = mode & 3;              // the GA latch is 2 bits wide
   const int px_xbase = v->disp_char * 16;  // active-relative X of the cell
   const int hs = v->hscroll;  // horizontal soft scroll (background only)
 
@@ -514,8 +517,8 @@ void render_cell_plus(video_state* v, const GateArrayRegs* g, uint8_t mode,
 // render_cell_classic (straight to the framebuffer) and the batch renderer's
 // per-call cache fill (into a 24-byte slot) run this exact code, so the
 // cached path is byte-identical by construction.
-void paint_byte_classic(const GateArrayRegs* g, uint8_t m, uint8_t byte,
-                        int pw, uint8_t* px) {
+void paint_byte_classic(const GateArrayRegs* g, uint8_t m, uint8_t byte, int pw,
+                        uint8_t* px) {
   const VidDecodeLut& lut = vid_lut();
   const int n = lut.count[m];
   const uint8_t* pens = lut.pens[m][byte];
@@ -654,8 +657,9 @@ extern "C" {
 size_t video_state_size(void) { return sizeof(video_state); }
 
 Device video_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  video_state *v = new (storage) video_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  video_state* v = new (storage) video_state();
   return Device{
       v,          "video",   video_tick, video_reset, video_dev_state_size,
       video_save, video_load};
@@ -749,8 +753,8 @@ void video_batch_cells(const Device* vid, const uint8_t* ram,
       }
       if (v->plus_active) {
         if (active) v->fetch0 = byte0;  // render_cell_plus reads the latch
-        render_cell_plus(v, &g, view.mode, active, byte1,
-                         v->beam_col * char_w, char_w);
+        render_cell_plus(v, &g, view.mode, active, byte1, v->beam_col * char_w,
+                         char_w);
       } else if (cc_on) {
         uint8_t* px = v->fb + (((static_cast<size_t>(v->beam_row) * v->fb_w) +
                                 (static_cast<size_t>(v->beam_col) * 16)) *

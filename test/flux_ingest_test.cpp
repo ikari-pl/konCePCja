@@ -31,21 +31,21 @@ void put_u16le(std::vector<uint8_t>& v, size_t at, uint16_t x) {
 std::vector<uint8_t> make_hfe() {
   std::vector<uint8_t> h(512, 0xFF);
   std::memcpy(h.data(), "HXCPICFE", 8);
-  h[0x08] = 0;     // format_revision (v1)
-  h[0x09] = 1;     // number_of_track
-  h[0x0A] = 2;     // number_of_side
-  h[0x0B] = 0x00;  // track_encoding
+  h[0x08] = 0;              // format_revision (v1)
+  h[0x09] = 1;              // number_of_track
+  h[0x0A] = 2;              // number_of_side
+  h[0x0B] = 0x00;           // track_encoding
   put_u16le(h, 0x0C, 250);  // bitRate: CPC DD (250 kbit/s -> 2 us cells)
   put_u16le(h, 0x0E, 300);  // floppyRPM
   h[0x10] = 0x06;           // CPC_DD_FLOPPYMODE
   put_u16le(h, 0x12, 1);    // track_list_offset (block 1)
 
   std::vector<uint8_t> img = std::move(h);
-  img.resize(1024, 0);            // header block (0) + LUT block (1)
-  put_u16le(img, 512, 2);         // track 0 data at block 2 (byte 1024)
-  put_u16le(img, 514, 512);       // track 0 length: one 512-byte block
+  img.resize(1024, 0);       // header block (0) + LUT block (1)
+  put_u16le(img, 512, 2);    // track 0 data at block 2 (byte 1024)
+  put_u16le(img, 514, 512);  // track 0 length: one 512-byte block
   img.resize(1024 + 512, 0);
-  img[1024] = 0x01;               // side-0 byte 0
+  img[1024] = 0x01;                                      // side-0 byte 0
   std::fill(img.begin() + 1024 + 256, img.end(), 0xFF);  // side-1 filler
   return img;
 }
@@ -80,8 +80,8 @@ std::vector<uint8_t> make_kryoflux_stream() {
   put_kfinfo("sck=40000000");
   for (int i = 0; i < 4; i++) s.push_back(0x40);
   put_index(0);
-  put_index(2);  // rev0 = flux[0..1]
-  put_index(4);  // rev1 = flux[2..3]
+  put_index(2);       // rev0 = flux[0..1]
+  put_index(4);       // rev1 = flux[2..3]
   s.push_back(0x0D);  // EOF OOB
   s.push_back(0x0D);
   s.push_back(0x0D);
@@ -101,29 +101,29 @@ std::vector<uint8_t> make_a2r() {
   };
   const std::vector<uint8_t> flux = {16, 24, 32, 0xFF, 45};
   std::vector<uint8_t> rwcp;
-  rwcp.push_back(1);             // version
-  put32(rwcp, 125000);          // resolution: 125 ns/tick
+  rwcp.push_back(1);    // version
+  put32(rwcp, 125000);  // resolution: 125 ns/tick
   rwcp.insert(rwcp.end(), 11, 0);
-  rwcp.push_back('C');          // capture mark
-  rwcp.push_back(1);            // type: timing
-  rwcp.push_back(0);            // location lo (cyl 0, side 0)
-  rwcp.push_back(0);            // location hi
-  rwcp.push_back(1);            // num_index
-  put32(rwcp, 1000);           // index[0]
+  rwcp.push_back('C');  // capture mark
+  rwcp.push_back(1);    // type: timing
+  rwcp.push_back(0);    // location lo (cyl 0, side 0)
+  rwcp.push_back(0);    // location hi
+  rwcp.push_back(1);    // num_index
+  put32(rwcp, 1000);    // index[0]
   put32(rwcp, static_cast<uint32_t>(flux.size()));
   rwcp.insert(rwcp.end(), flux.begin(), flux.end());
-  rwcp.push_back('X');          // terminator
+  rwcp.push_back('X');  // terminator
 
   std::vector<uint8_t> a2r = {'A', '2', 'R', '3', 0xFF, 0x0A, 0x0D, 0x0A};
   const char* info = "INFO";
   a2r.insert(a2r.end(), info, info + 4);
   put32(a2r, 37);
-  a2r.push_back(1);                    // INFO version
-  a2r.insert(a2r.end(), 32, ' ');      // creator
-  a2r.push_back(2);                    // drive type
-  a2r.push_back(0);                    // write protected
-  a2r.push_back(1);                    // synchronized
-  a2r.push_back(0);                    // hard sector count
+  a2r.push_back(1);                // INFO version
+  a2r.insert(a2r.end(), 32, ' ');  // creator
+  a2r.push_back(2);                // drive type
+  a2r.push_back(0);                // write protected
+  a2r.push_back(1);                // synchronized
+  a2r.push_back(0);                // hard sector count
   const char* rw = "RWCP";
   a2r.insert(a2r.end(), rw, rw + 4);
   put32(a2r, static_cast<uint32_t>(rwcp.size()));

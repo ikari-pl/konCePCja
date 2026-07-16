@@ -42,8 +42,8 @@ std::vector<uint8_t> scp_of(const std::vector<uint8_t>& dsk) {
 std::vector<std::vector<fluxtest::DecodedSector>> decode_scp(
     const std::vector<uint8_t>& scp) {
   std::vector<uint8_t> dsk(1u << 20, 0);
-  const long size = flux_scp_to_dsk(scp.data(), scp.size(), dsk.data(),
-                                    dsk.size(), nullptr);
+  const long size =
+      flux_scp_to_dsk(scp.data(), scp.size(), dsk.data(), dsk.size(), nullptr);
   if (size <= 0x100) return {};
   return fluxtest::read_dsk(dsk.data(), static_cast<std::size_t>(size));
 }
@@ -76,7 +76,8 @@ TEST(ScpWrite, NewFluxDiscSynthesizesEveryTrack) {
   for (std::size_t track = 0; track < original.size(); track++) {
     ASSERT_EQ(restored[track].size(), original[track].size());
     for (std::size_t sector = 0; sector < original[track].size(); sector++)
-      EXPECT_EQ(restored[track][sector].payload, original[track][sector].payload)
+      EXPECT_EQ(restored[track][sector].payload,
+                original[track][sector].payload)
           << "track " << track << " sector " << sector;
   }
 }
@@ -108,7 +109,8 @@ TEST(ScpWrite, DirtyTrackResynthesizedCleanTrackPreservedVerbatim) {
     ASSERT_EQ(restored[track].size(), expect.size()) << "track " << track;
     for (std::size_t sector = 0; sector < expect.size(); sector++)
       EXPECT_EQ(restored[track][sector].payload, expect[sector].payload)
-          << (track == 1 ? "dirty track must be DSK-B " : "clean track must be DSK-A ")
+          << (track == 1 ? "dirty track must be DSK-B "
+                         : "clean track must be DSK-A ")
           << "track " << track << " sector " << sector;
   }
   // And the two clean tracks must differ from what a DSK-B re-synth would give.

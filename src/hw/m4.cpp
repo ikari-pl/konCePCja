@@ -103,11 +103,11 @@ void m4_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   if (in->cpu.mreq && in->cpu.rd && !in->cpu.rfsh && rom_selected(m)) {
     const uint16_t a = in->cpu.addr;
     if (m->busy && a == kRespBase) {
-      // Busy sentinel (beads-315e): while the coprocessor is working, the status
-      // byte at &E800 reads 0xFF ("not ready"). The M4 ROM polls here until it
-      // flips; m4_complete_response then clears busy and writes the real status
-      // (0x00 OK / 0xFF error) into the window. Takes precedence over any stale
-      // prior response still sitting under response_len.
+      // Busy sentinel (beads-315e): while the coprocessor is working, the
+      // status byte at &E800 reads 0xFF ("not ready"). The M4 ROM polls here
+      // until it flips; m4_complete_response then clears busy and writes the
+      // real status (0x00 OK / 0xFF error) into the window. Takes precedence
+      // over any stale prior response still sitting under response_len.
       out->cpu.romdis = true;
       out->cpu.data = 0xFF;
     } else if (a >= kRespBase && a - kRespBase < m->response_len) {
@@ -156,8 +156,9 @@ extern "C" {
 size_t m4_state_size(void) { return sizeof(m4_state); }
 
 Device m4_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  m4_state *m = new (storage) m4_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  m4_state* m = new (storage) m4_state();
   return Device{m,       "m4",   m4_tick, m4_dev_reset, m4_dev_state_size,
                 m4_save, m4_load};
 }

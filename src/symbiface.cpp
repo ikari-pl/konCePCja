@@ -40,7 +40,7 @@ uint32_t ide_lba(const IDE_Device& dev) {
 
 namespace {
 void ide_set_string(uint16_t* buf, int word_start, int word_count,
-                           const char* str) {
+                    const char* str) {
   // ATA strings are byte-swapped within each word.
   // Track string length to avoid reading past the null terminator.
   int const slen = str ? static_cast<int>(strlen(str)) : 0;

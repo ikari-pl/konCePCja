@@ -39,19 +39,19 @@ uint32_t be16(const uint8_t* p) {
 // spec convention). Only the fields hfe_to_scp reads are meaningfully set;
 // everything else is inert filler.
 std::vector<uint8_t> make_header(uint8_t number_of_track, uint16_t bit_rate,
-                                  uint8_t format_revision = 0,
-                                  uint16_t track_list_offset = 1,
-                                  const char* signature = "HXCPICFE") {
+                                 uint8_t format_revision = 0,
+                                 uint16_t track_list_offset = 1,
+                                 const char* signature = "HXCPICFE") {
   std::vector<uint8_t> h(512, 0xFF);
   std::memcpy(h.data(), signature, 8);
   h[0x08] = format_revision;
   h[0x09] = number_of_track;
-  h[0x0A] = 2;    // number_of_side — informational only, never read
-  h[0x0B] = 0x00; // track_encoding — ignored (see hfe.cpp)
+  h[0x0A] = 2;     // number_of_side — informational only, never read
+  h[0x0B] = 0x00;  // track_encoding — ignored (see hfe.cpp)
   put_u16le(h, 0x0C, bit_rate);
   put_u16le(h, 0x0E, 300);  // floppyRPM — ignored
-  h[0x10] = 0x06;            // floppyinterfacemode: CPC_DD_FLOPPYMODE
-  h[0x11] = 0xFF;            // dnu (reserved)
+  h[0x10] = 0x06;           // floppyinterfacemode: CPC_DD_FLOPPYMODE
+  h[0x11] = 0xFF;           // dnu (reserved)
   put_u16le(h, 0x12, track_list_offset);
   h[0x14] = 0xFF;  // write_allowed — ignored
   h[0x15] = 0xFF;  // single_step — ignored
@@ -124,9 +124,8 @@ TEST(Hfe, RejectsBadSignature) {
 
 TEST(Hfe, RejectsHfeV3Signature) {
   std::vector<uint8_t> out;
-  std::vector<uint8_t> img =
-      make_header(1, 250, /*format_revision=*/0, /*track_list_offset=*/1,
-                  "HXCHFEV3");
+  std::vector<uint8_t> img = make_header(1, 250, /*format_revision=*/0,
+                                         /*track_list_offset=*/1, "HXCHFEV3");
   EXPECT_EQ(hfe_to_scp(img.data(), img.size(), out), HFE_E_UNSUPPORTED);
   EXPECT_TRUE(out.empty());
 }
@@ -188,9 +187,8 @@ TEST(Hfe, BitOrderIsLsbFirstWithinEachByte) {
   // instead read 1,0,1,0,1,0,1,0: transitions at cells 0,2,4,6, giving a
   // FIRST interval of 1*80=80 ticks, not 160 — this test would catch that.)
   std::vector<uint8_t> out;
-  const std::vector<uint8_t> img =
-      make_hfe_image(/*number_of_track=*/1, /*bit_rate=*/250,
-                      {std::vector<uint8_t>{0xAA}});
+  const std::vector<uint8_t> img = make_hfe_image(
+      /*number_of_track=*/1, /*bit_rate=*/250, {std::vector<uint8_t>{0xAA}});
   ASSERT_EQ(hfe_to_scp(img.data(), img.size(), out), 0);
 
   const uint32_t toff = le32(out.data() + 0x10);
@@ -220,10 +218,11 @@ TEST(Hfe, TranscodesTwoTrackImageIntoAWellFormedScp) {
   //   nbits = 256*8 = 2048; duration = 2048*80 = 163840 ticks.
   // Track 1 is absent (track_len = 0) -> an unformatted/empty TLUT slot.
   std::vector<uint8_t> track0(512, 0x00);
-  track0[0] = 0x01;                          // side-0 byte 0
+  track0[0] = 0x01;                                     // side-0 byte 0
   std::fill(track0.begin() + 256, track0.end(), 0xFF);  // side-1 filler
   const std::vector<uint8_t> img = make_hfe_image(
-      /*number_of_track=*/2, /*bit_rate=*/250, {track0, std::vector<uint8_t>{}});
+      /*number_of_track=*/2, /*bit_rate=*/250,
+      {track0, std::vector<uint8_t>{}});
 
   std::vector<uint8_t> scp;
   ASSERT_EQ(hfe_to_scp(img.data(), img.size(), scp), 0);
@@ -285,10 +284,10 @@ TEST(Hfe, DeinterleavesAcrossMultipleBlocks) {
   // so it doubles as an overflow check: 163840 = 2*65536 + 32768 -> two
   // 0x0000 carry words then 32768 (matches ipf.cpp push_flux_rev).
   std::vector<uint8_t> track0(1024, 0x00);
-  track0[0] = 0x01;                                    // block0 side-0 byte0
+  track0[0] = 0x01;  // block0 side-0 byte0
   std::fill(track0.begin() + 256, track0.begin() + 512, 0xFF);  // block0 s1
-  track0[512] = 0x01;                                  // block1 side-0 byte0
-  std::fill(track0.begin() + 768, track0.end(), 0xFF); // block1 s1
+  track0[512] = 0x01;                                   // block1 side-0 byte0
+  std::fill(track0.begin() + 768, track0.end(), 0xFF);  // block1 s1
   const std::vector<uint8_t> img =
       make_hfe_image(/*number_of_track=*/1, /*bit_rate=*/250, {track0});
 
@@ -345,7 +344,8 @@ TEST(Hfe, AllTracksUnformattedIsRejected) {
 // Set KONCEPCJA_REAL_HFE to its path, or drop it at test/hw/fixtures/
 // real.hfe — so no (possibly unlicensed) preservation dump lands in the
 // repo. Absent -> SKIP, so CI is unaffected (mirrors IpfMirror.
-// MirrorsARealCapsImageWhenProvided / FdcFlux.DecodesARealScpCaptureWhenProvided).
+// MirrorsARealCapsImageWhenProvided /
+// FdcFlux.DecodesARealScpCaptureWhenProvided).
 TEST(Hfe, DecodesARealHfeCaptureWhenProvided) {
   std::string path;
   if (const char* env = std::getenv("KONCEPCJA_REAL_HFE")) path = env;
@@ -366,7 +366,7 @@ TEST(Hfe, DecodesARealHfeCaptureWhenProvided) {
   EXPECT_EQ(flux_scp_probe(scp.data(), scp.size()), 1);
 
   std::vector<uint8_t> dsk(4u << 20);
-  const long n = flux_scp_to_dsk(scp.data(), scp.size(), dsk.data(),
-                                 dsk.size(), nullptr);
+  const long n =
+      flux_scp_to_dsk(scp.data(), scp.size(), dsk.data(), dsk.size(), nullptr);
   EXPECT_GT(n, 0x100) << "flux decode returned " << n;
 }

@@ -357,7 +357,8 @@ uintptr_t video_gpu_make_rgba_texture(const unsigned char* rgba, int w, int h) {
 
 void video_gpu_free_rgba_texture(uintptr_t tex) {
   if (!tex || !g_gpu.device) return;
-  // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer->pointer for an opaque GPU texture handle
+  // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional integer->pointer for
+  // an opaque GPU texture handle
   SDL_ReleaseGPUTexture(g_gpu.device, reinterpret_cast<SDL_GPUTexture*>(tex));
 }
 

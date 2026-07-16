@@ -265,10 +265,12 @@ TEST(AsicDma, IntOpcodeRaisesIrqAndVectorsOnAck) {
   }
   EXPECT_TRUE(saw_irq) << "the DMA INT opcode raised cpu.irq";
 
-  // DCSR (&6C0F) readback: channel 0 enable = bit 0, channel 0 INT flag = bit 6.
+  // DCSR (&6C0F) readback: channel 0 enable = bit 0, channel 0 INT flag =
+  // bit 6.
   const uint8_t dcsr = pgread(&board, 0x6C0F);
   EXPECT_EQ(dcsr & 0x01, 0x01) << "DCSR bit 0 = channel 0 enabled";
-  EXPECT_EQ(dcsr & 0x40, 0x40) << "DCSR bit 6 = channel 0 interrupt flag (cpcwiki)";
+  EXPECT_EQ(dcsr & 0x40, 0x40)
+      << "DCSR bit 6 = channel 0 interrupt flag (cpcwiki)";
 
   EXPECT_EQ(ack(&board), 0x34)
       << "IM2 vector = (0x30 & 0xF8) | 4: DMA channel 0's source code (cpcwiki "

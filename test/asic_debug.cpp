@@ -13,7 +13,7 @@ namespace {
 class AsicDebugTest : public testing::Test {
  protected:
   void SetUp() override {
-    asic = {};  // clear the view buffer
+    asic = {};                  // clear the view buffer
     asic.interrupt_vector = 1;  // power-on IM2 vector (hw asic default)
     memset(&CRTC, 0, sizeof(CRTC));
     // Allocate a register page if needed

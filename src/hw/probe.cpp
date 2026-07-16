@@ -67,8 +67,8 @@ void probe_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   // from the per-cycle loop while unarmed (recompose_active) with the soldered
   // fast path staying identical (it still lists the probe; the tick no-ops).
   // now is read only as a hit's timestamp (latch()), so freezing it while there
-  // can be no hit is unobservable. On arm, the first live cycle re-baselines the
-  // edge latches (a strobe already high reads as no rising edge — the same
+  // can be no hit is unobservable. On arm, the first live cycle re-baselines
+  // the edge latches (a strobe already high reads as no rising edge — the same
   // instruction boundary the CPU is mid-fetch of, not a spurious hit).
   if (p->exec_count == 0 && p->watch_count == 0 && p->io_count == 0 &&
       p->hit.kind == PROBE_HIT_NONE) {
@@ -115,8 +115,8 @@ void probe_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
     for (int i = 0; i < p->watch_count; ++i) {
       // 32-bit end: a range reaching the top of memory (e.g. 0xFFF0 len
       // 0x20) must not wrap to a tiny end and match nothing.
-      const uint32_t end = static_cast<uint32_t>(p->watch[i].addr) +
-                           p->watch[i].len - 1;
+      const uint32_t end =
+          static_cast<uint32_t>(p->watch[i].addr) + p->watch[i].len - 1;
       if (addr < p->watch[i].addr || addr > end) continue;
       if (mrd_edge && p->watch[i].on_read) {
         latch(p, PROBE_HIT_MEM_READ, addr, data);
@@ -176,8 +176,9 @@ extern "C" {
 size_t probe_state_size(void) { return sizeof(probe_state); }
 
 Device probe_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  probe_state *p = new (storage) probe_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  probe_state* p = new (storage) probe_state();
   Device dev = {};
   dev.self = p;
   dev.name = "probe";
@@ -320,11 +321,12 @@ int probe_armed(const Device* dev) {
 }
 
 int probe_active(const Device* dev) {
-  // Broader than probe_armed(): a latched hit also keeps the probe live. Matches
-  // probe_tick's idle predicate exactly — while this is 0 the tick is a no-op, so
-  // the board may skip it (recompose_active). Console taps no longer count: they
-  // fire from the machine's own fetch-edge check (service_taps), not the probe,
-  // so a tap-only machine keeps the probe dormant and Wake elision available.
+  // Broader than probe_armed(): a latched hit also keeps the probe live.
+  // Matches probe_tick's idle predicate exactly — while this is 0 the tick is a
+  // no-op, so the board may skip it (recompose_active). Console taps no longer
+  // count: they fire from the machine's own fetch-edge check (service_taps),
+  // not the probe, so a tap-only machine keeps the probe dormant and Wake
+  // elision available.
   probe_state const* p = self_of(dev->self);
   return (p->exec_count || p->watch_count || p->io_count ||
           p->hit.kind != PROBE_HIT_NONE)

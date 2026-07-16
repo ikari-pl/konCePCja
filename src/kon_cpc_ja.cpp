@@ -3,10 +3,10 @@
 // dispatch, audio push, and lifecycle (pause/reset/cleanup).
 
 #include <algorithm>
-#include <cstdint>
 #include <cctype>
 #include <chrono>
 #include <climits>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
@@ -26,8 +26,7 @@
 #include "SDL3/SDL.h"
 
 namespace {
-inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g,
-                                   Uint8 b) {
+inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
   const SDL_PixelFormatDetails* fmt =
       SDL_GetPixelFormatDetails(surface->format);
   SDL_Palette const* pal = SDL_GetSurfacePalette(surface);
@@ -170,7 +169,21 @@ dword g_exit_start_ticks = 0;
 // cycles.
 namespace {
 bool g_keyboard_scanned = false;
+// Engine=1: the rows the firmware actually read this frame (machine
+// take_key_scanned_rows(), read-and-clear — captured ONCE per frame here and
+// shared by the autotype scan gate and the KeyboardManager relay).
+uint16_t g_engine1_scanned_rows = 0;
+// A break fired while a KONCPC_WAITBREAK was still queued (e.g. `-a 'call 0'
+// -a KONCPC_WAITBREAK` where BASIC executes the CALL before the queue reaches
+// the WAITBREAK). The WAITBREAK consumes the latch instead of blocking on a
+// breakpoint that already came and went.
+bool g_waitbreak_latch = false;
 }  // namespace
+
+bool autotype_waitbreak_in_flight() {
+  return g_autotype_queue.is_blocked() ||
+         g_autotype_queue.has_pending_command(KONCPC_WAITBREAK);
+}
 namespace {
 int g_keyboard_scan_timeout = 0;  // frames since last scan, for fallback
 }  // namespace
@@ -248,7 +261,8 @@ uint64_t perfTicksTarget;  // next frame deadline in perf-counter ticks
 namespace {
 uint64_t perfTicksTargetFPS;  // next 1-second FPS sample point
 }  // namespace
-// NOLINTNEXTLINE(misc-use-internal-linkage): dwFPS is referenced cross-TU (tape_line_in.cpp); per-file check can't see the other TU
+// NOLINTNEXTLINE(misc-use-internal-linkage): dwFPS is referenced cross-TU
+// (tape_line_in.cpp); per-file check can't see the other TU
 dword dwFPS, dwFrameCount;
 namespace {
 dword dwXScale, dwYScale;
@@ -296,7 +310,7 @@ std::string lastSavedSnapshot;
 }  // namespace
 
 namespace {
-dword dwBreakPoint, dwTrace, dwMF2ExitAddr;
+dword dwMF2ExitAddr;
 }  // namespace
 extern dword dwMF2Flags;
 dword dwMF2Flags = 0;
@@ -309,9 +323,6 @@ extern byte* pbGPBuffer;
 byte* pbGPBuffer = nullptr;
 namespace {
 byte* pbSndBufferEnd = nullptr;
-}  // namespace
-namespace {
-byte* pbSndStream = nullptr;
 }  // namespace
 extern byte *membank_read[4], *membank_write[4], *memmap_ROM[256];
 byte *membank_read[4], *membank_write[4], *memmap_ROM[256];
@@ -336,7 +347,8 @@ namespace {
 byte* pbMF2ROM = nullptr;
 }  // namespace
 extern std::vector<byte> pbTapeImage;
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 std::vector<byte> pbTapeImage;
 // `keyboard_matrix` is the pending/authoritative key state: every writer (main
 // thread SDL/virtual keys, IPC thread, Z80-thread autotype) mutates it.
@@ -358,9 +370,9 @@ namespace {
 t_MemBankConfig membank_config;
 }  // namespace
 
-namespace {
+// External linkage: the engine=1 bridge drains the printer Device's
+// strobe-clocked bytes into this capture file (see koncepcja.h).
 FILE* pfoPrinter;
-}  // namespace
 
 #ifdef DEBUG
 dword dwDebugFlag = 0;
@@ -440,12 +452,10 @@ char chAppPath[_MAX_PATH + 1];
 namespace {
 std::filesystem::path binPath;  // Where the binary is
 }  // namespace
-namespace {
-char chROMSelected[_MAX_PATH + 1];
-}  // namespace
-// NOLINTNEXTLINE(misc-use-internal-linkage): chROMFile is referenced cross-TU (subcycle_bridge.cpp); per-file check can't see the other TU
+// NOLINTNEXTLINE(misc-use-internal-linkage): chROMFile is referenced cross-TU
+// (subcycle_bridge.cpp); per-file check can't see the other TU
 std::string chROMFile[4] = {"cpc464.rom", "cpc664.rom", "cpc6128.rom",
-                                   "system.cpr"};
+                            "system.cpr"};
 
 JoystickEmulation nextJoystickEmulation(JoystickEmulation current) {
   return static_cast<JoystickEmulation>(
@@ -514,7 +524,7 @@ enum ApplicationWindowState : std::uint8_t {
   Restored,     // application window has been restored
   GainedFocus,  // application window got input focus
   LostFocus     // application window lost input focus
-} _appWindowState;
+};
 }  // namespace
 
 namespace {
@@ -525,10 +535,10 @@ void ga_init_banking(t_MemBankConfig& membank_config, unsigned char RAM_bank) {
   // Eight 16K banks feed the decode: 0-3 are base RAM, 4-7 the selected
   // expansion bank (or a Silicon Disc bank when the index falls in its
   // range).
-  byte* expansion = g_silicon_disc.owns_bank(RAM_bank)
-                        ? g_silicon_disc.bank_ptr(RAM_bank -
-                                                  SILICON_DISC_FIRST_BANK)
-                        : pbRAM + ((RAM_bank + 1) * 65536);
+  byte* expansion =
+      g_silicon_disc.owns_bank(RAM_bank)
+          ? g_silicon_disc.bank_ptr(RAM_bank - SILICON_DISC_FIRST_BANK)
+          : pbRAM + ((RAM_bank + 1) * 65536);
   byte* banks[8];
   for (int i = 0; i < 4; ++i) {
     banks[i] = pbRAM + (i * 16384);
@@ -630,7 +640,8 @@ bool mf2_out_handler(reg_pair port, byte /*val*/) {
 }
 }  // namespace
 
-void mf2_register_io() {  // NOLINT(misc-use-internal-linkage): registered from io_dispatch (cross-TU)
+void mf2_register_io() {  // NOLINT(misc-use-internal-linkage): registered from
+                          // io_dispatch (cross-TU)
   s_mf2_enabled = CPC.mf2 != 0;
   io_register_out(0xFE, mf2_out_handler, &s_mf2_enabled, "Multiface II");
 }
@@ -650,7 +661,8 @@ void print(byte* pbAddr, const char* pchStr, bool bolColour) {
 
   // White truncates to all-ones at every depth; 8-bit palettized surfaces
   // ask SDL for the palette entry instead.
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   uint32_t colour = bolColour ? 0xffffffffu : 0u;
   if (CPC.scr_bpp == 8) {
     colour = bolColour ? MapRGBSurface(back_surface, 255, 255, 255)
@@ -674,12 +686,12 @@ void print(byte* pbAddr, const char* pchStr, bool bolColour) {
       byte bits = bFont[idx];  // one glyph scanline, MSB first
       for (int col = 0; col < FNT_CHAR_WIDTH; col++) {
         if (bits & 0x80) {
-          put(pixel, colour);                        // glyph pixel
-          put(pixel + CPC.scr_bps, colour);          // doubled half-line
-          put(pixel + px, 0);                        // shadow right
-          put(pixel + CPC.scr_bps + px, 0);          //  ... doubled
-          put(pixel + CPC.scr_line_offs, 0);         // shadow below
-          put(pixel + CPC.scr_line_offs + px, 0);    // shadow below-right
+          put(pixel, colour);                      // glyph pixel
+          put(pixel + CPC.scr_bps, colour);        // doubled half-line
+          put(pixel + px, 0);                      // shadow right
+          put(pixel + CPC.scr_bps + px, 0);        //  ... doubled
+          put(pixel + CPC.scr_line_offs, 0);       // shadow below
+          put(pixel + CPC.scr_line_offs + px, 0);  // shadow below-right
         }
         pixel += px;
         bits <<= 1;
@@ -900,8 +912,7 @@ int load_expansion_rom_slot(int slot, const std::string& rom_file) {
   // first 128 bytes of the ROM body over it.
   word checksum = 0;
   for (int n = 0; n < 0x43; n++) checksum += rom[n];
-  const bool has_amsdos_header =
-      checksum == ((rom[0x43] << 8) + rom[0x44]);
+  const bool has_amsdos_header = checksum == ((rom[0x43] << 8) + rom[0x44]);
   if (has_amsdos_header && fread(rom.get(), 128, 1, f.get()) != 1) {
     LOG_ERROR("Invalid ROM '" << path
                               << "': couldn't read the 128 bytes of the "
@@ -922,8 +933,7 @@ int load_expansion_rom_slot(int slot, const std::string& rom_file) {
   // for a Graduate accessory ROM.
   const bool valid_cpc_rom = !(rom[0] & 0xfc);
   if (!valid_cpc_rom && (rom[0] != 0x47 || !graduate)) {
-    fprintf(stderr,
-            "ERROR: %s is not a CPC ROM file - clearing ROM slot %d.\n",
+    fprintf(stderr, "ERROR: %s is not a CPC ROM file - clearing ROM slot %d.\n",
             rom_file.c_str(), slot);
     CPC.rom_file[slot] = "";
     return 0;
@@ -932,8 +942,7 @@ int load_expansion_rom_slot(int slot, const std::string& rom_file) {
   // 128 body bytes are already in the buffer; header_bytes more were
   // consumed from the file when the AMSDOS header was dropped.
   const long remaining = total_size - 128 - header_bytes;
-  if (remaining > 0 &&
-      fread(rom.get() + 128, remaining, 1, f.get()) != 1) {
+  if (remaining > 0 && fread(rom.get() + 128, remaining, 1, f.get()) != 1) {
     LOG_ERROR("Internal error: couldn't read the expected ROM size from "
               << path);
     return ERR_NOT_A_CPC_ROM;
@@ -1079,8 +1088,9 @@ void bin_load(const std::string& filename, const size_t offset) {
     LOG_ERROR("Empty bin file");
     return;
   }
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
-  if (subcycle::Machine *m = subcycle_bridge_machine()) {
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
+  if (subcycle::Machine* m = subcycle_bridge_machine()) {
     for (size_t i = 0; i < read; ++i) m->ram_write(offset + i, chunk[i]);
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
@@ -1108,8 +1118,7 @@ int printer_start() {
 
 void printer_stop() {
   if (pfoPrinter != nullptr && fclose(pfoPrinter) != 0) {
-    LOG_ERROR("Error closing printer output file '" << CPC.printer_file
-                                                    << "'");
+    LOG_ERROR("Error closing printer output file '" << CPC.printer_file << "'");
   }
   pfoPrinter = nullptr;
 }
@@ -1119,11 +1128,10 @@ namespace {
 uint64_t audio_last_push_tick = 0;  // perf counter of last push
 }  // namespace
 namespace {
-int audio_underrun_count = 0;       // underruns: queue was empty
+int audio_underrun_count = 0;  // underruns: queue was empty
 }  // namespace
 namespace {
-int audio_near_underrun_count =
-    0;                            // near-underruns: queue < half buffer
+int audio_near_underrun_count = 0;  // near-underruns: queue < half buffer
 }  // namespace
 namespace {
 int audio_push_count = 0;  // successful pushes this reporting period
@@ -1165,7 +1173,8 @@ void audio_push_buffer(const byte* data, int len) {
   // Detect underruns (skip if we have no previous push timestamp to
   // compute an interval from — e.g. the very first push after init).
   if (audio_last_push_tick > 0) {
-    double const interval_ms =
+    // [[maybe_unused]]: consumed only by LOG_DEBUG, which release compiles out.
+    [[maybe_unused]] double const interval_ms =
         static_cast<double>(now - audio_last_push_tick) * 1000.0 / perfFreq;
     if (queued == 0) {
       audio_underrun_count++;
@@ -1239,16 +1248,16 @@ int audio_align_samples(int given) {
 }  // namespace
 
 // SDL get-callback for the independent drive/tape SFX stream. Runs on SDL's
-// audio thread: renders the requested amount of interleaved-stereo int16 SFX and
-// hands it to SDL, which mixes it with the AY stream at the device. The
+// audio thread: renders the requested amount of interleaved-stereo int16 SFX
+// and hands it to SDL, which mixes it with the AY stream at the device. The
 // generator self-gates on its enable flags, so this is silence when the effects
 // are off. `additional_amount` is in the stream's source format (stereo S16 =>
 // 4 bytes/frame).
 namespace {
 void SDLCALL drive_sounds_audio_callback(void* /*userdata*/,
-                                                SDL_AudioStream* stream,
-                                                int additional_amount,
-                                                int /*total_amount*/) {
+                                         SDL_AudioStream* stream,
+                                         int additional_amount,
+                                         int /*total_amount*/) {
   if (additional_amount <= 0) return;
   constexpr int kBytesPerFrame = 2 * static_cast<int>(sizeof(int16_t));
   int frames_needed = additional_amount / kBytesPerFrame;
@@ -1337,8 +1346,8 @@ int audio_init() {
       SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(drive_audio_stream));
       LOG_DEBUG("Audio: drive/tape SFX stream ready (independent of AY)");
     } else {
-      LOG_ERROR("Audio: could not open drive/tape SFX stream: "
-                << SDL_GetError());
+      LOG_ERROR(
+          "Audio: could not open drive/tape SFX stream: " << SDL_GetError());
     }
   }
 
@@ -1346,8 +1355,8 @@ int audio_init() {
 }
 
 void audio_shutdown() {
-  // Each stream came from SDL_OpenAudioDeviceStream, so destroying it also closes
-  // its own logical device. Tear down the SFX stream first for tidiness.
+  // Each stream came from SDL_OpenAudioDeviceStream, so destroying it also
+  // closes its own logical device. Tear down the SFX stream first for tidiness.
   if (drive_audio_stream) {
     SDL_DestroyAudioStream(drive_audio_stream);
     drive_audio_stream = nullptr;
@@ -1484,10 +1493,11 @@ void mouse_init() {
 // monitor's usable area — windows drift off-screen from a saved position on a
 // now-disconnected display, or from OS window-management nudges. `min_visible`
 // is how many points must overlap a display in BOTH axes to count as "on
-// screen": pass a titlebar-ish value (~48) at startup so the window is grabbable,
-// or 1 on live moves so we only rescue a truly-lost window and never fight an
-// intentional partial drag. The window is only re-positioned (never resized), so
-// a large window on a small display keeps its size with its top-left made visible.
+// screen": pass a titlebar-ish value (~48) at startup so the window is
+// grabbable, or 1 on live moves so we only rescue a truly-lost window and never
+// fight an intentional partial drag. The window is only re-positioned (never
+// resized), so a large window on a small display keeps its size with its
+// top-left made visible.
 namespace {
 void koncpc_rescue_window_onscreen(SDL_Window* win, int min_visible) {
   if (!win) return;
@@ -1593,7 +1603,6 @@ int video_init() {
   CPC.scr_pos = CPC.scr_base = static_cast<byte*>(
       back_surface->pixels);  // memory address of back buffer
 
-
   // Resize window to match user's chosen scale (init always creates at 2x)
   if (CPC.scr_scale > 0 && mainSDLWindow) {
     static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
@@ -1626,7 +1635,8 @@ void video_shutdown() {
   video_gpu_shutdown();  // safety net — idempotent no-op after plugin close
 }
 
-void video_display() {  // NOLINT(misc-use-internal-linkage): called from video_host (cross-TU)
+void video_display() {  // NOLINT(misc-use-internal-linkage): called from
+                        // video_host (cross-TU)
   vid_plugin->flip(vid_plugin);
 }
 
@@ -1659,8 +1669,9 @@ int controller_free_slot() {
 }
 }  // namespace
 
-// Open a newly-seen device into a free slot.  Prefers the high-level SDL_Gamepad
-// API (auto-mapped buttons/axes); falls back to raw SDL_Joystick otherwise.
+// Open a newly-seen device into a free slot.  Prefers the high-level
+// SDL_Gamepad API (auto-mapped buttons/axes); falls back to raw SDL_Joystick
+// otherwise.
 namespace {
 void controller_open(SDL_JoystickID id) {
   if (id == 0 || controller_slot_of_instance(id) >= 0) return;  // already open
@@ -1908,19 +1919,14 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.mf2 = read_flag("system", "mf2", 0);
   CPC.keyboard = read_clamped("system", "keyboard", 0, 0, MAX_ROM_MODS);
 
-  // Default-when-absent is engine-conditional. The sub-cycle engine (engine=1)
-  // scans the keyboard matrix per-cycle, so a Direct release can drop a key
-  // pressed after the frame-start snapshot but before its row is scanned;
-  // BufferedUntilRead holds each key until the firmware actually reads its row.
-  // Legacy (engine=0) is unaffected and stays on Direct. An explicit value in
-  // the config or a `-O system.keyboard_support_mode=N` override always wins
-  // (getIntValue only returns the default when the key is absent). Peek engine
-  // straight from conf — CPC.engine isn't assigned until later, and this pure
-  // read already reflects any -O override.
+  // The sub-cycle board scans the keyboard matrix per-cycle, so a Direct
+  // release can drop a key pressed after the frame-start snapshot but before
+  // its row is scanned; BufferedUntilRead holds each key until the firmware
+  // actually reads its row. An explicit value in the config or a
+  // `-O system.keyboard_support_mode=N` override always wins (getIntValue
+  // only returns the default when the key is absent).
   const int ksm_default =
-      (conf.getIntValue("system", "engine", 1) & 1)
-          ? static_cast<int>(KeyboardSupportMode::BufferedUntilRead)
-          : static_cast<int>(KeyboardSupportMode::Direct);
+      static_cast<int>(KeyboardSupportMode::BufferedUntilRead);
   int ksm = conf.getIntValue("system", "keyboard_support_mode", ksm_default);
   if (ksm < 0 || ksm >= static_cast<int>(KeyboardSupportMode::Last)) {
     ksm = ksm_default;
@@ -2034,36 +2040,28 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.snd_stereo = read_flag("sound", "stereo", 1);
   // Sub-cycle engine (Milestone B): its audio contract is fixed at stereo
   // s16 44.1 kHz, so force the SDL stream format to match before audio init.
-  // The sub-cycle pin-level board is THE engine (Gate C Wave 1 retired the
-  // legacy core). [system] engine stays parseable for old configs, but any
-  // value other than 1 just logs and runs the board anyway.
-  CPC.engine = conf.getIntValue("system", "engine", 1) & 1;
-  if (CPC.engine != 1) {
-    LOG_ERROR(
-        "[system] engine=0 (legacy core) no longer exists — running the "
-        "sub-cycle engine");
-    CPC.engine = 1;
-  }
+  // The sub-cycle pin-level board is THE engine (Gate C retired the legacy
+  // core; the [system] engine flag is gone with it — an `engine=` line in an
+  // old config is simply never read).
   {  // [system] run_tier: 0=auto (Fast; Wake while debugging — the default,
      // user decision 2026-07-10), 1=fast, 2=wake, 3=soldered, 4=faithful.
     int pol = conf.getIntValue("system", "run_tier", 0);
     if (pol < 0 || pol > 4) pol = 0;
     subcycle_bridge_set_tier_policy(static_cast<BridgeTierPolicy>(pol));
   }
-  if (CPC.engine) {
-    CPC.snd_playback_rate = 2;  // 44100
-    CPC.snd_bits = 1;
-    CPC.snd_stereo = 1;
-  }
+  CPC.snd_playback_rate = 2;  // 44100 — the board's fixed output format
+  CPC.snd_bits = 1;
+  CPC.snd_stereo = 1;
   CPC.snd_volume = read_clamped("sound", "volume", 80, 0, 100);
   CPC.snd_pp_device = read_flag("sound", "pp_device", 0);
   g_amdrum.enabled = read_flag("sound", "amdrum", 0) != 0;
   g_drive_sounds.disk_enabled = read_flag("sound", "disk_sounds", 0) != 0;
   g_drive_sounds.tape_enabled = read_flag("sound", "tape_sounds", 0) != 0;
-  tape_line_out_set_volume(
-      conf.getIntValue("sound", "tape_data_volume", 35) / 100.0f);
-  // Drive Sound Lab tuning (params + volume/pan). Applied to g_drive_sounds.params
-  // here; drive_sounds_init() re-bakes from them later, in audio_init().
+  tape_line_out_set_volume(conf.getIntValue("sound", "tape_data_volume", 35) /
+                           100.0f);
+  // Drive Sound Lab tuning (params + volume/pan). Applied to
+  // g_drive_sounds.params here; drive_sounds_init() re-bakes from them later,
+  // in audio_init().
   drive_sounds_params_from_string(
       conf.getStringValue("sound", "drivesnd_params", ""));
   g_smartwatch.enabled = read_flag("system", "smartwatch", 0) != 0;
@@ -2560,7 +2558,7 @@ void koncpc_menu_action(int action) {
       // meaningful while the pin-level engine runs; env-pinned tiers stay
       // pinned (the OSD says which applies).
       if (!subcycle_bridge_active()) {
-        set_osd_message("Run tier: legacy engine (system.engine=0)");
+        set_osd_message("Run tier: board not running");
         break;
       }
       if (subcycle_bridge_tier_env_pinned()) {
@@ -2678,8 +2676,8 @@ std::string timestamped_dump_path(const std::string& dir, const char* what,
 }  // namespace
 
 void dumpScreen() {
-  const std::string path = timestamped_dump_path(CPC.sdump_dir, "screenshot",
-                                                 "screenshot", ".png");
+  const std::string path =
+      timestamped_dump_path(CPC.sdump_dir, "screenshot", "screenshot", ".png");
   LOG_INFO("Dumping screen to " + path);
   if (!dumpScreenTo(path)) {
     LOG_ERROR("Could not write screenshot file to " + path);
@@ -2856,8 +2854,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
 
 namespace {
 void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event,
-                                         std::atomic<byte> keyboard_matrix[],
-                                         bool pressed) {
+                                  std::atomic<byte> keyboard_matrix[],
+                                  bool pressed) {
   if (CPC.joystick_emulation == JoystickEmulation::Mouse) {
     if (event.button == 1)
       applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1),
@@ -2948,8 +2946,9 @@ void z80_thread_main() {
         if (g_log_fps || g_debug) {
           // Split the frame: machine = subcycle_bridge_frame (Z80+devices+blit+
           // debug_sync, the z80Start..z80End region); total = whole emu-loop
-          // iteration. machine≈total localizes the cost inside the machine frame;
-          // total>>machine points at the wrapper (audio/keyboard/signal/timing).
+          // iteration. machine≈total localizes the cost inside the machine
+          // frame; total>>machine points at the wrapper
+          // (audio/keyboard/signal/timing).
           double const machine_ms =
               frameTimeSamples
                   ? static_cast<double>(z80TimeAccum) * 1000.0 /
@@ -2961,7 +2960,8 @@ void z80_thread_main() {
                         static_cast<double>(perfFreq) / frameTimeSamples
                   : 0.0;
           printf(
-              "[fps] %3u FPS  %3u%% speed  | render-wait %.1f ms/f (%2.0f%%)  | "
+              "[fps] %3u FPS  %3u%% speed  | render-wait %.1f ms/f (%2.0f%%)  "
+              "| "
               "machine %.1f ms/f  total %.1f ms/f\n",
               dwFPS,
               dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS),
@@ -3134,12 +3134,14 @@ void z80_thread_main() {
         }
         if (tape_line_out_active())  // wires -> jack (data + motor carrier)
           tape_line_out_pump(*subcycle_bridge_machine());
-        // The firmware scans the whole keyboard matrix once per frame, so a
-        // completed frame IS a scan — signal autotype accordingly. (The
-        // legacy engine sets this from its PPI port-A read handler, which
-        // never runs here; without this every autotype action waits out the
-        // 10-frame fallback timeout — 20x slower than real typing.)
-        g_keyboard_scanned = true;
+        // Signal autotype only when the firmware ACTUALLY read the keyboard
+        // this frame (machine-side PSG port-A read detection — the engine=1
+        // equivalent of the legacy PPI read handler). Treating every
+        // completed frame as a scan made autotype type blindly during BOOT,
+        // before the firmware listens — eating the leading autocmd
+        // characters (`run"hello` arrived as `un3hello` in the e2e dsk test).
+        g_engine1_scanned_rows = subcycle_bridge_scanned_key_rows();
+        if (g_engine1_scanned_rows != 0) g_keyboard_scanned = true;
         // Wave-1 debug shim: mirror bench lists into the probe, publish the
         // machine's registers into the legacy view struct, and surface a
         // latched probe hit as the legacy breakpoint flow (pause, DevTools,
@@ -3199,7 +3201,11 @@ void z80_thread_main() {
       } else {
         z80.break_point = Z80_BREAKPOINT_NONE;
         z80.trace = 1;
-        // Release an autotype KONCPC_WAITBREAK that was waiting for this break.
+        // Release an autotype KONCPC_WAITBREAK that was waiting for this
+        // break — or latch the break for a WAITBREAK still queued behind the
+        // command that caused it (e.g. `call 0` executing before the queue
+        // reaches its WAITBREAK).
+        g_waitbreak_latch = true;
         g_autotype_queue.resume();
       }
     } else {
@@ -3213,18 +3219,21 @@ void z80_thread_main() {
       dwFrameCountOverall++;
       dwFrameCount++;
 
-      // Engine=1: the sub-cycle PPI/PSG read the keyboard directly and bypass the
-      // legacy PPI I/O handler that calls notify_scanned(). Relay the rows the
-      // firmware actually scanned this frame so the KeyboardManager's
+      // Engine=1: the sub-cycle PPI/PSG read the keyboard directly and bypass
+      // the legacy PPI I/O handler that calls notify_scanned(). Relay the rows
+      // the firmware actually scanned this frame so the KeyboardManager's
       // BufferedUntilRead mode can release a held key once its row was read
       // (matches the legacy per-read notify; no-op on engine=0).
       if (subcycle_bridge_active()) {
-        uint16_t const scanned = subcycle_bridge_scanned_key_rows();
+        // Captured once at frame run (read-and-clear source) — see
+        // g_engine1_scanned_rows; a second take here would always read 0.
+        uint16_t const scanned = g_engine1_scanned_rows;
         for (int krow = 0; krow < 16; ++krow)
           if (scanned & (1u << krow))
-            // Value-aware: confirm only keys actually present in the snapshot the
-            // firmware read this frame (keyboard_matrix_live is stable between
-            // this frame's publish and here), so a key set mid-frame stays held.
+            // Value-aware: confirm only keys actually present in the snapshot
+            // the firmware read this frame (keyboard_matrix_live is stable
+            // between this frame's publish and here), so a key set mid-frame
+            // stays held.
             g_keyboard_manager.notify_scanned(
                 krow,
                 keyboard_matrix_live[krow].load(std::memory_order_relaxed));
@@ -3312,6 +3321,13 @@ void z80_thread_main() {
         if (do_tick) {
           g_autotype_queue.tick(
               [](uint16_t cpc_key, bool pressed) {
+                // A break only satisfies a WAITBREAK when it fired AFTER the
+                // last typed keystroke (i.e. was caused by what autotype just
+                // typed) — clear the latch on every key PRESS so a boot-time
+                // break can't pre-satisfy a later WAITBREAK. Releases don't
+                // clear: `call 0`'s break can land between RETURN's press and
+                // its release tick, and must survive to the WAITBREAK.
+                if (pressed) g_waitbreak_latch = false;
                 CPCScancode const scancode =
                     CPC.InputMapper->CPCscancodeFromCPCkey(
                         static_cast<CPC_KEYS>(cpc_key));
@@ -3346,6 +3362,12 @@ void z80_thread_main() {
                 koncpc_menu_action(static_cast<int>(cmd));
                 // KONCPC_WAITBREAK blocks the queue until the next breakpoint
                 // fires (the Z80 thread then calls g_autotype_queue.resume()).
+                // A break that already fired while the WAITBREAK was still
+                // queued (latched below) satisfies it immediately.
+                if (cmd == KONCPC_WAITBREAK && g_waitbreak_latch) {
+                  g_waitbreak_latch = false;
+                  return false;
+                }
                 return cmd == KONCPC_WAITBREAK;
               });
         }
@@ -3523,7 +3545,7 @@ bool render_one_frame() {
     audio_queue_min_bytes = std::min(queued, audio_queue_min_bytes);
     if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
         audio_push_count > 0) {
-      double const display_ms =
+      [[maybe_unused]] double const display_ms =
           static_cast<double>(displayEnd - displayStart) * 1000.0 / perfFreq;
       LOG_DEBUG("Audio low queue after display: "
                 << queued << "B, display took " << display_ms << "ms");
@@ -3874,7 +3896,8 @@ int koncpc_main(int argc, char** argv) {
             } else {
               CPC.driveA.file = drop_path;
               if (file_load(CPC.driveA) == 0) {
-                ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
+                ui_host().toast(UiToastLevel::Success,
+                                "Drive A: " + drop_fname);
                 imgui_mru_push(CPC.mru_disks, drop_path);
               } else {
                 ui_host().toast(UiToastLevel::Error,
@@ -3980,9 +4003,8 @@ int koncpc_main(int argc, char** argv) {
           LOG_VERBOSE(
               "Keyboard: pressed: "
               << SDL_GetKeyName(event.key.key) << " (" << event.key.key
-              << ") - scancode: "
-              << SDL_GetScancodeName(event.key.scancode) << " ("
-              << event.key.scancode << ") - CPC key: "
+              << ") - scancode: " << SDL_GetScancodeName(event.key.scancode)
+              << " (" << event.key.scancode << ") - CPC key: "
               << CPC.InputMapper->CPCkeyToString(
                      CPC.InputMapper->CPCkeyFromKeysym(
                          event.key.key, static_cast<SDL_Keymod>(event.key.mod)))
@@ -4511,7 +4533,11 @@ int koncpc_main(int argc, char** argv) {
           }
           if (tape_line_out_active())
             tape_line_out_pump(*subcycle_bridge_machine());
-          g_keyboard_scanned = true;  // a completed frame IS a matrix scan
+          // Real-scan gate, same as the threaded branch: autotype must wait
+          // for the firmware's first matrix read (boot!) or it types into
+          // the void — the CI e2e dsk hang.
+          g_engine1_scanned_rows = subcycle_bridge_scanned_key_rows();
+          if (g_engine1_scanned_rows != 0) g_keyboard_scanned = true;
           iExitCondition =
               subcycle_bridge_debug_sync() ? EC_BREAKPOINT : EC_FRAME_COMPLETE;
         } else {
@@ -4563,7 +4589,9 @@ int koncpc_main(int argc, char** argv) {
           z80.trace = 1;  // make sure we'll be here to rearm break point at the
                           // next z80 instruction.
 
-          // Release an autotype KONCPC_WAITBREAK waiting for this break.
+          // Release an autotype KONCPC_WAITBREAK waiting for this break — or
+          // latch it for a WAITBREAK still queued (early `call 0`).
+          g_waitbreak_latch = true;
           g_autotype_queue.resume();
         }
       } else {
@@ -4688,6 +4716,10 @@ int koncpc_main(int argc, char** argv) {
           if (do_tick) {
             g_autotype_queue.tick(
                 [](uint16_t cpc_key, bool pressed) {
+                  // Same latch scoping as the threaded loop: only a break
+                  // after the last key PRESS can satisfy a WAITBREAK
+                  // (releases don't clear — the break can land mid-keystroke).
+                  if (pressed) g_waitbreak_latch = false;
                   CPCScancode const scancode =
                       CPC.InputMapper->CPCscancodeFromCPCkey(
                           static_cast<CPC_KEYS>(cpc_key));
@@ -4723,6 +4755,11 @@ int koncpc_main(int argc, char** argv) {
                 },
                 [](uint16_t cmd) -> bool {
                   koncpc_menu_action(static_cast<int>(cmd));
+                  // Same early-break latch consumption as the threaded loop.
+                  if (cmd == KONCPC_WAITBREAK && g_waitbreak_latch) {
+                    g_waitbreak_latch = false;
+                    return false;
+                  }
                   return cmd == KONCPC_WAITBREAK;
                 });
           }
@@ -4798,7 +4835,7 @@ int koncpc_main(int argc, char** argv) {
               audio_queue_min_bytes = std::min(queued, audio_queue_min_bytes);
               if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
                   audio_push_count > 0) {
-                double const display_ms =
+                [[maybe_unused]] double const display_ms =
                     static_cast<double>(displayEnd - displayStart) * 1000.0 /
                     perfFreq;
                 LOG_DEBUG("Audio low queue after display: "

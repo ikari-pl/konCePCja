@@ -1,13 +1,13 @@
 /* subcycle_bridge.cpp — see subcycle_bridge.h. */
 
 #include "subcycle_bridge.h"
-#include <cstdint>
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -25,6 +25,8 @@
 #include "hw/fdc.h"
 #include "hw/gate_array.h"
 #include "hw/memory.h"
+#include "hw/ppi.h"      // ppi_set_printer_ready: the /BUSY strap
+#include "hw/printer.h"  // printer_drain_events -> the pfoPrinter capture
 #include "hw/psg.h"
 #include "hw_views.h"     // TAPE_LEVEL_HIGH/LOW for the mirrored scope level
 #include "imgui_state.h"  // tape_decoded_buf: the BITS-view scope ring
@@ -37,6 +39,7 @@
 #include "symbiface.h"   // legacy g_symbiface: FIFO fill (SDL/IPC) + config
 #include "tape_line_in.h"  // auto-route the tape data signal to its own stream
 #include "trace.h"  // g_trace: per-instruction debug recorder (engine=1 seam)
+#include "zip_archive.h"  // read_media_file: first media entry of a .zip slot
 
 extern t_drive driveA;  // legacy drive struct: UI reads its altered flag
 extern t_drive driveB;  // ...and both drives' mechanics (drive_status)
@@ -46,9 +49,10 @@ extern t_FDC FDC;       // motor latch for the status surfaces
 
 extern t_CPC CPC;
 extern std::string chROMFile[4];  // per-model system ROM names (kon_cpc_ja.cpp)
-extern std::unique_ptr<byte[]> pbCartridgeImage;  // parsed CPR banks (cartridge.cpp)
-extern t_z80regs z80;             // legacy structs: Wave-1 view buffers
-extern t_CRTC CRTC;               // (all die with the legacy files)
+extern std::unique_ptr<byte[]>
+    pbCartridgeImage;  // parsed CPR banks (cartridge.cpp)
+extern t_z80regs z80;  // legacy structs: Wave-1 view buffers
+extern t_CRTC CRTC;    // (all die with the legacy files)
 extern t_GateArray GateArray;
 extern t_PSG PSG;
 // legacy tape scope level (tape.cpp); engine=1 mirrors it
@@ -73,23 +77,26 @@ struct Bridge {
                                   // one-pass scale+convert fell into
                                   // SDL_Blit_Slow — ~10 ms/frame on E-cores)
   std::vector<uint8_t> rom, amsdos, media;  // machine wiring: must outlive it
-  std::vector<uint8_t> media_b;  // drive B DSK image (unit 1): also must outlive
-  std::vector<uint8_t> mf2rom;              // Multiface II 8K ROM (optional)
-  std::atomic<bool> mf2_stop{false};        // deferred STOP (UI -> Z80 thread)
-  std::vector<uint8_t> ide_img[2];          // Symbiface IDE images (owned)
-  std::string ide_path[2];                  // their files, for write-back
+  std::vector<uint8_t>
+      media_b;                  // drive B DSK image (unit 1): also must outlive
+  std::vector<uint8_t> mf2rom;  // Multiface II 8K ROM (optional)
+  std::atomic<bool> mf2_stop{false};  // deferred STOP (UI -> Z80 thread)
+  std::vector<uint8_t> ide_img[2];    // Symbiface IDE images (owned)
+  std::string ide_path[2];            // their files, for write-back
   bool sf2_ide_loaded = false;
   std::vector<uint8_t> m4rom;  // M4 Board 16K ROM (owned)
   bool m4_loaded = false;
-  std::vector<uint8_t> serialrom;  // SI card serial BIOS 16K ROM (owned)
+  std::vector<uint8_t> serialrom;   // SI card serial BIOS 16K ROM (owned)
   std::vector<uint8_t> tape_media;  // cassette in the deck (owner)
   uint64_t next_deadline = 0;       // 50 Hz pacing (performance-counter ticks)
   bool active = false;
 
   // Tape host-side mirror (engine=1): each frame debug_sync mirrors the deck's
-  // live wires back to the legacy tape UI/SFX, which the sub-cycle path bypasses.
+  // live wires back to the legacy tape UI/SFX, which the sub-cycle path
+  // bypasses.
   bool prev_tape_running = false;  // motor&&play edge → drive_sounds_tape
-  bool tape_lineout_auto = false;  // WE auto-armed line-out (don't fight IPC arm)
+  bool tape_lineout_auto =
+      false;  // WE auto-armed line-out (don't fight IPC arm)
   // Deferred tape block-seek (UI thread requests, Z80 thread applies at the
   // frame boundary): the target block ordinal, or ~0 for "none".
   std::atomic<uint32_t> tape_seek_req{~uint32_t{0}};
@@ -102,12 +109,12 @@ struct Bridge {
   bool debug_engaged = false;
 
   // Async tier benchmark (Z80-thread-owned except the atomics).
-  std::atomic<int> bench_want{0};       // UI arms; Z80 thread consumes
+  std::atomic<int> bench_want{0};  // UI arms; Z80 thread consumes
   std::atomic<int> bench_fps[4] = {{-1}, {-1}, {-1}, {-1}};  // fast..faithful
-  int bench_tier = -1;                  // -1 idle; else tier being sampled
+  int bench_tier = -1;  // -1 idle; else tier being sampled
   int bench_frames = 0;
   double bench_secs = 0.0;
-  std::vector<uint8_t> bench_snap;      // disposable-run state snapshot
+  std::vector<uint8_t> bench_snap;  // disposable-run state snapshot
 
   // Hot-swap handoff (UI thread → Z80 thread): the FDC's media is live wiring
   // and must not change mid-tick, so swaps land here and the emulation thread
@@ -147,6 +154,42 @@ bool is_flux_ext(const std::string& ext) {
          ext == ".a2r";
 }
 
+// Read a disk-media slot file's bytes. A .zip is read as its FIRST media
+// entry (the same classification the legacy slot loader applies) and `ext`
+// is rewritten to the inner entry's extension so the flux/DSK dispatch sees
+// the real container — the raw archive bytes would just fail insert_disk.
+std::vector<uint8_t> read_media_file(const std::string& path,
+                                     std::string& ext) {
+  ext = lower_ext(path);
+  if (ext != ".zip") return read_file(path);
+
+  zip::t_zip_info zi;
+  zi.filename = path;
+  zi.extensions = ".dsk.ipf.raw.scp.hfe.a2r";
+  if (zip::dir(&zi) != 0 || zi.filesOffsets.empty()) {
+    LOG_ERROR("subcycle engine: no disk media inside " << path);
+    return {};
+  }
+  zi.dwOffset =
+      zi.filesOffsets[0].second;  // Use the first media entry found by dir().
+  FILE* f = nullptr;
+  if (zip::extract(zi, &f) != 0 || f == nullptr) {
+    LOG_ERROR("subcycle engine: cannot extract " << zi.filesOffsets[0].first
+                                                 << " from " << path);
+    return {};
+  }
+  std::vector<uint8_t> out;
+  uint8_t buf[65536];
+  size_t n = 0;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+    out.insert(out.end(), buf, buf + n);
+  fclose(f);
+  ext = lower_ext(zi.filesOffsets[0].first);
+  LOG_INFO("subcycle engine: " << path << " -> " << zi.filesOffsets[0].first
+                               << " (" << out.size() << " bytes)");
+  return out;
+}
+
 // Bridges the sub-cycle FDC's mechanical event ring to the host's procedural
 // drive-sound generator (drive_sounds.cpp): the machine drains FDC events and
 // this forwards motor/seek to drive_sounds. Events-only — the cosmetic audio
@@ -159,10 +202,17 @@ struct DriveSoundOverlay : subcycle::AudioOverlay {
   void events(const FdcEvent* ev, int n) override {
     for (int i = 0; i < n; ++i) {
       switch (ev[i].type) {
-        case FDC_EV_MOTOR_ON: drive_sounds_motor(true); break;
-        case FDC_EV_MOTOR_OFF: drive_sounds_motor(false); break;
-        case FDC_EV_STEP: drive_sounds_seek(); break;
-        default: break;  // MOTOR_READY / INDEX: no audible effect
+        case FDC_EV_MOTOR_ON:
+          drive_sounds_motor(true);
+          break;
+        case FDC_EV_MOTOR_OFF:
+          drive_sounds_motor(false);
+          break;
+        case FDC_EV_STEP:
+          drive_sounds_seek();
+          break;
+        default:
+          break;  // MOTOR_READY / INDEX: no audible effect
       }
     }
   }
@@ -195,10 +245,10 @@ bool subcycle_bridge_start() {
   const int model = static_cast<int>(CPC.model) & 3;
   const std::string rom_file = CPC.rom_path + "/" + chROMFile[model];
   if (model == 3 && pbCartridgeImage != nullptr) {
-    // Plus: boot from the PARSED cartridge (the legacy slot loader ran cpr_load,
-    // extracting the RIFF/AMS! container into pbCartridgeImage — bank 0 = OS /
-    // lower ROM, bank 1 = BASIC / upper ROM). Feeding the raw .cpr file to
-    // build() would map the container header as executable code.
+    // Plus: boot from the PARSED cartridge (the legacy slot loader ran
+    // cpr_load, extracting the RIFF/AMS! container into pbCartridgeImage — bank
+    // 0 = OS / lower ROM, bank 1 = BASIC / upper ROM). Feeding the raw .cpr
+    // file to build() would map the container header as executable code.
     b.rom.assign(pbCartridgeImage.get(), pbCartridgeImage.get() + 0x8000);
   } else {
     b.rom = read_file(rom_file);  // models 0-2: a plain 32K OS+BASIC ROM
@@ -240,11 +290,12 @@ bool subcycle_bridge_start() {
     b.m4_loaded = true;
   }
   {  // SI card serial BIOS ROM (rs232-device.md): the plotter/serial chain's
-     // firmware — the serial RSX + AUX routing. engine=1 must page it in itself;
-     // the legacy SIRomManager only fills the engine=0 rom_map. Attach into the
-     // SI card's slot (DEFAULT_SLOT=2) so the firmware's boot ROM scan finds and
-     // initialises it. Gated like the Device pair (enabled + Plotter backend) so
-     // ROM and DART stay consistent; only Faithful-tier, never in the bench.
+     // firmware — the serial RSX + AUX routing. engine=1 must page it in
+     // itself; the legacy SIRomManager only fills the engine=0 rom_map. Attach
+     // into the SI card's slot (DEFAULT_SLOT=2) so the firmware's boot ROM scan
+     // finds and initialises it. Gated like the Device pair (enabled + Plotter
+     // backend) so ROM and DART stay consistent; only Faithful-tier, never in
+     // the bench.
     const SerialConfig sc = g_serial_interface.get_config();
     if (sc.enabled && sc.backend_type == SerialBackendType::Plotter) {
       b.serialrom = read_file(CPC.rom_path + "/serial.rom");
@@ -261,9 +312,8 @@ bool subcycle_bridge_start() {
       b.machine.silicon_disc_load(g_silicon_disc.data, SILICON_DISC_SIZE);
   }
   if (g_symbiface.enabled && !b.sf2_ide_loaded) {  // symbiface-device.md §2
-    const char* const keys[2] = {
-        g_symbiface.ide_master.image_path.c_str(),
-        g_symbiface.ide_slave.image_path.c_str()};
+    const char* const keys[2] = {g_symbiface.ide_master.image_path.c_str(),
+                                 g_symbiface.ide_slave.image_path.c_str()};
     for (int d = 0; d < 2; ++d) {
       if (keys[d][0] == '\0') continue;
       b.ide_img[d] = read_file(keys[d]);
@@ -295,13 +345,13 @@ bool subcycle_bridge_start() {
     // legacy sector path. Flux is drive-A-only (fdc.cpp sel_media). For a
     // CAPS-encoder IPF, to_scp mirrors the legacy driveA the slot loader
     // already ipf_load-ed (loadSlots ran before subcycle_bridge_start).
-    const std::string ext = lower_ext(CPC.driveA.file);
+    std::string ext;  // the INNER extension when the slot file is a .zip
+    std::vector<uint8_t> raw = read_media_file(CPC.driveA.file, ext);
     const bool flux = is_flux_ext(ext);
     if (flux) {
-      const std::vector<uint8_t> raw = read_file(CPC.driveA.file);
       b.media = flux::to_scp(raw.data(), raw.size(), ext);
     } else {
-      b.media = read_file(CPC.driveA.file);
+      b.media = std::move(raw);
     }
     const bool ok =
         !b.media.empty() &&
@@ -316,12 +366,13 @@ bool subcycle_bridge_start() {
   }
 
   // Drive B (unit 1): DSK only — the CPC's second drive has no flux path, and
-  // the FDC's flux capture is drive-A-only (fdc.cpp sel_media). Loaded at engine
-  // build when the app already routed a second image to CPC.driveB (two-disk
-  // CLI, config slot_b). Runtime hot-swap into B is a separate follow-up
-  // (PendingMedia carries no unit yet — beads-xsdc).
+  // the FDC's flux capture is drive-A-only (fdc.cpp sel_media). Loaded at
+  // engine build when the app already routed a second image to CPC.driveB
+  // (two-disk CLI, config slot_b). Runtime hot-swap into B is a separate
+  // follow-up (PendingMedia carries no unit yet — beads-xsdc).
   if (!CPC.driveB.file.empty() && !ends_with(CPC.driveB.file, ".scp")) {
-    b.media_b = read_file(CPC.driveB.file);
+    std::string ext_b;
+    b.media_b = read_media_file(CPC.driveB.file, ext_b);
     if (!b.media_b.empty() &&
         b.machine.insert_disk(b.media_b.data(), b.media_b.size(), 1)) {
       LOG_INFO("subcycle engine: drive B <- " << CPC.driveB.file);
@@ -411,13 +462,14 @@ void subcycle_bridge_disk_leds(bool& drive_a, bool& drive_b) {
 // ── engine=1 instruction trace ───────────────────────────────────────────────
 // The subcycle Machine is standalone (it cannot see g_trace, which pulls in the
 // legacy z80_view.h accessors). The bridge is the one layer that knows both, so
-// the record adapter lives here: Machine fires the hook per retired instruction,
-// we translate Z80Regs -> the TraceRecorder's flat register signature. The
-// opcode bytes record() reads come back through z80_read_mem, which itself shims
-// to the machine's peek_mem under engine=1 — so the disassembly is CPU-correct.
-// (The telnet TXT_OUTPUT / BDOS console mirrors do NOT ride this hook: they are
-// re-registered as machine fetch-edge taps in subcycle_bridge_start — servicing
-// them here too double-prints every mirrored character.)
+// the record adapter lives here: Machine fires the hook per retired
+// instruction, we translate Z80Regs -> the TraceRecorder's flat register
+// signature. The opcode bytes record() reads come back through z80_read_mem,
+// which itself shims to the machine's peek_mem under engine=1 — so the
+// disassembly is CPU-correct. (The telnet TXT_OUTPUT / BDOS console mirrors do
+// NOT ride this hook: they are re-registered as machine fetch-edge taps in
+// subcycle_bridge_start — servicing them here too double-prints every mirrored
+// character.)
 namespace {
 void bridge_trace_instr_hook(void* /*ctx*/, const Z80Regs* regs) {
   g_trace.record(regs->pc, static_cast<uint8_t>(regs->af >> 8),
@@ -561,6 +613,20 @@ void sync_serial_backend(Bridge& b) {
 // existing checkboxes drive the sub-cycle Devices unchanged.
 void sync_peripheral_flags(Bridge& b) {
   b.machine.set_digiblaster(CPC.snd_pp_device != 0);  // printer-device.md §3
+  // Printer /BUSY strap (PPI Port B bit 6): READY while a virtual printer is
+  // attached ([printer] config), busy like an unconnected Centronics port
+  // otherwise. Without this the firmware's print-wait loop (MC WAIT PRINTER)
+  // spins forever — the e2e dsk hang.
+  ppi_set_printer_ready(b.machine.ppi(), CPC.printer ? 1 : 0);
+  // Printer capture parity: drain the strobe-clocked bytes into the legacy
+  // capture file (pfoPrinter, opened by the host when [printer] is on). The
+  // Digiblaster DAC is independent — the machine mixes the latch internally.
+  if (pfoPrinter != nullptr) {
+    PrinterEvent ev[64];
+    int n = 0;
+    while ((n = printer_drain_events(b.machine.printer(), ev, 64)) > 0)
+      for (int i = 0; i < n; ++i) fputc(ev[i].byte, pfoPrinter);
+  }
   b.machine.set_amdrum(g_amdrum.enabled);
   b.machine.set_mf2(CPC.mf2 != 0 && !b.mf2rom.empty());
   b.machine.set_amx_mouse(g_amx_mouse.enabled);
@@ -684,13 +750,24 @@ void subcycle_bridge_sync_probe() {
   // before the resumed frame runs, or a just-cleared breakpoint re-fires
   // off the stale mirror within milliseconds and re-pauses — the resume
   // livelock of beads-4gf9.
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   Bridge& b = g_bridge;
   if (!b.active) return;
   const Device* pr = b.machine.probe();
   probe_clear_exec(pr);
   for (const auto& bp : z80_list_breakpoints_ref())
     probe_add_exec(pr, static_cast<uint16_t>(bp.address));
+  // Legacy old-flavour single breakpoint (z80.break_point — the main loop
+  // keeps it re-armed at 0): mirror it into the probe ONLY while an autotype
+  // KONCPC_WAITBREAK is in flight (queued or blocking). That covers a
+  // `call 0` executing before the queue reaches its WAITBREAK (the hit is
+  // then latched for it), while a plain run never pays the debug-engaged
+  // tier drop for the always-rearmed break-at-0.
+  const bool waitbreak_armed =
+      autotype_waitbreak_in_flight() && z80.break_point != Z80_BREAKPOINT_NONE;
+  if (waitbreak_armed)
+    probe_add_exec(pr, static_cast<uint16_t>(z80.break_point));
   probe_clear_watch(pr);
   for (const auto& wp : z80_list_watchpoints_ref()) {
     const uint16_t len = wp.length ? wp.length : 1;
@@ -701,7 +778,7 @@ void subcycle_bridge_sync_probe() {
   for (const auto& io : z80_list_io_breakpoints_ref())
     probe_add_io(pr, io.port, io.mask, (io.dir & IO_IN) ? 1 : 0,
                  (io.dir & IO_OUT) ? 1 : 0);
-  b.debug_engaged = !z80_list_breakpoints_ref().empty() ||
+  b.debug_engaged = waitbreak_armed || !z80_list_breakpoints_ref().empty() ||
                     !z80_list_watchpoints_ref().empty() ||
                     !z80_list_io_breakpoints_ref().empty();
 }
@@ -734,22 +811,25 @@ int subcycle_bridge_debug_sync() {
   b.machine.tape_play_button(CPC.tape_play_button != 0);
 
   // ── Tape: mirror the sub-cycle deck's live wires back to the legacy host
-  // state the tape UI/SFX read. Engine=1 bypasses the z80_OUT_handler + tape.cpp
-  // chain that used to drive these, so the status-bar scope (bTapeLevel, gated on
-  // CPC.tape_motor), the procedural hiss (drive_sounds_tape), and the audible
-  // data signal all went dark. This is the tape counterpart to DriveSoundOverlay
-  // (which does the same for the FDC). Nothing here touches the AY — the SFX and
-  // the data monitor each render on their own SDL stream.
+  // state the tape UI/SFX read. Engine=1 bypasses the z80_OUT_handler +
+  // tape.cpp chain that used to drive these, so the status-bar scope
+  // (bTapeLevel, gated on CPC.tape_motor), the procedural hiss
+  // (drive_sounds_tape), and the audible data signal all went dark. This is the
+  // tape counterpart to DriveSoundOverlay (which does the same for the FDC).
+  // Nothing here touches the AY — the SFX and the data monitor each render on
+  // their own SDL stream.
   {
     const bool play = CPC.tape_play_button != 0;
     const bool motor = b.machine.tape_motor();
-    CPC.tape_motor = motor ? 0x10 : 0;  // matches legacy (val & 0x10); un-freezes
-                                        // the scope's sample gate (kon_cpc_ja.cpp)
+    CPC.tape_motor =
+        motor ? 0x10 : 0;  // matches legacy (val & 0x10); un-freezes
+                           // the scope's sample gate (kon_cpc_ja.cpp)
     bTapeLevel = b.machine.tape_read_level() ? TAPE_LEVEL_HIGH : TAPE_LEVEL_LOW;
 
-    // Mechanics (procedural hiss): edge-fire on the same motor-AND-play condition
-    // the legacy io_fire_tape_motor_hooks used. drive_sounds_tape self-gates on
-    // the [sound] tape_sounds flag, and renders on the independent SFX stream.
+    // Mechanics (procedural hiss): edge-fire on the same motor-AND-play
+    // condition the legacy io_fire_tape_motor_hooks used. drive_sounds_tape
+    // self-gates on the [sound] tape_sounds flag, and renders on the
+    // independent SFX stream.
     const bool running = motor && play;
     if (running != b.prev_tape_running) {
       drive_sounds_tape(running);
@@ -758,10 +838,11 @@ int subcycle_bridge_debug_sync() {
 
     // Data signal (audible screech): auto-route the cassette RDATA wire to its
     // own playback stream (tape_line_out — never the AY) while the deck plays.
-    // Armed once on Play, disarmed on Stop; we only ever touch what WE armed, so
-    // a manual IPC `tape` arm is left untouched.
+    // Armed once on Play, disarmed on Stop; we only ever touch what WE armed,
+    // so a manual IPC `tape` arm is left untouched.
     if (play && !tape_line_out_active()) {
-      if (tape_line_out_arm(b.machine, /*data_channel=*/0, /*source_rdata=*/true))
+      if (tape_line_out_arm(b.machine, /*data_channel=*/0,
+                            /*source_rdata=*/true))
         b.tape_lineout_auto = true;
     } else if (!play && b.tape_lineout_auto) {
       tape_line_out_disarm(b.machine);
@@ -769,11 +850,11 @@ int subcycle_bridge_debug_sync() {
     }
   }
 
-  // Deferred tape block-seek from the UI (Prev/Next): apply on this thread at the
-  // frame boundary so the live deck is never repositioned mid-tick.
+  // Deferred tape block-seek from the UI (Prev/Next): apply on this thread at
+  // the frame boundary so the live deck is never repositioned mid-tick.
   {
-    const uint32_t seek = b.tape_seek_req.exchange(~uint32_t{0},
-                                                   std::memory_order_relaxed);
+    const uint32_t seek =
+        b.tape_seek_req.exchange(~uint32_t{0}, std::memory_order_relaxed);
     if (seek != ~uint32_t{0}) b.machine.tape_seek(seek);
   }
 
@@ -803,9 +884,9 @@ int subcycle_bridge_debug_sync() {
     tape_peek(b.machine.tape(), &tr);
     if (tr.attached) {
       const int nblk = static_cast<int>(imgui_state.tape_block_offsets.size());
-      imgui_state.tape_current_block =
-          static_cast<int>(tr.block) >= nblk ? nblk - 1
-                                             : static_cast<int>(tr.block);
+      imgui_state.tape_current_block = static_cast<int>(tr.block) >= nblk
+                                           ? nblk - 1
+                                           : static_cast<int>(tr.block);
     }
   }
 
@@ -865,8 +946,27 @@ int subcycle_bridge_debug_sync() {
 
   ProbeHit hit{};
   if (b.machine.probe_hit(&hit)) {
-    if (hit.kind == PROBE_HIT_EXEC &&
-        !z80_probe_exec_should_break(hit.addr)) {
+    if (hit.kind == PROBE_HIT_EXEC && hit.addr == z80.break_point) {
+      // The old-flavour single breakpoint (z80.break_point, mirrored into
+      // the probe only while a KONCPC_WAITBREAK is in flight): report
+      // EC_BREAKPOINT WITHOUT breakpoint_reached, so the main loop takes its
+      // legacy else-branch — clear break_point, keep running, release/latch
+      // the WAITBREAK. Checked BEFORE should_break: that predicate returns
+      // true on an EMPTY list (the step path arms the probe without a list),
+      // which would misroute this hit into the pause path. A listed
+      // breakpoint at the same address still wins.
+      bool listed = false;
+      for (const auto& bp : z80_list_breakpoints_ref())
+        if (bp.address == hit.addr) {
+          listed = true;
+          break;
+        }
+      if (!listed) {
+        b.machine.probe_resume();
+        return 1;
+      }
+    }
+    if (hit.kind == PROBE_HIT_EXEC && !z80_probe_exec_should_break(hit.addr)) {
       b.machine.probe_resume();
       return 0;
     }
@@ -949,7 +1049,8 @@ void subcycle_bridge_stop() {
   b.active = false;
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
                                   uint8_t unit) {
   Bridge& b = g_bridge;
@@ -961,7 +1062,8 @@ void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
                     std::memory_order_release);
 }
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void subcycle_bridge_insert_tape(std::vector<uint8_t> bytes) {
   Bridge& b = g_bridge;
   if (!b.active || bytes.empty()) return;
@@ -971,7 +1073,8 @@ void subcycle_bridge_insert_tape(std::vector<uint8_t> bytes) {
 }
 
 void subcycle_bridge_refresh_asic_view() {
-  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
   Bridge& b = g_bridge;
   if (!b.active) return;
   const Device* ad = b.machine.asic();
@@ -1056,13 +1159,14 @@ void flush_dirty_media_unit(Bridge& b, uint8_t unit) {
   if (buf.empty() || path.empty()) return;
   // A dirty writable-flux disc (drive A) must be re-encoded to a flux container
   // (scp_from_disk over the dirty map) before write-back — the format-picker UI
-  // is Stage 4. `buf` here is the pristine SCP, so writing it back would clobber
-  // the file with the *unmodified* capture; skip until export lands.
+  // is Stage 4. `buf` here is the pristine SCP, so writing it back would
+  // clobber the file with the *unmodified* capture; skip until export lands.
   if (unit == 0) {
     size_t scp_len = 0;
     if (fdc_media_flux_scp(b.machine.fdc(), scp_len) != nullptr) {
-      LOG_INFO("subcycle engine: drive A flux write-back deferred to export "
-               "(Stage 4) — writes are live in the overlay");
+      LOG_INFO(
+          "subcycle engine: drive A flux write-back deferred to export "
+          "(Stage 4) — writes are live in the overlay");
       return;
     }
   }
@@ -1145,7 +1249,8 @@ void apply_pending_media(Bridge& b) {
 
 }  // namespace
 
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other translation units/tests; internal linkage would break the link
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
                                                   SDL_Surface* dst,
                                                   bool limit) {
@@ -1183,9 +1288,8 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
     if (b.bench_frames >= 100 ||
         b.bench_secs >= 1.0) {  // tier sampled: publish, restore, advance
       b.bench_fps[b.bench_tier].store(
-          b.bench_secs > 0.0
-              ? static_cast<int>(b.bench_frames / b.bench_secs)
-              : -1,
+          b.bench_secs > 0.0 ? static_cast<int>(b.bench_frames / b.bench_secs)
+                             : -1,
           std::memory_order_relaxed);
       b.machine.load_devices(b.bench_snap);
       b.bench_frames = 0;
@@ -1197,7 +1301,7 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
       }
     } else {
       b.machine.load_devices(b.bench_snap);  // partial slice: restore, resume
-    }                                        // this tier next frame
+    }  // this tier next frame
   }
 
   apply_pending_media(b);  // hot-swaps land between frames, never mid-tick

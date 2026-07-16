@@ -22,19 +22,20 @@ constexpr int kLockLen = 16;
 
 struct asic_state {
   uint8_t plugged = 0;
-  uint8_t locked = 1;       // the register page is hidden at cold boot
-  uint8_t page_on = 0;      // RMR2 has mapped the register page into &4000-&7FFF
-                            // (membank field == 3). The unlock knock only ENABLES
-                            // RMR2; the page is not overlaid until an RMR2 write
-                            // pages it in — and games page it back OUT (mapping a
-                            // low-ROM bank / RAM there) to bulk-copy through &6xxx
-                            // without scribbling the ASIC registers.
-  int lockpos = 0;          // position in the knock FSM
+  uint8_t locked = 1;   // the register page is hidden at cold boot
+  uint8_t page_on = 0;  // RMR2 has mapped the register page into &4000-&7FFF
+                        // (membank field == 3). The unlock knock only ENABLES
+                        // RMR2; the page is not overlaid until an RMR2 write
+                        // pages it in — and games page it back OUT (mapping a
+                        // low-ROM bank / RAM there) to bulk-copy through &6xxx
+                        // without scribbling the ASIC registers.
+  int lockpos = 0;      // position in the knock FSM
   bool knock_prev = false;  // previous cycle was a CRTC-select write (edge)
   bool pgwr_prev = false;   // previous cycle was a register-page write (edge)
-  uint8_t classic_pen = 0;  // pen latched by the classic Gate Array palette port
-                            // — on a Plus those ink writes land in the ASIC's
-                            // own palette RAM (the ASIC *is* the Gate Array).
+  uint8_t classic_pen =
+      0;  // pen latched by the classic Gate Array palette port
+          // — on a Plus those ink writes land in the ASIC's
+          // own palette RAM (the ASIC *is* the Gate Array).
 
   uint8_t page[0x4000] = {0};  // the register page, raw read-back mirror
 
@@ -81,9 +82,10 @@ struct asic_state {
   // Interrupts (increment D): the programmable raster interrupt counts frame
   // scanlines and fires at pri_line; the DMA INT flags and the IM2 vector round
   // it out. cpu.irq is wired-OR; the ASIC only ever asserts.
-  uint16_t pri_prev_line = 0xFFFF;  // last CRTC frame_line seen — edge-detect so
-                                    // the PRI fires once as the line is reached
-  bool pri_pending = false;   // a raster/DMA interrupt is awaiting acknowledge
+  uint16_t pri_prev_line =
+      0xFFFF;                // last CRTC frame_line seen — edge-detect so
+                             // the PRI fires once as the line is reached
+  bool pri_pending = false;  // a raster/DMA interrupt is awaiting acknowledge
   // Write generation of the per-line video snapshot's inputs (sprite attrs,
   // palette incl. classic-ink snoops, scroll/config) — F8 R17. The video
   // device skips its per-line re-snapshot while this is unchanged (a re-read
@@ -197,12 +199,12 @@ void decode_palette(asic_state* a, uint16_t addr, uint8_t val) {
 // to 4-bit 0 / 8 / 15 (video re-expands ×17). Mirrors video.cpp kPalette — the
 // shared gate-array colour set.
 constexpr uint8_t kClassic4[32][3] = {
-    {8, 8, 8},   {8, 8, 8},   {0, 15, 8},  {15, 15, 8}, {0, 0, 8},   {15, 0, 8},
-    {0, 8, 8},   {15, 8, 8},  {15, 0, 8},  {15, 15, 8}, {15, 15, 0}, {15, 15, 15},
-    {15, 0, 0},  {15, 0, 15}, {15, 8, 0},  {15, 8, 15}, {0, 0, 8},   {0, 15, 8},
-    {0, 15, 0},  {0, 15, 15}, {0, 0, 0},   {0, 0, 15},  {0, 8, 0},   {0, 8, 15},
-    {8, 0, 8},   {8, 15, 8},  {8, 15, 0},  {8, 15, 15}, {8, 0, 0},   {8, 0, 15},
-    {8, 8, 0},   {8, 8, 15},
+    {8, 8, 8},  {8, 8, 8},   {0, 15, 8}, {15, 15, 8}, {0, 0, 8},   {15, 0, 8},
+    {0, 8, 8},  {15, 8, 8},  {15, 0, 8}, {15, 15, 8}, {15, 15, 0}, {15, 15, 15},
+    {15, 0, 0}, {15, 0, 15}, {15, 8, 0}, {15, 8, 15}, {0, 0, 8},   {0, 15, 8},
+    {0, 15, 0}, {0, 15, 15}, {0, 0, 0},  {0, 0, 15},  {0, 8, 0},   {0, 8, 15},
+    {8, 0, 8},  {8, 15, 8},  {8, 15, 0}, {8, 15, 15}, {8, 0, 0},   {8, 0, 15},
+    {8, 8, 0},  {8, 8, 15},
 };
 
 // Snoop the classic Gate Array palette port (I/O A15=0/A14=1). On a Plus the
@@ -487,8 +489,9 @@ void asic_irq(asic_state* a, const Bus* in, Bus* out) {
     a->pri_pending = true;  // fire once as the target line is reached
   a->pri_prev_line = line;
 
-  // Reflect the raster-int flag in DCSR bit 7 (&6C0F) so a CPU read sees it live,
-  // even with no DMA activity to trigger dma_writeback (cpcwiki: bit 7 = RasterInt).
+  // Reflect the raster-int flag in DCSR bit 7 (&6C0F) so a CPU read sees it
+  // live, even with no DMA activity to trigger dma_writeback (cpcwiki: bit 7 =
+  // RasterInt).
   a->page[0x2C0F] = static_cast<uint8_t>((a->page[0x2C0F] & 0x7F) |
                                          (a->pri_pending ? 0x80 : 0));
 
@@ -498,11 +501,12 @@ void asic_irq(asic_state* a, const Bus* in, Bus* out) {
 
   if (in->cpu.m1 && in->cpu.iorq) {  // interrupt acknowledge
     if (a->pri_pending || dma_int) {
-      // IM2 vector = (programmed vector & 0xF8) | a 3-bit source code, chosen by
-      // priority (cpcwiki ASIC): raster (6, highest) > DMA ch2 (0) > ch1 (2) >
-      // ch0 (4, lowest). int_vector already holds the & 0xF8 part. Real hardware
-      // has the "Plus Vectored Interrupt Bug" (a raster ack occasionally drives
-      // 4 instead of 6); we implement the intended behaviour, not the bug.
+      // IM2 vector = (programmed vector & 0xF8) | a 3-bit source code, chosen
+      // by priority (cpcwiki ASIC): raster (6, highest) > DMA ch2 (0) > ch1 (2)
+      // > ch0 (4, lowest). int_vector already holds the & 0xF8 part. Real
+      // hardware has the "Plus Vectored Interrupt Bug" (a raster ack
+      // occasionally drives 4 instead of 6); we implement the intended
+      // behaviour, not the bug.
       uint8_t src = 0;
       if (a->dma_int[0]) src = 4;
       if (a->dma_int[1]) src = 2;
@@ -539,8 +543,9 @@ void asic_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   // Its membank field (bits 4-3) selects what sits at &4000-&7FFF: value 3 maps
   // the ASIC register page in (page_on), any other value maps a low-ROM bank /
   // RAM there instead (page off). The knock alone must NOT overlay the page —
-  // the CPU still has to page it in — else a game's bulk copy through &6xxx while
-  // the page is OFF would scribble the ASIC registers (enabling DMA, derailing).
+  // the CPU still has to page it in — else a game's bulk copy through &6xxx
+  // while the page is OFF would scribble the ASIC registers (enabling DMA,
+  // derailing).
   if (!a->locked && in->cpu.iorq && in->cpu.wr &&
       (in->cpu.addr & 0xC000) == 0x4000 && (in->cpu.data >> 6) == 2 &&
       (in->cpu.data & 0x20))
@@ -624,8 +629,9 @@ extern "C" {
 size_t asic_state_size(void) { return sizeof(asic_state); }
 
 Device asic_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  asic_state *a = new (storage) asic_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  asic_state* a = new (storage) asic_state();
   return Device{
       a,         "asic",   asic_tick, asic_dev_reset, asic_dev_state_size,
       asic_save, asic_load};

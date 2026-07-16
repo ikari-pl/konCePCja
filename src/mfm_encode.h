@@ -76,6 +76,7 @@ t_mfm_rev mfm_encode_track(const MfmTrackDesc& desc);
 // Build per-cylinder single-revolution MFM captures from a whole standard or
 // EXTENDED DSK image (side 0 only — matching the flux path's side-0 geometry).
 // Absent tracks become empty t_mfm_track slots. Empty on a non-DSK buffer.
-std::vector<t_mfm_track> mfm_tracks_from_dsk(const uint8_t* dsk, std::size_t len);
+std::vector<t_mfm_track> mfm_tracks_from_dsk(const uint8_t* dsk,
+                                             std::size_t len);
 
 #endif  // KONCPC_MFM_ENCODE_H

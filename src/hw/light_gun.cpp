@@ -45,7 +45,8 @@ void light_gun_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   // aim tolerance window (±2 line / ±2 column — spec §3).
   if (g->pressed) {
     const int dl = static_cast<int>(line) - static_cast<int>(g->aim_line);
-    const int dc = static_cast<int>(g->active_col) - static_cast<int>(g->aim_col);
+    const int dc =
+        static_cast<int>(g->active_col) - static_cast<int>(g->aim_col);
     if (std::abs(dl) < 2 && std::abs(dc) < 2) out->pen.strobe = true;
   }
 }
@@ -79,8 +80,9 @@ extern "C" {
 size_t light_gun_state_size(void) { return sizeof(light_gun_state); }
 
 Device light_gun_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  light_gun_state *g = new (storage) light_gun_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  light_gun_state* g = new (storage) light_gun_state();
   return Device{g,
                 "light-gun",
                 light_gun_tick,

@@ -37,8 +37,7 @@ bool is_directory(const std::string& filepath) {
 std::vector<std::string> listDirectory(const std::string& directory) {
   std::vector<std::string> names;
   std::error_code ec;
-  for (const auto& entry :
-       std::filesystem::directory_iterator(directory, ec)) {
+  for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
     std::string name = entry.path().filename().string();
     if (name != "." && name != "..") names.push_back(std::move(name));
   }

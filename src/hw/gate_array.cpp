@@ -45,13 +45,14 @@ void ga_write(ga_state* g, uint8_t data) {
              // rearm
       // 6128+ RMR2: on a Plus with the register page unlocked, a function-2
       // write with bit5 (0x20) set is the low-ROM bank-remap register, NOT a
-      // screen-mode/ROM/interrupt write. The memory Device acts on it (remapping
-      // the low-ROM cartridge bank); the Gate Array leaves mode, rom_config and
-      // the raster counter untouched. Mirrors the legacy z80_OUT_handler case 2
+      // screen-mode/ROM/interrupt write. The memory Device acts on it
+      // (remapping the low-ROM cartridge bank); the Gate Array leaves mode,
+      // rom_config and the raster counter untouched. Mirrors the legacy
+      // z80_OUT_handler case 2
       // (`if (!asic.locked && (val & 0x20)) …RMR2… else …MRER…`) and the memory
-      // Device's own RMR2 gate. Without this, Plus raster handlers that page ROM
-      // via RMR2 (data 0xB8/0xB0) would clobber the current mode and reset the
-      // interrupt cadence, breaking the per-band mode/split pipeline.
+      // Device's own RMR2 gate. Without this, Plus raster handlers that page
+      // ROM via RMR2 (data 0xB8/0xB0) would clobber the current mode and reset
+      // the interrupt cadence, breaking the per-band mode/split pipeline.
       if (g->asic && asic_unlocked(g->asic) && (data & 0x20)) break;
       g->req_mode = static_cast<uint8_t>(data & 0x03);
       g->rom_config = data;

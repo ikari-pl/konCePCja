@@ -80,8 +80,9 @@ extern "C" {
 size_t amx_state_size(void) { return sizeof(amx_state); }
 
 Device amx_init(void* storage) {
-  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self (void*), cannot be const
-  amx_state *a = new (storage) amx_state();
+  // NOLINTNEXTLINE(misc-const-correctness): pointer is stored in Device::self
+  // (void*), cannot be const
+  amx_state* a = new (storage) amx_state();
   return Device{a,        "amx",   amx_tick, amx_dev_reset, amx_dev_state_size,
                 amx_save, amx_load};
 }
@@ -99,10 +100,12 @@ void amx_feed(const Device* dev, int dx, int dy, uint8_t buttons) {
   long const x = a->mickeys_x + dx;
   long const y = a->mickeys_y + dy;
   a->mickeys_x =
-      // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+      // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+      // conditional kept intentionally; no clang-tidy auto-fix
       static_cast<int16_t>(x < -32768 ? -32768 : (x > 32767 ? 32767 : x));
   a->mickeys_y =
-      // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+      // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+      // conditional kept intentionally; no clang-tidy auto-fix
       static_cast<int16_t>(y < -32768 ? -32768 : (y > 32767 ? 32767 : y));
   a->buttons = buttons;
 }
