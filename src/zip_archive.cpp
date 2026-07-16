@@ -11,6 +11,10 @@
 #include <strings.h>
 #endif
 
+#ifdef _WIN32
+#include <windows.h>  // MAX_PATH for the named-temporary path in extract()
+#endif
+
 #include <zlib.h>
 
 #include <cerrno>

@@ -1736,7 +1736,8 @@ void sock_set_nonblocking(M4Board::socket_t s) {
 
 namespace {
 void m4_close_all_sockets() {
-  for (int& socket : g_m4board.sockets) {
+  // socket_t is int on POSIX but UINT_PTR-wide on Windows — never int&.
+  for (auto& socket : g_m4board.sockets) {
     if (socket != M4Board::INVALID_SOCK) {
       sock_close(socket);
       socket = M4Board::INVALID_SOCK;

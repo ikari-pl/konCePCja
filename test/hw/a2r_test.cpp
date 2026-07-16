@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>  // std::memcmp — libstdc++ does not provide it transitively
 #include <vector>
 
 namespace {
