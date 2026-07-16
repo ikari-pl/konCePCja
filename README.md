@@ -210,7 +210,7 @@ See [INSTALL.md](INSTALL.md) for build instructions.
 ## License
 
 konCePCja is a clean, hardware-inspired emulator authored from silicon
-behaviour, not derived from other emulators. Its source is distributed under
+behaviour, not based today on any other. Its source is distributed under
 the terms of the **[konCePCja Source License 1.0.0](LICENSE.md)** — a
 source-available license based on PolyForm Internal Use 1.0.0 with an added
 Personal & Hobby Use grant. In short: you may read, use, and modify the source

@@ -4,7 +4,7 @@
 
 konCePCja is a clean, hardware-inspired emulator of the Amstrad CPC — modelled
 from documented silicon behaviour and hardware specifications
-(`docs/hardware/`), device by device, not derived from other emulators.
+(`docs/hardware/`), device by device, not based today on any other.
 
 The project began, years ago, as a fork of **Caprice32** (© the Caprice32
 authors, GPLv2). Over the course of development every inherited Caprice32 file
