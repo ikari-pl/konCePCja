@@ -1,0 +1,80 @@
+diff --git a/src/video/cocoa/SDL_cocoaevents.m b/src/video/cocoa/SDL_cocoaevents.m
+index 58cae9955..1a9c6589f 100644
+--- a/src/video/cocoa/SDL_cocoaevents.m
++++ b/src/video/cocoa/SDL_cocoaevents.m
+@@ -23,6 +23,7 @@
+ #ifdef SDL_VIDEO_DRIVER_COCOA
+ 
+ #include "SDL_cocoavideo.h"
++#include "SDL_cocoamouse.h"
+ #include "../../events/SDL_events_c.h"
+ 
+ static SDL_Window *FindSDLWindowForNSWindow(NSWindow *win)
+@@ -629,6 +630,7 @@ void Cocoa_PumpEvents(SDL_VideoDevice *_this)
+ {
+     @autoreleasepool {
+         Cocoa_PumpEventsUntilDate(_this, [NSDate distantPast], true);
++        Cocoa_ReconcileMouseButtons();
+     }
+ }
+ 
+diff --git a/src/video/cocoa/SDL_cocoamouse.h b/src/video/cocoa/SDL_cocoamouse.h
+index 70282be9f..1d5d74f68 100644
+--- a/src/video/cocoa/SDL_cocoamouse.h
++++ b/src/video/cocoa/SDL_cocoamouse.h
+@@ -31,6 +31,7 @@ extern void Cocoa_HandleMouseEvent(SDL_VideoDevice *_this, NSEvent *event);
+ extern void Cocoa_HandleMouseWheel(SDL_Window *window, NSEvent *event);
+ extern void Cocoa_HandleMouseWarp(CGFloat x, CGFloat y);
+ extern void Cocoa_QuitMouse(SDL_VideoDevice *_this);
++extern void Cocoa_ReconcileMouseButtons(void);
+ 
+ typedef struct
+ {
+diff --git a/src/video/cocoa/SDL_cocoamouse.m b/src/video/cocoa/SDL_cocoamouse.m
+index 77ebf109d..7121fce96 100644
+--- a/src/video/cocoa/SDL_cocoamouse.m
++++ b/src/video/cocoa/SDL_cocoamouse.m
+@@ -369,6 +369,43 @@ static SDL_MouseButtonFlags Cocoa_GetGlobalMouseState(float *x, float *y)
+     return result;
+ }
+ 
++/* Cocoa_CaptureMouse() is a no-op, so mouse-up events can be lost when
++   windows are reordered (orderWindow:) during a drag. SDL's internal
++   buttonstate then gets permanently stuck, and duplicate suppression in
++   SDL_PrivateSendMouseButton() blocks all future button events.
++   This function polls [NSEvent pressedMouseButtons] (hardware truth) and
++   synthesizes releases for any buttons SDL thinks are pressed but aren't. */
++void Cocoa_ReconcileMouseButtons(void)
++{
++    SDL_Mouse *mouse = SDL_GetMouse();
++    if (!mouse) {
++        return;
++    }
++
++    const NSUInteger cocoaButtons = [NSEvent pressedMouseButtons];
++
++    /* Map: Cocoa bit → SDL button constant.
++       Cocoa: bit 0 = Left, bit 1 = Right, bit 2 = Middle
++       SDL:   SDL_BUTTON_LEFT=1, SDL_BUTTON_MIDDLE=2, SDL_BUTTON_RIGHT=3 */
++    static const struct { int cocoa_bit; Uint8 sdl_button; } map[] = {
++        { 0, SDL_BUTTON_LEFT },
++        { 1, SDL_BUTTON_RIGHT },
++        { 2, SDL_BUTTON_MIDDLE },
++    };
++
++    for (int i = 0; i < 3; i++) {
++        bool hw_pressed = (cocoaButtons & (1 << map[i].cocoa_bit)) != 0;
++        if (!hw_pressed) {
++            /* Hardware says released — send a release through SDL's normal
++               pipeline so buttonstate gets updated and an event is posted.
++               If SDL already considers it released, SDL_PrivateSendMouseButton's
++               duplicate suppression will no-op safely. */
++            SDL_SendMouseButton(0, mouse->focus, SDL_GLOBAL_MOUSE_ID,
++                                map[i].sdl_button, false);
++        }
++    }
++}
++
+ bool Cocoa_InitMouse(SDL_VideoDevice *_this)
+ {
+     NSPoint location;

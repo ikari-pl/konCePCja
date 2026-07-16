@@ -1,0 +1,143 @@
+/* video_host — public surface of the host presentation layer: the
+ * video_plugin vtable and registry, panel/topbar composition hooks, and the
+ * CPC-texture accessors the docked workspace uses. See src/video_host.cpp. */
+
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "SDL3/SDL.h"
+
+struct ImDrawList;
+
+typedef struct video_plugin {
+  /* the user-displayed name of this plugin */
+  const char* name;
+  /* whether the plugin should be hidden from UI (i.e. is deprecated) */
+  bool hidden;
+  /* initializes the video plugin ; returns the surface that you must draw into,
+   * nullptr in the (unlikely ;) event of a failure */
+  SDL_Surface* (*init)(video_plugin* t, int scale, bool fs);
+
+  void (*set_palette)(SDL_Color* c);
+  /* "flips" the video surface. Note that this might not always do a real flip
+   */
+  void (*flip)(video_plugin* t);
+  /* closes the plugin */
+  void (*close)();
+
+  /* this plugin wants : 0 half sized pixels (320x200 screen)/1 full sized
+   * pixels (640x200 screen)*/
+  Uint8 half_pixels;
+
+  /* mouse offset/scaling info */
+  int x_offset, y_offset;
+  float x_scale, y_scale;
+  /* width & height of the surface to display */
+  int width, height;
+
+  /* Second phase of flip: renders floating ImGui viewports and swaps the
+     window. Runs after audio push so the 30-60ms stall doesn't starve the audio
+     queue. Null for SDL_Renderer, headless, and non-ImGui GL plugins. */
+  void (*flip_b)(video_plugin* t);
+} video_plugin;
+
+extern std::vector<video_plugin> video_plugin_list;
+
+/* Only exposed for testing purposes. Do not use. */
+void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels);
+
+int renderer_bpp(SDL_Renderer* sdl_renderer);
+
+void video_set_topbar(SDL_Surface* surface, int height);
+void video_clear_topbar();
+int video_get_topbar_height();
+
+void video_set_bottombar(int height);
+int video_get_bottombar_height();
+
+video_plugin video_headless_plugin();
+
+// Lightweight video plugin switch (Direct ↔ CRT) without window/GL/ImGui
+// teardown. Returns true if handled; false if full reinit is needed.
+bool video_try_lightweight_switch();
+
+// CPC framebuffer texture/size for docked workspace mode.
+// Returns the GL texture ID as uintptr_t (from GLuint) for safe cast to
+// ImTextureID.
+uintptr_t video_get_cpc_texture();
+void video_get_cpc_size(int& w, int& h);
+
+// Returns true if the SDL_Renderer backend is active (no GL FBO support).
+bool video_is_sdl_renderer();
+
+// Renders an ImDrawList into a cached off-screen texture via the OpenGL3
+// backend. Only re-renders when dirty_marker changes or canvas dimensions
+// change. draw_fn receives a ready-to-use ImDrawList plus the FBO canvas
+// dimensions. Returns the GL texture ID as uintptr_t, or 0 if GL is
+// unavailable. Display with ImVec2(0,1)/ImVec2(1,0) UV (FBO is stored bottom-up
+// in GL).
+uintptr_t video_offscreen_texture(
+    const char* key, int canvas_w, int canvas_h, size_t dirty_marker,
+    const std::function<void(ImDrawList*, int, int)>& draw_fn);
+
+// ── Save-state slot thumbnails ──────────────────────────────────────────────
+// Backend-aware (SDL_GPU or SDL_Renderer) RGBA texture helpers + a raw
+// thumbnail capture/load pair used by the pause screen save-state grid.
+// No PNG decoder is involved: thumbnails are stored in a tiny ".kthm" raw
+// RGBA container so the code compiles identically on macOS/Linux/MINGW.
+
+// Create a GPU/Renderer texture from RGBA8 pixels.  Returns an ImTextureID-safe
+// handle as uintptr_t, or 0 on failure.  Must be called on the render thread.
+uintptr_t video_make_rgba_texture(const unsigned char* rgba, int w, int h);
+
+// Free a texture created by video_make_rgba_texture().  Null-safe.
+void video_free_rgba_texture(uintptr_t tex);
+
+// Downscale the live CPC framebuffer (nearest-neighbor) to <= max_w wide,
+// preserving aspect, and write it to `path` in the ".kthm" raw RGBA format.
+// Returns false on any error (never throws).
+bool video_capture_cpc_thumbnail(const std::string& path, int max_w);
+
+// Read a ".kthm" thumbnail back into `rgba` (validating magic + dims).
+// Returns false on mismatch or I/O error.
+bool video_load_rgba_thumbnail(const std::string& path,
+                               std::vector<unsigned char>& rgba, int& w,
+                               int& h);
+
+// ── Triple-buffered CPC frame ring (decouples Z80 from render thread) ────────
+// Allocate the ring around the plugin's front-end surface (the Z80's write
+// target).  Returns the Z80's initial write surface (assign to back_surface).
+SDL_Surface* video_ring_init(SDL_Surface* frontend);
+// Z80 thread: publish the current write buffer, advance to a free buffer, and
+// return the new write surface (assign to back_surface).
+SDL_Surface* video_ring_publish();
+// Render thread: lease + copy the latest published buffer into the front-end
+// surface the flip reads.  Call before OSD text + video_display().
+void video_ring_present();
+// The displayed front-end surface (for OSD text, dock preview).
+SDL_Surface* video_render_surface();
+// The most recently PUBLISHED frame (the emulation's actual output),
+// independent of the render thread — screenshots must not go stale when the
+// present path stalls (occluded macOS window / remote desktop). May tear
+// unless the emulation is paused; null when the ring is inactive.
+SDL_Surface* video_ring_published_peek();
+// Free the ring's write buffers (called from video_shutdown / restyle).
+void video_ring_shutdown();
+
+// Request a window screenshot (CPC display + ImGui overlay).
+// Sets path; capture happens on the next rendered frame.
+void video_request_window_screenshot(const std::string& path);
+// Call from main loop after video_display() to capture pending screenshots.
+void video_take_pending_window_screenshot();
+
+extern std::atomic<bool> g_repaint_pending;
+extern std::atomic<bool> g_repaint_done;
+extern std::mutex g_repaint_mutex;
+extern std::string g_repaint_screenshot_path;
+extern std::string g_repaint_error;

@@ -1,0 +1,49 @@
+---
+Checks: >
+  -*,
+  modernize-*,
+  performance-*,
+  misc-*,
+  readability-*,
+  -misc-definitions-in-headers,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion,
+  -modernize-avoid-c-arrays,
+  -modernize-deprecated-headers,
+  -modernize-make-unique,
+  -modernize-use-auto,
+  -modernize-use-default-member-init,
+  -modernize-use-equals-delete,
+  -modernize-use-nodiscard,
+  -modernize-use-trailing-return-type,
+  -modernize-use-using,
+  -performance-unnecessary-value-param,
+  -readability-avoid-const-params-in-decls,
+  -readability-braces-around-statements,
+  -readability-convert-member-functions-to-static,
+  -readability-function-size,
+  -readability-implicit-bool-cast,
+  -readability-implicit-bool-conversion,
+  -readability-isolate-declaration,
+  -readability-magic-numbers,
+  -readability-qualified-auto,
+  -readability-uppercase-literal-suffix,
+  -readability-use-anyofallof,
+  -readability-identifier-length,
+  -readability-function-cognitive-complexity,
+  -misc-include-cleaner,
+  -misc-header-include-cycle
+
+# misc-header-include-cycle (disabled above): this check reports on the whole
+# include graph and is NOT filtered by Header/ExcludeHeaderFilterRegex, so it
+# cannot be scoped to first-party code the way every other check is. First-party
+# src/ has no include cycles.
+
+HeaderFilterRegex: 'src/.*\.h$'
+# Vendored third-party headers are excluded from linting (their .cpp files are
+# already excluded from FORMAT_SOURCES in the Makefile). This keeps the gate
+# scoped to first-party src/ code even when -header-filter is broadened on the
+# command line.
+ExcludeHeaderFilterRegex: '.*(argparse|compat|m4board_web_assets).*'
+
+WarningsAsErrors: ''

@@ -1,0 +1,194 @@
+name: Shader Blobs
+
+# Auto-compile shader sources to bytecode and commit the resulting C++
+# headers back to the PR branch.  Two parallel jobs:
+#
+#   compile-dxbc   — Windows runner, fxc.exe on .hlsl   → blit_dxbc_blobs.h, crt_dxbc_blobs.h
+#   compile-spirv  — Linux  runner, glslangValidator on .glsl → blit_spirv_blobs.h, crt_spirv_blobs.h
+#
+# DXBC is consumed by SDL_GPU's D3D12 backend on Windows; SPIRV by its
+# Vulkan backend on Linux (and Windows where preferred).  Each platform
+# ignores blobs it cannot consume.
+
+on:
+  pull_request:
+    paths:
+      - 'src/shaders/**.hlsl'
+      - 'src/shaders/**.glsl'
+      - 'scripts/blob_to_header.py'
+      - '.github/workflows/shader-blobs.yml'
+  push:
+    branches-ignore:
+      - master
+    paths:
+      - 'src/shaders/**.hlsl'
+      - 'src/shaders/**.glsl'
+      - 'scripts/blob_to_header.py'
+
+permissions:
+  contents: write     # auto-commit needs write access on PR head branch
+
+jobs:
+  compile-dxbc:
+    name: Compile HLSL → DXBC and regenerate C++ headers
+    runs-on: windows-latest
+    # Skip auto-commits triggered by this workflow itself, otherwise we'd
+    # loop.  The marker is the bot's commit message prefix below.
+    if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
+
+    steps:
+      - name: Check out PR branch (with write token)
+        uses: actions/checkout@v4
+        with:
+          # PRs from forks: actions/checkout uses GITHUB_TOKEN (read-only
+          # for forks).  Auto-commit will be skipped — maintainer can
+          # rebuild locally and push.
+          ref: ${{ github.head_ref || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Locate fxc.exe (Windows SDK)
+        id: fxc
+        shell: pwsh
+        run: |
+          # fxc.exe ships with the Windows 10 SDK; runners have it.
+          $candidates = @(
+            "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\fxc.exe",
+            "C:\Program Files\Windows Kits\10\bin\*\x64\fxc.exe"
+          )
+          $fxc = Get-ChildItem -Path $candidates -ErrorAction SilentlyContinue |
+                 Sort-Object FullName -Descending |
+                 Select-Object -First 1 -ExpandProperty FullName
+          if (-not $fxc) {
+            Write-Error "fxc.exe not found on this runner"
+            exit 1
+          }
+          Write-Host "Using fxc: $fxc"
+          "fxc=$fxc" >> $env:GITHUB_OUTPUT
+
+      - name: Compile HLSL → DXBC
+        shell: pwsh
+        run: |
+          $fxc = "${{ steps.fxc.outputs.fxc }}"
+          $blobs = "src/shaders/blobs"
+          New-Item -ItemType Directory -Force -Path $blobs | Out-Null
+
+          # (source, target_profile, output_blob)
+          # SM 5_1: fxc-compilable profile that supports register-space syntax
+          # (`register(t0, space2)`).  SDL_GPU's DXBC format expects 5_1.
+          # Plain 5_0 errors with X3721 on `space2`.
+          $jobs = @(
+            @{ src='src/shaders/blit.vert.hlsl';        prof='vs_5_1'; out='blit.vert.dxbc' },
+            @{ src='src/shaders/blit.frag.hlsl';        prof='ps_5_1'; out='blit.frag.dxbc' },
+            @{ src='src/shaders/crt_basic.frag.hlsl';   prof='ps_5_1'; out='crt_basic.frag.dxbc' },
+            @{ src='src/shaders/crt_full.frag.hlsl';    prof='ps_5_1'; out='crt_full.frag.dxbc' },
+            @{ src='src/shaders/crt_lottes.frag.hlsl';  prof='ps_5_1'; out='crt_lottes.frag.dxbc' }
+          )
+          foreach ($j in $jobs) {
+            Write-Host "Compiling $($j.src) ($($j.prof)) → $($j.out)"
+            & $fxc /nologo /T $j.prof /E main $j.src /Fo "$blobs/$($j.out)"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "fxc failed on $($j.src) (exit $LASTEXITCODE)"
+              exit 1
+            }
+          }
+
+      - name: Regenerate C++ headers (DXBC only)
+        shell: pwsh
+        run: |
+          # --format dxbc so this Windows job doesn't touch SPIRV headers
+          # (no .spv files exist on this runner — they'd be overwritten as
+          # empty placeholders, racing the Linux compile-spirv job).
+          python scripts/blob_to_header.py --format dxbc
+
+      - name: Diff check
+        id: diff
+        shell: pwsh
+        run: |
+          git diff --name-only -- src/shaders/blit_dxbc_blobs.h src/shaders/crt_dxbc_blobs.h |
+            Tee-Object -Variable changed
+          if ($changed) {
+            "changed=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "changed=false" >> $env:GITHUB_OUTPUT
+            Write-Host "No header changes; nothing to commit."
+          }
+
+      - name: Commit and push regenerated headers
+        if: steps.diff.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: pwsh
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/shaders/blit_dxbc_blobs.h src/shaders/crt_dxbc_blobs.h
+          git commit -m "chore(shaders): regenerate DXBC blobs from HLSL sources"
+          git push origin HEAD:${{ github.head_ref }}
+
+  compile-spirv:
+    name: Compile GLSL → SPIRV and regenerate C++ headers
+    runs-on: ubuntu-latest
+    # Same anti-loop guard as compile-dxbc — skip when this workflow's own
+    # auto-commit triggers another run.
+    if: ${{ github.event.head_commit.message == null || !startsWith(github.event.head_commit.message, 'chore(shaders):') }}
+
+    steps:
+      - name: Check out PR branch (with write token)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install glslang-tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y glslang-tools
+
+      - name: Compile GLSL → SPIRV
+        run: |
+          set -euo pipefail
+          mkdir -p src/shaders/blobs
+
+          # glslangValidator -V emits SPIR-V 1.0 by default; SDL_GPU's
+          # Vulkan backend accepts that.  Profile is auto-detected from
+          # the shader's #version directive (450 in our sources).
+          jobs=(
+            "src/shaders/blit.vert.glsl:blit.vert.spv"
+            "src/shaders/blit.frag.glsl:blit.frag.spv"
+            "src/shaders/crt_basic.frag.glsl:crt_basic.frag.spv"
+            "src/shaders/crt_full.frag.glsl:crt_full.frag.spv"
+            "src/shaders/crt_lottes.frag.glsl:crt_lottes.frag.spv"
+          )
+          for j in "${jobs[@]}"; do
+            IFS=":" read -r src out <<< "$j"
+            echo "Compiling $src -> $out"
+            glslangValidator -V "$src" -o "src/shaders/blobs/$out"
+          done
+
+      - name: Regenerate C++ headers (SPIRV only)
+        run: |
+          # --format spirv so this Linux job doesn't touch DXBC headers
+          # (no .dxbc files on this runner; they'd be overwritten as
+          # empty placeholders, racing the Windows compile-dxbc job).
+          python3 scripts/blob_to_header.py --format spirv
+
+      - name: Diff check
+        id: diff
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only -- \
+            src/shaders/blit_spirv_blobs.h src/shaders/crt_spirv_blobs.h)
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No header changes; nothing to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push regenerated headers
+        if: steps.diff.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/shaders/blit_spirv_blobs.h src/shaders/crt_spirv_blobs.h
+          git commit -m "chore(shaders): regenerate SPIRV blobs from GLSL sources"
+          git push origin HEAD:${{ github.head_ref }}

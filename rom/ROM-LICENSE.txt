@@ -1,0 +1,44 @@
+ROM Image Licensing
+====================
+
+The ROM images in this directory are NOT covered by the project's GPLv2
+license.  They are proprietary firmware redistributed with permission (or,
+in the case of MF2.rom, under community practice).
+
+
+Amstrad CPC ROMs
+-----------------
+Files: cpc464.rom, cpc664.rom, cpc6128.rom, amsdos.rom, system.cpr
+
+(c) Amstrad plc and Locomotive Software Ltd.
+
+The operating-system and BASIC firmware was written by Locomotive Software.
+Amstrad hold the copyright on the ROM images as shipped in CPC hardware.
+
+Amstrad have kindly given their permission for the redistribution of their
+copyrighted material but retain that copyright.
+
+This permission was announced by Cliff Lawson (Amstrad) in 1999 on the
+comp.sys.amstrad.8bit Usenet newsgroup.  Locomotive Software separately
+confirmed permission for redistribution via Richard Clayton.
+
+These files may be freely redistributed with CPC emulators, but they remain
+the copyrighted property of Amstrad plc and Locomotive Software Ltd.  They
+are NOT licensed under GPLv2 or any open-source license.
+
+
+Multiface II ROM
+-----------------
+File: MF2.rom
+
+(c) Romantic Robot Ltd.
+
+Romantic Robot Ltd was dissolved in August 2025 (UK Companies House).  No
+explicit redistribution permission was granted by Romantic Robot prior to
+dissolution.  The copyright is now orphaned — it still exists, but there is
+no known entity authorised to grant or deny redistribution rights.
+
+MF2.rom is included for compatibility with upstream Caprice32 and in line
+with the broader CPC emulation community practice of distributing this ROM.
+Multiface II support in konCePCja is experimental.  Users may substitute
+their own Multiface II ROM image if they prefer.

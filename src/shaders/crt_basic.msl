@@ -1,0 +1,63 @@
+// konCePCja — CRT Basic shader (Metal Shading Language source).
+//
+// Port of crt_frag_basic (GLSL) from src/video.cpp.  Adds barrel
+// distortion, per-scanline modulation, and an RGB phosphor mask.
+// Shares the fullscreen-triangle vertex shader with the passthrough
+// blit (same Y-flipped UV output, SDL_GPU top-left origin).
+//
+// Uniforms (fragment stage, buffer slot 0) — must match the layout
+// of the CrtBasicUniforms struct in src/video.cpp.
+
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct CrtBasicUniforms {
+    float2 input_size;   // CPC framebuffer resolution (width, height)
+    float2 output_size;  // swapchain resolution (affects RGB mask cell size)
+};
+
+vertex VSOut vert_main(uint vid [[vertex_id]]) {
+    VSOut o;
+    float2 xy = float2(float((vid << 1) & 2), float(vid & 2));
+    o.position = float4(xy * 2.0 - 1.0, 0.0, 1.0);
+    o.uv = float2(xy.x, 1.0 - xy.y);
+    return o;
+}
+
+static float2 barrel(float2 uv, float k) {
+    float2 cc = uv - 0.5;
+    float dist = dot(cc, cc);
+    return uv + cc * dist * k;
+}
+
+fragment float4 frag_main(VSOut in [[stage_in]],
+                          texture2d<float> tex [[texture(0)]],
+                          sampler smp [[sampler(0)]],
+                          constant CrtBasicUniforms& u [[buffer(0)]])
+{
+    float2 uv = barrel(in.uv, 0.22);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    float3 col = tex.sample(smp, uv).rgb;
+
+    // Scanlines tied to source resolution
+    float scanline = sin(uv.y * u.input_size.y * 3.14159265) * 0.5 + 0.5;
+    col *= mix(1.0, scanline, 0.35);
+
+    // RGB phosphor mask at output pixel density
+    float2 outPos = uv * u.output_size;
+    float m = fmod(outPos.x, 3.0);
+    float3 mask = float3(
+        m < 1.0 ? 1.0 : 0.75,
+        (m >= 1.0 && m < 2.0) ? 1.0 : 0.75,
+        m >= 2.0 ? 1.0 : 0.75);
+    col *= mask;
+    col *= 1.3;
+    return float4(col, 1.0);
+}

@@ -1,0 +1,2628 @@
+/* z80.cpp — sub-cycle, cycle-stepped Z80 Device.
+ *
+ * Round Z80-a: M1 engine, flag core, 8-bit register/immediate group.
+ * Round Z80-b: an explicit per-instruction M-cycle step machine (M1 / READ /
+ *   WRITE / INTERNAL, each driven inline, the next cycle requested by micro()),
+ *   and the 8-bit (HL) memory-operand group (LD r,(HL); LD (HL),r; ALU A,(HL);
+ *   INC/DEC (HL); LD (HL),n).
+ * Not yet: (BC)/(DE)/(nn) loads, 16-bit ops, MEMPTR/WZ updates, control flow,
+ *   prefixes, interrupts. See docs/hardware/z80.md.
+ *
+ * CLEAN-ROOM: built from the Z80 datasheet + Sean Young's UnDoc Z80 + Rak's Q
+ * research, not from legacy z80.cpp. Validation: FUSE/jsmoo (final state +
+ * T-totals; the per-T bus trace is offset by the bus model's one-hop latency —
+ * hw-spec §2).
+ *
+ * TODO(z80-engine, before GA integration): drive-and-hold — re-drive the
+ * current M-cycle's owned lines on EVERY master cycle, not only enabled ones,
+ * so a memory request stays stable across the 3-of-4 cycles where clk.cpu is
+ * low (real GA). Today drive is inline per enabled T-state, correct only on a
+ * contiguous clock — which is exactly how the FUSE-validated isolation rounds
+ * run.
+ */
+
+#include "z80.h"
+
+#include <cstring>
+#include <new>
+
+namespace {
+
+/* Flag bits. */
+constexpr uint8_t SF = 0x80, ZF = 0x40, YF = 0x20, HF = 0x10, XF = 0x08,
+                  PF = 0x04, NF = 0x02, CF = 0x01;
+
+bool parity_even(uint8_t value) {
+  value ^= static_cast<uint8_t>(value >> 4);
+  value ^= static_cast<uint8_t>(value >> 2);
+  value ^= static_cast<uint8_t>(value >> 1);
+  return (value & 1) == 0;
+}
+
+uint8_t sz53(uint8_t r) {
+  return static_cast<uint8_t>((r & (SF | YF | XF)) | (r == 0 ? ZF : 0));
+}
+uint8_t sz53p(uint8_t r) {
+  return static_cast<uint8_t>(sz53(r) | (parity_even(r) ? PF : 0));
+}
+
+struct Reg16 {
+  uint16_t v = 0;
+  uint8_t hi() const { return static_cast<uint8_t>(v >> 8); }
+  uint8_t lo() const { return static_cast<uint8_t>(v & 0xFF); }
+  void set_hi(uint8_t h) { v = static_cast<uint16_t>((h << 8) | (v & 0x00FF)); }
+  void set_lo(uint8_t l) { v = static_cast<uint16_t>((v & 0xFF00) | l); }
+};
+
+}  // namespace
+
+namespace {
+struct z80_state {
+  // Fixed-set state fields use enum class (project convention) so switches are
+  // compiler-checked and values can't be confused with unrelated integers.
+  enum class MC : uint8_t {
+    M1,
+    READ,
+    WRITE,
+    INTERNAL,
+    IO,
+    IOACK
+  };  // current machine cycle
+  enum class IndexReg : uint8_t {
+    HL = 0,
+    IX = 1,
+    IY = 2
+  };  // active DD/FD selector
+  enum class Servicing : uint8_t {
+    NONE = 0,
+    NMI = 1,
+    MASKABLE = 2
+  };  // interrupt sequence
+  enum class IntMode : uint8_t { IM0 = 0, IM1 = 1, IM2 = 2 };
+
+  Reg16 af, bc, de, hl, af2, bc2, de2, hl2, ix, iy, sp, pc, wz;
+  uint8_t i = 0, r = 0, iff1 = 0, iff2 = 0;
+  IntMode im = IntMode::IM0;
+  uint8_t q = 0;   // committed flags-written latch (Rak's Q)
+  uint8_t qq = 0;  // scratch: F whenever F is written this instruction (else 0)
+  bool halted = false;
+
+  // Engine: the current machine cycle + a per-instruction step counter. micro()
+  // is called at each M-cycle boundary to process the result and request the
+  // next.
+  MC mc = MC::M1;
+  uint8_t t = 0;            // T-state within the current machine cycle
+  uint16_t mc_addr = 0;     // address/port for M1/READ/WRITE/IO
+  uint8_t mc_wval = 0;      // value for WRITE/IO write
+  bool mc_io_read = false;  // IO cycle direction (true=IN, false=OUT)
+  uint8_t mc_ilen = 0;      // length for INTERNAL
+
+  // Drive-and-hold: what the CPU is driving on the bus, kept asserted across
+  // the ÷4 clock's idle master cycles so a transaction stays stable between
+  // T-state advances. `data` is re-driven only when `wr` is set (tristate on
+  // reads).
+  CpuBus held{};
+  bool held_valid = false;
+
+  // Interrupt state.
+  bool nmi_prev = false;     // previous NMI line level (rising-edge detect)
+  bool nmi_pending = false;  // latched NMI awaiting an instruction boundary
+  bool ei_delay = false;     // suppress INT for the one instruction after EI
+  Servicing servicing = Servicing::NONE;  // active interrupt sequence, if any
+  uint8_t int_vec = 0;  // data-bus byte latched at INT acknowledge (IM0/IM2)
+  uint8_t step = 0;     // micro-step within the instruction (post-fetch)
+  uint8_t prefix =
+      0;  // active prefix byte (0xCB/0xED/...) or 0; cleared by finish()
+  IndexReg index =
+      IndexReg::HL;  // index-register selector; cleared by finish()
+  uint16_t mem_addr =
+      0;  // computed (IX/IY+d) effective address for index memory ops
+  uint8_t opcode = 0;
+  uint8_t tmp = 0;  // last byte read; set by READ and IO-read completions ONLY.
+                    // Survives WRITE and INTERNAL cycles unchanged — several
+                    // multi-step ops depend on this (EX (SP),HL, block I/O).
+  uint8_t tmpl = 0;    // low-byte latch (16-bit immediate assembly)
+  uint8_t halt_t = 0;  // 4T HALT cadence sub-counter
+  bool unimplemented = false;
+
+  uint64_t tstates = 0;
+  uint64_t instr_count = 0;  // completed instructions (one finish() each)
+
+  // --- byte accessors via octal index (0=B..5=L, 7=A; 6=(HL) handled by micro)
+  // ---
+  uint8_t a() const { return af.hi(); }
+  uint8_t f() const { return af.lo(); }
+  void set_a(uint8_t v) { af.set_hi(v); }
+  void set_f(uint8_t v) {
+    af.set_lo(v);
+    qq = v;  // F written → Q tracks it
+  }
+  // The active index register (HL, or IX/IY under a DD/FD prefix) as a pair and
+  // as high/low halves.
+  uint16_t idx_hl() const {
+    // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+    return index == IndexReg::IX ? ix.v : index == IndexReg::IY ? iy.v : hl.v;
+  }
+  void set_idx_hl(uint16_t v) {
+    if (index == IndexReg::IX)
+      ix.v = v;
+    else if (index == IndexReg::IY)
+      iy.v = v;
+    else
+      hl.v = v;
+  }
+  uint8_t idx_h() const {
+    return index == IndexReg::IX   ? ix.hi()
+           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+           : index == IndexReg::IY ? iy.hi()
+                                   : hl.hi();
+  }
+  uint8_t idx_l() const {
+    return index == IndexReg::IX   ? ix.lo()
+           // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested conditional kept intentionally; no clang-tidy auto-fix
+           : index == IndexReg::IY ? iy.lo()
+                                   : hl.lo();
+  }
+  void set_idx_h(uint8_t v) {
+    if (index == IndexReg::IX)
+      ix.set_hi(v);
+    else if (index == IndexReg::IY)
+      iy.set_hi(v);
+    else
+      hl.set_hi(v);
+  }
+  void set_idx_l(uint8_t v) {
+    if (index == IndexReg::IX)
+      ix.set_lo(v);
+    else if (index == IndexReg::IY)
+      iy.set_lo(v);
+    else
+      hl.set_lo(v);
+  }
+  // Byte register by octal index. The index-aware form substitutes H/L →
+  // IXH/IXL under a DD/FD prefix; the _real form never does (used for the
+  // register operand of an (IX+d) instruction, which keeps the true H/L).
+  uint8_t get_r_real(uint8_t idx) const {
+    switch (idx) {
+      case 0:
+        return bc.hi();
+      case 1:
+        return bc.lo();
+      case 2:
+        return de.hi();
+      case 3:
+        return de.lo();
+      case 4:
+        return hl.hi();
+      case 5:
+        return hl.lo();
+      case 7:
+        return af.hi();
+      default:
+        return 0;  // 6=(HL) never reaches here
+    }
+  }
+  void set_r_real(uint8_t idx, uint8_t v) {
+    switch (idx) {
+      case 0:
+        bc.set_hi(v);
+        break;
+      case 1:
+        bc.set_lo(v);
+        break;
+      case 2:
+        de.set_hi(v);
+        break;
+      case 3:
+        de.set_lo(v);
+        break;
+      case 4:
+        hl.set_hi(v);
+        break;
+      case 5:
+        hl.set_lo(v);
+        break;
+      case 7:
+        af.set_hi(v);
+        break;
+      default:
+        break;  // 6=(HL) never reaches here
+    }
+  }
+  uint8_t get_r(uint8_t idx) const {
+    if (idx == 4) return idx_h();
+    if (idx == 5) return idx_l();
+    return get_r_real(idx);
+  }
+  void set_r(uint8_t idx, uint8_t v) {
+    if (idx == 4) {
+      set_idx_h(v);
+      return;
+    }
+    if (idx == 5) {
+      set_idx_l(v);
+      return;
+    }
+    set_r_real(idx, v);
+  }
+  void bump_refresh() {
+    r = static_cast<uint8_t>((r & 0x80) | ((r + 1) & 0x7F));
+  }
+  void pcinc() { pc.v = static_cast<uint16_t>(pc.v + 1); }
+  // Assemble a 16-bit value from the two byte latches: `tmp` is the high byte
+  // (read last), `tmpl` the low byte (read first). Used by every nn-fetch,
+  // stack-pop, and vector read.
+  uint16_t assemble16() const {
+    return static_cast<uint16_t>((tmp << 8) | tmpl);
+  }
+
+  // 16-bit register pair by index (0=BC,1=DE,2=HL,3=SP).
+  uint16_t get_rp(uint8_t p) const {
+    switch (p) {
+      case 0:
+        return bc.v;
+      case 1:
+        return de.v;
+      case 2:
+        return idx_hl();  // HL/IX/IY
+      case 3:
+        return sp.v;
+      default:
+        return 0;
+    }
+  }
+  void set_rp(uint8_t p, uint16_t v) {
+    switch (p) {
+      case 0:
+        bc.v = v;
+        break;
+      case 1:
+        de.v = v;
+        break;
+      case 2:
+        set_idx_hl(v);
+        break;
+      case 3:
+        sp.v = v;
+        break;
+      default:
+        break;
+    }
+  }
+  // PUSH/POP register-pair table (0=BC,1=DE,2=HL,3=AF) — AF replaces SP.
+  uint16_t get_rp2(uint8_t p) const {
+    switch (p) {
+      case 0:
+        return bc.v;
+      case 1:
+        return de.v;
+      case 2:
+        return idx_hl();  // HL/IX/IY
+      case 3:
+        return af.v;
+      default:
+        return 0;
+    }
+  }
+  void set_rp2(uint8_t p, uint16_t v) {
+    switch (p) {
+      case 0:
+        bc.v = v;
+        break;
+      case 1:
+        de.v = v;
+        break;
+      case 2:
+        set_idx_hl(v);
+        break;
+      case 3:
+        af.v = v;
+        break;
+      default:
+        break;
+    }
+  }
+  // Branch condition by octal y: NZ,Z,NC,C,PO,PE,P,M.
+  bool cond(uint8_t y) const {
+    switch (y) {
+      case 0:
+        return (f() & ZF) == 0;
+      case 1:
+        return (f() & ZF) != 0;
+      case 2:
+        return (f() & CF) == 0;
+      case 3:
+        return (f() & CF) != 0;
+      case 4:
+        return (f() & PF) == 0;
+      case 5:
+        return (f() & PF) != 0;
+      case 6:
+        return (f() & SF) == 0;
+      case 7:
+        return (f() & SF) != 0;
+      default:
+        return false;
+    }
+  }
+
+  // --- ALU (flags validated against FUSE) ---
+  void alu(uint8_t kind, uint8_t val) {
+    const uint8_t acc = a();
+    const uint8_t carry = (f() & CF) ? 1 : 0;
+    uint16_t res = 0;
+    uint8_t flags = 0;
+    switch (kind) {
+      case 0:  // ADD
+      case 1:  // ADC
+      {
+        const uint8_t c = (kind == 1) ? carry : 0;
+        res = static_cast<uint16_t>(acc + val + c);
+        const uint8_t r8 = static_cast<uint8_t>(res);
+        flags = sz53(r8);
+        if (res & 0x100) flags |= CF;
+        if ((acc ^ val ^ r8) & 0x10) flags |= HF;
+        if ((~(acc ^ val) & (acc ^ r8)) & 0x80) flags |= PF;  // overflow
+        set_a(r8);
+        break;
+      }
+      case 2:  // SUB
+      case 3:  // SBC
+      case 7:  // CP
+      {
+        const uint8_t c = (kind == 3) ? carry : 0;
+        res = static_cast<uint16_t>(acc - val - c);
+        const uint8_t r8 = static_cast<uint8_t>(res);
+        flags = static_cast<uint8_t>((r8 & SF) | (r8 == 0 ? ZF : 0) | NF);
+        if (res & 0x100) flags |= CF;
+        if ((acc ^ val ^ r8) & 0x10) flags |= HF;
+        if (((acc ^ val) & (acc ^ r8)) & 0x80) flags |= PF;  // overflow
+        if (kind == 7) {
+          flags |= (val & (YF | XF));  // CP: undoc flags from operand
+        } else {
+          flags |= (r8 & (YF | XF));
+          set_a(r8);
+        }
+        break;
+      }
+      case 4:  // AND
+        res = static_cast<uint8_t>(acc & val);
+        flags = static_cast<uint8_t>(sz53p(static_cast<uint8_t>(res)) | HF);
+        set_a(static_cast<uint8_t>(res));
+        break;
+      case 5:  // XOR
+        res = static_cast<uint8_t>(acc ^ val);
+        flags = sz53p(static_cast<uint8_t>(res));
+        set_a(static_cast<uint8_t>(res));
+        break;
+      case 6:  // OR
+        res = static_cast<uint8_t>(acc | val);
+        flags = sz53p(static_cast<uint8_t>(res));
+        set_a(static_cast<uint8_t>(res));
+        break;
+      default:
+        break;
+    }
+    set_f(flags);
+  }
+  uint8_t inc8(uint8_t val) {
+    const uint8_t r8 = static_cast<uint8_t>(val + 1);
+    uint8_t flags = static_cast<uint8_t>((f() & CF) | sz53(r8));
+    if ((r8 & 0x0F) == 0x00) flags |= HF;
+    if (r8 == 0x80) flags |= PF;
+    set_f(flags);
+    return r8;
+  }
+  uint8_t dec8(uint8_t val) {
+    const uint8_t r8 = static_cast<uint8_t>(val - 1);
+    uint8_t flags = static_cast<uint8_t>((f() & CF) | sz53(r8) | NF);
+    if ((r8 & 0x0F) == 0x0F) flags |= HF;
+    if (r8 == 0x7F) flags |= PF;
+    set_f(flags);
+    return r8;
+  }
+
+  // --- accumulator rotates (RLCA/RRCA/RLA/RRA): C from the shifted-out bit,
+  // H=N=0,
+  //     S/Z/P unchanged, X/Y from the result; not the CB rotate flags. ---
+  void acc_rot(uint8_t op) {  // op: 0=RLCA 1=RRCA 2=RLA 3=RRA
+    const uint8_t av = a();
+    const uint8_t oldc = (f() & CF) ? 1 : 0;
+    uint8_t carry = 0;
+    uint8_t na = 0;
+    switch (op) {
+      case 0:
+        carry = static_cast<uint8_t>(av >> 7);
+        na = static_cast<uint8_t>((av << 1) | carry);
+        break;
+      case 1:
+        carry = static_cast<uint8_t>(av & 1);
+        na = static_cast<uint8_t>((av >> 1) | (carry << 7));
+        break;
+      case 2:
+        carry = static_cast<uint8_t>(av >> 7);
+        na = static_cast<uint8_t>((av << 1) | oldc);
+        break;
+      case 3:
+        carry = static_cast<uint8_t>(av & 1);
+        na = static_cast<uint8_t>((av >> 1) | (oldc << 7));
+        break;
+      default:
+        break;
+    }
+    set_a(na);
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | (na & (YF | XF)) |
+                               (carry ? CF : 0)));
+  }
+  void daa() {
+    const uint8_t av = a();
+    uint8_t correction = 0;
+    bool carry = (f() & CF) != 0;
+    if ((f() & HF) || (av & 0x0F) > 0x09) correction |= 0x06;
+    if (carry || av > 0x99) {
+      correction |= 0x60;
+      carry = true;
+    }
+    const uint8_t na = (f() & NF) ? static_cast<uint8_t>(av - correction)
+                                  : static_cast<uint8_t>(av + correction);
+    uint8_t flags =
+        static_cast<uint8_t>(sz53p(na) | (carry ? CF : 0) | (f() & NF));
+    flags |=
+        static_cast<uint8_t>((av ^ na) & HF);  // half-carry from the adjust
+    set_a(na);
+    set_f(flags);
+  }
+  void cpl() {
+    set_a(static_cast<uint8_t>(~a()));
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF | CF)) | HF | NF |
+                               (a() & (YF | XF))));
+  }
+  // SCF/CCF: NMOS X/Y = ((Q ^ F) | A) & (YF|XF); Q is the prior committed
+  // latch.
+  uint8_t scf_ccf_xy() const {
+    return static_cast<uint8_t>(((q ^ f()) | a()) & (YF | XF));
+  }
+  void scf() {
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | CF | scf_ccf_xy()));
+  }
+  void ccf() {
+    const uint8_t oldc = static_cast<uint8_t>(f() & CF);
+    set_f(static_cast<uint8_t>((f() & (SF | ZF | PF)) | (oldc ? 0 : CF) |
+                               (oldc ? HF : 0) | scf_ccf_xy()));
+  }
+  void add16(uint16_t val) {  // ADD HL/IX/IY,rr — H(bit11), C(bit15), N=0; SZP
+                              // kept; WZ=dst+1
+    const uint16_t dst = idx_hl();
+    wz.v = static_cast<uint16_t>(dst + 1);
+    const uint32_t res = static_cast<uint32_t>(dst) + val;
+    const uint16_t r16 = static_cast<uint16_t>(res);
+    uint8_t flags =
+        static_cast<uint8_t>((f() & (SF | ZF | PF)) | ((r16 >> 8) & (YF | XF)));
+    if ((dst ^ val ^ r16) & 0x1000) flags |= HF;
+    if (res & 0x10000) flags |= CF;
+    set_idx_hl(r16);
+    set_f(flags);
+  }
+
+  // --- M-cycle requests (set up the next cycle; the engine runs it) ---
+  void req_read(uint16_t addr) {
+    mc = MC::READ;
+    t = 0;
+    mc_addr = addr;
+  }
+  void req_write(uint16_t addr, uint8_t val) {
+    mc = MC::WRITE;
+    t = 0;
+    mc_addr = addr;
+    mc_wval = val;
+  }
+  void req_internal(uint8_t len) {
+    mc = MC::INTERNAL;
+    t = 0;
+    mc_ilen = len;
+  }
+  void req_io_read(uint16_t port) {
+    mc = MC::IO;
+    t = 0;
+    mc_addr = port;
+    mc_io_read = true;
+  }
+  void req_io_write(uint16_t port, uint8_t val) {
+    mc = MC::IO;
+    t = 0;
+    mc_addr = port;
+    mc_wval = val;
+    mc_io_read = false;
+  }
+  // Interrupt/NMI acknowledge M-cycle of `len` T-states: drives the ack bus
+  // signature (INT: m1+iorq, the device supplies the vector; NMI: m1+mreq, a
+  // discarded dummy fetch) so the Gate Array sees it.
+  void req_ioack(uint8_t len) {
+    mc = MC::IOACK;
+    t = 0;
+    mc_ilen = len;
+  }
+  void finish() {
+    q = qq;
+    mc = MC::M1;
+    t = 0;
+    step = 0;
+    prefix = 0;
+    index = IndexReg::HL;
+    instr_count++;  // one full instruction (or accepted interrupt) completed
+  }
+
+  // Interrupt-acceptance sequence (NMI or maskable INT). Entered at an
+  // instruction boundary with `servicing` set; PC already points at the
+  // instruction that will resume after RET[I/N].
+  void micro_interrupt() {
+    // Acceptance is dispatched from M1 T1, so one T-state is already counted
+    // (and the R refresh already bumped) by the engine before we get here. The
+    // leading INTERNAL therefore covers the REMAINDER of the acknowledge cycle:
+    // NMI ack is 5T (1 + 4), INT ack is 7T (1 + 6). Then the shared 2-byte PC
+    // push (3+3). Totals: NMI 11T, IM0/IM1 13T, IM2 19T.
+    if (step == 0) {
+      req_ioack(servicing == Servicing::NMI ? 4 : 6);
+      return;
+    }  // ack cycle
+    if (step == 1) {
+      sp.v--;
+      req_write(sp.v, pc.hi());
+      return;
+    }  // push PC high
+    if (step == 2) {
+      sp.v--;
+      req_write(sp.v, pc.lo());
+      return;
+    }  // push PC low
+    if (servicing ==
+        Servicing::NMI) {  // → 0x0066; IFF1 already cleared, IFF2 preserved
+      pc.v = wz.v = 0x0066;
+      servicing = Servicing::NONE;
+      finish();
+      return;
+    }
+    if (im == IntMode::IM2) {  // vector through (I<<8 | bus byte)
+      if (step == 3) {
+        mem_addr = static_cast<uint16_t>((i << 8) | int_vec);
+        req_read(mem_addr);
+        return;
+      }
+      if (step == 4) {
+        tmpl = tmp;
+        req_read(static_cast<uint16_t>(mem_addr + 1));
+        return;
+      }
+      pc.v = wz.v = assemble16();
+      servicing = Servicing::NONE;
+      finish();
+      return;
+    }
+    // IM0/IM1 — RST to a fixed vector. IM1 → 0x38; IM0 executes the bus opcode,
+    // which on the CPC (and typical hardware) is an RST.
+    pc.v = wz.v =
+        (im == IntMode::IM0) ? static_cast<uint16_t>(int_vec & 0x38) : 0x0038;
+    servicing = Servicing::NONE;
+    finish();
+  }
+
+  // Dispatch the instruction step machine for the active prefix / index state.
+  void run_micro() {
+    if (servicing != Servicing::NONE) {
+      micro_interrupt();
+      return;
+    }
+    if (prefix == 0xCB) {
+      micro_cb();
+      return;
+    }
+    if (prefix == 0xED) {
+      micro_ed();
+      return;
+    }
+    if (index != IndexReg::HL) {
+      if (opcode == 0xCB) {
+        micro_ddcb();
+        return;
+      }  // DDCB/FDCB
+      if (idx_uses_mem()) {
+        micro_index();
+        return;
+      }  // (IX/IY+d) memory ops
+    }
+    micro();  // index-aware register access happens inside the accessors
+  }
+
+  // --- ED-prefix helpers ---
+  void adc16(uint16_t val) {
+    wz.v = static_cast<uint16_t>(hl.v + 1);
+    const uint32_t res =
+        static_cast<uint32_t>(hl.v) + val + ((f() & CF) ? 1u : 0u);
+    const uint16_t r16 = static_cast<uint16_t>(res);
+    uint8_t flags = static_cast<uint8_t>(((r16 >> 8) & (SF | YF | XF)) |
+                                         (r16 == 0 ? ZF : 0));
+    if ((hl.v ^ val ^ r16) & 0x1000) flags |= HF;
+    if (res & 0x10000) flags |= CF;
+    if ((~(hl.v ^ val) & (hl.v ^ r16)) & 0x8000) flags |= PF;
+    hl.v = r16;
+    set_f(flags);
+  }
+  void sbc16(uint16_t val) {
+    wz.v = static_cast<uint16_t>(hl.v + 1);
+    const uint32_t res =
+        static_cast<uint32_t>(hl.v) - val - ((f() & CF) ? 1u : 0u);
+    const uint16_t r16 = static_cast<uint16_t>(res);
+    uint8_t flags = static_cast<uint8_t>(((r16 >> 8) & (SF | YF | XF)) |
+                                         (r16 == 0 ? ZF : 0) | NF);
+    if ((hl.v ^ val ^ r16) & 0x1000) flags |= HF;
+    if (res & 0x10000) flags |= CF;
+    if (((hl.v ^ val) & (hl.v ^ r16)) & 0x8000) flags |= PF;
+    hl.v = r16;
+    set_f(flags);
+  }
+  void neg() {
+    const uint8_t old = a();
+    const uint16_t res = static_cast<uint16_t>(0 - old);
+    const uint8_t r8 = static_cast<uint8_t>(res);
+    uint8_t flags =
+        static_cast<uint8_t>((r8 & (SF | YF | XF)) | (r8 == 0 ? ZF : 0) | NF);
+    if (res & 0x100) flags |= CF;
+    if ((old ^ r8) & 0x10) flags |= HF;
+    if ((old & r8) & 0x80) flags |= PF;  // overflow iff old == 0x80
+    set_a(r8);
+    set_f(flags);
+  }
+  void ld_a_ir(uint8_t val) {  // LD A,I / LD A,R
+    set_a(val);
+    uint8_t flags = static_cast<uint8_t>((f() & CF) | sz53(val));
+    if (iff2) flags |= PF;  // P/V = IFF2
+    set_f(flags);
+  }
+
+  // --- block operations (LDI/CPI/INI/OUTI families) ---
+  // `inc` = I-variant (++ pointers), else D-variant (--). `repeat` = R-variant
+  // (re-execute while the loop condition holds, costing an extra 5T INTERNAL).
+  // The undocumented X/Y flags come from a per-family scratch byte `n`.
+  void block_ld(bool inc, bool repeat) {  // LDI/LDD/LDIR/LDDR
+    if (step == 0) {
+      req_read(hl.v);
+      return;
+    }
+    if (step == 1) {
+      req_write(de.v, tmp);
+      return;
+    }
+    if (step == 2) {
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      de.v = static_cast<uint16_t>(de.v + d);
+      bc.v--;
+      const uint8_t n =
+          static_cast<uint8_t>(a() + tmp);  // A + transferred byte
+      uint8_t flags = static_cast<uint8_t>(f() & (SF | ZF | CF));
+      if (bc.v != 0) flags |= PF;
+      if (n & 0x02) flags |= YF;  // bit1 of n → YF
+      if (n & 0x08) flags |= XF;  // bit3 of n → XF
+      set_f(flags);
+      req_internal(2);  // LDI/LDD total: ED(4)+op(4)+rd(3)+wr(3)+2 = 16T
+      return;
+    }
+    if (step == 3) {
+      if (repeat && bc.v != 0) {
+        pc.v = static_cast<uint16_t>(pc.v -
+                                     2);  // re-execute the ED-prefixed opcode
+        wz.v = static_cast<uint16_t>(pc.v + 1);
+        // Repeating iteration: YF/XF are taken from PC bits 13/11, not the
+        // single-shot (A + byte) bits — the architectural mid-loop F (Banks
+        // 2018 / SingleStepTests). SF/ZF/CF preserved, PF set (BC != 0).
+        set_f(static_cast<uint8_t>((f() & (SF | ZF | CF)) | PF |
+                                   (pc.hi() & (YF | XF))));
+        req_internal(
+            5);  // +5T loop-back penalty → 21T for the repeating iteration
+        return;
+      }
+      finish();
+      return;
+    }
+    finish();  // step 4: after the loop's extra internal, re-fetch the opcode
+  }
+  void block_cp(bool inc, bool repeat) {  // CPI/CPD/CPIR/CPDR
+    if (step == 0) {
+      req_read(hl.v);
+      return;
+    }
+    if (step == 1) {
+      const uint8_t val = tmp;
+      const uint8_t res = static_cast<uint8_t>(a() - val);
+      const bool hf = ((a() ^ val ^ res) & 0x10) != 0;
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      bc.v--;
+      wz.v = static_cast<uint16_t>(wz.v + d);
+      const uint8_t n = static_cast<uint8_t>(res - (hf ? 1 : 0));
+      uint8_t flags = static_cast<uint8_t>((f() & CF) | (res & SF) | NF);
+      if (res == 0) flags |= ZF;
+      if (hf) flags |= HF;
+      if (bc.v != 0) flags |= PF;
+      if (n & 0x02) flags |= YF;
+      if (n & 0x08) flags |= XF;
+      set_f(flags);
+      req_internal(5);
+      return;
+    }
+    if (step == 2) {
+      if (repeat && bc.v != 0 &&
+          (f() & ZF) == 0) {  // loop until match or BC==0
+        pc.v = static_cast<uint16_t>(pc.v - 2);
+        wz.v = static_cast<uint16_t>(pc.v + 1);
+        // Repeating iteration: override YF/XF from PC bits 13/11 (Banks 2018 /
+        // SingleStepTests); the other bits keep the single-shot CP result.
+        set_f(static_cast<uint8_t>((f() & ~(YF | XF)) | (pc.hi() & (YF | XF))));
+        req_internal(5);
+        return;
+      }
+      finish();
+      return;
+    }
+    finish();  // step 3: after the loop's extra internal
+  }
+  // Undocumented flags of a repeating INIR/INDR/OTIR/OTDR iteration — the
+  // architectural F committed after every non-final iteration (Banks 2018).
+  // Source: David Banks, "Undocumented Z80 Flags" rev. 1.0 (2018-08-21),
+  // github.com/hoglet67/Z80Decoder/wiki/Undocumented-Flags (the post-2018
+  // block-instruction research; adopted by e.g. redcode/Z80 and the
+  // SingleStepTests corpus). When the repeat branch is taken (decremented
+  // B != 0), the 5T loop-back cycle writes F as:
+  //   SF = B.7, ZF = 0, YF = PC.13, XF = PC.11 (PC = the instruction's address,
+  //   i.e. the rewound PC), NF = data.7, and with the base condition
+  //   hcf = (k > 255) and p = (k & 7) ^ B (B = decremented value):
+  //     hcf=1, NF=1: CF=1, HF = ((B & 0x0F) == 0x0), PF = parity(p ^ ((B-1) &
+  //     7)) hcf=1, NF=0: CF=1, HF = ((B & 0x0F) == 0xF), PF = parity(p ^ ((B+1)
+  //     & 7)) hcf=0:       CF=0, HF = 0,                   PF = parity(p ^ (B &
+  //     7))
+  // Cross-validated 1:1 against SingleStepTests (see z80_singlestep_test.cpp).
+  // Five stale FUSE mid-loop expecteds were realigned to these values (Young
+  // §4.3 → Banks); see docs/hardware/z80.md §6.
+  uint8_t blkio_corrected_f(uint8_t val, uint16_t k, uint8_t bdec) const {
+    const uint8_t p = static_cast<uint8_t>((k & 7) ^ bdec);
+    uint8_t flags = static_cast<uint8_t>((bdec & SF) | (pc.hi() & (YF | XF)));
+    if (val & 0x80) flags |= NF;
+    if (k > 0xFF) {
+      flags |= CF;
+      if (val & 0x80) {
+        if ((bdec & 0x0F) == 0x00) flags |= HF;
+        if (parity_even(static_cast<uint8_t>(p ^ ((bdec - 1) & 7))))
+          flags |= PF;
+      } else {
+        if ((bdec & 0x0F) == 0x0F) flags |= HF;
+        if (parity_even(static_cast<uint8_t>(p ^ ((bdec + 1) & 7))))
+          flags |= PF;
+      }
+    } else if (parity_even(static_cast<uint8_t>(p ^ (bdec & 7)))) {
+      flags |= PF;
+    }
+    return flags;
+  }
+  void block_in(bool inc, bool repeat) {  // INI/IND/INIR/INDR
+    if (step == 0) {
+      req_internal(1);
+      return;
+    }  // 5T M1
+    if (step == 1) {
+      wz.v = static_cast<uint16_t>(bc.v + (inc ? 1 : -1));
+      req_io_read(bc.v);  // IN with the original B in the port
+      return;
+    }
+    if (step == 2) {
+      req_write(hl.v, tmp);
+      return;
+    }  // tmp survives the write
+    if (step == 3) {
+      const uint8_t val = tmp;
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      bc.set_hi(static_cast<uint8_t>(bc.hi() - 1));  // B-- after the input
+      const uint8_t bdec = bc.hi();
+      uint8_t flags = sz53(bdec);
+      if (val & 0x80) flags |= NF;
+      const uint16_t k = static_cast<uint16_t>(val) +
+                         (static_cast<uint8_t>(bc.lo() + d) & 0xFF);
+      if (k > 0xFF) flags |= static_cast<uint8_t>(HF | CF);
+      if (parity_even(static_cast<uint8_t>((k & 7) ^ bdec))) flags |= PF;
+      if (repeat && bdec != 0) {
+        pc.v = static_cast<uint16_t>(pc.v - 2);  // rewind first: YF/XF need PCi
+        wz.v = static_cast<uint16_t>(pc.v + 1);  // repeat: MEMPTR = PC+1, not BC±1
+        set_f(blkio_corrected_f(val, k, bdec));  // Banks 2018: committed mid-loop F
+        req_internal(5);
+        return;
+      }
+      set_f(flags);  // terminating iteration: the single-shot INI/IND flags
+      finish();
+      return;
+    }
+    finish();
+  }
+  void block_out(bool inc, bool repeat) {  // OUTI/OUTD/OTIR/OTDR
+    if (step == 0) {
+      req_internal(1);
+      return;
+    }  // 5T M1
+    if (step == 1) {
+      req_read(hl.v);
+      return;
+    }
+    if (step == 2) {
+      bc.set_hi(static_cast<uint8_t>(bc.hi() - 1));  // B-- before the output
+      wz.v = static_cast<uint16_t>(bc.v + (inc ? 1 : -1));
+      req_io_write(bc.v, tmp);  // OUT with the decremented B
+      return;
+    }
+    if (step == 3) {
+      const uint8_t val = tmp;
+      const int d = inc ? 1 : -1;
+      hl.v = static_cast<uint16_t>(hl.v + d);
+      const uint8_t bdec = bc.hi();
+      uint8_t flags = sz53(bdec);
+      if (val & 0x80) flags |= NF;
+      const uint16_t k =
+          static_cast<uint16_t>(val) + hl.lo();  // L after the move
+      if (k > 0xFF) flags |= static_cast<uint8_t>(HF | CF);
+      if (parity_even(static_cast<uint8_t>((k & 7) ^ bdec))) flags |= PF;
+      if (repeat && bdec != 0) {
+        pc.v = static_cast<uint16_t>(pc.v - 2);  // rewind first: YF/XF need PCi
+        wz.v = static_cast<uint16_t>(pc.v + 1);  // repeat: MEMPTR = PC+1, not BC±1
+        set_f(blkio_corrected_f(val, k, bdec));  // Banks 2018: committed mid-loop F
+        req_internal(5);
+        return;
+      }
+      set_f(flags);  // terminating iteration: the single-shot OUTI/OUTD flags
+      finish();
+      return;
+    }
+    finish();
+  }
+
+  void micro_ed() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+    const uint8_t p = static_cast<uint8_t>(y >> 1);
+    const uint8_t qbit = static_cast<uint8_t>(y & 1);
+
+    if (x == 1) {
+      switch (z) {
+        case 0:  // IN r,(C)  (y=6 → IN (C): flags only). MEMPTR = BC+1
+          if (step == 0) {
+            wz.v = static_cast<uint16_t>(bc.v + 1);
+            req_io_read(bc.v);
+            return;
+          }
+          set_f(static_cast<uint8_t>((f() & CF) |
+                                     sz53p(tmp)));  // SZ53P, H=N=0, C kept
+          if (y != 6) set_r(y, tmp);
+          finish();
+          return;
+        case 1:  // OUT (C),r  (y=6 → OUT (C),0). MEMPTR = BC+1
+          if (step == 0) {
+            req_io_write(bc.v, (y == 6) ? 0 : get_r(y));
+            wz.v = static_cast<uint16_t>(bc.v + 1);
+            return;
+          }
+          finish();
+          return;
+        case 3:  // LD (nn),rr / LD rr,(nn) — 20T. WZ as working pointer.
+          if (step == 0) {
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          if (step == 1) {
+            tmpl = tmp;
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          if (step == 2) wz.v = assemble16();  // WZ = nn
+          if (qbit == 0) {                     // LD (nn),rr
+            if (step == 2) {
+              req_write(wz.v, static_cast<uint8_t>(get_rp(p) & 0xFF));
+              wz.v++;
+              return;
+            }
+            if (step == 3) {
+              req_write(wz.v, static_cast<uint8_t>(get_rp(p) >> 8));
+              return;
+            }
+            finish();
+            return;
+          }
+          // LD rr,(nn)
+          if (step == 2) {
+            req_read(wz.v);
+            wz.v++;
+            return;
+          }
+          if (step == 3) {
+            tmpl = tmp;
+            req_read(wz.v);
+            return;
+          }
+          set_rp(p, assemble16());
+          finish();
+          return;
+        case 2:  // SBC HL,rr (q=0) / ADC HL,rr (q=1) — 15T (4+4+7)
+          if (step == 0) {
+            req_internal(7);
+            return;
+          }
+          if (qbit == 0)
+            sbc16(get_rp(p));
+          else
+            adc16(get_rp(p));
+          finish();
+          return;
+        case 4:  // NEG (all 8 encodings are NEG on NMOS)
+          neg();
+          finish();
+          return;
+        case 5:  // RETN (y even) / RETI (y odd) — pop PC, IFF1 = IFF2 (14T)
+          if (step == 0) {
+            req_read(sp.v);
+            sp.v++;
+            return;
+          }
+          if (step == 1) {
+            tmpl = tmp;
+            req_read(sp.v);
+            sp.v++;
+            return;
+          }
+          pc.v = wz.v = assemble16();
+          iff1 = iff2;
+          finish();
+          return;
+        case 6: {  // IM
+          static const uint8_t kImTable[8] = {0, 0, 1, 2, 0, 0, 1, 2};
+          im = static_cast<IntMode>(kImTable[y]);
+          finish();
+          return;
+        }
+        case 7:  // LD I,A / R,A / A,I / A,R / RRD / RLD
+          switch (y) {
+            case 0:  // LD I,A (9T: + INTERNAL(1))
+              if (step == 0) {
+                req_internal(1);
+                return;
+              }
+              i = a();
+              finish();
+              return;
+            case 1:  // LD R,A
+              if (step == 0) {
+                req_internal(1);
+                return;
+              }
+              r = a();
+              finish();
+              return;
+            case 2:  // LD A,I
+              if (step == 0) {
+                req_internal(1);
+                return;
+              }
+              ld_a_ir(i);
+              finish();
+              return;
+            case 3:  // LD A,R
+              if (step == 0) {
+                req_internal(1);
+                return;
+              }
+              ld_a_ir(r);
+              finish();
+              return;
+            case 4:  // RRD — 18T (4+4+3+4+3)
+            case 5:  // RLD
+              if (step == 0) {
+                req_read(hl.v);
+                return;
+              }
+              if (step == 1) {
+                req_internal(4);
+                return;
+              }
+              if (step == 2) {
+                const uint8_t old = tmp;
+                uint8_t newhl = 0;
+                uint8_t newa = 0;
+                if (y == 4) {  // RRD
+                  newhl = static_cast<uint8_t>((a() << 4) | (old >> 4));
+                  newa = static_cast<uint8_t>((a() & 0xF0) | (old & 0x0F));
+                } else {  // RLD
+                  newhl = static_cast<uint8_t>((old << 4) | (a() & 0x0F));
+                  newa = static_cast<uint8_t>((a() & 0xF0) | (old >> 4));
+                }
+                set_a(newa);
+                set_f(static_cast<uint8_t>((f() & CF) | sz53p(newa)));
+                wz.v = static_cast<uint16_t>(hl.v + 1);
+                req_write(hl.v, newhl);
+                return;
+              }
+              finish();
+              return;
+            default:
+              break;
+          }
+          break;
+        default:
+          break;
+      }
+    }
+
+    if (x == 2 && z < 4 &&
+        y >= 4) {  // block ops: I/D variants (y4/5), R variants (y6/7)
+      const bool inc = (y == 4 || y == 6);
+      const bool repeat = (y >= 6);
+      switch (z) {
+        case 0:
+          block_ld(inc, repeat);
+          return;
+        case 1:
+          block_cp(inc, repeat);
+          return;
+        case 2:
+          block_in(inc, repeat);
+          return;
+        case 3:
+          block_out(inc, repeat);
+          return;
+        default:
+          break;
+      }
+    }
+
+    unimplemented = true;
+    finish();
+  }
+
+  // --- CB-prefix helpers ---
+  // Rotate/shift (op 0..7: RLC RRC RL RR SLA SRA SLL SRL); sets SZ5H3PNC.
+  uint8_t cb_shift(uint8_t op, uint8_t val) {
+    const uint8_t oldc = (f() & CF) ? 1 : 0;
+    uint8_t carry = 0;
+    uint8_t res = 0;
+    switch (op) {
+      case 0:
+        carry = static_cast<uint8_t>(val >> 7);
+        res = static_cast<uint8_t>((val << 1) | carry);
+        break;
+      case 1:
+        carry = static_cast<uint8_t>(val & 1);
+        res = static_cast<uint8_t>((val >> 1) | (carry << 7));
+        break;
+      case 2:
+        carry = static_cast<uint8_t>(val >> 7);
+        res = static_cast<uint8_t>((val << 1) | oldc);
+        break;
+      case 3:
+        carry = static_cast<uint8_t>(val & 1);
+        res = static_cast<uint8_t>((val >> 1) | (oldc << 7));
+        break;
+      case 4:
+        carry = static_cast<uint8_t>(val >> 7);
+        res = static_cast<uint8_t>(val << 1);
+        break;
+      case 5:
+        carry = static_cast<uint8_t>(val & 1);
+        res = static_cast<uint8_t>((val >> 1) | (val & 0x80));
+        break;
+      case 6:
+        carry = static_cast<uint8_t>(val >> 7);
+        res = static_cast<uint8_t>((val << 1) | 1);
+        break;  // SLL (undoc)
+      case 7:
+        carry = static_cast<uint8_t>(val & 1);
+        res = static_cast<uint8_t>(val >> 1);
+        break;
+      default:
+        break;
+    }
+    set_f(static_cast<uint8_t>(sz53p(res) | (carry ? CF : 0)));
+    return res;
+  }
+  // BIT n,src — Z/P from the tested bit, H=1, N=0, S only from bit 7, C kept;
+  // undocumented X/Y come from `xy` (the register value, or WZ.hi for (HL)).
+  void cb_bit(uint8_t n, uint8_t val, uint8_t xy) {
+    const uint8_t bit = static_cast<uint8_t>(val & (1u << n));
+    uint8_t flags = static_cast<uint8_t>((f() & CF) | HF | (xy & (YF | XF)));
+    if (bit == 0) flags |= static_cast<uint8_t>(ZF | PF);
+    if (n == 7 && bit) flags |= SF;
+    set_f(flags);
+  }
+
+  // Does the current (DD/FD-prefixed) opcode use (HL) as a memory operand, i.e.
+  // does it need an (IX/IY+d) displacement fetch? (HALT is excluded.)
+  bool idx_uses_mem() const {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+    if (x == 1)
+      return (z == 6) !=
+             (y == 6);  // LD r,(HL)/(HL),r (exactly one is (HL); not HALT)
+    if (x == 2) return z == 6;  // ALU A,(HL)
+    if (x == 0 && (z == 4 || z == 5 || z == 6))
+      return y == 6;  // INC/DEC/LD (HL)
+    return false;
+  }
+
+  // (IX/IY+d) memory instructions. All fetch the displacement, compute the
+  // effective address (also the MEMPTR), then run the op. The register operand
+  // keeps its TRUE H/L (get_r_real), never IXH/IXL.
+  void micro_index() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+
+    if (x == 0 && z == 6 &&
+        y == 6) {  // LD (IX+d),n — fetch d, fetch n, write (19T)
+      if (step == 0) {
+        req_read(pc.v);
+        pcinc();
+        return;
+      }
+      if (step == 1) {
+        mem_addr = static_cast<uint16_t>(idx_hl() + static_cast<int8_t>(tmp));
+        wz.v = mem_addr;
+        req_read(pc.v);
+        pcinc();
+        return;
+      }
+      if (step == 2) {
+        tmpl = tmp;
+        req_internal(2);
+        return;
+      }
+      if (step == 3) {
+        req_write(mem_addr, tmpl);
+        return;
+      }
+      finish();
+      return;
+    }
+
+    // All other forms: fetch d, internal(5) for the address add, then the op.
+    if (step == 0) {
+      req_read(pc.v);
+      pcinc();
+      return;
+    }
+    if (step == 1) {
+      mem_addr = static_cast<uint16_t>(idx_hl() + static_cast<int8_t>(tmp));
+      wz.v = mem_addr;
+      req_internal(5);
+      return;
+    }
+    if (x == 1) {
+      if (z == 6) {  // LD r,(IX+d) — y is the real destination register
+        if (step == 2) {
+          req_read(mem_addr);
+          return;
+        }
+        set_r_real(y, tmp);
+        finish();
+        return;
+      }
+      // y == 6: LD (IX+d),r — z is the real source register
+      if (step == 2) {
+        req_write(mem_addr, get_r_real(z));
+        return;
+      }
+      finish();
+      return;
+    }
+    if (x == 2) {  // ALU A,(IX+d)
+      if (step == 2) {
+        req_read(mem_addr);
+        return;
+      }
+      alu(y, tmp);
+      finish();
+      return;
+    }
+    // x == 0, z==4/5, y==6: INC/DEC (IX+d) — read, internal(1), write (23T)
+    if (step == 2) {
+      req_read(mem_addr);
+      return;
+    }
+    if (step == 3) {
+      req_internal(1);
+      return;
+    }
+    if (step == 4) {
+      req_write(mem_addr, (z == 4) ? inc8(tmp) : dec8(tmp));
+      return;
+    }
+    finish();
+  }
+
+  // DDCB/FDCB: `DD CB d op`. The displacement is fetched BEFORE the sub-opcode,
+  // both as plain memory reads (no M1). The op acts on (IX+d); for non-BIT it
+  // writes back AND (undocumented) copies the result into register z (real).
+  void micro_ddcb() {
+    if (step == 0) {
+      req_read(pc.v);
+      pcinc();
+      return;
+    }  // displacement d
+    if (step == 1) {
+      mem_addr = static_cast<uint16_t>(idx_hl() + static_cast<int8_t>(tmp));
+      wz.v = mem_addr;
+      req_read(pc.v);
+      pcinc();  // the CB sub-opcode (no M1/refresh)
+      return;
+    }
+    if (step == 2) {
+      tmpl = tmp;
+      req_internal(3);
+      return;
+    }  // save op; address-calc
+    if (step == 3) {
+      req_read(mem_addr);
+      return;
+    }  // read (IX+d)
+    if (step == 4) {
+      const uint8_t cbx = static_cast<uint8_t>(tmpl >> 6);
+      const uint8_t cby = static_cast<uint8_t>((tmpl >> 3) & 7);
+      const uint8_t cbz = static_cast<uint8_t>(tmpl & 7);
+      if (cbx == 1) {  // BIT b,(IX+d): X/Y from the address high byte
+        cb_bit(cby, tmp, static_cast<uint8_t>(mem_addr >> 8));
+        finish();
+        return;
+      }
+      uint8_t res = 0;
+      if (cbx == 0)
+        res = cb_shift(cby, tmp);
+      else if (cbx == 2)
+        res = static_cast<uint8_t>(tmp & ~(1u << cby));
+      else
+        res = static_cast<uint8_t>(tmp | (1u << cby));
+      if (cbz != 6) set_r_real(cbz, res);  // undoc: also store into register z
+      req_write(mem_addr, res);
+      return;
+    }
+    finish();
+  }
+
+  void micro_cb() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+
+    if (z !=
+        6) {  // register operand: rotate/BIT/RES/SET in one step (8T total)
+      const uint8_t val = get_r(z);
+      if (x == 0)
+        set_r(z, cb_shift(y, val));
+      else if (x == 1)
+        cb_bit(y, val, val);
+      else if (x == 2)
+        set_r(z, static_cast<uint8_t>(val & ~(1u << y)));
+      else
+        set_r(z, static_cast<uint8_t>(val | (1u << y)));
+      finish();
+      return;
+    }
+
+    // (HL): READ, INTERNAL(1), then BIT (12T) or write-back (15T).
+    if (step == 0) {
+      req_read(hl.v);
+      return;
+    }
+    if (step == 1) {
+      req_internal(1);
+      return;
+    }
+    if (step == 2) {
+      if (x == 1) {
+        cb_bit(y, tmp, wz.hi());
+        finish();
+        return;
+      }  // BIT (HL): X/Y from WZ
+      uint8_t res = 0;
+      if (x == 0)
+        res = cb_shift(y, tmp);
+      else if (x == 2)
+        res = static_cast<uint8_t>(tmp & ~(1u << y));
+      else
+        res = static_cast<uint8_t>(tmp | (1u << y));
+      req_write(hl.v, res);
+      return;
+    }
+    finish();
+  }
+
+  // The instruction step machine. Dispatched by the opcode's x field so each
+  // family is isolated and decode no longer depends on guard ORDER (important
+  // once CB/ED/DD/FD multiply the branches). Each handler requests one M-cycle
+  // and returns, or finish()es. Unmatched opcodes set `unimplemented`.
+  void micro() {
+    const uint8_t x = static_cast<uint8_t>(opcode >> 6);
+    const uint8_t y = static_cast<uint8_t>((opcode >> 3) & 7);
+    const uint8_t z = static_cast<uint8_t>(opcode & 7);
+    switch (x) {
+      case 0:
+        micro_x0(y, z);
+        return;
+      case 1:
+        micro_x1(y, z);
+        return;
+      case 2:  // ALU A,r / A,(HL)
+        if (z == 6) {
+          if (step == 0) {
+            req_read(hl.v);
+            return;
+          }
+          alu(y, tmp);
+        } else {
+          alu(y, get_r(z));
+        }
+        finish();
+        return;
+      case 3:  // control flow, stack, ALU A,n, prefixes
+        micro_x3(y, z);
+        return;
+      default:
+        return;
+    }
+  }
+
+  // x=3: RET cc / POP / JP / CALL / RST / PUSH / EX / DI-EI / ALU A,n.
+  // Stack writes push high byte first (to SP-1), then low (to SP-2). Ops with a
+  // 5T/6T M1 (PUSH, RST, RET cc, LD SP,HL) model the extra T as a leading
+  // INTERNAL — same totals and bus behaviour, no special-casing in the engine.
+  void micro_x3(uint8_t y, uint8_t z) {
+    const uint8_t p = static_cast<uint8_t>(y >> 1);
+    const uint8_t qbit = static_cast<uint8_t>(y & 1);
+    switch (z) {
+      case 0:  // RET cc — 5T M1 (decision), then POP pc if taken
+        if (step == 0) {
+          req_internal(1);
+          return;
+        }
+        if (step == 1) {
+          if (!cond(y)) {
+            finish();
+            return;
+          }  // not taken: 5T
+          req_read(sp.v);
+          sp.v++;
+          return;
+        }
+        if (step == 2) {
+          tmpl = tmp;
+          req_read(sp.v);
+          sp.v++;
+          return;
+        }
+        pc.v = wz.v = assemble16();
+        finish();
+        return;
+      case 1:
+        if (qbit == 0) {  // POP rp2[p]
+          if (step == 0) {
+            req_read(sp.v);
+            sp.v++;
+            return;
+          }
+          if (step == 1) {
+            tmpl = tmp;
+            req_read(sp.v);
+            sp.v++;
+            return;
+          }
+          set_rp2(p, assemble16());
+          finish();
+          return;
+        }
+        switch (p) {
+          case 0:  // RET
+            if (step == 0) {
+              req_read(sp.v);
+              sp.v++;
+              return;
+            }
+            if (step == 1) {
+              tmpl = tmp;
+              req_read(sp.v);
+              sp.v++;
+              return;
+            }
+            pc.v = wz.v = assemble16();
+            finish();
+            return;
+          case 1: {  // EXX
+            const uint16_t b = bc.v, d = de.v, h = hl.v;
+            bc.v = bc2.v;
+            de.v = de2.v;
+            hl.v = hl2.v;
+            bc2.v = b;
+            de2.v = d;
+            hl2.v = h;
+            finish();
+            return;
+          }
+          case 2:  // JP (HL/IX/IY) — 4T, no WZ change
+            pc.v = idx_hl();
+            finish();
+            return;
+          case 3:  // LD SP,HL/IX/IY — 6T (M1 + 2 internal)
+            if (step == 0) {
+              req_internal(2);
+              return;
+            }
+            sp.v = idx_hl();
+            finish();
+            return;
+          default:
+            return;
+        }
+      case 2:  // JP cc,nn — always reads nn, WZ=nn, jumps if cc
+        if (step == 0) {
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (step == 1) {
+          tmpl = tmp;
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        wz.v = assemble16();
+        if (cond(y)) pc.v = wz.v;
+        finish();
+        return;
+      case 3:
+        switch (y) {
+          case 0:  // JP nn
+            if (step == 0) {
+              req_read(pc.v);
+              pcinc();
+              return;
+            }
+            if (step == 1) {
+              tmpl = tmp;
+              req_read(pc.v);
+              pcinc();
+              return;
+            }
+            pc.v = wz.v = assemble16();
+            finish();
+            return;
+          // (y=1 is the CB prefix, handled at M1 — see default below.)
+          case 2:  // OUT (n),A — port = (A<<8)|n; MEMPTR low=(n+1)&FF, high=A
+            if (step == 0) {
+              req_read(pc.v);
+              pcinc();
+              return;
+            }
+            if (step == 1) {
+              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
+              wz.set_lo(static_cast<uint8_t>((tmp + 1) & 0xFF));
+              wz.set_hi(a());
+              req_io_write(port, a());
+              return;
+            }
+            finish();
+            return;
+          case 3:  // IN A,(n) — port = (A<<8)|n; MEMPTR = port+1
+            if (step == 0) {
+              req_read(pc.v);
+              pcinc();
+              return;
+            }
+            if (step == 1) {
+              const uint16_t port = static_cast<uint16_t>((a() << 8) | tmp);
+              wz.v = static_cast<uint16_t>(port + 1);
+              req_io_read(port);
+              return;
+            }
+            set_a(tmp);
+            finish();
+            return;
+          case 4:  // EX (SP),HL/IX/IY — 19T. Read the stack word, write the
+                   // index reg there, then load it from the old word; WZ = new
+                   // value.
+            if (step == 0) {
+              req_read(sp.v);
+              return;
+            }
+            if (step == 1) {
+              tmpl = tmp;
+              req_read(static_cast<uint16_t>(sp.v + 1));
+              return;
+            }
+            if (step == 2) {
+              req_internal(1);
+              return;
+            }
+            if (step == 3) {
+              req_write(static_cast<uint16_t>(sp.v + 1), idx_h());
+              return;
+            }
+            if (step == 4) {
+              req_write(sp.v, idx_l());
+              return;
+            }
+            if (step == 5) {
+              set_idx_l(tmpl);
+              set_idx_h(tmp);
+              wz.v = idx_hl();
+              req_internal(2);
+              return;
+            }
+            finish();
+            return;
+          case 5: {  // EX DE,HL
+            const uint16_t t2 = de.v;
+            de.v = hl.v;
+            hl.v = t2;
+            finish();
+            return;
+          }
+          case 6:  // DI
+            iff1 = iff2 = 0;
+            finish();
+            return;
+          case 7:  // EI — enable, but defer INT acceptance until after the next
+                   // op
+            iff1 = iff2 = 1;
+            ei_delay = true;
+            finish();
+            return;
+          default:  // y=1 is the CB prefix (handled at M1)
+            unimplemented = true;
+            finish();
+            return;
+        }
+      case 4:  // CALL cc,nn
+        if (step == 0) {
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (step == 1) {
+          tmpl = tmp;
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (step == 2) {
+          wz.v = assemble16();
+          if (!cond(y)) {
+            finish();
+            return;
+          }  // not taken: 10T
+          req_internal(1);
+          return;
+        }
+        if (step == 3) {
+          sp.v--;
+          req_write(sp.v, pc.hi());
+          return;
+        }
+        if (step == 4) {
+          sp.v--;
+          req_write(sp.v, pc.lo());
+          return;
+        }
+        pc.v = wz.v;
+        finish();
+        return;
+      case 5:
+        if (qbit == 0) {  // PUSH rp2[p] — 5T M1 + 2 writes
+          if (step == 0) {
+            req_internal(1);
+            return;
+          }
+          if (step == 1) {
+            sp.v--;
+            req_write(sp.v, static_cast<uint8_t>(get_rp2(p) >> 8));
+            return;
+          }
+          if (step == 2) {
+            sp.v--;
+            req_write(sp.v, static_cast<uint8_t>(get_rp2(p) & 0xFF));
+            return;
+          }
+          finish();
+          return;
+        }
+        if (p == 0) {  // CALL nn
+          if (step == 0) {
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          if (step == 1) {
+            tmpl = tmp;
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          if (step == 2) {
+            wz.v = assemble16();
+            req_internal(1);
+            return;
+          }
+          if (step == 3) {
+            sp.v--;
+            req_write(sp.v, pc.hi());
+            return;
+          }
+          if (step == 4) {
+            sp.v--;
+            req_write(sp.v, pc.lo());
+            return;
+          }
+          pc.v = wz.v;
+          finish();
+          return;
+        }
+        unimplemented = true;  // p=1 DD / p=3 FD (index prefix, later)
+        finish();
+        return;
+      case 6:  // ALU A,n
+        if (step == 0) {
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        alu(y, tmp);
+        finish();
+        return;
+      case 7:  // RST y*8 — 5T M1 + 2 writes
+        if (step == 0) {
+          req_internal(1);
+          return;
+        }
+        if (step == 1) {
+          sp.v--;
+          req_write(sp.v, pc.hi());
+          return;
+        }
+        if (step == 2) {
+          sp.v--;
+          req_write(sp.v, pc.lo());
+          return;
+        }
+        pc.v = wz.v = static_cast<uint16_t>(y * 8);
+        finish();
+        return;
+      default:
+        unimplemented = true;
+        finish();
+        return;
+    }
+  }
+
+  void micro_x1(uint8_t y, uint8_t z) {  // LD r,r' / r,(HL) / (HL),r ; HALT
+    if (y == 6 && z == 6) {  // HALT — PC points back AT the opcode while halted
+      halted = true;
+      pc.v = static_cast<uint16_t>(pc.v - 1);
+      finish();
+      return;
+    }
+    if (z == 6) {  // LD r,(HL)
+      if (step == 0) {
+        req_read(hl.v);
+        return;
+      }
+      set_r(y, tmp);
+      finish();
+      return;
+    }
+    if (y == 6) {  // LD (HL),r
+      if (step == 0) {
+        req_write(hl.v, get_r(z));
+        return;
+      }
+      finish();
+      return;
+    }
+    set_r(y, get_r(z));  // LD r,r'
+    finish();
+  }
+
+  void micro_x0(uint8_t y, uint8_t z) {
+    const uint8_t p = static_cast<uint8_t>(y >> 1);
+    const uint8_t qbit = static_cast<uint8_t>(y & 1);
+    switch (z) {
+      case 0:  // NOP (y=0); EX AF,AF' (y=1); DJNZ (y=2); JR/JR cc (y>=3)
+        if (y == 0) {
+          finish();
+          return;
+        }
+        if (y == 1) {  // EX AF,AF'
+          const uint16_t tv = af.v;
+          af.v = af2.v;
+          af2.v = tv;
+          finish();
+          return;
+        }
+        if (y == 2) {  // DJNZ e — 5T M1, read displacement, branch if --B != 0
+          if (step == 0) {
+            req_internal(1);
+            return;
+          }
+          if (step == 1) {
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          if (step == 2) {
+            bc.set_hi(static_cast<uint8_t>(bc.hi() - 1));
+            if (bc.hi() == 0) {
+              finish();
+              return;
+            }  // not taken: 8T
+            req_internal(5);
+            return;
+          }
+          pc.v = wz.v = static_cast<uint16_t>(pc.v + static_cast<int8_t>(tmp));
+          finish();
+          return;
+        }
+        // JR e (y=3) / JR cc,e (y=4..7 → NZ,Z,NC,C)
+        if (step == 0) {
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (step == 1) {
+          const bool take = (y == 3) || cond(static_cast<uint8_t>(y - 4));
+          if (!take) {
+            finish();
+            return;
+          }  // not taken: 7T
+          req_internal(5);
+          return;
+        }
+        pc.v = wz.v = static_cast<uint16_t>(pc.v + static_cast<int8_t>(tmp));
+        finish();
+        return;
+      case 1:  // LD rr,nn (qbit=0) / ADD HL,rr (qbit=1)
+        if (qbit == 0) {
+          if (step == 0) {
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          if (step == 1) {
+            tmpl = tmp;
+            req_read(pc.v);
+            pcinc();
+            return;
+          }
+          set_rp(p, assemble16());
+          finish();
+          return;
+        }
+        // ADD HL,rr — INTERNAL(7) then the add (11T total)
+        if (step == 0) {
+          req_internal(7);
+          return;
+        }
+        add16(get_rp(p));
+        finish();
+        return;
+      case 2:  // LD A,(BC|DE) / LD (BC|DE),A (p<2); (nn) forms (p>=2) later
+        if (p < 2) {
+          const uint16_t rp = (p == 0) ? bc.v : de.v;
+          if (qbit == 1) {  // LD A,(rp)
+            if (step == 0) {
+              req_read(rp);
+              return;
+            }
+            set_a(tmp);
+            wz.v = static_cast<uint16_t>(rp + 1);  // MEMPTR = rp+1
+            finish();
+            return;
+          }
+          if (step == 0) {
+            req_write(rp, a());
+            return;
+          }  // LD (rp),A
+          wz.set_hi(a());
+          wz.set_lo(static_cast<uint8_t>((rp & 0xFF) +
+                                         1));  // MEMPTR = (A<<8)|(low+1)
+          finish();
+          return;
+        }
+        // p>=2: absolute (nn) loads. Read the 16-bit operand, then use WZ as
+        // the working address pointer (reads clobber `tmp`, never WZ).
+        if (step == 0) {
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (step == 1) {
+          tmpl = tmp;
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (step == 2) wz.v = assemble16();  // WZ = nn
+        if (p == 2 && qbit == 0) {           // LD (nn),HL/IX/IY
+          if (step == 2) {
+            req_write(wz.v, idx_l());
+            wz.v++;
+            return;
+          }
+          if (step == 3) {
+            req_write(wz.v, idx_h());
+            return;
+          }  // WZ already nn+1
+          finish();
+          return;
+        }
+        if (p == 2 && qbit == 1) {  // LD HL/IX/IY,(nn)
+          if (step == 2) {
+            req_read(wz.v);
+            wz.v++;
+            return;
+          }
+          if (step == 3) {
+            set_idx_l(tmp);
+            req_read(wz.v);
+            return;
+          }
+          set_idx_h(tmp);
+          finish();
+          return;
+        }
+        if (p == 3 && qbit == 0) {  // LD (nn),A — MEMPTR low=(nn+1)&FF, high=A
+          if (step == 2) {
+            req_write(wz.v, a());
+            wz.set_lo(static_cast<uint8_t>((wz.v & 0xFF) + 1));
+            wz.set_hi(a());
+            return;
+          }
+          finish();
+          return;
+        }
+        // p == 3 && qbit == 1: LD A,(nn)
+        if (step == 2) {
+          req_read(wz.v);
+          wz.v++;
+          return;
+        }
+        set_a(tmp);
+        finish();
+        return;
+      case 3:  // INC/DEC rr (no flags, INTERNAL(2))
+        if (step == 0) {
+          req_internal(2);
+          return;
+        }
+        {
+          const uint16_t v = get_rp(p);
+          set_rp(p, static_cast<uint16_t>(qbit ? (v - 1) : (v + 1)));
+        }
+        finish();
+        return;
+      case 4:          // INC r/(HL)
+      case 5:          // DEC r/(HL)
+        if (y == 6) {  // INC/DEC (HL): READ, INTERNAL(1), WRITE
+          if (step == 0) {
+            req_read(hl.v);
+            return;
+          }
+          if (step == 1) {
+            req_internal(1);
+            return;
+          }
+          if (step == 2) {
+            req_write(hl.v, (z == 4) ? inc8(tmp) : dec8(tmp));
+            return;
+          }
+          finish();
+          return;
+        }
+        set_r(y, (z == 4) ? inc8(get_r(y)) : dec8(get_r(y)));
+        finish();
+        return;
+      case 6:  // LD r,n / LD (HL),n
+        if (step == 0) {
+          req_read(pc.v);
+          pcinc();
+          return;
+        }
+        if (y == 6) {  // LD (HL),n
+          if (step == 1) {
+            req_write(hl.v, tmp);
+            return;
+          }
+          finish();
+          return;
+        }
+        set_r(y, tmp);  // LD r,n
+        finish();
+        return;
+      case 7:  // RLCA/RRCA/RLA/RRA/DAA/CPL/SCF/CCF
+        switch (y) {
+          case 0:
+            acc_rot(0);
+            break;
+          case 1:
+            acc_rot(1);
+            break;
+          case 2:
+            acc_rot(2);
+            break;
+          case 3:
+            acc_rot(3);
+            break;
+          case 4:
+            daa();
+            break;
+          case 5:
+            cpl();
+            break;
+          case 6:
+            scf();
+            break;
+          case 7:
+            ccf();
+            break;
+          default:
+            break;
+        }
+        finish();
+        return;
+      default:
+        break;
+    }
+    unimplemented = true;
+    finish();
+  }
+};
+}  // namespace
+
+namespace {
+
+z80_state* self_of(void* self) { return static_cast<z80_state*>(self); }
+
+void z80_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
+  z80_state* z = self_of(self);
+
+  // NMI is edge-triggered — latch a rising edge every master cycle (even while
+  // clock-gated) so an edge between CPU ticks is not missed.
+  if (in->cpu.nmi && !z->nmi_prev) z->nmi_pending = true;
+  z->nmi_prev = in->cpu.nmi;
+
+  if (!in->clk.cpu) {
+    // Drive-and-hold: the CPU advances a T-state only on the 4 MHz enable; on
+    // the ÷4 clock's other master cycles it keeps its address + control lines
+    // asserted so a memory/IO transaction stays stable until the next advance.
+    // `data` is held only for writes — on reads the CPU tristates it so the
+    // responding device drives the byte (keeping the shared bus single-driver /
+    // order-free).
+    if (z->held_valid) {
+      out->cpu.addr = z->held.addr;
+      out->cpu.m1 = z->held.m1;
+      out->cpu.mreq = z->held.mreq;
+      out->cpu.iorq = z->held.iorq;
+      out->cpu.rd = z->held.rd;
+      out->cpu.wr = z->held.wr;
+      out->cpu.rfsh = z->held.rfsh;
+      out->cpu.halt = z->held.halt;
+      out->cpu.busak = z->held.busak;
+      if (z->held.wr) out->cpu.data = z->held.data;
+    }
+    return;
+  }
+
+  const bool int_ready =
+      z->nmi_pending || (z->iff1 && in->cpu.irq && !z->ei_delay);
+
+  if (z->halted) {
+    if (int_ready) {  // an accepted interrupt wakes the CPU; resume at M1
+      z->halted = false;
+      z->halt_t = 0;  // clear the HALT refresh sub-counter for determinism
+      z->pc.v =
+          static_cast<uint16_t>(z->pc.v + 1);  // step past the HALT opcode
+      z->mc = z80_state::MC::M1;
+      z->t = 0;  // fall through to run M1 T1 (acceptance) this tick
+    } else {
+      z->tstates++;
+      if (++z->halt_t >= 4) {
+        z->halt_t = 0;
+        z->bump_refresh();
+      }
+      out->cpu.halt = true;  // HALT line stays asserted while halted
+      z->held = out->cpu;
+      z->held_valid = true;
+      return;
+    }
+  }
+
+  // BUSRQ / BUSAK: at a machine-cycle boundary (t == 0), a DMA master — the
+  // Plus ASIC's sound sequencer — can request the bus. Grant BUSAK, tristate
+  // the CPU bus, and hold (advancing no T-state) until BUSRQ deasserts; the
+  // gated-clock path above keeps BUSAK asserted via held.busak. The CPU resumes
+  // its next M-cycle when the bus is returned. FUSE runs never assert busrq, so
+  // this is inert there (like the WAIT quantiser below).
+  if (z->t == 0 && in->cpu.busrq) {
+    out->cpu.busak = true;  // out is otherwise resting → the CPU drives nothing
+    z->held = out->cpu;
+    z->held.busak = true;  // hold BUSAK through the gated (÷4) master cycles
+    z->held_valid = true;
+    return;
+  }
+
+  z->tstates++;  // one per executed T-state (WAIT Tw counts for free)
+  z->t++;
+
+  // GA µs-quantiser: every MEMORY machine cycle (M1 fetch, read, write,
+  // interrupt ack) begins only on a 1 µs boundary — the Gate Array holds the
+  // CPU with WAIT for 3 of each µs's 4 T-states, so a bus M-cycle's T1 can only
+  // land on the µs grid; internal cycles touch no bus and run freely. This
+  // per-M-cycle alignment is what produces the CPC's instruction timings
+  // (legacy cc_op golden master): PUSH = 16T, LD HL,(nn) = 20T, EX (SP),HL =
+  // 24T — NOT a per-instruction roundup(raw,4), which agrees on single-access
+  // opcodes but undercounts once an instruction has several bus M-cycles.
+  //
+  // MC::IO is EXEMPT from the T1 hold: an I/O cycle free-runs its T1 and
+  // instead stretches in its automatic TW until the GA releases /WAIT (slot 1
+  // of the µs; gate_array.cpp drives cpu.wait, the case-3 repeat below honours
+  // it). That combination reproduces the CPC's measured I/O totals: IN A,(n) =
+  // 12T but IN r,(C) = 16T, and OTIR = 24T per iteration. The memory-cycle T1
+  // hold is the SAME /WAIT expressed at µs granularity — an aligned memory T2
+  // always lands in the released slot, so memory cycles never stretch further.
+  // With the always-on test clock the phase is always 0 and nothing drives
+  // cpu.wait, so both mechanisms are no-ops there (raw timing preserved; FUSE
+  // unaffected).
+  if (z->t == 1 && z->mc != z80_state::MC::INTERNAL &&
+      z->mc != z80_state::MC::IO && in->clk.phase != 0) {
+    z->t = 0;  // consume a wait T-state, re-check next enable
+    out->cpu.halt = z->halted;
+    z->held = out->cpu;
+    z->held_valid = true;
+    return;
+  }
+
+  switch (z->mc) {
+    case z80_state::MC::M1:
+      switch (z->t) {
+        case 1:
+          z->qq = 0;
+          // Accept a pending interrupt only at a true instruction boundary
+          // (prefix==0 && index==0 — never between a prefix and its opcode).
+          if (z->prefix == 0 && z->index == z80_state::IndexReg::HL) {
+            const bool was_ei = z->ei_delay;
+            z->ei_delay = false;
+            // A repeat-taken block-I/O iteration now commits its corrected
+            // mid-loop F directly (Banks 2018 — see block_in/block_out), so an
+            // interrupt accepted here already sees the right flags; no fix-up.
+            // The interrupt/NMI acknowledge IS an M1 cycle: it performs one
+            // DRAM refresh, so R increments once per accepted interrupt.
+            if (z->nmi_pending) {
+              z->nmi_pending = false;
+              z->bump_refresh();
+              z->iff1 = 0;  // NMI: IFF1 cleared, IFF2 preserved
+              z->servicing = z80_state::Servicing::NMI;
+              z->step = 0;
+              z->run_micro();  // issue the first sequence M-cycle
+              break;
+            }
+            if (z->iff1 && in->cpu.irq && !was_ei) {
+              z->bump_refresh();
+              z->iff1 = z->iff2 = 0;
+              z->servicing =
+                  z80_state::Servicing::MASKABLE;  // vector latched in the ack
+                                                   // cycle
+              z->step = 0;
+              z->run_micro();
+              break;
+            }
+          }
+          z->mc_addr = z->pc.v;
+          z->pc.v = static_cast<uint16_t>(z->pc.v + 1);
+          out->cpu.addr = z->mc_addr;
+          out->cpu.m1 = out->cpu.mreq = out->cpu.rd = true;
+          break;
+        case 2:
+          out->cpu.addr = z->mc_addr;
+          out->cpu.m1 = out->cpu.mreq = out->cpu.rd = true;
+          break;
+        case 3:  // opcode sampled here (one-hop latency, hw-spec §2)
+          z->opcode = in->cpu.data;
+          z->bump_refresh();
+          out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
+          out->cpu.mreq = out->cpu.rfsh = true;
+          break;
+        case 4:
+          out->cpu.addr = static_cast<uint16_t>((z->i << 8) | z->r);
+          out->cpu.rfsh = true;
+          if (z->prefix == 0 && (z->opcode == 0xDD || z->opcode == 0xFD)) {
+            // DD/FD is a prefix only when none is active; after a CB/ED prefix
+            // the same byte is a sub-opcode (e.g. CB DD = SET 3,L, not a DD
+            // prefix).
+            z->index = (z->opcode == 0xDD)
+                           ? z80_state::IndexReg::IX
+                           : z80_state::IndexReg::IY;  // last DD/FD wins
+            z->prefix = 0;
+            z->mc = z80_state::MC::M1;  // fetch the real opcode as another M1
+            z->t = 0;
+          } else if (z->prefix == 0 && z->opcode == 0xED) {
+            z->prefix = 0xED;
+            z->index = z80_state::IndexReg::HL;  // ED ignores a pending DD/FD
+            z->mc = z80_state::MC::M1;
+            z->t = 0;
+          } else if (z->prefix == 0 && z->opcode == 0xCB &&
+                     z->index == z80_state::IndexReg::HL) {
+            z->prefix = 0xCB;  // plain CB → fetch the sub-opcode as a second M1
+            z->mc = z80_state::MC::M1;
+            z->t = 0;
+          } else {
+            z->step = 0;
+            z->run_micro();  // begin instruction (DDCB/index/plain by active
+                             // state)
+          }
+          break;
+        default:
+          break;
+      }
+      break;
+
+    case z80_state::MC::READ:
+      switch (z->t) {
+        case 1:
+        case 2:
+          out->cpu.addr = z->mc_addr;
+          out->cpu.mreq = out->cpu.rd = true;
+          if (z->t == 2 && in->cpu.wait) z->t = 1;  // insert Tw
+          break;
+        case 3:
+          z->tmp = in->cpu.data;
+          z->step++;
+          z->run_micro();
+          break;
+        default:
+          break;
+      }
+      break;
+
+    case z80_state::MC::WRITE:
+      switch (z->t) {
+        case 1:
+          out->cpu.addr = z->mc_addr;
+          out->cpu.data = z->mc_wval;
+          out->cpu.mreq = true;
+          break;
+        case 2:
+          out->cpu.addr = z->mc_addr;
+          out->cpu.data = z->mc_wval;
+          out->cpu.mreq = out->cpu.wr = true;
+          if (in->cpu.wait) z->t = 1;  // insert Tw
+          break;
+        case 3:
+          z->step++;
+          z->run_micro();
+          break;
+        default:
+          break;
+      }
+      break;
+
+    case z80_state::MC::INTERNAL:
+      if (z->t >= z->mc_ilen) {
+        z->step++;
+        z->run_micro();
+      }
+      break;
+
+    case z80_state::MC::IO:
+      // 4 T-states: T1, T2, an always-present auto-wait Tw, then sample at T4.
+      switch (z->t) {
+        case 1:
+        case 2:
+        case 3:
+          out->cpu.addr = z->mc_addr;
+          out->cpu.iorq = true;
+          if (z->mc_io_read) {
+            out->cpu.rd = true;
+          } else {
+            out->cpu.wr = true;
+            out->cpu.data = z->mc_wval;
+          }
+          if (z->t == 3 && in->cpu.wait) z->t = 2;  // honor external wait too
+          break;
+        case 4:
+          if (z->mc_io_read) z->tmp = in->cpu.data;
+          z->step++;
+          z->run_micro();
+          break;
+        default:
+          break;
+      }
+      break;
+
+    case z80_state::MC::IOACK:
+      // Interrupt/NMI acknowledge. INT drives m1+iorq (the interrupting device
+      // puts its vector on the data bus — the CPC floats 0xFF); NMI drives
+      // m1+mreq (a discarded dummy fetch). Runs mc_ilen T-states, then latches
+      // the vector.
+      out->cpu.addr = z->pc.v;
+      out->cpu.m1 = true;
+      if (z->servicing == z80_state::Servicing::MASKABLE)
+        out->cpu.iorq = true;
+      else
+        out->cpu.mreq = true;
+      if (z->t >= z->mc_ilen) {
+        if (z->servicing == z80_state::Servicing::MASKABLE)
+          z->int_vec = in->cpu.data;
+        z->step++;
+        z->run_micro();
+      }
+      break;
+  }
+
+  // Latch what we drove this T-state so drive-and-hold can re-assert it across
+  // the ÷4 clock's idle master cycles until the next advance.
+  out->cpu.halt = z->halted;
+  z->held = out->cpu;
+  z->held_valid = true;
+}
+
+void z80_reset(void* self) {
+  z80_state* z = self_of(self);
+  z->pc.v = 0;
+  z->i = z->r = z->iff1 = z->iff2 = 0;
+  z->im = z80_state::IntMode::IM0;
+  z->af.v = 0xFFFF;
+  z->sp.v = 0xFFFF;
+  z->wz.v = 0;
+  z->q = z->qq = 0;
+  z->halted = false;
+  z->mc = z80_state::MC::M1;
+  z->t = z->step = 0;
+  z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
+  z->mc_addr = z->mc_wval = z->mc_ilen =
+      0;  // scratch: deterministic for snapshots
+  z->mc_io_read = false;
+  z->index = z80_state::IndexReg::HL;
+  z->mem_addr = 0;
+  z->nmi_prev = z->nmi_pending = z->ei_delay = false;
+  z->servicing = z80_state::Servicing::NONE;
+  z->int_vec = 0;
+  z->held = CpuBus{};
+  z->held_valid = false;
+  z->unimplemented = false;
+  z->tstates = 0;
+  z->instr_count = 0;
+}
+
+size_t z80_dev_state_size(const void* /*unused*/) {
+  return sizeof(z80_state) + 1;
+}
+void z80_save(const void* self, void* buf) {
+  // z80_state is pointer-free and trivially copyable, so the whole struct IS
+  // logical state (device.h:38): register file + engine micro-state (mc/t/step/
+  // prefix/held bus) + interrupt latches — all of which a mid-execution save
+  // must preserve. Version byte, then the struct.
+  uint8_t* b = static_cast<uint8_t*>(buf);
+  b[0] = 1;
+  std::memcpy(b + 1, self, sizeof(z80_state));
+}
+void z80_load(void* self, const void* buf) {
+  const uint8_t* b = static_cast<const uint8_t*>(buf);
+  if (b[0] != 1) return;
+  std::memcpy(self, b + 1, sizeof(z80_state));
+}
+
+// ---------------------------------------------------------------------------
+// Batch (instruction-granularity) execution — the RunTier::Fast driver.
+//
+// The SAME micro-op handlers run unchanged; only the engine differs. Where the
+// per-cycle engine returns to the two-phase bus for every T-state, the batch
+// engine satisfies each requested M-cycle synchronously through the Z80BatchIO
+// seams and advances `tstates` by closed-form arithmetic that mirrors the
+// per-cycle timing fabric exactly (ORACLES: the FUSE corpus in batch mode and
+// the ccop dual-mode sweep — z80.md §batch):
+//   - memory-class cycles (M1 4T, READ/WRITE 3T, int-ack mc_ilen T) hold their
+//     T1 to the 4 T-state µs grid (the GA quantiser in z80_tick);
+//   - INTERNAL cycles run free;
+//   - I/O cycles free-run T1 and stretch their automatic Tw until the released
+//     /WAIT slot — T-slot 1 of the µs (gate_array.h: wait = (phase>>2) != 1).
+// Grid phase is `tstates & 3`, valid while the caller keeps tstates µs-locked
+// (true from reset/poke; frame boundaries are µs multiples; a DMA bus steal
+// must re-establish it — the ASIC scheduler's problem, not the driver's).
+// ---------------------------------------------------------------------------
+
+struct BatchEngine {
+  z80_state* z;
+  const Z80BatchIO* io;
+  uint8_t irq_vector;
+  bool grid;
+
+  // µs-quantiser: hold a memory-class T1 to the grid. The held T-states count
+  // (the per-cycle hold branch increments tstates per held tick).
+  void align_mem() const {
+    if (grid) z->tstates += (4 - (z->tstates & 3)) & 3;
+  }
+  // One M1 fetch: aligned, 4 T-states, opcode sampled, one refresh bump.
+  uint8_t fetch_m1() const {
+    align_mem();
+    const uint8_t op = io->mem_read(io->ctx, z->pc.v, z->tstates);
+    z->pcinc();
+    z->bump_refresh();
+    z->tstates += 4;
+    return op;
+  }
+  // Satisfy the M-cycle run_micro() just requested.
+  void satisfy() const {
+    switch (z->mc) {
+      case z80_state::MC::READ:
+        align_mem();
+        z->tmp = io->mem_read(io->ctx, z->mc_addr, z->tstates);
+        z->tstates += 3;
+        return;
+      case z80_state::MC::WRITE:
+        align_mem();
+        io->mem_write(io->ctx, z->mc_addr, z->mc_wval, z->tstates);
+        z->tstates += 3;
+        return;
+      case z80_state::MC::INTERNAL:
+        z->tstates += z->mc_ilen;
+        return;
+      case z80_state::MC::IO: {
+        // T1/T2 free-run; the auto-Tw at T-slot (start+2) repeats until it
+        // lands on the released slot (≡ 1 mod 4) where devices sample the
+        // transaction, then one final T-state (the per-cycle t==4) completes
+        // the cycle: raw total 4 T, grid total 4 + the Tw stretch. Writes
+        // carry the T1 timestamp (the strobes are driven and held from T1 —
+        // that is when snooping devices see them); reads carry the released
+        // slot (what the CPU's sample latches). z80.h §batch.
+        const uint64_t t1 = z->tstates;
+        uint64_t sample = t1 + 2;
+        if (grid) sample += (1 - static_cast<int>(sample & 3)) & 3;
+        z->tstates = sample + 2;
+        if (z->mc_io_read)
+          z->tmp = io->io_read(io->ctx, z->mc_addr, sample);
+        else
+          io->io_write(io->ctx, z->mc_addr, z->mc_wval, t1);
+        return;
+      }
+      case z80_state::MC::IOACK:
+        // Interrupt/NMI acknowledge: memory-class (T1 grid-held), mc_ilen
+        // T-states; a maskable ack latches the data-bus vector (CPC: 0xFF)
+        // and notifies the scheduler (the GA clears its counter on the
+        // M1+IORQ signature this cycle drives).
+        align_mem();
+        if (z->servicing == z80_state::Servicing::MASKABLE) {
+          z->int_vec =
+              io->int_ack ? io->int_ack(io->ctx, z->tstates) : irq_vector;
+        }
+        z->tstates += z->mc_ilen;
+        return;
+      case z80_state::MC::M1:
+        return;  // unreachable: finish() is detected before satisfy()
+    }
+  }
+  // Drive the instruction step machine to finish(). finish() is the only path
+  // that sets mc back to M1 post-fetch, so it doubles as the completion flag.
+  void run_to_finish() const {
+    for (;;) {
+      z->run_micro();
+      if (z->mc == z80_state::MC::M1) return;
+      satisfy();
+      z->step++;
+    }
+  }
+};
+
+}  // namespace
+
+extern "C" {
+
+size_t z80_state_size(void) { return sizeof(z80_state); }
+
+uint32_t z80_batch_step(const Device* dev, const Z80BatchIO* io, int irq,
+                        uint8_t irq_vector, int cpc_grid) {
+  z80_state* z = static_cast<z80_state*>(dev->self);
+  const BatchEngine e{z, io, irq_vector, cpc_grid != 0};
+  const uint64_t t0 = z->tstates;
+
+  const bool int_ready =
+      z->nmi_pending || (z->iff1 && irq != 0 && !z->ei_delay);
+  if (z->halted) {
+    if (!int_ready) return 0;  // caller advances halted time (z80_batch_halt)
+    // Wake: per-cycle consumes no extra T-state — the wake tick IS the M1 T1
+    // of the acceptance sequence below.
+    z->halted = false;
+    z->halt_t = 0;
+    z->pc.v = static_cast<uint16_t>(z->pc.v + 1);  // step past the HALT opcode
+  }
+
+  // Instruction boundary — mirrors the per-cycle M1 T1 exactly: Q scratch
+  // cleared, EI's one-instruction INT shadow consumed, a pending interrupt
+  // accepted with one refresh bump (the acknowledge is an M1 cycle).
+  z->qq = 0;
+  const bool was_ei = z->ei_delay;
+  z->ei_delay = false;
+  if (z->nmi_pending || (z->iff1 && irq != 0 && !was_ei)) {
+    e.align_mem();     // the acceptance tick is a memory-class M1 T1
+    z->tstates += 1;   // ...and costs that one T-state before the ack cycle
+    z->bump_refresh();
+    if (z->nmi_pending) {
+      z->nmi_pending = false;
+      z->iff1 = 0;  // NMI: IFF1 cleared, IFF2 preserved
+      z->servicing = z80_state::Servicing::NMI;
+    } else {
+      z->iff1 = z->iff2 = 0;
+      z->servicing = z80_state::Servicing::MASKABLE;
+    }
+    z->step = 0;
+    e.run_to_finish();
+    return static_cast<uint32_t>(z->tstates - t0);
+  }
+
+  // Fetch + prefix chain — mirrors the per-cycle M1 T4 dispatch. Each prefix
+  // byte is its own full M1 (4 T + refresh bump); interrupts are never
+  // sampled between a prefix and its opcode (whole chain = one batch step).
+  for (;;) {
+    z->opcode = e.fetch_m1();
+    if (z->prefix == 0 && (z->opcode == 0xDD || z->opcode == 0xFD)) {
+      z->index = (z->opcode == 0xDD) ? z80_state::IndexReg::IX
+                                     : z80_state::IndexReg::IY;
+      continue;  // last DD/FD wins
+    }
+    if (z->prefix == 0 && z->opcode == 0xED) {
+      z->prefix = 0xED;
+      z->index = z80_state::IndexReg::HL;  // ED ignores a pending DD/FD
+      continue;
+    }
+    if (z->prefix == 0 && z->opcode == 0xCB &&
+        z->index == z80_state::IndexReg::HL) {
+      z->prefix = 0xCB;
+      continue;
+    }
+    break;
+  }
+  z->step = 0;
+  e.run_to_finish();
+  return static_cast<uint32_t>(z->tstates - t0);
+}
+
+void z80_batch_halt(const Device* dev, uint32_t tstates) {
+  z80_state* z = static_cast<z80_state*>(dev->self);
+  // A halted CPU runs no bus cycles, so time advances quantiser-free; R bumps
+  // once per 4 halted T-states through the halt_t cadence sub-counter.
+  z->tstates += tstates;
+  const uint32_t total = z->halt_t + tstates;
+  const uint32_t bumps = total >> 2;
+  z->r = static_cast<uint8_t>((z->r & 0x80) | ((z->r + bumps) & 0x7F));
+  z->halt_t = static_cast<uint8_t>(total & 3);
+}
+
+void z80_batch_nmi(const Device* dev) {
+  static_cast<z80_state*>(dev->self)->nmi_pending = true;
+}
+
+int z80_batch_ready(const Device* dev) {
+  const z80_state* z = static_cast<const z80_state*>(dev->self);
+  return (z->mc == z80_state::MC::M1 && z->t == 0 && z->step == 0 &&
+          z->prefix == 0 && z->index == z80_state::IndexReg::HL &&
+          z->servicing == z80_state::Servicing::NONE)
+             ? 1
+             : 0;
+}
+
+uint64_t z80_batch_tstates(const Device* dev) {
+  return static_cast<const z80_state*>(dev->self)->tstates;
+}
+
+int z80_batch_halted(const Device* dev) {
+  return static_cast<const z80_state*>(dev->self)->halted ? 1 : 0;
+}
+
+int z80_batch_iff1(const Device* dev) {
+  return static_cast<const z80_state*>(dev->self)->iff1 ? 1 : 0;
+}
+
+uint16_t z80_batch_pc(const Device* dev) {
+  return static_cast<const z80_state*>(dev->self)->pc.v;
+}
+
+int z80_batch_will_accept(const Device* dev, int irq) {
+  // Keep in sync with z80_batch_step's acceptance branch (was_ei = the EI
+  // shadow as it stands at the boundary, before the step consumes it).
+  const z80_state* z = static_cast<const z80_state*>(dev->self);
+  return (z->nmi_pending || (z->iff1 && irq != 0 && !z->ei_delay)) ? 1 : 0;
+}
+
+void z80_batch_release_bus(const Device* dev) {
+  static_cast<z80_state*>(dev->self)->held_valid = false;
+}
+
+Device z80_init(void* storage) {
+  z80_state* z = new (storage) z80_state();
+  z80_reset(z);
+  return Device{z,        "z80",   z80_tick, z80_reset, z80_dev_state_size,
+                z80_save, z80_load};
+}
+
+void z80_peek(const Device* dev, Z80Regs* out) {
+  const z80_state* z = static_cast<const z80_state*>(dev->self);
+  out->af = z->af.v;
+  out->bc = z->bc.v;
+  out->de = z->de.v;
+  out->hl = z->hl.v;
+  out->af_ = z->af2.v;
+  out->bc_ = z->bc2.v;
+  out->de_ = z->de2.v;
+  out->hl_ = z->hl2.v;
+  out->ix = z->ix.v;
+  out->iy = z->iy.v;
+  out->sp = z->sp.v;
+  out->pc = z->pc.v;
+  out->wz = z->wz.v;
+  out->i = z->i;
+  out->r = z->r;
+  out->im = static_cast<uint8_t>(z->im);
+  out->iff1 = z->iff1;
+  out->iff2 = z->iff2;
+  out->q = z->q;
+  out->halted = z->halted ? 1 : 0;
+  out->tstates = z->tstates;
+  out->instr_count = z->instr_count;
+  out->last_opcode = z->opcode;
+  out->unimplemented = z->unimplemented ? 1 : 0;
+}
+
+void z80_poke(const Device* dev, const Z80Regs* in) {
+  z80_state* z = static_cast<z80_state*>(dev->self);
+  z->af.v = in->af;
+  z->bc.v = in->bc;
+  z->de.v = in->de;
+  z->hl.v = in->hl;
+  z->af2.v = in->af_;
+  z->bc2.v = in->bc_;
+  z->de2.v = in->de_;
+  z->hl2.v = in->hl_;
+  z->ix.v = in->ix;
+  z->iy.v = in->iy;
+  z->sp.v = in->sp;
+  z->pc.v = in->pc;
+  z->wz.v = in->wz;
+  z->i = in->i;
+  z->r = in->r;
+  z->im = static_cast<z80_state::IntMode>(in->im & 3);
+  z->iff1 = in->iff1;
+  z->iff2 = in->iff2;
+  z->halted = in->halted != 0;
+  // Fresh instruction boundary. Seed the committed Q latch from the snapshot so
+  // an oracle can set the *prior* instruction's Q — SCF/CCF read it for their
+  // undocumented YF/XF (§5). The per-instruction scratch (qq) still starts clear.
+  z->q = in->q;
+  z->qq = 0;
+  z->mc = z80_state::MC::M1;
+  z->t = z->step = 0;
+  z->opcode = z->tmp = z->tmpl = z->halt_t = z->prefix = 0;
+  z->mc_addr = z->mc_wval = z->mc_ilen = 0;
+  z->mc_io_read = false;
+  z->index = z80_state::IndexReg::HL;
+  z->mem_addr = 0;
+  z->nmi_prev = z->nmi_pending = z->ei_delay = false;
+  z->servicing = z80_state::Servicing::NONE;
+  z->int_vec = 0;
+  z->held = CpuBus{};
+  z->held_valid = false;
+  z->unimplemented = false;
+  z->tstates = 0;
+  z->instr_count = 0;
+}
+
+}  // extern "C"

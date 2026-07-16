@@ -1,0 +1,613 @@
+// konCePCja — shared host-shell header: emulator configuration (t_CPC),
+// legacy chip-view structs the bridge mirrors Device peeks into, SNA
+// snapshot layout, and the host loop's public entry points.
+
+#pragma once
+
+#include <cstdint>
+#include <cstdio>
+
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#ifdef _MSC_VER
+#include "compat/msvc_compat.h"
+#endif
+#include <string>
+#include <vector>
+
+#include "phazer_type.h"
+#include "types.h"
+
+class InputMapper;
+
+// Version is injected by the build system from the top-level VERSION
+// file (CMake: target_compile_definitions; makefile: KONCPC_VERSION).
+// The fallback below is only hit by IDE/static-analysis passes that
+// don't go through the build flags. Kept as a macro: call sites rely on
+// string-literal concatenation ("konCePCja " VERSION_STRING).
+#ifdef KONCPC_VERSION_STRING
+#define VERSION_STRING KONCPC_VERSION_STRING
+#else
+#define VERSION_STRING "v0.0.0-unknown"
+#endif
+
+#ifndef _MAX_PATH
+#ifdef _POSIX_PATH_MAX
+#define _MAX_PATH _POSIX_PATH_MAX
+#else
+#define _MAX_PATH 256
+#endif
+#endif
+
+inline constexpr double CPC_BASE_FREQUENCY_MHZ = 4.0;
+inline constexpr double FRAME_PERIOD_MS = 20.0;
+// Z80 cycles per 50 Hz frame.
+inline constexpr int CYCLE_COUNT_INIT =
+    static_cast<int>(CPC_BASE_FREQUENCY_MHZ * FRAME_PERIOD_MS * 1000);
+
+inline constexpr int CPC_SCR_WIDTH = 1024;  // max width
+inline constexpr int CPC_SCR_HEIGHT = 312;  // max height
+// display width for window sizing: (4+40+4) * 8
+inline constexpr int CPC_VISIBLE_SCR_WIDTH = 384;
+// native render width: (4+40+4) * 16 (Mode 2 pixel-accurate)
+inline constexpr int CPC_RENDER_WIDTH = 768;
+inline constexpr int CPC_VISIBLE_SCR_HEIGHT = 270;
+
+// Emulation speed range
+inline constexpr int MIN_SPEED_SETTING = 1;
+inline constexpr int MAX_SPEED_SETTING = 32;
+inline constexpr int DEF_SPEED_SETTING = 4;
+
+inline constexpr int ICN_DISK_WIDTH = 14;
+inline constexpr int ICN_DISK_HEIGHT = 16;
+inline constexpr int ICN_TAPE_WIDTH = 18;
+inline constexpr int ICN_TAPE_HEIGHT = 13;
+
+inline constexpr int VOC_THRESHOLD = 128;
+
+// Multiface 2 flags
+inline constexpr int MF2_ACTIVE = 1;
+inline constexpr int MF2_RUNNING = 2;
+inline constexpr int MF2_INVISIBLE = 4;
+
+// TODO: Tune threshold based on different joysticks or make it configurable ?
+inline constexpr int JOYSTICK_AXIS_THRESHOLD = 16384;
+
+inline constexpr int MAX_ROM_SLOTS = 32;
+
+inline constexpr int DEFAULT_VIDEO_PLUGIN = 0;
+
+#ifdef _MSC_VER
+// MSVC: use #pragma pack around the struct instead of a per-field attribute.
+// Wrap struct definitions with PACK_BEGIN / PACK_END.
+#define ATTR_PACKED
+#define PACK_BEGIN __pragma(pack(push, 1))
+#define PACK_END __pragma(pack(pop))
+#elif defined(_WIN32)
+// MinGW: As opposed to ms_struct, needs to be explicit on Windows
+#define ATTR_PACKED __attribute__((packed, gcc_struct))
+#define PACK_BEGIN
+#define PACK_END
+#else
+#define ATTR_PACKED __attribute__((packed))
+#define PACK_BEGIN
+#define PACK_END
+#endif
+
+struct t_SNA_header {
+  char id[8];
+  char unused1[8];
+  unsigned char version;
+  unsigned char AF[2];
+  unsigned char BC[2];
+  unsigned char DE[2];
+  unsigned char HL[2];
+  unsigned char R;
+  unsigned char I;
+  unsigned char IFF0;
+  unsigned char IFF1;
+  unsigned char IX[2];
+  unsigned char IY[2];
+  unsigned char SP[2];
+  unsigned char PC[2];
+  unsigned char IM;
+  unsigned char AFx[2];
+  unsigned char BCx[2];
+  unsigned char DEx[2];
+  unsigned char HLx[2];
+  unsigned char ga_pen;
+  unsigned char ga_ink_values[17];
+  unsigned char ga_ROM_config;
+  unsigned char ga_RAM_config;
+  unsigned char crtc_reg_select;
+  unsigned char crtc_registers[18];
+  unsigned char upper_ROM;
+  unsigned char ppi_A;
+  unsigned char ppi_B;
+  unsigned char ppi_C;
+  unsigned char ppi_control;
+  unsigned char psg_reg_select;
+  unsigned char psg_registers[16];
+  unsigned char ram_size[2];
+  // version 2 info follows
+  unsigned char cpc_model;
+  unsigned char last_interrupt;
+  unsigned char scr_modes[6];
+  // version 3 info follows
+  unsigned char drvA_DOSfilename[13];
+  unsigned char drvB_DOSfilename[13];
+  unsigned char cart_DOSfilename[13];
+  unsigned char fdc_motor;
+  unsigned char drvA_current_track;
+  unsigned char drvB_current_track;
+  unsigned char drvC_current_track;
+  unsigned char drvD_current_track;
+  unsigned char printer_data;
+  unsigned char psg_env_step;
+  unsigned char psg_env_direction;
+  unsigned char crtc_type;
+  unsigned char crtc_addr[2];
+  unsigned char crtc_scanline[2];
+  unsigned char crtc_char_count[2];
+  unsigned char crtc_line_count;
+  unsigned char crtc_raster_count;
+  unsigned char crtc_vt_adjust_count;
+  unsigned char crtc_hsw_count;
+  unsigned char crtc_vsw_count;
+  unsigned char crtc_flags[2];
+  unsigned char ga_int_delay;
+  unsigned char ga_sl_count;
+  unsigned char z80_int_pending;
+  unsigned char unused2[75];
+};
+
+enum class DRIVE : std::uint8_t {
+  DSK_A,
+  DSK_B,
+  TAPE,
+  CARTRIDGE,
+  SNAPSHOT,
+};
+
+struct t_slot {
+  DRIVE drive;
+  std::string file;
+  unsigned int zip_index;
+};
+
+enum class JoystickEmulation : std::uint8_t {
+  None = 0,
+  Keyboard = 1,
+  Mouse = 2,
+  Last = 3,
+};
+
+enum class KeyboardSupportMode : std::uint8_t {
+  Direct = 0,
+  BufferedUntilRead = 1,
+  Min2Frames = 2,
+  Last = 3,
+};
+
+JoystickEmulation nextJoystickEmulation(JoystickEmulation current);
+std::string JoystickEmulationToString(JoystickEmulation value);
+
+class t_CPC {
+ public:
+  t_CPC();
+
+  unsigned int model;
+  unsigned int
+      engine;  // 0 = legacy core, 1 = sub-cycle board (subcycle_bridge)
+  unsigned int jumpers;
+  unsigned int ram_size;
+  unsigned int speed;
+  unsigned int limit_speed;
+  unsigned int frameskip = 0;
+  bool skip_rendering = false;
+  bool paused = false;
+  unsigned int auto_pause;
+  unsigned int boot_time;
+  unsigned int keyboard_line;
+  unsigned int tape_motor;
+  unsigned int tape_play_button;
+  unsigned int printer;
+  unsigned int printer_port;
+  unsigned int mf2;
+  unsigned int keyboard;
+  KeyboardSupportMode keyboard_support_mode = KeyboardSupportMode::Direct;
+  JoystickEmulation joystick_emulation;
+  unsigned int joysticks;
+  unsigned int joystick_menu_button;
+  unsigned int joystick_vkeyboard_button;
+  PhazerType phazer_emulation;
+  bool phazer_pressed;
+  unsigned int phazer_x;
+  unsigned int phazer_y;
+  int cycle_count;
+  std::string resources_path;
+
+  unsigned int scr_style;
+  unsigned int scr_scale;
+  unsigned int scr_oglfilter;
+  unsigned int scr_oglscanlines;
+  unsigned int scr_scanlines;
+  unsigned int scr_led;
+  unsigned int scr_fps;
+  unsigned int scr_tube;
+  unsigned int scr_intensity;
+  unsigned int scr_remanency;
+  unsigned int scr_window;
+  unsigned int scr_vsync;  // video.vsync: 1=VSYNC present (default), 0=MAILBOX/
+                           // IMMEDIATE on the MAIN window only (viewport
+                           // windows always stay VSYNC). Safe escape hatch for
+                           // the remote-desktop present stall; emulation pacing
+                           // is unaffected (decoupled from render).
+  unsigned int scr_bpp;    // bits per pixel of the SDL back_surface
+  unsigned int scr_preserve_aspect_ratio;
+  unsigned int
+      scr_crt_aspect;  // 1 = force 4:3 CRT monitor aspect ratio (default)
+  dword dwYScale;  // Y scale (i.e. number of lines in SDL back_surface per CPC
+                   // line)
+  unsigned int scr_bps;        // bytes per line in the SDL back_surface
+  unsigned int scr_line_offs;  // bytes per CPC line in the SDL back_surface
+                               // (2*scr_bps if doubling Y)
+  unsigned int scr_green_mode;
+  unsigned int scr_green_blue_percent;
+  unsigned char* scr_base;  // begining of current line in the SDL back_surface
+  unsigned char* scr_pos;   // current position in the SDL back_surface
+  bool scr_is_ogl;
+
+  int devtools_scale;
+  unsigned int devtools_max_stack_size;
+
+  enum class WorkspaceLayoutMode : std::uint8_t { Classic = 0, Docked = 1 };
+  enum class ScreenScale : std::uint8_t { Fit = 0, X1 = 1, X2 = 2, X3 = 3 };
+
+  WorkspaceLayoutMode workspace_layout;
+  ScreenScale cpc_screen_scale;
+
+  unsigned int snd_enabled;
+  bool snd_ready;
+  unsigned int snd_playback_rate;
+  unsigned int snd_bits;
+  unsigned int snd_stereo;
+  unsigned int snd_volume;
+  unsigned int snd_pp_device;
+  unsigned int snd_buffersize;
+  unsigned char* snd_bufferptr;
+  union {
+    struct {
+      unsigned int low;
+      unsigned int high;
+    };
+    int64_t both;
+  } snd_cycle_count_init;
+
+  std::string kbd_layout;
+
+  unsigned int max_tracksize;
+
+  std::string dsk_path;
+  std::string tape_path;
+  std::string snap_path;  // Path where machine state snapshots will be
+                          // loaded/saved by default.
+  std::string cart_path;
+
+  t_slot driveA;
+  t_slot driveB;
+  t_slot tape;
+  t_slot snapshot;
+  t_slot cartridge;
+
+  std::string printer_file;
+  std::string sdump_dir;
+
+  std::string rom_path;
+  std::string rom_file[MAX_ROM_SLOTS];
+  std::string rom_mf2;
+
+  std::string current_snap_path;  // Last used snapshot path in the file dialog.
+  std::string
+      current_cart_path;         // Last used cartridge path in the file dialog.
+  std::string current_dsk_path;  // Last used disk path in the file dialog.
+  std::string current_tape_path;  // Last used tape path in the file dialog.
+
+  // Recent files (MRU) — persisted in config [file] section
+  static constexpr int MRU_MAX = 10;
+  std::vector<std::string> mru_disks;
+  std::vector<std::string> mru_tapes;
+  std::vector<std::string> mru_snaps;
+  std::vector<std::string> mru_carts;
+
+  // M4 Board HTTP server config
+  int m4_http_port = 8080;
+  std::string m4_bind_ip = "127.0.0.1";
+
+  class InputMapper* InputMapper;
+};
+
+struct t_CRTC {
+  unsigned int requested_addr;
+  unsigned int next_addr;
+  unsigned int addr;
+  unsigned int next_address;
+  unsigned int scr_base;
+  unsigned int char_count;
+  unsigned int line_count;
+  unsigned int raster_count;
+  unsigned int hsw;
+  unsigned int hsw_count;
+  unsigned int vsw;
+  unsigned int vsw_count;
+  unsigned int flag_hadhsync;
+  unsigned int flag_inmonhsync;
+  unsigned int flag_invsync;
+  unsigned int flag_invta;
+  unsigned int flag_newscan;
+  unsigned int flag_reschar;
+  unsigned int flag_resframe;
+  unsigned int flag_resnext;
+  unsigned int flag_resscan;
+  unsigned int flag_resvsync;
+  unsigned int flag_startvta;
+  unsigned int last_hend;
+  unsigned int reg5;
+  unsigned int r7match;
+  unsigned int r9match;
+  unsigned int hstart;
+  unsigned int hend;
+  void (*CharInstMR)();
+  void (*CharInstSL)();
+  unsigned char reg_select;
+  unsigned char registers[18];
+  unsigned char crtc_type;  // 0=HD6845S, 1=UM6845R, 2=MC6845, 3=AMS40489
+  // 6128+ split screen support
+  unsigned int split_addr;
+  unsigned char split_sl;
+  unsigned int sl_count;
+  unsigned char interrupt_sl;
+};
+
+struct t_FDC {
+  int timeout;
+  int motor;
+  int led;
+  int flags;
+  int phase;
+  int byte_count;
+  int buffer_count;
+  int cmd_length;
+  int res_length;
+  int cmd_direction;
+  void (*cmd_handler)();
+  unsigned char* buffer_ptr;
+  unsigned char* buffer_endptr;
+  unsigned char command[12];
+  unsigned char result[8];
+};
+
+struct t_GateArray {
+  unsigned int hs_count;
+  unsigned char ROM_config;
+  unsigned char lower_ROM_bank;
+  bool registerPageOn;
+  unsigned char RAM_bank;
+  unsigned char RAM_config;
+  unsigned char RAM_ext;  // extended bank bits from port address (Yarek 4MB)
+  unsigned char upper_ROM;
+  unsigned int requested_scr_mode;
+  unsigned int scr_mode;
+  unsigned char pen;
+  unsigned char ink_values[17];
+  unsigned int palette[34];
+  unsigned int dark_palette[34];
+  unsigned char sl_count;
+  unsigned char int_delay;
+};
+
+struct t_PPI {
+  unsigned char control;
+  unsigned char portA;
+  unsigned char portB;
+  unsigned char portC;
+};
+
+struct t_PSG {
+  union {
+    struct {
+      unsigned int low;
+      unsigned int high;
+    };
+    int64_t both;
+  } cycle_count;
+  unsigned int buffer_full;
+  unsigned char control;
+  unsigned char reg_select;
+  union {
+    unsigned char Index[16];
+    struct {
+      unsigned char TonALo, TonAHi;
+      unsigned char TonBLo, TonBHi;
+      unsigned char TonCLo, TonCHi;
+      unsigned char Noise;
+      unsigned char Mixer;
+      unsigned char AmplitudeA, AmplitudeB, AmplitudeC;
+      unsigned char EnvelopeLo, EnvelopeHi;
+      unsigned char EnvType;
+      unsigned char PortA;
+      unsigned char PortB;
+    };
+    PACK_BEGIN struct {
+      unsigned short TonA;
+      unsigned short TonB;
+      unsigned short TonC;
+      unsigned char _noise, _mixer, _ampa, _ampb, _ampc;
+      unsigned short Envelope;
+      unsigned char _envtype, _porta, portb;
+    } ATTR_PACKED PACK_END;
+  } RegisterAY;
+  int AmplitudeEnv;
+  bool FirstPeriod;
+  void (*Synthesizer)();
+};
+
+// Audio oscilloscope capture — per-channel levels sampled by the PSG mixer
+struct PsgScopeCapture {
+  static constexpr int SIZE = 512;
+  struct Sample {
+    int16_t chan_a, chan_b, chan_c;
+    int8_t envelope;  // 0-31
+  };
+  Sample buf[SIZE] = {};
+  int head = 0;
+
+  void push(int a, int b, int c, int env) {
+    buf[head] = {static_cast<int16_t>(a), static_cast<int16_t>(b),
+                 static_cast<int16_t>(c), static_cast<int8_t>(env)};
+    head = (head + 1) % SIZE;
+  }
+};
+extern PsgScopeCapture g_psg_scope;
+
+struct t_VDU {
+  int scrln;
+  int scanline;
+  unsigned int flag_drawing;
+  unsigned int frame_completed;
+};
+
+using t_MemBankConfig = std::array<std::array<byte*, 4>, 8>;
+
+// Frame-ready notification from the Z80 emulation thread to the render (main)
+// thread.  Since the triple-buffer ring decoupled the two (the Z80 never waits
+// on render), this is now a pure one-way wake-up: the Z80 calls signal_ready()
+// after publishing a frame; the render thread waits on it (with a timeout so it
+// can keep pumping the macOS run loop) and then reads the latest published
+// buffer.  There is no back-pressure — the old consumed/wait_consumed handshake
+// was removed with the decouple.
+struct FrameSignal {
+  std::mutex mtx;
+  std::condition_variable cv;
+  bool ready{false};
+  bool skip_render{
+      false};  // set by Z80 before signal_ready; render reads after wait_ready
+  bool aborted{false};  // set by doCleanUp to permanently release both threads
+
+  // Z80 thread: a new frame has been published; wake the render thread.  A
+  // no-op once aborted (during shutdown).
+  void signal_ready(bool skip = false) {
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    std::scoped_lock lock(mtx);
+    if (aborted) return;
+    skip_render = skip;
+    ready = true;
+    cv.notify_one();
+  }
+  // Render thread: block until Z80 signals a frame is ready; returns
+  // skip_render.
+  bool wait_ready() {
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    std::unique_lock<std::mutex> lock(mtx);
+    cv.wait(lock, [this] { return ready || aborted; });
+    ready = false;
+    return skip_render;
+  }
+  // Render thread: timed wait — returns true (and consumes the signal) if ready
+  // within timeout_ms, false if not.  Used by the render loop to interleave
+  // event pumping with waiting, keeping the macOS/Metal Cocoa run loop alive
+  // between Z80 frames.
+  bool try_wait_ready_for(int timeout_ms, bool& skip_out) {
+    // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+    std::unique_lock<std::mutex> lock(mtx);
+    if (cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                    [this] { return ready || aborted; })) {
+      if (aborted) return false;
+      ready = false;
+      skip_out = skip_render;
+      return true;
+    }
+    return false;
+  }
+  // Shutdown: permanently release the render thread from any current/future
+  // wait.  After this call, signal_ready is a no-op and wait_* return
+  // immediately.  Used by doCleanUp before joining the Z80 thread.
+  void abort() {
+    std::scoped_lock const lock(mtx);
+    aborted = true;
+    cv.notify_all();
+  }
+};
+
+// Emulation/render thread synchronization — see kon_cpc_ja.cpp
+extern std::atomic<bool> g_emu_paused;  // true while Z80 thread is halted
+extern std::atomic<bool>
+    g_z80_quiescent;  // true when Z80 thread is NOT inside z80_execute()
+extern FrameSignal g_frame_signal;  // back_surface handoff between threads
+// Protects imgui_state stats fields written by Z80 thread, read by render
+// thread. Lock before reading/writing: frame_time_*_us, z80_time_avg_us,
+// display_time_avg_us, sleep_time_avg_us, audio_underruns,
+// audio_near_underruns, audio_pushes, audio_queue_*_ms,
+// audio_push_interval_max_us.
+extern std::mutex g_imgui_stats_mutex;
+
+// kon_cpc_ja.cpp
+void set_osd_message(const std::string& message,
+                     uint32_t for_milliseconds = 1000);
+void koncpc_queue_virtual_keys(const std::string& text);
+void ga_init_banking(t_MemBankConfig& membank_config, unsigned char RAM_bank);
+void ga_memory_manager();
+void memory_set_read_bank(int slot, byte* ptr);
+void memory_set_write_bank(int slot, byte* ptr);
+bool driveAltered();
+void emulator_reset();
+void cpc_pause();
+void cpc_resume();
+// cpc_pause() + spin until the Z80 thread is not inside z80_execute().
+// Use this before touching Z80 state (registers, memory) from a non-Z80 thread.
+// No-op in headless mode (single-threaded; cpc_pause() is sufficient).
+void cpc_pause_and_wait();
+void bin_load(const std::string& filename, const size_t offset);
+bool dumpScreenTo(const std::string& path);
+void dumpScreen();
+int emulator_init();
+int video_set_palette();
+void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
+void init_joystick_emulation();
+void update_cpc_speed();
+int printer_start();
+void printer_stop();
+int audio_init();
+void audio_shutdown();
+void audio_pause();
+void audio_resume();
+void mouse_init();
+int video_init();
+void video_shutdown();
+void cleanExit(int returnCode, bool askIfUnsaved = true);
+
+extern bool g_headless;
+
+// Return the path to the best (i.e: most specific) configuration file.
+// Priority order is:
+//  - koncepcja.cfg in the same directory as koncepcja binary
+//  - $XDG_CONFIG_HOME/koncepcja.cfg
+//  - $HOME/.config/koncepcja.cfg
+//  - $HOME/.koncepcja.cfg
+//  - /etc/koncepcja.cfg
+std::string getConfigurationFilename(bool forWrite = false);
+void loadConfiguration(t_CPC& CPC, const std::string& configFilename);
+bool saveConfiguration(t_CPC& CPC, const std::string& configFilename);
+
+void set_cursor_visibility(bool show);
+
+int koncpc_main(int argc, char** argv);
+
+// fdc.c
+
+// psg.c
+
+double* video_get_green_palette(int mode);
+double* video_get_rgb_color(int color);

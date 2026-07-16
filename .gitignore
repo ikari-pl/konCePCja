@@ -1,0 +1,45 @@
+/obj
+/koncepcja
+/printer.dat
+/wGui.log
+/tags
+/.debug
+/googletest
+/test_runner
+/disk
+/screenshots
+/release
+.pc
+debian/koncepcja.debhelper.log
+debian/koncepcja.postinst.debhelper
+debian/koncepcja.postrm.debhelper
+debian/koncepcja.substvars
+debian/koncepcja/
+debian/files
+.DS_Store
+imgui.ini
+coverage.profdata
+coverage.profraw
+resources/roms/
+
+# Agent state files
+.omc/
+
+# Test artifacts
+test/integrated/test.log
+src/test_file.tmp
+.cache/
+
+# standalone chip-simulation host
+koncepcja_sim
+koncepcja_sim_headless
+
+# FPS benchmark harness + PGO artefacts (make bench / make pgo, beads-lcfa)
+koncepcja_bench
+koncepcja_bench_gen
+koncepcja_bench.profraw
+koncepcja_bench.profdata
+
+# beads-mwpg: local real flux fixtures (unknown-license captures, never commit)
+test/hw/fixtures/*.scp
+test/hw/fixtures/*.a2r

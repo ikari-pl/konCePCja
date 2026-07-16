@@ -1,0 +1,313 @@
+<!-- Creator     : groff version 1.22.4 -->
+<!-- CreationDate: Sat Oct  7 02:26:21 2023 -->
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+"http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<meta name="generator" content="groff -Thtml, see www.gnu.org">
+<meta http-equiv="Content-Type" content="text/html; charset=US-ASCII">
+<meta name="Content-Style" content="text/css">
+<style type="text/css">
+       p       { margin-top: 0; margin-bottom: 0; vertical-align: top }
+       pre     { margin-top: 0; margin-bottom: 0; vertical-align: top }
+       table   { margin-top: 0; margin-bottom: 0; vertical-align: top }
+       h1      { text-align: center }
+</style>
+<title>koncepcja</title>
+
+</head>
+<body>
+
+<h1 align="center">koncepcja</h1>
+
+<a href="#NAME">NAME</a><br>
+<a href="#SYNOPSIS">SYNOPSIS</a><br>
+<a href="#DESCRIPTION">DESCRIPTION</a><br>
+<a href="#OPTIONS">OPTIONS</a><br>
+<a href="#EXAMPLES">EXAMPLES</a><br>
+<a href="#BUGS">BUGS</a><br>
+<a href="#AUTHOR">AUTHOR</a><br>
+<a href="#FILES">FILES</a><br>
+<a href="#SEE ALSO">SEE ALSO</a><br>
+
+<hr>
+
+
+<h2>NAME
+<a name="NAME"></a>
+</h2>
+
+
+<p style="margin-left:11%; margin-top: 1em">koncepcja -
+konCePCja Amstrad CPC emulator</p>
+
+<h2>SYNOPSIS
+<a name="SYNOPSIS"></a>
+</h2>
+
+
+<p style="margin-left:11%; margin-top: 1em"><b>koncepcja</b>
+[<i>OPTION</i>]... [<i>FILE</i>]...</p>
+
+<h2>DESCRIPTION
+<a name="DESCRIPTION"></a>
+</h2>
+
+
+
+<p style="margin-left:11%; margin-top: 1em"><b>konCePCja</b>
+is an Amstrad CPC emulator. It emulates the Amstrad CPC464,
+664, 6128 and 6128+ home computers.</p>
+
+<p style="margin-left:11%; margin-top: 1em"><b>Media
+loading</b></p>
+
+<p style="margin-left:22%;">Upon invocation, the FILEs
+specified as arguments will be used to populate the various
+available CPC machine slots. The type of slot is determined
+by the file format, detected by its extension. konCePCja
+supports the following file formats: <b>.dsk</b> (disk
+image), <b>.ipf</b> (Interchangeable Preservation Format
+disk image), <b>.raw</b> (CT-RAW format), <b>.voc</b> or
+<b>.cdt</b> (tape image), <b>.cpr</b> (cartridge image),
+<b>.sna</b> (snapshot image), <b>.zip</b> (zip of any
+previously described file). Specifying slot content on
+the command line is optional.</p>
+
+<p style="margin-left:22%; margin-top: 1em">konCePCja
+supports two disk drives: drive A and drive B. If two disk
+image files (.dsk or .ipf) are provided, the first one will
+be loaded in drive A and the second one in drive B.</p>
+
+<p style="margin-left:22%; margin-top: 1em">The
+<b>cart_path</b>, <b>snap_path</b>, <b>dsk_path</b> and
+<b>tape_path</b> entries in the configuration file are
+<i>only</i> used to specify the directory to open when
+loading/saving files in the GUI. The full path to the
+various slot contents must be provided on the command
+line.</p>
+
+<p style="margin-left:22%; margin-top: 1em">The
+<b>rom_path</b> entry in the configuration file is used by
+the emulator to find its <i>system</i> ROM and
+cartridges.</p>
+
+
+<p style="margin-left:11%; margin-top: 1em"><b>Configuration</b></p>
+
+<p style="margin-left:22%;">When launched, konCePCja will
+look for a configuration file in several locations. If a
+configuration file was specified using the <b>--cfg_file</b>
+command line switch, konCePCja will try and use it. If no
+configuration file was specified, or the configuration file
+specified does not exist, konCePCja will try and open, in
+this order: <br>
+- <b>$CWD/koncepcja.cfg</b> ($CWD being the directory where the
+koncepcja executable resides) <br>
+- <b>koncepcja.cfg</b> file in the location pointed to by the
+XDG_CONFIG_HOME environment variable. If XDG_CONFIG_HOME is
+undefined, it will look at $HOME/.config/ as default
+XDG_CONFIG_HOME directory. <br>
+- <b>$HOME/.koncepcja.cfg</b> for compatibility. <br>
+- <b>/etc/koncepcja.cfg</b>. <br>
+konCePCja will use the first valid file it finds. If no
+configuration file is found, a default configuration will be
+used.</p>
+
+<p style="margin-left:22%; margin-top: 1em">The
+configuration file contains various configuration
+parameters, some of which can be modified from the GUI. When
+saving the configuration from the GUI, it will be written in
+the configuration file following the same order than
+previously described, except for the addition of the write
+permission condition.</p>
+
+<p style="margin-left:22%; margin-top: 1em">Most of the
+configuration file entries are commented in the
+configuration file provided by default with konCePCja.
+However, when overwriting the configuration file from the
+emulator menu, all comments will be lost.</p>
+
+
+<p style="margin-left:11%; margin-top: 1em"><b>Control</b></p>
+
+<p style="margin-left:22%;">Emulator functionalities are
+available through function keys (F1-F12). As CPC also had
+function keys, those are emulated by keys from the numpad.
+This makes sense since their disposition on the CPC keyboard
+was similar to the numpad. If your computer doesn&rsquo;t
+have a numpad (e.g laptop that doesn&rsquo;t support it with
+Fn key) the only way to access the CPC F1-F10 keys is
+through the virtual keyboard. The emulator function key
+mapping can also be redefined through the host keyboard
+mapping file.</p>
+
+<p style="margin-left:22%; margin-top: 1em">The emulator
+function default key mapping is:</p>
+
+<p style="margin-left:32%;"><b>F1</b> - Show GUI (and pause
+the emulator) <b><br>
+F2</b> - Toggle fullscreen / windowed mode <b><br>
+F3</b> - Take screenshot <b><br>
+F4</b> - Press tape reader play key <b><br>
+F5</b> - Reset the emulator <b><br>
+F6</b> - Multiface II stop (advanced users only) <b><br>
+F7</b> - Toggle joystick emulation <b><br>
+F8</b> - Toggle FPS display <b><br>
+F9</b> - Toggle speed limitation <b><br>
+F10</b> - Exit the emulator <b><br>
+F12</b> - Toggle debug mode <b><br>
+Shift+F1</b> - Show virtual keyboard <b><br>
+Shift+F3</b> - Take a machine snapshot</p>
+
+<p style="margin-left:11%; margin-top: 1em"><b>Joystick
+support</b></p>
+
+<p style="margin-left:22%;">Joystick emulation can be
+turned on with the F7 key. When joystick emulation is on,
+real joysticks are disabled, and the keyboard arrows
+(directions) as well as X and Z (fire buttons) keys are
+remapped to emulate the joystick 1 of the CPC machine.</p>
+
+<p style="margin-left:22%; margin-top: 1em">konCePCja can
+also be controlled completely from the joystick. The
+configuration file <b>joystick_menu_button</b> and
+<b>joystick_vkeyboard_button</b> entries allow binding menu
+and virtual keyboard invocations to some of the (host)
+joystick button.</p>
+
+<p style="margin-left:11%; margin-top: 1em"><b>Keyboard
+mapping</b></p>
+
+<p style="margin-left:22%;">konCePCja supports CPC English,
+French and Spanish keyboard layouts. The CPC keyboard layout
+is defined in the configuration file by the <b>keyboard</b>
+entry (0: English, 1: French, 2: Spanish). The host keyboard
+mapping is defined in a specific file, allowing to remap any
+host key to any specific key. The mapping file to use is set
+by the <b>kbd_layout</b> configuration entry. The mapping
+file must be put in the resources directory, defined by the
+configuration file <b>resources_path</b> entry. If the
+mapping file is not defined or not found, konCePCja will
+default to a standard US keyboard map.</p>
+
+<h2>OPTIONS
+<a name="OPTIONS"></a>
+</h2>
+
+
+<p style="margin-left:11%; margin-top: 1em"><b>-a</b>,
+<b>--autocmd</b>=<i>COMMAND</i></p>
+
+<p style="margin-left:22%;">pass command to execute to the
+emulator. The option can be repeated to pass multiple
+commands. For example: koncepcja -a &rsquo;print
+&quot;Hello&quot;&rsquo; -a &rsquo;print
+&quot;World&quot;&rsquo;</p>
+
+<p style="margin-left:11%;"><b>-c</b>,
+<b>--cfg_file</b>=<i>FILE</i></p>
+
+<p style="margin-left:22%;">use FILE as the emulator
+configuration file.</p>
+
+<p style="margin-left:11%;"><b>-h</b>, <b>--help</b></p>
+
+<p style="margin-left:22%;">display short help and
+exits</p>
+
+<p style="margin-left:11%;"><b>-i</b>, <b>--inject</b></p>
+
+<p style="margin-left:22%;">inject a binary in memory after
+the CPC startup finishes</p>
+
+<p style="margin-left:11%;"><b>-o</b>, <b>--offset</b></p>
+
+<p style="margin-left:22%;">offset at which to inject the
+binary provided with -i (default: 0x6000)</p>
+
+<p style="margin-left:11%;"><b>-O</b>,
+<b>--override</b></p>
+
+<p style="margin-left:22%;">override an option from the
+config. Can be repeated. (example: -O system.model=3)</p>
+
+<p style="margin-left:11%;"><b>-s</b>,
+<b>--sym_file</b>=<i>file</i></p>
+
+<p style="margin-left:22%;">use &lt;file&gt; as a source of
+symbols and entry points for disassembling in
+developers&rsquo; tools.</p>
+
+<p style="margin-left:11%;"><b>-V</b>, <b>--version</b></p>
+
+<p style="margin-left:22%;">display konCePCja version and
+exits</p>
+
+<p style="margin-left:11%;"><b>-v</b>, <b>--verbose</b></p>
+
+<p style="margin-left:22%;">be talkative about what the
+emulator is doing (mostly for debug builds)</p>
+
+<h2>EXAMPLES
+<a name="EXAMPLES"></a>
+</h2>
+
+
+<p style="margin-left:11%; margin-top: 1em">koncepcja
+./disk/sorcery.dsk ./trail.dsk</p>
+
+<p style="margin-left:22%;">Launches koncepcja, loads the
+content of ./disk/sorcery.dsk in the drive A slot, and
+./trail.dsk in the drive B slot.</p>
+
+<h2>BUGS
+<a name="BUGS"></a>
+</h2>
+
+
+<p style="margin-left:11%; margin-top: 1em">CPC6128+
+emulation is incomplete: vectored &amp; DMA interrupts,
+analog joysticks and 8 bit printer are not emulated.</p>
+
+<p style="margin-left:11%; margin-top: 1em">See
+https://github.com/ikari-pl/konCePCja/issues for the list
+of reported bugs.</p>
+
+<h2>AUTHOR
+<a name="AUTHOR"></a>
+</h2>
+
+
+<p style="margin-left:11%; margin-top: 1em">konCePCja was
+originally written by Ulrich Doewich.</p>
+
+<p style="margin-left:11%; margin-top: 1em">This manual
+page covers ikari&rsquo;s fork of konCePCja.</p>
+
+<p style="margin-left:11%; margin-top: 1em">The screen
+capture code uses driedfruit SDL_SavePNG code
+(https://github.com/driedfruit/SDL_SavePNG).</p>
+
+<h2>FILES
+<a name="FILES"></a>
+</h2>
+
+
+
+<p style="margin-left:11%; margin-top: 1em">$HOME/.koncepcja.cfg
+<br>
+/etc/koncepcja.cfg</p>
+
+<h2>SEE ALSO
+<a name="SEE ALSO"></a>
+</h2>
+
+
+
+<p style="margin-left:11%; margin-top: 1em">https://github.com/ikari-pl/konCePCja
+<br>
+ https://github.com/driedfruit/SDL_SavePNG</p>
+<hr>
+</body>
+</html>

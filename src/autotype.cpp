@@ -1,0 +1,259 @@
+#include "autotype.h"
+
+#include <cctype>
+#include <cstdlib>
+
+#include "cpc_key_tables.h"
+
+AutoTypeQueue g_autotype_queue;
+
+// Resolve a key name (case-insensitive) to CPC_KEYS enum value.
+// Returns -1 if not found.
+namespace {
+int resolve_key_name(const std::string& name) {
+  // NOLINTNEXTLINE(misc-const-correctness,performance-unnecessary-copy-initialization): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  std::string upper = name;
+  for (auto &c : upper)
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  auto it = cpc_key_names().find(upper);
+  if (it != cpc_key_names().end()) return static_cast<int>(it->second);
+  // Single char: try char map
+  if (name.size() == 1) {
+    auto cit = cpc_char_to_key().find(name[0]);
+    if (cit != cpc_char_to_key().end()) return static_cast<int>(cit->second);
+  }
+  return -1;
+}
+}  // namespace
+
+std::string AutoTypeQueue::enqueue(const std::string& text) {
+  std::scoped_lock const lock(mutex_);
+  std::deque<AutoTypeAction> parsed;
+
+  for (size_t i = 0; i < text.size();) {
+    if (text[i] == '~') {
+      // Check for literal tilde: ~~
+      if (i + 1 < text.size() && text[i + 1] == '~') {
+        // Literal tilde character - but tilde is not in the CPC char map,
+        // so we skip it (same as unmappable chars in input type)
+        i += 2;
+        continue;
+      }
+
+      // Find closing ~
+      size_t const close = text.find('~', i + 1);
+      if (close == std::string::npos) {
+        return "unclosed ~ at position " + std::to_string(i);
+      }
+
+      std::string tag = text.substr(i + 1, close - i - 1);
+      if (tag.empty()) {
+        return "empty ~~ tag at position " + std::to_string(i);
+      }
+
+      // Check for PAUSE
+      if (tag.size() > 6 && tag.substr(0, 6) == "PAUSE ") {
+        std::string const num_str = tag.substr(6);
+        char* endptr = nullptr;
+        long const frames = std::strtol(num_str.c_str(), &endptr, 10);
+        if (endptr == num_str.c_str() || *endptr != '\0' || frames < 1) {
+          return "bad PAUSE value: " + tag;
+        }
+        AutoTypeAction a;
+        a.type = AutoTypeAction::PAUSE;
+        a.cpc_key = 0;
+        a.pause_frames = static_cast<int>(frames);
+        parsed.push_back(a);
+        i = close + 1;
+        continue;
+      }
+
+      // Check for key hold: ~+KEY~ or ~-KEY~
+      if (tag.size() >= 2 && (tag[0] == '+' || tag[0] == '-')) {
+        bool const press = (tag[0] == '+');
+        std::string const key_name = tag.substr(1);
+        int const key = resolve_key_name(key_name);
+        if (key < 0) {
+          return "unknown key: " + key_name;
+        }
+        AutoTypeAction a;
+        a.type =
+            press ? AutoTypeAction::KEY_PRESS : AutoTypeAction::KEY_RELEASE;
+        a.cpc_key = static_cast<uint16_t>(key);
+        a.pause_frames = 0;
+        parsed.push_back(a);
+        i = close + 1;
+        continue;
+      }
+
+      // Regular special key: ~RETURN~, ~SPACE~, etc.
+      int const key = resolve_key_name(tag);
+      if (key < 0) {
+        return "unknown key: " + tag;
+      }
+      AutoTypeAction a;
+      a.type = AutoTypeAction::CHAR_PRESS_RELEASE;
+      a.cpc_key = static_cast<uint16_t>(key);
+      a.pause_frames = 0;
+      parsed.push_back(a);
+      i = close + 1;
+      continue;
+    }
+
+    // Regular character
+    char const ch = text[i];
+    auto cit = cpc_char_to_key().find(ch);
+    if (cit == cpc_char_to_key().end()) {
+      // Skip unmappable characters (consistent with input type behavior)
+      i++;
+      continue;
+    }
+    AutoTypeAction a;
+    a.type = AutoTypeAction::CHAR_PRESS_RELEASE;
+    a.cpc_key = static_cast<uint16_t>(cit->second);
+    a.pause_frames = 0;
+    parsed.push_back(a);
+    i++;
+  }
+
+  // Append parsed actions to existing queue
+  for (auto& a : parsed) {
+    queue_.push_back(a);
+  }
+  return "";
+}
+
+bool AutoTypeQueue::tick(const AutoTypeKeyFunc& apply_key,
+                         const AutoTypeCmdFunc& apply_cmd) {
+  std::scoped_lock const lock(mutex_);
+  // Blocked on a command (e.g. KONCPC_WAITBREAK) until resume() is called.
+  if (blocked_) return true;
+  // Handle pending release from previous CHAR_PRESS_RELEASE
+  if (awaiting_release_) {
+    apply_key(pending_release_key_, false);
+    awaiting_release_ = false;
+    pending_release_key_ = 0;
+    // Always wait one frame after a release before the next press.
+    // This ensures consecutive identical keys (like "ll") are registered
+    // as separate events by the CPC firmware.
+    inter_char_pause_ = true;
+    return true;
+  }
+
+  // Handle mandatory 1-frame pause between characters
+  if (inter_char_pause_) {
+    inter_char_pause_ = false;
+    return !queue_.empty();
+  }
+
+  // Handle active pause tag
+  if (pause_counter_ > 0) {
+    pause_counter_--;
+    return true;
+  }
+
+  if (queue_.empty()) return false;
+
+  AutoTypeAction const action = queue_.front();
+  queue_.pop_front();
+
+  switch (action.type) {
+    case AutoTypeAction::CHAR_PRESS_RELEASE:
+      // Press key this frame, release next frame
+      apply_key(action.cpc_key, true);
+      awaiting_release_ = true;
+      pending_release_key_ = action.cpc_key;
+      return true;
+
+    case AutoTypeAction::KEY_PRESS:
+      apply_key(action.cpc_key, true);
+      return !queue_.empty() || awaiting_release_;
+
+    case AutoTypeAction::KEY_RELEASE:
+      apply_key(action.cpc_key, false);
+      // Even manual releases should probably trigger a pause to be safe
+      inter_char_pause_ = true;
+      return true;
+
+    case AutoTypeAction::PAUSE:
+      pause_counter_ = action.pause_frames - 1;  // -1 because this frame counts
+      return true;
+
+    case AutoTypeAction::COMMAND:
+      // Execute the emulator command (KONCPC_*). If it returns true the queue
+      // blocks until resume() (KONCPC_WAITBREAK waits for the next breakpoint).
+      if (apply_cmd && apply_cmd(action.cpc_key)) {
+        blocked_ = true;
+      }
+      return true;
+  }
+
+  return false;
+}
+
+void AutoTypeQueue::resume() {
+  std::scoped_lock const lock(mutex_);
+  blocked_ = false;
+}
+
+void AutoTypeQueue::enqueue_legacy(const std::string& text) {
+  std::scoped_lock const lock(mutex_);
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  bool escaped = false; // '\a' — next char is a CPC special key code
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated (out-param/compound-assign/loop/reference)
+  bool command = false; // '\f' — next char is a KONCPC_* command code
+  for (char const c : text) {
+    if (c == '\a') {
+      escaped = true;
+      continue;
+    }
+    if (c == '\f') {
+      command = true;
+      continue;
+    }
+    AutoTypeAction a;
+    a.pause_frames = 0;
+    if (command) {
+      // The encoded byte is the KONCPC_* code's low byte; re-add MOD_EMU_KEY
+      // (the high bit the encoder dropped) to form the full command code, just
+      // as the legacy StringToEvents decoder did.
+      a.type = AutoTypeAction::COMMAND;
+      a.cpc_key =
+          static_cast<uint16_t>(static_cast<unsigned char>(c) | MOD_EMU_KEY);
+      command = false;
+    } else if (escaped) {
+      // The byte is already a CPC key code (CapriceKey), as encoded by the -a
+      // assembler's koncpc_specialkey().
+      a.type = AutoTypeAction::CHAR_PRESS_RELEASE;
+      a.cpc_key = static_cast<uint16_t>(static_cast<unsigned char>(c));
+    } else {
+      auto cit = cpc_char_to_key().find(c);
+      if (cit == cpc_char_to_key().end()) continue;  // skip unmappable
+      a.type = AutoTypeAction::CHAR_PRESS_RELEASE;
+      a.cpc_key = static_cast<uint16_t>(cit->second);
+    }
+    queue_.push_back(a);
+    escaped = false;
+  }
+}
+
+bool AutoTypeQueue::is_active() const {
+  std::scoped_lock const lock(mutex_);
+  return !queue_.empty() || awaiting_release_ || pause_counter_ > 0 ||
+         inter_char_pause_ || blocked_;
+}
+
+size_t AutoTypeQueue::remaining() const {
+  std::scoped_lock const lock(mutex_);
+  return queue_.size();
+}
+
+void AutoTypeQueue::clear() {
+  std::scoped_lock const lock(mutex_);
+  queue_.clear();
+  pause_counter_ = 0;
+  awaiting_release_ = false;
+  pending_release_key_ = 0;
+  inter_char_pause_ = false;
+  blocked_ = false;
+}
