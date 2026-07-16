@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>konCePCja — The Amstrad CPC Lives Again!</title>
+<style>
+/* ───────────────────────── Fonts ───────────────────────── */
+@font-face { font-family:"Rokkitt"; src:url("../fonts/Rokkitt[wght].ttf"); font-weight:100 900; font-display:swap; }
+@font-face { font-family:"Schola"; src:url("../fonts/texgyreschola-regular.otf"); font-weight:normal; font-display:swap; }
+@font-face { font-family:"Schola"; src:url("../fonts/texgyreschola-bold.otf"); font-weight:bold; }
+@font-face { font-family:"Schola"; src:url("../fonts/texgyreschola-italic.otf"); font-style:italic; }
+@font-face { font-family:"CPC"; src:url("../fonts/Amstrad_CPC_correct_Regular.ttf"); font-display:swap; }
+@font-face { font-family:"OCRB"; src:url("../fonts/OCRB.otf"); font-display:swap; }
+
+/* ───────────────────────── Palette ──────────────────────── */
+:root{
+  --ink:#16130d; --paper:#f3e9cf; --paper2:#efe2c0;
+  --red:#d4232b; --blue:#21407e; --cpc-blue:#2a4fa0;
+  --yellow:#ffce1f; --cyan:#19c6d8; --magenta:#d3208b; --green:#2bab43;
+}
+*{box-sizing:border-box}
+html{ -webkit-text-size-adjust:100%; }
+body{
+  margin:0; color:var(--ink);
+  font-family:"Schola",Georgia,serif;
+  /* halftone dot field over warm newsprint */
+  background:
+    radial-gradient(circle at center, rgba(0,0,0,.06) 1px, transparent 1.4px) 0 0/7px 7px,
+    var(--paper);
+}
+img{max-width:100%; display:block}
+
+/* page frame — a magazine spread */
+.page{ max-width:1000px; margin:0 auto; padding:0 14px 60px;
+  background:var(--paper);
+  box-shadow:0 0 0 1px rgba(0,0,0,.15), 0 18px 60px rgba(0,0,0,.35);
+}
+
+/* ───────────────────────── Masthead ─────────────────────── */
+.masthead{
+  display:flex; justify-content:space-between; align-items:stretch;
+  background:var(--ink); color:var(--paper); margin:0 -14px;
+  border-bottom:5px solid var(--red);
+  font-family:"Rokkitt",serif;
+}
+.masthead .left{ padding:10px 16px; font-weight:900; font-size:22px; letter-spacing:.04em; text-transform:uppercase; }
+.masthead .left b{ color:var(--yellow) }
+.masthead .right{ padding:10px 16px; background:var(--red); color:#fff;
+  font-weight:800; font-size:13px; letter-spacing:.12em; display:flex; align-items:center; }
+
+/* ───────────────────────── Hero ─────────────────────────── */
+.hero{ position:relative; padding:26px 8px 8px; text-align:center; }
+.kicker{ font-family:"Rokkitt",serif; font-weight:800; text-transform:uppercase;
+  letter-spacing:.18em; color:var(--blue); font-size:14px; margin:0 0 4px; }
+.headline{
+  font-family:"Rokkitt",serif; font-weight:900; line-height:.92;
+  font-size:clamp(40px,9vw,92px); margin:.05em 0 .1em; text-transform:uppercase;
+  letter-spacing:-.01em; color:var(--ink);
+  text-shadow:4px 4px 0 var(--yellow), 7px 7px 0 var(--red);
+}
+.headline .em{ color:var(--red) }
+.subhead{ font-style:italic; font-size:clamp(16px,2.4vw,22px); max-width:740px;
+  margin:.4em auto 1em; color:#3a3327; }
+.hero img.logo{ width:min(360px,72%); margin:6px auto 0;
+  filter:drop-shadow(8px 8px 0 rgba(0,0,0,.25)); }
+
+/* starburst NEW! badge */
+.burst{ position:absolute; top:-12px; right:-19px; width:118px; height:118px;
+  display:grid; place-items:center; transform:rotate(12deg); z-index:3; }
+.burst svg{ position:absolute; inset:0; width:100%; height:100% }
+.burst span{ position:relative; font-family:"Rokkitt",serif; font-weight:900;
+  color:#fff; font-size:21px; text-transform:uppercase; line-height:.85; text-align:center;
+  text-shadow:1px 1px 0 #000; }
+
+/* ───────────────────────── Article body ─────────────────── */
+.article{ padding:14px 22px 4px; }
+.article h2{ font-family:"Rokkitt",serif; font-weight:900; text-transform:uppercase;
+  font-size:30px; letter-spacing:-.01em; color:var(--blue); margin:.4em 0 .1em;
+  border-bottom:4px solid var(--ink); padding-bottom:4px; }
+.body{ column-width:300px; column-gap:30px; column-rule:1px solid rgba(0,0,0,.2);
+  font-size:16.5px; line-height:1.5; text-align:justify; hyphens:auto; }
+.body p{ margin:0 0 .8em }
+.body p.lead::first-letter{
+  font-family:"Rokkitt",serif; font-weight:900; float:left; color:var(--red);
+  font-size:74px; line-height:.7; padding:6px 8px 2px 0; }
+.body strong{ color:var(--ink) }
+.body .pull{ break-inside:avoid; font-family:"Rokkitt",serif; font-weight:800;
+  font-size:22px; line-height:1.05; color:var(--magenta); border-top:3px solid var(--magenta);
+  border-bottom:3px solid var(--magenta); padding:10px 0; margin:.4em 0; text-align:left; }
+
+/* screenshot plates */
+.plate{ break-inside:avoid; margin:6px 0 14px; background:#000; padding:8px;
+  border:3px solid var(--ink); box-shadow:6px 6px 0 rgba(0,0,0,.35); }
+.plate img{ width:100%; border:1px solid #333 }
+.plate figcaption{ font-family:"CPC",monospace; color:var(--yellow); background:#000;
+  font-size:11px; line-height:1.35; padding:7px 4px 2px; text-align:left; }
+.plate.tilt{ transform:rotate(-1.4deg) }
+.plate.tilt2{ transform:rotate(1.2deg) }
+
+/* ───────────────────────── Boxes row ────────────────────── */
+.boxes{ display:grid; grid-template-columns:1.2fr 1fr; gap:18px; padding:10px 22px; }
+@media(max-width:680px){ .boxes{ grid-template-columns:1fr } }
+.box{ border:4px solid var(--ink); background:var(--paper2);
+  box-shadow:7px 7px 0 var(--ink); }
+.box h3{ margin:0; font-family:"Rokkitt",serif; font-weight:900; text-transform:uppercase;
+  font-size:18px; letter-spacing:.05em; color:#fff; background:var(--ink); padding:7px 12px; }
+.box .inner{ padding:12px 14px; }
+.feature ul{ margin:0; padding:0; list-style:none; }
+.feature li{ padding:5px 0 5px 26px; position:relative; font-size:15px; line-height:1.35;
+  border-bottom:1px dotted rgba(0,0,0,.25); }
+.feature li:last-child{ border-bottom:0 }
+.feature li::before{ content:"▶"; position:absolute; left:4px; color:var(--red); font-size:12px; top:7px; }
+.feature li b{ color:var(--blue) }
+.spex .inner{ font-family:"OCRB",monospace; font-size:12.5px; line-height:1.7; }
+.spex .row{ display:flex; justify-content:space-between; gap:10px;
+  border-bottom:1px dotted rgba(0,0,0,.3); padding:1px 0; }
+.spex .row b{ color:var(--red) }
+
+/* ───────────────────────── Verdict ──────────────────────── */
+.verdict{ margin:22px; border:5px solid var(--ink); background:#fff;
+  box-shadow:9px 9px 0 var(--red); display:grid; grid-template-columns:1fr 220px; }
+@media(max-width:680px){ .verdict{ grid-template-columns:1fr } }
+.verdict .bars{ padding:14px 18px; }
+.verdict h3{ font-family:"Rokkitt",serif; font-weight:900; text-transform:uppercase;
+  font-size:24px; margin:0 0 8px; color:var(--ink); }
+.bar{ display:grid; grid-template-columns:120px 1fr 44px; align-items:center; gap:8px; margin:5px 0;
+  font-family:"Rokkitt",serif; font-weight:700; font-size:14px; text-transform:uppercase; letter-spacing:.04em; }
+.bar .track{ height:14px; background:#e4d9bd; border:2px solid var(--ink); overflow:hidden }
+.bar .fill{ height:100%; background:repeating-linear-gradient(45deg,var(--cpc-blue) 0 6px,#1a3a86 6px 12px); }
+.bar .pct{ text-align:right }
+.verdict .overall{ background:var(--ink); color:#fff; display:grid; place-content:center;
+  text-align:center; padding:14px; }
+.verdict .overall .num{ font-family:"Rokkitt",serif; font-weight:900; font-size:74px; line-height:.9; color:var(--yellow); }
+.verdict .overall .lab{ font-family:"Rokkitt",serif; font-weight:800; text-transform:uppercase;
+  letter-spacing:.12em; font-size:13px; }
+.verdict .overall .stamp{ margin-top:8px; border:3px solid var(--red); color:var(--red);
+  font-family:"Rokkitt",serif; font-weight:900; text-transform:uppercase; padding:4px 8px;
+  transform:rotate(-6deg); font-size:14px; letter-spacing:.06em; }
+
+/* ───────────────────────── Price + CTA ──────────────────── */
+.price{ margin:0 22px; background:var(--yellow); border:4px solid var(--ink);
+  padding:12px 16px; display:flex; flex-wrap:wrap; gap:6px 26px; justify-content:center;
+  font-family:"Rokkitt",serif; font-weight:800; text-transform:uppercase; letter-spacing:.04em;
+  font-size:15px; box-shadow:6px 6px 0 var(--ink); }
+.price b{ color:var(--red) }
+.cta{ display:flex; flex-wrap:wrap; gap:16px; justify-content:center; padding:24px 22px 8px; }
+.btn{ font-family:"Rokkitt",serif; font-weight:900; text-transform:uppercase; letter-spacing:.05em;
+  font-size:20px; text-decoration:none; padding:14px 26px; border:4px solid var(--ink);
+  box-shadow:6px 6px 0 var(--ink); transition:transform .05s, box-shadow .05s; }
+.btn:active{ transform:translate(4px,4px); box-shadow:2px 2px 0 var(--ink); }
+.btn.red{ background:var(--red); color:#fff }
+.btn.blue{ background:var(--cpc-blue); color:#fff }
+.btn .arr{ color:var(--yellow) }
+
+/* ───────────────────────── Footer ───────────────────────── */
+.foot{ margin:30px 22px 0; padding-top:14px; border-top:3px double var(--ink);
+  font-size:12px; line-height:1.5; color:#4a4334; }
+.foot b{ color:var(--ink) }
+.foot a{ color:var(--blue) }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="left">kon<b>Ce</b>PCja <span style="font-weight:400;font-size:13px;letter-spacing:.16em">· THE 8-BIT POWERHOUSE</span></div>
+    <div class="right">ISSUE #1 · 2026 · PRICE: FREE</div>
+  </header>
+
+  <section class="hero">
+    <div class="burst">
+      <svg viewBox="0 0 100 100" aria-hidden="true"><polygon points="50,2 59,28 86,18 73,43 98,52 73,61 86,86 59,76 50,98 41,76 14,86 27,61 2,52 27,43 14,18 41,28" fill="#d4232b" stroke="#16130d" stroke-width="2"/></svg>
+      <span>NEW!</span>
+    </div>
+    <p class="kicker">The complete CPC, faithfully reborn for your modern machine</p>
+    <h1 class="headline">The Amstrad CPC<br><span class="em">Lives Again!</span></h1>
+    <p class="subhead">Every chip. Every quirk. Every colour. Plus a debugger that would have made 1985 weep with joy.</p>
+    <img class="logo" src="../images/koncepcja-logo.png" alt="konCePCja — an Amstrad CPC on screen">
+  </section>
+
+  <section class="article">
+    <h2>Stone me — it's the whole machine!</h2>
+    <div class="body">
+      <p class="lead"><strong>konCePCja</strong> is a from-the-silicon-up emulator of the Amstrad CPC — the 464, the 664, the 6128, and the snazzy 6128 Plus — built on the venerable Caprice32 core and dragged kicking and screaming into the present day with a modern interface and a developer's toolkit that is, frankly, the dog's danglies.</p>
+
+      <p>It doesn't just <em>pretend</em> to be a CPC. The Z80A runs the full instruction set. The Gate Array does its palette and ROM-banking conjuring. The CRTC — all four flavours, 6845 through to the AMS40489 — keeps the raster honest. The PSG sings through three channels and an envelope generator, and the uPD765 floppy controller spins your discs exactly as cantankerously as the real thing.</p>
+
+      <figure class="plate tilt">
+        <img src="../images/main-display.png" alt="konCePCja running a BASIC colour demo">
+        <figcaption>&gt; BASIC 1.1, Ready. A few lines of FOR/PEN/PRINT and the borders are dancing — just like 1985.</figcaption>
+      </figure>
+
+      <p class="pull">"A debugger that would have made 1985 weep with joy."</p>
+
+      <p>Press <strong>F12</strong> and the curtain lifts. A full debugger swings into view: live Z80 registers, a disassembler that follows the program counter, a hex editor over all 64K, breakpoints and watchpoints, an I/O-port trap, and live windows onto the video and audio hardware. There's even an integrated Z80 assembler — type your code, hit Assemble, and watch it run.</p>
+
+      <figure class="plate tilt2">
+        <img src="../images/devtools-assembler.png" alt="The built-in Z80 assembler with code">
+        <figcaption>&gt; The built-in assembler — write Z80, assemble straight into memory, with syntax highlighting and a two-pass symbol table.</figcaption>
+      </figure>
+
+      <p>Want to drive it from a script? An IPC protocol on a TCP port lets you pause, poke, step, set breakpoints, and grab screenshots from the outside — perfect for automated testing or a cheeky bit of reverse-engineering. There's a telnet console that mirrors the CPC's text output, and an M4 Board with its own web file-manager.</p>
+
+      <figure class="plate tilt">
+        <img src="../images/devtools-video-state.png" alt="The video-state window showing CRTC and Gate Array registers">
+        <figcaption>&gt; Live video state: every CRTC register, the Gate Array mode, ROM/RAM config and selected pen — updated frame by frame.</figcaption>
+      </figure>
+
+      <p>And the peripherals! The Digiblaster and AmDrum DACs, the Dobbertin SmartWatch, the AMX and Symbiface II mice, an IDE hard disc, a real-time clock, the M4 Board, a light gun — even procedurally-generated disc-drive clatter for that authentic <em>whirr-chunk</em>. It loads DSK, CDT, SNA, CPR and IPF, runs on Mac, Linux and Windows, and costs precisely nothing.</p>
+    </div>
+  </section>
+
+  <div class="boxes">
+    <aside class="box feature">
+      <h3>What you get</h3>
+      <div class="inner"><ul>
+        <li><b>The whole machine</b> — 464 / 664 / 6128 / 6128 Plus, Z80A, Gate Array, four CRTC types, PSG, FDC, ASIC</li>
+        <li><b>Modern dev-tools</b> — debugger, disassembler, hex editor, breakpoints &amp; watchpoints, video/audio state, graphics finder</li>
+        <li><b>Built-in Z80 assembler</b> — two-pass, with symbols, straight into memory</li>
+        <li><b>Scripting &amp; automation</b> — IPC protocol, telnet console, M4 web file-manager</li>
+        <li><b>Heaps of peripherals</b> — DACs, mice, RTCs, IDE, light gun, Multiface II</li>
+        <li><b>All the formats</b> — DSK, EDSK, CDT, SNA, CPR, IPF</li>
+      </ul></div>
+    </aside>
+    <aside class="box spex">
+      <h3>Tech spex</h3>
+      <div class="inner">
+        <div class="row"><span>CPU</span><b>Z80A @ 4 MHz</b></div>
+        <div class="row"><span>RAM</span><b>64–128K (+exp)</b></div>
+        <div class="row"><span>Video</span><b>CRTC 0–3 + GA</b></div>
+        <div class="row"><span>Modes</span><b>0 / 1 / 2</b></div>
+        <div class="row"><span>Colours</span><b>27 (4096 on Plus)</b></div>
+        <div class="row"><span>Sound</span><b>AY-3-8912, 3ch</b></div>
+        <div class="row"><span>Disc</span><b>uPD765A, 3"</b></div>
+        <div class="row"><span>Licence</span><b>GPLv2</b></div>
+      </div>
+    </aside>
+  </div>
+
+  <section class="verdict">
+    <div class="bars">
+      <h3>The Verdict</h3>
+      <div class="bar"><span>Authenticity</span><span class="track"><span class="fill" style="width:98%"></span></span><span class="pct">98%</span></div>
+      <div class="bar"><span>Dev Tools</span><span class="track"><span class="fill" style="width:97%"></span></span><span class="pct">97%</span></div>
+      <div class="bar"><span>Graphics</span><span class="track"><span class="fill" style="width:94%"></span></span><span class="pct">94%</span></div>
+      <div class="bar"><span>Sonics</span><span class="track"><span class="fill" style="width:92%"></span></span><span class="pct">92%</span></div>
+      <div class="bar"><span>Value</span><span class="track"><span class="fill" style="width:100%"></span></span><span class="pct">100%</span></div>
+    </div>
+    <div class="overall">
+      <div class="num">96%</div>
+      <div class="lab">Overall</div>
+      <div class="stamp">Masterclass</div>
+    </div>
+  </section>
+
+  <div class="price">
+    <span><b>Price:</b> Nowt (it's free!)</span>
+    <span><b>Machines:</b> 464 · 664 · 6128 · Plus</span>
+    <span><b>Host:</b> Mac · Linux · Windows</span>
+    <span><b>Out:</b> Now</span>
+  </div>
+
+  <div class="cta">
+    <a class="btn red" href="../koncepcja_manual.html">Read the Manual <span class="arr">▸</span></a>
+    <a class="btn blue" href="https://github.com/ikari-pl/konCePCja">Get the Source <span class="arr">▸</span></a>
+  </div>
+
+  <footer class="foot">
+    <p><b>konCePCja</b> is an independent emulator based on Caprice32 (© 1997–2015 Ulrich Doewich · © 2016–2025 Colin Pitrat) and is distributed under the <b>GNU General Public License v2</b>. Amstrad, CPC, CPC464, CPC664, CPC6128 and CPC6128+ are trademarks of their respective owners; this project is not affiliated with, nor endorsed by, the trademark holders.</p>
+    <p>Illustrations, diagrams and screenshots © 2026 Cezar “ikari” Pokorski, <a href="https://ikari.press">ikari.press</a>. This page is a light-hearted homage to the 8-bit computer magazines of the 1980s — ratings and breathless prose included in that spirit.</p>
+  </footer>
+
+</div>
+</body>
+</html>

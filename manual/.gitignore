@@ -1,0 +1,4 @@
+# Build artifact — reproducible from source via `make` (Strategy A, free fonts).
+koncepcja_manual.pdf
+koncepcja_manual.html
+site/

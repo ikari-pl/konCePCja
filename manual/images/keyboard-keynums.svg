@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 382.046 347.458">
+<defs xmlns="http://www.w3.org/2000/svg">
+    <style>
+      .ba, .bb, .bc, .bd, .be, .bf {
+        fill: none;
+      }
+
+      .bg {
+        fill: #231f20;
+      }
+
+      .bh, .bi, .bj {
+        stroke: #000;
+      }
+
+      .bh, .bi, .bj, .bk {
+        fill: #fff;
+        stroke-miterlimit: 10;
+      }
+
+      .bb {
+        stroke-width: 1.023px;
+      }
+
+      .bb, .bc, .bd, .be, .bf {
+        stroke: #010101;
+      }
+
+      .bc {
+        stroke-width: 1.006px;
+      }
+
+      .bd {
+        stroke-width: .981px;
+      }
+
+      .be {
+        stroke-width: 1.056px;
+      }
+
+      .bf {
+        stroke-width: .907px;
+      }
+
+      .bi {
+        stroke-width: .966px;
+      }
+
+      .bj {
+        stroke-width: .985px;
+      }
+
+      .bl {
+        clip-path: url(#b);
+      }
+
+      .bk {
+        stroke: #231f20;
+        stroke-width: .5px;
+      }
+    </style>
+    <clipPath id="b">
+      <rect class="ba" x=".509" width="381.028" height="8.07" />
+    </clipPath>
+  </defs>
+  
+<g xmlns="http://www.w3.org/2000/svg">
+    <rect class="bd" x="15.725" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="35.305" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="54.885" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="74.465" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="94.045" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="113.615" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="133.195" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="152.775" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="172.355" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="191.935" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="231.231" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="250.811" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="270.381" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="289.961" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="309.541" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="329.121" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="348.701" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="15.725" y="53.465" width="25.39" height="16.67" />
+    <rect class="bd" x="43.115" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="62.695" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="82.275" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="101.845" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="121.425" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="141.005" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="160.585" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="180.165" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="199.745" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="239.041" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="258.611" y="53.465" width="17.58" height="16.67" />
+    <polygon class="bd" points="278.191 53.465 307.581 53.465 307.581 88.757 282.761 88.757 282.761 70.114 278.191 70.135 278.191 53.465" />
+    <rect class="bd" x="309.581" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="329.161" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="348.741" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="15.725" y="72.097" width="29.95" height="16.67" />
+    <rect class="bd" x="47.675" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="67.255" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="86.835" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="106.415" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="125.995" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="145.575" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="165.155" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="184.725" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="204.305" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="243.601" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="263.181" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="309.57" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="329.15" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="348.73" y="72.097" width="17.58" height="16.67" />
+    <rect class="be" x="15.725" y="90.729" width="40.053" height="16.67" />
+    <rect class="bd" x="57.825" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="77.405" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="96.975" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="116.555" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="136.135" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="155.715" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="175.295" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="214.591" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="234.171" y="90.729" width="17.58" height="16.67" />
+    <rect class="bf" x="273.557" y="90.729" width="34.134" height="16.67" />
+    <rect class="bd" x="309.575" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="329.155" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="348.725" y="90.729" width="17.58" height="16.67" />
+    <rect class="be" x="15.725" y="109.371" width="40.053" height="16.67" />
+    <rect class="bc" x="57.825" y="109.371" width="31.535" height="16.67" />
+    <rect class="bb" x="91.283" y="109.371" width="156.698" height="16.67" />
+    <rect class="bd" x="249.981" y="109.371" width="57.78" height="16.67" />
+    <rect class="bd" x="309.575" y="109.371" width="17.58" height="16.67" />
+    <rect class="bd" x="329.145" y="109.371" width="17.58" height="16.67" />
+    <rect class="bd" x="348.725" y="109.371" width="17.58" height="16.67" />
+    <rect class="bd" x="211.623" y="34.823" width="17.58" height="16.67" />
+    <rect class="bd" x="219.248" y="53.465" width="17.58" height="16.67" />
+    <rect class="bd" x="223.821" y="72.097" width="17.58" height="16.67" />
+    <rect class="bd" x="194.831" y="90.729" width="17.58" height="16.67" />
+    <rect class="bd" x="253.921" y="90.729" width="17.58" height="16.67" />
+  </g>
+  
+<g xmlns="http://www.w3.org/2000/svg" class="bl">
+    <g>
+      <g id="c" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points=".509 .25 2.478 .25 2.478 3.814 6.287 3.83 6.288 .255 8.257 .255" />
+      </g>
+      <g id="d" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="8.257 .25 10.226 .25 10.226 3.814 14.035 3.83 14.036 .255 16.005 .255" />
+      </g>
+      <g id="e" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="16.005 .25 17.974 .25 17.974 3.814 21.783 3.83 21.784 .255 23.753 .255" />
+      </g>
+      <g id="f" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="23.753 .25 25.722 .25 25.722 3.814 29.531 3.83 29.532 .255 31.501 .255" />
+      </g>
+      <g id="g" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="31.501 .25 33.47 .25 33.47 3.814 37.279 3.83 37.28 .255 39.249 .255" />
+      </g>
+      <g id="h" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="39.249 .25 41.218 .25 41.218 3.814 45.027 3.83 45.028 .255 46.997 .255" />
+      </g>
+      <g id="i" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="46.997 .25 48.966 .25 48.966 3.814 52.775 3.83 52.776 .255 54.745 .255" />
+      </g>
+      <g id="j" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="54.745 .25 56.714 .25 56.714 3.814 60.523 3.83 60.524 .255 62.493 .255" />
+      </g>
+      <g id="k" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="62.493 .25 64.462 .25 64.462 3.814 68.271 3.83 68.272 .255 70.241 .255" />
+      </g>
+      <g id="l" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="70.241 .25 72.21 .25 72.21 3.814 76.019 3.83 76.02 .255 77.989 .255" />
+      </g>
+      <g id="m" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="77.989 .25 79.958 .25 79.958 3.814 83.767 3.83 83.768 .255 85.737 .255" />
+      </g>
+      <g id="n" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="85.737 .25 87.706 .25 87.706 3.814 91.515 3.83 91.516 .255 93.485 .255" />
+      </g>
+      <g id="o" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="93.485 .25 95.453 .25 95.453 3.814 99.263 3.83 99.264 .255 101.233 .255" />
+      </g>
+      <g id="p" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="101.233 .25 103.201 .25 103.201 3.814 107.011 3.83 107.012 .255 108.981 .255" />
+      </g>
+      <g id="q" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="108.981 .25 110.949 .25 110.949 3.814 114.759 3.83 114.76 .255 116.729 .255" />
+      </g>
+      <g id="r" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="116.729 .25 118.697 .25 118.697 3.814 122.507 3.83 122.508 .255 124.477 .255" />
+      </g>
+      <g id="s" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="124.477 .25 126.445 .25 126.445 3.814 130.255 3.83 130.256 .255 132.225 .255" />
+      </g>
+      <g id="t" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="132.225 .25 134.193 .25 134.193 3.814 138.003 3.83 138.004 .255 139.973 .255" />
+      </g>
+      <g id="u" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="139.973 .25 141.941 .25 141.941 3.814 145.751 3.83 145.752 .255 147.721 .255" />
+      </g>
+      <g id="v" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="147.721 .25 149.689 .25 149.689 3.814 153.499 3.83 153.5 .255 155.469 .255" />
+      </g>
+      <g id="w" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="155.469 .25 157.437 .25 157.437 3.814 161.247 3.83 161.248 .255 163.216 .255" />
+      </g>
+      <g id="x" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="163.216 .25 165.185 .25 165.185 3.814 168.995 3.83 168.996 .255 170.964 .255" />
+      </g>
+      <g id="y" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="170.964 .25 172.933 .25 172.933 3.814 176.743 3.83 176.744 .255 178.712 .255" />
+      </g>
+      <g id="z" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="178.712 .25 180.681 .25 180.681 3.814 184.491 3.83 184.492 .255 186.46 .255" />
+      </g>
+      <g id="aa" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="186.46 .25 188.429 .25 188.429 3.814 192.239 3.83 192.24 .255 194.208 .255" />
+      </g>
+      <g id="ab" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="194.208 .25 196.177 .25 196.177 3.814 199.987 3.83 199.988 .255 201.956 .255" />
+      </g>
+      <g id="ac" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="201.956 .25 203.925 .25 203.925 3.814 207.735 3.83 207.736 .255 209.704 .255" />
+      </g>
+      <g id="ad" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="209.704 .25 211.673 .25 211.673 3.814 215.483 3.83 215.484 .255 217.452 .255" />
+      </g>
+      <g id="ae" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="217.452 .25 219.421 .25 219.421 3.814 223.231 3.83 223.231 .255 225.2 .255" />
+      </g>
+      <g id="af" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="225.2 .25 227.169 .25 227.169 3.814 230.979 3.83 230.979 .255 232.948 .255" />
+      </g>
+      <g id="ag" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="232.948 .25 234.917 .25 234.917 3.814 238.727 3.83 238.727 .255 240.696 .255" />
+      </g>
+      <g id="ah" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="240.696 .25 242.665 .25 242.665 3.814 246.475 3.83 246.475 .255 248.444 .255" />
+      </g>
+      <g id="ai" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="248.444 .25 250.413 .25 250.413 3.814 254.223 3.83 254.223 .255 256.192 .255" />
+      </g>
+      <g id="aj" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="256.192 .25 258.161 .25 258.161 3.814 261.971 3.83 261.971 .255 263.94 .255" />
+      </g>
+      <g id="ak" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="263.94 .25 265.909 .25 265.909 3.814 269.719 3.83 269.719 .255 271.688 .255" />
+      </g>
+      <g id="al" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="271.688 .25 273.657 .25 273.657 3.814 277.467 3.83 277.467 .255 279.436 .255" />
+      </g>
+      <g id="am" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="279.436 .25 281.405 .25 281.405 3.814 285.215 3.83 285.215 .255 287.184 .255" />
+      </g>
+      <g id="an" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="287.184 .25 289.153 .25 289.153 3.814 292.963 3.83 292.963 .255 294.932 .255" />
+      </g>
+      <g id="ao" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="294.932 .25 296.901 .25 296.901 3.814 300.711 3.83 300.711 .255 302.68 .255" />
+      </g>
+      <g id="ap" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="302.68 .25 304.649 .25 304.649 3.814 308.458 3.83 308.459 .255 310.428 .255" />
+      </g>
+      <g id="aq" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="310.428 .25 312.397 .25 312.397 3.814 316.206 3.83 316.207 .255 318.176 .255" />
+      </g>
+      <g id="ar" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="318.176 .25 320.145 .25 320.145 3.814 323.954 3.83 323.955 .255 325.924 .255" />
+      </g>
+      <g id="as" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="325.924 .25 327.893 .25 327.893 3.814 331.702 3.83 331.703 .255 333.672 .255" />
+      </g>
+      <g id="at" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="333.672 .25 335.641 .25 335.641 3.814 339.45 3.83 339.451 .255 341.42 .255" />
+      </g>
+      <g id="au" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="341.42 .25 343.389 .25 343.389 3.814 347.198 3.83 347.199 .255 349.168 .255" />
+      </g>
+      <g id="av" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="349.168 .25 351.137 .25 351.137 3.814 354.946 3.83 354.947 .255 356.916 .255" />
+      </g>
+      <g id="aw" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="356.916 .25 358.885 .25 358.885 3.814 362.694 3.83 362.695 .255 364.664 .255" />
+      </g>
+      <g id="ax" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="364.664 .25 366.633 .25 366.633 3.814 370.442 3.83 370.443 .255 372.412 .255" />
+      </g>
+      <g id="ay" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="372.412 .25 374.381 .25 374.381 3.814 378.19 3.83 378.191 .255 380.16 .255" />
+      </g>
+      <g id="az" data-name="&amp;lt;Grid Repeat&amp;gt;">
+        <polyline class="bk" points="380.16 .25 382.129 .25 382.129 3.814 385.938 3.83 385.939 .255 387.908 .255" />
+      </g>
+    </g>
+  </g>
+  
+<polygon xmlns="http://www.w3.org/2000/svg" points="382.045 20.467 382.046 21.269 0 21.482 0 20.68 382.045 20.467 382.045 20.467" />
+  
+<polygon xmlns="http://www.w3.org/2000/svg" points="382.045 138.933 382.046 139.736 0 139.949 0 139.146 382.045 138.933 382.045 138.933" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bj" x="39.568" y="291.576" width="114.689" height="25.159" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bi" x="85.558" y="260.024" width="23.294" height="86.008" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bh" x="65.029" y="284.856" width="63.134" height="38.182" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bi" x="70.173" y="291.248" width="25.397" height="25.397" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bi" x="98.84" y="291.248" width="25.397" height="25.397" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bj" x="207.9" y="292.519" width="114.689" height="25.159" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bi" x="253.89" y="260.968" width="23.294" height="86.008" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bh" x="233.361" y="285.799" width="63.134" height="38.182" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bi" x="238.505" y="292.191" width="25.397" height="25.397" />
+  
+<rect xmlns="http://www.w3.org/2000/svg" class="bi" x="267.172" y="292.191" width="25.397" height="25.397" />
+  
+<g xmlns="http://www.w3.org/2000/svg">
+    <path class="bg" d="M72.43,243.317h2.266c.11,0,.202.036.275.109s.11.165.11.275v4.444c0,.682-.235,1.228-.704,1.639-.411.359-.9.539-1.469.539s-1.054-.176-1.458-.528c-.455-.41-.682-.961-.682-1.649v-.012c0-.103.037-.192.11-.27.073-.077.163-.115.27-.115s.198.038.275.115c.077.077.115.167.115.27v.012c0,.462.143.821.429,1.077.249.228.561.342.935.342.381,0,.704-.117.968-.353.293-.257.44-.612.44-1.066v-4.07h-1.892c-.103,0-.193-.037-.27-.11-.077-.073-.116-.163-.116-.27s.039-.196.116-.27c.077-.073.167-.109.27-.109h.011Z" />
+    <path class="bg" d="M79.085,243.317c.807,0,1.397.227,1.771.682.44.543.66,1.483.66,2.821s-.22,2.279-.66,2.821c-.374.455-.964.683-1.771.683-.799,0-1.39-.231-1.771-.693-.44-.542-.66-1.479-.66-2.811s.22-2.268.66-2.811c.381-.462.972-.692,1.771-.692ZM79.085,244.076c-.293,0-.53.029-.709.088s-.335.169-.468.33c-.323.403-.484,1.179-.484,2.326s.161,1.924.484,2.327c.132.161.288.271.468.329.18.06.416.089.709.089s.53-.029.709-.089c.18-.059.335-.164.467-.318.323-.403.484-1.183.484-2.338s-.162-1.934-.484-2.337c-.132-.154-.288-.261-.467-.319s-.417-.088-.709-.088Z" />
+    <path class="bg" d="M83.066,243.13c.139,0,.246.062.319.188l1.859,2.98,1.859-2.98c.081-.125.19-.188.33-.188.11,0,.202.037.275.11s.11.165.11.274c0,.074-.022.144-.066.209l-2.123,3.41v2.695c0,.103-.039.192-.115.27-.077.077-.167.115-.27.115s-.192-.038-.27-.115-.116-.167-.116-.27v-2.695c-.088-.139-.205-.328-.352-.566-.146-.238-.375-.606-.688-1.105-.312-.498-.673-1.078-1.083-1.738-.044-.065-.066-.135-.066-.209,0-.109.037-.201.11-.274.073-.073.165-.11.275-.11h.011Z" />
+    <path class="bg" d="M91.405,243.218c.212,0,.418.029.616.088.198.06.365.127.5.204s.257.155.363.236c.106.081.182.15.226.209l.077.077c.059.073.088.153.088.242,0,.109-.039.201-.116.274s-.167.11-.27.11c-.125,0-.228-.052-.308-.154-.029-.036-.073-.084-.132-.143s-.191-.136-.396-.231c-.206-.095-.422-.143-.649-.143-.389,0-.719.123-.99.368-.271.246-.407.541-.407.886,0,.19.027.337.083.439.055.104.152.198.292.286.183.117.554.253,1.111.407.631.176,1.078.355,1.342.539.477.337.715.813.715,1.43,0,.58-.194,1.053-.583,1.419-.403.374-.939.562-1.606.562-.242,0-.479-.027-.709-.083-.231-.055-.424-.122-.578-.203s-.29-.163-.407-.248c-.117-.084-.202-.151-.253-.203l-.088-.088c-.059-.073-.088-.157-.088-.253,0-.103.037-.192.11-.27s.161-.115.264-.115c.125,0,.227.048.308.143.007.015.023.035.049.061.025.025.081.071.165.138.084.065.178.123.28.17.103.048.238.092.407.133.168.04.348.061.539.061.462,0,.821-.121,1.078-.363.235-.213.352-.499.352-.858,0-.205-.031-.366-.093-.483-.062-.117-.164-.224-.303-.319-.19-.132-.557-.275-1.1-.429-.008,0-.055-.012-.143-.033-.088-.022-.142-.037-.16-.044-.019-.008-.066-.022-.143-.044-.077-.022-.13-.039-.159-.05-.03-.011-.077-.027-.143-.05-.066-.021-.118-.042-.154-.061-.037-.018-.083-.04-.137-.065-.055-.025-.106-.052-.154-.077s-.093-.053-.137-.082c-.213-.14-.387-.326-.522-.562-.136-.234-.204-.502-.204-.803,0-.564.214-1.043.644-1.436.429-.393.937-.589,1.523-.589Z" />
+    <path class="bg" d="M97.576,243.184c.022,0,.044.004.066.012h1.859c.11,0,.202.036.275.109.073.074.11.164.11.27,0,.106-.037.196-.11.27s-.165.11-.275.11h-1.54v5.874c0,.103-.039.192-.116.27-.077.077-.167.115-.27.115s-.192-.038-.27-.115c-.077-.077-.115-.167-.115-.27v-5.874h-1.562c-.11,0-.202-.037-.275-.11-.074-.073-.11-.163-.11-.27,0-.105.037-.195.11-.27.073-.073.165-.109.275-.109h1.892c.015-.008.033-.012.055-.012Z" />
+    <path class="bg" d="M103.735,243.218c.022,0,.044.004.066.012h1.562c.103,0,.192.036.269.109.077.073.116.163.116.27s-.039.196-.116.27c-.077.073-.167.11-.269.11h-1.243v5.511h1.243c.103,0,.192.038.269.115.077.077.116.169.116.275s-.039.196-.116.27c-.077.073-.167.109-.269.109h-3.278c-.103,0-.192-.036-.27-.109-.077-.073-.115-.163-.115-.27s.039-.198.115-.275c.077-.077.167-.115.27-.115h1.265v-5.511h-1.265c-.103,0-.192-.037-.27-.11-.077-.073-.115-.163-.115-.27s.039-.196.115-.27c.077-.073.167-.109.27-.109h1.584c.022-.008.044-.012.066-.012Z" />
+    <path class="bg" d="M110.028,243.284c.682,0,1.213.169,1.595.506.095.073.176.159.242.259.066.099.11.178.132.236l.033.099c.007.029.011.062.011.1,0,.109-.037.201-.11.274s-.161.11-.264.11c-.088,0-.167-.027-.236-.083-.07-.055-.116-.122-.138-.203-.007-.051-.062-.125-.165-.22-.242-.205-.609-.309-1.1-.309-.293,0-.528.029-.704.088-.176.06-.327.169-.451.33-.315.411-.473,1.188-.473,2.332s.161,1.922.484,2.332c.125.162.275.273.451.336.176.062.407.094.693.094.521,0,.905-.14,1.155-.418.051-.052.094-.106.126-.165.033-.059.053-.103.061-.133l.011-.044c.015-.095.057-.174.126-.236.069-.062.152-.094.248-.094.103,0,.192.039.27.116.077.077.115.167.115.27,0,.029-.004.055-.011.077-.044.256-.169.498-.374.726-.396.44-.972.66-1.727.66-.785,0-1.368-.238-1.749-.715-.433-.551-.649-1.485-.649-2.806s.212-2.251.638-2.794c.374-.483.961-.726,1.76-.726Z" />
+    <path class="bg" d="M117.607,243.086h.011c.088,0,.169.029.242.088.095.081.143.18.143.297,0,.096-.029.177-.088.242l-2.013,2.476c.11.146.253.335.429.566.176.23.453.59.83,1.077.378.488.816,1.059,1.315,1.711.051.066.077.143.077.231,0,.124-.051.224-.154.297-.066.059-.143.088-.231.088-.125,0-.228-.052-.308-.154l-2.453-3.201-1.1,1.364v1.661c0,.103-.038.192-.115.27s-.167.115-.27.115-.192-.038-.27-.115-.116-.167-.116-.27v-6.336c0-.103.039-.192.116-.27s.167-.115.27-.115.192.038.27.115.115.167.115.27v3.454l3.014-3.718c.073-.089.168-.136.286-.144Z" />
+    <path class="bg" d="M128.365,243.317c.807,0,1.397.227,1.771.682.44.543.66,1.483.66,2.821s-.22,2.279-.66,2.821c-.374.455-.964.683-1.771.683-.799,0-1.39-.231-1.771-.693-.44-.542-.66-1.479-.66-2.811s.22-2.268.66-2.811c.381-.462.972-.692,1.771-.692ZM128.365,244.076c-.293,0-.53.029-.709.088s-.335.169-.468.33c-.323.403-.484,1.177-.484,2.321,0,.477.029.895.088,1.254l2.827-3.465c-.029-.052-.055-.092-.077-.121-.132-.154-.288-.261-.467-.319s-.417-.088-.709-.088ZM129.916,245.451l-2.849,3.487c.044.088.084.157.121.209.132.161.288.271.468.329.18.06.416.089.709.089s.53-.029.709-.089c.18-.059.335-.164.467-.318.323-.403.484-1.185.484-2.343,0-.528-.037-.983-.11-1.364Z" />
+  </g>
+  
+<g xmlns="http://www.w3.org/2000/svg">
+    <path class="bg" d="M239.25,243.35h2.266c.11,0,.202.036.275.109s.109.165.109.275v4.444c0,.682-.234,1.228-.703,1.639-.411.359-.9.539-1.469.539s-1.055-.176-1.458-.528c-.454-.41-.682-.961-.682-1.649v-.012c0-.103.036-.192.11-.27.073-.077.163-.115.27-.115.105,0,.197.038.274.115s.115.167.115.27v.012c0,.462.144.821.43,1.077.249.228.561.342.935.342.382,0,.704-.117.968-.353.294-.257.44-.612.44-1.066v-4.07h-1.892c-.104,0-.193-.037-.27-.11-.077-.073-.116-.163-.116-.27s.039-.196.116-.27c.076-.073.166-.109.27-.109h.011Z" />
+    <path class="bg" d="M245.905,243.35c.807,0,1.396.227,1.771.682.44.543.66,1.483.66,2.821s-.22,2.279-.66,2.821c-.374.455-.964.683-1.771.683-.8,0-1.39-.231-1.771-.693-.439-.542-.66-1.479-.66-2.811s.221-2.268.66-2.811c.382-.462.972-.692,1.771-.692ZM245.905,244.109c-.294,0-.53.029-.71.088s-.335.169-.468.33c-.322.403-.483,1.179-.483,2.326s.161,1.924.483,2.327c.133.161.288.271.468.329.18.06.416.089.71.089s.529-.029.709-.089c.18-.059.336-.164.468-.318.322-.403.484-1.183.484-2.338s-.162-1.934-.484-2.337c-.132-.154-.288-.261-.468-.319s-.416-.088-.709-.088Z" />
+    <path class="bg" d="M249.887,243.163c.139,0,.245.062.319.188l1.858,2.98,1.859-2.98c.08-.125.19-.188.33-.188.109,0,.201.037.274.11s.11.165.11.274c0,.074-.022.144-.066.209l-2.123,3.41v2.695c0,.103-.038.192-.115.27s-.167.115-.27.115-.192-.038-.27-.115-.115-.167-.115-.27v-2.695c-.088-.139-.205-.328-.353-.566-.146-.238-.375-.606-.688-1.105-.312-.498-.673-1.078-1.083-1.738-.044-.065-.066-.135-.066-.209,0-.109.037-.201.11-.274s.165-.11.275-.11h.011Z" />
+    <path class="bg" d="M258.225,243.251c.213,0,.418.029.616.088.198.06.364.127.5.204s.257.155.363.236.182.15.226.209l.077.077c.059.073.088.153.088.242,0,.109-.038.201-.115.274s-.167.11-.27.11c-.125,0-.228-.052-.309-.154-.029-.036-.073-.084-.132-.143s-.19-.136-.396-.231c-.206-.095-.422-.143-.649-.143-.389,0-.719.123-.99.368-.271.246-.406.541-.406.886,0,.19.027.337.082.439.055.104.152.198.292.286.183.117.554.253,1.11.407.631.176,1.078.355,1.342.539.478.337.716.813.716,1.43,0,.58-.194,1.053-.583,1.419-.403.374-.939.562-1.606.562-.242,0-.479-.027-.709-.083-.231-.055-.424-.122-.578-.203-.153-.081-.29-.163-.407-.248-.117-.084-.201-.151-.253-.203l-.088-.088c-.059-.073-.088-.157-.088-.253,0-.103.037-.192.11-.27s.161-.115.264-.115c.125,0,.228.048.309.143.007.015.023.035.049.061s.081.071.165.138c.084.065.178.123.28.17.103.048.238.092.407.133.169.04.349.061.539.061.462,0,.821-.121,1.078-.363.234-.213.352-.499.352-.858,0-.205-.031-.366-.093-.483-.062-.117-.164-.224-.303-.319-.19-.132-.558-.275-1.1-.429-.008,0-.056-.012-.144-.033-.088-.022-.142-.037-.159-.044-.019-.008-.066-.022-.144-.044-.077-.022-.13-.039-.159-.05s-.077-.027-.143-.05c-.066-.021-.118-.042-.154-.061-.037-.018-.083-.04-.138-.065s-.106-.052-.154-.077-.093-.053-.137-.082c-.213-.14-.388-.326-.522-.562-.136-.234-.204-.502-.204-.803,0-.564.215-1.043.644-1.436s.937-.589,1.523-.589Z" />
+    <path class="bg" d="M264.396,243.218c.022,0,.044.004.066.012h1.859c.109,0,.201.036.274.109.073.074.11.164.11.27,0,.106-.037.196-.11.27s-.165.11-.274.11h-1.54v5.874c0,.103-.039.192-.116.27-.076.077-.166.115-.27.115-.103,0-.192-.038-.27-.115-.076-.077-.115-.167-.115-.27v-5.874h-1.562c-.11,0-.202-.037-.275-.11s-.11-.163-.11-.27c0-.105.037-.195.11-.27.073-.073.165-.109.275-.109h1.892c.015-.008.033-.012.055-.012Z" />
+    <path class="bg" d="M270.556,243.251c.021,0,.044.004.066.012h1.562c.103,0,.192.036.27.109s.115.163.115.27-.038.196-.115.27-.167.11-.27.11h-1.243v5.511h1.243c.103,0,.192.038.27.115s.115.169.115.275-.038.196-.115.27-.167.109-.27.109h-3.278c-.103,0-.192-.036-.27-.109-.076-.073-.115-.163-.115-.27s.039-.198.115-.275c.077-.077.167-.115.27-.115h1.266v-5.511h-1.266c-.103,0-.192-.037-.27-.11-.076-.073-.115-.163-.115-.27s.039-.196.115-.27c.077-.073.167-.109.27-.109h1.584c.022-.008.044-.012.066-.012Z" />
+    <path class="bg" d="M276.848,243.317c.682,0,1.214.169,1.595.506.096.073.177.159.242.259.066.099.11.178.132.236l.033.099c.008.029.011.062.011.1,0,.109-.036.201-.109.274s-.161.11-.265.11c-.088,0-.166-.027-.236-.083-.069-.055-.115-.122-.138-.203-.007-.051-.062-.125-.164-.22-.242-.205-.609-.309-1.101-.309-.293,0-.528.029-.704.088-.176.06-.326.169-.451.33-.315.411-.473,1.188-.473,2.332s.161,1.922.484,2.332c.124.162.274.273.45.336.177.062.407.094.693.094.521,0,.905-.14,1.155-.418.051-.052.094-.106.126-.165.033-.059.054-.103.061-.133l.012-.044c.015-.095.057-.174.126-.236s.152-.094.248-.094c.103,0,.192.039.27.116.076.077.115.167.115.27,0,.029-.004.055-.011.077-.045.256-.169.498-.374.726-.396.44-.973.66-1.728.66-.785,0-1.368-.238-1.749-.715-.433-.551-.648-1.485-.648-2.806s.212-2.251.638-2.794c.374-.483.961-.726,1.76-.726Z" />
+    <path class="bg" d="M284.427,243.119h.011c.088,0,.169.029.242.088.095.081.143.18.143.297,0,.096-.029.177-.088.242l-2.013,2.476c.109.146.253.335.429.566.176.23.453.59.83,1.077.378.488.816,1.059,1.315,1.711.051.066.076.143.076.231,0,.124-.051.224-.153.297-.066.059-.144.088-.231.088-.125,0-.228-.052-.308-.154l-2.453-3.201-1.101,1.364v1.661c0,.103-.038.192-.115.27s-.167.115-.27.115-.192-.038-.27-.115-.115-.167-.115-.27v-6.336c0-.103.038-.192.115-.27s.167-.115.27-.115.192.038.27.115.115.167.115.27v3.454l3.015-3.718c.073-.089.168-.136.286-.144Z" />
+    <path class="bg" d="M295.185,243.262h.011c.104,0,.191.036.265.109s.109.165.109.275v5.896h1.266c.103,0,.192.037.27.11s.115.163.115.27-.038.196-.115.27-.167.109-.27.109h-3.3c-.104,0-.193-.036-.27-.109-.077-.073-.116-.163-.116-.27s.039-.196.116-.27c.076-.073.166-.11.27-.11h1.275v-5.126c-.029.022-.065.05-.109.083-.045.033-.112.086-.204.159s-.2.158-.324.253c-.073.059-.154.088-.242.088-.103,0-.192-.038-.27-.115s-.115-.167-.115-.27c0-.132.051-.234.154-.308.059-.044.13-.1.214-.165.084-.066.219-.169.401-.309.184-.139.396-.304.639-.495.065-.051.143-.076.23-.076Z" />
+  </g>
+
+  <text x="24.52" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">66</text>
+  <text x="44.09" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">64</text>
+  <text x="63.67" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">65</text>
+  <text x="83.25" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">57</text>
+  <text x="102.84" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">56</text>
+  <text x="122.41" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">49</text>
+  <text x="141.98" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">48</text>
+  <text x="161.56" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">41</text>
+  <text x="181.14" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">40</text>
+  <text x="200.72" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">33</text>
+  <text x="220.41" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">32</text>
+  <text x="240.02" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">25</text>
+  <text x="259.60" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">24</text>
+  <text x="279.17" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">16</text>
+  <text x="298.75" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">79</text>
+  <text x="318.33" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">10</text>
+  <text x="337.91" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">11</text>
+  <text x="357.49" y="45.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">3</text>
+  <text x="28.42" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">68</text>
+  <text x="51.91" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">67</text>
+  <text x="71.48" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">59</text>
+  <text x="91.06" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">58</text>
+  <text x="110.63" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">50</text>
+  <text x="130.22" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">51</text>
+  <text x="149.79" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">43</text>
+  <text x="169.38" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">42</text>
+  <text x="188.95" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">35</text>
+  <text x="208.53" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">34</text>
+  <text x="228.04" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">27</text>
+  <text x="247.83" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">26</text>
+  <text x="267.40" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">17</text>
+  <text x="318.37" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">20</text>
+  <text x="337.95" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">12</text>
+  <text x="357.53" y="64.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">4</text>
+  <text x="30.70" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">70</text>
+  <text x="56.46" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">69</text>
+  <text x="76.04" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">60</text>
+  <text x="95.62" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">61</text>
+  <text x="115.21" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">53</text>
+  <text x="134.78" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">52</text>
+  <text x="154.36" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">44</text>
+  <text x="173.94" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">45</text>
+  <text x="193.51" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">37</text>
+  <text x="213.09" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">36</text>
+  <text x="232.61" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">29</text>
+  <text x="252.39" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">28</text>
+  <text x="271.97" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">19</text>
+  <text x="318.36" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">13</text>
+  <text x="337.94" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">14</text>
+  <text x="357.52" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">5</text>
+  <text x="35.75" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">21</text>
+  <text x="66.62" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">71</text>
+  <text x="86.19" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">63</text>
+  <text x="105.76" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">62</text>
+  <text x="125.34" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">55</text>
+  <text x="144.92" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">54</text>
+  <text x="164.50" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">46</text>
+  <text x="184.08" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">38</text>
+  <text x="203.62" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">39</text>
+  <text x="223.38" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">31</text>
+  <text x="242.96" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">30</text>
+  <text x="262.71" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">22</text>
+  <text x="290.62" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">21</text>
+  <text x="318.37" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">15</text>
+  <text x="337.94" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">0</text>
+  <text x="357.52" y="101.86" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">7</text>
+  <text x="35.75" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">23</text>
+  <text x="73.59" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">9</text>
+  <text x="169.63" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">47</text>
+  <text x="278.87" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">6</text>
+  <text x="318.37" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">8</text>
+  <text x="337.94" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">2</text>
+  <text x="357.52" y="120.51" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">1</text>
+  <text x="295.17" y="83.23" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">18</text>
+  <text x="97.21" y="274.60" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">72</text>
+  <text x="97.21" y="338.18" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">73</text>
+  <text x="54.56" y="306.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">74</text>
+  <text x="139.55" y="306.96" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">75</text>
+  <text x="82.87" y="306.75" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">77</text>
+  <text x="111.54" y="306.75" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">76</text>
+  <text x="265.54" y="275.54" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">48</text>
+  <text x="265.54" y="339.13" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">49</text>
+  <text x="222.89" y="307.90" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">50</text>
+  <text x="307.89" y="307.90" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">51</text>
+  <text x="251.20" y="307.69" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">53</text>
+  <text x="279.87" y="307.69" text-anchor="middle" font-family="Brass Mono, Helvetica, Arial, sans-serif" font-size="8.0">52</text>
+</svg>
