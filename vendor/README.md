@@ -13,9 +13,15 @@ intact. They are relocated, not rewritten.
 | msf_gif | `vendor/msf_gif/` | https://github.com/notnullnotvoid/msf_gif | MIT OR Unlicense | Single-header GIF encoder used by the session GIF recorder (`src/gif_recorder.cpp`) |
 | ImGuiColorTextEdit | `vendor/ImGuiColorTextEdit/` | https://github.com/santaclose/ImGuiColorTextEdit (fork of https://github.com/BalazsJako/ImGuiColorTextEdit) | MIT | Colorizing text editor widget backing the DevTools Z80 assembler editor (`src/devtools_ui.cpp`); konCePCja adds a `Z80Assembly()` language definition downstream in `LanguageDefinitions.cpp`, following the file's own pattern |
 | portable-file-dialogs | `vendor/portable-file-dialogs/` | https://github.com/samhocevar/portable-file-dialogs | WTFPL | Native OS file-open/save dialogs used by the DevTools menus (`src/devtools_ui.cpp`, `src/kon_cpc_ja.cpp`) |
-| capsimg | `src/capsimg/` | Applied Engineering / SPS / CAPS project (see `src/capsimg/README.md` and `src/capsimg/LICENCE.txt`) | See upstream LICENCE.txt | IPF/CTRaw flux decoding for the disc flux layer. Intentionally left under `src/` rather than moved here — it already carries its own README/LICENCE and directory structure and was vendored as a self-contained unit before this sweep; replacing its IPF decoder with a clean-room implementation is a separate, later decision (see the replacement ledger) |
 
 ## What does NOT belong here
+
+The SPS Decoder Library (capsimg), once vendored under `src/capsimg/` for
+IPF flux decoding, is **gone**: its non-commercial license was incompatible
+with redistribution, so it was replaced by the clean-room decoder in
+`src/ipf_decode.{h,cpp}` (built solely from `docs/hardware/ipf-format.md`)
+and deleted — see the `ipf.{cpp,h}` row in the replacement ledger and
+`NOTICE.md`.
 
 `src/argparse.{cpp,h}` is **not** a third-party library despite the name and
 despite being listed as one in an earlier pass of the replacement ledger.
