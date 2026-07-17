@@ -10,6 +10,15 @@ name: release-please
 # Note: requires "Allow GitHub Actions to create and approve pull requests"
 # (Settings → Actions → General → Workflow permissions) so the default
 # GITHUB_TOKEN can open the release PR.
+#
+# The RELEASE_PLEASE_TOKEN secret (a fine-grained PAT: Contents + Pull
+# requests read/write) is REQUIRED, deliberately with no GITHUB_TOKEN
+# fallback: a release published with the default GITHUB_TOKEN cannot
+# trigger other workflows (GitHub's anti-recursion rule), so the
+# linux/macos/msvc `release: [published]` jobs that attach the platform
+# binaries would never fire. If the PAT expires this job fails loudly on
+# the next master push — that is the intended signal to mint a new one
+# (a silent fallback would ship binary-less releases instead).
 
 on:
   push:
@@ -27,6 +36,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
