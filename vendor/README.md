@@ -20,7 +20,7 @@ The SPS Decoder Library (capsimg), once vendored under `src/capsimg/` for
 IPF flux decoding, is **gone**: its non-commercial license was incompatible
 with redistribution, so it was replaced by the clean-room decoder in
 `src/ipf_decode.{h,cpp}` (built solely from `docs/hardware/ipf-format.md`)
-and deleted — see the `ipf.cpp/h` row in the replacement ledger and
+and deleted — see the `ipf.{cpp,h}` row in the replacement ledger and
 `NOTICE.md`.
 
 `src/argparse.{cpp,h}` is **not** a third-party library despite the name and
