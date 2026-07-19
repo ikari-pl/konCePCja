@@ -30,6 +30,13 @@ void light_gun_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   light_gun_state* g = self_of(self);
   if (g->type == 0) return;  // unplugged: never drives the strobe
 
+  // The host feeds aim_col in character columns
+  // (docs/hardware/light-gun-device.md §4), so advance the beam-column tracker
+  // once per CRTC character.  In the per-cycle paths this means gating on
+  // clk.crtc; in the batch Fast path the caller ticks us once per
+  // crtc_advance_view char.
+  if (!in->clk.crtc) return;
+
   const uint16_t line = in->vid.frame_line;
   const bool dispen = in->vid.dispen;
 
