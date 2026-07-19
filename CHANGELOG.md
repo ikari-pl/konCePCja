@@ -1,5 +1,13 @@
 # Changelog
 
+## [6.0.1](https://github.com/ikari-pl/konCePCja/compare/v6.0.0...v6.0.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **light-gun:** tick the gun under Wake + Fast so the LPEN latch works ([7d9ff86](https://github.com/ikari-pl/konCePCja/commit/7d9ff86c776d53fc0ca8a582d7656e5a558e6c92))
+* **light-gun:** tick the gun under Wake + Fast; ci(linux): resolve vendored SDL path ([3fe2dc3](https://github.com/ikari-pl/konCePCja/commit/3fe2dc35f62df3e0e42baac290c7f0e3cb446ad0))
+
 ## [6.0.0](https://github.com/ikari-pl/konCePCja/compare/v5.10.0...v6.0.0) (2026-07-16)
 
 
