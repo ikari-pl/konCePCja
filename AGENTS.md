@@ -157,6 +157,8 @@ echo "help" | nc localhost 6543
 | `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |
 | `input mouse button <L\|M\|R> <down\|up>` | Press/release a mouse button | `input mouse button L down` |
 | `input mouse buttons <mask>` | Set whole SDL button mask (L=1,M=2,R=4) | `input mouse buttons 0` |
+| `input gun move <x> <y>` | Absolute light-gun aim in window px (needs a phazer type enabled) | `input gun move 100 60` |
+| `input gun trigger <down\|up>` | Press/release the gun trigger (Trojan also pulses J0 FIRE1) | `input gun trigger down` |
 | `autotype <text>` | Queue text via AutoTypeQueue (supports WinAPE `~KEY~`) | `autotype 'run"game~RETURN~'` |
 | `autotype status` | Show pending queue length | `autotype status` |
 | `autotype clear` | Cancel pending input | `autotype clear` |
@@ -463,6 +465,11 @@ vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
 [sound]
 snd_enabled=1
 snd_playback_rate=2  # 0=11025, 1=22050, 2=44100, 3=48000, 4=96000
+
+[input]
+lightgun=0        # Light gun: 0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
+                  # Phazer. Same as the F-key toggle; lets config/headless runs
+                  # enable a gun (the IPC `input gun` contract keys off it).
 ```
 
 ## Code Conventions
