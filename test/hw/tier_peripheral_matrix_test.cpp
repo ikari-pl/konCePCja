@@ -36,7 +36,7 @@ void boot_fast(subcycle::Machine& m, const std::vector<uint8_t>& rom) {
 
 }  // namespace
 
-TEST(TierPeripheralMatrix, LightGunDegradesFastToFaithful) {
+TEST(TierPeripheralMatrix, LightGunKeepsFastTier) {
   const std::vector<uint8_t> rom = read_rom();
   if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
 
@@ -44,9 +44,11 @@ TEST(TierPeripheralMatrix, LightGunDegradesFastToFaithful) {
   boot_fast(m, rom);
   m.set_light_gun(1, 100, 20, false);
   m.run_frame();
-  EXPECT_EQ(m.effective_run_tier(), subcycle::Machine::RunTier::Faithful);
+  // The light gun carries a wake + Fast batch contract (wake_slot /
+  // fs_advance_chars dispatch it), so plugging no longer degrades the tier.
+  EXPECT_EQ(m.effective_run_tier(), subcycle::Machine::RunTier::Fast);
   for (int i = 0; i < 5; ++i) m.run_frame();
-  EXPECT_EQ(m.effective_run_tier(), subcycle::Machine::RunTier::Faithful);
+  EXPECT_EQ(m.effective_run_tier(), subcycle::Machine::RunTier::Fast);
 }
 
 TEST(TierPeripheralMatrix, SymbifaceDegradesFastToFaithful) {

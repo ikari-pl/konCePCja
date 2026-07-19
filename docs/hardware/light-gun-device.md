@@ -109,9 +109,11 @@ void   light_gun_set_aim(const Device* dev, uint16_t line, uint16_t col);
 void   light_gun_set_trigger(const Device* dev, int pressed);
 ```
 
-`set_type(0)` is the unplug (dormant in `recompose_active`; degrades the
-effective tier to Faithful when plugged — no wake contract, the Symbiface/
-serial precedent, so the strobe path need not thread through `wake_slot`).
+`set_type(0)` is the unplug (dormant in `recompose_active`). Plugged, the gun
+carries a **wake contract** (it ticks with the CRTC) and a **Fast batch
+contract** (char-by-char advance), so it no longer degrades the effective tier
+— Wake stays the default and Fast stays engaged with a gun fitted. See the
+batch-contract section below.
 
 ## 6. Acid tests
 
@@ -126,11 +128,33 @@ serial precedent, so the strobe path need not thread through `wake_slot`).
    their reset value (no legacy increment).
 4. **Unplugged neutral**: `set_type(0)`; the four canonical CKSUMs unchanged
    (strobe never asserts; the CRTC latch never runs).
-5. **Tier**: plugging degrades the effective tier to Faithful (recompose);
-   the latch is identical Faithful vs Soldered.
+5. **Tier oracle**: with the gun plugged and the trigger held, the latched
+   R16/R17 agrees across Soldered, Wake and Fast (`LightGun.
+   TierLatchAgreesSolderedWakeFast`). Unplugged, the four canonical CKSUMs are
+   unchanged (strobe never asserts; the CRTC latch never runs).
 
-## Batch contract (RunTier::Fast)
+## Batch contracts (Wake / Fast)
 
-None needed: an active gun forces Faithful (§5), so the strobe/latch path
-never runs under the wake/fast schedulers. Unplugged, the gun contributes no
-events and `pen.strobe` rests LOW — elision-eligible, byte-exact neutral.
+The gun drives `pen.strobe` only on `clk.crtc` (once per char), so it slots
+into the schedulers as a CRTC-shadowing peripheral. Both batched tiers must
+reproduce the per-cycle timing: the gun reads the committed bus, so it tracks
+the beam **one char behind** the CRTC, and the CRTC latches the char it has
+just advanced to — i.e. the char **after** the one the gun saw.
+
+The per-cycle strobe is a **one-master-cycle pulse per char** (the line rests
+LOW between char ticks), so the CRTC's edge detector re-arms every char and
+latches **every** in-window char, the last winning. The batched latch is
+therefore **level-sensitive** (`crtc_batch_lpen_latch`), NOT edge-triggered —
+feeding a per-char pulse into the edge-triggered `crtc_fast_lpen_strobe`
+latches only the first char of a run (the original Fast bug).
+
+- **Wake** (`wake_slot`): tick the gun on `clk.crtc` with the committed bus;
+  `crtc_tick` advances the char, then `crtc_batch_lpen_latch(gun_strobe)`
+  latches it. `crtc_tick`'s own `pen.strobe` handler stays inert because the
+  committed `pen.strobe` is LOW at a char boundary.
+- **Fast** (`fs_advance_chars`): advance one char at a time, tick the gun with
+  that char's view, defer its decision by one char, and
+  `crtc_batch_lpen_latch` the next char.
+
+Unplugged, the gun contributes no events and `pen.strobe` rests LOW —
+elision-eligible, byte-exact neutral.

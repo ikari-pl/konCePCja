@@ -669,7 +669,31 @@ void Machine::wake_slot(const Bus& cur, Bus& next) {
     if (cur.cpu.irq) next.cpu.irq = true;
     wk_ga_skip_++;
   }
-  if (w_crtc) cdev_.tick(cdev_.self, in, &next);
+  // Light gun: tick on char boundaries (clk.crtc) with the committed bus so it
+  // tracks the beam one char behind the CRTC exactly as in the per-cycle tiers,
+  // then latch the char the CRTC has just advanced to (the per-cycle path
+  // publishes the strobe one master cycle after the gun ticks, and the CRTC
+  // latches that same char — the one after the gun's view).  crtc_tick's own
+  // pen.strobe handler stays inert here: at a char boundary the committed
+  // pen.strobe is LOW (the gun drives it only on clk.crtc and the line rests
+  // between char ticks), so the level-sensitive batch latch owns the decision.
+  // The whole block is skipped on the common unplugged machine, leaving the
+  // plain CRTC tick.
+  if (w_crtc) {
+    if (wk_light_gun_on_) {
+      bool gun_strobe = false;
+      if (cur.clk.crtc) {
+        Bus lg_next = bus_resting();
+        lgdev_.tick(lgdev_.self, in, &lg_next);
+        gun_strobe = lg_next.pen.strobe;
+        next.pen.strobe = gun_strobe;
+      }
+      cdev_.tick(cdev_.self, in, &next);
+      if (cur.clk.crtc) crtc_batch_lpen_latch(&cdev_, gun_strobe);
+    } else {
+      cdev_.tick(cdev_.self, in, &next);
+    }
+  }
   if (w_ppi) pdev_.tick(pdev_.self, in, &next);
   if (w_psg) sdev_.tick(sdev_.self, in, &next);
   if (w_mem) mdev_.tick(mdev_.self, in, &next);
@@ -944,11 +968,11 @@ void Machine::fs_advance_chars(uint64_t target) {
     fs_pend_cap_ = cap;
   }
   CrtcCharView* views = fs_pend_buf_.get() + fs_pend_tail_;
-  crtc_advance_view(&cdev_, n, views);
   uint32_t last_line = 0xFFFFFFFF;  // 16-bit frame_line: the first view always
                                     // relays (asic_batch_frame_line dedupes)
-  for (uint32_t i = 0; i < n; ++i) {
-    CrtcCharView& view = views[i];
+  // Per-view work shared between the bulk (closed-form) and light-gun
+  // (char-by-char) paths.  Kept as a local lambda so both arms stay in sync.
+  auto apply_view = [this, &last_line](CrtcCharView& view) {
     if (view.edges & (1u << CRTC_EDGE_VSYNC_RISE)) {
       ga_batch_vsync_rise(&gdev_);
       if (++fs_frames_seen_ >= fs_target_) fs_cut_ = true;
@@ -966,6 +990,35 @@ void Machine::fs_advance_chars(uint64_t target) {
     view.mode = ga_current_mode(&gdev_);  // the latch as of THIS char —
                                           // stamped in edge order
     fs_vpages_ |= static_cast<uint8_t>(1u << ((view.ma >> 12) & 3));
+  };
+
+  if (fs_lpen_on_) {
+    // Light-gun Fast contract: advance one char at a time so c->ma sits at the
+    // latch char.  The per-cycle tiers publish the gun's strobe one master
+    // cycle after the gun ticks, and the CRTC then latches the char it has just
+    // advanced to — i.e. the char AFTER the one the gun saw.  Mirror that here:
+    // tick the gun with this char's view, defer its decision by one char, and
+    // latch the next char.  The latch is LEVEL-sensitive
+    // (crtc_batch_lpen_latch) because the gun pulses per char, so a held
+    // trigger latches every in-window char, not just the first of a run.
+    for (uint32_t i = 0; i < n; ++i) {
+      CrtcCharView& view = views[i];
+      crtc_advance_view(&cdev_, 1, &view);
+      apply_view(view);
+      crtc_batch_lpen_latch(&cdev_, fs_lpen_pending_);
+      Bus lg_in = bus_resting();
+      lg_in.clk.crtc = true;
+      lg_in.vid.frame_line = view.frame_line;
+      lg_in.vid.dispen = (view.levels & CRTC_LVL_DISPEN) != 0;
+      Bus lg_out = bus_resting();
+      lgdev_.tick(lgdev_.self, &lg_in, &lg_out);
+      fs_lpen_pending_ = lg_out.pen.strobe;
+    }
+  } else {
+    crtc_advance_view(&cdev_, n, views);
+    for (uint32_t i = 0; i < n; ++i) {
+      apply_view(views[i]);
+    }
   }
   fs_pend_tail_ += n;
   fs_chars_ = target;
@@ -1291,6 +1344,13 @@ bool Machine::run_frame_fast(VideoRegs& vr, uint32_t target) {
   fs_cut_ = false;
   fs_bail_ = false;
   fs_asic_on_ = asic_vid_active(&adev_) != 0;
+  {
+    LightGunRegs lg{};
+    light_gun_peek(&lgdev_, &lg);
+    fs_lpen_on_ = lg.plugged != 0;
+  }
+  fs_lpen_pending_ =
+      false;  // no deferred latch carries into this frame's batch
   fs_fdc_hot_ = fdc_quiet(&fdev_) == 0;  // gate said quiet; stay honest
   fs_irq_cache_ = fs_irq() ? 1 : 0;      // the boundary-0 poll (zero chars)
   fs_irq_tmax_ = 0;  // first real boundary computes a horizon
@@ -1492,14 +1552,18 @@ void Machine::recompose_active() {
   // contract in the scheduler — fall back to Faithful.
   wake_valid_ = true;
   wk_serial_on_ = false;
+  wk_light_gun_on_ = false;
   for (int k = 0; k < board_.active_count; ++k) {
     const int idx = board_.tick_order[k];
     const void* dself = board_.dev[idx].self;
-    // The RS232+plotter pair now carries a wake contract (wake_slot dispatches
-    // it on its own quiet/iorq predicate), so it no longer degrades the tier.
+    // The RS232+plotter pair and the light gun now carry wake contracts
+    // (wake_slot dispatches each on its own predicate), so they no longer
+    // degrade the tier.
     const bool serial = dself == rsdev_.self || dself == pldev_.self;
+    const bool light_gun = dself == lgdev_.self;
     if (serial) wk_serial_on_ = true;
-    const bool known = idx <= 10 || dself == adev_.self || serial;
+    if (light_gun) wk_light_gun_on_ = true;
+    const bool known = idx <= 10 || dself == adev_.self || serial || light_gun;
     if (!known) {
       wake_valid_ = false;
       break;
@@ -1589,6 +1653,11 @@ void Machine::run_frame() {
     wk_probe_on_ = probe_active(&prdev_) != 0;
     wk_asic_on_ = asic_vid_active(&adev_) != 0;
     wk_fdc_quiet_ = fdc_quiet(&fdev_) != 0;  // snapshot loads / host pokes
+    {
+      LightGunRegs lg{};
+      light_gun_peek(&lgdev_, &lg);
+      wk_light_gun_on_ = lg.plugged != 0;
+    }
     // Serial pair quiet snapshot: unplugged ⇒ always quiet (never blocks
     // elision); plugged ⇒ the real UART-idle state, so a byte in flight at
     // frame start keeps the pair (and elision) awake from slot 0.

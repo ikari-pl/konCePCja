@@ -136,6 +136,18 @@ int crtc_fast_io_read(const Device* dev, uint16_t port, uint8_t* out);
  * is the char's fetch address, matching crtc_tick's post-crtc_char strobe
  * check. */
 void crtc_fast_lpen_strobe(const Device* dev, bool level);
+
+/* Latch ma into R16/R17 whenever `level` is high — LEVEL-sensitive, the batch
+ * twin for a per-char-PULSED LPEN source (the light gun). Distinct from
+ * crtc_fast_lpen_strobe (edge-triggered, for a held LPEN level): in the
+ * per-cycle tiers the gun's strobe is a one-master-cycle pulse per char, so the
+ * CRTC's edge detector re-arms between chars and latches EVERY in-window char,
+ * the last winning. The batched Wake/Fast dispatch ticks the gun once per char
+ * and passes its out->pen.strobe decision; this latches each in-window char the
+ * same way. Call AFTER advancing the CRTC to the latch char so c->ma is that
+ * char's fetch address. The lpen_prev shadow is kept in step so an I/O-wake
+ * crtc_tick or a tier handover sees no spurious edge. */
+void crtc_batch_lpen_latch(const Device* dev, bool level);
 /* Select which 6845 variant is soldered in (0..3, default 0). A hardware strap:
  * persists across reset. Program-visible differences: register readability, the
  * type-1 status register, R3 sync widths, R8 DISPTMG skew (see the spec §5). */

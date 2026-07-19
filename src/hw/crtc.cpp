@@ -619,4 +619,16 @@ void crtc_fast_lpen_strobe(const Device* dev, bool level) {
   c->lpen_prev = level;
 }
 
+void crtc_batch_lpen_latch(const Device* dev, bool level) {
+  crtc_state* c = static_cast<crtc_state*>(dev->self);
+  // Level-sensitive (see crtc.h): latch ma on every in-window char, not just
+  // the edge. lpen_prev is carried (not used for the decision) so a following
+  // crtc_tick / tier handover inherits a consistent shadow.
+  if (level) {
+    c->reg[16] = static_cast<uint8_t>((c->ma >> 8) & 0x3F);
+    c->reg[17] = static_cast<uint8_t>(c->ma & 0xFF);
+  }
+  c->lpen_prev = level;
+}
+
 }  // extern "C"

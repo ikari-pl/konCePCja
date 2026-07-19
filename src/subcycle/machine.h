@@ -422,8 +422,9 @@ class Machine {
   // The light gun (Magnum Phaser / Trojan — light-gun-device.md). Its LPEN
   // strobe drives the CRTC light-pen latch; the aim is in CRTC beam space
   // (scanline + active char column), converted from the host mouse by the
-  // bridge. type 0 unplugs it; plugging degrades the effective tier to
-  // Faithful (recompose_active: no wake contract — the serial precedent).
+  // bridge. type 0 unplugs it; plugged, it carries a wake contract (ticks with
+  // the CRTC) and a Fast batch contract (char-by-char advance), so it no longer
+  // degrades the tier.
   const Device* light_gun() const { return &lgdev_; }
   void set_light_gun(int type, uint16_t aim_line, uint16_t aim_col,
                      bool pressed) {
@@ -576,6 +577,7 @@ class Machine {
                                     // so the DART/PIT see the select strobe
                                     // drop and reset their access edge (else
                                     // only the first OUT of a burst registers).
+  bool wk_light_gun_on_ = false;  // light gun plugged this frame (contract on)
 
   // Number of devices the soldered fast path (tick_soldered) calls by name. The
   // fast tier is valid only when the board's device set matches this (see
@@ -608,7 +610,13 @@ class Machine {
   bool fs_asic_on_ = false;   // entry cache: the ASIC is plugged (Plus)
   bool fs_bail_ = false;      // leave the frame to the per-cycle loop (a
                               // mid-frame DMA enable — F7 scope note)
-  uint32_t fs_target_ = 0;    // video frames target this run
+  bool fs_lpen_on_ = false;   // entry cache: light gun plugged (Fast char loop)
+  bool fs_lpen_pending_ = false;  // the deferred LPEN latch (fire at char K →
+                                  // latch char K+1). fs_advance_chars runs in
+                                  // incremental chunks within a frame, so this
+                                  // must persist across calls — a local would
+                                  // drop a fire on a chunk's final char.
+  uint32_t fs_target_ = 0;        // video frames target this run
   uint32_t fast_frames_run_ = 0;  // frames the batch driver completed (an
                                   // engagement signal: tests + the tier UI)
   uint32_t fs_frames_seen_ = 0;   // frames at entry + eager-counted rises

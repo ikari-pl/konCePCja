@@ -83,13 +83,22 @@ endif
 PKG_SDL_CFLAGS=`pkg-config --cflags sdl3`
 PKG_SDL_LIBS=`pkg-config --libs sdl3`
 # SDL_image optional support removed; PNG loads via libpng
-ifeq ($(ARCH),macos)
+# Resolve the vendored SDL via WORKSPACE-RELATIVE paths, not pkg-config.
+# pkg-config reads the install's sdl3.pc, whose baked-in ABSOLUTE prefix breaks
+# whenever the checkout moves: the konCePCja -> koncepcja_v5 repo rename left a
+# stale cached prefix (/home/runner/work/konCePCja/...) that no longer exists on
+# the case-sensitive Linux runner, so pkg-config --cflags sdl3 returned a bogus
+# -I and every SDL3/*.h include failed (the Linux + Coverage CI red). The
+# submodule headers and the built lib are always at these workspace-relative
+# locations, immune to renames. USE_VENDORED_SDL=0 opts back into pkg-config.
 ifeq ($(USE_VENDORED_SDL),1)
 PKG_SDL_CFLAGS=$(SDL_VENDOR_INCLUDE)
 PKG_SDL_LIBS=$(SDL_VENDOR_LIBS)
 ifeq ($(ARCH),macos)
 LDFLAGS += -Wl,-rpath,@executable_path/$(SDL_VENDOR_BUILD)/lib
 endif
+ifeq ($(ARCH),linux)
+LDFLAGS += -Wl,-rpath,'$$ORIGIN/$(SDL_VENDOR_BUILD)/lib'
 endif
 endif
 IPATHS = -Isrc/ -isystem vendor/imgui -isystem vendor/imgui/backends -isystem vendor/msf_gif -isystem vendor/ImGuiColorTextEdit -isystem vendor/portable-file-dialogs `pkg-config --cflags freetype2` $(PKG_SDL_CFLAGS) `pkg-config --cflags libpng` `pkg-config --cflags zlib`

@@ -8,10 +8,15 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <vector>
 
 #include "hw/board.h"
 #include "hw/crtc.h"
+#include "subcycle/machine.h"
 
 namespace {
 
@@ -210,4 +215,83 @@ TEST(LightGun, SnapshotRoundTrip) {
     ASSERT_EQ(ra.reg[16], rb.reg[16]) << "diverged at " << i;
     ASSERT_EQ(ra.reg[17], rb.reg[17]) << "diverged at " << i;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tier oracle: the light-pen latch must agree across Soldered, Wake and Fast
+// when a gun is plugged and the trigger is held.  This is the integration test
+// that catches the wake_slot / run_frame_fast omission (beads-g4jq).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<uint8_t> load_rom_file(const char* path) {
+  std::ifstream file(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(file),
+          std::istreambuf_iterator<char>()};
+}
+
+std::vector<uint8_t> load_system_rom() {
+  std::vector<uint8_t> rom = load_rom_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = load_rom_file("../rom/cpc6128.rom");
+  return rom;
+}
+
+constexpr size_t kFbLen =
+    static_cast<size_t>(subcycle::kFbWidth) * subcycle::kFbHeight * 3;
+
+// Build a 6128, plug the gun, and run enough frames for the beam to sweep the
+// aim point.  Returns the latched light-pen address (R16/R17) and the final
+// framebuffer hash so we can assert observation-identicality across tiers.
+struct LpenResult {
+  uint16_t ma;
+  uint32_t fast_frames;
+};
+
+LpenResult run_with_tier(const std::vector<uint8_t>& rom,
+                         subcycle::Machine::RunTier tier, uint16_t aim_line,
+                         uint16_t aim_col) {
+  subcycle::Machine machine;
+  std::vector<uint8_t> fb(kFbLen, 0);
+  if (!machine.build(rom.data(), rom.size())) return {0, 0};
+  machine.attach_framebuffer(fb.data(), subcycle::kFbWidth,
+                             subcycle::kFbHeight);
+  machine.set_light_gun(1, aim_line, aim_col, true);
+  machine.set_run_tier(tier);
+
+  // Run a handful of frames.  The beam sweeps the whole screen each frame, so
+  // the aim point is guaranteed to be visited.  Fast may need a frame or two to
+  // find a clean batch entry point.
+  for (int frame = 0; frame < 4; ++frame) machine.run_frame();
+
+  CrtcRegs cr{};
+  crtc_peek(machine.crtc(), &cr);
+  const uint16_t ma =
+      static_cast<uint16_t>(((cr.reg[16] & 0x3F) << 8) | cr.reg[17]);
+  return {ma, machine.fast_frames_run()};
+}
+
+}  // namespace
+
+TEST(LightGun, TierLatchAgreesSolderedWakeFast) {
+  std::vector<uint8_t> rom = load_system_rom();
+  if (rom.size() < 0x8000)
+    GTEST_SKIP() << "rom/cpc6128.rom not found (run from project root)";
+
+  // Aim near the middle of the visible window; the ±2 char/line tolerance makes
+  // the exact pixel irrelevant.
+  constexpr uint16_t kAimLine = 120;
+  constexpr uint16_t kAimCol = 18;
+
+  const auto soldered = run_with_tier(rom, subcycle::Machine::RunTier::Soldered,
+                                      kAimLine, kAimCol);
+  const auto wake =
+      run_with_tier(rom, subcycle::Machine::RunTier::Wake, kAimLine, kAimCol);
+  const auto fast =
+      run_with_tier(rom, subcycle::Machine::RunTier::Fast, kAimLine, kAimCol);
+
+  EXPECT_GT(soldered.ma, 0u) << "Soldered tier never latched";
+  EXPECT_EQ(wake.ma, soldered.ma) << "Wake-tier LPEN latch diverged";
+  EXPECT_EQ(fast.ma, soldered.ma) << "Fast-tier LPEN latch diverged";
+  EXPECT_GT(fast.fast_frames, 0u) << "Fast tier never engaged";
 }
