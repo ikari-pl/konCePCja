@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "autotype.h"
 #include "cpc_key_tables.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
@@ -39,9 +40,16 @@ constexpr size_t kBankSize = 16 * 1024;
 
 // Debug-surface commands now return "OK [context]\n" instead of bare "OK\n".
 // This helper checks that a response starts with "OK " or is exactly "OK\n".
-#define EXPECT_OK(resp)                                         \
-  EXPECT_TRUE((resp).substr(0, 3) == "OK " || (resp) == "OK\n") \
-      << "Expected OK response, got: " << (resp)
+// Bind the command's result to a variable so it is evaluated ONCE — evaluating
+// the argument inline would re-run the command when the reply is a bare "OK\n"
+// (the `.substr(0,3) == "OK "` branch fails, so `||` re-evaluates), which
+// double-dispatches non-idempotent commands (e.g. 'input type' enqueues twice).
+#define EXPECT_OK(resp)                                               \
+  do {                                                                \
+    const std::string ok_resp_ = (resp);                              \
+    EXPECT_TRUE(ok_resp_.substr(0, 3) == "OK " || ok_resp_ == "OK\n") \
+        << "Expected OK response, got: " << ok_resp_;                 \
+  } while (0)
 
 // Forward-declare the server so send_command can query its actual port
 static KoncepcjaIpcServer* g_test_server = nullptr;
@@ -482,6 +490,30 @@ TEST_F(IpcServerTest, ChordParsingHelpers) {
   EXPECT_EQ(cpc_modifier_flag("RSHIFT"), MOD_CPC_SHIFT);
   EXPECT_EQ(cpc_modifier_flag("ESC"), 0);
   EXPECT_EQ(cpc_modifier_flag("FOO"), 0);
+}
+
+// ─────────────────────────────────────────────────
+// Type unification (IPC Phase 4, beads-c8fn): 'input type' routes through
+// g_autotype_queue, so a WinAPE ~KEY~ token parses to ONE key action — not
+// the literal characters of its name (the old per-char path).
+// ─────────────────────────────────────────────────
+
+TEST_F(IpcServerTest, TypeRoutesThroughAutotypeQueue) {
+  // ~RETURN~ must become ONE RETURN-key action, not the letters R,E,T,U,R,N.
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type \"~RETURN~\""));
+  auto acts = g_autotype_queue.actions();
+  ASSERT_EQ(acts.size(), 1u) << "a ~RETURN~ token must parse to one key action";
+  EXPECT_EQ(acts[0].type, AutoTypeAction::CHAR_PRESS_RELEASE);
+  EXPECT_EQ(acts[0].cpc_key, static_cast<uint16_t>(CPC_RETURN))
+      << "~RETURN~ parses to the RETURN key, not its literal characters";
+
+  // Plain text still types one action per mappable character.
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type \"hi\""));
+  auto acts2 = g_autotype_queue.actions();
+  EXPECT_EQ(acts2.size(), 2u) << "plain text types one action per character";
+  g_autotype_queue.clear();
 }
 
 // ─────────────────────────────────────────────────

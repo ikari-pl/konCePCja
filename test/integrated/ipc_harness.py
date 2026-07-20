@@ -774,6 +774,41 @@ def test_chord_hold_input():
         return True
 
 
+def test_type_input():
+    """IPC type: 'input type' routed through the AutoTypeQueue (Phase 4).
+
+    Verifies that 'input type' now goes through g_autotype_queue (beads-c8fn),
+    so WinAPE ~KEY~ tokens and newlines work exactly as with 'autotype':
+      - plain text and ~KEY~ tokens accepted,
+      - missing text rejected.
+    That ~KEY~ parses to a KEY action (not literal characters) is asserted by
+    the IpcServerTest gtest, which inspects the queue directly.
+    """
+    print("Running type input test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        checks = [
+            ('autotype clear', True),            # ensure the queue is idle
+            ('input type "hello world"', True),  # plain text
+            ('input type "~RETURN~"', True),     # ~KEY~ token (now via the queue)
+            ('input type "~ENTER~"', True),      # ~KEY~ alias
+            ('input type', False),               # missing text
+        ]
+        for cmd, want_ok in checks:
+            ok, resp = emu.ipc.send_command(cmd)
+            if ok != want_ok:
+                print(f"FAIL: {cmd!r} -> ok={ok} (wanted {want_ok}): {resp.strip()}")
+                return False
+            print(f"  {cmd!r} -> {resp.strip()}")
+
+        print("PASS: type input test")
+        return True
+
+
 def test_joystick_input():
     """IPC joystick input: the 'input joy' command surface.
 
@@ -828,6 +863,7 @@ def main():
         test_mouse_input,
         test_gun_input,
         test_chord_hold_input,
+        test_type_input,
         test_joystick_input,
     ]
 
