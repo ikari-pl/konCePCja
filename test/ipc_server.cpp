@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "cpc_key_tables.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "symfile.h"
@@ -457,6 +458,30 @@ TEST_F(IpcServerTest, BadNumberIncludesValueInError) {
   auto resp = send_command("reg set A notanumber");
   EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
   EXPECT_TRUE(resp.find("notanumber") != std::string::npos) << resp;
+}
+
+// ─────────────────────────────────────────────────
+// Key modifiers (IPC Phase 3, beads-nz0n): the chord parser in cpc_key_tables.h
+// tokenizes "CTRL+SHIFT+ESC" and maps modifiers to scancode high-byte flags.
+// (The atomic tap itself runs only in the live emulator — the frame-stepped
+// hold blocks here, so the contract is covered by ipc_harness instead.)
+// ─────────────────────────────────────────────────
+
+TEST_F(IpcServerTest, ChordParsingHelpers) {
+  EXPECT_EQ(cpc_chord_tokens("CTRL+SHIFT+ESC"),
+            (std::vector<std::string>{"CTRL", "SHIFT", "ESC"}));
+  EXPECT_EQ(cpc_chord_tokens("ESC"), (std::vector<std::string>{"ESC"}));
+  EXPECT_EQ(cpc_chord_tokens("SHIFT+A"),
+            (std::vector<std::string>{"SHIFT", "A"}));
+
+  // Modifier mapping is case-insensitive; non-modifiers map to 0.
+  EXPECT_EQ(cpc_modifier_flag("CTRL"), MOD_CPC_CTRL);
+  EXPECT_EQ(cpc_modifier_flag("control"), MOD_CPC_CTRL);
+  EXPECT_EQ(cpc_modifier_flag("SHIFT"), MOD_CPC_SHIFT);
+  EXPECT_EQ(cpc_modifier_flag("lshift"), MOD_CPC_SHIFT);
+  EXPECT_EQ(cpc_modifier_flag("RSHIFT"), MOD_CPC_SHIFT);
+  EXPECT_EQ(cpc_modifier_flag("ESC"), 0);
+  EXPECT_EQ(cpc_modifier_flag("FOO"), 0);
 }
 
 // ─────────────────────────────────────────────────

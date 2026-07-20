@@ -653,9 +653,9 @@ void init_command_registry() {
 
   register_command(
       "input", "INPUT",
-      "input keydown|keyup|key <name> | input type <text> | "
-      "input joy <0|1> <dir> | input mouse <move|button|buttons> | "
-      "input gun <move|trigger> ...",
+      "input keydown|keyup|key <name> [hold=N] | input chord <M+K> [hold=N] | "
+      "input type <text> | input joy <0|1> <dir> | "
+      "input mouse <move|button|buttons> | input gun <move|trigger> ...",
       "Simulate user input",
       "Injects keyboard/joystick/mouse/light-gun events directly into the "
       "emulated hardware.\n"
@@ -663,7 +663,11 @@ void init_command_registry() {
       "single character (a, A, 1). See the cpc_key_names table.\n"
       "  keydown: Presses and holds <name> (matrix bit stays set).\n"
       "  keyup:   Releases <name>.\n"
-      "  key:     Taps <name> (press, hold 2 frames, release).\n"
+      "  key:     Taps <name> (press, hold, release). Optional hold=<frames> "
+      "overrides the default 2-frame hold.\n"
+      "  chord:   Atomic modified tap, e.g. 'chord CTRL+SHIFT+ESC'. Leading "
+      "modifier tokens (CTRL|SHIFT) then one base key; all rows go down in one "
+      "atomic write. Optional hold=<frames>.\n"
       "  type:    Types a literal string. Only mapped characters are emitted; "
       "WinAPE ~KEY~ syntax is NOT supported here -- use the 'autotype' command "
       "for that.\n"
@@ -2578,6 +2582,43 @@ std::string handle_command(const std::string& line) {
         return {false, 0};
       };
 
+      // Tap a scancode: press it (the modifier flags in its high byte set their
+      // matrix rows atomically in the same locked ipc_apply_keypress call),
+      // hold hold_frames frames via the frame-step counter so the CPC firmware
+      // scans the chord, then release every row it set.
+      auto tap_scancode = [&](CPCScancode scancode, int hold_frames) {
+        ipc_apply_keypress(scancode, keyboard_matrix, true);
+        if (g_ipc_instance) {
+          g_ipc_instance->frame_step_remaining.store(hold_frames);
+          g_ipc_instance->frame_step_active.store(true);
+          cpc_resume();
+          while (g_ipc_instance->frame_step_active.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+        }
+        ipc_apply_keypress(scancode, keyboard_matrix, false);
+      };
+
+      // Parse optional trailing "hold=<frames>" args (start = index of the
+      // first arg after the key/chord name). Returns the frame count (>=1), or
+      // a negative sentinel for a malformed/unknown extra arg.
+      auto parse_hold_args = [&](size_t start, int default_hold) -> int {
+        int hold = default_hold;
+        for (size_t i = start; i < parts.size(); ++i) {
+          const std::string& a = parts[i];
+          if (a.rfind("hold=", 0) != 0) return -1;  // unexpected extra arg
+          int v = -1;
+          try {
+            v = parse_int(a.substr(5));
+          } catch (const std::exception&) {
+            return -1;
+          }
+          if (v < 1) return -1;  // a tap must hold at least one frame
+          hold = v;
+        }
+        return hold;
+      };
+
       if (parts[1] == "keydown" && parts.size() >= 3) {
         auto [found, scancode] = resolve_key(parts[2]);
         if (!found) return "ERR 400 unknown-key\n";
@@ -2591,21 +2632,46 @@ std::string handle_command(const std::string& line) {
         return "OK\n";
       }
       if (parts[1] == "key" && parts.size() >= 3) {
-        // Tap: press key, advance frames while held, then release
+        // Tap: press, hold `hold` frames (default 2), release.
         auto [found, scancode] = resolve_key(parts[2]);
         if (!found) return "ERR 400 unknown-key\n";
-        // Set key in matrix before resuming (bypasses CPC.paused guard)
-        ipc_apply_keypress(scancode, keyboard_matrix, true);
-        // Hold for 2 frames to ensure the CPC firmware scans it
-        if (g_ipc_instance) {
-          g_ipc_instance->frame_step_remaining.store(2);
-          g_ipc_instance->frame_step_active.store(true);
-          cpc_resume();
-          while (g_ipc_instance->frame_step_active.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const int hold = parse_hold_args(3, 2);
+        if (hold < 0)
+          return "ERR 400 bad-hold (usage: input key <name> "
+                 "[hold=<frames>=1+])\n";
+        tap_scancode(scancode, hold);
+        return "OK\n";
+      }
+      if (parts[1] == "chord" && parts.size() >= 3) {
+        // Chord: leading modifier tokens then one base key — "CTRL+SHIFT+ESC".
+        // The modifier flags ride in the scancode's high byte, so the press
+        // sets the key AND its modifiers in one atomic ipc_apply_keypress call
+        // (an interleaved SHIFT-then-ESC would let the firmware see ESC alone).
+        const auto tokens = cpc_chord_tokens(parts[2]);
+        CPCScancode mods = 0;
+        std::string base;
+        for (size_t i = 0; i < tokens.size(); ++i) {
+          if (tokens[i].empty()) return "ERR 400 bad-chord (empty token)\n";
+          const CPCScancode flag = cpc_modifier_flag(tokens[i]);
+          if (i + 1 < tokens.size()) {
+            if (flag == 0)
+              return "ERR 400 unknown-modifier (expected CTRL|SHIFT)\n";
+            mods |= flag;
+          } else {
+            if (flag != 0)
+              return "ERR 400 chord-needs-key (ends in a modifier)\n";
+            base = tokens[i];
           }
         }
-        ipc_apply_keypress(scancode, keyboard_matrix, false);
+        if (base.empty())
+          return "ERR 400 bad-chord (usage: input chord MOD+KEY)\n";
+        auto [found, scancode] = resolve_key(base);
+        if (!found) return "ERR 400 unknown-key\n";
+        const int hold = parse_hold_args(3, 2);
+        if (hold < 0)
+          return "ERR 400 bad-hold (usage: input chord <MOD+KEY> "
+                 "[hold=<frames>=1+])\n";
+        tap_scancode(static_cast<CPCScancode>(scancode | mods), hold);
         return "OK\n";
       }
       if (parts[1] == "type") {
@@ -2763,10 +2829,12 @@ std::string handle_command(const std::string& line) {
         }
         return "ERR 400 bad-gun-cmd (move <x> <y> | trigger <down|up>)\n";
       }
-      return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy|mouse|gun)\n";
+      return "ERR 400 bad-input-cmd "
+             "(keydown|keyup|key|chord|type|joy|mouse|gun)\n";
     }
     if (cmd == "input")
-      return "ERR 400 usage: input (keydown|keyup|key|type|joy|mouse|gun)\n";
+      return "ERR 400 usage: input "
+             "(keydown|keyup|key|chord|type|joy|mouse|gun)\n";
 
     if (cmd == "wait" && parts.size() >= 2) {
       auto timeout_ms = std::chrono::milliseconds(5000);

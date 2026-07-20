@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cctype>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "keyboard.h"
 
@@ -90,4 +92,36 @@ inline const std::map<char, CPC_KEYS>& cpc_char_to_key() {
       {'\'', CPC_QUOTE},     {'`', CPC_BACKQUOTE},  {'_', CPC_UNDERSCORE},
   };
   return tbl;
+}
+
+// Modifier flag for one chord token, or 0 if it is not a recognized modifier.
+// CTRL/CONTROL -> MOD_CPC_CTRL; SHIFT/LSHIFT/RSHIFT -> MOD_CPC_SHIFT. Case-
+// insensitive. The flags ride in the CPCScancode high byte, so OR-ing them
+// into a base key's scancode makes the matrix write set the modifier rows in
+// the same atomic ipc_apply_keypress call.
+inline CPCScancode cpc_modifier_flag(const std::string& name) {
+  std::string upper = name;
+  for (auto& c : upper)
+    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  if (upper == "CTRL" || upper == "CONTROL") return MOD_CPC_CTRL;
+  if (upper == "SHIFT" || upper == "LSHIFT" || upper == "RSHIFT")
+    return MOD_CPC_SHIFT;
+  return 0;
+}
+
+// Split a chord string ("CTRL+SHIFT+ESC") on '+' into its tokens. A trailing
+// '+' yields an empty final token, which the caller treats as malformed.
+inline std::vector<std::string> cpc_chord_tokens(const std::string& chord) {
+  std::vector<std::string> out;
+  size_t start = 0;
+  while (start <= chord.size()) {
+    size_t const plus = chord.find('+', start);
+    if (plus == std::string::npos) {
+      out.push_back(chord.substr(start));
+      break;
+    }
+    out.push_back(chord.substr(start, plus - start));
+    start = plus + 1;
+  }
+  return out;
 }
