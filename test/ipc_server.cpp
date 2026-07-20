@@ -513,6 +513,14 @@ TEST_F(IpcServerTest, TypeRoutesThroughAutotypeQueue) {
   EXPECT_OK(send_command("input type \"hi\""));
   auto acts2 = g_autotype_queue.actions();
   EXPECT_EQ(acts2.size(), 2u) << "plain text types one action per character";
+
+  // Surrounding SINGLE quotes are stripped too: `input type '~RETURN~'` must
+  // parse to the same one key action.
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type '~RETURN~'"));
+  auto acts3 = g_autotype_queue.actions();
+  ASSERT_EQ(acts3.size(), 1u) << "surrounding single quotes must be stripped";
+  EXPECT_EQ(acts3[0].cpc_key, static_cast<uint16_t>(CPC_RETURN));
   g_autotype_queue.clear();
 }
 

@@ -2684,8 +2684,11 @@ std::string handle_command(const std::string& line) {
         size_t const pos = line.find("type ");
         if (pos == std::string::npos) return "ERR 400 bad-args\n";
         std::string text = line.substr(pos + 5);
-        // Strip surrounding quotes if present
-        if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
+        // Strip surrounding quotes (double OR single) if present, so both
+        // `input type "..."` and `input type '...'` work the same.
+        if (text.size() >= 2 &&
+            ((text.front() == '"' && text.back() == '"') ||
+             (text.front() == '\'' && text.back() == '\''))) {
           text = text.substr(1, text.size() - 2);
         }
         auto err = g_autotype_queue.enqueue(text);
