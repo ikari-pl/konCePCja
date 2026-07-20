@@ -229,19 +229,25 @@ void ipc_apply_keypress(CPCScancode cpc_key,
   // atomic vs the Z80-thread snapshot copy.  See beads-2qg / beads-d1n.
   std::scoped_lock const matrix_lock(g_kbd_matrix_mutex);
   if (pressed) {
-    keyboard_matrix[static_cast<byte>(cpc_key) >> 4].fetch_and(
-        ~bit_values[static_cast<byte>(cpc_key) & 7], std::memory_order_relaxed);
+    const byte base = static_cast<byte>(cpc_key);
+    keyboard_matrix[base >> 4].fetch_and(~bit_values[base & 7],
+                                         std::memory_order_relaxed);
+    // Modifier rows: hold when the scancode carries the flag, release when it
+    // does not (clears a stuck modifier for a plain key) — EXCEPT when the
+    // base key IS that modifier (LSHIFT/RSHIFT = 0x25, LCONTROL/RCONTROL =
+    // 0x27). There the base handling above already holds the key, and the
+    // release would undo the press (keydown SHIFT/CTRL would report not-held).
     if (cpc_key & MOD_CPC_SHIFT) {
       keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7],
                                            std::memory_order_relaxed);
-    } else {
+    } else if (base != 0x25) {
       keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
                                           std::memory_order_relaxed);
     }
     if (cpc_key & MOD_CPC_CTRL) {
       keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7],
                                            std::memory_order_relaxed);
-    } else {
+    } else if (base != 0x27) {
       keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
                                           std::memory_order_relaxed);
     }
@@ -680,7 +686,11 @@ void init_command_registry() {
       "  gun:     Drives the light gun (phazer). 'move <x> <y>' sets the "
       "absolute aim in window pixels; 'trigger <down|up>' sets the trigger "
       "(Trojan also pulses joystick Fire 1). Requires a phazer type to be "
-      "enabled.");
+      "enabled.\n"
+      "  state:   Reads back which keys are currently held. 'input state' "
+      "lists "
+      "every held key by name; 'input state <row 0-9>' reports one row's raw "
+      "matrix byte (active-low) plus its held key names.");
 
   register_command(
       "disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>",
@@ -2619,6 +2629,43 @@ std::string handle_command(const std::string& line) {
         return hold;
       };
 
+      // Reverse map: matrix position (row<<4 | bit) -> a canonical short key
+      // name, for 'input state' readback. Built once from the shared key
+      // tables; among the aliases mapping to one position, the SHORTEST name
+      // wins (CTRL over CONTROL, SHIFT over LSHIFT, ESC over ESCAPE).
+      auto scancode_to_name = []() -> const std::map<uint16_t, std::string>& {
+        static const std::map<uint16_t, std::string> tbl = [] {
+          std::map<uint16_t, std::string> m;
+          auto add = [&m](const std::string& name, CPC_KEYS key) {
+            const uint16_t pos = static_cast<uint16_t>(
+                CPC.InputMapper->CPCscancodeFromCPCkey(key) & 0xFF);
+            auto it = m.find(pos);
+            if (it == m.end() || name.size() < it->second.size()) m[pos] = name;
+          };
+          for (const auto& [name, key] : cpc_key_names()) add(name, key);
+          for (const auto& [ch, key] : cpc_char_to_key())
+            add(std::string(1, ch), key);
+          return m;
+        }();
+        return tbl;
+      };
+
+      // Report held keys in one matrix row as "<name>,<name>,..." (empty if
+      // none). The matrix is active-LOW: a clear bit is a held key.
+      auto row_held_names = [&](int row) -> std::string {
+        const auto& names = scancode_to_name();
+        const byte cur = keyboard_matrix[row].load(std::memory_order_relaxed);
+        std::string out;
+        for (int b = 0; b < 8; ++b) {
+          if (cur & bit_values[b]) continue;  // bit set = released
+          const auto it = names.find(static_cast<uint16_t>((row << 4) | b));
+          if (it == names.end()) continue;
+          if (!out.empty()) out += ",";
+          out += it->second;
+        }
+        return out;
+      };
+
       if (parts[1] == "keydown" && parts.size() >= 3) {
         auto [found, scancode] = resolve_key(parts[2]);
         if (!found) return "ERR 400 unknown-key\n";
@@ -2810,12 +2857,42 @@ std::string handle_command(const std::string& line) {
         }
         return "ERR 400 bad-gun-cmd (move <x> <y> | trigger <down|up>)\n";
       }
+      if (parts[1] == "state") {
+        // Input-state readback (Phase 5): report which keys are currently held
+        // from keyboard_matrix[] (active-LOW). 'input state' lists every held
+        // key by name; 'input state <row>' reports one row's raw byte + names.
+        if (parts.size() >= 3) {
+          int row = -1;
+          try {
+            row = parse_int(parts[2]);
+          } catch (const std::exception&) {
+            return "ERR 400 bad-row\n";
+          }
+          if (row < 0 || row > 9) return "ERR 400 bad-row (0-9)\n";
+          const byte cur = keyboard_matrix[row].load(std::memory_order_relaxed);
+          std::string const names = row_held_names(row);
+          char buf[96];
+          snprintf(buf, sizeof(buf), "OK row%d=0x%02X held=%s\n", row, cur,
+                   names.empty() ? "(none)" : names.c_str());
+          return buf;
+        }
+        // All rows: collect held key names; report "(none)" if the matrix is
+        // fully released.
+        std::string all;
+        for (int row = 0; row <= 9; ++row) {
+          std::string const names = row_held_names(row);
+          if (names.empty()) continue;
+          if (!all.empty()) all += ",";
+          all += names;
+        }
+        return "OK held=" + (all.empty() ? std::string("(none)") : all) + "\n";
+      }
       return "ERR 400 bad-input-cmd "
-             "(keydown|keyup|key|chord|type|joy|mouse|gun)\n";
+             "(keydown|keyup|key|chord|type|joy|mouse|gun|state)\n";
     }
     if (cmd == "input")
       return "ERR 400 usage: input "
-             "(keydown|keyup|key|chord|type|joy|mouse|gun)\n";
+             "(keydown|keyup|key|chord|type|joy|mouse|gun|state)\n";
 
     if (cmd == "wait" && parts.size() >= 2) {
       auto timeout_ms = std::chrono::milliseconds(5000);

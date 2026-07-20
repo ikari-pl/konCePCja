@@ -809,6 +809,70 @@ def test_type_input():
         return True
 
 
+def test_input_state():
+    """IPC input state readback (Phase 5, beads-bej2).
+
+    Verifies 'input state' reports held keys from keyboard_matrix:
+      - empty when nothing is held,
+      - SHIFT reported held after 'input keydown SHIFT' (also catches the
+        modifier-self release regression where keydown SHIFT never latched),
+      - a row view reports the raw byte + the name,
+      - released after keyup / after a chord tap,
+      - out-of-range / non-numeric rows rejected.
+    """
+    print("Running input state readback test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok, resp = emu.ipc.send_command('input state')
+        if not ok or '(none)' not in resp:
+            print(f"FAIL: expected held=(none) initially, got {resp!r}")
+            return False
+        print(f"  initial: {resp.strip()}")
+
+        emu.ipc.send_command('input keydown SHIFT')
+        ok, resp = emu.ipc.send_command('input state')
+        if not ok or 'SHIFT' not in resp:
+            print(f"FAIL: expected SHIFT held after keydown, got {resp!r}")
+            return False
+        print(f"  after keydown SHIFT: {resp.strip()}")
+
+        # SHIFT is row 2 bit 5 (0x25); the row view shows the raw byte + name.
+        ok, resp = emu.ipc.send_command('input state 2')
+        if not ok or 'row2=' not in resp or 'SHIFT' not in resp:
+            print(f"FAIL: expected row2 byte + SHIFT, got {resp!r}")
+            return False
+        print(f"  row 2: {resp.strip()}")
+
+        emu.ipc.send_command('input keyup SHIFT')
+        ok, resp = emu.ipc.send_command('input state')
+        if not ok or '(none)' not in resp:
+            print(f"FAIL: expected released after keyup, got {resp!r}")
+            return False
+        print(f"  after keyup SHIFT: {resp.strip()}")
+
+        # A chord tap presses then releases, so nothing stays held.
+        emu.ipc.send_command('input chord SHIFT+A')
+        ok, resp = emu.ipc.send_command('input state')
+        if not ok or '(none)' not in resp:
+            print(f"FAIL: expected nothing held after chord tap, got {resp!r}")
+            return False
+        print(f"  after chord tap: {resp.strip()}")
+
+        for cmd in ('input state 99', 'input state xyz'):
+            ok, resp = emu.ipc.send_command(cmd)
+            if ok:
+                print(f"FAIL: expected ERR for {cmd!r}, got OK: {resp!r}")
+                return False
+            print(f"  {cmd!r} -> {resp.strip()}")
+
+        print("PASS: input state readback test")
+        return True
+
+
 def test_joystick_input():
     """IPC joystick input: the 'input joy' command surface.
 
@@ -864,6 +928,7 @@ def main():
         test_gun_input,
         test_chord_hold_input,
         test_type_input,
+        test_input_state,
         test_joystick_input,
     ]
 

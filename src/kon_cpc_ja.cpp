@@ -3345,13 +3345,13 @@ void z80_thread_main() {
                   if (scancode & MOD_CPC_SHIFT)
                     keyboard_matrix[0x25 >> 4].fetch_and(
                         ~bit_values[0x25 & 7], std::memory_order_relaxed);
-                  else
+                  else if (static_cast<byte>(scancode) != 0x25)
                     keyboard_matrix[0x25 >> 4].fetch_or(
                         bit_values[0x25 & 7], std::memory_order_relaxed);
                   if (scancode & MOD_CPC_CTRL)
                     keyboard_matrix[0x27 >> 4].fetch_and(
                         ~bit_values[0x27 & 7], std::memory_order_relaxed);
-                  else
+                  else if (static_cast<byte>(scancode) != 0x27)
                     keyboard_matrix[0x27 >> 4].fetch_or(
                         bit_values[0x27 & 7], std::memory_order_relaxed);
                 } else {
@@ -4738,14 +4738,14 @@ int koncpc_main(int argc, char** argv) {
                     if (scancode & MOD_CPC_SHIFT) {
                       keyboard_matrix[0x25 >> 4].fetch_and(
                           ~bit_values[0x25 & 7], std::memory_order_relaxed);
-                    } else {
+                    } else if (static_cast<byte>(scancode) != 0x25) {
                       keyboard_matrix[0x25 >> 4].fetch_or(
                           bit_values[0x25 & 7], std::memory_order_relaxed);
                     }
                     if (scancode & MOD_CPC_CTRL) {
                       keyboard_matrix[0x27 >> 4].fetch_and(
                           ~bit_values[0x27 & 7], std::memory_order_relaxed);
-                    } else {
+                    } else if (static_cast<byte>(scancode) != 0x27) {
                       keyboard_matrix[0x27 >> 4].fetch_or(
                           bit_values[0x27 & 7], std::memory_order_relaxed);
                     }
