@@ -2592,9 +2592,9 @@ std::string handle_command(const std::string& line) {
           g_ipc_instance->frame_step_remaining.store(hold_frames);
           g_ipc_instance->frame_step_active.store(true);
           cpc_resume();
-          while (g_ipc_instance->frame_step_active.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          }
+          // Block on the frame-step condvar until the hold completes — no
+          // busy-wait.
+          g_ipc_instance->wait_frame_step_done();
         }
         ipc_apply_keypress(scancode, keyboard_matrix, false);
       };
