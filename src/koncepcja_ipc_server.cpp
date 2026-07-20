@@ -2630,23 +2630,28 @@ std::string handle_command(const std::string& line) {
       };
 
       // Reverse map: matrix position (row<<4 | bit) -> a canonical short key
-      // name, for 'input state' readback. Built once from the shared key
-      // tables; among the aliases mapping to one position, the SHORTEST name
-      // wins (CTRL over CONTROL, SHIFT over LSHIFT, ESC over ESCAPE).
+      // name, for 'input state' readback. Built lazily from the shared key
+      // tables, deferred until CPC.InputMapper is non-null (the IPC server can
+      // be queried before koncpc_main constructs it, so a static-on-first-call
+      // map would deref null — and stay permanently empty). Among the aliases
+      // mapping to one position, the SHORTEST name wins (CTRL over CONTROL,
+      // SHIFT over LSHIFT, ESC over ESCAPE).
       auto scancode_to_name = []() -> const std::map<uint16_t, std::string>& {
-        static const std::map<uint16_t, std::string> tbl = [] {
-          std::map<uint16_t, std::string> m;
-          auto add = [&m](const std::string& name, CPC_KEYS key) {
+        static std::map<uint16_t, std::string> tbl;
+        static bool initialized = false;
+        if (!initialized && CPC.InputMapper) {
+          auto add = [](std::map<uint16_t, std::string>& m,
+                        const std::string& name, CPC_KEYS key) {
             const uint16_t pos = static_cast<uint16_t>(
                 CPC.InputMapper->CPCscancodeFromCPCkey(key) & 0xFF);
             auto it = m.find(pos);
             if (it == m.end() || name.size() < it->second.size()) m[pos] = name;
           };
-          for (const auto& [name, key] : cpc_key_names()) add(name, key);
+          for (const auto& [name, key] : cpc_key_names()) add(tbl, name, key);
           for (const auto& [ch, key] : cpc_char_to_key())
-            add(std::string(1, ch), key);
-          return m;
-        }();
+            add(tbl, std::string(1, ch), key);
+          initialized = true;
+        }
         return tbl;
       };
 
@@ -2858,6 +2863,10 @@ std::string handle_command(const std::string& line) {
         return "ERR 400 bad-gun-cmd (move <x> <y> | trigger <down|up>)\n";
       }
       if (parts[1] == "state") {
+        // The key-name reverse map needs CPC.InputMapper; it is constructed in
+        // koncpc_main after the IPC server starts, so a query during early
+        // startup must not deref it (gemini-code-assist on PR #11).
+        if (!CPC.InputMapper) return "ERR 503 emulator-not-ready\n";
         // Input-state readback (Phase 5): report which keys are currently held
         // from keyboard_matrix[] (active-LOW). 'input state' lists every held
         // key by name; 'input state <row>' reports one row's raw byte + names.
@@ -2871,7 +2880,7 @@ std::string handle_command(const std::string& line) {
           if (row < 0 || row > 9) return "ERR 400 bad-row (0-9)\n";
           const byte cur = keyboard_matrix[row].load(std::memory_order_relaxed);
           std::string const names = row_held_names(row);
-          char buf[96];
+          char buf[256];  // fits a full row of long key names
           snprintf(buf, sizeof(buf), "OK row%d=0x%02X held=%s\n", row, cur,
                    names.empty() ? "(none)" : names.c_str());
           return buf;
