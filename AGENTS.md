@@ -160,6 +160,7 @@ echo "help" | nc localhost 6543
 | `input mouse buttons <mask>` | Set whole SDL button mask (L=1,M=2,R=4) | `input mouse buttons 0` |
 | `input gun move <x> <y>` | Absolute light-gun aim in window px (needs a phazer type enabled) | `input gun move 100 60` |
 | `input gun trigger <down\|up>` | Press/release the gun trigger (Trojan also pulses J0 FIRE1) | `input gun trigger down` |
+| `input state [row]` | Read back held keys (all, or one row's byte + names) | `input state`, `input state 2` |
 | `autotype <text>` | Queue text via AutoTypeQueue (supports WinAPE `~KEY~`) | `autotype 'run"game~RETURN~'` |
 | `autotype status` | Show pending queue length | `autotype status` |
 | `autotype clear` | Cancel pending input | `autotype clear` |
