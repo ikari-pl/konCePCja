@@ -2069,8 +2069,11 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // Light gun selection (0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
   // Phazer). Mirrors the F-key toggle; lets headless/CI runs and config files
   // enable a gun (the IPC 'input gun' contract keys off phazer_emulation).
-  CPC.phazer_emulation =
-      static_cast<PhazerType::Value>(conf.getIntValue("input", "lightgun", 0));
+  // Clamp to the valid enum range: a bad config value (e.g. 99) must not
+  // produce an out-of-range PhazerType.
+  CPC.phazer_emulation = static_cast<PhazerType::Value>(
+      std::clamp(conf.getIntValue("input", "lightgun", 0), 0,
+                 static_cast<int>(PhazerType::TrojanLightPhazer)));
   if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
 
   g_symbiface.enabled = read_flag("peripheral", "symbiface", 0) != 0;

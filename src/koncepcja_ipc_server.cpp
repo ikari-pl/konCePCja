@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -293,9 +294,11 @@ IpcMousePending g_ipc_mouse;
 namespace {
 struct IpcGunPending {
   std::mutex mutex;  // guards the x/y/trigger group as one snapshot
-  int32_t x{-1};     // staged window px (motion.x equivalent); <0 = untouched
-  int32_t y{-1};
-  int trigger{-1};                 // <0 = untouched, 0 = released, 1 = pressed
+  // std::optional over a -1 sentinel: negative window px (a left/top monitor in
+  // a multi-monitor setup) is a valid aim and must not read as "untouched".
+  std::optional<int32_t> x;  // staged window px (motion.x equivalent)
+  std::optional<int32_t> y;
+  std::optional<int> trigger;  // 0 = released, 1 = pressed; nullopt = untouched
   std::atomic<bool> dirty{false};  // fast-path: skip the lock when idle
   // Published by the main thread each frame (phazer_emulation != None) so the
   // IPC thread can gate the "no gun" error without reading CPC.phazer_emulation
@@ -341,37 +344,40 @@ void ipc_drain_input() {
   }
 
   if (g_ipc_gun.dirty.load(std::memory_order_acquire)) {
-    int32_t gx = -1;
-    int32_t gy = -1;
-    int trig = -1;
+    std::optional<int32_t> gx, gy;
+    std::optional<int> trig;
     {
       std::scoped_lock const lock(g_ipc_gun.mutex);
       if (g_ipc_gun.dirty.load(std::memory_order_relaxed)) {
         gx = g_ipc_gun.x;
         gy = g_ipc_gun.y;
         trig = g_ipc_gun.trigger;
-        g_ipc_gun.x = -1;
-        g_ipc_gun.y = -1;
-        g_ipc_gun.trigger = -1;
+        g_ipc_gun.x.reset();
+        g_ipc_gun.y.reset();
+        g_ipc_gun.trigger.reset();
         g_ipc_gun.dirty.store(false, std::memory_order_relaxed);
       }
     }
-    if (CPC.phazer_emulation) {
+    // vid_plugin is set up by video_init on this same main thread, but a drain
+    // can land before that (or in a headless/test context) — never deref null.
+    if (CPC.phazer_emulation && vid_plugin != nullptr) {
       // Same window-px -> CPC-frame mapping the SDL mouse-motion path uses.
-      if (gx >= 0)
-        CPC.phazer_x = static_cast<unsigned int>((gx - vid_plugin->x_offset) *
-                                                 vid_plugin->x_scale);
-      if (gy >= 0)
-        CPC.phazer_y = static_cast<unsigned int>((gy - vid_plugin->y_offset) *
-                                                 vid_plugin->y_scale);
-      if (trig >= 0) {
+      // Clamp at 0: a point left/above the offset (off the active window) maps
+      // negative, and a negative float -> unsigned int cast is undefined.
+      if (gx)
+        CPC.phazer_x = static_cast<unsigned int>(
+            std::max(0.0f, (*gx - vid_plugin->x_offset) * vid_plugin->x_scale));
+      if (gy)
+        CPC.phazer_y = static_cast<unsigned int>(
+            std::max(0.0f, (*gy - vid_plugin->y_offset) * vid_plugin->y_scale));
+      if (trig) {
         // Trojan wires the trigger to joystick Fire 1 (see the SDL button
         // path).
         if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer) {
           auto scancode = CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1);
-          ipc_apply_keypress(scancode, keyboard_matrix, trig == 1);
+          ipc_apply_keypress(scancode, keyboard_matrix, *trig == 1);
         }
-        CPC.phazer_pressed = (trig == 1);
+        CPC.phazer_pressed = (*trig == 1);
       }
     }
   }
