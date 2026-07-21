@@ -153,7 +153,7 @@ echo "help" | nc localhost 6543
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
 | `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release) | `input key RETURN hold=5` |
 | `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once) | `input chord CTRL+SHIFT+ESC` |
-| `input type <text>` | Type literal text (mapped chars only, no `~KEY~`) | `input type 'mode 1'` |
+| `input type <text>` | Type text via AutoTypeQueue (supports `~KEY~`, newlines; async like `autotype`) | `input type 'run"game~RETURN~'` |
 | `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |
 | `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |
 | `input mouse button <L\|M\|R> <down\|up>` | Press/release a mouse button | `input mouse button L down` |

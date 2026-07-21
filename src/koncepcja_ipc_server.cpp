@@ -674,9 +674,9 @@ void init_command_registry() {
       "  chord:   Atomic modified tap, e.g. 'chord CTRL+SHIFT+ESC'. Leading "
       "modifier tokens (CTRL|SHIFT) then one base key; all rows go down in one "
       "atomic write. Optional hold=<frames>.\n"
-      "  type:    Types a literal string. Only mapped characters are emitted; "
-      "WinAPE ~KEY~ syntax is NOT supported here -- use the 'autotype' command "
-      "for that.\n"
+      "  type:    Types a string through the AutoTypeQueue (the same path as "
+      "'autotype'), so WinAPE ~KEY~ tokens and newlines work. Typing is queued "
+      "and drains over the next keyboard scans (see 'autotype status').\n"
       "  joy:     Sets joystick <0|1> direction <dir> (U/D/L/R/F1/F2, or 0 to "
       "release all). Prefix <dir> with '-' to release a single direction.\n"
       "  mouse:   Drives the AMX/Symbiface mouse. 'move <dx> <dy>' feeds "
@@ -2681,43 +2681,24 @@ std::string handle_command(const std::string& line) {
         return "OK\n";
       }
       if (parts[1] == "type") {
-        // Collect the rest of the line as text (may include spaces)
-        // Find the start of the text after "input type "
+        // Route through the AutoTypeQueue — the SAME path as 'autotype' — so
+        // WinAPE ~KEY~ tokens and newlines work identically (one typing path,
+        // not two). The queue's parser types plain chars via cpc_char_to_key
+        // (the map is the char fallback) and expands ~KEY~ tokens; typing then
+        // drains asynchronously over the next keyboard scans (see 'autotype
+        // status'), unlike the old synchronous per-char loop.
         size_t const pos = line.find("type ");
         if (pos == std::string::npos) return "ERR 400 bad-args\n";
         std::string text = line.substr(pos + 5);
-        // Strip surrounding quotes if present
-        if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
+        // Strip surrounding quotes (double OR single) if present, so both
+        // `input type "..."` and `input type '...'` work the same.
+        if (text.size() >= 2 &&
+            ((text.front() == '"' && text.back() == '"') ||
+             (text.front() == '\'' && text.back() == '\''))) {
           text = text.substr(1, text.size() - 2);
         }
-        for (char const ch : text) {
-          auto charIt = cpc_char_to_key().find(ch);
-          if (charIt == cpc_char_to_key().end())
-            continue;  // skip unmappable chars
-          CPCScancode const scancode =
-              CPC.InputMapper->CPCscancodeFromCPCkey(charIt->second);
-          // Set key in matrix before resuming (bypasses CPC.paused guard)
-          ipc_apply_keypress(scancode, keyboard_matrix, true);
-          // Hold for 2 frames
-          if (g_ipc_instance) {
-            g_ipc_instance->frame_step_remaining.store(2);
-            g_ipc_instance->frame_step_active.store(true);
-            cpc_resume();
-            while (g_ipc_instance->frame_step_active.load()) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-          }
-          ipc_apply_keypress(scancode, keyboard_matrix, false);
-          // Wait 1 frame between chars for debouncer
-          if (g_ipc_instance) {
-            g_ipc_instance->frame_step_remaining.store(1);
-            g_ipc_instance->frame_step_active.store(true);
-            cpc_resume();
-            while (g_ipc_instance->frame_step_active.load()) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-          }
-        }
+        auto err = g_autotype_queue.enqueue(text);
+        if (!err.empty()) return "ERR 400 " + err + "\n";
         return "OK\n";
       }
       if (parts[1] == "joy" && parts.size() >= 4) {
