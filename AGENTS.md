@@ -151,7 +151,8 @@ echo "help" | nc localhost 6543
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
-| `input key <name>` | Tap a key (press, hold 2 frames, release) | `input key RETURN` |
+| `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release) | `input key RETURN hold=5` |
+| `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once) | `input chord CTRL+SHIFT+ESC` |
 | `input type <text>` | Type literal text (mapped chars only, no `~KEY~`) | `input type 'mode 1'` |
 | `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |
 | `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |

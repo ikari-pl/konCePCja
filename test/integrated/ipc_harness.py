@@ -731,6 +731,49 @@ def test_gun_input():
         return True
 
 
+def test_chord_hold_input():
+    """IPC key hold + chord: 'input key [hold=N]' and 'input chord' (Phase 3).
+
+    Verifies the hold=<frames> modifier on 'input key' and the atomic modified
+    tap of 'input chord' (beads-nz0n):
+      - default and custom hold accepted, hold<1 / bad numbers / stray args rejected,
+      - chord with modifiers accepted, modifier-only / unknown-modifier / empty
+        chords rejected.
+    The atomicity (all rows down in one write) is asserted by the gtest; this
+    checks the IPC command contract end-to-end.
+    """
+    print("Running chord/hold input test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        checks = [
+            ('input key RETURN', True),           # default 2-frame tap
+            ('input key RETURN hold=5', True),    # custom hold
+            ('input key RETURN hold=1', True),    # minimum hold
+            ('input key RETURN hold=0', False),   # hold must be >= 1
+            ('input key RETURN hold=xyz', False), # not a number
+            ('input key RETURN foo=5', False),    # unknown extra arg
+            ('input chord CTRL+SHIFT+ESC', True),
+            ('input chord SHIFT+A hold=3', True),
+            ('input chord ESC', True),            # degenerate chord = plain tap
+            ('input chord CTRL+SHIFT', False),    # ends in a modifier
+            ('input chord CTRL+FOO+ESC', False),  # unknown modifier
+            ('input chord', False),               # missing chord
+        ]
+        for cmd, want_ok in checks:
+            ok, resp = emu.ipc.send_command(cmd)
+            if ok != want_ok:
+                print(f"FAIL: {cmd!r} -> ok={ok} (wanted {want_ok}): {resp.strip()}")
+                return False
+            print(f"  {cmd!r} -> {resp.strip()}")
+
+        print("PASS: chord/hold input test")
+        return True
+
+
 def test_joystick_input():
     """IPC joystick input: the 'input joy' command surface.
 
@@ -784,6 +827,7 @@ def main():
         test_step_in_accuracy,
         test_mouse_input,
         test_gun_input,
+        test_chord_hold_input,
         test_joystick_input,
     ]
 
