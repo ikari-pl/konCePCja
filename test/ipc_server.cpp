@@ -22,6 +22,7 @@
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "symfile.h"
+#include "video_host.h"
 #include "z80_view.h"
 
 extern t_z80regs z80;
@@ -29,6 +30,7 @@ extern t_CPC CPC;
 extern SDL_Surface* back_surface;
 extern byte* membank_read[4];
 extern byte* membank_write[4];
+extern video_plugin* vid_plugin;
 
 namespace {
 
@@ -455,6 +457,45 @@ TEST_F(IpcServerTest, BadNumberIncludesValueInError) {
   auto resp = send_command("reg set A notanumber");
   EXPECT_TRUE(resp.find("ERR 400") != std::string::npos) << resp;
   EXPECT_TRUE(resp.find("notanumber") != std::string::npos) << resp;
+}
+
+// ─────────────────────────────────────────────────
+// Light-gun (IPC Phase 2, beads-vrsr): the staged 'input gun' commands are
+// flushed by ipc_drain_input() into CPC.phazer_* exactly as the SDL path does.
+// ─────────────────────────────────────────────────
+
+TEST_F(IpcServerTest, GunDrainAppliesAimAndTrigger) {
+  // Stub the video plugin so the drain's window->CPC mapping is known:
+  // phazer_x = (x - x_offset) * x_scale, phazer_y = (y - y_offset) * y_scale.
+  static video_plugin stub{};
+  stub.x_offset = 10;
+  stub.y_offset = 20;
+  stub.x_scale = 2.0f;
+  stub.y_scale = 4.0f;
+  video_plugin* const saved = vid_plugin;
+  vid_plugin = &stub;
+
+  CPC.phazer_emulation = PhazerType::AmstradMagnumPhaser;
+  CPC.phazer_x = 0;
+  CPC.phazer_y = 0;
+  CPC.phazer_pressed = false;
+
+  // Publish the device gate (the no-gun 409 would otherwise fire), then stage.
+  ipc_drain_input();
+  EXPECT_OK(send_command("input gun move 30 40"));
+  EXPECT_OK(send_command("input gun trigger down"));
+  ipc_drain_input();
+
+  EXPECT_EQ(CPC.phazer_x, static_cast<unsigned int>((30 - 10) * 2.0f));
+  EXPECT_EQ(CPC.phazer_y, static_cast<unsigned int>((40 - 20) * 4.0f));
+  EXPECT_TRUE(CPC.phazer_pressed);
+
+  EXPECT_OK(send_command("input gun trigger up"));
+  ipc_drain_input();
+  EXPECT_FALSE(CPC.phazer_pressed);
+
+  vid_plugin = saved;
+  CPC.phazer_emulation = PhazerType::None;
 }
 
 }  // namespace

@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -62,6 +63,7 @@
 #include "koncepcja.h"
 #include "m4board.h"
 #include "m4board_http.h"
+#include "phazer_type.h"
 #include "plotter.h"
 #include "plotter_view.h"
 #include "pokes.h"
@@ -86,6 +88,7 @@ extern t_GateArray GateArray;
 extern t_PSG PSG;
 extern SDL_Surface* back_surface;
 extern byte* pbRAM;
+extern video_plugin* vid_plugin;
 
 extern t_drive driveA;
 extern t_drive driveB;
@@ -276,35 +279,102 @@ struct IpcMousePending {
 IpcMousePending g_ipc_mouse;
 }  // namespace
 
-// Drained once per frame on the main thread.  Safe no-op when no mouse input is
-// pending or no mouse device is enabled.  The lock is held only to copy the
-// dx/dy/buttons group into a local snapshot and reset the accumulators, so dx
-// and dy can never come from different updates (no shearing); the device
-// updates run unlocked.
+// Light-gun input staging — the same deferral as the mouse above.  The IPC
+// thread accumulates an absolute window-pixel aim and the trigger level here;
+// ipc_drain_input() flushes them on the main thread through the same
+// CPC.phazer_* entry points SDL uses (the vid_plugin offset/scale window→CPC
+// mapping, and the Trojan FIRE1 pulse).  CPC.phazer_x/y/pressed are plain
+// (non-atomic) main-thread state, so the IPC thread never writes them directly.
+namespace {
+struct IpcGunPending {
+  std::mutex mutex;  // guards the x/y/trigger group as one snapshot
+  // std::optional over a -1 sentinel: negative window px (a left/top monitor in
+  // a multi-monitor setup) is a valid aim and must not read as "untouched".
+  std::optional<int32_t> x;  // staged window px (motion.x equivalent)
+  std::optional<int32_t> y;
+  std::optional<int> trigger;  // 0 = released, 1 = pressed; nullopt = untouched
+  std::atomic<bool> dirty{false};  // fast-path: skip the lock when idle
+  // Published by the main thread each frame (phazer_emulation != None) so the
+  // IPC thread can gate the "no gun" error without reading CPC.phazer_emulation
+  // cross-thread.
+  std::atomic<bool> device_active{false};
+};
+IpcGunPending g_ipc_gun;
+}  // namespace
+
+// Drained once per frame on the main thread.  Safe no-op when no input is
+// pending and no input device is enabled.  Each lock is held only to copy that
+// device's staged group into a local snapshot and reset it, so a field can
+// never come from a different update than its siblings (no shearing); the
+// device updates run unlocked.
 void ipc_drain_input() {
-  // Publish device-enabled state for the IPC thread's gate (read of the plain
+  // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
   g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
                                   std::memory_order_relaxed);
-  if (!g_ipc_mouse.dirty.load(std::memory_order_acquire)) return;
-  int32_t dx = 0;
-  int32_t dy = 0;
-  uint32_t buttons = 0;
-  {
-    std::scoped_lock const lock(g_ipc_mouse.mutex);
-    if (!g_ipc_mouse.dirty.load(std::memory_order_relaxed)) return;
-    dx = g_ipc_mouse.dx;
-    dy = g_ipc_mouse.dy;
-    buttons = g_ipc_mouse.buttons;
-    g_ipc_mouse.dx = 0;
-    g_ipc_mouse.dy = 0;
-    g_ipc_mouse.dirty.store(false, std::memory_order_relaxed);
+  g_ipc_gun.device_active.store(static_cast<bool>(CPC.phazer_emulation),
+                                std::memory_order_relaxed);
+
+  if (g_ipc_mouse.dirty.load(std::memory_order_acquire)) {
+    int32_t dx = 0;
+    int32_t dy = 0;
+    uint32_t buttons = 0;
+    {
+      std::scoped_lock const lock(g_ipc_mouse.mutex);
+      if (g_ipc_mouse.dirty.load(std::memory_order_relaxed)) {
+        dx = g_ipc_mouse.dx;
+        dy = g_ipc_mouse.dy;
+        buttons = g_ipc_mouse.buttons;
+        g_ipc_mouse.dx = 0;
+        g_ipc_mouse.dy = 0;
+        g_ipc_mouse.dirty.store(false, std::memory_order_relaxed);
+      }
+    }
+    auto f_dx = static_cast<float>(dx);
+    auto f_dy = static_cast<float>(dy);
+    // Feed whichever device(s) are active; SDL feeds both the same way.
+    if (g_amx_mouse.enabled) amx_mouse_update(f_dx, f_dy, buttons);
+    if (g_symbiface.enabled) symbiface_mouse_update(f_dx, f_dy, buttons);
   }
-  auto f_dx = static_cast<float>(dx);
-  auto f_dy = static_cast<float>(dy);
-  // Feed whichever device(s) are active; SDL feeds both the same way.
-  if (g_amx_mouse.enabled) amx_mouse_update(f_dx, f_dy, buttons);
-  if (g_symbiface.enabled) symbiface_mouse_update(f_dx, f_dy, buttons);
+
+  if (g_ipc_gun.dirty.load(std::memory_order_acquire)) {
+    std::optional<int32_t> gx, gy;
+    std::optional<int> trig;
+    {
+      std::scoped_lock const lock(g_ipc_gun.mutex);
+      if (g_ipc_gun.dirty.load(std::memory_order_relaxed)) {
+        gx = g_ipc_gun.x;
+        gy = g_ipc_gun.y;
+        trig = g_ipc_gun.trigger;
+        g_ipc_gun.x.reset();
+        g_ipc_gun.y.reset();
+        g_ipc_gun.trigger.reset();
+        g_ipc_gun.dirty.store(false, std::memory_order_relaxed);
+      }
+    }
+    // vid_plugin is set up by video_init on this same main thread, but a drain
+    // can land before that (or in a headless/test context) — never deref null.
+    if (CPC.phazer_emulation && vid_plugin != nullptr) {
+      // Same window-px -> CPC-frame mapping the SDL mouse-motion path uses.
+      // Clamp at 0: a point left/above the offset (off the active window) maps
+      // negative, and a negative float -> unsigned int cast is undefined.
+      if (gx)
+        CPC.phazer_x = static_cast<unsigned int>(
+            std::max(0.0f, (*gx - vid_plugin->x_offset) * vid_plugin->x_scale));
+      if (gy)
+        CPC.phazer_y = static_cast<unsigned int>(
+            std::max(0.0f, (*gy - vid_plugin->y_offset) * vid_plugin->y_scale));
+      if (trig) {
+        // Trojan wires the trigger to joystick Fire 1 (see the SDL button
+        // path).
+        if (CPC.phazer_emulation == PhazerType::TrojanLightPhazer) {
+          auto scancode = CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_FIRE1);
+          ipc_apply_keypress(scancode, keyboard_matrix, *trig == 1);
+        }
+        CPC.phazer_pressed = (*trig == 1);
+      }
+    }
+  }
 }
 
 namespace {
@@ -590,10 +660,11 @@ void init_command_registry() {
   register_command(
       "input", "INPUT",
       "input keydown|keyup|key <name> | input type <text> | "
-      "input joy <0|1> <dir> | input mouse <move|button|buttons> ...",
+      "input joy <0|1> <dir> | input mouse <move|button|buttons> | "
+      "input gun <move|trigger> ...",
       "Simulate user input",
-      "Injects keyboard/joystick/mouse events directly into the emulated "
-      "hardware.\n"
+      "Injects keyboard/joystick/mouse/light-gun events directly into the "
+      "emulated hardware.\n"
       "  <name> is a friendly key name (RETURN, SPACE, ESC, F1, UP, ...) or a "
       "single character (a, A, 1). See the cpc_key_names table.\n"
       "  keydown: Presses and holds <name> (matrix bit stays set).\n"
@@ -607,7 +678,11 @@ void init_command_registry() {
       "  mouse:   Drives the AMX/Symbiface mouse. 'move <dx> <dy>' feeds "
       "relative motion; 'button <L|M|R> <down|up>' sets one button; "
       "'buttons <mask>' sets the whole SDL button mask. Requires a mouse "
-      "device to be enabled.");
+      "device to be enabled.\n"
+      "  gun:     Drives the light gun (phazer). 'move <x> <y>' sets the "
+      "absolute aim in window pixels; 'trigger <down|up>' sets the trigger "
+      "(Trojan also pulses joystick Fire 1). Requires a phazer type to be "
+      "enabled.");
 
   register_command(
       "disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>",
@@ -2665,10 +2740,39 @@ std::string handle_command(const std::string& line) {
         return "ERR 400 bad-mouse-cmd (move <dx> <dy> | button <L|M|R> "
                "<down|up> | buttons <mask>)\n";
       }
-      return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy|mouse)\n";
+      if (parts[1] == "gun" && parts.size() >= 3) {
+        // Light-gun (phazer) input is staged here and flushed on the main
+        // thread by ipc_drain_input() — see the IpcGunPending comment above.
+        if (!g_ipc_gun.device_active.load(std::memory_order_relaxed))
+          return "ERR 409 no-light-gun (enable a phazer type)\n";
+        if (parts[2] == "move" && parts.size() >= 5) {
+          std::scoped_lock const lock(g_ipc_gun.mutex);
+          g_ipc_gun.x = parse_int(parts[3]);
+          g_ipc_gun.y = parse_int(parts[4]);
+          g_ipc_gun.dirty.store(true, std::memory_order_release);
+          return "OK\n";
+        }
+        if (parts[2] == "trigger" && parts.size() >= 4) {
+          int trig = -1;
+          if (parts[3] == "down")
+            trig = 1;
+          else if (parts[3] == "up")
+            trig = 0;
+          else
+            return "ERR 400 bad-trigger-state (down|up)\n";
+          {
+            std::scoped_lock const lock(g_ipc_gun.mutex);
+            g_ipc_gun.trigger = trig;
+            g_ipc_gun.dirty.store(true, std::memory_order_release);
+          }
+          return "OK\n";
+        }
+        return "ERR 400 bad-gun-cmd (move <x> <y> | trigger <down|up>)\n";
+      }
+      return "ERR 400 bad-input-cmd (keydown|keyup|key|type|joy|mouse|gun)\n";
     }
     if (cmd == "input")
-      return "ERR 400 usage: input (keydown|keyup|key|type|joy|mouse)\n";
+      return "ERR 400 usage: input (keydown|keyup|key|type|joy|mouse|gun)\n";
 
     if (cmd == "wait" && parts.size() >= 2) {
       auto timeout_ms = std::chrono::milliseconds(5000);

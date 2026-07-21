@@ -682,6 +682,55 @@ def test_mouse_input():
         return True
 
 
+def test_gun_input():
+    """IPC light-gun input: device gating + full command surface.
+
+    Verifies the 'input gun' command layer (IPC Phase 2, beads-vrsr):
+      - rejected when no phazer type is enabled,
+      - move/trigger accepted once a phazer is enabled (input.lightgun),
+      - malformed sub-commands are rejected.
+    The aim mapping and LPEN latch live in the light_gun Device (covered by the
+    LightGun gtest suite); this asserts the IPC command contract end-to-end.
+    """
+    print("Running gun input test...")
+
+    # 1. No phazer type -> commands rejected.
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ok, resp = emu.ipc.send_command('input gun move 100 100')
+        if ok:
+            print(f"FAIL: expected ERR with no light gun, got OK: {resp!r}")
+            return False
+        print(f"  no-gun rejected as expected: {resp.strip()}")
+
+    # 2. Phazer enabled -> full surface works, bad args rejected.
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'input.lightgun=1'):
+            print("FAIL: Could not start emulator with light gun")
+            return False
+
+        checks = [
+            ('input gun move 100 60', True),
+            ('input gun trigger down', True),
+            ('input gun trigger up', True),
+            ('input gun trigger sideways', False),  # bad trigger state
+            ('input gun wiggle', False),            # bad sub-command
+            ('input gun move 1', False),            # missing y
+            ('input gun', False),                   # missing sub-command
+        ]
+        for cmd, want_ok in checks:
+            ok, resp = emu.ipc.send_command(cmd)
+            if ok != want_ok:
+                print(f"FAIL: {cmd!r} -> ok={ok} (wanted {want_ok}): {resp.strip()}")
+                return False
+            print(f"  {cmd!r} -> {resp.strip()}")
+
+        print("PASS: gun input test")
+        return True
+
+
 def test_joystick_input():
     """IPC joystick input: the 'input joy' command surface.
 
@@ -734,6 +783,7 @@ def main():
         test_rapid_pause_resume,
         test_step_in_accuracy,
         test_mouse_input,
+        test_gun_input,
         test_joystick_input,
     ]
 
