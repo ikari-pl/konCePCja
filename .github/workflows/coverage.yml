@@ -12,7 +12,11 @@ jobs:
   coverage:
     name: Coverage Report
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The job runs apt-get (variable, occasionally 10+ min on a slow mirror),
+    # a full cold coverage build (no ccache), and gcovr. 15 min was too tight:
+    # a slow Install-dependencies step left the build <4 min and the job-level
+    # timeout cancelled it. 30 min covers the slow-apt + SDL-cache-miss worst case.
+    timeout-minutes: 30
     env:
       PKG_CONFIG_PATH: ${{ github.workspace }}/vendor/SDL/install/lib/pkgconfig
       LD_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
