@@ -2573,6 +2573,18 @@ std::string handle_command(const std::string& line) {
 
     // Input replay commands
     if (cmd == "input" && parts.size() >= 2) {
+      // Key/joystick injection resolves key names through CPC.InputMapper,
+      // which koncpc_main constructs AFTER the IPC server starts accepting
+      // (g_ipc->start() at kon_cpc_ja.cpp:3664 < CPC.InputMapper at :3752). A
+      // key/joy command arriving in that window would dereference a null
+      // InputMapper (SIGSEGV at 0x48), so reject it as not-ready instead.
+      // 'state' and the mouse/gun device paths have their own guards; 'type'
+      // only queues text and needs none.
+      if ((parts[1] == "keydown" || parts[1] == "keyup" || parts[1] == "key" ||
+           parts[1] == "chord" || parts[1] == "joy") &&
+          !CPC.InputMapper) {
+        return "ERR 503 emulator-not-ready\n";
+      }
       // Helper: resolve a key name to CPC scancode
       auto resolve_key =
           [](const std::string& name) -> std::pair<bool, CPCScancode> {
