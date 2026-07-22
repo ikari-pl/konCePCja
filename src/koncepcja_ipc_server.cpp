@@ -184,12 +184,25 @@ std::string build_debug_context() {
   auto& wps = z80_list_watchpoints_ref();
   auto& ios = z80_list_io_breakpoints_ref();
 
+  // Infer the runtime environment (CP/M vs BASIC) from the screen mode + RAM
+  // bank, so a reader doesn't have to memorize the encoding — during the
+  // plotter e2e a bare 'reg get PC' (which carries no context) was misread as
+  // BASIC while still in CP/M (beads-7hqp). This is a heuristic, not a
+  // guarantee (a BASIC program can MODE 2), so ambiguous combinations
+  // report '?' rather than guess.
+  const char* env = "?";
+  const unsigned ram_bank = GateArray.RAM_config & 7;
+  if (GateArray.scr_mode == 2 && ram_bank == 1)
+    env = "CP/M";
+  else if (GateArray.scr_mode == 1 && ram_bank == 0)
+    env = "BASIC";
+
   int const n = snprintf(
       buf, sizeof(buf),
-      "[PC=%04X SP=%04X|%s|mode=%u|rom:%s|ram:%u/%uK|bp:%zu,wp:%zu,io:%zu",
+      "[PC=%04X SP=%04X|%s|mode=%u|rom:%s|ram:%u/%uK|env:%s|bp:%zu,wp:%zu,io:%zu",
       z80.PC.w.l, z80.SP.w.l, CPC.paused ? "paused" : "running",
       GateArray.scr_mode, rom_str.c_str(), GateArray.RAM_config & 7,
-      CPC.ram_size, bps.size(), wps.size(), ios.size());
+      CPC.ram_size, env, bps.size(), wps.size(), ios.size());
 
   // Clamp to buffer size in case of truncation; n<0 would indicate encoding
   // error

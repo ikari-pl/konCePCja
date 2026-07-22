@@ -29,6 +29,7 @@
 
 extern t_z80regs z80;
 extern t_CPC CPC;
+extern t_GateArray GateArray;
 extern SDL_Surface* back_surface;
 extern byte* membank_read[4];
 extern byte* membank_write[4];
@@ -561,6 +562,40 @@ TEST_F(IpcServerTest, GunDrainAppliesAimAndTrigger) {
 
   vid_plugin = saved;
   CPC.phazer_emulation = PhazerType::None;
+}
+
+// ─────────────────────────────────────────────────
+// Status-bracket environment hint (beads-7hqp): the bracket decodes the
+// CP/M-vs-BASIC discriminator (screen mode + RAM bank) into a readable 'env'
+// field, so a reader doesn't have to remember the encoding (a bare 'reg get
+// PC' carries no such context). Heuristic only — ambiguous combinations must
+// report '?', not a guess.
+// ─────────────────────────────────────────────────
+
+TEST_F(IpcServerTest, StatusBracketInfersEnvironment) {
+  const unsigned int saved_mode = GateArray.scr_mode;
+  const unsigned char saved_ram = GateArray.RAM_config;
+
+  // CP/M Plus boots 80-col (mode 2) on RAM bank 1.
+  GateArray.scr_mode = 2;
+  GateArray.RAM_config = 1;
+  auto resp = send_command("pause");
+  EXPECT_NE(resp.find("env:CP/M"), std::string::npos) << resp;
+
+  // BASIC/AMSDOS sits in mode 1 on bank 0.
+  GateArray.scr_mode = 1;
+  GateArray.RAM_config = 0;
+  resp = send_command("pause");
+  EXPECT_NE(resp.find("env:BASIC"), std::string::npos) << resp;
+
+  // A mixed state (mode 2 but bank 0) is unknown — reported, not guessed.
+  GateArray.scr_mode = 2;
+  GateArray.RAM_config = 0;
+  resp = send_command("pause");
+  EXPECT_NE(resp.find("env:?"), std::string::npos) << resp;
+
+  GateArray.scr_mode = saved_mode;
+  GateArray.RAM_config = saved_ram;
 }
 
 }  // namespace
