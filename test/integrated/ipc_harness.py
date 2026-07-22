@@ -5,9 +5,11 @@ IPC Test Harness for konCePCja Emulator
 Connects to the emulator's IPC server (port 6543) to run automated tests.
 """
 
+import queue
+import re
 import socket
-import signal
 import subprocess
+import threading
 import time
 import sys
 import os
@@ -189,34 +191,80 @@ class EmulatorRunner:
         self.exe_path = exe_path
         self.process: Optional[subprocess.Popen] = None
         self.ipc = KoncepcjaIPC()
+        self._stderr_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
-    @staticmethod
-    def _kill_stale_instance(port: int = 6543) -> None:
-        """Kill ONLY an identified stale emulator holding the IPC port.
+    def _pump_stderr(self) -> None:
+        """Drain child stderr into _stderr_q for the process's whole life.
 
-        Never a blanket pkill: identify the single PID that owns the port,
-        verify its process name is 'koncepcja', and SIGTERM just that one.
+        Keeps the pipe from filling (which would block the emulator) and lets
+        start() read the 'IPC: listening on port N' line to learn which port
+        this specific instance bound. Puts None on EOF (process exited).
         """
-        try:
-            out = subprocess.run(['lsof', '-ti', f'tcp:{port}', '-sTCP:LISTEN'],
-                                 capture_output=True, text=True)
-            pids = out.stdout.split()
-            if len(pids) != 1:
-                return  # nothing listening, or ambiguous — leave it alone
-            pid = pids[0]
-            comm = subprocess.run(['ps', '-p', pid, '-o', 'comm='],
-                                  capture_output=True, text=True).stdout.strip()
-            if os.path.basename(comm) != 'koncepcja':
-                return
-            os.kill(int(pid), signal.SIGTERM)
-            time.sleep(0.2)
-        except (ValueError, ProcessLookupError, PermissionError, OSError):
-            pass
+        assert self.process is not None and self.process.stderr is not None
+        for line in self.process.stderr:
+            self._stderr_q.put(line)
+        self._stderr_q.put(None)
+
+    def _await_ipc_port(self, timeout: float = 20.0) -> Optional[int]:
+        """Return the port this spawned instance bound, parsed from its stderr.
+
+        The server probe-forwards past busy ports (6543+), so the port is not
+        knowable a priori. Returns None on timeout or if the process exits
+        before logging it.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                line = self._stderr_q.get(timeout=remaining)
+            except queue.Empty:
+                return None
+            if line is None:  # process exited before logging the port
+                return None
+            # Match the IPC server's line specifically — the telnet console
+            # logs a near-identical 'Telnet console: listening on port N' and
+            # probes a neighbouring range, so a loose match could grab it.
+            m = re.search(r'\bIPC: listening on port (\d+)', line)
+            if m:
+                return int(m.group(1))
+
+    def _drain_stderr_tail(self, max_lines: int = 20) -> str:
+        """Non-blocking grab of buffered stderr lines, for error messages."""
+        lines = []
+        while len(lines) < max_lines:
+            try:
+                line = self._stderr_q.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                break
+            lines.append(line.rstrip())
+        return "\n".join(lines)
+
+    def _await_ready(self, timeout: float = 15.0) -> bool:
+        """Block until the emulated core is executing, or timeout.
+
+        The IPC server accepts connections before the core finishes
+        initializing (InputMapper and emulator_init() run after g_ipc->start()),
+        so commands sent immediately land in a not-ready window: 'input state'
+        returns 503, key/joy injection can touch a null InputMapper, and
+        'pause' hangs. ('wait vbl' is no use here — the server implements it as
+        a fixed 20ms-per-count sleep, not a real blank wait.) A non-zero Z80 PC
+        proves the main loop is running, which only happens after
+        emulator_init() completes — i.e. InputMapper and devices are ready too.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            ok, pc = self.ipc.get_reg('PC')
+            if ok and pc:
+                return True
+            time.sleep(0.05)
+        return False
 
     def start(self, *args, headless: bool = True, engine: Optional[int] = None) -> bool:
         """Start emulator with given arguments."""
-        # Avoid connecting to a stale instance left from a prior harness run.
-        self._kill_stale_instance()
         env = os.environ.copy()
         if headless:
             env['SDL_VIDEODRIVER'] = 'dummy'
@@ -230,18 +278,48 @@ class EmulatorRunner:
             self.process = subprocess.Popen(
                 cmd,
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stdout=subprocess.DEVNULL,  # verbose logs unused; an unread PIPE could block the emulator
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # line-buffered
             )
-            # Wait for IPC server to start
-            if self.ipc.connect():
-                return True
-            else:
-                self.stop()
-                return False
         except Exception as e:
             print(f"Failed to start emulator: {e}")
+            self.process = None
             return False
+
+        threading.Thread(target=self._pump_stderr, daemon=True).start()
+
+        # Connect to THIS instance's actual IPC port, parsed from its stderr.
+        # The server probe-forwards past busy ports, so hardcoding 6543 could
+        # silently bind us to a different, already-running emulator
+        # (beads-p6im). This also removes the need to kill whatever holds 6543.
+        port = self._await_ipc_port()
+        if port is None:
+            print("Failed to start emulator: no 'IPC: listening on port' line "
+                  f"on stderr. Recent output:\n{self._drain_stderr_tail()}")
+            self.stop()
+            return False
+        self.ipc.port = port
+
+        # Wait for IPC server to accept connections on its reported port.
+        if not self.ipc.connect():
+            print(f"Failed to start emulator: IPC not reachable on reported port {port}")
+            self.stop()
+            return False
+
+        # The IPC server (g_ipc->start()) accepts connections before the core
+        # finishes initializing (InputMapper and emulator_init() run after it),
+        # so commands sent immediately land in a not-ready window: 'input state'
+        # returns 503, input devices aren't constructed yet, and key/joy
+        # injection can touch a null InputMapper. Block until the core is
+        # running before handing the instance to a test.
+        if not self._await_ready():
+            print("Failed to start emulator: core did not become ready "
+                  "(Z80 PC never advanced)")
+            self.stop()
+            return False
+        return True
 
     def stop(self):
         """Stop emulator."""
