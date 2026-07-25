@@ -598,4 +598,33 @@ TEST_F(IpcServerTest, StatusBracketInfersEnvironment) {
   GateArray.RAM_config = saved_ram;
 }
 
+// ─────────────────────────────────────────────────
+// Null-InputMapper guard (beads-p95s): the IPC server accepts connections
+// before koncpc_main constructs CPC.InputMapper, so key/joy injection arriving
+// in that window must return 503 — not dereference a null InputMapper (the
+// SIGSEGV-at-0x48 this guard prevents). IpcServerTest runs with no InputMapper,
+// which is exactly that window.
+// ─────────────────────────────────────────────────
+
+TEST_F(IpcServerTest, KeyJoyInjectionRequiresInputMapper) {
+  InputMapper* const saved = CPC.InputMapper;
+  CPC.InputMapper = nullptr;  // the early-boot window
+
+  // Every key/joy sub-command resolves names through CPC.InputMapper; with it
+  // null they must be rejected, not crash.
+  for (const char* cmd :
+       {"input key RETURN", "input keydown A", "input keyup A",
+        "input chord SHIFT+A", "input joy 0 U", "input joy 1 F1"}) {
+    EXPECT_EQ(send_command(cmd), "ERR 503 emulator-not-ready\n") << cmd;
+  }
+
+  // The guard is scoped to key/joy injection: 'type' only queues text (OK)
+  // and 'state' has its own InputMapper guard (503) — neither over-blocked.
+  EXPECT_OK(send_command("input type \"hi\""));
+  g_autotype_queue.clear();
+  EXPECT_EQ(send_command("input state"), "ERR 503 emulator-not-ready\n");
+
+  CPC.InputMapper = saved;
+}
+
 }  // namespace
