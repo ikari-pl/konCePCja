@@ -401,6 +401,11 @@ void mem_poke_cpu(const Device* dev, uint16_t addr, uint8_t val) {
   // The banked RAM byte, never ROM — exactly like a real mreq write.
   *banked_ptr(static_cast<mem_state*>(dev->self), addr) = val;
 }
+uint8_t mem_peek_ram(const Device* dev, uint16_t addr) {
+  // Read counterpart of mem_poke_cpu: same banked_ptr resolution, so a peek and
+  // a poke at the same address always refer to the same physical byte.
+  return *banked_ptr(static_cast<mem_state*>(dev->self), addr);
+}
 
 uint8_t mem_fast_read(const Device* dev, uint16_t addr) {
   mem_state* m = static_cast<mem_state*>(dev->self);
