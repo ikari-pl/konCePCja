@@ -159,8 +159,12 @@ void z80_cpu_write_mem(word addr, byte val) { z80_write_mem(addr, val); }
 byte z80_read_mem_via_write_bank(word addr) {
   // The banked RAM byte at addr, ignoring ROM overlays — what a CPU write
   // would land on (the "write bank" view of the memory hex window).
+  //
+  // mem_peek_ram, not mem_read_ram: the latter bypasses banking entirely and
+  // only ever sees the base 64K, so it disagreed with the legacy core's
+  // read_raw_via_write_bank for the banked 0x4000-0x7FFF window.
   if (subcycle::Machine const* m = subcycle_bridge_machine())
-    return mem_read_ram(m->mem(), addr);
+    return mem_peek_ram(m->mem(), addr);
   return g_memory_bus.read_raw_via_write_bank(addr);
 }
 

@@ -606,12 +606,24 @@ void init_command_registry() {
                    "returned in space-separated key=val pairs.");
 
   register_command(
-      "mem", "DEBUG", "mem read <addr> <len> | mem write <addr> <hex>",
+      "mem", "DEBUG",
+      "mem read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | mem write "
+      "<addr> <hex>",
       "Access emulated memory",
       "Allows direct manipulation of the 64K/128K RAM space.\n"
       "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
       "  write: Writes the provided <hex> string into memory starting at "
-      "<addr>.");
+      "<addr>.\n"
+      "  --view=read (default): what the Z80 would read now, ROM overlays "
+      "included.\n"
+      "  --view=ram: the banked RAM byte, ROM overlays ignored. USE THIS to "
+      "poll\n"
+      "    a game variable: an address under a paged-in ROM otherwise returns "
+      "the\n"
+      "    firmware byte and appears to flicker as the OS banks ROM in and "
+      "out.\n"
+      "  --bank=N: one physical 16K page, independent of banking.\n"
+      "  ascii: also return a printable rendering.");
 
   register_command("bp", "DEBUG",
                    "bp list | bp add <addr> [if <expr>] [pass <N>] | bp del "
@@ -1785,7 +1797,12 @@ std::string handle_command(const std::string& line) {
           with_ascii = true;
         } else if (parts[pi].rfind("--view=", 0) == 0) {
           std::string const v = parts[pi].substr(7);
-          if (v == "write") view_mode = 1;
+          // "ram" is the honest name for the write-bank view: the banked RAM
+          // byte with ROM overlays ignored. Anyone peeking a game variable
+          // wants this — the default "read" view returns the firmware byte
+          // whenever a ROM is paged over the address, so a variable under the
+          // lower ROM appears to flicker as the OS banks ROM in and out.
+          if (v == "write" || v == "ram") view_mode = 1;
         } else if (parts[pi].rfind("--bank=", 0) == 0) {
           raw_bank = parse_int(parts[pi].substr(7));
         }

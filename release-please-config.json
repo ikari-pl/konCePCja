@@ -18,7 +18,14 @@
   ],
   "packages": {
     ".": {
-      "package-name": "koncepcja"
+      "package-name": "koncepcja",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "vcpkg.json",
+          "jsonpath": "$['version-string']"
+        }
+      ]
     }
   }
 }

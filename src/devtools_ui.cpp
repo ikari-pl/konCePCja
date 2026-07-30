@@ -88,6 +88,15 @@ DevToolsUI::~DevToolsUI() = default;
 // Name-to-pointer mapping helpers
 // -----------------------------------------------
 
+byte DevToolsUI::memhex_read(word addr) const {
+  // See the contract on the declaration in devtools_ui.h. Note that
+  // z80_cpu_read_mem() is NOT the other half of this choice — it is a plain
+  // alias for z80_read_mem(), so the toggle used to select between two
+  // identical reads and had no observable effect at all.
+  if (memhex_cpu_view_) return z80_read_mem(addr);
+  return z80_read_mem_via_write_bank(addr);
+}
+
 bool* DevToolsUI::window_ptr(const std::string& name) {
   if (name == "registers") return &show_registers_;
   if (name == "disassembly") return &show_disassembly_;
@@ -933,10 +942,14 @@ void DevToolsUI::render_memory_hex() {
     ImGui::Checkbox("CPU view", &memhex_cpu_view_);
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip(
-          "When enabled, reads go through the full CPU view (watchpoints, "
-          "SmartWatch, MF2/ASIC).\n"
-          "When disabled, reads use the direct debugger view (SmartWatch only, "
-          "no watchpoints).");
+          "ON: show what the Z80 would read right now, including ROM "
+          "overlays.\n"
+          "OFF (default): show the banked RAM byte, ignoring ROM overlays.\n\n"
+          "Addresses under a paged-in ROM differ. A variable at &1AF1 reads as "
+          "&3E\n"
+          "in CPU view whenever the OS has the lower ROM banked in, so the "
+          "cell\n"
+          "appears to flicker; RAM view shows the value the program stored.");
     }
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
@@ -1015,8 +1028,7 @@ void DevToolsUI::render_memory_hex() {
           bool match = true;
           for (int j = 0; j < plen; j++) {
             word const sa = static_cast<word>(addr + j);
-            byte const m =
-                memhex_cpu_view_ ? z80_cpu_read_mem(sa) : z80_read_mem(sa);
+            byte const m = memhex_read(sa);
             if (m != pattern[j]) {
               match = false;
               break;
@@ -1101,8 +1113,7 @@ void DevToolsUI::render_memory_hex() {
         // Hex bytes with watchpoint highlighting
         for (int col = 0; col < bytes_per_row; col++) {
           word const a = (base_addr + col) & 0xFFFF;
-          byte const val =
-              memhex_cpu_view_ ? z80_cpu_read_mem(a) : z80_read_mem(a);
+          byte const val = memhex_read(a);
 
           ImGui::SameLine();
 
@@ -1266,9 +1277,7 @@ void DevToolsUI::render_memory_hex() {
         char ascii[33];
         int const asc_len = bytes_per_row < 32 ? bytes_per_row : 32;
         for (int col = 0; col < asc_len; col++) {
-          byte const b = memhex_cpu_view_
-                             ? z80_cpu_read_mem((base_addr + col) & 0xFFFF)
-                             : z80_read_mem((base_addr + col) & 0xFFFF);
+          byte const b = memhex_read((base_addr + col) & 0xFFFF);
           ascii[col] = (b >= 32 && b < 127) ? static_cast<char>(b) : '.';
         }
         ascii[asc_len] = '\0';
@@ -1294,8 +1303,7 @@ void DevToolsUI::render_memory_hex() {
       ImGui::TextDisabled("%04X", ctx_addr);
       ImGui::Separator();
       if (ImGui::MenuItem("Edit byte")) {
-        byte const v = memhex_cpu_view_ ? z80_cpu_read_mem(ctx_addr)
-                                        : z80_read_mem(ctx_addr);
+        byte const v = memhex_read(ctx_addr);
         memhex_edit_addr_ = static_cast<int>(ctx_addr);
         snprintf(memhex_edit_buf_, sizeof(memhex_edit_buf_), "%02X", v);
         memhex_edit_focus_ = true;
@@ -1797,9 +1805,13 @@ void DevToolsUI::render_symbols() {
     ImGui::TableHeadersRow();
 
     for (const auto& [addr, name] : syms) {
+      ImGui::PushID(static_cast<int>(addr));
       ImGui::TableNextRow();
       ImGui::TableSetColumnIndex(0);
-      if (ImGui::Selectable(nullptr, false,
+      // Invisible full-row hit target; the address text is drawn after it with
+      // SameLine(). The label must be non-null — Selectable hashes it for the
+      // item ID and measures it — so use a "##" label that renders nothing.
+      if (ImGui::Selectable("##symrow", false,
                             ImGuiSelectableFlags_SpanAllColumns)) {
         // Navigate disassembly to this address
         navigate_disassembly(addr);
@@ -1813,7 +1825,6 @@ void DevToolsUI::render_symbols() {
       ImGui::TableSetColumnIndex(1);
       ImGui::TextUnformatted(name.c_str());
       ImGui::TableSetColumnIndex(2);
-      ImGui::PushID(static_cast<int>(addr));
       if (ImGui::SmallButton("X")) {
         g_symfile.delSymbol(name);
         symtable_dirty_ = true;

@@ -77,6 +77,15 @@ void mem_attach_asic(const Device* dev, const Device* asic);
 uint8_t mem_peek_cpu(const Device* dev, uint16_t addr);
 void mem_poke_cpu(const Device* dev, uint16_t addr, uint8_t val);
 
+/* The banked RAM byte at addr, IGNORING the ROM overlays — the read
+ * counterpart of mem_poke_cpu, resolved through the same banking truth
+ * (banked_ptr). This is the view a memory editor wants: mem_peek_cpu on an
+ * address under a paged-in ROM returns the ROM byte, so a game variable at
+ * e.g. &1AF1 appears to flicker between its real value and firmware bytes as
+ * the OS pages the lower ROM in and out. Unlike mem_read_ram this honours RAM
+ * banking, so it is correct in the 0x4000-0x7FFF window too. */
+uint8_t mem_peek_ram(const Device* dev, uint16_t addr);
+
 /* --- Fast-tier batch seam (memory-device.md §batch, plan §4.3) ---
  *
  * The same CPU-visible view as mem_peek_cpu/mem_poke_cpu, but table-driven:
