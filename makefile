@@ -171,12 +171,19 @@ endif
 # test/version_source_test.cpp fails the build if the compiled-in string and
 # the manifest ever disagree.
 KONCPC_VERSION := $(shell sed -n 's/.*"\."[[:space:]]*:[[:space:]]*"\([0-9][^"]*\)".*/\1/p' .release-please-manifest.json 2>/dev/null | head -1)
-ifneq ($(KONCPC_VERSION),)
-COMMON_CFLAGS += -DKONCPC_VERSION_STRING=\"v$(KONCPC_VERSION)\"
+ifeq ($(KONCPC_VERSION),)
+# Parity with CMakeLists.txt, which FATAL_ERRORs here.  Without this the build
+# silently omitted -DKONCPC_VERSION_STRING and produced a binary that could not
+# report its own version -- the very failure single-sourcing was meant to end.
+# Packaging from a source tarball legitimately has no manifest, so an explicit
+# `make VERSION=x.y.z` still wins (linux.yml does exactly that for distrib).
+ifeq ($(origin VERSION),command line)
+KONCPC_VERSION := $(VERSION)
+else
+$(error Cannot parse the version from .release-please-manifest.json -- it is the single source of truth (see RELEASING.md).  When building from a source tarball pass VERSION=x.y.z explicitly.)
 endif
-# Absolute path to the source tree, so tests can find the manifest regardless of
-# the working directory they are launched from (ctest runs from the build dir).
-COMMON_CFLAGS += -DKONCPC_SOURCE_DIR=\"$(CURDIR)\"
+endif
+COMMON_CFLAGS += -DKONCPC_VERSION_STRING=\"v$(KONCPC_VERSION)\"
 
 ifdef APP_PATH
 COMMON_CFLAGS += -DAPP_PATH=\"$(APP_PATH)\"
@@ -520,6 +527,11 @@ googletest:
 	@[ -d googletest ] || git clone https://github.com/google/googletest.git
 
 TEST_CFLAGS = $(COMMON_CFLAGS) -I$(GTEST_DIR)/include -I$(GTEST_DIR) -I$(GMOCK_DIR)/include -I$(GMOCK_DIR)
+# Absolute source-tree path, so version_source_test can find the manifest no
+# matter what directory the runner is launched from.  TEST-ONLY on purpose: as a
+# COMMON_CFLAGS define it baked the build machine's path into every shipped
+# object.  Single-quoted so a checkout path containing spaces still builds.
+TEST_CFLAGS += '-DKONCPC_SOURCE_DIR="$(CURDIR)"'
 GTEST_DIR = googletest/googletest/
 GMOCK_DIR = googletest/googlemock/
 

@@ -15,7 +15,8 @@
 #include <string>
 
 // A port value of <= 0 means "that server is not running", and is emitted as
-// YAML null.
+// YAML null. An empty m4_bind_ip likewise emits null rather than '' -- a
+// consumer must not have to distinguish "absent" from "the empty string".
 struct StartupManifest {
   std::string version;  // KONCPC_VERSION_STRING
   std::string build;    // short git hash, may be empty
@@ -27,7 +28,12 @@ struct StartupManifest {
   std::string m4_bind_ip;
   unsigned int model = 0;        // 0=464, 1=664, 2=6128, 3=6128+
   unsigned int ram_size_kb = 0;  //
-  std::string config_file;       // may be empty if no config was found
+  // Effective run tier (fast/wake/soldered/faithful). A harness needs it: the
+  // tier decides whether per-cycle observability is on, which changes debugger
+  // semantics. Empty when unknown. (There is deliberately no `engine` field --
+  // the legacy core is gone, so it cannot vary.)
+  std::string run_tier;
+  std::string config_file;  // may be empty if no config was found
 };
 
 // Renders the manifest as one YAML document, framed by a `--- # koncepcja` line

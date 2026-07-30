@@ -3793,6 +3793,7 @@ int koncpc_main(int argc, char** argv) {
     }
     manifest.model = CPC.model;
     manifest.ram_size_kb = CPC.ram_size;
+    manifest.run_tier = subcycle_bridge_effective_tier_name();
     manifest.config_file = config_file;
     startup_manifest_emit(manifest);
   }
