@@ -25,6 +25,12 @@ std::string quoted(const std::string& s) {
   return out;
 }
 
+// A string that is absent emits null, not '' -- same reasoning as ports below.
+std::string quoted_or_null(const std::string& s) {
+  if (s.empty()) return "null";
+  return quoted(s);
+}
+
 // Ports are emitted as null rather than 0 when the server is not listening, so
 // a consumer cannot mistake "absent" for "port zero".
 std::string port_or_null(int port) {
@@ -46,10 +52,12 @@ std::string startup_manifest_yaml(const StartupManifest& m) {
   o << "  ipc: " << port_or_null(m.ipc_port) << '\n';
   o << "  telnet: " << port_or_null(m.telnet_port) << '\n';
   o << "  m4_http: " << port_or_null(m.m4_http_port) << '\n';
-  o << "  m4_bind_ip: " << quoted(m.m4_bind_ip) << '\n';
+  // Not nested under ports: a bind address is not a port.
+  o << "m4_bind_ip: " << quoted_or_null(m.m4_bind_ip) << '\n';
   o << "machine:\n";
   o << "  model: " << m.model << '\n';
   o << "  ram_size_kb: " << m.ram_size_kb << '\n';
+  o << "  run_tier: " << quoted_or_null(m.run_tier) << '\n';
   o << "config_file: " << quoted(m.config_file) << '\n';
   o << "...\n";
   return o.str();
@@ -78,10 +86,12 @@ void startup_manifest_emit(const StartupManifest& m) {
   std::string const yaml = startup_manifest_yaml(m);
   // stdio rather than std::cout: the rest of startup logging is a mix of both,
   // and fwrite+fflush guarantees this lands whole and immediately.
+  // Project convention (AGENTS.md): check fwrite/fclose/fflush. Warn on stderr,
+  // because stdout is the stream that just failed.
   if (fwrite(yaml.data(), 1, yaml.size(), stdout) != yaml.size()) {
-    // Nothing useful to do if stdout is broken; a harness will notice the
-    // missing manifest. Explicitly ignored rather than silently unchecked.
+    fprintf(stderr, "WARNING: startup manifest write failed (short write)\n");
     return;
   }
-  fflush(stdout);
+  if (fflush(stdout) != 0)
+    fprintf(stderr, "WARNING: startup manifest flush failed\n");
 }

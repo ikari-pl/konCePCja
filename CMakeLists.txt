@@ -17,6 +17,12 @@ if(NOT KONCPC_VERSION_MATCH)
           "that file, so the build cannot continue without it.")
 endif()
 set(KONCPC_VERSION "${CMAKE_MATCH_1}")
+
+# A bump to the manifest must re-run configure, or an incremental build keeps the
+# version baked at the last configure.  The makefile has an equivalent stamp;
+# without this line CMake was the half of the fix that silently did nothing.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_SOURCE_DIR}/.release-please-manifest.json")
 project(koncepcja VERSION ${KONCPC_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -164,9 +170,7 @@ endif()
 # makefile uses (see KONCPC_VERSION above).
 target_compile_definitions(koncepcja_lib PUBLIC KONCPC_VERSION_STRING="v${PROJECT_VERSION}")
 
-# Absolute path to the source tree, so tests can find the manifest regardless of
-# the working directory they are launched from (ctest runs from the build dir).
-target_compile_definitions(koncepcja_lib PUBLIC KONCPC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 
 # Modern-UI guard define (P1.5.1 step 4).  Source files that have
 # optional ImGui paths (currently: macos_menu.mm) check this to skip
@@ -283,6 +287,11 @@ target_link_libraries(test_runner PRIVATE
     gtest
     gmock
 )
+
+# Absolute source-tree path so version_source_test can find the manifest whatever
+# directory ctest launches from.  TEST-ONLY: as a PUBLIC define on koncepcja_lib
+# it baked the build machine's path into every shipped object.
+target_compile_definitions(test_runner PRIVATE KONCPC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 if(MSVC)
     # Relax warnings for test code

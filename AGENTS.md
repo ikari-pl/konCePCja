@@ -130,7 +130,7 @@ echo "help" | nc localhost 6543
 | `regs` | Dump all registers | `regs` → `OK A=00 F=00 ...` |
 | `reg get <R>` | Get register | `reg get PC` → `OK 1234` |
 | `reg set <R> <V>` | Set register | `reg set PC 0x4000` → `OK` |
-| `mem read <addr> <len> [ascii]` | Read memory | `mem read 0x4000 16 ascii` |
+| `mem read <addr> <len> [--view=read|ram] [--bank=N] [ascii]` | Read memory | `mem read 0x4000 16 ascii` |
 | `mem write <addr> <hex>` | Write memory | `mem write 0x4000 C3004000` |
 | `bp add <addr>` | Add breakpoint | `bp add 0x4000` → `OK` |
 | `bp del <addr>` | Remove breakpoint | `bp del 0x4000` → `OK` |

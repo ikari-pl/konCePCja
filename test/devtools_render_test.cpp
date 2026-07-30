@@ -57,12 +57,24 @@ class TestRam {
     const byte prog[] = {0x3E, 0x10, 0x3D, 0xC2, 0x05, 0x00, 0xC9};
     std::copy(std::begin(prog), std::end(prog), ram_.begin());
 
+    // Bank 0's READ pointer aims at a separate buffer standing in for the lower
+    // ROM overlay, while its WRITE pointer stays on RAM. That asymmetry is the
+    // whole point: with both pointing at one buffer (as they first did here)
+    // the CPU view and the RAM view are byte-identical, so a memory view that
+    // read through the ROM overlay -- the bug this suite exists to cover --
+    // would pass every assertion. kRomShadowAddr/kRomByte/kRamByte below give
+    // the tests a concrete divergence to assert on.
+    rom_.assign(0x4000, 0);
+    rom_[kRomShadowAddr] = kRomByte;
+    ram_[kRomShadowAddr] = kRamByte;
+
     for (int i = 0; i < 4; i++) {
       saved_read_[i] = membank_read[i];
       saved_write_[i] = membank_write[i];
       membank_read[i] = ram_.data() + (i * 0x4000);
       membank_write[i] = ram_.data() + (i * 0x4000);
     }
+    membank_read[0] = rom_.data();  // lower-ROM overlay over bank 0
     saved_resources_ = CPC.resources_path;
     CPC.resources_path = "resources";
   }
@@ -80,8 +92,17 @@ class TestRam {
     CPC.resources_path = saved_resources_;
   }
 
+ public:
+  // The address the ROM overlay and RAM disagree on, and the two bytes there.
+  // Mirrors the reported case: &1AF1 holds &3E in the 6128 OS ROM while the
+  // game stores its lives counter underneath.
+  static constexpr word kRomShadowAddr = 0x1AF1;
+  static constexpr byte kRomByte = 0x3E;
+  static constexpr byte kRamByte = 0x03;
+
  private:
   std::vector<byte> ram_;
+  std::vector<byte> rom_;
   byte* saved_read_[4] = {};
   byte* saved_write_[4] = {};
   std::string saved_resources_;
@@ -329,4 +350,22 @@ TEST_F(DevToolsRenderTest, ClosedWindowsEmitNoGeometry) {
   int const vtx = gui_.settled_frames([this] { dt_.render(); });
   EXPECT_EQ(vtx, 0) << "DevTools drew " << vtx
                     << " vertices with every window closed.";
+}
+
+// The two memory views must actually disagree where a ROM overlays RAM.
+//
+// This is the assertion that makes the Memory Hex "CPU view" toggle testable at
+// all. Before it, TestRam pointed the read and write banks at one buffer, so
+// both views returned the same byte everywhere and the shipped bug -- a toggle
+// whose branches called the same function -- passed the whole suite.
+TEST_F(DevToolsRenderTest, CpuViewAndRamViewDivergeUnderARomOverlay) {
+  EXPECT_EQ(z80_read_mem(TestRam::kRomShadowAddr), TestRam::kRomByte)
+      << "CPU view must read through the ROM overlay";
+  EXPECT_EQ(z80_read_mem_via_write_bank(TestRam::kRomShadowAddr),
+            TestRam::kRamByte)
+      << "RAM view must ignore the ROM overlay and show the stored byte";
+  EXPECT_NE(z80_read_mem(TestRam::kRomShadowAddr),
+            z80_read_mem_via_write_bank(TestRam::kRomShadowAddr))
+      << "the two views are indistinguishable, so nothing here can cover the "
+         "Memory Hex view toggle";
 }

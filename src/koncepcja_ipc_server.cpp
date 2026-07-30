@@ -1802,7 +1802,10 @@ std::string handle_command(const std::string& line) {
           // wants this — the default "read" view returns the firmware byte
           // whenever a ROM is paged over the address, so a variable under the
           // lower ROM appears to flicker as the OS banks ROM in and out.
-          if (v == "write" || v == "ram") view_mode = 1;
+          if (v == "write" || v == "ram")
+            view_mode = 1;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
         } else if (parts[pi].rfind("--bank=", 0) == 0) {
           raw_bank = parse_int(parts[pi].substr(7));
         }
@@ -4377,9 +4380,22 @@ std::string handle_command(const std::string& line) {
     // --- Enhanced search command (with wildcard support) ---
     if (cmd == "search" && parts.size() >= 3) {
       const std::string& submode = parts[1];
-      // Collect pattern from remaining parts
+      // Collect pattern from remaining parts. --view= is a flag, not pattern
+      // text: hex/text search scans DATA, so it needs the same RAM view
+      // `mem read --view=ram` offers. Without it a search for a game variable's
+      // value scans the firmware bytes of any paged-in ROM instead -- the exact
+      // wrong-value class the RAM view exists to fix.
+      bool search_ram_view = false;
       std::string pattern;
       for (size_t pi = 2; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "ram" || v == "write")
+            search_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+          continue;
+        }
         if (!pattern.empty()) pattern += " ";
         pattern += parts[pi];
       }
@@ -4458,7 +4474,9 @@ std::string handle_command(const std::string& line) {
       // HEX / TEXT mode: read full 64K into buffer
       std::vector<uint8_t> membuf(65536);
       for (size_t i = 0; i < 65536; i++) {
-        membuf[i] = z80_read_mem(static_cast<word>(i));
+        membuf[i] = search_ram_view
+                        ? z80_read_mem_via_write_bank(static_cast<word>(i))
+                        : z80_read_mem(static_cast<word>(i));
       }
       auto results =
           search_memory(membuf.data(), membuf.size(), pattern, mode, 256);
