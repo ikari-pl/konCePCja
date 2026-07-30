@@ -985,6 +985,61 @@ def test_joystick_input():
         return True
 
 
+def test_load_accepts_flux_disk_formats():
+    """IPC `load` routes flux disk images to drive A (beads-wxy6).
+
+    The dispatcher hard-coded ".dsk", so `load game.hfe` returned
+    ERR 415 unsupported even though the loader handles HFE — a front door
+    that had drifted from what slotshandler actually accepts.
+
+    Discriminates at the DOOR, not the loader: a deliberately-invalid file
+    with an accepted extension must get past extension dispatch and fail in
+    the loader (ERR 500), while an unknown extension is still rejected up
+    front (ERR 415). That distinction is exactly what this fix changed, and
+    it needs no real disk fixture — the repo has no flux images checked in.
+    """
+    print("Running IPC flux-format load routing test...")
+
+    import tempfile
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            # Accepted extensions: past the door, rejected by the loader.
+            for ext in ('.hfe', '.scp', '.a2r', '.ipf', '.raw', '.dsk'):
+                path = os.path.join(td, 'probe' + ext)
+                with open(path, 'wb') as f:
+                    f.write(b'not a real disk image')
+                ok, resp = emu.ipc.send_command('load ' + path)
+                if '415' in resp:
+                    print(f"FAIL: {ext} rejected at the door: {resp.strip()!r}")
+                    return False
+                print(f"  {ext}: accepted by dispatch -> {resp.strip()}")
+
+            # Unknown extension must still be refused up front.
+            path = os.path.join(td, 'probe.xyz')
+            with open(path, 'wb') as f:
+                f.write(b'nope')
+            ok, resp = emu.ipc.send_command('load ' + path)
+            if '415' not in resp:
+                print(f"FAIL: unknown ext should be ERR 415, got {resp.strip()!r}")
+                return False
+            print(f"  .xyz: correctly refused -> {resp.strip()}")
+
+        # The help text must advertise what the dispatcher accepts.
+        ok, resp = emu.ipc.send_command('help load')
+        if '.hfe' not in resp:
+            print(f"FAIL: 'help load' does not mention flux formats: {resp!r}")
+            return False
+        print("  help load advertises the flux formats")
+
+    print("PASS: IPC load accepts flux disk formats")
+    return True
+
+
 def main():
     """Run all IPC tests."""
     print("=" * 50)
@@ -1008,6 +1063,7 @@ def main():
         test_type_input,
         test_input_state,
         test_joystick_input,
+        test_load_accepts_flux_disk_formats,
     ]
 
     passed = 0

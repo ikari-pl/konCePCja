@@ -584,12 +584,16 @@ void init_command_registry() {
       "path — both observation-identical. Fast auto-degrades to faithful when "
       "the board is not the canonical device composition. 'get' reports the "
       "requested and effective tier and whether fast is available.");
-  register_command("load", "CORE", "load <file>",
-                   "Load a .DSK, .SNA, or .CPR file",
-                   "Loads a media or state file. Supports Disk Images (.DSK), "
-                   "Snapshots (.SNA), and Cartridges (.CPR). "
-                   "The file type is determined by the extension. For disks, "
-                   "it loads into Drive A.");
+  register_command(
+      "load", "CORE", "load <file>", "Load a disk, tape, snapshot or cartridge",
+      "Loads a media or state file; the type is determined by the "
+      "extension.\n"
+      "  Disks   (.dsk .ipf .raw) and flux images (.scp .hfe .a2r) load into "
+      "Drive A.\n"
+      "          Flux formats are Drive A only — the FDC's flux capture is "
+      "side-0/drive-A.\n"
+      "  Tapes   (.cdt .voc), snapshots (.sna), cartridges (.cpr), raw "
+      "binaries (.bin at 0x6000).");
 
   register_command("tier", "SYSTEM", "tier | tier set <policy>",
                    "Get or set the sub-cycle engine's run-tier policy",
@@ -1275,11 +1279,16 @@ std::string handle_command(const std::string& line) {
       auto dot = lower.find_last_of('.');
       if (dot == std::string::npos) return "ERR 415 unsupported\n";
       std::string const ext = lower.substr(dot);
-      if (ext == ".dsk") {
+      // Every drive-A disk format, from the one list slotshandler exports:
+      // .dsk/.ipf/.raw plus the flux containers .scp/.hfe/.a2r. This arm used
+      // to hard-code ".dsk" alone, so `load game.hfe` returned ERR 415 even
+      // though the loader handles it — the same front-door drift the drop
+      // handler had.
+      if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
         CPC.driveA.file = path;
         CPC.driveA.zip_index = 0;
         return file_load(CPC.driveA) == 0 ? ok_with_context()
-                                          : "ERR 500 load-dsk\n";
+                                          : "ERR 500 load-disk\n";
       }
       if (ext == ".sna") {
         bool const was_paused = CPC.paused;
