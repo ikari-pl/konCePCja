@@ -2228,10 +2228,19 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
 // same section, same name, same encoding (flags as 0/1 ints).
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   config::Config conf;
+  // Read before write. Building a fresh Config here deleted every comment in
+  // the file and every key this build does not set — and because the MRU list
+  // auto-saves on each file open, that happened constantly. Parsing first
+  // turns the save into an edit: unknown keys, hand-written notes and any
+  // setting a newer build understands all survive.
+  conf.parseFile(configFilename);
 
   conf.setIntValue("system", "model", CPC.model);
   conf.setIntValue("system", "jumpers", CPC.jumpers);
   conf.setIntValue("system", "ram_size", CPC.ram_size);
+  conf.setIntValue("system", "silicon_disc", g_silicon_disc.enabled ? 1 : 0);
+  conf.setIntValue("system", "run_tier",
+                   static_cast<int>(subcycle_bridge_tier_policy()));
   conf.setIntValue("system", "limit_speed", CPC.limit_speed);
   conf.setIntValue("system", "frameskip", CPC.frameskip);
   conf.setIntValue("system", "speed", CPC.speed);
@@ -2265,8 +2274,10 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("video", "scr_intensity", CPC.scr_intensity);
   conf.setIntValue("video", "scr_remanency", CPC.scr_remanency);
   conf.setIntValue("video", "scr_window", CPC.scr_window);
+  conf.setIntValue("video", "vsync", CPC.scr_vsync);
 
   conf.setIntValue("devtools", "scale", CPC.devtools_scale);
+  conf.setIntValue("devtools", "max_stack_size", CPC.devtools_max_stack_size);
 
   conf.setIntValue("ui", "workspace_layout",
                    static_cast<int>(CPC.workspace_layout));
@@ -2292,6 +2303,10 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
                       drive_sounds_params_to_string());
   conf.setIntValue("system", "smartwatch", g_smartwatch.enabled ? 1 : 0);
   conf.setIntValue("input", "amx_mouse", g_amx_mouse.enabled ? 1 : 0);
+  // Via Value, not int: PhazerType converts implicitly to both Value and
+  // bool, so a direct static_cast<int> is ambiguous.
+  conf.setIntValue("input", "lightgun",
+                   static_cast<PhazerType::Value>(CPC.phazer_emulation));
 
   conf.setIntValue("peripheral", "symbiface", g_symbiface.enabled ? 1 : 0);
   conf.setStringValue("peripheral", "ide_master",
