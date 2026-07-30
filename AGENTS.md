@@ -77,7 +77,8 @@ Options:
   -V/--version             Show version
   -v/--verbose             Verbose logging
 
-Slot files: .dsk (disk), .cdt/.voc (tape), .cpr (cartridge), .sna (snapshot)
+Slot files: .dsk/.ipf/.raw (disk), .scp/.hfe/.a2r (flux disk, drive A only),
+.cdt/.voc (tape), .cpr (cartridge), .sna (snapshot)
 ```
 
 ### Examples

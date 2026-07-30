@@ -39,7 +39,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk` (drive A), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (binary at 0x6000) |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (binary at 0x6000). An unrecognised extension returns `ERR 415 unsupported` |
 
 ## Registers
 

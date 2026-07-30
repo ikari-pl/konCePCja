@@ -13,10 +13,10 @@ koncepcja - konCePCja Amstrad CPC emulator
 \fBMedia loading\fR
 .RS
 Upon invocation, the FILEs specified as arguments will be used to populate the various available CPC machine slots. The type of slot is determined by the file format, detected by its extension. konCePCja supports the following file formats:
-\fB.dsk\fR (disk image), \fB.ipf\fR (Interchangeable Preservation Format disk image), \fB.raw\fR (CT-RAW format), \fB.voc\fR or \fB.cdt\fR (tape image), \fB.cpr\fR (cartridge image), \fB.sna\fR (snapshot image), \fB.zip\fR (zip of any previously described file).
+\fB.dsk\fR (disk image), \fB.ipf\fR (Interchangeable Preservation Format disk image), \fB.raw\fR (CT-RAW format), \fB.scp\fR (SuperCard Pro flux image), \fB.hfe\fR (HxC/Gotek flux image), \fB.a2r\fR (Applesauce flux image), \fB.voc\fR or \fB.cdt\fR (tape image), \fB.cpr\fR (cartridge image), \fB.sna\fR (snapshot image), \fB.zip\fR (zip of any previously described file).
 Specifying slot content on the command line is optional.
 .PP
-konCePCja supports two disk drives: drive A and drive B. If two disk image files (.dsk or .ipf) are provided, the first one will be loaded in drive A and the second one in drive B.
+konCePCja supports two disk drives: drive A and drive B. If two disk image files (.dsk or .ipf) are provided, the first one will be loaded in drive A and the second one in drive B. Flux images (.scp, .hfe, .a2r) load into drive A only \(em the FDC\(aqs flux capture is side-0/drive-A.
 .PP
 The \fBcart_path\fR, \fBsnap_path\fR, \fBdsk_path\fR and \fBtape_path\fR entries in the configuration file are \fIonly\fR used to specify the directory to open when loading/saving files in the GUI. The full path to the various slot contents must be provided on the command line.
 .PP
