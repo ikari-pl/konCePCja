@@ -591,7 +591,24 @@ Read and write emulator settings.
 | Command | Description |
 |---------|-------------|
 | `status` | Overall emulator status summary |
-| `status drives` | Detailed drive state (loaded image, tracks, format) |
+| `status drives` | Detailed drive state (see fields below) |
+
+`status drives` reports one line per drive:
+
+```
+drive=A motor=1 track=12 side=0 present=1 flux=1 tracks=80 sides=1 image=demo.hfe write_protected=0 altered=0
+```
+
+| Field | Meaning |
+|-------|---------|
+| `present` | A disc is in the drive. **Use this, not `tracks`** — a flux disc can report `tracks=0` |
+| `flux` | The medium is flux-backed (`.hfe`/`.scp`/`.a2r`), so it can be exported as `.scp`/`.hfe` |
+| `tracks` / `sides` | Geometry of the medium; `0` means unknown, not empty |
+| `track` / `side` | Live head position |
+| `altered` | The medium has been written and differs from the file on disk |
+
+Flux discs carry no sector view, so `tracks` is the flux cylinder count and
+`sides` is always 1 — the FDC captures side 0 only.
 
 ## ASIC Registers (Plus Range)
 
