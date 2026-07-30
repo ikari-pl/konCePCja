@@ -14,8 +14,12 @@ UNAME_S := $(shell uname -s)
 #  - LDFLAGS
 #  - WITHOUT_GL
 
-# To be overridden for debian packaging
-VERSION=latest
+# Package/archive name version (tarballs, .deb, .dmg).  Derived from the same
+# single source of truth as KONCPC_VERSION below — see the comment there — so a
+# release artefact can never be named a different version than the binary
+# inside it.  Still overridable on the command line for debian packaging.
+# Lazy (=, not :=) because KONCPC_VERSION is computed further down this file.
+VERSION = $(if $(KONCPC_VERSION),$(KONCPC_VERSION),latest)
 REVISION=0
 
 LAST_BUILD_IN_DEBUG = $(shell [ -e .debug ] && echo 1 || echo 0)
@@ -159,13 +163,20 @@ GIT_HASH = $(shell git rev-parse --verify HEAD)
 COMMON_CFLAGS += -DHASH=\"$(GIT_HASH)\"
 endif
 
-# Single source of truth for the binary version string.  Mirror the same
-# value in CMakeLists.txt's project(... VERSION) — that one drives CPack
-# / installer metadata.  See chore: keep-version-in-sync if it ever drifts.
-KONCPC_VERSION := $(shell cat VERSION 2>/dev/null)
+# THE single source of truth for the version: .release-please-manifest.json,
+# the file release-please actually bumps on every release.  Never add a second
+# copy — the old top-level VERSION file was supposed to be authoritative and
+# silently sat at 5.10.0 while shipped releases were at 6.1.0, so every v6
+# binary misreported its own version.  CMakeLists.txt parses the same file, and
+# test/version_source_test.cpp fails the build if the compiled-in string and
+# the manifest ever disagree.
+KONCPC_VERSION := $(shell sed -n 's/.*"\."[[:space:]]*:[[:space:]]*"\([0-9][^"]*\)".*/\1/p' .release-please-manifest.json 2>/dev/null | head -1)
 ifneq ($(KONCPC_VERSION),)
 COMMON_CFLAGS += -DKONCPC_VERSION_STRING=\"v$(KONCPC_VERSION)\"
 endif
+# Absolute path to the source tree, so tests can find the manifest regardless of
+# the working directory they are launched from (ctest runs from the build dir).
+COMMON_CFLAGS += -DKONCPC_SOURCE_DIR=\"$(CURDIR)\"
 
 ifdef APP_PATH
 COMMON_CFLAGS += -DAPP_PATH=\"$(APP_PATH)\"
@@ -250,7 +261,33 @@ TEST_HEADERS:=$(shell find $(TSTDIR) -name \*.h)
 TEST_DEPENDS:=$(foreach file,$(TEST_SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
 TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 
-.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo
+# The version reaches the compiler as a -D flag, and make cannot see flag
+# changes — only file timestamps.  Without this, bumping the version leaves
+# every already-built object stale and the binary keeps reporting the OLD
+# version (argparse.o prints it, and argparse.cpp itself did not change).  That
+# is not hypothetical: it is exactly what happened when this was first wired up.
+#
+# The stamp holds the current version string and is rewritten *only* when that
+# string actually changes, so a real bump forces a full rebuild while ordinary
+# builds stay incremental.
+VERSION_STAMP := $(OBJDIR)/.version-stamp
+
+# The stamp rule below is the first *real* rule in this file, and make takes its
+# first real rule as the default goal — so without this line a bare `make` would
+# build only the stamp and stop, silently doing nothing else.  `all` is defined
+# further down (conditionally on DEBUG); naming it here is enough.
+.DEFAULT_GOAL := all
+
+$(VERSION_STAMP): FORCE
+	@mkdir -p $(dir $@)
+	@printf '%s' '$(KONCPC_VERSION)' | cmp -s - $@ 2>/dev/null \
+	  || printf '%s' '$(KONCPC_VERSION)' > $@
+
+$(OBJECTS) $(TEST_OBJECTS): $(VERSION_STAMP)
+
+FORCE:
+
+.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo FORCE
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
 # Tier 1: always-errors even in release (undefined behavior / security critical)

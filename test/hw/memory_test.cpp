@@ -138,6 +138,55 @@ TEST(Memory, RomOverlaysAndBankingIO) {
   EXPECT_EQ(mr.rom_config & 0x08, 0x08);
 }
 
+// A game variable living UNDER the lower ROM must read back as the value the
+// program stored, not as the firmware byte overlaying it.
+//
+// Reported from the GUI against Fruity Frank's lives counter at &1AF1: in the
+// CPU-visible view the cell appears to flicker between 3 (the RAM value) and
+// &3E (what the 6128 OS ROM actually holds at &1AF1) as the firmware pages the
+// lower ROM in and out. mem_peek_ram is the stable view a memory editor needs.
+TEST(Memory, PeekRamIgnoresRomOverlaysWhilePeekCpuHonoursThem) {
+  MemRig rig;
+  make_mem(rig);
+  uint8_t lower[0x4000] = {0};
+  lower[0x1AF1] = 0x3E;  // the byte the real 6128 OS ROM holds at this address
+  mem_load_lower_rom(&rig.dev, lower, sizeof(lower));
+
+  wr(rig, 0x1AF1, 0x03);  // "3 lives" — write-through, lands in RAM under ROM
+
+  // Lower ROM banked in: the CPU sees firmware, the RAM view sees the game.
+  EXPECT_EQ(mem_peek_cpu(&rig.dev, 0x1AF1), 0x3E)
+      << "CPU view must report what the Z80 would actually read";
+  EXPECT_EQ(mem_peek_ram(&rig.dev, 0x1AF1), 0x03)
+      << "RAM view must report the byte the program stored";
+
+  // Lower ROM banked out: both views agree.
+  io(rig, 0x80 | 0x04);
+  EXPECT_EQ(mem_peek_cpu(&rig.dev, 0x1AF1), 0x03);
+  EXPECT_EQ(mem_peek_ram(&rig.dev, 0x1AF1), 0x03);
+
+  // ROM back in — the RAM view must NOT have moved. That stability is the bug
+  // this test exists for: the value must not flicker with the ROM state.
+  io(rig, 0x80);
+  EXPECT_EQ(mem_peek_ram(&rig.dev, 0x1AF1), 0x03)
+      << "RAM view flickered as the lower ROM was paged back in";
+}
+
+// mem_peek_ram is the read counterpart of mem_poke_cpu: both resolve through
+// banked_ptr, so a poke followed by a peek at the same address must agree even
+// where a ROM overlays that address.
+TEST(Memory, PeekRamIsTheReadCounterpartOfPokeCpu) {
+  MemRig rig;
+  make_mem(rig);
+  uint8_t lower[0x4000] = {0};
+  lower[0x2000] = 0xFF;
+  mem_load_lower_rom(&rig.dev, lower, sizeof(lower));
+
+  mem_poke_cpu(&rig.dev, 0x2000, 0x5A);
+  EXPECT_EQ(mem_peek_ram(&rig.dev, 0x2000), 0x5A);
+  EXPECT_EQ(mem_peek_cpu(&rig.dev, 0x2000), 0xFF) << "ROM still overlays";
+}
+
 TEST(Memory, Z80BootsFromLowerRom) {
   // Program in lower ROM: LD A,0x42 ; LD (0x8000),A ; HALT — proving the Z80
   // fetches and runs code from ROM at reset (PC=0).
@@ -225,6 +274,25 @@ TEST(Memory, Config2MapsWholeExpansionBank) {
 
   iow(rig, 0x7F00, 0xC0);  // back to config 0
   EXPECT_EQ(rd(rig, 0x8000), 0x00) << "base RAM visible again";
+}
+
+// Unlike mem_read_ram, which only ever sees the base 64K, mem_peek_ram follows
+// RAM banking. This is what made the two engines disagree: engine=1 answered
+// the memory-hex "RAM view" with base RAM while the legacy core answered with
+// the banked byte.
+TEST(Memory, PeekRamFollowsRamBankingUnlikeReadRam) {
+  MemRig rig;
+  make_mem(rig);
+  std::vector<uint8_t> exp(0x10000, 0);
+  mem_attach_expansion(&rig.dev, exp.data(), exp.size());
+
+  iow(rig, 0x7F00, 0xC2);  // config 2: slots 0-3 -> expansion pages 4-7
+  wr(rig, 0x8000, 0x77);   // slot 2 -> expansion, not base RAM
+
+  EXPECT_EQ(mem_read_ram(&rig.dev, 0x8000), 0x00)
+      << "mem_read_ram bypasses banking and sees only base RAM";
+  EXPECT_EQ(mem_peek_ram(&rig.dev, 0x8000), 0x77)
+      << "mem_peek_ram must follow banking into the expansion page";
 }
 
 TEST(Memory, Config3AliasesBasePage3IntoSlot1) {

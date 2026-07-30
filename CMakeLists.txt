@@ -1,9 +1,22 @@
 cmake_minimum_required(VERSION 3.21)
 
-# Read version from the top-level VERSION file (single source of truth,
-# also consumed by the makefile build).  No more two-file edits per bump.
-file(READ "${CMAKE_SOURCE_DIR}/VERSION" KONCPC_VERSION_RAW)
-string(STRIP "${KONCPC_VERSION_RAW}" KONCPC_VERSION)
+# THE single source of truth for the version: .release-please-manifest.json, the
+# file release-please actually bumps.  The makefile parses the same file; never
+# add a second copy.  (The old top-level VERSION file was meant to be
+# authoritative and silently sat at 5.10.0 while shipped releases were at 6.1.0,
+# so every v6 binary misreported its own version.)
+# test/version_source_test.cpp fails if the compiled string and the manifest
+# ever disagree, which covers this parse as well as the makefile's.
+file(READ "${CMAKE_SOURCE_DIR}/.release-please-manifest.json" KONCPC_MANIFEST_RAW)
+string(REGEX MATCH "\"\\.\"[ \t\r\n]*:[ \t\r\n]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\""
+       KONCPC_VERSION_MATCH "${KONCPC_MANIFEST_RAW}")
+if(NOT KONCPC_VERSION_MATCH)
+  message(FATAL_ERROR
+          "Could not read the \".\" version out of "
+          ".release-please-manifest.json — the version is single-sourced from "
+          "that file, so the build cannot continue without it.")
+endif()
+set(KONCPC_VERSION "${CMAKE_MATCH_1}")
 project(koncepcja VERSION ${KONCPC_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -150,6 +163,10 @@ endif()
 # Bake the version into the binary.  Same compile-define pattern the
 # makefile uses (see KONCPC_VERSION above).
 target_compile_definitions(koncepcja_lib PUBLIC KONCPC_VERSION_STRING="v${PROJECT_VERSION}")
+
+# Absolute path to the source tree, so tests can find the manifest regardless of
+# the working directory they are launched from (ctest runs from the build dir).
+target_compile_definitions(koncepcja_lib PUBLIC KONCPC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 # Modern-UI guard define (P1.5.1 step 4).  Source files that have
 # optional ImGui paths (currently: macos_menu.mm) check this to skip

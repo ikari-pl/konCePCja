@@ -141,6 +141,18 @@ class DevToolsUI {
   // Record current PC into the cache + history (called each frame from render)
   void disasm_cache_record_pc();
 
+  // The byte the Memory Hex window shows at addr, per the "CPU view" toggle:
+  //  - CPU view    : what the Z80 would read right now, ROM overlays included.
+  //  - direct view : the banked RAM byte, ROM overlays ignored.
+  // The difference is not cosmetic. A game variable that lives under a
+  // paged-in ROM — Fruity Frank's lives counter at &1AF1 is the reported case —
+  // reads back as a firmware byte (&1AF1 holds &3E in the 6128 OS ROM) whenever
+  // the OS has the lower ROM banked in, so in CPU view the cell appears to
+  // flicker between its real value and &3E as the firmware pages ROM in and
+  // out. Direct view is the default because that is what a memory editor is
+  // for, and it matches what other CPC debuggers show.
+  byte memhex_read(word addr) const;
+
   char memhex_goto_addr_[8] = "";
   int memhex_goto_value_ = -1;
   int memhex_bytes_per_row_ = 16;

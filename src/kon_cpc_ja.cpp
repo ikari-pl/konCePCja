@@ -59,6 +59,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "memutils.h"
 #include "serial_interface.h"
 #include "smartwatch.h"
+#include "startup_manifest.h"
 #include "stringutils.h"
 #include "symbiface.h"
 #include "symfile.h"
@@ -3677,8 +3678,8 @@ int koncpc_main(int argc, char** argv) {
   snprintf(chAppPath, sizeof(chAppPath), "%s", APP_PATH);
 #endif
 
-  loadConfiguration(
-      CPC, getConfigurationFilename());  // retrieve the emulator configuration
+  std::string const config_file = getConfigurationFilename();
+  loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
   if (CPC.printer) {
     if (!printer_start()) {  // start capturing printer output, if enabled
       CPC.printer = 0;
@@ -3764,6 +3765,36 @@ int koncpc_main(int argc, char** argv) {
   // M4 Board HTTP server — start after config is loaded and M4 is initialized
   if (g_m4board.enabled && !g_m4board.sd_root_path.empty()) {
     g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+  }
+
+  // Machine-consumable startup manifest. Emitted here because this is the first
+  // point at which every server has bound, so the ports it reports are the ones
+  // actually in use — each server probes forward when its default is taken, so
+  // a harness must never assume 6543/6544/8080.
+  {
+    StartupManifest manifest;
+#ifdef KONCPC_VERSION_STRING
+    manifest.version = KONCPC_VERSION_STRING;
+#endif
+#ifdef HASH
+    manifest.build = HASH;
+#endif
+    manifest.pid = startup_manifest_self_pid();
+    manifest.headless = g_headless;
+    constexpr int kPortWaitMs = 2000;
+    manifest.ipc_port =
+        startup_manifest_await_port([] { return g_ipc->port(); }, kPortWaitMs);
+    manifest.telnet_port = startup_manifest_await_port(
+        [] { return g_telnet.port(); }, kPortWaitMs);
+    if (g_m4_http.is_running()) {
+      manifest.m4_http_port = startup_manifest_await_port(
+          [] { return g_m4_http.port(); }, kPortWaitMs);
+      manifest.m4_bind_ip = g_m4_http.bind_ip();
+    }
+    manifest.model = CPC.model;
+    manifest.ram_size_kb = CPC.ram_size;
+    manifest.config_file = config_file;
+    startup_manifest_emit(manifest);
   }
 
   // Fill the autotype queue with the autocmd if provided.  A single
