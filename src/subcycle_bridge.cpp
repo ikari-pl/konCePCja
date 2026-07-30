@@ -944,6 +944,19 @@ int subcycle_bridge_debug_sync() {
   std::memcpy(PSG.RegisterAY.Index, ps.reg, sizeof(ps.reg));
   PSG.reg_select = ps.sel;
 
+  // Feed the DevTools PSG oscilloscope. g_psg_scope had NO writer at all --
+  // the legacy core used to fill it, engine=1 never did, so the Audio State
+  // waveforms drew a flat line of zeros while the register table above showed
+  // live values. Same host-mirror gap the tape scope had.
+  //
+  // One sample per debug-sync (per frame), not per PSG tick: this is a
+  // cheap "is it making noise, and roughly how loud" strip, and the sync seam
+  // is the only place that already holds a coherent PSG peek. Amplitudes are
+  // the per-channel level the chip is actually driving (0..31), sign-extended
+  // to the scope's int16 so the plot has something to scale.
+  g_psg_scope.push(ps.chan_level[0], ps.chan_level[1], ps.chan_level[2],
+                   ps.env_level);
+
   ProbeHit hit{};
   if (b.machine.probe_hit(&hit)) {
     if (hit.kind == PROBE_HIT_EXEC && hit.addr == z80.break_point) {

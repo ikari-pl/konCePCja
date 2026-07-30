@@ -9,9 +9,15 @@
 // Values set via setIntValue/setStringValue land in both the persisted map
 // and the override map; overrides (e.g. from -O on the command line) win
 // over parsed file content on reads.
+//
+// Writing is round-trip preserving: a Config that parsed a file remembers its
+// text and rewrites values in place, so comments, blank lines, key order and
+// keys this build knows nothing about all survive a save. Only a Config that
+// never parsed anything falls back to generating a bare key=value dump.
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace config {
 using ConfigSection = std::map<std::string, std::string>;
@@ -52,5 +58,11 @@ class Config {
 
   ConfigMap config_;
   ConfigMap overrides_;
+
+  // Verbatim text of everything parsed into this Config, in order. Empty for
+  // a Config built purely by setIntValue/setStringValue (e.g. a brand-new
+  // config file), which is the only case that still generates output from
+  // scratch.
+  std::vector<std::string> lines_;
 };
 }  // namespace config

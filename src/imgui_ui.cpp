@@ -3464,7 +3464,16 @@ void imgui_render_options() {
       // mutated (out-param/compound-assign/loop/reference)
       bool snd = CPC.snd_enabled != 0;
       if (ImGui::Checkbox("Enable Sound", &snd)) {
-        CPC.snd_enabled = snd ? 1 : 0;
+        if (snd) {
+          // Open/resume the device BEFORE raising the flag: the Z80 thread's
+          // push gate keys on snd_enabled, and a session that booted with
+          // sound off has no stream at all until audio_enable() creates one.
+          audio_enable();
+          CPC.snd_enabled = 1;
+        } else {
+          CPC.snd_enabled = 0;  // close the push gate first, then halt
+          audio_pause();
+        }
       }
 
       static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
@@ -3505,6 +3514,7 @@ void imgui_render_options() {
       int vol = static_cast<int>(CPC.snd_volume);
       if (ImGui::SliderInt("Volume", &vol, 0, 100)) {
         CPC.snd_volume = vol;
+        audio_apply_volume();  // live: gain on the AY stream, host-side
       }
 
       ImGui::Separator();
