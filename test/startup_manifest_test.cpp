@@ -122,3 +122,27 @@ TEST(StartupManifestAwaitPort, GivesUpAtTheDeadline) {
   int const port = startup_manifest_await_port([] { return 0; }, 20);
   EXPECT_EQ(port, 0);
 }
+
+// An absent bind address must be null, not '' — a consumer should not have to
+// distinguish "M4 is not running" from "the empty string".
+TEST(StartupManifest, AbsentBindAddressIsNullNotEmptyString) {
+  StartupManifest m = sample();
+  m.m4_http_port = 0;
+  m.m4_bind_ip.clear();
+
+  std::string const y = startup_manifest_yaml(m);
+  EXPECT_TRUE(contains(y, "m4_bind_ip: null"));
+  EXPECT_FALSE(contains(y, "m4_bind_ip: ''"));
+  // A bind address is not a port, so it must not sit inside the ports mapping.
+  EXPECT_TRUE(contains(y, "\nm4_bind_ip:"));
+}
+
+// The run tier changes debugger semantics (per-cycle observability), so a
+// harness needs it alongside the ports.
+TEST(StartupManifest, ReportsRunTier) {
+  StartupManifest m = sample();
+  m.run_tier = "fast";
+  EXPECT_TRUE(contains(startup_manifest_yaml(m), "run_tier: 'fast'"));
+  m.run_tier.clear();
+  EXPECT_TRUE(contains(startup_manifest_yaml(m), "run_tier: null"));
+}

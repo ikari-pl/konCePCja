@@ -63,7 +63,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Response |
 |---------|----------|
-| `mem read <addr> <len> [--view=read\|write] [--bank=N] [ascii]` | `OK <hex> [\|ascii\|]` — reads through Z80 banking |
+| `mem read <addr> <len> [--view=read\|ram] [--bank=N] [ascii]` | `OK <hex> [\|ascii\|]` — reads through Z80 banking |
 | `mem write <addr> <hex>` | `OK` — writes through Z80 banking |
 | `mem fill <addr> <len> <hex-pattern>` | `OK` — fill memory with repeating hex pattern |
 | `mem compare <addr1> <addr2> <len>` | `OK diffs=N [addr:src:dst ...]` — compare two regions, up to 64 diffs listed |
@@ -73,7 +73,14 @@ Addresses and values accept decimal, `0x` hex, or `0b` binary.
 ### Bank access (mem read)
 
 - Default: reads through `membank_read[]` (standard Z80 view — ROM overlays visible at 0x0000)
-- `--view=write`: reads through `membank_write[]` (underlying RAM at 0x0000-0x3FFF visible)
+- `--view=ram`: the banked RAM byte, ROM overlays ignored. **Use this to poll a
+  game variable.** An address under a paged-in ROM otherwise returns the firmware
+  byte and appears to flicker as the OS banks ROM in and out (e.g. `&1AF1` reads
+  as `&3E` from the 6128 OS ROM). `--view=write` is a deprecated alias.
+- `search hex|text` accepts the same `--view=ram` for the same reason; `search
+  asm` always uses the CPU view, since it disassembles code.
+- An unrecognised `--view=` value is rejected with `ERR 400 bad-view (read|ram)`
+  rather than silently falling back.
 - `--bank=N`: reads raw from physical 16KB bank N (`pbRAM + N*16384`), ignoring current mapping
 
 ## Breakpoints
