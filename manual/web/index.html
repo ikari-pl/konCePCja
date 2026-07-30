@@ -342,10 +342,28 @@ img{max-width:100%; display:block}
 // would silently go stale between the two. The download links above do not
 // depend on this -- they use GitHub's /releases/latest/download/ permalinks and
 // resolve correctly with JavaScript disabled or the API rate-limited.
+//
+// sessionStorage cache avoids burning the unauthenticated API rate limit
+// (60 req/hr) on every page view from a single tab.
 (function () {
   var ver = document.getElementById('relver');
   var date = document.getElementById('reldate');
   if (!ver) return;
+
+  var CACHE_KEY = 'koncepcja-releast-meta';
+  var CACHE_TTL  = 10 * 60 * 1000;  // 10 min
+
+  function render(tag, publishedAt) {
+    ver.textContent = tag;
+    if (date && publishedAt) {
+      var d = new Date(publishedAt);
+      if (!isNaN(d)) {
+        date.textContent = ' \u00b7 released ' + d.toLocaleDateString(undefined, {
+          year: 'numeric', month: 'long', day: 'numeric'
+        });
+      }
+    }
+  }
 
   function degrade() {
     // Never leave "loading..." on screen if the API is unreachable.
@@ -354,21 +372,31 @@ img{max-width:100%; display:block}
     if (date) date.textContent = '';
   }
 
+  // Serve from cache while it is still fresh (same tab session).
+  try {
+    var raw = sessionStorage.getItem(CACHE_KEY);
+    if (raw) {
+      var cached = JSON.parse(raw);
+      if (cached.t && (Date.now() - cached.t) < CACHE_TTL) {
+        render(cached.v, cached.d);
+        return;
+      }
+    }
+  } catch (_) { /* storage disabled/blocked — proceed to fetch */ }
+
   fetch('https://api.github.com/repos/ikari-pl/konCePCja/releases/latest', {
     headers: { 'Accept': 'application/vnd.github+json' }
   })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (rel) {
       if (!rel || !rel.tag_name) throw new Error('no tag');
-      ver.textContent = rel.tag_name;
-      if (date && rel.published_at) {
-        var d = new Date(rel.published_at);
-        if (!isNaN(d)) {
-          date.textContent = ' \u00b7 released ' + d.toLocaleDateString(undefined, {
-            year: 'numeric', month: 'long', day: 'numeric'
-          });
-        }
-      }
+      render(rel.tag_name, rel.published_at);
+      // Persist so repeat views within the same session skip the API call.
+      try {
+        sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+          t: Date.now(), v: rel.tag_name, d: rel.published_at
+        }));
+      } catch (_) {}
     })
     .catch(degrade);
 })();
