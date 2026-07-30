@@ -310,6 +310,13 @@ class Machine {
   // PHYSICAL RAM (base 64K then expansion), independent of banking — the
   // memory layout snapshots dump and restore.
   size_t ram_size() const;
+
+  // Fit `total_bytes` of physical RAM: the base 64K plus whatever expansion
+  // is left over, rounded down to whole 64K banks. Call before boot — this
+  // reallocates, so anything already in expansion RAM is lost. The Silicon
+  // Disc occupies banks 4-7 and raises the floor to 512K of expansion while
+  // it is enabled, whatever is asked for here.
+  void set_ram_size(size_t total_bytes);
   uint8_t ram_read(size_t addr) const;
   void ram_write(size_t addr, uint8_t val);
 
@@ -483,7 +490,11 @@ class Machine {
   std::vector<uint8_t> gmem_, cmem_, pmem_, smem_, mmem_, vmem_, zmem_, fmem_,
       prmem_, prtmem_, admem_, mfmem_, axmem_, swmem_, sfmem_, m4mem_, asmem_,
       tmem_, rsmem_, plmem_, lgmem_;
-  std::vector<uint8_t> xmem_;  // 64K expansion RAM: a true 128K 6128
+  void resize_expansion();
+
+  std::vector<uint8_t> xmem_;        // expansion RAM above the base 64K
+  size_t want_expansion_ = 0x10000;  // requested expansion (default: 128K CPC)
+  bool silicon_ = false;             // Silicon Disc fitted (needs banks 4-7)
   // Writable-flux DSK overlay (Stage 2): synthesized from the SCP at insert and
   // owned here, it is the FDC's mutable `image`; the caller's SCP stays the
   // pristine source. Empty when drive A holds a DSK or a read-only flux dump.

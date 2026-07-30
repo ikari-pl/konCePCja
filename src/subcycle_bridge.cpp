@@ -254,6 +254,10 @@ bool subcycle_bridge_start() {
   } else {
     b.rom = read_file(rom_file);  // models 0-2: a plain 32K OS+BASIC ROM
   }
+  // Physical RAM the user asked for. Without this the board is always a 128K
+  // 6128: a stock 64K 464 and a 576K Yarek config both booted with 128K while
+  // the status bar and `config get ram_size` reported the requested figure.
+  b.machine.set_ram_size(static_cast<size_t>(CPC.ram_size) * 1024);
   if (!b.machine.build(b.rom.data(), b.rom.size())) {
     LOG_ERROR("subcycle engine: cannot load system ROM "
               << rom_file << " (" << b.rom.size() << " bytes)");

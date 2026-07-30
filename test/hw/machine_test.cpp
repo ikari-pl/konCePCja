@@ -285,3 +285,51 @@ TEST(SubcycleMachine, ExpansionRomSlotCanBeFittedAndEmptied) {
       << "an emptied slot must read as BASIC again, not as the freed image";
   EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC001), basic1);
 }
+
+// The machine used to allocate a fixed 64K of expansion whatever was asked
+// for, so a stock 64K 464 and a 576K Yarek config both booted as a 128K 6128.
+TEST(SubcycleMachine, RamSizeFitsTheRequestedExpansion) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  struct Case {
+    size_t requested_kb;
+    size_t expect_total;
+  };
+  // 64K has no expansion at all; the rest keep whole 64K banks.
+  const Case kCases[] = {{64, 0x10000},
+                         {128, 0x20000},
+                         {256, 0x40000},
+                         {576, 0x90000},
+                         {4160, 0x410000}};
+
+  for (const auto& c : kCases) {
+    subcycle::Machine m;
+    m.set_ram_size(c.requested_kb * 1024);
+    ASSERT_TRUE(m.build(rom.data(), rom.size()));
+    EXPECT_EQ(m.ram_size(), c.expect_total)
+        << c.requested_kb << "K was not fitted";
+  }
+}
+
+// The Silicon Disc lives in expansion banks 4-7, so it raises the floor —
+// but it must not shrink a machine that was asked for more.
+TEST(SubcycleMachine, SiliconDiscRaisesTheRamFloorWithoutShrinkingIt) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  subcycle::Machine small;
+  small.set_ram_size(128 * 1024);
+  ASSERT_TRUE(small.build(rom.data(), rom.size()));
+  small.enable_silicon_disc(true);
+  EXPECT_GE(small.ram_size(), 0x90000u) << "no room for banks 4-7";
+
+  subcycle::Machine big;
+  big.set_ram_size(4160 * 1024);
+  ASSERT_TRUE(big.build(rom.data(), rom.size()));
+  const size_t before = big.ram_size();
+  big.enable_silicon_disc(true);
+  EXPECT_EQ(big.ram_size(), before) << "the Silicon Disc shrank the machine";
+}
