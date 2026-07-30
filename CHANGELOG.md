@@ -1,5 +1,34 @@
 # Changelog
 
+## [6.2.0](https://github.com/ikari-pl/konCePCja/compare/v6.1.1...v6.2.0) (2026-07-30)
+
+
+### Features
+
+* **dnd:** route flux disk images (.hfe/.scp/.a2r) through drag & drop ([bcc62ad](https://github.com/ikari-pl/konCePCja/commit/bcc62ade9db2276e11b731fcd64a91162909e3ce))
+* **ipc:** accept flux disk images in `load`, and .ipf/.raw too ([b4e1d2e](https://github.com/ikari-pl/konCePCja/commit/b4e1d2e43a30328ba0c2095be9e6009c8455dc46))
+* route flux disk images (.hfe/.scp/.a2r) through every front door ([63db699](https://github.com/ikari-pl/konCePCja/commit/63db699a330df60aaefbd4dd65042556fbc8d3ea))
+* **site:** add per-platform downloads and current version to the homepage ([3aa43df](https://github.com/ikari-pl/konCePCja/commit/3aa43df2abce1288435708aff5214c85b17fa53a))
+* **site:** add per-platform downloads and the current version to the homepage ([2056d59](https://github.com/ikari-pl/konCePCja/commit/2056d594fe8b03c5bbaf5cc45d8c97164914eeac))
+* **ui:** show flux disk images in the drive-A open dialogs ([9866576](https://github.com/ikari-pl/konCePCja/commit/9866576544d56d0fad69af33d05a6c013cf45157))
+
+
+### Bug Fixes
+
+* **audio:** stop persisting forced sound-off and wire volume/enable at runtime ([322994d](https://github.com/ikari-pl/konCePCja/commit/322994d0bb9450587aa50a487a652ed049c1acce))
+* close the review follow-ups from PR [#16](https://github.com/ikari-pl/konCePCja/issues/16) ([e05386d](https://github.com/ikari-pl/konCePCja/commit/e05386dd5ee409f5065a7332e4fdf316b82eafcf))
+* close the review follow-ups from PR [#16](https://github.com/ikari-pl/konCePCja/issues/16) (beads-5a8n, wxy6, rbtp) ([ad039ff](https://github.com/ikari-pl/konCePCja/commit/ad039ffb16bc1fa6dc17b10cc7ccac4b71a92508))
+* config truncation, silent audio, and the flat PSG scope ([66abcbc](https://github.com/ikari-pl/konCePCja/commit/66abcbce41aab54819aa0f3284659b5d9b7c6a02))
+* **config:** save the config file by editing it, not by replacing it ([2f66887](https://github.com/ikari-pl/konCePCja/commit/2f66887b241b968987b6fbe8d1993789edf2cbc0))
+* **devtools:** PSG oscilloscope had no writer — waveforms were always flat ([97c90c1](https://github.com/ikari-pl/konCePCja/commit/97c90c1d335b8c5b51f596d7b745563168da02f9))
+* **video:** quiesce the Z80 thread before tearing down video on fullscreen toggle ([f39051a](https://github.com/ikari-pl/konCePCja/commit/f39051a7c1b2dcef75b0a3151c6b5cbe0cccd92e))
+* **video:** quiesce the Z80 thread before tearing down video on fullscreen toggle ([9c2b455](https://github.com/ikari-pl/konCePCja/commit/9c2b45586d10e064bbb8c6485fdf2eee6799ca24))
+
+
+### Performance
+
+* **site:** cache release metadata in sessionStorage to reduce API calls ([36042e5](https://github.com/ikari-pl/konCePCja/commit/36042e55464e09ceeb26782bb2f98d2e89f97fa8))
+
 ## [6.1.1](https://github.com/ikari-pl/konCePCja/compare/v6.1.0...v6.1.1) (2026-07-30)
 
 
