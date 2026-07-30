@@ -31,8 +31,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
 
+      # actions/checkout has no retry for submodule fetches, and one PR run does
+      # ~9 of them (6 MSVC configs + linux + macos + coverage). A transient
+      # "Empty reply from server" from the SDL host therefore reddens a run
+      # regularly -- observed on run 30524543939, which passed on re-run with no
+      # code change. Retry the fetch instead of the whole job (beads-rbtp).
+      - name: Fetch submodules (retried)
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            git submodule update --init --recursive --depth=1 && exit 0
+            echo "submodule fetch attempt $i failed; retrying in 15s" >&2
+            sleep 15
+          done
+          echo "submodule fetch failed after 3 attempts" >&2
+          exit 1
       # ── GoogleTest (not a submodule — cloned by Makefile) ──
       - name: Clone GoogleTest
         run: git clone --depth 1 --branch v1.15.2 https://github.com/google/googletest.git
