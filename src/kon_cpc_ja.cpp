@@ -1275,10 +1275,6 @@ void SDLCALL drive_sounds_audio_callback(void* /*userdata*/,
 int audio_init() {
   SDL_AudioSpec desired;
 
-  if (!CPC.snd_enabled) {
-    return 0;
-  }
-
   CPC.snd_ready = false;
 
   desired.freq = freq_table[CPC.snd_playback_rate];
@@ -1323,6 +1319,7 @@ int audio_init() {
   }
   SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
   CPC.snd_ready = true;
+  audio_apply_volume();
   LOG_VERBOSE("Audio: Sound buffer ready");
 
   drive_sounds_init(desired.freq);
@@ -1368,8 +1365,12 @@ void audio_shutdown() {
   }
 }
 
+// Guard on the stream, not CPC.snd_enabled: snd_enabled is the user's config
+// INTENT (persisted by saveConfiguration); whether a device is actually open
+// is runtime state. Mixing the two is what allowed a sound-off session to
+// leave the device in a stale pause/resume state.
 void audio_pause() {
-  if (CPC.snd_enabled && audio_stream) {
+  if (audio_stream) {
     SDL_PauseAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
     // Halt the host SFX device too, so drive/tape sounds stop with emulation.
     if (drive_audio_stream) {
@@ -1379,12 +1380,45 @@ void audio_pause() {
 }
 
 void audio_resume() {
-  if (CPC.snd_enabled && audio_stream) {
+  if (audio_stream) {
     SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(audio_stream));
     if (drive_audio_stream) {
       SDL_ResumeAudioDevice(SDL_GetAudioStreamDevice(drive_audio_stream));
     }
   }
+}
+
+// Map the 0..100 config volume onto the AY stream's output gain. The legacy
+// core baked snd_volume into its PSG level tables; the sub-cycle machine
+// renders at a fixed reference gain (kAudioGain) and knows nothing about the
+// host, so the volume knob has to act host-side — on the SDL stream — or it
+// is wired to nothing at all (which is exactly what shipped with Gate C).
+// The drive/tape SFX stream keeps its own level model, matching the legacy
+// scope of snd_volume (PSG mixer only).
+void audio_apply_volume() {
+  if (audio_stream) {
+    SDL_SetAudioStreamGain(audio_stream,
+                           static_cast<float>(CPC.snd_volume) / 100.0f);
+  }
+}
+
+// Runtime "Enable Sound": a session that booted with sound disabled never
+// opened a device (audio_init is skipped entirely), so the checkbox must be
+// able to create the stream lazily — otherwise enabling sound silently does
+// nothing until the next restart. Disable is just audio_pause(): the stream
+// is kept for cheap re-enable, and the frame-loop push gate (CPC.snd_enabled)
+// stops feeding it. Called from the UI thread; safe against the Z80 thread's
+// audio_push_buffer because that gate is only opened (snd_enabled=1) after
+// this returns, and audio_init publishes CPC.snd_ready last.
+void audio_enable() {
+  if (!audio_stream) {
+    if (audio_init()) {
+      LOG_ERROR("Audio: could not enable sound: " << SDL_GetError());
+      return;
+    }
+  }
+  audio_resume();
+  audio_apply_volume();
 }
 
 void cpc_pause() {
@@ -3727,8 +3761,13 @@ int koncpc_main(int argc, char** argv) {
     CPC.scr_bps = back_surface->pitch;
     CPC.scr_line_offs = CPC.scr_bps * dwYScale;
     CPC.scr_pos = CPC.scr_base = static_cast<byte*>(back_surface->pixels);
-    // No audio in headless mode
-    CPC.snd_enabled = 0;
+    // No audio in headless mode: audio_init() is simply never called, so
+    // audio_push_buffer() no-ops (audio_stream null, snd_ready false).
+    // CPC.snd_enabled is deliberately NOT cleared — it is the user's config
+    // intent and saveConfiguration persists it; clearing it here meant one
+    // headless run could write sound=off into the user's cfg and permanently
+    // silence every later GUI session (the config-poisoning variant of the
+    // engine=1 host-state gaps).
   } else {
     if (video_init()) {
       fprintf(stderr, "video_init() failed. Aborting.\n");
@@ -3750,9 +3789,11 @@ int koncpc_main(int argc, char** argv) {
     // video_set_topbar handles the window resize using compute_window_size()
     mouse_init();
 
-    if (audio_init()) {
-      fprintf(stderr, "audio_init() failed. Disabling sound.\n");
-      CPC.snd_enabled = 0;
+    if (CPC.snd_enabled && audio_init()) {
+      fprintf(stderr, "audio_init() failed. Sound unavailable this session.\n");
+      // Do NOT clear CPC.snd_enabled: it is persisted config intent, and
+      // zeroing it turned one bad boot into a permanently silenced cfg.
+      // audio_push_buffer() already no-ops while snd_ready is false.
     }
 
     if (joysticks_init()) {

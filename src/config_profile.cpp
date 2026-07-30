@@ -173,6 +173,7 @@ std::string ConfigProfileManager::load(const std::string& name) {
   CPC.snd_bits = p.snd_bits;
   CPC.snd_stereo = p.snd_stereo;
   CPC.snd_volume = p.snd_volume;
+  audio_apply_volume();  // gain lives on the SDL stream — push the new value
   CPC.joystick_emulation = static_cast<JoystickEmulation>(p.joystick_emulation);
   CPC.keyboard_support_mode =
       static_cast<KeyboardSupportMode>(p.keyboard_support_mode);
