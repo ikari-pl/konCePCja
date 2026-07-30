@@ -158,6 +158,28 @@ img{max-width:100%; display:block}
   font-size:12px; line-height:1.5; color:#4a4334; }
 .foot b{ color:var(--ink) }
 .foot a{ color:var(--blue) }
+
+/* --- Downloads ("order form") ------------------------------------------- */
+.getit{ margin:22px; border:5px solid var(--ink); background:#fff; }
+.getit > h3{ margin:0; font-family:"Rokkitt",serif; font-weight:900;
+  text-transform:uppercase; letter-spacing:.04em; font-size:20px;
+  background:var(--ink); color:var(--paper); padding:8px 14px; }
+.getit .inner{ padding:14px 16px 16px; }
+.relmeta{ font-family:"OCRB",monospace; font-size:13px; margin:0 0 12px;
+  padding:6px 10px; background:var(--paper2); border:2px solid var(--ink); }
+.relmeta b{ color:var(--red) }
+.dlgrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  gap:10px; }
+.dl{ display:block; text-decoration:none; color:var(--ink);
+  border:3px solid var(--ink); background:var(--paper2); padding:9px 11px;
+  transition:transform .06s ease; }
+.dl:hover{ transform:translate(-1px,-1px); background:#fff; }
+.dl .os{ font-family:"Rokkitt",serif; font-weight:900; text-transform:uppercase;
+  font-size:15px; letter-spacing:.03em; display:block; }
+.dl .os .arr{ color:var(--red) }
+.dl .file{ font-family:"OCRB",monospace; font-size:11.5px; opacity:.75;
+  display:block; margin-top:2px; word-break:break-all; }
+.dlnote{ font-size:13px; margin:12px 0 0; font-style:italic; }
 </style>
 </head>
 <body>
@@ -261,6 +283,45 @@ img{max-width:100%; display:block}
     <span><b>Out:</b> Now</span>
   </div>
 
+  <section class="getit" id="download">
+    <h3>Get Your Copy &mdash; On Sale Now (Price: Nowt)</h3>
+    <div class="inner">
+      <p class="relmeta" id="relmeta">
+        <b>Current version:</b> <span id="relver">loading&hellip;</span>
+        <span id="reldate"></span>
+      </p>
+      <div class="dlgrid">
+      <a class="dl" href="https://github.com/ikari-pl/konCePCja/releases/latest/download/konCePCja.dmg">
+        <span class="os">macOS <span class="arr">&#9656;</span></span>
+        <span class="file">konCePCja.dmg &middot; disk image</span>
+      </a>
+      <a class="dl" href="https://github.com/ikari-pl/konCePCja/releases/latest/download/koncepcja-macos.zip">
+        <span class="os">macOS (zip) <span class="arr">&#9656;</span></span>
+        <span class="file">koncepcja-macos.zip</span>
+      </a>
+      <a class="dl" href="https://github.com/ikari-pl/konCePCja/releases/latest/download/koncepcja-windows-x64.zip">
+        <span class="os">Windows 64-bit <span class="arr">&#9656;</span></span>
+        <span class="file">koncepcja-windows-x64.zip</span>
+      </a>
+      <a class="dl" href="https://github.com/ikari-pl/konCePCja/releases/latest/download/koncepcja-windows-ARM64.zip">
+        <span class="os">Windows on ARM <span class="arr">&#9656;</span></span>
+        <span class="file">koncepcja-windows-ARM64.zip</span>
+      </a>
+      <a class="dl" href="https://github.com/ikari-pl/konCePCja/releases/latest/download/koncepcja-windows-Win32.zip">
+        <span class="os">Windows 32-bit <span class="arr">&#9656;</span></span>
+        <span class="file">koncepcja-windows-Win32.zip</span>
+      </a>
+      <a class="dl" href="https://github.com/ikari-pl/konCePCja/releases/latest">
+        <span class="os">Linux <span class="arr">&#9656;</span></span>
+        <span class="file">source tarball &middot; build with make</span>
+      </a>
+      </div>
+      <p class="dlnote">Every link points at the latest release, so they never go
+      stale. Linux ships as source for now &mdash; <code>make</code> and you are
+      away. <a href="https://github.com/ikari-pl/konCePCja/releases">All releases and release notes &#9656;</a></p>
+    </div>
+  </section>
+
   <div class="cta">
     <a class="btn red" href="../koncepcja_manual.html">Read the Manual <span class="arr">▸</span></a>
     <a class="btn blue" href="https://github.com/ikari-pl/konCePCja">Get the Source <span class="arr">▸</span></a>
@@ -272,5 +333,73 @@ img{max-width:100%; display:block}
   </footer>
 
 </div>
+
+<script>
+// Fill in the current release version and date.
+//
+// Fetched at runtime rather than baked in at build time on purpose: the Pages
+// site rebuilds on push, but releases are cut separately, so a baked-in version
+// would silently go stale between the two. The download links above do not
+// depend on this -- they use GitHub's /releases/latest/download/ permalinks and
+// resolve correctly with JavaScript disabled or the API rate-limited.
+//
+// sessionStorage cache avoids burning the unauthenticated API rate limit
+// (60 req/hr) on every page view from a single tab.
+(function () {
+  var ver = document.getElementById('relver');
+  var date = document.getElementById('reldate');
+  if (!ver) return;
+
+  var CACHE_KEY = 'koncepcja-releast-meta';
+  var CACHE_TTL  = 10 * 60 * 1000;  // 10 min
+
+  function render(tag, publishedAt) {
+    ver.textContent = tag;
+    if (date && publishedAt) {
+      var d = new Date(publishedAt);
+      if (!isNaN(d)) {
+        date.textContent = ' \u00b7 released ' + d.toLocaleDateString(undefined, {
+          year: 'numeric', month: 'long', day: 'numeric'
+        });
+      }
+    }
+  }
+
+  function degrade() {
+    // Never leave "loading..." on screen if the API is unreachable.
+    ver.innerHTML =
+      '<a href="https://github.com/ikari-pl/konCePCja/releases/latest">see latest release &#9656;</a>';
+    if (date) date.textContent = '';
+  }
+
+  // Serve from cache while it is still fresh (same tab session).
+  try {
+    var raw = sessionStorage.getItem(CACHE_KEY);
+    if (raw) {
+      var cached = JSON.parse(raw);
+      if (cached.t && (Date.now() - cached.t) < CACHE_TTL) {
+        render(cached.v, cached.d);
+        return;
+      }
+    }
+  } catch (_) { /* storage disabled/blocked — proceed to fetch */ }
+
+  fetch('https://api.github.com/repos/ikari-pl/konCePCja/releases/latest', {
+    headers: { 'Accept': 'application/vnd.github+json' }
+  })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (rel) {
+      if (!rel || !rel.tag_name) throw new Error('no tag');
+      render(rel.tag_name, rel.published_at);
+      // Persist so repeat views within the same session skip the API call.
+      try {
+        sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+          t: Date.now(), v: rel.tag_name, d: rel.published_at
+        }));
+      } catch (_) {}
+    })
+    .catch(degrade);
+})();
+</script>
 </body>
 </html>
