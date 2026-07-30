@@ -945,7 +945,6 @@ int cartridge_load(FILE* file) {
   return ERR_FILE_UNSUPPORTED;
 }
 
-namespace {
 std::string drive_extensions(const DRIVE drive) {
   switch (drive) {
     case DRIVE::DSK_A:
@@ -963,7 +962,6 @@ std::string drive_extensions(const DRIVE drive) {
   LOG_ERROR("Unsupported drive type: " << static_cast<int>(drive))
   return "";
 }
-}  // namespace
 
 // Read a whole file into memory — for mirroring media into the sub-cycle
 // engine, which wants the raw image bytes rather than parsed track structures.

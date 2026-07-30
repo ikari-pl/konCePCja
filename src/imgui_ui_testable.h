@@ -58,6 +58,23 @@ constexpr unsigned int SAMPLE_RATES[] = {11025, 22050, 44100, 48000, 96000};
 constexpr int SAMPLE_RATE_COUNT =
     sizeof(SAMPLE_RATES) / sizeof(SAMPLE_RATES[0]);
 
+// Exact-token membership in a dotted extension list (".dsk.ipf.raw"): true
+// iff `ext` (".dsk", lowercase, leading dot) appears as a WHOLE token — i.e.
+// followed by another '.' or the end of the list. Plain substring find() is
+// wrong here: ".hf" would match inside ".hfe". Pure so the drag-&-drop
+// routing can be unit-tested against the list slotshandler exports.
+inline bool extension_in_dotted_list(const std::string& list,
+                                     const std::string& ext) {
+  if (ext.size() < 2 || ext[0] != '.') return false;
+  size_t pos = 0;
+  while ((pos = list.find(ext, pos)) != std::string::npos) {
+    size_t const end = pos + ext.size();
+    if (end == list.size() || list[end] == '.') return true;
+    pos += 1;
+  }
+  return false;
+}
+
 // Check if a RAM size is in the allowed set
 inline bool is_valid_ram_size(unsigned int ram) {
   for (unsigned int const i : RAM_SIZES) {

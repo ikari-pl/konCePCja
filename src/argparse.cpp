@@ -26,19 +26,19 @@
 namespace {
 
 struct OptionSpec {
-  char short_name;        // unique key, also the short flag
+  char short_name;  // unique key, also the short flag
   std::string_view long_name;
   bool takes_value;
 };
 
 constexpr OptionSpec kOptions[] = {
-    {'a', "autocmd", true},      {'B', "exit-on-break", false},
-    {'c', "cfg_file", true},     {'D', "debug", false},
-    {'E', "exit-after", true},   {'F', "fps", false},
-    {'H', "headless", false},    {'h', "help", false},
-    {'i', "inject", true},       {'L', "list-plugins", false},
-    {'o', "offset", true},       {'O', "override", true},
-    {'s', "sym_file", true},     {'V', "version", false},
+    {'a', "autocmd", true},    {'B', "exit-on-break", false},
+    {'c', "cfg_file", true},   {'D', "debug", false},
+    {'E', "exit-after", true}, {'F', "fps", false},
+    {'H', "headless", false},  {'h', "help", false},
+    {'i', "inject", true},     {'L', "list-plugins", false},
+    {'o', "offset", true},     {'O', "override", true},
+    {'s', "sym_file", true},   {'V', "version", false},
     {'v', "verbose", false},
 };
 
@@ -106,7 +106,8 @@ void usage(std::ostream& os, const char* progPath, int errcode) {
   os << "\nslotfiles is an optional list of files giving the content of the "
         "various CPC ports.\n";
   os << "Ports files are identified by their extension. Supported formats are "
-        ".dsk (disk), .cdt or .voc (tape), .cpr (cartridge), .sna (snapshot), "
+        ".dsk, .ipf or .raw (disk), .scp, .hfe or .a2r (flux disk, drive A "
+        "only), .cdt or .voc (tape), .cpr (cartridge), .sna (snapshot), "
         "or .zip (archive containing one or more of the supported ports "
         "files).\n";
   os << "\nExample: " << progname << " sorcery.dsk\n";
@@ -153,8 +154,8 @@ void printVersion() {
 #endif
             << "\n";
 
-  std::cout << "Number of video plugins available: "
-            << video_plugin_list.size() << std::endl;
+  std::cout << "Number of video plugins available: " << video_plugin_list.size()
+            << std::endl;
   exit(0);
 }
 

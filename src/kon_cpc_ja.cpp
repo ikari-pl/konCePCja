@@ -3948,7 +3948,11 @@ int koncpc_main(int argc, char** argv) {
                        std::filesystem::path(drop_path).filename();
           };
 
-          if (ext == ".dsk" || ext == ".ipf" || ext == ".raw") {
+          // Route by the list slotshandler actually accepts for drive A
+          // (.dsk/.ipf/.raw + the flux containers .scp/.hfe/.a2r) instead of
+          // a hand-kept copy — a dropped .hfe used to hit the unknown-file
+          // toast because this list had drifted from the loaders.
+          if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
             if (already_mounted(CPC.driveA.file) ||
                 already_mounted(CPC.driveB.file)) {
               LOG_INFO("Ignoring drop of already-mounted disk: " << drop_fname);
