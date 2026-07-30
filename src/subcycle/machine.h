@@ -79,7 +79,9 @@ class Machine {
 
   // AMSDOS (or any 16K ROM) into upper-ROM slot 7. Caller-owned.
   void attach_amsdos(const uint8_t* rom16k, size_t len);
-  // Any caller-owned 16K ROM into an arbitrary upper-ROM slot (e.g. the M4).
+  // Any caller-owned 16K ROM into an arbitrary upper-ROM slot (e.g. the M4,
+  // or an expansion board the user fitted). nullptr empties the slot, which
+  // then reads as BASIC — call that before freeing the image.
   void attach_rom(int slot, const uint8_t* rom16k);
 
   // Plus (6128+) cartridge: the parsed CPR image (caller-owned, 16K banks)

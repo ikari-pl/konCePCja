@@ -41,9 +41,10 @@
 #include "trace.h"  // g_trace: per-instruction debug recorder (engine=1 seam)
 #include "zip_archive.h"  // read_media_file: first media entry of a .zip slot
 
-extern t_drive driveA;  // legacy drive struct: UI reads its altered flag
-extern t_drive driveB;  // ...and both drives' mechanics (drive_status)
-extern t_FDC FDC;       // motor latch for the status surfaces
+extern t_drive driveA;         // host sector view: UI reads its altered flag
+extern t_drive driveB;         // ...and both drives' mechanics (drive_status)
+extern t_FDC FDC;              // motor latch for the status surfaces
+extern byte* memmap_ROM[256];  // host-loaded 16K expansion ROM images
 #include "subcycle/machine.h"
 #include "z80_view.h"  // legacy: the Wave-1 view struct + bench lists (transitional)
 
@@ -51,8 +52,8 @@ extern t_CPC CPC;
 extern std::string chROMFile[4];  // per-model system ROM names (kon_cpc_ja.cpp)
 extern std::unique_ptr<byte[]>
     pbCartridgeImage;  // parsed CPR banks (cartridge.cpp)
-extern t_z80regs z80;  // legacy structs: Wave-1 view buffers
-extern t_CRTC CRTC;    // (all die with the legacy files)
+extern t_z80regs z80;  // host view buffers, filled by debug_sync
+extern t_CRTC CRTC;
 extern t_GateArray GateArray;
 extern t_PSG PSG;
 // legacy tape scope level (tape.cpp); engine=1 mirrors it
@@ -255,8 +256,7 @@ bool subcycle_bridge_start() {
   }
   if (!b.machine.build(b.rom.data(), b.rom.size())) {
     LOG_ERROR("subcycle engine: cannot load system ROM "
-              << rom_file << " (" << b.rom.size()
-              << " bytes) — staying on legacy core");
+              << rom_file << " (" << b.rom.size() << " bytes)");
     return false;
   }
   b.machine.set_overlay(&g_drive_overlay);  // drive sounds (self-gated on cfg)
@@ -269,6 +269,16 @@ bool subcycle_bridge_start() {
   }
   b.amsdos = read_file(CPC.rom_path + "/amsdos.rom");
   b.machine.attach_amsdos(b.amsdos.data(), b.amsdos.size());
+  // Expansion ROM slots the host has loaded ([rom] slotNN, the ROMs dialog,
+  // IPC `rom load`). Without this the board's roms[] stays empty and every
+  // fitted board — ParaDOS, Utopia, Maxam — falls back to BASIC, so |HELP
+  // never lists it and the ROM looks like it was never fitted. The M4 and
+  // serial-card attaches below deliberately run after, and win, for their
+  // own slots.
+  for (int slot = 0; slot < MAX_ROM_SLOTS; slot++) {
+    if (memmap_ROM[slot] != nullptr)
+      b.machine.attach_rom(slot, memmap_ROM[slot]);
+  }
   if (!CPC.rom_mf2.empty()) {  // Multiface II (multiface-device.md §6)
     b.mf2rom = read_file(CPC.rom_path + "/" + CPC.rom_mf2);
     if (b.mf2rom.size() >= 0x2000)
@@ -1144,6 +1154,12 @@ void subcycle_bridge_eject_tape() {
 
 void subcycle_bridge_mf2_stop() {
   g_bridge.mf2_stop.store(true, std::memory_order_release);
+}
+
+void subcycle_bridge_attach_rom_slot(int slot, const uint8_t* rom16k) {
+  if (!g_bridge.active) return;  // start() attaches every slot on the way up
+  if (slot < 0 || slot >= MAX_ROM_SLOTS) return;
+  g_bridge.machine.attach_rom(slot, rom16k);
 }
 
 void subcycle_bridge_eject_media(uint8_t unit) {

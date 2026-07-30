@@ -124,8 +124,10 @@ void Machine::attach_amsdos(const uint8_t* rom16k, size_t len) {
 }
 
 void Machine::attach_rom(int slot, const uint8_t* rom16k) {
-  if (rom16k != nullptr && slot >= 0 && slot < 256)
-    mem_attach_rom(&mdev_, slot, rom16k);
+  // nullptr empties the slot — an empty slot reads as BASIC, exactly like no
+  // board fitted. Removal has to be possible: the caller owns the image and
+  // frees it, and the memory device would otherwise keep reading it.
+  if (slot >= 0 && slot < 256) mem_attach_rom(&mdev_, slot, rom16k);
 }
 
 void Machine::attach_cartridge(const uint8_t* image, size_t bytes) {

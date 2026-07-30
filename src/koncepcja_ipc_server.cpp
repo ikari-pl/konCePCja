@@ -4583,6 +4583,7 @@ std::string handle_command(const std::string& line) {
         }
         memmap_ROM[slot] = rom_data;
         CPC.rom_file[slot] = path;
+        subcycle_bridge_attach_rom_slot(slot, rom_data);  // fit it in the CPC
         // If the currently selected upper ROM is this slot, update pointer
         if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
           pbExpansionROM = memmap_ROM[slot];
@@ -4601,6 +4602,8 @@ std::string handle_command(const std::string& line) {
         if (slot < 0 || slot >= MAX_ROM_SLOTS)
           return "ERR 400 slot must be 0-31\n";
         if (slot < 2) return "ERR 400 cannot-unload-system-rom\n";
+        subcycle_bridge_attach_rom_slot(slot, nullptr);  // unfit it first:
+        // the board must stop reading the image before it is freed.
         if (memmap_ROM[slot] != nullptr) {
           delete[] memmap_ROM[slot];
           memmap_ROM[slot] = nullptr;

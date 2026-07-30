@@ -13,6 +13,7 @@
 
 #include "hw/fdc.h"
 #include "hw/gate_array.h"
+#include "hw/memory.h"
 #include "hw/probe.h"
 
 namespace {
@@ -244,4 +245,43 @@ TEST(SubcycleMachine, DormantPeripheralsLeaveTheTickList) {
   m.run_frame();
   EXPECT_EQ(m.active_tick_count(), stock + 1)
       << "an armed execution breakpoint rejoins the probe to the tick list";
+}
+
+// An expansion ROM the user fits must be readable by the CPC, and removable
+// again. attach_rom used to ignore a nullptr, so a slot could be filled but
+// never emptied: `rom unload` freed the image while the memory device was
+// still pointing at it, and the CPC read freed memory.
+TEST(SubcycleMachine, ExpansionRomSlotCanBeFittedAndEmptied) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  subcycle::Machine m;
+  ASSERT_TRUE(m.build(rom.data(), rom.size()));
+
+  // Select upper-ROM slot 4 the way the CPC does: RMR (&7Fxx) enables both
+  // ROMs, the &DFxx latch picks the slot.
+  constexpr int kSlot = 4;
+  mem_fast_io_write(m.mem(), 0x7F00, 0x81);
+  mem_fast_io_write(m.mem(), 0xDF00, kSlot);
+
+  // An empty slot reads as BASIC — indistinguishable from no board fitted.
+  const uint8_t basic0 = mem_peek_cpu(m.mem(), 0xC000);
+  const uint8_t basic1 = mem_peek_cpu(m.mem(), 0xC001);
+
+  // A recognisable 16K image; the caller owns it, as the API requires.
+  std::vector<uint8_t> fitted(0x4000, 0x00);
+  fitted[0] = 0xA5;
+  fitted[1] = 0x5A;
+  ASSERT_NE(basic0, 0xA5) << "the marker must not collide with BASIC";
+
+  m.attach_rom(kSlot, fitted.data());
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC000), 0xA5)
+      << "a fitted ROM is not visible to the CPC";
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC001), 0x5A);
+
+  m.attach_rom(kSlot, nullptr);
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC000), basic0)
+      << "an emptied slot must read as BASIC again, not as the freed image";
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC001), basic1);
 }
