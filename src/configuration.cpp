@@ -148,7 +148,8 @@ std::ostream& Config::toStream(std::ostream& out) const {
   };
 
   if (lines_.empty()) {  // nothing was parsed: generate from scratch
-    for (const auto& [section, entries] : config_) dump_section(section, entries);
+    for (const auto& [section, entries] : config_)
+      dump_section(section, entries);
     return out;
   }
 
@@ -233,7 +234,8 @@ void Config::setOverrides(const ConfigMap& overrides) {
 
 const std::string* Config::find(const std::string& section,
                                 const std::string& key) const {
-  if (const std::string* value = find_in(overrides_, section, key)) return value;
+  if (const std::string* value = find_in(overrides_, section, key))
+    return value;
   return find_in(config_, section, key);
 }
 

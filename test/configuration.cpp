@@ -162,7 +162,8 @@ TEST_F(ConfigurationTest, saveToFileKeepsParsedKeysItNeverSets) {
                          "system", "a_key_from_a_newer_build", "GONE"));
 }
 
-TEST_F(ConfigurationTest, saveToFileRewritesValueInPlaceKeepingSpacingAndComment) {
+TEST_F(ConfigurationTest,
+       saveToFileRewritesValueInPlaceKeepingSpacingAndComment) {
   configuration_.parseString(
       "[system]\n"
       "model = 42  # the machine\n"
