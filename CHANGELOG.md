@@ -1,5 +1,15 @@
 # Changelog
 
+## [6.1.1](https://github.com/ikari-pl/konCePCja/compare/v6.1.0...v6.1.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* **devtools:** symbol-table crash and ROM-overlay memory flicker ([d714a31](https://github.com/ikari-pl/konCePCja/commit/d714a31626bb893a7bd64218852141b19b20b62a))
+* **devtools:** symbol-table crash and ROM-overlay memory flicker ([47cf19e](https://github.com/ikari-pl/konCePCja/commit/47cf19e584934174f44fe4bcb9ed02a2969ef507))
+* **profiles:** 6128plus profile selected model 4, which is not a machine ([80e9841](https://github.com/ikari-pl/konCePCja/commit/80e9841b956c56d5406bbda8020971fb1ec811f5))
+* **profiles:** 6128plus profile selected model 4, which is not a machine ([8c1e1bb](https://github.com/ikari-pl/konCePCja/commit/8c1e1bb4193dd4dbf4c9298e2934a2c30193c516))
+
 ## [6.1.0](https://github.com/ikari-pl/konCePCja/compare/v6.0.1...v6.1.0) (2026-07-25)
 
 
