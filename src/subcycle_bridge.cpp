@@ -273,14 +273,19 @@ bool subcycle_bridge_start() {
   }
   b.amsdos = read_file(CPC.rom_path + "/amsdos.rom");
   b.machine.attach_amsdos(b.amsdos.data(), b.amsdos.size());
-  // Expansion ROM slots the host has loaded ([rom] slotNN, the ROMs dialog,
+  // Expansion ROM slots the USER asked for ([rom] slotNN, the ROMs dialog,
   // IPC `rom load`). Without this the board's roms[] stays empty and every
   // fitted board — ParaDOS, Utopia, Maxam — falls back to BASIC, so |HELP
-  // never lists it and the ROM looks like it was never fitted. The M4 and
-  // serial-card attaches below deliberately run after, and win, for their
-  // own slots.
+  // never lists it and the ROM looks like it was never fitted.
+  //
+  // CPC.rom_file is what makes a slot the user's: the peripheral managers
+  // (M4, serial card) put their own images straight into memmap_ROM and never
+  // claim a rom_file entry. Fitting those here would be wrong twice over —
+  // their ROM only works when their Device is also wired up, which is decided
+  // below and can legitimately not happen, and they free their image on their
+  // own schedule, which would leave the board reading freed memory.
   for (int slot = 0; slot < MAX_ROM_SLOTS; slot++) {
-    if (memmap_ROM[slot] != nullptr)
+    if (!CPC.rom_file[slot].empty() && memmap_ROM[slot] != nullptr)
       b.machine.attach_rom(slot, memmap_ROM[slot]);
   }
   if (!CPC.rom_mf2.empty()) {  // Multiface II (multiface-device.md §6)
