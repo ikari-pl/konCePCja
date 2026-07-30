@@ -2415,6 +2415,35 @@ void koncpc_queue_virtual_keys(const std::string& text) {
   g_autotype_queue.enqueue_legacy(text);
 }
 
+// Toggle windowed/fullscreen.
+//
+// MUST quiesce the Z80 thread first. video_shutdown() tears down the surface
+// and GPU resources the emulation thread renders into, so doing it while that
+// thread runs is a use-after-free: the crash lands in z80_thread_main() with
+// EXC_BAD_ACCESS at a small offset, on the Z80 thread, while the fullscreen key
+// was pressed on the main thread. The previous code paused only *audio* and
+// then SDL_Delay(20)'d, which is a hope rather than a guarantee -- on a busy
+// frame the Z80 thread is still inside the renderer when the surface goes away.
+// Same contract emulator_reset() needs (see cpc_pause_and_wait).
+void koncpc_toggle_fullscreen() {
+  bool const was_paused = CPC.paused;
+  if (!was_paused) cpc_pause_and_wait();
+
+  audio_pause();
+  video_shutdown();
+  CPC.scr_window = CPC.scr_window ? 0 : 1;
+  if (video_init()) {
+    fprintf(stderr, "video_init() failed. Aborting.\n");
+    cleanExit(-1);
+  }
+#ifdef __APPLE__
+  koncpc_setup_macos_menu();
+#endif
+  audio_resume();
+
+  if (!was_paused) cpc_resume();
+}
+
 void koncpc_menu_action(int action) {
   switch (action) {
     case KONCPC_GUI: {
@@ -2445,18 +2474,7 @@ void koncpc_menu_action(int action) {
     }
 
     case KONCPC_FULLSCRN:
-      audio_pause();
-      SDL_Delay(20);
-      video_shutdown();
-      CPC.scr_window = CPC.scr_window ? 0 : 1;
-      if (video_init()) {
-        fprintf(stderr, "video_init() failed. Aborting.\n");
-        cleanExit(-1);
-      }
-#ifdef __APPLE__
-      koncpc_setup_macos_menu();
-#endif
-      audio_resume();
+      koncpc_toggle_fullscreen();
       break;
 
     case KONCPC_SCRNSHOT:
@@ -4081,18 +4099,7 @@ int koncpc_main(int argc, char** argv) {
                 break;
               }
               case KONCPC_FULLSCRN:
-                audio_pause();
-                SDL_Delay(20);
-                video_shutdown();
-                CPC.scr_window = CPC.scr_window ? 0 : 1;
-                if (video_init()) {
-                  fprintf(stderr, "video_init() failed. Aborting.\n");
-                  cleanExit(-1);
-                }
-#ifdef __APPLE__
-                koncpc_setup_macos_menu();
-#endif
-                audio_resume();
+                koncpc_toggle_fullscreen();
                 break;
               case KONCPC_SCRNSHOT:
                 koncpc_menu_action(KONCPC_SCRNSHOT);
