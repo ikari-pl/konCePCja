@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <fstream>
 
+#include "koncepcja.h"  // JoystickEmulation / KeyboardSupportMode
+
 namespace fs = std::filesystem;
 
 class ConfigProfileTest : public ::testing::Test {
@@ -170,4 +172,131 @@ TEST_F(ConfigProfileTest, ReadNonexistentFile) {
   ConfigProfile p;
   auto err = ConfigProfileManager::read_profile("/nonexistent/path.kpf", p);
   EXPECT_NE(err, "");
+}
+
+// ─────────────────────────────────────────────────
+// Built-in machine definitions
+// ─────────────────────────────────────────────────
+
+// The model numbers are a contract: 0=464, 1=664, 2=6128, 3=6128+, enforced
+// elsewhere by read_clamped("system", "model", 2, 0, 3). "6128plus" shipped
+// model 4, which is not a machine at all — it read past chROMFile[4] and made
+// set_asic(CPC.model == 3) false, so the profile produced a Plus with no ASIC.
+TEST_F(ConfigProfileTest, BuiltinProfileModelsAreValid) {
+  struct Expected {
+    const char* name;
+    unsigned int model;
+    unsigned int ram_size;
+  };
+  const Expected kExpected[] = {{"cpc464", 0, 64},
+                                {"cpc664", 1, 64},
+                                {"cpc6128", 2, 128},
+                                {"6128plus", 3, 128}};
+
+  for (const auto& e : kExpected) {
+    ConfigProfile const p = ConfigProfileManager::builtin_profile(e.name);
+    EXPECT_EQ(p.model, e.model) << e.name << " has the wrong model";
+    EXPECT_EQ(p.ram_size, e.ram_size) << e.name << " has the wrong RAM size";
+    EXPECT_LE(p.model, 3u) << e.name << " is outside the 0..3 model range";
+  }
+}
+
+// ─────────────────────────────────────────────────
+// Profile sanitisation
+// ─────────────────────────────────────────────────
+
+// A .kpf is a user-editable text file and load() writes straight into the
+// global CPC struct, where these fields index arrays and size allocations.
+TEST_F(ConfigProfileTest, SanitizeClampsOutOfRangeModel) {
+  ConfigProfile p;
+  p.model = 99;
+  ConfigProfileManager::sanitize(p);
+  EXPECT_LE(p.model, 3u) << "model must never index past chROMFile[4]";
+}
+
+TEST_F(ConfigProfileTest, SanitizeClampsVolumeAndRate) {
+  ConfigProfile p;
+  p.snd_volume = 9999;
+  p.snd_playback_rate = 250;
+  ConfigProfileManager::sanitize(p);
+  EXPECT_LE(p.snd_volume, 100u);
+  EXPECT_LE(p.snd_playback_rate, 4u) << "index into SAMPLE_RATES, not Hz";
+}
+
+// Never round a request UP: an edited file must not be able to inflate the
+// pbRAMbuffer allocation.
+TEST_F(ConfigProfileTest, SanitizeSnapsRamSizeDownToASupportedValue) {
+  ConfigProfile p;
+  p.ram_size = 200;  // between 192 and 256
+  ConfigProfileManager::sanitize(p);
+  EXPECT_EQ(p.ram_size, 192u);
+
+  p.ram_size = 999999;
+  ConfigProfileManager::sanitize(p);
+  EXPECT_EQ(p.ram_size, 4160u) << "clamped to the largest supported size";
+
+  p.ram_size = 1;  // below every supported size
+  ConfigProfileManager::sanitize(p);
+  EXPECT_EQ(p.ram_size, 64u);
+}
+
+TEST_F(ConfigProfileTest, SanitizeLeavesValidValuesAlone) {
+  ConfigProfile p;  // defaults are all valid
+  ConfigProfile const before = p;
+  ConfigProfileManager::sanitize(p);
+  EXPECT_EQ(p.model, before.model);
+  EXPECT_EQ(p.ram_size, before.ram_size);
+  EXPECT_EQ(p.speed, before.speed);
+  EXPECT_EQ(p.snd_volume, before.snd_volume);
+}
+
+// These are cast straight to enum class values, so an out-of-range number
+// would reach switches that do not handle it.
+TEST_F(ConfigProfileTest, SanitizeRejectsOutOfRangeEnums) {
+  ConfigProfile p;
+  p.joystick_emulation = 77;
+  p.keyboard_support_mode = 77;
+  ConfigProfileManager::sanitize(p);
+  EXPECT_LT(p.joystick_emulation,
+            static_cast<unsigned int>(JoystickEmulation::Last));
+  EXPECT_LT(p.keyboard_support_mode,
+            static_cast<unsigned int>(KeyboardSupportMode::Last));
+}
+
+// The sentinel Last is not a selectable mode either.
+TEST_F(ConfigProfileTest, SanitizeRejectsTheEnumSentinel) {
+  ConfigProfile p;
+  p.joystick_emulation = static_cast<unsigned int>(JoystickEmulation::Last);
+  ConfigProfileManager::sanitize(p);
+  EXPECT_LT(p.joystick_emulation,
+            static_cast<unsigned int>(JoystickEmulation::Last));
+}
+
+// ─────────────────────────────────────────────────
+// INI parsing edge cases
+// ─────────────────────────────────────────────────
+
+// Documents the accepted comment syntax: ';' and '#' both start a comment,
+// whole-line or inline.
+//
+// Honest note on coverage: this test does NOT discriminate the inline-'#' fix.
+// Every field here is parsed with std::stoul, which reads the leading digits
+// and stops, so "64 # hash comment" already yielded 64 before the parser
+// stripped '#'. The fix is defensive consistency with the whole-line skip
+// above it, not a behaviour change — there is no input for which the current
+// parser observably differs. Kept because the accepted syntax is worth pinning.
+TEST_F(ConfigProfileTest, ReadProfileAcceptsBothCommentStyles) {
+  std::string const path = (test_dir_ / "comments.kpf").string();
+  std::ofstream f(path);
+  f << "; a full-line comment\n"
+    << "# another full-line comment\n"
+    << "model = 1 ; semicolon comment\n"
+    << "ram_size = 64 # hash comment\n"
+    << "volume = 55\n";
+  f.close();
+
+  ConfigProfile p;
+  ASSERT_EQ(ConfigProfileManager::read_profile(path, p), "");
+  EXPECT_EQ(p.model, 1u);
+  EXPECT_EQ(p.ram_size, 64u) << "'#' inline comment leaked into the value";
 }

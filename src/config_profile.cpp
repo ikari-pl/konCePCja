@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "imgui_ui_testable.h"  // RAM_SIZES / SAMPLE_RATE_COUNT: the one list
 #include "koncepcja.h"
 
 namespace fs = std::filesystem;
@@ -60,10 +61,60 @@ ConfigProfile ConfigProfileManager::builtin_profile(const std::string& name) {
     p.model = 2;
     p.ram_size = 128;
   } else if (name == "6128plus") {
-    p.model = 4;
+    // Model 3, not 4: the model range is 0..3 (464/664/6128/6128+), enforced
+    // everywhere else by read_clamped("system", "model", 2, 0, 3). A 4 here
+    // indexed past chROMFile[4] and made set_asic(CPC.model == 3) false, so the
+    // "6128plus" profile silently produced a Plus-less machine.
+    p.model = 3;
     p.ram_size = 128;
   }
   return p;
+}
+
+void ConfigProfileManager::sanitize(ConfigProfile& p) {
+  auto clamp = [](unsigned int v, unsigned int lo, unsigned int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+  };
+
+  // Bounds mirror the read_clamped() calls in loadConfiguration().
+  p.model = clamp(p.model, 0, 3);  // 464 / 664 / 6128 / 6128+
+  p.speed = clamp(p.speed, static_cast<unsigned int>(MIN_SPEED_SETTING),
+                  static_cast<unsigned int>(MAX_SPEED_SETTING));
+  p.scr_scanlines = clamp(p.scr_scanlines, 0, 100);
+  p.snd_volume = clamp(p.snd_volume, 0, 100);
+  p.snd_playback_rate =
+      clamp(p.snd_playback_rate, 0, SAMPLE_RATE_COUNT - 1);  // index, not Hz
+
+  // ram_size sizes a heap allocation (pbRAMbuffer) and drives the banking
+  // manager, so it must be one of the sizes the machine actually supports.
+  // Snap to the largest supported size at or below the request — never above,
+  // so an edited file cannot inflate the allocation.
+  if (!is_valid_ram_size(p.ram_size)) {
+    unsigned int best = RAM_SIZES[0];
+    for (const unsigned int s : RAM_SIZES)
+      if (p.ram_size >= s) best = s;
+    p.ram_size = best;
+  }
+
+  // Flags are stored as ints but consumed as bools.
+  p.frameskip = clamp(p.frameskip, 0, 99);
+  p.snd_enabled = p.snd_enabled != 0 ? 1 : 0;
+  p.snd_bits = p.snd_bits != 0 ? 1 : 0;
+  p.snd_stereo = p.snd_stereo != 0 ? 1 : 0;
+
+  // These are cast straight to enum class values; a value outside the
+  // enumeration would be UB-adjacent and would reach switch statements that do
+  // not handle it. Fall back to the 0 member rather than clamping to Last,
+  // which is a sentinel and not a real mode.
+  if (p.joystick_emulation >=
+      static_cast<unsigned int>(JoystickEmulation::Last))
+    p.joystick_emulation = static_cast<unsigned int>(JoystickEmulation::None);
+  if (p.keyboard_support_mode >=
+      static_cast<unsigned int>(KeyboardSupportMode::Last))
+    p.keyboard_support_mode =
+        static_cast<unsigned int>(KeyboardSupportMode::Direct);
 }
 
 std::vector<std::string> ConfigProfileManager::list() const {
@@ -106,6 +157,10 @@ std::string ConfigProfileManager::load(const std::string& name) {
     if (!err.empty()) return err;
   }
 
+  // Never let an unvalidated value reach the global CPC struct: a .kpf is
+  // user-editable and these fields index arrays and size allocations.
+  sanitize(p);
+
   // Apply to CPC struct
   CPC.model = p.model;
   CPC.ram_size = p.ram_size;
@@ -114,7 +169,7 @@ std::string ConfigProfileManager::load(const std::string& name) {
   CPC.scr_scale = p.scr_scale;
   CPC.scr_oglscanlines = p.scr_scanlines;
   CPC.snd_enabled = p.snd_enabled;
-  CPC.snd_playback_rate = (p.snd_playback_rate <= 4) ? p.snd_playback_rate : 2;
+  CPC.snd_playback_rate = p.snd_playback_rate;  // sanitize() bounded it
   CPC.snd_bits = p.snd_bits;
   CPC.snd_stereo = p.snd_stereo;
   CPC.snd_volume = p.snd_volume;
@@ -226,7 +281,7 @@ std::string ConfigProfileManager::read_profile(const std::string& path,
     std::string const key = trim(line.substr(0, eq));
     std::string val_str = line.substr(eq + 1);
     // Strip inline comments
-    auto comment = val_str.find(';');
+    auto comment = val_str.find_first_of(";#");
     if (comment != std::string::npos) val_str = val_str.substr(0, comment);
     val_str = trim(val_str);
 

@@ -34,11 +34,23 @@ class ConfigProfileManager {
                                    const ConfigProfile& p);
   static std::string read_profile(const std::string& path, ConfigProfile& p);
 
+  // The settings for a named built-in machine. Public because it is a pure
+  // value producer and the model numbers it hands out are worth pinning in a
+  // test: "6128plus" shipped p.model = 4, which is not a valid model at all
+  // (the range is 0..3), so it read past chROMFile[4] and left the ASIC off.
+  static ConfigProfile builtin_profile(const std::string& name);
+
+  // Clamp every field into the range the emulator actually accepts, matching
+  // the read_clamped() bounds the main config path applies in
+  // loadConfiguration(). A .kpf is user-editable and load() writes straight
+  // into the global CPC struct, so unvalidated values would otherwise reach
+  // array indices and RAM sizing directly.
+  static void sanitize(ConfigProfile& p);
+
  private:
   std::string profile_dir() const;
   std::string profile_path(const std::string& name) const;
   bool is_builtin(const std::string& name) const;
-  static ConfigProfile builtin_profile(const std::string& name);
   static bool valid_name(const std::string& name);
 
   std::string profile_dir_;
