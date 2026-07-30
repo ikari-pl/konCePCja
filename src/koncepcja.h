@@ -583,6 +583,8 @@ int audio_init();
 void audio_shutdown();
 void audio_pause();
 void audio_resume();
+void audio_enable();        // runtime "Enable Sound": lazily opens the stream
+void audio_apply_volume();  // push CPC.snd_volume to the AY stream's gain
 void mouse_init();
 int video_init();
 void video_shutdown();

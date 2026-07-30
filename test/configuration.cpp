@@ -116,22 +116,151 @@ TEST_F(ConfigurationTest, parseFileDoesntExist) {
   configuration_.parseFile("/a/non/existing/file");
 }
 
-TEST_F(ConfigurationTest, saveToFileAndMore) {
-  std::string initalConfig =
+namespace {
+std::string readFile(const std::string& path) {
+  std::ifstream ifs(path);
+  std::stringstream buffer;
+  buffer << ifs.rdbuf();
+  return buffer.str();
+}
+}  // namespace
+
+// Saving is an edit of the parsed text, not a regeneration of it. Before this,
+// toStream dumped the key/value map and every comment in koncepcja.cfg — a
+// self-documenting template — was deleted the first time anything saved.
+TEST_F(ConfigurationTest, saveToFileKeepsCommentsAndLayout) {
+  std::string const initialConfig =
       "# A comment in top\n"
       "[system] # A comment at the end of the line\n"
       "model=42\n";
-  std::string expectedConfig =
-      "[system]\n"
-      "model=42\n";
-  configuration_.parseString(initalConfig);
+  configuration_.parseString(initialConfig);
 
   configuration_.saveToFile(getTmpFilename(0));
 
-  std::ifstream ifs(getTmpFilename(0));
-  std::stringstream buffer;
-  buffer << ifs.rdbuf();
-  ASSERT_EQ(expectedConfig, buffer.str());
+  ASSERT_EQ(initialConfig, readFile(getTmpFilename(0)));
+}
+
+// Honest note on coverage: this test does NOT discriminate the key-loss bug.
+// The old writer dumped config_, which already held every parsed key, so it
+// passed before the fix too — the keys were lost one level up, in
+// saveConfiguration, which never read the file it overwrote (see
+// saveConfigurationEditsTheFileInsteadOfReplacingIt, which does discriminate).
+// Kept as a forward guard: rewriting lines in place must not drop a key.
+TEST_F(ConfigurationTest, saveToFileKeepsParsedKeysItNeverSets) {
+  configuration_.parseString(
+      "[system]\n"
+      "model=42\n"
+      "a_key_from_a_newer_build=hello\n");
+
+  configuration_.setIntValue("system", "model", 2);
+  configuration_.saveToFile(getTmpFilename(0));
+
+  config::Config reloaded;
+  reloaded.parseFile(getTmpFilename(0));
+  ASSERT_EQ(2, reloaded.getIntValue("system", "model", 0));
+  ASSERT_EQ("hello", reloaded.getStringValue(
+                         "system", "a_key_from_a_newer_build", "GONE"));
+}
+
+TEST_F(ConfigurationTest,
+       saveToFileRewritesValueInPlaceKeepingSpacingAndComment) {
+  configuration_.parseString(
+      "[system]\n"
+      "model = 42  # the machine\n"
+      "speed=4\n");
+
+  configuration_.setIntValue("system", "model", 3);
+  configuration_.saveToFile(getTmpFilename(0));
+
+  ASSERT_EQ(
+      "[system]\n"
+      "model = 3  # the machine\n"
+      "speed=4\n",
+      readFile(getTmpFilename(0)));
+}
+
+// New keys join their section (after its last non-blank line, so trailing
+// blank lines stay trailing); a section the file never had goes at the end.
+TEST_F(ConfigurationTest, saveToFileAppendsNewKeysToTheirSection) {
+  configuration_.parseString(
+      "[system]\n"
+      "model=2\n"
+      "\n"
+      "[video]\n"
+      "scr_scale=1\n");
+
+  configuration_.setIntValue("system", "speed", 4);
+  configuration_.setIntValue("sound", "volume", 80);
+  configuration_.saveToFile(getTmpFilename(0));
+
+  ASSERT_EQ(
+      "[system]\n"
+      "model=2\n"
+      "speed=4\n"
+      "\n"
+      "[video]\n"
+      "scr_scale=1\n"
+      "[sound]\n"
+      "volume=80\n",
+      readFile(getTmpFilename(0)));
+}
+
+// A file that repeats a key must not re-parse to the stale duplicate: every
+// occurrence carries the new value.
+TEST_F(ConfigurationTest, saveToFileRewritesEveryOccurrenceOfARepeatedKey) {
+  configuration_.parseString(
+      "[system]\n"
+      "model=1\n"
+      "model=2\n");
+
+  configuration_.setIntValue("system", "model", 3);
+  configuration_.saveToFile(getTmpFilename(0));
+
+  ASSERT_EQ(
+      "[system]\n"
+      "model=3\n"
+      "model=3\n",
+      readFile(getTmpFilename(0)));
+
+  config::Config reloaded;
+  reloaded.parseFile(getTmpFilename(0));
+  ASSERT_EQ(3, reloaded.getIntValue("system", "model", 0));
+}
+
+// Re-saving must converge: the emulator writes this file on every file open.
+TEST_F(ConfigurationTest, saveToFileIsIdempotent) {
+  configuration_.parseString(
+      "# top\n"
+      "[system]\n"
+      "model = 2 # a comment\n"
+      "\n"
+      "[video]\n"
+      "scr_scale=1\n");
+  configuration_.setIntValue("sound", "volume", 80);
+  configuration_.saveToFile(getTmpFilename(0));
+  std::string const once = readFile(getTmpFilename(0));
+
+  config::Config again;
+  again.parseFile(getTmpFilename(0));
+  again.saveToFile(getTmpFilename(1));
+
+  ASSERT_EQ(once, readFile(getTmpFilename(1)));
+}
+
+// A Config that never parsed anything (a config file that does not exist yet)
+// still generates a complete file from scratch.
+TEST_F(ConfigurationTest, saveToFileGeneratesFromScratchWhenNothingWasParsed) {
+  configuration_.setIntValue("system", "model", 2);
+  configuration_.setIntValue("sound", "volume", 80);
+
+  configuration_.saveToFile(getTmpFilename(0));
+
+  ASSERT_EQ(
+      "[sound]\n"
+      "volume=80\n"
+      "[system]\n"
+      "model=2\n",
+      readFile(getTmpFilename(0)));
 }
 
 #ifndef _MSC_VER
@@ -227,6 +356,74 @@ TEST_F(ConfigurationTest, loadConfigurationWithInvalidValues) {
   ASSERT_EQ(0, CPC.printer);
   ASSERT_EQ(std::string(chAppPath) + "/resources",
             std::string(CPC.resources_path));
+}
+
+// Every key loadConfiguration reads, saveConfiguration must write back. Five
+// did not — vsync, run_tier, lightgun, silicon_disc and max_stack_size were
+// read at boot and then deleted by the next save, so setting any of them
+// silently reverted to the default. The MRU list auto-saves on every file
+// open, so "the next save" was one disk load away.
+TEST_F(ConfigurationTest, saveConfigurationPreservesEverySettingItReads) {
+  std::ofstream configFile(getTmpFilename(0));
+  configFile << "# a hand-written note\n"
+             << "[system]\n"
+             << "model=2\n"
+             << "run_tier=2\n"
+             << "silicon_disc=1\n"
+             << "a_key_from_a_newer_build=keep me\n"
+             << "[video]\n"
+             << "vsync=0\n"
+             << "[input]\n"
+             << "lightgun=2\n"
+             << "[devtools]\n"
+             << "max_stack_size=99\n";
+  configFile.close();
+
+  t_CPC CPC[2];
+  loadConfiguration(CPC[0], getTmpFilename(0));
+  saveConfiguration(CPC[0], getTmpFilename(1));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(1));
+  EXPECT_EQ(0, saved.getIntValue("video", "vsync", 1)) << "vsync was dropped";
+  EXPECT_EQ(2, saved.getIntValue("system", "run_tier", 0))
+      << "run_tier was dropped";
+  EXPECT_EQ(2, saved.getIntValue("input", "lightgun", 0))
+      << "lightgun was dropped";
+  EXPECT_EQ(1, saved.getIntValue("system", "silicon_disc", 0))
+      << "silicon_disc was dropped";
+  EXPECT_EQ(99, saved.getIntValue("devtools", "max_stack_size", 50))
+      << "max_stack_size was dropped";
+
+  // And the settings survive the full boot-edit-boot loop.
+  loadConfiguration(CPC[1], getTmpFilename(1));
+  EXPECT_EQ(0, CPC[1].scr_vsync);
+  EXPECT_EQ(99, CPC[1].devtools_max_stack_size);
+  EXPECT_EQ(PhazerType::TrojanLightPhazer,
+            static_cast<PhazerType::Value>(CPC[1].phazer_emulation));
+}
+
+// Saving over an existing file edits it: a comment and an unrecognised key
+// written by hand (or by a newer build) are still there afterwards.
+TEST_F(ConfigurationTest, saveConfigurationEditsTheFileInsteadOfReplacingIt) {
+  std::ofstream configFile(getTmpFilename(0));
+  configFile << "# a hand-written note\n"
+             << "[system]\n"
+             << "model=2\n"
+             << "a_key_from_a_newer_build=keep me\n";
+  configFile.close();
+
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  saveConfiguration(CPC, getTmpFilename(0));
+
+  std::string const text = readFile(getTmpFilename(0));
+  EXPECT_NE(std::string::npos, text.find("# a hand-written note"))
+      << "comments were stripped:\n"
+      << text;
+  EXPECT_NE(std::string::npos, text.find("a_key_from_a_newer_build=keep me"))
+      << "an unknown key was deleted:\n"
+      << text;
 }
 
 // Real unit tests
