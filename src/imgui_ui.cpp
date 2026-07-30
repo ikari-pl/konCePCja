@@ -1105,12 +1105,15 @@ extern "C" void koncpc_request_file_dialog(int action) {
   switch (fda) {
     case FileDialogAction::LoadDiskA: {
       static const SDL_DialogFileFilter f[] = {
-          {"Disk Images", "dsk;ipf;raw;zip"}};
+          {"Disk Images", "dsk;ipf;raw;scp;hfe;a2r;zip"}};
       SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
                              CPC.current_dsk_path.c_str(), false);
       break;
     }
     case FileDialogAction::LoadDiskB: {
+      // No flux formats (scp/hfe/a2r) here on purpose: flux capture is
+      // drive-A-only (side-0/drive-A FDC seam) — see drive_extensions() in
+      // slotshandler.cpp, which the loader enforces.
       static const SDL_DialogFileFilter f[] = {
           {"Disk Images", "dsk;ipf;raw;zip"}};
       SDL_ShowOpenFileDialog(file_dialog_callback, ud, mainSDLWindow, f, 1,
@@ -2135,9 +2138,15 @@ void imgui_render_statusbar() {
             // Ask to confirm eject
             imgui_state.eject_confirm_drive = drv;
           } else {
-            // Load disk
-            static const SDL_DialogFileFilter disk_filters[] = {
+            // Load disk. Per-drive filters: drive A takes the flux
+            // containers, drive B must not (flux is drive-A-only — see
+            // drive_extensions() in slotshandler.cpp).
+            static const SDL_DialogFileFilter drive_a_filters[] = {
+                {"Disk Images", "dsk;ipf;raw;scp;hfe;a2r;zip"}};
+            static const SDL_DialogFileFilter drive_b_filters[] = {
                 {"Disk Images", "dsk;ipf;raw;zip"}};
+            const SDL_DialogFileFilter* disk_filters =
+                drv == 0 ? drive_a_filters : drive_b_filters;
             auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED
                                 : FileDialogAction::LoadDiskB_LED;
             SDL_ShowOpenFileDialog(
