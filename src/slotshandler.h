@@ -15,6 +15,13 @@
 FILE* extractFile(const std::string& zipfile, const std::string& filename,
                   const std::string& ext);
 
+// The dotted extension list a slot accepts (e.g. ".dsk.ipf.raw.scp.hfe.a2r"
+// for drive A — flux containers are drive-A-only, side-0/drive-A flux
+// capture). THE single source of truth for what each slot loads: the loader
+// dispatch, the zip prefilter, the drag-&-drop routing and its drift-guard
+// test all consume this. Add a format here, not at the call sites.
+std::string drive_extensions(DRIVE drive);
+
 int snapshot_load(FILE* pfile);
 int snapshot_load(const std::string& filename);
 int snapshot_save(const std::string& filename);
