@@ -39,6 +39,13 @@ void tape_line_out_pump(subcycle::Machine& machine);
  * Applied live in the pump (scales both the data square and the motor carrier);
  * persisted as [sound] tape_data_volume (percent). */
 void tape_line_out_set_volume(float level);
+
+// Release every SDL audio object this module owns, without touching the
+// machine. MUST run before SDL_Quit(): the device-change watch installed by
+// tape_line_out_arm() calls SDL_DestroyAudioStream, and SDL_QuitAudio fires
+// device-removed events *while* it destroys those devices — the watch would
+// then re-enter SDL's teardown and mutate the list it is walking.
+void tape_line_audio_shutdown();
 float tape_line_out_volume();
 
 #endif /* KONCPC_TAPE_LINE_IN_H */

@@ -279,22 +279,34 @@ TEST_OBJECTS:=$(TEST_DEPENDS:.d=.o)
 # builds stay incremental.
 VERSION_STAMP := $(OBJDIR)/.version-stamp
 
-# The stamp rule below is the first *real* rule in this file, and make takes its
-# first real rule as the default goal — so without this line a bare `make` would
-# build only the stamp and stop, silently doing nothing else.  `all` is defined
-# further down (conditionally on DEBUG); naming it here is enough.
+# The build hash has the same problem and is worse: nothing about a commit
+# touches a source file, so `koncepcja --version` and the startup manifest kept
+# reporting the *previous* commit until something else happened to rebuild.
+# Only argparse.cpp and kon_cpc_ja.cpp embed it, so scope the rebuild to those.
+HASH_STAMP := $(OBJDIR)/.hash-stamp
+
+# Refresh both stamps while the makefile is read, rewriting one only when its
+# value actually changed. Doing it here rather than in a rule with a phony
+# prerequisite keeps them ordinary files with honest timestamps, so
+# `make -q koncepcja` truthfully answers "is the binary current?". (Bare
+# `make -q` always reports out of date, stamps or not: the default goal `all`
+# depends on the phony check_deps. Ask about the target you care about.)
+$(shell mkdir -p $(OBJDIR))
+$(shell printf '%s' '$(KONCPC_VERSION)' | cmp -s - $(VERSION_STAMP) 2>/dev/null \
+          || printf '%s' '$(KONCPC_VERSION)' > $(VERSION_STAMP))
+$(shell printf '%s' '$(GIT_HASH)' | cmp -s - $(HASH_STAMP) 2>/dev/null \
+          || printf '%s' '$(GIT_HASH)' > $(HASH_STAMP))
+
+# The dependency lines below are the first *real* rules in this file, and make
+# takes its first real rule as the default goal — without this line a bare
+# `make` would build one object and stop. `all` is defined further down
+# (conditionally on DEBUG); naming it here is enough.
 .DEFAULT_GOAL := all
 
-$(VERSION_STAMP): FORCE
-	@mkdir -p $(dir $@)
-	@printf '%s' '$(KONCPC_VERSION)' | cmp -s - $@ 2>/dev/null \
-	  || printf '%s' '$(KONCPC_VERSION)' > $@
-
 $(OBJECTS) $(TEST_OBJECTS): $(VERSION_STAMP)
+$(OBJDIR)/src/argparse.o $(OBJDIR)/src/kon_cpc_ja.o: $(HASH_STAMP)
 
-FORCE:
-
-.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo FORCE
+.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
 # Tier 1: always-errors even in release (undefined behavior / security critical)

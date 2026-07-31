@@ -52,6 +52,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "keyboard_manager.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "launch_echo.h"
 #include "m4board.h"
 #include "m4board_http.h"
 #include "macos_menu.h"
@@ -872,10 +873,8 @@ int input_init() {
 }
 }  // namespace
 
-namespace {
-
 // Read one expansion-ROM image (a 16K CPC ROM, optionally prefixed by a
-// 128-byte AMSDOS header) into memmap_ROM[slot].
+// 128-byte AMSDOS header) into memmap_ROM[slot] and fit it in the CPC.
 //
 // Mirrors the classic slot semantics: a missing file or a non-CPC image is a
 // SOFT failure — the slot is cleared with a message and boot continues; a
@@ -883,7 +882,11 @@ namespace {
 // oversized, I/O error) is a HARD failure that aborts emulator_init.
 // Returns 0 on success or soft failure, an ERR_* code on hard failure.
 int load_expansion_rom_slot(int slot, const std::string& rom_file) {
-  const std::string path = CPC.rom_path + "/" + rom_file;
+  // `rom_file` is a bare name in CPC.rom_path (the [rom] slotNN config form)
+  // or a full path, which is what the ROMs dialog and IPC `rom load` hand in.
+  const std::string path = std::filesystem::path(rom_file).is_absolute()
+                               ? rom_file
+                               : CPC.rom_path + "/" + rom_file;
   FilePtr const f = open_file(path, "rb");
   if (!f) {
     fprintf(stderr, "ERROR: The %s file is missing - clearing ROM slot %d.\n",
@@ -948,9 +951,33 @@ int load_expansion_rom_slot(int slot, const std::string& rom_file) {
               << path);
     return ERR_NOT_A_CPC_ROM;
   }
+  // Swap the new image in, repoint everything that was reading the old one,
+  // and only then free it. Freeing first would leave a window — however
+  // short — in which the board and the host's paging both point at released
+  // memory, and this runs while the machine is live: the ROMs dialog fits a
+  // ROM without a reset.
+  byte* const previous = memmap_ROM[slot];
   memmap_ROM[slot] = rom.release();
+
+  // At boot the board is not up yet and this is a no-op —
+  // subcycle_bridge_start() fits every configured slot on the way up.
+  subcycle_bridge_attach_rom_slot(slot, memmap_ROM[slot]);
+
+  // The host's own paging caches the selected upper ROM, so replacing the ROM
+  // that is currently selected has to move that pointer too. `rom load` and
+  // both unload paths already do this; doing it here covers every caller.
+  if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
+    pbExpansionROM = memmap_ROM[slot];
+    if (!(GateArray.ROM_config & 0x08)) {
+      memory_set_read_bank(3, pbExpansionROM);
+    }
+  }
+
+  delete[] previous;
   return 0;
 }
+
+namespace {
 
 // Load the Multiface II ROM: 8K firmware image kept twice — a pristine
 // backup (pbMF2ROMbackup, restored on every reset) and the live 8K ROM + 8K
@@ -2403,6 +2430,37 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   return conf.saveToFile(configFilename);
 }
 
+// Launch files that the window manager may echo back as a drop.
+//
+// The old guard compared *filenames* against whatever was mounted, forever —
+// so dropping a different game.dsk from another folder was silently ignored,
+// and re-dropping a mounted disk did nothing and said nothing about it. The
+// filter (src/launch_echo.h) is the narrow version: whole paths, consumed once
+// each, only during the moment after launch when an echo can arrive.
+namespace {
+LaunchEchoFilter g_launch_echo;
+
+std::string canonical_path(const std::string& p) {
+  std::error_code ec;
+  const std::filesystem::path c = std::filesystem::weakly_canonical(p, ec);
+  return ec ? p : c.string();
+}
+}  // namespace
+
+void register_launch_files(const std::vector<std::string>& slot_list) {
+  std::vector<std::string> canonical;
+  canonical.reserve(slot_list.size());
+  for (const auto& f : slot_list) canonical.push_back(canonical_path(f));
+  // Generous: the echo arrives within the first frames. Anything later is the
+  // user dropping a file they also passed on the command line, which is an
+  // ordinary thing to do and must behave like any other drop.
+  g_launch_echo.arm(canonical, SDL_GetTicks(), 5000);
+}
+
+bool drop_is_launch_echo(const std::string& drop_path) {
+  return g_launch_echo.consume(canonical_path(drop_path), SDL_GetTicks());
+}
+
 // As long as a GUI is enabled, we must show the cursor.
 // Because we can activate multiple GUIs at a time, we need to keep track of how
 // many times we've been asked to show or hide cursor.
@@ -2864,6 +2922,9 @@ void doCleanUp() {
   symbiface_cleanup();
   m4board_cleanup();
   joysticks_shutdown();
+  // Before audio_shutdown()/SDL_Quit(): the tape line I/O owns SDL audio
+  // streams and an audio-device event watch that neither of them knows about.
+  tape_line_audio_shutdown();
   audio_shutdown();
   video_clear_topbar();
   video_shutdown();
@@ -3822,6 +3883,10 @@ int koncpc_main(int argc, char** argv) {
 
   // Extract files to be loaded from the command line args
   fillSlots(slot_list, CPC);
+  // macOS re-delivers every launch file as a DROP_FILE once the window
+  // exists, after fillSlots() has already mounted it. Register each one to be
+  // swallowed exactly once, shortly after start — see drop_is_launch_echo().
+  register_launch_files(slot_list);
 
   // Must be done before emulator_init()
   CPC.InputMapper = new InputMapper(&CPC);
@@ -3990,38 +4055,27 @@ int koncpc_main(int argc, char** argv) {
           auto drop_fname =
               std::filesystem::path(drop_path).filename().string();
 
-          // macOS re-delivers the CLI launch-file arguments as DROP_FILE
-          // events once the window exists — *after* fillSlots() has already
-          // mounted them into the drive slots. Loading every dropped disk
-          // into drive A therefore clobbered a launch that filled both
-          // drives (the 2nd CLI disk overwrote the 1st). Ignore a drop that
-          // merely re-delivers a disk already mounted in a drive; match by
-          // filename, since the CLI arg may be relative while the drop path
-          // is absolute.
-          auto already_mounted = [&](const std::string& slot_file) {
-            return !slot_file.empty() &&
-                   std::filesystem::path(slot_file).filename() ==
-                       std::filesystem::path(drop_path).filename();
-          };
+          // The window manager echoing back a command-line file is not a
+          // user action. Everything past this point is, and must produce
+          // visible feedback — a drop that changes nothing and says nothing
+          // is indistinguishable from a broken emulator.
+          if (drop_is_launch_echo(drop_path)) {
+            LOG_INFO("Ignoring launch-file echo: " << drop_fname);
+            continue;
+          }
 
           // Route by the list slotshandler actually accepts for drive A
           // (.dsk/.ipf/.raw + the flux containers .scp/.hfe/.a2r) instead of
           // a hand-kept copy — a dropped .hfe used to hit the unknown-file
           // toast because this list had drifted from the loaders.
           if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
-            if (already_mounted(CPC.driveA.file) ||
-                already_mounted(CPC.driveB.file)) {
-              LOG_INFO("Ignoring drop of already-mounted disk: " << drop_fname);
+            CPC.driveA.file = drop_path;
+            if (file_load(CPC.driveA) == 0) {
+              ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
+              imgui_mru_push(CPC.mru_disks, drop_path);
             } else {
-              CPC.driveA.file = drop_path;
-              if (file_load(CPC.driveA) == 0) {
-                ui_host().toast(UiToastLevel::Success,
-                                "Drive A: " + drop_fname);
-                imgui_mru_push(CPC.mru_disks, drop_path);
-              } else {
-                ui_host().toast(UiToastLevel::Error,
-                                "Failed to load disk: " + drop_fname);
-              }
+              ui_host().toast(UiToastLevel::Error,
+                              "Failed to load disk: " + drop_fname);
             }
           } else if (ext == ".cdt" || ext == ".voc") {
             CPC.tape.file = drop_path;
