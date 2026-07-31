@@ -33,6 +33,7 @@ bool g_speedtest_open = false;
 #include "devtools_ui.h"
 #include "disk_format.h"
 #include "drive_sounds.h"
+#include "drive_status.h"
 #include "fileutils.h"
 #include "flux_save.h"
 #include "hw_views.h"
@@ -1379,16 +1380,13 @@ void imgui_render_menubar() {
     if (ImGui::MenuItem("New Disk...")) {
       imgui_state.show_new_disk = true;
     }
-    // Save-As: the format picker's options track the drive's live backing.
-    // Under engine=1 the caps come from the sub-cycle FDC medium; on a legacy
-    // engine=0 run they fall back to the driveA/driveB struct (sector-only).
-    const bool engine_live = subcycle_bridge_active();
-    const FluxSaveCaps caps_a =
-        engine_live ? flux_save_caps(0) : FluxSaveCaps{};
-    const FluxSaveCaps caps_b =
-        engine_live ? flux_save_caps(1) : FluxSaveCaps{};
-    const bool a_dsk = engine_live ? caps_a.can_dsk : (driveA.tracks != 0);
-    const bool b_dsk = engine_live ? caps_b.can_dsk : (driveB.tracks != 0);
+    // Save-As: the format picker's options track the drive's live backing,
+    // read from the FDC medium — the only thing that knows whether a disc is
+    // sector- or flux-backed.
+    const FluxSaveCaps caps_a = flux_save_caps(0);
+    const FluxSaveCaps caps_b = flux_save_caps(1);
+    const bool a_dsk = caps_a.can_dsk;
+    const bool b_dsk = caps_b.can_dsk;
     if (ImGui::BeginMenu("Save Disk A", a_dsk || caps_a.can_scp)) {
       if (ImGui::MenuItem("As .dsk...", nullptr, false, a_dsk)) {
         koncpc_request_file_dialog(
@@ -2076,12 +2074,16 @@ void imgui_render_statusbar() {
         t_drive const& drive = drv == 0 ? driveA : driveB;
         auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
         const char* driveLabel = drv == 0 ? "A:" : "B:";
+        // Ask the medium, not the sector view: a flux-backed disc (.hfe/.scp/
+        // .a2r) leaves drive.tracks at 0, which read here as "(no disk)" for a
+        // disc the CPC was happily reading.
+        const DriveMedium medium = drive_medium(drv);
 
         if (drv > 0) ImGui::SameLine(0, 12.0f);
 
         // Build display name
         const char* fullName;
-        if (drive.tracks) {
+        if (medium.present) {
           auto pos = driveFile.find_last_of("/\\");
           fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1
                                                 : driveFile.c_str();
@@ -2111,7 +2113,7 @@ void imgui_render_statusbar() {
         ImGui::SameLine(0, 4.0f);
 
         // Show track number when disk is loaded
-        if (drive.tracks) {
+        if (medium.present) {
           char trkStr[8];
           snprintf(trkStr, sizeof(trkStr), "T%02d",
                    static_cast<int>(drive.current_track));
@@ -2124,9 +2126,9 @@ void imgui_render_statusbar() {
         }
 
         // Show filename or "(no disk)" with marquee scrolling
-        ImGui::PushStyleColor(ImGuiCol_Text,
-                              drive.tracks ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-                                           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::PushStyleColor(
+            ImGuiCol_Text, medium.present ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+                                          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
         imgui_marquee_text(fullName, 120.0f);
         ImGui::PopStyleColor();
@@ -2134,7 +2136,7 @@ void imgui_render_statusbar() {
 
         // Click on the whole group (label + LED + filename)
         if (ImGui::IsItemClicked()) {
-          if (drive.tracks) {
+          if (medium.present) {
             // Ask to confirm eject
             imgui_state.eject_confirm_drive = drv;
           } else {
