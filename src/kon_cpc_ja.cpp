@@ -950,14 +950,29 @@ int load_expansion_rom_slot(int slot, const std::string& rom_file) {
               << path);
     return ERR_NOT_A_CPC_ROM;
   }
-  // Replace whatever was fitted: unfit it in the CPC before the image it is
-  // still pointing at goes away.
-  subcycle_bridge_attach_rom_slot(slot, nullptr);
-  delete[] memmap_ROM[slot];
+  // Swap the new image in, repoint everything that was reading the old one,
+  // and only then free it. Freeing first would leave a window — however
+  // short — in which the board and the host's paging both point at released
+  // memory, and this runs while the machine is live: the ROMs dialog fits a
+  // ROM without a reset.
+  byte* const previous = memmap_ROM[slot];
   memmap_ROM[slot] = rom.release();
-  // Fit it. At boot the board is not up yet and this is a no-op —
-  // subcycle_bridge_start() attaches every populated slot on the way up.
+
+  // At boot the board is not up yet and this is a no-op —
+  // subcycle_bridge_start() fits every configured slot on the way up.
   subcycle_bridge_attach_rom_slot(slot, memmap_ROM[slot]);
+
+  // The host's own paging caches the selected upper ROM, so replacing the ROM
+  // that is currently selected has to move that pointer too. `rom load` and
+  // both unload paths already do this; doing it here covers every caller.
+  if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
+    pbExpansionROM = memmap_ROM[slot];
+    if (!(GateArray.ROM_config & 0x08)) {
+      memory_set_read_bank(3, pbExpansionROM);
+    }
+  }
+
+  delete[] previous;
   return 0;
 }
 
