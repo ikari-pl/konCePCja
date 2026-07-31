@@ -95,6 +95,19 @@ void tape_line_out_disarm(subcycle::Machine& machine) {
 
 bool tape_line_out_active() { return g_out_stream != nullptr; }
 
+void tape_line_audio_shutdown() {
+  // Watch first: it is the thing that could re-enter SDL during teardown.
+  SDL_RemoveEventWatch(out_device_watch, nullptr);
+  if (g_out_stream != nullptr) {
+    SDL_DestroyAudioStream(g_out_stream);
+    g_out_stream = nullptr;
+  }
+  if (g_stream != nullptr) {
+    SDL_DestroyAudioStream(g_stream);
+    g_stream = nullptr;
+  }
+}
+
 void tape_line_out_set_volume(float level) {
   // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
   // conditional kept intentionally; no clang-tidy auto-fix
