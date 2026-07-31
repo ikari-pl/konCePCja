@@ -13,6 +13,7 @@
 
 #include "hw/fdc.h"
 #include "hw/gate_array.h"
+#include "hw/memory.h"
 #include "hw/probe.h"
 
 namespace {
@@ -244,4 +245,91 @@ TEST(SubcycleMachine, DormantPeripheralsLeaveTheTickList) {
   m.run_frame();
   EXPECT_EQ(m.active_tick_count(), stock + 1)
       << "an armed execution breakpoint rejoins the probe to the tick list";
+}
+
+// An expansion ROM the user fits must be readable by the CPC, and removable
+// again. attach_rom used to ignore a nullptr, so a slot could be filled but
+// never emptied: `rom unload` freed the image while the memory device was
+// still pointing at it, and the CPC read freed memory.
+TEST(SubcycleMachine, ExpansionRomSlotCanBeFittedAndEmptied) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  subcycle::Machine m;
+  ASSERT_TRUE(m.build(rom.data(), rom.size()));
+
+  // Select upper-ROM slot 4 the way the CPC does: RMR (&7Fxx) enables both
+  // ROMs, the &DFxx latch picks the slot.
+  constexpr int kSlot = 4;
+  mem_fast_io_write(m.mem(), 0x7F00, 0x81);
+  mem_fast_io_write(m.mem(), 0xDF00, kSlot);
+
+  // An empty slot reads as BASIC — indistinguishable from no board fitted.
+  const uint8_t basic0 = mem_peek_cpu(m.mem(), 0xC000);
+  const uint8_t basic1 = mem_peek_cpu(m.mem(), 0xC001);
+
+  // A recognisable 16K image; the caller owns it, as the API requires.
+  std::vector<uint8_t> fitted(0x4000, 0x00);
+  fitted[0] = 0xA5;
+  fitted[1] = 0x5A;
+  ASSERT_NE(basic0, 0xA5) << "the marker must not collide with BASIC";
+
+  m.attach_rom(kSlot, fitted.data());
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC000), 0xA5)
+      << "a fitted ROM is not visible to the CPC";
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC001), 0x5A);
+
+  m.attach_rom(kSlot, nullptr);
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC000), basic0)
+      << "an emptied slot must read as BASIC again, not as the freed image";
+  EXPECT_EQ(mem_peek_cpu(m.mem(), 0xC001), basic1);
+}
+
+// The machine used to allocate a fixed 64K of expansion whatever was asked
+// for, so a stock 64K 464 and a 576K Yarek config both booted as a 128K 6128.
+TEST(SubcycleMachine, RamSizeFitsTheRequestedExpansion) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  struct Case {
+    size_t requested_kb;
+    size_t expect_total;
+  };
+  // 64K has no expansion at all; the rest keep whole 64K banks.
+  const Case kCases[] = {{64, 0x10000},
+                         {128, 0x20000},
+                         {256, 0x40000},
+                         {576, 0x90000},
+                         {4160, 0x410000}};
+
+  for (const auto& c : kCases) {
+    subcycle::Machine m;
+    m.set_ram_size(c.requested_kb * 1024);
+    ASSERT_TRUE(m.build(rom.data(), rom.size()));
+    EXPECT_EQ(m.ram_size(), c.expect_total)
+        << c.requested_kb << "K was not fitted";
+  }
+}
+
+// The Silicon Disc lives in expansion banks 4-7, so it raises the floor —
+// but it must not shrink a machine that was asked for more.
+TEST(SubcycleMachine, SiliconDiscRaisesTheRamFloorWithoutShrinkingIt) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  subcycle::Machine small;
+  small.set_ram_size(128 * 1024);
+  ASSERT_TRUE(small.build(rom.data(), rom.size()));
+  small.enable_silicon_disc(true);
+  EXPECT_GE(small.ram_size(), 0x90000u) << "no room for banks 4-7";
+
+  subcycle::Machine big;
+  big.set_ram_size(4160 * 1024);
+  ASSERT_TRUE(big.build(rom.data(), rom.size()));
+  const size_t before = big.ram_size();
+  big.enable_silicon_disc(true);
+  EXPECT_EQ(big.ram_size(), before) << "the Silicon Disc shrank the machine";
 }

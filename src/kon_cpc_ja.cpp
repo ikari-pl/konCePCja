@@ -873,10 +873,8 @@ int input_init() {
 }
 }  // namespace
 
-namespace {
-
 // Read one expansion-ROM image (a 16K CPC ROM, optionally prefixed by a
-// 128-byte AMSDOS header) into memmap_ROM[slot].
+// 128-byte AMSDOS header) into memmap_ROM[slot] and fit it in the CPC.
 //
 // Mirrors the classic slot semantics: a missing file or a non-CPC image is a
 // SOFT failure — the slot is cleared with a message and boot continues; a
@@ -884,7 +882,11 @@ namespace {
 // oversized, I/O error) is a HARD failure that aborts emulator_init.
 // Returns 0 on success or soft failure, an ERR_* code on hard failure.
 int load_expansion_rom_slot(int slot, const std::string& rom_file) {
-  const std::string path = CPC.rom_path + "/" + rom_file;
+  // `rom_file` is a bare name in CPC.rom_path (the [rom] slotNN config form)
+  // or a full path, which is what the ROMs dialog and IPC `rom load` hand in.
+  const std::string path = std::filesystem::path(rom_file).is_absolute()
+                               ? rom_file
+                               : CPC.rom_path + "/" + rom_file;
   FilePtr const f = open_file(path, "rb");
   if (!f) {
     fprintf(stderr, "ERROR: The %s file is missing - clearing ROM slot %d.\n",
@@ -949,9 +951,33 @@ int load_expansion_rom_slot(int slot, const std::string& rom_file) {
               << path);
     return ERR_NOT_A_CPC_ROM;
   }
+  // Swap the new image in, repoint everything that was reading the old one,
+  // and only then free it. Freeing first would leave a window — however
+  // short — in which the board and the host's paging both point at released
+  // memory, and this runs while the machine is live: the ROMs dialog fits a
+  // ROM without a reset.
+  byte* const previous = memmap_ROM[slot];
   memmap_ROM[slot] = rom.release();
+
+  // At boot the board is not up yet and this is a no-op —
+  // subcycle_bridge_start() fits every configured slot on the way up.
+  subcycle_bridge_attach_rom_slot(slot, memmap_ROM[slot]);
+
+  // The host's own paging caches the selected upper ROM, so replacing the ROM
+  // that is currently selected has to move that pointer too. `rom load` and
+  // both unload paths already do this; doing it here covers every caller.
+  if (GateArray.upper_ROM == static_cast<unsigned char>(slot)) {
+    pbExpansionROM = memmap_ROM[slot];
+    if (!(GateArray.ROM_config & 0x08)) {
+      memory_set_read_bank(3, pbExpansionROM);
+    }
+  }
+
+  delete[] previous;
   return 0;
 }
+
+namespace {
 
 // Load the Multiface II ROM: 8K firmware image kept twice — a pristine
 // backup (pbMF2ROMbackup, restored on every reset) and the live 8K ROM + 8K

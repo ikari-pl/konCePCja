@@ -357,8 +357,20 @@ void process_pending_dialog() {
       emulator_reset();
       break;
     case FileDialogAction::LoadROM:
-      if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS)
+      // Record it AND fit it: setting rom_file alone only took effect at the
+      // next full init, so picking a ROM here appeared to do nothing.
+      if (rom_slot >= 0 && rom_slot < MAX_ROM_SLOTS) {
         CPC.rom_file[rom_slot] = path;
+        if (load_expansion_rom_slot(rom_slot, path) != 0) {
+          imgui_toast_error("Not a valid 16K CPC ROM: " + fname);
+          CPC.rom_file[rom_slot] = "";
+        } else if (memmap_ROM[rom_slot] == nullptr) {
+          imgui_toast_error("Could not load ROM: " + fname);
+        } else {
+          imgui_toast_success("ROM fitted in slot " + std::to_string(rom_slot) +
+                              ": " + fname);
+        }
+      }
       break;
     case FileDialogAction::SelectM4SDFolder:
       g_m4board.sd_root_path = path;
@@ -3295,6 +3307,9 @@ void imgui_render_options() {
             ImGui::TextDisabled("system");
           } else if (loaded) {
             if (ImGui::SmallButton("X")) {
+              // Unfit it in the CPC before freeing: the board holds this
+              // pointer until told otherwise.
+              subcycle_bridge_attach_rom_slot(i, nullptr);
               delete[] memmap_ROM[i];
               memmap_ROM[i] = nullptr;
               CPC.rom_file[i] = "";
