@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
   pull_request:
+  # A merge queue validates the PR against the tip of master on its own
+  # gh-readonly-queue/** branch. Without this trigger the required checks
+  # never report there, every queue entry times out, and nothing can merge.
+  merge_group:
   release:
     types: [published]
 
