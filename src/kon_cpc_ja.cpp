@@ -2922,6 +2922,9 @@ void doCleanUp() {
   symbiface_cleanup();
   m4board_cleanup();
   joysticks_shutdown();
+  // Before audio_shutdown()/SDL_Quit(): the tape line I/O owns SDL audio
+  // streams and an audio-device event watch that neither of them knows about.
+  tape_line_audio_shutdown();
   audio_shutdown();
   video_clear_topbar();
   video_shutdown();
