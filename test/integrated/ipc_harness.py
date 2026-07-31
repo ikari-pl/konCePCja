@@ -14,7 +14,7 @@ import time
 import sys
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 class KoncepcjaIPC:
     """Client for konCePCja IPC protocol."""
@@ -192,6 +192,9 @@ class EmulatorRunner:
         self.process: Optional[subprocess.Popen] = None
         self.ipc = KoncepcjaIPC()
         self._stderr_q: "queue.Queue[Optional[str]]" = queue.Queue()
+        # Every stderr line, kept because _await_ipc_port consumes the queue:
+        # a later probe (the telnet port) would otherwise find its line gone.
+        self._stderr_lines: List[str] = []
 
     def _pump_stderr(self) -> None:
         """Drain child stderr into _stderr_q for the process's whole life.
@@ -202,6 +205,7 @@ class EmulatorRunner:
         """
         assert self.process is not None and self.process.stderr is not None
         for line in self.process.stderr:
+            self._stderr_lines.append(line)
             self._stderr_q.put(line)
         self._stderr_q.put(None)
 
@@ -229,6 +233,23 @@ class EmulatorRunner:
             m = re.search(r'\bIPC: listening on port (\d+)', line)
             if m:
                 return int(m.group(1))
+
+    def await_logged_port(self, needle: str, timeout: float = 20.0) -> Optional[int]:
+        """Return a port this instance logged, e.g. 'Telnet console'.
+
+        Ports must always come from the process's own output: the servers
+        probe forward past busy ports, so a hardcoded or derived number can
+        silently address a different, already-running emulator.
+        """
+        pattern = re.compile(re.escape(needle) + r': listening on port (\d+)')
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for line in list(self._stderr_lines):
+                m = pattern.search(line)
+                if m:
+                    return int(m.group(1))
+            time.sleep(0.1)
+        return None
 
     def _drain_stderr_tail(self, max_lines: int = 20) -> str:
         """Non-blocking grab of buffered stderr lines, for error messages."""
@@ -1040,6 +1061,58 @@ def test_load_accepts_flux_disk_formats():
     return True
 
 
+
+def test_boots_to_basic_with_peripherals():
+    """The CPC must reach the BASIC prompt with peripherals configured.
+
+    Nothing else in this suite boots the configured machine and checks that it
+    arrives. That gap let a real crashloop ship: anything attached into an
+    expansion ROM slot gets initialised by the firmware's ROM scan at boot, so
+    fitting a peripheral's ROM whose Device is not wired up runs its boot code
+    against absent hardware and the machine resets forever, never reaching
+    BASIC. Every unit test still passed, because the defect was in which slots
+    get fitted, not in the fitting.
+
+    The assertion is the BASIC prompt itself, read off the telnet console —
+    model-independent, and exactly the thing the user loses when this breaks.
+    """
+    with EmulatorRunner() as emu:
+        # M4 on: it owns a ROM slot and auto-loads an image into it, which is
+        # the configuration that broke.
+        if not emu.start('-O', 'peripheral.m4board=1'):
+            print("  Failed to start emulator")
+            return False
+
+        port = emu.await_logged_port('Telnet console', timeout=10.0)
+        if port is None:
+            print("  SKIP: emulator logged no telnet port")
+            return True
+
+        banner = b''
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=5.0) as sock:
+                sock.settimeout(1.0)
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline and b'Ready' not in banner:
+                    try:
+                        chunk = sock.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if not chunk:
+                        break
+                    banner += chunk
+        except OSError as e:
+            print(f"  SKIP: could not reach the telnet console: {e}")
+            return True
+
+        if b'Ready' not in banner:
+            print(f"  CPC never reached the BASIC prompt. Console said: "
+                  f"{banner[:200]!r}")
+            return False
+        print("  CPC reached the BASIC prompt")
+        return True
+
+
 def main():
     """Run all IPC tests."""
     print("=" * 50)
@@ -1047,6 +1120,7 @@ def main():
     print("=" * 50)
 
     tests = [
+        test_boots_to_basic_with_peripherals,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,

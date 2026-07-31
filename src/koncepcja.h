@@ -610,6 +610,12 @@ bool autotype_waitbreak_in_flight();
 //  - $HOME/.koncepcja.cfg
 //  - /etc/koncepcja.cfg
 std::string getConfigurationFilename(bool forWrite = false);
+// Load a 16K expansion ROM into `slot` and fit it in the CPC. `rom_file` is a
+// bare name resolved against CPC.rom_path, or a full path. Replaces whatever
+// occupied the slot. Returns 0 on success, an ERR_* code on a bad image; a
+// missing file or a non-CPC ROM clears the slot and still returns 0.
+int load_expansion_rom_slot(int slot, const std::string& rom_file);
+
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename);
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename);
 
