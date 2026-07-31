@@ -60,6 +60,13 @@ void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
                                   uint8_t unit = 0);
 void subcycle_bridge_eject_media(uint8_t unit = 0);
 
+/* Fit or remove an expansion ROM in `slot` (0-31). `rom16k` is a caller-owned
+ * 16K image, or nullptr to empty the slot — an empty slot reads as BASIC, the
+ * same as no board fitted. Call this whenever the host's memmap_ROM changes
+ * (the ROMs dialog, IPC `rom load`/`rom unload`); writing memmap_ROM alone
+ * leaves the CPC unable to see the ROM. */
+void subcycle_bridge_attach_rom_slot(int slot, const uint8_t* rom16k);
+
 /* The Multiface II STOP button (deferred to the frame boundary). */
 void subcycle_bridge_mf2_stop();
 

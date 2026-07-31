@@ -100,7 +100,9 @@ bool Machine::build(const uint8_t* rom, size_t rom_len) {
 
   mem_load_lower_rom(&mdev_, rom, 0x4000);           // OS at 0x0000
   mem_load_upper_rom(&mdev_, rom + 0x4000, 0x4000);  // BASIC at 0xC000
-  xmem_.assign(0x10000, 0);  // 64K expansion: the machine is a real 128K 6128
+  // Expansion above the base 64K. set_ram_size() may already have chosen a
+  // size; the default is the 64K that makes a 6128.
+  xmem_.assign(want_expansion_, 0);
   mem_attach_expansion(&mdev_, xmem_.data(), xmem_.size());
   built_ = true;
   recompose_active();  // establish dormancy + wake-tier validity at
@@ -124,8 +126,10 @@ void Machine::attach_amsdos(const uint8_t* rom16k, size_t len) {
 }
 
 void Machine::attach_rom(int slot, const uint8_t* rom16k) {
-  if (rom16k != nullptr && slot >= 0 && slot < 256)
-    mem_attach_rom(&mdev_, slot, rom16k);
+  // nullptr empties the slot — an empty slot reads as BASIC, exactly like no
+  // board fitted. Removal has to be possible: the caller owns the image and
+  // frees it, and the memory device would otherwise keep reading it.
+  if (slot >= 0 && slot < 256) mem_attach_rom(&mdev_, slot, rom16k);
 }
 
 void Machine::attach_cartridge(const uint8_t* image, size_t bytes) {
@@ -1814,10 +1818,27 @@ size_t Machine::ram_size() const { return 0x10000 + xmem_.size(); }
 // memory Device already banks. Grow the expansion to 512K so banks 4-7 exist;
 // re-attach (resize may reallocate). Existing contents are preserved.
 void Machine::enable_silicon_disc(bool on) {
-  const size_t want = on ? kSiliconEnd : 0x10000;
+  silicon_ = on;
+  resize_expansion();
+}
+
+void Machine::set_ram_size(size_t total_bytes) {
+  want_expansion_ = total_bytes > 0x10000 ? total_bytes - 0x10000 : 0;
+  want_expansion_ -= want_expansion_ % 0x10000;  // whole 64K banks only
+  resize_expansion();
+}
+
+// The expansion is whichever is larger: what the machine was asked for, and
+// what the Silicon Disc needs to have banks 4-7 to live in. resize() keeps
+// existing contents; re-attach because it may have reallocated.
+void Machine::resize_expansion() {
+  const size_t want =
+      silicon_ && want_expansion_ < kSiliconEnd ? kSiliconEnd : want_expansion_;
   if (xmem_.size() == want) return;
   xmem_.resize(want, 0);
-  mem_attach_expansion(&mdev_, xmem_.data(), xmem_.size());
+  // Before build() there is no memory Device to attach to yet — it picks the
+  // size up itself. Attaching here would dereference an unbuilt Device.
+  if (built_) mem_attach_expansion(&mdev_, xmem_.data(), xmem_.size());
 }
 
 void Machine::silicon_disc_load(const uint8_t* src, size_t len) {
