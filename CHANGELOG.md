@@ -1,5 +1,23 @@
 # Changelog
 
+## [6.2.1](https://github.com/ikari-pl/konCePCja/compare/v6.2.0...v6.2.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* **audio:** release the tape line I/O before SDL_Quit ([97ac97b](https://github.com/ikari-pl/konCePCja/commit/97ac97b40726594099bb57bde8fa1a1a8b6c63cc))
+* **audio:** release the tape line I/O before SDL_Quit ([7b95e95](https://github.com/ikari-pl/konCePCja/commit/7b95e953bad025ad46a876bfd83941e7c5e1df1f))
+* **build:** stop the binary reporting the wrong commit ([d67129a](https://github.com/ikari-pl/konCePCja/commit/d67129abb31971e00be6a590e73f789728091776))
+* expansion ROMs, the configured RAM size, and an honest build hash ([80d202c](https://github.com/ikari-pl/konCePCja/commit/80d202cafafb77462e7c0ef167c4be3bc7256593))
+* **ram:** fit the RAM size the machine was configured for ([75470fc](https://github.com/ikari-pl/konCePCja/commit/75470fc97766d462754609389ebae1ac0647bab9))
+* **rom:** fit expansion ROM slots in the CPC ([b9fbf16](https://github.com/ikari-pl/konCePCja/commit/b9fbf167f4b8d8097d1353cec2f163a5b0ea3169))
+* **rom:** fit only the ROM slots the user asked for ([699faba](https://github.com/ikari-pl/konCePCja/commit/699faba39ca27d96c4f5e5a9998bdb339fc5882a))
+* **rom:** repoint the host's paging when a fitted ROM is replaced ([9816b4f](https://github.com/ikari-pl/konCePCja/commit/9816b4f3acca608d1de0b9ea21cbb09a497e4190))
+* **ui:** a dropped file is never silently ignored ([58dd71a](https://github.com/ikari-pl/konCePCja/commit/58dd71a7fa02636c7217d92a9fcf2cb07fb82917))
+* **ui:** a dropped file is never silently ignored ([23aae2f](https://github.com/ikari-pl/konCePCja/commit/23aae2fb03cfbb167a28514d2b1e3b10255f3fe8))
+* **ui:** read the drive's medium, not its sector view ([c3c1b7a](https://github.com/ikari-pl/konCePCja/commit/c3c1b7af0f913644f991e693ae09326d7bea6b47))
+* **ui:** read the drive's medium, not its sector view ([4d483ce](https://github.com/ikari-pl/konCePCja/commit/4d483ceb035e12e9d1ef99f8f5b10f4aa79b0be8))
+
 ## [6.2.0](https://github.com/ikari-pl/konCePCja/compare/v6.1.1...v6.2.0) (2026-07-30)
 
 
