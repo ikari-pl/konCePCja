@@ -2738,10 +2738,21 @@ void koncpc_menu_action(int action) {
                       (log_verbose ? "on" : "off"));
       break;
 
-    case KONCPC_NEXTDISKA:
+    case KONCPC_NEXTDISKA: {
+      // Walking off the end used to fail silently: the index still advanced,
+      // the load failed, and nothing on screen changed or said why.
+      const unsigned int previous_index = CPC.driveA.zip_index;
       CPC.driveA.zip_index += 1;
-      file_load(CPC.driveA);
+      if (file_load(CPC.driveA) == 0) {
+        set_osd_message("Archive disk " +
+                        std::to_string(CPC.driveA.zip_index + 1));
+      } else {
+        CPC.driveA.zip_index = previous_index;  // stay on the disk that works
+        file_load(CPC.driveA);
+        set_osd_message("No more disks in this archive");
+      }
       break;
+    }
   }
 }
 

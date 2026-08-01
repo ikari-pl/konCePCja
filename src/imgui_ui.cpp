@@ -723,12 +723,12 @@ void imgui_render_ui() {
       ImGui::TextUnformatted("Are you sure you want to quit?");
     }
     ImGui::Spacing();
+    bool const cancel = ImGui::Button("Cancel", ImVec2(90, 0));
+    ImGui::SetItemDefaultFocus();  // focus the safe button by default
+    ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(90, 0))) {
       cleanExit(0, false);
     }
-    ImGui::SameLine();
-    bool const cancel = ImGui::Button("Cancel", ImVec2(90, 0));
-    ImGui::SetItemDefaultFocus();  // focus the safe button by default
     if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
@@ -1517,11 +1517,18 @@ void imgui_render_menubar() {
         }
       });
       ImGui::Separator();
-      if (ImGui::MenuItem("Clear Recent")) {
-        CPC.mru_disks.clear();
-        CPC.mru_tapes.clear();
-        CPC.mru_snaps.clear();
-        CPC.mru_carts.clear();
+      // Clears FOUR lists, not just the one the submenu is showing, and
+      // cannot be undone — so it asks first and says what it did.
+      const size_t mru_total = CPC.mru_disks.size() + CPC.mru_tapes.size() +
+                               CPC.mru_snaps.size() + CPC.mru_carts.size();
+      if (ImGui::MenuItem("Clear Recent...", nullptr, false, mru_total > 0)) {
+        imgui_state.confirm_clear_recent = true;
+      }
+      if (ImGui::IsItemHovered() && mru_total > 0) {
+        ImGui::SetTooltip(
+            "Forget all %zu recent files (disks, tapes, "
+            "snapshots and cartridges)",
+            mru_total);
       }
       ImGui::EndMenu();
     }
@@ -2545,6 +2552,34 @@ void imgui_render_statusbar() {
     // open until the next frame, and eject_confirm_drive could be reset
     // by the else branch before BeginPopupModal succeeds.
     static int popup_eject_drive = -1;
+    // Clear Recent: destructive, spans four lists, and has no undo.
+    if (imgui_state.confirm_clear_recent) {
+      imgui_state.confirm_clear_recent = false;
+      ImGui::OpenPopup("Clear Recent Files?");
+    }
+    if (ImGui::BeginPopupModal("Clear Recent Files?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted(
+          "Forget every recent disk, tape, snapshot and cartridge?");
+      ImGui::TextDisabled("This only clears the lists — no files are deleted.");
+      ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      ImGui::SetItemDefaultFocus();  // the safe choice is the default
+      ImGui::SameLine();
+      if (ImGui::Button("Clear", ImVec2(90, 0))) {
+        const size_t cleared = CPC.mru_disks.size() + CPC.mru_tapes.size() +
+                               CPC.mru_snaps.size() + CPC.mru_carts.size();
+        CPC.mru_disks.clear();
+        CPC.mru_tapes.clear();
+        CPC.mru_snaps.clear();
+        CPC.mru_carts.clear();
+        imgui_toast_success("Cleared " + std::to_string(cleared) +
+                            " recent files");
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
     if (imgui_state.eject_confirm_drive >= 0) {
       popup_eject_drive = imgui_state.eject_confirm_drive;
       imgui_state.eject_confirm_drive = -1;
@@ -2555,17 +2590,18 @@ void imgui_render_statusbar() {
       const char* name = popup_eject_drive == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
       ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        popup_eject_drive = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SetItemDefaultFocus();  // keeping the disk is the safe choice
+      ImGui::SameLine();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
         t_drive& drive = popup_eject_drive == 0 ? driveA : driveB;
         auto& driveFile =
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         dsk_eject(&drive);
         driveFile.clear();
-        popup_eject_drive = -1;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();
       }
@@ -2580,16 +2616,17 @@ void imgui_render_statusbar() {
                                ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextUnformatted("Eject tape?");
       ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        imgui_state.eject_confirm_tape = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SetItemDefaultFocus();  // keeping the tape is the safe choice
+      ImGui::SameLine();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
         tape_eject();
         CPC.tape.file.clear();
         imgui_state.tape_block_offsets.clear();
         imgui_state.tape_current_block = 0;
-        imgui_state.eject_confirm_tape = false;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         imgui_state.eject_confirm_tape = false;
         ImGui::CloseCurrentPopup();
       }
@@ -4116,11 +4153,15 @@ void imgui_render_options() {
       commit_options(true);
     }
   }
+  ImGui::SetItemDefaultFocus();  // Save is the default action (Enter)
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Apply changes and save to config file");
   }
   ImGui::SameLine();
-  if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+  // Discard the edits and put back what was live when the dialog opened. Three
+  // routes need this — the button, Escape, and the window's X — and each used
+  // to carry its own copy.
+  auto revert_options = [&]() {
     unsigned int const prev_style = CPC.scr_style;
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
@@ -4132,6 +4173,9 @@ void imgui_render_options() {
     imgui_state.show_options = false;
     cpc_resume();
     first_open = true;
+  };
+  if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+    revert_options();
   }
   ImGui::SameLine();
   if (ImGui::Button("Apply", ImVec2(80, 0))) {
@@ -4157,31 +4201,28 @@ void imgui_render_options() {
     ImGui::TextUnformatted(
         "These settings restart the CPC. The changes will be lost.");
     ImGui::Spacing();
-    if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
-      commit_options(s_pending_commit == 1);
+    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
       s_pending_commit = 0;
       ImGui::CloseCurrentPopup();
     }
+    ImGui::SetItemDefaultFocus();  // not restarting is the safe choice
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
+    if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
+      commit_options(s_pending_commit == 1);
       s_pending_commit = 0;
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
   }
 
-  if (!open) {
-    // Window closed via X button — treat as Cancel
-    unsigned int const prev_style = CPC.scr_style;
-    CPC = imgui_state.old_cpc_settings;
-    CRTC.crtc_type = old_crtc_type;
-    if (subcycle::Machine* m = subcycle_bridge_machine())
-      m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));
-    g_m4board.enabled = old_m4_enabled;
-    if (CPC.scr_style != prev_style) imgui_state.video_reinit_pending = true;
-    imgui_state.show_options = false;
-    cpc_resume();
-    first_open = true;
+  // Escape is Cancel, the same as every other dialog here — but not while the
+  // restart confirmation owns the keyboard.
+  if (s_pending_commit == 0 && !ImGui::IsPopupOpen("Restart the CPC?") &&
+      ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    revert_options();
+  }
+  if (!open) {  // window closed via the X — treat as Cancel
+    revert_options();
   }
 
   ImGui::End();

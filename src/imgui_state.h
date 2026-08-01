@@ -105,7 +105,8 @@ struct ImGuiUIState {
   int mem_filter_value = -1;
 
   // Eject confirmation
-  int eject_confirm_drive = -1;  // -1=none, 0=A, 1=B
+  int eject_confirm_drive = -1;       // -1=none, 0=A, 1=B
+  bool confirm_clear_recent = false;  // Clear Recent asked, awaiting an answer
   bool eject_confirm_tape = false;
 
   // Tape block index (built on tape load)
