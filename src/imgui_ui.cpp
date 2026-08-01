@@ -950,7 +950,11 @@ bool koncpc_action_is_active(KONCPC_KEYS action) {
 // emulator-command menu item should go through here so labels/shortcuts can
 // never drift.
 namespace {
-bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
+// `defer` returns the click without dispatching, so a caller can interpose a
+// confirmation while label, shortcut and placement still come from the
+// registry. Everything else keeps the fire-and-forget behaviour.
+bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true,
+                    bool defer = false) {
   const MenuAction* meta = koncpc_find_action(action);
   if (meta == nullptr) return false;
   std::string const sc = koncpc_action_shortcut(action);
@@ -958,7 +962,7 @@ bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
   bool const clicked =
       ImGui::MenuItem(meta->title, shortcut,
                       meta->toggle && koncpc_action_is_active(action), enabled);
-  if (clicked) koncpc_menu_action(action);
+  if (clicked && !defer) koncpc_menu_action(action);
   return clicked;
 }
 }  // namespace
@@ -1336,7 +1340,13 @@ void imgui_render_menubar() {
                           pinned ? " (pinned by env)" : "");
       ImGui::EndMenu();
     }
-    RenderMenuItem(KONCPC_RESET);
+    if (RenderMenuItem(KONCPC_RESET, true, /*defer=*/true)) {
+      if (driveAltered()) {
+        imgui_state.confirm_reset = true;
+      } else {
+        koncpc_menu_action(KONCPC_RESET);
+      }
+    }
     ImGui::EndMenu();
   }
 
@@ -1419,16 +1429,25 @@ void imgui_render_menubar() {
     if (ImGui::MenuItem("Save Disk B...", nullptr, false, b_dsk)) {
       koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskB));
     }
+    // Ejecting was only reachable by clicking the status-bar LED — an
+    // affordance you had to already know about. Both routes raise the same
+    // confirmation, drawn by the status bar.
+    if (ImGui::MenuItem("Eject Disk A", nullptr, false,
+                        drive_medium(0).present)) {
+      imgui_state.eject_confirm_drive = 0;
+    }
+    if (ImGui::MenuItem("Eject Disk B", nullptr, false,
+                        drive_medium(1).present)) {
+      imgui_state.eject_confirm_drive = 1;
+    }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
       koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadTape));
     }
     RenderMenuItem(KONCPC_TAPEPLAY, !pbTapeImage.empty());
+    // Was ejecting immediately here while the status-bar route asked first.
     if (ImGui::MenuItem("Eject Tape", nullptr, false, !pbTapeImage.empty())) {
-      tape_eject();
-      CPC.tape.file.clear();
-      imgui_state.tape_block_offsets.clear();
-      imgui_state.tape_current_block = 0;
+      imgui_state.eject_confirm_tape = true;
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Cartridge...")) {
@@ -2552,6 +2571,27 @@ void imgui_render_statusbar() {
     // open until the next frame, and eject_confirm_drive could be reset
     // by the else branch before BeginPopupModal succeeds.
     static int popup_eject_drive = -1;
+    // Reset with unsaved disk edits: the same guard the quit paths use.
+    if (imgui_state.confirm_reset) {
+      imgui_state.confirm_reset = false;
+      ImGui::OpenPopup("Reset the CPC?");
+    }
+    if (ImGui::BeginPopupModal("Reset the CPC?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                         "You have unsaved changes to a disk.");
+      ImGui::TextUnformatted("Resetting will lose them.");
+      ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      ImGui::SetItemDefaultFocus();
+      ImGui::SameLine();
+      if (ImGui::Button("Reset", ImVec2(90, 0))) {
+        koncpc_menu_action(KONCPC_RESET);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
     // Clear Recent: destructive, spans four lists, and has no undo.
     if (imgui_state.confirm_clear_recent) {
       imgui_state.confirm_clear_recent = false;
