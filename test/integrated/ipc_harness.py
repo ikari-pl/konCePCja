@@ -9,6 +9,7 @@ import queue
 import re
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import sys
@@ -195,6 +196,7 @@ class EmulatorRunner:
         # Every stderr line, kept because _await_ipc_port consumes the queue:
         # a later probe (the telnet port) would otherwise find its line gone.
         self._stderr_lines: List[str] = []
+        self._cfg_tmp = None  # throwaway config copy, removed on stop()
 
     def _pump_stderr(self) -> None:
         """Drain child stderr into _stderr_q for the process's whole life.
@@ -292,6 +294,19 @@ class EmulatorRunner:
             env['SDL_AUDIODRIVER'] = 'dummy'
 
         cmd = [self.exe_path] + list(args)
+        # Pin the config unless the caller chose one. Started from the repo
+        # root the emulator would otherwise pick up $CWD/koncepcja.cfg — the
+        # maintainer's live config, which makes runs depend on whoever is
+        # sitting at the machine. A throwaway copy of the shipped example also
+        # keeps a mid-run save from editing the example itself.
+        if not any(a.startswith('-c') or a.startswith('--cfg_file') for a in args):
+            example = Path(self.exe_path).parent / 'koncepcja.cfg.example'
+            if example.exists():
+                self._cfg_tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.cfg', delete=False)
+                self._cfg_tmp.write(example.read_text())
+                self._cfg_tmp.close()
+                cmd += ['-c', self._cfg_tmp.name]
         eng = engine if engine is not None else EmulatorRunner.test_engine
         if eng is not None:
             cmd += ['-O', f'system.engine={eng}']
@@ -352,6 +367,12 @@ class EmulatorRunner:
             except subprocess.TimeoutExpired:
                 self.process.kill()
             self.process = None
+        if self._cfg_tmp is not None:
+            try:
+                os.unlink(self._cfg_tmp.name)
+            except OSError:
+                pass
+            self._cfg_tmp = None
 
     def __enter__(self):
         return self
