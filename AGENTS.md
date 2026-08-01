@@ -6,16 +6,28 @@ Amstrad CPC emulator based on Caprice32, with Dear ImGui interface and IPC debug
 
 ```
 src/
-├── kon_cpc_ja.cpp     # Main emulator loop, keyboard handling
-├── z80.cpp            # Z80 CPU emulation with breakpoint support
-├── video.cpp          # Video rendering, scanlines
-├── psg.cpp            # Sound chip (AY-3-8912) emulation
-├── tape.cpp           # CDT/TZX tape playback engine
-├── slotshandler.cpp   # File loading (DSK, CDT, SNA, CPR)
-├── imgui_ui.cpp       # Dear ImGui interface (topbar, devtools, menus)
+├── hw/                # THE hardware: one Device per chip, pin-level
+│   ├── z80.cpp        #   CPU
+│   ├── crtc.cpp       #   CRTC 6845
+│   ├── gate_array.cpp #   Gate Array
+│   ├── psg.cpp        #   AY-3-8912
+│   ├── fdc.cpp        #   uPD765A + flux media
+│   ├── tape.cpp       #   cassette deck
+│   ├── memory.cpp     #   banking, ROM slots, expansion RAM
+│   ├── video.cpp      #   raster output
+│   ├── asic.cpp       #   6128+ ASIC
+│   └── …              #   ppi, mf2, m4, symbiface, amx, rs232, plotter, …
+├── subcycle/
+│   ├── machine.cpp    # the board: builds and clocks the Devices together
+│   └── record_replay.cpp
+├── subcycle_bridge.cpp       # host ↔ board seam (media, ROMs, input, views)
+├── kon_cpc_ja.cpp     # main loop, host state, config load/save, cleanup
+├── slotshandler.cpp   # file loading (DSK, IPF, flux, CDT, SNA, CPR)
+├── imgui_ui.cpp       # Dear ImGui interface (topbar, options, menus)
+├── devtools_ui.cpp    # DevTools windows (disassembly, memory, breakpoints…)
 ├── koncepcja_ipc_server.cpp  # TCP IPC server for external debugging
 ├── telnet_console.cpp # TCP text console — mirrors CPC output, injects keyboard
-└── disk.cpp           # Floppy disk emulation
+└── z80_view.cpp       # host-side Z80 view + the firmware/BDOS output hooks
 ```
 
 ## Emulated Devices
@@ -61,21 +73,28 @@ make -j$(nproc) DEBUG=1
 
 ## Command Line Arguments
 
-Run `./koncepcja --help` for the full list:
+`./koncepcja --help` is the source of truth — this table is a copy and has
+drifted before (it listed 9 of 15 flags, omitting `--headless`):
 
 ```
 Usage: koncepcja [options] <slotfile(s)>
 
 Options:
-  -a/--autocmd=<command>   Execute BASIC command after CPC boots
+  -a/--autocmd=<command>   Execute BASIC command after CPC boots (repeatable)
+  -B/--exit-on-break       Exit with code 1 when a breakpoint is hit
   -c/--cfg_file=<file>     Use custom config file
+  -D/--debug               Frame timing + audio diagnostics in the DevTools bar
+  -E/--exit-after=<spec>   Exit after N frames (100f), seconds (5s) or ms (3000ms)
+  -H/--headless            Run without display or audio (IPC and emulation only)
   -h/--help                Show help
   -i/--inject=<file>       Inject binary into memory after boot
+  -L/--list-plugins        List video plugins (index: name) and exit
   -o/--offset=<address>    Injection address (default: 0x6000)
   -O/--override=<opt=val>  Override config option (repeatable)
   -s/--sym_file=<file>     Load symbols for disassembly
   -V/--version             Show version
   -v/--verbose             Verbose logging
+     --fps                 Log once-per-second FPS to stdout
 
 Slot files: .dsk/.ipf/.raw (disk), .scp/.hfe/.a2r (flux disk, drive A only),
 .cdt/.voc (tape), .cpr (cartridge), .sna (snapshot)
@@ -115,8 +134,22 @@ socat - TCP:localhost:6543
 
 ```bash
 echo "help" | nc localhost 6543
-# Response: OK commands: ping version help pause run reset load regs reg set/get mem bp(list/add/del/clear) step wait screenshot snapshot(save/load) disasm devtools
 ```
+
+The response is categorised and far longer than the table below — ask the
+server rather than trusting any list in this file:
+
+```
+OK available commands (usage: help <command>):
+  Protocol: persistent connections, ';' chains commands, 'disconnect' closes.
+  Numbers: 0x, $, &, # hex prefixes accepted (e.g. $C000, &4000, #BB5A).
+  CORE:      disconnect, gui, load <file>, metrics, pause, ping, plugins, …
+  DEBUG:     bp …, data …, disasm …, mem …, reg …, step …, trace …, wait …
+  …
+```
+
+`help <command>` prints that command's own usage. The full protocol lives in
+[docs/ipc-protocol.md](docs/ipc-protocol.md).
 
 ### IPC Command Reference
 
@@ -148,7 +181,7 @@ echo "help" | nc localhost 6543
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
 | `devtools` | Open DevTools window | `devtools` → `OK` |
-| `tier` | Run-tier policy (engine=1) | `tier` → `OK policy=auto effective=fast pinned=0` |
+| `tier` | Run-tier policy | `tier` → `OK policy=auto effective=fast pinned=0` |
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
@@ -168,8 +201,8 @@ echo "help" | nc localhost 6543
 
 `<name>` is a friendly key name (`RETURN`, `SPACE`, `ESC`, `F1`, `UP`, ...) or a
 single character (`a`, `A`, `1`). For multi-line entry or special keys inside a
-string, use `autotype` with `~KEY~` tokens — `input type` does **not** interpret
-them.
+string, either command works: `input type` is routed through the same
+AutoTypeQueue as `autotype`, so `~KEY~` tokens and newlines behave identically.
 
 ### Scripting Example
 
@@ -282,7 +315,7 @@ nc localhost 6544
 
 - `src/telnet_console.h` — TelnetConsole class, ring buffer, input mutex
 - `src/telnet_console.cpp` — TCP server thread, ANSI parsing, Z80 hook callback
-- Z80 hooks: `z80_set_txt_output_hook()` (firmware) and `z80_set_bdos_output_hook()` (CP/M) in `src/z80.cpp` / `src/z80.h`
+- Z80 hooks: `z80_set_txt_output_hook()` (firmware) and `z80_set_bdos_output_hook()` (CP/M) in `src/z80_view.cpp` / `src/z80_view.h`
 - Main loop integration: `g_telnet.start()` / `drain_input()` / `stop()` in `src/kon_cpc_ja.cpp`
 
 ## M4 HTTP Server
@@ -378,7 +411,7 @@ Malformed CDT/TZX files can crash older versions. Test files are rejected gracef
 
 The emulator uses LOG_DEBUG/LOG_INFO/LOG_ERROR macros. Key files with logging:
 - `slotshandler.cpp` - File loading errors
-- `psg.cpp` - Audio timing info
+- `src/hw/psg.cpp` - Audio timing info
 - `keyboard.cpp` - Key mapping issues
 
 ### DevTools
@@ -443,12 +476,9 @@ Config file locations (in order of precedence):
 ```ini
 [system]
 model=2           # 0=464, 1=664, 2=6128, 3=6128+
-engine=1          # 1=sub-cycle pin-level board (DEFAULT since 2026-07-10 —
-                  # beats legacy 30-49%, byte-exact, Auto tier policy);
-                  # 0=legacy Caprice32 core (kept until Gate C deletes it)
-ram_size=128      # RAM in KB
+ram_size=128      # RAM in KB: 64, 128, 192, 256, 320, 512, 576 … 4160
 speed=4           # Clock speed MHz
-run_tier=0        # Sub-cycle engine (engine=1) tier policy: 0=auto (Fast;
+run_tier=0        # Run-tier policy: 0=auto (Fast;
                   # drops to Wake while any breakpoint/watchpoint/IO-BP is
                   # set — per-cycle observability for the debugger), 1=fast,
                   # 2=wake, 3=soldered, 4=faithful. Shift+F9 cycles
@@ -466,8 +496,10 @@ vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
                   # (decoupled from render), so FPS stays 50 either way.
 
 [sound]
-snd_enabled=1
-snd_playback_rate=2  # 0=11025, 1=22050, 2=44100, 3=48000, 4=96000
+enabled=1         # NOTE: the INI keys are enabled/playback_rate/bits/stereo/
+playback_rate=2   # volume — NOT the snd_* names of the C++ struct members.
+                  # 0=11025, 1=22050, 2=44100, 3=48000, 4=96000
+volume=80         # 0-100
 
 [input]
 lightgun=0        # Light gun: 0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light

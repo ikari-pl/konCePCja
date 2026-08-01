@@ -1592,6 +1592,14 @@ void imgui_render_menubar() {
     ImGui::Separator();
     if (ImGui::BeginMenu("Diagnostics")) {
       RenderMenuItem(KONCPC_DEBUG);
+      if (ImGui::IsItemHovered()) {
+        // LOG_VERBOSE writes to stdout (log.h); errors and warnings go to
+        // stderr regardless of this toggle. Say where the output lands —
+        // "verbose logging" alone tells the user nothing about where to look.
+        ImGui::SetTooltip(
+            "Print detailed diagnostics to the terminal that started the "
+            "emulator.\nErrors and warnings are always printed.");
+      }
       ImGui::EndMenu();
     }
     ImGui::EndMenu();
@@ -4052,31 +4060,61 @@ void imgui_render_options() {
   ImGui::Separator();
   ImGui::Spacing();
 
-  // Bottom buttons
-  if (ImGui::Button("Save", ImVec2(80, 0))) {
-    std::string const cfg = getConfigurationFilename(true);
-    saveConfiguration(CPC, cfg);
-    // Apply changes that need re-init
-    if (CPC.model != imgui_state.old_cpc_settings.model ||
-        CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-        CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
-        g_m4board.enabled != old_m4_enabled) {
-      emulator_init();
+  // Changing any of these rebuilds the machine: emulator_init() wipes RAM and
+  // cold-boots the CPC. Computed once, because Save and Apply have to agree on
+  // what forces it — they each carried their own copy of this condition.
+  const bool needs_restart =
+      CPC.model != imgui_state.old_cpc_settings.model ||
+      CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
+      CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
+      g_m4board.enabled != old_m4_enabled;
+  const ImVec4 kWarn(0.95f, 0.75f, 0.2f, 1.0f);
+
+  // Say so before it happens, rather than rebooting under the user.
+  if (needs_restart) {
+    ImGui::TextColored(kWarn,
+                       "These settings restart the CPC — RAM is cleared.");
+    if (driveAltered()) {
+      ImGui::TextColored(kWarn,
+                         "A disk has unsaved changes that would be lost.");
     }
-    // Start/stop M4 HTTP server based on M4 enabled state
-    // Only auto-start when M4 was just enabled (not on every Save),
-    // so that a manual "Stop" in the UI stays effective.
-    if (g_m4board.enabled && !old_m4_enabled &&
-        !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
-      g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
-    } else if (!g_m4board.enabled && g_m4_http.is_running()) {
-      g_m4_http.stop();
+    ImGui::Spacing();
+  }
+
+  // One commit path for both buttons; `save_to_file` is the only difference.
+  auto commit_options = [&](bool save_to_file) {
+    if (save_to_file) {
+      saveConfiguration(CPC, getConfigurationFilename(true));
+    }
+    if (needs_restart) emulator_init();
+    if (save_to_file) {
+      // Start/stop M4 HTTP server based on M4 enabled state. Only auto-start
+      // when M4 was just enabled (not on every Save), so that a manual "Stop"
+      // in the UI stays effective.
+      if (g_m4board.enabled && !old_m4_enabled &&
+          !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
+        g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+      } else if (!g_m4board.enabled && g_m4_http.is_running()) {
+        g_m4_http.stop();
+      }
     }
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
     cpc_resume();
     first_open = true;
+  };
+
+  // 0 = nothing pending, 1 = Save awaiting confirmation, 2 = Apply.
+  static int s_pending_commit = 0;
+
+  // Bottom buttons
+  if (ImGui::Button("Save", ImVec2(80, 0))) {
+    if (needs_restart && driveAltered()) {
+      s_pending_commit = 1;  // confirm before throwing the disk edits away
+    } else {
+      commit_options(true);
+    }
   }
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Apply changes and save to config file");
@@ -4097,21 +4135,39 @@ void imgui_render_options() {
   }
   ImGui::SameLine();
   if (ImGui::Button("Apply", ImVec2(80, 0))) {
-    if (CPC.model != imgui_state.old_cpc_settings.model ||
-        CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-        CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
-        g_m4board.enabled != old_m4_enabled) {
-      emulator_init();
+    if (needs_restart && driveAltered()) {
+      s_pending_commit = 2;
+    } else {
+      commit_options(false);
     }
-    update_cpc_speed();
-    video_set_palette();
-    imgui_state.show_options = false;
-    cpc_resume();
-    first_open = true;
   }
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip(
         "Apply changes for this session only\n(not saved to config file)");
+  }
+
+  // The same guard the quit paths use: a restart is not worth a silent loss of
+  // disk edits the user has not written back.
+  if (s_pending_commit != 0 && !ImGui::IsPopupOpen("Restart the CPC?")) {
+    ImGui::OpenPopup("Restart the CPC?");
+  }
+  if (ImGui::BeginPopupModal("Restart the CPC?", nullptr,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextColored(kWarn, "You have unsaved changes to a disk.");
+    ImGui::TextUnformatted(
+        "These settings restart the CPC. The changes will be lost.");
+    ImGui::Spacing();
+    if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
+      commit_options(s_pending_commit == 1);
+      s_pending_commit = 0;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
+      s_pending_commit = 0;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
   }
 
   if (!open) {
