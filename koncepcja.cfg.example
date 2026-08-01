@@ -1,7 +1,7 @@
 # konCePCja — example configuration.
 #
 # Copy to koncepcja.cfg and edit. Deliberately neutral: 1x window, no
-# fullscreen, empty drives and no personal paths, the Fast run tier, and
+# fullscreen, empty drives and no personal paths, the Auto run tier, and
 # plain GPU-presented scaling that works on any machine. Drive and tape
 # sounds are on — they are part of how a CPC behaves.
 #
@@ -63,6 +63,11 @@ resources_path=
 #   Estimated time in video frames the CPC takes to boot.
 #   Caprice will emulate this number of frames before starting to send a provided autocmd.
 boot_time=42
+# run_tier
+#   0: auto  - Fast while running, Wake while a breakpoint/watchpoint is set
+#   1: fast  - pinned; the register view syncs at frame boundaries, so a
+#              debugger polling PC in an idle loop sees it repeat
+#   2: wake   3: soldered   4: faithful
 run_tier=0
 
 [video]

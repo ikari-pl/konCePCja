@@ -1110,6 +1110,8 @@ extern "C" void koncpc_open_settings_tab(int tab) {
   s_pending_options_tab = static_cast<OptionsTab>(tab);
 }
 
+void imgui_request_reset_confirmation() { imgui_state.confirm_reset = true; }
+
 extern "C" void koncpc_open_command_palette() { g_command_palette.open(); }
 
 extern "C" void koncpc_request_file_dialog(int action) {
@@ -1432,12 +1434,10 @@ void imgui_render_menubar() {
     // Ejecting was only reachable by clicking the status-bar LED — an
     // affordance you had to already know about. Both routes raise the same
     // confirmation, drawn by the status bar.
-    if (ImGui::MenuItem("Eject Disk A", nullptr, false,
-                        drive_medium(0).present)) {
+    if (ImGui::MenuItem("Eject Disk A", nullptr, false, caps_a.present)) {
       imgui_state.eject_confirm_drive = 0;
     }
-    if (ImGui::MenuItem("Eject Disk B", nullptr, false,
-                        drive_medium(1).present)) {
+    if (ImGui::MenuItem("Eject Disk B", nullptr, false, caps_b.present)) {
       imgui_state.eject_confirm_drive = 1;
     }
     ImGui::Separator();
@@ -4164,17 +4164,15 @@ void imgui_render_options() {
       saveConfiguration(CPC, getConfigurationFilename(true));
     }
     if (needs_restart) emulator_init();
-    if (save_to_file) {
-      // Start/stop M4 HTTP server based on M4 enabled state. Only auto-start
-      // when M4 was just enabled (not on every Save), so that a manual "Stop"
-      // in the UI stays effective.
-      if (g_m4board.enabled && !old_m4_enabled &&
-          !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
-        g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
-      } else if (!g_m4board.enabled && g_m4_http.is_running()) {
-        g_m4_http.stop();
-      }
+    // Auto-START only on Save, and only when M4 was just enabled, so a
+    // manual "Stop" in the UI stays effective.
+    if (save_to_file && g_m4board.enabled && !old_m4_enabled &&
+        !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
+      g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
     }
+    // STOP regardless of Save/Apply: leaving the server publishing a disabled
+    // board's SD directory is the surprising half of the asymmetry.
+    if (!g_m4board.enabled && g_m4_http.is_running()) g_m4_http.stop();
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
@@ -4182,13 +4180,14 @@ void imgui_render_options() {
     first_open = true;
   };
 
-  // 0 = nothing pending, 1 = Save awaiting confirmation, 2 = Apply.
-  static int s_pending_commit = 0;
+  // Which button is waiting on the restart confirmation.
+  enum class PendingCommit : std::uint8_t { None, Save, Apply };
+  static PendingCommit s_pending_commit = PendingCommit::None;
 
   // Bottom buttons
   if (ImGui::Button("Save", ImVec2(80, 0))) {
     if (needs_restart && driveAltered()) {
-      s_pending_commit = 1;  // confirm before throwing the disk edits away
+      s_pending_commit = PendingCommit::Save;  // confirm before losing edits
     } else {
       commit_options(true);
     }
@@ -4220,7 +4219,7 @@ void imgui_render_options() {
   ImGui::SameLine();
   if (ImGui::Button("Apply", ImVec2(80, 0))) {
     if (needs_restart && driveAltered()) {
-      s_pending_commit = 2;
+      s_pending_commit = PendingCommit::Apply;
     } else {
       commit_options(false);
     }
@@ -4232,7 +4231,8 @@ void imgui_render_options() {
 
   // The same guard the quit paths use: a restart is not worth a silent loss of
   // disk edits the user has not written back.
-  if (s_pending_commit != 0 && !ImGui::IsPopupOpen("Restart the CPC?")) {
+  if (s_pending_commit != PendingCommit::None &&
+      !ImGui::IsPopupOpen("Restart the CPC?")) {
     ImGui::OpenPopup("Restart the CPC?");
   }
   if (ImGui::BeginPopupModal("Restart the CPC?", nullptr,
@@ -4242,14 +4242,20 @@ void imgui_render_options() {
         "These settings restart the CPC. The changes will be lost.");
     ImGui::Spacing();
     if (ImGui::Button("Cancel", ImVec2(90, 0))) {
-      s_pending_commit = 0;
+      // Cancelling the RESTART must not silently discard the save: before
+      // this flow, Save always wrote the config. Persisting is harmless;
+      // only the reboot is refused.
+      if (s_pending_commit == PendingCommit::Save) {
+        saveConfiguration(CPC, getConfigurationFilename(true));
+      }
+      s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
     }
     ImGui::SetItemDefaultFocus();  // not restarting is the safe choice
     ImGui::SameLine();
     if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
-      commit_options(s_pending_commit == 1);
-      s_pending_commit = 0;
+      commit_options(s_pending_commit == PendingCommit::Save);
+      s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -4257,11 +4263,16 @@ void imgui_render_options() {
 
   // Escape is Cancel, the same as every other dialog here — but not while the
   // restart confirmation owns the keyboard.
-  if (s_pending_commit == 0 && !ImGui::IsPopupOpen("Restart the CPC?") &&
+  if (s_pending_commit == PendingCommit::None &&
+      !ImGui::IsPopupOpen("Restart the CPC?") &&
       ImGui::IsKeyPressed(ImGuiKey_Escape)) {
     revert_options();
   }
   if (!open) {  // window closed via the X — treat as Cancel
+    // Drop any pending confirmation with it. A stranded value re-opened the
+    // modal unprompted on the next Options open, where "Restart anyway"
+    // would run a saveConfiguration() nobody asked for.
+    s_pending_commit = PendingCommit::None;
     revert_options();
   }
 

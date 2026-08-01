@@ -299,14 +299,22 @@ class EmulatorRunner:
         # maintainer's live config, which makes runs depend on whoever is
         # sitting at the machine. A throwaway copy of the shipped example also
         # keeps a mid-run save from editing the example itself.
-        if not any(a.startswith('-c') or a.startswith('--cfg_file') for a in args):
+        if not any(a == '-c' or a.startswith('-c') or a == '--cfg_file'
+                   or a.startswith('--cfg_file=') for a in args):
             example = Path(self.exe_path).parent / 'koncepcja.cfg.example'
-            if example.exists():
-                self._cfg_tmp = tempfile.NamedTemporaryFile(
-                    mode='w', suffix='.cfg', delete=False)
-                self._cfg_tmp.write(example.read_text())
-                self._cfg_tmp.close()
-                cmd += ['-c', self._cfg_tmp.name]
+            if not example.exists():
+                # Silently carrying on would hand the emulator whoever's
+                # koncepcja.cfg happens to sit in the working directory —
+                # exactly the nondeterminism this pinning removes. A missing
+                # example is a broken checkout, not a condition to absorb.
+                raise FileNotFoundError(
+                    f"{example} is missing; integration runs must not fall "
+                    f"back to an arbitrary koncepcja.cfg")
+            self._cfg_tmp = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.cfg', delete=False)
+            self._cfg_tmp.write(example.read_text())
+            self._cfg_tmp.close()
+            cmd += ['-c', self._cfg_tmp.name]
         eng = engine if engine is not None else EmulatorRunner.test_engine
         if eng is not None:
             cmd += ['-O', f'system.engine={eng}']

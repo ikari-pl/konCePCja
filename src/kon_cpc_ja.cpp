@@ -2739,17 +2739,24 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_NEXTDISKA: {
-      // Walking off the end used to fail silently: the index still advanced,
-      // the load failed, and nothing on screen changed or said why.
-      const unsigned int previous_index = CPC.driveA.zip_index;
+      // Only an archive has a next disk. On a plain image this used to reload
+      // the same file and call it an archive.
+      const std::string ext = stringutils::lower(
+          std::filesystem::path(CPC.driveA.file).extension().string());
+      if (ext != ".zip") {
+        set_osd_message("Drive A holds no archive");
+        break;
+      }
+      // file_load wraps zip_index modulo the entry count (slotshandler.cpp),
+      // so advancing past the last disk returns to the first — there is no
+      // "past the end" to report. Read the index back afterwards: it is the
+      // disk actually loaded, which is not necessarily the one asked for.
       CPC.driveA.zip_index += 1;
       if (file_load(CPC.driveA) == 0) {
         set_osd_message("Archive disk " +
                         std::to_string(CPC.driveA.zip_index + 1));
       } else {
-        CPC.driveA.zip_index = previous_index;  // stay on the disk that works
-        file_load(CPC.driveA);
-        set_osd_message("No more disks in this archive");
+        set_osd_message("Could not load the next disk in the archive");
       }
       break;
     }
@@ -4238,7 +4245,15 @@ int koncpc_main(int argc, char** argv) {
                 koncpc_menu_action(KONCPC_MF2STOP);
                 break;
               case KONCPC_RESET:
-                koncpc_menu_action(KONCPC_RESET);
+                // The menu asks before a reset that would lose disk edits;
+                // F5 is how people actually reset, so it must ask too.
+                // Headless and IPC keep the unconditional path — there is no
+                // one to answer a modal.
+                if (!g_headless && driveAltered()) {
+                  imgui_request_reset_confirmation();
+                } else {
+                  koncpc_menu_action(KONCPC_RESET);
+                }
                 break;
               case KONCPC_JOY:
                 koncpc_menu_action(KONCPC_JOY);
