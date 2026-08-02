@@ -67,6 +67,12 @@ void subcycle_bridge_eject_media(uint8_t unit = 0);
  * leaves the CPC unable to see the ROM. */
 void subcycle_bridge_attach_rom_slot(int slot, const uint8_t* rom16k);
 
+/* Re-attach the current cartridge image to the board. emulator_init() reloads
+ * the cartridge on a Plus, which frees the old image — the board holds that
+ * pointer raw (attach_cartridge does not copy), so it must be told about the
+ * new one or it keeps reading released memory. */
+void subcycle_bridge_attach_cartridge();
+
 /* The Multiface II STOP button (deferred to the frame boundary). */
 void subcycle_bridge_mf2_stop();
 

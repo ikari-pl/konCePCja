@@ -106,6 +106,7 @@ struct ImGuiUIState {
 
   // Eject confirmation
   int eject_confirm_drive = -1;       // -1=none, 0=A, 1=B
+  bool confirm_m4_rebuild = false;    // M4 SD folder picked; rebuild pending
   bool confirm_reset = false;         // Reset asked while a disk was dirty
   bool confirm_clear_recent = false;  // Clear Recent asked, awaiting an answer
   bool eject_confirm_tape = false;

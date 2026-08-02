@@ -1165,6 +1165,12 @@ void subcycle_bridge_mf2_stop() {
   g_bridge.mf2_stop.store(true, std::memory_order_release);
 }
 
+void subcycle_bridge_attach_cartridge() {
+  if (!g_bridge.active || pbCartridgeImage == nullptr) return;
+  g_bridge.machine.attach_cartridge(pbCartridgeImage.get(),
+                                    static_cast<size_t>(32) * 0x4000);
+}
+
 void subcycle_bridge_attach_rom_slot(int slot, const uint8_t* rom16k) {
   if (!g_bridge.active) return;  // start() attaches every slot on the way up
   if (slot < 0 || slot >= MAX_ROM_SLOTS) return;

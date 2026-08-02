@@ -374,7 +374,15 @@ void process_pending_dialog() {
       break;
     case FileDialogAction::SelectM4SDFolder:
       g_m4board.sd_root_path = path;
-      if (g_m4board.enabled) emulator_init();
+      // Fitting a new SD folder rebuilds the whole machine. This route had no
+      // guard of any kind: no warning, no unsaved-disk check, and no quiesce.
+      if (g_m4board.enabled) {
+        if (driveAltered()) {
+          imgui_state.confirm_m4_rebuild = true;
+        } else if (koncpc_rebuild_machine() != 0) {
+          imgui_toast_error("Could not restart the CPC for the new SD folder");
+        }
+      }
       break;
     case FileDialogAction::SavePlotterSVG:
       if (plotter_view_export_svg(path))
@@ -2571,6 +2579,30 @@ void imgui_render_statusbar() {
     // open until the next frame, and eject_confirm_drive could be reset
     // by the else branch before BeginPopupModal succeeds.
     static int popup_eject_drive = -1;
+    // Fitting an M4 SD folder restarts the machine, so it asks like the rest.
+    if (imgui_state.confirm_m4_rebuild) {
+      imgui_state.confirm_m4_rebuild = false;
+      ImGui::OpenPopup("Restart for the SD folder?");
+    }
+    if (ImGui::BeginPopupModal("Restart for the SD folder?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                         "You have unsaved changes to a disk.");
+      ImGui::TextUnformatted(
+          "Fitting the new SD folder restarts the CPC and loses them.");
+      ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      ImGui::SetItemDefaultFocus();
+      ImGui::SameLine();
+      if (ImGui::Button("Restart", ImVec2(90, 0))) {
+        if (koncpc_rebuild_machine() != 0) {
+          imgui_toast_error("Could not restart the CPC for the new SD folder");
+        }
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
     // Reset with unsaved disk edits: the same guard the quit paths use.
     if (imgui_state.confirm_reset) {
       imgui_state.confirm_reset = false;
@@ -3161,10 +3193,12 @@ void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
   static bool old_m4_enabled = false;
+  static bool old_serial_enabled = false;
   if (first_open) {
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
     old_m4_enabled = g_m4board.enabled;
+    old_serial_enabled = g_serial_interface.get_config().enabled;
     first_open = false;
   }
 
@@ -4140,11 +4174,15 @@ void imgui_render_options() {
   // Changing any of these rebuilds the machine: emulator_init() wipes RAM and
   // cold-boots the CPC. Computed once, because Save and Apply have to agree on
   // what forces it — they each carried their own copy of this condition.
+  // Enabling the serial interface belongs here: g_si_rom.load() runs only
+  // inside emulator_init(), so without a rebuild the backend comes up with no
+  // RSX ROM mapped and the banner's claim to list what restarts is false.
   const bool needs_restart =
       CPC.model != imgui_state.old_cpc_settings.model ||
       CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
       CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
-      g_m4board.enabled != old_m4_enabled;
+      g_m4board.enabled != old_m4_enabled ||
+      g_serial_interface.get_config().enabled != old_serial_enabled;
   const ImVec4 kWarn(0.95f, 0.75f, 0.2f, 1.0f);
 
   // Say so before it happens, rather than rebooting under the user.
@@ -4163,7 +4201,13 @@ void imgui_render_options() {
     if (save_to_file) {
       saveConfiguration(CPC, getConfigurationFilename(true));
     }
-    if (needs_restart) emulator_init();
+    if (needs_restart && koncpc_rebuild_machine() != 0) {
+      // A half-built machine — a missing ROM, say — must not be reported as
+      // success and must not be resumed. Leave the dialog open on it.
+      imgui_toast_error(
+          "Could not rebuild the CPC with these settings; check the ROM paths");
+      return;
+    }
     // Auto-START only on Save, and only when M4 was just enabled, so a
     // manual "Stop" in the UI stays effective.
     if (save_to_file && g_m4board.enabled && !old_m4_enabled &&
