@@ -2964,6 +2964,19 @@ void m4board_write_response(byte* rom_base) {
   memcpy(rom_base + offset, g_m4board.response, len);
 }
 
+std::string m4board_find_rom(const std::string& rom_path,
+                             const std::string& resources_path) {
+  // rom_path first (where the other CPC ROMs live), then the bundled
+  // resources/roms. M4ROM.BIN is the name real M4 dumps ship under.
+  for (const char* name : {"m4board.rom", "M4ROM.BIN"}) {
+    std::string candidate = rom_path + "/" + name;
+    if (std::filesystem::exists(candidate)) return candidate;
+    candidate = resources_path + "/roms/" + name;
+    if (std::filesystem::exists(candidate)) return candidate;
+  }
+  return "";
+}
+
 void m4board_load_rom(byte** rom_map, const std::string& rom_path,
                       const std::string& resources_path) {
   if (!g_m4board.enabled) return;
@@ -2980,24 +2993,7 @@ void m4board_load_rom(byte** rom_map, const std::string& rom_path,
     rom_map[slot] = nullptr;
   }
 
-  // Search for the M4 ROM in standard locations
-  static const char* const rom_names[] = {"m4board.rom", "M4ROM.BIN", nullptr};
-  std::string found_path;
-
-  for (int i = 0; rom_names[i]; i++) {
-    // Check rom_path (where other CPC ROMs live)
-    std::string candidate = rom_path + "/" + rom_names[i];
-    if (std::filesystem::exists(candidate)) {
-      found_path = candidate;
-      break;
-    }
-    // Check resources/roms/ (absolute path from app directory)
-    candidate = resources_path + "/roms/" + rom_names[i];
-    if (std::filesystem::exists(candidate)) {
-      found_path = candidate;
-      break;
-    }
-  }
+  const std::string found_path = m4board_find_rom(rom_path, resources_path);
 
   if (found_path.empty()) {
     LOG_ERROR("M4: ROM file not found (searched for m4board.rom / M4ROM.BIN in "

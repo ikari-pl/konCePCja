@@ -296,8 +296,12 @@ bool subcycle_bridge_start() {
       b.mf2rom.clear();
   }
   if (g_m4board.enabled && !b.m4_loaded) {  // m4-device.md §2
-    b.m4rom = read_file(CPC.resources_path + "/m4.rom");
-    if (b.m4rom.size() < 0x4000) b.m4rom = read_file(CPC.rom_path + "/m4.rom");
+    // One resolver, shared with the host loader. The board used to keep its
+    // own list naming "m4.rom" — a file this project does not ship — so
+    // b.m4rom stayed empty, set_m4() was never called and the ROM was never
+    // attached. The M4 showed as fitted everywhere while the machine had no
+    // M4 at all: no RSX commands, and drive A stayed the default.
+    b.m4rom = read_file(m4board_find_rom(CPC.rom_path, CPC.resources_path));
     if (b.m4rom.size() >= 0x4000) {
       b.machine.set_m4_slot(g_m4board.rom_slot);
       b.machine.attach_m4_rom(b.m4rom.data(), b.m4rom.size());

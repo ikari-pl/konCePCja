@@ -107,6 +107,14 @@ void m4board_write_response(byte* rom_base);
 // Auto-load M4 ROM into the configured slot (called by emulator_init)
 // rom_map: the memmap_ROM[] array, rom_path: CPC.rom_path, resources_path:
 // CPC.resources_path
+// Resolve the M4 board ROM, or "" when it is not present. THE single source of
+// where that ROM lives: the host loader and the sub-cycle bridge both call
+// this. They used to keep separate lists, and the bridge's list named a file
+// this project does not ship ("m4.rom"), so the M4 Device was never fitted
+// while the ROMs dialog happily showed the board as present.
+std::string m4board_find_rom(const std::string& rom_path,
+                             const std::string& resources_path);
+
 void m4board_load_rom(byte** rom_map, const std::string& rom_path,
                       const std::string& resources_path);
 
