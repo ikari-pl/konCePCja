@@ -4254,7 +4254,7 @@ int koncpc_main(int argc, char** argv) {
                 break;
               case KONCPC_DEBUG:
                 log_verbose = !log_verbose;
-                set_osd_message(std::string("Debug mode: ") +
+                set_osd_message(std::string("Verbose log to console: ") +
                                 (log_verbose ? "on" : "off"));
                 break;
               case KONCPC_DELAY:
