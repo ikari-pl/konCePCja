@@ -374,7 +374,15 @@ void process_pending_dialog() {
       break;
     case FileDialogAction::SelectM4SDFolder:
       g_m4board.sd_root_path = path;
-      if (g_m4board.enabled) emulator_init();
+      // Fitting a new SD folder rebuilds the whole machine. This route had no
+      // guard of any kind: no warning, no unsaved-disk check, and no quiesce.
+      if (g_m4board.enabled) {
+        if (driveAltered()) {
+          imgui_state.confirm_m4_rebuild = true;
+        } else if (koncpc_rebuild_machine() != 0) {
+          imgui_toast_error("Could not restart the CPC for the new SD folder");
+        }
+      }
       break;
     case FileDialogAction::SavePlotterSVG:
       if (plotter_view_export_svg(path))
@@ -723,12 +731,12 @@ void imgui_render_ui() {
       ImGui::TextUnformatted("Are you sure you want to quit?");
     }
     ImGui::Spacing();
+    bool const cancel = ImGui::Button("Cancel", ImVec2(90, 0));
+    ImGui::SetItemDefaultFocus();  // focus the safe button by default
+    ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(90, 0))) {
       cleanExit(0, false);
     }
-    ImGui::SameLine();
-    bool const cancel = ImGui::Button("Cancel", ImVec2(90, 0));
-    ImGui::SetItemDefaultFocus();  // focus the safe button by default
     if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
       if (!imgui_state.show_menu && !imgui_state.show_options) {
@@ -950,7 +958,11 @@ bool koncpc_action_is_active(KONCPC_KEYS action) {
 // emulator-command menu item should go through here so labels/shortcuts can
 // never drift.
 namespace {
-bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
+// `defer` returns the click without dispatching, so a caller can interpose a
+// confirmation while label, shortcut and placement still come from the
+// registry. Everything else keeps the fire-and-forget behaviour.
+bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true,
+                    bool defer = false) {
   const MenuAction* meta = koncpc_find_action(action);
   if (meta == nullptr) return false;
   std::string const sc = koncpc_action_shortcut(action);
@@ -958,7 +970,7 @@ bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true) {
   bool const clicked =
       ImGui::MenuItem(meta->title, shortcut,
                       meta->toggle && koncpc_action_is_active(action), enabled);
-  if (clicked) koncpc_menu_action(action);
+  if (clicked && !defer) koncpc_menu_action(action);
   return clicked;
 }
 }  // namespace
@@ -1105,6 +1117,8 @@ extern "C" void koncpc_open_settings_tab(int tab) {
   imgui_state.show_options = true;
   s_pending_options_tab = static_cast<OptionsTab>(tab);
 }
+
+void imgui_request_reset_confirmation() { imgui_state.confirm_reset = true; }
 
 extern "C" void koncpc_open_command_palette() { g_command_palette.open(); }
 
@@ -1336,7 +1350,13 @@ void imgui_render_menubar() {
                           pinned ? " (pinned by env)" : "");
       ImGui::EndMenu();
     }
-    RenderMenuItem(KONCPC_RESET);
+    if (RenderMenuItem(KONCPC_RESET, true, /*defer=*/true)) {
+      if (driveAltered()) {
+        imgui_state.confirm_reset = true;
+      } else {
+        koncpc_menu_action(KONCPC_RESET);
+      }
+    }
     ImGui::EndMenu();
   }
 
@@ -1419,16 +1439,23 @@ void imgui_render_menubar() {
     if (ImGui::MenuItem("Save Disk B...", nullptr, false, b_dsk)) {
       koncpc_request_file_dialog(static_cast<int>(FileDialogAction::SaveDiskB));
     }
+    // Ejecting was only reachable by clicking the status-bar LED — an
+    // affordance you had to already know about. Both routes raise the same
+    // confirmation, drawn by the status bar.
+    if (ImGui::MenuItem("Eject Disk A", nullptr, false, caps_a.present)) {
+      imgui_state.eject_confirm_drive = 0;
+    }
+    if (ImGui::MenuItem("Eject Disk B", nullptr, false, caps_b.present)) {
+      imgui_state.eject_confirm_drive = 1;
+    }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Tape...")) {
       koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadTape));
     }
     RenderMenuItem(KONCPC_TAPEPLAY, !pbTapeImage.empty());
+    // Was ejecting immediately here while the status-bar route asked first.
     if (ImGui::MenuItem("Eject Tape", nullptr, false, !pbTapeImage.empty())) {
-      tape_eject();
-      CPC.tape.file.clear();
-      imgui_state.tape_block_offsets.clear();
-      imgui_state.tape_current_block = 0;
+      imgui_state.eject_confirm_tape = true;
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Load Cartridge...")) {
@@ -1517,11 +1544,18 @@ void imgui_render_menubar() {
         }
       });
       ImGui::Separator();
-      if (ImGui::MenuItem("Clear Recent")) {
-        CPC.mru_disks.clear();
-        CPC.mru_tapes.clear();
-        CPC.mru_snaps.clear();
-        CPC.mru_carts.clear();
+      // Clears FOUR lists, not just the one the submenu is showing, and
+      // cannot be undone — so it asks first and says what it did.
+      const size_t mru_total = CPC.mru_disks.size() + CPC.mru_tapes.size() +
+                               CPC.mru_snaps.size() + CPC.mru_carts.size();
+      if (ImGui::MenuItem("Clear Recent...", nullptr, false, mru_total > 0)) {
+        imgui_state.confirm_clear_recent = true;
+      }
+      if (ImGui::IsItemHovered() && mru_total > 0) {
+        ImGui::SetTooltip(
+            "Forget all %zu recent files (disks, tapes, "
+            "snapshots and cartridges)",
+            mru_total);
       }
       ImGui::EndMenu();
     }
@@ -2545,6 +2579,79 @@ void imgui_render_statusbar() {
     // open until the next frame, and eject_confirm_drive could be reset
     // by the else branch before BeginPopupModal succeeds.
     static int popup_eject_drive = -1;
+    // Fitting an M4 SD folder restarts the machine, so it asks like the rest.
+    if (imgui_state.confirm_m4_rebuild) {
+      imgui_state.confirm_m4_rebuild = false;
+      ImGui::OpenPopup("Restart for the SD folder?");
+    }
+    if (ImGui::BeginPopupModal("Restart for the SD folder?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                         "You have unsaved changes to a disk.");
+      ImGui::TextUnformatted(
+          "Fitting the new SD folder restarts the CPC and loses them.");
+      ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      ImGui::SetItemDefaultFocus();
+      ImGui::SameLine();
+      if (ImGui::Button("Restart", ImVec2(90, 0))) {
+        if (koncpc_rebuild_machine() != 0) {
+          imgui_toast_error("Could not restart the CPC for the new SD folder");
+        }
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
+    // Reset with unsaved disk edits: the same guard the quit paths use.
+    if (imgui_state.confirm_reset) {
+      imgui_state.confirm_reset = false;
+      ImGui::OpenPopup("Reset the CPC?");
+    }
+    if (ImGui::BeginPopupModal("Reset the CPC?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                         "You have unsaved changes to a disk.");
+      ImGui::TextUnformatted("Resetting will lose them.");
+      ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      ImGui::SetItemDefaultFocus();
+      ImGui::SameLine();
+      if (ImGui::Button("Reset", ImVec2(90, 0))) {
+        koncpc_menu_action(KONCPC_RESET);
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
+    // Clear Recent: destructive, spans four lists, and has no undo.
+    if (imgui_state.confirm_clear_recent) {
+      imgui_state.confirm_clear_recent = false;
+      ImGui::OpenPopup("Clear Recent Files?");
+    }
+    if (ImGui::BeginPopupModal("Clear Recent Files?", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::TextUnformatted(
+          "Forget every recent disk, tape, snapshot and cartridge?");
+      ImGui::TextDisabled("This only clears the lists — no files are deleted.");
+      ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      ImGui::SetItemDefaultFocus();  // the safe choice is the default
+      ImGui::SameLine();
+      if (ImGui::Button("Clear", ImVec2(90, 0))) {
+        const size_t cleared = CPC.mru_disks.size() + CPC.mru_tapes.size() +
+                               CPC.mru_snaps.size() + CPC.mru_carts.size();
+        CPC.mru_disks.clear();
+        CPC.mru_tapes.clear();
+        CPC.mru_snaps.clear();
+        CPC.mru_carts.clear();
+        imgui_toast_success("Cleared " + std::to_string(cleared) +
+                            " recent files");
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::EndPopup();
+    }
+
     if (imgui_state.eject_confirm_drive >= 0) {
       popup_eject_drive = imgui_state.eject_confirm_drive;
       imgui_state.eject_confirm_drive = -1;
@@ -2555,17 +2662,18 @@ void imgui_render_statusbar() {
       const char* name = popup_eject_drive == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
       ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        popup_eject_drive = -1;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SetItemDefaultFocus();  // keeping the disk is the safe choice
+      ImGui::SameLine();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
         t_drive& drive = popup_eject_drive == 0 ? driveA : driveB;
         auto& driveFile =
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         dsk_eject(&drive);
         driveFile.clear();
-        popup_eject_drive = -1;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();
       }
@@ -2580,16 +2688,17 @@ void imgui_render_statusbar() {
                                ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextUnformatted("Eject tape?");
       ImGui::Spacing();
+      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        imgui_state.eject_confirm_tape = false;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SetItemDefaultFocus();  // keeping the tape is the safe choice
+      ImGui::SameLine();
       if (ImGui::Button("Eject", ImVec2(80, 0))) {
         tape_eject();
         CPC.tape.file.clear();
         imgui_state.tape_block_offsets.clear();
         imgui_state.tape_current_block = 0;
-        imgui_state.eject_confirm_tape = false;
-        ImGui::CloseCurrentPopup();
-      }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
         imgui_state.eject_confirm_tape = false;
         ImGui::CloseCurrentPopup();
       }
@@ -3084,10 +3193,12 @@ void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
   static bool old_m4_enabled = false;
+  static bool old_serial_enabled = false;
   if (first_open) {
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
     old_m4_enabled = g_m4board.enabled;
+    old_serial_enabled = g_serial_interface.get_config().enabled;
     first_open = false;
   }
 
@@ -4063,11 +4174,15 @@ void imgui_render_options() {
   // Changing any of these rebuilds the machine: emulator_init() wipes RAM and
   // cold-boots the CPC. Computed once, because Save and Apply have to agree on
   // what forces it — they each carried their own copy of this condition.
+  // Enabling the serial interface belongs here: g_si_rom.load() runs only
+  // inside emulator_init(), so without a rebuild the backend comes up with no
+  // RSX ROM mapped and the banner's claim to list what restarts is false.
   const bool needs_restart =
       CPC.model != imgui_state.old_cpc_settings.model ||
       CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
       CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
-      g_m4board.enabled != old_m4_enabled;
+      g_m4board.enabled != old_m4_enabled ||
+      g_serial_interface.get_config().enabled != old_serial_enabled;
   const ImVec4 kWarn(0.95f, 0.75f, 0.2f, 1.0f);
 
   // Say so before it happens, rather than rebooting under the user.
@@ -4086,18 +4201,22 @@ void imgui_render_options() {
     if (save_to_file) {
       saveConfiguration(CPC, getConfigurationFilename(true));
     }
-    if (needs_restart) emulator_init();
-    if (save_to_file) {
-      // Start/stop M4 HTTP server based on M4 enabled state. Only auto-start
-      // when M4 was just enabled (not on every Save), so that a manual "Stop"
-      // in the UI stays effective.
-      if (g_m4board.enabled && !old_m4_enabled &&
-          !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
-        g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
-      } else if (!g_m4board.enabled && g_m4_http.is_running()) {
-        g_m4_http.stop();
-      }
+    if (needs_restart && koncpc_rebuild_machine() != 0) {
+      // A half-built machine — a missing ROM, say — must not be reported as
+      // success and must not be resumed. Leave the dialog open on it.
+      imgui_toast_error(
+          "Could not rebuild the CPC with these settings; check the ROM paths");
+      return;
     }
+    // Auto-START only on Save, and only when M4 was just enabled, so a
+    // manual "Stop" in the UI stays effective.
+    if (save_to_file && g_m4board.enabled && !old_m4_enabled &&
+        !g_m4board.sd_root_path.empty() && !g_m4_http.is_running()) {
+      g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
+    }
+    // STOP regardless of Save/Apply: leaving the server publishing a disabled
+    // board's SD directory is the surprising half of the asymmetry.
+    if (!g_m4board.enabled && g_m4_http.is_running()) g_m4_http.stop();
     update_cpc_speed();
     video_set_palette();
     imgui_state.show_options = false;
@@ -4105,22 +4224,27 @@ void imgui_render_options() {
     first_open = true;
   };
 
-  // 0 = nothing pending, 1 = Save awaiting confirmation, 2 = Apply.
-  static int s_pending_commit = 0;
+  // Which button is waiting on the restart confirmation.
+  enum class PendingCommit : std::uint8_t { None, Save, Apply };
+  static PendingCommit s_pending_commit = PendingCommit::None;
 
   // Bottom buttons
   if (ImGui::Button("Save", ImVec2(80, 0))) {
     if (needs_restart && driveAltered()) {
-      s_pending_commit = 1;  // confirm before throwing the disk edits away
+      s_pending_commit = PendingCommit::Save;  // confirm before losing edits
     } else {
       commit_options(true);
     }
   }
+  ImGui::SetItemDefaultFocus();  // Save is the default action (Enter)
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Apply changes and save to config file");
   }
   ImGui::SameLine();
-  if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+  // Discard the edits and put back what was live when the dialog opened. Three
+  // routes need this — the button, Escape, and the window's X — and each used
+  // to carry its own copy.
+  auto revert_options = [&]() {
     unsigned int const prev_style = CPC.scr_style;
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
@@ -4132,11 +4256,14 @@ void imgui_render_options() {
     imgui_state.show_options = false;
     cpc_resume();
     first_open = true;
+  };
+  if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+    revert_options();
   }
   ImGui::SameLine();
   if (ImGui::Button("Apply", ImVec2(80, 0))) {
     if (needs_restart && driveAltered()) {
-      s_pending_commit = 2;
+      s_pending_commit = PendingCommit::Apply;
     } else {
       commit_options(false);
     }
@@ -4148,7 +4275,8 @@ void imgui_render_options() {
 
   // The same guard the quit paths use: a restart is not worth a silent loss of
   // disk edits the user has not written back.
-  if (s_pending_commit != 0 && !ImGui::IsPopupOpen("Restart the CPC?")) {
+  if (s_pending_commit != PendingCommit::None &&
+      !ImGui::IsPopupOpen("Restart the CPC?")) {
     ImGui::OpenPopup("Restart the CPC?");
   }
   if (ImGui::BeginPopupModal("Restart the CPC?", nullptr,
@@ -4157,31 +4285,39 @@ void imgui_render_options() {
     ImGui::TextUnformatted(
         "These settings restart the CPC. The changes will be lost.");
     ImGui::Spacing();
-    if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
-      commit_options(s_pending_commit == 1);
-      s_pending_commit = 0;
+    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
+      // Cancelling the RESTART must not silently discard the save: before
+      // this flow, Save always wrote the config. Persisting is harmless;
+      // only the reboot is refused.
+      if (s_pending_commit == PendingCommit::Save) {
+        saveConfiguration(CPC, getConfigurationFilename(true));
+      }
+      s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
     }
+    ImGui::SetItemDefaultFocus();  // not restarting is the safe choice
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
-      s_pending_commit = 0;
+    if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
+      commit_options(s_pending_commit == PendingCommit::Save);
+      s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
   }
 
-  if (!open) {
-    // Window closed via X button — treat as Cancel
-    unsigned int const prev_style = CPC.scr_style;
-    CPC = imgui_state.old_cpc_settings;
-    CRTC.crtc_type = old_crtc_type;
-    if (subcycle::Machine* m = subcycle_bridge_machine())
-      m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));
-    g_m4board.enabled = old_m4_enabled;
-    if (CPC.scr_style != prev_style) imgui_state.video_reinit_pending = true;
-    imgui_state.show_options = false;
-    cpc_resume();
-    first_open = true;
+  // Escape is Cancel, the same as every other dialog here — but not while the
+  // restart confirmation owns the keyboard.
+  if (s_pending_commit == PendingCommit::None &&
+      !ImGui::IsPopupOpen("Restart the CPC?") &&
+      ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    revert_options();
+  }
+  if (!open) {  // window closed via the X — treat as Cancel
+    // Drop any pending confirmation with it. A stranded value re-opened the
+    // modal unprompted on the next Options open, where "Restart anyway"
+    // would run a saveConfiguration() nobody asked for.
+    s_pending_commit = PendingCommit::None;
+    revert_options();
   }
 
   ImGui::End();

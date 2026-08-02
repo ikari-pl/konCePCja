@@ -1012,6 +1012,47 @@ void load_mf2_rom() {
 
 }  // namespace
 
+// True once a machine exists, so the first init does not try to free one.
+static bool s_machine_built = false;
+// pbRegisterPage starts life pointing at a STATIC buffer (hw_views.cpp), which
+// must never be deleted. Only a page this function allocated may be freed.
+static bool s_register_page_owned = false;
+
+// Release what the previous machine owned. emulator_init() used to allocate
+// straight over the top, leaking the RAM, ROM and scratch buffers and orphaning
+// every expansion-ROM image on each rebuild.
+//
+// Order matters: the board keeps RAW pointers to the expansion ROMs
+// (mem_attach_rom stores, it does not copy), so each slot is detached from the
+// board before its image is freed. The caller has already quiesced the Z80
+// thread; this only keeps the board from holding a released pointer afterwards.
+static void release_previous_machine() {
+  if (!s_machine_built) return;
+
+  for (int slot = 0; slot < MAX_ROM_SLOTS; slot++) {
+    if (memmap_ROM[slot] == nullptr) continue;
+    subcycle_bridge_attach_rom_slot(slot, nullptr);
+    delete[] memmap_ROM[slot];
+    memmap_ROM[slot] = nullptr;
+  }
+  delete[] pbGPBuffer;
+  pbGPBuffer = nullptr;
+  delete[] pbRAMbuffer;
+  pbRAMbuffer = nullptr;
+  pbRAM = nullptr;
+  delete[] pbROM;
+  pbROM = nullptr;
+  pbROMlo = pbROMhi = pbExpansionROM = nullptr;
+  if (s_register_page_owned) {
+    delete[] pbRegisterPage;
+    pbRegisterPage = nullptr;
+    s_register_page_owned = false;
+  }
+  // pbMF2ROM/pbMF2ROMbackup are deliberately kept: load_mf2_rom() treats an
+  // already-resident image as done, and re-reading it every rebuild would be
+  // churn for no gain.
+}
+
 int emulator_init() {
   if (input_init()) {
     fprintf(stderr, "input_init() failed. Aborting.\n");
@@ -1022,12 +1063,15 @@ int emulator_init() {
   cartridge_load();
 
   // Host-side memory: all value-initialized (zeroed).
+  release_previous_machine();
+
   pbGPBuffer = new byte[128 * 1024]();  // general-purpose scratch buffer
   // One guard byte sits before pbRAM: prerender_normal*_plus may read it.
   pbRAMbuffer = new byte[(CPC.ram_size * 1024) + 1]();
   pbRAM = pbRAMbuffer + 1;
   pbROM = new byte[32 * 1024]();  // system ROM: OS + BASIC
   pbRegisterPage = new byte[16 * 1024]();
+  s_register_page_owned = true;
   pbROMlo = pbROM;
   pbROMhi = pbExpansionROM = pbROM + 16384;
   std::fill(std::begin(memmap_ROM), std::end(memmap_ROM), nullptr);
@@ -1065,6 +1109,11 @@ int emulator_init() {
 
   emulator_reset();
   CPC.paused = false;
+  // The cartridge was reloaded above, which freed the image the board was
+  // attached to. Point it at the new one — the board holds it raw, and nothing
+  // else re-attaches it outside subcycle_bridge_start().
+  subcycle_bridge_attach_cartridge();
+  s_machine_built = true;
 
   return 0;
 }
@@ -1087,6 +1136,29 @@ void emulator_shutdown() {
   delete[] pbGPBuffer;
 }
 }  // namespace
+
+int koncpc_rebuild_machine() {
+  // Quiesce first. cpc_pause() only raises a flag; the Z80 thread may still be
+  // inside a frame until it observes it, and emulator_init() frees memory that
+  // frame is reading (the cartridge image, the expansion ROMs) and wipes the
+  // I/O dispatch table underneath it.
+  const bool was_paused = CPC.paused;
+  cpc_pause_and_wait();
+
+  const int err = emulator_init();
+
+  // emulator_init() ends with CPC.paused = false without touching g_emu_paused,
+  // so the two flags that are meant to agree no longer do. Restore the run
+  // state through the functions that set both, rather than trusting what it
+  // left behind. A machine that failed to build stays stopped: it never reached
+  // emulator_reset() and must not be run.
+  if (err != 0 || was_paused) {
+    cpc_pause();
+  } else {
+    cpc_resume();
+  }
+  return err;
+}
 
 void bin_load(const std::string& filename, const size_t offset) {
   LOG_INFO("Load " << filename << " in memory at offset 0x" << std::hex
@@ -2738,10 +2810,28 @@ void koncpc_menu_action(int action) {
                       (log_verbose ? "on" : "off"));
       break;
 
-    case KONCPC_NEXTDISKA:
+    case KONCPC_NEXTDISKA: {
+      // Only an archive has a next disk. On a plain image this used to reload
+      // the same file and call it an archive.
+      const std::string ext = stringutils::lower(
+          std::filesystem::path(CPC.driveA.file).extension().string());
+      if (ext != ".zip") {
+        set_osd_message("Drive A holds no archive");
+        break;
+      }
+      // file_load wraps zip_index modulo the entry count (slotshandler.cpp),
+      // so advancing past the last disk returns to the first — there is no
+      // "past the end" to report. Read the index back afterwards: it is the
+      // disk actually loaded, which is not necessarily the one asked for.
       CPC.driveA.zip_index += 1;
-      file_load(CPC.driveA);
+      if (file_load(CPC.driveA) == 0) {
+        set_osd_message("Archive disk " +
+                        std::to_string(CPC.driveA.zip_index + 1));
+      } else {
+        set_osd_message("Could not load the next disk in the archive");
+      }
       break;
+    }
   }
 }
 
@@ -4227,7 +4317,15 @@ int koncpc_main(int argc, char** argv) {
                 koncpc_menu_action(KONCPC_MF2STOP);
                 break;
               case KONCPC_RESET:
-                koncpc_menu_action(KONCPC_RESET);
+                // The menu asks before a reset that would lose disk edits;
+                // F5 is how people actually reset, so it must ask too.
+                // Headless and IPC keep the unconditional path — there is no
+                // one to answer a modal.
+                if (!g_headless && driveAltered()) {
+                  imgui_request_reset_confirmation();
+                } else {
+                  koncpc_menu_action(KONCPC_RESET);
+                }
                 break;
               case KONCPC_JOY:
                 koncpc_menu_action(KONCPC_JOY);

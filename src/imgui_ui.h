@@ -50,3 +50,8 @@ void serial_terminal_feed_byte(uint8_t byte);
 
 // Plotter Preview window
 void imgui_render_plotter_preview();
+
+// Raise the "reset would lose unsaved disk edits" confirmation. Lets the
+// keyboard shortcut reach the same guard as the menu item without the SDL
+// layer reaching into ImGui state.
+void imgui_request_reset_confirmation();

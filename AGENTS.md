@@ -97,7 +97,8 @@ Options:
      --fps                 Log once-per-second FPS to stdout
 
 Slot files: .dsk/.ipf/.raw (disk), .scp/.hfe/.a2r (flux disk, drive A only),
-.cdt/.voc (tape), .cpr (cartridge), .sna (snapshot)
+.cdt/.voc (tape), .cpr (cartridge), .sna (snapshot), .zip (archive of any
+of the above)
 ```
 
 ### Examples
@@ -156,8 +157,8 @@ OK available commands (usage: help <command>):
 | Command | Description | Example |
 |---------|-------------|---------|
 | `ping` | Test connection | `ping` → `OK pong` |
-| `version` | Get version | `version` → `OK koncepcja-0.2 port=6543` |
-| `help` | List commands | `help` → `OK commands: ...` |
+| `version` | Get version | `version` → `OK koncepcja-<version> port=6543` |
+| `help` | List commands, categorised | `help` → `OK available commands (usage: help <command>): ...` |
 | `pause` | Pause emulation | `pause` → `OK` |
 | `run` | Resume emulation | `run` → `OK` |
 | `reset` | Reset CPC | `reset` → `OK` |

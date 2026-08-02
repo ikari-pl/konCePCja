@@ -573,6 +573,19 @@ void bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);
 void dumpScreen();
 int emulator_init();
+
+// Rebuild the emulated machine safely, and report whether it worked.
+//
+// emulator_init() frees and re-attaches memory the board holds raw pointers to
+// — the cartridge image and the expansion-ROM images — and wipes the I/O
+// dispatch table. Doing that while the Z80 thread is inside a frame is a
+// use-after-free. cpc_pause() alone only raises a flag; the thread can still be
+// mid-frame until it observes it, so the WAIT is the part that matters. This is
+// the same contract emulator_reset() and koncpc_toggle_fullscreen() follow.
+//
+// Restores whatever run state the caller was in. Returns emulator_init()'s
+// code; non-zero means the machine is NOT usable and is left paused.
+int koncpc_rebuild_machine();
 int video_set_palette();
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();

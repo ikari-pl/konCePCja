@@ -43,3 +43,7 @@ koncepcja_bench.profdata
 # beads-mwpg: local real flux fixtures (unknown-license captures, never commit)
 test/hw/fixtures/*.scp
 test/hw/fixtures/*.a2r
+
+# The live config: personal paths, MRU history and machine-specific tuning.
+# The shipped default is koncepcja.cfg.example — copy it to start.
+koncepcja.cfg

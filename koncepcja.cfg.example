@@ -1,3 +1,10 @@
+# konCePCja — example configuration.
+#
+# Copy to koncepcja.cfg and edit. Deliberately neutral: 1x window, no
+# fullscreen, empty drives and no personal paths, the Auto run tier, and
+# plain GPU-presented scaling that works on any machine. Drive and tape
+# sounds are on — they are part of how a CPC behaves.
+#
 # vi: syntax=cfg
 #
 # konCePCja configuration file.
@@ -56,6 +63,12 @@ resources_path=
 #   Estimated time in video frames the CPC takes to boot.
 #   Caprice will emulate this number of frames before starting to send a provided autocmd.
 boot_time=42
+# run_tier
+#   0: auto  - Fast while running, Wake while a breakpoint/watchpoint is set
+#   1: fast  - pinned; the register view syncs at frame boundaries, so a
+#              debugger polling PC in an idle loop sees it repeat
+#   2: wake   3: soldered   4: faithful
+run_tier=0
 
 [video]
 # scr_scale
@@ -68,7 +81,7 @@ boot_time=42
 #    6 = 2304x1620
 #    7 = 2688x1890
 #    8 = 3072x2160
-scr_scale=2
+scr_scale=1
 # scr_preserve_aspect_ratio
 #   Whether to preserve the aspect ratio or to stretch to the monitor size when in fullscreen.
 scr_preserve_aspect_ratio=1
@@ -85,7 +98,7 @@ scr_preserve_aspect_ratio=1
 #   9: Software bicubic
 #  10: Dot matrix
 #  11: OpenGL scaling
-scr_style=1
+scr_style=11
 # scr_oglfilter
 #   0: OpenGL filter inactive
 #   1: OpenGL filter active
@@ -166,13 +179,15 @@ volume=80
 #   0: No Digiblaster/soundplayer device attached to the printer port
 #   1: Digiblaster/soundplayer device attached to the printer port
 pp_device=0
+disk_sounds=1
+tape_sounds=1
 
 [control]
 # kbd_layout
 #   Host keyboard layout map
 #   Name of the map file (under the resources directory)
 #   If the file is not used a US keyboard is assumed
-kbd_layout=keymap_us.map
+kbd_layout=
 
 [file]
 max_track_size=5990
@@ -196,7 +211,7 @@ fmt06=
 fmt07=
 # printer_file
 #   Path to output printer stream.
-printer_file=./printer.dat
+printer_file=
 # sdump_dir
 #   Directory where screenshots will be found. Default to $APP_PATH/screenshots
 sdump_dir=
