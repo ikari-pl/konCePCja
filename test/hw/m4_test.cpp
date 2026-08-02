@@ -108,6 +108,59 @@ TEST(M4, AccumulateExecuteLatchAndBusy) {
   EXPECT_EQ(m4_pending_command(&rig.m4, &p), 0) << "mailbox drained once";
 }
 
+// A second command arriving before the host drained the first must be dropped
+// WHOLE. The bug this pins: latch_execute returned early on a full mailbox
+// without clearing the accumulator, so the dropped frame's bytes stayed put and
+// the NEXT frame was built from them plus the new ones. Spliced frames decoded
+// to a nonsense opcode, the host answered with an error, and every M4 directory
+// listing came back as garbage — reproduced live as 23/52/20-byte frames whose
+// size prefix disagreed with their length.
+//
+// Fails before the fix: the third frame arrives 6 bytes long, carrying the
+// undrained command's tail, instead of the 3 bytes actually sent.
+TEST(M4, AFrameArrivingWhileTheMailboxIsFullIsDroppedWhole) {
+  M4Rig rig;
+  make_rig(rig);
+
+  // First command: latched, and deliberately NOT drained.
+  io_write(rig, 0xFE00, 0x02);
+  io_write(rig, 0xFE00, 0x06);
+  io_write(rig, 0xFE00, 0x43);
+  io_write(rig, 0xFC00, 0x00);
+
+  M4Regs r{};
+  m4_peek(&rig.m4, &r);
+  ASSERT_EQ(r.busy, 1) << "first frame is latched and awaiting the host";
+
+  // Second command arrives while the mailbox is still full. It cannot be
+  // delivered — but it must not poison what comes next either.
+  io_write(rig, 0xFE00, 0xAA);
+  io_write(rig, 0xFE00, 0xBB);
+  io_write(rig, 0xFE00, 0xCC);
+  io_write(rig, 0xFC00, 0x00);
+
+  m4_peek(&rig.m4, &r);
+  EXPECT_EQ(r.cmd_count, 0)
+      << "the dropped frame left bytes behind; the next command will be built "
+         "from them and both commands are lost";
+
+  // The host drains the first frame, unchanged.
+  M4Pending p{};
+  ASSERT_EQ(m4_pending_command(&rig.m4, &p), 1);
+  EXPECT_EQ(p.cmd, 0x4306) << "the first frame survived intact";
+  EXPECT_EQ(p.len, 3);
+
+  // Now a third command must arrive exactly as sent — 3 bytes, not 6.
+  io_write(rig, 0xFE00, 0x02);
+  io_write(rig, 0xFE00, 0x09);
+  io_write(rig, 0xFE00, 0x43);
+  io_write(rig, 0xFC00, 0x00);
+
+  ASSERT_EQ(m4_pending_command(&rig.m4, &p), 1);
+  EXPECT_EQ(p.len, 3) << "frame was spliced onto the dropped one's remains";
+  EXPECT_EQ(p.cmd, 0x4309) << "decoded a command the CPC never sent";
+}
+
 TEST(M4, ResponseWindowOverlaysTheRomWhilePagedIn) {
   M4Rig rig;
   make_rig(rig);
