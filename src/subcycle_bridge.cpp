@@ -296,19 +296,20 @@ bool subcycle_bridge_start() {
       b.mf2rom.clear();
   }
   if (g_m4board.enabled && !b.m4_loaded) {  // m4-device.md §2
-    // One resolver, shared with the host loader. The board used to keep its
-    // own list naming "m4.rom" — a file this project does not ship — so
-    // b.m4rom stayed empty, set_m4() was never called and the ROM was never
-    // attached. The M4 showed as fitted everywhere while the machine had no
-    // M4 at all: no RSX commands, and drive A stayed the default.
-    b.m4rom = read_file(m4board_find_rom(CPC.rom_path, CPC.resources_path));
-    if (b.m4rom.size() >= 0x4000) {
+    // Attach the image the HOST prepared — never a fresh read of the file.
+    // m4board_load_rom() patches a boot stage into the ROM at 0x3800 (the
+    // shipped file is 0xFF there): stage1, stage2 and the banner string. That
+    // stage is what the firmware's ROM scan runs, and what registers the RSX
+    // commands. The bridge used to re-read the file itself — under a filename
+    // this project does not even ship — so the machine got an unpatched ROM
+    // with nothing to initialise, and the M4 was inert: no banner, no RSX,
+    // drive A still the default.
+    byte* const prepared = memmap_ROM[g_m4board.rom_slot];
+    if (prepared != nullptr) {
       b.machine.set_m4_slot(g_m4board.rom_slot);
-      b.machine.attach_m4_rom(b.m4rom.data(), b.m4rom.size());
-      b.machine.attach_rom(g_m4board.rom_slot, b.m4rom.data());  // the ROM body
+      b.machine.attach_m4_rom(prepared, 0x4000);
+      b.machine.attach_rom(g_m4board.rom_slot, prepared);
       b.machine.set_m4(true);
-    } else {
-      b.m4rom.clear();
     }
     b.m4_loaded = true;
   }

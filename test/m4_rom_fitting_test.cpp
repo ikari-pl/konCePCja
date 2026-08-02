@@ -64,19 +64,54 @@ TEST(M4RomFitting, ResolverReportsAbsenceRatherThanGuessing) {
             "");
 }
 
-// The regression guard proper. The bridge must ASK the resolver, not carry its
-// own idea of the filename — that divergence is what left the M4 unfitted, and
-// nothing at run time reported it. This fails on the pre-fix tree, where
-// subcycle_bridge.cpp read "m4.rom" directly.
-TEST(M4RomFitting, TheBridgeDoesNotKeepItsOwnRomFilename) {
+// The regression guard proper, and it has moved: the bridge must not load this
+// ROM AT ALL. m4board_load_rom() patches a boot stage into the image at 0x3800
+// (the shipped file is 0xFF there) and that stage is what registers the RSX
+// commands, so any second read of the file hands the machine an unpatched ROM.
+// The bridge must fit the host-prepared image out of memmap_ROM instead.
+//
+// Fails on the pre-fix tree, which read the file itself under a name this
+// project does not ship.
+TEST(M4RomFitting, TheBridgeFitsTheHostPreparedImage) {
   const std::string bridge = read_source_file("src/subcycle_bridge.cpp");
   ASSERT_FALSE(bridge.empty()) << "could not read src/subcycle_bridge.cpp";
 
-  EXPECT_NE(bridge.find("m4board_find_rom"), std::string::npos)
-      << "the bridge must resolve the M4 ROM through m4board_find_rom()";
+  const size_t m4_block = bridge.find("g_m4board.enabled && !b.m4_loaded");
+  ASSERT_NE(m4_block, std::string::npos) << "M4 fitting block not found";
+  const std::string block = bridge.substr(m4_block, 1400);
+
+  EXPECT_NE(block.find("memmap_ROM[g_m4board.rom_slot]"), std::string::npos)
+      << "the bridge must fit the image the host prepared, not its own read";
+  EXPECT_EQ(block.find("read_file"), std::string::npos)
+      << "the bridge is reading an M4 ROM file again; a fresh read misses the "
+         "boot stage m4board_load_rom patches in, and the M4 goes inert";
   EXPECT_EQ(bridge.find("\"/m4.rom\""), std::string::npos)
-      << "the bridge is hardcoding an M4 ROM filename again; that name is not "
-         "shipped and the M4 will not be fitted";
+      << "the bridge is hardcoding an M4 ROM filename again";
+}
+
+// The patched boot stage is the whole point: prove the shipped file does NOT
+// already contain it, so a future "just read the file" refactor cannot look
+// harmless.
+TEST(M4RomFitting, TheShippedRomHasNoBootStageOfItsOwn) {
+  const std::string rom =
+      m4board_find_rom(source_dir() + "/rom", source_dir() + "/resources");
+  ASSERT_FALSE(rom.empty());
+
+  std::ifstream f(rom, std::ios::binary);
+  ASSERT_TRUE(f) << rom;
+  std::string bytes((std::istreambuf_iterator<char>(f)),
+                    std::istreambuf_iterator<char>());
+  ASSERT_GE(bytes.size(), 0x3810u);
+
+  EXPECT_EQ(bytes.find("Emulated M4"), std::string::npos)
+      << "the banner is patched in by m4board_load_rom, not shipped";
+  bool all_blank = true;
+  for (size_t i = 0x3800; i < 0x3810; i++) {
+    if (static_cast<unsigned char>(bytes[i]) != 0xFF) all_blank = false;
+  }
+  EXPECT_TRUE(all_blank)
+      << "0x3800 is the boot-stage area the host patches; if the file now "
+         "carries its own code, revisit how the ROM is prepared";
 }
 
 // Same trap, one file over: the host loader must not re-grow its own lookup.
