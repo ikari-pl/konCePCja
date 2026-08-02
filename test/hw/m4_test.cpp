@@ -118,6 +118,52 @@ TEST(M4, AccumulateExecuteLatchAndBusy) {
 //
 // Fails before the fix: the third frame arrives 6 bytes long, carrying the
 // undrained command's tail, instead of the 3 bytes actually sent.
+// While the coprocessor is working, the WHOLE response window must read as
+// not-ready — not just the status byte at &E800. The M4 ROM's ready-poll
+// watches the TAIL of the response it expects (the last byte of a directory
+// entry). When only &E800 was blanked, a previous same-length response left
+// its terminator under the tail address, the poll passed instantly, and the
+// ROM copied five stale bytes — "READM" printed where "GAMES" belonged, byte
+// pattern captured live on beads-bx36.
+//
+// Fails before the fix: rom_read(0xE816) returns the STALE previous response
+// byte while busy, instead of 0xFF.
+TEST(M4, BusyBlanketsTheWholeResponseWindow) {
+  M4Rig rig;
+  make_rig(rig);
+  page_m4_rom(rig);
+
+  // A completed 23-byte response — a directory entry's exact shape.
+  uint8_t first[23] = {};
+  first[0] = 0x01;
+  first[22] = 0x00;  // the tail byte a ready-poll watches
+  m4_complete_response(&rig.m4, first, sizeof(first));
+  ASSERT_EQ(rom_read(rig, 0xE816), 0x00) << "tail served while idle";
+
+  // The CPC latches the next command: the coprocessor is now working.
+  io_write(rig, 0xFE00, 0x02);
+  io_write(rig, 0xFE00, 0x06);
+  io_write(rig, 0xFE00, 0x43);
+  io_write(rig, 0xFC00, 0x00);
+
+  EXPECT_EQ(rom_read(rig, 0xE800), 0xFF) << "status byte while busy";
+  EXPECT_EQ(rom_read(rig, 0xE816), 0xFF)
+      << "the tail byte still serves the PREVIOUS response while busy — a "
+         "same-length reply satisfies the ROM's ready-poll instantly and it "
+         "copies stale bytes";
+  EXPECT_EQ(rom_read(rig, 0xE80A), 0xFF) << "mid-window while busy";
+
+  // The host answers: the window serves the fresh bytes.
+  M4Pending drain{};
+  m4_pending_command(&rig.m4, &drain);
+  uint8_t second[23] = {};
+  second[0] = 0x01;
+  second[3] = 0x47;  // 'G'
+  m4_complete_response(&rig.m4, second, sizeof(second));
+  EXPECT_EQ(rom_read(rig, 0xE800), 0x01);
+  EXPECT_EQ(rom_read(rig, 0xE803), 0x47) << "fresh payload after the answer";
+}
+
 TEST(M4, AFrameArrivingWhileTheMailboxIsFullIsDroppedWhole) {
   M4Rig rig;
   make_rig(rig);

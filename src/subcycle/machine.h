@@ -260,6 +260,20 @@ class Machine {
     instr_hook_ctx_ = ctx;
   }
 
+  // Coprocessor-service seam (m4-device.md §3). The M4's STM32 answers a
+  // latched command in microseconds; the host used to answer once per frame
+  // (20ms), four orders slower than the ROM's poll loops tolerate — they
+  // timed out, printed garbage and retried. When installed, run_frame fires
+  // the service at the cycle the mailbox raises "command waiting", so the
+  // host answers with hardware-honest latency. Null by default → hw tests
+  // and M4-less sessions pay one predictable branch per cycle, nothing more.
+  using M4Service = void (*)(void* ctx);
+  void set_m4_service(M4Service fn, void* ctx) {
+    m4_service_ = fn;
+    m4_service_ctx_ = ctx;
+    m4_waiting_ = fn != nullptr ? m4_command_waiting(&m4dev_) : nullptr;
+  }
+
   using CycleHook = void (*)(void* ctx, uint64_t master_cycle);
   void set_cycle_hook(CycleHook fn, void* ctx) {
     cycle_hook_ = fn;
@@ -708,6 +722,9 @@ class Machine {
   void* cycle_hook_ctx_ = nullptr;
   InstrHook instr_hook_ = nullptr;  // per-instruction debug-trace seam
   void* instr_hook_ctx_ = nullptr;
+  M4Service m4_service_ = nullptr;  // coprocessor service (host answers M4)
+  void* m4_service_ctx_ = nullptr;
+  const uint8_t* m4_waiting_ = nullptr;  // the mailbox line, cached
   uint64_t instr_hook_last_ = 0;  // last-seen instr_count (per-cycle edge)
 };
 

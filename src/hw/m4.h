@@ -41,6 +41,12 @@ typedef struct M4Pending {
 } M4Pending;
 
 size_t m4_state_size(void);
+/* The mailbox's "command waiting" line, as a stable pointer into the Device's
+ * state: non-zero while a latched frame awaits the host. The Machine polls it
+ * per cycle to fire the host service with coprocessor latency (µs, like the
+ * real STM32) instead of frame latency (20ms) — the M4 ROM's poll loops time
+ * out and print garbage at frame latency. Read-only for the caller. */
+const uint8_t* m4_command_waiting(const Device* dev);
 Device m4_init(void* storage);
 void m4_peek(const Device* dev, M4Regs* out);
 

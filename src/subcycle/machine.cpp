@@ -1681,6 +1681,13 @@ void Machine::run_frame() {
   const long bound = kMasterPerFrame * 2;
   long i = 0;
   while (i < bound && vr.frames < target) {
+    // Coprocessor latency (m4-device.md §3): answer a latched M4 command NOW,
+    // not at the frame boundary — the ROM's poll loops are written against a
+    // microsecond STM32 and time out at frame latency. One load + predictable
+    // branch when idle; an M4-plugged board runs per-cycle (no wake contract),
+    // so this check is on every path that can carry an M4 command.
+    if (m4_waiting_ != nullptr && *m4_waiting_ != 0)
+      m4_service_(m4_service_ctx_);
 #ifndef SOLDERED
     // Entry needs a GENUINE GA phase-0 commit — clk.cpu rides along on those
     // (phase & 3 == 0), while the power-on resting bus fakes phase 0 with the

@@ -126,6 +126,8 @@ struct Bridge {
   std::atomic<uint8_t> swap_unit{0};
 };
 Bridge g_bridge;
+void sync_m4_command(Bridge& b);  // defined below; installed as the machine's
+                                  // coprocessor service at build
 const std::vector<int16_t> g_empty_audio;
 
 std::vector<uint8_t> read_file(const std::string& path) {
@@ -311,6 +313,12 @@ bool subcycle_bridge_start() {
       b.machine.attach_rom(g_m4board.rom_slot, prepared);
       b.machine.set_m4(true);
     }
+    // Answer M4 commands at coprocessor latency: run_frame fires this the
+    // cycle the mailbox latches (machine.h set_m4_service). The per-frame
+    // sync_m4_command call below stays as the fallback for stepped/paused
+    // execution, where run_frame's loop is not spinning; both drain the same
+    // mailbox and draining is idempotent.
+    b.machine.set_m4_service([](void*) { sync_m4_command(g_bridge); }, nullptr);
     b.m4_loaded = true;
   }
   {  // SI card serial BIOS ROM (rs232-device.md): the plotter/serial chain's
