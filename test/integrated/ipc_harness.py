@@ -9,6 +9,7 @@ import queue
 import re
 import socket
 import subprocess
+import shutil
 import tempfile
 import threading
 import time
@@ -1142,6 +1143,104 @@ def test_boots_to_basic_with_peripherals():
         return True
 
 
+def test_m4_cat_lists_the_sd_card():
+    """`cat` over the M4 must list the SD card's actual contents.
+
+    The one test that would have caught the whole M4 saga end-to-end. The M4
+    shipped through four separate defects — a ROM filename the project never
+    shipped, an unpatched ROM image, command frames spliced in the mailbox,
+    and a ready-poll defeated by frame-latency answers — and 100+ unit tests
+    passed through all of them, because each tested its component in
+    isolation. The CPC-visible truth is this: a two-entry SD card, `cat`, and
+    the two entries on the console, spelled right, exactly once.
+    """
+    sd = tempfile.mkdtemp(prefix='koncpc_m4sd_')
+    try:
+        with open(os.path.join(sd, 'readme.txt'), 'w') as f:
+            f.write('hello from the harness\n')
+        os.mkdir(os.path.join(sd, 'games'))
+
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', 'peripheral.m4board=1',
+                             '-O', f'peripheral.m4_sd_path={sd}'):
+                print("  Failed to start emulator")
+                return False
+
+            tport = emu.await_logged_port('Telnet console', timeout=10.0)
+            if tport is None:
+                print("  SKIP: emulator logged no telnet port")
+                return True
+
+            console = b''
+            try:
+                with socket.create_connection(('127.0.0.1', tport),
+                                              timeout=5.0) as sock:
+                    sock.settimeout(1.0)
+
+                    def read_until(marker: bytes, budget: float) -> bool:
+                        nonlocal console
+                        deadline = time.monotonic() + budget
+                        while time.monotonic() < deadline:
+                            if marker in console:
+                                return True
+                            try:
+                                chunk = sock.recv(4096)
+                            except socket.timeout:
+                                continue
+                            if not chunk:
+                                return marker in console
+                            console += chunk
+                        return marker in console
+
+                    if not read_until(b'Ready', 20.0):
+                        print(f"  CPC never reached BASIC: {console[:200]!r}")
+                        return False
+
+                    # Let the firmware settle at the prompt before typing.
+                    # Immediately after 'Ready' the keyboard handler can still
+                    # eat leading characters (the `un3hello` class): typed too
+                    # early, 'cat' arrives as a bare RETURN.
+                    time.sleep(3.0)
+                    ok, _ = emu.ipc.send_command("autotype 'cat~RETURN~'")
+                    if not ok:
+                        print("  autotype was refused")
+                        return False
+
+                    # 'free' is the tail of the M4's catalogue footer.
+                    if not read_until(b'free', 20.0):
+                        print(f"  cat never completed: {console[-300:]!r}")
+                        return False
+            except OSError as e:
+                print(f"  SKIP: could not reach the telnet console: {e}")
+                return True
+
+            listing = console[console.find(b'cat'):]
+            problems = []
+            if b'README  .TXT' not in listing:
+                problems.append("README  .TXT missing")
+            if b'GAMES' not in listing:
+                problems.append("GAMES missing")
+            if b'<DIR>' not in listing:
+                problems.append("<DIR> marker missing")
+            if listing.count(b'README') != 1:
+                problems.append(
+                    f"README listed {listing.count(b'README')} times "
+                    "(stale-response duplication)")
+            if b'READM ' in listing or b'READM\t' in listing:
+                problems.append("torn entry 'READM' present (window tear)")
+            if listing.count(b'+') > 10:
+                problems.append(
+                    f"{listing.count(b'+')} '+' glyphs (poll-timeout flood)")
+            if problems:
+                print(f"  M4 catalogue corrupt: {'; '.join(problems)}")
+                print(f"  console: {listing[:400]!r}")
+                return False
+            print("  M4 cat listed the SD card correctly")
+            return True
+    finally:
+        shutil.rmtree(sd, ignore_errors=True)
+
+
 def main():
     """Run all IPC tests."""
     print("=" * 50)
@@ -1150,6 +1249,7 @@ def main():
 
     tests = [
         test_boots_to_basic_with_peripherals,
+        test_m4_cat_lists_the_sd_card,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,
