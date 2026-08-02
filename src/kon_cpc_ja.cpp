@@ -2333,6 +2333,13 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // turns the save into an edit: unknown keys, hand-written notes and any
   // setting a newer build understands all survive.
   conf.parseFile(configFilename);
+  // The same -O overrides the session launched with. The setters below echo
+  // the LIVE state, which carries every override's value — and the Config's
+  // echo guard (configuration.h, beads-iorb) needs the launch map to tell a
+  // one-run override apart from a genuine in-session change. Without this, a
+  // `-O peripheral.m4_sd_path=/tmp/...` became a permanent config entry on
+  // the first save.
+  conf.setOverrides(args.cfgOverrides);
 
   conf.setIntValue("system", "model", CPC.model);
   conf.setIntValue("system", "jumpers", CPC.jumpers);

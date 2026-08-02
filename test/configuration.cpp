@@ -516,6 +516,76 @@ TEST_F(ConfigurationTest, setIntValueModifiesValue) {
   ASSERT_EQ(42, configuration_.getIntValue("system", "model", 0));
 }
 
+// beads-iorb: a -O override is one-run intent. At save time the live state
+// echoes the override's value back through the setters; persisting that echo
+// turns a temporary flag into permanent config (a scratch-dir m4_sd_path was
+// written into a real user's file exactly this way). The echo must not reach
+// the written file — while a genuine in-session change to the same key must.
+TEST_F(ConfigurationTest, anOverrideEchoedBackAtSaveDoesNotPersist) {
+  configuration_.parseString("[peripheral]\nm4_sd_path=\nm4board=0\n");
+  config::ConfigMap overrides;
+  overrides["peripheral"]["m4_sd_path"] = "/tmp/scratch/m4sd";
+  configuration_.setOverrides(overrides);
+
+  // Reads serve the override — that part of the contract is unchanged.
+  ASSERT_EQ("/tmp/scratch/m4sd",
+            configuration_.getStringValue("peripheral", "m4_sd_path", ""));
+
+  // Save time: the live state hands every current value back, including the
+  // override's.
+  configuration_.setStringValue("peripheral", "m4_sd_path",
+                                "/tmp/scratch/m4sd");
+  configuration_.setIntValue("peripheral", "m4board", 0);
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_EQ(oss.str().find("/tmp/scratch"), std::string::npos)
+      << "the one-run -O value was persisted into the file:\n"
+      << oss.str();
+  EXPECT_NE(oss.str().find("m4_sd_path="), std::string::npos)
+      << "the key itself must survive the save";
+  // The live view still serves the override after the save.
+  EXPECT_EQ("/tmp/scratch/m4sd",
+            configuration_.getStringValue("peripheral", "m4_sd_path", ""));
+}
+
+TEST_F(ConfigurationTest, aRealChangeToAnOverriddenKeyPersists) {
+  configuration_.parseString("[peripheral]\nm4_sd_path=/home/sd\n");
+  config::ConfigMap overrides;
+  overrides["peripheral"]["m4_sd_path"] = "/tmp/scratch/m4sd";
+  configuration_.setOverrides(overrides);
+
+  // The user changes the setting in-session: that is not an echo, and from
+  // here on the key belongs to them — including a later save-time echo of
+  // the NEW value.
+  configuration_.setStringValue("peripheral", "m4_sd_path", "/home/newsd");
+  ASSERT_EQ("/home/newsd",
+            configuration_.getStringValue("peripheral", "m4_sd_path", ""));
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("m4_sd_path=/home/newsd"), std::string::npos)
+      << oss.str();
+
+  // And a subsequent save-echo of the user's value keeps persisting it.
+  configuration_.setStringValue("peripheral", "m4_sd_path", "/home/newsd");
+  std::ostringstream oss2;
+  configuration_.toStream(oss2);
+  EXPECT_NE(oss2.str().find("m4_sd_path=/home/newsd"), std::string::npos);
+}
+
+TEST_F(ConfigurationTest, keysWithoutOverridesSaveExactlyAsBefore) {
+  configuration_.parseString("[system]\nmodel=2\n");
+  config::ConfigMap overrides;
+  overrides["peripheral"]["m4board"] = "1";  // unrelated key
+  configuration_.setOverrides(overrides);
+
+  configuration_.setIntValue("system", "model", 3);
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("model=3"), std::string::npos) << oss.str();
+}
+
 TEST_F(ConfigurationTest, toStreamDumpsConfig) {
   std::string config = "[system]\nmodel=1\n";
   configuration_.parseString(config);
