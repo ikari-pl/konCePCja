@@ -126,6 +126,8 @@ struct Bridge {
   std::atomic<uint8_t> swap_unit{0};
 };
 Bridge g_bridge;
+void sync_m4_command(Bridge& b);  // defined below; installed as the machine's
+                                  // coprocessor service at build
 const std::vector<int16_t> g_empty_audio;
 
 std::vector<uint8_t> read_file(const std::string& path) {
@@ -296,16 +298,27 @@ bool subcycle_bridge_start() {
       b.mf2rom.clear();
   }
   if (g_m4board.enabled && !b.m4_loaded) {  // m4-device.md §2
-    b.m4rom = read_file(CPC.resources_path + "/m4.rom");
-    if (b.m4rom.size() < 0x4000) b.m4rom = read_file(CPC.rom_path + "/m4.rom");
-    if (b.m4rom.size() >= 0x4000) {
+    // Attach the image the HOST prepared — never a fresh read of the file.
+    // m4board_load_rom() patches a boot stage into the ROM at 0x3800 (the
+    // shipped file is 0xFF there): stage1, stage2 and the banner string. That
+    // stage is what the firmware's ROM scan runs, and what registers the RSX
+    // commands. The bridge used to re-read the file itself — under a filename
+    // this project does not even ship — so the machine got an unpatched ROM
+    // with nothing to initialise, and the M4 was inert: no banner, no RSX,
+    // drive A still the default.
+    byte* const prepared = memmap_ROM[g_m4board.rom_slot];
+    if (prepared != nullptr) {
       b.machine.set_m4_slot(g_m4board.rom_slot);
-      b.machine.attach_m4_rom(b.m4rom.data(), b.m4rom.size());
-      b.machine.attach_rom(g_m4board.rom_slot, b.m4rom.data());  // the ROM body
+      b.machine.attach_m4_rom(prepared, 0x4000);
+      b.machine.attach_rom(g_m4board.rom_slot, prepared);
       b.machine.set_m4(true);
-    } else {
-      b.m4rom.clear();
     }
+    // Answer M4 commands at coprocessor latency: run_frame fires this the
+    // cycle the mailbox latches (machine.h set_m4_service). The per-frame
+    // sync_m4_command call below stays as the fallback for stepped/paused
+    // execution, where run_frame's loop is not spinning; both drain the same
+    // mailbox and draining is idempotent.
+    b.machine.set_m4_service([](void*) { sync_m4_command(g_bridge); }, nullptr);
     b.m4_loaded = true;
   }
   {  // SI card serial BIOS ROM (rs232-device.md): the plotter/serial chain's

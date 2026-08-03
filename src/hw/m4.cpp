@@ -52,7 +52,16 @@ m4_state* self_of(void* self) { return static_cast<m4_state*>(self); }
 // than 3 bytes is discarded (m4board_execute, :2591); if the mailbox is still
 // full the execute is held — the CPC cannot outrun the coprocessor.
 void latch_execute(m4_state* m) {
-  if (m->pending_valid) return;  // host hasn't drained the last one yet
+  if (m->pending_valid) {
+    // The host has not drained the last frame yet. Drop THIS frame whole —
+    // never leave its bytes in the accumulator, or the next command is built
+    // from this one's tail and both are lost. That merge is what corrupted
+    // every directory listing: frames arrived as 23/52/20 bytes of spliced
+    // commands, decoded to a nonsense opcode, and the CPC got a zero-filled
+    // response back, which the ROM printed as garbage.
+    m->acc_len = 0;
+    return;
+  }
   if (m->acc_len >= 3) {
     m->pending.cmd = static_cast<uint16_t>(m->acc[1] | (m->acc[2] << 8));
     m->pending.len = m->acc_len;
@@ -102,12 +111,16 @@ void m4_tick(void* self, const Bus* __restrict in, Bus* __restrict out) {
   // byte under romdis, keeping the caller ROM image immutable.
   if (in->cpu.mreq && in->cpu.rd && !in->cpu.rfsh && rom_selected(m)) {
     const uint16_t a = in->cpu.addr;
-    if (m->busy && a == kRespBase) {
-      // Busy sentinel (beads-315e): while the coprocessor is working, the
-      // status byte at &E800 reads 0xFF ("not ready"). The M4 ROM polls here
-      // until it flips; m4_complete_response then clears busy and writes the
-      // real status (0x00 OK / 0xFF error) into the window. Takes precedence
-      // over any stale prior response still sitting under response_len.
+    if (m->busy && a >= kRespBase && a - kRespBase < M4_RESPONSE_SIZE) {
+      // Busy sentinel (beads-315e, beads-bx36): while the coprocessor is
+      // working, the WHOLE response window reads 0xFF ("not ready"), not just
+      // the status byte. The M4 ROM's ready-poll watches the TAIL of the
+      // response it expects — the last byte of a directory entry, not &E800 —
+      // waiting for it to stop reading as blank ROM. Guarding only &E800
+      // let a previous same-length response satisfy that poll instantly, and
+      // the ROM copied five stale bytes ("READM" where "GAMES" belonged)
+      // before the host's answer landed at the frame boundary.
+      // m4_complete_response clears busy and the window serves real bytes.
       out->cpu.romdis = true;
       out->cpu.data = 0xFF;
     } else if (a >= kRespBase && a - kRespBase < m->response_len) {
@@ -185,6 +198,10 @@ void m4_set_slot(const Device* dev, int slot) {
 
 void m4_set_plugged(const Device* dev, int on) {
   static_cast<m4_state*>(dev->self)->plugged = on ? 1 : 0;
+}
+
+const uint8_t* m4_command_waiting(const Device* dev) {
+  return &static_cast<const m4_state*>(dev->self)->pending_valid;
 }
 
 int m4_pending_command(const Device* dev, M4Pending* out) {

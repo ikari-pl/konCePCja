@@ -230,6 +230,7 @@ bool Config::saveToFile(const std::string& configFilename) const {
 
 void Config::setOverrides(const ConfigMap& overrides) {
   overrides_ = overrides;
+  launch_overrides_ = overrides;
 }
 
 const std::string* Config::find(const std::string& section,
@@ -255,6 +256,17 @@ std::string Config::getStringValue(const std::string& section,
 
 void Config::setStringValue(const std::string& section, const std::string& key,
                             const std::string& value) {
+  if (const std::string* launched = find_in(launch_overrides_, section, key)) {
+    if (*launched == value) {
+      // The one-run override echoing back through live state at save time.
+      // Reads keep serving it; the FILE keeps its own value (beads-iorb).
+      overrides_[section][key] = value;
+      return;
+    }
+    // A different value is a real change: it persists, and the override no
+    // longer shields this key.
+    launch_overrides_[section].erase(key);
+  }
   overrides_[section][key] = value;
   config_[section][key] = value;
 }
