@@ -50,9 +50,11 @@ TEST(M4RomFitting, ResolverFindsTheShippedRom) {
   const std::string resources = source_dir() + "/resources";
   const std::string found = m4board_find_rom(source_dir() + "/rom", resources);
 
-  ASSERT_FALSE(found.empty())
-      << "no M4 ROM found under " << source_dir() + "/rom" << " or "
-      << resources + "/roms";
+  // resources/roms/ is gitignored — the M4 ROM is user-supplied, like the
+  // firmware ROMs. CI checkouts have none; skip there, assert where one is.
+  if (found.empty())
+    GTEST_SKIP() << "no M4 ROM under " << source_dir()
+                 << " (rom/ or resources/roms/) — user-supplied file";
   EXPECT_TRUE(std::filesystem::exists(found)) << found;
   EXPECT_GE(std::filesystem::file_size(found), 0x4000u)
       << "an M4 ROM smaller than 16K is rejected by attach_m4_rom, so the "
@@ -95,7 +97,8 @@ TEST(M4RomFitting, TheBridgeFitsTheHostPreparedImage) {
 TEST(M4RomFitting, TheShippedRomHasNoBootStageOfItsOwn) {
   const std::string rom =
       m4board_find_rom(source_dir() + "/rom", source_dir() + "/resources");
-  ASSERT_FALSE(rom.empty());
+  if (rom.empty())
+    GTEST_SKIP() << "no M4 ROM present (user-supplied, gitignored)";
 
   std::ifstream f(rom, std::ios::binary);
   ASSERT_TRUE(f) << rom;
