@@ -44,38 +44,69 @@ constexpr uint16_t kDst = 0x9000;  // results: one byte per row, 16 rows
 //     IN from port A -> (kDst + row)
 //   park.
 constexpr uint8_t kProgram[] = {
-    0xF3,              // di
-    0x01, 0x00, 0xF7,  // ld bc,&F700   ; PPI control
-    0x3E, 0x82,        // ld a,&82      ; A out, C out
-    0xED, 0x79,        // out (c),a
-    0x01, 0x00, 0xF4,  // ld bc,&F400   ; port A
-    0x3E, 0x0E,        // ld a,14
-    0xED, 0x79,        // out (c),a
-    0x01, 0x00, 0xF6,  // ld bc,&F600   ; port C
-    0x3E, 0xC0,        // ld a,&C0      ; latch AY register address
-    0xED, 0x79,        // out (c),a
-    0x3E, 0x00,        // ld a,&00      ; AY inactive
-    0xED, 0x79,        // out (c),a
-    0x01, 0x00, 0xF7,  // ld bc,&F700
-    0x3E, 0x92,        // ld a,&92      ; port A input
-    0xED, 0x79,        // out (c),a
+    0xF3,  // di
+    0x01,
+    0x00,
+    0xF7,  // ld bc,&F700   ; PPI control
+    0x3E,
+    0x82,  // ld a,&82      ; A out, C out
+    0xED,
+    0x79,  // out (c),a
+    0x01,
+    0x00,
+    0xF4,  // ld bc,&F400   ; port A
+    0x3E,
+    0x0E,  // ld a,14
+    0xED,
+    0x79,  // out (c),a
+    0x01,
+    0x00,
+    0xF6,  // ld bc,&F600   ; port C
+    0x3E,
+    0xC0,  // ld a,&C0      ; latch AY register address
+    0xED,
+    0x79,  // out (c),a
+    0x3E,
+    0x00,  // ld a,&00      ; AY inactive
+    0xED,
+    0x79,  // out (c),a
+    0x01,
+    0x00,
+    0xF7,  // ld bc,&F700
+    0x3E,
+    0x92,  // ld a,&92      ; port A input
+    0xED,
+    0x79,  // out (c),a
     // row loop: E = row, HL = dst
-    0x1E, 0x00,        // ld e,0
-    0x21, 0x00, 0x90,  // ld hl,&9000
+    0x1E,
+    0x00,  // ld e,0
+    0x21,
+    0x00,
+    0x90,  // ld hl,&9000
     // loop:
-    0x7B,              // ld a,e        ; row
-    0xF6, 0x40,        // or &40        ; AY read state
-    0x01, 0x00, 0xF6,  // ld bc,&F600
-    0xED, 0x79,        // out (c),a     ; select row, AY read
-    0x01, 0x00, 0xF4,  // ld bc,&F400
-    0xED, 0x78,        // in a,(c)      ; read columns
-    0x77,              // ld (hl),a
-    0x23,              // inc hl
-    0x1C,              // inc e
-    0x7B,              // ld a,e
-    0xFE, 0x10,        // cp 16
-    0x20, 0xEB,        // jr nz,loop    ; -21, back to ld a,e
-    0x18, 0xFE,        // jr $
+    0x7B,  // ld a,e        ; row
+    0xF6,
+    0x40,  // or &40        ; AY read state
+    0x01,
+    0x00,
+    0xF6,  // ld bc,&F600
+    0xED,
+    0x79,  // out (c),a     ; select row, AY read
+    0x01,
+    0x00,
+    0xF4,  // ld bc,&F400
+    0xED,
+    0x78,  // in a,(c)      ; read columns
+    0x77,  // ld (hl),a
+    0x23,  // inc hl
+    0x1C,  // inc e
+    0x7B,  // ld a,e
+    0xFE,
+    0x10,  // cp 16
+    0x20,
+    0xEB,  // jr nz,loop    ; -21, back to ld a,e
+    0x18,
+    0xFE,  // jr $
 };
 
 void run_scan(subcycle::Machine& m) {
