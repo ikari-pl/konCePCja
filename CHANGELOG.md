@@ -1,5 +1,18 @@
 # Changelog
 
+## [6.2.2](https://github.com/ikari-pl/konCePCja/compare/v6.2.1...v6.2.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **machine:** one guarded path for rebuilding the emulated machine ([4001747](https://github.com/ikari-pl/konCePCja/commit/4001747db09842bcef03b24774e346a779de3632))
+* **review:** correct the archive advance, the reset guard's layer, and the stranded confirmation ([7b13f1f](https://github.com/ikari-pl/konCePCja/commit/7b13f1f472ac5c69d973d689cd3b00b953261197))
+* **ui,config:** F-cluster confirmations and reachability, plus an example config ([59dbf35](https://github.com/ikari-pl/konCePCja/commit/59dbf352ef6439fb6bb19b1ce4419277f56aaada))
+* **ui,docs:** guard the Options restart, and stop the docs misdirecting ([4dc50f9](https://github.com/ikari-pl/konCePCja/commit/4dc50f9d5cd2e0ef5fa80f4168001085f04e506a))
+* **ui,docs:** guard the Options restart, and stop the docs misdirecting ([ef917e1](https://github.com/ikari-pl/konCePCja/commit/ef917e1060d73d9d9d3347f5757afe52e0652354))
+* **ui:** confirmations, keyboard and feedback in the F-cluster ([23b83eb](https://github.com/ikari-pl/konCePCja/commit/23b83eb1dd55e63c07090c601f02a6cf4ec370fc))
+* **ui:** eject from the menus, and confirm a reset that would lose disk edits ([55889da](https://github.com/ikari-pl/konCePCja/commit/55889da6708e199c47e816cc54e8c041bd2a4a83))
+
 ## [6.2.1](https://github.com/ikari-pl/konCePCja/compare/v6.2.0...v6.2.1) (2026-07-31)
 
 
