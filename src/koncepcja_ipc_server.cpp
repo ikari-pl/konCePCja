@@ -639,7 +639,18 @@ void init_command_registry() {
                    "  add:   Adds a new breakpoint at <addr>. Optional "
                    "condition and pass count.\n"
                    "  del:   Removes the breakpoint at the specified address.\n"
-                   "  clear: Removes all breakpoints.");
+                   "  clear: Removes all breakpoints.\n"
+                   "Conditions: registers (a f b c .. af bc hl ix pc sp), "
+                   "flags (carry zero sign parity overflow halfcarry "
+                   "nsub), address/value/previous/mode, functions peek() "
+                   "byte() hibyte() word() hiword() ay() crtc() "
+                   "timer_start() timer_stop(). Numbers: decimal, "
+                   "0x/&/$/# hex, % binary. Operators: + - * / mod, "
+                   "comparisons, and/or/xor ('&'/'%' after an operand "
+                   "mean and/mod). NOTE 'and' binds looser than "
+                   "comparisons: write (f & 0xFF) >= 0. 'pc' in a bp "
+                   "condition is the bp's own address. Unknown names "
+                   "are refused at arm time.");
 
   register_command(
       "wp", "DEBUG",
