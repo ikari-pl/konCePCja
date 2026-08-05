@@ -231,8 +231,10 @@ bool z80_probe_exec_should_break(uint16_t pc) {
   // The hit identity IS the PC for condition purposes. The machine parks
   // mid-fetch, so the synced view holds a PC already past the opcode —
   // evaluating `pc == <bp addr>` against that made a true condition false at
-  // its own breakpoint (beads-tib2). The ack path sets the same value after
-  // us; publishing it first keeps conditions honest.
+  // its own breakpoint (beads-tib2). Publish the hit PC for evaluation, then
+  // restore the mid-fetch view when we resume (the ack path re-publishes on
+  // a real pause).
+  const word saved_pc = z80.PC.w.l;
   z80.PC.w.l = pc;
   if (breakpoints.empty()) return true;
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
@@ -243,7 +245,9 @@ bool z80_probe_exec_should_break(uint16_t pc) {
     any = true;
     if (z80_bp_should_fire(b, static_cast<word>(pc))) return true;
   }
-  return !any;
+  if (!any) return true;
+  z80.PC.w.l = saved_pc;
+  return false;
 }
 
 bool z80_probe_watch_should_break(uint16_t addr, uint8_t data, bool is_write,

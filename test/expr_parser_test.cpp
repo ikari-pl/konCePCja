@@ -63,6 +63,24 @@ TEST(ExprParser, UnknownIdentifiersAreParseErrors) {
   EXPECT_NE(err.find("carrry"), std::string::npos)
       << "the error must name the offender: " << err;
   EXPECT_EQ(expr_parse("pc == bogus_name", err), nullptr);
+  EXPECT_EQ(expr_parse("peekk(0x4000)", err), nullptr)
+      << "unknown function accepted silently";
+  EXPECT_NE(err.find("peekk"), std::string::npos) << err;
+}
+
+// `not` must be logical against nonzero-truth: flags return 0/1, so bitwise
+// `~` made `not carry` always true (~0 and ~1 are both nonzero).
+TEST(ExprParser, NotIsLogicalAgainstFlagBits) {
+  t_z80regs regs{};
+  regs.AF.b.l = 0x01;  // carry set
+  EXPECT_EQ(eval_str("not carry", regs), 0);
+  regs.AF.b.l = 0x00;
+  EXPECT_EQ(eval_str("not carry", regs), -1);
+  regs.AF.b.l = 0x40;
+  EXPECT_EQ(eval_str("not zero", regs), 0);
+  regs.PC.w.l = 0;
+  EXPECT_EQ(eval_str("not (pc == 0)", regs), 0) << "not of a true comparison";
+  EXPECT_EQ(eval_str("not (pc == 1)", regs), -1) << "not of a false comparison";
 }
 
 // `f & 1` was rejected ("unexpected token after expression") because `&`

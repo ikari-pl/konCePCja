@@ -627,56 +627,74 @@ bool expr_variable_known(const std::string& name) {
 }
 }  // namespace
 
-// Resolve a function call
+// Function calls: ONE table owns both the name set and the dispatch, so a
+// new function cannot exist for the evaluator without existing for the
+// parser's arm-time validation (and vice versa) — the identifier fix's
+// single-authority rule, applied to functions.
 namespace {
-int32_t resolve_function(const std::string& name, int32_t arg,
-                         const ExprContext& ctx) {
-  if (name == "peek") {
-    return z80_read_mem(static_cast<word>(arg));
-  }
-  if (name == "byte") {
-    return arg & 0xFF;
-  }
-  if (name == "hibyte") {
-    return (arg >> 8) & 0xFF;
-  }
-  if (name == "word") {
-    return arg & 0xFFFF;
-  }
-  if (name == "hiword") {
-    return (arg >> 16) & 0xFFFF;
-  }
-  if (name == "ay") {
-    if (ctx.psg && arg >= 0 && arg < 16) {
-      auto* psg = static_cast<t_PSG*>(ctx.psg);
-      return psg->RegisterAY.Index[arg];
-    }
-    return 0;
-  }
-  if (name == "crtc") {
-    if (ctx.crtc && arg >= 0 && arg < 18) {
-      auto* crtc = static_cast<t_CRTC*>(ctx.crtc);
-      return crtc->registers[arg];
-    }
-    return 0;
-  }
-  if (name == "timer_start") {
-    g_debug_timers.timer_start(arg, g_tstate_counter);
-    return 0;
-  }
-  if (name == "timer_stop") {
-    return g_debug_timers.timer_stop(arg, g_tstate_counter);
-  }
-  return 0;
+struct ExprFunction {
+  const char* name;
+  int32_t (*fn)(int32_t arg, const ExprContext& ctx);
+};
+
+const ExprFunction kExprFunctions[] = {
+    {"peek",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return z80_read_mem(static_cast<word>(arg));
+     }},
+    {"byte",
+     [](int32_t arg, const ExprContext&) -> int32_t { return arg & 0xFF; }},
+    {"hibyte",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return (arg >> 8) & 0xFF;
+     }},
+    {"word",
+     [](int32_t arg, const ExprContext&) -> int32_t { return arg & 0xFFFF; }},
+    {"hiword",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return (arg >> 16) & 0xFFFF;
+     }},
+    {"ay",
+     [](int32_t arg, const ExprContext& ctx) -> int32_t {
+       if (ctx.psg && arg >= 0 && arg < 16) {
+         auto* psg = static_cast<t_PSG*>(ctx.psg);
+         return psg->RegisterAY.Index[arg];
+       }
+       return 0;
+     }},
+    {"crtc",
+     [](int32_t arg, const ExprContext& ctx) -> int32_t {
+       if (ctx.crtc && arg >= 0 && arg < 18) {
+         auto* crtc = static_cast<t_CRTC*>(ctx.crtc);
+         return crtc->registers[arg];
+       }
+       return 0;
+     }},
+    {"timer_start",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       g_debug_timers.timer_start(arg, g_tstate_counter);
+       return 0;
+     }},
+    {"timer_stop",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return g_debug_timers.timer_stop(arg, g_tstate_counter);
+     }},
+};
+
+const ExprFunction* find_function(const std::string& name) {
+  for (const auto& f : kExprFunctions)
+    if (name == f.name) return &f;
+  return nullptr;
 }
 
-// Kept adjacent to resolve_function so a new function name lands in both or
-// the parser refuses it loudly (the drift is then a visible arm-time error,
-// never a silent 0).
+int32_t resolve_function(const std::string& name, int32_t arg,
+                         const ExprContext& ctx) {
+  const ExprFunction* f = find_function(name);
+  return f != nullptr ? f->fn(arg, ctx) : 0;
+}
+
 bool expr_function_known(const std::string& name) {
-  return name == "peek" || name == "byte" || name == "hibyte" ||
-         name == "word" || name == "hiword" || name == "ay" || name == "crtc" ||
-         name == "timer_start" || name == "timer_stop";
+  return find_function(name) != nullptr;
 }
 }  // namespace
 
@@ -690,8 +708,13 @@ int32_t expr_eval(const ExprNode* node, const ExprContext& ctx) {
     case ExprNodeType::VARIABLE:
       return resolve_variable(node->name, ctx);
 
-    case ExprNodeType::UNARY_NOT:
-      return ~expr_eval(node->left.get(), ctx);
+    case ExprNodeType::UNARY_NOT: {
+      // Logical negation against the dialect's nonzero-truth rule. Bitwise ~
+      // made `not carry` always true: flags return 0/1, and ~0/~1 are both
+      // nonzero. Comparisons already return -1/0; match that so `not` composes
+      // with flag names and with `f & 1` the same way.
+      return expr_eval(node->left.get(), ctx) != 0 ? 0 : -1;
+    }
 
     case ExprNodeType::FUNCTION_CALL:
       return resolve_function(node->name, expr_eval(node->arg.get(), ctx), ctx);

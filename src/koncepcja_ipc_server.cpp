@@ -646,7 +646,7 @@ void init_command_registry() {
                    "byte() hibyte() word() hiword() ay() crtc() "
                    "timer_start() timer_stop(). Numbers: decimal, "
                    "0x/&/$/# hex, % binary. Operators: + - * / mod, "
-                   "comparisons, and/or/xor ('&'/'%' after an operand "
+                   "comparisons, and/or/xor/not ('&'/'%' after an operand "
                    "mean and/mod). NOTE 'and' binds looser than "
                    "comparisons: write (f & 0xFF) >= 0. 'pc' in a bp "
                    "condition is the bp's own address. Unknown names "
@@ -664,7 +664,17 @@ void init_command_registry() {
       "conditions.\n"
       "  clear: Removes all watchpoints.\n"
       "When a watchpoint triggers, 'wait bp' returns: OK PC=XXXX WATCH=1 "
-      "WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX");
+      "WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX\n"
+      "Conditions: registers (a f b c .. af bc hl ix pc sp), "
+      "flags (carry zero sign parity overflow halfcarry "
+      "nsub), address/value/previous/mode (hit-time access), functions "
+      "peek() byte() hibyte() word() hiword() ay() crtc() "
+      "timer_start() timer_stop(). Numbers: decimal, "
+      "0x/&/$/# hex, % binary. Operators: + - * / mod, "
+      "comparisons, and/or/xor/not ('&'/'%' after an operand "
+      "mean and/mod). NOTE 'and' binds looser than "
+      "comparisons: write (f & 0xFF) >= 0. Unknown names "
+      "are refused at arm time.");
 
   register_command(
       "iobp", "DEBUG",
@@ -677,7 +687,11 @@ void init_command_registry() {
       "  del:   Removes IO breakpoint by index.\n"
       "  list:  Shows all IO breakpoints with index, port, mask, direction and "
       "conditions.\n"
-      "  clear: Removes all IO breakpoints.");
+      "  clear: Removes all IO breakpoints.\n"
+      "Conditions: same dialect as 'help bp' (registers, flags, "
+      "address/value/previous/mode, peek()/…, 0x/&/$/#/% literals, "
+      "and/or/xor/not; '&'/'%' after an operand mean and/mod). "
+      "Unknown names are refused at arm time.");
 
   register_command(
       "wait", "DEBUG",
