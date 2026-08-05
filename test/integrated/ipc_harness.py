@@ -1197,6 +1197,22 @@ def test_conditional_debug_matrix():
                 return False
             print(f"  {label}: {got}")
 
+        # The original beads-tib2 repro, live: `if carry` at the idle loop's
+        # char-poll return (0x1BD9). Carry is set there exactly when KM READ
+        # CHAR hands back a fetched key, so pressing one guarantees a
+        # carry-true hit — on the pre-fix tree this armed OK and never fired.
+        ok, _ = emu.ipc.send_command('bp add 0x1BD9 if carry')
+        if not ok:
+            print("  FAIL: 'if carry' refused at arm time")
+            return False
+        emu.ipc.send_command('input key a')
+        ok, _ = emu.ipc.send_command('wait bp 6000')
+        reset_state()
+        if not ok:
+            print("  FAIL: 'if carry' never fired on a delivered key")
+            return False
+        print("  carry condition fires on a delivered key: FIRES")
+
         # Clear-promptness: a cleared breakpoint must not fire after resume.
         got = fires('bp add 0x1BD9')
         if got != 'FIRES':
