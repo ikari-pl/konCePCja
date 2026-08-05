@@ -1,5 +1,21 @@
 # Changelog
 
+## [6.2.3](https://github.com/ikari-pl/konCePCja/compare/v6.2.2...v6.2.3) (2026-08-05)
+
+
+### Bug Fixes
+
+* **config:** a -O override is one-run intent — never persisted by its own echo ([557c497](https://github.com/ikari-pl/konCePCja/commit/557c49789967628fd7812bd2bd42f63d668d5e14))
+* **debug:** conditional breakpoints and watchpoint hits must not lie ([0894b06](https://github.com/ikari-pl/konCePCja/commit/0894b0693ea8e46f1c9ba818e83ed679051a2de6))
+* **debug:** review follow-ups — logical not, PC restore, one function authority ([dd3c5c8](https://github.com/ikari-pl/konCePCja/commit/dd3c5c817b20ca19474d698ea577554b4881914d))
+* **debug:** the condition language and probe post-filters must not lie ([fa704f6](https://github.com/ikari-pl/konCePCja/commit/fa704f6ccee6fe73615c12c99def82abf2175d5d))
+* **m4:** actually fit the M4 board — the ROM lookup had drifted apart ([0ede93e](https://github.com/ikari-pl/konCePCja/commit/0ede93ebbce9215d4c76f878481bbb8d2f5be262))
+* **m4:** actually fit the M4 board — the ROM lookup had drifted apart ([9725f73](https://github.com/ikari-pl/konCePCja/commit/9725f73ebab1ba7bb6c672409e889a213581f78f))
+* **m4:** answer commands at coprocessor latency, and blank the whole window while busy ([79ebf64](https://github.com/ikari-pl/konCePCja/commit/79ebf6457cc0b38ed832b2aa36b8ead8ab6ffca0))
+* **m4:** fit the host-prepared ROM image, not a fresh read of the file ([d9242e2](https://github.com/ikari-pl/konCePCja/commit/d9242e29f1e0d0ef34ca7f7f13fd6150cb263653))
+* **m4:** never splice a dropped command frame onto the next one ([1a32ef2](https://github.com/ikari-pl/konCePCja/commit/1a32ef2fd0c5e96dc52adf69db8b225da059f6f4))
+* **review:** logical not, PC restore on filter-refuse, help/docs parity ([b4eb9da](https://github.com/ikari-pl/konCePCja/commit/b4eb9da313e8747f99eb8e775fae411f47c42932))
+
 ## [6.2.2](https://github.com/ikari-pl/konCePCja/compare/v6.2.1...v6.2.2) (2026-08-02)
 
 
