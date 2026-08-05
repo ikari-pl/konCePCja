@@ -1143,6 +1143,90 @@ def test_boots_to_basic_with_peripherals():
         return True
 
 
+def test_conditional_debug_matrix():
+    """Conditional breakpoints and watchpoints must judge hits honestly.
+
+    beads-tib2 pinned four lies in one sweep: `if carry` armed cleanly as an
+    unknown identifier and never fired; `if pc == <addr>` was false at its
+    own breakpoint (the view's PC was mid-fetch at post-filter time); EVERY
+    armed watchpoint's hits were silently resumed (the filter returned
+    watchpoints.empty()); and clears issued at a pause looked like they
+    leaked into later arms. This matrix drives all four through the live IPC
+    against the firmware's own activity: 0x1BD9 is the BASIC idle loop's
+    char-poll (constantly executed), 0xB8B4 is the firmware TIME counter
+    (written ~300/s at idle).
+    """
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.run_tier=4'):
+            print("  Failed to start emulator")
+            return False
+        time.sleep(5)  # let the firmware reach its idle loop
+
+        def fires(arm_cmd, timeout_ms=5000):
+            ok, resp = emu.ipc.send_command(arm_cmd)
+            if not ok:
+                return 'ERR'
+            ok, resp = emu.ipc.send_command(f'wait bp {timeout_ms}')
+            return 'FIRES' if ok else 'silent'
+
+        def reset_state():
+            emu.ipc.send_command('bp clear')
+            emu.ipc.send_command('wp clear')
+            emu.ipc.send_command('run')
+            time.sleep(0.5)
+
+        checks = [
+            ('bp add 0x1BD9 if pc == 0x1BD9', 'FIRES',
+             "true condition at its own breakpoint"),
+            ('bp add 0x1BD9 if pc != 0x1BD9', 'silent',
+             "false condition stays silent"),
+            ('bp add 0x1BD9 if carrry', 'ERR',
+             "unknown identifier refused at arm time"),
+            ('wp add 0xB8B4 1 w', 'FIRES',
+             "a plain watchpoint fires on the TIME counter"),
+            ('wp add 0xB8B4 1 w if value < 256', 'FIRES',
+             "watch condition sees the hit value"),
+            ('wp add 0xB8B4 1 w if 0', 'silent',
+             "false watch condition stays silent"),
+        ]
+        for arm, want, label in checks:
+            got = fires(arm, 2500 if want == 'silent' else 6000)
+            reset_state()
+            if got != want:
+                print(f"  FAIL {label}: {arm} -> {got} (want {want})")
+                return False
+            print(f"  {label}: {got}")
+
+        # The original beads-tib2 repro, live: `if carry` at the idle loop's
+        # char-poll return (0x1BD9). Carry is set there exactly when KM READ
+        # CHAR hands back a fetched key, so pressing one guarantees a
+        # carry-true hit — on the pre-fix tree this armed OK and never fired.
+        ok, _ = emu.ipc.send_command('bp add 0x1BD9 if carry')
+        if not ok:
+            print("  FAIL: 'if carry' refused at arm time")
+            return False
+        emu.ipc.send_command('input key a')
+        ok, _ = emu.ipc.send_command('wait bp 6000')
+        reset_state()
+        if not ok:
+            print("  FAIL: 'if carry' never fired on a delivered key")
+            return False
+        print("  carry condition fires on a delivered key: FIRES")
+
+        # Clear-promptness: a cleared breakpoint must not fire after resume.
+        got = fires('bp add 0x1BD9')
+        if got != 'FIRES':
+            print("  FAIL: plain bp did not fire")
+            return False
+        reset_state()  # clear at the pause, then resume
+        ok, _ = emu.ipc.send_command('wait bp 2500')
+        if ok:
+            print("  FAIL: a cleared breakpoint fired after resume")
+            return False
+        print("  cleared breakpoint stays cleared after resume")
+        return True
+
+
 def test_m4_cat_lists_the_sd_card():
     """`cat` over the M4 must list the SD card's actual contents.
 
@@ -1249,6 +1333,7 @@ def main():
 
     tests = [
         test_boots_to_basic_with_peripherals,
+        test_conditional_debug_matrix,
         test_m4_cat_lists_the_sd_card,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,

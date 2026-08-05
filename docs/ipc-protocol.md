@@ -373,7 +373,12 @@ echo "event on mem=0xC000 hash vram" | nc -w 1 localhost 6543
 
 ## Expression Syntax
 
-Expressions are used in conditional breakpoints (`bp add ... if <expr>`) and IO breakpoints (`iobp add ... if <expr>`). The syntax is inspired by WinAPE.
+Expressions are used in conditional breakpoints (`bp add ... if <expr>`),
+watchpoints (`wp add ... if <expr>`), and IO breakpoints
+(`iobp add ... if <expr>`). The syntax is inspired by WinAPE.
+
+Unknown identifiers and unknown function names are **refused at arm time**
+(`ERR 400 bad-expr: unknown name '…'`). They never evaluate as a silent `0`.
 
 ### Operators (lowest to highest precedence)
 
@@ -381,21 +386,28 @@ Expressions are used in conditional breakpoints (`bp add ... if <expr>`) and IO 
 |----------|-------------|
 | `or` | Bitwise OR |
 | `xor` | Bitwise XOR |
-| `and` | Bitwise AND |
-| `<` `<=` `=` `>=` `>` `<>` | Comparison (returns -1 for true, 0 for false) |
+| `and` | Bitwise AND (`&` after a complete operand is the same operator) |
+| `<` `<=` `=` `==` `>=` `>` `<>` `!=` | Comparison (returns -1 for true, 0 for false) |
 | `+` `-` | Addition, subtraction |
-| `*` `/` `mod` | Multiplication, division, modulo |
-| `not` | Bitwise NOT (unary) |
+| `*` `/` `mod` | Multiplication, division, modulo (`%` after a complete operand means `mod`) |
+| `not` | Logical NOT (unary): nonzero → 0, zero → -1 |
 
 All operations are 32-bit signed integers. Division by zero returns 0.
+
+**Precedence trap:** `and` binds looser than comparisons — write
+`(f & 0xFF) >= 0`, not `f & 0xFF >= 0`.
 
 ### Number literals
 
 | Format | Example |
 |--------|---------|
 | Decimal | `42` |
-| Hex (`#` or `&` or `0x`) | `#FF`, `&FF`, `0xFF` |
+| Hex (`#` or `&` or `$` or `0x`) | `#FF`, `&FF`, `$FF`, `0xFF` |
 | Binary (`%` or `0b`) | `%10110`, `0b10110` |
+
+In value position, `&` / `%` are still the CPC hex / binary prefixes
+(`f & &41`, `%101`). After a complete operand they are `and` / `mod`
+(`f & 1`, `a % 2`).
 
 ### Variables
 
@@ -403,7 +415,9 @@ All operations are 32-bit signed integers. Division by zero returns 0.
 
 **Shadow registers:** `AF'` `BC'` `DE'` `HL'`
 
-**Context variables:** `address` (breakpoint address), `value` (data value), `previous` (previous value for watchpoints), `mode` (access mode)
+**Flags (F bits as 0/1):** `carry` `nsub` `parity`/`overflow` `halfcarry` `zero` `sign`
+
+**Context variables:** `address` (hit address), `value` (data value), `previous` (previous value for watchpoints), `mode` (access mode). In an execution-breakpoint condition, `pc` is the breakpoint's own address (the hit identity), not a mid-fetch PC.
 
 ### Functions
 

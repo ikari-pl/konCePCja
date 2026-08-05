@@ -228,6 +228,14 @@ bool z80_wp_should_fire(Watchpoint& w, word addr, byte val, byte old_val,
 }
 
 bool z80_probe_exec_should_break(uint16_t pc) {
+  // The hit identity IS the PC for condition purposes. The machine parks
+  // mid-fetch, so the synced view holds a PC already past the opcode —
+  // evaluating `pc == <bp addr>` against that made a true condition false at
+  // its own breakpoint (beads-tib2). Publish the hit PC for evaluation, then
+  // restore the mid-fetch view when we resume (the ack path re-publishes on
+  // a real pause).
+  const word saved_pc = z80.PC.w.l;
+  z80.PC.w.l = pc;
   if (breakpoints.empty()) return true;
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
@@ -237,15 +245,29 @@ bool z80_probe_exec_should_break(uint16_t pc) {
     any = true;
     if (z80_bp_should_fire(b, static_cast<word>(pc))) return true;
   }
-  return !any;
+  if (!any) return true;
+  z80.PC.w.l = saved_pc;
+  return false;
 }
 
-// Parameters retained for API/callback signature stability.
-bool z80_probe_watch_should_break([[maybe_unused]] uint16_t addr,
-                                  [[maybe_unused]] uint8_t data,
-                                  [[maybe_unused]] bool is_write,
-                                  [[maybe_unused]] uint8_t old_val) {
-  return watchpoints.empty();
+bool z80_probe_watch_should_break(uint16_t addr, uint8_t data, bool is_write,
+                                  uint8_t old_val) {
+  // Step-machinery parity with the exec filter: a probe armed with no host
+  // list must keep breaking. Beyond that, judge the hit like the exec side —
+  // per matching watchpoint, conditions and pass counts included. The
+  // pre-fix body returned `watchpoints.empty()` verbatim: with ANY
+  // watchpoint armed, every latched memory hit was silently resumed —
+  // `wp add` armed cleanly and nothing ever fired (beads-tib2).
+  if (watchpoints.empty()) return true;
+  for (auto& w : watchpoints) {
+    // z80_wp_should_fire owns kind, range, condition and pass-count — the
+    // same predicate both engines' loops funnel through.
+    if (z80_wp_should_fire(w, static_cast<word>(addr), data, old_val, is_write))
+      return true;
+  }
+  // The hit matches no armed watchpoint (or its conditions refused it):
+  // resume without pausing.
+  return false;
 }
 
 void z80_remove_ephemeral_breakpoints() {

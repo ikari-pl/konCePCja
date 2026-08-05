@@ -47,6 +47,25 @@ class Tokenizer {
   explicit Tokenizer(const std::string& input) : src(input), pos(0) {}
 
   Token next() {
+    Token t = next_raw();
+    // Operand tracking for the '&'/'%' prefix-vs-operator decision: a NUMBER,
+    // a ')' or a value-shaped IDENT completes an operand; the word-operators
+    // do not.
+    if (t.type == TokenType::NUMBER || t.type == TokenType::RPAREN) {
+      after_operand = true;
+    } else if (t.type == TokenType::IDENT) {
+      std::string n = t.str_value;
+      std::transform(n.begin(), n.end(), n.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      after_operand =
+          n != "and" && n != "or" && n != "xor" && n != "mod" && n != "not";
+    } else {
+      after_operand = false;
+    }
+    return t;
+  }
+
+  Token next_raw() {
     skip_ws();
     if (pos >= src.size()) return {TokenType::END, 0, {}};
 
@@ -113,8 +132,20 @@ class Tokenizer {
       return {TokenType::NE, 0, {}};
     }
 
-    // Number: decimal, #hex, &hex, 0xhex, %binary
-    if (ch == '#' || ch == '&') {
+    // Number: decimal, #hex, &hex, $hex, 0xhex, %binary. The CPC prefixes
+    // '&' and '%' double as the AND and MOD operators: after a complete
+    // operand they cannot start a number, so they lex as the word-operators
+    // the grammar already knows ("f & 1" == "f and 1"). In value position
+    // they stay prefixes ("f & &41"). Same context rule the assembler uses.
+    if (ch == '&' && after_operand) {
+      pos++;
+      return {TokenType::IDENT, 0, "and"};
+    }
+    if (ch == '%' && after_operand) {
+      pos++;
+      return {TokenType::IDENT, 0, "mod"};
+    }
+    if (ch == '#' || ch == '&' || ch == '$') {
       pos++;
       return parse_hex();
     }
@@ -148,6 +179,7 @@ class Tokenizer {
  private:
   const std::string& src;
   size_t pos;
+  bool after_operand = false;
 
   void skip_ws() {
     while (pos < src.size() &&
@@ -462,19 +494,57 @@ class Parser {
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
+namespace {
+// Forward declarations of the evaluator's name authorities, used at parse
+// time so an unknown name is an error the user sees when arming, not a
+// silent constant 0 discovered days later (beads-tib2).
+bool expr_variable_known(const std::string& name);
+bool expr_function_known(const std::string& name);
+
+bool validate_names(const ExprNode* node, std::string& error) {
+  if (node == nullptr) return true;
+  switch (node->type) {
+    case ExprNodeType::VARIABLE:
+      if (!expr_variable_known(node->name)) {
+        error = "unknown name '" + node->name + "'";
+        return false;
+      }
+      return true;
+    case ExprNodeType::FUNCTION_CALL:
+      if (!expr_function_known(node->name)) {
+        error = "unknown function '" + node->name + "'";
+        return false;
+      }
+      return validate_names(node->arg.get(), error);
+    default:
+      return validate_names(node->left.get(), error) &&
+             validate_names(node->right.get(), error) &&
+             validate_names(node->arg.get(), error);
+  }
+}
+}  // namespace
+
 std::unique_ptr<ExprNode> expr_parse(const std::string& input,
                                      std::string& error) {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   Parser p(input);
-  return p.parse(error);
+  auto ast = p.parse(error);
+  if (ast && !validate_names(ast.get(), error)) return nullptr;
+  return ast;
 }
 
 // ─── Evaluator ──────────────────────────────────────────────────────
 
 // Resolve a register variable name to its value (case-insensitive)
 namespace {
-int32_t resolve_variable(const std::string& name, const ExprContext& ctx) {
+// The single authority on names: resolves AND reports existence, so parse
+// validation and evaluation can never drift apart (an unknown name silently
+// evaluating to 0 is how `bp add ... if carry` armed cleanly and never fired
+// — beads-tib2).
+int32_t resolve_variable_impl(const std::string& name, const ExprContext& ctx,
+                              bool* found) {
+  *found = true;
   if (!ctx.z80) return 0;
   const t_z80regs& z = *ctx.z80;
 
@@ -524,57 +594,107 @@ int32_t resolve_variable(const std::string& name, const ExprContext& ctx) {
   if (n == "iff1") return z.IFF1;
   if (n == "iff2") return z.IFF2;
 
+  // Flags, by name (F bit layout: C=0, N=1, P/V=2, H=4, Z=6, S=7)
+  if (n == "carry") return (z.AF.b.l & 0x01) != 0 ? 1 : 0;
+  if (n == "nsub") return (z.AF.b.l & 0x02) != 0 ? 1 : 0;
+  if (n == "parity" || n == "overflow") return (z.AF.b.l & 0x04) != 0 ? 1 : 0;
+  if (n == "halfcarry") return (z.AF.b.l & 0x10) != 0 ? 1 : 0;
+  if (n == "zero") return (z.AF.b.l & 0x40) != 0 ? 1 : 0;
+  if (n == "sign") return (z.AF.b.l & 0x80) != 0 ? 1 : 0;
+
   // Context variables
   if (n == "address") return ctx.address;
   if (n == "value") return ctx.value;
   if (n == "previous") return ctx.previous;
   if (n == "mode") return ctx.mode;
 
-  return 0;  // unknown variable
+  *found = false;
+  return 0;
+}
+
+int32_t resolve_variable(const std::string& name, const ExprContext& ctx) {
+  bool found = false;
+  return resolve_variable_impl(name, ctx, &found);
+}
+
+bool expr_variable_known(const std::string& name) {
+  static t_z80regs dummy{};
+  ExprContext ctx;
+  ctx.z80 = &dummy;
+  bool found = false;
+  resolve_variable_impl(name, ctx, &found);
+  return found;
 }
 }  // namespace
 
-// Resolve a function call
+// Function calls: ONE table owns both the name set and the dispatch, so a
+// new function cannot exist for the evaluator without existing for the
+// parser's arm-time validation (and vice versa) — the identifier fix's
+// single-authority rule, applied to functions.
 namespace {
+struct ExprFunction {
+  const char* name;
+  int32_t (*fn)(int32_t arg, const ExprContext& ctx);
+};
+
+const ExprFunction kExprFunctions[] = {
+    {"peek",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return z80_read_mem(static_cast<word>(arg));
+     }},
+    {"byte",
+     [](int32_t arg, const ExprContext&) -> int32_t { return arg & 0xFF; }},
+    {"hibyte",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return (arg >> 8) & 0xFF;
+     }},
+    {"word",
+     [](int32_t arg, const ExprContext&) -> int32_t { return arg & 0xFFFF; }},
+    {"hiword",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return (arg >> 16) & 0xFFFF;
+     }},
+    {"ay",
+     [](int32_t arg, const ExprContext& ctx) -> int32_t {
+       if (ctx.psg && arg >= 0 && arg < 16) {
+         auto* psg = static_cast<t_PSG*>(ctx.psg);
+         return psg->RegisterAY.Index[arg];
+       }
+       return 0;
+     }},
+    {"crtc",
+     [](int32_t arg, const ExprContext& ctx) -> int32_t {
+       if (ctx.crtc && arg >= 0 && arg < 18) {
+         auto* crtc = static_cast<t_CRTC*>(ctx.crtc);
+         return crtc->registers[arg];
+       }
+       return 0;
+     }},
+    {"timer_start",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       g_debug_timers.timer_start(arg, g_tstate_counter);
+       return 0;
+     }},
+    {"timer_stop",
+     [](int32_t arg, const ExprContext&) -> int32_t {
+       return g_debug_timers.timer_stop(arg, g_tstate_counter);
+     }},
+};
+
+const ExprFunction* find_function(const std::string& name) {
+  for (const auto& f : kExprFunctions)
+    if (name == f.name) return &f;
+  return nullptr;
+}
+
 int32_t resolve_function(const std::string& name, int32_t arg,
                          const ExprContext& ctx) {
-  if (name == "peek") {
-    return z80_read_mem(static_cast<word>(arg));
-  }
-  if (name == "byte") {
-    return arg & 0xFF;
-  }
-  if (name == "hibyte") {
-    return (arg >> 8) & 0xFF;
-  }
-  if (name == "word") {
-    return arg & 0xFFFF;
-  }
-  if (name == "hiword") {
-    return (arg >> 16) & 0xFFFF;
-  }
-  if (name == "ay") {
-    if (ctx.psg && arg >= 0 && arg < 16) {
-      auto* psg = static_cast<t_PSG*>(ctx.psg);
-      return psg->RegisterAY.Index[arg];
-    }
-    return 0;
-  }
-  if (name == "crtc") {
-    if (ctx.crtc && arg >= 0 && arg < 18) {
-      auto* crtc = static_cast<t_CRTC*>(ctx.crtc);
-      return crtc->registers[arg];
-    }
-    return 0;
-  }
-  if (name == "timer_start") {
-    g_debug_timers.timer_start(arg, g_tstate_counter);
-    return 0;
-  }
-  if (name == "timer_stop") {
-    return g_debug_timers.timer_stop(arg, g_tstate_counter);
-  }
-  return 0;
+  const ExprFunction* f = find_function(name);
+  return f != nullptr ? f->fn(arg, ctx) : 0;
+}
+
+bool expr_function_known(const std::string& name) {
+  return find_function(name) != nullptr;
 }
 }  // namespace
 
@@ -588,8 +708,13 @@ int32_t expr_eval(const ExprNode* node, const ExprContext& ctx) {
     case ExprNodeType::VARIABLE:
       return resolve_variable(node->name, ctx);
 
-    case ExprNodeType::UNARY_NOT:
-      return ~expr_eval(node->left.get(), ctx);
+    case ExprNodeType::UNARY_NOT: {
+      // Logical negation against the dialect's nonzero-truth rule. Bitwise ~
+      // made `not carry` always true: flags return 0/1, and ~0/~1 are both
+      // nonzero. Comparisons already return -1/0; match that so `not` composes
+      // with flag names and with `f & 1` the same way.
+      return expr_eval(node->left.get(), ctx) != 0 ? 0 : -1;
+    }
 
     case ExprNodeType::FUNCTION_CALL:
       return resolve_function(node->name, expr_eval(node->arg.get(), ctx), ctx);
