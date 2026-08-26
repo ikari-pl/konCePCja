@@ -47,3 +47,6 @@ test/hw/fixtures/*.a2r
 # The live config: personal paths, MRU history and machine-specific tuning.
 # The shipped default is koncepcja.cfg.example — copy it to start.
 koncepcja.cfg
+
+# Python bytecode cache from the IPC harness
+__pycache__/

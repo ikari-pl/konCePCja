@@ -6,6 +6,19 @@
            Characters are pushed to a lock-free SPSC ring buffer
            and flushed to the TCP client by the server thread.
 
+           LIMITATION -- this mirrors firmware OUTPUT only. The line
+           editor's echo of characters the USER types does NOT route
+           through &BB5A (verified: a breakpoint there never fires while
+           typing, while BASIC's "Ready" does hit it; &BB5D/TXT_WR_CHAR
+           does not fire either -- the editor uses an internal path). So
+           whatever you inject with `autotype` never appears on this
+           stream. Never use this console as an oracle for INPUT: a test
+           that types and then searches the mirror for what it typed
+           finds nothing, no matter how well typing works. That is
+           exactly what made beads-qgxr look like a keyboard defect for
+           three sessions. Assert on firmware output, or read back the
+           screen (`screenshot`) / the key-state map at B635.
+
    Input:  Received bytes are buffered and fed to AutoTypeQueue
            each frame by the main loop, converting ANSI escape
            sequences to CPC special keys.

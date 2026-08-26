@@ -184,7 +184,7 @@ class EmulatorRunner:
 
     test_engine: Optional[int] = None
 
-    def __init__(self, exe_path: str = None):
+    def __init__(self, exe_path: Optional[str] = None):
         if exe_path is None:
             # Find the executable relative to this script
             script_dir = Path(__file__).parent
@@ -1091,6 +1091,101 @@ def test_load_accepts_flux_disk_formats():
     return True
 
 
+def test_model_change_rebuild():
+    """Model changes must rebuild the board, not just mutate config state.
+
+    Repro for beads-o0iq item 3: switching 6128 -> 6128+ through the live
+    settings path used to update CPC.model, but the running board kept the old
+    model's boot ROM because koncpc_rebuild_machine() never restarted the
+    bridge. The proof is the visible ROM signature at 0x02E0: a rebuilt Plus
+    machine must match a fresh 6128+ boot, not the pre-change 6128 boot.
+    """
+    print("Running model-change rebuild test...")
+
+    # 0x02E5 differs between cpc6128.rom and the 6128+ system cartridge; low
+    # vectors at 0x0000 are identical, so sample a window that actually changes.
+    def rom_signature(ipc: KoncepcjaIPC) -> Optional[str]:
+        ok, resp = ipc.read_mem(0x02E0, 16)
+        if not ok:
+            return None
+        return resp.replace('OK ', '').strip().upper()
+
+    def model_value(ipc: KoncepcjaIPC) -> Optional[int]:
+        ok, resp = ipc.send_command('config get model')
+        if not ok:
+            return None
+        try:
+            return int(resp.replace('OK', '').strip())
+        except ValueError:
+            return None
+
+    with EmulatorRunner() as ref_6128:
+        if not ref_6128.start('-O', 'system.model=2'):
+            print("FAIL: Could not start 6128 reference machine")
+            return False
+        sig_6128 = rom_signature(ref_6128.ipc)
+        if sig_6128 is None:
+            print("FAIL: Could not read 6128 ROM signature")
+            return False
+
+    with EmulatorRunner() as ref_plus:
+        if not ref_plus.start('-O', 'system.model=3'):
+            print("FAIL: Could not start 6128+ reference machine")
+            return False
+        sig_plus = rom_signature(ref_plus.ipc)
+        if sig_plus is None:
+            print("FAIL: Could not read 6128+ ROM signature")
+            return False
+
+    if sig_6128 == sig_plus:
+        print(f"FAIL: Reference ROM signatures are identical: {sig_6128}")
+        return False
+
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.model=2'):
+            print("FAIL: Could not start emulator under test")
+            return False
+
+        before_model = model_value(emu.ipc)
+        if before_model != 2:
+            print(f"FAIL: Expected initial model 2, got {before_model!r}")
+            return False
+
+        before_sig = rom_signature(emu.ipc)
+        if before_sig != sig_6128:
+            print(f"FAIL: Initial ROM signature {before_sig!r} != 6128 ref {sig_6128!r}")
+            return False
+
+        ok, resp = emu.ipc.send_command('config set model 3')
+        if not ok:
+            print(f"FAIL: config set model 3 failed: {resp}")
+            return False
+        ok, resp = emu.ipc.send_command('config apply')
+        if not ok:
+            print(f"FAIL: config apply failed: {resp}")
+            return False
+
+        after_model = model_value(emu.ipc)
+        if after_model != 3:
+            print(f"FAIL: Expected rebuilt model 3, got {after_model!r}")
+            return False
+
+        after_sig = rom_signature(emu.ipc)
+        if after_sig != sig_plus:
+            print(f"FAIL: Rebuilt ROM signature {after_sig!r} != 6128+ ref {sig_plus!r}")
+            return False
+
+        if after_sig == before_sig:
+            print(f"FAIL: ROM signature stayed on the old model: {after_sig}")
+            return False
+
+        print(f"  6128 signature   : {sig_6128}")
+        print(f"  6128+ signature  : {sig_plus}")
+        print(f"  rebuilt signature: {after_sig}")
+        print("PASS: model change rebuilt the board and boot ROM")
+        return True
+
+
 
 def test_boots_to_basic_with_peripherals():
     """The CPC must reach the BASIC prompt with peripherals configured.
@@ -1174,6 +1269,21 @@ def test_conditional_debug_matrix():
             emu.ipc.send_command('wp clear')
             emu.ipc.send_command('run')
             time.sleep(0.5)
+            # Establish the precondition instead of assuming it. A hit that
+            # lands just AFTER a `wait bp` times out still pauses the machine,
+            # and that pause is applied by the main loop strictly later than
+            # the resume we just sent -- so `run` can be overtaken and the next
+            # check then arms against a stopped machine and sees nothing. That
+            # product-level race is beads-6561; here we simply refuse to start
+            # a check until the emulator is really running.
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                ok, resp = emu.ipc.send_command('status')
+                if ok and 'paused=0' in resp:
+                    return
+                emu.ipc.send_command('run')
+                time.sleep(0.1)
+            print("  WARNING: emulator would not resume before the next check")
 
         checks = [
             ('bp add 0x1BD9 if pc == 0x1BD9', 'FIRES',
@@ -1198,20 +1308,27 @@ def test_conditional_debug_matrix():
             print(f"  {label}: {got}")
 
         # The original beads-tib2 repro, live: `if carry` at the idle loop's
-        # char-poll return (0x1BD9). Carry is set there exactly when KM READ
-        # CHAR hands back a fetched key, so pressing one guarantees a
-        # carry-true hit — on the pre-fix tree this armed OK and never fired.
-        ok, _ = emu.ipc.send_command('bp add 0x1BD9 if carry')
-        if not ok:
-            print("  FAIL: 'if carry' refused at arm time")
+        # char-poll (0x1BD9). The defect there was that `carry` armed cleanly
+        # as an unknown identifier and then never fired, so what must be proven
+        # is that the identifier RESOLVES, evaluates, and discriminates.
+        #
+        # This step used to press a key and expect a carry-true hit, on the
+        # premise that carry is set at 0x1BD9 when KM READ CHAR hands back a
+        # fetched key. That premise is FALSE. Measured over 8 trials each:
+        # `if carry == 0` fires 8/8 there, while `if carry` and `if carry == 1`
+        # are silent 0/8 even with keys streaming in. The old assertion passed
+        # only when `wait bp` handed back a stale latched hit left by an
+        # earlier check -- once hits were stamped with their arming generation
+        # and that could no longer happen, it failed every run (beads-6561).
+        if fires('bp add 0x1BD9 if carry == 0') != 'FIRES':
+            print("  FAIL: 'if carry == 0' never fired at the idle char-poll")
             return False
-        emu.ipc.send_command('input key a')
-        ok, _ = emu.ipc.send_command('wait bp 6000')
         reset_state()
-        if not ok:
-            print("  FAIL: 'if carry' never fired on a delivered key")
+        if fires('bp add 0x1BD9 if carry', 2500) != 'silent':
+            print("  FAIL: 'if carry' fired where carry is never set")
             return False
-        print("  carry condition fires on a delivered key: FIRES")
+        reset_state()
+        print("  carry term evaluates and discriminates: FIRES / silent")
 
         # Clear-promptness: a cleared breakpoint must not fire after resume.
         got = fires('bp add 0x1BD9')
@@ -1225,6 +1342,92 @@ def test_conditional_debug_matrix():
             return False
         print("  cleared breakpoint stays cleared after resume")
         return True
+
+
+class TelnetOracle:
+    """Reader for the emulator's telnet console (IPC port + 1).
+
+    The console mirrors firmware OUTPUT only. The line editor's echo of the
+    characters you inject does NOT route through TXT_OUTPUT (&BB5A), so nothing
+    you send with `autotype` ever appears on this stream. Searching it for your
+    own keystrokes therefore fails no matter how well typing works -- that
+    mistake is what made beads-qgxr look like a keyboard defect for three
+    sessions. `type_and_expect` refuses such a search outright.
+
+    Assert on what the program PRINTS. To check input actually landed, read the
+    screen back (`screenshot`, with an idle control) or the firmware key-state
+    map at B635.
+    """
+
+    def __init__(self, sock):
+        self.sock = sock
+        self.sock.settimeout(1.0)
+        self.data = b''
+
+    def read_until(self, marker: bytes, budget: float) -> bool:
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            if marker in self.data:
+                return True
+            try:
+                chunk = self.sock.recv(4096)
+            except socket.timeout:
+                continue
+            if not chunk:
+                return marker in self.data
+            self.data += chunk
+        return marker in self.data
+
+    def mark(self) -> int:
+        """Offset to slice from, so assertions ignore earlier boot output."""
+        return len(self.data)
+
+    def read_until_since(self, mark: int, marker: bytes,
+                         budget: float) -> bool:
+        """Like read_until, but only output produced after `mark` counts.
+
+        read_until() searches the whole accumulated buffer, so a marker that
+        already appeared during boot (`Ready` is the obvious one) returns
+        instantly and the caller sees an empty slice -- a green that measured
+        nothing. Anything waiting on repeated output must use this.
+        """
+        deadline = time.monotonic() + budget
+        while time.monotonic() < deadline:
+            if marker in self.data[mark:]:
+                return True
+            try:
+                chunk = self.sock.recv(4096)
+            except socket.timeout:
+                continue
+            if not chunk:
+                return marker in self.data[mark:]
+            self.data += chunk
+        return marker in self.data[mark:]
+
+    def since(self, mark: int) -> bytes:
+        return self.data[mark:]
+
+    def type_and_expect(self, ipc, text: str, marker: bytes,
+                        budget: float = 20.0):
+        """Type `text`, then wait for `marker` in output produced after it.
+
+        Returns (found, mark) so the caller can slice the response with
+        `since(mark)` instead of searching for the typed command, which is
+        never echoed here.
+        """
+        typed = text.encode() if isinstance(text, str) else text
+        if marker and marker in typed:
+            raise AssertionError(
+                f"marker {marker!r} occurs in the typed text {typed!r}. The "
+                "telnet console mirrors firmware OUTPUT only and never echoes "
+                "injected keystrokes, so this search can only ever fail. "
+                "Assert on something the program prints instead.")
+        start = self.mark()
+        ok, resp = ipc.send_command(f"autotype {text}")
+        if not ok:
+            print(f"  autotype was refused: {resp}")
+            return False, start
+        return self.read_until_since(start, marker, budget), start
 
 
 def test_m4_cat_lists_the_sd_card():
@@ -1255,29 +1458,13 @@ def test_m4_cat_lists_the_sd_card():
                 print("  SKIP: emulator logged no telnet port")
                 return True
 
-            console = b''
             try:
                 with socket.create_connection(('127.0.0.1', tport),
                                               timeout=5.0) as sock:
-                    sock.settimeout(1.0)
+                    con = TelnetOracle(sock)
 
-                    def read_until(marker: bytes, budget: float) -> bool:
-                        nonlocal console
-                        deadline = time.monotonic() + budget
-                        while time.monotonic() < deadline:
-                            if marker in console:
-                                return True
-                            try:
-                                chunk = sock.recv(4096)
-                            except socket.timeout:
-                                continue
-                            if not chunk:
-                                return marker in console
-                            console += chunk
-                        return marker in console
-
-                    if not read_until(b'Ready', 20.0):
-                        print(f"  CPC never reached BASIC: {console[:200]!r}")
+                    if not con.read_until(b'Ready', 20.0):
+                        print(f"  CPC never reached BASIC: {con.data[:200]!r}")
                         return False
 
                     # Let the firmware settle at the prompt before typing.
@@ -1285,20 +1472,26 @@ def test_m4_cat_lists_the_sd_card():
                     # eat leading characters (the `un3hello` class): typed too
                     # early, 'cat' arrives as a bare RETURN.
                     time.sleep(3.0)
-                    ok, _ = emu.ipc.send_command("autotype 'cat~RETURN~'")
-                    if not ok:
-                        print("  autotype was refused")
-                        return False
-
-                    # 'free' is the tail of the M4's catalogue footer.
-                    if not read_until(b'free', 20.0):
-                        print(f"  cat never completed: {console[-300:]!r}")
+                    # NOT quoted: `autotype` types everything after the
+                    # first space literally (see `help autotype`). Wrapping the
+                    # text in apostrophes types them too, and a leading ' is a
+                    # BASIC comment marker -- the line then silently does
+                    # nothing, which is what made this test look like a
+                    # keyboard bug (beads-qgxr).
+                    # 'free' is the tail of the M4's catalogue footer -- an
+                    # assertion on what the M4 PRINTS. type_and_expect refuses
+                    # a marker taken from the typed text, because the console
+                    # never echoes injected keystrokes (beads-gosg).
+                    found, listing_from = con.type_and_expect(
+                        emu.ipc, 'cat~RETURN~', b'free', 20.0)
+                    if not found:
+                        print(f"  cat never completed: {con.data[-300:]!r}")
                         return False
             except OSError as e:
                 print(f"  SKIP: could not reach the telnet console: {e}")
                 return True
 
-            listing = console[console.find(b'cat'):]
+            listing = con.since(listing_from)
             problems = []
             if b'README  .TXT' not in listing:
                 problems.append("README  .TXT missing")
@@ -1335,6 +1528,7 @@ def main():
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,
         test_m4_cat_lists_the_sd_card,
+        test_model_change_rebuild,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,

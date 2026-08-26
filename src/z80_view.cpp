@@ -95,7 +95,16 @@ void z80_set_bdos_serial_in_hook(BdosSerialInHook hook) {
 }
 
 // --- konCePCja debug helpers ---
+namespace {
+// Not atomic: every mutator below runs on the host/IPC thread under the same
+// pause discipline the breakpoint list itself relies on.
+uint64_t g_bp_generation = 0;
+}  // namespace
+
+uint64_t z80_breakpoint_generation() { return g_bp_generation; }
+
 void z80_add_breakpoint(word addr) {
+  ++g_bp_generation;
   if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) {
         return b.address == addr && !b.condition;
       })) {
@@ -107,6 +116,7 @@ void z80_add_breakpoint(word addr) {
 // translation units/tests; internal linkage would break the link
 void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
                              const std::string& cond_str, int pass_count) {
+  ++g_bp_generation;
   Breakpoint bp(addr, NORMAL);
   bp.condition = std::move(condition);
   bp.condition_str = cond_str;
@@ -115,13 +125,17 @@ void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
 }
 
 void z80_del_breakpoint(word addr) {
+  ++g_bp_generation;
   breakpoints.erase(
       std::remove_if(breakpoints.begin(), breakpoints.end(),
                      [&](const auto& b) { return b.address == addr; }),
       breakpoints.end());
 }
 
-void z80_clear_breakpoints() { breakpoints.clear(); }
+void z80_clear_breakpoints() {
+  ++g_bp_generation;
+  breakpoints.clear();
+}
 
 void z80_step_instruction() {
   if (subcycle::Machine* m = subcycle_bridge_machine()) {
@@ -347,6 +361,7 @@ const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref() {
 // --- Watchpoints ---
 
 void z80_add_watchpoint(word addr, word len, WatchpointType type) {
+  ++g_bp_generation;
   Watchpoint wp(addr, type);
   wp.length = len;
   watchpoints.push_back(std::move(wp));
@@ -357,6 +372,7 @@ void z80_add_watchpoint(word addr, word len, WatchpointType type) {
 void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
                              std::unique_ptr<ExprNode> cond,
                              const std::string& cond_str, int pass_count) {
+  ++g_bp_generation;
   Watchpoint wp(addr, type);
   wp.length = len;
   wp.condition = std::move(cond);
@@ -366,12 +382,16 @@ void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
 }
 
 void z80_del_watchpoint(int index) {
+  ++g_bp_generation;
   if (index >= 0 && index < static_cast<int>(watchpoints.size())) {
     watchpoints.erase(watchpoints.begin() + index);
   }
 }
 
-void z80_clear_watchpoints() { watchpoints.clear(); }
+void z80_clear_watchpoints() {
+  ++g_bp_generation;
+  watchpoints.clear();
+}
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link

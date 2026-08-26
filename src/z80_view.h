@@ -190,6 +190,13 @@ void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
                              const std::string& cond_str, int pass_count = 0);
 void z80_del_breakpoint(word addr);
 void z80_clear_breakpoints();
+
+// Bumped by every user-facing breakpoint/watchpoint mutation. A latched hit
+// records the generation it fired under, so a consumer can tell "this fired
+// under the breakpoints armed right now" from "this is an uncollected hit left
+// over from an earlier arming". Without it `wait bp` reports a stale hit as if
+// the breakpoint just armed had fired (beads-6561).
+uint64_t z80_breakpoint_generation();
 void z80_step_instruction();
 const std::vector<Breakpoint>& z80_list_breakpoints_ref();
 

@@ -59,6 +59,14 @@ extern t_PSG PSG;
 // legacy tape scope level (tape.cpp); engine=1 mirrors it
 
 namespace {
+// Upper bound on filtered probe hits absorbed inside one host frame. A hot
+// armed address can latch thousands of times per frame; past this we stop and
+// let the next frame carry on, which is exactly the old behaviour and so can
+// only be as slow as before, never slower.
+constexpr int kMaxProbeContinues = 20000;
+}  // namespace
+
+namespace {
 
 enum class PendingMedia : std::uint8_t {
   kNone,
@@ -82,6 +90,11 @@ struct Bridge {
       media_b;                  // drive B DSK image (unit 1): also must outlive
   std::vector<uint8_t> mf2rom;  // Multiface II 8K ROM (optional)
   std::atomic<bool> mf2_stop{false};  // deferred STOP (UI -> Z80 thread)
+  // Disposition of a probe hit already judged inside subcycle_bridge_frame's
+  // continue loop, waiting for the debug sync to report it. -1 = none pending.
+  // Each hit is judged exactly once: the predicates mutate (hit_count, the
+  // published PC), so re-evaluating in the sync would corrupt pass counts.
+  int pending_hit_disposition = -1;
   std::vector<uint8_t> ide_img[2];    // Symbiface IDE images (owned)
   std::string ide_path[2];            // their files, for write-back
   bool sf2_ide_loaded = false;
@@ -819,6 +832,73 @@ void subcycle_bridge_request_tape_seek(uint32_t block_ordinal) {
   g_bridge.tape_seek_req.store(block_ordinal, std::memory_order_relaxed);
 }
 
+namespace {
+
+// Sole authority on what a latched probe hit MEANS. Returns 0 when the hit was
+// filtered out (already acked -- the caller may keep running), 1 when it is a
+// real break the host must report. Called from exactly two places, the frame's
+// continue loop and the debug sync, and never twice for the same hit: the
+// predicates it uses are stateful (z80_bp_should_fire increments hit_count,
+// z80_probe_exec_should_break republishes the PC), so a second opinion would
+// be a second side effect (beads-6561).
+int process_probe_hit(Bridge& b, const ProbeHit& hit) {
+  if (hit.kind == PROBE_HIT_EXEC && hit.addr == z80.break_point) {
+    // The old-flavour single breakpoint (z80.break_point, mirrored into
+    // the probe only while a KONCPC_WAITBREAK is in flight): report
+    // EC_BREAKPOINT WITHOUT breakpoint_reached, so the main loop takes its
+    // legacy else-branch — clear break_point, keep running, release/latch
+    // the WAITBREAK. Checked BEFORE should_break: that predicate returns
+    // true on an EMPTY list (the step path arms the probe without a list),
+    // which would misroute this hit into the pause path. A listed
+    // breakpoint at the same address still wins.
+    bool listed = false;
+    for (const auto& bp : z80_list_breakpoints_ref())
+      if (bp.address == hit.addr) {
+        listed = true;
+        break;
+      }
+    if (!listed) {
+      b.machine.probe_resume();
+      return 1;
+    }
+  }
+  if (hit.kind == PROBE_HIT_EXEC && !z80_probe_exec_should_break(hit.addr)) {
+    b.machine.probe_resume();
+    return 0;
+  }
+  if (hit.kind == PROBE_HIT_MEM_READ || hit.kind == PROBE_HIT_MEM_WRITE) {
+    const bool is_write = hit.kind == PROBE_HIT_MEM_WRITE;
+    // Pre-access byte: the mem Device commits a CPU write on the NEXT
+    // master cycle (one-tick write latch), and run_frame parks on the tick
+    // the probe latched — peek_mem still reads the pre-write value here.
+    const uint8_t old_val = b.machine.peek_mem(hit.addr);
+    if (!z80_probe_watch_should_break(hit.addr, hit.data, is_write,
+                                      old_val)) {
+      b.machine.probe_resume();
+      return 0;
+    }
+    z80.watchpoint_old = old_val;
+  }
+  b.machine
+      .probe_resume();  // edge consumed: resume continues mid-instruction
+  if (hit.kind == PROBE_HIT_EXEC) {
+    z80.breakpoint_reached = 1;
+    z80.PC.w.l =
+        hit.addr;  // the halted instruction's identity (spec: probe §3)
+  } else {
+    z80.watchpoint_reached = 1;
+    z80.watchpoint_addr = hit.addr;
+    z80.watchpoint_value = hit.data;
+  }
+  z80_remove_ephemeral_breakpoints();
+  z80_call_breakpoint_hit_hook(static_cast<word>(hit.addr),
+                               hit.kind != PROBE_HIT_EXEC);
+  return 1;
+  return 0;
+}
+
+}  // namespace
+
 int subcycle_bridge_debug_sync() {
   Bridge& b = g_bridge;
   // Media truth for the UI (fdc-device.md §10): the legacy save-on-eject and
@@ -989,61 +1069,14 @@ int subcycle_bridge_debug_sync() {
   g_psg_scope.push(ps.chan_level[0], ps.chan_level[1], ps.chan_level[2],
                    ps.env_level);
 
-  ProbeHit hit{};
-  if (b.machine.probe_hit(&hit)) {
-    if (hit.kind == PROBE_HIT_EXEC && hit.addr == z80.break_point) {
-      // The old-flavour single breakpoint (z80.break_point, mirrored into
-      // the probe only while a KONCPC_WAITBREAK is in flight): report
-      // EC_BREAKPOINT WITHOUT breakpoint_reached, so the main loop takes its
-      // legacy else-branch — clear break_point, keep running, release/latch
-      // the WAITBREAK. Checked BEFORE should_break: that predicate returns
-      // true on an EMPTY list (the step path arms the probe without a list),
-      // which would misroute this hit into the pause path. A listed
-      // breakpoint at the same address still wins.
-      bool listed = false;
-      for (const auto& bp : z80_list_breakpoints_ref())
-        if (bp.address == hit.addr) {
-          listed = true;
-          break;
-        }
-      if (!listed) {
-        b.machine.probe_resume();
-        return 1;
-      }
-    }
-    if (hit.kind == PROBE_HIT_EXEC && !z80_probe_exec_should_break(hit.addr)) {
-      b.machine.probe_resume();
-      return 0;
-    }
-    if (hit.kind == PROBE_HIT_MEM_READ || hit.kind == PROBE_HIT_MEM_WRITE) {
-      const bool is_write = hit.kind == PROBE_HIT_MEM_WRITE;
-      // Pre-access byte: the mem Device commits a CPU write on the NEXT
-      // master cycle (one-tick write latch), and run_frame parks on the tick
-      // the probe latched — peek_mem still reads the pre-write value here.
-      const uint8_t old_val = b.machine.peek_mem(hit.addr);
-      if (!z80_probe_watch_should_break(hit.addr, hit.data, is_write,
-                                        old_val)) {
-        b.machine.probe_resume();
-        return 0;
-      }
-      z80.watchpoint_old = old_val;
-    }
-    b.machine
-        .probe_resume();  // edge consumed: resume continues mid-instruction
-    if (hit.kind == PROBE_HIT_EXEC) {
-      z80.breakpoint_reached = 1;
-      z80.PC.w.l =
-          hit.addr;  // the halted instruction's identity (spec: probe §3)
-    } else {
-      z80.watchpoint_reached = 1;
-      z80.watchpoint_addr = hit.addr;
-      z80.watchpoint_value = hit.data;
-    }
-    z80_remove_ephemeral_breakpoints();
-    z80_call_breakpoint_hit_hook(static_cast<word>(hit.addr),
-                                 hit.kind != PROBE_HIT_EXEC);
-    return 1;
+  if (b.pending_hit_disposition >= 0) {
+    // Already judged inside this frame's continue loop; do not re-evaluate.
+    const int disposition = b.pending_hit_disposition;
+    b.pending_hit_disposition = -1;
+    return disposition;
   }
+  ProbeHit hit{};
+  if (b.machine.probe_hit(&hit)) return process_probe_hit(b, hit);
   return 0;
 }
 
@@ -1091,6 +1124,14 @@ void subcycle_bridge_stop() {
     SDL_DestroySurface(b.fbconv);
     b.fbconv = nullptr;
   }
+  // A restart builds a fresh Machine, so every one-shot "already fitted" latch
+  // has to fall with it. Left set, they silently unfit the M4 and the Symbiface
+  // IDE on the next subcycle_bridge_start() -- the gates there are
+  // `enabled && !loaded` -- and the firmware taps get registered on top of the
+  // old ones, so the telnet console prints every mirrored character twice.
+  b.m4_loaded = false;
+  b.sf2_ide_loaded = false;
+  b.machine.clear_taps();
   b.active = false;
 }
 
@@ -1393,6 +1434,31 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   }
 
   b.machine.run_frame();
+
+  // The probe stops run_frame EARLY on every candidate hit, and machine.h's
+  // contract is "ack + run again to continue the frame". That continuation was
+  // missing: a hit the condition filtered OUT was left latched for the
+  // once-per-frame debug sync to ack, so every rejected candidate cost a whole
+  // host frame. On a hot address that is catastrophic -- a conditional
+  // breakpoint at 0x1BD9 (the BASIC idle poll) dropped the machine from ~300
+  // to ~1.5 firmware ticks/s, ~200x, and so missed the very events it was
+  // armed for (beads-6561).
+  //
+  // Disposition goes through process_probe_hit(), the SAME function the debug
+  // sync uses, and each hit is judged exactly ONCE: the predicates behind it
+  // are not pure (z80_bp_should_fire increments hit_count, so pass counts
+  // would double-count) and z80_probe_exec_should_break republishes the PC.
+  // A hit that breaks is recorded here and handed to the sync unre-evaluated.
+  for (int guard = 0; guard < kMaxProbeContinues; ++guard) {
+    ProbeHit hit{};
+    if (!b.machine.probe_hit(&hit)) break;  // frame ran to completion
+    const int disposition = process_probe_hit(b, hit);
+    if (disposition != 0) {
+      b.pending_hit_disposition = disposition;  // the sync reports it
+      break;
+    }
+    b.machine.run_frame();  // filtered: finish the frame instead of the wait
+  }
 
   blit_fb(b, dst);
 

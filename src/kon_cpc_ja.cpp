@@ -1145,7 +1145,12 @@ int koncpc_rebuild_machine() {
   const bool was_paused = CPC.paused;
   cpc_pause_and_wait();
 
-  const int err = emulator_init();
+  subcycle_bridge_stop();
+
+  int err = emulator_init();
+  if (err == 0 && !subcycle_bridge_start()) {
+    err = ERR_CPC_ROM_MISSING;
+  }
 
   // emulator_init() ends with CPC.paused = false without touching g_emu_paused,
   // so the two flags that are meant to agree no longer do. Restore the run

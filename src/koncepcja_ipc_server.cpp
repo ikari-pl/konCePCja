@@ -435,6 +435,27 @@ void register_command(const std::string& name, const std::string& category,
                           description, man_page, handler};
 }
 
+namespace {
+
+// One balanced pair of surrounding quotes is stripped from injected text.
+// `input type` has always done this; `autotype` did not, even though the two
+// are documented as the same path -- so the natural shell-like form
+// `autotype 'cat~RETURN~'` typed a literal apostrophe, and a leading ' is the
+// COMMENT marker in Amstrad BASIC, making the whole line a silent no-op
+// (beads-qgxr burned three sessions on exactly that). Only a MATCHED pair is
+// stripped, so an unbalanced leading apostrophe -- a real BASIC comment the
+// user means to type -- still goes through verbatim.
+std::string strip_wrapping_quotes(std::string text) {
+  if (text.size() >= 2 &&
+      ((text.front() == '"' && text.back() == '"') ||
+       (text.front() == '\'' && text.back() == '\''))) {
+    return text.substr(1, text.size() - 2);
+  }
+  return text;
+}
+
+}  // namespace
+
 void init_command_registry() {
   if (!g_ipc_commands.empty()) return;
 
@@ -808,7 +829,8 @@ void init_command_registry() {
                    "different configuration.");
 
   register_command(
-      "config", "TOOLS", "config get <key> | config set <key> <val>",
+      "config", "TOOLS",
+      "config get <key> | config set <key> <val> | config apply",
       "Access emulator settings",
       "Reads or modifies internal emulator configuration variables.");
 
@@ -915,10 +937,11 @@ void init_command_registry() {
       "Queue text for keyboard injection",
       "Types text into the CPC using AutoTypeQueue. Supports "
       "WinAPE ~KEY~ syntax (e.g. ~ENTER~, ~CLR~).\n"
-      "  EVERYTHING after 'autotype ' is typed VERBATIM, including "
-      "any surrounding quotes or apostrophes -- do NOT wrap the "
-      "text in quotes (e.g. use `autotype |cpm~RETURN~`, NOT "
-      "`autotype '|cpm~RETURN~'`, or the quotes get typed too).\n"
+      "  Everything after 'autotype ' is typed verbatim, except that ONE "
+      "balanced pair of surrounding quotes or apostrophes is stripped, so "
+      "`autotype |cpm~RETURN~` and `autotype '|cpm~RETURN~'` are equivalent "
+      "(same rule as `input type`). An UNBALANCED leading apostrophe is kept "
+      "-- that is a real BASIC comment.\n"
       "  status: Show pending queue length.\n"
       "  clear:  Cancel pending input.");
 
@@ -2683,6 +2706,13 @@ std::string handle_command(const std::string& line) {
       // hold hold_frames frames via the frame-step counter so the CPC firmware
       // scans the chord, then release every row it set.
       auto tap_scancode = [&](CPCScancode scancode, int hold_frames) {
+        // A tap must not change whether the emulator is running. The frame
+        // step it rides on ends with cpc_pause() (kon_cpc_ja.cpp, "IPC frame
+        // step"), so without this the machine is left STOPPED even when the
+        // caller had it running — the key lands in the matrix and the firmware
+        // then never scans it. That is why `input key a; wait bp` could not
+        // see a carry-true hit: nothing was executing (beads-7983).
+        bool const was_paused = CPC.paused;
         ipc_apply_keypress(scancode, keyboard_matrix, true);
         if (g_ipc_instance) {
           g_ipc_instance->frame_step_remaining.store(hold_frames);
@@ -2693,6 +2723,13 @@ std::string handle_command(const std::string& line) {
           g_ipc_instance->wait_frame_step_done();
         }
         ipc_apply_keypress(scancode, keyboard_matrix, false);
+        // Resume only if the tap itself stopped us. If a breakpoint fired
+        // during the hold, that pause is the user's and resuming would drive
+        // straight through it.
+        if (!was_paused && g_ipc_instance != nullptr &&
+            !g_ipc_instance->breakpoint_hit_pending()) {
+          cpc_resume();
+        }
       };
 
       // Parse optional trailing "hold=<frames>" args (start = index of the
@@ -2734,8 +2771,16 @@ std::string handle_command(const std::string& line) {
             if (it == m.end() || name.size() < it->second.size()) m[pos] = name;
           };
           for (const auto& [name, key] : cpc_key_names()) add(tbl, name, key);
-          for (const auto& [ch, key] : cpc_char_to_key())
+          for (const auto& [ch, key] : cpc_char_to_key()) {
+            // Only GRAPHIC characters make usable readback names. The char
+            // table also carries ' ' -> CPC_SPACE and '\n'/'\r' -> CPC_RETURN,
+            // and being one character long those beat every alias under the
+            // shortest-name rule above: 'input state' then reported SPACE as an
+            // invisible blank and RETURN as a literal newline, which truncated
+            // the response mid-line and read as "no key is held" (beads-fiy4).
+            if (std::isgraph(static_cast<unsigned char>(ch)) == 0) continue;
             add(tbl, std::string(1, ch), key);
+          }
           initialized = true;
         }
         return tbl;
@@ -2821,14 +2866,9 @@ std::string handle_command(const std::string& line) {
         // status'), unlike the old synchronous per-char loop.
         size_t const pos = line.find("type ");
         if (pos == std::string::npos) return "ERR 400 bad-args\n";
-        std::string text = line.substr(pos + 5);
-        // Strip surrounding quotes (double OR single) if present, so both
-        // `input type "..."` and `input type '...'` work the same.
-        if (text.size() >= 2 &&
-            ((text.front() == '"' && text.back() == '"') ||
-             (text.front() == '\'' && text.back() == '\''))) {
-          text = text.substr(1, text.size() - 2);
-        }
+        // Same helper as `autotype` -- one quoting rule for the one typing
+        // path, so the two commands really do behave identically.
+        std::string const text = strip_wrapping_quotes(line.substr(pos + 5));
         auto err = g_autotype_queue.enqueue(text);
         if (!err.empty()) return "ERR 400 " + err + "\n";
         return "OK\n";
@@ -3053,6 +3093,21 @@ std::string handle_command(const std::string& line) {
             uint16_t pc = 0;
             bool watch = false;
             if (g_ipc_instance->consume_breakpoint_hit(pc, watch)) {
+              // The hit is published by the breakpoint hook, which runs inside
+              // the frame's debug sync -- the main loop applies cpc_pause()
+              // only afterwards. Returning here on the latch alone told the
+              // client "stopped at a breakpoint" while the machine was still
+              // running, so a client that immediately resumed raced the
+              // deferred pause: the `run` landed first, the pause landed
+              // second, and the machine sat stopped through the NEXT arm.
+              // That is the period-2 "every other wait bp misses" alternation
+              // in beads-6561. Wait for the stop we just promised.
+              const auto stop_by = std::chrono::steady_clock::now() +
+                                   std::chrono::milliseconds(500);
+              while (!CPC.paused &&
+                     std::chrono::steady_clock::now() < stop_by) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              }
               char resp[128];
               if (watch) {
                 snprintf(
@@ -3591,7 +3646,7 @@ std::string handle_command(const std::string& line) {
       if (pos == std::string::npos || pos + 1 >= line.size()) {
         return "ERR 400 bad-args (autotype TEXT|status|clear)\n";
       }
-      std::string const text = line.substr(pos + 1);
+      std::string const text = strip_wrapping_quotes(line.substr(pos + 1));
       auto err = g_autotype_queue.enqueue(text);
       if (!err.empty()) {
         return "ERR 400 " + err + "\n";
@@ -4167,7 +4222,16 @@ std::string handle_command(const std::string& line) {
 
     // --- Config commands ---
     if (cmd == "config" && parts.size() >= 2) {
+      if (parts[1] == "apply") {
+        int const err = koncpc_rebuild_machine();
+        if (err != 0)
+          return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+        return "OK\n";
+      }
       if (parts[1] == "get" && parts.size() >= 3) {
+        if (parts[2] == "model") {
+          return "OK " + std::to_string(CPC.model) + "\n";
+        }
         if (parts[2] == "crtc_type") {
           return "OK " + std::to_string(CRTC.crtc_type) + "\n";
         }
@@ -4197,6 +4261,12 @@ std::string handle_command(const std::string& line) {
         return "ERR 400 unknown-config-key\n";
       }
       if (parts[1] == "set" && parts.size() >= 4) {
+        if (parts[2] == "model") {
+          int const model = parse_int(parts[3]);
+          if (model < 0 || model > 3) return "ERR 400 model must be 0-3\n";
+          CPC.model = static_cast<unsigned int>(model);
+          return "OK (apply required)\n";
+        }
         if (parts[2] == "crtc_type") {
           int const t = parse_int(parts[3]);
           if (t < 0 || t > 3) return "ERR 400 crtc_type must be 0-3\n";
@@ -4246,7 +4316,7 @@ std::string handle_command(const std::string& line) {
         }
         return "ERR 400 unknown-config-key\n";
       }
-      return "ERR 400 bad-config-cmd (get|set)\n";
+      return "ERR 400 bad-config-cmd (get|set|apply)\n";
     }
 
     // --- Silicon Disc commands ---
@@ -5253,12 +5323,21 @@ void KoncepcjaIpcServer::stop() {
 void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint) {
   breakpoint_pc.store(pc);
   breakpoint_watchpoint.store(watchpoint);
+  breakpoint_hit_generation.store(z80_breakpoint_generation());
   breakpoint_hit.store(true);
 }
 
 bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc,
                                                 bool& watchpoint) {
   if (!breakpoint_hit.load()) return false;
+  if (breakpoint_hit_generation.load() != z80_breakpoint_generation()) {
+    // Fired under a breakpoint set that has since changed. Reporting it would
+    // answer "did the breakpoint I just armed fire?" with someone else's hit,
+    // which is how test_conditional_debug_matrix's carry step could pass while
+    // measuring nothing (beads-6561). Drop it and say no.
+    breakpoint_hit.store(false);
+    return false;
+  }
   pc = breakpoint_pc.load();
   watchpoint = breakpoint_watchpoint.load();
   breakpoint_hit.store(false);
@@ -5276,7 +5355,25 @@ void KoncepcjaIpcServer::wait_frame_step_done() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   std::unique_lock<std::mutex> lock(frame_step_mutex);
-  frame_step_cv.wait(lock, [this] { return !frame_step_active.load(); });
+  // Bounded on purpose. The main loop only clears frame_step_active when the
+  // hold counts down, and it stops counting the moment anything else pauses
+  // the machine -- a breakpoint landing mid-hold is the common case. An
+  // unbounded wait here therefore blocked the IPC connection FOREVER: `input
+  // key a` with a breakpoint armed at a hot address (0x1BD9, the BASIC idle
+  // poll) wedged the socket and every later command on it (beads-7983).
+  // Poll instead, and abandon the step if the machine stopped under us; the
+  // breakpoint's own pause is the caller's to observe via `wait bp`.
+  while (frame_step_active.load()) {
+    if (frame_step_cv.wait_for(lock, std::chrono::milliseconds(50),
+                               [this] { return !frame_step_active.load(); })) {
+      return;
+    }
+    if (CPC.paused) {
+      frame_step_active.store(false);
+      frame_step_remaining.store(0);
+      return;
+    }
+  }
 }
 
 // --- Event system ---
