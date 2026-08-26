@@ -27,15 +27,18 @@
 #page(header: none)[
   #v(1fr)
   #text(size: 9pt, fill: amstrad-grey)[
-    konCePCja is an Amstrad CPC emulator based on Caprice32.
+    konCePCja is an Amstrad CPC emulator. The project began as a fork of
+    Caprice32; every inherited file has since been replaced by clean-room
+    implementations — see `NOTICE.md` in the source for provenance and
+    third-party attributions.
 
     #v(6pt)
     © 1997–2015 Ulrich Doewich · © 2016–2025 Colin Pitrat (Caprice32) \
     © 2024–2026 the konCePCja contributors
 
     #v(6pt)
-    konCePCja is free software, distributed under the terms of the GNU General
-    Public License, version 2 (GPLv2), included with the source as `COPYING.txt`.
+    konCePCja is distributed under the konCePCja Source License 1.0.0, a
+    source-available licence, included with the source as `LICENSE.md`.
     This manual is distributed with konCePCja under the same terms.
 
     #v(6pt)
