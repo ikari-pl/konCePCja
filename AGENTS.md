@@ -182,6 +182,8 @@ OK available commands (usage: help <command>):
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
 | `devtools` | Open DevTools window | `devtools` → `OK` |
+| `config get\|set <key> [val]` | Read/modify settings (`model`, `crtc_type`, `ram_size`, …) | `config set model 3` |
+| `config apply` | Rebuild the machine with staged settings (needed after `config set model`) | `config apply` → `OK` |
 | `tier` | Run-tier policy | `tier` → `OK policy=auto effective=fast pinned=0` |
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |

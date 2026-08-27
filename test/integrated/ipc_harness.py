@@ -1238,6 +1238,83 @@ def test_boots_to_basic_with_peripherals():
         return True
 
 
+def test_debugger_stop_contract():
+    """When the debugger says it stopped, it must actually have stopped there.
+
+    Three claims that were each broken at some point and are cheap to pin:
+      * `input key` must not change whether the emulator is running. The tap
+        rides a frame step that ends in cpc_pause(), so without an explicit
+        restore a tap STOPS a running machine and the firmware never scans the
+        key.
+      * After `wait bp`, `reg get PC` must equal the address armed. The hit
+        identity is published by process_probe_hit() and then overwritten by
+        subcycle_bridge_sync_regs_view(), so it has to be re-applied.
+      * `wait bp` must not report a hit left over from a PREVIOUS arming --
+        that is how a test can pass while measuring nothing.
+    """
+    print("Running debugger stop-contract test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.run_tier=4'):
+            print("  Failed to start emulator")
+            return False
+        time.sleep(5)
+
+        def paused() -> Optional[str]:
+            ok, resp = emu.ipc.send_command('status')
+            if not ok:
+                return None
+            parts = [t for t in resp.split() if t.startswith('paused=')]
+            return parts[0] if parts else None
+
+        emu.ipc.send_command('bp clear')
+        emu.ipc.send_command('wp clear')
+        emu.ipc.send_command('run')
+        time.sleep(0.5)
+
+        # 1. a tap leaves a running machine running
+        emu.ipc.send_command('input key a')
+        state = paused()
+        if state != 'paused=0':
+            print(f"  FAIL: 'input key' left the machine {state} (want paused=0)")
+            return False
+        print("  tap leaves a running machine running: OK")
+
+        # 2. the reported PC is the breakpoint address, not the fetch past it
+        emu.ipc.send_command('bp clear')
+        emu.ipc.send_command('run')
+        time.sleep(0.3)
+        emu.ipc.send_command('bp add 0x1BD9')
+        ok, resp = emu.ipc.send_command('wait bp 4000')
+        if not ok:
+            print(f"  FAIL: plain bp at the idle poll never fired: {resp!r}")
+            return False
+        ok, regs = emu.ipc.send_command('regs')
+        pc = next((t.split('=')[1] for t in regs.split()
+                   if t.startswith('PC=')), None)
+        if pc is None or int(pc, 16) != 0x1BD9:
+            print(f"  FAIL: after wait bp, reg PC={pc} (want 1BD9)")
+            return False
+        print("  breakpoint PC survives the register sync: OK")
+
+        # 3. a hit from a previous arming must not answer the next wait
+        emu.ipc.send_command('bp clear')   # drops the arming the hit came from
+        emu.ipc.send_command('run')
+        time.sleep(0.3)
+        emu.ipc.send_command('bp add 0x0000')  # never executed at the prompt
+        ok, _ = emu.ipc.send_command('wait bp 1500')
+        if ok:
+            print("  FAIL: wait bp reported a stale hit from a previous arming")
+            return False
+        print("  stale hits are not reported as fresh: OK")
+
+        emu.ipc.send_command('bp clear')
+        emu.ipc.send_command('run')
+
+    print("PASS: debugger stop-contract test")
+    return True
+
+
 def test_conditional_debug_matrix():
     """Conditional breakpoints and watchpoints must judge hits honestly.
 
@@ -1308,27 +1385,32 @@ def test_conditional_debug_matrix():
             print(f"  {label}: {got}")
 
         # The original beads-tib2 repro, live: `if carry` at the idle loop's
-        # char-poll (0x1BD9). The defect there was that `carry` armed cleanly
-        # as an unknown identifier and then never fired, so what must be proven
-        # is that the identifier RESOLVES, evaluates, and discriminates.
+        # char-poll return (0x1BD9). Carry is set there exactly when KM READ
+        # CHAR hands back a fetched key, so pressing one guarantees a
+        # carry-true hit -- on the pre-fix tree this armed OK and never fired.
         #
-        # This step used to press a key and expect a carry-true hit, on the
-        # premise that carry is set at 0x1BD9 when KM READ CHAR hands back a
-        # fetched key. That premise is FALSE. Measured over 8 trials each:
-        # `if carry == 0` fires 8/8 there, while `if carry` and `if carry == 1`
-        # are silent 0/8 even with keys streaming in. The old assertion passed
-        # only when `wait bp` handed back a stale latched hit left by an
-        # earlier check -- once hits were stamped with their arming generation
-        # and that could no longer happen, it failed every run (beads-6561).
-        if fires('bp add 0x1BD9 if carry == 0') != 'FIRES':
-            print("  FAIL: 'if carry == 0' never fired at the idle char-poll")
+        # This assertion was briefly rewritten to claim the opposite (that
+        # carry is NEVER set here), because a regression made the condition
+        # evaluator read the PREVIOUS frame's flags: hits judged in
+        # subcycle_bridge_frame()'s continue loop were evaluated before
+        # subcycle_bridge_sync_regs_view() refreshed z80.AF. With the sync
+        # restored, `if carry` fires on a delivered key again. Do not weaken
+        # this assertion to match a green run -- it is the canary for exactly
+        # that class of stale-mirror bug (beads-6561).
+        #
+        # 4000ms, not 6000: KoncepcjaIPC's own socket timeout is 5.0s, so a
+        # longer server-side budget can never be observed by the client.
+        ok, _ = emu.ipc.send_command('bp add 0x1BD9 if carry')
+        if not ok:
+            print("  FAIL: 'if carry' refused at arm time")
             return False
+        emu.ipc.send_command('input key a')
+        ok, _ = emu.ipc.send_command('wait bp 4000')
         reset_state()
-        if fires('bp add 0x1BD9 if carry', 2500) != 'silent':
-            print("  FAIL: 'if carry' fired where carry is never set")
+        if not ok:
+            print("  FAIL: 'if carry' never fired on a delivered key")
             return False
-        reset_state()
-        print("  carry term evaluates and discriminates: FIRES / silent")
+        print("  carry condition fires on a delivered key: FIRES")
 
         # Clear-promptness: a cleared breakpoint must not fire after resume.
         got = fires('bp add 0x1BD9')
@@ -1527,6 +1609,7 @@ def main():
     tests = [
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,
+        test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
         test_headless_runs_subcycle_engine,

@@ -285,6 +285,39 @@ void ipc_apply_keypress(CPCScancode cpc_key,
 // symbiface_mouse_update() entry points SDL uses.  Mirrors the deferral pattern
 // used by g_m4_http.drain_pending() and g_repaint_pending.
 namespace {
+// Machine-rebuild staging. koncpc_rebuild_machine() tears down and reallocates
+// the board (pbRAMbuffer/pbROM/pbGPBuffer) and the Bridge. Running that from
+// the IPC server thread was unsafe twice over:
+//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_quiescent is
+//     only toggled inside z80_thread_main(), which is spawned only when
+//     !g_headless -- so the IPC thread could free memory the main thread was
+//     still executing a frame out of;
+//   * it is non-reentrant, and the pre-existing callers in imgui_ui.cpp run on
+//     the render thread, so an agent's `config apply` could race a human
+//     clicking Apply through the same free/realloc teardown.
+// Both go away by doing the rebuild where every other caller already does it:
+// the main thread, drained once per frame by ipc_drain_input(). The requesting
+// connection blocks until the main loop reports the result, so `config apply`
+// stays synchronous from the client's point of view.
+struct IpcRebuildPending {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool requested{false};
+  bool done{false};
+  int result{0};
+};
+IpcRebuildPending g_rebuild_pending;
+
+// Model staged by `config set model`, committed into CPC.model only by the
+// rebuild itself. Writing CPC.model directly made "(apply required)" a lie:
+// the running board reads that field, so a 6128 would fit the Plus ASIC on the
+// next frame, `config get model` reported a machine that was not running, and
+// a `snapshot save` taken in between recorded the wrong model. -1 = nothing
+// staged.
+std::atomic<int> g_pending_model{-1};
+}  // namespace
+
+namespace {
 struct IpcMousePending {
   std::mutex mutex;  // guards the dx/dy/buttons group as one snapshot
   int32_t dx{0};
@@ -327,7 +360,25 @@ IpcGunPending g_ipc_gun;
 // device's staged group into a local snapshot and reset it, so a field can
 // never come from a different update than its siblings (no shearing); the
 // device updates run unlocked.
+// Runs the machine rebuild requested by `config apply` on the MAIN thread.
+// Called from ipc_drain_input(), which every main-loop flavour (GUI render
+// path, emulation loop, headless loop) already ticks once per frame.
+void ipc_drain_rebuild() {
+  std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
+  if (!g_rebuild_pending.requested) return;
+  g_rebuild_pending.requested = false;
+  lock.unlock();
+  const int staged = g_pending_model.exchange(-1);
+  if (staged >= 0) CPC.model = static_cast<unsigned int>(staged);
+  const int err = koncpc_rebuild_machine();  // main thread: same as the GUI
+  lock.lock();
+  g_rebuild_pending.result = err;
+  g_rebuild_pending.done = true;
+  g_rebuild_pending.cv.notify_all();
+}
+
 void ipc_drain_input() {
+  ipc_drain_rebuild();
   // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
   g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
@@ -446,9 +497,8 @@ namespace {
 // stripped, so an unbalanced leading apostrophe -- a real BASIC comment the
 // user means to type -- still goes through verbatim.
 std::string strip_wrapping_quotes(std::string text) {
-  if (text.size() >= 2 &&
-      ((text.front() == '"' && text.back() == '"') ||
-       (text.front() == '\'' && text.back() == '\''))) {
+  if (text.size() >= 2 && ((text.front() == '"' && text.back() == '"') ||
+                           (text.front() == '\'' && text.back() == '\''))) {
     return text.substr(1, text.size() - 2);
   }
   return text;
@@ -832,7 +882,14 @@ void init_command_registry() {
       "config", "TOOLS",
       "config get <key> | config set <key> <val> | config apply",
       "Access emulator settings",
-      "Reads or modifies internal emulator configuration variables.");
+      "Reads or modifies internal emulator configuration variables.\n"
+      "  Keys include model (0-3), crtc_type, ram_size, silicon_disc.\n"
+      "  `set model` STAGES the change and answers 'OK (apply required)': it "
+      "needs `config apply`, not the plain `reset` command -- reset resets the "
+      "board and will not reload the model's ROMs. Until apply, `config get "
+      "model` reports the live model plus `pending=<n>`.\n"
+      "  apply: rebuild the machine with the staged settings (main-thread, "
+      "drained once per frame).");
 
   register_command(
       "search", "TOOLS", "search hex <pattern> | search text <string>",
@@ -862,7 +919,11 @@ void init_command_registry() {
       "  ANSI escape sequences are converted to CPC special keys (arrows, DEL, "
       "ESC, TAB).\n"
       "  Preferred over screenshots for automated regression testing of "
-      "text-based programs.\n"
+      "text-based programs -- but assert on what the program PRINTS. This "
+      "mirrors firmware OUTPUT only: injected keystrokes are never echoed "
+      "back here (the line editor does not route through TXT_OUTPUT), so "
+      "searching this stream for text you typed always fails no matter how "
+      "well typing works.\n"
       "  Example:  nc -w 1 localhost 6544 < /dev/null");
 
   register_command(
@@ -4223,13 +4284,31 @@ std::string handle_command(const std::string& line) {
     // --- Config commands ---
     if (cmd == "config" && parts.size() >= 2) {
       if (parts[1] == "apply") {
-        int const err = koncpc_rebuild_machine();
+        // Hand the rebuild to the main thread and wait for it (see
+        // IpcRebuildPending). Never call koncpc_rebuild_machine() from here.
+        std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
+        g_rebuild_pending.done = false;
+        g_rebuild_pending.requested = true;
+        if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10), [] {
+              return g_rebuild_pending.done;
+            })) {
+          g_rebuild_pending.requested = false;
+          return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+        }
+        int const err = g_rebuild_pending.result;
         if (err != 0)
           return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
         return "OK\n";
       }
       if (parts[1] == "get" && parts.size() >= 3) {
         if (parts[2] == "model") {
+          // The live board's model, plus the staged one when they differ, so a
+          // client can see that a rebuild is still owed.
+          const int staged = g_pending_model.load();
+          if (staged >= 0 && static_cast<unsigned int>(staged) != CPC.model) {
+            return "OK " + std::to_string(CPC.model) +
+                   " pending=" + std::to_string(staged) + "\n";
+          }
           return "OK " + std::to_string(CPC.model) + "\n";
         }
         if (parts[2] == "crtc_type") {
@@ -4264,7 +4343,7 @@ std::string handle_command(const std::string& line) {
         if (parts[2] == "model") {
           int const model = parse_int(parts[3]);
           if (model < 0 || model > 3) return "ERR 400 model must be 0-3\n";
-          CPC.model = static_cast<unsigned int>(model);
+          g_pending_model.store(model);  // staged; `config apply` commits it
           return "OK (apply required)\n";
         }
         if (parts[2] == "crtc_type") {
@@ -5325,6 +5404,14 @@ void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint) {
   breakpoint_watchpoint.store(watchpoint);
   breakpoint_hit_generation.store(z80_breakpoint_generation());
   breakpoint_hit.store(true);
+}
+
+bool KoncepcjaIpcServer::breakpoint_hit_pending() const {
+  // Agrees with consume_breakpoint_hit() on purpose: a hit stamped under a
+  // previous arming is one the consumer would drop, so it must not count as
+  // "a breakpoint is pending" and suppress `input key`'s resume.
+  return breakpoint_hit.load() &&
+         breakpoint_hit_generation.load() == z80_breakpoint_generation();
 }
 
 bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc,

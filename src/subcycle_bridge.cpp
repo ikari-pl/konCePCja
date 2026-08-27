@@ -59,6 +59,14 @@ extern t_PSG PSG;
 // legacy tape scope level (tape.cpp); engine=1 mirrors it
 
 namespace {
+// What a latched probe hit means. AGENTS.md: "enum class over int magic
+// numbers ... must use enum class, not bare int with comment-documented
+// constants." kFiltered/kBreak mirror the 0/1 the debug sync returns to the
+// main loop as EC_FRAME_COMPLETE / EC_BREAKPOINT.
+enum class ProbeDisposition { kNone, kFiltered, kBreak };
+}  // namespace
+
+namespace {
 // Upper bound on filtered probe hits absorbed inside one host frame. A hot
 // armed address can latch thousands of times per frame; past this we stop and
 // let the next frame carry on, which is exactly the old behaviour and so can
@@ -94,9 +102,22 @@ struct Bridge {
   // continue loop, waiting for the debug sync to report it. -1 = none pending.
   // Each hit is judged exactly once: the predicates mutate (hit_count, the
   // published PC), so re-evaluating in the sync would corrupt pass counts.
-  int pending_hit_disposition = -1;
-  std::vector<uint8_t> ide_img[2];    // Symbiface IDE images (owned)
-  std::string ide_path[2];            // their files, for write-back
+  ProbeDisposition pending_hit_disposition = ProbeDisposition::kNone;
+  // The hit that disposition belongs to. subcycle_bridge_debug_sync() runs
+  // subcycle_bridge_sync_regs_view() BEFORE it reports the pending
+  // disposition, and that sync rewrites z80.PC from the live machine — so the
+  // halted identity process_probe_hit() published has to be re-applied
+  // afterwards or the debugger reports the mid-fetch PC instead of the
+  // breakpoint address.
+  ProbeHit pending_hit{};
+  // Audio spliced across a frame that was interrupted by filtered probe hits.
+  // run_frame() clears audio_ at entry, so each re-entry would otherwise throw
+  // away the samples produced before the halt. Only used when a continuation
+  // actually happens -- an uninterrupted frame still returns machine.audio()
+  // directly and pays nothing.
+  std::vector<int16_t> spliced_audio;
+  std::vector<uint8_t> ide_img[2];  // Symbiface IDE images (owned)
+  std::string ide_path[2];          // their files, for write-back
   bool sf2_ide_loaded = false;
   std::vector<uint8_t> m4rom;  // M4 Board 16K ROM (owned)
   bool m4_loaded = false;
@@ -872,15 +893,13 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit) {
     // master cycle (one-tick write latch), and run_frame parks on the tick
     // the probe latched — peek_mem still reads the pre-write value here.
     const uint8_t old_val = b.machine.peek_mem(hit.addr);
-    if (!z80_probe_watch_should_break(hit.addr, hit.data, is_write,
-                                      old_val)) {
+    if (!z80_probe_watch_should_break(hit.addr, hit.data, is_write, old_val)) {
       b.machine.probe_resume();
       return 0;
     }
     z80.watchpoint_old = old_val;
   }
-  b.machine
-      .probe_resume();  // edge consumed: resume continues mid-instruction
+  b.machine.probe_resume();  // edge consumed: resume continues mid-instruction
   if (hit.kind == PROBE_HIT_EXEC) {
     z80.breakpoint_reached = 1;
     z80.PC.w.l =
@@ -894,7 +913,6 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit) {
   z80_call_breakpoint_hit_hook(static_cast<word>(hit.addr),
                                hit.kind != PROBE_HIT_EXEC);
   return 1;
-  return 0;
 }
 
 }  // namespace
@@ -1069,11 +1087,18 @@ int subcycle_bridge_debug_sync() {
   g_psg_scope.push(ps.chan_level[0], ps.chan_level[1], ps.chan_level[2],
                    ps.env_level);
 
-  if (b.pending_hit_disposition >= 0) {
+  if (b.pending_hit_disposition != ProbeDisposition::kNone) {
     // Already judged inside this frame's continue loop; do not re-evaluate.
-    const int disposition = b.pending_hit_disposition;
-    b.pending_hit_disposition = -1;
-    return disposition;
+    const ProbeDisposition disposition = b.pending_hit_disposition;
+    const ProbeHit hit = b.pending_hit;
+    b.pending_hit_disposition = ProbeDisposition::kNone;
+    b.pending_hit = ProbeHit{};
+    // subcycle_bridge_sync_regs_view() ran above and overwrote z80.PC with the
+    // live mid-fetch PC. Re-publish the halted instruction's identity, the
+    // same value process_probe_hit() set (probe spec §3) — otherwise `reg get
+    // PC` and the disassembly view point one fetch past the breakpoint.
+    if (hit.kind == PROBE_HIT_EXEC) z80.PC.w.l = hit.addr;
+    return disposition == ProbeDisposition::kBreak ? 1 : 0;
   }
   ProbeHit hit{};
   if (b.machine.probe_hit(&hit)) return process_probe_hit(b, hit);
@@ -1131,6 +1156,9 @@ void subcycle_bridge_stop() {
   // old ones, so the telnet console prints every mirrored character twice.
   b.m4_loaded = false;
   b.sf2_ide_loaded = false;
+  b.pending_hit_disposition =
+      ProbeDisposition::kNone;  // belongs to the machine being torn down
+  b.pending_hit = ProbeHit{};
   b.machine.clear_taps();
   b.active = false;
 }
@@ -1449,13 +1477,30 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   // are not pure (z80_bp_should_fire increments hit_count, so pass counts
   // would double-count) and z80_probe_exec_should_break republishes the PC.
   // A hit that breaks is recorded here and handed to the sync unre-evaluated.
+  bool spliced = false;  // did a filtered hit force a mid-frame re-entry?
   for (int guard = 0; guard < kMaxProbeContinues; ++guard) {
     ProbeHit hit{};
     if (!b.machine.probe_hit(&hit)) break;  // frame ran to completion
-    const int disposition = process_probe_hit(b, hit);
-    if (disposition != 0) {
-      b.pending_hit_disposition = disposition;  // the sync reports it
+    // Judge against the state AT THE HALT. The condition evaluator reads the
+    // host-side z80 view (z80.AF carries the flags `if carry` tests), and that
+    // view is only refreshed by subcycle_bridge_sync_regs_view() -- which the
+    // debug sync runs once per frame, i.e. AFTER this loop. Judging without
+    // this sync evaluated every condition against the PREVIOUS frame's
+    // registers, so `bp <addr> if carry` silently never fired.
+    subcycle_bridge_sync_regs_view();
+    if (process_probe_hit(b, hit) != 0) {
+      b.pending_hit_disposition = ProbeDisposition::kBreak;  // sync reports it
+      b.pending_hit = hit;
       break;
+    }
+    // Keep this segment's samples before run_frame() clears them.
+    const std::vector<int16_t>& segment = b.machine.audio();
+    if (!spliced) {
+      b.spliced_audio.assign(segment.begin(), segment.end());
+      spliced = true;
+    } else {
+      b.spliced_audio.insert(b.spliced_audio.end(), segment.begin(),
+                             segment.end());
     }
     b.machine.run_frame();  // filtered: finish the frame instead of the wait
   }
@@ -1479,6 +1524,11 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
     b.next_deadline = 0;
   }
 
+  if (spliced) {  // stitch the final segment onto the earlier ones
+    const std::vector<int16_t>& tail = b.machine.audio();
+    b.spliced_audio.insert(b.spliced_audio.end(), tail.begin(), tail.end());
+    return b.spliced_audio;
+  }
   return b.machine.audio();
 }
 

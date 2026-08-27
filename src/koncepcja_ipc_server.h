@@ -36,7 +36,12 @@ class KoncepcjaIpcServer {
   // Non-consuming peek. A caller that resumes the machine on the caller's
   // behalf (see `input key`'s tap) must not resume THROUGH a breakpoint that
   // fired while it held the CPU; the hit itself still belongs to `wait bp`.
-  bool breakpoint_hit_pending() const { return breakpoint_hit.load(); }
+  // Generation-aware so it agrees with consume_breakpoint_hit(): a latched hit
+  // from a PREVIOUS arming is one the consumer would drop, so it must not
+  // suppress the tap's resume and strand the machine paused.
+  // Defined in the .cpp: it consults z80_breakpoint_generation(), and pulling
+  // z80_view.h into this header just for that would widen the include graph.
+  bool breakpoint_hit_pending() const;
 
   // Frame stepping: set by IPC "step frame N", decremented by main loop each
   // frame
