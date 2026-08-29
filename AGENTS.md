@@ -174,7 +174,7 @@ OK available commands (usage: help <command>):
 | `step [n]` | Step N instructions | `step 10` → `OK` |
 | `wait pc <addr> [timeout]` | Wait for PC | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
-| `wait bp [timeout]` | Wait for breakpoint hit | `wait bp 10000` |
+| `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Wait N vertical blanks | `wait vbl 50` |
 | `disasm <addr> <count>` | Disassemble | `disasm 0x4000 10` |
 | `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
@@ -182,13 +182,15 @@ OK available commands (usage: help <command>):
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
 | `devtools` | Open DevTools window | `devtools` → `OK` |
+| `config get\|set <key> [val]` | Read/modify settings (`model`, `crtc_type`, `ram_size`, …) | `config set model 3` |
+| `config apply` | Rebuild the machine with staged settings (needed after `config set model`) | `config apply` → `OK` |
 | `tier` | Run-tier policy | `tier` → `OK policy=auto effective=fast pinned=0` |
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
 | `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release) | `input key RETURN hold=5` |
 | `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once) | `input chord CTRL+SHIFT+ESC` |
-| `input type <text>` | Type text via AutoTypeQueue (supports `~KEY~`, newlines; async like `autotype`) | `input type 'run"game~RETURN~'` |
+| `input type <text>` | Type text via AutoTypeQueue (supports `~KEY~`, newlines; async like `autotype`) | `input type run"game~RETURN~` |
 | `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |
 | `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |
 | `input mouse button <L\|M\|R> <down\|up>` | Press/release a mouse button | `input mouse button L down` |
@@ -196,7 +198,7 @@ OK available commands (usage: help <command>):
 | `input gun move <x> <y>` | Absolute light-gun aim in window px (needs a phazer type enabled) | `input gun move 100 60` |
 | `input gun trigger <down\|up>` | Press/release the gun trigger (Trojan also pulses J0 FIRE1) | `input gun trigger down` |
 | `input state [row]` | Read back held keys (all, or one row's byte + names) | `input state`, `input state 2` |
-| `autotype <text>` | Queue text via AutoTypeQueue (supports WinAPE `~KEY~`) | `autotype 'run"game~RETURN~'` |
+| `autotype <text>` | Queue text via AutoTypeQueue (supports WinAPE `~KEY~`) | `autotype run"game~RETURN~` |
 | `autotype status` | Show pending queue length | `autotype status` |
 | `autotype clear` | Cancel pending input | `autotype clear` |
 

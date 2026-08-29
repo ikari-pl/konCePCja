@@ -23,6 +23,14 @@ nc localhost 6544       # connect — type to interact with the CPC
 
 See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
+> **The console mirrors firmware OUTPUT only.** The line editor's echo of
+> characters you inject never routes through TXT_OUTPUT, so nothing sent with
+> `autotype` / `input type` appears on this stream. Assert on what the program
+> *prints* (`Ready`, a catalogue footer, `PRINT` output) — never on the text you
+> typed. Searching the mirror for your own keystrokes always fails, no matter
+> how well typing works, and has repeatedly been mistaken for a keyboard bug.
+> To confirm input landed, read the screen back (`screenshot`) instead.
+
 ## Lifecycle
 
 | Command | Description |
@@ -162,7 +170,7 @@ All wait commands resume emulation, block until condition or timeout, then pause
 |---------|-------------|
 | `wait pc <addr> [timeout_ms]` | Wait until PC reaches address |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
-| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` |
+| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` once the machine has actually stopped (bounded: it waits up to 500ms after the hit for the pause to land). Only reports hits from the CURRENT arming — a hit left uncollected from a previous `bp`/`wp`/IO-bp change is dropped, so it reads as a timeout |
 | `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each) |
 
 Default timeout: 5000ms. Returns `ERR 408 timeout` on expiry.
@@ -598,6 +606,9 @@ Read and write emulator settings.
 | `config get silicon_disc` | `OK 0\|1` — Silicon Disc enabled |
 | `config set crtc_type <0-3>` | Set CRTC type (0=HD6845S, 1=UM6845R, 2=MC6845, 3=ASIC) |
 | `config set ram_size <kb>` | Set RAM size (reset required) |
+| `config get model` | `OK 0`-`3` — live CPC model (0=464, 1=664, 2=6128, 3=6128+). While a `config set model` is staged but not yet applied, appends ` pending=<n>` |
+| `config set model <0-3>` | Stage a model change. Returns `OK (apply required)` — it needs `config apply`, **not** plain `reset`: `reset` only resets the board and will NOT reload the model's ROMs or refit its devices |
+| `config apply` | Rebuild the machine with the staged settings. Runs on the main thread (the request is drained once per frame), so it is safe from any connection. `ERR 500 rebuild-failed code=<n>` if the rebuild fails, `ERR 504 rebuild-not-drained` if the main loop never claimed the request, `ERR 504 rebuild-still-running` if a claimed rebuild outlasted the wait |
 | `config set silicon_disc <0\|1>` | Enable/disable Silicon Disc |
 
 ## Status

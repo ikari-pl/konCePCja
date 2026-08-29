@@ -95,11 +95,33 @@ void z80_set_bdos_serial_in_hook(BdosSerialInHook hook) {
 }
 
 // --- konCePCja debug helpers ---
+namespace {
+// Atomic on purpose. The mutators below run on the IPC/UI threads while
+// notify_breakpoint_hit() READS this from the emulation thread, and the
+// `bp add`/`bp del`/`bp clear` handlers do NOT pause first (unlike `reg set`
+// or `mem write`) -- so there is no pause discipline to lean on. Relaxed is
+// enough: the value is only ever stamped and later compared for equality.
+std::atomic<uint64_t> g_bp_generation{0};
+
+// Bumped AFTER the list mutation it describes, never before: a hit that fires
+// mid-mutation then carries the OLD generation and is dropped by
+// consume_breakpoint_hit(), which is the conservative direction. Bumping first
+// would let such a hit be reported as if it had fired under the new arming.
+void bump_bp_generation() {
+  g_bp_generation.fetch_add(1, std::memory_order_relaxed);
+}
+}  // namespace
+
+uint64_t z80_breakpoint_generation() {
+  return g_bp_generation.load(std::memory_order_relaxed);
+}
+
 void z80_add_breakpoint(word addr) {
   if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) {
         return b.address == addr && !b.condition;
       })) {
     breakpoints.emplace_back(addr, NORMAL);
+    bump_bp_generation();  // only when the arming actually changed
   }
 }
 
@@ -112,16 +134,24 @@ void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
   bp.condition_str = cond_str;
   bp.pass_count = pass_count;
   breakpoints.push_back(std::move(bp));
+  bump_bp_generation();
 }
 
 void z80_del_breakpoint(word addr) {
+  const auto before = breakpoints.size();
   breakpoints.erase(
       std::remove_if(breakpoints.begin(), breakpoints.end(),
                      [&](const auto& b) { return b.address == addr; }),
       breakpoints.end());
+  // Mirror z80_add_breakpoint: only bump when the arming actually changed.
+  // A no-op del must not invalidate an in-flight wait-bp / input-key hit.
+  if (breakpoints.size() != before) bump_bp_generation();
 }
 
-void z80_clear_breakpoints() { breakpoints.clear(); }
+void z80_clear_breakpoints() {
+  breakpoints.clear();
+  bump_bp_generation();
+}
 
 void z80_step_instruction() {
   if (subcycle::Machine* m = subcycle_bridge_machine()) {
@@ -314,6 +344,7 @@ void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir) {
   bp.mask = mask;
   bp.dir = dir;
   io_breakpoints.push_back(std::move(bp));
+  bump_bp_generation();
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -328,15 +359,25 @@ void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
   bp.condition = std::move(condition);
   bp.condition_str = cond_str;
   io_breakpoints.push_back(std::move(bp));
+  bump_bp_generation();
 }
 
 void z80_del_io_breakpoint(int index) {
   if (index >= 0 && index < static_cast<int>(io_breakpoints.size())) {
     io_breakpoints.erase(io_breakpoints.begin() + index);
+    bump_bp_generation();
   }
 }
 
-void z80_clear_io_breakpoints() { io_breakpoints.clear(); }
+// IO breakpoints reach the SAME latch as exec/watch hits: an IO probe hit runs
+// through process_probe_hit() -> z80_call_breakpoint_hit_hook() ->
+// notify_breakpoint_hit(), and consume_breakpoint_hit() gates on the arming
+// generation. Skipping the bump here left `wait bp` able to report a stale IO
+// hit from a previous arming -- the same defect the stamp exists to close.
+void z80_clear_io_breakpoints() {
+  io_breakpoints.clear();
+  bump_bp_generation();
+}
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
@@ -350,6 +391,7 @@ void z80_add_watchpoint(word addr, word len, WatchpointType type) {
   Watchpoint wp(addr, type);
   wp.length = len;
   watchpoints.push_back(std::move(wp));
+  bump_bp_generation();
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -363,15 +405,20 @@ void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
   wp.condition_str = cond_str;
   wp.pass_count = pass_count;
   watchpoints.push_back(std::move(wp));
+  bump_bp_generation();
 }
 
 void z80_del_watchpoint(int index) {
   if (index >= 0 && index < static_cast<int>(watchpoints.size())) {
     watchpoints.erase(watchpoints.begin() + index);
+    bump_bp_generation();
   }
 }
 
-void z80_clear_watchpoints() { watchpoints.clear(); }
+void z80_clear_watchpoints() {
+  watchpoints.clear();
+  bump_bp_generation();
+}
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
