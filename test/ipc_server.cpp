@@ -367,14 +367,33 @@ TEST_F(IpcServerTest, WatchpointRange) {
 }
 
 TEST_F(IpcServerTest, StepOutCommand) {
+  // Bare RET at entry: SP starts below the return word; RET pops and SP climbs,
+  // so the SP-above-entry stop fires via z80_step_instruction (no main loop).
   z80.PC.w.l = 0x0000;
-  z80_write_mem(0x0000, 0xC9);  // RET instruction
+  z80.SP.w.l = 0x0100;
+  z80_write_mem(0x0100, 0x00);  // return address low
+  z80_write_mem(0x0101, 0x40);  // return address high -> 0x4000
+  z80_write_mem(0x0000, 0xC9);  // RET
 
-  // Step out without a running main loop will timeout or succeed immediately.
-  // Verify the command is accepted and doesn't crash.
   auto resp = send_command("step out");
-  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
-              resp.find("ERR 408") != std::string::npos);
+  EXPECT_OK(resp);
+  EXPECT_EQ(z80.SP.w.l, 0x0102);
+  EXPECT_EQ(z80.PC.w.l, 0x4000);
+}
+
+// SP wrap: RET from SP=0xFFFE yields SP=0x0000, which must count as finished
+// (unsigned <= would keep looping).
+TEST_F(IpcServerTest, StepOutSpWrap) {
+  z80.PC.w.l = 0x0000;
+  z80.SP.w.l = 0xFFFE;
+  z80_write_mem(0xFFFE, 0x00);
+  z80_write_mem(0xFFFF, 0x50);  // return -> 0x5000
+  z80_write_mem(0x0000, 0xC9);
+
+  auto resp = send_command("step out");
+  EXPECT_OK(resp);
+  EXPECT_EQ(z80.SP.w.l, 0x0000);
+  EXPECT_EQ(z80.PC.w.l, 0x5000);
 }
 
 TEST_F(IpcServerTest, SymbolLoad) {
