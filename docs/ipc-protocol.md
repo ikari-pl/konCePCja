@@ -158,7 +158,7 @@ echo "iobp add 0xF400 0xFF00 in" | nc -w 1 localhost 6543
 |---------|-------------|
 | `step [N]` | Single-step N instructions (default 1). Pauses first. |
 | `step over [N]` | Execute N instructions, skipping over CALL/RST (sets ephemeral breakpoint at next PC). Timeout: 5s. |
-| `step out` | Run until current function returns (uses return address tracking). Timeout: 5s. |
+| `step out` | Run until SP climbs above the entry SP (nearest-RET / finish). CALL/RST callees are skipped via an ephemeral breakpoint. Timeout: 5s. A breakpoint/watchpoint inside a skipped callee returns `OK breakpoint-hit` with the usual debug context. |
 | `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. |
 | `step frame [N]` | Advance N complete frames (default 1), then pause. Blocks until done. |
 

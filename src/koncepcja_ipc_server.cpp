@@ -2552,31 +2552,80 @@ std::string handle_command(const std::string& line) {
         }
         return ok_with_context();
       }
-      // "step out" — run until current function returns
+      // "step out" — run until the CURRENT function returns.
+      //
+      // The legacy z80.step_out flag (with step_out_addresses) was only ever
+      // honoured by the old interpreter core. The subcycle ("faithful") engine
+      // that actually runs never implements it — nothing sets step_in>=2 on a
+      // RET — so the old resume-and-wait just free-ran the whole machine to the
+      // 5s deadline (advancing the game, and from a forced PC clobbering RAM
+      // the caller had staged). Implement step-out with the same primitives
+      // step-over uses: advance instructions — skipping CALL/RST callees at
+      // full speed via an ephemeral breakpoint — until SP climbs ABOVE the
+      // entry SP, i.e. this frame's RET has unwound the stack. This is
+      // nearest-RET / finish semantics and is correct from any point in the
+      // function. Interrupt-safe: an ISR pushes then RET[I/N]s, so SP never
+      // crosses the entry level inside an interrupt; nested calls stay at/below
+      // it too.
       if (parts.size() >= 2 && parts[1] == "out") {
-        z80.step_out = 1;
-        z80.step_out_addresses.clear();
-        // Clear stale hits before resume to avoid race conditions
-        uint16_t dummy_pc;
-        bool dummy_watch;
-        g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-        cpc_resume();
-        // Wait for step_out to complete (main loop pauses when step_in >= 2)
-        auto deadline =
+        word const sp0 = z80.SP.w.l;
+        auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-          uint16_t hit_pc = 0;
-          bool watch = false;
-          if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
-          if (CPC.paused) break;  // main loop paused after step completion
+        // Signed distance so SP wrap FFFE→0000 after RET counts as finished.
+        auto still_in_frame = [&]() {
+          return static_cast<int16_t>(sp0 - z80.SP.w.l) >= 0;
+        };
+        while (still_in_frame()) {
+          word const pc = z80.PC.w.l;
+          if (z80_is_call_or_rst(pc)) {
+            // Skip the callee at full speed: break just past the CALL/RST.
+            word const next_pc =
+                static_cast<word>(pc + z80_instruction_length(pc));
+            z80_add_breakpoint_ephemeral(next_pc);
+            uint16_t dummy_pc;
+            bool dummy_watch;
+            g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
+            cpc_resume();
+            bool other_break = false;
+            bool foreign_pause = false;
+            while (true) {
+              uint16_t hit_pc = 0;
+              bool watch = false;
+              if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
+                if (!watch && hit_pc == next_pc) break;  // our step landed
+                other_break = true;  // a real breakpoint/watchpoint fired
+                break;
+              }
+              if (CPC.paused) {
+                // Someone else paused us (not our ephemeral). Do not fall
+                // through into single-step past their stop.
+                foreign_pause = true;
+                break;
+              }
+              if (std::chrono::steady_clock::now() > deadline) {
+                cpc_pause();
+                z80_remove_ephemeral_breakpoints();
+                return err_with_context(408, "timeout");
+              }
+              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (!CPC.paused) cpc_pause();
+            if (other_break || foreign_pause) {
+              z80_remove_ephemeral_breakpoints();
+              return ok_with_context("breakpoint-hit");
+            }
+            // Successful landing: engine clears EPHEMERAL on hit; belt-and-
+            // braces in case the pause path skipped that.
+            z80_remove_ephemeral_breakpoints();
+          } else {
+            z80_step_instruction();  // one instruction (probe-blind)
+          }
           if (std::chrono::steady_clock::now() > deadline) {
-            cpc_pause();
-            z80.step_out = 0;
+            if (!CPC.paused) cpc_pause();
+            z80_remove_ephemeral_breakpoints();
             return err_with_context(408, "timeout");
           }
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        if (!CPC.paused) cpc_pause();
         return ok_with_context();
       }
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
