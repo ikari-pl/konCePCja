@@ -4304,7 +4304,8 @@ std::string handle_command(const std::string& line) {
             })) {
           // The main thread clears `requested` before running the rebuild, so a
           // slow rebuild can still finish after we time out. Prefer that result
-          // over a lying 504; only cancel when the drain never claimed the work.
+          // over a lying 504; only cancel when the drain never claimed the
+          // work.
           if (g_rebuild_pending.done) {
             // Fall through to the result below.
           } else if (g_rebuild_pending.requested) {
@@ -4313,10 +4314,9 @@ std::string handle_command(const std::string& line) {
           } else {
             // Drain claimed it; wait a bit more for completion rather than
             // reporting "main loop did not run" while a rebuild is in flight.
-            if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(30),
-                                              [] {
-                                                return g_rebuild_pending.done;
-                                              })) {
+            if (!g_rebuild_pending.cv.wait_for(
+                    lock, std::chrono::seconds(30),
+                    [] { return g_rebuild_pending.done; })) {
               return "ERR 504 rebuild-still-running\n";
             }
           }
