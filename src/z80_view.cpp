@@ -138,11 +138,14 @@ void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
 }
 
 void z80_del_breakpoint(word addr) {
+  const auto before = breakpoints.size();
   breakpoints.erase(
       std::remove_if(breakpoints.begin(), breakpoints.end(),
                      [&](const auto& b) { return b.address == addr; }),
       breakpoints.end());
-  bump_bp_generation();
+  // Mirror z80_add_breakpoint: only bump when the arming actually changed.
+  // A no-op del must not invalidate an in-flight wait-bp / input-key hit.
+  if (breakpoints.size() != before) bump_bp_generation();
 }
 
 void z80_clear_breakpoints() {

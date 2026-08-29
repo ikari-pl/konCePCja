@@ -174,7 +174,7 @@ OK available commands (usage: help <command>):
 | `step [n]` | Step N instructions | `step 10` → `OK` |
 | `wait pc <addr> [timeout]` | Wait for PC | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
-| `wait bp [timeout]` | Wait for breakpoint hit | `wait bp 10000` |
+| `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Wait N vertical blanks | `wait vbl 50` |
 | `disasm <addr> <count>` | Disassemble | `disasm 0x4000 10` |
 | `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |

@@ -363,14 +363,22 @@ IpcGunPending g_ipc_gun;
 // Runs the machine rebuild requested by `config apply` on the MAIN thread.
 // Called from ipc_drain_input(), which every main-loop flavour (GUI render
 // path, emulation loop, headless loop) already ticks once per frame.
-void ipc_drain_rebuild() {
+static void ipc_drain_rebuild() {
   std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
   if (!g_rebuild_pending.requested) return;
   g_rebuild_pending.requested = false;
   lock.unlock();
+  // Commit the staged model only for this attempt. On failure, restore both
+  // CPC.model and g_pending_model so `config get model` still shows
+  // pending=<n> and a bare `config apply` retries the same change.
   const int staged = g_pending_model.exchange(-1);
+  const unsigned int previous_model = CPC.model;
   if (staged >= 0) CPC.model = static_cast<unsigned int>(staged);
   const int err = koncpc_rebuild_machine();  // main thread: same as the GUI
+  if (err != 0 && staged >= 0) {
+    CPC.model = previous_model;
+    g_pending_model.store(staged);
+  }
   lock.lock();
   g_rebuild_pending.result = err;
   g_rebuild_pending.done = true;
@@ -773,8 +781,10 @@ void init_command_registry() {
       "  pc:  Resumes and waits until PC equals <addr>.\n"
       "  mem: Resumes and waits until memory at <addr> equals <val> (with "
       "optional mask).\n"
-      "  bp:  Waits for a breakpoint or watchpoint hit. Watchpoint hits "
-      "include WP_ADDR/WP_VAL/WP_OLD.\n"
+      "  bp:  Waits for a breakpoint or watchpoint hit, then for the machine "
+      "to actually pause (up to 500ms). Only reports hits from the CURRENT "
+      "arming — a hit left uncollected from a previous bp/wp/IO-bp change is "
+      "dropped (timeout). Watchpoint hits include WP_ADDR/WP_VAL/WP_OLD.\n"
       "  vbl: Waits for N vertical blanks (1/50th second each).");
 
   register_command(
@@ -4292,8 +4302,24 @@ std::string handle_command(const std::string& line) {
         if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10), [] {
               return g_rebuild_pending.done;
             })) {
-          g_rebuild_pending.requested = false;
-          return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+          // The main thread clears `requested` before running the rebuild, so a
+          // slow rebuild can still finish after we time out. Prefer that result
+          // over a lying 504; only cancel when the drain never claimed the work.
+          if (g_rebuild_pending.done) {
+            // Fall through to the result below.
+          } else if (g_rebuild_pending.requested) {
+            g_rebuild_pending.requested = false;
+            return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+          } else {
+            // Drain claimed it; wait a bit more for completion rather than
+            // reporting "main loop did not run" while a rebuild is in flight.
+            if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(30),
+                                              [] {
+                                                return g_rebuild_pending.done;
+                                              })) {
+              return "ERR 504 rebuild-still-running\n";
+            }
+          }
         }
         int const err = g_rebuild_pending.result;
         if (err != 0)

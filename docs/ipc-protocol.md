@@ -606,9 +606,9 @@ Read and write emulator settings.
 | `config get silicon_disc` | `OK 0\|1` — Silicon Disc enabled |
 | `config set crtc_type <0-3>` | Set CRTC type (0=HD6845S, 1=UM6845R, 2=MC6845, 3=ASIC) |
 | `config set ram_size <kb>` | Set RAM size (reset required) |
-| `config get model` | `OK 0`-`3` — CPC model (0=464, 1=664, 2=6128, 3=6128+) |
+| `config get model` | `OK 0`-`3` — live CPC model (0=464, 1=664, 2=6128, 3=6128+). While a `config set model` is staged but not yet applied, appends ` pending=<n>` |
 | `config set model <0-3>` | Stage a model change. Returns `OK (apply required)` — it needs `config apply`, **not** plain `reset`: `reset` only resets the board and will NOT reload the model's ROMs or refit its devices |
-| `config apply` | Rebuild the machine with the staged settings. Runs on the main thread (the request is drained once per frame), so it is safe from any connection. `ERR 500 rebuild-failed code=<n>` if the rebuild fails, `ERR 504 rebuild-not-drained` if the main loop never ran |
+| `config apply` | Rebuild the machine with the staged settings. Runs on the main thread (the request is drained once per frame), so it is safe from any connection. `ERR 500 rebuild-failed code=<n>` if the rebuild fails, `ERR 504 rebuild-not-drained` if the main loop never claimed the request, `ERR 504 rebuild-still-running` if a claimed rebuild outlasted the wait |
 | `config set silicon_disc <0\|1>` | Enable/disable Silicon Disc |
 
 ## Status
