@@ -367,11 +367,13 @@ TEST_F(IpcServerTest, WatchpointRange) {
 }
 
 TEST_F(IpcServerTest, StepOutCommand) {
+  // Without a live Machine, z80_step_instruction is a no-op, so step out hits
+  // the 5s deadline. This only checks the command is wired and does not crash;
+  // SP-climb / CALL-skip behaviour is covered by the IPC harness on a running
+  // emulator (see PR #37).
   z80.PC.w.l = 0x0000;
-  z80_write_mem(0x0000, 0xC9);  // RET instruction
+  z80_write_mem(0x0000, 0xC9);  // RET
 
-  // Step out without a running main loop will timeout or succeed immediately.
-  // Verify the command is accepted and doesn't crash.
   auto resp = send_command("step out");
   EXPECT_TRUE(resp.find("OK") != std::string::npos ||
               resp.find("ERR 408") != std::string::npos);
