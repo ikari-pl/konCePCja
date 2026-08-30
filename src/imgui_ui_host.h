@@ -23,3 +23,18 @@ class ImGuiUiHost final : public IUiHost {
   void toast(UiToastLevel level, const std::string& message) override;
   int topbar_height() const override;
 };
+
+// Install the ImGuiUiHost as the process-wide IUiHost.  Call once, early
+// in koncpc_main(), before any ui_host() use.  Idempotent.
+//
+// This MUST be an explicit call rather than a file-scope static
+// constructor.  koncepcja_lib is a STATIC library (CMakeLists.txt), and a
+// linker only pulls a member object out of a static library when it
+// resolves a referenced symbol.  A TU whose sole entry point is a
+// self-registering static ctor references nothing, so MSVC discards
+// imgui_ui_host.obj entirely: the ctor never runs, ui_host() keeps
+// returning NullUiHost, and the whole ImGui UI silently stops receiving
+// input while still rendering.  The GNU/macOS makefile build links every
+// object directly and so never exhibited this — it was Windows-only.
+// Having koncpc_main() call this by name is what forces the object in.
+void install_imgui_ui_host();

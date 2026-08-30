@@ -84,6 +84,9 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "command_palette.h"
 #include "imgui_ui.h"
 #include "iui_host.h"
+#ifdef KONCPC_MODERN_UI
+#include "imgui_ui_host.h"
+#endif
 #include "menu_actions.h"
 
 Symfile g_symfile;
@@ -3822,6 +3825,13 @@ void koncpc_render_tracking_tick() {
 }
 
 int koncpc_main(int argc, char** argv) {
+#ifdef KONCPC_MODERN_UI
+  // Install the ImGui UI host before anything can call ui_host().  This
+  // call is also what keeps imgui_ui_host.obj in the link — see the
+  // comment on install_imgui_ui_host() in imgui_ui_host.h.
+  install_imgui_ui_host();
+#endif
+
   // Remember the main thread — cleanExit() uses this to route IPC/HTTP/
   // telnet-initiated quits through SDL_EVENT_QUIT instead of letting an
   // auxiliary thread call SDL_Quit() while the main thread is mid-

@@ -104,18 +104,14 @@ int ImGuiUiHost::topbar_height() const {
 
 // -- Install at startup ----------------------------------------------
 //
-// A file-scope global + static-init pair replaces the NullUiHost default
-// with our ImGuiUiHost before main() runs.  This means:
-//   - kon_cpc_ja.cpp:main can call ui_host() from the very first line
-//     and get the right impl.
-//   - We don't need to plumb an explicit init point through the existing
-//     startup sequence (argparse → emulator_init → video_init → ...).
-//   - The headless build (P1.5.2) just doesn't compile this TU, so the
-//     null host stays installed.
+// Replaces the NullUiHost default with our ImGuiUiHost.  koncpc_main()
+// calls this explicitly; see the comment on the declaration in
+// imgui_ui_host.h for why this cannot be a file-scope static ctor.
+//
+// The headless build (P1.5.2) doesn't compile this TU, so the null host
+// stays installed there — the call site is guarded by KONCPC_MODERN_UI.
 namespace {
 ImGuiUiHost g_imgui_host_instance;
-struct AutoInstaller {
-  AutoInstaller() { install_ui_host(&g_imgui_host_instance); }
-};
-[[maybe_unused]] AutoInstaller g_auto_installer;
 }  // namespace
+
+void install_imgui_ui_host() { install_ui_host(&g_imgui_host_instance); }
