@@ -56,7 +56,19 @@ constexpr size_t kBankSize = 16 * 1024;
 static KoncepcjaIpcServer* g_test_server = nullptr;
 
 std::string send_command(const std::string& command) {
-  int port = g_test_server ? g_test_server->port() : 6543;
+  // Always the test server's own port, never a literal.  The server scans
+  // 6543..6552 and publishes whichever it got, so a default of 6543 would
+  // send test traffic to a koncepcja instance the developer happens to be
+  // running -- which answers, so the test misbehaves instead of failing.
+  if (g_test_server == nullptr) {
+    ADD_FAILURE() << "send_command called with no test server running";
+    return "";
+  }
+  int const port = g_test_server->port();
+  if (port <= 0) {
+    ADD_FAILURE() << "test IPC server has not bound a port";
+    return "";
+  }
 #ifdef _WIN32
   SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   EXPECT_NE(fd, INVALID_SOCKET);
@@ -131,8 +143,16 @@ class IpcServerTest : public testing::Test {
     CPC.snd_enabled = 0;
     g_test_server = &server;
     server.start();
-    // Give the listener thread time to bind and listen
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Wait for the listener to publish the port it actually bound, rather
+    // than assuming a fixed delay is enough.  With a koncepcja instance
+    // already holding 6543/6544 the server scans further up the range, so
+    // the bind takes longer than it does on an idle machine.
+    int port = 0;
+    for (int i = 0; i < 200 && port <= 0; i++) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      port = server.port();
+    }
+    ASSERT_GT(port, 0) << "test IPC server never bound a port";
   }
 
   static void TearDownTestSuite() {
