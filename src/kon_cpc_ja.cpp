@@ -491,6 +491,15 @@ t_CPC::t_CPC() {
 }
 
 t_CPC CPC;
+
+// True once loadConfiguration() has populated CPC.  Gates every write-back
+// of the real config, so a process that never read it leaves the user file
+// alone.
+bool g_config_loaded = false;
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_config_loaded() { return g_config_loaded; }
 extern t_CRTC CRTC;
 t_CRTC CRTC;
 extern t_FDC FDC;
@@ -3920,6 +3929,7 @@ int koncpc_main(int argc, char** argv) {
 
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
+  g_config_loaded = true;
   if (CPC.printer) {
     if (!printer_start()) {  // start capturing printer output, if enabled
       CPC.printer = 0;

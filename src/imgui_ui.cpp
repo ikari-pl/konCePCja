@@ -824,7 +824,9 @@ void mru_push(std::vector<std::string>& list, const std::string& path) {
   // disk by the Options▸Save button (saveConfiguration has a single caller),
   // so a load followed by quit/crash would lose the entry. Opening a file is a
   // rare, explicit user action, so a full config write-back here is cheap.
-  saveConfiguration(CPC, getConfigurationFilename(true));
+  if (koncpc_config_loaded()) {
+    saveConfiguration(CPC, getConfigurationFilename(true));
+  }
 }
 }  // namespace
 

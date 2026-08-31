@@ -562,6 +562,12 @@ void ga_memory_manager();
 void memory_set_read_bank(int slot, byte* ptr);
 void memory_set_write_bank(int slot, byte* ptr);
 bool driveAltered();
+
+// True once koncpc_main() has read the configuration file into CPC.  Guards
+// every write-back of the real config, so a process that never loaded it --
+// the unit-test binary, or a shutdown before startup finished -- leaves the
+// user file untouched.
+bool koncpc_config_loaded();
 void emulator_reset();
 void cpc_pause();
 void cpc_resume();
