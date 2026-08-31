@@ -98,6 +98,7 @@ void imgui_render_statusbar();
 }  // namespace
 namespace {
 void imgui_render_menu();
+void imgui_render_about();
 }  // namespace
 namespace {
 void imgui_render_options();
@@ -627,6 +628,7 @@ void imgui_render_ui() {
   imgui_render_topbar();
   imgui_render_statusbar();
   if (imgui_state.show_menu) imgui_render_menu();
+  imgui_render_about();
   if (imgui_state.show_options) imgui_render_options();
   if (imgui_state.show_serial_terminal) imgui_render_serial_terminal();
   if (imgui_state.show_plotter_preview) imgui_render_plotter_preview();
@@ -731,10 +733,11 @@ void imgui_render_ui() {
       ImGui::TextUnformatted("Are you sure you want to quit?");
     }
     ImGui::Spacing();
-    bool const cancel = ImGui::Button("Cancel", ImVec2(90, 0));
+    bool const cancel =
+        ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)));
     ImGui::SetItemDefaultFocus();  // focus the safe button by default
     ImGui::SameLine();
-    if (ImGui::Button("Quit", ImVec2(90, 0))) {
+    if (ImGui::Button("Quit", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
       cleanExit(0, false);
     }
     if (cancel || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
@@ -772,12 +775,12 @@ void imgui_render_ui() {
         "     exports to real HxC/Gotek hardware (.hfe) and .scp.");
     imgui_state.new_disk_flux = backing == 1;
     ImGui::Spacing();
-    if (ImGui::Button("Create...", ImVec2(100, 0))) {
+    if (ImGui::Button("Create...", ImVec2(ui_dpi_px(100), ui_dpi_px(0)))) {
       ImGui::CloseCurrentPopup();
       koncpc_request_file_dialog(static_cast<int>(FileDialogAction::NewDiskA));
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(100, 0)) ||
+    if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(100), ui_dpi_px(0))) ||
         ImGui::IsKeyPressed(ImGuiKey_Escape)) {
       ImGui::CloseCurrentPopup();
     }
@@ -793,20 +796,34 @@ void imgui_render_ui() {
   // Apply deferred topbar/bottombar resize AFTER all ImGui rendering is
   // complete. Calling SDL_SetWindowSize during the render loop causes macOS to
   // shift window coordinates mid-frame, breaking button click detection.
+  //
+  // While video_hold_window_size() is active, set_topbar/bottombar update the
+  // stored heights but skip SDL_SetWindowSize. Keep the dirty flags set so we
+  // retry after the hold expires — and call video_apply_pending_chrome_resize
+  // once heights already match (they were applied during the hold).
   if (s_topbar_height_dirty) {
     int const total =
         static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
     if (total != video_get_topbar_height()) {
       video_set_topbar(nullptr, total);
+    } else if (!video_window_size_held()) {
+      video_apply_pending_chrome_resize();
     }
-    s_topbar_height_dirty = false;
+    if (!video_window_size_held()) {
+      s_topbar_height_dirty = false;
+    }
   }
   if (s_bottombar_height_dirty) {
     if (s_statusbar_h != video_get_bottombar_height()) {
       video_set_bottombar(s_statusbar_h);
+    } else if (!video_window_size_held()) {
+      video_apply_pending_chrome_resize();
     }
-    s_bottombar_height_dirty = false;
+    if (!video_window_size_held()) {
+      s_bottombar_height_dirty = false;
+    }
   }
+  video_maybe_apply_fit_chrome_preserve();
 
   // Keyboard routing is handled at the SDL event level in kon_cpc_ja.cpp
   // using imgui_any_keyboard_ui_active() as the single source of truth.
@@ -820,11 +837,12 @@ void imgui_render_ui() {
 namespace {
 void mru_push(std::vector<std::string>& list, const std::string& path) {
   mru_list_push(list, path, t_CPC::MRU_MAX);
-  // Persist immediately. The recent-files list is otherwise only written to
-  // disk by the Options▸Save button (saveConfiguration has a single caller),
-  // so a load followed by quit/crash would lose the entry. Opening a file is a
-  // rare, explicit user action, so a full config write-back here is cheap.
-  saveConfiguration(CPC, getConfigurationFilename(true));
+  // Persist immediately so a load followed by quit/crash keeps the entry.
+  // Opening a file is a rare, explicit user action, so a full config
+  // write-back here is cheap. Use the intent-preserving path so a failed
+  // printer_start() or live fullscreen toggle cannot poison the file
+  // (Options▸Save is the deliberate path that captures new intent).
+  koncpc_save_configuration_preserving_intent();
 }
 }  // namespace
 
@@ -1567,6 +1585,29 @@ void imgui_render_menubar() {
   if (ImGui::BeginMenu("View")) {
     RenderMenuItem(KONCPC_FULLSCRN);
 
+    // Fit — size the window to the emulated screen at the current scale plus
+    // the chrome.  Available for a fixed scale in windowed mode.
+    {
+      // Fullscreen is read from the window, not from CPC.scr_window: entering
+      // it through the OS (green button, WM shortcut) never touches the
+      // config field, and resizing a fullscreen window is meaningless.
+      bool const fullscreen =
+          mainSDLWindow != nullptr &&
+          (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+      bool const fit_scale = CPC.scr_scale == 0;
+      bool const can_fit = !fit_scale && !fullscreen;
+      if (ImGui::MenuItem("Fit Window to Screen", nullptr, false, can_fit)) {
+        video_fit_window_to_screen();
+      }
+      if (!can_fit &&
+          ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(
+            fullscreen
+                ? "Not available in fullscreen"
+                : "Scale is set to Fit — the image already follows the window");
+      }
+    }
+
     // Scale ▸ — window scale factor (mirrors Settings ▸ Video ▸ Scale, same
     // apply path via the bridge).  Checkmark on the current factor.
     if (ImGui::BeginMenu("Scale")) {
@@ -1608,7 +1649,6 @@ void imgui_render_menubar() {
   if (ImGui::BeginMenu("Input")) {
     RenderMenuItem(KONCPC_JOY);
     RenderMenuItem(KONCPC_PHAZER);
-    RenderMenuItem(KONCPC_SPEED);
     ImGui::EndMenu();
   }
 
@@ -1621,6 +1661,7 @@ void imgui_render_menubar() {
       koncpc_open_command_palette();
     }
     RenderMenuItem(KONCPC_MF2STOP);
+    RenderMenuItem(KONCPC_SPEED);
     // beads-41p: developer/diagnostics group — Verbose Logging moved here from
     // the Options menu (where it sat among player toggles).
     ImGui::Separator();
@@ -1707,7 +1748,8 @@ void render_layout_dropdown() {
       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
       ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
 
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(ui_dpi_px(8), ui_dpi_px(6)));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
   if (ImGui::Begin("##LayoutDropdown", nullptr, dd_flags)) {
     // Close when clicking outside
@@ -1874,16 +1916,18 @@ void render_layout_dropdown() {
 
 namespace {
 void imgui_render_topbar() {
-  float const pad_y = 2.0f;
+  // Hand-tuned pixel sizes; ui_dpi_px() scales them with the display.
+  float const pad_y = ui_dpi_px(2.0f);
   float const bar_height =
-      25.0f;  // topbar window only (not including menu bar)
+      ui_dpi_px(25.0f);  // topbar window only (not including menu bar)
 
   ImGuiViewport const* vp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
   ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, pad_y));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_dpi_px(4), pad_y));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                      ImVec2(ui_dpi_px(8), ui_dpi_px(0)));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg,
@@ -2088,8 +2132,17 @@ void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active, int r,
 
 namespace {
 void imgui_render_statusbar() {
-  float const bar_height = 22.0f;
-  float const pad_y = 2.0f;
+  // These are hand-tuned pixel sizes, so they must follow the DPI scale.
+  // Without this the font grows at high DPI while the bar stays 22px and
+  // the content is clipped — the bar looks "mostly cropped out".  On macOS
+  // the Retina factor is in the framebuffer scale, which multiplied these
+  // literals for us; on Windows nothing does, so we do it here.
+  // At scale 1.0 the arithmetic is identical to the previous constants.
+  // Two rows: tape on top, disk drives below.  Height follows the live frame
+  // height, so the rows track the font at any DPI.
+  float const pad_y = ui_dpi_px(2.0f);
+  float const bar_height = (ImGui::GetFrameHeight() * 2.0f) +
+                           ImGui::GetStyle().ItemSpacing.y + (pad_y * 2.0f);
 
   ImGuiViewport const* vp = ImGui::GetMainViewport();
   float const bar_y = vp->Pos.y + vp->Size.y - bar_height;
@@ -2098,8 +2151,9 @@ void imgui_render_statusbar() {
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
   ImGui::SetNextWindowViewport(
       vp->ID);  // keep on main viewport, don't spawn platform window
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, pad_y));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(ui_dpi_px(6.0f), pad_y));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui_dpi_px(8.0f), 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.08f, 0.08f, 0.08f, 1.0f));
@@ -2119,169 +2173,12 @@ void imgui_render_statusbar() {
       s_bottombar_height_dirty = true;
     }
 
-    // ── Drive activity LEDs ──
-    {
-      float const frameH = ImGui::GetFrameHeight();
-      for (int drv = 0; drv < 2; drv++) {
-        bool const active =
-            drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
-        t_drive const& drive = drv == 0 ? driveA : driveB;
-        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
-        const char* driveLabel = drv == 0 ? "A:" : "B:";
-        // Ask the medium, not the sector view: a flux-backed disc (.hfe/.scp/
-        // .a2r) leaves drive.tracks at 0, which read here as "(no disk)" for a
-        // disc the CPC was happily reading.
-        const DriveMedium medium = drive_medium(drv);
-
-        if (drv > 0) ImGui::SameLine(0, 12.0f);
-
-        // Build display name
-        const char* fullName;
-        if (medium.present) {
-          auto pos = driveFile.find_last_of("/\\");
-          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1
-                                                : driveFile.c_str();
-        } else {
-          fullName = "(no disk)";
-        }
-
-        // Push unique ID per drive to avoid conflicts
-        ImGui::PushID(100 + drv);  // offset IDs to avoid clashes with topbar
-
-        ImGui::BeginGroup();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(driveLabel);
-        ImGui::SameLine(0, 2.0f);
-
-        // Draw LED
-        ImVec2 const cursor = ImGui::GetCursorScreenPos();
-        float const ledW = 16.0f;
-        float const ledH = 8.0f;
-        float const yOff = (frameH - ledH) * 0.5f;
-        ImVec2 const p0(cursor.x, cursor.y + yOff);
-        ImVec2 const p1(p0.x + ledW, p0.y + ledH);
-
-        draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 255, 0, 0);
-
-        ImGui::Dummy(ImVec2(ledW, frameH));
-        ImGui::SameLine(0, 4.0f);
-
-        // Show track number when disk is loaded
-        if (medium.present) {
-          char trkStr[8];
-          snprintf(trkStr, sizeof(trkStr), "T%02d",
-                   static_cast<int>(drive.current_track));
-          ImGui::PushStyleColor(ImGuiCol_Text,
-                                ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-          ImGui::AlignTextToFramePadding();
-          ImGui::TextUnformatted(trkStr);
-          ImGui::PopStyleColor();
-          ImGui::SameLine(0, 4.0f);
-        }
-
-        // Show filename or "(no disk)" with marquee scrolling
-        ImGui::PushStyleColor(
-            ImGuiCol_Text, medium.present ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-                                          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(fullName, 120.0f);
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-
-        // Click on the whole group (label + LED + filename)
-        if (ImGui::IsItemClicked()) {
-          if (medium.present) {
-            // Ask to confirm eject
-            imgui_state.eject_confirm_drive = drv;
-          } else {
-            // Load disk. Per-drive filters: drive A takes the flux
-            // containers, drive B must not (flux is drive-A-only — see
-            // drive_extensions() in slotshandler.cpp).
-            static const SDL_DialogFileFilter drive_a_filters[] = {
-                {"Disk Images", "dsk;ipf;raw;scp;hfe;a2r;zip"}};
-            static const SDL_DialogFileFilter drive_b_filters[] = {
-                {"Disk Images", "dsk;ipf;raw;zip"}};
-            const SDL_DialogFileFilter* disk_filters =
-                drv == 0 ? drive_a_filters : drive_b_filters;
-            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED
-                                : FileDialogAction::LoadDiskB_LED;
-            SDL_ShowOpenFileDialog(
-                file_dialog_callback,
-                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
-                // integer/pointer reinterpret for hardware/opaque handles
-                reinterpret_cast<void*>(static_cast<intptr_t>(act)),
-                mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(),
-                false);
-          }
-        }
-
-        ImGui::PopID();
-      }
-    }
-
-    // ── M4 Board activity LED (green, only shown when M4 is enabled) ──
-    if (g_m4board.enabled) {
-      float const frameH = ImGui::GetFrameHeight();
-      bool const active = g_m4board.activity_frames > 0;
-
-      ImGui::SameLine(0, 12.0f);
-      ImGui::BeginGroup();
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted("M4:");
-      ImGui::SameLine(0, 2.0f);
-
-      ImVec2 const cursor = ImGui::GetCursorScreenPos();
-      float const ledW = 16.0f;
-      float const ledH = 8.0f;
-      float const yOff = (frameH - ledH) * 0.5f;
-      ImVec2 const p0(cursor.x, cursor.y + yOff);
-      ImVec2 const p1(p0.x + ledW, p0.y + ledH);
-
-      draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 0, 255, 0);
-
-      ImGui::Dummy(ImVec2(ledW, frameH));
-
-      // Show container name if inside a DSK (with marquee scrolling)
-      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
-        ImGui::SameLine(0, 4.0f);
-        // Cache the container filename — only changes on container open/close.
-        static std::string cached_path;
-        static std::string cached_fname;
-        if (g_m4board.container_host_path != cached_path) {
-          cached_path = g_m4board.container_host_path;
-          auto pos = cached_path.find_last_of("/\\");
-          cached_fname = (pos != std::string::npos)
-                             ? cached_path.substr(pos + 1)
-                             : cached_path;
-        }
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(cached_fname.c_str(), 120.0f);
-        ImGui::PopStyleColor();
-      }
-
-      ImGui::EndGroup();
-    }
-
-    // ── Separator ──
-    ImGui::SameLine(0, 12.0f);
-    {
-      ImVec2 const cursor = ImGui::GetCursorScreenPos();
-      float const frameH = ImGui::GetFrameHeight();
-      ImGui::GetWindowDrawList()->AddLine(
-          ImVec2(cursor.x, cursor.y + 2.0f),
-          ImVec2(cursor.x, cursor.y + frameH - 2.0f),
-          IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
-      ImGui::Dummy(ImVec2(1.0f, frameH));
-    }
-
     // ── TAPE section ──
     {
       bool const tape_loaded = !pbTapeImage.empty();
       bool const tape_playing =
           tape_loaded && CPC.tape_motor && CPC.tape_play_button;
 
-      ImGui::SameLine(0, 8.0f);
       ImGui::AlignTextToFramePadding();
 
       ImU32 const color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
@@ -2294,7 +2191,7 @@ void imgui_render_statusbar() {
       ImGui::PopStyleColor();
 
       // ── Filename (clickable when no tape → load) ──
-      ImGui::SameLine(0, 4);
+      ImGui::SameLine(0, ui_dpi_px(4));
       {
         const char* fullTapeName;
         if (tape_loaded && !CPC.tape.file.empty()) {
@@ -2309,7 +2206,7 @@ void imgui_render_statusbar() {
                               tape_loaded ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
                                           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(fullTapeName, 120.0f);
+        imgui_marquee_text(fullTapeName, ui_dpi_px(120.0f));
         ImGui::PopStyleColor();
         if (!tape_loaded && ImGui::IsItemClicked()) {
           static const SDL_DialogFileFilter tape_filters[] = {
@@ -2326,7 +2223,7 @@ void imgui_render_statusbar() {
       }
 
       // ── Transport buttons (gray SmallButtons) ──
-      ImGui::SameLine(0, 6);
+      ImGui::SameLine(0, ui_dpi_px(6));
       {
         // Gray button style
         ImGui::PushStyleColor(ImGuiCol_Button,
@@ -2368,7 +2265,7 @@ void imgui_render_statusbar() {
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ▶ Play
         if (is_playing) {
@@ -2387,7 +2284,7 @@ void imgui_render_statusbar() {
         ImGui::EndDisabled();
         if (is_playing) ImGui::PopStyleColor(3);
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ⏹ Stop
         ImGui::BeginDisabled(!is_playing);
@@ -2396,7 +2293,7 @@ void imgui_render_statusbar() {
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ▷| Next block
         ImGui::BeginDisabled(
@@ -2429,7 +2326,7 @@ void imgui_render_statusbar() {
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ⏏ Eject
         ImGui::BeginDisabled(!tape_loaded);
@@ -2443,7 +2340,7 @@ void imgui_render_statusbar() {
 
       // ── Block counter ──
       if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
-        ImGui::SameLine(0, 4);
+        ImGui::SameLine(0, ui_dpi_px(4));
         char blockStr[32];
         snprintf(blockStr, sizeof(blockStr), "%d/%d",
                  imgui_state.tape_current_block + 1,
@@ -2463,7 +2360,7 @@ void imgui_render_statusbar() {
                  sizeof(imgui_state.tape_decoded_buf));
         }
 
-        ImGui::SameLine(0, 4);
+        ImGui::SameLine(0, ui_dpi_px(4));
         float const frameH = ImGui::GetFrameHeight();
         ImU32 const color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
         ImU32 const color_dim = IM_COL32(0x00, 0x40, 0x20, 0xFF);
@@ -2547,7 +2444,7 @@ void imgui_render_statusbar() {
           // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
           // mutated (out-param/compound-assign/loop/reference)
           float vol = tape_line_out_volume() * 100.0f;
-          ImGui::SetNextItemWidth(140.0f);
+          ImGui::SetNextItemWidth(ui_dpi_px(140.0f));
           if (ImGui::SliderFloat("##tape_data_vol", &vol, 0.0f, 100.0f,
                                  "%.0f%%"))
             tape_line_out_set_volume(vol / 100.0f);
@@ -2559,6 +2456,150 @@ void imgui_render_statusbar() {
               "Right-click: tape data sound volume");
         }
       }
+    }
+
+    // ── Drive activity LEDs ──
+    {
+      float const frameH = ImGui::GetFrameHeight();
+      for (int drv = 0; drv < 2; drv++) {
+        bool const active =
+            drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+        t_drive const& drive = drv == 0 ? driveA : driveB;
+        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        const char* driveLabel = drv == 0 ? "A:" : "B:";
+        // Ask the medium, not the sector view: a flux-backed disc (.hfe/.scp/
+        // .a2r) leaves drive.tracks at 0, which read here as "(no disk)" for a
+        // disc the CPC was happily reading.
+        const DriveMedium medium = drive_medium(drv);
+
+        if (drv > 0) ImGui::SameLine(0, ui_dpi_px(12.0f));
+
+        // Build display name
+        const char* fullName;
+        if (medium.present) {
+          auto pos = driveFile.find_last_of("/\\");
+          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1
+                                                : driveFile.c_str();
+        } else {
+          fullName = "(no disk)";
+        }
+
+        // Push unique ID per drive to avoid conflicts
+        ImGui::PushID(100 + drv);  // offset IDs to avoid clashes with topbar
+
+        ImGui::BeginGroup();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(driveLabel);
+        ImGui::SameLine(0, ui_dpi_px(2.0f));
+
+        // Draw LED
+        ImVec2 const cursor = ImGui::GetCursorScreenPos();
+        float const ledW = ui_dpi_px(16.0f);
+        float const ledH = ui_dpi_px(8.0f);
+        float const yOff = (frameH - ledH) * 0.5f;
+        ImVec2 const p0(cursor.x, cursor.y + yOff);
+        ImVec2 const p1(p0.x + ledW, p0.y + ledH);
+
+        draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 255, 0, 0);
+
+        ImGui::Dummy(ImVec2(ledW, frameH));
+        ImGui::SameLine(0, ui_dpi_px(4.0f));
+
+        // Show track number when disk is loaded
+        if (medium.present) {
+          char trkStr[8];
+          snprintf(trkStr, sizeof(trkStr), "T%02d",
+                   static_cast<int>(drive.current_track));
+          ImGui::PushStyleColor(ImGuiCol_Text,
+                                ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted(trkStr);
+          ImGui::PopStyleColor();
+          ImGui::SameLine(0, ui_dpi_px(4.0f));
+        }
+
+        // Show filename or "(no disk)" with marquee scrolling
+        ImGui::PushStyleColor(
+            ImGuiCol_Text, medium.present ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+                                          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(fullName, ui_dpi_px(120.0f));
+        ImGui::PopStyleColor();
+        ImGui::EndGroup();
+
+        // Click on the whole group (label + LED + filename)
+        if (ImGui::IsItemClicked()) {
+          if (medium.present) {
+            // Ask to confirm eject
+            imgui_state.eject_confirm_drive = drv;
+          } else {
+            // Load disk. Per-drive filters: drive A takes the flux
+            // containers, drive B must not (flux is drive-A-only — see
+            // drive_extensions() in slotshandler.cpp).
+            static const SDL_DialogFileFilter drive_a_filters[] = {
+                {"Disk Images", "dsk;ipf;raw;scp;hfe;a2r;zip"}};
+            static const SDL_DialogFileFilter drive_b_filters[] = {
+                {"Disk Images", "dsk;ipf;raw;zip"}};
+            const SDL_DialogFileFilter* disk_filters =
+                drv == 0 ? drive_a_filters : drive_b_filters;
+            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED
+                                : FileDialogAction::LoadDiskB_LED;
+            SDL_ShowOpenFileDialog(
+                file_dialog_callback,
+                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+                // integer/pointer reinterpret for hardware/opaque handles
+                reinterpret_cast<void*>(static_cast<intptr_t>(act)),
+                mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(),
+                false);
+          }
+        }
+
+        ImGui::PopID();
+      }
+    }
+
+    // ── M4 Board activity LED (green, only shown when M4 is enabled) ──
+    if (g_m4board.enabled) {
+      float const frameH = ImGui::GetFrameHeight();
+      bool const active = g_m4board.activity_frames > 0;
+
+      ImGui::SameLine(0, ui_dpi_px(12.0f));
+      ImGui::BeginGroup();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("M4:");
+      ImGui::SameLine(0, ui_dpi_px(2.0f));
+
+      ImVec2 const cursor = ImGui::GetCursorScreenPos();
+      float const ledW = ui_dpi_px(16.0f);
+      float const ledH = ui_dpi_px(8.0f);
+      float const yOff = (frameH - ledH) * 0.5f;
+      ImVec2 const p0(cursor.x, cursor.y + yOff);
+      ImVec2 const p1(p0.x + ledW, p0.y + ledH);
+
+      draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 0, 255, 0);
+
+      ImGui::Dummy(ImVec2(ledW, frameH));
+
+      // Show container name if inside a DSK (with marquee scrolling)
+      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
+        ImGui::SameLine(0, ui_dpi_px(4.0f));
+        // Cache the container filename — only changes on container open/close.
+        static std::string cached_path;
+        static std::string cached_fname;
+        if (g_m4board.container_host_path != cached_path) {
+          cached_path = g_m4board.container_host_path;
+          auto pos = cached_path.find_last_of("/\\");
+          cached_fname = (pos != std::string::npos)
+                             ? cached_path.substr(pos + 1)
+                             : cached_path;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(cached_fname.c_str(), ui_dpi_px(120.0f));
+        ImGui::PopStyleColor();
+      }
+
+      ImGui::EndGroup();
     }
 
     // ── First-run empty-state hint ──
@@ -2591,10 +2632,11 @@ void imgui_render_statusbar() {
       ImGui::TextUnformatted(
           "Fitting the new SD folder restarts the CPC and loses them.");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0))))
+        ImGui::CloseCurrentPopup();
       ImGui::SetItemDefaultFocus();
       ImGui::SameLine();
-      if (ImGui::Button("Restart", ImVec2(90, 0))) {
+      if (ImGui::Button("Restart", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
         if (koncpc_rebuild_machine() != 0) {
           imgui_toast_error("Could not restart the CPC for the new SD folder");
         }
@@ -2614,10 +2656,11 @@ void imgui_render_statusbar() {
                          "You have unsaved changes to a disk.");
       ImGui::TextUnformatted("Resetting will lose them.");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0))))
+        ImGui::CloseCurrentPopup();
       ImGui::SetItemDefaultFocus();
       ImGui::SameLine();
-      if (ImGui::Button("Reset", ImVec2(90, 0))) {
+      if (ImGui::Button("Reset", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
         koncpc_menu_action(KONCPC_RESET);
         ImGui::CloseCurrentPopup();
       }
@@ -2635,10 +2678,11 @@ void imgui_render_statusbar() {
           "Forget every recent disk, tape, snapshot and cartridge?");
       ImGui::TextDisabled("This only clears the lists — no files are deleted.");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(90, 0))) ImGui::CloseCurrentPopup();
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0))))
+        ImGui::CloseCurrentPopup();
       ImGui::SetItemDefaultFocus();  // the safe choice is the default
       ImGui::SameLine();
-      if (ImGui::Button("Clear", ImVec2(90, 0))) {
+      if (ImGui::Button("Clear", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
         const size_t cleared = CPC.mru_disks.size() + CPC.mru_tapes.size() +
                                CPC.mru_snaps.size() + CPC.mru_carts.size();
         CPC.mru_disks.clear();
@@ -2662,13 +2706,13 @@ void imgui_render_statusbar() {
       const char* name = popup_eject_drive == 0 ? "A" : "B";
       ImGui::Text("Eject disk from drive %s?", name);
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
         popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();
       }
       ImGui::SetItemDefaultFocus();  // keeping the disk is the safe choice
       ImGui::SameLine();
-      if (ImGui::Button("Eject", ImVec2(80, 0))) {
+      if (ImGui::Button("Eject", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
         t_drive& drive = popup_eject_drive == 0 ? driveA : driveB;
         auto& driveFile =
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
@@ -2688,13 +2732,13 @@ void imgui_render_statusbar() {
                                ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::TextUnformatted("Eject tape?");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
         imgui_state.eject_confirm_tape = false;
         ImGui::CloseCurrentPopup();
       }
       ImGui::SetItemDefaultFocus();  // keeping the tape is the safe choice
       ImGui::SameLine();
-      if (ImGui::Button("Eject", ImVec2(80, 0))) {
+      if (ImGui::Button("Eject", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
         tape_eject();
         CPC.tape.file.clear();
         imgui_state.tape_block_offsets.clear();
@@ -2851,7 +2895,7 @@ void imgui_render_menu() {
   ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
                           ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowBgAlpha(0.85f);
-  ImGui::SetNextWindowSize(ImVec2(360, 0));
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(360), ui_dpi_px(0)));
   ImGui::SetNextWindowViewport(mvp->ID);
 
   // Darken the emulator behind the overlay (the classic dimmed pause backdrop).
@@ -3120,7 +3164,13 @@ void imgui_render_menu() {
   ImGui::End();
 
   if (action) imgui_close_menu();
+}
 
+// The About box renders every frame, not from inside imgui_render_menu():
+// OpenPopup and BeginPopupModal only run on frames where their host
+// renders, so hosting it in the F1 overlay meant the menubar item did
+// nothing until that overlay was on screen.
+void imgui_render_about() {
   // --- About popup ---
   if (imgui_state.show_about) {
     ImGui::OpenPopup("About konCePCja");
@@ -3132,7 +3182,6 @@ void imgui_render_menu() {
     ImGui::Separator();
     ImGui::Text("Amstrad CPC Emulator");
     ImGui::Text("Clean-room, hardware-modelled emulation");
-    ImGui::Text("Heritage: originally forked from Caprice32 (Ulrich Doewich)");
     ImGui::Spacing();
     ImGui::Text("Shortcuts:");
     ImGui::BulletText("%s - Menu", koncpc_action_shortcut(KONCPC_GUI).c_str());
@@ -3149,7 +3198,7 @@ void imgui_render_menu() {
     ImGui::BulletText("Ctrl+K - Command Palette");
 #endif
     ImGui::Spacing();
-    if (ImGui::Button("OK", ImVec2(120, 0))) {
+    if (ImGui::Button("OK", ImVec2(ui_dpi_px(120), ui_dpi_px(0)))) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -3205,7 +3254,8 @@ void imgui_render_options() {
   ImGuiViewport const* mvp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
                           ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(480, 420), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(480), ui_dpi_px(420)),
+                           ImGuiCond_Appearing);
   ImGui::SetNextWindowViewport(mvp->ID);
 
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
@@ -3791,7 +3841,7 @@ void imgui_render_options() {
         }
 
         int slot = g_m4board.rom_slot;
-        ImGui::SetNextItemWidth(80.0f);
+        ImGui::SetNextItemWidth(ui_dpi_px(80.0f));
         if (ImGui::InputInt("ROM Slot##m4", &slot, 1, 1)) {
           slot = std::max(slot, 0);
           slot = std::min(slot, 31);
@@ -3837,7 +3887,7 @@ void imgui_render_options() {
         ImGui::TextDisabled("HTTP Server");
 
         int http_port = CPC.m4_http_port;
-        ImGui::SetNextItemWidth(140.0f);
+        ImGui::SetNextItemWidth(ui_dpi_px(140.0f));
         if (ImGui::InputInt("HTTP Port##m4http", &http_port, 1, 100)) {
           http_port = std::max(http_port, 1024);
           http_port = std::min(http_port, 65535);
@@ -3954,12 +4004,12 @@ void imgui_render_options() {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — &var passed
         // to ImGui as a mutable in/out pointer
         static int new_host_port = 8080;
-        ImGui::SetNextItemWidth(70.0f);
+        ImGui::SetNextItemWidth(ui_dpi_px(70.0f));
         ImGui::InputInt("##newcpc", &new_cpc_port, 0, 0);
         ImGui::SameLine();
         ImGui::TextDisabled("->");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(70.0f);
+        ImGui::SetNextItemWidth(ui_dpi_px(70.0f));
         ImGui::InputInt("##newhost", &new_host_port, 0, 0);
         ImGui::SameLine();
         if (ImGui::SmallButton("Add Mapping")) {
@@ -4008,7 +4058,7 @@ void imgui_render_options() {
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
       // mutated (out-param/compound-assign/loop/reference)
       int current_backend = static_cast<int>(cfg.backend_type);
-      ImGui::SetNextItemWidth(150.0f);
+      ImGui::SetNextItemWidth(ui_dpi_px(150.0f));
       if (ImGui::Combo("Backend", &current_backend, backend_types,
                        IM_ARRAYSIZE(backend_types))) {
         cfg.backend_type = static_cast<SerialBackendType>(current_backend);
@@ -4082,13 +4132,13 @@ void imgui_render_options() {
           char host_buf[256] = {};
           snprintf(host_buf, sizeof(host_buf), "%s", cfg.tcp_host.c_str());
 
-          ImGui::SetNextItemWidth(200.0f);
+          ImGui::SetNextItemWidth(ui_dpi_px(200.0f));
           if (ImGui::InputText("Host##serial", host_buf, sizeof(host_buf))) {
             cfg.tcp_host = host_buf;
           }
           ImGui::SameLine();
           int port = cfg.tcp_port;
-          ImGui::SetNextItemWidth(80.0f);
+          ImGui::SetNextItemWidth(ui_dpi_px(80.0f));
           if (ImGui::InputInt("Port##serial", &port, 1, 100)) {
             port = std::max(port, 1);
             port = std::min(port, 65535);
@@ -4132,7 +4182,7 @@ void imgui_render_options() {
           break;
         }
       }
-      ImGui::SetNextItemWidth(120.0f);
+      ImGui::SetNextItemWidth(ui_dpi_px(120.0f));
       if (ImGui::Combo("Baud Rate##serial", &baud_idx, baud_items)) {
         cfg.baud_rate = baud_rates[baud_idx];
       }
@@ -4200,6 +4250,9 @@ void imgui_render_options() {
   auto commit_options = [&](bool save_to_file) {
     if (save_to_file) {
       saveConfiguration(CPC, getConfigurationFilename(true));
+      // Options▸Save is a deliberate persist of printer/scr_window — refresh
+      // the intent snapshot so cleanExit / MRU write-backs do not undo it.
+      koncpc_capture_config_intent();
     }
     if (needs_restart && koncpc_rebuild_machine() != 0) {
       // A half-built machine — a missing ROM, say — must not be reported as
@@ -4229,7 +4282,7 @@ void imgui_render_options() {
   static PendingCommit s_pending_commit = PendingCommit::None;
 
   // Bottom buttons
-  if (ImGui::Button("Save", ImVec2(80, 0))) {
+  if (ImGui::Button("Save", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
     if (needs_restart && driveAltered()) {
       s_pending_commit = PendingCommit::Save;  // confirm before losing edits
     } else {
@@ -4257,11 +4310,11 @@ void imgui_render_options() {
     cpc_resume();
     first_open = true;
   };
-  if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+  if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
     revert_options();
   }
   ImGui::SameLine();
-  if (ImGui::Button("Apply", ImVec2(80, 0))) {
+  if (ImGui::Button("Apply", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
     if (needs_restart && driveAltered()) {
       s_pending_commit = PendingCommit::Apply;
     } else {
@@ -4285,19 +4338,20 @@ void imgui_render_options() {
     ImGui::TextUnformatted(
         "These settings restart the CPC. The changes will be lost.");
     ImGui::Spacing();
-    if (ImGui::Button("Cancel", ImVec2(90, 0))) {
+    if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
       // Cancelling the RESTART must not silently discard the save: before
       // this flow, Save always wrote the config. Persisting is harmless;
       // only the reboot is refused.
       if (s_pending_commit == PendingCommit::Save) {
         saveConfiguration(CPC, getConfigurationFilename(true));
+        koncpc_capture_config_intent();
       }
       s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
     }
     ImGui::SetItemDefaultFocus();  // not restarting is the safe choice
     ImGui::SameLine();
-    if (ImGui::Button("Restart anyway", ImVec2(130, 0))) {
+    if (ImGui::Button("Restart anyway", ImVec2(ui_dpi_px(130), ui_dpi_px(0)))) {
       commit_options(s_pending_commit == PendingCommit::Save);
       s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
@@ -4342,11 +4396,11 @@ bool ui_poke_input(char* addr_buf, size_t addr_size, char* val_buf,
                    size_t val_size, const char* id_suffix) {
   ImGui::PushID(id_suffix);
 
-  ImGui::SetNextItemWidth(50);
+  ImGui::SetNextItemWidth(ui_dpi_px(50));
   ImGui::InputText("Addr", addr_buf, addr_size,
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(40);
+  ImGui::SetNextItemWidth(ui_dpi_px(40));
   ImGui::InputText("Val", val_buf, val_size,
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
@@ -4417,8 +4471,10 @@ void imgui_render_devtools() {
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 0));  // auto-height
   ImGui::SetNextWindowViewport(vp->ID);             // keep on main viewport
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 2));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(ui_dpi_px(4), ui_dpi_px(2)));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                      ImVec2(ui_dpi_px(8), ui_dpi_px(0)));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 1.0f));
@@ -4706,7 +4762,8 @@ void imgui_render_devtools() {
 
 namespace {
 void imgui_render_memory_tool() {
-  ImGui::SetNextWindowSize(ImVec2(400, 340), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(400), ui_dpi_px(340)),
+                           ImGuiCond_FirstUseEver);
 
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
@@ -4723,7 +4780,7 @@ void imgui_render_memory_tool() {
                 "mt");
 
   // Display address
-  ImGui::SetNextItemWidth(50);
+  ImGui::SetNextItemWidth(ui_dpi_px(50));
   ImGui::InputText("Display##mt", imgui_state.mem_display_addr,
                    sizeof(imgui_state.mem_display_addr),
                    ImGuiInputTextFlags_CharsHexadecimal);
@@ -4744,13 +4801,13 @@ void imgui_render_memory_tool() {
   for (int i = 0; i < 6; i++) {
     if (bpl_values[i] == imgui_state.mem_bytes_per_line) bpl_idx = i;
   }
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   if (ImGui::Combo("Bytes/Line##mt", &bpl_idx, bpl_items, 6)) {
     imgui_state.mem_bytes_per_line = bpl_values[bpl_idx];
   }
 
   // Filter
-  ImGui::SetNextItemWidth(40);
+  ImGui::SetNextItemWidth(ui_dpi_px(40));
   ImGui::InputText("Filter Byte##mt", imgui_state.mem_filter_val,
                    sizeof(imgui_state.mem_filter_val),
                    ImGuiInputTextFlags_CharsHexadecimal);
@@ -4868,7 +4925,8 @@ void imgui_render_vkeyboard() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   bool open = true;
-  ImGui::SetNextWindowSize(ImVec2(575, 265), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(575), ui_dpi_px(265)),
+                           ImGuiCond_FirstUseEver);
 
   if (!ImGui::Begin("CPC 6128 Keyboard", &open, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();
@@ -5258,7 +5316,8 @@ void imgui_render_vjoystick() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   bool open = true;
-  ImGui::SetNextWindowSize(ImVec2(250, 240), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(250), ui_dpi_px(240)),
+                           ImGuiCond_FirstUseEver);
   // NoNav: arrow keys are read for the joystick (below), not consumed by
   // ImGui's keyboard navigation between the d-pad buttons.
   if (!ImGui::Begin("Virtual Joystick", &open,
@@ -5416,7 +5475,8 @@ void serial_terminal_feed_byte(uint8_t byte) {
 }
 
 void imgui_render_serial_terminal() {
-  ImGui::SetNextWindowSize(ImVec2(700, 500), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(700), ui_dpi_px(500)),
+                           ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Serial Terminal", &imgui_state.show_serial_terminal)) {
     ImGui::End();
     return;
@@ -5513,7 +5573,7 @@ void imgui_render_serial_terminal() {
     s_serial_term.input_buf[0] = '\0';
   }
   ImGui::SameLine();
-  if (ImGui::Button("Send", ImVec2(60, 0))) {
+  if (ImGui::Button("Send", ImVec2(ui_dpi_px(60), ui_dpi_px(0)))) {
     for (const char* p = s_serial_term.input_buf; *p; p++) {
       if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
         s_serial_term.tx_buffer.push_back(*p);
@@ -5549,7 +5609,8 @@ void imgui_render_serial_terminal() {
 // ─────────────────────────────────────────────────
 
 void imgui_render_plotter_preview() {
-  ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(600), ui_dpi_px(500)),
+                           ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Plotter Preview", &imgui_state.show_plotter_preview)) {
     ImGui::End();
     return;

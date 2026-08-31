@@ -95,6 +95,35 @@ void ImGuiUiHost::toast(UiToastLevel level, const std::string& message) {
   }
 }
 
+void ImGuiUiHost::set_display_scale(float scale) {
+  if (!ImGui::GetCurrentContext()) return;
+  if (!(scale > 0.0F)) return;  // also rejects NaN
+
+  // Fonts: ImGui 1.92 rasterises on demand at the size actually needed, so
+  // FontScaleDpi alone resizes the text.
+  //
+  // Sizes: padding and spacing scale alongside the text, so the chrome keeps
+  // its proportions.  ScaleAllSizes() multiplies in place, so the unscaled
+  // style is captured once and every call re-derives from that copy; this
+  // stays idempotent and follows the scale back down again.  Colours come
+  // from the live style, preserving a theme change made after the capture.
+  static ImGuiStyle s_base_style;
+  static bool s_base_captured = false;
+  ImGuiStyle& style = ImGui::GetStyle();
+  if (!s_base_captured) {
+    s_base_style = style;
+    s_base_captured = true;
+  }
+
+  ImVec4 live_colors[ImGuiCol_COUNT];
+  for (int i = 0; i < ImGuiCol_COUNT; ++i) live_colors[i] = style.Colors[i];
+  style = s_base_style;
+  for (int i = 0; i < ImGuiCol_COUNT; ++i) style.Colors[i] = live_colors[i];
+
+  style.ScaleAllSizes(scale);
+  style.FontScaleDpi = scale;
+}
+
 int ImGuiUiHost::topbar_height() const {
   // imgui_topbar_height() lives in imgui_ui.cpp and caches the live
   // menubar+statusbar measurements.  Safe pre-init: returns 0 before
@@ -104,18 +133,14 @@ int ImGuiUiHost::topbar_height() const {
 
 // -- Install at startup ----------------------------------------------
 //
-// A file-scope global + static-init pair replaces the NullUiHost default
-// with our ImGuiUiHost before main() runs.  This means:
-//   - kon_cpc_ja.cpp:main can call ui_host() from the very first line
-//     and get the right impl.
-//   - We don't need to plumb an explicit init point through the existing
-//     startup sequence (argparse → emulator_init → video_init → ...).
-//   - The headless build (P1.5.2) just doesn't compile this TU, so the
-//     null host stays installed.
+// Replaces the NullUiHost default with our ImGuiUiHost.  koncpc_main()
+// calls this explicitly; see the comment on the declaration in
+// imgui_ui_host.h for why this cannot be a file-scope static ctor.
+//
+// The headless build (P1.5.2) doesn't compile this TU, so the null host
+// stays installed there — the call site is guarded by KONCPC_MODERN_UI.
 namespace {
 ImGuiUiHost g_imgui_host_instance;
-struct AutoInstaller {
-  AutoInstaller() { install_ui_host(&g_imgui_host_instance); }
-};
-[[maybe_unused]] AutoInstaller g_auto_installer;
 }  // namespace
+
+void install_imgui_ui_host() { install_ui_host(&g_imgui_host_instance); }

@@ -237,6 +237,9 @@ class t_CPC {
   unsigned int scr_intensity;
   unsigned int scr_remanency;
   unsigned int scr_window;
+  // Last window size in window coordinates; 0 = derive from scr_scale.
+  unsigned int win_w;
+  unsigned int win_h;
   unsigned int scr_vsync;  // video.vsync: 1=VSYNC present (default), 0=MAILBOX/
                            // IMMEDIATE on the MAIN window only (viewport
                            // windows always stay VSYNC). Safe escape hatch for
@@ -562,6 +565,24 @@ void ga_memory_manager();
 void memory_set_read_bank(int slot, byte* ptr);
 void memory_set_write_bank(int slot, byte* ptr);
 bool driveAltered();
+
+// True once koncpc_main() has read the configuration file into CPC.  Guards
+// every write-back of the real config, so a process that never loaded it --
+// the unit-test binary, or a shutdown before startup finished -- leaves the
+// user file untouched.
+bool koncpc_config_loaded();
+
+// Snapshot CPC.printer / CPC.scr_window as the user's deliberate intent.
+// Call after Options▸Save (and any other path that intentionally persists
+// those fields).  cleanExit / MRU write-backs restore this snapshot so a
+// failed printer_start() or a live fullscreen toggle cannot poison the file.
+void koncpc_capture_config_intent();
+
+// Write the real config with printer/scr_window restored to the captured
+// intent.  Live CPC values are preserved across the call.  No-op (false)
+// when the config was never loaded.
+bool koncpc_save_configuration_preserving_intent();
+
 void emulator_reset();
 void cpc_pause();
 void cpc_resume();

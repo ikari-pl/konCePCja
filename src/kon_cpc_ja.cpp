@@ -84,6 +84,9 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "command_palette.h"
 #include "imgui_ui.h"
 #include "iui_host.h"
+#ifdef KONCPC_MODERN_UI
+#include "imgui_ui_host.h"
+#endif
 #include "menu_actions.h"
 
 Symfile g_symfile;
@@ -488,6 +491,48 @@ t_CPC::t_CPC() {
 }
 
 t_CPC CPC;
+
+// True once loadConfiguration() has populated CPC.  Gates every write-back
+// of the real config, so a process that never read it leaves the user file
+// alone.
+bool g_config_loaded = false;
+
+// The config-file values of the two fields that later hold runtime state.
+// Captured at load, written back on exit so a failed printer start or a live
+// fullscreen toggle cannot rewrite the user's intent.
+unsigned int g_cfg_intent_printer = 0;
+unsigned int g_cfg_intent_scr_window = 1;
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_config_loaded() { return g_config_loaded; }
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_capture_config_intent() {
+  g_cfg_intent_printer = CPC.printer;
+  g_cfg_intent_scr_window = CPC.scr_window;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_save_configuration_preserving_intent() {
+  if (!g_config_loaded) return false;
+  // printer / scr_window hold runtime state; write the captured intent so a
+  // failed printer_start() or a live fullscreen toggle cannot poison the file.
+  unsigned int const live_printer = CPC.printer;
+  unsigned int const live_scr_window = CPC.scr_window;
+  CPC.printer = g_cfg_intent_printer;
+  CPC.scr_window = g_cfg_intent_scr_window;
+  std::string const cfg = getConfigurationFilename(true);
+  bool const ok = saveConfiguration(CPC, cfg);
+  CPC.printer = live_printer;
+  CPC.scr_window = live_scr_window;
+  if (!ok) {
+    LOG_ERROR("Failed to save configuration to '" << cfg << "'");
+  }
+  return ok;
+}
 extern t_CRTC CRTC;
 t_CRTC CRTC;
 extern t_FDC FDC;
@@ -2167,6 +2212,10 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.scr_intensity = read_clamped("video", "scr_intensity", 10, 5, 15);
   CPC.scr_remanency = read_flag("video", "scr_remanency", 0);
   CPC.scr_window = read_flag("video", "scr_window", 1);
+  // Bounded like the neighbouring keys: a corrupt or hand-edited value must
+  // not produce a window that cannot be resized back.  0 means "derive".
+  CPC.win_w = read_clamped("video", "win_w", 0, 0, 16384);
+  CPC.win_h = read_clamped("video", "win_h", 0, 0, 16384);
 
   CPC.scr_green_mode = read_flag("video", "scr_green_mode", 0);
   CPC.scr_green_blue_percent =
@@ -2331,6 +2380,19 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
 // Mirror image of loadConfiguration: every key written here is read there,
 // same section, same name, same encoding (flags as 0/1 ints).
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
+  // Record the live window size, so both "Save" and the save-on-exit keep
+  // whatever the user last dragged the window to.  In fullscreen the stored
+  // value stands, since that size belongs to the display.
+  if (mainSDLWindow &&
+      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) == 0) {
+    int w = 0;
+    int h = 0;
+    SDL_GetWindowSize(mainSDLWindow, &w, &h);
+    if (w > 0 && h > 0) {
+      CPC.win_w = static_cast<unsigned int>(w);
+      CPC.win_h = static_cast<unsigned int>(h);
+    }
+  }
   config::Config conf;
   // Read before write. Building a fresh Config here deleted every comment in
   // the file and every key this build does not set — and because the MRU list
@@ -2385,6 +2447,8 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("video", "scr_intensity", CPC.scr_intensity);
   conf.setIntValue("video", "scr_remanency", CPC.scr_remanency);
   conf.setIntValue("video", "scr_window", CPC.scr_window);
+  conf.setIntValue("video", "win_w", static_cast<int>(CPC.win_w));
+  conf.setIntValue("video", "win_h", static_cast<int>(CPC.win_h));
   conf.setIntValue("video", "vsync", CPC.scr_vsync);
 
   conf.setIntValue("devtools", "scale", CPC.devtools_scale);
@@ -3087,6 +3151,14 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   if (!g_headless && askIfUnsaved && driveAltered() &&
       !userConfirmsQuitWithoutSaving()) {
     return;
+  }
+  // Persist settings on a clean exit, so a change survives without an
+  // explicit Options▸Save.  Restricted to a successful GUI exit: that is the
+  // state worth recording.  printer / scr_window are restored to the
+  // captured intent (refreshed by Options▸Save via
+  // koncpc_capture_config_intent) so runtime mutations cannot poison the file.
+  if (returnCode == 0 && !g_headless && g_config_loaded) {
+    koncpc_save_configuration_preserving_intent();
   }
   doCleanUp();
   _exit(returnCode);
@@ -3822,6 +3894,13 @@ void koncpc_render_tracking_tick() {
 }
 
 int koncpc_main(int argc, char** argv) {
+#ifdef KONCPC_MODERN_UI
+  // Install the ImGui UI host before anything can call ui_host().  This
+  // call is also what keeps imgui_ui_host.obj in the link — see the
+  // comment on install_imgui_ui_host() in imgui_ui_host.h.
+  install_imgui_ui_host();
+#endif
+
   // Remember the main thread — cleanExit() uses this to route IPC/HTTP/
   // telnet-initiated quits through SDL_EVENT_QUIT instead of letting an
   // auxiliary thread call SDL_Quit() while the main thread is mid-
@@ -3910,6 +3989,8 @@ int koncpc_main(int argc, char** argv) {
 
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
+  g_config_loaded = true;
+  koncpc_capture_config_intent();
   if (CPC.printer) {
     if (!printer_start()) {  // start capturing printer output, if enabled
       CPC.printer = 0;
@@ -3965,6 +4046,29 @@ int koncpc_main(int argc, char** argv) {
     topbar_height_px = ui_host().topbar_height();
     video_set_topbar(nullptr, topbar_height_px);
     // video_set_topbar handles the window resize using compute_window_size()
+
+    // Restore the saved window size (width/height only).  This follows
+    // video_set_topbar() so compute_window_size() below can fold in a measured
+    // topbar; running it earlier compared against the bare emulated screen and
+    // let a too-small size through.  The hold covers the resizes still to come
+    // as the bottombar settles on a later frame.
+    if (CPC.win_w > 0 && CPC.win_h > 0 && mainSDLWindow &&
+        CPC.scr_window != 0) {
+      int w = static_cast<int>(CPC.win_w);
+      int h = static_cast<int>(CPC.win_h);
+      // Keep the window big enough to show the whole emulated screen at the
+      // current scale.  compute_scale() crops and centres the CPC image when
+      // the window is smaller, so a saved size from a smaller scale would
+      // otherwise open on the blank middle of the picture.
+      int dw = 0;
+      int dh = 0;
+      if (video_derived_window_size(dw, dh)) {
+        w = std::max(w, dw);
+        h = std::max(h, dh);
+      }
+      SDL_SetWindowSize(mainSDLWindow, w, h);
+      video_hold_window_size(750);
+    }
     mouse_init();
 
     if (CPC.snd_enabled && audio_init()) {
@@ -4586,6 +4690,39 @@ int koncpc_main(int argc, char** argv) {
         //       the right thing to do here is to restore focus but keep
         //       paused... implementing this require keeping track of pause
         //       source, which will be a pain.
+        case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+          // The desktop scale changed (Settings → Display → Scale, or the
+          // window moved to a display with a different setting).  Rescale the
+          // ImGui chrome to match, so it keeps its physical size.
+          if (!mainSDLWindow ||
+              event.window.windowID != SDL_GetWindowID(mainSDLWindow)) {
+            break;
+          }
+          float const density = SDL_GetWindowPixelDensity(mainSDLWindow);
+          float const display_scale = SDL_GetWindowDisplayScale(mainSDLWindow);
+          if (!(density > 0.0F) || !(display_scale > 0.0F)) break;
+          // SDL_GetWindowDisplayScale is pixel density * content scale, so
+          // dividing recovers the content scale — the part expressed in window
+          // coordinates.  On macOS the Retina factor sits in the density,
+          // making this 1.0 there.
+          float const content_scale = display_scale / density;
+
+          // Hold the window at its current size across the resize the new
+          // chrome heights would trigger.  At a fixed scr_scale the CPC image
+          // stays pixel-exact: compute_scale() crops and centres it.  Fit mode
+          // cannot derive a fixed size, so remember chrome+window and grow by
+          // the chrome delta after the bars settle instead of holding.
+          if (CPC.scr_scale == 0) {
+            video_begin_fit_chrome_preserve();
+          } else {
+            video_hold_window_size(750);
+          }
+          ui_host().set_display_scale(content_scale);
+          LOG_INFO("Display scale changed — content scale now "
+                   << content_scale << " (display " << display_scale
+                   << ", pixel density " << density << ")");
+          break;
+        }
         case SDL_EVENT_WINDOW_MOVED:
           // A move — often an OS window-management nudge rather than the user —
           // may push the main window fully off every display. Rescue it, but

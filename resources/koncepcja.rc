@@ -1,0 +1,8 @@
+// Windows resources for koncepcja.exe.
+//
+// The icon is the first ICON resource in the binary, which is what Explorer,
+// the taskbar and Alt-Tab use for the executable.  Keep it first if more are
+// ever added.
+#define KONCPC_ICON 1
+
+KONCPC_ICON ICON "koncepcja.ico"
