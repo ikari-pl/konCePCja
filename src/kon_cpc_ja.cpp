@@ -2179,6 +2179,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.scr_intensity = read_clamped("video", "scr_intensity", 10, 5, 15);
   CPC.scr_remanency = read_flag("video", "scr_remanency", 0);
   CPC.scr_window = read_flag("video", "scr_window", 1);
+  CPC.win_w = conf.getIntValue("video", "win_w", 0);
+  CPC.win_h = conf.getIntValue("video", "win_h", 0);
 
   CPC.scr_green_mode = read_flag("video", "scr_green_mode", 0);
   CPC.scr_green_blue_percent =
@@ -2343,6 +2345,19 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
 // Mirror image of loadConfiguration: every key written here is read there,
 // same section, same name, same encoding (flags as 0/1 ints).
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
+  // Record the live window size, so both "Save" and the save-on-exit keep
+  // whatever the user last dragged the window to.  In fullscreen the stored
+  // value stands, since that size belongs to the display.
+  if (mainSDLWindow &&
+      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) == 0) {
+    int w = 0;
+    int h = 0;
+    SDL_GetWindowSize(mainSDLWindow, &w, &h);
+    if (w > 0 && h > 0) {
+      CPC.win_w = static_cast<unsigned int>(w);
+      CPC.win_h = static_cast<unsigned int>(h);
+    }
+  }
   config::Config conf;
   // Read before write. Building a fresh Config here deleted every comment in
   // the file and every key this build does not set — and because the MRU list
@@ -2397,6 +2412,8 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("video", "scr_intensity", CPC.scr_intensity);
   conf.setIntValue("video", "scr_remanency", CPC.scr_remanency);
   conf.setIntValue("video", "scr_window", CPC.scr_window);
+  conf.setIntValue("video", "win_w", static_cast<int>(CPC.win_w));
+  conf.setIntValue("video", "win_h", static_cast<int>(CPC.win_h));
   conf.setIntValue("video", "vsync", CPC.scr_vsync);
 
   conf.setIntValue("devtools", "scale", CPC.devtools_scale);
@@ -3099,6 +3116,12 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   if (!g_headless && askIfUnsaved && driveAltered() &&
       !userConfirmsQuitWithoutSaving()) {
     return;
+  }
+  // Persist settings on a clean exit, so a change survives without an
+  // explicit Options▸Save.  Restricted to a successful GUI exit: that is the
+  // state worth recording.
+  if (returnCode == 0 && !g_headless && g_config_loaded) {
+    saveConfiguration(CPC, getConfigurationFilename(true));
   }
   doCleanUp();
   _exit(returnCode);
@@ -3970,6 +3993,26 @@ int koncpc_main(int argc, char** argv) {
     if (video_init()) {
       fprintf(stderr, "video_init() failed. Aborting.\n");
       cleanExit(-1);
+    }
+    // Restore the saved window size (width/height only).  The hold covers the
+    // early chrome-driven resizes, as the topbar and bottombar each settle on
+    // their own frame.
+    if (CPC.win_w > 0 && CPC.win_h > 0 && mainSDLWindow &&
+        CPC.scr_window != 0) {
+      int w = static_cast<int>(CPC.win_w);
+      int h = static_cast<int>(CPC.win_h);
+      // Keep the window big enough to show the whole emulated screen at the
+      // current scale.  compute_scale() crops and centres the CPC image when
+      // the window is smaller, so a saved size from a smaller scale would
+      // otherwise open on the blank middle of the picture.
+      int dw = 0;
+      int dh = 0;
+      if (video_derived_window_size(dw, dh)) {
+        w = std::max(w, dw);
+        h = std::max(h, dh);
+      }
+      SDL_SetWindowSize(mainSDLWindow, w, h);
+      video_hold_window_size(4);
     }
 #ifdef __APPLE__
     koncpc_setup_macos_menu();
