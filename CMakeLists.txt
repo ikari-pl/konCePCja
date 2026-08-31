@@ -255,6 +255,14 @@ if(WIN32)
     set_target_properties(koncepcja PROPERTIES
         WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
     )
+    # Embed the application icon.  Without an ICON resource the executable
+    # shows the generic Windows binary icon in Explorer, the taskbar and
+    # Alt-Tab.  The .rc references koncepcja.ico relative to its own
+    # directory, so the include path has to name that directory.
+    target_sources(koncepcja PRIVATE resources/koncepcja.rc)
+    set_source_files_properties(resources/koncepcja.rc PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/resources/koncepcja.ico"
+    )
 endif()
 
 # ── Test executable ──────────────────────────────────────

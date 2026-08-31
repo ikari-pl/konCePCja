@@ -263,6 +263,16 @@ IMGUI_OBJECTS:=$(foreach file,$(IMGUI_SOURCES:.cpp=.o),$(OBJDIR)/$(file))
 
 OBJECTS:=$(OBJECTS_CPP) $(OBJECTS_MM) $(IMGUI_OBJECTS) $(VENDORED_TEXTEDITOR)
 
+# Windows resources: the embedded application icon.  Without an ICON resource
+# the executable shows the generic Windows binary icon in Explorer, the
+# taskbar and Alt-Tab.  windres ships with the MinGW toolchains used for
+# ARCH=win32 and ARCH=win64.
+ifeq ($(PLATFORM),windows)
+WINDRES?=windres
+WIN_RES:=$(OBJDIR)/resources/koncepcja.res.o
+OBJECTS+=$(WIN_RES)
+endif
+
 TEST_SOURCES:=$(shell find $(TSTDIR) -name \*.cpp)
 TEST_HEADERS:=$(shell find $(TSTDIR) -name \*.h)
 TEST_DEPENDS:=$(foreach file,$(TEST_SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))
@@ -466,6 +476,12 @@ $(HTML_DOC): $(GROFF_DOC)
 
 koncepcja.cfg: koncepcja.cfg.tmpl
 	@sed 's/__SHARE_PATH__.*//' koncepcja.cfg.tmpl > koncepcja.cfg
+
+ifeq ($(PLATFORM),windows)
+$(WIN_RES): resources/koncepcja.rc resources/koncepcja.ico
+	@mkdir -p `dirname $@`
+	$(WINDRES) -I resources -O coff -o $@ $<
+endif
 
 $(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg
 	$(CXX) $(LDFLAGS) -o $(TARGET) $(OBJECTS) $(MAIN) $(LIBS)
