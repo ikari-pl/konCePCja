@@ -1569,6 +1569,21 @@ void imgui_render_menubar() {
   if (ImGui::BeginMenu("View")) {
     RenderMenuItem(KONCPC_FULLSCRN);
 
+    // Fit — size the window to the emulated screen at the current scale plus
+    // the chrome.  Available for a fixed scale in windowed mode.
+    {
+      bool const can_fit = CPC.scr_scale > 0 && CPC.scr_window != 0;
+      if (ImGui::MenuItem("Fit Window to Screen", nullptr, false, can_fit)) {
+        video_fit_window_to_screen();
+      }
+      if (!can_fit && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(
+            CPC.scr_scale == 0
+                ? "Scale is set to Fit — the image already follows the window"
+                : "Not available in fullscreen");
+      }
+    }
+
     // Scale ▸ — window scale factor (mirrors Settings ▸ Video ▸ Scale, same
     // apply path via the bridge).  Checkmark on the current factor.
     if (ImGui::BeginMenu("Scale")) {
@@ -1610,7 +1625,6 @@ void imgui_render_menubar() {
   if (ImGui::BeginMenu("Input")) {
     RenderMenuItem(KONCPC_JOY);
     RenderMenuItem(KONCPC_PHAZER);
-    RenderMenuItem(KONCPC_SPEED);
     ImGui::EndMenu();
   }
 
@@ -1623,6 +1637,7 @@ void imgui_render_menubar() {
       koncpc_open_command_palette();
     }
     RenderMenuItem(KONCPC_MF2STOP);
+    RenderMenuItem(KONCPC_SPEED);
     // beads-41p: developer/diagnostics group — Verbose Logging moved here from
     // the Options menu (where it sat among player toggles).
     ImGui::Separator();
@@ -2091,8 +2106,17 @@ void draw_status_led(ImDrawList* dl, ImVec2 p0, ImVec2 p1, bool active, int r,
 
 namespace {
 void imgui_render_statusbar() {
-  float const bar_height = 22.0f;
-  float const pad_y = 2.0f;
+  // These are hand-tuned pixel sizes, so they must follow the DPI scale.
+  // Without this the font grows at high DPI while the bar stays 22px and
+  // the content is clipped — the bar looks "mostly cropped out".  On macOS
+  // the Retina factor is in the framebuffer scale, which multiplied these
+  // literals for us; on Windows nothing does, so we do it here.
+  // At scale 1.0 the arithmetic is identical to the previous constants.
+  // Two rows: tape on top, disk drives below.  Height follows the live frame
+  // height, so the rows track the font at any DPI.
+  float const pad_y = ui_dpi_px(2.0f);
+  float const bar_height = (ImGui::GetFrameHeight() * 2.0f) +
+                           ImGui::GetStyle().ItemSpacing.y + (pad_y * 2.0f);
 
   ImGuiViewport const* vp = ImGui::GetMainViewport();
   float const bar_y = vp->Pos.y + vp->Size.y - bar_height;
@@ -2122,169 +2146,12 @@ void imgui_render_statusbar() {
       s_bottombar_height_dirty = true;
     }
 
-    // ── Drive activity LEDs ──
-    {
-      float const frameH = ImGui::GetFrameHeight();
-      for (int drv = 0; drv < 2; drv++) {
-        bool const active =
-            drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
-        t_drive const& drive = drv == 0 ? driveA : driveB;
-        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
-        const char* driveLabel = drv == 0 ? "A:" : "B:";
-        // Ask the medium, not the sector view: a flux-backed disc (.hfe/.scp/
-        // .a2r) leaves drive.tracks at 0, which read here as "(no disk)" for a
-        // disc the CPC was happily reading.
-        const DriveMedium medium = drive_medium(drv);
-
-        if (drv > 0) ImGui::SameLine(0, 12.0f);
-
-        // Build display name
-        const char* fullName;
-        if (medium.present) {
-          auto pos = driveFile.find_last_of("/\\");
-          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1
-                                                : driveFile.c_str();
-        } else {
-          fullName = "(no disk)";
-        }
-
-        // Push unique ID per drive to avoid conflicts
-        ImGui::PushID(100 + drv);  // offset IDs to avoid clashes with topbar
-
-        ImGui::BeginGroup();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(driveLabel);
-        ImGui::SameLine(0, 2.0f);
-
-        // Draw LED
-        ImVec2 const cursor = ImGui::GetCursorScreenPos();
-        float const ledW = 16.0f;
-        float const ledH = 8.0f;
-        float const yOff = (frameH - ledH) * 0.5f;
-        ImVec2 const p0(cursor.x, cursor.y + yOff);
-        ImVec2 const p1(p0.x + ledW, p0.y + ledH);
-
-        draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 255, 0, 0);
-
-        ImGui::Dummy(ImVec2(ledW, frameH));
-        ImGui::SameLine(0, 4.0f);
-
-        // Show track number when disk is loaded
-        if (medium.present) {
-          char trkStr[8];
-          snprintf(trkStr, sizeof(trkStr), "T%02d",
-                   static_cast<int>(drive.current_track));
-          ImGui::PushStyleColor(ImGuiCol_Text,
-                                ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-          ImGui::AlignTextToFramePadding();
-          ImGui::TextUnformatted(trkStr);
-          ImGui::PopStyleColor();
-          ImGui::SameLine(0, 4.0f);
-        }
-
-        // Show filename or "(no disk)" with marquee scrolling
-        ImGui::PushStyleColor(
-            ImGuiCol_Text, medium.present ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
-                                          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(fullName, 120.0f);
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-
-        // Click on the whole group (label + LED + filename)
-        if (ImGui::IsItemClicked()) {
-          if (medium.present) {
-            // Ask to confirm eject
-            imgui_state.eject_confirm_drive = drv;
-          } else {
-            // Load disk. Per-drive filters: drive A takes the flux
-            // containers, drive B must not (flux is drive-A-only — see
-            // drive_extensions() in slotshandler.cpp).
-            static const SDL_DialogFileFilter drive_a_filters[] = {
-                {"Disk Images", "dsk;ipf;raw;scp;hfe;a2r;zip"}};
-            static const SDL_DialogFileFilter drive_b_filters[] = {
-                {"Disk Images", "dsk;ipf;raw;zip"}};
-            const SDL_DialogFileFilter* disk_filters =
-                drv == 0 ? drive_a_filters : drive_b_filters;
-            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED
-                                : FileDialogAction::LoadDiskB_LED;
-            SDL_ShowOpenFileDialog(
-                file_dialog_callback,
-                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
-                // integer/pointer reinterpret for hardware/opaque handles
-                reinterpret_cast<void*>(static_cast<intptr_t>(act)),
-                mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(),
-                false);
-          }
-        }
-
-        ImGui::PopID();
-      }
-    }
-
-    // ── M4 Board activity LED (green, only shown when M4 is enabled) ──
-    if (g_m4board.enabled) {
-      float const frameH = ImGui::GetFrameHeight();
-      bool const active = g_m4board.activity_frames > 0;
-
-      ImGui::SameLine(0, 12.0f);
-      ImGui::BeginGroup();
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted("M4:");
-      ImGui::SameLine(0, 2.0f);
-
-      ImVec2 const cursor = ImGui::GetCursorScreenPos();
-      float const ledW = 16.0f;
-      float const ledH = 8.0f;
-      float const yOff = (frameH - ledH) * 0.5f;
-      ImVec2 const p0(cursor.x, cursor.y + yOff);
-      ImVec2 const p1(p0.x + ledW, p0.y + ledH);
-
-      draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 0, 255, 0);
-
-      ImGui::Dummy(ImVec2(ledW, frameH));
-
-      // Show container name if inside a DSK (with marquee scrolling)
-      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
-        ImGui::SameLine(0, 4.0f);
-        // Cache the container filename — only changes on container open/close.
-        static std::string cached_path;
-        static std::string cached_fname;
-        if (g_m4board.container_host_path != cached_path) {
-          cached_path = g_m4board.container_host_path;
-          auto pos = cached_path.find_last_of("/\\");
-          cached_fname = (pos != std::string::npos)
-                             ? cached_path.substr(pos + 1)
-                             : cached_path;
-        }
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
-        ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(cached_fname.c_str(), 120.0f);
-        ImGui::PopStyleColor();
-      }
-
-      ImGui::EndGroup();
-    }
-
-    // ── Separator ──
-    ImGui::SameLine(0, 12.0f);
-    {
-      ImVec2 const cursor = ImGui::GetCursorScreenPos();
-      float const frameH = ImGui::GetFrameHeight();
-      ImGui::GetWindowDrawList()->AddLine(
-          ImVec2(cursor.x, cursor.y + 2.0f),
-          ImVec2(cursor.x, cursor.y + frameH - 2.0f),
-          IM_COL32(0x50, 0x50, 0x50, 0xFF), 1.0f);
-      ImGui::Dummy(ImVec2(1.0f, frameH));
-    }
-
     // ── TAPE section ──
     {
       bool const tape_loaded = !pbTapeImage.empty();
       bool const tape_playing =
           tape_loaded && CPC.tape_motor && CPC.tape_play_button;
 
-      ImGui::SameLine(0, 8.0f);
       ImGui::AlignTextToFramePadding();
 
       ImU32 const color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
@@ -2563,6 +2430,151 @@ void imgui_render_statusbar() {
         }
       }
     }
+
+    // ── Drive activity LEDs ──
+    {
+      float const frameH = ImGui::GetFrameHeight();
+      for (int drv = 0; drv < 2; drv++) {
+        bool const active =
+            drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+        t_drive const& drive = drv == 0 ? driveA : driveB;
+        auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
+        const char* driveLabel = drv == 0 ? "A:" : "B:";
+        // Ask the medium, not the sector view: a flux-backed disc (.hfe/.scp/
+        // .a2r) leaves drive.tracks at 0, which read here as "(no disk)" for a
+        // disc the CPC was happily reading.
+        const DriveMedium medium = drive_medium(drv);
+
+        if (drv > 0) ImGui::SameLine(0, 12.0f);
+
+        // Build display name
+        const char* fullName;
+        if (medium.present) {
+          auto pos = driveFile.find_last_of("/\\");
+          fullName = (pos != std::string::npos) ? driveFile.c_str() + pos + 1
+                                                : driveFile.c_str();
+        } else {
+          fullName = "(no disk)";
+        }
+
+        // Push unique ID per drive to avoid conflicts
+        ImGui::PushID(100 + drv);  // offset IDs to avoid clashes with topbar
+
+        ImGui::BeginGroup();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(driveLabel);
+        ImGui::SameLine(0, 2.0f);
+
+        // Draw LED
+        ImVec2 const cursor = ImGui::GetCursorScreenPos();
+        float const ledW = 16.0f;
+        float const ledH = 8.0f;
+        float const yOff = (frameH - ledH) * 0.5f;
+        ImVec2 const p0(cursor.x, cursor.y + yOff);
+        ImVec2 const p1(p0.x + ledW, p0.y + ledH);
+
+        draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 255, 0, 0);
+
+        ImGui::Dummy(ImVec2(ledW, frameH));
+        ImGui::SameLine(0, 4.0f);
+
+        // Show track number when disk is loaded
+        if (medium.present) {
+          char trkStr[8];
+          snprintf(trkStr, sizeof(trkStr), "T%02d",
+                   static_cast<int>(drive.current_track));
+          ImGui::PushStyleColor(ImGuiCol_Text,
+                                ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted(trkStr);
+          ImGui::PopStyleColor();
+          ImGui::SameLine(0, 4.0f);
+        }
+
+        // Show filename or "(no disk)" with marquee scrolling
+        ImGui::PushStyleColor(
+            ImGuiCol_Text, medium.present ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
+                                          : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(fullName, 120.0f);
+        ImGui::PopStyleColor();
+        ImGui::EndGroup();
+
+        // Click on the whole group (label + LED + filename)
+        if (ImGui::IsItemClicked()) {
+          if (medium.present) {
+            // Ask to confirm eject
+            imgui_state.eject_confirm_drive = drv;
+          } else {
+            // Load disk. Per-drive filters: drive A takes the flux
+            // containers, drive B must not (flux is drive-A-only — see
+            // drive_extensions() in slotshandler.cpp).
+            static const SDL_DialogFileFilter drive_a_filters[] = {
+                {"Disk Images", "dsk;ipf;raw;scp;hfe;a2r;zip"}};
+            static const SDL_DialogFileFilter drive_b_filters[] = {
+                {"Disk Images", "dsk;ipf;raw;zip"}};
+            const SDL_DialogFileFilter* disk_filters =
+                drv == 0 ? drive_a_filters : drive_b_filters;
+            auto act = drv == 0 ? FileDialogAction::LoadDiskA_LED
+                                : FileDialogAction::LoadDiskB_LED;
+            SDL_ShowOpenFileDialog(
+                file_dialog_callback,
+                // NOLINTNEXTLINE(performance-no-int-to-ptr): intentional
+                // integer/pointer reinterpret for hardware/opaque handles
+                reinterpret_cast<void*>(static_cast<intptr_t>(act)),
+                mainSDLWindow, disk_filters, 1, CPC.current_dsk_path.c_str(),
+                false);
+          }
+        }
+
+        ImGui::PopID();
+      }
+    }
+
+    // ── M4 Board activity LED (green, only shown when M4 is enabled) ──
+    if (g_m4board.enabled) {
+      float const frameH = ImGui::GetFrameHeight();
+      bool const active = g_m4board.activity_frames > 0;
+
+      ImGui::SameLine(0, 12.0f);
+      ImGui::BeginGroup();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted("M4:");
+      ImGui::SameLine(0, 2.0f);
+
+      ImVec2 const cursor = ImGui::GetCursorScreenPos();
+      float const ledW = 16.0f;
+      float const ledH = 8.0f;
+      float const yOff = (frameH - ledH) * 0.5f;
+      ImVec2 const p0(cursor.x, cursor.y + yOff);
+      ImVec2 const p1(p0.x + ledW, p0.y + ledH);
+
+      draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 0, 255, 0);
+
+      ImGui::Dummy(ImVec2(ledW, frameH));
+
+      // Show container name if inside a DSK (with marquee scrolling)
+      if (g_m4board.container_type != M4Board::ContainerType::NONE) {
+        ImGui::SameLine(0, 4.0f);
+        // Cache the container filename — only changes on container open/close.
+        static std::string cached_path;
+        static std::string cached_fname;
+        if (g_m4board.container_host_path != cached_path) {
+          cached_path = g_m4board.container_host_path;
+          auto pos = cached_path.find_last_of("/\\");
+          cached_fname = (pos != std::string::npos)
+                             ? cached_path.substr(pos + 1)
+                             : cached_path;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
+        ImGui::AlignTextToFramePadding();
+        imgui_marquee_text(cached_fname.c_str(), 120.0f);
+        ImGui::PopStyleColor();
+      }
+
+      ImGui::EndGroup();
+    }
+
 
     // ── First-run empty-state hint ──
     // beads-mng: when no media is loaded anywhere, show an unobtrusive,

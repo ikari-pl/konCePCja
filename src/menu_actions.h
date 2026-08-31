@@ -16,8 +16,8 @@ enum class MenuGroup : std::uint8_t {
   Edit,      // Paste, ...
   Media,     // disks, tapes, cartridges, snapshots
   View,      // display actions: Fullscreen, Screenshot, Show FPS
-  Input,     // input/emulation toggles: Joystick, Light Gun, Limit Speed
-  Tools,     // DevTools, Command Palette, Multiface II, Diagnostics
+  Input,     // input devices: Joystick, Light Gun
+  Tools,     // DevTools, Command Palette, Multiface II, Limit Speed, Diagnostics
   Window,    // tool/debug windows, virtual keyboard
 };
 
