@@ -98,6 +98,7 @@ void imgui_render_statusbar();
 }  // namespace
 namespace {
 void imgui_render_menu();
+void imgui_render_about();
 }  // namespace
 namespace {
 void imgui_render_options();
@@ -627,6 +628,7 @@ void imgui_render_ui() {
   imgui_render_topbar();
   imgui_render_statusbar();
   if (imgui_state.show_menu) imgui_render_menu();
+  imgui_render_about();
   if (imgui_state.show_options) imgui_render_options();
   if (imgui_state.show_serial_terminal) imgui_render_serial_terminal();
   if (imgui_state.show_plotter_preview) imgui_render_plotter_preview();
@@ -3136,6 +3138,13 @@ void imgui_render_menu() {
 
   if (action) imgui_close_menu();
 
+}
+
+// The About box renders every frame, not from inside imgui_render_menu():
+// OpenPopup and BeginPopupModal only run on frames where their host
+// renders, so hosting it in the F1 overlay meant the menubar item did
+// nothing until that overlay was on screen.
+void imgui_render_about() {
   // --- About popup ---
   if (imgui_state.show_about) {
     ImGui::OpenPopup("About konCePCja");
