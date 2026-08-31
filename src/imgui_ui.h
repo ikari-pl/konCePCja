@@ -11,7 +11,19 @@
 // headless-safe.  This header re-exports `imgui_state.h` so existing
 // modern-UI callers keep compiling unchanged.
 
+#include "imgui.h"
 #include "imgui_state.h"
+
+// Scale a hand-tuned pixel constant by the display's DPI scale.
+//
+// Hard-coded sizes (window sizes, item widths, paddings) are in ImGui
+// coordinates, which on Windows are raw pixels.  Wrapping such a literal in
+// this keeps its physical size as the desktop scale changes, so text and the
+// box around it grow together.  Returns the value unchanged at 100%.
+inline float ui_dpi_px(float px) {
+  float const s = ImGui::GetStyle().FontScaleDpi;
+  return px * ((s > 0.0f) ? s : 1.0f);
+}
 
 void imgui_init_ui();
 void imgui_render_ui();

@@ -392,7 +392,7 @@ void DevToolsUI::render_registers() {
   };
 
   auto RegField8 = [&](const char* label, byte& val) {
-    ImGui::SetNextItemWidth(40);
+    ImGui::SetNextItemWidth(ui_dpi_px(40));
     // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
     // mutated (out-param/compound-assign/loop/reference)
     unsigned char v = val;
@@ -543,7 +543,7 @@ void DevToolsUI::render_disassembly() {
   if (ImGui::BeginMenuBar()) {
     ImGui::Checkbox("Follow PC", &disasm_follow_pc_);
     ImGui::Separator();
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     if (ImGui::InputText("Goto", disasm_goto_addr_, sizeof(disasm_goto_addr_),
                          ImGuiInputTextFlags_CharsHexadecimal |
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -918,7 +918,7 @@ void DevToolsUI::render_memory_hex() {
 
   // Toolbar
   if (ImGui::BeginMenuBar()) {
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     if (ImGui::InputText("Goto##memhex", memhex_goto_addr_,
                          sizeof(memhex_goto_addr_),
                          ImGuiInputTextFlags_CharsHexadecimal |
@@ -931,7 +931,7 @@ void DevToolsUI::render_memory_hex() {
     ImGui::Separator();
     ImGui::Text("W:");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(40);
+    ImGui::SetNextItemWidth(ui_dpi_px(40));
     // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
     // mutated (out-param/compound-assign/loop/reference)
     int bpr = memhex_bytes_per_row_;
@@ -961,7 +961,7 @@ void DevToolsUI::render_memory_hex() {
 
   // ── Search bar ──
   {
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(ui_dpi_px(120));
     bool do_search =
         ImGui::InputText("Find##mh", memhex_search_, sizeof(memhex_search_),
                          ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1153,7 +1153,7 @@ void DevToolsUI::render_memory_hex() {
 
             if (is_editing) {
               // Compact inline edit — fixed width matching "FF"
-              ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+              ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ui_dpi_px(0), ui_dpi_px(0)));
               ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x);
               if (memhex_edit_focus_) {
                 ImGui::SetKeyboardFocusHere();
@@ -1452,7 +1452,7 @@ void DevToolsUI::render_breakpoints() {
         imgui_toast_error("Bad breakpoint address/symbol");
       }
     };
-    ImGui::SetNextItemWidth(90);
+    ImGui::SetNextItemWidth(ui_dpi_px(90));
     if (ImGui::InputText("##quickbp", quick_bp_addr, sizeof(quick_bp_addr),
                          ImGuiInputTextFlags_EnterReturnsTrue))
       add_quick_bp();
@@ -1605,17 +1605,17 @@ void DevToolsUI::render_breakpoints() {
   ImGui::Spacing();
   if (ImGui::CollapsingHeader("Add Breakpoint",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputText("Addr##bp", bp_addr_, sizeof(bp_addr_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(180);
+    ImGui::SetNextItemWidth(ui_dpi_px(180));
     ImGui::InputText("Condition##bp", bp_cond_, sizeof(bp_cond_));
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip(
           "e.g. A==0x42, (HL)>0x100, BC==DE\nLeave empty for unconditional");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(40);
+    ImGui::SetNextItemWidth(ui_dpi_px(40));
     ImGui::InputText("Pass##bp", bp_pass_, sizeof(bp_pass_),
                      ImGuiInputTextFlags_CharsDecimal);
     if (ImGui::IsItemHovered())
@@ -1654,15 +1654,15 @@ void DevToolsUI::render_breakpoints() {
 
   // Add Watchpoint form
   if (ImGui::CollapsingHeader("Add Watchpoint")) {
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputText("Addr##wp", wp_addr_, sizeof(wp_addr_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(40);
+    ImGui::SetNextItemWidth(ui_dpi_px(40));
     ImGui::InputText("Len##wp", wp_len_, sizeof(wp_len_),
                      ImGuiInputTextFlags_CharsDecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(ui_dpi_px(80));
     const char* const wp_types[] = {"Read", "Write", "R/W"};
     ImGui::Combo("Type##wp", &wp_type_, wp_types, 3);
     ImGui::SameLine();
@@ -1686,15 +1686,15 @@ void DevToolsUI::render_breakpoints() {
 
   // Add IO Breakpoint form
   if (ImGui::CollapsingHeader("Add IO Breakpoint")) {
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputText("Port##iobp", iobp_port_, sizeof(iobp_port_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputText("Mask##iobp", iobp_mask_, sizeof(iobp_mask_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(ui_dpi_px(80));
     const char* const iobp_dirs[] = {"IN", "OUT", "Both"};
     ImGui::Combo("Dir##iobp", &iobp_dir_, iobp_dirs, 3);
     ImGui::SameLine();
@@ -1771,11 +1771,11 @@ void DevToolsUI::render_symbols() {
                            sizeof(sym_path_));
 
   // Add Symbol form
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputText("Addr##addsym", sym_addr_, sizeof(sym_addr_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(150);
+  ImGui::SetNextItemWidth(ui_dpi_px(150));
   ImGui::InputText("Name##addsym", sym_name_, sizeof(sym_name_));
   ImGui::SameLine();
   if (ImGui::Button("Add##addsym")) {
@@ -2042,7 +2042,7 @@ void DevToolsUI::render_disc_tools() {
 
   // Drive selector
   const char* const drives[] = {"Drive A", "Drive B"};
-  ImGui::SetNextItemWidth(100);
+  ImGui::SetNextItemWidth(ui_dpi_px(100));
   if (ImGui::Combo("Drive", &dt_drive_, drives, 2)) {
     dt_files_dirty_ = true;
   }
@@ -2064,7 +2064,7 @@ void DevToolsUI::render_disc_tools() {
       dt_format_combo_dirty_ = false;
     }
     if (!dt_format_combo_.empty()) {
-      ImGui::SetNextItemWidth(120);
+      ImGui::SetNextItemWidth(ui_dpi_px(120));
       ImGui::Combo("Format##dt", &dt_format_, dt_format_combo_.c_str());
       ImGui::SameLine();
       if (ImGui::Button("Format")) {
@@ -2213,10 +2213,10 @@ void DevToolsUI::render_disc_tools() {
 
   // Sector browser
   if (ImGui::CollapsingHeader("Sector Browser")) {
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputInt("Track##sec", &dt_track_, 1, 1);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(40);
+    ImGui::SetNextItemWidth(ui_dpi_px(40));
     ImGui::InputInt("Side##sec", &dt_side_, 1, 1);
     dt_track_ = std::max(dt_track_, 0);
     dt_side_ = std::max(dt_side_, 0);
@@ -2261,7 +2261,7 @@ void DevToolsUI::render_disc_tools() {
     }
 
     // Read a specific sector
-    ImGui::SetNextItemWidth(40);
+    ImGui::SetNextItemWidth(ui_dpi_px(40));
     ImGui::InputText("Sector ID##read", dt_sector_id_, sizeof(dt_sector_id_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
@@ -2365,19 +2365,19 @@ void DevToolsUI::render_data_areas() {
   ImGui::Separator();
 
   // Mark form
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputText("Start##da", da_start_, sizeof(da_start_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputText("End##da", da_end_, sizeof(da_end_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(80);
+  ImGui::SetNextItemWidth(ui_dpi_px(80));
   const char* const da_types[] = {"Bytes", "Words", "Text"};
   ImGui::Combo("Type##da", &da_type_, da_types, 3);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(100);
+  ImGui::SetNextItemWidth(ui_dpi_px(100));
   ImGui::InputText("Label##da", da_label_, sizeof(da_label_));
   ImGui::SameLine();
   if (ImGui::Button("Mark")) {
@@ -2491,11 +2491,11 @@ void DevToolsUI::render_disasm_export() {
     return;
   }
 
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputText("Start##dex", dex_start_, sizeof(dex_start_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputText("End##dex", dex_end_, sizeof(dex_end_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
@@ -2656,15 +2656,15 @@ void DevToolsUI::render_disasm_export() {
 
   // Quick "Mark as data" form
   if (ImGui::TreeNode("Mark as data")) {
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputText("Start##dexmark", dex_mark_start_, sizeof(dex_mark_start_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60);
+    ImGui::SetNextItemWidth(ui_dpi_px(60));
     ImGui::InputText("End##dexmark", dex_mark_end_, sizeof(dex_mark_end_),
                      ImGuiInputTextFlags_CharsHexadecimal);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80);
+    ImGui::SetNextItemWidth(ui_dpi_px(80));
     const char* const mark_types[] = {"Bytes", "Words", "Text"};
     ImGui::Combo("##dexmarktype", &dex_mark_type_, mark_types, 3);
     ImGui::SameLine();
@@ -2878,14 +2878,14 @@ void DevToolsUI::render_gfx_finder() {
   ImGui::SameLine();
 
   // Parameters
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputText("Addr##gfx", gfx_addr_, sizeof(gfx_addr_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputInt("W (bytes)##gfx", &gfx_width_);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60);
+  ImGui::SetNextItemWidth(ui_dpi_px(60));
   ImGui::InputInt("H##gfx", &gfx_height_);
 
   gfx_width_ = std::max(gfx_width_, 1);
@@ -2893,11 +2893,11 @@ void DevToolsUI::render_gfx_finder() {
   gfx_height_ = std::max(gfx_height_, 1);
   gfx_height_ = std::min(gfx_height_, 256);
 
-  ImGui::SetNextItemWidth(80);
+  ImGui::SetNextItemWidth(ui_dpi_px(80));
   const char* const modes[] = {"Mode 0", "Mode 1", "Mode 2"};
   ImGui::Combo("Mode##gfx", &gfx_mode_, modes, 3);
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(80);
+  ImGui::SetNextItemWidth(ui_dpi_px(80));
   ImGui::SliderInt("Zoom##gfx", &gfx_zoom_, 1, 16);
 
   // Decode the graphics
@@ -3057,7 +3057,7 @@ void DevToolsUI::render_video_state() {
     // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
     // mutated (out-param/compound-assign/loop/reference)
     unsigned char val = CRTC.registers[i];
-    ImGui::SetNextItemWidth(50);
+    ImGui::SetNextItemWidth(ui_dpi_px(50));
     ImGui::InputScalar(crtc_names[i], ImGuiDataType_U8, &val, nullptr, nullptr,
                        "%02X", ImGuiInputTextFlags_ReadOnly);
   }
@@ -3365,7 +3365,7 @@ void DevToolsUI::render_drive_sound_lab() {
     static int auto_ctr = 0;
     ImGui::Checkbox("Auto-repeat", &auto_seek);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
+    ImGui::SetNextItemWidth(ui_dpi_px(150));
     ImGui::SliderInt("every N frames", &auto_every, 1, 30);
     if (auto_seek && ++auto_ctr >= auto_every) {
       auto_ctr = 0;
@@ -3550,7 +3550,7 @@ void DevToolsUI::render_recording_controls() {
                          "Recording (%u frames, %s)", fc,
                          format_size(g_avi_recorder.bytes_written()).c_str());
     } else {
-      ImGui::SetNextItemWidth(120);
+      ImGui::SetNextItemWidth(ui_dpi_px(120));
       ImGui::SliderInt("Quality##avi", &rc_avi_quality_, 1, 100);
       if (ImGui::Button("Record##avi")) {
         if (rc_avi_path_[0] != '\0') {
@@ -3941,7 +3941,7 @@ void DevToolsUI::render_assembler() {
     }
   }
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(200.0f);
+  ImGui::SetNextItemWidth(ui_dpi_px(200.0f));
   ImGui::InputText("##asm_path", asm_path_, sizeof(asm_path_));
   ImGui::SameLine();
   if (ImGui::Button("Load")) {
@@ -3992,7 +3992,7 @@ void DevToolsUI::render_assembler() {
   // ── Row 2: Origin address, Format hint, status ──
   ImGui::Text("Origin:");
   ImGui::SameLine();
-  ImGui::SetNextItemWidth(60.0f);
+  ImGui::SetNextItemWidth(ui_dpi_px(60.0f));
   ImGui::InputText("##asm_org", asm_org_addr_, sizeof(asm_org_addr_),
                    ImGuiInputTextFlags_CharsHexadecimal);
   ImGui::SameLine();
@@ -4083,7 +4083,7 @@ void DevToolsUI::render_assembler() {
 // -----------------------------------------------
 
 void DevToolsUI::render_asm_reference() {
-  ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(520), ui_dpi_px(600)), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Assembly Reference##devtools", &show_asm_reference_)) {
     ImGui::End();
     return;
@@ -4203,7 +4203,7 @@ void DevToolsUI::render_asm_reference() {
 
       // Filter
       static char instr_filter[32] = "";
-      ImGui::SetNextItemWidth(200.0f);
+      ImGui::SetNextItemWidth(ui_dpi_px(200.0f));
       ImGui::InputTextWithHint("##instr_filter", "Filter...", instr_filter,
                                sizeof(instr_filter));
 
@@ -4214,7 +4214,7 @@ void DevToolsUI::render_asm_reference() {
           c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
       }
 
-      ImGui::BeginChild("##instr_list", ImVec2(0, 0));
+      ImGui::BeginChild("##instr_list", ImVec2(ui_dpi_px(0), ui_dpi_px(0)));
       for (auto& grp : groups) {
         // Apply filter
         if (!filter_upper.empty() &&
