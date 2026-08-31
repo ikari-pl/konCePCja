@@ -1569,12 +1569,17 @@ std::string handle_command(const std::string& line) {
         resp << buf;
       }
       char buf[128];
+      // R52 is the Gate Array's 6-bit HSYNC line counter (gate_array.h), the
+      // one a raster effect is timed against.  It used to report CRTC.reg5 --
+      // the vertical-adjust register, already printed above as R5 -- so the
+      // field a rupture is debugged with named one register and showed
+      // another.  SL stays CRTC.sl_count, the frame scanline.
       snprintf(buf, sizeof(buf),
                " VCC=%02X VLC=%02X HCC=%02X HSC=%02X VSC=%02X VMA=%04X "
                "R52=%02X SL=%02X",
                CRTC.line_count, CRTC.raster_count, CRTC.char_count,
-               CRTC.hsw_count, CRTC.vsw_count, CRTC.addr, CRTC.reg5,
-               CRTC.sl_count);
+               CRTC.hsw_count, CRTC.vsw_count, CRTC.addr,
+               GateArray.sl_count, CRTC.sl_count);
       resp << buf << "\n";
       return resp.str();
     }

@@ -30,6 +30,7 @@
 extern t_z80regs z80;
 extern t_CPC CPC;
 extern t_GateArray GateArray;
+extern t_CRTC CRTC;
 extern SDL_Surface* back_surface;
 extern byte* membank_read[4];
 extern byte* membank_write[4];
@@ -201,6 +202,26 @@ TEST_F(IpcServerTest, RegGetReturnsValues) {
 
   resp = send_command("reg get PC");
   EXPECT_EQ(resp, "OK 3456\n");
+}
+
+// R52 in the crtc dump is the Gate Array's HSYNC line counter, the reference a
+// raster effect is timed against.  It reported CRTC.reg5 instead -- a value
+// the same line already prints as R5 -- so the field read plausibly while
+// describing a different register.  Give the two sources distinct values so
+// the wrong one cannot pass.
+TEST_F(IpcServerTest, RegsCrtcReportsGateArrayR52NotCrtcReg5) {
+  GateArray.sl_count = 0x2A;
+  CRTC.registers[5] = 0x13;
+  CRTC.reg5 = 0x13;
+
+  auto const resp = send_command("regs crtc");
+  ASSERT_NE(resp.find("R52="), std::string::npos) << resp;
+  EXPECT_NE(resp.find("R52=2A"), std::string::npos)
+      << "R52 must report GateArray.sl_count; got: " << resp;
+  EXPECT_EQ(resp.find("R52=13"), std::string::npos)
+      << "R52 is reporting CRTC register 5: " << resp;
+  // R5 keeps reporting the CRTC register, so the two stay distinguishable.
+  EXPECT_NE(resp.find("R5=13"), std::string::npos) << resp;
 }
 
 TEST_F(IpcServerTest, BreakpointListAddDelClear) {
