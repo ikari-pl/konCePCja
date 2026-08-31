@@ -3156,7 +3156,6 @@ void imgui_render_about() {
     ImGui::Separator();
     ImGui::Text("Amstrad CPC Emulator");
     ImGui::Text("Clean-room, hardware-modelled emulation");
-    ImGui::Text("Heritage: originally forked from Caprice32 (Ulrich Doewich)");
     ImGui::Spacing();
     ImGui::Text("Shortcuts:");
     ImGui::BulletText("%s - Menu", koncpc_action_shortcut(KONCPC_GUI).c_str());
