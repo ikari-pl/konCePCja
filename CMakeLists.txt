@@ -263,6 +263,29 @@ if(WIN32)
     set_source_files_properties(resources/koncepcja.rc PROPERTIES
         OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/resources/koncepcja.ico"
     )
+
+    # Stage the runtime assets beside the executable so it runs from its own
+    # directory -- double-clicked from Explorer, copied elsewhere, or launched
+    # by a debugger.  Resource paths derive from the working directory, so
+    # without this the binary aborts with "Couldn't open ROM file" anywhere
+    # except the source root.
+    #
+    # The seed config is what makes it self-contained: getConfigurationFilename()
+    # already prefers a koncepcja.cfg next to the binary and switches the
+    # working directory to match, which is the path Finder/Explorer launches
+    # take.  copy_directory_if_different keeps rebuilds cheap.
+    add_custom_command(TARGET koncepcja POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                "${CMAKE_SOURCE_DIR}/rom" "$<TARGET_FILE_DIR:koncepcja>/rom"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                "${CMAKE_SOURCE_DIR}/resources"
+                "$<TARGET_FILE_DIR:koncepcja>/resources"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/koncepcja.cfg.example"
+                "$<TARGET_FILE_DIR:koncepcja>/koncepcja.cfg"
+        COMMENT "Staging rom/, resources/ and a seed koncepcja.cfg next to koncepcja.exe"
+        VERBATIM
+    )
 endif()
 
 # ── Test executable ──────────────────────────────────────
