@@ -5683,8 +5683,15 @@ void KoncepcjaIpcServer::run() {
     return;
   }
 
+  // SO_EXCLUSIVEADDRUSE, not SO_REUSEADDR: on Windows SO_REUSEADDR lets a
+  // second process bind a port another process is already listening on, and
+  // connections are then handed out between them unpredictably.  That makes
+  // the 6543..6552 scan below silently useless — a second instance, or the
+  // unit tests run while the emulator is open, would "bind" 6543 and then
+  // answer, or be answered by, the wrong process.  SO_EXCLUSIVEADDRUSE makes
+  // bind() fail on a port in use, so the scan moves to the next one.
   int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+  setsockopt(server_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
              reinterpret_cast<const char*>(&opt), sizeof(opt));
 
   sockaddr_in addr{};
