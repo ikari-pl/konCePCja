@@ -24,6 +24,7 @@
 #include "imgui_impl_sdlgpu3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "imgui_ui.h"
+#include "iui_host.h"
 #include "koncepcja.h"
 #include "log.h"
 #include "macos_menu.h"
@@ -593,6 +594,23 @@ void direct_setpal(SDL_Color* c) {
 //   - Non-blocking swapchain acquire — never blocks the render thread.
 
 namespace {
+
+// Content scale of the display this window is on (1.0 = 100%, 2.25 = 225%),
+// used to size the ImGui chrome.
+//
+// SDL_GetWindowDisplayScale() is pixel density * display content scale, so
+// dividing recovers the content scale — the part expressed in window
+// coordinates.  Query the window, since with several displays attached it
+// opens on whichever one the session puts it on.  On macOS the Retina
+// backing factor lives in the pixel density, making this 1.0 there.
+float koncpc_window_content_scale(SDL_Window* w) {
+  if (!w) return 1.0F;
+  float const density = SDL_GetWindowPixelDensity(w);
+  float const display_scale = SDL_GetWindowDisplayScale(w);
+  if (!(density > 0.0F) || !(display_scale > 0.0F)) return 1.0F;
+  return display_scale / density;
+}
+
 SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   // HIGH_PIXEL_DENSITY: on a Retina display the GPU swapchain is created at the
   // full backing pixel size (2x) instead of macOS upscaling a low-res drawable,
@@ -641,6 +659,11 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
                     ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = g_gpu.device;
@@ -1714,6 +1737,11 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
   // ViewportsEnable not supported by SDL_Renderer backend
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
@@ -1858,6 +1886,11 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs) {
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
@@ -2141,14 +2174,57 @@ bool compute_window_size(int& out_w, int& out_h) {
 // surface now. The devtools_panel_* variables stay: compute_window_size still
 // folds them into the main-window geometry.
 
+namespace {
+// Pending chrome-driven resizes to skip, holding the window at its current
+// size while the chrome grows or shrinks with DPI.  At a fixed scr_scale
+// compute_scale() crops and centres the CPC image, keeping it pixel-exact;
+// Fit mode re-fits it.  Each skipped resize consumes one count.
+int s_hold_window_size = 0;
+
+// The single resize point for chrome-driven geometry changes, so the hold
+// is honoured identically by topbar/bottombar set and clear.
+void resize_window_for_chrome() {
+  if (!mainSDLWindow) return;
+  if (s_hold_window_size > 0) {
+    --s_hold_window_size;
+    return;
+  }
+  int w = 0;
+  int h = 0;
+  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+}
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_hold_window_size(int resizes) {
+  if (resizes > s_hold_window_size) s_hold_window_size = resizes;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+// Derived window size: the emulated screen at the current scale plus the
+// chrome.  False in Fit scale mode, where no fixed size follows from it.
+bool video_derived_window_size(int& out_w, int& out_h) {
+  return compute_window_size(out_w, out_h);
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_fit_window_to_screen() {
+  if (!mainSDLWindow) return;
+  int w = 0;
+  int h = 0;
+  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+}
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void video_set_topbar(SDL_Surface* surface, int height) {
   if (!mainSDLWindow) return;
   topbar_surface = surface;
   topbar_height = height;
-  int w, h;
-  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+  resize_window_for_chrome();
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -2156,8 +2232,7 @@ void video_clear_topbar() {
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
-    int w, h;
-    if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+    resize_window_for_chrome();
   }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
@@ -2167,8 +2242,7 @@ int video_get_topbar_height() { return topbar_height; }
 void video_set_bottombar(int height) {
   if (!mainSDLWindow) return;
   bottombar_height = height;
-  int w, h;
-  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+  resize_window_for_chrome();
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -2417,6 +2491,11 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
       ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = g_gpu.device;

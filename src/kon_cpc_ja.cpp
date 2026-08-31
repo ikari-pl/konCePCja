@@ -4596,6 +4596,34 @@ int koncpc_main(int argc, char** argv) {
         //       the right thing to do here is to restore focus but keep
         //       paused... implementing this require keeping track of pause
         //       source, which will be a pain.
+        case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+          // The desktop scale changed (Settings → Display → Scale, or the
+          // window moved to a display with a different setting).  Rescale the
+          // ImGui chrome to match, so it keeps its physical size.
+          if (!mainSDLWindow ||
+              event.window.windowID != SDL_GetWindowID(mainSDLWindow)) {
+            break;
+          }
+          float const density = SDL_GetWindowPixelDensity(mainSDLWindow);
+          float const display_scale = SDL_GetWindowDisplayScale(mainSDLWindow);
+          if (!(density > 0.0F) || !(display_scale > 0.0F)) break;
+          // SDL_GetWindowDisplayScale is pixel density * content scale, so
+          // dividing recovers the content scale — the part expressed in window
+          // coordinates.  On macOS the Retina factor sits in the density,
+          // making this 1.0 there.
+          float const content_scale = display_scale / density;
+
+          // Hold the window at its current size across the resize the new
+          // chrome heights would trigger.  The CPC image keeps the chosen
+          // scr_scale and stays pixel-exact: compute_scale() crops and
+          // centres it, and Fit mode re-fits it.
+          video_hold_window_size(1);
+          ui_host().set_display_scale(content_scale);
+          LOG_INFO("Display scale changed — content scale now "
+                   << content_scale << " (display " << display_scale
+                   << ", pixel density " << density << ")");
+          break;
+        }
         case SDL_EVENT_WINDOW_MOVED:
           // A move — often an OS window-management nudge rather than the user —
           // may push the main window fully off every display. Rescue it, but

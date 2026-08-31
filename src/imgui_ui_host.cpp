@@ -95,6 +95,35 @@ void ImGuiUiHost::toast(UiToastLevel level, const std::string& message) {
   }
 }
 
+void ImGuiUiHost::set_display_scale(float scale) {
+  if (!ImGui::GetCurrentContext()) return;
+  if (!(scale > 0.0F)) return;  // also rejects NaN
+
+  // Fonts: ImGui 1.92 rasterises on demand at the size actually needed, so
+  // FontScaleDpi alone resizes the text.
+  //
+  // Sizes: padding and spacing scale alongside the text, so the chrome keeps
+  // its proportions.  ScaleAllSizes() multiplies in place, so the unscaled
+  // style is captured once and every call re-derives from that copy; this
+  // stays idempotent and follows the scale back down again.  Colours come
+  // from the live style, preserving a theme change made after the capture.
+  static ImGuiStyle s_base_style;
+  static bool s_base_captured = false;
+  ImGuiStyle& style = ImGui::GetStyle();
+  if (!s_base_captured) {
+    s_base_style = style;
+    s_base_captured = true;
+  }
+
+  ImVec4 live_colors[ImGuiCol_COUNT];
+  for (int i = 0; i < ImGuiCol_COUNT; ++i) live_colors[i] = style.Colors[i];
+  style = s_base_style;
+  for (int i = 0; i < ImGuiCol_COUNT; ++i) style.Colors[i] = live_colors[i];
+
+  style.ScaleAllSizes(scale);
+  style.FontScaleDpi = scale;
+}
+
 int ImGuiUiHost::topbar_height() const {
   // imgui_topbar_height() lives in imgui_ui.cpp and caches the live
   // menubar+statusbar measurements.  Safe pre-init: returns 0 before
