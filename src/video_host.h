@@ -56,7 +56,9 @@ int renderer_bpp(SDL_Renderer* sdl_renderer);
 
 void video_set_topbar(SDL_Surface* surface, int height);
 void video_clear_topbar();
-void video_hold_window_size(int resizes);
+// Hold the window at its current size against chrome-driven resizes for the
+// next `ms` milliseconds.
+void video_hold_window_size(int ms);
 void video_fit_window_to_screen();
 bool video_derived_window_size(int& out_w, int& out_h);
 int video_get_topbar_height();

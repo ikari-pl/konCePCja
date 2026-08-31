@@ -1574,15 +1574,23 @@ void imgui_render_menubar() {
     // Fit — size the window to the emulated screen at the current scale plus
     // the chrome.  Available for a fixed scale in windowed mode.
     {
-      bool const can_fit = CPC.scr_scale > 0 && CPC.scr_window != 0;
+      // Fullscreen is read from the window, not from CPC.scr_window: entering
+      // it through the OS (green button, WM shortcut) never touches the
+      // config field, and resizing a fullscreen window is meaningless.
+      bool const fullscreen =
+          mainSDLWindow != nullptr &&
+          (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+      bool const fit_scale = CPC.scr_scale == 0;
+      bool const can_fit = !fit_scale && !fullscreen;
       if (ImGui::MenuItem("Fit Window to Screen", nullptr, false, can_fit)) {
         video_fit_window_to_screen();
       }
-      if (!can_fit && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      if (!can_fit &&
+          ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip(
-            CPC.scr_scale == 0
-                ? "Scale is set to Fit — the image already follows the window"
-                : "Not available in fullscreen");
+            fullscreen
+                ? "Not available in fullscreen"
+                : "Scale is set to Fit — the image already follows the window");
       }
     }
 
@@ -2181,7 +2189,7 @@ void imgui_render_statusbar() {
                               tape_loaded ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
                                           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(fullTapeName, 120.0f);
+        imgui_marquee_text(fullTapeName, ui_dpi_px(120.0f));
         ImGui::PopStyleColor();
         if (!tape_loaded && ImGui::IsItemClicked()) {
           static const SDL_DialogFileFilter tape_filters[] = {
@@ -2447,7 +2455,7 @@ void imgui_render_statusbar() {
         // disc the CPC was happily reading.
         const DriveMedium medium = drive_medium(drv);
 
-        if (drv > 0) ImGui::SameLine(0, 12.0f);
+        if (drv > 0) ImGui::SameLine(0, ui_dpi_px(12.0f));
 
         // Build display name
         const char* fullName;
@@ -2465,12 +2473,12 @@ void imgui_render_statusbar() {
         ImGui::BeginGroup();
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(driveLabel);
-        ImGui::SameLine(0, 2.0f);
+        ImGui::SameLine(0, ui_dpi_px(2.0f));
 
         // Draw LED
         ImVec2 const cursor = ImGui::GetCursorScreenPos();
-        float const ledW = 16.0f;
-        float const ledH = 8.0f;
+        float const ledW = ui_dpi_px(16.0f);
+        float const ledH = ui_dpi_px(8.0f);
         float const yOff = (frameH - ledH) * 0.5f;
         ImVec2 const p0(cursor.x, cursor.y + yOff);
         ImVec2 const p1(p0.x + ledW, p0.y + ledH);
@@ -2478,7 +2486,7 @@ void imgui_render_statusbar() {
         draw_status_led(ImGui::GetWindowDrawList(), p0, p1, active, 255, 0, 0);
 
         ImGui::Dummy(ImVec2(ledW, frameH));
-        ImGui::SameLine(0, 4.0f);
+        ImGui::SameLine(0, ui_dpi_px(4.0f));
 
         // Show track number when disk is loaded
         if (medium.present) {
@@ -2490,7 +2498,7 @@ void imgui_render_statusbar() {
           ImGui::AlignTextToFramePadding();
           ImGui::TextUnformatted(trkStr);
           ImGui::PopStyleColor();
-          ImGui::SameLine(0, 4.0f);
+          ImGui::SameLine(0, ui_dpi_px(4.0f));
         }
 
         // Show filename or "(no disk)" with marquee scrolling
@@ -2498,7 +2506,7 @@ void imgui_render_statusbar() {
             ImGuiCol_Text, medium.present ? ImVec4(0.75f, 0.75f, 0.75f, 1.0f)
                                           : ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(fullName, 120.0f);
+        imgui_marquee_text(fullName, ui_dpi_px(120.0f));
         ImGui::PopStyleColor();
         ImGui::EndGroup();
 
@@ -2538,15 +2546,15 @@ void imgui_render_statusbar() {
       float const frameH = ImGui::GetFrameHeight();
       bool const active = g_m4board.activity_frames > 0;
 
-      ImGui::SameLine(0, 12.0f);
+      ImGui::SameLine(0, ui_dpi_px(12.0f));
       ImGui::BeginGroup();
       ImGui::AlignTextToFramePadding();
       ImGui::TextUnformatted("M4:");
-      ImGui::SameLine(0, 2.0f);
+      ImGui::SameLine(0, ui_dpi_px(2.0f));
 
       ImVec2 const cursor = ImGui::GetCursorScreenPos();
-      float const ledW = 16.0f;
-      float const ledH = 8.0f;
+      float const ledW = ui_dpi_px(16.0f);
+      float const ledH = ui_dpi_px(8.0f);
       float const yOff = (frameH - ledH) * 0.5f;
       ImVec2 const p0(cursor.x, cursor.y + yOff);
       ImVec2 const p1(p0.x + ledW, p0.y + ledH);
@@ -2557,7 +2565,7 @@ void imgui_render_statusbar() {
 
       // Show container name if inside a DSK (with marquee scrolling)
       if (g_m4board.container_type != M4Board::ContainerType::NONE) {
-        ImGui::SameLine(0, 4.0f);
+        ImGui::SameLine(0, ui_dpi_px(4.0f));
         // Cache the container filename — only changes on container open/close.
         static std::string cached_path;
         static std::string cached_fname;

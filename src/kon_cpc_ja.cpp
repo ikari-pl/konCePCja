@@ -497,6 +497,12 @@ t_CPC CPC;
 // alone.
 bool g_config_loaded = false;
 
+// The config-file values of the two fields that later hold runtime state.
+// Captured at load, written back on exit so a failed printer start or a live
+// fullscreen toggle cannot rewrite the user's intent.
+unsigned int g_cfg_intent_printer = 0;
+unsigned int g_cfg_intent_scr_window = 1;
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 bool koncpc_config_loaded() { return g_config_loaded; }
@@ -2179,8 +2185,10 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.scr_intensity = read_clamped("video", "scr_intensity", 10, 5, 15);
   CPC.scr_remanency = read_flag("video", "scr_remanency", 0);
   CPC.scr_window = read_flag("video", "scr_window", 1);
-  CPC.win_w = conf.getIntValue("video", "win_w", 0);
-  CPC.win_h = conf.getIntValue("video", "win_h", 0);
+  // Bounded like the neighbouring keys: a corrupt or hand-edited value must
+  // not produce a window that cannot be resized back.  0 means "derive".
+  CPC.win_w = read_clamped("video", "win_w", 0, 0, 16384);
+  CPC.win_h = read_clamped("video", "win_h", 0, 0, 16384);
 
   CPC.scr_green_mode = read_flag("video", "scr_green_mode", 0);
   CPC.scr_green_blue_percent =
@@ -3121,7 +3129,25 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   // explicit Options▸Save.  Restricted to a successful GUI exit: that is the
   // state worth recording.
   if (returnCode == 0 && !g_headless && g_config_loaded) {
+    // Two fields hold runtime state rather than user intent, and writing them
+    // back poisons the config for every later session:
+    //
+    //   printer     — cleared when printer_start() fails, so one boot with the
+    //                 port unavailable would disable printing for good.  Same
+    //                 hazard the snd_enabled comment in koncpc_main() records.
+    //   scr_window  — toggled live by koncpc_toggle_fullscreen(), so quitting
+    //                 while fullscreen would launch fullscreen from then on
+    //                 with no visible cause.
+    //
+    // Restore what the file said before writing it back.  Options▸Save still
+    // records a deliberate change to either.
+    unsigned int const live_printer = CPC.printer;
+    unsigned int const live_scr_window = CPC.scr_window;
+    CPC.printer = g_cfg_intent_printer;
+    CPC.scr_window = g_cfg_intent_scr_window;
     saveConfiguration(CPC, getConfigurationFilename(true));
+    CPC.printer = live_printer;
+    CPC.scr_window = live_scr_window;
   }
   doCleanUp();
   _exit(returnCode);
@@ -3953,6 +3979,8 @@ int koncpc_main(int argc, char** argv) {
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
   g_config_loaded = true;
+  g_cfg_intent_printer = CPC.printer;
+  g_cfg_intent_scr_window = CPC.scr_window;
   if (CPC.printer) {
     if (!printer_start()) {  // start capturing printer output, if enabled
       CPC.printer = 0;
@@ -3994,9 +4022,26 @@ int koncpc_main(int argc, char** argv) {
       fprintf(stderr, "video_init() failed. Aborting.\n");
       cleanExit(-1);
     }
-    // Restore the saved window size (width/height only).  The hold covers the
-    // early chrome-driven resizes, as the topbar and bottombar each settle on
-    // their own frame.
+#ifdef __APPLE__
+    koncpc_setup_macos_menu();
+    koncpc_disable_app_nap();
+    // Set the Dock icon (fixes generic icon when running outside .app bundle).
+    // koncepcja-icon.png serves as both the icon and CRT overlay — its screen
+    // area is translucent (~alpha 40) so the live CPC screen shows through.
+    {
+      std::string const icon_path = CPC.resources_path + "/koncepcja-icon.png";
+      koncpc_set_dock_icon(icon_path.c_str());
+    }
+#endif
+    topbar_height_px = ui_host().topbar_height();
+    video_set_topbar(nullptr, topbar_height_px);
+    // video_set_topbar handles the window resize using compute_window_size()
+
+    // Restore the saved window size (width/height only).  This follows
+    // video_set_topbar() so compute_window_size() below can fold in a measured
+    // topbar; running it earlier compared against the bare emulated screen and
+    // let a too-small size through.  The hold covers the resizes still to come
+    // as the bottombar settles on a later frame.
     if (CPC.win_w > 0 && CPC.win_h > 0 && mainSDLWindow &&
         CPC.scr_window != 0) {
       int w = static_cast<int>(CPC.win_w);
@@ -4012,22 +4057,8 @@ int koncpc_main(int argc, char** argv) {
         h = std::max(h, dh);
       }
       SDL_SetWindowSize(mainSDLWindow, w, h);
-      video_hold_window_size(4);
+      video_hold_window_size(750);
     }
-#ifdef __APPLE__
-    koncpc_setup_macos_menu();
-    koncpc_disable_app_nap();
-    // Set the Dock icon (fixes generic icon when running outside .app bundle).
-    // koncepcja-icon.png serves as both the icon and CRT overlay — its screen
-    // area is translucent (~alpha 40) so the live CPC screen shows through.
-    {
-      std::string const icon_path = CPC.resources_path + "/koncepcja-icon.png";
-      koncpc_set_dock_icon(icon_path.c_str());
-    }
-#endif
-    topbar_height_px = ui_host().topbar_height();
-    video_set_topbar(nullptr, topbar_height_px);
-    // video_set_topbar handles the window resize using compute_window_size()
     mouse_init();
 
     if (CPC.snd_enabled && audio_init()) {
@@ -4670,7 +4701,7 @@ int koncpc_main(int argc, char** argv) {
           // chrome heights would trigger.  The CPC image keeps the chosen
           // scr_scale and stays pixel-exact: compute_scale() crops and
           // centres it, and Fit mode re-fits it.
-          video_hold_window_size(1);
+          video_hold_window_size(750);
           ui_host().set_display_scale(content_scale);
           LOG_INFO("Display scale changed — content scale now "
                    << content_scale << " (display " << display_scale

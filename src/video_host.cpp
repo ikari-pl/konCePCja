@@ -2175,20 +2175,23 @@ bool compute_window_size(int& out_w, int& out_h) {
 // folds them into the main-window geometry.
 
 namespace {
-// Pending chrome-driven resizes to skip, holding the window at its current
-// size while the chrome grows or shrinks with DPI.  At a fixed scr_scale
-// compute_scale() crops and centres the CPC image, keeping it pixel-exact;
-// Fit mode re-fits it.  Each skipped resize consumes one count.
-int s_hold_window_size = 0;
+// Deadline until which chrome-driven resizes are skipped, holding the window
+// at its current size while the chrome settles or rescales.  At a fixed
+// scr_scale compute_scale() crops and centres the CPC image, keeping it
+// pixel-exact; Fit mode re-fits it.
+//
+// A deadline rather than a countdown: the topbar and bottombar settle on
+// their own frames, so the number of resizes is not known in advance.  A
+// count that guessed too low let one through, and one that guessed too high
+// left a hold armed to swallow an unrelated later resize — the window
+// refusing to grow when DevTools opened, say.  Time bounds it either way.
+Uint64 s_hold_window_size_until = 0;
 
 // The single resize point for chrome-driven geometry changes, so the hold
 // is honoured identically by topbar/bottombar set and clear.
 void resize_window_for_chrome() {
   if (!mainSDLWindow) return;
-  if (s_hold_window_size > 0) {
-    --s_hold_window_size;
-    return;
-  }
+  if (SDL_GetTicks() < s_hold_window_size_until) return;
   int w = 0;
   int h = 0;
   if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
@@ -2197,8 +2200,9 @@ void resize_window_for_chrome() {
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
-void video_hold_window_size(int resizes) {
-  if (resizes > s_hold_window_size) s_hold_window_size = resizes;
+void video_hold_window_size(int ms) {
+  Uint64 const until = SDL_GetTicks() + static_cast<Uint64>(ms);
+  if (until > s_hold_window_size_until) s_hold_window_size_until = until;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other

@@ -357,19 +357,23 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
       add_action_item(m, target, e);
   }
 
-  // ── Input ── Joystick, Light Gun, Limit Speed (all MenuGroup::Input).
+  // ── Input ── Joystick, Light Gun (all MenuGroup::Input).
   {
     NSMenu* m = insert_submenu(mainMenu, @"Input", insertIdx++);
     add_group_actions(m, target, MenuGroup::Input);
   }
 
-  // ── Tools ── DevTools, Command Palette, Multiface II, Diagnostics ▸.
+  // ── Tools ── DevTools, Command Palette, Multiface II, Limit Speed,
+  // Diagnostics ▸.  Assembled by hand rather than from MenuGroup::Tools, so
+  // an action tagged Tools has to be listed here to appear at all.
   {
     NSMenu* m = insert_submenu(mainMenu, @"Tools", insertIdx++);
     if (const MenuAction* e = koncpc_find_action(KONCPC_DEVTOOLS))
       add_action_item(m, target, e);
     add_bridge_item(m, target, @"Command Palette", BK_PALETTE, 0);
     if (const MenuAction* e = koncpc_find_action(KONCPC_MF2STOP))
+      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_SPEED))
       add_action_item(m, target, e);
     [m addItem:[NSMenuItem separatorItem]];
     NSMenuItem* diagItem = [[NSMenuItem alloc] initWithTitle:@"Diagnostics"
