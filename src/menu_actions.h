@@ -17,8 +17,8 @@ enum class MenuGroup : std::uint8_t {
   Media,     // disks, tapes, cartridges, snapshots
   View,      // display actions: Fullscreen, Screenshot, Show FPS
   Input,     // input devices: Joystick, Light Gun
-  Tools,     // DevTools, Command Palette, Multiface II, Limit Speed, Diagnostics
-  Window,    // tool/debug windows, virtual keyboard
+  Tools,   // DevTools, Command Palette, Multiface II, Limit Speed, Diagnostics
+  Window,  // tool/debug windows, virtual keyboard
 };
 
 // Single source of truth for an emulator action's UI metadata.  The shortcut

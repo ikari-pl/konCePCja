@@ -1153,7 +1153,8 @@ void DevToolsUI::render_memory_hex() {
 
             if (is_editing) {
               // Compact inline edit — fixed width matching "FF"
-              ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ui_dpi_px(0), ui_dpi_px(0)));
+              ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                  ImVec2(ui_dpi_px(0), ui_dpi_px(0)));
               ImGui::SetNextItemWidth(ImGui::CalcTextSize("FF").x);
               if (memhex_edit_focus_) {
                 ImGui::SetKeyboardFocusHere();
@@ -4083,7 +4084,8 @@ void DevToolsUI::render_assembler() {
 // -----------------------------------------------
 
 void DevToolsUI::render_asm_reference() {
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(520), ui_dpi_px(600)), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(520), ui_dpi_px(600)),
+                           ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Assembly Reference##devtools", &show_asm_reference_)) {
     ImGui::End();
     return;

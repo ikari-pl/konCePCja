@@ -571,6 +571,18 @@ bool driveAltered();
 // the unit-test binary, or a shutdown before startup finished -- leaves the
 // user file untouched.
 bool koncpc_config_loaded();
+
+// Snapshot CPC.printer / CPC.scr_window as the user's deliberate intent.
+// Call after Options▸Save (and any other path that intentionally persists
+// those fields).  cleanExit / MRU write-backs restore this snapshot so a
+// failed printer_start() or a live fullscreen toggle cannot poison the file.
+void koncpc_capture_config_intent();
+
+// Write the real config with printer/scr_window restored to the captured
+// intent.  Live CPC values are preserved across the call.  No-op (false)
+// when the config was never loaded.
+bool koncpc_save_configuration_preserving_intent();
+
 void emulator_reset();
 void cpc_pause();
 void cpc_resume();

@@ -506,6 +506,33 @@ unsigned int g_cfg_intent_scr_window = 1;
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 bool koncpc_config_loaded() { return g_config_loaded; }
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_capture_config_intent() {
+  g_cfg_intent_printer = CPC.printer;
+  g_cfg_intent_scr_window = CPC.scr_window;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_save_configuration_preserving_intent() {
+  if (!g_config_loaded) return false;
+  // printer / scr_window hold runtime state; write the captured intent so a
+  // failed printer_start() or a live fullscreen toggle cannot poison the file.
+  unsigned int const live_printer = CPC.printer;
+  unsigned int const live_scr_window = CPC.scr_window;
+  CPC.printer = g_cfg_intent_printer;
+  CPC.scr_window = g_cfg_intent_scr_window;
+  std::string const cfg = getConfigurationFilename(true);
+  bool const ok = saveConfiguration(CPC, cfg);
+  CPC.printer = live_printer;
+  CPC.scr_window = live_scr_window;
+  if (!ok) {
+    LOG_ERROR("Failed to save configuration to '" << cfg << "'");
+  }
+  return ok;
+}
 extern t_CRTC CRTC;
 t_CRTC CRTC;
 extern t_FDC FDC;
@@ -3127,27 +3154,11 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   }
   // Persist settings on a clean exit, so a change survives without an
   // explicit Options▸Save.  Restricted to a successful GUI exit: that is the
-  // state worth recording.
+  // state worth recording.  printer / scr_window are restored to the
+  // captured intent (refreshed by Options▸Save via
+  // koncpc_capture_config_intent) so runtime mutations cannot poison the file.
   if (returnCode == 0 && !g_headless && g_config_loaded) {
-    // Two fields hold runtime state rather than user intent, and writing them
-    // back poisons the config for every later session:
-    //
-    //   printer     — cleared when printer_start() fails, so one boot with the
-    //                 port unavailable would disable printing for good.  Same
-    //                 hazard the snd_enabled comment in koncpc_main() records.
-    //   scr_window  — toggled live by koncpc_toggle_fullscreen(), so quitting
-    //                 while fullscreen would launch fullscreen from then on
-    //                 with no visible cause.
-    //
-    // Restore what the file said before writing it back.  Options▸Save still
-    // records a deliberate change to either.
-    unsigned int const live_printer = CPC.printer;
-    unsigned int const live_scr_window = CPC.scr_window;
-    CPC.printer = g_cfg_intent_printer;
-    CPC.scr_window = g_cfg_intent_scr_window;
-    saveConfiguration(CPC, getConfigurationFilename(true));
-    CPC.printer = live_printer;
-    CPC.scr_window = live_scr_window;
+    koncpc_save_configuration_preserving_intent();
   }
   doCleanUp();
   _exit(returnCode);
@@ -3979,8 +3990,7 @@ int koncpc_main(int argc, char** argv) {
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
   g_config_loaded = true;
-  g_cfg_intent_printer = CPC.printer;
-  g_cfg_intent_scr_window = CPC.scr_window;
+  koncpc_capture_config_intent();
   if (CPC.printer) {
     if (!printer_start()) {  // start capturing printer output, if enabled
       CPC.printer = 0;
@@ -4698,10 +4708,15 @@ int koncpc_main(int argc, char** argv) {
           float const content_scale = display_scale / density;
 
           // Hold the window at its current size across the resize the new
-          // chrome heights would trigger.  The CPC image keeps the chosen
-          // scr_scale and stays pixel-exact: compute_scale() crops and
-          // centres it, and Fit mode re-fits it.
-          video_hold_window_size(750);
+          // chrome heights would trigger.  At a fixed scr_scale the CPC image
+          // stays pixel-exact: compute_scale() crops and centres it.  Fit mode
+          // cannot derive a fixed size, so remember chrome+window and grow by
+          // the chrome delta after the bars settle instead of holding.
+          if (CPC.scr_scale == 0) {
+            video_begin_fit_chrome_preserve();
+          } else {
+            video_hold_window_size(750);
+          }
           ui_host().set_display_scale(content_scale);
           LOG_INFO("Display scale changed — content scale now "
                    << content_scale << " (display " << display_scale

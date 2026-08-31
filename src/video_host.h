@@ -59,6 +59,17 @@ void video_clear_topbar();
 // Hold the window at its current size against chrome-driven resizes for the
 // next `ms` milliseconds.
 void video_hold_window_size(int ms);
+// True while a chrome-resize hold is still active.
+bool video_window_size_held();
+// Remember current chrome + window height so a later Fit-mode DPI settle can
+// grow the window by the chrome delta (Fit never derives a fixed size).
+void video_begin_fit_chrome_preserve();
+// After chrome has settled, apply any pending Fit chrome-preserve grow.
+void video_maybe_apply_fit_chrome_preserve();
+// Re-run the chrome→window size mapping once the hold has expired.  Needed
+// when heights were applied during a hold and the deferred dirty flag alone
+// would see matching heights and skip the resize.
+void video_apply_pending_chrome_resize();
 void video_fit_window_to_screen();
 bool video_derived_window_size(int& out_w, int& out_h);
 int video_get_topbar_height();

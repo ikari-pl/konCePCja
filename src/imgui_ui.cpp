@@ -733,7 +733,8 @@ void imgui_render_ui() {
       ImGui::TextUnformatted("Are you sure you want to quit?");
     }
     ImGui::Spacing();
-    bool const cancel = ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)));
+    bool const cancel =
+        ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)));
     ImGui::SetItemDefaultFocus();  // focus the safe button by default
     ImGui::SameLine();
     if (ImGui::Button("Quit", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
@@ -795,20 +796,34 @@ void imgui_render_ui() {
   // Apply deferred topbar/bottombar resize AFTER all ImGui rendering is
   // complete. Calling SDL_SetWindowSize during the render loop causes macOS to
   // shift window coordinates mid-frame, breaking button click detection.
+  //
+  // While video_hold_window_size() is active, set_topbar/bottombar update the
+  // stored heights but skip SDL_SetWindowSize. Keep the dirty flags set so we
+  // retry after the hold expires — and call video_apply_pending_chrome_resize
+  // once heights already match (they were applied during the hold).
   if (s_topbar_height_dirty) {
     int const total =
         static_cast<int>(s_menubar_h) + s_main_topbar_h + s_devtools_bar_h;
     if (total != video_get_topbar_height()) {
       video_set_topbar(nullptr, total);
+    } else if (!video_window_size_held()) {
+      video_apply_pending_chrome_resize();
     }
-    s_topbar_height_dirty = false;
+    if (!video_window_size_held()) {
+      s_topbar_height_dirty = false;
+    }
   }
   if (s_bottombar_height_dirty) {
     if (s_statusbar_h != video_get_bottombar_height()) {
       video_set_bottombar(s_statusbar_h);
+    } else if (!video_window_size_held()) {
+      video_apply_pending_chrome_resize();
     }
-    s_bottombar_height_dirty = false;
+    if (!video_window_size_held()) {
+      s_bottombar_height_dirty = false;
+    }
   }
+  video_maybe_apply_fit_chrome_preserve();
 
   // Keyboard routing is handled at the SDL event level in kon_cpc_ja.cpp
   // using imgui_any_keyboard_ui_active() as the single source of truth.
@@ -822,13 +837,12 @@ void imgui_render_ui() {
 namespace {
 void mru_push(std::vector<std::string>& list, const std::string& path) {
   mru_list_push(list, path, t_CPC::MRU_MAX);
-  // Persist immediately. The recent-files list is otherwise only written to
-  // disk by the Options▸Save button (saveConfiguration has a single caller),
-  // so a load followed by quit/crash would lose the entry. Opening a file is a
-  // rare, explicit user action, so a full config write-back here is cheap.
-  if (koncpc_config_loaded()) {
-    saveConfiguration(CPC, getConfigurationFilename(true));
-  }
+  // Persist immediately so a load followed by quit/crash keeps the entry.
+  // Opening a file is a rare, explicit user action, so a full config
+  // write-back here is cheap. Use the intent-preserving path so a failed
+  // printer_start() or live fullscreen toggle cannot poison the file
+  // (Options▸Save is the deliberate path that captures new intent).
+  koncpc_save_configuration_preserving_intent();
 }
 }  // namespace
 
@@ -1734,7 +1748,8 @@ void render_layout_dropdown() {
       ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
       ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
 
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_dpi_px(8), ui_dpi_px(6)));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(ui_dpi_px(8), ui_dpi_px(6)));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
   if (ImGui::Begin("##LayoutDropdown", nullptr, dd_flags)) {
     // Close when clicking outside
@@ -1911,7 +1926,8 @@ void imgui_render_topbar() {
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
   ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_dpi_px(4), pad_y));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui_dpi_px(8), ui_dpi_px(0)));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                      ImVec2(ui_dpi_px(8), ui_dpi_px(0)));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg,
@@ -2135,7 +2151,8 @@ void imgui_render_statusbar() {
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
   ImGui::SetNextWindowViewport(
       vp->ID);  // keep on main viewport, don't spawn platform window
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_dpi_px(6.0f), pad_y));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(ui_dpi_px(6.0f), pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui_dpi_px(8.0f), 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -2174,7 +2191,7 @@ void imgui_render_statusbar() {
       ImGui::PopStyleColor();
 
       // ── Filename (clickable when no tape → load) ──
-      ImGui::SameLine(0, 4);
+      ImGui::SameLine(0, ui_dpi_px(4));
       {
         const char* fullTapeName;
         if (tape_loaded && !CPC.tape.file.empty()) {
@@ -2206,7 +2223,7 @@ void imgui_render_statusbar() {
       }
 
       // ── Transport buttons (gray SmallButtons) ──
-      ImGui::SameLine(0, 6);
+      ImGui::SameLine(0, ui_dpi_px(6));
       {
         // Gray button style
         ImGui::PushStyleColor(ImGuiCol_Button,
@@ -2248,7 +2265,7 @@ void imgui_render_statusbar() {
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ▶ Play
         if (is_playing) {
@@ -2267,7 +2284,7 @@ void imgui_render_statusbar() {
         ImGui::EndDisabled();
         if (is_playing) ImGui::PopStyleColor(3);
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ⏹ Stop
         ImGui::BeginDisabled(!is_playing);
@@ -2276,7 +2293,7 @@ void imgui_render_statusbar() {
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ▷| Next block
         ImGui::BeginDisabled(
@@ -2309,7 +2326,7 @@ void imgui_render_statusbar() {
         }
         ImGui::EndDisabled();
 
-        ImGui::SameLine(0, 2);
+        ImGui::SameLine(0, ui_dpi_px(2));
 
         // ⏏ Eject
         ImGui::BeginDisabled(!tape_loaded);
@@ -2323,7 +2340,7 @@ void imgui_render_statusbar() {
 
       // ── Block counter ──
       if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
-        ImGui::SameLine(0, 4);
+        ImGui::SameLine(0, ui_dpi_px(4));
         char blockStr[32];
         snprintf(blockStr, sizeof(blockStr), "%d/%d",
                  imgui_state.tape_current_block + 1,
@@ -2343,7 +2360,7 @@ void imgui_render_statusbar() {
                  sizeof(imgui_state.tape_decoded_buf));
         }
 
-        ImGui::SameLine(0, 4);
+        ImGui::SameLine(0, ui_dpi_px(4));
         float const frameH = ImGui::GetFrameHeight();
         ImU32 const color_active = IM_COL32(0x00, 0xFF, 0x80, 0xFF);
         ImU32 const color_dim = IM_COL32(0x00, 0x40, 0x20, 0xFF);
@@ -2578,13 +2595,12 @@ void imgui_render_statusbar() {
         }
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.9f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
-        imgui_marquee_text(cached_fname.c_str(), 120.0f);
+        imgui_marquee_text(cached_fname.c_str(), ui_dpi_px(120.0f));
         ImGui::PopStyleColor();
       }
 
       ImGui::EndGroup();
     }
-
 
     // ── First-run empty-state hint ──
     // beads-mng: when no media is loaded anywhere, show an unobtrusive,
@@ -2616,7 +2632,8 @@ void imgui_render_statusbar() {
       ImGui::TextUnformatted(
           "Fitting the new SD folder restarts the CPC and loses them.");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) ImGui::CloseCurrentPopup();
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0))))
+        ImGui::CloseCurrentPopup();
       ImGui::SetItemDefaultFocus();
       ImGui::SameLine();
       if (ImGui::Button("Restart", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
@@ -2639,7 +2656,8 @@ void imgui_render_statusbar() {
                          "You have unsaved changes to a disk.");
       ImGui::TextUnformatted("Resetting will lose them.");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) ImGui::CloseCurrentPopup();
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0))))
+        ImGui::CloseCurrentPopup();
       ImGui::SetItemDefaultFocus();
       ImGui::SameLine();
       if (ImGui::Button("Reset", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
@@ -2660,7 +2678,8 @@ void imgui_render_statusbar() {
           "Forget every recent disk, tape, snapshot and cartridge?");
       ImGui::TextDisabled("This only clears the lists — no files are deleted.");
       ImGui::Spacing();
-      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) ImGui::CloseCurrentPopup();
+      if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(90), ui_dpi_px(0))))
+        ImGui::CloseCurrentPopup();
       ImGui::SetItemDefaultFocus();  // the safe choice is the default
       ImGui::SameLine();
       if (ImGui::Button("Clear", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
@@ -3145,7 +3164,6 @@ void imgui_render_menu() {
   ImGui::End();
 
   if (action) imgui_close_menu();
-
 }
 
 // The About box renders every frame, not from inside imgui_render_menu():
@@ -3236,7 +3254,8 @@ void imgui_render_options() {
   ImGuiViewport const* mvp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
                           ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(480), ui_dpi_px(420)), ImGuiCond_Appearing);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(480), ui_dpi_px(420)),
+                           ImGuiCond_Appearing);
   ImGui::SetNextWindowViewport(mvp->ID);
 
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
@@ -4231,6 +4250,9 @@ void imgui_render_options() {
   auto commit_options = [&](bool save_to_file) {
     if (save_to_file) {
       saveConfiguration(CPC, getConfigurationFilename(true));
+      // Options▸Save is a deliberate persist of printer/scr_window — refresh
+      // the intent snapshot so cleanExit / MRU write-backs do not undo it.
+      koncpc_capture_config_intent();
     }
     if (needs_restart && koncpc_rebuild_machine() != 0) {
       // A half-built machine — a missing ROM, say — must not be reported as
@@ -4322,6 +4344,7 @@ void imgui_render_options() {
       // only the reboot is refused.
       if (s_pending_commit == PendingCommit::Save) {
         saveConfiguration(CPC, getConfigurationFilename(true));
+        koncpc_capture_config_intent();
       }
       s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();
@@ -4448,8 +4471,10 @@ void imgui_render_devtools() {
   ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
   ImGui::SetNextWindowSize(ImVec2(vp->Size.x, 0));  // auto-height
   ImGui::SetNextWindowViewport(vp->ID);             // keep on main viewport
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_dpi_px(4), ui_dpi_px(2)));
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui_dpi_px(8), ui_dpi_px(0)));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                      ImVec2(ui_dpi_px(4), ui_dpi_px(2)));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                      ImVec2(ui_dpi_px(8), ui_dpi_px(0)));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.11f, 0.11f, 0.11f, 1.0f));
@@ -4737,7 +4762,8 @@ void imgui_render_devtools() {
 
 namespace {
 void imgui_render_memory_tool() {
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(400), ui_dpi_px(340)), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(400), ui_dpi_px(340)),
+                           ImGuiCond_FirstUseEver);
 
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
@@ -4899,7 +4925,8 @@ void imgui_render_vkeyboard() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   bool open = true;
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(575), ui_dpi_px(265)), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(575), ui_dpi_px(265)),
+                           ImGuiCond_FirstUseEver);
 
   if (!ImGui::Begin("CPC 6128 Keyboard", &open, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();
@@ -5289,7 +5316,8 @@ void imgui_render_vjoystick() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   bool open = true;
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(250), ui_dpi_px(240)), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(250), ui_dpi_px(240)),
+                           ImGuiCond_FirstUseEver);
   // NoNav: arrow keys are read for the joystick (below), not consumed by
   // ImGui's keyboard navigation between the d-pad buttons.
   if (!ImGui::Begin("Virtual Joystick", &open,
@@ -5447,7 +5475,8 @@ void serial_terminal_feed_byte(uint8_t byte) {
 }
 
 void imgui_render_serial_terminal() {
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(700), ui_dpi_px(500)), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(700), ui_dpi_px(500)),
+                           ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Serial Terminal", &imgui_state.show_serial_terminal)) {
     ImGui::End();
     return;
@@ -5580,7 +5609,8 @@ void imgui_render_serial_terminal() {
 // ─────────────────────────────────────────────────
 
 void imgui_render_plotter_preview() {
-  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(600), ui_dpi_px(500)), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(600), ui_dpi_px(500)),
+                           ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Plotter Preview", &imgui_state.show_plotter_preview)) {
     ImGui::End();
     return;
