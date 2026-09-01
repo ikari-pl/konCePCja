@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.2.4](https://github.com/ikari-pl/konCePCja/compare/v6.2.3...v6.2.4) (2026-08-31)
+
+
+### Bug Fixes
+
+* Windows DPI scaling, config safety, and UI fixes ([#39](https://github.com/ikari-pl/konCePCja/issues/39)) ([e9fe883](https://github.com/ikari-pl/konCePCja/commit/e9fe88385c9c57258693bba4af4c9d29e387e8b4))
+
 ## [6.2.3](https://github.com/ikari-pl/konCePCja/compare/v6.2.2...v6.2.3) (2026-08-29)
 
 
