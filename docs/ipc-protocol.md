@@ -63,7 +63,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Response |
 |---------|----------|
-| `regs crtc` | `OK R0=xx..R17=xx VCC=xx VLC=xx HCC=xx HSC=xx VSC=xx VMA=xxxx R52=xx SL=xx` — CRTC 6845 registers and internal counters |
+| `regs crtc` | `OK R0=xx..R17=xx VCC=xx VLC=xx HCC=xx HSC=xx VSC=xx VMA=xxxx R52=xx SL=xx` — CRTC 6845 registers and internal counters. `SL` is the frame scanline; `R52` is the Gate Array 6-bit HSYNC line counter that raster interrupts fire from, not CRTC register 5 |
 | `regs ga` | `OK MODE=x PEN=xx INK0=xx..INK16=xx ROM_CFG=xx RAM_CFG=xx SL=xx INT_DELAY=xx` — Gate Array state |
 | `regs psg` | `OK R0=xx..R15=xx SELECT=xx CONTROL=xx` — AY-3-8912 sound chip registers |
 

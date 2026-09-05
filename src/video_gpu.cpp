@@ -137,9 +137,15 @@ bool video_gpu_init(SDL_Window* window, uint32_t fb_w, uint32_t fb_h) {
 
   // ── 1. Create GPU device ──────────────────────────────────────────
   // Accept any backend (Metal on macOS, Vulkan on Linux, D3D12 on Windows).
+  // DXBC belongs in this list: the direct3d12 branch of create_blit_shaders()
+  // supplies DXBC blobs, and SDL validates a shader's format against the set
+  // requested here.  The check only runs under debug_mode, so omitting it was
+  // survivable in release and an assert ("Incompatible shader format for GPU
+  // backend") the moment anyone turned debug on to investigate something.
   g_gpu.device = SDL_CreateGPUDevice(
       SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_MSL |
-          SDL_GPU_SHADERFORMAT_METALLIB | SDL_GPU_SHADERFORMAT_DXIL,
+          SDL_GPU_SHADERFORMAT_METALLIB | SDL_GPU_SHADERFORMAT_DXIL |
+          SDL_GPU_SHADERFORMAT_DXBC,
       /*debug_mode=*/false,
       /*name=*/nullptr);
 
