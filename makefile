@@ -587,6 +587,11 @@ sim_headless: sim/koncepcja_sim.cpp $(SIM_HW_SRCS)
 cpct_tap_rig: sim/cpct_tap_rig.cpp $(SIM_HW_SRCS)
 	$(CXX) -std=c++17 -O2 -Isrc -o cpct_tap_rig $^
 
+# PSG oracle rig (no SDL): the PSG Device driven by a scripted register
+# program through the AY bus, generators dumped per PSG clock (copycat/sim/psg).
+psg_oracle_rig: sim/psg_oracle_rig.cpp $(SIM_HW_SRCS)
+	$(CXX) -std=c++17 -O2 -Isrc -o psg_oracle_rig $^
+
 # --- FPS benchmark + PGO 2-phase flow (beads-lcfa / plan §10-B4, risk #5) -------
 # A FIXED, deterministic headless cold-boot trace (sim/bench_fps.cpp) reusing the
 # sim source set (hw Devices + subcycle) — no SDL, no legacy loop — so the FPS is
