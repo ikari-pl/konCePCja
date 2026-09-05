@@ -9,6 +9,7 @@
  *                  [--screen ram_c000.bin] (dump RAM C000-FFFF at the end)
  *                  [--garegs ga.txt]     (dump the Gate Array's mode and inks)
  *                  [--capacity N]        (tap record buffer, default 1<<24)
+ *                  [--expansion KB]      (attach a dk'tronics-style RAM expansion, 64..512)
  */
 #include <cstdint>
 #include <cstdio>
@@ -38,7 +39,7 @@ int main(int argc, char** argv) {
   long cycles = 2000000;
   int key_rows[16], key_cols[16], nkeys = 0;
   const char* upper_path = nullptr; const char* screen_path = nullptr; const char* garegs_path = nullptr;
-  size_t capacity = size_t(1) << 24;
+  size_t capacity = size_t(1) << 24; long expansion_kb = 0;
   for (int i = 1; i < argc; i++) {
     if (!std::strcmp(argv[i], "--rom") && i + 1 < argc) rom_path = argv[++i];
     else if (!std::strcmp(argv[i], "--out") && i + 1 < argc) out_path = argv[++i];
@@ -47,6 +48,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--screen") && i + 1 < argc) screen_path = argv[++i];
     else if (!std::strcmp(argv[i], "--garegs") && i + 1 < argc) garegs_path = argv[++i];
     else if (!std::strcmp(argv[i], "--capacity") && i + 1 < argc) capacity = std::strtoul(argv[++i], nullptr, 0);
+    else if (!std::strcmp(argv[i], "--expansion") && i + 1 < argc) expansion_kb = std::atol(argv[++i]);
     else if (!std::strcmp(argv[i], "--key") && i + 1 < argc && nkeys < 16) {
       std::sscanf(argv[++i], "%d,%i", &key_rows[nkeys], &key_cols[nkeys]);
       nkeys++;
@@ -84,6 +86,8 @@ int main(int argc, char** argv) {
     if (upper.size() < 0x4000) { std::fprintf(stderr, "cpct_tap_rig: %s is not a 16 KB ROM\n", upper_path); return 2; }
     mem_load_upper_rom(&mdev, upper.data(), 0x4000);
   }
+  std::vector<uint8_t> xmem;
+  if (expansion_kb > 0) { xmem.assign(static_cast<size_t>(expansion_kb) * 1024, 0); mem_attach_expansion(&mdev, xmem.data(), xmem.size()); }
   cpct_tap_set_capacity(&tdev, capacity);
   for (int k = 0; k < nkeys; k++)
     psg_set_key_row(&sdev, static_cast<uint8_t>(key_rows[k]), static_cast<uint8_t>(key_cols[k]));
