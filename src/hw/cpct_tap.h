@@ -17,6 +17,17 @@
  *   (T-states at 4 MHz), and the address and data bus AS LAST SEEN while the
  *   strobe was active -- the byte the CPU consumed on a read, the byte it
  *   drove on a write; the record is emitted when the strobe ends.
+ *
+ * KNOWN MODEL ARTEFACT in the cycle stamps (2026-09-05, measured against the
+ * CoPyCat standalone RTL on the same program): this Z80 aligns a memory
+ * M-cycle to the Gate Array's microsecond grid by HOLDING T1 until the grid
+ * (z80.cpp, "T1 hold"), so its /MREQ appears on the grid; real silicon
+ * asserts /MREQ in T1 wherever T1 falls and is then held in T2 by /WAIT.
+ * Instruction totals are identical either way; the START of a bus strobe in
+ * this trace is therefore up to 3 T-states LATER than hardware's for the
+ * same access (the end is the same). A consumer placing sub-microsecond
+ * effects by `cycle` should expect that jitter from a konCePCja-produced
+ * trace and none from a hardware capture.
  */
 #ifndef KONCPC_HW_CPCT_TAP_H
 #define KONCPC_HW_CPCT_TAP_H
