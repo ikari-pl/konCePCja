@@ -582,6 +582,11 @@ sim: sim/koncepcja_sim.cpp $(SIM_HW_SRCS)
 sim_headless: sim/koncepcja_sim.cpp $(SIM_HW_SRCS)
 	$(CXX) -std=c++17 -O2 -Isrc -DSIM_HEADLESS_ONLY -o $(SIM_TARGET)_headless $^
 
+# CPCT bus tap rig (no SDL): boot a given lower ROM with the tap attached and
+# write the trace; the other side of the comparison is the CoPyCat RTL bench.
+cpct_tap_rig: sim/cpct_tap_rig.cpp $(SIM_HW_SRCS)
+	$(CXX) -std=c++17 -O2 -Isrc -o cpct_tap_rig $^
+
 # --- FPS benchmark + PGO 2-phase flow (beads-lcfa / plan §10-B4, risk #5) -------
 # A FIXED, deterministic headless cold-boot trace (sim/bench_fps.cpp) reusing the
 # sim source set (hw Devices + subcycle) — no SDL, no legacy loop — so the FPS is
