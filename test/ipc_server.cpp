@@ -431,6 +431,102 @@ TEST_F(IpcServerTest, BreakpointMutationCannotRaceStopCommit) {
   z80_clear_breakpoints();
 }
 
+TEST_F(IpcServerTest, PauseLeaseBlocksConcurrentResume) {
+  // Destructive callers hold CpcPauseLease across their critical section.
+  // A concurrent IPC/UI Run must not clear pause or bump the resume epoch
+  // while that lease is alive — otherwise quiescence waits can hang and
+  // teardown can race a restarted Z80 thread.
+  cpc_resume();
+  uint64_t const epoch_before = cpc_resume_epoch();
+
+  std::atomic<bool> resume_started{false};
+  std::atomic<bool> resume_finished{false};
+  std::thread resume_thread;
+  {
+    CpcPauseLease lease;
+    EXPECT_TRUE(CPC.paused);
+    EXPECT_FALSE(lease.was_paused());
+
+    resume_thread = std::thread([&]() {
+      resume_started.store(true, std::memory_order_release);
+      uint64_t const epoch = cpc_resume();
+      EXPECT_EQ(epoch, epoch_before);
+      resume_finished.store(true, std::memory_order_release);
+    });
+    while (!resume_started.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Resume returns promptly (deferred no-op) but must not unpause.
+    EXPECT_TRUE(resume_finished.load(std::memory_order_acquire));
+    EXPECT_TRUE(CPC.paused);
+    EXPECT_EQ(cpc_resume_epoch(), epoch_before);
+  }
+
+  resume_thread.join();
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_EQ(cpc_resume_epoch(), epoch_before);
+
+  uint64_t const epoch_after = cpc_resume();
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_EQ(epoch_after, epoch_before + 1);
+}
+
+TEST_F(IpcServerTest, PauseLeaseProtectsQuiescenceWaitFromConcurrentResume) {
+  // Simulate a non-quiescent Z80 thread while a lease waits. Concurrent
+  // Resume must not clear pause — otherwise the wait would never observe
+  // the paused branch and could spin forever.
+  cpc_resume();
+  g_z80_quiescent.store(false, std::memory_order_release);
+
+  std::atomic<bool> lease_held{false};
+  std::atomic<bool> allow_wait{false};
+  std::atomic<bool> waiter_done{false};
+  std::thread waiter([&]() {
+    CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+    lease_held.store(true, std::memory_order_release);
+    while (!allow_wait.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    lease.wait();
+    waiter_done.store(true, std::memory_order_release);
+  });
+
+  while (!lease_held.load(std::memory_order_acquire)) std::this_thread::yield();
+  EXPECT_TRUE(CPC.paused);
+
+  uint64_t const epoch = cpc_resume_epoch();
+  EXPECT_EQ(cpc_resume(), epoch);  // deferred while lease is held
+  EXPECT_TRUE(CPC.paused);
+
+  allow_wait.store(true, std::memory_order_release);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  EXPECT_FALSE(waiter_done.load(std::memory_order_acquire));
+
+  g_z80_quiescent.store(true, std::memory_order_release);
+  waiter.join();
+  EXPECT_TRUE(waiter_done.load(std::memory_order_acquire));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_EQ(cpc_resume_epoch(), epoch);
+}
+
+TEST_F(IpcServerTest, NestedPauseLeasesKeepResumeDeferred) {
+  cpc_resume();
+  uint64_t const epoch = cpc_resume_epoch();
+  {
+    CpcPauseLease outer;
+    {
+      CpcPauseLease inner;
+      EXPECT_TRUE(inner.was_paused());
+      EXPECT_EQ(cpc_resume(), epoch);
+      EXPECT_TRUE(CPC.paused);
+    }
+    // Outer lease still held — Resume remains deferred.
+    EXPECT_EQ(cpc_resume(), epoch);
+    EXPECT_TRUE(CPC.paused);
+  }
+  EXPECT_EQ(cpc_resume(), epoch + 1);
+  EXPECT_FALSE(CPC.paused);
+}
+
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto screenshotPath =

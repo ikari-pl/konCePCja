@@ -598,6 +598,45 @@ class CpcStopCoordinationGuard {
   uint64_t breakpoint_generation_ = 0;
 };
 
+// RAII ownership of a destructive pause critical section.
+//
+// Acquires a pause lease, pauses the machine, and (by default) waits until the
+// Z80 thread is quiescent. While any lease is held, cpc_resume() is deferred:
+// it neither clears CPC.paused nor advances the resume epoch. Nested leases
+// are refcounted. Call release() before an intentional cpc_resume() that must
+// take effect while this scope is still alive.
+//
+// Prefer this over bare cpc_pause_and_wait() whenever the caller then touches
+// shared machine/video state (reset, rebuild, snapshot, fullscreen, video
+// reinit, stepped Z80 state).
+enum class CpcPauseLeaseMode {
+  WaitImmediately,  // pause + wait for g_z80_quiescent (default)
+  PauseOnly,        // pause under lease; caller must call wait() after any
+                    // setup that must precede quiescence (e.g. frame abort)
+};
+
+class CpcPauseLease {
+ public:
+  explicit CpcPauseLease(
+      CpcPauseLeaseMode mode = CpcPauseLeaseMode::WaitImmediately);
+  ~CpcPauseLease();
+  CpcPauseLease(const CpcPauseLease&) = delete;
+  CpcPauseLease& operator=(const CpcPauseLease&) = delete;
+  CpcPauseLease(CpcPauseLease&& other) noexcept;
+  CpcPauseLease& operator=(CpcPauseLease&&) = delete;
+
+  bool was_paused() const { return was_paused_; }
+  bool active() const { return active_; }
+  void wait();     // spin until g_z80_quiescent (idempotent if already waited)
+  void release();  // drop the lease early; machine stays paused
+
+ private:
+  void acquire(CpcPauseLeaseMode mode);
+  bool was_paused_ = false;
+  bool active_ = false;
+  bool waited_ = false;
+};
+
 void emulator_reset();
 void cpc_pause();
 uint64_t cpc_resume();
@@ -608,8 +647,10 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
                                 word pc, bool watchpoint);
 // cpc_pause() + spin until the Z80 thread is not inside z80_execute().
-// Use this before touching Z80 state (registers, memory) from a non-Z80 thread.
-// No-op in headless mode (single-threaded; cpc_pause() is sufficient).
+// Holds a pause lease only for the duration of the wait (so concurrent Resume
+// cannot defeat quiescence). The lease is released before return — callers that
+// then enter a destructive critical section must hold CpcPauseLease across that
+// section. No-op wait in headless mode (single-threaded; pause is sufficient).
 void cpc_pause_and_wait();
 void bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);

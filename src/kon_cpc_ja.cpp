@@ -828,8 +828,10 @@ void emulator_reset() {
   // paused and resumes itself; a running caller (F5) keeps running. Cheap and
   // idempotent — in headless/single-threaded mode g_z80_quiescent is always
   // true, and at init (before the Z80 thread exists) it is too.
-  const bool was_paused = g_emu_paused.load(std::memory_order_relaxed);
-  cpc_pause_and_wait();
+  //
+  // Hold a pause lease for the whole destructive section so a concurrent
+  // IPC/UI Run cannot restart the Z80 while we wipe board state.
+  CpcPauseLease lease;
   subcycle_bridge_reset();  // no-op unless the sub-cycle engine is active
   if (CPC.model > 2) {
     if (pbCartridgePages[0] != nullptr) {
@@ -906,7 +908,10 @@ void emulator_reset() {
     set_osd_message("Machine reset");
   }
 
-  if (!was_paused) cpc_resume();  // a running caller keeps running post-reset
+  if (!lease.was_paused()) {
+    lease.release();
+    cpc_resume();  // a running caller keeps running post-reset
+  }
 }
 
 namespace {
@@ -1187,9 +1192,10 @@ int koncpc_rebuild_machine() {
   // Quiesce first. cpc_pause() only raises a flag; the Z80 thread may still be
   // inside a frame until it observes it, and emulator_init() frees memory that
   // frame is reading (the cartridge image, the expansion ROMs) and wipes the
-  // I/O dispatch table underneath it.
-  const bool was_paused = CPC.paused;
-  cpc_pause_and_wait();
+  // I/O dispatch table underneath it. Hold a pause lease so concurrent Resume
+  // cannot restart execution while we tear down and rebuild.
+  CpcPauseLease lease;
+  const bool was_paused = lease.was_paused();
 
   subcycle_bridge_stop();
   // Serial backends are raw callback contexts in the Machine. Replace them
@@ -1211,6 +1217,7 @@ int koncpc_rebuild_machine() {
   // state through the functions that set both, rather than trusting what it
   // left behind. A machine that failed to build stays stopped: it never reached
   // emulator_reset() and must not be run.
+  lease.release();
   if (err != 0 || was_paused) {
     cpc_pause();
   } else {
@@ -1582,6 +1589,23 @@ void audio_enable() {
 namespace {
 std::mutex g_pause_mutex;
 uint64_t g_resume_epoch = 0;
+unsigned g_pause_lease_count = 0;
+
+void cpc_wait_quiescent() {
+  // Spin until the Z80 thread has exited z80_execute() and entered its sleep
+  // loop. g_z80_quiescent is set true by z80_thread_main before sleeping, false
+  // before entering z80_execute().  In headless mode the Z80 runs on the
+  // calling thread, so g_z80_quiescent stays true and we return immediately.
+  while (!g_z80_quiescent.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+}
+
+void cpc_pause_locked() {
+  audio_pause();
+  CPC.paused = true;
+  g_emu_paused.store(true, std::memory_order_release);
+}
 }  // namespace
 
 CpcStopCoordinationGuard::CpcStopCoordinationGuard() {
@@ -1594,6 +1618,44 @@ CpcStopCoordinationGuard::~CpcStopCoordinationGuard() {
   g_pause_mutex.unlock();
 }
 
+void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
+  {
+    std::scoped_lock const lock(g_pause_mutex);
+    was_paused_ = CPC.paused;
+    ++g_pause_lease_count;
+    active_ = true;
+    cpc_pause_locked();
+  }
+  if (mode == CpcPauseLeaseMode::WaitImmediately) {
+    cpc_wait_quiescent();
+    waited_ = true;
+  }
+}
+
+CpcPauseLease::CpcPauseLease(CpcPauseLeaseMode mode) { acquire(mode); }
+
+CpcPauseLease::CpcPauseLease(CpcPauseLease&& other) noexcept
+    : was_paused_(other.was_paused_),
+      active_(other.active_),
+      waited_(other.waited_) {
+  other.active_ = false;
+}
+
+CpcPauseLease::~CpcPauseLease() { release(); }
+
+void CpcPauseLease::wait() {
+  if (!active_ || waited_) return;
+  cpc_wait_quiescent();
+  waited_ = true;
+}
+
+void CpcPauseLease::release() {
+  if (!active_) return;
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) --g_pause_lease_count;
+  active_ = false;
+}
+
 uint64_t cpc_resume_epoch() {
   std::scoped_lock const lock(g_pause_mutex);
   return g_resume_epoch;
@@ -1601,13 +1663,15 @@ uint64_t cpc_resume_epoch() {
 
 void cpc_pause() {
   std::scoped_lock const lock(g_pause_mutex);
-  audio_pause();
-  CPC.paused = true;
-  g_emu_paused.store(true, std::memory_order_release);
+  cpc_pause_locked();
 }
 
 uint64_t cpc_resume() {
   std::scoped_lock const lock(g_pause_mutex);
+  // A destructive pause lease owns the machine until its critical section
+  // finishes. Concurrent IPC/UI Run must not clear pause mid-wait (unbounded
+  // quiescence spin) or mid-teardown (use-after-free on shared state).
+  if (g_pause_lease_count > 0) return g_resume_epoch;
   // A resume issued while the machine is already running is not a real
   // pause->run transition -- bumping the epoch here would invalidate a
   // breakpoint stop that was legitimately classified moments ago (between
@@ -1630,9 +1694,7 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch) {
   std::scoped_lock const lock(g_pause_mutex);
   if (expected_epoch != g_resume_epoch) return false;
 
-  audio_pause();
-  CPC.paused = true;
-  g_emu_paused.store(true, std::memory_order_release);
+  cpc_pause_locked();
   return true;
 }
 
@@ -1643,22 +1705,16 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
       arming_generation != z80_breakpoint_generation())
     return false;
 
-  audio_pause();
-  CPC.paused = true;
-  g_emu_paused.store(true, std::memory_order_release);
+  cpc_pause_locked();
   z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
   return true;
 }
 
 void cpc_pause_and_wait() {
-  cpc_pause();
-  // Spin until the Z80 thread has exited z80_execute() and entered its sleep
-  // loop. g_z80_quiescent is set true by z80_thread_main before sleeping, false
-  // before entering z80_execute().  In headless mode the Z80 runs on the
-  // calling thread, so g_z80_quiescent stays true and we return immediately.
-  while (!g_z80_quiescent.load(std::memory_order_acquire)) {
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-  }
+  // Lease covers the wait only — concurrent Resume cannot defeat quiescence.
+  // Callers with a destructive critical section after this must hold
+  // CpcPauseLease across that section.
+  CpcPauseLease lease;
 }
 
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
@@ -2745,10 +2801,10 @@ void koncpc_queue_virtual_keys(const std::string& text) {
 // was pressed on the main thread. The previous code paused only *audio* and
 // then SDL_Delay(20)'d, which is a hope rather than a guarantee -- on a busy
 // frame the Z80 thread is still inside the renderer when the surface goes away.
-// Same contract emulator_reset() needs (see cpc_pause_and_wait).
+// Same contract emulator_reset() needs (see CpcPauseLease).
 void koncpc_toggle_fullscreen() {
-  bool const was_paused = CPC.paused;
-  if (!was_paused) cpc_pause_and_wait();
+  CpcPauseLease lease;
+  bool const was_paused = lease.was_paused();
 
   audio_pause();
   video_shutdown();
@@ -2762,7 +2818,10 @@ void koncpc_toggle_fullscreen() {
 #endif
   audio_resume();
 
-  if (!was_paused) cpc_resume();
+  if (!was_paused) {
+    lease.release();
+    cpc_resume();
+  }
 }
 
 void koncpc_menu_action(int action) {
@@ -3128,15 +3187,18 @@ void doCleanUp() {
   //     paused/quiescent branch at the top of its loop.  abort() makes
   //     signal_ready a no-op and releases the render thread's wait so neither
   //     thread can be left spinning on the frame signal during teardown; then
-  //     cpc_pause_and_wait() drives the Z80 to its quiescent paused branch.
+  //     wait() drives the Z80 to its quiescent paused branch. A pause lease
+  //     keeps concurrent Resume from defeating either step.
   if (g_z80_thread.joinable() &&
       std::this_thread::get_id() != g_z80_thread.get_id()) {
     if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
-      cpc_pause();
-      g_frame_signal
-          .abort();  // make signal_ready a no-op + release render wait
-      cpc_pause_and_wait();
-      g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      {
+        CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+        g_frame_signal
+            .abort();  // make signal_ready a no-op + release render wait
+        lease.wait();
+        g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      }
       cpc_resume();
     }
     g_frame_signal.abort();  // belt-and-suspenders during teardown
@@ -5373,11 +5435,11 @@ int koncpc_main(int argc, char** argv) {
         // Quiesce the Z80 thread before tearing down video: video_shutdown()
         // frees the triple-buffer ring, and the Z80 writes into / publishes
         // those buffers (back_surface == a ring buffer). Freeing them while the
-        // Z80 runs is a use-after-free → segfault on renderer switch.
-        bool const z80_was_paused =
-            g_emu_paused.load(std::memory_order_relaxed);
+        // Z80 runs is a use-after-free → segfault on renderer switch. Hold a
+        // pause lease so concurrent Resume cannot restart mid-reinit.
+        CpcPauseLease lease;
+        bool const z80_was_paused = lease.was_paused();
         audio_pause();
-        cpc_pause_and_wait();
         // Free cached save-state thumbnail textures while the OLD render device
         // is still alive — video_shutdown() destroys it, leaving stale GPU
         // handles that would be used/freed against a dead device on next use.
@@ -5402,7 +5464,10 @@ int koncpc_main(int argc, char** argv) {
         koncpc_setup_macos_menu();
 #endif
         audio_resume();
-        if (!z80_was_paused) cpc_resume();
+        if (!z80_was_paused) {
+          lease.release();
+          cpc_resume();
+        }
       }
     }
 
