@@ -560,6 +560,12 @@ void imgui_init_ui() {
       "ASIC Registers", "Show ASIC register viewer", "",
       []() { g_devtools_ui.toggle_window("asic"); });
   g_command_palette.register_command(
+      "Video State", "Show video hardware state", "",
+      []() { g_devtools_ui.toggle_window("video_state"); });
+  g_command_palette.register_command(
+      "Audio State", "Show audio hardware state", "",
+      []() { g_devtools_ui.toggle_window("audio_state"); });
+  g_command_palette.register_command(
       "Disc Tools", "Show disc file/sector tools", "",
       []() { g_devtools_ui.toggle_window("disc_tools"); });
   g_command_palette.register_command(
@@ -1037,6 +1043,13 @@ void dbg_step_over() {
 }  // namespace
 namespace {
 void dbg_step_out() {
+  if (subcycle_bridge_active()) {
+    cpc_pause_and_wait();
+    if (z80_step_out_finish(5000) == Z80StepOutResult::Timeout) {
+      set_osd_message("Step Out timed out", 3000);
+    }
+    return;
+  }
   z80.step_out = 1;
   z80.step_out_addresses.clear();
   z80.step_in = 0;
@@ -3216,9 +3229,6 @@ namespace {
 const char* scale_items[] = {"Fit window", "1x", "1.5x", "2x", "3x"};
 }  // namespace
 namespace {
-const char* sample_rates[] = {"11025", "22050", "44100", "48000", "96000"};
-}  // namespace
-namespace {
 const char* cpc_models[] = {"CPC 464", "CPC 664", "CPC 6128", "6128+"};
 }  // namespace
 namespace {
@@ -3242,12 +3252,30 @@ void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
   static bool old_m4_enabled = false;
-  static bool old_serial_enabled = false;
+  static bool old_smartwatch_enabled = false;
+  static bool old_symbiface_enabled = false;
+  static bool old_amdrum_enabled = false;
+  static bool old_amx_enabled = false;
+  static bool old_disk_sounds_enabled = false;
+  static bool old_tape_sounds_enabled = false;
+  static SerialConfig old_serial_config;
+  static SerialConfig edited_serial_config;
   if (first_open) {
+    if (mainSDLWindow) {
+      CPC.scr_window =
+          (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) ? 0 : 1;
+    }
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
     old_m4_enabled = g_m4board.enabled;
-    old_serial_enabled = g_serial_interface.get_config().enabled;
+    old_smartwatch_enabled = g_smartwatch.enabled;
+    old_symbiface_enabled = g_symbiface.enabled;
+    old_amdrum_enabled = g_amdrum.enabled;
+    old_amx_enabled = g_amx_mouse.enabled;
+    old_disk_sounds_enabled = g_drive_sounds.disk_enabled;
+    old_tape_sounds_enabled = g_drive_sounds.tape_enabled;
+    old_serial_config = g_serial_interface.get_config();
+    edited_serial_config = old_serial_config;
     first_open = false;
   }
 
@@ -3598,10 +3626,7 @@ void imgui_render_options() {
       bool scanlines = CPC.scr_scanlines != 0;
       if (ImGui::Checkbox("Scanlines", &scanlines)) {
         CPC.scr_scanlines = scanlines ? 1 : 0;
-        if (!scanlines) {
-          CPC.scr_oglscanlines = 0;
-          video_set_palette();
-        }
+        if (scanlines && CPC.scr_oglscanlines == 0) CPC.scr_oglscanlines = 30;
       }
       if (scanlines) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
@@ -3625,6 +3650,7 @@ void imgui_render_options() {
       bool fullscreen = CPC.scr_window == 0;
       if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
         CPC.scr_window = fullscreen ? 0 : 1;
+        imgui_state.fullscreen_request = CPC.scr_window;
       }
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
@@ -3662,37 +3688,10 @@ void imgui_render_options() {
         }
       }
 
-      static constexpr int kDefaultSampleRateIndex = 2;  // 44100 Hz
-      int rate_idx = static_cast<int>(CPC.snd_playback_rate);
-      // NOLINTNEXTLINE(readability-redundant-casting): cast guards the macro
-      // from a clang-tidy mis-fix
-      if (rate_idx < 0 ||
-          rate_idx >= static_cast<int>(IM_ARRAYSIZE(sample_rates))) {
-        rate_idx = kDefaultSampleRateIndex;
-        CPC.snd_playback_rate = rate_idx;  // fix invalid value immediately
-      }
-      if (ImGui::Combo("Sample Rate", &rate_idx, sample_rates,
-                       IM_ARRAYSIZE(sample_rates))) {
-        CPC.snd_playback_rate =
-            rate_idx;  // store index (0-4), not raw frequency
-      }
-
-      bool const stereo = CPC.snd_stereo != 0;
-      if (ImGui::RadioButton("Mono", !stereo)) {
-        CPC.snd_stereo = 0;
-      }
-      ImGui::SameLine();
-      if (ImGui::RadioButton("Stereo", stereo)) {
-        CPC.snd_stereo = 1;
-      }
-
-      bool const bits16 = CPC.snd_bits != 0;
-      if (ImGui::RadioButton("8-bit", !bits16)) {
-        CPC.snd_bits = 0;
-      }
-      ImGui::SameLine();
-      if (ImGui::RadioButton("16-bit", bits16)) {
-        CPC.snd_bits = 1;
+      ImGui::TextDisabled("Playback format: 44100 Hz, 16-bit stereo (fixed)");
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "The sub-cycle audio engine has one native output format.");
       }
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
@@ -4030,15 +4029,13 @@ void imgui_render_options() {
                             s_pending_options_tab == OptionsTab::Serial
                                 ? ImGuiTabItemFlags_SetSelected
                                 : 0)) {
-      SerialConfig cfg = g_serial_interface.get_config();
+      SerialConfig& cfg = edited_serial_config;
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
       // mutated (out-param/compound-assign/loop/reference)
       bool serial_en = cfg.enabled;
 
       if (ImGui::Checkbox("Enable Serial Interface", &serial_en)) {
         cfg.enabled = serial_en;
-        g_serial_interface.set_config(cfg);
-        g_serial_interface.apply_config();
       }
 
       if (ImGui::IsItemHovered()) {
@@ -4062,7 +4059,6 @@ void imgui_render_options() {
       if (ImGui::Combo("Backend", &current_backend, backend_types,
                        IM_ARRAYSIZE(backend_types))) {
         cfg.backend_type = static_cast<SerialBackendType>(current_backend);
-        g_serial_interface.set_config(cfg);
       }
 
       // Backend-specific options
@@ -4187,12 +4183,8 @@ void imgui_render_options() {
         cfg.baud_rate = baud_rates[baud_idx];
       }
 
-      // Apply button
       ImGui::Spacing();
-      if (ImGui::Button("Apply Changes##serial")) {
-        g_serial_interface.set_config(cfg);
-        g_serial_interface.apply_config();
-      }
+      ImGui::TextDisabled("Serial changes take effect with Apply or Save.");
 
       // Status
       ImGui::Spacing();
@@ -4227,12 +4219,21 @@ void imgui_render_options() {
   // Enabling the serial interface belongs here: g_si_rom.load() runs only
   // inside emulator_init(), so without a rebuild the backend comes up with no
   // RSX ROM mapped and the banner's claim to list what restarts is false.
+  auto serial_config_equal = [](const SerialConfig& lhs,
+                                const SerialConfig& rhs) {
+    return lhs.enabled == rhs.enabled && lhs.backend_type == rhs.backend_type &&
+           lhs.input_file == rhs.input_file &&
+           lhs.output_file == rhs.output_file &&
+           lhs.device_path == rhs.device_path && lhs.tcp_host == rhs.tcp_host &&
+           lhs.tcp_port == rhs.tcp_port && lhs.baud_rate == rhs.baud_rate;
+  };
+  bool const serial_config_changed =
+      !serial_config_equal(edited_serial_config, old_serial_config);
   const bool needs_restart =
       CPC.model != imgui_state.old_cpc_settings.model ||
       CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
       CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
-      g_m4board.enabled != old_m4_enabled ||
-      g_serial_interface.get_config().enabled != old_serial_enabled;
+      g_m4board.enabled != old_m4_enabled || serial_config_changed;
   const ImVec4 kWarn(0.95f, 0.75f, 0.2f, 1.0f);
 
   // Say so before it happens, rather than rebooting under the user.
@@ -4246,20 +4247,35 @@ void imgui_render_options() {
     ImGui::Spacing();
   }
 
+  // Serialize the staged serial values without applying/reopening the backend.
+  // This is used when Save is requested but a destructive restart is declined.
+  auto save_edited_configuration = [&]() {
+    SerialConfig const runtime_serial = g_serial_interface.get_config();
+    g_serial_interface.set_config(edited_serial_config);
+    bool const saved = saveConfiguration(CPC, getConfigurationFilename(true));
+    g_serial_interface.set_config(runtime_serial);
+    if (saved) koncpc_capture_config_intent();
+    return saved;
+  };
+
   // One commit path for both buttons; `save_to_file` is the only difference.
   auto commit_options = [&](bool save_to_file) {
-    if (save_to_file) {
-      saveConfiguration(CPC, getConfigurationFilename(true));
-      // Options▸Save is a deliberate persist of printer/scr_window — refresh
-      // the intent snapshot so cleanExit / MRU write-backs do not undo it.
-      koncpc_capture_config_intent();
-    }
+    SerialConfig const previous_serial = g_serial_interface.get_config();
+    g_serial_interface.set_config(edited_serial_config);
     if (needs_restart && koncpc_rebuild_machine() != 0) {
+      g_serial_interface.set_config(previous_serial);
+      g_serial_interface.apply_config();
       // A half-built machine — a missing ROM, say — must not be reported as
       // success and must not be resumed. Leave the dialog open on it.
       imgui_toast_error(
           "Could not rebuild the CPC with these settings; check the ROM paths");
       return;
+    }
+    if (save_to_file) {
+      saveConfiguration(CPC, getConfigurationFilename(true));
+      // Options▸Save is a deliberate persist of printer/scr_window — refresh
+      // the intent snapshot so cleanExit / MRU write-backs do not undo it.
+      koncpc_capture_config_intent();
     }
     // Auto-START only on Save, and only when M4 was just enabled, so a
     // manual "Stop" in the UI stays effective.
@@ -4299,15 +4315,30 @@ void imgui_render_options() {
   // to carry its own copy.
   auto revert_options = [&]() {
     unsigned int const prev_style = CPC.scr_style;
+    imgui_state.fullscreen_request = imgui_state.old_cpc_settings.scr_window;
     CPC = imgui_state.old_cpc_settings;
     CRTC.crtc_type = old_crtc_type;
     if (subcycle::Machine* m = subcycle_bridge_machine())
       m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));
     g_m4board.enabled = old_m4_enabled;
+    g_smartwatch.enabled = old_smartwatch_enabled;
+    g_symbiface.enabled = old_symbiface_enabled;
+    g_amdrum.enabled = old_amdrum_enabled;
+    g_amx_mouse.enabled = old_amx_enabled;
+    g_drive_sounds.disk_enabled = old_disk_sounds_enabled;
+    g_drive_sounds.tape_enabled = old_tape_sounds_enabled;
+    edited_serial_config = old_serial_config;
+    g_serial_interface.set_config(old_serial_config);
     // Revert video plugin if it was changed live
     if (CPC.scr_style != prev_style) imgui_state.video_reinit_pending = true;
+    video_set_palette();
     imgui_state.show_options = false;
     cpc_resume();
+    audio_apply_volume();
+    if (CPC.snd_enabled)
+      audio_enable();
+    else
+      audio_pause();
     first_open = true;
   };
   if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
@@ -4343,8 +4374,7 @@ void imgui_render_options() {
       // this flow, Save always wrote the config. Persisting is harmless;
       // only the reboot is refused.
       if (s_pending_commit == PendingCommit::Save) {
-        saveConfiguration(CPC, getConfigurationFilename(true));
-        koncpc_capture_config_intent();
+        save_edited_configuration();
       }
       s_pending_commit = PendingCommit::None;
       ImGui::CloseCurrentPopup();

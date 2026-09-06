@@ -171,4 +171,9 @@ void subcycle_bridge_sync_regs_view();
 /* The legacy struct -> machine (after IPC/DevTools write a register). */
 void subcycle_bridge_regs_to_machine();
 
+// Dim alternate rows of an RGB24 framebuffer in place. Shared with the
+// renderer and its regression test; intensity is clamped to 0..100.
+void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
+                                           int height, unsigned int intensity);
+
 #endif /* KONCPC_SUBCYCLE_BRIDGE_H */

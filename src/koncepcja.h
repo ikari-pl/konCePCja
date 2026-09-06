@@ -583,9 +583,30 @@ void koncpc_capture_config_intent();
 // when the config was never loaded.
 bool koncpc_save_configuration_preserving_intent();
 
+class CpcStopCoordinationGuard {
+ public:
+  CpcStopCoordinationGuard();
+  ~CpcStopCoordinationGuard();
+  CpcStopCoordinationGuard(const CpcStopCoordinationGuard&) = delete;
+  CpcStopCoordinationGuard& operator=(const CpcStopCoordinationGuard&) = delete;
+
+  uint64_t resume_epoch() const { return resume_epoch_; }
+  uint64_t breakpoint_generation() const { return breakpoint_generation_; }
+
+ private:
+  uint64_t resume_epoch_ = 0;
+  uint64_t breakpoint_generation_ = 0;
+};
+
 void emulator_reset();
 void cpc_pause();
-void cpc_resume();
+uint64_t cpc_resume();
+uint64_t cpc_resume_epoch();
+bool cpc_pause_if_epoch(uint64_t expected_epoch);
+// Atomically commits a staged engine breakpoint only if no later resume has
+// invalidated it. Publishes the hit after the paused state is visible.
+bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
+                                word pc, bool watchpoint);
 // cpc_pause() + spin until the Z80 thread is not inside z80_execute().
 // Use this before touching Z80 state (registers, memory) from a non-Z80 thread.
 // No-op in headless mode (single-threaded; cpc_pause() is sufficient).

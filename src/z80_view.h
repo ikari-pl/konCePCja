@@ -105,6 +105,30 @@ struct IOBreakpoint {
   std::string condition_str;
 };
 
+struct BreakpointSnapshot {
+  dword address;
+  BreakpointType type;
+  int pass_count;
+  int hit_count;
+  std::string condition_str;
+};
+
+struct WatchpointSnapshot {
+  dword address;
+  word length;
+  WatchpointType type;
+  int pass_count;
+  int hit_count;
+  std::string condition_str;
+};
+
+struct IOBreakpointSnapshot {
+  word port;
+  word mask;
+  IOBreakpointDir dir;
+  std::string condition_str;
+};
+
 class t_z80regs {
  public:
   t_z80regs() {
@@ -198,7 +222,24 @@ void z80_clear_breakpoints();
 // the breakpoint just armed had fired (beads-6561).
 uint64_t z80_breakpoint_generation();
 void z80_step_instruction();
+
+enum class Z80StepOutResult : std::uint8_t {
+  Done,
+  Timeout,
+  BreakpointHit,
+};
+
+using BreakpointHitConsumer = std::function<bool(uint16_t&, bool&)>;
+
+// Finish the current stack frame on the sub-cycle engine. The caller must
+// first quiesce the CPU. A hit consumer is optional: IPC supplies its
+// generation-aware event queue, while the GUI can classify stops from the
+// paused PC.
+Z80StepOutResult z80_step_out_finish(
+    int timeout_ms, const BreakpointHitConsumer& consume_hit = {});
+
 const std::vector<Breakpoint>& z80_list_breakpoints_ref();
+std::vector<BreakpointSnapshot> z80_breakpoints_snapshot();
 
 // Shared fire predicates (condition eval + hit/pass-count bookkeeping):
 // the probe post-filters below funnel through these, so conditional and
@@ -211,9 +252,14 @@ bool z80_wp_should_fire(Watchpoint& w, word addr, byte val, byte old_val,
 // hardware probe comparators do not model. `old_val` is the pre-access byte,
 // peeked by the bridge while the machine is parked on the hit.
 bool z80_probe_exec_should_break(uint16_t pc);
+bool z80_probe_exec_should_break(uint16_t pc, bool& user_breakpoint_fired);
 bool z80_probe_watch_should_break(uint16_t addr, uint8_t data, bool is_write,
                                   uint8_t old_val);
+void z80_record_probe_hit_source(bool user_breakpoint);
+bool z80_last_probe_hit_was_user_breakpoint();
 void z80_remove_ephemeral_breakpoints();
+// Caller must hold CpcStopCoordinationGuard.
+void z80_remove_ephemeral_breakpoints_while_coordinated();
 
 // Watchpoints
 void z80_add_watchpoint(word addr, word len, WatchpointType type);
@@ -223,6 +269,7 @@ void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
 void z80_del_watchpoint(int index);
 void z80_clear_watchpoints();
 const std::vector<Watchpoint>& z80_list_watchpoints_ref();
+std::vector<WatchpointSnapshot> z80_watchpoints_snapshot();
 
 // Ephemeral breakpoints (removed when execution next pauses)
 void z80_add_breakpoint_ephemeral(word addr);
@@ -236,16 +283,19 @@ void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
 void z80_del_io_breakpoint(int index);
 void z80_clear_io_breakpoints();
 const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref();
+std::vector<IOBreakpointSnapshot> z80_io_breakpoints_snapshot();
 
 // Global T-state counter for debug timers
 extern uint64_t g_tstate_counter;
 
 // Breakpoint hit notification hook (konCePCja IPC)
-typedef void (*BreakpointHitHook)(word pc, bool watchpoint);
+typedef void (*BreakpointHitHook)(word pc, bool watchpoint,
+                                  uint64_t arming_generation);
 void z80_set_breakpoint_hit_hook(BreakpointHitHook hook);
 /* Invoke the installed hook (Wave-1 shim: the sub-cycle bridge reports probe
  * hits through the same channel). */
-void z80_call_breakpoint_hit_hook(word pc, bool watchpoint);
+void z80_call_breakpoint_hit_hook(word pc, bool watchpoint,
+                                  uint64_t arming_generation);
 
 // TXT_OUTPUT hook — fires when PC hits the given address, passing the A
 // register. Used by the telnet console to mirror CPC text output.

@@ -73,6 +73,7 @@
 #include "slotshandler.h"
 #include "symbiface.h"
 #include "symfile.h"
+#include "telnet_console.h"
 #include "trace.h"
 #include "video_host.h"
 #include "wav_recorder.h"
@@ -80,6 +81,7 @@
 #include "z80_assembler.h"
 #include "z80_disassembly.h"
 #include "z80_view.h"
+#include "zip_archive.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -180,9 +182,9 @@ std::string build_debug_context() {
   else
     rom_str = "--,--";
 
-  auto& bps = z80_list_breakpoints_ref();
-  auto& wps = z80_list_watchpoints_ref();
-  auto& ios = z80_list_io_breakpoints_ref();
+  auto const bps = z80_breakpoints_snapshot();
+  auto const wps = z80_watchpoints_snapshot();
+  auto const ios = z80_io_breakpoints_snapshot();
 
   // Infer the runtime environment (CP/M vs BASIC) from the screen mode + RAM
   // bank, so a reader doesn't have to memorize the encoding — during the
@@ -655,14 +657,52 @@ void init_command_registry() {
       "(or the CPC's SAVE) + the 19 kHz motor-REMOTE carrier to the jack — "
       "opt-in, soft-ramped, auto-disarmed on device change (sub-cycle only).");
   register_command(
-      "tier", "CORE", "tier [get] | tier set faithful|wake|soldered|fast",
-      "Runtime speed tier (sub-cycle engine)",
-      "Selects the sub-cycle engine's per-master-cycle dispatch tier, applied "
-      "at the next frame boundary (never mid-frame). 'fast' is the "
-      "devirtualized soldered path; 'faithful' is the pluggable, steppable "
-      "path — both observation-identical. Fast auto-degrades to faithful when "
-      "the board is not the canonical device composition. 'get' reports the "
-      "requested and effective tier and whether fast is available.");
+      "tier", "CORE",
+      "tier [get|status] | tier set auto|fast|wake|soldered|faithful",
+      "Get or set the sub-cycle engine's run-tier policy",
+      "Policies: auto (Fast; Wake while the debugger is engaged — the "
+      "default), fast, wake, soldered, faithful. Reports the effective tier "
+      "and whether a KONCPC_TIER/KONCPC_WAKE environment pin overrides the "
+      "policy.",
+      [](const auto& parts, const auto&) {
+        if (!subcycle_bridge_active()) return std::string("ERR 503 no-board\n");
+        if (parts.size() >= 2 && parts[1] == "set") {
+          if (parts.size() < 3)
+            return std::string(
+                "ERR 400 usage: tier set "
+                "auto|fast|wake|soldered|faithful\n");
+          BridgeTierPolicy policy;
+          if (parts[2] == "auto")
+            policy = BridgeTierPolicy::Auto;
+          else if (parts[2] == "fast")
+            policy = BridgeTierPolicy::Fast;
+          else if (parts[2] == "wake")
+            policy = BridgeTierPolicy::Wake;
+          else if (parts[2] == "soldered")
+            policy = BridgeTierPolicy::Soldered;
+          else if (parts[2] == "faithful")
+            policy = BridgeTierPolicy::Faithful;
+          else
+            return std::string(
+                "ERR 400 usage: tier set "
+                "auto|fast|wake|soldered|faithful\n");
+          if (subcycle_bridge_tier_env_pinned())
+            return std::string(
+                "ERR 409 pinned-by-KONCPC_TIER-or-KONCPC_WAKE\n");
+          subcycle_bridge_set_tier_policy(policy);
+        } else if (parts.size() >= 2 && parts[1] != "get" &&
+                   parts[1] != "status") {
+          return std::string(
+              "ERR 400 usage: tier [get|status] | tier set "
+              "auto|fast|wake|soldered|faithful\n");
+        }
+        static const char* const kPolicyNames[] = {"auto", "fast", "wake",
+                                                   "soldered", "faithful"};
+        int const policy = static_cast<int>(subcycle_bridge_tier_policy());
+        return std::string("OK policy=") + kPolicyNames[policy] +
+               " effective=" + subcycle_bridge_effective_tier_name() +
+               " pinned=" + (subcycle_bridge_tier_env_pinned() ? "1\n" : "0\n");
+      });
   register_command(
       "load", "CORE", "load <file>", "Load a disk, tape, snapshot or cartridge",
       "Loads a media or state file; the type is determined by the "
@@ -672,26 +712,26 @@ void init_command_registry() {
       "          Flux formats are Drive A only — the FDC's flux capture is "
       "side-0/drive-A.\n"
       "  Tapes   (.cdt .voc), snapshots (.sna), cartridges (.cpr), raw "
-      "binaries (.bin at 0x6000).");
+      "binaries (.bin at 0x6000).\n"
+      "  Archives (.zip) load their first supported media member, matching the "
+      "CLI and drag/drop paths.");
 
-  register_command("tier", "SYSTEM", "tier | tier set <policy>",
-                   "Get or set the sub-cycle engine's run-tier policy",
-                   "Policies: auto (Fast; Wake while the debugger is engaged "
-                   "- the default), fast, wake, soldered, faithful. Reports "
-                   "the effective tier and whether a KONCPC_TIER/KONCPC_WAKE "
-                   "env pin overrides the policy.");
-
-  register_command("regs", "DEBUG", "regs",
+  register_command("regs", "DEBUG", "regs [get|set|crtc|ga|psg|asic] ...",
                    "Get all Z80 and core hardware registers",
                    "Returns a comprehensive list of all Z80 registers (AF, BC, "
                    "HL, etc.), alternate registers, "
                    "and core hardware states (Gate Array, CRTC, PSG). Data is "
                    "returned in space-separated key=val pairs.");
+  register_command("reg", "DEBUG", "reg (get|set|crtc|ga|psg|asic) ...",
+                   "Read, write or inspect CPU and hardware registers",
+                   "Alias-oriented register access. Use 'reg get <R>' or 'reg "
+                   "set <R> <V>'; hardware groups are crtc, ga, psg and asic.");
 
   register_command(
       "mem", "DEBUG",
-      "mem read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | mem write "
-      "<addr> <hex>",
+      "mem read|cpu-read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | "
+      "mem write|cpu-write <addr> <hex> | mem fill <addr> <len> <hex> | mem "
+      "compare <a> <b> <len> | mem find <start> <end> <hex>",
       "Access emulated memory",
       "Allows direct manipulation of the 64K/128K RAM space.\n"
       "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
@@ -781,10 +821,10 @@ void init_command_registry() {
       "  pc:  Resumes and waits until PC equals <addr>.\n"
       "  mem: Resumes and waits until memory at <addr> equals <val> (with "
       "optional mask).\n"
-      "  bp:  Waits for a breakpoint or watchpoint hit, then for the machine "
-      "to actually pause (up to 500ms). Only reports hits from the CURRENT "
-      "arming — a hit left uncollected from a previous bp/wp/IO-bp change is "
-      "dropped (timeout). Watchpoint hits include WP_ADDR/WP_VAL/WP_OLD.\n"
+      "  bp:  Waits for a committed breakpoint or watchpoint stop. Only "
+      "reports hits from the CURRENT arming — a hit left uncollected from a "
+      "previous bp/wp/IO-bp change is dropped (timeout). Watchpoint hits "
+      "include WP_ADDR/WP_VAL/WP_OLD.\n"
       "  vbl: Waits for N vertical blanks (1/50th second each).");
 
   register_command(
@@ -835,7 +875,10 @@ void init_command_registry() {
       "matrix byte (active-low) plus its held key names.");
 
   register_command(
-      "disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>",
+      "disk", "HARDWARE",
+      "disk formats | format <A|B> <format> | new <path> [format] "
+      "[sector|flux] | ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> "
+      "<file> <path> | put <A|B> <path> [file] | sector ...",
       "Manage emulated floppy disks",
       "High-level disk management.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
@@ -853,7 +896,7 @@ void init_command_registry() {
       "  --screenshot PATH  Save the repainted frame as a PNG file.");
 
   register_command(
-      "screenshot", "MEDIA", "screenshot window <path>",
+      "screenshot", "MEDIA", "screenshot [<path> | window <path>]",
       "Capture emulator window to PNG",
       "Saves a PNG file of the emulator window on the next rendered frame. "
       "Note: Currently captures the emulated CPC display only; ImGui overlays "
@@ -883,7 +926,9 @@ void init_command_registry() {
       "Manage developer tools",
       "Toggles the developer tool overlay or individual debug windows.");
 
-  register_command("profile", "TOOLS", "profile list | profile load <name>",
+  register_command("profile", "TOOLS",
+                   "profile list|current | profile load|delete <name> | "
+                   "profile save <name> [description]",
                    "Manage configuration profiles",
                    "Lists available profiles or switches the emulator to a "
                    "different configuration.");
@@ -902,21 +947,27 @@ void init_command_registry() {
       "drained once per frame).");
 
   register_command(
-      "search", "TOOLS", "search hex <pattern> | search text <string>",
+      "search", "TOOLS",
+      "search hex <pattern> | search text <string> | search asm <instruction>",
       "Search memory",
       "Searches the 64KB RAM space for byte sequences or strings.");
 
-  register_command("rom", "HARDWARE", "rom list | rom load <slot> <path>",
+  register_command("rom", "HARDWARE",
+                   "rom list | rom load <slot> <path> | rom unload <slot> | "
+                   "rom info <slot>",
                    "Manage expansion ROMs",
                    "Lists currently mapped ROMs or loads a new ROM image into "
                    "a specific slot (0-255).");
 
   register_command(
-      "asm", "TOOLS", "asm text <source> | asm assemble", "Z80 Assembler",
+      "asm", "TOOLS",
+      "asm text <source> | asm load <path> | asm assemble | asm "
+      "errors|symbols|source",
+      "Z80 Assembler",
       "Enters Z80 assembly source code and assembles it into emulated memory.");
 
   register_command(
-      "telnet", "TOOLS", "telnet (port 6544)", "Text console for CPC I/O",
+      "telnet", "TOOLS", "telnet status", "Text console for CPC I/O",
       "A telnet interface runs on port IPC+1 (default 6544) that captures all "
       "CPC text output "
       "(TXT_OUTPUT calls) and allows text input. Connecting returns a banner "
@@ -934,7 +985,21 @@ void init_command_registry() {
       "back here (the line editor does not route through TXT_OUTPUT), so "
       "searching this stream for text you typed always fails no matter how "
       "well typing works.\n"
-      "  Example:  nc -w 1 localhost 6544 < /dev/null");
+      "  Example:  nc -w 1 localhost 6544 < /dev/null",
+      [](const auto& parts, const auto&) {
+        if (parts.size() != 2 || parts[1] != "status")
+          return std::string("ERR 400 usage: telnet status\n");
+        return std::string("OK port=") + std::to_string(g_telnet.port()) +
+               " client=" + (g_telnet.has_client() ? "1\n" : "0\n");
+      });
+
+  register_command(
+      "serial", "HARDWARE",
+      "serial status | serial send <byte> | serial send_string <text> | "
+      "serial config get | serial config set <key> <value>",
+      "Inspect and control the Amstrad serial interface",
+      "Reports card/backend state, sends bytes or text, and reads or changes "
+      "serial settings.");
 
   register_command(
       "disasm", "DEBUG",
@@ -1096,9 +1161,9 @@ void init_command_registry() {
       "  status: Show state (idle/recording/playing), frame and event counts.");
 }
 
-void breakpoint_hit_hook(word pc, bool watchpoint) {
+void breakpoint_hit_hook(word pc, bool watchpoint, uint64_t arming_generation) {
   if (g_ipc_instance) {
-    g_ipc_instance->notify_breakpoint_hit(pc, watchpoint);
+    g_ipc_instance->notify_breakpoint_hit(pc, watchpoint, arming_generation);
   }
 }
 
@@ -1298,34 +1363,6 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 bad-args (hash vram|mem|regs)\n";
     }
 
-    if (cmd == "tier") {
-      if (!subcycle_bridge_active()) return "ERROR tier: board not running";
-      if (parts.size() >= 3 && parts[1] == "set") {
-        BridgeTierPolicy pol;
-        if (parts[2] == "auto")
-          pol = BridgeTierPolicy::Auto;
-        else if (parts[2] == "fast")
-          pol = BridgeTierPolicy::Fast;
-        else if (parts[2] == "wake")
-          pol = BridgeTierPolicy::Wake;
-        else if (parts[2] == "soldered")
-          pol = BridgeTierPolicy::Soldered;
-        else if (parts[2] == "faithful")
-          pol = BridgeTierPolicy::Faithful;
-        else
-          return "ERROR tier set: auto|fast|wake|soldered|faithful";
-        if (subcycle_bridge_tier_env_pinned())
-          return "ERROR tier: pinned by KONCPC_TIER/KONCPC_WAKE env";
-        subcycle_bridge_set_tier_policy(pol);
-        return std::string("OK policy=") + parts[2];
-      }
-      static const char* const kPolicyNames[] = {"auto", "fast", "wake",
-                                                 "soldered", "faithful"};
-      const int pol = static_cast<int>(subcycle_bridge_tier_policy());
-      return std::string("OK policy=") + kPolicyNames[pol] +
-             " effective=" + subcycle_bridge_effective_tier_name() +
-             " pinned=" + (subcycle_bridge_tier_env_pinned() ? "1" : "0");
-    }
     if (cmd == "pause") {
       cpc_pause();
       return ok_with_context();
@@ -1397,7 +1434,19 @@ std::string handle_command(const std::string& line) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       auto dot = lower.find_last_of('.');
       if (dot == std::string::npos) return "ERR 415 unsupported\n";
-      std::string const ext = lower.substr(dot);
+      std::string ext = lower.substr(dot);
+      if (ext == ".zip") {
+        zip::t_zip_info zip_info;
+        zip_info.filename = path;
+        zip_info.extensions = ".dsk.sna.cdt.voc.cpr.ipf.raw.scp.hfe.a2r";
+        if (zip::dir(&zip_info) || zip_info.filesOffsets.empty())
+          return "ERR 415 no-supported-media-in-zip\n";
+        std::string inner = zip_info.filesOffsets.front().first;
+        if (inner.size() < 4) return "ERR 415 no-supported-media-in-zip\n";
+        ext = inner.substr(inner.size() - 4);
+        for (auto& c : ext)
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
       // Every drive-A disk format, from the one list slotshandler exports:
       // .dsk/.ipf/.raw plus the flux containers .scp/.hfe/.a2r. This arm used
       // to hard-code ".dsk" alone, so `load game.hfe` returned ERR 415 even
@@ -1709,48 +1758,6 @@ std::string handle_command(const std::string& line) {
       dumpScreen();
       return "OK\n";
     }
-    if (cmd == "tier") {
-      subcycle::Machine* mach = subcycle_bridge_machine();
-      if (!mach) return "ERR 503 no-subcycle-engine\n";
-      using RunTier = subcycle::Machine::RunTier;
-      auto tier_name = [](RunTier t) {
-        switch (t) {
-          case RunTier::Soldered:
-            return "soldered";
-          case RunTier::Wake:
-            return "wake";
-          case RunTier::Fast:
-            return "fast";
-          case RunTier::Faithful:
-          default:
-            return "faithful";
-        }
-      };
-      auto report = [&]() {
-        std::ostringstream os;
-        os << "OK requested=" << tier_name(mach->run_tier())
-           << " effective=" << tier_name(mach->effective_run_tier())
-           << " soldered_available=" << (mach->soldered_available() ? 1 : 0)
-           << " wake_available=" << (mach->wake_active() ? 1 : 0) << "\n";
-        return os.str();
-      };
-      if (parts.size() < 2 || parts[1] == "get" || parts[1] == "status")
-        return report();
-      if (parts[1] == "set" && parts.size() >= 3) {
-        if (parts[2] == "wake")
-          mach->set_run_tier(RunTier::Wake);
-        else if (parts[2] == "faithful")
-          mach->set_run_tier(RunTier::Faithful);
-        else if (parts[2] == "soldered")
-          mach->set_run_tier(RunTier::Soldered);
-        else if (parts[2] == "fast")  // reserved: degrades to wake until F2+
-          mach->set_run_tier(RunTier::Fast);
-        else
-          return "ERR 400 bad-args (faithful|wake|soldered|fast)\n";
-        return report();  // applied at the next frame boundary
-      }
-      return "ERR 400 bad-args\n";
-    }
     if (cmd == "tape") {
       if (parts.size() < 2) return "ERR 400 bad-args\n";
       subcycle::Machine* mach = subcycle_bridge_machine();
@@ -1881,6 +1888,15 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 bad-args\n";
     }
     if (cmd == "devtools") {
+      if (parts.size() == 1) {
+        imgui_state.show_devtools = true;
+        return "OK\n";
+      }
+      if (parts.size() == 2 && (parts[1] == "on" || parts[1] == "off")) {
+        imgui_state.show_devtools = parts[1] == "on";
+        if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
+        return "OK\n";
+      }
       if (parts.size() >= 3 && parts[1] == "show") {
         bool* ptr = g_devtools_ui.window_ptr(parts[2]);
         if (!ptr) return "ERR 404 unknown window\n";
@@ -1893,8 +1909,7 @@ std::string handle_command(const std::string& line) {
         *ptr = false;
         return "OK\n";
       }
-      imgui_state.show_devtools = true;
-      return "OK\n";
+      return "ERR 400 usage: devtools (on|off|show|hide) [name]\n";
     }
     if (cmd == "snapshot" && parts.size() >= 2) {
       if (parts[1] == "save") {
@@ -2353,7 +2368,7 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "list") {
-        const auto& bps = z80_list_breakpoints_ref();
+        const auto bps = z80_breakpoints_snapshot();
         std::ostringstream resp;
         resp << "OK count=" << bps.size();
         for (const auto& b : bps) {
@@ -2459,7 +2474,7 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "list") {
-        const auto& bps = z80_list_io_breakpoints_ref();
+        const auto bps = z80_io_breakpoints_snapshot();
         std::ostringstream resp;
         resp << "OK count=" << bps.size();
         for (size_t i = 0; i < bps.size(); i++) {
@@ -2573,65 +2588,17 @@ std::string handle_command(const std::string& line) {
       // crosses the entry level inside an interrupt; nested calls stay at/below
       // it too.
       if (parts.size() >= 2 && parts[1] == "out") {
-        word const sp0 = z80.SP.w.l;
-        auto const deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        // Signed distance so SP wrap FFFE→0000 after RET counts as finished.
-        auto still_in_frame = [&]() {
-          return static_cast<int16_t>(sp0 - z80.SP.w.l) >= 0;
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
         };
-        while (still_in_frame()) {
-          word const pc = z80.PC.w.l;
-          if (z80_is_call_or_rst(pc)) {
-            // Skip the callee at full speed: break just past the CALL/RST.
-            word const next_pc =
-                static_cast<word>(pc + z80_instruction_length(pc));
-            z80_add_breakpoint_ephemeral(next_pc);
-            uint16_t dummy_pc;
-            bool dummy_watch;
-            g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-            cpc_resume();
-            bool other_break = false;
-            bool foreign_pause = false;
-            while (true) {
-              uint16_t hit_pc = 0;
-              bool watch = false;
-              if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
-                if (!watch && hit_pc == next_pc) break;  // our step landed
-                other_break = true;  // a real breakpoint/watchpoint fired
-                break;
-              }
-              if (CPC.paused) {
-                // Someone else paused us (not our ephemeral). Do not fall
-                // through into single-step past their stop.
-                foreign_pause = true;
-                break;
-              }
-              if (std::chrono::steady_clock::now() > deadline) {
-                cpc_pause();
-                z80_remove_ephemeral_breakpoints();
-                return err_with_context(408, "timeout");
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            if (!CPC.paused) cpc_pause();
-            if (other_break || foreign_pause) {
-              z80_remove_ephemeral_breakpoints();
-              return ok_with_context("breakpoint-hit");
-            }
-            // Successful landing: engine clears EPHEMERAL on hit; belt-and-
-            // braces in case the pause path skipped that.
-            z80_remove_ephemeral_breakpoints();
-          } else {
-            z80_step_instruction();  // one instruction (probe-blind)
-          }
-          if (std::chrono::steady_clock::now() > deadline) {
-            if (!CPC.paused) cpc_pause();
-            z80_remove_ephemeral_breakpoints();
+        switch (z80_step_out_finish(5000, consume_hit)) {
+          case Z80StepOutResult::Done:
+            return ok_with_context();
+          case Z80StepOutResult::BreakpointHit:
+            return ok_with_context("breakpoint-hit");
+          case Z80StepOutResult::Timeout:
             return err_with_context(408, "timeout");
-          }
         }
-        return ok_with_context();
       }
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
       if (parts.size() >= 3 && parts[1] == "to") {
@@ -3218,21 +3185,9 @@ std::string handle_command(const std::string& line) {
             uint16_t pc = 0;
             bool watch = false;
             if (g_ipc_instance->consume_breakpoint_hit(pc, watch)) {
-              // The hit is published by the breakpoint hook, which runs inside
-              // the frame's debug sync -- the main loop applies cpc_pause()
-              // only afterwards. Returning here on the latch alone told the
-              // client "stopped at a breakpoint" while the machine was still
-              // running, so a client that immediately resumed raced the
-              // deferred pause: the `run` landed first, the pause landed
-              // second, and the machine sat stopped through the NEXT arm.
-              // That is the period-2 "every other wait bp misses" alternation
-              // in beads-6561. Wait for the stop we just promised.
-              const auto stop_by = std::chrono::steady_clock::now() +
-                                   std::chrono::milliseconds(500);
-              while (!CPC.paused &&
-                     std::chrono::steady_clock::now() < stop_by) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-              }
+              // Publication happens inside the epoch-validated pause
+              // transaction, so consuming a hit proves the machine stopped
+              // before this response became observable.
               char resp[128];
               if (watch) {
                 snprintf(
@@ -3479,7 +3434,7 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "list") {
-        const auto& wps = z80_list_watchpoints_ref();
+        const auto wps = z80_watchpoints_snapshot();
         std::ostringstream resp;
         resp << "OK count=" << wps.size();
         for (size_t i = 0; i < wps.size(); i++) {
@@ -3804,10 +3759,17 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[1] == "new") {
         if (parts.size() < 3)
-          return "ERR 400 usage: disk new <path> [format]\n";
+          return "ERR 400 usage: disk new <path> [format] [sector|flux]\n";
         const std::string& path = parts[2];
         std::string const fmt = (parts.size() >= 4) ? parts[3] : "data";
-        std::string const err = disk_create_new(path, fmt);
+        DiskBacking backing = DiskBacking::Sector;
+        if (parts.size() >= 5) {
+          if (parts[4] == "flux")
+            backing = DiskBacking::Flux;
+          else if (parts[4] != "sector")
+            return "ERR 400 backing must be sector or flux\n";
+        }
+        std::string const err = disk_create_new(path, fmt, backing);
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
@@ -5479,10 +5441,11 @@ void KoncepcjaIpcServer::stop() {
   }
 }
 
-void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint) {
+void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint,
+                                               uint64_t arming_generation) {
   breakpoint_pc.store(pc);
   breakpoint_watchpoint.store(watchpoint);
-  breakpoint_hit_generation.store(z80_breakpoint_generation());
+  breakpoint_hit_generation.store(arming_generation);
   breakpoint_hit.store(true);
 }
 

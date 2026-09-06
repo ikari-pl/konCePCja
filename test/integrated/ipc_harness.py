@@ -762,6 +762,49 @@ def test_step_in_accuracy():
         return True
 
 
+def test_step_out_nested_call():
+    """Step Out finishes the current frame while skipping a nested CALL."""
+    print("Running step-out nested-call test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: CALL 6006; NOP; RET; padding; 6006: NOP; RET
+        setup = [
+            'mem write 0x6000 CD066000C90000C9',
+            'mem write 0x8000 0070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp or pc != 0x7000 or sp != 0x8002:
+            print(
+                f"FAIL: expected PC=7000 SP=8002, got "
+                f"PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: Step Out skipped nested CALL and unwound one frame")
+        return True
+
+
 def test_mouse_input():
     """IPC mouse input: device gating + full command surface.
 
@@ -1052,6 +1095,7 @@ def test_load_accepts_flux_disk_formats():
     print("Running IPC flux-format load routing test...")
 
     import tempfile
+    import zipfile
 
     with EmulatorRunner() as emu:
         if not emu.start():
@@ -1070,6 +1114,19 @@ def test_load_accepts_flux_disk_formats():
                     return False
                 print(f"  {ext}: accepted by dispatch -> {resp.strip()}")
 
+            # A ZIP is classified by its first supported member, just like
+            # command-line and drag/drop loading.
+            zip_path = os.path.join(td, 'probe.zip')
+            with zipfile.ZipFile(zip_path, 'w') as archive:
+                archive.writestr('inside.dsk', b'not a real disk image')
+            ok, resp = emu.ipc.send_command('load ' + zip_path)
+            if ok or not resp.startswith('ERR 500'):
+                print(
+                    "FAIL: .zip did not reach the inner DSK loader: "
+                    f"{resp.strip()!r}")
+                return False
+            print(f"  .zip: classified by inner media -> {resp.strip()}")
+
             # Unknown extension must still be refused up front.
             path = os.path.join(td, 'probe.xyz')
             with open(path, 'wb') as f:
@@ -1082,8 +1139,8 @@ def test_load_accepts_flux_disk_formats():
 
         # The help text must advertise what the dispatcher accepts.
         ok, resp = emu.ipc.send_command('help load')
-        if '.hfe' not in resp:
-            print(f"FAIL: 'help load' does not mention flux formats: {resp!r}")
+        if '.hfe' not in resp or '.zip' not in resp:
+            print(f"FAIL: 'help load' omits accepted formats: {resp!r}")
             return False
         print("  help load advertises the flux formats")
 
@@ -1307,6 +1364,41 @@ def test_debugger_stop_contract():
             print("  FAIL: wait bp reported a stale hit from a previous arming")
             return False
         print("  stale hits are not reported as fresh: OK")
+
+        # 4. a stop staged before a timeout must not overtake the Run that
+        # follows it. A zero-budget wait at the hot idle poll forces both
+        # orderings over repeated attempts.
+        saw_timeout = False
+        for _ in range(50):
+            emu.ipc.send_command('bp clear')
+            emu.ipc.send_command('run')
+            emu.ipc.send_command('bp add 0x1BD9')
+            hit, _ = emu.ipc.send_command('wait bp 0')
+            if hit:
+                emu.ipc.send_command('run')
+                continue
+            saw_timeout = True
+            emu.ipc.send_command('bp clear')
+            emu.ipc.send_command('run')
+            time.sleep(0.1)
+            state = paused()
+            if state != 'paused=0':
+                print(
+                    "  FAIL: an expired breakpoint stop overtook the "
+                    f"following run ({state})")
+                return False
+            break
+        if not saw_timeout:
+            print("  FAIL: could not exercise wait-bp timeout ordering")
+            return False
+        print("  expired stop cannot overtake a later run: OK")
+
+        emu.ipc.send_command('bp add 0x1BD9')
+        ok, _ = emu.ipc.send_command('wait bp 4000')
+        if not ok or paused() != 'paused=1':
+            print("  FAIL: committed breakpoint was not observably paused")
+            return False
+        print("  committed hit is published only after pause: OK")
 
         emu.ipc.send_command('bp clear')
         emu.ipc.send_command('run')
@@ -1622,6 +1714,7 @@ def main():
         test_snapshot_round_trip,
         test_rapid_pause_resume,
         test_step_in_accuracy,
+        test_step_out_nested_call,
         test_mouse_input,
         test_gun_input,
         test_chord_hold_input,

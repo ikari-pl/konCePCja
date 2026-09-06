@@ -654,7 +654,7 @@ void DevToolsUI::render_disassembly() {
     lines.push_back(std::move(entry));
   }
 
-  const auto& breakpoints = z80_list_breakpoints_ref();
+  const auto breakpoints = z80_breakpoints_snapshot();
 
   // ROM detection: when read and write banks differ for a slot, ROM is overlaid
 
@@ -1048,7 +1048,7 @@ void DevToolsUI::render_memory_hex() {
   int const total_rows = (0x10000 + bytes_per_row - 1) / bytes_per_row;
 
   // Collect watchpoint ranges for highlighting
-  const auto& watchpoints = z80_list_watchpoints_ref();
+  const auto watchpoints = z80_watchpoints_snapshot();
 
   // Pre-compute search pattern length (avoids reparse per byte in render loop)
   int search_plen = 0;
@@ -1462,9 +1462,9 @@ void DevToolsUI::render_breakpoints() {
     if (ImGui::Button("Add BP##quick")) add_quick_bp();
   }
 
-  const auto& bps = z80_list_breakpoints_ref();
-  const auto& wps = z80_list_watchpoints_ref();
-  const auto& iobps = z80_list_io_breakpoints_ref();
+  const auto bps = z80_breakpoints_snapshot();
+  const auto wps = z80_watchpoints_snapshot();
+  const auto iobps = z80_io_breakpoints_snapshot();
 
   // Count visible (non-ephemeral) breakpoints
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
