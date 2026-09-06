@@ -85,7 +85,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | `mem cpu-read <addr> <len>` | Read through the CPU-visible memory path |
 | `mem cpu-write <addr> <hex>` | Write through the CPU-visible memory path |
 | `mem fill <addr> <len> <hex-pattern>` | `OK` — fill memory with repeating hex pattern |
-| `mem compare <addr1> <addr2> <len>` | `OK diffs=N [addr:src:dst ...]` — compare two regions, up to 64 diffs listed |
+| `mem compare <addr1> <addr2> <len> [--view=read\|ram]` | `OK diffs=N [addr:src:dst ...]` — compare two regions, up to 64 diffs listed |
 
 Addresses and values accept decimal, `0x` hex, or `0b` binary.
 
@@ -96,8 +96,9 @@ Addresses and values accept decimal, `0x` hex, or `0b` binary.
   game variable.** An address under a paged-in ROM otherwise returns the firmware
   byte and appears to flicker as the OS banks ROM in and out (e.g. `&1AF1` reads
   as `&3E` from the 6128 OS ROM). `--view=write` is a deprecated alias.
-- `search hex|text` accepts the same `--view=ram` for the same reason; `search
-  asm` always uses the CPU view, since it disassembles code.
+- `search hex|text`, `mem find hex|text`, and `mem compare` accept the same
+  `--view=ram` for the same reason; `search asm` / `mem find asm` always use the
+  CPU view, since they disassemble code.
 - An unrecognised `--view=` value is rejected with `ERR 400 bad-view (read|ram)`
   rather than silently falling back.
 - `--bank=N`: reads raw from physical 16KB bank N (`pbRAM + N*16384`), ignoring current mapping
@@ -250,9 +251,9 @@ echo "sym lookup 0x0038" | nc -w 1 localhost 6543         # → OK irq_handler
 
 | Command | Description |
 |---------|-------------|
-| `mem find hex <start> <end> <hex-pattern>` | Search for hex bytes. `??` = wildcard byte. Max 32 results. |
-| `mem find text <start> <end> <string>` | Search for ASCII text. Quotes optional. |
-| `mem find asm <start> <end> <pattern>` | Search for Z80 instructions. `*` = operand wildcard. Case-insensitive. |
+| `mem find hex <start> <end> <hex-pattern> [--view=read\|ram]` | Search for hex bytes. `??` = wildcard byte. Max 32 results. |
+| `mem find text <start> <end> <string> [--view=read\|ram]` | Search for ASCII text. Quotes optional. |
+| `mem find asm <start> <end> <pattern>` | Search for Z80 instructions. `*` = operand wildcard. Case-insensitive. Always CPU view. |
 
 ```bash
 # Find CALL 0x0038 instructions (CD 38 00)
@@ -773,9 +774,9 @@ Full-memory search with glob-style wildcards. Searches the entire 64K address sp
 
 | Command | Description |
 |---------|-------------|
-| `search hex <pattern>` | Search for hex bytes. `??` = wildcard. Max 256 results. |
-| `search text <pattern>` | Search for ASCII text. Case-sensitive. |
-| `search asm <pattern>` | Search for Z80 mnemonics with `?` (single char) and `*` (any sequence) glob wildcards. |
+| `search hex <pattern> [--view=read\|ram]` | Search for hex bytes. `??` = wildcard. Max 256 results. |
+| `search text <pattern> [--view=read\|ram]` | Search for ASCII text. Case-sensitive. |
+| `search asm <pattern>` | Search for Z80 mnemonics with `?` (single char) and `*` (any sequence) glob wildcards. Always CPU view. |
 
 Note: `search` scans 0x0000-0xFFFF. For range-limited search, use `mem find`.
 

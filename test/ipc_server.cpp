@@ -734,6 +734,56 @@ TEST_F(IpcServerTest, MemFindWildcard) {
   EXPECT_TRUE(resp.find("3000") != std::string::npos);
 }
 
+// Bank 0 READ aims at a ROM overlay while WRITE stays on RAM — the asymmetry
+// that makes --view=ram distinguishable from the default CPU view. Mirrors
+// DevToolsRenderTest::CpuViewAndRamViewDivergeUnderARomOverlay (&1AF1).
+TEST_F(IpcServerTest, MemRamViewIgnoresRomOverlay) {
+  static byte rom[kBankSize];
+  std::memset(rom, 0, sizeof(rom));
+  constexpr word kAddr = 0x1AF1;
+  constexpr byte kRomByte = 0x3E;
+  constexpr byte kRamByte = 0x03;
+  rom[kAddr] = kRomByte;
+  memory[0][kAddr] = kRamByte;
+  membank_read[0] = rom;
+
+  auto resp = send_command("mem read 0x1AF1 1");
+  EXPECT_EQ(resp, "OK 3E\n") << resp;
+
+  resp = send_command("mem read 0x1AF1 1 --view=ram");
+  EXPECT_EQ(resp, "OK 03\n") << resp;
+
+  resp = send_command("mem read 0x1AF1 1 --view=write");
+  EXPECT_EQ(resp, "OK 03\n") << resp;
+
+  resp = send_command("mem read 0x1AF1 1 --view=bogus");
+  EXPECT_EQ(resp, "ERR 400 bad-view (read|ram)\n") << resp;
+
+  // Reference byte at 0x4000 matches RAM under the overlay.
+  memory[1][0x0000] = kRamByte;  // 0x4000
+  resp = send_command("mem compare 0x1AF1 0x4000 1");
+  EXPECT_TRUE(resp.find("OK diffs=1") != std::string::npos) << resp;
+
+  resp = send_command("mem compare 0x1AF1 0x4000 1 --view=ram");
+  EXPECT_TRUE(resp.find("OK diffs=0") != std::string::npos) << resp;
+
+  resp = send_command("mem compare 0x1AF1 0x4000 1 --view=bogus");
+  EXPECT_EQ(resp, "ERR 400 bad-view (read|ram)\n") << resp;
+
+  // CPU view cannot find the RAM byte under ROM; RAM view can.
+  resp = send_command("mem find hex 0x1AF0 0x1AF2 03");
+  EXPECT_EQ(resp, "OK\n") << resp;
+
+  resp = send_command("mem find hex 0x1AF0 0x1AF2 03 --view=ram");
+  EXPECT_TRUE(resp.find("1AF1") != std::string::npos) << resp;
+
+  resp = send_command("search hex 03 --view=ram");
+  EXPECT_TRUE(resp.find("1AF1") != std::string::npos) << resp;
+
+  resp = send_command("search hex 03 --view=bogus");
+  EXPECT_EQ(resp, "ERR 400 bad-view (read|ram)\n") << resp;
+}
+
 // ─────────────────────────────────────────────────
 // Error message quality tests
 // ─────────────────────────────────────────────────

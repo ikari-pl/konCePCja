@@ -448,6 +448,84 @@ def test_memory_rw():
             return False
 
 
+def test_mem_ram_view_under_rom_overlay():
+    """beads-wxy6: --view=ram must see RAM under a paged-in lower ROM.
+
+    The Fruity Frank lives-counter case: &1AF1 holds &3E in the 6128 OS ROM
+    while the game stores a counter underneath. Default mem read returns the
+    firmware byte; --view=ram returns the stored value. Also asserts bad-view
+    rejection so agents cannot silently fall back to the CPU view.
+    """
+    print("Running mem --view=ram under ROM overlay test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start('--headless'):
+            print("FAIL: Could not start emulator")
+            return False
+
+        ipc = emu.ipc
+        if not ipc.pause():
+            print("FAIL: Could not pause")
+            return False
+
+        addr = 0x1AF1
+        ok, _ = ipc.send_command(f'mem write 0x{addr:04X} 03')
+        if not ok:
+            print("FAIL: Could not write under-ROM RAM")
+            return False
+
+        ok, _ = ipc.send_command('mem write 0x4000 03')
+        if not ok:
+            print("FAIL: Could not write reference byte at 0x4000")
+            return False
+
+        ok, cpu_resp = ipc.send_command(f'mem read 0x{addr:04X} 1')
+        if not ok:
+            print(f"FAIL: CPU-view read failed: {cpu_resp}")
+            return False
+
+        ok, ram_resp = ipc.send_command(f'mem read 0x{addr:04X} 1 --view=ram')
+        if not ok:
+            print(f"FAIL: RAM-view read failed: {ram_resp}")
+            return False
+
+        ram_hex = ram_resp.replace('OK', '').strip().upper()
+        if ram_hex != '03':
+            print(f"FAIL: --view=ram expected 03, got {ram_resp!r}")
+            return False
+
+        ok, bad = ipc.send_command(f'mem read 0x{addr:04X} 1 --view=bogus')
+        if ok or 'bad-view' not in bad:
+            print(f"FAIL: expected ERR 400 bad-view, got ok={ok} {bad!r}")
+            return False
+
+        ok, cmp_ram = ipc.send_command(
+            f'mem compare 0x{addr:04X} 0x4000 1 --view=ram')
+        if not ok or 'diffs=0' not in cmp_ram:
+            print(f"FAIL: compare --view=ram expected diffs=0, got {cmp_ram!r}")
+            return False
+
+        ok, find_ram = ipc.send_command(
+            f'mem find hex 0x1AF0 0x1AF2 03 --view=ram')
+        if not ok or '1AF1' not in find_ram.upper():
+            print(f"FAIL: find --view=ram missed under-ROM byte: {find_ram!r}")
+            return False
+
+        cpu_hex = cpu_resp.replace('OK', '').strip().upper()
+        if cpu_hex != '03':
+            # Strong path: lower ROM still overlays &1AF1.
+            ok, cmp_cpu = ipc.send_command(
+                f'mem compare 0x{addr:04X} 0x4000 1')
+            if not ok or 'diffs=0' in cmp_cpu:
+                print(f"FAIL: CPU-view compare should differ under ROM, "
+                      f"got {cmp_cpu!r}")
+                return False
+            print(f"PASS: mem --view=ram (CPU={cpu_hex} RAM=03 under ROM)")
+        else:
+            print("PASS: mem --view=ram (ROM banked out; alias + bad-view OK)")
+        return True
+
+
 def test_breakpoint():
     """Test breakpoint functionality."""
     print("Running breakpoint test...")
@@ -1793,6 +1871,7 @@ def main():
         test_engine1_bp_clear_resume,
         test_z80_basic,
         test_memory_rw,
+        test_mem_ram_view_under_rom_overlay,
         test_breakpoint,
         # Thread-split correctness tests (work in both headless and threaded mode)
         test_breakpoint_pause_step_resume,

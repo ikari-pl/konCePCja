@@ -731,12 +731,16 @@ void init_command_registry() {
       "mem", "DEBUG",
       "mem read|cpu-read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | "
       "mem write|cpu-write <addr> <hex> | mem fill <addr> <len> <hex> | mem "
-      "compare <a> <b> <len> | mem find <start> <end> <hex>",
+      "compare <a> <b> <len> [--view=read|ram] | mem find hex|text|asm "
+      "<start> <end> <pattern> [--view=read|ram]",
       "Access emulated memory",
       "Allows direct manipulation of the 64K/128K RAM space.\n"
       "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
       "  write: Writes the provided <hex> string into memory starting at "
       "<addr>.\n"
+      "  compare / find hex|text: honour --view= the same way as read "
+      "(find asm\n"
+      "    always uses the CPU view, since it disassembles code).\n"
       "  --view=read (default): what the Z80 would read now, ROM overlays "
       "included.\n"
       "  --view=ram: the banked RAM byte, ROM overlays ignored. USE THIS to "
@@ -948,9 +952,12 @@ void init_command_registry() {
 
   register_command(
       "search", "TOOLS",
-      "search hex <pattern> | search text <string> | search asm <instruction>",
+      "search hex <pattern> [--view=read|ram] | search text <string> "
+      "[--view=read|ram] | search asm <instruction>",
       "Search memory",
-      "Searches the 64KB RAM space for byte sequences or strings.");
+      "Searches the 64KB address space for byte sequences or strings.\n"
+      "  hex|text: honour --view=ram like mem read (ROM overlays ignored).\n"
+      "  asm: always uses the CPU view (disassembles fetched instructions).");
 
   register_command("rom", "HARDWARE",
                    "rom list | rom load <slot> <path> | rom unload <slot> | "
@@ -2029,15 +2036,35 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
-      // mem compare <addr1> <addr2> <len>
+      // mem compare <addr1> <addr2> <len> [--view=read|ram]
+      // Same ROM-overlay hazard as mem read / search: comparing a game
+      // variable under a paged-in ROM against a reference buffer must use
+      // --view=ram or both sides read firmware bytes.
       unsigned int const addr1 = parse_number(parts[2]);
       unsigned int const addr2 = parse_number(parts[3]);
       unsigned int const len = parse_number(parts[4]);
+      bool compare_ram_view = false;
+      for (size_t pi = 5; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "write" || v == "ram")
+            compare_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+        } else {
+          return "ERR 400 usage: mem compare <addr1> <addr2> <len> "
+                 "[--view=read|ram]\n";
+        }
+      }
       int diff_count = 0;
       std::string diffs;
+      auto const peek = [compare_ram_view](word a) {
+        return compare_ram_view ? z80_read_mem_via_write_bank(a)
+                                : z80_read_mem(a);
+      };
       for (unsigned int i = 0; i < len; i++) {
-        byte const v1 = z80_read_mem(static_cast<word>(addr1 + i));
-        byte const v2 = z80_read_mem(static_cast<word>(addr2 + i));
+        byte const v1 = peek(static_cast<word>(addr1 + i));
+        byte const v2 = peek(static_cast<word>(addr2 + i));
         if (v1 != v2) {
           diff_count++;
           if (diff_count <= 64) {
@@ -3541,13 +3568,37 @@ std::string handle_command(const std::string& line) {
 
     // --- Memory search ---
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "find") {
-      unsigned int const start = parse_number(parts[3]);
-      unsigned int end = parse_number(parts[4]);
-      end = std::min<unsigned int>(end, 0xFFFF);
+      // mem find hex|text|asm <start> <end> <pattern> [--view=read|ram]
+      // Hex/text scan DATA, so they honour --view=ram like mem read / search.
+      // Asm disassembles the CPU-visible stream and always uses that view.
+      bool find_ram_view = false;
+      std::vector<std::string> args;
+      for (size_t pi = 2; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "write" || v == "ram")
+            find_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+          continue;
+        }
+        args.push_back(parts[pi]);
+      }
+      if (args.size() < 4)
+        return "ERR 400 usage: mem find (hex|text|asm) <start> <end> "
+               "<pattern> [--view=read|ram]\n";
 
-      if (parts[2] == "hex" && parts.size() >= 6) {
+      const std::string& find_mode = args[0];
+      unsigned int const start = parse_number(args[1]);
+      unsigned int end = parse_number(args[2]);
+      end = std::min<unsigned int>(end, 0xFFFF);
+      auto const peek = [find_ram_view](word a) {
+        return find_ram_view ? z80_read_mem_via_write_bank(a) : z80_read_mem(a);
+      };
+
+      if (find_mode == "hex") {
         // Parse hex pattern with ?? wildcards
-        const std::string& hex = parts[5];
+        const std::string& hex = args[3];
         std::vector<int> pattern;  // -1 = wildcard, else byte value
         for (size_t i = 0; i + 1 < hex.size(); i += 2) {
           if (hex[i] == '?' && hex[i + 1] == '?') {
@@ -3566,7 +3617,7 @@ std::string handle_command(const std::string& line) {
           bool match = true;
           for (size_t j = 0; j < pattern.size(); j++) {
             if (pattern[j] < 0) continue;
-            if (z80_read_mem(static_cast<word>(addr + j)) !=
+            if (peek(static_cast<word>(addr + j)) !=
                 static_cast<byte>(pattern[j])) {
               match = false;
               break;
@@ -3581,12 +3632,12 @@ std::string handle_command(const std::string& line) {
         resp << "\n";
         return resp.str();
       }
-      if (parts[2] == "text" && parts.size() >= 6) {
+      if (find_mode == "text") {
         // Collect text from remaining parts (may have spaces)
         std::string text;
-        for (size_t pi = 5; pi < parts.size(); pi++) {
+        for (size_t pi = 3; pi < args.size(); pi++) {
           if (!text.empty()) text += " ";
-          text += parts[pi];
+          text += args[pi];
         }
         // Strip surrounding quotes
         if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
@@ -3600,7 +3651,7 @@ std::string handle_command(const std::string& line) {
              addr + text.size() - 1 <= end && found < 32; addr++) {
           bool match = true;
           for (size_t j = 0; j < text.size(); j++) {
-            if (z80_read_mem(static_cast<word>(addr + j)) !=
+            if (peek(static_cast<word>(addr + j)) !=
                 static_cast<byte>(text[j])) {
               match = false;
               break;
@@ -3615,12 +3666,14 @@ std::string handle_command(const std::string& line) {
         resp << "\n";
         return resp.str();
       }
-      if (parts[2] == "asm" && parts.size() >= 6) {
-        // Collect asm pattern from remaining parts
+      if (find_mode == "asm") {
+        // Collect asm pattern from remaining parts. Always CPU view —
+        // disassembly is of the instruction stream the Z80 would fetch.
+        (void)find_ram_view;
         std::string pattern;
-        for (size_t pi = 5; pi < parts.size(); pi++) {
+        for (size_t pi = 3; pi < args.size(); pi++) {
           if (!pattern.empty()) pattern += " ";
-          pattern += parts[pi];
+          pattern += args[pi];
         }
         // Lowercase pattern for case-insensitive matching
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
