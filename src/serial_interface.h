@@ -387,13 +387,11 @@ struct SerialConfig {
   uint32_t baud_rate = 9600;
 
   friend bool operator==(const SerialConfig& lhs, const SerialConfig& rhs) {
-    return lhs.enabled == rhs.enabled &&
-           lhs.backend_type == rhs.backend_type &&
+    return lhs.enabled == rhs.enabled && lhs.backend_type == rhs.backend_type &&
            lhs.input_file == rhs.input_file &&
            lhs.output_file == rhs.output_file &&
-           lhs.device_path == rhs.device_path &&
-           lhs.tcp_host == rhs.tcp_host && lhs.tcp_port == rhs.tcp_port &&
-           lhs.baud_rate == rhs.baud_rate;
+           lhs.device_path == rhs.device_path && lhs.tcp_host == rhs.tcp_host &&
+           lhs.tcp_port == rhs.tcp_port && lhs.baud_rate == rhs.baud_rate;
   }
   friend bool operator!=(const SerialConfig& lhs, const SerialConfig& rhs) {
     return !(lhs == rhs);
@@ -414,9 +412,7 @@ struct SerialInterface {
   // stages a change apply_config() hasn't seen yet. A rebuild triggered by
   // an unrelated setting (RAM size, CRTC type, model) should skip
   // re-opening an already-current backend rather than truncate/reconnect it.
-  bool config_applied() const {
-    return applied_ && config_ == applied_config_;
-  }
+  bool config_applied() const { return applied_ && config_ == applied_config_; }
 
  private:
   SerialConfig config_;

@@ -733,7 +733,8 @@ TEST(SafeReadDword, ExactFourBytes) {
 // ─────────────────────────────────────────────────
 
 TEST(OptionsNeedsRestart, NoChangeDoesNotRestart) {
-  EXPECT_FALSE(options_needs_restart(2, 2, 128, 128, 0, 0, false, false, false));
+  EXPECT_FALSE(
+      options_needs_restart(2, 2, 128, 128, 0, 0, false, false, false));
 }
 
 TEST(OptionsNeedsRestart, ModelChangeRestarts) {

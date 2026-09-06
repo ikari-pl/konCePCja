@@ -94,8 +94,8 @@ struct Bridge {
   // trailing destination sub-row of each source scanline's replicated span
   // (see blit_fb) -- the dark "gap" a real CRT shows between bright lines.
   std::vector<uint8_t> scanline_fb;
-  SDL_Surface* scanline_surface = nullptr;      // native RGB24 view of it
-  SDL_Surface* scanline_fbconv = nullptr;       // dst-format staging for it
+  SDL_Surface* scanline_surface = nullptr;  // native RGB24 view of it
+  SDL_Surface* scanline_fbconv = nullptr;   // dst-format staging for it
   SDL_Surface* fbconv = nullptr;  // dst-format staging: convert-then-stretch
                                   // keeps SDL on its fast blit paths (F8: the
                                   // one-pass scale+convert fell into
@@ -1649,12 +1649,13 @@ void blit_fb(Bridge& b, SDL_Surface* dst) {
   // fallback — measured ~2 ms/frame on P-cores and ~10 ms on E-cores,
   // 39% of the Z80 thread's time under §8.3 (F8).
   if (b.fbconv == nullptr) {
-    b.fbconv = SDL_CreateSurface(subcycle::kFbWidth, subcycle::kFbHeight,
-                                 dst->format);
+    b.fbconv =
+        SDL_CreateSurface(subcycle::kFbWidth, subcycle::kFbHeight, dst->format);
     // Alpha formats default to SDL_BLENDMODE_BLEND — the stretch would
     // alpha-blend every pixel (SDL_Blit_..._Blend_Scale, the E-core
     // profile's top entry). The frame is opaque; copy it.
-    if (b.fbconv != nullptr) SDL_SetSurfaceBlendMode(b.fbconv, SDL_BLENDMODE_NONE);
+    if (b.fbconv != nullptr)
+      SDL_SetSurfaceBlendMode(b.fbconv, SDL_BLENDMODE_NONE);
   }
   // Integer-exact vertical mapping: the legacy plugins' input surfaces
   // are built around CPC_VISIBLE_SCR_HEIGHT=270 (540 when line-doubled)

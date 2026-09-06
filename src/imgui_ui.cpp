@@ -3288,9 +3288,12 @@ void imgui_render_options() {
   // restores-on-revert (no auto-start or other side logic, unlike M4 above);
   // table-driven so a new toggle is one array entry, not three edit sites.
   static bool* const kPeripheralToggles[] = {
-      &g_smartwatch.enabled, &g_symbiface.enabled,
-      &g_amdrum.enabled,     &g_amx_mouse.enabled,
-      &g_drive_sounds.disk_enabled, &g_drive_sounds.tape_enabled,
+      &g_smartwatch.enabled,
+      &g_symbiface.enabled,
+      &g_amdrum.enabled,
+      &g_amx_mouse.enabled,
+      &g_drive_sounds.disk_enabled,
+      &g_drive_sounds.tape_enabled,
   };
   static constexpr size_t kPeripheralToggleCount =
       sizeof(kPeripheralToggles) / sizeof(kPeripheralToggles[0]);

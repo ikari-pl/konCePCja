@@ -20,8 +20,18 @@ TEST(Scanlines, DimsEveryRgb24Row) {
   subcycle_bridge_apply_scanlines_rgb24(pixels.data(), 2, 2, 25);
 
   EXPECT_EQ((std::array<uint8_t, 12>{
-                7,  15, 22, 30, 37, 45,  // row 0 at 75%
-                60, 30, 15, 9,  6,  3,   // row 1 at 75%
+                7,
+                15,
+                22,
+                30,
+                37,
+                45,  // row 0 at 75%
+                60,
+                30,
+                15,
+                9,
+                6,
+                3,  // row 1 at 75%
             }),
             pixels);
 }
