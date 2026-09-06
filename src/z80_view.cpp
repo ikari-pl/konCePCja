@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hw/memory.h"
@@ -20,6 +22,7 @@
 #include "memory_bus.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
+#include "z80_disassembly.h"
 
 extern t_CRTC CRTC;
 extern t_GateArray GateArray;
@@ -69,8 +72,10 @@ void z80_set_breakpoint_hit_hook(BreakpointHitHook hook) {
   g_breakpoint_hit_hook = hook;
 }
 
-void z80_call_breakpoint_hit_hook(word pc, bool watchpoint) {
-  if (g_breakpoint_hit_hook) g_breakpoint_hit_hook(pc, watchpoint);
+void z80_call_breakpoint_hit_hook(word pc, bool watchpoint,
+                                  uint64_t arming_generation) {
+  if (g_breakpoint_hit_hook)
+    g_breakpoint_hit_hook(pc, watchpoint, arming_generation);
 }
 
 TxtOutputHook z80_get_txt_output_hook(uint16_t* address) {
@@ -102,6 +107,7 @@ namespace {
 // or `mem write`) -- so there is no pause discipline to lean on. Relaxed is
 // enough: the value is only ever stamped and later compared for equality.
 std::atomic<uint64_t> g_bp_generation{0};
+std::atomic<bool> g_last_probe_hit_user_breakpoint{false};
 
 // Bumped AFTER the list mutation it describes, never before: a hit that fires
 // mid-mutation then carries the OLD generation and is dropped by
@@ -117,6 +123,7 @@ uint64_t z80_breakpoint_generation() {
 }
 
 void z80_add_breakpoint(word addr) {
+  CpcStopCoordinationGuard const coordination;
   if (!std::any_of(breakpoints.begin(), breakpoints.end(), [&](const auto& b) {
         return b.address == addr && !b.condition;
       })) {
@@ -129,6 +136,7 @@ void z80_add_breakpoint(word addr) {
 // translation units/tests; internal linkage would break the link
 void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
                              const std::string& cond_str, int pass_count) {
+  CpcStopCoordinationGuard const coordination;
   Breakpoint bp(addr, NORMAL);
   bp.condition = std::move(condition);
   bp.condition_str = cond_str;
@@ -138,6 +146,7 @@ void z80_add_breakpoint_cond(word addr, std::unique_ptr<ExprNode> condition,
 }
 
 void z80_del_breakpoint(word addr) {
+  CpcStopCoordinationGuard const coordination;
   const auto before = breakpoints.size();
   breakpoints.erase(
       std::remove_if(breakpoints.begin(), breakpoints.end(),
@@ -149,6 +158,7 @@ void z80_del_breakpoint(word addr) {
 }
 
 void z80_clear_breakpoints() {
+  CpcStopCoordinationGuard const coordination;
   breakpoints.clear();
   bump_bp_generation();
 }
@@ -158,6 +168,107 @@ void z80_step_instruction() {
     m->step_instruction();  // probe-blind: never re-trips the halt
     subcycle_bridge_sync_regs_view();
   }
+}
+
+Z80StepOutResult z80_step_out_finish(int timeout_ms,
+                                     const BreakpointHitConsumer& consume_hit) {
+  word const entry_sp = z80.SP.w.l;
+  uint64_t operation_epoch = cpc_resume_epoch();
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  auto still_in_frame = [&]() {
+    // Signed distance makes an FFFE→0000 stack wrap count as unwound.
+    return static_cast<int16_t>(entry_sp - z80.SP.w.l) >= 0;
+  };
+
+  while (still_in_frame()) {
+    if (cpc_resume_epoch() != operation_epoch ||
+        !g_emu_paused.load(std::memory_order_acquire)) {
+      z80_remove_ephemeral_breakpoints();
+      return Z80StepOutResult::BreakpointHit;
+    }
+    word const pc = z80.PC.w.l;
+    if (z80_is_call_or_rst(pc)) {
+      word const next_pc = static_cast<word>(pc + z80_instruction_length(pc));
+      z80_add_breakpoint_ephemeral(next_pc);
+
+      if (consume_hit) {
+        uint16_t stale_pc = 0;
+        bool stale_watch = false;
+        consume_hit(stale_pc, stale_watch);
+      }
+
+      uint64_t const run_epoch = cpc_resume();
+      operation_epoch = run_epoch;
+      bool landed = false;
+      while (true) {
+        if (cpc_resume_epoch() != run_epoch) {
+          z80_remove_ephemeral_breakpoints();
+          return Z80StepOutResult::BreakpointHit;
+        }
+        if (consume_hit) {
+          uint16_t hit_pc = 0;
+          bool watch = false;
+          if (consume_hit(hit_pc, watch)) {
+            if (!watch && hit_pc == next_pc) {
+              landed = true;
+              break;
+            }
+            cpc_pause_if_epoch(run_epoch);
+            z80_remove_ephemeral_breakpoints();
+            return Z80StepOutResult::BreakpointHit;
+          }
+        }
+
+        if (g_emu_paused.load(std::memory_order_acquire)) {
+          landed = z80.PC.w.l == next_pc;
+          break;
+        }
+        if (std::chrono::steady_clock::now() > deadline) {
+          if (!cpc_pause_if_epoch(run_epoch)) {
+            z80_remove_ephemeral_breakpoints();
+            return Z80StepOutResult::BreakpointHit;
+          }
+          z80_remove_ephemeral_breakpoints();
+          return Z80StepOutResult::Timeout;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+
+      if (!g_emu_paused.load(std::memory_order_acquire) &&
+          !cpc_pause_if_epoch(run_epoch)) {
+        z80_remove_ephemeral_breakpoints();
+        return Z80StepOutResult::BreakpointHit;
+      }
+      z80_remove_ephemeral_breakpoints();
+      if (!landed) return Z80StepOutResult::BreakpointHit;
+      if (z80_last_probe_hit_was_user_breakpoint())
+        return Z80StepOutResult::BreakpointHit;
+    } else {
+      bool interrupted = false;
+      {
+        CpcStopCoordinationGuard const coordination;
+        interrupted = coordination.resume_epoch() != operation_epoch ||
+                      !g_emu_paused.load(std::memory_order_acquire);
+        if (!interrupted) z80_step_instruction();
+      }
+      if (interrupted) {
+        z80_remove_ephemeral_breakpoints();
+        return Z80StepOutResult::BreakpointHit;
+      }
+    }
+
+    if (std::chrono::steady_clock::now() > deadline) {
+      if (!cpc_pause_if_epoch(operation_epoch)) {
+        z80_remove_ephemeral_breakpoints();
+        return Z80StepOutResult::BreakpointHit;
+      }
+      z80_remove_ephemeral_breakpoints();
+      return Z80StepOutResult::Timeout;
+    }
+  }
+
+  return Z80StepOutResult::Done;
 }
 
 // ---- Tool-facing memory accessors (IPC, DevTools, expr parser) ----------
@@ -257,7 +368,8 @@ bool z80_wp_should_fire(Watchpoint& w, word addr, byte val, byte old_val,
   return w.pass_count <= 0 || w.hit_count >= w.pass_count;
 }
 
-bool z80_probe_exec_should_break(uint16_t pc) {
+bool z80_probe_exec_should_break(uint16_t pc, bool& user_breakpoint_fired) {
+  user_breakpoint_fired = false;
   // The hit identity IS the PC for condition purposes. The machine parks
   // mid-fetch, so the synced view holds a PC already past the opcode —
   // evaluating `pc == <bp addr>` against that made a true condition false at
@@ -270,14 +382,33 @@ bool z80_probe_exec_should_break(uint16_t pc) {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   bool any = false;
-  for (auto& b : breakpoints) {
-    if (b.address != pc) continue;
-    any = true;
-    if (z80_bp_should_fire(b, static_cast<word>(pc))) return true;
+  for (BreakpointType const type : {NORMAL, EPHEMERAL}) {
+    for (auto& b : breakpoints) {
+      if (b.address != pc || b.type != type) continue;
+      any = true;
+      if (z80_bp_should_fire(b, static_cast<word>(pc))) {
+        user_breakpoint_fired = b.type == NORMAL;
+        return true;
+      }
+    }
   }
   if (!any) return true;
   z80.PC.w.l = saved_pc;
   return false;
+}
+
+bool z80_probe_exec_should_break(uint16_t pc) {
+  bool user_breakpoint_fired = false;
+  return z80_probe_exec_should_break(pc, user_breakpoint_fired);
+}
+
+void z80_record_probe_hit_source(bool user_breakpoint) {
+  g_last_probe_hit_user_breakpoint.store(user_breakpoint,
+                                         std::memory_order_release);
+}
+
+bool z80_last_probe_hit_was_user_breakpoint() {
+  return g_last_probe_hit_user_breakpoint.load(std::memory_order_acquire);
 }
 
 bool z80_probe_watch_should_break(uint16_t addr, uint8_t data, bool is_write,
@@ -301,6 +432,11 @@ bool z80_probe_watch_should_break(uint16_t addr, uint8_t data, bool is_write,
 }
 
 void z80_remove_ephemeral_breakpoints() {
+  CpcStopCoordinationGuard const coordination;
+  z80_remove_ephemeral_breakpoints_while_coordinated();
+}
+
+void z80_remove_ephemeral_breakpoints_while_coordinated() {
   breakpoints.erase(
       std::remove_if(breakpoints.begin(), breakpoints.end(),
                      [](const Breakpoint& b) { return b.type == EPHEMERAL; }),
@@ -311,6 +447,17 @@ void z80_remove_ephemeral_breakpoints() {
 // translation units/tests; internal linkage would break the link
 const std::vector<Breakpoint>& z80_list_breakpoints_ref() {
   return breakpoints;
+}
+
+std::vector<BreakpointSnapshot> z80_breakpoints_snapshot() {
+  CpcStopCoordinationGuard const coordination;
+  std::vector<BreakpointSnapshot> result;
+  result.reserve(breakpoints.size());
+  for (const auto& bp : breakpoints) {
+    result.push_back(
+        {bp.address, bp.type, bp.pass_count, bp.hit_count, bp.condition_str});
+  }
+  return result;
 }
 
 // --- IO breakpoints ---
@@ -339,6 +486,7 @@ bool z80_check_io_breakpoint(word port, IOBreakpointDir access, byte val) {
 }
 
 void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir) {
+  CpcStopCoordinationGuard const coordination;
   IOBreakpoint bp;
   bp.port = port;
   bp.mask = mask;
@@ -352,6 +500,7 @@ void z80_add_io_breakpoint(word port, word mask, IOBreakpointDir dir) {
 void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
                                 std::unique_ptr<ExprNode> condition,
                                 const std::string& cond_str) {
+  CpcStopCoordinationGuard const coordination;
   IOBreakpoint bp;
   bp.port = port;
   bp.mask = mask;
@@ -363,6 +512,7 @@ void z80_add_io_breakpoint_cond(word port, word mask, IOBreakpointDir dir,
 }
 
 void z80_del_io_breakpoint(int index) {
+  CpcStopCoordinationGuard const coordination;
   if (index >= 0 && index < static_cast<int>(io_breakpoints.size())) {
     io_breakpoints.erase(io_breakpoints.begin() + index);
     bump_bp_generation();
@@ -375,6 +525,7 @@ void z80_del_io_breakpoint(int index) {
 // generation. Skipping the bump here left `wait bp` able to report a stale IO
 // hit from a previous arming -- the same defect the stamp exists to close.
 void z80_clear_io_breakpoints() {
+  CpcStopCoordinationGuard const coordination;
   io_breakpoints.clear();
   bump_bp_generation();
 }
@@ -385,9 +536,20 @@ const std::vector<IOBreakpoint>& z80_list_io_breakpoints_ref() {
   return io_breakpoints;
 }
 
+std::vector<IOBreakpointSnapshot> z80_io_breakpoints_snapshot() {
+  CpcStopCoordinationGuard const coordination;
+  std::vector<IOBreakpointSnapshot> result;
+  result.reserve(io_breakpoints.size());
+  for (const auto& bp : io_breakpoints) {
+    result.push_back({bp.port, bp.mask, bp.dir, bp.condition_str});
+  }
+  return result;
+}
+
 // --- Watchpoints ---
 
 void z80_add_watchpoint(word addr, word len, WatchpointType type) {
+  CpcStopCoordinationGuard const coordination;
   Watchpoint wp(addr, type);
   wp.length = len;
   watchpoints.push_back(std::move(wp));
@@ -399,6 +561,7 @@ void z80_add_watchpoint(word addr, word len, WatchpointType type) {
 void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
                              std::unique_ptr<ExprNode> cond,
                              const std::string& cond_str, int pass_count) {
+  CpcStopCoordinationGuard const coordination;
   Watchpoint wp(addr, type);
   wp.length = len;
   wp.condition = std::move(cond);
@@ -409,6 +572,7 @@ void z80_add_watchpoint_cond(word addr, word len, WatchpointType type,
 }
 
 void z80_del_watchpoint(int index) {
+  CpcStopCoordinationGuard const coordination;
   if (index >= 0 && index < static_cast<int>(watchpoints.size())) {
     watchpoints.erase(watchpoints.begin() + index);
     bump_bp_generation();
@@ -416,6 +580,7 @@ void z80_del_watchpoint(int index) {
 }
 
 void z80_clear_watchpoints() {
+  CpcStopCoordinationGuard const coordination;
   watchpoints.clear();
   bump_bp_generation();
 }
@@ -426,8 +591,20 @@ const std::vector<Watchpoint>& z80_list_watchpoints_ref() {
   return watchpoints;
 }
 
+std::vector<WatchpointSnapshot> z80_watchpoints_snapshot() {
+  CpcStopCoordinationGuard const coordination;
+  std::vector<WatchpointSnapshot> result;
+  result.reserve(watchpoints.size());
+  for (const auto& wp : watchpoints) {
+    result.push_back({wp.address, wp.length, wp.type, wp.pass_count,
+                      wp.hit_count, wp.condition_str});
+  }
+  return result;
+}
+
 // --- Ephemeral breakpoints ---
 
 void z80_add_breakpoint_ephemeral(word addr) {
+  CpcStopCoordinationGuard const coordination;
   breakpoints.emplace_back(addr, EPHEMERAL);
 }

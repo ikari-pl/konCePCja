@@ -81,7 +81,9 @@ void render_run_state_chip() {
 
 DevToolsUI g_devtools_ui;
 
-// Destructor defined here where TextEditor is a complete type
+// Constructor and destructor defined here where TextEditor and the
+// breakpoint/watchpoint/IO-breakpoint snapshot types are complete.
+DevToolsUI::DevToolsUI() = default;
 DevToolsUI::~DevToolsUI() = default;
 
 // -----------------------------------------------
@@ -527,6 +529,15 @@ void DevToolsUI::disasm_cache_record_pc() {
   disasm_cache_[pc] = {line.instruction_, static_cast<uint8_t>(len)};
 }
 
+void DevToolsUI::refresh_breakpoint_snapshots() {
+  uint64_t const generation = z80_breakpoint_generation();
+  if (generation == bp_snapshot_generation_) return;
+  bp_snapshot_cache_ = z80_breakpoints_snapshot();
+  wp_snapshot_cache_ = z80_watchpoints_snapshot();
+  iobp_snapshot_cache_ = z80_io_breakpoints_snapshot();
+  bp_snapshot_generation_ = generation;
+}
+
 void DevToolsUI::render_disassembly() {
   apply_default_window_layout(1, 440, 500);
 
@@ -654,7 +665,8 @@ void DevToolsUI::render_disassembly() {
     lines.push_back(std::move(entry));
   }
 
-  const auto& breakpoints = z80_list_breakpoints_ref();
+  refresh_breakpoint_snapshots();
+  const auto& breakpoints = bp_snapshot_cache_;
 
   // ROM detection: when read and write banks differ for a slot, ROM is overlaid
 
@@ -1048,7 +1060,8 @@ void DevToolsUI::render_memory_hex() {
   int const total_rows = (0x10000 + bytes_per_row - 1) / bytes_per_row;
 
   // Collect watchpoint ranges for highlighting
-  const auto& watchpoints = z80_list_watchpoints_ref();
+  refresh_breakpoint_snapshots();
+  const auto& watchpoints = wp_snapshot_cache_;
 
   // Pre-compute search pattern length (avoids reparse per byte in render loop)
   int search_plen = 0;
@@ -1462,9 +1475,10 @@ void DevToolsUI::render_breakpoints() {
     if (ImGui::Button("Add BP##quick")) add_quick_bp();
   }
 
-  const auto& bps = z80_list_breakpoints_ref();
-  const auto& wps = z80_list_watchpoints_ref();
-  const auto& iobps = z80_list_io_breakpoints_ref();
+  refresh_breakpoint_snapshots();
+  const auto& bps = bp_snapshot_cache_;
+  const auto& wps = wp_snapshot_cache_;
+  const auto& iobps = iobp_snapshot_cache_;
 
   // Count visible (non-ephemeral) breakpoints
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated

@@ -930,6 +930,8 @@ void SerialInterface::apply_config() {
   // Sync I/O dispatch gate with config
 
   serial_interface_enabled = config_.enabled;
+  applied_config_ = config_;
+  applied_ = true;
 
   if (!config_.enabled) {
     z80_set_bdos_serial_out_hook(nullptr);

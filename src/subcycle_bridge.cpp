@@ -5,6 +5,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstdint>
@@ -89,6 +90,12 @@ struct Bridge {
   subcycle::Machine machine;
   std::vector<uint8_t> fb;        // RGB24 native frame the machine renders into
   SDL_Surface* fbsurf = nullptr;  // SDL view of fb for the scaled blit
+  // Fully-dimmed copy of `fb`, native RGB24. Composited onto only the
+  // trailing destination sub-row of each source scanline's replicated span
+  // (see blit_fb) -- the dark "gap" a real CRT shows between bright lines.
+  std::vector<uint8_t> scanline_fb;
+  SDL_Surface* scanline_surface = nullptr;  // native RGB24 view of it
+  SDL_Surface* scanline_fbconv = nullptr;   // dst-format staging for it
   SDL_Surface* fbconv = nullptr;  // dst-format staging: convert-then-stretch
                                   // keeps SDL on its fast blit paths (F8: the
                                   // one-pass scale+convert fell into
@@ -110,6 +117,12 @@ struct Bridge {
   // afterwards or the debugger reports the mid-fetch PC instead of the
   // breakpoint address.
   ProbeHit pending_hit{};
+  // A listed breakpoint/watchpoint stop is classified while the machine is
+  // parked, then committed at debug_sync after register publication. The
+  // resume epoch prevents an older staged stop from overtaking a later Run.
+  bool pending_real_stop = false;
+  uint64_t pending_stop_epoch = 0;
+  uint64_t pending_stop_generation = 0;
   // Audio spliced across a frame that was interrupted by filtered probe hits.
   // run_frame() clears audio_ at entry, so each re-entry would otherwise throw
   // away the samples produced before the halt. Only used when a continuation
@@ -356,12 +369,12 @@ bool subcycle_bridge_start() {
     b.m4_loaded = true;
   }
   {  // SI card serial BIOS ROM (rs232-device.md): the plotter/serial chain's
-     // firmware — the serial RSX + AUX routing. engine=1 must page it in
-     // itself; the legacy SIRomManager only fills the engine=0 rom_map. Attach
-     // into the SI card's slot (DEFAULT_SLOT=2) so the firmware's boot ROM scan
-     // finds and initialises it. Gated like the Device pair (enabled + Plotter
-     // backend) so ROM and DART stay consistent; only Faithful-tier, never in
-     // the bench.
+    // firmware — the serial RSX + AUX routing. engine=1 must page it in
+    // itself; the legacy SIRomManager only fills the engine=0 rom_map. Attach
+    // into the SI card's slot (DEFAULT_SLOT=2) so the firmware's boot ROM scan
+    // finds and initialises it. Gated like the Device pair (enabled + Plotter
+    // backend) so ROM and DART stay consistent; only Faithful-tier, never in
+    // the bench.
     const SerialConfig sc = g_serial_interface.get_config();
     if (sc.enabled && sc.backend_type == SerialBackendType::Plotter) {
       b.serialrom = read_file(CPC.rom_path + "/serial.rom");
@@ -820,6 +833,7 @@ void subcycle_bridge_sync_probe() {
   // (out-param/compound-assign/loop/reference)
   Bridge& b = g_bridge;
   if (!b.active) return;
+  CpcStopCoordinationGuard const coordination;
   const Device* pr = b.machine.probe();
   probe_clear_exec(pr);
   for (const auto& bp : z80_list_breakpoints_ref())
@@ -862,7 +876,8 @@ namespace {
 // predicates it uses are stateful (z80_bp_should_fire increments hit_count,
 // z80_probe_exec_should_break republishes the PC), so a second opinion would
 // be a second side effect (beads-6561).
-int process_probe_hit(Bridge& b, const ProbeHit& hit) {
+int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
+                      uint64_t breakpoint_generation) {
   if (hit.kind == PROBE_HIT_EXEC && hit.addr == z80.break_point) {
     // The old-flavour single breakpoint (z80.break_point, mirrored into
     // the probe only while a KONCPC_WAITBREAK is in flight): report
@@ -883,9 +898,12 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit) {
       return 1;
     }
   }
-  if (hit.kind == PROBE_HIT_EXEC && !z80_probe_exec_should_break(hit.addr)) {
-    b.machine.probe_resume();
-    return 0;
+  bool user_breakpoint_fired = hit.kind != PROBE_HIT_EXEC;
+  if (hit.kind == PROBE_HIT_EXEC) {
+    if (!z80_probe_exec_should_break(hit.addr, user_breakpoint_fired)) {
+      b.machine.probe_resume();
+      return 0;
+    }
   }
   if (hit.kind == PROBE_HIT_MEM_READ || hit.kind == PROBE_HIT_MEM_WRITE) {
     const bool is_write = hit.kind == PROBE_HIT_MEM_WRITE;
@@ -909,9 +927,11 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit) {
     z80.watchpoint_addr = hit.addr;
     z80.watchpoint_value = hit.data;
   }
-  z80_remove_ephemeral_breakpoints();
-  z80_call_breakpoint_hit_hook(static_cast<word>(hit.addr),
-                               hit.kind != PROBE_HIT_EXEC);
+  z80_record_probe_hit_source(user_breakpoint_fired);
+  z80_remove_ephemeral_breakpoints_while_coordinated();
+  b.pending_real_stop = true;
+  b.pending_stop_epoch = resume_epoch;
+  b.pending_stop_generation = breakpoint_generation;
   return 1;
 }
 
@@ -1087,6 +1107,21 @@ int subcycle_bridge_debug_sync() {
   g_psg_scope.push(ps.chan_level[0], ps.chan_level[1], ps.chan_level[2],
                    ps.env_level);
 
+  auto commit_real_stop = [&](const ProbeHit& hit) {
+    if (!b.pending_real_stop) return true;  // legacy KONCPC_WAITBREAK
+    bool const committed = cpc_commit_breakpoint_stop(
+        b.pending_stop_epoch, b.pending_stop_generation,
+        static_cast<word>(hit.addr), hit.kind != PROBE_HIT_EXEC);
+    b.pending_real_stop = false;
+    b.pending_stop_epoch = 0;
+    b.pending_stop_generation = 0;
+    if (!committed) {
+      z80.breakpoint_reached = 0;
+      z80.watchpoint_reached = 0;
+    }
+    return committed;
+  };
+
   if (b.pending_hit_disposition != ProbeDisposition::kNone) {
     // Already judged inside this frame's continue loop; do not re-evaluate.
     const ProbeDisposition disposition = b.pending_hit_disposition;
@@ -1098,10 +1133,24 @@ int subcycle_bridge_debug_sync() {
     // same value process_probe_hit() set (probe spec §3) — otherwise `reg get
     // PC` and the disassembly view point one fetch past the breakpoint.
     if (hit.kind == PROBE_HIT_EXEC) z80.PC.w.l = hit.addr;
-    return disposition == ProbeDisposition::kBreak ? 1 : 0;
+    if (disposition != ProbeDisposition::kBreak) return 0;
+    return commit_real_stop(hit) ? 1 : 0;
   }
   ProbeHit hit{};
-  if (b.machine.probe_hit(&hit)) return process_probe_hit(b, hit);
+  int disposition = 0;
+  bool has_hit = false;
+  {
+    CpcStopCoordinationGuard const coordination;
+    has_hit = b.machine.probe_hit(&hit);
+    if (has_hit) {
+      disposition = process_probe_hit(b, hit, coordination.resume_epoch(),
+                                      coordination.breakpoint_generation());
+    }
+  }
+  if (has_hit) {
+    if (disposition == 0) return 0;
+    return commit_real_stop(hit) ? 1 : 0;
+  }
   return 0;
 }
 
@@ -1145,6 +1194,15 @@ void subcycle_bridge_stop() {
     SDL_DestroySurface(b.fbsurf);
     b.fbsurf = nullptr;
   }
+  if (b.scanline_surface != nullptr) {
+    SDL_DestroySurface(b.scanline_surface);
+    b.scanline_surface = nullptr;
+  }
+  if (b.scanline_fbconv != nullptr) {
+    SDL_DestroySurface(b.scanline_fbconv);
+    b.scanline_fbconv = nullptr;
+  }
+  b.scanline_fb.clear();
   if (b.fbconv != nullptr) {
     SDL_DestroySurface(b.fbconv);
     b.fbconv = nullptr;
@@ -1159,6 +1217,9 @@ void subcycle_bridge_stop() {
   b.pending_hit_disposition =
       ProbeDisposition::kNone;  // belongs to the machine being torn down
   b.pending_hit = ProbeHit{};
+  b.pending_real_stop = false;
+  b.pending_stop_epoch = 0;
+  b.pending_stop_generation = 0;
   b.machine.clear_taps();
   b.active = false;
 }
@@ -1461,8 +1522,6 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
     if (b.machine.run_tier() != want) b.machine.set_run_tier(want);
   }
 
-  b.machine.run_frame();
-
   // The probe stops run_frame EARLY on every candidate hit, and machine.h's
   // contract is "ack + run again to continue the frame". That continuation was
   // missing: a hit the condition filtered OUT was left latched for the
@@ -1480,15 +1539,26 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   bool spliced = false;  // did a filtered hit force a mid-frame re-entry?
   for (int guard = 0; guard < kMaxProbeContinues; ++guard) {
     ProbeHit hit{};
-    if (!b.machine.probe_hit(&hit)) break;  // frame ran to completion
-    // Judge against the state AT THE HALT. The condition evaluator reads the
-    // host-side z80 view (z80.AF carries the flags `if carry` tests), and that
-    // view is only refreshed by subcycle_bridge_sync_regs_view() -- which the
-    // debug sync runs once per frame, i.e. AFTER this loop. Judging without
-    // this sync evaluated every condition against the PREVIOUS frame's
-    // registers, so `bp <addr> if carry` silently never fired.
-    subcycle_bridge_sync_regs_view();
-    if (process_probe_hit(b, hit) != 0) {
+    bool has_hit = false;
+    int disposition = 0;
+    {
+      // Resume and breakpoint-list mutation linearize outside one complete
+      // execution slice. A hit is stamped with the epoch/generation that were
+      // active while the probe actually latched, not when it is observed
+      // later by debug_sync.
+      CpcStopCoordinationGuard const coordination;
+      b.machine.run_frame();
+      has_hit = b.machine.probe_hit(&hit);
+      if (has_hit) {
+        // Judge against the state AT THE HALT. The condition evaluator reads
+        // the host-side z80 view, so publish registers before evaluating it.
+        subcycle_bridge_sync_regs_view();
+        disposition = process_probe_hit(b, hit, coordination.resume_epoch(),
+                                        coordination.breakpoint_generation());
+      }
+    }
+    if (!has_hit) break;  // frame ran to completion
+    if (disposition != 0) {
       b.pending_hit_disposition = ProbeDisposition::kBreak;  // sync reports it
       b.pending_hit = hit;
       break;
@@ -1502,7 +1572,6 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
       b.spliced_audio.insert(b.spliced_audio.end(), segment.begin(),
                              segment.end());
     }
-    b.machine.run_frame();  // filtered: finish the frame instead of the wait
   }
 
   blit_fb(b, dst);
@@ -1539,48 +1608,122 @@ void subcycle_bridge_repaint(SDL_Surface* dst) {
   if (b.active) blit_fb(b, dst);
 }
 
+bool subcycle_bridge_scanline_gap_row(int dst_row, int src_h, int dst_h,
+                                      int* source_row) {
+  if (src_h <= 0 || dst_h <= 0 || dst_row < 0 || dst_row >= dst_h) return false;
+  int const s = (dst_row * src_h) / dst_h;
+  bool const first_of_span =
+      dst_row == 0 || (((dst_row - 1) * src_h) / dst_h) != s;
+  bool const last_of_span =
+      dst_row + 1 == dst_h || (((dst_row + 1) * src_h) / dst_h) != s;
+  if (!last_of_span || first_of_span) return false;  // no spare row here
+  if (source_row != nullptr) *source_row = s;
+  return true;
+}
+
+void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
+                                           int height, unsigned int intensity) {
+  if (pixels == nullptr || width <= 0 || height <= 0) return;
+  unsigned int const factor = 100u - std::min(intensity, 100u);
+  std::array<uint8_t, 256> dim{};
+  for (size_t value = 0; value < dim.size(); ++value) {
+    dim[value] = static_cast<uint8_t>(
+        (static_cast<unsigned int>(value) * factor) / 100u);
+  }
+  size_t const row_bytes = static_cast<size_t>(width) * 3;
+  for (int y = 0; y < height; ++y) {
+    uint8_t* row = pixels + (static_cast<size_t>(y) * row_bytes);
+    for (size_t x = 0; x < row_bytes; ++x) {
+      row[x] = dim[row[x]];
+    }
+  }
+}
+
 namespace {
 void blit_fb(Bridge& b, SDL_Surface* dst) {
-  if (dst != nullptr && b.fbsurf != nullptr) {
-    // Two passes, each on an SDL fast path: unscaled RGB24→dst-format
-    // convert, then a same-format nearest stretch. The one-pass
-    // SDL_BlitSurfaceScaled(convert+scale) takes SDL's generic per-pixel
-    // fallback — measured ~2 ms/frame on P-cores and ~10 ms on E-cores,
-    // 39% of the Z80 thread's time under §8.3 (F8).
-    if (b.fbconv == nullptr) {
-      b.fbconv = SDL_CreateSurface(subcycle::kFbWidth, subcycle::kFbHeight,
-                                   dst->format);
-      // Alpha formats default to SDL_BLENDMODE_BLEND — the stretch would
-      // alpha-blend every pixel (SDL_Blit_..._Blend_Scale, the E-core
-      // profile's top entry). The frame is opaque; copy it.
-      if (b.fbconv != nullptr)
-        SDL_SetSurfaceBlendMode(b.fbconv, SDL_BLENDMODE_NONE);
+  if (dst == nullptr || b.fbsurf == nullptr) return;
+
+  // Two passes, each on an SDL fast path: unscaled RGB24→dst-format
+  // convert, then a same-format nearest stretch. The one-pass
+  // SDL_BlitSurfaceScaled(convert+scale) takes SDL's generic per-pixel
+  // fallback — measured ~2 ms/frame on P-cores and ~10 ms on E-cores,
+  // 39% of the Z80 thread's time under §8.3 (F8).
+  if (b.fbconv == nullptr) {
+    b.fbconv =
+        SDL_CreateSurface(subcycle::kFbWidth, subcycle::kFbHeight, dst->format);
+    // Alpha formats default to SDL_BLENDMODE_BLEND — the stretch would
+    // alpha-blend every pixel (SDL_Blit_..._Blend_Scale, the E-core
+    // profile's top entry). The frame is opaque; copy it.
+    if (b.fbconv != nullptr)
+      SDL_SetSurfaceBlendMode(b.fbconv, SDL_BLENDMODE_NONE);
+  }
+  // Integer-exact vertical mapping: the legacy plugins' input surfaces
+  // are built around CPC_VISIBLE_SCR_HEIGHT=270 (540 when line-doubled)
+  // while the machine's monitor window is 272 lines. A raw full-surface
+  // stretch resamples 272→540/270 at a non-integer ratio — nearest drops
+  // and doubles lines unevenly, visibly under the CRT styles (Lottes).
+  // Crop the fb to the largest centered window the dst holds at an
+  // integer factor; the stretch is then exact (270 → clean 2× or 1:1).
+  SDL_Rect src{0, 0, b.fbsurf->w, b.fbsurf->h};
+  {
+    const int fbh = b.fbsurf->h;
+    int factor = (dst->h + (fbh / 2)) / fbh;
+    factor = std::max(factor, 1);
+    int src_h = dst->h / factor;
+    src_h = std::min(src_h, fbh);
+    src_h = std::max(src_h, 1);
+    src.y = (fbh - src_h) / 2;
+    src.h = src_h;
+  }
+
+  if (b.fbconv != nullptr) {
+    SDL_BlitSurface(b.fbsurf, nullptr, b.fbconv, nullptr);
+    SDL_BlitSurfaceScaled(b.fbconv, &src, dst, nullptr, SDL_SCALEMODE_NEAREST);
+  } else {
+    SDL_BlitSurfaceScaled(b.fbsurf, &src, dst, nullptr, SDL_SCALEMODE_NEAREST);
+  }
+
+  // Scanlines: a real CRT's dark gap is a destination row nearest-neighbour
+  // upscaling never produces on its own -- every row it emits is a bright
+  // copy of source content, never a duplicate free to darken. So this
+  // composites a fully-dimmed copy of the native frame onto only the LAST
+  // destination row each source scanline expands into (computed the same
+  // way SDL's own nearest mapping would pick a source row per destination
+  // row, so it lines up exactly with what was just blitted above). A
+  // source row that maps to exactly one destination row (no spare row,
+  // e.g. an unscaled 1:1 window) has no gap to show and is left alone.
+  unsigned int const intensity = std::clamp(CPC.scr_oglscanlines, 0u, 100u);
+  if (CPC.scr_scanlines && intensity > 0 && b.fbconv != nullptr &&
+      dst->h > src.h) {
+    if (b.scanline_fb.size() != b.fb.size()) {
+      if (b.scanline_surface != nullptr) SDL_DestroySurface(b.scanline_surface);
+      b.scanline_fb.resize(b.fb.size());
+      b.scanline_surface = SDL_CreateSurfaceFrom(
+          subcycle::kFbWidth, subcycle::kFbHeight, SDL_PIXELFORMAT_RGB24,
+          b.scanline_fb.data(), subcycle::kFbWidth * 3);
     }
-    // Integer-exact vertical mapping: the legacy plugins' input surfaces
-    // are built around CPC_VISIBLE_SCR_HEIGHT=270 (540 when line-doubled)
-    // while the machine's monitor window is 272 lines. A raw full-surface
-    // stretch resamples 272→540/270 at a non-integer ratio — nearest drops
-    // and doubles lines unevenly, visibly under the CRT styles (Lottes).
-    // Crop the fb to the largest centered window the dst holds at an
-    // integer factor; the stretch is then exact (270 → clean 2× or 1:1).
-    SDL_Rect src{0, 0, b.fbsurf->w, b.fbsurf->h};
-    {
-      const int fbh = b.fbsurf->h;
-      int factor = (dst->h + (fbh / 2)) / fbh;
-      factor = std::max(factor, 1);
-      int src_h = dst->h / factor;
-      src_h = std::min(src_h, fbh);
-      src_h = std::max(src_h, 1);
-      src.y = (fbh - src_h) / 2;
-      src.h = src_h;
+    if (b.scanline_fbconv == nullptr) {
+      b.scanline_fbconv = SDL_CreateSurface(subcycle::kFbWidth,
+                                            subcycle::kFbHeight, dst->format);
+      if (b.scanline_fbconv != nullptr)
+        SDL_SetSurfaceBlendMode(b.scanline_fbconv, SDL_BLENDMODE_NONE);
     }
-    if (b.fbconv != nullptr) {
-      SDL_BlitSurface(b.fbsurf, nullptr, b.fbconv, nullptr);
-      SDL_BlitSurfaceScaled(b.fbconv, &src, dst, nullptr,
-                            SDL_SCALEMODE_NEAREST);
-    } else {
-      SDL_BlitSurfaceScaled(b.fbsurf, &src, dst, nullptr,
-                            SDL_SCALEMODE_NEAREST);
+    if (b.scanline_surface != nullptr && b.scanline_fbconv != nullptr) {
+      std::copy(b.fb.begin(), b.fb.end(), b.scanline_fb.begin());
+      subcycle_bridge_apply_scanlines_rgb24(b.scanline_fb.data(),
+                                            subcycle::kFbWidth,
+                                            subcycle::kFbHeight, intensity);
+      SDL_BlitSurface(b.scanline_surface, nullptr, b.scanline_fbconv, nullptr);
+
+      for (int d = 0; d < dst->h; ++d) {
+        int source_row = 0;
+        if (!subcycle_bridge_scanline_gap_row(d, src.h, dst->h, &source_row))
+          continue;  // no spare row here
+        SDL_Rect src_row{src.x, src.y + source_row, src.w, 1};
+        SDL_Rect dst_row{0, d, dst->w, 1};
+        SDL_BlitSurfaceScaled(b.scanline_fbconv, &src_row, dst, &dst_row,
+                              SDL_SCALEMODE_NEAREST);
+      }
     }
   }
 }

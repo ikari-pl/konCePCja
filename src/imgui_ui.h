@@ -27,6 +27,11 @@ inline float ui_dpi_px(float px) {
 
 void imgui_init_ui();
 void imgui_render_ui();
+// Blocks (bounded by Step Out's own 5s timeout) until a Step Out that was
+// dispatched to a background thread has finished, so the app never tears
+// down state a still-running step-out thread is touching. Call once from
+// the main thread during shutdown, before the Z80 thread is joined.
+void dbg_step_out_await_shutdown();
 int imgui_topbar_height();
 void imgui_open_menu();
 void imgui_close_menu();

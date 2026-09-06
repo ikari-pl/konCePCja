@@ -31,7 +31,8 @@ class KoncepcjaIpcServer {
   void stop();
   int port() const { return actual_port.load(); }
 
-  void notify_breakpoint_hit(uint16_t pc, bool watchpoint);
+  void notify_breakpoint_hit(uint16_t pc, bool watchpoint,
+                             uint64_t arming_generation);
   bool consume_breakpoint_hit(uint16_t& pc, bool& watchpoint);
   // Non-consuming peek. A caller that resumes the machine on the caller's
   // behalf (see `input key`'s tap) must not resume THROUGH a breakpoint that

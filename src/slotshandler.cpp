@@ -164,7 +164,7 @@ void fillSlots(std::vector<std::string> slot_list, t_CPC& CPC) {
     if (extension == ".zip") {  // classify by the first relevant entry inside
       zip::t_zip_info zip_info;
       zip_info.filename = fullpath;
-      zip_info.extensions = ".dsk.sna.cdt.voc.cpr.ipf.raw.scp.hfe.a2r";
+      zip_info.extensions = zip::kAllSupportedZipMediaExtensions;
       if (zip::dir(&zip_info)) {
         continue;  // error or nothing relevant found
       }

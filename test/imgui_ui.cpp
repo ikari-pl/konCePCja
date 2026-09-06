@@ -727,3 +727,71 @@ TEST(SafeReadDword, ExactFourBytes) {
   EXPECT_TRUE(safe_read_dword(buffer, buffer + 4, 0, result));
   EXPECT_EQ(0x04030201u, result);
 }
+
+// ─────────────────────────────────────────────────
+// options_needs_restart: no-change vs each-field-change
+// ─────────────────────────────────────────────────
+
+TEST(OptionsNeedsRestart, NoChangeDoesNotRestart) {
+  EXPECT_FALSE(
+      options_needs_restart(2, 2, 128, 128, 0, 0, false, false, false));
+}
+
+TEST(OptionsNeedsRestart, ModelChangeRestarts) {
+  EXPECT_TRUE(options_needs_restart(2, 3, 128, 128, 0, 0, false, false, false));
+}
+
+TEST(OptionsNeedsRestart, RamSizeChangeRestarts) {
+  EXPECT_TRUE(options_needs_restart(2, 2, 128, 256, 0, 0, false, false, false));
+}
+
+TEST(OptionsNeedsRestart, KeyboardChangeRestarts) {
+  EXPECT_TRUE(options_needs_restart(2, 2, 128, 128, 0, 1, false, false, false));
+}
+
+TEST(OptionsNeedsRestart, M4EnableChangeRestarts) {
+  EXPECT_TRUE(options_needs_restart(2, 2, 128, 128, 0, 0, false, true, false));
+}
+
+TEST(OptionsNeedsRestart, SerialConfigChangeAloneRestarts) {
+  // The bug this guards: enabling serial without a rebuild leaves the RSX
+  // ROM unmapped even though nothing else in the machine's ROM map changed.
+  EXPECT_TRUE(options_needs_restart(2, 2, 128, 128, 0, 0, false, false, true));
+}
+
+// ─────────────────────────────────────────────────
+// capture_toggle_values / restore_toggle_values
+// ─────────────────────────────────────────────────
+
+TEST(ToggleValues, CaptureThenRestoreRoundTrips) {
+  bool a = true, b = false, c = true;
+  bool* const toggles[] = {&a, &b, &c};
+  bool old_values[3] = {};
+
+  capture_toggle_values(toggles, old_values, 3);
+  EXPECT_EQ(old_values[0], true);
+  EXPECT_EQ(old_values[1], false);
+  EXPECT_EQ(old_values[2], true);
+
+  // Simulate the user flipping every toggle in the dialog.
+  a = false;
+  b = true;
+  c = false;
+
+  restore_toggle_values(toggles, old_values, 3);
+  EXPECT_EQ(a, true);
+  EXPECT_EQ(b, false);
+  EXPECT_EQ(c, true);
+}
+
+TEST(ToggleValues, RestoreIsNoOpWhenNothingChanged) {
+  bool a = true, b = false;
+  bool* const toggles[] = {&a, &b};
+  bool old_values[2] = {};
+
+  capture_toggle_values(toggles, old_values, 2);
+  restore_toggle_values(toggles, old_values, 2);
+
+  EXPECT_EQ(a, true);
+  EXPECT_EQ(b, false);
+}

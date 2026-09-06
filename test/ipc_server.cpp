@@ -10,6 +10,7 @@
 #include <unistd.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,7 @@
 
 #include "autotype.h"
 #include "cpc_key_tables.h"
+#include "imgui_state.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "symfile.h"
@@ -204,6 +206,35 @@ TEST_F(IpcServerTest, RegGetReturnsValues) {
   EXPECT_EQ(resp, "OK 3456\n");
 }
 
+TEST_F(IpcServerTest, HelpRegistryMatchesImplementedCommands) {
+  auto help = send_command("help");
+  EXPECT_OK(help);
+  EXPECT_NE(help.find("tier [get|status]"), std::string::npos) << help;
+
+  EXPECT_OK(send_command("help reg"));
+  EXPECT_OK(send_command("help serial"));
+  EXPECT_OK(send_command("help telnet"));
+}
+
+TEST_F(IpcServerTest, RegisteredStatusCommandsHaveProtocolResponses) {
+  auto const tier = send_command("tier");
+  EXPECT_EQ(tier, "ERR 503 no-board\n");
+
+  auto const telnet = send_command("telnet status");
+  EXPECT_OK(telnet);
+  EXPECT_NE(telnet.find("port="), std::string::npos);
+  EXPECT_NE(telnet.find("client="), std::string::npos);
+}
+
+TEST_F(IpcServerTest, DevtoolsOnOffUsesRequestedState) {
+  imgui_state.show_devtools = true;
+  EXPECT_OK(send_command("devtools off"));
+  EXPECT_FALSE(imgui_state.show_devtools);
+
+  EXPECT_OK(send_command("devtools on"));
+  EXPECT_TRUE(imgui_state.show_devtools);
+}
+
 // R52 in the crtc dump is the Gate Array's HSYNC line counter, the reference a
 // raster effect is timed against.  It reported CRTC.reg5 instead -- a value
 // the same line already prints as R5 -- so the field read plausibly while
@@ -267,12 +298,162 @@ TEST_F(IpcServerTest, WaitVblCompletes) {
   EXPECT_OK(resp);
 }
 
+TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);  // discard any earlier hit
+
+  cpc_resume();
+  uint64_t const stale_epoch = cpc_resume_epoch();
+  // A genuine pause->run transition is what invalidates a staged stop --
+  // cpc_resume() is a no-op (does not bump the epoch) when the machine is
+  // already running, so a real intervening pause is needed here to make
+  // this "the user's later Run", not a redundant no-op resume.
+  cpc_pause();
+  cpc_resume();
+
+  uint64_t const generation = z80_breakpoint_generation();
+  EXPECT_FALSE(
+      cpc_commit_breakpoint_stop(stale_epoch, generation, 0x1234, false));
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
+
+  uint64_t const current_epoch = cpc_resume_epoch();
+  EXPECT_TRUE(
+      cpc_commit_breakpoint_stop(current_epoch, generation, 0x5678, false));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
+  EXPECT_EQ(hit_pc, 0x5678);
+  EXPECT_FALSE(watch);
+}
+
+TEST_F(IpcServerTest, RedundantResumeCannotDiscardAPendingStop) {
+  // The bug this guards: a resume issued while the machine is ALREADY
+  // running used to still bump the epoch, so a client (or another thread)
+  // sending an idempotent `run` in the narrow window between a real
+  // breakpoint being classified and debug_sync committing it would
+  // silently discard that hit -- the machine never actually paused, and
+  // the caller who armed the breakpoint got no report at all. cpc_resume()
+  // must be a true no-op when CPC.paused is already false.
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  cpc_pause();
+  uint64_t const epoch = cpc_resume();  // real transition: paused -> running
+  uint64_t const generation = z80_breakpoint_generation();
+
+  // A second, redundant `run` arrives while the machine is already running
+  // (e.g. a client that isn't tracking pause state, or two racing callers).
+  uint64_t const redundant_epoch = cpc_resume();
+  EXPECT_EQ(redundant_epoch, epoch)
+      << "a resume on an already-running machine must not advance the epoch";
+
+  // The hit staged against the FIRST (and only real) epoch must still commit.
+  EXPECT_TRUE(cpc_commit_breakpoint_stop(epoch, generation, 0x1234, false));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
+  EXPECT_EQ(hit_pc, 0x1234);
+}
+
+TEST_F(IpcServerTest, BreakpointMutationInvalidatesClassifiedStop) {
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  uint64_t const epoch = cpc_resume();
+  uint64_t const old_generation = z80_breakpoint_generation();
+  z80_add_breakpoint(0x1234);
+
+  EXPECT_FALSE(
+      cpc_commit_breakpoint_stop(epoch, old_generation, 0x1234, false));
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
+  z80_clear_breakpoints();
+}
+
+TEST_F(IpcServerTest, ResumeCannotInterleaveWithExecutionEpochStamp) {
+  // Establish a known paused state so the background thread's cpc_resume()
+  // below is a real pause->run transition and therefore does bump the
+  // epoch -- cpc_resume() is a no-op on an already-running machine.
+  cpc_pause();
+  std::atomic<bool> resume_started{false};
+  std::atomic<bool> resume_finished{false};
+  std::thread resume_thread;
+  uint64_t stamped_epoch = 0;
+  uint64_t stamped_generation = 0;
+
+  {
+    CpcStopCoordinationGuard const coordination;
+    stamped_epoch = coordination.resume_epoch();
+    stamped_generation = coordination.breakpoint_generation();
+    resume_thread = std::thread([&]() {
+      resume_started.store(true, std::memory_order_release);
+      cpc_resume();
+      resume_finished.store(true, std::memory_order_release);
+    });
+    while (!resume_started.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(resume_finished.load(std::memory_order_acquire));
+  }
+
+  resume_thread.join();
+  EXPECT_TRUE(resume_finished.load(std::memory_order_acquire));
+  EXPECT_FALSE(cpc_commit_breakpoint_stop(stamped_epoch, stamped_generation,
+                                          0x1234, false));
+}
+
+TEST_F(IpcServerTest, BreakpointMutationCannotRaceStopCommit) {
+  z80_clear_breakpoints();
+  std::atomic<bool> mutation_started{false};
+  std::atomic<bool> mutation_finished{false};
+  std::thread mutation_thread;
+  uint64_t const old_generation = z80_breakpoint_generation();
+
+  {
+    CpcStopCoordinationGuard const coordination;
+    mutation_thread = std::thread([&]() {
+      mutation_started.store(true, std::memory_order_release);
+      z80_add_breakpoint(0x1234);
+      mutation_finished.store(true, std::memory_order_release);
+    });
+    while (!mutation_started.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(mutation_finished.load(std::memory_order_acquire));
+    EXPECT_EQ(coordination.breakpoint_generation(), old_generation);
+  }
+
+  mutation_thread.join();
+  EXPECT_TRUE(mutation_finished.load(std::memory_order_acquire));
+  EXPECT_GT(z80_breakpoint_generation(), old_generation);
+  z80_clear_breakpoints();
+}
+
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto screenshotPath =
       (std::filesystem::temp_directory_path() / "kaprys_test.png").string();
   auto resp = send_command("screenshot " + screenshotPath);
   EXPECT_EQ(resp, "ERR 503 no-surface\n");
+}
+
+TEST_F(IpcServerTest, DiskNewCanCreateFluxBacking) {
+  auto const path =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-flux.scp";
+  std::filesystem::remove(path);
+
+  auto const response =
+      send_command("disk new " + path.string() + " data flux");
+  EXPECT_OK(response);
+
+  std::ifstream file(path, std::ios::binary);
+  char signature[3] = {};
+  file.read(signature, sizeof(signature));
+  EXPECT_EQ(std::string(signature, sizeof(signature)), "SCP");
+  file.close();
+  std::filesystem::remove(path);
 }
 
 TEST_F(IpcServerTest, WatchpointAddListDelClear) {

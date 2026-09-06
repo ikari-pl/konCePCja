@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -1191,6 +1192,14 @@ int koncpc_rebuild_machine() {
   cpc_pause_and_wait();
 
   subcycle_bridge_stop();
+  // Serial backends are raw callback contexts in the Machine. Replace them
+  // only after the bridge has been stopped, then let bridge_start() attach the
+  // new backend. Every rebuild lands here, including ones triggered by an
+  // unrelated setting (RAM size, CRTC type, model) -- only reapply when the
+  // staged config actually differs from what's already open, or a File
+  // backend's output gets truncated and a live TCP/plotter session dropped
+  // for no reason.
+  if (!g_serial_interface.config_applied()) g_serial_interface.apply_config();
 
   int err = emulator_init();
   if (err == 0 && !subcycle_bridge_start()) {
@@ -1570,18 +1579,75 @@ void audio_enable() {
   audio_apply_volume();
 }
 
-void cpc_pause() {
-  audio_pause();
-  CPC.paused = true;
-  g_emu_paused.store(true, std::memory_order_relaxed);
+namespace {
+std::mutex g_pause_mutex;
+uint64_t g_resume_epoch = 0;
+}  // namespace
+
+CpcStopCoordinationGuard::CpcStopCoordinationGuard() {
+  g_pause_mutex.lock();
+  resume_epoch_ = g_resume_epoch;
+  breakpoint_generation_ = z80_breakpoint_generation();
 }
 
-void cpc_resume() {
+CpcStopCoordinationGuard::~CpcStopCoordinationGuard() {
+  g_pause_mutex.unlock();
+}
+
+uint64_t cpc_resume_epoch() {
+  std::scoped_lock const lock(g_pause_mutex);
+  return g_resume_epoch;
+}
+
+void cpc_pause() {
+  std::scoped_lock const lock(g_pause_mutex);
+  audio_pause();
+  CPC.paused = true;
+  g_emu_paused.store(true, std::memory_order_release);
+}
+
+uint64_t cpc_resume() {
+  std::scoped_lock const lock(g_pause_mutex);
+  // A resume issued while the machine is already running is not a real
+  // pause->run transition -- bumping the epoch here would invalidate a
+  // breakpoint stop that was legitimately classified moments ago (between
+  // the Z80 thread staging it and debug_sync committing it) even though
+  // nothing about the debugger's authority over the machine actually
+  // changed. A caller that cares about the current epoch already has
+  // cpc_resume_epoch() for that; this only guards the two real transition
+  // side effects (lastFrameStart reset, audio_resume) from re-firing too.
+  if (!CPC.paused) return g_resume_epoch;
+  ++g_resume_epoch;
   CPC.paused = false;
-  g_emu_paused.store(false, std::memory_order_relaxed);
+  g_emu_paused.store(false, std::memory_order_release);
   lastFrameStart =
       0;  // reset so first frame after resume isn't measured as huge
   audio_resume();
+  return g_resume_epoch;
+}
+
+bool cpc_pause_if_epoch(uint64_t expected_epoch) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (expected_epoch != g_resume_epoch) return false;
+
+  audio_pause();
+  CPC.paused = true;
+  g_emu_paused.store(true, std::memory_order_release);
+  return true;
+}
+
+bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
+                                word pc, bool watchpoint) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (hit_epoch != g_resume_epoch ||
+      arming_generation != z80_breakpoint_generation())
+    return false;
+
+  audio_pause();
+  CPC.paused = true;
+  g_emu_paused.store(true, std::memory_order_release);
+  z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
+  return true;
 }
 
 void cpc_pause_and_wait() {
@@ -2232,7 +2298,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // core; the [system] engine flag is gone with it — an `engine=` line in an
   // old config is simply never read).
   {  // [system] run_tier: 0=auto (Fast; Wake while debugging — the default,
-     // user decision 2026-07-10), 1=fast, 2=wake, 3=soldered, 4=faithful.
+    // user decision 2026-07-10), 1=fast, 2=wake, 3=soldered, 4=faithful.
     int pol = conf.getIntValue("system", "run_tier", 0);
     if (pol < 0 || pol > 4) pol = 0;
     subcycle_bridge_set_tier_policy(static_cast<BridgeTierPolicy>(pol));
@@ -3027,6 +3093,11 @@ void doCleanUp() {
 #ifdef _WIN32
   timeEndPeriod(1);
 #endif
+  // A GUI Step Out in flight on its own worker thread (see dbg_step_out())
+  // still touches z80/CPC state; wait for it (bounded by its own 5s
+  // timeout) before the teardown below starts pausing/joining the Z80
+  // thread out from under it.
+  dbg_step_out_await_shutdown();
   // Shutdown ordering — three constraints that together force this dance:
   //
   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside
@@ -3494,7 +3565,10 @@ void z80_thread_main() {
           cleanExit(1, false);
         }
         imgui_state.show_devtools = true;
-        cpc_pause();
+        // Engine breakpoints are committed atomically in debug_sync before
+        // their hit is published. Re-pausing here would let this older stop
+        // overtake a newer IPC `run`.
+        if (!subcycle_bridge_active()) cpc_pause();
         // Mid-frame pause: the render thread may be waiting in
         // try_wait_ready_for() for a frame that will never arrive (we stopped
         // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
@@ -4980,7 +5054,7 @@ int koncpc_main(int argc, char** argv) {
           }
           // This is a breakpoint from DevTools or symbol file
           imgui_state.show_devtools = true;
-          CPC.paused = true;
+          if (!subcycle_bridge_active()) cpc_pause();
           z80.step_in = 0;
           z80.step_out = 0;
           z80.step_out_addresses.clear();
@@ -5268,6 +5342,20 @@ int koncpc_main(int argc, char** argv) {
       if (g_m4_http.is_running()) g_m4_http.drain_pending();
       ipc_drain_input();
       std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
+    }
+
+    // Fullscreen transitions destroy/recreate video resources, so an Options
+    // checkbox cannot perform one from inside the active ImGui frame.
+    if (imgui_state.fullscreen_request != -1) {
+      int const requested = imgui_state.fullscreen_request;
+      imgui_state.fullscreen_request = -1;
+      int actual = CPC.scr_window;
+      if (mainSDLWindow) {
+        actual =
+            (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) ? 0 : 1;
+      }
+      CPC.scr_window = actual;
+      if (actual != requested) koncpc_toggle_fullscreen();
     }
 
     // Deferred video plugin switch (triggered by Options combo).

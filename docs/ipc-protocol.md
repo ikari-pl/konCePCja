@@ -20,6 +20,8 @@ nc localhost 6544       # connect — type to interact with the CPC
 - Input is fed through AutoTypeQueue with ANSI escape → CPC key mapping
 - Single client at a time; new connections replace the existing one
 - Port probes forward up to +10 if 6544 is taken
+- `telnet status` on the IPC port reports the actual port and whether a client
+  is connected
 
 See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
@@ -43,11 +45,18 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | `run` | Resume emulation |
 | `reset` | Hard reset the CPC |
 
+## Run tier
+
+| Command | Description |
+|---------|-------------|
+| `tier [get\|status]` | Report requested/effective sub-cycle run tier and environment pin state |
+| `tier set <auto\|fast\|wake\|soldered\|faithful>` | Change run-tier policy; rejected when `KONCPC_TIER`/`KONCPC_WAKE` pins it |
+
 ## Loading
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (binary at 0x6000). An unrecognised extension returns `ERR 415 unsupported` |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported` |
 
 ## Registers
 
@@ -73,6 +82,8 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 |---------|----------|
 | `mem read <addr> <len> [--view=read\|ram] [--bank=N] [ascii]` | `OK <hex> [\|ascii\|]` — reads through Z80 banking |
 | `mem write <addr> <hex>` | `OK` — writes through Z80 banking |
+| `mem cpu-read <addr> <len>` | Read through the CPU-visible memory path |
+| `mem cpu-write <addr> <hex>` | Write through the CPU-visible memory path |
 | `mem fill <addr> <len> <hex-pattern>` | `OK` — fill memory with repeating hex pattern |
 | `mem compare <addr1> <addr2> <len>` | `OK diffs=N [addr:src:dst ...]` — compare two regions, up to 64 diffs listed |
 
@@ -170,7 +181,7 @@ All wait commands resume emulation, block until condition or timeout, then pause
 |---------|-------------|
 | `wait pc <addr> [timeout_ms]` | Wait until PC reaches address |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
-| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` once the machine has actually stopped (bounded: it waits up to 500ms after the hit for the pause to land). Only reports hits from the CURRENT arming — a hit left uncollected from a previous `bp`/`wp`/IO-bp change is dropped, so it reads as a timeout |
+| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop. Only hits from the current arming are reported |
 | `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each) |
 
 Default timeout: 5000ms. Returns `ERR 408 timeout` on expiry.
@@ -189,7 +200,8 @@ CRC32 hashes for CI regression testing.
 
 | Command | Description |
 |---------|-------------|
-| `screenshot [path]` | Save current screen as PNG |
+| `screenshot [path]` | Save the CPC screen as PNG (default path when omitted) |
+| `screenshot window <path>` | Capture the emulator window on the next rendered frame |
 | `snapshot save <path>` | Save emulator state (.sna) |
 | `snapshot load <path>` | Load emulator state (.sna) |
 
@@ -502,7 +514,7 @@ File-level and sector-level access to DSK disc images.
 |---------|-------------|
 | `disk formats` | `OK data vendor system ...` — list available format names |
 | `disk format <A\|B> <format_name>` | Format drive with named format |
-| `disk new <path> [format]` | Create a new blank DSK file (default format: `data`) |
+| `disk new <path> [format] [sector\|flux]` | Create a blank disc (default: `data sector`). Flux backing is chosen at creation because discarded flux cannot be reconstructed later |
 | `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
 | `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
 | `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
@@ -674,6 +686,16 @@ Load and unload ROM images in 32 expansion ROM slots.
 echo "rom list" | nc -w 1 localhost 6543
 echo "rom load 7 maxam.rom" | nc -w 1 localhost 6543
 ```
+
+## Serial Interface
+
+| Command | Description |
+|---------|-------------|
+| `serial status` | Report interface/backend configuration and counters |
+| `serial send <byte>` | Inject one received byte |
+| `serial send_string <text>` | Inject text into the receive path |
+| `serial config get` | Report serial configuration |
+| `serial config set <key> <value>` | Change a serial configuration field |
 
 ## Data Areas
 

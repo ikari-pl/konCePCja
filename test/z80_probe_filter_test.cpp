@@ -121,6 +121,24 @@ TEST_F(ProbeFilterTest, ExecPassCountFiresOnTheNthHit) {
   EXPECT_TRUE(z80_probe_exec_should_break(0x1BD9)) << "second hit pauses";
 }
 
+TEST_F(ProbeFilterTest, ExecHitReportsTheBreakpointThatActuallyFired) {
+  z80.PC.w.l = 0x1BDA;
+  z80_add_breakpoint_cond(0x1BD9, parse("0"), "0", 0);
+  z80_add_breakpoint_ephemeral(0x1BD9);
+
+  bool user_breakpoint_fired = true;
+  EXPECT_TRUE(z80_probe_exec_should_break(0x1BD9, user_breakpoint_fired));
+  EXPECT_FALSE(user_breakpoint_fired)
+      << "a false user condition must not claim the ephemeral stop";
+
+  z80_clear_breakpoints();
+  z80_add_breakpoint(0x1BD9);
+  z80_add_breakpoint_ephemeral(0x1BD9);
+  EXPECT_TRUE(z80_probe_exec_should_break(0x1BD9, user_breakpoint_fired));
+  EXPECT_TRUE(user_breakpoint_fired)
+      << "a real user breakpoint takes precedence over Step Out's landing";
+}
+
 TEST_F(ProbeFilterTest, WatchPassCountFiresOnTheNthHit) {
   z80_add_watchpoint_cond(0xB7F8, 1, WatchpointType::WRITE, nullptr, "",
                           /*pass_count=*/2);
