@@ -90,8 +90,12 @@ struct Bridge {
   subcycle::Machine machine;
   std::vector<uint8_t> fb;        // RGB24 native frame the machine renders into
   SDL_Surface* fbsurf = nullptr;  // SDL view of fb for the scaled blit
-  std::vector<uint8_t> scanline_fb;  // optional dimmed copy of odd raster rows
-  SDL_Surface* scanline_surface = nullptr;
+  // Fully-dimmed copy of `fb`, native RGB24. Composited onto only the
+  // trailing destination sub-row of each source scanline's replicated span
+  // (see blit_fb) -- the dark "gap" a real CRT shows between bright lines.
+  std::vector<uint8_t> scanline_fb;
+  SDL_Surface* scanline_surface = nullptr;      // native RGB24 view of it
+  SDL_Surface* scanline_fbconv = nullptr;       // dst-format staging for it
   SDL_Surface* fbconv = nullptr;  // dst-format staging: convert-then-stretch
                                   // keeps SDL on its fast blit paths (F8: the
                                   // one-pass scale+convert fell into
@@ -1194,6 +1198,10 @@ void subcycle_bridge_stop() {
     SDL_DestroySurface(b.scanline_surface);
     b.scanline_surface = nullptr;
   }
+  if (b.scanline_fbconv != nullptr) {
+    SDL_DestroySurface(b.scanline_fbconv);
+    b.scanline_fbconv = nullptr;
+  }
   b.scanline_fb.clear();
   if (b.fbconv != nullptr) {
     SDL_DestroySurface(b.fbconv);
@@ -1600,6 +1608,19 @@ void subcycle_bridge_repaint(SDL_Surface* dst) {
   if (b.active) blit_fb(b, dst);
 }
 
+bool subcycle_bridge_scanline_gap_row(int dst_row, int src_h, int dst_h,
+                                      int* source_row) {
+  if (src_h <= 0 || dst_h <= 0 || dst_row < 0 || dst_row >= dst_h) return false;
+  int const s = (dst_row * src_h) / dst_h;
+  bool const first_of_span =
+      dst_row == 0 || (((dst_row - 1) * src_h) / dst_h) != s;
+  bool const last_of_span =
+      dst_row + 1 == dst_h || (((dst_row + 1) * src_h) / dst_h) != s;
+  if (!last_of_span || first_of_span) return false;  // no spare row here
+  if (source_row != nullptr) *source_row = s;
+  return true;
+}
+
 void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
                                            int height, unsigned int intensity) {
   if (pixels == nullptr || width <= 0 || height <= 0) return;
@@ -1610,8 +1631,8 @@ void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
         (static_cast<unsigned int>(value) * factor) / 100u);
   }
   size_t const row_bytes = static_cast<size_t>(width) * 3;
-  for (int y = 1; y < height; y += 2) {
-    uint8_t* row = pixels + static_cast<size_t>(y) * row_bytes;
+  for (int y = 0; y < height; ++y) {
+    uint8_t* row = pixels + (static_cast<size_t>(y) * row_bytes);
     for (size_t x = 0; x < row_bytes; ++x) {
       row[x] = dim[row[x]];
     }
@@ -1620,65 +1641,88 @@ void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
 
 namespace {
 void blit_fb(Bridge& b, SDL_Surface* dst) {
-  if (dst != nullptr && b.fbsurf != nullptr) {
-    SDL_Surface* source = b.fbsurf;
-    unsigned int const intensity = std::clamp(CPC.scr_oglscanlines, 0u, 100u);
-    if (CPC.scr_scanlines && intensity > 0) {
-      if (b.scanline_fb.size() != b.fb.size()) {
-        if (b.scanline_surface != nullptr)
-          SDL_DestroySurface(b.scanline_surface);
-        b.scanline_fb.resize(b.fb.size());
-        b.scanline_surface = SDL_CreateSurfaceFrom(
-            subcycle::kFbWidth, subcycle::kFbHeight, SDL_PIXELFORMAT_RGB24,
-            b.scanline_fb.data(), subcycle::kFbWidth * 3);
-      }
-      if (b.scanline_surface != nullptr) {
-        std::copy(b.fb.begin(), b.fb.end(), b.scanline_fb.begin());
-        subcycle_bridge_apply_scanlines_rgb24(b.scanline_fb.data(),
-                                              subcycle::kFbWidth,
-                                              subcycle::kFbHeight, intensity);
-        source = b.scanline_surface;
-      }
-    }
+  if (dst == nullptr || b.fbsurf == nullptr) return;
 
-    // Two passes, each on an SDL fast path: unscaled RGB24→dst-format
-    // convert, then a same-format nearest stretch. The one-pass
-    // SDL_BlitSurfaceScaled(convert+scale) takes SDL's generic per-pixel
-    // fallback — measured ~2 ms/frame on P-cores and ~10 ms on E-cores,
-    // 39% of the Z80 thread's time under §8.3 (F8).
-    if (b.fbconv == nullptr) {
-      b.fbconv = SDL_CreateSurface(subcycle::kFbWidth, subcycle::kFbHeight,
-                                   dst->format);
-      // Alpha formats default to SDL_BLENDMODE_BLEND — the stretch would
-      // alpha-blend every pixel (SDL_Blit_..._Blend_Scale, the E-core
-      // profile's top entry). The frame is opaque; copy it.
-      if (b.fbconv != nullptr)
-        SDL_SetSurfaceBlendMode(b.fbconv, SDL_BLENDMODE_NONE);
+  // Two passes, each on an SDL fast path: unscaled RGB24→dst-format
+  // convert, then a same-format nearest stretch. The one-pass
+  // SDL_BlitSurfaceScaled(convert+scale) takes SDL's generic per-pixel
+  // fallback — measured ~2 ms/frame on P-cores and ~10 ms on E-cores,
+  // 39% of the Z80 thread's time under §8.3 (F8).
+  if (b.fbconv == nullptr) {
+    b.fbconv = SDL_CreateSurface(subcycle::kFbWidth, subcycle::kFbHeight,
+                                 dst->format);
+    // Alpha formats default to SDL_BLENDMODE_BLEND — the stretch would
+    // alpha-blend every pixel (SDL_Blit_..._Blend_Scale, the E-core
+    // profile's top entry). The frame is opaque; copy it.
+    if (b.fbconv != nullptr) SDL_SetSurfaceBlendMode(b.fbconv, SDL_BLENDMODE_NONE);
+  }
+  // Integer-exact vertical mapping: the legacy plugins' input surfaces
+  // are built around CPC_VISIBLE_SCR_HEIGHT=270 (540 when line-doubled)
+  // while the machine's monitor window is 272 lines. A raw full-surface
+  // stretch resamples 272→540/270 at a non-integer ratio — nearest drops
+  // and doubles lines unevenly, visibly under the CRT styles (Lottes).
+  // Crop the fb to the largest centered window the dst holds at an
+  // integer factor; the stretch is then exact (270 → clean 2× or 1:1).
+  SDL_Rect src{0, 0, b.fbsurf->w, b.fbsurf->h};
+  {
+    const int fbh = b.fbsurf->h;
+    int factor = (dst->h + (fbh / 2)) / fbh;
+    factor = std::max(factor, 1);
+    int src_h = dst->h / factor;
+    src_h = std::min(src_h, fbh);
+    src_h = std::max(src_h, 1);
+    src.y = (fbh - src_h) / 2;
+    src.h = src_h;
+  }
+
+  if (b.fbconv != nullptr) {
+    SDL_BlitSurface(b.fbsurf, nullptr, b.fbconv, nullptr);
+    SDL_BlitSurfaceScaled(b.fbconv, &src, dst, nullptr, SDL_SCALEMODE_NEAREST);
+  } else {
+    SDL_BlitSurfaceScaled(b.fbsurf, &src, dst, nullptr, SDL_SCALEMODE_NEAREST);
+  }
+
+  // Scanlines: a real CRT's dark gap is a destination row nearest-neighbour
+  // upscaling never produces on its own -- every row it emits is a bright
+  // copy of source content, never a duplicate free to darken. So this
+  // composites a fully-dimmed copy of the native frame onto only the LAST
+  // destination row each source scanline expands into (computed the same
+  // way SDL's own nearest mapping would pick a source row per destination
+  // row, so it lines up exactly with what was just blitted above). A
+  // source row that maps to exactly one destination row (no spare row,
+  // e.g. an unscaled 1:1 window) has no gap to show and is left alone.
+  unsigned int const intensity = std::clamp(CPC.scr_oglscanlines, 0u, 100u);
+  if (CPC.scr_scanlines && intensity > 0 && b.fbconv != nullptr &&
+      dst->h > src.h) {
+    if (b.scanline_fb.size() != b.fb.size()) {
+      if (b.scanline_surface != nullptr) SDL_DestroySurface(b.scanline_surface);
+      b.scanline_fb.resize(b.fb.size());
+      b.scanline_surface = SDL_CreateSurfaceFrom(
+          subcycle::kFbWidth, subcycle::kFbHeight, SDL_PIXELFORMAT_RGB24,
+          b.scanline_fb.data(), subcycle::kFbWidth * 3);
     }
-    // Integer-exact vertical mapping: the legacy plugins' input surfaces
-    // are built around CPC_VISIBLE_SCR_HEIGHT=270 (540 when line-doubled)
-    // while the machine's monitor window is 272 lines. A raw full-surface
-    // stretch resamples 272→540/270 at a non-integer ratio — nearest drops
-    // and doubles lines unevenly, visibly under the CRT styles (Lottes).
-    // Crop the fb to the largest centered window the dst holds at an
-    // integer factor; the stretch is then exact (270 → clean 2× or 1:1).
-    SDL_Rect src{0, 0, b.fbsurf->w, b.fbsurf->h};
-    {
-      const int fbh = b.fbsurf->h;
-      int factor = (dst->h + (fbh / 2)) / fbh;
-      factor = std::max(factor, 1);
-      int src_h = dst->h / factor;
-      src_h = std::min(src_h, fbh);
-      src_h = std::max(src_h, 1);
-      src.y = (fbh - src_h) / 2;
-      src.h = src_h;
+    if (b.scanline_fbconv == nullptr) {
+      b.scanline_fbconv = SDL_CreateSurface(subcycle::kFbWidth,
+                                            subcycle::kFbHeight, dst->format);
+      if (b.scanline_fbconv != nullptr)
+        SDL_SetSurfaceBlendMode(b.scanline_fbconv, SDL_BLENDMODE_NONE);
     }
-    if (b.fbconv != nullptr) {
-      SDL_BlitSurface(source, nullptr, b.fbconv, nullptr);
-      SDL_BlitSurfaceScaled(b.fbconv, &src, dst, nullptr,
-                            SDL_SCALEMODE_NEAREST);
-    } else {
-      SDL_BlitSurfaceScaled(source, &src, dst, nullptr, SDL_SCALEMODE_NEAREST);
+    if (b.scanline_surface != nullptr && b.scanline_fbconv != nullptr) {
+      std::copy(b.fb.begin(), b.fb.end(), b.scanline_fb.begin());
+      subcycle_bridge_apply_scanlines_rgb24(b.scanline_fb.data(),
+                                            subcycle::kFbWidth,
+                                            subcycle::kFbHeight, intensity);
+      SDL_BlitSurface(b.scanline_surface, nullptr, b.scanline_fbconv, nullptr);
+
+      for (int d = 0; d < dst->h; ++d) {
+        int source_row = 0;
+        if (!subcycle_bridge_scanline_gap_row(d, src.h, dst->h, &source_row))
+          continue;  // no spare row here
+        SDL_Rect src_row{src.x, src.y + source_row, src.w, 1};
+        SDL_Rect dst_row{0, d, dst->w, 1};
+        SDL_BlitSurfaceScaled(b.scanline_fbconv, &src_row, dst, &dst_row,
+                              SDL_SCALEMODE_NEAREST);
+      }
     }
   }
 }

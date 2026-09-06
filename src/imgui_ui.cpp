@@ -15,6 +15,7 @@ bool g_speedtest_open = false;
 #include <SDL3/SDL_dialog.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -25,6 +26,7 @@ bool g_speedtest_open = false;
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 #include "amdrum.h"
 #include "amx_mouse.h"
@@ -1041,13 +1043,43 @@ void dbg_step_over() {
   }
 }
 }  // namespace
+// z80_step_out_finish() blocks on 1ms-polled cpc_resume()/cpc_pause_if_epoch()
+// loops (up to its 5s timeout) while skipping nested CALL/RST at full speed --
+// exactly what the IPC `step out` handler already does from its own server
+// thread. Running that same call directly from the render thread's button
+// handler froze the whole GUI (no SDL_PumpEvents) for however long it took.
+// So the GUI path dispatches it to a short-lived worker thread instead and
+// polls the result once per frame at the button site, matching the pattern
+// IPC already established rather than inventing a second concurrency model.
+namespace {
+std::atomic<bool> g_step_out_running{false};
+std::atomic<bool> g_step_out_timed_out{false};
+std::thread g_step_out_thread;
+}  // namespace
+
+void dbg_step_out_await_shutdown() {
+  if (g_step_out_thread.joinable()) g_step_out_thread.join();
+}
+
 namespace {
 void dbg_step_out() {
   if (subcycle_bridge_active()) {
-    cpc_pause_and_wait();
-    if (z80_step_out_finish(5000) == Z80StepOutResult::Timeout) {
-      set_osd_message("Step Out timed out", 3000);
+    if (g_step_out_running.exchange(true, std::memory_order_acq_rel)) {
+      return;  // already stepping out; ignore a repeated click/shortcut
     }
+    cpc_pause_and_wait();
+    // The previous run already flipped g_step_out_running back to false
+    // before this exchange could succeed, so this join cannot block.
+    if (g_step_out_thread.joinable()) g_step_out_thread.join();
+    g_step_out_thread = std::thread([]() {
+      bool const timed_out =
+          z80_step_out_finish(5000) == Z80StepOutResult::Timeout;
+      // set_osd_message() touches render-thread-owned state (the toast
+      // queue); only the boolean crosses threads, and the render thread
+      // reads it and calls set_osd_message() itself when it polls below.
+      g_step_out_timed_out.store(timed_out, std::memory_order_release);
+      g_step_out_running.store(false, std::memory_order_release);
+    });
     return;
   }
   z80.step_out = 1;
@@ -3252,12 +3284,17 @@ void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
   static bool old_m4_enabled = false;
-  static bool old_smartwatch_enabled = false;
-  static bool old_symbiface_enabled = false;
-  static bool old_amdrum_enabled = false;
-  static bool old_amx_enabled = false;
-  static bool old_disk_sounds_enabled = false;
-  static bool old_tape_sounds_enabled = false;
+  // Peripheral enable flags that Options only ever captures-on-open and
+  // restores-on-revert (no auto-start or other side logic, unlike M4 above);
+  // table-driven so a new toggle is one array entry, not three edit sites.
+  static bool* const kPeripheralToggles[] = {
+      &g_smartwatch.enabled, &g_symbiface.enabled,
+      &g_amdrum.enabled,     &g_amx_mouse.enabled,
+      &g_drive_sounds.disk_enabled, &g_drive_sounds.tape_enabled,
+  };
+  static constexpr size_t kPeripheralToggleCount =
+      sizeof(kPeripheralToggles) / sizeof(kPeripheralToggles[0]);
+  static bool old_peripheral_toggles[kPeripheralToggleCount] = {};
   static SerialConfig old_serial_config;
   static SerialConfig edited_serial_config;
   if (first_open) {
@@ -3268,12 +3305,8 @@ void imgui_render_options() {
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
     old_m4_enabled = g_m4board.enabled;
-    old_smartwatch_enabled = g_smartwatch.enabled;
-    old_symbiface_enabled = g_symbiface.enabled;
-    old_amdrum_enabled = g_amdrum.enabled;
-    old_amx_enabled = g_amx_mouse.enabled;
-    old_disk_sounds_enabled = g_drive_sounds.disk_enabled;
-    old_tape_sounds_enabled = g_drive_sounds.tape_enabled;
+    capture_toggle_values(kPeripheralToggles, old_peripheral_toggles,
+                          kPeripheralToggleCount);
     old_serial_config = g_serial_interface.get_config();
     edited_serial_config = old_serial_config;
     first_open = false;
@@ -4219,21 +4252,12 @@ void imgui_render_options() {
   // Enabling the serial interface belongs here: g_si_rom.load() runs only
   // inside emulator_init(), so without a rebuild the backend comes up with no
   // RSX ROM mapped and the banner's claim to list what restarts is false.
-  auto serial_config_equal = [](const SerialConfig& lhs,
-                                const SerialConfig& rhs) {
-    return lhs.enabled == rhs.enabled && lhs.backend_type == rhs.backend_type &&
-           lhs.input_file == rhs.input_file &&
-           lhs.output_file == rhs.output_file &&
-           lhs.device_path == rhs.device_path && lhs.tcp_host == rhs.tcp_host &&
-           lhs.tcp_port == rhs.tcp_port && lhs.baud_rate == rhs.baud_rate;
-  };
-  bool const serial_config_changed =
-      !serial_config_equal(edited_serial_config, old_serial_config);
-  const bool needs_restart =
-      CPC.model != imgui_state.old_cpc_settings.model ||
-      CPC.ram_size != imgui_state.old_cpc_settings.ram_size ||
-      CPC.keyboard != imgui_state.old_cpc_settings.keyboard ||
-      g_m4board.enabled != old_m4_enabled || serial_config_changed;
+  bool const serial_config_changed = edited_serial_config != old_serial_config;
+  const bool needs_restart = options_needs_restart(
+      imgui_state.old_cpc_settings.model, CPC.model,
+      imgui_state.old_cpc_settings.ram_size, CPC.ram_size,
+      imgui_state.old_cpc_settings.keyboard, CPC.keyboard, old_m4_enabled,
+      g_m4board.enabled, serial_config_changed);
   const ImVec4 kWarn(0.95f, 0.75f, 0.2f, 1.0f);
 
   // Say so before it happens, rather than rebooting under the user.
@@ -4321,12 +4345,8 @@ void imgui_render_options() {
     if (subcycle::Machine* m = subcycle_bridge_machine())
       m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));
     g_m4board.enabled = old_m4_enabled;
-    g_smartwatch.enabled = old_smartwatch_enabled;
-    g_symbiface.enabled = old_symbiface_enabled;
-    g_amdrum.enabled = old_amdrum_enabled;
-    g_amx_mouse.enabled = old_amx_enabled;
-    g_drive_sounds.disk_enabled = old_disk_sounds_enabled;
-    g_drive_sounds.tape_enabled = old_tape_sounds_enabled;
+    restore_toggle_values(kPeripheralToggles, old_peripheral_toggles,
+                          kPeripheralToggleCount);
     edited_serial_config = old_serial_config;
     g_serial_interface.set_config(old_serial_config);
     // Revert video plugin if it was changed live
@@ -4621,7 +4641,18 @@ void imgui_render_devtools() {
     // Use the atomic flag — CPC.paused is a plain bool written by the Z80
     // thread.
     bool const was_paused = g_emu_paused.load(std::memory_order_relaxed);
-    if (!was_paused) ImGui::BeginDisabled();
+    // A Step Out in flight on its background thread is still resuming and
+    // re-pausing the machine to skip nested CALLs -- Step In/Over issued
+    // from this same toolbar while that's happening would race it over the
+    // same ephemeral-breakpoint and pause/resume state, so the whole group
+    // stays disabled until it reports back.
+    bool const step_out_running =
+        g_step_out_running.load(std::memory_order_acquire);
+    if (!step_out_running &&
+        g_step_out_timed_out.exchange(false, std::memory_order_acq_rel)) {
+      set_osd_message("Step Out timed out", 3000);
+    }
+    if (!was_paused || step_out_running) ImGui::BeginDisabled();
     if (ImGui::Button("Step In")) dbg_step_in();
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("Execute one instruction, entering CALLs (F7)");
@@ -4632,11 +4663,12 @@ void imgui_render_devtools() {
       ImGui::SetTooltip("Execute one instruction, over CALLs/RSTs (Shift+F7)");
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Out")) dbg_step_out();
+    if (ImGui::Button(step_out_running ? "Stepping out..." : "Step Out"))
+      dbg_step_out();
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip("Run until the current subroutine returns (Shift+F11)");
     }
-    if (!was_paused) ImGui::EndDisabled();
+    if (!was_paused || step_out_running) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(was_paused ? "Resume" : "Pause")) {
       if (was_paused)

@@ -305,7 +305,12 @@ TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
 
   cpc_resume();
   uint64_t const stale_epoch = cpc_resume_epoch();
-  cpc_resume();  // the user's later Run invalidates the staged stop
+  // A genuine pause->run transition is what invalidates a staged stop --
+  // cpc_resume() is a no-op (does not bump the epoch) when the machine is
+  // already running, so a real intervening pause is needed here to make
+  // this "the user's later Run", not a redundant no-op resume.
+  cpc_pause();
+  cpc_resume();
 
   uint64_t const generation = z80_breakpoint_generation();
   EXPECT_FALSE(
@@ -320,6 +325,35 @@ TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
   EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
   EXPECT_EQ(hit_pc, 0x5678);
   EXPECT_FALSE(watch);
+}
+
+TEST_F(IpcServerTest, RedundantResumeCannotDiscardAPendingStop) {
+  // The bug this guards: a resume issued while the machine is ALREADY
+  // running used to still bump the epoch, so a client (or another thread)
+  // sending an idempotent `run` in the narrow window between a real
+  // breakpoint being classified and debug_sync committing it would
+  // silently discard that hit -- the machine never actually paused, and
+  // the caller who armed the breakpoint got no report at all. cpc_resume()
+  // must be a true no-op when CPC.paused is already false.
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  cpc_pause();
+  uint64_t const epoch = cpc_resume();  // real transition: paused -> running
+  uint64_t const generation = z80_breakpoint_generation();
+
+  // A second, redundant `run` arrives while the machine is already running
+  // (e.g. a client that isn't tracking pause state, or two racing callers).
+  uint64_t const redundant_epoch = cpc_resume();
+  EXPECT_EQ(redundant_epoch, epoch)
+      << "a resume on an already-running machine must not advance the epoch";
+
+  // The hit staged against the FIRST (and only real) epoch must still commit.
+  EXPECT_TRUE(cpc_commit_breakpoint_stop(epoch, generation, 0x1234, false));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
+  EXPECT_EQ(hit_pc, 0x1234);
 }
 
 TEST_F(IpcServerTest, BreakpointMutationInvalidatesClassifiedStop) {
@@ -339,6 +373,10 @@ TEST_F(IpcServerTest, BreakpointMutationInvalidatesClassifiedStop) {
 }
 
 TEST_F(IpcServerTest, ResumeCannotInterleaveWithExecutionEpochStamp) {
+  // Establish a known paused state so the background thread's cpc_resume()
+  // below is a real pause->run transition and therefore does bump the
+  // epoch -- cpc_resume() is a no-op on an already-running machine.
+  cpc_pause();
   std::atomic<bool> resume_started{false};
   std::atomic<bool> resume_finished{false};
   std::thread resume_thread;

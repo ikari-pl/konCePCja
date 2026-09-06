@@ -178,3 +178,40 @@ inline void mru_list_push(std::vector<std::string>& list,
   list.insert(list.begin(), path);
   if (static_cast<int>(list.size()) > max_size) list.resize(max_size);
 }
+
+// ─────────────────────────────────────────────────
+// Options dialog: restart decision + peripheral-toggle capture/restore
+// ─────────────────────────────────────────────────
+
+// True when the settings staged in Options require a full machine rebuild
+// (emulator_init() wipes RAM and cold-boots the CPC) rather than a live
+// apply. Model/RAM/keyboard swap the ROM map underneath the running Z80;
+// an M4 enable/disable or any serial config change re-touches expansion ROM
+// slots and the RS232 card the same way. Computed once so Save and Apply
+// can't carry their own, divergent copies of this condition.
+inline bool options_needs_restart(unsigned int old_model,
+                                  unsigned int new_model,
+                                  unsigned int old_ram_size,
+                                  unsigned int new_ram_size,
+                                  unsigned int old_keyboard,
+                                  unsigned int new_keyboard,
+                                  bool old_m4_enabled, bool new_m4_enabled,
+                                  bool serial_config_changed) {
+  return old_model != new_model || old_ram_size != new_ram_size ||
+         old_keyboard != new_keyboard || old_m4_enabled != new_m4_enabled ||
+         serial_config_changed;
+}
+
+// Snapshot each pointed-to bool into old_values[0..count), same order as
+// toggles. Used by Options' first_open capture and revert_options()'s
+// restore over one shared table instead of a repeated per-flag triplet.
+inline void capture_toggle_values(bool* const* toggles, bool* old_values,
+                                  size_t count) {
+  for (size_t i = 0; i < count; ++i) old_values[i] = *toggles[i];
+}
+
+// Write old_values[0..count) back through toggles, same order as capture.
+inline void restore_toggle_values(bool* const* toggles,
+                                  const bool* old_values, size_t count) {
+  for (size_t i = 0; i < count; ++i) *toggles[i] = old_values[i];
+}

@@ -1438,7 +1438,7 @@ std::string handle_command(const std::string& line) {
       if (ext == ".zip") {
         zip::t_zip_info zip_info;
         zip_info.filename = path;
-        zip_info.extensions = ".dsk.sna.cdt.voc.cpr.ipf.raw.scp.hfe.a2r";
+        zip_info.extensions = zip::kAllSupportedZipMediaExtensions;
         if (zip::dir(&zip_info) || zip_info.filesOffsets.empty())
           return "ERR 415 no-supported-media-in-zip\n";
         std::string inner = zip_info.filesOffsets.front().first;

@@ -1194,8 +1194,12 @@ int koncpc_rebuild_machine() {
   subcycle_bridge_stop();
   // Serial backends are raw callback contexts in the Machine. Replace them
   // only after the bridge has been stopped, then let bridge_start() attach the
-  // new backend.
-  g_serial_interface.apply_config();
+  // new backend. Every rebuild lands here, including ones triggered by an
+  // unrelated setting (RAM size, CRTC type, model) -- only reapply when the
+  // staged config actually differs from what's already open, or a File
+  // backend's output gets truncated and a live TCP/plotter session dropped
+  // for no reason.
+  if (!g_serial_interface.config_applied()) g_serial_interface.apply_config();
 
   int err = emulator_init();
   if (err == 0 && !subcycle_bridge_start()) {
@@ -1604,6 +1608,15 @@ void cpc_pause() {
 
 uint64_t cpc_resume() {
   std::scoped_lock const lock(g_pause_mutex);
+  // A resume issued while the machine is already running is not a real
+  // pause->run transition -- bumping the epoch here would invalidate a
+  // breakpoint stop that was legitimately classified moments ago (between
+  // the Z80 thread staging it and debug_sync committing it) even though
+  // nothing about the debugger's authority over the machine actually
+  // changed. A caller that cares about the current epoch already has
+  // cpc_resume_epoch() for that; this only guards the two real transition
+  // side effects (lastFrameStart reset, audio_resume) from re-firing too.
+  if (!CPC.paused) return g_resume_epoch;
   ++g_resume_epoch;
   CPC.paused = false;
   g_emu_paused.store(false, std::memory_order_release);
@@ -3080,6 +3093,11 @@ void doCleanUp() {
 #ifdef _WIN32
   timeEndPeriod(1);
 #endif
+  // A GUI Step Out in flight on its own worker thread (see dbg_step_out())
+  // still touches z80/CPC state; wait for it (bounded by its own 5s
+  // timeout) before the teardown below starts pausing/joining the Z80
+  // thread out from under it.
+  dbg_step_out_await_shutdown();
   // Shutdown ordering — three constraints that together force this dance:
   //
   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside

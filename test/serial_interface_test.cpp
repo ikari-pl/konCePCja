@@ -818,3 +818,125 @@ TEST_F(TcpSocketBackendTest, RecvWithoutConnectionReturnsZero) {
 TEST_F(TcpSocketBackendTest, HasDataReturnsFalseWithoutConnection) {
   EXPECT_FALSE(client.has_data());
 }
+
+// ─────────────────────────────────────────────────
+// SerialConfig equality + SerialInterface::config_applied()
+//
+// koncpc_rebuild_machine() runs for every settings change, not just serial
+// ones (RAM size, CRTC type, model...). Before beads-o0iq item 3 fixed
+// beads-related drift here, apply_config() ran unconditionally on every
+// rebuild, truncating a File backend's output file / dropping a live
+// TcpSocket connection even when serial settings never changed.
+// config_applied() is the guard: only re-open the backend when the staged
+// config actually differs from what's already applied.
+// ─────────────────────────────────────────────────
+
+TEST(SerialConfigEquality, IdenticalConfigsCompareEqual) {
+  SerialConfig a;
+  SerialConfig b;
+  EXPECT_TRUE(a == b);
+  EXPECT_FALSE(a != b);
+}
+
+TEST(SerialConfigEquality, DiffersOnEnabled) {
+  SerialConfig a;
+  SerialConfig b;
+  b.enabled = !a.enabled;
+  EXPECT_FALSE(a == b);
+  EXPECT_TRUE(a != b);
+}
+
+TEST(SerialConfigEquality, DiffersOnBackendType) {
+  SerialConfig a;
+  SerialConfig b;
+  a.backend_type = SerialBackendType::Null;
+  b.backend_type = SerialBackendType::TcpSocket;
+  EXPECT_TRUE(a != b);
+}
+
+TEST(SerialConfigEquality, DiffersOnFileBackendPaths) {
+  SerialConfig a;
+  SerialConfig b = a;
+  b.input_file = "different_input.bin";
+  EXPECT_TRUE(a != b);
+
+  SerialConfig c = a;
+  c.output_file = "different_output.bin";
+  EXPECT_TRUE(a != c);
+}
+
+TEST(SerialConfigEquality, DiffersOnTcpHostAndPort) {
+  SerialConfig a;
+  SerialConfig b = a;
+  b.tcp_host = "192.168.1.1";
+  EXPECT_TRUE(a != b);
+
+  SerialConfig c = a;
+  c.tcp_port = a.tcp_port + 1;
+  EXPECT_TRUE(a != c);
+}
+
+TEST(SerialConfigEquality, DiffersOnBaudRate) {
+  SerialConfig a;
+  SerialConfig b = a;
+  b.baud_rate = a.baud_rate + 1;
+  EXPECT_TRUE(a != b);
+}
+
+class SerialInterfaceConfigTest : public testing::Test {
+ protected:
+  SerialInterface iface;
+};
+
+TEST_F(SerialInterfaceConfigTest, NeverAppliedStartsFalse) {
+  EXPECT_FALSE(iface.config_applied());
+}
+
+TEST_F(SerialInterfaceConfigTest, ApplyMakesItTrue) {
+  SerialConfig cfg;
+  cfg.enabled = false;  // Null/disabled backend: no real I/O in a unit test
+  iface.set_config(cfg);
+  iface.apply_config();
+  EXPECT_TRUE(iface.config_applied());
+}
+
+TEST_F(SerialInterfaceConfigTest, SettingAnIdenticalConfigStaysApplied) {
+  SerialConfig cfg;
+  cfg.enabled = false;
+  iface.set_config(cfg);
+  iface.apply_config();
+  ASSERT_TRUE(iface.config_applied());
+
+  // Re-staging the exact same values (e.g. re-reading them from the same
+  // Options fields) must not report the backend as needing a rebuild.
+  iface.set_config(cfg);
+  EXPECT_TRUE(iface.config_applied());
+}
+
+TEST_F(SerialInterfaceConfigTest, StagingADifferentConfigClearsApplied) {
+  SerialConfig cfg;
+  cfg.enabled = false;
+  iface.set_config(cfg);
+  iface.apply_config();
+  ASSERT_TRUE(iface.config_applied());
+
+  cfg.baud_rate = 19200;
+  iface.set_config(cfg);
+  EXPECT_FALSE(iface.config_applied())
+      << "an actually-changed config must be reported as not-yet-applied, "
+         "so callers know a rebuild's re-open is warranted";
+}
+
+TEST_F(SerialInterfaceConfigTest, ReapplyingAfterChangeRestoresApplied) {
+  SerialConfig cfg;
+  cfg.enabled = false;
+  iface.set_config(cfg);
+  iface.apply_config();
+
+  cfg.baud_rate = 19200;
+  iface.set_config(cfg);
+  ASSERT_FALSE(iface.config_applied());
+
+  iface.apply_config();
+  EXPECT_TRUE(iface.config_applied());
+}

@@ -805,6 +805,63 @@ def test_step_out_nested_call():
         return True
 
 
+def test_step_out_stops_at_real_breakpoint_on_landing_address():
+    """A real breakpoint sitting on Step Out's ephemeral landing address
+    must win and be reported as a breakpoint hit, not silently absorbed as
+    a clean Step Out landing.
+
+    z80_probe_exec_should_break() checks NORMAL breakpoints before
+    EPHEMERAL ones at the same address and flags user_breakpoint_fired so
+    process_probe_hit() records that a real breakpoint -- not the
+    ephemeral -- caused the stop. The existing unit test for that predicate
+    (z80_probe_filter_test.cpp) calls it directly, bypassing the ephemeral
+    lifecycle entirely; this exercises the real `step out` path end to end.
+    """
+    print("Running step-out vs real-breakpoint collision test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: CALL 6006; NOP; RET; padding; 6006: NOP; RET
+        setup = [
+            'mem write 0x6000 CD066000C90000C9',
+            'mem write 0x8000 0070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+            'bp add 0x6003',  # exactly Step Out's ephemeral landing address
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                emu.ipc.send_command('bp clear')
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok or 'breakpoint-hit' not in resp:
+            print(
+                "FAIL: expected a reported breakpoint hit when a real "
+                f"breakpoint sits on the landing address, got {resp.strip()!r}")
+            emu.ipc.send_command('bp clear')
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        emu.ipc.send_command('bp clear')
+        if not ok_pc or pc != 0x6003:
+            print(f"FAIL: expected PC=6003 (the real breakpoint), got "
+                  f"PC={pc:04X}" if ok_pc else "FAIL: could not read PC")
+            return False
+
+        print("PASS: real breakpoint at the landing address wins over Step Out")
+        return True
+
+
 def test_mouse_input():
     """IPC mouse input: device gating + full command surface.
 
@@ -1126,6 +1183,34 @@ def test_load_accepts_flux_disk_formats():
                     f"{resp.strip()!r}")
                 return False
             print(f"  .zip: classified by inner media -> {resp.strip()}")
+
+            # A zip with no member the loader recognises must be refused
+            # with the dedicated no-supported-media error, not routed to
+            # any loader.
+            no_media_zip = os.path.join(td, 'no_media.zip')
+            with zipfile.ZipFile(no_media_zip, 'w') as archive:
+                archive.writestr('readme.txt', b'not a disk or tape image')
+            ok, resp = emu.ipc.send_command('load ' + no_media_zip)
+            if ok or 'no-supported-media-in-zip' not in resp:
+                print(
+                    "FAIL: zip with no supported media should be "
+                    f"ERR 415 no-supported-media-in-zip, got {resp.strip()!r}")
+                return False
+            print(f"  .zip with no supported media: correctly refused -> "
+                  f"{resp.strip()}")
+
+            # A corrupt/malformed zip must fail the same way, not crash or
+            # hang the IPC command.
+            corrupt_zip = os.path.join(td, 'corrupt.zip')
+            with open(corrupt_zip, 'wb') as f:
+                f.write(b'PK\x03\x04not actually a zip file')
+            ok, resp = emu.ipc.send_command('load ' + corrupt_zip)
+            if ok or 'no-supported-media-in-zip' not in resp:
+                print(
+                    "FAIL: corrupt zip should be "
+                    f"ERR 415 no-supported-media-in-zip, got {resp.strip()!r}")
+                return False
+            print(f"  corrupt .zip: correctly refused -> {resp.strip()}")
 
             # Unknown extension must still be refused up front.
             path = os.path.join(td, 'probe.xyz')
@@ -1715,6 +1800,7 @@ def main():
         test_rapid_pause_resume,
         test_step_in_accuracy,
         test_step_out_nested_call,
+        test_step_out_stops_at_real_breakpoint_on_landing_address,
         test_mouse_input,
         test_gun_input,
         test_chord_hold_input,
