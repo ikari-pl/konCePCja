@@ -3765,7 +3765,13 @@ std::string handle_command(const std::string& line) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
         // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
+        CpcPauseLease lease;  // quiesce before replacing the live medium
+        bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
@@ -3785,267 +3791,311 @@ std::string handle_command(const std::string& line) {
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
-      // Helper lambda: resolve drive letter to t_drive*
-      auto resolve_drive = [&](const std::string& letter) -> t_drive* {
-        if (letter.empty()) return nullptr;
+      // Helper: resolve drive letter to unit (0=A, 1=B) or -1.
+      auto resolve_unit = [&](const std::string& letter) -> int {
+        if (letter.empty()) return -1;
         char const c = static_cast<char>(
             std::toupper(static_cast<unsigned char>(letter[0])));
-        if (c == 'A') return &driveA;
-        if (c == 'B') return &driveB;
-        return nullptr;
+        if (c == 'A') return 0;
+        if (c == 'B') return 1;
+        return -1;
+      };
+      // Machine medium is authoritative (beads-lly6): pull into the host view
+      // before tools read/edit; push after mutations. Lease owns pause through
+      // the critical section (zx8h).
+      auto with_synced_drive =
+          [&](const std::string& letter, bool commit,
+              const std::function<std::string(t_drive*)>& body) -> std::string {
+        const int unit = resolve_unit(letter);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        t_drive* drv = unit == 0 ? &driveA : &driveB;
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
+        if (subcycle_bridge_active()) {
+          subcycle_bridge_pull_drive_view(static_cast<uint8_t>(unit));
+        }
+        std::string result = body(drv);
+        if (commit && result.rfind("OK", 0) == 0 && subcycle_bridge_active()) {
+          if (!subcycle_bridge_push_drive_view(static_cast<uint8_t>(unit))) {
+            result = "ERR failed to update live FDC medium\n";
+          }
+        }
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
+        return result;
       };
 
       if (parts[1] == "ls") {
         if (parts.size() < 3) return "ERR 400 usage: disk ls <A|B>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto files = disk_list_files(drv, err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        std::ostringstream resp;
-        resp << "OK\n";
-        for (const auto& f : files) {
-          resp << f.display_name << " " << f.size_bytes;
-          if (f.read_only) resp << " R/O";
-          if (f.system) resp << " SYS";
-          resp << "\n";
-        }
-        return resp.str();
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto files = disk_list_files(drv, err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              std::ostringstream resp;
+              resp << "OK\n";
+              for (const auto& f : files) {
+                resp << f.display_name << " " << f.size_bytes;
+                if (f.read_only) resp << " R/O";
+                if (f.system) resp << " SYS";
+                resp << "\n";
+              }
+              return resp.str();
+            });
       }
       if (parts[1] == "cat") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk cat <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        // Check for AMSDOS header -- if present, skip it and report actual
-        // length
-        auto hdr_info = disk_parse_amsdos_header(raw);
-        size_t offset = 0;
-        size_t reported_size = raw.size();
-        if (hdr_info.valid && raw.size() >= 128) {
-          offset = 128;
-          reported_size = hdr_info.file_length;
-        }
-        std::ostringstream resp;
-        resp << "OK size=" << reported_size << "\n";
-        resp << std::hex << std::uppercase << std::setfill('0');
-        for (size_t i = offset; i < raw.size() && (i - offset) < reported_size;
-             i++) {
-          if (i > offset) resp << ' ';
-          resp << std::setw(2) << static_cast<unsigned>(raw[i]);
-        }
-        resp << "\n";
-        return resp.str();
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              // Check for AMSDOS header -- if present, skip it and report
+              // actual length
+              auto hdr_info = disk_parse_amsdos_header(raw);
+              size_t offset = 0;
+              size_t reported_size = raw.size();
+              if (hdr_info.valid && raw.size() >= 128) {
+                offset = 128;
+                reported_size = hdr_info.file_length;
+              }
+              std::ostringstream resp;
+              resp << "OK size=" << reported_size << "\n";
+              resp << std::hex << std::uppercase << std::setfill('0');
+              for (size_t i = offset;
+                   i < raw.size() && (i - offset) < reported_size; i++) {
+                if (i > offset) resp << ' ';
+                resp << std::setw(2) << static_cast<unsigned>(raw[i]);
+              }
+              resp << "\n";
+              return resp.str();
+            });
       }
       if (parts[1] == "get") {
         if (parts.size() < 5)
           return "ERR 400 usage: disk get <A|B> <filename> <local_path>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        // Strip AMSDOS header if present
-        auto hdr_info = disk_parse_amsdos_header(raw);
-        size_t offset = 0;
-        size_t length = raw.size();
-        if (hdr_info.valid && raw.size() >= 128) {
-          offset = 128;
-          length = hdr_info.file_length;
-        }
-        if (offset + length > raw.size()) length = raw.size() - offset;
-        std::ofstream out(parts[4], std::ios::binary);
-        if (!out) return "ERR failed to open " + parts[4] + "\n";
-        out.write(reinterpret_cast<const char*>(raw.data() + offset),
-                  static_cast<std::streamsize>(length));
-        out.close();
-        return "OK bytes=" + std::to_string(length) + "\n";
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              // Strip AMSDOS header if present
+              auto hdr_info = disk_parse_amsdos_header(raw);
+              size_t offset = 0;
+              size_t length = raw.size();
+              if (hdr_info.valid && raw.size() >= 128) {
+                offset = 128;
+                length = hdr_info.file_length;
+              }
+              if (offset + length > raw.size()) length = raw.size() - offset;
+              std::ofstream out(parts[4], std::ios::binary);
+              if (!out) return "ERR failed to open " + parts[4] + "\n";
+              out.write(reinterpret_cast<const char*>(raw.data() + offset),
+                        static_cast<std::streamsize>(length));
+              out.close();
+              return "OK bytes=" + std::to_string(length) + "\n";
+            });
       }
       if (parts[1] == "put") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename]\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        const std::string& local_path = parts[3];
-        std::string cpc_name;
-        if (parts.size() >= 5) {
-          cpc_name = parts[4];
-          // Uppercase it
-          for (auto& c : cpc_name)
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        } else {
-          cpc_name = disk_to_cpc_filename(local_path);
-          if (cpc_name.empty())
-            return "ERR cannot derive CPC filename from path\n";
-        }
-        std::ifstream in(local_path, std::ios::binary);
-        if (!in) return "ERR cannot open " + local_path + "\n";
-        std::vector<uint8_t> const data((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-        in.close();
-        std::string const err = disk_write_file(drv, cpc_name, data, true);
-        if (!err.empty()) return "ERR " + err + "\n";
-        return "OK\n";
+        return with_synced_drive(
+            parts[2], true, [&](t_drive* drv) -> std::string {
+              const std::string& local_path = parts[3];
+              std::string cpc_name;
+              if (parts.size() >= 5) {
+                cpc_name = parts[4];
+                // Uppercase it
+                for (auto& c : cpc_name)
+                  c = static_cast<char>(
+                      std::toupper(static_cast<unsigned char>(c)));
+              } else {
+                cpc_name = disk_to_cpc_filename(local_path);
+                if (cpc_name.empty())
+                  return "ERR cannot derive CPC filename from path\n";
+              }
+              std::ifstream in(local_path, std::ios::binary);
+              if (!in) return "ERR cannot open " + local_path + "\n";
+              std::vector<uint8_t> const data(
+                  (std::istreambuf_iterator<char>(in)),
+                  std::istreambuf_iterator<char>());
+              in.close();
+              std::string const err =
+                  disk_write_file(drv, cpc_name, data, true);
+              if (!err.empty()) return "ERR " + err + "\n";
+              return "OK\n";
+            });
       }
       if (parts[1] == "rm") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk rm <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        std::string const err = disk_delete_file(drv, parts[3]);
-        if (!err.empty()) return "ERR " + err + "\n";
-        return "OK\n";
+        return with_synced_drive(
+            parts[2], true, [&](t_drive* drv) -> std::string {
+              std::string const err = disk_delete_file(drv, parts[3]);
+              if (!err.empty()) return "ERR " + err + "\n";
+              return "OK\n";
+            });
       }
       if (parts[1] == "info") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk info <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        auto info = disk_parse_amsdos_header(raw);
-        if (!info.valid) return "ERR no valid AMSDOS header\n";
-        char buf[256];
-        const char* type_str = "unknown";
-        switch (info.type) {
-          case AmsdosFileType::BASIC:
-            type_str = "basic";
-            break;
-          case AmsdosFileType::PROTECTED:
-            type_str = "protected";
-            break;
-          case AmsdosFileType::BINARY:
-            type_str = "binary";
-            break;
-          default:
-            break;
-        }
-        std::snprintf(buf, sizeof(buf),
-                      "OK type=%s load=%04X exec=%04X size=%u\n", type_str,
-                      info.load_addr, info.exec_addr, info.file_length);
-        return {buf};
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              auto info = disk_parse_amsdos_header(raw);
+              if (!info.valid) return "ERR no valid AMSDOS header\n";
+              char buf[256];
+              const char* type_str = "unknown";
+              switch (info.type) {
+                case AmsdosFileType::BASIC:
+                  type_str = "basic";
+                  break;
+                case AmsdosFileType::PROTECTED:
+                  type_str = "protected";
+                  break;
+                case AmsdosFileType::BINARY:
+                  type_str = "binary";
+                  break;
+                default:
+                  break;
+              }
+              std::snprintf(
+                  buf, sizeof(buf), "OK type=%s load=%04X exec=%04X size=%u\n",
+                  type_str, info.load_addr, info.exec_addr, info.file_length);
+              return std::string{buf};
+            });
       }
       if (parts[1] == "sector") {
         if (parts.size() < 3)
           return "ERR 400 usage: disk sector (read|write|info) ...\n";
-
-        // Helper lambda: resolve drive letter to t_drive* (reuse from above
-        // scope)
-        auto sec_resolve_drive = [&](const std::string& letter) -> t_drive* {
-          if (letter.empty()) return nullptr;
-          char const c = static_cast<char>(
-              std::toupper(static_cast<unsigned char>(letter[0])));
-          if (c == 'A') return &driveA;
-          if (c == 'B') return &driveB;
-          return nullptr;
-        };
 
         if (parts[2] == "read") {
           // disk sector read <drive> <track> <side> <sector_id>
           if (parts.size() < 7)
             return "ERR 400 usage: disk sector read <drive> <track> <side> "
                    "<sector_id>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          uint8_t sector_id =
-              static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err;
-          auto data = disk_sector_read(drv, trk, side, sector_id, err);
-          if (!err.empty()) return "ERR " + err + "\n";
-          std::ostringstream resp;
-          resp << "OK size=" << data.size() << "\n";
-          resp << std::hex << std::uppercase << std::setfill('0');
-          for (size_t i = 0; i < data.size(); i++) {
-            if (i > 0) resp << ' ';
-            resp << std::setw(2) << static_cast<unsigned>(data[i]);
-          }
-          resp << "\n";
-          return resp.str();
+          return with_synced_drive(
+              parts[3], false, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                uint8_t sector_id =
+                    static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err;
+                auto data = disk_sector_read(drv, trk, side, sector_id, err);
+                if (!err.empty()) return "ERR " + err + "\n";
+                std::ostringstream resp;
+                resp << "OK size=" << data.size() << "\n";
+                resp << std::hex << std::uppercase << std::setfill('0');
+                for (size_t i = 0; i < data.size(); i++) {
+                  if (i > 0) resp << ' ';
+                  resp << std::setw(2) << static_cast<unsigned>(data[i]);
+                }
+                resp << "\n";
+                return resp.str();
+              });
         }
         if (parts[2] == "write") {
           // disk sector write <drive> <track> <side> <sector_id> <hex_data>
           if (parts.size() < 8)
             return "ERR 400 usage: disk sector write <drive> <track> <side> "
                    "<sector_id> <hex_data>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          uint8_t const sector_id =
-              static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // Parse hex data: remaining parts are space-separated hex bytes
-          std::vector<uint8_t> data;
-          for (size_t i = 7; i < parts.size(); i++) {
-            // Each part may be a single hex byte like "FF" or multiple bytes
-            // Handle both "FF" and "FFAA" formats
-            const std::string& hex_str = parts[i];
-            for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
-              std::string const byte_str = hex_str.substr(j, 2);
-              data.push_back(
-                  static_cast<uint8_t>(std::stoul(byte_str, nullptr, 16)));
-            }
-          }
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err = disk_sector_write(drv, trk, side, sector_id, data);
-          if (!err.empty()) return "ERR " + err + "\n";
-          return "OK\n";
+          return with_synced_drive(
+              parts[3], true, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                uint8_t const sector_id =
+                    static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+                // Parse hex data: remaining parts are space-separated hex bytes
+                std::vector<uint8_t> data;
+                for (size_t i = 7; i < parts.size(); i++) {
+                  // Each part may be a single hex byte like "FF" or multiple
+                  // bytes Handle both "FF" and "FFAA" formats
+                  const std::string& hex_str = parts[i];
+                  for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
+                    std::string const byte_str = hex_str.substr(j, 2);
+                    data.push_back(static_cast<uint8_t>(
+                        std::stoul(byte_str, nullptr, 16)));
+                  }
+                }
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err =
+                    disk_sector_write(drv, trk, side, sector_id, data);
+                if (!err.empty()) return "ERR " + err + "\n";
+                return "OK\n";
+              });
         }
         if (parts[2] == "info") {
           // disk sector info <drive> <track> <side>
           if (parts.size() < 6)
             return "ERR 400 usage: disk sector info <drive> <track> <side>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err;
-          auto sectors = disk_sector_info(drv, trk, side, err);
-          if (!err.empty()) return "ERR " + err + "\n";
-          std::ostringstream resp;
-          resp << "OK sectors=" << sectors.size() << "\n";
-          resp << std::hex << std::uppercase << std::setfill('0');
-          for (const auto& s : sectors) {
-            resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
-                 << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
-                 << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
-                 << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
-                 << " size=" << std::dec << s.size << "\n";
-            resp << std::hex;  // reset for next iteration
-          }
-          return resp.str();
+          return with_synced_drive(
+              parts[3], false, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err;
+                auto sectors = disk_sector_info(drv, trk, side, err);
+                if (!err.empty()) return "ERR " + err + "\n";
+                std::ostringstream resp;
+                resp << "OK sectors=" << sectors.size() << "\n";
+                resp << std::hex << std::uppercase << std::setfill('0');
+                for (const auto& s : sectors) {
+                  resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
+                       << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
+                       << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
+                       << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
+                       << " size=" << std::dec << s.size << "\n";
+                  resp << std::hex;  // reset for next iteration
+                }
+                return resp.str();
+              });
         }
         return "ERR 400 unknown sector subcommand (read|write|info)\n";
       }

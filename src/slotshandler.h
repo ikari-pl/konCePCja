@@ -28,11 +28,19 @@ int snapshot_save(const std::string& filename);
 
 int dsk_load(FILE* pfile, t_drive* drive);
 int dsk_load(const std::string& filename, t_drive* drive);
+// Parse an in-memory DSK image into the host sector view without touching the
+// sub-cycle FDC medium (Disc Tools / IPC pull path). Clears any previous host
+// tracks first. Returns 0 or ERR_DSK_*.
+int dsk_load_bytes(const uint8_t* data, size_t len, t_drive* drive);
 int dsk_save(const std::string& filename, t_drive* drive);
 // Serialize a formatted drive to EXTENDED-DSK bytes in memory (the same bytes
 // dsk_save writes to a file). Returns 0, or ERR_DSK_WRITE when the drive has no
 // tracks. Used by the flux New-disk path to synthesize an SCP from a blank DSK.
 int dsk_to_bytes(t_drive* drive, std::vector<uint8_t>& out);
+// Free host track buffers only — does NOT queue a sub-cycle eject. Use when
+// rehydrating driveA/driveB from the live FDC medium.
+void dsk_eject_host(t_drive* drive);
+// Host eject + queue a sub-cycle media eject for drive A/B.
 void dsk_eject(t_drive* drive);
 int dsk_format(t_drive* drive, int iFormat);
 

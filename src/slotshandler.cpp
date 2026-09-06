@@ -6,8 +6,10 @@
 #include "slotshandler.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -291,11 +293,8 @@ int snapshot_save(const std::string& filename) {
   return ERR_SNA_WRITE;  // machine not up yet: nothing to save
 }
 
-void dsk_eject(t_drive* drive) {
-  if (drive == &driveA) subcycle_bridge_eject_media(0);  // mirror to engine
-  if (drive == &driveB) subcycle_bridge_eject_media(1);
-  if (drive->eject_hook) drive->eject_hook(drive);  // additional cleanup
-
+void dsk_eject_host(t_drive* drive) {
+  if (drive == nullptr) return;
   for (auto& track_row : drive->track) {
     for (auto& track : track_row) {
       delete[] track.data;  // release memory allocated for this track
@@ -305,6 +304,13 @@ void dsk_eject(t_drive* drive) {
       drive->current_track;           // save the drive head position
   memset(drive, 0, sizeof(t_drive));  // clear drive info structure
   drive->current_track = head_position;
+}
+
+void dsk_eject(t_drive* drive) {
+  if (drive == &driveA) subcycle_bridge_eject_media(0);  // mirror to engine
+  if (drive == &driveB) subcycle_bridge_eject_media(1);
+  if (drive->eject_hook) drive->eject_hook(drive);  // additional cleanup
+  dsk_eject_host(drive);
 }
 
 namespace {
@@ -453,6 +459,44 @@ int dsk_load(const std::string& filename, t_drive* drive) {
   int const rc = dsk_load(pfile, drive);
   fclose(pfile);
   return rc;  // dsk_load already ejected on error
+}
+
+int dsk_load_bytes(const uint8_t* data, size_t len, t_drive* drive) {
+  if (drive == nullptr) return ERR_DSK_INVALID;
+  dsk_eject_host(drive);
+  if (data == nullptr || len == 0) return ERR_DSK_INVALID;
+
+  // Named temp file: portable across POSIX tmpfile() and Windows (where
+  // tmpfile() often cannot create in C:\). Unique per call via address+size.
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("koncpc-dsk-load-" + std::to_string(reinterpret_cast<uintptr_t>(data)) +
+       "-" + std::to_string(len) + ".dsk");
+  {
+    FILE* out = fopen(path.string().c_str(), "wb");
+    if (out == nullptr) return ERR_DSK_INVALID;
+    const bool wrote = fwrite(data, 1, len, out) == len;
+    const bool closed = fclose(out) == 0;
+    if (!wrote || !closed) {
+      std::error_code ec;
+      std::filesystem::remove(path, ec);
+      return ERR_DSK_INVALID;
+    }
+  }
+  FILE* pfile = fopen(path.string().c_str(), "rb");
+  if (pfile == nullptr) {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    return ERR_DSK_INVALID;
+  }
+  int const rc = dsk_parse(pfile, drive);
+  fclose(pfile);
+  {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+  }
+  if (rc != 0) dsk_eject_host(drive);
+  return rc;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other

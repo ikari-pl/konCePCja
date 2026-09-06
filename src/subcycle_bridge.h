@@ -60,6 +60,15 @@ void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
                                   uint8_t unit = 0);
 void subcycle_bridge_eject_media(uint8_t unit = 0);
 
+// Disc Tools / IPC disk family: the FDC medium is authoritative; driveA/driveB
+// are a host tooling view. Pull copies the live sector image into the view;
+// push serializes the view back onto the FDC (and marks dirty). Both require
+// the Z80 thread quiescent (hold CpcPauseLease). No-op / false when the bridge
+// is inactive or the unit has no writable sector image (empty / read-only
+// flux).
+bool subcycle_bridge_pull_drive_view(uint8_t unit = 0);
+bool subcycle_bridge_push_drive_view(uint8_t unit = 0);
+
 /* Fit or remove an expansion ROM in `slot` (0-31). `rom16k` is a caller-owned
  * 16K image, or nullptr to empty the slot — an empty slot reads as BASIC, the
  * same as no board fitted. Call this whenever the host's memmap_ROM changes

@@ -95,6 +95,9 @@ int fdc_media_dirty(const Device* dev);
 int fdc_media_dirty_unit(const Device* dev, uint8_t unit);
 void fdc_media_mark_clean(const Device* dev);
 void fdc_media_mark_clean_unit(const Device* dev, uint8_t unit);
+// Host tooling (Disc Tools / IPC) mutated the attached image out-of-band —
+// mark dirty so flush_dirty_media_unit persists it like an FDC WRITE.
+void fdc_media_mark_dirty_unit(const Device* dev, uint8_t unit);
 
 /* How the medium behind a drive is backed (fdc_media.backing). SECTOR = a plain
  * DSK image; FLUX = a flux dump. A flux medium may still carry a writable DSK
