@@ -1406,6 +1406,106 @@ def test_model_change_rebuild():
         return True
 
 
+def test_profile_load_rebuilds_machine():
+    """profile load must quiesce + rebuild when model/ram_size change.
+
+    Repro for beads-x3ka: ConfigProfileManager::load() wrote CPC.model straight
+    into the global struct with no pause and no emulator_init(), so IPC
+    `profile load 6128plus` left banks/ASIC/ROMs on the old machine while
+    config reported Plus. The proof matches test_model_change_rebuild: the
+    ROM signature at 0x02E0 must match a fresh 6128+ boot after the load.
+    Soft-only profile fields are covered by the unit suite; this guards the
+    runtime caller contract.
+    """
+    print("Running profile-load rebuild test...")
+
+    def rom_signature(ipc: KoncepcjaIPC) -> Optional[str]:
+        ok, resp = ipc.read_mem(0x02E0, 16)
+        if not ok:
+            return None
+        return resp.replace('OK ', '').strip().upper()
+
+    def model_value(ipc: KoncepcjaIPC) -> Optional[int]:
+        ok, resp = ipc.send_command('config get model')
+        if not ok:
+            return None
+        try:
+            # Strip a possible ` pending=<n>` suffix — profile load clears it,
+            # but tolerate the config get format.
+            token = resp.replace('OK', '').strip().split()[0]
+            return int(token)
+        except (ValueError, IndexError):
+            return None
+
+    with EmulatorRunner() as ref_plus:
+        if not ref_plus.start('-O', 'system.model=3'):
+            print("FAIL: Could not start 6128+ reference machine")
+            return False
+        sig_plus = rom_signature(ref_plus.ipc)
+        if sig_plus is None:
+            print("FAIL: Could not read 6128+ ROM signature")
+            return False
+
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.model=2'):
+            print("FAIL: Could not start emulator under test")
+            return False
+
+        before_model = model_value(emu.ipc)
+        if before_model != 2:
+            print(f"FAIL: Expected initial model 2, got {before_model!r}")
+            return False
+
+        before_sig = rom_signature(emu.ipc)
+        if before_sig is None:
+            print("FAIL: Could not read initial ROM signature")
+            return False
+        if before_sig == sig_plus:
+            print(f"FAIL: 6128 boot already matches Plus ref: {before_sig}")
+            return False
+
+        # Built-in profile — no host .kpf required.
+        ok, resp = emu.ipc.send_command('profile load 6128plus')
+        if not ok:
+            print(f"FAIL: profile load 6128plus failed: {resp}")
+            return False
+
+        after_model = model_value(emu.ipc)
+        if after_model != 3:
+            print(f"FAIL: Expected model 3 after profile load, got {after_model!r}")
+            return False
+
+        ok, cur = emu.ipc.send_command('profile current')
+        if not ok or '6128plus' not in cur:
+            print(f"FAIL: profile current after load: {cur!r}")
+            return False
+
+        after_sig = rom_signature(emu.ipc)
+        if after_sig != sig_plus:
+            print(f"FAIL: Profile-load ROM signature {after_sig!r} != "
+                  f"6128+ ref {sig_plus!r}")
+            return False
+
+        if after_sig == before_sig:
+            print(f"FAIL: ROM signature stayed on the old model: {after_sig}")
+            return False
+
+        # Soft re-load of the same identity must stay OK without a second
+        # identity change (still rebuilds only when model/ram differ).
+        ok, resp = emu.ipc.send_command('profile load 6128plus')
+        if not ok:
+            print(f"FAIL: second profile load 6128plus failed: {resp}")
+            return False
+        if model_value(emu.ipc) != 3:
+            print("FAIL: model drifted after same-profile reload")
+            return False
+
+        print(f"  before (6128)    : {before_sig}")
+        print(f"  6128+ reference  : {sig_plus}")
+        print(f"  after profile load: {after_sig}")
+        print("PASS: profile load rebuilt the board under pause lease")
+        return True
+
 
 def test_boots_to_basic_with_peripherals():
     """The CPC must reach the BASIC prompt with peripherals configured.
@@ -1867,6 +1967,7 @@ def main():
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
+        test_profile_load_rebuilds_machine,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,

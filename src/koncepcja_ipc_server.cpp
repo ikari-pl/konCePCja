@@ -387,6 +387,40 @@ static void ipc_drain_rebuild() {
   g_rebuild_pending.cv.notify_all();
 }
 
+// Hand a machine rebuild to the main thread and wait for the drain.
+// Never call koncpc_rebuild_machine() from the IPC server thread (see
+// IpcRebuildPending). Returns an empty string on success, otherwise a full
+// `ERR …\n` response ready to send to the client.
+static std::string ipc_request_rebuild_and_wait() {
+  std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
+  g_rebuild_pending.done = false;
+  g_rebuild_pending.requested = true;
+  if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10),
+                                     [] { return g_rebuild_pending.done; })) {
+    // The main thread clears `requested` before running the rebuild, so a
+    // slow rebuild can still finish after we time out. Prefer that result
+    // over a lying 504; only cancel when the drain never claimed the work.
+    if (g_rebuild_pending.done) {
+      // Fall through to the result below.
+    } else if (g_rebuild_pending.requested) {
+      g_rebuild_pending.requested = false;
+      return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+    } else {
+      // Drain claimed it; wait a bit more for completion rather than
+      // reporting "main loop did not run" while a rebuild is in flight.
+      if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(30), [] {
+            return g_rebuild_pending.done;
+          })) {
+        return "ERR 504 rebuild-still-running\n";
+      }
+    }
+  }
+  int const err = g_rebuild_pending.result;
+  if (err != 0)
+    return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+  return {};
+}
+
 void ipc_drain_input() {
   ipc_drain_rebuild();
   // Publish device-enabled state for the IPC thread's gates (read of the plain
@@ -930,12 +964,17 @@ void init_command_registry() {
       "Manage developer tools",
       "Toggles the developer tool overlay or individual debug windows.");
 
-  register_command("profile", "TOOLS",
-                   "profile list|current | profile load|delete <name> | "
-                   "profile save <name> [description]",
-                   "Manage configuration profiles",
-                   "Lists available profiles or switches the emulator to a "
-                   "different configuration.");
+  register_command(
+      "profile", "TOOLS",
+      "profile list|current | profile load|delete <name> | "
+      "profile save <name> [description]",
+      "Manage configuration profiles",
+      "Lists available profiles or switches the emulator to a different "
+      "configuration.\n"
+      "  load: applies the profile under a pause lease. When model or "
+      "ram_size changes, rebuilds the machine on the main thread (same "
+      "quiesce path as `config apply`) so mid-run switches cannot race the "
+      "Z80 thread.");
 
   register_command(
       "config", "TOOLS",
@@ -4391,9 +4430,52 @@ std::string handle_command(const std::string& line) {
         return "OK " + cur + "\n";
       }
       if (parts[1] == "load") {
-        if (parts.size() < 3) return "ERR 400 missing profile name\n";
+        if (parts.size() < 3)
+          return "ERR 400 missing profile name\n";
+        // ConfigProfileManager::load() is pure state application — it writes
+        // CPC.model/ram_size/etc with no quiesce and no rebuild. At runtime
+        // that races the Z80 thread and leaves banks/ASIC/ROMs on the old
+        // machine (beads-x3ka). Hold a pause lease across the apply; when
+        // the machine identity actually changed, rebuild on the main thread
+        // like `config apply` / Options Apply.
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
+        unsigned int const old_model = CPC.model;
+        unsigned int const old_ram = CPC.ram_size;
+
         auto err = g_profile_manager.load(parts[2]);
-        if (!err.empty()) return "ERR " + err + "\n";
+        if (!err.empty())
+          return "ERR " + err + "\n";
+
+        bool const needs_rebuild =
+            CPC.model != old_model || CPC.ram_size != old_ram;
+        if (needs_rebuild) {
+          // Drop any staged `config set model` — the profile already wrote
+          // the live CPC.model, and ipc_drain_rebuild would otherwise
+          // overwrite it with a stale pending value.
+          g_pending_model.store(-1);
+          std::string const rebuild_err = ipc_request_rebuild_and_wait();
+          if (!rebuild_err.empty()) {
+            // Board never came up under the new identity; restore so a
+            // retry / `config get` do not report a machine that is not
+            // running. Soft profile fields stay applied.
+            CPC.model = old_model;
+            CPC.ram_size = old_ram;
+            return rebuild_err;
+          }
+        } else {
+          update_cpc_speed();
+          if (CPC.InputMapper)
+            CPC.InputMapper->set_joystick_emulation();
+        }
+
+        // Inner rebuild saw us already paused (outer lease), so it left the
+        // machine stopped. Soft loads also stay paused under the lease.
+        // Restore the caller's run state explicitly.
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return "OK\n";
       }
       if (parts[1] == "save") {
@@ -4425,36 +4507,9 @@ std::string handle_command(const std::string& line) {
     // --- Config commands ---
     if (cmd == "config" && parts.size() >= 2) {
       if (parts[1] == "apply") {
-        // Hand the rebuild to the main thread and wait for it (see
-        // IpcRebuildPending). Never call koncpc_rebuild_machine() from here.
-        std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
-        g_rebuild_pending.done = false;
-        g_rebuild_pending.requested = true;
-        if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10), [] {
-              return g_rebuild_pending.done;
-            })) {
-          // The main thread clears `requested` before running the rebuild, so a
-          // slow rebuild can still finish after we time out. Prefer that result
-          // over a lying 504; only cancel when the drain never claimed the
-          // work.
-          if (g_rebuild_pending.done) {
-            // Fall through to the result below.
-          } else if (g_rebuild_pending.requested) {
-            g_rebuild_pending.requested = false;
-            return "ERR 504 rebuild-not-drained (main loop did not run)\n";
-          } else {
-            // Drain claimed it; wait a bit more for completion rather than
-            // reporting "main loop did not run" while a rebuild is in flight.
-            if (!g_rebuild_pending.cv.wait_for(
-                    lock, std::chrono::seconds(30),
-                    [] { return g_rebuild_pending.done; })) {
-              return "ERR 504 rebuild-still-running\n";
-            }
-          }
-        }
-        int const err = g_rebuild_pending.result;
-        if (err != 0)
-          return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+        std::string const rebuild_err = ipc_request_rebuild_and_wait();
+        if (!rebuild_err.empty())
+          return rebuild_err;
         return "OK\n";
       }
       if (parts[1] == "get" && parts.size() >= 3) {

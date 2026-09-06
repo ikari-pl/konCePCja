@@ -603,7 +603,7 @@ Save and switch between named config presets.
 |---------|-------------|
 | `profile list` | List profiles. Active profile marked with `*`. |
 | `profile current` | Show active profile name |
-| `profile load <name>` | Switch to named profile |
+| `profile load <name>` | Switch to named profile. Soft settings apply under a pause lease; when `model` or `ram_size` changes, rebuilds the machine on the main thread (same quiesce path as `config apply`) |
 | `profile save <name>` | Save current config as named profile |
 | `profile delete <name>` | Remove a profile |
 
