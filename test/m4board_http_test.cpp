@@ -12,6 +12,7 @@
 #include "m4board.h"
 
 #ifdef _WIN32
+#include <process.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 using test_sock_t = SOCKET;
@@ -30,6 +31,7 @@ static void test_sock_set_timeout(test_sock_t s, int secs) {
   setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
              reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 }
+static int test_getpid() { return static_cast<int>(_getpid()); }
 // RAII WSA init for the test suite
 struct WsaInit {
   WsaInit() {
@@ -58,6 +60,7 @@ static void test_sock_set_timeout(test_sock_t s, int secs) {
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv),
              sizeof(tv));
 }
+static int test_getpid() { return static_cast<int>(::getpid()); }
 #endif
 
 // ── Helpers ──
@@ -151,37 +154,48 @@ static int extract_status(const std::string& response) {
   }
 }
 
-// ── Shared server environment ──
-// One server for the entire test suite — avoids 25+ start/stop cycles
-// with TIME_WAIT port exhaustion on slow CI runners (Win32).
-// Port 0 = OS-assigned ephemeral (avoids collisions with parallel jobs on CI).
+// ── Suite-scoped HTTP fixture (beads-pfr0) ──
+// One server for M4HttpTest only — avoids 24 start/stop cycles / TIME_WAIT on
+// Win32, but does NOT use a process-global Environment: other suites
+// (M4BoardTest, UrlDecode, IPC…) mutate g_m4board / the filesystem, and a
+// process-long Environment left the SD tree and bind state stale by the time
+// M4HttpTest ran in the full suite.
+// Port 0 = OS-assigned ephemeral (avoids collisions with parallel CI jobs).
 
 static std::filesystem::path g_test_sd_dir;
 static int g_test_port = 0;
 
-class M4HttpEnvironment : public ::testing::Environment {
- public:
-  void SetUp() override {
-    g_test_sd_dir = std::filesystem::temp_directory_path() / "m4http_test";
-    std::filesystem::remove_all(g_test_sd_dir);
-    std::filesystem::create_directories(g_test_sd_dir);
+static void m4http_write_baseline_files(const std::filesystem::path& root) {
+  std::filesystem::create_directories(root);
+  std::ofstream(root / "test.bas") << "10 PRINT \"HELLO\"\n20 GOTO 10\n";
+  std::ofstream(root / "game.dsk");  // empty file
+  std::filesystem::create_directories(root / "games");
+  std::ofstream(root / "games" / "demo.bin") << std::string(256, 'X');
+}
 
-    // Create baseline test files
-    std::ofstream(g_test_sd_dir / "test.bas")
-        << "10 PRINT \"HELLO\"\n20 GOTO 10\n";
-    std::ofstream(g_test_sd_dir / "game.dsk");  // empty file
-    std::filesystem::create_directories(g_test_sd_dir / "games");
-    std::ofstream(g_test_sd_dir / "games" / "demo.bin")
-        << std::string(256, 'X');
+static void m4http_wait_for_port() {
+  for (int i = 0; i < 300 && g_m4_http.port() == 0; i++) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+}
+
+class M4HttpTest : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() {
+    // Unique per-process dir so parallel runners / leftover /tmp trees cannot
+    // collide on the old fixed "m4http_test" name.
+    g_test_sd_dir = std::filesystem::temp_directory_path() /
+                    ("m4http_test_" + std::to_string(test_getpid()));
+    std::filesystem::remove_all(g_test_sd_dir);
+    m4http_write_baseline_files(g_test_sd_dir);
 
     g_m4board.enabled = true;
     g_m4board.sd_root_path = g_test_sd_dir.string();
     g_m4board.current_dir = "/";
 
+    if (g_m4_http.is_running()) g_m4_http.stop();
     g_m4_http.start(0, "127.0.0.1");
-    for (int i = 0; i < 300 && g_m4_http.port() == 0; i++) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    m4http_wait_for_port();
     g_test_port = g_m4_http.port();
     if (g_test_port <= 0) {
       g_m4_http.stop();
@@ -190,31 +204,39 @@ class M4HttpEnvironment : public ::testing::Environment {
     }
   }
 
-  void TearDown() override {
+  static void TearDownTestSuite() {
     g_m4_http.stop();
     g_m4board.enabled = false;
     g_m4board.sd_root_path.clear();
     g_m4board.current_dir = "/";
     std::filesystem::remove_all(g_test_sd_dir);
+    g_test_port = 0;
   }
-};
 
-// Register the environment — GoogleTest owns the pointer
-static auto* g_http_env [[maybe_unused]] =
-    ::testing::AddGlobalTestEnvironment(new M4HttpEnvironment);
-
-class M4HttpTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    port_ = g_test_port;
+  // Re-assert SD tree + g_m4board + live server after any cross-suite pollution.
+  void restore_fixture_state() {
     sd_dir_ = g_test_sd_dir;
-    // Reset state that other test suites (M4BoardTest etc.) may have modified
+    m4http_write_baseline_files(g_test_sd_dir);
+
     g_m4board.enabled = true;
     g_m4board.sd_root_path = g_test_sd_dir.string();
     g_m4board.current_dir = "/";
     g_m4_http.pending_reset.store(false);
     g_m4_http.pending_pause_toggle.store(false);
     g_m4_http.pending_nmi.store(false);
+
+    if (!g_m4_http.is_running()) {
+      g_m4_http.start(0, "127.0.0.1");
+      m4http_wait_for_port();
+      g_test_port = g_m4_http.port();
+    }
+    port_ = g_test_port;
+  }
+
+  void SetUp() override {
+    restore_fixture_state();
+    ASSERT_GT(port_, 0);
+    ASSERT_TRUE(g_m4_http.is_running());
   }
 
   std::filesystem::path sd_dir_;
@@ -226,6 +248,33 @@ class M4HttpTest : public ::testing::Test {
 TEST_F(M4HttpTest, ServerStartsAndListens) {
   ASSERT_TRUE(g_m4_http.is_running());
   ASSERT_GT(port_, 0);
+}
+
+// beads-pfr0: listing/download tests used to fail in the full suite when a
+// prior suite wiped the shared SD tree or redirected g_m4board. SetUp must
+// rebuild the baseline and rebind state — prove that recovery path here.
+TEST_F(M4HttpTest, RecoversFromCrossSuitePollution) {
+  std::filesystem::remove_all(sd_dir_);
+  g_m4board.enabled = false;
+  g_m4board.sd_root_path = "/nonexistent-m4http-pollution";
+  g_m4board.current_dir = "/stale";
+  g_m4_http.stop();
+
+  restore_fixture_state();
+  ASSERT_GT(port_, 0);
+  ASSERT_TRUE(g_m4_http.is_running());
+
+  auto resp = http_get(port_, "/config.cgi?ls=/");
+  ASSERT_FALSE(resp.empty());
+  EXPECT_EQ(200, extract_status(resp));
+  auto body = extract_body(resp);
+  EXPECT_NE(std::string::npos, body.find("test.bas"));
+  EXPECT_NE(std::string::npos, body.find("game.dsk"));
+
+  resp = http_get(port_, "/sd/games/demo.bin");
+  ASSERT_FALSE(resp.empty());
+  EXPECT_EQ(200, extract_status(resp));
+  EXPECT_EQ(256u, extract_body(resp).size());
 }
 
 TEST_F(M4HttpTest, GetIndexReturnsHtml) {
@@ -480,8 +529,13 @@ TEST(M4PortMappingTest, RemoveMapping) {
 TEST(M4HttpUrlDecode, BasicDecoding) {
   // Exercise URL decoding indirectly via the config.cgi mkdir handler,
   // which decodes the query param value before using it.
-  // Create temp SD dir and configure M4 board
-  auto sd_dir = std::filesystem::temp_directory_path() / "m4_urldecode_test";
+  // Save/restore g_m4board so shuffle order cannot leak into M4HttpTest.
+  const bool saved_enabled = g_m4board.enabled;
+  const std::string saved_sd = g_m4board.sd_root_path;
+  const std::string saved_dir = g_m4board.current_dir;
+
+  auto sd_dir = std::filesystem::temp_directory_path() /
+                ("m4_urldecode_test_" + std::to_string(test_getpid()));
   std::filesystem::remove_all(sd_dir);
   std::filesystem::create_directories(sd_dir);
 
@@ -505,8 +559,9 @@ TEST(M4HttpUrlDecode, BasicDecoding) {
   EXPECT_TRUE(std::filesystem::is_directory(sd_dir / "hello world"));
 
   server.stop();
-  g_m4board.enabled = false;
-  g_m4board.sd_root_path.clear();
+  g_m4board.enabled = saved_enabled;
+  g_m4board.sd_root_path = saved_sd;
+  g_m4board.current_dir = saved_dir;
   std::filesystem::remove_all(sd_dir);
 }
 
