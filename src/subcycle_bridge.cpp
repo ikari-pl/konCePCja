@@ -1371,18 +1371,18 @@ bool subcycle_bridge_push_drive_view(uint8_t unit) {
   const bool flux =
       unit == 0 && fdc_media_flux_scp(b.machine.fdc(), scp_len) != nullptr;
 
-  if (flux && cur != nullptr && cur_len == bytes.size()) {
-    // Writable flux: edit the DSK overlay in place so clean-track flux
-    // serving stays attached (insert_disk would drop the SCP backing).
-    std::memcpy(const_cast<uint8_t*>(cur), bytes.data(), bytes.size());
-    fdc_media_mark_dirty_unit(b.machine.fdc(), unit);
-    drive->altered = true;
-    return true;
-  }
-  if (flux && cur == nullptr) {
+  if (flux) {
+    if (cur != nullptr && cur_len == bytes.size()) {
+      // Writable flux: edit the DSK overlay in place so clean-track flux
+      // serving stays attached (insert_disk would drop the SCP backing).
+      std::memcpy(const_cast<uint8_t*>(cur), bytes.data(), bytes.size());
+      fdc_media_mark_dirty_unit(b.machine.fdc(), unit);
+      drive->altered = true;
+      return true;
+    }
     LOG_ERROR(
-        "subcycle engine: cannot push host edits onto read-only flux "
-        "(no DSK overlay)");
+        "subcycle engine: cannot push host edits onto flux without a "
+        "same-size DSK overlay (insert_disk would drop the SCP backing)");
     return false;
   }
 
@@ -1399,6 +1399,18 @@ bool subcycle_bridge_push_drive_view(uint8_t unit) {
                                      << " updated from host disc tools ("
                                      << buf.size() << " bytes)");
   return true;
+}
+
+void subcycle_bridge_rollback_host_view(uint8_t unit,
+                                        const std::vector<uint8_t>& snapshot) {
+  unit = unit & 1;
+  if (subcycle_bridge_pull_drive_view(unit)) return;
+  t_drive* drive = unit == 0 ? &driveA : &driveB;
+  if (!snapshot.empty() &&
+      dsk_load_bytes(snapshot.data(), snapshot.size(), drive) == 0) {
+    return;
+  }
+  dsk_eject_host(drive);
 }
 
 namespace {

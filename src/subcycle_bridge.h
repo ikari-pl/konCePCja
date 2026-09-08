@@ -68,6 +68,12 @@ void subcycle_bridge_eject_media(uint8_t unit = 0);
 // flux).
 bool subcycle_bridge_pull_drive_view(uint8_t unit = 0);
 bool subcycle_bridge_push_drive_view(uint8_t unit = 0);
+// After a failed push: restore the host tooling view from the live FDC
+// (authoritative) or, if pull cannot, from `snapshot` taken before the
+// mutation. Empty snapshot + failed pull ejects the host view so a later
+// `disk ls` cannot show the rejected edit.
+void subcycle_bridge_rollback_host_view(uint8_t unit,
+                                        const std::vector<uint8_t>& snapshot);
 
 /* Fit or remove an expansion ROM in `slot` (0-31). `rom16k` is a caller-owned
  * 16K image, or nullptr to empty the slot — an empty slot reads as BASIC, the

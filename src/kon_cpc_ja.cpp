@@ -1656,6 +1656,13 @@ void CpcPauseLease::release() {
   active_ = false;
 }
 
+void CpcPauseLease::restore_run_state() {
+  if (!active_) return;
+  bool const resume = !was_paused_;
+  release();
+  if (resume) cpc_resume();
+}
+
 uint64_t cpc_resume_epoch() {
   std::scoped_lock const lock(g_pause_mutex);
   return g_resume_epoch;
@@ -1666,12 +1673,8 @@ void cpc_pause() {
   cpc_pause_locked();
 }
 
-uint64_t cpc_resume() {
-  std::scoped_lock const lock(g_pause_mutex);
-  // A destructive pause lease owns the machine until its critical section
-  // finishes. Concurrent IPC/UI Run must not clear pause mid-wait (unbounded
-  // quiescence spin) or mid-teardown (use-after-free on shared state).
-  if (g_pause_lease_count > 0) return g_resume_epoch;
+namespace {
+uint64_t cpc_resume_unlocked() {
   // A resume issued while the machine is already running is not a real
   // pause->run transition -- bumping the epoch here would invalidate a
   // breakpoint stop that was legitimately classified moments ago (between
@@ -1688,6 +1691,23 @@ uint64_t cpc_resume() {
       0;  // reset so first frame after resume isn't measured as huge
   audio_resume();
   return g_resume_epoch;
+}
+}  // namespace
+
+uint64_t cpc_resume() {
+  std::scoped_lock const lock(g_pause_mutex);
+  // A destructive pause lease owns the machine until its critical section
+  // finishes. Concurrent IPC/UI Run must not clear pause mid-wait (unbounded
+  // quiescence spin) or mid-teardown (use-after-free on shared state).
+  if (g_pause_lease_count > 0) return g_resume_epoch;
+  return cpc_resume_unlocked();
+}
+
+bool cpc_resume_applied() {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) return false;
+  cpc_resume_unlocked();
+  return true;
 }
 
 bool cpc_pause_if_epoch(uint64_t expected_epoch) {

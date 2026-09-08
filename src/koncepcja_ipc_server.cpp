@@ -670,7 +670,10 @@ void init_command_registry() {
                    "responsive and can still be used to inspect state.");
 
   register_command("run", "CORE", "run", "Resume emulation",
-                   "Resumes the machine from a paused state.");
+                   "Resumes the machine from a paused state. Returns "
+                   "`ERR 409 pause-lease-held` when a pause lease still owns "
+                   "the machine (disk/profile/reset critical sections) so a "
+                   "successful `run` always means emulation is running.");
 
   register_command("reset", "CORE", "reset [--no-resume]",
                    "Reset the machine and resume (unless --no-resume is used)",
@@ -918,7 +921,9 @@ void init_command_registry() {
       "[sector|flux] | ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> "
       "<file> <path> | put <A|B> <path> [file] | sector ...",
       "Manage emulated floppy disks",
-      "High-level disk management.\n"
+      "High-level disk management. Mutations (format/put/rm/sector write) "
+      "push to the live FDC; a failed push rolls the host view back so "
+      "`disk ls` cannot show the rejected edit.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
       "  put: Copies a file from the host machine onto the emulated disk.");
 
@@ -974,7 +979,8 @@ void init_command_registry() {
       "  load: applies the profile under a pause lease. When model or "
       "ram_size changes, rebuilds the machine on the main thread (same "
       "quiesce path as `config apply`) so mid-run switches cannot race the "
-      "Z80 thread.");
+      "Z80 thread. Failed load/rebuild resumes the caller; "
+      "`ERR 504 rebuild-still-running` leaves the machine paused.");
 
   register_command(
       "config", "TOOLS",
@@ -1414,7 +1420,8 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
     if (cmd == "run") {
-      cpc_resume();
+      if (!cpc_resume_applied())
+        return "ERR 409 pause-lease-held\n";
       return ok_with_context();
     }
     if (cmd == "reset") {
@@ -3906,9 +3913,15 @@ std::string handle_command(const std::string& line) {
         if (subcycle_bridge_active()) {
           subcycle_bridge_pull_drive_view(static_cast<uint8_t>(unit));
         }
+        std::vector<uint8_t> snapshot;
+        if (commit && subcycle_bridge_active() && drv->tracks > 0) {
+          (void)dsk_to_bytes(drv, snapshot);
+        }
         std::string result = body(drv);
         if (commit && result.rfind("OK", 0) == 0 && subcycle_bridge_active()) {
           if (!subcycle_bridge_push_drive_view(static_cast<uint8_t>(unit))) {
+            subcycle_bridge_rollback_host_view(static_cast<uint8_t>(unit),
+                                               snapshot);
             result = "ERR failed to update live FDC medium\n";
           }
         }
@@ -4439,13 +4452,14 @@ std::string handle_command(const std::string& line) {
         // the machine identity actually changed, rebuild on the main thread
         // like `config apply` / Options Apply.
         CpcPauseLease lease;
-        bool const was_paused = lease.was_paused();
         unsigned int const old_model = CPC.model;
         unsigned int const old_ram = CPC.ram_size;
 
         auto err = g_profile_manager.load(parts[2]);
-        if (!err.empty())
+        if (!err.empty()) {
+          lease.restore_run_state();
           return "ERR " + err + "\n";
+        }
 
         bool const needs_rebuild =
             CPC.model != old_model || CPC.ram_size != old_ram;
@@ -4456,11 +4470,18 @@ std::string handle_command(const std::string& line) {
           g_pending_model.store(-1);
           std::string const rebuild_err = ipc_request_rebuild_and_wait();
           if (!rebuild_err.empty()) {
-            // Board never came up under the new identity; restore so a
-            // retry / `config get` do not report a machine that is not
-            // running. Soft profile fields stay applied.
-            CPC.model = old_model;
-            CPC.ram_size = old_ram;
+            // An in-flight rebuild may still finish after 504
+            // rebuild-still-running. Leave the target identity in CPC.*
+            // and stay paused so we do not lie about a machine the drain
+            // is still building. Restore identity only when the rebuild
+            // completed as a failure.
+            const bool in_flight =
+                rebuild_err.find("rebuild-still-running") != std::string::npos;
+            if (!in_flight) {
+              CPC.model = old_model;
+              CPC.ram_size = old_ram;
+              lease.restore_run_state();
+            }
             return rebuild_err;
           }
         } else {
@@ -4472,10 +4493,7 @@ std::string handle_command(const std::string& line) {
         // Inner rebuild saw us already paused (outer lease), so it left the
         // machine stopped. Soft loads also stay paused under the lease.
         // Restore the caller's run state explicitly.
-        if (!was_paused) {
-          lease.release();
-          cpc_resume();
-        }
+        lease.restore_run_state();
         return "OK\n";
       }
       if (parts[1] == "save") {

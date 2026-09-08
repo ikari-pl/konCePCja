@@ -629,6 +629,10 @@ class CpcPauseLease {
   bool active() const { return active_; }
   void wait();     // spin until g_z80_quiescent (idempotent if already waited)
   void release();  // drop the lease early; machine stays paused
+  // Drop the lease and resume if this holder found the machine running.
+  // Error paths that return before the success-path resume must call this
+  // (the destructor only releases the count — it never resumes).
+  void restore_run_state();
 
  private:
   void acquire(CpcPauseLeaseMode mode);
@@ -640,6 +644,9 @@ class CpcPauseLease {
 void emulator_reset();
 void cpc_pause();
 uint64_t cpc_resume();
+// Like cpc_resume(), but reports whether a pause lease deferred the call.
+// False means the machine is still paused because a CpcPauseLease is held.
+bool cpc_resume_applied();
 uint64_t cpc_resume_epoch();
 bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // Atomically commits a staged engine breakpoint only if no later resume has

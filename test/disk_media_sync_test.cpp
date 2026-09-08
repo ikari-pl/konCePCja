@@ -121,6 +121,47 @@ TEST_F(DiskMediaSyncTest, PullSeesMachineMutationsHostMissed) {
   EXPECT_EQ("FROMCPC.BIN", fresh[0].display_name);
 }
 
+TEST_F(DiskMediaSyncTest, LoadBytesFailedParseKeepsExistingTracks) {
+  ASSERT_EQ("", disk_format_drive('A', "data"));
+  const unsigned int tracks = driveA.tracks;
+  ASSERT_GT(tracks, 0u);
+
+  const uint8_t garbage[] = {'N', 'O', 'T', 'A', 'D', 'I', 'S', 'K'};
+  EXPECT_NE(0, dsk_load_bytes(garbage, sizeof(garbage), &driveA));
+  EXPECT_EQ(tracks, driveA.tracks);
+}
+
+TEST_F(DiskMediaSyncTest, RollbackHostViewRestoresSnapshotWhenBridgeInactive) {
+  ASSERT_EQ("", disk_format_drive('A', "data"));
+  ASSERT_EQ("", disk_write_file(&driveA, "HELLO.BIN",
+                                std::vector<uint8_t>{'H', 'I'}, true));
+  std::vector<uint8_t> snapshot;
+  ASSERT_EQ(0, dsk_to_bytes(&driveA, snapshot));
+
+  ASSERT_EQ("", disk_write_file(&driveA, "WORLD.BIN",
+                                std::vector<uint8_t>{'W'}, true));
+  std::string err;
+  auto mutated = disk_list_files(&driveA, err);
+  ASSERT_EQ("", err);
+  ASSERT_EQ(2u, mutated.size());
+
+  ASSERT_FALSE(subcycle_bridge_active());
+  subcycle_bridge_rollback_host_view(0, snapshot);
+
+  auto restored = disk_list_files(&driveA, err);
+  ASSERT_EQ("", err);
+  ASSERT_EQ(1u, restored.size());
+  EXPECT_EQ("HELLO.BIN", restored[0].display_name);
+}
+
+TEST_F(DiskMediaSyncTest, RollbackHostViewEjectsWhenSnapshotEmpty) {
+  ASSERT_EQ("", disk_format_drive('A', "data"));
+  ASSERT_GT(driveA.tracks, 0u);
+  ASSERT_FALSE(subcycle_bridge_active());
+  subcycle_bridge_rollback_host_view(0, {});
+  EXPECT_EQ(0u, driveA.tracks);
+}
+
 TEST(DiskMediaSyncBridge, PullPushNoopWhenInactive) {
   EXPECT_FALSE(subcycle_bridge_active());
   EXPECT_FALSE(subcycle_bridge_pull_drive_view(0));

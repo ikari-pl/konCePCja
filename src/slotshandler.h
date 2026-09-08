@@ -29,8 +29,9 @@ int snapshot_save(const std::string& filename);
 int dsk_load(FILE* pfile, t_drive* drive);
 int dsk_load(const std::string& filename, t_drive* drive);
 // Parse an in-memory DSK image into the host sector view without touching the
-// sub-cycle FDC medium (Disc Tools / IPC pull path). Clears any previous host
-// tracks first. Returns 0 or ERR_DSK_*.
+// sub-cycle FDC medium (Disc Tools / IPC pull path). Replaces the host tracks
+// only after a successful parse — a failed parse leaves the previous view
+// intact. Returns 0 or ERR_DSK_*.
 int dsk_load_bytes(const uint8_t* data, size_t len, t_drive* drive);
 int dsk_save(const std::string& filename, t_drive* drive);
 // Serialize a formatted drive to EXTENDED-DSK bytes in memory (the same bytes

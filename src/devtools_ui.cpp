@@ -30,6 +30,7 @@
 #include "portable-file-dialogs.h"
 #include "session_recording.h"
 #include "silicon_disc.h"
+#include "slotshandler.h"
 #include "subcycle_bridge.h"
 #include "symfile.h"
 #include "wav_recorder.h"
@@ -2081,9 +2082,15 @@ void DevToolsUI::render_disc_tools() {
       subcycle_bridge_pull_drive_view(dt_unit);
     }
     t_drive* d = (dt_drive_ == 0) ? &driveA : &driveB;
+    std::vector<uint8_t> snapshot;
+    if (subcycle_bridge_active() && d->tracks > 0) {
+      (void)dsk_to_bytes(d, snapshot);
+    }
     body(d);
-    if (subcycle_bridge_active()) {
-      subcycle_bridge_push_drive_view(dt_unit);
+    if (subcycle_bridge_active() &&
+        !subcycle_bridge_push_drive_view(dt_unit)) {
+      subcycle_bridge_rollback_host_view(dt_unit, snapshot);
+      imgui_toast_error("Could not update live FDC medium");
     }
     if (!lease.was_paused()) {
       lease.release();
@@ -2176,11 +2183,16 @@ void DevToolsUI::render_disc_tools() {
               subcycle_bridge_pull_drive_view(unit);
             }
             t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+            std::vector<uint8_t> snapshot;
+            if (subcycle_bridge_active() && d->tracks > 0) {
+              (void)dsk_to_bytes(d, snapshot);
+            }
             // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
             // is mutated (out-param/compound-assign/loop/reference)
             std::string err = disk_write_file(d, cpc_name, data, false);
             if (err.empty() && subcycle_bridge_active() &&
                 !subcycle_bridge_push_drive_view(unit)) {
+              subcycle_bridge_rollback_host_view(unit, snapshot);
               err = "could not update live FDC medium";
             }
             if (!lease.was_paused()) {

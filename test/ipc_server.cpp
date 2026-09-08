@@ -527,6 +527,29 @@ TEST_F(IpcServerTest, NestedPauseLeasesKeepResumeDeferred) {
   EXPECT_FALSE(CPC.paused);
 }
 
+TEST_F(IpcServerTest, ResumeAppliedReportsLeaseDeferral) {
+  cpc_resume();
+  {
+    CpcPauseLease lease;
+    EXPECT_FALSE(cpc_resume_applied());
+    EXPECT_TRUE(CPC.paused);
+    lease.restore_run_state();
+  }
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_TRUE(cpc_resume_applied());
+}
+
+TEST_F(IpcServerTest, RunReportsPauseLeaseHeld) {
+  cpc_resume();
+  CpcPauseLease lease;
+  auto const resp = send_command("run");
+  EXPECT_EQ(resp, "ERR 409 pause-lease-held\n");
+  EXPECT_TRUE(CPC.paused);
+  lease.restore_run_state();
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_OK(send_command("run"));
+}
+
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto screenshotPath =

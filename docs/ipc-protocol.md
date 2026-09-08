@@ -42,7 +42,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | `help` | Lists all commands |
 | `quit [code]` | Exit emulator with given code (default 0) |
 | `pause` | Pause emulation |
-| `run` | Resume emulation |
+| `run` | Resume emulation. `ERR 409 pause-lease-held` if a pause lease still owns the machine |
 | `reset` | Hard reset the CPC |
 
 ## Run tier
@@ -514,13 +514,13 @@ File-level and sector-level access to DSK disc images.
 | Command | Description |
 |---------|-------------|
 | `disk formats` | `OK data vendor system ...` — list available format names |
-| `disk format <A\|B> <format_name>` | Format drive with named format |
+| `disk format <A\|B> <format_name>` | Format drive with named format. Failed live-FDC push rolls the host view back |
 | `disk new <path> [format] [sector\|flux]` | Create a blank disc (default: `data sector`). Flux backing is chosen at creation because discarded flux cannot be reconstructed later |
 | `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
 | `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
 | `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
-| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted) |
-| `disk rm <A\|B> <filename>` | Delete file from disc |
+| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted). Failed live-FDC push rolls the host view back |
+| `disk rm <A\|B> <filename>` | Delete file from disc. Failed live-FDC push rolls the host view back |
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
 
 ### Sector Commands
@@ -603,7 +603,7 @@ Save and switch between named config presets.
 |---------|-------------|
 | `profile list` | List profiles. Active profile marked with `*`. |
 | `profile current` | Show active profile name |
-| `profile load <name>` | Switch to named profile. Soft settings apply under a pause lease; when `model` or `ram_size` changes, rebuilds the machine on the main thread (same quiesce path as `config apply`) |
+| `profile load <name>` | Switch to named profile. Soft settings apply under a pause lease; when `model` or `ram_size` changes, rebuilds the machine on the main thread (same quiesce path as `config apply`). Load/rebuild failures restore the caller's run state, except `ERR 504 rebuild-still-running` which leaves the machine paused under the in-flight identity |
 | `profile save <name>` | Save current config as named profile |
 | `profile delete <name>` | Remove a profile |
 
