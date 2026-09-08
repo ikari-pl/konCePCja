@@ -1507,6 +1507,101 @@ def test_profile_load_rebuilds_machine():
         return True
 
 
+def test_disk_live_put_cat():
+    """Live FDC is authoritative for IPC disk put/cat (beads-csl7.1 / lly6).
+
+    Unit tests only cover pull/push when the bridge is inactive. This starts a
+    real board, formats drive A, writes a host file onto the live medium, and
+    reads it back. A put that returns OK but a cat that cannot see the bytes
+    is a stale host-view bug, not a generic command failure.
+    """
+    print("Running live-board disk put/cat test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok, resp = emu.ipc.send_command('disk format A data')
+        if not ok:
+            print(f"FAIL: disk format command ERR (not stale-view): {resp}")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'hello.bin')
+            with open(host, 'wb') as f:
+                f.write(b'HI')
+
+            ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+            if not ok:
+                print(f"FAIL: disk put command ERR (not stale-view): {resp}")
+                return False
+
+            ok, ls_resp = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls_resp:
+                print(f"FAIL: stale host view after OK put; ls={ls_resp!r}")
+                return False
+
+            ok, cat_resp = emu.ipc.send_command('disk cat A HELLO.BIN')
+            if not ok:
+                print(f"FAIL: stale host view after OK put; cat={cat_resp!r}")
+                return False
+            compact = cat_resp.replace(' ', '').upper()
+            if '48' not in compact or '49' not in compact:
+                print(f"FAIL: cat payload mismatch (stale or truncated): "
+                      f"{cat_resp!r}")
+                return False
+
+        print(f"  ls: {ls_resp.strip()}")
+        print(f"  cat: {cat_resp.strip()}")
+        print("PASS: live-board disk put/cat round-trip")
+        return True
+
+
+def test_profile_load_missing_keeps_running():
+    """profile load ERR must restore a running machine (beads-csl7.2).
+
+    CpcPauseLease destructor only drops the lease count; 13db3b7c added
+    restore_run_state on load failure. A missing profile must return ERR and
+    leave the Z80 advancing — wait vbl is a fixed sleep and would pass even
+    if paused, so this asserts PC motion the way the headless-engine test does.
+    """
+    print("Running profile-load missing-name resume test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok1, pc1 = emu.ipc.send_command('reg get PC')
+        time.sleep(0.4)
+        ok2, pc2 = emu.ipc.send_command('reg get PC')
+        if not (ok1 and ok2 and pc1 != pc2):
+            print(f"FAIL: PC already frozen before load ({pc1} / {pc2})")
+            return False
+
+        ok, resp = emu.ipc.send_command('profile load no-such-profile-csl7')
+        if ok:
+            print(f"FAIL: missing profile unexpectedly succeeded: {resp}")
+            return False
+        if not resp.startswith('ERR'):
+            print(f"FAIL: expected ERR for missing profile, got {resp!r}")
+            return False
+
+        ok3, pc3 = emu.ipc.send_command('reg get PC')
+        time.sleep(0.4)
+        ok4, pc4 = emu.ipc.send_command('reg get PC')
+        if not (ok3 and ok4 and pc3 != pc4):
+            print(f"FAIL: machine left paused after profile load ERR "
+                  f"({pc3} / {pc4}); resp={resp!r}")
+            return False
+
+        print(f"  load ERR: {resp.strip()}")
+        print(f"  PC still moves: {pc3.strip()} -> {pc4.strip()}")
+        print("PASS: profile load ERR left the machine running")
+        return True
+
+
 def test_boots_to_basic_with_peripherals():
     """The CPC must reach the BASIC prompt with peripherals configured.
 
@@ -1968,6 +2063,8 @@ def main():
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
         test_profile_load_rebuilds_machine,
+        test_profile_load_missing_keeps_running,
+        test_disk_live_put_cat,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,
