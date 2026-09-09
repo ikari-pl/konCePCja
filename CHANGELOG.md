@@ -1,5 +1,27 @@
 # Changelog
 
+## [6.2.5](https://github.com/ikari-pl/konCePCja/compare/v6.2.4...v6.2.5) (2026-09-09)
+
+
+### Bug Fixes
+
+* address code review findings on debugger/IPC/Options PR ([12c51a5](https://github.com/ikari-pl/konCePCja/commit/12c51a5ab88d350c38bf4ec12c766441db48d73a))
+* close debugger, IPC and options gaps ([0e9a5f9](https://github.com/ikari-pl/konCePCja/commit/0e9a5f9387bbfd9229cc4458c45bff11b368aa89))
+* close debugger, IPC, and Options gaps ([3c070be](https://github.com/ikari-pl/konCePCja/commit/3c070beb1bc3657fe91e77d47c86058d23563e93))
+* **gpu:** declare DXBC among the device's shader formats ([2e26aa4](https://github.com/ikari-pl/konCePCja/commit/2e26aa4a163d5853f981009a1a5489b9bbb58abf))
+* hold pause lease through destructive quiescence sections ([e41485e](https://github.com/ikari-pl/konCePCja/commit/e41485e73d6691f551751ff7d2a05250cea63371))
+* honour --view=ram on mem compare/find for agent parity ([1830805](https://github.com/ikari-pl/konCePCja/commit/18308055c60a0bc81ccae011afd821f63ec9df63))
+* **ipc:** bind exclusively on Windows so the port scan works ([f4ae745](https://github.com/ikari-pl/konCePCja/commit/f4ae74517bbbda3c59fd394d89debd0e1687a0ac))
+* **ipc:** report the Gate Array counter for R52 in the crtc dump ([e8e1310](https://github.com/ikari-pl/konCePCja/commit/e8e13103dd09aa78c9a85b8ef8579fe43dd3a60f))
+* pause leases, live disk sync, RAM-view mem, and profile rebuild ([346a89c](https://github.com/ikari-pl/konCePCja/commit/346a89c1487cf6373301b32977e4e7dd43363c48))
+* quiesce and rebuild on mid-run profile load ([40c3f33](https://github.com/ikari-pl/konCePCja/commit/40c3f33bfb421f04a27f500287f568ccf6aa5918))
+* **review:** keep pause-lease, flux, and disk views honest ([13db3b7](https://github.com/ikari-pl/konCePCja/commit/13db3b7c8b3ea8060e101e7bbb0b3daffa147b81))
+* sync Disc Tools/IPC disk edits with the live FDC medium ([0e76fd0](https://github.com/ikari-pl/konCePCja/commit/0e76fd0dfb836324a1b3724645f3522fc6b54088))
+* **test:** make M4HttpTest recover from cross-suite SD/port pollution ([6663392](https://github.com/ikari-pl/konCePCja/commit/6663392c3fc4af92eb86efdcab7b5df0f210560c))
+* **windows:** IPC port hijack, standalone exe, zip litter, and R52 reporting ([58966b8](https://github.com/ikari-pl/konCePCja/commit/58966b853ff563c977d5ddbd96076cb5cd1bb23a))
+* **windows:** stage runtime assets next to the executable ([c493272](https://github.com/ikari-pl/konCePCja/commit/c49327249ae4687332917ab83cc546d201ebe918))
+* **zip:** stop leaving temporary files in the working directory ([92fa66e](https://github.com/ikari-pl/konCePCja/commit/92fa66e99b300263ea70eadb06186e06011f6f3c))
+
 ## [6.2.4](https://github.com/ikari-pl/konCePCja/compare/v6.2.3...v6.2.4) (2026-08-31)
 
 
