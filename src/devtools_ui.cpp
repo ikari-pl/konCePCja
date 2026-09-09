@@ -7,6 +7,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@
 #include "portable-file-dialogs.h"
 #include "session_recording.h"
 #include "silicon_disc.h"
+#include "slotshandler.h"
 #include "subcycle_bridge.h"
 #include "symfile.h"
 #include "wav_recorder.h"
@@ -2061,6 +2063,39 @@ void DevToolsUI::render_disc_tools() {
   if (ImGui::Combo("Drive", &dt_drive_, drives, 2)) {
     dt_files_dirty_ = true;
   }
+  const uint8_t dt_unit = static_cast<uint8_t>(dt_drive_ == 0 ? 0 : 1);
+  // beads-lly6: refresh the host sector view from the live FDC medium before
+  // any Disc Tools read so listings match what the CPC sees.
+  auto sync_pull = [&] {
+    if (!subcycle_bridge_active()) return;
+    CpcPauseLease lease;
+    subcycle_bridge_pull_drive_view(dt_unit);
+    if (!lease.was_paused()) {
+      lease.release();
+      cpc_resume();
+    }
+  };
+  // Mutating helpers: pause, pull, run body, push.
+  auto with_disk_mutation = [&](const std::function<void(t_drive*)>& body) {
+    CpcPauseLease lease;
+    if (subcycle_bridge_active()) {
+      subcycle_bridge_pull_drive_view(dt_unit);
+    }
+    t_drive* d = (dt_drive_ == 0) ? &driveA : &driveB;
+    std::vector<uint8_t> snapshot;
+    if (subcycle_bridge_active() && d->tracks > 0) {
+      (void)dsk_to_bytes(d, snapshot);
+    }
+    body(d);
+    if (subcycle_bridge_active() && !subcycle_bridge_push_drive_view(dt_unit)) {
+      subcycle_bridge_rollback_host_view(dt_unit, snapshot);
+      imgui_toast_error("Could not update live FDC medium");
+    }
+    if (!lease.was_paused()) {
+      lease.release();
+      cpc_resume();
+    }
+  };
   t_drive* drv = (dt_drive_ == 0) ? &driveA : &driveB;
 
   ImGui::Separator();
@@ -2086,7 +2121,12 @@ void DevToolsUI::render_disc_tools() {
         auto formats = disk_format_names();
         char const letter = (dt_drive_ == 0) ? 'A' : 'B';
         if (dt_format_ >= 0 && dt_format_ < static_cast<int>(formats.size())) {
+          CpcPauseLease lease;
           disk_format_drive(letter, formats[dt_format_]);
+          if (!lease.was_paused()) {
+            lease.release();
+            cpc_resume();
+          }
           dt_files_dirty_ = true;
         }
       }
@@ -2096,6 +2136,8 @@ void DevToolsUI::render_disc_tools() {
   // File browser
   if (ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) {
     if (dt_files_dirty_) {
+      sync_pull();
+      drv = (dt_drive_ == 0) ? &driveA : &driveB;
       dt_file_cache_ = disk_list_files(drv, dt_file_error_);
       dt_files_dirty_ = false;
     }
@@ -2111,9 +2153,8 @@ void DevToolsUI::render_disc_tools() {
             if (!filelist || !filelist[0]) return;
             auto* self = static_cast<DevToolsUI*>(ud);
             std::string const host_path(filelist[0]);
-            // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
-            // is mutated (out-param/compound-assign/loop/reference)
-            t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+            const uint8_t unit =
+                static_cast<uint8_t>(self->dt_dialog_drive_ == 0 ? 0 : 1);
 
             // Read host file
             std::ifstream f(host_path, std::ios::binary);
@@ -2136,9 +2177,27 @@ void DevToolsUI::render_disc_tools() {
               return;
             }
 
+            CpcPauseLease lease;
+            if (subcycle_bridge_active()) {
+              subcycle_bridge_pull_drive_view(unit);
+            }
+            t_drive* d = (self->dt_dialog_drive_ == 0) ? &driveA : &driveB;
+            std::vector<uint8_t> snapshot;
+            if (subcycle_bridge_active() && d->tracks > 0) {
+              (void)dsk_to_bytes(d, snapshot);
+            }
             // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable
             // is mutated (out-param/compound-assign/loop/reference)
             std::string err = disk_write_file(d, cpc_name, data, false);
+            if (err.empty() && subcycle_bridge_active() &&
+                !subcycle_bridge_push_drive_view(unit)) {
+              subcycle_bridge_rollback_host_view(unit, snapshot);
+              err = "could not update live FDC medium";
+            }
+            if (!lease.was_paused()) {
+              lease.release();
+              cpc_resume();
+            }
             if (err.empty()) {
               imgui_toast_success("Imported: " + fname);
               self->dt_files_dirty_ = true;
@@ -2188,6 +2247,12 @@ void DevToolsUI::render_disc_tools() {
               [](void* ud, const char* const* filelist, int) {
                 if (!filelist || !filelist[0]) return;
                 auto* self = static_cast<DevToolsUI*>(ud);
+                const uint8_t unit =
+                    static_cast<uint8_t>(self->dt_dialog_drive_ == 0 ? 0 : 1);
+                CpcPauseLease lease;
+                if (subcycle_bridge_active()) {
+                  subcycle_bridge_pull_drive_view(unit);
+                }
                 // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
                 // variable is mutated
                 // (out-param/compound-assign/loop/reference)
@@ -2197,6 +2262,10 @@ void DevToolsUI::render_disc_tools() {
                 // (out-param/compound-assign/loop/reference)
                 std::string err;
                 auto data = disk_read_file(d, self->dt_export_filename_, err);
+                if (!lease.was_paused()) {
+                  lease.release();
+                  cpc_resume();
+                }
                 if (!err.empty()) {
                   imgui_toast_error("Export failed: " + err);
                   return;
@@ -2217,7 +2286,8 @@ void DevToolsUI::render_disc_tools() {
         ImGui::TableSetColumnIndex(4);
         ImGui::PushID(static_cast<int>(i));
         if (ImGui::SmallButton("X")) {
-          disk_delete_file(drv, fe.filename);
+          with_disk_mutation(
+              [&](t_drive* d) { disk_delete_file(d, fe.filename); });
           dt_files_dirty_ = true;
         }
         ImGui::PopID();
@@ -2238,6 +2308,8 @@ void DevToolsUI::render_disc_tools() {
 
     ImGui::SameLine();
     if (ImGui::Button("List Sectors")) {
+      sync_pull();
+      drv = (dt_drive_ == 0) ? &driveA : &driveB;
       dt_sector_cache_ =
           disk_sector_info(drv, static_cast<unsigned>(dt_track_),
                            static_cast<unsigned>(dt_side_), dt_sector_error_);
@@ -2283,6 +2355,8 @@ void DevToolsUI::render_disc_tools() {
     if (ImGui::Button("Read Sector")) {
       unsigned long sid;
       if (parse_hex(dt_sector_id_, &sid, 0xFF)) {
+        sync_pull();
+        drv = (dt_drive_ == 0) ? &driveA : &driveB;
         dt_sector_data_ =
             disk_sector_read(drv, static_cast<unsigned>(dt_track_),
                              static_cast<unsigned>(dt_side_),

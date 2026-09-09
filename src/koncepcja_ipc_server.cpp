@@ -387,6 +387,40 @@ static void ipc_drain_rebuild() {
   g_rebuild_pending.cv.notify_all();
 }
 
+// Hand a machine rebuild to the main thread and wait for the drain.
+// Never call koncpc_rebuild_machine() from the IPC server thread (see
+// IpcRebuildPending). Returns an empty string on success, otherwise a full
+// `ERR …\n` response ready to send to the client.
+static std::string ipc_request_rebuild_and_wait() {
+  std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
+  g_rebuild_pending.done = false;
+  g_rebuild_pending.requested = true;
+  if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10),
+                                     [] { return g_rebuild_pending.done; })) {
+    // The main thread clears `requested` before running the rebuild, so a
+    // slow rebuild can still finish after we time out. Prefer that result
+    // over a lying 504; only cancel when the drain never claimed the work.
+    if (g_rebuild_pending.done) {
+      // Fall through to the result below.
+    } else if (g_rebuild_pending.requested) {
+      g_rebuild_pending.requested = false;
+      return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+    } else {
+      // Drain claimed it; wait a bit more for completion rather than
+      // reporting "main loop did not run" while a rebuild is in flight.
+      if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(30), [] {
+            return g_rebuild_pending.done;
+          })) {
+        return "ERR 504 rebuild-still-running\n";
+      }
+    }
+  }
+  int const err = g_rebuild_pending.result;
+  if (err != 0)
+    return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+  return {};
+}
+
 void ipc_drain_input() {
   ipc_drain_rebuild();
   // Publish device-enabled state for the IPC thread's gates (read of the plain
@@ -636,7 +670,10 @@ void init_command_registry() {
                    "responsive and can still be used to inspect state.");
 
   register_command("run", "CORE", "run", "Resume emulation",
-                   "Resumes the machine from a paused state.");
+                   "Resumes the machine from a paused state. Returns "
+                   "`ERR 409 pause-lease-held` when a pause lease still owns "
+                   "the machine (disk/profile/reset critical sections) so a "
+                   "successful `run` always means emulation is running.");
 
   register_command("reset", "CORE", "reset [--no-resume]",
                    "Reset the machine and resume (unless --no-resume is used)",
@@ -731,12 +768,16 @@ void init_command_registry() {
       "mem", "DEBUG",
       "mem read|cpu-read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | "
       "mem write|cpu-write <addr> <hex> | mem fill <addr> <len> <hex> | mem "
-      "compare <a> <b> <len> | mem find <start> <end> <hex>",
+      "compare <a> <b> <len> [--view=read|ram] | mem find hex|text|asm "
+      "<start> <end> <pattern> [--view=read|ram]",
       "Access emulated memory",
       "Allows direct manipulation of the 64K/128K RAM space.\n"
       "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
       "  write: Writes the provided <hex> string into memory starting at "
       "<addr>.\n"
+      "  compare / find hex|text: honour --view= the same way as read "
+      "(find asm\n"
+      "    always uses the CPU view, since it disassembles code).\n"
       "  --view=read (default): what the Z80 would read now, ROM overlays "
       "included.\n"
       "  --view=ram: the banked RAM byte, ROM overlays ignored. USE THIS to "
@@ -880,7 +921,9 @@ void init_command_registry() {
       "[sector|flux] | ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> "
       "<file> <path> | put <A|B> <path> [file] | sector ...",
       "Manage emulated floppy disks",
-      "High-level disk management.\n"
+      "High-level disk management. Mutations (format/put/rm/sector write) "
+      "push to the live FDC; a failed push rolls the host view back so "
+      "`disk ls` cannot show the rejected edit.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
       "  put: Copies a file from the host machine onto the emulated disk.");
 
@@ -926,12 +969,18 @@ void init_command_registry() {
       "Manage developer tools",
       "Toggles the developer tool overlay or individual debug windows.");
 
-  register_command("profile", "TOOLS",
-                   "profile list|current | profile load|delete <name> | "
-                   "profile save <name> [description]",
-                   "Manage configuration profiles",
-                   "Lists available profiles or switches the emulator to a "
-                   "different configuration.");
+  register_command(
+      "profile", "TOOLS",
+      "profile list|current | profile load|delete <name> | "
+      "profile save <name> [description]",
+      "Manage configuration profiles",
+      "Lists available profiles or switches the emulator to a different "
+      "configuration.\n"
+      "  load: applies the profile under a pause lease. When model or "
+      "ram_size changes, rebuilds the machine on the main thread (same "
+      "quiesce path as `config apply`) so mid-run switches cannot race the "
+      "Z80 thread. Failed load/rebuild resumes the caller; "
+      "`ERR 504 rebuild-still-running` leaves the machine paused.");
 
   register_command(
       "config", "TOOLS",
@@ -948,9 +997,12 @@ void init_command_registry() {
 
   register_command(
       "search", "TOOLS",
-      "search hex <pattern> | search text <string> | search asm <instruction>",
+      "search hex <pattern> [--view=read|ram] | search text <string> "
+      "[--view=read|ram] | search asm <instruction>",
       "Search memory",
-      "Searches the 64KB RAM space for byte sequences or strings.");
+      "Searches the 64KB address space for byte sequences or strings.\n"
+      "  hex|text: honour --view=ram like mem read (ROM overlays ignored).\n"
+      "  asm: always uses the CPU view (disassembles fetched instructions).");
 
   register_command("rom", "HARDWARE",
                    "rom list | rom load <slot> <path> | rom unload <slot> | "
@@ -1368,18 +1420,19 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
     if (cmd == "run") {
-      cpc_resume();
+      if (!cpc_resume_applied()) return "ERR 409 pause-lease-held\n";
       return ok_with_context();
     }
     if (cmd == "reset") {
-      bool const was_paused = CPC.paused;
-      if (!was_paused) cpc_pause_and_wait();
+      CpcPauseLease lease;
+      bool const was_paused = lease.was_paused();
       emulator_reset();
       bool no_resume = false;
       for (size_t i = 1; i < parts.size(); i++) {
         if (parts[i] == "--no-resume") no_resume = true;
       }
       if (!no_resume) {
+        lease.release();
         cpc_resume();
       } else if (was_paused) {
         // Was already paused and user wants no-resume, keep paused
@@ -1459,12 +1512,15 @@ std::string handle_command(const std::string& line) {
                                           : "ERR 500 load-disk\n";
       }
       if (ext == ".sna") {
-        bool const was_paused = CPC.paused;
-        if (!was_paused) cpc_pause_and_wait();
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
         CPC.snapshot.file = path;
         CPC.snapshot.zip_index = 0;
         int const rc = file_load(CPC.snapshot);
-        if (!was_paused) cpc_resume();
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return rc == 0 ? ok_with_context() : "ERR 500 load-sna\n";
       }
       if (ext == ".cdt" || ext == ".voc") {
@@ -1915,19 +1971,25 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "save") {
         if (parts.size() < 3) return "ERR 400 bad-args\n";
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-        bool const was_paused = CPC.paused;
-        if (!was_paused) cpc_pause_and_wait();
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
         int const rc = snapshot_save(parts[2]);
-        if (!was_paused) cpc_resume();
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return rc == 0 ? ok_with_context() : "ERR 500 snapshot-save\n";
       }
       if (parts[1] == "load") {
         if (parts.size() < 3) return "ERR 400 bad-args\n";
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-        bool const was_paused = CPC.paused;
-        if (!was_paused) cpc_pause_and_wait();
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
         int const rc = snapshot_load(parts[2]);
-        if (!was_paused) cpc_resume();
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
       }
     }
@@ -2019,15 +2081,35 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
-      // mem compare <addr1> <addr2> <len>
+      // mem compare <addr1> <addr2> <len> [--view=read|ram]
+      // Same ROM-overlay hazard as mem read / search: comparing a game
+      // variable under a paged-in ROM against a reference buffer must use
+      // --view=ram or both sides read firmware bytes.
       unsigned int const addr1 = parse_number(parts[2]);
       unsigned int const addr2 = parse_number(parts[3]);
       unsigned int const len = parse_number(parts[4]);
+      bool compare_ram_view = false;
+      for (size_t pi = 5; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "write" || v == "ram")
+            compare_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+        } else {
+          return "ERR 400 usage: mem compare <addr1> <addr2> <len> "
+                 "[--view=read|ram]\n";
+        }
+      }
       int diff_count = 0;
       std::string diffs;
+      auto const peek = [compare_ram_view](word a) {
+        return compare_ram_view ? z80_read_mem_via_write_bank(a)
+                                : z80_read_mem(a);
+      };
       for (unsigned int i = 0; i < len; i++) {
-        byte const v1 = z80_read_mem(static_cast<word>(addr1 + i));
-        byte const v2 = z80_read_mem(static_cast<word>(addr2 + i));
+        byte const v1 = peek(static_cast<word>(addr1 + i));
+        byte const v2 = peek(static_cast<word>(addr2 + i));
         if (v1 != v2) {
           diff_count++;
           if (diff_count <= 64) {
@@ -2498,8 +2580,7 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
     if (cmd == "step") {
-      cpc_pause_and_wait();  // ensure Z80 thread is not inside z80_execute()
-                             // before touching state
+      CpcPauseLease lease;  // quiesce + own pause through destructive step work
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -2529,6 +2610,7 @@ std::string handle_command(const std::string& line) {
         if (n < 1) return "ERR 400 bad-args\n";
         g_ipc_instance->frame_step_remaining.store(n);
         g_ipc_instance->frame_step_active.store(true);
+        lease.release();
         cpc_resume();
         g_ipc_instance->wait_frame_step_done();
         return ok_with_context();
@@ -2547,6 +2629,7 @@ std::string handle_command(const std::string& line) {
             uint16_t dummy_pc;
             bool dummy_watch;
             g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
+            lease.release();
             cpc_resume();
             // Wait for breakpoint hit
             auto deadline =
@@ -2591,6 +2674,7 @@ std::string handle_command(const std::string& line) {
         auto consume_hit = [](uint16_t& pc, bool& watch) {
           return g_ipc_instance->consume_breakpoint_hit(pc, watch);
         };
+        lease.release();  // z80_step_out_finish resumes under its own control
         switch (z80_step_out_finish(5000, consume_hit)) {
           case Z80StepOutResult::Done:
             return ok_with_context();
@@ -2608,6 +2692,7 @@ std::string handle_command(const std::string& line) {
         uint16_t dummy_pc;
         bool dummy_watch;
         g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
+        lease.release();
         cpc_resume();
         auto deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -2625,7 +2710,6 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       // "step [N]" — single-step N instructions
-      cpc_pause();
       int count = 1;
       if (parts.size() >= 2) count = parse_int(parts[1]);
       for (int i = 0; i < count; i++) z80_step_instruction();
@@ -3529,13 +3613,37 @@ std::string handle_command(const std::string& line) {
 
     // --- Memory search ---
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "find") {
-      unsigned int const start = parse_number(parts[3]);
-      unsigned int end = parse_number(parts[4]);
-      end = std::min<unsigned int>(end, 0xFFFF);
+      // mem find hex|text|asm <start> <end> <pattern> [--view=read|ram]
+      // Hex/text scan DATA, so they honour --view=ram like mem read / search.
+      // Asm disassembles the CPU-visible stream and always uses that view.
+      bool find_ram_view = false;
+      std::vector<std::string> args;
+      for (size_t pi = 2; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "write" || v == "ram")
+            find_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+          continue;
+        }
+        args.push_back(parts[pi]);
+      }
+      if (args.size() < 4)
+        return "ERR 400 usage: mem find (hex|text|asm) <start> <end> "
+               "<pattern> [--view=read|ram]\n";
 
-      if (parts[2] == "hex" && parts.size() >= 6) {
+      const std::string& find_mode = args[0];
+      unsigned int const start = parse_number(args[1]);
+      unsigned int end = parse_number(args[2]);
+      end = std::min<unsigned int>(end, 0xFFFF);
+      auto const peek = [find_ram_view](word a) {
+        return find_ram_view ? z80_read_mem_via_write_bank(a) : z80_read_mem(a);
+      };
+
+      if (find_mode == "hex") {
         // Parse hex pattern with ?? wildcards
-        const std::string& hex = parts[5];
+        const std::string& hex = args[3];
         std::vector<int> pattern;  // -1 = wildcard, else byte value
         for (size_t i = 0; i + 1 < hex.size(); i += 2) {
           if (hex[i] == '?' && hex[i + 1] == '?') {
@@ -3554,7 +3662,7 @@ std::string handle_command(const std::string& line) {
           bool match = true;
           for (size_t j = 0; j < pattern.size(); j++) {
             if (pattern[j] < 0) continue;
-            if (z80_read_mem(static_cast<word>(addr + j)) !=
+            if (peek(static_cast<word>(addr + j)) !=
                 static_cast<byte>(pattern[j])) {
               match = false;
               break;
@@ -3569,12 +3677,12 @@ std::string handle_command(const std::string& line) {
         resp << "\n";
         return resp.str();
       }
-      if (parts[2] == "text" && parts.size() >= 6) {
+      if (find_mode == "text") {
         // Collect text from remaining parts (may have spaces)
         std::string text;
-        for (size_t pi = 5; pi < parts.size(); pi++) {
+        for (size_t pi = 3; pi < args.size(); pi++) {
           if (!text.empty()) text += " ";
-          text += parts[pi];
+          text += args[pi];
         }
         // Strip surrounding quotes
         if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
@@ -3588,7 +3696,7 @@ std::string handle_command(const std::string& line) {
              addr + text.size() - 1 <= end && found < 32; addr++) {
           bool match = true;
           for (size_t j = 0; j < text.size(); j++) {
-            if (z80_read_mem(static_cast<word>(addr + j)) !=
+            if (peek(static_cast<word>(addr + j)) !=
                 static_cast<byte>(text[j])) {
               match = false;
               break;
@@ -3603,12 +3711,14 @@ std::string handle_command(const std::string& line) {
         resp << "\n";
         return resp.str();
       }
-      if (parts[2] == "asm" && parts.size() >= 6) {
-        // Collect asm pattern from remaining parts
+      if (find_mode == "asm") {
+        // Collect asm pattern from remaining parts. Always CPU view —
+        // disassembly is of the instruction stream the Z80 would fetch.
+        (void)find_ram_view;
         std::string pattern;
-        for (size_t pi = 5; pi < parts.size(); pi++) {
+        for (size_t pi = 3; pi < args.size(); pi++) {
           if (!pattern.empty()) pattern += " ";
-          pattern += parts[pi];
+          pattern += args[pi];
         }
         // Lowercase pattern for case-insensitive matching
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
@@ -3753,7 +3863,13 @@ std::string handle_command(const std::string& line) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
         // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
+        CpcPauseLease lease;  // quiesce before replacing the live medium
+        bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
@@ -3773,267 +3889,317 @@ std::string handle_command(const std::string& line) {
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
-      // Helper lambda: resolve drive letter to t_drive*
-      auto resolve_drive = [&](const std::string& letter) -> t_drive* {
-        if (letter.empty()) return nullptr;
+      // Helper: resolve drive letter to unit (0=A, 1=B) or -1.
+      auto resolve_unit = [&](const std::string& letter) -> int {
+        if (letter.empty()) return -1;
         char const c = static_cast<char>(
             std::toupper(static_cast<unsigned char>(letter[0])));
-        if (c == 'A') return &driveA;
-        if (c == 'B') return &driveB;
-        return nullptr;
+        if (c == 'A') return 0;
+        if (c == 'B') return 1;
+        return -1;
+      };
+      // Machine medium is authoritative (beads-lly6): pull into the host view
+      // before tools read/edit; push after mutations. Lease owns pause through
+      // the critical section (zx8h).
+      auto with_synced_drive =
+          [&](const std::string& letter, bool commit,
+              const std::function<std::string(t_drive*)>& body) -> std::string {
+        const int unit = resolve_unit(letter);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        t_drive* drv = unit == 0 ? &driveA : &driveB;
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
+        if (subcycle_bridge_active()) {
+          subcycle_bridge_pull_drive_view(static_cast<uint8_t>(unit));
+        }
+        std::vector<uint8_t> snapshot;
+        if (commit && subcycle_bridge_active() && drv->tracks > 0) {
+          (void)dsk_to_bytes(drv, snapshot);
+        }
+        std::string result = body(drv);
+        if (commit && result.rfind("OK", 0) == 0 && subcycle_bridge_active()) {
+          if (!subcycle_bridge_push_drive_view(static_cast<uint8_t>(unit))) {
+            subcycle_bridge_rollback_host_view(static_cast<uint8_t>(unit),
+                                               snapshot);
+            result = "ERR failed to update live FDC medium\n";
+          }
+        }
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
+        return result;
       };
 
       if (parts[1] == "ls") {
         if (parts.size() < 3) return "ERR 400 usage: disk ls <A|B>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto files = disk_list_files(drv, err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        std::ostringstream resp;
-        resp << "OK\n";
-        for (const auto& f : files) {
-          resp << f.display_name << " " << f.size_bytes;
-          if (f.read_only) resp << " R/O";
-          if (f.system) resp << " SYS";
-          resp << "\n";
-        }
-        return resp.str();
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto files = disk_list_files(drv, err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              std::ostringstream resp;
+              resp << "OK\n";
+              for (const auto& f : files) {
+                resp << f.display_name << " " << f.size_bytes;
+                if (f.read_only) resp << " R/O";
+                if (f.system) resp << " SYS";
+                resp << "\n";
+              }
+              return resp.str();
+            });
       }
       if (parts[1] == "cat") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk cat <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        // Check for AMSDOS header -- if present, skip it and report actual
-        // length
-        auto hdr_info = disk_parse_amsdos_header(raw);
-        size_t offset = 0;
-        size_t reported_size = raw.size();
-        if (hdr_info.valid && raw.size() >= 128) {
-          offset = 128;
-          reported_size = hdr_info.file_length;
-        }
-        std::ostringstream resp;
-        resp << "OK size=" << reported_size << "\n";
-        resp << std::hex << std::uppercase << std::setfill('0');
-        for (size_t i = offset; i < raw.size() && (i - offset) < reported_size;
-             i++) {
-          if (i > offset) resp << ' ';
-          resp << std::setw(2) << static_cast<unsigned>(raw[i]);
-        }
-        resp << "\n";
-        return resp.str();
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              // Check for AMSDOS header -- if present, skip it and report
+              // actual length
+              auto hdr_info = disk_parse_amsdos_header(raw);
+              size_t offset = 0;
+              size_t reported_size = raw.size();
+              if (hdr_info.valid && raw.size() >= 128) {
+                offset = 128;
+                reported_size = hdr_info.file_length;
+              }
+              std::ostringstream resp;
+              resp << "OK size=" << reported_size << "\n";
+              resp << std::hex << std::uppercase << std::setfill('0');
+              for (size_t i = offset;
+                   i < raw.size() && (i - offset) < reported_size; i++) {
+                if (i > offset) resp << ' ';
+                resp << std::setw(2) << static_cast<unsigned>(raw[i]);
+              }
+              resp << "\n";
+              return resp.str();
+            });
       }
       if (parts[1] == "get") {
         if (parts.size() < 5)
           return "ERR 400 usage: disk get <A|B> <filename> <local_path>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        // Strip AMSDOS header if present
-        auto hdr_info = disk_parse_amsdos_header(raw);
-        size_t offset = 0;
-        size_t length = raw.size();
-        if (hdr_info.valid && raw.size() >= 128) {
-          offset = 128;
-          length = hdr_info.file_length;
-        }
-        if (offset + length > raw.size()) length = raw.size() - offset;
-        std::ofstream out(parts[4], std::ios::binary);
-        if (!out) return "ERR failed to open " + parts[4] + "\n";
-        out.write(reinterpret_cast<const char*>(raw.data() + offset),
-                  static_cast<std::streamsize>(length));
-        out.close();
-        return "OK bytes=" + std::to_string(length) + "\n";
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              // Strip AMSDOS header if present
+              auto hdr_info = disk_parse_amsdos_header(raw);
+              size_t offset = 0;
+              size_t length = raw.size();
+              if (hdr_info.valid && raw.size() >= 128) {
+                offset = 128;
+                length = hdr_info.file_length;
+              }
+              if (offset + length > raw.size()) length = raw.size() - offset;
+              std::ofstream out(parts[4], std::ios::binary);
+              if (!out) return "ERR failed to open " + parts[4] + "\n";
+              out.write(reinterpret_cast<const char*>(raw.data() + offset),
+                        static_cast<std::streamsize>(length));
+              out.close();
+              return "OK bytes=" + std::to_string(length) + "\n";
+            });
       }
       if (parts[1] == "put") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename]\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        const std::string& local_path = parts[3];
-        std::string cpc_name;
-        if (parts.size() >= 5) {
-          cpc_name = parts[4];
-          // Uppercase it
-          for (auto& c : cpc_name)
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        } else {
-          cpc_name = disk_to_cpc_filename(local_path);
-          if (cpc_name.empty())
-            return "ERR cannot derive CPC filename from path\n";
-        }
-        std::ifstream in(local_path, std::ios::binary);
-        if (!in) return "ERR cannot open " + local_path + "\n";
-        std::vector<uint8_t> const data((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-        in.close();
-        std::string const err = disk_write_file(drv, cpc_name, data, true);
-        if (!err.empty()) return "ERR " + err + "\n";
-        return "OK\n";
+        return with_synced_drive(
+            parts[2], true, [&](t_drive* drv) -> std::string {
+              const std::string& local_path = parts[3];
+              std::string cpc_name;
+              if (parts.size() >= 5) {
+                cpc_name = parts[4];
+                // Uppercase it
+                for (auto& c : cpc_name)
+                  c = static_cast<char>(
+                      std::toupper(static_cast<unsigned char>(c)));
+              } else {
+                cpc_name = disk_to_cpc_filename(local_path);
+                if (cpc_name.empty())
+                  return "ERR cannot derive CPC filename from path\n";
+              }
+              std::ifstream in(local_path, std::ios::binary);
+              if (!in) return "ERR cannot open " + local_path + "\n";
+              std::vector<uint8_t> const data(
+                  (std::istreambuf_iterator<char>(in)),
+                  std::istreambuf_iterator<char>());
+              in.close();
+              std::string const err =
+                  disk_write_file(drv, cpc_name, data, true);
+              if (!err.empty()) return "ERR " + err + "\n";
+              return "OK\n";
+            });
       }
       if (parts[1] == "rm") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk rm <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        std::string const err = disk_delete_file(drv, parts[3]);
-        if (!err.empty()) return "ERR " + err + "\n";
-        return "OK\n";
+        return with_synced_drive(
+            parts[2], true, [&](t_drive* drv) -> std::string {
+              std::string const err = disk_delete_file(drv, parts[3]);
+              if (!err.empty()) return "ERR " + err + "\n";
+              return "OK\n";
+            });
       }
       if (parts[1] == "info") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk info <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        auto info = disk_parse_amsdos_header(raw);
-        if (!info.valid) return "ERR no valid AMSDOS header\n";
-        char buf[256];
-        const char* type_str = "unknown";
-        switch (info.type) {
-          case AmsdosFileType::BASIC:
-            type_str = "basic";
-            break;
-          case AmsdosFileType::PROTECTED:
-            type_str = "protected";
-            break;
-          case AmsdosFileType::BINARY:
-            type_str = "binary";
-            break;
-          default:
-            break;
-        }
-        std::snprintf(buf, sizeof(buf),
-                      "OK type=%s load=%04X exec=%04X size=%u\n", type_str,
-                      info.load_addr, info.exec_addr, info.file_length);
-        return {buf};
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              auto info = disk_parse_amsdos_header(raw);
+              if (!info.valid) return "ERR no valid AMSDOS header\n";
+              char buf[256];
+              const char* type_str = "unknown";
+              switch (info.type) {
+                case AmsdosFileType::BASIC:
+                  type_str = "basic";
+                  break;
+                case AmsdosFileType::PROTECTED:
+                  type_str = "protected";
+                  break;
+                case AmsdosFileType::BINARY:
+                  type_str = "binary";
+                  break;
+                default:
+                  break;
+              }
+              std::snprintf(
+                  buf, sizeof(buf), "OK type=%s load=%04X exec=%04X size=%u\n",
+                  type_str, info.load_addr, info.exec_addr, info.file_length);
+              return std::string{buf};
+            });
       }
       if (parts[1] == "sector") {
         if (parts.size() < 3)
           return "ERR 400 usage: disk sector (read|write|info) ...\n";
-
-        // Helper lambda: resolve drive letter to t_drive* (reuse from above
-        // scope)
-        auto sec_resolve_drive = [&](const std::string& letter) -> t_drive* {
-          if (letter.empty()) return nullptr;
-          char const c = static_cast<char>(
-              std::toupper(static_cast<unsigned char>(letter[0])));
-          if (c == 'A') return &driveA;
-          if (c == 'B') return &driveB;
-          return nullptr;
-        };
 
         if (parts[2] == "read") {
           // disk sector read <drive> <track> <side> <sector_id>
           if (parts.size() < 7)
             return "ERR 400 usage: disk sector read <drive> <track> <side> "
                    "<sector_id>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          uint8_t sector_id =
-              static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err;
-          auto data = disk_sector_read(drv, trk, side, sector_id, err);
-          if (!err.empty()) return "ERR " + err + "\n";
-          std::ostringstream resp;
-          resp << "OK size=" << data.size() << "\n";
-          resp << std::hex << std::uppercase << std::setfill('0');
-          for (size_t i = 0; i < data.size(); i++) {
-            if (i > 0) resp << ' ';
-            resp << std::setw(2) << static_cast<unsigned>(data[i]);
-          }
-          resp << "\n";
-          return resp.str();
+          return with_synced_drive(
+              parts[3], false, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                uint8_t sector_id =
+                    static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err;
+                auto data = disk_sector_read(drv, trk, side, sector_id, err);
+                if (!err.empty()) return "ERR " + err + "\n";
+                std::ostringstream resp;
+                resp << "OK size=" << data.size() << "\n";
+                resp << std::hex << std::uppercase << std::setfill('0');
+                for (size_t i = 0; i < data.size(); i++) {
+                  if (i > 0) resp << ' ';
+                  resp << std::setw(2) << static_cast<unsigned>(data[i]);
+                }
+                resp << "\n";
+                return resp.str();
+              });
         }
         if (parts[2] == "write") {
           // disk sector write <drive> <track> <side> <sector_id> <hex_data>
           if (parts.size() < 8)
             return "ERR 400 usage: disk sector write <drive> <track> <side> "
                    "<sector_id> <hex_data>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          uint8_t const sector_id =
-              static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // Parse hex data: remaining parts are space-separated hex bytes
-          std::vector<uint8_t> data;
-          for (size_t i = 7; i < parts.size(); i++) {
-            // Each part may be a single hex byte like "FF" or multiple bytes
-            // Handle both "FF" and "FFAA" formats
-            const std::string& hex_str = parts[i];
-            for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
-              std::string const byte_str = hex_str.substr(j, 2);
-              data.push_back(
-                  static_cast<uint8_t>(std::stoul(byte_str, nullptr, 16)));
-            }
-          }
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err = disk_sector_write(drv, trk, side, sector_id, data);
-          if (!err.empty()) return "ERR " + err + "\n";
-          return "OK\n";
+          return with_synced_drive(
+              parts[3], true, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                uint8_t const sector_id =
+                    static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+                // Parse hex data: remaining parts are space-separated hex bytes
+                std::vector<uint8_t> data;
+                for (size_t i = 7; i < parts.size(); i++) {
+                  // Each part may be a single hex byte like "FF" or multiple
+                  // bytes Handle both "FF" and "FFAA" formats
+                  const std::string& hex_str = parts[i];
+                  for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
+                    std::string const byte_str = hex_str.substr(j, 2);
+                    data.push_back(static_cast<uint8_t>(
+                        std::stoul(byte_str, nullptr, 16)));
+                  }
+                }
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err =
+                    disk_sector_write(drv, trk, side, sector_id, data);
+                if (!err.empty()) return "ERR " + err + "\n";
+                return "OK\n";
+              });
         }
         if (parts[2] == "info") {
           // disk sector info <drive> <track> <side>
           if (parts.size() < 6)
             return "ERR 400 usage: disk sector info <drive> <track> <side>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err;
-          auto sectors = disk_sector_info(drv, trk, side, err);
-          if (!err.empty()) return "ERR " + err + "\n";
-          std::ostringstream resp;
-          resp << "OK sectors=" << sectors.size() << "\n";
-          resp << std::hex << std::uppercase << std::setfill('0');
-          for (const auto& s : sectors) {
-            resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
-                 << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
-                 << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
-                 << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
-                 << " size=" << std::dec << s.size << "\n";
-            resp << std::hex;  // reset for next iteration
-          }
-          return resp.str();
+          return with_synced_drive(
+              parts[3], false, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err;
+                auto sectors = disk_sector_info(drv, trk, side, err);
+                if (!err.empty()) return "ERR " + err + "\n";
+                std::ostringstream resp;
+                resp << "OK sectors=" << sectors.size() << "\n";
+                resp << std::hex << std::uppercase << std::setfill('0');
+                for (const auto& s : sectors) {
+                  resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
+                       << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
+                       << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
+                       << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
+                       << " size=" << std::dec << s.size << "\n";
+                  resp << std::hex;  // reset for next iteration
+                }
+                return resp.str();
+              });
         }
         return "ERR 400 unknown sector subcommand (read|write|info)\n";
       }
@@ -4277,8 +4443,54 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[1] == "load") {
         if (parts.size() < 3) return "ERR 400 missing profile name\n";
+        // ConfigProfileManager::load() is pure state application — it writes
+        // CPC.model/ram_size/etc with no quiesce and no rebuild. At runtime
+        // that races the Z80 thread and leaves banks/ASIC/ROMs on the old
+        // machine (beads-x3ka). Hold a pause lease across the apply; when
+        // the machine identity actually changed, rebuild on the main thread
+        // like `config apply` / Options Apply.
+        CpcPauseLease lease;
+        unsigned int const old_model = CPC.model;
+        unsigned int const old_ram = CPC.ram_size;
+
         auto err = g_profile_manager.load(parts[2]);
-        if (!err.empty()) return "ERR " + err + "\n";
+        if (!err.empty()) {
+          lease.restore_run_state();
+          return "ERR " + err + "\n";
+        }
+
+        bool const needs_rebuild =
+            CPC.model != old_model || CPC.ram_size != old_ram;
+        if (needs_rebuild) {
+          // Drop any staged `config set model` — the profile already wrote
+          // the live CPC.model, and ipc_drain_rebuild would otherwise
+          // overwrite it with a stale pending value.
+          g_pending_model.store(-1);
+          std::string const rebuild_err = ipc_request_rebuild_and_wait();
+          if (!rebuild_err.empty()) {
+            // An in-flight rebuild may still finish after 504
+            // rebuild-still-running. Leave the target identity in CPC.*
+            // and stay paused so we do not lie about a machine the drain
+            // is still building. Restore identity only when the rebuild
+            // completed as a failure.
+            const bool in_flight =
+                rebuild_err.find("rebuild-still-running") != std::string::npos;
+            if (!in_flight) {
+              CPC.model = old_model;
+              CPC.ram_size = old_ram;
+              lease.restore_run_state();
+            }
+            return rebuild_err;
+          }
+        } else {
+          update_cpc_speed();
+          if (CPC.InputMapper) CPC.InputMapper->set_joystick_emulation();
+        }
+
+        // Inner rebuild saw us already paused (outer lease), so it left the
+        // machine stopped. Soft loads also stay paused under the lease.
+        // Restore the caller's run state explicitly.
+        lease.restore_run_state();
         return "OK\n";
       }
       if (parts[1] == "save") {
@@ -4310,36 +4522,8 @@ std::string handle_command(const std::string& line) {
     // --- Config commands ---
     if (cmd == "config" && parts.size() >= 2) {
       if (parts[1] == "apply") {
-        // Hand the rebuild to the main thread and wait for it (see
-        // IpcRebuildPending). Never call koncpc_rebuild_machine() from here.
-        std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
-        g_rebuild_pending.done = false;
-        g_rebuild_pending.requested = true;
-        if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10), [] {
-              return g_rebuild_pending.done;
-            })) {
-          // The main thread clears `requested` before running the rebuild, so a
-          // slow rebuild can still finish after we time out. Prefer that result
-          // over a lying 504; only cancel when the drain never claimed the
-          // work.
-          if (g_rebuild_pending.done) {
-            // Fall through to the result below.
-          } else if (g_rebuild_pending.requested) {
-            g_rebuild_pending.requested = false;
-            return "ERR 504 rebuild-not-drained (main loop did not run)\n";
-          } else {
-            // Drain claimed it; wait a bit more for completion rather than
-            // reporting "main loop did not run" while a rebuild is in flight.
-            if (!g_rebuild_pending.cv.wait_for(
-                    lock, std::chrono::seconds(30),
-                    [] { return g_rebuild_pending.done; })) {
-              return "ERR 504 rebuild-still-running\n";
-            }
-          }
-        }
-        int const err = g_rebuild_pending.result;
-        if (err != 0)
-          return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+        std::string const rebuild_err = ipc_request_rebuild_and_wait();
+        if (!rebuild_err.empty()) return rebuild_err;
         return "OK\n";
       }
       if (parts[1] == "get" && parts.size() >= 3) {
@@ -5059,10 +5243,13 @@ std::string handle_command(const std::string& line) {
           return "ERR 500 playback-start-failed\n";
         // Load the embedded snapshot to restore state
         {
-          bool const was_paused = CPC.paused;
-          if (!was_paused) cpc_pause_and_wait();
+          CpcPauseLease lease;
+          bool const was_paused = lease.was_paused();
           int const rc = snapshot_load(snap_path);
-          if (!was_paused) cpc_resume();
+          if (!was_paused) {
+            lease.release();
+            cpc_resume();
+          }
           if (rc != 0) {
             g_session.stop_playback();
             return "ERR 500 snapshot-load-failed\n";

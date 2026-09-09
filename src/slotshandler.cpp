@@ -6,8 +6,11 @@
 #include "slotshandler.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -291,11 +294,8 @@ int snapshot_save(const std::string& filename) {
   return ERR_SNA_WRITE;  // machine not up yet: nothing to save
 }
 
-void dsk_eject(t_drive* drive) {
-  if (drive == &driveA) subcycle_bridge_eject_media(0);  // mirror to engine
-  if (drive == &driveB) subcycle_bridge_eject_media(1);
-  if (drive->eject_hook) drive->eject_hook(drive);  // additional cleanup
-
+void dsk_eject_host(t_drive* drive) {
+  if (drive == nullptr) return;
   for (auto& track_row : drive->track) {
     for (auto& track : track_row) {
       delete[] track.data;  // release memory allocated for this track
@@ -305,6 +305,13 @@ void dsk_eject(t_drive* drive) {
       drive->current_track;           // save the drive head position
   memset(drive, 0, sizeof(t_drive));  // clear drive info structure
   drive->current_track = head_position;
+}
+
+void dsk_eject(t_drive* drive) {
+  if (drive == &driveA) subcycle_bridge_eject_media(0);  // mirror to engine
+  if (drive == &driveB) subcycle_bridge_eject_media(1);
+  if (drive->eject_hook) drive->eject_hook(drive);  // additional cleanup
+  dsk_eject_host(drive);
 }
 
 namespace {
@@ -453,6 +460,52 @@ int dsk_load(const std::string& filename, t_drive* drive) {
   int const rc = dsk_load(pfile, drive);
   fclose(pfile);
   return rc;  // dsk_load already ejected on error
+}
+
+int dsk_load_bytes(const uint8_t* data, size_t len, t_drive* drive) {
+  if (drive == nullptr) return ERR_DSK_INVALID;
+  if (data == nullptr || len == 0) return ERR_DSK_INVALID;
+
+  // Prefer tmpfile() (unlinked, no name collision). Some Windows CRTs cannot
+  // create tmpfile() in C:\ — fall back to a unique named file then.
+  std::filesystem::path named;
+  FILE* pfile = tmpfile();
+  if (pfile == nullptr) {
+    static std::atomic<uint64_t> seq{0};
+    named =
+        std::filesystem::temp_directory_path() /
+        ("koncpc-dsk-load-" +
+         std::to_string(seq.fetch_add(1, std::memory_order_relaxed)) + ".dsk");
+    pfile = fopen(named.string().c_str(), "w+b");
+    if (pfile == nullptr) return ERR_DSK_INVALID;
+  }
+  const bool wrote = fwrite(data, 1, len, pfile) == len;
+  if (!wrote || fflush(pfile) != 0 || fseek(pfile, 0, SEEK_SET) != 0) {
+    fclose(pfile);
+    if (!named.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(named, ec);
+    }
+    return ERR_DSK_INVALID;
+  }
+
+  // Parse into a scratch drive so a failed parse cannot empty the caller's
+  // existing host view (pull used to eject-then-parse).
+  auto parsed = std::make_unique<t_drive>();
+  int const rc = dsk_parse(pfile, parsed.get());
+  const bool closed = fclose(pfile) == 0;
+  if (!named.empty()) {
+    std::error_code ec;
+    std::filesystem::remove(named, ec);
+  }
+  if (rc != 0 || !closed) {
+    dsk_eject_host(parsed.get());
+    return rc != 0 ? rc : ERR_DSK_INVALID;
+  }
+  dsk_eject_host(drive);
+  *drive = *parsed;
+  *parsed = t_drive{};  // ownership of track buffers moved to *drive
+  return 0;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other

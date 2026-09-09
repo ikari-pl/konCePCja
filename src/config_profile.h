@@ -26,6 +26,10 @@ class ConfigProfileManager {
   std::vector<std::string> list() const;
   std::string current() const;
   std::string load(const std::string& name);
+  // Pure state application into the global CPC struct — no pause, no
+  // emulator_init/rebuild. Runtime callers (IPC `profile load`, any future UI
+  // path) MUST quiesce the Z80 thread and rebuild when model/ram_size change;
+  // see beads-x3ka / the IPC handler.
   std::string save(const std::string& name);
   std::string remove(const std::string& name);
 

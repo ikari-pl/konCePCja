@@ -36,6 +36,7 @@
 #include "m4board.h"  // legacy g_m4board: the deferred command executor
 #include "serial_interface.h"  // g_serial_interface config → the serial pair
 #include "silicon_disc.h"  // legacy g_silicon_disc: the battery buffer anchor
+#include "slotshandler.h"  // dsk_load_bytes / dsk_to_bytes (host↔medium sync)
 #include "smartwatch.h"  // legacy g_smartwatch: the UI toggles its enabled flag
 #include "symbiface.h"   // legacy g_symbiface: FIFO fill (SDL/IPC) + config
 #include "tape_line_in.h"  // auto-route the tape data signal to its own stream
@@ -1327,6 +1328,89 @@ void subcycle_bridge_eject_media(uint8_t unit) {
   b.swap_bytes.clear();
   b.swap_unit.store(unit & 1, std::memory_order_release);
   b.swap_kind.store(PendingMedia::kEject, std::memory_order_release);
+}
+
+bool subcycle_bridge_pull_drive_view(uint8_t unit) {
+  Bridge& b = g_bridge;
+  if (!b.active) return false;
+  unit = unit & 1;
+  t_drive* drive = unit == 0 ? &driveA : &driveB;
+  size_t len = 0;
+  const uint8_t* image = fdc_media_image_unit(b.machine.fdc(), unit, len);
+  if (image == nullptr || len == 0) {
+    // Empty drive / read-only flux: leave the host view alone so tools can
+    // still show a previously loaded sector mirror (IPF best-effort).
+    return false;
+  }
+  return dsk_load_bytes(image, len, drive) == 0;
+}
+
+bool subcycle_bridge_push_drive_view(uint8_t unit) {
+  Bridge& b = g_bridge;
+  if (!b.active) return false;
+  unit = unit & 1;
+  t_drive* drive = unit == 0 ? &driveA : &driveB;
+  if (drive->tracks == 0) return false;
+
+  std::vector<uint8_t> bytes;
+  if (dsk_to_bytes(drive, bytes) != 0 || bytes.empty()) return false;
+
+  std::scoped_lock const lock(b.swap_mutex);
+  // Cancel a deferred eject/swap for this unit so it cannot undo this push
+  // on the next frame (disk_format_drive used to queue eject then only fill
+  // the host view).
+  if (b.swap_unit.load(std::memory_order_acquire) == unit &&
+      b.swap_kind.load(std::memory_order_acquire) != PendingMedia::kNone) {
+    b.swap_kind.store(PendingMedia::kNone, std::memory_order_release);
+    b.swap_bytes.clear();
+  }
+
+  size_t cur_len = 0;
+  const uint8_t* cur = fdc_media_image_unit(b.machine.fdc(), unit, cur_len);
+  size_t scp_len = 0;
+  const bool flux =
+      unit == 0 && fdc_media_flux_scp(b.machine.fdc(), scp_len) != nullptr;
+
+  if (flux) {
+    if (cur != nullptr && cur_len == bytes.size()) {
+      // Writable flux: edit the DSK overlay in place so clean-track flux
+      // serving stays attached (insert_disk would drop the SCP backing).
+      std::memcpy(const_cast<uint8_t*>(cur), bytes.data(), bytes.size());
+      fdc_media_mark_dirty_unit(b.machine.fdc(), unit);
+      drive->altered = true;
+      return true;
+    }
+    LOG_ERROR(
+        "subcycle engine: cannot push host edits onto flux without a "
+        "same-size DSK overlay (insert_disk would drop the SCP backing)");
+    return false;
+  }
+
+  std::vector<uint8_t>& buf = unit == 0 ? b.media : b.media_b;
+  buf = std::move(bytes);
+  if (!b.machine.insert_disk(buf.data(), buf.size(), unit)) {
+    LOG_ERROR("subcycle engine: push drive " << (unit ? 'B' : 'A')
+                                             << " rejected (bad image)");
+    return false;
+  }
+  fdc_media_mark_dirty_unit(b.machine.fdc(), unit);
+  drive->altered = true;
+  LOG_INFO("subcycle engine: drive " << (unit ? 'B' : 'A')
+                                     << " updated from host disc tools ("
+                                     << buf.size() << " bytes)");
+  return true;
+}
+
+void subcycle_bridge_rollback_host_view(uint8_t unit,
+                                        const std::vector<uint8_t>& snapshot) {
+  unit = unit & 1;
+  if (subcycle_bridge_pull_drive_view(unit)) return;
+  t_drive* drive = unit == 0 ? &driveA : &driveB;
+  if (!snapshot.empty() &&
+      dsk_load_bytes(snapshot.data(), snapshot.size(), drive) == 0) {
+    return;
+  }
+  dsk_eject_host(drive);
 }
 
 namespace {

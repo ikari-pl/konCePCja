@@ -448,6 +448,84 @@ def test_memory_rw():
             return False
 
 
+def test_mem_ram_view_under_rom_overlay():
+    """beads-wxy6: --view=ram must see RAM under a paged-in lower ROM.
+
+    The Fruity Frank lives-counter case: &1AF1 holds &3E in the 6128 OS ROM
+    while the game stores a counter underneath. Default mem read returns the
+    firmware byte; --view=ram returns the stored value. Also asserts bad-view
+    rejection so agents cannot silently fall back to the CPU view.
+    """
+    print("Running mem --view=ram under ROM overlay test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start('--headless'):
+            print("FAIL: Could not start emulator")
+            return False
+
+        ipc = emu.ipc
+        if not ipc.pause():
+            print("FAIL: Could not pause")
+            return False
+
+        addr = 0x1AF1
+        ok, _ = ipc.send_command(f'mem write 0x{addr:04X} 03')
+        if not ok:
+            print("FAIL: Could not write under-ROM RAM")
+            return False
+
+        ok, _ = ipc.send_command('mem write 0x4000 03')
+        if not ok:
+            print("FAIL: Could not write reference byte at 0x4000")
+            return False
+
+        ok, cpu_resp = ipc.send_command(f'mem read 0x{addr:04X} 1')
+        if not ok:
+            print(f"FAIL: CPU-view read failed: {cpu_resp}")
+            return False
+
+        ok, ram_resp = ipc.send_command(f'mem read 0x{addr:04X} 1 --view=ram')
+        if not ok:
+            print(f"FAIL: RAM-view read failed: {ram_resp}")
+            return False
+
+        ram_hex = ram_resp.replace('OK', '').strip().upper()
+        if ram_hex != '03':
+            print(f"FAIL: --view=ram expected 03, got {ram_resp!r}")
+            return False
+
+        ok, bad = ipc.send_command(f'mem read 0x{addr:04X} 1 --view=bogus')
+        if ok or 'bad-view' not in bad:
+            print(f"FAIL: expected ERR 400 bad-view, got ok={ok} {bad!r}")
+            return False
+
+        ok, cmp_ram = ipc.send_command(
+            f'mem compare 0x{addr:04X} 0x4000 1 --view=ram')
+        if not ok or 'diffs=0' not in cmp_ram:
+            print(f"FAIL: compare --view=ram expected diffs=0, got {cmp_ram!r}")
+            return False
+
+        ok, find_ram = ipc.send_command(
+            f'mem find hex 0x1AF0 0x1AF2 03 --view=ram')
+        if not ok or '1AF1' not in find_ram.upper():
+            print(f"FAIL: find --view=ram missed under-ROM byte: {find_ram!r}")
+            return False
+
+        cpu_hex = cpu_resp.replace('OK', '').strip().upper()
+        if cpu_hex != '03':
+            # Strong path: lower ROM still overlays &1AF1.
+            ok, cmp_cpu = ipc.send_command(
+                f'mem compare 0x{addr:04X} 0x4000 1')
+            if not ok or 'diffs=0' in cmp_cpu:
+                print(f"FAIL: CPU-view compare should differ under ROM, "
+                      f"got {cmp_cpu!r}")
+                return False
+            print(f"PASS: mem --view=ram (CPU={cpu_hex} RAM=03 under ROM)")
+        else:
+            print("PASS: mem --view=ram (ROM banked out; alias + bad-view OK)")
+        return True
+
+
 def test_breakpoint():
     """Test breakpoint functionality."""
     print("Running breakpoint test...")
@@ -1328,6 +1406,201 @@ def test_model_change_rebuild():
         return True
 
 
+def test_profile_load_rebuilds_machine():
+    """profile load must quiesce + rebuild when model/ram_size change.
+
+    Repro for beads-x3ka: ConfigProfileManager::load() wrote CPC.model straight
+    into the global struct with no pause and no emulator_init(), so IPC
+    `profile load 6128plus` left banks/ASIC/ROMs on the old machine while
+    config reported Plus. The proof matches test_model_change_rebuild: the
+    ROM signature at 0x02E0 must match a fresh 6128+ boot after the load.
+    Soft-only profile fields are covered by the unit suite; this guards the
+    runtime caller contract.
+    """
+    print("Running profile-load rebuild test...")
+
+    def rom_signature(ipc: KoncepcjaIPC) -> Optional[str]:
+        ok, resp = ipc.read_mem(0x02E0, 16)
+        if not ok:
+            return None
+        return resp.replace('OK ', '').strip().upper()
+
+    def model_value(ipc: KoncepcjaIPC) -> Optional[int]:
+        ok, resp = ipc.send_command('config get model')
+        if not ok:
+            return None
+        try:
+            # Strip a possible ` pending=<n>` suffix — profile load clears it,
+            # but tolerate the config get format.
+            token = resp.replace('OK', '').strip().split()[0]
+            return int(token)
+        except (ValueError, IndexError):
+            return None
+
+    with EmulatorRunner() as ref_plus:
+        if not ref_plus.start('-O', 'system.model=3'):
+            print("FAIL: Could not start 6128+ reference machine")
+            return False
+        sig_plus = rom_signature(ref_plus.ipc)
+        if sig_plus is None:
+            print("FAIL: Could not read 6128+ ROM signature")
+            return False
+
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.model=2'):
+            print("FAIL: Could not start emulator under test")
+            return False
+
+        before_model = model_value(emu.ipc)
+        if before_model != 2:
+            print(f"FAIL: Expected initial model 2, got {before_model!r}")
+            return False
+
+        before_sig = rom_signature(emu.ipc)
+        if before_sig is None:
+            print("FAIL: Could not read initial ROM signature")
+            return False
+        if before_sig == sig_plus:
+            print(f"FAIL: 6128 boot already matches Plus ref: {before_sig}")
+            return False
+
+        # Built-in profile — no host .kpf required.
+        ok, resp = emu.ipc.send_command('profile load 6128plus')
+        if not ok:
+            print(f"FAIL: profile load 6128plus failed: {resp}")
+            return False
+
+        after_model = model_value(emu.ipc)
+        if after_model != 3:
+            print(f"FAIL: Expected model 3 after profile load, got {after_model!r}")
+            return False
+
+        ok, cur = emu.ipc.send_command('profile current')
+        if not ok or '6128plus' not in cur:
+            print(f"FAIL: profile current after load: {cur!r}")
+            return False
+
+        after_sig = rom_signature(emu.ipc)
+        if after_sig != sig_plus:
+            print(f"FAIL: Profile-load ROM signature {after_sig!r} != "
+                  f"6128+ ref {sig_plus!r}")
+            return False
+
+        if after_sig == before_sig:
+            print(f"FAIL: ROM signature stayed on the old model: {after_sig}")
+            return False
+
+        # Soft re-load of the same identity must stay OK without a second
+        # identity change (still rebuilds only when model/ram differ).
+        ok, resp = emu.ipc.send_command('profile load 6128plus')
+        if not ok:
+            print(f"FAIL: second profile load 6128plus failed: {resp}")
+            return False
+        if model_value(emu.ipc) != 3:
+            print("FAIL: model drifted after same-profile reload")
+            return False
+
+        print(f"  before (6128)    : {before_sig}")
+        print(f"  6128+ reference  : {sig_plus}")
+        print(f"  after profile load: {after_sig}")
+        print("PASS: profile load rebuilt the board under pause lease")
+        return True
+
+
+def test_disk_live_put_cat():
+    """Live FDC is authoritative for IPC disk put/cat (beads-csl7.1 / lly6).
+
+    Unit tests only cover pull/push when the bridge is inactive. This starts a
+    real board, formats drive A, writes a host file onto the live medium, and
+    reads it back. A put that returns OK but a cat that cannot see the bytes
+    is a stale host-view bug, not a generic command failure.
+    """
+    print("Running live-board disk put/cat test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok, resp = emu.ipc.send_command('disk format A data')
+        if not ok:
+            print(f"FAIL: disk format command ERR (not stale-view): {resp}")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'hello.bin')
+            with open(host, 'wb') as f:
+                f.write(b'HI')
+
+            ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+            if not ok:
+                print(f"FAIL: disk put command ERR (not stale-view): {resp}")
+                return False
+
+            ok, ls_resp = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls_resp:
+                print(f"FAIL: stale host view after OK put; ls={ls_resp!r}")
+                return False
+
+            ok, cat_resp = emu.ipc.send_command('disk cat A HELLO.BIN')
+            if not ok:
+                print(f"FAIL: stale host view after OK put; cat={cat_resp!r}")
+                return False
+            compact = cat_resp.replace(' ', '').upper()
+            if '48' not in compact or '49' not in compact:
+                print(f"FAIL: cat payload mismatch (stale or truncated): "
+                      f"{cat_resp!r}")
+                return False
+
+        print(f"  ls: {ls_resp.strip()}")
+        print(f"  cat: {cat_resp.strip()}")
+        print("PASS: live-board disk put/cat round-trip")
+        return True
+
+
+def test_profile_load_missing_keeps_running():
+    """profile load ERR must restore a running machine (beads-csl7.2).
+
+    CpcPauseLease destructor only drops the lease count; 13db3b7c added
+    restore_run_state on load failure. A missing profile must return ERR and
+    leave the Z80 advancing — wait vbl is a fixed sleep and would pass even
+    if paused, so this asserts PC motion the way the headless-engine test does.
+    """
+    print("Running profile-load missing-name resume test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok1, pc1 = emu.ipc.send_command('reg get PC')
+        time.sleep(0.4)
+        ok2, pc2 = emu.ipc.send_command('reg get PC')
+        if not (ok1 and ok2 and pc1 != pc2):
+            print(f"FAIL: PC already frozen before load ({pc1} / {pc2})")
+            return False
+
+        ok, resp = emu.ipc.send_command('profile load no-such-profile-csl7')
+        if ok:
+            print(f"FAIL: missing profile unexpectedly succeeded: {resp}")
+            return False
+        if not resp.startswith('ERR'):
+            print(f"FAIL: expected ERR for missing profile, got {resp!r}")
+            return False
+
+        ok3, pc3 = emu.ipc.send_command('reg get PC')
+        time.sleep(0.4)
+        ok4, pc4 = emu.ipc.send_command('reg get PC')
+        if not (ok3 and ok4 and pc3 != pc4):
+            print(f"FAIL: machine left paused after profile load ERR "
+                  f"({pc3} / {pc4}); resp={resp!r}")
+            return False
+
+        print(f"  load ERR: {resp.strip()}")
+        print(f"  PC still moves: {pc3.strip()} -> {pc4.strip()}")
+        print("PASS: profile load ERR left the machine running")
+        return True
+
 
 def test_boots_to_basic_with_peripherals():
     """The CPC must reach the BASIC prompt with peripherals configured.
@@ -1789,10 +2062,14 @@ def main():
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
+        test_profile_load_rebuilds_machine,
+        test_profile_load_missing_keeps_running,
+        test_disk_live_put_cat,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,
         test_memory_rw,
+        test_mem_ram_view_under_rom_overlay,
         test_breakpoint,
         # Thread-split correctness tests (work in both headless and threaded mode)
         test_breakpoint_pause_step_resume,

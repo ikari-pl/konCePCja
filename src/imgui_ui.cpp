@@ -1067,7 +1067,9 @@ void dbg_step_out() {
     if (g_step_out_running.exchange(true, std::memory_order_acq_rel)) {
       return;  // already stepping out; ignore a repeated click/shortcut
     }
-    cpc_pause_and_wait();
+    {
+      CpcPauseLease lease;  // quiesce before dispatching the worker
+    }
     // The previous run already flipped g_step_out_running back to false
     // before this exchange could succeed, so this join cannot block.
     if (g_step_out_thread.joinable()) g_step_out_thread.join();
