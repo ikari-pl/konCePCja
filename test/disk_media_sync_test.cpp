@@ -138,8 +138,8 @@ TEST_F(DiskMediaSyncTest, RollbackHostViewRestoresSnapshotWhenBridgeInactive) {
   std::vector<uint8_t> snapshot;
   ASSERT_EQ(0, dsk_to_bytes(&driveA, snapshot));
 
-  ASSERT_EQ("", disk_write_file(&driveA, "WORLD.BIN",
-                                std::vector<uint8_t>{'W'}, true));
+  ASSERT_EQ("", disk_write_file(&driveA, "WORLD.BIN", std::vector<uint8_t>{'W'},
+                                true));
   std::string err;
   auto mutated = disk_list_files(&driveA, err);
   ASSERT_EQ("", err);

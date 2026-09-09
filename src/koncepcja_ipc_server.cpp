@@ -1420,8 +1420,7 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
     if (cmd == "run") {
-      if (!cpc_resume_applied())
-        return "ERR 409 pause-lease-held\n";
+      if (!cpc_resume_applied()) return "ERR 409 pause-lease-held\n";
       return ok_with_context();
     }
     if (cmd == "reset") {
@@ -4443,8 +4442,7 @@ std::string handle_command(const std::string& line) {
         return "OK " + cur + "\n";
       }
       if (parts[1] == "load") {
-        if (parts.size() < 3)
-          return "ERR 400 missing profile name\n";
+        if (parts.size() < 3) return "ERR 400 missing profile name\n";
         // ConfigProfileManager::load() is pure state application — it writes
         // CPC.model/ram_size/etc with no quiesce and no rebuild. At runtime
         // that races the Z80 thread and leaves banks/ASIC/ROMs on the old
@@ -4486,8 +4484,7 @@ std::string handle_command(const std::string& line) {
           }
         } else {
           update_cpc_speed();
-          if (CPC.InputMapper)
-            CPC.InputMapper->set_joystick_emulation();
+          if (CPC.InputMapper) CPC.InputMapper->set_joystick_emulation();
         }
 
         // Inner rebuild saw us already paused (outer lease), so it left the
@@ -4526,8 +4523,7 @@ std::string handle_command(const std::string& line) {
     if (cmd == "config" && parts.size() >= 2) {
       if (parts[1] == "apply") {
         std::string const rebuild_err = ipc_request_rebuild_and_wait();
-        if (!rebuild_err.empty())
-          return rebuild_err;
+        if (!rebuild_err.empty()) return rebuild_err;
         return "OK\n";
       }
       if (parts[1] == "get" && parts.size() >= 3) {

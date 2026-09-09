@@ -2087,8 +2087,7 @@ void DevToolsUI::render_disc_tools() {
       (void)dsk_to_bytes(d, snapshot);
     }
     body(d);
-    if (subcycle_bridge_active() &&
-        !subcycle_bridge_push_drive_view(dt_unit)) {
+    if (subcycle_bridge_active() && !subcycle_bridge_push_drive_view(dt_unit)) {
       subcycle_bridge_rollback_host_view(dt_unit, snapshot);
       imgui_toast_error("Could not update live FDC medium");
     }

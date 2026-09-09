@@ -213,7 +213,8 @@ class M4HttpTest : public ::testing::Test {
     g_test_port = 0;
   }
 
-  // Re-assert SD tree + g_m4board + live server after any cross-suite pollution.
+  // Re-assert SD tree + g_m4board + live server after any cross-suite
+  // pollution.
   void restore_fixture_state() {
     sd_dir_ = g_test_sd_dir;
     m4http_write_baseline_files(g_test_sd_dir);

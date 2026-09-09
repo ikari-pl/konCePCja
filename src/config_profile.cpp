@@ -7,7 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
-#include "imgui_ui_testable.h" // RAM_SIZES / SAMPLE_RATE_COUNT: the one list
+#include "imgui_ui_testable.h"  // RAM_SIZES / SAMPLE_RATE_COUNT: the one list
 #include "koncepcja.h"
 
 namespace fs = std::filesystem;
@@ -19,33 +19,29 @@ ConfigProfileManager g_profile_manager;
 static const std::vector<std::string> builtin_names = {"cpc464", "cpc664",
                                                        "cpc6128", "6128plus"};
 
-void ConfigProfileManager::set_profile_dir(const std::string &dir) {
+void ConfigProfileManager::set_profile_dir(const std::string& dir) {
   profile_dir_ = dir;
 }
 
 std::string ConfigProfileManager::profile_dir() const {
-  if (!profile_dir_.empty())
-    return profile_dir_;
-  const char *home = getenv("HOME");
-  if (!home)
-    home = getenv("USERPROFILE");
-  if (!home)
-    return ".koncepcja/profiles";
+  if (!profile_dir_.empty()) return profile_dir_;
+  const char* home = getenv("HOME");
+  if (!home) home = getenv("USERPROFILE");
+  if (!home) return ".koncepcja/profiles";
   return (fs::path(home) / ".koncepcja" / "profiles").string();
 }
 
-std::string ConfigProfileManager::profile_path(const std::string &name) const {
+std::string ConfigProfileManager::profile_path(const std::string& name) const {
   return (fs::path(profile_dir()) / (name + ".kpf")).string();
 }
 
-bool ConfigProfileManager::is_builtin(const std::string &name) const {
+bool ConfigProfileManager::is_builtin(const std::string& name) const {
   return std::find(builtin_names.begin(), builtin_names.end(), name) !=
          builtin_names.end();
 }
 
-bool ConfigProfileManager::valid_name(const std::string &name) {
-  if (name.empty() || name.size() > 64)
-    return false;
+bool ConfigProfileManager::valid_name(const std::string& name) {
+  if (name.empty() || name.size() > 64) return false;
   for (char const c : name) {
     if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
       return false;
@@ -53,7 +49,7 @@ bool ConfigProfileManager::valid_name(const std::string &name) {
   return true;
 }
 
-ConfigProfile ConfigProfileManager::builtin_profile(const std::string &name) {
+ConfigProfile ConfigProfileManager::builtin_profile(const std::string& name) {
   ConfigProfile p;
   if (name == "cpc464") {
     p.model = 0;
@@ -75,23 +71,21 @@ ConfigProfile ConfigProfileManager::builtin_profile(const std::string &name) {
   return p;
 }
 
-void ConfigProfileManager::sanitize(ConfigProfile &p) {
+void ConfigProfileManager::sanitize(ConfigProfile& p) {
   auto clamp = [](unsigned int v, unsigned int lo, unsigned int hi) {
-    if (v < lo)
-      return lo;
-    if (v > hi)
-      return hi;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
     return v;
   };
 
   // Bounds mirror the read_clamped() calls in loadConfiguration().
-  p.model = clamp(p.model, 0, 3); // 464 / 664 / 6128 / 6128+
+  p.model = clamp(p.model, 0, 3);  // 464 / 664 / 6128 / 6128+
   p.speed = clamp(p.speed, static_cast<unsigned int>(MIN_SPEED_SETTING),
                   static_cast<unsigned int>(MAX_SPEED_SETTING));
   p.scr_scanlines = clamp(p.scr_scanlines, 0, 100);
   p.snd_volume = clamp(p.snd_volume, 0, 100);
   p.snd_playback_rate =
-      clamp(p.snd_playback_rate, 0, SAMPLE_RATE_COUNT - 1); // index, not Hz
+      clamp(p.snd_playback_rate, 0, SAMPLE_RATE_COUNT - 1);  // index, not Hz
 
   // ram_size sizes a heap allocation (pbRAMbuffer) and drives the banking
   // manager, so it must be one of the sizes the machine actually supports.
@@ -100,8 +94,7 @@ void ConfigProfileManager::sanitize(ConfigProfile &p) {
   if (!is_valid_ram_size(p.ram_size)) {
     unsigned int best = RAM_SIZES[0];
     for (const unsigned int s : RAM_SIZES)
-      if (p.ram_size >= s)
-        best = s;
+      if (p.ram_size >= s) best = s;
     p.ram_size = best;
   }
 
@@ -129,7 +122,7 @@ std::vector<std::string> ConfigProfileManager::list() const {
   std::string const dir = profile_dir();
   std::error_code ec;
   if (fs::is_directory(dir, ec)) {
-    for (const auto &entry : fs::directory_iterator(dir, ec)) {
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
       if (entry.path().extension() == ".kpf") {
         std::string const n = entry.path().stem().string();
         if (std::find(names.begin(), names.end(), n) == names.end()) {
@@ -144,9 +137,8 @@ std::vector<std::string> ConfigProfileManager::list() const {
 
 std::string ConfigProfileManager::current() const { return current_name_; }
 
-std::string ConfigProfileManager::load(const std::string &name) {
-  if (!valid_name(name))
-    return "invalid profile name";
+std::string ConfigProfileManager::load(const std::string& name) {
+  if (!valid_name(name)) return "invalid profile name";
 
   ConfigProfile p;
   if (is_builtin(name)) {
@@ -155,16 +147,14 @@ std::string ConfigProfileManager::load(const std::string &name) {
     std::error_code ec;
     if (fs::exists(path, ec)) {
       auto err = read_profile(path, p);
-      if (!err.empty())
-        return err;
+      if (!err.empty()) return err;
     } else {
       p = builtin_profile(name);
     }
   } else {
     std::string const path = profile_path(name);
     auto err = read_profile(path, p);
-    if (!err.empty())
-      return err;
+    if (!err.empty()) return err;
   }
 
   // Never let an unvalidated value reach the global CPC struct: a .kpf is
@@ -181,11 +171,11 @@ std::string ConfigProfileManager::load(const std::string &name) {
   CPC.scr_scale = p.scr_scale;
   CPC.scr_oglscanlines = p.scr_scanlines;
   CPC.snd_enabled = p.snd_enabled;
-  CPC.snd_playback_rate = p.snd_playback_rate; // sanitize() bounded it
+  CPC.snd_playback_rate = p.snd_playback_rate;  // sanitize() bounded it
   CPC.snd_bits = p.snd_bits;
   CPC.snd_stereo = p.snd_stereo;
   CPC.snd_volume = p.snd_volume;
-  audio_apply_volume(); // gain lives on the SDL stream — push the new value
+  audio_apply_volume();  // gain lives on the SDL stream — push the new value
   CPC.joystick_emulation = static_cast<JoystickEmulation>(p.joystick_emulation);
   CPC.keyboard_support_mode =
       static_cast<KeyboardSupportMode>(p.keyboard_support_mode);
@@ -194,15 +184,13 @@ std::string ConfigProfileManager::load(const std::string &name) {
   return "";
 }
 
-std::string ConfigProfileManager::save(const std::string &name) {
-  if (!valid_name(name))
-    return "invalid profile name";
+std::string ConfigProfileManager::save(const std::string& name) {
+  if (!valid_name(name)) return "invalid profile name";
 
   std::string const dir = profile_dir();
   std::error_code ec;
   fs::create_directories(dir, ec);
-  if (ec)
-    return "cannot create profile directory: " + ec.message();
+  if (ec) return "cannot create profile directory: " + ec.message();
 
   ConfigProfile p;
   p.model = CPC.model;
@@ -221,37 +209,30 @@ std::string ConfigProfileManager::save(const std::string &name) {
       static_cast<unsigned int>(CPC.keyboard_support_mode);
 
   auto err = write_profile(profile_path(name), p);
-  if (!err.empty())
-    return err;
+  if (!err.empty()) return err;
 
   current_name_ = name;
   return "";
 }
 
-std::string ConfigProfileManager::remove(const std::string &name) {
-  if (!valid_name(name))
-    return "invalid profile name";
-  if (is_builtin(name))
-    return "cannot delete built-in profile";
+std::string ConfigProfileManager::remove(const std::string& name) {
+  if (!valid_name(name)) return "invalid profile name";
+  if (is_builtin(name)) return "cannot delete built-in profile";
 
   std::string const path = profile_path(name);
   std::error_code ec;
-  if (!fs::exists(path, ec))
-    return "profile not found";
-  if (!fs::remove(path, ec))
-    return "failed to delete: " + ec.message();
+  if (!fs::exists(path, ec)) return "profile not found";
+  if (!fs::remove(path, ec)) return "failed to delete: " + ec.message();
 
-  if (current_name_ == name)
-    current_name_.clear();
+  if (current_name_ == name) current_name_.clear();
   return "";
 }
 
 // --- INI writer ---
-std::string ConfigProfileManager::write_profile(const std::string &path,
-                                                const ConfigProfile &p) {
+std::string ConfigProfileManager::write_profile(const std::string& path,
+                                                const ConfigProfile& p) {
   std::ofstream f(path);
-  if (!f.is_open())
-    return "cannot open file for writing";
+  if (!f.is_open()) return "cannot open file for writing";
 
   f << "; konCePCja profile\n";
   f << "[general]\n";
@@ -272,27 +253,24 @@ std::string ConfigProfileManager::write_profile(const std::string &path,
   f << "joystick = " << p.joystick_emulation << "\n";
   f << "keyboard_mode = " << p.keyboard_support_mode << "\n";
 
-  if (!f.good())
-    return "write error";
+  if (!f.good()) return "write error";
   return "";
 }
 
 // --- INI reader ---
 namespace {
-std::string trim(const std::string &s) {
+std::string trim(const std::string& s) {
   size_t const start = s.find_first_not_of(" \t\r\n");
-  if (start == std::string::npos)
-    return "";
+  if (start == std::string::npos) return "";
   size_t const end = s.find_last_not_of(" \t\r\n");
   return s.substr(start, end - start + 1);
 }
-} // namespace
+}  // namespace
 
-std::string ConfigProfileManager::read_profile(const std::string &path,
-                                               ConfigProfile &p) {
+std::string ConfigProfileManager::read_profile(const std::string& path,
+                                               ConfigProfile& p) {
   std::ifstream f(path);
-  if (!f.is_open())
-    return "cannot open profile file";
+  if (!f.is_open()) return "cannot open profile file";
 
   std::string line;
   while (std::getline(f, line)) {
@@ -301,25 +279,22 @@ std::string ConfigProfileManager::read_profile(const std::string &path,
       continue;
 
     auto eq = line.find('=');
-    if (eq == std::string::npos)
-      continue;
+    if (eq == std::string::npos) continue;
 
     std::string const key = trim(line.substr(0, eq));
     std::string val_str = line.substr(eq + 1);
     // Strip inline comments
     auto comment = val_str.find_first_of(";#");
-    if (comment != std::string::npos)
-      val_str = val_str.substr(0, comment);
+    if (comment != std::string::npos) val_str = val_str.substr(0, comment);
     val_str = trim(val_str);
 
-    if (val_str.empty())
-      continue;
+    if (val_str.empty()) continue;
 
     unsigned int val;
     try {
       val = static_cast<unsigned int>(std::stoul(val_str));
-    } catch (const std::logic_error &) {
-      continue; // skip unparseable values
+    } catch (const std::logic_error&) {
+      continue;  // skip unparseable values
     }
 
     if (key == "model")

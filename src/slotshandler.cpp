@@ -472,10 +472,10 @@ int dsk_load_bytes(const uint8_t* data, size_t len, t_drive* drive) {
   FILE* pfile = tmpfile();
   if (pfile == nullptr) {
     static std::atomic<uint64_t> seq{0};
-    named = std::filesystem::temp_directory_path() /
-            ("koncpc-dsk-load-" +
-             std::to_string(seq.fetch_add(1, std::memory_order_relaxed)) +
-             ".dsk");
+    named =
+        std::filesystem::temp_directory_path() /
+        ("koncpc-dsk-load-" +
+         std::to_string(seq.fetch_add(1, std::memory_order_relaxed)) + ".dsk");
     pfile = fopen(named.string().c_str(), "w+b");
     if (pfile == nullptr) return ERR_DSK_INVALID;
   }
