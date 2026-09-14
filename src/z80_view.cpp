@@ -202,6 +202,76 @@ bool user_breakpoint_fires_at(word pc) {
 }
 }  // namespace
 
+Z80RunUntilResult z80_run_until_ephemeral(
+    word target, std::chrono::steady_clock::time_point deadline,
+    const BreakpointHitConsumer& consume_hit) {
+  z80_add_breakpoint_ephemeral(target);
+
+  // Drop a hit latched before we armed: it belongs to whatever ran last, and
+  // mistaking it for our landing would end the command at the wrong PC.
+  if (consume_hit) {
+    uint16_t stale_pc = 0;
+    bool stale_watch = false;
+    consume_hit(stale_pc, stale_watch);
+  }
+
+  uint64_t const run_epoch = cpc_resume();
+  bool landed = false;
+  for (;;) {
+    // A different epoch means someone else resumed the machine out from under
+    // us; whatever happens next is not our run to interpret.
+    if (cpc_resume_epoch() != run_epoch) {
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::OtherBreak;
+    }
+    if (consume_hit) {
+      uint16_t hit_pc = 0;
+      bool watch = false;
+      if (consume_hit(hit_pc, watch)) {
+        // A watchpoint that happens to fire at `target` is NOT our landing.
+        if (!watch && hit_pc == target) {
+          landed = true;
+          break;
+        }
+        cpc_pause_if_epoch(run_epoch);
+        z80_remove_ephemeral_breakpoints();
+        return Z80RunUntilResult::OtherBreak;
+      }
+    }
+    if (g_emu_paused.load(std::memory_order_acquire)) {
+      landed = z80.PC.w.l == target;
+      break;
+    }
+    if (std::chrono::steady_clock::now() > deadline) {
+      if (!cpc_pause_if_epoch(run_epoch)) {
+        z80_remove_ephemeral_breakpoints();
+        return Z80RunUntilResult::OtherBreak;
+      }
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::Timeout;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  if (!g_emu_paused.load(std::memory_order_acquire) &&
+      !cpc_pause_if_epoch(run_epoch)) {
+    z80_remove_ephemeral_breakpoints();
+    return Z80RunUntilResult::OtherBreak;
+  }
+  z80_remove_ephemeral_breakpoints();
+  if (!landed) return Z80RunUntilResult::OtherBreak;
+  // Landed on our address, but a user breakpoint armed there fired too — the
+  // user's stop wins over our bookkeeping.
+  if (z80_last_probe_hit_was_user_breakpoint())
+    return Z80RunUntilResult::OtherBreak;
+  // cpc_pause_if_epoch() flags the pause under the pause mutex but does not
+  // wait for the Z80 thread to leave z80_execute(); that mutex guards
+  // pause/resume transitions, not execution. Callers step the machine from
+  // their own thread straight after this returns, so wait here.
+  cpc_wait_quiescent();
+  return Z80RunUntilResult::Landed;
+}
+
 Z80StepOutResult z80_step_out_finish(int timeout_ms,
                                      const BreakpointHitConsumer& consume_hit) {
   // Without a machine nothing can retire: SP never moves and the walk below
@@ -238,70 +308,20 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
     // firmware ABI; nested CALLs inside the RST handler still skip at speed.
     if (z80_is_call(pc)) {
       word const next_pc = static_cast<word>(pc + z80_instruction_length(pc));
-      z80_add_breakpoint_ephemeral(next_pc);
-
-      if (consume_hit) {
-        uint16_t stale_pc = 0;
-        bool stale_watch = false;
-        consume_hit(stale_pc, stale_watch);
-      }
-
-      uint64_t const run_epoch = cpc_resume();
-      operation_epoch = run_epoch;
-      bool landed = false;
-      while (true) {
-        if (cpc_resume_epoch() != run_epoch) {
-          z80_remove_ephemeral_breakpoints();
+      switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit)) {
+        case Z80RunUntilResult::OtherBreak:
           return Z80StepOutResult::BreakpointHit;
-        }
-        if (consume_hit) {
-          uint16_t hit_pc = 0;
-          bool watch = false;
-          if (consume_hit(hit_pc, watch)) {
-            if (!watch && hit_pc == next_pc) {
-              landed = true;
-              break;
-            }
-            cpc_pause_if_epoch(run_epoch);
-            z80_remove_ephemeral_breakpoints();
-            return Z80StepOutResult::BreakpointHit;
-          }
-        }
-
-        if (g_emu_paused.load(std::memory_order_acquire)) {
-          landed = z80.PC.w.l == next_pc;
-          break;
-        }
-        if (std::chrono::steady_clock::now() > deadline) {
-          if (!cpc_pause_if_epoch(run_epoch)) {
-            z80_remove_ephemeral_breakpoints();
-            return Z80StepOutResult::BreakpointHit;
-          }
-          z80_remove_ephemeral_breakpoints();
+        case Z80RunUntilResult::Timeout:
           return Z80StepOutResult::Timeout;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        case Z80RunUntilResult::Landed:
+          break;
       }
-
-      if (!g_emu_paused.load(std::memory_order_acquire) &&
-          !cpc_pause_if_epoch(run_epoch)) {
-        z80_remove_ephemeral_breakpoints();
-        return Z80StepOutResult::BreakpointHit;
-      }
-      z80_remove_ephemeral_breakpoints();
-      if (!landed) return Z80StepOutResult::BreakpointHit;
-      if (z80_last_probe_hit_was_user_breakpoint())
-        return Z80StepOutResult::BreakpointHit;
-      // cpc_pause_if_epoch() flags the pause under g_pause_mutex but does not
-      // wait for the Z80 thread to leave z80_execute(); that mutex guards
-      // pause/resume transitions, not execution. Step the machine from this
-      // thread before it is quiescent and the two race. Wait once here, per
-      // callee skip — not per instruction, where the 100us poll inside would
-      // dominate the walk.
-      cpc_wait_quiescent();
-      // A callee that unwound our frame itself (longjmp-style stack surgery,
-      // an error path that drops the return address) never comes back to a
-      // RET of ours. Honour the stack.
+      // The helper leaves us paused, so the epoch it resumed under is still
+      // current; adopt it as ours for the foreign-pause check up top.
+      operation_epoch = cpc_resume_epoch();
+      // A callee that unwound our frame itself (stack surgery, an error path
+      // that drops the return address) never comes back to a RET of ours.
+      // Honour the stack.
       if (unwound()) return Z80StepOutResult::Done;
     } else {
       // Capture before the step: after it, pc no longer describes what ran.

@@ -1011,36 +1011,40 @@ void dbg_step_in() {
     return;
   }
   z80.step_in = 1;
-  z80.step_out = 0;
-  z80.step_out_addresses.clear();
   cpc_resume();
 }
 }  // namespace
 namespace {
+// Defined with the step-out worker below; declared here because Step Over
+// needs it to get past an RST.
+void dispatch_step_out_worker();
+
 void dbg_step_over() {
-  if (subcycle_bridge_active()) {
-    cpc_pause();
-    word const pc = z80.PC.w.l;
-    if (z80_is_call_or_rst(pc)) {
-      z80_add_breakpoint_ephemeral(
-          static_cast<word>(pc + z80_instruction_length(pc)));
-      cpc_resume();
-      return;
-    }
-    z80_step_instruction();
+  if (!subcycle_bridge_active()) {
+    set_osd_message("Step Over needs a running machine", 3000);
     return;
   }
-  z80.step_in = 0;
-  z80.step_out = 0;
-  z80.step_out_addresses.clear();
+  cpc_pause();
   word const pc = z80.PC.w.l;
-  if (z80_is_call_or_rst(pc)) {
-    z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
+  if (z80_is_call(pc)) {
+    // A real CALL always returns to pc+len: arm it and let the main loop's
+    // breakpoint path do the pausing (fire-and-forget keeps the GUI live).
+    z80_add_breakpoint_ephemeral(
+        static_cast<word>(pc + z80_instruction_length(pc)));
     cpc_resume();
-  } else {
-    z80.step_in = 1;
-    cpc_resume();
+    return;
   }
+  if (z80_is_rst(pc)) {
+    // NOT pc+len. The CPC firmware restarts (08/10/18/28) carry inline
+    // operands and resume past them, so an ephemeral at pc+1 sits on a data
+    // byte that is never fetched as an instruction. It never fires — and this
+    // path is fire-and-forget with no deadline, so the machine would simply
+    // run on forever. Step into the vector and finish the frame it opened.
+    z80_step_instruction();
+    dispatch_step_out_worker();
+    return;
+  }
+  z80_step_instruction();
 }
 }  // namespace
 // z80_step_out_finish() blocks on 1ms-polled cpc_resume()/cpc_pause_if_epoch()
@@ -1066,31 +1070,35 @@ void dbg_step_out_await_shutdown() {
 }
 
 namespace {
+void dispatch_step_out_worker() {
+  if (g_step_out_running.exchange(true, std::memory_order_acq_rel)) {
+    return;  // already stepping out; ignore a repeated click/shortcut
+  }
+  {
+    CpcPauseLease lease;  // quiesce before dispatching the worker
+  }
+  // The previous run already flipped g_step_out_running back to false
+  // before this exchange could succeed, so this join cannot block.
+  if (g_step_out_thread.joinable()) g_step_out_thread.join();
+  g_step_out_thread = std::thread([]() {
+    Z80StepOutResult const result = z80_step_out_finish(5000);
+    // set_osd_message() touches render-thread-owned state (the toast queue);
+    // only the outcome code crosses threads, and the render thread reads it
+    // and calls set_osd_message() itself when it polls below.
+    g_step_out_outcome.store(static_cast<int>(result),
+                             std::memory_order_release);
+    g_step_out_running.store(false, std::memory_order_release);
+  });
+}
+
 void dbg_step_out() {
-  if (subcycle_bridge_active()) {
-    if (g_step_out_running.exchange(true, std::memory_order_acq_rel)) {
-      return;  // already stepping out; ignore a repeated click/shortcut
-    }
-    {
-      CpcPauseLease lease;  // quiesce before dispatching the worker
-    }
-    // The previous run already flipped g_step_out_running back to false
-    // before this exchange could succeed, so this join cannot block.
-    if (g_step_out_thread.joinable()) g_step_out_thread.join();
-    g_step_out_thread = std::thread([]() {
-      Z80StepOutResult const result = z80_step_out_finish(5000);
-      // set_osd_message() touches render-thread-owned state (the toast
-      // queue); only the outcome code crosses threads, and the render thread
-      // reads it and calls set_osd_message() itself when it polls below.
-      g_step_out_outcome.store(static_cast<int>(result),
-                               std::memory_order_release);
-      g_step_out_running.store(false, std::memory_order_release);
-    });
+  if (!subcycle_bridge_active()) {
+    // No sub-cycle machine (the legacy interpreter is gone, so this is only
+    // reachable before the board is up): there is nothing to step out of.
+    set_osd_message("Step Out needs a running machine", 3000);
     return;
   }
-  // No sub-cycle machine (the legacy interpreter is gone, so this is only
-  // reachable before the board is up): there is nothing to step out of.
-  set_osd_message("Step Out needs a running machine", 3000);
+  dispatch_step_out_worker();
 }
 }  // namespace
 

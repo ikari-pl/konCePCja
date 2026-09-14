@@ -3664,14 +3664,10 @@ void z80_thread_main() {
         // iteration.
         g_frame_signal.signal_ready(true);
         z80.step_in = 0;
-        z80.step_out = 0;
-        z80.step_out_addresses.clear();
       } else if (z80.step_in >= 2) {
         cpc_pause();
         g_frame_signal.signal_ready(true);  // same: unblock render thread
         z80.step_in = 0;
-        z80.step_out = 0;
-        z80.step_out_addresses.clear();
       } else {
         z80.break_point = Z80_BREAKPOINT_NONE;
         z80.trace = 1;
@@ -5144,15 +5140,11 @@ int koncpc_main(int argc, char** argv) {
           imgui_state.show_devtools = true;
           if (!subcycle_bridge_active()) cpc_pause();
           z80.step_in = 0;
-          z80.step_out = 0;
-          z80.step_out_addresses.clear();
         } else if (z80.step_in >= 2) {
           // Step In completed (one instruction) or Step Out completed (RET
           // reached)
           CPC.paused = true;
           z80.step_in = 0;
-          z80.step_out = 0;
-          z80.step_out_addresses.clear();
         } else {
           // This is an old flavour breakpoint
           // We have to clear breakpoint to let the z80 emulator move on.

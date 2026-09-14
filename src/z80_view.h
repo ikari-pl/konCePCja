@@ -11,6 +11,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -159,7 +160,6 @@ class t_z80regs {
     watchpoint_value = 0;
     watchpoint_old = 0;
     step_in = 0;
-    step_out = 0;
     break_point = 0;
     trace = 0;
   };
@@ -172,8 +172,6 @@ class t_z80regs {
   byte watchpoint_value;  // value being read/written
   byte watchpoint_old;    // previous value at address
   byte step_in;
-  byte step_out;
-  std::vector<word> step_out_addresses;
   dword break_point, trace;
 };
 
@@ -236,6 +234,23 @@ enum class Z80StepOutResult : std::uint8_t {
 };
 
 using BreakpointHitConsumer = std::function<bool(uint16_t&, bool&)>;
+
+enum class Z80RunUntilResult : std::uint8_t {
+  Landed,      // execution reached the target address
+  OtherBreak,  // a user breakpoint/watchpoint fired, or someone else paused us
+  Timeout,     // the deadline expired first
+};
+
+// "Run to this address at full speed" — arm an ephemeral breakpoint at
+// `target`, resume, and wait for it. Shared by `step over`, `step out` and
+// `step to` so the stale-hit drain, the watchpoint-vs-landing distinction, the
+// foreign-pause epoch check, the ephemeral cleanup on EVERY exit path, and the
+// quiescence wait before the caller touches Z80 state again have exactly one
+// definition. Always returns with the machine paused and no ephemeral left
+// armed. The caller must have quiesced the CPU first.
+Z80RunUntilResult z80_run_until_ephemeral(
+    word target, std::chrono::steady_clock::time_point deadline,
+    const BreakpointHitConsumer& consume_hit = {});
 
 // Finish the current stack frame on the sub-cycle engine. The caller must
 // first quiesce the CPU. A hit consumer is optional: IPC supplies its

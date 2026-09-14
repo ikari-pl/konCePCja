@@ -870,14 +870,19 @@ void init_command_registry() {
 
   register_command(
       "step", "DEBUG",
-      "step in [N] | step over [N] | step out | step frame [N]",
+      "step in [N] | step over [N] | step out | step to <addr> | "
+      "step frame [N]",
       "Step the CPU or emulation frame",
       "Executes code and pauses again.\n"
       "  in [N]:    Steps into exactly N instructions (default 1). Traces "
       "inside subroutines.\n"
       "  over [N]:  Steps over the current CALL or RST. If not a call, it "
       "performs a single step.\n"
-      "  out:       Continues execution until the current subroutine returns.\n"
+      "  out:       Finishes the current stack frame — runs until a RET (or a "
+      "computed JP (HL) return) retires AND leaves SP above the entry SP, so "
+      "a POP before the RET does not end it early. Correct from any point in "
+      "the function. ERR 409 no-progress if the frame can never return.\n"
+      "  to <addr>: Run-to-cursor via an ephemeral breakpoint.\n"
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
   register_command(
@@ -2619,36 +2624,46 @@ std::string handle_command(const std::string& line) {
       if (parts.size() >= 2 && parts[1] == "over") {
         int count = 1;
         if (parts.size() >= 3) count = parse_int(parts[2]);
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
+        };
         for (int i = 0; i < count; i++) {
           word const pc = z80.PC.w.l;
-          if (z80_is_call_or_rst(pc)) {
-            int const len = z80_instruction_length(pc);
-            word const next_pc = static_cast<word>(pc + len);
-            z80_add_breakpoint_ephemeral(next_pc);
-            // Clear stale hits before resume to avoid race conditions
-            uint16_t dummy_pc;
-            bool dummy_watch;
-            g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
+          auto const deadline =
+              std::chrono::steady_clock::now() + std::chrono::seconds(5);
+          if (z80_is_call(pc)) {
+            word const next_pc =
+                static_cast<word>(pc + z80_instruction_length(pc));
             lease.release();
-            cpc_resume();
-            // Wait for breakpoint hit
-            auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (true) {
-              uint16_t hit_pc = 0;
-              bool watch = false;
-              if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
-                if (hit_pc == next_pc) break;
-                // If we hit a different breakpoint, stop stepping
-                return "OK breakpoint-hit\n";
-              }
-              if (std::chrono::steady_clock::now() > deadline) {
-                cpc_pause();
+            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit)) {
+              case Z80RunUntilResult::Landed:
+                break;
+              case Z80RunUntilResult::OtherBreak:
+                return ok_with_context("breakpoint-hit");
+              case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
-            cpc_pause();
+          } else if (z80_is_rst(pc)) {
+            // A CPC firmware RST (08/10/18/28) carries inline operands and
+            // does NOT resume at pc+1, so the old ephemeral-at-pc+len skip
+            // planted a breakpoint on a data byte: it never fired and the
+            // machine free-ran to the deadline. Step into the vector instead
+            // and finish the frame it opened — that lands after the operands
+            // wherever the handler decides they end, with no firmware ABI
+            // hard-coded here. Nested CALLs inside the handler still skip at
+            // full speed.
+            z80_step_instruction();
+            lease.release();
+            switch (z80_step_out_finish(5000, consume_hit)) {
+              case Z80StepOutResult::Done:
+                break;
+              case Z80StepOutResult::BreakpointHit:
+                return ok_with_context("breakpoint-hit");
+              case Z80StepOutResult::Timeout:
+                return err_with_context(408, "timeout");
+              case Z80StepOutResult::Stalled:
+                return err_with_context(409, "no-progress");
+            }
           } else {
             z80_step_instruction();
           }
@@ -2657,19 +2672,11 @@ std::string handle_command(const std::string& line) {
       }
       // "step out" — run until the CURRENT function returns.
       //
-      // The legacy z80.step_out flag (with step_out_addresses) was only ever
-      // honoured by the old interpreter core. The subcycle ("faithful") engine
-      // that actually runs never implements it — nothing sets step_in>=2 on a
-      // RET — so the old resume-and-wait just free-ran the whole machine to the
-      // 5s deadline (advancing the game, and from a forced PC clobbering RAM
-      // the caller had staged). Implement step-out with the same primitives
-      // step-over uses: advance instructions — skipping CALL/RST callees at
-      // full speed via an ephemeral breakpoint — until SP climbs ABOVE the
-      // entry SP, i.e. this frame's RET has unwound the stack. This is
-      // nearest-RET / finish semantics and is correct from any point in the
-      // function. Interrupt-safe: an ISR pushes then RET[I/N]s, so SP never
-      // crosses the entry level inside an interrupt; nested calls stay at/below
-      // it too.
+      // The walk itself lives in z80_step_out_finish() (z80_view.cpp) so the
+      // DevTools button runs exactly the same code; see the commentary there
+      // for why the exit is gated on a RET rather than on SP alone, and why
+      // RSTs are stepped rather than skipped. Everything this handler owns is
+      // the 5s budget, the hit consumer, and the mapping to wire replies.
       if (parts.size() >= 2 && parts[1] == "out") {
         auto consume_hit = [](uint16_t& pc, bool& watch) {
           return g_ipc_instance->consume_breakpoint_hit(pc, watch);
@@ -2694,27 +2701,24 @@ std::string handle_command(const std::string& line) {
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
       if (parts.size() >= 3 && parts[1] == "to") {
         unsigned int const addr = parse_number(parts[2]);
-        z80_add_breakpoint_ephemeral(static_cast<word>(addr));
-        // Clear stale hits before resume to avoid race conditions
-        uint16_t dummy_pc;
-        bool dummy_watch;
-        g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-        lease.release();
-        cpc_resume();
-        auto deadline =
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
+        };
+        auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-          uint16_t hit_pc = 0;
-          bool watch = false;
-          if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
-          if (std::chrono::steady_clock::now() > deadline) {
-            cpc_pause();
+        lease.release();
+        switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
+                                        consume_hit)) {
+          case Z80RunUntilResult::Landed:
+            return ok_with_context();
+          case Z80RunUntilResult::OtherBreak:
+            // Previously indistinguishable: any hit ended the wait and was
+            // reported as a successful run-to-cursor, even a watchpoint or an
+            // unrelated breakpoint that fired on the way.
+            return ok_with_context("breakpoint-hit");
+          case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
-        cpc_pause();
-        return ok_with_context();
       }
       // "step [N]" — single-step N instructions
       int count = 1;

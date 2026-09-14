@@ -883,6 +883,77 @@ def test_step_out_nested_call():
         return True
 
 
+def test_step_out_gated_on_ret_not_sp():
+    """Step Out must finish on the RET, not on the first POP that lifts SP.
+
+    The ordinary Z80 subroutine saves a register on entry and restores it
+    just before returning:
+
+        PUSH HL / <body> / POP HL / RET
+
+    Issue `step out` inside <body> and the entry SP is the POST-push value,
+    so `POP HL` alone raises SP above it. A bare SP-threshold test ends the
+    walk there -- one instruction early, PC still on the RET, still inside
+    the callee. This pins the RET gate that prevents that.
+    """
+    print("Running step-out RET-gate test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # Mid-body of a routine that already did `PUSH HL`:
+        #   6000: NOP        <- step out issued here
+        #   6001: POP HL     <- raises SP to 8002, ABOVE the 8000 entry SP
+        #   6002: RET        <- the real frame exit, to 7000
+        # Stack: 8000 = saved HL (1234), 8002 = return address (7000).
+        setup = [
+            'mem write 0x6000 00E1C9',
+            'mem write 0x8000 34120070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6002:
+            print(
+                "FAIL: stopped at the POP, not the RET -- PC=6002 SP="
+                f"{sp:04X} (the SP-threshold regression)")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(
+                f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        # HL must carry the POP'd value: the walk really executed the body.
+        ok_hl, hl = emu.ipc.get_reg('HL')
+        if not ok_hl or hl != 0x1234:
+            print(f"FAIL: expected HL=1234 after POP, got {hl:04X}")
+            return False
+
+        print("PASS: Step Out ran through the POP and finished on the RET")
+        return True
+
+
 def test_step_out_stops_at_real_breakpoint_on_landing_address():
     """A real breakpoint sitting on Step Out's ephemeral landing address
     must win and be reported as a breakpoint hit, not silently absorbed as
@@ -2077,6 +2148,7 @@ def main():
         test_rapid_pause_resume,
         test_step_in_accuracy,
         test_step_out_nested_call,
+        test_step_out_gated_on_ret_not_sp,
         test_step_out_stops_at_real_breakpoint_on_landing_address,
         test_mouse_input,
         test_gun_input,
