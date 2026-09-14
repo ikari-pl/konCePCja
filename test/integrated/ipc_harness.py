@@ -975,6 +975,149 @@ def test_step_out_gated_on_ret_not_sp():
         return True
 
 
+def make_test_rom(handlers=None, parked=True):
+    """Build a synthetic 32K system ROM and return the directory holding it.
+
+    The CPC maps the lower ROM over 0x0000-0x3FFF, so the eight Z80 restart
+    vectors (&00-&38) are covered by firmware and `mem write` there lands in
+    RAM the CPU never executes -- a handler simply cannot be planted at a
+    restart vector on a normally-booted machine. Supplying our own system ROM
+    sidesteps that entirely: no unmapping, no new IPC command, just a ROM with
+    no firmware in it. `rom_path` is only a directory (CPC.rom_path + "/" +
+    chROMFile[model]), so pointing it at a temp dir is enough.
+
+    `handlers` maps a ROM offset to the bytes to place there, e.g.
+    {0x0030: bytes([0xD1, 0xC3, 0x04, 0x60])} for a restart that discards its
+    return address and jumps away. Filler is 0xFF (rst 38h) so stray execution
+    is obvious rather than silently sliding through NOPs.
+
+    Caller owns the returned directory; shutil.rmtree it when done.
+    """
+    rom = bytearray(b'\xFF' * 32768)      # OS half + BASIC half
+    if parked:
+        rom[0x0000:0x0003] = bytes([0xC3, 0x00, 0x00])  # 0000: JP 0000
+    for offset, code in (handlers or {}).items():
+        rom[offset:offset + len(code)] = code
+    d = tempfile.mkdtemp(prefix='koncpc_testrom_')
+    with open(os.path.join(d, 'cpc6128.rom'), 'wb') as f:
+        f.write(rom)
+    return d
+
+
+def test_step_out_tail_jumping_restart():
+    """A restart that discards its return address must not strand the walk.
+
+    The CPC's LOW JUMP (&08) and FIRM JUMP (&28) push a return address, then
+    the handler POPs it, reads its inline operand and JUMPS away -- the return
+    never happens. Counting entered frames cannot express that: the restart's
+    entry is never balanced, so step out finishes a frame too high. Tracking
+    each entered frame by its return SLOT does, because the entry retires when
+    the stack rises past it however that happens.
+
+    Runs against a synthetic ROM so the restart handler is OURS. An earlier
+    attempt at this test planted the handler with `mem write` and passed for
+    entirely the wrong reason -- the firmware's own handler happened to return.
+    """
+    print("Running step-out tail-jumping-restart test...")
+
+    romdir = make_test_rom({
+        # 0030: POP DE (discard the pushed return address) / JP 6004
+        0x0030: bytes([0xD1, 0xC3, 0x04, 0x60]),
+    })
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', f'rom.rom_path={romdir}'):
+                print("FAIL: emulator would not start with the test ROM")
+                return False
+            emu.ipc.timeout = 30.0
+            if not emu.ipc.pause():
+                print("FAIL: Could not pause emulator")
+                return False
+
+            # Prove the CPU really sees our handler, not firmware. Without this
+            # the test can pass for the wrong reason, which is exactly how the
+            # previous version of it fooled us.
+            ok, dis = emu.ipc.send_command('disasm 0x0030 1')
+            if 'pop de' not in dis.lower():
+                print(f"FAIL: 0x0030 is not our handler: {dis.strip()!r}")
+                return False
+
+            #   6000: RST 30h   -> pushes 6001, vectors to our handler
+            #   6004: RET       -> returns to 7000 via OUR frame's slot
+            # Stack: 8000 = 7000 (this frame's return address)
+            setup = [
+                'mem write 0x6000 F7000000C9',
+                'mem write 0x8000 0070',
+                'reg set SP 0x8000',
+                'reg set PC 0x6000',
+            ]
+            for command in setup:
+                ok, resp = emu.ipc.send_command(command)
+                if not ok:
+                    print(f"FAIL: {command!r} failed: {resp}")
+                    return False
+
+            ok, resp = emu.ipc.send_command('step out')
+            if not ok:
+                print(f"FAIL: step out failed: {resp}")
+                return False
+
+            ok_pc, pc = emu.ipc.get_reg('PC')
+            ok_sp, sp = emu.ipc.get_reg('SP')
+            if not ok_pc or not ok_sp or pc != 0x7000 or sp != 0x8002:
+                print(f"FAIL: expected PC=7000 SP=8002, "
+                      f"got PC={pc:04X} SP={sp:04X}")
+                return False
+
+            print("PASS: tail-jumping restart did not strand the walk")
+            return True
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
+
+
+def test_step_out_nested_restarts():
+    """Two restarts deep: the walk must unwind both, not stop inside one."""
+    print("Running step-out nested-restarts test...")
+
+    # TWO DIFFERENT restarts, not one calling itself -- RST 30h at 0x0030
+    # would recurse forever and run the stack into the ground.
+    romdir = make_test_rom({
+        0x0028: bytes([0xC9]),        # 0028: RET
+        0x0030: bytes([0xEF, 0xC9]),  # 0030: RST 28h, then RET
+    })
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', f'rom.rom_path={romdir}'):
+                print("FAIL: emulator would not start with the test ROM")
+                return False
+            emu.ipc.timeout = 30.0
+            emu.ipc.pause()
+
+            # 6000: RST 30h -> handler re-enters itself once, then both return.
+            for command in ['mem write 0x6000 F7C9',
+                            'mem write 0x8000 0070',
+                            'reg set SP 0x8000', 'reg set PC 0x6000']:
+                ok, resp = emu.ipc.send_command(command)
+                if not ok:
+                    print(f"FAIL: {command!r} failed: {resp}")
+                    return False
+
+            ok, resp = emu.ipc.send_command('step out')
+            if not ok:
+                print(f"FAIL: step out failed: {resp}")
+                return False
+
+            ok_pc, pc = emu.ipc.get_reg('PC')
+            if not ok_pc or pc != 0x7000:
+                print(f"FAIL: expected PC=7000, got {pc:04X}")
+                return False
+
+            print("PASS: nested restarts unwound to the caller")
+            return True
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
+
+
 def _load_frame(emu, code_hex, stack_hex="34120070", extra=None):
     """Plant a routine at 0x6000 inside a frame whose return address is 0x7000.
 
@@ -2567,6 +2710,8 @@ def main():
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,
         test_step_out_pop_then_call,
+        test_step_out_tail_jumping_restart,
+        test_step_out_nested_restarts,
         test_step_out_computed_return,
         test_step_out_never_returns_times_out_honestly,
         test_step_out_stops_at_breakpoint_inside_own_frame,
