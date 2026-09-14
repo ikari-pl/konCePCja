@@ -13,8 +13,16 @@ set -e
 
 PYTHON=${PYTHON:-python3}
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
-  echo "SKIP: no $PYTHON on PATH"
-  exit 0
+  # Fail closed. This suite exists because a harness that gates nothing let a
+  # real step-out bug ship through green CI; silently passing when the
+  # interpreter is missing would recreate exactly that. Set
+  # KONCPC_ALLOW_SKIP_IPC=1 to opt out deliberately.
+  if [ "${KONCPC_ALLOW_SKIP_IPC:-0}" = "1" ]; then
+    echo "SKIP: no $PYTHON on PATH (KONCPC_ALLOW_SKIP_IPC=1)"
+    exit 0
+  fi
+  echo "FAIL: no $PYTHON on PATH -- the IPC suite cannot run"
+  exit 1
 fi
 
 # Run from the project root: the emulator resolves rom/ and resources/

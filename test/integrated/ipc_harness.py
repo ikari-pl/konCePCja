@@ -699,7 +699,7 @@ def test_snapshot_round_trip():
     """Save snapshot while paused, corrupt memory, load snapshot, verify restored.
 
     Exercises cpc_pause_and_wait() in the IPC server's snapshot save/load paths.
-    Without quiescence the snapshot might capture a partially-updated Z80 state.
+    Without going idle the snapshot might capture a partially-updated Z80 state.
     """
     print("Running snapshot round-trip test...")
 
@@ -1032,6 +1032,54 @@ def test_step_out_untaken_conditional_ret():
             return False
 
         print("PASS: untaken RET cc did not end the walk")
+        return True
+
+
+def test_step_out_pop_then_call():
+    """A POP before a CALL must not end the walk when the callee is skipped.
+
+    The walk once carried a `depth == 0 && unwound()` backstop after a
+    callee skip, for a hypothetical callee that destroys the stack. A plain
+    POP earlier in the frame lifts SP above the entry level, so the very next
+    CALL-skip satisfied it and step out reported OK at the RET -- inside the
+    frame. Third variant of the same bug: any exit that fires without seeing a
+    taken return is it.
+    """
+    print("Running step-out POP-then-CALL test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL     -> SP 8000 -> 8002, above the entry SP
+        #   6001: CALL 6005  -> skipped at full speed
+        #   6004: RET        -> the real frame exit, to 7000
+        #   6005: RET        -> the callee
+        if not _load_frame(emu, 'E1CD0560C9C9'):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6004:
+            print("FAIL: backstop fired after the CALL skip, still in frame")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: POP before CALL did not end the walk early")
         return True
 
 
@@ -1667,7 +1715,7 @@ def test_model_change_rebuild():
 
 
 def test_profile_load_rebuilds_machine():
-    """profile load must quiesce + rebuild when model/ram_size change.
+    """profile load must idle + rebuild when model/ram_size change.
 
     Repro for beads-x3ka: ConfigProfileManager::load() wrote CPC.model straight
     into the global struct with no pause and no emulator_init(), so IPC
@@ -2514,6 +2562,7 @@ def main():
         test_step_out_nested_call,
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,
+        test_step_out_pop_then_call,
         test_step_out_computed_return,
         test_step_out_never_returns_times_out_honestly,
         test_step_out_stops_at_breakpoint_inside_own_frame,

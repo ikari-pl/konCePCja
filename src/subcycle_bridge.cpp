@@ -921,6 +921,11 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
   b.machine.probe_resume();  // edge consumed: resume continues mid-instruction
   if (hit.kind == PROBE_HIT_EXEC) {
     z80.breakpoint_reached = 1;
+    // Clear the watchpoint flag: it was only ever set, never cleared on a
+    // successful stop, so once any watchpoint had fired every later EXEC stop
+    // still read as "a watchpoint did this" -- and any consumer reporting
+    // WATCH= from it published stale WP_ADDR/VAL/OLD forever after.
+    z80.watchpoint_reached = 0;
     z80.PC.w.l =
         hit.addr;  // the halted instruction's identity (spec: probe §3)
   } else {

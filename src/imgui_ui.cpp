@@ -378,7 +378,7 @@ void process_pending_dialog() {
     case FileDialogAction::SelectM4SDFolder:
       g_m4board.sd_root_path = path;
       // Fitting a new SD folder rebuilds the whole machine. This route had no
-      // guard of any kind: no warning, no unsaved-disk check, and no quiesce.
+      // guard of any kind: no warning, no unsaved-disk check, and no idle.
       if (g_m4board.enabled) {
         if (driveAltered()) {
           imgui_state.confirm_m4_rebuild = true;
@@ -1032,7 +1032,7 @@ void dbg_step_over() {
   }
   // A lease, not a bare cpc_pause(): this reads PC, classifies it and may step
   // the machine, all from the render thread, so the Z80 thread must actually
-  // be quiescent first -- cpc_pause() only sets the flag.
+  // be idle first -- cpc_pause() only sets the flag.
   word pc = 0;
   Z80StepClass cls;
   {
@@ -1078,6 +1078,9 @@ std::atomic<bool> g_step_walk_running{false};
 constexpr int kStepWalkNoOutcome = -1;
 std::atomic<int> g_step_walk_outcome{kStepWalkNoOutcome};
 std::atomic<StepWalkAction> g_step_walk_action{StepWalkAction::StepOut};
+// Upper bound on waiting for the Z80 thread to go idle before dispatching.
+// Generous (a frame is 20ms); the point is that the render thread cannot hang.
+constexpr int kStepWalkIdleWaitMs = 1000;
 std::thread g_step_walk_thread;
 }  // namespace
 
@@ -1097,30 +1100,47 @@ void dispatch_step_walk(StepWalkAction action,
   if (g_step_walk_running.exchange(true, std::memory_order_acq_rel)) {
     return;  // a walk is already in flight; ignore the repeated click/shortcut
   }
+  // Pause, then wait for the Z80 thread to go idle WITH A BOUND. A plain
+  // CpcPauseLease waits forever, and this runs on the render thread -- an
+  // unbounded wait here would freeze the GUI, which is the exact failure this
+  // worker exists to prevent.
   {
-    CpcPauseLease lease;  // quiesce before dispatching the worker
+    CpcPauseLease const lease(CpcPauseLeaseMode::PauseOnly);
+    if (!cpc_wait_until_idle(kStepWalkIdleWaitMs)) {
+      g_step_walk_running.store(false, std::memory_order_release);
+      set_osd_message("Z80 thread is not responding", 3000);
+      return;
+    }
   }
   // The previous run already flipped g_step_walk_running back to false before
   // this exchange could succeed, so this join cannot block.
   if (g_step_walk_thread.joinable()) g_step_walk_thread.join();
   g_step_walk_action.store(action, std::memory_order_release);
-  g_step_walk_thread = std::thread([walk = std::move(walk)]() {
-    Z80StepOutResult result = Z80StepOutResult::Stalled;
-    try {
-      result = walk();
-    } catch (const std::exception& e) {
-      // A worker that throws would otherwise call std::terminate and take the
-      // emulator with it, and leave the running flag latched so the whole step
-      // toolbar stays dead.
-      LOG_ERROR("step walk failed: " << e.what());
-    }
-    // set_osd_message() touches render-thread-owned state (the toast queue);
-    // only the outcome code crosses threads, and the render thread reads it
-    // and calls set_osd_message() itself when it polls.
-    g_step_walk_outcome.store(static_cast<int>(result),
-                              std::memory_order_release);
+  try {
+    g_step_walk_thread = std::thread([walk = std::move(walk)]() {
+      Z80StepOutResult result = Z80StepOutResult::Stalled;
+      try {
+        result = walk();
+      } catch (const std::exception& e) {
+        // A worker that throws would otherwise call std::terminate and take the
+        // emulator with it, and leave the running flag latched so the whole
+        // step toolbar stays dead.
+        LOG_ERROR("step walk failed: " << e.what());
+      }
+      // set_osd_message() touches render-thread-owned state (the toast queue);
+      // only the outcome code crosses threads, and the render thread reads it
+      // and calls set_osd_message() itself when it polls.
+      g_step_walk_outcome.store(static_cast<int>(result),
+                                std::memory_order_release);
+      g_step_walk_running.store(false, std::memory_order_release);
+    });
+  } catch (...) {
+    // std::thread construction can throw (resource exhaustion). Without this
+    // the running flag stays latched true and the whole step toolbar is dead
+    // for the rest of the session.
     g_step_walk_running.store(false, std::memory_order_release);
-  });
+    set_osd_message("Could not start the step worker", 3000);
+  }
 }
 
 // Run to `target` at full speed, bounded, off the render thread. Shared by
@@ -1136,6 +1156,8 @@ void dispatch_run_to(StepWalkAction action, word target) {
         return Z80StepOutResult::BreakpointHit;
       case Z80RunUntilResult::Timeout:
         return Z80StepOutResult::Timeout;
+      case Z80RunUntilResult::Stalled:
+        return Z80StepOutResult::Stalled;
     }
     return Z80StepOutResult::Timeout;
   });
@@ -2839,7 +2861,7 @@ void imgui_render_statusbar() {
         auto& driveFile =
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         {
-          CpcPauseLease lease;  // quiesce so the flush below is synchronous
+          CpcPauseLease lease;  // idle so the flush below is synchronous
           dsk_eject(&drive);
           // dsk_eject only queues the FDC unmount; apply it now, while
           // driveFile still names the outgoing disc, so any dirty sectors

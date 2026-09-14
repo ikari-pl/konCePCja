@@ -249,7 +249,7 @@ std::mutex g_imgui_stats_mutex;
 // True when the Z80 thread is NOT inside z80_execute() (i.e. safe to touch Z80
 // state from another thread).  Starts true because the thread hasn't spawned
 // yet.
-std::atomic<bool> g_z80_quiescent{true};
+std::atomic<bool> g_z80_idle{true};
 // Frame handoff: Z80 signals after asic_draw_sprites(); render signals after
 // Phase A.
 FrameSignal g_frame_signal;
@@ -823,10 +823,10 @@ void emulator_reset() {
   // then free-runs the char clock (observed: tens of GB of audio, PC frozen at
   // 0x0000, the emulator wedged). Most reset callers on the render thread (the
   // Machine-menu button, F5, drag-drop cartridge load) reach here without
-  // quiescing; the IPC path already does. Quiesce here so every path is safe,
+  // going idle; the IPC path already does. Go idle here so every path is safe,
   // and restore the caller's pause state: a paused caller (menu/IPC) stays
   // paused and resumes itself; a running caller (F5) keeps running. Cheap and
-  // idempotent — in headless/single-threaded mode g_z80_quiescent is always
+  // idempotent — in headless/single-threaded mode g_z80_idle is always
   // true, and at init (before the Z80 thread exists) it is too.
   //
   // Hold a pause lease for the whole destructive section so a concurrent
@@ -1075,7 +1075,7 @@ static bool s_register_page_owned = false;
 //
 // Order matters: the board keeps RAW pointers to the expansion ROMs
 // (mem_attach_rom stores, it does not copy), so each slot is detached from the
-// board before its image is freed. The caller has already quiesced the Z80
+// board before its image is freed. The caller has already idled the Z80
 // thread; this only keeps the board from holding a released pointer afterwards.
 static void release_previous_machine() {
   if (!s_machine_built) return;
@@ -1596,14 +1596,14 @@ unsigned g_pause_lease_count = 0;
 // z80_view.cpp waits here after each callee skip); internal linkage would
 // break the link.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-bool cpc_wait_quiescent(int timeout_ms) {
+bool cpc_wait_until_idle(int timeout_ms) {
   // Spin until the Z80 thread has exited z80_execute() and entered its sleep
-  // loop. g_z80_quiescent is set true by z80_thread_main before sleeping, false
+  // loop. g_z80_idle is set true by z80_thread_main before sleeping, false
   // before entering z80_execute().  In headless mode the Z80 runs on the
-  // calling thread, so g_z80_quiescent stays true and we return immediately.
+  // calling thread, so g_z80_idle stays true and we return immediately.
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-  while (!g_z80_quiescent.load(std::memory_order_acquire)) {
+  while (!g_z80_idle.load(std::memory_order_acquire)) {
     if (timeout_ms > 0 && std::chrono::steady_clock::now() > deadline)
       return false;
     std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -1638,7 +1638,7 @@ void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
     cpc_pause_locked();
   }
   if (mode == CpcPauseLeaseMode::WaitImmediately) {
-    cpc_wait_quiescent();
+    cpc_wait_until_idle();
     waited_ = true;
   }
 }
@@ -1656,7 +1656,7 @@ CpcPauseLease::~CpcPauseLease() { release(); }
 
 void CpcPauseLease::wait() {
   if (!active_ || waited_) return;
-  cpc_wait_quiescent();
+  cpc_wait_until_idle();
   waited_ = true;
 }
 
@@ -1709,7 +1709,7 @@ uint64_t cpc_resume() {
   std::scoped_lock const lock(g_pause_mutex);
   // A destructive pause lease owns the machine until its critical section
   // finishes. Concurrent IPC/UI Run must not clear pause mid-wait (unbounded
-  // quiescence spin) or mid-teardown (use-after-free on shared state).
+  // idle spin) or mid-teardown (use-after-free on shared state).
   if (g_pause_lease_count > 0) return g_resume_epoch;
   return cpc_resume_unlocked();
 }
@@ -1742,7 +1742,7 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
 }
 
 void cpc_pause_and_wait() {
-  // Lease covers the wait only — concurrent Resume cannot defeat quiescence.
+  // Lease covers the wait only — concurrent Resume cannot defeat going idle.
   // Callers with a destructive critical section after this must hold
   // CpcPauseLease across that section.
   CpcPauseLease lease;
@@ -2825,7 +2825,7 @@ void koncpc_queue_virtual_keys(const std::string& text) {
 
 // Toggle windowed/fullscreen.
 //
-// MUST quiesce the Z80 thread first. video_shutdown() tears down the surface
+// MUST idle the Z80 thread first. video_shutdown() tears down the surface
 // and GPU resources the emulation thread renders into, so doing it while that
 // thread runs is a use-after-free: the crash lands in z80_thread_main() with
 // EXC_BAD_ACCESS at a small offset, on the Z80 thread, while the fullscreen key
@@ -3206,19 +3206,19 @@ void doCleanUp() {
   // sets g_z80_thread_quit and pushes SDL_EVENT_QUIT before returning; by
   // the time the render thread reaches doCleanUp(), the Z80 has typically
   // already exited its loop.  In that case cpc_pause_and_wait() would block
-  // forever (it spins until g_z80_quiescent goes true, which the now-dead
+  // forever (it spins until g_z80_idle goes true, which the now-dead
   // Z80 thread will never set).  Skip it and join directly.
   //
   // For the "render thread initiated quit" path (e.g. SDL_QUIT from the
   // window close button or F10 menu), the Z80 is still actively running
-  // inside z80_execute() and we DO need pause+quiescence before join.
+  // inside z80_execute() and we DO need pause+going idle before join.
   //
   //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
-  //     g_z80_quiescent=false before z80_execute() and only re-enters the
-  //     paused/quiescent branch at the top of its loop.  abort() makes
+  //     g_z80_idle=false before z80_execute() and only re-enters the
+  //     paused/idle branch at the top of its loop.  abort() makes
   //     signal_ready a no-op and releases the render thread's wait so neither
   //     thread can be left spinning on the frame signal during teardown; then
-  //     wait() drives the Z80 to its quiescent paused branch. A pause lease
+  //     wait() drives the Z80 to its idle paused branch. A pause lease
   //     keeps concurrent Resume from defeating either step.
   if (g_z80_thread.joinable() &&
       std::this_thread::get_id() != g_z80_thread.get_id()) {
@@ -3383,14 +3383,14 @@ void z80_thread_main() {
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
-      // Mark quiescent so cpc_pause_and_wait() callers know we are safe to
+      // Mark idle so cpc_pause_and_wait() callers know we are safe to
       // inspect.
-      g_z80_quiescent.store(true, std::memory_order_release);
+      g_z80_idle.store(true, std::memory_order_release);
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    // About to enter z80_execute() — mark non-quiescent.
-    g_z80_quiescent.store(false, std::memory_order_release);
+    // About to enter z80_execute() — mark non-idle.
+    g_z80_idle.store(false, std::memory_order_release);
 
     // Publish a consistent snapshot of the pending keyboard state for this
     // frame's firmware scan (see publish_keyboard_snapshot).

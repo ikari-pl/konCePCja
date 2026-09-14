@@ -203,7 +203,7 @@ constexpr uint64_t kStepOutClockStride = 4096;
 // Upper bound on waiting for the Z80 thread to leave z80_execute() after a
 // callee skip. A frame is 20ms, so this is generous; the point is that it
 // terminates rather than spinning inside a deadline-bounded walk forever.
-constexpr int kQuiescenceWaitMs = 1000;
+constexpr int kIdleWaitMs = 1000;
 
 // Does a user breakpoint armed at `pc` want to stop here?
 //
@@ -231,7 +231,7 @@ Z80RunUntilResult z80_run_until_ephemeral(
   // for the deadline. z80_step_out_finish() bails the same way; leaving this
   // one out meant `step to` and `step over` still burned the full 5s in the
   // unit-test binary.
-  if (subcycle_bridge_machine() == nullptr) return Z80RunUntilResult::Timeout;
+  if (subcycle_bridge_machine() == nullptr) return Z80RunUntilResult::Stalled;
   z80_add_breakpoint_ephemeral(target);
 
   // Drop a hit latched before we armed: it belongs to whatever ran last, and
@@ -295,8 +295,8 @@ Z80RunUntilResult z80_run_until_ephemeral(
   // wait for the Z80 thread to leave z80_execute(); that mutex guards
   // pause/resume transitions, not execution. Callers step the machine from
   // their own thread straight after this returns, so wait here — bounded, so a
-  // Z80 thread that never quiesces cannot outlive this walk's own deadline.
-  if (!cpc_wait_quiescent(kQuiescenceWaitMs)) return Z80RunUntilResult::Timeout;
+  // Z80 thread that never goes idle cannot outlive this walk's own deadline.
+  if (!cpc_wait_until_idle(kIdleWaitMs)) return Z80RunUntilResult::Timeout;
   return Z80RunUntilResult::Landed;
 }
 
@@ -356,17 +356,23 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
           return Z80StepOutResult::BreakpointHit;
         case Z80RunUntilResult::Timeout:
           return Z80StepOutResult::Timeout;
+        case Z80RunUntilResult::Stalled:
+          return Z80StepOutResult::Stalled;
         case Z80RunUntilResult::Landed:
           break;
       }
       // The helper leaves us paused, so the epoch it resumed under is still
       // current; adopt it as ours for the foreign-pause check up top.
       operation_epoch = cpc_resume_epoch();
-      // Backstop only: a callee that unwound OUR frame itself (stack surgery,
-      // an error path that drops the return address) never comes back to a RET
-      // of ours. A balanced CALL/RET pair leaves SP exactly where it was, so
-      // this cannot fire for a well-behaved callee.
-      if (depth == 0 && unwound()) return Z80StepOutResult::Done;
+      // No backstop here, deliberately. There used to be a
+      // `depth == 0 && unwound()` check for "a callee unwound OUR frame
+      // itself". It was a false-finish generator: a plain `POP` earlier in the
+      // frame lifts SP above entry_sp, so the very next CALL-skip ended the
+      // walk mid-frame (reproduced: POP HL / CALL sub / RET stopped at the RET
+      // with OK). That is the same bug class this walk was rewritten twice to
+      // kill -- ANY exit that fires without observing a taken return is it.
+      // A callee that really does destroy the stack now runs into the deadline
+      // and reports an honest timeout, which beats OK at the wrong address.
     } else {
       word const sp_before = z80.SP.w.l;
       word const expected_next = static_cast<word>(pc + cls.length);
@@ -453,6 +459,7 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
         // Publish it like the probe would, so `wait bp` and the DevTools
         // panel see a breakpoint stop rather than a silent pause.
         z80.breakpoint_reached = 1;
+        z80.watchpoint_reached = 0;  // an exec stop, not a watchpoint
         z80_record_probe_hit_source(true);
         return Z80StepOutResult::BreakpointHit;
       }

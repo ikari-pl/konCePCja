@@ -308,7 +308,7 @@ namespace {
 // Machine-rebuild staging. koncpc_rebuild_machine() tears down and reallocates
 // the board (pbRAMbuffer/pbROM/pbGPBuffer) and the Bridge. Running that from
 // the IPC server thread was unsafe twice over:
-//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_quiescent is
+//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_idle is
 //     only toggled inside z80_thread_main(), which is spawned only when
 //     !g_headless -- so the IPC thread could free memory the main thread was
 //     still executing a frame out of;
@@ -1014,7 +1014,7 @@ void init_command_registry() {
       "configuration.\n"
       "  load: applies the profile under a pause lease. When model or "
       "ram_size changes, rebuilds the machine on the main thread (same "
-      "quiesce path as `config apply`) so mid-run switches cannot race the "
+      "idle path as `config apply`) so mid-run switches cannot race the "
       "Z80 thread. Failed load/rebuild resumes the caller; "
       "`ERR 504 rebuild-still-running` leaves the machine paused.");
 
@@ -2616,7 +2616,7 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
     if (cmd == "step") {
-      CpcPauseLease lease;  // quiesce + own pause through destructive step work
+      CpcPauseLease lease;  // idle + own pause through destructive step work
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -2673,6 +2673,8 @@ std::string handle_command(const std::string& line) {
                 return ok_with_context(breakpoint_hit_body());
               case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
+              case Z80RunUntilResult::Stalled:
+                return err_with_context(409, "no-progress");
             }
           } else if (z80_is_rst(pc)) {
             // A CPC firmware RST (08/10/18/28) carries inline operands and
@@ -2746,6 +2748,8 @@ std::string handle_command(const std::string& line) {
             return ok_with_context(breakpoint_hit_body());
           case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
+          case Z80RunUntilResult::Stalled:
+            return err_with_context(409, "no-progress");
         }
       }
       // "step [N]" — single-step N instructions
@@ -3903,7 +3907,7 @@ std::string handle_command(const std::string& line) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
         // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
-        CpcPauseLease lease;  // quiesce before replacing the live medium
+        CpcPauseLease lease;  // idle before replacing the live medium
         bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
         if (!was_paused) {
@@ -4259,7 +4263,7 @@ std::string handle_command(const std::string& line) {
         if (unit < 0) return "ERR 400 invalid drive letter\n";
         CpcPauseLease lease;
         // A just-issued `load` only queues the FDC insert. Apply it while
-        // quiescent so caps match the disc the agent thinks is mounted.
+        // idle so caps match the disc the agent thinks is mounted.
         subcycle_bridge_apply_pending_media();
         const FluxSaveCaps caps = disk_caps(unit);
         lease.restore_run_state();
@@ -4323,7 +4327,7 @@ std::string handle_command(const std::string& line) {
         CpcPauseLease lease;
         dsk_eject(unit == 0 ? &driveA : &driveB);
         // dsk_eject only queues FDC unmount for the next frame. Apply now
-        // while the Z80 is quiescent so the next IPC command cannot pull
+        // while the Z80 is idle so the next IPC command cannot pull
         // the disc back into the host view. This must run BEFORE clearing
         // CPC.driveA/B.file below: the deferred apply flushes any dirty
         // sectors back to that path (flush_dirty_media_unit), so clearing
@@ -4577,7 +4581,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "load") {
         if (parts.size() < 3) return "ERR 400 missing profile name\n";
         // ConfigProfileManager::load() is pure state application — it writes
-        // CPC.model/ram_size/etc with no quiesce and no rebuild. At runtime
+        // CPC.model/ram_size/etc with no idle and no rebuild. At runtime
         // that races the Z80 thread and leaves banks/ASIC/ROMs on the old
         // machine (beads-x3ka). Hold a pause lease across the apply; when
         // the machine identity actually changed, rebuild on the main thread

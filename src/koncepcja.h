@@ -547,7 +547,7 @@ struct FrameSignal {
 // Emulation/render thread synchronization — see kon_cpc_ja.cpp
 extern std::atomic<bool> g_emu_paused;  // true while Z80 thread is halted
 extern std::atomic<bool>
-    g_z80_quiescent;  // true when Z80 thread is NOT inside z80_execute()
+    g_z80_idle;  // true when Z80 thread is NOT inside z80_execute()
 extern FrameSignal g_frame_signal;  // back_surface handoff between threads
 // Protects imgui_state stats fields written by Z80 thread, read by render
 // thread. Lock before reading/writing: frame_time_*_us, z80_time_avg_us,
@@ -601,7 +601,7 @@ class CpcStopCoordinationGuard {
 // RAII ownership of a destructive pause critical section.
 //
 // Acquires a pause lease, pauses the machine, and (by default) waits until the
-// Z80 thread is quiescent. While any lease is held, cpc_resume() is deferred:
+// Z80 thread is idle. While any lease is held, cpc_resume() is deferred:
 // it neither clears CPC.paused nor advances the resume epoch. Nested leases
 // are refcounted. Call release() before an intentional cpc_resume() that must
 // take effect while this scope is still alive.
@@ -610,9 +610,9 @@ class CpcStopCoordinationGuard {
 // shared machine/video state (reset, rebuild, snapshot, fullscreen, video
 // reinit, stepped Z80 state).
 enum class CpcPauseLeaseMode {
-  WaitImmediately,  // pause + wait for g_z80_quiescent (default)
+  WaitImmediately,  // pause + wait for g_z80_idle (default)
   PauseOnly,        // pause under lease; caller must call wait() after any
-                    // setup that must precede quiescence (e.g. frame abort)
+                    // setup that must precede going idle (e.g. frame abort)
 };
 
 class CpcPauseLease {
@@ -627,7 +627,7 @@ class CpcPauseLease {
 
   bool was_paused() const { return was_paused_; }
   bool active() const { return active_; }
-  void wait();     // spin until g_z80_quiescent (idempotent if already waited)
+  void wait();     // spin until g_z80_idle (idempotent if already waited)
   void release();  // drop the lease early; machine stays paused
   // Drop the lease and resume if this holder found the machine running.
   // Error paths that return before the success-path resume must call this
@@ -657,15 +657,15 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // Returns false if `timeout_ms` elapsed first (0 = wait forever, the legacy
 // behaviour). A deadline-bounded caller must pass a bound: an unbounded spin
 // nested inside a bounded walk can outlive the walk's own deadline with no
-// diagnostic if the Z80 thread never goes quiescent.
-bool cpc_wait_quiescent(int timeout_ms = 0);
+// diagnostic if the Z80 thread never goes idle.
+bool cpc_wait_until_idle(int timeout_ms = 0);
 // Atomically commits a staged engine breakpoint only if no later resume has
 // invalidated it. Publishes the hit after the paused state is visible.
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
                                 word pc, bool watchpoint);
 // cpc_pause() + spin until the Z80 thread is not inside z80_execute().
 // Holds a pause lease only for the duration of the wait (so concurrent Resume
-// cannot defeat quiescence). The lease is released before return — callers that
+// cannot defeat going idle). The lease is released before return — callers that
 // then enter a destructive critical section must hold CpcPauseLease across that
 // section. No-op wait in headless mode (single-threaded; pause is sufficient).
 void cpc_pause_and_wait();

@@ -434,7 +434,7 @@ TEST_F(IpcServerTest, BreakpointMutationCannotRaceStopCommit) {
 TEST_F(IpcServerTest, PauseLeaseBlocksConcurrentResume) {
   // Destructive callers hold CpcPauseLease across their critical section.
   // A concurrent IPC/UI Run must not clear pause or bump the resume epoch
-  // while that lease is alive — otherwise quiescence waits can hang and
+  // while that lease is alive — otherwise going idle waits can hang and
   // teardown can race a restarted Z80 thread.
   cpc_resume();
   uint64_t const epoch_before = cpc_resume_epoch();
@@ -472,11 +472,11 @@ TEST_F(IpcServerTest, PauseLeaseBlocksConcurrentResume) {
 }
 
 TEST_F(IpcServerTest, PauseLeaseProtectsQuiescenceWaitFromConcurrentResume) {
-  // Simulate a non-quiescent Z80 thread while a lease waits. Concurrent
+  // Simulate a non-idle Z80 thread while a lease waits. Concurrent
   // Resume must not clear pause — otherwise the wait would never observe
   // the paused branch and could spin forever.
   cpc_resume();
-  g_z80_quiescent.store(false, std::memory_order_release);
+  g_z80_idle.store(false, std::memory_order_release);
 
   std::atomic<bool> lease_held{false};
   std::atomic<bool> allow_wait{false};
@@ -501,7 +501,7 @@ TEST_F(IpcServerTest, PauseLeaseProtectsQuiescenceWaitFromConcurrentResume) {
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
   EXPECT_FALSE(waiter_done.load(std::memory_order_acquire));
 
-  g_z80_quiescent.store(true, std::memory_order_release);
+  g_z80_idle.store(true, std::memory_order_release);
   waiter.join();
   EXPECT_TRUE(waiter_done.load(std::memory_order_acquire));
   EXPECT_TRUE(CPC.paused);
@@ -732,11 +732,14 @@ TEST_F(IpcServerTest, StepOverDoesNotDescendIntoCall) {
   EXPECT_OK(resp);
 }
 
-TEST_F(IpcServerTest, StepToWithoutMachineTimesOutPromptly) {
+TEST_F(IpcServerTest, StepToWithoutMachineReportsNoProgressPromptly) {
   // Was "OK or ERR 408" -- the command's whole output space, so it could not
   // fail. With no machine attached nothing can ever reach the target, so the
   // shared run-until helper must say so at once rather than burning its 5s
-  // deadline (the same bail z80_step_out_finish already had).
+  // deadline. It reports 409 no-progress, the same as every other step
+  // command: "nothing can run" is one condition and gets one code, rather
+  // than 409 from the paths that route through z80_step_out_finish and 408
+  // from the paths that do not.
   z80.PC.w.l = 0x0000;
   z80_write_mem(0x0000, 0x00);
 
@@ -744,10 +747,26 @@ TEST_F(IpcServerTest, StepToWithoutMachineTimesOutPromptly) {
   auto resp = send_command("step to 0x0001");
   auto const elapsed = std::chrono::steady_clock::now() - started;
 
-  EXPECT_NE(resp.find("ERR 408"), std::string::npos) << "got: " << resp;
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
   EXPECT_LT(
       std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
       1000);
+}
+
+TEST_F(IpcServerTest, StepOverCallWithoutMachineReportsNoProgressPromptly) {
+  // The CALL path goes through z80_run_until_ephemeral, the RST path through
+  // z80_step_out_finish. Only the latter used to have a no-machine bail, so
+  // this case returned ERR 408 while the docs promised 409 -- the two halves
+  // of one command disagreeing about what "nothing can run" means.
+  z80.PC.w.l = 0x0000;
+  z80_write_mem(0x0000, 0xCD);  // call nn
+  z80_write_mem(0x0001, 0x00);
+  z80_write_mem(0x0002, 0xC0);
+
+  auto resp = send_command("step over");
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
 }
 
 TEST_F(IpcServerTest, StepOverRstWithoutMachineReportsNoProgressPromptly) {
