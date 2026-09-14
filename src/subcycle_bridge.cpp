@@ -1520,6 +1520,11 @@ void apply_pending_media(Bridge& b) {
 
 }  // namespace
 
+void subcycle_bridge_apply_pending_media() {
+  if (!g_bridge.active) return;
+  apply_pending_media(g_bridge);
+}
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],

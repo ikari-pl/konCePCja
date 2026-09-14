@@ -575,6 +575,59 @@ TEST_F(IpcServerTest, DiskNewCanCreateFluxBacking) {
   std::filesystem::remove(path);
 }
 
+TEST_F(IpcServerTest, DiskStatusSaveEjectAndCaps) {
+  EXPECT_OK(send_command("disk eject A"));
+  auto status = send_command("disk status A");
+  EXPECT_EQ(status,
+            "OK present=0 backing=empty can_dsk=0 can_scp=0 can_hfe=0\n");
+
+  EXPECT_OK(send_command("disk format A data"));
+  status = send_command("disk status A");
+  EXPECT_EQ(status,
+            "OK present=1 backing=sector can_dsk=1 can_scp=0 can_hfe=0\n");
+
+  auto const saved =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-save.dsk";
+  std::filesystem::remove(saved);
+  EXPECT_OK(send_command("disk save A " + saved.string() + " dsk"));
+  std::ifstream file(saved, std::ios::binary);
+  char magic[8] = {};
+  file.read(magic, sizeof(magic));
+  const std::string header(magic, static_cast<std::size_t>(file.gcount()));
+  EXPECT_TRUE(header.rfind("MV - CPC", 0) == 0 ||
+              header.rfind("EXTENDED", 0) == 0)
+      << header;
+  file.close();
+  std::filesystem::remove(saved);
+
+  EXPECT_EQ(send_command("disk save B /tmp/koncepcja-ipc-b.scp scp"),
+            "ERR 409 save-format-unavailable\n");
+  EXPECT_EQ(send_command("disk save A ../koncepcja-ipc-escape.dsk"),
+            "ERR 403 path-traversal-blocked\n");
+
+  // Genuine I/O failure (nonexistent directory) must still carry the
+  // "ERR <code> <slug>" convention, not a bare "ERR <raw message>".
+  auto const write_fail =
+      send_command("disk save A /nonexistent-dir-koncepcja/x.dsk");
+  EXPECT_TRUE(write_fail.rfind("ERR 500 ", 0) == 0) << write_fail;
+
+  EXPECT_OK(send_command("disk eject A"));
+  EXPECT_EQ(send_command("disk save A " + saved.string() + " dsk"),
+            "ERR 404 empty-drive\n");
+
+  auto const help = send_command("help disk");
+  EXPECT_OK(help);
+  EXPECT_NE(help.find("status"), std::string::npos) << help;
+  EXPECT_NE(help.find("save"), std::string::npos) << help;
+  EXPECT_NE(help.find("eject"), std::string::npos) << help;
+
+  EXPECT_OK(send_command("disk eject A"));
+  auto ls = send_command("disk ls A");
+  EXPECT_TRUE(ls.rfind("ERR", 0) == 0) << ls;
+  EXPECT_EQ(send_command("disk status A"),
+            "OK present=0 backing=empty can_dsk=0 can_scp=0 can_hfe=0\n");
+}
+
 TEST_F(IpcServerTest, WatchpointAddListDelClear) {
   auto resp = send_command("wp clear");
   EXPECT_OK(resp);
