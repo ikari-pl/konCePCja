@@ -228,6 +228,13 @@ std::string ok_with_context(const std::string& body = "") {
 }
 }  // namespace
 
+// Upper bound on waiting for the Z80 thread to go idle before a step command
+// touches machine state. Generous (a frame is 20ms); the point is that a stuck
+// Z80 thread cannot hang the single-connection IPC server indefinitely.
+namespace {
+constexpr int kStepIdleWaitMs = 1000;
+}  // namespace
+
 // Body for a step command that stopped on a breakpoint/watchpoint rather than
 // finishing. Without the WATCH/WP_* detail an agent knows WHERE it stopped
 // (the context trailer carries PC) but not WHY -- and `wait bp` has reported
@@ -2616,7 +2623,15 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
     if (cmd == "step") {
-      CpcPauseLease lease;  // idle + own pause through destructive step work
+      // Pause and own the machine through the destructive step work — but
+      // wait for the Z80 thread to go idle WITH A BOUND. A plain lease waits
+      // forever, and this server handles one connection at a time with
+      // handle_command() inline: a Z80 thread stuck for any reason would hang
+      // the entire IPC surface here, before any per-step deadline had even
+      // started, with no way for the caller to send `pause` or anything else.
+      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+      if (!cpc_wait_until_idle(kStepIdleWaitMs))
+        return err_with_context(409, "z80-not-idle");
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&

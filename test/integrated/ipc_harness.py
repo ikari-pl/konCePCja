@@ -883,6 +883,10 @@ def test_step_out_nested_call():
                 print(f"FAIL: {command!r} failed: {resp}")
                 return False
 
+        # The walk single-steps through the restart handler, so give the
+        # client more than its default 5s -- otherwise a slow-but-correct walk
+        # looks like a failure.
+        emu.ipc.timeout = 30.0
         ok, resp = emu.ipc.send_command('step out')
         if not ok:
             print(f"FAIL: step out failed: {resp}")

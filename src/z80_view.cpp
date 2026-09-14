@@ -313,15 +313,23 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   uint64_t retired = 0;
-  // Frames entered since the walk began: a stepped-into RST or an accepted
-  // interrupt takes us one deeper, its return brings us back. The frame is
-  // finished when a TAKEN return fires at depth 0.
-  int depth = 0;
+  // Stack slots holding the return address of each frame this walk has entered
+  // (a stepped-into RST, or an accepted interrupt).
+  //
+  // Deliberately slots, not a counter. A counter can only express "entered"
+  // and "returned", and the CPC has restarts that do NEITHER: LOW JUMP (&08)
+  // and FIRM JUMP (&28) push a return address, then the handler POPs it,
+  // reads its inline operand and JUMPS away — the return never happens. A
+  // counter is then inflated forever and the walk finishes a frame too high.
+  // Tracking the slot says it exactly: an entry is gone once the stack has
+  // risen past it, which covers a normal return AND a discarded one, with no
+  // special case for either.
+  std::vector<word> entered;
   // The word most recently popped off the stack, so a `POP rr : JP (rr)`
   // computed return can be told apart from an in-frame jump-table dispatch.
   word last_popped = 0;
-  // Signed distance makes an FFFE→0000 stack wrap count as unwound. Only used
-  // as a backstop now that depth tracking owns the exit decision.
+  // Signed distance makes an FFFE→0000 stack wrap count as unwound. A
+  // conjunct of the exit, never the test on its own.
   auto unwound = [&]() {
     return static_cast<int16_t>(entry_sp - z80.SP.w.l) < 0;
   };
@@ -336,6 +344,15 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
       z80_remove_ephemeral_breakpoints();
       return Z80StepOutResult::BreakpointHit;
     }
+    // Drop entries the stack has already risen past — returned from, or
+    // discarded by a tail-jumping restart. Done here, before the exit tests
+    // read `entered`, and using the CURRENT SP: an entry must still be live
+    // while its own RET is being judged, or that RET would be mistaken for
+    // this frame's.
+    while (!entered.empty() &&
+           static_cast<int16_t>(z80.SP.w.l - entered.back()) > 0)
+      entered.pop_back();
+
     word const pc = z80.PC.w.l;
     bool took_step = false;
     // ONE decode per instruction, not three: is_call/is_ret/is_indirect_jump
@@ -400,44 +417,38 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
       took_step = true;
 
       // Frame accounting. The exit condition is a RETURN THAT WAS TAKEN at the
-      // depth we started from — NOT "a RET-class opcode retired" AND "SP is
-      // above where we began", which are two independent facts that an untaken
-      // `RET cc` satisfies together the moment an earlier POP has lifted SP.
-      // (Reproduced: `POP HL / RET NZ (not taken) / RET` stopped on the RET NZ,
-      // still inside the frame — the same class of bug the SP threshold had.)
-      // Counting depth is also what makes interrupts safe without a special
-      // case: an accepted interrupt pushes and vectors away (+1), its RETI
-      // pops back (-1), so it nets out wherever SP happens to be sitting.
+      // frame the walk started in — NOT "a RET-class opcode retired" AND "SP
+      // is above where we began", which are two independent facts that an
+      // untaken `RET cc` satisfies together the moment an earlier POP has
+      // lifted SP. (Reproduced: `POP HL / RET NZ (not taken) / RET` stopped on
+      // the RET NZ, still inside the frame.) Tracking entered frames by their
+      // return slot is also what makes interrupts safe with no special case:
+      // an accepted interrupt pushes and vectors away, and its slot retires
+      // itself when the stack rises past it — however that happens.
       word const sp_after = z80.SP.w.l;
       word const pc_after = z80.PC.w.l;
       bool const pushed = static_cast<word>(sp_before - sp_after) == 2;
       bool const popped = static_cast<word>(sp_after - sp_before) == 2;
 
       if (cls.is_rst && pushed) {
-        ++depth;  // stepped into the restart handler
+        entered.push_back(sp_after);  // stepped into the restart handler
       } else if (pushed && pc_after != expected_next) {
         // Pushed two bytes AND vectored somewhere other than the next
         // instruction, without being a call: an interrupt was accepted. A
         // plain PUSH also drops SP by 2, but leaves PC at expected_next.
-        // Deliberately NOT counted as stack progress: on the CPC an interrupt
-        // fires every ~300us, so counting it would make even a `JP $` spin
-        // look busy and defeat the stall classification below.
-        ++depth;
+        entered.push_back(sp_after);
       } else if (cls.is_ret && popped) {
-        // A taken return — an untaken `RET cc` moves no stack at all.
+        // A taken return — an untaken `RET cc` moves no stack at all — with
+        // no entered frame left to return from, and the stack above where the
+        // walk began.
         //
-        // `unwound()` is a conjunct, not the test. Depth counting assumes
-        // returns balance against calls WE counted, and that assumption is not
-        // safe in firmware: code routinely arrives somewhere by JP and leaves
-        // by RET, so a taken RET can appear with no matching counted call.
-        // Each one decrements depth, and once depth reaches 0 inside firmware
-        // the next stray RET would be read as this frame's return. Requiring
-        // the stack to have actually unwound past where the walk began rejects
-        // those, while staying immune to the original bug -- that one exited on
-        // SP ALONE; this needs a taken return AND depth AND the stack level.
-        if (depth == 0 && unwound()) return Z80StepOutResult::Done;
-        if (depth > 0) --depth;
-      } else if (cls.is_indirect_jump && depth == 0 &&
+        // `unwound()` is a conjunct, never the test on its own. Firmware
+        // arrives places by JP and leaves by RET, so a taken RET can appear
+        // with no entry of ours behind it; requiring the stack to have risen
+        // past our starting level rejects those. No decrement here: pruning at
+        // the top of the loop retires the entry once SP passes its slot.
+        if (entered.empty() && unwound()) return Z80StepOutResult::Done;
+      } else if (cls.is_indirect_jump && entered.empty() &&
                  pc_after == last_popped && unwound()) {
         // `POP HL : JP (HL)` — how hand-written Z80 returns to a computed
         // address. Only a jump to the word we just popped counts; a jump-table
