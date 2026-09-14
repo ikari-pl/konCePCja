@@ -605,6 +605,16 @@ TEST_F(IpcServerTest, DiskStatusSaveEjectAndCaps) {
   EXPECT_EQ(send_command("disk save A ../koncepcja-ipc-escape.dsk"),
             "ERR 403 path-traversal-blocked\n");
 
+  // Genuine I/O failure (nonexistent directory) must still carry the
+  // "ERR <code> <slug>" convention, not a bare "ERR <raw message>".
+  auto const write_fail =
+      send_command("disk save A /nonexistent-dir-koncepcja/x.dsk");
+  EXPECT_TRUE(write_fail.rfind("ERR 500 ", 0) == 0) << write_fail;
+
+  EXPECT_OK(send_command("disk eject A"));
+  EXPECT_EQ(send_command("disk save A " + saved.string() + " dsk"),
+            "ERR 404 empty-drive\n");
+
   auto const help = send_command("help disk");
   EXPECT_OK(help);
   EXPECT_NE(help.find("status"), std::string::npos) << help;

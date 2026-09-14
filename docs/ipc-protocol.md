@@ -523,7 +523,7 @@ File-level and sector-level access to DSK disc images.
 | `disk rm <A\|B> <filename>` | Delete file from disc. Failed live-FDC push rolls the host view back |
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
 | `disk status <A\|B>` | `OK present=0\|1 backing=empty\|sector\|flux can_dsk=0\|1 can_scp=0\|1 can_hfe=0\|1` — same save caps the File menu uses |
-| `disk save <A\|B> <path> [dsk\|scp\|hfe]` | Write the **live FDC medium** (not a stale host `t_drive`). Default `dsk`. `ERR 409 save-format-unavailable` when caps forbid the format (flux is drive-A-only). `ERR 404 empty-drive` for `dsk` on an empty drive. Traversal (`..`) rejected |
+| `disk save <A\|B> <path> [dsk\|scp\|hfe]` | Write the **live FDC medium** (not a stale host `t_drive`). Default `dsk`. `ERR 409 save-format-unavailable` when caps forbid the format (flux is drive-A-only). `ERR 404 empty-drive` for `dsk` on an empty drive. `ERR 500 <reason>` on a genuine write failure (bad path, disk full, I/O error). Traversal (`..`) rejected |
 | `disk eject <A\|B>` | Unmount the drive (`dsk_eject`). No GUI confirm. Dirty media follows the File-menu flush-on-eject path |
 
 ### Sector Commands

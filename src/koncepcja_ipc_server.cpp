@@ -929,7 +929,9 @@ void init_command_registry() {
       "medium (never a stale host t_drive when the board is running).\n"
       "  status: Presence and save caps (present, backing, can_dsk/scp/hfe).\n"
       "  save: Persist drive A/B to a host path. Default format dsk. scp/hfe "
-      "require flux backing on A; otherwise ERR 409. Traversal rejected.\n"
+      "require flux backing on A; otherwise ERR 409. ERR 404 for dsk on an "
+      "empty drive. ERR 500 on a genuine write failure. Traversal "
+      "rejected.\n"
       "  eject: Unmount the drive (no GUI confirm). Dirty media follows the "
       "same flush-on-eject path as the File menu.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
@@ -4282,7 +4284,7 @@ std::string handle_command(const std::string& line) {
           if (!ok) err = "write error";
         }
         lease.restore_run_state();
-        if (!ok) return "ERR " + err + "\n";
+        if (!ok) return "ERR 500 " + err + "\n";
         return "OK\n";
       }
       if (parts[1] == "eject") {
@@ -4291,14 +4293,17 @@ std::string handle_command(const std::string& line) {
         if (unit < 0) return "ERR 400 invalid drive letter\n";
         CpcPauseLease lease;
         dsk_eject(unit == 0 ? &driveA : &driveB);
+        // dsk_eject only queues FDC unmount for the next frame. Apply now
+        // while the Z80 is quiescent so the next IPC command cannot pull
+        // the disc back into the host view. This must run BEFORE clearing
+        // CPC.driveA/B.file below: the deferred apply flushes any dirty
+        // sectors back to that path (flush_dirty_media_unit), so clearing
+        // it first would make the flush a silent no-op and drop the writes.
+        subcycle_bridge_apply_pending_media();
         if (unit == 0)
           CPC.driveA.file.clear();
         else
           CPC.driveB.file.clear();
-        // dsk_eject only queues FDC unmount for the next frame. Apply now
-        // while the Z80 is quiescent so the next IPC command cannot pull
-        // the disc back into the host view.
-        subcycle_bridge_apply_pending_media();
         lease.restore_run_state();
         return "OK\n";
       }

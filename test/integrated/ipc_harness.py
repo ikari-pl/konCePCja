@@ -1660,6 +1660,60 @@ def test_disk_status_save_eject():
         return True
 
 
+def test_disk_eject_flushes_dirty_writes():
+    """`disk eject` must persist dirty writes even without an explicit save.
+
+    Regression for the eject/flush ordering bug: subcycle_bridge_apply_pending_media()
+    (which flushes dirty sectors back to CPC.driveA/B.file) must run BEFORE that
+    path is cleared, or the flush silently no-ops and the write is lost.
+    """
+    print("Running disk eject dirty-write-flush test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            disk_path = os.path.join(td, 'dirty.dsk')
+            ok, resp = emu.ipc.send_command(f'disk new {disk_path} data sector')
+            if not ok:
+                print(f"FAIL: disk new: {resp}")
+                return False
+
+            ok, resp = emu.ipc.send_command(f'load {disk_path}')
+            if not ok:
+                print(f"FAIL: load: {resp}")
+                return False
+
+            host = os.path.join(td, 'dirty.bin')
+            with open(host, 'wb') as f:
+                f.write(b'UNSAVED')
+            ok, resp = emu.ipc.send_command(f'disk put A {host} DIRTY.BIN')
+            if not ok:
+                print(f"FAIL: put: {resp}")
+                return False
+
+            # Eject WITHOUT an explicit `disk save` first — the flush-on-eject
+            # path is the only thing that can persist this write.
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+
+            ok, resp = emu.ipc.send_command(f'load {disk_path}')
+            if not ok:
+                print(f"FAIL: reload after eject: {resp}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'DIRTY.BIN' not in ls:
+                print(f"FAIL: eject discarded dirty write; ls={ls!r}")
+                return False
+
+        print("PASS: disk eject flushes dirty writes without an explicit save")
+        return True
+
+
 def test_profile_load_missing_keeps_running():
     """profile load ERR must restore a running machine (beads-csl7.2).
 
@@ -2168,6 +2222,7 @@ def main():
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
         test_disk_status_save_eject,
+        test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,
