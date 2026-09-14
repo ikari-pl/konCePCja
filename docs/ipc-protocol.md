@@ -81,7 +81,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | Command | Response |
 |---------|----------|
 | `mem read <addr> <len> [--view=read\|ram] [--bank=N] [ascii]` | `OK <hex> [\|ascii\|]` — reads through Z80 banking |
-| `mem write <addr> <hex>` | `OK` — writes through Z80 banking |
+| `mem write <addr> <hex>` | `OK` — writes the **banked RAM byte, never a paged-in ROM** (a real `mreq` write). This is NOT symmetric with `mem read`/`disasm`, which show the ROM overlay: writing under a mapped ROM (`0000-3FFF`, or `C000-FFFF` with upper ROM paged in) returns `OK` and changes nothing the CPU will execute. Verify with `disasm` at the same address. |
 | `mem cpu-read <addr> <len>` | Read through the CPU-visible memory path |
 | `mem cpu-write <addr> <hex>` | Write through the CPU-visible memory path |
 | `mem fill <addr> <len> <hex-pattern>` | `OK` — fill memory with repeating hex pattern |

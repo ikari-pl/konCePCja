@@ -975,7 +975,7 @@ def test_step_out_gated_on_ret_not_sp():
         return True
 
 
-def make_test_rom(handlers=None, parked=True):
+def make_test_rom(handlers=None):
     """Build a synthetic 32K system ROM and return the directory holding it.
 
     The CPC maps the lower ROM over 0x0000-0x3FFF, so the eight Z80 restart
@@ -994,13 +994,36 @@ def make_test_rom(handlers=None, parked=True):
     Caller owns the returned directory; shutil.rmtree it when done.
     """
     rom = bytearray(b'\xFF' * 32768)      # OS half + BASIC half
-    if parked:
-        rom[0x0000:0x0003] = bytes([0xC3, 0x00, 0x00])  # 0000: JP 0000
+    # Park at a NON-ZERO address: EmulatorRunner treats PC==0 as "not ready
+    # yet", so a loop at 0x0000 would sit exactly on that sentinel.
+    rom[0x0000:0x0003] = bytes([0xC3, 0x00, 0x01])  # 0000: JP 0100
+    rom[0x0100:0x0103] = bytes([0xC3, 0x00, 0x01])  # 0100: JP 0100 (park)
+    # &FF filler decodes as `rst 38h`, so 0x0038 would otherwise recurse into
+    # itself and run the stack down. A bare RET keeps stray execution bounded.
+    rom[0x0038] = 0xC9
+    # Overwriting any of these silently removes the scaffolding: clobber the
+    # park loop and the machine never reaches a steady PC, so start() waits
+    # out its full timeout and then blames the ROM for not loading.
+    reserved = set(range(0x0000, 0x0003)) | {0x0038} | set(
+        range(0x0100, 0x0103))
     for offset, code in (handlers or {}).items():
+        assert 0 <= offset and offset + len(code) <= len(rom), (
+            f"handler at {offset:#06x} ({len(code)} bytes) does not fit a 32K "
+            f"ROM")
+        clash = reserved & set(range(offset, offset + len(code)))
+        assert not clash, (
+            f"handler at {offset:#06x} ({len(code)} bytes) overlaps ROM "
+            f"scaffolding at {sorted(hex(a) for a in clash)} -- the reset "
+            f"vector, the park loop at 0x0100 or the 0x0038 guard")
         rom[offset:offset + len(code)] = code
+    assert len(rom) == 32768, "a slice assignment resized the ROM"
     d = tempfile.mkdtemp(prefix='koncpc_testrom_')
-    with open(os.path.join(d, 'cpc6128.rom'), 'wb') as f:
-        f.write(rom)
+    try:
+        with open(os.path.join(d, 'cpc6128.rom'), 'wb') as f:
+            f.write(rom)
+    except OSError:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
     return d
 
 
@@ -1026,7 +1049,8 @@ def test_step_out_tail_jumping_restart():
     })
     try:
         with EmulatorRunner() as emu:
-            if not emu.start('-O', f'rom.rom_path={romdir}'):
+            if not emu.start('-O', f'rom.rom_path={romdir}',
+                             '-O', 'system.model=2'):
                 print("FAIL: emulator would not start with the test ROM")
                 return False
             emu.ipc.timeout = 30.0
@@ -1037,8 +1061,9 @@ def test_step_out_tail_jumping_restart():
             # Prove the CPU really sees our handler, not firmware. Without this
             # the test can pass for the wrong reason, which is exactly how the
             # previous version of it fooled us.
-            ok, dis = emu.ipc.send_command('disasm 0x0030 1')
-            if 'pop de' not in dis.lower():
+            ok, dis = emu.ipc.send_command('disasm 0x0030 2')
+            low = dis.lower()
+            if not ok or 'pop de' not in low or 'jp $6004' not in low:
                 print(f"FAIL: 0x0030 is not our handler: {dis.strip()!r}")
                 return False
 
@@ -1069,6 +1094,16 @@ def test_step_out_tail_jumping_restart():
                       f"got PC={pc:04X} SP={sp:04X}")
                 return False
 
+            # The handler's POP DE lifted the pushed return address into DE.
+            # Without this, nothing distinguishes "the handler ran and threw
+            # its return address away" from "the walk reached the right PC by
+            # some other route".
+            ok_de, de = emu.ipc.get_reg('DE')
+            if not ok_de or de != 0x6001:
+                print(f"FAIL: handler's POP DE did not run "
+                      f"(DE={de:04X}, expected 6001)")
+                return False
+
             print("PASS: tail-jumping restart did not strand the walk")
             return True
     finally:
@@ -1076,7 +1111,28 @@ def test_step_out_tail_jumping_restart():
 
 
 def test_step_out_nested_restarts():
-    """Two restarts deep: the walk must unwind both, not stop inside one."""
+    """Two restarts deep, entered mid-frame, must both unwind.
+
+    This is the test that requires entered frames to be a STACK of slots
+    rather than one slot. Its partner, test_step_out_tail_jumping_restart,
+    covers the other half; between them both wrong shapes die. Verified by
+    mutating src/z80_view.cpp and re-running:
+
+        mutation                              nested      tail-jumping
+        keep only the newest entered slot     FAIL        (passes)
+        pre-PR depth counter, no pruning      (passes)    FAIL (times out)
+
+    So this test alone does NOT rule out the counter -- do not read it as a
+    regression guard for that bug. What it does rule out is dropping an outer
+    frame when an inner one is entered.
+
+    The mid-frame entry is what gives it teeth. Entered at the top of the
+    frame, it stays green under every mutation above, because each restart's
+    RET lands exactly at entry_sp and the unwound() conjunct rejects it
+    without consulting the slots at all. The leading POP puts entry_sp BELOW
+    both restart slots, so a dropped slot yields a RET that does satisfy
+    unwound() and the walk stops early at 0x6002.
+    """
     print("Running step-out nested-restarts test...")
 
     # TWO DIFFERENT restarts, not one calling itself -- RST 30h at 0x0030
@@ -1087,15 +1143,41 @@ def test_step_out_nested_restarts():
     })
     try:
         with EmulatorRunner() as emu:
-            if not emu.start('-O', f'rom.rom_path={romdir}'):
+            if not emu.start('-O', f'rom.rom_path={romdir}',
+                             '-O', 'system.model=2'):
                 print("FAIL: emulator would not start with the test ROM")
                 return False
             emu.ipc.timeout = 30.0
-            emu.ipc.pause()
+            if not emu.ipc.pause():
+                print("FAIL: Could not pause emulator")
+                return False
 
-            # 6000: RST 30h -> handler re-enters itself once, then both return.
-            for command in ['mem write 0x6000 F7C9',
-                            'mem write 0x8000 0070',
+            # Both vectors must be OURS. &28 in particular is a real firmware
+            # restart (FIRM JUMP), so if the ROM override were silently
+            # ignored this test would run Amstrad's code and could pass for
+            # the wrong reason -- the exact failure that got an earlier
+            # version of the sibling test deleted.
+            # Exact mnemonics, not substrings: the 0xFF filler disassembles
+            # as `rst 38h`, which would satisfy a bare 'rst' check and let an
+            # ignored ROM override pass for the wrong reason.
+            for addr, want in ((0x0028, 'ret'), (0x0030, 'rst 28h')):
+                ok, dis = emu.ipc.send_command(f'disasm 0x{addr:04X} 1')
+                if not ok or want not in dis.lower():
+                    print(f"FAIL: 0x{addr:04X} is not our handler: "
+                          f"{dis.strip()!r}")
+                    return False
+
+            # Enter MID-frame, like a real step out does. Without the POP
+            # the whole test passes even with frame tracking deleted, because
+            # the stack-level conjunct carries it: the outer handler's RET
+            # lands exactly at entry_sp and is rejected anyway. With the POP,
+            # entry_sp sits BELOW the restart slots, so losing a slot makes
+            # the walk finish early at 0x6002 instead of the caller.
+            #   6000: POP HL   -> SP 8000 -> 8002
+            #   6001: RST 30h  -> 0030 RST 28h -> 0028 RET -> 0031 RET
+            #   6002: RET      -> the frame exit, to 7000
+            for command in ['mem write 0x6000 E1F7C9',
+                            'mem write 0x8000 34120070',
                             'reg set SP 0x8000', 'reg set PC 0x6000']:
                 ok, resp = emu.ipc.send_command(command)
                 if not ok:
@@ -1108,8 +1190,17 @@ def test_step_out_nested_restarts():
                 return False
 
             ok_pc, pc = emu.ipc.get_reg('PC')
-            if not ok_pc or pc != 0x7000:
-                print(f"FAIL: expected PC=7000, got {pc:04X}")
+            ok_sp, sp = emu.ipc.get_reg('SP')
+            if not ok_pc or not ok_sp:
+                print("FAIL: could not read back PC/SP")
+                return False
+            if pc == 0x6002:
+                print("FAIL: finished inside the frame -- a restart slot was "
+                      "lost")
+                return False
+            if pc != 0x7000 or sp != 0x8004:
+                print(f"FAIL: expected PC=7000 SP=8004, "
+                      f"got PC={pc:04X} SP={sp:04X}")
                 return False
 
             print("PASS: nested restarts unwound to the caller")
