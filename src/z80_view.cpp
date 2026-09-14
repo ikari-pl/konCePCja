@@ -419,8 +419,18 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
         ++depth;
       } else if (cls.is_ret && popped) {
         // A taken return — an untaken `RET cc` moves no stack at all.
-        if (depth == 0) return Z80StepOutResult::Done;
-        --depth;
+        //
+        // `unwound()` is a conjunct, not the test. Depth counting assumes
+        // returns balance against calls WE counted, and that assumption is not
+        // safe in firmware: code routinely arrives somewhere by JP and leaves
+        // by RET, so a taken RET can appear with no matching counted call.
+        // Each one decrements depth, and once depth reaches 0 inside firmware
+        // the next stray RET would be read as this frame's return. Requiring
+        // the stack to have actually unwound past where the walk began rejects
+        // those, while staying immune to the original bug -- that one exited on
+        // SP ALONE; this needs a taken return AND depth AND the stack level.
+        if (depth == 0 && unwound()) return Z80StepOutResult::Done;
+        if (depth > 0) --depth;
       } else if (cls.is_indirect_jump && depth == 0 &&
                  pc_after == last_popped && unwound()) {
         // `POP HL : JP (HL)` — how hand-written Z80 returns to a computed
