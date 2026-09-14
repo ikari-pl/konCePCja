@@ -60,14 +60,14 @@ void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
                                   uint8_t unit = 0);
 void subcycle_bridge_eject_media(uint8_t unit = 0);
 // Apply a queued insert/eject now. Safe only while the Z80 thread is
-// quiescent (hold CpcPauseLease). IPC disk eject uses this so the next
+// idle (hold CpcPauseLease). IPC disk eject uses this so the next
 // command cannot pull the disc back from a still-mounted FDC.
 void subcycle_bridge_apply_pending_media();
 
 // Disc Tools / IPC disk family: the FDC medium is authoritative; driveA/driveB
 // are a host tooling view. Pull copies the live sector image into the view;
 // push serializes the view back onto the FDC (and marks dirty). Both require
-// the Z80 thread quiescent (hold CpcPauseLease). No-op / false when the bridge
+// the Z80 thread idle (hold CpcPauseLease). No-op / false when the bridge
 // is inactive or the unit has no writable sector image (empty / read-only
 // flux).
 bool subcycle_bridge_pull_drive_view(uint8_t unit = 0);

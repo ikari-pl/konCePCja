@@ -299,9 +299,46 @@ DisassembledCode disassemble(const std::vector<word>& entry_points) {
 
 int z80_instruction_length(word pc) { return decode_at(pc).length; }
 
-bool z80_is_call_or_rst(word pc) {
+Z80StepClass z80_classify_at(word pc) {
+  Z80StepClass c;
+  const RawInstr r = decode_at(pc);
+  if (r.op == nullptr) return c;
+  c.length = r.length;
+  const std::string_view m(r.op->mnemonic);
+  c.is_call = m.rfind("call", 0) == 0;
+  c.is_rst = m.rfind("rst", 0) == 0;
+  c.is_ret = m.rfind("ret", 0) == 0;
+  c.is_indirect_jump = m == "jp (hl)" || m == "jp (ix)" || m == "jp (iy)";
+  return c;
+}
+
+bool z80_is_call(word pc) {
+  const RawInstr r = decode_at(pc);
+  if (r.op == nullptr) return false;
+  return std::string_view(r.op->mnemonic).rfind("call", 0) == 0;
+}
+
+bool z80_is_rst(word pc) {
+  const RawInstr r = decode_at(pc);
+  if (r.op == nullptr) return false;
+  return std::string_view(r.op->mnemonic).rfind("rst", 0) == 0;
+}
+
+bool z80_is_ret(word pc) {
+  // One prefix covers the family: "ret", the eight "ret cc" forms, "reti"
+  // and every "retn" alias (ED 45/55/5D/65/6D/75/7D as well as ED 4D/45).
+  const RawInstr r = decode_at(pc);
+  if (r.op == nullptr) return false;
+  return std::string_view(r.op->mnemonic).rfind("ret", 0) == 0;
+}
+
+bool z80_is_indirect_jump(word pc) {
+  // JP (HL)/(IX)/(IY). Z80 has no "return" instruction beyond RET, so the
+  // `POP HL : JP (HL)` idiom is how hand-written code returns to a computed
+  // address — a step-out that only watched for RET would sail straight past
+  // it and finish one frame too high.
   const RawInstr r = decode_at(pc);
   if (r.op == nullptr) return false;
   const std::string_view m(r.op->mnemonic);
-  return m.rfind("call", 0) == 0 || m.rfind("rst", 0) == 0;
+  return m == "jp (hl)" || m == "jp (ix)" || m == "jp (iy)";
 }

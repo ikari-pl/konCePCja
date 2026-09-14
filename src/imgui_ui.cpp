@@ -378,7 +378,7 @@ void process_pending_dialog() {
     case FileDialogAction::SelectM4SDFolder:
       g_m4board.sd_root_path = path;
       // Fitting a new SD folder rebuilds the whole machine. This route had no
-      // guard of any kind: no warning, no unsaved-disk check, and no quiesce.
+      // guard of any kind: no warning, no unsaved-disk check, and no idle.
       if (g_m4board.enabled) {
         if (driveAltered()) {
           imgui_state.confirm_m4_rebuild = true;
@@ -1011,83 +1011,180 @@ void dbg_step_in() {
     return;
   }
   z80.step_in = 1;
-  z80.step_out = 0;
-  z80.step_out_addresses.clear();
   cpc_resume();
 }
 }  // namespace
 namespace {
+// Which GUI command asked for a bounded walk. Defined here rather than with
+// the worker below because a scoped enum's enumerators are unusable until the
+// definition is seen, and dbg_step_over() names them.
+enum class StepWalkAction : std::uint8_t { StepOut, StepOver, RunToHere };
+
+// Both defined with the step-walk worker below.
+void dispatch_run_to(StepWalkAction action, word target);
+void dispatch_step_walk(StepWalkAction action,
+                        std::function<Z80StepOutResult()> walk);
+
 void dbg_step_over() {
-  if (subcycle_bridge_active()) {
-    cpc_pause();
-    word const pc = z80.PC.w.l;
-    if (z80_is_call_or_rst(pc)) {
-      z80_add_breakpoint_ephemeral(
-          static_cast<word>(pc + z80_instruction_length(pc)));
-      cpc_resume();
-      return;
-    }
-    z80_step_instruction();
+  if (!subcycle_bridge_active()) {
+    set_osd_message("Step Over needs a running machine", 3000);
     return;
   }
-  z80.step_in = 0;
-  z80.step_out = 0;
-  z80.step_out_addresses.clear();
-  word const pc = z80.PC.w.l;
-  if (z80_is_call_or_rst(pc)) {
-    z80_add_breakpoint_ephemeral(pc + z80_instruction_length(pc));
-    cpc_resume();
-  } else {
-    z80.step_in = 1;
-    cpc_resume();
+  // A lease, not a bare cpc_pause(): this reads PC, classifies it and may step
+  // the machine, all from the render thread, so the Z80 thread must actually
+  // be idle first -- cpc_pause() only sets the flag.
+  word pc = 0;
+  Z80StepClass cls;
+  {
+    CpcPauseLease const lease;
+    pc = z80.PC.w.l;
+    cls = z80_classify_at(pc);
+    if (!cls.is_call && !cls.is_rst) {
+      z80_step_instruction();
+      return;
+    }
+    if (cls.is_rst) {
+      // NOT pc+len. The CPC firmware restarts (08/10/18/28) carry inline
+      // operands and resume past them, so an ephemeral at pc+1 sits on a data
+      // byte that is never fetched as an instruction and never fires. Step
+      // into the vector; the walk below finishes the frame it opened.
+      z80_step_instruction();
+    }
   }
+  if (cls.is_rst) {
+    dispatch_step_walk(StepWalkAction::StepOver,
+                       []() { return z80_step_out_finish(5000); });
+    return;
+  }
+  // A real CALL returns to pc+len. Bounded, like every sibling path: the old
+  // fire-and-forget resume had no deadline at all, so a callee that never
+  // returned left the toolbar disabled indefinitely with a stale ephemeral
+  // still armed.
+  dispatch_run_to(StepWalkAction::StepOver, static_cast<word>(pc + cls.length));
 }
 }  // namespace
-// z80_step_out_finish() blocks on 1ms-polled cpc_resume()/cpc_pause_if_epoch()
-// loops (up to its 5s timeout) while skipping nested CALL/RST at full speed --
-// exactly what the IPC `step out` handler already does from its own server
-// thread. Running that same call directly from the render thread's button
-// handler froze the whole GUI (no SDL_PumpEvents) for however long it took.
-// So the GUI path dispatches it to a short-lived worker thread instead and
-// polls the result once per frame at the button site, matching the pattern
-// IPC already established rather than inventing a second concurrency model.
+// The bounded step walks (z80_step_out_finish, z80_run_until_ephemeral) block
+// on 1ms-polled cpc_resume()/cpc_pause_if_epoch() loops for up to their
+// deadline -- exactly what the IPC handlers do from the server thread. Running
+// one on the render thread froze the whole GUI (no SDL_PumpEvents) for however
+// long it took. So every GUI action that needs a bounded walk dispatches it to
+// a short-lived worker and polls the result once per frame at the toolbar,
+// matching the pattern IPC already established.
 namespace {
-std::atomic<bool> g_step_out_running{false};
-std::atomic<bool> g_step_out_timed_out{false};
-std::thread g_step_out_thread;
+std::atomic<bool> g_step_walk_running{false};
+// Outcome of the last walk, or -1 for "nothing to report". An int because the
+// walk can end unfinished for two different reasons and the toast must not
+// call a stall a timeout.
+constexpr int kStepWalkNoOutcome = -1;
+std::atomic<int> g_step_walk_outcome{kStepWalkNoOutcome};
+std::atomic<StepWalkAction> g_step_walk_action{StepWalkAction::StepOut};
+// Upper bound on waiting for the Z80 thread to go idle before dispatching.
+// Generous (a frame is 20ms); the point is that the render thread cannot hang.
+constexpr int kStepWalkIdleWaitMs = 1000;
+std::thread g_step_walk_thread;
 }  // namespace
 
-void dbg_step_out_await_shutdown() {
-  if (g_step_out_thread.joinable()) g_step_out_thread.join();
+bool dbg_step_walk_running() {
+  return g_step_walk_running.load(std::memory_order_acquire);
+}
+
+void dbg_step_walk_await_shutdown() {
+  if (g_step_walk_thread.joinable()) g_step_walk_thread.join();
+}
+
+namespace {
+// Run `walk` off the render thread, tagging the result with the action that
+// asked for it so the toast names the right command.
+void dispatch_step_walk(StepWalkAction action,
+                        std::function<Z80StepOutResult()> walk) {
+  if (g_step_walk_running.exchange(true, std::memory_order_acq_rel)) {
+    return;  // a walk is already in flight; ignore the repeated click/shortcut
+  }
+  // Pause, then wait for the Z80 thread to go idle WITH A BOUND. A plain
+  // CpcPauseLease waits forever, and this runs on the render thread -- an
+  // unbounded wait here would freeze the GUI, which is the exact failure this
+  // worker exists to prevent.
+  {
+    CpcPauseLease const lease(CpcPauseLeaseMode::PauseOnly);
+    if (!cpc_wait_until_idle(kStepWalkIdleWaitMs)) {
+      g_step_walk_running.store(false, std::memory_order_release);
+      set_osd_message("Z80 thread is not responding", 3000);
+      return;
+    }
+  }
+  // The previous run already flipped g_step_walk_running back to false before
+  // this exchange could succeed, so this join cannot block.
+  if (g_step_walk_thread.joinable()) g_step_walk_thread.join();
+  g_step_walk_action.store(action, std::memory_order_release);
+  try {
+    g_step_walk_thread = std::thread([walk = std::move(walk)]() {
+      Z80StepOutResult result = Z80StepOutResult::Stalled;
+      try {
+        result = walk();
+      } catch (const std::exception& e) {
+        // A worker that throws would otherwise call std::terminate and take the
+        // emulator with it, and leave the running flag latched so the whole
+        // step toolbar stays dead.
+        LOG_ERROR("step walk failed: " << e.what());
+      }
+      // set_osd_message() touches render-thread-owned state (the toast queue);
+      // only the outcome code crosses threads, and the render thread reads it
+      // and calls set_osd_message() itself when it polls.
+      g_step_walk_outcome.store(static_cast<int>(result),
+                                std::memory_order_release);
+      g_step_walk_running.store(false, std::memory_order_release);
+    });
+  } catch (...) {
+    // std::thread construction can throw (resource exhaustion). Without this
+    // the running flag stays latched true and the whole step toolbar is dead
+    // for the rest of the session.
+    g_step_walk_running.store(false, std::memory_order_release);
+    set_osd_message("Could not start the step worker", 3000);
+  }
+}
+
+// Run to `target` at full speed, bounded, off the render thread. Shared by
+// Step Over's CALL skip and the disassembly view's "Run to here".
+void dispatch_run_to(StepWalkAction action, word target) {
+  dispatch_step_walk(action, [target]() {
+    auto const deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(5000);
+    switch (z80_run_until_ephemeral(target, deadline)) {
+      case Z80RunUntilResult::Landed:
+        return Z80StepOutResult::Done;
+      case Z80RunUntilResult::OtherBreak:
+        return Z80StepOutResult::BreakpointHit;
+      case Z80RunUntilResult::Timeout:
+        return Z80StepOutResult::Timeout;
+      case Z80RunUntilResult::Stalled:
+        return Z80StepOutResult::Stalled;
+    }
+    return Z80StepOutResult::Timeout;
+  });
+}
+
+}  // namespace
+
+// Public entry so the disassembly view's "Run to here" shares this bounded,
+// off-render-thread path instead of its own fire-and-forget resume.
+void dbg_run_to_address(word target) {
+  if (!subcycle_bridge_active()) {
+    set_osd_message("Run to here needs a running machine", 3000);
+    return;
+  }
+  dispatch_run_to(StepWalkAction::RunToHere, target);
 }
 
 namespace {
 void dbg_step_out() {
-  if (subcycle_bridge_active()) {
-    if (g_step_out_running.exchange(true, std::memory_order_acq_rel)) {
-      return;  // already stepping out; ignore a repeated click/shortcut
-    }
-    {
-      CpcPauseLease lease;  // quiesce before dispatching the worker
-    }
-    // The previous run already flipped g_step_out_running back to false
-    // before this exchange could succeed, so this join cannot block.
-    if (g_step_out_thread.joinable()) g_step_out_thread.join();
-    g_step_out_thread = std::thread([]() {
-      bool const timed_out =
-          z80_step_out_finish(5000) == Z80StepOutResult::Timeout;
-      // set_osd_message() touches render-thread-owned state (the toast
-      // queue); only the boolean crosses threads, and the render thread
-      // reads it and calls set_osd_message() itself when it polls below.
-      g_step_out_timed_out.store(timed_out, std::memory_order_release);
-      g_step_out_running.store(false, std::memory_order_release);
-    });
+  if (!subcycle_bridge_active()) {
+    // No sub-cycle machine (the legacy interpreter is gone, so this is only
+    // reachable before the board is up): there is nothing to step out of.
+    set_osd_message("Step Out needs a running machine", 3000);
     return;
   }
-  z80.step_out = 1;
-  z80.step_out_addresses.clear();
-  z80.step_in = 0;
-  cpc_resume();
+  dispatch_step_walk(StepWalkAction::StepOut,
+                     []() { return z80_step_out_finish(5000); });
 }
 }  // namespace
 
@@ -2764,7 +2861,7 @@ void imgui_render_statusbar() {
         auto& driveFile =
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         {
-          CpcPauseLease lease;  // quiesce so the flush below is synchronous
+          CpcPauseLease lease;  // idle so the flush below is synchronous
           dsk_eject(&drive);
           // dsk_eject only queues the FDC unmount; apply it now, while
           // driveFile still names the outgoing disc, so any dirty sectors
@@ -4661,10 +4758,28 @@ void imgui_render_devtools() {
     // same ephemeral-breakpoint and pause/resume state, so the whole group
     // stays disabled until it reports back.
     bool const step_out_running =
-        g_step_out_running.load(std::memory_order_acquire);
-    if (!step_out_running &&
-        g_step_out_timed_out.exchange(false, std::memory_order_acq_rel)) {
-      set_osd_message("Step Out timed out", 3000);
+        g_step_walk_running.load(std::memory_order_acquire);
+    if (!step_out_running) {
+      int const outcome = g_step_walk_outcome.exchange(
+          kStepWalkNoOutcome, std::memory_order_acq_rel);
+      // Name the command the user actually invoked: Step Over on an RST runs
+      // the same walk, and reporting that as "Step Out" is simply wrong.
+      char const* what = "Step Out";
+      switch (g_step_walk_action.load(std::memory_order_acquire)) {
+        case StepWalkAction::StepOver:
+          what = "Step Over";
+          break;
+        case StepWalkAction::RunToHere:
+          what = "Run to here";
+          break;
+        case StepWalkAction::StepOut:
+          break;
+      }
+      if (outcome == static_cast<int>(Z80StepOutResult::Timeout)) {
+        set_osd_message(std::string(what) + " timed out", 3000);
+      } else if (outcome == static_cast<int>(Z80StepOutResult::Stalled)) {
+        set_osd_message(std::string(what) + ": this never returns", 3000);
+      }
     }
     if (!was_paused || step_out_running) ImGui::BeginDisabled();
     if (ImGui::Button("Step In")) dbg_step_in();
@@ -4699,7 +4814,12 @@ void imgui_render_devtools() {
     {
       ImGuiIO const& io = ImGui::GetIO();
       if (io.WantCaptureKeyboard && !io.WantTextInput) {
-        if (was_paused) {
+        // `&& !step_out_running`: the toolbar buttons are wrapped in
+        // BeginDisabled(!was_paused || step_out_running), but the shortcuts
+        // used to check only was_paused -- and the machine IS paused for most
+        // of a walk, so Shift+F7 / F7 drove the Z80 from the render thread
+        // while the worker was driving it too.
+        if (was_paused && !step_out_running) {
           if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F7))
             dbg_step_over();
           else if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_F11))

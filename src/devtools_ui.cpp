@@ -832,8 +832,10 @@ void DevToolsUI::render_disassembly() {
         const DataArea* ctx_da = g_data_areas.find(entry.addr);
         if (!entry.is_data_area) {
           if (ImGui::MenuItem("Run to here")) {
-            z80_add_breakpoint_ephemeral(entry.addr);
-            cpc_resume();
+            // Shares the bounded, off-render-thread walk the step commands
+            // use. The old arm-and-resume had no deadline, no stale-hit drain
+            // and no way to report that it never arrived.
+            dbg_run_to_address(static_cast<word>(entry.addr));
           }
           if (ImGui::MenuItem("Set PC here")) {
             z80.PC.w.l = entry.addr;
