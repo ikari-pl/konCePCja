@@ -918,6 +918,29 @@ TEST_F(IpcServerTest, TypeRoutesThroughAutotypeQueue) {
   g_autotype_queue.clear();
 }
 
+// The IPC server's ';'-command-chaining line splitter (split_semicolons)
+// used to trim trailing spaces/tabs from EVERY segment, including a line
+// with no ';' at all. 'input type'/'autotype' consume the rest of the line
+// verbatim as their text argument, so a trailing space in that argument was
+// silently eaten before ever reaching AutoTypeQueue::enqueue() -- 100%
+// deterministically, not a race (beads-u00m).
+TEST_F(IpcServerTest, TypeAndAutotypePreserveATrailingSpace) {
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type hello "));
+  auto acts = g_autotype_queue.actions();
+  ASSERT_EQ(acts.size(), 6u)
+      << "trailing space in 'input type' text must not be trimmed";
+  EXPECT_EQ(acts[5].cpc_key, static_cast<uint16_t>(CPC_SPACE));
+
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("autotype hello "));
+  auto acts2 = g_autotype_queue.actions();
+  ASSERT_EQ(acts2.size(), 6u)
+      << "trailing space in 'autotype' text must not be trimmed";
+  EXPECT_EQ(acts2[5].cpc_key, static_cast<uint16_t>(CPC_SPACE));
+  g_autotype_queue.clear();
+}
+
 // ─────────────────────────────────────────────────
 // Light-gun (IPC Phase 2, beads-vrsr): the staged 'input gun' commands are
 // flushed by ipc_drain_input() into CPC.phazer_* exactly as the SDL path does.
