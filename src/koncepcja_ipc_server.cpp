@@ -57,6 +57,7 @@
 #include "disk_sector_editor.h"
 #include "drive_status.h"
 #include "expr_parser.h"
+#include "flux_save.h"
 #include "gif_recorder.h"
 #include "imgui_ui_testable.h"
 #include "keyboard.h"
@@ -918,12 +919,19 @@ void init_command_registry() {
   register_command(
       "disk", "HARDWARE",
       "disk formats | format <A|B> <format> | new <path> [format] "
-      "[sector|flux] | ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> "
-      "<file> <path> | put <A|B> <path> [file] | sector ...",
+      "[sector|flux] | status|eject <A|B> | save <A|B> <path> [dsk|scp|hfe] | "
+      "ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> <file> <path> | put "
+      "<A|B> <path> [file] | sector ...",
       "Manage emulated floppy disks",
       "High-level disk management. Mutations (format/put/rm/sector write) "
       "push to the live FDC; a failed push rolls the host view back so "
-      "`disk ls` cannot show the rejected edit.\n"
+      "`disk ls` cannot show the rejected edit. Save writes the live FDC "
+      "medium (never a stale host t_drive when the board is running).\n"
+      "  status: Presence and save caps (present, backing, can_dsk/scp/hfe).\n"
+      "  save: Persist drive A/B to a host path. Default format dsk. scp/hfe "
+      "require flux backing on A; otherwise ERR 409. Traversal rejected.\n"
+      "  eject: Unmount the drive (no GUI confirm). Dirty media follows the "
+      "same flush-on-eject path as the File menu.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
       "  put: Copies a file from the host machine onto the emulated disk.");
 
@@ -3848,7 +3856,8 @@ std::string handle_command(const std::string& line) {
     if (cmd == "disk") {
       if (parts.size() < 2)
         return "ERR 400 missing subcommand "
-               "(formats|format|new|ls|cat|get|put|rm|info|sector)\n";
+               "(formats|format|new|status|save|eject|ls|cat|get|put|rm|info|"
+               "sector)\n";
       if (parts[1] == "formats") {
         auto names = disk_format_names();
         std::ostringstream resp;
@@ -3897,6 +3906,16 @@ std::string handle_command(const std::string& line) {
         if (c == 'A') return 0;
         if (c == 'B') return 1;
         return -1;
+      };
+      auto disk_caps = [&](int unit) -> FluxSaveCaps {
+        if (subcycle_bridge_active()) return flux_save_caps(unit);
+        FluxSaveCaps caps;
+        const t_drive& d = unit == 0 ? driveA : driveB;
+        if (d.tracks > 0) {
+          caps.present = true;
+          caps.can_dsk = true;
+        }
+        return caps;
       };
       // Machine medium is authoritative (beads-lly6): pull into the host view
       // before tools read/edit; push after mutations. Lease owns pause through
@@ -4202,6 +4221,86 @@ std::string handle_command(const std::string& line) {
               });
         }
         return "ERR 400 unknown sector subcommand (read|write|info)\n";
+      }
+      if (parts[1] == "status") {
+        if (parts.size() < 3) return "ERR 400 usage: disk status <A|B>\n";
+        const int unit = resolve_unit(parts[2]);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        CpcPauseLease lease;
+        // A just-issued `load` only queues the FDC insert. Apply it while
+        // quiescent so caps match the disc the agent thinks is mounted.
+        subcycle_bridge_apply_pending_media();
+        const FluxSaveCaps caps = disk_caps(unit);
+        lease.restore_run_state();
+        const char* backing = "empty";
+        if (caps.present) backing = caps.can_scp ? "flux" : "sector";
+        std::ostringstream resp;
+        resp << "OK present=" << (caps.present ? 1 : 0)
+             << " backing=" << backing << " can_dsk=" << (caps.can_dsk ? 1 : 0)
+             << " can_scp=" << (caps.can_scp ? 1 : 0)
+             << " can_hfe=" << (caps.can_hfe ? 1 : 0) << "\n";
+        return resp.str();
+      }
+      if (parts[1] == "save") {
+        if (parts.size() < 4)
+          return "ERR 400 usage: disk save <A|B> <path> [dsk|scp|hfe]\n";
+        const int unit = resolve_unit(parts[2]);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        const std::string& path = parts[3];
+        if (!is_safe_path(path)) return "ERR 403 path-traversal-blocked\n";
+        std::string fmt_name = parts.size() >= 5 ? parts[4] : "dsk";
+        for (auto& c : fmt_name)
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        SaveFormat fmt = SaveFormat::Dsk;
+        if (fmt_name == "dsk") {
+          fmt = SaveFormat::Dsk;
+        } else if (fmt_name == "scp") {
+          fmt = SaveFormat::Scp;
+        } else if (fmt_name == "hfe") {
+          fmt = SaveFormat::Hfe;
+        } else {
+          return "ERR 400 format must be dsk, scp, or hfe\n";
+        }
+        CpcPauseLease lease;
+        subcycle_bridge_apply_pending_media();
+        const FluxSaveCaps caps = disk_caps(unit);
+        const bool allowed = (fmt == SaveFormat::Dsk && caps.can_dsk) ||
+                             (fmt == SaveFormat::Scp && caps.can_scp) ||
+                             (fmt == SaveFormat::Hfe && caps.can_hfe);
+        if (!allowed) {
+          lease.restore_run_state();
+          if (!caps.present && fmt == SaveFormat::Dsk)
+            return "ERR 404 empty-drive\n";
+          return "ERR 409 save-format-unavailable\n";
+        }
+        std::string err;
+        bool ok = false;
+        if (subcycle_bridge_active()) {
+          ok = flux_save_to_file(unit, fmt, path, err);
+        } else {
+          ok = dsk_save(path, unit == 0 ? &driveA : &driveB) == 0;
+          if (!ok) err = "write error";
+        }
+        lease.restore_run_state();
+        if (!ok) return "ERR " + err + "\n";
+        return "OK\n";
+      }
+      if (parts[1] == "eject") {
+        if (parts.size() < 3) return "ERR 400 usage: disk eject <A|B>\n";
+        const int unit = resolve_unit(parts[2]);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        CpcPauseLease lease;
+        dsk_eject(unit == 0 ? &driveA : &driveB);
+        if (unit == 0)
+          CPC.driveA.file.clear();
+        else
+          CPC.driveB.file.clear();
+        // dsk_eject only queues FDC unmount for the next frame. Apply now
+        // while the Z80 is quiescent so the next IPC command cannot pull
+        // the disc back into the host view.
+        subcycle_bridge_apply_pending_media();
+        lease.restore_run_state();
+        return "OK\n";
       }
       return "ERR 400 unknown disk subcommand\n";
     }

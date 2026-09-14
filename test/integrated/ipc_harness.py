@@ -1558,6 +1558,108 @@ def test_disk_live_put_cat():
         return True
 
 
+def test_disk_status_save_eject():
+    """File-menu Save Disk / Eject Disk over IPC (live FDC, not host t_drive).
+
+    After put, disk save must persist the CPC file into a loadable image.
+    Reload after eject is the proof the bytes came from the live medium.
+    Drive B flux save is 409 because flux is A-only.
+    """
+    print("Running live-board disk status/save/eject test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok, status = emu.ipc.send_command('disk eject A')
+        if not ok:
+            print(f"FAIL: eject empty A: {status}")
+            return False
+        ok, status = emu.ipc.send_command('disk status A')
+        if not ok or 'present=0' not in status or 'backing=empty' not in status:
+            print(f"FAIL: empty status: {status!r}")
+            return False
+
+        ok, resp = emu.ipc.send_command('disk format A data')
+        if not ok:
+            print(f"FAIL: disk format: {resp}")
+            return False
+        ok, status = emu.ipc.send_command('disk status A')
+        if not ok or 'present=1' not in status or 'can_dsk=1' not in status:
+            print(f"FAIL: formatted status: {status!r}")
+            return False
+        if 'can_scp=1' in status:
+            print(f"FAIL: sector disc reported flux caps: {status!r}")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'hello.bin')
+            with open(host, 'wb') as f:
+                f.write(b'HI')
+            ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+            if not ok:
+                print(f"FAIL: put: {resp}")
+                return False
+
+            saved = os.path.join(td, 'saved.dsk')
+            ok, resp = emu.ipc.send_command(f'disk save A {saved} dsk')
+            if not ok:
+                print(f"FAIL: save dsk: {resp}")
+                return False
+            if not os.path.isfile(saved) or os.path.getsize(saved) < 64:
+                print(f"FAIL: saved image missing or tiny: {saved}")
+                return False
+
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if ok and 'HELLO.BIN' in ls:
+                print(f"FAIL: HELLO.BIN still listed after eject: {ls!r}")
+                return False
+
+            ok, resp = emu.ipc.send_command(f'load {saved}')
+            if not ok:
+                print(f"FAIL: reload saved image: {resp}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls:
+                print(f"FAIL: saved image dropped live write; ls={ls!r}")
+                return False
+
+            flux_path = os.path.join(td, 'blank.scp')
+            ok, resp = emu.ipc.send_command(
+                f'disk new {flux_path} data flux')
+            if not ok:
+                print(f"FAIL: disk new flux: {resp}")
+                return False
+            ok, resp = emu.ipc.send_command(f'load {flux_path}')
+            if not ok:
+                print(f"FAIL: load flux: {resp}")
+                return False
+            ok, status = emu.ipc.send_command('disk status A')
+            if not ok or 'backing=flux' not in status or 'can_scp=1' not in status:
+                print(f"FAIL: flux status: {status!r}")
+                return False
+            out_scp = os.path.join(td, 'out.scp')
+            ok, resp = emu.ipc.send_command(f'disk save A {out_scp} scp')
+            if not ok:
+                print(f"FAIL: save scp on A: {resp}")
+                return False
+            ok, resp = emu.ipc.send_command(
+                f'disk save B {os.path.join(td, "b.scp")} scp')
+            if ok or '409' not in resp:
+                print(f"FAIL: expected 409 saving scp on B, got {resp!r}")
+                return False
+
+        print(f"  status after format: sector, can_dsk")
+        print(f"  save/reload kept HELLO.BIN; A scp save OK; B scp 409")
+        print("PASS: live-board disk status/save/eject")
+        return True
+
+
 def test_profile_load_missing_keeps_running():
     """profile load ERR must restore a running machine (beads-csl7.2).
 
@@ -2065,6 +2167,7 @@ def main():
         test_profile_load_rebuilds_machine,
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
+        test_disk_status_save_eject,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,
