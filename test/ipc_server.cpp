@@ -971,6 +971,30 @@ TEST_F(IpcServerTest, TypeRoutesThroughAutotypeQueue) {
   g_autotype_queue.clear();
 }
 
+// A literal ';' in 'input type'/'autotype' text is swallowed by the IPC
+// server's ';'-command-chaining line splitter (split_semicolons(), called
+// on every raw line before dispatch) -- the tail after the ';' is parsed
+// as a separate, usually-unrecognized command instead of ever reaching
+// AutoTypeQueue (beads-x7hu). ~SEMICOLON~ sidesteps this entirely: no
+// literal ';' byte reaches the wire, so the chain-splitter never sees it.
+TEST_F(IpcServerTest, SemicolonTokenTypesTheKeyWithoutTriggeringChainSplit) {
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type a~SEMICOLON~b"));
+  auto acts = g_autotype_queue.actions();
+  ASSERT_EQ(acts.size(), 3u)
+      << "~SEMICOLON~ must parse to one key action between 'a' and 'b', "
+         "not be swallowed by chain-splitting";
+  EXPECT_EQ(acts[1].cpc_key, static_cast<uint16_t>(CPC_SEMICOLON));
+
+  // Case-insensitive, matching every other named ~KEY~ token.
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("autotype ~semicolon~"));
+  auto acts2 = g_autotype_queue.actions();
+  ASSERT_EQ(acts2.size(), 1u);
+  EXPECT_EQ(acts2[0].cpc_key, static_cast<uint16_t>(CPC_SEMICOLON));
+  g_autotype_queue.clear();
+}
+
 // ─────────────────────────────────────────────────
 // Light-gun (IPC Phase 2, beads-vrsr): the staged 'input gun' commands are
 // flushed by ipc_drain_input() into CPC.phazer_* exactly as the SDL path does.

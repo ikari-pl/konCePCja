@@ -900,7 +900,10 @@ void init_command_registry() {
       "atomic write. Optional hold=<frames>.\n"
       "  type:    Types a string through the AutoTypeQueue (the same path as "
       "'autotype'), so WinAPE ~KEY~ tokens and newlines work. Typing is queued "
-      "and drains over the next keyboard scans (see 'autotype status').\n"
+      "and drains over the next keyboard scans (see 'autotype status'). A "
+      "literal ';' cannot appear in the text (the IPC line parser splits on "
+      "it for command chaining before this command sees it) -- use "
+      "~SEMICOLON~ instead.\n"
       "  joy:     Sets joystick <0|1> direction <dir> (U/D/L/R/F1/F2, or 0 to "
       "release all). Prefix <dir> with '-' to release a single direction.\n"
       "  mouse:   Drives the AMX/Symbiface mouse. 'move <dx> <dy>' feeds "
@@ -1139,7 +1142,9 @@ void init_command_registry() {
       "balanced pair of surrounding quotes or apostrophes is stripped, so "
       "`autotype |cpm~RETURN~` and `autotype '|cpm~RETURN~'` are equivalent "
       "(same rule as `input type`). An UNBALANCED leading apostrophe is kept "
-      "-- that is a real BASIC comment.\n"
+      "-- that is a real BASIC comment. A literal ';' cannot appear in the "
+      "text -- the IPC line parser splits on ';' for command chaining "
+      "before this command ever sees it -- use ~SEMICOLON~ instead.\n"
       "  status: Show pending queue length.\n"
       "  clear:  Cancel pending input.");
 
