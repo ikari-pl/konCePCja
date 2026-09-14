@@ -699,7 +699,7 @@ def test_snapshot_round_trip():
     """Save snapshot while paused, corrupt memory, load snapshot, verify restored.
 
     Exercises cpc_pause_and_wait() in the IPC server's snapshot save/load paths.
-    Without quiescence the snapshot might capture a partially-updated Z80 state.
+    Without going idle the snapshot might capture a partially-updated Z80 state.
     """
     print("Running snapshot round-trip test...")
 
@@ -798,11 +798,20 @@ def test_rapid_pause_resume():
 
 
 def test_step_in_accuracy():
-    """Pause, read PC, step N instructions, verify PC advanced monotonically.
+    """Pause, plant a known instruction run, step it, verify PC advances.
 
-    Exercises cpc_pause_and_wait() in the IPC step-in path.  If the Z80 thread
-    was still inside z80_execute() when step_in ran, the PC would not advance
+    Exercises cpc_pause_and_wait() in the IPC step-in path: if the Z80 thread
+    were still inside z80_execute() when step_in ran, PC would not advance
     predictably.
+
+    Deliberately steps a PLANTED run of NOPs rather than whatever boot code
+    happens to be live. The previous version paused at an arbitrary point and
+    demanded PC change on every single step, which is simply false for Z80
+    block instructions -- LDIR/LDDR/OTIR re-execute at the SAME PC once per
+    iteration until BC hits 0. The CPC firmware boots through big LDIR block
+    copies, so that test failed on most runs (measured 3 of 4 on master, at
+    0x0642 and 0x0B2C -- both `ldir`) while the stepping code was perfectly
+    correct.
     """
     print("Running step-in accuracy test...")
 
@@ -815,12 +824,15 @@ def test_step_in_accuracy():
 
         emu.ipc.pause()
 
-        ok, pc_start = emu.ipc.get_reg('PC')
+        # 16 NOPs at 0x6000: one byte each, so PC must advance by exactly 1.
+        ok, resp = emu.ipc.send_command('mem write 0x6000 ' + '00' * 16)
         if not ok:
-            print("FAIL: Could not read initial PC")
+            print(f"FAIL: could not plant NOPs: {resp}")
+            return False
+        if not emu.ipc.send_command('reg set PC 0x6000')[0]:
+            print("FAIL: could not set PC")
             return False
 
-        prev_pc = pc_start
         for i in range(STEPS):
             ok_s, _ = emu.ipc.step_in(1)
             if not ok_s:
@@ -830,12 +842,17 @@ def test_step_in_accuracy():
             if not ok_r:
                 print(f"FAIL: Could not read PC after step {i+1}")
                 return False
-            if cur_pc == prev_pc:
-                print(f"FAIL: PC stuck at 0x{cur_pc:04X} after step {i+1}")
-                return False
-            prev_pc = cur_pc
+            want = 0x6000 + i + 1
+            if cur_pc != want:
+                # An interrupt vectoring away mid-run is legitimate; a PC that
+                # simply failed to move is the bug this test is about.
+                if cur_pc == 0x6000 + i:
+                    print(f"FAIL: PC stuck at 0x{cur_pc:04X} after step {i+1}")
+                    return False
+                print(f"  interrupt took PC to 0x{cur_pc:04X}; re-seating")
+                emu.ipc.send_command(f'reg set PC 0x{want:04X}')
 
-        print(f"  PC advanced from 0x{pc_start:04X} to 0x{prev_pc:04X} over {STEPS} steps")
+        print(f"  PC advanced one NOP at a time across {STEPS} steps")
         print("PASS: Step-in accuracy test")
         return True
 
@@ -866,6 +883,10 @@ def test_step_out_nested_call():
                 print(f"FAIL: {command!r} failed: {resp}")
                 return False
 
+        # The walk single-steps through the restart handler, so give the
+        # client more than its default 5s -- otherwise a slow-but-correct walk
+        # looks like a failure.
+        emu.ipc.timeout = 30.0
         ok, resp = emu.ipc.send_command('step out')
         if not ok:
             print(f"FAIL: step out failed: {resp}")
@@ -880,6 +901,297 @@ def test_step_out_nested_call():
             return False
 
         print("PASS: Step Out skipped nested CALL and unwound one frame")
+        return True
+
+
+def test_step_out_gated_on_ret_not_sp():
+    """Step Out must finish on the RET, not on the first POP that lifts SP.
+
+    The ordinary Z80 subroutine saves a register on entry and restores it
+    just before returning:
+
+        PUSH HL / <body> / POP HL / RET
+
+    Issue `step out` inside <body> and the entry SP is the POST-push value,
+    so `POP HL` alone raises SP above it. A bare SP-threshold test ends the
+    walk there -- one instruction early, PC still on the RET, still inside
+    the callee. This pins the RET gate that prevents that.
+    """
+    print("Running step-out RET-gate test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # Mid-body of a routine that already did `PUSH HL`:
+        #   6000: NOP        <- step out issued here
+        #   6001: POP HL     <- raises SP to 8002, ABOVE the 8000 entry SP
+        #   6002: RET        <- the real frame exit, to 7000
+        # Stack: 8000 = saved HL (1234), 8002 = return address (7000).
+        setup = [
+            'mem write 0x6000 00E1C9',
+            'mem write 0x8000 34120070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6002:
+            print(
+                "FAIL: stopped at the POP, not the RET -- PC=6002 SP="
+                f"{sp:04X} (the SP-threshold regression)")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(
+                f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        # HL must carry the POP'd value: the walk really executed the body.
+        ok_hl, hl = emu.ipc.get_reg('HL')
+        if not ok_hl or hl != 0x1234:
+            print(f"FAIL: expected HL=1234 after POP, got {hl:04X}")
+            return False
+
+        print("PASS: Step Out ran through the POP and finished on the RET")
+        return True
+
+
+def _load_frame(emu, code_hex, stack_hex="34120070", extra=None):
+    """Plant a routine at 0x6000 inside a frame whose return address is 0x7000.
+
+    Stack: 8000 = a saved register pair, 8002 = the return address. SP starts
+    at 8000, i.e. mid-frame, AFTER the routine's entry PUSH -- the position
+    that breaks a naive stack-pointer threshold.
+    """
+    for command in ['mem write 0x6000 ' + code_hex,
+                    'mem write 0x8000 ' + stack_hex,
+                    'reg set SP 0x8000',
+                    'reg set PC 0x6000'] + (extra or []):
+        ok, resp = emu.ipc.send_command(command)
+        if not ok:
+            print(f"FAIL: {command!r} failed: {resp}")
+            return False
+    return True
+
+
+def test_step_out_untaken_conditional_ret():
+    """An untaken RET cc must NOT end the walk.
+
+    This is the case that defeated the first RET gate. That gate asked two
+    independent questions -- "is this a RET-class opcode?" and "is SP above
+    where we started?" -- and an untaken `RET NZ` answers yes to both the
+    moment an earlier POP has lifted SP. Reproduced then: step out stopped at
+    0x6002, on the untaken RET NZ, still inside the frame.
+    """
+    print("Running step-out untaken-RET-cc test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL   -> SP 8000 -> 8002, ABOVE the entry SP
+        #   6001: RET NZ   -> NOT taken (Z set): moves no stack at all
+        #   6002: RET      -> the real frame exit, to 7000
+        if not _load_frame(emu, 'E1C0C9', extra=['reg set F 0x40']):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6002:
+            print("FAIL: stopped on the untaken RET NZ, still inside the frame")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: untaken RET cc did not end the walk")
+        return True
+
+
+def test_step_out_pop_then_call():
+    """A POP before a CALL must not end the walk when the callee is skipped.
+
+    The walk once carried a `depth == 0 && unwound()` backstop after a
+    callee skip, for a hypothetical callee that destroys the stack. A plain
+    POP earlier in the frame lifts SP above the entry level, so the very next
+    CALL-skip satisfied it and step out reported OK at the RET -- inside the
+    frame. Third variant of the same bug: any exit that fires without seeing a
+    taken return is it.
+    """
+    print("Running step-out POP-then-CALL test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL     -> SP 8000 -> 8002, above the entry SP
+        #   6001: CALL 6005  -> skipped at full speed
+        #   6004: RET        -> the real frame exit, to 7000
+        #   6005: RET        -> the callee
+        if not _load_frame(emu, 'E1CD0560C9C9'):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6004:
+            print("FAIL: backstop fired after the CALL skip, still in frame")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: POP before CALL did not end the walk early")
+        return True
+
+
+def test_step_out_computed_return():
+    """`POP HL : JP (HL)` is a return, and must end the walk."""
+    print("Running step-out computed-return test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL   -> HL = 7000 (the return address), SP 8000 -> 8002
+        #   6001: JP (HL)  -> jumps to the word just popped: a return
+        # Stack: 8000 = 7000 so the POP lifts the return address into HL.
+        if not _load_frame(emu, 'E1E9', stack_hex='00700070'):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        if not ok_pc or pc != 0x7000:
+            print(f"FAIL: expected PC=7000 after POP HL:JP (HL), got {pc:04X}")
+            return False
+
+        print("PASS: computed return ended the walk at the caller")
+        return True
+
+
+def test_step_out_never_returns_times_out_honestly():
+    """A frame that can never return must report a plain 408, not a false OK.
+
+    Deciding whether a frame WILL return is undecidable, so step out does not
+    guess: it runs its deadline and says it timed out. What it must never do is
+    report success at some arbitrary address it happened to stop at.
+    """
+    print("Running step-out never-returns test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: DI / 6001: JP $6001 -- spins forever, never returns, never
+        # calls. Interrupts are disabled so the walk is testing THIS frame and
+        # not the firmware's interrupt handler, whose frames interleave with
+        # ours in a way that is timing-dependent (see beads: interrupt frames
+        # serviced invisibly during a full-speed CALL skip).
+        if not _load_frame(emu, 'F3C30160'):
+            return False
+
+        emu.ipc.timeout = 30.0  # the walk runs its full deadline by design
+        ok, resp = emu.ipc.send_command('step out')
+        if 'ERR 408' not in resp:
+            print(f"FAIL: expected ERR 408 timeout, got: {resp.strip()}")
+            return False
+
+        print("PASS: non-returning frame timed out honestly")
+        return True
+
+
+def test_step_out_stops_at_breakpoint_inside_own_frame():
+    """A breakpoint in the frame being stepped out of must stop the walk.
+
+    The stepped path is probe-blind, so without an explicit check a breakpoint
+    here is walked straight through -- while the identical breakpoint inside a
+    skipped callee stops the command.
+    """
+    print("Running step-out breakpoint-inside-frame test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: NOP / 6001: NOP / 6002: RET, breakpoint on the second NOP.
+        if not _load_frame(emu, '000000C9'):
+            return False
+        emu.ipc.send_command('bp clear')
+        ok, resp = emu.ipc.send_command('bp add 0x6001')
+        if not ok:
+            print(f"FAIL: bp add failed: {resp}")
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        emu.ipc.send_command('bp clear')
+        if 'breakpoint-hit' not in resp:
+            print(f"FAIL: expected breakpoint-hit, got: {resp.strip()}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        if not ok_pc or pc != 0x6001:
+            print(f"FAIL: expected to stop at PC=6001, got {pc:04X}")
+            return False
+
+        print("PASS: breakpoint inside the stepped frame stopped the walk")
         return True
 
 
@@ -1407,7 +1719,7 @@ def test_model_change_rebuild():
 
 
 def test_profile_load_rebuilds_machine():
-    """profile load must quiesce + rebuild when model/ram_size change.
+    """profile load must idle + rebuild when model/ram_size change.
 
     Repro for beads-x3ka: ConfigProfileManager::load() wrote CPC.model straight
     into the global struct with no pause and no emulator_init(), so IPC
@@ -2129,6 +2441,23 @@ def test_m4_cat_lists_the_sd_card():
     isolation. The CPC-visible truth is this: a two-entry SD card, `cat`, and
     the two entries on the console, spelled right, exactly once.
     """
+    # The M4 ROM is user-supplied and gitignored (rom/ or resources/roms/), so
+    # a clean checkout -- and every CI job -- simply has none. Without it the
+    # board never attaches, `cat` falls through to AMSDOS and the CPC answers
+    # "Drive A: disc missing". That is a missing asset, not a defect, and the
+    # unit-level M4 tests already GTEST_SKIP on exactly this condition
+    # (test/m4_rom_fitting_test.cpp:56,101). Match them rather than hard-fail:
+    # this test used to report False while printing nothing at all.
+    # Same filenames and same search order as m4board_find_rom() in
+    # src/m4board.cpp: rom/ first, then resources/roms/.
+    repo_root = Path(__file__).parent.parent.parent
+    have_rom = any((repo_root / d / name).exists()
+                   for d in ('rom', 'resources/roms')
+                   for name in ('m4board.rom', 'M4ROM.BIN'))
+    if not have_rom:
+        print("  SKIP: no M4 ROM present (user-supplied, gitignored)")
+        return True
+
     sd = tempfile.mkdtemp(prefix='koncpc_m4sd_')
     try:
         with open(os.path.join(sd, 'readme.txt'), 'w') as f:
@@ -2235,6 +2564,12 @@ def main():
         test_rapid_pause_resume,
         test_step_in_accuracy,
         test_step_out_nested_call,
+        test_step_out_gated_on_ret_not_sp,
+        test_step_out_untaken_conditional_ret,
+        test_step_out_pop_then_call,
+        test_step_out_computed_return,
+        test_step_out_never_returns_times_out_honestly,
+        test_step_out_stops_at_breakpoint_inside_own_frame,
         test_step_out_stops_at_real_breakpoint_on_landing_address,
         test_mouse_input,
         test_gun_input,
@@ -2251,19 +2586,32 @@ def main():
     # The sub-cycle board is the only engine (Gate C Wave 1 deleted the
     # legacy core), so the old dual-engine loop is gone.
     EmulatorRunner.test_engine = 1
+    # The runner reports the name and outcome of every test itself. Relying on
+    # each test to announce itself meant three of them printed nothing at all,
+    # so a test could return False and the only trace was the arithmetic in the
+    # summary -- a silent failure in a suite that is meant to be a gate.
+    failures = []
     for test in tests:
+        name = test.__name__
         try:
             if test():
                 passed += 1
+                print(f"  -> {name}: PASS")
             else:
                 failed += 1
+                failures.append(name)
+                print(f"  -> {name}: FAIL")
         except Exception as e:
-            print(f"FAIL: {test.__name__} raised {e}")
+            print(f"FAIL: {name} raised {e}")
             failed += 1
+            failures.append(name)
+            print(f"  -> {name}: FAIL")
         print()
 
     print("=" * 50)
     print(f"Results: {passed} passed, {failed} failed")
+    for name in failures:
+        print(f"  FAILED: {name}")
     print("=" * 50)
 
     return 0 if failed == 0 else 1
