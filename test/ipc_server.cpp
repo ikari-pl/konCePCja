@@ -707,17 +707,26 @@ TEST_F(IpcServerTest, WatchpointRange) {
   send_command("wp clear");
 }
 
-TEST_F(IpcServerTest, StepOutCommand) {
-  // Without a live Machine, z80_step_instruction is a no-op, so step out hits
-  // the 5s deadline. This only checks the command is wired and does not crash;
-  // SP-climb / CALL-skip behaviour is covered by the IPC harness on a running
-  // emulator (see PR #37).
+TEST_F(IpcServerTest, StepOutWithoutMachineReportsNoProgressPromptly) {
+  // The unit-test binary never calls subcycle_bridge_start(), so
+  // z80_step_instruction() is a no-op and SP can never move. The walk used to
+  // discover that by hot-spinning to its 5s deadline -- on every suite run.
+  // It must now say so immediately, and say the *right* thing: 409, not a 408
+  // that blames a clock it never really raced.
   z80.PC.w.l = 0x0000;
   z80_write_mem(0x0000, 0xC9);  // RET
 
+  auto const started = std::chrono::steady_clock::now();
   auto resp = send_command("step out");
-  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
-              resp.find("ERR 408") != std::string::npos);
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
+  // Generous versus the 5s spin this replaced, tight enough to fail if the
+  // no-machine bail is ever lost.
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
 }
 
 TEST_F(IpcServerTest, SymbolLoad) {

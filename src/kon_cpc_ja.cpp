@@ -1590,7 +1590,12 @@ namespace {
 std::mutex g_pause_mutex;
 uint64_t g_resume_epoch = 0;
 unsigned g_pause_lease_count = 0;
+}  // namespace
 
+// External API consumed by other translation units (the step-out walk in
+// z80_view.cpp waits here after each callee skip); internal linkage would
+// break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void cpc_wait_quiescent() {
   // Spin until the Z80 thread has exited z80_execute() and entered its sleep
   // loop. g_z80_quiescent is set true by z80_thread_main before sleeping, false
@@ -1601,6 +1606,7 @@ void cpc_wait_quiescent() {
   }
 }
 
+namespace {
 void cpc_pause_locked() {
   audio_pause();
   CPC.paused = true;

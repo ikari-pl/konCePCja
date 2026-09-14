@@ -2682,6 +2682,13 @@ std::string handle_command(const std::string& line) {
             return ok_with_context("breakpoint-hit");
           case Z80StepOutResult::Timeout:
             return err_with_context(408, "timeout");
+          case Z80StepOutResult::Stalled:
+            // The walk could not advance at all, or retired its whole
+            // instruction budget inside the frame: stepping out of top-level
+            // code that never returns, a `JP $` spin, or no machine attached.
+            // Distinct from 408 so a script can tell "too slow" from "this
+            // will never finish".
+            return err_with_context(409, "no-progress");
         }
       }
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)

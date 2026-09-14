@@ -170,25 +170,73 @@ void z80_step_instruction() {
   }
 }
 
+namespace {
+// A step-out that can never converge must not hold the caller for the whole
+// wall-clock deadline: the IPC server serves one connection at a time with
+// handle_command() inline, so those seconds freeze every client — the caller
+// cannot even send `pause`, because its next line is not read until the
+// handler returns. Bound the walk by retired instructions as well as by time.
+constexpr uint64_t kStepOutInstructionBudget = 8000000;
+// Reading steady_clock::now() once per retired Z80 instruction dominated the
+// walk. Sample it (and offer the CPU up) on this stride instead; the budget
+// above is what actually bounds a runaway, the clock is the backstop. Power of
+// two so the stride test is a mask.
+constexpr uint64_t kStepOutClockStride = 4096;
+
+// Does a user breakpoint armed at `pc` want to stop here?
+//
+// Deliberately NOT z80_probe_exec_should_break(): that is a post-filter for a
+// hit the probe already latched, so it answers "honour this stop" and returns
+// true on an empty list (the step machinery arms the probe without one). Here
+// the question is the opposite — "is a user breakpoint sitting at this PC?" —
+// and that rule would answer yes on every single stepped instruction. Ask the
+// list directly, through the shared fire predicate so conditions and pass
+// counts keep their one definition. z80.PC already equals `pc` (we just
+// stepped onto it), so no publish/restore dance is needed.
+bool user_breakpoint_fires_at(word pc) {
+  for (auto& b : breakpoints) {
+    if (b.type != NORMAL || b.address != pc) continue;
+    if (z80_bp_should_fire(b, pc)) return true;
+  }
+  return false;
+}
+}  // namespace
+
 Z80StepOutResult z80_step_out_finish(int timeout_ms,
                                      const BreakpointHitConsumer& consume_hit) {
+  // Without a machine nothing can retire: SP never moves and the walk below
+  // would spin to the deadline for nothing. The unit-test binary never calls
+  // subcycle_bridge_start(), so this is the difference between a 5s hot spin
+  // on every suite run and an immediate, honest answer.
+  if (subcycle_bridge_machine() == nullptr) return Z80StepOutResult::Stalled;
+
   word const entry_sp = z80.SP.w.l;
   uint64_t operation_epoch = cpc_resume_epoch();
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-  auto still_in_frame = [&]() {
-    // Signed distance makes an FFFE→0000 stack wrap count as unwound.
-    return static_cast<int16_t>(entry_sp - z80.SP.w.l) >= 0;
+  uint64_t retired = 0;
+  // Signed distance makes an FFFE→0000 stack wrap count as unwound.
+  auto unwound = [&]() {
+    return static_cast<int16_t>(entry_sp - z80.SP.w.l) < 0;
   };
 
-  while (still_in_frame()) {
+  for (;;) {
     if (cpc_resume_epoch() != operation_epoch ||
         !g_emu_paused.load(std::memory_order_acquire)) {
       z80_remove_ephemeral_breakpoints();
       return Z80StepOutResult::BreakpointHit;
     }
     word const pc = z80.PC.w.l;
-    if (z80_is_call_or_rst(pc)) {
+    bool took_step = false;
+    // Only a real CALL puts its return address at pc+len. A CPC firmware RST
+    // (08/10/18/28 — LOW JUMP, SIDE CALL, FAR CALL, FIRM JUMP) carries inline
+    // operand bytes after the opcode and resumes past them, so an ephemeral
+    // planted at pc+1 sits on data that is never fetched as an instruction: it
+    // never fires and the machine free-runs to the deadline — precisely the
+    // bug this walk exists to kill. RSTs are therefore stepped rather than
+    // skipped. Slower through the firmware, but correct without hard-coding a
+    // firmware ABI; nested CALLs inside the RST handler still skip at speed.
+    if (z80_is_call(pc)) {
       word const next_pc = static_cast<word>(pc + z80_instruction_length(pc));
       z80_add_breakpoint_ephemeral(next_pc);
 
@@ -244,7 +292,20 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
       if (!landed) return Z80StepOutResult::BreakpointHit;
       if (z80_last_probe_hit_was_user_breakpoint())
         return Z80StepOutResult::BreakpointHit;
+      // cpc_pause_if_epoch() flags the pause under g_pause_mutex but does not
+      // wait for the Z80 thread to leave z80_execute(); that mutex guards
+      // pause/resume transitions, not execution. Step the machine from this
+      // thread before it is quiescent and the two race. Wait once here, per
+      // callee skip — not per instruction, where the 100us poll inside would
+      // dominate the walk.
+      cpc_wait_quiescent();
+      // A callee that unwound our frame itself (longjmp-style stack surgery,
+      // an error path that drops the return address) never comes back to a
+      // RET of ours. Honour the stack.
+      if (unwound()) return Z80StepOutResult::Done;
     } else {
+      // Capture before the step: after it, pc no longer describes what ran.
+      bool const may_leave_frame = z80_is_ret(pc) || z80_is_indirect_jump(pc);
       bool interrupted = false;
       {
         CpcStopCoordinationGuard const coordination;
@@ -256,9 +317,41 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
         z80_remove_ephemeral_breakpoints();
         return Z80StepOutResult::BreakpointHit;
       }
+      took_step = true;
+
+      // The frame is finished only when an instruction that transfers control
+      // OFF THE STACK retires and leaves SP above the entry level. Watching SP
+      // alone ended the walk at the first POP of the ordinary
+      // `PUSH HL / ... / POP HL / RET` shape — one instruction short, still
+      // inside the callee, and three short for a routine saving three
+      // registers. An interrupt cannot fake this: an ISR pushes on entry and
+      // its RET[I/N] only restores SP to the level it interrupted, which is at
+      // or below entry_sp, so `unwound()` stays false throughout.
+      if (may_leave_frame && unwound()) return Z80StepOutResult::Done;
+
+      // z80_step_instruction() is probe-blind, so without this a breakpoint
+      // the user armed inside THIS frame is walked straight through, while the
+      // identical breakpoint inside a skipped callee stops the command — an
+      // asymmetry with no defensible explanation. Watchpoints stay unreported
+      // on the stepped path: step_instruction() surfaces no memory-access
+      // record to judge them against.
+      if (user_breakpoint_fires_at(z80.PC.w.l)) {
+        z80_remove_ephemeral_breakpoints();
+        return Z80StepOutResult::BreakpointHit;
+      }
     }
 
-    if (std::chrono::steady_clock::now() > deadline) {
+    bool clock_due = true;
+    if (took_step) {
+      if (++retired >= kStepOutInstructionBudget) {
+        cpc_pause_if_epoch(operation_epoch);
+        z80_remove_ephemeral_breakpoints();
+        return Z80StepOutResult::Stalled;
+      }
+      clock_due = (retired % kStepOutClockStride) == 0;
+      if (clock_due) std::this_thread::yield();
+    }
+    if (clock_due && std::chrono::steady_clock::now() > deadline) {
       if (!cpc_pause_if_epoch(operation_epoch)) {
         z80_remove_ephemeral_breakpoints();
         return Z80StepOutResult::BreakpointHit;
@@ -267,8 +360,6 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
       return Z80StepOutResult::Timeout;
     }
   }
-
-  return Z80StepOutResult::Done;
 }
 
 // ---- Tool-facing memory accessors (IPC, DevTools, expr parser) ----------

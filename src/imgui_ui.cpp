@@ -1053,7 +1053,11 @@ void dbg_step_over() {
 // IPC already established rather than inventing a second concurrency model.
 namespace {
 std::atomic<bool> g_step_out_running{false};
-std::atomic<bool> g_step_out_timed_out{false};
+// Outcome of the last worker run, or -1 for "nothing to report". An int, not
+// a bool: the walk can end without finishing for two different reasons and the
+// toast should not call a stall a timeout.
+constexpr int kStepOutNoOutcome = -1;
+std::atomic<int> g_step_out_outcome{kStepOutNoOutcome};
 std::thread g_step_out_thread;
 }  // namespace
 
@@ -1074,20 +1078,19 @@ void dbg_step_out() {
     // before this exchange could succeed, so this join cannot block.
     if (g_step_out_thread.joinable()) g_step_out_thread.join();
     g_step_out_thread = std::thread([]() {
-      bool const timed_out =
-          z80_step_out_finish(5000) == Z80StepOutResult::Timeout;
+      Z80StepOutResult const result = z80_step_out_finish(5000);
       // set_osd_message() touches render-thread-owned state (the toast
-      // queue); only the boolean crosses threads, and the render thread
+      // queue); only the outcome code crosses threads, and the render thread
       // reads it and calls set_osd_message() itself when it polls below.
-      g_step_out_timed_out.store(timed_out, std::memory_order_release);
+      g_step_out_outcome.store(static_cast<int>(result),
+                               std::memory_order_release);
       g_step_out_running.store(false, std::memory_order_release);
     });
     return;
   }
-  z80.step_out = 1;
-  z80.step_out_addresses.clear();
-  z80.step_in = 0;
-  cpc_resume();
+  // No sub-cycle machine (the legacy interpreter is gone, so this is only
+  // reachable before the board is up): there is nothing to step out of.
+  set_osd_message("Step Out needs a running machine", 3000);
 }
 }  // namespace
 
@@ -4653,9 +4656,14 @@ void imgui_render_devtools() {
     // stays disabled until it reports back.
     bool const step_out_running =
         g_step_out_running.load(std::memory_order_acquire);
-    if (!step_out_running &&
-        g_step_out_timed_out.exchange(false, std::memory_order_acq_rel)) {
-      set_osd_message("Step Out timed out", 3000);
+    if (!step_out_running) {
+      int const outcome = g_step_out_outcome.exchange(
+          kStepOutNoOutcome, std::memory_order_acq_rel);
+      if (outcome == static_cast<int>(Z80StepOutResult::Timeout)) {
+        set_osd_message("Step Out timed out", 3000);
+      } else if (outcome == static_cast<int>(Z80StepOutResult::Stalled)) {
+        set_osd_message("Step Out: this frame never returns", 3000);
+      }
     }
     if (!was_paused || step_out_running) ImGui::BeginDisabled();
     if (ImGui::Button("Step In")) dbg_step_in();

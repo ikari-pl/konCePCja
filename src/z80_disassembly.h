@@ -50,4 +50,8 @@ DisassembledCode disassemble(const std::vector<word>& entry_points);
 // konCePCja debug helpers
 int z80_instruction_length(
     word pc);  // disassemble one instruction, return its size in bytes
-bool z80_is_call_or_rst(word pc);  // true for CALL/CALL cc/RST opcodes
+bool z80_is_call_or_rst(word pc);    // true for CALL/CALL cc/RST opcodes
+bool z80_is_call(word pc);           // CALL/CALL cc only — NOT RST
+bool z80_is_rst(word pc);            // RST vectors only
+bool z80_is_ret(word pc);            // RET/RET cc/RETI/RETN
+bool z80_is_indirect_jump(word pc);  // JP (HL)/(IX)/(IY)

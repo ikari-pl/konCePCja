@@ -227,6 +227,12 @@ enum class Z80StepOutResult : std::uint8_t {
   Done,
   Timeout,
   BreakpointHit,
+  // The walk cannot make progress: no sub-cycle machine is attached, or it
+  // retired its whole instruction budget without leaving the frame (top-level
+  // code that never returns, a `JP $` spin, HALT with interrupts off).
+  // Distinct from Timeout so the caller can say so instead of blaming a clock
+  // it never really raced.
+  Stalled,
 };
 
 using BreakpointHitConsumer = std::function<bool(uint16_t&, bool&)>;
