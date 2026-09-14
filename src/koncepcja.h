@@ -653,7 +653,12 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // flags the pause under the pause mutex — that mutex serialises pause/resume
 // transitions, NOT execution — so a caller that then touches Z80 state from
 // another thread must wait here first. No-op in headless mode.
-void cpc_wait_quiescent();
+//
+// Returns false if `timeout_ms` elapsed first (0 = wait forever, the legacy
+// behaviour). A deadline-bounded caller must pass a bound: an unbounded spin
+// nested inside a bounded walk can outlive the walk's own deadline with no
+// diagnostic if the Z80 thread never goes quiescent.
+bool cpc_wait_quiescent(int timeout_ms = 0);
 // Atomically commits a staged engine breakpoint only if no later resume has
 // invalidated it. Publishes the hit after the paused state is visible.
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,

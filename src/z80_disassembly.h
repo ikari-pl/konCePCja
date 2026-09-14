@@ -50,8 +50,20 @@ DisassembledCode disassemble(const std::vector<word>& entry_points);
 // konCePCja debug helpers
 int z80_instruction_length(
     word pc);  // disassemble one instruction, return its size in bytes
-bool z80_is_call_or_rst(word pc);    // true for CALL/CALL cc/RST opcodes
 bool z80_is_call(word pc);           // CALL/CALL cc only — NOT RST
 bool z80_is_rst(word pc);            // RST vectors only
 bool z80_is_ret(word pc);            // RET/RET cc/RETI/RETN
 bool z80_is_indirect_jump(word pc);  // JP (HL)/(IX)/(IY)
+
+// Everything a step walker needs about one instruction, from a SINGLE decode.
+// The predicates above each decode independently, so asking three of them
+// about the same PC — which the step-out walk does once per retired
+// instruction — decoded that instruction three times over.
+struct Z80StepClass {
+  bool is_call = false;           // CALL / CALL cc
+  bool is_rst = false;            // RST vector
+  bool is_ret = false;            // RET / RET cc / RETI / RETN
+  bool is_indirect_jump = false;  // JP (HL)/(IX)/(IY)
+  int length = 1;                 // bytes the instruction consumes
+};
+Z80StepClass z80_classify_at(word pc);

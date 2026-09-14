@@ -299,11 +299,17 @@ DisassembledCode disassemble(const std::vector<word>& entry_points) {
 
 int z80_instruction_length(word pc) { return decode_at(pc).length; }
 
-bool z80_is_call_or_rst(word pc) {
+Z80StepClass z80_classify_at(word pc) {
+  Z80StepClass c;
   const RawInstr r = decode_at(pc);
-  if (r.op == nullptr) return false;
+  if (r.op == nullptr) return c;
+  c.length = r.length;
   const std::string_view m(r.op->mnemonic);
-  return m.rfind("call", 0) == 0 || m.rfind("rst", 0) == 0;
+  c.is_call = m.rfind("call", 0) == 0;
+  c.is_rst = m.rfind("rst", 0) == 0;
+  c.is_ret = m.rfind("ret", 0) == 0;
+  c.is_indirect_jump = m == "jp (hl)" || m == "jp (ix)" || m == "jp (iy)";
+  return c;
 }
 
 bool z80_is_call(word pc) {

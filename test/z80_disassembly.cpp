@@ -172,23 +172,29 @@ TEST(Z80DisassemblyTest, CallAndRstClassification) {
   CPC.resources_path = "resources";
   membank_read[0] = membank0;
 
-  EXPECT_TRUE(z80_is_call_or_rst(0));   // call $c000
-  EXPECT_FALSE(z80_is_call_or_rst(3));  // jp $c000
-  EXPECT_TRUE(z80_is_call_or_rst(6));   // rst 38h
-
   // step-out skips CALL callees with an ephemeral breakpoint at pc+len, which
   // is only the true return site for a real CALL: a CPC firmware RST carries
   // inline operands and resumes past them. The two must be separable.
-  EXPECT_TRUE(z80_is_call(0));
+  EXPECT_TRUE(z80_is_call(0));   // call $c000
+  EXPECT_FALSE(z80_is_call(3));  // jp $c000
   EXPECT_FALSE(z80_is_call(6));  // rst 38h is NOT a call for skip purposes
   EXPECT_TRUE(z80_is_rst(6));
   EXPECT_FALSE(z80_is_rst(0));
+
+  // One decode, same answers: the walk asks z80_classify_at() once per
+  // instruction instead of decoding the same PC through three predicates.
+  EXPECT_TRUE(z80_classify_at(0).is_call);
+  EXPECT_EQ(3, z80_classify_at(0).length);
+  EXPECT_TRUE(z80_classify_at(6).is_rst);
+  EXPECT_EQ(1, z80_classify_at(6).length);
 }
 
 TEST(Z80DisassemblyTest, ReturnClassification) {
   // ret / ret nz / reti / retn / jp (hl) / pop hl / jp $c000
-  byte membank0[10] = {0xC9, 0xC0, 0xED, 0x4D, 0xED,
-                       0x45, 0xE9, 0xE1, 0xC3, 0x00};
+  // 11 bytes, not 10: the `jp $c000` at index 8 is three bytes wide, so a
+  // 10-byte array made decode_at read one past the end.
+  byte membank0[11] = {0xC9, 0xC0, 0xED, 0x4D, 0xED, 0x45,
+                       0xE9, 0xE1, 0xC3, 0x00, 0xC0};
   CPC.resources_path = "resources";
   membank_read[0] = membank0;
 
@@ -207,6 +213,10 @@ TEST(Z80DisassemblyTest, ReturnClassification) {
   EXPECT_TRUE(z80_is_indirect_jump(6));   // jp (hl)
   EXPECT_FALSE(z80_is_indirect_jump(8));  // jp $c000 — absolute, not a return
   EXPECT_FALSE(z80_is_indirect_jump(0));  // ret
+
+  EXPECT_TRUE(z80_classify_at(0).is_ret);
+  EXPECT_TRUE(z80_classify_at(6).is_indirect_jump);
+  EXPECT_FALSE(z80_classify_at(7).is_ret);  // pop hl
 }
 
 TEST(Z80DisassemblyTest, IndirectJumpCoversIndexRegisters) {

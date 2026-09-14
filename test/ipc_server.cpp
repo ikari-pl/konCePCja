@@ -679,18 +679,40 @@ TEST_F(IpcServerTest, StepOverDoesNotDescendIntoCall) {
   EXPECT_OK(resp);
 }
 
-TEST_F(IpcServerTest, StepToCommand) {
-  // Write NOP at 0x0000, step to 0x0001 should work immediately via ephemeral
-  // bp
+TEST_F(IpcServerTest, StepToWithoutMachineTimesOutPromptly) {
+  // Was "OK or ERR 408" -- the command's whole output space, so it could not
+  // fail. With no machine attached nothing can ever reach the target, so the
+  // shared run-until helper must say so at once rather than burning its 5s
+  // deadline (the same bail z80_step_out_finish already had).
   z80.PC.w.l = 0x0000;
   z80_write_mem(0x0000, 0x00);
-  // step to on a paused emulator won't actually run; check command is accepted
-  // In test environment without main loop, this will timeout
-  // Just verify the command doesn't crash
+
+  auto const started = std::chrono::steady_clock::now();
   auto resp = send_command("step to 0x0001");
-  // Either timeout or OK is acceptable in test harness
-  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
-              resp.find("ERR 408") != std::string::npos);
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_NE(resp.find("ERR 408"), std::string::npos) << "got: " << resp;
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
+}
+
+TEST_F(IpcServerTest, StepOverRstWithoutMachineReportsNoProgressPromptly) {
+  // `step over` on an RST steps into the vector and finishes that frame, so it
+  // goes through the same walk as `step out` and must inherit its no-machine
+  // bail rather than hanging for the deadline.
+  z80.PC.w.l = 0x0000;
+  z80_write_mem(0x0000, 0xFF);  // rst 38h
+
+  auto const started = std::chrono::steady_clock::now();
+  auto resp = send_command("step over");
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
 }
 
 TEST_F(IpcServerTest, WatchpointRange) {

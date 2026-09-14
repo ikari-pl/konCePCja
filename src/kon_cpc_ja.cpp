@@ -1596,14 +1596,19 @@ unsigned g_pause_lease_count = 0;
 // z80_view.cpp waits here after each callee skip); internal linkage would
 // break the link.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-void cpc_wait_quiescent() {
+bool cpc_wait_quiescent(int timeout_ms) {
   // Spin until the Z80 thread has exited z80_execute() and entered its sleep
   // loop. g_z80_quiescent is set true by z80_thread_main before sleeping, false
   // before entering z80_execute().  In headless mode the Z80 runs on the
   // calling thread, so g_z80_quiescent stays true and we return immediately.
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (!g_z80_quiescent.load(std::memory_order_acquire)) {
+    if (timeout_ms > 0 && std::chrono::steady_clock::now() > deadline)
+      return false;
     std::this_thread::sleep_for(std::chrono::microseconds(100));
   }
+  return true;
 }
 
 namespace {
@@ -3182,7 +3187,7 @@ void doCleanUp() {
   // still touches z80/CPC state; wait for it (bounded by its own 5s
   // timeout) before the teardown below starts pausing/joining the Z80
   // thread out from under it.
-  dbg_step_out_await_shutdown();
+  dbg_step_walk_await_shutdown();
   // Shutdown ordering — three constraints that together force this dance:
   //
   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside

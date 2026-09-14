@@ -227,6 +227,23 @@ std::string ok_with_context(const std::string& body = "") {
 }
 }  // namespace
 
+// Body for a step command that stopped on a breakpoint/watchpoint rather than
+// finishing. Without the WATCH/WP_* detail an agent knows WHERE it stopped
+// (the context trailer carries PC) but not WHY -- and `wait bp` has reported
+// exactly that detail for the same underlying event all along. The fields are
+// still valid here: the bridge sets them on the hit and only clears them on a
+// failed commit.
+namespace {
+std::string breakpoint_hit_body() {
+  if (z80.watchpoint_reached == 0) return "breakpoint-hit WATCH=0";
+  char buf[96];
+  snprintf(buf, sizeof(buf),
+           "breakpoint-hit WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X",
+           z80.watchpoint_addr, z80.watchpoint_value, z80.watchpoint_old);
+  return {buf};
+}
+}  // namespace
+
 // Append debug context trailer to an ERR response.
 namespace {
 std::string err_with_context(int code, const std::string& msg) {
@@ -876,12 +893,16 @@ void init_command_registry() {
       "Executes code and pauses again.\n"
       "  in [N]:    Steps into exactly N instructions (default 1). Traces "
       "inside subroutines.\n"
-      "  over [N]:  Steps over the current CALL or RST. If not a call, it "
-      "performs a single step.\n"
-      "  out:       Finishes the current stack frame — runs until a RET (or a "
-      "computed JP (HL) return) retires AND leaves SP above the entry SP, so "
-      "a POP before the RET does not end it early. Correct from any point in "
-      "the function. ERR 409 no-progress if the frame can never return.\n"
+      "  over [N]:  Steps over a CALL via an ephemeral breakpoint at pc+len. "
+      "An RST is stepped INTO and its frame finished instead — CPC firmware "
+      "restarts carry inline operands, so they do not resume at pc+1. Not a "
+      "call: a single step.\n"
+      "  out:       Finishes the current stack frame — runs until a TAKEN "
+      "return (RET/RETI/RETN, or a POP+JP (rr) computed return) fires at the "
+      "depth the walk started from. Counting frame depth is what makes a POP "
+      "before the RET, an untaken RET cc, and an interrupt mid-walk all safe. "
+      "ERR 409 no-progress only if no machine is attached; a frame that never "
+      "returns is ERR 408 timeout.\n"
       "  to <addr>: Run-to-cursor via an ephemeral breakpoint.\n"
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
@@ -2639,7 +2660,7 @@ std::string handle_command(const std::string& line) {
               case Z80RunUntilResult::Landed:
                 break;
               case Z80RunUntilResult::OtherBreak:
-                return ok_with_context("breakpoint-hit");
+                return ok_with_context(breakpoint_hit_body());
               case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
             }
@@ -2658,7 +2679,7 @@ std::string handle_command(const std::string& line) {
               case Z80StepOutResult::Done:
                 break;
               case Z80StepOutResult::BreakpointHit:
-                return ok_with_context("breakpoint-hit");
+                return ok_with_context(breakpoint_hit_body());
               case Z80StepOutResult::Timeout:
                 return err_with_context(408, "timeout");
               case Z80StepOutResult::Stalled:
@@ -2686,15 +2707,12 @@ std::string handle_command(const std::string& line) {
           case Z80StepOutResult::Done:
             return ok_with_context();
           case Z80StepOutResult::BreakpointHit:
-            return ok_with_context("breakpoint-hit");
+            return ok_with_context(breakpoint_hit_body());
           case Z80StepOutResult::Timeout:
             return err_with_context(408, "timeout");
           case Z80StepOutResult::Stalled:
-            // The walk could not advance at all, or retired its whole
-            // instruction budget inside the frame: stepping out of top-level
-            // code that never returns, a `JP $` spin, or no machine attached.
-            // Distinct from 408 so a script can tell "too slow" from "this
-            // will never finish".
+            // Nothing can retire: no sub-cycle machine is attached. Distinct
+            // from 408, which means the walk was running and ran out of time.
             return err_with_context(409, "no-progress");
         }
       }
@@ -2715,7 +2733,7 @@ std::string handle_command(const std::string& line) {
             // Previously indistinguishable: any hit ended the wait and was
             // reported as a successful run-to-cursor, even a watchpoint or an
             // unrelated breakpoint that fired on the way.
-            return ok_with_context("breakpoint-hit");
+            return ok_with_context(breakpoint_hit_body());
           case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
         }
