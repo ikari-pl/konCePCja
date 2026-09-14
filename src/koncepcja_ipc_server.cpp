@@ -228,6 +228,30 @@ std::string ok_with_context(const std::string& body = "") {
 }
 }  // namespace
 
+// Upper bound on waiting for the Z80 thread to go idle before a step command
+// touches machine state. Generous (a frame is 20ms); the point is that a stuck
+// Z80 thread cannot hang the single-connection IPC server indefinitely.
+namespace {
+constexpr int kStepIdleWaitMs = 1000;
+}  // namespace
+
+// Body for a step command that stopped on a breakpoint/watchpoint rather than
+// finishing. Without the WATCH/WP_* detail an agent knows WHERE it stopped
+// (the context trailer carries PC) but not WHY -- and `wait bp` has reported
+// exactly that detail for the same underlying event all along. The fields are
+// still valid here: the bridge sets them on the hit and only clears them on a
+// failed commit.
+namespace {
+std::string breakpoint_hit_body() {
+  if (z80.watchpoint_reached == 0) return "breakpoint-hit WATCH=0";
+  char buf[96];
+  snprintf(buf, sizeof(buf),
+           "breakpoint-hit WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X",
+           z80.watchpoint_addr, z80.watchpoint_value, z80.watchpoint_old);
+  return {buf};
+}
+}  // namespace
+
 // Append debug context trailer to an ERR response.
 namespace {
 std::string err_with_context(int code, const std::string& msg) {
@@ -291,7 +315,7 @@ namespace {
 // Machine-rebuild staging. koncpc_rebuild_machine() tears down and reallocates
 // the board (pbRAMbuffer/pbROM/pbGPBuffer) and the Bridge. Running that from
 // the IPC server thread was unsafe twice over:
-//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_quiescent is
+//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_idle is
 //     only toggled inside z80_thread_main(), which is spawned only when
 //     !g_headless -- so the IPC thread could free memory the main thread was
 //     still executing a frame out of;
@@ -871,14 +895,23 @@ void init_command_registry() {
 
   register_command(
       "step", "DEBUG",
-      "step in [N] | step over [N] | step out | step frame [N]",
+      "step in [N] | step over [N] | step out | step to <addr> | "
+      "step frame [N]",
       "Step the CPU or emulation frame",
       "Executes code and pauses again.\n"
       "  in [N]:    Steps into exactly N instructions (default 1). Traces "
       "inside subroutines.\n"
-      "  over [N]:  Steps over the current CALL or RST. If not a call, it "
-      "performs a single step.\n"
-      "  out:       Continues execution until the current subroutine returns.\n"
+      "  over [N]:  Steps over a CALL via an ephemeral breakpoint at pc+len. "
+      "An RST is stepped INTO and its frame finished instead — CPC firmware "
+      "restarts carry inline operands, so they do not resume at pc+1. Not a "
+      "call: a single step.\n"
+      "  out:       Finishes the current stack frame — runs until a TAKEN "
+      "return (RET/RETI/RETN, or a POP+JP (rr) computed return) fires at the "
+      "depth the walk started from. Counting frame depth is what makes a POP "
+      "before the RET, an untaken RET cc, and an interrupt mid-walk all safe. "
+      "ERR 409 no-progress only if no machine is attached; a frame that never "
+      "returns is ERR 408 timeout.\n"
+      "  to <addr>: Run-to-cursor via an ephemeral breakpoint.\n"
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
   register_command(
@@ -988,7 +1021,7 @@ void init_command_registry() {
       "configuration.\n"
       "  load: applies the profile under a pause lease. When model or "
       "ram_size changes, rebuilds the machine on the main thread (same "
-      "quiesce path as `config apply`) so mid-run switches cannot race the "
+      "idle path as `config apply`) so mid-run switches cannot race the "
       "Z80 thread. Failed load/rebuild resumes the caller; "
       "`ERR 504 rebuild-still-running` leaves the machine paused.");
 
@@ -2606,7 +2639,15 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
     if (cmd == "step") {
-      CpcPauseLease lease;  // quiesce + own pause through destructive step work
+      // Pause and own the machine through the destructive step work — but
+      // wait for the Z80 thread to go idle WITH A BOUND. A plain lease waits
+      // forever, and this server handles one connection at a time with
+      // handle_command() inline: a Z80 thread stuck for any reason would hang
+      // the entire IPC surface here, before any per-step deadline had even
+      // started, with no way for the caller to send `pause` or anything else.
+      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+      if (!cpc_wait_until_idle(kStepIdleWaitMs))
+        return err_with_context(409, "z80-not-idle");
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -2645,36 +2686,48 @@ std::string handle_command(const std::string& line) {
       if (parts.size() >= 2 && parts[1] == "over") {
         int count = 1;
         if (parts.size() >= 3) count = parse_int(parts[2]);
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
+        };
         for (int i = 0; i < count; i++) {
           word const pc = z80.PC.w.l;
-          if (z80_is_call_or_rst(pc)) {
-            int const len = z80_instruction_length(pc);
-            word const next_pc = static_cast<word>(pc + len);
-            z80_add_breakpoint_ephemeral(next_pc);
-            // Clear stale hits before resume to avoid race conditions
-            uint16_t dummy_pc;
-            bool dummy_watch;
-            g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
+          auto const deadline =
+              std::chrono::steady_clock::now() + std::chrono::seconds(5);
+          if (z80_is_call(pc)) {
+            word const next_pc =
+                static_cast<word>(pc + z80_instruction_length(pc));
             lease.release();
-            cpc_resume();
-            // Wait for breakpoint hit
-            auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (true) {
-              uint16_t hit_pc = 0;
-              bool watch = false;
-              if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
-                if (hit_pc == next_pc) break;
-                // If we hit a different breakpoint, stop stepping
-                return "OK breakpoint-hit\n";
-              }
-              if (std::chrono::steady_clock::now() > deadline) {
-                cpc_pause();
+            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit)) {
+              case Z80RunUntilResult::Landed:
+                break;
+              case Z80RunUntilResult::OtherBreak:
+                return ok_with_context(breakpoint_hit_body());
+              case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              case Z80RunUntilResult::Stalled:
+                return err_with_context(409, "no-progress");
             }
-            cpc_pause();
+          } else if (z80_is_rst(pc)) {
+            // A CPC firmware RST (08/10/18/28) carries inline operands and
+            // does NOT resume at pc+1, so the old ephemeral-at-pc+len skip
+            // planted a breakpoint on a data byte: it never fired and the
+            // machine free-ran to the deadline. Step into the vector instead
+            // and finish the frame it opened — that lands after the operands
+            // wherever the handler decides they end, with no firmware ABI
+            // hard-coded here. Nested CALLs inside the handler still skip at
+            // full speed.
+            z80_step_instruction();
+            lease.release();
+            switch (z80_step_out_finish(5000, consume_hit)) {
+              case Z80StepOutResult::Done:
+                break;
+              case Z80StepOutResult::BreakpointHit:
+                return ok_with_context(breakpoint_hit_body());
+              case Z80StepOutResult::Timeout:
+                return err_with_context(408, "timeout");
+              case Z80StepOutResult::Stalled:
+                return err_with_context(409, "no-progress");
+            }
           } else {
             z80_step_instruction();
           }
@@ -2683,19 +2736,11 @@ std::string handle_command(const std::string& line) {
       }
       // "step out" — run until the CURRENT function returns.
       //
-      // The legacy z80.step_out flag (with step_out_addresses) was only ever
-      // honoured by the old interpreter core. The subcycle ("faithful") engine
-      // that actually runs never implements it — nothing sets step_in>=2 on a
-      // RET — so the old resume-and-wait just free-ran the whole machine to the
-      // 5s deadline (advancing the game, and from a forced PC clobbering RAM
-      // the caller had staged). Implement step-out with the same primitives
-      // step-over uses: advance instructions — skipping CALL/RST callees at
-      // full speed via an ephemeral breakpoint — until SP climbs ABOVE the
-      // entry SP, i.e. this frame's RET has unwound the stack. This is
-      // nearest-RET / finish semantics and is correct from any point in the
-      // function. Interrupt-safe: an ISR pushes then RET[I/N]s, so SP never
-      // crosses the entry level inside an interrupt; nested calls stay at/below
-      // it too.
+      // The walk itself lives in z80_step_out_finish() (z80_view.cpp) so the
+      // DevTools button runs exactly the same code; see the commentary there
+      // for why the exit is gated on a RET rather than on SP alone, and why
+      // RSTs are stepped rather than skipped. Everything this handler owns is
+      // the 5s budget, the hit consumer, and the mapping to wire replies.
       if (parts.size() >= 2 && parts[1] == "out") {
         auto consume_hit = [](uint16_t& pc, bool& watch) {
           return g_ipc_instance->consume_breakpoint_hit(pc, watch);
@@ -2705,35 +2750,38 @@ std::string handle_command(const std::string& line) {
           case Z80StepOutResult::Done:
             return ok_with_context();
           case Z80StepOutResult::BreakpointHit:
-            return ok_with_context("breakpoint-hit");
+            return ok_with_context(breakpoint_hit_body());
           case Z80StepOutResult::Timeout:
             return err_with_context(408, "timeout");
+          case Z80StepOutResult::Stalled:
+            // Nothing can retire: no sub-cycle machine is attached. Distinct
+            // from 408, which means the walk was running and ran out of time.
+            return err_with_context(409, "no-progress");
         }
       }
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
       if (parts.size() >= 3 && parts[1] == "to") {
         unsigned int const addr = parse_number(parts[2]);
-        z80_add_breakpoint_ephemeral(static_cast<word>(addr));
-        // Clear stale hits before resume to avoid race conditions
-        uint16_t dummy_pc;
-        bool dummy_watch;
-        g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-        lease.release();
-        cpc_resume();
-        auto deadline =
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
+        };
+        auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-          uint16_t hit_pc = 0;
-          bool watch = false;
-          if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
-          if (std::chrono::steady_clock::now() > deadline) {
-            cpc_pause();
+        lease.release();
+        switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
+                                        consume_hit)) {
+          case Z80RunUntilResult::Landed:
+            return ok_with_context();
+          case Z80RunUntilResult::OtherBreak:
+            // Previously indistinguishable: any hit ended the wait and was
+            // reported as a successful run-to-cursor, even a watchpoint or an
+            // unrelated breakpoint that fired on the way.
+            return ok_with_context(breakpoint_hit_body());
+          case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          case Z80RunUntilResult::Stalled:
+            return err_with_context(409, "no-progress");
         }
-        cpc_pause();
-        return ok_with_context();
       }
       // "step [N]" — single-step N instructions
       int count = 1;
@@ -3890,7 +3938,7 @@ std::string handle_command(const std::string& line) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
         // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
-        CpcPauseLease lease;  // quiesce before replacing the live medium
+        CpcPauseLease lease;  // idle before replacing the live medium
         bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
         if (!was_paused) {
@@ -4246,7 +4294,7 @@ std::string handle_command(const std::string& line) {
         if (unit < 0) return "ERR 400 invalid drive letter\n";
         CpcPauseLease lease;
         // A just-issued `load` only queues the FDC insert. Apply it while
-        // quiescent so caps match the disc the agent thinks is mounted.
+        // idle so caps match the disc the agent thinks is mounted.
         subcycle_bridge_apply_pending_media();
         const FluxSaveCaps caps = disk_caps(unit);
         lease.restore_run_state();
@@ -4310,7 +4358,7 @@ std::string handle_command(const std::string& line) {
         CpcPauseLease lease;
         dsk_eject(unit == 0 ? &driveA : &driveB);
         // dsk_eject only queues FDC unmount for the next frame. Apply now
-        // while the Z80 is quiescent so the next IPC command cannot pull
+        // while the Z80 is idle so the next IPC command cannot pull
         // the disc back into the host view. This must run BEFORE clearing
         // CPC.driveA/B.file below: the deferred apply flushes any dirty
         // sectors back to that path (flush_dirty_media_unit), so clearing
@@ -4564,7 +4612,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "load") {
         if (parts.size() < 3) return "ERR 400 missing profile name\n";
         // ConfigProfileManager::load() is pure state application — it writes
-        // CPC.model/ram_size/etc with no quiesce and no rebuild. At runtime
+        // CPC.model/ram_size/etc with no idle and no rebuild. At runtime
         // that races the Z80 thread and leaves banks/ASIC/ROMs on the old
         // machine (beads-x3ka). Hold a pause lease across the apply; when
         // the machine identity actually changed, rebuild on the main thread

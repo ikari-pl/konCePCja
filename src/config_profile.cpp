@@ -161,7 +161,7 @@ std::string ConfigProfileManager::load(const std::string& name) {
   // user-editable and these fields index arrays and size allocations.
   sanitize(p);
 
-  // Apply to CPC struct. Caller responsibility at runtime: quiesce + rebuild
+  // Apply to CPC struct. Caller responsibility at runtime: idle + rebuild
   // when model/ram_size change (IPC profile load / Options Apply). This keeps
   // startup-time loads from double-init'ing.
   CPC.model = p.model;

@@ -31,7 +31,9 @@ void imgui_render_ui();
 // dispatched to a background thread has finished, so the app never tears
 // down state a still-running step-out thread is touching. Call once from
 // the main thread during shutdown, before the Z80 thread is joined.
-void dbg_step_out_await_shutdown();
+void dbg_step_walk_await_shutdown();
+bool dbg_step_walk_running();
+void dbg_run_to_address(word target);
 int imgui_topbar_height();
 void imgui_open_menu();
 void imgui_close_menu();
