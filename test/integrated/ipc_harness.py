@@ -578,10 +578,8 @@ def test_headless_runs_subcycle_engine():
         if not ok or 'effective=' not in resp:
             print(f"FAIL: bridge inactive under --headless: {resp}")
             return False
-        ok1, pc1 = ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok2, pc2 = ipc.send_command('reg get PC')
-        if not (ok1 and ok2 and pc1 != pc2):
+        moved, pc1, pc2 = pc_is_moving(ipc)
+        if not moved:
             print(f"FAIL: PC frozen headless ({pc1} / {pc2})")
             return False
         print("PASS: headless runs the sub-cycle engine (tier OK, PC moves)")
@@ -973,6 +971,36 @@ def test_step_out_gated_on_ret_not_sp():
 
         print("PASS: Step Out ran through the POP and finished on the RET")
         return True
+
+
+def pc_is_moving(ipc, timeout_s=3.0):
+    """Poll `reg get PC` until it changes. Returns (moved, first, last).
+
+    A single before/after pair is NOT a liveness test. The firmware idles in
+    a short loop, so two samples taken 0.4s apart can land on the same PC
+    while the Z80 is running flat out -- the sample interval says nothing
+    about where in the loop each read happens. That aliasing failed
+    test_profile_load_missing_keeps_running on the macOS CI runner with both
+    reads returning 1BC5, while the machine was demonstrably running.
+
+    Polling keeps the original intent -- prove the CPU advances -- and only
+    reports frozen after the whole budget has elapsed with no movement, which
+    a genuinely paused machine always does.
+    """
+    ok, first = ipc.send_command('reg get PC')
+    if not ok:
+        return False, first, first
+    last = first
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(0.05)
+        ok, cur = ipc.send_command('reg get PC')
+        if not ok:
+            return False, first, cur
+        last = cur
+        if cur != first:
+            return True, first, cur
+    return False, first, last
 
 
 def make_test_rom(handlers=None):
@@ -2266,7 +2294,8 @@ def test_profile_load_missing_keeps_running():
     CpcPauseLease destructor only drops the lease count; 13db3b7c added
     restore_run_state on load failure. A missing profile must return ERR and
     leave the Z80 advancing — wait vbl is a fixed sleep and would pass even
-    if paused, so this asserts PC motion the way the headless-engine test does.
+    if paused, so this asserts PC motion via pc_is_moving(), which polls
+    rather than comparing one before/after pair (see that helper for why).
     """
     print("Running profile-load missing-name resume test...")
 
@@ -2275,10 +2304,8 @@ def test_profile_load_missing_keeps_running():
             print("FAIL: Could not start emulator")
             return False
 
-        ok1, pc1 = emu.ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok2, pc2 = emu.ipc.send_command('reg get PC')
-        if not (ok1 and ok2 and pc1 != pc2):
+        moved, pc1, pc2 = pc_is_moving(emu.ipc)
+        if not moved:
             print(f"FAIL: PC already frozen before load ({pc1} / {pc2})")
             return False
 
@@ -2290,10 +2317,8 @@ def test_profile_load_missing_keeps_running():
             print(f"FAIL: expected ERR for missing profile, got {resp!r}")
             return False
 
-        ok3, pc3 = emu.ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok4, pc4 = emu.ipc.send_command('reg get PC')
-        if not (ok3 and ok4 and pc3 != pc4):
+        moved, pc3, pc4 = pc_is_moving(emu.ipc)
+        if not moved:
             print(f"FAIL: machine left paused after profile load ERR "
                   f"({pc3} / {pc4}); resp={resp!r}")
             return False
