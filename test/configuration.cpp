@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "koncepcja.h"
+#include "silicon_disc.h"
 #include "slotshandler.h"
 #ifndef _MSC_VER
 #include <unistd.h>
@@ -21,9 +22,14 @@ extern t_disk_format disk_format[8];
 
 class ConfigurationTest : public testing::Test {
  public:
-  void SetUp() {}
+  // loadConfiguration() writes process-global device state, not just the
+  // t_CPC it is handed: system/silicon_disc lands in g_silicon_disc.enabled.
+  // Leaving that on leaked into RamExpansionTest, where an enabled Silicon
+  // Disc suppresses the out-of-range bank clamp. Restore it.
+  void SetUp() { saved_silicon_disc_ = g_silicon_disc.enabled; }
 
   void TearDown() {
+    g_silicon_disc.enabled = saved_silicon_disc_;
     for (auto f : tmpFilenames_) {
       ASSERT_EQ(0, unlink(f.c_str()));
     }
@@ -40,6 +46,7 @@ class ConfigurationTest : public testing::Test {
 
  protected:
   std::vector<std::string> tmpFilenames_;
+  bool saved_silicon_disc_ = false;
   config::Config configuration_;
 
  private:
