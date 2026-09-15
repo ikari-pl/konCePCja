@@ -1,5 +1,25 @@
 # Changelog
 
+## [6.3.0](https://github.com/ikari-pl/konCePCja/compare/v6.2.5...v6.3.0) (2026-09-15)
+
+
+### Features
+
+* **ipc:** add ~SEMICOLON~ autotype token ([#50](https://github.com/ikari-pl/konCePCja/issues/50)) ([b8fe3d4](https://github.com/ikari-pl/konCePCja/commit/b8fe3d4ee87d4273236f7d283544a8612da8a345))
+* **ipc:** add disk status, save, and eject commands ([40c4e78](https://github.com/ikari-pl/konCePCja/commit/40c4e7823e00a11abb0c10de7a9c140567527233))
+* **ipc:** add disk status, save, and eject commands (beads-csl7.3) ([bc499c7](https://github.com/ikari-pl/konCePCja/commit/bc499c7d4947ae914d1e5a5224f240b4c40f45aa))
+
+
+### Bug Fixes
+
+* **debug:** count frame depth in step-out, and converge the step commands ([4b0ac78](https://github.com/ikari-pl/konCePCja/commit/4b0ac7805a83c51f440aa20baadc97ae247f92de))
+* **debug:** count frame depth, and close the review's whole finding set ([0c3bffb](https://github.com/ikari-pl/konCePCja/commit/0c3bffb3808a5da5fa9db7b4a50360adb8165d31))
+* **debug:** gate step-out on a real RET, not on SP alone ([9f8879f](https://github.com/ikari-pl/konCePCja/commit/9f8879f09a68fbfa9a6d01233b1a8cd5e19ac77b))
+* **debug:** require the stack to have unwound, not just a return at depth 0 ([45a9ff0](https://github.com/ikari-pl/konCePCja/commit/45a9ff098b09e224ec936e9da3c5c8901c856318))
+* **debug:** track entered frames by return slot, and bound the IPC step wait ([1ba61c6](https://github.com/ikari-pl/konCePCja/commit/1ba61c6d3347dae014c1f732bdc20c5994a9b0c0))
+* **ipc:** don't trim a trailing space from input type/autotype text ([#49](https://github.com/ikari-pl/konCePCja/issues/49)) ([1fa1665](https://github.com/ikari-pl/konCePCja/commit/1fa166568d2af759f5fd789456c83bda11c3b475))
+* **ipc:** flush dirty writes before clearing drive path on eject ([fffcd3d](https://github.com/ikari-pl/konCePCja/commit/fffcd3d805fa5081d97cfc9b6c06153d86ee4a5b))
+
 ## [6.2.5](https://github.com/ikari-pl/konCePCja/compare/v6.2.4...v6.2.5) (2026-09-09)
 
 
