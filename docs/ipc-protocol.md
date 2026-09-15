@@ -1,7 +1,8 @@
 # konCePCja IPC Protocol Reference
 
 TCP text protocol on **localhost:6543**. One command per line, newline-terminated.
-Responses start with `OK` or `ERR <code> <reason>`.
+Responses start with `OK` or `ERR <code> <reason>`. A line may chain multiple
+commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
@@ -309,7 +310,7 @@ Single characters work directly: `A`-`Z`, `a`-`z`, `0`-`9`, punctuation.
 | `input mouse button <L\|M\|R> <down\|up>` | Press/release one mouse button. |
 | `input mouse buttons <mask>` | Set the whole SDL button mask at once (Left=1, Middle=2, Right=4). |
 
-> **Note:** `input type` emits only mapped characters — it does *not* interpret WinAPE `~KEY~` tokens. Use the `autotype` command for special keys, holds, and multi-line entry.
+> **Note:** `input type` routes through the same AutoTypeQueue as `autotype`, so WinAPE `~KEY~` tokens (`~ENTER~`, `~PAUSE n~`, `~SEMICOLON~`, ...) and newlines work identically in both commands.
 
 ### Example: Type and run a BASIC program
 
@@ -501,8 +502,19 @@ WinAPE-compatible auto-type with special key syntax.
 | `autotype status` | `OK active: N actions remaining` or `OK idle` |
 | `autotype clear` | Cancel pending auto-type queue. |
 
+> A literal `;` cannot appear in `<text>` for `autotype` or `input type`: the
+> IPC line parser splits every raw line on `;` for command chaining before
+> either command ever sees its text argument, so anything after the `;` is
+> parsed as a separate (usually unrecognized) command instead of being
+> typed. Use the `~SEMICOLON~` token to type the character without putting
+> a literal `;` on the wire — it doesn't trigger the chain-splitter and
+> doesn't affect chaining after the autotype/input type call itself.
+
 ```bash
 echo 'autotype 10 PRINT "HELLO"~ENTER~RUN~ENTER~' | nc -w 1 localhost 6543
+
+# A literal semicolon in a typed BASIC line (e.g. `PRINT A~SEMICOLON~B`)
+echo 'autotype PRINT A~SEMICOLON~B~ENTER~' | nc -w 1 localhost 6543
 ```
 
 ## Disc Management
