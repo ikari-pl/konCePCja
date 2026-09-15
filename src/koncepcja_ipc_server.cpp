@@ -1275,14 +1275,30 @@ std::vector<std::string> split_semicolons(const std::string& s) {
   while (start < s.size()) {
     size_t pos = s.find(';', start);
     if (pos == std::string::npos) pos = s.size();
-    // Trim whitespace from the segment
+    // Trim leading whitespace from the segment -- harmless, and needed for
+    // a consistent command-keyword match just below.
     size_t seg_start = start;
     while (seg_start < pos && (s[seg_start] == ' ' || s[seg_start] == '\t'))
       seg_start++;
+    // `input type <text>` and `autotype <text>` consume the REST OF THE
+    // LINE verbatim as their text argument (see their handlers: they find
+    // the first space and take everything after it, with no further
+    // tokenization) -- unlike every other command, whose arguments are
+    // later re-split on whitespace by split_ws(), which already treats
+    // trailing whitespace as insignificant. Trimming a trailing space/tab
+    // here silently eats the last character of THEIR argument whenever it
+    // happens to be one: `input type "hi "` loses the space before ever
+    // reaching AutoTypeQueue::enqueue(), deterministically, on every call
+    // (not a race -- confirmed via direct single-call repro, beads-u00m).
+    bool const is_raw_text_command =
+        s.compare(seg_start, 11, "input type ") == 0 ||
+        s.compare(seg_start, 9, "autotype ") == 0;
     size_t seg_end = pos;
-    while (seg_end > seg_start &&
-           (s[seg_end - 1] == ' ' || s[seg_end - 1] == '\t'))
-      seg_end--;
+    if (!is_raw_text_command) {
+      while (seg_end > seg_start &&
+             (s[seg_end - 1] == ' ' || s[seg_end - 1] == '\t'))
+        seg_end--;
+    }
     if (seg_end > seg_start)
       out.push_back(s.substr(seg_start, seg_end - seg_start));
     start = pos + 1;
