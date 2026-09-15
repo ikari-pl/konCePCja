@@ -578,10 +578,8 @@ def test_headless_runs_subcycle_engine():
         if not ok or 'effective=' not in resp:
             print(f"FAIL: bridge inactive under --headless: {resp}")
             return False
-        ok1, pc1 = ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok2, pc2 = ipc.send_command('reg get PC')
-        if not (ok1 and ok2 and pc1 != pc2):
+        moved, pc1, pc2 = pc_is_moving(ipc)
+        if not moved:
             print(f"FAIL: PC frozen headless ({pc1} / {pc2})")
             return False
         print("PASS: headless runs the sub-cycle engine (tier OK, PC moves)")
@@ -973,6 +971,270 @@ def test_step_out_gated_on_ret_not_sp():
 
         print("PASS: Step Out ran through the POP and finished on the RET")
         return True
+
+
+def pc_is_moving(ipc, timeout_s=3.0):
+    """Poll `reg get PC` until it changes. Returns (moved, first, last).
+
+    A single before/after pair is NOT a liveness test. The firmware idles in
+    a short loop, so two samples taken 0.4s apart can land on the same PC
+    while the Z80 is running flat out -- the sample interval says nothing
+    about where in the loop each read happens. That aliasing failed
+    test_profile_load_missing_keeps_running on the macOS CI runner with both
+    reads returning 1BC5, while the machine was demonstrably running.
+
+    Polling keeps the original intent -- prove the CPU advances -- and only
+    reports frozen after the whole budget has elapsed with no movement, which
+    a genuinely paused machine always does.
+    """
+    ok, first = ipc.send_command('reg get PC')
+    if not ok:
+        return False, first, first
+    last = first
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(0.05)
+        ok, cur = ipc.send_command('reg get PC')
+        if not ok:
+            return False, first, cur
+        last = cur
+        if cur != first:
+            return True, first, cur
+    return False, first, last
+
+
+def make_test_rom(handlers=None):
+    """Build a synthetic 32K system ROM and return the directory holding it.
+
+    The CPC maps the lower ROM over 0x0000-0x3FFF, so the eight Z80 restart
+    vectors (&00-&38) are covered by firmware and `mem write` there lands in
+    RAM the CPU never executes -- a handler simply cannot be planted at a
+    restart vector on a normally-booted machine. Supplying our own system ROM
+    sidesteps that entirely: no unmapping, no new IPC command, just a ROM with
+    no firmware in it. `rom_path` is only a directory (CPC.rom_path + "/" +
+    chROMFile[model]), so pointing it at a temp dir is enough.
+
+    `handlers` maps a ROM offset to the bytes to place there, e.g.
+    {0x0030: bytes([0xD1, 0xC3, 0x04, 0x60])} for a restart that discards its
+    return address and jumps away. Filler is 0xFF (rst 38h) so stray execution
+    is obvious rather than silently sliding through NOPs.
+
+    Caller owns the returned directory; shutil.rmtree it when done.
+    """
+    rom = bytearray(b'\xFF' * 32768)      # OS half + BASIC half
+    # Park at a NON-ZERO address: EmulatorRunner treats PC==0 as "not ready
+    # yet", so a loop at 0x0000 would sit exactly on that sentinel.
+    rom[0x0000:0x0003] = bytes([0xC3, 0x00, 0x01])  # 0000: JP 0100
+    rom[0x0100:0x0103] = bytes([0xC3, 0x00, 0x01])  # 0100: JP 0100 (park)
+    # &FF filler decodes as `rst 38h`, so 0x0038 would otherwise recurse into
+    # itself and run the stack down. A bare RET keeps stray execution bounded.
+    rom[0x0038] = 0xC9
+    # Overwriting any of these silently removes the scaffolding: clobber the
+    # park loop and the machine never reaches a steady PC, so start() waits
+    # out its full timeout and then blames the ROM for not loading.
+    reserved = set(range(0x0000, 0x0003)) | {0x0038} | set(
+        range(0x0100, 0x0103))
+    for offset, code in (handlers or {}).items():
+        assert 0 <= offset and offset + len(code) <= len(rom), (
+            f"handler at {offset:#06x} ({len(code)} bytes) does not fit a 32K "
+            f"ROM")
+        clash = reserved & set(range(offset, offset + len(code)))
+        assert not clash, (
+            f"handler at {offset:#06x} ({len(code)} bytes) overlaps ROM "
+            f"scaffolding at {sorted(hex(a) for a in clash)} -- the reset "
+            f"vector, the park loop at 0x0100 or the 0x0038 guard")
+        rom[offset:offset + len(code)] = code
+    assert len(rom) == 32768, "a slice assignment resized the ROM"
+    d = tempfile.mkdtemp(prefix='koncpc_testrom_')
+    try:
+        with open(os.path.join(d, 'cpc6128.rom'), 'wb') as f:
+            f.write(rom)
+    except OSError:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    return d
+
+
+def test_step_out_tail_jumping_restart():
+    """A restart that discards its return address must not strand the walk.
+
+    The CPC's LOW JUMP (&08) and FIRM JUMP (&28) push a return address, then
+    the handler POPs it, reads its inline operand and JUMPS away -- the return
+    never happens. Counting entered frames cannot express that: the restart's
+    entry is never balanced, so step out finishes a frame too high. Tracking
+    each entered frame by its return SLOT does, because the entry retires when
+    the stack rises past it however that happens.
+
+    Runs against a synthetic ROM so the restart handler is OURS. An earlier
+    attempt at this test planted the handler with `mem write` and passed for
+    entirely the wrong reason -- the firmware's own handler happened to return.
+    """
+    print("Running step-out tail-jumping-restart test...")
+
+    romdir = make_test_rom({
+        # 0030: POP DE (discard the pushed return address) / JP 6004
+        0x0030: bytes([0xD1, 0xC3, 0x04, 0x60]),
+    })
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', f'rom.rom_path={romdir}',
+                             '-O', 'system.model=2'):
+                print("FAIL: emulator would not start with the test ROM")
+                return False
+            emu.ipc.timeout = 30.0
+            if not emu.ipc.pause():
+                print("FAIL: Could not pause emulator")
+                return False
+
+            # Prove the CPU really sees our handler, not firmware. Without this
+            # the test can pass for the wrong reason, which is exactly how the
+            # previous version of it fooled us.
+            ok, dis = emu.ipc.send_command('disasm 0x0030 2')
+            low = dis.lower()
+            if not ok or 'pop de' not in low or 'jp $6004' not in low:
+                print(f"FAIL: 0x0030 is not our handler: {dis.strip()!r}")
+                return False
+
+            #   6000: RST 30h   -> pushes 6001, vectors to our handler
+            #   6004: RET       -> returns to 7000 via OUR frame's slot
+            # Stack: 8000 = 7000 (this frame's return address)
+            setup = [
+                'mem write 0x6000 F7000000C9',
+                'mem write 0x8000 0070',
+                'reg set SP 0x8000',
+                'reg set PC 0x6000',
+            ]
+            for command in setup:
+                ok, resp = emu.ipc.send_command(command)
+                if not ok:
+                    print(f"FAIL: {command!r} failed: {resp}")
+                    return False
+
+            ok, resp = emu.ipc.send_command('step out')
+            if not ok:
+                print(f"FAIL: step out failed: {resp}")
+                return False
+
+            ok_pc, pc = emu.ipc.get_reg('PC')
+            ok_sp, sp = emu.ipc.get_reg('SP')
+            if not ok_pc or not ok_sp or pc != 0x7000 or sp != 0x8002:
+                print(f"FAIL: expected PC=7000 SP=8002, "
+                      f"got PC={pc:04X} SP={sp:04X}")
+                return False
+
+            # The handler's POP DE lifted the pushed return address into DE.
+            # Without this, nothing distinguishes "the handler ran and threw
+            # its return address away" from "the walk reached the right PC by
+            # some other route".
+            ok_de, de = emu.ipc.get_reg('DE')
+            if not ok_de or de != 0x6001:
+                print(f"FAIL: handler's POP DE did not run "
+                      f"(DE={de:04X}, expected 6001)")
+                return False
+
+            print("PASS: tail-jumping restart did not strand the walk")
+            return True
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
+
+
+def test_step_out_nested_restarts():
+    """Two restarts deep, entered mid-frame, must both unwind.
+
+    This is the test that requires entered frames to be a STACK of slots
+    rather than one slot. Its partner, test_step_out_tail_jumping_restart,
+    covers the other half; between them both wrong shapes die. Verified by
+    mutating src/z80_view.cpp and re-running:
+
+        mutation                              nested      tail-jumping
+        keep only the newest entered slot     FAIL        (passes)
+        pre-PR depth counter, no pruning      (passes)    FAIL (times out)
+
+    So this test alone does NOT rule out the counter -- do not read it as a
+    regression guard for that bug. What it does rule out is dropping an outer
+    frame when an inner one is entered.
+
+    The mid-frame entry is what gives it teeth. Entered at the top of the
+    frame, it stays green under every mutation above, because each restart's
+    RET lands exactly at entry_sp and the unwound() conjunct rejects it
+    without consulting the slots at all. The leading POP puts entry_sp BELOW
+    both restart slots, so a dropped slot yields a RET that does satisfy
+    unwound() and the walk stops early at 0x6002.
+    """
+    print("Running step-out nested-restarts test...")
+
+    # TWO DIFFERENT restarts, not one calling itself -- RST 30h at 0x0030
+    # would recurse forever and run the stack into the ground.
+    romdir = make_test_rom({
+        0x0028: bytes([0xC9]),        # 0028: RET
+        0x0030: bytes([0xEF, 0xC9]),  # 0030: RST 28h, then RET
+    })
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', f'rom.rom_path={romdir}',
+                             '-O', 'system.model=2'):
+                print("FAIL: emulator would not start with the test ROM")
+                return False
+            emu.ipc.timeout = 30.0
+            if not emu.ipc.pause():
+                print("FAIL: Could not pause emulator")
+                return False
+
+            # Both vectors must be OURS. &28 in particular is a real firmware
+            # restart (FIRM JUMP), so if the ROM override were silently
+            # ignored this test would run Amstrad's code and could pass for
+            # the wrong reason -- the exact failure that got an earlier
+            # version of the sibling test deleted.
+            # Exact mnemonics, not substrings: the 0xFF filler disassembles
+            # as `rst 38h`, which would satisfy a bare 'rst' check and let an
+            # ignored ROM override pass for the wrong reason.
+            for addr, want in ((0x0028, 'ret'), (0x0030, 'rst 28h')):
+                ok, dis = emu.ipc.send_command(f'disasm 0x{addr:04X} 1')
+                if not ok or want not in dis.lower():
+                    print(f"FAIL: 0x{addr:04X} is not our handler: "
+                          f"{dis.strip()!r}")
+                    return False
+
+            # Enter MID-frame, like a real step out does. Without the POP
+            # the whole test passes even with frame tracking deleted, because
+            # the stack-level conjunct carries it: the outer handler's RET
+            # lands exactly at entry_sp and is rejected anyway. With the POP,
+            # entry_sp sits BELOW the restart slots, so losing a slot makes
+            # the walk finish early at 0x6002 instead of the caller.
+            #   6000: POP HL   -> SP 8000 -> 8002
+            #   6001: RST 30h  -> 0030 RST 28h -> 0028 RET -> 0031 RET
+            #   6002: RET      -> the frame exit, to 7000
+            for command in ['mem write 0x6000 E1F7C9',
+                            'mem write 0x8000 34120070',
+                            'reg set SP 0x8000', 'reg set PC 0x6000']:
+                ok, resp = emu.ipc.send_command(command)
+                if not ok:
+                    print(f"FAIL: {command!r} failed: {resp}")
+                    return False
+
+            ok, resp = emu.ipc.send_command('step out')
+            if not ok:
+                print(f"FAIL: step out failed: {resp}")
+                return False
+
+            ok_pc, pc = emu.ipc.get_reg('PC')
+            ok_sp, sp = emu.ipc.get_reg('SP')
+            if not ok_pc or not ok_sp:
+                print("FAIL: could not read back PC/SP")
+                return False
+            if pc == 0x6002:
+                print("FAIL: finished inside the frame -- a restart slot was "
+                      "lost")
+                return False
+            if pc != 0x7000 or sp != 0x8004:
+                print(f"FAIL: expected PC=7000 SP=8004, "
+                      f"got PC={pc:04X} SP={sp:04X}")
+                return False
+
+            print("PASS: nested restarts unwound to the caller")
+            return True
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
 
 
 def _load_frame(emu, code_hex, stack_hex="34120070", extra=None):
@@ -2032,7 +2294,8 @@ def test_profile_load_missing_keeps_running():
     CpcPauseLease destructor only drops the lease count; 13db3b7c added
     restore_run_state on load failure. A missing profile must return ERR and
     leave the Z80 advancing — wait vbl is a fixed sleep and would pass even
-    if paused, so this asserts PC motion the way the headless-engine test does.
+    if paused, so this asserts PC motion via pc_is_moving(), which polls
+    rather than comparing one before/after pair (see that helper for why).
     """
     print("Running profile-load missing-name resume test...")
 
@@ -2041,10 +2304,8 @@ def test_profile_load_missing_keeps_running():
             print("FAIL: Could not start emulator")
             return False
 
-        ok1, pc1 = emu.ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok2, pc2 = emu.ipc.send_command('reg get PC')
-        if not (ok1 and ok2 and pc1 != pc2):
+        moved, pc1, pc2 = pc_is_moving(emu.ipc)
+        if not moved:
             print(f"FAIL: PC already frozen before load ({pc1} / {pc2})")
             return False
 
@@ -2056,10 +2317,8 @@ def test_profile_load_missing_keeps_running():
             print(f"FAIL: expected ERR for missing profile, got {resp!r}")
             return False
 
-        ok3, pc3 = emu.ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok4, pc4 = emu.ipc.send_command('reg get PC')
-        if not (ok3 and ok4 and pc3 != pc4):
+        moved, pc3, pc4 = pc_is_moving(emu.ipc)
+        if not moved:
             print(f"FAIL: machine left paused after profile load ERR "
                   f"({pc3} / {pc4}); resp={resp!r}")
             return False
@@ -2567,6 +2826,8 @@ def main():
         test_step_out_gated_on_ret_not_sp,
         test_step_out_untaken_conditional_ret,
         test_step_out_pop_then_call,
+        test_step_out_tail_jumping_restart,
+        test_step_out_nested_restarts,
         test_step_out_computed_return,
         test_step_out_never_returns_times_out_honestly,
         test_step_out_stops_at_breakpoint_inside_own_frame,

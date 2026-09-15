@@ -285,6 +285,46 @@ Tune `KoncepcjaIPC(timeout=5.0)` if the machine is slow.
 4. If the test exercises a threaded-only path, gate it with `ipc.is_threaded()`
    and skip (return `True`) in headless mode.
 
+#### Testing the restart vectors: use a prepared ROM, not `mem write`
+
+**`mem write` and `disasm` do not address the same memory.**  `mem write`
+targets RAM; `disasm` and `mem read` show the ROM overlay.  The lower ROM
+covers `0x0000-0x3FFF`, which is *all eight* Z80 restart vectors — so a
+handler poked to `0x0030` lands in RAM the CPU will never execute, while
+`disasm 0x0030` cheerfully shows you firmware.  Two step-out tests were
+written this way and **passed for the wrong reason**: they were exercising
+Amstrad's restart handlers, which happen to return.  Both had to be deleted.
+
+Use `make_test_rom()` in `test/integrated/ipc_harness.py` instead.  It builds
+a synthetic 32K system ROM with no firmware in it and returns a temp
+directory; `rom.rom_path` is only a directory name, so:
+
+```python
+romdir = make_test_rom({0x0030: bytes([0xD1, 0xC3, 0x04, 0x60])})  # POP DE : JP $6004
+try:
+    with EmulatorRunner() as emu:
+        emu.start('-O', f'rom.rom_path={romdir}', '-O', 'system.model=2')
+finally:
+    shutil.rmtree(romdir, ignore_errors=True)
+```
+
+Three things are load-bearing:
+
+- **Pin `system.model=2`.**  The image is written as `cpc6128.rom` because the
+  filename comes from `chROMFile[model]`.  Under another model the emulator
+  aborts looking for `cpc464.rom` and the test reports a misleading
+  "would not start".
+- **Assert the ROM is really yours** by disassembling a vector and matching an
+  **exact mnemonic**.  Filler is `0xFF`, which decodes as `rst 38h`, so a
+  substring check for `'rst'` is satisfied by empty ROM.
+- **Don't fight the scaffolding.**  `0x0000` jumps to a park loop at `0x0100`
+  (`EmulatorRunner` treats `PC == 0` as "not ready yet"), and `0x0038` holds a
+  bare `RET`.  `make_test_rom` refuses handlers that overlap these.
+
+The emulator refuses to boot a missing or wrong-sized ROM
+(`ERR_CPC_ROM_MISSING` / `ERR_NOT_A_CPC_ROM`), so a botched fixture fails loudly
+rather than silently falling back to firmware.
+
 ## Telnet Console
 
 A persistent TCP text console on **port 6544** (IPC+1). Mirrors everything the CPC prints and accepts keyboard input — like a remote terminal for the emulated CPC.
