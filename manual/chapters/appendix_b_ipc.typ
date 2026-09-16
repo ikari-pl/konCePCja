@@ -28,7 +28,7 @@ and send one command per line.
   [#ipc-cmd[wait vbl \<n\>]], [Wait N vertical blanks],
   [#ipc-cmd[disasm \<addr\> \<count\>]], [Disassemble],
   [#ipc-cmd[input keydown/keyup/key]], [Keyboard input],
-  [#ipc-cmd[input type \<text\>]], [Type literal text],
+  [#ipc-cmd[input type \<text\>]], [Type text (same `~KEY~` syntax as `autotype`)],
   [#ipc-cmd[input joy \<n\> \<dir\>]], [Joystick input],
   [#ipc-cmd[input mouse move/button/buttons]], [Mouse input (needs a mouse device)],
   [#ipc-cmd[autotype \<text\>]], [Queue text with WinAPE `~KEY~` syntax],

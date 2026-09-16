@@ -48,12 +48,22 @@ scr_style=1       ; rendering style (0-11)
 vsync=1           ; 1=VSYNC on (default)
 ```
 
+#note[
+  Keep `vsync=1` on a variable-refresh-rate (VRR) display. VRR locks the
+  panel's refresh to the cadence at which frames are presented; with `vsync=0`
+  the main window may present in IMMEDIATE mode, which has no cadence for the
+  panel to follow, and the picture visibly snaps back to earlier frames. With
+  VSYNC a VRR display settles onto the CPC's own 50 Hz. `vsync=0` exists only
+  to work around the present stall some remote-desktop setups cause; emulation
+  speed is the same either way.
+]
+
 === Sound
 
 ```ini
 [sound]
-snd_enabled=1
-snd_playback_rate=2   ; 0=11025, 1=22050, 2=44100, 3=48000, 4=96000 Hz
+enabled=1
+playback_rate=2   ; 0=11025, 1=22050, 2=44100, 3=48000, 4=96000 Hz
 ```
 
 == Overriding settings on the command line

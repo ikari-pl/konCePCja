@@ -79,9 +79,8 @@ DevTools UI is built on top of the same API.
 For example, type and run a BASIC program over the IPC socket:
 
 ```bash
-echo 'input type "10 print \"hello\""' | nc -w 2 localhost 6543
-echo 'input key RETURN'                | nc -w 2 localhost 6543
-echo 'autotype "run~RETURN~"'          | nc -w 2 localhost 6543   # ~KEY~ via autotype
+echo 'input type "10 print \"hello\"~RETURN~"' | nc -w 2 localhost 6543
+echo 'autotype "run~RETURN~"'                  | nc -w 2 localhost 6543   # same ~KEY~ syntax
 echo 'input mouse move 10 -4'          | nc -w 2 localhost 6543   # needs a mouse device
 ```
 
