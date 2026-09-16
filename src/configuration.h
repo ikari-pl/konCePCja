@@ -45,6 +45,33 @@ class Config {
 
   void setOverrides(const ConfigMap& overrides);
 
+  // The values as LOADED from the file this session. At save time a setter
+  // whose value is unchanged since load leaves the persisted map alone when
+  // the file still holds that key: the file keeps whatever it has NOW,
+  // including an edit made by hand while the emulator ran. A full write-back
+  // from live state used to overwrite such edits on every clean exit — and a
+  // SIGTERM is a clean exit, SDL turns it into SDL_EVENT_QUIT — which is how
+  // a stale kbd_layout kept re-persisting over a fixed one. A value that
+  // differs from the loaded one is a real in-session change and persists; a
+  // key the file lacks is still written so older files gain new keys.
+  // This does NOT protect a key whose live value legitimately drifts at
+  // runtime (scr_window under a fullscreen toggle, printer after a failed
+  // start): those differ from the loaded value and would persist. They rely
+  // on koncpc_save_configuration_preserving_intent() swapping the load-time
+  // intent back in before the save — keep both mechanisms.
+  void setBaseline(const ConfigMap& loaded);
+
+  // The baseline after this Config's setters ran: the loaded values, with
+  // every key that was actually persisted moved to its written value. The
+  // caller stores this as the baseline for the NEXT save, so a value changed,
+  // saved, and changed back is written again rather than mistaken for
+  // "unchanged since load".
+  const ConfigMap& baseline() const;
+
+  // The parsed file contents before any setter ran — what loadConfiguration
+  // hands back as the baseline for the next save.
+  ConfigMap parsedValues() const;
+
   int getIntValue(const std::string& section, const std::string& key,
                   const int defaultValue) const;
   void setIntValue(const std::string& section, const std::string& key,
@@ -72,6 +99,10 @@ class Config {
   // setter writes to keep reads coherent, so it cannot tell an echo from an
   // edit.
   ConfigMap launch_overrides_;
+
+  // See setBaseline(). Empty for a Config that was never handed one (a save
+  // outside the load/save pair, e.g. a fresh file), which writes every key.
+  ConfigMap baseline_;
 
   // Verbatim text of everything parsed into this Config, in order. Empty for
   // a Config built purely by setIntValue/setStringValue (e.g. a brand-new

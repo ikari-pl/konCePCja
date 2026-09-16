@@ -689,6 +689,8 @@ int koncpc_rebuild_machine();
 int video_set_palette();
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();
+// Re-read CPC.kbd_layout into the live host→CPC key map (Settings ▸ Input).
+void koncpc_reload_host_keymap();
 void update_cpc_speed();
 int printer_start();
 void printer_stop();
