@@ -1,10 +1,16 @@
 #include <gtest/gtest.h>
 
+#include "imgui.h"
 #include "imgui_ui.h"
+#include "keyboard.h"
 #include "koncepcja.h"
+#include "video_host.h"
 
 extern t_CPC CPC;
 extern ImGuiUIState imgui_state;
+extern video_plugin* vid_plugin;
+extern SDL_Surface* back_surface;
+extern SDL_Window* mainSDLWindow;
 
 // Uses the real imgui_close_menu() — no duplication of logic.
 
@@ -364,4 +370,104 @@ TEST_F(UIStateTest, MruPushDuplicateMovesToFront) {
   EXPECT_EQ(list.size(), 2u);
   EXPECT_EQ(list[0], "/a.dsk");
   EXPECT_EQ(list[1], "/b.dsk");
+}
+
+// ─── Fullscreen from the menu is deferred, never toggled inline ───────────
+//
+// koncpc_menu_action(KONCPC_FULLSCRN) is reached from inside the active ImGui
+// frame (konCePCja's own menu bar) and from AppKit's nested menu-tracking run
+// loop (the native macOS menu).  koncpc_toggle_fullscreen() tears the whole
+// video stack down and back up — video_shutdown()/video_init(), which destroy
+// and recreate the ImGui context — so calling it from there corrupted the
+// context mid-render and crashed in ImGui::MenuItemEx (SIGSEGV, a byte write
+// near null, from a real macOS crash log).  The handler must instead post
+// imgui_state.fullscreen_request and let the main loop apply it after the
+// frame, exactly as the Options checkbox does.
+
+namespace {
+
+// A live ImGui context whose pointer identity is the oracle: a synchronous
+// toggle would DestroyContext() it (current context -> null) and then
+// CreateContext() a different one.  No backend, no frame — nothing here needs
+// one, and the fixture restores whatever context was current before.
+class ScopedImGuiContext {
+ public:
+  ScopedImGuiContext()
+      : previous_(ImGui::GetCurrentContext()), ctx_(ImGui::CreateContext()) {
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::GetIO().LogFilename = nullptr;
+  }
+  ScopedImGuiContext(const ScopedImGuiContext&) = delete;
+  ScopedImGuiContext& operator=(const ScopedImGuiContext&) = delete;
+  ~ScopedImGuiContext() {
+    // Destroy only what we created: if the code under test destroyed it, the
+    // current context is already gone (or someone else's) and the test has
+    // failed anyway — don't double-free on the way out.
+    if (ImGui::GetCurrentContext() == ctx_) ImGui::DestroyContext(ctx_);
+    ImGui::SetCurrentContext(previous_);
+  }
+  ImGuiContext* get() const { return ctx_; }
+
+ private:
+  ImGuiContext* previous_;
+  ImGuiContext* ctx_;
+};
+
+}  // namespace
+
+TEST_F(UIStateTest, FullscreenRequestStartsIdle) {
+  // -1 is the "nothing pending" sentinel the main-loop consumer keys on.
+  EXPECT_EQ(imgui_state.fullscreen_request, -1);
+}
+
+TEST_F(UIStateTest, FullscreenMenuActionPostsARequestInsteadOfToggling) {
+  ScopedImGuiContext imgui;
+  video_plugin* const plugin_before = vid_plugin;
+  SDL_Surface* const surface_before = back_surface;
+  SDL_Window* const window_before = mainSDLWindow;
+
+  CPC.scr_window = 1;  // windowed
+  imgui_state.fullscreen_request = -1;
+
+  koncpc_menu_action(KONCPC_FULLSCRN);
+
+  // The intent is recorded for the deferred consumer …
+  EXPECT_EQ(CPC.scr_window, 0u) << "scr_window must flip at once (UI feedback)";
+  EXPECT_EQ(imgui_state.fullscreen_request, 0)
+      << "request must carry the new scr_window for the main loop to apply";
+
+  // … and nothing about the video stack was touched synchronously.
+  EXPECT_EQ(ImGui::GetCurrentContext(), imgui.get())
+      << "ImGui context was destroyed/recreated inline: the toggle ran";
+  EXPECT_EQ(vid_plugin, plugin_before);
+  EXPECT_EQ(back_surface, surface_before);
+  EXPECT_EQ(mainSDLWindow, window_before);
+}
+
+TEST_F(UIStateTest, FullscreenMenuActionRequestsWindowedFromFullscreen) {
+  ScopedImGuiContext imgui;
+  CPC.scr_window = 0;  // fullscreen
+  imgui_state.fullscreen_request = -1;
+
+  koncpc_menu_action(KONCPC_FULLSCRN);
+
+  EXPECT_EQ(CPC.scr_window, 1u);
+  EXPECT_EQ(imgui_state.fullscreen_request, 1);
+  EXPECT_EQ(ImGui::GetCurrentContext(), imgui.get());
+}
+
+TEST_F(UIStateTest, FullscreenMenuActionTwiceRequestsTheOriginalState) {
+  // Two clicks before the main loop gets a turn (menu spam) must leave a
+  // request for the state the user ends up asking for, not a stale one; the
+  // consumer compares it against the real window flags and no-ops if equal.
+  ScopedImGuiContext imgui;
+  CPC.scr_window = 1;
+  imgui_state.fullscreen_request = -1;
+
+  koncpc_menu_action(KONCPC_FULLSCRN);
+  koncpc_menu_action(KONCPC_FULLSCRN);
+
+  EXPECT_EQ(CPC.scr_window, 1u);
+  EXPECT_EQ(imgui_state.fullscreen_request, 1);
+  EXPECT_EQ(ImGui::GetCurrentContext(), imgui.get());
 }
