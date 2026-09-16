@@ -73,7 +73,16 @@ drive from a browser while emulation runs.
 
 ```ini
 [peripheral]
+m4board=1                  ; enable the board (off by default)
 m4_http_port=8080          ; HTTP server port
 m4_bind_ip=127.0.0.1       ; bind address (127.0.0.2 works without root on macOS)
 m4_port_map_0=80:8080:1    ; cpc_port:host_port:user_override
 ```
+
+#note[
+  While the board is enabled its ROM owns the disc jumpblock, so `CAT` and
+  `RUN"` address the SD card (the listing is headed `Drive C:/`) --- even with
+  a disk in drive A. To use the floppy again type `|DISC`, AMSDOS's own
+  command, which re-installs its vectors, exactly as on real hardware. `|A`
+  alone only changes the drive letter and is not enough.
+]

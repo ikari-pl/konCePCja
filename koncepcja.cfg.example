@@ -148,6 +148,8 @@ scr_window=1
 #   0: MAILBOX/IMMEDIATE on the MAIN window only (viewport/DevTools windows
 #      always stay VSYNC). Escape hatch for the remote-desktop present stall;
 #      emulation pacing is unaffected (decoupled from render), FPS stays 50.
+#      Keep 1 on a variable-refresh-rate (VRR) display: IMMEDIATE has no
+#      cadence for the panel to lock to and frames visibly snap back.
 vsync=1
 
 [sound]
