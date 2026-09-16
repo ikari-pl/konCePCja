@@ -928,10 +928,12 @@ void emulator_reset() {
 namespace {
 // init() rebuilds the host-key map from CPC.kbd_layout alone; the joystick
 // emulation keys are layered on top afterwards. Startup and a live layout
-// change must do exactly the same two steps.
+// change must do exactly the same two steps — and publish the result for the
+// IPC thread, which never reads CPC.kbd_layout itself.
 void reload_input_mapper() {
   CPC.InputMapper->init();
   CPC.InputMapper->set_joystick_emulation();
+  ipc_publish_host_keymap(CPC.kbd_layout, CPC.resources_path);
 }
 }  // namespace
 
@@ -940,6 +942,13 @@ void reload_input_mapper() {
 // translation units/tests; internal linkage would break the link
 void koncpc_reload_host_keymap() {
   if (CPC.InputMapper == nullptr) return;
+  // A host key held across the switch was pressed through the old map and
+  // would be released through the new one — a different CPC key, leaving the
+  // original matrix bit stuck down.  Release everything first; the user gets
+  // one keyup they did not type, not a key that never comes up.
+  for (auto& row : keyboard_matrix) row.store(0xFF, std::memory_order_relaxed);
+  for (auto& row : keyboard_matrix_live)
+    row.store(0xFF, std::memory_order_relaxed);
   reload_input_mapper();
 }
 

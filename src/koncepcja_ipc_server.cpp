@@ -387,13 +387,31 @@ IpcGunPending g_ipc_gun;
 // the main thread's key-event handler, so the switch is applied by
 // ipc_drain_input() through koncpc_reload_host_keymap(), exactly as the
 // Settings ▸ Input combo does it.
+//
+// The IPC thread never reads CPC.kbd_layout or CPC.resources_path either:
+// they are std::strings the main thread reassigns (the combo, Settings ▸
+// Cancel's whole-struct restore, the drain below), so `config get` answers
+// from `live`/`resources_path`, a mirror the main thread publishes under the
+// mutex every time it (re)loads the mapper.  Empty until the first load: the
+// server starts before the config is read.
 namespace {
 struct IpcKeymapPending {
   std::mutex mutex;
   std::optional<std::string> name;  // staged layout file; nullopt = none
+  std::string live;                 // the map in use, as last published
+  std::string resources_path;       // where the *.map files live
 };
 IpcKeymapPending g_ipc_keymap;
 }  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void ipc_publish_host_keymap(const std::string& layout,
+                             const std::string& resources_path) {
+  std::scoped_lock const lock(g_ipc_keymap.mutex);
+  g_ipc_keymap.live = layout;
+  g_ipc_keymap.resources_path = resources_path;
+}
 
 // Drained once per frame on the main thread.  Safe no-op when no input is
 // pending and no input device is enabled.  Each lock is held only to copy that
@@ -470,6 +488,12 @@ void ipc_drain_input() {
     if (name) {
       CPC.kbd_layout = *name;
       koncpc_reload_host_keymap();
+      // Settings ▸ Cancel restores the CPC snapshot taken when the dialog
+      // opened.  A switch applied while it is open must become part of that
+      // baseline, or Cancel silently undoes it after the client was told OK.
+      if (imgui_state.show_options) {
+        imgui_state.old_cpc_settings.kbd_layout = *name;
+      }
     }
   }
   // Publish device-enabled state for the IPC thread's gates (read of the plain
@@ -4768,17 +4792,21 @@ std::string handle_command(const std::string& line) {
         }
         if (parts[2] == "kbd_layout") {
           // The live map, plus the staged one while a `set` awaits the drain.
-          std::string resp = "OK " + CPC.kbd_layout;
-          {
-            std::scoped_lock const lock(g_ipc_keymap.mutex);
-            if (g_ipc_keymap.name) resp += " pending=" + *g_ipc_keymap.name;
-          }
+          std::scoped_lock const lock(g_ipc_keymap.mutex);
+          if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
+          std::string resp = "OK " + g_ipc_keymap.live;
+          if (g_ipc_keymap.name) resp += " pending=" + *g_ipc_keymap.name;
           return resp + "\n";
         }
         if (parts[2] == "kbd_layouts") {
+          std::string resources_path;
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
+            resources_path = g_ipc_keymap.resources_path;
+          }
           std::string resp = "OK\n";
-          for (const auto& f :
-               InputMapper::host_layout_files(CPC.resources_path))
+          for (const auto& f : InputMapper::host_layout_files(resources_path))
             resp += f + "\n";
           return resp;
         }
@@ -4839,7 +4867,13 @@ std::string handle_command(const std::string& line) {
           return "OK\n";
         }
         if (parts[2] == "kbd_layout") {
-          const auto files = InputMapper::host_layout_files(CPC.resources_path);
+          std::string resources_path;
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
+            resources_path = g_ipc_keymap.resources_path;
+          }
+          const auto files = InputMapper::host_layout_files(resources_path);
           if (std::find(files.begin(), files.end(), parts[3]) == files.end()) {
             return "ERR 400 unknown-kbd-layout (see config get kbd_layouts)\n";
           }

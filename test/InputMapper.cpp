@@ -40,6 +40,26 @@ TEST_F(InputMapperTest, ReloadHostKeymapAppliesTheLiveLayout) {
   CPC.InputMapper = mapper;
 }
 
+// A host key held across the switch was pressed through the old map; its
+// release would resolve through the new one to a different CPC key, leaving
+// the original matrix bit down for good.  The reload releases every row.
+TEST_F(InputMapperTest, ReloadHostKeymapReleasesEveryHeldKey) {
+  CPC.keyboard = 0;
+  CPC.kbd_layout = "keymap_us.map";
+  keyboard_matrix[3].store(0xFE, std::memory_order_relaxed);  // a key down
+  keyboard_matrix_live[3].store(0xFE, std::memory_order_relaxed);
+  keyboard_matrix[9].store(0x7F, std::memory_order_relaxed);
+
+  koncpc_reload_host_keymap();
+
+  for (int i = 0; i < 16; ++i) {
+    EXPECT_EQ(0xFF, keyboard_matrix[i].load(std::memory_order_relaxed))
+        << "row " << i;
+    EXPECT_EQ(0xFF, keyboard_matrix_live[i].load(std::memory_order_relaxed))
+        << "row " << i;
+  }
+}
+
 TEST_F(InputMapperTest, Keymapping) {
   CPC.kbd_layout = "keymap_us.map";
   CPC.keyboard = 0;

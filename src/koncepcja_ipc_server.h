@@ -107,3 +107,11 @@ void ipc_check_vbl_events();
 // MUST be called once per frame on the main thread — the IPC server thread only
 // accumulates; this applies. Cheap no-op when nothing is pending.
 void ipc_drain_input();
+
+// Main thread: publish the host keymap in use and the directory its *.map
+// files live in, for `config get|set kbd_layout(s)` to answer from without
+// touching CPC.kbd_layout / CPC.resources_path off-thread. Called every time
+// the InputMapper is (re)loaded; until the first call those commands answer
+// `ERR 503 not-ready`.
+void ipc_publish_host_keymap(const std::string& layout,
+                             const std::string& resources_path);

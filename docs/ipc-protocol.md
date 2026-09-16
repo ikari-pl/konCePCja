@@ -639,7 +639,11 @@ Read and write emulator settings.
 | `config get silicon_disc` | `OK 0\|1` — Silicon Disc enabled |
 | `config get kbd_layout` | `OK <file>` — the host keymap in use (`resources/*.map`). While a `config set kbd_layout` awaits the next frame, appends ` pending=<file>` |
 | `config get kbd_layouts` | `OK` then one `*.map` filename per line — the choices the Settings ▸ Input combo offers |
-| `config set kbd_layout <file>` | Switch the host keymap live, the same way the Settings combo does: applied on the main thread on the next frame (`OK (applied on next frame)`). `ERR 400 unknown-kbd-layout` if the file is not one of `config get kbd_layouts` |
+| `config set kbd_layout <file>` | Switch the host keymap live, the same way the Settings combo does: applied on the main thread on the next frame (`OK (applied on next frame)`). `ERR 400 unknown-kbd-layout` if the file is not one of `config get kbd_layouts`. A switch applied while the Settings dialog is open survives its Cancel |
+
+All three `kbd_layout` commands answer `ERR 503 not-ready` until the host
+keymap has been loaded — the IPC server comes up before the configuration
+is read, so a client connecting at launch may see it briefly.
 | `config set crtc_type <0-3>` | Set CRTC type (0=HD6845S, 1=UM6845R, 2=MC6845, 3=ASIC) |
 | `config set ram_size <kb>` | Set RAM size (reset required) |
 | `config get model` | `OK 0`-`3` — live CPC model (0=464, 1=664, 2=6128, 3=6128+). While a `config set model` is staged but not yet applied, appends ` pending=<n>` |

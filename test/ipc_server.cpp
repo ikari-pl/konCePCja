@@ -194,9 +194,23 @@ TEST_F(IpcServerTest, ConfigKbdLayoutListsStagesAndAppliesOnDrain) {
   CPC.InputMapper = new InputMapper(&CPC);
   CPC.kbd_layout = "keymap_us.map";
   CPC.keyboard = 0;
-  CPC.InputMapper->init();
 
-  auto resp = send_command("config get kbd_layouts");
+  // The IPC thread answers from what the main thread last published, never
+  // from CPC.kbd_layout itself.  Nothing published yet (the server starts
+  // before the config is read): not ready, not a stale or torn read.
+  ipc_publish_host_keymap("", "");
+  auto resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("ERR 503 not-ready")) << resp;
+  resp = send_command("config get kbd_layouts");
+  EXPECT_EQ(0u, resp.find("ERR 503 not-ready")) << resp;
+  resp = send_command("config set kbd_layout keymap_uk_linux.map");
+  EXPECT_EQ(0u, resp.find("ERR 503 not-ready")) << resp;
+
+  koncpc_reload_host_keymap();  // loads the map and publishes it
+  resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("OK keymap_us.map")) << resp;
+
+  resp = send_command("config get kbd_layouts");
   EXPECT_EQ(0u, resp.find("OK\n")) << resp;  // multi-line, like `disk ls`
   EXPECT_NE(resp.find("keymap_us.map"), std::string::npos) << resp;
   EXPECT_NE(resp.find("keymap_uk_linux.map"), std::string::npos) << resp;
@@ -213,14 +227,29 @@ TEST_F(IpcServerTest, ConfigKbdLayoutListsStagesAndAppliesOnDrain) {
   EXPECT_EQ("keymap_us.map", CPC.kbd_layout)
       << "the switch must wait for the main-thread drain";
 
+  // The Settings dialog is open: its Cancel restores the snapshot taken when
+  // it opened.  The switch must join that snapshot or Cancel undoes it.
+  imgui_state.show_options = true;
+  imgui_state.old_cpc_settings.kbd_layout = "keymap_us.map";
   ipc_drain_input();  // what the main loop does once per frame
   EXPECT_EQ("keymap_uk_linux.map", CPC.kbd_layout);
+  EXPECT_EQ("keymap_uk_linux.map", imgui_state.old_cpc_settings.kbd_layout)
+      << "Settings > Cancel would silently revert the applied switch";
   resp = send_command("config get kbd_layout");
   EXPECT_EQ(0u, resp.find("OK keymap_uk_linux.map")) << resp;
   EXPECT_EQ(std::string::npos, resp.find("pending=")) << resp;
   // Shift+3 is the pound sign on a UK host keyboard; the US map gives '#'.
   EXPECT_EQ(0x30 | MOD_CPC_SHIFT,
             CPC.InputMapper->CPCscancodeFromKeysym(SDLK_3, SDL_KMOD_RSHIFT));
+
+  // Dialog closed: the snapshot is nobody's business.
+  imgui_state.show_options = false;
+  imgui_state.old_cpc_settings.kbd_layout = "untouched";
+  resp = send_command("config set kbd_layout keymap_us.map");
+  EXPECT_OK(resp);
+  ipc_drain_input();
+  EXPECT_EQ("keymap_us.map", CPC.kbd_layout);
+  EXPECT_EQ("untouched", imgui_state.old_cpc_settings.kbd_layout);
 
   delete CPC.InputMapper;
   CPC.InputMapper = previous;

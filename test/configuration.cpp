@@ -12,6 +12,7 @@
 #include <errno.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -680,6 +681,31 @@ TEST_F(ConfigurationTest, aPersistedValueBecomesTheBaselineForTheNextSave) {
       << "a written value must become the next baseline";
   EXPECT_EQ("2", next.at("system").at("model"))
       << "a skipped key keeps its loaded baseline, not the file's hand edit";
+}
+
+// The baseline advances to what was actually persisted — only after a save
+// that succeeded.  Advancing it on a failed save would make the change look
+// 'unchanged' to the next save, which would then leave the file's old value.
+TEST_F(ConfigurationTest, aFailedSaveDoesNotAdvanceTheBaseline) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[system]\nmodel=2\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ(2, CPC.model);
+
+  CPC.model = 3;
+  std::filesystem::path const nowhere = std::filesystem::temp_directory_path() /
+                                        "koncepcja-no-such-dir" /
+                                        "koncepcja.cfg";
+  ASSERT_FALSE(saveConfiguration(CPC, nowhere.string()));
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(3, saved.getIntValue("system", "model", -1))
+      << "the failed save must not have made the change look 'unchanged'";
 }
 
 TEST_F(ConfigurationTest, changeSaveRevertSavePersistsTheRevert) {
