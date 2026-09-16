@@ -16,6 +16,50 @@ class InputMapperTest : public testing::Test {
   }
 };
 
+// koncpc_reload_host_keymap() is what the Settings ▸ Input combo (and its
+// Cancel path) call to make a changed CPC.kbd_layout take effect live: the
+// same InputMapper::init() + joystick relayer as startup.
+TEST_F(InputMapperTest, ReloadHostKeymapAppliesTheLiveLayout) {
+  CPC.keyboard = 0;
+  CPC.kbd_layout = "keymap_us.map";
+  koncpc_reload_host_keymap();
+  // Shift+1 is '!' on a US host keyboard.
+  EXPECT_EQ(0x80 | MOD_CPC_SHIFT,
+            CPC.InputMapper->CPCscancodeFromKeysym(SDLK_1, SDL_KMOD_LSHIFT));
+
+  CPC.kbd_layout = "keymap_uk_linux.map";
+  koncpc_reload_host_keymap();
+  // Shift+3 is the pound sign on a UK host keyboard; the US map gives '#'.
+  EXPECT_EQ(0x30 | MOD_CPC_SHIFT,
+            CPC.InputMapper->CPCscancodeFromKeysym(SDLK_3, SDL_KMOD_RSHIFT));
+
+  // No mapper yet (startup order): a no-op, not a crash.
+  InputMapper* const mapper = CPC.InputMapper;
+  CPC.InputMapper = nullptr;
+  koncpc_reload_host_keymap();
+  CPC.InputMapper = mapper;
+}
+
+// A host key held across the switch was pressed through the old map; its
+// release would resolve through the new one to a different CPC key, leaving
+// the original matrix bit down for good.  The reload releases every row.
+TEST_F(InputMapperTest, ReloadHostKeymapReleasesEveryHeldKey) {
+  CPC.keyboard = 0;
+  CPC.kbd_layout = "keymap_us.map";
+  keyboard_matrix[3].store(0xFE, std::memory_order_relaxed);  // a key down
+  keyboard_matrix_live[3].store(0xFE, std::memory_order_relaxed);
+  keyboard_matrix[9].store(0x7F, std::memory_order_relaxed);
+
+  koncpc_reload_host_keymap();
+
+  for (int i = 0; i < 16; ++i) {
+    EXPECT_EQ(0xFF, keyboard_matrix[i].load(std::memory_order_relaxed))
+        << "row " << i;
+    EXPECT_EQ(0xFF, keyboard_matrix_live[i].load(std::memory_order_relaxed))
+        << "row " << i;
+  }
+}
+
 TEST_F(InputMapperTest, Keymapping) {
   CPC.kbd_layout = "keymap_us.map";
   CPC.keyboard = 0;

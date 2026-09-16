@@ -19,6 +19,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "SDL3/SDL.h"
 #include "koncepcja.h"
@@ -370,6 +371,11 @@ class InputMapper {
   InputMapper(t_CPC* CPC);
   bool load_layout(const std::string& filename);
   void init();
+  // The host keymap files (*.map) under `resources_path`, sorted by name —
+  // the choices the Settings dialog offers for CPC.kbd_layout. Empty when
+  // the directory is missing.
+  static std::vector<std::string> host_layout_files(
+      const std::string& resources_path);
   CPCScancode CPCscancodeFromCPCkey(CPC_KEYS cpc_key);
   CPCScancode CPCscancodeFromKeysym(SDL_Keycode key, SDL_Keymod mod);
   CapriceKey CPCkeyFromKeysym(SDL_Keycode key, SDL_Keymod mod);
