@@ -1195,15 +1195,15 @@ namespace {
 void apply_scr_scale(int scale_idx) {
   if (scale_idx < 0 || scale_idx > 4) scale_idx = 0;
   CPC.scr_scale = scale_idx;
-  if (scale_idx > 0 && mainSDLWindow) {
-    static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
-    float const f = sf[scale_idx];
-    int const new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-    int new_h = CPC.scr_crt_aspect
-                    ? static_cast<int>(new_w * 3.f / 4.f)
-                    : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
-    new_h += video_get_topbar_height() + video_get_bottombar_height();
-    SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
+  // Fit mode has no derived size.  A fixed scale resizes to the geometry
+  // video_derived_window_size() computes — doubled-scanline surface, CRT
+  // aspect flag, live chrome — the one formula the reinit and launch paths use,
+  // so the picker cannot drift from them again (its own copy sized from the
+  // undoubled 270px height: a half-height window with scr_crt_aspect off).
+  int w = 0;
+  int h = 0;
+  if (mainSDLWindow && video_derived_window_size(w, h)) {
+    SDL_SetWindowSize(mainSDLWindow, w, h);
   }
 }
 }  // namespace

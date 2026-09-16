@@ -1977,18 +1977,24 @@ int video_init() {
   CPC.scr_pos = CPC.scr_base = static_cast<byte*>(
       back_surface->pixels);  // memory address of back buffer
 
-  // Resize window to match user's chosen scale (init always creates at 2x)
-  if (CPC.scr_scale > 0 && mainSDLWindow) {
-    static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
-    if (CPC.scr_scale < sizeof(sf) / sizeof(sf[0])) {
-      float const f = sf[CPC.scr_scale];
-      int const new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-      int new_h = CPC.scr_crt_aspect
-                      ? static_cast<int>(new_w * 3.f / 4.f)
-                      : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
-      new_h += video_get_topbar_height() + video_get_bottombar_height();
-      SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
-    }
+  // Size the window.  The plugin always creates it at the surface's own
+  // 768x540 — video_init() inits every plugin at scale 2 — which is a 2.84:1
+  // letterbox, not a window size anyone asked for.  Every windowed init must
+  // therefore set the real size, including the inits that happen mid-session
+  // when a fullscreen toggle or a renderer switch tears the window down and
+  // builds a new one.
+  //
+  // At a fixed scr_scale that size is derived from the scale.  In Fit mode
+  // (scr_scale == 0) there is nothing to derive from, so restore the size the
+  // window had before this reinit (recorded by video_shutdown()) — after an
+  // aspect-ratio sanity check, since a stale degenerate size on disk would
+  // otherwise reproduce the squish; only a genuinely fresh window falls back
+  // to the 1x default.  The decision lives in video_reinit_window_size().
+  if (mainSDLWindow && CPC.scr_window != 0) {
+    int new_w = 0;
+    int new_h = 0;
+    video_reinit_window_size(new_w, new_h);
+    if (new_w > 0 && new_h > 0) SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
   }
 
   // A saved/derived position may land on a display that no longer exists (or is
@@ -1999,6 +2005,11 @@ int video_init() {
 }
 
 void video_shutdown() {
+  // Remember the windowed geometry before the plugin destroys the window: the
+  // next video_init() creates a brand-new one and, in Fit mode, this is the
+  // only record of the size the user chose.  A fullscreen window's size belongs
+  // to the display, not the user, so it is never recorded.
+  video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
   // Plugin close must run first so the GPU plugin can tear down ImGui
   // SDLGPU3 and other device-dependent state before the GPU device
   // itself is destroyed.  For non-GPU plugins the order is irrelevant
@@ -2574,16 +2585,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // Record the live window size, so both "Save" and the save-on-exit keep
   // whatever the user last dragged the window to.  In fullscreen the stored
   // value stands, since that size belongs to the display.
-  if (mainSDLWindow &&
-      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) == 0) {
-    int w = 0;
-    int h = 0;
-    SDL_GetWindowSize(mainSDLWindow, &w, &h);
-    if (w > 0 && h > 0) {
-      CPC.win_w = static_cast<unsigned int>(w);
-      CPC.win_h = static_cast<unsigned int>(h);
-    }
-  }
+  video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
   config::Config conf;
   // Read before write. Building a fresh Config here deleted every comment in
   // the file and every key this build does not set — and because the MRU list
@@ -2932,7 +2934,14 @@ void koncpc_menu_action(int action) {
     }
 
     case KONCPC_FULLSCRN:
-      koncpc_toggle_fullscreen();
+      // Fullscreen transitions destroy/recreate video (and the whole ImGui
+      // context) — this handler can run from inside the active ImGui frame
+      // (clicked from konCePCja's own in-window menu bar) or from AppKit's
+      // nested menu-tracking run loop (native macOS menu bar), so it must
+      // defer the same way the Options checkbox does (see fullscreen_request
+      // consumption below), not call koncpc_toggle_fullscreen() directly.
+      CPC.scr_window = CPC.scr_window ? 0 : 1;
+      imgui_state.fullscreen_request = CPC.scr_window;
       break;
 
     case KONCPC_SCRNSHOT:
@@ -4262,8 +4271,12 @@ int koncpc_main(int argc, char** argv) {
     // topbar; running it earlier compared against the bare emulated screen and
     // let a too-small size through.  The hold covers the resizes still to come
     // as the bottombar settles on a later frame.
-    if (CPC.win_w > 0 && CPC.win_h > 0 && mainSDLWindow &&
-        CPC.scr_window != 0) {
+    // Same gate as the mid-session reinit path: a degenerate persisted size
+    // (the 1536x540 letterbox a pre-fix build wrote) must not be reapplied at
+    // launch either, or it comes back on every start until a fullscreen
+    // round-trip happens to replace it.
+    if (video_persisted_window_size_is_sane(CPC.win_w, CPC.win_h) &&
+        mainSDLWindow && CPC.scr_window != 0) {
       int w = static_cast<int>(CPC.win_w);
       int h = static_cast<int>(CPC.win_h);
       // Keep the window big enough to show the whole emulated screen at the
