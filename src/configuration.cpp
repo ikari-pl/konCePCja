@@ -267,9 +267,22 @@ void Config::setStringValue(const std::string& section, const std::string& key,
     // longer shields this key.
     launch_overrides_[section].erase(key);
   }
+  if (const std::string* loaded = find_in(baseline_, section, key)) {
+    if (*loaded == value && find_in(config_, section, key) != nullptr) {
+      // Unchanged since load, and the file still has the key: leave the
+      // file's current value alone — it may carry a hand edit made while
+      // this session ran (see setBaseline). Reads keep serving live state.
+      overrides_[section][key] = value;
+      return;
+    }
+  }
   overrides_[section][key] = value;
   config_[section][key] = value;
 }
+
+void Config::setBaseline(const ConfigMap& loaded) { baseline_ = loaded; }
+
+ConfigMap Config::parsedValues() const { return config_; }
 
 void Config::setIntValue(const std::string& section, const std::string& key,
                          const int value) {

@@ -3889,6 +3889,35 @@ void imgui_render_options() {
         CPC.keyboard = keyboard;
       }
 
+      // Host keyboard layout: the *.map that translates the host's physical
+      // keys into CPC keys. It was config-file-only before this combo, so a
+      // wrong value (a Spanish map on a US keyboard) sat invisible for weeks
+      // with no way to notice it, let alone fix it, from inside the app.
+      {
+        static std::vector<std::string> s_layouts;
+        static std::string s_scanned_path;
+        if (s_scanned_path != CPC.resources_path) {
+          s_layouts = InputMapper::host_layout_files(CPC.resources_path);
+          s_scanned_path = CPC.resources_path;
+        }
+        if (ImGui::BeginCombo("Host Keyboard Layout",
+                              CPC.kbd_layout.c_str())) {
+          for (const std::string& name : s_layouts) {
+            bool const selected = name == CPC.kbd_layout;
+            if (ImGui::Selectable(name.c_str(), selected) && !selected) {
+              CPC.kbd_layout = name;
+              koncpc_reload_host_keymap();
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip(
+            "Which host keys produce which CPC keys. Pick the map matching\n"
+            "your physical keyboard (keymap_us.map for a US layout).\n"
+            "Applies immediately.");
+      }
+
       int ksm = static_cast<int>(CPC.keyboard_support_mode);
       const char* const ksm_modes[] = {"Direct", "Buffered Until Read",
                                        "Min. 2 Frames"};
@@ -4450,8 +4479,12 @@ void imgui_render_options() {
   // to carry its own copy.
   auto revert_options = [&]() {
     unsigned int const prev_style = CPC.scr_style;
+    std::string const prev_kbd_layout = CPC.kbd_layout;
     imgui_state.fullscreen_request = imgui_state.old_cpc_settings.scr_window;
     CPC = imgui_state.old_cpc_settings;
+    // The host keymap was reloaded live when the combo changed; a reverted
+    // kbd_layout has to reach the live map the same way.
+    if (CPC.kbd_layout != prev_kbd_layout) koncpc_reload_host_keymap();
     CRTC.crtc_type = old_crtc_type;
     if (subcycle::Machine* m = subcycle_bridge_machine())
       m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));

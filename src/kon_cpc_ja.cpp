@@ -504,6 +504,14 @@ bool g_config_loaded = false;
 unsigned int g_cfg_intent_printer = 0;
 unsigned int g_cfg_intent_scr_window = 1;
 
+namespace {
+// Every value as loaded from the config file this session. saveConfiguration
+// hands it to the Config as the baseline: a key still holding its loaded value
+// is not written back, so the file keeps any edit made by hand while the
+// emulator ran (see config::Config::setBaseline).
+config::ConfigMap g_config_baseline;
+}  // namespace
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 bool koncpc_config_loaded() { return g_config_loaded; }
@@ -912,6 +920,17 @@ void emulator_reset() {
     lease.release();
     cpc_resume();  // a running caller keeps running post-reset
   }
+}
+
+// Main thread only: the key-event handler that reads these maps runs there too.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_reload_host_keymap() {
+  if (CPC.InputMapper == nullptr) return;
+  CPC.InputMapper->init();
+  // init() rebuilds the host-key map from the layout file alone; the joystick
+  // emulation keys are layered on top afterwards, exactly as at startup.
+  CPC.InputMapper->set_joystick_emulation();
 }
 
 namespace {
@@ -2213,6 +2232,7 @@ std::string getConfigurationFilename(bool forWrite) {
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   config::Config conf;
   conf.parseFile(configFilename);
+  g_config_baseline = conf.parsedValues();
   conf.setOverrides(args.cfgOverrides);
 
   std::string const appPath = chAppPath;
@@ -2560,6 +2580,10 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // `-O peripheral.m4_sd_path=/tmp/...` became a permanent config entry on
   // the first save.
   conf.setOverrides(args.cfgOverrides);
+  // Only keys that changed in this session are written; the rest keep the
+  // file's current text, so a hand edit made while running survives the
+  // exit-time save instead of being overwritten from stale live state.
+  conf.setBaseline(g_config_baseline);
 
   conf.setIntValue("system", "model", CPC.model);
   conf.setIntValue("system", "jumpers", CPC.jumpers);

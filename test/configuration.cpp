@@ -581,6 +581,87 @@ TEST_F(ConfigurationTest, aRealChangeToAnOverriddenKeyPersists) {
   EXPECT_NE(oss2.str().find("m4_sd_path=/home/newsd"), std::string::npos);
 }
 
+// A key whose live value is unchanged since load must not be written back:
+// the file keeps whatever it holds NOW. Every clean exit used to write the
+// whole live state over the file — and a SIGTERM is a clean exit, SDL turns
+// it into SDL_EVENT_QUIT — so a stale kbd_layout was re-persisted over a hand
+// fix the moment the running instance was killed.
+TEST_F(ConfigurationTest, anUnchangedValueDoesNotOverwriteAHandEdit) {
+  // The file as it is at save time: edited by hand while the emulator ran.
+  configuration_.parseString("[control]\nkbd_layout=keymap_us.map\n");
+  // What this session loaded at boot.
+  config::ConfigMap loaded;
+  loaded["control"]["kbd_layout"] = "keymap_es_linux.map";
+  configuration_.setBaseline(loaded);
+
+  // Save time: live state echoes the loaded value back, unchanged.
+  configuration_.setStringValue("control", "kbd_layout",
+                                "keymap_es_linux.map");
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("kbd_layout=keymap_us.map"), std::string::npos)
+      << "the hand edit was overwritten by the stale live value:\n"
+      << oss.str();
+  EXPECT_EQ(oss.str().find("keymap_es_linux"), std::string::npos);
+}
+
+TEST_F(ConfigurationTest, aValueChangedSinceLoadPersists) {
+  configuration_.parseString("[control]\nkbd_layout=keymap_es_linux.map\n");
+  config::ConfigMap loaded;
+  loaded["control"]["kbd_layout"] = "keymap_es_linux.map";
+  configuration_.setBaseline(loaded);
+
+  configuration_.setStringValue("control", "kbd_layout", "keymap_fr_win.map");
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("kbd_layout=keymap_fr_win.map"), std::string::npos)
+      << oss.str();
+}
+
+// An unchanged value is still written when the target file lacks the key:
+// older files must keep gaining the keys a newer build reads (see
+// saveConfigurationPreservesEverySettingItReads), and a save to a different
+// file must be complete.
+TEST_F(ConfigurationTest, anUnchangedValueIsWrittenWhenTheFileLacksTheKey) {
+  configuration_.parseString("[control]\n");
+  config::ConfigMap loaded;
+  loaded["control"]["kbd_layout"] = "keymap_us.map";
+  configuration_.setBaseline(loaded);
+
+  configuration_.setStringValue("control", "kbd_layout", "keymap_us.map");
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("kbd_layout=keymap_us.map"), std::string::npos)
+      << oss.str();
+}
+
+// End to end through loadConfiguration/saveConfiguration: boot with one
+// value, fix the file by hand while "running", save on exit — the fix
+// survives.
+TEST_F(ConfigurationTest, saveOnExitKeepsAHandEditMadeWhileRunning) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[control]\nkbd_layout=keymap_es_linux.map\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ("keymap_es_linux.map", CPC.kbd_layout);
+
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[control]\nkbd_layout=keymap_us.map\n";
+  }
+  saveConfiguration(CPC, getTmpFilename(0));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ("keymap_us.map",
+            saved.getStringValue("control", "kbd_layout", ""));
+}
+
 TEST_F(ConfigurationTest, keysWithoutOverridesSaveExactlyAsBefore) {
   configuration_.parseString("[system]\nmodel=2\n");
   config::ConfigMap overrides;
