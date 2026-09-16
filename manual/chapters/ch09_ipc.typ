@@ -16,9 +16,10 @@
 == Connecting
 
 #idx("IPC")The server listens on #port[localhost:6543]. The protocol is plain
-text: one command per line, newline-terminated. Every response begins with
-#cmd[OK] (followed by any result) or #cmd[ERR] #arg[code] #arg[reason]. Any tool
-that speaks TCP works:
+text: one command per line, newline-terminated. Several commands may be
+chained on one line, separated by `;`; each gets its own response. Every
+response begins with #cmd[OK] (followed by any result) or #cmd[ERR] #arg[code]
+#arg[reason]. Any tool that speaks TCP works:
 
 ```bash
 echo "ping" | nc -w 1 localhost 6543      # → OK pong
@@ -205,9 +206,12 @@ input mouse move 10 -4   # relative mouse motion (needs a mouse device)
 ```
 
 #note[
-  `input type` emits only mapped characters --- it does #emph[not] interpret the
-  WinAPE `~KEY~` syntax. For special keys, holds, or multi-line entry use the
-  `autotype` command, which understands tokens such as `~RETURN~`.
+  `input type` and `autotype` share one typing path: both understand WinAPE
+  `~KEY~` tokens (`~RETURN~`, `~PAUSE n~`, ...) and newlines, and both return
+  `OK` immediately while the text drains over the next keyboard scans
+  (`autotype status` reports progress). Because the IPC parser splits a line
+  on `;` to chain commands, a literal semicolon cannot appear in typed text ---
+  use `~SEMICOLON~` instead.
 ]
 
 == Hashes for regression testing
@@ -231,9 +235,8 @@ result by hashing the screen:
 ```bash
 echo 'reset'                              | nc -w 1 localhost 6543
 echo 'wait vbl 50'                        | nc -w 2 localhost 6543
-echo 'input type "10 PRINT CHR\$(42)"'    | nc -w 5 localhost 6543
-echo 'input key RETURN'                   | nc -w 2 localhost 6543
-echo 'autotype "run~RETURN~"'             | nc -w 5 localhost 6543
+echo 'input type "10 PRINT CHR\$(42)~RETURN~"' | nc -w 5 localhost 6543
+echo 'autotype "run~RETURN~"'                  | nc -w 5 localhost 6543
 echo 'step frame 20'                      | nc -w 5 localhost 6543
 echo 'hash vram'                          | nc -w 1 localhost 6543
 ```

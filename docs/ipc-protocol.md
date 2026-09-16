@@ -304,22 +304,22 @@ Single characters work directly: `A`-`Z`, `a`-`z`, `0`-`9`, punctuation.
 | `input keydown <key>` | Press and hold key in matrix. Works even when paused. |
 | `input keyup <key>` | Release key from matrix. |
 | `input key <key>` | Tap: press, hold 2 frames, release. Blocks. |
-| `input type "<text>"` | Type each character with 2-frame hold and 1-frame gap. Handles uppercase (auto-SHIFT). Blocks. |
+| `input type <text>` | Queue text through the AutoTypeQueue (same path as `autotype`). Returns `OK` at once; drains over subsequent keyboard scans (see `autotype status`). `~KEY~` tokens and newlines supported. |
 | `input joy <n> <dir>` | Joystick N (0 or 1). Directions: `U`/`UP` `D`/`DOWN` `L`/`LEFT` `R`/`RIGHT` `F`/`F1`/`FIRE1` `F2`/`FIRE2`. Prefix `-` to release. `0` releases all. |
 | `input mouse move <dx> <dy>` | Relative mouse motion (mickeys) fed to the AMX/Symbiface mouse. Requires a mouse device enabled (`input.amx_mouse=1` or `peripheral.symbiface=1`), else `ERR 409`. |
 | `input mouse button <L\|M\|R> <down\|up>` | Press/release one mouse button. |
 | `input mouse buttons <mask>` | Set the whole SDL button mask at once (Left=1, Middle=2, Right=4). |
 
 > **Note:** `input type` routes through the same AutoTypeQueue as `autotype`, so WinAPE `~KEY~` tokens (`~ENTER~`, `~PAUSE n~`, `~SEMICOLON~`, ...) and newlines work identically in both commands.
+>
+> Both return `OK` before the text has been typed — it drains over the following keyboard scans. Put the `~RETURN~` in the same call rather than following up with a separate `input key RETURN`: that tap is applied immediately and can land before the queued text has finished.
 
 ### Example: Type and run a BASIC program
 
 ```bash
 echo "wait vbl 50"                          | nc -w 5 localhost 6543
-echo 'input type "10 PRINT CHR$(42)"'       | nc -w 15 localhost 6543
-echo "input key RETURN"                     | nc -w 2 localhost 6543
-echo 'input type "RUN"'                     | nc -w 5 localhost 6543
-echo "input key RETURN"                     | nc -w 2 localhost 6543
+echo 'input type "10 PRINT CHR$(42)~RETURN~"' | nc -w 15 localhost 6543
+echo 'input type "RUN~RETURN~"'               | nc -w 5 localhost 6543
 echo "step frame 20"                        | nc -w 5 localhost 6543
 echo "screenshot /tmp/result.png"           | nc -w 1 localhost 6543
 ```

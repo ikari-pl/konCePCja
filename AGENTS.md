@@ -417,6 +417,9 @@ The HTTP server runs in its own thread. CPC-mutating operations (reset, pause to
 
 ```ini
 [peripheral]
+m4board=1                  # Enable the board (off by default). While on, its ROM
+                           # owns the disc vectors: CAT/RUN" go to the SD card
+                           # ("Drive C:/") until you type |DISC — same as real hw.
 m4_http_port=8080          # HTTP server port (default 8080)
 m4_bind_ip=127.0.0.1       # Bind IP (127.0.0.2 works on macOS without root)
 m4_port_map_0=80:8080:1    # Port forwarding: cpc_port:host_port:user_override
@@ -537,6 +540,12 @@ vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
                   # IMMEDIATE breaks their swapchains). Escape hatch for the
                   # remote-desktop present stall; emulation pacing is unaffected
                   # (decoupled from render), so FPS stays 50 either way.
+                  # Cost of 0: when only IMMEDIATE is available (no MAILBOX —
+                  # seen on a 5K/144 Hz Mac display) the 50 Hz presents land
+                  # unsynced. On a variable-refresh-rate (VRR) display that is
+                  # visibly broken — frames snap back — because VRR locks the
+                  # panel to the present cadence and IMMEDIATE has none. Use 1
+                  # with VRR (beads-7azm).
 
 [sound]
 enabled=1         # NOTE: the INI keys are enabled/playback_rate/bits/stereo/
