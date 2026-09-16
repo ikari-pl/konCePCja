@@ -3174,6 +3174,18 @@ void imgui_render_menu() {
   ImGui::NextColumn();
   ImGui::TextDisabled("%s", model_name);
   ImGui::NextColumn();
+  // Which file this session runs on: a checkout-local koncepcja.cfg used to
+  // win silently over the user's profile config, with nothing in the app to
+  // show it (beads-825s).
+  ImGui::Text("Config file:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", koncpc_config_file().empty()
+                                ? "(none loaded)"
+                                : koncpc_config_file().c_str());
+  if (!koncpc_config_file().empty() && ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("%s", koncpc_config_file().c_str());
+  }
+  ImGui::NextColumn();
   ImGui::Text("RAM:");
   ImGui::NextColumn();
   ImGui::TextDisabled("%u KB", CPC.ram_size);

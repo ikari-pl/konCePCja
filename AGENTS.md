@@ -234,8 +234,9 @@ kill %1
 
 The harness provides two classes:
 
-- **`KoncepcjaIPC`** — thin client, one TCP connection per command (the server
-  closes after each response).  All methods return `(bool, str)` or `bool`.
+- **`KoncepcjaIPC`** — thin client, one TCP connection per command for
+  simplicity (the server itself keeps connections open; `disconnect` closes
+  one).  All methods return `(bool, str)` or `bool`.
 - **`EmulatorRunner`** — context manager that launches and tears down the
   emulator process, waits for the IPC port to come up.
 
@@ -510,12 +511,17 @@ When `ImGuiConfigFlags_ViewportsEnable` is active, ImGui creates separate OS win
 
 ## Configuration
 
-Config file locations (in order of precedence):
+Config file locations (in order of precedence — the first one found wins):
 1. `-c/--cfg_file=<path>` argument
-2. `$CWD/koncepcja.cfg`
-3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`)
-4. `~/.koncepcja.cfg`
+2. `$XDG_CONFIG_HOME/koncepcja/koncepcja.cfg` (or `~/.config/koncepcja/koncepcja.cfg`)
+3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`), `~/.koncepcja.cfg` — legacy flat paths
+4. `$CWD/koncepcja.cfg`, then `koncepcja.cfg` next to the binary
 5. `/etc/koncepcja.cfg`
+
+The profile config outranks a checkout-local file: running a debug-style
+build from the repo root no longer picks up the untracked `koncepcja.cfg`
+sitting there when `~/.config/koncepcja/koncepcja.cfg` exists. Settings ▸
+System shows the file in use, as does `config get file` over IPC.
 
 ### Key Config Options
 

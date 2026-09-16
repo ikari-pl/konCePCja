@@ -13,6 +13,7 @@
 #ifdef _MSC_VER
 #include "compat/msvc_compat.h"
 #endif
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -691,6 +692,18 @@ void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();
 // Re-read CPC.kbd_layout into the live host→CPC key map (Settings ▸ Input).
 void koncpc_reload_host_keymap();
+// The scr_window value (1 = windowed, 0 = fullscreen) a Fullscreen toggle
+// asks for: the flip starts from the window's real state when one is known
+// and no request is pending, else from scr_window. See kon_cpc_ja.cpp.
+unsigned int koncpc_fullscreen_toggle_target(
+    int pending_request, unsigned int scr_window,
+    std::optional<bool> window_is_fullscreen);
+// Registers that hand a RAM program at `entry` to the firmware's MC START
+// PROGRAM (&BD16) — the launch RUN" performs. Used by -i/--inject.
+class t_z80regs;
+void koncpc_firmware_launch_regs(t_z80regs& regs, word entry);
+// The configuration file this session loaded ("" before loadConfiguration).
+const std::string& koncpc_config_file();
 void update_cpc_speed();
 int printer_start();
 void printer_stop();

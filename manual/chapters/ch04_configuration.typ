@@ -16,10 +16,17 @@
 in the following locations, in order of precedence (the first one found wins):
 
 + the path given with #cmd[--cfg_file] (`-c`) on the command line;
-+ #cfg-key[koncepcja.cfg] in the current working directory;
-+ #cfg-key[\$XDG_CONFIG_HOME/koncepcja.cfg] (or `~/.config/koncepcja.cfg`);
-+ #cfg-key[~/.koncepcja.cfg];
++ #cfg-key[\$XDG_CONFIG_HOME/koncepcja/koncepcja.cfg] (or
+  `~/.config/koncepcja/koncepcja.cfg`) — your profile configuration;
++ the older flat paths #cfg-key[\$XDG_CONFIG_HOME/koncepcja.cfg]
+  (or `~/.config/koncepcja.cfg`) and #cfg-key[~/.koncepcja.cfg];
++ #cfg-key[koncepcja.cfg] in the current working directory, then next to the
+  binary;
 + #cfg-key[/etc/koncepcja.cfg].
+
+Your profile configuration therefore wins over a #cfg-key[koncepcja.cfg]
+that happens to sit in the directory you launch from. The Settings ▸ System
+tab shows which file is in use; over IPC, `config get file` reports it.
 
 The file is divided into `[section]` headings, each containing
 #cfg-key[key=value] lines.
