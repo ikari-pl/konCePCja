@@ -72,6 +72,9 @@ void video_maybe_apply_fit_chrome_preserve();
 void video_apply_pending_chrome_resize();
 void video_fit_window_to_screen();
 bool video_derived_window_size(int& out_w, int& out_h);
+void video_default_window_size(int& out_w, int& out_h);
+bool video_persisted_window_size_is_sane(unsigned int w, unsigned int h);
+void video_reinit_window_size(int& out_w, int& out_h);
 int video_get_topbar_height();
 
 void video_set_bottombar(int height);

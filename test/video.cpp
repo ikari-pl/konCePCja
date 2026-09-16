@@ -5,8 +5,174 @@
 
 extern SDL_Surface* pub;
 extern SDL_Surface* scaled;
+extern t_CPC CPC;
 
 namespace {
+
+// The plugin renders into CPC_RENDER_WIDTH x (CPC_VISIBLE_SCR_HEIGHT * 2):
+// video_init() inits every plugin at scale 2, doubling the scanlines.  The
+// window geometry must follow that surface, not the undoubled height.
+class WindowGeometryTest : public testing::Test {
+ protected:
+  void SetUp() override { saved_ = CPC; }
+  void TearDown() override { CPC = saved_; }
+
+ private:
+  t_CPC saved_;
+};
+
+TEST_F(WindowGeometryTest, FixedScaleCrtAspectIsFourThirds) {
+  CPC.scr_scale = 1;
+  CPC.scr_crt_aspect = 1;
+  int w = 0;
+  int h = 0;
+  ASSERT_TRUE(video_derived_window_size(w, h));
+  EXPECT_EQ(w, CPC_RENDER_WIDTH);
+  EXPECT_EQ(h, CPC_RENDER_WIDTH * 3 / 4);
+}
+
+TEST_F(WindowGeometryTest, FixedScaleRawAspectMatchesTheRenderSurface) {
+  CPC.scr_scale = 1;
+  CPC.scr_crt_aspect = 0;
+  int w = 0;
+  int h = 0;
+  ASSERT_TRUE(video_derived_window_size(w, h));
+  EXPECT_EQ(w, CPC_RENDER_WIDTH);
+  // Not CPC_VISIBLE_SCR_HEIGHT: that would be a 2.84:1 letterbox window.
+  EXPECT_EQ(h, CPC_VISIBLE_SCR_HEIGHT * 2);
+}
+
+TEST_F(WindowGeometryTest, FitModeHasNoDerivedSize) {
+  CPC.scr_scale = 0;
+  int w = 0;
+  int h = 0;
+  EXPECT_FALSE(video_derived_window_size(w, h));
+}
+
+TEST_F(WindowGeometryTest, FitModeDefaultSizeIsTheOneXGeometry) {
+  CPC.scr_scale = 0;
+  CPC.scr_crt_aspect = 0;
+  int w = 0;
+  int h = 0;
+  video_default_window_size(w, h);
+  EXPECT_EQ(w, CPC_RENDER_WIDTH);
+  EXPECT_EQ(h, CPC_VISIBLE_SCR_HEIGHT * 2);
+}
+
+// ─── Persisted win_w/win_h sanity gate ───────────────────────────────────
+//
+// win_w/win_h come straight from the user's config with only a > 0 bounds
+// check.  A stale degenerate value left there by an earlier bug (the real one
+// was 1536x540 — exactly the raw plugin-init letterbox) used to be restored
+// verbatim on the first fullscreen exit of a fresh launch, reproducing the
+// squished window the geometry fix above was meant to eliminate.
+
+TEST_F(WindowGeometryTest, PersistedSizeRejectsTheRealWorldLetterbox) {
+  // 2.84:1 — the value found in the user's config that triggered the fix.
+  EXPECT_FALSE(video_persisted_window_size_is_sane(1536, 540));
+  // The same shape at 1x, in case the plugin-init size ever leaks at scale 1.
+  EXPECT_FALSE(video_persisted_window_size_is_sane(768, 270));
+}
+
+TEST_F(WindowGeometryTest, PersistedSizeRejectsZeroDimensions) {
+  EXPECT_FALSE(video_persisted_window_size_is_sane(0, 0));
+  EXPECT_FALSE(video_persisted_window_size_is_sane(768, 0));
+  EXPECT_FALSE(video_persisted_window_size_is_sane(0, 576));
+}
+
+TEST_F(WindowGeometryTest, PersistedSizeAcceptsWindowsAUserWouldActuallyHave) {
+  // 4:3 CRT geometry at 1x and at a hand-dragged size.
+  EXPECT_TRUE(video_persisted_window_size_is_sane(768, 576));
+  EXPECT_TRUE(video_persisted_window_size_is_sane(1024, 768));
+  // The native doubled-scanline surface (768:540 ~ 1.42:1) and 2x of it.
+  EXPECT_TRUE(video_persisted_window_size_is_sane(768, 540));
+  EXPECT_TRUE(video_persisted_window_size_is_sane(1536, 1080));
+  // A window widened for the DevTools side panel still sits inside the band.
+  EXPECT_TRUE(video_persisted_window_size_is_sane(1600, 900));
+}
+
+// The band is [0.9, 2.2] inclusive.  900/1000 and 2200/1000 are correctly
+// rounded IEEE divisions, so they compare equal to the 0.9 / 2.2 literals: the
+// boundary itself is accepted, one pixel past it is not.
+TEST_F(WindowGeometryTest, PersistedSizeBandIsInclusiveAtBothEnds) {
+  EXPECT_TRUE(video_persisted_window_size_is_sane(900, 1000));    // == 0.9
+  EXPECT_FALSE(video_persisted_window_size_is_sane(899, 1000));   // < 0.9
+  EXPECT_TRUE(video_persisted_window_size_is_sane(2200, 1000));   // == 2.2
+  EXPECT_FALSE(video_persisted_window_size_is_sane(2201, 1000));  // > 2.2
+  // Portrait windows (taller than wide) are never a CPC window.
+  EXPECT_FALSE(video_persisted_window_size_is_sane(576, 768));
+}
+
+// ─── Window size chosen on a windowed (re)init ───────────────────────────
+//
+// video_init() sizes every freshly created window through
+// video_reinit_window_size(); these pin the three-way decision it makes.
+
+TEST_F(WindowGeometryTest, ReinitInFitModeRestoresASanePersistedSize) {
+  CPC.scr_scale = 0;
+  CPC.scr_crt_aspect = 0;
+  CPC.win_w = 1024;
+  CPC.win_h = 768;
+  int w = 0;
+  int h = 0;
+  video_reinit_window_size(w, h);
+  EXPECT_EQ(w, 1024);
+  EXPECT_EQ(h, 768);
+}
+
+TEST_F(WindowGeometryTest, ReinitInFitModeRejectsADegeneratePersistedSize) {
+  CPC.scr_scale = 0;
+  CPC.scr_crt_aspect = 0;
+  CPC.win_w = 1536;  // the stale 2.84:1 value from the user's real config
+  CPC.win_h = 540;
+  int expected_w = 0;
+  int expected_h = 0;
+  video_default_window_size(expected_w, expected_h);
+
+  int w = 0;
+  int h = 0;
+  video_reinit_window_size(w, h);
+  EXPECT_EQ(w, expected_w);
+  EXPECT_EQ(h, expected_h);
+  // Belt and braces: whatever the default is, it is not the bad size.
+  EXPECT_FALSE(w == 1536 && h == 540);
+}
+
+TEST_F(WindowGeometryTest, ReinitInFitModeFallsBackToDefaultWhenNothingSaved) {
+  CPC.scr_scale = 0;
+  CPC.scr_crt_aspect = 0;
+  CPC.win_w = 0;
+  CPC.win_h = 0;
+  int expected_w = 0;
+  int expected_h = 0;
+  video_default_window_size(expected_w, expected_h);
+
+  int w = 0;
+  int h = 0;
+  video_reinit_window_size(w, h);
+  EXPECT_EQ(w, expected_w);
+  EXPECT_EQ(h, expected_h);
+  EXPECT_GT(w, 0);
+  EXPECT_GT(h, 0);
+}
+
+TEST_F(WindowGeometryTest, ReinitAtAFixedScaleIgnoresThePersistedSize) {
+  CPC.scr_scale = 1;
+  CPC.scr_crt_aspect = 0;
+  CPC.win_w = 1536;  // must be irrelevant: the scale decides
+  CPC.win_h = 540;
+  int expected_w = 0;
+  int expected_h = 0;
+  ASSERT_TRUE(video_derived_window_size(expected_w, expected_h));
+
+  int w = 0;
+  int h = 0;
+  video_reinit_window_size(w, h);
+  EXPECT_EQ(w, expected_w);
+  EXPECT_EQ(h, expected_h);
+  EXPECT_EQ(w, CPC_RENDER_WIDTH);
+  EXPECT_EQ(h, CPC_VISIBLE_SCR_HEIGHT * 2);
+}
 
 class ComputeRectsTest : public testing::Test {
  public:

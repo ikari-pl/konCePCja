@@ -541,8 +541,13 @@ void compute_scale(video_plugin* t, int w, int h) {
     t->x_scale = w / static_cast<float>(disp_w);
     t->y_scale = h / static_cast<float>(disp_h);
   } else {
+    // Stretch to fill the area left over by the chrome.  win_width/win_height
+    // are already net of the bars above, so the image must still be pushed
+    // down past the topbar — without that offset it was drawn from y=0, hiding
+    // the CPC's top border under the topbar and leaving a black band of
+    // topbar_height between the image and the bottombar.
     t->x_offset = 0;
-    t->y_offset = 0;
+    t->y_offset = topbar_height > 0 ? static_cast<float>(topbar_height) : 0.f;
     t->x_scale = w / static_cast<float>(win_width);
     t->y_scale = h / static_cast<float>(win_height);
     t->width = win_width;
@@ -2153,18 +2158,26 @@ static const int video_scale_factors_count =
 // For Fit mode (scr_scale=0), returns false (don't resize — keep user's
 // window).
 namespace {
-bool compute_window_size(int& out_w, int& out_h) {
-  float f;
-  if (CPC.scr_scale > 0 &&
-      static_cast<int>(CPC.scr_scale) < video_scale_factors_count)
-    f = video_scale_factors[CPC.scr_scale];
-  else
-    return false;  // Fit mode — don't resize
+// Window dimensions for one CPC image scale factor, chrome included.
+//
+// The plugin renders into a CPC_RENDER_WIDTH x (CPC_VISIBLE_SCR_HEIGHT * 2)
+// surface — video_init() always inits the plugin at scale 2, which doubles the
+// scanlines — so the raw (non-CRT) pixel aspect is 768:540, not 768:270.
+// Sizing the window from the undoubled height gave a 2.84:1 letterbox window
+// whenever scr_crt_aspect was off.
+void window_size_for_factor(float f, int& out_w, int& out_h) {
   out_w = static_cast<int>(CPC_RENDER_WIDTH * f) + devtools_panel_width;
   int const cpc_h = CPC.scr_crt_aspect
                         ? static_cast<int>(CPC_RENDER_WIDTH * f * 3.f / 4.f)
-                        : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+                        : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * 2 * f);
   out_h = max(cpc_h + topbar_height + bottombar_height, devtools_panel_height);
+}
+
+bool compute_window_size(int& out_w, int& out_h) {
+  if (CPC.scr_scale == 0 ||
+      static_cast<int>(CPC.scr_scale) >= video_scale_factors_count)
+    return false;  // Fit mode — don't resize
+  window_size_for_factor(video_scale_factors[CPC.scr_scale], out_w, out_h);
   return true;
 }
 }  // namespace
@@ -2267,6 +2280,50 @@ void video_apply_pending_chrome_resize() { resize_window_for_chrome(); }
 // chrome.  False in Fit scale mode, where no fixed size follows from it.
 bool video_derived_window_size(int& out_w, int& out_h) {
   return compute_window_size(out_w, out_h);
+}
+
+// Fit mode (scr_scale = 0) has no derived size — the window is whatever the
+// user dragged it to.  A fresh window still needs *a* correctly-proportioned
+// size to start from, so fall back to 1x plus chrome.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units; internal linkage would break the link
+void video_default_window_size(int& out_w, int& out_h) {
+  window_size_for_factor(1.f, out_w, out_h);
+}
+
+// A win_w/win_h persisted from before the reinit-size fix (or from any other
+// bug that could wedge the window at a degenerate size) must not be trusted
+// blindly — sanity-check its aspect ratio against the plausible CPC range
+// (4:3 CRT through the ~1.42:1 native doubled-scanline surface) before using
+// it, or a stale bad value on disk reproduces the same squish the fix exists to
+// prevent.  1536x540 (2.84:1, the raw plugin-init letterbox) is the real-world
+// value that got through before this check existed.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_persisted_window_size_is_sane(unsigned int w, unsigned int h) {
+  constexpr double kMinAspect = 0.9;
+  constexpr double kMaxAspect = 2.2;
+  if (w == 0 || h == 0) return false;
+  double const aspect = static_cast<double>(w) / static_cast<double>(h);
+  return aspect >= kMinAspect && aspect <= kMaxAspect;
+}
+
+// The size a freshly (re)created windowed window must be set to.  At a fixed
+// scr_scale that size is derived from the scale.  In Fit mode (scr_scale == 0)
+// there is nothing to derive from, so restore the size the window had before
+// this reinit (CPC.win_w/win_h, recorded by video_shutdown() or loaded from the
+// config) when it is sane; only a genuinely fresh window — or a degenerate
+// persisted size — falls back to the 1x default.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_reinit_window_size(int& out_w, int& out_h) {
+  if (video_derived_window_size(out_w, out_h)) return;
+  if (video_persisted_window_size_is_sane(CPC.win_w, CPC.win_h)) {
+    out_w = static_cast<int>(CPC.win_w);
+    out_h = static_cast<int>(CPC.win_h);
+  } else {
+    video_default_window_size(out_w, out_h);
+  }
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
