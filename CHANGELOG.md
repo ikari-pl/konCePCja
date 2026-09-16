@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.3.1](https://github.com/ikari-pl/konCePCja/compare/v6.3.0...v6.3.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **config:** keep hand edits across the exit-time save; add a host keyboard layout setting ([#54](https://github.com/ikari-pl/konCePCja/issues/54)) ([ae098ee](https://github.com/ikari-pl/konCePCja/commit/ae098ee13a056a66fe4048f0ce6d5317ef94e23e))
+* **review:** bound the wide side of the persisted-size gate by height; size the scale picker from the shared geometry ([8ff33ea](https://github.com/ikari-pl/konCePCja/commit/8ff33ea459864d4789a7fc4f85302abaec80d95c))
+* **review:** gate the launch-time window restore; test compute_scale's stretch placement ([0a549f5](https://github.com/ikari-pl/konCePCja/commit/0a549f5affbf00fad3e587b871f548a01e5dfccc))
+* **video:** defer the Fullscreen menu toggle and size the window on every reinit ([e14bef2](https://github.com/ikari-pl/konCePCja/commit/e14bef26d3ab2505fbc3f8b597a4691b4ab7515e))
+* **video:** defer the Fullscreen menu toggle and size the window on every reinit ([180bbd4](https://github.com/ikari-pl/konCePCja/commit/180bbd492a89b3d7210fe16aa3847ced872dd1c8))
+
 ## [6.3.0](https://github.com/ikari-pl/konCePCja/compare/v6.2.5...v6.3.0) (2026-09-15)
 
 
