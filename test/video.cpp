@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "koncepcja.h"
+#include "menu_bridge.h"
 #include "video_host.h"
 
 extern SDL_Surface* pub;
@@ -72,6 +73,28 @@ TEST_F(WindowGeometryTest, PersistedSizeRejectsTheRealWorldLetterbox) {
   EXPECT_FALSE(video_persisted_window_size_is_sane(1536, 540));
   // The same shape at 1x, in case the plugin-init size ever leaks at scale 1.
   EXPECT_FALSE(video_persisted_window_size_is_sane(768, 270));
+  // And at 4x: the letterbox shape is rejected however tall it has grown —
+  // a real 2.84:1 window of that height would be a 32:9 display's problem.
+  EXPECT_FALSE(video_persisted_window_size_is_sane(3072, 1080));
+}
+
+// The wide side of the band is bounded by height, not ratio: a Fit-mode
+// window maximised on an ultrawide display is wider than any CPC image and
+// still exactly the size the user chose.  Rejecting it reset the window to 1x
+// on every launch and fullscreen exit.
+TEST_F(WindowGeometryTest, PersistedSizeAcceptsAMaximisedUltrawideWindow) {
+  EXPECT_TRUE(video_persisted_window_size_is_sane(3440, 1387));  // 21:9 - bar
+  EXPECT_TRUE(video_persisted_window_size_is_sane(2560, 1080));  // 21:9
+  EXPECT_TRUE(video_persisted_window_size_is_sane(5120, 1440));  // 32:9
+}
+
+TEST_F(WindowGeometryTest, PersistedSizeRejectsAWideButShortWindow) {
+  // Wider than the band and no taller than the 1x image plus chrome: a
+  // letterbox of some other ratio, never a maximised window.
+  EXPECT_FALSE(video_persisted_window_size_is_sane(1400, 600));
+  EXPECT_FALSE(video_persisted_window_size_is_sane(2000, 604));
+  // One pixel taller than that floor is a window a user could have.
+  EXPECT_TRUE(video_persisted_window_size_is_sane(2000, 605));
 }
 
 TEST_F(WindowGeometryTest, PersistedSizeRejectsZeroDimensions) {
@@ -91,14 +114,17 @@ TEST_F(WindowGeometryTest, PersistedSizeAcceptsWindowsAUserWouldActuallyHave) {
   EXPECT_TRUE(video_persisted_window_size_is_sane(1600, 900));
 }
 
-// The band is [0.9, 2.2] inclusive.  900/1000 and 2200/1000 are correctly
-// rounded IEEE divisions, so they compare equal to the 0.9 / 2.2 literals: the
-// boundary itself is accepted, one pixel past it is not.
+// The ratio band is [0.9, 2.2] inclusive.  900/1000 and 2200/1000 are
+// correctly rounded IEEE divisions, so they compare equal to the 0.9 / 2.2
+// literals: the boundary itself is accepted unconditionally; one pixel past
+// the wide end is accepted only because 1000 is taller than the wide-window
+// height floor, and one pixel past the narrow end never is.
 TEST_F(WindowGeometryTest, PersistedSizeBandIsInclusiveAtBothEnds) {
-  EXPECT_TRUE(video_persisted_window_size_is_sane(900, 1000));    // == 0.9
-  EXPECT_FALSE(video_persisted_window_size_is_sane(899, 1000));   // < 0.9
-  EXPECT_TRUE(video_persisted_window_size_is_sane(2200, 1000));   // == 2.2
-  EXPECT_FALSE(video_persisted_window_size_is_sane(2201, 1000));  // > 2.2
+  EXPECT_TRUE(video_persisted_window_size_is_sane(900, 1000));   // == 0.9
+  EXPECT_FALSE(video_persisted_window_size_is_sane(899, 1000));  // < 0.9
+  EXPECT_TRUE(video_persisted_window_size_is_sane(2200, 1000));  // == 2.2
+  EXPECT_TRUE(video_persisted_window_size_is_sane(2201, 1000));  // > 2.2, tall
+  EXPECT_FALSE(video_persisted_window_size_is_sane(1321, 600));  // > 2.2, short
   // Portrait windows (taller than wide) are never a CPC window.
   EXPECT_FALSE(video_persisted_window_size_is_sane(576, 768));
 }
@@ -328,13 +354,12 @@ TEST_F(ComputeRectsTest, BiggerPub) {
 }
 }  // namespace
 
-// ── compute_scale() placement ───────────────────────────────────────────────
-// The stretch branch (scr_preserve_aspect_ratio=0) must push the image down
-// past the topbar: drawn from y=0 it hid the CPC's top border under the topbar
-// and left a black band of topbar_height between the image and the bottombar.
+// ── Hidden-window fixture ───────────────────────────────────────────────────
+// Stands up a hidden SDL window as mainSDLWindow for the geometry code that
+// can only be reached through a live window.
 extern SDL_Window* mainSDLWindow;
 
-class ComputeScaleTest : public ::testing::Test {
+class HiddenWindowTest : public ::testing::Test {
  protected:
   void SetUp() override {
     // Subsystem-refcounted, so a suite that holds SDL video open across its
@@ -367,6 +392,12 @@ class ComputeScaleTest : public ::testing::Test {
   SDL_Window* saved_window_ = nullptr;
   t_CPC saved_cpc_{};
 };
+
+// ── compute_scale() placement ───────────────────────────────────────────────
+// The stretch branch (scr_preserve_aspect_ratio=0) must push the image down
+// past the topbar: drawn from y=0 it hid the CPC's top border under the topbar
+// and left a black band of topbar_height between the image and the bottombar.
+using ComputeScaleTest = HiddenWindowTest;
 
 TEST_F(ComputeScaleTest, StretchBranchOffsetsPastTheTopbar) {
   constexpr int kTopbar = 24;
@@ -403,4 +434,105 @@ TEST_F(ComputeScaleTest, StretchBranchWithNoChromeStartsAtTheTop) {
   EXPECT_FLOAT_EQ(0.f, t.y_offset);
   EXPECT_EQ(win_w, t.width);
   EXPECT_EQ(win_h, t.height);
+}
+
+// ── The scale picker ────────────────────────────────────────────────────────
+// The Settings Video tab and the View > Scale menu resize through
+// koncpc_set_scale().  It kept its own copy of the sizing formula — from the
+// undoubled 270px height — after the reinit path was fixed to use the doubled
+// surface, so the picker gave a half-height window while a reinit gave the
+// full one.  It must produce exactly video_derived_window_size().
+using ScalePickerTest = HiddenWindowTest;
+
+TEST_F(ScalePickerTest, FixedScaleResizesToTheDerivedGeometry) {
+  constexpr int kTopbar = 24;
+  constexpr int kBottombar = 16;
+  CPC.scr_crt_aspect = 0;
+  video_set_topbar(nullptr, kTopbar);
+  video_set_bottombar(kBottombar);
+
+  koncpc_set_scale(1);
+  SDL_SyncWindow(mainSDLWindow);
+
+  EXPECT_EQ(1u, CPC.scr_scale);
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(mainSDLWindow, &w, &h);
+  int expected_w = 0;
+  int expected_h = 0;
+  ASSERT_TRUE(video_derived_window_size(expected_w, expected_h));
+  EXPECT_EQ(expected_w, w);
+  EXPECT_EQ(expected_h, h);
+  EXPECT_EQ(CPC_RENDER_WIDTH, w);
+  EXPECT_EQ((CPC_VISIBLE_SCR_HEIGHT * 2) + kTopbar + kBottombar, h)
+      << "the doubled-scanline surface plus the chrome, not 270 + chrome";
+}
+
+TEST_F(ScalePickerTest, FitModeLeavesTheWindowAlone) {
+  SDL_SetWindowSize(mainSDLWindow, 1000, 700);
+  SDL_SyncWindow(mainSDLWindow);
+
+  koncpc_set_scale(0);
+  SDL_SyncWindow(mainSDLWindow);
+
+  EXPECT_EQ(0u, CPC.scr_scale);
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(mainSDLWindow, &w, &h);
+  EXPECT_EQ(1000, w);
+  EXPECT_EQ(700, h);
+}
+
+// ── Recording the windowed geometry ─────────────────────────────────────────
+// video_shutdown() and saveConfiguration() record the live window into
+// CPC.win_w/win_h — the only record of a Fit-mode size across a reinit — but
+// never a fullscreen window's, whose size belongs to the display.  The pure
+// half pins the fullscreen branch without putting a window into fullscreen.
+
+TEST(WindowedGeometryTest, RecordsAWindowedSize) {
+  unsigned int w = 1;
+  unsigned int h = 2;
+  EXPECT_TRUE(video_windowed_geometry(SDL_WINDOW_RESIZABLE, 1024, 768, w, h));
+  EXPECT_EQ(1024u, w);
+  EXPECT_EQ(768u, h);
+}
+
+TEST(WindowedGeometryTest, LeavesTheRecordAloneForAFullscreenWindow) {
+  unsigned int w = 1024;
+  unsigned int h = 768;
+  EXPECT_FALSE(video_windowed_geometry(
+      SDL_WINDOW_FULLSCREEN | SDL_WINDOW_RESIZABLE, 2560, 1440, w, h));
+  EXPECT_EQ(1024u, w) << "a display's size must never become the user's";
+  EXPECT_EQ(768u, h);
+}
+
+TEST(WindowedGeometryTest, LeavesTheRecordAloneForADegenerateSize) {
+  unsigned int w = 1024;
+  unsigned int h = 768;
+  EXPECT_FALSE(video_windowed_geometry(0, 0, 768, w, h));
+  EXPECT_FALSE(video_windowed_geometry(0, 1024, 0, w, h));
+  EXPECT_FALSE(video_windowed_geometry(0, -1, -1, w, h));
+  EXPECT_EQ(1024u, w);
+  EXPECT_EQ(768u, h);
+}
+
+TEST(WindowedGeometryTest, NoWindowRecordsNothing) {
+  unsigned int w = 1024;
+  unsigned int h = 768;
+  EXPECT_FALSE(video_capture_windowed_geometry(nullptr, w, h));
+  EXPECT_EQ(1024u, w);
+  EXPECT_EQ(768u, h);
+}
+
+using WindowedGeometryCaptureTest = HiddenWindowTest;
+
+TEST_F(WindowedGeometryCaptureTest, CapturesTheLiveWindowedSize) {
+  SDL_SetWindowSize(mainSDLWindow, 1024, 768);
+  SDL_SyncWindow(mainSDLWindow);
+
+  unsigned int w = 0;
+  unsigned int h = 0;
+  EXPECT_TRUE(video_capture_windowed_geometry(mainSDLWindow, w, h));
+  EXPECT_EQ(1024u, w);
+  EXPECT_EQ(768u, h);
 }

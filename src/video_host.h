@@ -79,6 +79,13 @@ bool video_derived_window_size(int& out_w, int& out_h);
 void video_default_window_size(int& out_w, int& out_h);
 bool video_persisted_window_size_is_sane(unsigned int w, unsigned int h);
 void video_reinit_window_size(int& out_w, int& out_h);
+// Records a windowed window's size into out_w/out_h (the CPC.win_w/win_h
+// record).  A fullscreen window — its size belongs to the display — or a
+// degenerate size leaves the outputs untouched and returns false.
+bool video_windowed_geometry(Uint64 window_flags, int w, int h,
+                             unsigned int& out_w, unsigned int& out_h);
+bool video_capture_windowed_geometry(SDL_Window* win, unsigned int& out_w,
+                                     unsigned int& out_h);
 int video_get_topbar_height();
 
 void video_set_bottombar(int height);

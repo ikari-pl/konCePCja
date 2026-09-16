@@ -2301,19 +2301,63 @@ void video_default_window_size(int& out_w, int& out_h) {
 
 // A win_w/win_h persisted from before the reinit-size fix (or from any other
 // bug that could wedge the window at a degenerate size) must not be trusted
-// blindly — sanity-check its aspect ratio against the plausible CPC range
-// (4:3 CRT through the ~1.42:1 native doubled-scanline surface) before using
-// it, or a stale bad value on disk reproduces the same squish the fix exists to
-// prevent.  1536x540 (2.84:1, the raw plugin-init letterbox) is the real-world
-// value that got through before this check existed.
+// blindly — sanity-check its shape before using it, or a stale bad value on
+// disk reproduces the same squish the fix exists to prevent.  1536x540 (2.84:1,
+// the raw plugin-init letterbox) is the real-world value that got through
+// before this check existed.
+//
+// Anything from 0.9:1 (portrait is never a CPC window) to 2.2:1 (4:3 CRT
+// through the ~1.42:1 native surface, plus a DevTools side panel) is plainly a
+// user's window.  Wider than that is still a user's window when it is tall as
+// well — a Fit-mode window maximised on an ultrawide display — so the wide
+// side is bounded by height, not by ratio: wide-but-short is a squish whatever
+// its exact ratio.  The plugin-init letterbox shape itself (768:270 at any
+// scale) is rejected outright, tall or not.
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 bool video_persisted_window_size_is_sane(unsigned int w, unsigned int h) {
   constexpr double kMinAspect = 0.9;
   constexpr double kMaxAspect = 2.2;
+  constexpr double kLetterboxAspect =
+      static_cast<double>(CPC_RENDER_WIDTH) / CPC_VISIBLE_SCR_HEIGHT;
+  constexpr double kLetterboxTolerance = 0.05;
+  // The 1x doubled-scanline image plus room for the chrome: a window wider
+  // than kMaxAspect but no taller than this cannot be a maximised window on
+  // any display — it is a letterbox.
+  constexpr unsigned int kShortestWideWindow =
+      (CPC_VISIBLE_SCR_HEIGHT * 2) + 64;
   if (w == 0 || h == 0) return false;
   double const aspect = static_cast<double>(w) / static_cast<double>(h);
-  return aspect >= kMinAspect && aspect <= kMaxAspect;
+  if (aspect < kMinAspect) return false;
+  if (fabs(aspect - kLetterboxAspect) < kLetterboxTolerance) return false;
+  if (aspect <= kMaxAspect) return true;
+  return h > kShortestWideWindow;
+}
+
+// The size a windowed window contributes to CPC.win_w/win_h.  A fullscreen
+// window's size belongs to the display, not the user, so it — like a
+// degenerate size — leaves the outputs untouched and returns false.  Pure so
+// the fullscreen branch is testable without putting a window into fullscreen.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_windowed_geometry(Uint64 window_flags, int w, int h,
+                             unsigned int& out_w, unsigned int& out_h) {
+  if ((window_flags & SDL_WINDOW_FULLSCREEN) != 0) return false;
+  if (w <= 0 || h <= 0) return false;
+  out_w = static_cast<unsigned int>(w);
+  out_h = static_cast<unsigned int>(h);
+  return true;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_capture_windowed_geometry(SDL_Window* win, unsigned int& out_w,
+                                     unsigned int& out_h) {
+  if (win == nullptr) return false;
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(win, &w, &h);
+  return video_windowed_geometry(SDL_GetWindowFlags(win), w, h, out_w, out_h);
 }
 
 // The size a freshly (re)created windowed window must be set to.  At a fixed

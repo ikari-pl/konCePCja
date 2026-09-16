@@ -1972,16 +1972,7 @@ void video_shutdown() {
   // next video_init() creates a brand-new one and, in Fit mode, this is the
   // only record of the size the user chose.  A fullscreen window's size belongs
   // to the display, not the user, so it is never recorded.
-  if (mainSDLWindow &&
-      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) == 0) {
-    int w = 0;
-    int h = 0;
-    SDL_GetWindowSize(mainSDLWindow, &w, &h);
-    if (w > 0 && h > 0) {
-      CPC.win_w = static_cast<unsigned int>(w);
-      CPC.win_h = static_cast<unsigned int>(h);
-    }
-  }
+  video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
   // Plugin close must run first so the GPU plugin can tear down ImGui
   // SDLGPU3 and other device-dependent state before the GPU device
   // itself is destroyed.  For non-GPU plugins the order is irrelevant
@@ -2556,16 +2547,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // Record the live window size, so both "Save" and the save-on-exit keep
   // whatever the user last dragged the window to.  In fullscreen the stored
   // value stands, since that size belongs to the display.
-  if (mainSDLWindow &&
-      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) == 0) {
-    int w = 0;
-    int h = 0;
-    SDL_GetWindowSize(mainSDLWindow, &w, &h);
-    if (w > 0 && h > 0) {
-      CPC.win_w = static_cast<unsigned int>(w);
-      CPC.win_h = static_cast<unsigned int>(h);
-    }
-  }
+  video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
   config::Config conf;
   // Read before write. Building a fresh Config here deleted every comment in
   // the file and every key this build does not set — and because the MRU list
