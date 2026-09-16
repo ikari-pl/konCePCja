@@ -2145,6 +2145,14 @@ void compute_rects(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels) {
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
+// Test seam for compute_scale(): where the CPC image lands inside the window
+// is otherwise reachable only through a plugin flip.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void compute_scale_for_tests(video_plugin* t, int w, int h) {
+  compute_scale(t, w, h);
+}
+
 void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels) {
   compute_rects(src, dst, half_pixels);
 }

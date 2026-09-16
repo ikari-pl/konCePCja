@@ -327,3 +327,80 @@ TEST_F(ComputeRectsTest, BiggerPub) {
   }
 }
 }  // namespace
+
+// ── compute_scale() placement ───────────────────────────────────────────────
+// The stretch branch (scr_preserve_aspect_ratio=0) must push the image down
+// past the topbar: drawn from y=0 it hid the CPC's top border under the topbar
+// and left a black band of topbar_height between the image and the bottombar.
+extern SDL_Window* mainSDLWindow;
+
+class ComputeScaleTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    // Subsystem-refcounted, so a suite that holds SDL video open across its
+    // tests (VideoGpuTest) is untouched by this fixture's teardown.
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+      GTEST_SKIP() << "no SDL video: " << SDL_GetError();
+    }
+    window_ =
+        SDL_CreateWindow("compute-scale-test", 800, 600, SDL_WINDOW_HIDDEN);
+    if (!window_) {
+      SDL_QuitSubSystem(SDL_INIT_VIDEO);
+      GTEST_SKIP() << "no window (headless): " << SDL_GetError();
+    }
+    saved_window_ = mainSDLWindow;
+    saved_cpc_ = CPC;
+    mainSDLWindow = window_;
+  }
+
+  void TearDown() override {
+    if (!window_) return;
+    video_clear_topbar();
+    video_set_bottombar(0);
+    mainSDLWindow = saved_window_;
+    CPC = saved_cpc_;
+    SDL_DestroyWindow(window_);
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+  }
+
+  SDL_Window* window_ = nullptr;
+  SDL_Window* saved_window_ = nullptr;
+  t_CPC saved_cpc_{};
+};
+
+TEST_F(ComputeScaleTest, StretchBranchOffsetsPastTheTopbar) {
+  constexpr int kTopbar = 24;
+  constexpr int kBottombar = 16;
+  CPC.scr_preserve_aspect_ratio = 0;
+  video_set_topbar(nullptr, kTopbar);
+  video_set_bottombar(kBottombar);
+  int win_w = 0;
+  int win_h = 0;
+  SDL_GetWindowSize(mainSDLWindow, &win_w, &win_h);
+
+  video_plugin t{};
+  compute_scale_for_tests(&t, CPC_RENDER_WIDTH, CPC_VISIBLE_SCR_HEIGHT * 2);
+
+  EXPECT_FLOAT_EQ(static_cast<float>(kTopbar), t.y_offset)
+      << "the image must start below the topbar, not at y=0";
+  EXPECT_FLOAT_EQ(0.f, t.x_offset);
+  EXPECT_EQ(win_w, t.width);
+  EXPECT_EQ(win_h - kTopbar - kBottombar, t.height)
+      << "the image fills exactly the area left between the bars";
+}
+
+TEST_F(ComputeScaleTest, StretchBranchWithNoChromeStartsAtTheTop) {
+  CPC.scr_preserve_aspect_ratio = 0;
+  video_clear_topbar();
+  video_set_bottombar(0);
+  int win_w = 0;
+  int win_h = 0;
+  SDL_GetWindowSize(mainSDLWindow, &win_w, &win_h);
+
+  video_plugin t{};
+  compute_scale_for_tests(&t, CPC_RENDER_WIDTH, CPC_VISIBLE_SCR_HEIGHT * 2);
+
+  EXPECT_FLOAT_EQ(0.f, t.y_offset);
+  EXPECT_EQ(win_w, t.width);
+  EXPECT_EQ(win_h, t.height);
+}

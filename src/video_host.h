@@ -51,6 +51,10 @@ extern std::vector<video_plugin> video_plugin_list;
 
 /* Only exposed for testing purposes. Do not use. */
 void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels);
+// Runs compute_scale() on `t` for a w x h CPC surface against the current
+// mainSDLWindow and chrome heights — the image placement is otherwise
+// reachable only through a plugin flip.
+void compute_scale_for_tests(video_plugin* t, int w, int h);
 
 int renderer_bpp(SDL_Renderer* sdl_renderer);
 

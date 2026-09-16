@@ -4242,8 +4242,12 @@ int koncpc_main(int argc, char** argv) {
     // topbar; running it earlier compared against the bare emulated screen and
     // let a too-small size through.  The hold covers the resizes still to come
     // as the bottombar settles on a later frame.
-    if (CPC.win_w > 0 && CPC.win_h > 0 && mainSDLWindow &&
-        CPC.scr_window != 0) {
+    // Same gate as the mid-session reinit path: a degenerate persisted size
+    // (the 1536x540 letterbox a pre-fix build wrote) must not be reapplied at
+    // launch either, or it comes back on every start until a fullscreen
+    // round-trip happens to replace it.
+    if (video_persisted_window_size_is_sane(CPC.win_w, CPC.win_h) &&
+        mainSDLWindow && CPC.scr_window != 0) {
       int w = static_cast<int>(CPC.win_w);
       int h = static_cast<int>(CPC.win_h);
       // Keep the window big enough to show the whole emulated screen at the
