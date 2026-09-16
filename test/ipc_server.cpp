@@ -23,6 +23,7 @@
 #include "autotype.h"
 #include "cpc_key_tables.h"
 #include "imgui_state.h"
+#include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "symfile.h"
@@ -184,6 +185,46 @@ class IpcServerTest : public testing::Test {
 
 KoncepcjaIpcServer IpcServerTest::server;
 byte IpcServerTest::memory[4][kBankSize];
+
+// Settings ▸ Input's host-layout combo has an agent-side twin: list the
+// shipped maps, stage a switch, and the main-thread drain applies it live.
+TEST_F(IpcServerTest, ConfigKbdLayoutListsStagesAndAppliesOnDrain) {
+  CPC.resources_path = "resources";
+  InputMapper* const previous = CPC.InputMapper;
+  CPC.InputMapper = new InputMapper(&CPC);
+  CPC.kbd_layout = "keymap_us.map";
+  CPC.keyboard = 0;
+  CPC.InputMapper->init();
+
+  auto resp = send_command("config get kbd_layouts");
+  EXPECT_EQ(0u, resp.find("OK\n")) << resp;  // multi-line, like `disk ls`
+  EXPECT_NE(resp.find("keymap_us.map"), std::string::npos) << resp;
+  EXPECT_NE(resp.find("keymap_uk_linux.map"), std::string::npos) << resp;
+
+  resp = send_command("config set kbd_layout keymap_nonexistent.map");
+  EXPECT_EQ(0u, resp.find("ERR 400")) << resp;
+  EXPECT_EQ("keymap_us.map", CPC.kbd_layout);
+
+  resp = send_command("config set kbd_layout keymap_uk_linux.map");
+  EXPECT_OK(resp);
+  resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("OK keymap_us.map pending=keymap_uk_linux.map"))
+      << resp;
+  EXPECT_EQ("keymap_us.map", CPC.kbd_layout)
+      << "the switch must wait for the main-thread drain";
+
+  ipc_drain_input();  // what the main loop does once per frame
+  EXPECT_EQ("keymap_uk_linux.map", CPC.kbd_layout);
+  resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("OK keymap_uk_linux.map")) << resp;
+  EXPECT_EQ(std::string::npos, resp.find("pending=")) << resp;
+  // Shift+3 is the pound sign on a UK host keyboard; the US map gives '#'.
+  EXPECT_EQ(0x30 | MOD_CPC_SHIFT,
+            CPC.InputMapper->CPCscancodeFromKeysym(SDLK_3, SDL_KMOD_RSHIFT));
+
+  delete CPC.InputMapper;
+  CPC.InputMapper = previous;
+}
 
 TEST_F(IpcServerTest, RegSetUpdatesRegisters) {
   auto resp = send_command("reg set A 0x42");

@@ -54,7 +54,19 @@ class Config {
   // a stale kbd_layout kept re-persisting over a fixed one. A value that
   // differs from the loaded one is a real in-session change and persists; a
   // key the file lacks is still written so older files gain new keys.
+  // This does NOT protect a key whose live value legitimately drifts at
+  // runtime (scr_window under a fullscreen toggle, printer after a failed
+  // start): those differ from the loaded value and would persist. They rely
+  // on koncpc_save_configuration_preserving_intent() swapping the load-time
+  // intent back in before the save — keep both mechanisms.
   void setBaseline(const ConfigMap& loaded);
+
+  // The baseline after this Config's setters ran: the loaded values, with
+  // every key that was actually persisted moved to its written value. The
+  // caller stores this as the baseline for the NEXT save, so a value changed,
+  // saved, and changed back is written again rather than mistaken for
+  // "unchanged since load".
+  const ConfigMap& baseline() const;
 
   // The parsed file contents before any setter ran — what loadConfiguration
   // hands back as the baseline for the next save.

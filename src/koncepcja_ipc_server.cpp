@@ -382,6 +382,19 @@ struct IpcGunPending {
 IpcGunPending g_ipc_gun;
 }  // namespace
 
+// Host keymap staging — the same deferral again. `config set kbd_layout` runs
+// on the IPC thread, but CPC.kbd_layout and the live InputMapper are read by
+// the main thread's key-event handler, so the switch is applied by
+// ipc_drain_input() through koncpc_reload_host_keymap(), exactly as the
+// Settings ▸ Input combo does it.
+namespace {
+struct IpcKeymapPending {
+  std::mutex mutex;
+  std::optional<std::string> name;  // staged layout file; nullopt = none
+};
+IpcKeymapPending g_ipc_keymap;
+}  // namespace
+
 // Drained once per frame on the main thread.  Safe no-op when no input is
 // pending and no input device is enabled.  Each lock is held only to copy that
 // device's staged group into a local snapshot and reset it, so a field can
@@ -448,6 +461,17 @@ static std::string ipc_request_rebuild_and_wait() {
 
 void ipc_drain_input() {
   ipc_drain_rebuild();
+  {
+    std::optional<std::string> name;
+    {
+      std::scoped_lock const lock(g_ipc_keymap.mutex);
+      name.swap(g_ipc_keymap.name);
+    }
+    if (name) {
+      CPC.kbd_layout = *name;
+      koncpc_reload_host_keymap();
+    }
+  }
   // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
   g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
@@ -1037,7 +1061,9 @@ void init_command_registry() {
       "config get <key> | config set <key> <val> | config apply",
       "Access emulator settings",
       "Reads or modifies internal emulator configuration variables.\n"
-      "  Keys include model (0-3), crtc_type, ram_size, silicon_disc.\n"
+      "  Keys include model (0-3), crtc_type, ram_size, silicon_disc, "
+      "kbd_layout (host keymap file; `config get kbd_layouts` lists the "
+      "choices; `set` applies on the next frame, like the Settings combo).\n"
       "  `set model` STAGES the change and answers 'OK (apply required)': it "
       "needs `config apply`, not the plain `reset` command -- reset resets the "
       "board and will not reload the model's ROMs. Until apply, `config get "
@@ -4740,6 +4766,22 @@ std::string handle_command(const std::string& line) {
         if (parts[2] == "m4_rom_slot") {
           return "OK " + std::to_string(g_m4board.rom_slot) + "\n";
         }
+        if (parts[2] == "kbd_layout") {
+          // The live map, plus the staged one while a `set` awaits the drain.
+          std::string resp = "OK " + CPC.kbd_layout;
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            if (g_ipc_keymap.name) resp += " pending=" + *g_ipc_keymap.name;
+          }
+          return resp + "\n";
+        }
+        if (parts[2] == "kbd_layouts") {
+          std::string resp = "OK\n";
+          for (const auto& f :
+               InputMapper::host_layout_files(CPC.resources_path))
+            resp += f + "\n";
+          return resp;
+        }
         return "ERR 400 unknown-config-key\n";
       }
       if (parts[1] == "set" && parts.size() >= 4) {
@@ -4795,6 +4837,17 @@ std::string handle_command(const std::string& line) {
           if (pos == std::string::npos) return "ERR 400 bad-args\n";
           g_m4board.sd_root_path = line.substr(pos + 11);
           return "OK\n";
+        }
+        if (parts[2] == "kbd_layout") {
+          const auto files = InputMapper::host_layout_files(CPC.resources_path);
+          if (std::find(files.begin(), files.end(), parts[3]) == files.end()) {
+            return "ERR 400 unknown-kbd-layout (see config get kbd_layouts)\n";
+          }
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            g_ipc_keymap.name = parts[3];
+          }
+          return "OK (applied on next frame)\n";
         }
         return "ERR 400 unknown-config-key\n";
       }

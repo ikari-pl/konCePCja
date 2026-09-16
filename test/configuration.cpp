@@ -595,8 +595,7 @@ TEST_F(ConfigurationTest, anUnchangedValueDoesNotOverwriteAHandEdit) {
   configuration_.setBaseline(loaded);
 
   // Save time: live state echoes the loaded value back, unchanged.
-  configuration_.setStringValue("control", "kbd_layout",
-                                "keymap_es_linux.map");
+  configuration_.setStringValue("control", "kbd_layout", "keymap_es_linux.map");
 
   std::ostringstream oss;
   configuration_.toStream(oss);
@@ -658,8 +657,83 @@ TEST_F(ConfigurationTest, saveOnExitKeepsAHandEditMadeWhileRunning) {
 
   config::Config saved;
   saved.parseFile(getTmpFilename(0));
-  EXPECT_EQ("keymap_us.map",
-            saved.getStringValue("control", "kbd_layout", ""));
+  EXPECT_EQ("keymap_us.map", saved.getStringValue("control", "kbd_layout", ""));
+}
+
+// A value persisted by one save is the reference for the next. Without this,
+// change -> save -> revert -> save loses the revert: the reverted value equals
+// the boot baseline, so the second save skips it and the file keeps the
+// intermediate value. The MRU auto-save on every file open makes such an
+// intermediate save routine.
+TEST_F(ConfigurationTest, aPersistedValueBecomesTheBaselineForTheNextSave) {
+  configuration_.parseString("[system]\nlimit_speed=1\nmodel=3\n");
+  config::ConfigMap loaded;
+  loaded["system"]["limit_speed"] = "1";
+  loaded["system"]["model"] = "2";  // the file was hand-edited to 3 meanwhile
+  configuration_.setBaseline(loaded);
+
+  configuration_.setIntValue("system", "limit_speed", 0);  // a real change
+  configuration_.setIntValue("system", "model", 2);        // unchanged: skipped
+
+  const config::ConfigMap& next = configuration_.baseline();
+  EXPECT_EQ("0", next.at("system").at("limit_speed"))
+      << "a written value must become the next baseline";
+  EXPECT_EQ("2", next.at("system").at("model"))
+      << "a skipped key keeps its loaded baseline, not the file's hand edit";
+}
+
+TEST_F(ConfigurationTest, changeSaveRevertSavePersistsTheRevert) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[system]\nmodel=2\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ(2, CPC.model);
+
+  CPC.model = 3;
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  CPC.model = 2;
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(2, saved.getIntValue("system", "model", -1))
+      << "the revert to the loaded value was mistaken for 'unchanged' and lost";
+}
+
+// The baseline guard skips only a key whose live value still EQUALS the loaded
+// one. A live fullscreen toggle flips scr_window, so it is kept out of the
+// file solely by koncpc_save_configuration_preserving_intent() swapping the
+// load-time intent back in before the save. Pin that contract: with the swap
+// the file keeps 1; without it the toggle persists.
+TEST_F(ConfigurationTest,
+       liveFullscreenToggleIsKeptOutOfTheFileOnlyByTheIntentSwap) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[video]\nscr_window=1\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ(1u, CPC.scr_window);
+  unsigned int const intent = CPC.scr_window;
+
+  CPC.scr_window = 0;  // a live fullscreen toggle
+  // What the preserving-intent wrapper does around the save:
+  CPC.scr_window = intent;
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  CPC.scr_window = 0;
+  {
+    config::Config saved;
+    saved.parseFile(getTmpFilename(0));
+    EXPECT_EQ(1, saved.getIntValue("video", "scr_window", -1));
+  }
+
+  // Without the swap the baseline guard alone does NOT protect it.
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(0, saved.getIntValue("video", "scr_window", -1));
 }
 
 TEST_F(ConfigurationTest, keysWithoutOverridesSaveExactlyAsBefore) {

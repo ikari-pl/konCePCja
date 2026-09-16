@@ -278,9 +278,18 @@ void Config::setStringValue(const std::string& section, const std::string& key,
   }
   overrides_[section][key] = value;
   config_[section][key] = value;
+  // A persisted value is the new reference point for this key: the next save
+  // compares against what was last WRITTEN, not what was loaded at boot.
+  // Without this, change -> save -> revert -> save loses the revert (the
+  // reverted value equals the boot baseline, so the second save skips it and
+  // the file keeps the intermediate value). Skipped keys keep their loaded
+  // baseline, so a hand edit to an untouched key still survives.
+  baseline_[section][key] = value;
 }
 
 void Config::setBaseline(const ConfigMap& loaded) { baseline_ = loaded; }
+
+const ConfigMap& Config::baseline() const { return baseline_; }
 
 ConfigMap Config::parsedValues() const { return config_; }
 

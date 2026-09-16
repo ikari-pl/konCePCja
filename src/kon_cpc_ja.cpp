@@ -529,6 +529,9 @@ bool koncpc_save_configuration_preserving_intent() {
   if (!g_config_loaded) return false;
   // printer / scr_window hold runtime state; write the captured intent so a
   // failed printer_start() or a live fullscreen toggle cannot poison the file.
+  // Still required alongside Config::setBaseline(): that guard only skips a
+  // key whose live value EQUALS the loaded one, and a toggled scr_window
+  // differs — without this swap the baseline guard would persist it.
   unsigned int const live_printer = CPC.printer;
   unsigned int const live_scr_window = CPC.scr_window;
   CPC.printer = g_cfg_intent_printer;
@@ -922,21 +925,27 @@ void emulator_reset() {
   }
 }
 
+namespace {
+// init() rebuilds the host-key map from CPC.kbd_layout alone; the joystick
+// emulation keys are layered on top afterwards. Startup and a live layout
+// change must do exactly the same two steps.
+void reload_input_mapper() {
+  CPC.InputMapper->init();
+  CPC.InputMapper->set_joystick_emulation();
+}
+}  // namespace
+
 // Main thread only: the key-event handler that reads these maps runs there too.
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void koncpc_reload_host_keymap() {
   if (CPC.InputMapper == nullptr) return;
-  CPC.InputMapper->init();
-  // init() rebuilds the host-key map from the layout file alone; the joystick
-  // emulation keys are layered on top afterwards, exactly as at startup.
-  CPC.InputMapper->set_joystick_emulation();
+  reload_input_mapper();
 }
 
 namespace {
 int input_init() {
-  CPC.InputMapper->init();
-  CPC.InputMapper->set_joystick_emulation();
+  reload_input_mapper();
   SDL_SetWindowRelativeMouseMode(
       mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
   return 0;
@@ -2752,7 +2761,12 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
         i < static_cast<int>(CPC.mru_carts.size()) ? CPC.mru_carts[i] : "");
   }
 
-  return conf.saveToFile(configFilename);
+  bool const ok = conf.saveToFile(configFilename);
+  // What this save persisted is the reference for the next one: a key the
+  // MRU auto-save (every file open) or Options▸Save just wrote must not be
+  // judged against the boot-time value later, or reverting it never persists.
+  if (ok) g_config_baseline = conf.baseline();
+  return ok;
 }
 
 // Launch files that the window manager may echo back as a drop.
