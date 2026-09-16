@@ -3900,8 +3900,7 @@ void imgui_render_options() {
           s_layouts = InputMapper::host_layout_files(CPC.resources_path);
           s_scanned_path = CPC.resources_path;
         }
-        if (ImGui::BeginCombo("Host Keyboard Layout",
-                              CPC.kbd_layout.c_str())) {
+        if (ImGui::BeginCombo("Host Keyboard Layout", CPC.kbd_layout.c_str())) {
           for (const std::string& name : s_layouts) {
             bool const selected = name == CPC.kbd_layout;
             if (ImGui::Selectable(name.c_str(), selected) && !selected) {

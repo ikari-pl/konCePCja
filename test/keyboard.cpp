@@ -20,7 +20,8 @@ TEST(KeyboardTest, hostLayoutFilesListsTheShippedMapsSorted) {
   EXPECT_TRUE(std::is_sorted(files.begin(), files.end()));
   for (const auto& f : files) {
     EXPECT_EQ(".map", f.substr(f.size() - 4)) << f;
-    EXPECT_EQ(std::string::npos, f.find('/')) << "bare filename expected: " << f;
+    EXPECT_EQ(std::string::npos, f.find('/'))
+        << "bare filename expected: " << f;
   }
 }
 
@@ -39,14 +40,14 @@ TEST(KeyboardTest, hostLayoutFilesIgnoresNonMapFilesAndSubdirs) {
   auto const files = InputMapper::host_layout_files(dir.string());
   std::filesystem::remove_all(dir);
 
-  EXPECT_EQ((std::vector<std::string>{"keymap_a.map", "keymap_b.map",
-                                      "other.map"}),
-            files);
+  EXPECT_EQ(
+      (std::vector<std::string>{"keymap_a.map", "keymap_b.map", "other.map"}),
+      files);
 }
 
 TEST(KeyboardTest, hostLayoutFilesOnAMissingDirectoryIsEmpty) {
-  EXPECT_TRUE(InputMapper::host_layout_files("/nonexistent/koncpc/resources")
-                  .empty());
+  EXPECT_TRUE(
+      InputMapper::host_layout_files("/nonexistent/koncpc/resources").empty());
 }
 
 TEST(KeyboardTest, parseAllLayoutFiles) {
