@@ -413,6 +413,72 @@ void ipc_publish_host_keymap(const std::string& layout,
   g_ipc_keymap.resources_path = resources_path;
 }
 
+// Window state — the main window's live geometry, published by the drain
+// every frame so `config get window|fullscreen` can answer without touching
+// SDL or CPC.* from the IPC thread — and the fullscreen staging: a `config
+// set fullscreen` is applied by the drain by posting imgui_state's
+// fullscreen_request, the same deferral the menu item and the Options
+// checkbox use (a fullscreen transition tears down video and ImGui, so only
+// the main loop may perform it, between frames).
+extern SDL_Window* mainSDLWindow;
+
+namespace {
+struct IpcWindowPending {
+  std::mutex mutex;
+  std::optional<int> fullscreen;  // staged: 1 = go fullscreen, 0 = windowed
+  bool known = false;             // a main window has been published
+  int w = 0;
+  int h = 0;
+  unsigned int scale = 0;
+  bool is_fullscreen = false;
+};
+IpcWindowPending g_ipc_window;
+
+void ipc_publish_window_state() {
+  std::scoped_lock const lock(g_ipc_window.mutex);
+  if (mainSDLWindow == nullptr) {
+    g_ipc_window.known = false;
+    return;
+  }
+  g_ipc_window.known = true;
+  SDL_GetWindowSize(mainSDLWindow, &g_ipc_window.w, &g_ipc_window.h);
+  g_ipc_window.scale = CPC.scr_scale;
+  g_ipc_window.is_fullscreen =
+      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+struct IpcConfigFile {
+  std::mutex mutex;
+  std::string path;
+};
+IpcConfigFile g_ipc_config_file;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void ipc_publish_config_file(const std::string& path) {
+  std::scoped_lock const lock(g_ipc_config_file.mutex);
+  g_ipc_config_file.path = path;
+}
+
+namespace {
+// `wait vbl` sleeps this long per requested blank (it is a paced sleep with
+// the machine running, not a real blank wait).
+constexpr int kWaitVblMsPerBlank = 20;
+constexpr int kWaitDefaultTimeoutMs = 5000;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+std::chrono::milliseconds ipc_wait_vbl_default_timeout(int count) {
+  // The shared 5000ms default expired before any count above 250 could
+  // complete — 'ERR 408 timeout' for a wait that was merely long
+  // (beads-mtak). The nominal length of the wait plus the usual slack.
+  long long const blanks = count > 0 ? count : 0;
+  return std::chrono::milliseconds(kWaitDefaultTimeoutMs +
+                                   (blanks * kWaitVblMsPerBlank));
+}
+
 // Drained once per frame on the main thread.  Safe no-op when no input is
 // pending and no input device is enabled.  Each lock is held only to copy that
 // device's staged group into a local snapshot and reset it, so a field can
@@ -495,6 +561,20 @@ void ipc_drain_input() {
         imgui_state.old_cpc_settings.kbd_layout = *name;
       }
     }
+  }
+  {
+    std::optional<int> fullscreen;
+    {
+      std::scoped_lock const lock(g_ipc_window.mutex);
+      fullscreen.swap(g_ipc_window.fullscreen);
+    }
+    if (fullscreen && mainSDLWindow != nullptr) {
+      // scr_window is 1 for windowed; the main loop compares the request
+      // against the window's real flags and toggles only on a difference.
+      CPC.scr_window = *fullscreen ? 0u : 1u;
+      imgui_state.fullscreen_request = static_cast<int>(CPC.scr_window);
+    }
+    ipc_publish_window_state();
   }
   // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
@@ -943,7 +1023,9 @@ void init_command_registry() {
       "reports hits from the CURRENT arming — a hit left uncollected from a "
       "previous bp/wp/IO-bp change is dropped (timeout). Watchpoint hits "
       "include WP_ADDR/WP_VAL/WP_OLD.\n"
-      "  vbl: Waits for N vertical blanks (1/50th second each).");
+      "  vbl: Waits for N vertical blanks (1/50th second each). Without an "
+      "explicit timeout the deadline is N x 20ms plus 5000ms, so a long "
+      "count completes instead of timing out at 5s.");
 
   register_command(
       "step", "DEBUG",
@@ -1087,7 +1169,10 @@ void init_command_registry() {
       "Reads or modifies internal emulator configuration variables.\n"
       "  Keys include model (0-3), crtc_type, ram_size, silicon_disc, "
       "kbd_layout (host keymap file; `config get kbd_layouts` lists the "
-      "choices; `set` applies on the next frame, like the Settings combo).\n"
+      "choices; `set` applies on the next frame, like the Settings combo), "
+      "fullscreen (0|1; `set` applies on the next frame, like the View menu), "
+      "window (read-only: w=<px> h=<px> scale=<idx> fullscreen=<0|1>), "
+      "file (read-only: the configuration file this session loaded).\n"
       "  `set model` STAGES the change and answers 'OK (apply required)': it "
       "needs `config apply`, not the plain `reset` command -- reset resets the "
       "board and will not reload the model's ROMs. Until apply, `config get "
@@ -3426,16 +3511,18 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[1] == "vbl") {
         int const count = parse_int(parts[2]);
-        if (parts.size() >= 4)
-          deadline = std::chrono::steady_clock::now() +
-                     std::chrono::milliseconds(parse_int(parts[3]));
+        deadline =
+            std::chrono::steady_clock::now() +
+            (parts.size() >= 4 ? std::chrono::milliseconds(parse_int(parts[3]))
+                               : ipc_wait_vbl_default_timeout(count));
         cpc_resume();
         for (int i = 0; i < count; i++) {
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");
           }
-          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+          std::this_thread::sleep_for(
+              std::chrono::milliseconds(kWaitVblMsPerBlank));
         }
         cpc_pause();
         return ok_with_context();
@@ -4810,6 +4897,30 @@ std::string handle_command(const std::string& line) {
             resp += f + "\n";
           return resp;
         }
+        if (parts[2] == "fullscreen") {
+          std::scoped_lock const lock(g_ipc_window.mutex);
+          if (!g_ipc_window.known) return "ERR 503 no-window\n";
+          std::string resp =
+              "OK " + std::string(g_ipc_window.is_fullscreen ? "1" : "0");
+          if (g_ipc_window.fullscreen) {
+            resp += " pending=" + std::to_string(*g_ipc_window.fullscreen);
+          }
+          return resp + "\n";
+        }
+        if (parts[2] == "window") {
+          std::scoped_lock const lock(g_ipc_window.mutex);
+          if (!g_ipc_window.known) return "ERR 503 no-window\n";
+          return "OK w=" + std::to_string(g_ipc_window.w) +
+                 " h=" + std::to_string(g_ipc_window.h) +
+                 " scale=" + std::to_string(g_ipc_window.scale) +
+                 " fullscreen=" + (g_ipc_window.is_fullscreen ? "1" : "0") +
+                 "\n";
+        }
+        if (parts[2] == "file") {
+          std::scoped_lock const lock(g_ipc_config_file.mutex);
+          if (g_ipc_config_file.path.empty()) return "ERR 503 not-ready\n";
+          return "OK " + g_ipc_config_file.path + "\n";
+        }
         return "ERR 400 unknown-config-key\n";
       }
       if (parts[1] == "set" && parts.size() >= 4) {
@@ -4881,6 +4992,15 @@ std::string handle_command(const std::string& line) {
             std::scoped_lock const lock(g_ipc_keymap.mutex);
             g_ipc_keymap.name = parts[3];
           }
+          return "OK (applied on next frame)\n";
+        }
+        if (parts[2] == "fullscreen") {
+          if (parts[3] != "0" && parts[3] != "1") {
+            return "ERR 400 fullscreen must be 0 or 1\n";
+          }
+          std::scoped_lock const lock(g_ipc_window.mutex);
+          if (!g_ipc_window.known) return "ERR 503 no-window\n";
+          g_ipc_window.fullscreen = parts[3] == "1" ? 1 : 0;
           return "OK (applied on next frame)\n";
         }
         return "ERR 400 unknown-config-key\n";

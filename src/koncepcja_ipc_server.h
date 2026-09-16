@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -115,3 +116,12 @@ void ipc_drain_input();
 // `ERR 503 not-ready`.
 void ipc_publish_host_keymap(const std::string& layout,
                              const std::string& resources_path);
+
+// Main thread: publish the configuration file this session loaded, for
+// `config get file`.
+void ipc_publish_config_file(const std::string& path);
+
+// The deadline `wait vbl <n>` gets when the caller gives none: the wait's own
+// nominal length (20ms per blank) plus the 5s every `wait` allows, so a long
+// but legitimate count no longer times out at 5s regardless of n.
+std::chrono::milliseconds ipc_wait_vbl_default_timeout(int count);

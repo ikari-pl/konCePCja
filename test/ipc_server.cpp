@@ -38,6 +38,7 @@ extern SDL_Surface* back_surface;
 extern byte* membank_read[4];
 extern byte* membank_write[4];
 extern video_plugin* vid_plugin;
+extern SDL_Window* mainSDLWindow;
 
 namespace {
 
@@ -185,6 +186,112 @@ class IpcServerTest : public testing::Test {
 
 KoncepcjaIpcServer IpcServerTest::server;
 byte IpcServerTest::memory[4][kBankSize];
+
+// `wait vbl <n>` without a timeout used to share every wait's 5000ms default
+// and, at 20ms per blank, timed out before any n > 250 could complete.
+TEST(IpcWaitVbl, DefaultTimeoutCoversTheRequestedCount) {
+  using std::chrono::milliseconds;
+  EXPECT_EQ(milliseconds(5000), ipc_wait_vbl_default_timeout(0));
+  EXPECT_EQ(milliseconds(5000 + (250 * 20)), ipc_wait_vbl_default_timeout(250));
+  EXPECT_EQ(milliseconds(5000 + (500 * 20)), ipc_wait_vbl_default_timeout(500));
+  EXPECT_GT(ipc_wait_vbl_default_timeout(500), milliseconds(500 * 20))
+      << "the deadline must lie past the wait's own nominal length";
+  EXPECT_EQ(milliseconds(5000), ipc_wait_vbl_default_timeout(-3))
+      << "a nonsense count keeps the plain default";
+}
+
+// The main window over IPC: an agent can read the live geometry back
+// (`config get window`), and enter or leave fullscreen (`config set
+// fullscreen`) through the same deferred request the View menu posts — a
+// transition tears down video and ImGui, so only the main loop applies it.
+TEST_F(IpcServerTest, ConfigWindowAndFullscreenNeedAMainWindow) {
+  SDL_Window* const saved = mainSDLWindow;
+  mainSDLWindow = nullptr;
+  ipc_drain_input();  // publishes "no window"
+
+  auto resp = send_command("config get window");
+  EXPECT_EQ(0u, resp.find("ERR 503 no-window")) << resp;
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ(0u, resp.find("ERR 503 no-window")) << resp;
+  resp = send_command("config set fullscreen 1");
+  EXPECT_EQ(0u, resp.find("ERR 503 no-window")) << resp;
+  resp = send_command("config set fullscreen 2");
+  EXPECT_EQ(0u, resp.find("ERR 400")) << resp;
+  mainSDLWindow = saved;
+}
+
+TEST_F(IpcServerTest, ConfigWindowReportsAndFullscreenStagesForTheDrain) {
+  if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+    GTEST_SKIP() << "no SDL video: " << SDL_GetError();
+  }
+  SDL_Window* const window =
+      SDL_CreateWindow("ipc-window-test", 800, 600, SDL_WINDOW_HIDDEN);
+  if (!window) {
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    GTEST_SKIP() << "no window (headless): " << SDL_GetError();
+  }
+  SDL_Window* const saved_window = mainSDLWindow;
+  unsigned int const saved_scale = CPC.scr_scale;
+  unsigned int const saved_scr_window = CPC.scr_window;
+  int const saved_request = imgui_state.fullscreen_request;
+  mainSDLWindow = window;
+  CPC.scr_scale = 2;
+  CPC.scr_window = 1;
+  imgui_state.fullscreen_request = -1;
+
+  ipc_drain_input();  // publishes the window once per frame
+  auto resp = send_command("config get window");
+  EXPECT_EQ("OK w=800 h=600 scale=2 fullscreen=0\n", resp);
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ("OK 0\n", resp);
+
+  // A geometry change shows up on the next drain, not before.
+  SDL_SetWindowSize(window, 1024, 768);
+  SDL_SyncWindow(window);
+  resp = send_command("config get window");
+  EXPECT_EQ("OK w=800 h=600 scale=2 fullscreen=0\n", resp)
+      << "the mirror is what the last drain published";
+  ipc_drain_input();
+  resp = send_command("config get window");
+  EXPECT_EQ("OK w=1024 h=768 scale=2 fullscreen=0\n", resp);
+
+  // Stage fullscreen: nothing happens until the drain, which posts the same
+  // deferred request the View menu does (scr_window 0 = fullscreen).
+  resp = send_command("config set fullscreen 1");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  EXPECT_EQ(-1, imgui_state.fullscreen_request);
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ("OK 0 pending=1\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(0, imgui_state.fullscreen_request)
+      << "the drain must post a request for scr_window=0 (fullscreen)";
+  EXPECT_EQ(0u, CPC.scr_window);
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ(std::string::npos, resp.find("pending=")) << resp;
+
+  imgui_state.fullscreen_request = -1;
+  resp = send_command("config set fullscreen 0");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(1, imgui_state.fullscreen_request);
+  EXPECT_EQ(1u, CPC.scr_window);
+
+  imgui_state.fullscreen_request = saved_request;
+  CPC.scr_window = saved_scr_window;
+  CPC.scr_scale = saved_scale;
+  mainSDLWindow = saved_window;
+  SDL_DestroyWindow(window);
+  SDL_QuitSubSystem(SDL_INIT_VIDEO);
+}
+
+TEST_F(IpcServerTest, ConfigFileReportsWhatWasPublished) {
+  ipc_publish_config_file("");
+  auto resp = send_command("config get file");
+  EXPECT_EQ("ERR 503 not-ready\n", resp);
+  ipc_publish_config_file("/somewhere/koncepcja.cfg");
+  resp = send_command("config get file");
+  EXPECT_EQ("OK /somewhere/koncepcja.cfg\n", resp);
+}
 
 // Settings ▸ Input's host-layout combo has an agent-side twin: list the
 // shipped maps, stage a switch, and the main-thread drain applies it live.
