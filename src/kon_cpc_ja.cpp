@@ -1266,6 +1266,11 @@ int koncpc_rebuild_machine() {
   return err;
 }
 
+namespace {
+constexpr word kMcStartProgram =
+    0xBD16;  // firmware jumpblock: MC START PROGRAM
+}  // namespace
+
 void bin_load(const std::string& filename, const size_t offset) {
   LOG_INFO("Load " << filename << " in memory at offset 0x" << std::hex
                    << offset);
@@ -1301,8 +1306,50 @@ void bin_load(const std::string& filename, const size_t offset) {
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
   }
-  koncpc_firmware_launch_regs(z80, static_cast<word>(offset));
+  // The Z80 thread must not be mid-frame while the registers are rewritten
+  // and pushed to the machine (same contract as koncpc_toggle_fullscreen()).
+  CpcPauseLease lease;
+  bool const was_paused = lease.was_paused();
+  koncpc_inject_launch_regs(z80, static_cast<word>(offset),
+                            z80_read_mem(kMcStartProgram));
   if (subcycle_bridge_active()) subcycle_bridge_regs_to_machine();
+  if (!was_paused) {
+    lease.release();
+    cpc_resume();
+  }
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_firmware_jumpblock_present(byte opcode_at_bd16) {
+  // The firmware builds its RAM jumpblock from RST 1 (LOW JUMP, &CF) and JP
+  // (&C3) entries; zeroed or random RAM holds neither. Until the firmware has
+  // written it, MC START PROGRAM is not there to be called.
+  constexpr byte kRst1LowJump = 0xCF;
+  constexpr byte kJp = 0xC3;
+  return opcode_at_bd16 == kRst1LowJump || opcode_at_bd16 == kJp;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_firmware_jumpblock_ready() {
+  return koncpc_firmware_jumpblock_present(z80_read_mem(kMcStartProgram));
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_inject_launch_regs(t_z80regs& regs, word entry,
+                               byte opcode_at_bd16) {
+  if (koncpc_firmware_jumpblock_present(opcode_at_bd16)) {
+    koncpc_firmware_launch_regs(regs, entry);
+    return;
+  }
+  // No firmware to hand the program to (a prepared test ROM, or a boot_time
+  // that fires before the firmware has built its jumpblock): enter it
+  // directly, as before. Interrupts and the firmware packs are then whatever
+  // the program finds.
+  LOG_INFO("no firmware jumpblock at &BD16 - entering the program directly");
+  regs.PC.w.l = entry;
 }
 
 // Hand a program in RAM to the firmware's own launcher, MC START PROGRAM
@@ -1316,7 +1363,6 @@ void bin_load(const std::string& filename, const size_t offset) {
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void koncpc_firmware_launch_regs(t_z80regs& regs, word entry) {
-  constexpr word kMcStartProgram = 0xBD16;
   constexpr byte kNoRomSelect = 0xFF;
   regs.HL.w.l = entry;
   regs.BC.b.l = kNoRomSelect;
@@ -2928,19 +2974,19 @@ unsigned int koncpc_fullscreen_toggle_target(
   return current ? 0u : 1u;
 }
 
-namespace {
-std::optional<bool> main_window_is_fullscreen() {
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+std::optional<bool> koncpc_main_window_is_fullscreen() {
   if (mainSDLWindow == nullptr) return std::nullopt;
   return (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
 }
-}  // namespace
 
 void koncpc_toggle_fullscreen() {
   CpcPauseLease lease;
   bool const was_paused = lease.was_paused();
 
   // Read the window before video_shutdown() destroys it.
-  std::optional<bool> const fullscreen_now = main_window_is_fullscreen();
+  std::optional<bool> const fullscreen_now = koncpc_main_window_is_fullscreen();
   audio_pause();
   video_shutdown();
   CPC.scr_window =
@@ -2952,6 +2998,10 @@ void koncpc_toggle_fullscreen() {
 #ifdef __APPLE__
   koncpc_setup_macos_menu();
 #endif
+  // The IPC mirror was published earlier this frame, before the toggle: an
+  // agent polling `config get fullscreen` after its request drained would
+  // otherwise read the old state for a frame with nothing marked pending.
+  ipc_publish_window_state();
   audio_resume();
 
   if (!was_paused) {
@@ -2998,7 +3048,7 @@ void koncpc_menu_action(int action) {
       // consumption below), not call koncpc_toggle_fullscreen() directly.
       CPC.scr_window = koncpc_fullscreen_toggle_target(
           imgui_state.fullscreen_request, CPC.scr_window,
-          main_window_is_fullscreen());
+          koncpc_main_window_is_fullscreen());
       imgui_state.fullscreen_request = CPC.scr_window;
       break;
 
@@ -4491,8 +4541,15 @@ int koncpc_main(int argc, char** argv) {
   // Whether this loop of emulation should release the joystick axis for mouse
   // emulation.
   while (true) {
-    // We can only load bin files after the CPC finished the init
-    if (!bin_loaded && dwFrameCountOverall > CPC.boot_time) {
+    // We can only load bin files after the CPC finished the init: boot_time
+    // frames at least, and — since the launch goes through the firmware's
+    // MC START PROGRAM — once the firmware has built its jumpblock. A ROM
+    // that never builds one (a prepared test ROM) gets the direct entry after
+    // a grace period rather than never.
+    constexpr unsigned int kJumpblockGraceFrames = 250;  // 5s at 50Hz
+    if (!bin_loaded && dwFrameCountOverall > CPC.boot_time &&
+        (koncpc_firmware_jumpblock_ready() ||
+         dwFrameCountOverall > CPC.boot_time + kJumpblockGraceFrames)) {
       bin_loaded = true;
       if (!args.binFile.empty()) bin_load(args.binFile, args.binOffset);
     }

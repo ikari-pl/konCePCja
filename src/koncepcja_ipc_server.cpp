@@ -433,20 +433,24 @@ struct IpcWindowPending {
   bool is_fullscreen = false;
 };
 IpcWindowPending g_ipc_window;
+}  // namespace
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
 void ipc_publish_window_state() {
+  std::optional<bool> const fullscreen = koncpc_main_window_is_fullscreen();
   std::scoped_lock const lock(g_ipc_window.mutex);
-  if (mainSDLWindow == nullptr) {
+  if (!fullscreen.has_value()) {
     g_ipc_window.known = false;
     return;
   }
   g_ipc_window.known = true;
   SDL_GetWindowSize(mainSDLWindow, &g_ipc_window.w, &g_ipc_window.h);
   g_ipc_window.scale = CPC.scr_scale;
-  g_ipc_window.is_fullscreen =
-      (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+  g_ipc_window.is_fullscreen = *fullscreen;
 }
 
+namespace {
 struct IpcConfigFile {
   std::mutex mutex;
   std::string path;
@@ -564,7 +568,10 @@ void ipc_drain_input() {
   }
   {
     std::optional<int> fullscreen;
-    {
+    // A request the menu, F2 or the Options checkbox posted this frame is
+    // applied first; the staged IPC value waits for the next drain rather
+    // than overwriting it (last-writer-wins would swallow the user's click).
+    if (imgui_state.fullscreen_request == -1) {
       std::scoped_lock const lock(g_ipc_window.mutex);
       fullscreen.swap(g_ipc_window.fullscreen);
     }
@@ -573,6 +580,12 @@ void ipc_drain_input() {
       // against the window's real flags and toggles only on a difference.
       CPC.scr_window = *fullscreen ? 0u : 1u;
       imgui_state.fullscreen_request = static_cast<int>(CPC.scr_window);
+      // Settings ▸ Cancel restores the snapshot taken when the dialog opened
+      // and re-posts its scr_window; fold the switch into that snapshot or
+      // Cancel silently undoes it (as for kbd_layout above).
+      if (imgui_state.show_options) {
+        imgui_state.old_cpc_settings.scr_window = CPC.scr_window;
+      }
     }
     ipc_publish_window_state();
   }
@@ -3424,8 +3437,14 @@ std::string handle_command(const std::string& line) {
              "(keydown|keyup|key|chord|type|joy|mouse|gun|state)\n";
 
     if (cmd == "wait" && parts.size() >= 2) {
-      auto timeout_ms = std::chrono::milliseconds(5000);
+      auto timeout_ms = std::chrono::milliseconds(kWaitDefaultTimeoutMs);
       auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+      // The server handles commands on its one thread and stop() joins it:
+      // a wait must give up when the server is stopping, or exit hangs for
+      // the rest of the deadline (up to n x 20ms + 5s for `wait vbl`).
+      auto const server_stopping = []() {
+        return g_ipc_instance != nullptr && !g_ipc_instance->is_running();
+      };
 
       if (parts[1] == "pc") {
         unsigned int const addr = parse_number(parts[2]);
@@ -3434,6 +3453,10 @@ std::string handle_command(const std::string& line) {
                      std::chrono::milliseconds(parse_int(parts[3]));
         cpc_resume();
         while (z80.PC.w.l != addr) {
+          if (server_stopping()) {
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
+          }
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");
@@ -3469,6 +3492,10 @@ std::string handle_command(const std::string& line) {
           if ((memv & static_cast<byte>(mask)) ==
               (static_cast<byte>(val) & static_cast<byte>(mask)))
             break;
+          if (server_stopping()) {
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
+          }
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");
@@ -3503,6 +3530,7 @@ std::string handle_command(const std::string& line) {
               return {resp};
             }
           }
+          if (server_stopping()) return "ERR 503 shutting-down\n";
           if (std::chrono::steady_clock::now() > deadline) {
             return err_with_context(408, "timeout");
           }
@@ -3517,6 +3545,10 @@ std::string handle_command(const std::string& line) {
                                : ipc_wait_vbl_default_timeout(count));
         cpc_resume();
         for (int i = 0; i < count; i++) {
+          if (server_stopping()) {
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
+          }
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");

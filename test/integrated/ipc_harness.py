@@ -668,10 +668,16 @@ def test_inject_launches_like_run():
                 print(f"FAIL: &6100 must start clear, got {resp}")
                 return False
             ipc.run()
-            ok, resp = ipc.send_command('input key a')
-            if not ok:
-                print(f"FAIL: input key a: {resp}")
-                return False
+            # Hold the key across several frames rather than 'input key a':
+            # the default 2-frame tap releases from the IPC thread and races
+            # the once-per-frame publish of the matrix the firmware scans, so
+            # the firmware can miss it entirely under load (beads-cjej). This
+            # test is about the launch path, not the tap.
+            for cmd in ('input keydown a', 'wait vbl 5', 'input keyup a'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
             # Only the firmware's ISR (KM SCAN KEYS every frame flyback) can
             # move that key into the buffer KM READ CHAR drains.
             ok, resp = ipc.send_command('wait mem 0x6100 0x61 5000')

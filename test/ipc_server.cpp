@@ -276,6 +276,39 @@ TEST_F(IpcServerTest, ConfigWindowReportsAndFullscreenStagesForTheDrain) {
   EXPECT_EQ(1, imgui_state.fullscreen_request);
   EXPECT_EQ(1u, CPC.scr_window);
 
+  // A request the UI posted this frame goes first: the staged IPC value
+  // stays pending until the next drain instead of overwriting it.
+  imgui_state.fullscreen_request = 0;  // the menu asked for fullscreen
+  resp = send_command("config set fullscreen 0");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(0, imgui_state.fullscreen_request) << "the click must survive";
+  resp = send_command("config get fullscreen");
+  EXPECT_NE(std::string::npos, resp.find("pending=0")) << resp;
+  imgui_state.fullscreen_request = -1;  // the main loop consumed the click
+  ipc_drain_input();
+  EXPECT_EQ(1, imgui_state.fullscreen_request) << "now the IPC request";
+
+  // Settings open: Cancel restores old_cpc_settings and re-posts its
+  // scr_window, so an applied IPC switch must be folded into the snapshot.
+  imgui_state.fullscreen_request = -1;
+  imgui_state.show_options = true;
+  imgui_state.old_cpc_settings.scr_window = 1;
+  resp = send_command("config set fullscreen 1");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(0u, imgui_state.old_cpc_settings.scr_window)
+      << "Settings > Cancel would silently leave fullscreen again";
+  imgui_state.show_options = false;
+
+  // The toggle re-publishes right after the transition, so a client never
+  // reads a frame of stale state with nothing pending.
+  SDL_SetWindowSize(window, 640, 480);
+  SDL_SyncWindow(window);
+  ipc_publish_window_state();
+  resp = send_command("config get window");
+  EXPECT_EQ("OK w=640 h=480 scale=2 fullscreen=0\n", resp);
+
   imgui_state.fullscreen_request = saved_request;
   CPC.scr_window = saved_scr_window;
   CPC.scr_scale = saved_scale;

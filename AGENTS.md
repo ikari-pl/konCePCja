@@ -517,11 +517,15 @@ Config file locations (in order of precedence — the first one found wins):
 3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`), `~/.koncepcja.cfg` — legacy flat paths
 4. `$CWD/koncepcja.cfg`, then `koncepcja.cfg` next to the binary
 5. `/etc/koncepcja.cfg`
+6. `koncepcja.cfg` in the macOS app bundle's `Resources/` (next to the binary's
+   parent)
 
 The profile config outranks a checkout-local file: running a debug-style
 build from the repo root no longer picks up the untracked `koncepcja.cfg`
 sitting there when `~/.config/koncepcja/koncepcja.cfg` exists. Settings ▸
-System shows the file in use, as does `config get file` over IPC.
+System shows the file in use, as does `config get file` over IPC. The
+sidecars — `imgui.ini` and the DevTools `layouts/` directory — live next to
+whichever config file wins, so they move with it.
 
 ### Key Config Options
 
@@ -541,6 +545,9 @@ run_tier=0        # Run-tier policy: 0=auto (Fast;
 [video]
 scr_scale=2       # Window scale factor
 scr_style=1       # Rendering style (0-11)
+scr_window=1      # 1 = start windowed, 0 = start fullscreen. NOTE the IPC key
+                  # `config get|set fullscreen` has the opposite polarity
+                  # (1 = fullscreen).
 vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
                   # window only (viewport/DevTools windows always stay VSYNC —
                   # IMMEDIATE breaks their swapchains). Escape hatch for the

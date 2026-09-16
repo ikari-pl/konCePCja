@@ -698,10 +698,20 @@ void koncpc_reload_host_keymap();
 unsigned int koncpc_fullscreen_toggle_target(
     int pending_request, unsigned int scr_window,
     std::optional<bool> window_is_fullscreen);
+// Whether the main window is fullscreen right now; nullopt without a window.
+std::optional<bool> koncpc_main_window_is_fullscreen();
 // Registers that hand a RAM program at `entry` to the firmware's MC START
 // PROGRAM (&BD16) — the launch RUN" performs. Used by -i/--inject.
 class t_z80regs;
 void koncpc_firmware_launch_regs(t_z80regs& regs, word entry);
+// True when the byte at &BD16 is a firmware jumpblock entry (RST 1 or JP):
+// MC START PROGRAM is there to be called.
+bool koncpc_firmware_jumpblock_present(byte opcode_at_bd16);
+bool koncpc_firmware_jumpblock_ready();
+// The -i launch: through the firmware when its jumpblock is present, else a
+// direct entry (a prepared ROM without firmware).
+void koncpc_inject_launch_regs(t_z80regs& regs, word entry,
+                               byte opcode_at_bd16);
 // The configuration file this session loaded ("" before loadConfiguration).
 const std::string& koncpc_config_file();
 void update_cpc_speed();

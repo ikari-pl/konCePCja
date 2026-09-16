@@ -6,6 +6,9 @@
 #include "koncepcja.h"
 #include "silicon_disc.h"
 #include "slotshandler.h"
+#ifdef _WIN32
+#include <process.h>
+#endif
 #ifndef _MSC_VER
 #include <unistd.h>
 #endif
@@ -718,10 +721,14 @@ void write_file(const std::filesystem::path& p, const char* text) {
 class ConfigLookupTest : public testing::Test {
  protected:
   void SetUp() override {
-    // A per-test sandbox (two test binaries may run at once: see the
-    // concurrent-test-runner note in the project memory).
+    // A per-test, per-process sandbox: two test binaries may run at once.
+#ifdef _WIN32
+    int const pid = _getpid();
+#else
+    int const pid = getpid();
+#endif
     root_ = std::filesystem::temp_directory_path() /
-            ("koncepcja-cfg-lookup-" +
+            ("koncepcja-cfg-lookup-" + std::to_string(pid) + "-" +
              std::to_string(reinterpret_cast<std::uintptr_t>(this)));
     std::filesystem::create_directories(root_ / "cwd");
     std::filesystem::create_directories(root_ / "home");
@@ -772,6 +779,19 @@ TEST_F(ConfigLookupTest, TheHomeProfileConfigAlsoOutranksTheWorkingDirectory) {
   EXPECT_EQ(
       (root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg").string(),
       getConfigurationFilename());
+}
+
+TEST_F(ConfigLookupTest, TheLegacyFlatPathsAlsoOutrankTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "home" / ".koncepcja.cfg", "[system]\nmodel=2\n");
+
+  EXPECT_EQ((root_ / "home" / ".koncepcja.cfg").string(),
+            getConfigurationFilename());
+
+  // The flat XDG file outranks the home dotfile, as before.
+  write_file(root_ / "xdg" / "koncepcja.cfg", "[system]\nmodel=1\n");
+  EXPECT_EQ((root_ / "xdg" / "koncepcja.cfg").string(),
+            getConfigurationFilename());
 }
 
 TEST_F(ConfigLookupTest, TheWorkingDirectoryIsTheFallbackWithoutAProfile) {

@@ -3803,7 +3803,10 @@ void imgui_render_options() {
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
       // mutated (out-param/compound-assign/loop/reference)
-      bool fullscreen = CPC.scr_window == 0;
+      // From the window, not the flag: after an OS-driven transition (macOS's
+      // green button) the flag lags and the box would show the wrong state.
+      bool fullscreen =
+          koncpc_main_window_is_fullscreen().value_or(CPC.scr_window == 0);
       if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
         CPC.scr_window = fullscreen ? 0 : 1;
         imgui_state.fullscreen_request = CPC.scr_window;
