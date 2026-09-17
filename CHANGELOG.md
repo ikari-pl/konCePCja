@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.3.2](https://github.com/ikari-pl/konCePCja/compare/v6.3.1...v6.3.2) (2026-09-17)
+
+
+### Bug Fixes
+
+* -i launches through the firmware; fullscreen/window over IPC; profile config outranks the checkout; wait vbl timeout; docs ([#57](https://github.com/ikari-pl/konCePCja/issues/57)) ([aec1b93](https://github.com/ikari-pl/konCePCja/commit/aec1b9306ba317611687bc887e6f83075bcd94f2))
+
 ## [6.3.1](https://github.com/ikari-pl/konCePCja/compare/v6.3.0...v6.3.1) (2026-09-16)
 
 
