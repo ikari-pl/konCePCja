@@ -760,6 +760,12 @@ class ConfigLookupTest : public testing::Test {
   std::string saved_xdg_;
   bool had_xdg_ = false;
   char saved_app_path_[_MAX_PATH + 1] = {};
+
+  // Compare as paths, element-wise: the lookup joins its candidates with
+  // '/' while path::string() yields the native separator ('\\' on Windows).
+  static void expect_found(const std::filesystem::path& expected) {
+    EXPECT_EQ(expected, std::filesystem::path(getConfigurationFilename()));
+  }
 };
 
 TEST_F(ConfigLookupTest, TheProfileConfigOutranksTheWorkingDirectory) {
@@ -767,8 +773,7 @@ TEST_F(ConfigLookupTest, TheProfileConfigOutranksTheWorkingDirectory) {
   write_file(root_ / "xdg" / "koncepcja" / "koncepcja.cfg",
              "[system]\nmodel=2\n");
 
-  EXPECT_EQ((root_ / "xdg" / "koncepcja" / "koncepcja.cfg").string(),
-            getConfigurationFilename());
+  expect_found(root_ / "xdg" / "koncepcja" / "koncepcja.cfg");
 }
 
 TEST_F(ConfigLookupTest, TheHomeProfileConfigAlsoOutranksTheWorkingDirectory) {
@@ -776,29 +781,24 @@ TEST_F(ConfigLookupTest, TheHomeProfileConfigAlsoOutranksTheWorkingDirectory) {
   write_file(root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg",
              "[system]\nmodel=2\n");
 
-  EXPECT_EQ(
-      (root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg").string(),
-      getConfigurationFilename());
+  expect_found(root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg");
 }
 
 TEST_F(ConfigLookupTest, TheLegacyFlatPathsAlsoOutrankTheWorkingDirectory) {
   write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
   write_file(root_ / "home" / ".koncepcja.cfg", "[system]\nmodel=2\n");
 
-  EXPECT_EQ((root_ / "home" / ".koncepcja.cfg").string(),
-            getConfigurationFilename());
+  expect_found(root_ / "home" / ".koncepcja.cfg");
 
   // The flat XDG file outranks the home dotfile, as before.
   write_file(root_ / "xdg" / "koncepcja.cfg", "[system]\nmodel=1\n");
-  EXPECT_EQ((root_ / "xdg" / "koncepcja.cfg").string(),
-            getConfigurationFilename());
+  expect_found(root_ / "xdg" / "koncepcja.cfg");
 }
 
 TEST_F(ConfigLookupTest, TheWorkingDirectoryIsTheFallbackWithoutAProfile) {
   write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
 
-  EXPECT_EQ((root_ / "cwd" / "koncepcja.cfg").string(),
-            getConfigurationFilename());
+  expect_found(root_ / "cwd" / "koncepcja.cfg");
 }
 
 TEST_F(ConfigLookupTest, LoadRecordsTheFileForTheAppToShow) {
