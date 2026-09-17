@@ -3174,6 +3174,18 @@ void imgui_render_menu() {
   ImGui::NextColumn();
   ImGui::TextDisabled("%s", model_name);
   ImGui::NextColumn();
+  // Which file this session runs on: a checkout-local koncepcja.cfg used to
+  // win silently over the user's profile config, with nothing in the app to
+  // show it (beads-825s).
+  ImGui::Text("Config file:");
+  ImGui::NextColumn();
+  ImGui::TextDisabled("%s", koncpc_config_file().empty()
+                                ? "(none loaded)"
+                                : koncpc_config_file().c_str());
+  if (!koncpc_config_file().empty() && ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("%s", koncpc_config_file().c_str());
+  }
+  ImGui::NextColumn();
   ImGui::Text("RAM:");
   ImGui::NextColumn();
   ImGui::TextDisabled("%u KB", CPC.ram_size);
@@ -3791,7 +3803,10 @@ void imgui_render_options() {
 
       // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
       // mutated (out-param/compound-assign/loop/reference)
-      bool fullscreen = CPC.scr_window == 0;
+      // From the window, not the flag: after an OS-driven transition (macOS's
+      // green button) the flag lags and the box would show the wrong state.
+      bool fullscreen =
+          koncpc_main_window_is_fullscreen().value_or(CPC.scr_window == 0);
       if (ImGui::Checkbox("Fullscreen", &fullscreen)) {
         CPC.scr_window = fullscreen ? 0 : 1;
         imgui_state.fullscreen_request = CPC.scr_window;

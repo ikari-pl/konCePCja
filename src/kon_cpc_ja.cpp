@@ -510,6 +510,9 @@ namespace {
 // is not written back, so the file keeps any edit made by hand while the
 // emulator ran (see config::Config::setBaseline).
 config::ConfigMap g_config_baseline;
+// The file loadConfiguration() last read (main thread; the IPC thread gets
+// its own published copy).
+std::string g_config_file;
 }  // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -1263,6 +1266,11 @@ int koncpc_rebuild_machine() {
   return err;
 }
 
+namespace {
+constexpr word kMcStartProgram =
+    0xBD16;  // firmware jumpblock: MC START PROGRAM
+}  // namespace
+
 void bin_load(const std::string& filename, const size_t offset) {
   LOG_INFO("Load " << filename << " in memory at offset 0x" << std::hex
                    << offset);
@@ -1298,16 +1306,67 @@ void bin_load(const std::string& filename, const size_t offset) {
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
   }
-  // Jump at the beginning of the program
-  z80.PC.w.l = static_cast<word>(offset);
-  // Setup the stack the way it would be if we had launch it with run"
-  z80_write_mem(--z80.SP.w.l, 0x0);
-  z80_write_mem(--z80.SP.w.l, 0x98);
-  z80_write_mem(--z80.SP.w.l, 0x7f);
-  z80_write_mem(--z80.SP.w.l, 0x89);
-  z80_write_mem(--z80.SP.w.l, 0xb9);
-  z80_write_mem(--z80.SP.w.l, 0xa2);
+  // The Z80 thread must not be mid-frame while the registers are rewritten
+  // and pushed to the machine (same contract as koncpc_toggle_fullscreen()).
+  CpcPauseLease lease;
+  bool const was_paused = lease.was_paused();
+  koncpc_inject_launch_regs(z80, static_cast<word>(offset),
+                            z80_read_mem(kMcStartProgram));
   if (subcycle_bridge_active()) subcycle_bridge_regs_to_machine();
+  if (!was_paused) {
+    lease.release();
+    cpc_resume();
+  }
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_firmware_jumpblock_present(byte opcode_at_bd16) {
+  // The firmware builds its RAM jumpblock from RST 1 (LOW JUMP, &CF) and JP
+  // (&C3) entries; zeroed or random RAM holds neither. Until the firmware has
+  // written it, MC START PROGRAM is not there to be called.
+  constexpr byte kRst1LowJump = 0xCF;
+  constexpr byte kJp = 0xC3;
+  return opcode_at_bd16 == kRst1LowJump || opcode_at_bd16 == kJp;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_firmware_jumpblock_ready() {
+  return koncpc_firmware_jumpblock_present(z80_read_mem(kMcStartProgram));
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_inject_launch_regs(t_z80regs& regs, word entry,
+                               byte opcode_at_bd16) {
+  if (koncpc_firmware_jumpblock_present(opcode_at_bd16)) {
+    koncpc_firmware_launch_regs(regs, entry);
+    return;
+  }
+  // No firmware to hand the program to (a prepared test ROM, or a boot_time
+  // that fires before the firmware has built its jumpblock): enter it
+  // directly, as before. Interrupts and the firmware packs are then whatever
+  // the program finds.
+  LOG_INFO("no firmware jumpblock at &BD16 - entering the program directly");
+  regs.PC.w.l = entry;
+}
+
+// Hand a program in RAM to the firmware's own launcher, MC START PROGRAM
+// (&BD16) — what RUN" does once the file is loaded: HL = entry, C = &FF (a
+// RAM program selects no ROM). It resets the stack, re-initialises the
+// firmware packs and indirections and enables interrupts before entering the
+// program, so the program starts with the state it is entitled to. Setting PC
+// to the entry point behind the firmware's back, with a faked BASIC return
+// stack, left the interrupt-driven keyboard scan dead — a game reading keys
+// through KM READ CHAR never saw one (beads-scrl).
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_firmware_launch_regs(t_z80regs& regs, word entry) {
+  constexpr byte kNoRomSelect = 0xFF;
+  regs.HL.w.l = entry;
+  regs.BC.b.l = kNoRomSelect;
+  regs.PC.w.l = kMcStartProgram;
 }
 
 int printer_start() {
@@ -2215,18 +2274,24 @@ std::string getConfigurationFilename(bool forWrite) {
   const char* PATH_OK = "";
 
   std::string const binPathStr = binPath.string();
+  // The user's profile outranks whatever koncepcja.cfg the working directory
+  // happens to hold: a debug-style build run from a source checkout used the
+  // checkout's untracked file — months of stale values nobody could see from
+  // inside the app — ahead of the config the user actually maintains
+  // (beads-825s). A checkout-local file is now the fallback for a machine
+  // with no profile config, or an explicit choice via -c.
   std::vector<std::pair<const char*, std::string>> const configPaths = {
       {PATH_OK, args.cfgFilePath},  // First look in any user supplied
                                     // configuration file path
-      {chAppPath,
-       "/koncepcja.cfg"},  // koncepcja.cfg in the current working directory
-      {binPathStr.c_str(),
-       "/koncepcja.cfg"},  // koncepcja.cfg next to the binary (Finder launch)
       {getenv("XDG_CONFIG_HOME"), "/koncepcja/koncepcja.cfg"},
       {getenv("HOME"), "/.config/koncepcja/koncepcja.cfg"},
       {getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg"},  // legacy flat paths
       {getenv("HOME"), "/.config/koncepcja.cfg"},
       {getenv("HOME"), "/.koncepcja.cfg"},
+      {chAppPath,
+       "/koncepcja.cfg"},  // koncepcja.cfg in the current working directory
+      {binPathStr.c_str(),
+       "/koncepcja.cfg"},  // koncepcja.cfg next to the binary (Finder launch)
       {DESTDIR, "/etc/koncepcja.cfg"},
       {binPath.string().c_str(),
        "/../Resources/koncepcja.cfg"},  // To find the configuration from the
@@ -2258,10 +2323,18 @@ std::string getConfigurationFilename(bool forWrite) {
   return "";
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+const std::string& koncpc_config_file() { return g_config_file; }
+
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   config::Config conf;
   conf.parseFile(configFilename);
   g_config_baseline = conf.parsedValues();
+  // Which file this session runs on is otherwise invisible from inside the
+  // app; the Settings dialog and `config get file` show it.
+  g_config_file = configFilename;
+  ipc_publish_config_file(configFilename);
   conf.setOverrides(args.cfgOverrides);
 
   std::string const appPath = chAppPath;
@@ -2882,13 +2955,42 @@ void koncpc_queue_virtual_keys(const std::string& text) {
 // then SDL_Delay(20)'d, which is a hope rather than a guarantee -- on a busy
 // frame the Z80 thread is still inside the renderer when the surface goes away.
 // Same contract emulator_reset() needs (see CpcPauseLease).
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+unsigned int koncpc_fullscreen_toggle_target(
+    int pending_request, unsigned int scr_window,
+    std::optional<bool> window_is_fullscreen) {
+  // CPC.scr_window (1 = windowed) lags the window when the OS drove the
+  // transition — macOS's green button — so a toggle starts from the window's
+  // real state, not the flag: from the flag, the first click after the green
+  // button asked for the state the window was already in and was swallowed
+  // (beads-f0sc). A pending request means the user clicked again before the
+  // main loop applied the first one; the flip then continues from the state
+  // that click asked for, so menu spam cancels out.
+  unsigned int current = scr_window;
+  if (pending_request == -1 && window_is_fullscreen.has_value()) {
+    current = *window_is_fullscreen ? 0u : 1u;
+  }
+  return current ? 0u : 1u;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+std::optional<bool> koncpc_main_window_is_fullscreen() {
+  if (mainSDLWindow == nullptr) return std::nullopt;
+  return (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
 void koncpc_toggle_fullscreen() {
   CpcPauseLease lease;
   bool const was_paused = lease.was_paused();
 
+  // Read the window before video_shutdown() destroys it.
+  std::optional<bool> const fullscreen_now = koncpc_main_window_is_fullscreen();
   audio_pause();
   video_shutdown();
-  CPC.scr_window = CPC.scr_window ? 0 : 1;
+  CPC.scr_window =
+      koncpc_fullscreen_toggle_target(-1, CPC.scr_window, fullscreen_now);
   if (video_init()) {
     fprintf(stderr, "video_init() failed. Aborting.\n");
     cleanExit(-1);
@@ -2896,6 +2998,10 @@ void koncpc_toggle_fullscreen() {
 #ifdef __APPLE__
   koncpc_setup_macos_menu();
 #endif
+  // The IPC mirror was published earlier this frame, before the toggle: an
+  // agent polling `config get fullscreen` after its request drained would
+  // otherwise read the old state for a frame with nothing marked pending.
+  ipc_publish_window_state();
   audio_resume();
 
   if (!was_paused) {
@@ -2940,7 +3046,9 @@ void koncpc_menu_action(int action) {
       // nested menu-tracking run loop (native macOS menu bar), so it must
       // defer the same way the Options checkbox does (see fullscreen_request
       // consumption below), not call koncpc_toggle_fullscreen() directly.
-      CPC.scr_window = CPC.scr_window ? 0 : 1;
+      CPC.scr_window = koncpc_fullscreen_toggle_target(
+          imgui_state.fullscreen_request, CPC.scr_window,
+          koncpc_main_window_is_fullscreen());
       imgui_state.fullscreen_request = CPC.scr_window;
       break;
 
@@ -4433,8 +4541,15 @@ int koncpc_main(int argc, char** argv) {
   // Whether this loop of emulation should release the joystick axis for mouse
   // emulation.
   while (true) {
-    // We can only load bin files after the CPC finished the init
-    if (!bin_loaded && dwFrameCountOverall > CPC.boot_time) {
+    // We can only load bin files after the CPC finished the init: boot_time
+    // frames at least, and — since the launch goes through the firmware's
+    // MC START PROGRAM — once the firmware has built its jumpblock. A ROM
+    // that never builds one (a prepared test ROM) gets the direct entry after
+    // a grace period rather than never.
+    constexpr unsigned int kJumpblockGraceFrames = 250;  // 5s at 50Hz
+    if (!bin_loaded && dwFrameCountOverall > CPC.boot_time &&
+        (koncpc_firmware_jumpblock_ready() ||
+         dwFrameCountOverall > CPC.boot_time + kJumpblockGraceFrames)) {
       bin_loaded = true;
       if (!args.binFile.empty()) bin_load(args.binFile, args.binOffset);
     }

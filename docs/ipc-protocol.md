@@ -184,7 +184,7 @@ All wait commands resume emulation, block until condition or timeout, then pause
 | `wait pc <addr> [timeout_ms]` | Wait until PC reaches address |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
 | `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop. Only hits from the current arming are reported |
-| `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each) |
+| `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each). Without `timeout_ms` the deadline is `count × 20ms + 5000ms`, so a long count completes instead of hitting the 5s default every other `wait` uses |
 
 Default timeout: 5000ms. Returns `ERR 408 timeout` on expiry.
 
@@ -640,6 +640,10 @@ Read and write emulator settings.
 | `config get kbd_layout` | `OK <file>` — the host keymap in use (`resources/*.map`). While a `config set kbd_layout` awaits the next frame, appends ` pending=<file>` |
 | `config get kbd_layouts` | `OK` then one `*.map` filename per line — the choices the Settings ▸ Input combo offers |
 | `config set kbd_layout <file>` | Switch the host keymap live, the same way the Settings combo does: applied on the main thread on the next frame (`OK (applied on next frame)`). `ERR 400 unknown-kbd-layout` if the file is not one of `config get kbd_layouts`. A switch applied while the Settings dialog is open survives its Cancel |
+| `config get fullscreen` | `OK <0\|1>` — whether the main window is fullscreen right now (the inverse of `[video] scr_window`). While a `config set fullscreen` awaits the next frame, appends ` pending=<0\|1>`. `ERR 503 no-window` when there is no main window (headless) |
+| `config set fullscreen <0\|1>` | Enter or leave fullscreen the way View ▸ Fullscreen does: applied on the main thread on the next frame (`OK (applied on next frame)`); a no-op when the window is already in that state. `ERR 400 fullscreen must be 0 or 1`; `ERR 503 no-window` when headless |
+| `config get window` | `OK w=<px> h=<px> scale=<idx> fullscreen=<0\|1>` — the main window's live size in window units, the `scr_scale` index (0 = Fit) and its fullscreen state, published once per frame. Read it back after a resize, scale change or fullscreen round-trip instead of eyeballing a screenshot. `ERR 503 no-window` when headless |
+| `config get file` | `OK <path>` — the configuration file this session loaded (see the lookup order in AGENTS.md ▸ Configuration). `ERR 503 not-ready` before the config is read |
 
 All three `kbd_layout` commands answer `ERR 503 not-ready` until the host
 keymap has been loaded — the IPC server comes up before the configuration

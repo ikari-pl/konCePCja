@@ -456,6 +456,69 @@ TEST_F(UIStateTest, FullscreenMenuActionRequestsWindowedFromFullscreen) {
   EXPECT_EQ(ImGui::GetCurrentContext(), imgui.get());
 }
 
+// ─── The toggle's starting point ───────────────────────────────
+// CPC.scr_window (1 = windowed) lags the window when the OS drove the
+// transition: after macOS's green button the flag still says windowed, so a
+// flip from the flag asked for fullscreen — the state the window was already
+// in — and the consumer swallowed the click.  The flip starts from the
+// window's real state when it is known and nothing is pending.
+
+TEST_F(UIStateTest, ToggleTargetStartsFromTheWindowNotTheStaleFlag) {
+  // Green button: window fullscreen, flag still says windowed -> ask for
+  // windowed (the click means "leave fullscreen").
+  EXPECT_EQ(1u, koncpc_fullscreen_toggle_target(-1, 1u, true));
+  // The other way round: flag says fullscreen, window is not -> ask for it.
+  EXPECT_EQ(0u, koncpc_fullscreen_toggle_target(-1, 0u, false));
+  // Flag and window agree: a plain flip.
+  EXPECT_EQ(0u, koncpc_fullscreen_toggle_target(-1, 1u, false));
+  EXPECT_EQ(1u, koncpc_fullscreen_toggle_target(-1, 0u, true));
+}
+
+TEST_F(UIStateTest, ToggleTargetFallsBackToTheFlagWithoutAWindow) {
+  EXPECT_EQ(0u, koncpc_fullscreen_toggle_target(-1, 1u, std::nullopt));
+  EXPECT_EQ(1u, koncpc_fullscreen_toggle_target(-1, 0u, std::nullopt));
+}
+
+TEST_F(UIStateTest, ToggleTargetContinuesFromAPendingRequest) {
+  // A second click before the main loop applied the first continues from the
+  // state that click asked for — whatever the window is doing right now — so
+  // menu spam cancels out.
+  EXPECT_EQ(1u, koncpc_fullscreen_toggle_target(0, 0u, false));
+  EXPECT_EQ(0u, koncpc_fullscreen_toggle_target(1, 1u, true));
+}
+
+TEST_F(UIStateTest, FullscreenMenuActionAfterTheGreenButtonLeavesFullscreen) {
+  // A hidden window stands in for the real one; it is windowed, and the flag
+  // is stale the other way (says fullscreen). The click must ask for
+  // fullscreen — what a windowed window's Fullscreen item means — not for the
+  // windowed state the stale flag would have produced.
+  if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+    GTEST_SKIP() << "no SDL video: " << SDL_GetError();
+  }
+  SDL_Window* const window =
+      SDL_CreateWindow("ui-state-test", 320, 200, SDL_WINDOW_HIDDEN);
+  if (!window) {
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    GTEST_SKIP() << "no window (headless): " << SDL_GetError();
+  }
+  ScopedImGuiContext imgui;
+  SDL_Window* const saved = mainSDLWindow;
+  mainSDLWindow = window;
+  CPC.scr_window = 0;  // stale: says fullscreen, the window is not
+  imgui_state.fullscreen_request = -1;
+
+  koncpc_menu_action(KONCPC_FULLSCRN);
+
+  EXPECT_EQ(0u, CPC.scr_window) << "a windowed window's Fullscreen click "
+                                   "asks for fullscreen";
+  EXPECT_EQ(0, imgui_state.fullscreen_request);
+  EXPECT_EQ(ImGui::GetCurrentContext(), imgui.get());
+
+  mainSDLWindow = saved;
+  SDL_DestroyWindow(window);
+  SDL_QuitSubSystem(SDL_INIT_VIDEO);
+}
+
 TEST_F(UIStateTest, FullscreenMenuActionTwiceRequestsTheOriginalState) {
   // Two clicks before the main loop gets a turn (menu spam) must leave a
   // request for the state the user ends up asking for, not a stale one; the

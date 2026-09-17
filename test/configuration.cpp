@@ -6,6 +6,9 @@
 #include "koncepcja.h"
 #include "silicon_disc.h"
 #include "slotshandler.h"
+#ifdef _WIN32
+#include <process.h>
+#endif
 #ifndef _MSC_VER
 #include <unistd.h>
 #endif
@@ -681,6 +684,128 @@ TEST_F(ConfigurationTest, aPersistedValueBecomesTheBaselineForTheNextSave) {
       << "a written value must become the next baseline";
   EXPECT_EQ("2", next.at("system").at("model"))
       << "a skipped key keeps its loaded baseline, not the file's hand edit";
+}
+
+// ─── Which file wins ─────────────────────────────────────────────────────
+// The user's profile config outranks a koncepcja.cfg in the working
+// directory: a debug-style build run from a source checkout used the
+// checkout's untracked file — stale for months, invisible from inside the
+// app — ahead of the config the user maintains (beads-825s).
+
+namespace {
+void set_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
+}
+void unset_env(const char* name) {
+#ifdef _WIN32
+  _putenv_s(name, "");
+#else
+  unsetenv(name);
+#endif
+}
+std::string env_or_empty(const char* name) {
+  const char* v = getenv(name);
+  return v ? v : "";
+}
+void write_file(const std::filesystem::path& p, const char* text) {
+  std::filesystem::create_directories(p.parent_path());
+  std::ofstream f(p);
+  f << text;
+}
+}  // namespace
+
+class ConfigLookupTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    // A per-test, per-process sandbox: two test binaries may run at once.
+#ifdef _WIN32
+    int const pid = _getpid();
+#else
+    int const pid = getpid();
+#endif
+    root_ = std::filesystem::temp_directory_path() /
+            ("koncepcja-cfg-lookup-" + std::to_string(pid) + "-" +
+             std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+    std::filesystem::create_directories(root_ / "cwd");
+    std::filesystem::create_directories(root_ / "home");
+    std::filesystem::create_directories(root_ / "xdg");
+    saved_home_ = env_or_empty("HOME");
+    saved_xdg_ = env_or_empty("XDG_CONFIG_HOME");
+    had_xdg_ = getenv("XDG_CONFIG_HOME") != nullptr;
+    snprintf(saved_app_path_, sizeof(saved_app_path_), "%s", chAppPath);
+    // Point every candidate at the sandbox so nothing on the machine leaks in.
+    set_env("HOME", (root_ / "home").string());
+    set_env("XDG_CONFIG_HOME", (root_ / "xdg").string());
+    snprintf(chAppPath, sizeof(chAppPath), "%s",
+             (root_ / "cwd").string().c_str());
+  }
+  void TearDown() override {
+    snprintf(chAppPath, sizeof(chAppPath), "%s", saved_app_path_);
+    set_env("HOME", saved_home_);
+    if (had_xdg_) {
+      set_env("XDG_CONFIG_HOME", saved_xdg_);
+    } else {
+      unset_env("XDG_CONFIG_HOME");
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(root_, ec);
+  }
+
+  std::filesystem::path root_;
+  std::string saved_home_;
+  std::string saved_xdg_;
+  bool had_xdg_ = false;
+  char saved_app_path_[_MAX_PATH + 1] = {};
+
+  // Compare as paths, element-wise: the lookup joins its candidates with
+  // '/' while path::string() yields the native separator ('\\' on Windows).
+  static void expect_found(const std::filesystem::path& expected) {
+    EXPECT_EQ(expected, std::filesystem::path(getConfigurationFilename()));
+  }
+};
+
+TEST_F(ConfigLookupTest, TheProfileConfigOutranksTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "xdg" / "koncepcja" / "koncepcja.cfg",
+             "[system]\nmodel=2\n");
+
+  expect_found(root_ / "xdg" / "koncepcja" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, TheHomeProfileConfigAlsoOutranksTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg",
+             "[system]\nmodel=2\n");
+
+  expect_found(root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, TheLegacyFlatPathsAlsoOutrankTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "home" / ".koncepcja.cfg", "[system]\nmodel=2\n");
+
+  expect_found(root_ / "home" / ".koncepcja.cfg");
+
+  // The flat XDG file outranks the home dotfile, as before.
+  write_file(root_ / "xdg" / "koncepcja.cfg", "[system]\nmodel=1\n");
+  expect_found(root_ / "xdg" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, TheWorkingDirectoryIsTheFallbackWithoutAProfile) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+
+  expect_found(root_ / "cwd" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, LoadRecordsTheFileForTheAppToShow) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  t_CPC CPC;
+  loadConfiguration(CPC, (root_ / "cwd" / "koncepcja.cfg").string());
+  EXPECT_EQ((root_ / "cwd" / "koncepcja.cfg").string(), koncpc_config_file());
 }
 
 // The baseline advances to what was actually persisted — only after a save

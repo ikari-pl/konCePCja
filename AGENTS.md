@@ -234,8 +234,9 @@ kill %1
 
 The harness provides two classes:
 
-- **`KoncepcjaIPC`** — thin client, one TCP connection per command (the server
-  closes after each response).  All methods return `(bool, str)` or `bool`.
+- **`KoncepcjaIPC`** — thin client, one TCP connection per command for
+  simplicity (the server itself keeps connections open; `disconnect` closes
+  one).  All methods return `(bool, str)` or `bool`.
 - **`EmulatorRunner`** — context manager that launches and tears down the
   emulator process, waits for the IPC port to come up.
 
@@ -510,12 +511,21 @@ When `ImGuiConfigFlags_ViewportsEnable` is active, ImGui creates separate OS win
 
 ## Configuration
 
-Config file locations (in order of precedence):
+Config file locations (in order of precedence — the first one found wins):
 1. `-c/--cfg_file=<path>` argument
-2. `$CWD/koncepcja.cfg`
-3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`)
-4. `~/.koncepcja.cfg`
+2. `$XDG_CONFIG_HOME/koncepcja/koncepcja.cfg` (or `~/.config/koncepcja/koncepcja.cfg`)
+3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`), `~/.koncepcja.cfg` — legacy flat paths
+4. `$CWD/koncepcja.cfg`, then `koncepcja.cfg` next to the binary
 5. `/etc/koncepcja.cfg`
+6. `koncepcja.cfg` in the macOS app bundle's `Resources/` (next to the binary's
+   parent)
+
+The profile config outranks a checkout-local file: running a debug-style
+build from the repo root no longer picks up the untracked `koncepcja.cfg`
+sitting there when `~/.config/koncepcja/koncepcja.cfg` exists. Settings ▸
+System shows the file in use, as does `config get file` over IPC. The
+sidecars — `imgui.ini` and the DevTools `layouts/` directory — live next to
+whichever config file wins, so they move with it.
 
 ### Key Config Options
 
@@ -535,6 +545,9 @@ run_tier=0        # Run-tier policy: 0=auto (Fast;
 [video]
 scr_scale=2       # Window scale factor
 scr_style=1       # Rendering style (0-11)
+scr_window=1      # 1 = start windowed, 0 = start fullscreen. NOTE the IPC key
+                  # `config get|set fullscreen` has the opposite polarity
+                  # (1 = fullscreen).
 vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
                   # window only (viewport/DevTools windows always stay VSYNC —
                   # IMMEDIATE breaks their swapchains). Escape hatch for the

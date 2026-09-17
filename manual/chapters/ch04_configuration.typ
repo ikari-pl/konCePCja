@@ -16,10 +16,20 @@
 in the following locations, in order of precedence (the first one found wins):
 
 + the path given with #cmd[--cfg_file] (`-c`) on the command line;
-+ #cfg-key[koncepcja.cfg] in the current working directory;
-+ #cfg-key[\$XDG_CONFIG_HOME/koncepcja.cfg] (or `~/.config/koncepcja.cfg`);
-+ #cfg-key[~/.koncepcja.cfg];
-+ #cfg-key[/etc/koncepcja.cfg].
++ #cfg-key[\$XDG_CONFIG_HOME/koncepcja/koncepcja.cfg] (or
+  `~/.config/koncepcja/koncepcja.cfg`) — your profile configuration;
++ the older flat paths #cfg-key[\$XDG_CONFIG_HOME/koncepcja.cfg]
+  (or `~/.config/koncepcja.cfg`) and #cfg-key[~/.koncepcja.cfg];
++ #cfg-key[koncepcja.cfg] in the current working directory, then next to the
+  binary;
++ #cfg-key[/etc/koncepcja.cfg];
++ on macOS, #cfg-key[koncepcja.cfg] in the app bundle's `Resources/` folder.
+
+Your profile configuration therefore wins over a #cfg-key[koncepcja.cfg]
+that happens to sit in the directory you launch from. The Settings ▸ System
+tab shows which file is in use; over IPC, `config get file` reports it. The
+window-layout file (`imgui.ini`) and the DevTools `layouts/` folder are kept
+next to whichever configuration file is in use.
 
 The file is divided into `[section]` headings, each containing
 #cfg-key[key=value] lines.
@@ -45,6 +55,7 @@ cartridges and ASIC features).
 [video]
 scr_scale=2       ; window scale factor
 scr_style=1       ; rendering style (0-11)
+scr_window=1      ; 1 = start windowed, 0 = start fullscreen
 vsync=1           ; 1=VSYNC on (default)
 ```
 

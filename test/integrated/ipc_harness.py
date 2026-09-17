@@ -47,8 +47,9 @@ class KoncepcjaIPC:
     def send_command(self, cmd: str) -> Tuple[bool, str]:
         """Send command and return (success, response).
 
-        Note: The server closes the connection after each command,
-        so we create a new connection for each request.
+        Note: one fresh connection per request, for simplicity. The server
+        itself keeps a connection open across commands ('disconnect' closes
+        it); nothing here depends on that.
         """
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -624,6 +625,70 @@ def test_engine1_bp_clear_resume():
             return False
         print("PASS: engine=1 resumed after bp clear (PC advances)")
         return True
+
+
+def test_inject_launches_like_run():
+    """-i/--inject must hand the program to the firmware the way RUN" does.
+
+    bin_load() used to poke PC at the entry point behind the firmware's back
+    (a faked BASIC return stack, no pack re-initialisation), which left a
+    program running with the interrupt-driven keyboard scan dead: a game that
+    reads keys through KM READ CHAR never saw a keypress (beads-scrl). The
+    firmware's own launcher, MC START PROGRAM (&BD16), resets the stack, the
+    packs and interrupts, then enters the program — so a 10-byte program that
+    loops on KM READ CHAR and stores the character must see a tapped key.
+
+        &6000  CALL &BB09      ; KM READ CHAR: carry set, A = char
+        &6003  JR NC,&6000
+        &6005  LD (&6100),A
+        &6008  JR &6000
+    """
+    print("Running inject → MC START PROGRAM → firmware keyboard test...")
+    program = bytes([0xCD, 0x09, 0xBB, 0x30, 0xFB, 0x32, 0x00, 0x61, 0x18, 0xF6])
+    with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+        f.write(program)
+        bin_path = f.name
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0  # the server-side waits below run up to 15s
+            # Injection happens once boot_time frames have elapsed; the program
+            # then spins in &6000-&6009. wait pc pauses on the hit.
+            ok, resp = ipc.send_command('wait pc 0x6000 15000')
+            if not ok:
+                _, regs = ipc.get_regs()
+                print(f"FAIL: injected program never reached &6000: {resp} "
+                      f"(PC={regs.get('PC', -1):04X})")
+                return False
+            ok, resp = ipc.read_mem(0x6100, 1)
+            if not ok or not resp.endswith('00'):
+                print(f"FAIL: &6100 must start clear, got {resp}")
+                return False
+            ipc.run()
+            # Hold the key across several frames rather than 'input key a':
+            # the default 2-frame tap releases from the IPC thread and races
+            # the once-per-frame publish of the matrix the firmware scans, so
+            # the firmware can miss it entirely under load (beads-cjej). This
+            # test is about the launch path, not the tap.
+            for cmd in ('input keydown a', 'wait vbl 5', 'input keyup a'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+            # Only the firmware's ISR (KM SCAN KEYS every frame flyback) can
+            # move that key into the buffer KM READ CHAR drains.
+            ok, resp = ipc.send_command('wait mem 0x6100 0x61 5000')
+            if not ok:
+                print(f"FAIL: the key never reached the program through the "
+                      f"firmware — interrupt/keyboard path dead after -i: {resp}")
+                return False
+            print("PASS: injected program received a key via KM READ CHAR")
+            return True
+    finally:
+        os.unlink(bin_path)
 
 
 def test_breakpoint_pause_step_resume():
@@ -2801,6 +2866,7 @@ def main():
     print("=" * 50)
 
     tests = [
+        test_inject_launches_like_run,
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,
         test_debugger_stop_contract,
