@@ -4,7 +4,7 @@
 #   docker run --rm --platform linux/riscv64 -v "$PWD:/src" koncepcja-rv64 tools/riscv64/build.sh
 set -eu
 JOBS="${JOBS:-$(nproc)}"
-SDL_INSTALL=/src/vendor/SDL/install
+SDL_INSTALL=/src/build-rv64/sdl-install
 
 echo "== arch: $(uname -m) =="
 

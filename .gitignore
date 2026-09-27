@@ -50,3 +50,6 @@ koncepcja.cfg
 
 # Python bytecode cache from the IPC harness
 __pycache__/
+
+# riscv64 cross/emulated build output
+build-rv64/
