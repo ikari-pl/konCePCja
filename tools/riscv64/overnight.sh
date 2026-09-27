@@ -48,6 +48,7 @@ if [ -n "$BIN" ]; then
   step "headless-smoke" sh -c "SDL_VIDEODRIVER=dummy timeout 60 '$BIN' --headless --help"
 fi
 
+step "test_runner-build" cmake --build /src/build-rv64/kon --target test_runner -j "$JOBS"
 step "ctest" sh -c "cd /src/build-rv64/kon && ctest --output-on-failure --no-tests=error -j $JOBS"
 
 say "=== STATUS ==="; /bin/cat /src/build-rv64/STATUS | tee -a "$LOG"
