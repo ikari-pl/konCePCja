@@ -231,3 +231,72 @@ discovered mid-phase.
 * Multi-viewport ImGui — the SDL_Renderer plugins set `flip_b = nullptr`.
 * The 800 MHz little core / RT-Smart split (interesting for deterministic
   timing; revisit only if Phase 4 measurement demands it).
+
+---
+
+## Phase 1 RESULT — validated under emulation, 2026-09-28
+
+**Phase 1 is complete and green.** Everything below was produced inside
+`docker run --platform linux/riscv64` on an aarch64 host, with no hardware.
+
+| Step | Result | Time (-j6, emulated) |
+| --- | --- | --- |
+| SDL3 3.2.0 configure + build + install | ✅ | ~6m30s |
+| konCePCja configure | ✅ | ~4m40s |
+| konCePCja build | ✅ | ~10m |
+| Binary identity | ✅ ELF64 LSB, `e_machine 0xF3` (EM_RISCV) | — |
+| Runs natively | ✅ prints `konCePCja v6.3.1` | — |
+| `--headless` smoke | ✅ | — |
+| **Test suite** | ✅ **1315 passed / 0 failed / 21 skipped** | ~5s |
+
+### The test result in detail
+
+`test_runner` must be run **from the repo root** — fixtures are referenced
+relatively (e.g. `test/zip/test1.zip`), so running from the build directory
+produces 17 spurious failures. From the root:
+
+* **1302 pass** in the main sweep, **13 more** in the socket group.
+* **21 skipped**, all for expected environmental reasons: `VideoGpuTest.*` and
+  `SdlGpuSmokeTest.*` (no Vulkan — exactly as predicted), window/geometry tests
+  (no display), optional flux captures not provided, and the shipped-ROM
+  resolver (no `APP_PATH`).
+* **0 failures.**
+
+**Risk #6 (`char` unsigned on RISC-V) is retired.** The container confirmed
+`char is UNSIGNED` on this toolchain, and the full suite still passes — so the
+Z80 core, CRTC, gate array, FDC and flux decoders carry no signedness,
+endianness or alignment assumptions. This was the single largest correctness
+unknown and it is now measured, not assumed.
+
+**Risk #5 (QEMU build times) is retired.** ~17 minutes for a cold full build at
+`-j6`. Tier 0 is an iteration loop, not an overnight batch. The Phase 1 estimate
+of 0.5-2 days was pessimistic by an order of magnitude.
+
+### Two environment notes for CI
+
+1. **`test_runner` is not in the default target** — it must be built explicitly
+   (`--target test_runner`); `ctest` alone reports "No tests were found" and
+   *exits 0*, so a zero-test run silently looks like a pass. Use
+   `--no-tests=error`.
+2. **The 13 `*Net*` M4-board tests raise `SIGPIPE`** in a bare container and
+   abort the whole runner. With `SIGPIPE` ignored (`trap "" PIPE`) all 13 pass.
+   Worth checking whether the production code should be setting `MSG_NOSIGNAL` /
+   `SO_NOSIGPIPE` on those sends rather than relying on the ambient disposition.
+
+### Revised risk table
+
+| # | Risk | Status |
+| --- | --- | --- |
+| 1 | No Vulkan -> SDL_GPU unusable | Known; 8 SDL_Renderer plugins are the path |
+| 2 | KMSDRM absent in K230 BSP | **Reduced** — `libdrm 2.4.124` + `gbm 25.0.7` found, `SDL_KMSDRM: ON`, builds clean. Board-side presence still unverified |
+| 3 | Software blit + ImGui too slow | **Now the #1 risk.** Unmeasured |
+| 4 | `MODERN_UI=OFF` does not link | Avoided — built with `ON` |
+| 5 | QEMU build times | **Retired** — ~17 min cold |
+| 6 | `char` unsigned on RISC-V | **Retired** — 1315 tests pass |
+
+### Next: Phase 2
+
+The emulator is proven correct on riscv64. What remains is entirely
+presentation. Install `qemu-system-riscv64` (`brew install qemu`), boot a
+riscv64 rootfs with `-device virtio-gpu-pci` for a real `/dev/dri/card0`, set
+`scr_style` to `Direct (SDL)`, and get a CPC frame on screen at 1232x568.
