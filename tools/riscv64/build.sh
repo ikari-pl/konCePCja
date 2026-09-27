@@ -14,7 +14,7 @@ if [ ! -f "$SDL_INSTALL/lib/pkgconfig/sdl3.pc" ]; then
     -DCMAKE_BUILD_TYPE=Release \
     -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF \
     -DSDL_KMSDRM=ON -DSDL_ALSA=ON \
-    -DSDL_VULKAN=OFF -DSDL_X11=OFF -DSDL_WAYLAND=OFF \
+    -DSDL_VULKAN=OFF -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_UNIX_CONSOLE_BUILD=ON \
     -DCMAKE_INSTALL_PREFIX="$SDL_INSTALL"
   cmake --build /tmp/sdl-build -j "$JOBS"
   cmake --install /tmp/sdl-build

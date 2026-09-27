@@ -23,7 +23,7 @@ say "arch=$(uname -m) jobs=$JOBS gcc=$(gcc -dumpversion)"
 step "sdl3-configure" cmake -S /src/vendor/SDL -B /src/build-rv64/sdl \
   -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF \
   -DSDL_KMSDRM=ON -DSDL_ALSA=ON \
-  -DSDL_VULKAN=OFF -DSDL_X11=OFF -DSDL_WAYLAND=OFF \
+  -DSDL_VULKAN=OFF -DSDL_X11=OFF -DSDL_WAYLAND=OFF -DSDL_UNIX_CONSOLE_BUILD=ON \
   -DCMAKE_INSTALL_PREFIX="$SDL_INSTALL"
 step "sdl3-build"   cmake --build /src/build-rv64/sdl -j "$JOBS"
 step "sdl3-install" cmake --install /src/build-rv64/sdl
@@ -46,7 +46,7 @@ if [ -n "$BIN" ]; then
   step "headless-smoke" sh -c "SDL_VIDEODRIVER=dummy timeout 60 '$BIN' --headless --help"
 fi
 
-step "ctest" sh -c "cd /src/build-rv64/kon && ctest --output-on-failure -j $JOBS"
+step "ctest" sh -c "cd /src/build-rv64/kon && ctest --output-on-failure --no-tests=error -j $JOBS"
 
 say "=== STATUS ==="; /bin/cat /src/build-rv64/STATUS | tee -a "$LOG"
 say "DONE"
