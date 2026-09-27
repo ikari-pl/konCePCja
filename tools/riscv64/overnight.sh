@@ -32,11 +32,13 @@ PKG_CONFIG_PATH="$SDL_INSTALL/lib/pkgconfig"; export PKG_CONFIG_PATH
 LD_LIBRARY_PATH="$SDL_INSTALL/lib"; export LD_LIBRARY_PATH
 say "sdl3 version: $(pkg-config --modversion sdl3 2>/dev/null || echo UNKNOWN)"
 say "sdl3 video drivers compiled in:"
-grep -hoE 'SDL_VIDEO_DRIVER_[A-Z0-9_]+ 1' "$SDL_INSTALL"/include/SDL3/SDL_revision.h 2>/dev/null >> "$LOG"
+grep -E "SDL_(KMSDRM|ALSA|VULKAN|X11|WAYLAND|OPENGL)  *\\(Wanted" "$LOG" | tail -20 >> "$LOG".drivers 2>/dev/null
 
 # MODERN_UI stays ON: CMakeLists says OFF fails to link until P1.5.2.
 step "koncepcja-configure" cmake -S /src -B /src/build-rv64/kon \
-  -DCMAKE_BUILD_TYPE=Release -DKONCPC_BUILD_MODERN_UI=ON
+  -DCMAKE_BUILD_TYPE=Release -DKONCPC_BUILD_MODERN_UI=ON \
+  -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_KMSDRM=ON -DSDL_ALSA=ON \
+  -DSDL_VULKAN=OFF -DSDL_X11=OFF -DSDL_WAYLAND=OFF
 step "koncepcja-build" cmake --build /src/build-rv64/kon -j "$JOBS"
 
 BIN=$(find /src/build-rv64/kon -maxdepth 2 -type f -name 'koncepcja*' -perm -u+x 2>/dev/null | head -1)
