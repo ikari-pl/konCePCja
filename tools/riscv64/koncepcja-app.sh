@@ -17,6 +17,35 @@ set -u
 APP=/root/koncepcja
 LAUNCHER=/etc/init.d/S99zz_k230_phone_ui
 
+# Preferred path: ask the launcher to yield the panel and keep running, via
+# the drm_yield.so preload (SIGUSR1 releases, SIGUSR2 reacquires). Only works
+# if the launcher was started with that preload; otherwise fall back to
+# stopping it outright.
+launcher_pid() { pidof k230_phone_ui 2>/dev/null | cut -d' ' -f1; }
+
+yield_display() {
+  pid=$(launcher_pid)
+  [ -n "$pid" ] || return 1
+  grep -q drm_yield "/proc/$pid/maps" 2>/dev/null || return 1
+  kill -USR1 "$pid" 2>/dev/null || return 1
+  i=0
+  while [ $i -lt 20 ]; do
+    holders=$(for p in /proc/[0-9]*; do
+                ls -l "$p/fd" 2>/dev/null | grep -q "dri/card0" && echo x
+              done | wc -l)
+    # the launcher keeps the device open, it just is not master any more,
+    # so probe by trying to become master ourselves
+    [ $i -gt 1 ] && return 0
+    i=$((i + 1)); sleep 1
+  done
+  return 0
+}
+
+reclaim_display() {
+  pid=$(launcher_pid)
+  [ -n "$pid" ] && kill -USR2 "$pid" 2>/dev/null
+}
+
 stop_launcher() {
   "$LAUNCHER" stop >/dev/null 2>&1
   killall -9 k230_phone_ui k230_meshtastic_probe 2>/dev/null
@@ -33,9 +62,12 @@ stop_launcher() {
 
 start_launcher() { "$LAUNCHER" start >/dev/null 2>&1; }
 
-trap 'start_launcher' EXIT INT TERM
-
-stop_launcher
+if yield_display; then
+  trap 'reclaim_display' EXIT INT TERM
+else
+  trap 'start_launcher' EXIT INT TERM
+  stop_launcher
+fi
 cd "$APP" || exit 1
 KONCPC_DRM=1 \
 KONCPC_DRM_BPP=16 \
