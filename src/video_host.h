@@ -110,6 +110,11 @@ bool video_is_sdl_renderer();
 // column so the CPC keeps full height. Width of that column, 0 when off.
 bool video_wide_layout();
 int video_side_panel_width();
+// UI scale for handheld panels; 0 means "use the window content scale".
+float video_ui_scale();
+int video_safe_inset();
+// Where the emulated screen landed, so the UI can lay out beside it.
+void video_cpc_rect(int& x, int& y, int& w, int& h);
 
 // Renders an ImDrawList into a cached off-screen texture via the OpenGL3
 // backend. Only re-renders when dirty_marker changes or canvas dimensions

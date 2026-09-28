@@ -8,6 +8,18 @@
 // Speed Test (Run Tier menu): OpenPopup must fire outside the menu's ID
 // scope, so the click only raises this and the modal renders post-menu.
 namespace {
+
+// Transport and arrow labels use box-drawing/geometric glyphs. Desktop font
+// atlases carry them; the handheld build's default atlas does not, and a
+// missing glyph renders as a hollow box. Ask the live font rather than gating
+// on platform, so desktop keeps the real symbols and anything with a reduced
+// atlas degrades to ASCII automatically.
+const char* ui_glyph(ImWchar cp, const char* utf8, const char* ascii) {
+  ImFont* f = ImGui::GetFont();
+  if (f && f->IsGlyphInFont(cp)) return utf8;
+  return ascii;
+}
+
 bool g_speedtest_open = false;
 }  // namespace
 
@@ -91,6 +103,7 @@ extern dword dwFrameCountOverall;
 // Forward declarations
 namespace {
 void imgui_render_menubar();
+void imgui_menu_contents();
 }  // namespace
 namespace {
 void imgui_render_topbar();
@@ -455,7 +468,6 @@ void imgui_init_ui() {
 #endif
   }
 #endif
-
   ImGuiStyle& style = ImGui::GetStyle();
   style.WindowRounding = 6.0f;
   style.FrameRounding = 4.0f;
@@ -600,6 +612,109 @@ void imgui_init_ui() {
 // Main dispatcher
 // ─────────────────────────────────────────────────
 
+// ── Handheld control panels ────────────────────────────────────────────────
+// A wide-and-short panel has no room for horizontal bars, so the chrome lives
+// in two vertical columns flanking the centred CPC screen. Everything here is
+// sized from the column width and the frame height, never from text extents,
+// so nothing overflows or clips the way repositioned desktop widgets did.
+void imgui_render_handheld_panels() {
+  // A software rasteriser pays for anti-aliasing and blending per pixel, and
+  // ScaleAllSizes() doubles the corner radii so every panel and button becomes
+  // a fan of anti-aliased triangles. Measured on the K230: leaving these on
+  // cost ~103 ms/frame for two small windows. Flat, opaque, unrounded chrome
+  // costs a fraction of that and suits a handheld anyway.
+  ImGuiStyle& st = ImGui::GetStyle();
+  bool const aa_lines = st.AntiAliasedLines;
+  bool const aa_fill = st.AntiAliasedFill;
+  float const wr = st.WindowRounding, fr = st.FrameRounding;
+  ImVec4 const wbg = st.Colors[ImGuiCol_WindowBg];
+  st.AntiAliasedLines = false;
+  st.AntiAliasedFill = false;
+  st.WindowRounding = 0.0f;
+  st.FrameRounding = 0.0f;
+  st.Colors[ImGuiCol_WindowBg] = ImVec4(wbg.x, wbg.y, wbg.z, 1.0f);
+  struct Restore {
+    ImGuiStyle& st; bool al, af; float wr, fr; ImVec4 wbg;
+    ~Restore() {
+      st.AntiAliasedLines = al; st.AntiAliasedFill = af;
+      st.WindowRounding = wr; st.FrameRounding = fr;
+      st.Colors[ImGuiCol_WindowBg] = wbg;
+    }
+  } restore{st, aa_lines, aa_fill, wr, fr, wbg};
+
+  ImGuiViewport* vp = ImGui::GetMainViewport();
+  int cx = 0, cy = 0, cw = 0, ch = 0;
+  video_cpc_rect(cx, cy, cw, ch);
+
+  float const left_w = static_cast<float>(cx) - vp->WorkPos.x;
+  float const right_x = static_cast<float>(cx + cw);
+  float const right_w = (vp->WorkPos.x + vp->WorkSize.x) - right_x;
+  if (left_w < 40.0f || right_w < 40.0f) return;  // not enough room to bother
+
+  ImGuiWindowFlags const flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNavFocus |
+      ImGuiWindowFlags_NoBringToFrontOnFocus;
+
+  float const row_h = ImGui::GetFrameHeight() * 1.5f;  // finger-sized
+
+  // ── left column: machine controls ──
+  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y));
+  ImGui::SetNextWindowSize(ImVec2(left_w, vp->WorkSize.y));
+  if (ImGui::Begin("##hh_left", nullptr, flags)) {
+    float const w = ImGui::GetContentRegionAvail().x;
+    if (ImGui::Button("MENU", ImVec2(w, row_h))) ImGui::OpenPopup("##hh_menu");
+    if (ImGui::BeginPopup("##hh_menu")) {
+      imgui_menu_contents();
+      ImGui::EndPopup();
+    }
+    bool const paused = g_emu_paused.load(std::memory_order_relaxed);
+    if (ImGui::Button(paused ? "RESUME" : "PAUSE", ImVec2(w, row_h))) {
+      if (paused) {
+        cpc_resume();
+        imgui_state.show_menu = false;
+      } else {
+        imgui_open_menu();
+      }
+    }
+    if (ImGui::Button("RESET", ImVec2(w, row_h))) {
+      imgui_state.confirm_reset = true;
+    }
+    ImGui::Dummy(ImVec2(0, row_h * 0.3f));
+    ImGui::Separator();
+    ImGui::TextUnformatted("DRIVES");
+    ImGui::Button(driveA.tracks ? "A: disk" : "A: empty", ImVec2(w, row_h));
+    ImGui::Button(driveB.tracks ? "B: disk" : "B: empty", ImVec2(w, row_h));
+  }
+  ImGui::End();
+
+  // ── right column: FPS at the top, tape transport below ──
+  ImGui::SetNextWindowPos(ImVec2(right_x, vp->WorkPos.y));
+  ImGui::SetNextWindowSize(ImVec2(right_w, vp->WorkSize.y));
+  if (ImGui::Begin("##hh_right", nullptr, flags)) {
+    float const w = ImGui::GetContentRegionAvail().x;
+    std::string const fps = imgui_state.topbar_fps;
+    if (!fps.empty()) {
+      float const tw = ImGui::CalcTextSize(fps.c_str()).x;
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (w - tw > 0 ? w - tw : 0));
+      ImGui::TextUnformatted(fps.c_str());
+    }
+    ImGui::Dummy(ImVec2(0, row_h * 0.3f));
+    ImGui::Separator();
+    ImGui::TextUnformatted("TAPE");
+    ImGui::TextUnformatted(pbTapeImage.empty() ? "(none)" : "loaded");
+    float const third = (w - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
+    ImGui::Button("<<", ImVec2(third, row_h));
+    ImGui::SameLine();
+    ImGui::Button(">", ImVec2(third, row_h));
+    ImGui::SameLine();
+    ImGui::Button("[]", ImVec2(third, row_h));
+  }
+  ImGui::End();
+}
+
+
 void imgui_render_ui() {
   // Reconcile ImGui mouse state with hardware — defense against stuck buttons.
   // Only poll hardware state when ImGui thinks a button is down, to avoid the
@@ -632,9 +747,24 @@ void imgui_render_ui() {
   // (workspace_layout.cpp), which is outside this file's edit scope — handle it
   // there.
   workspace_render_cpc_screen();
-  imgui_render_menubar();
-  imgui_render_topbar();
-  imgui_render_statusbar();
+  // Rounded-corner panels clip the extreme edges, so shrink the viewport's
+  // work area once here. Every ImGui window that honours WorkPos/WorkSize then
+  // lands inside the safe rectangle instead of each bar being hand-offset.
+  if (video_wide_layout()) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    float const inset = static_cast<float>(video_safe_inset());
+    vp->WorkPos = ImVec2(vp->Pos.x + inset, vp->Pos.y + inset);
+    vp->WorkSize = ImVec2(vp->Size.x - 2.0f * inset, vp->Size.y - 2.0f * inset);
+  }
+
+  // A horizontal menu bar is unusable on a handheld: at UI scale the eight top
+  // level items overflow the panel width and each is a few pixels tall. In
+  // wide mode the menu is reached from a button in the side column instead.
+  if (!video_wide_layout()) imgui_render_menubar();
+  if (video_wide_layout() && !SDL_getenv("KONCPC_NOPANELS"))
+    imgui_render_handheld_panels();
+  if (!video_wide_layout()) imgui_render_topbar();
+  if (!video_wide_layout()) imgui_render_statusbar();
   if (imgui_state.show_menu) imgui_render_menu();
   imgui_render_about();
   if (imgui_state.show_options) imgui_render_options();
@@ -1432,14 +1562,10 @@ extern "C" const char* koncpc_renderer_group(int i) {
 }
 
 namespace {
-void imgui_render_menubar() {
-  if (!ImGui::BeginMainMenuBar()) return;
-
-  float const h = ImGui::GetWindowSize().y;
-  if (h != s_menubar_h) {
-    s_menubar_h = h;
-    s_topbar_height_dirty = true;
-  }
+// The menu entries themselves, independent of the container. The desktop
+// draws them in a main menu bar; the handheld has no room for one and
+// draws the same entries inside a popup opened from the side column.
+void imgui_menu_contents() {
 
   // ── konCePCja ──
   if (ImGui::BeginMenu("konCePCja")) {
@@ -1859,6 +1985,17 @@ void imgui_render_menubar() {
     ImGui::EndMenu();
   }
 
+}
+
+void imgui_render_menubar() {
+  if (!ImGui::BeginMainMenuBar()) return;
+
+  float const h = ImGui::GetWindowSize().y;
+  if (h != s_menubar_h) {
+    s_menubar_h = h;
+    s_topbar_height_dirty = true;
+  }
+  imgui_menu_contents();
   ImGui::EndMainMenuBar();
 }
 }  // namespace
@@ -2071,8 +2208,8 @@ void imgui_render_topbar() {
   if (video_wide_layout() && video_side_panel_width() > 0) {
     float const col_w = static_cast<float>(video_side_panel_width());
     ImGui::SetNextWindowPos(
-        ImVec2(vp->Pos.x + vp->Size.x - col_w, vp->Pos.y + s_menubar_h));
-    ImGui::SetNextWindowSize(ImVec2(col_w, bar_height * 2.0f));
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x - col_w, vp->WorkPos.y));
+    ImGui::SetNextWindowSize(ImVec2(col_w, bar_height * 2.5f));
   } else {
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
@@ -2153,6 +2290,17 @@ void imgui_render_topbar() {
       }
     }
 
+    // ── Handheld: the menu bar is suppressed, so the menu is reached here ──
+    if (video_wide_layout()) {
+      float const w = ImGui::GetContentRegionAvail().x;
+      float const h = ImGui::GetFrameHeight() * 1.6f;
+      if (ImGui::Button("MENU", ImVec2(w, h))) ImGui::OpenPopup("##handheld_menu");
+      if (ImGui::BeginPopup("##handheld_menu")) {
+        imgui_menu_contents();
+        ImGui::EndPopup();
+      }
+    }
+
     // ── Right status cluster: Layout button + (PAUSED | FPS) ──
     // Uses a state-flag + standalone window instead of ImGui popup, because
     // popups from the fixed topbar close immediately in docked mode due to
@@ -2171,7 +2319,7 @@ void imgui_render_topbar() {
                           (ImGui::GetStyle().FramePadding.x * 2.0f);
       ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f);
 
-      if (ImGui::Button("Layout")) {
+      if (!video_wide_layout() && ImGui::Button("Layout")) {
         imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
       }
       // Remember button position for dropdown window placement
@@ -2302,10 +2450,10 @@ void imgui_render_statusbar() {
 
   if (video_wide_layout() && video_side_panel_width() > 0) {
     float const col_w = static_cast<float>(video_side_panel_width());
-    float const top = vp->Pos.y + s_menubar_h + (bar_height * 2.0f);
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - col_w, top));
+    float const top = vp->WorkPos.y + (bar_height * 2.5f);
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - col_w, top));
     ImGui::SetNextWindowSize(
-        ImVec2(col_w, vp->Pos.y + vp->Size.y - top));
+        ImVec2(col_w, vp->WorkPos.y + vp->WorkSize.y - top));
   } else {
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
     ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
@@ -2402,7 +2550,7 @@ void imgui_render_statusbar() {
 
         // |◀ Prev block
         ImGui::BeginDisabled(at_start);
-        if (ImGui::SmallButton("\xe2\x97\x80##sb_prev")) {  // ◀
+        if (ImGui::SmallButton((std::string(ui_glyph(9664, "\xe2\x97\x80", "|<")) + "##sb_prev").c_str())) {  // ◀
           int const prev = imgui_state.tape_current_block - 1;
           if (prev >= 0 &&
               prev < static_cast<int>(imgui_state.tape_block_offsets.size())) {
@@ -2439,7 +2587,7 @@ void imgui_render_statusbar() {
                                 ImVec4(0.0f, 0.25f, 0.12f, 1.0f));
         }
         ImGui::BeginDisabled(!tape_loaded || is_playing);
-        if (ImGui::SmallButton("\xe2\x96\xb6##sb_play")) {  // ▶
+        if (ImGui::SmallButton((std::string(ui_glyph(9654, "\xe2\x96\xb6", ">")) + "##sb_play").c_str())) {  // ▶
           CPC.tape_play_button = 0x10;
         }
         ImGui::EndDisabled();
@@ -2449,7 +2597,7 @@ void imgui_render_statusbar() {
 
         // ⏹ Stop
         ImGui::BeginDisabled(!is_playing);
-        if (ImGui::SmallButton("\xe2\x96\xa0##sb_stop")) {  // ■
+        if (ImGui::SmallButton((std::string(ui_glyph(9632, "\xe2\x96\xa0", "[]")) + "##sb_stop").c_str())) {  // ■
           CPC.tape_play_button = 0;
         }
         ImGui::EndDisabled();
@@ -2461,7 +2609,7 @@ void imgui_render_statusbar() {
             at_end ||
             imgui_state.tape_current_block >=
                 static_cast<int>(imgui_state.tape_block_offsets.size()) - 1);
-        if (ImGui::SmallButton("\xe2\x96\xb6##sb_next")) {  // ▶
+        if (ImGui::SmallButton((std::string(ui_glyph(9654, "\xe2\x96\xb6", ">|")) + "##sb_next").c_str())) {  // ▶
           int const next = imgui_state.tape_current_block + 1;
           if (next < static_cast<int>(imgui_state.tape_block_offsets.size())) {
             CPC.tape_play_button = 0;
@@ -2491,7 +2639,7 @@ void imgui_render_statusbar() {
 
         // ⏏ Eject
         ImGui::BeginDisabled(!tape_loaded);
-        if (ImGui::SmallButton("\xe2\x8f\x8f##sb_eject")) {  // ⏏
+        if (ImGui::SmallButton((std::string(ui_glyph(9167, "\xe2\x8f\x8f", "^")) + "##sb_eject").c_str())) {  // ⏏
           imgui_state.eject_confirm_tape = true;
         }
         ImGui::EndDisabled();
@@ -2766,7 +2914,8 @@ void imgui_render_statusbar() {
     // ── First-run empty-state hint ──
     // beads-mng: when no media is loaded anywhere, show an unobtrusive,
     // right-aligned dim hint so a fresh launch isn't a blank dead-end.
-    if (driveA.tracks == 0 && driveB.tracks == 0 && pbTapeImage.empty()) {
+    if (driveA.tracks == 0 && driveB.tracks == 0 && pbTapeImage.empty() &&
+        !video_wide_layout()) {  // nothing to drag from on a handheld
       const char* hint = "Drop a .dsk/.cdt or press F1 to load";
       float const hint_w = ImGui::CalcTextSize(hint).x;
       ImGui::SameLine(ImGui::GetWindowWidth() - hint_w - 10.0f);
@@ -3621,7 +3770,8 @@ void imgui_render_options() {
           ImGui::TableSetColumnIndex(0);
           ImVec4 const dot_color = loaded ? ImVec4(0.2f, 0.8f, 0.2f, 1.0f)
                                           : ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
-          ImGui::TextColored(dot_color, loaded ? "●" : "○");
+          ImGui::TextColored(dot_color, loaded ? ui_glyph(0x25CF, "\xe2\x97\x8f", "*")
+                                    : ui_glyph(0x25CB, "\xe2\x97\x8b", "o"));
 
           // Slot number
           ImGui::TableSetColumnIndex(1);
@@ -5479,7 +5629,7 @@ void imgui_render_vkeyboard() {
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + (ROW * 3)));
   vk_cpc("F0", K, CPC_F0);
-  vk("\xe2\x86\x91##up", K, cpc_emit(CPC_CUR_UP).c_str(), CPC_CUR_UP);
+  vk((std::string(ui_glyph(8593, "\xe2\x86\x91", "^")) + "##up").c_str(), K, cpc_emit(CPC_CUR_UP).c_str(), CPC_CUR_UP);
   vk_end(".##np", K, ".", CPC_FPERIOD);
 
   // ═══════════════════ ROW 4 ═══════════════════
@@ -5501,9 +5651,9 @@ void imgui_render_vkeyboard() {
   vk_end("ENTER", enter_w, "\n", CPC_ENTER);
   // Numpad
   ImGui::SetCursorPos(ImVec2(np_x, y0 + (ROW * 4)));
-  vk("\xe2\x86\x90##left", K, cpc_emit(CPC_CUR_LEFT).c_str(), CPC_CUR_LEFT);
-  vk("\xe2\x86\x93##down", K, cpc_emit(CPC_CUR_DOWN).c_str(), CPC_CUR_DOWN);
-  vk_end("\xe2\x86\x92##right", K, cpc_emit(CPC_CUR_RIGHT).c_str(),
+  vk((std::string(ui_glyph(8592, "\xe2\x86\x90", "<")) + "##left").c_str(), K, cpc_emit(CPC_CUR_LEFT).c_str(), CPC_CUR_LEFT);
+  vk((std::string(ui_glyph(8595, "\xe2\x86\x93", "v")) + "##down").c_str(), K, cpc_emit(CPC_CUR_DOWN).c_str(), CPC_CUR_DOWN);
+  vk_end((std::string(ui_glyph(8594, "\xe2\x86\x92", ">")) + "##right").c_str(), K, cpc_emit(CPC_CUR_RIGHT).c_str(),
          CPC_CUR_RIGHT);
 
   // Move cursor below keyboard for the rest

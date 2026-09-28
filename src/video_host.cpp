@@ -502,6 +502,17 @@ namespace {
 //
 // Enabled with KONCPC_WIDE=1. Geometry only: the ImGui bars still draw where
 // they always did until the vertical layout lands.
+// Pixels to keep clear at every edge on a rounded-corner panel.
+int wide_safe_inset() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char* v = SDL_getenv("KONCPC_SAFE_INSET");
+    cached = v ? SDL_atoi(v) : 16;
+    if (cached < 0) cached = 0;
+  }
+  return cached;
+}
+
 bool wide_layout_enabled() {
   static int cached = -1;
   if (cached < 0) {
@@ -514,6 +525,27 @@ bool wide_layout_enabled() {
 }  // namespace
 
 bool video_wide_layout() { return wide_layout_enabled(); }
+
+// Handheld panels are physically tiny but high-DPI (4.1" at 568x1232 is roughly
+// 336 dpi), so desktop-sized controls are unusably small and untappable.
+// KONCPC_UI_SCALE overrides; 3.0 is the default in wide mode.
+static int g_cpc_x = 0, g_cpc_y = 0, g_cpc_w = 0, g_cpc_h = 0;
+void video_cpc_rect(int& x, int& y, int& w, int& h) {
+  x = g_cpc_x; y = g_cpc_y; w = g_cpc_w; h = g_cpc_h;
+}
+
+int video_safe_inset() { return wide_layout_enabled() ? wide_safe_inset() : 0; }
+
+float video_ui_scale() {
+  if (!wide_layout_enabled()) return 0.0f;  // 0 = leave the host scale alone
+  static float cached = -1.0f;
+  if (cached < 0.0f) {
+    const char* v = SDL_getenv("KONCPC_UI_SCALE");
+    cached = v ? static_cast<float>(SDL_atof(v)) : 3.0f;
+    if (cached < 0.5f) cached = 0.5f;
+  }
+  return cached;
+}
 int video_side_panel_width() {
   return wide_layout_enabled() ? devtools_panel_width : 0;
 }
@@ -524,11 +556,17 @@ void compute_scale(video_plugin* t, int w, int h) {
   int win_width, win_height;
   SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
   if (wide_layout_enabled()) {
+    // Rounded corners clip the outermost pixels. Keep a safe inset so nothing
+    // meaningful lands in the curve.
+    int const inset = wide_safe_inset();
+    win_width = max(1, win_width - 2 * inset);
+    win_height = max(1, win_height - 2 * inset);
     // Reserve everything the CPC does not need as a side column, and drop the
     // horizontal bars. h is the source height (540 with doubled scanlines), so
     // asking for exactly that keeps the vertical scale at 1:1.
-    int const want_w = (h > 0) ? (w * min(win_height, h) / h) : w;
-    devtools_panel_width = max(0, win_width - want_w);
+    // The CPC is height-fitted and centred; the space left over at each side
+    // becomes a control column, so nothing is reserved asymmetrically here.
+    devtools_panel_width = 0;
     topbar_height = 0;
     bottombar_height = 0;
   }
@@ -576,10 +614,26 @@ void compute_scale(video_plugin* t, int w, int h) {
     // Center in available area — offset can be negative (cropping)
     float x_offset = 0.5f * (win_width - t->width);
     float y_offset = 0.5f * (win_height - t->height);
-    if (devtools_panel_width > 0) x_offset = 0;
+    // Flush-left is right for a DevTools dock on a desktop, but a handheld
+    // panel has rounded corners that eat the extreme edges, so centre the
+    // image in whatever the chrome left over.
+    if (devtools_panel_width > 0 && !wide_layout_enabled()) x_offset = 0;
     if (topbar_height > 0) y_offset += static_cast<float>(topbar_height);
+    if (wide_layout_enabled()) {
+      // The available area was reduced by the safe inset, so shift back inside
+      // it -- otherwise centring lands the image partly under the bezel.
+      float const inset = static_cast<float>(wide_safe_inset());
+      x_offset += inset;
+      y_offset += inset;
+      if (x_offset < inset) x_offset = inset;
+      if (y_offset < inset) y_offset = inset;
+    }
     t->x_offset = x_offset;
     t->y_offset = y_offset;
+    g_cpc_x = static_cast<int>(x_offset);
+    g_cpc_y = static_cast<int>(y_offset);
+    g_cpc_w = disp_w;
+    g_cpc_h = disp_h;
     t->x_scale = w / static_cast<float>(disp_w);
     t->y_scale = h / static_cast<float>(disp_h);
   } else {
@@ -710,7 +764,9 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   // CreateContext(); the host no-ops without a context.  Only the chrome:
   // the CPC image keeps the users chosen integer scr_scale so it stays
   // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
+  ui_host().set_display_scale(video_ui_scale() > 0.0f
+                                  ? video_ui_scale()
+                                  : koncpc_window_content_scale(mainSDLWindow));
   ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = g_gpu.device;
@@ -1797,7 +1853,9 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
   // CreateContext(); the host no-ops without a context.  Only the chrome:
   // the CPC image keeps the users chosen integer scr_scale so it stays
   // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
+  ui_host().set_display_scale(video_ui_scale() > 0.0f
+                                  ? video_ui_scale()
+                                  : koncpc_window_content_scale(mainSDLWindow));
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
@@ -1997,7 +2055,9 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs) {
   // CreateContext(); the host no-ops without a context.  Only the chrome:
   // the CPC image keeps the users chosen integer scr_scale so it stays
   // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
+  ui_host().set_display_scale(video_ui_scale() > 0.0f
+                                  ? video_ui_scale()
+                                  : koncpc_window_content_scale(mainSDLWindow));
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
@@ -2794,7 +2854,9 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   // CreateContext(); the host no-ops without a context.  Only the chrome:
   // the CPC image keeps the users chosen integer scr_scale so it stays
   // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
+  ui_host().set_display_scale(video_ui_scale() > 0.0f
+                                  ? video_ui_scale()
+                                  : koncpc_window_content_scale(mainSDLWindow));
   ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = g_gpu.device;
