@@ -300,3 +300,68 @@ The emulator is proven correct on riscv64. What remains is entirely
 presentation. Install `qemu-system-riscv64` (`brew install qemu`), boot a
 riscv64 rootfs with `-device virtio-gpu-pci` for a real `/dev/dri/card0`, set
 `scr_style` to `Direct (SDL)`, and get a CPC frame on screen at 1232x568.
+
+---
+
+## Phase 2 (partial) RESULT — the SDL_Renderer path runs, 2026-09-28
+
+The SDL3 build has **`KMSDRM`, `OFFSCREEN` and `DUMMY`** video drivers compiled
+in (confirmed in `SDL_build_config.h`). `OFFSCREEN` makes the whole render path
+testable **with no display and no VM** — so most of Phase 2's correctness
+question was answerable in the container.
+
+### SDL_GPU is confirmed unavailable — and the code already handles it
+
+Running plugin index 0 (`Direct`, a `gpu_*` plugin):
+
+```
+video_gpu.cpp:153  - SDL_CreateGPUDevice failed: No supported SDL_GPU backend found!
+kon_cpc_ja.cpp:1981 - Could not set requested video mode: ... — trying SDL_Renderer fallback
+```
+
+Index 11 (`Direct (SDL)`) produces **no GPU error at all**. This is direct
+confirmation of the plan's central thesis, from the target architecture.
+
+**New finding — Risk #1 is softer than assumed.** `kon_cpc_ja.cpp:1981` already
+implements an **automatic SDL_Renderer fallback** when GPU init fails. The
+emulator degrades gracefully on hardware without Vulkan rather than dying, so a
+wrong `scr_style` on the board is a performance/quality issue, not a brick.
+Setting `scr_style` correctly is still preferred (skip the failed GPU probe).
+
+### Measured: full-speed emulation, render cost ~zero
+
+`--exit-after=120f --fps`, `SDL_VIDEODRIVER=offscreen`, pin-level board
+(`run_tier: faithful`, model 2, 128 KB):
+
+| scr_style | Plugin | Result |
+| --- | --- | --- |
+| 0 | Direct (GPU, falls back) | 51 FPS, 102% speed, render-wait 0.0 ms/f (0%) |
+| **11** | **Direct (SDL)** | **50 FPS, 100% speed, render-wait 0.0 ms/f (0%)** |
+| 13 | Scale2x (SDL) | 50 FPS, 100% speed, render-wait 0.0 ms/f (0%) |
+| 21 | Dot matrix (SDL) | 51 FPS, 102% speed, render-wait 0.0 ms/f (0%) |
+
+**Machine time ~19.9-20.0 ms/frame against a 20 ms budget, and render-wait is
+0% on every SDL_Renderer plugin including the 2x scalers.**
+
+### Honest caveats on those numbers
+
+These are **not** a prediction for K230 silicon:
+
+1. **QEMU user-mode emulation** of riscv64 on an M2-class aarch64 host. The host
+   core is far stronger than a 1.6 GHz K230 core, while QEMU adds 5-15x
+   overhead. The two effects offset by an unknown ratio, so treat this as a
+   plausibility proxy, not a measurement.
+2. **`OFFSCREEN` never scans out.** Real presentation through KMSDRM costs more
+   than rendering to an offscreen surface, so per-frame render cost here is
+   understated.
+
+What the numbers *do* establish: the SDL_Renderer plugins **initialise and run
+correctly on riscv64 with no GPU and no display**, and the render path does not
+stall emulation even with a 2x software scaler. Risk #3 is materially reduced but
+not closed — it needs real silicon.
+
+### Phase 2 remaining
+
+`qemu-system-riscv64` is now installed. What is left is the genuine KMSDRM
+scanout test: boot a riscv64 rootfs with `-device virtio-gpu-pci` for a real
+`/dev/dri/card0`, present at 1232x568, and confirm a visible CPC frame.
