@@ -690,17 +690,20 @@ void imgui_render_handheld_panels() {
       bool const active =
           drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
       DriveMedium const medium = drive_medium(drv);
+      // A full-width bar directly above its button: the LED is what you watch
+      // while a game loads, so give it the whole column rather than a dot
+      // competing with the label for space.
+      float const led_h = row_h * 0.3f;
       ImVec2 const p = ImGui::GetCursorScreenPos();
+      ImGui::GetWindowDrawList()->AddRectFilled(
+          p, ImVec2(p.x + w, p.y + led_h),
+          active ? IM_COL32(0xFF, 0x30, 0x20, 0xFF)
+                 : IM_COL32(0x3A, 0x0E, 0x0E, 0xFF));
+      ImGui::Dummy(ImVec2(w, led_h));
       char label[32];
       snprintf(label, sizeof(label), "%s %s##hh_drv%d", drv == 0 ? "A:" : "B:",
                medium.present ? "disk" : "empty", drv);
       ImGui::Button(label, ImVec2(w, row_h));
-      float const led = row_h * 0.45f;
-      ImVec2 const l0(p.x + w - led - row_h * 0.25f, p.y + (row_h - led) * 0.5f);
-      ImGui::GetWindowDrawList()->AddRectFilled(
-          l0, ImVec2(l0.x + led, l0.y + led),
-          active ? IM_COL32(0xFF, 0x30, 0x20, 0xFF)
-                 : IM_COL32(0x40, 0x10, 0x10, 0xFF));
     }
   }
   ImGui::End();
