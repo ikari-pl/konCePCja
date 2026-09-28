@@ -1752,9 +1752,18 @@ void sdlr_swscale_close();
 
 namespace {
 SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
+  // Initial creation normally derives the size from the scale factor; only
+  // reinit honours CPC.win_w/win_h. On a fixed-size panel that is wrong -- the
+  // scale-derived window is larger than the display, so everything downstream
+  // renders extra pixels and the presenter then has to scale them back down.
+  int init_w = CPC_RENDER_WIDTH * scale;
+  int init_h = CPC_VISIBLE_SCR_HEIGHT * scale;
+  if (wide_layout_enabled() && CPC.win_w > 0 && CPC.win_h > 0) {
+    init_w = static_cast<int>(CPC.win_w);
+    init_h = static_cast<int>(CPC.win_h);
+  }
   mainSDLWindow =
-      SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
-                       CPC_VISIBLE_SCR_HEIGHT * scale,
+      SDL_CreateWindow("konCePCja " VERSION_STRING, init_w, init_h,
                        (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
@@ -1945,9 +1954,18 @@ void sdlr_close() {
  * -------------------------------------------------------- */
 namespace {
 SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs) {
+  // Initial creation normally derives the size from the scale factor; only
+  // reinit honours CPC.win_w/win_h. On a fixed-size panel that is wrong -- the
+  // scale-derived window is larger than the display, so everything downstream
+  // renders extra pixels and the presenter then has to scale them back down.
+  int init_w = CPC_RENDER_WIDTH * scale;
+  int init_h = CPC_VISIBLE_SCR_HEIGHT * scale;
+  if (wide_layout_enabled() && CPC.win_w > 0 && CPC.win_h > 0) {
+    init_w = static_cast<int>(CPC.win_w);
+    init_h = static_cast<int>(CPC.win_h);
+  }
   mainSDLWindow =
-      SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
-                       CPC_VISIBLE_SCR_HEIGHT * scale,
+      SDL_CreateWindow("konCePCja " VERSION_STRING, init_w, init_h,
                        (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
@@ -2295,6 +2313,10 @@ Uint64 s_fit_chrome_preserve_deadline = 0;
 // is honoured identically by topbar/bottombar set and clear.
 void resize_window_for_chrome() {
   if (!mainSDLWindow) return;
+  // On a fixed panel the window size is the display size; letting chrome
+  // changes resize it makes the render target mismatch the scanout and forces
+  // the presenter to resample every frame.
+  if (wide_layout_enabled()) return;
   if (SDL_GetTicks() < s_hold_window_size_until) return;
   int w = 0;
   int h = 0;
@@ -2699,9 +2721,18 @@ void dotmat_flip([[maybe_unused]] video_plugin* t) {
 
 namespace {
 SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
+  // Initial creation normally derives the size from the scale factor; only
+  // reinit honours CPC.win_w/win_h. On a fixed-size panel that is wrong -- the
+  // scale-derived window is larger than the display, so everything downstream
+  // renders extra pixels and the presenter then has to scale them back down.
+  int init_w = CPC_RENDER_WIDTH * scale;
+  int init_h = CPC_VISIBLE_SCR_HEIGHT * scale;
+  if (wide_layout_enabled() && CPC.win_w > 0 && CPC.win_h > 0) {
+    init_w = static_cast<int>(CPC.win_w);
+    init_h = static_cast<int>(CPC.win_h);
+  }
   mainSDLWindow =
-      SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
-                       CPC_VISIBLE_SCR_HEIGHT * scale,
+      SDL_CreateWindow("konCePCja " VERSION_STRING, init_w, init_h,
                        (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
 
