@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -32,6 +33,11 @@
 #include "log.h"
 
 namespace {
+
+inline uint16_t to565(uint32_t x) {
+  return static_cast<uint16_t>(((x >> 8) & 0xf800) | ((x >> 5) & 0x07e0) |
+                               ((x >> 3) & 0x001f));
+}
 
 struct DumbFb {
   uint32_t handle = 0, pitch = 0, fb_id = 0;
@@ -67,12 +73,34 @@ struct DrmState {
 
 DrmState g;
 
+// Scanout bandwidth matters here: 1232x568 at 32 bpp and 52 Hz is ~145 MB/s of
+// sustained DMA read, and this SoC's measured CPU memcpy is only ~276 MB/s. The
+// primary plane advertises RG16 (RGB565), which halves that to ~73 MB/s -- and
+// RGB565 is what LVGL-based vendor UIs typically use on panels like this.
+int fb_bpp() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char* v = std::getenv("KONCPC_DRM_BPP");
+    cached = (v && std::atoi(v) == 16) ? 16 : 32;
+  }
+  return cached;
+}
+
 bool make_fb(int fd, uint32_t w, uint32_t h, DumbFb& f) {
+  int const bpp = fb_bpp();
   drm_mode_create_dumb creq{};
-  creq.width = w; creq.height = h; creq.bpp = 32;
+  creq.width = w; creq.height = h; creq.bpp = static_cast<uint32_t>(bpp);
   if (drmIoctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &creq)) return false;
   f.handle = creq.handle; f.pitch = creq.pitch; f.size = creq.size;
-  if (drmModeAddFB(fd, w, h, 24, 32, f.pitch, f.handle, &f.fb_id)) return false;
+  if (bpp == 16) {
+    uint32_t handles[4] = {f.handle, 0, 0, 0};
+    uint32_t pitches[4] = {f.pitch, 0, 0, 0};
+    uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(fd, w, h, DRM_FORMAT_RGB565, handles, pitches, offsets,
+                      &f.fb_id, 0)) return false;
+  } else if (drmModeAddFB(fd, w, h, 24, 32, f.pitch, f.handle, &f.fb_id)) {
+    return false;
+  }
   drm_mode_map_dumb mreq{};
   mreq.handle = f.handle;
   if (drmIoctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mreq)) return false;
@@ -208,6 +236,44 @@ void drm_present_frame(SDL_Renderer* renderer) {
     g.ready = true;
   }
 
+  // Diagnostic: KONCPC_DRM_STATIC=1 paints one fixed pattern into every buffer
+  // once, then keeps flipping without ever writing again. If the panel is rock
+  // steady the pipeline is fine and the fault is in our per-frame CPU writes
+  // reaching scanout (cache coherency). If it still jitters, the fault is in
+  // the display path itself.
+  {
+    static int static_mode = -1;
+    if (static_mode < 0) {
+      const char* v = std::getenv("KONCPC_DRM_STATIC");
+      static_mode = (v && v[0] == '1') ? 1 : 0;
+      if (static_mode) {
+        for (int b = 0; b < 3; b++) {
+          for (int y = 0; y < g.fb_h; y++) {
+            auto* row = reinterpret_cast<uint32_t*>(g.fb[b].map + (size_t)y * g.fb[b].pitch);
+            for (int x = 0; x < g.fb_w; x++) {
+              // static colour bars + a 64px grid, identical in all buffers
+              uint32_t c = ((x / 154) % 2) ? 0x00203080u : 0x00902020u;
+              if ((x % 64) == 0 || (y % 64) == 0) c = 0x00ffffffu;
+              if (fb_bpp() == 16) {
+                reinterpret_cast<uint16_t*>(row)[x] = to565(c);
+              } else {
+                row[x] = c;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (static_mode) {
+      if (page_flip(g.fb[g.next].fb_id)) {
+        g.pending = g.next; g.front = g.next; g.next = (g.next + 1) % 3;
+      }
+      g.n_frames++;
+      return;
+    }
+  }
+
+
   double const t_read0 = now_ms();
   SDL_Surface* src = SDL_RenderReadPixels(renderer, nullptr);
   if (!src) return;
@@ -256,15 +322,44 @@ void drm_present_frame(SDL_Renderer* renderer) {
     auto const* srow = reinterpret_cast<uint32_t const*>(
         static_cast<uint8_t const*>(rgb->pixels) +
         static_cast<size_t>(dy * sh / (dh ? dh : 1)) * rgb->pitch);
-    auto* drow = reinterpret_cast<uint32_t*>(
-        back.map + static_cast<size_t>(dy + y_off) * back.pitch) + x_off;
-    for (int dx = 0; dx < dw; dx++) drow[dx] = srow[g.xmap[dx]];
+    uint8_t* const dbase = back.map + static_cast<size_t>(dy + y_off) * back.pitch;
+    if (fb_bpp() == 16) {
+      auto* d16 = reinterpret_cast<uint16_t*>(dbase) + x_off;
+      for (int dx = 0; dx < dw; dx++) d16[dx] = to565(srow[g.xmap[dx]]);
+    } else {
+      auto* d32 = reinterpret_cast<uint32_t*>(dbase) + x_off;
+      for (int dx = 0; dx < dw; dx++) d32[dx] = srow[g.xmap[dx]];
+    }
   }
 
   if (rgb != src) SDL_DestroySurface(rgb);
   SDL_DestroySurface(src);
 
   g.blit_ms += now_ms() - t_blit0;
+  // Diagnostic: dump the first N composed frames exactly as handed to the
+  // panel, as raw BGRA. Separates "what we submit" from "what the display
+  // does with it" -- if these are stable and correct, the fault is downstream.
+  {
+    static int dump_left = -1;
+    static int dump_idx = 0;
+    if (dump_left < 0) {
+      const char* v = std::getenv("KONCPC_DRM_DUMP");
+      dump_left = v ? std::atoi(v) : 0;
+    }
+    if (dump_left > 0) {
+      char path[128];
+      snprintf(path, sizeof(path), "/tmp/drmdump_%03d.bgra", dump_idx++);
+      FILE* f = fopen(path, "wb");
+      if (f) {
+        for (int y = 0; y < g.fb_h; y++) {
+          fwrite(back.map + (size_t)y * back.pitch, 4, (size_t)g.fb_w, f);
+        }
+        fclose(f);
+      }
+      dump_left--;
+    }
+  }
+
   // Pace BEFORE submitting, not after. Waiting after the flip serialises the
   // flip-wait with the next render and costs a whole extra refresh; holding
   // here only burns the remainder of the slot the render did not use.

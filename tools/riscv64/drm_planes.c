@@ -18,6 +18,12 @@ int main(void) {
     if (!p) continue;
     printf("\nplane %u: crtc=%u fb=%u possible_crtcs=0x%x formats=%u\n",
            p->plane_id, p->crtc_id, p->fb_id, p->possible_crtcs, p->count_formats);
+    printf("   formats:");
+    for (uint32_t k = 0; k < p->count_formats; k++) {
+      uint32_t f = p->formats[k];
+      printf(" %c%c%c%c", f & 0xff, (f >> 8) & 0xff, (f >> 16) & 0xff, (f >> 24) & 0xff);
+    }
+    printf("\n");
     drmModeObjectProperties *props =
         drmModeObjectGetProperties(fd, p->plane_id, DRM_MODE_OBJECT_PLANE);
     if (props) {
