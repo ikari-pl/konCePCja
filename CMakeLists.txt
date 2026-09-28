@@ -167,7 +167,7 @@ target_link_libraries(koncepcja_lib PUBLIC
 # presenter compiles to no-ops and nothing else changes.
 if(UNIX AND NOT APPLE)
     find_package(PkgConfig QUIET)
-    if(PkgConfig_FOUND)
+    if(PKG_CONFIG_FOUND)
         pkg_check_modules(LIBDRM QUIET libdrm)
         if(LIBDRM_FOUND)
             target_include_directories(koncepcja_lib PUBLIC ${LIBDRM_INCLUDE_DIRS})

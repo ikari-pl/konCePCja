@@ -12,10 +12,13 @@
 // Opt-in: set KONCPC_DRM=1. Absent (or on any non-Linux host) every entry
 // point is a no-op, so desktop builds are unaffected.
 
+struct SDL_Renderer;
+
 bool drm_present_enabled();
 
-// Read the current frame back from the SDL renderer and scan it out.
-// Safe to call every frame; initialises lazily on first use.
-void drm_present_frame();
+// Read the current frame back from `r` and scan it out. Safe to call every
+// frame; initialises lazily on first use. The renderer is passed in because
+// video_host.cpp keeps it in an anonymous namespace (internal linkage).
+void drm_present_frame(SDL_Renderer* r);
 
 void drm_present_shutdown();

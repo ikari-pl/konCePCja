@@ -29,9 +29,6 @@
 
 #include "log.h"
 
-// Provided by video_host.cpp — the renderer ImGui and the CPC both draw into.
-extern SDL_Renderer* renderer;
-
 namespace {
 
 struct DumbFb {
@@ -136,7 +133,7 @@ bool drm_present_enabled() {
   return v && v[0] == '1';
 }
 
-void drm_present_frame() {
+void drm_present_frame(SDL_Renderer* renderer) {
   if (!drm_present_enabled() || g.failed || !renderer) return;
   if (!g.ready) {
     if (!init()) { g.failed = true; return; }
@@ -199,7 +196,7 @@ void drm_present_shutdown() {
 #else  // !__linux__
 
 bool drm_present_enabled() { return false; }
-void drm_present_frame() {}
+void drm_present_frame(SDL_Renderer*) {}
 void drm_present_shutdown() {}
 
 #endif

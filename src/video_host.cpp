@@ -1837,7 +1837,7 @@ void sdlr_flip(video_plugin* t) {
   video_capture_if_pending();
 
   SDL_RenderPresent(renderer);
-  drm_present_frame();  // scan out to /dev/dri/card0 when KONCPC_DRM=1
+  drm_present_frame(renderer);  // scan out to /dev/dri/card0 when KONCPC_DRM=1
 }
 }  // namespace
 
