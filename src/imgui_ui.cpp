@@ -2161,10 +2161,20 @@ void imgui_render_topbar() {
       } else if (!fps_display.empty()) {
         right_w = ImGui::CalcTextSize(fps_display.c_str()).x + 16.0f;
       }
-      float const btn_w = ImGui::CalcTextSize("Layout").x +
-                          (ImGui::GetStyle().FramePadding.x * 2.0f);
-      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f);
+      float const pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+      float const gap = ImGui::GetStyle().ItemSpacing.x;
+      float const layout_w = ImGui::CalcTextSize("Layout").x + pad;
+      float const shot_w = ImGui::CalcTextSize("Screenshot").x + pad;
+      float const full_w = ImGui::CalcTextSize("Fullscreen").x + pad;
+      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - layout_w - gap -
+                      shot_w - gap - full_w - 12.0f);
 
+      // Two frequent one-click actions with no fast path before (beads-flt):
+      // the same deferred toggle the View menu posts, and the same screenshot.
+      if (ImGui::Button("Fullscreen")) koncpc_menu_action(KONCPC_FULLSCRN);
+      ImGui::SameLine();
+      if (ImGui::Button("Screenshot")) koncpc_menu_action(KONCPC_SCRNSHOT);
+      ImGui::SameLine();
       if (ImGui::Button("Layout")) {
         imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
       }
