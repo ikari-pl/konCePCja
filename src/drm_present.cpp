@@ -15,7 +15,9 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #if defined(__linux__) && defined(KONCPC_HAVE_LIBDRM)
 
@@ -49,6 +51,11 @@ struct DrmState {
   std::vector<int> xmap;    // destination column -> source column
   int xmap_src_w = -1, xmap_dst_w = -1;
   int cleared_w = -1, cleared_h = -1;
+  int last_flip_errno = 0;
+  // instrumentation
+  unsigned long n_frames = 0, n_flip_ok = 0, n_flip_fail = 0, n_drain_hits = 0;
+  double drain_ms = 0, blit_ms = 0, read_ms = 0, conv_ms = 0, last_report = 0;
+  int src_fmt = 0, src_w = 0, src_h = 0;
 };
 
 DrmState g;
@@ -121,6 +128,7 @@ void on_flip(int, unsigned, unsigned, unsigned, void*) { flip_pending = 0; }
 // writing it produces tearing.
 void drain_flip() {
   if (!flip_pending) return;
+  g.n_drain_hits++;
   drmEventContext ev{};
   ev.version = 2;
   ev.page_flip_handler = on_flip;
@@ -133,9 +141,17 @@ void drain_flip() {
 // success. An unchecked failure here was the other half of the tearing: the
 // front index advanced anyway and the next frame drew into the live buffer.
 bool page_flip(uint32_t fb_id) {
-  if (drmModePageFlip(g.fd, g.crtc_id, fb_id, DRM_MODE_PAGE_FLIP_EVENT, nullptr)) return false;
+  int rc = drmModePageFlip(g.fd, g.crtc_id, fb_id, DRM_MODE_PAGE_FLIP_EVENT, nullptr);
+  if (rc) { g.n_flip_fail++; g.last_flip_errno = -rc; return false; }
   flip_pending = 1;
+  g.n_flip_ok++;
   return true;
+}
+
+double now_ms() {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec * 1000.0 + t.tv_nsec / 1e6;
 }
 
 }  // namespace
@@ -152,15 +168,21 @@ void drm_present_frame(SDL_Renderer* renderer) {
     g.ready = true;
   }
 
+  double const t_read0 = now_ms();
   SDL_Surface* src = SDL_RenderReadPixels(renderer, nullptr);
   if (!src) return;
+  double const t_conv0 = now_ms();
+  g.read_ms += t_conv0 - t_read0;
   SDL_Surface* rgb = (src->format == SDL_PIXELFORMAT_XRGB8888)
                          ? src
                          : SDL_ConvertSurface(src, SDL_PIXELFORMAT_XRGB8888);
+  g.conv_ms += now_ms() - t_conv0;
+  if (g.n_frames == 0) g.src_fmt = (int)src->format;
   if (!rgb) { SDL_DestroySurface(src); return; }
 
   // Fit the rendered frame into the landscape framebuffer, preserving aspect.
   int const sw = rgb->w, sh = rgb->h;
+  g.src_w = sw; g.src_h = sh;
   int dw = g.fb_w, dh = sh * g.fb_w / (sw ? sw : 1);
   if (dh > g.fb_h) { dh = g.fb_h; dw = sw * g.fb_h / (sh ? sh : 1); }
   int const x_off = (g.fb_w - dw) / 2, y_off = (g.fb_h - dh) / 2;
@@ -172,7 +194,10 @@ void drm_present_frame(SDL_Renderer* renderer) {
   }
 
   // The previous flip must have retired before this buffer is safe to write.
+  double const t_drain0 = now_ms();
   drain_flip();
+  double const t_blit0 = now_ms();
+  g.drain_ms += t_blit0 - t_drain0;
 
   DumbFb& back = g.fb[g.front ^ 1];
   // Clear only when the letterbox geometry changes; a full 2.7 MB memset every
@@ -194,7 +219,26 @@ void drm_present_frame(SDL_Renderer* renderer) {
   if (rgb != src) SDL_DestroySurface(rgb);
   SDL_DestroySurface(src);
 
+  g.blit_ms += now_ms() - t_blit0;
   if (page_flip(back.fb_id)) g.front ^= 1;
+
+  g.n_frames++;
+  double const t_now = now_ms();
+  if (g.last_report == 0) g.last_report = t_now;
+  if (t_now - g.last_report >= 1000.0) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "drm_present: %lu fps  flips ok=%lu fail=%lu (errno %d)  "
+             "readback %.1f  convert %.1f  drain %.2f  blit %.2f ms/f  src %dx%d fmt 0x%x",
+             g.n_frames, g.n_flip_ok, g.n_flip_fail, g.last_flip_errno,
+             g.read_ms / g.n_frames, g.conv_ms / g.n_frames,
+             g.drain_ms / g.n_frames, g.blit_ms / g.n_frames,
+             g.src_w, g.src_h, g.src_fmt);
+    LOG_INFO(std::string(buf));
+    g.n_frames = g.n_flip_ok = g.n_flip_fail = g.n_drain_hits = 0;
+    g.drain_ms = g.blit_ms = g.read_ms = g.conv_ms = 0;
+    g.last_report = t_now;
+  }
 }
 
 void drm_present_shutdown() {
