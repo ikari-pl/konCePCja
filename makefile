@@ -501,7 +501,7 @@ distrib: $(TARGET)
 	cp $(TARGET) $(ARCHIVE_DIR)/
 	$(foreach DLL,$(DLLS),[ -f $(MINGW_PATH)/bin/$(DLL) ] && cp $(MINGW_PATH)/bin/$(DLL) $(ARCHIVE_DIR)/ || (echo "$(MINGW_PATH)/bin/$(DLL) doesn't exist" && false);)
 	cp $(MINGW_PATH)/bin/libgcc_s_*-1.dll $(ARCHIVE_DIR)/
-	cp koncepcja.cfg.tmpl koncepcja.cfg COPYING.txt README.md $(ARCHIVE_DIR)/
+	cp koncepcja.cfg.tmpl koncepcja.cfg LICENSE.md NOTICE.md README.md $(ARCHIVE_DIR)/
 	cp -r resources/ rom/ licenses/ $(ARCHIVE_DIR)/
 	cd $(RELEASE_DIR) && zip -r $(ARCHIVE).zip $(ARCHIVE)
 
@@ -517,7 +517,7 @@ distrib: $(TARGET)
 	rm -f $(RELEASE_DIR)/$(ARCHIVE).zip
 	cp $(TARGET) $(ARCHIVE_DIR)/
 	cp -r rom resources doc licenses $(ARCHIVE_DIR)
-	cp koncepcja.cfg README.md COPYING.txt $(ARCHIVE_DIR)
+	cp koncepcja.cfg README.md LICENSE.md NOTICE.md $(ARCHIVE_DIR)
 	cd $(RELEASE_DIR) && zip -r $(ARCHIVE).zip $(ARCHIVE)
 
 else
@@ -529,7 +529,7 @@ distrib: $(TARGET)
 	mkdir -p $(SRC_PACKAGE_DIR)
 	rm -fr $(SRC_PACKAGE_DIR)/*
 	cp -r src rom resources doc licenses debian $(SRC_PACKAGE_DIR)
-	cp main.cpp koncepcja.cfg.tmpl koncepcja.cfg makefile README.md INSTALL.md COPYING.txt $(SRC_PACKAGE_DIR)
+	cp main.cpp koncepcja.cfg.tmpl koncepcja.cfg makefile README.md INSTALL.md LICENSE.md NOTICE.md $(SRC_PACKAGE_DIR)
 	tar jcf $(SRC_PACKAGE_DIR).tar.bz2 -C $(ARCHIVE_DIR) koncepcja-$(VERSION)
 	ln -s koncepcja-$(VERSION).tar.bz2 $(ARCHIVE_DIR)/koncepcja_$(VERSION).orig.tar.bz2 || true
 
