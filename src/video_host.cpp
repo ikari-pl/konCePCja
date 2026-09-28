@@ -511,6 +511,15 @@ bool wide_layout_enabled() {
   return cached == 1;
 }
 
+}  // namespace
+
+bool video_wide_layout() { return wide_layout_enabled(); }
+int video_side_panel_width() {
+  return wide_layout_enabled() ? devtools_panel_width : 0;
+}
+
+namespace {
+
 void compute_scale(video_plugin* t, int w, int h) {
   int win_width, win_height;
   SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
@@ -2487,6 +2496,11 @@ void video_fit_window_to_screen() {
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void video_set_topbar(SDL_Surface* surface, int height) {
+  // Wide mode keeps the chrome in a side column, so the horizontal bars must
+  // stay at zero height. ImGui writes these every frame from its measured bar
+  // sizes; letting that through fought compute_scale's zeroing and made the
+  // CPC y-offset alternate between frames -- a visible vertical jump.
+  if (wide_layout_enabled()) return;
   if (!mainSDLWindow) return;
   topbar_surface = surface;
   topbar_height = height;
@@ -2495,6 +2509,11 @@ void video_set_topbar(SDL_Surface* surface, int height) {
 }
 
 void video_clear_topbar() {
+  // Wide mode keeps the chrome in a side column, so the horizontal bars must
+  // stay at zero height. ImGui writes these every frame from its measured bar
+  // sizes; letting that through fought compute_scale's zeroing and made the
+  // CPC y-offset alternate between frames -- a visible vertical jump.
+  if (wide_layout_enabled()) return;
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
@@ -2506,6 +2525,11 @@ void video_clear_topbar() {
 int video_get_topbar_height() { return topbar_height; }
 
 void video_set_bottombar(int height) {
+  // Wide mode keeps the chrome in a side column, so the horizontal bars must
+  // stay at zero height. ImGui writes these every frame from its measured bar
+  // sizes; letting that through fought compute_scale's zeroing and made the
+  // CPC y-offset alternate between frames -- a visible vertical jump.
+  if (wide_layout_enabled()) return;
   if (!mainSDLWindow) return;
   bottombar_height = height;
   resize_window_for_chrome();

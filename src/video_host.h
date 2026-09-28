@@ -106,6 +106,11 @@ void video_get_cpc_size(int& w, int& h);
 // Returns true if the SDL_Renderer backend is active (no GL FBO support).
 bool video_is_sdl_renderer();
 
+// Wide-and-short panel mode (KONCPC_WIDE=1): the chrome moves to a right-hand
+// column so the CPC keeps full height. Width of that column, 0 when off.
+bool video_wide_layout();
+int video_side_panel_width();
+
 // Renders an ImDrawList into a cached off-screen texture via the OpenGL3
 // backend. Only re-renders when dirty_marker changes or canvas dimensions
 // change. draw_fn receives a ready-to-use ImDrawList plus the FBO canvas

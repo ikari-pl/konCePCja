@@ -2066,8 +2066,17 @@ void imgui_render_topbar() {
       ui_dpi_px(25.0f);  // topbar window only (not including menu bar)
 
   ImGuiViewport const* vp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
-  ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  // Wide panels: the chrome lives in a right-hand column beside the CPC
+  // instead of as full-width bars above and below it.
+  if (video_wide_layout() && video_side_panel_width() > 0) {
+    float const col_w = static_cast<float>(video_side_panel_width());
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->Pos.x + vp->Size.x - col_w, vp->Pos.y + s_menubar_h));
+    ImGui::SetNextWindowSize(ImVec2(col_w, bar_height * 2.0f));
+  } else {
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, vp->Pos.y + s_menubar_h));
+    ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  }
   ImGui::SetNextWindowViewport(vp->ID);  // keep on main viewport
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_dpi_px(4), pad_y));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
@@ -2291,8 +2300,16 @@ void imgui_render_statusbar() {
   ImGuiViewport const* vp = ImGui::GetMainViewport();
   float const bar_y = vp->Pos.y + vp->Size.y - bar_height;
 
-  ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
-  ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  if (video_wide_layout() && video_side_panel_width() > 0) {
+    float const col_w = static_cast<float>(video_side_panel_width());
+    float const top = vp->Pos.y + s_menubar_h + (bar_height * 2.0f);
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - col_w, top));
+    ImGui::SetNextWindowSize(
+        ImVec2(col_w, vp->Pos.y + vp->Size.y - top));
+  } else {
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x, bar_y));
+    ImGui::SetNextWindowSize(ImVec2(vp->Size.x, bar_height));
+  }
   ImGui::SetNextWindowViewport(
       vp->ID);  // keep on main viewport, don't spawn platform window
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
