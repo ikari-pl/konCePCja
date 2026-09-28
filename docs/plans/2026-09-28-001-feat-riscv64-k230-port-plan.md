@@ -467,3 +467,107 @@ Dear ImGui UI has no presentation path without SDL video. Options, in order of
 increasing effort: ship emulator-only output first (no UI chrome), finish the
 P1.5.2 headless/ImGui-free split, or write a minimal ImGui renderer targeting
 the dumb buffer.
+
+---
+
+## Hardware facts from the board itself, 2026-09-28
+
+`tools/riscv64/k230.sh` gives a root shell. **No setup was needed:** the stock
+image ships OpenSSH with `PermitRootLogin yes`, `PasswordAuthentication yes`,
+`PermitEmptyPasswords yes`, root has an empty password, and
+`/etc/init.d/S50sshd` starts it at boot. Only the IP was missing
+(`192.168.1.182` over Wi-Fi). `telnetd` (`S50telnet`) and a configfs
+ADB/MTP USB gadget (`S41adb_mtp`, `usb/bin/adbd`, VID:PID `0x29F1:0x0105`,
+manual start) are also available if the network is not.
+
+`Linux canaan 6.6.36 #2 SMP riscv64`, Buildroot 2025.02.1.
+
+### Display — every earlier inference confirmed
+
+```
+/dev/dri/card0          (226,0) — and NOTHING else; no renderD128
+/sys/class/drm/card0-DSI-1/status = connected
+/sys/class/drm/card0-DSI-1/modes  = 568x1232      (the only mode)
+driver -> bus/platform/drivers/canaan-drm
+```
+
+A display-only KMS driver: it can set a mode and scan out, it cannot render.
+`drm_direct` with dumb buffers is therefore the correct and only design, and
+**rotation must happen in our blit** — there is no landscape mode to select.
+
+### Three findings that change the plan
+
+**1. Linux sees ONE core.** `nproc` = 1. The 800 MHz little core is running
+RT-Smart, not Linux. So there is no second Linux thread to hide render cost on —
+emulation and presentation share a single 1.6 GHz core. This raises the
+importance of a cheap present path (and vindicates dropping software GL).
+
+**2. The ISA includes the Vector extension.**
+
+```
+rv64imafdcv_zicbom_zicboz_zicntr_zicsr_zifencei_zihpm_zba_zbb_zbs_svpbmt
+        ^ v = RVV               ^ zba/zbb/zbs = bit manipulation
+```
+
+**`v` means RVV is available**, plus the Zb* bitmanip extensions. The blit and
+the 2x scaler kernels are exactly the kind of code RVV accelerates. GCC 14.2 is
+on the target. Worth building with `-march=rv64gcv` and measuring — potentially
+the single largest performance lever, and it costs a compiler flag before any
+hand-written intrinsics.
+
+**3. The launcher owns the display.** `k230_phone_ui` (pid 222) is running, plus
+a `k230_meshtastic_probe` daemon. It holds DRM master, so it must be stopped
+(`/etc/init.d/S99zz_k230_phone_ui stop`) before anything else can modeset.
+Reversible.
+
+### Audio: ready
+
+```
+card 0: K230I2SINNO [K230_I2S_INNO], device 0: Audio 9140e000.inno_codec-0
+```
+
+ALSA enumerates a playback device, and `libasound.so.2` plus `/usr/share/alsa`
+are in the rootfs. Phase 4 audio is low risk.
+
+### Input: the keyboard is NOT an evdev device
+
+```
+/proc/bus/input/devices:
+  N: Name="K230 PMU Power Key"   H: Handlers=kbd event0
+  N: Name="goodix_ts"            H: Handlers=kbd mouse0 event1
+```
+
+Only the power key and the touchscreen. **There is no TCA8418 evdev node.**
+Confirmed by driver binding:
+
+```
+/sys/bus/i2c/devices/0-0037  name=gc2093  driver=<none>
+/sys/bus/i2c/devices/0-0038  name=aht20   driver=<none>
+/sys/bus/i2c/devices/1-005d  name=nottingham driver=gtx8_i2c
+/proc/interrupts: 110  gpio-k230  Edge  k230-phone-tca8418-irq
+```
+
+The TCA8418 interrupt is wired and named, but **no kernel driver is bound** — so
+the launcher reads the keyboard matrix from userspace over I2C (`/dev/i2c-*`),
+driven by that GPIO IRQ. Likewise `aht20` and `gc2093` are userspace-driven.
+
+**Phase 3 impact:** we cannot just read evdev for the keyboard. Either
+reimplement the TCA8418 userspace scan (I2C address `0x34`, IRQ on `GPIO42`,
+reset on `GPIO43` per the pinmap) and feed it into the CPC key matrix, or write
+a `uinput` bridge daemon that turns TCA8418 scans into a virtual evdev keyboard
+so SDL/our input layer sees a normal keyboard. The bridge is the cleaner split
+and is reusable outside konCePCja.
+
+Touch is a normal evdev device, so ImGui/pointer input is easy by comparison.
+
+### Risk table
+
+| # | Risk | Status |
+| --- | --- | --- |
+| 1 | No Vulkan / SDL_GPU | Retired |
+| 2 | KMSDRM / display path | **Resolved** — `canaan-drm`, dumb buffers, 568x1232, rotate in blit |
+| 3 | Presentation too slow | Open. Single core hurts; RVV may more than compensate. Measure |
+| 4 | ImGui has no present path without SDL video | **Top risk.** Unchanged |
+| 5 | QEMU build times | Retired |
+| 6 | `char` unsigned | Retired |
+| 7 | **Keyboard is not evdev** | **New.** Userspace TCA8418 scan or a uinput bridge |
