@@ -8,8 +8,10 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <functional>
 
+#include "headless_imgui.h"
 #include "imgui.h"
 #include "imgui_state.h"
 #include "imgui_ui.h"
@@ -20,43 +22,7 @@ extern t_CPC CPC;
 
 namespace {
 
-class HeadlessImGui {
- public:
-  HeadlessImGui() {
-    ctx_ = ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(1600.0f, 1000.0f);
-    io.DeltaTime = 1.0f / 60.0f;
-    io.IniFilename = nullptr;
-    io.LogFilename = nullptr;
-    io.Fonts->AddFontDefault();
-    unsigned char* pixels = nullptr;
-    int tex_w = 0;
-    int tex_h = 0;
-    io.Fonts->GetTexDataAsRGBA32(&pixels, &tex_w, &tex_h);
-    io.Fonts->SetTexID(static_cast<ImTextureID>(1));
-  }
-  HeadlessImGui(const HeadlessImGui&) = delete;
-  HeadlessImGui& operator=(const HeadlessImGui&) = delete;
-  HeadlessImGui(HeadlessImGui&&) = delete;
-  HeadlessImGui& operator=(HeadlessImGui&&) = delete;
-  ~HeadlessImGui() { ImGui::DestroyContext(ctx_); }
-
-  int frame(const std::function<void()>& body) {
-    ImGui::NewFrame();
-    body();
-    ImGui::Render();
-    return ImGui::GetDrawData()->TotalVtxCount;
-  }
-  int settled_frames(const std::function<void()>& body, int n = 3) {
-    int vtx = 0;
-    for (int i = 0; i < n; i++) vtx = frame(body);
-    return vtx;
-  }
-
- private:
-  ImGuiContext* ctx_ = nullptr;
-};
+using koncpc_test::HeadlessImGui;
 
 class PauseHubRenderTest : public ::testing::Test {
  protected:
@@ -66,11 +32,20 @@ class PauseHubRenderTest : public ::testing::Test {
     imgui_state = ImGuiUIState{};
     imgui_state.show_menu = true;
     CPC.paused = true;
+    // The save-state grid creates <snap_path>/states/ on first draw; keep
+    // that out of the test's working directory.
+    snap_dir_ =
+        std::filesystem::temp_directory_path() / "koncepcja-pause-hub-test";
+    std::filesystem::create_directories(snap_dir_);
+    CPC.snap_path = snap_dir_.string();
   }
   void TearDown() override {
     imgui_state = saved_state_;
     CPC = saved_cpc_;
+    std::error_code ec;
+    std::filesystem::remove_all(snap_dir_, ec);
   }
+  std::filesystem::path snap_dir_;
   ImGuiUIState saved_state_;
   t_CPC saved_cpc_;
 };
@@ -102,6 +77,33 @@ TEST_F(PauseHubRenderTest, DrawsTheTransportRowsAndTheDevToolsButton) {
   EXPECT_GT(vtx, 400)
       << "the hub drew almost nothing: a widget early-returned or the window "
          "collapsed";
+}
+
+TEST_F(PauseHubRenderTest, TheMediaRowItselfDraws) {
+  // Differential, not a floor: the same window with and without the row.
+  HeadlessImGui gui;
+  auto window = [](const std::function<void()>& body) {
+    ImGui::SetNextWindowSize(ImVec2(360, 300));
+    ImGui::Begin("row-test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+    body();
+    ImGui::End();
+  };
+  int const without = gui.settled_frames([&] { window([] {}); });
+  int const with_all_disabled = gui.settled_frames([&] {
+    window([] {
+      imgui_render_hub_media_row(hub_media_buttons(false, false, false),
+                                 340.0f);
+    });
+  });
+  int const with_all_enabled = gui.settled_frames([&] {
+    window([] {
+      imgui_render_hub_media_row(hub_media_buttons(true, true, true), 340.0f);
+    });
+  });
+  EXPECT_GT(with_all_disabled, without)
+      << "three Eject buttons and DevTools must add geometry";
+  EXPECT_EQ(with_all_enabled, with_all_disabled)
+      << "enabled vs disabled changes colour, not geometry";
 }
 
 TEST_F(PauseHubRenderTest, EjectAndDevToolsDoNotFireUnclicked) {

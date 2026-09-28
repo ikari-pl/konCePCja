@@ -2166,8 +2166,11 @@ void imgui_render_topbar() {
       float const layout_w = ImGui::CalcTextSize("Layout").x + pad;
       float const shot_w = ImGui::CalcTextSize("Screenshot").x + pad;
       float const full_w = ImGui::CalcTextSize("Fullscreen").x + pad;
-      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - layout_w - gap -
-                      shot_w - gap - full_w - 12.0f);
+      // Right-aligned, but never left of where the row already is: on a
+      // narrow window the cluster would otherwise draw over Pause.
+      float const cluster_x = ImGui::GetWindowWidth() - right_w - layout_w -
+                              gap - shot_w - gap - full_w - 12.0f;
+      ImGui::SameLine(std::max(cluster_x, ImGui::GetCursorPosX() + gap));
 
       // Two frequent one-click actions with no fast path before (beads-flt):
       // the same deferred toggle the View menu posts, and the same screenshot.
@@ -3055,7 +3058,30 @@ void load_state_slot(int i) {
 // Menu
 // ─────────────────────────────────────────────────
 
-namespace {}  // namespace
+// The hub's media row: Eject A / B / Tape, enabled per `media`, raising the
+// same confirmation the Media menu and the status-bar LEDs do; then DevTools,
+// which opens beside the hub (the machine stays paused). External linkage so
+// the headless render test can draw the row on its own.
+void imgui_render_hub_media_row(const HubMediaButtons& media, float width) {
+  float const third = (width - (ImGui::GetStyle().ItemSpacing.x * 2)) / 3.0f;
+  for (int i = 0; i < 3; ++i) {
+    if (i > 0) ImGui::SameLine();
+    ImGui::BeginDisabled(!media.button[i].enabled);
+    if (ImGui::Button(media.button[i].label, ImVec2(third, 0))) {
+      if (i == 2) {
+        imgui_state.eject_confirm_tape = true;
+      } else {
+        imgui_state.eject_confirm_drive = i;
+      }
+    }
+    ImGui::EndDisabled();
+  }
+  std::string const devtools_lbl =
+      "DevTools (" + koncpc_action_shortcut(KONCPC_DEVTOOLS) + ")";
+  if (ImGui::Button(devtools_lbl.c_str(), ImVec2(width, 0))) {
+    koncpc_menu_action(KONCPC_DEVTOOLS);
+  }
+}
 
 // The F1 pause hub — external linkage: imgui_ui.h exposes it for the
 // headless render tests.
@@ -3157,29 +3183,10 @@ void imgui_render_menu() {
   // media they want out (beads-7sh). Ejects raise the same confirmation the
   // Media menu and the status-bar LEDs do; DevTools opens beside the hub, the
   // machine stays paused.
-  {
-    HubMediaButtons const media =
-        hub_media_buttons(flux_save_caps(0).present, flux_save_caps(1).present,
-                          !pbTapeImage.empty());
-    float const third = (bw - (ImGui::GetStyle().ItemSpacing.x * 2)) / 3.0f;
-    for (int i = 0; i < 3; ++i) {
-      if (i > 0) ImGui::SameLine();
-      ImGui::BeginDisabled(!media.button[i].enabled);
-      if (ImGui::Button(media.button[i].label, ImVec2(third, 0))) {
-        if (i == 2) {
-          imgui_state.eject_confirm_tape = true;
-        } else {
-          imgui_state.eject_confirm_drive = i;
-        }
-      }
-      ImGui::EndDisabled();
-    }
-    std::string const devtools_lbl =
-        "DevTools (" + koncpc_action_shortcut(KONCPC_DEVTOOLS) + ")";
-    if (ImGui::Button(devtools_lbl.c_str(), ImVec2(bw, 0))) {
-      koncpc_menu_action(KONCPC_DEVTOOLS);
-    }
-  }
+  imgui_render_hub_media_row(
+      hub_media_buttons(flux_save_caps(0).present, flux_save_caps(1).present,
+                        !pbTapeImage.empty()),
+      bw);
 
   // ── Section 2: Status dashboard ─────────────────────────────────────
   ImGui::Separator();

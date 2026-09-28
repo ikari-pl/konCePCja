@@ -55,3 +55,13 @@ TEST(HostChords, KeyEquivalentsMatchTheResolver) {
   }
   EXPECT_EQ(0, host_chord_key(HostChord::None));
 }
+
+TEST(HostChords, OptOutReturnsTheControlChordsToTheCpc) {
+  // [input] host_chords=0: on a Control platform every Ctrl combination is the
+  // CPC's again (CP/M's WordStar uses Ctrl+O/S/K).
+  EXPECT_EQ(HostChord::None, host_chord_for('o', true, false, false, false));
+  EXPECT_EQ(HostChord::None, host_chord_for('s', true, false, false, false));
+  EXPECT_EQ(HostChord::None, host_chord_for('k', true, false, false, false));
+  // On macOS the flag is moot: Command is never a CPC key.
+  EXPECT_EQ(HostChord::OpenDisk, host_chord_for('o', false, true, true, false));
+}

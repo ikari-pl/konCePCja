@@ -2540,6 +2540,9 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       std::clamp(conf.getIntValue("input", "lightgun", 0), 0,
                  static_cast<int>(PhazerType::TrojanLightPhazer)));
   if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
+  // Cmd/Ctrl+K/O/S as host chords (host_chords.h); 0 gives Ctrl+K/O/S back
+  // to the CPC on Linux/Windows (CP/M software uses them).
+  CPC.host_chords = read_flag("input", "host_chords", 1);
 
   g_symbiface.enabled = read_flag("peripheral", "symbiface", 0) != 0;
   g_m4board.enabled = read_flag("peripheral", "m4board", 0) != 0;
@@ -2754,6 +2757,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // bool, so a direct static_cast<int> is ambiguous.
   conf.setIntValue("input", "lightgun",
                    static_cast<PhazerType::Value>(CPC.phazer_emulation));
+  conf.setIntValue("input", "host_chords", CPC.host_chords);
 
   conf.setIntValue("peripheral", "symbiface", g_symbiface.enabled ? 1 : 0);
   conf.setStringValue("peripheral", "ide_master",
@@ -4675,14 +4679,16 @@ int koncpc_main(int argc, char** argv) {
 
       // Host-UI chords (Cmd on macOS, Ctrl elsewhere): the palette, Load
       // Disk A..., Save Snapshot... — resolved by host_chord_for() so the
-      // menus' accelerator labels and this dispatch cannot disagree. On macOS
-      // the native menu bar's key equivalents catch Cmd+O/S first; this path
-      // serves the other platforms and a hidden native bar.
-      if (event.type == SDL_EVENT_KEY_DOWN) {
+      // menus' shortcut labels and this dispatch cannot disagree. This is the
+      // only dispatcher on every platform: the native macOS menu shows the
+      // chords as text and registers no key equivalent (see host_chords.h).
+      // Not on auto-repeat: a held Cmd+O would open a file dialog per repeat.
+      if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
         bool const ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
         bool const cmd_key = (event.key.mod & SDL_KMOD_GUI) != 0;
         bool handled = true;
-        switch (host_chord_for(event.key.key, ctrl, cmd_key)) {
+        switch (host_chord_for(event.key.key, ctrl, cmd_key, kHostChordApple,
+                               CPC.host_chords != 0)) {
           case HostChord::CommandPalette:
             g_command_palette.toggle();
             break;

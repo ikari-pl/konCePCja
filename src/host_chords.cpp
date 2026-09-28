@@ -6,9 +6,12 @@ int lower(int keycode) {
 }
 }  // namespace
 
-HostChord host_chord_for(int keycode, bool ctrl, bool cmd, bool apple) {
+HostChord host_chord_for(int keycode, bool ctrl, bool cmd, bool apple,
+                         bool enabled) {
   bool const modifier = apple ? cmd : ctrl;
   if (!modifier) return HostChord::None;
+  // Opted out on a Control platform: the chords belong to the CPC again.
+  if (!apple && !enabled) return HostChord::None;
   switch (lower(keycode)) {
     case 'k':
       return HostChord::CommandPalette;
