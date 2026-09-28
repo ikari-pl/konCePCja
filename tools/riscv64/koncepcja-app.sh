@@ -28,6 +28,12 @@ yield_display() {
   [ -n "$pid" ] || return 1
   grep -q drm_yield "/proc/$pid/maps" 2>/dev/null || return 1
   kill -USR1 "$pid" 2>/dev/null || return 1
+  # Dropping master is not enough on its own: LVGL keeps calling
+  # drmModePageFlip, which now fails with EACCES, and its flip-pending flag
+  # never clears because no completion event can arrive -- the UI then waits
+  # forever and looks frozen even after the panel is handed back. Suspending
+  # the process stops it issuing ioctls at all while it has no display.
+  kill -STOP "$pid" 2>/dev/null
   i=0
   while [ $i -lt 20 ]; do
     holders=$(for p in /proc/[0-9]*; do
@@ -43,7 +49,10 @@ yield_display() {
 
 reclaim_display() {
   pid=$(launcher_pid)
-  [ -n "$pid" ] && kill -USR2 "$pid" 2>/dev/null
+  [ -n "$pid" ] || return 0
+  # Resume first: a stopped process cannot run the SIGUSR2 handler.
+  kill -CONT "$pid" 2>/dev/null
+  kill -USR2 "$pid" 2>/dev/null
 }
 
 stop_launcher() {
