@@ -684,8 +684,24 @@ void imgui_render_handheld_panels() {
     ImGui::Dummy(ImVec2(0, row_h * 0.3f));
     ImGui::Separator();
     ImGui::TextUnformatted("DRIVES");
-    ImGui::Button(driveA.tracks ? "A: disk" : "A: empty", ImVec2(w, row_h));
-    ImGui::Button(driveB.tracks ? "B: disk" : "B: empty", ImVec2(w, row_h));
+    // The activity LED is the part that actually matters while a game loads,
+    // so draw it as a solid block beside the row rather than relying on text.
+    for (int drv = 0; drv < 2; drv++) {
+      bool const active =
+          drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+      DriveMedium const medium = drive_medium(drv);
+      ImVec2 const p = ImGui::GetCursorScreenPos();
+      char label[32];
+      snprintf(label, sizeof(label), "%s %s##hh_drv%d", drv == 0 ? "A:" : "B:",
+               medium.present ? "disk" : "empty", drv);
+      ImGui::Button(label, ImVec2(w, row_h));
+      float const led = row_h * 0.45f;
+      ImVec2 const l0(p.x + w - led - row_h * 0.25f, p.y + (row_h - led) * 0.5f);
+      ImGui::GetWindowDrawList()->AddRectFilled(
+          l0, ImVec2(l0.x + led, l0.y + led),
+          active ? IM_COL32(0xFF, 0x30, 0x20, 0xFF)
+                 : IM_COL32(0x40, 0x10, 0x10, 0xFF));
+    }
   }
   ImGui::End();
 
@@ -704,12 +720,24 @@ void imgui_render_handheld_panels() {
     ImGui::Separator();
     ImGui::TextUnformatted("TAPE");
     ImGui::TextUnformatted(pbTapeImage.empty() ? "(none)" : "loaded");
-    float const third = (w - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
-    ImGui::Button("<<", ImVec2(third, row_h));
-    ImGui::SameLine();
-    ImGui::Button(">", ImVec2(third, row_h));
-    ImGui::SameLine();
-    ImGui::Button("[]", ImVec2(third, row_h));
+    // A 216 px column cannot hold five transports in one row at finger size,
+    // so lay them out as a grid that grows downwards instead of clipping.
+    float const gap = ImGui::GetStyle().ItemSpacing.x;
+    float const half = (w - gap) * 0.5f;
+    struct TapeBtn { const char* label; int cp; const char* utf8; };
+    static TapeBtn const btns[] = {
+        {"|<", 0x25C0, "\xe2\x97\x80"}, {">|", 0x25B6, "\xe2\x96\xb6"},
+        {">",  0x25B6, "\xe2\x96\xb6"}, {"[]", 0x25A0, "\xe2\x96\xa0"},
+    };
+    for (int i = 0; i < 4; i++) {
+      std::string const cap =
+          std::string(ui_glyph(static_cast<ImWchar>(btns[i].cp), btns[i].utf8,
+                               btns[i].label)) +
+          "##hh_tape" + std::to_string(i);
+      ImGui::Button(cap.c_str(), ImVec2(half, row_h));
+      if ((i % 2) == 0) ImGui::SameLine();
+    }
+    ImGui::Button("EJECT", ImVec2(w, row_h));
   }
   ImGui::End();
 }

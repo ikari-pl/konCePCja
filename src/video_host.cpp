@@ -7,6 +7,7 @@
  */
 
 #include "drm_present.h"
+#include "touch_evdev.h"
 #include "video_host.h"
 
 #include <math.h>
@@ -1935,6 +1936,14 @@ void sdlr_flip(video_plugin* t) {
   SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
   double const d_b = d_now();
   d_up += d_b - d_a;
+
+  // SDL's offscreen driver produces no input events, so the touchscreen is
+  // read directly and injected before the frame is built.
+  {
+    int tw = 0, th = 0;
+    SDL_GetWindowSize(mainSDLWindow, &tw, &th);
+    touch_evdev_poll(tw, th);
+  }
 
   // Start ImGui frame
   ImGui_ImplSDLRenderer3_NewFrame();
