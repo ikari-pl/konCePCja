@@ -488,9 +488,35 @@ int renderer_bpp(SDL_Renderer* sdl_renderer) {
 
 // TODO: Cleanup sw_scaling if really not needed
 namespace {
+// Wide-and-short panels (handhelds): the classic layout stacks full-width
+// chrome above and below the CPC, which on a 2.17:1 panel leaves the screen
+// height-limited and forces a non-integer downscale -- expensive in software
+// and soft to look at. In wide mode the chrome moves to a right-hand column
+// instead, so the CPC keeps its full height and lands pixel-exact.
+//
+// Enabled with KONCPC_WIDE=1. Geometry only: the ImGui bars still draw where
+// they always did until the vertical layout lands.
+bool wide_layout_enabled() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char* v = SDL_getenv("KONCPC_WIDE");
+    cached = (v && v[0] == '1') ? 1 : 0;
+  }
+  return cached == 1;
+}
+
 void compute_scale(video_plugin* t, int w, int h) {
   int win_width, win_height;
   SDL_GetWindowSize(mainSDLWindow, &win_width, &win_height);
+  if (wide_layout_enabled()) {
+    // Reserve everything the CPC does not need as a side column, and drop the
+    // horizontal bars. h is the source height (540 with doubled scanlines), so
+    // asking for exactly that keeps the vertical scale at 1:1.
+    int const want_w = (h > 0) ? (w * min(win_height, h) / h) : w;
+    devtools_panel_width = max(0, win_width - want_w);
+    topbar_height = 0;
+    bottombar_height = 0;
+  }
   if (devtools_panel_width > 0) {
     win_width = max(1, win_width - devtools_panel_width);
   }
@@ -1814,6 +1840,13 @@ void sdlr_flip(video_plugin* t) {
   SDL_SetTextureScaleMode(cpc_sdl_texture, CPC.scr_crt_aspect
                                                ? SDL_SCALEMODE_LINEAR
                                                : SDL_SCALEMODE_NEAREST);
+  // The CPC framebuffer is fully opaque, but RGBA32 textures default to
+  // SDL_BLENDMODE_BLEND — which makes a software renderer alpha-blend every
+  // pixel of a full-screen quad for no visible effect. Measured on the K230:
+  // this is the difference between ~10 and ~40+ Mpx/s.
+  if (!SDL_getenv("KONCPC_BLEND")) {
+    SDL_SetTextureBlendMode(cpc_sdl_texture, SDL_BLENDMODE_NONE);
+  }
 
   // Upload CPC framebuffer to SDL texture
   double const d_a = d_now();
@@ -1843,7 +1876,10 @@ void sdlr_flip(video_plugin* t) {
   d_imgui += d_c - d_b;
 
   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-  SDL_RenderClear(renderer);
+  // TEMP experiment: KONCPC_NOCLEAR=1 skips the full-window clear to quantify
+  // its share of the software fill cost. The CPC quad covers most of the
+  // window, so the visible cost of skipping is stale pixels in the margins.
+  if (!SDL_getenv("KONCPC_NOCLEAR")) SDL_RenderClear(renderer);
   ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
   double const d_d = d_now();
   d_raster += d_d - d_c;
@@ -1860,9 +1896,12 @@ void sdlr_flip(video_plugin* t) {
   if (++d_n >= 9) {
     char b[192];
     snprintf(b, sizeof(b),
-             "sdlr_flip[%s]: upload %.1f  imgui %.1f  raster %.1f  CAPTURE %.1f  present %.1f ms/f",
+             "sdlr_flip[%s]: dst %dx%d @%d,%d src %dx%d | upload %.1f imgui %.1f "
+             "raster %.1f present %.1f ms/f",
              SDL_GetRendererName(renderer) ? SDL_GetRendererName(renderer) : "?",
-             d_up / d_n, d_imgui / d_n, d_raster / d_n, d_capture / d_n, d_present / d_n);
+             (int)t->width, (int)t->height, (int)t->x_offset, (int)t->y_offset,
+             vid->w, vid->h,
+             d_up / d_n, d_imgui / d_n, d_raster / d_n, d_present / d_n);
     LOG_INFO(std::string(b));
     d_up = d_imgui = d_raster = d_present = d_capture = 0; d_n = 0; (void)d_t0;
   }
