@@ -9,8 +9,8 @@ KH="${TMPDIR:-/tmp}/k230_known_hosts"
 exec ssh \
   -o StrictHostKeyChecking=accept-new \
   -o UserKnownHostsFile="$KH" \
-  -o PubkeyAuthentication=no \
-  -o PreferredAuthentications=password,keyboard-interactive \
+  -o PubkeyAuthentication=yes \
+  -o PreferredAuthentications=publickey,password,keyboard-interactive \
   -o NumberOfPasswordPrompts=1 \
   -o ConnectTimeout=8 \
   "root@$HOST" "$@"

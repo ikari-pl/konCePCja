@@ -571,3 +571,110 @@ Touch is a normal evdev device, so ImGui/pointer input is easy by comparison.
 | 5 | QEMU build times | Retired |
 | 6 | `char` unsigned | Retired |
 | 7 | **Keyboard is not evdev** | **New.** Userspace TCA8418 scan or a uinput bridge |
+
+---
+
+## Phase 2 PROVEN ON HARDWARE — `drm_direct` works, Risk #3 closed
+
+`tools/riscv64/drm_probe.c` (149 lines) was cross-compiled and run on the board.
+It creates dumb buffers, modesets, page-flips, and measures the real blit cost.
+**The panel displayed CPU-written test bars.**
+
+### Rotation is done in HARDWARE — correcting the earlier entry
+
+`tools/riscv64/drm_planes.c` enumerated 7 planes. The **primary** plane (id 34,
+`type=1`) has:
+
+```
+rotation = 8      [rotate-0=0 rotate-90=1 rotate-180=2 rotate-270=3 ...]
+```
+
+The enum values are **bit positions**, so 8 = `1<<3` = **rotate-270**. The other
+six planes are rotate-0. The display engine therefore rotates for us and the
+CRTC expects a **landscape** source. That is exactly what the first attempt hit:
+
+```
+drm_framebuffer_check_src_coords: Invalid source coordinates
+  1232.000000x568.000000+0.000000+0.000000 (fb 568x1232)   -> ret=-28 (ENOSPC)
+```
+
+**Correction:** the Phase 2 replan said "rotation must happen in our blit".
+Wrong — allocate the dumb buffer as **1232x568 landscape** and rotation is free.
+That is also precisely **2.169:1**, the aspect
+`video_persisted_window_size_is_sane()` already accepts (0.9 .. 2.2). No guard
+change needed.
+
+It further improves the blit: writing landscape rows is sequential, whereas a
+CPU-rotated blit wrote columns with a 4928-byte stride between consecutive
+pixels — cache-hostile on a single core.
+
+### Measurements (board, 120 frames, `-O2 -static`)
+
+```
+connector 54   mode 568x1232@52   crtc 52
+dumb buffers   1232x568 landscape, pitch 4928, 2733 KiB each (x2)
+
+A) bare flips      120 in 2.299s = 52.2 FPS (19.16 ms/flip)
+B) blit+flip       120 in 2.297s = 52.2 FPS (19.14 ms/frame)
+   blit alone      2.26 ms/frame   (11.3% of a 20 ms CPC budget)
+```
+
+**Presentation is vsync-bound, not CPU-bound.** Bare flips and blit+flip are
+identical, so the blit vanishes into the panel's own 19.16 ms. Roughly **88% of
+the frame budget remains for emulation**.
+
+**Risk #3 is closed.** Scaled 768x270 -> 1232x433 presentation costs 2.26 ms on
+this hardware.
+
+### RVV is NOT a lever here — correcting an earlier claim
+
+```
+-O2               blit 2.26 ms/frame
+-O2 -march=rv64gcv blit 2.43 ms/frame     (marginally worse)
+```
+
+The earlier note calling `-march=rv64gcv` "potentially the single largest
+performance lever" was wrong. This blit is **memory-bound** — a scaled copy with
+an indexed gather into an uncached dumb buffer — so vector width does not help.
+Cost of finding out: one compiler flag.
+
+### Panel runs at 52 Hz, CPC at 50 Hz
+
+A 4% mismatch. One repeated/dropped frame every ~25 is imperceptible, and the
+existing triple-buffer decoupling (plan 2026-06-21) already tolerates a display
+clock that differs from the emulation clock. Note, not a blocker.
+
+### Toolchain constraint: static linking is mandatory
+
+Board glibc is **2.33** (Buildroot); the Debian trixie riscv64 container is
+**2.41**. Dynamically linked binaries fail with
+`version 'GLIBC_2.34' not found`. Either build `-static` (works, `libdrm.a` is
+packaged) or build against a sysroot copied from the board. **For konCePCja,
+plan a static build** — SDL is already static in this project.
+
+### Also observed: the Wi-Fi driver oopses (not ours)
+
+`dmesg` shows a repeating kernel oops in the RTL8189FS driver
+(`rtw_lps_state_chk` -> `SetHwReg` -> `LPS_Leave` -> `rtw_set_ps_mode`), i.e.
+Wi-Fi power-save handling. The board keeps running. Disabling Wi-Fi power save
+would likely avoid it. Unrelated to this port, but relevant if Wi-Fi drops.
+
+### Risk table
+
+| # | Risk | Status |
+| --- | --- | --- |
+| 1 | No Vulkan / SDL_GPU | Retired |
+| 2 | Display path | **Retired** — `drm_direct` proven on hardware |
+| 3 | Presentation too slow | **Retired** — 2.26 ms/frame, 11.3% of budget |
+| 4 | ImGui has no present path without SDL video | **Top risk**, untouched |
+| 5 | QEMU build times | Retired |
+| 6 | `char` unsigned | Retired |
+| 7 | Keyboard not evdev | Open — userspace TCA8418 scan or uinput bridge |
+| 8 | **glibc 2.33 vs 2.41** | **New, solved** — build static |
+
+### Next
+
+Only Risk #4 and #7 remain. Implement `drm_direct` as a real `video_plugin`
+(the probe is the reference), then decide the ImGui story: emulator-only output
+first, finish the P1.5.2 headless split, or write a minimal ImGui renderer into
+the dumb buffer.
