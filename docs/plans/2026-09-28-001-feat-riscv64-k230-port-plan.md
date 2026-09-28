@@ -365,3 +365,105 @@ not closed — it needs real silicon.
 `qemu-system-riscv64` is now installed. What is left is the genuine KMSDRM
 scanout test: boot a riscv64 rootfs with `-device virtio-gpu-pci` for a real
 `/dev/dri/card0`, present at 1232x568, and confirm a visible CPC frame.
+
+---
+
+## Phase 2 REPLAN — SDL's KMSDRM is unusable; present via DRM dumb buffers
+
+**Board fact (2026-09-28): `/dev/dri/card0` exists, and it is the ONLY node in
+`/dev/dri` — there is no `renderD128` render node.**
+
+The board's own rootfs was then inspected directly by loop-mounting the ext4
+partition of the verified `sysimage-sdcard.img` (offset `134217728`) — no board
+interaction needed, since the image is SHA-256 identical to the card.
+
+### The rootfs has no GL stack at all
+
+| Library | Present? |
+| --- | --- |
+| `libdrm.so.2` (2.124.0) | ✅ |
+| `libevdev.so.2` | ✅ |
+| `libfreetype.so.6` | ✅ |
+| `libasound.so.2` + `/usr/share/alsa` | ✅ |
+| `libpng16`, `libz`, `libstdc++.so.6.0.33` | ✅ |
+| **`libEGL` / `libGLESv2` / `libgbm` / Mesa / any `dri/*.so`** | ❌ **NONE** |
+
+An exhaustive `find` for `*egl*`, `*gles*`, `*gbm*`, `*mesa*` across the whole
+rootfs returns **nothing**. Distro is Buildroot 2025.02.1, riscv64 lp64d.
+
+### Why that rules out SDL's video layer
+
+Verified in the vendored SDL3 source:
+
+* `SDL_kmsdrmvideo.c` has **64 GBM references**; `gbm_create_device()` and
+  `gbm_surface_create()` are mandatory. **No `libgbm` -> KMSDRM cannot init.**
+* KMSDRM does **not** implement `CreateWindowFramebuffer`, so SDL's
+  software-surface present path does not exist on it (the `offscreen` driver
+  does implement it — which is why the earlier offscreen tests worked).
+* Our build compiled only `SDL_VIDEO_RENDER_GPU` (needs Vulkan) and
+  `SDL_VIDEO_RENDER_OGL_ES2` (needs EGL/GLES2). `SDL_VIDEO_RENDER_SW` is
+  `#undef`, and even enabled it presents through
+  `SDL_GetWindowSurface`/`SDL_UpdateWindowSurface` — the hook KMSDRM lacks.
+
+**Correction to the earlier Phase 2 entry:** the 50-51 FPS offscreen numbers
+measured a presentation path the board does not have. They remain valid evidence
+that the *emulator core* runs at full speed on riscv64 (`machine 19.9 ms/f`
+against a 20 ms budget), but they say nothing about presentation on this
+hardware. Risk #3 was not reduced by that test.
+
+### The launcher shows exactly what to do
+
+`/app/k230_phone_ui` links **`liblvgl_linux.so`, `liblvgl.so.9`, `libdrm.so.2`,
+`libevdev.so.2`** — and no GL of any kind. Its strings include:
+
+```
+/dev/dri/card0
+lv_linux_drm_create
+lv_linux_drm_find_device_path
+lv_linux_drm_set_file
+lv_linux_drm_set_rotation
+```
+
+So the vendor's own UI renders **in software** into **DRM dumb buffers** and
+scans out on `card0`, with **rotation handled in the presenter**. That is the
+template, and it is proof the approach works on this exact panel.
+
+### Revised approach: a `drm_direct` video plugin
+
+Write a new `video_plugin` that bypasses SDL's video subsystem:
+
+1. `open("/dev/dri/card0")`, `drmModeGetResources`, pick connector/CRTC/mode.
+2. `DRM_IOCTL_MODE_CREATE_DUMB` x2 (double buffer), `MAP_DUMB`, `drmModeAddFB`.
+3. Blit the CPC surface into the mapped buffer with the existing swscale
+   kernels — they already produce plain pixel output.
+4. `drmModePageFlip` to present; handle rotation in the blit (or via a DRM plane
+   `rotation` property if the driver exposes one).
+
+This slots into the existing `video_plugin` vtable (`init`/`setpal`/`flip`/
+`close`, `flip_b = nullptr`), same shape as the `sdlr_*` plugins.
+
+**This is better than the original plan, not worse.** Software GL via
+`kms_swrast` would have rasterised a full-screen textured quad on a 1.6 GHz
+core; a dumb-buffer blit removes the rasteriser entirely. For a 2D emulator
+scanout that is the right architecture — and it is what the vendor chose.
+
+**SDL is still wanted** for audio (`libasound` present) and input, or those can
+go straight to ALSA and **evdev** (`libevdev` present — also the route to the
+TCA8418 keyboard, de-risking Phase 3).
+
+### Risk table after Phase 2 investigation
+
+| # | Risk | Status |
+| --- | --- | --- |
+| 1 | No Vulkan -> SDL_GPU unusable | **Retired** — confirmed; automatic SDL_Renderer fallback exists |
+| 2 | KMSDRM absent | **Resolved differently** — `card0` exists, but no GBM, so SDL's KMSDRM is out. Direct DRM is in |
+| 3 | Presentation too slow | **Reduced by architecture** — dumb-buffer blit, no rasteriser. Still unmeasured |
+| 4 | `MODERN_UI=OFF` does not link | **Now a real problem.** ImGui's only usable backends here are `sdlrenderer3`/`sdlgpu3`, both dependent on SDL video. A `drm_direct` plugin has no ImGui path, so the headless split (P1.5.2) becomes load-bearing — or ImGui must be rendered into the same dumb buffer via a custom backend |
+| 5 | QEMU build times | Retired |
+| 6 | `char` unsigned on RISC-V | Retired — 1315 tests pass |
+
+**New top risk is #4**, not #3: the emulator screen is straightforward, but the
+Dear ImGui UI has no presentation path without SDL video. Options, in order of
+increasing effort: ship emulator-only output first (no UI chrome), finish the
+P1.5.2 headless/ImGui-free split, or write a minimal ImGui renderer targeting
+the dumb buffer.
