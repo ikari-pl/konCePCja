@@ -39,6 +39,10 @@ Two calls in the LVGL DRM driver, and a helper in the launcher that uses them.
 LVGL patches already carried in the Buildroot overlay -- one of which
 (`0002-...-add-k230-plane-rotation`) modifies this same file.
 
+`release()` records the CRTC in `drm_dev->saved_crtc`. That field is declared in
+`drm_dev_t` and restored by `drm_del_event_cb()`, but nothing has ever assigned
+it, so the restore on display delete was dead code; it now does something.
+
 Launcher side, modelled on the existing `system()` call sites (2642 / 2926 / 3163):
 
 ```c
@@ -73,11 +77,20 @@ for a completion event that can never arrive. The UI freezes, and **stays frozen
 after the panel is handed back**, because the stuck state is inside LVGL, not in
 the kernel. Restoring the CRTC does not recover it.
 
-So `release()` also gates flushing: while paused, `drm_flush()` calls
-`lv_display_flush_ready()` and returns without submitting anything, and
-`drm_flush_wait()` returns immediately. LVGL's state machine stays consistent
-and no ioctls are issued. `release()` first waits out any in-flight flip, so its
-completion is not lost.
+So `release()` also gates flushing: while paused, `drm_flush()` clears
+`act_buf` and returns without submitting anything, and `drm_flush_wait()`
+returns immediately. No ioctls are issued and LVGL's state machine stays
+consistent -- this driver signals completion through `flush_wait_cb` and never
+calls `lv_display_flush_ready()`, so there is nothing else to unwind.
+
+`release()` first waits out the flip already in flight, while it is still
+master, so the completion event is consumed rather than left queued on the fd
+to be delivered spuriously after the next `acquire()`. That wait is bounded
+(`DRM_RELEASE_FLIP_TIMEOUT_MS`), so `release()` cannot itself become the thing
+that blocks forever.
+
+The poll loop is factored out into `drm_wait_flip(drm_dev, timeout_ms)`, which
+`drm_flush_wait()` calls with `-1`; its behaviour is unchanged.
 
 We reproduced the freeze twice before understanding it; the fix is small but it
 is not optional.
@@ -100,10 +113,21 @@ card0 holder: k230_phone_ui        # launcher never restarted, stayed responsive
 The external application was an Amstrad CPC emulator presenting via DRM dumb
 buffers at RGB565.
 
-Caveat: the patch itself is **not compile-tested** against the Buildroot tree --
-we had no SDK checkout. The logic mirrors the verified shim, and field names are
-checked against LVGL `59dc7e43`, the revision pinned in
-`package/lvgl/59dc7e436ae97a25e32656739ea6a943f9f11b6a/`.
+The patch itself applies and compiles. Base is LVGL `59dc7e43` with this
+overlay's `0001`--`0004` applied, the same tree Buildroot builds; `0005` applies
+with no fuzz and no rejects, and the driver translation unit was compiled with
+`-Wall -Wextra` both for the host and for riscv64 with the SDK's own
+`Xuantie-900-gcc-linux-6.6.0-glibc` 14.1.1:
+
+| build | host | riscv64 | `release`+`acquire` symbols |
+| --- | --- | --- | --- |
+| `0001`--`0004` | exit 0, 18680 B | exit 0, 42856 B | 0 |
+| `0001`--`0005` | exit 0, 19768 B | exit 0, 45792 B | 2 |
+
+No warnings from the changed code. The symbol counts are there because the file
+sits inside `#if LV_USE_LINUX_DRM`, so a misconfigured `lv_conf.h` compiles to
+an empty object and exits 0 -- the object is checked with `nm`, not just the
+exit status. `compile-check.sh` alongside this patch reproduces the table.
 
 ## Not in this PR
 
