@@ -678,3 +678,66 @@ Only Risk #4 and #7 remain. Implement `drm_direct` as a real `video_plugin`
 (the probe is the reference), then decide the ImGui story: emulator-only output
 first, finish the P1.5.2 headless split, or write a minimal ImGui renderer into
 the dumb buffer.
+
+---
+
+## Option 4: keep SDL, present its window surface to DRM — the full-UI route
+
+Goal is the **full ImGui UI**, so the "emulator-only" and "headless split"
+options are out (both deliver a UI-less emulator; the split is ~100-200 lines
+because `imgui_state.h` is already ImGui-free and only `kon_cpc_ja.cpp` and
+`video_host.cpp` include the 76-line `imgui_ui.h`, but cheapness buys nothing
+we want). A software ImGui rasteriser is 600-1200 lines plus real perf risk on
+one core.
+
+**Option 4 gets full-UI capability at roughly headless-split effort:**
+
+```
+SDL_VIDEODRIVER=offscreen + SDL software renderer
+  -> imgui_impl_sdlrenderer3 works unchanged
+  -> all 8 existing sdlr_* video plugins work unchanged
+  -> read SDL_GetWindowSurface() pixels
+  -> blit into the DRM dumb buffer, page-flip   (~100 lines, drm_probe.c is the reference)
+```
+
+`drm_direct` stops being a new `video_plugin` and becomes a **presenter**.
+
+### Corrections to earlier entries
+
+* **The SDL software renderer IS in our build.** An earlier entry said
+  `SDL_VIDEO_RENDER_SW` was `#undef` — that was read from the generated
+  `SDL_build_config.h`, which is the wrong file. `src/SDL_internal.h:190` does
+  `#if !defined(SDL_VIDEO_RENDER_SW) && !defined(SDL_LEAN_AND_MEAN)` ->
+  `#define SDL_VIDEO_RENDER_SW 1`. Neither `SDL_LEAN_AND_MEAN` nor
+  `SDL_RENDER_DISABLED` is set, so `SW_RenderDriver` is registered. There is no
+  `SDL_RENDER_SW` CMake option because it needs none.
+* The `offscreen` driver implements `SDL_OFFSCREEN_CreateWindowFramebuffer`, so
+  `SDL_GetWindowSurface()` yields real CPU-readable pixels — the hook KMSDRM
+  lacks.
+
+### Evidence so far (riscv64 container)
+
+With `SDL_VIDEODRIVER=offscreen SDL_RENDER_DRIVER=software -O video.scr_style=11`:
+
+* **`mode: gui`** in the startup manifest — **no headless fallback**, so ImGui
+  is initialised. (CLAUDE.md warns `SDL_VIDEODRIVER=dummy` falls back to
+  headless on macOS because GL init fails; forcing the software renderer avoids
+  that.)
+* 51 FPS / 102% speed, `render-wait 0.0 ms/f`, no GPU errors.
+* `screenshot window` over IPC produced a **correct CPC 6128 boot screen**,
+  768x540 RGBA — proof the emulator's pixel path is right on riscv64.
+
+### What is still NOT proven
+
+**That ImGui's draw data rasterises to readable pixels.** The capture at
+`video_host.cpp:459` saves `vid` (the CPC surface) from inside the flip handler,
+not the composited window — two captures taken before and after issuing
+`devtools` were byte-identical. So this test *cannot* show chrome either way;
+it is a limitation of the probe, not evidence against option 4.
+
+### Next step
+
+Read `SDL_GetWindowSurface()` directly rather than going through the screenshot
+path — which is exactly what the DRM presenter must do anyway. Build konCePCja
+static for the board, add the ~100-line presenter, run it on the panel, and
+look. That is the real integration and it answers the question directly.
