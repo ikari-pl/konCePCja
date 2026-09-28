@@ -44,13 +44,20 @@ struct DrmState {
   uint32_t crtc_id = 0, conn_id = 0;
   drmModeModeInfo mode{};
   int fb_w = 0, fb_h = 0;   // landscape: mode.vdisplay x mode.hdisplay
-  DumbFb fb[2];
-  int front = 0;
+  // Triple buffered: with only two buffers the render thread must wait for the
+  // in-flight flip to retire before it can draw again, serialising flip-wait
+  // and render (~46 ms cycle for 36 ms of work). A third buffer means there is
+  // always one that is neither scanned out nor pending.
+  DumbFb fb[3];
+  int front = 0;      // being scanned out
+  int pending = -1;   // flip submitted, not yet retired
+  int next = 1;       // safe to draw into
   bool ready = false;
   bool failed = false;
   std::vector<int> xmap;    // destination column -> source column
   int xmap_src_w = -1, xmap_dst_w = -1;
   int cleared_w = -1, cleared_h = -1;
+  double last_submit_ms = 0;
   int last_flip_errno = 0;
   // instrumentation
   unsigned long n_frames = 0, n_flip_ok = 0, n_flip_fail = 0, n_drain_hits = 0;
@@ -102,7 +109,9 @@ bool init() {
   g.fb_w = g.mode.vdisplay;
   g.fb_h = g.mode.hdisplay;
 
-  bool ok = make_fb(g.fd, g.fb_w, g.fb_h, g.fb[0]) && make_fb(g.fd, g.fb_w, g.fb_h, g.fb[1]);
+  bool ok = make_fb(g.fd, g.fb_w, g.fb_h, g.fb[0]) &&
+            make_fb(g.fd, g.fb_w, g.fb_h, g.fb[1]) &&
+            make_fb(g.fd, g.fb_w, g.fb_h, g.fb[2]);
   drmModeFreeConnector(conn);
   drmModeFreeResources(res);
   if (!ok) { LOG_ERROR("drm_present: dumb buffer allocation failed"); return false; }
@@ -121,7 +130,11 @@ bool init() {
 }
 
 volatile int flip_pending = 0;
-void on_flip(int, unsigned, unsigned, unsigned, void*) { flip_pending = 0; }
+volatile unsigned last_flip_seq = 0;
+void on_flip(int, unsigned seq, unsigned, unsigned, void*) {
+  flip_pending = 0;
+  last_flip_seq = seq;
+}
 
 // Block until the in-flight page flip (if any) has retired. Until it does, the
 // buffer we are about to draw into may still be the one being scanned out, and
@@ -135,6 +148,33 @@ void drain_flip() {
   while (flip_pending) {
     if (drmHandleEvent(g.fd, &ev)) { flip_pending = 0; break; }
   }
+}
+
+// Pace to a whole number of panel refreshes. The render thread produces a
+// frame roughly every 37 ms while the panel refreshes every ~19.2 ms, so
+// unpaced flips land alternately 1 and 2 refreshes apart -- a visible judder
+// even though every individual flip is vsync-latched. Waiting until at least
+// KONCPC_DRM_DIVISOR refreshes have elapsed locks the cadence instead.
+// Default 2 (26 Hz on a 52 Hz panel); 1 restores free-running.
+int refresh_divisor() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char* v = std::getenv("KONCPC_DRM_DIVISOR");
+    cached = v ? std::atoi(v) : 2;
+    if (cached < 1) cached = 1;
+  }
+  return cached;
+}
+
+// Wait until the panel reaches an absolute vblank count. Targeting an absolute
+// sequence (rather than sleeping a relative number of vblanks) waits only the
+// remainder of the slot, so a render that already took most of it costs nothing
+// extra -- the earlier relative version added a whole refresh and paced to 3.
+void wait_until_vblank(unsigned target_seq) {
+  drmVBlank vbl{};
+  vbl.request.type = DRM_VBLANK_ABSOLUTE;
+  vbl.request.sequence = target_seq;
+  drmWaitVBlank(g.fd, &vbl);
 }
 
 // Returns true when the flip was accepted, so the caller only swaps buffers on
@@ -193,13 +233,18 @@ void drm_present_frame(SDL_Renderer* renderer) {
     g.xmap_src_w = sw; g.xmap_dst_w = dw;
   }
 
-  // The previous flip must have retired before this buffer is safe to write.
+  // DRM allows only one pending flip per CRTC, so the previous event must be
+  // consumed before another can be submitted -- leaving it queued makes every
+  // later flip fail with ENOMEM. Because a render takes longer than a refresh
+  // the flip has almost always retired already, so this costs nothing; the
+  // third buffer is what stops it from serialising when it has not.
   double const t_drain0 = now_ms();
   drain_flip();
+  g.pending = -1;
   double const t_blit0 = now_ms();
   g.drain_ms += t_blit0 - t_drain0;
 
-  DumbFb& back = g.fb[g.front ^ 1];
+  DumbFb& back = g.fb[g.next];
   // Clear only when the letterbox geometry changes; a full 2.7 MB memset every
   // frame is pure cost once the bars are already black.
   if (g.cleared_w != dw || g.cleared_h != dh) {
@@ -220,7 +265,28 @@ void drm_present_frame(SDL_Renderer* renderer) {
   SDL_DestroySurface(src);
 
   g.blit_ms += now_ms() - t_blit0;
-  if (page_flip(back.fb_id)) g.front ^= 1;
+  // Pace BEFORE submitting, not after. Waiting after the flip serialises the
+  // flip-wait with the next render and costs a whole extra refresh; holding
+  // here only burns the remainder of the slot the render did not use.
+  int const div = refresh_divisor();
+  if (div > 1 && g.last_submit_ms > 0) {
+    double const period = 1000.0 / (g.mode.vrefresh ? g.mode.vrefresh : 60);
+    double const due = g.last_submit_ms + period * div;
+    double slack = due - now_ms();
+    while (slack > 0.5) {
+      struct timespec ts {};
+      ts.tv_sec = 0;
+      ts.tv_nsec = (long)(slack * 1e6);
+      nanosleep(&ts, nullptr);
+      slack = due - now_ms();
+    }
+  }
+  if (page_flip(back.fb_id)) {
+    g.last_submit_ms = now_ms();
+    g.pending = g.next;
+    g.front = g.next;
+    g.next = (g.next + 1) % 3;
+  }
 
   g.n_frames++;
   double const t_now = now_ms();
