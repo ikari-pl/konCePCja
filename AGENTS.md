@@ -487,6 +487,14 @@ Press **F12** or send `devtools` via IPC to open the developer tools:
 | F12 | Toggle DevTools |
 | Shift+F1 | Virtual keyboard |
 | Shift+F3 | Save snapshot |
+| Cmd+K (macOS) / Ctrl+K | Command palette |
+| Cmd+O / Ctrl+O | Load Disk A... |
+| Cmd+S / Ctrl+S | Save Snapshot... |
+
+Cmd/Ctrl chords belong to the host UI and never reach the CPC; unmodified
+keys (F-keys included) are the CPC's. The chords are resolved in one place,
+`src/host_chords.h`, which the event loop, both menu bars and the About box
+all read.
 
 ### SDL3 macOS Mouse Events & ImGui Viewports
 

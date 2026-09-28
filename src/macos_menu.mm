@@ -2,6 +2,7 @@
 #include "keyboard.h"
 #include "menu_actions.h"
 #include "menu_bridge.h"
+#include "host_chords.h"
 #include "imgui_state.h"  // FileDialogAction
 #ifdef KONCPC_MODERN_UI
 #include "imgui.h"
@@ -144,13 +145,18 @@ static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
   [submenu addItem:item];
 }
 
-// Add a bridge item (non-KONCPC).  No keyEquivalent — bridge items carry no
-// SDL shortcut.
+// Add a bridge item (non-KONCPC).  Bridge items carry no SDL shortcut; the
+// few with a host chord (host_chords.h) get it as a real key equivalent so
+// AppKit dispatches Cmd+O / Cmd+S itself — a chord the CPC cannot own.
 static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
-                                   NSString* title, BridgeKind kind, int payload) {
+                                   NSString* title, BridgeKind kind, int payload,
+                                   HostChord chord = HostChord::None) {
+  char const key = host_chord_key(chord);
+  NSString* keyEquivalent =
+      key ? [NSString stringWithFormat:@"%c", key] : @"";
   NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
                                                 action:@selector(bridgeAction:)
-                                         keyEquivalent:@""];
+                                         keyEquivalent:keyEquivalent];
   [item setTarget:target];
   [item setTag:pack_bridge_tag(kind, payload)];
   [submenu addItem:item];
@@ -272,7 +278,8 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   {
     NSMenu* m = insert_submenu(mainMenu, @"Media", insertIdx++);
     add_bridge_item(m, target, @"Load Disk A...", BK_FILEDLG,
-                    static_cast<int>(FileDialogAction::LoadDiskA));
+                    static_cast<int>(FileDialogAction::LoadDiskA),
+                    HostChord::OpenDisk);
     add_bridge_item(m, target, @"Load Disk B...", BK_FILEDLG,
                     static_cast<int>(FileDialogAction::LoadDiskB));
     add_bridge_item(m, target, @"Save Disk A...", BK_FILEDLG,
@@ -291,7 +298,8 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     add_bridge_item(m, target, @"Load Snapshot...", BK_FILEDLG,
                     static_cast<int>(FileDialogAction::LoadSnapshot));
     add_bridge_item(m, target, @"Save Snapshot...", BK_FILEDLG,
-                    static_cast<int>(FileDialogAction::SaveSnapshot));
+                    static_cast<int>(FileDialogAction::SaveSnapshot),
+                    HostChord::SaveSnapshot);
     if (const MenuAction* e = koncpc_find_action(KONCPC_SNAPSHOT))
       add_action_item(m, target, e);
     if (const MenuAction* e = koncpc_find_action(KONCPC_LD_SNAP))

@@ -83,8 +83,10 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 // contract — see iui_host.h header for why imgui_state stays free-
 // standing instead of being absorbed into the host interface.
 #include "command_palette.h"
+#include "host_chords.h"
 #include "imgui_ui.h"
 #include "iui_host.h"
+#include "menu_bridge.h"
 #ifdef KONCPC_MODERN_UI
 #include "imgui_ui_host.h"
 #endif
@@ -4671,13 +4673,32 @@ int koncpc_main(int argc, char** argv) {
         continue;
       }
 
-      // Check for command palette shortcut (Cmd+K / Ctrl+K)
+      // Host-UI chords (Cmd on macOS, Ctrl elsewhere): the palette, Load
+      // Disk A..., Save Snapshot... — resolved by host_chord_for() so the
+      // menus' accelerator labels and this dispatch cannot disagree. On macOS
+      // the native menu bar's key equivalents catch Cmd+O/S first; this path
+      // serves the other platforms and a hidden native bar.
       if (event.type == SDL_EVENT_KEY_DOWN) {
         bool const ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
         bool const cmd_key = (event.key.mod & SDL_KMOD_GUI) != 0;
-        if (g_command_palette.handle_key(event.key.key, ctrl, cmd_key)) {
-          continue;
+        bool handled = true;
+        switch (host_chord_for(event.key.key, ctrl, cmd_key)) {
+          case HostChord::CommandPalette:
+            g_command_palette.toggle();
+            break;
+          case HostChord::OpenDisk:
+            koncpc_request_file_dialog(
+                static_cast<int>(FileDialogAction::LoadDiskA));
+            break;
+          case HostChord::SaveSnapshot:
+            koncpc_request_file_dialog(
+                static_cast<int>(FileDialogAction::SaveSnapshot));
+            break;
+          case HostChord::None:
+            handled = false;
+            break;
         }
+        if (handled) continue;
       }
 
       // If the UI wants input, skip emulator processing.

@@ -22,7 +22,6 @@ class CommandPalette {
   void render();
 
   // Check for Cmd/Ctrl+K shortcut. Returns true if palette toggled.
-  bool handle_key(int keycode, bool ctrl, bool cmd);
 
   // Register a command
   void register_command(const std::string& name, const std::string& description,
