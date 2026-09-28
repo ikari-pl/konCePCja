@@ -12,17 +12,28 @@ This adds a matching pair of calls so the launcher can hand the panel to a
 child process and take it back when the child exits, without tearing down and
 rebuilding the LVGL display.
 
+Dropping master is not sufficient on its own. While not master, drmModePageFlip
+fails with EACCES, drm_dev->req stays set, and drm_flush_wait() blocks in
+poll(..., -1) for a completion event that can never arrive -- the UI hangs, and
+stays hung after the panel is handed back, because the stuck state is in LVGL
+rather than in the kernel. So the release also gates flushing: while paused,
+drm_flush() completes immediately without touching DRM, which keeps LVGL's
+state machine consistent and issues no ioctls.
+
 --- a/lvgl/src/drivers/display/drm/lv_linux_drm.h
 +++ b/lvgl/src/drivers/display/drm/lv_linux_drm.h
-@@ -69,6 +69,29 @@ void lv_linux_drm_set_rotation(lv_display_t * disp, int rotation);
+@@ -69,6 +69,33 @@ void lv_linux_drm_set_rotation(lv_display_t * disp, int rotation);
  
  /**
-+ * @brief Release DRM master so another process can drive the display
++ * @brief Release the display so another process can drive it
 + *
 + * DRM allows a single master per device. Call this before launching an
 + * external application that needs the panel, then lv_linux_drm_acquire()
-+ * when it exits. The display object stays valid throughout; only the master
-+ * capability is given up.
++ * when it exits. The display object stays valid throughout.
++ *
++ * Flushing is suspended for the duration: without that, page flips fail with
++ * EACCES and the driver blocks forever waiting for a completion event that
++ * cannot arrive.
 + *
 + * @param disp Pointer to the display object created with lv_linux_drm_create()
 + * @return LV_RESULT_OK on success
@@ -30,11 +41,11 @@ rebuilding the LVGL display.
 +lv_result_t lv_linux_drm_release(lv_display_t * disp);
 +
 +/**
-+ * @brief Reacquire DRM master and restore the mode
++ * @brief Reacquire the display and restore the mode
 + *
 + * Counterpart to lv_linux_drm_release(). The external application will have
-+ * reprogrammed the CRTC, so the saved configuration is restored; the caller
-+ * only needs to trigger a redraw afterwards.
++ * reprogrammed the CRTC, so the saved configuration is restored and flushing
++ * resumes. Trigger a redraw afterwards.
 + *
 + * @param disp Pointer to the display object created with lv_linux_drm_create()
 + * @return LV_RESULT_OK on success
@@ -47,7 +58,41 @@ rebuilding the LVGL display.
   * Sets the DRM device file path and connector ID to use for the specified display.
 --- a/lvgl/src/drivers/display/drm/lv_linux_drm.c
 +++ b/lvgl/src/drivers/display/drm/lv_linux_drm.c
-@@ -202,6 +202,44 @@
+@@ -62,6 +62,7 @@
+     uint32_t width, height;
+     uint32_t mmWidth, mmHeight;
+     uint32_t fourcc;
++    bool paused;
+     drmModeModeInfo mode;
+     uint32_t blob_id;
+     drmModeCrtc * saved_crtc;
+@@ -1044,6 +1045,9 @@ static void drm_flush_wait(lv_display_t * disp)
+ {
+     drm_dev_t * drm_dev = lv_display_get_driver_data(disp);
+ 
++    /* Nothing was submitted while paused, so there is nothing to wait for. */
++    if(drm_dev->paused) return;
++
+     struct pollfd pfd;
+     pfd.fd = drm_dev->fd;
+     pfd.events = POLLIN;
+@@ -1067,6 +1071,15 @@ static void drm_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_
+ {
+     if(!lv_display_flush_is_last(disp)) return;
+ 
++    drm_dev_t * paused_dev = lv_display_get_driver_data(disp);
++    if(paused_dev->paused) {
++        /* We are not master: a page flip would fail with EACCES and leave
++         * drm_dev->req set, which makes drm_flush_wait() poll forever. Report
++         * the flush as done so LVGL stays consistent, and submit nothing. */
++        lv_display_flush_ready(disp);
++        return;
++    }
++
+     LV_UNUSED(area);
+     LV_UNUSED(px_map);
+     drm_dev_t * drm_dev = lv_display_get_driver_data(disp);
+@@ -202,6 +215,52 @@
  }
  
 +lv_result_t lv_linux_drm_release(lv_display_t * disp)
@@ -58,7 +103,13 @@ rebuilding the LVGL display.
 +        return LV_RESULT_INVALID;
 +    }
 +
++    /* Let any in-flight flip retire before we stop servicing events, or its
++     * completion is lost and drm_dev->req never clears. */
++    drm_flush_wait(disp);
++    drm_dev->paused = true;
++
 +    if(drmDropMaster(drm_dev->fd) != 0) {
++        drm_dev->paused = false;
 +        LV_LOG_WARN("drmDropMaster failed: %d", errno);
 +        return LV_RESULT_INVALID;
 +    }
@@ -88,6 +139,7 @@ rebuilding the LVGL display.
 +                       &drm_dev->saved_crtc->mode);
 +    }
 +
++    drm_dev->paused = false;
 +    return LV_RESULT_OK;
 +}
 +
