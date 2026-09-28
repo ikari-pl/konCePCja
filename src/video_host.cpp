@@ -206,6 +206,12 @@ void video_ring_present() {
         g_ring_shared.exchange(g_ring_front, std::memory_order_acq_rel);
     g_ring_front = prev & RING_INDEX_MASK;
   }
+  // Same trap as the CPC texture: a surface with an alpha channel blits
+  // *blended* by default, so this straight frame handoff was alpha-compositing
+  // every pixel for no visible effect. The ring holds opaque CPC frames.
+  if (!SDL_getenv("KONCPC_BLEND")) {
+    SDL_SetSurfaceBlendMode(g_cpc_ring[g_ring_front], SDL_BLENDMODE_NONE);
+  }
   SDL_BlitSurface(g_cpc_ring[g_ring_front], nullptr, g_frontend, nullptr);
 }
 
