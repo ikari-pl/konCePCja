@@ -1,0 +1,96 @@
+Allow the DRM display to be released and reacquired.
+
+The launcher creates its display once with lv_linux_drm_create() and holds DRM
+master for its whole lifetime. DRM permits exactly one master per device, so no
+other process can drive the panel while it runs: drmSetMaster returns EBUSY and
+drmModeSetPlane returns EACCES, even as root and even for the overlay planes
+the launcher never uses.
+
+That prevents the board from running any external full-screen application.
+
+This adds a matching pair of calls so the launcher can hand the panel to a
+child process and take it back when the child exits, without tearing down and
+rebuilding the LVGL display.
+
+--- a/lvgl/src/drivers/display/drm/lv_linux_drm.h
++++ b/lvgl/src/drivers/display/drm/lv_linux_drm.h
+@@ -69,6 +69,29 @@ void lv_linux_drm_set_rotation(lv_display_t * disp, int rotation);
+ 
+ /**
++ * @brief Release DRM master so another process can drive the display
++ *
++ * DRM allows a single master per device. Call this before launching an
++ * external application that needs the panel, then lv_linux_drm_acquire()
++ * when it exits. The display object stays valid throughout; only the master
++ * capability is given up.
++ *
++ * @param disp Pointer to the display object created with lv_linux_drm_create()
++ * @return LV_RESULT_OK on success
++ */
++lv_result_t lv_linux_drm_release(lv_display_t * disp);
++
++/**
++ * @brief Reacquire DRM master and restore the mode
++ *
++ * Counterpart to lv_linux_drm_release(). The external application will have
++ * reprogrammed the CRTC, so the saved configuration is restored; the caller
++ * only needs to trigger a redraw afterwards.
++ *
++ * @param disp Pointer to the display object created with lv_linux_drm_create()
++ * @return LV_RESULT_OK on success
++ */
++lv_result_t lv_linux_drm_acquire(lv_display_t * disp);
++
++/**
+  * @brief Configure the DRM device file and connector for a display
+  *
+  * Sets the DRM device file path and connector ID to use for the specified display.
+--- a/lvgl/src/drivers/display/drm/lv_linux_drm.c
++++ b/lvgl/src/drivers/display/drm/lv_linux_drm.c
+@@ -202,6 +202,44 @@
+ }
+ 
++lv_result_t lv_linux_drm_release(lv_display_t * disp)
++{
++    drm_dev_t * drm_dev = lv_display_get_driver_data(disp);
++
++    if(drm_dev == NULL || drm_dev->fd < 0) {
++        return LV_RESULT_INVALID;
++    }
++
++    if(drmDropMaster(drm_dev->fd) != 0) {
++        LV_LOG_WARN("drmDropMaster failed: %d", errno);
++        return LV_RESULT_INVALID;
++    }
++
++    return LV_RESULT_OK;
++}
++
++lv_result_t lv_linux_drm_acquire(lv_display_t * disp)
++{
++    drm_dev_t * drm_dev = lv_display_get_driver_data(disp);
++
++    if(drm_dev == NULL || drm_dev->fd < 0) {
++        return LV_RESULT_INVALID;
++    }
++
++    if(drmSetMaster(drm_dev->fd) != 0) {
++        LV_LOG_WARN("drmSetMaster failed: %d", errno);
++        return LV_RESULT_INVALID;
++    }
++
++    /* The external application reprogrammed the CRTC, so put ours back before
++     * the next flush lands on a pipe configured for someone else's mode. */
++    if(drm_dev->saved_crtc != NULL) {
++        drmModeSetCrtc(drm_dev->fd, drm_dev->saved_crtc->crtc_id,
++                       drm_dev->saved_crtc->buffer_id, drm_dev->saved_crtc->x,
++                       drm_dev->saved_crtc->y, &drm_dev->conn_id, 1,
++                       &drm_dev->saved_crtc->mode);
++    }
++
++    return LV_RESULT_OK;
++}
++
+ lv_result_t lv_linux_drm_set_file(lv_display_t * disp, const char * file, int64_t connector_id)
+ {
+     int ret;
