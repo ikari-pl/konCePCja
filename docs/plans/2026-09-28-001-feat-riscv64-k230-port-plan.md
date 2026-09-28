@@ -741,3 +741,59 @@ Read `SDL_GetWindowSurface()` directly rather than going through the screenshot
 path — which is exactly what the DRM presenter must do anyway. Build konCePCja
 static for the board, add the ~100-line presenter, run it on the panel, and
 look. That is the real integration and it answers the question directly.
+
+---
+
+## Operational notes for working on this board
+
+### The Wi-Fi link dies on its own (RTL8189FS LPS oops)
+
+The board dropped off the network mid-session and did not return; only a
+power-cycle recovered it. `dmesg` carries a repeating kernel oops in the
+RTL8189FS power-save teardown:
+
+```
+rtw_lps_state_chk -> SetHwReg -> SetHwReg8188F -> SetHwReg8188FS
+  -> rtw_hal_set_hwreg -> rtw_set_ps_mode -> LPS_Leave -> lps_ctrl_wk_hdl
+```
+
+`/proc/net/rtl8189fs/wlan0/ps_info` shows `LPS mode: MAX` with non-zero
+`LPS enter/leave count`, i.e. the faulting path is being exercised routinely.
+
+**`rtw_power_mgnt=0` does not fix a live session.** Writing
+`/sys/module/8189fs/parameters/rtw_power_mgnt` and `rtw_ips_mode` succeeds, but
+the adapter read those at init — `ps_info` still reports `LPS mode: MAX`
+afterwards. They only take effect on module re-init, which drops the link.
+
+**Practical mitigation: never let the link go idle.** LPS engages on idle, so a
+few-second ping keeps it out of power-save. `tools/riscv64/keepalive.sh` does
+this and reports the moment the board becomes unreachable, so a lost link is
+never mistaken for a slow command.
+
+**Consequence for risky operations:** do not rewrite the partition table of the
+**mounted** rootfs over SSH. A disconnect between `fdisk` writing the extent and
+`resize2fs` finishing corrupts the card. Do the resize offline with the card in
+a host reader (nothing mounted, no link to lose, and the verified
+`sysimage-sdcard.img` is the fallback).
+
+### Rootfs is small: 600 MB partition, ~133 MB free
+
+The image claims only 728 MB of the 32 GB card. To grow: keep p2's start at
+sector 262144 and extend its size from 1228800 to 33554432 sectors (16 GiB),
+then `resize2fs`. Check `resize2fs` exists first — Buildroot often omits it.
+
+### Board needs the power key held after every power-cycle
+
+USB power alone leaves the SoC in deep sleep with a black screen. Hold the PMU
+power key ~2-3 s. BOOT0 does not do this.
+
+### Two build-script mistakes worth not repeating
+
+1. **Never set `CMAKE_FIND_LIBRARY_SUFFIXES=".a"`** to force a static build. It
+   makes every CMake `TryCompile` probe perform a full static link; under QEMU
+   the configure phase then runs longer than the entire build (19 minutes in,
+   one object file). `gcc -static` already prefers `.a` archives.
+2. **Do not `sed`-delete lines from a shell script that uses line
+   continuations.** Removing the last `-D...` flag left a dangling `\` that
+   swallowed the following `cmake --build` line into the configure command —
+   valid shell, wrong program, and `sh -n` passes. Rewrite such scripts whole.
