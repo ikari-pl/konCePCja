@@ -48,6 +48,7 @@ struct DrmState {
   bool failed = false;
   std::vector<int> xmap;    // destination column -> source column
   int xmap_src_w = -1, xmap_dst_w = -1;
+  int cleared_w = -1, cleared_h = -1;
 };
 
 DrmState g;
@@ -115,15 +116,26 @@ bool init() {
 volatile int flip_pending = 0;
 void on_flip(int, unsigned, unsigned, unsigned, void*) { flip_pending = 0; }
 
-void page_flip(uint32_t fb_id) {
-  if (drmModePageFlip(g.fd, g.crtc_id, fb_id, DRM_MODE_PAGE_FLIP_EVENT, nullptr)) return;
-  flip_pending = 1;
+// Block until the in-flight page flip (if any) has retired. Until it does, the
+// buffer we are about to draw into may still be the one being scanned out, and
+// writing it produces tearing.
+void drain_flip() {
+  if (!flip_pending) return;
   drmEventContext ev{};
   ev.version = 2;
   ev.page_flip_handler = on_flip;
   while (flip_pending) {
-    if (drmHandleEvent(g.fd, &ev)) break;
+    if (drmHandleEvent(g.fd, &ev)) { flip_pending = 0; break; }
   }
+}
+
+// Returns true when the flip was accepted, so the caller only swaps buffers on
+// success. An unchecked failure here was the other half of the tearing: the
+// front index advanced anyway and the next frame drew into the live buffer.
+bool page_flip(uint32_t fb_id) {
+  if (drmModePageFlip(g.fd, g.crtc_id, fb_id, DRM_MODE_PAGE_FLIP_EVENT, nullptr)) return false;
+  flip_pending = 1;
+  return true;
 }
 
 }  // namespace
@@ -159,8 +171,17 @@ void drm_present_frame(SDL_Renderer* renderer) {
     g.xmap_src_w = sw; g.xmap_dst_w = dw;
   }
 
+  // The previous flip must have retired before this buffer is safe to write.
+  drain_flip();
+
   DumbFb& back = g.fb[g.front ^ 1];
-  std::memset(back.map, 0, back.size);           // letterbox bars
+  // Clear only when the letterbox geometry changes; a full 2.7 MB memset every
+  // frame is pure cost once the bars are already black.
+  if (g.cleared_w != dw || g.cleared_h != dh) {
+    std::memset(g.fb[0].map, 0, g.fb[0].size);
+    std::memset(g.fb[1].map, 0, g.fb[1].size);
+    g.cleared_w = dw; g.cleared_h = dh;
+  }
   for (int dy = 0; dy < dh; dy++) {
     auto const* srow = reinterpret_cast<uint32_t const*>(
         static_cast<uint8_t const*>(rgb->pixels) +
@@ -173,12 +194,12 @@ void drm_present_frame(SDL_Renderer* renderer) {
   if (rgb != src) SDL_DestroySurface(rgb);
   SDL_DestroySurface(src);
 
-  page_flip(back.fb_id);
-  g.front ^= 1;
+  if (page_flip(back.fb_id)) g.front ^= 1;
 }
 
 void drm_present_shutdown() {
   if (!g.ready) return;
+  drain_flip();
   for (auto& f : g.fb) {
     if (f.map) munmap(f.map, f.size);
     if (f.fb_id) drmModeRmFB(g.fd, f.fb_id);

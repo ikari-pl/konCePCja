@@ -68,6 +68,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "telnet_console.h"
 #include "trace.h"
 #include "video_gpu.h"
+#include "drm_present.h"
 #include "video_host.h"
 #include "vjoystick_map.h"
 #include "wav_recorder.h"
@@ -2064,6 +2065,7 @@ int video_init() {
 }
 
 void video_shutdown() {
+  drm_present_shutdown();  // release DRM master before SDL tears the video down
   // Remember the windowed geometry before the plugin destroys the window: the
   // next video_init() creates a brand-new one and, in Fit mode, this is the
   // only record of the size the user chose.  A fullscreen window's size belongs
