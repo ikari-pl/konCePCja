@@ -4095,8 +4095,17 @@ bool render_one_frame() {
   // GPU call (CRT Basic/Full with GL shaders, SDL swscale with pixel
   // filters).
   bool skip = false;
+  // TEMP instrumentation: how much of the frame is spent in this wait loop,
+  // and how much of THAT is SDL_PumpEvents?
+  static double dbg_wait_ms = 0, dbg_pump_ms = 0;
+  static unsigned long dbg_iters = 0;
+  uint64_t const dbg_freq = SDL_GetPerformanceFrequency();
+  uint64_t const dbg_wait0 = SDL_GetPerformanceCounter();
   while (!g_frame_signal.try_wait_ready_for(1, skip)) {
+    dbg_iters++;
+    uint64_t const dbg_pump0 = SDL_GetPerformanceCounter();
     SDL_PumpEvents();  // keep macOS/Metal run loop alive
+    dbg_pump_ms += (double)(SDL_GetPerformanceCounter() - dbg_pump0) * 1000.0 / dbg_freq;
     // Escape hatch: if the emulator got paused (e.g. focus loss /
     // auto_pause, IPC pause) or a quit was requested while we were
     // waiting, the Z80 thread stops producing frames and this loop
@@ -4110,6 +4119,7 @@ bool render_one_frame() {
       return false;
     }
   }
+  dbg_wait_ms += (double)(SDL_GetPerformanceCounter() - dbg_wait0) * 1000.0 / dbg_freq;
   // Pace the present pipeline to display rate (F8): an uncapped emulation
   // publishes thousands of frames a second, and running the full present
   // (ring copy + texture upload + ImGui + scaled software blits) for each
@@ -4120,9 +4130,16 @@ bool render_one_frame() {
   // below the threshold (60 Hz ≈ 16.7 ms > 1/70 s) and is unaffected.
   static uint64_t s_last_present = 0;
   const uint64_t present_now = SDL_GetPerformanceCounter();
+  // TEMP instrumentation: why is the present rate far below the 50 Hz the
+  // emulation reports? Count outcomes per second.
+  static unsigned long dbg_calls = 0, dbg_skip_sig = 0, dbg_skip_pace = 0, dbg_present = 0;
+  static uint64_t dbg_t0 = 0;
+  dbg_calls++;
+  if (skip) dbg_skip_sig++;
   if (!skip && s_last_present != 0 &&
       present_now - s_last_present < SDL_GetPerformanceFrequency() / 70) {
     skip = true;
+    dbg_skip_pace++;
   }
   if (skip) {
     // Skipped frame: nothing to present this time; just service pending
@@ -4136,8 +4153,34 @@ bool render_one_frame() {
     return false;
   }
   s_last_present = present_now;
+  dbg_present++;
+  static double dbg_body_ms = 0, dbg_ring_ms = 0, dbg_ab_ms = 0, dbg_tail_ms = 0;
+  uint64_t const dbg_body0 = SDL_GetPerformanceCounter();
+  if (dbg_t0 == 0) dbg_t0 = present_now;
+  if (present_now - dbg_t0 >= SDL_GetPerformanceFrequency()) {
+    {
+      char b[256];
+      snprintf(b, sizeof(b),
+               "render_one_frame/s: calls=%lu presented=%lu | wait %.1f | body %.1f "
+               "= ring %.1f + AB %.1f + rest %.1f ms/f",
+               dbg_calls, dbg_present,
+               dbg_wait_ms / (dbg_present ? dbg_present : 1),
+               dbg_body_ms / (dbg_present ? dbg_present : 1),
+               dbg_ring_ms / (dbg_present ? dbg_present : 1),
+               dbg_ab_ms / (dbg_present ? dbg_present : 1),
+               (dbg_body_ms - dbg_ring_ms - dbg_ab_ms) / (dbg_present ? dbg_present : 1));
+      LOG_INFO(std::string(b));
+    }
+    dbg_calls = dbg_present = dbg_skip_sig = dbg_skip_pace = 0;
+    dbg_wait_ms = dbg_pump_ms = 0; dbg_iters = 0;
+    dbg_body_ms = dbg_ring_ms = dbg_ab_ms = dbg_tail_ms = 0;
+    dbg_t0 = present_now;
+  }
   // Copy the latest published frame into the surface the flip reads.
+  uint64_t const dbg_ring0 = SDL_GetPerformanceCounter();
   video_ring_present();
+  dbg_ring_ms += (double)(SDL_GetPerformanceCounter() - dbg_ring0) * 1000.0 /
+                 SDL_GetPerformanceFrequency();
   // OSD text — render thread owns osd_message/osd_timing, no race.
   // Write onto the presented frame (video_render_surface()), not the
   // Z80's live write buffer.
@@ -4178,6 +4221,8 @@ bool render_one_frame() {
   }
   video_display_b();  // Phase B: 0-60ms, Z80 runs concurrently!
   uint64_t const displayEnd = SDL_GetPerformanceCounter();
+  dbg_ab_ms += (double)(displayEnd - displayStart) * 1000.0 / SDL_GetPerformanceFrequency();
+  dbg_tail_ms += 0;  // filled at end of body
   displayTimeAccum.fetch_add(displayEnd - displayStart,
                              std::memory_order_relaxed);
   if (audio_stream && CPC.snd_ready) {
@@ -4197,6 +4242,8 @@ bool render_one_frame() {
     dumpScreen();
     g_take_screenshot = false;
   }
+  dbg_body_ms += (double)(SDL_GetPerformanceCounter() - dbg_body0) * 1000.0 /
+                 SDL_GetPerformanceFrequency();
   return false;
 }
 }  // namespace

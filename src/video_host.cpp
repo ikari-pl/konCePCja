@@ -1799,6 +1799,14 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
 
 namespace {
 void sdlr_flip(video_plugin* t) {
+  // TEMP instrumentation: split the ~99 ms Phase A on the K230 into upload,
+  // ImGui draw-list build, software rasterisation, and present.
+  static double d_up = 0, d_imgui = 0, d_raster = 0, d_present = 0, d_capture = 0;
+  static unsigned long d_n = 0;
+  static Uint64 d_t0 = 0;
+  auto d_now = []() {
+    return (double)SDL_GetPerformanceCounter() * 1000.0 / SDL_GetPerformanceFrequency();
+  };
   // Recompute display area each frame (handles window resize, 4:3 aspect)
   compute_scale(t, vid->w, vid->h);
 
@@ -1808,7 +1816,10 @@ void sdlr_flip(video_plugin* t) {
                                                : SDL_SCALEMODE_NEAREST);
 
   // Upload CPC framebuffer to SDL texture
+  double const d_a = d_now();
   SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
+  double const d_b = d_now();
+  d_up += d_b - d_a;
 
   // Start ImGui frame
   ImGui_ImplSDLRenderer3_NewFrame();
@@ -1828,16 +1839,33 @@ void sdlr_flip(video_plugin* t) {
   // Render all ImGui windows
   imgui_render_ui();
   ImGui::Render();
+  double const d_c = d_now();
+  d_imgui += d_c - d_b;
 
   SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
   SDL_RenderClear(renderer);
   ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+  double const d_d = d_now();
+  d_raster += d_d - d_c;
 
   // Capture screenshot (emulator screen only)
   video_capture_if_pending();
+  double const d_e = d_now();
+  d_capture += d_e - d_d;
 
   SDL_RenderPresent(renderer);
+  d_present += d_now() - d_e;
   drm_present_frame(renderer);  // scan out to /dev/dri/card0 when KONCPC_DRM=1
+
+  if (++d_n >= 9) {
+    char b[192];
+    snprintf(b, sizeof(b),
+             "sdlr_flip[%s]: upload %.1f  imgui %.1f  raster %.1f  CAPTURE %.1f  present %.1f ms/f",
+             SDL_GetRendererName(renderer) ? SDL_GetRendererName(renderer) : "?",
+             d_up / d_n, d_imgui / d_n, d_raster / d_n, d_capture / d_n, d_present / d_n);
+    LOG_INFO(std::string(b));
+    d_up = d_imgui = d_raster = d_present = d_capture = 0; d_n = 0; (void)d_t0;
+  }
 }
 }  // namespace
 
