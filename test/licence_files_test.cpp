@@ -144,9 +144,15 @@ TEST(DebianPackaging, TheDesktopEntryIsKoncepcjas) {
   EXPECT_TRUE(contains(desktop, "Exec=koncepcja"));
   EXPECT_FALSE(contains(desktop, "Caprice"));
   EXPECT_FALSE(contains(desktop, "caprice32"));
-  EXPECT_TRUE(
-      std::filesystem::exists(source_dir() + "/resources/koncepcja-icon.png"))
-      << "the icon `make install` places in share/pixmaps";
+  // The hicolor theme wants square renditions per size; these are rendered
+  // from the 1024x1024 .icns master (the marketing PNG is 850x759).
+  for (const char* size : {"16x16", "24x24", "32x32", "48x48", "64x64",
+                           "128x128", "256x256", "512x512"}) {
+    EXPECT_TRUE(std::filesystem::exists(
+        source_dir() + "/resources/freedesktop/icons/hicolor/" + size +
+        "/apps/koncepcja.png"))
+        << size;
+  }
 }
 
 TEST(DebianPackaging,
@@ -155,6 +161,9 @@ TEST(DebianPackaging,
   ASSERT_FALSE(makefile.empty());
   EXPECT_TRUE(contains(makefile, "share/applications/koncepcja.desktop"));
   EXPECT_TRUE(contains(makefile, "share/pixmaps/koncepcja.png"));
+  EXPECT_TRUE(
+      contains(makefile, "share/icons/hicolor/$$size/apps/koncepcja.png"))
+      << "the square hicolor set must be installed per size";
   EXPECT_TRUE(contains(makefile, "s,__SHARE_PATH__,$(SHARE_PATH),"))
       << "a package build passes SHARE_PATH so /etc/koncepcja.cfg does not "
          "point into the staging directory";

@@ -551,7 +551,13 @@ SHARE_PATH ?= $(DESTDIR)$(prefix)/share/koncepcja
 install: $(TARGET)
 	install -D $(TARGET) $(DESTDIR)$(prefix)/bin/$(TARGET)
 	install -D -m644 resources/freedesktop/koncepcja.desktop $(DESTDIR)$(prefix)/share/applications/koncepcja.desktop
-	install -D -m644 resources/koncepcja-icon.png $(DESTDIR)$(prefix)/share/pixmaps/koncepcja.png
+	# Square icons rendered from the .icns master (resources/freedesktop/icons):
+	# the hicolor theme for desktops, share/pixmaps for anything older.
+	for d in resources/freedesktop/icons/hicolor/*/apps; do \
+		size=$$(basename $$(dirname $$d)); \
+		install -D -m644 $$d/koncepcja.png $(DESTDIR)$(prefix)/share/icons/hicolor/$$size/apps/koncepcja.png; \
+	done
+	install -D -m644 resources/freedesktop/icons/hicolor/256x256/apps/koncepcja.png $(DESTDIR)$(prefix)/share/pixmaps/koncepcja.png
 	install -D $(GROFF_DOC) $(DESTDIR)$(prefix)/share/man/man6/koncepcja.6
 	if [ ! -f $(DESTDIR)/etc/koncepcja.cfg ]; then \
 		install -D -m664 koncepcja.cfg.tmpl $(DESTDIR)/etc/koncepcja.cfg; \
