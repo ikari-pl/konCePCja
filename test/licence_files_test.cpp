@@ -69,6 +69,27 @@ TEST(LicenceFiles, EveryArchiveTargetShipsTheProjectLicenceAndNotice) {
   }
   EXPECT_EQ(3, archive_copies)
       << "expected the MinGW, macOS and source-package targets";
+
+  // The macOS .app bundle is packaged by its own target, not an archive cp:
+  // it carried the ROMs and resources and no licence at all.
+  EXPECT_TRUE(contains(
+      makefile,
+      "cp LICENSE.md NOTICE.md README.md $(BUNDLE_DIR)/Contents/Resources/"))
+      << "the app bundle must carry the project's licence and notice";
+  EXPECT_TRUE(contains(makefile, "cp -r resources rom licenses $(BUNDLE_DIR)"))
+      << "and the third-party licences";
+}
+
+TEST(LicenceFiles, TheWindowsZipShipsTheProjectLicenceAndNotice) {
+  // The MSVC workflow packages its own zip (not via the makefile); it copied
+  // the third-party licences and none of the program's own.
+  std::string const msvc =
+      read_file(source_dir() + "/.github/workflows/msvc.yml");
+  ASSERT_FALSE(msvc.empty()) << "could not read the MSVC workflow";
+  EXPECT_TRUE(
+      contains(msvc, "Copy-Item LICENSE.md, NOTICE.md, README.md $stage"))
+      << "the Windows release zip must stage LICENSE.md and NOTICE.md";
+  EXPECT_FALSE(contains(msvc, "COPYING.txt"));
 }
 
 TEST(LicenceFiles, DebianCopyrightDescribesThisProjectNotCaprice32) {
@@ -79,6 +100,65 @@ TEST(LicenceFiles, DebianCopyrightDescribesThisProjectNotCaprice32) {
   EXPECT_FALSE(contains(copyright, "License: GPL-2.0+"))
       << "the project's files are not GPL";
   EXPECT_FALSE(contains(copyright, "caprice32"));
+}
+
+// The Debian recipe was Caprice32's from 2017 — package name, homepage, SDL2
+// build-dependency, a debian/menu entry — shipped untouched in every Linux
+// source archive. It must describe this project and its current build.
+TEST(DebianPackaging, TheRecipeDescribesKoncepcja) {
+  std::string const control = read_file(source_dir() + "/debian/control");
+  ASSERT_FALSE(control.empty());
+  EXPECT_TRUE(contains(control, "Source: koncepcja"));
+  EXPECT_TRUE(contains(control, "Package: koncepcja"));
+  EXPECT_TRUE(
+      contains(control, "Homepage: https://github.com/ikari-pl/konCePCja"));
+  EXPECT_FALSE(contains(control, "caprice"));
+  EXPECT_FALSE(contains(control, "libsdl2")) << "the build vendors SDL3";
+  EXPECT_TRUE(contains(control, "debhelper-compat"))
+      << "compat level lives in Build-Depends, not a debian/compat file";
+
+  std::string const changelog = read_file(source_dir() + "/debian/changelog");
+  ASSERT_FALSE(changelog.empty());
+  EXPECT_EQ(0u, changelog.find("koncepcja ("))
+      << "the changelog names the package; the version comes from "
+         "`make debian-changelog` (release-please manifest)";
+  EXPECT_FALSE(contains(changelog, "caprice32 ("));
+
+  std::string const rules = read_file(source_dir() + "/debian/rules");
+  ASSERT_FALSE(rules.empty());
+  EXPECT_FALSE(contains(rules, "caprice"));
+  EXPECT_TRUE(contains(rules, "vendor/SDL") || contains(rules, "SDL_SRC"))
+      << "the package must build the vendored SDL3 it links";
+
+  // Obsolete since Debian 9 / debhelper 13 respectively.
+  EXPECT_FALSE(std::filesystem::exists(source_dir() + "/debian/menu"));
+  EXPECT_FALSE(std::filesystem::exists(source_dir() + "/debian/compat"));
+}
+
+TEST(DebianPackaging, TheDesktopEntryIsKoncepcjas) {
+  std::string const desktop =
+      read_file(source_dir() + "/resources/freedesktop/koncepcja.desktop");
+  ASSERT_FALSE(desktop.empty());
+  EXPECT_TRUE(contains(desktop, "Name=konCePCja"));
+  EXPECT_TRUE(contains(desktop, "Icon=koncepcja"));
+  EXPECT_TRUE(contains(desktop, "Exec=koncepcja"));
+  EXPECT_FALSE(contains(desktop, "Caprice"));
+  EXPECT_FALSE(contains(desktop, "caprice32"));
+  EXPECT_TRUE(
+      std::filesystem::exists(source_dir() + "/resources/koncepcja-icon.png"))
+      << "the icon `make install` places in share/pixmaps";
+}
+
+TEST(DebianPackaging,
+     InstallStagesTheDesktopEntryAndDoesNotBakeDestdirIntoEtc) {
+  std::string const makefile = read_file(source_dir() + "/makefile");
+  ASSERT_FALSE(makefile.empty());
+  EXPECT_TRUE(contains(makefile, "share/applications/koncepcja.desktop"));
+  EXPECT_TRUE(contains(makefile, "share/pixmaps/koncepcja.png"));
+  EXPECT_TRUE(contains(makefile, "s,__SHARE_PATH__,$(SHARE_PATH),"))
+      << "a package build passes SHARE_PATH so /etc/koncepcja.cfg does not "
+         "point into the staging directory";
+  EXPECT_TRUE(contains(makefile, "debian-changelog:"));
 }
 
 TEST(LicenceFiles, RomLicenceDoesNotNameAGplProject) {

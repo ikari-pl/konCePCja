@@ -44,13 +44,22 @@ make APP_PATH="$PWD" -j$(nproc)
 
 ### Debian/Ubuntu package
 
-Install additional packaging tools:
+The recipe in `debian/` builds a `koncepcja` package: it compiles the vendored
+SDL3 first and ships it privately under `/usr/lib/koncepcja`, installs the
+binary, man page, `/etc/koncepcja.cfg`, `/usr/share/koncepcja/{resources,rom}`,
+a desktop entry and an icon. Install the build tools plus the `Build-Depends`
+listed in `debian/control`, then, from a checkout with submodules:
 
 ```
-sudo apt-get install dpkg-dev devscripts fakeroot debhelper
+sudo apt-get install dpkg-dev debhelper devscripts fakeroot
+make debian-changelog          # stamps debian/changelog with the release version
+dpkg-buildpackage -us -uc -b   # ../koncepcja_<version>-1_<arch>.deb
 ```
 
-Then build with `make VERSION=<version>`, go to `release/koncepcja_linux/koncepcja-<version>/debian` and run `debuild -us -uc`.
+`make distrib` produces the same tree as a source package under
+`release/koncepcja_linux/koncepcja-<version>/` (vendored SDL3 sources
+included), from which `dpkg-buildpackage` also works. The licence does not
+permit redistribution, so the package is for your own machines.
 
 ## macOS
 

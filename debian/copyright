@@ -3,11 +3,9 @@ Upstream-Name: konCePCja
 Upstream-Contact: Cezar "ikari" Pokorski <cezar@pokor.ski>
 Source: https://github.com/ikari-pl/konCePCja
 Comment:
- konCePCja began as a fork of Caprice32 (GPLv2). Every inherited file has since
- been replaced by a clean-room implementation and deleted (see NOTICE.md and
- docs/replacement-ledger.md); no Caprice32 code survives in this tree, which is
- what allows the source-available licence below. This is NOT free software in
- the Debian sense: redistribution of the software is not permitted.
+ Provenance and third-party attributions are recorded in NOTICE.md. This is
+ NOT free software in the Debian sense: redistribution of the software is not
+ permitted, so the package is for personal and internal builds only.
 
 Files: *
 Copyright: 2016-2026 Cezar "ikari" Pokorski

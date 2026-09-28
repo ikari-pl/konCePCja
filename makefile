@@ -524,23 +524,38 @@ else
 
 SRC_PACKAGE_DIR=$(ARCHIVE_DIR)/koncepcja-$(VERSION)
 
-# Create a debian source package
-distrib: $(TARGET)
+# Regenerate debian/changelog from the release version so the source package
+# and `dpkg-buildpackage` carry the version release-please cut.
+debian-changelog:
+	printf 'koncepcja (%s-1) unstable; urgency=medium\n\n  * Release %s. See https://github.com/ikari-pl/konCePCja/releases/tag/v%s\n\n -- Cezar "ikari" Pokorski <cezar@pokor.ski>  %s\n' "$(VERSION)" "$(VERSION)" "$(VERSION)" "$$(date -R)" > debian/changelog
+
+# Create a debian source package: everything dpkg-buildpackage needs, the
+# vendored SDL3 sources included (its build products are left out).
+distrib: $(TARGET) debian-changelog
 	mkdir -p $(SRC_PACKAGE_DIR)
 	rm -fr $(SRC_PACKAGE_DIR)/*
-	cp -r src rom resources doc licenses debian $(SRC_PACKAGE_DIR)
-	cp main.cpp koncepcja.cfg.tmpl koncepcja.cfg makefile README.md INSTALL.md LICENSE.md NOTICE.md $(SRC_PACKAGE_DIR)
+	cp -r src rom resources doc licenses debian vendor $(SRC_PACKAGE_DIR)
+	rm -rf $(SRC_PACKAGE_DIR)/vendor/SDL/build $(SRC_PACKAGE_DIR)/vendor/SDL/install
+	cp main.cpp koncepcja.cfg.tmpl koncepcja.cfg makefile README.md INSTALL.md LICENSE.md NOTICE.md .release-please-manifest.json $(SRC_PACKAGE_DIR)
 	tar jcf $(SRC_PACKAGE_DIR).tar.bz2 -C $(ARCHIVE_DIR) koncepcja-$(VERSION)
 	ln -s koncepcja-$(VERSION).tar.bz2 $(ARCHIVE_DIR)/koncepcja_$(VERSION).orig.tar.bz2 || true
 
 endif  # ARCH =? macos
 
+# Where the installed config points for resources/cart/snap. Defaults to the
+# staged location so `make install DESTDIR=… && test_make_install.sh` runs the
+# staged tree in place; a package build passes the final path
+# (SHARE_PATH=/usr/share/koncepcja) so DESTDIR is not baked into /etc.
+SHARE_PATH ?= $(DESTDIR)$(prefix)/share/koncepcja
+
 install: $(TARGET)
 	install -D $(TARGET) $(DESTDIR)$(prefix)/bin/$(TARGET)
+	install -D -m644 resources/freedesktop/koncepcja.desktop $(DESTDIR)$(prefix)/share/applications/koncepcja.desktop
+	install -D -m644 resources/koncepcja-icon.png $(DESTDIR)$(prefix)/share/pixmaps/koncepcja.png
 	install -D $(GROFF_DOC) $(DESTDIR)$(prefix)/share/man/man6/koncepcja.6
 	if [ ! -f $(DESTDIR)/etc/koncepcja.cfg ]; then \
 		install -D -m664 koncepcja.cfg.tmpl $(DESTDIR)/etc/koncepcja.cfg; \
-		sed -i "s,__SHARE_PATH__,$(DESTDIR)$(prefix)/share/koncepcja," $(DESTDIR)/etc/koncepcja.cfg; \
+		sed -i "s,__SHARE_PATH__,$(SHARE_PATH)," $(DESTDIR)/etc/koncepcja.cfg; \
 	fi
 	mkdir -p $(DESTDIR)$(prefix)/share/koncepcja
 	cp -r resources rom $(DESTDIR)$(prefix)/share/koncepcja
@@ -696,7 +711,8 @@ macos_bundle: all
 	install resources/Info.plist $(BUNDLE_DIR)/Contents/
 	install -m664 koncepcja.cfg.tmpl $(BUNDLE_DIR)/Contents/Resources/koncepcja.cfg
 	gsed -i "s,__SHARE_PATH__,../Resources," $(BUNDLE_DIR)/Contents/Resources/koncepcja.cfg
-	cp -r resources rom $(BUNDLE_DIR)/Contents/Resources
+	cp -r resources rom licenses $(BUNDLE_DIR)/Contents/Resources
+	cp LICENSE.md NOTICE.md README.md $(BUNDLE_DIR)/Contents/Resources/
 	mkdir -p $(BUNDLE_DIR)/Contents/Frameworks
 	# Copy shared libs — skip @rpath entries (handled separately below)
 	for lib in $$(otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep ".dylib" | awk '{ print $$1 }' | grep -v @); do \
