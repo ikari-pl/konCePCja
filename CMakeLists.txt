@@ -161,6 +161,23 @@ target_link_libraries(koncepcja_lib PUBLIC
     ZLIB::ZLIB
 )
 
+# ── libdrm: direct KMS scanout (src/drm_present.cpp) ─────
+# Needed on embedded Linux panels that expose /dev/dri/card0 but no GBM/EGL,
+# where SDL's KMSDRM driver cannot initialise. Optional: without it the
+# presenter compiles to no-ops and nothing else changes.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(LIBDRM QUIET libdrm)
+        if(LIBDRM_FOUND)
+            target_include_directories(koncepcja_lib PUBLIC ${LIBDRM_INCLUDE_DIRS})
+            target_link_libraries(koncepcja_lib PUBLIC ${LIBDRM_LIBRARIES})
+            target_compile_definitions(koncepcja_lib PUBLIC KONCPC_HAVE_LIBDRM=1)
+            message(STATUS "  libdrm found: direct KMS presenter enabled")
+        endif()
+    endif()
+endif()
+
 # ── Compile definitions ──────────────────────────────────
 if(GIT_HASH)
     target_compile_definitions(koncepcja_lib PUBLIC HASH="${GIT_HASH}")
