@@ -49,6 +49,34 @@ TEST(DebugStepControls, CompactLabelsForTheDisassemblyMenuBar) {
                debug_step_controls(true, true, false).step_out_label);
 }
 
+TEST(DebugStepControls, BothSurfacesGetTheSameTooltips) {
+  // The hover text used to be hand-written at each of the two call sites and
+  // had already drifted ("Step In: one instruction..." in the Disassembly menu
+  // bar vs "Execute one instruction..." in the DevTools toolbar). It now comes
+  // from here, so the compact and full groups describe the action identically.
+  for (bool paused : {false, true}) {
+    for (bool walking : {false, true}) {
+      DebugStepControls const compact =
+          debug_step_controls(paused, walking, true);
+      DebugStepControls const full =
+          debug_step_controls(paused, walking, false);
+      ASSERT_NE(nullptr, compact.step_in_tooltip);
+      EXPECT_STREQ(compact.step_in_tooltip, full.step_in_tooltip);
+      EXPECT_STREQ(compact.step_over_tooltip, full.step_over_tooltip);
+      EXPECT_STREQ(compact.step_out_tooltip, full.step_out_tooltip);
+      EXPECT_STREQ(compact.run_pause_tooltip, full.run_pause_tooltip);
+    }
+  }
+  DebugStepControls const c = debug_step_controls(true, false, true);
+  // Each tooltip names its own key, so a copy-paste slip is caught here.
+  EXPECT_NE(std::string::npos, std::string(c.step_in_tooltip).find("(F7)"));
+  EXPECT_NE(std::string::npos,
+            std::string(c.step_over_tooltip).find("(Shift+F7)"));
+  EXPECT_NE(std::string::npos,
+            std::string(c.step_out_tooltip).find("(Shift+F11)"));
+  EXPECT_NE(std::string::npos, std::string(c.run_pause_tooltip).find("(F5)"));
+}
+
 // ── Disc Tools listing key ──────────────────────────────────────────────────
 
 TEST(DiscToolsListing, StaleWhenTheDriveOrItsMediumChanges) {

@@ -84,6 +84,9 @@ class DevToolsUI {
   void symtable_mark_dirty() { symtable_dirty_ = true; }
   // Disc Tools' cached Files listing (read-only, for the render tests).
   size_t disc_tools_listed_file_count() const { return dt_file_cache_.size(); }
+  // How many times that listing has been rebuilt (read-only, for the render
+  // tests): one swap must cost exactly one rebuild.
+  uint64_t disc_tools_listing_rebuilds() const { return dt_listing_rebuilds_; }
 
   // Immediate cache clear — MAIN THREAD ONLY.
   void disasm_cache_clear() {
@@ -224,6 +227,7 @@ class DevToolsUI {
   // The drive + medium the Files listing was built from; a mismatch with the
   // live key (another drive picked, a disk loaded or ejected) re-lists.
   DiscToolsMediaKey dt_listed_media_{-1, 0};
+  uint64_t dt_listing_rebuilds_ = 0;
   std::string dt_format_combo_;
   bool dt_format_combo_dirty_ = true;
   std::vector<SectorInfo> dt_sector_cache_;

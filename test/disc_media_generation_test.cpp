@@ -186,6 +186,30 @@ TEST_F(LiveBoardMediaTest, PullWhilePausedSeesTheDiscJustLoaded) {
   EXPECT_EQ(3u, listed_files());
 }
 
+TEST_F(LiveBoardMediaTest, ARejectedHotSwapStillMovesTheGeneration) {
+  // apply_pending_media() ejects the drive when insert_disk() refuses the
+  // image, so Disc Tools must be told to look again on the failure branch too
+  // -- the generation bump sits outside the if/else by construction, and a
+  // future edit that tucks it into the success arm would leave the listing
+  // showing a disc the FDC no longer holds.
+  load_a(one_);
+  subcycle_bridge_apply_pending_media();
+  ASSERT_TRUE(subcycle_bridge_pull_drive_view(0));
+  ASSERT_EQ(1u, listed_files());
+
+  // Garbage the FDC cannot parse, queued exactly the way file_load queues a
+  // disc image.
+  std::vector<uint8_t> const junk(512, 0xA5);
+  subcycle_bridge_insert_media(junk, false, 0);
+  uint64_t const queued = dsk_media_generation(0);
+  subcycle_bridge_apply_pending_media();
+
+  EXPECT_NE(queued, dsk_media_generation(0))
+      << "the rejected swap emptied the drive; the listing must be rebuilt";
+  EXPECT_FALSE(subcycle_bridge_pull_drive_view(0))
+      << "a rejected image must leave the drive empty, not half-mounted";
+}
+
 TEST_F(LiveBoardMediaTest, TheBoardApplyingASwapMovesTheGeneration) {
   load_a(one_);
   uint64_t const queued = dsk_media_generation(0);

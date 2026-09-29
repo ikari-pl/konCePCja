@@ -3534,7 +3534,13 @@ void imgui_render_options() {
     old_crtc_type = CRTC.crtc_type;
     old_win_w = 0;
     old_win_h = 0;
-    if (mainSDLWindow) SDL_GetWindowSize(mainSDLWindow, &old_win_w, &old_win_h);
+    // Fullscreen reports the display size, and Cancel with the old scale at
+    // Fit would park that as the floating window size. Capture nothing then:
+    // the revert skips the resize on a zero.
+    if (mainSDLWindow &&
+        !koncpc_main_window_is_fullscreen().value_or(CPC.scr_window == 0)) {
+      SDL_GetWindowSize(mainSDLWindow, &old_win_w, &old_win_h);
+    }
     old_m4_enabled = g_m4board.enabled;
     capture_toggle_values(kPeripheralToggles, old_peripheral_toggles,
                           kPeripheralToggleCount);
@@ -4931,22 +4937,22 @@ void imgui_render_devtools() {
     if (!ctl.step_enabled) ImGui::BeginDisabled();
     if (ImGui::Button(ctl.step_in_label)) dbg_step_in();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction, entering CALLs (F7)");
+      ImGui::SetTooltip("%s", ctl.step_in_tooltip);
     }
     ImGui::SameLine();
     if (ImGui::Button(ctl.step_over_label)) dbg_step_over();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction, over CALLs/RSTs (Shift+F7)");
+      ImGui::SetTooltip("%s", ctl.step_over_tooltip);
     }
     ImGui::SameLine();
     if (ImGui::Button(ctl.step_out_label)) dbg_step_out();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Run until the current subroutine returns (Shift+F11)");
+      ImGui::SetTooltip("%s", ctl.step_out_tooltip);
     }
     if (!ctl.step_enabled) ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button(ctl.run_pause_label)) dbg_run_pause_toggle();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run / halt the CPU (F5)");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ctl.run_pause_tooltip);
 
     // Keyboard shortcuts for the debugger inner loop.  Active only when an
     // ImGui (DevTools) window holds keyboard focus and no text field is being

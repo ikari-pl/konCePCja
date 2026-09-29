@@ -246,6 +246,12 @@ struct DebugStepControls {
   const char* step_over_label;  // Disassembly menu bar
   const char* step_out_label;   // says so while a Step Out walk is in flight
   const char* run_pause_label;
+  // Hover text. Deliberately NOT compact-dependent: the two surfaces describe
+  // the same action, so they get the same sentence from the same place.
+  const char* step_in_tooltip;
+  const char* step_over_tooltip;
+  const char* step_out_tooltip;
+  const char* run_pause_tooltip;
 };
 inline DebugStepControls debug_step_controls(bool paused, bool walk_running,
                                              bool compact) {
@@ -266,6 +272,12 @@ inline DebugStepControls debug_step_controls(bool paused, bool walk_running,
   } else {
     c.run_pause_label = paused ? "Resume" : "Pause";
   }
+  c.step_in_tooltip = "Step In: one instruction, entering CALLs (F7)";
+  c.step_over_tooltip =
+      "Step Over: one instruction, over CALLs/RSTs (Shift+F7)";
+  c.step_out_tooltip =
+      "Step Out: run until this subroutine returns (Shift+F11)";
+  c.run_pause_tooltip = "Run / halt the CPU (F5)";
   return c;
 }
 

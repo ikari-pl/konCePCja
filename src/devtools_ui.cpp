@@ -551,17 +551,16 @@ void DevToolsUI::render_disasm_step_controls() {
   if (!ctl.step_enabled) ImGui::BeginDisabled();
   if (ImGui::SmallButton(ctl.step_in_label)) dbg_step_in();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("Step In: one instruction, entering CALLs (F7)");
+    ImGui::SetTooltip("%s", ctl.step_in_tooltip);
   if (ImGui::SmallButton(ctl.step_over_label)) dbg_step_over();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("Step Over: one instruction, over CALLs/RSTs (Shift+F7)");
+    ImGui::SetTooltip("%s", ctl.step_over_tooltip);
   if (ImGui::SmallButton(ctl.step_out_label)) dbg_step_out();
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip(
-        "Step Out: run until this subroutine returns (Shift+F11)");
+    ImGui::SetTooltip("%s", ctl.step_out_tooltip);
   if (!ctl.step_enabled) ImGui::EndDisabled();
   if (ImGui::SmallButton(ctl.run_pause_label)) dbg_run_pause_toggle();
-  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run / halt the CPU (F5)");
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ctl.run_pause_tooltip);
 }
 
 void DevToolsUI::render_disassembly() {
@@ -2176,7 +2175,13 @@ void DevToolsUI::render_disc_tools() {
       drv = (dt_drive_ == 0) ? &driveA : &driveB;
       dt_file_cache_ = disk_list_files(drv, dt_file_error_);
       dt_files_dirty_ = false;
-      dt_listed_media_ = live_media;
+      // Re-read the generation AFTER the pull: the pull applies a swap queued
+      // while paused, which bumps it again. Keying on the pre-pull value left
+      // the listing stale on the very next frame, so every swap rebuilt twice
+      // and took two pause/resume cycles of a running machine.
+      dt_listed_media_ =
+          DiscToolsMediaKey{dt_drive_, dsk_media_generation(dt_unit)};
+      ++dt_listing_rebuilds_;
     }
     if (ImGui::Button("Refresh##files")) dt_files_dirty_ = true;
     ImGui::SameLine();
