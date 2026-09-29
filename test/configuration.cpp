@@ -30,6 +30,11 @@ extern char chAppPath[_MAX_PATH + 1];
 // TODO(cpitrat): Make this a list or vector in t_CPC
 extern t_disk_format disk_format[8];
 
+// The process-wide config state the save paths read.
+extern t_CPC CPC;
+extern bool g_config_loaded;
+extern SerialConfig g_cfg_intent_serial;
+
 class ConfigurationTest : public testing::Test {
  public:
   void TearDown() {
@@ -412,6 +417,38 @@ TEST_F(ConfigurationTest, saveConfigurationPreservesEverySettingItReads) {
             static_cast<PhazerType::Value>(CPC[1].phazer_emulation));
 }
 
+namespace {
+// Snapshot of the device globals the config drives, restorable in one call.
+struct DeviceGlobals {
+  bool silicon_disc = g_silicon_disc.enabled;
+  bool amdrum = g_amdrum.enabled;
+  bool disk_sounds = g_drive_sounds.disk_enabled;
+  bool tape_sounds = g_drive_sounds.tape_enabled;
+  bool smartwatch = g_smartwatch.enabled;
+  bool amx_mouse = g_amx_mouse.enabled;
+  bool symbiface = g_symbiface.enabled;
+  std::string ide_master = g_symbiface.ide_master.image_path;
+  std::string ide_slave = g_symbiface.ide_slave.image_path;
+  bool ide_master_present = g_symbiface.ide_master.present;
+  bool ide_slave_present = g_symbiface.ide_slave.present;
+  SerialConfig serial = g_serial_interface.get_config();
+  void restore() const {
+    g_silicon_disc.enabled = silicon_disc;
+    g_amdrum.enabled = amdrum;
+    g_drive_sounds.disk_enabled = disk_sounds;
+    g_drive_sounds.tape_enabled = tape_sounds;
+    g_smartwatch.enabled = smartwatch;
+    g_amx_mouse.enabled = amx_mouse;
+    g_symbiface.enabled = symbiface;
+    g_symbiface.ide_master.image_path = ide_master;
+    g_symbiface.ide_slave.image_path = ide_slave;
+    g_symbiface.ide_master.present = ide_master_present;
+    g_symbiface.ide_slave.present = ide_slave_present;
+    g_serial_interface.set_config(serial);
+  }
+};
+}  // namespace
+
 // beads-ab4j: loadConfiguration() fills CPC.devices and nothing else. It
 // used to switch eight process-global devices on or off as a side effect,
 // so under --gtest_shuffle every test after a config load inherited them
@@ -437,34 +474,23 @@ TEST_F(ConfigurationTest, loadConfigurationLeavesDeviceGlobalsAlone) {
   // Every live device is off and the file turns every one on, so any write
   // shows up. Other tests may have left them in any state: force, then
   // restore.
-  struct Live {
-    bool silicon_disc = g_silicon_disc.enabled;
-    bool amdrum = g_amdrum.enabled;
-    bool disk_sounds = g_drive_sounds.disk_enabled;
-    bool tape_sounds = g_drive_sounds.tape_enabled;
-    bool smartwatch = g_smartwatch.enabled;
-    bool amx_mouse = g_amx_mouse.enabled;
-    bool symbiface = g_symbiface.enabled;
-    void set() const {
-      g_silicon_disc.enabled = silicon_disc;
-      g_amdrum.enabled = amdrum;
-      g_drive_sounds.disk_enabled = disk_sounds;
-      g_drive_sounds.tape_enabled = tape_sounds;
-      g_smartwatch.enabled = smartwatch;
-      g_amx_mouse.enabled = amx_mouse;
-      g_symbiface.enabled = symbiface;
-    }
-  };
-  Live const before;
-  Live const all_off{false, false, false, false, false, false, false};
-  all_off.set();
+  DeviceGlobals const before;
+  DeviceGlobals all_off = before;
+  all_off.silicon_disc = false;
+  all_off.amdrum = false;
+  all_off.disk_sounds = false;
+  all_off.tape_sounds = false;
+  all_off.smartwatch = false;
+  all_off.amx_mouse = false;
+  all_off.symbiface = false;
+  all_off.restore();
   SerialConfig const serial = g_serial_interface.get_config();
 
   t_CPC CPC;
   loadConfiguration(CPC, getTmpFilename(0));
-  Live const after;
+  DeviceGlobals const after;
   SerialConfig const serial_after = g_serial_interface.get_config();
-  before.set();
+  before.restore();
 
   // The settings were read...
   EXPECT_TRUE(CPC.devices.silicon_disc);
@@ -488,34 +514,6 @@ TEST_F(ConfigurationTest, loadConfigurationLeavesDeviceGlobalsAlone) {
   EXPECT_FALSE(after.symbiface);
   EXPECT_TRUE(serial == serial_after) << "the serial config was replaced";
 }
-
-namespace {
-// Snapshot of the device globals the config drives, restorable in one call.
-struct DeviceGlobals {
-  bool silicon_disc = g_silicon_disc.enabled;
-  bool amdrum = g_amdrum.enabled;
-  bool disk_sounds = g_drive_sounds.disk_enabled;
-  bool tape_sounds = g_drive_sounds.tape_enabled;
-  bool smartwatch = g_smartwatch.enabled;
-  bool amx_mouse = g_amx_mouse.enabled;
-  bool symbiface = g_symbiface.enabled;
-  std::string ide_master = g_symbiface.ide_master.image_path;
-  std::string ide_slave = g_symbiface.ide_slave.image_path;
-  SerialConfig serial = g_serial_interface.get_config();
-  void restore() const {
-    g_silicon_disc.enabled = silicon_disc;
-    g_amdrum.enabled = amdrum;
-    g_drive_sounds.disk_enabled = disk_sounds;
-    g_drive_sounds.tape_enabled = tape_sounds;
-    g_smartwatch.enabled = smartwatch;
-    g_amx_mouse.enabled = amx_mouse;
-    g_symbiface.enabled = symbiface;
-    g_symbiface.ide_master.image_path = ide_master;
-    g_symbiface.ide_slave.image_path = ide_slave;
-    g_serial_interface.set_config(serial);
-  }
-};
-}  // namespace
 
 // apply_device_config() and capture_device_config() are inverses over every
 // device the config drives: what startup applies is what a save captures.
@@ -577,15 +575,43 @@ TEST_F(ConfigurationTest, captureKeepsIdePathsWhileSymbifaceIsOff) {
   g_symbiface.enabled = false;
   g_symbiface.ide_master.image_path.clear();
   g_symbiface.ide_slave.image_path.clear();
+  g_symbiface.ide_master.present = false;
+  g_symbiface.ide_slave.present = false;
   capture_device_config(CPC);
   EXPECT_EQ("master.img", CPC.devices.ide_master);
   EXPECT_EQ("slave.img", CPC.devices.ide_slave);
 
   g_symbiface.enabled = true;
   g_symbiface.ide_master.image_path = "swapped.img";
+  g_symbiface.ide_master.present = true;
   capture_device_config(CPC);
   EXPECT_EQ("swapped.img", CPC.devices.ide_master) << "a live swap was lost";
   before.restore();
+}
+
+// The same erasure, with the board switched on: symbiface_ide_attach()
+// detaches first and returns with an empty path when the image will not
+// open, and the runtime toggle never attaches at all. Copying the live path
+// then would drop the user's ide_master= line from the file on the next MRU
+// push or clean exit. `present` is what says a mount actually succeeded.
+TEST_F(ConfigurationTest, captureKeepsIdePathsWhenTheImageIsNotMounted) {
+  DeviceGlobals const before;
+  t_CPC CPC;
+  CPC.devices.ide_master = "master.img";
+  CPC.devices.ide_slave = "slave.img";
+
+  g_symbiface.enabled = true;  // board on...
+  g_symbiface.ide_master.image_path.clear();
+  g_symbiface.ide_slave.image_path.clear();
+  g_symbiface.ide_master.present = false;  // ...image never opened
+  g_symbiface.ide_slave.present = false;
+  capture_device_config(CPC);
+  before.restore();
+
+  EXPECT_EQ("master.img", CPC.devices.ide_master)
+      << "a failed mount erased the configured image";
+  EXPECT_EQ("slave.img", CPC.devices.ide_slave)
+      << "a failed mount erased the configured image";
 }
 
 // Saving over an existing file edits it: a comment and an unrecognised key
@@ -980,6 +1006,49 @@ TEST_F(ConfigLookupTest, LoadRecordsTheFileForTheAppToShow) {
   t_CPC CPC;
   loadConfiguration(CPC, (root_ / "cwd" / "koncepcja.cfg").string());
   EXPECT_EQ((root_ / "cwd" / "koncepcja.cfg").string(), koncpc_config_file());
+}
+
+// Options offers "save without restart" for a serial edit the user does not
+// want to reboot the machine for: the new values go to the file while the
+// live interface keeps running the old ones. Every later write-back (the MRU
+// push on the next file open, clean exit) captures the LIVE config, so
+// without the intent snapshot it silently undoes that deliberate save.
+TEST_F(ConfigLookupTest, AStagedSerialSaveSurvivesTheNextWriteBack) {
+  auto const cfg = root_ / "xdg" / "koncepcja" / "koncepcja.cfg";
+  write_file(cfg, "[peripheral]\nserial_enabled=0\nserial_baud=2400\n");
+  ASSERT_EQ(cfg, std::filesystem::path(getConfigurationFilename(true)));
+
+  t_CPC const saved_cpc = CPC;
+  bool const saved_loaded = g_config_loaded;
+  SerialConfig const saved_intent = g_cfg_intent_serial;
+  SerialConfig const saved_live = g_serial_interface.get_config();
+
+  loadConfiguration(CPC, cfg.string());
+  g_config_loaded = true;
+  koncpc_capture_config_intent();
+  ASSERT_FALSE(CPC.devices.serial.enabled);
+  // The user declined the restart, so the live config stays as it was.
+  g_serial_interface.set_config(CPC.devices.serial);
+
+  SerialConfig staged = CPC.devices.serial;
+  staged.enabled = true;
+  staged.baud_rate = 19200;
+  ASSERT_TRUE(koncpc_save_live_configuration(cfg.string(), &staged));
+  koncpc_capture_config_intent();
+
+  // ...and then anything at all writes the config again.
+  ASSERT_TRUE(koncpc_save_configuration_preserving_intent());
+
+  config::Config saved;
+  saved.parseFile(cfg.string());
+  EXPECT_EQ(1, saved.getIntValue("peripheral", "serial_enabled", -1))
+      << "the write-back overwrote the deliberate save with the live config";
+  EXPECT_EQ(19200, saved.getIntValue("peripheral", "serial_baud", -1));
+
+  g_serial_interface.set_config(saved_live);
+  g_cfg_intent_serial = saved_intent;
+  g_config_loaded = saved_loaded;
+  CPC = saved_cpc;
 }
 
 // The baseline advances to what was actually persisted — only after a save

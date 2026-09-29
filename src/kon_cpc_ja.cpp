@@ -500,11 +500,18 @@ t_CPC CPC;
 // alone.
 bool g_config_loaded = false;
 
-// The config-file values of the two fields that later hold runtime state.
+// The config-file values of the fields that later hold runtime state.
 // Captured at load, written back on exit so a failed printer start or a live
 // fullscreen toggle cannot rewrite the user's intent.
 unsigned int g_cfg_intent_printer = 0;
 unsigned int g_cfg_intent_scr_window = 1;
+// The serial settings the user last meant to persist: the file's values, or
+// the staged ones Options wrote on "save without restart". The live config
+// can differ from both (a backend that failed to open, a session-scoped
+// `serial config set` over IPC), and an incidental write-back — an MRU push
+// on the next file open, or clean exit — must not promote that difference
+// into the file, nor undo the deliberate save.
+SerialConfig g_cfg_intent_serial;
 
 namespace {
 // Every value as loaded from the config file this session. saveConfiguration
@@ -526,6 +533,9 @@ bool koncpc_config_loaded() { return g_config_loaded; }
 void koncpc_capture_config_intent() {
   g_cfg_intent_printer = CPC.printer;
   g_cfg_intent_scr_window = CPC.scr_window;
+  // CPC.devices.serial holds what the save just wrote: the override when
+  // Options staged one, otherwise the live config.
+  g_cfg_intent_serial = CPC.devices.serial;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -542,7 +552,10 @@ bool koncpc_save_configuration_preserving_intent() {
   CPC.printer = g_cfg_intent_printer;
   CPC.scr_window = g_cfg_intent_scr_window;
   std::string const cfg = getConfigurationFilename(true);
-  bool const ok = koncpc_save_live_configuration(cfg);
+  // The serial settings get the same treatment through the override: a
+  // "save without restart" edit would otherwise be overwritten by the live
+  // (still old) config the next time anything writes the file.
+  bool const ok = koncpc_save_live_configuration(cfg, &g_cfg_intent_serial);
   CPC.printer = live_printer;
   CPC.scr_window = live_scr_window;
   if (!ok) {
@@ -2401,12 +2414,15 @@ void capture_device_config(t_CPC& CPC) {
   d.amx_mouse = g_amx_mouse.enabled;
   d.symbiface = g_symbiface.enabled;
   // The configured images are only mounted while the Symbiface is on; with it
-  // off (or a mount that failed) the live paths are empty, and copying them
-  // would erase the user's image choice on the next save.
-  if (g_symbiface.enabled) {
+  // off, with the board switched on at runtime, or after a mount that failed
+  // (symbiface_ide_attach() detaches first, so the live path is left empty)
+  // there is no live path to copy, and copying the empty one would erase the
+  // user's image choice on the next save. `present` is set only after the
+  // image really opened, so it is the flag that matches the intent.
+  if (g_symbiface.ide_master.present)
     d.ide_master = g_symbiface.ide_master.image_path;
+  if (g_symbiface.ide_slave.present)
     d.ide_slave = g_symbiface.ide_slave.image_path;
-  }
   d.serial = g_serial_interface.get_config();
 }
 

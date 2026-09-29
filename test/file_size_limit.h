@@ -9,6 +9,8 @@
 
 #pragma once
 
+#include <iostream>
+
 #ifndef _WIN32
 #include <sys/resource.h>
 
@@ -27,6 +29,7 @@ class ScopedFileSizeLimit {
 
 #ifdef _WIN32
   explicit ScopedFileSizeLimit(unsigned long /*max_bytes*/) {}
+  ~ScopedFileSizeLimit() { clear_stream_errors(); }
 #else
   explicit ScopedFileSizeLimit(rlim_t max_bytes) {
     old_handler_ = std::signal(SIGXFSZ, SIG_IGN);
@@ -40,6 +43,7 @@ class ScopedFileSizeLimit {
   ~ScopedFileSizeLimit() {
     if (active_) setrlimit(RLIMIT_FSIZE, &old_);
     std::signal(SIGXFSZ, old_handler_);
+    clear_stream_errors();
   }
 #endif
   ScopedFileSizeLimit(const ScopedFileSizeLimit&) = delete;
@@ -48,6 +52,15 @@ class ScopedFileSizeLimit {
   bool active() const { return active_; }
 
  private:
+  // A LOG_ line written inside the limited scope fails and leaves badbit set
+  // on the stream for the rest of the process — every later test that logs
+  // would then write nothing. Undo that when the limit goes away.
+  static void clear_stream_errors() {
+    std::cerr.clear();
+    std::cout.clear();
+    std::clog.clear();
+  }
+
   bool active_ = false;
 #ifndef _WIN32
   struct rlimit old_{};

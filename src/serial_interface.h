@@ -344,8 +344,15 @@ class TcpSocketBackend : public SerialBackend {
   // returning with the connection still in flight (resolved lazily later).
   static constexpr int kConnectWaitMs = 100;
 
+  // How long open() waits for the host name to resolve. getaddrinfo() has no
+  // timeout of its own, so the lookup runs on a worker thread and open()
+  // gives up here rather than freezing its caller (startup, `config apply`,
+  // or the IPC thread) for as long as an unreachable resolver takes.
+  static constexpr int kResolveWaitMs = 2000;
+
   // true once the socket exists and the connect is established or still in
-  // flight; false when the host does not resolve or the peer refused.
+  // flight; false when the host does not resolve in time and when the peer
+  // refused.
   bool open() override;
   void close() override;
   bool is_open() const override { return state_ != State::Disconnected; }

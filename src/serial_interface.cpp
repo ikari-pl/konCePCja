@@ -23,6 +23,7 @@ typedef int ssize_t;
 #include <filesystem>
 #include <utility>
 
+#include "bounded_deadline.h"
 #include "io_dispatch.h"
 #include "log.h"
 #include "plotter.h"
@@ -475,11 +476,17 @@ bool FileBackend::open() {
 
 void FileBackend::close() {
   if (input_file_) {
-    fclose(input_file_);
+    if (fclose(input_file_) != 0)
+      LOG_ERROR("Serial file backend: closing " << input_path_ << " failed");
     input_file_ = nullptr;
   }
   if (output_file_) {
-    fclose(output_file_);
+    // fclose flushes: a disk that filled up while buffered bytes were still
+    // in flight loses them here, and nowhere else would say so.
+    if (fclose(output_file_) != 0)
+      LOG_ERROR("Serial file backend: closing " << output_path_
+                                                << " failed; output may be "
+                                                   "incomplete");
     output_file_ = nullptr;
   }
   open_ = false;
@@ -792,14 +799,33 @@ bool TcpSocketBackend::open() {
   if (state_ != State::Disconnected) return true;
   if (sockfd_ >= 0) close();  // a connection that dropped: start over
 
-  struct addrinfo hints = {};
+  // getaddrinfo() is the one call left in this path with no timeout of its
+  // own: a stale or unreachable resolver blocks for tens of seconds, and
+  // open() runs on the main thread at startup and on the IPC thread from
+  // `serial config set`. Bound it the way the connect step is bounded; a
+  // lookup that answers too late frees its own result.
   struct addrinfo* result = nullptr;
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
   std::string const port_str = std::to_string(port_);
-  if (getaddrinfo(host_.c_str(), port_str.c_str(), &hints, &result) != 0 ||
-      result == nullptr) {
-    if (result) freeaddrinfo(result);
+  DeadlineResult const resolved = run_with_deadline<struct addrinfo*>(
+      [host = host_, port_str](struct addrinfo*& out) {
+        struct addrinfo hints = {};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        out = nullptr;
+        if (getaddrinfo(host.c_str(), port_str.c_str(), &hints, &out) != 0) {
+          out = nullptr;  // undefined on failure, and nothing was allocated
+          return false;
+        }
+        return out != nullptr;
+      },
+      [](struct addrinfo* late) { freeaddrinfo(late); }, kResolveWaitMs,
+      result);
+  if (resolved == DeadlineResult::TimedOut) {
+    LOG_ERROR("Serial TCP: resolving " << host_ << " timed out after "
+                                       << kResolveWaitMs << " ms");
+    return false;
+  }
+  if (resolved != DeadlineResult::Ok) {
     LOG_ERROR("Serial TCP: cannot resolve " << host_);
     return false;
   }
@@ -846,14 +872,16 @@ TcpSocketBackend::State TcpSocketBackend::resolve_connect(
   int const ready = tcp_wait_connect(sockfd_, timeout_ms);
   if (ready == 0) return State::Connecting;
   int const err = ready < 0 ? tcp_last_error() : tcp_socket_error(sockfd_);
-  if (err != 0) {
+  State const settled = err != 0 ? State::Disconnected : State::Connected;
+  // The IPC thread (status/connected) and the Z80 thread (has_data/send) both
+  // resolve the same socket: settle it once, and report what the winner
+  // settled it to.
+  State expected = State::Connecting;
+  if (!state_.compare_exchange_strong(expected, settled)) return expected;
+  if (err != 0)
     LOG_ERROR("Serial TCP: connect to " << host_ << ":" << port_
                                         << " failed (error " << err << ")");
-    state_ = State::Disconnected;
-  } else {
-    state_ = State::Connected;
-  }
-  return state_;
+  return settled;
 }
 
 void TcpSocketBackend::mark_disconnected() const {

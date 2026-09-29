@@ -27,6 +27,7 @@
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "stuck_z80_thread.h"
 #include "symfile.h"
 #include "video_host.h"
 #include "z80_view.h"
@@ -758,20 +759,7 @@ TEST_F(IpcServerTest, ResumeAppliedReportsLeaseDeferral) {
 // The production bound is kCpcIdleTimeoutMs (5 s); these tests lower it so
 // they prove the cap without waiting it out, and put everything back after.
 namespace {
-struct StuckZ80Thread {
-  explicit StuckZ80Thread(int bound_ms) {
-    cpc_set_idle_timeout_ms(bound_ms);
-    g_z80_idle.store(false, std::memory_order_release);
-  }
-  ~StuckZ80Thread() {
-    g_z80_idle.store(true, std::memory_order_release);
-    // A successful wait clears the "known stuck" latch for later tests.
-    {
-      CpcPauseLease const clear;
-    }
-    cpc_set_idle_timeout_ms(kCpcIdleTimeoutMs);
-  }
-};
+using koncpc_test::StuckZ80Thread;
 
 long long ms_since(std::chrono::steady_clock::time_point t) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -885,6 +873,22 @@ TEST_F(IpcServerTest, RebuildRefusesOnAStuckZ80Thread) {
   StuckZ80Thread const stuck(100);
   EXPECT_EQ(ERR_Z80_NOT_IDLE, koncpc_rebuild_machine());
   EXPECT_FALSE(CPC.paused);
+}
+
+// The helper itself must not leak a paused machine into the next test: its
+// clear-lease used to release() (which never resumes) instead of restoring
+// the run state, so every test after one of these inherited CPC.paused=true
+// under --gtest_shuffle.
+TEST_F(IpcServerTest, TheStuckThreadHelperHandsTheMachineBackRunning) {
+  cpc_resume();
+  ASSERT_FALSE(CPC.paused);
+  {
+    StuckZ80Thread const stuck(50);
+    CpcPauseLease lease;
+    EXPECT_FALSE(lease.idle());
+    lease.restore_run_state();
+  }
+  EXPECT_FALSE(CPC.paused) << "the helper left the machine paused";
 }
 
 TEST_F(IpcServerTest, LoadBinReportsAnUnreadableFile) {
