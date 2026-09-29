@@ -11,6 +11,7 @@
 #include "log.h"
 #include "mfm_encode.h"  // mfm_tracks_from_dsk
 #include "slotshandler.h"
+#include "subcycle_bridge.h"
 
 extern t_drive driveA;
 extern t_drive driveB;
@@ -119,12 +120,15 @@ std::string disk_create_new(const std::string& path,
 std::string disk_format_drive(char drive_letter,
                               const std::string& format_name) {
   t_drive* drive = nullptr;
+  uint8_t unit = 0;
   char const upper =
       static_cast<char>(std::toupper(static_cast<unsigned char>(drive_letter)));
   if (upper == 'A') {
     drive = &driveA;
+    unit = 0;
   } else if (upper == 'B') {
     drive = &driveB;
+    unit = 1;
   } else {
     return "invalid drive letter: " + std::string(1, drive_letter);
   }
@@ -134,12 +138,22 @@ std::string disk_format_drive(char drive_letter,
     return "unknown format: " + format_name;
   }
 
-  // Eject any existing disc content before formatting.
-  dsk_eject(drive);
+  // Host-only eject: do not queue a deferred FDC eject that would race a
+  // subsequent push (beads-lly6). The push below replaces the live medium.
+  std::vector<uint8_t> snapshot;
+  if (drive->tracks > 0) {
+    (void)dsk_to_bytes(drive, snapshot);
+  }
+  dsk_eject_host(drive);
 
   int const rc = dsk_format(drive, idx);
   if (rc != 0) {
+    subcycle_bridge_rollback_host_view(unit, snapshot);
     return "format error code " + std::to_string(rc);
+  }
+  if (subcycle_bridge_active() && !subcycle_bridge_push_drive_view(unit)) {
+    subcycle_bridge_rollback_host_view(unit, snapshot);
+    return "formatted host view but could not update the live FDC medium";
   }
   return "";
 }

@@ -1292,6 +1292,18 @@ void fdc_media_mark_clean_unit(const Device* dev, uint8_t unit) {
   (unit ? f->media1 : f->media).dirty = false;
 }
 
+void fdc_media_mark_dirty_unit(const Device* dev, uint8_t unit) {
+  fdc_state* f = static_cast<fdc_state*>(dev->self);
+  fdc_media* m = sel_media(f, unit ? 1 : 0);
+  if (m == nullptr || m->image == nullptr) return;
+  m->dirty = true;
+  // Flux hybrid: promote every track so subsequent reads serve the overlay
+  // the host just wrote (otherwise clean tracks keep the pristine flux cache).
+  if (m->backing == FDC_BACKING_FLUX) {
+    for (int t = 0; t < kMaxTracks; ++t) m->track_dirty[t] = true;
+  }
+}
+
 const bool* fdc_media_track_dirty(const Device* dev, int& ntracks_out) {
   const fdc_state* f = static_cast<const fdc_state*>(dev->self);
   // Only a WRITABLE flux medium (flux backing + a DSK overlay to serve written

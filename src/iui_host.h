@@ -84,6 +84,14 @@ class IUiHost {
   // when computing mouse-over-topbar regions.  Returns 0 on NullUiHost
   // so headless callers see the full window as the CPC viewport.
   virtual int topbar_height() const = 0;
+
+  // -- Display scale --------------------------------------------------
+  // Tell the UI the display content scale (1.0 = 100%, 2.25 = 225%), at
+  // startup and whenever SDL reports SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED.
+  // The ImGui host scales its chrome by this; the CPC image keeps its own
+  // scaling in video_host.cpp.  Defaults to a no-op, which hosts without
+  // chrome inherit.
+  virtual void set_display_scale(float /*scale*/) {}
 };
 
 // Returns a process-wide singleton chosen at build time:

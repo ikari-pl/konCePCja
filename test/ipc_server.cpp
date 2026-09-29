@@ -10,6 +10,7 @@
 #include <unistd.h>
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,8 @@
 
 #include "autotype.h"
 #include "cpc_key_tables.h"
+#include "imgui_state.h"
+#include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "symfile.h"
@@ -30,10 +33,12 @@
 extern t_z80regs z80;
 extern t_CPC CPC;
 extern t_GateArray GateArray;
+extern t_CRTC CRTC;
 extern SDL_Surface* back_surface;
 extern byte* membank_read[4];
 extern byte* membank_write[4];
 extern video_plugin* vid_plugin;
+extern SDL_Window* mainSDLWindow;
 
 namespace {
 
@@ -56,7 +61,19 @@ constexpr size_t kBankSize = 16 * 1024;
 static KoncepcjaIpcServer* g_test_server = nullptr;
 
 std::string send_command(const std::string& command) {
-  int port = g_test_server ? g_test_server->port() : 6543;
+  // Always the test server's own port, never a literal.  The server scans
+  // 6543..6552 and publishes whichever it got, so a default of 6543 would
+  // send test traffic to a koncepcja instance the developer happens to be
+  // running -- which answers, so the test misbehaves instead of failing.
+  if (g_test_server == nullptr) {
+    ADD_FAILURE() << "send_command called with no test server running";
+    return "";
+  }
+  int const port = g_test_server->port();
+  if (port <= 0) {
+    ADD_FAILURE() << "test IPC server has not bound a port";
+    return "";
+  }
 #ifdef _WIN32
   SOCKET fd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   EXPECT_NE(fd, INVALID_SOCKET);
@@ -131,8 +148,16 @@ class IpcServerTest : public testing::Test {
     CPC.snd_enabled = 0;
     g_test_server = &server;
     server.start();
-    // Give the listener thread time to bind and listen
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Wait for the listener to publish the port it actually bound, rather
+    // than assuming a fixed delay is enough.  With a koncepcja instance
+    // already holding 6543/6544 the server scans further up the range, so
+    // the bind takes longer than it does on an idle machine.
+    int port = 0;
+    for (int i = 0; i < 200 && port <= 0; i++) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+      port = server.port();
+    }
+    ASSERT_GT(port, 0) << "test IPC server never bound a port";
   }
 
   static void TearDownTestSuite() {
@@ -162,6 +187,214 @@ class IpcServerTest : public testing::Test {
 KoncepcjaIpcServer IpcServerTest::server;
 byte IpcServerTest::memory[4][kBankSize];
 
+// `wait vbl <n>` without a timeout used to share every wait's 5000ms default
+// and, at 20ms per blank, timed out before any n > 250 could complete.
+TEST(IpcWaitVbl, DefaultTimeoutCoversTheRequestedCount) {
+  using std::chrono::milliseconds;
+  EXPECT_EQ(milliseconds(5000), ipc_wait_vbl_default_timeout(0));
+  EXPECT_EQ(milliseconds(5000 + (250 * 20)), ipc_wait_vbl_default_timeout(250));
+  EXPECT_EQ(milliseconds(5000 + (500 * 20)), ipc_wait_vbl_default_timeout(500));
+  EXPECT_GT(ipc_wait_vbl_default_timeout(500), milliseconds(500 * 20))
+      << "the deadline must lie past the wait's own nominal length";
+  EXPECT_EQ(milliseconds(5000), ipc_wait_vbl_default_timeout(-3))
+      << "a nonsense count keeps the plain default";
+}
+
+// The main window over IPC: an agent can read the live geometry back
+// (`config get window`), and enter or leave fullscreen (`config set
+// fullscreen`) through the same deferred request the View menu posts — a
+// transition tears down video and ImGui, so only the main loop applies it.
+TEST_F(IpcServerTest, ConfigWindowAndFullscreenNeedAMainWindow) {
+  SDL_Window* const saved = mainSDLWindow;
+  mainSDLWindow = nullptr;
+  ipc_drain_input();  // publishes "no window"
+
+  auto resp = send_command("config get window");
+  EXPECT_EQ(0u, resp.find("ERR 503 no-window")) << resp;
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ(0u, resp.find("ERR 503 no-window")) << resp;
+  resp = send_command("config set fullscreen 1");
+  EXPECT_EQ(0u, resp.find("ERR 503 no-window")) << resp;
+  resp = send_command("config set fullscreen 2");
+  EXPECT_EQ(0u, resp.find("ERR 400")) << resp;
+  mainSDLWindow = saved;
+}
+
+TEST_F(IpcServerTest, ConfigWindowReportsAndFullscreenStagesForTheDrain) {
+  if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+    GTEST_SKIP() << "no SDL video: " << SDL_GetError();
+  }
+  SDL_Window* const window =
+      SDL_CreateWindow("ipc-window-test", 800, 600, SDL_WINDOW_HIDDEN);
+  if (!window) {
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    GTEST_SKIP() << "no window (headless): " << SDL_GetError();
+  }
+  SDL_Window* const saved_window = mainSDLWindow;
+  unsigned int const saved_scale = CPC.scr_scale;
+  unsigned int const saved_scr_window = CPC.scr_window;
+  int const saved_request = imgui_state.fullscreen_request;
+  mainSDLWindow = window;
+  CPC.scr_scale = 2;
+  CPC.scr_window = 1;
+  imgui_state.fullscreen_request = -1;
+
+  ipc_drain_input();  // publishes the window once per frame
+  auto resp = send_command("config get window");
+  EXPECT_EQ("OK w=800 h=600 scale=2 fullscreen=0\n", resp);
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ("OK 0\n", resp);
+
+  // A geometry change shows up on the next drain, not before.
+  SDL_SetWindowSize(window, 1024, 768);
+  SDL_SyncWindow(window);
+  resp = send_command("config get window");
+  EXPECT_EQ("OK w=800 h=600 scale=2 fullscreen=0\n", resp)
+      << "the mirror is what the last drain published";
+  ipc_drain_input();
+  resp = send_command("config get window");
+  EXPECT_EQ("OK w=1024 h=768 scale=2 fullscreen=0\n", resp);
+
+  // Stage fullscreen: nothing happens until the drain, which posts the same
+  // deferred request the View menu does (scr_window 0 = fullscreen).
+  resp = send_command("config set fullscreen 1");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  EXPECT_EQ(-1, imgui_state.fullscreen_request);
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ("OK 0 pending=1\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(0, imgui_state.fullscreen_request)
+      << "the drain must post a request for scr_window=0 (fullscreen)";
+  EXPECT_EQ(0u, CPC.scr_window);
+  resp = send_command("config get fullscreen");
+  EXPECT_EQ(std::string::npos, resp.find("pending=")) << resp;
+
+  imgui_state.fullscreen_request = -1;
+  resp = send_command("config set fullscreen 0");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(1, imgui_state.fullscreen_request);
+  EXPECT_EQ(1u, CPC.scr_window);
+
+  // A request the UI posted this frame goes first: the staged IPC value
+  // stays pending until the next drain instead of overwriting it.
+  imgui_state.fullscreen_request = 0;  // the menu asked for fullscreen
+  resp = send_command("config set fullscreen 0");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(0, imgui_state.fullscreen_request) << "the click must survive";
+  resp = send_command("config get fullscreen");
+  EXPECT_NE(std::string::npos, resp.find("pending=0")) << resp;
+  imgui_state.fullscreen_request = -1;  // the main loop consumed the click
+  ipc_drain_input();
+  EXPECT_EQ(1, imgui_state.fullscreen_request) << "now the IPC request";
+
+  // Settings open: Cancel restores old_cpc_settings and re-posts its
+  // scr_window, so an applied IPC switch must be folded into the snapshot.
+  imgui_state.fullscreen_request = -1;
+  imgui_state.show_options = true;
+  imgui_state.old_cpc_settings.scr_window = 1;
+  resp = send_command("config set fullscreen 1");
+  EXPECT_EQ("OK (applied on next frame)\n", resp);
+  ipc_drain_input();
+  EXPECT_EQ(0u, imgui_state.old_cpc_settings.scr_window)
+      << "Settings > Cancel would silently leave fullscreen again";
+  imgui_state.show_options = false;
+
+  // The toggle re-publishes right after the transition, so a client never
+  // reads a frame of stale state with nothing pending.
+  SDL_SetWindowSize(window, 640, 480);
+  SDL_SyncWindow(window);
+  ipc_publish_window_state();
+  resp = send_command("config get window");
+  EXPECT_EQ("OK w=640 h=480 scale=2 fullscreen=0\n", resp);
+
+  imgui_state.fullscreen_request = saved_request;
+  CPC.scr_window = saved_scr_window;
+  CPC.scr_scale = saved_scale;
+  mainSDLWindow = saved_window;
+  SDL_DestroyWindow(window);
+  SDL_QuitSubSystem(SDL_INIT_VIDEO);
+}
+
+TEST_F(IpcServerTest, ConfigFileReportsWhatWasPublished) {
+  ipc_publish_config_file("");
+  auto resp = send_command("config get file");
+  EXPECT_EQ("ERR 503 not-ready\n", resp);
+  ipc_publish_config_file("/somewhere/koncepcja.cfg");
+  resp = send_command("config get file");
+  EXPECT_EQ("OK /somewhere/koncepcja.cfg\n", resp);
+}
+
+// Settings ▸ Input's host-layout combo has an agent-side twin: list the
+// shipped maps, stage a switch, and the main-thread drain applies it live.
+TEST_F(IpcServerTest, ConfigKbdLayoutListsStagesAndAppliesOnDrain) {
+  CPC.resources_path = "resources";
+  InputMapper* const previous = CPC.InputMapper;
+  CPC.InputMapper = new InputMapper(&CPC);
+  CPC.kbd_layout = "keymap_us.map";
+  CPC.keyboard = 0;
+
+  // The IPC thread answers from what the main thread last published, never
+  // from CPC.kbd_layout itself.  Nothing published yet (the server starts
+  // before the config is read): not ready, not a stale or torn read.
+  ipc_publish_host_keymap("", "");
+  auto resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("ERR 503 not-ready")) << resp;
+  resp = send_command("config get kbd_layouts");
+  EXPECT_EQ(0u, resp.find("ERR 503 not-ready")) << resp;
+  resp = send_command("config set kbd_layout keymap_uk_linux.map");
+  EXPECT_EQ(0u, resp.find("ERR 503 not-ready")) << resp;
+
+  koncpc_reload_host_keymap();  // loads the map and publishes it
+  resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("OK keymap_us.map")) << resp;
+
+  resp = send_command("config get kbd_layouts");
+  EXPECT_EQ(0u, resp.find("OK\n")) << resp;  // multi-line, like `disk ls`
+  EXPECT_NE(resp.find("keymap_us.map"), std::string::npos) << resp;
+  EXPECT_NE(resp.find("keymap_uk_linux.map"), std::string::npos) << resp;
+
+  resp = send_command("config set kbd_layout keymap_nonexistent.map");
+  EXPECT_EQ(0u, resp.find("ERR 400")) << resp;
+  EXPECT_EQ("keymap_us.map", CPC.kbd_layout);
+
+  resp = send_command("config set kbd_layout keymap_uk_linux.map");
+  EXPECT_OK(resp);
+  resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("OK keymap_us.map pending=keymap_uk_linux.map"))
+      << resp;
+  EXPECT_EQ("keymap_us.map", CPC.kbd_layout)
+      << "the switch must wait for the main-thread drain";
+
+  // The Settings dialog is open: its Cancel restores the snapshot taken when
+  // it opened.  The switch must join that snapshot or Cancel undoes it.
+  imgui_state.show_options = true;
+  imgui_state.old_cpc_settings.kbd_layout = "keymap_us.map";
+  ipc_drain_input();  // what the main loop does once per frame
+  EXPECT_EQ("keymap_uk_linux.map", CPC.kbd_layout);
+  EXPECT_EQ("keymap_uk_linux.map", imgui_state.old_cpc_settings.kbd_layout)
+      << "Settings > Cancel would silently revert the applied switch";
+  resp = send_command("config get kbd_layout");
+  EXPECT_EQ(0u, resp.find("OK keymap_uk_linux.map")) << resp;
+  EXPECT_EQ(std::string::npos, resp.find("pending=")) << resp;
+  // Shift+3 is the pound sign on a UK host keyboard; the US map gives '#'.
+  EXPECT_EQ(0x30 | MOD_CPC_SHIFT,
+            CPC.InputMapper->CPCscancodeFromKeysym(SDLK_3, SDL_KMOD_RSHIFT));
+
+  // Dialog closed: the snapshot is nobody's business.
+  imgui_state.show_options = false;
+  imgui_state.old_cpc_settings.kbd_layout = "untouched";
+  resp = send_command("config set kbd_layout keymap_us.map");
+  EXPECT_OK(resp);
+  ipc_drain_input();
+  EXPECT_EQ("keymap_us.map", CPC.kbd_layout);
+  EXPECT_EQ("untouched", imgui_state.old_cpc_settings.kbd_layout);
+
+  delete CPC.InputMapper;
+  CPC.InputMapper = previous;
+}
+
 TEST_F(IpcServerTest, RegSetUpdatesRegisters) {
   auto resp = send_command("reg set A 0x42");
   EXPECT_OK(resp);
@@ -181,6 +414,55 @@ TEST_F(IpcServerTest, RegGetReturnsValues) {
 
   resp = send_command("reg get PC");
   EXPECT_EQ(resp, "OK 3456\n");
+}
+
+TEST_F(IpcServerTest, HelpRegistryMatchesImplementedCommands) {
+  auto help = send_command("help");
+  EXPECT_OK(help);
+  EXPECT_NE(help.find("tier [get|status]"), std::string::npos) << help;
+
+  EXPECT_OK(send_command("help reg"));
+  EXPECT_OK(send_command("help serial"));
+  EXPECT_OK(send_command("help telnet"));
+}
+
+TEST_F(IpcServerTest, RegisteredStatusCommandsHaveProtocolResponses) {
+  auto const tier = send_command("tier");
+  EXPECT_EQ(tier, "ERR 503 no-board\n");
+
+  auto const telnet = send_command("telnet status");
+  EXPECT_OK(telnet);
+  EXPECT_NE(telnet.find("port="), std::string::npos);
+  EXPECT_NE(telnet.find("client="), std::string::npos);
+}
+
+TEST_F(IpcServerTest, DevtoolsOnOffUsesRequestedState) {
+  imgui_state.show_devtools = true;
+  EXPECT_OK(send_command("devtools off"));
+  EXPECT_FALSE(imgui_state.show_devtools);
+
+  EXPECT_OK(send_command("devtools on"));
+  EXPECT_TRUE(imgui_state.show_devtools);
+}
+
+// R52 in the crtc dump is the Gate Array's HSYNC line counter, the reference a
+// raster effect is timed against.  It reported CRTC.reg5 instead -- a value
+// the same line already prints as R5 -- so the field read plausibly while
+// describing a different register.  Give the two sources distinct values so
+// the wrong one cannot pass.
+TEST_F(IpcServerTest, RegsCrtcReportsGateArrayR52NotCrtcReg5) {
+  GateArray.sl_count = 0x2A;
+  CRTC.registers[5] = 0x13;
+  CRTC.reg5 = 0x13;
+
+  auto const resp = send_command("regs crtc");
+  ASSERT_NE(resp.find("R52="), std::string::npos) << resp;
+  EXPECT_NE(resp.find("R52=2A"), std::string::npos)
+      << "R52 must report GateArray.sl_count; got: " << resp;
+  EXPECT_EQ(resp.find("R52=13"), std::string::npos)
+      << "R52 is reporting CRTC register 5: " << resp;
+  // R5 keeps reporting the CRTC register, so the two stay distinguishable.
+  EXPECT_NE(resp.find("R5=13"), std::string::npos) << resp;
 }
 
 TEST_F(IpcServerTest, BreakpointListAddDelClear) {
@@ -226,12 +508,334 @@ TEST_F(IpcServerTest, WaitVblCompletes) {
   EXPECT_OK(resp);
 }
 
+TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);  // discard any earlier hit
+
+  cpc_resume();
+  uint64_t const stale_epoch = cpc_resume_epoch();
+  // A genuine pause->run transition is what invalidates a staged stop --
+  // cpc_resume() is a no-op (does not bump the epoch) when the machine is
+  // already running, so a real intervening pause is needed here to make
+  // this "the user's later Run", not a redundant no-op resume.
+  cpc_pause();
+  cpc_resume();
+
+  uint64_t const generation = z80_breakpoint_generation();
+  EXPECT_FALSE(
+      cpc_commit_breakpoint_stop(stale_epoch, generation, 0x1234, false));
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
+
+  uint64_t const current_epoch = cpc_resume_epoch();
+  EXPECT_TRUE(
+      cpc_commit_breakpoint_stop(current_epoch, generation, 0x5678, false));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
+  EXPECT_EQ(hit_pc, 0x5678);
+  EXPECT_FALSE(watch);
+}
+
+TEST_F(IpcServerTest, RedundantResumeCannotDiscardAPendingStop) {
+  // The bug this guards: a resume issued while the machine is ALREADY
+  // running used to still bump the epoch, so a client (or another thread)
+  // sending an idempotent `run` in the narrow window between a real
+  // breakpoint being classified and debug_sync committing it would
+  // silently discard that hit -- the machine never actually paused, and
+  // the caller who armed the breakpoint got no report at all. cpc_resume()
+  // must be a true no-op when CPC.paused is already false.
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  cpc_pause();
+  uint64_t const epoch = cpc_resume();  // real transition: paused -> running
+  uint64_t const generation = z80_breakpoint_generation();
+
+  // A second, redundant `run` arrives while the machine is already running
+  // (e.g. a client that isn't tracking pause state, or two racing callers).
+  uint64_t const redundant_epoch = cpc_resume();
+  EXPECT_EQ(redundant_epoch, epoch)
+      << "a resume on an already-running machine must not advance the epoch";
+
+  // The hit staged against the FIRST (and only real) epoch must still commit.
+  EXPECT_TRUE(cpc_commit_breakpoint_stop(epoch, generation, 0x1234, false));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
+  EXPECT_EQ(hit_pc, 0x1234);
+}
+
+TEST_F(IpcServerTest, BreakpointMutationInvalidatesClassifiedStop) {
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  uint64_t const epoch = cpc_resume();
+  uint64_t const old_generation = z80_breakpoint_generation();
+  z80_add_breakpoint(0x1234);
+
+  EXPECT_FALSE(
+      cpc_commit_breakpoint_stop(epoch, old_generation, 0x1234, false));
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
+  z80_clear_breakpoints();
+}
+
+TEST_F(IpcServerTest, ResumeCannotInterleaveWithExecutionEpochStamp) {
+  // Establish a known paused state so the background thread's cpc_resume()
+  // below is a real pause->run transition and therefore does bump the
+  // epoch -- cpc_resume() is a no-op on an already-running machine.
+  cpc_pause();
+  std::atomic<bool> resume_started{false};
+  std::atomic<bool> resume_finished{false};
+  std::thread resume_thread;
+  uint64_t stamped_epoch = 0;
+  uint64_t stamped_generation = 0;
+
+  {
+    CpcStopCoordinationGuard const coordination;
+    stamped_epoch = coordination.resume_epoch();
+    stamped_generation = coordination.breakpoint_generation();
+    resume_thread = std::thread([&]() {
+      resume_started.store(true, std::memory_order_release);
+      cpc_resume();
+      resume_finished.store(true, std::memory_order_release);
+    });
+    while (!resume_started.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(resume_finished.load(std::memory_order_acquire));
+  }
+
+  resume_thread.join();
+  EXPECT_TRUE(resume_finished.load(std::memory_order_acquire));
+  EXPECT_FALSE(cpc_commit_breakpoint_stop(stamped_epoch, stamped_generation,
+                                          0x1234, false));
+}
+
+TEST_F(IpcServerTest, BreakpointMutationCannotRaceStopCommit) {
+  z80_clear_breakpoints();
+  std::atomic<bool> mutation_started{false};
+  std::atomic<bool> mutation_finished{false};
+  std::thread mutation_thread;
+  uint64_t const old_generation = z80_breakpoint_generation();
+
+  {
+    CpcStopCoordinationGuard const coordination;
+    mutation_thread = std::thread([&]() {
+      mutation_started.store(true, std::memory_order_release);
+      z80_add_breakpoint(0x1234);
+      mutation_finished.store(true, std::memory_order_release);
+    });
+    while (!mutation_started.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    EXPECT_FALSE(mutation_finished.load(std::memory_order_acquire));
+    EXPECT_EQ(coordination.breakpoint_generation(), old_generation);
+  }
+
+  mutation_thread.join();
+  EXPECT_TRUE(mutation_finished.load(std::memory_order_acquire));
+  EXPECT_GT(z80_breakpoint_generation(), old_generation);
+  z80_clear_breakpoints();
+}
+
+TEST_F(IpcServerTest, PauseLeaseBlocksConcurrentResume) {
+  // Destructive callers hold CpcPauseLease across their critical section.
+  // A concurrent IPC/UI Run must not clear pause or bump the resume epoch
+  // while that lease is alive — otherwise going idle waits can hang and
+  // teardown can race a restarted Z80 thread.
+  cpc_resume();
+  uint64_t const epoch_before = cpc_resume_epoch();
+
+  std::atomic<bool> resume_started{false};
+  std::atomic<bool> resume_finished{false};
+  std::thread resume_thread;
+  {
+    CpcPauseLease lease;
+    EXPECT_TRUE(CPC.paused);
+    EXPECT_FALSE(lease.was_paused());
+
+    resume_thread = std::thread([&]() {
+      resume_started.store(true, std::memory_order_release);
+      uint64_t const epoch = cpc_resume();
+      EXPECT_EQ(epoch, epoch_before);
+      resume_finished.store(true, std::memory_order_release);
+    });
+    while (!resume_started.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Resume returns promptly (deferred no-op) but must not unpause.
+    EXPECT_TRUE(resume_finished.load(std::memory_order_acquire));
+    EXPECT_TRUE(CPC.paused);
+    EXPECT_EQ(cpc_resume_epoch(), epoch_before);
+  }
+
+  resume_thread.join();
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_EQ(cpc_resume_epoch(), epoch_before);
+
+  uint64_t const epoch_after = cpc_resume();
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_EQ(epoch_after, epoch_before + 1);
+}
+
+TEST_F(IpcServerTest, PauseLeaseProtectsQuiescenceWaitFromConcurrentResume) {
+  // Simulate a non-idle Z80 thread while a lease waits. Concurrent
+  // Resume must not clear pause — otherwise the wait would never observe
+  // the paused branch and could spin forever.
+  cpc_resume();
+  g_z80_idle.store(false, std::memory_order_release);
+
+  std::atomic<bool> lease_held{false};
+  std::atomic<bool> allow_wait{false};
+  std::atomic<bool> waiter_done{false};
+  std::thread waiter([&]() {
+    CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+    lease_held.store(true, std::memory_order_release);
+    while (!allow_wait.load(std::memory_order_acquire))
+      std::this_thread::yield();
+    lease.wait();
+    waiter_done.store(true, std::memory_order_release);
+  });
+
+  while (!lease_held.load(std::memory_order_acquire)) std::this_thread::yield();
+  EXPECT_TRUE(CPC.paused);
+
+  uint64_t const epoch = cpc_resume_epoch();
+  EXPECT_EQ(cpc_resume(), epoch);  // deferred while lease is held
+  EXPECT_TRUE(CPC.paused);
+
+  allow_wait.store(true, std::memory_order_release);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  EXPECT_FALSE(waiter_done.load(std::memory_order_acquire));
+
+  g_z80_idle.store(true, std::memory_order_release);
+  waiter.join();
+  EXPECT_TRUE(waiter_done.load(std::memory_order_acquire));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_EQ(cpc_resume_epoch(), epoch);
+}
+
+TEST_F(IpcServerTest, NestedPauseLeasesKeepResumeDeferred) {
+  cpc_resume();
+  uint64_t const epoch = cpc_resume_epoch();
+  {
+    CpcPauseLease outer;
+    {
+      CpcPauseLease inner;
+      EXPECT_TRUE(inner.was_paused());
+      EXPECT_EQ(cpc_resume(), epoch);
+      EXPECT_TRUE(CPC.paused);
+    }
+    // Outer lease still held — Resume remains deferred.
+    EXPECT_EQ(cpc_resume(), epoch);
+    EXPECT_TRUE(CPC.paused);
+  }
+  EXPECT_EQ(cpc_resume(), epoch + 1);
+  EXPECT_FALSE(CPC.paused);
+}
+
+TEST_F(IpcServerTest, ResumeAppliedReportsLeaseDeferral) {
+  cpc_resume();
+  {
+    CpcPauseLease lease;
+    EXPECT_FALSE(cpc_resume_applied());
+    EXPECT_TRUE(CPC.paused);
+    lease.restore_run_state();
+  }
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_TRUE(cpc_resume_applied());
+}
+
+TEST_F(IpcServerTest, RunReportsPauseLeaseHeld) {
+  cpc_resume();
+  CpcPauseLease lease;
+  auto const resp = send_command("run");
+  EXPECT_EQ(resp, "ERR 409 pause-lease-held\n");
+  EXPECT_TRUE(CPC.paused);
+  lease.restore_run_state();
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_OK(send_command("run"));
+}
+
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto screenshotPath =
       (std::filesystem::temp_directory_path() / "kaprys_test.png").string();
   auto resp = send_command("screenshot " + screenshotPath);
   EXPECT_EQ(resp, "ERR 503 no-surface\n");
+}
+
+TEST_F(IpcServerTest, DiskNewCanCreateFluxBacking) {
+  auto const path =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-flux.scp";
+  std::filesystem::remove(path);
+
+  auto const response =
+      send_command("disk new " + path.string() + " data flux");
+  EXPECT_OK(response);
+
+  std::ifstream file(path, std::ios::binary);
+  char signature[3] = {};
+  file.read(signature, sizeof(signature));
+  EXPECT_EQ(std::string(signature, sizeof(signature)), "SCP");
+  file.close();
+  std::filesystem::remove(path);
+}
+
+TEST_F(IpcServerTest, DiskStatusSaveEjectAndCaps) {
+  EXPECT_OK(send_command("disk eject A"));
+  auto status = send_command("disk status A");
+  EXPECT_EQ(status,
+            "OK present=0 backing=empty can_dsk=0 can_scp=0 can_hfe=0\n");
+
+  EXPECT_OK(send_command("disk format A data"));
+  status = send_command("disk status A");
+  EXPECT_EQ(status,
+            "OK present=1 backing=sector can_dsk=1 can_scp=0 can_hfe=0\n");
+
+  auto const saved =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-save.dsk";
+  std::filesystem::remove(saved);
+  EXPECT_OK(send_command("disk save A " + saved.string() + " dsk"));
+  std::ifstream file(saved, std::ios::binary);
+  char magic[8] = {};
+  file.read(magic, sizeof(magic));
+  const std::string header(magic, static_cast<std::size_t>(file.gcount()));
+  EXPECT_TRUE(header.rfind("MV - CPC", 0) == 0 ||
+              header.rfind("EXTENDED", 0) == 0)
+      << header;
+  file.close();
+  std::filesystem::remove(saved);
+
+  EXPECT_EQ(send_command("disk save B /tmp/koncepcja-ipc-b.scp scp"),
+            "ERR 409 save-format-unavailable\n");
+  EXPECT_EQ(send_command("disk save A ../koncepcja-ipc-escape.dsk"),
+            "ERR 403 path-traversal-blocked\n");
+
+  // Genuine I/O failure (nonexistent directory) must still carry the
+  // "ERR <code> <slug>" convention, not a bare "ERR <raw message>".
+  auto const write_fail =
+      send_command("disk save A /nonexistent-dir-koncepcja/x.dsk");
+  EXPECT_TRUE(write_fail.rfind("ERR 500 ", 0) == 0) << write_fail;
+
+  EXPECT_OK(send_command("disk eject A"));
+  EXPECT_EQ(send_command("disk save A " + saved.string() + " dsk"),
+            "ERR 404 empty-drive\n");
+
+  auto const help = send_command("help disk");
+  EXPECT_OK(help);
+  EXPECT_NE(help.find("status"), std::string::npos) << help;
+  EXPECT_NE(help.find("save"), std::string::npos) << help;
+  EXPECT_NE(help.find("eject"), std::string::npos) << help;
+
+  EXPECT_OK(send_command("disk eject A"));
+  auto ls = send_command("disk ls A");
+  EXPECT_TRUE(ls.rfind("ERR", 0) == 0) << ls;
+  EXPECT_EQ(send_command("disk status A"),
+            "OK present=0 backing=empty can_dsk=0 can_scp=0 can_hfe=0\n");
 }
 
 TEST_F(IpcServerTest, WatchpointAddListDelClear) {
@@ -338,18 +942,59 @@ TEST_F(IpcServerTest, StepOverDoesNotDescendIntoCall) {
   EXPECT_OK(resp);
 }
 
-TEST_F(IpcServerTest, StepToCommand) {
-  // Write NOP at 0x0000, step to 0x0001 should work immediately via ephemeral
-  // bp
+TEST_F(IpcServerTest, StepToWithoutMachineReportsNoProgressPromptly) {
+  // Was "OK or ERR 408" -- the command's whole output space, so it could not
+  // fail. With no machine attached nothing can ever reach the target, so the
+  // shared run-until helper must say so at once rather than burning its 5s
+  // deadline. It reports 409 no-progress, the same as every other step
+  // command: "nothing can run" is one condition and gets one code, rather
+  // than 409 from the paths that route through z80_step_out_finish and 408
+  // from the paths that do not.
   z80.PC.w.l = 0x0000;
   z80_write_mem(0x0000, 0x00);
-  // step to on a paused emulator won't actually run; check command is accepted
-  // In test environment without main loop, this will timeout
-  // Just verify the command doesn't crash
+
+  auto const started = std::chrono::steady_clock::now();
   auto resp = send_command("step to 0x0001");
-  // Either timeout or OK is acceptable in test harness
-  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
-              resp.find("ERR 408") != std::string::npos);
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
+}
+
+TEST_F(IpcServerTest, StepOverCallWithoutMachineReportsNoProgressPromptly) {
+  // The CALL path goes through z80_run_until_ephemeral, the RST path through
+  // z80_step_out_finish. Only the latter used to have a no-machine bail, so
+  // this case returned ERR 408 while the docs promised 409 -- the two halves
+  // of one command disagreeing about what "nothing can run" means.
+  z80.PC.w.l = 0x0000;
+  z80_write_mem(0x0000, 0xCD);  // call nn
+  z80_write_mem(0x0001, 0x00);
+  z80_write_mem(0x0002, 0xC0);
+
+  auto resp = send_command("step over");
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
+}
+
+TEST_F(IpcServerTest, StepOverRstWithoutMachineReportsNoProgressPromptly) {
+  // `step over` on an RST steps into the vector and finishes that frame, so it
+  // goes through the same walk as `step out` and must inherit its no-machine
+  // bail rather than hanging for the deadline.
+  z80.PC.w.l = 0x0000;
+  z80_write_mem(0x0000, 0xFF);  // rst 38h
+
+  auto const started = std::chrono::steady_clock::now();
+  auto resp = send_command("step over");
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
 }
 
 TEST_F(IpcServerTest, WatchpointRange) {
@@ -366,17 +1011,26 @@ TEST_F(IpcServerTest, WatchpointRange) {
   send_command("wp clear");
 }
 
-TEST_F(IpcServerTest, StepOutCommand) {
-  // Without a live Machine, z80_step_instruction is a no-op, so step out hits
-  // the 5s deadline. This only checks the command is wired and does not crash;
-  // SP-climb / CALL-skip behaviour is covered by the IPC harness on a running
-  // emulator (see PR #37).
+TEST_F(IpcServerTest, StepOutWithoutMachineReportsNoProgressPromptly) {
+  // The unit-test binary never calls subcycle_bridge_start(), so
+  // z80_step_instruction() is a no-op and SP can never move. The walk used to
+  // discover that by hot-spinning to its 5s deadline -- on every suite run.
+  // It must now say so immediately, and say the *right* thing: 409, not a 408
+  // that blames a clock it never really raced.
   z80.PC.w.l = 0x0000;
   z80_write_mem(0x0000, 0xC9);  // RET
 
+  auto const started = std::chrono::steady_clock::now();
   auto resp = send_command("step out");
-  EXPECT_TRUE(resp.find("OK") != std::string::npos ||
-              resp.find("ERR 408") != std::string::npos);
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_NE(resp.find("ERR 409 no-progress"), std::string::npos)
+      << "got: " << resp;
+  // Generous versus the 5s spin this replaced, tight enough to fail if the
+  // no-machine bail is ever lost.
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
 }
 
 TEST_F(IpcServerTest, SymbolLoad) {
@@ -414,6 +1068,56 @@ TEST_F(IpcServerTest, MemFindWildcard) {
   auto resp = send_command("mem find hex 0x2F00 0x3100 DE??BEEF");
   EXPECT_TRUE(resp.find("OK") != std::string::npos);
   EXPECT_TRUE(resp.find("3000") != std::string::npos);
+}
+
+// Bank 0 READ aims at a ROM overlay while WRITE stays on RAM — the asymmetry
+// that makes --view=ram distinguishable from the default CPU view. Mirrors
+// DevToolsRenderTest::CpuViewAndRamViewDivergeUnderARomOverlay (&1AF1).
+TEST_F(IpcServerTest, MemRamViewIgnoresRomOverlay) {
+  static byte rom[kBankSize];
+  std::memset(rom, 0, sizeof(rom));
+  constexpr word kAddr = 0x1AF1;
+  constexpr byte kRomByte = 0x3E;
+  constexpr byte kRamByte = 0x03;
+  rom[kAddr] = kRomByte;
+  memory[0][kAddr] = kRamByte;
+  membank_read[0] = rom;
+
+  auto resp = send_command("mem read 0x1AF1 1");
+  EXPECT_EQ(resp, "OK 3E\n") << resp;
+
+  resp = send_command("mem read 0x1AF1 1 --view=ram");
+  EXPECT_EQ(resp, "OK 03\n") << resp;
+
+  resp = send_command("mem read 0x1AF1 1 --view=write");
+  EXPECT_EQ(resp, "OK 03\n") << resp;
+
+  resp = send_command("mem read 0x1AF1 1 --view=bogus");
+  EXPECT_EQ(resp, "ERR 400 bad-view (read|ram)\n") << resp;
+
+  // Reference byte at 0x4000 matches RAM under the overlay.
+  memory[1][0x0000] = kRamByte;  // 0x4000
+  resp = send_command("mem compare 0x1AF1 0x4000 1");
+  EXPECT_TRUE(resp.find("OK diffs=1") != std::string::npos) << resp;
+
+  resp = send_command("mem compare 0x1AF1 0x4000 1 --view=ram");
+  EXPECT_TRUE(resp.find("OK diffs=0") != std::string::npos) << resp;
+
+  resp = send_command("mem compare 0x1AF1 0x4000 1 --view=bogus");
+  EXPECT_EQ(resp, "ERR 400 bad-view (read|ram)\n") << resp;
+
+  // CPU view cannot find the RAM byte under ROM; RAM view can.
+  resp = send_command("mem find hex 0x1AF0 0x1AF2 03");
+  EXPECT_EQ(resp, "OK\n") << resp;
+
+  resp = send_command("mem find hex 0x1AF0 0x1AF2 03 --view=ram");
+  EXPECT_TRUE(resp.find("1AF1") != std::string::npos) << resp;
+
+  resp = send_command("search hex 03 --view=ram");
+  EXPECT_TRUE(resp.find("1AF1") != std::string::npos) << resp;
+
+  resp = send_command("search hex 03 --view=bogus");
+  EXPECT_EQ(resp, "ERR 400 bad-view (read|ram)\n") << resp;
 }
 
 // ─────────────────────────────────────────────────
@@ -524,6 +1228,53 @@ TEST_F(IpcServerTest, TypeRoutesThroughAutotypeQueue) {
   auto acts3 = g_autotype_queue.actions();
   ASSERT_EQ(acts3.size(), 1u) << "surrounding single quotes must be stripped";
   EXPECT_EQ(acts3[0].cpc_key, static_cast<uint16_t>(CPC_RETURN));
+  g_autotype_queue.clear();
+}
+
+// A literal ';' in 'input type'/'autotype' text is swallowed by the IPC
+// server's ';'-command-chaining line splitter (split_semicolons(), called
+// on every raw line before dispatch) -- the tail after the ';' is parsed
+// as a separate, usually-unrecognized command instead of ever reaching
+// AutoTypeQueue (beads-x7hu). ~SEMICOLON~ sidesteps this entirely: no
+// literal ';' byte reaches the wire, so the chain-splitter never sees it.
+TEST_F(IpcServerTest, SemicolonTokenTypesTheKeyWithoutTriggeringChainSplit) {
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type a~SEMICOLON~b"));
+  auto acts = g_autotype_queue.actions();
+  ASSERT_EQ(acts.size(), 3u)
+      << "~SEMICOLON~ must parse to one key action between 'a' and 'b', "
+         "not be swallowed by chain-splitting";
+  EXPECT_EQ(acts[1].cpc_key, static_cast<uint16_t>(CPC_SEMICOLON));
+
+  // Case-insensitive, matching every other named ~KEY~ token.
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("autotype ~semicolon~"));
+  auto acts2 = g_autotype_queue.actions();
+  ASSERT_EQ(acts2.size(), 1u);
+  EXPECT_EQ(acts2[0].cpc_key, static_cast<uint16_t>(CPC_SEMICOLON));
+  g_autotype_queue.clear();
+}
+
+// The IPC server's ';'-command-chaining line splitter (split_semicolons)
+// used to trim trailing spaces/tabs from EVERY segment, including a line
+// with no ';' at all. 'input type'/'autotype' consume the rest of the line
+// verbatim as their text argument, so a trailing space in that argument was
+// silently eaten before ever reaching AutoTypeQueue::enqueue() -- 100%
+// deterministically, not a race (beads-u00m).
+TEST_F(IpcServerTest, TypeAndAutotypePreserveATrailingSpace) {
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("input type hello "));
+  auto acts = g_autotype_queue.actions();
+  ASSERT_EQ(acts.size(), 6u)
+      << "trailing space in 'input type' text must not be trimmed";
+  EXPECT_EQ(acts[5].cpc_key, static_cast<uint16_t>(CPC_SPACE));
+
+  g_autotype_queue.clear();
+  EXPECT_OK(send_command("autotype hello "));
+  auto acts2 = g_autotype_queue.actions();
+  ASSERT_EQ(acts2.size(), 6u)
+      << "trailing space in 'autotype' text must not be trimmed";
+  EXPECT_EQ(acts2[5].cpc_key, static_cast<uint16_t>(CPC_SPACE));
   g_autotype_queue.clear();
 }
 

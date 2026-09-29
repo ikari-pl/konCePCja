@@ -11,13 +11,40 @@
 // headless-safe.  This header re-exports `imgui_state.h` so existing
 // modern-UI callers keep compiling unchanged.
 
+#include "imgui.h"
 #include "imgui_state.h"
+
+// Scale a hand-tuned pixel constant by the display's DPI scale.
+//
+// Hard-coded sizes (window sizes, item widths, paddings) are in ImGui
+// coordinates, which on Windows are raw pixels.  Wrapping such a literal in
+// this keeps its physical size as the desktop scale changes, so text and the
+// box around it grow together.  Returns the value unchanged at 100%.
+inline float ui_dpi_px(float px) {
+  float const s = ImGui::GetStyle().FontScaleDpi;
+  return px * ((s > 0.0f) ? s : 1.0f);
+}
 
 void imgui_init_ui();
 void imgui_render_ui();
+// Blocks (bounded by Step Out's own 5s timeout) until a Step Out that was
+// dispatched to a background thread has finished, so the app never tears
+// down state a still-running step-out thread is touching. Call once from
+// the main thread during shutdown, before the Z80 thread is joined.
+void dbg_step_walk_await_shutdown();
+bool dbg_step_walk_running();
+void dbg_run_to_address(word target);
 int imgui_topbar_height();
 void imgui_open_menu();
 void imgui_close_menu();
+// The F1 pause hub (Transport / Status / Save States). Drawn by
+// imgui_render_ui() while imgui_state.show_menu; exposed for the headless
+// render tests.
+void imgui_render_menu();
+// The hub's Eject A/B/Tape + DevTools row (see imgui_ui_testable.h's
+// hub_media_buttons for the enable logic); exposed for the render tests.
+struct HubMediaButtons;
+void imgui_render_hub_media_row(const HubMediaButtons& media, float width);
 // Free every cached save-state slot thumbnail GPU texture.  Must be called
 // before video_shutdown() (e.g. on a renderer switch) so stale texture handles
 // are never used or freed against a destroyed render device.

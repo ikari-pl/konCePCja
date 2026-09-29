@@ -24,6 +24,7 @@
 #include "imgui_impl_sdlgpu3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "imgui_ui.h"
+#include "iui_host.h"
 #include "koncepcja.h"
 #include "log.h"
 #include "macos_menu.h"
@@ -540,8 +541,13 @@ void compute_scale(video_plugin* t, int w, int h) {
     t->x_scale = w / static_cast<float>(disp_w);
     t->y_scale = h / static_cast<float>(disp_h);
   } else {
+    // Stretch to fill the area left over by the chrome.  win_width/win_height
+    // are already net of the bars above, so the image must still be pushed
+    // down past the topbar — without that offset it was drawn from y=0, hiding
+    // the CPC's top border under the topbar and leaving a black band of
+    // topbar_height between the image and the bottombar.
     t->x_offset = 0;
-    t->y_offset = 0;
+    t->y_offset = topbar_height > 0 ? static_cast<float>(topbar_height) : 0.f;
     t->x_scale = w / static_cast<float>(win_width);
     t->y_scale = h / static_cast<float>(win_height);
     t->width = win_width;
@@ -593,6 +599,23 @@ void direct_setpal(SDL_Color* c) {
 //   - Non-blocking swapchain acquire — never blocks the render thread.
 
 namespace {
+
+// Content scale of the display this window is on (1.0 = 100%, 2.25 = 225%),
+// used to size the ImGui chrome.
+//
+// SDL_GetWindowDisplayScale() is pixel density * display content scale, so
+// dividing recovers the content scale — the part expressed in window
+// coordinates.  Query the window, since with several displays attached it
+// opens on whichever one the session puts it on.  On macOS the Retina
+// backing factor lives in the pixel density, making this 1.0 there.
+float koncpc_window_content_scale(SDL_Window* w) {
+  if (!w) return 1.0F;
+  float const density = SDL_GetWindowPixelDensity(w);
+  float const display_scale = SDL_GetWindowDisplayScale(w);
+  if (!(density > 0.0F) || !(display_scale > 0.0F)) return 1.0F;
+  return display_scale / density;
+}
+
 SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   // HIGH_PIXEL_DENSITY: on a Retina display the GPU swapchain is created at the
   // full backing pixel size (2x) instead of macOS upscaling a low-res drawable,
@@ -641,6 +664,11 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
                     ImGuiConfigFlags_ViewportsEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = g_gpu.device;
@@ -1714,6 +1742,11 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
   // ViewportsEnable not supported by SDL_Renderer backend
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
@@ -1858,6 +1891,11 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs) {
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
     ImGui::DestroyContext();
     SDL_DestroyRenderer(renderer);
@@ -2107,6 +2145,14 @@ void compute_rects(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels) {
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
+// Test seam for compute_scale(): where the CPC image lands inside the window
+// is otherwise reachable only through a plugin flip.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void compute_scale_for_tests(video_plugin* t, int w, int h) {
+  compute_scale(t, w, h);
+}
+
 void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels) {
   compute_rects(src, dst, half_pixels);
 }
@@ -2120,18 +2166,26 @@ static const int video_scale_factors_count =
 // For Fit mode (scr_scale=0), returns false (don't resize — keep user's
 // window).
 namespace {
-bool compute_window_size(int& out_w, int& out_h) {
-  float f;
-  if (CPC.scr_scale > 0 &&
-      static_cast<int>(CPC.scr_scale) < video_scale_factors_count)
-    f = video_scale_factors[CPC.scr_scale];
-  else
-    return false;  // Fit mode — don't resize
+// Window dimensions for one CPC image scale factor, chrome included.
+//
+// The plugin renders into a CPC_RENDER_WIDTH x (CPC_VISIBLE_SCR_HEIGHT * 2)
+// surface — video_init() always inits the plugin at scale 2, which doubles the
+// scanlines — so the raw (non-CRT) pixel aspect is 768:540, not 768:270.
+// Sizing the window from the undoubled height gave a 2.84:1 letterbox window
+// whenever scr_crt_aspect was off.
+void window_size_for_factor(float f, int& out_w, int& out_h) {
   out_w = static_cast<int>(CPC_RENDER_WIDTH * f) + devtools_panel_width;
   int const cpc_h = CPC.scr_crt_aspect
                         ? static_cast<int>(CPC_RENDER_WIDTH * f * 3.f / 4.f)
-                        : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
+                        : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * 2 * f);
   out_h = max(cpc_h + topbar_height + bottombar_height, devtools_panel_height);
+}
+
+bool compute_window_size(int& out_w, int& out_h) {
+  if (CPC.scr_scale == 0 ||
+      static_cast<int>(CPC.scr_scale) >= video_scale_factors_count)
+    return false;  // Fit mode — don't resize
+  window_size_for_factor(video_scale_factors[CPC.scr_scale], out_w, out_h);
   return true;
 }
 }  // namespace
@@ -2141,14 +2195,205 @@ bool compute_window_size(int& out_w, int& out_h) {
 // surface now. The devtools_panel_* variables stay: compute_window_size still
 // folds them into the main-window geometry.
 
+namespace {
+// Deadline until which chrome-driven resizes are skipped, holding the window
+// at its current size while the chrome settles or rescales.  At a fixed
+// scr_scale compute_scale() crops and centres the CPC image, keeping it
+// pixel-exact; Fit mode re-fits it.
+//
+// A deadline rather than a countdown: the topbar and bottombar settle on
+// their own frames, so the number of resizes is not known in advance.  A
+// count that guessed too low let one through, and one that guessed too high
+// left a hold armed to swallow an unrelated later resize — the window
+// refusing to grow when DevTools opened, say.  Time bounds it either way.
+Uint64 s_hold_window_size_until = 0;
+
+// Fit-mode DPI: remember chrome+window before scale so we can grow the
+// window by the chrome delta after bars settle (compute_window_size is
+// false in Fit, so a hold alone permanently shrinks the CPC viewport).
+bool s_fit_chrome_preserve = false;
+int s_fit_chrome_before = 0;
+int s_fit_win_h_before = 0;
+Uint64 s_fit_chrome_preserve_deadline = 0;
+
+// The single resize point for chrome-driven geometry changes, so the hold
+// is honoured identically by topbar/bottombar set and clear.
+void resize_window_for_chrome() {
+  if (!mainSDLWindow) return;
+  if (SDL_GetTicks() < s_hold_window_size_until) return;
+  int w = 0;
+  int h = 0;
+  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+}
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_hold_window_size(int ms) {
+  Uint64 const until = SDL_GetTicks() + static_cast<Uint64>(ms);
+  if (until > s_hold_window_size_until) s_hold_window_size_until = until;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_window_size_held() {
+  return SDL_GetTicks() < s_hold_window_size_until;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_begin_fit_chrome_preserve() {
+  if (!mainSDLWindow) return;
+  s_fit_chrome_before = topbar_height + bottombar_height;
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(mainSDLWindow, &w, &h);
+  s_fit_win_h_before = h;
+  s_fit_chrome_preserve = true;
+  // Topbar and bottombar settle on separate frames; give them the same
+  // budget the fixed-scale path uses for its hold.
+  s_fit_chrome_preserve_deadline = SDL_GetTicks() + 750;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_maybe_apply_fit_chrome_preserve() {
+  if (!s_fit_chrome_preserve || !mainSDLWindow) return;
+  // Wait out the settle budget so both topbar and bottombar have a chance to
+  // measure at the new scale before we grow once.
+  if (SDL_GetTicks() < s_fit_chrome_preserve_deadline) return;
+  int const chrome_after = topbar_height + bottombar_height;
+  int const delta = chrome_after - s_fit_chrome_before;
+  s_fit_chrome_preserve = false;
+  if (delta == 0) return;
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(mainSDLWindow, &w, &h);
+  // Grow/shrink from the pre-scale window height so a mid-settle GetWindowSize
+  // that already moved does not double-apply.
+  int const target_h = s_fit_win_h_before + delta;
+  if (target_h > 0 && h != target_h) {
+    SDL_SetWindowSize(mainSDLWindow, w, target_h);
+    if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
+  }
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_apply_pending_chrome_resize() { resize_window_for_chrome(); }
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+// Derived window size: the emulated screen at the current scale plus the
+// chrome.  False in Fit scale mode, where no fixed size follows from it.
+bool video_derived_window_size(int& out_w, int& out_h) {
+  return compute_window_size(out_w, out_h);
+}
+
+// Fit mode (scr_scale = 0) has no derived size — the window is whatever the
+// user dragged it to.  A fresh window still needs *a* correctly-proportioned
+// size to start from, so fall back to 1x plus chrome.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units; internal linkage would break the link
+void video_default_window_size(int& out_w, int& out_h) {
+  window_size_for_factor(1.f, out_w, out_h);
+}
+
+// A win_w/win_h persisted from before the reinit-size fix (or from any other
+// bug that could wedge the window at a degenerate size) must not be trusted
+// blindly — sanity-check its shape before using it, or a stale bad value on
+// disk reproduces the same squish the fix exists to prevent.  1536x540 (2.84:1,
+// the raw plugin-init letterbox) is the real-world value that got through
+// before this check existed.
+//
+// Anything from 0.9:1 (portrait is never a CPC window) to 2.2:1 (4:3 CRT
+// through the ~1.42:1 native surface, plus a DevTools side panel) is plainly a
+// user's window.  Wider than that is still a user's window when it is tall as
+// well — a Fit-mode window maximised on an ultrawide display — so the wide
+// side is bounded by height, not by ratio: wide-but-short is a squish whatever
+// its exact ratio.  The plugin-init letterbox shape itself (768:270 at any
+// scale) is rejected outright, tall or not.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_persisted_window_size_is_sane(unsigned int w, unsigned int h) {
+  constexpr double kMinAspect = 0.9;
+  constexpr double kMaxAspect = 2.2;
+  constexpr double kLetterboxAspect =
+      static_cast<double>(CPC_RENDER_WIDTH) / CPC_VISIBLE_SCR_HEIGHT;
+  constexpr double kLetterboxTolerance = 0.05;
+  // The 1x doubled-scanline image plus room for the chrome: a window wider
+  // than kMaxAspect but no taller than this cannot be a maximised window on
+  // any display — it is a letterbox.
+  constexpr unsigned int kShortestWideWindow =
+      (CPC_VISIBLE_SCR_HEIGHT * 2) + 64;
+  if (w == 0 || h == 0) return false;
+  double const aspect = static_cast<double>(w) / static_cast<double>(h);
+  if (aspect < kMinAspect) return false;
+  if (fabs(aspect - kLetterboxAspect) < kLetterboxTolerance) return false;
+  if (aspect <= kMaxAspect) return true;
+  return h > kShortestWideWindow;
+}
+
+// The size a windowed window contributes to CPC.win_w/win_h.  A fullscreen
+// window's size belongs to the display, not the user, so it — like a
+// degenerate size — leaves the outputs untouched and returns false.  Pure so
+// the fullscreen branch is testable without putting a window into fullscreen.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_windowed_geometry(Uint64 window_flags, int w, int h,
+                             unsigned int& out_w, unsigned int& out_h) {
+  if ((window_flags & SDL_WINDOW_FULLSCREEN) != 0) return false;
+  if (w <= 0 || h <= 0) return false;
+  out_w = static_cast<unsigned int>(w);
+  out_h = static_cast<unsigned int>(h);
+  return true;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool video_capture_windowed_geometry(SDL_Window* win, unsigned int& out_w,
+                                     unsigned int& out_h) {
+  if (win == nullptr) return false;
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(win, &w, &h);
+  return video_windowed_geometry(SDL_GetWindowFlags(win), w, h, out_w, out_h);
+}
+
+// The size a freshly (re)created windowed window must be set to.  At a fixed
+// scr_scale that size is derived from the scale.  In Fit mode (scr_scale == 0)
+// there is nothing to derive from, so restore the size the window had before
+// this reinit (CPC.win_w/win_h, recorded by video_shutdown() or loaded from the
+// config) when it is sane; only a genuinely fresh window — or a degenerate
+// persisted size — falls back to the 1x default.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_reinit_window_size(int& out_w, int& out_h) {
+  if (video_derived_window_size(out_w, out_h)) return;
+  if (video_persisted_window_size_is_sane(CPC.win_w, CPC.win_h)) {
+    out_w = static_cast<int>(CPC.win_w);
+    out_h = static_cast<int>(CPC.win_h);
+  } else {
+    video_default_window_size(out_w, out_h);
+  }
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void video_fit_window_to_screen() {
+  if (!mainSDLWindow) return;
+  int w = 0;
+  int h = 0;
+  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+}
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void video_set_topbar(SDL_Surface* surface, int height) {
   if (!mainSDLWindow) return;
   topbar_surface = surface;
   topbar_height = height;
-  int w, h;
-  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+  resize_window_for_chrome();
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -2156,8 +2401,7 @@ void video_clear_topbar() {
   topbar_surface = nullptr;
   topbar_height = 0;
   if (mainSDLWindow) {
-    int w, h;
-    if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+    resize_window_for_chrome();
   }
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
@@ -2167,8 +2411,7 @@ int video_get_topbar_height() { return topbar_height; }
 void video_set_bottombar(int height) {
   if (!mainSDLWindow) return;
   bottombar_height = height;
-  int w, h;
-  if (compute_window_size(w, h)) SDL_SetWindowSize(mainSDLWindow, w, h);
+  resize_window_for_chrome();
   if (vid_plugin && vid) compute_scale(vid_plugin, vid->w, vid->h);
 }
 
@@ -2417,6 +2660,11 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
       ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
   ImGui::StyleColorsDark();
   imgui_init_ui();
+  // Scale the ImGui chrome to the desktop scale.  Must follow
+  // CreateContext(); the host no-ops without a context.  Only the chrome:
+  // the CPC image keeps the users chosen integer scr_scale so it stays
+  // pixel-exact, and its viewport is computed per frame anyway.
+  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
   ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
   ImGui_ImplSDLGPU3_InitInfo init_info{};
   init_info.Device = g_gpu.device;

@@ -201,7 +201,7 @@ TEST(FastTierMachine, TierSwitchesAtFrameBoundariesMatchPureWake) {
 // Regression guard for the Fast-tier frame bound (kMaxFastChars). Context: a
 // Machine→Reset in the GUI wedged the emulator with ~36 GB RSS and PC frozen at
 // 0x0000. Root cause was a race — the render thread called emulator_reset()
-// without quiescing the engine=1 Z80 thread (fixed by quiescing emulator_reset;
+// without idling the engine=1 Z80 thread (fixed by idling emulator_reset;
 // the app-level threaded case isn't reachable from this single-threaded test).
 // The *consequence* was in run_frame_fast: with no VSYNC to cut the frame, a
 // HALT with interrupts off free-ran the char clock and produced ~20M audio

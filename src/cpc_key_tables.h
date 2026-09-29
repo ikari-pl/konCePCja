@@ -52,6 +52,14 @@ inline const std::map<std::string, CPC_KEYS>& cpc_key_names() {
       {"J1_RIGHT", CPC_J1_RIGHT},
       {"J1_FIRE1", CPC_J1_FIRE1},
       {"J1_FIRE2", CPC_J1_FIRE2},
+      // A literal ';' is otherwise untypeable via a single 'autotype'/
+      // 'input type' IPC call: the server's line parser splits every raw
+      // line on ';' for command chaining before autotype ever sees the
+      // text (beads-x7hu). ~SEMICOLON~ resolves to the key here without
+      // ever putting a literal ';' byte on the wire, so the chain-splitter
+      // never sees it -- no protocol change needed, and chaining after an
+      // autotype/input type call is unaffected.
+      {"SEMICOLON", CPC_SEMICOLON},
   };
   return tbl;
 }

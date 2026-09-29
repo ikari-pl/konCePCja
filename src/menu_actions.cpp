@@ -26,7 +26,7 @@ const std::vector<MenuAction>& koncpc_menu_actions() {
       {KONCPC_JOY, "Joystick Emulation", "", true, MenuGroup::Input},
       {KONCPC_PHAZER, "Light Gun (Magnum Phaser)", "", true, MenuGroup::Input},
       {KONCPC_FPS, "Show FPS", "", true, MenuGroup::View},
-      {KONCPC_SPEED, "Limit Speed", "", true, MenuGroup::Input},
+      {KONCPC_SPEED, "Limit Speed", "", true, MenuGroup::Tools},
       {KONCPC_DEBUG, "Verbose Log to Console", "", true, MenuGroup::Tools},
       {KONCPC_EXIT, "Quit", "", false, MenuGroup::App},
       {KONCPC_PASTE, "Paste", "", false, MenuGroup::Edit},

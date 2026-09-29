@@ -4,13 +4,18 @@
 #include <stdlib.h>
 
 #include "koncepcja.h"
+#include "silicon_disc.h"
 #include "slotshandler.h"
+#ifdef _WIN32
+#include <process.h>
+#endif
 #ifndef _MSC_VER
 #include <unistd.h>
 #endif
 #include <errno.h>
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -21,9 +26,14 @@ extern t_disk_format disk_format[8];
 
 class ConfigurationTest : public testing::Test {
  public:
-  void SetUp() {}
+  // loadConfiguration() writes process-global device state, not just the
+  // t_CPC it is handed: system/silicon_disc lands in g_silicon_disc.enabled.
+  // Leaving that on leaked into RamExpansionTest, where an enabled Silicon
+  // Disc suppresses the out-of-range bank clamp. Restore it.
+  void SetUp() { saved_silicon_disc_ = g_silicon_disc.enabled; }
 
   void TearDown() {
+    g_silicon_disc.enabled = saved_silicon_disc_;
     for (auto f : tmpFilenames_) {
       ASSERT_EQ(0, unlink(f.c_str()));
     }
@@ -40,6 +50,7 @@ class ConfigurationTest : public testing::Test {
 
  protected:
   std::vector<std::string> tmpFilenames_;
+  bool saved_silicon_disc_ = false;
   config::Config configuration_;
 
  private:
@@ -572,6 +583,308 @@ TEST_F(ConfigurationTest, aRealChangeToAnOverriddenKeyPersists) {
   std::ostringstream oss2;
   configuration_.toStream(oss2);
   EXPECT_NE(oss2.str().find("m4_sd_path=/home/newsd"), std::string::npos);
+}
+
+// A key whose live value is unchanged since load must not be written back:
+// the file keeps whatever it holds NOW. Every clean exit used to write the
+// whole live state over the file — and a SIGTERM is a clean exit, SDL turns
+// it into SDL_EVENT_QUIT — so a stale kbd_layout was re-persisted over a hand
+// fix the moment the running instance was killed.
+TEST_F(ConfigurationTest, anUnchangedValueDoesNotOverwriteAHandEdit) {
+  // The file as it is at save time: edited by hand while the emulator ran.
+  configuration_.parseString("[control]\nkbd_layout=keymap_us.map\n");
+  // What this session loaded at boot.
+  config::ConfigMap loaded;
+  loaded["control"]["kbd_layout"] = "keymap_es_linux.map";
+  configuration_.setBaseline(loaded);
+
+  // Save time: live state echoes the loaded value back, unchanged.
+  configuration_.setStringValue("control", "kbd_layout", "keymap_es_linux.map");
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("kbd_layout=keymap_us.map"), std::string::npos)
+      << "the hand edit was overwritten by the stale live value:\n"
+      << oss.str();
+  EXPECT_EQ(oss.str().find("keymap_es_linux"), std::string::npos);
+}
+
+TEST_F(ConfigurationTest, aValueChangedSinceLoadPersists) {
+  configuration_.parseString("[control]\nkbd_layout=keymap_es_linux.map\n");
+  config::ConfigMap loaded;
+  loaded["control"]["kbd_layout"] = "keymap_es_linux.map";
+  configuration_.setBaseline(loaded);
+
+  configuration_.setStringValue("control", "kbd_layout", "keymap_fr_win.map");
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("kbd_layout=keymap_fr_win.map"), std::string::npos)
+      << oss.str();
+}
+
+// An unchanged value is still written when the target file lacks the key:
+// older files must keep gaining the keys a newer build reads (see
+// saveConfigurationPreservesEverySettingItReads), and a save to a different
+// file must be complete.
+TEST_F(ConfigurationTest, anUnchangedValueIsWrittenWhenTheFileLacksTheKey) {
+  configuration_.parseString("[control]\n");
+  config::ConfigMap loaded;
+  loaded["control"]["kbd_layout"] = "keymap_us.map";
+  configuration_.setBaseline(loaded);
+
+  configuration_.setStringValue("control", "kbd_layout", "keymap_us.map");
+
+  std::ostringstream oss;
+  configuration_.toStream(oss);
+  EXPECT_NE(oss.str().find("kbd_layout=keymap_us.map"), std::string::npos)
+      << oss.str();
+}
+
+// End to end through loadConfiguration/saveConfiguration: boot with one
+// value, fix the file by hand while "running", save on exit — the fix
+// survives.
+TEST_F(ConfigurationTest, saveOnExitKeepsAHandEditMadeWhileRunning) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[control]\nkbd_layout=keymap_es_linux.map\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ("keymap_es_linux.map", CPC.kbd_layout);
+
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[control]\nkbd_layout=keymap_us.map\n";
+  }
+  saveConfiguration(CPC, getTmpFilename(0));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ("keymap_us.map", saved.getStringValue("control", "kbd_layout", ""));
+}
+
+// A value persisted by one save is the reference for the next. Without this,
+// change -> save -> revert -> save loses the revert: the reverted value equals
+// the boot baseline, so the second save skips it and the file keeps the
+// intermediate value. The MRU auto-save on every file open makes such an
+// intermediate save routine.
+TEST_F(ConfigurationTest, aPersistedValueBecomesTheBaselineForTheNextSave) {
+  configuration_.parseString("[system]\nlimit_speed=1\nmodel=3\n");
+  config::ConfigMap loaded;
+  loaded["system"]["limit_speed"] = "1";
+  loaded["system"]["model"] = "2";  // the file was hand-edited to 3 meanwhile
+  configuration_.setBaseline(loaded);
+
+  configuration_.setIntValue("system", "limit_speed", 0);  // a real change
+  configuration_.setIntValue("system", "model", 2);        // unchanged: skipped
+
+  const config::ConfigMap& next = configuration_.baseline();
+  EXPECT_EQ("0", next.at("system").at("limit_speed"))
+      << "a written value must become the next baseline";
+  EXPECT_EQ("2", next.at("system").at("model"))
+      << "a skipped key keeps its loaded baseline, not the file's hand edit";
+}
+
+// ─── Which file wins ─────────────────────────────────────────────────────
+// The user's profile config outranks a koncepcja.cfg in the working
+// directory: a debug-style build run from a source checkout used the
+// checkout's untracked file — stale for months, invisible from inside the
+// app — ahead of the config the user maintains (beads-825s).
+
+namespace {
+void set_env(const char* name, const std::string& value) {
+#ifdef _WIN32
+  _putenv_s(name, value.c_str());
+#else
+  setenv(name, value.c_str(), 1);
+#endif
+}
+void unset_env(const char* name) {
+#ifdef _WIN32
+  _putenv_s(name, "");
+#else
+  unsetenv(name);
+#endif
+}
+std::string env_or_empty(const char* name) {
+  const char* v = getenv(name);
+  return v ? v : "";
+}
+void write_file(const std::filesystem::path& p, const char* text) {
+  std::filesystem::create_directories(p.parent_path());
+  std::ofstream f(p);
+  f << text;
+}
+}  // namespace
+
+class ConfigLookupTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    // A per-test, per-process sandbox: two test binaries may run at once.
+#ifdef _WIN32
+    int const pid = _getpid();
+#else
+    int const pid = getpid();
+#endif
+    root_ = std::filesystem::temp_directory_path() /
+            ("koncepcja-cfg-lookup-" + std::to_string(pid) + "-" +
+             std::to_string(reinterpret_cast<std::uintptr_t>(this)));
+    std::filesystem::create_directories(root_ / "cwd");
+    std::filesystem::create_directories(root_ / "home");
+    std::filesystem::create_directories(root_ / "xdg");
+    saved_home_ = env_or_empty("HOME");
+    saved_xdg_ = env_or_empty("XDG_CONFIG_HOME");
+    had_xdg_ = getenv("XDG_CONFIG_HOME") != nullptr;
+    snprintf(saved_app_path_, sizeof(saved_app_path_), "%s", chAppPath);
+    // Point every candidate at the sandbox so nothing on the machine leaks in.
+    set_env("HOME", (root_ / "home").string());
+    set_env("XDG_CONFIG_HOME", (root_ / "xdg").string());
+    snprintf(chAppPath, sizeof(chAppPath), "%s",
+             (root_ / "cwd").string().c_str());
+  }
+  void TearDown() override {
+    snprintf(chAppPath, sizeof(chAppPath), "%s", saved_app_path_);
+    set_env("HOME", saved_home_);
+    if (had_xdg_) {
+      set_env("XDG_CONFIG_HOME", saved_xdg_);
+    } else {
+      unset_env("XDG_CONFIG_HOME");
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(root_, ec);
+  }
+
+  std::filesystem::path root_;
+  std::string saved_home_;
+  std::string saved_xdg_;
+  bool had_xdg_ = false;
+  char saved_app_path_[_MAX_PATH + 1] = {};
+
+  // Compare as paths, element-wise: the lookup joins its candidates with
+  // '/' while path::string() yields the native separator ('\\' on Windows).
+  static void expect_found(const std::filesystem::path& expected) {
+    EXPECT_EQ(expected, std::filesystem::path(getConfigurationFilename()));
+  }
+};
+
+TEST_F(ConfigLookupTest, TheProfileConfigOutranksTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "xdg" / "koncepcja" / "koncepcja.cfg",
+             "[system]\nmodel=2\n");
+
+  expect_found(root_ / "xdg" / "koncepcja" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, TheHomeProfileConfigAlsoOutranksTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg",
+             "[system]\nmodel=2\n");
+
+  expect_found(root_ / "home" / ".config" / "koncepcja" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, TheLegacyFlatPathsAlsoOutrankTheWorkingDirectory) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  write_file(root_ / "home" / ".koncepcja.cfg", "[system]\nmodel=2\n");
+
+  expect_found(root_ / "home" / ".koncepcja.cfg");
+
+  // The flat XDG file outranks the home dotfile, as before.
+  write_file(root_ / "xdg" / "koncepcja.cfg", "[system]\nmodel=1\n");
+  expect_found(root_ / "xdg" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, TheWorkingDirectoryIsTheFallbackWithoutAProfile) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+
+  expect_found(root_ / "cwd" / "koncepcja.cfg");
+}
+
+TEST_F(ConfigLookupTest, LoadRecordsTheFileForTheAppToShow) {
+  write_file(root_ / "cwd" / "koncepcja.cfg", "[system]\nmodel=0\n");
+  t_CPC CPC;
+  loadConfiguration(CPC, (root_ / "cwd" / "koncepcja.cfg").string());
+  EXPECT_EQ((root_ / "cwd" / "koncepcja.cfg").string(), koncpc_config_file());
+}
+
+// The baseline advances to what was actually persisted — only after a save
+// that succeeded.  Advancing it on a failed save would make the change look
+// 'unchanged' to the next save, which would then leave the file's old value.
+TEST_F(ConfigurationTest, aFailedSaveDoesNotAdvanceTheBaseline) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[system]\nmodel=2\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ(2, CPC.model);
+
+  CPC.model = 3;
+  std::filesystem::path const nowhere = std::filesystem::temp_directory_path() /
+                                        "koncepcja-no-such-dir" /
+                                        "koncepcja.cfg";
+  ASSERT_FALSE(saveConfiguration(CPC, nowhere.string()));
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(3, saved.getIntValue("system", "model", -1))
+      << "the failed save must not have made the change look 'unchanged'";
+}
+
+TEST_F(ConfigurationTest, changeSaveRevertSavePersistsTheRevert) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[system]\nmodel=2\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ(2, CPC.model);
+
+  CPC.model = 3;
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  CPC.model = 2;
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(2, saved.getIntValue("system", "model", -1))
+      << "the revert to the loaded value was mistaken for 'unchanged' and lost";
+}
+
+// The baseline guard skips only a key whose live value still EQUALS the loaded
+// one. A live fullscreen toggle flips scr_window, so it is kept out of the
+// file solely by koncpc_save_configuration_preserving_intent() swapping the
+// load-time intent back in before the save. Pin that contract: with the swap
+// the file keeps 1; without it the toggle persists.
+TEST_F(ConfigurationTest,
+       liveFullscreenToggleIsKeptOutOfTheFileOnlyByTheIntentSwap) {
+  {
+    std::ofstream f(getTmpFilename(0));
+    f << "[video]\nscr_window=1\n";
+  }
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  ASSERT_EQ(1u, CPC.scr_window);
+  unsigned int const intent = CPC.scr_window;
+
+  CPC.scr_window = 0;  // a live fullscreen toggle
+  // What the preserving-intent wrapper does around the save:
+  CPC.scr_window = intent;
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  CPC.scr_window = 0;
+  {
+    config::Config saved;
+    saved.parseFile(getTmpFilename(0));
+    EXPECT_EQ(1, saved.getIntValue("video", "scr_window", -1));
+  }
+
+  // Without the swap the baseline guard alone does NOT protect it.
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(0, saved.getIntValue("video", "scr_window", -1));
 }
 
 TEST_F(ConfigurationTest, keysWithoutOverridesSaveExactlyAsBefore) {

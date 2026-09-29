@@ -21,9 +21,6 @@ class CommandPalette {
   // Called each frame from ImGui render loop
   void render();
 
-  // Check for Cmd/Ctrl+K shortcut. Returns true if palette toggled.
-  bool handle_key(int keycode, bool ctrl, bool cmd);
-
   // Register a command
   void register_command(const std::string& name, const std::string& description,
                         const std::string& shortcut,

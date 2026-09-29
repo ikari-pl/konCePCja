@@ -28,22 +28,6 @@ void CommandPalette::toggle() {
     open();
 }
 
-bool CommandPalette::handle_key(int keycode, bool ctrl, bool cmd) {
-  bool modifier = false;
-#ifdef __APPLE__
-  modifier = cmd;
-  (void)ctrl;
-#else
-  modifier = ctrl;
-  (void)cmd;
-#endif
-  if (modifier && (keycode == 'k' || keycode == 'K')) {
-    toggle();
-    return true;
-  }
-  return false;
-}
-
 void CommandPalette::register_command(const std::string& name,
                                       const std::string& description,
                                       const std::string& shortcut,

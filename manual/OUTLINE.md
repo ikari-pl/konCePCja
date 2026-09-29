@@ -704,7 +704,7 @@ echo "mem read 0x4001 1" | nc localhost 6543
 
 ### 9.5 Automated Testing with ipc_harness.py
 - Location: `test/integrated/ipc_harness.py`
-- `KoncepcjaIPC` class: one TCP connection per command
+- `KoncepcjaIPC` class: one TCP connection per command (the server keeps connections open; the client just does not reuse them)
 - `EmulatorRunner` context manager: launches and tears down the emulator
 - Running tests: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./koncepcja & python3 test/integrated/ipc_harness.py`
 - Headless vs GUI mode detection: `ipc.is_threaded()` (sends `devtools` — fails in headless)

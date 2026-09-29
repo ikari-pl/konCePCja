@@ -5,8 +5,12 @@
  * the media loaders) publish Device truth into them at frame/refresh
  * boundaries. Nothing here executes — the emulation lives in src/hw and
  * src/subcycle. The DSK-geometry types double as the parse target for the
- * host's DSK loader/editor tooling (disc tools operate on the host image; the
- * FDC Device gets the raw bytes). */
+ * host's DSK loader/editor tooling.
+ *
+ * Authoritative disc bytes while the engine runs: the FDC's attached image
+ * (Bridge::media / media_b). driveA/driveB are a tooling view — Disc Tools and
+ * IPC must subcycle_bridge_pull_drive_view before reading and
+ * subcycle_bridge_push_drive_view after mutating (beads-lly6). */
 
 #pragma once
 

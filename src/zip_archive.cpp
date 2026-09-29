@@ -144,14 +144,25 @@ int dir(t_zip_info* zi) {
 int extract(const t_zip_info& zi, FILE** pfileOut) {
 #ifdef WINDOWS
   // Windows tmpfile() wants the root directory; use a named temporary.
+  //
+  // Put it in the OS temp directory rather than the working directory, and
+  // open it with "D" so the file is removed when the last handle closes.
+  // Without both, every zip that was opened left a koncpc_tmp_* file behind
+  // in whatever directory the emulator was started from -- the POSIX branch
+  // gets this for free from tmpfile().
+  char tmpDir[MAX_PATH];
+  DWORD const dirLen = GetTempPathA(sizeof(tmpDir), tmpDir);
+  if (dirLen == 0 || dirLen > sizeof(tmpDir) - 1) {
+    snprintf(tmpDir, sizeof(tmpDir), ".\\");
+  }
   char tmpFilePath[MAX_PATH];
-  snprintf(tmpFilePath, sizeof(tmpFilePath), ".\\koncpc_tmp_XXXXXX");
+  snprintf(tmpFilePath, sizeof(tmpFilePath), "%skoncpc_tmp_XXXXXX", tmpDir);
   if (_mktemp_s(tmpFilePath, strlen(tmpFilePath) + 1) != 0) {
     LOG_ERROR("Couldn't unzip file: Couldn't generate temporary file name: "
               << strerror(errno));
     return ERR_FILE_UNZIP_FAILED;
   }
-  *pfileOut = fopen(tmpFilePath, "w+b");
+  *pfileOut = fopen(tmpFilePath, "w+bTD");
 #else
   *pfileOut = tmpfile();
 #endif

@@ -13,6 +13,7 @@
 #ifdef _MSC_VER
 #include "compat/msvc_compat.h"
 #endif
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -237,6 +238,9 @@ class t_CPC {
   unsigned int scr_intensity;
   unsigned int scr_remanency;
   unsigned int scr_window;
+  // Last window size in window coordinates; 0 = derive from scr_scale.
+  unsigned int win_w;
+  unsigned int win_h;
   unsigned int scr_vsync;  // video.vsync: 1=VSYNC present (default), 0=MAILBOX/
                            // IMMEDIATE on the MAIN window only (viewport
                            // windows always stay VSYNC). Safe escape hatch for
@@ -284,6 +288,9 @@ class t_CPC {
   } snd_cycle_count_init;
 
   std::string kbd_layout;
+  // [input] host_chords: 1 = Cmd/Ctrl+K/O/S drive the host UI (default); 0 on
+  // Linux/Windows returns Ctrl+K/O/S to the CPC. See host_chords.h.
+  unsigned int host_chords;
 
   unsigned int max_tracksize;
 
@@ -544,7 +551,7 @@ struct FrameSignal {
 // Emulation/render thread synchronization — see kon_cpc_ja.cpp
 extern std::atomic<bool> g_emu_paused;  // true while Z80 thread is halted
 extern std::atomic<bool>
-    g_z80_quiescent;  // true when Z80 thread is NOT inside z80_execute()
+    g_z80_idle;  // true when Z80 thread is NOT inside z80_execute()
 extern FrameSignal g_frame_signal;  // back_surface handoff between threads
 // Protects imgui_state stats fields written by Z80 thread, read by render
 // thread. Lock before reading/writing: frame_time_*_us, z80_time_avg_us,
@@ -562,12 +569,109 @@ void ga_memory_manager();
 void memory_set_read_bank(int slot, byte* ptr);
 void memory_set_write_bank(int slot, byte* ptr);
 bool driveAltered();
+
+// True once koncpc_main() has read the configuration file into CPC.  Guards
+// every write-back of the real config, so a process that never loaded it --
+// the unit-test binary, or a shutdown before startup finished -- leaves the
+// user file untouched.
+bool koncpc_config_loaded();
+
+// Snapshot CPC.printer / CPC.scr_window as the user's deliberate intent.
+// Call after Options▸Save (and any other path that intentionally persists
+// those fields).  cleanExit / MRU write-backs restore this snapshot so a
+// failed printer_start() or a live fullscreen toggle cannot poison the file.
+void koncpc_capture_config_intent();
+
+// Write the real config with printer/scr_window restored to the captured
+// intent.  Live CPC values are preserved across the call.  No-op (false)
+// when the config was never loaded.
+bool koncpc_save_configuration_preserving_intent();
+
+class CpcStopCoordinationGuard {
+ public:
+  CpcStopCoordinationGuard();
+  ~CpcStopCoordinationGuard();
+  CpcStopCoordinationGuard(const CpcStopCoordinationGuard&) = delete;
+  CpcStopCoordinationGuard& operator=(const CpcStopCoordinationGuard&) = delete;
+
+  uint64_t resume_epoch() const { return resume_epoch_; }
+  uint64_t breakpoint_generation() const { return breakpoint_generation_; }
+
+ private:
+  uint64_t resume_epoch_ = 0;
+  uint64_t breakpoint_generation_ = 0;
+};
+
+// RAII ownership of a destructive pause critical section.
+//
+// Acquires a pause lease, pauses the machine, and (by default) waits until the
+// Z80 thread is idle. While any lease is held, cpc_resume() is deferred:
+// it neither clears CPC.paused nor advances the resume epoch. Nested leases
+// are refcounted. Call release() before an intentional cpc_resume() that must
+// take effect while this scope is still alive.
+//
+// Prefer this over bare cpc_pause_and_wait() whenever the caller then touches
+// shared machine/video state (reset, rebuild, snapshot, fullscreen, video
+// reinit, stepped Z80 state).
+enum class CpcPauseLeaseMode {
+  WaitImmediately,  // pause + wait for g_z80_idle (default)
+  PauseOnly,        // pause under lease; caller must call wait() after any
+                    // setup that must precede going idle (e.g. frame abort)
+};
+
+class CpcPauseLease {
+ public:
+  explicit CpcPauseLease(
+      CpcPauseLeaseMode mode = CpcPauseLeaseMode::WaitImmediately);
+  ~CpcPauseLease();
+  CpcPauseLease(const CpcPauseLease&) = delete;
+  CpcPauseLease& operator=(const CpcPauseLease&) = delete;
+  CpcPauseLease(CpcPauseLease&& other) noexcept;
+  CpcPauseLease& operator=(CpcPauseLease&&) = delete;
+
+  bool was_paused() const { return was_paused_; }
+  bool active() const { return active_; }
+  void wait();     // spin until g_z80_idle (idempotent if already waited)
+  void release();  // drop the lease early; machine stays paused
+  // Drop the lease and resume if this holder found the machine running.
+  // Error paths that return before the success-path resume must call this
+  // (the destructor only releases the count — it never resumes).
+  void restore_run_state();
+
+ private:
+  void acquire(CpcPauseLeaseMode mode);
+  bool was_paused_ = false;
+  bool active_ = false;
+  bool waited_ = false;
+};
+
 void emulator_reset();
 void cpc_pause();
-void cpc_resume();
+uint64_t cpc_resume();
+// Like cpc_resume(), but reports whether a pause lease deferred the call.
+// False means the machine is still paused because a CpcPauseLease is held.
+bool cpc_resume_applied();
+uint64_t cpc_resume_epoch();
+bool cpc_pause_if_epoch(uint64_t expected_epoch);
+// Spin until the Z80 thread has left z80_execute(). cpc_pause_if_epoch() only
+// flags the pause under the pause mutex — that mutex serialises pause/resume
+// transitions, NOT execution — so a caller that then touches Z80 state from
+// another thread must wait here first. No-op in headless mode.
+//
+// Returns false if `timeout_ms` elapsed first (0 = wait forever, the legacy
+// behaviour). A deadline-bounded caller must pass a bound: an unbounded spin
+// nested inside a bounded walk can outlive the walk's own deadline with no
+// diagnostic if the Z80 thread never goes idle.
+bool cpc_wait_until_idle(int timeout_ms = 0);
+// Atomically commits a staged engine breakpoint only if no later resume has
+// invalidated it. Publishes the hit after the paused state is visible.
+bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
+                                word pc, bool watchpoint);
 // cpc_pause() + spin until the Z80 thread is not inside z80_execute().
-// Use this before touching Z80 state (registers, memory) from a non-Z80 thread.
-// No-op in headless mode (single-threaded; cpc_pause() is sufficient).
+// Holds a pause lease only for the duration of the wait (so concurrent Resume
+// cannot defeat going idle). The lease is released before return — callers that
+// then enter a destructive critical section must hold CpcPauseLease across that
+// section. No-op wait in headless mode (single-threaded; pause is sufficient).
 void cpc_pause_and_wait();
 void bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);
@@ -589,6 +693,30 @@ int koncpc_rebuild_machine();
 int video_set_palette();
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();
+// Re-read CPC.kbd_layout into the live host→CPC key map (Settings ▸ Input).
+void koncpc_reload_host_keymap();
+// The scr_window value (1 = windowed, 0 = fullscreen) a Fullscreen toggle
+// asks for: the flip starts from the window's real state when one is known
+// and no request is pending, else from scr_window. See kon_cpc_ja.cpp.
+unsigned int koncpc_fullscreen_toggle_target(
+    int pending_request, unsigned int scr_window,
+    std::optional<bool> window_is_fullscreen);
+// Whether the main window is fullscreen right now; nullopt without a window.
+std::optional<bool> koncpc_main_window_is_fullscreen();
+// Registers that hand a RAM program at `entry` to the firmware's MC START
+// PROGRAM (&BD16) — the launch RUN" performs. Used by -i/--inject.
+class t_z80regs;
+void koncpc_firmware_launch_regs(t_z80regs& regs, word entry);
+// True when the byte at &BD16 is a firmware jumpblock entry (RST 1 or JP):
+// MC START PROGRAM is there to be called.
+bool koncpc_firmware_jumpblock_present(byte opcode_at_bd16);
+bool koncpc_firmware_jumpblock_ready();
+// The -i launch: through the firmware when its jumpblock is present, else a
+// direct entry (a prepared ROM without firmware).
+void koncpc_inject_launch_regs(t_z80regs& regs, word entry,
+                               byte opcode_at_bd16);
+// The configuration file this session loaded ("" before loadConfiguration).
+const std::string& koncpc_config_file();
 void update_cpc_speed();
 int printer_start();
 void printer_stop();

@@ -12,6 +12,12 @@
 
 namespace zip {
 
+// Every slot-file extension a .zip archive may be classified by, shared by
+// the CLI/drag-drop loader (slotshandler.cpp) and the IPC `load` command
+// (koncepcja_ipc_server.cpp) so the two dispatch paths can't drift apart.
+inline constexpr const char* kAllSupportedZipMediaExtensions =
+    ".dsk.sna.cdt.voc.cpr.ipf.raw.scp.hfe.a2r";
+
 typedef struct {
   std::string filename;    // the .zip on disk
   std::string extensions;  // concatenated 4-char extensions: ".dsk.sna..."

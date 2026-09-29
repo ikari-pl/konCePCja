@@ -13,10 +13,23 @@
 #include "types.h"
 #include "z80_assembler.h"
 
+// Forward-declared rather than including z80_view.h: these are only used as
+// std::vector element types below (fine with an incomplete type; the vector
+// destructor instantiates out-of-line in devtools_ui.cpp, which does include
+// the full definitions).
+struct BreakpointSnapshot;
+struct WatchpointSnapshot;
+struct IOBreakpointSnapshot;
+
 enum class NavTarget : std::uint8_t { DISASM, MEMORY, GFX };
 
 class DevToolsUI {
  public:
+  // Declared (not defaulted) here and defined out-of-line in devtools_ui.cpp:
+  // the implicit forms would need complete BreakpointSnapshot/etc. types --
+  // forward-declared above -- wherever a DevToolsUI is constructed/destroyed,
+  // including every other translation unit that just includes this header.
+  DevToolsUI();
   ~DevToolsUI();
   void render();
   void toggle_window(const std::string& name);
@@ -165,6 +178,16 @@ class DevToolsUI {
   std::vector<std::pair<word, std::string>> symtable_cached_;
   std::atomic<bool> symtable_dirty_{
       true};  // set from any thread, drained in render
+
+  // Breakpoint/watchpoint/IO-breakpoint list caches, generation-gated: the
+  // snapshot accessors take the same mutex the Z80 thread holds across each
+  // emulated frame, so re-copying the lists every render frame (rather than
+  // only when they actually change) needlessly contends with it.
+  uint64_t bp_snapshot_generation_ = UINT64_MAX;  // forces the first refresh
+  std::vector<BreakpointSnapshot> bp_snapshot_cache_;
+  std::vector<WatchpointSnapshot> wp_snapshot_cache_;
+  std::vector<IOBreakpointSnapshot> iobp_snapshot_cache_;
+  void refresh_breakpoint_snapshots();
 
   // Session Recording state
   char sr_path_[256] = "";

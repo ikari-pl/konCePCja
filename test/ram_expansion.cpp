@@ -8,6 +8,7 @@
 
 #include "configuration.h"
 #include "koncepcja.h"
+#include "silicon_disc.h"
 
 extern t_CPC CPC;
 extern t_GateArray GateArray;
@@ -18,12 +19,23 @@ class RamExpansionTest : public testing::Test {
   unsigned char saved_RAM_config;
   unsigned char saved_RAM_bank;
   unsigned char saved_RAM_ext;
+  bool saved_silicon_disc;
 
   void SetUp() override {
     saved_ram_size = CPC.ram_size;
     saved_RAM_config = GateArray.RAM_config;
     saved_RAM_bank = GateArray.RAM_bank;
     saved_RAM_ext = GateArray.RAM_ext;
+
+    // ga_memory_manager() skips the "bank beyond available memory" clamp for
+    // any bank the Silicon Disc owns (expansion banks 4-7). That makes
+    // g_silicon_disc.enabled a real input to every banking expectation here,
+    // and it is process-global: ConfigurationTest loads a config containing
+    // silicon_disc=1, which turns it on and never turns it back off. Under
+    // --gtest_shuffle (which CI uses) that ordering made
+    // Banking512K_Bank6Valid_Bank7Invalid fail with bank 7 unclamped.
+    saved_silicon_disc = g_silicon_disc.enabled;
+    g_silicon_disc.enabled = false;
   }
 
   void TearDown() override {
@@ -31,6 +43,7 @@ class RamExpansionTest : public testing::Test {
     GateArray.RAM_config = saved_RAM_config;
     GateArray.RAM_bank = saved_RAM_bank;
     GateArray.RAM_ext = saved_RAM_ext;
+    g_silicon_disc.enabled = saved_silicon_disc;
   }
 };
 

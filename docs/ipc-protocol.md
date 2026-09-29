@@ -1,7 +1,8 @@
 # konCePCja IPC Protocol Reference
 
 TCP text protocol on **localhost:6543**. One command per line, newline-terminated.
-Responses start with `OK` or `ERR <code> <reason>`.
+Responses start with `OK` or `ERR <code> <reason>`. A line may chain multiple
+commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
@@ -20,6 +21,8 @@ nc localhost 6544       # connect — type to interact with the CPC
 - Input is fed through AutoTypeQueue with ANSI escape → CPC key mapping
 - Single client at a time; new connections replace the existing one
 - Port probes forward up to +10 if 6544 is taken
+- `telnet status` on the IPC port reports the actual port and whether a client
+  is connected
 
 See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
@@ -40,14 +43,21 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | `help` | Lists all commands |
 | `quit [code]` | Exit emulator with given code (default 0) |
 | `pause` | Pause emulation |
-| `run` | Resume emulation |
+| `run` | Resume emulation. `ERR 409 pause-lease-held` if a pause lease still owns the machine |
 | `reset` | Hard reset the CPC |
+
+## Run tier
+
+| Command | Description |
+|---------|-------------|
+| `tier [get\|status]` | Report requested/effective sub-cycle run tier and environment pin state |
+| `tier set <auto\|fast\|wake\|soldered\|faithful>` | Change run-tier policy; rejected when `KONCPC_TIER`/`KONCPC_WAKE` pins it |
 
 ## Loading
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (binary at 0x6000). An unrecognised extension returns `ERR 415 unsupported` |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported` |
 
 ## Registers
 
@@ -63,7 +73,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Response |
 |---------|----------|
-| `regs crtc` | `OK R0=xx..R17=xx VCC=xx VLC=xx HCC=xx HSC=xx VSC=xx VMA=xxxx R52=xx SL=xx` — CRTC 6845 registers and internal counters |
+| `regs crtc` | `OK R0=xx..R17=xx VCC=xx VLC=xx HCC=xx HSC=xx VSC=xx VMA=xxxx R52=xx SL=xx` — CRTC 6845 registers and internal counters. `SL` is the frame scanline; `R52` is the Gate Array 6-bit HSYNC line counter that raster interrupts fire from, not CRTC register 5 |
 | `regs ga` | `OK MODE=x PEN=xx INK0=xx..INK16=xx ROM_CFG=xx RAM_CFG=xx SL=xx INT_DELAY=xx` — Gate Array state |
 | `regs psg` | `OK R0=xx..R15=xx SELECT=xx CONTROL=xx` — AY-3-8912 sound chip registers |
 
@@ -72,9 +82,11 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | Command | Response |
 |---------|----------|
 | `mem read <addr> <len> [--view=read\|ram] [--bank=N] [ascii]` | `OK <hex> [\|ascii\|]` — reads through Z80 banking |
-| `mem write <addr> <hex>` | `OK` — writes through Z80 banking |
+| `mem write <addr> <hex>` | `OK` — writes the **banked RAM byte, never a paged-in ROM** (a real `mreq` write). This is NOT symmetric with `mem read`/`disasm`, which show the ROM overlay: writing under a mapped ROM (`0000-3FFF`, or `C000-FFFF` with upper ROM paged in) returns `OK` and changes nothing the CPU will execute. Verify with `disasm` at the same address. |
+| `mem cpu-read <addr> <len>` | Read through the CPU-visible memory path |
+| `mem cpu-write <addr> <hex>` | Write through the CPU-visible memory path |
 | `mem fill <addr> <len> <hex-pattern>` | `OK` — fill memory with repeating hex pattern |
-| `mem compare <addr1> <addr2> <len>` | `OK diffs=N [addr:src:dst ...]` — compare two regions, up to 64 diffs listed |
+| `mem compare <addr1> <addr2> <len> [--view=read\|ram]` | `OK diffs=N [addr:src:dst ...]` — compare two regions, up to 64 diffs listed |
 
 Addresses and values accept decimal, `0x` hex, or `0b` binary.
 
@@ -85,8 +97,9 @@ Addresses and values accept decimal, `0x` hex, or `0b` binary.
   game variable.** An address under a paged-in ROM otherwise returns the firmware
   byte and appears to flicker as the OS banks ROM in and out (e.g. `&1AF1` reads
   as `&3E` from the 6128 OS ROM). `--view=write` is a deprecated alias.
-- `search hex|text` accepts the same `--view=ram` for the same reason; `search
-  asm` always uses the CPU view, since it disassembles code.
+- `search hex|text`, `mem find hex|text`, and `mem compare` accept the same
+  `--view=ram` for the same reason; `search asm` / `mem find asm` always use the
+  CPU view, since they disassemble code.
 - An unrecognised `--view=` value is rejected with `ERR 400 bad-view (read|ram)`
   rather than silently falling back.
 - `--bank=N`: reads raw from physical 16KB bank N (`pbRAM + N*16384`), ignoring current mapping
@@ -157,9 +170,9 @@ echo "iobp add 0xF400 0xFF00 in" | nc -w 1 localhost 6543
 | Command | Description |
 |---------|-------------|
 | `step [N]` | Single-step N instructions (default 1). Pauses first. |
-| `step over [N]` | Execute N instructions, skipping over CALL/RST (sets ephemeral breakpoint at next PC). Timeout: 5s. |
-| `step out` | Run until SP climbs above the entry SP (nearest-RET / finish). CALL/RST callees are skipped via an ephemeral breakpoint. Timeout: 5s. A breakpoint/watchpoint inside a skipped callee returns `OK breakpoint-hit` with the usual debug context. |
-| `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. |
+| `step over [N]` | Execute N instructions, skipping over calls. A `CALL` is skipped with an ephemeral breakpoint at `pc+len`; an `RST` is stepped into and its frame finished instead, because the CPC firmware restarts (`&08`/`&10`/`&18`/`&28`) carry inline operands and do not resume at `pc+1`. Timeout: 5s. A breakpoint/watchpoint hit inside the skipped callee returns `OK breakpoint-hit`. `ERR 409 no-progress` when no machine is attached (both the CALL and RST paths); a callee that never returns is `ERR 408 timeout`. The `breakpoint-hit` body carries `WATCH=0`, or `WATCH=1 WP_ADDR=.. WP_VAL=.. WP_OLD=..` when a watchpoint caused the stop. |
+| `step out` | Finish the current stack frame: run until a **taken** return (`RET`/`RET cc`/`RETI`/`RETN`, or a `POP rr : JP (rr)` computed return) fires at the frame depth the walk started from. Depth counting — not a stack-pointer threshold — is what makes a `POP` before the `RET`, an **untaken** `RET cc`, and an interrupt arriving mid-walk all safe. `CALL` callees are skipped at full speed via an ephemeral breakpoint; `RST` vectors are stepped through. Timeout: 5s. A breakpoint/watchpoint inside a skipped callee returns `OK breakpoint-hit` with `WATCH=0`, or `WATCH=1 WP_ADDR=.. WP_VAL=.. WP_OLD=..`, plus the usual debug context. Watchpoints are NOT evaluated on the single-stepped path, only inside skipped callees. `ERR 409 no-progress` only when no sub-cycle machine is attached, so nothing can retire. A frame that never returns is an honest `ERR 408 timeout` — deciding in advance whether it *would* return is undecidable, so the command does not pretend to. Code that unwinds by manual stack surgery (`LD SP,nn` mid-frame) is not tracked. |
+| `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. If a different breakpoint or a watchpoint fires on the way, returns `OK breakpoint-hit` (with `WATCH=`/`WP_*` as above) instead of reporting a successful run-to-cursor. `ERR 409 no-progress` when no machine is attached. |
 | `step frame [N]` | Advance N complete frames (default 1), then pause. Blocks until done. |
 
 ## Waiting
@@ -170,8 +183,8 @@ All wait commands resume emulation, block until condition or timeout, then pause
 |---------|-------------|
 | `wait pc <addr> [timeout_ms]` | Wait until PC reaches address |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
-| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` once the machine has actually stopped (bounded: it waits up to 500ms after the hit for the pause to land). Only reports hits from the CURRENT arming — a hit left uncollected from a previous `bp`/`wp`/IO-bp change is dropped, so it reads as a timeout |
-| `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each) |
+| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop. Only hits from the current arming are reported |
+| `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each). Without `timeout_ms` the deadline is `count × 20ms + 5000ms`, so a long count completes instead of hitting the 5s default every other `wait` uses |
 
 Default timeout: 5000ms. Returns `ERR 408 timeout` on expiry.
 
@@ -189,7 +202,8 @@ CRC32 hashes for CI regression testing.
 
 | Command | Description |
 |---------|-------------|
-| `screenshot [path]` | Save current screen as PNG |
+| `screenshot [path]` | Save the CPC screen as PNG (default path when omitted) |
+| `screenshot window <path>` | Capture the emulator window on the next rendered frame |
 | `snapshot save <path>` | Save emulator state (.sna) |
 | `snapshot load <path>` | Load emulator state (.sna) |
 
@@ -238,9 +252,9 @@ echo "sym lookup 0x0038" | nc -w 1 localhost 6543         # → OK irq_handler
 
 | Command | Description |
 |---------|-------------|
-| `mem find hex <start> <end> <hex-pattern>` | Search for hex bytes. `??` = wildcard byte. Max 32 results. |
-| `mem find text <start> <end> <string>` | Search for ASCII text. Quotes optional. |
-| `mem find asm <start> <end> <pattern>` | Search for Z80 instructions. `*` = operand wildcard. Case-insensitive. |
+| `mem find hex <start> <end> <hex-pattern> [--view=read\|ram]` | Search for hex bytes. `??` = wildcard byte. Max 32 results. |
+| `mem find text <start> <end> <string> [--view=read\|ram]` | Search for ASCII text. Quotes optional. |
+| `mem find asm <start> <end> <pattern>` | Search for Z80 instructions. `*` = operand wildcard. Case-insensitive. Always CPU view. |
 
 ```bash
 # Find CALL 0x0038 instructions (CD 38 00)
@@ -290,22 +304,22 @@ Single characters work directly: `A`-`Z`, `a`-`z`, `0`-`9`, punctuation.
 | `input keydown <key>` | Press and hold key in matrix. Works even when paused. |
 | `input keyup <key>` | Release key from matrix. |
 | `input key <key>` | Tap: press, hold 2 frames, release. Blocks. |
-| `input type "<text>"` | Type each character with 2-frame hold and 1-frame gap. Handles uppercase (auto-SHIFT). Blocks. |
+| `input type <text>` | Queue text through the AutoTypeQueue (same path as `autotype`). Returns `OK` at once; drains over subsequent keyboard scans (see `autotype status`). `~KEY~` tokens and newlines supported. |
 | `input joy <n> <dir>` | Joystick N (0 or 1). Directions: `U`/`UP` `D`/`DOWN` `L`/`LEFT` `R`/`RIGHT` `F`/`F1`/`FIRE1` `F2`/`FIRE2`. Prefix `-` to release. `0` releases all. |
 | `input mouse move <dx> <dy>` | Relative mouse motion (mickeys) fed to the AMX/Symbiface mouse. Requires a mouse device enabled (`input.amx_mouse=1` or `peripheral.symbiface=1`), else `ERR 409`. |
 | `input mouse button <L\|M\|R> <down\|up>` | Press/release one mouse button. |
 | `input mouse buttons <mask>` | Set the whole SDL button mask at once (Left=1, Middle=2, Right=4). |
 
-> **Note:** `input type` emits only mapped characters — it does *not* interpret WinAPE `~KEY~` tokens. Use the `autotype` command for special keys, holds, and multi-line entry.
+> **Note:** `input type` routes through the same AutoTypeQueue as `autotype`, so WinAPE `~KEY~` tokens (`~ENTER~`, `~PAUSE n~`, `~SEMICOLON~`, ...) and newlines work identically in both commands.
+>
+> Both return `OK` before the text has been typed — it drains over the following keyboard scans. Put the `~RETURN~` in the same call rather than following up with a separate `input key RETURN`: that tap is applied immediately and can land before the queued text has finished.
 
 ### Example: Type and run a BASIC program
 
 ```bash
 echo "wait vbl 50"                          | nc -w 5 localhost 6543
-echo 'input type "10 PRINT CHR$(42)"'       | nc -w 15 localhost 6543
-echo "input key RETURN"                     | nc -w 2 localhost 6543
-echo 'input type "RUN"'                     | nc -w 5 localhost 6543
-echo "input key RETURN"                     | nc -w 2 localhost 6543
+echo 'input type "10 PRINT CHR$(42)~RETURN~"' | nc -w 15 localhost 6543
+echo 'input type "RUN~RETURN~"'               | nc -w 5 localhost 6543
 echo "step frame 20"                        | nc -w 5 localhost 6543
 echo "screenshot /tmp/result.png"           | nc -w 1 localhost 6543
 ```
@@ -344,6 +358,14 @@ echo "frames dump /tmp/recording.gif 100" | nc -w 60 localhost 6543
 # Animated GIF at 10fps for slow-motion review
 echo "frames dump /tmp/slowmo.gif 50 10" | nc -w 30 localhost 6543
 ```
+
+## DevTools
+
+| Command | Description |
+|---------|-------------|
+| `devtools` | Toggle the developer tools (F12; the pause hub's DevTools button) |
+| `devtools on\|off` | Show or hide them explicitly |
+| `devtools show <name>` / `devtools hide <name>` | Open or close one window: `registers`, `disassembly`, `memory_hex`, `stack`, `breakpoints`, `symbols`, `session_recording`, `gfx_finder`, `silicon_disc`, `asic`, `disc_tools`, `data_areas`, `disasm_export`, `video_state`, `audio_state`, `recording_controls`, `assembler`, `drive_sound_lab`. `ERR 404 unknown window` otherwise |
 
 ## Event System
 
@@ -488,8 +510,19 @@ WinAPE-compatible auto-type with special key syntax.
 | `autotype status` | `OK active: N actions remaining` or `OK idle` |
 | `autotype clear` | Cancel pending auto-type queue. |
 
+> A literal `;` cannot appear in `<text>` for `autotype` or `input type`: the
+> IPC line parser splits every raw line on `;` for command chaining before
+> either command ever sees its text argument, so anything after the `;` is
+> parsed as a separate (usually unrecognized) command instead of being
+> typed. Use the `~SEMICOLON~` token to type the character without putting
+> a literal `;` on the wire — it doesn't trigger the chain-splitter and
+> doesn't affect chaining after the autotype/input type call itself.
+
 ```bash
 echo 'autotype 10 PRINT "HELLO"~ENTER~RUN~ENTER~' | nc -w 1 localhost 6543
+
+# A literal semicolon in a typed BASIC line (e.g. `PRINT A~SEMICOLON~B`)
+echo 'autotype PRINT A~SEMICOLON~B~ENTER~' | nc -w 1 localhost 6543
 ```
 
 ## Disc Management
@@ -501,14 +534,17 @@ File-level and sector-level access to DSK disc images.
 | Command | Description |
 |---------|-------------|
 | `disk formats` | `OK data vendor system ...` — list available format names |
-| `disk format <A\|B> <format_name>` | Format drive with named format |
-| `disk new <path> [format]` | Create a new blank DSK file (default format: `data`) |
+| `disk format <A\|B> <format_name>` | Format drive with named format. Failed live-FDC push rolls the host view back |
+| `disk new <path> [format] [sector\|flux]` | Create a blank disc (default: `data sector`). Flux backing is chosen at creation because discarded flux cannot be reconstructed later |
 | `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
 | `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
 | `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
-| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted) |
-| `disk rm <A\|B> <filename>` | Delete file from disc |
+| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted). Failed live-FDC push rolls the host view back |
+| `disk rm <A\|B> <filename>` | Delete file from disc. Failed live-FDC push rolls the host view back |
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
+| `disk status <A\|B>` | `OK present=0\|1 backing=empty\|sector\|flux can_dsk=0\|1 can_scp=0\|1 can_hfe=0\|1` — same save caps the File menu uses |
+| `disk save <A\|B> <path> [dsk\|scp\|hfe]` | Write the **live FDC medium** (not a stale host `t_drive`). Default `dsk`. `ERR 409 save-format-unavailable` when caps forbid the format (flux is drive-A-only). `ERR 404 empty-drive` for `dsk` on an empty drive. `ERR 500 <reason>` on a genuine write failure (bad path, disk full, I/O error). Traversal (`..`) rejected |
+| `disk eject <A\|B>` | Unmount the drive (`dsk_eject`). No GUI confirm. Dirty media follows the File-menu flush-on-eject path |
 
 ### Sector Commands
 
@@ -517,6 +553,23 @@ File-level and sector-level access to DSK disc images.
 | `disk sector read <drive> <track> <side> <sector_id>` | Read raw sector data as hex |
 | `disk sector write <drive> <track> <side> <sector_id> <hex>` | Write raw hex data to sector |
 | `disk sector info <drive> <track> <side>` | List sectors on track: `C=xx H=xx R=xx N=xx size=N` per sector |
+
+## Tape
+
+The cassette deck the Media menu, the F4 key and the pause hub's Eject Tape
+button drive. `help tape` on the port shows the same usage.
+
+| Command | Description |
+|---------|-------------|
+| `tape play` / `tape stop` | Start / stop the deck (F4) |
+| `tape rewind` | Rewind to the first block |
+| `tape eject` | Eject the tape — the pause hub's Eject Tape and the Media menu's Eject Tape, without the confirmation |
+| `tape status` | `OK` plus the deck state (motor, playing, position) |
+| `tape seek <block>` | Jump to a block of the loaded image. `ERR 409 no-tape` with nothing loaded; `ERR 400 block-out-of-range` |
+| `tape volume [0-100]` | Get or set the line-out volume — `OK volume=<n>` |
+| `tape lineout on\|off` | Route the deck's audio to the host's playback device (`OK ramping`; `ERR 503 no-playback-device`) |
+| `tape linein on [left\|right\|mix]` / `tape linein off` | Record from the host's line/mic input as if from tape (`ERR 503 no-recording-device`) |
+
 
 ```bash
 # List files on drive A
@@ -527,6 +580,11 @@ echo "disk get A GAME.BAS /tmp/game.bas" | nc -w 1 localhost 6543
 
 # Read sector C1 on track 0 side 0
 echo "disk sector read A 0 0 C1" | nc -w 1 localhost 6543
+
+# Persist / unmount (File ▸ Save Disk / Eject Disk)
+echo "disk status A" | nc -w 1 localhost 6543
+echo "disk save A /tmp/out.dsk" | nc -w 1 localhost 6543
+echo "disk eject A" | nc -w 1 localhost 6543
 ```
 
 ## Recording
@@ -590,7 +648,7 @@ Save and switch between named config presets.
 |---------|-------------|
 | `profile list` | List profiles. Active profile marked with `*`. |
 | `profile current` | Show active profile name |
-| `profile load <name>` | Switch to named profile |
+| `profile load <name>` | Switch to named profile. Soft settings apply under a pause lease; when `model` or `ram_size` changes, rebuilds the machine on the main thread (same idle path as `config apply`). Load/rebuild failures restore the caller's run state, except `ERR 504 rebuild-still-running` which leaves the machine paused under the in-flight identity |
 | `profile save <name>` | Save current config as named profile |
 | `profile delete <name>` | Remove a profile |
 
@@ -604,6 +662,17 @@ Read and write emulator settings.
 | `config get crtc_info` | `OK type=N chip=<name> manufacturer=<name>` |
 | `config get ram_size` | `OK <kb>` — current RAM in KB |
 | `config get silicon_disc` | `OK 0\|1` — Silicon Disc enabled |
+| `config get kbd_layout` | `OK <file>` — the host keymap in use (`resources/*.map`). While a `config set kbd_layout` awaits the next frame, appends ` pending=<file>` |
+| `config get kbd_layouts` | `OK` then one `*.map` filename per line — the choices the Settings ▸ Input combo offers |
+| `config set kbd_layout <file>` | Switch the host keymap live, the same way the Settings combo does: applied on the main thread on the next frame (`OK (applied on next frame)`). `ERR 400 unknown-kbd-layout` if the file is not one of `config get kbd_layouts`. A switch applied while the Settings dialog is open survives its Cancel |
+| `config get fullscreen` | `OK <0\|1>` — whether the main window is fullscreen right now (the inverse of `[video] scr_window`). While a `config set fullscreen` awaits the next frame, appends ` pending=<0\|1>`. `ERR 503 no-window` when there is no main window (headless) |
+| `config set fullscreen <0\|1>` | Enter or leave fullscreen the way View ▸ Fullscreen does: applied on the main thread on the next frame (`OK (applied on next frame)`); a no-op when the window is already in that state. `ERR 400 fullscreen must be 0 or 1`; `ERR 503 no-window` when headless |
+| `config get window` | `OK w=<px> h=<px> scale=<idx> fullscreen=<0\|1>` — the main window's live size in window units, the `scr_scale` index (0 = Fit) and its fullscreen state, published once per frame. Read it back after a resize, scale change or fullscreen round-trip instead of eyeballing a screenshot. `ERR 503 no-window` when headless |
+| `config get file` | `OK <path>` — the configuration file this session loaded (see the lookup order in AGENTS.md ▸ Configuration). `ERR 503 not-ready` before the config is read |
+
+All three `kbd_layout` commands answer `ERR 503 not-ready` until the host
+keymap has been loaded — the IPC server comes up before the configuration
+is read, so a client connecting at launch may see it briefly.
 | `config set crtc_type <0-3>` | Set CRTC type (0=HD6845S, 1=UM6845R, 2=MC6845, 3=ASIC) |
 | `config set ram_size <kb>` | Set RAM size (reset required) |
 | `config get model` | `OK 0`-`3` — live CPC model (0=464, 1=664, 2=6128, 3=6128+). While a `config set model` is staged but not yet applied, appends ` pending=<n>` |
@@ -674,6 +743,16 @@ Load and unload ROM images in 32 expansion ROM slots.
 echo "rom list" | nc -w 1 localhost 6543
 echo "rom load 7 maxam.rom" | nc -w 1 localhost 6543
 ```
+
+## Serial Interface
+
+| Command | Description |
+|---------|-------------|
+| `serial status` | Report interface/backend configuration and counters |
+| `serial send <byte>` | Inject one received byte |
+| `serial send_string <text>` | Inject text into the receive path |
+| `serial config get` | Report serial configuration |
+| `serial config set <key> <value>` | Change a serial configuration field |
 
 ## Data Areas
 
@@ -751,9 +830,9 @@ Full-memory search with glob-style wildcards. Searches the entire 64K address sp
 
 | Command | Description |
 |---------|-------------|
-| `search hex <pattern>` | Search for hex bytes. `??` = wildcard. Max 256 results. |
-| `search text <pattern>` | Search for ASCII text. Case-sensitive. |
-| `search asm <pattern>` | Search for Z80 mnemonics with `?` (single char) and `*` (any sequence) glob wildcards. |
+| `search hex <pattern> [--view=read\|ram]` | Search for hex bytes. `??` = wildcard. Max 256 results. |
+| `search text <pattern> [--view=read\|ram]` | Search for ASCII text. Case-sensitive. |
+| `search asm <pattern>` | Search for Z80 mnemonics with `?` (single char) and `*` (any sequence) glob wildcards. Always CPU view. |
 
 Note: `search` scans 0x0000-0xFFFF. For range-limited search, use `mem find`.
 

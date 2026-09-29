@@ -1,5 +1,88 @@
 # Changelog
 
+## [6.3.1](https://github.com/ikari-pl/konCePCja/compare/v6.3.0...v6.3.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **config:** keep hand edits across the exit-time save; add a host keyboard layout setting ([#54](https://github.com/ikari-pl/konCePCja/issues/54)) ([ae098ee](https://github.com/ikari-pl/konCePCja/commit/ae098ee13a056a66fe4048f0ce6d5317ef94e23e))
+* **review:** bound the wide side of the persisted-size gate by height; size the scale picker from the shared geometry ([8ff33ea](https://github.com/ikari-pl/konCePCja/commit/8ff33ea459864d4789a7fc4f85302abaec80d95c))
+* **review:** gate the launch-time window restore; test compute_scale's stretch placement ([0a549f5](https://github.com/ikari-pl/konCePCja/commit/0a549f5affbf00fad3e587b871f548a01e5dfccc))
+* **video:** defer the Fullscreen menu toggle and size the window on every reinit ([e14bef2](https://github.com/ikari-pl/konCePCja/commit/e14bef26d3ab2505fbc3f8b597a4691b4ab7515e))
+* **video:** defer the Fullscreen menu toggle and size the window on every reinit ([180bbd4](https://github.com/ikari-pl/konCePCja/commit/180bbd492a89b3d7210fe16aa3847ced872dd1c8))
+
+## [6.3.0](https://github.com/ikari-pl/konCePCja/compare/v6.2.5...v6.3.0) (2026-09-15)
+
+
+### Features
+
+* **ipc:** add ~SEMICOLON~ autotype token ([#50](https://github.com/ikari-pl/konCePCja/issues/50)) ([b8fe3d4](https://github.com/ikari-pl/konCePCja/commit/b8fe3d4ee87d4273236f7d283544a8612da8a345))
+* **ipc:** add disk status, save, and eject commands ([40c4e78](https://github.com/ikari-pl/konCePCja/commit/40c4e7823e00a11abb0c10de7a9c140567527233))
+* **ipc:** add disk status, save, and eject commands (beads-csl7.3) ([bc499c7](https://github.com/ikari-pl/konCePCja/commit/bc499c7d4947ae914d1e5a5224f240b4c40f45aa))
+
+
+### Bug Fixes
+
+* **debug:** count frame depth in step-out, and converge the step commands ([4b0ac78](https://github.com/ikari-pl/konCePCja/commit/4b0ac7805a83c51f440aa20baadc97ae247f92de))
+* **debug:** count frame depth, and close the review's whole finding set ([0c3bffb](https://github.com/ikari-pl/konCePCja/commit/0c3bffb3808a5da5fa9db7b4a50360adb8165d31))
+* **debug:** gate step-out on a real RET, not on SP alone ([9f8879f](https://github.com/ikari-pl/konCePCja/commit/9f8879f09a68fbfa9a6d01233b1a8cd5e19ac77b))
+* **debug:** require the stack to have unwound, not just a return at depth 0 ([45a9ff0](https://github.com/ikari-pl/konCePCja/commit/45a9ff098b09e224ec936e9da3c5c8901c856318))
+* **debug:** track entered frames by return slot, and bound the IPC step wait ([1ba61c6](https://github.com/ikari-pl/konCePCja/commit/1ba61c6d3347dae014c1f732bdc20c5994a9b0c0))
+* **ipc:** don't trim a trailing space from input type/autotype text ([#49](https://github.com/ikari-pl/konCePCja/issues/49)) ([1fa1665](https://github.com/ikari-pl/konCePCja/commit/1fa166568d2af759f5fd789456c83bda11c3b475))
+* **ipc:** flush dirty writes before clearing drive path on eject ([fffcd3d](https://github.com/ikari-pl/konCePCja/commit/fffcd3d805fa5081d97cfc9b6c06153d86ee4a5b))
+
+## [6.2.5](https://github.com/ikari-pl/konCePCja/compare/v6.2.4...v6.2.5) (2026-09-09)
+
+
+### Bug Fixes
+
+* address code review findings on debugger/IPC/Options PR ([12c51a5](https://github.com/ikari-pl/konCePCja/commit/12c51a5ab88d350c38bf4ec12c766441db48d73a))
+* close debugger, IPC and options gaps ([0e9a5f9](https://github.com/ikari-pl/konCePCja/commit/0e9a5f9387bbfd9229cc4458c45bff11b368aa89))
+* close debugger, IPC, and Options gaps ([3c070be](https://github.com/ikari-pl/konCePCja/commit/3c070beb1bc3657fe91e77d47c86058d23563e93))
+* **gpu:** declare DXBC among the device's shader formats ([2e26aa4](https://github.com/ikari-pl/konCePCja/commit/2e26aa4a163d5853f981009a1a5489b9bbb58abf))
+* hold pause lease through destructive quiescence sections ([e41485e](https://github.com/ikari-pl/konCePCja/commit/e41485e73d6691f551751ff7d2a05250cea63371))
+* honour --view=ram on mem compare/find for agent parity ([1830805](https://github.com/ikari-pl/konCePCja/commit/18308055c60a0bc81ccae011afd821f63ec9df63))
+* **ipc:** bind exclusively on Windows so the port scan works ([f4ae745](https://github.com/ikari-pl/konCePCja/commit/f4ae74517bbbda3c59fd394d89debd0e1687a0ac))
+* **ipc:** report the Gate Array counter for R52 in the crtc dump ([e8e1310](https://github.com/ikari-pl/konCePCja/commit/e8e13103dd09aa78c9a85b8ef8579fe43dd3a60f))
+* pause leases, live disk sync, RAM-view mem, and profile rebuild ([346a89c](https://github.com/ikari-pl/konCePCja/commit/346a89c1487cf6373301b32977e4e7dd43363c48))
+* quiesce and rebuild on mid-run profile load ([40c3f33](https://github.com/ikari-pl/konCePCja/commit/40c3f33bfb421f04a27f500287f568ccf6aa5918))
+* **review:** keep pause-lease, flux, and disk views honest ([13db3b7](https://github.com/ikari-pl/konCePCja/commit/13db3b7c8b3ea8060e101e7bbb0b3daffa147b81))
+* sync Disc Tools/IPC disk edits with the live FDC medium ([0e76fd0](https://github.com/ikari-pl/konCePCja/commit/0e76fd0dfb836324a1b3724645f3522fc6b54088))
+* **test:** make M4HttpTest recover from cross-suite SD/port pollution ([6663392](https://github.com/ikari-pl/konCePCja/commit/6663392c3fc4af92eb86efdcab7b5df0f210560c))
+* **windows:** IPC port hijack, standalone exe, zip litter, and R52 reporting ([58966b8](https://github.com/ikari-pl/konCePCja/commit/58966b853ff563c977d5ddbd96076cb5cd1bb23a))
+* **windows:** stage runtime assets next to the executable ([c493272](https://github.com/ikari-pl/konCePCja/commit/c49327249ae4687332917ab83cc546d201ebe918))
+* **zip:** stop leaving temporary files in the working directory ([92fa66e](https://github.com/ikari-pl/konCePCja/commit/92fa66e99b300263ea70eadb06186e06011f6f3c))
+
+## [6.2.4](https://github.com/ikari-pl/konCePCja/compare/v6.2.3...v6.2.4) (2026-08-31)
+
+
+### Bug Fixes
+
+* Windows DPI scaling, config safety, and UI fixes ([#39](https://github.com/ikari-pl/konCePCja/issues/39)) ([e9fe883](https://github.com/ikari-pl/konCePCja/commit/e9fe88385c9c57258693bba4af4c9d29e387e8b4))
+
+## [6.2.3](https://github.com/ikari-pl/konCePCja/compare/v6.2.2...v6.2.3) (2026-08-29)
+
+
+### Bug Fixes
+
+* **config:** a -O override is one-run intent — never persisted by its own echo ([557c497](https://github.com/ikari-pl/konCePCja/commit/557c49789967628fd7812bd2bd42f63d668d5e14))
+* **debug:** conditional breakpoints and watchpoint hits must not lie ([0894b06](https://github.com/ikari-pl/konCePCja/commit/0894b0693ea8e46f1c9ba818e83ed679051a2de6))
+* **debug:** harden step-out exit paths and SP wrap ([dbd2356](https://github.com/ikari-pl/konCePCja/commit/dbd2356f1ea195512fb3fd9f6b1dfb26c39241fa))
+* **debug:** make `step out` actually stop on the subcycle engine ([d69b512](https://github.com/ikari-pl/konCePCja/commit/d69b51295f99d00caaa64a0bafc7ef698f04df68))
+* **debug:** make `step out` actually stop on the subcycle engine ([9aedf4d](https://github.com/ikari-pl/konCePCja/commit/9aedf4dd4943c2f0973412b02bde6bfe67d9beb8))
+* **debug:** make the debugger and the restart path tell the truth ([a2749e8](https://github.com/ikari-pl/konCePCja/commit/a2749e87adca6a845c218bc5330b864761b81063))
+* **debug:** make the debugger and the restart path tell the truth ([f2b66b3](https://github.com/ikari-pl/konCePCja/commit/f2b66b3c645862fdaee9b2944a33f9a1a531bdf5))
+* **debug:** review follow-ups — logical not, PC restore, one function authority ([dd3c5c8](https://github.com/ikari-pl/konCePCja/commit/dd3c5c817b20ca19474d698ea577554b4881914d))
+* **debug:** the condition language and probe post-filters must not lie ([fa704f6](https://github.com/ikari-pl/konCePCja/commit/fa704f6ccee6fe73615c12c99def82abf2175d5d))
+* **m4:** actually fit the M4 board — the ROM lookup had drifted apart ([0ede93e](https://github.com/ikari-pl/konCePCja/commit/0ede93ebbce9215d4c76f878481bbb8d2f5be262))
+* **m4:** actually fit the M4 board — the ROM lookup had drifted apart ([9725f73](https://github.com/ikari-pl/konCePCja/commit/9725f73ebab1ba7bb6c672409e889a213581f78f))
+* **m4:** answer commands at coprocessor latency, and blank the whole window while busy ([79ebf64](https://github.com/ikari-pl/konCePCja/commit/79ebf6457cc0b38ed832b2aa36b8ead8ab6ffca0))
+* **m4:** fit the host-prepared ROM image, not a fresh read of the file ([d9242e2](https://github.com/ikari-pl/konCePCja/commit/d9242e29f1e0d0ef34ca7f7f13fd6150cb263653))
+* **m4:** never splice a dropped command frame onto the next one ([1a32ef2](https://github.com/ikari-pl/konCePCja/commit/1a32ef2fd0c5e96dc52adf69db8b225da059f6f4))
+* **review:** address the code review — stale flags, wrong thread, lost audio ([f14a126](https://github.com/ikari-pl/konCePCja/commit/f14a126af204560e6ea6eaf98f7dad5146ab19c5))
+* **review:** harden config apply and wait-bp generation edges ([89af327](https://github.com/ikari-pl/konCePCja/commit/89af327c36f6fba6223d01329ca92f14b2934d01))
+* **review:** logical not, PC restore on filter-refuse, help/docs parity ([b4eb9da](https://github.com/ikari-pl/konCePCja/commit/b4eb9da313e8747f99eb8e775fae411f47c42932))
+
 ## [6.2.2](https://github.com/ikari-pl/konCePCja/compare/v6.2.1...v6.2.2) (2026-08-02)
 
 

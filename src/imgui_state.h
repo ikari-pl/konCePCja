@@ -94,6 +94,7 @@ struct ImGuiUIState {
 
   // Options dialog state
   t_CPC old_cpc_settings;
+  int fullscreen_request = -1;  // desired scr_window, applied after ImGui frame
 
   // Memory tool input buffers
   char mem_poke_addr[8] = "";

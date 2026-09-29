@@ -47,8 +47,9 @@ class KoncepcjaIPC:
     def send_command(self, cmd: str) -> Tuple[bool, str]:
         """Send command and return (success, response).
 
-        Note: The server closes the connection after each command,
-        so we create a new connection for each request.
+        Note: one fresh connection per request, for simplicity. The server
+        itself keeps a connection open across commands ('disconnect' closes
+        it); nothing here depends on that.
         """
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -448,6 +449,84 @@ def test_memory_rw():
             return False
 
 
+def test_mem_ram_view_under_rom_overlay():
+    """beads-wxy6: --view=ram must see RAM under a paged-in lower ROM.
+
+    The Fruity Frank lives-counter case: &1AF1 holds &3E in the 6128 OS ROM
+    while the game stores a counter underneath. Default mem read returns the
+    firmware byte; --view=ram returns the stored value. Also asserts bad-view
+    rejection so agents cannot silently fall back to the CPU view.
+    """
+    print("Running mem --view=ram under ROM overlay test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start('--headless'):
+            print("FAIL: Could not start emulator")
+            return False
+
+        ipc = emu.ipc
+        if not ipc.pause():
+            print("FAIL: Could not pause")
+            return False
+
+        addr = 0x1AF1
+        ok, _ = ipc.send_command(f'mem write 0x{addr:04X} 03')
+        if not ok:
+            print("FAIL: Could not write under-ROM RAM")
+            return False
+
+        ok, _ = ipc.send_command('mem write 0x4000 03')
+        if not ok:
+            print("FAIL: Could not write reference byte at 0x4000")
+            return False
+
+        ok, cpu_resp = ipc.send_command(f'mem read 0x{addr:04X} 1')
+        if not ok:
+            print(f"FAIL: CPU-view read failed: {cpu_resp}")
+            return False
+
+        ok, ram_resp = ipc.send_command(f'mem read 0x{addr:04X} 1 --view=ram')
+        if not ok:
+            print(f"FAIL: RAM-view read failed: {ram_resp}")
+            return False
+
+        ram_hex = ram_resp.replace('OK', '').strip().upper()
+        if ram_hex != '03':
+            print(f"FAIL: --view=ram expected 03, got {ram_resp!r}")
+            return False
+
+        ok, bad = ipc.send_command(f'mem read 0x{addr:04X} 1 --view=bogus')
+        if ok or 'bad-view' not in bad:
+            print(f"FAIL: expected ERR 400 bad-view, got ok={ok} {bad!r}")
+            return False
+
+        ok, cmp_ram = ipc.send_command(
+            f'mem compare 0x{addr:04X} 0x4000 1 --view=ram')
+        if not ok or 'diffs=0' not in cmp_ram:
+            print(f"FAIL: compare --view=ram expected diffs=0, got {cmp_ram!r}")
+            return False
+
+        ok, find_ram = ipc.send_command(
+            f'mem find hex 0x1AF0 0x1AF2 03 --view=ram')
+        if not ok or '1AF1' not in find_ram.upper():
+            print(f"FAIL: find --view=ram missed under-ROM byte: {find_ram!r}")
+            return False
+
+        cpu_hex = cpu_resp.replace('OK', '').strip().upper()
+        if cpu_hex != '03':
+            # Strong path: lower ROM still overlays &1AF1.
+            ok, cmp_cpu = ipc.send_command(
+                f'mem compare 0x{addr:04X} 0x4000 1')
+            if not ok or 'diffs=0' in cmp_cpu:
+                print(f"FAIL: CPU-view compare should differ under ROM, "
+                      f"got {cmp_cpu!r}")
+                return False
+            print(f"PASS: mem --view=ram (CPU={cpu_hex} RAM=03 under ROM)")
+        else:
+            print("PASS: mem --view=ram (ROM banked out; alias + bad-view OK)")
+        return True
+
+
 def test_breakpoint():
     """Test breakpoint functionality."""
     print("Running breakpoint test...")
@@ -500,10 +579,8 @@ def test_headless_runs_subcycle_engine():
         if not ok or 'effective=' not in resp:
             print(f"FAIL: bridge inactive under --headless: {resp}")
             return False
-        ok1, pc1 = ipc.send_command('reg get PC')
-        time.sleep(0.4)
-        ok2, pc2 = ipc.send_command('reg get PC')
-        if not (ok1 and ok2 and pc1 != pc2):
+        moved, pc1, pc2 = pc_is_moving(ipc)
+        if not moved:
             print(f"FAIL: PC frozen headless ({pc1} / {pc2})")
             return False
         print("PASS: headless runs the sub-cycle engine (tier OK, PC moves)")
@@ -548,6 +625,70 @@ def test_engine1_bp_clear_resume():
             return False
         print("PASS: engine=1 resumed after bp clear (PC advances)")
         return True
+
+
+def test_inject_launches_like_run():
+    """-i/--inject must hand the program to the firmware the way RUN" does.
+
+    bin_load() used to poke PC at the entry point behind the firmware's back
+    (a faked BASIC return stack, no pack re-initialisation), which left a
+    program running with the interrupt-driven keyboard scan dead: a game that
+    reads keys through KM READ CHAR never saw a keypress (beads-scrl). The
+    firmware's own launcher, MC START PROGRAM (&BD16), resets the stack, the
+    packs and interrupts, then enters the program — so a 10-byte program that
+    loops on KM READ CHAR and stores the character must see a tapped key.
+
+        &6000  CALL &BB09      ; KM READ CHAR: carry set, A = char
+        &6003  JR NC,&6000
+        &6005  LD (&6100),A
+        &6008  JR &6000
+    """
+    print("Running inject → MC START PROGRAM → firmware keyboard test...")
+    program = bytes([0xCD, 0x09, 0xBB, 0x30, 0xFB, 0x32, 0x00, 0x61, 0x18, 0xF6])
+    with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+        f.write(program)
+        bin_path = f.name
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0  # the server-side waits below run up to 15s
+            # Injection happens once boot_time frames have elapsed; the program
+            # then spins in &6000-&6009. wait pc pauses on the hit.
+            ok, resp = ipc.send_command('wait pc 0x6000 15000')
+            if not ok:
+                _, regs = ipc.get_regs()
+                print(f"FAIL: injected program never reached &6000: {resp} "
+                      f"(PC={regs.get('PC', -1):04X})")
+                return False
+            ok, resp = ipc.read_mem(0x6100, 1)
+            if not ok or not resp.endswith('00'):
+                print(f"FAIL: &6100 must start clear, got {resp}")
+                return False
+            ipc.run()
+            # Hold the key across several frames rather than 'input key a':
+            # the default 2-frame tap releases from the IPC thread and races
+            # the once-per-frame publish of the matrix the firmware scans, so
+            # the firmware can miss it entirely under load (beads-cjej). This
+            # test is about the launch path, not the tap.
+            for cmd in ('input keydown a', 'wait vbl 5', 'input keyup a'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+            # Only the firmware's ISR (KM SCAN KEYS every frame flyback) can
+            # move that key into the buffer KM READ CHAR drains.
+            ok, resp = ipc.send_command('wait mem 0x6100 0x61 5000')
+            if not ok:
+                print(f"FAIL: the key never reached the program through the "
+                      f"firmware — interrupt/keyboard path dead after -i: {resp}")
+                return False
+            print("PASS: injected program received a key via KM READ CHAR")
+            return True
+    finally:
+        os.unlink(bin_path)
 
 
 def test_breakpoint_pause_step_resume():
@@ -621,7 +762,7 @@ def test_snapshot_round_trip():
     """Save snapshot while paused, corrupt memory, load snapshot, verify restored.
 
     Exercises cpc_pause_and_wait() in the IPC server's snapshot save/load paths.
-    Without quiescence the snapshot might capture a partially-updated Z80 state.
+    Without going idle the snapshot might capture a partially-updated Z80 state.
     """
     print("Running snapshot round-trip test...")
 
@@ -720,11 +861,20 @@ def test_rapid_pause_resume():
 
 
 def test_step_in_accuracy():
-    """Pause, read PC, step N instructions, verify PC advanced monotonically.
+    """Pause, plant a known instruction run, step it, verify PC advances.
 
-    Exercises cpc_pause_and_wait() in the IPC step-in path.  If the Z80 thread
-    was still inside z80_execute() when step_in ran, the PC would not advance
+    Exercises cpc_pause_and_wait() in the IPC step-in path: if the Z80 thread
+    were still inside z80_execute() when step_in ran, PC would not advance
     predictably.
+
+    Deliberately steps a PLANTED run of NOPs rather than whatever boot code
+    happens to be live. The previous version paused at an arbitrary point and
+    demanded PC change on every single step, which is simply false for Z80
+    block instructions -- LDIR/LDDR/OTIR re-execute at the SAME PC once per
+    iteration until BC hits 0. The CPC firmware boots through big LDIR block
+    copies, so that test failed on most runs (measured 3 of 4 on master, at
+    0x0642 and 0x0B2C -- both `ldir`) while the stepping code was perfectly
+    correct.
     """
     print("Running step-in accuracy test...")
 
@@ -737,12 +887,15 @@ def test_step_in_accuracy():
 
         emu.ipc.pause()
 
-        ok, pc_start = emu.ipc.get_reg('PC')
+        # 16 NOPs at 0x6000: one byte each, so PC must advance by exactly 1.
+        ok, resp = emu.ipc.send_command('mem write 0x6000 ' + '00' * 16)
         if not ok:
-            print("FAIL: Could not read initial PC")
+            print(f"FAIL: could not plant NOPs: {resp}")
+            return False
+        if not emu.ipc.send_command('reg set PC 0x6000')[0]:
+            print("FAIL: could not set PC")
             return False
 
-        prev_pc = pc_start
         for i in range(STEPS):
             ok_s, _ = emu.ipc.step_in(1)
             if not ok_s:
@@ -752,13 +905,677 @@ def test_step_in_accuracy():
             if not ok_r:
                 print(f"FAIL: Could not read PC after step {i+1}")
                 return False
-            if cur_pc == prev_pc:
-                print(f"FAIL: PC stuck at 0x{cur_pc:04X} after step {i+1}")
-                return False
-            prev_pc = cur_pc
+            want = 0x6000 + i + 1
+            if cur_pc != want:
+                # An interrupt vectoring away mid-run is legitimate; a PC that
+                # simply failed to move is the bug this test is about.
+                if cur_pc == 0x6000 + i:
+                    print(f"FAIL: PC stuck at 0x{cur_pc:04X} after step {i+1}")
+                    return False
+                print(f"  interrupt took PC to 0x{cur_pc:04X}; re-seating")
+                emu.ipc.send_command(f'reg set PC 0x{want:04X}')
 
-        print(f"  PC advanced from 0x{pc_start:04X} to 0x{prev_pc:04X} over {STEPS} steps")
+        print(f"  PC advanced one NOP at a time across {STEPS} steps")
         print("PASS: Step-in accuracy test")
+        return True
+
+
+def test_step_out_nested_call():
+    """Step Out finishes the current frame while skipping a nested CALL."""
+    print("Running step-out nested-call test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: CALL 6006; NOP; RET; padding; 6006: NOP; RET
+        setup = [
+            'mem write 0x6000 CD066000C90000C9',
+            'mem write 0x8000 0070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                return False
+
+        # The walk single-steps through the restart handler, so give the
+        # client more than its default 5s -- otherwise a slow-but-correct walk
+        # looks like a failure.
+        emu.ipc.timeout = 30.0
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp or pc != 0x7000 or sp != 0x8002:
+            print(
+                f"FAIL: expected PC=7000 SP=8002, got "
+                f"PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: Step Out skipped nested CALL and unwound one frame")
+        return True
+
+
+def test_step_out_gated_on_ret_not_sp():
+    """Step Out must finish on the RET, not on the first POP that lifts SP.
+
+    The ordinary Z80 subroutine saves a register on entry and restores it
+    just before returning:
+
+        PUSH HL / <body> / POP HL / RET
+
+    Issue `step out` inside <body> and the entry SP is the POST-push value,
+    so `POP HL` alone raises SP above it. A bare SP-threshold test ends the
+    walk there -- one instruction early, PC still on the RET, still inside
+    the callee. This pins the RET gate that prevents that.
+    """
+    print("Running step-out RET-gate test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # Mid-body of a routine that already did `PUSH HL`:
+        #   6000: NOP        <- step out issued here
+        #   6001: POP HL     <- raises SP to 8002, ABOVE the 8000 entry SP
+        #   6002: RET        <- the real frame exit, to 7000
+        # Stack: 8000 = saved HL (1234), 8002 = return address (7000).
+        setup = [
+            'mem write 0x6000 00E1C9',
+            'mem write 0x8000 34120070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6002:
+            print(
+                "FAIL: stopped at the POP, not the RET -- PC=6002 SP="
+                f"{sp:04X} (the SP-threshold regression)")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(
+                f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        # HL must carry the POP'd value: the walk really executed the body.
+        ok_hl, hl = emu.ipc.get_reg('HL')
+        if not ok_hl or hl != 0x1234:
+            print(f"FAIL: expected HL=1234 after POP, got {hl:04X}")
+            return False
+
+        print("PASS: Step Out ran through the POP and finished on the RET")
+        return True
+
+
+def pc_is_moving(ipc, timeout_s=3.0):
+    """Poll `reg get PC` until it changes. Returns (moved, first, last).
+
+    A single before/after pair is NOT a liveness test. The firmware idles in
+    a short loop, so two samples taken 0.4s apart can land on the same PC
+    while the Z80 is running flat out -- the sample interval says nothing
+    about where in the loop each read happens. That aliasing failed
+    test_profile_load_missing_keeps_running on the macOS CI runner with both
+    reads returning 1BC5, while the machine was demonstrably running.
+
+    Polling keeps the original intent -- prove the CPU advances -- and only
+    reports frozen after the whole budget has elapsed with no movement, which
+    a genuinely paused machine always does.
+    """
+    ok, first = ipc.send_command('reg get PC')
+    if not ok:
+        return False, first, first
+    last = first
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        time.sleep(0.05)
+        ok, cur = ipc.send_command('reg get PC')
+        if not ok:
+            return False, first, cur
+        last = cur
+        if cur != first:
+            return True, first, cur
+    return False, first, last
+
+
+def make_test_rom(handlers=None):
+    """Build a synthetic 32K system ROM and return the directory holding it.
+
+    The CPC maps the lower ROM over 0x0000-0x3FFF, so the eight Z80 restart
+    vectors (&00-&38) are covered by firmware and `mem write` there lands in
+    RAM the CPU never executes -- a handler simply cannot be planted at a
+    restart vector on a normally-booted machine. Supplying our own system ROM
+    sidesteps that entirely: no unmapping, no new IPC command, just a ROM with
+    no firmware in it. `rom_path` is only a directory (CPC.rom_path + "/" +
+    chROMFile[model]), so pointing it at a temp dir is enough.
+
+    `handlers` maps a ROM offset to the bytes to place there, e.g.
+    {0x0030: bytes([0xD1, 0xC3, 0x04, 0x60])} for a restart that discards its
+    return address and jumps away. Filler is 0xFF (rst 38h) so stray execution
+    is obvious rather than silently sliding through NOPs.
+
+    Caller owns the returned directory; shutil.rmtree it when done.
+    """
+    rom = bytearray(b'\xFF' * 32768)      # OS half + BASIC half
+    # Park at a NON-ZERO address: EmulatorRunner treats PC==0 as "not ready
+    # yet", so a loop at 0x0000 would sit exactly on that sentinel.
+    rom[0x0000:0x0003] = bytes([0xC3, 0x00, 0x01])  # 0000: JP 0100
+    rom[0x0100:0x0103] = bytes([0xC3, 0x00, 0x01])  # 0100: JP 0100 (park)
+    # &FF filler decodes as `rst 38h`, so 0x0038 would otherwise recurse into
+    # itself and run the stack down. A bare RET keeps stray execution bounded.
+    rom[0x0038] = 0xC9
+    # Overwriting any of these silently removes the scaffolding: clobber the
+    # park loop and the machine never reaches a steady PC, so start() waits
+    # out its full timeout and then blames the ROM for not loading.
+    reserved = set(range(0x0000, 0x0003)) | {0x0038} | set(
+        range(0x0100, 0x0103))
+    for offset, code in (handlers or {}).items():
+        assert 0 <= offset and offset + len(code) <= len(rom), (
+            f"handler at {offset:#06x} ({len(code)} bytes) does not fit a 32K "
+            f"ROM")
+        clash = reserved & set(range(offset, offset + len(code)))
+        assert not clash, (
+            f"handler at {offset:#06x} ({len(code)} bytes) overlaps ROM "
+            f"scaffolding at {sorted(hex(a) for a in clash)} -- the reset "
+            f"vector, the park loop at 0x0100 or the 0x0038 guard")
+        rom[offset:offset + len(code)] = code
+    assert len(rom) == 32768, "a slice assignment resized the ROM"
+    d = tempfile.mkdtemp(prefix='koncpc_testrom_')
+    try:
+        with open(os.path.join(d, 'cpc6128.rom'), 'wb') as f:
+            f.write(rom)
+    except OSError:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    return d
+
+
+def test_step_out_tail_jumping_restart():
+    """A restart that discards its return address must not strand the walk.
+
+    The CPC's LOW JUMP (&08) and FIRM JUMP (&28) push a return address, then
+    the handler POPs it, reads its inline operand and JUMPS away -- the return
+    never happens. Counting entered frames cannot express that: the restart's
+    entry is never balanced, so step out finishes a frame too high. Tracking
+    each entered frame by its return SLOT does, because the entry retires when
+    the stack rises past it however that happens.
+
+    Runs against a synthetic ROM so the restart handler is OURS. An earlier
+    attempt at this test planted the handler with `mem write` and passed for
+    entirely the wrong reason -- the firmware's own handler happened to return.
+    """
+    print("Running step-out tail-jumping-restart test...")
+
+    romdir = make_test_rom({
+        # 0030: POP DE (discard the pushed return address) / JP 6004
+        0x0030: bytes([0xD1, 0xC3, 0x04, 0x60]),
+    })
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', f'rom.rom_path={romdir}',
+                             '-O', 'system.model=2'):
+                print("FAIL: emulator would not start with the test ROM")
+                return False
+            emu.ipc.timeout = 30.0
+            if not emu.ipc.pause():
+                print("FAIL: Could not pause emulator")
+                return False
+
+            # Prove the CPU really sees our handler, not firmware. Without this
+            # the test can pass for the wrong reason, which is exactly how the
+            # previous version of it fooled us.
+            ok, dis = emu.ipc.send_command('disasm 0x0030 2')
+            low = dis.lower()
+            if not ok or 'pop de' not in low or 'jp $6004' not in low:
+                print(f"FAIL: 0x0030 is not our handler: {dis.strip()!r}")
+                return False
+
+            #   6000: RST 30h   -> pushes 6001, vectors to our handler
+            #   6004: RET       -> returns to 7000 via OUR frame's slot
+            # Stack: 8000 = 7000 (this frame's return address)
+            setup = [
+                'mem write 0x6000 F7000000C9',
+                'mem write 0x8000 0070',
+                'reg set SP 0x8000',
+                'reg set PC 0x6000',
+            ]
+            for command in setup:
+                ok, resp = emu.ipc.send_command(command)
+                if not ok:
+                    print(f"FAIL: {command!r} failed: {resp}")
+                    return False
+
+            ok, resp = emu.ipc.send_command('step out')
+            if not ok:
+                print(f"FAIL: step out failed: {resp}")
+                return False
+
+            ok_pc, pc = emu.ipc.get_reg('PC')
+            ok_sp, sp = emu.ipc.get_reg('SP')
+            if not ok_pc or not ok_sp or pc != 0x7000 or sp != 0x8002:
+                print(f"FAIL: expected PC=7000 SP=8002, "
+                      f"got PC={pc:04X} SP={sp:04X}")
+                return False
+
+            # The handler's POP DE lifted the pushed return address into DE.
+            # Without this, nothing distinguishes "the handler ran and threw
+            # its return address away" from "the walk reached the right PC by
+            # some other route".
+            ok_de, de = emu.ipc.get_reg('DE')
+            if not ok_de or de != 0x6001:
+                print(f"FAIL: handler's POP DE did not run "
+                      f"(DE={de:04X}, expected 6001)")
+                return False
+
+            print("PASS: tail-jumping restart did not strand the walk")
+            return True
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
+
+
+def test_step_out_nested_restarts():
+    """Two restarts deep, entered mid-frame, must both unwind.
+
+    This is the test that requires entered frames to be a STACK of slots
+    rather than one slot. Its partner, test_step_out_tail_jumping_restart,
+    covers the other half; between them both wrong shapes die. Verified by
+    mutating src/z80_view.cpp and re-running:
+
+        mutation                              nested      tail-jumping
+        keep only the newest entered slot     FAIL        (passes)
+        pre-PR depth counter, no pruning      (passes)    FAIL (times out)
+
+    So this test alone does NOT rule out the counter -- do not read it as a
+    regression guard for that bug. What it does rule out is dropping an outer
+    frame when an inner one is entered.
+
+    The mid-frame entry is what gives it teeth. Entered at the top of the
+    frame, it stays green under every mutation above, because each restart's
+    RET lands exactly at entry_sp and the unwound() conjunct rejects it
+    without consulting the slots at all. The leading POP puts entry_sp BELOW
+    both restart slots, so a dropped slot yields a RET that does satisfy
+    unwound() and the walk stops early at 0x6002.
+    """
+    print("Running step-out nested-restarts test...")
+
+    # TWO DIFFERENT restarts, not one calling itself -- RST 30h at 0x0030
+    # would recurse forever and run the stack into the ground.
+    romdir = make_test_rom({
+        0x0028: bytes([0xC9]),        # 0028: RET
+        0x0030: bytes([0xEF, 0xC9]),  # 0030: RST 28h, then RET
+    })
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', f'rom.rom_path={romdir}',
+                             '-O', 'system.model=2'):
+                print("FAIL: emulator would not start with the test ROM")
+                return False
+            emu.ipc.timeout = 30.0
+            if not emu.ipc.pause():
+                print("FAIL: Could not pause emulator")
+                return False
+
+            # Both vectors must be OURS. &28 in particular is a real firmware
+            # restart (FIRM JUMP), so if the ROM override were silently
+            # ignored this test would run Amstrad's code and could pass for
+            # the wrong reason -- the exact failure that got an earlier
+            # version of the sibling test deleted.
+            # Exact mnemonics, not substrings: the 0xFF filler disassembles
+            # as `rst 38h`, which would satisfy a bare 'rst' check and let an
+            # ignored ROM override pass for the wrong reason.
+            for addr, want in ((0x0028, 'ret'), (0x0030, 'rst 28h')):
+                ok, dis = emu.ipc.send_command(f'disasm 0x{addr:04X} 1')
+                if not ok or want not in dis.lower():
+                    print(f"FAIL: 0x{addr:04X} is not our handler: "
+                          f"{dis.strip()!r}")
+                    return False
+
+            # Enter MID-frame, like a real step out does. Without the POP
+            # the whole test passes even with frame tracking deleted, because
+            # the stack-level conjunct carries it: the outer handler's RET
+            # lands exactly at entry_sp and is rejected anyway. With the POP,
+            # entry_sp sits BELOW the restart slots, so losing a slot makes
+            # the walk finish early at 0x6002 instead of the caller.
+            #   6000: POP HL   -> SP 8000 -> 8002
+            #   6001: RST 30h  -> 0030 RST 28h -> 0028 RET -> 0031 RET
+            #   6002: RET      -> the frame exit, to 7000
+            for command in ['mem write 0x6000 E1F7C9',
+                            'mem write 0x8000 34120070',
+                            'reg set SP 0x8000', 'reg set PC 0x6000']:
+                ok, resp = emu.ipc.send_command(command)
+                if not ok:
+                    print(f"FAIL: {command!r} failed: {resp}")
+                    return False
+
+            ok, resp = emu.ipc.send_command('step out')
+            if not ok:
+                print(f"FAIL: step out failed: {resp}")
+                return False
+
+            ok_pc, pc = emu.ipc.get_reg('PC')
+            ok_sp, sp = emu.ipc.get_reg('SP')
+            if not ok_pc or not ok_sp:
+                print("FAIL: could not read back PC/SP")
+                return False
+            if pc == 0x6002:
+                print("FAIL: finished inside the frame -- a restart slot was "
+                      "lost")
+                return False
+            if pc != 0x7000 or sp != 0x8004:
+                print(f"FAIL: expected PC=7000 SP=8004, "
+                      f"got PC={pc:04X} SP={sp:04X}")
+                return False
+
+            print("PASS: nested restarts unwound to the caller")
+            return True
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
+
+
+def _load_frame(emu, code_hex, stack_hex="34120070", extra=None):
+    """Plant a routine at 0x6000 inside a frame whose return address is 0x7000.
+
+    Stack: 8000 = a saved register pair, 8002 = the return address. SP starts
+    at 8000, i.e. mid-frame, AFTER the routine's entry PUSH -- the position
+    that breaks a naive stack-pointer threshold.
+    """
+    for command in ['mem write 0x6000 ' + code_hex,
+                    'mem write 0x8000 ' + stack_hex,
+                    'reg set SP 0x8000',
+                    'reg set PC 0x6000'] + (extra or []):
+        ok, resp = emu.ipc.send_command(command)
+        if not ok:
+            print(f"FAIL: {command!r} failed: {resp}")
+            return False
+    return True
+
+
+def test_step_out_untaken_conditional_ret():
+    """An untaken RET cc must NOT end the walk.
+
+    This is the case that defeated the first RET gate. That gate asked two
+    independent questions -- "is this a RET-class opcode?" and "is SP above
+    where we started?" -- and an untaken `RET NZ` answers yes to both the
+    moment an earlier POP has lifted SP. Reproduced then: step out stopped at
+    0x6002, on the untaken RET NZ, still inside the frame.
+    """
+    print("Running step-out untaken-RET-cc test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL   -> SP 8000 -> 8002, ABOVE the entry SP
+        #   6001: RET NZ   -> NOT taken (Z set): moves no stack at all
+        #   6002: RET      -> the real frame exit, to 7000
+        if not _load_frame(emu, 'E1C0C9', extra=['reg set F 0x40']):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6002:
+            print("FAIL: stopped on the untaken RET NZ, still inside the frame")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: untaken RET cc did not end the walk")
+        return True
+
+
+def test_step_out_pop_then_call():
+    """A POP before a CALL must not end the walk when the callee is skipped.
+
+    The walk once carried a `depth == 0 && unwound()` backstop after a
+    callee skip, for a hypothetical callee that destroys the stack. A plain
+    POP earlier in the frame lifts SP above the entry level, so the very next
+    CALL-skip satisfied it and step out reported OK at the RET -- inside the
+    frame. Third variant of the same bug: any exit that fires without seeing a
+    taken return is it.
+    """
+    print("Running step-out POP-then-CALL test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL     -> SP 8000 -> 8002, above the entry SP
+        #   6001: CALL 6005  -> skipped at full speed
+        #   6004: RET        -> the real frame exit, to 7000
+        #   6005: RET        -> the callee
+        if not _load_frame(emu, 'E1CD0560C9C9'):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        ok_sp, sp = emu.ipc.get_reg('SP')
+        if not ok_pc or not ok_sp:
+            print("FAIL: could not read back PC/SP")
+            return False
+        if pc == 0x6004:
+            print("FAIL: backstop fired after the CALL skip, still in frame")
+            return False
+        if pc != 0x7000 or sp != 0x8004:
+            print(f"FAIL: expected PC=7000 SP=8004, got PC={pc:04X} SP={sp:04X}")
+            return False
+
+        print("PASS: POP before CALL did not end the walk early")
+        return True
+
+
+def test_step_out_computed_return():
+    """`POP HL : JP (HL)` is a return, and must end the walk."""
+    print("Running step-out computed-return test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        #   6000: POP HL   -> HL = 7000 (the return address), SP 8000 -> 8002
+        #   6001: JP (HL)  -> jumps to the word just popped: a return
+        # Stack: 8000 = 7000 so the POP lifts the return address into HL.
+        if not _load_frame(emu, 'E1E9', stack_hex='00700070'):
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok:
+            print(f"FAIL: step out failed: {resp}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        if not ok_pc or pc != 0x7000:
+            print(f"FAIL: expected PC=7000 after POP HL:JP (HL), got {pc:04X}")
+            return False
+
+        print("PASS: computed return ended the walk at the caller")
+        return True
+
+
+def test_step_out_never_returns_times_out_honestly():
+    """A frame that can never return must report a plain 408, not a false OK.
+
+    Deciding whether a frame WILL return is undecidable, so step out does not
+    guess: it runs its deadline and says it timed out. What it must never do is
+    report success at some arbitrary address it happened to stop at.
+    """
+    print("Running step-out never-returns test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: DI / 6001: JP $6001 -- spins forever, never returns, never
+        # calls. Interrupts are disabled so the walk is testing THIS frame and
+        # not the firmware's interrupt handler, whose frames interleave with
+        # ours in a way that is timing-dependent (see beads: interrupt frames
+        # serviced invisibly during a full-speed CALL skip).
+        if not _load_frame(emu, 'F3C30160'):
+            return False
+
+        emu.ipc.timeout = 30.0  # the walk runs its full deadline by design
+        ok, resp = emu.ipc.send_command('step out')
+        if 'ERR 408' not in resp:
+            print(f"FAIL: expected ERR 408 timeout, got: {resp.strip()}")
+            return False
+
+        print("PASS: non-returning frame timed out honestly")
+        return True
+
+
+def test_step_out_stops_at_breakpoint_inside_own_frame():
+    """A breakpoint in the frame being stepped out of must stop the walk.
+
+    The stepped path is probe-blind, so without an explicit check a breakpoint
+    here is walked straight through -- while the identical breakpoint inside a
+    skipped callee stops the command.
+    """
+    print("Running step-out breakpoint-inside-frame test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: NOP / 6001: NOP / 6002: RET, breakpoint on the second NOP.
+        if not _load_frame(emu, '000000C9'):
+            return False
+        emu.ipc.send_command('bp clear')
+        ok, resp = emu.ipc.send_command('bp add 0x6001')
+        if not ok:
+            print(f"FAIL: bp add failed: {resp}")
+            return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        emu.ipc.send_command('bp clear')
+        if 'breakpoint-hit' not in resp:
+            print(f"FAIL: expected breakpoint-hit, got: {resp.strip()}")
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        if not ok_pc or pc != 0x6001:
+            print(f"FAIL: expected to stop at PC=6001, got {pc:04X}")
+            return False
+
+        print("PASS: breakpoint inside the stepped frame stopped the walk")
+        return True
+
+
+def test_step_out_stops_at_real_breakpoint_on_landing_address():
+    """A real breakpoint sitting on Step Out's ephemeral landing address
+    must win and be reported as a breakpoint hit, not silently absorbed as
+    a clean Step Out landing.
+
+    z80_probe_exec_should_break() checks NORMAL breakpoints before
+    EPHEMERAL ones at the same address and flags user_breakpoint_fired so
+    process_probe_hit() records that a real breakpoint -- not the
+    ephemeral -- caused the stop. The existing unit test for that predicate
+    (z80_probe_filter_test.cpp) calls it directly, bypassing the ephemeral
+    lifecycle entirely; this exercises the real `step out` path end to end.
+    """
+    print("Running step-out vs real-breakpoint collision test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6000: CALL 6006; NOP; RET; padding; 6006: NOP; RET
+        setup = [
+            'mem write 0x6000 CD066000C90000C9',
+            'mem write 0x8000 0070',
+            'reg set SP 0x8000',
+            'reg set PC 0x6000',
+            'bp add 0x6003',  # exactly Step Out's ephemeral landing address
+        ]
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                emu.ipc.send_command('bp clear')
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if not ok or 'breakpoint-hit' not in resp:
+            print(
+                "FAIL: expected a reported breakpoint hit when a real "
+                f"breakpoint sits on the landing address, got {resp.strip()!r}")
+            emu.ipc.send_command('bp clear')
+            return False
+
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        emu.ipc.send_command('bp clear')
+        if not ok_pc or pc != 0x6003:
+            print(f"FAIL: expected PC=6003 (the real breakpoint), got "
+                  f"PC={pc:04X}" if ok_pc else "FAIL: could not read PC")
+            return False
+
+        print("PASS: real breakpoint at the landing address wins over Step Out")
         return True
 
 
@@ -1052,6 +1869,7 @@ def test_load_accepts_flux_disk_formats():
     print("Running IPC flux-format load routing test...")
 
     import tempfile
+    import zipfile
 
     with EmulatorRunner() as emu:
         if not emu.start():
@@ -1070,6 +1888,47 @@ def test_load_accepts_flux_disk_formats():
                     return False
                 print(f"  {ext}: accepted by dispatch -> {resp.strip()}")
 
+            # A ZIP is classified by its first supported member, just like
+            # command-line and drag/drop loading.
+            zip_path = os.path.join(td, 'probe.zip')
+            with zipfile.ZipFile(zip_path, 'w') as archive:
+                archive.writestr('inside.dsk', b'not a real disk image')
+            ok, resp = emu.ipc.send_command('load ' + zip_path)
+            if ok or not resp.startswith('ERR 500'):
+                print(
+                    "FAIL: .zip did not reach the inner DSK loader: "
+                    f"{resp.strip()!r}")
+                return False
+            print(f"  .zip: classified by inner media -> {resp.strip()}")
+
+            # A zip with no member the loader recognises must be refused
+            # with the dedicated no-supported-media error, not routed to
+            # any loader.
+            no_media_zip = os.path.join(td, 'no_media.zip')
+            with zipfile.ZipFile(no_media_zip, 'w') as archive:
+                archive.writestr('readme.txt', b'not a disk or tape image')
+            ok, resp = emu.ipc.send_command('load ' + no_media_zip)
+            if ok or 'no-supported-media-in-zip' not in resp:
+                print(
+                    "FAIL: zip with no supported media should be "
+                    f"ERR 415 no-supported-media-in-zip, got {resp.strip()!r}")
+                return False
+            print(f"  .zip with no supported media: correctly refused -> "
+                  f"{resp.strip()}")
+
+            # A corrupt/malformed zip must fail the same way, not crash or
+            # hang the IPC command.
+            corrupt_zip = os.path.join(td, 'corrupt.zip')
+            with open(corrupt_zip, 'wb') as f:
+                f.write(b'PK\x03\x04not actually a zip file')
+            ok, resp = emu.ipc.send_command('load ' + corrupt_zip)
+            if ok or 'no-supported-media-in-zip' not in resp:
+                print(
+                    "FAIL: corrupt zip should be "
+                    f"ERR 415 no-supported-media-in-zip, got {resp.strip()!r}")
+                return False
+            print(f"  corrupt .zip: correctly refused -> {resp.strip()}")
+
             # Unknown extension must still be refused up front.
             path = os.path.join(td, 'probe.xyz')
             with open(path, 'wb') as f:
@@ -1082,8 +1941,8 @@ def test_load_accepts_flux_disk_formats():
 
         # The help text must advertise what the dispatcher accepts.
         ok, resp = emu.ipc.send_command('help load')
-        if '.hfe' not in resp:
-            print(f"FAIL: 'help load' does not mention flux formats: {resp!r}")
+        if '.hfe' not in resp or '.zip' not in resp:
+            print(f"FAIL: 'help load' omits accepted formats: {resp!r}")
             return False
         print("  help load advertises the flux formats")
 
@@ -1185,6 +2044,354 @@ def test_model_change_rebuild():
         print("PASS: model change rebuilt the board and boot ROM")
         return True
 
+
+def test_profile_load_rebuilds_machine():
+    """profile load must idle + rebuild when model/ram_size change.
+
+    Repro for beads-x3ka: ConfigProfileManager::load() wrote CPC.model straight
+    into the global struct with no pause and no emulator_init(), so IPC
+    `profile load 6128plus` left banks/ASIC/ROMs on the old machine while
+    config reported Plus. The proof matches test_model_change_rebuild: the
+    ROM signature at 0x02E0 must match a fresh 6128+ boot after the load.
+    Soft-only profile fields are covered by the unit suite; this guards the
+    runtime caller contract.
+    """
+    print("Running profile-load rebuild test...")
+
+    def rom_signature(ipc: KoncepcjaIPC) -> Optional[str]:
+        ok, resp = ipc.read_mem(0x02E0, 16)
+        if not ok:
+            return None
+        return resp.replace('OK ', '').strip().upper()
+
+    def model_value(ipc: KoncepcjaIPC) -> Optional[int]:
+        ok, resp = ipc.send_command('config get model')
+        if not ok:
+            return None
+        try:
+            # Strip a possible ` pending=<n>` suffix — profile load clears it,
+            # but tolerate the config get format.
+            token = resp.replace('OK', '').strip().split()[0]
+            return int(token)
+        except (ValueError, IndexError):
+            return None
+
+    with EmulatorRunner() as ref_plus:
+        if not ref_plus.start('-O', 'system.model=3'):
+            print("FAIL: Could not start 6128+ reference machine")
+            return False
+        sig_plus = rom_signature(ref_plus.ipc)
+        if sig_plus is None:
+            print("FAIL: Could not read 6128+ ROM signature")
+            return False
+
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.model=2'):
+            print("FAIL: Could not start emulator under test")
+            return False
+
+        before_model = model_value(emu.ipc)
+        if before_model != 2:
+            print(f"FAIL: Expected initial model 2, got {before_model!r}")
+            return False
+
+        before_sig = rom_signature(emu.ipc)
+        if before_sig is None:
+            print("FAIL: Could not read initial ROM signature")
+            return False
+        if before_sig == sig_plus:
+            print(f"FAIL: 6128 boot already matches Plus ref: {before_sig}")
+            return False
+
+        # Built-in profile — no host .kpf required.
+        ok, resp = emu.ipc.send_command('profile load 6128plus')
+        if not ok:
+            print(f"FAIL: profile load 6128plus failed: {resp}")
+            return False
+
+        after_model = model_value(emu.ipc)
+        if after_model != 3:
+            print(f"FAIL: Expected model 3 after profile load, got {after_model!r}")
+            return False
+
+        ok, cur = emu.ipc.send_command('profile current')
+        if not ok or '6128plus' not in cur:
+            print(f"FAIL: profile current after load: {cur!r}")
+            return False
+
+        after_sig = rom_signature(emu.ipc)
+        if after_sig != sig_plus:
+            print(f"FAIL: Profile-load ROM signature {after_sig!r} != "
+                  f"6128+ ref {sig_plus!r}")
+            return False
+
+        if after_sig == before_sig:
+            print(f"FAIL: ROM signature stayed on the old model: {after_sig}")
+            return False
+
+        # Soft re-load of the same identity must stay OK without a second
+        # identity change (still rebuilds only when model/ram differ).
+        ok, resp = emu.ipc.send_command('profile load 6128plus')
+        if not ok:
+            print(f"FAIL: second profile load 6128plus failed: {resp}")
+            return False
+        if model_value(emu.ipc) != 3:
+            print("FAIL: model drifted after same-profile reload")
+            return False
+
+        print(f"  before (6128)    : {before_sig}")
+        print(f"  6128+ reference  : {sig_plus}")
+        print(f"  after profile load: {after_sig}")
+        print("PASS: profile load rebuilt the board under pause lease")
+        return True
+
+
+def test_disk_live_put_cat():
+    """Live FDC is authoritative for IPC disk put/cat (beads-csl7.1 / lly6).
+
+    Unit tests only cover pull/push when the bridge is inactive. This starts a
+    real board, formats drive A, writes a host file onto the live medium, and
+    reads it back. A put that returns OK but a cat that cannot see the bytes
+    is a stale host-view bug, not a generic command failure.
+    """
+    print("Running live-board disk put/cat test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok, resp = emu.ipc.send_command('disk format A data')
+        if not ok:
+            print(f"FAIL: disk format command ERR (not stale-view): {resp}")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'hello.bin')
+            with open(host, 'wb') as f:
+                f.write(b'HI')
+
+            ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+            if not ok:
+                print(f"FAIL: disk put command ERR (not stale-view): {resp}")
+                return False
+
+            ok, ls_resp = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls_resp:
+                print(f"FAIL: stale host view after OK put; ls={ls_resp!r}")
+                return False
+
+            ok, cat_resp = emu.ipc.send_command('disk cat A HELLO.BIN')
+            if not ok:
+                print(f"FAIL: stale host view after OK put; cat={cat_resp!r}")
+                return False
+            compact = cat_resp.replace(' ', '').upper()
+            if '48' not in compact or '49' not in compact:
+                print(f"FAIL: cat payload mismatch (stale or truncated): "
+                      f"{cat_resp!r}")
+                return False
+
+        print(f"  ls: {ls_resp.strip()}")
+        print(f"  cat: {cat_resp.strip()}")
+        print("PASS: live-board disk put/cat round-trip")
+        return True
+
+
+def test_disk_status_save_eject():
+    """File-menu Save Disk / Eject Disk over IPC (live FDC, not host t_drive).
+
+    After put, disk save must persist the CPC file into a loadable image.
+    Reload after eject is the proof the bytes came from the live medium.
+    Drive B flux save is 409 because flux is A-only.
+    """
+    print("Running live-board disk status/save/eject test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        ok, status = emu.ipc.send_command('disk eject A')
+        if not ok:
+            print(f"FAIL: eject empty A: {status}")
+            return False
+        ok, status = emu.ipc.send_command('disk status A')
+        if not ok or 'present=0' not in status or 'backing=empty' not in status:
+            print(f"FAIL: empty status: {status!r}")
+            return False
+
+        ok, resp = emu.ipc.send_command('disk format A data')
+        if not ok:
+            print(f"FAIL: disk format: {resp}")
+            return False
+        ok, status = emu.ipc.send_command('disk status A')
+        if not ok or 'present=1' not in status or 'can_dsk=1' not in status:
+            print(f"FAIL: formatted status: {status!r}")
+            return False
+        if 'can_scp=1' in status:
+            print(f"FAIL: sector disc reported flux caps: {status!r}")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'hello.bin')
+            with open(host, 'wb') as f:
+                f.write(b'HI')
+            ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+            if not ok:
+                print(f"FAIL: put: {resp}")
+                return False
+
+            saved = os.path.join(td, 'saved.dsk')
+            ok, resp = emu.ipc.send_command(f'disk save A {saved} dsk')
+            if not ok:
+                print(f"FAIL: save dsk: {resp}")
+                return False
+            if not os.path.isfile(saved) or os.path.getsize(saved) < 64:
+                print(f"FAIL: saved image missing or tiny: {saved}")
+                return False
+
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if ok and 'HELLO.BIN' in ls:
+                print(f"FAIL: HELLO.BIN still listed after eject: {ls!r}")
+                return False
+
+            ok, resp = emu.ipc.send_command(f'load {saved}')
+            if not ok:
+                print(f"FAIL: reload saved image: {resp}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls:
+                print(f"FAIL: saved image dropped live write; ls={ls!r}")
+                return False
+
+            flux_path = os.path.join(td, 'blank.scp')
+            ok, resp = emu.ipc.send_command(
+                f'disk new {flux_path} data flux')
+            if not ok:
+                print(f"FAIL: disk new flux: {resp}")
+                return False
+            ok, resp = emu.ipc.send_command(f'load {flux_path}')
+            if not ok:
+                print(f"FAIL: load flux: {resp}")
+                return False
+            ok, status = emu.ipc.send_command('disk status A')
+            if not ok or 'backing=flux' not in status or 'can_scp=1' not in status:
+                print(f"FAIL: flux status: {status!r}")
+                return False
+            out_scp = os.path.join(td, 'out.scp')
+            ok, resp = emu.ipc.send_command(f'disk save A {out_scp} scp')
+            if not ok:
+                print(f"FAIL: save scp on A: {resp}")
+                return False
+            ok, resp = emu.ipc.send_command(
+                f'disk save B {os.path.join(td, "b.scp")} scp')
+            if ok or '409' not in resp:
+                print(f"FAIL: expected 409 saving scp on B, got {resp!r}")
+                return False
+
+        print(f"  status after format: sector, can_dsk")
+        print(f"  save/reload kept HELLO.BIN; A scp save OK; B scp 409")
+        print("PASS: live-board disk status/save/eject")
+        return True
+
+
+def test_disk_eject_flushes_dirty_writes():
+    """`disk eject` must persist dirty writes even without an explicit save.
+
+    Regression for the eject/flush ordering bug: subcycle_bridge_apply_pending_media()
+    (which flushes dirty sectors back to CPC.driveA/B.file) must run BEFORE that
+    path is cleared, or the flush silently no-ops and the write is lost.
+    """
+    print("Running disk eject dirty-write-flush test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            disk_path = os.path.join(td, 'dirty.dsk')
+            ok, resp = emu.ipc.send_command(f'disk new {disk_path} data sector')
+            if not ok:
+                print(f"FAIL: disk new: {resp}")
+                return False
+
+            ok, resp = emu.ipc.send_command(f'load {disk_path}')
+            if not ok:
+                print(f"FAIL: load: {resp}")
+                return False
+
+            host = os.path.join(td, 'dirty.bin')
+            with open(host, 'wb') as f:
+                f.write(b'UNSAVED')
+            ok, resp = emu.ipc.send_command(f'disk put A {host} DIRTY.BIN')
+            if not ok:
+                print(f"FAIL: put: {resp}")
+                return False
+
+            # Eject WITHOUT an explicit `disk save` first — the flush-on-eject
+            # path is the only thing that can persist this write.
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+
+            ok, resp = emu.ipc.send_command(f'load {disk_path}')
+            if not ok:
+                print(f"FAIL: reload after eject: {resp}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'DIRTY.BIN' not in ls:
+                print(f"FAIL: eject discarded dirty write; ls={ls!r}")
+                return False
+
+        print("PASS: disk eject flushes dirty writes without an explicit save")
+        return True
+
+
+def test_profile_load_missing_keeps_running():
+    """profile load ERR must restore a running machine (beads-csl7.2).
+
+    CpcPauseLease destructor only drops the lease count; 13db3b7c added
+    restore_run_state on load failure. A missing profile must return ERR and
+    leave the Z80 advancing — wait vbl is a fixed sleep and would pass even
+    if paused, so this asserts PC motion via pc_is_moving(), which polls
+    rather than comparing one before/after pair (see that helper for why).
+    """
+    print("Running profile-load missing-name resume test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        moved, pc1, pc2 = pc_is_moving(emu.ipc)
+        if not moved:
+            print(f"FAIL: PC already frozen before load ({pc1} / {pc2})")
+            return False
+
+        ok, resp = emu.ipc.send_command('profile load no-such-profile-csl7')
+        if ok:
+            print(f"FAIL: missing profile unexpectedly succeeded: {resp}")
+            return False
+        if not resp.startswith('ERR'):
+            print(f"FAIL: expected ERR for missing profile, got {resp!r}")
+            return False
+
+        moved, pc3, pc4 = pc_is_moving(emu.ipc)
+        if not moved:
+            print(f"FAIL: machine left paused after profile load ERR "
+                  f"({pc3} / {pc4}); resp={resp!r}")
+            return False
+
+        print(f"  load ERR: {resp.strip()}")
+        print(f"  PC still moves: {pc3.strip()} -> {pc4.strip()}")
+        print("PASS: profile load ERR left the machine running")
+        return True
 
 
 def test_boots_to_basic_with_peripherals():
@@ -1307,6 +2514,41 @@ def test_debugger_stop_contract():
             print("  FAIL: wait bp reported a stale hit from a previous arming")
             return False
         print("  stale hits are not reported as fresh: OK")
+
+        # 4. a stop staged before a timeout must not overtake the Run that
+        # follows it. A zero-budget wait at the hot idle poll forces both
+        # orderings over repeated attempts.
+        saw_timeout = False
+        for _ in range(50):
+            emu.ipc.send_command('bp clear')
+            emu.ipc.send_command('run')
+            emu.ipc.send_command('bp add 0x1BD9')
+            hit, _ = emu.ipc.send_command('wait bp 0')
+            if hit:
+                emu.ipc.send_command('run')
+                continue
+            saw_timeout = True
+            emu.ipc.send_command('bp clear')
+            emu.ipc.send_command('run')
+            time.sleep(0.1)
+            state = paused()
+            if state != 'paused=0':
+                print(
+                    "  FAIL: an expired breakpoint stop overtook the "
+                    f"following run ({state})")
+                return False
+            break
+        if not saw_timeout:
+            print("  FAIL: could not exercise wait-bp timeout ordering")
+            return False
+        print("  expired stop cannot overtake a later run: OK")
+
+        emu.ipc.send_command('bp add 0x1BD9')
+        ok, _ = emu.ipc.send_command('wait bp 4000')
+        if not ok or paused() != 'paused=1':
+            print("  FAIL: committed breakpoint was not observably paused")
+            return False
+        print("  committed hit is published only after pause: OK")
 
         emu.ipc.send_command('bp clear')
         emu.ipc.send_command('run')
@@ -1523,6 +2765,23 @@ def test_m4_cat_lists_the_sd_card():
     isolation. The CPC-visible truth is this: a two-entry SD card, `cat`, and
     the two entries on the console, spelled right, exactly once.
     """
+    # The M4 ROM is user-supplied and gitignored (rom/ or resources/roms/), so
+    # a clean checkout -- and every CI job -- simply has none. Without it the
+    # board never attaches, `cat` falls through to AMSDOS and the CPC answers
+    # "Drive A: disc missing". That is a missing asset, not a defect, and the
+    # unit-level M4 tests already GTEST_SKIP on exactly this condition
+    # (test/m4_rom_fitting_test.cpp:56,101). Match them rather than hard-fail:
+    # this test used to report False while printing nothing at all.
+    # Same filenames and same search order as m4board_find_rom() in
+    # src/m4board.cpp: rom/ first, then resources/roms/.
+    repo_root = Path(__file__).parent.parent.parent
+    have_rom = any((repo_root / d / name).exists()
+                   for d in ('rom', 'resources/roms')
+                   for name in ('m4board.rom', 'M4ROM.BIN'))
+    if not have_rom:
+        print("  SKIP: no M4 ROM present (user-supplied, gitignored)")
+        return True
+
     sd = tempfile.mkdtemp(prefix='koncpc_m4sd_')
     try:
         with open(os.path.join(sd, 'readme.txt'), 'w') as f:
@@ -1607,21 +2866,38 @@ def main():
     print("=" * 50)
 
     tests = [
+        test_inject_launches_like_run,
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
+        test_profile_load_rebuilds_machine,
+        test_profile_load_missing_keeps_running,
+        test_disk_live_put_cat,
+        test_disk_status_save_eject,
+        test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,
         test_engine1_bp_clear_resume,
         test_z80_basic,
         test_memory_rw,
+        test_mem_ram_view_under_rom_overlay,
         test_breakpoint,
         # Thread-split correctness tests (work in both headless and threaded mode)
         test_breakpoint_pause_step_resume,
         test_snapshot_round_trip,
         test_rapid_pause_resume,
         test_step_in_accuracy,
+        test_step_out_nested_call,
+        test_step_out_gated_on_ret_not_sp,
+        test_step_out_untaken_conditional_ret,
+        test_step_out_pop_then_call,
+        test_step_out_tail_jumping_restart,
+        test_step_out_nested_restarts,
+        test_step_out_computed_return,
+        test_step_out_never_returns_times_out_honestly,
+        test_step_out_stops_at_breakpoint_inside_own_frame,
+        test_step_out_stops_at_real_breakpoint_on_landing_address,
         test_mouse_input,
         test_gun_input,
         test_chord_hold_input,
@@ -1637,19 +2913,32 @@ def main():
     # The sub-cycle board is the only engine (Gate C Wave 1 deleted the
     # legacy core), so the old dual-engine loop is gone.
     EmulatorRunner.test_engine = 1
+    # The runner reports the name and outcome of every test itself. Relying on
+    # each test to announce itself meant three of them printed nothing at all,
+    # so a test could return False and the only trace was the arithmetic in the
+    # summary -- a silent failure in a suite that is meant to be a gate.
+    failures = []
     for test in tests:
+        name = test.__name__
         try:
             if test():
                 passed += 1
+                print(f"  -> {name}: PASS")
             else:
                 failed += 1
+                failures.append(name)
+                print(f"  -> {name}: FAIL")
         except Exception as e:
-            print(f"FAIL: {test.__name__} raised {e}")
+            print(f"FAIL: {name} raised {e}")
             failed += 1
+            failures.append(name)
+            print(f"  -> {name}: FAIL")
         print()
 
     print("=" * 50)
     print(f"Results: {passed} passed, {failed} failed")
+    for name in failures:
+        print(f"  FAILED: {name}")
     print("=" * 50)
 
     return 0 if failed == 0 else 1

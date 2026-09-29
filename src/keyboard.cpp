@@ -3,6 +3,7 @@
 #include "keyboard.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
@@ -671,6 +672,20 @@ void InputMapper::init() {
           static_cast<SDL_Keymod>(sdl_moddedkey >> BITSHIFT_MOD));
     }
   }
+}
+
+std::vector<std::string> InputMapper::host_layout_files(
+    const std::string& resources_path) {
+  std::vector<std::string> files;
+  std::error_code ec;
+  for (const auto& entry :
+       std::filesystem::directory_iterator(resources_path, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    if (entry.path().extension() != ".map") continue;
+    files.push_back(entry.path().filename().string());
+  }
+  std::sort(files.begin(), files.end());
+  return files;
 }
 
 CPCScancode InputMapper::CPCscancodeFromCPCkey(CPC_KEYS cpc_key) {

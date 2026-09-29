@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -30,8 +31,12 @@ class KoncepcjaIpcServer {
   void start();
   void stop();
   int port() const { return actual_port.load(); }
+  // False once stop() has been called; long-running commands (the `wait`
+  // family) give up on it so stop()'s join does not wait out their deadline.
+  bool is_running() const { return running.load(); }
 
-  void notify_breakpoint_hit(uint16_t pc, bool watchpoint);
+  void notify_breakpoint_hit(uint16_t pc, bool watchpoint,
+                             uint64_t arming_generation);
   bool consume_breakpoint_hit(uint16_t& pc, bool& watchpoint);
   // Non-consuming peek. A caller that resumes the machine on the caller's
   // behalf (see `input key`'s tap) must not resume THROUGH a breakpoint that
@@ -106,3 +111,25 @@ void ipc_check_vbl_events();
 // MUST be called once per frame on the main thread — the IPC server thread only
 // accumulates; this applies. Cheap no-op when nothing is pending.
 void ipc_drain_input();
+
+// Main thread: publish the host keymap in use and the directory its *.map
+// files live in, for `config get|set kbd_layout(s)` to answer from without
+// touching CPC.kbd_layout / CPC.resources_path off-thread. Called every time
+// the InputMapper is (re)loaded; until the first call those commands answer
+// `ERR 503 not-ready`.
+void ipc_publish_host_keymap(const std::string& layout,
+                             const std::string& resources_path);
+
+// Main thread: publish the configuration file this session loaded, for
+// `config get file`.
+void ipc_publish_config_file(const std::string& path);
+
+// Main thread: publish the main window's live geometry and fullscreen state
+// for `config get window|fullscreen`. ipc_drain_input() does it once per
+// frame; a fullscreen toggle re-publishes right after the transition.
+void ipc_publish_window_state();
+
+// The deadline `wait vbl <n>` gets when the caller gives none: the wait's own
+// nominal length (20ms per blank) plus the 5s every `wait` allows, so a long
+// but legitimate count no longer times out at 5s regardless of n.
+std::chrono::milliseconds ipc_wait_vbl_default_timeout(int count);

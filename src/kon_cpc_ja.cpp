@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -82,8 +83,13 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 // contract — see iui_host.h header for why imgui_state stays free-
 // standing instead of being absorbed into the host interface.
 #include "command_palette.h"
+#include "host_chords.h"
 #include "imgui_ui.h"
 #include "iui_host.h"
+#include "menu_bridge.h"
+#ifdef KONCPC_MODERN_UI
+#include "imgui_ui_host.h"
+#endif
 #include "menu_actions.h"
 
 Symfile g_symfile;
@@ -245,7 +251,7 @@ std::mutex g_imgui_stats_mutex;
 // True when the Z80 thread is NOT inside z80_execute() (i.e. safe to touch Z80
 // state from another thread).  Starts true because the thread hasn't spawned
 // yet.
-std::atomic<bool> g_z80_quiescent{true};
+std::atomic<bool> g_z80_idle{true};
 // Frame handoff: Z80 signals after asic_draw_sprites(); render signals after
 // Phase A.
 FrameSignal g_frame_signal;
@@ -488,6 +494,62 @@ t_CPC::t_CPC() {
 }
 
 t_CPC CPC;
+
+// True once loadConfiguration() has populated CPC.  Gates every write-back
+// of the real config, so a process that never read it leaves the user file
+// alone.
+bool g_config_loaded = false;
+
+// The config-file values of the two fields that later hold runtime state.
+// Captured at load, written back on exit so a failed printer start or a live
+// fullscreen toggle cannot rewrite the user's intent.
+unsigned int g_cfg_intent_printer = 0;
+unsigned int g_cfg_intent_scr_window = 1;
+
+namespace {
+// Every value as loaded from the config file this session. saveConfiguration
+// hands it to the Config as the baseline: a key still holding its loaded value
+// is not written back, so the file keeps any edit made by hand while the
+// emulator ran (see config::Config::setBaseline).
+config::ConfigMap g_config_baseline;
+// The file loadConfiguration() last read (main thread; the IPC thread gets
+// its own published copy).
+std::string g_config_file;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_config_loaded() { return g_config_loaded; }
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_capture_config_intent() {
+  g_cfg_intent_printer = CPC.printer;
+  g_cfg_intent_scr_window = CPC.scr_window;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_save_configuration_preserving_intent() {
+  if (!g_config_loaded) return false;
+  // printer / scr_window hold runtime state; write the captured intent so a
+  // failed printer_start() or a live fullscreen toggle cannot poison the file.
+  // Still required alongside Config::setBaseline(): that guard only skips a
+  // key whose live value EQUALS the loaded one, and a toggled scr_window
+  // differs — without this swap the baseline guard would persist it.
+  unsigned int const live_printer = CPC.printer;
+  unsigned int const live_scr_window = CPC.scr_window;
+  CPC.printer = g_cfg_intent_printer;
+  CPC.scr_window = g_cfg_intent_scr_window;
+  std::string const cfg = getConfigurationFilename(true);
+  bool const ok = saveConfiguration(CPC, cfg);
+  CPC.printer = live_printer;
+  CPC.scr_window = live_scr_window;
+  if (!ok) {
+    LOG_ERROR("Failed to save configuration to '" << cfg << "'");
+  }
+  return ok;
+}
 extern t_CRTC CRTC;
 t_CRTC CRTC;
 extern t_FDC FDC;
@@ -777,13 +839,15 @@ void emulator_reset() {
   // then free-runs the char clock (observed: tens of GB of audio, PC frozen at
   // 0x0000, the emulator wedged). Most reset callers on the render thread (the
   // Machine-menu button, F5, drag-drop cartridge load) reach here without
-  // quiescing; the IPC path already does. Quiesce here so every path is safe,
+  // going idle; the IPC path already does. Go idle here so every path is safe,
   // and restore the caller's pause state: a paused caller (menu/IPC) stays
   // paused and resumes itself; a running caller (F5) keeps running. Cheap and
-  // idempotent — in headless/single-threaded mode g_z80_quiescent is always
+  // idempotent — in headless/single-threaded mode g_z80_idle is always
   // true, and at init (before the Z80 thread exists) it is too.
-  const bool was_paused = g_emu_paused.load(std::memory_order_relaxed);
-  cpc_pause_and_wait();
+  //
+  // Hold a pause lease for the whole destructive section so a concurrent
+  // IPC/UI Run cannot restart the Z80 while we wipe board state.
+  CpcPauseLease lease;
   subcycle_bridge_reset();  // no-op unless the sub-cycle engine is active
   if (CPC.model > 2) {
     if (pbCartridgePages[0] != nullptr) {
@@ -860,13 +924,42 @@ void emulator_reset() {
     set_osd_message("Machine reset");
   }
 
-  if (!was_paused) cpc_resume();  // a running caller keeps running post-reset
+  if (!lease.was_paused()) {
+    lease.release();
+    cpc_resume();  // a running caller keeps running post-reset
+  }
+}
+
+namespace {
+// init() rebuilds the host-key map from CPC.kbd_layout alone; the joystick
+// emulation keys are layered on top afterwards. Startup and a live layout
+// change must do exactly the same two steps — and publish the result for the
+// IPC thread, which never reads CPC.kbd_layout itself.
+void reload_input_mapper() {
+  CPC.InputMapper->init();
+  CPC.InputMapper->set_joystick_emulation();
+  ipc_publish_host_keymap(CPC.kbd_layout, CPC.resources_path);
+}
+}  // namespace
+
+// Main thread only: the key-event handler that reads these maps runs there too.
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_reload_host_keymap() {
+  if (CPC.InputMapper == nullptr) return;
+  // A host key held across the switch was pressed through the old map and
+  // would be released through the new one — a different CPC key, leaving the
+  // original matrix bit stuck down.  Release everything first; the user gets
+  // one keyup they did not type, not a key that never comes up.
+  for (auto& row : keyboard_matrix) row.store(0xFF, std::memory_order_relaxed);
+  for (auto& row : keyboard_matrix_live)
+    row.store(0xFF, std::memory_order_relaxed);
+  reload_input_mapper();
 }
 
 namespace {
 int input_init() {
-  CPC.InputMapper->init();
-  CPC.InputMapper->set_joystick_emulation();
+  reload_input_mapper();
   SDL_SetWindowRelativeMouseMode(
       mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
   return 0;
@@ -1024,7 +1117,7 @@ static bool s_register_page_owned = false;
 //
 // Order matters: the board keeps RAW pointers to the expansion ROMs
 // (mem_attach_rom stores, it does not copy), so each slot is detached from the
-// board before its image is freed. The caller has already quiesced the Z80
+// board before its image is freed. The caller has already idled the Z80
 // thread; this only keeps the board from holding a released pointer afterwards.
 static void release_previous_machine() {
   if (!s_machine_built) return;
@@ -1141,11 +1234,20 @@ int koncpc_rebuild_machine() {
   // Quiesce first. cpc_pause() only raises a flag; the Z80 thread may still be
   // inside a frame until it observes it, and emulator_init() frees memory that
   // frame is reading (the cartridge image, the expansion ROMs) and wipes the
-  // I/O dispatch table underneath it.
-  const bool was_paused = CPC.paused;
-  cpc_pause_and_wait();
+  // I/O dispatch table underneath it. Hold a pause lease so concurrent Resume
+  // cannot restart execution while we tear down and rebuild.
+  CpcPauseLease lease;
+  const bool was_paused = lease.was_paused();
 
   subcycle_bridge_stop();
+  // Serial backends are raw callback contexts in the Machine. Replace them
+  // only after the bridge has been stopped, then let bridge_start() attach the
+  // new backend. Every rebuild lands here, including ones triggered by an
+  // unrelated setting (RAM size, CRTC type, model) -- only reapply when the
+  // staged config actually differs from what's already open, or a File
+  // backend's output gets truncated and a live TCP/plotter session dropped
+  // for no reason.
+  if (!g_serial_interface.config_applied()) g_serial_interface.apply_config();
 
   int err = emulator_init();
   if (err == 0 && !subcycle_bridge_start()) {
@@ -1157,6 +1259,7 @@ int koncpc_rebuild_machine() {
   // state through the functions that set both, rather than trusting what it
   // left behind. A machine that failed to build stays stopped: it never reached
   // emulator_reset() and must not be run.
+  lease.release();
   if (err != 0 || was_paused) {
     cpc_pause();
   } else {
@@ -1164,6 +1267,11 @@ int koncpc_rebuild_machine() {
   }
   return err;
 }
+
+namespace {
+constexpr word kMcStartProgram =
+    0xBD16;  // firmware jumpblock: MC START PROGRAM
+}  // namespace
 
 void bin_load(const std::string& filename, const size_t offset) {
   LOG_INFO("Load " << filename << " in memory at offset 0x" << std::hex
@@ -1200,16 +1308,67 @@ void bin_load(const std::string& filename, const size_t offset) {
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
   }
-  // Jump at the beginning of the program
-  z80.PC.w.l = static_cast<word>(offset);
-  // Setup the stack the way it would be if we had launch it with run"
-  z80_write_mem(--z80.SP.w.l, 0x0);
-  z80_write_mem(--z80.SP.w.l, 0x98);
-  z80_write_mem(--z80.SP.w.l, 0x7f);
-  z80_write_mem(--z80.SP.w.l, 0x89);
-  z80_write_mem(--z80.SP.w.l, 0xb9);
-  z80_write_mem(--z80.SP.w.l, 0xa2);
+  // The Z80 thread must not be mid-frame while the registers are rewritten
+  // and pushed to the machine (same contract as koncpc_toggle_fullscreen()).
+  CpcPauseLease lease;
+  bool const was_paused = lease.was_paused();
+  koncpc_inject_launch_regs(z80, static_cast<word>(offset),
+                            z80_read_mem(kMcStartProgram));
   if (subcycle_bridge_active()) subcycle_bridge_regs_to_machine();
+  if (!was_paused) {
+    lease.release();
+    cpc_resume();
+  }
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_firmware_jumpblock_present(byte opcode_at_bd16) {
+  // The firmware builds its RAM jumpblock from RST 1 (LOW JUMP, &CF) and JP
+  // (&C3) entries; zeroed or random RAM holds neither. Until the firmware has
+  // written it, MC START PROGRAM is not there to be called.
+  constexpr byte kRst1LowJump = 0xCF;
+  constexpr byte kJp = 0xC3;
+  return opcode_at_bd16 == kRst1LowJump || opcode_at_bd16 == kJp;
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+bool koncpc_firmware_jumpblock_ready() {
+  return koncpc_firmware_jumpblock_present(z80_read_mem(kMcStartProgram));
+}
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_inject_launch_regs(t_z80regs& regs, word entry,
+                               byte opcode_at_bd16) {
+  if (koncpc_firmware_jumpblock_present(opcode_at_bd16)) {
+    koncpc_firmware_launch_regs(regs, entry);
+    return;
+  }
+  // No firmware to hand the program to (a prepared test ROM, or a boot_time
+  // that fires before the firmware has built its jumpblock): enter it
+  // directly, as before. Interrupts and the firmware packs are then whatever
+  // the program finds.
+  LOG_INFO("no firmware jumpblock at &BD16 - entering the program directly");
+  regs.PC.w.l = entry;
+}
+
+// Hand a program in RAM to the firmware's own launcher, MC START PROGRAM
+// (&BD16) — what RUN" does once the file is loaded: HL = entry, C = &FF (a
+// RAM program selects no ROM). It resets the stack, re-initialises the
+// firmware packs and indirections and enables interrupts before entering the
+// program, so the program starts with the state it is entitled to. Setting PC
+// to the entry point behind the firmware's back, with a faked BASIC return
+// stack, left the interrupt-driven keyboard scan dead — a game reading keys
+// through KM READ CHAR never saw one (beads-scrl).
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void koncpc_firmware_launch_regs(t_z80regs& regs, word entry) {
+  constexpr byte kNoRomSelect = 0xFF;
+  regs.HL.w.l = entry;
+  regs.BC.b.l = kNoRomSelect;
+  regs.PC.w.l = kMcStartProgram;
 }
 
 int printer_start() {
@@ -1525,29 +1684,166 @@ void audio_enable() {
   audio_apply_volume();
 }
 
-void cpc_pause() {
-  audio_pause();
-  CPC.paused = true;
-  g_emu_paused.store(true, std::memory_order_relaxed);
+namespace {
+std::mutex g_pause_mutex;
+uint64_t g_resume_epoch = 0;
+unsigned g_pause_lease_count = 0;
+}  // namespace
+
+// External API consumed by other translation units (the step-out walk in
+// z80_view.cpp waits here after each callee skip); internal linkage would
+// break the link.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+bool cpc_wait_until_idle(int timeout_ms) {
+  // Spin until the Z80 thread has exited z80_execute() and entered its sleep
+  // loop. g_z80_idle is set true by z80_thread_main before sleeping, false
+  // before entering z80_execute().  In headless mode the Z80 runs on the
+  // calling thread, so g_z80_idle stays true and we return immediately.
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (!g_z80_idle.load(std::memory_order_acquire)) {
+    if (timeout_ms > 0 && std::chrono::steady_clock::now() > deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
+  }
+  return true;
 }
 
-void cpc_resume() {
+namespace {
+void cpc_pause_locked() {
+  audio_pause();
+  CPC.paused = true;
+  g_emu_paused.store(true, std::memory_order_release);
+}
+}  // namespace
+
+CpcStopCoordinationGuard::CpcStopCoordinationGuard() {
+  g_pause_mutex.lock();
+  resume_epoch_ = g_resume_epoch;
+  breakpoint_generation_ = z80_breakpoint_generation();
+}
+
+CpcStopCoordinationGuard::~CpcStopCoordinationGuard() {
+  g_pause_mutex.unlock();
+}
+
+void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
+  {
+    std::scoped_lock const lock(g_pause_mutex);
+    was_paused_ = CPC.paused;
+    ++g_pause_lease_count;
+    active_ = true;
+    cpc_pause_locked();
+  }
+  if (mode == CpcPauseLeaseMode::WaitImmediately) {
+    cpc_wait_until_idle();
+    waited_ = true;
+  }
+}
+
+CpcPauseLease::CpcPauseLease(CpcPauseLeaseMode mode) { acquire(mode); }
+
+CpcPauseLease::CpcPauseLease(CpcPauseLease&& other) noexcept
+    : was_paused_(other.was_paused_),
+      active_(other.active_),
+      waited_(other.waited_) {
+  other.active_ = false;
+}
+
+CpcPauseLease::~CpcPauseLease() { release(); }
+
+void CpcPauseLease::wait() {
+  if (!active_ || waited_) return;
+  cpc_wait_until_idle();
+  waited_ = true;
+}
+
+void CpcPauseLease::release() {
+  if (!active_) return;
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) --g_pause_lease_count;
+  active_ = false;
+}
+
+void CpcPauseLease::restore_run_state() {
+  if (!active_) return;
+  bool const resume = !was_paused_;
+  release();
+  if (resume) cpc_resume();
+}
+
+uint64_t cpc_resume_epoch() {
+  std::scoped_lock const lock(g_pause_mutex);
+  return g_resume_epoch;
+}
+
+void cpc_pause() {
+  std::scoped_lock const lock(g_pause_mutex);
+  cpc_pause_locked();
+}
+
+namespace {
+uint64_t cpc_resume_unlocked() {
+  // A resume issued while the machine is already running is not a real
+  // pause->run transition -- bumping the epoch here would invalidate a
+  // breakpoint stop that was legitimately classified moments ago (between
+  // the Z80 thread staging it and debug_sync committing it) even though
+  // nothing about the debugger's authority over the machine actually
+  // changed. A caller that cares about the current epoch already has
+  // cpc_resume_epoch() for that; this only guards the two real transition
+  // side effects (lastFrameStart reset, audio_resume) from re-firing too.
+  if (!CPC.paused) return g_resume_epoch;
+  ++g_resume_epoch;
   CPC.paused = false;
-  g_emu_paused.store(false, std::memory_order_relaxed);
+  g_emu_paused.store(false, std::memory_order_release);
   lastFrameStart =
       0;  // reset so first frame after resume isn't measured as huge
   audio_resume();
+  return g_resume_epoch;
+}
+}  // namespace
+
+uint64_t cpc_resume() {
+  std::scoped_lock const lock(g_pause_mutex);
+  // A destructive pause lease owns the machine until its critical section
+  // finishes. Concurrent IPC/UI Run must not clear pause mid-wait (unbounded
+  // idle spin) or mid-teardown (use-after-free on shared state).
+  if (g_pause_lease_count > 0) return g_resume_epoch;
+  return cpc_resume_unlocked();
+}
+
+bool cpc_resume_applied() {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) return false;
+  cpc_resume_unlocked();
+  return true;
+}
+
+bool cpc_pause_if_epoch(uint64_t expected_epoch) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (expected_epoch != g_resume_epoch) return false;
+
+  cpc_pause_locked();
+  return true;
+}
+
+bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
+                                word pc, bool watchpoint) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (hit_epoch != g_resume_epoch ||
+      arming_generation != z80_breakpoint_generation())
+    return false;
+
+  cpc_pause_locked();
+  z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
+  return true;
 }
 
 void cpc_pause_and_wait() {
-  cpc_pause();
-  // Spin until the Z80 thread has exited z80_execute() and entered its sleep
-  // loop. g_z80_quiescent is set true by z80_thread_main before sleeping, false
-  // before entering z80_execute().  In headless mode the Z80 runs on the
-  // calling thread, so g_z80_quiescent stays true and we return immediately.
-  while (!g_z80_quiescent.load(std::memory_order_acquire)) {
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-  }
+  // Lease covers the wait only — concurrent Resume cannot defeat going idle.
+  // Callers with a destructive critical section after this must hold
+  // CpcPauseLease across that section.
+  CpcPauseLease lease;
 }
 
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
@@ -1742,18 +2038,24 @@ int video_init() {
   CPC.scr_pos = CPC.scr_base = static_cast<byte*>(
       back_surface->pixels);  // memory address of back buffer
 
-  // Resize window to match user's chosen scale (init always creates at 2x)
-  if (CPC.scr_scale > 0 && mainSDLWindow) {
-    static const float sf[] = {0.f, 1.f, 1.5f, 2.f, 3.f};
-    if (CPC.scr_scale < sizeof(sf) / sizeof(sf[0])) {
-      float const f = sf[CPC.scr_scale];
-      int const new_w = static_cast<int>(CPC_RENDER_WIDTH * f);
-      int new_h = CPC.scr_crt_aspect
-                      ? static_cast<int>(new_w * 3.f / 4.f)
-                      : static_cast<int>(CPC_VISIBLE_SCR_HEIGHT * f);
-      new_h += video_get_topbar_height() + video_get_bottombar_height();
-      SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
-    }
+  // Size the window.  The plugin always creates it at the surface's own
+  // 768x540 — video_init() inits every plugin at scale 2 — which is a 2.84:1
+  // letterbox, not a window size anyone asked for.  Every windowed init must
+  // therefore set the real size, including the inits that happen mid-session
+  // when a fullscreen toggle or a renderer switch tears the window down and
+  // builds a new one.
+  //
+  // At a fixed scr_scale that size is derived from the scale.  In Fit mode
+  // (scr_scale == 0) there is nothing to derive from, so restore the size the
+  // window had before this reinit (recorded by video_shutdown()) — after an
+  // aspect-ratio sanity check, since a stale degenerate size on disk would
+  // otherwise reproduce the squish; only a genuinely fresh window falls back
+  // to the 1x default.  The decision lives in video_reinit_window_size().
+  if (mainSDLWindow && CPC.scr_window != 0) {
+    int new_w = 0;
+    int new_h = 0;
+    video_reinit_window_size(new_w, new_h);
+    if (new_w > 0 && new_h > 0) SDL_SetWindowSize(mainSDLWindow, new_w, new_h);
   }
 
   // A saved/derived position may land on a display that no longer exists (or is
@@ -1764,6 +2066,11 @@ int video_init() {
 }
 
 void video_shutdown() {
+  // Remember the windowed geometry before the plugin destroys the window: the
+  // next video_init() creates a brand-new one and, in Fit mode, this is the
+  // only record of the size the user chose.  A fullscreen window's size belongs
+  // to the display, not the user, so it is never recorded.
+  video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
   // Plugin close must run first so the GPU plugin can tear down ImGui
   // SDLGPU3 and other device-dependent state before the GPU device
   // itself is destroyed.  For non-GPU plugins the order is irrelevant
@@ -1969,18 +2276,24 @@ std::string getConfigurationFilename(bool forWrite) {
   const char* PATH_OK = "";
 
   std::string const binPathStr = binPath.string();
+  // The user's profile outranks whatever koncepcja.cfg the working directory
+  // happens to hold: a debug-style build run from a source checkout used the
+  // checkout's untracked file — months of stale values nobody could see from
+  // inside the app — ahead of the config the user actually maintains
+  // (beads-825s). A checkout-local file is now the fallback for a machine
+  // with no profile config, or an explicit choice via -c.
   std::vector<std::pair<const char*, std::string>> const configPaths = {
       {PATH_OK, args.cfgFilePath},  // First look in any user supplied
                                     // configuration file path
-      {chAppPath,
-       "/koncepcja.cfg"},  // koncepcja.cfg in the current working directory
-      {binPathStr.c_str(),
-       "/koncepcja.cfg"},  // koncepcja.cfg next to the binary (Finder launch)
       {getenv("XDG_CONFIG_HOME"), "/koncepcja/koncepcja.cfg"},
       {getenv("HOME"), "/.config/koncepcja/koncepcja.cfg"},
       {getenv("XDG_CONFIG_HOME"), "/koncepcja.cfg"},  // legacy flat paths
       {getenv("HOME"), "/.config/koncepcja.cfg"},
       {getenv("HOME"), "/.koncepcja.cfg"},
+      {chAppPath,
+       "/koncepcja.cfg"},  // koncepcja.cfg in the current working directory
+      {binPathStr.c_str(),
+       "/koncepcja.cfg"},  // koncepcja.cfg next to the binary (Finder launch)
       {DESTDIR, "/etc/koncepcja.cfg"},
       {binPath.string().c_str(),
        "/../Resources/koncepcja.cfg"},  // To find the configuration from the
@@ -2012,9 +2325,18 @@ std::string getConfigurationFilename(bool forWrite) {
   return "";
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+const std::string& koncpc_config_file() { return g_config_file; }
+
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   config::Config conf;
   conf.parseFile(configFilename);
+  g_config_baseline = conf.parsedValues();
+  // Which file this session runs on is otherwise invisible from inside the
+  // app; the Settings dialog and `config get file` show it.
+  g_config_file = configFilename;
+  ipc_publish_config_file(configFilename);
   conf.setOverrides(args.cfgOverrides);
 
   std::string const appPath = chAppPath;
@@ -2167,6 +2489,10 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.scr_intensity = read_clamped("video", "scr_intensity", 10, 5, 15);
   CPC.scr_remanency = read_flag("video", "scr_remanency", 0);
   CPC.scr_window = read_flag("video", "scr_window", 1);
+  // Bounded like the neighbouring keys: a corrupt or hand-edited value must
+  // not produce a window that cannot be resized back.  0 means "derive".
+  CPC.win_w = read_clamped("video", "win_w", 0, 0, 16384);
+  CPC.win_h = read_clamped("video", "win_h", 0, 0, 16384);
 
   CPC.scr_green_mode = read_flag("video", "scr_green_mode", 0);
   CPC.scr_green_blue_percent =
@@ -2183,7 +2509,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // core; the [system] engine flag is gone with it — an `engine=` line in an
   // old config is simply never read).
   {  // [system] run_tier: 0=auto (Fast; Wake while debugging — the default,
-     // user decision 2026-07-10), 1=fast, 2=wake, 3=soldered, 4=faithful.
+    // user decision 2026-07-10), 1=fast, 2=wake, 3=soldered, 4=faithful.
     int pol = conf.getIntValue("system", "run_tier", 0);
     if (pol < 0 || pol > 4) pol = 0;
     subcycle_bridge_set_tier_policy(static_cast<BridgeTierPolicy>(pol));
@@ -2214,6 +2540,9 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       std::clamp(conf.getIntValue("input", "lightgun", 0), 0,
                  static_cast<int>(PhazerType::TrojanLightPhazer)));
   if (!CPC.phazer_emulation) CPC.phazer_pressed = false;
+  // Cmd/Ctrl+K/O/S as host chords (host_chords.h); 0 gives Ctrl+K/O/S back
+  // to the CPC on Linux/Windows (CP/M software uses them).
+  CPC.host_chords = read_flag("input", "host_chords", 1);
 
   g_symbiface.enabled = read_flag("peripheral", "symbiface", 0) != 0;
   g_m4board.enabled = read_flag("peripheral", "m4board", 0) != 0;
@@ -2331,6 +2660,10 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
 // Mirror image of loadConfiguration: every key written here is read there,
 // same section, same name, same encoding (flags as 0/1 ints).
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
+  // Record the live window size, so both "Save" and the save-on-exit keep
+  // whatever the user last dragged the window to.  In fullscreen the stored
+  // value stands, since that size belongs to the display.
+  video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
   config::Config conf;
   // Read before write. Building a fresh Config here deleted every comment in
   // the file and every key this build does not set — and because the MRU list
@@ -2345,6 +2678,10 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // `-O peripheral.m4_sd_path=/tmp/...` became a permanent config entry on
   // the first save.
   conf.setOverrides(args.cfgOverrides);
+  // Only keys that changed in this session are written; the rest keep the
+  // file's current text, so a hand edit made while running survives the
+  // exit-time save instead of being overwritten from stale live state.
+  conf.setBaseline(g_config_baseline);
 
   conf.setIntValue("system", "model", CPC.model);
   conf.setIntValue("system", "jumpers", CPC.jumpers);
@@ -2385,6 +2722,8 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("video", "scr_intensity", CPC.scr_intensity);
   conf.setIntValue("video", "scr_remanency", CPC.scr_remanency);
   conf.setIntValue("video", "scr_window", CPC.scr_window);
+  conf.setIntValue("video", "win_w", static_cast<int>(CPC.win_w));
+  conf.setIntValue("video", "win_h", static_cast<int>(CPC.win_h));
   conf.setIntValue("video", "vsync", CPC.scr_vsync);
 
   conf.setIntValue("devtools", "scale", CPC.devtools_scale);
@@ -2418,6 +2757,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // bool, so a direct static_cast<int> is ambiguous.
   conf.setIntValue("input", "lightgun",
                    static_cast<PhazerType::Value>(CPC.phazer_emulation));
+  conf.setIntValue("input", "host_chords", CPC.host_chords);
 
   conf.setIntValue("peripheral", "symbiface", g_symbiface.enabled ? 1 : 0);
   conf.setStringValue("peripheral", "ide_master",
@@ -2511,7 +2851,12 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
         i < static_cast<int>(CPC.mru_carts.size()) ? CPC.mru_carts[i] : "");
   }
 
-  return conf.saveToFile(configFilename);
+  bool const ok = conf.saveToFile(configFilename);
+  // What this save persisted is the reference for the next one: a key the
+  // MRU auto-save (every file open) or Options▸Save just wrote must not be
+  // judged against the boot-time value later, or reverting it never persists.
+  if (ok) g_config_baseline = conf.baseline();
+  return ok;
 }
 
 // Launch files that the window manager may echo back as a drop.
@@ -2608,21 +2953,50 @@ void koncpc_queue_virtual_keys(const std::string& text) {
 
 // Toggle windowed/fullscreen.
 //
-// MUST quiesce the Z80 thread first. video_shutdown() tears down the surface
+// MUST idle the Z80 thread first. video_shutdown() tears down the surface
 // and GPU resources the emulation thread renders into, so doing it while that
 // thread runs is a use-after-free: the crash lands in z80_thread_main() with
 // EXC_BAD_ACCESS at a small offset, on the Z80 thread, while the fullscreen key
 // was pressed on the main thread. The previous code paused only *audio* and
 // then SDL_Delay(20)'d, which is a hope rather than a guarantee -- on a busy
 // frame the Z80 thread is still inside the renderer when the surface goes away.
-// Same contract emulator_reset() needs (see cpc_pause_and_wait).
-void koncpc_toggle_fullscreen() {
-  bool const was_paused = CPC.paused;
-  if (!was_paused) cpc_pause_and_wait();
+// Same contract emulator_reset() needs (see CpcPauseLease).
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+unsigned int koncpc_fullscreen_toggle_target(
+    int pending_request, unsigned int scr_window,
+    std::optional<bool> window_is_fullscreen) {
+  // CPC.scr_window (1 = windowed) lags the window when the OS drove the
+  // transition — macOS's green button — so a toggle starts from the window's
+  // real state, not the flag: from the flag, the first click after the green
+  // button asked for the state the window was already in and was swallowed
+  // (beads-f0sc). A pending request means the user clicked again before the
+  // main loop applied the first one; the flip then continues from the state
+  // that click asked for, so menu spam cancels out.
+  unsigned int current = scr_window;
+  if (pending_request == -1 && window_is_fullscreen.has_value()) {
+    current = *window_is_fullscreen ? 0u : 1u;
+  }
+  return current ? 0u : 1u;
+}
 
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+std::optional<bool> koncpc_main_window_is_fullscreen() {
+  if (mainSDLWindow == nullptr) return std::nullopt;
+  return (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+}
+
+void koncpc_toggle_fullscreen() {
+  CpcPauseLease lease;
+  bool const was_paused = lease.was_paused();
+
+  // Read the window before video_shutdown() destroys it.
+  std::optional<bool> const fullscreen_now = koncpc_main_window_is_fullscreen();
   audio_pause();
   video_shutdown();
-  CPC.scr_window = CPC.scr_window ? 0 : 1;
+  CPC.scr_window =
+      koncpc_fullscreen_toggle_target(-1, CPC.scr_window, fullscreen_now);
   if (video_init()) {
     fprintf(stderr, "video_init() failed. Aborting.\n");
     cleanExit(-1);
@@ -2630,9 +3004,16 @@ void koncpc_toggle_fullscreen() {
 #ifdef __APPLE__
   koncpc_setup_macos_menu();
 #endif
+  // The IPC mirror was published earlier this frame, before the toggle: an
+  // agent polling `config get fullscreen` after its request drained would
+  // otherwise read the old state for a frame with nothing marked pending.
+  ipc_publish_window_state();
   audio_resume();
 
-  if (!was_paused) cpc_resume();
+  if (!was_paused) {
+    lease.release();
+    cpc_resume();
+  }
 }
 
 void koncpc_menu_action(int action) {
@@ -2665,7 +3046,16 @@ void koncpc_menu_action(int action) {
     }
 
     case KONCPC_FULLSCRN:
-      koncpc_toggle_fullscreen();
+      // Fullscreen transitions destroy/recreate video (and the whole ImGui
+      // context) — this handler can run from inside the active ImGui frame
+      // (clicked from konCePCja's own in-window menu bar) or from AppKit's
+      // nested menu-tracking run loop (native macOS menu bar), so it must
+      // defer the same way the Options checkbox does (see fullscreen_request
+      // consumption below), not call koncpc_toggle_fullscreen() directly.
+      CPC.scr_window = koncpc_fullscreen_toggle_target(
+          imgui_state.fullscreen_request, CPC.scr_window,
+          koncpc_main_window_is_fullscreen());
+      imgui_state.fullscreen_request = CPC.scr_window;
       break;
 
     case KONCPC_SCRNSHOT:
@@ -2963,6 +3353,11 @@ void doCleanUp() {
 #ifdef _WIN32
   timeEndPeriod(1);
 #endif
+  // A GUI Step Out in flight on its own worker thread (see dbg_step_out())
+  // still touches z80/CPC state; wait for it (bounded by its own 5s
+  // timeout) before the teardown below starts pausing/joining the Z80
+  // thread out from under it.
+  dbg_step_walk_await_shutdown();
   // Shutdown ordering — three constraints that together force this dance:
   //
   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside
@@ -2981,27 +3376,30 @@ void doCleanUp() {
   // sets g_z80_thread_quit and pushes SDL_EVENT_QUIT before returning; by
   // the time the render thread reaches doCleanUp(), the Z80 has typically
   // already exited its loop.  In that case cpc_pause_and_wait() would block
-  // forever (it spins until g_z80_quiescent goes true, which the now-dead
+  // forever (it spins until g_z80_idle goes true, which the now-dead
   // Z80 thread will never set).  Skip it and join directly.
   //
   // For the "render thread initiated quit" path (e.g. SDL_QUIT from the
   // window close button or F10 menu), the Z80 is still actively running
-  // inside z80_execute() and we DO need pause+quiescence before join.
+  // inside z80_execute() and we DO need pause+going idle before join.
   //
   //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
-  //     g_z80_quiescent=false before z80_execute() and only re-enters the
-  //     paused/quiescent branch at the top of its loop.  abort() makes
+  //     g_z80_idle=false before z80_execute() and only re-enters the
+  //     paused/idle branch at the top of its loop.  abort() makes
   //     signal_ready a no-op and releases the render thread's wait so neither
   //     thread can be left spinning on the frame signal during teardown; then
-  //     cpc_pause_and_wait() drives the Z80 to its quiescent paused branch.
+  //     wait() drives the Z80 to its idle paused branch. A pause lease
+  //     keeps concurrent Resume from defeating either step.
   if (g_z80_thread.joinable() &&
       std::this_thread::get_id() != g_z80_thread.get_id()) {
     if (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
-      cpc_pause();
-      g_frame_signal
-          .abort();  // make signal_ready a no-op + release render wait
-      cpc_pause_and_wait();
-      g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      {
+        CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+        g_frame_signal
+            .abort();  // make signal_ready a no-op + release render wait
+        lease.wait();
+        g_z80_thread_quit.store(true, std::memory_order_relaxed);
+      }
       cpc_resume();
     }
     g_frame_signal.abort();  // belt-and-suspenders during teardown
@@ -3088,6 +3486,14 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
       !userConfirmsQuitWithoutSaving()) {
     return;
   }
+  // Persist settings on a clean exit, so a change survives without an
+  // explicit Options▸Save.  Restricted to a successful GUI exit: that is the
+  // state worth recording.  printer / scr_window are restored to the
+  // captured intent (refreshed by Options▸Save via
+  // koncpc_capture_config_intent) so runtime mutations cannot poison the file.
+  if (returnCode == 0 && !g_headless && g_config_loaded) {
+    koncpc_save_configuration_preserving_intent();
+  }
   doCleanUp();
   _exit(returnCode);
 }
@@ -3147,14 +3553,14 @@ void z80_thread_main() {
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
-      // Mark quiescent so cpc_pause_and_wait() callers know we are safe to
+      // Mark idle so cpc_pause_and_wait() callers know we are safe to
       // inspect.
-      g_z80_quiescent.store(true, std::memory_order_release);
+      g_z80_idle.store(true, std::memory_order_release);
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    // About to enter z80_execute() — mark non-quiescent.
-    g_z80_quiescent.store(false, std::memory_order_release);
+    // About to enter z80_execute() — mark non-idle.
+    g_z80_idle.store(false, std::memory_order_release);
 
     // Publish a consistent snapshot of the pending keyboard state for this
     // frame's firmware scan (see publish_keyboard_snapshot).
@@ -3422,7 +3828,10 @@ void z80_thread_main() {
           cleanExit(1, false);
         }
         imgui_state.show_devtools = true;
-        cpc_pause();
+        // Engine breakpoints are committed atomically in debug_sync before
+        // their hit is published. Re-pausing here would let this older stop
+        // overtake a newer IPC `run`.
+        if (!subcycle_bridge_active()) cpc_pause();
         // Mid-frame pause: the render thread may be waiting in
         // try_wait_ready_for() for a frame that will never arrive (we stopped
         // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
@@ -3430,14 +3839,10 @@ void z80_thread_main() {
         // iteration.
         g_frame_signal.signal_ready(true);
         z80.step_in = 0;
-        z80.step_out = 0;
-        z80.step_out_addresses.clear();
       } else if (z80.step_in >= 2) {
         cpc_pause();
         g_frame_signal.signal_ready(true);  // same: unblock render thread
         z80.step_in = 0;
-        z80.step_out = 0;
-        z80.step_out_addresses.clear();
       } else {
         z80.break_point = Z80_BREAKPOINT_NONE;
         z80.trace = 1;
@@ -3822,6 +4227,13 @@ void koncpc_render_tracking_tick() {
 }
 
 int koncpc_main(int argc, char** argv) {
+#ifdef KONCPC_MODERN_UI
+  // Install the ImGui UI host before anything can call ui_host().  This
+  // call is also what keeps imgui_ui_host.obj in the link — see the
+  // comment on install_imgui_ui_host() in imgui_ui_host.h.
+  install_imgui_ui_host();
+#endif
+
   // Remember the main thread — cleanExit() uses this to route IPC/HTTP/
   // telnet-initiated quits through SDL_EVENT_QUIT instead of letting an
   // auxiliary thread call SDL_Quit() while the main thread is mid-
@@ -3910,6 +4322,8 @@ int koncpc_main(int argc, char** argv) {
 
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
+  g_config_loaded = true;
+  koncpc_capture_config_intent();
   if (CPC.printer) {
     if (!printer_start()) {  // start capturing printer output, if enabled
       CPC.printer = 0;
@@ -3965,6 +4379,33 @@ int koncpc_main(int argc, char** argv) {
     topbar_height_px = ui_host().topbar_height();
     video_set_topbar(nullptr, topbar_height_px);
     // video_set_topbar handles the window resize using compute_window_size()
+
+    // Restore the saved window size (width/height only).  This follows
+    // video_set_topbar() so compute_window_size() below can fold in a measured
+    // topbar; running it earlier compared against the bare emulated screen and
+    // let a too-small size through.  The hold covers the resizes still to come
+    // as the bottombar settles on a later frame.
+    // Same gate as the mid-session reinit path: a degenerate persisted size
+    // (the 1536x540 letterbox a pre-fix build wrote) must not be reapplied at
+    // launch either, or it comes back on every start until a fullscreen
+    // round-trip happens to replace it.
+    if (video_persisted_window_size_is_sane(CPC.win_w, CPC.win_h) &&
+        mainSDLWindow && CPC.scr_window != 0) {
+      int w = static_cast<int>(CPC.win_w);
+      int h = static_cast<int>(CPC.win_h);
+      // Keep the window big enough to show the whole emulated screen at the
+      // current scale.  compute_scale() crops and centres the CPC image when
+      // the window is smaller, so a saved size from a smaller scale would
+      // otherwise open on the blank middle of the picture.
+      int dw = 0;
+      int dh = 0;
+      if (video_derived_window_size(dw, dh)) {
+        w = std::max(w, dw);
+        h = std::max(h, dh);
+      }
+      SDL_SetWindowSize(mainSDLWindow, w, h);
+      video_hold_window_size(750);
+    }
     mouse_init();
 
     if (CPC.snd_enabled && audio_init()) {
@@ -4106,8 +4547,15 @@ int koncpc_main(int argc, char** argv) {
   // Whether this loop of emulation should release the joystick axis for mouse
   // emulation.
   while (true) {
-    // We can only load bin files after the CPC finished the init
-    if (!bin_loaded && dwFrameCountOverall > CPC.boot_time) {
+    // We can only load bin files after the CPC finished the init: boot_time
+    // frames at least, and — since the launch goes through the firmware's
+    // MC START PROGRAM — once the firmware has built its jumpblock. A ROM
+    // that never builds one (a prepared test ROM) gets the direct entry after
+    // a grace period rather than never.
+    constexpr unsigned int kJumpblockGraceFrames = 250;  // 5s at 50Hz
+    if (!bin_loaded && dwFrameCountOverall > CPC.boot_time &&
+        (koncpc_firmware_jumpblock_ready() ||
+         dwFrameCountOverall > CPC.boot_time + kJumpblockGraceFrames)) {
       bin_loaded = true;
       if (!args.binFile.empty()) bin_load(args.binFile, args.binOffset);
     }
@@ -4229,13 +4677,34 @@ int koncpc_main(int argc, char** argv) {
         continue;
       }
 
-      // Check for command palette shortcut (Cmd+K / Ctrl+K)
-      if (event.type == SDL_EVENT_KEY_DOWN) {
+      // Host-UI chords (Cmd on macOS, Ctrl elsewhere): the palette, Load
+      // Disk A..., Save Snapshot... — resolved by host_chord_for() so the
+      // menus' shortcut labels and this dispatch cannot disagree. This is the
+      // only dispatcher on every platform: the native macOS menu shows the
+      // chords as text and registers no key equivalent (see host_chords.h).
+      // Not on auto-repeat: a held Cmd+O would open a file dialog per repeat.
+      if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
         bool const ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
         bool const cmd_key = (event.key.mod & SDL_KMOD_GUI) != 0;
-        if (g_command_palette.handle_key(event.key.key, ctrl, cmd_key)) {
-          continue;
+        bool handled = true;
+        switch (host_chord_for(event.key.key, ctrl, cmd_key, kHostChordApple,
+                               CPC.host_chords != 0)) {
+          case HostChord::CommandPalette:
+            g_command_palette.toggle();
+            break;
+          case HostChord::OpenDisk:
+            koncpc_request_file_dialog(
+                static_cast<int>(FileDialogAction::LoadDiskA));
+            break;
+          case HostChord::SaveSnapshot:
+            koncpc_request_file_dialog(
+                static_cast<int>(FileDialogAction::SaveSnapshot));
+            break;
+          case HostChord::None:
+            handled = false;
+            break;
         }
+        if (handled) continue;
       }
 
       // If the UI wants input, skip emulator processing.
@@ -4586,6 +5055,39 @@ int koncpc_main(int argc, char** argv) {
         //       the right thing to do here is to restore focus but keep
         //       paused... implementing this require keeping track of pause
         //       source, which will be a pain.
+        case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
+          // The desktop scale changed (Settings → Display → Scale, or the
+          // window moved to a display with a different setting).  Rescale the
+          // ImGui chrome to match, so it keeps its physical size.
+          if (!mainSDLWindow ||
+              event.window.windowID != SDL_GetWindowID(mainSDLWindow)) {
+            break;
+          }
+          float const density = SDL_GetWindowPixelDensity(mainSDLWindow);
+          float const display_scale = SDL_GetWindowDisplayScale(mainSDLWindow);
+          if (!(density > 0.0F) || !(display_scale > 0.0F)) break;
+          // SDL_GetWindowDisplayScale is pixel density * content scale, so
+          // dividing recovers the content scale — the part expressed in window
+          // coordinates.  On macOS the Retina factor sits in the density,
+          // making this 1.0 there.
+          float const content_scale = display_scale / density;
+
+          // Hold the window at its current size across the resize the new
+          // chrome heights would trigger.  At a fixed scr_scale the CPC image
+          // stays pixel-exact: compute_scale() crops and centres it.  Fit mode
+          // cannot derive a fixed size, so remember chrome+window and grow by
+          // the chrome delta after the bars settle instead of holding.
+          if (CPC.scr_scale == 0) {
+            video_begin_fit_chrome_preserve();
+          } else {
+            video_hold_window_size(750);
+          }
+          ui_host().set_display_scale(content_scale);
+          LOG_INFO("Display scale changed — content scale now "
+                   << content_scale << " (display " << display_scale
+                   << ", pixel density " << density << ")");
+          break;
+        }
         case SDL_EVENT_WINDOW_MOVED:
           // A move — often an OS window-management nudge rather than the user —
           // may push the main window fully off every display. Rescue it, but
@@ -4843,17 +5345,13 @@ int koncpc_main(int argc, char** argv) {
           }
           // This is a breakpoint from DevTools or symbol file
           imgui_state.show_devtools = true;
-          CPC.paused = true;
+          if (!subcycle_bridge_active()) cpc_pause();
           z80.step_in = 0;
-          z80.step_out = 0;
-          z80.step_out_addresses.clear();
         } else if (z80.step_in >= 2) {
           // Step In completed (one instruction) or Step Out completed (RET
           // reached)
           CPC.paused = true;
           z80.step_in = 0;
-          z80.step_out = 0;
-          z80.step_out_addresses.clear();
         } else {
           // This is an old flavour breakpoint
           // We have to clear breakpoint to let the z80 emulator move on.
@@ -5133,6 +5631,20 @@ int koncpc_main(int argc, char** argv) {
       std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
     }
 
+    // Fullscreen transitions destroy/recreate video resources, so an Options
+    // checkbox cannot perform one from inside the active ImGui frame.
+    if (imgui_state.fullscreen_request != -1) {
+      int const requested = imgui_state.fullscreen_request;
+      imgui_state.fullscreen_request = -1;
+      int actual = CPC.scr_window;
+      if (mainSDLWindow) {
+        actual =
+            (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) ? 0 : 1;
+      }
+      CPC.scr_window = actual;
+      if (actual != requested) koncpc_toggle_fullscreen();
+    }
+
     // Deferred video plugin switch (triggered by Options combo).
     // Lightweight path swaps CRT resources only; full path tears down
     // window/GL.
@@ -5148,11 +5660,11 @@ int koncpc_main(int argc, char** argv) {
         // Quiesce the Z80 thread before tearing down video: video_shutdown()
         // frees the triple-buffer ring, and the Z80 writes into / publishes
         // those buffers (back_surface == a ring buffer). Freeing them while the
-        // Z80 runs is a use-after-free → segfault on renderer switch.
-        bool const z80_was_paused =
-            g_emu_paused.load(std::memory_order_relaxed);
+        // Z80 runs is a use-after-free → segfault on renderer switch. Hold a
+        // pause lease so concurrent Resume cannot restart mid-reinit.
+        CpcPauseLease lease;
+        bool const z80_was_paused = lease.was_paused();
         audio_pause();
-        cpc_pause_and_wait();
         // Free cached save-state thumbnail textures while the OLD render device
         // is still alive — video_shutdown() destroys it, leaving stale GPU
         // handles that would be used/freed against a dead device on next use.
@@ -5177,7 +5689,10 @@ int koncpc_main(int argc, char** argv) {
         koncpc_setup_macos_menu();
 #endif
         audio_resume();
-        if (!z80_was_paused) cpc_resume();
+        if (!z80_was_paused) {
+          lease.release();
+          cpc_resume();
+        }
       }
     }
 

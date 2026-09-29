@@ -234,8 +234,9 @@ kill %1
 
 The harness provides two classes:
 
-- **`KoncepcjaIPC`** — thin client, one TCP connection per command (the server
-  closes after each response).  All methods return `(bool, str)` or `bool`.
+- **`KoncepcjaIPC`** — thin client, one TCP connection per command for
+  simplicity (the server itself keeps connections open; `disconnect` closes
+  one).  All methods return `(bool, str)` or `bool`.
 - **`EmulatorRunner`** — context manager that launches and tears down the
   emulator process, waits for the IPC port to come up.
 
@@ -284,6 +285,46 @@ Tune `KoncepcjaIPC(timeout=5.0)` if the machine is slow.
    exception.
 4. If the test exercises a threaded-only path, gate it with `ipc.is_threaded()`
    and skip (return `True`) in headless mode.
+
+#### Testing the restart vectors: use a prepared ROM, not `mem write`
+
+**`mem write` and `disasm` do not address the same memory.**  `mem write`
+targets RAM; `disasm` and `mem read` show the ROM overlay.  The lower ROM
+covers `0x0000-0x3FFF`, which is *all eight* Z80 restart vectors — so a
+handler poked to `0x0030` lands in RAM the CPU will never execute, while
+`disasm 0x0030` cheerfully shows you firmware.  Two step-out tests were
+written this way and **passed for the wrong reason**: they were exercising
+Amstrad's restart handlers, which happen to return.  Both had to be deleted.
+
+Use `make_test_rom()` in `test/integrated/ipc_harness.py` instead.  It builds
+a synthetic 32K system ROM with no firmware in it and returns a temp
+directory; `rom.rom_path` is only a directory name, so:
+
+```python
+romdir = make_test_rom({0x0030: bytes([0xD1, 0xC3, 0x04, 0x60])})  # POP DE : JP $6004
+try:
+    with EmulatorRunner() as emu:
+        emu.start('-O', f'rom.rom_path={romdir}', '-O', 'system.model=2')
+finally:
+    shutil.rmtree(romdir, ignore_errors=True)
+```
+
+Three things are load-bearing:
+
+- **Pin `system.model=2`.**  The image is written as `cpc6128.rom` because the
+  filename comes from `chROMFile[model]`.  Under another model the emulator
+  aborts looking for `cpc464.rom` and the test reports a misleading
+  "would not start".
+- **Assert the ROM is really yours** by disassembling a vector and matching an
+  **exact mnemonic**.  Filler is `0xFF`, which decodes as `rst 38h`, so a
+  substring check for `'rst'` is satisfied by empty ROM.
+- **Don't fight the scaffolding.**  `0x0000` jumps to a park loop at `0x0100`
+  (`EmulatorRunner` treats `PC == 0` as "not ready yet"), and `0x0038` holds a
+  bare `RET`.  `make_test_rom` refuses handlers that overlap these.
+
+The emulator refuses to boot a missing or wrong-sized ROM
+(`ERR_CPC_ROM_MISSING` / `ERR_NOT_A_CPC_ROM`), so a botched fixture fails loudly
+rather than silently falling back to firmware.
 
 ## Telnet Console
 
@@ -377,6 +418,9 @@ The HTTP server runs in its own thread. CPC-mutating operations (reset, pause to
 
 ```ini
 [peripheral]
+m4board=1                  # Enable the board (off by default). While on, its ROM
+                           # owns the disc vectors: CAT/RUN" go to the SD card
+                           # ("Drive C:/") until you type |DISC — same as real hw.
 m4_http_port=8080          # HTTP server port (default 8080)
 m4_bind_ip=127.0.0.1       # Bind IP (127.0.0.2 works on macOS without root)
 m4_port_map_0=80:8080:1    # Port forwarding: cpc_port:host_port:user_override
@@ -443,6 +487,18 @@ Press **F12** or send `devtools` via IPC to open the developer tools:
 | F12 | Toggle DevTools |
 | Shift+F1 | Virtual keyboard |
 | Shift+F3 | Save snapshot |
+| Cmd+K (macOS) / Ctrl+K (Linux, Windows) | Command palette |
+| Cmd+O (macOS) / Ctrl+O (Linux, Windows) | Load Disk A... |
+| Cmd+S (macOS) / Ctrl+S (Linux, Windows) | Save Snapshot... |
+
+Cmd/Ctrl chords belong to the host UI and never reach the CPC; unmodified
+keys (F-keys included) are the CPC's. The chords are resolved in one place,
+`src/host_chords.h`/`.cpp`, which the SDL event loop, both menu bars and the
+About box all read. SDL is the only dispatcher — the native macOS menu shows
+a chord as text and registers no key equivalent, since AppKit and SDL both
+see the key and an accelerator on it double-fires (the F9 lesson). On Linux
+and Windows, Control is a real CPC key, so Ctrl+K/O/S are the three
+combinations taken from the CPC; every other Control combination reaches it.
 
 ### SDL3 macOS Mouse Events & ImGui Viewports
 
@@ -467,12 +523,21 @@ When `ImGuiConfigFlags_ViewportsEnable` is active, ImGui creates separate OS win
 
 ## Configuration
 
-Config file locations (in order of precedence):
+Config file locations (in order of precedence — the first one found wins):
 1. `-c/--cfg_file=<path>` argument
-2. `$CWD/koncepcja.cfg`
-3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`)
-4. `~/.koncepcja.cfg`
+2. `$XDG_CONFIG_HOME/koncepcja/koncepcja.cfg` (or `~/.config/koncepcja/koncepcja.cfg`)
+3. `$XDG_CONFIG_HOME/koncepcja.cfg` (or `~/.config/koncepcja.cfg`), `~/.koncepcja.cfg` — legacy flat paths
+4. `$CWD/koncepcja.cfg`, then `koncepcja.cfg` next to the binary
 5. `/etc/koncepcja.cfg`
+6. `koncepcja.cfg` in the macOS app bundle's `Resources/` (next to the binary's
+   parent)
+
+The profile config outranks a checkout-local file: running a debug-style
+build from the repo root no longer picks up the untracked `koncepcja.cfg`
+sitting there when `~/.config/koncepcja/koncepcja.cfg` exists. Settings ▸
+System shows the file in use, as does `config get file` over IPC. The
+sidecars — `imgui.ini` and the DevTools `layouts/` directory — live next to
+whichever config file wins, so they move with it.
 
 ### Key Config Options
 
@@ -492,11 +557,20 @@ run_tier=0        # Run-tier policy: 0=auto (Fast;
 [video]
 scr_scale=2       # Window scale factor
 scr_style=1       # Rendering style (0-11)
+scr_window=1      # 1 = start windowed, 0 = start fullscreen. NOTE the IPC key
+                  # `config get|set fullscreen` has the opposite polarity
+                  # (1 = fullscreen).
 vsync=1           # 1=VSYNC present (default). 0=MAILBOX/IMMEDIATE on the MAIN
                   # window only (viewport/DevTools windows always stay VSYNC —
                   # IMMEDIATE breaks their swapchains). Escape hatch for the
                   # remote-desktop present stall; emulation pacing is unaffected
                   # (decoupled from render), so FPS stays 50 either way.
+                  # Cost of 0: when only IMMEDIATE is available (no MAILBOX —
+                  # seen on a 5K/144 Hz Mac display) the 50 Hz presents land
+                  # unsynced. On a variable-refresh-rate (VRR) display that is
+                  # visibly broken — frames snap back — because VRR locks the
+                  # panel to the present cadence and IMMEDIATE has none. Use 1
+                  # with VRR (beads-7azm).
 
 [sound]
 enabled=1         # NOTE: the INI keys are enabled/playback_rate/bits/stereo/
@@ -508,6 +582,10 @@ volume=80         # 0-100
 lightgun=0        # Light gun: 0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
                   # Phazer. Same as the F-key toggle; lets config/headless runs
                   # enable a gun (the IPC `input gun` contract keys off it).
+host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
+                  # Save Snapshot). 0 hands Ctrl+K/O/S back to the CPC on
+                  # Linux/Windows — CP/M software (WordStar) uses them. No
+                  # effect on macOS, where the chords use Command.
 ```
 
 ## Code Conventions

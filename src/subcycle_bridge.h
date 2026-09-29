@@ -59,6 +59,25 @@ void subcycle_bridge_repaint(SDL_Surface* dst);
 void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
                                   uint8_t unit = 0);
 void subcycle_bridge_eject_media(uint8_t unit = 0);
+// Apply a queued insert/eject now. Safe only while the Z80 thread is
+// idle (hold CpcPauseLease). IPC disk eject uses this so the next
+// command cannot pull the disc back from a still-mounted FDC.
+void subcycle_bridge_apply_pending_media();
+
+// Disc Tools / IPC disk family: the FDC medium is authoritative; driveA/driveB
+// are a host tooling view. Pull copies the live sector image into the view;
+// push serializes the view back onto the FDC (and marks dirty). Both require
+// the Z80 thread idle (hold CpcPauseLease). No-op / false when the bridge
+// is inactive or the unit has no writable sector image (empty / read-only
+// flux).
+bool subcycle_bridge_pull_drive_view(uint8_t unit = 0);
+bool subcycle_bridge_push_drive_view(uint8_t unit = 0);
+// After a failed push: restore the host tooling view from the live FDC
+// (authoritative) or, if pull cannot, from `snapshot` taken before the
+// mutation. Empty snapshot + failed pull ejects the host view so a later
+// `disk ls` cannot show the rejected edit.
+void subcycle_bridge_rollback_host_view(uint8_t unit,
+                                        const std::vector<uint8_t>& snapshot);
 
 /* Fit or remove an expansion ROM in `slot` (0-31). `rom16k` is a caller-owned
  * 16K image, or nullptr to empty the slot — an empty slot reads as BASIC, the
@@ -170,5 +189,24 @@ void subcycle_bridge_sync_regs_view();
 
 /* The legacy struct -> machine (after IPC/DevTools write a register). */
 void subcycle_bridge_regs_to_machine();
+
+// True when `dst_row` (0-based, in [0, dst_h)) is the trailing row of a
+// >1-row span that nearest-neighbour upscaling maps back to the same
+// source row -- the one spare destination row scanline dimming is free to
+// darken without touching real picture content. On true, `source_row` (may
+// be null) receives that source row, 0-based in [0, src_h). Mirrors
+// exactly how SDL_BlitSurfaceScaled's own NEAREST mapping picks a source
+// row per destination row, so the composite in blit_fb lines up with what
+// was already blitted. Shared with the regression test.
+bool subcycle_bridge_scanline_gap_row(int dst_row, int src_h, int dst_h,
+                                      int* source_row);
+
+// Dim every row of an RGB24 framebuffer in place, producing a fully-dark
+// variant the renderer composites onto only the trailing destination
+// sub-row of each source scanline's replicated span (see blit_fb) -- not
+// used as a final image on its own. Shared with the regression test;
+// intensity is clamped to 0..100.
+void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
+                                           int height, unsigned int intensity);
 
 #endif /* KONCPC_SUBCYCLE_BRIDGE_H */

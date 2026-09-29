@@ -57,6 +57,7 @@
 #include "disk_sector_editor.h"
 #include "drive_status.h"
 #include "expr_parser.h"
+#include "flux_save.h"
 #include "gif_recorder.h"
 #include "imgui_ui_testable.h"
 #include "keyboard.h"
@@ -73,6 +74,7 @@
 #include "slotshandler.h"
 #include "symbiface.h"
 #include "symfile.h"
+#include "telnet_console.h"
 #include "trace.h"
 #include "video_host.h"
 #include "wav_recorder.h"
@@ -80,6 +82,7 @@
 #include "z80_assembler.h"
 #include "z80_disassembly.h"
 #include "z80_view.h"
+#include "zip_archive.h"
 
 extern t_z80regs z80;
 extern t_CPC CPC;
@@ -180,9 +183,9 @@ std::string build_debug_context() {
   else
     rom_str = "--,--";
 
-  auto& bps = z80_list_breakpoints_ref();
-  auto& wps = z80_list_watchpoints_ref();
-  auto& ios = z80_list_io_breakpoints_ref();
+  auto const bps = z80_breakpoints_snapshot();
+  auto const wps = z80_watchpoints_snapshot();
+  auto const ios = z80_io_breakpoints_snapshot();
 
   // Infer the runtime environment (CP/M vs BASIC) from the screen mode + RAM
   // bank, so a reader doesn't have to memorize the encoding — during the
@@ -222,6 +225,30 @@ namespace {
 std::string ok_with_context(const std::string& body = "") {
   if (body.empty()) return "OK " + build_debug_context() + "\n";
   return "OK " + body + " " + build_debug_context() + "\n";
+}
+}  // namespace
+
+// Upper bound on waiting for the Z80 thread to go idle before a step command
+// touches machine state. Generous (a frame is 20ms); the point is that a stuck
+// Z80 thread cannot hang the single-connection IPC server indefinitely.
+namespace {
+constexpr int kStepIdleWaitMs = 1000;
+}  // namespace
+
+// Body for a step command that stopped on a breakpoint/watchpoint rather than
+// finishing. Without the WATCH/WP_* detail an agent knows WHERE it stopped
+// (the context trailer carries PC) but not WHY -- and `wait bp` has reported
+// exactly that detail for the same underlying event all along. The fields are
+// still valid here: the bridge sets them on the hit and only clears them on a
+// failed commit.
+namespace {
+std::string breakpoint_hit_body() {
+  if (z80.watchpoint_reached == 0) return "breakpoint-hit WATCH=0";
+  char buf[96];
+  snprintf(buf, sizeof(buf),
+           "breakpoint-hit WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X",
+           z80.watchpoint_addr, z80.watchpoint_value, z80.watchpoint_old);
+  return {buf};
 }
 }  // namespace
 
@@ -288,7 +315,7 @@ namespace {
 // Machine-rebuild staging. koncpc_rebuild_machine() tears down and reallocates
 // the board (pbRAMbuffer/pbROM/pbGPBuffer) and the Bridge. Running that from
 // the IPC server thread was unsafe twice over:
-//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_quiescent is
+//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_idle is
 //     only toggled inside z80_thread_main(), which is spawned only when
 //     !g_headless -- so the IPC thread could free memory the main thread was
 //     still executing a frame out of;
@@ -355,6 +382,107 @@ struct IpcGunPending {
 IpcGunPending g_ipc_gun;
 }  // namespace
 
+// Host keymap staging — the same deferral again. `config set kbd_layout` runs
+// on the IPC thread, but CPC.kbd_layout and the live InputMapper are read by
+// the main thread's key-event handler, so the switch is applied by
+// ipc_drain_input() through koncpc_reload_host_keymap(), exactly as the
+// Settings ▸ Input combo does it.
+//
+// The IPC thread never reads CPC.kbd_layout or CPC.resources_path either:
+// they are std::strings the main thread reassigns (the combo, Settings ▸
+// Cancel's whole-struct restore, the drain below), so `config get` answers
+// from `live`/`resources_path`, a mirror the main thread publishes under the
+// mutex every time it (re)loads the mapper.  Empty until the first load: the
+// server starts before the config is read.
+namespace {
+struct IpcKeymapPending {
+  std::mutex mutex;
+  std::optional<std::string> name;  // staged layout file; nullopt = none
+  std::string live;                 // the map in use, as last published
+  std::string resources_path;       // where the *.map files live
+};
+IpcKeymapPending g_ipc_keymap;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void ipc_publish_host_keymap(const std::string& layout,
+                             const std::string& resources_path) {
+  std::scoped_lock const lock(g_ipc_keymap.mutex);
+  g_ipc_keymap.live = layout;
+  g_ipc_keymap.resources_path = resources_path;
+}
+
+// Window state — the main window's live geometry, published by the drain
+// every frame so `config get window|fullscreen` can answer without touching
+// SDL or CPC.* from the IPC thread — and the fullscreen staging: a `config
+// set fullscreen` is applied by the drain by posting imgui_state's
+// fullscreen_request, the same deferral the menu item and the Options
+// checkbox use (a fullscreen transition tears down video and ImGui, so only
+// the main loop may perform it, between frames).
+extern SDL_Window* mainSDLWindow;
+
+namespace {
+struct IpcWindowPending {
+  std::mutex mutex;
+  std::optional<int> fullscreen;  // staged: 1 = go fullscreen, 0 = windowed
+  bool known = false;             // a main window has been published
+  int w = 0;
+  int h = 0;
+  unsigned int scale = 0;
+  bool is_fullscreen = false;
+};
+IpcWindowPending g_ipc_window;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void ipc_publish_window_state() {
+  std::optional<bool> const fullscreen = koncpc_main_window_is_fullscreen();
+  std::scoped_lock const lock(g_ipc_window.mutex);
+  if (!fullscreen.has_value()) {
+    g_ipc_window.known = false;
+    return;
+  }
+  g_ipc_window.known = true;
+  SDL_GetWindowSize(mainSDLWindow, &g_ipc_window.w, &g_ipc_window.h);
+  g_ipc_window.scale = CPC.scr_scale;
+  g_ipc_window.is_fullscreen = *fullscreen;
+}
+
+namespace {
+struct IpcConfigFile {
+  std::mutex mutex;
+  std::string path;
+};
+IpcConfigFile g_ipc_config_file;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+void ipc_publish_config_file(const std::string& path) {
+  std::scoped_lock const lock(g_ipc_config_file.mutex);
+  g_ipc_config_file.path = path;
+}
+
+namespace {
+// `wait vbl` sleeps this long per requested blank (it is a paced sleep with
+// the machine running, not a real blank wait).
+constexpr int kWaitVblMsPerBlank = 20;
+constexpr int kWaitDefaultTimeoutMs = 5000;
+}  // namespace
+
+// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
+// translation units/tests; internal linkage would break the link
+std::chrono::milliseconds ipc_wait_vbl_default_timeout(int count) {
+  // The shared 5000ms default expired before any count above 250 could
+  // complete — 'ERR 408 timeout' for a wait that was merely long
+  // (beads-mtak). The nominal length of the wait plus the usual slack.
+  long long const blanks = count > 0 ? count : 0;
+  return std::chrono::milliseconds(kWaitDefaultTimeoutMs +
+                                   (blanks * kWaitVblMsPerBlank));
+}
+
 // Drained once per frame on the main thread.  Safe no-op when no input is
 // pending and no input device is enabled.  Each lock is held only to copy that
 // device's staged group into a local snapshot and reset it, so a field can
@@ -385,8 +513,82 @@ static void ipc_drain_rebuild() {
   g_rebuild_pending.cv.notify_all();
 }
 
+// Hand a machine rebuild to the main thread and wait for the drain.
+// Never call koncpc_rebuild_machine() from the IPC server thread (see
+// IpcRebuildPending). Returns an empty string on success, otherwise a full
+// `ERR …\n` response ready to send to the client.
+static std::string ipc_request_rebuild_and_wait() {
+  std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
+  g_rebuild_pending.done = false;
+  g_rebuild_pending.requested = true;
+  if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10),
+                                     [] { return g_rebuild_pending.done; })) {
+    // The main thread clears `requested` before running the rebuild, so a
+    // slow rebuild can still finish after we time out. Prefer that result
+    // over a lying 504; only cancel when the drain never claimed the work.
+    if (g_rebuild_pending.done) {
+      // Fall through to the result below.
+    } else if (g_rebuild_pending.requested) {
+      g_rebuild_pending.requested = false;
+      return "ERR 504 rebuild-not-drained (main loop did not run)\n";
+    } else {
+      // Drain claimed it; wait a bit more for completion rather than
+      // reporting "main loop did not run" while a rebuild is in flight.
+      if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(30), [] {
+            return g_rebuild_pending.done;
+          })) {
+        return "ERR 504 rebuild-still-running\n";
+      }
+    }
+  }
+  int const err = g_rebuild_pending.result;
+  if (err != 0)
+    return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+  return {};
+}
+
 void ipc_drain_input() {
   ipc_drain_rebuild();
+  {
+    std::optional<std::string> name;
+    {
+      std::scoped_lock const lock(g_ipc_keymap.mutex);
+      name.swap(g_ipc_keymap.name);
+    }
+    if (name) {
+      CPC.kbd_layout = *name;
+      koncpc_reload_host_keymap();
+      // Settings ▸ Cancel restores the CPC snapshot taken when the dialog
+      // opened.  A switch applied while it is open must become part of that
+      // baseline, or Cancel silently undoes it after the client was told OK.
+      if (imgui_state.show_options) {
+        imgui_state.old_cpc_settings.kbd_layout = *name;
+      }
+    }
+  }
+  {
+    std::optional<int> fullscreen;
+    // A request the menu, F2 or the Options checkbox posted this frame is
+    // applied first; the staged IPC value waits for the next drain rather
+    // than overwriting it (last-writer-wins would swallow the user's click).
+    if (imgui_state.fullscreen_request == -1) {
+      std::scoped_lock const lock(g_ipc_window.mutex);
+      fullscreen.swap(g_ipc_window.fullscreen);
+    }
+    if (fullscreen && mainSDLWindow != nullptr) {
+      // scr_window is 1 for windowed; the main loop compares the request
+      // against the window's real flags and toggles only on a difference.
+      CPC.scr_window = *fullscreen ? 0u : 1u;
+      imgui_state.fullscreen_request = static_cast<int>(CPC.scr_window);
+      // Settings ▸ Cancel restores the snapshot taken when the dialog opened
+      // and re-posts its scr_window; fold the switch into that snapshot or
+      // Cancel silently undoes it (as for kbd_layout above).
+      if (imgui_state.show_options) {
+        imgui_state.old_cpc_settings.scr_window = CPC.scr_window;
+      }
+    }
+    ipc_publish_window_state();
+  }
   // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
   g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
@@ -634,7 +836,10 @@ void init_command_registry() {
                    "responsive and can still be used to inspect state.");
 
   register_command("run", "CORE", "run", "Resume emulation",
-                   "Resumes the machine from a paused state.");
+                   "Resumes the machine from a paused state. Returns "
+                   "`ERR 409 pause-lease-held` when a pause lease still owns "
+                   "the machine (disk/profile/reset critical sections) so a "
+                   "successful `run` always means emulation is running.");
 
   register_command("reset", "CORE", "reset [--no-resume]",
                    "Reset the machine and resume (unless --no-resume is used)",
@@ -655,14 +860,52 @@ void init_command_registry() {
       "(or the CPC's SAVE) + the 19 kHz motor-REMOTE carrier to the jack — "
       "opt-in, soft-ramped, auto-disarmed on device change (sub-cycle only).");
   register_command(
-      "tier", "CORE", "tier [get] | tier set faithful|wake|soldered|fast",
-      "Runtime speed tier (sub-cycle engine)",
-      "Selects the sub-cycle engine's per-master-cycle dispatch tier, applied "
-      "at the next frame boundary (never mid-frame). 'fast' is the "
-      "devirtualized soldered path; 'faithful' is the pluggable, steppable "
-      "path — both observation-identical. Fast auto-degrades to faithful when "
-      "the board is not the canonical device composition. 'get' reports the "
-      "requested and effective tier and whether fast is available.");
+      "tier", "CORE",
+      "tier [get|status] | tier set auto|fast|wake|soldered|faithful",
+      "Get or set the sub-cycle engine's run-tier policy",
+      "Policies: auto (Fast; Wake while the debugger is engaged — the "
+      "default), fast, wake, soldered, faithful. Reports the effective tier "
+      "and whether a KONCPC_TIER/KONCPC_WAKE environment pin overrides the "
+      "policy.",
+      [](const auto& parts, const auto&) {
+        if (!subcycle_bridge_active()) return std::string("ERR 503 no-board\n");
+        if (parts.size() >= 2 && parts[1] == "set") {
+          if (parts.size() < 3)
+            return std::string(
+                "ERR 400 usage: tier set "
+                "auto|fast|wake|soldered|faithful\n");
+          BridgeTierPolicy policy;
+          if (parts[2] == "auto")
+            policy = BridgeTierPolicy::Auto;
+          else if (parts[2] == "fast")
+            policy = BridgeTierPolicy::Fast;
+          else if (parts[2] == "wake")
+            policy = BridgeTierPolicy::Wake;
+          else if (parts[2] == "soldered")
+            policy = BridgeTierPolicy::Soldered;
+          else if (parts[2] == "faithful")
+            policy = BridgeTierPolicy::Faithful;
+          else
+            return std::string(
+                "ERR 400 usage: tier set "
+                "auto|fast|wake|soldered|faithful\n");
+          if (subcycle_bridge_tier_env_pinned())
+            return std::string(
+                "ERR 409 pinned-by-KONCPC_TIER-or-KONCPC_WAKE\n");
+          subcycle_bridge_set_tier_policy(policy);
+        } else if (parts.size() >= 2 && parts[1] != "get" &&
+                   parts[1] != "status") {
+          return std::string(
+              "ERR 400 usage: tier [get|status] | tier set "
+              "auto|fast|wake|soldered|faithful\n");
+        }
+        static const char* const kPolicyNames[] = {"auto", "fast", "wake",
+                                                   "soldered", "faithful"};
+        int const policy = static_cast<int>(subcycle_bridge_tier_policy());
+        return std::string("OK policy=") + kPolicyNames[policy] +
+               " effective=" + subcycle_bridge_effective_tier_name() +
+               " pinned=" + (subcycle_bridge_tier_env_pinned() ? "1\n" : "0\n");
+      });
   register_command(
       "load", "CORE", "load <file>", "Load a disk, tape, snapshot or cartridge",
       "Loads a media or state file; the type is determined by the "
@@ -672,31 +915,39 @@ void init_command_registry() {
       "          Flux formats are Drive A only — the FDC's flux capture is "
       "side-0/drive-A.\n"
       "  Tapes   (.cdt .voc), snapshots (.sna), cartridges (.cpr), raw "
-      "binaries (.bin at 0x6000).");
+      "binaries (.bin at 0x6000).\n"
+      "  Archives (.zip) load their first supported media member, matching the "
+      "CLI and drag/drop paths.");
 
-  register_command("tier", "SYSTEM", "tier | tier set <policy>",
-                   "Get or set the sub-cycle engine's run-tier policy",
-                   "Policies: auto (Fast; Wake while the debugger is engaged "
-                   "- the default), fast, wake, soldered, faithful. Reports "
-                   "the effective tier and whether a KONCPC_TIER/KONCPC_WAKE "
-                   "env pin overrides the policy.");
-
-  register_command("regs", "DEBUG", "regs",
+  register_command("regs", "DEBUG", "regs [get|set|crtc|ga|psg|asic] ...",
                    "Get all Z80 and core hardware registers",
                    "Returns a comprehensive list of all Z80 registers (AF, BC, "
                    "HL, etc.), alternate registers, "
                    "and core hardware states (Gate Array, CRTC, PSG). Data is "
                    "returned in space-separated key=val pairs.");
+  register_command("reg", "DEBUG", "reg (get|set|crtc|ga|psg|asic) ...",
+                   "Read, write or inspect CPU and hardware registers",
+                   "Alias-oriented register access. Use 'reg get <R>' or 'reg "
+                   "set <R> <V>'; hardware groups are crtc, ga, psg and asic.");
 
   register_command(
       "mem", "DEBUG",
-      "mem read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | mem write "
-      "<addr> <hex>",
+      "mem read|cpu-read <addr> <len> [--view=read|ram] [--bank=N] [ascii] | "
+      "mem write|cpu-write <addr> <hex> | mem fill <addr> <len> <hex> | mem "
+      "compare <a> <b> <len> [--view=read|ram] | mem find hex|text|asm "
+      "<start> <end> <pattern> [--view=read|ram]",
       "Access emulated memory",
       "Allows direct manipulation of the 64K/128K RAM space.\n"
       "  read: Returns <len> bytes starting at <addr> as a hex string.\n"
       "  write: Writes the provided <hex> string into memory starting at "
-      "<addr>.\n"
+      "<addr>. ALWAYS the banked RAM byte, never a paged-in ROM -- like a\n"
+      "         real mreq write, and unlike read/disasm, which show the ROM\n"
+      "         overlay. Writing under a mapped ROM (0000-3FFF, or C000-FFFF\n"
+      "         with upper ROM paged in) returns OK and changes nothing the\n"
+      "         CPU will execute; check with disasm at the same address.\n"
+      "  compare / find hex|text: honour --view= the same way as read "
+      "(find asm\n"
+      "    always uses the CPU view, since it disassembles code).\n"
       "  --view=read (default): what the Z80 would read now, ROM overlays "
       "included.\n"
       "  --view=ram: the banked RAM byte, ROM overlays ignored. USE THIS to "
@@ -781,22 +1032,33 @@ void init_command_registry() {
       "  pc:  Resumes and waits until PC equals <addr>.\n"
       "  mem: Resumes and waits until memory at <addr> equals <val> (with "
       "optional mask).\n"
-      "  bp:  Waits for a breakpoint or watchpoint hit, then for the machine "
-      "to actually pause (up to 500ms). Only reports hits from the CURRENT "
-      "arming — a hit left uncollected from a previous bp/wp/IO-bp change is "
-      "dropped (timeout). Watchpoint hits include WP_ADDR/WP_VAL/WP_OLD.\n"
-      "  vbl: Waits for N vertical blanks (1/50th second each).");
+      "  bp:  Waits for a committed breakpoint or watchpoint stop. Only "
+      "reports hits from the CURRENT arming — a hit left uncollected from a "
+      "previous bp/wp/IO-bp change is dropped (timeout). Watchpoint hits "
+      "include WP_ADDR/WP_VAL/WP_OLD.\n"
+      "  vbl: Waits for N vertical blanks (1/50th second each). Without an "
+      "explicit timeout the deadline is N x 20ms plus 5000ms, so a long "
+      "count completes instead of timing out at 5s.");
 
   register_command(
       "step", "DEBUG",
-      "step in [N] | step over [N] | step out | step frame [N]",
+      "step in [N] | step over [N] | step out | step to <addr> | "
+      "step frame [N]",
       "Step the CPU or emulation frame",
       "Executes code and pauses again.\n"
       "  in [N]:    Steps into exactly N instructions (default 1). Traces "
       "inside subroutines.\n"
-      "  over [N]:  Steps over the current CALL or RST. If not a call, it "
-      "performs a single step.\n"
-      "  out:       Continues execution until the current subroutine returns.\n"
+      "  over [N]:  Steps over a CALL via an ephemeral breakpoint at pc+len. "
+      "An RST is stepped INTO and its frame finished instead — CPC firmware "
+      "restarts carry inline operands, so they do not resume at pc+1. Not a "
+      "call: a single step.\n"
+      "  out:       Finishes the current stack frame — runs until a TAKEN "
+      "return (RET/RETI/RETN, or a POP+JP (rr) computed return) fires at the "
+      "depth the walk started from. Counting frame depth is what makes a POP "
+      "before the RET, an untaken RET cc, and an interrupt mid-walk all safe. "
+      "ERR 409 no-progress only if no machine is attached; a frame that never "
+      "returns is ERR 408 timeout.\n"
+      "  to <addr>: Run-to-cursor via an ephemeral breakpoint.\n"
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
   register_command(
@@ -818,7 +1080,10 @@ void init_command_registry() {
       "atomic write. Optional hold=<frames>.\n"
       "  type:    Types a string through the AutoTypeQueue (the same path as "
       "'autotype'), so WinAPE ~KEY~ tokens and newlines work. Typing is queued "
-      "and drains over the next keyboard scans (see 'autotype status').\n"
+      "and drains over the next keyboard scans (see 'autotype status'). A "
+      "literal ';' cannot appear in the text (the IPC line parser splits on "
+      "it for command chaining before this command sees it) -- use "
+      "~SEMICOLON~ instead.\n"
       "  joy:     Sets joystick <0|1> direction <dir> (U/D/L/R/F1/F2, or 0 to "
       "release all). Prefix <dir> with '-' to release a single direction.\n"
       "  mouse:   Drives the AMX/Symbiface mouse. 'move <dx> <dy>' feeds "
@@ -835,9 +1100,23 @@ void init_command_registry() {
       "matrix byte (active-low) plus its held key names.");
 
   register_command(
-      "disk", "HARDWARE", "disk ls <A|B> | disk put <A|B> <path>",
+      "disk", "HARDWARE",
+      "disk formats | format <A|B> <format> | new <path> [format] "
+      "[sector|flux] | status|eject <A|B> | save <A|B> <path> [dsk|scp|hfe] | "
+      "ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> <file> <path> | put "
+      "<A|B> <path> [file] | sector ...",
       "Manage emulated floppy disks",
-      "High-level disk management.\n"
+      "High-level disk management. Mutations (format/put/rm/sector write) "
+      "push to the live FDC; a failed push rolls the host view back so "
+      "`disk ls` cannot show the rejected edit. Save writes the live FDC "
+      "medium (never a stale host t_drive when the board is running).\n"
+      "  status: Presence and save caps (present, backing, can_dsk/scp/hfe).\n"
+      "  save: Persist drive A/B to a host path. Default format dsk. scp/hfe "
+      "require flux backing on A; otherwise ERR 409. ERR 404 for dsk on an "
+      "empty drive. ERR 500 on a genuine write failure. Traversal "
+      "rejected.\n"
+      "  eject: Unmount the drive (no GUI confirm). Dirty media follows the "
+      "same flush-on-eject path as the File menu.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
       "  put: Copies a file from the host machine onto the emulated disk.");
 
@@ -853,7 +1132,7 @@ void init_command_registry() {
       "  --screenshot PATH  Save the repainted frame as a PNG file.");
 
   register_command(
-      "screenshot", "MEDIA", "screenshot window <path>",
+      "screenshot", "MEDIA", "screenshot [<path> | window <path>]",
       "Capture emulator window to PNG",
       "Saves a PNG file of the emulator window on the next rendered frame. "
       "Note: Currently captures the emulated CPC display only; ImGui overlays "
@@ -883,17 +1162,30 @@ void init_command_registry() {
       "Manage developer tools",
       "Toggles the developer tool overlay or individual debug windows.");
 
-  register_command("profile", "TOOLS", "profile list | profile load <name>",
-                   "Manage configuration profiles",
-                   "Lists available profiles or switches the emulator to a "
-                   "different configuration.");
+  register_command(
+      "profile", "TOOLS",
+      "profile list|current | profile load|delete <name> | "
+      "profile save <name> [description]",
+      "Manage configuration profiles",
+      "Lists available profiles or switches the emulator to a different "
+      "configuration.\n"
+      "  load: applies the profile under a pause lease. When model or "
+      "ram_size changes, rebuilds the machine on the main thread (same "
+      "idle path as `config apply`) so mid-run switches cannot race the "
+      "Z80 thread. Failed load/rebuild resumes the caller; "
+      "`ERR 504 rebuild-still-running` leaves the machine paused.");
 
   register_command(
       "config", "TOOLS",
       "config get <key> | config set <key> <val> | config apply",
       "Access emulator settings",
       "Reads or modifies internal emulator configuration variables.\n"
-      "  Keys include model (0-3), crtc_type, ram_size, silicon_disc.\n"
+      "  Keys include model (0-3), crtc_type, ram_size, silicon_disc, "
+      "kbd_layout (host keymap file; `config get kbd_layouts` lists the "
+      "choices; `set` applies on the next frame, like the Settings combo), "
+      "fullscreen (0|1; `set` applies on the next frame, like the View menu), "
+      "window (read-only: w=<px> h=<px> scale=<idx> fullscreen=<0|1>), "
+      "file (read-only: the configuration file this session loaded).\n"
       "  `set model` STAGES the change and answers 'OK (apply required)': it "
       "needs `config apply`, not the plain `reset` command -- reset resets the "
       "board and will not reload the model's ROMs. Until apply, `config get "
@@ -902,21 +1194,30 @@ void init_command_registry() {
       "drained once per frame).");
 
   register_command(
-      "search", "TOOLS", "search hex <pattern> | search text <string>",
+      "search", "TOOLS",
+      "search hex <pattern> [--view=read|ram] | search text <string> "
+      "[--view=read|ram] | search asm <instruction>",
       "Search memory",
-      "Searches the 64KB RAM space for byte sequences or strings.");
+      "Searches the 64KB address space for byte sequences or strings.\n"
+      "  hex|text: honour --view=ram like mem read (ROM overlays ignored).\n"
+      "  asm: always uses the CPU view (disassembles fetched instructions).");
 
-  register_command("rom", "HARDWARE", "rom list | rom load <slot> <path>",
+  register_command("rom", "HARDWARE",
+                   "rom list | rom load <slot> <path> | rom unload <slot> | "
+                   "rom info <slot>",
                    "Manage expansion ROMs",
                    "Lists currently mapped ROMs or loads a new ROM image into "
                    "a specific slot (0-255).");
 
   register_command(
-      "asm", "TOOLS", "asm text <source> | asm assemble", "Z80 Assembler",
+      "asm", "TOOLS",
+      "asm text <source> | asm load <path> | asm assemble | asm "
+      "errors|symbols|source",
+      "Z80 Assembler",
       "Enters Z80 assembly source code and assembles it into emulated memory.");
 
   register_command(
-      "telnet", "TOOLS", "telnet (port 6544)", "Text console for CPC I/O",
+      "telnet", "TOOLS", "telnet status", "Text console for CPC I/O",
       "A telnet interface runs on port IPC+1 (default 6544) that captures all "
       "CPC text output "
       "(TXT_OUTPUT calls) and allows text input. Connecting returns a banner "
@@ -934,7 +1235,21 @@ void init_command_registry() {
       "back here (the line editor does not route through TXT_OUTPUT), so "
       "searching this stream for text you typed always fails no matter how "
       "well typing works.\n"
-      "  Example:  nc -w 1 localhost 6544 < /dev/null");
+      "  Example:  nc -w 1 localhost 6544 < /dev/null",
+      [](const auto& parts, const auto&) {
+        if (parts.size() != 2 || parts[1] != "status")
+          return std::string("ERR 400 usage: telnet status\n");
+        return std::string("OK port=") + std::to_string(g_telnet.port()) +
+               " client=" + (g_telnet.has_client() ? "1\n" : "0\n");
+      });
+
+  register_command(
+      "serial", "HARDWARE",
+      "serial status | serial send <byte> | serial send_string <text> | "
+      "serial config get | serial config set <key> <value>",
+      "Inspect and control the Amstrad serial interface",
+      "Reports card/backend state, sends bytes or text, and reads or changes "
+      "serial settings.");
 
   register_command(
       "disasm", "DEBUG",
@@ -1012,7 +1327,9 @@ void init_command_registry() {
       "balanced pair of surrounding quotes or apostrophes is stripped, so "
       "`autotype |cpm~RETURN~` and `autotype '|cpm~RETURN~'` are equivalent "
       "(same rule as `input type`). An UNBALANCED leading apostrophe is kept "
-      "-- that is a real BASIC comment.\n"
+      "-- that is a real BASIC comment. A literal ';' cannot appear in the "
+      "text -- the IPC line parser splits on ';' for command chaining "
+      "before this command ever sees it -- use ~SEMICOLON~ instead.\n"
       "  status: Show pending queue length.\n"
       "  clear:  Cancel pending input.");
 
@@ -1096,9 +1413,9 @@ void init_command_registry() {
       "  status: Show state (idle/recording/playing), frame and event counts.");
 }
 
-void breakpoint_hit_hook(word pc, bool watchpoint) {
+void breakpoint_hit_hook(word pc, bool watchpoint, uint64_t arming_generation) {
   if (g_ipc_instance) {
-    g_ipc_instance->notify_breakpoint_hit(pc, watchpoint);
+    g_ipc_instance->notify_breakpoint_hit(pc, watchpoint, arming_generation);
   }
 }
 
@@ -1111,14 +1428,30 @@ std::vector<std::string> split_semicolons(const std::string& s) {
   while (start < s.size()) {
     size_t pos = s.find(';', start);
     if (pos == std::string::npos) pos = s.size();
-    // Trim whitespace from the segment
+    // Trim leading whitespace from the segment -- harmless, and needed for
+    // a consistent command-keyword match just below.
     size_t seg_start = start;
     while (seg_start < pos && (s[seg_start] == ' ' || s[seg_start] == '\t'))
       seg_start++;
+    // `input type <text>` and `autotype <text>` consume the REST OF THE
+    // LINE verbatim as their text argument (see their handlers: they find
+    // the first space and take everything after it, with no further
+    // tokenization) -- unlike every other command, whose arguments are
+    // later re-split on whitespace by split_ws(), which already treats
+    // trailing whitespace as insignificant. Trimming a trailing space/tab
+    // here silently eats the last character of THEIR argument whenever it
+    // happens to be one: `input type "hi "` loses the space before ever
+    // reaching AutoTypeQueue::enqueue(), deterministically, on every call
+    // (not a race -- confirmed via direct single-call repro, beads-u00m).
+    bool const is_raw_text_command =
+        s.compare(seg_start, 11, "input type ") == 0 ||
+        s.compare(seg_start, 9, "autotype ") == 0;
     size_t seg_end = pos;
-    while (seg_end > seg_start &&
-           (s[seg_end - 1] == ' ' || s[seg_end - 1] == '\t'))
-      seg_end--;
+    if (!is_raw_text_command) {
+      while (seg_end > seg_start &&
+             (s[seg_end - 1] == ' ' || s[seg_end - 1] == '\t'))
+        seg_end--;
+    }
     if (seg_end > seg_start)
       out.push_back(s.substr(seg_start, seg_end - seg_start));
     start = pos + 1;
@@ -1298,51 +1631,24 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 bad-args (hash vram|mem|regs)\n";
     }
 
-    if (cmd == "tier") {
-      if (!subcycle_bridge_active()) return "ERROR tier: board not running";
-      if (parts.size() >= 3 && parts[1] == "set") {
-        BridgeTierPolicy pol;
-        if (parts[2] == "auto")
-          pol = BridgeTierPolicy::Auto;
-        else if (parts[2] == "fast")
-          pol = BridgeTierPolicy::Fast;
-        else if (parts[2] == "wake")
-          pol = BridgeTierPolicy::Wake;
-        else if (parts[2] == "soldered")
-          pol = BridgeTierPolicy::Soldered;
-        else if (parts[2] == "faithful")
-          pol = BridgeTierPolicy::Faithful;
-        else
-          return "ERROR tier set: auto|fast|wake|soldered|faithful";
-        if (subcycle_bridge_tier_env_pinned())
-          return "ERROR tier: pinned by KONCPC_TIER/KONCPC_WAKE env";
-        subcycle_bridge_set_tier_policy(pol);
-        return std::string("OK policy=") + parts[2];
-      }
-      static const char* const kPolicyNames[] = {"auto", "fast", "wake",
-                                                 "soldered", "faithful"};
-      const int pol = static_cast<int>(subcycle_bridge_tier_policy());
-      return std::string("OK policy=") + kPolicyNames[pol] +
-             " effective=" + subcycle_bridge_effective_tier_name() +
-             " pinned=" + (subcycle_bridge_tier_env_pinned() ? "1" : "0");
-    }
     if (cmd == "pause") {
       cpc_pause();
       return ok_with_context();
     }
     if (cmd == "run") {
-      cpc_resume();
+      if (!cpc_resume_applied()) return "ERR 409 pause-lease-held\n";
       return ok_with_context();
     }
     if (cmd == "reset") {
-      bool const was_paused = CPC.paused;
-      if (!was_paused) cpc_pause_and_wait();
+      CpcPauseLease lease;
+      bool const was_paused = lease.was_paused();
       emulator_reset();
       bool no_resume = false;
       for (size_t i = 1; i < parts.size(); i++) {
         if (parts[i] == "--no-resume") no_resume = true;
       }
       if (!no_resume) {
+        lease.release();
         cpc_resume();
       } else if (was_paused) {
         // Was already paused and user wants no-resume, keep paused
@@ -1397,7 +1703,19 @@ std::string handle_command(const std::string& line) {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
       auto dot = lower.find_last_of('.');
       if (dot == std::string::npos) return "ERR 415 unsupported\n";
-      std::string const ext = lower.substr(dot);
+      std::string ext = lower.substr(dot);
+      if (ext == ".zip") {
+        zip::t_zip_info zip_info;
+        zip_info.filename = path;
+        zip_info.extensions = zip::kAllSupportedZipMediaExtensions;
+        if (zip::dir(&zip_info) || zip_info.filesOffsets.empty())
+          return "ERR 415 no-supported-media-in-zip\n";
+        std::string inner = zip_info.filesOffsets.front().first;
+        if (inner.size() < 4) return "ERR 415 no-supported-media-in-zip\n";
+        ext = inner.substr(inner.size() - 4);
+        for (auto& c : ext)
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      }
       // Every drive-A disk format, from the one list slotshandler exports:
       // .dsk/.ipf/.raw plus the flux containers .scp/.hfe/.a2r. This arm used
       // to hard-code ".dsk" alone, so `load game.hfe` returned ERR 415 even
@@ -1410,12 +1728,15 @@ std::string handle_command(const std::string& line) {
                                           : "ERR 500 load-disk\n";
       }
       if (ext == ".sna") {
-        bool const was_paused = CPC.paused;
-        if (!was_paused) cpc_pause_and_wait();
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
         CPC.snapshot.file = path;
         CPC.snapshot.zip_index = 0;
         int const rc = file_load(CPC.snapshot);
-        if (!was_paused) cpc_resume();
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return rc == 0 ? ok_with_context() : "ERR 500 load-sna\n";
       }
       if (ext == ".cdt" || ext == ".voc") {
@@ -1569,11 +1890,16 @@ std::string handle_command(const std::string& line) {
         resp << buf;
       }
       char buf[128];
+      // R52 is the Gate Array's 6-bit HSYNC line counter (gate_array.h), the
+      // one a raster effect is timed against.  It used to report CRTC.reg5 --
+      // the vertical-adjust register, already printed above as R5 -- so the
+      // field a rupture is debugged with named one register and showed
+      // another.  SL stays CRTC.sl_count, the frame scanline.
       snprintf(buf, sizeof(buf),
                " VCC=%02X VLC=%02X HCC=%02X HSC=%02X VSC=%02X VMA=%04X "
                "R52=%02X SL=%02X",
                CRTC.line_count, CRTC.raster_count, CRTC.char_count,
-               CRTC.hsw_count, CRTC.vsw_count, CRTC.addr, CRTC.reg5,
+               CRTC.hsw_count, CRTC.vsw_count, CRTC.addr, GateArray.sl_count,
                CRTC.sl_count);
       resp << buf << "\n";
       return resp.str();
@@ -1703,48 +2029,6 @@ std::string handle_command(const std::string& line) {
       }
       dumpScreen();
       return "OK\n";
-    }
-    if (cmd == "tier") {
-      subcycle::Machine* mach = subcycle_bridge_machine();
-      if (!mach) return "ERR 503 no-subcycle-engine\n";
-      using RunTier = subcycle::Machine::RunTier;
-      auto tier_name = [](RunTier t) {
-        switch (t) {
-          case RunTier::Soldered:
-            return "soldered";
-          case RunTier::Wake:
-            return "wake";
-          case RunTier::Fast:
-            return "fast";
-          case RunTier::Faithful:
-          default:
-            return "faithful";
-        }
-      };
-      auto report = [&]() {
-        std::ostringstream os;
-        os << "OK requested=" << tier_name(mach->run_tier())
-           << " effective=" << tier_name(mach->effective_run_tier())
-           << " soldered_available=" << (mach->soldered_available() ? 1 : 0)
-           << " wake_available=" << (mach->wake_active() ? 1 : 0) << "\n";
-        return os.str();
-      };
-      if (parts.size() < 2 || parts[1] == "get" || parts[1] == "status")
-        return report();
-      if (parts[1] == "set" && parts.size() >= 3) {
-        if (parts[2] == "wake")
-          mach->set_run_tier(RunTier::Wake);
-        else if (parts[2] == "faithful")
-          mach->set_run_tier(RunTier::Faithful);
-        else if (parts[2] == "soldered")
-          mach->set_run_tier(RunTier::Soldered);
-        else if (parts[2] == "fast")  // reserved: degrades to wake until F2+
-          mach->set_run_tier(RunTier::Fast);
-        else
-          return "ERR 400 bad-args (faithful|wake|soldered|fast)\n";
-        return report();  // applied at the next frame boundary
-      }
-      return "ERR 400 bad-args\n";
     }
     if (cmd == "tape") {
       if (parts.size() < 2) return "ERR 400 bad-args\n";
@@ -1876,6 +2160,15 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 bad-args\n";
     }
     if (cmd == "devtools") {
+      if (parts.size() == 1) {
+        imgui_state.show_devtools = true;
+        return "OK\n";
+      }
+      if (parts.size() == 2 && (parts[1] == "on" || parts[1] == "off")) {
+        imgui_state.show_devtools = parts[1] == "on";
+        if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
+        return "OK\n";
+      }
       if (parts.size() >= 3 && parts[1] == "show") {
         bool* ptr = g_devtools_ui.window_ptr(parts[2]);
         if (!ptr) return "ERR 404 unknown window\n";
@@ -1888,26 +2181,31 @@ std::string handle_command(const std::string& line) {
         *ptr = false;
         return "OK\n";
       }
-      imgui_state.show_devtools = true;
-      return "OK\n";
+      return "ERR 400 usage: devtools (on|off|show|hide) [name]\n";
     }
     if (cmd == "snapshot" && parts.size() >= 2) {
       if (parts[1] == "save") {
         if (parts.size() < 3) return "ERR 400 bad-args\n";
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-        bool const was_paused = CPC.paused;
-        if (!was_paused) cpc_pause_and_wait();
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
         int const rc = snapshot_save(parts[2]);
-        if (!was_paused) cpc_resume();
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return rc == 0 ? ok_with_context() : "ERR 500 snapshot-save\n";
       }
       if (parts[1] == "load") {
         if (parts.size() < 3) return "ERR 400 bad-args\n";
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
-        bool const was_paused = CPC.paused;
-        if (!was_paused) cpc_pause_and_wait();
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
         int const rc = snapshot_load(parts[2]);
-        if (!was_paused) cpc_resume();
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
       }
     }
@@ -1999,15 +2297,35 @@ std::string handle_command(const std::string& line) {
       return ok_with_context();
     }
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
-      // mem compare <addr1> <addr2> <len>
+      // mem compare <addr1> <addr2> <len> [--view=read|ram]
+      // Same ROM-overlay hazard as mem read / search: comparing a game
+      // variable under a paged-in ROM against a reference buffer must use
+      // --view=ram or both sides read firmware bytes.
       unsigned int const addr1 = parse_number(parts[2]);
       unsigned int const addr2 = parse_number(parts[3]);
       unsigned int const len = parse_number(parts[4]);
+      bool compare_ram_view = false;
+      for (size_t pi = 5; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "write" || v == "ram")
+            compare_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+        } else {
+          return "ERR 400 usage: mem compare <addr1> <addr2> <len> "
+                 "[--view=read|ram]\n";
+        }
+      }
       int diff_count = 0;
       std::string diffs;
+      auto const peek = [compare_ram_view](word a) {
+        return compare_ram_view ? z80_read_mem_via_write_bank(a)
+                                : z80_read_mem(a);
+      };
       for (unsigned int i = 0; i < len; i++) {
-        byte const v1 = z80_read_mem(static_cast<word>(addr1 + i));
-        byte const v2 = z80_read_mem(static_cast<word>(addr2 + i));
+        byte const v1 = peek(static_cast<word>(addr1 + i));
+        byte const v2 = peek(static_cast<word>(addr2 + i));
         if (v1 != v2) {
           diff_count++;
           if (diff_count <= 64) {
@@ -2348,7 +2666,7 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "list") {
-        const auto& bps = z80_list_breakpoints_ref();
+        const auto bps = z80_breakpoints_snapshot();
         std::ostringstream resp;
         resp << "OK count=" << bps.size();
         for (const auto& b : bps) {
@@ -2454,7 +2772,7 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "list") {
-        const auto& bps = z80_list_io_breakpoints_ref();
+        const auto bps = z80_io_breakpoints_snapshot();
         std::ostringstream resp;
         resp << "OK count=" << bps.size();
         for (size_t i = 0; i < bps.size(); i++) {
@@ -2478,8 +2796,15 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
     if (cmd == "step") {
-      cpc_pause_and_wait();  // ensure Z80 thread is not inside z80_execute()
-                             // before touching state
+      // Pause and own the machine through the destructive step work — but
+      // wait for the Z80 thread to go idle WITH A BOUND. A plain lease waits
+      // forever, and this server handles one connection at a time with
+      // handle_command() inline: a Z80 thread stuck for any reason would hang
+      // the entire IPC surface here, before any per-step deadline had even
+      // started, with no way for the caller to send `pause` or anything else.
+      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+      if (!cpc_wait_until_idle(kStepIdleWaitMs))
+        return err_with_context(409, "z80-not-idle");
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -2509,6 +2834,7 @@ std::string handle_command(const std::string& line) {
         if (n < 1) return "ERR 400 bad-args\n";
         g_ipc_instance->frame_step_remaining.store(n);
         g_ipc_instance->frame_step_active.store(true);
+        lease.release();
         cpc_resume();
         g_ipc_instance->wait_frame_step_done();
         return ok_with_context();
@@ -2517,35 +2843,48 @@ std::string handle_command(const std::string& line) {
       if (parts.size() >= 2 && parts[1] == "over") {
         int count = 1;
         if (parts.size() >= 3) count = parse_int(parts[2]);
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
+        };
         for (int i = 0; i < count; i++) {
           word const pc = z80.PC.w.l;
-          if (z80_is_call_or_rst(pc)) {
-            int const len = z80_instruction_length(pc);
-            word const next_pc = static_cast<word>(pc + len);
-            z80_add_breakpoint_ephemeral(next_pc);
-            // Clear stale hits before resume to avoid race conditions
-            uint16_t dummy_pc;
-            bool dummy_watch;
-            g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-            cpc_resume();
-            // Wait for breakpoint hit
-            auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(5);
-            while (true) {
-              uint16_t hit_pc = 0;
-              bool watch = false;
-              if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
-                if (hit_pc == next_pc) break;
-                // If we hit a different breakpoint, stop stepping
-                return "OK breakpoint-hit\n";
-              }
-              if (std::chrono::steady_clock::now() > deadline) {
-                cpc_pause();
+          auto const deadline =
+              std::chrono::steady_clock::now() + std::chrono::seconds(5);
+          if (z80_is_call(pc)) {
+            word const next_pc =
+                static_cast<word>(pc + z80_instruction_length(pc));
+            lease.release();
+            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit)) {
+              case Z80RunUntilResult::Landed:
+                break;
+              case Z80RunUntilResult::OtherBreak:
+                return ok_with_context(breakpoint_hit_body());
+              case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              case Z80RunUntilResult::Stalled:
+                return err_with_context(409, "no-progress");
             }
-            cpc_pause();
+          } else if (z80_is_rst(pc)) {
+            // A CPC firmware RST (08/10/18/28) carries inline operands and
+            // does NOT resume at pc+1, so the old ephemeral-at-pc+len skip
+            // planted a breakpoint on a data byte: it never fired and the
+            // machine free-ran to the deadline. Step into the vector instead
+            // and finish the frame it opened — that lands after the operands
+            // wherever the handler decides they end, with no firmware ABI
+            // hard-coded here. Nested CALLs inside the handler still skip at
+            // full speed.
+            z80_step_instruction();
+            lease.release();
+            switch (z80_step_out_finish(5000, consume_hit)) {
+              case Z80StepOutResult::Done:
+                break;
+              case Z80StepOutResult::BreakpointHit:
+                return ok_with_context(breakpoint_hit_body());
+              case Z80StepOutResult::Timeout:
+                return err_with_context(408, "timeout");
+              case Z80StepOutResult::Stalled:
+                return err_with_context(409, "no-progress");
+            }
           } else {
             z80_step_instruction();
           }
@@ -2554,106 +2893,54 @@ std::string handle_command(const std::string& line) {
       }
       // "step out" — run until the CURRENT function returns.
       //
-      // The legacy z80.step_out flag (with step_out_addresses) was only ever
-      // honoured by the old interpreter core. The subcycle ("faithful") engine
-      // that actually runs never implements it — nothing sets step_in>=2 on a
-      // RET — so the old resume-and-wait just free-ran the whole machine to the
-      // 5s deadline (advancing the game, and from a forced PC clobbering RAM
-      // the caller had staged). Implement step-out with the same primitives
-      // step-over uses: advance instructions — skipping CALL/RST callees at
-      // full speed via an ephemeral breakpoint — until SP climbs ABOVE the
-      // entry SP, i.e. this frame's RET has unwound the stack. This is
-      // nearest-RET / finish semantics and is correct from any point in the
-      // function. Interrupt-safe: an ISR pushes then RET[I/N]s, so SP never
-      // crosses the entry level inside an interrupt; nested calls stay at/below
-      // it too.
+      // The walk itself lives in z80_step_out_finish() (z80_view.cpp) so the
+      // DevTools button runs exactly the same code; see the commentary there
+      // for why the exit is gated on a RET rather than on SP alone, and why
+      // RSTs are stepped rather than skipped. Everything this handler owns is
+      // the 5s budget, the hit consumer, and the mapping to wire replies.
       if (parts.size() >= 2 && parts[1] == "out") {
-        word const sp0 = z80.SP.w.l;
-        auto const deadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        // Signed distance so SP wrap FFFE→0000 after RET counts as finished.
-        auto still_in_frame = [&]() {
-          return static_cast<int16_t>(sp0 - z80.SP.w.l) >= 0;
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
         };
-        while (still_in_frame()) {
-          word const pc = z80.PC.w.l;
-          if (z80_is_call_or_rst(pc)) {
-            // Skip the callee at full speed: break just past the CALL/RST.
-            word const next_pc =
-                static_cast<word>(pc + z80_instruction_length(pc));
-            z80_add_breakpoint_ephemeral(next_pc);
-            uint16_t dummy_pc;
-            bool dummy_watch;
-            g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-            cpc_resume();
-            bool other_break = false;
-            bool foreign_pause = false;
-            while (true) {
-              uint16_t hit_pc = 0;
-              bool watch = false;
-              if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) {
-                if (!watch && hit_pc == next_pc) break;  // our step landed
-                other_break = true;  // a real breakpoint/watchpoint fired
-                break;
-              }
-              if (CPC.paused) {
-                // Someone else paused us (not our ephemeral). Do not fall
-                // through into single-step past their stop.
-                foreign_pause = true;
-                break;
-              }
-              if (std::chrono::steady_clock::now() > deadline) {
-                cpc_pause();
-                z80_remove_ephemeral_breakpoints();
-                return err_with_context(408, "timeout");
-              }
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-            if (!CPC.paused) cpc_pause();
-            if (other_break || foreign_pause) {
-              z80_remove_ephemeral_breakpoints();
-              return ok_with_context("breakpoint-hit");
-            }
-            // Successful landing: engine clears EPHEMERAL on hit; belt-and-
-            // braces in case the pause path skipped that.
-            z80_remove_ephemeral_breakpoints();
-          } else {
-            z80_step_instruction();  // one instruction (probe-blind)
-          }
-          if (std::chrono::steady_clock::now() > deadline) {
-            if (!CPC.paused) cpc_pause();
-            z80_remove_ephemeral_breakpoints();
+        lease.release();  // z80_step_out_finish resumes under its own control
+        switch (z80_step_out_finish(5000, consume_hit)) {
+          case Z80StepOutResult::Done:
+            return ok_with_context();
+          case Z80StepOutResult::BreakpointHit:
+            return ok_with_context(breakpoint_hit_body());
+          case Z80StepOutResult::Timeout:
             return err_with_context(408, "timeout");
-          }
+          case Z80StepOutResult::Stalled:
+            // Nothing can retire: no sub-cycle machine is attached. Distinct
+            // from 408, which means the walk was running and ran out of time.
+            return err_with_context(409, "no-progress");
         }
-        return ok_with_context();
       }
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
       if (parts.size() >= 3 && parts[1] == "to") {
         unsigned int const addr = parse_number(parts[2]);
-        z80_add_breakpoint_ephemeral(static_cast<word>(addr));
-        // Clear stale hits before resume to avoid race conditions
-        uint16_t dummy_pc;
-        bool dummy_watch;
-        g_ipc_instance->consume_breakpoint_hit(dummy_pc, dummy_watch);
-        cpc_resume();
-        auto deadline =
+        auto consume_hit = [](uint16_t& pc, bool& watch) {
+          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
+        };
+        auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (true) {
-          uint16_t hit_pc = 0;
-          bool watch = false;
-          if (g_ipc_instance->consume_breakpoint_hit(hit_pc, watch)) break;
-          if (std::chrono::steady_clock::now() > deadline) {
-            cpc_pause();
+        lease.release();
+        switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
+                                        consume_hit)) {
+          case Z80RunUntilResult::Landed:
+            return ok_with_context();
+          case Z80RunUntilResult::OtherBreak:
+            // Previously indistinguishable: any hit ended the wait and was
+            // reported as a successful run-to-cursor, even a watchpoint or an
+            // unrelated breakpoint that fired on the way.
+            return ok_with_context(breakpoint_hit_body());
+          case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          case Z80RunUntilResult::Stalled:
+            return err_with_context(409, "no-progress");
         }
-        cpc_pause();
-        return ok_with_context();
       }
       // "step [N]" — single-step N instructions
-      cpc_pause();
       int count = 1;
       if (parts.size() >= 2) count = parse_int(parts[1]);
       for (int i = 0; i < count; i++) z80_step_instruction();
@@ -3150,8 +3437,14 @@ std::string handle_command(const std::string& line) {
              "(keydown|keyup|key|chord|type|joy|mouse|gun|state)\n";
 
     if (cmd == "wait" && parts.size() >= 2) {
-      auto timeout_ms = std::chrono::milliseconds(5000);
+      auto timeout_ms = std::chrono::milliseconds(kWaitDefaultTimeoutMs);
       auto deadline = std::chrono::steady_clock::now() + timeout_ms;
+      // The server handles commands on its one thread and stop() joins it:
+      // a wait must give up when the server is stopping, or exit hangs for
+      // the rest of the deadline (up to n x 20ms + 5s for `wait vbl`).
+      auto const server_stopping = []() {
+        return g_ipc_instance != nullptr && !g_ipc_instance->is_running();
+      };
 
       if (parts[1] == "pc") {
         unsigned int const addr = parse_number(parts[2]);
@@ -3160,6 +3453,10 @@ std::string handle_command(const std::string& line) {
                      std::chrono::milliseconds(parse_int(parts[3]));
         cpc_resume();
         while (z80.PC.w.l != addr) {
+          if (server_stopping()) {
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
+          }
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");
@@ -3195,6 +3492,10 @@ std::string handle_command(const std::string& line) {
           if ((memv & static_cast<byte>(mask)) ==
               (static_cast<byte>(val) & static_cast<byte>(mask)))
             break;
+          if (server_stopping()) {
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
+          }
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");
@@ -3213,21 +3514,9 @@ std::string handle_command(const std::string& line) {
             uint16_t pc = 0;
             bool watch = false;
             if (g_ipc_instance->consume_breakpoint_hit(pc, watch)) {
-              // The hit is published by the breakpoint hook, which runs inside
-              // the frame's debug sync -- the main loop applies cpc_pause()
-              // only afterwards. Returning here on the latch alone told the
-              // client "stopped at a breakpoint" while the machine was still
-              // running, so a client that immediately resumed raced the
-              // deferred pause: the `run` landed first, the pause landed
-              // second, and the machine sat stopped through the NEXT arm.
-              // That is the period-2 "every other wait bp misses" alternation
-              // in beads-6561. Wait for the stop we just promised.
-              const auto stop_by = std::chrono::steady_clock::now() +
-                                   std::chrono::milliseconds(500);
-              while (!CPC.paused &&
-                     std::chrono::steady_clock::now() < stop_by) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-              }
+              // Publication happens inside the epoch-validated pause
+              // transaction, so consuming a hit proves the machine stopped
+              // before this response became observable.
               char resp[128];
               if (watch) {
                 snprintf(
@@ -3241,6 +3530,7 @@ std::string handle_command(const std::string& line) {
               return {resp};
             }
           }
+          if (server_stopping()) return "ERR 503 shutting-down\n";
           if (std::chrono::steady_clock::now() > deadline) {
             return err_with_context(408, "timeout");
           }
@@ -3249,16 +3539,22 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[1] == "vbl") {
         int const count = parse_int(parts[2]);
-        if (parts.size() >= 4)
-          deadline = std::chrono::steady_clock::now() +
-                     std::chrono::milliseconds(parse_int(parts[3]));
+        deadline =
+            std::chrono::steady_clock::now() +
+            (parts.size() >= 4 ? std::chrono::milliseconds(parse_int(parts[3]))
+                               : ipc_wait_vbl_default_timeout(count));
         cpc_resume();
         for (int i = 0; i < count; i++) {
+          if (server_stopping()) {
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
+          }
           if (std::chrono::steady_clock::now() > deadline) {
             cpc_pause();
             return err_with_context(408, "timeout");
           }
-          std::this_thread::sleep_for(std::chrono::milliseconds(20));
+          std::this_thread::sleep_for(
+              std::chrono::milliseconds(kWaitVblMsPerBlank));
         }
         cpc_pause();
         return ok_with_context();
@@ -3474,7 +3770,7 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "list") {
-        const auto& wps = z80_list_watchpoints_ref();
+        const auto wps = z80_watchpoints_snapshot();
         std::ostringstream resp;
         resp << "OK count=" << wps.size();
         for (size_t i = 0; i < wps.size(); i++) {
@@ -3569,13 +3865,37 @@ std::string handle_command(const std::string& line) {
 
     // --- Memory search ---
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "find") {
-      unsigned int const start = parse_number(parts[3]);
-      unsigned int end = parse_number(parts[4]);
-      end = std::min<unsigned int>(end, 0xFFFF);
+      // mem find hex|text|asm <start> <end> <pattern> [--view=read|ram]
+      // Hex/text scan DATA, so they honour --view=ram like mem read / search.
+      // Asm disassembles the CPU-visible stream and always uses that view.
+      bool find_ram_view = false;
+      std::vector<std::string> args;
+      for (size_t pi = 2; pi < parts.size(); pi++) {
+        if (parts[pi].rfind("--view=", 0) == 0) {
+          std::string const v = parts[pi].substr(7);
+          if (v == "write" || v == "ram")
+            find_ram_view = true;
+          else if (v != "read")
+            return "ERR 400 bad-view (read|ram)\n";
+          continue;
+        }
+        args.push_back(parts[pi]);
+      }
+      if (args.size() < 4)
+        return "ERR 400 usage: mem find (hex|text|asm) <start> <end> "
+               "<pattern> [--view=read|ram]\n";
 
-      if (parts[2] == "hex" && parts.size() >= 6) {
+      const std::string& find_mode = args[0];
+      unsigned int const start = parse_number(args[1]);
+      unsigned int end = parse_number(args[2]);
+      end = std::min<unsigned int>(end, 0xFFFF);
+      auto const peek = [find_ram_view](word a) {
+        return find_ram_view ? z80_read_mem_via_write_bank(a) : z80_read_mem(a);
+      };
+
+      if (find_mode == "hex") {
         // Parse hex pattern with ?? wildcards
-        const std::string& hex = parts[5];
+        const std::string& hex = args[3];
         std::vector<int> pattern;  // -1 = wildcard, else byte value
         for (size_t i = 0; i + 1 < hex.size(); i += 2) {
           if (hex[i] == '?' && hex[i + 1] == '?') {
@@ -3594,7 +3914,7 @@ std::string handle_command(const std::string& line) {
           bool match = true;
           for (size_t j = 0; j < pattern.size(); j++) {
             if (pattern[j] < 0) continue;
-            if (z80_read_mem(static_cast<word>(addr + j)) !=
+            if (peek(static_cast<word>(addr + j)) !=
                 static_cast<byte>(pattern[j])) {
               match = false;
               break;
@@ -3609,12 +3929,12 @@ std::string handle_command(const std::string& line) {
         resp << "\n";
         return resp.str();
       }
-      if (parts[2] == "text" && parts.size() >= 6) {
+      if (find_mode == "text") {
         // Collect text from remaining parts (may have spaces)
         std::string text;
-        for (size_t pi = 5; pi < parts.size(); pi++) {
+        for (size_t pi = 3; pi < args.size(); pi++) {
           if (!text.empty()) text += " ";
-          text += parts[pi];
+          text += args[pi];
         }
         // Strip surrounding quotes
         if (text.size() >= 2 && text.front() == '"' && text.back() == '"') {
@@ -3628,7 +3948,7 @@ std::string handle_command(const std::string& line) {
              addr + text.size() - 1 <= end && found < 32; addr++) {
           bool match = true;
           for (size_t j = 0; j < text.size(); j++) {
-            if (z80_read_mem(static_cast<word>(addr + j)) !=
+            if (peek(static_cast<word>(addr + j)) !=
                 static_cast<byte>(text[j])) {
               match = false;
               break;
@@ -3643,12 +3963,14 @@ std::string handle_command(const std::string& line) {
         resp << "\n";
         return resp.str();
       }
-      if (parts[2] == "asm" && parts.size() >= 6) {
-        // Collect asm pattern from remaining parts
+      if (find_mode == "asm") {
+        // Collect asm pattern from remaining parts. Always CPU view —
+        // disassembly is of the instruction stream the Z80 would fetch.
+        (void)find_ram_view;
         std::string pattern;
-        for (size_t pi = 5; pi < parts.size(); pi++) {
+        for (size_t pi = 3; pi < args.size(); pi++) {
           if (!pattern.empty()) pattern += " ";
-          pattern += parts[pi];
+          pattern += args[pi];
         }
         // Lowercase pattern for case-insensitive matching
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
@@ -3778,7 +4100,8 @@ std::string handle_command(const std::string& line) {
     if (cmd == "disk") {
       if (parts.size() < 2)
         return "ERR 400 missing subcommand "
-               "(formats|format|new|ls|cat|get|put|rm|info|sector)\n";
+               "(formats|format|new|status|save|eject|ls|cat|get|put|rm|info|"
+               "sector)\n";
       if (parts[1] == "formats") {
         auto names = disk_format_names();
         std::ostringstream resp;
@@ -3793,282 +4116,438 @@ std::string handle_command(const std::string& line) {
         // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
         // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
+        CpcPauseLease lease;  // idle before replacing the live medium
+        bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
       if (parts[1] == "new") {
         if (parts.size() < 3)
-          return "ERR 400 usage: disk new <path> [format]\n";
+          return "ERR 400 usage: disk new <path> [format] [sector|flux]\n";
         const std::string& path = parts[2];
         std::string const fmt = (parts.size() >= 4) ? parts[3] : "data";
-        std::string const err = disk_create_new(path, fmt);
+        DiskBacking backing = DiskBacking::Sector;
+        if (parts.size() >= 5) {
+          if (parts[4] == "flux")
+            backing = DiskBacking::Flux;
+          else if (parts[4] != "sector")
+            return "ERR 400 backing must be sector or flux\n";
+        }
+        std::string const err = disk_create_new(path, fmt, backing);
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
-      // Helper lambda: resolve drive letter to t_drive*
-      auto resolve_drive = [&](const std::string& letter) -> t_drive* {
-        if (letter.empty()) return nullptr;
+      // Helper: resolve drive letter to unit (0=A, 1=B) or -1.
+      auto resolve_unit = [&](const std::string& letter) -> int {
+        if (letter.empty()) return -1;
         char const c = static_cast<char>(
             std::toupper(static_cast<unsigned char>(letter[0])));
-        if (c == 'A') return &driveA;
-        if (c == 'B') return &driveB;
-        return nullptr;
+        if (c == 'A') return 0;
+        if (c == 'B') return 1;
+        return -1;
+      };
+      auto disk_caps = [&](int unit) -> FluxSaveCaps {
+        if (subcycle_bridge_active()) return flux_save_caps(unit);
+        FluxSaveCaps caps;
+        const t_drive& d = unit == 0 ? driveA : driveB;
+        if (d.tracks > 0) {
+          caps.present = true;
+          caps.can_dsk = true;
+        }
+        return caps;
+      };
+      // Machine medium is authoritative (beads-lly6): pull into the host view
+      // before tools read/edit; push after mutations. Lease owns pause through
+      // the critical section (zx8h).
+      auto with_synced_drive =
+          [&](const std::string& letter, bool commit,
+              const std::function<std::string(t_drive*)>& body) -> std::string {
+        const int unit = resolve_unit(letter);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        t_drive* drv = unit == 0 ? &driveA : &driveB;
+        CpcPauseLease lease;
+        bool const was_paused = lease.was_paused();
+        if (subcycle_bridge_active()) {
+          subcycle_bridge_pull_drive_view(static_cast<uint8_t>(unit));
+        }
+        std::vector<uint8_t> snapshot;
+        if (commit && subcycle_bridge_active() && drv->tracks > 0) {
+          (void)dsk_to_bytes(drv, snapshot);
+        }
+        std::string result = body(drv);
+        if (commit && result.rfind("OK", 0) == 0 && subcycle_bridge_active()) {
+          if (!subcycle_bridge_push_drive_view(static_cast<uint8_t>(unit))) {
+            subcycle_bridge_rollback_host_view(static_cast<uint8_t>(unit),
+                                               snapshot);
+            result = "ERR failed to update live FDC medium\n";
+          }
+        }
+        if (!was_paused) {
+          lease.release();
+          cpc_resume();
+        }
+        return result;
       };
 
       if (parts[1] == "ls") {
         if (parts.size() < 3) return "ERR 400 usage: disk ls <A|B>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto files = disk_list_files(drv, err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        std::ostringstream resp;
-        resp << "OK\n";
-        for (const auto& f : files) {
-          resp << f.display_name << " " << f.size_bytes;
-          if (f.read_only) resp << " R/O";
-          if (f.system) resp << " SYS";
-          resp << "\n";
-        }
-        return resp.str();
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto files = disk_list_files(drv, err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              std::ostringstream resp;
+              resp << "OK\n";
+              for (const auto& f : files) {
+                resp << f.display_name << " " << f.size_bytes;
+                if (f.read_only) resp << " R/O";
+                if (f.system) resp << " SYS";
+                resp << "\n";
+              }
+              return resp.str();
+            });
       }
       if (parts[1] == "cat") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk cat <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        // Check for AMSDOS header -- if present, skip it and report actual
-        // length
-        auto hdr_info = disk_parse_amsdos_header(raw);
-        size_t offset = 0;
-        size_t reported_size = raw.size();
-        if (hdr_info.valid && raw.size() >= 128) {
-          offset = 128;
-          reported_size = hdr_info.file_length;
-        }
-        std::ostringstream resp;
-        resp << "OK size=" << reported_size << "\n";
-        resp << std::hex << std::uppercase << std::setfill('0');
-        for (size_t i = offset; i < raw.size() && (i - offset) < reported_size;
-             i++) {
-          if (i > offset) resp << ' ';
-          resp << std::setw(2) << static_cast<unsigned>(raw[i]);
-        }
-        resp << "\n";
-        return resp.str();
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              // Check for AMSDOS header -- if present, skip it and report
+              // actual length
+              auto hdr_info = disk_parse_amsdos_header(raw);
+              size_t offset = 0;
+              size_t reported_size = raw.size();
+              if (hdr_info.valid && raw.size() >= 128) {
+                offset = 128;
+                reported_size = hdr_info.file_length;
+              }
+              std::ostringstream resp;
+              resp << "OK size=" << reported_size << "\n";
+              resp << std::hex << std::uppercase << std::setfill('0');
+              for (size_t i = offset;
+                   i < raw.size() && (i - offset) < reported_size; i++) {
+                if (i > offset) resp << ' ';
+                resp << std::setw(2) << static_cast<unsigned>(raw[i]);
+              }
+              resp << "\n";
+              return resp.str();
+            });
       }
       if (parts[1] == "get") {
         if (parts.size() < 5)
           return "ERR 400 usage: disk get <A|B> <filename> <local_path>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        // Strip AMSDOS header if present
-        auto hdr_info = disk_parse_amsdos_header(raw);
-        size_t offset = 0;
-        size_t length = raw.size();
-        if (hdr_info.valid && raw.size() >= 128) {
-          offset = 128;
-          length = hdr_info.file_length;
-        }
-        if (offset + length > raw.size()) length = raw.size() - offset;
-        std::ofstream out(parts[4], std::ios::binary);
-        if (!out) return "ERR failed to open " + parts[4] + "\n";
-        out.write(reinterpret_cast<const char*>(raw.data() + offset),
-                  static_cast<std::streamsize>(length));
-        out.close();
-        return "OK bytes=" + std::to_string(length) + "\n";
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              // Strip AMSDOS header if present
+              auto hdr_info = disk_parse_amsdos_header(raw);
+              size_t offset = 0;
+              size_t length = raw.size();
+              if (hdr_info.valid && raw.size() >= 128) {
+                offset = 128;
+                length = hdr_info.file_length;
+              }
+              if (offset + length > raw.size()) length = raw.size() - offset;
+              std::ofstream out(parts[4], std::ios::binary);
+              if (!out) return "ERR failed to open " + parts[4] + "\n";
+              out.write(reinterpret_cast<const char*>(raw.data() + offset),
+                        static_cast<std::streamsize>(length));
+              out.close();
+              return "OK bytes=" + std::to_string(length) + "\n";
+            });
       }
       if (parts[1] == "put") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename]\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        const std::string& local_path = parts[3];
-        std::string cpc_name;
-        if (parts.size() >= 5) {
-          cpc_name = parts[4];
-          // Uppercase it
-          for (auto& c : cpc_name)
-            c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        } else {
-          cpc_name = disk_to_cpc_filename(local_path);
-          if (cpc_name.empty())
-            return "ERR cannot derive CPC filename from path\n";
-        }
-        std::ifstream in(local_path, std::ios::binary);
-        if (!in) return "ERR cannot open " + local_path + "\n";
-        std::vector<uint8_t> const data((std::istreambuf_iterator<char>(in)),
-                                        std::istreambuf_iterator<char>());
-        in.close();
-        std::string const err = disk_write_file(drv, cpc_name, data, true);
-        if (!err.empty()) return "ERR " + err + "\n";
-        return "OK\n";
+        return with_synced_drive(
+            parts[2], true, [&](t_drive* drv) -> std::string {
+              const std::string& local_path = parts[3];
+              std::string cpc_name;
+              if (parts.size() >= 5) {
+                cpc_name = parts[4];
+                // Uppercase it
+                for (auto& c : cpc_name)
+                  c = static_cast<char>(
+                      std::toupper(static_cast<unsigned char>(c)));
+              } else {
+                cpc_name = disk_to_cpc_filename(local_path);
+                if (cpc_name.empty())
+                  return "ERR cannot derive CPC filename from path\n";
+              }
+              std::ifstream in(local_path, std::ios::binary);
+              if (!in) return "ERR cannot open " + local_path + "\n";
+              std::vector<uint8_t> const data(
+                  (std::istreambuf_iterator<char>(in)),
+                  std::istreambuf_iterator<char>());
+              in.close();
+              std::string const err =
+                  disk_write_file(drv, cpc_name, data, true);
+              if (!err.empty()) return "ERR " + err + "\n";
+              return "OK\n";
+            });
       }
       if (parts[1] == "rm") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk rm <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        std::string const err = disk_delete_file(drv, parts[3]);
-        if (!err.empty()) return "ERR " + err + "\n";
-        return "OK\n";
+        return with_synced_drive(
+            parts[2], true, [&](t_drive* drv) -> std::string {
+              std::string const err = disk_delete_file(drv, parts[3]);
+              if (!err.empty()) return "ERR " + err + "\n";
+              return "OK\n";
+            });
       }
       if (parts[1] == "info") {
         if (parts.size() < 4)
           return "ERR 400 usage: disk info <A|B> <filename>\n";
-        t_drive* drv = resolve_drive(parts[2]);
-        if (!drv) return "ERR 400 invalid drive letter\n";
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        std::string err;
-        auto raw = disk_read_file(drv, parts[3], err);
-        if (!err.empty()) return "ERR " + err + "\n";
-        auto info = disk_parse_amsdos_header(raw);
-        if (!info.valid) return "ERR no valid AMSDOS header\n";
-        char buf[256];
-        const char* type_str = "unknown";
-        switch (info.type) {
-          case AmsdosFileType::BASIC:
-            type_str = "basic";
-            break;
-          case AmsdosFileType::PROTECTED:
-            type_str = "protected";
-            break;
-          case AmsdosFileType::BINARY:
-            type_str = "binary";
-            break;
-          default:
-            break;
-        }
-        std::snprintf(buf, sizeof(buf),
-                      "OK type=%s load=%04X exec=%04X size=%u\n", type_str,
-                      info.load_addr, info.exec_addr, info.file_length);
-        return {buf};
+        return with_synced_drive(
+            parts[2], false, [&](t_drive* drv) -> std::string {
+              // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+              // variable is mutated (out-param/compound-assign/loop/reference)
+              std::string err;
+              auto raw = disk_read_file(drv, parts[3], err);
+              if (!err.empty()) return "ERR " + err + "\n";
+              auto info = disk_parse_amsdos_header(raw);
+              if (!info.valid) return "ERR no valid AMSDOS header\n";
+              char buf[256];
+              const char* type_str = "unknown";
+              switch (info.type) {
+                case AmsdosFileType::BASIC:
+                  type_str = "basic";
+                  break;
+                case AmsdosFileType::PROTECTED:
+                  type_str = "protected";
+                  break;
+                case AmsdosFileType::BINARY:
+                  type_str = "binary";
+                  break;
+                default:
+                  break;
+              }
+              std::snprintf(
+                  buf, sizeof(buf), "OK type=%s load=%04X exec=%04X size=%u\n",
+                  type_str, info.load_addr, info.exec_addr, info.file_length);
+              return std::string{buf};
+            });
       }
       if (parts[1] == "sector") {
         if (parts.size() < 3)
           return "ERR 400 usage: disk sector (read|write|info) ...\n";
-
-        // Helper lambda: resolve drive letter to t_drive* (reuse from above
-        // scope)
-        auto sec_resolve_drive = [&](const std::string& letter) -> t_drive* {
-          if (letter.empty()) return nullptr;
-          char const c = static_cast<char>(
-              std::toupper(static_cast<unsigned char>(letter[0])));
-          if (c == 'A') return &driveA;
-          if (c == 'B') return &driveB;
-          return nullptr;
-        };
 
         if (parts[2] == "read") {
           // disk sector read <drive> <track> <side> <sector_id>
           if (parts.size() < 7)
             return "ERR 400 usage: disk sector read <drive> <track> <side> "
                    "<sector_id>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          uint8_t sector_id =
-              static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err;
-          auto data = disk_sector_read(drv, trk, side, sector_id, err);
-          if (!err.empty()) return "ERR " + err + "\n";
-          std::ostringstream resp;
-          resp << "OK size=" << data.size() << "\n";
-          resp << std::hex << std::uppercase << std::setfill('0');
-          for (size_t i = 0; i < data.size(); i++) {
-            if (i > 0) resp << ' ';
-            resp << std::setw(2) << static_cast<unsigned>(data[i]);
-          }
-          resp << "\n";
-          return resp.str();
+          return with_synced_drive(
+              parts[3], false, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                uint8_t sector_id =
+                    static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err;
+                auto data = disk_sector_read(drv, trk, side, sector_id, err);
+                if (!err.empty()) return "ERR " + err + "\n";
+                std::ostringstream resp;
+                resp << "OK size=" << data.size() << "\n";
+                resp << std::hex << std::uppercase << std::setfill('0');
+                for (size_t i = 0; i < data.size(); i++) {
+                  if (i > 0) resp << ' ';
+                  resp << std::setw(2) << static_cast<unsigned>(data[i]);
+                }
+                resp << "\n";
+                return resp.str();
+              });
         }
         if (parts[2] == "write") {
           // disk sector write <drive> <track> <side> <sector_id> <hex_data>
           if (parts.size() < 8)
             return "ERR 400 usage: disk sector write <drive> <track> <side> "
                    "<sector_id> <hex_data>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          uint8_t const sector_id =
-              static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
-          // Parse hex data: remaining parts are space-separated hex bytes
-          std::vector<uint8_t> data;
-          for (size_t i = 7; i < parts.size(); i++) {
-            // Each part may be a single hex byte like "FF" or multiple bytes
-            // Handle both "FF" and "FFAA" formats
-            const std::string& hex_str = parts[i];
-            for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
-              std::string const byte_str = hex_str.substr(j, 2);
-              data.push_back(
-                  static_cast<uint8_t>(std::stoul(byte_str, nullptr, 16)));
-            }
-          }
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err = disk_sector_write(drv, trk, side, sector_id, data);
-          if (!err.empty()) return "ERR " + err + "\n";
-          return "OK\n";
+          return with_synced_drive(
+              parts[3], true, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                uint8_t const sector_id =
+                    static_cast<uint8_t>(std::stoul(parts[6], nullptr, 16));
+                // Parse hex data: remaining parts are space-separated hex bytes
+                std::vector<uint8_t> data;
+                for (size_t i = 7; i < parts.size(); i++) {
+                  // Each part may be a single hex byte like "FF" or multiple
+                  // bytes Handle both "FF" and "FFAA" formats
+                  const std::string& hex_str = parts[i];
+                  for (size_t j = 0; j + 1 < hex_str.size(); j += 2) {
+                    std::string const byte_str = hex_str.substr(j, 2);
+                    data.push_back(static_cast<uint8_t>(
+                        std::stoul(byte_str, nullptr, 16)));
+                  }
+                }
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err =
+                    disk_sector_write(drv, trk, side, sector_id, data);
+                if (!err.empty()) return "ERR " + err + "\n";
+                return "OK\n";
+              });
         }
         if (parts[2] == "info") {
           // disk sector info <drive> <track> <side>
           if (parts.size() < 6)
             return "ERR 400 usage: disk sector info <drive> <track> <side>\n";
-          t_drive* drv = sec_resolve_drive(parts[3]);
-          if (!drv) return "ERR 400 invalid drive letter\n";
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int trk = static_cast<unsigned int>(parse_number(parts[4]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          unsigned int side = static_cast<unsigned int>(parse_number(parts[5]));
-          // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-          // mutated (out-param/compound-assign/loop/reference)
-          std::string err;
-          auto sectors = disk_sector_info(drv, trk, side, err);
-          if (!err.empty()) return "ERR " + err + "\n";
-          std::ostringstream resp;
-          resp << "OK sectors=" << sectors.size() << "\n";
-          resp << std::hex << std::uppercase << std::setfill('0');
-          for (const auto& s : sectors) {
-            resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
-                 << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
-                 << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
-                 << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
-                 << " size=" << std::dec << s.size << "\n";
-            resp << std::hex;  // reset for next iteration
-          }
-          return resp.str();
+          return with_synced_drive(
+              parts[3], false, [&](t_drive* drv) -> std::string {
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int trk =
+                    static_cast<unsigned int>(parse_number(parts[4]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                unsigned int side =
+                    static_cast<unsigned int>(parse_number(parts[5]));
+                // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP —
+                // variable is mutated
+                // (out-param/compound-assign/loop/reference)
+                std::string err;
+                auto sectors = disk_sector_info(drv, trk, side, err);
+                if (!err.empty()) return "ERR " + err + "\n";
+                std::ostringstream resp;
+                resp << "OK sectors=" << sectors.size() << "\n";
+                resp << std::hex << std::uppercase << std::setfill('0');
+                for (const auto& s : sectors) {
+                  resp << "C=" << std::setw(2) << static_cast<unsigned>(s.C)
+                       << " H=" << std::setw(2) << static_cast<unsigned>(s.H)
+                       << " R=" << std::setw(2) << static_cast<unsigned>(s.R)
+                       << " N=" << std::setw(2) << static_cast<unsigned>(s.N)
+                       << " size=" << std::dec << s.size << "\n";
+                  resp << std::hex;  // reset for next iteration
+                }
+                return resp.str();
+              });
         }
         return "ERR 400 unknown sector subcommand (read|write|info)\n";
+      }
+      if (parts[1] == "status") {
+        if (parts.size() < 3) return "ERR 400 usage: disk status <A|B>\n";
+        const int unit = resolve_unit(parts[2]);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        CpcPauseLease lease;
+        // A just-issued `load` only queues the FDC insert. Apply it while
+        // idle so caps match the disc the agent thinks is mounted.
+        subcycle_bridge_apply_pending_media();
+        const FluxSaveCaps caps = disk_caps(unit);
+        lease.restore_run_state();
+        const char* backing = "empty";
+        if (caps.present) backing = caps.can_scp ? "flux" : "sector";
+        std::ostringstream resp;
+        resp << "OK present=" << (caps.present ? 1 : 0)
+             << " backing=" << backing << " can_dsk=" << (caps.can_dsk ? 1 : 0)
+             << " can_scp=" << (caps.can_scp ? 1 : 0)
+             << " can_hfe=" << (caps.can_hfe ? 1 : 0) << "\n";
+        return resp.str();
+      }
+      if (parts[1] == "save") {
+        if (parts.size() < 4)
+          return "ERR 400 usage: disk save <A|B> <path> [dsk|scp|hfe]\n";
+        const int unit = resolve_unit(parts[2]);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        const std::string& path = parts[3];
+        if (!is_safe_path(path)) return "ERR 403 path-traversal-blocked\n";
+        std::string fmt_name = parts.size() >= 5 ? parts[4] : "dsk";
+        for (auto& c : fmt_name)
+          c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        SaveFormat fmt = SaveFormat::Dsk;
+        if (fmt_name == "dsk") {
+          fmt = SaveFormat::Dsk;
+        } else if (fmt_name == "scp") {
+          fmt = SaveFormat::Scp;
+        } else if (fmt_name == "hfe") {
+          fmt = SaveFormat::Hfe;
+        } else {
+          return "ERR 400 format must be dsk, scp, or hfe\n";
+        }
+        CpcPauseLease lease;
+        subcycle_bridge_apply_pending_media();
+        const FluxSaveCaps caps = disk_caps(unit);
+        const bool allowed = (fmt == SaveFormat::Dsk && caps.can_dsk) ||
+                             (fmt == SaveFormat::Scp && caps.can_scp) ||
+                             (fmt == SaveFormat::Hfe && caps.can_hfe);
+        if (!allowed) {
+          lease.restore_run_state();
+          if (!caps.present && fmt == SaveFormat::Dsk)
+            return "ERR 404 empty-drive\n";
+          return "ERR 409 save-format-unavailable\n";
+        }
+        std::string err;
+        bool ok = false;
+        if (subcycle_bridge_active()) {
+          ok = flux_save_to_file(unit, fmt, path, err);
+        } else {
+          ok = dsk_save(path, unit == 0 ? &driveA : &driveB) == 0;
+          if (!ok) err = "write error";
+        }
+        lease.restore_run_state();
+        if (!ok) return "ERR 500 " + err + "\n";
+        return "OK\n";
+      }
+      if (parts[1] == "eject") {
+        if (parts.size() < 3) return "ERR 400 usage: disk eject <A|B>\n";
+        const int unit = resolve_unit(parts[2]);
+        if (unit < 0) return "ERR 400 invalid drive letter\n";
+        CpcPauseLease lease;
+        dsk_eject(unit == 0 ? &driveA : &driveB);
+        // dsk_eject only queues FDC unmount for the next frame. Apply now
+        // while the Z80 is idle so the next IPC command cannot pull
+        // the disc back into the host view. This must run BEFORE clearing
+        // CPC.driveA/B.file below: the deferred apply flushes any dirty
+        // sectors back to that path (flush_dirty_media_unit), so clearing
+        // it first would make the flush a silent no-op and drop the writes.
+        subcycle_bridge_apply_pending_media();
+        if (unit == 0)
+          CPC.driveA.file.clear();
+        else
+          CPC.driveB.file.clear();
+        lease.restore_run_state();
+        return "OK\n";
       }
       return "ERR 400 unknown disk subcommand\n";
     }
@@ -4310,8 +4789,54 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[1] == "load") {
         if (parts.size() < 3) return "ERR 400 missing profile name\n";
+        // ConfigProfileManager::load() is pure state application — it writes
+        // CPC.model/ram_size/etc with no idle and no rebuild. At runtime
+        // that races the Z80 thread and leaves banks/ASIC/ROMs on the old
+        // machine (beads-x3ka). Hold a pause lease across the apply; when
+        // the machine identity actually changed, rebuild on the main thread
+        // like `config apply` / Options Apply.
+        CpcPauseLease lease;
+        unsigned int const old_model = CPC.model;
+        unsigned int const old_ram = CPC.ram_size;
+
         auto err = g_profile_manager.load(parts[2]);
-        if (!err.empty()) return "ERR " + err + "\n";
+        if (!err.empty()) {
+          lease.restore_run_state();
+          return "ERR " + err + "\n";
+        }
+
+        bool const needs_rebuild =
+            CPC.model != old_model || CPC.ram_size != old_ram;
+        if (needs_rebuild) {
+          // Drop any staged `config set model` — the profile already wrote
+          // the live CPC.model, and ipc_drain_rebuild would otherwise
+          // overwrite it with a stale pending value.
+          g_pending_model.store(-1);
+          std::string const rebuild_err = ipc_request_rebuild_and_wait();
+          if (!rebuild_err.empty()) {
+            // An in-flight rebuild may still finish after 504
+            // rebuild-still-running. Leave the target identity in CPC.*
+            // and stay paused so we do not lie about a machine the drain
+            // is still building. Restore identity only when the rebuild
+            // completed as a failure.
+            const bool in_flight =
+                rebuild_err.find("rebuild-still-running") != std::string::npos;
+            if (!in_flight) {
+              CPC.model = old_model;
+              CPC.ram_size = old_ram;
+              lease.restore_run_state();
+            }
+            return rebuild_err;
+          }
+        } else {
+          update_cpc_speed();
+          if (CPC.InputMapper) CPC.InputMapper->set_joystick_emulation();
+        }
+
+        // Inner rebuild saw us already paused (outer lease), so it left the
+        // machine stopped. Soft loads also stay paused under the lease.
+        // Restore the caller's run state explicitly.
+        lease.restore_run_state();
         return "OK\n";
       }
       if (parts[1] == "save") {
@@ -4343,36 +4868,8 @@ std::string handle_command(const std::string& line) {
     // --- Config commands ---
     if (cmd == "config" && parts.size() >= 2) {
       if (parts[1] == "apply") {
-        // Hand the rebuild to the main thread and wait for it (see
-        // IpcRebuildPending). Never call koncpc_rebuild_machine() from here.
-        std::unique_lock<std::mutex> lock(g_rebuild_pending.mutex);
-        g_rebuild_pending.done = false;
-        g_rebuild_pending.requested = true;
-        if (!g_rebuild_pending.cv.wait_for(lock, std::chrono::seconds(10), [] {
-              return g_rebuild_pending.done;
-            })) {
-          // The main thread clears `requested` before running the rebuild, so a
-          // slow rebuild can still finish after we time out. Prefer that result
-          // over a lying 504; only cancel when the drain never claimed the
-          // work.
-          if (g_rebuild_pending.done) {
-            // Fall through to the result below.
-          } else if (g_rebuild_pending.requested) {
-            g_rebuild_pending.requested = false;
-            return "ERR 504 rebuild-not-drained (main loop did not run)\n";
-          } else {
-            // Drain claimed it; wait a bit more for completion rather than
-            // reporting "main loop did not run" while a rebuild is in flight.
-            if (!g_rebuild_pending.cv.wait_for(
-                    lock, std::chrono::seconds(30),
-                    [] { return g_rebuild_pending.done; })) {
-              return "ERR 504 rebuild-still-running\n";
-            }
-          }
-        }
-        int const err = g_rebuild_pending.result;
-        if (err != 0)
-          return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
+        std::string const rebuild_err = ipc_request_rebuild_and_wait();
+        if (!rebuild_err.empty()) return rebuild_err;
         return "OK\n";
       }
       if (parts[1] == "get" && parts.size() >= 3) {
@@ -4411,6 +4908,50 @@ std::string handle_command(const std::string& line) {
         }
         if (parts[2] == "m4_rom_slot") {
           return "OK " + std::to_string(g_m4board.rom_slot) + "\n";
+        }
+        if (parts[2] == "kbd_layout") {
+          // The live map, plus the staged one while a `set` awaits the drain.
+          std::scoped_lock const lock(g_ipc_keymap.mutex);
+          if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
+          std::string resp = "OK " + g_ipc_keymap.live;
+          if (g_ipc_keymap.name) resp += " pending=" + *g_ipc_keymap.name;
+          return resp + "\n";
+        }
+        if (parts[2] == "kbd_layouts") {
+          std::string resources_path;
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
+            resources_path = g_ipc_keymap.resources_path;
+          }
+          std::string resp = "OK\n";
+          for (const auto& f : InputMapper::host_layout_files(resources_path))
+            resp += f + "\n";
+          return resp;
+        }
+        if (parts[2] == "fullscreen") {
+          std::scoped_lock const lock(g_ipc_window.mutex);
+          if (!g_ipc_window.known) return "ERR 503 no-window\n";
+          std::string resp =
+              "OK " + std::string(g_ipc_window.is_fullscreen ? "1" : "0");
+          if (g_ipc_window.fullscreen) {
+            resp += " pending=" + std::to_string(*g_ipc_window.fullscreen);
+          }
+          return resp + "\n";
+        }
+        if (parts[2] == "window") {
+          std::scoped_lock const lock(g_ipc_window.mutex);
+          if (!g_ipc_window.known) return "ERR 503 no-window\n";
+          return "OK w=" + std::to_string(g_ipc_window.w) +
+                 " h=" + std::to_string(g_ipc_window.h) +
+                 " scale=" + std::to_string(g_ipc_window.scale) +
+                 " fullscreen=" + (g_ipc_window.is_fullscreen ? "1" : "0") +
+                 "\n";
+        }
+        if (parts[2] == "file") {
+          std::scoped_lock const lock(g_ipc_config_file.mutex);
+          if (g_ipc_config_file.path.empty()) return "ERR 503 not-ready\n";
+          return "OK " + g_ipc_config_file.path + "\n";
         }
         return "ERR 400 unknown-config-key\n";
       }
@@ -4467,6 +5008,32 @@ std::string handle_command(const std::string& line) {
           if (pos == std::string::npos) return "ERR 400 bad-args\n";
           g_m4board.sd_root_path = line.substr(pos + 11);
           return "OK\n";
+        }
+        if (parts[2] == "kbd_layout") {
+          std::string resources_path;
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            if (g_ipc_keymap.live.empty()) return "ERR 503 not-ready\n";
+            resources_path = g_ipc_keymap.resources_path;
+          }
+          const auto files = InputMapper::host_layout_files(resources_path);
+          if (std::find(files.begin(), files.end(), parts[3]) == files.end()) {
+            return "ERR 400 unknown-kbd-layout (see config get kbd_layouts)\n";
+          }
+          {
+            std::scoped_lock const lock(g_ipc_keymap.mutex);
+            g_ipc_keymap.name = parts[3];
+          }
+          return "OK (applied on next frame)\n";
+        }
+        if (parts[2] == "fullscreen") {
+          if (parts[3] != "0" && parts[3] != "1") {
+            return "ERR 400 fullscreen must be 0 or 1\n";
+          }
+          std::scoped_lock const lock(g_ipc_window.mutex);
+          if (!g_ipc_window.known) return "ERR 503 no-window\n";
+          g_ipc_window.fullscreen = parts[3] == "1" ? 1 : 0;
+          return "OK (applied on next frame)\n";
         }
         return "ERR 400 unknown-config-key\n";
       }
@@ -5092,10 +5659,13 @@ std::string handle_command(const std::string& line) {
           return "ERR 500 playback-start-failed\n";
         // Load the embedded snapshot to restore state
         {
-          bool const was_paused = CPC.paused;
-          if (!was_paused) cpc_pause_and_wait();
+          CpcPauseLease lease;
+          bool const was_paused = lease.was_paused();
           int const rc = snapshot_load(snap_path);
-          if (!was_paused) cpc_resume();
+          if (!was_paused) {
+            lease.release();
+            cpc_resume();
+          }
           if (rc != 0) {
             g_session.stop_playback();
             return "ERR 500 snapshot-load-failed\n";
@@ -5474,10 +6044,11 @@ void KoncepcjaIpcServer::stop() {
   }
 }
 
-void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint) {
+void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint,
+                                               uint64_t arming_generation) {
   breakpoint_pc.store(pc);
   breakpoint_watchpoint.store(watchpoint);
-  breakpoint_hit_generation.store(z80_breakpoint_generation());
+  breakpoint_hit_generation.store(arming_generation);
   breakpoint_hit.store(true);
 }
 
@@ -5683,8 +6254,15 @@ void KoncepcjaIpcServer::run() {
     return;
   }
 
+  // SO_EXCLUSIVEADDRUSE, not SO_REUSEADDR: on Windows SO_REUSEADDR lets a
+  // second process bind a port another process is already listening on, and
+  // connections are then handed out between them unpredictably.  That makes
+  // the 6543..6552 scan below silently useless — a second instance, or the
+  // unit tests run while the emulator is open, would "bind" 6543 and then
+  // answer, or be answered by, the wrong process.  SO_EXCLUSIVEADDRUSE makes
+  // bind() fail on a port in use, so the scan moves to the next one.
   int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+  setsockopt(server_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
              reinterpret_cast<const char*>(&opt), sizeof(opt));
 
   sockaddr_in addr{};

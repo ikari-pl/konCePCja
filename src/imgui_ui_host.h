@@ -22,4 +22,14 @@ class ImGuiUiHost final : public IUiHost {
   bool any_keyboard_ui_active() const override;
   void toast(UiToastLevel level, const std::string& message) override;
   int topbar_height() const override;
+  void set_display_scale(float scale) override;
 };
+
+// Install the ImGuiUiHost as the process-wide IUiHost.  Call once, early in
+// koncpc_main(), before any ui_host() use.  Idempotent.
+//
+// koncepcja_lib is a STATIC library, and a linker pulls a member object out
+// of one only to resolve a referenced symbol.  koncpc_main() calling this by
+// name is what keeps imgui_ui_host.obj in the link, and therefore what makes
+// ui_host() return this host on MSVC.
+void install_imgui_ui_host();
