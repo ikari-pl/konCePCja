@@ -48,6 +48,11 @@ static inline BridgeKind bridge_kind(NSInteger tag) {
 }
 static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 0x00FFFFFF); }
 
+// Marks the items add_action_item built, so validateMenuItem: retitles only
+// those. AppKit's own Quit item is retargeted to menuAction:/KONCPC_EXIT too
+// (wire_app_menu) and must keep its "Quit konCePCja" title and Cmd+Q.
+static NSString* const kKoncpcActionItem = @"koncpc.action-item";
+
 @interface KoncepcjaMenuTarget : NSObject
 @end
 
@@ -97,7 +102,7 @@ static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 
     const MenuAction* entry = koncpc_find_action(static_cast<KONCPC_KEYS>([item tag]));
     // Re-derive the shortcut text as the menu opens, so it tracks the live
     // binding (a keymap change, or a menu built before the mapper existed).
-    if (entry != nullptr) {
+    if (entry != nullptr && [item representedObject] == kKoncpcActionItem) {
       NSString* title =
           [NSString stringWithUTF8String:koncpc_action_menu_title(entry->action).c_str()];
       if (![[item title] isEqualToString:title]) [item setTitle:title];
@@ -143,6 +148,7 @@ static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target, const 
                                          keyEquivalent:@""];
   [item setTarget:target];
   [item setTag:static_cast<NSInteger>(entry->action)];
+  [item setRepresentedObject:kKoncpcActionItem];
   [submenu addItem:item];
 }
 

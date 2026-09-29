@@ -676,12 +676,9 @@ void imgui_render_ui() {
     ImDrawList* dl = nullptr;
     if (!imgui_state.toasts.empty()) {
       ImGuiPlatformIO const& pio = ImGui::GetPlatformIO();
-      std::vector<bool> focused;
-      focused.reserve(static_cast<size_t>(pio.Viewports.Size));
-      for (ImGuiViewport const* v : pio.Viewports) {
-        focused.push_back((v->Flags & ImGuiViewportFlags_IsFocused) != 0);
-      }
-      int const idx = toast_viewport_index(focused);
+      int const idx = toast_viewport_index(pio.Viewports.Size, [&pio](int i) {
+        return (pio.Viewports[i]->Flags & ImGuiViewportFlags_IsFocused) != 0;
+      });
       vp = (idx < pio.Viewports.Size) ? pio.Viewports[idx]
                                       : ImGui::GetMainViewport();
       dl = ImGui::GetForegroundDrawList(vp);
@@ -722,11 +719,11 @@ void imgui_render_ui() {
       float const boxW = textSize.x + 16.0f;
       float const boxH = textSize.y + 12.0f;
 
-      ToastRect const r =
-          toast_rect(vp->WorkPos.x, vp->WorkPos.y, vp->WorkSize.x,
-                     vp->WorkSize.y, boxW, boxH, yOffset, xMargin);
-      float const x = r.x;
-      float const y = r.y;
+      ToastPos const pos =
+          toast_pos(vp->WorkPos.x, vp->WorkPos.y, vp->WorkSize.x,
+                    vp->WorkSize.y, boxW, boxH, yOffset, xMargin);
+      float const x = pos.x;
+      float const y = pos.y;
 
       ImVec2 const p0(x, y);
       ImVec2 const p1(x + boxW, y + boxH);
@@ -3507,6 +3504,10 @@ namespace {
 void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
+  // The window's size when Options opened: what Cancel restores when the old
+  // scale was Fit, which has no size of its own to recompute.
+  static int old_win_w = 0;
+  static int old_win_h = 0;
   static bool old_m4_enabled = false;
   // Peripheral enable flags that Options only ever captures-on-open and
   // restores-on-revert (no auto-start or other side logic, unlike M4 above);
@@ -3531,6 +3532,9 @@ void imgui_render_options() {
     }
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
+    old_win_w = 0;
+    old_win_h = 0;
+    if (mainSDLWindow) SDL_GetWindowSize(mainSDLWindow, &old_win_w, &old_win_h);
     old_m4_enabled = g_m4board.enabled;
     capture_toggle_values(kPeripheralToggles, old_peripheral_toggles,
                           kPeripheralToggleCount);
@@ -4597,6 +4601,10 @@ void imgui_render_options() {
     // The Scale combo resized the window live; copying scr_scale back does
     // not shrink it again (beads-ydkw).
     if (plan.rescale_window) apply_scr_scale(static_cast<int>(CPC.scr_scale));
+    if (plan.restore_window_size && mainSDLWindow && old_win_w > 0 &&
+        old_win_h > 0) {
+      SDL_SetWindowSize(mainSDLWindow, old_win_w, old_win_h);
+    }
     CRTC.crtc_type = old_crtc_type;
     if (subcycle::Machine* m = subcycle_bridge_machine())
       m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));

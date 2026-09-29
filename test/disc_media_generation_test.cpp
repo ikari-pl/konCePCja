@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -14,7 +15,9 @@
 #include "disk_format.h"
 #include "koncepcja.h"
 #include "slotshandler.h"
+#include "subcycle_bridge.h"
 
+extern t_CPC CPC;
 extern t_drive driveA;
 extern t_drive driveB;
 
@@ -85,4 +88,109 @@ TEST_F(DiscMediaGenerationTest, PullingTheSameMediumDoesNotMoveIt) {
   EXPECT_EQ(a0, dsk_media_generation(0))
       << "the pull path re-reads the same disc; moving the generation here "
          "would rebuild the Disc Tools listing every frame";
+}
+
+// -----------------------------------------------
+// With the board running: a load made while paused is only queued
+// -----------------------------------------------
+
+namespace {
+
+// Brings the sub-cycle board up on a synthetic 32K system ROM (no firmware
+// needed: nothing executes, the test only swaps media) and tears it down again,
+// so no other test sees an active bridge.
+class LiveBoardMediaTest : public DiscMediaGenerationTest {
+ protected:
+  void SetUp() override {
+    DiscMediaGenerationTest::SetUp();
+    saved_cpc_rom_path_ = CPC.rom_path;
+    saved_model_ = CPC.model;
+    saved_ram_ = CPC.ram_size;
+    std::vector<char> rom(0x8000, 0);
+    std::filesystem::path const rom_file = dir_ / "cpc6128.rom";
+    FILE* f = fopen(rom_file.string().c_str(), "wb");
+    ASSERT_NE(nullptr, f);
+    ASSERT_EQ(rom.size(), fwrite(rom.data(), 1, rom.size(), f));
+    ASSERT_EQ(0, fclose(f));
+    CPC.rom_path = dir_.string();
+    CPC.model = 2;  // chROMFile[2] == "cpc6128.rom"
+    CPC.ram_size = 128;
+    ASSERT_TRUE(subcycle_bridge_start());
+
+    // Two discs to swap between: one file, then two.
+    one_ = write_disc("one.dsk", {"ONE.BIN"});
+    two_ = write_disc("two.dsk", {"TWO.BIN", "THREE.BIN"});
+  }
+
+  void TearDown() override {
+    subcycle_bridge_stop();
+    CPC.rom_path = saved_cpc_rom_path_;
+    CPC.model = saved_model_;
+    CPC.ram_size = saved_ram_;
+    DiscMediaGenerationTest::TearDown();
+  }
+
+  std::string write_disc(const char* name,
+                         const std::vector<std::string>& files) {
+    dsk_eject_host(&driveA);
+    EXPECT_EQ("", disk_format_drive('A', "data"));
+    for (const std::string& file : files) {
+      EXPECT_EQ("", disk_write_file(&driveA, file, {'x'}, true));
+    }
+    std::string const path = (dir_ / name).string();
+    EXPECT_EQ(0, dsk_save(path, &driveA));
+    dsk_eject_host(&driveA);
+    return path;
+  }
+
+  static size_t listed_files() {
+    std::string err;
+    return disk_list_files(&driveA, err).size();
+  }
+
+  static void load_a(const std::string& path) {
+    t_slot slot{};
+    slot.drive = DRIVE::DSK_A;
+    slot.file = path;
+    ASSERT_EQ(0, file_load(slot));
+  }
+
+  std::string one_;
+  std::string two_;
+
+ private:
+  std::string saved_cpc_rom_path_;
+  unsigned int saved_model_ = 0;
+  unsigned int saved_ram_ = 0;
+};
+
+}  // namespace
+
+TEST_F(LiveBoardMediaTest, PullWhilePausedSeesTheDiscJustLoaded) {
+  // No frame runs in this test -- exactly the paused machine: every insert
+  // stays queued until something applies it.
+  load_a(one_);
+  ASSERT_TRUE(subcycle_bridge_pull_drive_view(0));
+  EXPECT_EQ(1u, listed_files());
+
+  load_a(two_);
+  ASSERT_TRUE(subcycle_bridge_pull_drive_view(0));
+  EXPECT_EQ(2u, listed_files())
+      << "the pull read the outgoing disc over the one just loaded";
+
+  // A Disc Tools edit pushes the view back. It must land on the new disc,
+  // not cancel a still-queued swap and leave the old one mounted.
+  ASSERT_EQ("", disk_write_file(&driveA, "FOUR.BIN", {'y'}, true));
+  ASSERT_TRUE(subcycle_bridge_push_drive_view(0));
+  ASSERT_TRUE(subcycle_bridge_pull_drive_view(0));
+  EXPECT_EQ(3u, listed_files());
+}
+
+TEST_F(LiveBoardMediaTest, TheBoardApplyingASwapMovesTheGeneration) {
+  load_a(one_);
+  uint64_t const queued = dsk_media_generation(0);
+  subcycle_bridge_apply_pending_media();
+  EXPECT_NE(queued, dsk_media_generation(0))
+      << "a listing pulled between queue and apply saw the outgoing disc; "
+         "readers must be told to look again when the FDC takes the new one";
 }

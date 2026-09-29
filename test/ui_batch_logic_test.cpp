@@ -23,18 +23,14 @@ TEST(DebugStepControls, StepsOnlyWhilePausedAndNoWalkIsRunning) {
     for (bool walking : {false, true}) {
       EXPECT_EQ(debug_step_controls(paused, walking, true).step_enabled,
                 debug_step_controls(paused, walking, false).step_enabled);
-      EXPECT_EQ(debug_step_controls(paused, walking, true).run_pause_resumes,
-                debug_step_controls(paused, walking, false).run_pause_resumes);
     }
   }
 }
 
 TEST(DebugStepControls, RunPauseSaysWhatAClickWillDo) {
   DebugStepControls const paused = debug_step_controls(true, false, true);
-  EXPECT_TRUE(paused.run_pause_resumes);
   EXPECT_STREQ("Run", paused.run_pause_label);
   DebugStepControls const running = debug_step_controls(false, false, true);
-  EXPECT_FALSE(running.run_pause_resumes);
   EXPECT_STREQ("Pause", running.run_pause_label);
   EXPECT_STREQ("Resume",
                debug_step_controls(true, false, false).run_pause_label);
@@ -72,38 +68,40 @@ TEST(DiscToolsListing, NeverListedIsAlwaysStale) {
 
 // ── Toast placement ─────────────────────────────────────────────────────────
 
-TEST(ToastRect, AnchorsBottomRightOfTheWorkRect) {
+TEST(ToastPos, AnchorsBottomRightOfTheWorkRect) {
   // A 1000x800 viewport at (2000, 100), e.g. a DevTools window on the second
   // monitor. 16px right margin, 40px from the bottom.
-  ToastRect const r = toast_rect(2000, 100, 1000, 800, 200, 30, 40, 16);
+  ToastPos const r = toast_pos(2000, 100, 1000, 800, 200, 30, 40, 16);
   EXPECT_FLOAT_EQ(2000 + 1000 - 200 - 16, r.x);
   EXPECT_FLOAT_EQ(100 + 800 - 40 - 30, r.y);
-  EXPECT_FLOAT_EQ(200, r.w);
-  EXPECT_FLOAT_EQ(30, r.h);
 }
 
-TEST(ToastRect, StacksUpwardWithTheOffset) {
-  ToastRect const first = toast_rect(0, 0, 800, 600, 200, 30, 40, 16);
-  ToastRect const second = toast_rect(0, 0, 800, 600, 200, 30, 40 + 34, 16);
+TEST(ToastPos, StacksUpwardWithTheOffset) {
+  ToastPos const first = toast_pos(0, 0, 800, 600, 200, 30, 40, 16);
+  ToastPos const second = toast_pos(0, 0, 800, 600, 200, 30, 40 + 34, 16);
   EXPECT_FLOAT_EQ(first.y - 34, second.y);
   EXPECT_FLOAT_EQ(first.x, second.x);
 }
 
-TEST(ToastRect, ClampsIntoASmallViewport) {
+TEST(ToastPos, ClampsIntoASmallViewport) {
   // A narrow floating window: the toast is wider than it. Keep the left edge
   // (the start of the message) inside rather than hanging off to the left.
-  ToastRect const wide = toast_rect(500, 300, 150, 400, 300, 30, 40, 16);
+  ToastPos const wide = toast_pos(500, 300, 150, 400, 300, 30, 40, 16);
   EXPECT_FLOAT_EQ(500, wide.x);
   // A short window with many toasts stacked: the top ones pin to the top.
-  ToastRect const tall = toast_rect(500, 300, 400, 100, 200, 30, 90, 16);
+  ToastPos const tall = toast_pos(500, 300, 400, 100, 200, 30, 90, 16);
   EXPECT_FLOAT_EQ(300, tall.y);
 }
 
 TEST(ToastViewport, FocusedViewportElseMain) {
-  EXPECT_EQ(0, toast_viewport_index({}));
-  EXPECT_EQ(0, toast_viewport_index({false, false, false}));
-  EXPECT_EQ(2, toast_viewport_index({false, false, true}));
-  EXPECT_EQ(0, toast_viewport_index({true, false, true}));
+  auto pick = [](std::vector<bool> focused) {
+    return toast_viewport_index(static_cast<int>(focused.size()),
+                                [&focused](int i) { return focused[i]; });
+  };
+  EXPECT_EQ(0, pick({}));
+  EXPECT_EQ(0, pick({false, false, false}));
+  EXPECT_EQ(2, pick({false, false, true}));
+  EXPECT_EQ(0, pick({true, false, true}));
 }
 
 // ── Options dialog ──────────────────────────────────────────────────────────
@@ -137,14 +135,25 @@ TEST(OptionsRevertPlan, CancelResizesTheWindowBackWhenScaleWasPreviewed) {
   OptionsRevertPlan const plan =
       options_revert_plan(3, 1, 1, 1, "keymap_us.map", "keymap_us.map");
   EXPECT_TRUE(plan.rescale_window);
+  EXPECT_FALSE(plan.restore_window_size);
   EXPECT_FALSE(plan.reinit_video);
   EXPECT_FALSE(plan.reload_host_keymap);
+}
+
+TEST(OptionsRevertPlan, CancelBackToFitRestoresTheSavedWindowSize) {
+  // Fit (0) has no derived size: apply_scr_scale(0) resizes nothing, so
+  // rescaling "back to Fit" left the window at the previewed 3x size.
+  OptionsRevertPlan const plan =
+      options_revert_plan(4, 0, 1, 1, "keymap_us.map", "keymap_us.map");
+  EXPECT_FALSE(plan.rescale_window);
+  EXPECT_TRUE(plan.restore_window_size);
 }
 
 TEST(OptionsRevertPlan, NothingToUndoWhenNothingWasPreviewed) {
   OptionsRevertPlan const plan =
       options_revert_plan(2, 2, 4, 4, "keymap_uk.map", "keymap_uk.map");
   EXPECT_FALSE(plan.rescale_window);
+  EXPECT_FALSE(plan.restore_window_size);
   EXPECT_FALSE(plan.reinit_video);
   EXPECT_FALSE(plan.reload_host_keymap);
 }

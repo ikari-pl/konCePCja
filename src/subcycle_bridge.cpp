@@ -1335,9 +1335,19 @@ void subcycle_bridge_eject_media(uint8_t unit) {
   b.swap_kind.store(PendingMedia::kEject, std::memory_order_release);
 }
 
+namespace {
+void apply_pending_media(Bridge& b);  // defined with the frame loop below
+}  // namespace
+
 bool subcycle_bridge_pull_drive_view(uint8_t unit) {
   Bridge& b = g_bridge;
   if (!b.active) return false;
+  // A load or eject made while the machine is paused is only queued: the Z80
+  // thread applies it at its next frame boundary, which never comes while
+  // paused. Pulling now would read the outgoing disc over the host view the
+  // load just filled, and a later push would cancel the queued swap and lose
+  // the load. The caller holds the pause lease, so apply it here first.
+  apply_pending_media(b);
   unit = unit & 1;
   t_drive* drive = unit == 0 ? &driveA : &driveB;
   size_t len = 0;

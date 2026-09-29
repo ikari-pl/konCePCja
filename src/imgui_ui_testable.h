@@ -242,7 +242,6 @@ inline HubMediaButtons hub_media_buttons(bool disk_a_present,
 // so the two groups cannot disagree about when a step is allowed.
 struct DebugStepControls {
   bool step_enabled;            // In / Over / Out
-  bool run_pause_resumes;       // true: the Run-Pause button resumes
   const char* step_in_label;    // labels: full in the toolbar, short in the
   const char* step_over_label;  // Disassembly menu bar
   const char* step_out_label;   // says so while a Step Out walk is in flight
@@ -255,7 +254,6 @@ inline DebugStepControls debug_step_controls(bool paused, bool walk_running,
   // re-pauses the machine on its own worker; a step issued meanwhile would
   // race it over the same ephemeral breakpoint.
   c.step_enabled = paused && !walk_running;
-  c.run_pause_resumes = paused;
   c.step_in_label = compact ? "In" : "Step In";
   c.step_over_label = compact ? "Over" : "Step Over";
   if (walk_running) {
@@ -276,29 +274,30 @@ inline DebugStepControls debug_step_controls(bool paused, bool walk_running,
 // looking at (beads-ar4). The work rect is that viewport's usable area; the
 // toast is clamped into it, so a small floating DevTools viewport still shows
 // the toast's left/top edge instead of pushing it off its window.
-struct ToastRect {
+struct ToastPos {
   float x;
   float y;
-  float w;
-  float h;
 };
-inline ToastRect toast_rect(float work_x, float work_y, float work_w,
-                            float work_h, float box_w, float box_h,
-                            float bottom_offset, float right_margin) {
+inline ToastPos toast_pos(float work_x, float work_y, float work_w,
+                          float work_h, float box_w, float box_h,
+                          float bottom_offset, float right_margin) {
   float x = work_x + work_w - box_w - right_margin;
   float y = work_y + work_h - bottom_offset - box_h;
   // Right/bottom anchoring first, then the left/top edge wins: the start of
   // the message is the part worth keeping visible.
   x = std::max(x, work_x);
   y = std::max(y, work_y);
-  return {x, y, box_w, box_h};
+  return {x, y};
 }
 
-// Which viewport shows the toasts: the first one the platform reports as
-// focused, else the main viewport (index 0 in ImGuiPlatformIO::Viewports).
-inline int toast_viewport_index(const std::vector<bool>& focused) {
-  for (size_t i = 0; i < focused.size(); ++i) {
-    if (focused[i]) return static_cast<int>(i);
+// Which viewport shows the toasts: the first of `count` the platform reports
+// as focused, else the main viewport (index 0 in ImGuiPlatformIO::Viewports).
+// A predicate rather than a container, so the per-frame caller scans the live
+// viewport list without building one.
+template <typename IsFocused>
+int toast_viewport_index(int count, IsFocused is_focused) {
+  for (int i = 0; i < count; ++i) {
+    if (is_focused(i)) return i;
   }
   return 0;
 }
@@ -329,15 +328,20 @@ inline const std::vector<OptionsButtonSpec>& options_button_row() {
 // not follow the struct: the window keeps a previewed size, the renderer a
 // previewed plugin, the host keymap a previewed layout.
 struct OptionsRevertPlan {
-  bool rescale_window;  // resize the window back to old scr_scale
-  bool reinit_video;    // rebuild the video plugin for old scr_style
+  bool rescale_window;  // resize the window back to old (fixed) scr_scale
+  // Old scale was Fit: it has no derived size, so the window goes back to
+  // the size it had when Options opened.
+  bool restore_window_size;
+  bool reinit_video;  // rebuild the video plugin for old scr_style
   bool reload_host_keymap;
 };
 inline OptionsRevertPlan options_revert_plan(
     unsigned int live_scr_scale, unsigned int old_scr_scale,
     unsigned int live_scr_style, unsigned int old_scr_style,
     const std::string& live_kbd_layout, const std::string& old_kbd_layout) {
-  return {live_scr_scale != old_scr_scale, live_scr_style != old_scr_style,
+  bool const scale_changed = live_scr_scale != old_scr_scale;
+  return {scale_changed && old_scr_scale != 0,
+          scale_changed && old_scr_scale == 0, live_scr_style != old_scr_style,
           live_kbd_layout != old_kbd_layout};
 }
 

@@ -66,7 +66,9 @@ void subcycle_bridge_apply_pending_media();
 
 // Disc Tools / IPC disk family: the FDC medium is authoritative; driveA/driveB
 // are a host tooling view. Pull copies the live sector image into the view;
-// push serializes the view back onto the FDC (and marks dirty). Both require
+// push serializes the view back onto the FDC (and marks dirty). Pull first
+// applies any queued insert/eject, so it reads the disc the user last
+// loaded even while the machine is paused. Both require
 // the Z80 thread idle (hold CpcPauseLease). No-op / false when the bridge
 // is inactive or the unit has no writable sector image (empty / read-only
 // flux).
