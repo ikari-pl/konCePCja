@@ -542,6 +542,7 @@ bool koncpc_save_configuration_preserving_intent() {
   CPC.printer = g_cfg_intent_printer;
   CPC.scr_window = g_cfg_intent_scr_window;
   std::string const cfg = getConfigurationFilename(true);
+  capture_device_config(CPC);
   bool const ok = saveConfiguration(CPC, cfg);
   CPC.printer = live_printer;
   CPC.scr_window = live_scr_window;
@@ -2329,6 +2330,40 @@ std::string getConfigurationFilename(bool forWrite) {
 // translation units/tests; internal linkage would break the link
 const std::string& koncpc_config_file() { return g_config_file; }
 
+void apply_device_config(const t_CPC& CPC) {
+  const t_DeviceConfig& d = CPC.devices;
+  g_silicon_disc.enabled = d.silicon_disc;
+  if (g_silicon_disc.enabled) {
+    silicon_disc_init(g_silicon_disc);
+  }
+  g_amdrum.enabled = d.amdrum;
+  g_drive_sounds.disk_enabled = d.disk_sounds;
+  g_drive_sounds.tape_enabled = d.tape_sounds;
+  g_smartwatch.enabled = d.smartwatch;
+  g_amx_mouse.enabled = d.amx_mouse;
+  g_symbiface.enabled = d.symbiface;
+  if (g_symbiface.enabled) {
+    if (!d.ide_master.empty()) symbiface_ide_attach(0, d.ide_master);
+    if (!d.ide_slave.empty()) symbiface_ide_attach(1, d.ide_slave);
+  }
+  g_serial_interface.set_config(d.serial);
+  g_serial_interface.apply_config();
+}
+
+void capture_device_config(t_CPC& CPC) {
+  t_DeviceConfig& d = CPC.devices;
+  d.silicon_disc = g_silicon_disc.enabled;
+  d.amdrum = g_amdrum.enabled;
+  d.disk_sounds = g_drive_sounds.disk_enabled;
+  d.tape_sounds = g_drive_sounds.tape_enabled;
+  d.smartwatch = g_smartwatch.enabled;
+  d.amx_mouse = g_amx_mouse.enabled;
+  d.symbiface = g_symbiface.enabled;
+  d.ide_master = g_symbiface.ide_master.image_path;
+  d.ide_slave = g_symbiface.ide_slave.image_path;
+  d.serial = g_serial_interface.get_config();
+}
+
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   config::Config conf;
   conf.parseFile(configFilename);
@@ -2365,10 +2400,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     CPC.ram_size = 128;  // minimum RAM size for CPC 6128 is 128KB
   }
   // Silicon Disc: battery-backed 256K RAM (banks 4-7)
-  g_silicon_disc.enabled = conf.getIntValue("system", "silicon_disc", 0) != 0;
-  if (g_silicon_disc.enabled) {
-    silicon_disc_init(g_silicon_disc);
-  }
+  CPC.devices.silicon_disc = conf.getIntValue("system", "silicon_disc", 0) != 0;
 
   CPC.speed = read_clamped("system", "speed", DEF_SPEED_SETTING,
                            MIN_SPEED_SETTING, MAX_SPEED_SETTING);
@@ -2519,9 +2551,9 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.snd_stereo = 1;
   CPC.snd_volume = read_clamped("sound", "volume", 80, 0, 100);
   CPC.snd_pp_device = read_flag("sound", "pp_device", 0);
-  g_amdrum.enabled = read_flag("sound", "amdrum", 0) != 0;
-  g_drive_sounds.disk_enabled = read_flag("sound", "disk_sounds", 0) != 0;
-  g_drive_sounds.tape_enabled = read_flag("sound", "tape_sounds", 0) != 0;
+  CPC.devices.amdrum = read_flag("sound", "amdrum", 0) != 0;
+  CPC.devices.disk_sounds = read_flag("sound", "disk_sounds", 0) != 0;
+  CPC.devices.tape_sounds = read_flag("sound", "tape_sounds", 0) != 0;
   tape_line_out_set_volume(conf.getIntValue("sound", "tape_data_volume", 35) /
                            100.0f);
   // Drive Sound Lab tuning (params + volume/pan). Applied to
@@ -2529,8 +2561,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // in audio_init().
   drive_sounds_params_from_string(
       conf.getStringValue("sound", "drivesnd_params", ""));
-  g_smartwatch.enabled = read_flag("system", "smartwatch", 0) != 0;
-  g_amx_mouse.enabled = read_flag("input", "amx_mouse", 0) != 0;
+  CPC.devices.smartwatch = read_flag("system", "smartwatch", 0) != 0;
+  CPC.devices.amx_mouse = read_flag("input", "amx_mouse", 0) != 0;
   // Light gun selection (0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
   // Phazer). Mirrors the F-key toggle; lets headless/CI runs and config files
   // enable a gun (the IPC 'input gun' contract keys off phazer_emulation).
@@ -2544,7 +2576,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // to the CPC on Linux/Windows (CP/M software uses them).
   CPC.host_chords = read_flag("input", "host_chords", 1);
 
-  g_symbiface.enabled = read_flag("peripheral", "symbiface", 0) != 0;
+  CPC.devices.symbiface = read_flag("peripheral", "symbiface", 0) != 0;
   g_m4board.enabled = read_flag("peripheral", "m4board", 0) != 0;
   g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 6);
@@ -2564,20 +2596,13 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       g_m4_http.set_port_mapping(cpc_port, host_port, user_override != 0);
     }
   }
-  {
-    std::string ide_path = conf.getStringValue("peripheral", "ide_master", "");
-    if (!ide_path.empty() && g_symbiface.enabled) {
-      symbiface_ide_attach(0, ide_path);
-    }
-    ide_path = conf.getStringValue("peripheral", "ide_slave", "");
-    if (!ide_path.empty() && g_symbiface.enabled) {
-      symbiface_ide_attach(1, ide_path);
-    }
-  }
+  CPC.devices.ide_master = conf.getStringValue("peripheral", "ide_master", "");
+  CPC.devices.ide_slave = conf.getStringValue("peripheral", "ide_slave", "");
 
   // Serial Interface config
   {
-    SerialConfig scfg;
+    SerialConfig& scfg = CPC.devices.serial;
+    scfg = SerialConfig{};
     scfg.enabled = conf.getIntValue("peripheral", "serial_enabled", 0) != 0;
     scfg.backend_type = static_cast<SerialBackendType>(
         conf.getIntValue("peripheral", "serial_backend", 0));
@@ -2591,8 +2616,6 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     scfg.tcp_port = static_cast<uint16_t>(
         conf.getIntValue("peripheral", "serial_tcp_port", 23));
     scfg.baud_rate = conf.getIntValue("peripheral", "serial_baud", 9600);
-    g_serial_interface.set_config(scfg);
-    g_serial_interface.apply_config();
   }
 
   CPC.kbd_layout =
@@ -2686,7 +2709,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("system", "model", CPC.model);
   conf.setIntValue("system", "jumpers", CPC.jumpers);
   conf.setIntValue("system", "ram_size", CPC.ram_size);
-  conf.setIntValue("system", "silicon_disc", g_silicon_disc.enabled ? 1 : 0);
+  conf.setIntValue("system", "silicon_disc", CPC.devices.silicon_disc ? 1 : 0);
   conf.setIntValue("system", "run_tier",
                    static_cast<int>(subcycle_bridge_tier_policy()));
   conf.setIntValue("system", "limit_speed", CPC.limit_speed);
@@ -2744,26 +2767,24 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("sound", "stereo", CPC.snd_stereo);
   conf.setIntValue("sound", "volume", CPC.snd_volume);
   conf.setIntValue("sound", "pp_device", CPC.snd_pp_device);
-  conf.setIntValue("sound", "amdrum", g_amdrum.enabled ? 1 : 0);
-  conf.setIntValue("sound", "disk_sounds", g_drive_sounds.disk_enabled ? 1 : 0);
-  conf.setIntValue("sound", "tape_sounds", g_drive_sounds.tape_enabled ? 1 : 0);
+  conf.setIntValue("sound", "amdrum", CPC.devices.amdrum ? 1 : 0);
+  conf.setIntValue("sound", "disk_sounds", CPC.devices.disk_sounds ? 1 : 0);
+  conf.setIntValue("sound", "tape_sounds", CPC.devices.tape_sounds ? 1 : 0);
   conf.setIntValue("sound", "tape_data_volume",
                    static_cast<int>((tape_line_out_volume() * 100.0f) + 0.5f));
   conf.setStringValue("sound", "drivesnd_params",
                       drive_sounds_params_to_string());
-  conf.setIntValue("system", "smartwatch", g_smartwatch.enabled ? 1 : 0);
-  conf.setIntValue("input", "amx_mouse", g_amx_mouse.enabled ? 1 : 0);
+  conf.setIntValue("system", "smartwatch", CPC.devices.smartwatch ? 1 : 0);
+  conf.setIntValue("input", "amx_mouse", CPC.devices.amx_mouse ? 1 : 0);
   // Via Value, not int: PhazerType converts implicitly to both Value and
   // bool, so a direct static_cast<int> is ambiguous.
   conf.setIntValue("input", "lightgun",
                    static_cast<PhazerType::Value>(CPC.phazer_emulation));
   conf.setIntValue("input", "host_chords", CPC.host_chords);
 
-  conf.setIntValue("peripheral", "symbiface", g_symbiface.enabled ? 1 : 0);
-  conf.setStringValue("peripheral", "ide_master",
-                      g_symbiface.ide_master.image_path);
-  conf.setStringValue("peripheral", "ide_slave",
-                      g_symbiface.ide_slave.image_path);
+  conf.setIntValue("peripheral", "symbiface", CPC.devices.symbiface ? 1 : 0);
+  conf.setStringValue("peripheral", "ide_master", CPC.devices.ide_master);
+  conf.setStringValue("peripheral", "ide_slave", CPC.devices.ide_slave);
   conf.setIntValue("peripheral", "m4board", g_m4board.enabled ? 1 : 0);
   conf.setStringValue("peripheral", "m4_sd_path", g_m4board.sd_root_path);
   conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
@@ -2772,7 +2793,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
 
   // Serial Interface config
   {
-    auto cfg = g_serial_interface.get_config();
+    const SerialConfig& cfg = CPC.devices.serial;
     conf.setIntValue("peripheral", "serial_enabled", cfg.enabled ? 1 : 0);
     conf.setIntValue("peripheral", "serial_backend",
                      static_cast<int>(cfg.backend_type));
@@ -4322,6 +4343,7 @@ int koncpc_main(int argc, char** argv) {
 
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
+  apply_device_config(CPC);
   g_config_loaded = true;
   koncpc_capture_config_intent();
   if (CPC.printer) {

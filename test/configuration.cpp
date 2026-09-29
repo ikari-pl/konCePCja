@@ -3,9 +3,15 @@
 #include <gtest/gtest.h>
 #include <stdlib.h>
 
+#include "amdrum.h"
+#include "amx_mouse.h"
+#include "drive_sounds.h"
 #include "koncepcja.h"
+#include "serial_interface.h"
 #include "silicon_disc.h"
 #include "slotshandler.h"
+#include "smartwatch.h"
+#include "symbiface.h"
 #ifdef _WIN32
 #include <process.h>
 #endif
@@ -26,14 +32,7 @@ extern t_disk_format disk_format[8];
 
 class ConfigurationTest : public testing::Test {
  public:
-  // loadConfiguration() writes process-global device state, not just the
-  // t_CPC it is handed: system/silicon_disc lands in g_silicon_disc.enabled.
-  // Leaving that on leaked into RamExpansionTest, where an enabled Silicon
-  // Disc suppresses the out-of-range bank clamp. Restore it.
-  void SetUp() { saved_silicon_disc_ = g_silicon_disc.enabled; }
-
   void TearDown() {
-    g_silicon_disc.enabled = saved_silicon_disc_;
     for (auto f : tmpFilenames_) {
       ASSERT_EQ(0, unlink(f.c_str()));
     }
@@ -50,7 +49,6 @@ class ConfigurationTest : public testing::Test {
 
  protected:
   std::vector<std::string> tmpFilenames_;
-  bool saved_silicon_disc_ = false;
   config::Config configuration_;
 
  private:
@@ -412,6 +410,96 @@ TEST_F(ConfigurationTest, saveConfigurationPreservesEverySettingItReads) {
   EXPECT_EQ(99, CPC[1].devtools_max_stack_size);
   EXPECT_EQ(PhazerType::TrojanLightPhazer,
             static_cast<PhazerType::Value>(CPC[1].phazer_emulation));
+}
+
+// beads-ab4j: loadConfiguration() fills CPC.devices and nothing else. It
+// used to switch eight process-global devices on or off as a side effect,
+// so under --gtest_shuffle every test after a config load inherited them
+// (an enabled Silicon Disc broke RamExpansionTest's bank clamp).
+TEST_F(ConfigurationTest, loadConfigurationLeavesDeviceGlobalsAlone) {
+  std::ofstream configFile(getTmpFilename(0));
+  configFile << "[system]\n"
+             << "silicon_disc=1\n"
+             << "smartwatch=1\n"
+             << "[sound]\n"
+             << "amdrum=1\n"
+             << "disk_sounds=1\n"
+             << "tape_sounds=1\n"
+             << "[input]\n"
+             << "amx_mouse=1\n"
+             << "[peripheral]\n"
+             << "symbiface=1\n"
+             << "serial_enabled=1\n"
+             << "serial_backend=1\n"
+             << "serial_baud=19200\n";
+  configFile.close();
+
+  // Every live device is off and the file turns every one on, so any write
+  // shows up. Other tests may have left them in any state: force, then
+  // restore.
+  struct Live {
+    bool silicon_disc = g_silicon_disc.enabled;
+    bool amdrum = g_amdrum.enabled;
+    bool disk_sounds = g_drive_sounds.disk_enabled;
+    bool tape_sounds = g_drive_sounds.tape_enabled;
+    bool smartwatch = g_smartwatch.enabled;
+    bool amx_mouse = g_amx_mouse.enabled;
+    bool symbiface = g_symbiface.enabled;
+    void set() const {
+      g_silicon_disc.enabled = silicon_disc;
+      g_amdrum.enabled = amdrum;
+      g_drive_sounds.disk_enabled = disk_sounds;
+      g_drive_sounds.tape_enabled = tape_sounds;
+      g_smartwatch.enabled = smartwatch;
+      g_amx_mouse.enabled = amx_mouse;
+      g_symbiface.enabled = symbiface;
+    }
+  };
+  Live const before;
+  Live const all_off{false, false, false, false, false, false, false};
+  all_off.set();
+  SerialConfig const serial = g_serial_interface.get_config();
+
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  Live const after;
+  SerialConfig const serial_after = g_serial_interface.get_config();
+  before.set();
+
+  // The settings were read...
+  EXPECT_TRUE(CPC.devices.silicon_disc);
+  EXPECT_TRUE(CPC.devices.smartwatch);
+  EXPECT_TRUE(CPC.devices.amdrum);
+  EXPECT_TRUE(CPC.devices.disk_sounds);
+  EXPECT_TRUE(CPC.devices.tape_sounds);
+  EXPECT_TRUE(CPC.devices.amx_mouse);
+  EXPECT_TRUE(CPC.devices.symbiface);
+  EXPECT_TRUE(CPC.devices.serial.enabled);
+  EXPECT_EQ(SerialBackendType::File, CPC.devices.serial.backend_type);
+  EXPECT_EQ(19200, CPC.devices.serial.baud_rate);
+
+  // ...and none of them went live.
+  EXPECT_FALSE(after.silicon_disc);
+  EXPECT_FALSE(after.amdrum);
+  EXPECT_FALSE(after.disk_sounds);
+  EXPECT_FALSE(after.tape_sounds);
+  EXPECT_FALSE(after.smartwatch);
+  EXPECT_FALSE(after.amx_mouse);
+  EXPECT_FALSE(after.symbiface);
+  EXPECT_TRUE(serial == serial_after) << "the serial config was replaced";
+}
+
+// capture_device_config() is how a save picks up a device toggled at
+// runtime (Options, menus, IPC) now that loadConfiguration no longer
+// shares the globals.
+TEST_F(ConfigurationTest, captureDeviceConfigReadsTheLiveDevices) {
+  bool const saved = g_amdrum.enabled;
+  g_amdrum.enabled = true;
+  t_CPC CPC;
+  CPC.devices.amdrum = false;
+  capture_device_config(CPC);
+  g_amdrum.enabled = saved;
+  EXPECT_TRUE(CPC.devices.amdrum);
 }
 
 // Saving over an existing file edits it: a comment and an unrecognised key

@@ -4483,10 +4483,9 @@ void imgui_render_options() {
   // Serialize the staged serial values without applying/reopening the backend.
   // This is used when Save is requested but a destructive restart is declined.
   auto save_edited_configuration = [&]() {
-    SerialConfig const runtime_serial = g_serial_interface.get_config();
-    g_serial_interface.set_config(edited_serial_config);
+    capture_device_config(CPC);
+    CPC.devices.serial = edited_serial_config;
     bool const saved = saveConfiguration(CPC, getConfigurationFilename(true));
-    g_serial_interface.set_config(runtime_serial);
     if (saved) koncpc_capture_config_intent();
     return saved;
   };
@@ -4505,6 +4504,7 @@ void imgui_render_options() {
       return;
     }
     if (save_to_file) {
+      capture_device_config(CPC);
       saveConfiguration(CPC, getConfigurationFilename(true));
       // Options▸Save is a deliberate persist of printer/scr_window — refresh
       // the intent snapshot so cleanExit / MRU write-backs do not undo it.

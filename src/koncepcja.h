@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "phazer_type.h"
+#include "serial_interface.h"
 #include "types.h"
 
 class InputMapper;
@@ -194,6 +195,26 @@ enum class KeyboardSupportMode : std::uint8_t {
 JoystickEmulation nextJoystickEmulation(JoystickEmulation current);
 std::string JoystickEmulationToString(JoystickEmulation value);
 
+// Expansion-device settings from the config file. loadConfiguration() fills
+// this and saveConfiguration() writes it back; neither touches the device
+// globals (g_silicon_disc, g_amdrum, ...), which is what lets a test load a
+// config without switching devices on or off for every test after it.
+// apply_device_config() pushes it into the globals at startup and
+// capture_device_config() pulls the live state back before a save.
+struct t_DeviceConfig {
+  bool silicon_disc = false;  // [system] silicon_disc
+  bool smartwatch = false;    // [system] smartwatch
+  bool amdrum = false;        // [sound] amdrum
+  bool disk_sounds = false;   // [sound] disk_sounds
+  bool tape_sounds = false;   // [sound] tape_sounds
+  bool amx_mouse = false;     // [input] amx_mouse
+  bool symbiface = false;     // [peripheral] symbiface
+  // [peripheral] ide_master / ide_slave: attached only when symbiface is on.
+  std::string ide_master;
+  std::string ide_slave;
+  SerialConfig serial;  // [peripheral] serial_*
+};
+
 class t_CPC {
  public:
   t_CPC();
@@ -291,6 +312,8 @@ class t_CPC {
   // [input] host_chords: 1 = Cmd/Ctrl+K/O/S drive the host UI (default); 0 on
   // Linux/Windows returns Ctrl+K/O/S to the CPC. See host_chords.h.
   unsigned int host_chords;
+
+  t_DeviceConfig devices;
 
   unsigned int max_tracksize;
 
@@ -757,8 +780,18 @@ std::string getConfigurationFilename(bool forWrite = false);
 // missing file or a non-CPC ROM clears the slot and still returns 0.
 int load_expansion_rom_slot(int slot, const std::string& rom_file);
 
+// Fill CPC from the config file. Expansion-device settings land in
+// CPC.devices only; apply_device_config() makes them live.
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename);
+// Write CPC (including CPC.devices) back to the file. Call
+// capture_device_config() first when the devices may have been toggled at
+// runtime.
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename);
+// CPC.devices -> the device globals (enables, Silicon Disc init, IDE images,
+// serial backend). Startup runs it once after loadConfiguration().
+void apply_device_config(const t_CPC& CPC);
+// The device globals -> CPC.devices, so a save persists runtime toggles.
+void capture_device_config(t_CPC& CPC);
 
 void set_cursor_visibility(bool show);
 
