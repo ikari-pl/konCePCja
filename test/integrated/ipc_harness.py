@@ -844,7 +844,7 @@ def test_breakpoint_pause_step_resume():
 def test_snapshot_round_trip():
     """Save snapshot while paused, corrupt memory, load snapshot, verify restored.
 
-    Exercises cpc_pause_and_wait() in the IPC server's snapshot save/load paths.
+    Exercises the pause-lease wait in the IPC server's snapshot save/load paths.
     Without going idle the snapshot might capture a partially-updated Z80 state.
     """
     print("Running snapshot round-trip test...")
@@ -946,7 +946,7 @@ def test_rapid_pause_resume():
 def test_step_in_accuracy():
     """Pause, plant a known instruction run, step it, verify PC advances.
 
-    Exercises cpc_pause_and_wait() in the IPC step-in path: if the Z80 thread
+    Exercises the pause-lease wait in the IPC step-in path: if the Z80 thread
     were still inside z80_execute() when step_in ran, PC would not advance
     predictably.
 

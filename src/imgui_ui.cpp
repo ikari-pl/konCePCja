@@ -382,8 +382,9 @@ void process_pending_dialog() {
       if (g_m4board.enabled) {
         if (driveAltered()) {
           imgui_state.confirm_m4_rebuild = true;
-        } else if (koncpc_rebuild_machine() != 0) {
-          imgui_toast_error("Could not restart the CPC for the new SD folder");
+        } else if (int const rc = koncpc_rebuild_machine(); rc != 0) {
+          imgui_toast_error(rebuild_failure_text(
+              rc, "Could not restart the CPC for the new SD folder"));
         }
       }
       break;
@@ -883,6 +884,13 @@ void imgui_toast_info(const std::string& message) {
 void imgui_toast_success(const std::string& message) {
   imgui_toast(message, ImGuiUIState::ToastLevel::Success);
 }
+bool imgui_lease_ready(CpcPauseLease& lease) {
+  if (lease.idle()) return true;
+  lease.restore_run_state();
+  imgui_toast_error(rebuild_failure_text(ERR_Z80_NOT_IDLE, ""));
+  return false;
+}
+
 void imgui_toast_error(const std::string& message) {
   imgui_toast(message, ImGuiUIState::ToastLevel::Error);
 }
@@ -1036,7 +1044,8 @@ void dbg_step_over() {
   word pc = 0;
   Z80StepClass cls;
   {
-    CpcPauseLease const lease;
+    CpcPauseLease lease;
+    if (!imgui_lease_ready(lease)) return;
     pc = z80.PC.w.l;
     cls = z80_classify_at(pc);
     if (!cls.is_call && !cls.is_rst) {
@@ -1100,10 +1109,10 @@ void dispatch_step_walk(StepWalkAction action,
   if (g_step_walk_running.exchange(true, std::memory_order_acq_rel)) {
     return;  // a walk is already in flight; ignore the repeated click/shortcut
   }
-  // Pause, then wait for the Z80 thread to go idle WITH A BOUND. A plain
-  // CpcPauseLease waits forever, and this runs on the render thread -- an
-  // unbounded wait here would freeze the GUI, which is the exact failure this
-  // worker exists to prevent.
+  // Pause, then wait for the Z80 thread to go idle with a SHORT bound. A
+  // plain CpcPauseLease waits up to kCpcIdleTimeoutMs, and this runs on the
+  // render thread -- a long wait here would freeze the GUI, which is the
+  // exact failure this worker exists to prevent.
   {
     CpcPauseLease const lease(CpcPauseLeaseMode::PauseOnly);
     if (!cpc_wait_until_idle(kStepWalkIdleWaitMs)) {
@@ -2797,8 +2806,9 @@ void imgui_render_statusbar() {
       ImGui::SetItemDefaultFocus();
       ImGui::SameLine();
       if (ImGui::Button("Restart", ImVec2(ui_dpi_px(90), ui_dpi_px(0)))) {
-        if (koncpc_rebuild_machine() != 0) {
-          imgui_toast_error("Could not restart the CPC for the new SD folder");
+        if (int const rc = koncpc_rebuild_machine(); rc != 0) {
+          imgui_toast_error(rebuild_failure_text(
+              rc, "Could not restart the CPC for the new SD folder"));
         }
         ImGui::CloseCurrentPopup();
       }
@@ -2878,14 +2888,16 @@ void imgui_render_statusbar() {
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         {
           CpcPauseLease lease;  // idle so the flush below is synchronous
-          dsk_eject(&drive);
-          // dsk_eject only queues the FDC unmount; apply it now, while
-          // driveFile still names the outgoing disc, so any dirty sectors
-          // are flushed back to it before we clear the path below (see
-          // flush_dirty_media_unit — clearing first makes the flush a
-          // silent no-op and drops unsaved writes).
-          subcycle_bridge_apply_pending_media();
-          driveFile.clear();
+          if (imgui_lease_ready(lease)) {
+            dsk_eject(&drive);
+            // dsk_eject only queues the FDC unmount; apply it now, while
+            // driveFile still names the outgoing disc, so any dirty sectors
+            // are flushed back to it before we clear the path below (see
+            // flush_dirty_media_unit — clearing first makes the flush a
+            // silent no-op and drops unsaved writes).
+            subcycle_bridge_apply_pending_media();
+            driveFile.clear();
+          }
         }
         popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();
@@ -4483,10 +4495,8 @@ void imgui_render_options() {
   // Serialize the staged serial values without applying/reopening the backend.
   // This is used when Save is requested but a destructive restart is declined.
   auto save_edited_configuration = [&]() {
-    SerialConfig const runtime_serial = g_serial_interface.get_config();
-    g_serial_interface.set_config(edited_serial_config);
-    bool const saved = saveConfiguration(CPC, getConfigurationFilename(true));
-    g_serial_interface.set_config(runtime_serial);
+    bool const saved = koncpc_save_live_configuration(
+        getConfigurationFilename(true), &edited_serial_config);
     if (saved) koncpc_capture_config_intent();
     return saved;
   };
@@ -4495,17 +4505,24 @@ void imgui_render_options() {
   auto commit_options = [&](bool save_to_file) {
     SerialConfig const previous_serial = g_serial_interface.get_config();
     g_serial_interface.set_config(edited_serial_config);
-    if (needs_restart && koncpc_rebuild_machine() != 0) {
+    int const rc = needs_restart ? koncpc_rebuild_machine() : 0;
+    if (rc != 0) {
       g_serial_interface.set_config(previous_serial);
-      g_serial_interface.apply_config();
+      // A refusal (Z80 thread stuck) returned before the bridge was stopped:
+      // the old backend is still wired into the live machine, so it must not
+      // be replaced. Any other failure happened after the teardown and needs
+      // the previous backend reopened.
+      if (rc != ERR_Z80_NOT_IDLE) g_serial_interface.apply_config();
       // A half-built machine — a missing ROM, say — must not be reported as
       // success and must not be resumed. Leave the dialog open on it.
-      imgui_toast_error(
-          "Could not rebuild the CPC with these settings; check the ROM paths");
+      imgui_toast_error(rebuild_failure_text(
+          rc,
+          "Could not rebuild the CPC with these settings; check the ROM "
+          "paths"));
       return;
     }
     if (save_to_file) {
-      saveConfiguration(CPC, getConfigurationFilename(true));
+      koncpc_save_live_configuration(getConfigurationFilename(true));
       // Options▸Save is a deliberate persist of printer/scr_window — refresh
       // the intent snapshot so cleanExit / MRU write-backs do not undo it.
       koncpc_capture_config_intent();

@@ -6,6 +6,15 @@ commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+Commands that change machine state — `reset`, `load` of a snapshot or a
+`.bin`, `snapshot save|load`, the `disk` family, `profile load`,
+`config apply`, `session play` and `step` — first pause the CPC and wait for
+the Z80 thread to leave the frame it is in. That wait is bounded (5 s; `step`
+uses its own 1 s). If the thread is stuck, the command answers
+`ERR 409 z80-not-idle`, changes nothing, and leaves the machine running or
+paused exactly as it found it. After one such timeout, later commands give up
+after 250 ms until the thread is seen idle again.
+
 ## Companion: Telnet Console (port 6544)
 
 A separate persistent TCP connection on **port 6544** provides a text terminal
@@ -57,7 +66,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported` |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`; `ERR 500 load-bin` if the file is missing, empty or too big), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported` |
 
 ## Registers
 
@@ -748,7 +757,7 @@ echo "rom load 7 maxam.rom" | nc -w 1 localhost 6543
 
 | Command | Description |
 |---------|-------------|
-| `serial status` | Report interface/backend configuration and counters |
+| `serial status` | Report interface/backend configuration and counters. `tx_dropped=N` counts bytes the CPC sent that the backend could not deliver (not connected, peer gone, disk full). `backend_connected=0\|1` is the resolved state; for a TCP backend `backend_status` reads `Connecting to host:port` while the connect is in flight, `Connected to …` once it completes and `Disconnected from …` after a refusal or hang-up |
 | `serial send <byte>` | Inject one received byte |
 | `serial send_string <text>` | Inject text into the receive path |
 | `serial config get` | Report serial configuration |
