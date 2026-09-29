@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "errors.h"
 #include "types.h"
 
 // ─────────────────────────────────────────────────
@@ -372,4 +373,13 @@ struct DiscToolsMediaKey {
 inline bool disc_tools_listing_stale(const DiscToolsMediaKey& listed,
                                      const DiscToolsMediaKey& live) {
   return listed != live;
+}
+
+// The message for a failed koncpc_rebuild_machine(). A refusal because the
+// Z80 thread would not stop is not a ROM problem and must not send the user
+// hunting through ROM paths.
+inline std::string rebuild_failure_text(int rc, const std::string& fallback) {
+  return rc == ERR_Z80_NOT_IDLE
+             ? "Z80 thread is not responding; nothing was changed"
+             : fallback;
 }

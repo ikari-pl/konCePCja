@@ -22,10 +22,12 @@
 
 #include "autotype.h"
 #include "cpc_key_tables.h"
+#include "errors.h"
 #include "imgui_state.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "stuck_z80_thread.h"
 #include "symfile.h"
 #include "video_host.h"
 #include "z80_view.h"
@@ -749,6 +751,151 @@ TEST_F(IpcServerTest, ResumeAppliedReportsLeaseDeferral) {
   EXPECT_TRUE(cpc_resume_applied());
 }
 
+// beads-csl7.5: the quiescence wait is bounded. A Z80 thread that never
+// leaves its frame (g_z80_idle stuck false) used to hang the lease holder --
+// the IPC thread or the UI -- forever. Now the wait gives up, the lease reports
+// not-idle, and the holder must leave the machine alone.
+//
+// The production bound is kCpcIdleTimeoutMs (5 s); these tests lower it so
+// they prove the cap without waiting it out, and put everything back after.
+namespace {
+using koncpc_test::StuckZ80Thread;
+
+long long ms_since(std::chrono::steady_clock::time_point t) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now() - t)
+      .count();
+}
+}  // namespace
+
+TEST_F(IpcServerTest, PauseLeaseWaitGivesUpOnAStuckZ80Thread) {
+  cpc_resume();
+  {
+    StuckZ80Thread const stuck(100);
+    auto const started = std::chrono::steady_clock::now();
+    CpcPauseLease lease;
+    EXPECT_LT(ms_since(started), 1000);
+    EXPECT_TRUE(lease.active());
+    EXPECT_FALSE(lease.idle());
+    EXPECT_FALSE(lease.wait()) << "still stuck";
+    EXPECT_TRUE(CPC.paused) << "the lease must still hold the pause";
+    lease.restore_run_state();
+    EXPECT_FALSE(CPC.paused) << "the caller's run state was not restored";
+  }
+  CpcPauseLease lease;
+  EXPECT_TRUE(lease.idle());
+  lease.restore_run_state();
+}
+
+// After one timeout the next holder must not pay the full bound again (a
+// frozen UI on every click); once the thread is seen idle, the full bound is
+// back for the next stall.
+TEST_F(IpcServerTest, PauseLeaseFailsFastWhileTheZ80ThreadIsKnownStuck) {
+  cpc_resume();
+  StuckZ80Thread const stuck(600);
+
+  auto t = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease const first;
+  }
+  EXPECT_GE(ms_since(t), 550) << "the first stall waits the full bound";
+
+  t = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease const second;
+  }
+  EXPECT_LT(ms_since(t), 450)
+      << "a known-stuck thread still cost the full bound";
+
+  g_z80_idle.store(true, std::memory_order_release);
+  {
+    CpcPauseLease const recovered;
+    EXPECT_TRUE(recovered.idle());
+  }
+  g_z80_idle.store(false, std::memory_order_release);
+  t = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease const third;
+  }
+  EXPECT_GE(ms_since(t), 550) << "recovery did not re-arm the full bound";
+  cpc_resume();
+}
+
+// Every IPC command that takes a pause lease answers the same way when the
+// thread is stuck: ERR 409 z80-not-idle (the code `step` always used), no
+// change, and the machine handed back running.
+TEST_F(IpcServerTest, LeaseTakingCommandsFailClosedOnAStuckZ80Thread) {
+  std::filesystem::path const bin = "test/.ipc_stuck_z80.bin";
+  {
+    std::ofstream(bin, std::ios::binary) << std::string(16, '\x5A');
+  }
+  std::filesystem::path const sna = "test/.ipc_stuck_z80.sna";
+  std::filesystem::remove(sna);
+
+  const char* const commands[] = {
+      "reset",
+      "snapshot save test/.ipc_stuck_z80.sna",
+      "snapshot load test/.ipc_stuck_z80.sna",
+      "load test/.ipc_stuck_z80.sna",
+      "load test/.ipc_stuck_z80.bin",
+      "disk format A data",
+      "disk status A",
+      "disk save A test/.ipc_stuck_z80.dsk dsk",
+      "disk eject A",
+      "disk ls A",
+      "profile load no-such-profile",
+      "step",
+  };
+  unsigned int const saved_ram_size = CPC.ram_size;
+  CPC.ram_size = 128;  // so `load x.bin` gets as far as the lease
+  z80_write_mem(0x6000, 0x00);
+  for (const char* cmd : commands) {
+    SCOPED_TRACE(cmd);
+    cpc_resume();
+    StuckZ80Thread const stuck(50);
+    auto const started = std::chrono::steady_clock::now();
+    std::string const resp = send_command(cmd);
+    EXPECT_EQ(0u, resp.rfind("ERR 409 z80-not-idle", 0)) << resp;
+    EXPECT_LT(ms_since(started), 1500);
+    EXPECT_FALSE(CPC.paused) << "the machine was left paused";
+  }
+  EXPECT_FALSE(std::filesystem::exists(sna)) << "snapshot written anyway";
+  EXPECT_EQ(0x00, z80_read_mem(0x6000)) << ".bin copied under a stuck frame";
+  CPC.ram_size = saved_ram_size;
+  std::filesystem::remove(bin);
+  std::filesystem::remove("test/.ipc_stuck_z80.dsk");
+}
+
+// A rebuild refused for the same reason tears nothing down and says why, so
+// callers (Options, config apply) can tell it from a ROM failure.
+TEST_F(IpcServerTest, RebuildRefusesOnAStuckZ80Thread) {
+  cpc_resume();
+  StuckZ80Thread const stuck(100);
+  EXPECT_EQ(ERR_Z80_NOT_IDLE, koncpc_rebuild_machine());
+  EXPECT_FALSE(CPC.paused);
+}
+
+// The helper itself must not leak a paused machine into the next test: its
+// clear-lease used to release() (which never resumes) instead of restoring
+// the run state, so every test after one of these inherited CPC.paused=true
+// under --gtest_shuffle.
+TEST_F(IpcServerTest, TheStuckThreadHelperHandsTheMachineBackRunning) {
+  cpc_resume();
+  ASSERT_FALSE(CPC.paused);
+  {
+    StuckZ80Thread const stuck(50);
+    CpcPauseLease lease;
+    EXPECT_FALSE(lease.idle());
+    lease.restore_run_state();
+  }
+  EXPECT_FALSE(CPC.paused) << "the helper left the machine paused";
+}
+
+TEST_F(IpcServerTest, LoadBinReportsAnUnreadableFile) {
+  std::string const resp = send_command("load test/.no_such_file.bin");
+  EXPECT_EQ("ERR 500 load-bin\n", resp);
+}
+
 TEST_F(IpcServerTest, RunReportsPauseLeaseHeld) {
   cpc_resume();
   CpcPauseLease lease;
@@ -1012,7 +1159,7 @@ TEST_F(IpcServerTest, WatchpointRange) {
 }
 
 TEST_F(IpcServerTest, StepOutWithoutMachineReportsNoProgressPromptly) {
-  // The unit-test binary never calls subcycle_bridge_start(), so
+  // No test leaves a subcycle_bridge_start() machine running, so
   // z80_step_instruction() is a no-op and SP can never move. The walk used to
   // discover that by hot-spinning to its 5s deadline -- on every suite run.
   // It must now say so immediately, and say the *right* thing: 409, not a 408

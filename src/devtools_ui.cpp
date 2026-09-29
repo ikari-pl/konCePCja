@@ -2093,18 +2093,24 @@ void DevToolsUI::render_disc_tools() {
   const uint8_t dt_unit = static_cast<uint8_t>(dt_drive_ == 0 ? 0 : 1);
   // beads-lly6: refresh the host sector view from the live FDC medium before
   // any Disc Tools read so listings match what the CPC sees.
-  auto sync_pull = [&] {
-    if (!subcycle_bridge_active()) return;
+  // Returns false when the pull could not happen because the pause lease timed
+  // out (the Z80 thread is stuck inside a frame). Callers that cache what the
+  // pull produced must not mark that cache fresh in that case.
+  auto sync_pull = [&]() -> bool {
+    if (!subcycle_bridge_active()) return true;
     CpcPauseLease lease;
+    if (!imgui_lease_ready(lease)) return false;
     subcycle_bridge_pull_drive_view(dt_unit);
     if (!lease.was_paused()) {
       lease.release();
       cpc_resume();
     }
+    return true;
   };
   // Mutating helpers: pause, pull, run body, push.
   auto with_disk_mutation = [&](const std::function<void(t_drive*)>& body) {
     CpcPauseLease lease;
+    if (!imgui_lease_ready(lease)) return;
     if (subcycle_bridge_active()) {
       subcycle_bridge_pull_drive_view(dt_unit);
     }
@@ -2149,12 +2155,14 @@ void DevToolsUI::render_disc_tools() {
         char const letter = (dt_drive_ == 0) ? 'A' : 'B';
         if (dt_format_ >= 0 && dt_format_ < static_cast<int>(formats.size())) {
           CpcPauseLease lease;
-          disk_format_drive(letter, formats[dt_format_]);
-          if (!lease.was_paused()) {
-            lease.release();
-            cpc_resume();
+          if (imgui_lease_ready(lease)) {
+            disk_format_drive(letter, formats[dt_format_]);
+            if (!lease.was_paused()) {
+              lease.release();
+              cpc_resume();
+            }
+            dt_files_dirty_ = true;
           }
-          dt_files_dirty_ = true;
         }
       }
     }
@@ -2170,8 +2178,9 @@ void DevToolsUI::render_disc_tools() {
     if (disc_tools_listing_stale(dt_listed_media_, live_media)) {
       dt_files_dirty_ = true;
     }
-    if (dt_files_dirty_) {
-      sync_pull();
+    // A failed pull leaves the host view showing the outgoing medium: keep the
+    // listing dirty rather than caching that and calling it current.
+    if (dt_files_dirty_ && sync_pull()) {
       drv = (dt_drive_ == 0) ? &driveA : &driveB;
       dt_file_cache_ = disk_list_files(drv, dt_file_error_);
       dt_files_dirty_ = false;
@@ -2220,6 +2229,7 @@ void DevToolsUI::render_disc_tools() {
             }
 
             CpcPauseLease lease;
+            if (!imgui_lease_ready(lease)) return;
             if (subcycle_bridge_active()) {
               subcycle_bridge_pull_drive_view(unit);
             }
@@ -2292,6 +2302,7 @@ void DevToolsUI::render_disc_tools() {
                 const uint8_t unit =
                     static_cast<uint8_t>(self->dt_dialog_drive_ == 0 ? 0 : 1);
                 CpcPauseLease lease;
+                if (!imgui_lease_ready(lease)) return;
                 if (subcycle_bridge_active()) {
                   subcycle_bridge_pull_drive_view(unit);
                 }

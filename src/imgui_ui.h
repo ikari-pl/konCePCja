@@ -80,6 +80,13 @@ void imgui_toast_info(const std::string& message);
 void imgui_toast_success(const std::string& message);
 void imgui_toast_error(const std::string& message);
 
+class CpcPauseLease;
+// For a UI holder of a pause lease: true when the Z80 thread went idle. When
+// the wait timed out, restores the run state the lease found, tells the user
+// nothing was changed, and returns false -- the caller must then skip its
+// work.
+bool imgui_lease_ready(CpcPauseLease& lease);
+
 // Serial Terminal window
 void imgui_render_serial_terminal();
 void serial_terminal_feed_byte(uint8_t byte);

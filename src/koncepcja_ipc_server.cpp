@@ -1,6 +1,7 @@
 #include "koncepcja_ipc_server.h"
 
 #include "autotype.h"
+#include "errors.h"
 #include "gfx_finder.h"
 #include "hw/tape.h"
 #include "hw_views.h"
@@ -260,6 +261,16 @@ std::string err_with_context(int code, const std::string& msg) {
 }
 }  // namespace
 
+// A pause lease whose bounded wait timed out: the Z80 thread is stuck inside a
+// frame, so the command must not touch machine state. Give the machine back
+// in the run state the lease found it in and say why.
+namespace {
+std::string z80_not_idle(CpcPauseLease& lease) {
+  lease.restore_run_state();
+  return err_with_context(409, "z80-not-idle");
+}
+}  // namespace
+
 // Direct keyboard matrix manipulation that works even when CPC.paused is true.
 // applyKeypress() refuses to act when paused, but IPC input commands need to
 // set keys before resuming emulation for frame stepping.
@@ -315,7 +326,7 @@ namespace {
 // Machine-rebuild staging. koncpc_rebuild_machine() tears down and reallocates
 // the board (pbRAMbuffer/pbROM/pbGPBuffer) and the Bridge. Running that from
 // the IPC server thread was unsafe twice over:
-//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_idle is
+//   * in HEADLESS mode a pause-lease wait is a no-op -- g_z80_idle is
 //     only toggled inside z80_thread_main(), which is spawned only when
 //     !g_headless -- so the IPC thread could free memory the main thread was
 //     still executing a frame out of;
@@ -542,6 +553,9 @@ static std::string ipc_request_rebuild_and_wait() {
     }
   }
   int const err = g_rebuild_pending.result;
+  // Refused before anything was torn down: same condition, same answer as
+  // every other lease holder.
+  if (err == ERR_Z80_NOT_IDLE) return err_with_context(409, "z80-not-idle");
   if (err != 0)
     return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
   return {};
@@ -1641,6 +1655,7 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "reset") {
       CpcPauseLease lease;
+      if (!lease.idle()) return z80_not_idle(lease);
       bool const was_paused = lease.was_paused();
       emulator_reset();
       bool no_resume = false;
@@ -1725,8 +1740,11 @@ std::string handle_command(const std::string& line) {
         // Hold the machine still for the load, like the .sna arm below: the
         // render thread's Disc Tools pull takes the same lease, so a load
         // interleaved with it would be listed as the outgoing disc while the
-        // new one is still only queued.
+        // new one is still only queued. Fail closed like every other lease
+        // holder: a lease that timed out means the Z80 thread is stuck inside
+        // a frame, and swapping the medium under it would corrupt the drive.
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         CPC.driveA.file = path;
         CPC.driveA.zip_index = 0;
         int const rc = file_load(CPC.driveA);
@@ -1735,6 +1753,7 @@ std::string handle_command(const std::string& line) {
       }
       if (ext == ".sna") {
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         bool const was_paused = lease.was_paused();
         CPC.snapshot.file = path;
         CPC.snapshot.zip_index = 0;
@@ -1759,8 +1778,15 @@ std::string handle_command(const std::string& line) {
                                              : "ERR 500 load-cpr\n";
       }
       if (ext == ".bin") {
-        bin_load(path, 0x6000);
-        return ok_with_context();
+        switch (bin_load(path, 0x6000)) {
+          case BinLoadResult::Ok:
+            return ok_with_context();
+          case BinLoadResult::NotIdle:
+            return err_with_context(409, "z80-not-idle");
+          case BinLoadResult::FileError:
+            break;
+        }
+        return "ERR 500 load-bin\n";
       }
       return "ERR 415 unsupported\n";
     }
@@ -2194,6 +2220,7 @@ std::string handle_command(const std::string& line) {
         if (parts.size() < 3) return "ERR 400 bad-args\n";
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         bool const was_paused = lease.was_paused();
         int const rc = snapshot_save(parts[2]);
         if (!was_paused) {
@@ -2206,6 +2233,7 @@ std::string handle_command(const std::string& line) {
         if (parts.size() < 3) return "ERR 400 bad-args\n";
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         bool const was_paused = lease.was_paused();
         int const rc = snapshot_load(parts[2]);
         if (!was_paused) {
@@ -2803,14 +2831,14 @@ std::string handle_command(const std::string& line) {
     if (cmd == "iobp") return "ERR 400 usage: iobp (add|del|clear|list)\n";
     if (cmd == "step") {
       // Pause and own the machine through the destructive step work — but
-      // wait for the Z80 thread to go idle WITH A BOUND. A plain lease waits
-      // forever, and this server handles one connection at a time with
+      // wait for the Z80 thread to go idle with a SHORT bound. A plain lease
+      // waits up to kCpcIdleTimeoutMs, and this server handles one
+      // connection at a time with
       // handle_command() inline: a Z80 thread stuck for any reason would hang
       // the entire IPC surface here, before any per-step deadline had even
       // started, with no way for the caller to send `pause` or anything else.
-      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
-      if (!cpc_wait_until_idle(kStepIdleWaitMs))
-        return err_with_context(409, "z80-not-idle");
+      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly, kStepIdleWaitMs);
+      if (!lease.wait()) return z80_not_idle(lease);
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -4123,6 +4151,7 @@ std::string handle_command(const std::string& line) {
         // mutated (out-param/compound-assign/loop/reference)
         char drive = parts[2][0];
         CpcPauseLease lease;  // idle before replacing the live medium
+        if (!lease.idle()) return z80_not_idle(lease);
         bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
         if (!was_paused) {
@@ -4177,6 +4206,7 @@ std::string handle_command(const std::string& line) {
         if (unit < 0) return "ERR 400 invalid drive letter\n";
         t_drive* drv = unit == 0 ? &driveA : &driveB;
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         bool const was_paused = lease.was_paused();
         if (subcycle_bridge_active()) {
           subcycle_bridge_pull_drive_view(static_cast<uint8_t>(unit));
@@ -4477,6 +4507,7 @@ std::string handle_command(const std::string& line) {
         const int unit = resolve_unit(parts[2]);
         if (unit < 0) return "ERR 400 invalid drive letter\n";
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         // A just-issued `load` only queues the FDC insert. Apply it while
         // idle so caps match the disc the agent thinks is mounted.
         subcycle_bridge_apply_pending_media();
@@ -4512,6 +4543,7 @@ std::string handle_command(const std::string& line) {
           return "ERR 400 format must be dsk, scp, or hfe\n";
         }
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         subcycle_bridge_apply_pending_media();
         const FluxSaveCaps caps = disk_caps(unit);
         const bool allowed = (fmt == SaveFormat::Dsk && caps.can_dsk) ||
@@ -4540,6 +4572,7 @@ std::string handle_command(const std::string& line) {
         const int unit = resolve_unit(parts[2]);
         if (unit < 0) return "ERR 400 invalid drive letter\n";
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         dsk_eject(unit == 0 ? &driveA : &driveB);
         // dsk_eject only queues FDC unmount for the next frame. Apply now
         // while the Z80 is idle so the next IPC command cannot pull
@@ -4802,6 +4835,7 @@ std::string handle_command(const std::string& line) {
         // the machine identity actually changed, rebuild on the main thread
         // like `config apply` / Options Apply.
         CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         unsigned int const old_model = CPC.model;
         unsigned int const old_ram = CPC.ram_size;
 
@@ -5104,8 +5138,11 @@ std::string handle_command(const std::string& line) {
            << " rx_available="
            << (g_serial_interface.dart.rx_available() ? 1 : 0)
            << " baud=" << cfg.baud_rate;
+        ss << " tx_dropped=" << g_serial_interface.tx_dropped();
         if (g_serial_interface.backend) {
           ss << " backend_name=" << g_serial_interface.backend->name();
+          ss << " backend_connected="
+             << (g_serial_interface.backend->connected() ? 1 : 0);
           ss << " backend_status=" << g_serial_interface.backend->status();
         }
         ss << "\n";
@@ -5666,6 +5703,10 @@ std::string handle_command(const std::string& line) {
         // Load the embedded snapshot to restore state
         {
           CpcPauseLease lease;
+          if (!lease.idle()) {
+            g_session.stop_playback();
+            return z80_not_idle(lease);
+          }
           bool const was_paused = lease.was_paused();
           int const rc = snapshot_load(snap_path);
           if (!was_paused) {
