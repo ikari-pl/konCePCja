@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -125,11 +126,20 @@ std::string agents_source_dir() {
 #endif
 }
 
-std::string read_doc(const std::string& name) {
-  std::ifstream f(agents_source_dir() + "/" + name, std::ios::binary);
+// The whole file with CR LF folded to LF: a Windows checkout
+// (core.autocrlf) hands the same doc over with CR LF line ends, and every
+// search below is written against LF.
+std::string read_source_file(const std::string& relative) {
+  std::ifstream f(agents_source_dir() + "/" + relative, std::ios::binary);
   std::ostringstream ss;
   ss << f.rdbuf();
   std::string text = ss.str();
+  text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+  return text;
+}
+
+std::string read_doc(const std::string& name) {
+  std::string const text = read_source_file(name);
   // A checkout without symlink support stores a link as a file holding its
   // target's name: follow it.
   if (!text.empty() && text.size() < 64 && text.find('\n') == std::string::npos)
@@ -208,11 +218,14 @@ TEST(AgentsDocDrift, OptionListMatchesTheParserExactly) {
 // user could copy into a config file and have silently do nothing.
 TEST(AgentsDocDrift, DocumentedSoundKeysAreKeysTheConfigLoaderReads) {
   std::string const doc = read_doc("AGENTS.md");
-  size_t const start = doc.find("\n[sound]\n");
-  ASSERT_NE(std::string::npos, start) << "AGENTS.md has no [sound] example";
-  std::set<std::string> documented;
-  std::istringstream in(doc.substr(start + 9));
+  ASSERT_FALSE(doc.empty()) << "could not read AGENTS.md";
+  // Find the section by whole line: its header is a line of its own.
+  std::istringstream in(doc);
   std::string line;
+  bool found = false;
+  while (!found && std::getline(in, line)) found = line == "[sound]";
+  ASSERT_TRUE(found) << "AGENTS.md has no [sound] example";
+  std::set<std::string> documented;
   while (std::getline(in, line) && !line.empty() && line[0] != '[' &&
          line[0] != '`') {
     if (line[0] == ' ' || line[0] == '#') continue;
@@ -221,10 +234,7 @@ TEST(AgentsDocDrift, DocumentedSoundKeysAreKeysTheConfigLoaderReads) {
   }
   ASSERT_FALSE(documented.empty());
 
-  std::ifstream src(agents_source_dir() + "/src/kon_cpc_ja.cpp");
-  std::ostringstream ss;
-  ss << src.rdbuf();
-  std::string const code = ss.str();
+  std::string const code = read_source_file("src/kon_cpc_ja.cpp");
   ASSERT_FALSE(code.empty());
   for (const std::string& key : documented) {
     EXPECT_NE(std::string::npos, code.find("(\"sound\", \"" + key + "\""))
