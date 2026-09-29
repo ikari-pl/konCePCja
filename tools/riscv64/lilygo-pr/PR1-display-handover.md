@@ -43,28 +43,55 @@ LVGL patches already carried in the Buildroot overlay -- one of which
 `drm_dev_t` and restored by `drm_del_event_cb()`, but nothing has ever assigned
 it, so the restore on display delete was dead code; it now does something.
 
-Launcher side, modelled on the existing `system()` call sites (2642 / 2926 / 3163):
+Launcher side (`launcher-lvglsim.patch`), modelled on the existing `system()`
+call sites (2642 / 2926 / 3163):
 
 ```c
-static int launch_external_app(const char * cmd)
+static int launch_external_app(const char *cmd)
 {
-    if(lv_linux_drm_release(disp) != LV_RESULT_OK) {
-        LV_LOG_WARN("could not release the display; not launching %s", cmd);
+    int rc;
+
+    if(!main_display) {
         return -1;
     }
 
-    int const rc = system(cmd);
+    if(lv_linux_drm_release(main_display) != LV_RESULT_OK) {
+        touch_trace_log("EXTERNAL_APP_RELEASE_FAIL cmd=%s", cmd);
+        return -1;
+    }
 
-    if(lv_linux_drm_acquire(disp) != LV_RESULT_OK) {
-        LV_LOG_ERROR("could not reacquire the display after %s", cmd);
+    rc = system(cmd);
+
+    if(lv_linux_drm_acquire(main_display) != LV_RESULT_OK) {
+        touch_trace_log("EXTERNAL_APP_ACQUIRE_FAIL cmd=%s", cmd);
         return -2;
     }
 
+    /* The panel is showing whatever the child last drew on it */
     lv_obj_invalidate(lv_screen_active());
-    lv_refr_now(disp);
+    lv_refr_now(main_display);
+
     return rc;
 }
 ```
+
+### The caller is lvglsim
+
+`lvglsim` already ships in this image at `/root/app/lvglsim` and nothing has ever
+been able to start it -- it is an LVGL DRM client, so it needs the panel to
+itself. It is reachable now through a `PAGE_LVGL_DEMO` tile, which is the same
+shape as the Reboot page: a `command_button` that arms a one-shot
+`lv_timer_create(..., 250, NULL)`.
+
+The timer matters. `system()` blocks the LVGL loop for as long as the child runs,
+so the button handler only sets the "Running..." label and arms the timer; the
+label reaches the panel on the next refresh, and the blocking call happens after
+that. `reboot_confirm_event_cb()` / `reboot_timer_cb()` do exactly this.
+
+`render_page()`'s switch has no `default:`, so the new enumerator must be handled
+there or the build warns -- which is the right place for it anyway. The other
+seven switches over `page_id_t` all have a `default:`; `page_name()` gets a case
+regardless so the touch traces name the page like every other one.
 
 ## Dropping master is not enough on its own
 
@@ -132,8 +159,9 @@ exit status. `compile-check.sh` alongside this patch reproduces the table.
 ## Not in this PR
 
 Adding third-party apps to the launcher's grid (icons, a runtime manifest) is a
-separate design question and belongs in its own change. This PR only adds the
-capability to hand the display over; it does not decide who may use it.
+separate design question and belongs in its own change. This PR wires exactly
+one caller, and that caller is a binary this image already ships; it does not
+add a way for anything else to ask for the panel.
 
 `drmModeCreateLease()` would be the richer alternative -- the panel exposes
 seven planes and the launcher drives only the primary, so an app could composite

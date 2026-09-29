@@ -1,0 +1,210 @@
+--- a/k230_launcher/k230_phone_ui/src/ui_common.h
++++ b/k230_launcher/k230_phone_ui/src/ui_common.h
+@@ -112,6 +112,7 @@
+     PAGE_REBOOT,
+     PAGE_NRF52840_DFU,
+     PAGE_STORAGE_EXPAND,
++    PAGE_LVGL_DEMO,
+ } page_id_t;
+ 
+ void app_nav_to_page(page_id_t page);
+--- a/k230_launcher/k230_phone_ui/src/main.c
++++ b/k230_launcher/k230_phone_ui/src/main.c
+@@ -639,6 +639,7 @@
+     {"System", LV_SYMBOL_LIST, 0xF5A524, PAGE_SYSTEM},
+     {"Display", LV_SYMBOL_EYE_OPEN, 0x8B5CF6, PAGE_DISPLAY},
+     {"Screen Test", "RGB", 0x22C55E, PAGE_DISPLAY_TEST},
++    {"LVGL Demo", "LV", 0x8B5CF6, PAGE_LVGL_DEMO},
+     {"HDMI", "HDMI", 0x60A5FA, PAGE_HDMI_TEST},
+     {"Touch", "TCH", 0x22D3EE, PAGE_TOUCH_TEST},
+     {"Motion", LV_SYMBOL_PLAY, 0xF97316, PAGE_MOTION},
+@@ -751,6 +752,8 @@
+         return "System";
+     case PAGE_STORAGE_EXPAND:
+         return "Expand storage";
++    case PAGE_LVGL_DEMO:
++        return "LVGL demo";
+     case PAGE_DISPLAY:
+         return "Display";
+     case PAGE_DISPLAY_TEST:
+@@ -12040,6 +12043,170 @@
+     app_nav_back();
+ }
+ 
++/*
++ * Running a full-screen program alongside the launcher
++ *
++ * DRM permits one master per device and the launcher holds it from
++ * lv_linux_drm_create() until it exits, so an external program cannot set a
++ * mode or a plane while the launcher runs. lv_linux_drm_release() hands the
++ * panel over and lv_linux_drm_acquire() takes it back; the display object and
++ * every LVGL object built on it survive untouched in between.
++ *
++ * lvglsim ships in this image at /root/app/lvglsim and, until now, nothing
++ * could start it: it is an LVGL DRM client, so it needs the panel to itself.
++ */
++#define EXTERNAL_APP_LVGL_DEMO "/root/app/lvglsim"
++
++static lv_obj_t *external_app_status_label;
++static lv_obj_t *external_app_run_btn;
++static int external_app_running;
++
++static int launch_external_app(const char *cmd)
++{
++    int rc;
++
++    if(!main_display) {
++        return -1;
++    }
++
++    if(lv_linux_drm_release(main_display) != LV_RESULT_OK) {
++        touch_trace_log("EXTERNAL_APP_RELEASE_FAIL cmd=%s", cmd);
++        return -1;
++    }
++
++    rc = system(cmd);
++
++    if(lv_linux_drm_acquire(main_display) != LV_RESULT_OK) {
++        touch_trace_log("EXTERNAL_APP_ACQUIRE_FAIL cmd=%s", cmd);
++        return -2;
++    }
++
++    /* The panel is showing whatever the child last drew on it */
++    lv_obj_invalidate(lv_screen_active());
++    lv_refr_now(main_display);
++
++    return rc;
++}
++
++/* system() blocks the LVGL loop, so the button press only arms this timer;
++ * that gives the "Running..." label a chance to reach the panel first.
++ * Same shape as reboot_confirm_event_cb() / reboot_timer_cb() below. */
++static void external_app_timer_cb(lv_timer_t *timer)
++{
++    int rc;
++
++    (void)timer;
++
++    touch_trace_log("EXTERNAL_APP_RUN cmd=%s", EXTERNAL_APP_LVGL_DEMO);
++    rc = launch_external_app(EXTERNAL_APP_LVGL_DEMO);
++    touch_trace_log("EXTERNAL_APP_DONE rc=%d", rc);
++
++    external_app_running = 0;
++
++    if(external_app_run_btn && lv_obj_is_valid(external_app_run_btn)) {
++        lv_obj_clear_state(external_app_run_btn, LV_STATE_DISABLED);
++    }
++    if(external_app_status_label && lv_obj_is_valid(external_app_status_label)) {
++        if(rc == 0) {
++            lv_label_set_text(external_app_status_label, ui_tr("Finished"));
++            lv_obj_set_style_text_color(external_app_status_label,
++                                        lv_color_hex(0x25C281), 0);
++        } else {
++            lv_label_set_text(external_app_status_label,
++                              ui_tr("Could not hand over the display"));
++            lv_obj_set_style_text_color(external_app_status_label,
++                                        lv_color_hex(0xEF4D5A), 0);
++        }
++    }
++    request_fast_refresh();
++}
++
++static void external_app_run_event_cb(lv_event_t *event)
++{
++    lv_timer_t *timer;
++
++    (void)event;
++
++    if(external_app_running) {
++        return;
++    }
++    external_app_running = 1;
++
++    if(external_app_run_btn && lv_obj_is_valid(external_app_run_btn)) {
++        lv_obj_add_state(external_app_run_btn, LV_STATE_DISABLED);
++    }
++    if(external_app_status_label && lv_obj_is_valid(external_app_status_label)) {
++        lv_label_set_text(external_app_status_label, ui_tr("Running..."));
++        lv_obj_set_style_text_color(external_app_status_label,
++                                    lv_color_hex(0xF5A524), 0);
++    }
++    request_fast_refresh();
++
++    timer = lv_timer_create(external_app_timer_cb, 250, NULL);
++    if(timer) {
++        lv_timer_set_repeat_count(timer, 1);
++    }
++}
++
++static void create_lvgl_demo_page(lv_obj_t *scr)
++{
++    int body_w = ui_page_panel_width();
++    int body_y = ui_page_top_y(144);
++    int body_h = ui_body_height(body_y) - 42;
++    lv_obj_t *page_body;
++    lv_obj_t *body;
++    lv_obj_t *title;
++    lv_obj_t *detail;
++    lv_obj_t *hint;
++
++    external_app_status_label = NULL;
++    external_app_run_btn = NULL;
++    external_app_running = 0;
++
++    if(body_h < 300) {
++        body_h = 300;
++    }
++
++    create_header(scr, "LVGL Demo");
++
++    page_body = ui_page_body(scr, 144);
++    lv_obj_set_scrollbar_mode(page_body, LV_SCROLLBAR_MODE_OFF);
++    body = panel(page_body, ui_page_panel_x(), 18, body_w, body_h);
++    lv_obj_set_style_bg_color(body, lv_color_hex(0x111820), 0);
++    lv_obj_set_scrollbar_mode(body, LV_SCROLLBAR_MODE_OFF);
++
++    title = label(body, "Run lvglsim", &lv_font_montserrat_28, 0xF2F5F8);
++    lv_obj_set_pos(title, 24, 24);
++    lv_obj_set_width(title, body_w - 48);
++    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
++
++    detail = label(body, EXTERNAL_APP_LVGL_DEMO, &lv_font_montserrat_20,
++                   0xCBD5E1);
++    lv_obj_set_pos(detail, 24, 78);
++    lv_obj_set_width(detail, body_w - 48);
++    lv_label_set_long_mode(detail, LV_LABEL_LONG_WRAP);
++
++    hint = label(body,
++                 "The launcher hands the panel over while it runs, "
++                 "and takes it back when it exits.",
++                 &lv_font_montserrat_16, 0x9AA4AF);
++    lv_obj_set_pos(hint, 24, 118);
++    lv_obj_set_width(hint, body_w - 48);
++    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
++
++    external_app_status_label = label(body, "", &lv_font_montserrat_18,
++                                     0x25C281);
++    lv_obj_set_pos(external_app_status_label, 24, 180);
++    lv_obj_set_width(external_app_status_label, body_w - 48);
++    lv_label_set_long_mode(external_app_status_label, LV_LABEL_LONG_DOT);
++
++    external_app_run_btn = command_button(body, 24, 224,
++                                          body_w - 48 > 204 ? 204 : body_w - 48,
++                                          "Run", 0x8B5CF6);
++    lv_obj_add_event_cb(external_app_run_btn, external_app_run_event_cb,
++                        LV_EVENT_CLICKED, NULL);
++}
++
+ static void create_reboot_page(lv_obj_t *scr)
+ {
+     int body_y = ui_page_top_y(144);
+@@ -12601,6 +12768,9 @@
+     case PAGE_STORAGE_EXPAND:
+         create_storage_expand_page(scr);
+         break;
++    case PAGE_LVGL_DEMO:
++        create_lvgl_demo_page(scr);
++        break;
+     case PAGE_SETTINGS:
+         ui_settings_create(scr);
+         break;
