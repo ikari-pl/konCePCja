@@ -59,6 +59,7 @@
 #include "expr_parser.h"
 #include "flux_save.h"
 #include "gif_recorder.h"
+#include "imgui_ui.h"
 #include "imgui_ui_testable.h"
 #include "keyboard.h"
 #include "koncepcja.h"
@@ -382,6 +383,52 @@ struct IpcGunPending {
 IpcGunPending g_ipc_gun;
 }  // namespace
 
+// Recent-files staging. A successful `load` belongs in the Recent menu just as
+// a File-menu or drag-drop load does (beads-00jf), but CPC.mru_* is read by
+// the menu every frame and pushing to it saves the config, so the IPC thread
+// only records the entry; ipc_drain_input() applies it on the main thread.
+namespace {
+struct IpcMruPending {
+  std::mutex mutex;
+  std::vector<std::pair<IpcMruList, std::string>> entries;
+};
+IpcMruPending g_ipc_mru;
+
+void ipc_stage_mru(IpcMruList list, const std::string& path) {
+  std::scoped_lock const lock(g_ipc_mru.mutex);
+  g_ipc_mru.entries.emplace_back(list, path);
+}
+}  // namespace
+
+std::vector<std::string>& ipc_mru_list(t_CPC& cpc, IpcMruList list) {
+  switch (list) {
+    case IpcMruList::Tapes:
+      return cpc.mru_tapes;
+    case IpcMruList::Snapshots:
+      return cpc.mru_snaps;
+    case IpcMruList::Cartridges:
+      return cpc.mru_carts;
+    case IpcMruList::Disks:
+      break;
+  }
+  return cpc.mru_disks;
+}
+
+void ipc_apply_staged_mru(bool save_config) {
+  std::vector<std::pair<IpcMruList, std::string>> entries;
+  {
+    std::scoped_lock const lock(g_ipc_mru.mutex);
+    entries.swap(g_ipc_mru.entries);
+  }
+  for (const auto& [list, path] : entries) {
+    if (save_config) {
+      imgui_mru_push(ipc_mru_list(CPC, list), path);
+    } else {
+      mru_list_push(ipc_mru_list(CPC, list), path, t_CPC::MRU_MAX);
+    }
+  }
+}
+
 // Host keymap staging — the same deferral again. `config set kbd_layout` runs
 // on the IPC thread, but CPC.kbd_layout and the live InputMapper are read by
 // the main thread's key-event handler, so the switch is applied by
@@ -547,6 +594,19 @@ static std::string ipc_request_rebuild_and_wait() {
   return {};
 }
 
+void ipc_publish_device_gates(bool mouse_fitted, bool gun_fitted) {
+  g_ipc_mouse.device_active.store(mouse_fitted, std::memory_order_relaxed);
+  g_ipc_gun.device_active.store(gun_fitted, std::memory_order_relaxed);
+}
+
+bool ipc_mouse_gate_open() {
+  return g_ipc_mouse.device_active.load(std::memory_order_relaxed);
+}
+
+bool ipc_gun_gate_open() {
+  return g_ipc_gun.device_active.load(std::memory_order_relaxed);
+}
+
 void ipc_drain_input() {
   ipc_drain_rebuild();
   {
@@ -591,10 +651,11 @@ void ipc_drain_input() {
   }
   // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
-  g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
-                                  std::memory_order_relaxed);
-  g_ipc_gun.device_active.store(static_cast<bool>(CPC.phazer_emulation),
-                                std::memory_order_relaxed);
+  ipc_publish_device_gates(g_amx_mouse.enabled || g_symbiface.enabled,
+                           static_cast<bool>(CPC.phazer_emulation));
+  // A headless run is automation (CI, an agent's scratch session): its loads
+  // go on the Recent list but never rewrite the user's config file.
+  ipc_apply_staged_mru(!g_headless);
 
   if (g_ipc_mouse.dirty.load(std::memory_order_acquire)) {
     int32_t dx = 0;
@@ -899,10 +960,8 @@ void init_command_registry() {
               "ERR 400 usage: tier [get|status] | tier set "
               "auto|fast|wake|soldered|faithful\n");
         }
-        static const char* const kPolicyNames[] = {"auto", "fast", "wake",
-                                                   "soldered", "faithful"};
-        int const policy = static_cast<int>(subcycle_bridge_tier_policy());
-        return std::string("OK policy=") + kPolicyNames[policy] +
+        return std::string("OK policy=") +
+               subcycle_bridge_tier_policy_name(subcycle_bridge_tier_policy()) +
                " effective=" + subcycle_bridge_effective_tier_name() +
                " pinned=" + (subcycle_bridge_tier_env_pinned() ? "1\n" : "0\n");
       });
@@ -1074,7 +1133,9 @@ void init_command_registry() {
       "  keydown: Presses and holds <name> (matrix bit stays set).\n"
       "  keyup:   Releases <name>.\n"
       "  key:     Taps <name> (press, hold, release). Optional hold=<frames> "
-      "overrides the default 2-frame hold.\n"
+      "overrides the default 2-frame hold. The hold counts frames that began "
+      "with the key down, so the firmware's keyboard scan sees it that many "
+      "times.\n"
       "  chord:   Atomic modified tap, e.g. 'chord CTRL+SHIFT+ESC'. Leading "
       "modifier tokens (CTRL|SHIFT) then one base key; all rows go down in one "
       "atomic write. Optional hold=<frames>.\n"
@@ -1104,7 +1165,7 @@ void init_command_registry() {
       "disk formats | format <A|B> <format> | new <path> [format] "
       "[sector|flux] | status|eject <A|B> | save <A|B> <path> [dsk|scp|hfe] | "
       "ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> <file> <path> | put "
-      "<A|B> <path> [file] | sector ...",
+      "<A|B> <path> [file] [auto|basic|binary|ascii] | sector ...",
       "Manage emulated floppy disks",
       "High-level disk management. Mutations (format/put/rm/sector write) "
       "push to the live FDC; a failed push rolls the host view back so "
@@ -1118,7 +1179,13 @@ void init_command_registry() {
       "  eject: Unmount the drive (no GUI confirm). Dirty media follows the "
       "same flush-on-eject path as the File menu.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
-      "  put: Copies a file from the host machine onto the emulated disk.");
+      "  put: Copies a file from the host machine onto the emulated disk. "
+      "The optional last word picks how: basic (AMSDOS header type 0, a "
+      "tokenised program), binary (header type 2, load/exec 0), ascii (no "
+      "header, as SAVE\"x\",A writes it: bare LF becomes CR LF and a ^Z "
+      "ends the text, so RUN\" tokenises it). Without it (auto): .txt/.asc "
+      "are ascii, a .bas is ascii when it is plain text and basic when it is "
+      "already tokenised, anything else is binary.");
 
   register_command(
       "repaint", "DEBUG", "repaint [--screenshot PATH]",
@@ -1724,8 +1791,9 @@ std::string handle_command(const std::string& line) {
       if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
         CPC.driveA.file = path;
         CPC.driveA.zip_index = 0;
-        return file_load(CPC.driveA) == 0 ? ok_with_context()
-                                          : "ERR 500 load-disk\n";
+        if (file_load(CPC.driveA) != 0) return "ERR 500 load-disk\n";
+        ipc_stage_mru(IpcMruList::Disks, path);
+        return ok_with_context();
       }
       if (ext == ".sna") {
         CpcPauseLease lease;
@@ -1737,20 +1805,24 @@ std::string handle_command(const std::string& line) {
           lease.release();
           cpc_resume();
         }
-        return rc == 0 ? ok_with_context() : "ERR 500 load-sna\n";
+        if (rc != 0) return "ERR 500 load-sna\n";
+        ipc_stage_mru(IpcMruList::Snapshots, path);
+        return ok_with_context();
       }
       if (ext == ".cdt" || ext == ".voc") {
         CPC.tape.file = path;
         CPC.tape.zip_index = 0;
         if (file_load(CPC.tape) != 0) return "ERR 500 load-tape\n";
         tape_scan_blocks();  // build the block table (parity with the GUI load)
+        ipc_stage_mru(IpcMruList::Tapes, path);
         return ok_with_context();
       }
       if (ext == ".cpr") {
         CPC.cartridge.file = path;
         CPC.cartridge.zip_index = 0;
-        return file_load(CPC.cartridge) == 0 ? ok_with_context()
-                                             : "ERR 500 load-cpr\n";
+        if (file_load(CPC.cartridge) != 0) return "ERR 500 load-cpr\n";
+        ipc_stage_mru(IpcMruList::Cartridges, path);
+        return ok_with_context();
       }
       if (ext == ".bin") {
         bin_load(path, 0x6000);
@@ -2832,8 +2904,7 @@ std::string handle_command(const std::string& line) {
         int n = 1;
         if (parts.size() >= 3) n = parse_int(parts[2]);
         if (n < 1) return "ERR 400 bad-args\n";
-        g_ipc_instance->frame_step_remaining.store(n);
-        g_ipc_instance->frame_step_active.store(true);
+        g_ipc_instance->arm_frame_step(n);
         lease.release();
         cpc_resume();
         g_ipc_instance->wait_frame_step_done();
@@ -3015,8 +3086,7 @@ std::string handle_command(const std::string& line) {
         for (int i = 0; i < frame_count; i++) {
           // Advance one frame
           if (g_ipc_instance) {
-            g_ipc_instance->frame_step_remaining.store(1);
-            g_ipc_instance->frame_step_active.store(true);
+            g_ipc_instance->arm_frame_step(1);
             cpc_resume();
             while (g_ipc_instance->frame_step_active.load()) {
               std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -3037,8 +3107,7 @@ std::string handle_command(const std::string& line) {
       int saved = 0;
       for (int i = 0; i < frame_count; i++) {
         if (g_ipc_instance) {
-          g_ipc_instance->frame_step_remaining.store(1);
-          g_ipc_instance->frame_step_active.store(true);
+          g_ipc_instance->arm_frame_step(1);
           cpc_resume();
           while (g_ipc_instance->frame_step_active.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -3122,8 +3191,15 @@ std::string handle_command(const std::string& line) {
         bool const was_paused = CPC.paused;
         ipc_apply_keypress(scancode, keyboard_matrix, true);
         if (g_ipc_instance) {
-          g_ipc_instance->frame_step_remaining.store(hold_frames);
-          g_ipc_instance->frame_step_active.store(true);
+          // Count the hold from the first keyboard snapshot published after
+          // the press, not from whatever frame happens to be running: that
+          // frame began with the old matrix, so counting it let the release
+          // land before the firmware ever scanned the key (beads-cjej). The
+          // serial is read AFTER the press — a publish racing in between
+          // only makes the hold one frame longer, never shorter.
+          g_ipc_instance->arm_frame_step(
+              hold_frames,
+              g_kbd_publish_serial.load(std::memory_order_acquire));
           cpc_resume();
           // Block on the frame-step condvar until the hold completes — no
           // busy-wait.
@@ -3323,7 +3399,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "mouse" && parts.size() >= 3) {
         // Mouse input is staged here and flushed on the main thread by
         // ipc_drain_input() — see the IpcMousePending comment above.
-        if (!g_ipc_mouse.device_active.load(std::memory_order_relaxed))
+        if (!ipc_mouse_gate_open())
           return "ERR 409 no-mouse-device (enable AMX or Symbiface mouse)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
           std::scoped_lock const lock(g_ipc_mouse.mutex);
@@ -3369,7 +3445,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "gun" && parts.size() >= 3) {
         // Light-gun (phazer) input is staged here and flushed on the main
         // thread by ipc_drain_input() — see the IpcGunPending comment above.
-        if (!g_ipc_gun.device_active.load(std::memory_order_relaxed))
+        if (!ipc_gun_gate_open())
           return "ERR 409 no-light-gun (enable a phazer type)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
           std::scoped_lock const lock(g_ipc_gun.mutex);
@@ -4273,13 +4349,24 @@ std::string handle_command(const std::string& line) {
             });
       }
       if (parts[1] == "put") {
-        if (parts.size() < 4)
-          return "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename]\n";
+        static const char* const kPutUsage =
+            "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename] "
+            "[auto|basic|binary|ascii]\n";
+        if (parts.size() < 4 || parts.size() > 6) return kPutUsage;
+        // The trailing type word is optional and so is the name before it:
+        // `disk put A prog.bas ascii` names the type, not a file "ASCII".
+        DiskPutMode mode = DiskPutMode::AUTO;
+        size_t name_args = parts.size() - 4;
+        if (name_args > 0 && disk_parse_put_mode(parts.back(), mode)) {
+          --name_args;
+        } else if (name_args > 1) {
+          return kPutUsage;  // two extra words, the last not a type
+        }
         return with_synced_drive(
             parts[2], true, [&](t_drive* drv) -> std::string {
               const std::string& local_path = parts[3];
               std::string cpc_name;
-              if (parts.size() >= 5) {
+              if (name_args == 1) {
                 cpc_name = parts[4];
                 // Uppercase it
                 for (auto& c : cpc_name)
@@ -4297,7 +4384,7 @@ std::string handle_command(const std::string& line) {
                   std::istreambuf_iterator<char>());
               in.close();
               std::string const err =
-                  disk_write_file(drv, cpc_name, data, true);
+                  disk_put_file(drv, cpc_name, local_path, data, mode);
               if (!err.empty()) return "ERR " + err + "\n";
               return "OK\n";
             });
@@ -6078,6 +6165,20 @@ bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc,
 }
 
 // --- Frame step synchronization ---
+
+void KoncepcjaIpcServer::arm_frame_step(int n, uint64_t after_serial) {
+  frame_step_after_serial.store(after_serial);
+  frame_step_remaining.store(n);
+  frame_step_active.store(true);
+}
+
+bool KoncepcjaIpcServer::frame_step_tick(uint64_t frame_kbd_serial) {
+  if (!frame_step_active.load()) return false;
+  // A frame that was already running when the step was armed began with an
+  // older snapshot; it does not count (see frame_step_after_serial).
+  if (frame_kbd_serial <= frame_step_after_serial.load()) return false;
+  return frame_step_remaining.fetch_sub(1) - 1 <= 0;
+}
 
 void KoncepcjaIpcServer::notify_frame_step_done() {
   frame_step_active.store(false);

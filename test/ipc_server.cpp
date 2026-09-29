@@ -445,6 +445,53 @@ TEST_F(IpcServerTest, DevtoolsOnOffUsesRequestedState) {
   EXPECT_TRUE(imgui_state.show_devtools);
 }
 
+// Bare `devtools` opens and never closes (beads-oz0): an agent that sends it
+// twice must not end up with the window shut. Only F12 toggles.
+TEST_F(IpcServerTest, BareDevtoolsIsAnIdempotentOpen) {
+  imgui_state.show_devtools = false;
+  EXPECT_OK(send_command("devtools"));
+  EXPECT_TRUE(imgui_state.show_devtools);
+  EXPECT_OK(send_command("devtools"));
+  EXPECT_TRUE(imgui_state.show_devtools) << "a second bare devtools closed it";
+  imgui_state.show_devtools = false;
+}
+
+// A key tap's hold is counted in frames that BEGAN with the pressed matrix
+// (beads-cjej). The frame already running when the tap arms started with the
+// old snapshot, so it must not count: counting it released a hold=2 tap after
+// one scannable frame, or none when the release raced the publish.
+TEST(IpcFrameStep, TapHoldCountsOnlyFramesPublishedAfterThePress) {
+  KoncepcjaIpcServer s;
+  constexpr uint64_t kPressSerial = 41;  // the serial read after the press
+  s.arm_frame_step(2, kPressSerial);
+
+  // The in-flight frame (and any stale re-tick of it) ends: not counted.
+  EXPECT_FALSE(s.frame_step_tick(40));
+  EXPECT_FALSE(s.frame_step_tick(kPressSerial));
+  EXPECT_TRUE(s.frame_step_active.load());
+
+  // Two frames that began with the key live finish the hold, not one.
+  EXPECT_FALSE(s.frame_step_tick(kPressSerial + 1));
+  EXPECT_TRUE(s.frame_step_tick(kPressSerial + 2));
+}
+
+TEST(IpcFrameStep, PlainFrameStepCountsEveryFrame) {
+  KoncepcjaIpcServer s;
+  // A tap leaves a high serial behind; `step frame` must not inherit it.
+  s.arm_frame_step(1, 1000);
+  s.notify_frame_step_done();
+  s.arm_frame_step(3);
+  EXPECT_FALSE(s.frame_step_tick(1));
+  EXPECT_FALSE(s.frame_step_tick(2));
+  EXPECT_TRUE(s.frame_step_tick(3));
+}
+
+TEST(IpcFrameStep, IdleStepNeverFires) {
+  KoncepcjaIpcServer s;
+  EXPECT_FALSE(s.frame_step_tick(1));
+  EXPECT_FALSE(s.frame_step_tick(99));
+}
+
 // R52 in the crtc dump is the Gate Array's HSYNC line counter, the reference a
 // raster effect is timed against.  It reported CRTC.reg5 instead -- a value
 // the same line already prints as R5 -- so the field read plausibly while
@@ -783,6 +830,81 @@ TEST_F(IpcServerTest, DiskNewCanCreateFluxBacking) {
   EXPECT_EQ(std::string(signature, sizeof(signature)), "SCP");
   file.close();
   std::filesystem::remove(path);
+}
+
+// `disk put` takes an optional type after the optional CPC name, and guesses
+// it from the host file without one (beads-otjf).
+TEST_F(IpcServerTest, DiskPutTypeArgumentAndAutoDetect) {
+  EXPECT_OK(send_command("disk format A data"));
+  auto const dir = std::filesystem::temp_directory_path();
+  auto const tok = dir / "koncepcja-ipc-put-tok.bas";
+  auto const bin = dir / "koncepcja-ipc-put.bin";
+  {
+    std::ofstream(tok, std::ios::binary)
+        .write("\x0A\x00\x0A\x00\xBF\x20\x22\x48\x22\x00", 10);
+    std::ofstream(bin, std::ios::binary).write("\xC9", 1);
+  }
+  // Auto: a tokenised .bas gets a BASIC header, anything else BINARY.
+  EXPECT_OK(send_command("disk put A " + tok.string()));
+  EXPECT_EQ(send_command("disk info A KONCEPCJ.BAS").rfind("OK type=basic", 0),
+            0u);
+  EXPECT_OK(send_command("disk put A " + bin.string() + " CODE.BIN"));
+  EXPECT_EQ(send_command("disk info A CODE.BIN").rfind("OK type=binary", 0),
+            0u);
+  // A lone type word is the type, not a CPC name; the name is derived.
+  EXPECT_OK(send_command("disk put A " + bin.string() + " basic"));
+  EXPECT_EQ(send_command("disk info A KONCEPCJ.BIN").rfind("OK type=basic", 0),
+            0u);
+  // Name and type together; ascii writes no header at all.
+  EXPECT_OK(send_command("disk put A " + tok.string() + " RAW.TXT ascii"));
+  EXPECT_EQ(send_command("disk info A RAW.TXT"),
+            "ERR no valid AMSDOS header\n");
+  // Two extra words where the last is not a type is a usage error.
+  EXPECT_EQ(send_command("disk put A " + bin.string() + " X.BIN Y.BIN")
+                .rfind("ERR 400 usage: disk put", 0),
+            0u);
+  std::filesystem::remove(tok);
+  std::filesystem::remove(bin);
+}
+
+// A successful IPC `load` lands on the Recent list like a File-menu or
+// drag-drop load (beads-00jf). The IPC thread only stages it -- the menu reads
+// CPC.mru_* every frame -- and the main thread's drain applies it; a failed
+// load stages nothing.
+TEST_F(IpcServerTest, LoadPushesTheRecentList) {
+  auto const dsk =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-mru.dsk";
+  std::filesystem::remove(dsk);
+  EXPECT_OK(send_command("disk format A data"));
+  EXPECT_OK(send_command("disk save A " + dsk.string() + " dsk"));
+  ipc_apply_staged_mru(false);  // start from an empty queue
+
+  std::vector<std::string> const saved_disks = CPC.mru_disks;
+  CPC.mru_disks.clear();
+  EXPECT_OK(send_command("load " + dsk.string()));
+  EXPECT_TRUE(CPC.mru_disks.empty())
+      << "the IPC thread must not touch the list the menu is reading";
+  ipc_apply_staged_mru(false);
+  ASSERT_FALSE(CPC.mru_disks.empty());
+  EXPECT_EQ(dsk.string(), CPC.mru_disks.front());
+
+  CPC.mru_disks.clear();
+  EXPECT_NE("OK",
+            send_command("load " + dsk.string() + ".missing.dsk").substr(0, 2));
+  ipc_apply_staged_mru(false);
+  EXPECT_TRUE(CPC.mru_disks.empty()) << "a failed load went on the list";
+
+  CPC.mru_disks = saved_disks;
+  EXPECT_OK(send_command("disk eject A"));
+  std::filesystem::remove(dsk);
+}
+
+TEST(IpcMru, EachLoadKindHasItsOwnList) {
+  t_CPC cpc;
+  EXPECT_EQ(&cpc.mru_disks, &ipc_mru_list(cpc, IpcMruList::Disks));
+  EXPECT_EQ(&cpc.mru_tapes, &ipc_mru_list(cpc, IpcMruList::Tapes));
+  EXPECT_EQ(&cpc.mru_snaps, &ipc_mru_list(cpc, IpcMruList::Snapshots));
+  EXPECT_EQ(&cpc.mru_carts, &ipc_mru_list(cpc, IpcMruList::Cartridges));
 }
 
 TEST_F(IpcServerTest, DiskStatusSaveEjectAndCaps) {

@@ -4,6 +4,7 @@
 
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class CapriceArgs {
@@ -25,6 +26,18 @@ class CapriceArgs {
 // Expands KONCPC_*/CPC_* keywords in an autocmd string into the internal
 // keystroke escape sequences understood by the autotype queue.
 std::string replaceKoncpcKeys(std::string command);
+
+// One command-line option: the short flag, the long name, and whether it
+// takes a value.
+struct CliOption {
+  char short_name;
+  std::string_view long_name;
+  bool takes_value;
+};
+
+// Every option parseArguments() accepts. Exposed so the docs that copy the
+// option list (AGENTS.md) can be checked against it (beads-5bcr).
+const std::vector<CliOption>& cli_options();
 
 // Parses argv into `args`; every non-option argument lands in `slot_list`.
 // Exits the process for --help/--version/--list-plugins and on bad usage.

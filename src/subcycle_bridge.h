@@ -140,6 +140,23 @@ enum class BridgeTierPolicy : std::uint8_t {
 };
 void subcycle_bridge_set_tier_policy(BridgeTierPolicy policy);
 BridgeTierPolicy subcycle_bridge_tier_policy();
+// The policy's name as `[system] run_tier`, IPC `tier` and the startup
+// manifest spell it: auto/fast/wake/soldered/faithful.
+inline const char* subcycle_bridge_tier_policy_name(BridgeTierPolicy policy) {
+  switch (policy) {
+    case BridgeTierPolicy::Auto:
+      return "auto";
+    case BridgeTierPolicy::Fast:
+      return "fast";
+    case BridgeTierPolicy::Wake:
+      return "wake";
+    case BridgeTierPolicy::Soldered:
+      return "soldered";
+    case BridgeTierPolicy::Faithful:
+      return "faithful";
+  }
+  return "auto";
+}
 // engine=1 CPU trace: attach/detach the per-instruction record hook that feeds
 // g_trace. No-op sink when the sub-cycle engine is inactive (legacy uses its
 // own z80.cpp call site). Setting the hook also suppresses the µs-chunk elision

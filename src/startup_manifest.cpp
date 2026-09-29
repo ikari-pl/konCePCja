@@ -58,6 +58,7 @@ std::string startup_manifest_yaml(const StartupManifest& m) {
   o << "  model: " << m.model << '\n';
   o << "  ram_size_kb: " << m.ram_size_kb << '\n';
   o << "  run_tier: " << quoted_or_null(m.run_tier) << '\n';
+  o << "  effective_tier: " << quoted_or_null(m.effective_tier) << '\n';
   o << "config_file: " << quoted(m.config_file) << '\n';
   o << "...\n";
   return o.str();

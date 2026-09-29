@@ -502,6 +502,7 @@ distrib: $(TARGET)
 	$(foreach DLL,$(DLLS),[ -f $(MINGW_PATH)/bin/$(DLL) ] && cp $(MINGW_PATH)/bin/$(DLL) $(ARCHIVE_DIR)/ || (echo "$(MINGW_PATH)/bin/$(DLL) doesn't exist" && false);)
 	cp $(MINGW_PATH)/bin/libgcc_s_*-1.dll $(ARCHIVE_DIR)/
 	cp koncepcja.cfg.tmpl koncepcja.cfg LICENSE.md NOTICE.md README.md $(ARCHIVE_DIR)/
+	mkdir -p $(ARCHIVE_DIR)/docs && cp docs/ipc-protocol.md $(ARCHIVE_DIR)/docs/
 	cp -r resources/ rom/ licenses/ $(ARCHIVE_DIR)/
 	cd $(RELEASE_DIR) && zip -r $(ARCHIVE).zip $(ARCHIVE)
 
@@ -518,6 +519,7 @@ distrib: $(TARGET)
 	cp $(TARGET) $(ARCHIVE_DIR)/
 	cp -r rom resources doc licenses $(ARCHIVE_DIR)
 	cp koncepcja.cfg README.md LICENSE.md NOTICE.md $(ARCHIVE_DIR)
+	mkdir -p $(ARCHIVE_DIR)/docs && cp docs/ipc-protocol.md $(ARCHIVE_DIR)/docs/
 	cd $(RELEASE_DIR) && zip -r $(ARCHIVE).zip $(ARCHIVE)
 
 else
@@ -537,6 +539,7 @@ distrib: $(TARGET) debian-changelog
 	cp -r src rom resources doc licenses debian vendor $(SRC_PACKAGE_DIR)
 	rm -rf $(SRC_PACKAGE_DIR)/vendor/SDL/build $(SRC_PACKAGE_DIR)/vendor/SDL/install
 	cp main.cpp koncepcja.cfg.tmpl koncepcja.cfg makefile README.md INSTALL.md LICENSE.md NOTICE.md .release-please-manifest.json $(SRC_PACKAGE_DIR)
+	mkdir -p $(SRC_PACKAGE_DIR)/docs && cp docs/ipc-protocol.md $(SRC_PACKAGE_DIR)/docs/
 	tar jcf $(SRC_PACKAGE_DIR).tar.bz2 -C $(ARCHIVE_DIR) koncepcja-$(VERSION)
 	ln -s koncepcja-$(VERSION).tar.bz2 $(ARCHIVE_DIR)/koncepcja_$(VERSION).orig.tar.bz2 || true
 
@@ -719,6 +722,7 @@ macos_bundle: all
 	gsed -i "s,__SHARE_PATH__,../Resources," $(BUNDLE_DIR)/Contents/Resources/koncepcja.cfg
 	cp -r resources rom licenses $(BUNDLE_DIR)/Contents/Resources
 	cp LICENSE.md NOTICE.md README.md $(BUNDLE_DIR)/Contents/Resources/
+	mkdir -p $(BUNDLE_DIR)/Contents/Resources/docs && cp docs/ipc-protocol.md $(BUNDLE_DIR)/Contents/Resources/docs/
 	mkdir -p $(BUNDLE_DIR)/Contents/Frameworks
 	# Copy shared libs — skip @rpath entries (handled separately below)
 	for lib in $$(otool -L $(BUNDLE_DIR)/Contents/MacOS/$(TARGET) | grep ".dylib" | awk '{ print $$1 }' | grep -v @); do \

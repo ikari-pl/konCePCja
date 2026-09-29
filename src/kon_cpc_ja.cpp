@@ -370,6 +370,7 @@ std::vector<byte> pbTapeImage;
 std::atomic<byte> keyboard_matrix[16];
 std::atomic<byte> keyboard_matrix_live[16];
 std::mutex g_kbd_matrix_mutex;
+std::atomic<uint64_t> g_kbd_publish_serial{0};
 
 extern dword dwFrameCountOverall;
 dword dwFrameCountOverall = 0;
@@ -2545,6 +2546,10 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.host_chords = read_flag("input", "host_chords", 1);
 
   g_symbiface.enabled = read_flag("peripheral", "symbiface", 0) != 0;
+  // The IPC `input mouse`/`input gun` gates must be right from here, not from
+  // the main loop's first drain: a client can reach a running Z80 before it.
+  ipc_publish_device_gates(g_amx_mouse.enabled || g_symbiface.enabled,
+                           static_cast<bool>(CPC.phazer_emulation));
   g_m4board.enabled = read_flag("peripheral", "m4board", 0) != 0;
   g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 6);
@@ -3528,6 +3533,7 @@ void publish_keyboard_snapshot() {
         keyboard_matrix[i].load(std::memory_order_relaxed),
         std::memory_order_relaxed);
   }
+  g_kbd_publish_serial.fetch_add(1, std::memory_order_release);
 }
 }  // namespace
 
@@ -4020,13 +4026,12 @@ void z80_thread_main() {
 
       g_telnet.drain_input();
 
-      // IPC frame step
-      if (g_ipc->frame_step_active.load()) {
-        int const remaining = g_ipc->frame_step_remaining.fetch_sub(1) - 1;
-        if (remaining <= 0) {
-          cpc_pause();
-          g_ipc->notify_frame_step_done();
-        }
+      // IPC frame step. This thread published the snapshot this frame began
+      // with, so the current serial is that frame's.
+      if (g_ipc->frame_step_tick(
+              g_kbd_publish_serial.load(std::memory_order_relaxed))) {
+        cpc_pause();
+        g_ipc->notify_frame_step_done();
       }
 
       // Drive LED state and FPS text — written before signal_ready() so the
@@ -4475,7 +4480,9 @@ int koncpc_main(int argc, char** argv) {
     }
     manifest.model = CPC.model;
     manifest.ram_size_kb = CPC.ram_size;
-    manifest.run_tier = subcycle_bridge_effective_tier_name();
+    manifest.run_tier =
+        subcycle_bridge_tier_policy_name(subcycle_bridge_tier_policy());
+    manifest.effective_tier = subcycle_bridge_effective_tier_name();
     manifest.config_file = config_file;
     startup_manifest_emit(manifest);
   }
@@ -5538,13 +5545,11 @@ int koncpc_main(int argc, char** argv) {
         // Telnet console: drain input into autotype queue
         g_telnet.drain_input();
 
-        // Handle IPC "step frame" — decrement remaining, pause when done
-        if (g_ipc->frame_step_active.load()) {
-          int const remaining = g_ipc->frame_step_remaining.fetch_sub(1) - 1;
-          if (remaining <= 0) {
-            cpc_pause();
-            g_ipc->notify_frame_step_done();
-          }
+        // Handle IPC "step frame" — count the frame, pause when done
+        if (g_ipc->frame_step_tick(
+                g_kbd_publish_serial.load(std::memory_order_relaxed))) {
+          cpc_pause();
+          g_ipc->notify_frame_step_done();
         }
 
         if (!g_headless) {

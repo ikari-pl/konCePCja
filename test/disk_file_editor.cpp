@@ -185,6 +185,89 @@ TEST_F(DiskFileEditorTest, WriteWithHeaderAndReadBack) {
   EXPECT_EQ(data, payload);
 }
 
+// `disk put` used to give every file a BINARY header (load/exec 0), so a
+// pushed BASIC program was RUN" as machine code at address 0 (beads-otjf).
+TEST(DiskPutMode, ParsesTheFourWordsInAnyCase) {
+  DiskPutMode m = DiskPutMode::BINARY;
+  EXPECT_TRUE(disk_parse_put_mode("auto", m));
+  EXPECT_EQ(DiskPutMode::AUTO, m);
+  EXPECT_TRUE(disk_parse_put_mode("BASIC", m));
+  EXPECT_EQ(DiskPutMode::BASIC, m);
+  EXPECT_TRUE(disk_parse_put_mode("Binary", m));
+  EXPECT_EQ(DiskPutMode::BINARY, m);
+  EXPECT_TRUE(disk_parse_put_mode("ascii", m));
+  EXPECT_EQ(DiskPutMode::ASCII, m);
+  EXPECT_FALSE(disk_parse_put_mode("PROG.BAS", m));
+  EXPECT_FALSE(disk_parse_put_mode("", m));
+}
+
+TEST(DiskPutMode, AutoPicksFromExtensionAndContents) {
+  const std::vector<uint8_t> listing = {'1', '0', ' ', 'P', 'R', 'I', 'N',
+                                        'T', ' ', '"', 'H', 'I', '"', '\n'};
+  // A tokenised line: length word, line number word, PRINT token (0xBF).
+  const std::vector<uint8_t> tokenised = {0x0A, 0x00, 0x0A, 0x00, 0xBF,
+                                          0x20, 0x22, 0x48, 0x22, 0x00};
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "/x/prog.bas", listing));
+  EXPECT_EQ(DiskPutMode::BASIC,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "/x/PROG.BAS", tokenised));
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "notes.TXT", tokenised));
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "prog.asc", listing));
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "code.bin", listing));
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "noext", listing));
+  // An explicit mode always wins over the guess.
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::BINARY, "prog.bas", listing));
+}
+
+TEST_F(DiskFileEditorTest, PutBasicWritesHeaderType0) {
+  const std::vector<uint8_t> tokenised = {0x0A, 0x00, 0x0A, 0x00, 0xBF,
+                                          0x20, 0x22, 0x48, 0x22, 0x00};
+  ASSERT_EQ("", disk_put_file(&driveA, "PROG.BAS", "prog.bas", tokenised,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto raw = disk_read_file(&driveA, "PROG.BAS", err);
+  ASSERT_EQ("", err);
+  auto info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(AmsdosFileType::BASIC, info.type);
+  EXPECT_EQ(0x00, raw[18]) << "header type byte";
+  EXPECT_EQ(tokenised.size(), info.file_length);
+}
+
+TEST_F(DiskFileEditorTest, PutBinaryWritesHeaderType2) {
+  const std::vector<uint8_t> code = {0xC9};
+  ASSERT_EQ("", disk_put_file(&driveA, "PROG.BAS", "prog.bas", code,
+                              DiskPutMode::BINARY));
+  std::string err;
+  auto raw = disk_read_file(&driveA, "PROG.BAS", err);
+  ASSERT_EQ("", err);
+  auto info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(AmsdosFileType::BINARY, info.type);
+  EXPECT_EQ(0x02, raw[18]) << "header type byte";
+}
+
+TEST_F(DiskFileEditorTest, PutAsciiIsHeaderlessWithCrLfAndEofMarker) {
+  const std::string text = "10 PRINT \"HI\"\n20 GOTO 10\r\n";
+  const std::vector<uint8_t> data(text.begin(), text.end());
+  ASSERT_EQ("", disk_put_file(&driveA, "PROG.BAS", "prog.bas", data,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto raw = disk_read_file(&driveA, "PROG.BAS", err);
+  ASSERT_EQ("", err);
+  EXPECT_FALSE(disk_parse_amsdos_header(raw).valid)
+      << "BASIC reads only a HEADERLESS file as a listing to tokenise";
+  const std::string expect = "10 PRINT \"HI\"\r\n20 GOTO 10\r\n\x1A";
+  ASSERT_GE(raw.size(), expect.size());
+  EXPECT_EQ(expect, std::string(raw.begin(), raw.begin() + expect.size()))
+      << "bare LF gains its CR, CR LF is kept, ^Z ends the text";
+}
+
 TEST_F(DiskFileEditorTest, WriteMultipleFiles) {
   std::vector<uint8_t> d1(100, 0x11);
   std::vector<uint8_t> d2(200, 0x22);

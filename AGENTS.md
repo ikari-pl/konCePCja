@@ -94,7 +94,7 @@ Options:
   -s/--sym_file=<file>     Load symbols for disassembly
   -V/--version             Show version
   -v/--verbose             Verbose logging
-     --fps                 Log once-per-second FPS to stdout
+  -F/--fps                 Log once-per-second FPS to stdout
 
 Slot files: .dsk/.ipf/.raw (disk), .scp/.hfe/.a2r (flux disk, drive A only),
 .cdt/.voc (tape), .cpr (cartridge), .sna (snapshot), .zip (archive of any
@@ -181,14 +181,14 @@ OK available commands (usage: help <command>):
 | `snapshot save <path>` | Save state | `snapshot save game.sna` |
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
 | `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
-| `devtools` | Open DevTools window | `devtools` → `OK` |
+| `devtools` | Open DevTools window (idempotent); `devtools off` closes; F12 toggles | `devtools` → `OK` |
 | `config get\|set <key> [val]` | Read/modify settings (`model`, `crtc_type`, `ram_size`, …) | `config set model 3` |
 | `config apply` | Rebuild the machine with staged settings (needed after `config set model`) | `config apply` → `OK` |
 | `tier` | Run-tier policy | `tier` → `OK policy=auto effective=fast pinned=0` |
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
-| `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release) | `input key RETURN hold=5` |
+| `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release). The hold counts frames that began with the key down, so the firmware scans it N times | `input key RETURN hold=5` |
 | `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once) | `input chord CTRL+SHIFT+ESC` |
 | `input type <text>` | Type text via AutoTypeQueue (supports `~KEY~`, newlines; async like `autotype`) | `input type run"game~RETURN~` |
 | `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |

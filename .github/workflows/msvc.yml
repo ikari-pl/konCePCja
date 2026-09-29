@@ -131,6 +131,9 @@ jobs:
           # The program's own licence and provenance, beside the binary — the
           # zip used to carry the third-party licences and none of its own.
           Copy-Item LICENSE.md, NOTICE.md, README.md $stage
+          # README.md links docs/ipc-protocol.md; keep that relative path live.
+          New-Item -ItemType Directory -Force -Path "$stage/docs" | Out-Null
+          Copy-Item docs/ipc-protocol.md "$stage/docs/"
 
           # Strip the __SHARE_PATH__ placeholder so paths resolve relative to the exe.
           if (Test-Path koncepcja.cfg.tmpl) {

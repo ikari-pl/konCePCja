@@ -28,11 +28,15 @@ struct StartupManifest {
   std::string m4_bind_ip;
   unsigned int model = 0;        // 0=464, 1=664, 2=6128, 3=6128+
   unsigned int ram_size_kb = 0;  //
-  // Effective run tier (fast/wake/soldered/faithful). A harness needs it: the
-  // tier decides whether per-cycle observability is on, which changes debugger
-  // semantics. Empty when unknown. (There is deliberately no `engine` field --
-  // the legacy core is gone, so it cannot vary.)
+  // The run tier, the way IPC `tier` reports it (beads-tt7v): run_tier is the
+  // POLICY as configured ([system] run_tier: auto/fast/wake/soldered/
+  // faithful), effective_tier the tier the machine actually resolved to
+  // (fast/wake/soldered/faithful). A harness needs the latter: it decides
+  // whether per-cycle observability is on, which changes debugger semantics.
+  // Either is empty when unknown. (There is deliberately no `engine` field --
+  // there is one emulation core, so it cannot vary.)
   std::string run_tier;
+  std::string effective_tier;
   std::string config_file;  // may be empty if no config was found
 };
 

@@ -667,17 +667,26 @@ def test_inject_launches_like_run():
             if not ok or not resp.endswith('00'):
                 print(f"FAIL: &6100 must start clear, got {resp}")
                 return False
+            # Let the firmware settle first. A key that is down during roughly
+            # the first two frames after MC START PROGRAM is never delivered,
+            # however it is pressed (measured: a tap sent at once misses, the
+            # same tap 200 ms later lands, and so does one held for 10
+            # frames). That window is the program's start-up, not the tap.
+            ok, resp = ipc.send_command('wait vbl 5')
+            if not ok:
+                print(f"FAIL: wait vbl 5: {resp}")
+                return False
             ipc.run()
-            # Hold the key across several frames rather than 'input key a':
-            # the default 2-frame tap releases from the IPC thread and races
-            # the once-per-frame publish of the matrix the firmware scans, so
-            # the firmware can miss it entirely under load (beads-cjej). This
-            # test is about the launch path, not the tap.
-            for cmd in ('input keydown a', 'wait vbl 5', 'input keyup a'):
-                ok, resp = ipc.send_command(cmd)
-                if not ok:
-                    print(f"FAIL: {cmd}: {resp}")
-                    return False
+            # The default tap, sent while the machine runs. It used to count
+            # the frame already running when it pressed, so the key could be
+            # released after a single scannable frame, or before the firmware
+            # scanned it at all when the release raced the matrix publish; the
+            # hold now counts only frames that began with the key down
+            # (beads-cjej). This is that regression check.
+            ok, resp = ipc.send_command('input key a')
+            if not ok:
+                print(f"FAIL: input key a: {resp}")
+                return False
             # Only the firmware's ISR (KM SCAN KEYS every frame flyback) can
             # move that key into the buffer KM READ CHAR drains.
             ok, resp = ipc.send_command('wait mem 0x6100 0x61 5000')
@@ -2197,6 +2206,58 @@ def test_disk_live_put_cat():
         return True
 
 
+def test_disk_put_basic_listing_runs():
+    """A BASIC listing pushed with `disk put` must RUN (beads-otjf).
+
+    `disk put` gave every file a BINARY header with load/exec address 0, so
+    RUN" of a pushed .bas executed its text as Z80 code at &0000 and rebooted
+    the machine. A plain-text .bas is now written the way SAVE"x",A writes one
+    -- no header, CR LF lines, a ^Z at the end -- and BASIC tokenises it on
+    load. The program's POKE is the proof it ran.
+    """
+    print("Running disk put BASIC listing → RUN\" test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 25.0
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'prog.bas')
+            with open(host, 'w', newline='\n') as f:
+                f.write('10 POKE &6100,&61\n')
+            for cmd in ('disk format A data', f'disk put A {host}'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+        # A plain listing is stored headerless; BINARY here is the old bug.
+        ok, resp = ipc.send_command('disk info A PROG.BAS')
+        if ok or 'no valid AMSDOS header' not in resp:
+            print(f"FAIL: a listing must be stored without a header: {resp}")
+            return False
+        # Boot to the prompt and let it settle before typing (see
+        # test_m4_cat_lists_the_sd_card: keys typed at once get eaten).
+        for cmd in ('wait vbl 150 30000', 'mem write 0x6100 00'):
+            ok, resp = ipc.send_command(cmd)
+            if not ok:
+                print(f"FAIL: {cmd}: {resp}")
+                return False
+        ipc.run()
+        # NOT quoted: autotype types everything after the first space.
+        ok, resp = ipc.send_command('autotype run"prog~RETURN~')
+        if not ok:
+            print(f"FAIL: autotype: {resp}")
+            return False
+        ok, resp = ipc.send_command('wait mem 0x6100 0x61 20000')
+        if not ok:
+            print(f"FAIL: RUN\"prog never executed the listing: {resp}")
+            return False
+        print("PASS: a disk-put BASIC listing loads and RUNs")
+        return True
+
+
 def test_disk_status_save_eject():
     """File-menu Save Disk / Eject Disk over IPC (live FDC, not host t_drive).
 
@@ -2875,6 +2936,7 @@ def main():
         test_profile_load_rebuilds_machine,
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
+        test_disk_put_basic_listing_runs,
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,

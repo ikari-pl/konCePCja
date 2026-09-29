@@ -10,6 +10,8 @@
 
 #include <string>
 
+#include "subcycle_bridge.h"
+
 namespace {
 
 StartupManifest sample() {
@@ -145,4 +147,32 @@ TEST(StartupManifest, ReportsRunTier) {
   EXPECT_TRUE(contains(startup_manifest_yaml(m), "run_tier: 'fast'"));
   m.run_tier.clear();
   EXPECT_TRUE(contains(startup_manifest_yaml(m), "run_tier: null"));
+}
+
+// run_tier names the [system] POLICY key, so it must carry the policy; the
+// tier the machine resolved to is a different reading with its own key. The
+// manifest used to put the effective tier under run_tier: configured wake,
+// reported 'faithful' (beads-tt7v). Same pair as IPC `tier`.
+TEST(StartupManifest, ReportsPolicyAndEffectiveTierSeparately) {
+  StartupManifest m = sample();
+  m.run_tier = "auto";
+  m.effective_tier = "wake";
+  std::string const y = startup_manifest_yaml(m);
+  EXPECT_TRUE(contains(y, "  run_tier: 'auto'\n"));
+  EXPECT_TRUE(contains(y, "  effective_tier: 'wake'\n"));
+  m.effective_tier.clear();
+  EXPECT_TRUE(contains(startup_manifest_yaml(m), "effective_tier: null"));
+}
+
+TEST(StartupManifest, PolicyNamesMatchTheConfigAndIpcSpelling) {
+  EXPECT_STREQ("auto",
+               subcycle_bridge_tier_policy_name(BridgeTierPolicy::Auto));
+  EXPECT_STREQ("fast",
+               subcycle_bridge_tier_policy_name(BridgeTierPolicy::Fast));
+  EXPECT_STREQ("wake",
+               subcycle_bridge_tier_policy_name(BridgeTierPolicy::Wake));
+  EXPECT_STREQ("soldered",
+               subcycle_bridge_tier_policy_name(BridgeTierPolicy::Soldered));
+  EXPECT_STREQ("faithful",
+               subcycle_bridge_tier_policy_name(BridgeTierPolicy::Faithful));
 }

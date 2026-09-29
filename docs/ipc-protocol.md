@@ -6,6 +6,34 @@ commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+The port is only the default: every server probes forward when its port is
+taken, so a stale instance can hold 6543 and the new one lands elsewhere. Read
+the real ports from the **startup manifest**, one YAML document the emulator
+prints on stdout once its servers are up:
+
+```yaml
+--- # koncepcja
+manifest_version: 1
+version: 'v6.3.1'
+build: 'dba77141'
+pid: 4242
+mode: headless            # or gui
+ports:
+  ipc: 6545
+  telnet: 6546
+  m4_http: null           # null = that server is not running
+m4_bind_ip: null
+machine:
+  model: 2                # 0=464, 1=664, 2=6128, 3=6128+
+  ram_size_kb: 128
+  run_tier: 'auto'        # the [system] run_tier POLICY, as `tier` reports policy=
+  effective_tier: 'fast'  # the tier the machine resolved to, as `tier` reports effective=
+config_file: '/home/u/.config/koncepcja/koncepcja.cfg'
+...
+```
+
+Slice it out of the log between `--- # koncepcja` and `...`.
+
 ## Companion: Telnet Console (port 6544)
 
 A separate persistent TCP connection on **port 6544** provides a text terminal
@@ -57,7 +85,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported` |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported`. A successful disk, tape, snapshot or cartridge load goes on the matching Recent list, as a File-menu load does; the GUI then saves the config (as the menu does), a `--headless` run never rewrites the config file |
 
 ## Registers
 
@@ -303,7 +331,8 @@ Single characters work directly: `A`-`Z`, `a`-`z`, `0`-`9`, punctuation.
 |---------|-------------|
 | `input keydown <key>` | Press and hold key in matrix. Works even when paused. |
 | `input keyup <key>` | Release key from matrix. |
-| `input key <key>` | Tap: press, hold 2 frames, release. Blocks. |
+| `input key <key> [hold=N]` | Tap: press, hold N frames (default 2), release. Blocks. The hold counts only frames that *began* with the key down, i.e. frames whose keyboard scan could see it — the frame already running when the tap arrives does not count — so the firmware scans a default tap at least twice. |
+| `input chord <M+K> [hold=N]` | Atomic modified tap (`CTRL`/`SHIFT` modifiers and one key, all down in one write), held the same way as `input key`. |
 | `input type <text>` | Queue text through the AutoTypeQueue (same path as `autotype`). Returns `OK` at once; drains over subsequent keyboard scans (see `autotype status`). `~KEY~` tokens and newlines supported. |
 | `input joy <n> <dir>` | Joystick N (0 or 1). Directions: `U`/`UP` `D`/`DOWN` `L`/`LEFT` `R`/`RIGHT` `F`/`F1`/`FIRE1` `F2`/`FIRE2`. Prefix `-` to release. `0` releases all. |
 | `input mouse move <dx> <dy>` | Relative mouse motion (mickeys) fed to the AMX/Symbiface mouse. Requires a mouse device enabled (`input.amx_mouse=1` or `peripheral.symbiface=1`), else `ERR 409`. |
@@ -363,7 +392,7 @@ echo "frames dump /tmp/slowmo.gif 50 10" | nc -w 30 localhost 6543
 
 | Command | Description |
 |---------|-------------|
-| `devtools` | Toggle the developer tools (F12; the pause hub's DevTools button) |
+| `devtools` | Open the developer tools. Idempotent: sending it again leaves them open, so it never toggles them shut (the F12 key does toggle). `devtools off` closes them |
 | `devtools on\|off` | Show or hide them explicitly |
 | `devtools show <name>` / `devtools hide <name>` | Open or close one window: `registers`, `disassembly`, `memory_hex`, `stack`, `breakpoints`, `symbols`, `session_recording`, `gfx_finder`, `silicon_disc`, `asic`, `disc_tools`, `data_areas`, `disasm_export`, `video_state`, `audio_state`, `recording_controls`, `assembler`, `drive_sound_lab`. `ERR 404 unknown window` otherwise |
 
@@ -539,7 +568,7 @@ File-level and sector-level access to DSK disc images.
 | `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
 | `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
 | `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
-| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted). Failed live-FDC push rolls the host view back |
+| `disk put <A\|B> <local_path> [cpc_name] [auto\|basic\|binary\|ascii]` | Write local file to disc (auto-generates CPC name if omitted). The last word picks the file type: `basic` = AMSDOS header type 0 (tokenised program), `binary` = header type 2 (load/exec 0), `ascii` = no header, as `SAVE"x",A` writes it (bare LF becomes CR LF, a ^Z ends the text), so `RUN"` tokenises it. Default `auto`: `.txt`/`.asc` → ascii; `.bas` → ascii if it is plain text, basic if already tokenised; anything else → binary. A lone type word is the type, not a CPC name. Failed live-FDC push rolls the host view back |
 | `disk rm <A\|B> <filename>` | Delete file from disc. Failed live-FDC push rolls the host view back |
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
 | `disk status <A\|B>` | `OK present=0\|1 backing=empty\|sector\|flux can_dsk=0\|1 can_scp=0\|1 can_hfe=0\|1` — same save caps the File menu uses |

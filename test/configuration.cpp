@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "koncepcja.h"
+#include "koncepcja_ipc_server.h"
 #include "silicon_disc.h"
 #include "slotshandler.h"
 #ifdef _WIN32
@@ -412,6 +413,35 @@ TEST_F(ConfigurationTest, saveConfigurationPreservesEverySettingItReads) {
   EXPECT_EQ(99, CPC[1].devtools_max_stack_size);
   EXPECT_EQ(PhazerType::TrojanLightPhazer,
             static_cast<PhazerType::Value>(CPC[1].phazer_emulation));
+}
+
+// The IPC `input gun` gate used to be published only by the main loop's
+// per-frame drain. In GUI mode the Z80 thread starts before that first drain,
+// so a client could reach a running machine launched with -O
+// input.lightgun=1 and still get ERR 409 no-light-gun (beads-i834). Loading
+// the configuration now opens the gate itself, no drain involved.
+TEST_F(ConfigurationTest, loadConfigurationPublishesTheIpcDeviceGates) {
+  {
+    std::ofstream configFile(getTmpFilename(0));
+    configFile << "[input]\n"
+               << "lightgun=1\n"
+               << "amx_mouse=1\n";
+  }
+  {
+    std::ofstream configFile(getTmpFilename(1));
+    configFile << "[input]\n"
+               << "lightgun=0\n"
+               << "amx_mouse=0\n";
+  }
+  ipc_publish_device_gates(false, false);
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  EXPECT_TRUE(ipc_gun_gate_open());
+  EXPECT_TRUE(ipc_mouse_gate_open());
+
+  loadConfiguration(CPC, getTmpFilename(1));
+  EXPECT_FALSE(ipc_gun_gate_open());
+  EXPECT_FALSE(ipc_mouse_gate_open());
 }
 
 // Saving over an existing file edits it: a comment and an unrecognised key

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <set>
 
@@ -686,6 +687,69 @@ std::string disk_delete_file(t_drive* drive, const std::string& filename) {
   if (!write_directory(drive, dir)) return "failed to write directory";
   drive->altered = true;
   return "";
+}
+
+bool disk_parse_put_mode(const std::string& word, DiskPutMode& out) {
+  std::string w = word;
+  for (auto& c : w)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (w == "auto") {
+    out = DiskPutMode::AUTO;
+  } else if (w == "basic") {
+    out = DiskPutMode::BASIC;
+  } else if (w == "binary") {
+    out = DiskPutMode::BINARY;
+  } else if (w == "ascii") {
+    out = DiskPutMode::ASCII;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+DiskPutMode disk_resolve_put_mode(DiskPutMode mode,
+                                  const std::string& local_path,
+                                  const std::vector<uint8_t>& data) {
+  if (mode != DiskPutMode::AUTO) return mode;
+  std::string ext = std::filesystem::path(local_path).extension().string();
+  for (auto& c : ext)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (ext == ".txt" || ext == ".asc") return DiskPutMode::ASCII;
+  if (ext != ".bas") return DiskPutMode::BINARY;
+  // A tokenised program holds line-number words and token bytes >= 0x80; a
+  // listing is printable text with line ends (and maybe a ^Z terminator).
+  bool const text = std::all_of(data.begin(), data.end(), [](uint8_t b) {
+    return (b >= 0x20 && b < 0x7F) || b == '\r' || b == '\n' || b == '\t' ||
+           b == 0x1A;
+  });
+  return text ? DiskPutMode::ASCII : DiskPutMode::BASIC;
+}
+
+std::string disk_put_file(t_drive* drive, const std::string& cpc_filename,
+                          const std::string& local_path,
+                          const std::vector<uint8_t>& data, DiskPutMode mode) {
+  switch (disk_resolve_put_mode(mode, local_path, data)) {
+    case DiskPutMode::BASIC:
+      return disk_write_file(drive, cpc_filename, data, true, 0, 0,
+                             AmsdosFileType::BASIC);
+    case DiskPutMode::ASCII: {
+      std::vector<uint8_t> text;
+      text.reserve(data.size() + (data.size() / 16) + 1);
+      for (size_t i = 0; i < data.size(); ++i) {
+        if (data[i] == '\n' && (i == 0 || data[i - 1] != '\r')) {
+          text.push_back('\r');
+        }
+        text.push_back(data[i]);
+      }
+      if (text.empty() || text.back() != 0x1A) text.push_back(0x1A);
+      return disk_write_file(drive, cpc_filename, text, false);
+    }
+    case DiskPutMode::AUTO:  // resolved above; unreachable
+    case DiskPutMode::BINARY:
+      break;
+  }
+  return disk_write_file(drive, cpc_filename, data, true, 0, 0,
+                         AmsdosFileType::BINARY);
 }
 
 std::string disk_to_cpc_filename(const std::string& local_name) {

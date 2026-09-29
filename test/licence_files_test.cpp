@@ -80,6 +80,37 @@ TEST(LicenceFiles, EveryArchiveTargetShipsTheProjectLicenceAndNotice) {
       << "and the third-party licences";
 }
 
+// README.md sends binary users to docs/ipc-protocol.md, the only full IPC
+// reference, and no archive carried it: a dead link in every release
+// (beads-x9fk). Each target stages it at docs/ beside README.md, so the
+// relative link resolves.
+TEST(LicenceFiles, EveryArchiveShipsTheIpcReferenceTheReadmeLinks) {
+  std::string const readme = read_file(source_dir() + "/README.md");
+  ASSERT_TRUE(contains(readme, "(docs/ipc-protocol.md)"))
+      << "README.md no longer links docs/ipc-protocol.md; update this test";
+  std::string const makefile = read_file(source_dir() + "/makefile");
+  ASSERT_FALSE(makefile.empty());
+  auto count = [&](const std::string& needle) {
+    int n = 0;
+    for (size_t at = makefile.find(needle); at != std::string::npos;
+         at = makefile.find(needle, at + 1)) {
+      ++n;
+    }
+    return n;
+  };
+  EXPECT_EQ(2, count("cp docs/ipc-protocol.md $(ARCHIVE_DIR)/docs/"))
+      << "the MinGW and macOS zips";
+  EXPECT_EQ(1, count("cp docs/ipc-protocol.md $(SRC_PACKAGE_DIR)/docs/"))
+      << "the source package";
+  EXPECT_EQ(1, count("cp docs/ipc-protocol.md "
+                     "$(BUNDLE_DIR)/Contents/Resources/docs/"))
+      << "the app bundle, beside its README.md";
+  std::string const msvc =
+      read_file(source_dir() + "/.github/workflows/msvc.yml");
+  EXPECT_TRUE(contains(msvc, "Copy-Item docs/ipc-protocol.md \"$stage/docs/\""))
+      << "the MSVC zip";
+}
+
 TEST(LicenceFiles, TheWindowsZipShipsTheProjectLicenceAndNotice) {
   // The MSVC workflow packages its own zip (not via the makefile); it copied
   // the third-party licences and none of the program's own.

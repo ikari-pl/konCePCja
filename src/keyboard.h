@@ -33,6 +33,11 @@
 extern std::atomic<byte> keyboard_matrix[16];
 extern std::atomic<byte> keyboard_matrix_live[16];
 extern std::mutex g_kbd_matrix_mutex;
+// Bumped by every pending->live publish (once per emulated frame). A frame's
+// firmware scan sees exactly the snapshot with the serial read at its start,
+// so waiting for the serial to move past a press is how a caller knows the
+// key has become visible (IPC key taps, beads-cjej).
+extern std::atomic<uint64_t> g_kbd_publish_serial;
 
 // PCKey packs one host key combination: SDL modifier mask in the high dword,
 // SDL keysym in the low dword.
