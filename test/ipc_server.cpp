@@ -913,8 +913,34 @@ TEST(IpcMru, EntriesWaitWhileTheOptionsDialogIsOpen) {
   imgui_state.show_options = false;
   ipc_mru_apply_staged(false);
   ASSERT_EQ(1u, CPC.mru_snaps.size());
-  EXPECT_EQ("/x/game.sna", CPC.mru_snaps.front());
+  EXPECT_EQ(ipc_mru_canonical_path("/x/game.sna"), CPC.mru_snaps.front());
   CPC.mru_snaps = saved;
+}
+
+// A cwd-relative `load game.dsk` used to persist the literal string. Every
+// other producer of these lists (the file dialog, drag-drop) supplies an
+// absolute path, so the menu's consumers assume one and a relative entry
+// opened nothing the next time the emulator started elsewhere (beads-qm5z).
+TEST(IpcMru, StagedPathsAreAbsolute) {
+  std::vector<std::string> const saved = CPC.mru_disks;
+  CPC.mru_disks.clear();
+  ipc_mru_stage(&t_CPC::mru_disks, "game.dsk");
+  ipc_mru_apply_staged(false);
+  ASSERT_EQ(1u, CPC.mru_disks.size());
+  std::filesystem::path const entry(CPC.mru_disks.front());
+  EXPECT_TRUE(entry.is_absolute()) << CPC.mru_disks.front();
+  EXPECT_EQ("game.dsk", entry.filename().string());
+
+  // An absolute path is normalised, not rewritten.
+  CPC.mru_disks.clear();
+  auto const dotted =
+      std::filesystem::temp_directory_path() / "x" / ".." / "a.dsk";
+  ipc_mru_stage(&t_CPC::mru_disks, dotted.string());
+  ipc_mru_apply_staged(false);
+  ASSERT_EQ(1u, CPC.mru_disks.size());
+  EXPECT_EQ((std::filesystem::temp_directory_path() / "a.dsk").string(),
+            CPC.mru_disks.front());
+  CPC.mru_disks = saved;
 }
 
 TEST(IpcMru, EachEntryLandsOnItsOwnList) {
@@ -925,8 +951,10 @@ TEST(IpcMru, EachEntryLandsOnItsOwnList) {
   ipc_mru_stage(&t_CPC::mru_tapes, "t.cdt");
   ipc_mru_stage(&t_CPC::mru_disks, "d.dsk");
   ipc_mru_apply_staged(false);
-  EXPECT_EQ(std::vector<std::string>{"t.cdt"}, CPC.mru_tapes);
-  EXPECT_EQ(std::vector<std::string>{"d.dsk"}, CPC.mru_disks);
+  EXPECT_EQ(std::vector<std::string>{ipc_mru_canonical_path("t.cdt")},
+            CPC.mru_tapes);
+  EXPECT_EQ(std::vector<std::string>{ipc_mru_canonical_path("d.dsk")},
+            CPC.mru_disks);
   CPC.mru_disks = disks;
   CPC.mru_tapes = tapes;
 }

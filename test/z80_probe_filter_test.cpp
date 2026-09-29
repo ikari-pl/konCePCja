@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 
 #include "expr_parser.h"
@@ -181,4 +182,31 @@ TEST_F(ProbeFilterTest, ExecConditionSeesTheParkedFlags) {
   EXPECT_TRUE(z80_probe_exec_should_break(0x1BD9));
   z80.AF.b.l = 0x28;  // carry clear
   EXPECT_FALSE(z80_probe_exec_should_break(0x1BD9));
+}
+
+// A bounded run-to-address walk must give up when its caller's abort
+// predicate says so, not when its own deadline runs out. The IPC server runs
+// `wait pc` / `step to` on the thread its stop() joins, so a walk that only
+// watched the clock held process exit for the rest of a deadline harnesses
+// routinely set to 15-60s. The predicate is asked before the "no machine"
+// bail too: "your caller is going away" is a different answer from "nothing
+// can run here", and the caller has to be able to tell them apart.
+TEST(Z80RunUntilEphemeral, HonoursTheCallersAbortPredicate) {
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  auto const started = std::chrono::steady_clock::now();
+  auto const result =
+      z80_run_until_ephemeral(0x1234, deadline, {}, [] { return true; });
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  EXPECT_EQ(Z80RunUntilResult::Aborted, result);
+  EXPECT_LT(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
+      1000);
+
+  // A predicate that never fires changes nothing: with no machine attached
+  // the walk still answers Stalled at once, as it did before.
+  EXPECT_EQ(
+      Z80RunUntilResult::Stalled,
+      z80_run_until_ephemeral(0x1234, deadline, {}, [] { return false; }));
 }

@@ -4546,6 +4546,17 @@ int koncpc_main(int argc, char** argv) {
             CPC.rom_path.c_str());
     cleanExit(ERR_CPC_ROM_MISSING, false);
   }
+  // Re-seed the IPC `input mouse`/`input gun` gates from the flags the built
+  // machine is actually running with, before the Z80 starts and before the
+  // main loop's first drain publishes them. loadConfiguration() seeds them
+  // too, but it runs after g_ipc->start() and anything between the two that
+  // re-reads or rebuilds the machine (a profile, a staged model) would leave
+  // the gates describing a machine that is no longer the one running: a
+  // client then gets ERR 409 no-mouse-device / no-light-gun on a session
+  // launched with the device enabled (beads-0n59, same class as beads-i834).
+  ipc_publish_device_gates(g_amx_mouse.enabled || g_symbiface.enabled,
+                           static_cast<bool>(CPC.phazer_emulation));
+
   if (!g_headless) {
     g_z80_thread = std::thread(z80_thread_main);
   }

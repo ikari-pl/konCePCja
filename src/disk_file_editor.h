@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 struct t_drive;
+
+// Every AMSDOS header is one 128-byte record ahead of the payload.
+inline constexpr size_t kAmsdosHeaderSize = 128;
 
 // AMSDOS file types
 enum class AmsdosFileType : uint8_t {

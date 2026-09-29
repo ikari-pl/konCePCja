@@ -15,7 +15,13 @@
 // Which of t_CPC's Recent lists an entry goes on: &t_CPC::mru_disks, ...
 using CpcMruList = std::vector<std::string> t_CPC::*;
 
-// Any thread: queue path for `list`.
+// `path` made absolute and lexically normal, or returned unchanged when the
+// filesystem cannot answer. Exposed so tests can state the expectation.
+std::string ipc_mru_canonical_path(const std::string& path);
+
+// Any thread: queue path for `list`. A relative path is canonicalised against
+// the current working directory first — a Recent entry outlives the directory
+// the emulator happened to be started from.
 void ipc_mru_stage(CpcMruList list, const std::string& path);
 
 // Main thread: move the queued entries onto CPC's lists. save_config=true

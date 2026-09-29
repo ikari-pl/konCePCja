@@ -683,6 +683,131 @@ def test_wait_pc_is_exact():
         os.unlink(bin_path)
 
 
+def test_run_to_address_breakpoint_polarity():
+    """`wait pc` and `step to` must agree on what OK means.
+
+    Two rules, one walk (z80_run_until_ephemeral), so both commands answer the
+    same way:
+      * a breakpoint of the caller's OWN armed at the target address is an
+        arrival — the CPU is standing exactly where it was asked to stop — and
+        used to be reported as `ERR 409 stopped-elsewhere` with the target in
+        its own trailer;
+      * anything else stopping the walk short is `ERR 409 stopped-elsewhere`,
+        where `step to` used to answer `OK breakpoint-hit` — so a client whose
+        success test is "the reply starts with OK" believed it had arrived.
+    """
+    print("Running run-to-address breakpoint polarity test...")
+    program = bytes([0x00] * 1024 + [0xC3, 0x00, 0x60])  # NOPs; JP &6000
+    with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+        f.write(program)
+        bin_path = f.name
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0
+            ok, resp = ipc.send_command('wait pc 0x6000 15000')
+            if not ok:
+                print(f"FAIL: program never started: {resp}")
+                return False
+            ok, resp = ipc.send_command('bp add 0x6200')
+            if not ok:
+                print(f"FAIL: bp add: {resp}")
+                return False
+            # 1. wait pc onto its own breakpoint.
+            ok, resp = ipc.send_command('wait pc 0x6200 3000')
+            if not ok:
+                print(f"FAIL: wait pc onto its own breakpoint at the target "
+                      f"must be OK, got: {resp}")
+                return False
+            _, regs = ipc.get_regs()
+            if regs.get('PC') != 0x6200:
+                print(f"FAIL: OK at PC={regs.get('PC', -1):04X}, not &6200")
+                return False
+            # 2. step to onto the same breakpoint. Step off it first, or the
+            #    walk would be satisfied where it already stands.
+            ipc.send_command('step 1')
+            ok, resp = ipc.send_command('step to 0x6200')
+            if not ok:
+                print(f"FAIL: step to onto its own breakpoint at the target "
+                      f"must be OK, got: {resp}")
+                return False
+            # 3. step to interrupted by that breakpoint on the way to &6300.
+            ipc.send_command('step 1')
+            ok, resp = ipc.send_command('step to 0x6300')
+            if ok or 'stopped-elsewhere' not in resp:
+                print(f"FAIL: step to must report a breakpoint that fires "
+                      f"before the target as an error, got: {resp}")
+                return False
+            print("PASS: wait pc and step to agree — own breakpoint at the "
+                  "target is OK, an intervening stop is 409")
+            return True
+    finally:
+        os.unlink(bin_path)
+
+
+def test_wait_pc_aborts_on_shutdown():
+    """A wait in flight must not hold the process open for its whole deadline.
+
+    A `wait pc` runs on the IPC server's one command thread, which teardown
+    joins, and the teardown before that pause-waits the Z80 the walk keeps
+    resuming. The run-to-address walk only watched its own deadline, so
+    quitting while a client had `wait pc <unreachable> 60000` outstanding
+    could hold the exit for the rest of that minute; harnesses routinely use
+    15-30s waits. The walk now takes an abort predicate (unit-tested in
+    Z80RunUntilEphemeral.HonoursTheCallersAbortPredicate) and answers
+    ERR 503 shutting-down.
+
+    The assertion here is the one this level can make honestly: the process
+    exits promptly with the wait outstanding. The 503 itself may not reach the
+    client — teardown ends in _exit(), which can beat the reply onto the wire.
+    """
+    print("Running wait pc shutdown-abort test...")
+    with EmulatorRunner() as emu:
+        # The emulator ends its own run while the wait below is outstanding.
+        if not emu.start('--exit-after=4s'):
+            print("FAIL: Could not start emulator")
+            return False
+        assert emu.process is not None
+        port = emu.ipc.port
+        reply = {}
+
+        def waiter():
+            # &4321 is RAM the firmware never executes, so this wait can only
+            # end at its deadline or by the shutdown abort.
+            ipc = KoncepcjaIPC(port=port, timeout=90.0)
+            reply['result'] = ipc.send_command('wait pc 0x4321 60000')
+
+        thread = threading.Thread(target=waiter, daemon=True)
+        thread.start()
+        time.sleep(0.5)  # let the wait get in flight before the exit lands
+        started = time.monotonic()
+        try:
+            emu.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            print("FAIL: the emulator did not exit while a wait pc was in "
+                  "flight (its 60s deadline held the process open)")
+            return False
+        elapsed = time.monotonic() - started
+        if elapsed > 15:
+            print(f"FAIL: exit took {elapsed:.1f}s — the wait's deadline, "
+                  f"not the shutdown, ended it")
+            return False
+        thread.join(timeout=10)
+        ok, resp = reply.get('result', (False, ''))
+        if ok:
+            print(f"FAIL: the interrupted wait must not answer OK: {resp}")
+            return False
+        if resp and 'shutting-down' not in resp:
+            print(f"FAIL: the aborted wait answered something other than "
+                  f"ERR 503 shutting-down: {resp}")
+            return False
+        print(f"PASS: wait pc did not hold the exit; it took {elapsed:.1f}s")
+        return True
+
+
 def test_inject_launches_like_run():
     """-i/--inject must hand the program to the firmware the way RUN" does.
 
@@ -3026,6 +3151,8 @@ def main():
 
     tests = [
         test_wait_pc_is_exact,
+        test_wait_pc_aborts_on_shutdown,
+        test_run_to_address_breakpoint_polarity,
         test_inject_launches_like_run,
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,

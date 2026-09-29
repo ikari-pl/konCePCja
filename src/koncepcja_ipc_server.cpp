@@ -687,6 +687,54 @@ constexpr int kBasePort = 6543;
 constexpr int kMaxPortAttempts = 10;  // try 6543..6552
 KoncepcjaIpcServer* g_ipc_instance = nullptr;
 
+// The server handles commands on its one thread and stop() joins it, so every
+// bounded wait must give up when the server is stopping or process exit hangs
+// for the rest of that wait's deadline. One definition, shared by the polling
+// waits and by the run-to-address walks they hand to z80_run_until_ephemeral().
+bool ipc_server_stopping() {
+  return g_ipc_instance != nullptr && !g_ipc_instance->is_running();
+}
+
+// What stopped a z80_run_until_ephemeral() walk, remembered on the way past.
+// The walk consumes the hit itself, so the handler that has to describe the
+// stop can only learn of it here.
+//
+// `step to` and `wait pc` both need the same distinction: a user breakpoint
+// armed at the very address being run to is a LANDING (run_until reports it as
+// OtherBreak because the user's stop wins over its own bookkeeping), while a
+// breakpoint or watchpoint anywhere else is a stop somewhere else.
+struct RunUntilStop {
+  bool hit_seen = false;
+  uint16_t last_pc = 0;
+  bool last_watch = false;
+  int consumes = 0;
+
+  void reset() {
+    hit_seen = false;
+    last_pc = 0;
+    last_watch = false;
+    consumes = 0;
+  }
+
+  // run_until's first call only drains a hit latched before it armed; that
+  // stale hit belongs to whatever ran last, not to this walk.
+  BreakpointHitConsumer consumer() {
+    return [this](uint16_t& pc, bool& watch) {
+      bool const hit = g_ipc_instance->consume_breakpoint_hit(pc, watch);
+      if (consumes++ > 0 && hit) {
+        hit_seen = true;
+        last_pc = pc;
+        last_watch = watch;
+      }
+      return hit;
+    };
+  }
+
+  bool landed_at(word target) const {
+    return hit_seen && !last_watch && last_pc == target;
+  }
+};
+
 struct IpcCommand {
   std::string name;
   std::string category;
@@ -1042,7 +1090,11 @@ void init_command_registry() {
       "wait bp [timeout] | wait vbl <N> [timeout]",
       "Wait for a condition before returning",
       "Blocks until a condition is met or timeout (default 5000ms).\n"
-      "  pc:  Resumes and waits until PC equals <addr>.\n"
+      "  pc:  Resumes and waits until PC equals <addr>, stopping on it "
+      "exactly with a one-shot breakpoint. A breakpoint of your own AT <addr> "
+      "is an arrival (OK breakpoint-hit); one that fires earlier is ERR 409 "
+      "stopped-elsewhere. A server shutdown mid-wait answers ERR 503 "
+      "shutting-down rather than holding exit for the rest of the timeout.\n"
       "  mem: Resumes and waits until memory at <addr> equals <val> (with "
       "optional mask).\n"
       "  bp:  Waits for a committed breakpoint or watchpoint stop. Only "
@@ -1071,7 +1123,10 @@ void init_command_registry() {
       "before the RET, an untaken RET cc, and an interrupt mid-walk all safe. "
       "ERR 409 no-progress only if no machine is attached; a frame that never "
       "returns is ERR 408 timeout.\n"
-      "  to <addr>: Run-to-cursor via an ephemeral breakpoint.\n"
+      "  to <addr>: Run-to-cursor via an ephemeral breakpoint. A breakpoint "
+      "of your own AT <addr> is an arrival (OK breakpoint-hit); any other "
+      "breakpoint or watchpoint firing first is ERR 409 stopped-elsewhere, "
+      "the same polarity wait pc uses.\n"
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
   register_command(
@@ -2884,13 +2939,16 @@ std::string handle_command(const std::string& line) {
             word const next_pc =
                 static_cast<word>(pc + z80_instruction_length(pc));
             lease.release();
-            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit)) {
+            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit,
+                                            ipc_server_stopping)) {
               case Z80RunUntilResult::Landed:
                 break;
               case Z80RunUntilResult::OtherBreak:
                 return ok_with_context(breakpoint_hit_body());
               case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
+              case Z80RunUntilResult::Aborted:
+                return "ERR 503 shutting-down\n";
               case Z80RunUntilResult::Stalled:
                 return err_with_context(409, "no-progress");
             }
@@ -2949,23 +3007,29 @@ std::string handle_command(const std::string& line) {
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
       if (parts.size() >= 3 && parts[1] == "to") {
         unsigned int const addr = parse_number(parts[2]);
-        auto consume_hit = [](uint16_t& pc, bool& watch) {
-          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
-        };
+        RunUntilStop stop;
         auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
         lease.release();
         switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
-                                        consume_hit)) {
+                                        stop.consumer(), ipc_server_stopping)) {
           case Z80RunUntilResult::Landed:
             return ok_with_context();
           case Z80RunUntilResult::OtherBreak:
-            // Previously indistinguishable: any hit ended the wait and was
-            // reported as a successful run-to-cursor, even a watchpoint or an
-            // unrelated breakpoint that fired on the way.
-            return ok_with_context(breakpoint_hit_body());
+            // A user breakpoint armed at `addr` fired as we arrived: the CPU
+            // is standing where the caller asked, so this is a landing.
+            if (stop.landed_at(static_cast<word>(addr)))
+              return ok_with_context(breakpoint_hit_body());
+            // Anything else stopped us short of `addr`. Reported as an error,
+            // not `OK breakpoint-hit`: a client whose success test is "the
+            // reply starts with OK" would otherwise believe it reached the
+            // address. Same polarity as `wait pc`, which shares this walk.
+            return err_with_context(
+                409, "stopped-elsewhere " + breakpoint_hit_body());
           case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
+          case Z80RunUntilResult::Aborted:
+            return "ERR 503 shutting-down\n";
           case Z80RunUntilResult::Stalled:
             return err_with_context(409, "no-progress");
         }
@@ -3474,12 +3538,9 @@ std::string handle_command(const std::string& line) {
     if (cmd == "wait" && parts.size() >= 2) {
       auto timeout_ms = std::chrono::milliseconds(kWaitDefaultTimeoutMs);
       auto deadline = std::chrono::steady_clock::now() + timeout_ms;
-      // The server handles commands on its one thread and stop() joins it:
-      // a wait must give up when the server is stopping, or exit hangs for
+      // A wait must give up when the server is stopping, or exit hangs for
       // the rest of the deadline (up to n x 20ms + 5s for `wait vbl`).
-      auto const server_stopping = []() {
-        return g_ipc_instance != nullptr && !g_ipc_instance->is_running();
-      };
+      auto const server_stopping = []() { return ipc_server_stopping(); };
 
       if (parts[1] == "pc") {
         unsigned int const addr = parse_number(parts[2]);
@@ -3493,41 +3554,44 @@ std::string handle_command(const std::string& line) {
         // slow host that fit fewer frames into the deadline missed it
         // outright. Stop there with a one-shot probe breakpoint instead, as
         // `step to` does.
-        bool hit_seen = false;
-        int consumes = 0;
-        // run_until's first call only drains a hit latched before it armed;
-        // that stale hit is not a stop on the way to `addr`.
-        auto consume_hit = [&hit_seen, &consumes](uint16_t& pc, bool& watch) {
-          bool const hit = g_ipc_instance->consume_breakpoint_hit(pc, watch);
-          if (consumes++ > 0) hit_seen = hit_seen || hit;
-          return hit;
-        };
+        RunUntilStop stop;
         bool stalled = false;
         while (!stalled) {
-          hit_seen = false;
-          consumes = 0;
+          stop.reset();
           switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
-                                          consume_hit)) {
+                                          stop.consumer(), server_stopping)) {
             case Z80RunUntilResult::Landed:
               return ok_with_context();
             case Z80RunUntilResult::Timeout:
               return err_with_context(408, "timeout");
+            case Z80RunUntilResult::Aborted:
+              // The server is being torn down while we waited. Answering now
+              // is the difference between a clean exit and one that hangs for
+              // the rest of this deadline -- harnesses use 15-30s ones.
+              return "ERR 503 shutting-down\n";
             case Z80RunUntilResult::Stalled:
               stalled = true;  // no machine: only the register view to watch
               break;
             case Z80RunUntilResult::OtherBreak:
+              // A user breakpoint sitting AT `addr` is a landing, not a stop
+              // somewhere else: the machine is standing exactly where the
+              // caller asked. `step to` reports it the same way.
+              if (stop.landed_at(static_cast<word>(addr)))
+                return ok_with_context(breakpoint_hit_body());
               // A breakpoint or watchpoint stopped the machine before `addr`:
               // report it (the hit was consumed here, so this is the only
               // place its detail can go).
-              if (hit_seen) {
+              if (stop.hit_seen) {
                 return err_with_context(
                     409, "stopped-elsewhere " + breakpoint_hit_body());
               }
               // Someone else paused and resumed the machine under us -- the
               // -i injection does, to rewrite the registers. Keep waiting once
               // it runs again; a pause that stays (a client's `pause`) is not
-              // ours to undo, so that runs out the deadline as before.
+              // ours to undo, so that runs out the deadline as before -- but
+              // if that pause left us standing on `addr`, the wait is over.
               while (CPC.paused) {
+                if (z80.PC.w.l == addr) return ok_with_context();
                 if (server_stopping()) return "ERR 503 shutting-down\n";
                 if (std::chrono::steady_clock::now() > deadline)
                   return err_with_context(408, "timeout");
@@ -3536,6 +3600,10 @@ std::string handle_command(const std::string& line) {
               break;
           }
         }
+        // Test-only fallback. Stalled means no machine is attached, which
+        // outside the unit-test binary cannot happen; there the register view
+        // is all there is, so sample it rather than answer no-progress and
+        // lose the coverage `wait pc` has in that binary.
         cpc_resume();
         while (z80.PC.w.l != addr) {
           if (server_stopping()) {
@@ -4391,6 +4459,14 @@ std::string handle_command(const std::string& line) {
               std::error_code ec;
               if (!std::filesystem::is_regular_file(local_path, ec))
                 return "ERR cannot open " + local_path + "\n";
+              // Read after a size check, not before: the biggest thing that
+              // can fit on a CPC disc is ~200K, so a mistyped path pointing at
+              // a DVD image should be refused, not pulled into memory first.
+              constexpr uintmax_t kMaxPutBytes = 1024u * 1024u;
+              auto const size = std::filesystem::file_size(local_path, ec);
+              if (!ec && size > kMaxPutBytes)
+                return "ERR file too large (" + std::to_string(size) +
+                       " bytes, max " + std::to_string(kMaxPutBytes) + ")\n";
               std::ifstream in(local_path, std::ios::binary);
               if (!in) return "ERR cannot open " + local_path + "\n";
               std::vector<uint8_t> const data(

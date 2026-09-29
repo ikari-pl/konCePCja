@@ -226,7 +226,12 @@ bool user_breakpoint_fires_at(word pc) {
 
 Z80RunUntilResult z80_run_until_ephemeral(
     word target, std::chrono::steady_clock::time_point deadline,
-    const BreakpointHitConsumer& consume_hit) {
+    const BreakpointHitConsumer& consume_hit,
+    const Z80AbortPredicate& should_abort) {
+  // Asked before the machine check as well as inside the loop below: a caller
+  // that is already going away wants an answer now, and "nothing can run" is
+  // not the reason it is being told to stop.
+  if (should_abort && should_abort()) return Z80RunUntilResult::Aborted;
   // Nothing can reach `target` without a machine, so waiting for it is waiting
   // for the deadline. z80_step_out_finish() bails the same way; leaving this
   // one out meant `step to` and `step over` still burned the full 5s in the
@@ -268,6 +273,13 @@ Z80RunUntilResult z80_run_until_ephemeral(
     if (g_emu_paused.load(std::memory_order_acquire)) {
       landed = z80.PC.w.l == target;
       break;
+    }
+    // Polled with the deadline, not instead of it: a wait whose caller is
+    // being torn down must end now, not when its own clock says so.
+    if (should_abort && should_abort()) {
+      cpc_pause_if_epoch(run_epoch);
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::Aborted;
     }
     if (std::chrono::steady_clock::now() > deadline) {
       if (!cpc_pause_if_epoch(run_epoch)) {
@@ -374,6 +386,8 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
         case Z80RunUntilResult::Timeout:
           return Z80StepOutResult::Timeout;
         case Z80RunUntilResult::Stalled:
+          return Z80StepOutResult::Stalled;
+        case Z80RunUntilResult::Aborted:  // no predicate passed: unreachable
           return Z80StepOutResult::Stalled;
         case Z80RunUntilResult::Landed:
           break;

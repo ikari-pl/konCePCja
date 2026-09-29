@@ -1,6 +1,8 @@
 #include "ipc_mru.h"
 
+#include <filesystem>
 #include <mutex>
+#include <system_error>
 #include <utility>
 
 #include "imgui_state.h"
@@ -14,9 +16,22 @@ std::mutex g_mru_mutex;
 std::vector<std::pair<CpcMruList, std::string>> g_mru_entries;
 }  // namespace
 
+std::string ipc_mru_canonical_path(const std::string& path) {
+  std::error_code ec;
+  auto const abs = std::filesystem::absolute(std::filesystem::path(path), ec);
+  if (ec) return path;
+  return abs.lexically_normal().string();
+}
+
 void ipc_mru_stage(CpcMruList list, const std::string& path) {
+  // Resolved here, not at the call sites: an IPC `load game.dsk` is relative
+  // to the server's cwd, and every other producer of these lists (the file
+  // dialog, drag-drop) supplies an absolute path, so the menu's consumers
+  // assume one. A relative entry saved into the config opens nothing the next
+  // time the emulator starts somewhere else.
+  std::string const resolved = ipc_mru_canonical_path(path);
   std::scoped_lock const lock(g_mru_mutex);
-  g_mru_entries.emplace_back(list, path);
+  g_mru_entries.emplace_back(list, resolved);
 }
 
 void ipc_mru_apply_staged(bool save_config) {

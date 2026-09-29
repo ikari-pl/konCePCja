@@ -444,6 +444,36 @@ TEST_F(ConfigurationTest, loadConfigurationPublishesTheIpcDeviceGates) {
   EXPECT_FALSE(ipc_mouse_gate_open());
 }
 
+// The mouse gate has two sources, not one: the AMX mouse above and the
+// Symbiface II's PS/2 mouse. A session launched with only the Symbiface
+// enabled must be able to drive `input mouse` from its first command
+// (beads-0n59) — the gun-gate test covered only the AMX half.
+TEST_F(ConfigurationTest, loadConfigurationOpensTheMouseGateForTheSymbiface) {
+  {
+    std::ofstream configFile(getTmpFilename(0));
+    configFile << "[input]\n"
+               << "amx_mouse=0\n"
+               << "[peripheral]\n"
+               << "symbiface=1\n";
+  }
+  {
+    std::ofstream configFile(getTmpFilename(1));
+    configFile << "[input]\n"
+               << "amx_mouse=0\n"
+               << "[peripheral]\n"
+               << "symbiface=0\n";
+  }
+  ipc_publish_device_gates(false, false);
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  EXPECT_TRUE(ipc_mouse_gate_open())
+      << "the Symbiface PS/2 mouse must open the gate on its own";
+  EXPECT_FALSE(ipc_gun_gate_open()) << "no gun was configured";
+
+  loadConfiguration(CPC, getTmpFilename(1));
+  EXPECT_FALSE(ipc_mouse_gate_open());
+}
+
 // Saving over an existing file edits it: a comment and an unrecognised key
 // written by hand (or by a newer build) are still there afterwards.
 TEST_F(ConfigurationTest, saveConfigurationEditsTheFileInsteadOfReplacingIt) {

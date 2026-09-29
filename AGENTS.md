@@ -172,7 +172,7 @@ OK available commands (usage: help <command>):
 | `bp list` | List breakpoints | `bp list` → `OK count=1 4000` |
 | `bp clear` | Clear all breakpoints | `bp clear` → `OK` |
 | `step [n]` | Step N instructions | `step 10` → `OK` |
-| `wait pc <addr> [timeout]` | Run until PC reaches addr exactly (one-shot breakpoint), then pause | `wait pc 0x4000 5000` |
+| `wait pc <addr> [timeout]` | Run until PC reaches addr exactly (one-shot breakpoint), then pause. A breakpoint of your own AT addr counts as arriving (`OK`); one that fires earlier is `ERR 409 stopped-elsewhere`, and a shutdown mid-wait is `ERR 503 shutting-down` | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
 | `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Wait N vertical blanks | `wait vbl 50` |
@@ -180,7 +180,7 @@ OK available commands (usage: help <command>):
 | `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
 | `snapshot save <path>` | Save state | `snapshot save game.sna` |
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
-| `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
+| `load <path>` | Load file (.dsk/.sna/.cpr/.bin); a successful disk/tape/snapshot/cartridge load also lands on the matching Recent list, with the path made absolute (GUI saves the config, `--headless` does not) | `load game.dsk` |
 | `devtools` | Open DevTools window (idempotent); `devtools off` closes; F12 toggles | `devtools` → `OK` |
 | `config get\|set <key> [val]` | Read/modify settings (`model`, `crtc_type`, `ram_size`, …) | `config set model 3` |
 | `config apply` | Rebuild the machine with staged settings (needed after `config set model`) | `config apply` → `OK` |
@@ -189,7 +189,7 @@ OK available commands (usage: help <command>):
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
 | `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release). The hold counts frames that began with the key down, so the firmware scans it N times | `input key RETURN hold=5` |
-| `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once) | `input chord CTRL+SHIFT+ESC` |
+| `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once). Same hold semantics as `input key`: N frames that began with the keys down | `input chord CTRL+SHIFT+ESC` |
 | `input type <text>` | Type text via AutoTypeQueue (supports `~KEY~`, newlines; async like `autotype`) | `input type run"game~RETURN~` |
 | `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |
 | `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |

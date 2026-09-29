@@ -282,6 +282,60 @@ TEST_F(DiskFileEditorTest, PutAsciiEdgeCases) {
   ASSERT_GE(raw.size(), expect.size());
   EXPECT_EQ(expect, std::vector<uint8_t>(raw.begin(), raw.begin() + 6));
   EXPECT_NE(0x1A, raw[6]) << "the ^Z was doubled";
+  // A BOM-emitting editor (Notepad) prefixes EF BB BF. It was copied through
+  // verbatim, so BASIC saw a first line that did not start with a line number,
+  // ran it as a direct command and dropped line 10.
+  const std::vector<uint8_t> bom_listing = {0xEF, 0xBB, 0xBF, '1', '0',
+                                            ' ',  'E',  'N',  'D', '\n'};
+  ASSERT_EQ("", disk_put_file(&driveA, "BOM.BAS", "bom.bas", bom_listing,
+                              DiskPutMode::ASCII));
+  raw = disk_read_file(&driveA, "BOM.BAS", err);
+  ASSERT_EQ("", err);
+  ASSERT_GE(raw.size(), 2u);
+  EXPECT_EQ('1', raw[0]) << "the BOM was written ahead of the line number";
+  EXPECT_EQ('0', raw[1]);
+}
+
+// The AMSDOS checksum is the sum of bytes 0..66 against the word at 67..68,
+// which 69 zero bytes satisfy. A 16K screen whose first rows are pen 0, a
+// zero-padded bank dump or a cleared-RAM save therefore looked "already
+// headered" and went to the disc with NO header: AMSDOS then read the file's
+// own first 128 bytes as a type-0, length-0 header and LOAD read nothing.
+TEST_F(DiskFileEditorTest, AutoPutHeadersAZeroPrefixedBinary) {
+  const std::vector<uint8_t> zeros(256, 0x00);
+  ASSERT_TRUE(disk_parse_amsdos_header(zeros).valid)
+      << "the premise: the checksum alone accepts this";
+  ASSERT_EQ("", disk_put_file(&driveA, "ZEROS.BIN", "zeros.bin", zeros,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto const raw = disk_read_file(&driveA, "ZEROS.BIN", err);
+  ASSERT_EQ("", err);
+  auto const info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(AmsdosFileType::BINARY, info.type);
+  EXPECT_EQ(zeros.size(), info.file_length);
+}
+
+// The same sniff must not take a header whose length cannot fit the bytes
+// after it (a truncated fetch) for a real one.
+TEST_F(DiskFileEditorTest, AutoPutRehandlesAnImplausibleHeaderLength) {
+  std::vector<uint8_t> data(160, 0x00);
+  data[18] = 0x02;  // BINARY
+  data[64] = 0xFF;  // file_length 0xFFFF, far past the 32 bytes that follow
+  data[65] = 0xFF;
+  uint16_t sum = 0;
+  for (int i = 0; i < 67; i++) sum = static_cast<uint16_t>(sum + data[i]);
+  data[67] = static_cast<uint8_t>(sum & 0xFF);
+  data[68] = static_cast<uint8_t>(sum >> 8);
+  ASSERT_TRUE(disk_parse_amsdos_header(data).valid);
+  ASSERT_EQ("", disk_put_file(&driveA, "TRUNC.BIN", "trunc.bin", data,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto const raw = disk_read_file(&driveA, "TRUNC.BIN", err);
+  ASSERT_EQ("", err);
+  auto const info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(data.size(), info.file_length) << "a header of our own was added";
 }
 
 // put(ascii) -> get -> put(auto): the fetched copy carries the ^Z plus 0xE5
