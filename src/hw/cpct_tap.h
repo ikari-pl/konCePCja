@@ -30,8 +30,8 @@
  *
  * Overflow: the buffer is bounded (cpct_tap_set_capacity). Records past it
  * are counted, not stored; cpct_tap_write() then ends the file with a GAP
- * record (flags 0, addr = the saturated lost count, cycle = the tap's cycle
- * at write time, the first cycle after the loss).
+ * record (flags 0, addr = the saturated lost count, cycle = the cycle of the
+ * first record that was dropped, where the loss began).
  *
  * At write time an access whose strobe is still active is not written (it
  * has no end yet); line events already queued behind it are.
@@ -115,6 +115,18 @@ int cpct_tap_write(const Device* dev, const char* path, uint8_t crtc_type,
 
 #ifdef __cplusplus
 }
+
+/* The one owner of a tap Device: destroys the tap's heap buffer when it goes
+ * out of scope, so no caller has to remember cpct_tap_destroy(). Every
+ * consumer (the rig, the tests, a live-capture hook) declares one next to the
+ * Device it built. Non-copyable: two owners would destroy the same state. */
+struct CpctTapOwner {
+  const Device* dev;
+  explicit CpctTapOwner(const Device* d) : dev(d) {}
+  ~CpctTapOwner() { cpct_tap_destroy(dev); }
+  CpctTapOwner(const CpctTapOwner&) = delete;
+  CpctTapOwner& operator=(const CpctTapOwner&) = delete;
+};
 #endif
 
 #endif /* KONCPC_HW_CPCT_TAP_H */

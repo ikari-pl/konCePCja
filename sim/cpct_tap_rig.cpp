@@ -18,7 +18,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <new>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "hw/board.h"
@@ -30,6 +32,7 @@
 #include "hw/psg.h"
 #include "hw/video.h"
 #include "hw/z80.h"
+#include "rig_args.h"
 #include "subcycle/machine.h"
 
 static std::vector<uint8_t> read_file(const char* path) {
@@ -47,18 +50,7 @@ static bool write_ppm(const std::string& path, const std::vector<uint8_t>& fb,
   return std::fclose(f) == 0 && ok;
 }
 
-// Strict unsigned parse: the whole string must be a number in [lo, hi]
-// (0x.. accepted). atol/strtoul would turn "abc" into 0 and run nothing.
-static bool parse_u64(const char* s, unsigned long long lo,
-                      unsigned long long hi, unsigned long long& out) {
-  if (!s || !*s || *s == '-') return false;
-  errno = 0;
-  char* end = nullptr;
-  const unsigned long long v = std::strtoull(s, &end, 0);
-  if (errno != 0 || *end != '\0' || v < lo || v > hi) return false;
-  out = v;
-  return true;
-}
+using rig::parse_u64;
 
 // "ROW,COLS": row 0..15, columns byte 0..255 (0 bits = pressed).
 static bool parse_key(const char* s, int& row, int& cols) {
@@ -85,8 +77,7 @@ int main(int argc, char** argv) {
   unsigned long long expansion_kb = 0;
   const char* frames_dir = nullptr;
   auto bad_arg = [](const char* opt, const char* val) {
-    std::fprintf(stderr, "cpct_tap_rig: bad %s value '%s'\n", opt, val);
-    return 2;
+    return rig::bad_arg("cpct_tap_rig", opt, val);
   };
   for (int i = 1; i < argc; i++) {
     if (!std::strcmp(argv[i], "--rom") && i + 1 < argc)
@@ -108,7 +99,8 @@ int main(int argc, char** argv) {
         return bad_arg("--capacity", argv[i]);
       capacity = static_cast<size_t>(c);
     } else if (!std::strcmp(argv[i], "--expansion") && i + 1 < argc) {
-      if (!parse_u64(argv[++i], 64, 512, expansion_kb))
+      // Expansion RAM comes in 64 KB banks; anything else is a typo.
+      if (!parse_u64(argv[++i], 64, 512, expansion_kb) || expansion_kb % 64)
         return bad_arg("--expansion", argv[i]);
     } else if (!std::strcmp(argv[i], "--dump-frames") && i + 1 < argc)
       frames_dir = argv[++i];
@@ -134,10 +126,52 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "cpct_tap_rig: --rom and --out are required\n");
     return 2;
   }
+  // The trace is the deliverable: fail on an unwritable path now, not after a
+  // run that can take minutes. cpct_tap_write reopens with "wb" and truncates,
+  // so the empty probe file is harmless.
+  if (FILE* probe = std::fopen(out_path, "wb")) {
+    std::fclose(probe);
+  } else {
+    std::fprintf(stderr, "cpct_tap_rig: cannot write %s: %s\n", out_path,
+                 std::strerror(errno));
+    return 1;
+  }
+  if (frames_dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(frames_dir, ec);
+    if (ec) {
+      std::fprintf(stderr, "cpct_tap_rig: cannot create %s: %s\n", frames_dir,
+                   ec.message().c_str());
+      return 1;
+    }
+    // Frame names restart at frame_00001.ppm every run: a shorter second run
+    // into the same directory would leave the tail of the first one behind and
+    // a consumer globbing frame_*.ppm would mix two captures.
+    for (const auto& e : std::filesystem::directory_iterator(frames_dir, ec)) {
+      if (e.path().filename().string().rfind("frame_", 0) == 0) {
+        std::fprintf(stderr,
+                     "cpct_tap_rig: %s already contains frames; use an empty "
+                     "directory\n",
+                     frames_dir);
+        return 2;
+      }
+    }
+  }
   std::vector<uint8_t> rom = read_file(rom_path);
-  if (rom.size() < 0x4000) {
-    std::fprintf(stderr, "cpct_tap_rig: %s is not a 16 KB ROM (%zu bytes)\n",
+  // 16 KB is the lower ROM. A 32 KB image is the usual OS+BASIC pair: split
+  // it, so a 6128 ROM set boots with BASIC instead of silently running with an
+  // empty upper socket.
+  if (rom.size() != 0x4000 && rom.size() != 0x8000) {
+    std::fprintf(stderr,
+                 "cpct_tap_rig: %s is not a 16 KB or 32 KB ROM (%zu bytes)\n",
                  rom_path, rom.size());
+    return 2;
+  }
+  if (rom.size() == 0x8000 && upper_path) {
+    std::fprintf(stderr,
+                 "cpct_tap_rig: %s is a 32 KB OS+BASIC pair; --upper would "
+                 "contradict its second half\n",
+                 rom_path);
     return 2;
   }
 
@@ -155,10 +189,8 @@ int main(int argc, char** argv) {
   Device zdev = z80_init(zmem.data());
   std::vector<uint8_t> tmem(cpct_tap_state_size());
   Device tdev = cpct_tap_init(tmem.data());
-  struct TapGuard {  // the tap owns a heap buffer: destroy on every return
-    const Device* d;
-    ~TapGuard() { cpct_tap_destroy(d); }
-  } tap_guard{&tdev};
+  // The tap owns a heap buffer: destroy it on every return.
+  CpctTapOwner tap_owner(&tdev);
   // Before the board reset, so even its power-on RESET record is bounded.
   cpct_tap_set_capacity(&tdev, capacity);
   std::vector<uint8_t> vmem(video_state_size());
@@ -180,19 +212,14 @@ int main(int argc, char** argv) {
   const int fb_w = subcycle::kFbWidth, fb_h = subcycle::kFbHeight;
   std::vector<uint8_t> fb;
   if (frames_dir) {
-    std::error_code ec;
-    std::filesystem::create_directories(frames_dir, ec);
-    if (ec) {
-      std::fprintf(stderr, "cpct_tap_rig: cannot create %s: %s\n", frames_dir,
-                   ec.message().c_str());
-      return 1;
-    }
     fb.assign(static_cast<size_t>(fb_w) * fb_h * 3, 0);
     video_attach(&vdev, &gdev, fb.data(), fb_w, fb_h);
   }
   mem_load_lower_rom(&mdev, rom.data(), 0x4000);
   std::vector<uint8_t> upper;
-  if (upper_path) {
+  if (rom.size() == 0x8000) {
+    mem_load_upper_rom(&mdev, rom.data() + 0x4000, 0x4000);
+  } else if (upper_path) {
     upper = read_file(upper_path);
     if (upper.size() < 0x4000) {
       std::fprintf(stderr, "cpct_tap_rig: %s is not a 16 KB ROM\n", upper_path);
@@ -210,22 +237,33 @@ int main(int argc, char** argv) {
                     static_cast<uint8_t>(key_cols[k]));
 
   uint32_t frames_seen = 0, frames_written = 0;
-  for (unsigned long long i = 0; i < cycles; i++) {
-    board_tick(&board);
-    if (!frames_dir) continue;
-    VideoRegs v{};
-    video_peek(&vdev, &v);
-    if (v.frames == frames_seen) continue;
-    frames_seen = v.frames;
-    char name[32];
-    std::snprintf(name, sizeof name, "frame_%05u.ppm", frames_seen);
-    const std::string path =
-        (std::filesystem::path(frames_dir) / name).string();
-    if (!write_ppm(path, fb, fb_w, fb_h)) {
-      std::fprintf(stderr, "cpct_tap_rig: cannot write %s\n", path.c_str());
-      return 1;
+  bool frames_ok = true;
+  try {
+    for (unsigned long long i = 0; frames_ok && i < cycles; i++) {
+      board_tick(&board);
+      if (!frames_dir) continue;
+      VideoRegs v{};
+      video_peek(&vdev, &v);
+      if (v.frames == frames_seen) continue;
+      frames_seen = v.frames;
+      char name[32];
+      std::snprintf(name, sizeof name, "frame_%05u.ppm", frames_seen);
+      const std::string path =
+          (std::filesystem::path(frames_dir) / name).string();
+      if (!write_ppm(path, fb, fb_w, fb_h)) {
+        // Stop the run, but still write the trace below: the records captured
+        // so far are intact and are the expensive half of the result.
+        std::fprintf(stderr, "cpct_tap_rig: cannot write %s\n", path.c_str());
+        frames_ok = false;
+        break;
+      }
+      frames_written++;
     }
-    frames_written++;
+  } catch (const std::bad_alloc&) {
+    std::fprintf(stderr,
+                 "cpct_tap_rig: out of memory recording the trace; lower "
+                 "--capacity\n");
+    return 1;
   }
 
   size_t n = 0, dropped = 0;
@@ -262,9 +300,10 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "cpct_tap_rig: cannot write %s\n", garegs_path);
       return 1;
     }
-    std::fprintf(f, "mode=%u\n", g.mode);
-    for (int k = 0; k < 17; k++) std::fprintf(f, "ink%d=%u\n", k, g.ink[k]);
-    if (std::fclose(f) != 0) {
+    bool ok = std::fprintf(f, "mode=%u\n", g.mode) > 0;
+    for (int k = 0; k < 17; k++)
+      ok = ok && std::fprintf(f, "ink%d=%u\n", k, g.ink[k]) > 0;
+    if (std::fclose(f) != 0 || !ok) {
       std::fprintf(stderr, "cpct_tap_rig: cannot write %s\n", garegs_path);
       return 1;
     }
@@ -278,6 +317,8 @@ int main(int argc, char** argv) {
   if (frames_dir)
     std::fprintf(stderr, "cpct_tap_rig: %u frames written to %s\n",
                  frames_written, frames_dir);
+  // The trace is on disk either way; a failed frame dump is still a failure.
+  if (!frames_ok) return 1;
   // A trace that lost records or caught no access is not a usable result:
   // the file is written for inspection, but the exit status says so.
   if (dropped) {

@@ -6,7 +6,12 @@
 
 #include <gtest/gtest.h>
 
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
+
 #include <algorithm>
+#include <csignal>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -27,10 +32,13 @@ namespace {
 struct Tap {
   std::vector<uint8_t> mem;
   Device dev;
-  Tap() : mem(cpct_tap_state_size()), dev(cpct_tap_init(mem.data())) {
+  CpctTapOwner owner;
+  Tap()
+      : mem(cpct_tap_state_size()),
+        dev(cpct_tap_init(mem.data())),
+        owner(&dev) {
     dev.reset(dev.self);
   }
-  ~Tap() { cpct_tap_destroy(&dev); }
   Tap(const Tap&) = delete;
   Tap& operator=(const Tap&) = delete;
 
@@ -204,10 +212,38 @@ TEST(CpctTap, OverflowIsCountedAndWrittenAsAGapRecord) {
   std::filesystem::remove(path);
   ASSERT_EQ(32u + 3 * 8, bytes.size());
   const uint8_t* gap = bytes.data() + 32 + 2 * 8;
-  EXPECT_EQ(6, gap[0]);  // tap cycle at write: 24 master = 6 T
+  // The spec's "first cycle after the gap": the first dropped record's own
+  // cycle, the second fetch, which opened at master 8 = T 2.
+  EXPECT_EQ(2, gap[0]);
   EXPECT_EQ(CPCT_GAP, gap[4]);
   EXPECT_EQ(0, gap[5]);
   EXPECT_EQ(2, gap[6] | (gap[7] << 8));
+}
+
+// The drop and the write are far apart here, so a write-time stamp cannot
+// masquerade as the gap-start stamp.
+TEST(CpctTap, GapCycleIsWhereTheLossBeganNotWhereTheWriteHappened) {
+  Tap t;
+  cpct_tap_set_capacity(&t.dev, 2);  // the RESET marker + one access
+  t.hold(fetch(0x1000, 0), 4);       // stored: opens at master 0 = T 0
+  t.hold(idle(), 4);
+  t.hold(fetch(0x2000, 0), 4);  // dropped: opens at master 8 = T 2
+  t.hold(idle(), 4);
+  t.hold(idle(), 40000);  // 10000 T-states pass before the trace is written
+
+  size_t dropped = 0;
+  ASSERT_EQ(2u, t.records(&dropped).size());
+  ASSERT_EQ(1u, dropped);
+
+  TempFile tmp("cpct_tap_test_gap_cycle.cpct");
+  ASSERT_EQ(0, cpct_tap_write(&t.dev, tmp.path.string().c_str(), 0, 2));
+  const auto bytes = slurp(tmp.path);
+  ASSERT_EQ(32u + 3 * 8, bytes.size());
+  const uint8_t* gap = bytes.data() + 32 + 2 * 8;
+  const uint32_t cycle = gap[0] | (gap[1] << 8) | (gap[2] << 16) |
+                         (static_cast<uint32_t>(gap[3]) << 24);
+  EXPECT_EQ(CPCT_GAP, gap[4]);
+  EXPECT_EQ(2u, cycle);  // not 10004, the tap's cycle at write time
 }
 
 // A real board: Z80 + GA + CRTC + PPI + PSG + memory, a 16 KB lower ROM that
@@ -254,10 +290,7 @@ TEST(CpctTap, BoardRunRecordsFetchesIoAndInterruptEdges) {
          p = ppi_init(pm.data()), s = psg_init(sm.data()),
          m = mem_init(mm.data()), z = z80_init(zm.data()),
          tap = cpct_tap_init(tm.data());
-  struct TapGuard {
-    const Device* d;
-    ~TapGuard() { cpct_tap_destroy(d); }
-  } tap_guard{&tap};
+  CpctTapOwner tap_owner(&tap);
   Board board;
   board_init(&board);
   for (const Device& d : {g, c, p, s, m, z, tap}) board_add(&board, d);
@@ -462,6 +495,39 @@ TEST(CpctTap, WriteToAnUnopenablePathFails) {
   const auto path = std::filesystem::temp_directory_path() /
                     "cpct_tap_test_no_such_dir" / "trace.cpct";
   EXPECT_EQ(-1, cpct_tap_write(&t.dev, path.string().c_str(), 0, 2));
+}
+
+// A CPCT v0 file has no record count or trailer, so a truncated one parses as
+// a shorter but valid capture: a failed write must leave nothing behind.
+TEST(CpctTap, AFailedWriteLeavesNoPartialTraceOnDisk) {
+#ifdef _WIN32
+  GTEST_SKIP() << "no portable way to make a write fail mid-file on Windows";
+#else
+  Tap t;
+  for (int k = 0; k < 8; k++) {
+    t.hold(fetch(static_cast<uint16_t>(k), 0), 4);
+    t.hold(idle(), 4);
+  }
+  TempFile tmp("cpct_tap_test_partial.cpct");
+
+  // A 16-byte file size limit: the 32-byte header alone cannot land.
+  struct rlimit old_limit{};
+  ASSERT_EQ(0, getrlimit(RLIMIT_FSIZE, &old_limit));
+  struct rlimit small = old_limit;
+  small.rlim_cur = 16;
+  ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &small));
+  // Exceeding the limit also raises SIGXFSZ, whose default action is fatal.
+  void (*old_handler)(int) = std::signal(SIGXFSZ, SIG_IGN);
+
+  const int rc = cpct_tap_write(&t.dev, tmp.path.string().c_str(), 0, 2);
+
+  std::signal(SIGXFSZ, old_handler);
+  ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &old_limit));
+
+  EXPECT_EQ(-1, rc);
+  EXPECT_FALSE(std::filesystem::exists(tmp.path))
+      << "a partial trace was left at " << tmp.path;
+#endif
 }
 
 TEST(CpctTap, WriteIncludesMarkersQueuedBehindAnOpenAccess) {

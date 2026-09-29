@@ -42,12 +42,24 @@ behaviour.
   written just after that access's record. This keeps the stream in
   non-decreasing cycle order. Up to four edges can wait behind one access; a
   fifth and later edge adds its flag to the fourth marker.
-- The record buffer is bounded (`cpct_tap_set_capacity`). Once it is full,
+- Every trace begins with a RESET record at cycle 0: the tap's own power-on
+  reset writes it, so a consumer counting records from the start of the file
+  meets that marker before the first access.
+- The record buffer is bounded (`cpct_tap_set_capacity`, `1<<22` records
+  unless the caller sets it; the rig asks for `1<<24`). Once it is full,
   further records are counted but not stored. `cpct_tap_write` then ends the
   file with a GAP record: `addr` holds the lost count, saturated at `0xFFFF`,
-  and `cycle` is the tap's current cycle.
+  and `cycle` is the cycle of the first record that was dropped — where the
+  loss began, not the cycle the file was written on.
 - At write time an access whose strobe is still active is left out, because
   it has not ended. Line events already waiting behind it are written.
+- A write that fails part way removes the file it was writing. A CPCT v0 file
+  carries no record count or trailer, so a truncated one would parse as a
+  shorter but valid capture.
+- `Device.reset` discards the records captured so far and starts a fresh
+  stream with a RESET record at cycle 0. A tap attached to a live machine
+  therefore loses its capture when that machine is reset: read the records out
+  first.
 
 Known artefact, HALT: this Z80 runs no bus cycles while halted. It holds
 /HALT low and waits. Real silicon keeps fetching NOPs, one M1 cycle every
@@ -88,12 +100,12 @@ tail -c 16384 rom/cpc6128.rom > basic.bin
 
 | Option | Meaning |
 |---|---|
-| `--rom FILE` | 16 KB lower ROM (required) |
+| `--rom FILE` | 16 KB lower ROM, or a 32 KB OS+BASIC pair which is split between the two sockets (required) |
 | `--out FILE` | trace to write (required) |
 | `--cycles N` | master cycles to run, 16 per µs (default 2000000) |
 | `--upper FILE` | 16 KB upper ROM 0, for example BASIC |
 | `--key ROW,COLS` | hold a keyboard row (0-15): the columns byte (0-255), 0 = pressed; up to 16 times |
-| `--expansion KB` | attach a dk'tronics-style RAM expansion (64-512) |
+| `--expansion KB` | attach a dk'tronics-style RAM expansion (64-512, in whole 64 KB banks) |
 | `--capacity N` | tap buffer in records (default 1<<24) |
 | `--screen FILE` | dump RAM `&C000-&FFFF` at the end |
 | `--garegs FILE` | dump the Gate Array's mode and inks at the end |
@@ -103,16 +115,26 @@ tail -c 16384 rom/cpc6128.rom > basic.bin
 Device is attached only when this option is given. It only listens to the RAM
 fetch bus and the CRTC timing, so the trace is the same with or without it.
 Each frame is 768×272 RGB, the size the main emulator's framebuffer uses.
+Frame numbers restart at `frame_00001.ppm` on every run, so the directory has
+to be empty of `frame_*.ppm`: a shorter second run into the same directory
+would leave the tail of the first one behind, and the rig refuses rather than
+hand a consumer two captures mixed together.
 
 Numbers must be whole and in range (`0x` hex is accepted); anything else is
-rejected with exit status 2. The exit status is 0 when the run worked, 1 on
-an I/O failure, 2 for bad arguments or input files, and 3 when the trace was
-written but is not usable: records were dropped (raise `--capacity`) or no
-access was recorded at all.
+rejected with exit status 2. Both output paths are checked before the run
+starts, so an unwritable `--out` fails in a second rather than after minutes
+of simulation. The exit status is 0 when the run worked, 1 on an I/O failure,
+2 for bad arguments or input files, and 3 when the trace was written but is
+not usable: records were dropped (raise `--capacity`) or no access was
+recorded at all.
 
 The file header says `crtc_type = 0` and `machine = 2` (6128), which match
 the rig's board.
 
 `sim/psg_oracle_rig.cpp` (`make psg_oracle_rig`) is the PSG counterpart. It
 drives the PSG Device through the AY bus from a scripted register program and
-dumps the generators once per PSG clock, for `copycat/sim/psg`.
+dumps the generators once per PSG clock, for `copycat/sim/psg`. It reads
+`--us` with the same strict parser (`sim/rig_args.h`), rejects a script line
+that is neither blank, a `#` comment, nor `t_us reg val` with a register
+0-15, and exits 3 if the dump came out empty, so an unusable oracle never
+looks like a successful run.

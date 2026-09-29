@@ -28,6 +28,7 @@ struct tap_state {
   int npending = 0;
   size_t capacity = 1u << 22;
   size_t dropped = 0;
+  uint32_t gap_cycle = 0;  // cycle of the first dropped record
   std::vector<CpctRecord> rec;
 };
 
@@ -36,10 +37,14 @@ tap_state* self_of(void* self) { return static_cast<tap_state*>(self); }
 uint32_t tstate(uint64_t master) { return static_cast<uint32_t>(master / 4); }
 
 void push(tap_state* t, const CpctRecord& r) {
-  if (t->rec.size() < t->capacity)
+  if (t->rec.size() < t->capacity) {
     t->rec.push_back(r);
-  else
+  } else {
+    // The GAP record is stamped with the cycle the loss began (the spec's
+    // "first cycle after the gap"), not the cycle the file is written on.
+    if (t->dropped == 0) t->gap_cycle = r.cycle;
     t->dropped++;
+  }
 }
 
 void emit_access(tap_state* t) {
@@ -113,6 +118,7 @@ void tap_reset(void* self) {
   t->npending = 0;
   t->rec.clear();
   t->dropped = 0;
+  t->gap_cycle = 0;
   push(t, CpctRecord{0, CPCT_RESET, 0, 0});  // the capture starts at power-on
 }
 
@@ -205,10 +211,12 @@ int cpct_tap_write(const Device* dev, const char* path, uint8_t crtc_type,
   // write them (the open access itself has not ended, so it is not a record
   // yet). Past the capacity they count as lost like any other record.
   size_t lost_total = t->dropped;
+  uint32_t gap_cycle = t->gap_cycle;
   size_t room =
       t->capacity > t->rec.size() ? t->capacity - t->rec.size() : size_t{0};
   for (int i = 0; ok && i < t->npending; i++) {
     if (room == 0) {
+      if (lost_total == 0) gap_cycle = t->pending[i].cycle;
       lost_total++;
       continue;
     }
@@ -219,11 +227,15 @@ int cpct_tap_write(const Device* dev, const char* path, uint8_t crtc_type,
   if (ok && lost_total) {
     const uint16_t lost =
         lost_total >= 0xFFFF ? 0xFFFF : static_cast<uint16_t>(lost_total);
-    const CpctRecord gap{tstate(t->now), CPCT_GAP, 0, lost};
+    const CpctRecord gap{gap_cycle, CPCT_GAP, 0, lost};
     cpct_encode_record(r, &gap);
     ok = std::fwrite(r, 1, sizeof r, f) == sizeof r;
   }
   if (std::fclose(f) != 0) ok = false;
+  // A trace cut short by a failed write parses as a shorter but valid capture
+  // (v0 has no record count or trailer): remove it rather than leave a
+  // plausible partial oracle on disk.
+  if (!ok) std::remove(path);
   return ok ? 0 : -1;
 }
 

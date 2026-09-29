@@ -11,6 +11,9 @@
  * Dump: one line per PSG clock: "t tone noise env la lb lc" with tone as a
  * 3-bit mask (bit k = channel k), env 0..31, levels 0..31 (konCePCja's
  * 5-bit scale: fixed level L reads 2L+1).
+ *
+ * Exit status: 0 ok, 1 I/O failure, 2 bad arguments or script, 3 the dump is
+ * not usable (no PSG clock was dumped).
  */
 #include <cstdint>
 #include <cstdio>
@@ -22,6 +25,7 @@
 #include "hw/crtc.h"
 #include "hw/gate_array.h"
 #include "hw/psg.h"
+#include "rig_args.h"
 
 struct Ev {
   uint64_t us;
@@ -77,15 +81,16 @@ static void drv_load(void*, const void*) {}
 int main(int argc, char** argv) {
   const char* script = nullptr;
   const char* outp = nullptr;
-  long us = 20000;
+  unsigned long long us = 20000;
   for (int i = 1; i < argc; i++) {
     if (!std::strcmp(argv[i], "--script") && i + 1 < argc)
       script = argv[++i];
     else if (!std::strcmp(argv[i], "--out") && i + 1 < argc)
       outp = argv[++i];
-    else if (!std::strcmp(argv[i], "--us") && i + 1 < argc)
-      us = std::atol(argv[++i]);
-    else {
+    else if (!std::strcmp(argv[i], "--us") && i + 1 < argc) {
+      if (!rig::parse_u64(argv[++i], 1, 100000000ULL, us))
+        return rig::bad_arg("psg_oracle_rig", "--us", argv[i]);
+    } else {
       std::fprintf(stderr,
                    "usage: %s --script prog.txt --out dump.txt [--us N]\n",
                    argv[0]);
@@ -99,13 +104,26 @@ int main(int argc, char** argv) {
   driver_state drv;
   if (FILE* f = std::fopen(script, "r")) {
     char line[256];
+    unsigned long lineno = 0;
     while (std::fgets(line, sizeof line, f)) {
+      lineno++;
+      // A line that does not scan is a typo in the register program, not
+      // something to drop: a silently skipped line yields a flat dump that
+      // still exits 0.
+      const char* p = line + std::strspn(line, " \t\r\n");
+      if (*p == '\0' || *p == '#') continue;  // blank line or comment
       unsigned long t;
       unsigned r;
       int v;
-      if (std::sscanf(line, "%lu %u %i", &t, &r, &v) == 3)
-        drv.evs.push_back(
-            Ev{t, static_cast<uint8_t>(r), static_cast<uint8_t>(v)});
+      if (std::sscanf(line, "%lu %u %i", &t, &r, &v) != 3 || r > 15 || v < 0 ||
+          v > 255) {
+        std::fprintf(stderr, "psg_oracle_rig: %s:%lu is not \"t_us reg val\"\n",
+                     script, lineno);
+        std::fclose(f);
+        return 2;
+      }
+      drv.evs.push_back(
+          Ev{t, static_cast<uint8_t>(r), static_cast<uint8_t>(v)});
     }
     std::fclose(f);
   } else {
@@ -139,14 +157,14 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "psg_oracle_rig: cannot write %s\n", outp);
     return 1;
   }
-  long t = 0;
+  unsigned long long t = 0;
   bool ok = true;
-  for (long c = 0; ok && c < us * 16; c++) {
+  for (unsigned long long c = 0; ok && c < us * 16; c++) {
     board_tick(&board);
     if (board.bus.clk.psg) {
       PsgRegs p{};
       psg_peek(&sdev, &p);
-      ok = std::fprintf(fo, "%ld %u %u %u %u %u %u\n", t, p.tone_out & 7,
+      ok = std::fprintf(fo, "%llu %u %u %u %u %u %u\n", t, p.tone_out & 7,
                         p.noise_out & 1, p.env_level, p.chan_level[0],
                         p.chan_level[1], p.chan_level[2]) > 0;
       t++;
@@ -156,7 +174,12 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "psg_oracle_rig: cannot write %s\n", outp);
     return 1;
   }
-  std::fprintf(stderr, "psg_oracle_rig: %ld PSG clocks dumped to %s\n", t,
+  std::fprintf(stderr, "psg_oracle_rig: %llu PSG clocks dumped to %s\n", t,
                outp);
+  // An empty dump is not a successful comparison input: say so in the status.
+  if (t == 0) {
+    std::fprintf(stderr, "psg_oracle_rig: no PSG clock was dumped\n");
+    return 3;
+  }
   return 0;
 }
