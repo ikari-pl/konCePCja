@@ -6,7 +6,9 @@
 #include <cctype>
 #include <chrono>
 #include <climits>
+#include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -59,6 +61,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "macos_menu.h"
 #include "memory_bus.h"
 #include "memutils.h"
+#include "quit_policy.h"
 #include "serial_interface.h"
 #include "smartwatch.h"
 #include "startup_manifest.h"
@@ -232,6 +235,23 @@ std::atomic<bool> g_z80_thread_quit{false};
 // Exit code to use when the Z80 thread requests quit via SDL_EVENT_QUIT.
 namespace {
 std::atomic<int> g_z80_requested_exit_code{0};
+}  // namespace
+// Whether that off-main quit may raise the unsaved-disk dialog. IPC `quit`
+// and the break/exit-after paths pass askIfUnsaved=false; the flag has to
+// survive the hop through SDL_EVENT_QUIT or the main thread re-asks. A QUIT
+// that SDL raises on its own (the last window closing) reads the default.
+namespace {
+std::atomic<bool> g_z80_requested_ask_unsaved{true};
+}  // namespace
+// SIGTERM/SIGINT land here (SDL's own handlers are disabled). A signal is a
+// programmatic exit: the main loop polls this and quits without a dialog.
+namespace {
+volatile std::sig_atomic_t g_signal_quit = 0;
+void on_terminate_signal(int sig) { g_signal_quit = sig; }
+}  // namespace
+// KONCPC_NO_DIALOGS=1: never raise a native modal (test harnesses set it).
+namespace {
+bool g_no_dialogs = false;
 }  // namespace
 // Captured at the top of koncpc_main() so cleanExit() can tell whether it's
 // running on the main (render) thread vs. an auxiliary thread (IPC / HTTP /
@@ -3470,6 +3490,7 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
 
   if (is_z80_self || is_not_main) {
     g_z80_requested_exit_code.store(returnCode, std::memory_order_relaxed);
+    g_z80_requested_ask_unsaved.store(askIfUnsaved, std::memory_order_relaxed);
     if (is_z80_self) {
       // Z80 self-quit also has to break its own loop.  Aux threads don't
       // need this bit — the main thread handles shutdown orchestration.
@@ -3482,7 +3503,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   }
 
   // Main thread (or early-init pre-capture): safe to prompt and tear down.
-  if (!g_headless && askIfUnsaved && driveAltered() &&
+  if (koncpc_quit_should_prompt(g_headless, askIfUnsaved, driveAltered(),
+                                g_no_dialogs) &&
       !userConfirmsQuitWithoutSaving()) {
     return;
   }
@@ -4265,6 +4287,8 @@ int koncpc_main(int argc, char** argv) {
   }
   parseArguments(argc, argv, slot_list, args);
   g_headless = args.headless;
+  g_no_dialogs =
+      koncpc_dialogs_suppressed_by_env(std::getenv("KONCPC_NO_DIALOGS"));
   g_debug = args.debug;
   g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
@@ -4287,6 +4311,14 @@ int koncpc_main(int argc, char** argv) {
       g_exit_target = std::stoul(spec);
     }
   }
+
+  // Own the termination signals: SDL would turn them into SDL_EVENT_QUIT,
+  // which the main loop cannot tell from a user closing the window and so
+  // would answer with the unsaved-disk dialog. A harness's terminate() must
+  // never block on a modal.
+  SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+  std::signal(SIGTERM, on_terminate_signal);
+  std::signal(SIGINT, on_terminate_signal);
 
   if (g_headless) {
     // SDL3: timer is always available, init core only for headless
@@ -4547,6 +4579,9 @@ int koncpc_main(int argc, char** argv) {
   // Whether this loop of emulation should release the joystick axis for mouse
   // emulation.
   while (true) {
+    if (g_signal_quit != 0) {
+      cleanExit(0, false);
+    }
     // We can only load bin files after the CPC finished the init: boot_time
     // frames at least, and — since the launch goes through the firmware's
     // MC START PROGRAM — once the firmware has built its jumpblock. A ROM
@@ -5125,7 +5160,9 @@ int koncpc_main(int argc, char** argv) {
           break;
 
         case SDL_EVENT_QUIT:
-          cleanExit(g_z80_requested_exit_code.load(std::memory_order_relaxed));
+          cleanExit(g_z80_requested_exit_code.load(std::memory_order_relaxed),
+                    g_z80_requested_ask_unsaved.exchange(
+                        true, std::memory_order_relaxed));
       }
     }
     // ---- Non-headless: Z80 thread (z80_thread_main) handles emulation ----

@@ -291,6 +291,11 @@ class EmulatorRunner:
     def start(self, *args, headless: bool = True, engine: Optional[int] = None) -> bool:
         """Start emulator with given arguments."""
         env = os.environ.copy()
+        # A test must never raise a native modal: stop() terminates the
+        # emulator, possibly with a disk the test itself dirtied, and the
+        # "unsaved changes" dialog would then block the run (and land on the
+        # maintainer's desktop). The emulator honours this in every mode.
+        env['KONCPC_NO_DIALOGS'] = '1'
         if headless:
             env['SDL_VIDEODRIVER'] = 'dummy'
             env['SDL_AUDIODRIVER'] = 'dummy'

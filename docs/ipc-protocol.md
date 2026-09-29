@@ -41,7 +41,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 | `ping` | Returns `OK pong` |
 | `version` | Returns version string |
 | `help` | Lists all commands |
-| `quit [code]` | Exit emulator with given code (default 0) |
+| `quit [code]` | Exit emulator with given code (default 0). Never asks about unsaved disk changes: a scripted quit has nobody to answer a dialog, so the disk is left as it is on the host |
 | `pause` | Pause emulation |
 | `run` | Resume emulation. `ERR 409 pause-lease-held` if a pause lease still owns the machine |
 | `reset` | Hard reset the CPC |
