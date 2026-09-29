@@ -539,6 +539,18 @@ System shows the file in use, as does `config get file` over IPC. The
 sidecars — `imgui.ini` and the DevTools `layouts/` directory — live next to
 whichever config file wins, so they move with it.
 
+### Scripted runs and dialogs
+
+Only a user gesture (window close, F10, the native Quit item) may raise the
+"unsaved changes to a disk" dialog. IPC `quit`, SIGTERM/SIGINT,
+`-E/--exit-after`, `-B/--exit-on-break` and a scripted `-a KONCPC_EXIT` quit
+without asking — nobody is there to answer. A signal exits with 128+signo
+(130 for Ctrl+C, 143 for SIGTERM) and does not save settings; a second signal
+before shutdown finishes kills the process outright. `KONCPC_NO_DIALOGS=1`
+in the environment suppresses the dialog on every path;
+`test/integrated/ipc_harness.py` sets it, so a test that dirties a disk and
+is then terminated can never block on a modal.
+
 ### Key Config Options
 
 ```ini

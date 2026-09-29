@@ -6,7 +6,9 @@
 #include <cctype>
 #include <chrono>
 #include <climits>
+#include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -59,6 +61,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "macos_menu.h"
 #include "memory_bus.h"
 #include "memutils.h"
+#include "quit_policy.h"
 #include "serial_interface.h"
 #include "smartwatch.h"
 #include "startup_manifest.h"
@@ -229,9 +232,31 @@ std::atomic<bool> g_emu_paused{false};
 namespace {
 std::atomic<bool> g_z80_thread_quit{false};
 }  // namespace
-// Exit code to use when the Z80 thread requests quit via SDL_EVENT_QUIT.
+// A quit requested off the main thread (IPC `quit`, the Z80 thread, HTTP,
+// telnet): exit code plus whether it may raise the unsaved-disk dialog. IPC
+// `quit` and the break/exit-after paths pass askIfUnsaved=false, and that has
+// to survive the hop to the main thread or the main thread re-asks.
 namespace {
-std::atomic<int> g_z80_requested_exit_code{0};
+QuitMailbox g_quit_mailbox;
+}  // namespace
+// SIGTERM/SIGINT land here (SDL's own handlers are disabled). A signal is a
+// programmatic exit: the main loop polls this and quits without a dialog. A
+// second signal before that happens restores the default action and re-raises
+// it, so a wedged main thread can still be killed with another Ctrl+C.
+namespace {
+std::atomic<int> g_signal_quit{0};
+static_assert(std::atomic<int>::is_always_lock_free,
+              "the signal handler needs a lock-free flag");
+void on_terminate_signal(int sig) {
+  if (g_signal_quit.exchange(sig) != 0) {
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+  }
+}
+}  // namespace
+// KONCPC_NO_DIALOGS=1: never raise a native modal (test harnesses set it).
+namespace {
+bool g_no_dialogs = false;
 }  // namespace
 // Captured at the top of koncpc_main() so cleanExit() can tell whether it's
 // running on the main (render) thread vs. an auxiliary thread (IPC / HTTP /
@@ -3235,7 +3260,10 @@ void koncpc_menu_action(int action) {
       }
 
     case KONCPC_EXIT:
-      cleanExit(0);
+      // F10 / the menus run here on the main thread and ask; a scripted
+      // `-a KONCPC_EXIT` arrives on the Z80 thread and must not.
+      cleanExit(0, koncpc_exit_action_asks(std::this_thread::get_id() ==
+                                           g_main_thread_id));
       break;
 
     case KONCPC_FPS:
@@ -3557,7 +3585,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   // The render thread's SDL_EVENT_QUIT handler calls cleanExit() recursively,
   // at which point we land in the main-thread branch and do the real
   // teardown (including the confirm dialog if askIfUnsaved was set — the
-  // returnCode carries through via g_z80_requested_exit_code).
+  // returnCode and askIfUnsaved carry through g_quit_mailbox). Headless mode
+  // polls no SDL events, so its main loop takes the mailbox directly.
   //
   // `is_not_main` is framed defensively: if g_main_thread_id hasn't been
   // captured yet (early-init path), we *assume* we're on main.  That
@@ -3571,7 +3600,7 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
       (g_main_thread_id != std::thread::id{}) && (tid != g_main_thread_id);
 
   if (is_z80_self || is_not_main) {
-    g_z80_requested_exit_code.store(returnCode, std::memory_order_relaxed);
+    g_quit_mailbox.post(returnCode, askIfUnsaved);
     if (is_z80_self) {
       // Z80 self-quit also has to break its own loop.  Aux threads don't
       // need this bit — the main thread handles shutdown orchestration.
@@ -3584,7 +3613,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   }
 
   // Main thread (or early-init pre-capture): safe to prompt and tear down.
-  if (!g_headless && askIfUnsaved && driveAltered() &&
+  if (koncpc_quit_should_prompt(g_headless, askIfUnsaved, driveAltered(),
+                                g_no_dialogs) &&
       !userConfirmsQuitWithoutSaving()) {
     return;
   }
@@ -4212,7 +4242,8 @@ bool render_one_frame() {
     // which re-reads g_emu_paused and takes the paused-overlay branch
     // that both pumps AND polls events.
     if (g_emu_paused.load(std::memory_order_relaxed) ||
-        g_z80_thread_quit.load(std::memory_order_relaxed)) {
+        g_z80_thread_quit.load(std::memory_order_relaxed) ||
+        g_signal_quit.load(std::memory_order_relaxed) != 0) {
       return false;
     }
   }
@@ -4367,6 +4398,8 @@ int koncpc_main(int argc, char** argv) {
   }
   parseArguments(argc, argv, slot_list, args);
   g_headless = args.headless;
+  g_no_dialogs =
+      koncpc_dialogs_suppressed_by_env(std::getenv("KONCPC_NO_DIALOGS"));
   g_debug = args.debug;
   g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
@@ -4389,6 +4422,14 @@ int koncpc_main(int argc, char** argv) {
       g_exit_target = std::stoul(spec);
     }
   }
+
+  // Own the termination signals: SDL would turn them into SDL_EVENT_QUIT,
+  // which the main loop cannot tell from a user closing the window and so
+  // would answer with the unsaved-disk dialog. A harness's terminate() must
+  // never block on a modal.
+  SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+  std::signal(SIGTERM, on_terminate_signal);
+  std::signal(SIGINT, on_terminate_signal);
 
   if (g_headless) {
     // SDL3: timer is always available, init core only for headless
@@ -4650,6 +4691,14 @@ int koncpc_main(int argc, char** argv) {
   // Whether this loop of emulation should release the joystick axis for mouse
   // emulation.
   while (true) {
+    if (const int sig = g_signal_quit.load(); sig != 0) {
+      cleanExit(koncpc_signal_exit_code(sig), false);
+    }
+    if (g_headless) {
+      if (auto quit = g_quit_mailbox.take()) {
+        cleanExit(quit->code, quit->ask_if_unsaved);
+      }
+    }
     // We can only load bin files after the CPC finished the init: boot_time
     // frames at least, and — since the launch goes through the firmware's
     // MC START PROGRAM — once the firmware has built its jumpblock. A ROM
@@ -4685,6 +4734,13 @@ int koncpc_main(int argc, char** argv) {
             mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
         if (event.window.windowID == main_id) {
           cleanExit(0);
+          // Reaching here means the user declined the unsaved-disk dialog:
+          // cleanExit() returns instead of tearing down. SDL follows the
+          // close request of the last window with a QUIT of its own, and the
+          // SDL_EVENT_QUIT branch below finds an empty mailbox and reads it
+          // as a fresh gesture — so the dialog would come straight back a
+          // second time. Drop that trailing QUIT.
+          SDL_FlushEvent(SDL_EVENT_QUIT);
         }
       }
 
@@ -5228,7 +5284,13 @@ int koncpc_main(int argc, char** argv) {
           break;
 
         case SDL_EVENT_QUIT:
-          cleanExit(g_z80_requested_exit_code.load(std::memory_order_relaxed));
+          // Posted by an off-main cleanExit(), or nothing: SDL raised the
+          // QUIT on its own (the last window closing), which is a gesture.
+          if (auto quit = g_quit_mailbox.take()) {
+            cleanExit(quit->code, quit->ask_if_unsaved);
+          } else {
+            cleanExit(0);
+          }
       }
     }
     // ---- Non-headless: Z80 thread (z80_thread_main) handles emulation ----
