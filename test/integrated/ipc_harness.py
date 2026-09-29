@@ -592,6 +592,35 @@ def test_headless_runs_subcycle_engine():
         return True
 
 
+def test_programmatic_quit_exit_codes():
+    """IPC `quit N` and SIGTERM end the process with the right exit code.
+
+    Headless polls no SDL events, so the SDL_EVENT_QUIT that `quit` used to
+    push from the IPC thread was never read: the command answered OK and the
+    emulator ran on. A signal is not a success either: it exits 128+signo.
+    """
+    for how, expected in (('ipc', 3), ('sigterm', 143)):
+        with EmulatorRunner() as emu:
+            if not emu.start('--headless'):
+                print(f"FAIL: could not start emulator ({how})")
+                return False
+            proc = emu.process
+            if how == 'ipc':
+                emu.ipc.send_command('quit 3')
+            else:
+                proc.terminate()
+            try:
+                rc = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print(f"FAIL: {how} quit left the emulator running")
+                return False
+            if rc != expected:
+                print(f"FAIL: {how} quit exited {rc}, expected {expected}")
+                return False
+    print("PASS: IPC quit exits 3, SIGTERM exits 143")
+    return True
+
+
 def test_engine1_bp_clear_resume():
     """beads-4gf9: clearing a hit breakpoint and resuming must truly resume.
 
@@ -2883,6 +2912,7 @@ def main():
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,
+        test_programmatic_quit_exit_codes,
         test_engine1_bp_clear_resume,
         test_z80_basic,
         test_memory_rw,
