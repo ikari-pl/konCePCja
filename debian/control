@@ -1,15 +1,51 @@
-Source: caprice32
-Section: contrib/otherosfs
+Source: koncepcja
+Section: non-free/otherosfs
 Priority: optional
-Maintainer: Seb Haezebrouck <seb@zyglute.fr>
-Build-Depends: debhelper (>= 9), gcc (>= 4.8), g++ (>= 4.8), libsdl2-dev, libfreetype6-dev, zlib1g-dev, libpng-dev, quilt
-Standards-Version: 4.0.0
-Homepage: https://github.com/ColinPitrat/caprice32
-Vcs-Git: https://github.com/ColinPitrat/caprice32.git
-Vcs-Browser: https://github.com/ColinPitrat/caprice32
+Maintainer: Cezar "ikari" Pokorski <cezar@pokor.ski>
+Build-Depends: debhelper-compat (= 13),
+               g++,
+               pkg-config,
+               cmake,
+               libfreetype-dev,
+               zlib1g-dev,
+               libpng-dev,
+               libjpeg-dev,
+               libcurl4-openssl-dev,
+               libgl1-mesa-dev,
+               libegl1-mesa-dev,
+               libgles2-mesa-dev,
+               libx11-dev,
+               libxext-dev,
+               libxrandr-dev,
+               libxcursor-dev,
+               libxfixes-dev,
+               libxi-dev,
+               libxss-dev,
+               libwayland-dev,
+               libxkbcommon-dev,
+               libdrm-dev,
+               libgbm-dev,
+               libdecor-0-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/ikari-pl/konCePCja
+Vcs-Git: https://github.com/ikari-pl/konCePCja.git
+Vcs-Browser: https://github.com/ikari-pl/konCePCja
+Rules-Requires-Root: no
 
-Package: caprice32
+Package: koncepcja
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Amstrad CPC Emulator
- Amstrad CPC Emulator. Fork of the original Caprice32.
+Description: Amstrad CPC emulator with a debugger and an IPC control port
+ konCePCja emulates the Amstrad CPC 464, 664, 6128 and the 6128+ at the
+ chip level: Z80, Gate Array, CRTC 6845 (types 0-3), PPI, AY-3-8912, uPD765
+ floppy controller with flux-level disk images, tape deck, and the Plus
+ ASIC, plus expansions such as the M4 board, Symbiface II, AMX mouse,
+ Multiface II, light guns and an HP-GL plotter.
+ .
+ It ships a Dear ImGui interface with DevTools (disassembler, memory,
+ breakpoints, watchpoints, an assembler), a TCP control port for scripting
+ and automated testing, and a telnet console mirroring the CPC's text
+ output.
+ .
+ The vendored SDL3 the binary is built against is installed privately under
+ /usr/lib/koncepcja.

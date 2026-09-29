@@ -1,5 +1,11 @@
-caprice32 (20170601-1) unstable; urgency=low
+koncepcja (6.3.1-1) unstable; urgency=medium
 
-  * Modification of installation path in code and cfg file
+  * konCePCja's own packaging. The recipe in debian/ was Caprice32's from
+    2017 — package name, homepage, SDL2 build-dependency and all — and had
+    never been touched; the Linux source archive shipped it as-is.
+  * Builds the vendored SDL3 and installs it under /usr/lib/koncepcja.
+  * Desktop entry and icon; the obsolete debian/menu entry is gone.
+  * `make debian-changelog` regenerates this entry from the release
+    version (.release-please-manifest.json); `make distrib` runs it.
 
- -- Seb Haezebrouck <seb@zyglute.fr>  Thu, 01 Jun 2017 17:22:07 +0200
+ -- Cezar "ikari" Pokorski <cezar@pokor.ski>  Mon, 28 Sep 2026 21:30:00 +0200

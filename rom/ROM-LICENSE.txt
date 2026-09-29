@@ -1,8 +1,9 @@
 ROM Image Licensing
 ====================
 
-The ROM images in this directory are NOT covered by the project's GPLv2
-license.  They are proprietary firmware redistributed with permission (or,
+The ROM images in this directory are NOT covered by the konCePCja Source
+License (LICENSE.md).  They are proprietary firmware redistributed with
+permission (or,
 in the case of MF2.rom, under community practice).
 
 
@@ -24,7 +25,8 @@ confirmed permission for redistribution via Richard Clayton.
 
 These files may be freely redistributed with CPC emulators, but they remain
 the copyrighted property of Amstrad plc and Locomotive Software Ltd.  They
-are NOT licensed under GPLv2 or any open-source license.
+are NOT licensed under the konCePCja Source License or any open-source
+license.
 
 
 Multiface II ROM

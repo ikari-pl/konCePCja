@@ -1,0 +1,5 @@
+# The Bitstream Vera fonts ship under their own licence (licenses/Bitstream
+# Vera License.txt); the embedding bits in the files are the upstream's.
+koncepcja: truetype-font-prohibits-installable-embedding
+# Not a Debian upload; there is no ITP bug to close.
+koncepcja: initial-upload-closes-no-bugs
