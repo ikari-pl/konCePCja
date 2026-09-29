@@ -2,6 +2,7 @@
 
 // konCePCja — media manager: file-to-slot routing (see slotshandler.cpp).
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -43,6 +44,13 @@ int dsk_to_bytes(t_drive* drive, std::vector<uint8_t>& out);
 void dsk_eject_host(t_drive* drive);
 // Host eject + queue a sub-cycle media eject for drive A/B.
 void dsk_eject(t_drive* drive);
+// A counter per drive (0 = A, 1 = B) that moves whenever that drive gets a
+// different medium: a load, an eject, or the board applying a queued swap.
+// Readers such as Disc Tools compare it with the value they last saw; the
+// number itself means nothing. The pull path (dsk_load_bytes /
+// dsk_eject_host) only re-reads the same medium and leaves it alone.
+uint64_t dsk_media_generation(uint8_t unit);
+void dsk_media_changed(uint8_t unit);
 int dsk_format(t_drive* drive, int iFormat);
 
 int tape_insert(FILE* pfile);

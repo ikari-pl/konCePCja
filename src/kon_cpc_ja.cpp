@@ -4366,7 +4366,8 @@ int koncpc_main(int argc, char** argv) {
       cleanExit(-1);
     }
 #ifdef __APPLE__
-    koncpc_setup_macos_menu();
+    // The native menu is built further down, once the InputMapper exists:
+    // built here it had no bindings to read and showed no shortcuts.
     koncpc_disable_app_nap();
     // Set the Dock icon (fixes generic icon when running outside .app bundle).
     // koncepcja-icon.png serves as both the icon and CRT overlay — its screen
@@ -4440,6 +4441,12 @@ int koncpc_main(int argc, char** argv) {
     fprintf(stderr, "emulator_init() failed. Aborting.\n");
     cleanExit(-1);
   }
+
+#ifdef __APPLE__
+  // After emulator_init(): the menu prints each action's shortcut from the
+  // live InputMapper bindings, which do not exist before it (beads-bqx).
+  if (!g_headless) koncpc_setup_macos_menu();
+#endif
 
   // Really load the various drives, if needed
   loadSlots();

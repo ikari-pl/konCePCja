@@ -95,6 +95,13 @@ static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 
   SEL act = [item action];
   if (act == @selector(menuAction:)) {
     const MenuAction* entry = koncpc_find_action(static_cast<KONCPC_KEYS>([item tag]));
+    // Re-derive the shortcut text as the menu opens, so it tracks the live
+    // binding (a keymap change, or a menu built before the mapper existed).
+    if (entry != nullptr) {
+      NSString* title =
+          [NSString stringWithUTF8String:koncpc_action_menu_title(entry->action).c_str()];
+      if (![[item title] isEqualToString:title]) [item setTitle:title];
+    }
     if (entry != nullptr && entry->toggle) {
       [item setState:koncpc_action_is_active(entry->action) ? NSControlStateValueOn
                                                             : NSControlStateValueOff];
@@ -129,11 +136,8 @@ static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 
 // the action registry.  Shortcut is shown as TEXT only (no keyEquivalent):
 // SDL owns every key, so an AppKit accelerator here would double-fire.
 static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target, const MenuAction* entry) {
-  NSString* itemTitle = [NSString stringWithUTF8String:entry->title];
-  std::string sc = koncpc_action_shortcut(entry->action);
-  if (!sc.empty()) {
-    itemTitle = [itemTitle stringByAppendingFormat:@"  (%s)", sc.c_str()];
-  }
+  NSString* itemTitle =
+      [NSString stringWithUTF8String:koncpc_action_menu_title(entry->action).c_str()];
   NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:itemTitle
                                                 action:@selector(menuAction:)
                                          keyEquivalent:@""];
@@ -149,10 +153,9 @@ static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target, const 
 static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target, NSString* title,
                                    BridgeKind kind, int payload,
                                    HostChord chord = HostChord::None) {
-  std::string const sc = host_chord_label(chord);
-  if (!sc.empty()) {
-    title = [title stringByAppendingFormat:@"  (%s)", sc.c_str()];
-  }
+  std::string const text =
+      koncpc_menu_title_with_shortcut([title UTF8String], host_chord_label(chord));
+  title = [NSString stringWithUTF8String:text.c_str()];
   NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
                                                 action:@selector(bridgeAction:)
                                          keyEquivalent:@""];

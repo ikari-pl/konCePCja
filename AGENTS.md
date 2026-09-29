@@ -463,11 +463,19 @@ The emulator uses LOG_DEBUG/LOG_INFO/LOG_ERROR macros. Key files with logging:
 
 ### DevTools
 
-Press **F12** or send `devtools` via IPC to open the developer tools:
-- **Z80 tab**: Registers, flags, disassembly
-- **Memory tab**: Hex viewer, search, poke
-- **Breakpoints**: Add/remove execution breakpoints
-- **Watch**: Memory watchpoints
+Press **F12** or send `devtools` via IPC to open the developer tools: a
+toolbar plus floating windows (Registers, Disassembly, Memory, Stack,
+Breakpoints, Symbols, Disc Tools, …), listed in the Window menu.
+
+- **Step group**: Step In / Step Over / Step Out / Resume-Pause sit in the
+  DevTools toolbar AND, as In / Over / Out / Run-Pause, in the Disassembly
+  window's menu bar. Both call the same `dbg_step_*` helpers in
+  `src/imgui_ui.cpp`, and `debug_step_controls()` (`src/imgui_ui_testable.h`)
+  decides for both when stepping is allowed (paused, no step walk running).
+  While a DevTools window has keyboard focus: F7 Step In, Shift+F7 Step Over,
+  Shift+F11 Step Out, F5 run/pause.
+- **Disc Tools**: the Files listing rebuilds on its own when the drive gets a
+  different medium (load, swap, eject), keyed on `dsk_media_generation()`.
 
 ### Function Keys
 
@@ -496,7 +504,10 @@ keys (F-keys included) are the CPC's. The chords are resolved in one place,
 `src/host_chords.h`/`.cpp`, which the SDL event loop, both menu bars and the
 About box all read. SDL is the only dispatcher — the native macOS menu shows
 a chord as text and registers no key equivalent, since AppKit and SDL both
-see the key and an accelerator on it double-fires (the F9 lesson). On Linux
+see the key and an accelerator on it double-fires (the F9 lesson). The F-key
+text on native menu items comes from the live InputMapper bindings
+(`koncpc_action_menu_title()`), so the menu is built after the mapper exists
+and re-reads the text each time it opens. On Linux
 and Windows, Control is a real CPC key, so Ctrl+K/O/S are the three
 combinations taken from the CPC; every other Control combination reaches it.
 

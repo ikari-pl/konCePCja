@@ -540,6 +540,30 @@ void DevToolsUI::refresh_breakpoint_snapshots() {
   bp_snapshot_generation_ = generation;
 }
 
+// In / Over / Out / Run-Pause, in the Disassembly menu bar where the eyes are
+// while stepping (beads-4i4). Same helpers and the same enable rule as the
+// DevTools toolbar, so the two groups cannot drift apart.
+void DevToolsUI::render_disasm_step_controls() {
+  bool const paused = g_emu_paused.load(std::memory_order_relaxed);
+  bool const walking = dbg_step_walk_running();
+  dbg_step_walk_poll_outcome();
+  DebugStepControls const ctl = debug_step_controls(paused, walking, true);
+  if (!ctl.step_enabled) ImGui::BeginDisabled();
+  if (ImGui::SmallButton(ctl.step_in_label)) dbg_step_in();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("Step In: one instruction, entering CALLs (F7)");
+  if (ImGui::SmallButton(ctl.step_over_label)) dbg_step_over();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("Step Over: one instruction, over CALLs/RSTs (Shift+F7)");
+  if (ImGui::SmallButton(ctl.step_out_label)) dbg_step_out();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip(
+        "Step Out: run until this subroutine returns (Shift+F11)");
+  if (!ctl.step_enabled) ImGui::EndDisabled();
+  if (ImGui::SmallButton(ctl.run_pause_label)) dbg_run_pause_toggle();
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run / halt the CPU (F5)");
+}
+
 void DevToolsUI::render_disassembly() {
   apply_default_window_layout(1, 440, 500);
 
@@ -567,6 +591,8 @@ void DevToolsUI::render_disassembly() {
         disasm_scroll_pending_ = true;
       }
     }
+    ImGui::Separator();
+    render_disasm_step_controls();
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
@@ -2137,11 +2163,20 @@ void DevToolsUI::render_disc_tools() {
 
   // File browser
   if (ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Two atomic loads a frame: cheap enough to ask every time whether the
+    // drive now holds a different medium than the listing was built from
+    // (beads-p5t: a swapped or ejected disc used to keep its old listing).
+    DiscToolsMediaKey const live_media{dt_drive_,
+                                       dsk_media_generation(dt_unit)};
+    if (disc_tools_listing_stale(dt_listed_media_, live_media)) {
+      dt_files_dirty_ = true;
+    }
     if (dt_files_dirty_) {
       sync_pull();
       drv = (dt_drive_ == 0) ? &driveA : &driveB;
       dt_file_cache_ = disk_list_files(drv, dt_file_error_);
       dt_files_dirty_ = false;
+      dt_listed_media_ = live_media;
     }
     if (ImGui::Button("Refresh##files")) dt_files_dirty_ = true;
     ImGui::SameLine();

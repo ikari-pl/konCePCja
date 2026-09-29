@@ -1495,11 +1495,16 @@ void apply_pending_media(Bridge& b) {
                   << drive << " hot-swap rejected (bad image)");
         b.machine.eject_disk(unit);
       }
+      // The host announced the load when it queued it; this is the moment the
+      // FDC actually holds the new disc. A listing pulled in between saw the
+      // outgoing medium, so readers must look again.
+      dsk_media_changed(unit);
       break;
     }
     case PendingMedia::kEject:
       flush_dirty_media_unit(b, unit);  // the outgoing disc keeps its writes
       b.machine.eject_disk(unit);
+      dsk_media_changed(unit);
       LOG_INFO("subcycle engine: drive " << drive << " ejected");
       break;
     case PendingMedia::kTape: {
