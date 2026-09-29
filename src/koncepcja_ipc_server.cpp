@@ -59,8 +59,8 @@
 #include "expr_parser.h"
 #include "flux_save.h"
 #include "gif_recorder.h"
-#include "imgui_ui.h"
 #include "imgui_ui_testable.h"
+#include "ipc_mru.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "m4board.h"
@@ -383,52 +383,6 @@ struct IpcGunPending {
 IpcGunPending g_ipc_gun;
 }  // namespace
 
-// Recent-files staging. A successful `load` belongs in the Recent menu just as
-// a File-menu or drag-drop load does (beads-00jf), but CPC.mru_* is read by
-// the menu every frame and pushing to it saves the config, so the IPC thread
-// only records the entry; ipc_drain_input() applies it on the main thread.
-namespace {
-struct IpcMruPending {
-  std::mutex mutex;
-  std::vector<std::pair<IpcMruList, std::string>> entries;
-};
-IpcMruPending g_ipc_mru;
-
-void ipc_stage_mru(IpcMruList list, const std::string& path) {
-  std::scoped_lock const lock(g_ipc_mru.mutex);
-  g_ipc_mru.entries.emplace_back(list, path);
-}
-}  // namespace
-
-std::vector<std::string>& ipc_mru_list(t_CPC& cpc, IpcMruList list) {
-  switch (list) {
-    case IpcMruList::Tapes:
-      return cpc.mru_tapes;
-    case IpcMruList::Snapshots:
-      return cpc.mru_snaps;
-    case IpcMruList::Cartridges:
-      return cpc.mru_carts;
-    case IpcMruList::Disks:
-      break;
-  }
-  return cpc.mru_disks;
-}
-
-void ipc_apply_staged_mru(bool save_config) {
-  std::vector<std::pair<IpcMruList, std::string>> entries;
-  {
-    std::scoped_lock const lock(g_ipc_mru.mutex);
-    entries.swap(g_ipc_mru.entries);
-  }
-  for (const auto& [list, path] : entries) {
-    if (save_config) {
-      imgui_mru_push(ipc_mru_list(CPC, list), path);
-    } else {
-      mru_list_push(ipc_mru_list(CPC, list), path, t_CPC::MRU_MAX);
-    }
-  }
-}
-
 // Host keymap staging — the same deferral again. `config set kbd_layout` runs
 // on the IPC thread, but CPC.kbd_layout and the live InputMapper are read by
 // the main thread's key-event handler, so the switch is applied by
@@ -655,7 +609,7 @@ void ipc_drain_input() {
                            static_cast<bool>(CPC.phazer_emulation));
   // A headless run is automation (CI, an agent's scratch session): its loads
   // go on the Recent list but never rewrite the user's config file.
-  ipc_apply_staged_mru(!g_headless);
+  ipc_mru_apply_staged(!g_headless);
 
   if (g_ipc_mouse.dirty.load(std::memory_order_acquire)) {
     int32_t dx = 0;
@@ -1182,10 +1136,13 @@ void init_command_registry() {
       "  put: Copies a file from the host machine onto the emulated disk. "
       "The optional last word picks how: basic (AMSDOS header type 0, a "
       "tokenised program), binary (header type 2, load/exec 0), ascii (no "
-      "header, as SAVE\"x\",A writes it: bare LF becomes CR LF and a ^Z "
-      "ends the text, so RUN\" tokenises it). Without it (auto): .txt/.asc "
-      "are ascii, a .bas is ascii when it is plain text and basic when it is "
-      "already tokenised, anything else is binary.");
+      "header, as SAVE\"x\",A writes it: bare LF becomes CR LF and the "
+      "text ends at the first ^Z, so RUN\" tokenises it). Without it (auto): "
+      "a file that already has an AMSDOS header is written unchanged; "
+      ".txt/.asc are ascii; a .bas is basic when it holds a 0x00 byte (it is "
+      "tokenised) and ascii otherwise; anything else is binary. The host "
+      "extension decides, or the CPC name's when the host one is none of "
+      "these.");
 
   register_command(
       "repaint", "DEBUG", "repaint [--screenshot PATH]",
@@ -1792,7 +1749,7 @@ std::string handle_command(const std::string& line) {
         CPC.driveA.file = path;
         CPC.driveA.zip_index = 0;
         if (file_load(CPC.driveA) != 0) return "ERR 500 load-disk\n";
-        ipc_stage_mru(IpcMruList::Disks, path);
+        ipc_mru_stage(&t_CPC::mru_disks, path);
         return ok_with_context();
       }
       if (ext == ".sna") {
@@ -1806,7 +1763,7 @@ std::string handle_command(const std::string& line) {
           cpc_resume();
         }
         if (rc != 0) return "ERR 500 load-sna\n";
-        ipc_stage_mru(IpcMruList::Snapshots, path);
+        ipc_mru_stage(&t_CPC::mru_snaps, path);
         return ok_with_context();
       }
       if (ext == ".cdt" || ext == ".voc") {
@@ -1814,14 +1771,14 @@ std::string handle_command(const std::string& line) {
         CPC.tape.zip_index = 0;
         if (file_load(CPC.tape) != 0) return "ERR 500 load-tape\n";
         tape_scan_blocks();  // build the block table (parity with the GUI load)
-        ipc_stage_mru(IpcMruList::Tapes, path);
+        ipc_mru_stage(&t_CPC::mru_tapes, path);
         return ok_with_context();
       }
       if (ext == ".cpr") {
         CPC.cartridge.file = path;
         CPC.cartridge.zip_index = 0;
         if (file_load(CPC.cartridge) != 0) return "ERR 500 load-cpr\n";
-        ipc_stage_mru(IpcMruList::Cartridges, path);
+        ipc_mru_stage(&t_CPC::mru_carts, path);
         return ok_with_context();
       }
       if (ext == ".bin") {
@@ -2278,7 +2235,9 @@ std::string handle_command(const std::string& line) {
           lease.release();
           cpc_resume();
         }
-        return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
+        if (rc != 0) return "ERR 500 snapshot-load\n";
+        ipc_mru_stage(&t_CPC::mru_snaps, parts[2]);
+        return ok_with_context();
       }
     }
     if (cmd == "snapshot")
@@ -3074,6 +3033,17 @@ std::string handle_command(const std::string& line) {
           (lower_pattern.size() >= 4 &&
            lower_pattern.substr(lower_pattern.size() - 4) == ".gif");
 
+      // Advance one frame. False when a breakpoint stopped the machine
+      // mid-step: the frame never completes, and the old unbounded spin on
+      // frame_step_active wedged this connection for good. The recording
+      // ends there with what it has; the stop is the caller's `wait bp`.
+      auto step_one_frame = [&]() -> bool {
+        if (!g_ipc_instance) return true;
+        g_ipc_instance->arm_frame_step(1);
+        cpc_resume();
+        g_ipc_instance->wait_frame_step_done();
+        return !g_ipc_instance->breakpoint_hit_pending();
+      };
       if (is_gif) {
         // Animated GIF output
         if (!back_surface) return "ERR 503 no-surface\n";
@@ -3083,21 +3053,16 @@ std::string handle_command(const std::string& line) {
         if (!gif.begin(back_surface->w, back_surface->h, delay_cs)) {
           return "ERR 500 gif-begin-failed\n";
         }
+        int recorded = 0;
         for (int i = 0; i < frame_count; i++) {
-          // Advance one frame
-          if (g_ipc_instance) {
-            g_ipc_instance->arm_frame_step(1);
-            cpc_resume();
-            while (g_ipc_instance->frame_step_active.load()) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-          }
+          if (!step_one_frame()) break;
           gif.add_frame(static_cast<const uint8_t*>(back_surface->pixels),
                         back_surface->pitch);
+          ++recorded;
         }
         if (gif.end(pattern)) {
           char buf[64];
-          snprintf(buf, sizeof(buf), "OK frames=%d\n", frame_count);
+          snprintf(buf, sizeof(buf), "OK frames=%d\n", recorded);
           return {buf};
         }
         return "ERR 500 gif-write-failed\n";
@@ -3106,13 +3071,7 @@ std::string handle_command(const std::string& line) {
       // PNG series output
       int saved = 0;
       for (int i = 0; i < frame_count; i++) {
-        if (g_ipc_instance) {
-          g_ipc_instance->arm_frame_step(1);
-          cpc_resume();
-          while (g_ipc_instance->frame_step_active.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          }
-        }
+        if (!step_one_frame()) break;
         char fname[512];
         if (pattern.find('%') != std::string::npos) {
           // Safe replacement for common patterns
@@ -4377,11 +4336,17 @@ std::string handle_command(const std::string& line) {
                 if (cpc_name.empty())
                   return "ERR cannot derive CPC filename from path\n";
               }
+              // A directory opens as a stream on POSIX and reads as empty, so
+              // it used to land on the disc as an empty file with an OK.
+              std::error_code ec;
+              if (!std::filesystem::is_regular_file(local_path, ec))
+                return "ERR cannot open " + local_path + "\n";
               std::ifstream in(local_path, std::ios::binary);
               if (!in) return "ERR cannot open " + local_path + "\n";
               std::vector<uint8_t> const data(
                   (std::istreambuf_iterator<char>(in)),
                   std::istreambuf_iterator<char>());
+              if (in.bad()) return "ERR cannot read " + local_path + "\n";
               in.close();
               std::string const err =
                   disk_put_file(drv, cpc_name, local_path, data, mode);

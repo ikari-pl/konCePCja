@@ -23,6 +23,7 @@
 #include "autotype.h"
 #include "cpc_key_tables.h"
 #include "imgui_state.h"
+#include "ipc_mru.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
@@ -877,21 +878,21 @@ TEST_F(IpcServerTest, LoadPushesTheRecentList) {
   std::filesystem::remove(dsk);
   EXPECT_OK(send_command("disk format A data"));
   EXPECT_OK(send_command("disk save A " + dsk.string() + " dsk"));
-  ipc_apply_staged_mru(false);  // start from an empty queue
+  ipc_mru_apply_staged(false);  // start from an empty queue
 
   std::vector<std::string> const saved_disks = CPC.mru_disks;
   CPC.mru_disks.clear();
   EXPECT_OK(send_command("load " + dsk.string()));
   EXPECT_TRUE(CPC.mru_disks.empty())
       << "the IPC thread must not touch the list the menu is reading";
-  ipc_apply_staged_mru(false);
+  ipc_mru_apply_staged(false);
   ASSERT_FALSE(CPC.mru_disks.empty());
   EXPECT_EQ(dsk.string(), CPC.mru_disks.front());
 
   CPC.mru_disks.clear();
   EXPECT_NE("OK",
             send_command("load " + dsk.string() + ".missing.dsk").substr(0, 2));
-  ipc_apply_staged_mru(false);
+  ipc_mru_apply_staged(false);
   EXPECT_TRUE(CPC.mru_disks.empty()) << "a failed load went on the list";
 
   CPC.mru_disks = saved_disks;
@@ -899,12 +900,47 @@ TEST_F(IpcServerTest, LoadPushesTheRecentList) {
   std::filesystem::remove(dsk);
 }
 
-TEST(IpcMru, EachLoadKindHasItsOwnList) {
-  t_CPC cpc;
-  EXPECT_EQ(&cpc.mru_disks, &ipc_mru_list(cpc, IpcMruList::Disks));
-  EXPECT_EQ(&cpc.mru_tapes, &ipc_mru_list(cpc, IpcMruList::Tapes));
-  EXPECT_EQ(&cpc.mru_snaps, &ipc_mru_list(cpc, IpcMruList::Snapshots));
-  EXPECT_EQ(&cpc.mru_carts, &ipc_mru_list(cpc, IpcMruList::Cartridges));
+// While Settings is open, CPC holds the dialog's uncommitted edits: a save
+// would persist them, and Cancel (CPC = old_cpc_settings) would drop the new
+// entry. Staged entries wait for the dialog to close (review of PR #63).
+TEST(IpcMru, EntriesWaitWhileTheOptionsDialogIsOpen) {
+  std::vector<std::string> const saved = CPC.mru_snaps;
+  CPC.mru_snaps.clear();
+  ipc_mru_stage(&t_CPC::mru_snaps, "/x/game.sna");
+  imgui_state.show_options = true;
+  ipc_mru_apply_staged(true);
+  EXPECT_TRUE(CPC.mru_snaps.empty()) << "applied under an open dialog";
+  imgui_state.show_options = false;
+  ipc_mru_apply_staged(false);
+  ASSERT_EQ(1u, CPC.mru_snaps.size());
+  EXPECT_EQ("/x/game.sna", CPC.mru_snaps.front());
+  CPC.mru_snaps = saved;
+}
+
+TEST(IpcMru, EachEntryLandsOnItsOwnList) {
+  std::vector<std::string> const disks = CPC.mru_disks;
+  std::vector<std::string> const tapes = CPC.mru_tapes;
+  CPC.mru_disks.clear();
+  CPC.mru_tapes.clear();
+  ipc_mru_stage(&t_CPC::mru_tapes, "t.cdt");
+  ipc_mru_stage(&t_CPC::mru_disks, "d.dsk");
+  ipc_mru_apply_staged(false);
+  EXPECT_EQ(std::vector<std::string>{"t.cdt"}, CPC.mru_tapes);
+  EXPECT_EQ(std::vector<std::string>{"d.dsk"}, CPC.mru_disks);
+  CPC.mru_disks = disks;
+  CPC.mru_tapes = tapes;
+}
+
+// A directory opens as a stream on POSIX and reads as empty: `disk put` used
+// to write it to the disc as an empty file and answer OK.
+TEST_F(IpcServerTest, DiskPutOfADirectoryIsAnError) {
+  EXPECT_OK(send_command("disk format A data"));
+  auto const dir = std::filesystem::temp_directory_path();
+  EXPECT_EQ(send_command("disk put A " + dir.string() + " DIR.BIN")
+                .rfind("ERR cannot open", 0),
+            0u);
+  EXPECT_EQ(send_command("disk info A DIR.BIN").rfind("ERR", 0), 0u)
+      << "nothing may have been written";
 }
 
 TEST_F(IpcServerTest, DiskStatusSaveEjectAndCaps) {

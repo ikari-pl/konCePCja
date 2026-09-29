@@ -12,8 +12,6 @@
 // Event trigger types
 enum class EventTrigger : std::uint8_t { PC, MEM_WRITE, VBL };
 
-class t_CPC;
-
 struct IpcEvent {
   int id;
   EventTrigger trigger;
@@ -126,14 +124,6 @@ void ipc_check_vbl_events();
 // MUST be called once per frame on the main thread — the IPC server thread only
 // accumulates; this applies. Cheap no-op when nothing is pending.
 void ipc_drain_input();
-
-// Which Recent list an IPC `load` lands on (beads-00jf).
-enum class IpcMruList : uint8_t { Disks, Tapes, Snapshots, Cartridges };
-std::vector<std::string>& ipc_mru_list(t_CPC& cpc, IpcMruList list);
-// Main thread (ipc_drain_input): move the entries successful IPC loads staged
-// onto CPC's Recent lists. save_config=false updates the lists only; true also
-// saves the config, as a File-menu load does.
-void ipc_apply_staged_mru(bool save_config);
 
 // Publish whether a mouse (AMX/Symbiface) and a light gun are fitted, for the
 // `input mouse`/`input gun` gates on the IPC thread. ipc_drain_input() does it

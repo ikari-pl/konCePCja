@@ -2258,6 +2258,47 @@ def test_disk_put_basic_listing_runs():
         return True
 
 
+def test_frames_dump_stops_at_a_breakpoint():
+    """`frames dump` must end, not wedge, when a breakpoint fires mid-step.
+
+    Each recorded frame is a one-frame step; a breakpoint pauses the machine
+    before the frame completes, so the step never counted down and the old
+    loop spun on it forever -- the socket, and every command after it, hung.
+    RST &38 runs on every interrupt (300/s), so a breakpoint there fires in
+    the first frame.
+    """
+    print("Running frames dump vs breakpoint test...")
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 15.0
+        with tempfile.TemporaryDirectory() as td:
+            gif = os.path.join(td, 'rec.gif')
+            for cmd in ('wait vbl 10', 'bp add 0x0038'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+            ok, resp = ipc.send_command(f'frames dump {gif} 20')
+            if not ok or not resp.startswith('OK frames='):
+                print(f"FAIL: frames dump under a breakpoint: {resp!r}")
+                return False
+            recorded = int(resp.split('=')[1].split()[0])
+            if recorded >= 20:
+                print(f"FAIL: recorded all {recorded} frames through a "
+                      f"breakpoint at &0038")
+                return False
+            ok, resp = ipc.send_command('ping')
+            if not ok:
+                print(f"FAIL: connection unusable afterwards: {resp}")
+                return False
+        ipc.send_command('bp clear')
+        print(f"PASS: recording ended at the breakpoint ({recorded} frames)")
+        return True
+
+
 def test_disk_status_save_eject():
     """File-menu Save Disk / Eject Disk over IPC (live FDC, not host t_drive).
 
@@ -2937,6 +2978,7 @@ def main():
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
         test_disk_put_basic_listing_runs,
+        test_frames_dump_stops_at_a_breakpoint,
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,

@@ -43,7 +43,7 @@ std::string port_or_null(int port) {
 std::string startup_manifest_yaml(const StartupManifest& m) {
   std::ostringstream o;
   o << "--- # koncepcja\n";
-  o << "manifest_version: 1\n";
+  o << "manifest_version: 2\n";
   o << "version: " << quoted(m.version) << '\n';
   o << "build: " << quoted(m.build) << '\n';
   o << "pid: " << m.pid << '\n';

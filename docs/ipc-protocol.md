@@ -13,7 +13,7 @@ prints on stdout once its servers are up:
 
 ```yaml
 --- # koncepcja
-manifest_version: 1
+manifest_version: 2        # 1 = run_tier held the effective tier (no effective_tier key)
 version: 'v6.3.1'
 build: 'dba77141'
 pid: 4242
@@ -32,7 +32,7 @@ config_file: '/home/u/.config/koncepcja/koncepcja.cfg'
 ...
 ```
 
-Slice it out of the log between `--- # koncepcja` and `...`.
+Slice it out of the log between `--- # koncepcja` and `...`. Version 2 split the tier into `run_tier` (policy) and `effective_tier`; a version-1 manifest carried the effective tier under `run_tier`.
 
 ## Companion: Telnet Console (port 6544)
 
@@ -85,7 +85,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported`. A successful disk, tape, snapshot or cartridge load goes on the matching Recent list, as a File-menu load does; the GUI then saves the config (as the menu does), a `--headless` run never rewrites the config file |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported`. A successful disk, tape, snapshot or cartridge load goes on the matching Recent list, as a File-menu load does; the GUI then saves the config (as the menu does), a `--headless` run never rewrites the config file. While the Settings dialog is open the entry waits until it closes (saving then would persist the dialog's uncommitted edits) |
 
 ## Registers
 
@@ -233,7 +233,7 @@ CRC32 hashes for CI regression testing.
 | `screenshot [path]` | Save the CPC screen as PNG (default path when omitted) |
 | `screenshot window <path>` | Capture the emulator window on the next rendered frame |
 | `snapshot save <path>` | Save emulator state (.sna) |
-| `snapshot load <path>` | Load emulator state (.sna) |
+| `snapshot load <path>` | Load emulator state (.sna). A successful load goes on the snapshot Recent list, as `load` does |
 
 ## Watchpoints
 
@@ -369,7 +369,7 @@ Ring-buffer recording of Z80 instruction execution.
 
 | Command | Description |
 |---------|-------------|
-| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF. Otherwise, saves a PNG per frame. Max 10000 frames. |
+| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF. Otherwise, saves a PNG per frame. Max 10000 frames. A breakpoint that fires mid-recording ends it there: the reply counts the frames actually recorded (`OK frames=N` / `OK saved=N`) and the machine stays stopped for `wait bp`. |
 
 **PNG mode** (default): Pattern uses printf `%d`/`%04d` for frame number, or `_NNNN.png` is appended. Returns `OK saved=N`.
 
@@ -568,7 +568,7 @@ File-level and sector-level access to DSK disc images.
 | `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
 | `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
 | `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
-| `disk put <A\|B> <local_path> [cpc_name] [auto\|basic\|binary\|ascii]` | Write local file to disc (auto-generates CPC name if omitted). The last word picks the file type: `basic` = AMSDOS header type 0 (tokenised program), `binary` = header type 2 (load/exec 0), `ascii` = no header, as `SAVE"x",A` writes it (bare LF becomes CR LF, a ^Z ends the text), so `RUN"` tokenises it. Default `auto`: `.txt`/`.asc` → ascii; `.bas` → ascii if it is plain text, basic if already tokenised; anything else → binary. A lone type word is the type, not a CPC name. Failed live-FDC push rolls the host view back |
+| `disk put <A\|B> <local_path> [cpc_name] [auto\|basic\|binary\|ascii]` | Write local file to disc (auto-generates CPC name if omitted). The last word picks the file type: `basic` = AMSDOS header type 0 (tokenised program), `binary` = header type 2 (load/exec 0), `ascii` = no header, as `SAVE"x",A` writes it (bare LF becomes CR LF, the text ends at the first ^Z and one ^Z is written after it), so `RUN"` tokenises it. Default `auto`: a file that already starts with a valid AMSDOS header is written unchanged; otherwise the extension decides (the host file's, or the CPC name's when the host one is not `.bas`/`.txt`/`.asc`): `.txt`/`.asc` → ascii; `.bas` → basic if it holds any 0x00 byte (every tokenised program does), ascii if not (a listing); anything else → binary. A lone type word is the type, not a CPC name. Failed live-FDC push rolls the host view back |
 | `disk rm <A\|B> <filename>` | Delete file from disc. Failed live-FDC push rolls the host view back |
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
 | `disk status <A\|B>` | `OK present=0\|1 backing=empty\|sector\|flux can_dsk=0\|1 can_scp=0\|1 can_hfe=0\|1` — same save caps the File menu uses |

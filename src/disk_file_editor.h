@@ -66,16 +66,18 @@ enum class DiskPutMode : uint8_t { AUTO, BASIC, BINARY, ASCII };
 // "auto", "basic", "binary" or "ascii" (any case). False for anything else.
 bool disk_parse_put_mode(const std::string& word, DiskPutMode& out);
 
-// Resolves AUTO from the host path and contents; any other mode is returned
-// unchanged. .txt/.asc are ASCII. A .bas that is plain text (a listing) is
-// ASCII, one with other bytes (already tokenised) is BASIC. Anything else is
-// BINARY.
+// Resolves AUTO from the host path (or, when its extension says nothing, the
+// CPC name) and contents; any other mode is returned unchanged. .txt/.asc
+// are ASCII. A .bas holding any 0x00 byte is tokenised (BASIC); one without is
+// a listing (ASCII). Anything else is BINARY.
 DiskPutMode disk_resolve_put_mode(DiskPutMode mode,
                                   const std::string& local_path,
-                                  const std::vector<uint8_t>& data);
+                                  const std::vector<uint8_t>& data,
+                                  const std::string& cpc_filename = "");
 
-// Writes data as `mode` (AUTO is resolved first). Same return contract as
-// disk_write_file.
+// Writes data as `mode` (AUTO is resolved first). In AUTO, a file that
+// already carries a valid AMSDOS header is written unchanged. ASCII text ends
+// at the first ^Z. Same return contract as disk_write_file.
 std::string disk_put_file(t_drive* drive, const std::string& cpc_filename,
                           const std::string& local_path,
                           const std::vector<uint8_t>& data, DiskPutMode mode);

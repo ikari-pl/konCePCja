@@ -707,41 +707,63 @@ bool disk_parse_put_mode(const std::string& word, DiskPutMode& out) {
   return true;
 }
 
-DiskPutMode disk_resolve_put_mode(DiskPutMode mode,
-                                  const std::string& local_path,
-                                  const std::vector<uint8_t>& data) {
-  if (mode != DiskPutMode::AUTO) return mode;
-  std::string ext = std::filesystem::path(local_path).extension().string();
+namespace {
+std::string lower_extension(const std::string& name) {
+  std::string ext = std::filesystem::path(name).extension().string();
   for (auto& c : ext)
     c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext;
+}
+
+bool is_put_text_extension(const std::string& ext) {
+  return ext == ".bas" || ext == ".txt" || ext == ".asc";
+}
+}  // namespace
+
+DiskPutMode disk_resolve_put_mode(DiskPutMode mode,
+                                  const std::string& local_path,
+                                  const std::vector<uint8_t>& data,
+                                  const std::string& cpc_filename) {
+  if (mode != DiskPutMode::AUTO) return mode;
+  std::string ext = lower_extension(local_path);
+  // A host temp file (no or odd extension) pushed under a CPC name such as
+  // GAME.BAS is still a BASIC file: fall back to the name it lands under.
+  if (!is_put_text_extension(ext)) ext = lower_extension(cpc_filename);
   if (ext == ".txt" || ext == ".asc") return DiskPutMode::ASCII;
   if (ext != ".bas") return DiskPutMode::BINARY;
-  // A tokenised program holds line-number words and token bytes >= 0x80; a
-  // listing is printable text with line ends (and maybe a ^Z terminator).
-  bool const text = std::all_of(data.begin(), data.end(), [](uint8_t b) {
-    return (b >= 0x20 && b < 0x7F) || b == '\r' || b == '\n' || b == '\t' ||
-           b == 0x1A;
-  });
-  return text ? DiskPutMode::ASCII : DiskPutMode::BASIC;
+  // Every tokenised program holds 0x00 bytes (each line ends in one, the
+  // program in two); a listing never does. Testing for "printable text"
+  // instead misread listings with CPC graphics characters, a UTF-8 BOM, or
+  // the 0xE5 record padding `disk get` returns after the ^Z.
+  bool const tokenised =
+      std::find(data.begin(), data.end(), uint8_t{0x00}) != data.end();
+  return tokenised ? DiskPutMode::BASIC : DiskPutMode::ASCII;
 }
 
 std::string disk_put_file(t_drive* drive, const std::string& cpc_filename,
                           const std::string& local_path,
                           const std::vector<uint8_t>& data, DiskPutMode mode) {
-  switch (disk_resolve_put_mode(mode, local_path, data)) {
+  // A host file that already starts with a valid AMSDOS header (one fetched
+  // with `disk get`, say) is written as it is, not given a second header.
+  if (mode == DiskPutMode::AUTO && disk_parse_amsdos_header(data).valid) {
+    return disk_write_file(drive, cpc_filename, data, false);
+  }
+  switch (disk_resolve_put_mode(mode, local_path, data, cpc_filename)) {
     case DiskPutMode::BASIC:
       return disk_write_file(drive, cpc_filename, data, true, 0, 0,
                              AmsdosFileType::BASIC);
     case DiskPutMode::ASCII: {
+      // The text ends at the first ^Z; what follows is record padding.
+      auto const eof = std::find(data.begin(), data.end(), uint8_t{0x1A});
       std::vector<uint8_t> text;
       text.reserve(data.size() + (data.size() / 16) + 1);
-      for (size_t i = 0; i < data.size(); ++i) {
-        if (data[i] == '\n' && (i == 0 || data[i - 1] != '\r')) {
+      for (auto it = data.begin(); it != eof; ++it) {
+        if (*it == '\n' && (it == data.begin() || *(it - 1) != '\r')) {
           text.push_back('\r');
         }
-        text.push_back(data[i]);
+        text.push_back(*it);
       }
-      if (text.empty() || text.back() != 0x1A) text.push_back(0x1A);
+      text.push_back(0x1A);
       return disk_write_file(drive, cpc_filename, text, false);
     }
     case DiskPutMode::AUTO:  // resolved above; unreachable

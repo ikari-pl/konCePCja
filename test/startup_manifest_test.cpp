@@ -41,7 +41,10 @@ TEST(StartupManifest, IsFramedAsOneYamlDocument) {
   // A consumer slices the manifest out of interleaved log output using these.
   EXPECT_EQ(y.rfind("--- # koncepcja", 0), 0u) << "must start with the marker";
   EXPECT_TRUE(contains(y, "\n...\n")) << "must close the YAML document";
-  EXPECT_TRUE(contains(y, "manifest_version: 1"));
+  // 2: machine.run_tier changed meaning (effective tier -> policy) and
+  // effective_tier was added (beads-tt7v). A consumer keyed on run_tier must
+  // be able to tell which reading it has.
+  EXPECT_TRUE(contains(y, "manifest_version: 2"));
 }
 
 TEST(StartupManifest, ReportsActualPorts) {
