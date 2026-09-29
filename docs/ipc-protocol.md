@@ -6,6 +6,14 @@ commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+Commands that change machine state — `reset`, `load` of a snapshot,
+`snapshot save|load`, the `disk` family, `profile load`, session playback —
+first pause the CPC and wait for the Z80 thread to leave the frame it is in.
+That wait is bounded (5 s). If the thread is stuck, the command answers
+`ERR 504 z80-not-idle`, changes nothing, and leaves the machine running or
+paused exactly as it found it. (`step` has its own shorter bound and reports
+`ERR 409 z80-not-idle`.)
+
 ## Companion: Telnet Console (port 6544)
 
 A separate persistent TCP connection on **port 6544** provides a text terminal

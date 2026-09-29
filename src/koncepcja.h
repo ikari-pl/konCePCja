@@ -636,6 +636,12 @@ class CpcStopCoordinationGuard {
 // Prefer this over bare cpc_pause_and_wait() whenever the caller then touches
 // shared machine/video state (reset, rebuild, snapshot, fullscreen, video
 // reinit, stepped Z80 state).
+// How long a pause lease (and cpc_wait_until_idle() by default) waits for the
+// Z80 thread to leave z80_execute(). A frame is at most tens of ms even on the
+// Faithful tier, so reaching this means the thread is stuck; waiting longer
+// would only hang the IPC server or the UI along with it.
+constexpr int kCpcIdleTimeoutMs = 5000;
+
 enum class CpcPauseLeaseMode {
   WaitImmediately,  // pause + wait for g_z80_idle (default)
   PauseOnly,        // pause under lease; caller must call wait() after any
@@ -645,7 +651,8 @@ enum class CpcPauseLeaseMode {
 class CpcPauseLease {
  public:
   explicit CpcPauseLease(
-      CpcPauseLeaseMode mode = CpcPauseLeaseMode::WaitImmediately);
+      CpcPauseLeaseMode mode = CpcPauseLeaseMode::WaitImmediately,
+      int idle_timeout_ms = kCpcIdleTimeoutMs);
   ~CpcPauseLease();
   CpcPauseLease(const CpcPauseLease&) = delete;
   CpcPauseLease& operator=(const CpcPauseLease&) = delete;
@@ -654,7 +661,13 @@ class CpcPauseLease {
 
   bool was_paused() const { return was_paused_; }
   bool active() const { return active_; }
-  void wait();     // spin until g_z80_idle (idempotent if already waited)
+  // True once the Z80 thread is known idle. False after a wait that timed
+  // out: the machine is paused (the lease still holds it) but a frame may be
+  // running, so the holder must NOT touch machine state. Fail closed: call
+  // restore_run_state() and report the failure (IPC: ERR 504 z80-not-idle).
+  bool idle() const { return idle_; }
+  // Wait (bounded) for g_z80_idle; returns idle(). Idempotent once idle.
+  bool wait();
   void release();  // drop the lease early; machine stays paused
   // Drop the lease and resume if this holder found the machine running.
   // Error paths that return before the success-path resume must call this
@@ -665,7 +678,8 @@ class CpcPauseLease {
   void acquire(CpcPauseLeaseMode mode);
   bool was_paused_ = false;
   bool active_ = false;
-  bool waited_ = false;
+  bool idle_ = false;
+  int idle_timeout_ms_ = kCpcIdleTimeoutMs;
 };
 
 void emulator_reset();
@@ -681,21 +695,20 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // transitions, NOT execution — so a caller that then touches Z80 state from
 // another thread must wait here first. No-op in headless mode.
 //
-// Returns false if `timeout_ms` elapsed first (0 = wait forever, the legacy
-// behaviour). A deadline-bounded caller must pass a bound: an unbounded spin
-// nested inside a bounded walk can outlive the walk's own deadline with no
-// diagnostic if the Z80 thread never goes idle.
-bool cpc_wait_until_idle(int timeout_ms = 0);
+// Returns false if `timeout_ms` elapsed first. Always bounded: a Z80 thread
+// that never goes idle must not take the IPC server or the UI down with it.
+bool cpc_wait_until_idle(int timeout_ms = kCpcIdleTimeoutMs);
 // Atomically commits a staged engine breakpoint only if no later resume has
 // invalidated it. Publishes the hit after the paused state is visible.
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
                                 word pc, bool watchpoint);
-// cpc_pause() + spin until the Z80 thread is not inside z80_execute().
-// Holds a pause lease only for the duration of the wait (so concurrent Resume
-// cannot defeat going idle). The lease is released before return — callers that
-// then enter a destructive critical section must hold CpcPauseLease across that
-// section. No-op wait in headless mode (single-threaded; pause is sufficient).
-void cpc_pause_and_wait();
+// cpc_pause() + spin (bounded) until the Z80 thread is not inside
+// z80_execute(). Holds a pause lease only for the duration of the wait (so
+// concurrent Resume cannot defeat going idle). The lease is released before
+// return — callers that then enter a destructive critical section must hold
+// CpcPauseLease across that section. Returns false (machine left paused) if
+// the thread did not go idle in time. No-op wait in headless mode.
+bool cpc_pause_and_wait();
 void bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);
 void dumpScreen();

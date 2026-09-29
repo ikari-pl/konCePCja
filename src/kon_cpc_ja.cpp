@@ -849,6 +849,12 @@ void emulator_reset() {
   // Hold a pause lease for the whole destructive section so a concurrent
   // IPC/UI Run cannot restart the Z80 while we wipe board state.
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: never wipe board state under a frame still running.
+    lease.restore_run_state();
+    set_osd_message("Reset skipped: Z80 thread is not responding", 3000);
+    return;
+  }
   subcycle_bridge_reset();  // no-op unless the sub-cycle engine is active
   if (CPC.model > 2) {
     if (pbCartridgePages[0] != nullptr) {
@@ -1238,6 +1244,11 @@ int koncpc_rebuild_machine() {
   // I/O dispatch table underneath it. Hold a pause lease so concurrent Resume
   // cannot restart execution while we tear down and rebuild.
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: emulator_init() would free memory the stuck frame reads.
+    lease.restore_run_state();
+    return ERR_Z80_NOT_IDLE;
+  }
   const bool was_paused = lease.was_paused();
 
   subcycle_bridge_stop();
@@ -1312,6 +1323,11 @@ void bin_load(const std::string& filename, const size_t offset) {
   // The Z80 thread must not be mid-frame while the registers are rewritten
   // and pushed to the machine (same contract as koncpc_toggle_fullscreen()).
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    lease.restore_run_state();
+    LOG_ERROR("Binary loaded but not launched: Z80 thread is not responding");
+    return;
+  }
   bool const was_paused = lease.was_paused();
   koncpc_inject_launch_regs(z80, static_cast<word>(offset),
                             z80_read_mem(kMcStartProgram));
@@ -1703,8 +1719,7 @@ bool cpc_wait_until_idle(int timeout_ms) {
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (!g_z80_idle.load(std::memory_order_acquire)) {
-    if (timeout_ms > 0 && std::chrono::steady_clock::now() > deadline)
-      return false;
+    if (std::chrono::steady_clock::now() > deadline) return false;
     std::this_thread::sleep_for(std::chrono::microseconds(100));
   }
   return true;
@@ -1736,27 +1751,33 @@ void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
     active_ = true;
     cpc_pause_locked();
   }
-  if (mode == CpcPauseLeaseMode::WaitImmediately) {
-    cpc_wait_until_idle();
-    waited_ = true;
-  }
+  if (mode == CpcPauseLeaseMode::WaitImmediately) wait();
 }
 
-CpcPauseLease::CpcPauseLease(CpcPauseLeaseMode mode) { acquire(mode); }
+CpcPauseLease::CpcPauseLease(CpcPauseLeaseMode mode, int idle_timeout_ms)
+    : idle_timeout_ms_(idle_timeout_ms) {
+  acquire(mode);
+}
 
 CpcPauseLease::CpcPauseLease(CpcPauseLease&& other) noexcept
     : was_paused_(other.was_paused_),
       active_(other.active_),
-      waited_(other.waited_) {
+      idle_(other.idle_),
+      idle_timeout_ms_(other.idle_timeout_ms_) {
   other.active_ = false;
 }
 
 CpcPauseLease::~CpcPauseLease() { release(); }
 
-void CpcPauseLease::wait() {
-  if (!active_ || waited_) return;
-  cpc_wait_until_idle();
-  waited_ = true;
+bool CpcPauseLease::wait() {
+  if (!active_ || idle_) return idle_;
+  idle_ = cpc_wait_until_idle(idle_timeout_ms_);
+  if (!idle_) {
+    LOG_ERROR("Z80 thread did not go idle within "
+              << idle_timeout_ms_
+              << " ms; refusing to touch machine state (machine left paused)");
+  }
+  return idle_;
 }
 
 void CpcPauseLease::release() {
@@ -1840,11 +1861,12 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
   return true;
 }
 
-void cpc_pause_and_wait() {
+bool cpc_pause_and_wait() {
   // Lease covers the wait only — concurrent Resume cannot defeat going idle.
   // Callers with a destructive critical section after this must hold
   // CpcPauseLease across that section.
-  CpcPauseLease lease;
+  CpcPauseLease const lease;
+  return lease.idle();
 }
 
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
@@ -3010,6 +3032,13 @@ std::optional<bool> koncpc_main_window_is_fullscreen() {
 
 void koncpc_toggle_fullscreen() {
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: video_shutdown() frees buffers the stuck frame writes.
+    lease.restore_run_state();
+    set_osd_message("Fullscreen toggle skipped: Z80 thread is not responding",
+                    3000);
+    return;
+  }
   bool const was_paused = lease.was_paused();
 
   // Read the window before video_shutdown() destroys it.
@@ -3418,7 +3447,12 @@ void doCleanUp() {
         CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
         g_frame_signal
             .abort();  // make signal_ready a no-op + release render wait
-        lease.wait();
+        if (!lease.wait()) {
+          // Still join below: freeing the machine under a thread that is
+          // mid-frame would crash, so a stuck thread hangs exit instead --
+          // now with the reason in the log.
+          LOG_ERROR("Shutdown: Z80 thread is not responding; waiting to join");
+        }
         g_z80_thread_quit.store(true, std::memory_order_relaxed);
       }
       cpc_resume();
@@ -5685,35 +5719,44 @@ int koncpc_main(int argc, char** argv) {
         // Z80 runs is a use-after-free → segfault on renderer switch. Hold a
         // pause lease so concurrent Resume cannot restart mid-reinit.
         CpcPauseLease lease;
-        bool const z80_was_paused = lease.was_paused();
-        audio_pause();
-        // Free cached save-state thumbnail textures while the OLD render device
-        // is still alive — video_shutdown() destroys it, leaving stale GPU
-        // handles that would be used/freed against a dead device on next use.
-        imgui_invalidate_slot_thumbs();
-        SDL_Delay(20);
-        video_shutdown();
-        if (video_init()) {
-          fprintf(stderr,
-                  "video_init() failed after plugin change. Aborting.\n");
-          cleanExit(-1);
-        }
-        // Only restore window geometry if the output size didn't change
-        // (i.e. only the plugin changed, not scale/fullscreen)
-        bool const size_changed =
-            (CPC.scr_scale != imgui_state.old_cpc_settings.scr_scale) ||
-            (CPC.scr_window != imgui_state.old_cpc_settings.scr_window);
-        if (saved_w > 0 && mainSDLWindow && !size_changed) {
-          SDL_SetWindowSize(mainSDLWindow, saved_w, saved_h);
-          SDL_SetWindowPosition(mainSDLWindow, saved_x, saved_y);
-        }
+        if (!lease.idle()) {
+          // Fail closed: video_shutdown() frees buffers the stuck frame
+          // writes.
+          lease.restore_run_state();
+          set_osd_message("Video switch skipped: Z80 thread is not responding",
+                          3000);
+        } else {
+          bool const z80_was_paused = lease.was_paused();
+          audio_pause();
+          // Free cached save-state thumbnail textures while the OLD render
+          // device is still alive — video_shutdown() destroys it, leaving stale
+          // GPU handles that would be used/freed against a dead device on next
+          // use.
+          imgui_invalidate_slot_thumbs();
+          SDL_Delay(20);
+          video_shutdown();
+          if (video_init()) {
+            fprintf(stderr,
+                    "video_init() failed after plugin change. Aborting.\n");
+            cleanExit(-1);
+          }
+          // Only restore window geometry if the output size didn't change
+          // (i.e. only the plugin changed, not scale/fullscreen)
+          bool const size_changed =
+              (CPC.scr_scale != imgui_state.old_cpc_settings.scr_scale) ||
+              (CPC.scr_window != imgui_state.old_cpc_settings.scr_window);
+          if (saved_w > 0 && mainSDLWindow && !size_changed) {
+            SDL_SetWindowSize(mainSDLWindow, saved_w, saved_h);
+            SDL_SetWindowPosition(mainSDLWindow, saved_x, saved_y);
+          }
 #ifdef __APPLE__
-        koncpc_setup_macos_menu();
+          koncpc_setup_macos_menu();
 #endif
-        audio_resume();
-        if (!z80_was_paused) {
-          lease.release();
-          cpc_resume();
+          audio_resume();
+          if (!z80_was_paused) {
+            lease.release();
+            cpc_resume();
+          }
         }
       }
     }

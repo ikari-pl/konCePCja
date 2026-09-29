@@ -1036,7 +1036,12 @@ void dbg_step_over() {
   word pc = 0;
   Z80StepClass cls;
   {
-    CpcPauseLease const lease;
+    CpcPauseLease lease;
+    if (!lease.idle()) {
+      lease.restore_run_state();
+      set_osd_message("Z80 thread is not responding", 3000);
+      return;
+    }
     pc = z80.PC.w.l;
     cls = z80_classify_at(pc);
     if (!cls.is_call && !cls.is_rst) {
@@ -1100,10 +1105,10 @@ void dispatch_step_walk(StepWalkAction action,
   if (g_step_walk_running.exchange(true, std::memory_order_acq_rel)) {
     return;  // a walk is already in flight; ignore the repeated click/shortcut
   }
-  // Pause, then wait for the Z80 thread to go idle WITH A BOUND. A plain
-  // CpcPauseLease waits forever, and this runs on the render thread -- an
-  // unbounded wait here would freeze the GUI, which is the exact failure this
-  // worker exists to prevent.
+  // Pause, then wait for the Z80 thread to go idle with a SHORT bound. A
+  // plain CpcPauseLease waits up to kCpcIdleTimeoutMs, and this runs on the
+  // render thread -- a long wait here would freeze the GUI, which is the
+  // exact failure this worker exists to prevent.
   {
     CpcPauseLease const lease(CpcPauseLeaseMode::PauseOnly);
     if (!cpc_wait_until_idle(kStepWalkIdleWaitMs)) {
@@ -2878,14 +2883,20 @@ void imgui_render_statusbar() {
             popup_eject_drive == 0 ? CPC.driveA.file : CPC.driveB.file;
         {
           CpcPauseLease lease;  // idle so the flush below is synchronous
-          dsk_eject(&drive);
-          // dsk_eject only queues the FDC unmount; apply it now, while
-          // driveFile still names the outgoing disc, so any dirty sectors
-          // are flushed back to it before we clear the path below (see
-          // flush_dirty_media_unit — clearing first makes the flush a
-          // silent no-op and drops unsaved writes).
-          subcycle_bridge_apply_pending_media();
-          driveFile.clear();
+          if (!lease.idle()) {
+            lease.restore_run_state();
+            imgui_toast_error(
+                "Z80 thread is not responding; nothing was changed");
+          } else {
+            dsk_eject(&drive);
+            // dsk_eject only queues the FDC unmount; apply it now, while
+            // driveFile still names the outgoing disc, so any dirty sectors
+            // are flushed back to it before we clear the path below (see
+            // flush_dirty_media_unit — clearing first makes the flush a
+            // silent no-op and drops unsaved writes).
+            subcycle_bridge_apply_pending_media();
+            driveFile.clear();
+          }
         }
         popup_eject_drive = -1;
         ImGui::CloseCurrentPopup();

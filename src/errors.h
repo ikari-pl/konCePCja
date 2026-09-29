@@ -48,3 +48,8 @@ inline constexpr int ERR_CPR_INVALID = 33;
 inline constexpr int ERR_IPF_DYNLIB_LOAD = 34;
 
 inline constexpr int ERR_JOYSTICKS_INIT = 45;
+
+// Threads
+// The Z80 thread did not leave its frame within kCpcIdleTimeoutMs, so the
+// machine was left untouched (and paused).
+inline constexpr int ERR_Z80_NOT_IDLE = 46;

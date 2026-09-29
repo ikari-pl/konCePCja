@@ -749,6 +749,68 @@ TEST_F(IpcServerTest, ResumeAppliedReportsLeaseDeferral) {
   EXPECT_TRUE(cpc_resume_applied());
 }
 
+// beads-csl7.5: the quiescence wait is bounded. A Z80 thread that never
+// leaves its frame (g_z80_idle stuck false) used to hang the lease holder --
+// the IPC thread or the UI -- forever. Now the wait gives up, the lease reports
+// not-idle, and the holder must leave the machine alone.
+TEST_F(IpcServerTest, PauseLeaseWaitGivesUpOnAStuckZ80Thread) {
+  cpc_resume();
+  g_z80_idle.store(false, std::memory_order_release);
+
+  auto const started = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease lease(CpcPauseLeaseMode::WaitImmediately,
+                        /*idle_timeout_ms=*/50);
+    auto const waited = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(
+        std::chrono::duration_cast<std::chrono::milliseconds>(waited).count(),
+        1000);
+    EXPECT_TRUE(lease.active());
+    EXPECT_FALSE(lease.idle());
+    EXPECT_FALSE(lease.wait()) << "still stuck";
+    EXPECT_TRUE(CPC.paused) << "the lease must still hold the pause";
+    lease.restore_run_state();
+  }
+  EXPECT_FALSE(CPC.paused) << "the caller's run state was not restored";
+
+  g_z80_idle.store(true, std::memory_order_release);
+  CpcPauseLease lease;
+  EXPECT_TRUE(lease.idle());
+  lease.restore_run_state();
+}
+
+// The same through a destructive IPC command using the DEFAULT bound: 'reset'
+// must answer ERR 504 without resetting, and hand the machine back running.
+TEST_F(IpcServerTest, DestructiveCommandFailsClosedOnAStuckZ80Thread) {
+  cpc_resume();
+  z80.PC.w.l = 0x1234;  // emulator_reset() would clear this
+  g_z80_idle.store(false, std::memory_order_release);
+
+  // If the wait were unbounded again, unstick it well after the bound so the
+  // suite fails on the timing below instead of hanging forever.
+  std::atomic<bool> done{false};
+  std::thread watchdog([&] {
+    auto const give_up = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(kCpcIdleTimeoutMs + 5000);
+    while (!done.load() && std::chrono::steady_clock::now() < give_up)
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    g_z80_idle.store(true, std::memory_order_release);
+  });
+
+  auto const started = std::chrono::steady_clock::now();
+  std::string const resp = send_command("reset");
+  auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - started)
+                           .count();
+  done.store(true);
+  watchdog.join();
+
+  EXPECT_EQ("ERR 504 z80-not-idle\n", resp);
+  EXPECT_LT(elapsed, kCpcIdleTimeoutMs + 2000);
+  EXPECT_EQ(0x1234, z80.PC.w.l) << "reset ran under a stuck frame";
+  EXPECT_FALSE(CPC.paused) << "the machine was left paused";
+}
+
 TEST_F(IpcServerTest, RunReportsPauseLeaseHeld) {
   cpc_resume();
   CpcPauseLease lease;
