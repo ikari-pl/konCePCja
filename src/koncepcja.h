@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "phazer_type.h"
+#include "serial_config.h"
 #include "types.h"
 
 class InputMapper;
@@ -194,6 +195,26 @@ enum class KeyboardSupportMode : std::uint8_t {
 JoystickEmulation nextJoystickEmulation(JoystickEmulation current);
 std::string JoystickEmulationToString(JoystickEmulation value);
 
+// Expansion-device settings from the config file. loadConfiguration() fills
+// this and saveConfiguration() writes it back; neither touches the device
+// globals (g_silicon_disc, g_amdrum, ...), which is what lets a test load a
+// config without switching devices on or off for every test after it.
+// apply_device_config() pushes it into the globals at startup and
+// capture_device_config() pulls the live state back before a save.
+struct t_DeviceConfig {
+  bool silicon_disc = false;  // [system] silicon_disc
+  bool smartwatch = false;    // [system] smartwatch
+  bool amdrum = false;        // [sound] amdrum
+  bool disk_sounds = false;   // [sound] disk_sounds
+  bool tape_sounds = false;   // [sound] tape_sounds
+  bool amx_mouse = false;     // [input] amx_mouse
+  bool symbiface = false;     // [peripheral] symbiface
+  // [peripheral] ide_master / ide_slave: attached only when symbiface is on.
+  std::string ide_master;
+  std::string ide_slave;
+  SerialConfig serial;  // [peripheral] serial_*
+};
+
 class t_CPC {
  public:
   t_CPC();
@@ -291,6 +312,8 @@ class t_CPC {
   // [input] host_chords: 1 = Cmd/Ctrl+K/O/S drive the host UI (default); 0 on
   // Linux/Windows returns Ctrl+K/O/S to the CPC. See host_chords.h.
   unsigned int host_chords;
+
+  t_DeviceConfig devices;
 
   unsigned int max_tracksize;
 
@@ -602,6 +625,21 @@ class CpcStopCoordinationGuard {
   uint64_t breakpoint_generation_ = 0;
 };
 
+// How long a pause lease (and cpc_wait_until_idle() by default) waits for the
+// Z80 thread to leave z80_execute(). A frame is at most tens of ms even on the
+// Faithful tier, so reaching this means the thread is stuck; waiting longer
+// would only hang the IPC server or the UI along with it.
+constexpr int kCpcIdleTimeoutMs = 5000;
+// Once a wait has timed out, later waits give up after this instead, until
+// the thread is seen idle again: a stuck thread must not cost the UI another
+// full kCpcIdleTimeoutMs freeze on every click. Still several frames long, so
+// a thread that was only slow recovers on the next attempt.
+constexpr int kCpcIdleRetryMs = 250;
+// The bound in force (kCpcIdleTimeoutMs unless a test lowers it, so a
+// fail-closed test proves the cap without waiting out the production value).
+int cpc_idle_timeout_ms();
+void cpc_set_idle_timeout_ms(int timeout_ms);
+
 // RAII ownership of a destructive pause critical section.
 //
 // Acquires a pause lease, pauses the machine, and (by default) waits until the
@@ -610,9 +648,10 @@ class CpcStopCoordinationGuard {
 // are refcounted. Call release() before an intentional cpc_resume() that must
 // take effect while this scope is still alive.
 //
-// Prefer this over bare cpc_pause_and_wait() whenever the caller then touches
-// shared machine/video state (reset, rebuild, snapshot, fullscreen, video
-// reinit, stepped Z80 state).
+// Hold one whenever the caller touches shared machine/video state (reset,
+// rebuild, snapshot, fullscreen, video reinit, stepped Z80 state), and check
+// idle() before doing so.
+
 enum class CpcPauseLeaseMode {
   WaitImmediately,  // pause + wait for g_z80_idle (default)
   PauseOnly,        // pause under lease; caller must call wait() after any
@@ -622,7 +661,8 @@ enum class CpcPauseLeaseMode {
 class CpcPauseLease {
  public:
   explicit CpcPauseLease(
-      CpcPauseLeaseMode mode = CpcPauseLeaseMode::WaitImmediately);
+      CpcPauseLeaseMode mode = CpcPauseLeaseMode::WaitImmediately,
+      int idle_timeout_ms = -1);  // -1: cpc_idle_timeout_ms()
   ~CpcPauseLease();
   CpcPauseLease(const CpcPauseLease&) = delete;
   CpcPauseLease& operator=(const CpcPauseLease&) = delete;
@@ -631,7 +671,13 @@ class CpcPauseLease {
 
   bool was_paused() const { return was_paused_; }
   bool active() const { return active_; }
-  void wait();     // spin until g_z80_idle (idempotent if already waited)
+  // True once the Z80 thread is known idle. False after a wait that timed
+  // out: the machine is paused (the lease still holds it) but a frame may be
+  // running, so the holder must NOT touch machine state. Fail closed: call
+  // restore_run_state() and report the failure (IPC: ERR 409 z80-not-idle).
+  bool idle() const { return idle_; }
+  // Wait (bounded) for g_z80_idle; returns idle(). Idempotent once idle.
+  bool wait();
   void release();  // drop the lease early; machine stays paused
   // Drop the lease and resume if this holder found the machine running.
   // Error paths that return before the success-path resume must call this
@@ -642,7 +688,8 @@ class CpcPauseLease {
   void acquire(CpcPauseLeaseMode mode);
   bool was_paused_ = false;
   bool active_ = false;
-  bool waited_ = false;
+  bool idle_ = false;
+  int idle_timeout_ms_ = -1;
 };
 
 void emulator_reset();
@@ -658,22 +705,22 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // transitions, NOT execution — so a caller that then touches Z80 state from
 // another thread must wait here first. No-op in headless mode.
 //
-// Returns false if `timeout_ms` elapsed first (0 = wait forever, the legacy
-// behaviour). A deadline-bounded caller must pass a bound: an unbounded spin
-// nested inside a bounded walk can outlive the walk's own deadline with no
-// diagnostic if the Z80 thread never goes idle.
-bool cpc_wait_until_idle(int timeout_ms = 0);
+// Returns false if `timeout_ms` elapsed first. Always bounded: a Z80 thread
+// that never goes idle must not take the IPC server or the UI down with it.
+// -1 (the default) means cpc_idle_timeout_ms().
+bool cpc_wait_until_idle(int timeout_ms = -1);
 // Atomically commits a staged engine breakpoint only if no later resume has
 // invalidated it. Publishes the hit after the paused state is visible.
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
                                 word pc, bool watchpoint);
-// cpc_pause() + spin until the Z80 thread is not inside z80_execute().
-// Holds a pause lease only for the duration of the wait (so concurrent Resume
-// cannot defeat going idle). The lease is released before return — callers that
-// then enter a destructive critical section must hold CpcPauseLease across that
-// section. No-op wait in headless mode (single-threaded; pause is sufficient).
-void cpc_pause_and_wait();
-void bin_load(const std::string& filename, const size_t offset);
+enum class BinLoadResult : std::uint8_t {
+  Ok,
+  FileError,  // missing, unreadable, empty or too big
+  NotIdle,    // the Z80 thread would not stop; nothing was written
+};
+// Copy a raw binary into RAM at `offset` and launch it through MC START
+// PROGRAM.
+BinLoadResult bin_load(const std::string& filename, const size_t offset);
 bool dumpScreenTo(const std::string& path);
 void dumpScreen();
 int emulator_init();
@@ -757,8 +804,22 @@ std::string getConfigurationFilename(bool forWrite = false);
 // missing file or a non-CPC ROM clears the slot and still returns 0.
 int load_expansion_rom_slot(int slot, const std::string& rom_file);
 
+// Fill CPC from the config file. Expansion-device settings land in
+// CPC.devices only; apply_device_config() makes them live.
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename);
+// Write CPC (including CPC.devices) back to the file, as is: the serializer.
+// Runtime saves go through koncpc_save_live_configuration().
 bool saveConfiguration(t_CPC& CPC, const std::string& configFilename);
+// CPC.devices -> the device globals (enables, Silicon Disc init, IDE images,
+// serial backend). Startup runs it once after loadConfiguration().
+void apply_device_config(const t_CPC& CPC);
+// The device globals -> CPC.devices, so a save persists runtime toggles.
+void capture_device_config(t_CPC& CPC);
+// The save every runtime path uses: capture_device_config(CPC), then
+// saveConfiguration(CPC, path). `serial_override`, when set, is written
+// instead of the live serial config (Options "save without restart").
+bool koncpc_save_live_configuration(
+    const std::string& path, const SerialConfig* serial_override = nullptr);
 
 void set_cursor_visibility(bool show);
 

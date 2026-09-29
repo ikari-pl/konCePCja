@@ -5,8 +5,10 @@ IPC Test Harness for konCePCja Emulator
 Connects to the emulator's IPC server (port 6543) to run automated tests.
 """
 
+import hashlib
 import queue
 import re
+import signal
 import socket
 import subprocess
 import shutil
@@ -291,6 +293,11 @@ class EmulatorRunner:
     def start(self, *args, headless: bool = True, engine: Optional[int] = None) -> bool:
         """Start emulator with given arguments."""
         env = os.environ.copy()
+        # A test must never raise a native modal: stop() terminates the
+        # emulator, possibly with a disk the test itself dirtied, and the
+        # "unsaved changes" dialog would then block the run (and land on the
+        # maintainer's desktop). The emulator honours this in every mode.
+        env['KONCPC_NO_DIALOGS'] = '1'
         if headless:
             env['SDL_VIDEODRIVER'] = 'dummy'
             env['SDL_AUDIODRIVER'] = 'dummy'
@@ -587,6 +594,82 @@ def test_headless_runs_subcycle_engine():
         return True
 
 
+def test_programmatic_quit_exit_codes():
+    """IPC `quit N` and SIGTERM end the process with the right exit code.
+
+    Headless polls no SDL events, so the SDL_EVENT_QUIT that `quit` used to
+    push from the IPC thread was never read: the command answered OK and the
+    emulator ran on. A signal is not a success either: it exits 128+signo.
+    """
+    for how, expected in (('ipc', 3), ('sigterm', 143), ('sigint', 130)):
+        with EmulatorRunner() as emu:
+            if not emu.start('--headless'):
+                print(f"FAIL: could not start emulator ({how})")
+                return False
+            proc = emu.process
+            # The runner pins a throwaway copy of the shipped example config.
+            # A signalled exit is not a clean exit, so it must not rewrite it:
+            # a harness that kills the emulator would otherwise leave settings
+            # behind that no one asked to save.
+            cfg = Path(emu._cfg_tmp.name) if emu._cfg_tmp else None
+            before = hashlib.md5(cfg.read_bytes()).hexdigest() if cfg else None
+            if how == 'ipc':
+                emu.ipc.send_command('quit 3')
+            elif how == 'sigterm':
+                proc.send_signal(signal.SIGTERM)
+            else:
+                proc.send_signal(signal.SIGINT)
+            try:
+                rc = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print(f"FAIL: {how} quit left the emulator running")
+                return False
+            if rc != expected:
+                print(f"FAIL: {how} quit exited {rc}, expected {expected}")
+                return False
+            if cfg is not None and how != 'ipc':
+                after = hashlib.md5(cfg.read_bytes()).hexdigest()
+                if after != before:
+                    print(f"FAIL: {how} rewrote the config file")
+                    return False
+    print("PASS: IPC quit exits 3, SIGTERM exits 143, SIGINT exits 130, "
+          "and a signalled exit leaves the config alone")
+    return True
+
+
+def test_double_signal_terminates():
+    """A second SIGTERM must kill the emulator even if the first is unhandled.
+
+    on_terminate_signal() records the first signal for the main loop to drain;
+    a second one restores the OS default disposition and re-raises, so an
+    operator's second Ctrl+C still kills a wedged main thread. Whichever of
+    the two paths wins the race, the contract the operator sees is the same:
+    the process is gone, and not because the harness's own SIGKILL fallback
+    reaped it 5 seconds later.
+    """
+    with EmulatorRunner() as emu:
+        if not emu.start('--headless'):
+            print("FAIL: could not start emulator")
+            return False
+        proc = emu.process
+        proc.send_signal(signal.SIGTERM)
+        proc.send_signal(signal.SIGTERM)
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print("FAIL: two SIGTERMs left the emulator running")
+            return False
+    # -SIGTERM: the second signal hit the force-kill branch (default
+    # disposition, re-raised). 143: the main loop drained the first one
+    # before the second landed, so the second was itself a first.
+    if rc not in (-signal.SIGTERM, 143):
+        print(f"FAIL: double SIGTERM exited {rc}, expected -15 or 143")
+        return False
+    how = "force-killed by the second signal" if rc < 0 else "clean 128+signo"
+    print(f"PASS: double SIGTERM terminated the emulator ({how})")
+    return True
+
+
 def test_engine1_bp_clear_resume():
     """beads-4gf9: clearing a hit breakpoint and resuming must truly resume.
 
@@ -761,7 +844,7 @@ def test_breakpoint_pause_step_resume():
 def test_snapshot_round_trip():
     """Save snapshot while paused, corrupt memory, load snapshot, verify restored.
 
-    Exercises cpc_pause_and_wait() in the IPC server's snapshot save/load paths.
+    Exercises the pause-lease wait in the IPC server's snapshot save/load paths.
     Without going idle the snapshot might capture a partially-updated Z80 state.
     """
     print("Running snapshot round-trip test...")
@@ -863,7 +946,7 @@ def test_rapid_pause_resume():
 def test_step_in_accuracy():
     """Pause, plant a known instruction run, step it, verify PC advances.
 
-    Exercises cpc_pause_and_wait() in the IPC step-in path: if the Z80 thread
+    Exercises the pause-lease wait in the IPC step-in path: if the Z80 thread
     were still inside z80_execute() when step_in ran, PC would not advance
     predictably.
 
@@ -2878,6 +2961,8 @@ def main():
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,
+        test_programmatic_quit_exit_codes,
+        test_double_signal_terminates,
         test_engine1_bp_clear_resume,
         test_z80_basic,
         test_memory_rw,

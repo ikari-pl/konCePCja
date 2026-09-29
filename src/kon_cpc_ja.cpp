@@ -6,7 +6,9 @@
 #include <cctype>
 #include <chrono>
 #include <climits>
+#include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <mutex>
@@ -59,6 +61,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "macos_menu.h"
 #include "memory_bus.h"
 #include "memutils.h"
+#include "quit_policy.h"
 #include "serial_interface.h"
 #include "smartwatch.h"
 #include "startup_manifest.h"
@@ -229,9 +232,31 @@ std::atomic<bool> g_emu_paused{false};
 namespace {
 std::atomic<bool> g_z80_thread_quit{false};
 }  // namespace
-// Exit code to use when the Z80 thread requests quit via SDL_EVENT_QUIT.
+// A quit requested off the main thread (IPC `quit`, the Z80 thread, HTTP,
+// telnet): exit code plus whether it may raise the unsaved-disk dialog. IPC
+// `quit` and the break/exit-after paths pass askIfUnsaved=false, and that has
+// to survive the hop to the main thread or the main thread re-asks.
 namespace {
-std::atomic<int> g_z80_requested_exit_code{0};
+QuitMailbox g_quit_mailbox;
+}  // namespace
+// SIGTERM/SIGINT land here (SDL's own handlers are disabled). A signal is a
+// programmatic exit: the main loop polls this and quits without a dialog. A
+// second signal before that happens restores the default action and re-raises
+// it, so a wedged main thread can still be killed with another Ctrl+C.
+namespace {
+std::atomic<int> g_signal_quit{0};
+static_assert(std::atomic<int>::is_always_lock_free,
+              "the signal handler needs a lock-free flag");
+void on_terminate_signal(int sig) {
+  if (g_signal_quit.exchange(sig) != 0) {
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+  }
+}
+}  // namespace
+// KONCPC_NO_DIALOGS=1: never raise a native modal (test harnesses set it).
+namespace {
+bool g_no_dialogs = false;
 }  // namespace
 // Captured at the top of koncpc_main() so cleanExit() can tell whether it's
 // running on the main (render) thread vs. an auxiliary thread (IPC / HTTP /
@@ -500,11 +525,18 @@ t_CPC CPC;
 // alone.
 bool g_config_loaded = false;
 
-// The config-file values of the two fields that later hold runtime state.
+// The config-file values of the fields that later hold runtime state.
 // Captured at load, written back on exit so a failed printer start or a live
 // fullscreen toggle cannot rewrite the user's intent.
 unsigned int g_cfg_intent_printer = 0;
 unsigned int g_cfg_intent_scr_window = 1;
+// The serial settings the user last meant to persist: the file's values, or
+// the staged ones Options wrote on "save without restart". The live config
+// can differ from both (a backend that failed to open, a session-scoped
+// `serial config set` over IPC), and an incidental write-back — an MRU push
+// on the next file open, or clean exit — must not promote that difference
+// into the file, nor undo the deliberate save.
+SerialConfig g_cfg_intent_serial;
 
 namespace {
 // Every value as loaded from the config file this session. saveConfiguration
@@ -526,6 +558,9 @@ bool koncpc_config_loaded() { return g_config_loaded; }
 void koncpc_capture_config_intent() {
   g_cfg_intent_printer = CPC.printer;
   g_cfg_intent_scr_window = CPC.scr_window;
+  // CPC.devices.serial holds what the save just wrote: the override when
+  // Options staged one, otherwise the live config.
+  g_cfg_intent_serial = CPC.devices.serial;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -542,7 +577,10 @@ bool koncpc_save_configuration_preserving_intent() {
   CPC.printer = g_cfg_intent_printer;
   CPC.scr_window = g_cfg_intent_scr_window;
   std::string const cfg = getConfigurationFilename(true);
-  bool const ok = saveConfiguration(CPC, cfg);
+  // The serial settings get the same treatment through the override: a
+  // "save without restart" edit would otherwise be overwritten by the live
+  // (still old) config the next time anything writes the file.
+  bool const ok = koncpc_save_live_configuration(cfg, &g_cfg_intent_serial);
   CPC.printer = live_printer;
   CPC.scr_window = live_scr_window;
   if (!ok) {
@@ -848,6 +886,12 @@ void emulator_reset() {
   // Hold a pause lease for the whole destructive section so a concurrent
   // IPC/UI Run cannot restart the Z80 while we wipe board state.
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: never wipe board state under a frame still running.
+    lease.restore_run_state();
+    set_osd_message("Reset skipped: Z80 thread is not responding", 3000);
+    return;
+  }
   subcycle_bridge_reset();  // no-op unless the sub-cycle engine is active
   if (CPC.model > 2) {
     if (pbCartridgePages[0] != nullptr) {
@@ -1237,6 +1281,11 @@ int koncpc_rebuild_machine() {
   // I/O dispatch table underneath it. Hold a pause lease so concurrent Resume
   // cannot restart execution while we tear down and rebuild.
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: emulator_init() would free memory the stuck frame reads.
+    lease.restore_run_state();
+    return ERR_Z80_NOT_IDLE;
+  }
   const bool was_paused = lease.was_paused();
 
   subcycle_bridge_stop();
@@ -1273,33 +1322,47 @@ constexpr word kMcStartProgram =
     0xBD16;  // firmware jumpblock: MC START PROGRAM
 }  // namespace
 
-void bin_load(const std::string& filename, const size_t offset) {
+BinLoadResult bin_load(const std::string& filename, const size_t offset) {
   LOG_INFO("Load " << filename << " in memory at offset 0x" << std::hex
                    << offset);
   FILE* file;
   if ((file = fopen(filename.c_str(), "rb")) == nullptr) {
     LOG_ERROR("File not found: " << filename);
-    return;
+    return BinLoadResult::FileError;
   }
 
   auto closure = [&]() { fclose(file); };
   memutils::scope_exit<decltype(closure)> const cs(closure);
 
   size_t const ram_size = static_cast<size_t>(CPC.ram_size) * 1024;
+  if (offset >= ram_size) {  // the subtraction below would wrap
+    LOG_ERROR("Bin load offset 0x" << std::hex << offset
+                                   << " is beyond the end of RAM");
+    return BinLoadResult::FileError;
+  }
   size_t const max_size = ram_size - offset;
   std::vector<uint8_t> chunk(max_size);
   size_t const read = fread(chunk.data(), 1, max_size, file);
   if (!feof(file)) {
     LOG_ERROR("Bin file too big to fit in memory");
-    return;
+    return BinLoadResult::FileError;
   }
   if (ferror(file)) {
     LOG_ERROR("Error reading the bin file: " << ferror(file));
-    return;
+    return BinLoadResult::FileError;
   }
   if (read == 0) {
     LOG_ERROR("Empty bin file");
-    return;
+    return BinLoadResult::FileError;
+  }
+  // The Z80 thread must not be mid-frame while RAM and the registers are
+  // rewritten and pushed to the machine (same contract as
+  // koncpc_toggle_fullscreen()).
+  CpcPauseLease lease;
+  if (!lease.idle()) {
+    lease.restore_run_state();
+    LOG_ERROR("Binary not loaded: Z80 thread is not responding");
+    return BinLoadResult::NotIdle;
   }
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
@@ -1308,9 +1371,6 @@ void bin_load(const std::string& filename, const size_t offset) {
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
   }
-  // The Z80 thread must not be mid-frame while the registers are rewritten
-  // and pushed to the machine (same contract as koncpc_toggle_fullscreen()).
-  CpcPauseLease lease;
   bool const was_paused = lease.was_paused();
   koncpc_inject_launch_regs(z80, static_cast<word>(offset),
                             z80_read_mem(kMcStartProgram));
@@ -1319,6 +1379,7 @@ void bin_load(const std::string& filename, const size_t offset) {
     lease.release();
     cpc_resume();
   }
+  return BinLoadResult::Ok;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -1685,6 +1746,21 @@ void audio_enable() {
 }
 
 namespace {
+std::atomic<int> g_idle_timeout_ms{kCpcIdleTimeoutMs};
+// Set when a lease wait times out, cleared when the thread is next seen idle.
+std::atomic<bool> g_z80_unresponsive{false};
+}  // namespace
+
+int cpc_idle_timeout_ms() {
+  return g_idle_timeout_ms.load(std::memory_order_relaxed);
+}
+
+void cpc_set_idle_timeout_ms(int timeout_ms) {
+  g_idle_timeout_ms.store(timeout_ms > 0 ? timeout_ms : kCpcIdleTimeoutMs,
+                          std::memory_order_relaxed);
+}
+
+namespace {
 std::mutex g_pause_mutex;
 uint64_t g_resume_epoch = 0;
 unsigned g_pause_lease_count = 0;
@@ -1695,6 +1771,7 @@ unsigned g_pause_lease_count = 0;
 // break the link.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool cpc_wait_until_idle(int timeout_ms) {
+  if (timeout_ms < 0) timeout_ms = cpc_idle_timeout_ms();
   // Spin until the Z80 thread has exited z80_execute() and entered its sleep
   // loop. g_z80_idle is set true by z80_thread_main before sleeping, false
   // before entering z80_execute().  In headless mode the Z80 runs on the
@@ -1702,8 +1779,7 @@ bool cpc_wait_until_idle(int timeout_ms) {
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (!g_z80_idle.load(std::memory_order_acquire)) {
-    if (timeout_ms > 0 && std::chrono::steady_clock::now() > deadline)
-      return false;
+    if (std::chrono::steady_clock::now() > deadline) return false;
     std::this_thread::sleep_for(std::chrono::microseconds(100));
   }
   return true;
@@ -1735,27 +1811,38 @@ void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
     active_ = true;
     cpc_pause_locked();
   }
-  if (mode == CpcPauseLeaseMode::WaitImmediately) {
-    cpc_wait_until_idle();
-    waited_ = true;
-  }
+  if (mode == CpcPauseLeaseMode::WaitImmediately) wait();
 }
 
-CpcPauseLease::CpcPauseLease(CpcPauseLeaseMode mode) { acquire(mode); }
+CpcPauseLease::CpcPauseLease(CpcPauseLeaseMode mode, int idle_timeout_ms)
+    : idle_timeout_ms_(idle_timeout_ms) {
+  acquire(mode);
+}
 
 CpcPauseLease::CpcPauseLease(CpcPauseLease&& other) noexcept
     : was_paused_(other.was_paused_),
       active_(other.active_),
-      waited_(other.waited_) {
+      idle_(other.idle_),
+      idle_timeout_ms_(other.idle_timeout_ms_) {
   other.active_ = false;
 }
 
 CpcPauseLease::~CpcPauseLease() { release(); }
 
-void CpcPauseLease::wait() {
-  if (!active_ || waited_) return;
-  cpc_wait_until_idle();
-  waited_ = true;
+bool CpcPauseLease::wait() {
+  if (!active_ || idle_) return idle_;
+  int bound = idle_timeout_ms_ < 0 ? cpc_idle_timeout_ms() : idle_timeout_ms_;
+  bool const known_stuck = g_z80_unresponsive.load(std::memory_order_relaxed);
+  if (known_stuck) bound = std::min(bound, kCpcIdleRetryMs);
+  idle_ = cpc_wait_until_idle(bound);
+  g_z80_unresponsive.store(!idle_, std::memory_order_relaxed);
+  if (!idle_) {
+    LOG_ERROR("Z80 thread did not go idle within "
+              << bound
+              << " ms; not touching machine state (the holder restores the "
+                 "run state it found)");
+  }
+  return idle_;
 }
 
 void CpcPauseLease::release() {
@@ -1837,13 +1924,6 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
   cpc_pause_locked();
   z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
   return true;
-}
-
-void cpc_pause_and_wait() {
-  // Lease covers the wait only — concurrent Resume cannot defeat going idle.
-  // Callers with a destructive critical section after this must hold
-  // CpcPauseLease across that section.
-  CpcPauseLease lease;
 }
 
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
@@ -2329,6 +2409,55 @@ std::string getConfigurationFilename(bool forWrite) {
 // translation units/tests; internal linkage would break the link
 const std::string& koncpc_config_file() { return g_config_file; }
 
+void apply_device_config(const t_CPC& CPC) {
+  const t_DeviceConfig& d = CPC.devices;
+  g_silicon_disc.enabled = d.silicon_disc;
+  if (g_silicon_disc.enabled) {
+    silicon_disc_init(g_silicon_disc);
+  }
+  g_amdrum.enabled = d.amdrum;
+  g_drive_sounds.disk_enabled = d.disk_sounds;
+  g_drive_sounds.tape_enabled = d.tape_sounds;
+  g_smartwatch.enabled = d.smartwatch;
+  g_amx_mouse.enabled = d.amx_mouse;
+  g_symbiface.enabled = d.symbiface;
+  if (g_symbiface.enabled) {
+    if (!d.ide_master.empty()) symbiface_ide_attach(0, d.ide_master);
+    if (!d.ide_slave.empty()) symbiface_ide_attach(1, d.ide_slave);
+  }
+  g_serial_interface.set_config(d.serial);
+  g_serial_interface.apply_config();
+}
+
+void capture_device_config(t_CPC& CPC) {
+  t_DeviceConfig& d = CPC.devices;
+  d.silicon_disc = g_silicon_disc.enabled;
+  d.amdrum = g_amdrum.enabled;
+  d.disk_sounds = g_drive_sounds.disk_enabled;
+  d.tape_sounds = g_drive_sounds.tape_enabled;
+  d.smartwatch = g_smartwatch.enabled;
+  d.amx_mouse = g_amx_mouse.enabled;
+  d.symbiface = g_symbiface.enabled;
+  // The configured images are only mounted while the Symbiface is on; with it
+  // off, with the board switched on at runtime, or after a mount that failed
+  // (symbiface_ide_attach() detaches first, so the live path is left empty)
+  // there is no live path to copy, and copying the empty one would erase the
+  // user's image choice on the next save. `present` is set only after the
+  // image really opened, so it is the flag that matches the intent.
+  if (g_symbiface.ide_master.present)
+    d.ide_master = g_symbiface.ide_master.image_path;
+  if (g_symbiface.ide_slave.present)
+    d.ide_slave = g_symbiface.ide_slave.image_path;
+  d.serial = g_serial_interface.get_config();
+}
+
+bool koncpc_save_live_configuration(const std::string& path,
+                                    const SerialConfig* serial_override) {
+  capture_device_config(CPC);
+  if (serial_override != nullptr) CPC.devices.serial = *serial_override;
+  return saveConfiguration(CPC, path);
+}
+
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   config::Config conf;
   conf.parseFile(configFilename);
@@ -2365,10 +2494,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     CPC.ram_size = 128;  // minimum RAM size for CPC 6128 is 128KB
   }
   // Silicon Disc: battery-backed 256K RAM (banks 4-7)
-  g_silicon_disc.enabled = conf.getIntValue("system", "silicon_disc", 0) != 0;
-  if (g_silicon_disc.enabled) {
-    silicon_disc_init(g_silicon_disc);
-  }
+  CPC.devices.silicon_disc = conf.getIntValue("system", "silicon_disc", 0) != 0;
 
   CPC.speed = read_clamped("system", "speed", DEF_SPEED_SETTING,
                            MIN_SPEED_SETTING, MAX_SPEED_SETTING);
@@ -2519,9 +2645,9 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   CPC.snd_stereo = 1;
   CPC.snd_volume = read_clamped("sound", "volume", 80, 0, 100);
   CPC.snd_pp_device = read_flag("sound", "pp_device", 0);
-  g_amdrum.enabled = read_flag("sound", "amdrum", 0) != 0;
-  g_drive_sounds.disk_enabled = read_flag("sound", "disk_sounds", 0) != 0;
-  g_drive_sounds.tape_enabled = read_flag("sound", "tape_sounds", 0) != 0;
+  CPC.devices.amdrum = read_flag("sound", "amdrum", 0) != 0;
+  CPC.devices.disk_sounds = read_flag("sound", "disk_sounds", 0) != 0;
+  CPC.devices.tape_sounds = read_flag("sound", "tape_sounds", 0) != 0;
   tape_line_out_set_volume(conf.getIntValue("sound", "tape_data_volume", 35) /
                            100.0f);
   // Drive Sound Lab tuning (params + volume/pan). Applied to
@@ -2529,8 +2655,8 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // in audio_init().
   drive_sounds_params_from_string(
       conf.getStringValue("sound", "drivesnd_params", ""));
-  g_smartwatch.enabled = read_flag("system", "smartwatch", 0) != 0;
-  g_amx_mouse.enabled = read_flag("input", "amx_mouse", 0) != 0;
+  CPC.devices.smartwatch = read_flag("system", "smartwatch", 0) != 0;
+  CPC.devices.amx_mouse = read_flag("input", "amx_mouse", 0) != 0;
   // Light gun selection (0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
   // Phazer). Mirrors the F-key toggle; lets headless/CI runs and config files
   // enable a gun (the IPC 'input gun' contract keys off phazer_emulation).
@@ -2544,7 +2670,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // to the CPC on Linux/Windows (CP/M software uses them).
   CPC.host_chords = read_flag("input", "host_chords", 1);
 
-  g_symbiface.enabled = read_flag("peripheral", "symbiface", 0) != 0;
+  CPC.devices.symbiface = read_flag("peripheral", "symbiface", 0) != 0;
   g_m4board.enabled = read_flag("peripheral", "m4board", 0) != 0;
   g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 6);
@@ -2564,20 +2690,13 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
       g_m4_http.set_port_mapping(cpc_port, host_port, user_override != 0);
     }
   }
-  {
-    std::string ide_path = conf.getStringValue("peripheral", "ide_master", "");
-    if (!ide_path.empty() && g_symbiface.enabled) {
-      symbiface_ide_attach(0, ide_path);
-    }
-    ide_path = conf.getStringValue("peripheral", "ide_slave", "");
-    if (!ide_path.empty() && g_symbiface.enabled) {
-      symbiface_ide_attach(1, ide_path);
-    }
-  }
+  CPC.devices.ide_master = conf.getStringValue("peripheral", "ide_master", "");
+  CPC.devices.ide_slave = conf.getStringValue("peripheral", "ide_slave", "");
 
   // Serial Interface config
   {
-    SerialConfig scfg;
+    SerialConfig& scfg = CPC.devices.serial;
+    scfg = SerialConfig{};
     scfg.enabled = conf.getIntValue("peripheral", "serial_enabled", 0) != 0;
     scfg.backend_type = static_cast<SerialBackendType>(
         conf.getIntValue("peripheral", "serial_backend", 0));
@@ -2591,8 +2710,6 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     scfg.tcp_port = static_cast<uint16_t>(
         conf.getIntValue("peripheral", "serial_tcp_port", 23));
     scfg.baud_rate = conf.getIntValue("peripheral", "serial_baud", 9600);
-    g_serial_interface.set_config(scfg);
-    g_serial_interface.apply_config();
   }
 
   CPC.kbd_layout =
@@ -2686,7 +2803,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("system", "model", CPC.model);
   conf.setIntValue("system", "jumpers", CPC.jumpers);
   conf.setIntValue("system", "ram_size", CPC.ram_size);
-  conf.setIntValue("system", "silicon_disc", g_silicon_disc.enabled ? 1 : 0);
+  conf.setIntValue("system", "silicon_disc", CPC.devices.silicon_disc ? 1 : 0);
   conf.setIntValue("system", "run_tier",
                    static_cast<int>(subcycle_bridge_tier_policy()));
   conf.setIntValue("system", "limit_speed", CPC.limit_speed);
@@ -2744,26 +2861,24 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setIntValue("sound", "stereo", CPC.snd_stereo);
   conf.setIntValue("sound", "volume", CPC.snd_volume);
   conf.setIntValue("sound", "pp_device", CPC.snd_pp_device);
-  conf.setIntValue("sound", "amdrum", g_amdrum.enabled ? 1 : 0);
-  conf.setIntValue("sound", "disk_sounds", g_drive_sounds.disk_enabled ? 1 : 0);
-  conf.setIntValue("sound", "tape_sounds", g_drive_sounds.tape_enabled ? 1 : 0);
+  conf.setIntValue("sound", "amdrum", CPC.devices.amdrum ? 1 : 0);
+  conf.setIntValue("sound", "disk_sounds", CPC.devices.disk_sounds ? 1 : 0);
+  conf.setIntValue("sound", "tape_sounds", CPC.devices.tape_sounds ? 1 : 0);
   conf.setIntValue("sound", "tape_data_volume",
                    static_cast<int>((tape_line_out_volume() * 100.0f) + 0.5f));
   conf.setStringValue("sound", "drivesnd_params",
                       drive_sounds_params_to_string());
-  conf.setIntValue("system", "smartwatch", g_smartwatch.enabled ? 1 : 0);
-  conf.setIntValue("input", "amx_mouse", g_amx_mouse.enabled ? 1 : 0);
+  conf.setIntValue("system", "smartwatch", CPC.devices.smartwatch ? 1 : 0);
+  conf.setIntValue("input", "amx_mouse", CPC.devices.amx_mouse ? 1 : 0);
   // Via Value, not int: PhazerType converts implicitly to both Value and
   // bool, so a direct static_cast<int> is ambiguous.
   conf.setIntValue("input", "lightgun",
                    static_cast<PhazerType::Value>(CPC.phazer_emulation));
   conf.setIntValue("input", "host_chords", CPC.host_chords);
 
-  conf.setIntValue("peripheral", "symbiface", g_symbiface.enabled ? 1 : 0);
-  conf.setStringValue("peripheral", "ide_master",
-                      g_symbiface.ide_master.image_path);
-  conf.setStringValue("peripheral", "ide_slave",
-                      g_symbiface.ide_slave.image_path);
+  conf.setIntValue("peripheral", "symbiface", CPC.devices.symbiface ? 1 : 0);
+  conf.setStringValue("peripheral", "ide_master", CPC.devices.ide_master);
+  conf.setStringValue("peripheral", "ide_slave", CPC.devices.ide_slave);
   conf.setIntValue("peripheral", "m4board", g_m4board.enabled ? 1 : 0);
   conf.setStringValue("peripheral", "m4_sd_path", g_m4board.sd_root_path);
   conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
@@ -2772,7 +2887,7 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
 
   // Serial Interface config
   {
-    auto cfg = g_serial_interface.get_config();
+    const SerialConfig& cfg = CPC.devices.serial;
     conf.setIntValue("peripheral", "serial_enabled", cfg.enabled ? 1 : 0);
     conf.setIntValue("peripheral", "serial_backend",
                      static_cast<int>(cfg.backend_type));
@@ -2989,6 +3104,13 @@ std::optional<bool> koncpc_main_window_is_fullscreen() {
 
 void koncpc_toggle_fullscreen() {
   CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: video_shutdown() frees buffers the stuck frame writes.
+    lease.restore_run_state();
+    set_osd_message("Fullscreen toggle skipped: Z80 thread is not responding",
+                    3000);
+    return;
+  }
   bool const was_paused = lease.was_paused();
 
   // Read the window before video_shutdown() destroys it.
@@ -3138,7 +3260,10 @@ void koncpc_menu_action(int action) {
       }
 
     case KONCPC_EXIT:
-      cleanExit(0);
+      // F10 / the menus run here on the main thread and ask; a scripted
+      // `-a KONCPC_EXIT` arrives on the Z80 thread and must not.
+      cleanExit(0, koncpc_exit_action_asks(std::this_thread::get_id() ==
+                                           g_main_thread_id));
       break;
 
     case KONCPC_FPS:
@@ -3375,15 +3500,15 @@ void doCleanUp() {
   // set.  When KONCPC_EXIT is processed inside the Z80 thread, cleanExit()
   // sets g_z80_thread_quit and pushes SDL_EVENT_QUIT before returning; by
   // the time the render thread reaches doCleanUp(), the Z80 has typically
-  // already exited its loop.  In that case cpc_pause_and_wait() would block
-  // forever (it spins until g_z80_idle goes true, which the now-dead
-  // Z80 thread will never set).  Skip it and join directly.
+  // already exited its loop.  In that case a lease wait would only time out
+  // (it spins until g_z80_idle goes true, which the now-dead Z80 thread will
+  // never set).  Skip it and join directly.
   //
   // For the "render thread initiated quit" path (e.g. SDL_QUIT from the
   // window close button or F10 menu), the Z80 is still actively running
   // inside z80_execute() and we DO need pause+going idle before join.
   //
-  //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
+  //  4. A plain WaitImmediately lease is NOT sufficient: the Z80 thread sets
   //     g_z80_idle=false before z80_execute() and only re-enters the
   //     paused/idle branch at the top of its loop.  abort() makes
   //     signal_ready a no-op and releases the render thread's wait so neither
@@ -3397,7 +3522,12 @@ void doCleanUp() {
         CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
         g_frame_signal
             .abort();  // make signal_ready a no-op + release render wait
-        lease.wait();
+        if (!lease.wait()) {
+          // Still join below: freeing the machine under a thread that is
+          // mid-frame would crash, so a stuck thread hangs exit instead --
+          // now with the reason in the log.
+          LOG_ERROR("Shutdown: Z80 thread is not responding; waiting to join");
+        }
         g_z80_thread_quit.store(true, std::memory_order_relaxed);
       }
       cpc_resume();
@@ -3455,7 +3585,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   // The render thread's SDL_EVENT_QUIT handler calls cleanExit() recursively,
   // at which point we land in the main-thread branch and do the real
   // teardown (including the confirm dialog if askIfUnsaved was set — the
-  // returnCode carries through via g_z80_requested_exit_code).
+  // returnCode and askIfUnsaved carry through g_quit_mailbox). Headless mode
+  // polls no SDL events, so its main loop takes the mailbox directly.
   //
   // `is_not_main` is framed defensively: if g_main_thread_id hasn't been
   // captured yet (early-init path), we *assume* we're on main.  That
@@ -3469,7 +3600,7 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
       (g_main_thread_id != std::thread::id{}) && (tid != g_main_thread_id);
 
   if (is_z80_self || is_not_main) {
-    g_z80_requested_exit_code.store(returnCode, std::memory_order_relaxed);
+    g_quit_mailbox.post(returnCode, askIfUnsaved);
     if (is_z80_self) {
       // Z80 self-quit also has to break its own loop.  Aux threads don't
       // need this bit — the main thread handles shutdown orchestration.
@@ -3482,7 +3613,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   }
 
   // Main thread (or early-init pre-capture): safe to prompt and tear down.
-  if (!g_headless && askIfUnsaved && driveAltered() &&
+  if (koncpc_quit_should_prompt(g_headless, askIfUnsaved, driveAltered(),
+                                g_no_dialogs) &&
       !userConfirmsQuitWithoutSaving()) {
     return;
   }
@@ -3553,7 +3685,7 @@ void z80_thread_main() {
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
-      // Mark idle so cpc_pause_and_wait() callers know we are safe to
+      // Mark idle so pause-lease holders know we are safe to
       // inspect.
       g_z80_idle.store(true, std::memory_order_release);
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -4110,7 +4242,8 @@ bool render_one_frame() {
     // which re-reads g_emu_paused and takes the paused-overlay branch
     // that both pumps AND polls events.
     if (g_emu_paused.load(std::memory_order_relaxed) ||
-        g_z80_thread_quit.load(std::memory_order_relaxed)) {
+        g_z80_thread_quit.load(std::memory_order_relaxed) ||
+        g_signal_quit.load(std::memory_order_relaxed) != 0) {
       return false;
     }
   }
@@ -4265,6 +4398,8 @@ int koncpc_main(int argc, char** argv) {
   }
   parseArguments(argc, argv, slot_list, args);
   g_headless = args.headless;
+  g_no_dialogs =
+      koncpc_dialogs_suppressed_by_env(std::getenv("KONCPC_NO_DIALOGS"));
   g_debug = args.debug;
   g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
@@ -4287,6 +4422,14 @@ int koncpc_main(int argc, char** argv) {
       g_exit_target = std::stoul(spec);
     }
   }
+
+  // Own the termination signals: SDL would turn them into SDL_EVENT_QUIT,
+  // which the main loop cannot tell from a user closing the window and so
+  // would answer with the unsaved-disk dialog. A harness's terminate() must
+  // never block on a modal.
+  SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+  std::signal(SIGTERM, on_terminate_signal);
+  std::signal(SIGINT, on_terminate_signal);
 
   if (g_headless) {
     // SDL3: timer is always available, init core only for headless
@@ -4322,6 +4465,7 @@ int koncpc_main(int argc, char** argv) {
 
   std::string const config_file = getConfigurationFilename();
   loadConfiguration(CPC, config_file);  // retrieve the emulator configuration
+  apply_device_config(CPC);
   g_config_loaded = true;
   koncpc_capture_config_intent();
   if (CPC.printer) {
@@ -4547,6 +4691,14 @@ int koncpc_main(int argc, char** argv) {
   // Whether this loop of emulation should release the joystick axis for mouse
   // emulation.
   while (true) {
+    if (const int sig = g_signal_quit.load(); sig != 0) {
+      cleanExit(koncpc_signal_exit_code(sig), false);
+    }
+    if (g_headless) {
+      if (auto quit = g_quit_mailbox.take()) {
+        cleanExit(quit->code, quit->ask_if_unsaved);
+      }
+    }
     // We can only load bin files after the CPC finished the init: boot_time
     // frames at least, and — since the launch goes through the firmware's
     // MC START PROGRAM — once the firmware has built its jumpblock. A ROM
@@ -4582,6 +4734,13 @@ int koncpc_main(int argc, char** argv) {
             mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
         if (event.window.windowID == main_id) {
           cleanExit(0);
+          // Reaching here means the user declined the unsaved-disk dialog:
+          // cleanExit() returns instead of tearing down. SDL follows the
+          // close request of the last window with a QUIT of its own, and the
+          // SDL_EVENT_QUIT branch below finds an empty mailbox and reads it
+          // as a fresh gesture — so the dialog would come straight back a
+          // second time. Drop that trailing QUIT.
+          SDL_FlushEvent(SDL_EVENT_QUIT);
         }
       }
 
@@ -5125,7 +5284,13 @@ int koncpc_main(int argc, char** argv) {
           break;
 
         case SDL_EVENT_QUIT:
-          cleanExit(g_z80_requested_exit_code.load(std::memory_order_relaxed));
+          // Posted by an off-main cleanExit(), or nothing: SDL raised the
+          // QUIT on its own (the last window closing), which is a gesture.
+          if (auto quit = g_quit_mailbox.take()) {
+            cleanExit(quit->code, quit->ask_if_unsaved);
+          } else {
+            cleanExit(0);
+          }
       }
     }
     // ---- Non-headless: Z80 thread (z80_thread_main) handles emulation ----
@@ -5663,35 +5828,44 @@ int koncpc_main(int argc, char** argv) {
         // Z80 runs is a use-after-free → segfault on renderer switch. Hold a
         // pause lease so concurrent Resume cannot restart mid-reinit.
         CpcPauseLease lease;
-        bool const z80_was_paused = lease.was_paused();
-        audio_pause();
-        // Free cached save-state thumbnail textures while the OLD render device
-        // is still alive — video_shutdown() destroys it, leaving stale GPU
-        // handles that would be used/freed against a dead device on next use.
-        imgui_invalidate_slot_thumbs();
-        SDL_Delay(20);
-        video_shutdown();
-        if (video_init()) {
-          fprintf(stderr,
-                  "video_init() failed after plugin change. Aborting.\n");
-          cleanExit(-1);
-        }
-        // Only restore window geometry if the output size didn't change
-        // (i.e. only the plugin changed, not scale/fullscreen)
-        bool const size_changed =
-            (CPC.scr_scale != imgui_state.old_cpc_settings.scr_scale) ||
-            (CPC.scr_window != imgui_state.old_cpc_settings.scr_window);
-        if (saved_w > 0 && mainSDLWindow && !size_changed) {
-          SDL_SetWindowSize(mainSDLWindow, saved_w, saved_h);
-          SDL_SetWindowPosition(mainSDLWindow, saved_x, saved_y);
-        }
+        if (!lease.idle()) {
+          // Fail closed: video_shutdown() frees buffers the stuck frame
+          // writes.
+          lease.restore_run_state();
+          set_osd_message("Video switch skipped: Z80 thread is not responding",
+                          3000);
+        } else {
+          bool const z80_was_paused = lease.was_paused();
+          audio_pause();
+          // Free cached save-state thumbnail textures while the OLD render
+          // device is still alive — video_shutdown() destroys it, leaving stale
+          // GPU handles that would be used/freed against a dead device on next
+          // use.
+          imgui_invalidate_slot_thumbs();
+          SDL_Delay(20);
+          video_shutdown();
+          if (video_init()) {
+            fprintf(stderr,
+                    "video_init() failed after plugin change. Aborting.\n");
+            cleanExit(-1);
+          }
+          // Only restore window geometry if the output size didn't change
+          // (i.e. only the plugin changed, not scale/fullscreen)
+          bool const size_changed =
+              (CPC.scr_scale != imgui_state.old_cpc_settings.scr_scale) ||
+              (CPC.scr_window != imgui_state.old_cpc_settings.scr_window);
+          if (saved_w > 0 && mainSDLWindow && !size_changed) {
+            SDL_SetWindowSize(mainSDLWindow, saved_w, saved_h);
+            SDL_SetWindowPosition(mainSDLWindow, saved_x, saved_y);
+          }
 #ifdef __APPLE__
-        koncpc_setup_macos_menu();
+          koncpc_setup_macos_menu();
 #endif
-        audio_resume();
-        if (!z80_was_paused) {
-          lease.release();
-          cpc_resume();
+          audio_resume();
+          if (!z80_was_paused) {
+            lease.release();
+            cpc_resume();
+          }
         }
       }
     }
