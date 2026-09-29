@@ -797,3 +797,39 @@ power key ~2-3 s. BOOT0 does not do this.
    continuations.** Removing the last `-D...` flag left a dangling `\` that
    swallowed the following `cmake --build` line into the configure command —
    valid shell, wrong program, and `sh -n` passes. Rewrite such scripts whole.
+
+### Building the LilyGO BSP needs a case-sensitive filesystem
+
+Cost 2h47m of build time to learn, and the error names an unrelated package:
+
+```
+>>> ncurses 6.4-20230603 Installing to target
+install: cannot stat '.../sysroot/usr/share/terminfo/a/ansi': No such file or directory
+make[2]: *** [package/pkg-generic.mk:368: .../ncurses.../.stamp_target_installed] Error 1
+```
+
+terminfo keys entries by first letter and some names are capitalised (`E/Eterm`),
+so on a case-insensitive filesystem `E/` and `e/` collide. ncurses' configure
+detects this and stores entries under hex character codes instead — staging ends
+up with `6a/`, `4c/`, `6f/` rather than `a/`, `L/`, `o/` — while Buildroot's
+target-install step still asks for the letter path. Nothing is wrong with the
+tree or the patches.
+
+APFS on this machine is case-insensitive and a Docker bind mount inherits that,
+so the build tree now lives on a case-sensitive APFS sparsebundle inside the
+workspace (`k230build.sparsebundle`, attached at `/Volumes/k230build`). Sparse,
+so it costs only what the build uses, and `hdiutil detach` + `rm -rf` still
+purges everything. Verify it rather than assuming — on the host *and* through
+Docker, since only the latter is what Buildroot sees:
+
+```
+mkdir A && mkdir a && ls -d ?     # must list both
+```
+
+The toolchain stays on the plain volume: read-only input, all-lowercase names.
+
+Third build-script mistake worth not repeating, in the same family as the two
+above: the container ran `./build_sdcard_image.sh > log 2>&1` and then `echo
+"exit=$?" >> log`, so `docker run` returned **0** for a build that had failed
+with 2. The background task reported success. Always propagate the real code
+(`rc=$?; ...; exit $rc`) — and read the recorded value, not the wrapper's.
