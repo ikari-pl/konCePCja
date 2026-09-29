@@ -1333,9 +1333,19 @@ void subcycle_bridge_eject_media(uint8_t unit) {
   b.swap_kind.store(PendingMedia::kEject, std::memory_order_release);
 }
 
+namespace {
+void apply_pending_media(Bridge& b);  // defined with the frame loop below
+}  // namespace
+
 bool subcycle_bridge_pull_drive_view(uint8_t unit) {
   Bridge& b = g_bridge;
   if (!b.active) return false;
+  // A load or eject made while the machine is paused is only queued: the Z80
+  // thread applies it at its next frame boundary, which never comes while
+  // paused. Pulling now would read the outgoing disc over the host view the
+  // load just filled, and a later push would cancel the queued swap and lose
+  // the load. The caller holds the pause lease, so apply it here first.
+  apply_pending_media(b);
   unit = unit & 1;
   t_drive* drive = unit == 0 ? &driveA : &driveB;
   size_t len = 0;
@@ -1493,11 +1503,16 @@ void apply_pending_media(Bridge& b) {
                   << drive << " hot-swap rejected (bad image)");
         b.machine.eject_disk(unit);
       }
+      // The host announced the load when it queued it; this is the moment the
+      // FDC actually holds the new disc. A listing pulled in between saw the
+      // outgoing medium, so readers must look again.
+      dsk_media_changed(unit);
       break;
     }
     case PendingMedia::kEject:
       flush_dirty_media_unit(b, unit);  // the outgoing disc keeps its writes
       b.machine.eject_disk(unit);
+      dsk_media_changed(unit);
       LOG_INFO("subcycle engine: drive " << drive << " ejected");
       break;
     case PendingMedia::kTape: {

@@ -540,6 +540,29 @@ void DevToolsUI::refresh_breakpoint_snapshots() {
   bp_snapshot_generation_ = generation;
 }
 
+// In / Over / Out / Run-Pause, in the Disassembly menu bar where the eyes are
+// while stepping (beads-4i4). Same helpers and the same enable rule as the
+// DevTools toolbar, so the two groups cannot drift apart.
+void DevToolsUI::render_disasm_step_controls() {
+  bool const paused = g_emu_paused.load(std::memory_order_relaxed);
+  bool const walking = dbg_step_walk_running();
+  dbg_step_walk_poll_outcome();
+  DebugStepControls const ctl = debug_step_controls(paused, walking, true);
+  if (!ctl.step_enabled) ImGui::BeginDisabled();
+  if (ImGui::SmallButton(ctl.step_in_label)) dbg_step_in();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", ctl.step_in_tooltip);
+  if (ImGui::SmallButton(ctl.step_over_label)) dbg_step_over();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", ctl.step_over_tooltip);
+  if (ImGui::SmallButton(ctl.step_out_label)) dbg_step_out();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    ImGui::SetTooltip("%s", ctl.step_out_tooltip);
+  if (!ctl.step_enabled) ImGui::EndDisabled();
+  if (ImGui::SmallButton(ctl.run_pause_label)) dbg_run_pause_toggle();
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ctl.run_pause_tooltip);
+}
+
 void DevToolsUI::render_disassembly() {
   apply_default_window_layout(1, 440, 500);
 
@@ -567,6 +590,8 @@ void DevToolsUI::render_disassembly() {
         disasm_scroll_pending_ = true;
       }
     }
+    ImGui::Separator();
+    render_disasm_step_controls();
     ImGui::Separator();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
@@ -2068,15 +2093,19 @@ void DevToolsUI::render_disc_tools() {
   const uint8_t dt_unit = static_cast<uint8_t>(dt_drive_ == 0 ? 0 : 1);
   // beads-lly6: refresh the host sector view from the live FDC medium before
   // any Disc Tools read so listings match what the CPC sees.
-  auto sync_pull = [&] {
-    if (!subcycle_bridge_active()) return;
+  // Returns false when the pull could not happen because the pause lease timed
+  // out (the Z80 thread is stuck inside a frame). Callers that cache what the
+  // pull produced must not mark that cache fresh in that case.
+  auto sync_pull = [&]() -> bool {
+    if (!subcycle_bridge_active()) return true;
     CpcPauseLease lease;
-    if (!imgui_lease_ready(lease)) return;
+    if (!imgui_lease_ready(lease)) return false;
     subcycle_bridge_pull_drive_view(dt_unit);
     if (!lease.was_paused()) {
       lease.release();
       cpc_resume();
     }
+    return true;
   };
   // Mutating helpers: pause, pull, run body, push.
   auto with_disk_mutation = [&](const std::function<void(t_drive*)>& body) {
@@ -2141,11 +2170,27 @@ void DevToolsUI::render_disc_tools() {
 
   // File browser
   if (ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) {
-    if (dt_files_dirty_) {
-      sync_pull();
+    // Two atomic loads a frame: cheap enough to ask every time whether the
+    // drive now holds a different medium than the listing was built from
+    // (beads-p5t: a swapped or ejected disc used to keep its old listing).
+    DiscToolsMediaKey const live_media{dt_drive_,
+                                       dsk_media_generation(dt_unit)};
+    if (disc_tools_listing_stale(dt_listed_media_, live_media)) {
+      dt_files_dirty_ = true;
+    }
+    // A failed pull leaves the host view showing the outgoing medium: keep the
+    // listing dirty rather than caching that and calling it current.
+    if (dt_files_dirty_ && sync_pull()) {
       drv = (dt_drive_ == 0) ? &driveA : &driveB;
       dt_file_cache_ = disk_list_files(drv, dt_file_error_);
       dt_files_dirty_ = false;
+      // Re-read the generation AFTER the pull: the pull applies a swap queued
+      // while paused, which bumps it again. Keying on the pre-pull value left
+      // the listing stale on the very next frame, so every swap rebuilt twice
+      // and took two pause/resume cycles of a running machine.
+      dt_listed_media_ =
+          DiscToolsMediaKey{dt_drive_, dsk_media_generation(dt_unit)};
+      ++dt_listing_rebuilds_;
     }
     if (ImGui::Button("Refresh##files")) dt_files_dirty_ = true;
     ImGui::SameLine();
