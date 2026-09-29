@@ -495,13 +495,16 @@ bool HpglPlotter::export_svg(const std::string& path) const {
   return plotter_export_svg_segments(segments_, char_height_, path);
 }
 
-// Free-function SVG writer over a segment list — shared by the legacy
+// Free-function SVG writer over a segment list — shared by
 // HpglPlotter above and the sub-cycle plotter Device's page (plotter_view).
 bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
                                  float char_height_cm,
                                  const std::string& path) {
   FILE* f = fopen(path.c_str(), "w");
-  if (!f) return false;
+  if (!f) {
+    LOG_ERROR("HP-GL: cannot open " << path << " for SVG export");
+    return false;
+  }
 
   // SVG coordinate system: Y is flipped (HP-GL Y-up → SVG Y-down)
   // Viewbox covers the full plotter area
@@ -597,7 +600,13 @@ bool plotter_export_svg_segments(const std::vector<PlotSegment>& segments,
   }
 
   fprintf(f, "</svg>\n");
-  fclose(f);
+  // One check covers every fprintf above: the stream's error flag is sticky,
+  // and fclose() flushes the tail (where a full disk usually shows up).
+  bool const write_failed = ferror(f) != 0;
+  if (fclose(f) != 0 || write_failed) {
+    LOG_ERROR("HP-GL: SVG export to " << path << " failed (write error)");
+    return false;
+  }
   LOG_INFO("HP-GL: exported SVG to " << path);
   return true;
 }
