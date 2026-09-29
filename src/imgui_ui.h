@@ -34,6 +34,15 @@ void imgui_render_ui();
 void dbg_step_walk_await_shutdown();
 bool dbg_step_walk_running();
 void dbg_run_to_address(word target);
+// The debugger step group, shared by the DevTools toolbar, the Disassembly
+// window's menu bar and the F5/F7 shortcuts (see debug_step_controls() in
+// imgui_ui_testable.h for what is enabled when).
+void dbg_step_in();
+void dbg_step_over();
+void dbg_step_out();
+void dbg_run_pause_toggle();
+// Toast how the last step walk ended (once); a no-op while one is running.
+void dbg_step_walk_poll_outcome();
 int imgui_topbar_height();
 void imgui_open_menu();
 void imgui_close_menu();

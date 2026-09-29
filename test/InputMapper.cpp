@@ -2,8 +2,10 @@
 
 #include <string>
 
+#include "host_chords.h"
 #include "keyboard.h"
 #include "koncepcja.h"
+#include "menu_actions.h"
 
 extern t_CPC CPC;
 
@@ -112,4 +114,36 @@ TEST_F(InputMapperTest, ShortcutForActionDerivesFromBindings) {
   // The free-function wrapper used by every UI surface agrees.
   EXPECT_EQ(CPC.InputMapper->shortcutForAction(KONCPC_RESET),
             koncpc_action_shortcut(KONCPC_RESET));
+}
+
+// beads-bqx: the native macOS menu showed no shortcuts at all, because it was
+// built before the InputMapper existed and the title text is derived from the
+// mapper's live bindings. These pin the text the menu builds from.
+TEST_F(InputMapperTest, NativeMenuTitleCarriesTheLiveShortcut) {
+  CPC.kbd_layout = "keymap_us.map";
+  CPC.keyboard = 0;
+  CPC.InputMapper->init();
+  EXPECT_EQ("Reset  (F5)", koncpc_action_menu_title(KONCPC_RESET));
+  EXPECT_EQ("Quit  (F10)", koncpc_action_menu_title(KONCPC_EXIT));
+
+  // Built with no mapper -- the old startup order -- every suffix is empty.
+  // This is the state the menu was frozen in; the fix builds it after the
+  // mapper and refreshes the text each time the menu opens.
+  InputMapper* const mapper = CPC.InputMapper;
+  CPC.InputMapper = nullptr;
+  EXPECT_EQ("Reset", koncpc_action_menu_title(KONCPC_RESET));
+  CPC.InputMapper = mapper;
+  EXPECT_EQ("Reset  (F5)", koncpc_action_menu_title(KONCPC_RESET));
+}
+
+TEST_F(InputMapperTest, NativeMenuHostChordsAreTextNotKeyEquivalents) {
+  // The #60 rule: Cmd+O etc. appear as "  (Cmd+O)" in the title text; the
+  // menu registers no key equivalent (SDL dispatches the chord).
+  EXPECT_EQ("Load Disk A...  (Cmd+O)",
+            koncpc_menu_title_with_shortcut(
+                "Load Disk A...", host_chord_label(HostChord::OpenDisk, true)));
+  EXPECT_EQ("About konCePCja",
+            koncpc_menu_title_with_shortcut(
+                "About konCePCja", host_chord_label(HostChord::None, true)));
+  EXPECT_EQ("", koncpc_menu_title_with_shortcut(nullptr, ""));
 }

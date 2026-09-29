@@ -10,6 +10,7 @@
 #include "TextEditor.h"
 #include "disk_file_editor.h"
 #include "disk_sector_editor.h"
+#include "imgui_ui_testable.h"
 #include "types.h"
 #include "z80_assembler.h"
 
@@ -81,6 +82,11 @@ class DevToolsUI {
 
   // Mark symbol table cache as stale — safe to call from any thread.
   void symtable_mark_dirty() { symtable_dirty_ = true; }
+  // Disc Tools' cached Files listing (read-only, for the render tests).
+  size_t disc_tools_listed_file_count() const { return dt_file_cache_.size(); }
+  // How many times that listing has been rebuilt (read-only, for the render
+  // tests): one swap must cost exactly one rebuild.
+  uint64_t disc_tools_listing_rebuilds() const { return dt_listing_rebuilds_; }
 
   // Immediate cache clear — MAIN THREAD ONLY.
   void disasm_cache_clear() {
@@ -218,6 +224,10 @@ class DevToolsUI {
   std::vector<DiskFileEntry> dt_file_cache_;
   std::string dt_file_error_;
   bool dt_files_dirty_ = true;
+  // The drive + medium the Files listing was built from; a mismatch with the
+  // live key (another drive picked, a disk loaded or ejected) re-lists.
+  DiscToolsMediaKey dt_listed_media_{-1, 0};
+  uint64_t dt_listing_rebuilds_ = 0;
   std::string dt_format_combo_;
   bool dt_format_combo_dirty_ = true;
   std::vector<SectorInfo> dt_sector_cache_;
@@ -300,6 +310,7 @@ class DevToolsUI {
 
   void render_registers();
   void render_disassembly();
+  void render_disasm_step_controls();
   void render_memory_hex();
   void render_stack();
   void render_breakpoints();

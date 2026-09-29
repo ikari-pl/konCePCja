@@ -307,9 +307,27 @@ void dsk_eject_host(t_drive* drive) {
   drive->current_track = head_position;
 }
 
+namespace {
+std::atomic<uint64_t> g_dsk_media_generation[2] = {};
+}  // namespace
+
+uint64_t dsk_media_generation(uint8_t unit) {
+  return g_dsk_media_generation[unit & 1].load(std::memory_order_acquire);
+}
+
+void dsk_media_changed(uint8_t unit) {
+  g_dsk_media_generation[unit & 1].fetch_add(1, std::memory_order_acq_rel);
+}
+
 void dsk_eject(t_drive* drive) {
-  if (drive == &driveA) subcycle_bridge_eject_media(0);  // mirror to engine
-  if (drive == &driveB) subcycle_bridge_eject_media(1);
+  if (drive == &driveA) {
+    subcycle_bridge_eject_media(0);  // mirror to engine
+    dsk_media_changed(0);
+  }
+  if (drive == &driveB) {
+    subcycle_bridge_eject_media(1);
+    dsk_media_changed(1);
+  }
   if (drive->eject_hook) drive->eject_hook(drive);  // additional cleanup
   dsk_eject_host(drive);
 }
@@ -1096,6 +1114,16 @@ int file_load(t_slot& slot) {
     int ret = file ? loader.load_from_file(file)
                    : loader.load_from_filename(slot.file);
     if (file) fclose(file);
+    // Whatever the outcome, the drive no longer holds what it held: a zip
+    // member parsed from a FILE* and the flux formats never pass dsk_eject.
+    // The bump must land AFTER the swap is queued below, next to the queue
+    // write (the way dsk_eject bumps next to subcycle_bridge_eject_media):
+    // announced earlier, a render-thread pull landing in the gap would list
+    // the outgoing disc and then record this generation as the one it listed.
+    auto media_changed = [&slot]() {
+      if (slot.drive == DRIVE::DSK_A) dsk_media_changed(0);
+      if (slot.drive == DRIVE::DSK_B) dsk_media_changed(1);
+    };
 
     // Flux containers only use the loader above to fill the best-effort legacy
     // sector view (disc-tools/DSK-export). The real medium is the flux
@@ -1105,8 +1133,14 @@ int file_load(t_slot& slot) {
     const bool is_flux = extension == ".ipf" || extension == ".raw" ||
                          extension == ".scp" || extension == ".hfe" ||
                          extension == ".a2r";
-    if (!subcycle_bridge_active()) return ret;
-    if (ret != 0 && !is_flux) return ret;
+    if (!subcycle_bridge_active()) {
+      media_changed();
+      return ret;
+    }
+    if (ret != 0 && !is_flux) {
+      media_changed();
+      return ret;
+    }
 
     if (slot.drive == DRIVE::TAPE) {
       std::vector<uint8_t> bytes = slot_bytes();
@@ -1126,6 +1160,7 @@ int file_load(t_slot& slot) {
       } else {
         subcycle_bridge_insert_media(std::move(bytes), false, unit);
       }
+      media_changed();
     } else if (is_flux) {
       // The sub-cycle FDC eats flux: run the raw file bytes through the unified
       // content-sniffing dispatcher (flux::to_scp) into an in-memory SCP
@@ -1142,16 +1177,19 @@ int file_load(t_slot& slot) {
                                                             << " into flux");
           // The flux medium IS the disk for the sub-cycle FDC — no flux, no
           // load. Surface the sector-view error if we had one, else generic.
+          media_changed();
           return ret != 0 ? ret : ERR_DSK_INVALID;
         }
         subcycle_bridge_insert_media(std::move(scp), true, 0);
+        media_changed();
         return 0;  // flux transcode is the authority: a successful decode is a
                    // successful load even when the sector-view loader
                    // (ipf_load) failed or was stubbed out in a clean build.
       }
       LOG_INFO(
           "subcycle engine: flux is drive-A-only — IPF/RAW in "
-          "drive B stays on the legacy path");
+          "drive B keeps the host sector view");
+      media_changed();
     }
     return ret;
   }

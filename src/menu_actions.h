@@ -38,6 +38,20 @@ const std::vector<MenuAction>& koncpc_menu_actions();
 // Look up an action's metadata by id, or nullptr if it has no entry.
 const MenuAction* koncpc_find_action(KONCPC_KEYS action);
 
+// The native macOS menu's item text: "Reset  (F5)", or the bare title when
+// there is no shortcut. The shortcut is TEXT, never an NSMenuItem key
+// equivalent: SDL owns every key, and an AppKit accelerator on the same key
+// fires the action twice (the F9 double-fire, f85a8b69).
+std::string koncpc_menu_title_with_shortcut(const char* title,
+                                            const std::string& shortcut);
+
+// A registry action's native-menu text, with the shortcut its live binding has
+// right now. Empty title for an unknown action. Before the InputMapper exists
+// there is no binding to read, so there is no suffix — which is why the native
+// menu is built after the mapper and refreshes these titles as it opens
+// (beads-bqx).
+std::string koncpc_action_menu_title(KONCPC_KEYS action);
+
 // Live toggle state for a toggle-kind action (checkmark in menus).  Defined in
 // the GUI translation unit (imgui_ui.cpp) since it reads GUI/emulator globals;
 // returns false for non-toggle actions or in non-GUI builds.

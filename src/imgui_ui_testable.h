@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -232,6 +233,146 @@ inline HubMediaButtons hub_media_buttons(bool disk_a_present,
   return {{{"Eject A", disk_a_present},
            {"Eject B", disk_b_present},
            {"Eject Tape", tape_present}}};
+}
+
+// ── Debugger step controls ──────────────────────────────────────────────────
+// The In / Over / Out / Run-Pause group is drawn in two places: the DevTools
+// main toolbar and the Disassembly window's menu bar, where the user's eyes
+// already are while stepping (beads-4i4). Both call the same dbg_step_*
+// helpers; this decides, for both, what is enabled and what the buttons say,
+// so the two groups cannot disagree about when a step is allowed.
+struct DebugStepControls {
+  bool step_enabled;            // In / Over / Out
+  const char* step_in_label;    // labels: full in the toolbar, short in the
+  const char* step_over_label;  // Disassembly menu bar
+  const char* step_out_label;   // says so while a Step Out walk is in flight
+  const char* run_pause_label;
+  // Hover text. Deliberately NOT compact-dependent: the two surfaces describe
+  // the same action, so they get the same sentence from the same place.
+  const char* step_in_tooltip;
+  const char* step_over_tooltip;
+  const char* step_out_tooltip;
+  const char* run_pause_tooltip;
+};
+inline DebugStepControls debug_step_controls(bool paused, bool walk_running,
+                                             bool compact) {
+  DebugStepControls c{};
+  // A walk (Step Out, Step Over across a CALL, Run to here) resumes and
+  // re-pauses the machine on its own worker; a step issued meanwhile would
+  // race it over the same ephemeral breakpoint.
+  c.step_enabled = paused && !walk_running;
+  c.step_in_label = compact ? "In" : "Step In";
+  c.step_over_label = compact ? "Over" : "Step Over";
+  if (walk_running) {
+    c.step_out_label = compact ? "Out..." : "Stepping out...";
+  } else {
+    c.step_out_label = compact ? "Out" : "Step Out";
+  }
+  if (compact) {
+    c.run_pause_label = paused ? "Run" : "Pause";
+  } else {
+    c.run_pause_label = paused ? "Resume" : "Pause";
+  }
+  c.step_in_tooltip = "Step In: one instruction, entering CALLs (F7)";
+  c.step_over_tooltip =
+      "Step Over: one instruction, over CALLs/RSTs (Shift+F7)";
+  c.step_out_tooltip =
+      "Step Out: run until this subroutine returns (Shift+F11)";
+  c.run_pause_tooltip = "Run / halt the CPU (F5)";
+  return c;
+}
+
+// ── Toast placement ─────────────────────────────────────────────────────────
+// Toasts stack upward from the bottom-right of the viewport the user is
+// looking at (beads-ar4). The work rect is that viewport's usable area; the
+// toast is clamped into it, so a small floating DevTools viewport still shows
+// the toast's left/top edge instead of pushing it off its window.
+struct ToastPos {
+  float x;
+  float y;
+};
+inline ToastPos toast_pos(float work_x, float work_y, float work_w,
+                          float work_h, float box_w, float box_h,
+                          float bottom_offset, float right_margin) {
+  float x = work_x + work_w - box_w - right_margin;
+  float y = work_y + work_h - bottom_offset - box_h;
+  // Right/bottom anchoring first, then the left/top edge wins: the start of
+  // the message is the part worth keeping visible.
+  x = std::max(x, work_x);
+  y = std::max(y, work_y);
+  return {x, y};
+}
+
+// Which viewport shows the toasts: the first of `count` the platform reports
+// as focused, else the main viewport (index 0 in ImGuiPlatformIO::Viewports).
+// A predicate rather than a container, so the per-frame caller scans the live
+// viewport list without building one.
+template <typename IsFocused>
+int toast_viewport_index(int count, IsFocused is_focused) {
+  for (int i = 0; i < count; ++i) {
+    if (is_focused(i)) return i;
+  }
+  return 0;
+}
+
+// ── Options dialog: the button row ─────────────────────────────────────────
+// Mac order (beads-3v8): Cancel on the left, the default commit on the right.
+// Apply commits for this session; Save commits and writes the config file.
+enum class OptionsButton : std::uint8_t { Cancel, Apply, Save };
+struct OptionsButtonSpec {
+  OptionsButton id;
+  const char* label;
+  const char* tooltip;  // nullptr: no tooltip
+  bool is_default;      // takes the default focus (Enter)
+};
+inline const std::vector<OptionsButtonSpec>& options_button_row() {
+  static const std::vector<OptionsButtonSpec> row = {
+      {OptionsButton::Cancel, "Cancel", "Discard changes", false},
+      {OptionsButton::Apply, "Apply",
+       "Apply changes now without saving them\n(this session only)", false},
+      {OptionsButton::Save, "Save",
+       "Apply changes and write them to the config file", true},
+  };
+  return row;
+}
+
+// What Cancel must undo beyond copying the old settings back. Copying CPC
+// restores the values, but the live side effects of a previewed change do
+// not follow the struct: the window keeps a previewed size, the renderer a
+// previewed plugin, the host keymap a previewed layout.
+struct OptionsRevertPlan {
+  bool rescale_window;  // resize the window back to old (fixed) scr_scale
+  // Old scale was Fit: it has no derived size, so the window goes back to
+  // the size it had when Options opened.
+  bool restore_window_size;
+  bool reinit_video;  // rebuild the video plugin for old scr_style
+  bool reload_host_keymap;
+};
+inline OptionsRevertPlan options_revert_plan(
+    unsigned int live_scr_scale, unsigned int old_scr_scale,
+    unsigned int live_scr_style, unsigned int old_scr_style,
+    const std::string& live_kbd_layout, const std::string& old_kbd_layout) {
+  bool const scale_changed = live_scr_scale != old_scr_scale;
+  return {scale_changed && old_scr_scale != 0,
+          scale_changed && old_scr_scale == 0, live_scr_style != old_scr_style,
+          live_kbd_layout != old_kbd_layout};
+}
+
+// ── Disc Tools: when the Files listing is stale ────────────────────────────
+// The listing is cached (it walks the whole directory); it must be rebuilt
+// when the user looks at a different drive or the drive holds a different
+// medium than when it was built (beads-p5t).
+struct DiscToolsMediaKey {
+  int drive;            // 0 = A, 1 = B
+  uint64_t generation;  // dsk_media_generation() of that drive
+  bool operator==(const DiscToolsMediaKey& o) const {
+    return drive == o.drive && generation == o.generation;
+  }
+  bool operator!=(const DiscToolsMediaKey& o) const { return !(*this == o); }
+};
+inline bool disc_tools_listing_stale(const DiscToolsMediaKey& listed,
+                                     const DiscToolsMediaKey& live) {
+  return listed != live;
 }
 
 // The message for a failed koncpc_rebuild_machine(). A refusal because the

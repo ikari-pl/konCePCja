@@ -669,9 +669,21 @@ void imgui_render_ui() {
       }
     }
 
-    // Render from bottom of viewport, stacking upward
-    ImVec2 const vpPos = ImGui::GetMainViewport()->Pos;
-    ImVec2 const vpSize = ImGui::GetMainViewport()->Size;
+    // Render from the bottom of the viewport the user is looking at,
+    // stacking upward. With floating DevTools a toast on the main viewport
+    // hid behind the debugger or landed on another screen (beads-ar4). The
+    // viewport and its draw list are resolved only when there is a toast.
+    ImGuiViewport* vp = nullptr;
+    ImDrawList* dl = nullptr;
+    if (!imgui_state.toasts.empty()) {
+      ImGuiPlatformIO const& pio = ImGui::GetPlatformIO();
+      int const idx = toast_viewport_index(pio.Viewports.Size, [&pio](int i) {
+        return (pio.Viewports[i]->Flags & ImGuiViewportFlags_IsFocused) != 0;
+      });
+      vp = (idx < pio.Viewports.Size) ? pio.Viewports[idx]
+                                      : ImGui::GetMainViewport();
+      dl = ImGui::GetForegroundDrawList(vp);
+    }
     for (int i = static_cast<int>(imgui_state.toasts.size()) - 1; i >= 0; --i) {
       auto& t = imgui_state.toasts[i];
 
@@ -708,10 +720,12 @@ void imgui_render_ui() {
       float const boxW = textSize.x + 16.0f;
       float const boxH = textSize.y + 12.0f;
 
-      float const x = vpPos.x + vpSize.x - boxW - xMargin;
-      float const y = vpPos.y + vpSize.y - yOffset - boxH;
+      ToastPos const pos =
+          toast_pos(vp->WorkPos.x, vp->WorkPos.y, vp->WorkSize.x,
+                    vp->WorkSize.y, boxW, boxH, yOffset, xMargin);
+      float const x = pos.x;
+      float const y = pos.y;
 
-      ImDrawList* dl = ImGui::GetForegroundDrawList();
       ImVec2 const p0(x, y);
       ImVec2 const p1(x + boxW, y + boxH);
       dl->AddRectFilled(p0, p1, bgCol, 4.0f);
@@ -1009,9 +1023,9 @@ bool RenderMenuItem(KONCPC_KEYS action, bool enabled = true,
 }
 }  // namespace
 
-// Shared debugger step actions, so the DevTools toolbar buttons and the
-// keyboard shortcuts invoke identical behavior (beads-fa5).
-namespace {
+// Shared debugger step actions, so the DevTools toolbar buttons, the
+// Disassembly window's menu bar and the keyboard shortcuts invoke identical
+// behavior (beads-fa5, beads-4i4).
 void dbg_step_in() {
   if (subcycle_bridge_active()) {
     cpc_pause();
@@ -1021,7 +1035,15 @@ void dbg_step_in() {
   z80.step_in = 1;
   cpc_resume();
 }
-}  // namespace
+
+void dbg_run_pause_toggle() {
+  if (g_emu_paused.load(std::memory_order_relaxed)) {
+    cpc_resume();
+  } else {
+    cpc_pause();
+  }
+}
+
 namespace {
 // Which GUI command asked for a bounded walk. Defined here rather than with
 // the worker below because a scoped enum's enumerators are unusable until the
@@ -1032,6 +1054,7 @@ enum class StepWalkAction : std::uint8_t { StepOut, StepOver, RunToHere };
 void dispatch_run_to(StepWalkAction action, word target);
 void dispatch_step_walk(StepWalkAction action,
                         std::function<Z80StepOutResult()> walk);
+}  // namespace
 
 void dbg_step_over() {
   if (!subcycle_bridge_active()) {
@@ -1071,7 +1094,6 @@ void dbg_step_over() {
   // still armed.
   dispatch_run_to(StepWalkAction::StepOver, static_cast<word>(pc + cls.length));
 }
-}  // namespace
 // The bounded step walks (z80_step_out_finish, z80_run_until_ephemeral) block
 // on 1ms-polled cpc_resume()/cpc_pause_if_epoch() loops for up to their
 // deadline -- exactly what the IPC handlers do from the server thread. Running
@@ -1186,7 +1208,6 @@ void dbg_run_to_address(word target) {
   dispatch_run_to(StepWalkAction::RunToHere, target);
 }
 
-namespace {
 void dbg_step_out() {
   if (!subcycle_bridge_active()) {
     // No sub-cycle machine (the legacy interpreter is gone, so this is only
@@ -1197,7 +1218,34 @@ void dbg_step_out() {
   dispatch_step_walk(StepWalkAction::StepOut,
                      []() { return z80_step_out_finish(5000); });
 }
-}  // namespace
+
+// Report how the last walk ended, once. Called by every surface that draws
+// the step group, so a walk started from the Disassembly window still gets
+// its toast when the DevTools toolbar is not on screen.
+void dbg_step_walk_poll_outcome() {
+  if (g_step_walk_running.load(std::memory_order_acquire)) return;
+  int const outcome = g_step_walk_outcome.exchange(kStepWalkNoOutcome,
+                                                   std::memory_order_acq_rel);
+  if (outcome == kStepWalkNoOutcome) return;
+  // Name the command the user actually invoked: Step Over on an RST runs the
+  // same walk, and reporting that as "Step Out" is simply wrong.
+  char const* what = "Step Out";
+  switch (g_step_walk_action.load(std::memory_order_acquire)) {
+    case StepWalkAction::StepOver:
+      what = "Step Over";
+      break;
+    case StepWalkAction::RunToHere:
+      what = "Run to here";
+      break;
+    case StepWalkAction::StepOut:
+      break;
+  }
+  if (outcome == static_cast<int>(Z80StepOutResult::Timeout)) {
+    set_osd_message(std::string(what) + " timed out", 3000);
+  } else if (outcome == static_cast<int>(Z80StepOutResult::Stalled)) {
+    set_osd_message(std::string(what) + ": this never returns", 3000);
+  }
+}
 
 // Apply a window-scale choice (0 = Fit window, 1..4 = 1x/1.5x/2x/3x): set
 // CPC.scr_scale and resize the SDL window to match.  Shared by the Settings
@@ -3470,6 +3518,10 @@ namespace {
 void imgui_render_options() {
   static bool first_open = true;
   static unsigned char old_crtc_type = 0;
+  // The window's size when Options opened: what Cancel restores when the old
+  // scale was Fit, which has no size of its own to recompute.
+  static int old_win_w = 0;
+  static int old_win_h = 0;
   static bool old_m4_enabled = false;
   // Peripheral enable flags that Options only ever captures-on-open and
   // restores-on-revert (no auto-start or other side logic, unlike M4 above);
@@ -3494,6 +3546,15 @@ void imgui_render_options() {
     }
     imgui_state.old_cpc_settings = CPC;
     old_crtc_type = CRTC.crtc_type;
+    old_win_w = 0;
+    old_win_h = 0;
+    // Fullscreen reports the display size, and Cancel with the old scale at
+    // Fit would park that as the floating window size. Capture nothing then:
+    // the revert skips the resize on a zero.
+    if (mainSDLWindow &&
+        !koncpc_main_window_is_fullscreen().value_or(CPC.scr_window == 0)) {
+      SDL_GetWindowSize(mainSDLWindow, &old_win_w, &old_win_h);
+    }
     old_m4_enabled = g_m4board.enabled;
     capture_toggle_values(kPeripheralToggles, old_peripheral_toggles,
                           kPeripheralToggleCount);
@@ -4549,30 +4610,26 @@ void imgui_render_options() {
   enum class PendingCommit : std::uint8_t { None, Save, Apply };
   static PendingCommit s_pending_commit = PendingCommit::None;
 
-  // Bottom buttons
-  if (ImGui::Button("Save", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
-    if (needs_restart && driveAltered()) {
-      s_pending_commit = PendingCommit::Save;  // confirm before losing edits
-    } else {
-      commit_options(true);
-    }
-  }
-  ImGui::SetItemDefaultFocus();  // Save is the default action (Enter)
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("Apply changes and save to config file");
-  }
-  ImGui::SameLine();
   // Discard the edits and put back what was live when the dialog opened. Three
   // routes need this — the button, Escape, and the window's X — and each used
   // to carry its own copy.
   auto revert_options = [&]() {
-    unsigned int const prev_style = CPC.scr_style;
-    std::string const prev_kbd_layout = CPC.kbd_layout;
+    OptionsRevertPlan const plan = options_revert_plan(
+        CPC.scr_scale, imgui_state.old_cpc_settings.scr_scale, CPC.scr_style,
+        imgui_state.old_cpc_settings.scr_style, CPC.kbd_layout,
+        imgui_state.old_cpc_settings.kbd_layout);
     imgui_state.fullscreen_request = imgui_state.old_cpc_settings.scr_window;
     CPC = imgui_state.old_cpc_settings;
     // The host keymap was reloaded live when the combo changed; a reverted
     // kbd_layout has to reach the live map the same way.
-    if (CPC.kbd_layout != prev_kbd_layout) koncpc_reload_host_keymap();
+    if (plan.reload_host_keymap) koncpc_reload_host_keymap();
+    // The Scale combo resized the window live; copying scr_scale back does
+    // not shrink it again (beads-ydkw).
+    if (plan.rescale_window) apply_scr_scale(static_cast<int>(CPC.scr_scale));
+    if (plan.restore_window_size && mainSDLWindow && old_win_w > 0 &&
+        old_win_h > 0) {
+      SDL_SetWindowSize(mainSDLWindow, old_win_w, old_win_h);
+    }
     CRTC.crtc_type = old_crtc_type;
     if (subcycle::Machine* m = subcycle_bridge_machine())
       m->set_crtc_type(static_cast<uint8_t>(old_crtc_type));
@@ -4582,7 +4639,7 @@ void imgui_render_options() {
     edited_serial_config = old_serial_config;
     g_serial_interface.set_config(old_serial_config);
     // Revert video plugin if it was changed live
-    if (CPC.scr_style != prev_style) imgui_state.video_reinit_pending = true;
+    if (plan.reinit_video) imgui_state.video_reinit_pending = true;
     video_set_palette();
     imgui_state.show_options = false;
     cpc_resume();
@@ -4593,20 +4650,34 @@ void imgui_render_options() {
       audio_pause();
     first_open = true;
   };
-  if (ImGui::Button("Cancel", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
-    revert_options();
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Apply", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
-    if (needs_restart && driveAltered()) {
-      s_pending_commit = PendingCommit::Apply;
-    } else {
-      commit_options(false);
+  // Bottom buttons, in Mac order: Cancel | Apply | Save, the default commit
+  // on the right (beads-3v8). options_button_row() owns order, labels and
+  // tooltips.
+  for (const OptionsButtonSpec& spec : options_button_row()) {
+    if (spec.id != options_button_row().front().id) ImGui::SameLine();
+    bool const clicked =
+        ImGui::Button(spec.label, ImVec2(ui_dpi_px(80), ui_dpi_px(0)));
+    if (spec.is_default) ImGui::SetItemDefaultFocus();  // Enter
+    if (spec.tooltip != nullptr && ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("%s", spec.tooltip);
     }
-  }
-  if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip(
-        "Apply changes for this session only\n(not saved to config file)");
+    if (!clicked) continue;
+    switch (spec.id) {
+      case OptionsButton::Cancel:
+        revert_options();
+        break;
+      case OptionsButton::Apply:
+      case OptionsButton::Save: {
+        bool const save = spec.id == OptionsButton::Save;
+        if (needs_restart && driveAltered()) {
+          // confirm before losing edits
+          s_pending_commit = save ? PendingCommit::Save : PendingCommit::Apply;
+        } else {
+          commit_options(save);
+        }
+        break;
+      }
+    }
   }
 
   // The same guard the quit paths use: a restart is not worth a silent loss of
@@ -4873,60 +4944,34 @@ void imgui_render_devtools() {
     // Use the atomic flag — CPC.paused is a plain bool written by the Z80
     // thread.
     bool const was_paused = g_emu_paused.load(std::memory_order_relaxed);
-    // A Step Out in flight on its background thread is still resuming and
+    // A step walk in flight on its background thread is still resuming and
     // re-pausing the machine to skip nested CALLs -- Step In/Over issued
     // from this same toolbar while that's happening would race it over the
     // same ephemeral-breakpoint and pause/resume state, so the whole group
     // stays disabled until it reports back.
-    bool const step_out_running =
-        g_step_walk_running.load(std::memory_order_acquire);
-    if (!step_out_running) {
-      int const outcome = g_step_walk_outcome.exchange(
-          kStepWalkNoOutcome, std::memory_order_acq_rel);
-      // Name the command the user actually invoked: Step Over on an RST runs
-      // the same walk, and reporting that as "Step Out" is simply wrong.
-      char const* what = "Step Out";
-      switch (g_step_walk_action.load(std::memory_order_acquire)) {
-        case StepWalkAction::StepOver:
-          what = "Step Over";
-          break;
-        case StepWalkAction::RunToHere:
-          what = "Run to here";
-          break;
-        case StepWalkAction::StepOut:
-          break;
-      }
-      if (outcome == static_cast<int>(Z80StepOutResult::Timeout)) {
-        set_osd_message(std::string(what) + " timed out", 3000);
-      } else if (outcome == static_cast<int>(Z80StepOutResult::Stalled)) {
-        set_osd_message(std::string(what) + ": this never returns", 3000);
-      }
-    }
-    if (!was_paused || step_out_running) ImGui::BeginDisabled();
-    if (ImGui::Button("Step In")) dbg_step_in();
+    bool const step_out_running = dbg_step_walk_running();
+    dbg_step_walk_poll_outcome();
+    DebugStepControls const ctl =
+        debug_step_controls(was_paused, step_out_running, false);
+    if (!ctl.step_enabled) ImGui::BeginDisabled();
+    if (ImGui::Button(ctl.step_in_label)) dbg_step_in();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction, entering CALLs (F7)");
+      ImGui::SetTooltip("%s", ctl.step_in_tooltip);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step Over")) dbg_step_over();
+    if (ImGui::Button(ctl.step_over_label)) dbg_step_over();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Execute one instruction, over CALLs/RSTs (Shift+F7)");
+      ImGui::SetTooltip("%s", ctl.step_over_tooltip);
     }
     ImGui::SameLine();
-    if (ImGui::Button(step_out_running ? "Stepping out..." : "Step Out"))
-      dbg_step_out();
+    if (ImGui::Button(ctl.step_out_label)) dbg_step_out();
     if (ImGui::IsItemHovered()) {
-      ImGui::SetTooltip("Run until the current subroutine returns (Shift+F11)");
+      ImGui::SetTooltip("%s", ctl.step_out_tooltip);
     }
-    if (!was_paused || step_out_running) ImGui::EndDisabled();
+    if (!ctl.step_enabled) ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button(was_paused ? "Resume" : "Pause")) {
-      if (was_paused)
-        cpc_resume();
-      else
-        cpc_pause();
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Run / halt the CPU (F5)");
+    if (ImGui::Button(ctl.run_pause_label)) dbg_run_pause_toggle();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", ctl.run_pause_tooltip);
 
     // Keyboard shortcuts for the debugger inner loop.  Active only when an
     // ImGui (DevTools) window holds keyboard focus and no text field is being

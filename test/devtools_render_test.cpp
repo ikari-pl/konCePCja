@@ -21,20 +21,28 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
 
 #include "data_areas.h"
 #include "devtools_ui.h"
+#include "disk_file_editor.h"
+#include "disk_format.h"
 #include "headless_imgui.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "koncepcja.h"
+#include "slotshandler.h"
+#include "subcycle_bridge.h"
 #include "symfile.h"
 #include "z80_view.h"
 
 extern byte *membank_read[4], *membank_write[4];
 extern t_CPC CPC;
+extern t_drive driveA;
 
 namespace {
 
@@ -309,4 +317,211 @@ TEST_F(DevToolsRenderTest, CpuViewAndRamViewDivergeUnderARomOverlay) {
             z80_read_mem_via_write_bank(TestRam::kRomShadowAddr))
       << "the two views are indistinguishable, so nothing here can cover the "
          "Memory Hex view toggle";
+}
+
+// -----------------------------------------------
+// Disassembly: the step group sits in its own menu bar (beads-4i4)
+// -----------------------------------------------
+
+namespace {
+
+// Sweep the mouse along the Disassembly menu bar, one frame per position, and
+// report whether an item with this label (inside the menu bar's ID scope) ever
+// became the hovered item. Hovering proves the button was really submitted in
+// that menu bar, where a vertex count could not tell it from the neighbours.
+bool disasm_menubar_has_item(HeadlessImGui& gui, DevToolsUI& dt,
+                             const char* label) {
+  gui.settled_frames([&dt] { dt.render(); });
+  ImGuiWindow* win = ImGui::FindWindowByName("Disassembly");
+  if (win == nullptr) return false;
+  ImRect const bar = win->MenuBarRect();
+  ImGuiID const bar_id = ImHashStr("##MenuBar", 0, win->ID);
+  ImGuiID const target = ImHashStr(label, 0, bar_id);
+  float const y = (bar.Min.y + bar.Max.y) * 0.5f;
+  for (float x = bar.Min.x + 1.0f; x < bar.Max.x; x += 4.0f) {
+    ImGui::GetIO().AddMousePosEvent(x, y);
+    gui.frame([&dt] { dt.render(); });
+    if (ImGui::GetCurrentContext()->HoveredId == target) return true;
+  }
+  return false;
+}
+
+// Pins g_emu_paused for the test and puts it back.
+class PausedFlag {
+ public:
+  explicit PausedFlag(bool paused) : saved_(g_emu_paused.load()) {
+    g_emu_paused.store(paused);
+  }
+  PausedFlag(const PausedFlag&) = delete;
+  PausedFlag& operator=(const PausedFlag&) = delete;
+  PausedFlag(PausedFlag&&) = delete;
+  PausedFlag& operator=(PausedFlag&&) = delete;
+  ~PausedFlag() { g_emu_paused.store(saved_); }
+
+ private:
+  bool saved_;
+};
+
+}  // namespace
+
+TEST_F(DevToolsRenderTest, DisassemblyMenuBarCarriesTheStepGroup) {
+  PausedFlag const paused(true);
+  dt_.toggle_window("disassembly");
+  EXPECT_TRUE(disasm_menubar_has_item(gui_, dt_, "In"));
+  EXPECT_TRUE(disasm_menubar_has_item(gui_, dt_, "Over"));
+  EXPECT_TRUE(disasm_menubar_has_item(gui_, dt_, "Out"));
+  EXPECT_TRUE(disasm_menubar_has_item(gui_, dt_, "Run"))
+      << "paused: the Run-Pause button offers Run";
+}
+
+TEST_F(DevToolsRenderTest, DisassemblyRunPauseFollowsTheMachine) {
+  PausedFlag const running(false);
+  dt_.toggle_window("disassembly");
+  EXPECT_TRUE(disasm_menubar_has_item(gui_, dt_, "Pause"));
+  EXPECT_FALSE(disasm_menubar_has_item(gui_, dt_, "Run"));
+}
+
+// -----------------------------------------------
+// Disc Tools: the Files listing follows a disk swap (beads-p5t)
+// -----------------------------------------------
+
+namespace {
+
+// Two discs on the host, one file and two files, to swap between.
+class SwapDiscs {
+ public:
+  SwapDiscs() {
+    dir_ = std::filesystem::temp_directory_path() / "koncepcja-disc-tools-swap";
+    std::filesystem::create_directories(dir_);
+    one_ = write_disc("one.dsk", {"ONE.BIN"});
+    two_ = write_disc("two.dsk", {"TWO.BIN", "THREE.BIN"});
+  }
+  SwapDiscs(const SwapDiscs&) = delete;
+  SwapDiscs& operator=(const SwapDiscs&) = delete;
+  SwapDiscs(SwapDiscs&&) = delete;
+  SwapDiscs& operator=(SwapDiscs&&) = delete;
+  ~SwapDiscs() {
+    dsk_eject_host(&driveA);
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+  const std::string& one() const { return one_; }
+  const std::string& two() const { return two_; }
+
+ private:
+  std::string write_disc(const char* name,
+                         const std::vector<std::string>& files) {
+    dsk_eject_host(&driveA);
+    EXPECT_EQ("", disk_format_drive('A', "data"));
+    for (const std::string& f : files) {
+      EXPECT_EQ("", disk_write_file(&driveA, f, {'x', 'y'}, true));
+    }
+    std::string const path = (dir_ / name).string();
+    EXPECT_EQ(0, dsk_save(path, &driveA));
+    dsk_eject_host(&driveA);
+    return path;
+  }
+
+  std::filesystem::path dir_;
+  std::string one_;
+  std::string two_;
+};
+
+}  // namespace
+
+TEST_F(DevToolsRenderTest, DiscToolsListingFollowsADiskSwap) {
+  SwapDiscs const discs;
+  dt_.toggle_window("disc_tools");
+
+  ASSERT_EQ(0, dsk_load(discs.one(), &driveA));
+  gui_.settled_frames([this] { dt_.render(); });
+  ASSERT_EQ(1u, dt_.disc_tools_listed_file_count());
+
+  // The user rebuilds and re-mounts: no Refresh click.
+  ASSERT_EQ(0, dsk_load(discs.two(), &driveA));
+  gui_.settled_frames([this] { dt_.render(); });
+  EXPECT_EQ(2u, dt_.disc_tools_listed_file_count())
+      << "Disc Tools still lists the disc that was swapped out";
+
+  dsk_eject(&driveA);
+  gui_.settled_frames([this] { dt_.render(); });
+  EXPECT_EQ(0u, dt_.disc_tools_listed_file_count())
+      << "an ejected drive still shows the old listing";
+}
+
+namespace {
+
+// Brings the sub-cycle board up on a synthetic 32K system ROM, so Disc Tools
+// takes the board path: its pull applies the swap that a load queued while the
+// machine is paused, which moves the medium generation a second time.
+class LiveBoard {
+ public:
+  LiveBoard() {
+    dir_ =
+        std::filesystem::temp_directory_path() / "koncepcja-disc-tools-board";
+    std::filesystem::create_directories(dir_);
+    std::vector<char> const rom(0x8000, 0);
+    std::filesystem::path const rom_file = dir_ / "cpc6128.rom";
+    FILE* f = fopen(rom_file.string().c_str(), "wb");
+    EXPECT_NE(nullptr, f);
+    if (f != nullptr) {
+      EXPECT_EQ(rom.size(), fwrite(rom.data(), 1, rom.size(), f));
+      EXPECT_EQ(0, fclose(f));
+    }
+    saved_rom_path_ = CPC.rom_path;
+    saved_model_ = CPC.model;
+    saved_ram_ = CPC.ram_size;
+    CPC.rom_path = dir_.string();
+    CPC.model = 2;  // chROMFile[2] == "cpc6128.rom"
+    CPC.ram_size = 128;
+    started_ = subcycle_bridge_start();
+    EXPECT_TRUE(started_);
+  }
+  LiveBoard(const LiveBoard&) = delete;
+  LiveBoard& operator=(const LiveBoard&) = delete;
+  LiveBoard(LiveBoard&&) = delete;
+  LiveBoard& operator=(LiveBoard&&) = delete;
+  ~LiveBoard() {
+    if (started_) subcycle_bridge_stop();
+    CPC.rom_path = saved_rom_path_;
+    CPC.model = saved_model_;
+    CPC.ram_size = saved_ram_;
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+
+ private:
+  std::filesystem::path dir_;
+  std::string saved_rom_path_;
+  unsigned int saved_model_ = 0;
+  unsigned int saved_ram_ = 0;
+  bool started_ = false;
+};
+
+void load_drive_a(const std::string& path) {
+  t_slot slot{};
+  slot.drive = DRIVE::DSK_A;
+  slot.file = path;
+  ASSERT_EQ(0, file_load(slot));
+}
+
+}  // namespace
+
+TEST_F(DevToolsRenderTest, DiscToolsRelistsOncePerSwapWithTheBoardRunning) {
+  SwapDiscs const discs;
+  LiveBoard const board;
+  dt_.toggle_window("disc_tools");
+
+  load_drive_a(discs.one());
+  gui_.settled_frames([this] { dt_.render(); });
+  ASSERT_EQ(1u, dt_.disc_tools_listed_file_count());
+  uint64_t const after_first = dt_.disc_tools_listing_rebuilds();
+
+  load_drive_a(discs.two());
+  gui_.settled_frames([this] { dt_.render(); });
+  EXPECT_EQ(2u, dt_.disc_tools_listed_file_count());
+  EXPECT_EQ(after_first + 1, dt_.disc_tools_listing_rebuilds())
+      << "the listing was keyed on the pre-pull generation, so the swap the "
+         "pull applied made it stale again: two directory walks and two "
+         "pause/resume cycles for one disc";
 }

@@ -1816,9 +1816,23 @@ std::string handle_command(const std::string& line) {
       // though the loader handles it — the same front-door drift the drop
       // handler had.
       if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
+        // Hold the machine still for the load, like the .sna arm below: the
+        // render thread's Disc Tools pull takes the same lease, so a load
+        // interleaved with it would be listed as the outgoing disc while the
+        // new one is still only queued. Fail closed like every other lease
+        // holder: a lease that timed out means the Z80 thread is stuck inside
+        // a frame, and swapping the medium under it would corrupt the drive.
+        CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
         CPC.driveA.file = path;
         CPC.driveA.zip_index = 0;
-        if (file_load(CPC.driveA) != 0) return "ERR 500 load-disk\n";
+        int const rc = file_load(CPC.driveA);
+        lease.restore_run_state();
+        if (rc != 0) return "ERR 500 load-disk\n";
+        // Only a load that actually happened goes on the Recent list, and it
+        // goes on after the lease has restored the run state -- staging is
+        // just a queue for the main thread, so it must not sit inside the
+        // window where the machine is still held still.
         ipc_mru_stage(&t_CPC::mru_disks, path);
         return ok_with_context();
       }

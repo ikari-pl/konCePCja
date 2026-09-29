@@ -1,5 +1,7 @@
 #include "menu_actions.h"
 
+#include <string>
+
 // Canonical label + toggle metadata for every emulator action.  Shortcut hints
 // are intentionally NOT stored here — every surface derives them from the live
 // binding via koncpc_action_shortcut() so a label can never drift from its key.
@@ -42,4 +44,18 @@ const MenuAction* koncpc_find_action(KONCPC_KEYS action) {
     if (a.action == action) return &a;
   }
   return nullptr;
+}
+
+std::string koncpc_menu_title_with_shortcut(const char* title,
+                                            const std::string& shortcut) {
+  std::string out = title != nullptr ? title : "";
+  if (!shortcut.empty()) out += "  (" + shortcut + ")";
+  return out;
+}
+
+std::string koncpc_action_menu_title(KONCPC_KEYS action) {
+  const MenuAction* entry = koncpc_find_action(action);
+  if (entry == nullptr) return "";
+  return koncpc_menu_title_with_shortcut(entry->title,
+                                         koncpc_action_shortcut(action));
 }
