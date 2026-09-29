@@ -1189,6 +1189,8 @@ void dispatch_run_to(StepWalkAction action, word target) {
         return Z80StepOutResult::Timeout;
       case Z80RunUntilResult::Stalled:
         return Z80StepOutResult::Stalled;
+      case Z80RunUntilResult::Aborted:  // no predicate passed: unreachable
+        return Z80StepOutResult::Stalled;
     }
     return Z80StepOutResult::Timeout;
   });

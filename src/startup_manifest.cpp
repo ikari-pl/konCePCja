@@ -43,7 +43,7 @@ std::string port_or_null(int port) {
 std::string startup_manifest_yaml(const StartupManifest& m) {
   std::ostringstream o;
   o << "--- # koncepcja\n";
-  o << "manifest_version: 1\n";
+  o << "manifest_version: 2\n";
   o << "version: " << quoted(m.version) << '\n';
   o << "build: " << quoted(m.build) << '\n';
   o << "pid: " << m.pid << '\n';
@@ -58,6 +58,7 @@ std::string startup_manifest_yaml(const StartupManifest& m) {
   o << "  model: " << m.model << '\n';
   o << "  ram_size_kb: " << m.ram_size_kb << '\n';
   o << "  run_tier: " << quoted_or_null(m.run_tier) << '\n';
+  o << "  effective_tier: " << quoted_or_null(m.effective_tier) << '\n';
   o << "config_file: " << quoted(m.config_file) << '\n';
   o << "...\n";
   return o.str();

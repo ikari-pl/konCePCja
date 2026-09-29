@@ -7,6 +7,7 @@
 #include "amx_mouse.h"
 #include "drive_sounds.h"
 #include "koncepcja.h"
+#include "koncepcja_ipc_server.h"
 #include "serial_interface.h"
 #include "silicon_disc.h"
 #include "slotshandler.h"
@@ -415,6 +416,65 @@ TEST_F(ConfigurationTest, saveConfigurationPreservesEverySettingItReads) {
   EXPECT_EQ(99, CPC[1].devtools_max_stack_size);
   EXPECT_EQ(PhazerType::TrojanLightPhazer,
             static_cast<PhazerType::Value>(CPC[1].phazer_emulation));
+}
+
+// The IPC `input gun` gate used to be published only by the main loop's
+// per-frame drain. In GUI mode the Z80 thread starts before that first drain,
+// so a client could reach a running machine launched with -O
+// input.lightgun=1 and still get ERR 409 no-light-gun (beads-i834). Loading
+// the configuration now opens the gate itself, no drain involved.
+TEST_F(ConfigurationTest, loadConfigurationPublishesTheIpcDeviceGates) {
+  {
+    std::ofstream configFile(getTmpFilename(0));
+    configFile << "[input]\n"
+               << "lightgun=1\n"
+               << "amx_mouse=1\n";
+  }
+  {
+    std::ofstream configFile(getTmpFilename(1));
+    configFile << "[input]\n"
+               << "lightgun=0\n"
+               << "amx_mouse=0\n";
+  }
+  ipc_publish_device_gates(false, false);
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  EXPECT_TRUE(ipc_gun_gate_open());
+  EXPECT_TRUE(ipc_mouse_gate_open());
+
+  loadConfiguration(CPC, getTmpFilename(1));
+  EXPECT_FALSE(ipc_gun_gate_open());
+  EXPECT_FALSE(ipc_mouse_gate_open());
+}
+
+// The mouse gate has two sources, not one: the AMX mouse above and the
+// Symbiface II's PS/2 mouse. A session launched with only the Symbiface
+// enabled must be able to drive `input mouse` from its first command
+// (beads-0n59) — the gun-gate test covered only the AMX half.
+TEST_F(ConfigurationTest, loadConfigurationOpensTheMouseGateForTheSymbiface) {
+  {
+    std::ofstream configFile(getTmpFilename(0));
+    configFile << "[input]\n"
+               << "amx_mouse=0\n"
+               << "[peripheral]\n"
+               << "symbiface=1\n";
+  }
+  {
+    std::ofstream configFile(getTmpFilename(1));
+    configFile << "[input]\n"
+               << "amx_mouse=0\n"
+               << "[peripheral]\n"
+               << "symbiface=0\n";
+  }
+  ipc_publish_device_gates(false, false);
+  t_CPC CPC;
+  loadConfiguration(CPC, getTmpFilename(0));
+  EXPECT_TRUE(ipc_mouse_gate_open())
+      << "the Symbiface PS/2 mouse must open the gate on its own";
+  EXPECT_FALSE(ipc_gun_gate_open()) << "no gun was configured";
+
+  loadConfiguration(CPC, getTmpFilename(1));
+  EXPECT_FALSE(ipc_mouse_gate_open());
 }
 
 namespace {

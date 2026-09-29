@@ -24,6 +24,7 @@
 #include "cpc_key_tables.h"
 #include "errors.h"
 #include "imgui_state.h"
+#include "ipc_mru.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
@@ -175,6 +176,11 @@ class IpcServerTest : public testing::Test {
     z80_clear_breakpoints();
     z80_clear_watchpoints();
     g_symfile.clear();
+    // imgui_state is a process-wide global; a suite that leaves the Settings
+    // dialog flagged open turns ipc_mru_apply_staged() into a no-op for every
+    // test after it — that is how the coverage job's suite order broke the
+    // Recent-list tests. Start from the state these tests actually assume.
+    imgui_state.show_options = false;
     for (int i = 0; i < 4; i++) {
       std::memset(memory[i], 0, kBankSize);
       membank_read[i] = memory[i];
@@ -445,6 +451,53 @@ TEST_F(IpcServerTest, DevtoolsOnOffUsesRequestedState) {
 
   EXPECT_OK(send_command("devtools on"));
   EXPECT_TRUE(imgui_state.show_devtools);
+}
+
+// Bare `devtools` opens and never closes (beads-oz0): an agent that sends it
+// twice must not end up with the window shut. Only F12 toggles.
+TEST_F(IpcServerTest, BareDevtoolsIsAnIdempotentOpen) {
+  imgui_state.show_devtools = false;
+  EXPECT_OK(send_command("devtools"));
+  EXPECT_TRUE(imgui_state.show_devtools);
+  EXPECT_OK(send_command("devtools"));
+  EXPECT_TRUE(imgui_state.show_devtools) << "a second bare devtools closed it";
+  imgui_state.show_devtools = false;
+}
+
+// A key tap's hold is counted in frames that BEGAN with the pressed matrix
+// (beads-cjej). The frame already running when the tap arms started with the
+// old snapshot, so it must not count: counting it released a hold=2 tap after
+// one scannable frame, or none when the release raced the publish.
+TEST(IpcFrameStep, TapHoldCountsOnlyFramesPublishedAfterThePress) {
+  KoncepcjaIpcServer s;
+  constexpr uint64_t kPressSerial = 41;  // the serial read after the press
+  s.arm_frame_step(2, kPressSerial);
+
+  // The in-flight frame (and any stale re-tick of it) ends: not counted.
+  EXPECT_FALSE(s.frame_step_tick(40));
+  EXPECT_FALSE(s.frame_step_tick(kPressSerial));
+  EXPECT_TRUE(s.frame_step_active.load());
+
+  // Two frames that began with the key live finish the hold, not one.
+  EXPECT_FALSE(s.frame_step_tick(kPressSerial + 1));
+  EXPECT_TRUE(s.frame_step_tick(kPressSerial + 2));
+}
+
+TEST(IpcFrameStep, PlainFrameStepCountsEveryFrame) {
+  KoncepcjaIpcServer s;
+  // A tap leaves a high serial behind; `step frame` must not inherit it.
+  s.arm_frame_step(1, 1000);
+  s.notify_frame_step_done();
+  s.arm_frame_step(3);
+  EXPECT_FALSE(s.frame_step_tick(1));
+  EXPECT_FALSE(s.frame_step_tick(2));
+  EXPECT_TRUE(s.frame_step_tick(3));
+}
+
+TEST(IpcFrameStep, IdleStepNeverFires) {
+  KoncepcjaIpcServer s;
+  EXPECT_FALSE(s.frame_step_tick(1));
+  EXPECT_FALSE(s.frame_step_tick(99));
 }
 
 // R52 in the crtc dump is the Gate Array's HSYNC line counter, the reference a
@@ -930,6 +983,173 @@ TEST_F(IpcServerTest, DiskNewCanCreateFluxBacking) {
   EXPECT_EQ(std::string(signature, sizeof(signature)), "SCP");
   file.close();
   std::filesystem::remove(path);
+}
+
+// `disk put` takes an optional type after the optional CPC name, and guesses
+// it from the host file without one (beads-otjf).
+TEST_F(IpcServerTest, DiskPutTypeArgumentAndAutoDetect) {
+  EXPECT_OK(send_command("disk format A data"));
+  auto const dir = std::filesystem::temp_directory_path();
+  auto const tok = dir / "koncepcja-ipc-put-tok.bas";
+  auto const bin = dir / "koncepcja-ipc-put.bin";
+  {
+    std::ofstream(tok, std::ios::binary)
+        .write("\x0A\x00\x0A\x00\xBF\x20\x22\x48\x22\x00", 10);
+    std::ofstream(bin, std::ios::binary).write("\xC9", 1);
+  }
+  // Auto: a tokenised .bas gets a BASIC header, anything else BINARY.
+  EXPECT_OK(send_command("disk put A " + tok.string()));
+  EXPECT_EQ(send_command("disk info A KONCEPCJ.BAS").rfind("OK type=basic", 0),
+            0u);
+  EXPECT_OK(send_command("disk put A " + bin.string() + " CODE.BIN"));
+  EXPECT_EQ(send_command("disk info A CODE.BIN").rfind("OK type=binary", 0),
+            0u);
+  // A lone type word is the type, not a CPC name; the name is derived.
+  EXPECT_OK(send_command("disk put A " + bin.string() + " basic"));
+  EXPECT_EQ(send_command("disk info A KONCEPCJ.BIN").rfind("OK type=basic", 0),
+            0u);
+  // Name and type together; ascii writes no header at all.
+  EXPECT_OK(send_command("disk put A " + tok.string() + " RAW.TXT ascii"));
+  EXPECT_EQ(send_command("disk info A RAW.TXT"),
+            "ERR no valid AMSDOS header\n");
+  // Two extra words where the last is not a type is a usage error.
+  EXPECT_EQ(send_command("disk put A " + bin.string() + " X.BIN Y.BIN")
+                .rfind("ERR 400 usage: disk put", 0),
+            0u);
+  std::filesystem::remove(tok);
+  std::filesystem::remove(bin);
+}
+
+// A successful IPC `load` lands on the Recent list like a File-menu or
+// drag-drop load (beads-00jf). The IPC thread only stages it -- the menu reads
+// CPC.mru_* every frame -- and the main thread's drain applies it; a failed
+// load stages nothing.
+TEST_F(IpcServerTest, LoadPushesTheRecentList) {
+  auto const dsk =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-mru.dsk";
+  std::filesystem::remove(dsk);
+  EXPECT_OK(send_command("disk format A data"));
+  EXPECT_OK(send_command("disk save A " + dsk.string() + " dsk"));
+  ipc_mru_apply_staged(false);  // start from an empty queue
+
+  std::vector<std::string> const saved_disks = CPC.mru_disks;
+  CPC.mru_disks.clear();
+  EXPECT_OK(send_command("load " + dsk.string()));
+  EXPECT_TRUE(CPC.mru_disks.empty())
+      << "the IPC thread must not touch the list the menu is reading";
+  ipc_mru_apply_staged(false);
+  ASSERT_FALSE(CPC.mru_disks.empty());
+  EXPECT_EQ(dsk.string(), CPC.mru_disks.front());
+
+  CPC.mru_disks.clear();
+  EXPECT_NE("OK",
+            send_command("load " + dsk.string() + ".missing.dsk").substr(0, 2));
+  ipc_mru_apply_staged(false);
+  EXPECT_TRUE(CPC.mru_disks.empty()) << "a failed load went on the list";
+
+  CPC.mru_disks = saved_disks;
+  EXPECT_OK(send_command("disk eject A"));
+  std::filesystem::remove(dsk);
+}
+
+// imgui_state is a process-wide global these tests READ through production
+// code: ipc_mru_apply_staged() applies nothing while show_options is set. Any
+// suite that leaves a dialog flag behind would otherwise turn every apply here
+// into a silent no-op, which is what the coverage job's suite order exposed.
+// Own the precondition rather than inheriting whatever ran before.
+class IpcMruTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    saved_options_ = imgui_state.show_options;
+    imgui_state.show_options = false;
+    ipc_mru_apply_staged(false);  // start from an empty stage queue
+    saved_disks_ = CPC.mru_disks;
+    saved_tapes_ = CPC.mru_tapes;
+    saved_snaps_ = CPC.mru_snaps;
+  }
+  void TearDown() override {
+    imgui_state.show_options = saved_options_;
+    CPC.mru_disks = saved_disks_;
+    CPC.mru_tapes = saved_tapes_;
+    CPC.mru_snaps = saved_snaps_;
+  }
+
+ private:
+  bool saved_options_ = false;
+  std::vector<std::string> saved_disks_;
+  std::vector<std::string> saved_tapes_;
+  std::vector<std::string> saved_snaps_;
+};
+
+// While Settings is open, CPC holds the dialog's uncommitted edits: a save
+// would persist them, and Cancel (CPC = old_cpc_settings) would drop the new
+// entry. Staged entries wait for the dialog to close (review of PR #63).
+TEST_F(IpcMruTest, EntriesWaitWhileTheOptionsDialogIsOpen) {
+  std::vector<std::string> const saved = CPC.mru_snaps;
+  CPC.mru_snaps.clear();
+  ipc_mru_stage(&t_CPC::mru_snaps, "/x/game.sna");
+  imgui_state.show_options = true;
+  ipc_mru_apply_staged(true);
+  EXPECT_TRUE(CPC.mru_snaps.empty()) << "applied under an open dialog";
+  imgui_state.show_options = false;
+  ipc_mru_apply_staged(false);
+  ASSERT_EQ(1u, CPC.mru_snaps.size());
+  EXPECT_EQ(ipc_mru_canonical_path("/x/game.sna"), CPC.mru_snaps.front());
+  CPC.mru_snaps = saved;
+}
+
+// A cwd-relative `load game.dsk` used to persist the literal string. Every
+// other producer of these lists (the file dialog, drag-drop) supplies an
+// absolute path, so the menu's consumers assume one and a relative entry
+// opened nothing the next time the emulator started elsewhere (beads-qm5z).
+TEST_F(IpcMruTest, StagedPathsAreAbsolute) {
+  std::vector<std::string> const saved = CPC.mru_disks;
+  CPC.mru_disks.clear();
+  ipc_mru_stage(&t_CPC::mru_disks, "game.dsk");
+  ipc_mru_apply_staged(false);
+  ASSERT_EQ(1u, CPC.mru_disks.size());
+  std::filesystem::path const entry(CPC.mru_disks.front());
+  EXPECT_TRUE(entry.is_absolute()) << CPC.mru_disks.front();
+  EXPECT_EQ("game.dsk", entry.filename().string());
+
+  // An absolute path is normalised, not rewritten.
+  CPC.mru_disks.clear();
+  auto const dotted =
+      std::filesystem::temp_directory_path() / "x" / ".." / "a.dsk";
+  ipc_mru_stage(&t_CPC::mru_disks, dotted.string());
+  ipc_mru_apply_staged(false);
+  ASSERT_EQ(1u, CPC.mru_disks.size());
+  EXPECT_EQ((std::filesystem::temp_directory_path() / "a.dsk").string(),
+            CPC.mru_disks.front());
+  CPC.mru_disks = saved;
+}
+
+TEST_F(IpcMruTest, EachEntryLandsOnItsOwnList) {
+  std::vector<std::string> const disks = CPC.mru_disks;
+  std::vector<std::string> const tapes = CPC.mru_tapes;
+  CPC.mru_disks.clear();
+  CPC.mru_tapes.clear();
+  ipc_mru_stage(&t_CPC::mru_tapes, "t.cdt");
+  ipc_mru_stage(&t_CPC::mru_disks, "d.dsk");
+  ipc_mru_apply_staged(false);
+  EXPECT_EQ(std::vector<std::string>{ipc_mru_canonical_path("t.cdt")},
+            CPC.mru_tapes);
+  EXPECT_EQ(std::vector<std::string>{ipc_mru_canonical_path("d.dsk")},
+            CPC.mru_disks);
+  CPC.mru_disks = disks;
+  CPC.mru_tapes = tapes;
+}
+
+// A directory opens as a stream on POSIX and reads as empty: `disk put` used
+// to write it to the disc as an empty file and answer OK.
+TEST_F(IpcServerTest, DiskPutOfADirectoryIsAnError) {
+  EXPECT_OK(send_command("disk format A data"));
+  auto const dir = std::filesystem::temp_directory_path();
+  EXPECT_EQ(send_command("disk put A " + dir.string() + " DIR.BIN")
+                .rfind("ERR cannot open", 0),
+            0u);
+  EXPECT_EQ(send_command("disk info A DIR.BIN").rfind("ERR", 0), 0u)
+      << "nothing may have been written";
 }
 
 TEST_F(IpcServerTest, DiskStatusSaveEjectAndCaps) {

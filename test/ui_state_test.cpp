@@ -21,6 +21,17 @@ class UIStateTest : public ::testing::Test {
     imgui_state = ImGuiUIState{};
     CPC.paused = false;
   }
+  // imgui_state is a process-wide global that production code READS: while
+  // show_options is set, ipc_mru_apply_staged() applies nothing, because the
+  // Settings dialog then holds uncommitted edits a config save would persist.
+  // Resetting only in SetUp leaves whichever of these tests ran last holding
+  // a dialog open for every suite that runs after it — which is how IpcMru.*
+  // failed in the coverage job, whose suite order differs from the default.
+  // Own the global on the way out as well as on the way in.
+  void TearDown() override {
+    imgui_state = ImGuiUIState{};
+    CPC.paused = false;
+  }
 };
 
 // ─── Menu open/close ──────────────────────────────

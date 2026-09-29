@@ -710,6 +710,211 @@ def test_engine1_bp_clear_resume():
         return True
 
 
+def test_wait_pc_is_exact():
+    """`wait pc` must stop on an address the CPU only passes through.
+
+    It used to poll the register view, which is published once per frame, so
+    it saw only the PC a frame happened to end on. The -i launch test waits
+    for &6000 while its program sits in KM READ CHAR almost all the time, and
+    that wait timed out now and then on slow CI Macs with PC in the firmware.
+    Here the target is one NOP in 1024: a frame ends on it about one time in a
+    thousand, so a sampled wait nearly always misses while an exact one lands
+    every time.
+    """
+    print("Running exact wait pc test...")
+    program = bytes([0x00] * 1024 + [0xC3, 0x00, 0x60])  # NOPs; JP &6000
+    with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+        f.write(program)
+        bin_path = f.name
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0
+            ok, resp = ipc.send_command('wait pc 0x6000 15000')
+            if not ok:
+                print(f"FAIL: program never started: {resp}")
+                return False
+            for i in range(10):
+                # Step off first: a wait issued while already standing on
+                # `addr` is satisfied at once (the old contract), which would
+                # prove nothing about catching it in flight.
+                ipc.send_command('step 1')
+                ok, resp = ipc.send_command('wait pc 0x6200 2000')
+                if not ok:
+                    print(f"FAIL: wait {i} missed &6200: {resp}")
+                    return False
+                _, regs = ipc.get_regs()
+                if regs.get('PC') != 0x6200:
+                    print(f"FAIL: wait {i} returned OK at PC="
+                          f"{regs.get('PC', -1):04X}, not &6200")
+                    return False
+            # A breakpoint on the way is reported, not waited through.
+            for cmd in ('step 1', 'bp add 0x6100'):
+                ipc.send_command(cmd)
+            ok, resp = ipc.send_command('wait pc 0x6200 2000')
+            if ok or 'stopped-elsewhere' not in resp:
+                print(f"FAIL: breakpoint at &6100 not reported: {resp}")
+                return False
+            ipc.send_command('bp clear')
+            print("PASS: wait pc lands exactly, 10/10, and reports a "
+                  "breakpoint on the way")
+            return True
+    finally:
+        os.unlink(bin_path)
+
+
+def test_run_to_address_breakpoint_polarity():
+    """`wait pc` and `step to` must agree on what OK means.
+
+    Two rules, one walk (z80_run_until_ephemeral), so both commands answer the
+    same way:
+      * a breakpoint of the caller's OWN armed at the target address is an
+        arrival — the CPU is standing exactly where it was asked to stop — and
+        used to be reported as `ERR 409 stopped-elsewhere` with the target in
+        its own trailer;
+      * anything else stopping the walk short is `ERR 409 stopped-elsewhere`,
+        where `step to` used to answer `OK breakpoint-hit` — so a client whose
+        success test is "the reply starts with OK" believed it had arrived.
+    """
+    print("Running run-to-address breakpoint polarity test...")
+    program = bytes([0x00] * 1024 + [0xC3, 0x00, 0x60])  # NOPs; JP &6000
+    with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+        f.write(program)
+        bin_path = f.name
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0
+            ok, resp = ipc.send_command('wait pc 0x6000 15000')
+            if not ok:
+                print(f"FAIL: program never started: {resp}")
+                return False
+            ok, resp = ipc.send_command('bp add 0x6200')
+            if not ok:
+                print(f"FAIL: bp add: {resp}")
+                return False
+            # 1. wait pc onto its own breakpoint.
+            ok, resp = ipc.send_command('wait pc 0x6200 3000')
+            if not ok:
+                print(f"FAIL: wait pc onto its own breakpoint at the target "
+                      f"must be OK, got: {resp}")
+                return False
+            _, regs = ipc.get_regs()
+            if regs.get('PC') != 0x6200:
+                print(f"FAIL: OK at PC={regs.get('PC', -1):04X}, not &6200")
+                return False
+            # 2. step to onto the same breakpoint. Step off it first, or the
+            #    walk would be satisfied where it already stands.
+            ipc.send_command('step 1')
+            ok, resp = ipc.send_command('step to 0x6200')
+            if not ok:
+                print(f"FAIL: step to onto its own breakpoint at the target "
+                      f"must be OK, got: {resp}")
+                return False
+            # 3. step to interrupted by that breakpoint on the way to the
+            #    target. The target is the breakpoint's own successor, and
+            #    that choice is load-bearing: this program is 1024 NOPs at
+            #    &6000 with a JP &6000 after them, so execution is a ring and
+            #    a walk reaches &6201 only by executing &6200 immediately
+            #    before it — from ANY starting PC. Asking for a target
+            #    further ahead (&6300, as this first did) only crosses &6200
+            #    when the machine happens to sit behind it, which is why that
+            #    version passed here and failed on a loaded CI runner: under
+            #    load the machine drifts between commands and the breakpoint
+            #    falls behind the walk instead of in front of it.
+            #
+            #    The walk must also not already stand on the target: run_until
+            #    resumes into a fetch of the PC it is parked on, so a machine
+            #    sitting at &6201 lands immediately without going round at
+            #    all. Step clear of it and say so, rather than assuming where
+            #    the previous command left us -- under load the machine drifts
+            #    between commands.
+            ipc.send_command('step 2')
+            _, regs = ipc.get_regs()
+            if regs.get('PC') == 0x6201:
+                ipc.send_command('step 1')
+                _, regs = ipc.get_regs()
+            if regs.get('PC') == 0x6201:
+                print("FAIL: could not step clear of the target &6201")
+                return False
+            ok, resp = ipc.send_command('step to 0x6201')
+            if ok or 'stopped-elsewhere' not in resp:
+                print(f"FAIL: step to must report a breakpoint that fires "
+                      f"before the target as an error, got: {resp}")
+                return False
+            print("PASS: wait pc and step to agree — own breakpoint at the "
+                  "target is OK, an intervening stop is 409")
+            return True
+    finally:
+        os.unlink(bin_path)
+
+
+def test_wait_pc_aborts_on_shutdown():
+    """A wait in flight must not hold the process open for its whole deadline.
+
+    A `wait pc` runs on the IPC server's one command thread, which teardown
+    joins, and the teardown before that pause-waits the Z80 the walk keeps
+    resuming. The run-to-address walk only watched its own deadline, so
+    quitting while a client had `wait pc <unreachable> 60000` outstanding
+    could hold the exit for the rest of that minute; harnesses routinely use
+    15-30s waits. The walk now takes an abort predicate (unit-tested in
+    Z80RunUntilEphemeral.HonoursTheCallersAbortPredicate) and answers
+    ERR 503 shutting-down.
+
+    The assertion here is the one this level can make honestly: the process
+    exits promptly with the wait outstanding. The 503 itself may not reach the
+    client — teardown ends in _exit(), which can beat the reply onto the wire.
+    """
+    print("Running wait pc shutdown-abort test...")
+    with EmulatorRunner() as emu:
+        # The emulator ends its own run while the wait below is outstanding.
+        if not emu.start('--exit-after=4s'):
+            print("FAIL: Could not start emulator")
+            return False
+        assert emu.process is not None
+        port = emu.ipc.port
+        reply = {}
+
+        def waiter():
+            # &4321 is RAM the firmware never executes, so this wait can only
+            # end at its deadline or by the shutdown abort.
+            ipc = KoncepcjaIPC(port=port, timeout=90.0)
+            reply['result'] = ipc.send_command('wait pc 0x4321 60000')
+
+        thread = threading.Thread(target=waiter, daemon=True)
+        thread.start()
+        time.sleep(0.5)  # let the wait get in flight before the exit lands
+        started = time.monotonic()
+        try:
+            emu.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            print("FAIL: the emulator did not exit while a wait pc was in "
+                  "flight (its 60s deadline held the process open)")
+            return False
+        elapsed = time.monotonic() - started
+        if elapsed > 15:
+            print(f"FAIL: exit took {elapsed:.1f}s — the wait's deadline, "
+                  f"not the shutdown, ended it")
+            return False
+        thread.join(timeout=10)
+        ok, resp = reply.get('result', (False, ''))
+        if ok:
+            print(f"FAIL: the interrupted wait must not answer OK: {resp}")
+            return False
+        if resp and 'shutting-down' not in resp:
+            print(f"FAIL: the aborted wait answered something other than "
+                  f"ERR 503 shutting-down: {resp}")
+            return False
+        print(f"PASS: wait pc did not hold the exit; it took {elapsed:.1f}s")
+        return True
+
+
 def test_inject_launches_like_run():
     """-i/--inject must hand the program to the firmware the way RUN" does.
 
@@ -750,17 +955,27 @@ def test_inject_launches_like_run():
             if not ok or not resp.endswith('00'):
                 print(f"FAIL: &6100 must start clear, got {resp}")
                 return False
+            # Let the firmware settle first. `wait pc` now stops on the very
+            # first instruction after MC START PROGRAM, and a key that is down
+            # during the next 5-10 frames is never delivered, however it is
+            # pressed (measured with an exact wait: a 5-frame settle misses
+            # 2/2, 10 lands 2/2). That window is the program's start-up, not
+            # the tap, so settle well clear of it.
+            ok, resp = ipc.send_command('wait vbl 50 20000')
+            if not ok:
+                print(f"FAIL: wait vbl 50: {resp}")
+                return False
             ipc.run()
-            # Hold the key across several frames rather than 'input key a':
-            # the default 2-frame tap releases from the IPC thread and races
-            # the once-per-frame publish of the matrix the firmware scans, so
-            # the firmware can miss it entirely under load (beads-cjej). This
-            # test is about the launch path, not the tap.
-            for cmd in ('input keydown a', 'wait vbl 5', 'input keyup a'):
-                ok, resp = ipc.send_command(cmd)
-                if not ok:
-                    print(f"FAIL: {cmd}: {resp}")
-                    return False
+            # The default tap, sent while the machine runs. It used to count
+            # the frame already running when it pressed, so the key could be
+            # released after a single scannable frame, or before the firmware
+            # scanned it at all when the release raced the matrix publish; the
+            # hold now counts only frames that began with the key down
+            # (beads-cjej). This is that regression check.
+            ok, resp = ipc.send_command('input key a')
+            if not ok:
+                print(f"FAIL: input key a: {resp}")
+                return False
             # Only the firmware's ISR (KM SCAN KEYS every frame flyback) can
             # move that key into the buffer KM READ CHAR drains.
             ok, resp = ipc.send_command('wait mem 0x6100 0x61 5000')
@@ -2280,6 +2495,99 @@ def test_disk_live_put_cat():
         return True
 
 
+def test_disk_put_basic_listing_runs():
+    """A BASIC listing pushed with `disk put` must RUN (beads-otjf).
+
+    `disk put` gave every file a BINARY header with load/exec address 0, so
+    RUN" of a pushed .bas executed its text as Z80 code at &0000 and rebooted
+    the machine. A plain-text .bas is now written the way SAVE"x",A writes one
+    -- no header, CR LF lines, a ^Z at the end -- and BASIC tokenises it on
+    load. The program's POKE is the proof it ran.
+    """
+    print("Running disk put BASIC listing → RUN\" test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 25.0
+        with tempfile.TemporaryDirectory() as td:
+            host = os.path.join(td, 'prog.bas')
+            with open(host, 'w', newline='\n') as f:
+                f.write('10 POKE &6100,&61\n')
+            for cmd in ('disk format A data', f'disk put A {host}'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+        # A plain listing is stored headerless; BINARY here is the old bug.
+        ok, resp = ipc.send_command('disk info A PROG.BAS')
+        if ok or 'no valid AMSDOS header' not in resp:
+            print(f"FAIL: a listing must be stored without a header: {resp}")
+            return False
+        # Boot to the prompt and let it settle before typing (see
+        # test_m4_cat_lists_the_sd_card: keys typed at once get eaten).
+        for cmd in ('wait vbl 150 30000', 'mem write 0x6100 00'):
+            ok, resp = ipc.send_command(cmd)
+            if not ok:
+                print(f"FAIL: {cmd}: {resp}")
+                return False
+        ipc.run()
+        # NOT quoted: autotype types everything after the first space.
+        ok, resp = ipc.send_command('autotype run"prog~RETURN~')
+        if not ok:
+            print(f"FAIL: autotype: {resp}")
+            return False
+        ok, resp = ipc.send_command('wait mem 0x6100 0x61 20000')
+        if not ok:
+            print(f"FAIL: RUN\"prog never executed the listing: {resp}")
+            return False
+        print("PASS: a disk-put BASIC listing loads and RUNs")
+        return True
+
+
+def test_frames_dump_stops_at_a_breakpoint():
+    """`frames dump` must end, not wedge, when a breakpoint fires mid-step.
+
+    Each recorded frame is a one-frame step; a breakpoint pauses the machine
+    before the frame completes, so the step never counted down and the old
+    loop spun on it forever -- the socket, and every command after it, hung.
+    RST &38 runs on every interrupt (300/s), so a breakpoint there fires in
+    the first frame.
+    """
+    print("Running frames dump vs breakpoint test...")
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 15.0
+        with tempfile.TemporaryDirectory() as td:
+            gif = os.path.join(td, 'rec.gif')
+            for cmd in ('wait vbl 10', 'bp add 0x0038'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+            ok, resp = ipc.send_command(f'frames dump {gif} 20')
+            if not ok or not resp.startswith('OK frames='):
+                print(f"FAIL: frames dump under a breakpoint: {resp!r}")
+                return False
+            recorded = int(resp.split('=')[1].split()[0])
+            if recorded >= 20:
+                print(f"FAIL: recorded all {recorded} frames through a "
+                      f"breakpoint at &0038")
+                return False
+            ok, resp = ipc.send_command('ping')
+            if not ok:
+                print(f"FAIL: connection unusable afterwards: {resp}")
+                return False
+        ipc.send_command('bp clear')
+        print(f"PASS: recording ended at the breakpoint ({recorded} frames)")
+        return True
+
+
 def test_disk_status_save_eject():
     """File-menu Save Disk / Eject Disk over IPC (live FDC, not host t_drive).
 
@@ -2657,6 +2965,17 @@ def test_conditional_debug_matrix():
         if not emu.start('-O', 'system.run_tier=4'):
             print("  Failed to start emulator")
             return False
+        # Every check below asks the server to wait up to 5-6s, and this runs
+        # at the slowest tier. With the 5.0s default socket timeout the client
+        # abandons the connection first, so a server-side budget of 5000ms or
+        # more can never be observed: a slow-but-correct hit and a breakpoint
+        # that never fires produce the identical "silent". The checks passed
+        # only because hits normally land in well under a second — on a loaded
+        # runner they do not, and the last one reported "plain bp did not
+        # fire" for what may only have been the client giving up. Give the
+        # socket room so every budget here is observable and a real miss is
+        # reported as a real miss.
+        emu.ipc.timeout = 20.0
         time.sleep(5)  # let the firmware reach its idle loop
 
         def fires(arm_cmd, timeout_ms=5000):
@@ -2723,8 +3042,8 @@ def test_conditional_debug_matrix():
         # this assertion to match a green run -- it is the canary for exactly
         # that class of stale-mirror bug (beads-6561).
         #
-        # 4000ms, not 6000: KoncepcjaIPC's own socket timeout is 5.0s, so a
-        # longer server-side budget can never be observed by the client.
+        # 4000ms is plenty for a delivered key; the socket timeout raised at
+        # the top of this test is what makes any budget here observable at all.
         ok, _ = emu.ipc.send_command('bp add 0x1BD9 if carry')
         if not ok:
             print("  FAIL: 'if carry' refused at arm time")
@@ -2949,6 +3268,9 @@ def main():
     print("=" * 50)
 
     tests = [
+        test_wait_pc_is_exact,
+        test_wait_pc_aborts_on_shutdown,
+        test_run_to_address_breakpoint_polarity,
         test_inject_launches_like_run,
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,
@@ -2958,6 +3280,8 @@ def main():
         test_profile_load_rebuilds_machine,
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
+        test_disk_put_basic_listing_runs,
+        test_frames_dump_stops_at_a_breakpoint,
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,

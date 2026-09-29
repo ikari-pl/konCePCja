@@ -244,7 +244,15 @@ enum class Z80RunUntilResult : std::uint8_t {
   // from "too slow" for EVERY step command, not just the ones that happen to
   // route through z80_step_out_finish().
   Stalled,
+  // The caller's abort predicate asked the walk to give up before the target
+  // or the deadline arrived. The IPC server raises it while shutting down:
+  // stop() joins the thread this walk runs on, so a walk that only watched
+  // its deadline would hold the whole process open for the rest of it.
+  Aborted,
 };
+
+// Asked once per poll of a bounded walk: "give up now?". Empty means never.
+using Z80AbortPredicate = std::function<bool()>;
 
 // "Run to this address at full speed" — arm an ephemeral breakpoint at
 // `target`, resume, and wait for it. Shared by `step over`, `step out` and
@@ -253,9 +261,14 @@ enum class Z80RunUntilResult : std::uint8_t {
 // idle wait before the caller touches Z80 state again have exactly one
 // definition. Always returns with the machine paused and no ephemeral left
 // armed. The caller must have idled the CPU first.
+//
+// `should_abort` is polled next to the deadline; when it answers true the walk
+// pauses, disarms and returns Aborted. Callers whose wait can outlive their
+// own thread (the IPC server's, which stop() joins) must pass one.
 Z80RunUntilResult z80_run_until_ephemeral(
     word target, std::chrono::steady_clock::time_point deadline,
-    const BreakpointHitConsumer& consume_hit = {});
+    const BreakpointHitConsumer& consume_hit = {},
+    const Z80AbortPredicate& should_abort = {});
 
 // Finish the current stack frame on the sub-cycle engine. The caller must
 // first idle the CPU. A hit consumer is optional: IPC supplies its

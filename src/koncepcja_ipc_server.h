@@ -54,6 +54,19 @@ class KoncepcjaIpcServer {
   // Set true when frame stepping is active; main loop pauses when count reaches
   // 0
   std::atomic<bool> frame_step_active{false};
+  // Only frames that began with a keyboard snapshot newer than this serial
+  // (g_kbd_publish_serial) count toward the step. 0 counts every frame; a key
+  // tap arms it with the serial read after its press, so the hold is measured
+  // in frames the firmware could actually scan the key in (beads-cjej).
+  std::atomic<uint64_t> frame_step_after_serial{0};
+
+  // Arm a frame step of n counted frames (see frame_step_after_serial).
+  void arm_frame_step(int n, uint64_t after_serial = 0);
+  // Called by the emulation loop at each completed frame with the serial of
+  // the keyboard snapshot that frame began with. Returns true when this frame
+  // finished the step; the caller then pauses and calls
+  // notify_frame_step_done().
+  bool frame_step_tick(uint64_t frame_kbd_serial);
 
   // Signal that frame stepping has completed (called from main loop)
   void notify_frame_step_done();
@@ -111,6 +124,16 @@ void ipc_check_vbl_events();
 // MUST be called once per frame on the main thread — the IPC server thread only
 // accumulates; this applies. Cheap no-op when nothing is pending.
 void ipc_drain_input();
+
+// Publish whether a mouse (AMX/Symbiface) and a light gun are fitted, for the
+// `input mouse`/`input gun` gates on the IPC thread. ipc_drain_input() does it
+// every frame; loadConfiguration() does it too, so the gates are right before
+// the first drain -- in GUI mode the Z80 thread (and a client talking to it)
+// can run before the main loop's first frame (beads-i834).
+void ipc_publish_device_gates(bool mouse_fitted, bool gun_fitted);
+// The published state, as the gates read it.
+bool ipc_mouse_gate_open();
+bool ipc_gun_gate_open();
 
 // Main thread: publish the host keymap in use and the directory its *.map
 // files live in, for `config get|set kbd_layout(s)` to answer from without

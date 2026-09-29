@@ -94,7 +94,7 @@ Options:
   -s/--sym_file=<file>     Load symbols for disassembly
   -V/--version             Show version
   -v/--verbose             Verbose logging
-     --fps                 Log once-per-second FPS to stdout
+  -F/--fps                 Log once-per-second FPS to stdout
 
 Slot files: .dsk/.ipf/.raw (disk), .scp/.hfe/.a2r (flux disk, drive A only),
 .cdt/.voc (tape), .cpr (cartridge), .sna (snapshot), .zip (archive of any
@@ -172,7 +172,7 @@ OK available commands (usage: help <command>):
 | `bp list` | List breakpoints | `bp list` → `OK count=1 4000` |
 | `bp clear` | Clear all breakpoints | `bp clear` → `OK` |
 | `step [n]` | Step N instructions | `step 10` → `OK` |
-| `wait pc <addr> [timeout]` | Wait for PC | `wait pc 0x4000 5000` |
+| `wait pc <addr> [timeout]` | Run until PC reaches addr exactly (one-shot breakpoint), then pause. A breakpoint of your own AT addr counts as arriving (`OK`); one that fires earlier is `ERR 409 stopped-elsewhere`, and a shutdown mid-wait is `ERR 503 shutting-down` | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
 | `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Wait N vertical blanks | `wait vbl 50` |
@@ -180,16 +180,16 @@ OK available commands (usage: help <command>):
 | `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
 | `snapshot save <path>` | Save state | `snapshot save game.sna` |
 | `snapshot load <path>` | Load state | `snapshot load game.sna` |
-| `load <path>` | Load file (.dsk/.sna/.cpr/.bin) | `load game.dsk` |
-| `devtools` | Open DevTools window | `devtools` → `OK` |
+| `load <path>` | Load file (.dsk/.sna/.cpr/.bin); a successful disk/tape/snapshot/cartridge load also lands on the matching Recent list, with the path made absolute (GUI saves the config, `--headless` does not) | `load game.dsk` |
+| `devtools` | Open DevTools window (idempotent); `devtools off` closes; F12 toggles | `devtools` → `OK` |
 | `config get\|set <key> [val]` | Read/modify settings (`model`, `crtc_type`, `ram_size`, …) | `config set model 3` |
 | `config apply` | Rebuild the machine with staged settings (needed after `config set model`) | `config apply` → `OK` |
 | `tier` | Run-tier policy | `tier` → `OK policy=auto effective=fast pinned=0` |
 | `tier set <p>` | Set policy: auto/fast/wake/soldered/faithful | `tier set wake` → `OK policy=wake` |
 | `input keydown <name>` | Press and hold a key | `input keydown SHIFT` |
 | `input keyup <name>` | Release a key | `input keyup SHIFT` |
-| `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release) | `input key RETURN hold=5` |
-| `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once) | `input chord CTRL+SHIFT+ESC` |
+| `input key <name> [hold=N]` | Tap a key (press, hold N frames [default 2], release). The hold counts frames that began with the key down, so the firmware scans it N times | `input key RETURN hold=5` |
+| `input chord <M+K> [hold=N]` | Atomic modified tap (modifiers then one key, all down at once). Same hold semantics as `input key`: N frames that began with the keys down | `input chord CTRL+SHIFT+ESC` |
 | `input type <text>` | Type text via AutoTypeQueue (supports `~KEY~`, newlines; async like `autotype`) | `input type run"game~RETURN~` |
 | `input joy <0\|1> <dir>` | Joystick dir (U/D/L/R/F1/F2, `0`=release all, `-`=release one) | `input joy 0 F1` |
 | `input mouse move <dx> <dy>` | Relative mouse motion (needs AMX/Symbiface mouse enabled) | `input mouse move 10 -4` |
@@ -239,6 +239,12 @@ The harness provides two classes:
   one).  All methods return `(bool, str)` or `bool`.
 - **`EmulatorRunner`** — context manager that launches and tears down the
   emulator process, waits for the IPC port to come up.
+
+`make e2e_test` runs the same suite the macOS CI job runs
+(`test/integrated/run_tests.sh`, which includes this harness).
+`make e2e_test_slow` runs it pinned to the efficiency cores (`taskpolicy -b`
+on macOS, `nice` elsewhere), the cheap way to reproduce a flake that only a
+slow shared CI Mac shows.
 
 #### Key patterns
 

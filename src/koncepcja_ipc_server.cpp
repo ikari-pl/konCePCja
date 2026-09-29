@@ -61,6 +61,7 @@
 #include "flux_save.h"
 #include "gif_recorder.h"
 #include "imgui_ui_testable.h"
+#include "ipc_mru.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "m4board.h"
@@ -561,6 +562,19 @@ static std::string ipc_request_rebuild_and_wait() {
   return {};
 }
 
+void ipc_publish_device_gates(bool mouse_fitted, bool gun_fitted) {
+  g_ipc_mouse.device_active.store(mouse_fitted, std::memory_order_relaxed);
+  g_ipc_gun.device_active.store(gun_fitted, std::memory_order_relaxed);
+}
+
+bool ipc_mouse_gate_open() {
+  return g_ipc_mouse.device_active.load(std::memory_order_relaxed);
+}
+
+bool ipc_gun_gate_open() {
+  return g_ipc_gun.device_active.load(std::memory_order_relaxed);
+}
+
 void ipc_drain_input() {
   ipc_drain_rebuild();
   {
@@ -605,10 +619,11 @@ void ipc_drain_input() {
   }
   // Publish device-enabled state for the IPC thread's gates (read of the plain
   // bool flags is safe here — this runs on the main thread that writes them).
-  g_ipc_mouse.device_active.store(g_amx_mouse.enabled || g_symbiface.enabled,
-                                  std::memory_order_relaxed);
-  g_ipc_gun.device_active.store(static_cast<bool>(CPC.phazer_emulation),
-                                std::memory_order_relaxed);
+  ipc_publish_device_gates(g_amx_mouse.enabled || g_symbiface.enabled,
+                           static_cast<bool>(CPC.phazer_emulation));
+  // A headless run is automation (CI, an agent's scratch session): its loads
+  // go on the Recent list but never rewrite the user's config file.
+  ipc_mru_apply_staged(!g_headless);
 
   if (g_ipc_mouse.dirty.load(std::memory_order_acquire)) {
     int32_t dx = 0;
@@ -685,6 +700,54 @@ namespace {
 constexpr int kBasePort = 6543;
 constexpr int kMaxPortAttempts = 10;  // try 6543..6552
 KoncepcjaIpcServer* g_ipc_instance = nullptr;
+
+// The server handles commands on its one thread and stop() joins it, so every
+// bounded wait must give up when the server is stopping or process exit hangs
+// for the rest of that wait's deadline. One definition, shared by the polling
+// waits and by the run-to-address walks they hand to z80_run_until_ephemeral().
+bool ipc_server_stopping() {
+  return g_ipc_instance != nullptr && !g_ipc_instance->is_running();
+}
+
+// What stopped a z80_run_until_ephemeral() walk, remembered on the way past.
+// The walk consumes the hit itself, so the handler that has to describe the
+// stop can only learn of it here.
+//
+// `step to` and `wait pc` both need the same distinction: a user breakpoint
+// armed at the very address being run to is a LANDING (run_until reports it as
+// OtherBreak because the user's stop wins over its own bookkeeping), while a
+// breakpoint or watchpoint anywhere else is a stop somewhere else.
+struct RunUntilStop {
+  bool hit_seen = false;
+  uint16_t last_pc = 0;
+  bool last_watch = false;
+  int consumes = 0;
+
+  void reset() {
+    hit_seen = false;
+    last_pc = 0;
+    last_watch = false;
+    consumes = 0;
+  }
+
+  // run_until's first call only drains a hit latched before it armed; that
+  // stale hit belongs to whatever ran last, not to this walk.
+  BreakpointHitConsumer consumer() {
+    return [this](uint16_t& pc, bool& watch) {
+      bool const hit = g_ipc_instance->consume_breakpoint_hit(pc, watch);
+      if (consumes++ > 0 && hit) {
+        hit_seen = true;
+        last_pc = pc;
+        last_watch = watch;
+      }
+      return hit;
+    };
+  }
+
+  bool landed_at(word target) const {
+    return hit_seen && !last_watch && last_pc == target;
+  }
+};
 
 struct IpcCommand {
   std::string name;
@@ -913,10 +976,8 @@ void init_command_registry() {
               "ERR 400 usage: tier [get|status] | tier set "
               "auto|fast|wake|soldered|faithful\n");
         }
-        static const char* const kPolicyNames[] = {"auto", "fast", "wake",
-                                                   "soldered", "faithful"};
-        int const policy = static_cast<int>(subcycle_bridge_tier_policy());
-        return std::string("OK policy=") + kPolicyNames[policy] +
+        return std::string("OK policy=") +
+               subcycle_bridge_tier_policy_name(subcycle_bridge_tier_policy()) +
                " effective=" + subcycle_bridge_effective_tier_name() +
                " pinned=" + (subcycle_bridge_tier_env_pinned() ? "1\n" : "0\n");
       });
@@ -1043,7 +1104,11 @@ void init_command_registry() {
       "wait bp [timeout] | wait vbl <N> [timeout]",
       "Wait for a condition before returning",
       "Blocks until a condition is met or timeout (default 5000ms).\n"
-      "  pc:  Resumes and waits until PC equals <addr>.\n"
+      "  pc:  Resumes and waits until PC equals <addr>, stopping on it "
+      "exactly with a one-shot breakpoint. A breakpoint of your own AT <addr> "
+      "is an arrival (OK breakpoint-hit); one that fires earlier is ERR 409 "
+      "stopped-elsewhere. A server shutdown mid-wait answers ERR 503 "
+      "shutting-down rather than holding exit for the rest of the timeout.\n"
       "  mem: Resumes and waits until memory at <addr> equals <val> (with "
       "optional mask).\n"
       "  bp:  Waits for a committed breakpoint or watchpoint stop. Only "
@@ -1072,7 +1137,10 @@ void init_command_registry() {
       "before the RET, an untaken RET cc, and an interrupt mid-walk all safe. "
       "ERR 409 no-progress only if no machine is attached; a frame that never "
       "returns is ERR 408 timeout.\n"
-      "  to <addr>: Run-to-cursor via an ephemeral breakpoint.\n"
+      "  to <addr>: Run-to-cursor via an ephemeral breakpoint. A breakpoint "
+      "of your own AT <addr> is an arrival (OK breakpoint-hit); any other "
+      "breakpoint or watchpoint firing first is ERR 409 stopped-elsewhere, "
+      "the same polarity wait pc uses.\n"
       "  frame [N]: Steps exactly N video frames (1/50th of a second).");
 
   register_command(
@@ -1088,7 +1156,9 @@ void init_command_registry() {
       "  keydown: Presses and holds <name> (matrix bit stays set).\n"
       "  keyup:   Releases <name>.\n"
       "  key:     Taps <name> (press, hold, release). Optional hold=<frames> "
-      "overrides the default 2-frame hold.\n"
+      "overrides the default 2-frame hold. The hold counts frames that began "
+      "with the key down, so the firmware's keyboard scan sees it that many "
+      "times.\n"
       "  chord:   Atomic modified tap, e.g. 'chord CTRL+SHIFT+ESC'. Leading "
       "modifier tokens (CTRL|SHIFT) then one base key; all rows go down in one "
       "atomic write. Optional hold=<frames>.\n"
@@ -1118,7 +1188,7 @@ void init_command_registry() {
       "disk formats | format <A|B> <format> | new <path> [format] "
       "[sector|flux] | status|eject <A|B> | save <A|B> <path> [dsk|scp|hfe] | "
       "ls|info <A|B> | cat|rm <A|B> <file> | get <A|B> <file> <path> | put "
-      "<A|B> <path> [file] | sector ...",
+      "<A|B> <path> [file] [auto|basic|binary|ascii] | sector ...",
       "Manage emulated floppy disks",
       "High-level disk management. Mutations (format/put/rm/sector write) "
       "push to the live FDC; a failed push rolls the host view back so "
@@ -1132,7 +1202,16 @@ void init_command_registry() {
       "  eject: Unmount the drive (no GUI confirm). Dirty media follows the "
       "same flush-on-eject path as the File menu.\n"
       "  ls: Lists files on the disk currently in the specified drive.\n"
-      "  put: Copies a file from the host machine onto the emulated disk.");
+      "  put: Copies a file from the host machine onto the emulated disk. "
+      "The optional last word picks how: basic (AMSDOS header type 0, a "
+      "tokenised program), binary (header type 2, load/exec 0), ascii (no "
+      "header, as SAVE\"x\",A writes it: bare LF becomes CR LF and the "
+      "text ends at the first ^Z, so RUN\" tokenises it). Without it (auto): "
+      "a file that already has an AMSDOS header is written unchanged; "
+      ".txt/.asc are ascii; a .bas is basic when it holds a 0x00 byte (it is "
+      "tokenised) and ascii otherwise; anything else is binary. The host "
+      "extension decides, or the CPC name's when the host one is none of "
+      "these.");
 
   register_command(
       "repaint", "DEBUG", "repaint [--screenshot PATH]",
@@ -1749,7 +1828,13 @@ std::string handle_command(const std::string& line) {
         CPC.driveA.zip_index = 0;
         int const rc = file_load(CPC.driveA);
         lease.restore_run_state();
-        return rc == 0 ? ok_with_context() : "ERR 500 load-disk\n";
+        if (rc != 0) return "ERR 500 load-disk\n";
+        // Only a load that actually happened goes on the Recent list, and it
+        // goes on after the lease has restored the run state -- staging is
+        // just a queue for the main thread, so it must not sit inside the
+        // window where the machine is still held still.
+        ipc_mru_stage(&t_CPC::mru_disks, path);
+        return ok_with_context();
       }
       if (ext == ".sna") {
         CpcPauseLease lease;
@@ -1762,20 +1847,24 @@ std::string handle_command(const std::string& line) {
           lease.release();
           cpc_resume();
         }
-        return rc == 0 ? ok_with_context() : "ERR 500 load-sna\n";
+        if (rc != 0) return "ERR 500 load-sna\n";
+        ipc_mru_stage(&t_CPC::mru_snaps, path);
+        return ok_with_context();
       }
       if (ext == ".cdt" || ext == ".voc") {
         CPC.tape.file = path;
         CPC.tape.zip_index = 0;
         if (file_load(CPC.tape) != 0) return "ERR 500 load-tape\n";
         tape_scan_blocks();  // build the block table (parity with the GUI load)
+        ipc_mru_stage(&t_CPC::mru_tapes, path);
         return ok_with_context();
       }
       if (ext == ".cpr") {
         CPC.cartridge.file = path;
         CPC.cartridge.zip_index = 0;
-        return file_load(CPC.cartridge) == 0 ? ok_with_context()
-                                             : "ERR 500 load-cpr\n";
+        if (file_load(CPC.cartridge) != 0) return "ERR 500 load-cpr\n";
+        ipc_mru_stage(&t_CPC::mru_carts, path);
+        return ok_with_context();
       }
       if (ext == ".bin") {
         switch (bin_load(path, 0x6000)) {
@@ -2240,7 +2329,9 @@ std::string handle_command(const std::string& line) {
           lease.release();
           cpc_resume();
         }
-        return rc == 0 ? ok_with_context() : "ERR 500 snapshot-load\n";
+        if (rc != 0) return "ERR 500 snapshot-load\n";
+        ipc_mru_stage(&t_CPC::mru_snaps, parts[2]);
+        return ok_with_context();
       }
     }
     if (cmd == "snapshot")
@@ -2866,8 +2957,7 @@ std::string handle_command(const std::string& line) {
         int n = 1;
         if (parts.size() >= 3) n = parse_int(parts[2]);
         if (n < 1) return "ERR 400 bad-args\n";
-        g_ipc_instance->frame_step_remaining.store(n);
-        g_ipc_instance->frame_step_active.store(true);
+        g_ipc_instance->arm_frame_step(n);
         lease.release();
         cpc_resume();
         g_ipc_instance->wait_frame_step_done();
@@ -2888,13 +2978,16 @@ std::string handle_command(const std::string& line) {
             word const next_pc =
                 static_cast<word>(pc + z80_instruction_length(pc));
             lease.release();
-            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit)) {
+            switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit,
+                                            ipc_server_stopping)) {
               case Z80RunUntilResult::Landed:
                 break;
               case Z80RunUntilResult::OtherBreak:
                 return ok_with_context(breakpoint_hit_body());
               case Z80RunUntilResult::Timeout:
                 return err_with_context(408, "timeout");
+              case Z80RunUntilResult::Aborted:
+                return "ERR 503 shutting-down\n";
               case Z80RunUntilResult::Stalled:
                 return err_with_context(409, "no-progress");
             }
@@ -2953,23 +3046,29 @@ std::string handle_command(const std::string& line) {
       // "step to <addr>" — run-to-cursor (ephemeral breakpoint)
       if (parts.size() >= 3 && parts[1] == "to") {
         unsigned int const addr = parse_number(parts[2]);
-        auto consume_hit = [](uint16_t& pc, bool& watch) {
-          return g_ipc_instance->consume_breakpoint_hit(pc, watch);
-        };
+        RunUntilStop stop;
         auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
         lease.release();
         switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
-                                        consume_hit)) {
+                                        stop.consumer(), ipc_server_stopping)) {
           case Z80RunUntilResult::Landed:
             return ok_with_context();
           case Z80RunUntilResult::OtherBreak:
-            // Previously indistinguishable: any hit ended the wait and was
-            // reported as a successful run-to-cursor, even a watchpoint or an
-            // unrelated breakpoint that fired on the way.
-            return ok_with_context(breakpoint_hit_body());
+            // A user breakpoint armed at `addr` fired as we arrived: the CPU
+            // is standing where the caller asked, so this is a landing.
+            if (stop.landed_at(static_cast<word>(addr)))
+              return ok_with_context(breakpoint_hit_body());
+            // Anything else stopped us short of `addr`. Reported as an error,
+            // not `OK breakpoint-hit`: a client whose success test is "the
+            // reply starts with OK" would otherwise believe it reached the
+            // address. Same polarity as `wait pc`, which shares this walk.
+            return err_with_context(
+                409, "stopped-elsewhere " + breakpoint_hit_body());
           case Z80RunUntilResult::Timeout:
             return err_with_context(408, "timeout");
+          case Z80RunUntilResult::Aborted:
+            return "ERR 503 shutting-down\n";
           case Z80RunUntilResult::Stalled:
             return err_with_context(409, "no-progress");
         }
@@ -3037,6 +3136,17 @@ std::string handle_command(const std::string& line) {
           (lower_pattern.size() >= 4 &&
            lower_pattern.substr(lower_pattern.size() - 4) == ".gif");
 
+      // Advance one frame. False when a breakpoint stopped the machine
+      // mid-step: the frame never completes, and the old unbounded spin on
+      // frame_step_active wedged this connection for good. The recording
+      // ends there with what it has; the stop is the caller's `wait bp`.
+      auto step_one_frame = [&]() -> bool {
+        if (!g_ipc_instance) return true;
+        g_ipc_instance->arm_frame_step(1);
+        cpc_resume();
+        g_ipc_instance->wait_frame_step_done();
+        return !g_ipc_instance->breakpoint_hit_pending();
+      };
       if (is_gif) {
         // Animated GIF output
         if (!back_surface) return "ERR 503 no-surface\n";
@@ -3046,22 +3156,16 @@ std::string handle_command(const std::string& line) {
         if (!gif.begin(back_surface->w, back_surface->h, delay_cs)) {
           return "ERR 500 gif-begin-failed\n";
         }
+        int recorded = 0;
         for (int i = 0; i < frame_count; i++) {
-          // Advance one frame
-          if (g_ipc_instance) {
-            g_ipc_instance->frame_step_remaining.store(1);
-            g_ipc_instance->frame_step_active.store(true);
-            cpc_resume();
-            while (g_ipc_instance->frame_step_active.load()) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            }
-          }
+          if (!step_one_frame()) break;
           gif.add_frame(static_cast<const uint8_t*>(back_surface->pixels),
                         back_surface->pitch);
+          ++recorded;
         }
         if (gif.end(pattern)) {
           char buf[64];
-          snprintf(buf, sizeof(buf), "OK frames=%d\n", frame_count);
+          snprintf(buf, sizeof(buf), "OK frames=%d\n", recorded);
           return {buf};
         }
         return "ERR 500 gif-write-failed\n";
@@ -3070,14 +3174,7 @@ std::string handle_command(const std::string& line) {
       // PNG series output
       int saved = 0;
       for (int i = 0; i < frame_count; i++) {
-        if (g_ipc_instance) {
-          g_ipc_instance->frame_step_remaining.store(1);
-          g_ipc_instance->frame_step_active.store(true);
-          cpc_resume();
-          while (g_ipc_instance->frame_step_active.load()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-          }
-        }
+        if (!step_one_frame()) break;
         char fname[512];
         if (pattern.find('%') != std::string::npos) {
           // Safe replacement for common patterns
@@ -3156,8 +3253,15 @@ std::string handle_command(const std::string& line) {
         bool const was_paused = CPC.paused;
         ipc_apply_keypress(scancode, keyboard_matrix, true);
         if (g_ipc_instance) {
-          g_ipc_instance->frame_step_remaining.store(hold_frames);
-          g_ipc_instance->frame_step_active.store(true);
+          // Count the hold from the first keyboard snapshot published after
+          // the press, not from whatever frame happens to be running: that
+          // frame began with the old matrix, so counting it let the release
+          // land before the firmware ever scanned the key (beads-cjej). The
+          // serial is read AFTER the press — a publish racing in between
+          // only makes the hold one frame longer, never shorter.
+          g_ipc_instance->arm_frame_step(
+              hold_frames,
+              g_kbd_publish_serial.load(std::memory_order_acquire));
           cpc_resume();
           // Block on the frame-step condvar until the hold completes — no
           // busy-wait.
@@ -3357,7 +3461,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "mouse" && parts.size() >= 3) {
         // Mouse input is staged here and flushed on the main thread by
         // ipc_drain_input() — see the IpcMousePending comment above.
-        if (!g_ipc_mouse.device_active.load(std::memory_order_relaxed))
+        if (!ipc_mouse_gate_open())
           return "ERR 409 no-mouse-device (enable AMX or Symbiface mouse)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
           std::scoped_lock const lock(g_ipc_mouse.mutex);
@@ -3403,7 +3507,7 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "gun" && parts.size() >= 3) {
         // Light-gun (phazer) input is staged here and flushed on the main
         // thread by ipc_drain_input() — see the IpcGunPending comment above.
-        if (!g_ipc_gun.device_active.load(std::memory_order_relaxed))
+        if (!ipc_gun_gate_open())
           return "ERR 409 no-light-gun (enable a phazer type)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
           std::scoped_lock const lock(g_ipc_gun.mutex);
@@ -3473,18 +3577,72 @@ std::string handle_command(const std::string& line) {
     if (cmd == "wait" && parts.size() >= 2) {
       auto timeout_ms = std::chrono::milliseconds(kWaitDefaultTimeoutMs);
       auto deadline = std::chrono::steady_clock::now() + timeout_ms;
-      // The server handles commands on its one thread and stop() joins it:
-      // a wait must give up when the server is stopping, or exit hangs for
+      // A wait must give up when the server is stopping, or exit hangs for
       // the rest of the deadline (up to n x 20ms + 5s for `wait vbl`).
-      auto const server_stopping = []() {
-        return g_ipc_instance != nullptr && !g_ipc_instance->is_running();
-      };
+      auto const server_stopping = []() { return ipc_server_stopping(); };
 
       if (parts[1] == "pc") {
         unsigned int const addr = parse_number(parts[2]);
         if (parts.size() >= 4)
           deadline = std::chrono::steady_clock::now() +
                      std::chrono::milliseconds(parse_int(parts[3]));
+        // Exact, not sampled. The host register view is published once per
+        // frame, so polling z80.PC only ever saw the PC a frame happened to
+        // end on: code that passes through `addr` but spends its time
+        // elsewhere (a loop around a firmware call) was caught by luck, and a
+        // slow host that fit fewer frames into the deadline missed it
+        // outright. Stop there with a one-shot probe breakpoint instead, as
+        // `step to` does.
+        RunUntilStop stop;
+        bool stalled = false;
+        while (!stalled) {
+          stop.reset();
+          switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
+                                          stop.consumer(), server_stopping)) {
+            case Z80RunUntilResult::Landed:
+              return ok_with_context();
+            case Z80RunUntilResult::Timeout:
+              return err_with_context(408, "timeout");
+            case Z80RunUntilResult::Aborted:
+              // The server is being torn down while we waited. Answering now
+              // is the difference between a clean exit and one that hangs for
+              // the rest of this deadline -- harnesses use 15-30s ones.
+              return "ERR 503 shutting-down\n";
+            case Z80RunUntilResult::Stalled:
+              stalled = true;  // no machine: only the register view to watch
+              break;
+            case Z80RunUntilResult::OtherBreak:
+              // A user breakpoint sitting AT `addr` is a landing, not a stop
+              // somewhere else: the machine is standing exactly where the
+              // caller asked. `step to` reports it the same way.
+              if (stop.landed_at(static_cast<word>(addr)))
+                return ok_with_context(breakpoint_hit_body());
+              // A breakpoint or watchpoint stopped the machine before `addr`:
+              // report it (the hit was consumed here, so this is the only
+              // place its detail can go).
+              if (stop.hit_seen) {
+                return err_with_context(
+                    409, "stopped-elsewhere " + breakpoint_hit_body());
+              }
+              // Someone else paused and resumed the machine under us -- the
+              // -i injection does, to rewrite the registers. Keep waiting once
+              // it runs again; a pause that stays (a client's `pause`) is not
+              // ours to undo, so that runs out the deadline as before -- but
+              // if that pause left us standing on `addr`, the wait is over.
+              while (CPC.paused) {
+                if (z80.PC.w.l == addr) return ok_with_context();
+                if (server_stopping()) return "ERR 503 shutting-down\n";
+                if (std::chrono::steady_clock::now() > deadline)
+                  return err_with_context(408, "timeout");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              }
+              break;
+          }
+        }
+        // Test-only fallback. Stalled means no machine is attached, which
+        // outside the unit-test binary cannot happen; there the register view
+        // is all there is, so sample it rather than answer no-progress and
+        // lose the coverage `wait pc` has in that binary.
         cpc_resume();
         while (z80.PC.w.l != addr) {
           if (server_stopping()) {
@@ -4309,13 +4467,24 @@ std::string handle_command(const std::string& line) {
             });
       }
       if (parts[1] == "put") {
-        if (parts.size() < 4)
-          return "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename]\n";
+        static const char* const kPutUsage =
+            "ERR 400 usage: disk put <A|B> <local_path> [cpc_filename] "
+            "[auto|basic|binary|ascii]\n";
+        if (parts.size() < 4 || parts.size() > 6) return kPutUsage;
+        // The trailing type word is optional and so is the name before it:
+        // `disk put A prog.bas ascii` names the type, not a file "ASCII".
+        DiskPutMode mode = DiskPutMode::AUTO;
+        size_t name_args = parts.size() - 4;
+        if (name_args > 0 && disk_parse_put_mode(parts.back(), mode)) {
+          --name_args;
+        } else if (name_args > 1) {
+          return kPutUsage;  // two extra words, the last not a type
+        }
         return with_synced_drive(
             parts[2], true, [&](t_drive* drv) -> std::string {
               const std::string& local_path = parts[3];
               std::string cpc_name;
-              if (parts.size() >= 5) {
+              if (name_args == 1) {
                 cpc_name = parts[4];
                 // Uppercase it
                 for (auto& c : cpc_name)
@@ -4326,14 +4495,28 @@ std::string handle_command(const std::string& line) {
                 if (cpc_name.empty())
                   return "ERR cannot derive CPC filename from path\n";
               }
+              // A directory opens as a stream on POSIX and reads as empty, so
+              // it used to land on the disc as an empty file with an OK.
+              std::error_code ec;
+              if (!std::filesystem::is_regular_file(local_path, ec))
+                return "ERR cannot open " + local_path + "\n";
+              // Read after a size check, not before: the biggest thing that
+              // can fit on a CPC disc is ~200K, so a mistyped path pointing at
+              // a DVD image should be refused, not pulled into memory first.
+              constexpr uintmax_t kMaxPutBytes = 1024u * 1024u;
+              auto const size = std::filesystem::file_size(local_path, ec);
+              if (!ec && size > kMaxPutBytes)
+                return "ERR file too large (" + std::to_string(size) +
+                       " bytes, max " + std::to_string(kMaxPutBytes) + ")\n";
               std::ifstream in(local_path, std::ios::binary);
               if (!in) return "ERR cannot open " + local_path + "\n";
               std::vector<uint8_t> const data(
                   (std::istreambuf_iterator<char>(in)),
                   std::istreambuf_iterator<char>());
+              if (in.bad()) return "ERR cannot read " + local_path + "\n";
               in.close();
               std::string const err =
-                  disk_write_file(drv, cpc_name, data, true);
+                  disk_put_file(drv, cpc_name, local_path, data, mode);
               if (!err.empty()) return "ERR " + err + "\n";
               return "OK\n";
             });
@@ -6125,6 +6308,20 @@ bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc,
 }
 
 // --- Frame step synchronization ---
+
+void KoncepcjaIpcServer::arm_frame_step(int n, uint64_t after_serial) {
+  frame_step_after_serial.store(after_serial);
+  frame_step_remaining.store(n);
+  frame_step_active.store(true);
+}
+
+bool KoncepcjaIpcServer::frame_step_tick(uint64_t frame_kbd_serial) {
+  if (!frame_step_active.load()) return false;
+  // A frame that was already running when the step was armed began with an
+  // older snapshot; it does not count (see frame_step_after_serial).
+  if (frame_kbd_serial <= frame_step_after_serial.load()) return false;
+  return frame_step_remaining.fetch_sub(1) - 1 <= 0;
+}
 
 void KoncepcjaIpcServer::notify_frame_step_done() {
   frame_step_active.store(false);

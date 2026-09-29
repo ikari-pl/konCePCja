@@ -185,6 +185,241 @@ TEST_F(DiskFileEditorTest, WriteWithHeaderAndReadBack) {
   EXPECT_EQ(data, payload);
 }
 
+// `disk put` used to give every file a BINARY header (load/exec 0), so a
+// pushed BASIC program was RUN" as machine code at address 0 (beads-otjf).
+TEST(DiskPutMode, ParsesTheFourWordsInAnyCase) {
+  DiskPutMode m = DiskPutMode::BINARY;
+  EXPECT_TRUE(disk_parse_put_mode("auto", m));
+  EXPECT_EQ(DiskPutMode::AUTO, m);
+  EXPECT_TRUE(disk_parse_put_mode("BASIC", m));
+  EXPECT_EQ(DiskPutMode::BASIC, m);
+  EXPECT_TRUE(disk_parse_put_mode("Binary", m));
+  EXPECT_EQ(DiskPutMode::BINARY, m);
+  EXPECT_TRUE(disk_parse_put_mode("ascii", m));
+  EXPECT_EQ(DiskPutMode::ASCII, m);
+  EXPECT_FALSE(disk_parse_put_mode("PROG.BAS", m));
+  EXPECT_FALSE(disk_parse_put_mode("", m));
+}
+
+TEST(DiskPutMode, AutoPicksFromExtensionAndContents) {
+  const std::vector<uint8_t> listing = {'1', '0', ' ', 'P', 'R', 'I', 'N',
+                                        'T', ' ', '"', 'H', 'I', '"', '\n'};
+  // A tokenised line: length word, line number word, PRINT token (0xBF).
+  const std::vector<uint8_t> tokenised = {0x0A, 0x00, 0x0A, 0x00, 0xBF,
+                                          0x20, 0x22, 0x48, 0x22, 0x00};
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "/x/prog.bas", listing));
+  EXPECT_EQ(DiskPutMode::BASIC,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "/x/PROG.BAS", tokenised));
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "notes.TXT", tokenised));
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "prog.asc", listing));
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "code.bin", listing));
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "noext", listing));
+  // An explicit mode always wins over the guess.
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::BINARY, "prog.bas", listing));
+}
+
+// Review of PR #63: "all printable" misread listings as tokenised BASIC --
+// a CPC graphics character, a UTF-8 BOM, or the 0xE5 record padding that
+// `disk get` returns after the ^Z of an ASCII file each gave a listing a
+// type-0 header. Only a tokenised program holds 0x00 bytes.
+TEST(DiskPutMode, AutoReadsAListingWithHighBytesOrPaddingAsAscii) {
+  std::vector<uint8_t> listing = {'1',  '0',  ' ',  'R',  'E',  'M',  ' ',
+                                  0xE4, '\r', '\n', 0x1A, 0xE5, 0xE5, 0xE5};
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "p.bas", listing));
+  std::vector<uint8_t> const bom = {0xEF, 0xBB, 0xBF, '1', '0',
+                                    ' ',  'E',  'N',  'D', '\n'};
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "p.bas", bom));
+  // A tokenised program whose first line is 26 bytes long starts with 0x1A:
+  // still BASIC.
+  std::vector<uint8_t> const tok = {0x1A, 0x00, 0x0A, 0x00, 0xBF, 0x00};
+  EXPECT_EQ(DiskPutMode::BASIC,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "p.bas", tok));
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "p.bas", {}));
+}
+
+// A host temp file with no extension pushed as GAME.BAS used to get a BINARY
+// header (load/exec 0) -- RUN" of it reset the machine.
+TEST(DiskPutMode, AutoFallsBackToTheCpcNameExtension) {
+  std::vector<uint8_t> const listing = {'1', '0', ' ', 'E', 'N', 'D', '\n'};
+  EXPECT_EQ(DiskPutMode::ASCII,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "/tmp/tmpXYZ", listing,
+                                  "GAME.BAS"));
+  EXPECT_EQ(DiskPutMode::BINARY,
+            disk_resolve_put_mode(DiskPutMode::AUTO, "/tmp/tmpXYZ", listing,
+                                  "GAME.BIN"));
+  EXPECT_EQ(
+      DiskPutMode::ASCII,
+      disk_resolve_put_mode(DiskPutMode::AUTO, "prog.txt", listing, "GAME.BIN"))
+      << "a host .bas/.txt/.asc wins over the CPC name";
+}
+
+TEST_F(DiskFileEditorTest, PutAsciiEdgeCases) {
+  std::string err;
+  // Empty file: just the ^Z.
+  ASSERT_EQ("",
+            disk_put_file(&driveA, "E.TXT", "e.txt", {}, DiskPutMode::ASCII));
+  auto raw = disk_read_file(&driveA, "E.TXT", err);
+  ASSERT_EQ("", err);
+  ASSERT_FALSE(raw.empty());
+  EXPECT_EQ(0x1A, raw[0]);
+  // Input that already ends in ^Z gets exactly one; a lone LF at the start
+  // gains its CR.
+  ASSERT_EQ("",
+            disk_put_file(&driveA, "Z.TXT", "z.txt",
+                          {'\n', 'A', '\r', '\n', 0x1A}, DiskPutMode::ASCII));
+  raw = disk_read_file(&driveA, "Z.TXT", err);
+  ASSERT_EQ("", err);
+  const std::vector<uint8_t> expect = {'\r', '\n', 'A', '\r', '\n', 0x1A};
+  ASSERT_GE(raw.size(), expect.size());
+  EXPECT_EQ(expect, std::vector<uint8_t>(raw.begin(), raw.begin() + 6));
+  EXPECT_NE(0x1A, raw[6]) << "the ^Z was doubled";
+  // A BOM-emitting editor (Notepad) prefixes EF BB BF. It was copied through
+  // verbatim, so BASIC saw a first line that did not start with a line number,
+  // ran it as a direct command and dropped line 10.
+  const std::vector<uint8_t> bom_listing = {0xEF, 0xBB, 0xBF, '1', '0',
+                                            ' ',  'E',  'N',  'D', '\n'};
+  ASSERT_EQ("", disk_put_file(&driveA, "BOM.BAS", "bom.bas", bom_listing,
+                              DiskPutMode::ASCII));
+  raw = disk_read_file(&driveA, "BOM.BAS", err);
+  ASSERT_EQ("", err);
+  ASSERT_GE(raw.size(), 2u);
+  EXPECT_EQ('1', raw[0]) << "the BOM was written ahead of the line number";
+  EXPECT_EQ('0', raw[1]);
+}
+
+// The AMSDOS checksum is the sum of bytes 0..66 against the word at 67..68,
+// which 69 zero bytes satisfy. A 16K screen whose first rows are pen 0, a
+// zero-padded bank dump or a cleared-RAM save therefore looked "already
+// headered" and went to the disc with NO header: AMSDOS then read the file's
+// own first 128 bytes as a type-0, length-0 header and LOAD read nothing.
+TEST_F(DiskFileEditorTest, AutoPutHeadersAZeroPrefixedBinary) {
+  const std::vector<uint8_t> zeros(256, 0x00);
+  ASSERT_TRUE(disk_parse_amsdos_header(zeros).valid)
+      << "the premise: the checksum alone accepts this";
+  ASSERT_EQ("", disk_put_file(&driveA, "ZEROS.BIN", "zeros.bin", zeros,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto const raw = disk_read_file(&driveA, "ZEROS.BIN", err);
+  ASSERT_EQ("", err);
+  auto const info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(AmsdosFileType::BINARY, info.type);
+  EXPECT_EQ(zeros.size(), info.file_length);
+}
+
+// The same sniff must not take a header whose length cannot fit the bytes
+// after it (a truncated fetch) for a real one.
+TEST_F(DiskFileEditorTest, AutoPutRehandlesAnImplausibleHeaderLength) {
+  std::vector<uint8_t> data(160, 0x00);
+  data[18] = 0x02;  // BINARY
+  data[64] = 0xFF;  // file_length 0xFFFF, far past the 32 bytes that follow
+  data[65] = 0xFF;
+  uint16_t sum = 0;
+  for (int i = 0; i < 67; i++) sum = static_cast<uint16_t>(sum + data[i]);
+  data[67] = static_cast<uint8_t>(sum & 0xFF);
+  data[68] = static_cast<uint8_t>(sum >> 8);
+  ASSERT_TRUE(disk_parse_amsdos_header(data).valid);
+  ASSERT_EQ("", disk_put_file(&driveA, "TRUNC.BIN", "trunc.bin", data,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto const raw = disk_read_file(&driveA, "TRUNC.BIN", err);
+  ASSERT_EQ("", err);
+  auto const info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(data.size(), info.file_length) << "a header of our own was added";
+}
+
+// put(ascii) -> get -> put(auto): the fetched copy carries the ^Z plus 0xE5
+// record padding. It must go back as the same headerless listing.
+TEST_F(DiskFileEditorTest, AsciiRoundTripsThroughGetAndAutoPut) {
+  const std::string listing = "10 PRINT \"HI\"\r\n";
+  ASSERT_EQ(
+      "", disk_put_file(&driveA, "A.BAS", "a.bas",
+                        {listing.begin(), listing.end()}, DiskPutMode::ASCII));
+  std::string err;
+  auto const fetched = disk_read_file(&driveA, "A.BAS", err);
+  ASSERT_EQ("", err);
+  ASSERT_EQ(128u, fetched.size()) << "whole records, padded after the ^Z";
+  ASSERT_EQ(
+      "", disk_put_file(&driveA, "B.BAS", "b.bas", fetched, DiskPutMode::AUTO));
+  auto const again = disk_read_file(&driveA, "B.BAS", err);
+  ASSERT_EQ("", err);
+  EXPECT_FALSE(disk_parse_amsdos_header(again).valid);
+  EXPECT_EQ(fetched, again) << "same bytes, padding re-generated";
+}
+
+// A host file that already starts with a valid AMSDOS header (a `disk get`
+// of a BINARY file) goes back unchanged, not with a second header.
+TEST_F(DiskFileEditorTest, AutoPutKeepsAnExistingAmsdosHeader) {
+  const std::vector<uint8_t> code = {0xC9, 0x00, 0x01};
+  ASSERT_EQ("", disk_write_file(&driveA, "C.BIN", code, true, 0x4000, 0x4000,
+                                AmsdosFileType::BINARY));
+  std::string err;
+  auto const fetched = disk_read_file(&driveA, "C.BIN", err);
+  ASSERT_EQ("", err);
+  ASSERT_EQ(
+      "", disk_put_file(&driveA, "D.BIN", "d.bin", fetched, DiskPutMode::AUTO));
+  auto const again = disk_read_file(&driveA, "D.BIN", err);
+  ASSERT_EQ("", err);
+  auto const info = disk_parse_amsdos_header(again);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(0x4000u, info.load_addr) << "the original header, not a new one";
+  EXPECT_EQ(code.size(), info.file_length);
+}
+
+TEST_F(DiskFileEditorTest, PutBasicWritesHeaderType0) {
+  const std::vector<uint8_t> tokenised = {0x0A, 0x00, 0x0A, 0x00, 0xBF,
+                                          0x20, 0x22, 0x48, 0x22, 0x00};
+  ASSERT_EQ("", disk_put_file(&driveA, "PROG.BAS", "prog.bas", tokenised,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto raw = disk_read_file(&driveA, "PROG.BAS", err);
+  ASSERT_EQ("", err);
+  auto info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(AmsdosFileType::BASIC, info.type);
+  EXPECT_EQ(0x00, raw[18]) << "header type byte";
+  EXPECT_EQ(tokenised.size(), info.file_length);
+}
+
+TEST_F(DiskFileEditorTest, PutBinaryWritesHeaderType2) {
+  const std::vector<uint8_t> code = {0xC9};
+  ASSERT_EQ("", disk_put_file(&driveA, "PROG.BAS", "prog.bas", code,
+                              DiskPutMode::BINARY));
+  std::string err;
+  auto raw = disk_read_file(&driveA, "PROG.BAS", err);
+  ASSERT_EQ("", err);
+  auto info = disk_parse_amsdos_header(raw);
+  ASSERT_TRUE(info.valid);
+  EXPECT_EQ(AmsdosFileType::BINARY, info.type);
+  EXPECT_EQ(0x02, raw[18]) << "header type byte";
+}
+
+TEST_F(DiskFileEditorTest, PutAsciiIsHeaderlessWithCrLfAndEofMarker) {
+  const std::string text = "10 PRINT \"HI\"\n20 GOTO 10\r\n";
+  const std::vector<uint8_t> data(text.begin(), text.end());
+  ASSERT_EQ("", disk_put_file(&driveA, "PROG.BAS", "prog.bas", data,
+                              DiskPutMode::AUTO));
+  std::string err;
+  auto raw = disk_read_file(&driveA, "PROG.BAS", err);
+  ASSERT_EQ("", err);
+  EXPECT_FALSE(disk_parse_amsdos_header(raw).valid)
+      << "BASIC reads only a HEADERLESS file as a listing to tokenise";
+  const std::string expect = "10 PRINT \"HI\"\r\n20 GOTO 10\r\n\x1A";
+  ASSERT_GE(raw.size(), expect.size());
+  EXPECT_EQ(expect, std::string(raw.begin(), raw.begin() + expect.size()))
+      << "bare LF gains its CR, CR LF is kept, ^Z ends the text";
+}
+
 TEST_F(DiskFileEditorTest, WriteMultipleFiles) {
   std::vector<uint8_t> d1(100, 0x11);
   std::vector<uint8_t> d2(200, 0x22);

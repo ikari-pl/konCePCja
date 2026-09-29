@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <string_view>
@@ -25,11 +26,8 @@
 
 namespace {
 
-struct OptionSpec {
-  char short_name;  // unique key, also the short flag
-  std::string_view long_name;
-  bool takes_value;
-};
+// short_name is the unique key and also the short flag.
+using OptionSpec = CliOption;
 
 constexpr OptionSpec kOptions[] = {
     {'a', "autocmd", true},    {'B', "exit-on-break", false},
@@ -62,6 +60,16 @@ const OptionSpec* findLong(std::string_view name) {
   }
   return ambiguous ? nullptr : prefix_match;
 }
+
+}  // namespace
+
+const std::vector<CliOption>& cli_options() {
+  static const std::vector<CliOption> options(std::begin(kOptions),
+                                              std::end(kOptions));
+  return options;
+}
+
+namespace {
 
 void usage(std::ostream& os, const char* progPath, int errcode) {
   std::string progname, dirname;
@@ -101,7 +109,7 @@ void usage(std::ostream& os, const char* progPath, int errcode) {
   os << "   -v/--verbose:           be talkative\n";
   os << "   -D/--debug:             show frame timing and audio diagnostics in "
         "DevTools bar\n";
-  os << "   --fps:                  log once-per-second FPS to stdout (e.g. "
+  os << "   -F/--fps:               log once-per-second FPS to stdout (e.g. "
         "'[fps] 50 FPS 100% speed')\n";
   os << "\nslotfiles is an optional list of files giving the content of the "
         "various CPC ports.\n";

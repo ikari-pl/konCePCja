@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <set>
 
@@ -686,6 +687,117 @@ std::string disk_delete_file(t_drive* drive, const std::string& filename) {
   if (!write_directory(drive, dir)) return "failed to write directory";
   drive->altered = true;
   return "";
+}
+
+bool disk_parse_put_mode(const std::string& word, DiskPutMode& out) {
+  std::string w = word;
+  for (auto& c : w)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (w == "auto") {
+    out = DiskPutMode::AUTO;
+  } else if (w == "basic") {
+    out = DiskPutMode::BASIC;
+  } else if (w == "binary") {
+    out = DiskPutMode::BINARY;
+  } else if (w == "ascii") {
+    out = DiskPutMode::ASCII;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+namespace {
+std::string lower_extension(const std::string& name) {
+  std::string ext = std::filesystem::path(name).extension().string();
+  for (auto& c : ext)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return ext;
+}
+
+bool is_put_text_extension(const std::string& ext) {
+  return ext == ".bas" || ext == ".txt" || ext == ".asc";
+}
+}  // namespace
+
+DiskPutMode disk_resolve_put_mode(DiskPutMode mode,
+                                  const std::string& local_path,
+                                  const std::vector<uint8_t>& data,
+                                  const std::string& cpc_filename) {
+  if (mode != DiskPutMode::AUTO) return mode;
+  std::string ext = lower_extension(local_path);
+  // A host temp file (no or odd extension) pushed under a CPC name such as
+  // GAME.BAS is still a BASIC file: fall back to the name it lands under.
+  if (!is_put_text_extension(ext)) ext = lower_extension(cpc_filename);
+  if (ext == ".txt" || ext == ".asc") return DiskPutMode::ASCII;
+  if (ext != ".bas") return DiskPutMode::BINARY;
+  // Every tokenised program holds 0x00 bytes (each line ends in one, the
+  // program in two); a listing never does. Testing for "printable text"
+  // instead misread listings with CPC graphics characters, a UTF-8 BOM, or
+  // the 0xE5 record padding `disk get` returns after the ^Z.
+  bool const tokenised =
+      std::find(data.begin(), data.end(), uint8_t{0x00}) != data.end();
+  return tokenised ? DiskPutMode::BASIC : DiskPutMode::ASCII;
+}
+
+std::string disk_put_file(t_drive* drive, const std::string& cpc_filename,
+                          const std::string& local_path,
+                          const std::vector<uint8_t>& data, DiskPutMode mode) {
+  // A host file that already starts with a valid AMSDOS header (one fetched
+  // with `disk get`, say) is written as it is, not given a second header.
+  //
+  // The checksum alone is not enough to say "already headered": it is the sum
+  // of bytes 0..66 against the word at 67..68, which 69 zero bytes satisfy. A
+  // 16K screen whose first rows are pen 0, a zero-padded bank dump or a
+  // cleared-RAM save therefore looked headered and went to the disc with no
+  // header at all — AMSDOS then reads the file's own first 128 bytes as a
+  // type-0, length-0 header and LOAD reads nothing, silently. Ask for a header
+  // that is also plausible for THIS payload: a real file type, and a length
+  // that fits in what follows the header.
+  if (mode == DiskPutMode::AUTO && data.size() >= kAmsdosHeaderSize) {
+    auto const hdr = disk_parse_amsdos_header(data);
+    bool const real_type = hdr.type == AmsdosFileType::BASIC ||
+                           hdr.type == AmsdosFileType::PROTECTED ||
+                           hdr.type == AmsdosFileType::BINARY;
+    if (hdr.valid && real_type && hdr.file_length > 0 &&
+        hdr.file_length <= data.size() - kAmsdosHeaderSize) {
+      return disk_write_file(drive, cpc_filename, data, false);
+    }
+  }
+  switch (disk_resolve_put_mode(mode, local_path, data, cpc_filename)) {
+    case DiskPutMode::BASIC:
+      return disk_write_file(drive, cpc_filename, data, true, 0, 0,
+                             AmsdosFileType::BASIC);
+    case DiskPutMode::ASCII: {
+      // The text ends at the first ^Z; what follows is record padding.
+      auto const eof = std::find(data.begin(), data.end(), uint8_t{0x1A});
+      // A UTF-8 BOM is not text the CPC can use: BASIC's loader sees a first
+      // line that does not start with a line number, runs it as a direct
+      // command (Syntax error) and drops the program's first line. The
+      // detector already treats a BOM-prefixed listing as ASCII; the writer
+      // has to agree with it.
+      auto begin = data.begin();
+      if (data.size() >= 3 && data[0] == 0xEF && data[1] == 0xBB &&
+          data[2] == 0xBF && (eof - begin) >= 3) {
+        begin += 3;
+      }
+      std::vector<uint8_t> text;
+      text.reserve(data.size() + (data.size() / 16) + 1);
+      for (auto it = begin; it != eof; ++it) {
+        if (*it == '\n' && (it == begin || *(it - 1) != '\r')) {
+          text.push_back('\r');
+        }
+        text.push_back(*it);
+      }
+      text.push_back(0x1A);
+      return disk_write_file(drive, cpc_filename, text, false);
+    }
+    case DiskPutMode::AUTO:  // resolved above; unreachable
+    case DiskPutMode::BINARY:
+      break;
+  }
+  return disk_write_file(drive, cpc_filename, data, true, 0, 0,
+                         AmsdosFileType::BINARY);
 }
 
 std::string disk_to_cpc_filename(const std::string& local_name) {

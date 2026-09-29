@@ -6,6 +6,34 @@ commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+The port is only the default: every server probes forward when its port is
+taken, so a stale instance can hold 6543 and the new one lands elsewhere. Read
+the real ports from the **startup manifest**, one YAML document the emulator
+prints on stdout once its servers are up:
+
+```yaml
+--- # koncepcja
+manifest_version: 2        # 1 = run_tier held the effective tier (no effective_tier key)
+version: 'v6.3.1'
+build: 'dba77141'
+pid: 4242
+mode: headless            # or gui
+ports:
+  ipc: 6545
+  telnet: 6546
+  m4_http: null           # null = that server is not running
+m4_bind_ip: null
+machine:
+  model: 2                # 0=464, 1=664, 2=6128, 3=6128+
+  ram_size_kb: 128
+  run_tier: 'auto'        # the [system] run_tier POLICY, as `tier` reports policy=
+  effective_tier: 'fast'  # the tier the machine resolved to, as `tier` reports effective=
+config_file: '/home/u/.config/koncepcja/koncepcja.cfg'
+...
+```
+
+Slice it out of the log between `--- # koncepcja` and `...`. Version 2 split the tier into `run_tier` (policy) and `effective_tier`; a version-1 manifest carried the effective tier under `run_tier`.
+
 Commands that change machine state — `reset`, `load` of a snapshot or a
 `.bin`, `snapshot save|load`, the `disk` family, `profile load`,
 `config apply`, `session play` and `step` — first pause the CPC and wait for
@@ -66,7 +94,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`; `ERR 500 load-bin` if the file is missing, empty or too big), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported` |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`; `ERR 500 load-bin` if the file is missing, empty or too big), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported`. A successful disk, tape, snapshot or cartridge load goes on the matching Recent list, as a File-menu load does, with the path made absolute first (a cwd-relative `load game.dsk` would otherwise persist an entry that opens nothing from another directory); the GUI then saves the config (as the menu does), a `--headless` run never rewrites the config file. While the Settings dialog is open the entry waits until it closes (saving then would persist the dialog's uncommitted edits) |
 
 ## Registers
 
@@ -181,7 +209,7 @@ echo "iobp add 0xF400 0xFF00 in" | nc -w 1 localhost 6543
 | `step [N]` | Single-step N instructions (default 1). Pauses first. |
 | `step over [N]` | Execute N instructions, skipping over calls. A `CALL` is skipped with an ephemeral breakpoint at `pc+len`; an `RST` is stepped into and its frame finished instead, because the CPC firmware restarts (`&08`/`&10`/`&18`/`&28`) carry inline operands and do not resume at `pc+1`. Timeout: 5s. A breakpoint/watchpoint hit inside the skipped callee returns `OK breakpoint-hit`. `ERR 409 no-progress` when no machine is attached (both the CALL and RST paths); a callee that never returns is `ERR 408 timeout`. The `breakpoint-hit` body carries `WATCH=0`, or `WATCH=1 WP_ADDR=.. WP_VAL=.. WP_OLD=..` when a watchpoint caused the stop. |
 | `step out` | Finish the current stack frame: run until a **taken** return (`RET`/`RET cc`/`RETI`/`RETN`, or a `POP rr : JP (rr)` computed return) fires at the frame depth the walk started from. Depth counting — not a stack-pointer threshold — is what makes a `POP` before the `RET`, an **untaken** `RET cc`, and an interrupt arriving mid-walk all safe. `CALL` callees are skipped at full speed via an ephemeral breakpoint; `RST` vectors are stepped through. Timeout: 5s. A breakpoint/watchpoint inside a skipped callee returns `OK breakpoint-hit` with `WATCH=0`, or `WATCH=1 WP_ADDR=.. WP_VAL=.. WP_OLD=..`, plus the usual debug context. Watchpoints are NOT evaluated on the single-stepped path, only inside skipped callees. `ERR 409 no-progress` only when no sub-cycle machine is attached, so nothing can retire. A frame that never returns is an honest `ERR 408 timeout` — deciding in advance whether it *would* return is undecidable, so the command does not pretend to. Code that unwinds by manual stack surgery (`LD SP,nn` mid-frame) is not tracked. |
-| `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. If a different breakpoint or a watchpoint fires on the way, returns `OK breakpoint-hit` (with `WATCH=`/`WP_*` as above) instead of reporting a successful run-to-cursor. `ERR 409 no-progress` when no machine is attached. |
+| `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. A breakpoint of your own armed AT `addr` is an arrival, not an interruption: `OK breakpoint-hit` (with `WATCH=`/`WP_*` as above). Any other breakpoint or watchpoint firing on the way returns `ERR 409 stopped-elsewhere breakpoint-hit ...` — the same polarity `wait pc` uses, so a client whose success test is "the reply starts with OK" cannot mistake an intervening stop for reaching `addr`. `ERR 409 no-progress` when no machine is attached; `ERR 503 shutting-down` if the server is torn down mid-walk. |
 | `step frame [N]` | Advance N complete frames (default 1), then pause. Blocks until done. |
 
 ## Waiting
@@ -190,7 +218,7 @@ All wait commands resume emulation, block until condition or timeout, then pause
 
 | Command | Description |
 |---------|-------------|
-| `wait pc <addr> [timeout_ms]` | Wait until PC reaches address |
+| `wait pc <addr> [timeout_ms]` | Run until the CPU reaches `addr`, then pause there. Exact: a one-shot breakpoint stops on the instruction, so code that only passes through `addr` is caught every time. `ERR 408 timeout` if it is not reached; `ERR 409 stopped-elsewhere` (with the `WATCH=` detail) when a breakpoint or watchpoint stops the machine somewhere else first — a breakpoint of your own armed AT `addr` is an arrival and returns `OK breakpoint-hit`. `ERR 503 shutting-down` if the server is torn down mid-wait, so a long wait never holds up process exit. A pause and resume by someone else (the `-i` injection) does not end the wait; a pause that leaves the CPU standing on `addr` ends it with `OK` |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
 | `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop. Only hits from the current arming are reported |
 | `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each). Without `timeout_ms` the deadline is `count × 20ms + 5000ms`, so a long count completes instead of hitting the 5s default every other `wait` uses |
@@ -214,7 +242,7 @@ CRC32 hashes for CI regression testing.
 | `screenshot [path]` | Save the CPC screen as PNG (default path when omitted) |
 | `screenshot window <path>` | Capture the emulator window on the next rendered frame |
 | `snapshot save <path>` | Save emulator state (.sna) |
-| `snapshot load <path>` | Load emulator state (.sna) |
+| `snapshot load <path>` | Load emulator state (.sna). A successful load goes on the snapshot Recent list, as `load` does |
 
 ## Watchpoints
 
@@ -312,7 +340,8 @@ Single characters work directly: `A`-`Z`, `a`-`z`, `0`-`9`, punctuation.
 |---------|-------------|
 | `input keydown <key>` | Press and hold key in matrix. Works even when paused. |
 | `input keyup <key>` | Release key from matrix. |
-| `input key <key>` | Tap: press, hold 2 frames, release. Blocks. |
+| `input key <key> [hold=N]` | Tap: press, hold N frames (default 2), release. Blocks. The hold counts only frames that *began* with the key down, i.e. frames whose keyboard scan could see it — the frame already running when the tap arrives does not count — so the firmware scans a default tap at least twice. |
+| `input chord <M+K> [hold=N]` | Atomic modified tap (`CTRL`/`SHIFT` modifiers and one key, all down in one write), held the same way as `input key`. |
 | `input type <text>` | Queue text through the AutoTypeQueue (same path as `autotype`). Returns `OK` at once; drains over subsequent keyboard scans (see `autotype status`). `~KEY~` tokens and newlines supported. |
 | `input joy <n> <dir>` | Joystick N (0 or 1). Directions: `U`/`UP` `D`/`DOWN` `L`/`LEFT` `R`/`RIGHT` `F`/`F1`/`FIRE1` `F2`/`FIRE2`. Prefix `-` to release. `0` releases all. |
 | `input mouse move <dx> <dy>` | Relative mouse motion (mickeys) fed to the AMX/Symbiface mouse. Requires a mouse device enabled (`input.amx_mouse=1` or `peripheral.symbiface=1`), else `ERR 409`. |
@@ -349,7 +378,7 @@ Ring-buffer recording of Z80 instruction execution.
 
 | Command | Description |
 |---------|-------------|
-| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF. Otherwise, saves a PNG per frame. Max 10000 frames. |
+| `frames dump <pattern> <count> [delay_cs]` | Advance N frames, saving output. If pattern ends in `.gif`, produces an animated GIF. Otherwise, saves a PNG per frame. Max 10000 frames. A breakpoint that fires mid-recording ends it there: the reply counts the frames actually recorded (`OK frames=N` / `OK saved=N`) and the machine stays stopped for `wait bp`. |
 
 **PNG mode** (default): Pattern uses printf `%d`/`%04d` for frame number, or `_NNNN.png` is appended. Returns `OK saved=N`.
 
@@ -372,7 +401,7 @@ echo "frames dump /tmp/slowmo.gif 50 10" | nc -w 30 localhost 6543
 
 | Command | Description |
 |---------|-------------|
-| `devtools` | Toggle the developer tools (F12; the pause hub's DevTools button) |
+| `devtools` | Open the developer tools. Idempotent: sending it again leaves them open, so it never toggles them shut (the F12 key does toggle). `devtools off` closes them |
 | `devtools on\|off` | Show or hide them explicitly |
 | `devtools show <name>` / `devtools hide <name>` | Open or close one window: `registers`, `disassembly`, `memory_hex`, `stack`, `breakpoints`, `symbols`, `session_recording`, `gfx_finder`, `silicon_disc`, `asic`, `disc_tools`, `data_areas`, `disasm_export`, `video_state`, `audio_state`, `recording_controls`, `assembler`, `drive_sound_lab`. `ERR 404 unknown window` otherwise |
 
@@ -548,7 +577,7 @@ File-level and sector-level access to DSK disc images.
 | `disk ls <A\|B>` | List AMSDOS files on drive. Returns `name size [R/O] [SYS]` per line |
 | `disk cat <A\|B> <filename>` | Read file contents as hex (strips AMSDOS header). Returns `OK size=N\nhex...` |
 | `disk get <A\|B> <filename> <local_path>` | Extract file to local filesystem |
-| `disk put <A\|B> <local_path> [cpc_name]` | Write local file to disc (auto-generates CPC name if omitted). Failed live-FDC push rolls the host view back |
+| `disk put <A\|B> <local_path> [cpc_name] [auto\|basic\|binary\|ascii]` | Write local file to disc (auto-generates CPC name if omitted; host files over 1 MiB are refused). The last word picks the file type: `basic` = AMSDOS header type 0 (tokenised program), `binary` = header type 2 (load/exec 0), `ascii` = no header, as `SAVE"x",A` writes it (bare LF becomes CR LF, a leading UTF-8 BOM is dropped, the text ends at the first ^Z and one ^Z is written after it), so `RUN"` tokenises it. Default `auto`: a file that already starts with a plausible AMSDOS header — valid checksum, a real file type, and a length that fits the bytes after the header — is written unchanged (the checksum alone accepts 69 zero bytes, so a zero-prefixed binary is NOT mistaken for a headered one); otherwise the extension decides (the host file's, or the CPC name's when the host one is not `.bas`/`.txt`/`.asc`): `.txt`/`.asc` → ascii; `.bas` → basic if it holds any 0x00 byte (every tokenised program does), ascii if not (a listing); anything else → binary. A lone type word is the type, not a CPC name. Failed live-FDC push rolls the host view back |
 | `disk rm <A\|B> <filename>` | Delete file from disc. Failed live-FDC push rolls the host view back |
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
 | `disk status <A\|B>` | `OK present=0\|1 backing=empty\|sector\|flux can_dsk=0\|1 can_scp=0\|1 can_hfe=0\|1` — same save caps the File menu uses |
