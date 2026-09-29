@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -207,7 +208,8 @@ class SerialBackend {
   virtual bool is_open() const = 0;
 
   // Send/receive
-  virtual void send(uint8_t byte) = 0;
+  // false when the byte could not be delivered (not connected, I/O error).
+  virtual bool send(uint8_t byte) = 0;
   virtual bool has_data() const = 0;
   virtual uint8_t recv() = 0;
 
@@ -223,7 +225,7 @@ class NullBackend : public SerialBackend {
   bool open() override { return true; }
   void close() override {}
   bool is_open() const override { return true; }
-  void send(uint8_t /*byte*/) override {}
+  bool send(uint8_t /*byte*/) override { return true; }
   bool has_data() const override { return false; }
   uint8_t recv() override { return 0; }
   bool connected() const override { return true; }
@@ -241,7 +243,7 @@ class FileBackend : public SerialBackend {
   void close() override;
   bool is_open() const override { return open_; }
 
-  void send(uint8_t byte) override;
+  bool send(uint8_t byte) override;
   bool has_data() const override;
   uint8_t recv() override;
 
@@ -255,7 +257,8 @@ class FileBackend : public SerialBackend {
   FILE* input_file_ = nullptr;
   FILE* output_file_ = nullptr;
   bool open_ = false;
-  mutable int lookahead_ = -1;  // buffered byte for peek, -1 = empty
+  bool tx_error_logged_ = false;  // report a failing output file once
+  mutable int lookahead_ = -1;    // buffered byte for peek, -1 = empty
 };
 
 // Host serial backend (POSIX /dev/tty.* on macOS/Linux only)
@@ -269,7 +272,7 @@ class HostSerialBackend : public SerialBackend {
   void close() override;
   bool is_open() const override { return fd_ >= 0; }
 
-  void send(uint8_t byte) override;
+  bool send(uint8_t byte) override;
   bool has_data() const override;
   uint8_t recv() override;
 
@@ -292,7 +295,7 @@ class HostSerialBackend : public SerialBackend {
   bool open() override { return false; }
   void close() override {}
   bool is_open() const override { return false; }
-  void send(uint8_t) override {}
+  bool send(uint8_t) override { return false; }
   bool has_data() const override { return false; }
   uint8_t recv() override { return 0; }
   bool connected() const override { return false; }
@@ -312,7 +315,7 @@ class NullModemBackend : public SerialBackend {
   void close() override;
   bool is_open() const override { return open_; }
 
-  void send(uint8_t byte) override;
+  bool send(uint8_t byte) override;
   bool has_data() const override;
   uint8_t recv() override;
 
@@ -336,23 +339,40 @@ class TcpSocketBackend : public SerialBackend {
   explicit TcpSocketBackend(std::string host, uint16_t port);
   ~TcpSocketBackend() override;
 
+  // How long open() waits for a non-blocking connect() to resolve before
+  // returning with the connection still in flight (resolved lazily later).
+  static constexpr int kConnectWaitMs = 100;
+
+  // true once the socket exists and the connect is established or still in
+  // flight; false when the host does not resolve or the peer refused.
   bool open() override;
   void close() override;
-  bool is_open() const override { return connected_; }
+  bool is_open() const override { return state_ != State::Disconnected; }
 
-  void send(uint8_t byte) override;
+  // false when the byte was not handed to the kernel: not (yet) connected,
+  // or the peer went away (which also drops the connection).
+  bool send(uint8_t byte) override;
   bool has_data() const override;
   uint8_t recv() override;
 
-  bool connected() const override { return connected_; }
+  // Only true after the connect has really completed (SO_ERROR == 0).
+  bool connected() const override;
   std::string name() const override { return "TcpSocket"; }
   std::string status() const override;
 
  private:
+  enum class State : std::uint8_t { Disconnected, Connecting, Connected };
+
+  // Resolve a Connecting socket: wait up to timeout_ms for writability, then
+  // read SO_ERROR. Returns the state afterwards.
+  State resolve_connect(int timeout_ms) const;
+  // The peer closed or reset the connection.
+  void mark_disconnected() const;
+
   std::string host_;
   uint16_t port_;
   int sockfd_ = -1;
-  bool connected_ = false;
+  mutable std::atomic<State> state_{State::Disconnected};
   mutable std::vector<uint8_t> rx_buffer_;
   mutable std::mutex rx_mutex_;
 };
@@ -458,7 +478,7 @@ class PlotterBackend : public SerialBackend {
   void close() override;
   bool is_open() const override { return open_; }
 
-  void send(uint8_t byte) override;
+  bool send(uint8_t byte) override;
   bool has_data() const override;
   uint8_t recv() override;
 
