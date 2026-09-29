@@ -9,13 +9,16 @@
 
 #include "disk_file_editor.h"
 #include "disk_format.h"
+#include "flux_encode_util.h"  // fluxtest::build_standard_dsk
 #include "hw/fdc.h"
+#include "hw/flux_synth.h"  // fluxsynth::amsdos_content / scp_from_sectors
 #include "koncepcja.h"
 #include "slotshandler.h"
 #include "subcycle_bridge.h"
 
 extern t_drive driveA;
 extern t_drive driveB;
+extern t_CPC CPC;
 
 namespace {
 
@@ -166,6 +169,107 @@ TEST(DiskMediaSyncBridge, PullPushNoopWhenInactive) {
   EXPECT_FALSE(subcycle_bridge_active());
   EXPECT_FALSE(subcycle_bridge_pull_drive_view(0));
   EXPECT_FALSE(subcycle_bridge_push_drive_view(0));
+}
+
+// beads-csl7.4: the push guard added in 13db3b7c. With a writable flux disc in
+// drive A, the FDC serves clean tracks from the SCP and written tracks from a
+// synthesized DSK overlay. A host edit is pushed by copying into that overlay,
+// which only works when the sizes match; anything else used to fall through
+// to insert_disk(), which replaces the medium and silently drops the SCP (and
+// with it every weak/protection bit on the clean tracks). The push must be
+// refused instead, with the flux backing still attached.
+class FluxPushGuardTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    saved_rom_path_ = CPC.rom_path;
+    saved_model_ = CPC.model;
+    saved_ram_size_ = CPC.ram_size;
+    saved_drive_a_file_ = CPC.driveA.file;
+    CPC.rom_path = "rom";
+    CPC.model = 2;
+    CPC.ram_size = 128;
+    CPC.driveA.file.clear();  // stop() must have nowhere to write back to
+    dsk_eject_host(&driveA);
+    started_ = subcycle_bridge_start();
+  }
+
+  void TearDown() override {
+    if (started_) subcycle_bridge_stop();
+    dsk_eject_host(&driveA);
+    CPC.rom_path = saved_rom_path_;
+    CPC.model = saved_model_;
+    CPC.ram_size = saved_ram_size_;
+    CPC.driveA.file = saved_drive_a_file_;
+  }
+
+  // Attach a writable 2-cylinder flux disc to drive A, now.
+  void attach_writable_flux() {
+    subcycle_bridge_insert_media(
+        fluxsynth::scp_from_sectors(fluxsynth::amsdos_content(2)),
+        /*flux=*/true, 0);
+    subcycle_bridge_apply_pending_media();
+  }
+
+  static const uint8_t* scp() {
+    size_t len = 0;
+    return fdc_media_flux_scp(subcycle_bridge_fdc(), len);
+  }
+  static size_t overlay_size() {
+    size_t len = 0;
+    return fdc_media_image_unit(subcycle_bridge_fdc(), 0, len) ? len : 0;
+  }
+
+  bool started_ = false;
+  std::string saved_rom_path_;
+  unsigned int saved_model_ = 0;
+  unsigned int saved_ram_size_ = 0;
+  std::string saved_drive_a_file_;
+};
+
+TEST_F(FluxPushGuardTest, SameSizeEditLandsInTheOverlayAndKeepsTheScp) {
+  ASSERT_TRUE(started_) << "bridge did not start from rom/";
+  attach_writable_flux();
+  ASSERT_NE(nullptr, scp()) << "the synthetic SCP did not attach";
+  ASSERT_GT(overlay_size(), 0u) << "flux attached read-only (no DSK overlay)";
+
+  // The Disc Tools path: pull the live overlay, edit, push back.
+  ASSERT_TRUE(subcycle_bridge_pull_drive_view(0));
+  ASSERT_EQ("", disk_write_file(&driveA, "HI.BIN", {'H', 'I'}, true));
+  EXPECT_TRUE(subcycle_bridge_push_drive_view(0));
+  EXPECT_NE(nullptr, scp()) << "an in-place overlay edit dropped the SCP";
+}
+
+TEST_F(FluxPushGuardTest, DifferentSizeHostDiscIsRefusedAndKeepsTheScp) {
+  ASSERT_TRUE(started_) << "bridge did not start from rom/";
+  attach_writable_flux();
+  const uint8_t* const scp_before = scp();
+  ASSERT_NE(nullptr, scp_before) << "the synthetic SCP did not attach";
+  size_t const overlay_before = overlay_size();
+  ASSERT_GT(overlay_before, 0u) << "flux attached read-only (no DSK overlay)";
+
+  // A 3-track host disc against the 2-cylinder overlay. Loaded straight
+  // into the host view: disk_format_drive() would push on its own (and is
+  // refused by the same guard — it reports "could not update the live FDC
+  // medium").
+  std::vector<std::vector<fluxtest::SectorSpec>> tracks(3);
+  for (int t = 0; t < 3; ++t) {
+    for (int r = 0; r < 9; ++r) {
+      fluxtest::SectorSpec sec;
+      sec.chrn[0] = static_cast<uint8_t>(t);
+      sec.chrn[2] = static_cast<uint8_t>(0xC1 + r);
+      sec.payload = fluxtest::make_payload(t, r, 512);
+      tracks[t].push_back(sec);
+    }
+  }
+  std::vector<uint8_t> host = fluxtest::build_standard_dsk(tracks);
+  ASSERT_EQ(0, dsk_load_bytes(host.data(), host.size(), &driveA));
+  std::vector<uint8_t> serialized;
+  ASSERT_EQ(0, dsk_to_bytes(&driveA, serialized));
+  ASSERT_NE(overlay_before, serialized.size());
+
+  EXPECT_FALSE(subcycle_bridge_push_drive_view(0));
+  EXPECT_EQ(scp_before, scp()) << "the push replaced the flux backing";
+  EXPECT_EQ(overlay_before, overlay_size()) << "the overlay was replaced";
 }
 
 }  // namespace

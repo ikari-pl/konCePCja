@@ -1012,7 +1012,7 @@ TEST_F(IpcServerTest, WatchpointRange) {
 }
 
 TEST_F(IpcServerTest, StepOutWithoutMachineReportsNoProgressPromptly) {
-  // The unit-test binary never calls subcycle_bridge_start(), so
+  // No test leaves a subcycle_bridge_start() machine running, so
   // z80_step_instruction() is a no-op and SP can never move. The walk used to
   // discover that by hot-spinning to its 5s deadline -- on every suite run.
   // It must now say so immediately, and say the *right* thing: 409, not a 408
