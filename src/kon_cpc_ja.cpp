@@ -4631,6 +4631,13 @@ int koncpc_main(int argc, char** argv) {
             mainSDLWindow ? SDL_GetWindowID(mainSDLWindow) : 0;
         if (event.window.windowID == main_id) {
           cleanExit(0);
+          // Reaching here means the user declined the unsaved-disk dialog:
+          // cleanExit() returns instead of tearing down. SDL follows the
+          // close request of the last window with a QUIT of its own, and the
+          // SDL_EVENT_QUIT branch below finds an empty mailbox and reads it
+          // as a fresh gesture — so the dialog would come straight back a
+          // second time. Drop that trailing QUIT.
+          SDL_FlushEvent(SDL_EVENT_QUIT);
         }
       }
 
