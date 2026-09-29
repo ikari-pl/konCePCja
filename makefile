@@ -316,7 +316,7 @@ $(shell printf '%s' '$(GIT_HASH)' | cmp -s - $(HASH_STAMP) 2>/dev/null \
 $(OBJECTS) $(TEST_OBJECTS): $(VERSION_STAMP)
 $(OBJDIR)/src/argparse.o $(OBJDIR)/src/kon_cpc_ja.o: $(HASH_STAMP)
 
-.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo
+.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test e2e_test e2e_test_slow install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
 # Tier 1: always-errors even in release (undefined behavior / security critical)
@@ -703,6 +703,17 @@ unit_test: $(TEST_TARGET)
 
 e2e_test: $(TARGET)
 	cd test/integrated && ./run_tests.sh
+
+# The e2e suite as a slow CI runner sees it: on macOS pinned to the
+# efficiency cores (taskpolicy -b), which is how timing-dependent harness
+# flakes that only show up on shared CI Macs reproduce locally.
+ifeq ($(ARCH),macos)
+E2E_SLOW = taskpolicy -b
+else
+E2E_SLOW = nice -n 19
+endif
+e2e_test_slow: $(TARGET)
+	cd test/integrated && $(E2E_SLOW) ./run_tests.sh
 endif
 
 deb_pkg: all

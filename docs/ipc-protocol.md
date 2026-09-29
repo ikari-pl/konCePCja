@@ -209,7 +209,7 @@ All wait commands resume emulation, block until condition or timeout, then pause
 
 | Command | Description |
 |---------|-------------|
-| `wait pc <addr> [timeout_ms]` | Wait until PC reaches address |
+| `wait pc <addr> [timeout_ms]` | Run until the CPU reaches `addr`, then pause there. Exact: a one-shot breakpoint stops on the instruction, so code that only passes through `addr` is caught every time. `ERR 408 timeout` if it is not reached; `ERR 409 stopped-elsewhere` (with the `WATCH=` detail) when a breakpoint or watchpoint stops the machine first. A pause and resume by someone else (the `-i` injection) does not end the wait |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
 | `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop. Only hits from the current arming are reported |
 | `wait vbl <count> [timeout_ms]` | Wait for N vertical blanks (~20ms each). Without `timeout_ms` the deadline is `count × 20ms + 5000ms`, so a long count completes instead of hitting the 5s default every other `wait` uses |

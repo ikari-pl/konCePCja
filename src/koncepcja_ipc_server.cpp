@@ -3486,6 +3486,56 @@ std::string handle_command(const std::string& line) {
         if (parts.size() >= 4)
           deadline = std::chrono::steady_clock::now() +
                      std::chrono::milliseconds(parse_int(parts[3]));
+        // Exact, not sampled. The host register view is published once per
+        // frame, so polling z80.PC only ever saw the PC a frame happened to
+        // end on: code that passes through `addr` but spends its time
+        // elsewhere (a loop around a firmware call) was caught by luck, and a
+        // slow host that fit fewer frames into the deadline missed it
+        // outright. Stop there with a one-shot probe breakpoint instead, as
+        // `step to` does.
+        bool hit_seen = false;
+        int consumes = 0;
+        // run_until's first call only drains a hit latched before it armed;
+        // that stale hit is not a stop on the way to `addr`.
+        auto consume_hit = [&hit_seen, &consumes](uint16_t& pc, bool& watch) {
+          bool const hit = g_ipc_instance->consume_breakpoint_hit(pc, watch);
+          if (consumes++ > 0) hit_seen = hit_seen || hit;
+          return hit;
+        };
+        bool stalled = false;
+        while (!stalled) {
+          hit_seen = false;
+          consumes = 0;
+          switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
+                                          consume_hit)) {
+            case Z80RunUntilResult::Landed:
+              return ok_with_context();
+            case Z80RunUntilResult::Timeout:
+              return err_with_context(408, "timeout");
+            case Z80RunUntilResult::Stalled:
+              stalled = true;  // no machine: only the register view to watch
+              break;
+            case Z80RunUntilResult::OtherBreak:
+              // A breakpoint or watchpoint stopped the machine before `addr`:
+              // report it (the hit was consumed here, so this is the only
+              // place its detail can go).
+              if (hit_seen) {
+                return err_with_context(
+                    409, "stopped-elsewhere " + breakpoint_hit_body());
+              }
+              // Someone else paused and resumed the machine under us -- the
+              // -i injection does, to rewrite the registers. Keep waiting once
+              // it runs again; a pause that stays (a client's `pause`) is not
+              // ours to undo, so that runs out the deadline as before.
+              while (CPC.paused) {
+                if (server_stopping()) return "ERR 503 shutting-down\n";
+                if (std::chrono::steady_clock::now() > deadline)
+                  return err_with_context(408, "timeout");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              }
+              break;
+          }
+        }
         cpc_resume();
         while (z80.PC.w.l != addr) {
           if (server_stopping()) {

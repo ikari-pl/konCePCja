@@ -627,6 +627,62 @@ def test_engine1_bp_clear_resume():
         return True
 
 
+def test_wait_pc_is_exact():
+    """`wait pc` must stop on an address the CPU only passes through.
+
+    It used to poll the register view, which is published once per frame, so
+    it saw only the PC a frame happened to end on. The -i launch test waits
+    for &6000 while its program sits in KM READ CHAR almost all the time, and
+    that wait timed out now and then on slow CI Macs with PC in the firmware.
+    Here the target is one NOP in 1024: a frame ends on it about one time in a
+    thousand, so a sampled wait nearly always misses while an exact one lands
+    every time.
+    """
+    print("Running exact wait pc test...")
+    program = bytes([0x00] * 1024 + [0xC3, 0x00, 0x60])  # NOPs; JP &6000
+    with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+        f.write(program)
+        bin_path = f.name
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0
+            ok, resp = ipc.send_command('wait pc 0x6000 15000')
+            if not ok:
+                print(f"FAIL: program never started: {resp}")
+                return False
+            for i in range(10):
+                # Step off first: a wait issued while already standing on
+                # `addr` is satisfied at once (the old contract), which would
+                # prove nothing about catching it in flight.
+                ipc.send_command('step 1')
+                ok, resp = ipc.send_command('wait pc 0x6200 2000')
+                if not ok:
+                    print(f"FAIL: wait {i} missed &6200: {resp}")
+                    return False
+                _, regs = ipc.get_regs()
+                if regs.get('PC') != 0x6200:
+                    print(f"FAIL: wait {i} returned OK at PC="
+                          f"{regs.get('PC', -1):04X}, not &6200")
+                    return False
+            # A breakpoint on the way is reported, not waited through.
+            for cmd in ('step 1', 'bp add 0x6100'):
+                ipc.send_command(cmd)
+            ok, resp = ipc.send_command('wait pc 0x6200 2000')
+            if ok or 'stopped-elsewhere' not in resp:
+                print(f"FAIL: breakpoint at &6100 not reported: {resp}")
+                return False
+            ipc.send_command('bp clear')
+            print("PASS: wait pc lands exactly, 10/10, and reports a "
+                  "breakpoint on the way")
+            return True
+    finally:
+        os.unlink(bin_path)
+
+
 def test_inject_launches_like_run():
     """-i/--inject must hand the program to the firmware the way RUN" does.
 
@@ -667,14 +723,15 @@ def test_inject_launches_like_run():
             if not ok or not resp.endswith('00'):
                 print(f"FAIL: &6100 must start clear, got {resp}")
                 return False
-            # Let the firmware settle first. A key that is down during roughly
-            # the first two frames after MC START PROGRAM is never delivered,
-            # however it is pressed (measured: a tap sent at once misses, the
-            # same tap 200 ms later lands, and so does one held for 10
-            # frames). That window is the program's start-up, not the tap.
-            ok, resp = ipc.send_command('wait vbl 5')
+            # Let the firmware settle first. `wait pc` now stops on the very
+            # first instruction after MC START PROGRAM, and a key that is down
+            # during the next 5-10 frames is never delivered, however it is
+            # pressed (measured with an exact wait: a 5-frame settle misses
+            # 2/2, 10 lands 2/2). That window is the program's start-up, not
+            # the tap, so settle well clear of it.
+            ok, resp = ipc.send_command('wait vbl 50 20000')
             if not ok:
-                print(f"FAIL: wait vbl 5: {resp}")
+                print(f"FAIL: wait vbl 50: {resp}")
                 return False
             ipc.run()
             # The default tap, sent while the machine runs. It used to count
@@ -2968,6 +3025,7 @@ def main():
     print("=" * 50)
 
     tests = [
+        test_wait_pc_is_exact,
         test_inject_launches_like_run,
         test_boots_to_basic_with_peripherals,
         test_conditional_debug_matrix,

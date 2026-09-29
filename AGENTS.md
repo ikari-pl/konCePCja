@@ -172,7 +172,7 @@ OK available commands (usage: help <command>):
 | `bp list` | List breakpoints | `bp list` → `OK count=1 4000` |
 | `bp clear` | Clear all breakpoints | `bp clear` → `OK` |
 | `step [n]` | Step N instructions | `step 10` → `OK` |
-| `wait pc <addr> [timeout]` | Wait for PC | `wait pc 0x4000 5000` |
+| `wait pc <addr> [timeout]` | Run until PC reaches addr exactly (one-shot breakpoint), then pause | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
 | `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Wait N vertical blanks | `wait vbl 50` |
@@ -239,6 +239,12 @@ The harness provides two classes:
   one).  All methods return `(bool, str)` or `bool`.
 - **`EmulatorRunner`** — context manager that launches and tears down the
   emulator process, waits for the IPC port to come up.
+
+`make e2e_test` runs the same suite the macOS CI job runs
+(`test/integrated/run_tests.sh`, which includes this harness).
+`make e2e_test_slow` runs it pinned to the efficiency cores (`taskpolicy -b`
+on macOS, `nice` elsewhere), the cheap way to reproduce a flake that only a
+slow shared CI Mac shows.
 
 #### Key patterns
 
