@@ -34,6 +34,10 @@ src/test_file.tmp
 koncepcja_sim
 koncepcja_sim_headless
 
+# bench rigs for the CoPyCat / CPCień comparisons (make cpct_tap_rig psg_oracle_rig)
+cpct_tap_rig
+psg_oracle_rig
+
 # FPS benchmark harness + PGO artefacts (make bench / make pgo, beads-lcfa)
 koncepcja_bench
 koncepcja_bench_gen

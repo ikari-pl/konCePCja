@@ -620,7 +620,8 @@ sim_headless: sim/koncepcja_sim.cpp $(SIM_HW_SRCS)
 	$(CXX) -std=c++17 -O2 -Isrc -DSIM_HEADLESS_ONLY -o $(SIM_TARGET)_headless $^
 
 # CPCT bus tap rig (no SDL): boot a given lower ROM with the tap attached and
-# write the trace; the other side of the comparison is the CoPyCat RTL bench.
+# write the trace (+ per-frame framebuffer PPMs with --dump-frames); the other
+# side of the comparison is the CoPyCat RTL bench. See docs/cpct-tap.md.
 cpct_tap_rig: sim/cpct_tap_rig.cpp $(SIM_HW_SRCS)
 	$(CXX) -std=c++17 -O2 -Isrc -o cpct_tap_rig $^
 
@@ -806,6 +807,7 @@ clean:
 	rm -rf obj/ release/ .pc/ doxygen/
 	rm -f test_runner test_runner.exe koncepcja koncepcja.exe .debug tags
 	rm -f koncepcja_sim koncepcja_sim_headless koncepcja_bench koncepcja_bench_gen
+	rm -f cpct_tap_rig psg_oracle_rig
 	rm -f koncepcja_bench.profraw koncepcja_bench.profdata
 
 -include $(DEPENDS) $(TEST_DEPENDS)
