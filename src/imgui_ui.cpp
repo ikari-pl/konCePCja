@@ -3498,7 +3498,9 @@ void imgui_render_options() {
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
   bool open = true;
-  if (!ImGui::Begin("Options", &open, ImGuiWindowFlags_NoCollapse)) {
+  // "Settings", as the menus call it — the window was the last place still
+  // titled "Options" after the rename (beads-59j).
+  if (!ImGui::Begin("Settings", &open, ImGuiWindowFlags_NoCollapse)) {
     if (!open) {
       imgui_state.show_options = false;
       first_open = true;

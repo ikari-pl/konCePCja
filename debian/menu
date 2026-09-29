@@ -1,2 +1,0 @@
-?package(caprice32):needs="X11" section="Applications/Emulators"\
-  title="koncepcja" command="/usr/bin/koncepcja"

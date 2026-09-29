@@ -138,7 +138,7 @@ static const char m4_web_index_html_src[] = R"HTML(<!DOCTYPE html>
       <tr><td>Network</td><td>Emulated (host bridged)</td></tr>
     </table>
     <p class="note">WiFi/NTP/SSID settings are not applicable in emulation.<br>
-    Network, ROM, and peripheral settings are managed via the emulator's Options dialog.</p>
+    Network, ROM, and peripheral settings are managed via the emulator's Settings dialog.</p>
   </div>
 </div>
 </div>

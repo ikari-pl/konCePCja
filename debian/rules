@@ -1,33 +1,58 @@
 #!/usr/bin/make -f
-# See debhelper(7) (uncomment to enable)
-# output every command that modifies files on the build system.
-#DH_VERBOSE = 1
+# konCePCja Debian packaging. Builds the vendored SDL3 first (the tree pins a
+# specific SDL with its own patches; no distro libsdl3 is used), then the
+# emulator against it, and ships that SDL privately under /usr/lib/koncepcja
+# with a matching rpath on the binary.
 
-# see EXAMPLES in dpkg-buildflags(1) and read /usr/share/dpkg/*
-DPKG_EXPORT_BUILDFLAGS = 1
 include /usr/share/dpkg/default.mk
 
-# see FEATURE AREAS in dpkg-buildflags(1)
-#export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-# see ENVIRONMENT in dpkg-buildflags(1)
-# package maintainers to append CFLAGS
-#export DEB_CFLAGS_MAINT_APPEND  = -Wall -pedantic
-# package maintainers to append LDFLAGS
-#export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+SDL_PRIVATE_LIB = /usr/lib/koncepcja
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,-rpath,$(SDL_PRIVATE_LIB)
 
-export RELEASE = true
-export APP_PATH=/usr/share/caprice32
-# main packaging script based on dh7 syntax
+SDL_SRC     = $(CURDIR)/vendor/SDL
+SDL_BUILD   = $(SDL_SRC)/build
+SDL_INSTALL = $(SDL_SRC)/install
+NUMJOBS     = $(or $(DEB_BUILD_OPTION_PARALLEL),$(shell nproc))
+STAGE       = $(CURDIR)/debian/koncepcja
+SHARE       = /usr/share/koncepcja
+
 %:
-	dh $@ 
+	dh $@
 
-# debmake generated override targets
-# This is example for Cmake (See http://bugs.debian.org/641051 )
-#override_dh_auto_configure:
-#	dh_auto_configure -- \
-#	-DCMAKE_LIBRARY_PATH=$(DEB_HOST_MULTIARCH)
+override_dh_auto_configure:
+	# The patches under vendor/sdl-patches/ touch the Cocoa backend only and
+	# are applied by the macOS build; nothing to apply for a Linux build.
+	cmake -S $(SDL_SRC) -B $(SDL_BUILD) \
+	      -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF \
+	      -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
+	      -DCMAKE_INSTALL_PREFIX=$(SDL_INSTALL)
+	cmake --build $(SDL_BUILD) -j$(NUMJOBS)
+	cmake --install $(SDL_BUILD)
+
+override_dh_auto_build:
+	$(MAKE) -j$(NUMJOBS) APP_PATH=$(SHARE) koncepcja
+
+override_dh_auto_test:
+	# The unit suite needs the googletest checkout the makefile clones on
+	# demand; not run inside the package build.
 
 override_dh_auto_install:
-	dh_auto_install -- prefix=/usr
+	$(MAKE) install DESTDIR=$(STAGE) prefix=/usr APP_PATH=$(SHARE) SHARE_PATH=$(SHARE)
+	# The SDL3 the binary was linked against, in its private directory.
+	install -d $(STAGE)$(SDL_PRIVATE_LIB)
+	cp -a $(SDL_INSTALL)/lib/libSDL3.so* $(STAGE)$(SDL_PRIVATE_LIB)/
 
+override_dh_shlibdeps:
+	dh_shlibdeps -l$(STAGE)$(SDL_PRIVATE_LIB)
+
+override_dh_makeshlibs:
+	# A private library: nothing else may link it, so no shlibs file and no
+	# ldconfig trigger (lintian: package-has-unnecessary-activation-of-
+	# ldconfig-trigger).
+	dh_makeshlibs -X$(SDL_PRIVATE_LIB)
+
+override_dh_auto_clean:
+	-$(MAKE) clean
+	rm -rf $(SDL_BUILD) $(SDL_INSTALL)
