@@ -37,15 +37,27 @@ behaviour.
 - Refresh cycles and interrupt acknowledges (`iorq` together with `m1`) are
   not accesses, so they produce no record. Idle cycles produce no record
   either: the `cycle` field carries the time between records.
-- A line event is a record with `addr = data = 0`. If its edge falls inside an
-  open access, it is written just after that access's record. This keeps the
-  stream in non-decreasing cycle order.
+- A line event is a record with `addr = data = 0`. If its edge falls while an
+  access is open, including on the master cycle the access opens, it is
+  written just after that access's record. This keeps the stream in
+  non-decreasing cycle order. Up to four edges can wait behind one access; a
+  fifth and later edge adds its flag to the fourth marker.
 - The record buffer is bounded (`cpct_tap_set_capacity`). Once it is full,
   further records are counted but not stored. `cpct_tap_write` then ends the
   file with a GAP record: `addr` holds the lost count, saturated at `0xFFFF`,
   and `cycle` is the tap's current cycle.
+- At write time an access whose strobe is still active is left out, because
+  it has not ended. Line events already waiting behind it are written.
 
-Known artefact: this Z80 holds T1 until the Gate Array's microsecond grid.
+Known artefact, HALT: this Z80 runs no bus cycles while halted. It holds
+/HALT low and waits. Real silicon keeps fetching NOPs, one M1 cycle every
+4 T-states, each with /HALT low. So in a konCePCja trace no access record
+carries `HALT`; it appears only on the /INT or /RESET line event that ends
+the halt. A hardware or RTL capture of the same program has an
+`M1 | MEM_RD | HALT` record every 4 T-states while halted, and a comparison
+has to skip those.
+
+Known artefact, T1: this Z80 holds T1 until the Gate Array's microsecond grid.
 Real silicon asserts /MREQ in T1 wherever T1 falls, then waits in T2.
 Because of that, a strobe in a konCePCja trace can start up to 3 T-states
 later than the same strobe on hardware. The end of the strobe is the same,
@@ -80,8 +92,8 @@ tail -c 16384 rom/cpc6128.rom > basic.bin
 | `--out FILE` | trace to write (required) |
 | `--cycles N` | master cycles to run, 16 per µs (default 2000000) |
 | `--upper FILE` | 16 KB upper ROM 0, for example BASIC |
-| `--key ROW,COLS` | hold a keyboard row: the columns byte, 0 = pressed (repeatable) |
-| `--expansion KB` | attach a dk'tronics-style RAM expansion |
+| `--key ROW,COLS` | hold a keyboard row (0-15): the columns byte (0-255), 0 = pressed; up to 16 times |
+| `--expansion KB` | attach a dk'tronics-style RAM expansion (64-512) |
 | `--capacity N` | tap buffer in records (default 1<<24) |
 | `--screen FILE` | dump RAM `&C000-&FFFF` at the end |
 | `--garegs FILE` | dump the Gate Array's mode and inks at the end |
@@ -91,6 +103,12 @@ tail -c 16384 rom/cpc6128.rom > basic.bin
 Device is attached only when this option is given. It only listens to the RAM
 fetch bus and the CRTC timing, so the trace is the same with or without it.
 Each frame is 768×272 RGB, the size the main emulator's framebuffer uses.
+
+Numbers must be whole and in range (`0x` hex is accepted); anything else is
+rejected with exit status 2. The exit status is 0 when the run worked, 1 on
+an I/O failure, 2 for bad arguments or input files, and 3 when the trace was
+written but is not usable: records were dropped (raise `--capacity`) or no
+access was recorded at all.
 
 The file header says `crtc_type = 0` and `machine = 2` (6128), which match
 the rig's board.

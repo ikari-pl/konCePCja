@@ -3,19 +3,15 @@
  * run N master cycles, write the trace. The other half of the comparison is
  * the CoPyCat standalone RTL bench running the same ROM (copycat/sim/tap).
  *
- *   ./cpct_tap_rig --rom stub.bin --out trace.cpct [--cycles N]
- *                  [--key ROW,COLUMNS]...   (PSG keyboard: columns 0 = pressed;
- * repeatable)
- *                  [--upper basic.bin]   (16 KB upper ROM 0, e.g. BASIC)
- *                  [--screen ram_c000.bin] (dump RAM C000-FFFF at the end)
- *                  [--garegs ga.txt]     (dump the Gate Array's mode and inks)
- *                  [--capacity N]        (tap record buffer, default 1<<24)
- *                  [--expansion KB]      (attach a dk'tronics-style RAM
- * expansion, 64..512)
- *                  [--dump-frames DIR]   (the video Device's framebuffer as
- *                                         DIR/frame_NNNNN.ppm at every
- * completed frame: the shadow twin's oracle)
+ *   ./cpct_tap_rig --rom ROM16K --out TRACE.cpct [options]
+ *
+ * Options (--cycles, --key, --upper, --screen, --garegs, --capacity,
+ * --expansion, --dump-frames) are listed in docs/cpct-tap.md.
+ *
+ * Exit status: 0 ok, 1 I/O failure, 2 bad arguments or input, 3 the trace is
+ * not usable (records were dropped, or no access was recorded).
  */
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -51,38 +47,78 @@ static bool write_ppm(const std::string& path, const std::vector<uint8_t>& fb,
   return std::fclose(f) == 0 && ok;
 }
 
+// Strict unsigned parse: the whole string must be a number in [lo, hi]
+// (0x.. accepted). atol/strtoul would turn "abc" into 0 and run nothing.
+static bool parse_u64(const char* s, unsigned long long lo,
+                      unsigned long long hi, unsigned long long& out) {
+  if (!s || !*s || *s == '-') return false;
+  errno = 0;
+  char* end = nullptr;
+  const unsigned long long v = std::strtoull(s, &end, 0);
+  if (errno != 0 || *end != '\0' || v < lo || v > hi) return false;
+  out = v;
+  return true;
+}
+
+// "ROW,COLS": row 0..15, columns byte 0..255 (0 bits = pressed).
+static bool parse_key(const char* s, int& row, int& cols) {
+  const char* comma = s ? std::strchr(s, ',') : nullptr;
+  if (!comma) return false;
+  const std::string r(s, comma);
+  unsigned long long rv = 0, cv = 0;
+  if (!parse_u64(r.c_str(), 0, 15, rv) || !parse_u64(comma + 1, 0, 255, cv))
+    return false;
+  row = static_cast<int>(rv);
+  cols = static_cast<int>(cv);
+  return true;
+}
+
 int main(int argc, char** argv) {
   const char* rom_path = nullptr;
   const char* out_path = nullptr;
-  long cycles = 2000000;
-  int key_rows[16], key_cols[16], nkeys = 0;
+  unsigned long long cycles = 2000000;
+  int key_rows[16] = {}, key_cols[16] = {}, nkeys = 0;
   const char* upper_path = nullptr;
   const char* screen_path = nullptr;
   const char* garegs_path = nullptr;
   size_t capacity = size_t(1) << 24;
-  long expansion_kb = 0;
+  unsigned long long expansion_kb = 0;
   const char* frames_dir = nullptr;
+  auto bad_arg = [](const char* opt, const char* val) {
+    std::fprintf(stderr, "cpct_tap_rig: bad %s value '%s'\n", opt, val);
+    return 2;
+  };
   for (int i = 1; i < argc; i++) {
     if (!std::strcmp(argv[i], "--rom") && i + 1 < argc)
       rom_path = argv[++i];
     else if (!std::strcmp(argv[i], "--out") && i + 1 < argc)
       out_path = argv[++i];
-    else if (!std::strcmp(argv[i], "--cycles") && i + 1 < argc)
-      cycles = std::atol(argv[++i]);
-    else if (!std::strcmp(argv[i], "--upper") && i + 1 < argc)
+    else if (!std::strcmp(argv[i], "--cycles") && i + 1 < argc) {
+      if (!parse_u64(argv[++i], 1, ~0ULL, cycles))
+        return bad_arg("--cycles", argv[i]);
+    } else if (!std::strcmp(argv[i], "--upper") && i + 1 < argc)
       upper_path = argv[++i];
     else if (!std::strcmp(argv[i], "--screen") && i + 1 < argc)
       screen_path = argv[++i];
     else if (!std::strcmp(argv[i], "--garegs") && i + 1 < argc)
       garegs_path = argv[++i];
-    else if (!std::strcmp(argv[i], "--capacity") && i + 1 < argc)
-      capacity = std::strtoul(argv[++i], nullptr, 0);
-    else if (!std::strcmp(argv[i], "--expansion") && i + 1 < argc)
-      expansion_kb = std::atol(argv[++i]);
-    else if (!std::strcmp(argv[i], "--dump-frames") && i + 1 < argc)
+    else if (!std::strcmp(argv[i], "--capacity") && i + 1 < argc) {
+      unsigned long long c = 0;
+      if (!parse_u64(argv[++i], 0, SIZE_MAX, c))
+        return bad_arg("--capacity", argv[i]);
+      capacity = static_cast<size_t>(c);
+    } else if (!std::strcmp(argv[i], "--expansion") && i + 1 < argc) {
+      if (!parse_u64(argv[++i], 64, 512, expansion_kb))
+        return bad_arg("--expansion", argv[i]);
+    } else if (!std::strcmp(argv[i], "--dump-frames") && i + 1 < argc)
       frames_dir = argv[++i];
-    else if (!std::strcmp(argv[i], "--key") && i + 1 < argc && nkeys < 16) {
-      std::sscanf(argv[++i], "%d,%i", &key_rows[nkeys], &key_cols[nkeys]);
+    else if (!std::strcmp(argv[i], "--key") && i + 1 < argc) {
+      if (nkeys == 16) {
+        std::fprintf(stderr, "cpct_tap_rig: at most 16 --key options\n");
+        return 2;
+      }
+      if (!parse_key(argv[++i], key_rows[nkeys], key_cols[nkeys]))
+        return bad_arg("--key", argv[i]);
       nkeys++;
     } else {
       std::fprintf(stderr,
@@ -119,6 +155,12 @@ int main(int argc, char** argv) {
   Device zdev = z80_init(zmem.data());
   std::vector<uint8_t> tmem(cpct_tap_state_size());
   Device tdev = cpct_tap_init(tmem.data());
+  struct TapGuard {  // the tap owns a heap buffer: destroy on every return
+    const Device* d;
+    ~TapGuard() { cpct_tap_destroy(d); }
+  } tap_guard{&tdev};
+  // Before the board reset, so even its power-on RESET record is bounded.
+  cpct_tap_set_capacity(&tdev, capacity);
   std::vector<uint8_t> vmem(video_state_size());
   Device vdev = video_init(vmem.data());
 
@@ -163,13 +205,12 @@ int main(int argc, char** argv) {
     xmem.assign(static_cast<size_t>(expansion_kb) * 1024, 0);
     mem_attach_expansion(&mdev, xmem.data(), xmem.size());
   }
-  cpct_tap_set_capacity(&tdev, capacity);
   for (int k = 0; k < nkeys; k++)
     psg_set_key_row(&sdev, static_cast<uint8_t>(key_rows[k]),
                     static_cast<uint8_t>(key_cols[k]));
 
   uint32_t frames_seen = 0, frames_written = 0;
-  for (long i = 0; i < cycles; i++) {
+  for (unsigned long long i = 0; i < cycles; i++) {
     board_tick(&board);
     if (!frames_dir) continue;
     VideoRegs v{};
@@ -188,7 +229,12 @@ int main(int argc, char** argv) {
   }
 
   size_t n = 0, dropped = 0;
-  cpct_tap_records(&tdev, &n, &dropped);
+  const CpctRecord* recs = cpct_tap_records(&tdev, &n, &dropped);
+  size_t accesses = 0;
+  for (size_t k = 0; k < n; k++)
+    if (recs[k].flags &
+        (CPCT_M1 | CPCT_MEM_RD | CPCT_MEM_WR | CPCT_IO_RD | CPCT_IO_WR))
+      accesses++;
   if (cpct_tap_write(&tdev, out_path, 0, 2) != 0) {
     std::fprintf(stderr, "cpct_tap_rig: cannot write %s\n", out_path);
     return 1;
@@ -226,11 +272,24 @@ int main(int argc, char** argv) {
   Z80Regs z{};
   z80_peek(&zdev, &z);
   std::fprintf(stderr,
-               "cpct_tap_rig: %ld master cycles, %zu records (%zu dropped), "
+               "cpct_tap_rig: %llu master cycles, %zu records (%zu dropped), "
                "PC=%04X, wrote %s\n",
                cycles, n, dropped, z.pc, out_path);
   if (frames_dir)
     std::fprintf(stderr, "cpct_tap_rig: %u frames written to %s\n",
                  frames_written, frames_dir);
+  // A trace that lost records or caught no access is not a usable result:
+  // the file is written for inspection, but the exit status says so.
+  if (dropped) {
+    std::fprintf(stderr,
+                 "cpct_tap_rig: trace truncated (%zu records lost, see the GAP "
+                 "record); raise --capacity\n",
+                 dropped);
+    return 3;
+  }
+  if (accesses == 0) {
+    std::fprintf(stderr, "cpct_tap_rig: no bus access was recorded\n");
+    return 3;
+  }
   return 0;
 }

@@ -140,18 +140,22 @@ int main(int argc, char** argv) {
     return 1;
   }
   long t = 0;
-  for (long c = 0; c < us * 16; c++) {
+  bool ok = true;
+  for (long c = 0; ok && c < us * 16; c++) {
     board_tick(&board);
     if (board.bus.clk.psg) {
       PsgRegs p{};
       psg_peek(&sdev, &p);
-      std::fprintf(fo, "%ld %u %u %u %u %u %u\n", t, p.tone_out & 7,
-                   p.noise_out & 1, p.env_level, p.chan_level[0],
-                   p.chan_level[1], p.chan_level[2]);
+      ok = std::fprintf(fo, "%ld %u %u %u %u %u %u\n", t, p.tone_out & 7,
+                        p.noise_out & 1, p.env_level, p.chan_level[0],
+                        p.chan_level[1], p.chan_level[2]) > 0;
       t++;
     }
   }
-  std::fclose(fo);
+  if (std::fclose(fo) != 0 || !ok) {
+    std::fprintf(stderr, "psg_oracle_rig: cannot write %s\n", outp);
+    return 1;
+  }
   std::fprintf(stderr, "psg_oracle_rig: %ld PSG clocks dumped to %s\n", t,
                outp);
   return 0;

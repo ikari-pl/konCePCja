@@ -54,9 +54,9 @@ void flush_pending(tap_state* t) {
 
 void line_event(tap_state* t, uint8_t flags) {
   const CpctRecord r{tstate(t->now), flags, 0, 0};
-  // An access that opened on an earlier cycle has a smaller stamp but is not
-  // out yet: hold the marker behind it to keep the stream ordered.
-  if (t->active && t->start < t->now) {
+  // An open access (even one that opened on this very cycle) is not out yet:
+  // hold the marker behind its record, as the rule in cpct_tap.h says.
+  if (t->active) {
     if (t->npending < kMaxPendingLines)
       t->pending[t->npending++] = r;
     else
@@ -165,6 +165,10 @@ void cpct_tap_set_capacity(const Device* dev, size_t capacity) {
   self_of(dev->self)->capacity = capacity;
 }
 
+void cpct_tap_destroy(const Device* dev) {
+  if (dev && dev->self) self_of(dev->self)->~tap_state();
+}
+
 void cpct_encode_header(uint8_t out[CPCT_HEADER_SIZE], uint8_t crtc_type,
                         uint8_t machine, uint64_t start_cycle) {
   std::memset(out, 0, CPCT_HEADER_SIZE);
@@ -197,9 +201,24 @@ int cpct_tap_write(const Device* dev, const char* path, uint8_t crtc_type,
     cpct_encode_record(r, &t->rec[i]);
     ok = std::fwrite(r, 1, sizeof r, f) == sizeof r;
   }
-  if (ok && t->dropped) {
+  // Line events still queued behind the open access are complete events:
+  // write them (the open access itself has not ended, so it is not a record
+  // yet). Past the capacity they count as lost like any other record.
+  size_t lost_total = t->dropped;
+  size_t room =
+      t->capacity > t->rec.size() ? t->capacity - t->rec.size() : size_t{0};
+  for (int i = 0; ok && i < t->npending; i++) {
+    if (room == 0) {
+      lost_total++;
+      continue;
+    }
+    room--;
+    cpct_encode_record(r, &t->pending[i]);
+    ok = std::fwrite(r, 1, sizeof r, f) == sizeof r;
+  }
+  if (ok && lost_total) {
     const uint16_t lost =
-        t->dropped >= 0xFFFF ? 0xFFFF : static_cast<uint16_t>(t->dropped);
+        lost_total >= 0xFFFF ? 0xFFFF : static_cast<uint16_t>(lost_total);
     const CpctRecord gap{tstate(t->now), CPCT_GAP, 0, lost};
     cpct_encode_record(r, &gap);
     ok = std::fwrite(r, 1, sizeof r, f) == sizeof r;

@@ -30,7 +30,7 @@ struct Tap {
   Tap() : mem(cpct_tap_state_size()), dev(cpct_tap_init(mem.data())) {
     dev.reset(dev.self);
   }
-  ~Tap() = default;
+  ~Tap() { cpct_tap_destroy(&dev); }
   Tap(const Tap&) = delete;
   Tap& operator=(const Tap&) = delete;
 
@@ -56,6 +56,28 @@ Bus fetch(uint16_t addr, uint8_t op) {
   b.cpu.addr = addr;
   b.cpu.data = op;
   b.cpu.m1 = b.cpu.mreq = b.cpu.rd = true;
+  return b;
+}
+
+// A temp file removed on scope exit, even when an ASSERT returns early.
+struct TempFile {
+  std::filesystem::path path;
+  explicit TempFile(const char* name)
+      : path(std::filesystem::temp_directory_path() / name) {}
+  ~TempFile() {
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+  }
+  TempFile(const TempFile&) = delete;
+  TempFile& operator=(const TempFile&) = delete;
+};
+
+Bus with_irq(Bus b, bool irq) {
+  b.cpu.irq = irq;
+  return b;
+}
+Bus with_reset(Bus b, bool reset) {
+  b.cpu.reset = reset;
   return b;
 }
 
@@ -232,6 +254,10 @@ TEST(CpctTap, BoardRunRecordsFetchesIoAndInterruptEdges) {
          p = ppi_init(pm.data()), s = psg_init(sm.data()),
          m = mem_init(mm.data()), z = z80_init(zm.data()),
          tap = cpct_tap_init(tm.data());
+  struct TapGuard {
+    const Device* d;
+    ~TapGuard() { cpct_tap_destroy(d); }
+  } tap_guard{&tap};
   Board board;
   board_init(&board);
   for (const Device& d : {g, c, p, s, m, z, tap}) board_add(&board, d);
@@ -250,7 +276,7 @@ TEST(CpctTap, BoardRunRecordsFetchesIoAndInterruptEdges) {
   // Idle cycles omitted: far fewer records than T-states elapsed, and none
   // without a flag.
   EXPECT_LT(n, static_cast<size_t>(3 * kFrame / 4 / 2));
-  int ints = 0, halts = 0, isr_fetches = 0;
+  int ints = 0, halt_accesses = 0, halt_markers = 0, isr_fetches = 0;
   std::vector<uint32_t> int_at;
   bool out7f = false, inf5 = false, wr8000 = false;
   for (size_t i = 0; i < n; i++) {
@@ -262,7 +288,12 @@ TEST(CpctTap, BoardRunRecordsFetchesIoAndInterruptEdges) {
       int_at.push_back(r[i].cycle);
       ints++;
     }
-    if (r[i].flags & CPCT_HALT) halts++;
+    if (r[i].flags & CPCT_HALT) {
+      if (r[i].flags & 0xF8)
+        halt_accesses++;
+      else
+        halt_markers++;
+    }
     if ((r[i].flags & CPCT_M1) && r[i].addr == 0x0038) isr_fetches++;
     if (r[i].flags == CPCT_IO_WR && r[i].addr == 0x7F00) out7f = true;
     if (r[i].flags == CPCT_IO_RD && (r[i].addr >> 8) == 0xF5) inf5 = true;
@@ -284,5 +315,166 @@ TEST(CpctTap, BoardRunRecordsFetchesIoAndInterruptEdges) {
   for (size_t k = int_at.size() - 6; k < int_at.size(); k++)
     EXPECT_EQ(13312u, int_at[k] - int_at[k - 1]) << "interval " << k;
   EXPECT_GE(isr_fetches, ints - 1);  // every edge but maybe the last is taken
-  EXPECT_GT(halts, 0);
+  // This Z80 runs no bus cycles while halted (the known artefact in
+  // cpct_tap.h), so HALT is never on an access: it rides the /INT markers
+  // that end each halt -- every one but possibly the first, which can fall
+  // before the program reaches its HALT.
+  EXPECT_EQ(0, halt_accesses);
+  EXPECT_GE(halt_markers, ints - 1);
+}
+
+TEST(CpctTap, ResetFallIsOneLineEventPerEdge) {
+  Tap t;
+  t.hold(idle(), 8);
+  t.hold(with_reset(idle(), true), 8);  // /RESET falls at master 8 = T 2
+  t.hold(idle(), 4);
+  Bus h = with_reset(idle(), true);
+  h.cpu.halt = true;
+  t.hold(h, 4);  // falls again at master 20 = T 5, with /HALT low
+
+  const auto r = t.records();
+  ASSERT_EQ(3u, r.size());
+  EXPECT_EQ(CPCT_RESET, r[1].flags);
+  EXPECT_EQ(2u, r[1].cycle);
+  EXPECT_EQ(CPCT_RESET | CPCT_HALT, r[2].flags);
+  EXPECT_EQ(5u, r[2].cycle);
+}
+
+TEST(CpctTap, EdgeOnTheCycleAnAccessOpensFollowsItsRecord) {
+  Tap t;
+  t.hold(idle(), 4);
+  t.hold(with_irq(fetch(0x0100, 0x00), true), 4);  // both start at master 4
+  t.hold(with_irq(idle(), true), 4);
+
+  const auto r = t.records();
+  ASSERT_EQ(3u, r.size());
+  EXPECT_EQ(CPCT_M1 | CPCT_MEM_RD, r[1].flags);
+  EXPECT_EQ(1u, r[1].cycle);
+  EXPECT_EQ(CPCT_INT, r[2].flags);
+  EXPECT_EQ(1u, r[2].cycle);
+}
+
+TEST(CpctTap, MoreThanFourEdgesInOneAccessMergeIntoTheLastSlot) {
+  Tap t;
+  const Bus f = fetch(0x0200, 0x00);
+  // Five edges while one fetch stays open: INT@4, RESET@8, INT@16,
+  // RESET@24, INT@32 (master cycles).
+  t.hold(f, 4);
+  t.hold(with_irq(f, true), 4);
+  t.hold(with_reset(with_irq(f, true), true), 4);
+  t.hold(f, 4);
+  t.hold(with_irq(f, true), 4);
+  t.hold(f, 4);
+  t.hold(with_reset(f, true), 4);
+  t.hold(f, 4);
+  t.hold(with_irq(f, true), 4);
+  t.hold(idle(), 4);
+
+  const auto r = t.records();
+  ASSERT_EQ(6u, r.size());  // RESET, the fetch, four markers
+  EXPECT_EQ(CPCT_M1 | CPCT_MEM_RD, r[1].flags);
+  EXPECT_EQ(CPCT_INT, r[2].flags);
+  EXPECT_EQ(1u, r[2].cycle);
+  EXPECT_EQ(CPCT_RESET, r[3].flags);
+  EXPECT_EQ(2u, r[3].cycle);
+  EXPECT_EQ(CPCT_INT, r[4].flags);
+  EXPECT_EQ(4u, r[4].cycle);
+  // The fifth edge folds its flag into the fourth slot, keeping its stamp.
+  EXPECT_EQ(CPCT_RESET | CPCT_INT, r[5].flags);
+  EXPECT_EQ(6u, r[5].cycle);
+}
+
+TEST(CpctTap, DeviceResetAfterActivityStartsAFreshStream) {
+  Tap t;
+  cpct_tap_set_capacity(&t.dev, 3);
+  for (int k = 0; k < 4; k++) {
+    t.hold(fetch(static_cast<uint16_t>(k), 0), 4);
+    t.hold(idle(), 4);
+  }
+  t.hold(fetch(0x10, 0), 2);                  // an access left open ...
+  t.hold(with_irq(fetch(0x10, 0), true), 2);  // ... with a marker behind it
+  size_t dropped = 0;
+  ASSERT_GT(t.records(&dropped).size(), 1u);
+  ASSERT_GT(dropped, 0u);
+
+  t.dev.reset(t.dev.self);
+  auto r = t.records(&dropped);
+  ASSERT_EQ(1u, r.size());
+  EXPECT_EQ(CPCT_RESET, r[0].flags);
+  EXPECT_EQ(0u, r[0].cycle);
+  EXPECT_EQ(0u, dropped);
+
+  // No stale open access, pending marker or /INT level survives the reset.
+  t.hold(idle(), 4);
+  t.hold(fetch(0x20, 0x3E), 4);
+  t.hold(idle(), 1);
+  r = t.records();
+  ASSERT_EQ(2u, r.size());
+  EXPECT_EQ(CPCT_M1 | CPCT_MEM_RD, r[1].flags);
+  EXPECT_EQ(1u, r[1].cycle);
+  EXPECT_EQ(0x20, r[1].addr);
+}
+
+TEST(CpctTap, GapLostCountSaturatesAtFfff) {
+  Tap t;
+  cpct_tap_set_capacity(&t.dev, 1);  // only the RESET marker fits
+  for (int k = 0; k < 70000; k++) {
+    t.hold(fetch(0, 0), 4);
+    t.hold(idle(), 4);
+  }
+  size_t dropped = 0;
+  t.records(&dropped);
+  ASSERT_EQ(70000u, dropped);
+
+  TempFile tmp("cpct_tap_test_saturate.cpct");
+  ASSERT_EQ(0, cpct_tap_write(&t.dev, tmp.path.string().c_str(), 0, 2));
+  const auto bytes = slurp(tmp.path);
+  ASSERT_EQ(32u + 2 * 8, bytes.size());
+  const uint8_t* gap = bytes.data() + 32 + 8;
+  EXPECT_EQ(CPCT_GAP, gap[4]);
+  EXPECT_EQ(0xFFFF, gap[6] | (gap[7] << 8));
+}
+
+TEST(CpctTap, WriteWithoutLossIsHeaderPlusRecordsExactly) {
+  Tap t;
+  t.hold(fetch(0x1234, 0xAB), 4);
+  t.hold(idle(), 4);
+  const auto r = t.records();
+  ASSERT_EQ(2u, r.size());
+
+  TempFile tmp("cpct_tap_test_exact.cpct");
+  ASSERT_EQ(0, cpct_tap_write(&t.dev, tmp.path.string().c_str(), 2, 1));
+  const auto bytes = slurp(tmp.path);
+  ASSERT_EQ(32u + 2 * 8, bytes.size());  // no GAP record
+  uint8_t want[CPCT_HEADER_SIZE];
+  cpct_encode_header(want, 2, 1, 0);
+  EXPECT_EQ(0, std::memcmp(bytes.data(), want, sizeof want));
+  for (size_t i = 0; i < r.size(); i++) {
+    uint8_t rec[CPCT_RECORD_SIZE];
+    cpct_encode_record(rec, &r[i]);
+    EXPECT_EQ(0, std::memcmp(bytes.data() + 32 + 8 * i, rec, sizeof rec))
+        << "record " << i;
+  }
+}
+
+TEST(CpctTap, WriteToAnUnopenablePathFails) {
+  Tap t;
+  const auto path = std::filesystem::temp_directory_path() /
+                    "cpct_tap_test_no_such_dir" / "trace.cpct";
+  EXPECT_EQ(-1, cpct_tap_write(&t.dev, path.string().c_str(), 0, 2));
+}
+
+TEST(CpctTap, WriteIncludesMarkersQueuedBehindAnOpenAccess) {
+  Tap t;
+  t.hold(fetch(0x0300, 0x76), 4);  // opens at master 0, never closes
+  t.hold(with_irq(fetch(0x0300, 0x76), true), 4);  // /INT falls at T 1
+
+  TempFile tmp("cpct_tap_test_pending.cpct");
+  ASSERT_EQ(0, cpct_tap_write(&t.dev, tmp.path.string().c_str(), 0, 2));
+  const auto bytes = slurp(tmp.path);
+  // RESET, then the INT marker; the unfinished fetch has no record yet.
+  ASSERT_EQ(32u + 2 * 8, bytes.size());
+  const uint8_t* m = bytes.data() + 32 + 8;
+  EXPECT_EQ(1, m[0]);
+  EXPECT_EQ(CPCT_INT, m[4]);
 }

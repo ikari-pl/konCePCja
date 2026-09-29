@@ -22,8 +22,9 @@
  * Line events: /INT falling (cpu.irq rising) and /RESET falling (cpu.reset
  * rising) each produce a pure line-event record (INT or RESET, plus HALT
  * when /HALT is low on that cycle; addr = data = 0) stamped with the edge's
- * cycle. An edge that lands inside an access is emitted right after that
- * access's record, so the stream stays in non-decreasing cycle order. A
+ * cycle. An edge that lands while an access is open -- including on the
+ * master cycle the access opens -- is emitted right after that access's
+ * record, so the stream stays in non-decreasing cycle order. A
  * power-on reset of the tap (Device.reset) starts the stream with a RESET
  * record at cycle 0, as the spec asks of a capture that began at power-on.
  *
@@ -31,6 +32,17 @@
  * are counted, not stored; cpct_tap_write() then ends the file with a GAP
  * record (flags 0, addr = the saturated lost count, cycle = the tap's cycle
  * at write time, the first cycle after the loss).
+ *
+ * At write time an access whose strobe is still active is not written (it
+ * has no end yet); line events already queued behind it are.
+ *
+ * KNOWN MODEL ARTEFACT, HALT: this Z80 runs no bus cycles while halted -- it
+ * holds /HALT low and waits (z80.cpp). Real silicon keeps executing NOP M1
+ * fetches (one every 4 T-states, each with /HALT low). So in a
+ * konCePCja-produced trace no access record carries HALT; HALT appears only
+ * on the INT/RESET line events that end the halt. A hardware or RTL capture
+ * of the same program has an M1|MEM_RD|HALT fetch record every 4 T-states
+ * while halted; a comparison must skip those.
  *
  * KNOWN MODEL ARTEFACT in the cycle stamps (2026-09-05, measured against the
  * CoPyCat standalone RTL on the same program): this Z80 aligns a memory
@@ -85,6 +97,10 @@ Device cpct_tap_init(void* storage);
 const CpctRecord* cpct_tap_records(const Device* dev, size_t* count,
                                    size_t* dropped);
 void cpct_tap_set_capacity(const Device* dev, size_t capacity);
+
+/* Destroy the tap's state (it owns a heap buffer) before its storage is
+ * freed. The Device must not be ticked afterwards. */
+void cpct_tap_destroy(const Device* dev);
 
 /* The v0 byte layout, little-endian: a 32-byte header and 8-byte records. */
 void cpct_encode_header(uint8_t out[CPCT_HEADER_SIZE], uint8_t crtc_type,
