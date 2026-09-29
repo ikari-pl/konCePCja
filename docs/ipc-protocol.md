@@ -359,6 +359,14 @@ echo "frames dump /tmp/recording.gif 100" | nc -w 60 localhost 6543
 echo "frames dump /tmp/slowmo.gif 50 10" | nc -w 30 localhost 6543
 ```
 
+## DevTools
+
+| Command | Description |
+|---------|-------------|
+| `devtools` | Toggle the developer tools (F12; the pause hub's DevTools button) |
+| `devtools on\|off` | Show or hide them explicitly |
+| `devtools show <name>` / `devtools hide <name>` | Open or close one window: `registers`, `disassembly`, `memory_hex`, `stack`, `breakpoints`, `symbols`, `session_recording`, `gfx_finder`, `silicon_disc`, `asic`, `disc_tools`, `data_areas`, `disasm_export`, `video_state`, `audio_state`, `recording_controls`, `assembler`, `drive_sound_lab`. `ERR 404 unknown window` otherwise |
+
 ## Event System
 
 Register IPC commands to execute automatically on triggers.
@@ -545,6 +553,23 @@ File-level and sector-level access to DSK disc images.
 | `disk sector read <drive> <track> <side> <sector_id>` | Read raw sector data as hex |
 | `disk sector write <drive> <track> <side> <sector_id> <hex>` | Write raw hex data to sector |
 | `disk sector info <drive> <track> <side>` | List sectors on track: `C=xx H=xx R=xx N=xx size=N` per sector |
+
+## Tape
+
+The cassette deck the Media menu, the F4 key and the pause hub's Eject Tape
+button drive. `help tape` on the port shows the same usage.
+
+| Command | Description |
+|---------|-------------|
+| `tape play` / `tape stop` | Start / stop the deck (F4) |
+| `tape rewind` | Rewind to the first block |
+| `tape eject` | Eject the tape — the pause hub's Eject Tape and the Media menu's Eject Tape, without the confirmation |
+| `tape status` | `OK` plus the deck state (motor, playing, position) |
+| `tape seek <block>` | Jump to a block of the loaded image. `ERR 409 no-tape` with nothing loaded; `ERR 400 block-out-of-range` |
+| `tape volume [0-100]` | Get or set the line-out volume — `OK volume=<n>` |
+| `tape lineout on\|off` | Route the deck's audio to the host's playback device (`OK ramping`; `ERR 503 no-playback-device`) |
+| `tape linein on [left\|right\|mix]` / `tape linein off` | Record from the host's line/mic input as if from tape (`ERR 503 no-recording-device`) |
+
 
 ```bash
 # List files on drive A

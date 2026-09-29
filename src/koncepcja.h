@@ -288,6 +288,9 @@ class t_CPC {
   } snd_cycle_count_init;
 
   std::string kbd_layout;
+  // [input] host_chords: 1 = Cmd/Ctrl+K/O/S drive the host UI (default); 0 on
+  // Linux/Windows returns Ctrl+K/O/S to the CPC. See host_chords.h.
+  unsigned int host_chords;
 
   unsigned int max_tracksize;
 

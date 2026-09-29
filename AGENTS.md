@@ -487,6 +487,18 @@ Press **F12** or send `devtools` via IPC to open the developer tools:
 | F12 | Toggle DevTools |
 | Shift+F1 | Virtual keyboard |
 | Shift+F3 | Save snapshot |
+| Cmd+K (macOS) / Ctrl+K (Linux, Windows) | Command palette |
+| Cmd+O (macOS) / Ctrl+O (Linux, Windows) | Load Disk A... |
+| Cmd+S (macOS) / Ctrl+S (Linux, Windows) | Save Snapshot... |
+
+Cmd/Ctrl chords belong to the host UI and never reach the CPC; unmodified
+keys (F-keys included) are the CPC's. The chords are resolved in one place,
+`src/host_chords.h`/`.cpp`, which the SDL event loop, both menu bars and the
+About box all read. SDL is the only dispatcher — the native macOS menu shows
+a chord as text and registers no key equivalent, since AppKit and SDL both
+see the key and an accelerator on it double-fires (the F9 lesson). On Linux
+and Windows, Control is a real CPC key, so Ctrl+K/O/S are the three
+combinations taken from the CPC; every other Control combination reaches it.
 
 ### SDL3 macOS Mouse Events & ImGui Viewports
 
@@ -570,6 +582,10 @@ volume=80         # 0-100
 lightgun=0        # Light gun: 0=off, 1=Amstrad Magnum Phaser, 2=Trojan Light
                   # Phazer. Same as the F-key toggle; lets config/headless runs
                   # enable a gun (the IPC `input gun` contract keys off it).
+host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
+                  # Save Snapshot). 0 hands Ctrl+K/O/S back to the CPC on
+                  # Linux/Windows — CP/M software (WordStar) uses them. No
+                  # effect on macOS, where the chords use Command.
 ```
 
 ## Code Conventions

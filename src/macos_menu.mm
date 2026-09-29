@@ -1,8 +1,9 @@
 #import <Cocoa/Cocoa.h>
+#include "host_chords.h"
+#include "imgui_state.h"  // FileDialogAction
 #include "keyboard.h"
 #include "menu_actions.h"
 #include "menu_bridge.h"
-#include "imgui_state.h"  // FileDialogAction
 #ifdef KONCPC_MODERN_UI
 #include "imgui.h"
 #endif
@@ -32,12 +33,12 @@ extern "C" void koncpc_menu_action(int action);
 // validateMenuItem: can compute the live checkmark from the same bridge fns.
 enum BridgeKind {
   BK_ABOUT = 1,
-  BK_SETTINGS,   // payload = OptionsTab int
+  BK_SETTINGS,  // payload = OptionsTab int
   BK_PALETTE,
-  BK_FILEDLG,    // payload = FileDialogAction int
-  BK_WINDOW,     // payload = index into koncpc_window_menu_items()
-  BK_SCALE,      // payload = scale index
-  BK_RENDERER,   // payload = video_plugin index
+  BK_FILEDLG,   // payload = FileDialogAction int
+  BK_WINDOW,    // payload = index into koncpc_window_menu_items()
+  BK_SCALE,     // payload = scale index
+  BK_RENDERER,  // payload = video_plugin index
 };
 static inline NSInteger pack_bridge_tag(BridgeKind kind, int payload) {
   return (static_cast<NSInteger>(kind) << 24) | (payload & 0x00FFFFFF);
@@ -45,9 +46,7 @@ static inline NSInteger pack_bridge_tag(BridgeKind kind, int payload) {
 static inline BridgeKind bridge_kind(NSInteger tag) {
   return static_cast<BridgeKind>((tag >> 24) & 0xFF);
 }
-static inline int bridge_payload(NSInteger tag) {
-  return static_cast<int>(tag & 0x00FFFFFF);
-}
+static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 0x00FFFFFF); }
 
 @interface KoncepcjaMenuTarget : NSObject
 @end
@@ -129,8 +128,7 @@ static inline int bridge_payload(NSInteger tag) {
 // Add a KONCPC_* command item to a submenu, label/placement/shortcut all from
 // the action registry.  Shortcut is shown as TEXT only (no keyEquivalent):
 // SDL owns every key, so an AppKit accelerator here would double-fire.
-static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
-                            const MenuAction* entry) {
+static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target, const MenuAction* entry) {
   NSString* itemTitle = [NSString stringWithUTF8String:entry->title];
   std::string sc = koncpc_action_shortcut(entry->action);
   if (!sc.empty()) {
@@ -144,10 +142,17 @@ static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
   [submenu addItem:item];
 }
 
-// Add a bridge item (non-KONCPC).  No keyEquivalent — bridge items carry no
-// SDL shortcut.
-static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
-                                   NSString* title, BridgeKind kind, int payload) {
+// Add a bridge item (non-KONCPC).  A host chord (host_chords.h) is shown as
+// TEXT, like the F-keys above, never as a keyEquivalent: SDL owns every key
+// and dispatches the chord itself; an AppKit accelerator on the same key
+// fired the action twice (the F9 double-fire, f85a8b69).
+static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target, NSString* title,
+                                   BridgeKind kind, int payload,
+                                   HostChord chord = HostChord::None) {
+  std::string const sc = host_chord_label(chord);
+  if (!sc.empty()) {
+    title = [title stringByAppendingFormat:@"  (%s)", sc.c_str()];
+  }
   NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:title
                                                 action:@selector(bridgeAction:)
                                          keyEquivalent:@""];
@@ -159,8 +164,7 @@ static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
 
 // Append every registry action whose MenuGroup matches `group` to `submenu`,
 // so labels + placement come from menu_actions.cpp.
-static void add_group_actions(NSMenu* submenu, KoncepcjaMenuTarget* target,
-                              MenuGroup group) {
+static void add_group_actions(NSMenu* submenu, KoncepcjaMenuTarget* target, MenuGroup group) {
   for (const MenuAction& entry : koncpc_menu_actions()) {
     if (entry.group != group) continue;
     add_action_item(submenu, target, &entry);
@@ -232,8 +236,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   // ── App menu ── re-target AppKit's existing application menu (item 0) for
   // About / Settings / Quit instead of adding a parallel "konCePCja" menu
   // (which produced a duplicate app menu + wrong placement).
-  NSMenu* appMenu =
-      ([mainMenu numberOfItems] > 0) ? [[mainMenu itemAtIndex:0] submenu] : nil;
+  NSMenu* appMenu = ([mainMenu numberOfItems] > 0) ? [[mainMenu itemAtIndex:0] submenu] : nil;
   wire_app_menu(appMenu, target);
 
   // Insert our custom menus BEFORE the system "Window" menu so it stays last
@@ -254,12 +257,10 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     NSMenu* m = insert_submenu(mainMenu, @"Machine", insertIdx++);
     for (const SettingsTabItem& it : koncpc_settings_tab_items()) {
       if (it.separator_before) [m addItem:[NSMenuItem separatorItem]];
-      add_bridge_item(m, target, [NSString stringWithUTF8String:it.label],
-                      BK_SETTINGS, it.tab);
+      add_bridge_item(m, target, [NSString stringWithUTF8String:it.label], BK_SETTINGS, it.tab);
     }
     [m addItem:[NSMenuItem separatorItem]];
-    if (const MenuAction* e = koncpc_find_action(KONCPC_RESET))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_RESET)) add_action_item(m, target, e);
   }
 
   // ── Edit ──
@@ -272,7 +273,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   {
     NSMenu* m = insert_submenu(mainMenu, @"Media", insertIdx++);
     add_bridge_item(m, target, @"Load Disk A...", BK_FILEDLG,
-                    static_cast<int>(FileDialogAction::LoadDiskA));
+                    static_cast<int>(FileDialogAction::LoadDiskA), HostChord::OpenDisk);
     add_bridge_item(m, target, @"Load Disk B...", BK_FILEDLG,
                     static_cast<int>(FileDialogAction::LoadDiskB));
     add_bridge_item(m, target, @"Save Disk A...", BK_FILEDLG,
@@ -282,8 +283,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     [m addItem:[NSMenuItem separatorItem]];
     add_bridge_item(m, target, @"Load Tape...", BK_FILEDLG,
                     static_cast<int>(FileDialogAction::LoadTape));
-    if (const MenuAction* e = koncpc_find_action(KONCPC_TAPEPLAY))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_TAPEPLAY)) add_action_item(m, target, e);
     [m addItem:[NSMenuItem separatorItem]];
     add_bridge_item(m, target, @"Load Cartridge...", BK_FILEDLG,
                     static_cast<int>(FileDialogAction::LoadCartridge));
@@ -291,22 +291,18 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     add_bridge_item(m, target, @"Load Snapshot...", BK_FILEDLG,
                     static_cast<int>(FileDialogAction::LoadSnapshot));
     add_bridge_item(m, target, @"Save Snapshot...", BK_FILEDLG,
-                    static_cast<int>(FileDialogAction::SaveSnapshot));
-    if (const MenuAction* e = koncpc_find_action(KONCPC_SNAPSHOT))
-      add_action_item(m, target, e);
-    if (const MenuAction* e = koncpc_find_action(KONCPC_LD_SNAP))
-      add_action_item(m, target, e);
+                    static_cast<int>(FileDialogAction::SaveSnapshot), HostChord::SaveSnapshot);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_SNAPSHOT)) add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_LD_SNAP)) add_action_item(m, target, e);
     [m addItem:[NSMenuItem separatorItem]];
-    if (const MenuAction* e = koncpc_find_action(KONCPC_NEXTDISKA))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_NEXTDISKA)) add_action_item(m, target, e);
     // Open Recent (MRU) is in-window-only; intentionally skipped natively.
   }
 
   // ── View ── Fullscreen, Scale, Renderer, Screenshot, Show FPS.
   {
     NSMenu* m = insert_submenu(mainMenu, @"View", insertIdx++);
-    if (const MenuAction* e = koncpc_find_action(KONCPC_FULLSCRN))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_FULLSCRN)) add_action_item(m, target, e);
 
     // Scale ▸
     NSMenuItem* scaleItem = [[NSMenuItem alloc] initWithTitle:@"Scale"
@@ -316,8 +312,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     {
       const auto& labels = koncpc_scale_labels();
       for (int i = 0; i < static_cast<int>(labels.size()); i++) {
-        add_bridge_item(scaleMenu, target,
-                        [NSString stringWithUTF8String:labels[i]], BK_SCALE, i);
+        add_bridge_item(scaleMenu, target, [NSString stringWithUTF8String:labels[i]], BK_SCALE, i);
       }
     }
     [scaleItem setSubmenu:scaleMenu];
@@ -334,16 +329,14 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
         if (koncpc_renderer_hidden(i)) continue;
         const char* group = koncpc_renderer_group(i);
         if (!prev_group || strcmp(prev_group, group) != 0) {
-          NSMenuItem* hdr = [[NSMenuItem alloc]
-              initWithTitle:[NSString stringWithUTF8String:group]
-                     action:nil
-              keyEquivalent:@""];
+          NSMenuItem* hdr = [[NSMenuItem alloc] initWithTitle:[NSString stringWithUTF8String:group]
+                                                       action:nil
+                                                keyEquivalent:@""];
           [hdr setEnabled:NO];
           [rendMenu addItem:hdr];
           prev_group = group;
         }
-        add_bridge_item(rendMenu, target,
-                        [NSString stringWithUTF8String:koncpc_renderer_name(i)],
+        add_bridge_item(rendMenu, target, [NSString stringWithUTF8String:koncpc_renderer_name(i)],
                         BK_RENDERER, i);
       }
     }
@@ -351,10 +344,8 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     [m addItem:rendItem];
 
     [m addItem:[NSMenuItem separatorItem]];
-    if (const MenuAction* e = koncpc_find_action(KONCPC_SCRNSHOT))
-      add_action_item(m, target, e);
-    if (const MenuAction* e = koncpc_find_action(KONCPC_FPS))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_SCRNSHOT)) add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_FPS)) add_action_item(m, target, e);
   }
 
   // ── Input ── Joystick, Light Gun (all MenuGroup::Input).
@@ -368,13 +359,10 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   // an action tagged Tools has to be listed here to appear at all.
   {
     NSMenu* m = insert_submenu(mainMenu, @"Tools", insertIdx++);
-    if (const MenuAction* e = koncpc_find_action(KONCPC_DEVTOOLS))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_DEVTOOLS)) add_action_item(m, target, e);
     add_bridge_item(m, target, @"Command Palette", BK_PALETTE, 0);
-    if (const MenuAction* e = koncpc_find_action(KONCPC_MF2STOP))
-      add_action_item(m, target, e);
-    if (const MenuAction* e = koncpc_find_action(KONCPC_SPEED))
-      add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_MF2STOP)) add_action_item(m, target, e);
+    if (const MenuAction* e = koncpc_find_action(KONCPC_SPEED)) add_action_item(m, target, e);
     [m addItem:[NSMenuItem separatorItem]];
     NSMenuItem* diagItem = [[NSMenuItem alloc] initWithTitle:@"Diagnostics"
                                                       action:nil
@@ -395,11 +383,8 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     [m addItem:[NSMenuItem separatorItem]];
     const auto& items = koncpc_window_menu_items();
     for (int i = 0; i < static_cast<int>(items.size()); i++) {
-      if (items[i].separator_before && i != 0)
-        [m addItem:[NSMenuItem separatorItem]];
-      add_bridge_item(m, target,
-                      [NSString stringWithUTF8String:items[i].label], BK_WINDOW,
-                      i);
+      if (items[i].separator_before && i != 0) [m addItem:[NSMenuItem separatorItem]];
+      add_bridge_item(m, target, [NSString stringWithUTF8String:items[i].label], BK_WINDOW, i);
     }
   }
 }
@@ -419,20 +404,17 @@ extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSM
 // NSMenuDidEndTracking; a depth counter handles nested submenus.
 void koncpc_render_tracking_tick();  // defined in kon_cpc_ja.cpp
 
-static int g_menu_track_depth = 0;             // nested begin/end (submenus)
+static int g_menu_track_depth = 0;              // nested begin/end (submenus)
 static CFRunLoopTimerRef g_track_timer = NULL;  // live only during tracking
 
-static void koncpc_track_timer_cb(CFRunLoopTimerRef, void*) {
-  koncpc_render_tracking_tick();
-}
+static void koncpc_track_timer_cb(CFRunLoopTimerRef, void*) { koncpc_render_tracking_tick(); }
 
 static void koncpc_menu_track_begin() {
   if (g_menu_track_depth++ != 0) return;  // already inside a tracking session
   if (g_track_timer) return;
   // ~60 Hz tick; the ring present is cheap and idempotent if no new frame.
-  g_track_timer = CFRunLoopTimerCreate(
-      kCFAllocatorDefault, CFAbsoluteTimeGetCurrent(), 1.0 / 60.0, 0, 0,
-      koncpc_track_timer_cb, NULL);
+  g_track_timer = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent(), 1.0 / 60.0,
+                                       0, 0, koncpc_track_timer_cb, NULL);
   if (g_track_timer) {
     CFRunLoopAddTimer(CFRunLoopGetCurrent(), g_track_timer,
                       (__bridge CFStringRef)NSEventTrackingRunLoopMode);
@@ -460,11 +442,15 @@ static void koncpc_register_menu_tracking_observers() {
     [nc addObserverForName:NSMenuDidBeginTrackingNotification
                     object:nil
                      queue:nil
-                usingBlock:^(NSNotification*) { koncpc_menu_track_begin(); }];
+                usingBlock:^(NSNotification*) {
+                  koncpc_menu_track_begin();
+                }];
     [nc addObserverForName:NSMenuDidEndTrackingNotification
                     object:nil
                      queue:nil
-                usingBlock:^(NSNotification*) { koncpc_menu_track_end(); }];
+                usingBlock:^(NSNotification*) {
+                  koncpc_menu_track_end();
+                }];
   });
 }
 

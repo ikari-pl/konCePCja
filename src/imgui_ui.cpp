@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "host_chords.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
 
@@ -99,7 +100,6 @@ namespace {
 void imgui_render_statusbar();
 }  // namespace
 namespace {
-void imgui_render_menu();
 void imgui_render_about();
 }  // namespace
 namespace {
@@ -1565,7 +1565,8 @@ void imgui_render_menubar() {
 
   // ── Media ── (loaders/savers single-sourced via koncpc_request_file_dialog)
   if (ImGui::BeginMenu("Media")) {
-    if (ImGui::MenuItem("Load Disk A...")) {
+    if (ImGui::MenuItem("Load Disk A...",
+                        host_chord_label(HostChord::OpenDisk).c_str())) {
       koncpc_request_file_dialog(static_cast<int>(FileDialogAction::LoadDiskA));
     }
     if (ImGui::MenuItem("Load Disk B...")) {
@@ -1629,7 +1630,8 @@ void imgui_render_menubar() {
       koncpc_request_file_dialog(
           static_cast<int>(FileDialogAction::LoadSnapshot));
     }
-    if (ImGui::MenuItem("Save Snapshot...")) {
+    if (ImGui::MenuItem("Save Snapshot...",
+                        host_chord_label(HostChord::SaveSnapshot).c_str())) {
       koncpc_request_file_dialog(
           static_cast<int>(FileDialogAction::SaveSnapshot));
     }
@@ -1801,7 +1803,8 @@ void imgui_render_menubar() {
     RenderMenuItem(KONCPC_DEVTOOLS);
     // beads-qnf: surface the Cmd+K command palette (previously only mentioned
     // in the About box) as a discoverable menu entry.
-    if (ImGui::MenuItem("Command Palette", "Cmd+K")) {
+    if (ImGui::MenuItem("Command Palette",
+                        host_chord_label(HostChord::CommandPalette).c_str())) {
       koncpc_open_command_palette();
     }
     RenderMenuItem(KONCPC_MF2STOP);
@@ -2158,10 +2161,23 @@ void imgui_render_topbar() {
       } else if (!fps_display.empty()) {
         right_w = ImGui::CalcTextSize(fps_display.c_str()).x + 16.0f;
       }
-      float const btn_w = ImGui::CalcTextSize("Layout").x +
-                          (ImGui::GetStyle().FramePadding.x * 2.0f);
-      ImGui::SameLine(ImGui::GetWindowWidth() - right_w - btn_w - 12.0f);
+      float const pad = ImGui::GetStyle().FramePadding.x * 2.0f;
+      float const gap = ImGui::GetStyle().ItemSpacing.x;
+      float const layout_w = ImGui::CalcTextSize("Layout").x + pad;
+      float const shot_w = ImGui::CalcTextSize("Screenshot").x + pad;
+      float const full_w = ImGui::CalcTextSize("Fullscreen").x + pad;
+      // Right-aligned, but never left of where the row already is: on a
+      // narrow window the cluster would otherwise draw over Pause.
+      float const cluster_x = ImGui::GetWindowWidth() - right_w - layout_w -
+                              gap - shot_w - gap - full_w - 12.0f;
+      ImGui::SameLine(std::max(cluster_x, ImGui::GetCursorPosX() + gap));
 
+      // Two frequent one-click actions with no fast path before (beads-flt):
+      // the same deferred toggle the View menu posts, and the same screenshot.
+      if (ImGui::Button("Fullscreen")) koncpc_menu_action(KONCPC_FULLSCRN);
+      ImGui::SameLine();
+      if (ImGui::Button("Screenshot")) koncpc_menu_action(KONCPC_SCRNSHOT);
+      ImGui::SameLine();
       if (ImGui::Button("Layout")) {
         imgui_state.show_layout_dropdown = !imgui_state.show_layout_dropdown;
       }
@@ -3042,7 +3058,33 @@ void load_state_slot(int i) {
 // Menu
 // ─────────────────────────────────────────────────
 
-namespace {
+// The hub's media row: Eject A / B / Tape, enabled per `media`, raising the
+// same confirmation the Media menu and the status-bar LEDs do; then DevTools,
+// which opens beside the hub (the machine stays paused). External linkage so
+// the headless render test can draw the row on its own.
+void imgui_render_hub_media_row(const HubMediaButtons& media, float width) {
+  float const third = (width - (ImGui::GetStyle().ItemSpacing.x * 2)) / 3.0f;
+  for (int i = 0; i < 3; ++i) {
+    if (i > 0) ImGui::SameLine();
+    ImGui::BeginDisabled(!media.button[i].enabled);
+    if (ImGui::Button(media.button[i].label, ImVec2(third, 0))) {
+      if (i == 2) {
+        imgui_state.eject_confirm_tape = true;
+      } else {
+        imgui_state.eject_confirm_drive = i;
+      }
+    }
+    ImGui::EndDisabled();
+  }
+  std::string const devtools_lbl =
+      "DevTools (" + koncpc_action_shortcut(KONCPC_DEVTOOLS) + ")";
+  if (ImGui::Button(devtools_lbl.c_str(), ImVec2(width, 0))) {
+    koncpc_menu_action(KONCPC_DEVTOOLS);
+  }
+}
+
+// The F1 pause hub — external linkage: imgui_ui.h exposes it for the
+// headless render tests.
 void imgui_render_menu() {
   ImGuiViewport* mvp = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(mvp->GetCenter(), ImGuiCond_Appearing,
@@ -3137,6 +3179,14 @@ void imgui_render_menu() {
       set_osd_message("Screenshot saved");
     }
   }
+  // The hub is where a paused user reaches for the debugger and for the
+  // media they want out (beads-7sh). Ejects raise the same confirmation the
+  // Media menu and the status-bar LEDs do; DevTools opens beside the hub, the
+  // machine stays paused.
+  imgui_render_hub_media_row(
+      hub_media_buttons(flux_save_caps(0).present, flux_save_caps(1).present,
+                        !pbTapeImage.empty()),
+      bw);
 
   // ── Section 2: Status dashboard ─────────────────────────────────────
   ImGui::Separator();
@@ -3331,6 +3381,8 @@ void imgui_render_menu() {
   if (action) imgui_close_menu();
 }
 
+namespace {
+
 // The About box renders every frame, not from inside imgui_render_menu():
 // OpenPopup and BeginPopupModal only run on frames where their host
 // renders, so hosting it in the F1 overlay meant the menubar item did
@@ -3357,11 +3409,12 @@ void imgui_render_about() {
     ImGui::BulletText("%s - Quit", koncpc_action_shortcut(KONCPC_EXIT).c_str());
     ImGui::BulletText("%s - Screenshot",
                       koncpc_action_shortcut(KONCPC_SCRNSHOT).c_str());
-#ifdef __APPLE__
-    ImGui::BulletText("Cmd+K - Command Palette");
-#else
-    ImGui::BulletText("Ctrl+K - Command Palette");
-#endif
+    ImGui::BulletText("%s - Command Palette",
+                      host_chord_label(HostChord::CommandPalette).c_str());
+    ImGui::BulletText("%s - Load Disk A...",
+                      host_chord_label(HostChord::OpenDisk).c_str());
+    ImGui::BulletText("%s - Save Snapshot...",
+                      host_chord_label(HostChord::SaveSnapshot).c_str());
     ImGui::Spacing();
     if (ImGui::Button("OK", ImVec2(ui_dpi_px(120), ui_dpi_px(0)))) {
       ImGui::CloseCurrentPopup();

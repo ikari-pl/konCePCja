@@ -212,3 +212,23 @@ inline void restore_toggle_values(bool* const* toggles, const bool* old_values,
                                   size_t count) {
   for (size_t i = 0; i < count; ++i) *toggles[i] = old_values[i];
 }
+
+// ── Pause hub: the media row ────────────────────────────────────────────────
+// The hub's Eject buttons, in the order they are drawn: Disk A, Disk B, Tape.
+// A button is enabled only while something is in that drive/deck — the same
+// presence the Media menu's Eject items key on. Pure so the enable logic is
+// testable without rendering.
+struct HubMediaButton {
+  const char* label;
+  bool enabled;
+};
+struct HubMediaButtons {
+  HubMediaButton button[3];
+};
+inline HubMediaButtons hub_media_buttons(bool disk_a_present,
+                                         bool disk_b_present,
+                                         bool tape_present) {
+  return {{{"Eject A", disk_a_present},
+           {"Eject B", disk_b_present},
+           {"Eject Tape", tape_present}}};
+}
