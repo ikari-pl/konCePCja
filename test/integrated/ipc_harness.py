@@ -2858,6 +2858,17 @@ def test_conditional_debug_matrix():
         if not emu.start('-O', 'system.run_tier=4'):
             print("  Failed to start emulator")
             return False
+        # Every check below asks the server to wait up to 5-6s, and this runs
+        # at the slowest tier. With the 5.0s default socket timeout the client
+        # abandons the connection first, so a server-side budget of 5000ms or
+        # more can never be observed: a slow-but-correct hit and a breakpoint
+        # that never fires produce the identical "silent". The checks passed
+        # only because hits normally land in well under a second — on a loaded
+        # runner they do not, and the last one reported "plain bp did not
+        # fire" for what may only have been the client giving up. Give the
+        # socket room so every budget here is observable and a real miss is
+        # reported as a real miss.
+        emu.ipc.timeout = 20.0
         time.sleep(5)  # let the firmware reach its idle loop
 
         def fires(arm_cmd, timeout_ms=5000):
@@ -2924,8 +2935,8 @@ def test_conditional_debug_matrix():
         # this assertion to match a green run -- it is the canary for exactly
         # that class of stale-mirror bug (beads-6561).
         #
-        # 4000ms, not 6000: KoncepcjaIPC's own socket timeout is 5.0s, so a
-        # longer server-side budget can never be observed by the client.
+        # 4000ms is plenty for a delivered key; the socket timeout raised at
+        # the top of this test is what makes any budget here observable at all.
         ok, _ = emu.ipc.send_command('bp add 0x1BD9 if carry')
         if not ok:
             print("  FAIL: 'if carry' refused at arm time")

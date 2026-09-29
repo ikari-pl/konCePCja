@@ -174,6 +174,11 @@ class IpcServerTest : public testing::Test {
     z80_clear_breakpoints();
     z80_clear_watchpoints();
     g_symfile.clear();
+    // imgui_state is a process-wide global; a suite that leaves the Settings
+    // dialog flagged open turns ipc_mru_apply_staged() into a no-op for every
+    // test after it — that is how the coverage job's suite order broke the
+    // Recent-list tests. Start from the state these tests actually assume.
+    imgui_state.show_options = false;
     for (int i = 0; i < 4; i++) {
       std::memset(memory[i], 0, kBankSize);
       membank_read[i] = memory[i];
@@ -900,10 +905,39 @@ TEST_F(IpcServerTest, LoadPushesTheRecentList) {
   std::filesystem::remove(dsk);
 }
 
+// imgui_state is a process-wide global these tests READ through production
+// code: ipc_mru_apply_staged() applies nothing while show_options is set. Any
+// suite that leaves a dialog flag behind would otherwise turn every apply here
+// into a silent no-op, which is what the coverage job's suite order exposed.
+// Own the precondition rather than inheriting whatever ran before.
+class IpcMruTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    saved_options_ = imgui_state.show_options;
+    imgui_state.show_options = false;
+    ipc_mru_apply_staged(false);  // start from an empty stage queue
+    saved_disks_ = CPC.mru_disks;
+    saved_tapes_ = CPC.mru_tapes;
+    saved_snaps_ = CPC.mru_snaps;
+  }
+  void TearDown() override {
+    imgui_state.show_options = saved_options_;
+    CPC.mru_disks = saved_disks_;
+    CPC.mru_tapes = saved_tapes_;
+    CPC.mru_snaps = saved_snaps_;
+  }
+
+ private:
+  bool saved_options_ = false;
+  std::vector<std::string> saved_disks_;
+  std::vector<std::string> saved_tapes_;
+  std::vector<std::string> saved_snaps_;
+};
+
 // While Settings is open, CPC holds the dialog's uncommitted edits: a save
 // would persist them, and Cancel (CPC = old_cpc_settings) would drop the new
 // entry. Staged entries wait for the dialog to close (review of PR #63).
-TEST(IpcMru, EntriesWaitWhileTheOptionsDialogIsOpen) {
+TEST_F(IpcMruTest, EntriesWaitWhileTheOptionsDialogIsOpen) {
   std::vector<std::string> const saved = CPC.mru_snaps;
   CPC.mru_snaps.clear();
   ipc_mru_stage(&t_CPC::mru_snaps, "/x/game.sna");
@@ -921,7 +955,7 @@ TEST(IpcMru, EntriesWaitWhileTheOptionsDialogIsOpen) {
 // other producer of these lists (the file dialog, drag-drop) supplies an
 // absolute path, so the menu's consumers assume one and a relative entry
 // opened nothing the next time the emulator started elsewhere (beads-qm5z).
-TEST(IpcMru, StagedPathsAreAbsolute) {
+TEST_F(IpcMruTest, StagedPathsAreAbsolute) {
   std::vector<std::string> const saved = CPC.mru_disks;
   CPC.mru_disks.clear();
   ipc_mru_stage(&t_CPC::mru_disks, "game.dsk");
@@ -943,7 +977,7 @@ TEST(IpcMru, StagedPathsAreAbsolute) {
   CPC.mru_disks = saved;
 }
 
-TEST(IpcMru, EachEntryLandsOnItsOwnList) {
+TEST_F(IpcMruTest, EachEntryLandsOnItsOwnList) {
   std::vector<std::string> const disks = CPC.mru_disks;
   std::vector<std::string> const tapes = CPC.mru_tapes;
   CPC.mru_disks.clear();
