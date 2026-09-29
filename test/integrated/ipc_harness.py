@@ -817,9 +817,33 @@ def test_run_to_address_breakpoint_polarity():
                 print(f"FAIL: step to onto its own breakpoint at the target "
                       f"must be OK, got: {resp}")
                 return False
-            # 3. step to interrupted by that breakpoint on the way to &6300.
-            ipc.send_command('step 1')
-            ok, resp = ipc.send_command('step to 0x6300')
+            # 3. step to interrupted by that breakpoint on the way to the
+            #    target. The target is the breakpoint's own successor, and
+            #    that choice is load-bearing: this program is 1024 NOPs at
+            #    &6000 with a JP &6000 after them, so execution is a ring and
+            #    a walk reaches &6201 only by executing &6200 immediately
+            #    before it — from ANY starting PC. Asking for a target
+            #    further ahead (&6300, as this first did) only crosses &6200
+            #    when the machine happens to sit behind it, which is why that
+            #    version passed here and failed on a loaded CI runner: under
+            #    load the machine drifts between commands and the breakpoint
+            #    falls behind the walk instead of in front of it.
+            #
+            #    The walk must also not already stand on the target: run_until
+            #    resumes into a fetch of the PC it is parked on, so a machine
+            #    sitting at &6201 lands immediately without going round at
+            #    all. Step clear of it and say so, rather than assuming where
+            #    the previous command left us -- under load the machine drifts
+            #    between commands.
+            ipc.send_command('step 2')
+            _, regs = ipc.get_regs()
+            if regs.get('PC') == 0x6201:
+                ipc.send_command('step 1')
+                _, regs = ipc.get_regs()
+            if regs.get('PC') == 0x6201:
+                print("FAIL: could not step clear of the target &6201")
+                return False
+            ok, resp = ipc.send_command('step to 0x6201')
             if ok or 'stopped-elsewhere' not in resp:
                 print(f"FAIL: step to must report a breakpoint that fires "
                       f"before the target as an error, got: {resp}")
