@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 
+#include "file_size_limit.h"
 #include "types.h"
 
 // ─────────────────────────────────────────────────
@@ -374,6 +375,56 @@ TEST_F(SerialBackendTest, FileBackend_BothFiles) {
   EXPECT_EQ(fgetc(f), 0x01);
   EXPECT_EQ(fgetc(f), 0x02);
   fclose(f);
+}
+
+// Bytes the CPC transmits but the backend cannot deliver are counted, so
+// `serial status` can report them (tx_dropped).
+TEST_F(SerialBackendTest, HostTxCountsUndeliveredBytes) {
+  SerialInterface si;
+  si.host_tx(0x41);  // no backend at all
+  EXPECT_EQ(1u, si.tx_dropped());
+
+  NullBackend sink;
+  si.backend = &sink;
+  si.host_tx(0x42);  // delivered (and dropped by design, not by failure)
+  EXPECT_EQ(1u, si.tx_dropped());
+
+  FileBackend no_output("", "");
+  ASSERT_TRUE(no_output.is_open());
+  si.backend = &no_output;
+  si.host_tx(0x43);
+  EXPECT_EQ(2u, si.tx_dropped());
+  si.backend = nullptr;
+}
+
+// beads-5os: a failing output stream must be reported, not swallowed.
+TEST_F(SerialBackendTest, FileBackend_SendReportsWriteFailure) {
+  FileBackend no_output("", "");
+  ASSERT_TRUE(no_output.is_open());
+  EXPECT_FALSE(no_output.send(0x42));  // nowhere to put it
+
+  FileBackend ok("", test_output_path_);
+  ASSERT_TRUE(ok.open());
+  EXPECT_TRUE(ok.send(0x42));
+  ok.close();
+
+  if (!ScopedFileSizeLimit::supported()) {
+    GTEST_SKIP() << "no per-process file size limit on this platform";
+  }
+  // The disk-full case: the file opens, then refuses to grow.
+  FileBackend full("", test_output_path_);
+  ASSERT_TRUE(full.open());
+  bool first = true;
+  bool second = true;
+  {
+    ScopedFileSizeLimit const limit(0);
+    ASSERT_TRUE(limit.active());
+    first = full.send(0x42);
+    second = full.send(0x43);  // keeps failing (logged once, not per byte)
+  }
+  full.close();
+  EXPECT_FALSE(first);
+  EXPECT_FALSE(second);
 }
 
 TEST_F(SerialBackendTest, FileBackend_CloseMultipleTimes) {

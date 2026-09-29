@@ -795,3 +795,12 @@ TEST(ToggleValues, RestoreIsNoOpWhenNothingChanged) {
   EXPECT_EQ(a, true);
   EXPECT_EQ(b, false);
 }
+
+// A rebuild refused because the Z80 thread would not stop is not a ROM
+// problem; the Options/SD-folder toasts must not send the user hunting there.
+TEST(RebuildFailureText, NotIdleIsNotReportedAsAMissingRom) {
+  EXPECT_EQ("Z80 thread is not responding; nothing was changed",
+            rebuild_failure_text(ERR_Z80_NOT_IDLE, "check the ROM paths"));
+  EXPECT_EQ("check the ROM paths",
+            rebuild_failure_text(ERR_CPC_ROM_MISSING, "check the ROM paths"));
+}

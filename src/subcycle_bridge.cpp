@@ -677,8 +677,7 @@ uint8_t to_bcd(int v) {
 }
 
 void serial_host_tx_byte(uint8_t byte, void* ctx) {
-  auto* backend = static_cast<SerialBackend*>(ctx);
-  if (backend) backend->send(byte);
+  static_cast<SerialInterface*>(ctx)->host_tx(byte);
 }
 
 void sync_serial_backend(Bridge& b) {
@@ -727,8 +726,7 @@ void sync_peripheral_flags(Bridge& b) {
       b.machine.set_serial_plotter(false, 0);
       b.machine.set_serial_card(sc.enabled);
       if (sc.enabled && g_serial_interface.backend) {
-        b.machine.set_serial_host_tx(serial_host_tx_byte,
-                                     g_serial_interface.backend);
+        b.machine.set_serial_host_tx(serial_host_tx_byte, &g_serial_interface);
       } else {
         b.machine.set_serial_host_tx(nullptr, nullptr);
       }
