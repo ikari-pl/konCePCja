@@ -542,8 +542,7 @@ bool koncpc_save_configuration_preserving_intent() {
   CPC.printer = g_cfg_intent_printer;
   CPC.scr_window = g_cfg_intent_scr_window;
   std::string const cfg = getConfigurationFilename(true);
-  capture_device_config(CPC);
-  bool const ok = saveConfiguration(CPC, cfg);
+  bool const ok = koncpc_save_live_configuration(cfg);
   CPC.printer = live_printer;
   CPC.scr_window = live_scr_window;
   if (!ok) {
@@ -1285,33 +1284,47 @@ constexpr word kMcStartProgram =
     0xBD16;  // firmware jumpblock: MC START PROGRAM
 }  // namespace
 
-void bin_load(const std::string& filename, const size_t offset) {
+BinLoadResult bin_load(const std::string& filename, const size_t offset) {
   LOG_INFO("Load " << filename << " in memory at offset 0x" << std::hex
                    << offset);
   FILE* file;
   if ((file = fopen(filename.c_str(), "rb")) == nullptr) {
     LOG_ERROR("File not found: " << filename);
-    return;
+    return BinLoadResult::FileError;
   }
 
   auto closure = [&]() { fclose(file); };
   memutils::scope_exit<decltype(closure)> const cs(closure);
 
   size_t const ram_size = static_cast<size_t>(CPC.ram_size) * 1024;
+  if (offset >= ram_size) {  // the subtraction below would wrap
+    LOG_ERROR("Bin load offset 0x" << std::hex << offset
+                                   << " is beyond the end of RAM");
+    return BinLoadResult::FileError;
+  }
   size_t const max_size = ram_size - offset;
   std::vector<uint8_t> chunk(max_size);
   size_t const read = fread(chunk.data(), 1, max_size, file);
   if (!feof(file)) {
     LOG_ERROR("Bin file too big to fit in memory");
-    return;
+    return BinLoadResult::FileError;
   }
   if (ferror(file)) {
     LOG_ERROR("Error reading the bin file: " << ferror(file));
-    return;
+    return BinLoadResult::FileError;
   }
   if (read == 0) {
     LOG_ERROR("Empty bin file");
-    return;
+    return BinLoadResult::FileError;
+  }
+  // The Z80 thread must not be mid-frame while RAM and the registers are
+  // rewritten and pushed to the machine (same contract as
+  // koncpc_toggle_fullscreen()).
+  CpcPauseLease lease;
+  if (!lease.idle()) {
+    lease.restore_run_state();
+    LOG_ERROR("Binary not loaded: Z80 thread is not responding");
+    return BinLoadResult::NotIdle;
   }
   // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
   // (out-param/compound-assign/loop/reference)
@@ -1319,14 +1332,6 @@ void bin_load(const std::string& filename, const size_t offset) {
     for (size_t i = 0; i < read; ++i) m->ram_write(offset + i, chunk[i]);
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
-  }
-  // The Z80 thread must not be mid-frame while the registers are rewritten
-  // and pushed to the machine (same contract as koncpc_toggle_fullscreen()).
-  CpcPauseLease lease;
-  if (!lease.idle()) {
-    lease.restore_run_state();
-    LOG_ERROR("Binary loaded but not launched: Z80 thread is not responding");
-    return;
   }
   bool const was_paused = lease.was_paused();
   koncpc_inject_launch_regs(z80, static_cast<word>(offset),
@@ -1336,6 +1341,7 @@ void bin_load(const std::string& filename, const size_t offset) {
     lease.release();
     cpc_resume();
   }
+  return BinLoadResult::Ok;
 }
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -1702,6 +1708,21 @@ void audio_enable() {
 }
 
 namespace {
+std::atomic<int> g_idle_timeout_ms{kCpcIdleTimeoutMs};
+// Set when a lease wait times out, cleared when the thread is next seen idle.
+std::atomic<bool> g_z80_unresponsive{false};
+}  // namespace
+
+int cpc_idle_timeout_ms() {
+  return g_idle_timeout_ms.load(std::memory_order_relaxed);
+}
+
+void cpc_set_idle_timeout_ms(int timeout_ms) {
+  g_idle_timeout_ms.store(timeout_ms > 0 ? timeout_ms : kCpcIdleTimeoutMs,
+                          std::memory_order_relaxed);
+}
+
+namespace {
 std::mutex g_pause_mutex;
 uint64_t g_resume_epoch = 0;
 unsigned g_pause_lease_count = 0;
@@ -1712,6 +1733,7 @@ unsigned g_pause_lease_count = 0;
 // break the link.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool cpc_wait_until_idle(int timeout_ms) {
+  if (timeout_ms < 0) timeout_ms = cpc_idle_timeout_ms();
   // Spin until the Z80 thread has exited z80_execute() and entered its sleep
   // loop. g_z80_idle is set true by z80_thread_main before sleeping, false
   // before entering z80_execute().  In headless mode the Z80 runs on the
@@ -1771,11 +1793,16 @@ CpcPauseLease::~CpcPauseLease() { release(); }
 
 bool CpcPauseLease::wait() {
   if (!active_ || idle_) return idle_;
-  idle_ = cpc_wait_until_idle(idle_timeout_ms_);
+  int bound = idle_timeout_ms_ < 0 ? cpc_idle_timeout_ms() : idle_timeout_ms_;
+  bool const known_stuck = g_z80_unresponsive.load(std::memory_order_relaxed);
+  if (known_stuck) bound = std::min(bound, kCpcIdleRetryMs);
+  idle_ = cpc_wait_until_idle(bound);
+  g_z80_unresponsive.store(!idle_, std::memory_order_relaxed);
   if (!idle_) {
     LOG_ERROR("Z80 thread did not go idle within "
-              << idle_timeout_ms_
-              << " ms; refusing to touch machine state (machine left paused)");
+              << bound
+              << " ms; not touching machine state (the holder restores the "
+                 "run state it found)");
   }
   return idle_;
 }
@@ -1859,14 +1886,6 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
   cpc_pause_locked();
   z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
   return true;
-}
-
-bool cpc_pause_and_wait() {
-  // Lease covers the wait only — concurrent Resume cannot defeat going idle.
-  // Callers with a destructive critical section after this must hold
-  // CpcPauseLease across that section.
-  CpcPauseLease const lease;
-  return lease.idle();
 }
 
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
@@ -2381,9 +2400,21 @@ void capture_device_config(t_CPC& CPC) {
   d.smartwatch = g_smartwatch.enabled;
   d.amx_mouse = g_amx_mouse.enabled;
   d.symbiface = g_symbiface.enabled;
-  d.ide_master = g_symbiface.ide_master.image_path;
-  d.ide_slave = g_symbiface.ide_slave.image_path;
+  // The configured images are only mounted while the Symbiface is on; with it
+  // off (or a mount that failed) the live paths are empty, and copying them
+  // would erase the user's image choice on the next save.
+  if (g_symbiface.enabled) {
+    d.ide_master = g_symbiface.ide_master.image_path;
+    d.ide_slave = g_symbiface.ide_slave.image_path;
+  }
   d.serial = g_serial_interface.get_config();
+}
+
+bool koncpc_save_live_configuration(const std::string& path,
+                                    const SerialConfig* serial_override) {
+  capture_device_config(CPC);
+  if (serial_override != nullptr) CPC.devices.serial = *serial_override;
+  return saveConfiguration(CPC, path);
 }
 
 void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
@@ -3425,15 +3456,15 @@ void doCleanUp() {
   // set.  When KONCPC_EXIT is processed inside the Z80 thread, cleanExit()
   // sets g_z80_thread_quit and pushes SDL_EVENT_QUIT before returning; by
   // the time the render thread reaches doCleanUp(), the Z80 has typically
-  // already exited its loop.  In that case cpc_pause_and_wait() would block
-  // forever (it spins until g_z80_idle goes true, which the now-dead
-  // Z80 thread will never set).  Skip it and join directly.
+  // already exited its loop.  In that case a lease wait would only time out
+  // (it spins until g_z80_idle goes true, which the now-dead Z80 thread will
+  // never set).  Skip it and join directly.
   //
   // For the "render thread initiated quit" path (e.g. SDL_QUIT from the
   // window close button or F10 menu), the Z80 is still actively running
   // inside z80_execute() and we DO need pause+going idle before join.
   //
-  //  4. Plain cpc_pause_and_wait() is NOT sufficient: the Z80 thread sets
+  //  4. A plain WaitImmediately lease is NOT sufficient: the Z80 thread sets
   //     g_z80_idle=false before z80_execute() and only re-enters the
   //     paused/idle branch at the top of its loop.  abort() makes
   //     signal_ready a no-op and releases the render thread's wait so neither
@@ -3608,7 +3639,7 @@ void z80_thread_main() {
 
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
-      // Mark idle so cpc_pause_and_wait() callers know we are safe to
+      // Mark idle so pause-lease holders know we are safe to
       // inspect.
       g_z80_idle.store(true, std::memory_order_release);
       std::this_thread::sleep_for(std::chrono::milliseconds(1));

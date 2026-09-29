@@ -377,6 +377,26 @@ TEST_F(SerialBackendTest, FileBackend_BothFiles) {
   fclose(f);
 }
 
+// Bytes the CPC transmits but the backend cannot deliver are counted, so
+// `serial status` can report them (tx_dropped).
+TEST_F(SerialBackendTest, HostTxCountsUndeliveredBytes) {
+  SerialInterface si;
+  si.host_tx(0x41);  // no backend at all
+  EXPECT_EQ(1u, si.tx_dropped());
+
+  NullBackend sink;
+  si.backend = &sink;
+  si.host_tx(0x42);  // delivered (and dropped by design, not by failure)
+  EXPECT_EQ(1u, si.tx_dropped());
+
+  FileBackend no_output("", "");
+  ASSERT_TRUE(no_output.is_open());
+  si.backend = &no_output;
+  si.host_tx(0x43);
+  EXPECT_EQ(2u, si.tx_dropped());
+  si.backend = nullptr;
+}
+
 // beads-5os: a failing output stream must be reported, not swallowed.
 TEST_F(SerialBackendTest, FileBackend_SendReportsWriteFailure) {
   FileBackend no_output("", "");

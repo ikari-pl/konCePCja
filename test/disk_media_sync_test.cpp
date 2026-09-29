@@ -13,8 +13,11 @@
 #include "hw/fdc.h"
 #include "hw/flux_synth.h"  // fluxsynth::amsdos_content / scp_from_sectors
 #include "koncepcja.h"
+#include "m4board.h"
+#include "silicon_disc.h"
 #include "slotshandler.h"
 #include "subcycle_bridge.h"
+#include "symbiface.h"
 
 extern t_drive driveA;
 extern t_drive driveB;
@@ -185,10 +188,21 @@ class FluxPushGuardTest : public testing::Test {
     saved_model_ = CPC.model;
     saved_ram_size_ = CPC.ram_size;
     saved_drive_a_file_ = CPC.driveA.file;
+    saved_drive_b_file_ = CPC.driveB.file;
+    saved_m4_ = g_m4board.enabled;
+    saved_silicon_disc_ = g_silicon_disc.enabled;
+    saved_symbiface_ = g_symbiface.enabled;
     CPC.rom_path = "rom";
     CPC.model = 2;
     CPC.ram_size = 128;
-    CPC.driveA.file.clear();  // stop() must have nowhere to write back to
+    // stop() writes dirty discs, the Silicon Disc and IDE images back to
+    // wherever these point; whatever an earlier test left here must not be
+    // attached, or written to.
+    CPC.driveA.file.clear();
+    CPC.driveB.file.clear();
+    g_m4board.enabled = false;
+    g_silicon_disc.enabled = false;
+    g_symbiface.enabled = false;
     dsk_eject_host(&driveA);
     started_ = subcycle_bridge_start();
   }
@@ -200,6 +214,10 @@ class FluxPushGuardTest : public testing::Test {
     CPC.model = saved_model_;
     CPC.ram_size = saved_ram_size_;
     CPC.driveA.file = saved_drive_a_file_;
+    CPC.driveB.file = saved_drive_b_file_;
+    g_m4board.enabled = saved_m4_;
+    g_silicon_disc.enabled = saved_silicon_disc_;
+    g_symbiface.enabled = saved_symbiface_;
   }
 
   // Attach a writable 2-cylinder flux disc to drive A, now.
@@ -224,6 +242,10 @@ class FluxPushGuardTest : public testing::Test {
   unsigned int saved_model_ = 0;
   unsigned int saved_ram_size_ = 0;
   std::string saved_drive_a_file_;
+  std::string saved_drive_b_file_;
+  bool saved_m4_ = false;
+  bool saved_silicon_disc_ = false;
+  bool saved_symbiface_ = false;
 };
 
 TEST_F(FluxPushGuardTest, SameSizeEditLandsInTheOverlayAndKeepsTheScp) {

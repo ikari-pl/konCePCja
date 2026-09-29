@@ -455,6 +455,7 @@ FileBackend::FileBackend(std::string input_path, std::string output_path)
 }
 
 bool FileBackend::open() {
+  tx_error_logged_ = false;  // a reopened file gets its own report
   if (!input_path_.empty()) {
     input_file_ = fopen(input_path_.c_str(), "rb");
     if (!input_file_) return false;
@@ -918,6 +919,7 @@ uint8_t TcpSocketBackend::recv() {
 }
 
 std::string TcpSocketBackend::status() const {
+  resolve_connect(0);  // a paused machine never calls has_data()/send()
   std::string const where = host_ + ":" + std::to_string(port_);
   switch (state_.load()) {
     case State::Connected:
@@ -991,6 +993,11 @@ void SIRomManager::unload(byte** rom_map) {
 }
 
 // SerialInterface implementation
+void SerialInterface::host_tx(uint8_t byte) {
+  if (backend == nullptr || !backend->send(byte))
+    tx_dropped_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void SerialInterface::set_config(const SerialConfig& config) {
   config_ = config;
 }
@@ -1047,7 +1054,7 @@ void SerialInterface::apply_config() {
 
     // Connect DART TX to backend + mirror to serial terminal
     dart.set_rx_callback([this](uint8_t byte) {
-      if (backend) backend->send(byte);
+      host_tx(byte);
       extern void serial_terminal_feed_byte(uint8_t byte);
       serial_terminal_feed_byte(byte);
     });

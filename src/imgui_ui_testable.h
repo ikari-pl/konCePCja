@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "errors.h"
 #include "types.h"
 
 // ─────────────────────────────────────────────────
@@ -231,4 +232,13 @@ inline HubMediaButtons hub_media_buttons(bool disk_a_present,
   return {{{"Eject A", disk_a_present},
            {"Eject B", disk_b_present},
            {"Eject Tape", tape_present}}};
+}
+
+// The message for a failed koncpc_rebuild_machine(). A refusal because the
+// Z80 thread would not stop is not a ROM problem and must not send the user
+// hunting through ROM paths.
+inline std::string rebuild_failure_text(int rc, const std::string& fallback) {
+  return rc == ERR_Z80_NOT_IDLE
+             ? "Z80 thread is not responding; nothing was changed"
+             : fallback;
 }

@@ -489,17 +489,103 @@ TEST_F(ConfigurationTest, loadConfigurationLeavesDeviceGlobalsAlone) {
   EXPECT_TRUE(serial == serial_after) << "the serial config was replaced";
 }
 
-// capture_device_config() is how a save picks up a device toggled at
-// runtime (Options, menus, IPC) now that loadConfiguration no longer
-// shares the globals.
-TEST_F(ConfigurationTest, captureDeviceConfigReadsTheLiveDevices) {
-  bool const saved = g_amdrum.enabled;
-  g_amdrum.enabled = true;
+namespace {
+// Snapshot of the device globals the config drives, restorable in one call.
+struct DeviceGlobals {
+  bool silicon_disc = g_silicon_disc.enabled;
+  bool amdrum = g_amdrum.enabled;
+  bool disk_sounds = g_drive_sounds.disk_enabled;
+  bool tape_sounds = g_drive_sounds.tape_enabled;
+  bool smartwatch = g_smartwatch.enabled;
+  bool amx_mouse = g_amx_mouse.enabled;
+  bool symbiface = g_symbiface.enabled;
+  std::string ide_master = g_symbiface.ide_master.image_path;
+  std::string ide_slave = g_symbiface.ide_slave.image_path;
+  SerialConfig serial = g_serial_interface.get_config();
+  void restore() const {
+    g_silicon_disc.enabled = silicon_disc;
+    g_amdrum.enabled = amdrum;
+    g_drive_sounds.disk_enabled = disk_sounds;
+    g_drive_sounds.tape_enabled = tape_sounds;
+    g_smartwatch.enabled = smartwatch;
+    g_amx_mouse.enabled = amx_mouse;
+    g_symbiface.enabled = symbiface;
+    g_symbiface.ide_master.image_path = ide_master;
+    g_symbiface.ide_slave.image_path = ide_slave;
+    g_serial_interface.set_config(serial);
+  }
+};
+}  // namespace
+
+// apply_device_config() and capture_device_config() are inverses over every
+// device the config drives: what startup applies is what a save captures.
+TEST_F(ConfigurationTest, applyThenCaptureRoundTripsEveryDevice) {
+  DeviceGlobals const before;
+  for (bool const on : {true, false}) {
+    SCOPED_TRACE(on ? "all on" : "all off");
+    t_CPC in;
+    in.devices.silicon_disc = on;
+    in.devices.smartwatch = on;
+    in.devices.amdrum = on;
+    in.devices.disk_sounds = on;
+    in.devices.tape_sounds = on;
+    in.devices.amx_mouse = on;
+    in.devices.symbiface = on;
+    in.devices.serial.baud_rate = on ? 19200 : 2400;  // enabled stays off
+    apply_device_config(in);
+
+    t_CPC out;
+    capture_device_config(out);
+    EXPECT_EQ(on, out.devices.silicon_disc);
+    EXPECT_EQ(on, out.devices.smartwatch);
+    EXPECT_EQ(on, out.devices.amdrum);
+    EXPECT_EQ(on, out.devices.disk_sounds);
+    EXPECT_EQ(on, out.devices.tape_sounds);
+    EXPECT_EQ(on, out.devices.amx_mouse);
+    EXPECT_EQ(on, out.devices.symbiface);
+    EXPECT_TRUE(in.devices.serial == out.devices.serial);
+  }
+  before.restore();
+  g_serial_interface.apply_config();
+}
+
+// A runtime toggle reaches the file through the live save, and only there:
+// saveConfiguration() itself serializes CPC.devices as it stands.
+TEST_F(ConfigurationTest, liveSaveCapturesARuntimeToggle) {
+  DeviceGlobals const before;
   t_CPC CPC;
   CPC.devices.amdrum = false;
+  g_amdrum.enabled = true;
   capture_device_config(CPC);
-  g_amdrum.enabled = saved;
+  before.restore();
   EXPECT_TRUE(CPC.devices.amdrum);
+  ASSERT_TRUE(saveConfiguration(CPC, getTmpFilename(0)));
+  config::Config saved;
+  saved.parseFile(getTmpFilename(0));
+  EXPECT_EQ(1, saved.getIntValue("sound", "amdrum", 0));
+}
+
+// The IDE images are mounted only while the Symbiface is on. With it off the
+// live paths are empty; a save must keep the configured ones rather than
+// erase them.
+TEST_F(ConfigurationTest, captureKeepsIdePathsWhileSymbifaceIsOff) {
+  DeviceGlobals const before;
+  t_CPC CPC;
+  CPC.devices.ide_master = "master.img";
+  CPC.devices.ide_slave = "slave.img";
+
+  g_symbiface.enabled = false;
+  g_symbiface.ide_master.image_path.clear();
+  g_symbiface.ide_slave.image_path.clear();
+  capture_device_config(CPC);
+  EXPECT_EQ("master.img", CPC.devices.ide_master);
+  EXPECT_EQ("slave.img", CPC.devices.ide_slave);
+
+  g_symbiface.enabled = true;
+  g_symbiface.ide_master.image_path = "swapped.img";
+  capture_device_config(CPC);
+  EXPECT_EQ("swapped.img", CPC.devices.ide_master) << "a live swap was lost";
+  before.restore();
 }
 
 // Saving over an existing file edits it: a comment and an unrecognised key

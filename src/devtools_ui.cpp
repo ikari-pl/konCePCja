@@ -2071,11 +2071,7 @@ void DevToolsUI::render_disc_tools() {
   auto sync_pull = [&] {
     if (!subcycle_bridge_active()) return;
     CpcPauseLease lease;
-    if (!lease.idle()) {
-      lease.restore_run_state();
-      imgui_toast_error("Z80 thread is not responding; nothing was changed");
-      return;
-    }
+    if (!imgui_lease_ready(lease)) return;
     subcycle_bridge_pull_drive_view(dt_unit);
     if (!lease.was_paused()) {
       lease.release();
@@ -2085,11 +2081,7 @@ void DevToolsUI::render_disc_tools() {
   // Mutating helpers: pause, pull, run body, push.
   auto with_disk_mutation = [&](const std::function<void(t_drive*)>& body) {
     CpcPauseLease lease;
-    if (!lease.idle()) {
-      lease.restore_run_state();
-      imgui_toast_error("Z80 thread is not responding; nothing was changed");
-      return;
-    }
+    if (!imgui_lease_ready(lease)) return;
     if (subcycle_bridge_active()) {
       subcycle_bridge_pull_drive_view(dt_unit);
     }
@@ -2134,11 +2126,7 @@ void DevToolsUI::render_disc_tools() {
         char const letter = (dt_drive_ == 0) ? 'A' : 'B';
         if (dt_format_ >= 0 && dt_format_ < static_cast<int>(formats.size())) {
           CpcPauseLease lease;
-          if (!lease.idle()) {
-            lease.restore_run_state();
-            imgui_toast_error(
-                "Z80 thread is not responding; nothing was changed");
-          } else {
+          if (imgui_lease_ready(lease)) {
             disk_format_drive(letter, formats[dt_format_]);
             if (!lease.was_paused()) {
               lease.release();
@@ -2196,12 +2184,7 @@ void DevToolsUI::render_disc_tools() {
             }
 
             CpcPauseLease lease;
-            if (!lease.idle()) {
-              lease.restore_run_state();
-              imgui_toast_error(
-                  "Z80 thread is not responding; nothing was changed");
-              return;
-            }
+            if (!imgui_lease_ready(lease)) return;
             if (subcycle_bridge_active()) {
               subcycle_bridge_pull_drive_view(unit);
             }
@@ -2274,12 +2257,7 @@ void DevToolsUI::render_disc_tools() {
                 const uint8_t unit =
                     static_cast<uint8_t>(self->dt_dialog_drive_ == 0 ? 0 : 1);
                 CpcPauseLease lease;
-                if (!lease.idle()) {
-                  lease.restore_run_state();
-                  imgui_toast_error(
-                      "Z80 thread is not responding; nothing was changed");
-                  return;
-                }
+                if (!imgui_lease_ready(lease)) return;
                 if (subcycle_bridge_active()) {
                   subcycle_bridge_pull_drive_view(unit);
                 }

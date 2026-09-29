@@ -22,6 +22,7 @@
 
 #include "autotype.h"
 #include "cpc_key_tables.h"
+#include "errors.h"
 #include "imgui_state.h"
 #include "keyboard.h"
 #include "koncepcja.h"
@@ -753,62 +754,142 @@ TEST_F(IpcServerTest, ResumeAppliedReportsLeaseDeferral) {
 // leaves its frame (g_z80_idle stuck false) used to hang the lease holder --
 // the IPC thread or the UI -- forever. Now the wait gives up, the lease reports
 // not-idle, and the holder must leave the machine alone.
+//
+// The production bound is kCpcIdleTimeoutMs (5 s); these tests lower it so
+// they prove the cap without waiting it out, and put everything back after.
+namespace {
+struct StuckZ80Thread {
+  explicit StuckZ80Thread(int bound_ms) {
+    cpc_set_idle_timeout_ms(bound_ms);
+    g_z80_idle.store(false, std::memory_order_release);
+  }
+  ~StuckZ80Thread() {
+    g_z80_idle.store(true, std::memory_order_release);
+    // A successful wait clears the "known stuck" latch for later tests.
+    {
+      CpcPauseLease const clear;
+    }
+    cpc_set_idle_timeout_ms(kCpcIdleTimeoutMs);
+  }
+};
+
+long long ms_since(std::chrono::steady_clock::time_point t) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now() - t)
+      .count();
+}
+}  // namespace
+
 TEST_F(IpcServerTest, PauseLeaseWaitGivesUpOnAStuckZ80Thread) {
   cpc_resume();
-  g_z80_idle.store(false, std::memory_order_release);
-
-  auto const started = std::chrono::steady_clock::now();
   {
-    CpcPauseLease lease(CpcPauseLeaseMode::WaitImmediately,
-                        /*idle_timeout_ms=*/50);
-    auto const waited = std::chrono::steady_clock::now() - started;
-    EXPECT_LT(
-        std::chrono::duration_cast<std::chrono::milliseconds>(waited).count(),
-        1000);
+    StuckZ80Thread const stuck(100);
+    auto const started = std::chrono::steady_clock::now();
+    CpcPauseLease lease;
+    EXPECT_LT(ms_since(started), 1000);
     EXPECT_TRUE(lease.active());
     EXPECT_FALSE(lease.idle());
     EXPECT_FALSE(lease.wait()) << "still stuck";
     EXPECT_TRUE(CPC.paused) << "the lease must still hold the pause";
     lease.restore_run_state();
+    EXPECT_FALSE(CPC.paused) << "the caller's run state was not restored";
   }
-  EXPECT_FALSE(CPC.paused) << "the caller's run state was not restored";
-
-  g_z80_idle.store(true, std::memory_order_release);
   CpcPauseLease lease;
   EXPECT_TRUE(lease.idle());
   lease.restore_run_state();
 }
 
-// The same through a destructive IPC command using the DEFAULT bound: 'reset'
-// must answer ERR 504 without resetting, and hand the machine back running.
-TEST_F(IpcServerTest, DestructiveCommandFailsClosedOnAStuckZ80Thread) {
+// After one timeout the next holder must not pay the full bound again (a
+// frozen UI on every click); once the thread is seen idle, the full bound is
+// back for the next stall.
+TEST_F(IpcServerTest, PauseLeaseFailsFastWhileTheZ80ThreadIsKnownStuck) {
   cpc_resume();
-  z80.PC.w.l = 0x1234;  // emulator_reset() would clear this
+  StuckZ80Thread const stuck(600);
+
+  auto t = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease const first;
+  }
+  EXPECT_GE(ms_since(t), 550) << "the first stall waits the full bound";
+
+  t = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease const second;
+  }
+  EXPECT_LT(ms_since(t), 450)
+      << "a known-stuck thread still cost the full bound";
+
+  g_z80_idle.store(true, std::memory_order_release);
+  {
+    CpcPauseLease const recovered;
+    EXPECT_TRUE(recovered.idle());
+  }
   g_z80_idle.store(false, std::memory_order_release);
+  t = std::chrono::steady_clock::now();
+  {
+    CpcPauseLease const third;
+  }
+  EXPECT_GE(ms_since(t), 550) << "recovery did not re-arm the full bound";
+  cpc_resume();
+}
 
-  // If the wait were unbounded again, unstick it well after the bound so the
-  // suite fails on the timing below instead of hanging forever.
-  std::atomic<bool> done{false};
-  std::thread watchdog([&] {
-    auto const give_up = std::chrono::steady_clock::now() +
-                         std::chrono::milliseconds(kCpcIdleTimeoutMs + 5000);
-    while (!done.load() && std::chrono::steady_clock::now() < give_up)
-      std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    g_z80_idle.store(true, std::memory_order_release);
-  });
+// Every IPC command that takes a pause lease answers the same way when the
+// thread is stuck: ERR 409 z80-not-idle (the code `step` always used), no
+// change, and the machine handed back running.
+TEST_F(IpcServerTest, LeaseTakingCommandsFailClosedOnAStuckZ80Thread) {
+  std::filesystem::path const bin = "test/.ipc_stuck_z80.bin";
+  {
+    std::ofstream(bin, std::ios::binary) << std::string(16, '\x5A');
+  }
+  std::filesystem::path const sna = "test/.ipc_stuck_z80.sna";
+  std::filesystem::remove(sna);
 
-  auto const started = std::chrono::steady_clock::now();
-  std::string const resp = send_command("reset");
-  auto const elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now() - started)
-                           .count();
-  done.store(true);
-  watchdog.join();
+  const char* const commands[] = {
+      "reset",
+      "snapshot save test/.ipc_stuck_z80.sna",
+      "snapshot load test/.ipc_stuck_z80.sna",
+      "load test/.ipc_stuck_z80.sna",
+      "load test/.ipc_stuck_z80.bin",
+      "disk format A data",
+      "disk status A",
+      "disk save A test/.ipc_stuck_z80.dsk dsk",
+      "disk eject A",
+      "disk ls A",
+      "profile load no-such-profile",
+      "step",
+  };
+  unsigned int const saved_ram_size = CPC.ram_size;
+  CPC.ram_size = 128;  // so `load x.bin` gets as far as the lease
+  z80_write_mem(0x6000, 0x00);
+  for (const char* cmd : commands) {
+    SCOPED_TRACE(cmd);
+    cpc_resume();
+    StuckZ80Thread const stuck(50);
+    auto const started = std::chrono::steady_clock::now();
+    std::string const resp = send_command(cmd);
+    EXPECT_EQ(0u, resp.rfind("ERR 409 z80-not-idle", 0)) << resp;
+    EXPECT_LT(ms_since(started), 1500);
+    EXPECT_FALSE(CPC.paused) << "the machine was left paused";
+  }
+  EXPECT_FALSE(std::filesystem::exists(sna)) << "snapshot written anyway";
+  EXPECT_EQ(0x00, z80_read_mem(0x6000)) << ".bin copied under a stuck frame";
+  CPC.ram_size = saved_ram_size;
+  std::filesystem::remove(bin);
+  std::filesystem::remove("test/.ipc_stuck_z80.dsk");
+}
 
-  EXPECT_EQ("ERR 504 z80-not-idle\n", resp);
-  EXPECT_LT(elapsed, kCpcIdleTimeoutMs + 2000);
-  EXPECT_EQ(0x1234, z80.PC.w.l) << "reset ran under a stuck frame";
-  EXPECT_FALSE(CPC.paused) << "the machine was left paused";
+// A rebuild refused for the same reason tears nothing down and says why, so
+// callers (Options, config apply) can tell it from a ROM failure.
+TEST_F(IpcServerTest, RebuildRefusesOnAStuckZ80Thread) {
+  cpc_resume();
+  StuckZ80Thread const stuck(100);
+  EXPECT_EQ(ERR_Z80_NOT_IDLE, koncpc_rebuild_machine());
+  EXPECT_FALSE(CPC.paused);
+}
+
+TEST_F(IpcServerTest, LoadBinReportsAnUnreadableFile) {
+  std::string const resp = send_command("load test/.no_such_file.bin");
+  EXPECT_EQ("ERR 500 load-bin\n", resp);
 }
 
 TEST_F(IpcServerTest, RunReportsPauseLeaseHeld) {

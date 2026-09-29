@@ -1,6 +1,7 @@
 #include "koncepcja_ipc_server.h"
 
 #include "autotype.h"
+#include "errors.h"
 #include "gfx_finder.h"
 #include "hw/tape.h"
 #include "hw_views.h"
@@ -266,7 +267,7 @@ std::string err_with_context(int code, const std::string& msg) {
 namespace {
 std::string z80_not_idle(CpcPauseLease& lease) {
   lease.restore_run_state();
-  return "ERR 504 z80-not-idle\n";
+  return err_with_context(409, "z80-not-idle");
 }
 }  // namespace
 
@@ -325,7 +326,7 @@ namespace {
 // Machine-rebuild staging. koncpc_rebuild_machine() tears down and reallocates
 // the board (pbRAMbuffer/pbROM/pbGPBuffer) and the Bridge. Running that from
 // the IPC server thread was unsafe twice over:
-//   * in HEADLESS mode cpc_pause_and_wait() is a no-op -- g_z80_idle is
+//   * in HEADLESS mode a pause-lease wait is a no-op -- g_z80_idle is
 //     only toggled inside z80_thread_main(), which is spawned only when
 //     !g_headless -- so the IPC thread could free memory the main thread was
 //     still executing a frame out of;
@@ -552,6 +553,9 @@ static std::string ipc_request_rebuild_and_wait() {
     }
   }
   int const err = g_rebuild_pending.result;
+  // Refused before anything was torn down: same condition, same answer as
+  // every other lease holder.
+  if (err == ERR_Z80_NOT_IDLE) return err_with_context(409, "z80-not-idle");
   if (err != 0)
     return "ERR 500 rebuild-failed code=" + std::to_string(err) + "\n";
   return {};
@@ -1765,8 +1769,15 @@ std::string handle_command(const std::string& line) {
                                              : "ERR 500 load-cpr\n";
       }
       if (ext == ".bin") {
-        bin_load(path, 0x6000);
-        return ok_with_context();
+        switch (bin_load(path, 0x6000)) {
+          case BinLoadResult::Ok:
+            return ok_with_context();
+          case BinLoadResult::NotIdle:
+            return err_with_context(409, "z80-not-idle");
+          case BinLoadResult::FileError:
+            break;
+        }
+        return "ERR 500 load-bin\n";
       }
       return "ERR 415 unsupported\n";
     }
@@ -2817,9 +2828,8 @@ std::string handle_command(const std::string& line) {
       // handle_command() inline: a Z80 thread stuck for any reason would hang
       // the entire IPC surface here, before any per-step deadline had even
       // started, with no way for the caller to send `pause` or anything else.
-      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
-      if (!cpc_wait_until_idle(kStepIdleWaitMs))
-        return err_with_context(409, "z80-not-idle");
+      CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly, kStepIdleWaitMs);
+      if (!lease.wait()) return z80_not_idle(lease);
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -5119,8 +5129,11 @@ std::string handle_command(const std::string& line) {
            << " rx_available="
            << (g_serial_interface.dart.rx_available() ? 1 : 0)
            << " baud=" << cfg.baud_rate;
+        ss << " tx_dropped=" << g_serial_interface.tx_dropped();
         if (g_serial_interface.backend) {
           ss << " backend_name=" << g_serial_interface.backend->name();
+          ss << " backend_connected="
+             << (g_serial_interface.backend->connected() ? 1 : 0);
           ss << " backend_status=" << g_serial_interface.backend->status();
         }
         ss << "\n";
