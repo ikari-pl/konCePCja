@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 TEST(QuitPolicy, PromptsOnlyForAGestureWithADirtyDiskInTheGui) {
@@ -136,11 +137,18 @@ TEST(QuitMailbox, PostIsObservedAsAWholeRequest) {
   // exists to suppress.
   //
   // Only two pairings are ever posted, so any other pairing is a tear.
+  //
+  // The take loop runs until it has seen enough requests, not for a fixed
+  // number of spins: on Windows a std::thread can take longer to get going
+  // than 200000 empty take() calls do, so a fixed count finished before
+  // either poster had posted once and the test failed as vacuous.
+  std::atomic<int> started{0};
   std::atomic<bool> go{false};
   std::atomic<bool> stop{false};
   QuitMailbox box;
 
   std::thread poster_a([&] {
+    started.fetch_add(1);
     while (!go.load()) {
     }
     while (!stop.load()) {
@@ -148,6 +156,7 @@ TEST(QuitMailbox, PostIsObservedAsAWholeRequest) {
     }
   });
   std::thread poster_b([&] {
+    started.fetch_add(1);
     while (!go.load()) {
     }
     while (!stop.load()) {
@@ -155,10 +164,16 @@ TEST(QuitMailbox, PostIsObservedAsAWholeRequest) {
     }
   });
 
+  while (started.load() < 2) {
+    std::this_thread::yield();
+  }
   go.store(true);
+  constexpr int kWantedTakes = 20000;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
   int taken = 0;
   int torn = 0;
-  for (int i = 0; i < 200000; ++i) {
+  while (taken < kWantedTakes && std::chrono::steady_clock::now() < deadline) {
     if (auto quit = box.take()) {
       ++taken;
       const bool a = quit->code == 7 && !quit->ask_if_unsaved;
