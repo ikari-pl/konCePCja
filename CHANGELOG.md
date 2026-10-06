@@ -1,5 +1,23 @@
 # Changelog
 
+## [6.4.0](https://github.com/ikari-pl/konCePCja/compare/v6.3.1...v6.4.0) (2026-10-06)
+
+
+### Features
+
+* **trace:** CPCT v0 bus-event tap and rig for the CPCień shadow twin ([#61](https://github.com/ikari-pl/konCePCja/issues/61)) ([6737fb3](https://github.com/ikari-pl/konCePCja/commit/6737fb37762c32db38bbcf2f069f03643f57b926))
+* **ui:** Cmd+O / Cmd+S host chords; Eject and DevTools in the pause hub; topbar Fullscreen/Screenshot ([#60](https://github.com/ikari-pl/konCePCja/issues/60)) ([dba7714](https://github.com/ikari-pl/konCePCja/commit/dba7714197739325cd15ec8a5c38481b4693f0c9))
+
+
+### Bug Fixes
+
+* -i launches through the firmware; fullscreen/window over IPC; profile config outranks the checkout; wait vbl timeout; docs ([#57](https://github.com/ikari-pl/konCePCja/issues/57)) ([aec1b93](https://github.com/ikari-pl/konCePCja/commit/aec1b9306ba317611687bc887e6f83075bcd94f2))
+* **host:** programmatic quits never raise the unsaved-disk dialog ([#65](https://github.com/ikari-pl/konCePCja/issues/65)) ([f079648](https://github.com/ikari-pl/konCePCja/commit/f0796482df3d097e430e97e03ea6fa2181408643))
+* **ipc:** reliable input key taps; disk put file type; gun gate seeded from config; manifest policy+effective tier; load updates MRU; ship the IPC doc; AGENTS.md drift guard ([#63](https://github.com/ikari-pl/konCePCja/issues/63)) ([8acf9da](https://github.com/ikari-pl/konCePCja/commit/8acf9daa8efe93446a46647f1b3443e65816cccd))
+* **release:** ship LICENSE.md and NOTICE.md in every archive, not the stock GPLv2 text ([#59](https://github.com/ikari-pl/konCePCja/issues/59)) ([9d48c2b](https://github.com/ikari-pl/konCePCja/commit/9d48c2b731806c978128a1d55257537734042cf7))
+* **serial:** TCP connect resolution and I/O error checks; loadConfiguration stops writing globals; bounded quiescence waits; flux size-mismatch test ([#64](https://github.com/ikari-pl/konCePCja/issues/64)) ([5046645](https://github.com/ikari-pl/konCePCja/commit/50466456ce6cbd510d6980f0c31f1fa0cdc113e9))
+* **ui:** Disassembly step toolbar; Disc Tools refresh on swap; toasts on the focused viewport; Options button order and Cancel revert; native menu shortcuts ([#62](https://github.com/ikari-pl/konCePCja/issues/62)) ([6ae3ba5](https://github.com/ikari-pl/konCePCja/commit/6ae3ba565e0fd26d37cc24e33a71444c686005be))
+
 ## [6.3.1](https://github.com/ikari-pl/konCePCja/compare/v6.3.0...v6.3.1) (2026-09-16)
 
 
