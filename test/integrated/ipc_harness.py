@@ -2248,6 +2248,54 @@ def test_load_accepts_flux_disk_formats():
     return True
 
 
+def read_lower_rom_signature(ipc: KoncepcjaIPC, addr: int = 0x02E0,
+                             length: int = 16,
+                             max_steps: int = 20000) -> Optional[str]:
+    """Read `length` bytes of the LOWER ROM at `addr`, or None if not found.
+
+    A plain `mem read` is not a ROM read. It returns what the Z80 would see
+    right now, and the firmware switches the lower ROM in and out all the
+    time (it sits disabled at the BASIC prompt). On a running machine a read
+    at 0x02E0 got ROM ~93% of the time on a 6128 and ~50% on a 6128+; the
+    rest were the zeros of the RAM underneath, or a byte-by-byte mix of both.
+    That is beads-idt4: the reference signatures read as all zeros on a
+    loaded CI Mac.
+
+    So: pause, and walk forward with `step in` (which also waits for the Z80
+    thread to go idle -- `pause` alone only raises a flag) until the window
+    read as the CPU sees it differs from the same window read with
+    --view=ram. Only then did the bytes come from a ROM overlay. Stepping
+    rather than run/pause retries keeps this off the wall clock: a pause
+    lands at the same point in the frame each time, where the ROM may well
+    be off. The `rom:LO` flag in the context line is no substitute for the
+    comparison: on a 6128+ it can run one step ahead of the memory device
+    right after the firmware's ROM-switching OUT at &B9B2 (beads-szc0).
+    The machine is left running, as EmulatorRunner.start() hands it over.
+    """
+    stride = 7  # odd, so the walk does not lock onto a loop's period
+    ipc.pause()
+    try:
+        ok, _ = ipc.step_in(1)  # the first read must not race a running Z80
+        if not ok:
+            return None
+        for _ in range(0, max_steps, stride):
+            ok_cpu, cpu = ipc.read_mem(addr, length)
+            ok_ram, ram = ipc.send_command(
+                f'mem read 0x{addr:04X} {length} --view=ram')
+            if not (ok_cpu and ok_ram):
+                return None
+            cpu = cpu.replace('OK ', '').strip().upper()
+            ram = ram.replace('OK ', '').strip().upper()
+            if cpu != ram:
+                return cpu
+            ok, _ = ipc.step_in(stride)
+            if not ok:
+                return None
+        return None
+    finally:
+        ipc.run()
+
+
 def test_model_change_rebuild():
     """Model changes must rebuild the board, not just mutate config state.
 
@@ -2261,11 +2309,7 @@ def test_model_change_rebuild():
 
     # 0x02E5 differs between cpc6128.rom and the 6128+ system cartridge; low
     # vectors at 0x0000 are identical, so sample a window that actually changes.
-    def rom_signature(ipc: KoncepcjaIPC) -> Optional[str]:
-        ok, resp = ipc.read_mem(0x02E0, 16)
-        if not ok:
-            return None
-        return resp.replace('OK ', '').strip().upper()
+    rom_signature = read_lower_rom_signature
 
     def model_value(ipc: KoncepcjaIPC) -> Optional[int]:
         ok, resp = ipc.send_command('config get model')
@@ -2356,11 +2400,7 @@ def test_profile_load_rebuilds_machine():
     """
     print("Running profile-load rebuild test...")
 
-    def rom_signature(ipc: KoncepcjaIPC) -> Optional[str]:
-        ok, resp = ipc.read_mem(0x02E0, 16)
-        if not ok:
-            return None
-        return resp.replace('OK ', '').strip().upper()
+    rom_signature = read_lower_rom_signature
 
     def model_value(ipc: KoncepcjaIPC) -> Optional[int]:
         ok, resp = ipc.send_command('config get model')
