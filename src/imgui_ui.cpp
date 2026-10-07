@@ -4507,9 +4507,9 @@ void imgui_render_options() {
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::TextDisabled("Status");
-      if (g_serial_interface.backend) {
-        ImGui::Text("Backend: %s", g_serial_interface.backend->name().c_str());
-        ImGui::Text("Status: %s", g_serial_interface.backend->status().c_str());
+      if (auto backend = g_serial_interface.backend()) {
+        ImGui::Text("Backend: %s", backend->name().c_str());
+        ImGui::Text("Status: %s", backend->status().c_str());
         ImGui::Text("TX Empty: %s",
                     g_serial_interface.dart.tx_empty() ? "Yes" : "No");
         ImGui::Text("RX Available: %s",
@@ -5845,12 +5845,11 @@ void imgui_render_serial_terminal() {
   }
 
   // Status bar
+  const auto backend = g_serial_interface.backend();
   ImGui::Text("DART: TX=%s RX=%s | Backend: %s",
               g_serial_interface.dart.tx_empty() ? "Empty" : "Busy",
               g_serial_interface.dart.rx_available() ? "Data" : "Empty",
-              g_serial_interface.backend
-                  ? g_serial_interface.backend->name().c_str()
-                  : "None");
+              backend ? backend->name().c_str() : "None");
 
   ImGui::Separator();
 
@@ -5926,7 +5925,7 @@ void imgui_render_serial_terminal() {
       if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
         s_serial_term.tx_buffer.push_back(*p);
         // Send to backend
-        if (g_serial_interface.backend) {
+        if (g_serial_interface.backend()) {
           // This would send to the DART, which then calls backend->send()
           g_serial_interface.dart.enqueue_rx(*p);  // Echo locally for now
         }
