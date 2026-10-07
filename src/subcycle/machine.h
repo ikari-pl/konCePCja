@@ -438,6 +438,7 @@ class Machine {
   }
   void set_serial_card(bool plugged) { rs232_set_plugged(&rsdev_, plugged); }
   void serial_host_rx(uint8_t byte) { rs232_host_rx(&rsdev_, byte); }
+  int serial_rx_room() const { return rs232_rx_room(&rsdev_); }
   void set_serial_host_tx(void (*fn)(uint8_t, void*), void* ctx) {
     rs232_set_host_tx(&rsdev_, fn, ctx);
   }

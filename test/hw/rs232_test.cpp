@@ -175,6 +175,33 @@ TEST(Rs232, RxFifoHoldsThreeThenOverruns) {
   EXPECT_EQ(io_read(rig, DART_DATA), 3);
 }
 
+// The host feed (IPC, Serial Terminal, file/TCP/tty backends) lands in the
+// same FIFO the CPU reads, and rx_room tells the bridge when to stop: one
+// byte past it overruns, exactly like the wire.
+TEST(Rs232, HostRxFillsTheFifoTheCpuReadsAndRoomCountsDown) {
+  SerialRig rig;
+  make_rig(rig);
+  EXPECT_EQ(rs232_rx_room(&rig.dev), 3);
+  rs232_host_rx(&rig.dev, 'H');
+  rs232_host_rx(&rig.dev, 'I');
+  EXPECT_EQ(rs232_rx_room(&rig.dev), 1);
+  EXPECT_TRUE(io_read(rig, DART_CTRL) & 0x01) << "RR0: character available";
+  EXPECT_EQ(io_read(rig, DART_DATA), 'H');
+  EXPECT_EQ(rs232_rx_room(&rig.dev), 2);
+  rs232_host_rx(&rig.dev, '!');
+  rs232_host_rx(&rig.dev, '?');
+  EXPECT_EQ(rs232_rx_room(&rig.dev), 0);
+  Rs232Regs regs{};
+  rs232_peek(&rig.dev, &regs);
+  EXPECT_FALSE(regs.rr1 & 0x10) << "filling to the brim is not an overrun";
+  rs232_host_rx(&rig.dev, 'x');
+  rs232_peek(&rig.dev, &regs);
+  EXPECT_TRUE(regs.rr1 & 0x10) << "one past the room overruns";
+  EXPECT_EQ(io_read(rig, DART_DATA), 'I');
+  EXPECT_EQ(io_read(rig, DART_DATA), '!');
+  EXPECT_EQ(io_read(rig, DART_DATA), '?');
+}
+
 TEST(Rs232, LoopbackRoundTripsAByte) {
   SerialRig rig;
   make_rig(rig);

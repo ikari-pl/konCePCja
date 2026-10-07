@@ -5315,11 +5315,19 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "status") {
         auto cfg = g_serial_interface.get_config();
         std::stringstream ss;
+        // The card's own registers, read off the board (the `tape status`
+        // precedent): what the CPC sees at $FADE, not a host-side model.
+        Rs232Regs card{};
+        card.rr0 = 0x04;  // no board yet: nothing in flight, nothing received
+        if (subcycle::Machine* mach = subcycle_bridge_machine())
+          rs232_peek(mach->rs232_card(), &card);
         ss << "OK enabled=" << (cfg.enabled ? 1 : 0)
            << " backend=" << static_cast<int>(cfg.backend_type)
-           << " tx_empty=" << (g_serial_interface.dart.tx_empty() ? 1 : 0)
-           << " rx_available="
-           << (g_serial_interface.dart.rx_available() ? 1 : 0)
+           << " tx_empty=" << ((card.rr0 & 0x04) ? 1 : 0)
+           << " rx_available=" << ((card.rr0 & 0x01) ? 1 : 0)
+           << " rx_fifo=" << static_cast<int>(card.fifo_depth)
+           << " rx_pending=" << g_serial_interface.rx_pending()
+           << " rx_overrun=" << ((card.rr1 & 0x10) ? 1 : 0)
            << " baud=" << cfg.baud_rate;
         ss << " tx_dropped=" << g_serial_interface.tx_dropped();
         if (g_serial_interface.backend) {
@@ -5331,26 +5339,36 @@ std::string handle_command(const std::string& line) {
         ss << "\n";
         return ss.str();
       }
-      if (parts[1] == "send" && parts.size() >= 3) {
-        try {
-          int const byte = parse_int(parts[2]);
-          if (byte < 0 || byte > 255) {
-            return "ERR 400 byte must be 0-255\n";
+      if ((parts[1] == "send" || parts[1] == "send_string") &&
+          parts.size() >= 3) {
+        // Queued for the card's RX FIFO; the bridge feeds it as the FIFO
+        // has room.
+        if (!g_serial_interface.host_wired())
+          return "ERR 409 serial-card-not-on-host-wire\n";
+        std::string bytes;
+        if (parts[1] == "send") {
+          int byte = 0;
+          try {
+            byte = parse_int(parts[2]);
+          } catch (const std::invalid_argument&) {
+            return "ERR 400 bad-byte\n";
+          } catch (const std::out_of_range&) {
+            return "ERR 400 bad-byte\n";
           }
-          g_serial_interface.dart.enqueue_rx(static_cast<uint8_t>(byte));
-          return "OK sent byte " + parts[2] + "\n";
-        } catch (const std::exception&) {
-          return "ERR 400 bad-byte\n";
+          if (byte < 0 || byte > 255) return "ERR 400 byte must be 0-255\n";
+          bytes.push_back(static_cast<char>(byte));
+        } else {
+          size_t const pos = line.find("send_string ");
+          if (pos == std::string::npos) return "ERR 400 bad-args\n";
+          bytes = line.substr(pos + 12);
         }
-      }
-      if (parts[1] == "send_string" && parts.size() >= 3) {
-        size_t const pos = line.find("send_string ");
-        if (pos == std::string::npos) return "ERR 400 bad-args\n";
-        std::string const str = line.substr(pos + 12);
-        for (char const c : str) {
-          g_serial_interface.dart.enqueue_rx(static_cast<uint8_t>(c));
-        }
-        return "OK sent " + std::to_string(str.size()) + " bytes\n";
+        size_t const queued = g_serial_interface.queue_rx(
+            reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+        if (queued < bytes.size())
+          return "ERR 507 rx-queue-full queued=" + std::to_string(queued) +
+                 "\n";
+        if (parts[1] == "send") return "OK sent byte " + parts[2] + "\n";
+        return "OK sent " + std::to_string(bytes.size()) + " bytes\n";
       }
       if (parts[1] == "config") {
         if (parts.size() == 3 && parts[2] == "get") {
