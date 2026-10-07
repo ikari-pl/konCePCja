@@ -38,6 +38,19 @@ void z80_peek(const Device* dev, Z80Regs* out);
  * Only the register/flag/interrupt fields of *in are consumed. */
 void z80_poke(const Device* dev, const Z80Regs* in);
 
+/* Debugger edits. A pause or a breakpoint parks the CPU mid-instruction, and
+ * z80_poke() would throw away the rest of that instruction (half a PUSH).
+ *  - z80_poke_regfile: write the register file (AF..PC, WZ, I, R, IM, IFF1/2)
+ *    and nothing else; the sequencer keeps its place, so the instruction in
+ *    flight carries on with the new values.
+ *  - z80_at_instruction_boundary: 1 when no instruction is in flight (the next
+ *    tick starts an M1 fetch, or the CPU sits in HALT).
+ *  - z80_abandon_instruction: drop the instruction in flight and restart at an
+ *    M1 fetch from PC. Registers, interrupt latches and counters are kept. */
+void z80_poke_regfile(const Device* dev, const Z80Regs* in);
+int z80_at_instruction_boundary(const Device* dev);
+void z80_abandon_instruction(const Device* dev);
+
 /* --- Batch (instruction-granularity) execution — the RunTier::Fast driver.
  *
  * Runs the SAME micro-op sequences as the per-cycle engine (dual-mode, not a
