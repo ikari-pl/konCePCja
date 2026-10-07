@@ -269,10 +269,15 @@ A breakpoint mid-frame skips EC_FRAME_COMPLETE, so the render thread would block
 in `wait_ready()` forever.  The fix lives in `kon_cpc_ja.cpp`; the IPC test
 (`test_breakpoint_pause_step_resume`) catches regressions.
 
-**`SDL_VIDEODRIVER=dummy` triggers headless mode on macOS.**  OpenGL init fails
-under the offscreen/dummy SDL driver, so the emulator falls back to headless and
-runs single-threaded.  The IPC protocol is identical in both modes.
-`KoncepcjaIPC.is_threaded()` probes this by sending `devtools` (fails in
+**`SDL_VIDEODRIVER=dummy` does NOT mean headless.**  The video plugins
+initialise fine on the dummy driver, so `EmulatorRunner.start()` runs the full
+GUI build: a Z80 thread plus a render thread that draws ImGui and DevTools
+offscreen. Only `-H/--headless`, or a video init that fails outright ("falling
+back to headless" in the log), runs the single-threaded headless loop. So
+render-thread code (DevTools windows, which a breakpoint stop opens) runs during
+e2e tests; that is how the Registers window corrupted the machine in
+beads-vwwq. The IPC protocol is identical in both modes.
+`KoncepcjaIPC.is_threaded()` tells them apart by sending `devtools` (fails in
 headless, succeeds in GUI mode).
 
 **Snapshot round-trip pattern.**  Pause → read reference bytes → `snapshot save`

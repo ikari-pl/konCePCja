@@ -961,9 +961,17 @@ def test_inject_launches_like_run():
             # pressed (measured with an exact wait: a 5-frame settle misses
             # 2/2, 10 lands 2/2). That window is the program's start-up, not
             # the tap, so settle well clear of it.
-            ok, resp = ipc.send_command('wait vbl 50 20000')
+            #
+            # `step frame`, not `wait vbl`: wait vbl is a wall-clock sleep
+            # (beads-71pg) that runs ~150 frames for 50; step frame runs
+            # exactly 50. This test used to lose its key ~2% of the time
+            # (beads-27a7): the breakpoint stop above opens the DevTools
+            # Registers window, which pushed the registers into the machine
+            # on every paused frame and cut the instruction in flight in half
+            # (beads-vwwq, fixed in devtools_ui.cpp).
+            ok, resp = ipc.send_command('step frame 50')
             if not ok:
-                print(f"FAIL: wait vbl 50: {resp}")
+                print(f"FAIL: step frame 50: {resp}")
                 return False
             ipc.run()
             # The default tap, sent while the machine runs. It used to count
