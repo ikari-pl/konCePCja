@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.4.2](https://github.com/ikari-pl/konCePCja/compare/v6.4.1...v6.4.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* **debug:** a step refreshes the chip views, so rom:LO follows the ROM-switch OUT ([#73](https://github.com/ikari-pl/konCePCja/issues/73)) ([9f72b87](https://github.com/ikari-pl/konCePCja/commit/9f72b8729c0229a6331725dd85e10050d5ac1821))
+* **debug:** register edits no longer drop or replay the instruction in flight ([#70](https://github.com/ikari-pl/konCePCja/issues/70)) ([2188f73](https://github.com/ikari-pl/konCePCja/commit/2188f73d9b17dd3056cf21f416c2e6b2610dc499))
+* **ipc:** wait vbl counts real frames instead of sleeping 20ms per blank ([#75](https://github.com/ikari-pl/konCePCja/issues/75)) ([8d41091](https://github.com/ikari-pl/konCePCja/commit/8d410919e0cfeeef1fe6892a7ba0b53a23c5a3d9))
+* **serial:** IPC and the Serial Terminal drive the board's rs232 card ([#72](https://github.com/ikari-pl/konCePCja/issues/72)) ([d9db998](https://github.com/ikari-pl/konCePCja/commit/d9db998e52fcba961c9bb7550a27da0c1903cc37))
+* **serial:** keep a swapped-out backend alive until its last send returns ([#71](https://github.com/ikari-pl/konCePCja/issues/71)) ([303afd5](https://github.com/ikari-pl/konCePCja/commit/303afd57ed27d5d40e140be7457423f638d87c42))
+
 ## [6.4.1](https://github.com/ikari-pl/konCePCja/compare/v6.4.0...v6.4.1) (2026-10-07)
 
 
