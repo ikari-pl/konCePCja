@@ -89,6 +89,18 @@ extern dword dwFrameCountOverall;
 // present in both MODERN_UI=ON and OFF builds — the core writes telemetry
 // into it from headless TUs that don't link imgui_ui.cpp.
 
+namespace {
+// The serial card's registers off the board, as the CPC reads them; an idle,
+// empty card while no board is built.
+Rs232Regs serial_card_regs() {
+  Rs232Regs card{};
+  card.rr0 = 0x04;  // TX empty, nothing received
+  if (subcycle::Machine* mach = subcycle_bridge_machine())
+    rs232_peek(mach->rs232_card(), &card);
+  return card;
+}
+}  // namespace
+
 // Forward declarations
 namespace {
 void imgui_render_menubar();
@@ -4508,12 +4520,11 @@ void imgui_render_options() {
       ImGui::Separator();
       ImGui::TextDisabled("Status");
       if (auto backend = g_serial_interface.backend()) {
+        const Rs232Regs card = serial_card_regs();
         ImGui::Text("Backend: %s", backend->name().c_str());
         ImGui::Text("Status: %s", backend->status().c_str());
-        ImGui::Text("TX Empty: %s",
-                    g_serial_interface.dart.tx_empty() ? "Yes" : "No");
-        ImGui::Text("RX Available: %s",
-                    g_serial_interface.dart.rx_available() ? "Yes" : "No");
+        ImGui::Text("TX Empty: %s", (card.rr0 & 0x04) ? "Yes" : "No");
+        ImGui::Text("RX Available: %s", (card.rr0 & 0x01) ? "Yes" : "No");
       } else {
         ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
                            "Serial interface disabled");
@@ -5830,11 +5841,19 @@ void render_hex_line(const uint8_t* data, int len) {
 }
 }  // namespace
 
-void serial_terminal_feed_byte(uint8_t byte) {
-  if (s_serial_term.rx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
-    s_serial_term.rx_buffer.push_back(byte);
+namespace {
+// Typed bytes go to the CPC: queued for the card's RX FIFO, and listed in
+// the TX buffer the window shows.
+void serial_terminal_send(const char* text) {
+  if (!g_serial_interface.host_wired()) return;
+  size_t const n = strlen(text);
+  g_serial_interface.queue_rx(reinterpret_cast<const uint8_t*>(text), n);
+  for (size_t i = 0; i < n; i++) {
+    if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE)
+      s_serial_term.tx_buffer.push_back(static_cast<uint8_t>(text[i]));
   }
 }
+}  // namespace
 
 void imgui_render_serial_terminal() {
   ImGui::SetNextWindowSize(ImVec2(ui_dpi_px(700), ui_dpi_px(500)),
@@ -5844,11 +5863,19 @@ void imgui_render_serial_terminal() {
     return;
   }
 
-  // Status bar
+  // What the CPC sent since last frame (SerialInterface::host_tx mirrors it).
+  g_serial_interface.drain_monitor(s_serial_term.rx_buffer);
+  if (s_serial_term.rx_buffer.size() > SerialTerminalState::BUFFER_SIZE)
+    s_serial_term.rx_buffer.resize(SerialTerminalState::BUFFER_SIZE);
+
+  // Status bar: the board's card, as the CPC sees it at $FADE
+  const Rs232Regs card = serial_card_regs();
   const auto backend = g_serial_interface.backend();
-  ImGui::Text("DART: TX=%s RX=%s | Backend: %s",
-              g_serial_interface.dart.tx_empty() ? "Empty" : "Busy",
-              g_serial_interface.dart.rx_available() ? "Data" : "Empty",
+  ImGui::Text("DART: TX=%s RX=%s (%d in FIFO, %zu queued) | Backend: %s",
+              (card.rr0 & 0x04) ? "Empty" : "Busy",
+              (card.rr0 & 0x01) ? "Data" : "Empty",
+              static_cast<int>(card.fifo_depth),
+              g_serial_interface.rx_pending(),
               backend ? backend->name().c_str() : "None");
 
   ImGui::Separator();
@@ -5871,10 +5898,6 @@ void imgui_render_serial_terminal() {
   ImGui::PopButtonRepeat();
 
   ImGui::Separator();
-
-  // Data is fed via serial_terminal_feed_byte() from the DART TX callback
-  // (see apply_config in serial_interface.cpp) — no direct backend polling
-  // here.
 
   // Data display
   {
@@ -5920,26 +5943,12 @@ void imgui_render_serial_terminal() {
   if (ImGui::InputText("##serial_input", s_serial_term.input_buf,
                        sizeof(s_serial_term.input_buf),
                        ImGuiInputTextFlags_EnterReturnsTrue)) {
-    // Send input
-    for (const char* p = s_serial_term.input_buf; *p; p++) {
-      if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
-        s_serial_term.tx_buffer.push_back(*p);
-        // Send to backend
-        if (g_serial_interface.backend()) {
-          // This would send to the DART, which then calls backend->send()
-          g_serial_interface.dart.enqueue_rx(*p);  // Echo locally for now
-        }
-      }
-    }
+    serial_terminal_send(s_serial_term.input_buf);
     s_serial_term.input_buf[0] = '\0';
   }
   ImGui::SameLine();
   if (ImGui::Button("Send", ImVec2(ui_dpi_px(60), ui_dpi_px(0)))) {
-    for (const char* p = s_serial_term.input_buf; *p; p++) {
-      if (s_serial_term.tx_buffer.size() < SerialTerminalState::BUFFER_SIZE) {
-        s_serial_term.tx_buffer.push_back(*p);
-      }
-    }
+    serial_terminal_send(s_serial_term.input_buf);
     s_serial_term.input_buf[0] = '\0';
   }
 

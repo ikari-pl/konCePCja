@@ -2885,6 +2885,120 @@ def test_boots_to_basic_with_peripherals():
         return True
 
 
+def test_serial_ipc_drives_the_live_card():
+    """`serial send` must reach the CPU through the card the board clocks.
+
+    `serial send`, `send_string` and `status` used to talk to a DART object
+    the CPU never addressed: the bytes queued where no IN instruction could
+    read them, and `status` reported that object's permanently empty FIFO.
+    Here a Z80 program polls the live card's RR0 and reads its data port, so
+    the bytes count only if they really arrive -- and it echoes each one back
+    out of the data port into a File backend, the CPC-to-host direction.
+
+    The program waits on a flag first, so `status` can be read while the
+    bytes sit in the card: three in its RX FIFO, the rest queued host-side
+    until there is room (the FIFO is three deep; pushing more overruns it).
+    """
+    print("Running serial-on-the-live-card test...")
+    program = bytes([
+        0xF3,              # 6000 DI
+        0xAF,              # 6001 XOR A
+        0x32, 0xFF, 0x7F,  # 6002 LD (&7FFF),A   clear the go flag
+        0x3A, 0xFF, 0x7F,  # 6005 wait: LD A,(&7FFF)
+        0xB7,              # 6008 OR A
+        0x28, 0xFA,        # 6009 JR Z,wait
+        0x21, 0x00, 0x70,  # 600B LD HL,&7000
+        0x1E, 0x05,        # 600E LD E,5
+        0x01, 0xDE, 0xFA,  # 6010 rx: LD BC,&FADE  DART ch A control
+        0xED, 0x78,        # 6013 IN A,(C)         RR0
+        0xE6, 0x01,        # 6015 AND 1            RX character available
+        0x28, 0xF7,        # 6017 JR Z,rx
+        0x01, 0xDC, 0xFA,  # 6019 LD BC,&FADC      DART ch A data
+        0xED, 0x78,        # 601C IN A,(C)
+        0x77,              # 601E LD (HL),A
+        0x23,              # 601F INC HL
+        0xED, 0x79,        # 6020 OUT (C),A        echo it back out
+        0x1D,              # 6022 DEC E
+        0x20, 0xEB,        # 6023 JR NZ,rx
+        0x18, 0xFE,        # 6025 done: JR done
+    ])
+    done = 0x6025
+    workdir = tempfile.mkdtemp(prefix='koncpc_serial_')
+    bin_path = os.path.join(workdir, 'serial.bin')
+    out_path = os.path.join(workdir, 'serial_out.bin')
+    with open(bin_path, 'wb') as f:
+        f.write(program)
+
+    def status_fields(resp: str) -> dict:
+        return dict(p.split('=', 1) for p in resp.split()[1:] if '=' in p)
+
+    try:
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', 'peripheral.serial_enabled=1',
+                             '-O', 'peripheral.serial_backend=1',  # File
+                             '-O', f'peripheral.serial_output_file={out_path}',
+                             '-i', bin_path, '-o', '0x6000'):
+                print("FAIL: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0
+            ok, resp = ipc.send_command('wait pc 0x6005 15000')
+            if not ok:
+                print(f"FAIL: program never started: {resp}")
+                return False
+            ipc.run()
+
+            ok, resp = ipc.send_command('serial send_string HELL')
+            if not ok or 'sent 4 bytes' not in resp:
+                print(f"FAIL: send_string: {resp}")
+                return False
+            ok, resp = ipc.send_command('serial send 0x4F')  # 'O'
+            if not ok:
+                print(f"FAIL: send: {resp}")
+                return False
+            ipc.wait_vbl(10)
+
+            ok, resp = ipc.send_command('serial status')
+            st = status_fields(resp)
+            print(f"  before the CPU reads: {resp}")
+            if not ok or st.get('rx_available') != '1' \
+                    or st.get('rx_fifo') != '3' or st.get('rx_pending') != '2' \
+                    or st.get('rx_overrun') != '0':
+                print("FAIL: status should show 3 bytes in the card's FIFO, "
+                      "2 queued, no overrun")
+                return False
+
+            ipc.send_command('mem write 0x7FFF 01')
+            ok, resp = ipc.send_command(f'wait pc 0x{done:04X} 10000')
+            if not ok:
+                print(f"FAIL: the CPU never received all five bytes: {resp}")
+                return False
+
+            ok, resp = ipc.read_mem(0x7000, 5)
+            if '48454C4C4F' not in resp.upper().replace(' ', ''):
+                print(f"FAIL: the CPU read the wrong bytes: {resp}")
+                return False
+
+            ok, resp = ipc.send_command('serial status')
+            st = status_fields(resp)
+            print(f"  after: {resp}")
+            if st.get('rx_available') != '0' or st.get('rx_pending') != '0' \
+                    or st.get('tx_dropped') != '0':
+                print("FAIL: status should show the FIFO and queue drained")
+                return False
+
+            with open(out_path, 'rb') as f:
+                echoed = f.read()
+            if echoed != b'HELLO':
+                print(f"FAIL: the CPC's echo reached the backend as {echoed!r}")
+                return False
+            print("PASS: the CPU read HELLO off the live card and echoed it "
+                  "to the backend")
+            return True
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def test_debugger_stop_contract():
     """When the debugger says it stopped, it must actually have stopped there.
 
@@ -3322,6 +3436,7 @@ def main():
         test_run_to_address_breakpoint_polarity,
         test_inject_launches_like_run,
         test_boots_to_basic_with_peripherals,
+        test_serial_ipc_drives_the_live_card,
         test_conditional_debug_matrix,
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,

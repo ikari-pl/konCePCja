@@ -731,12 +731,17 @@ void serial_host_tx_byte(uint8_t byte, void* ctx) {
   static_cast<SerialInterface*>(ctx)->host_tx(byte);
 }
 
+void serial_card_rx_byte(uint8_t byte, void* ctx) {
+  static_cast<subcycle::Machine*>(ctx)->serial_host_rx(byte);
+}
+
+// Host -> CPC: IPC/terminal bytes, then the backend's, into the card's RX
+// FIFO -- never more than it has room for, so nothing overruns. The CPC
+// drains the FIFO by reading the DART data port; the rest wait a frame.
 void sync_serial_backend(Bridge& b) {
-  const SerialConfig sc = g_serial_interface.get_config();
-  if (!sc.enabled || sc.backend_type == SerialBackendType::Plotter) return;
-  const std::shared_ptr<SerialBackend> backend = g_serial_interface.backend();
-  if (backend == nullptr) return;
-  while (backend->has_data()) b.machine.serial_host_rx(backend->recv());
+  if (!g_serial_interface.host_wired()) return;
+  g_serial_interface.pump_rx(static_cast<size_t>(b.machine.serial_rx_room()),
+                             serial_card_rx_byte, &b.machine);
 }
 
 // Enable/plugged flags mirrored from the legacy UI toggles each frame, so the

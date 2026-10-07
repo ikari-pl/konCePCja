@@ -24,427 +24,11 @@ typedef int ssize_t;
 #include <utility>
 
 #include "bounded_deadline.h"
-#include "io_dispatch.h"
 #include "log.h"
 #include "plotter.h"
 #include "serial_interface.h"
 #include "subcycle_bridge.h"
 #include "z80_view.h"
-
-// I/O port handlers for $FADx (DART) and $FBDx (8253 Timer)
-// DART registers at $FADC-$FADF, timer at $FBDC-$FBDF.
-// Must check full low byte 0xDC-0xDF to avoid colliding with FDC ($FB7E) etc.
-// Map real DART hardware port offsets to the simplified register model used by
-// dart.read() / dart.write() (offset 0=Data, 1=RR0/WR0, 2=RR1/WR1, 3=RR2/WR3).
-//
-// Real hardware:  offset 0 ($FADC) = Ch A Data
-//                 offset 1 ($FADD) = Ch B Data  (unused on Amstrad SI)
-//                 offset 2 ($FADE) = Ch A Control (WR0/RR0 with register
-//                 pointer) offset 3 ($FADF) = Ch B Control (unused on Amstrad
-//                 SI)
-//
-// Z80 SI ROM code reads RR0 from $FADE (offset 2) and writes WR0 there too.
-// Remapping offset 2 → 1 keeps that code working with the simplified model.
-namespace {
-inline uint8_t dart_remap(uint8_t offset) { return (offset == 2) ? 1 : offset; }
-}  // namespace
-
-namespace {
-bool dart_in(reg_pair port, byte& ret_val) {
-  uint8_t const lo = port.b.l;
-  if (lo >= 0xDC && lo <= 0xDF) {
-    ret_val = g_serial_interface.dart.read(dart_remap(lo - 0xDC));
-    return true;
-  }
-  return false;
-}
-}  // namespace
-
-namespace {
-bool dart_out(reg_pair port, byte val) {
-  uint8_t const lo = port.b.l;
-  if (lo >= 0xDC && lo <= 0xDF) {
-    g_serial_interface.dart.write(dart_remap(lo - 0xDC), val);
-    return true;
-  }
-  return false;
-}
-}  // namespace
-
-namespace {
-bool timer_in(reg_pair port, byte& ret_val) {
-  uint8_t const lo = port.b.l;
-  if (lo >= 0xDC && lo <= 0xDF) {
-    ret_val = g_serial_interface.timer.read(lo - 0xDC);
-    return true;
-  }
-  return false;
-}
-}  // namespace
-
-namespace {
-bool timer_out(reg_pair port, byte val) {
-  uint8_t const lo = port.b.l;
-  if (lo >= 0xDC && lo <= 0xDF) {
-    g_serial_interface.timer.write(lo - 0xDC, val);
-    return true;
-  }
-  return false;
-}
-}  // namespace
-
-// Configuration flag for enabling/disabling serial interface
-namespace {
-bool serial_interface_enabled = false;
-}  // namespace
-
-void serial_interface_register_io() {  // NOLINT(misc-use-internal-linkage):
-                                       // registered from io_dispatch (cross-TU)
-  io_register_in(0xFA, dart_in, &serial_interface_enabled,
-                 "Serial Interface (DART)");
-  io_register_out(0xFA, dart_out, &serial_interface_enabled,
-                  "Serial Interface (DART)");
-  io_register_in(0xFB, timer_in, &serial_interface_enabled,
-                 "Serial Interface (8253 Timer)");
-  io_register_out(0xFB, timer_out, &serial_interface_enabled,
-                  "Serial Interface (8253 Timer)");
-}
-
-// Z80 DART Implementation
-Z80Dart::Z80Dart() { reset(); }
-
-void Z80Dart::reset() {
-  channel_a_ = true;
-  while (!rx_fifo_.empty()) rx_fifo_.pop();
-
-  tx_buffer_empty_ = true;
-  tx_shift_reg_empty_ = true;
-  tx_buffer_ = 0;
-  tx_shift_ = 0;
-
-  rts_ = false;
-  cts_ = true;
-  dtr_ = false;
-  dsr_ = true;
-  dcd_ = false;
-  break_pending_ = false;
-
-  overrun_error_ = false;
-  parity_error_ = false;
-  framing_error_ = false;
-
-  memset(wr0_, 0, sizeof(wr0_));
-  memset(wr1_, 0, sizeof(wr1_));
-  memset(wr3_, 0, sizeof(wr3_));
-
-  rr0_[0] = RR0_TX_EMPTY | RR0_TX_BUFFER_EMPTY | RR0_CTS;
-  rr0_[1] = RR0_TX_EMPTY | RR0_TX_BUFFER_EMPTY | RR0_CTS;
-  rr1_[0] = 0;
-  rr1_[1] = 0;
-  rr2_ = 0;
-
-  interrupt_pending_ = false;
-  interrupt_vector_ = 0;
-}
-
-uint8_t Z80Dart::read(uint8_t port) {
-  // Simplified DART register model (symmetric with write()):
-  //   offset 0 ($FADC / port & 0x03 == 0): Data  — read from RX FIFO
-  //   offset 1 ($FADD / port & 0x03 == 1): RR0   — Status register
-  //   offset 2 ($FADE / port & 0x03 == 2): RR1   — Special Receive Condition
-  //   offset 3 ($FADF / port & 0x03 == 3): RR2   — Interrupt Vector
-  //
-  // Note: dart_in() remaps the real hardware Ch A Control address ($FADE,
-  // offset 2) to offset 1 so that real Z80 code reading status from $FADE
-  // still receives RR0.  This model omits the DART's register-pointer
-  // mechanism because Channel B is unused on the Amstrad Serial Interface.
-
-  switch (port & 0x03) {
-    case 0x00:  // Data — read received byte
-    {
-      // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-      // mutated (out-param/compound-assign/loop/reference)
-      uint8_t val = 0;
-      if (!rx_fifo_.empty()) {
-        val = rx_fifo_.front();
-        rx_fifo_.pop();
-        update_interrupts();
-      }
-      return val;
-    }
-    case 0x01:  // RR0 — Status
-      return read_rr(0);
-    case 0x02:  // RR1 — Special Receive Condition
-      return read_rr(1);
-    case 0x03:  // RR2 — Interrupt Vector
-      return read_rr(2);
-  }
-
-  return 0xFF;
-}
-
-uint8_t Z80Dart::read_rr(int reg) {
-  int const ch = channel_a_ ? 0 : 1;
-  uint8_t val = 0;
-
-  switch (reg) {
-    case 0:  // RR0 - Status
-      // Poll backend for incoming data before reporting status.
-      // This ensures RX_AVAILABLE is up-to-date when the Z80 checks.
-      if (rx_poll_) rx_poll_();
-      val = rr0_[ch];
-      // Update TX empty status
-      if (tx_buffer_empty_) val |= RR0_TX_BUFFER_EMPTY;
-      if (tx_shift_reg_empty_) val |= RR0_TX_EMPTY;
-      // Update RX available
-      if (!rx_fifo_.empty())
-        val |= RR0_RX_AVAILABLE;
-      else
-        val &= ~RR0_RX_AVAILABLE;
-      // CTS follows the actual cts_ state (loopback = true)
-      if (cts_)
-        val |= RR0_CTS;
-      else
-        val &= ~RR0_CTS;
-      break;
-
-    case 1:  // RR1 - Special Receive Condition
-      val = rr1_[ch];
-      if (!rx_fifo_.empty()) val |= RR0_RX_AVAILABLE;
-      if (overrun_error_) val |= RR1_OVERRUN;
-      if (parity_error_) val |= RR1_PARITY_ERROR;
-      if (framing_error_) val |= RR1_CRC_FRAMING_ERROR;
-      break;
-
-    case 2:  // RR2 - Interrupt Vector
-      val = channel_a_ ? wr2_[0] : rr2_;
-      break;
-  }
-
-  return val;
-}
-
-void Z80Dart::write(uint8_t port, uint8_t val) {
-  int const reg = port & 0x03;
-
-  switch (reg) {
-    case 0x00:  // Data register
-      // Send byte to backend
-      if (rx_callback_) {
-        rx_callback_(val);
-      }
-      // Store in TX buffer
-      tx_buffer_ = val;
-      tx_buffer_empty_ = false;
-      // Update status
-      rr0_[channel_a_ ? 0 : 1] &= ~RR0_TX_BUFFER_EMPTY;
-      do_tx();
-      break;
-
-    case 0x01:  // WR0 — Command register
-      wr0_[channel_a_ ? 0 : 1] = val;
-      // Bits 7-6 carry the command code: 00=none, 01=reset receiver,
-      // 10=reset transmitter, 11=reset error flags.
-      {
-        int const cmd = (val >> 6) & 0x03;
-        int const ch = channel_a_ ? 0 : 1;
-        switch (cmd) {
-          case 1:  // Reset receiver
-            while (!rx_fifo_.empty()) rx_fifo_.pop();
-            overrun_error_ = false;
-            parity_error_ = false;
-            framing_error_ = false;
-            break;
-          case 2:  // Reset transmitter
-            tx_buffer_empty_ = true;
-            tx_shift_reg_empty_ = true;
-            rr0_[ch] |= RR0_TX_EMPTY | RR0_TX_BUFFER_EMPTY;
-            break;
-          case 3:  // Reset error flags
-            overrun_error_ = false;
-            parity_error_ = false;
-            framing_error_ = false;
-            rr1_[ch] = 0;
-            break;
-          default:  // 0 — no command
-            break;
-        }
-      }
-      // Bits 3-2: channel select (00 = Ch A, 01 = Ch B)
-      if ((val & 0x0C) == 0x04)
-        channel_a_ = false;
-      else if ((val & 0x0C) == 0x00)
-        channel_a_ = true;
-      break;
-
-    case 0x02:  // WR1 or WR2 depending on channel
-      if (channel_a_) {
-        wr1_[0] = val;  // Interrupt enable
-      } else {
-        wr2_[1] = val;  // Channel B interrupt vector
-      }
-      update_interrupts();
-      break;
-
-    case 0x03:  // WR3 (receive parameters) or WR2 (interrupt vector for A)
-      if (channel_a_) {
-        wr3_[0] = val;
-      } else {
-        wr2_[1] = val;  // Same as above
-      }
-      break;
-  }
-}
-
-void Z80Dart::enqueue_rx(uint8_t byte) {
-  if (rx_fifo_.size() < RX_FIFO_SIZE) {
-    rx_fifo_.push(byte);
-  } else {
-    overrun_error_ = true;
-  }
-  update_interrupts();
-}
-
-void Z80Dart::do_tx() {
-  if (tx_buffer_empty_) return;
-
-  tx_shift_ = tx_buffer_;
-  tx_buffer_empty_ = true;
-  tx_shift_reg_empty_ = false;
-  rr0_[channel_a_ ? 0 : 1] |= RR0_TX_BUFFER_EMPTY;
-
-  // TX complete - mark shift register empty after "transmit time"
-  // In real hardware this would be baud rate dependent
-  tx_shift_reg_empty_ = true;
-  rr0_[channel_a_ ? 0 : 1] |= RR0_TX_EMPTY;
-  rr1_[channel_a_ ? 0 : 1] |= RR1_ALL_SENT;
-
-  update_interrupts();
-}
-
-void Z80Dart::update_interrupts() {
-  bool should_int = false;
-
-  int const ch = channel_a_ ? 0 : 1;
-
-  // Check interrupt conditions based on WR1
-  uint8_t const wr1 = wr1_[ch];
-
-  // External/Status interrupt - fires on CTS/DCD/DSR changes (bit 0)
-  // For simplicity, we don't simulate these status changes
-  // Real hardware would check for status changes via RR0 bits
-
-  // Transmit interrupt - fires when TX buffer empty and TX interrupt enabled
-  // (bit 1)
-  if ((wr1 & 0x02) && tx_buffer_empty_) {
-    should_int = true;
-  }
-
-  // Receive interrupt - fires when character available and Rx interrupt enabled
-  // (bit 2)
-  if ((wr1 & 0x04) && !rx_fifo_.empty()) {
-    should_int = true;
-  }
-
-  interrupt_pending_ = should_int;
-
-  // Set interrupt vector
-  interrupt_vector_ = wr2_[0] | (should_int ? 0x00 : 0x08);
-}
-
-uint8_t Z80Dart::get_interrupt_vector() const { return interrupt_vector_; }
-
-// Intel 8253 Timer Implementation
-Intel8253::Intel8253() { reset(); }
-
-void Intel8253::reset() {
-  for (int i = 0; i < 3; i++) {
-    counters_[i].count = 0;
-    counters_[i].latch = 0;
-    counters_[i].mode = 0;
-    counters_[i].counting = false;
-    counters_[i].gate = true;
-    latch_count_[i] = false;
-  }
-  mode_register_ = 0;
-  manual_baud_.reset();
-}
-
-uint8_t Intel8253::read(uint8_t port) {
-  int const ch = port & 0x03;
-
-  // Port 3 is mode register - reading it returns 0
-  if (ch >= 3) return 0;  // Mode register is write-only
-
-  // Check if count is latched for reading
-  if (latch_count_[ch]) {
-    latch_count_[ch] = false;
-    // Return latched value (LSB)
-    return counters_[ch].latch & 0xFF;
-  }
-
-  return counters_[ch].count & 0xFF;
-}
-
-void Intel8253::write(uint8_t port, uint8_t val) {
-  int const ch = port & 0x03;
-
-  if (ch == 3) {
-    // Mode register write (port 3 = 0x0F)
-    // Check for latch commands (bits 7-6)
-    switch (val >> 6) {
-      case 0:
-        counters_[0].latch = counters_[0].count;
-        latch_count_[0] = true;
-        break;
-      case 1:
-        counters_[1].latch = counters_[1].count;
-        latch_count_[1] = true;
-        break;
-      case 2:
-        counters_[2].latch = counters_[2].count;
-        latch_count_[2] = true;
-        break;
-      case 3:
-        counters_[0].latch = counters_[0].count;
-        counters_[1].latch = counters_[1].count;
-        counters_[2].latch = counters_[2].count;
-        latch_count_[0] = true;
-        latch_count_[1] = true;
-        latch_count_[2] = true;
-        break;
-    }
-    return;
-  }
-
-  // Counter write - always update the counter value
-  Counter& c = counters_[ch];
-  c.count = val;
-  c.counting = true;
-
-  // Counter 0 is used for baud rate
-  if (ch == 0) {
-    update_baud();
-  }
-}
-
-void Intel8253::update_baud() {
-  if (manual_baud_.has_value()) return;
-
-  uint16_t divisor = counters_[0].count;
-  if (divisor == 0) divisor = 1;  // Avoid divide by zero
-
-  if (baud_callback_) {
-    baud_callback_(divisor);
-  }
-}
-
-void Intel8253::set_manual_baud(uint32_t baud) { manual_baud_ = baud; }
-
-uint16_t Intel8253::read_counter(int ch) const {
-  if (ch < 0 || ch >= 3) return 0;
-  return counters_[ch].count;
-}
 
 // File Backend Implementation
 FileBackend::FileBackend(std::string input_path, std::string output_path)
@@ -1039,9 +623,62 @@ void SerialInterface::set_backend(std::shared_ptr<SerialBackend> next) {
 }
 
 void SerialInterface::host_tx(uint8_t byte) {
+  {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    if (monitor_.size() == kMonitorCap) monitor_.pop_front();
+    monitor_.push_back(byte);
+  }
   const std::shared_ptr<SerialBackend> b = backend();
   if (b == nullptr || !b->send(byte))
     tx_dropped_.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool SerialInterface::host_wired() const {
+  const SerialConfig cfg = get_config();
+  return cfg.enabled && cfg.backend_type != SerialBackendType::Plotter;
+}
+
+size_t SerialInterface::queue_rx(const uint8_t* data, size_t n) {
+  std::lock_guard<std::mutex> lock(queue_mu_);
+  size_t const room = kRxQueueCap - rx_queue_.size();
+  size_t const taken = n < room ? n : room;
+  rx_queue_.insert(rx_queue_.end(), data, data + taken);
+  return taken;
+}
+
+size_t SerialInterface::rx_pending() const {
+  std::lock_guard<std::mutex> lock(queue_mu_);
+  return rx_queue_.size();
+}
+
+size_t SerialInterface::pump_rx(size_t room, void (*sink)(uint8_t, void*),
+                                void* ctx) {
+  size_t moved = 0;
+  {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    while (moved < room && !rx_queue_.empty()) {
+      sink(rx_queue_.front(), ctx);
+      rx_queue_.pop_front();
+      ++moved;
+    }
+  }
+  // The backend's bytes stay in the backend (socket buffer, file, tty) until
+  // the FIFO has room for them, rather than overrunning it. A counted
+  // reference, like host_tx(): apply_config() may swap it meanwhile.
+  if (moved < room) {
+    const std::shared_ptr<SerialBackend> b = backend();
+    while (moved < room && b != nullptr && b->has_data()) {
+      sink(b->recv(), ctx);
+      ++moved;
+    }
+  }
+  return moved;
+}
+
+void SerialInterface::drain_monitor(std::vector<uint8_t>& out) {
+  std::lock_guard<std::mutex> lock(queue_mu_);
+  out.insert(out.end(), monitor_.begin(), monitor_.end());
+  monitor_.clear();
 }
 
 void SerialInterface::set_config(const SerialConfig& config) {
@@ -1066,9 +703,6 @@ void SerialInterface::apply_config() {
 
   const SerialConfig cfg = get_config();
 
-  // Sync I/O dispatch gate with config
-
-  serial_interface_enabled = cfg.enabled;
   {
     std::lock_guard<std::mutex> lock(mu_);
     applied_config_ = cfg;
@@ -1076,6 +710,12 @@ void SerialInterface::apply_config() {
   }
 
   if (!cfg.enabled) {
+    // Bytes queued for a card that is now unplugged would otherwise arrive
+    // the next time someone enables it.
+    {
+      std::lock_guard<std::mutex> lock(queue_mu_);
+      rx_queue_.clear();
+    }
     z80_set_bdos_serial_out_hook(nullptr);
     z80_set_bdos_serial_in_hook(nullptr);
     return;
@@ -1111,28 +751,10 @@ void SerialInterface::apply_config() {
 
   if (next) {
     // Open before publishing, so no host_tx() ever sees a half-open backend.
+    // The board's rs232 Device reaches it through the bridge: host_tx() for
+    // bytes the CPC sends, pump_rx() for bytes it receives.
     next->open();
     set_backend(next);
-
-    // Connect DART TX to backend + mirror to serial terminal
-    dart.set_rx_callback([this](uint8_t byte) {
-      host_tx(byte);
-      extern void serial_terminal_feed_byte(uint8_t byte);
-      serial_terminal_feed_byte(byte);
-    });
-
-    // Poll backend for incoming data on DART status reads
-    dart.set_rx_poll([this]() {
-      const std::shared_ptr<SerialBackend> b = backend();
-      if (b && b->has_data()) {
-        dart.enqueue_rx(b->recv());
-      }
-    });
-
-    // Set manual baud rate if configured
-    if (config_.baud_rate > 0) {
-      timer.set_manual_baud(config_.baud_rate);
-    }
 
     // The BDOS serial hooks that used to shortcut the plotter backend are
     // retired (beads-5q4v milestone C): the plotter is a bus Device on the

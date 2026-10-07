@@ -37,6 +37,9 @@ void rs232_set_plugged(const Device* dev, int on);
 /* Host-side byte feed (backend → CPC RX FIFO). Bypasses bit-serial wire
  * simulation — used by the engine=1 serial bridge for file/TCP/tty backends. */
 void rs232_host_rx(const Device* dev, uint8_t byte);
+/* Free RX FIFO slots (0–3): how many host_rx bytes fit before the next one
+ * overruns. The bridge feeds no more than this per frame. */
+int rs232_rx_room(const Device* dev);
 void rs232_set_host_tx(const Device* dev, void (*fn)(uint8_t, void*),
                        void* ctx);
 
