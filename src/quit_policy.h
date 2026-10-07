@@ -26,11 +26,11 @@ inline bool koncpc_quit_should_prompt(bool headless, bool ask_if_unsaved,
   return !headless && !dialogs_suppressed && ask_if_unsaved && drive_altered;
 }
 
-// KONCPC_NO_DIALOGS: unset, empty, or one of the usual off spellings ("0",
-// "false", "no", "off", any case) keeps dialogs; anything else suppresses.
-// Spelling `KONCPC_NO_DIALOGS=false` and getting dialogs suppressed is the
+// A boolean KONCPC_* environment switch: unset, empty, or one of the usual
+// off spellings ("0", "false", "no", "off", any case) is off; anything else is
+// on. Spelling `KONCPC_NO_DIALOGS=false` and getting dialogs suppressed is the
 // kind of surprise that only ever shows up as a modal on someone's desktop.
-inline bool koncpc_dialogs_suppressed_by_env(const char* value) {
+inline bool koncpc_env_flag_on(const char* value) {
   if (value == nullptr || value[0] == '\0') {
     return false;
   }
@@ -41,6 +41,11 @@ inline bool koncpc_dialogs_suppressed_by_env(const char* value) {
   }
   return !(lowered == "0" || lowered == "false" || lowered == "no" ||
            lowered == "off");
+}
+
+// KONCPC_NO_DIALOGS: on suppresses every native modal.
+inline bool koncpc_dialogs_suppressed_by_env(const char* value) {
+  return koncpc_env_flag_on(value);
 }
 
 // KONCPC_EXIT is both a gesture (F10, the ImGui menu, the native Quit item —

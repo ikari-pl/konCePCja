@@ -21,6 +21,11 @@ fi
 export SED=$SED
 echo "Using sed: $SED"
 
+# The GUI-mode suites (scr_style, dsk) open real windows and type into the CPC
+# with autotype. KONCPC_TEST_WINDOW keeps those windows from taking focus,
+# clicks or keystrokes, so someone using the machine can't corrupt a run.
+export KONCPC_TEST_WINDOW=1
+
 # Hard per-test cap: a hung emulator must FAIL its test, not stall the whole
 # job until the CI timeout kills it. GNU `timeout` on Linux; `gtimeout`
 # (coreutils) on macOS; unbounded only if neither exists.

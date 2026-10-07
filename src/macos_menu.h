@@ -1,4 +1,6 @@
 #pragma once
+
+struct SDL_Window;
 #ifdef __APPLE__
 void koncpc_setup_macos_menu();
 // Present the latest emulated frame from the native-menu tracking driver.
@@ -14,6 +16,8 @@ void koncpc_activate_app();
 // bar instead of [SDLContentView keyDown:].
 void koncpc_restore_keyboard_focus();
 void koncpc_order_viewports_above_main();
+// Clicks pass through this window to whatever is below it (test windows).
+void koncpc_set_window_click_through(SDL_Window* window);
 // Dock icon: set the app icon from the bundled PNG, optionally with a live CPC
 // screen inset
 void koncpc_set_dock_icon(const char* png_path);
@@ -28,6 +32,7 @@ inline void koncpc_enable_app_nap() {}
 inline void koncpc_activate_app() {}
 inline void koncpc_restore_keyboard_focus() {}
 inline void koncpc_order_viewports_above_main() {}
+inline void koncpc_set_window_click_through(SDL_Window*) {}
 inline void koncpc_set_dock_icon(const char*) {}
 inline void koncpc_update_dock_icon_preview(const void*, int, int, int, int,
                                             int, int, int) {}

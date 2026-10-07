@@ -31,6 +31,7 @@
 #include "savepng.h"
 #include "scalers/cpc_scalers.h"
 #include "shaders/blit_shaders.h"
+#include "test_window.h"
 #include "video_gpu.h"
 
 extern SDL_Window* mainSDLWindow;
@@ -624,12 +625,13 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   // CPC-blit viewport is scaled to the swapchain's pixel size in the flip
   // below; ImGui handles its own framebuffer scale. (Point-space input mapping
   // is unaffected.)
-  mainSDLWindow =
-      SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
-                       CPC_VISIBLE_SCR_HEIGHT * scale,
-                       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE |
-                           SDL_WINDOW_HIGH_PIXEL_DENSITY);
+  mainSDLWindow = SDL_CreateWindow(
+      "konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
+      CPC_VISIBLE_SCR_HEIGHT * scale,
+      (fs ? SDL_WINDOW_FULLSCREEN : 0) | koncpc_test_window_flags() |
+          SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   if (!mainSDLWindow) return nullptr;
+  koncpc_test_window_apply(mainSDLWindow);
 
   const int surface_width = CPC_RENDER_WIDTH;
   const int surface_height =
@@ -1722,8 +1724,10 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
   mainSDLWindow =
       SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
                        CPC_VISIBLE_SCR_HEIGHT * scale,
-                       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+                       (fs ? SDL_WINDOW_FULLSCREEN : 0) |
+                           koncpc_test_window_flags() | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
+  koncpc_test_window_apply(mainSDLWindow);
 
   renderer = SDL_CreateRenderer(mainSDLWindow, nullptr);
   if (!renderer) {
@@ -1873,8 +1877,10 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs) {
   mainSDLWindow =
       SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
                        CPC_VISIBLE_SCR_HEIGHT * scale,
-                       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+                       (fs ? SDL_WINDOW_FULLSCREEN : 0) |
+                           koncpc_test_window_flags() | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
+  koncpc_test_window_apply(mainSDLWindow);
 
   renderer = SDL_CreateRenderer(mainSDLWindow, nullptr);
   if (!renderer) {
@@ -2627,8 +2633,10 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   mainSDLWindow =
       SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
                        CPC_VISIBLE_SCR_HEIGHT * scale,
-                       (fs ? SDL_WINDOW_FULLSCREEN : 0) | SDL_WINDOW_RESIZABLE);
+                       (fs ? SDL_WINDOW_FULLSCREEN : 0) |
+                           koncpc_test_window_flags() | SDL_WINDOW_RESIZABLE);
   if (!mainSDLWindow) return nullptr;
+  koncpc_test_window_apply(mainSDLWindow);
 
   const int surface_width = CPC_RENDER_WIDTH;
   const int surface_height =
