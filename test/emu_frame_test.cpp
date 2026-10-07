@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -25,6 +26,7 @@
 
 extern t_CPC CPC;
 extern t_z80regs z80;
+extern dword dwFrameCountOverall;
 
 namespace {
 
@@ -248,6 +250,127 @@ TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
   subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
   EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks())
       << "an unpaced frame never sleeps";
+}
+
+// beads-b0bj: under -H the main thread runs the frames, and it never marked
+// itself busy, so a pause lease taken on another thread (IPC reset, snapshot
+// load, disk swap...) reported the machine idle at once and mutated it under
+// a running frame. With the lease held, no frame may complete.
+TEST_F(EmuFramePacingTest, HeadlessTurnHoldsOffAPauseLease) {
+  bool const was_paused = g_emu_paused.load();
+  cpc_resume();
+  std::atomic<bool> stop{false};
+  std::atomic<unsigned> turns{0};
+  std::thread runner([&] {
+    while (!stop.load()) {
+      if (emu_headless_turn())
+        turns.fetch_add(1);
+      else
+        std::this_thread::yield();
+    }
+  });
+  int overlaps = 0;
+  for (int i = 0; i < 50; ++i) {
+    // Let the runner get back into its stride before each lease.
+    unsigned const before = turns.load();
+    auto const deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (turns.load() < before + 2 &&
+           std::chrono::steady_clock::now() < deadline)
+      std::this_thread::yield();
+    CpcPauseLease lease;
+    if (!lease.idle()) {
+      ADD_FAILURE() << "lease never went idle";
+      lease.restore_run_state();
+      break;
+    }
+    dword const frames = dwFrameCountOverall;
+    // A frame here costs well under a millisecond: one in flight when the
+    // lease was granted has finished by now.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (dwFrameCountOverall != frames) ++overlaps;
+    lease.restore_run_state();
+  }
+  stop.store(true);
+  runner.join();
+  if (was_paused) cpc_pause();
+  EXPECT_EQ(0, overlaps) << "frames completed while a pause lease was held";
+}
+
+// The handshake itself, without a machine. Each test leaves the run state it
+// found.
+class EmuFrameTurnTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    was_paused_ = g_emu_paused.load();
+    cpc_resume();
+  }
+  void TearDown() override {
+    cpc_set_idle_timeout_ms(kCpcIdleTimeoutMs);
+    if (was_paused_) cpc_pause();
+  }
+  bool was_paused_ = false;
+};
+
+// A lease taken on another thread waits for the turn to end.
+TEST_F(EmuFrameTurnTest, ALeaseWaitsForTheTurnToEnd) {
+  std::atomic<bool> in_turn{false};
+  std::atomic<bool> turn_over{false};
+  std::thread runner([&] {
+    EmuFrameTurn const turn(/*idle_after=*/true);
+    ASSERT_TRUE(turn.entered());
+    in_turn.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    turn_over.store(true);
+  });
+  while (!in_turn.load()) std::this_thread::yield();
+  CpcPauseLease lease;
+  EXPECT_TRUE(lease.idle());
+  EXPECT_TRUE(turn_over.load()) << "the lease went idle inside the turn";
+  lease.restore_run_state();
+  runner.join();
+}
+
+// A turn that starts after the pause landed runs nothing and stays idle.
+TEST_F(EmuFrameTurnTest, ATurnAfterThePauseDoesNotEnter) {
+  CpcPauseLease lease;
+  ASSERT_TRUE(lease.idle());
+  {
+    EmuFrameTurn const turn(/*idle_after=*/false);
+    EXPECT_FALSE(turn.entered());
+  }
+  EXPECT_TRUE(cpc_wait_until_idle(0)) << "a refused turn must leave it idle";
+  lease.restore_run_state();
+}
+
+// The GUI's Z80 thread stays busy between frames (its video-ring publish
+// follows the frame); -H goes idle as soon as the turn ends.
+TEST_F(EmuFrameTurnTest, OnlyTheHeadlessTurnGoesIdleWhenItEnds) {
+  {
+    EmuFrameTurn const turn(/*idle_after=*/false);
+  }
+  EXPECT_FALSE(cpc_wait_until_idle(1));
+  {
+    EmuFrameTurn const turn(/*idle_after=*/true);
+  }
+  EXPECT_TRUE(cpc_wait_until_idle(1));
+}
+
+// A lease the frame runner takes on itself (an autotype ~KONCPC_RESET~ handled
+// in the frame epilogue) must not wait for its own frame. It used to time out
+// after kCpcIdleTimeoutMs and skip the reset on the GUI's Z80 thread.
+TEST_F(EmuFrameTurnTest, ALeaseTheRunnerTakesOnItselfDoesNotWait) {
+  cpc_set_idle_timeout_ms(2000);
+  EmuFrameTurn const turn(/*idle_after=*/true);
+  ASSERT_TRUE(turn.entered());
+  auto const t0 = std::chrono::steady_clock::now();
+  CpcPauseLease lease;
+  auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
+  EXPECT_TRUE(lease.idle());
+  EXPECT_LT(ms, 1000) << "the runner waited on its own frame";
+  lease.restore_run_state();
 }
 
 TEST(FrameskipDecision, SkipsOnlyALateCompletedPacedFrameUpToTheCap) {

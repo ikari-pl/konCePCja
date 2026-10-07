@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -275,10 +276,17 @@ std::thread g_z80_thread;
 // Protects the imgui_state stats fields written by the Z80 thread and read by
 // the render thread (frame_time_avg_us, z80_time_avg_us, audio_*, etc.).
 std::mutex g_imgui_stats_mutex;
-// True when the Z80 thread is NOT inside z80_execute() (i.e. safe to touch Z80
-// state from another thread).  Starts true because the thread hasn't spawned
-// yet.
+// True when no thread is running a frame (i.e. safe to touch Z80 state from
+// another thread). Starts true because no frame has run yet. The frame runner
+// -- the GUI's Z80 thread, or the main thread under -H -- clears it for each
+// frame through EmuFrameTurn (emu_frame.h: the handshake with the pausers).
 std::atomic<bool> g_z80_idle{true};
+namespace {
+// True on the frame runner for the length of its turn (EmuFrameTurn). A pause
+// lease the runner takes on itself -- an autotype ~KONCPC_RESET~ handled in the
+// frame epilogue -- must not wait for its own frame to end.
+thread_local bool t_frame_turn = false;
+}  // namespace
 // Frame handoff: Z80 signals after asic_draw_sprites(); render signals after
 // Phase A.
 FrameSignal g_frame_signal;
@@ -1758,13 +1766,15 @@ unsigned g_pause_lease_count = 0;
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 bool cpc_wait_until_idle(int timeout_ms) {
   if (timeout_ms < 0) timeout_ms = cpc_idle_timeout_ms();
-  // Spin until the Z80 thread has exited z80_execute() and entered its sleep
-  // loop. g_z80_idle is set true by z80_thread_main before sleeping, false
-  // before entering z80_execute().  In headless mode the Z80 runs on the
-  // calling thread, so g_z80_idle stays true and we return immediately.
+  // The frame runner asking: it cannot race its own frame, and whatever asks
+  // runs after the machine frame returned (the epilogue). Waiting would only
+  // time out (beads-b0bj; it stalled 5 s and skipped the reset in the GUI).
+  if (t_frame_turn) return true;
+  // Spin until the frame runner is between frames or parked by the pause.
+  // seq_cst pairs with EmuFrameTurn (emu_frame.h).
   auto const deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-  while (!g_z80_idle.load(std::memory_order_acquire)) {
+  while (!g_z80_idle.load(std::memory_order_seq_cst)) {
     if (std::chrono::steady_clock::now() > deadline) return false;
     std::this_thread::sleep_for(std::chrono::microseconds(100));
   }
@@ -1775,7 +1785,8 @@ namespace {
 void cpc_pause_locked() {
   audio_pause();
   CPC.paused = true;
-  g_emu_paused.store(true, std::memory_order_release);
+  // seq_cst: the pauser's half of the EmuFrameTurn handshake.
+  g_emu_paused.store(true, std::memory_order_seq_cst);
 }
 }  // namespace
 
@@ -4085,6 +4096,45 @@ EmuFrameResult emu_run_frame() {
   return EmuFrameResult::kFrameComplete;
 }
 
+EmuFrameTurn::EmuFrameTurn(bool idle_after) : idle_after_(idle_after) {
+  // seq_cst on both sides of the handshake: see emu_frame.h.
+  g_z80_idle.store(false, std::memory_order_seq_cst);
+  if (g_emu_paused.load(std::memory_order_seq_cst)) {
+    g_z80_idle.store(true, std::memory_order_release);
+    return;
+  }
+  entered_ = true;
+  t_frame_turn = true;
+}
+
+EmuFrameTurn::~EmuFrameTurn() {
+  if (!entered_) return;
+  t_frame_turn = false;
+  if (idle_after_) g_z80_idle.store(true, std::memory_order_release);
+}
+
+std::optional<EmuFrameResult> emu_headless_turn() {
+  EmuFrameTurn const turn(/*idle_after=*/true);
+  if (!turn.entered()) return std::nullopt;
+  EmuFrameResult const result = emu_run_frame();
+  if (result == EmuFrameResult::kFrameComplete) {
+#ifdef __APPLE__
+    // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
+    // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT * scale
+    if (back_surface && (dwFrameCountOverall % 50) == 0) {
+      koncpc_update_dock_icon_preview(back_surface->pixels, back_surface->w,
+                                      back_surface->h, back_surface->pitch, 0,
+                                      0, back_surface->w, back_surface->h);
+    }
+#endif
+    if (g_take_screenshot) {
+      dumpScreen();
+      g_take_screenshot = false;
+    }
+  }
+  return result;
+}
+
 // Z80 emulation thread — runs emu_run_frame() and hands each finished frame
 // to the render thread. Used only in non-headless (GUI) mode; headless calls
 // emu_run_frame() from the main loop.
@@ -4104,8 +4154,8 @@ void z80_thread_main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    // About to run a frame — mark non-idle.
-    g_z80_idle.store(false, std::memory_order_release);
+    EmuFrameTurn const turn(/*idle_after=*/false);
+    if (!turn.entered()) continue;  // a pause landed; idle again
 
     EmuFrameResult const result = emu_run_frame();
 
@@ -5281,24 +5331,9 @@ int koncpc_main(int argc, char** argv) {
       // mode. It runs while paused too, or an HTTP resume would never land.
       if (g_m4_http.is_running()) g_m4_http.drain_pending();
       ipc_drain_input();
-      if (CPC.paused) {
+      if (!emu_headless_turn()) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(POLL_INTERVAL_MS));
-      } else if (emu_run_frame() == EmuFrameResult::kFrameComplete) {
-#ifdef __APPLE__
-        // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
-        // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT *
-        // scale
-        if (back_surface && (dwFrameCountOverall % 50) == 0) {
-          koncpc_update_dock_icon_preview(
-              back_surface->pixels, back_surface->w, back_surface->h,
-              back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
-        }
-#endif
-        if (g_take_screenshot) {
-          dumpScreen();
-          g_take_screenshot = false;
-        }
       }
     }
 
