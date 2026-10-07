@@ -16,6 +16,7 @@
 #include <thread>
 #include <vector>
 
+#include "autotype.h"
 #include "keyboard_manager.h"
 #include "koncepcja.h"
 #include "subcycle/machine.h"
@@ -81,6 +82,10 @@ class EmuFrameTest : public testing::Test {
     CPC.model = 2;  // chROMFile[2] == "cpc6128.rom"
     CPC.ram_size = 128;
     CPC.limit_speed = 0;
+    // A queue another (shuffled) test left behind would type through
+    // CPC.InputMapper, which the test binary never builds, and would force
+    // real-time pacing on.
+    g_autotype_queue.clear();
     ASSERT_TRUE(subcycle_bridge_start());
     started_ = true;
     ASSERT_NE(nullptr, subcycle_bridge_machine());
@@ -90,6 +95,7 @@ class EmuFrameTest : public testing::Test {
 
   void TearDown() override {
     if (started_) subcycle_bridge_stop();
+    g_autotype_queue.clear();
     for (auto& row : keyboard_matrix) row.store(0xFF);
     CPC.rom_path = saved_rom_path_;
     CPC.model = saved_model_;
