@@ -993,6 +993,69 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
 
 }  // namespace
 
+// Chip-state views: CRTC / Gate Array / PSG windows, the topbar mode readout
+// and the IPC context line (rom:LO,...) read these legacy structs; publish the
+// Devices' pin-level truth. debug_sync runs it once per frame, and every path
+// that moves the machine while it is paused (a step, a snapshot load) must run
+// it too, or those views keep describing the state before the move
+// (beads-szc0: after stepping the firmware's ROM-switching OUT, rom:LO still
+// showed the pre-pause latch while the CPU view had the RAM paged in).
+void subcycle_bridge_sync_chip_views() {
+  if (!g_bridge.active) return;
+  Bridge& b = g_bridge;
+  CrtcRegs cr{};
+  crtc_peek(b.machine.crtc(), &cr);
+  std::memcpy(CRTC.registers, cr.reg, sizeof(cr.reg));
+  CRTC.reg_select = cr.reg_select;
+  CRTC.crtc_type = cr.type;
+  // The deep 6845 counters the IPC chip-state query prints (Wave-1 peek
+  // cutover): every one is real chip state, straight off the Device.
+  CRTC.char_count = cr.hcc;
+  CRTC.line_count = cr.vcc;
+  CRTC.raster_count = cr.ra;
+  CRTC.hsw_count = cr.hsw;
+  CRTC.vsw_count = cr.vsw;
+  CRTC.addr = cr.ma;
+  CRTC.reg5 = cr.vta;
+  CRTC.sl_count = static_cast<unsigned char>(cr.scanline);
+  // Plus PRI scanline (asic_debug reads CRTC.interrupt_sl; 0 = PRI off,
+  // matching the legacy semantics and the classic machines).
+  {
+    AsicRegs ar{};
+    asic_peek(b.machine.asic(), &ar);
+    CRTC.interrupt_sl = ar.pri_line;
+  }
+  // Drive mechanics for the status surfaces (drive LED / IPC drive query):
+  // the physical head position per unit and the motor latch, off the FDC.
+  {
+    FdcRegs fr{};
+    fdc_peek(b.machine.fdc(), &fr);
+    driveA.current_track = fr.track[0];
+    driveB.current_track = fr.track[1];
+    FDC.motor = fr.motor;
+  }
+  GateArrayRegs ga{};
+  ga_peek(b.machine.gate_array(), &ga);
+  GateArray.pen = ga.pen;
+  std::memcpy(GateArray.ink_values, ga.ink, sizeof(ga.ink));
+  GateArray.scr_mode = ga.mode;
+  GateArray.requested_scr_mode = ga.req_mode;
+  GateArray.ROM_config = ga.rom_config;
+  GateArray.RAM_config = ga.ram_config;
+  GateArray.sl_count = ga.sl_count;
+  GateArray.hs_count = ga.hs_count;
+  GateArray.RAM_bank = ga.ram_config & 7;  // the banking field of &7Fxx fn 3
+  {
+    MemRegs mr{};
+    mem_peek(b.machine.mem(), &mr);
+    GateArray.upper_ROM = mr.rom_select;  // the &DFxx upper-ROM latch
+  }
+  PsgRegs ps{};
+  psg_peek(b.machine.psg(), &ps);
+  std::memcpy(PSG.RegisterAY.Index, ps.reg, sizeof(ps.reg));
+  PSG.reg_select = ps.sel;
+}
+
 int subcycle_bridge_debug_sync() {
   Bridge& b = g_bridge;
   // Media truth for the UI (fdc-device.md §10): the legacy save-on-eject and
@@ -1096,59 +1159,10 @@ int subcycle_bridge_debug_sync() {
     }
   }
 
-  // Chip-state views: CRTC / Gate Array / PSG windows (and the topbar mode
-  // readout) read these legacy structs; publish the Devices' pin-level truth.
-  CrtcRegs cr{};
-  crtc_peek(b.machine.crtc(), &cr);
-  std::memcpy(CRTC.registers, cr.reg, sizeof(cr.reg));
-  CRTC.reg_select = cr.reg_select;
-  CRTC.crtc_type = cr.type;
-  // The deep 6845 counters the IPC chip-state query prints (Wave-1 peek
-  // cutover): every one is real chip state, straight off the Device.
-  CRTC.char_count = cr.hcc;
-  CRTC.line_count = cr.vcc;
-  CRTC.raster_count = cr.ra;
-  CRTC.hsw_count = cr.hsw;
-  CRTC.vsw_count = cr.vsw;
-  CRTC.addr = cr.ma;
-  CRTC.reg5 = cr.vta;
-  CRTC.sl_count = static_cast<unsigned char>(cr.scanline);
-  // Plus PRI scanline (asic_debug reads CRTC.interrupt_sl; 0 = PRI off,
-  // matching the legacy semantics and the classic machines).
-  {
-    AsicRegs ar{};
-    asic_peek(b.machine.asic(), &ar);
-    CRTC.interrupt_sl = ar.pri_line;
-  }
-  // Drive mechanics for the status surfaces (drive LED / IPC drive query):
-  // the physical head position per unit and the motor latch, off the FDC.
-  {
-    FdcRegs fr{};
-    fdc_peek(b.machine.fdc(), &fr);
-    driveA.current_track = fr.track[0];
-    driveB.current_track = fr.track[1];
-    FDC.motor = fr.motor;
-  }
-  GateArrayRegs ga{};
-  ga_peek(b.machine.gate_array(), &ga);
-  GateArray.pen = ga.pen;
-  std::memcpy(GateArray.ink_values, ga.ink, sizeof(ga.ink));
-  GateArray.scr_mode = ga.mode;
-  GateArray.requested_scr_mode = ga.req_mode;
-  GateArray.ROM_config = ga.rom_config;
-  GateArray.RAM_config = ga.ram_config;
-  GateArray.sl_count = ga.sl_count;
-  GateArray.hs_count = ga.hs_count;
-  GateArray.RAM_bank = ga.ram_config & 7;  // the banking field of &7Fxx fn 3
-  {
-    MemRegs mr{};
-    mem_peek(b.machine.mem(), &mr);
-    GateArray.upper_ROM = mr.rom_select;  // the &DFxx upper-ROM latch
-  }
+  subcycle_bridge_sync_chip_views();
+
   PsgRegs ps{};
   psg_peek(b.machine.psg(), &ps);
-  std::memcpy(PSG.RegisterAY.Index, ps.reg, sizeof(ps.reg));
-  PSG.reg_select = ps.sel;
 
   // Feed the DevTools PSG oscilloscope. g_psg_scope had NO writer at all --
   // the legacy core used to fill it, engine=1 never did, so the Audio State

@@ -167,6 +167,7 @@ void z80_step_instruction() {
   if (subcycle::Machine* m = subcycle_bridge_machine()) {
     m->step_instruction();  // probe-blind: never re-trips the halt
     subcycle_bridge_sync_regs_view();
+    subcycle_bridge_sync_chip_views();  // rom:LO etc. follow the step's OUTs
   }
 }
 

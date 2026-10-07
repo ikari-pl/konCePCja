@@ -206,6 +206,11 @@ void subcycle_bridge_refresh_asic_view();
 /* Machine registers -> the legacy view struct only (used after stepping). */
 void subcycle_bridge_sync_regs_view();
 
+/* Chip state (CRTC, Gate Array incl. the ROM enables, PSG registers, FDC head
+ * and motor) -> the legacy view structs. Runs every frame inside debug_sync;
+ * call it after anything that moves a paused machine (step, snapshot load). */
+void subcycle_bridge_sync_chip_views();
+
 /* The legacy struct -> machine (after IPC/DevTools write a register). Writes
  * only the fields that differ from what the view was last given, and never
  * drops or replays part of the instruction in flight: the edit waits for it to
