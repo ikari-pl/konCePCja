@@ -298,6 +298,9 @@ class EmulatorRunner:
         # "unsaved changes" dialog would then block the run (and land on the
         # maintainer's desktop). The emulator honours this in every mode.
         env['KONCPC_NO_DIALOGS'] = '1'
+        # Windows that never take focus, clicks or host keystrokes: whoever
+        # uses the desktop during a run can't type into the CPC.
+        env['KONCPC_TEST_WINDOW'] = '1'
         if headless:
             env['SDL_VIDEODRIVER'] = 'dummy'
             env['SDL_AUDIODRIVER'] = 'dummy'

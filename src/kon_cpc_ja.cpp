@@ -119,6 +119,7 @@ KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
 #include "tape_line_in.h"
+#include "test_window.h"
 
 inline constexpr int MAX_NB_JOYSTICKS = 2;
 inline constexpr int POLL_INTERVAL_MS = 1;
@@ -4349,6 +4350,7 @@ int koncpc_main(int argc, char** argv) {
   g_headless = args.headless;
   g_no_dialogs =
       koncpc_dialogs_suppressed_by_env(std::getenv("KONCPC_NO_DIALOGS"));
+  koncpc_test_window_init_from_env();  // before SDL_Init: sets a hint
   g_debug = args.debug;
   g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
@@ -4695,6 +4697,9 @@ int koncpc_main(int argc, char** argv) {
                     keyboard_matrix, false, false);
     }
     while (!g_headless && SDL_PollEvent(&event)) {
+      // A test window (KONCPC_TEST_WINDOW) ignores whoever sits at the host:
+      // their keys and clicks must never reach the CPC mid-test.
+      if (koncpc_test_window_drops_event(event.type)) continue;
       // Handle main window close before ImGui consumes the event
       if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
         SDL_WindowID const main_id =
