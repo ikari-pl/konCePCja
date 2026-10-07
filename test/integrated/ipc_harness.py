@@ -277,8 +277,8 @@ class EmulatorRunner:
         initializing (InputMapper and emulator_init() run after g_ipc->start()),
         so commands sent immediately land in a not-ready window: 'input state'
         returns 503, key/joy injection can touch a null InputMapper, and
-        'pause' hangs. ('wait vbl' is no use here — the server implements it as
-        a fixed 20ms-per-count sleep, not a real blank wait.) A non-zero Z80 PC
+        'pause' hangs. ('wait vbl' is no use here — it counts frames the core
+        runs, so before the core is up it can only time out.) A non-zero Z80 PC
         proves the main loop is running, which only happens after
         emulator_init() completes — i.e. InputMapper and devices are ready too.
         """
@@ -710,6 +710,125 @@ def test_engine1_bp_clear_resume():
         return True
 
 
+def _firmware_time(ipc) -> Optional[int]:
+    """The firmware TIME counter at &B8B4 (4 bytes, LE, 300 ticks/s).
+
+    The frame flyback interrupt advances it 6 ticks per 50Hz frame, so a
+    difference divided by 6 is the number of frames the machine ran.
+    """
+    ok, resp = ipc.read_mem(0xB8B4, 4)
+    if not ok:
+        return None
+    digits = ''.join(resp.replace('OK', '').split())[:8]
+    try:
+        return int.from_bytes(bytes.fromhex(digits), 'little')
+    except ValueError:
+        return None
+
+
+def test_wait_vbl_counts_real_frames():
+    """`wait vbl N` must run N frames of emulation, not N x 20ms of wall time.
+
+    It used to resume, sleep 20ms per blank and pause, so the frame count was
+    whatever the host managed in that time: 143-182 frames for `wait vbl 50`
+    unloaded, 260-275 with the E-cores saturated (beads-71pg). It now rides
+    the frame-step counter `step frame` uses, so it ends paused exactly N
+    frames on. Measured with the firmware TIME counter in the threaded GUI
+    loop (dummy video) AND the -H headless loop, which count frames in
+    different places. From a paused machine the count is exact; from a
+    running one the frame in flight is the first of the N blanks.
+    """
+    print("Running wait vbl frame-count test...")
+    for mode_args, mode in (((), 'gui'), (('--headless',), 'headless')):
+        with EmulatorRunner() as emu:
+            if not emu.start(*mode_args):
+                print(f"FAIL [{mode}]: Could not start emulator")
+                return False
+            ipc = emu.ipc
+            ipc.timeout = 20.0
+            # Past the boot: the firmware sets TIME up during initialisation.
+            ok, resp = ipc.send_command('step frame 100')
+            if not ok:
+                print(f"FAIL [{mode}]: step frame 100: {resp}")
+                return False
+            for n in (1, 7, 50):
+                for start_state in ('paused', 'running'):
+                    if start_state == 'running':
+                        ipc.run()
+                        time.sleep(0.05)
+                    else:
+                        ipc.pause()
+                    t0 = _firmware_time(ipc)
+                    ok, resp = ipc.send_command(f'wait vbl {n} 15000')
+                    t1 = _firmware_time(ipc)
+                    if not ok:
+                        print(f"FAIL [{mode}]: wait vbl {n} ({start_state}): "
+                              f"{resp}")
+                        return False
+                    if t0 is None or t1 is None:
+                        print(f"FAIL [{mode}]: could not read TIME")
+                        return False
+                    # Exact from a paused start. From a running one t0 is
+                    # read before the wait arms, and an unpaced headless loop
+                    # (~1800 fps) runs a dozen frames in that round trip, so
+                    # there only the outcome is checked: OK, then paused.
+                    frames = (t1 - t0) / 6
+                    if start_state == 'paused' and frames != n:
+                        print(f"FAIL [{mode}]: wait vbl {n} (paused) ran "
+                              f"{frames:g} frames, want {n}")
+                        return False
+                    # It ends paused, like every other wait.
+                    t2 = _firmware_time(ipc)
+                    time.sleep(0.1)
+                    if _firmware_time(ipc) != t2:
+                        print(f"FAIL [{mode}]: machine still running after "
+                              f"wait vbl {n}")
+                        return False
+            # The reference: `step frame 50` runs exactly the same 50.
+            t0 = _firmware_time(ipc)
+            ipc.send_command('step frame 50')
+            step_frames = (_firmware_time(ipc) - t0) / 6
+            t0 = _firmware_time(ipc)
+            ipc.send_command('wait vbl 50')
+            vbl_frames = (_firmware_time(ipc) - t0) / 6
+            if step_frames != vbl_frames:
+                print(f"FAIL [{mode}]: step frame 50 ran {step_frames:g}, "
+                      f"wait vbl 50 ran {vbl_frames:g}")
+                return False
+            # A breakpoint stopping the machine first ends the wait with
+            # ERR 409 and leaves the hit for `wait bp`. RST &38 runs on every
+            # interrupt, so it fires inside the first frame.
+            ipc.send_command('bp add 0x0038')
+            ok, resp = ipc.send_command('wait vbl 50 5000')
+            if ok or 'stopped-elsewhere' not in resp:
+                print(f"FAIL [{mode}]: wait vbl through a breakpoint: {resp!r}")
+                return False
+            ok, resp = ipc.send_command('wait bp 1000')
+            if not ok or 'PC=0038' not in resp:
+                print(f"FAIL [{mode}]: wait bp after the stop: {resp!r}")
+                return False
+            ipc.send_command('bp clear')
+            # A wait that cannot finish times out and still ends paused.
+            ok, resp = ipc.send_command('wait vbl 100000 200')
+            if ok or not resp.startswith('ERR 408'):
+                print(f"FAIL [{mode}]: expected ERR 408, got {resp!r}")
+                return False
+            t2 = _firmware_time(ipc)
+            time.sleep(0.1)
+            if _firmware_time(ipc) != t2:
+                print(f"FAIL [{mode}]: machine left running after ERR 408")
+                return False
+            # ...and leaves no frame step armed: a later run is not cut short.
+            ipc.run()
+            moved, pc1, pc2 = pc_is_moving(ipc)
+            if not moved:
+                print(f"FAIL [{mode}]: machine stopped after run ({pc1}/{pc2})")
+                return False
+        print(f"  {mode}: wait vbl N ran N frames")
+    print("PASS: wait vbl counts real frames")
+    return True
+
+
 def test_wait_pc_is_exact():
     """`wait pc` must stop on an address the CPU only passes through.
 
@@ -962,9 +1081,9 @@ def test_inject_launches_like_run():
             # 2/2, 10 lands 2/2). That window is the program's start-up, not
             # the tap, so settle well clear of it.
             #
-            # `step frame`, not `wait vbl`: wait vbl is a wall-clock sleep
-            # (beads-71pg) that runs ~150 frames for 50; step frame runs
-            # exactly 50. This test used to lose its key ~2% of the time
+            # Exactly 50 frames (`wait vbl 50` now runs the same 50; it used
+            # to be a wall-clock sleep that ran ~150, beads-71pg). This test
+            # used to lose its key ~2% of the time
             # (beads-27a7): the breakpoint stop above opens the DevTools
             # Registers window, which pushed the registers into the machine
             # on every paused frame and cut the instruction in flight in half
@@ -2798,9 +2917,10 @@ def test_profile_load_missing_keeps_running():
 
     CpcPauseLease destructor only drops the lease count; 13db3b7c added
     restore_run_state on load failure. A missing profile must return ERR and
-    leave the Z80 advancing — wait vbl is a fixed sleep and would pass even
-    if paused, so this asserts PC motion via pc_is_moving(), which polls
-    rather than comparing one before/after pair (see that helper for why).
+    leave the Z80 advancing — wait vbl resumes the machine itself and would
+    pass even if left paused, so this asserts PC motion via pc_is_moving(),
+    which polls rather than comparing one before/after pair (see that helper
+    for why).
     """
     print("Running profile-load missing-name resume test...")
 
@@ -3431,6 +3551,7 @@ def main():
     print("=" * 50)
 
     tests = [
+        test_wait_vbl_counts_real_frames,
         test_wait_pc_is_exact,
         test_wait_pc_aborts_on_shutdown,
         test_run_to_address_breakpoint_polarity,

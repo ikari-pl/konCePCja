@@ -74,7 +74,9 @@ def run_scenario(
         while next_cp < len(checkpoints):
             target = checkpoints[next_cp]
             while frame < target:
-                ok, _ = ipc.send_command(f"wait vbl 1 10000")
+                # Exactly one emulated frame, then paused (beads-71pg; it was
+                # a 20ms wall-clock sleep that ran a host-dependent number).
+                ok, _ = ipc.send_command("wait vbl 1 10000")
                 if not ok:
                     raise RuntimeError(
                         f"engine={engine}: wait vbl failed at frame {frame}"

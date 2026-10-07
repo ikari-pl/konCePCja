@@ -175,7 +175,7 @@ OK available commands (usage: help <command>):
 | `wait pc <addr> [timeout]` | Run until PC reaches addr exactly (one-shot breakpoint), then pause. A breakpoint of your own AT addr counts as arriving (`OK`); one that fires earlier is `ERR 409 stopped-elsewhere`, and a shutdown mid-wait is `ERR 503 shutting-down` | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
 | `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
-| `wait vbl <n> [timeout]` | Wait N vertical blanks | `wait vbl 50` |
+| `wait vbl <n> [timeout]` | Run N frames of emulation (vertical blanks, not wall time), then pause; same count as `step frame N` from a paused machine. A breakpoint that fires first is `ERR 409 stopped-elsewhere` | `wait vbl 50` |
 | `disasm <addr> <count>` | Disassemble | `disasm 0x4000 10` |
 | `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
 | `snapshot save <path>` | Save state | `snapshot save game.sna` |

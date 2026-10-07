@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -72,6 +73,21 @@ class KoncepcjaIpcServer {
   void notify_frame_step_done();
   // Block until frame_step_active becomes false
   void wait_frame_step_done();
+
+  // How wait_frame_step_until() ended.
+  enum class FrameStepWait {
+    Done,        // the counted frames ran; the main loop paused the machine
+    Breakpoint,  // a breakpoint/watchpoint stopped the machine first
+    Timeout,     // the deadline passed first
+    Aborted,     // should_abort() said to give up (server shutting down)
+  };
+  // Like wait_frame_step_done(), but bounded by `deadline` and outliving a
+  // plain pause: frames only count while the machine runs, so a pause someone
+  // else lifts again (the -i injection's) just delays the count. Anything but
+  // Done disarms the step, so a late tick cannot pause a later run.
+  FrameStepWait wait_frame_step_until(
+      std::chrono::steady_clock::time_point deadline,
+      const std::function<bool()>& should_abort);
 
   // Event system — called from hot paths, must be fast
   void check_pc_events(uint16_t pc);

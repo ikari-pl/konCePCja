@@ -559,9 +559,70 @@ TEST_F(IpcServerTest, WaitMemHonorsMask) {
   EXPECT_OK(resp);
 }
 
-TEST_F(IpcServerTest, WaitVblCompletes) {
-  auto resp = send_command("wait vbl 1 100");
+// Stands in for the emulation loop the unit binary does not have: while the
+// machine runs it finishes a frame every millisecond, ticking the frame step
+// exactly as kon_cpc_ja.cpp does (pause, then notify).
+class FakeFrameLoop {
+ public:
+  explicit FakeFrameLoop(KoncepcjaIpcServer& s)
+      : thread_([this, &s] {
+          uint64_t serial = 0;
+          while (!quit_.load()) {
+            if (!CPC.paused) {
+              frames_.fetch_add(1);
+              if (s.frame_step_tick(++serial)) {
+                cpc_pause();
+                s.notify_frame_step_done();
+              }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+        }) {}
+  ~FakeFrameLoop() {
+    quit_.store(true);
+    thread_.join();
+  }
+  FakeFrameLoop(const FakeFrameLoop&) = delete;
+  FakeFrameLoop& operator=(const FakeFrameLoop&) = delete;
+  int frames() const { return frames_.load(); }
+
+ private:
+  std::atomic<bool> quit_{false};
+  std::atomic<int> frames_{0};
+  std::thread thread_;
+};
+
+// `wait vbl N` waits for N frames of emulation, then pauses. It used to sleep
+// N x 20ms of wall time instead, running however many frames the host fit in
+// (3-5x the count on an unpaced machine) (beads-71pg).
+TEST_F(IpcServerTest, WaitVblRunsExactlyNFrames) {
+  cpc_pause();
+  FakeFrameLoop loop(server);
+  auto resp = send_command("wait vbl 25 5000");
   EXPECT_OK(resp);
+  EXPECT_TRUE(CPC.paused) << "wait vbl ends paused";
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_EQ(25, loop.frames()) << "wait vbl 25 must run 25 frames";
+  EXPECT_FALSE(server.frame_step_active.load());
+}
+
+// No frames, no blanks: the deadline still answers ERR 408, the machine ends
+// paused, and the abandoned count cannot pause a later run.
+TEST_F(IpcServerTest, WaitVblWithoutFramesTimesOutPaused) {
+  cpc_pause();
+  auto const t0 = std::chrono::steady_clock::now();
+  // Ample wall time for two blanks (the old sleep answered OK after 40ms);
+  // none of it is emulated, so none of it counts.
+  auto resp = send_command("wait vbl 2 400");
+  EXPECT_EQ(0u, resp.rfind("ERR 408 timeout", 0)) << resp;
+  EXPECT_LT(std::chrono::steady_clock::now() - t0, std::chrono::seconds(3));
+  EXPECT_TRUE(CPC.paused);
+  EXPECT_FALSE(server.frame_step_active.load());
+}
+
+TEST_F(IpcServerTest, WaitVblRejectsANonPositiveCount) {
+  EXPECT_EQ(0u, send_command("wait vbl 0").rfind("ERR 400", 0));
+  EXPECT_EQ(0u, send_command("wait vbl -2 100").rfind("ERR 400", 0));
 }
 
 TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
