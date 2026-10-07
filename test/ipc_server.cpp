@@ -28,6 +28,7 @@
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
+#include "serial_interface.h"
 #include "stuck_z80_thread.h"
 #include "symfile.h"
 #include "video_host.h"
@@ -1459,6 +1460,50 @@ TEST_F(IpcServerTest, StepOutWithoutMachineReportsNoProgressPromptly) {
   EXPECT_LT(
       std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count(),
       1000);
+}
+
+// beads-2myi: `serial send` feeds the card the board clocks, through the
+// host-side queue the bridge pumps into its RX FIFO -- not a DART model the
+// CPU never addresses. With no card on the host wire there is nowhere for
+// the bytes to go, and the command says so instead of claiming it sent them.
+TEST_F(IpcServerTest, SerialSendQueuesForTheCardOnlyWhenItIsOnTheHostWire) {
+  SerialConfig const saved = g_serial_interface.get_config();
+  SerialConfig off = saved;
+  off.enabled = false;
+  g_serial_interface.set_config(off);
+  g_serial_interface.apply_config();
+
+  auto resp = send_command("serial send 0x41");
+  EXPECT_NE(resp.find("ERR 409"), std::string::npos) << resp;
+  EXPECT_EQ(0u, g_serial_interface.rx_pending());
+
+  SerialConfig on = off;
+  on.enabled = true;
+  on.backend_type = SerialBackendType::Null;
+  g_serial_interface.set_config(on);
+  g_serial_interface.apply_config();
+
+  EXPECT_EQ(send_command("serial send 0x41"), "OK sent byte 0x41\n");
+  EXPECT_EQ(send_command("serial send_string BCD"), "OK sent 3 bytes\n");
+  EXPECT_EQ(4u, g_serial_interface.rx_pending());
+  resp = send_command("serial status");
+  EXPECT_NE(resp.find(" rx_pending=4 "), std::string::npos) << resp;
+  EXPECT_NE(resp.find(" rx_fifo=0 "), std::string::npos)
+      << "no board built: nothing has reached a FIFO\n"
+      << resp;
+  EXPECT_NE(send_command("serial send 256").find("ERR 400"), std::string::npos);
+  EXPECT_NE(send_command("serial send zz").find("ERR 400"), std::string::npos);
+
+  on.backend_type = SerialBackendType::Plotter;  // the plotter owns the wire
+  g_serial_interface.set_config(on);
+  resp = send_command("serial send 0x41");
+  EXPECT_NE(resp.find("ERR 409"), std::string::npos) << resp;
+
+  g_serial_interface.set_config(off);
+  g_serial_interface.apply_config();  // also drops the queued bytes
+  EXPECT_EQ(0u, g_serial_interface.rx_pending());
+  g_serial_interface.set_config(saved);
+  g_serial_interface.apply_config();
 }
 
 TEST_F(IpcServerTest, SymbolLoad) {

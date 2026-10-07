@@ -1,257 +1,27 @@
-/* Tests for Serial Interface (Z80 DART + Intel 8253 + Backends)
+/* Tests for the Serial Interface host side (the card itself is the rs232
+ * Device: test/hw/rs232_test.cpp)
  *
- * Comprehensive test coverage for:
- * - Z80Dart: register read/write, reset, interrupts, channel selection
- * - Intel8253: counter read/write, mode register, latch, manual baud
  * - NullBackend: basic operations
  * - FileBackend: file I/O operations
+ * - SerialInterface: config staging, the host<->card queues
  */
 
 #include "serial_interface.h"
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
+#include <iterator>
+#include <memory>
+#include <thread>
+#include <vector>
 
 #include "file_size_limit.h"
 #include "types.h"
-
-// ─────────────────────────────────────────────────
-// Z80Dart Tests
-// ─────────────────────────────────────────────────
-
-class Z80DartTest : public testing::Test {
- protected:
-  // Logical register offsets (simplified DART model, see serial_interface.cpp).
-  static constexpr uint8_t DATA = 0;  // RX/TX data
-  static constexpr uint8_t WR0 = 1;   // Command / RR0 status
-  static constexpr uint8_t WR1 = 2;   // Interrupt enable / RR1
-  static constexpr uint8_t WR2 = 3;   // Interrupt vector / RR2
-
-  void SetUp() override { dart = Z80Dart(); }
-
-  Z80Dart dart;
-};
-
-TEST_F(Z80DartTest, Reset_InitialState) {
-  dart.reset();
-
-  // TX should be empty and ready
-  EXPECT_TRUE(dart.tx_empty());
-
-  // RX FIFO should be empty
-  EXPECT_FALSE(dart.rx_available());
-
-  // CTS should be asserted (loopback)
-  EXPECT_TRUE(dart.cts());
-}
-
-TEST_F(Z80DartTest, Read_RR0_InitialStatus) {
-  uint8_t status = dart.read(WR0);
-
-  // Should have TX empty and CTS bits set
-  EXPECT_TRUE(status & 0x04);  // TX Empty
-  EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
-  EXPECT_TRUE(status & 0x20);  // CTS
-}
-
-TEST_F(Z80DartTest, Write_Data_TriggersCallback) {
-  bool callback_called = false;
-  uint8_t received_byte = 0;
-
-  dart.set_rx_callback([&](uint8_t byte) {
-    callback_called = true;
-    received_byte = byte;
-  });
-
-  dart.write(DATA, 0x42);  // 'B'
-
-  EXPECT_TRUE(callback_called);
-  EXPECT_EQ(received_byte, 0x42);
-}
-
-TEST_F(Z80DartTest, Write_Data_SetsTxBufferFull) {
-  uint8_t status = dart.read(WR0);
-  EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
-
-  dart.write(DATA, 0x55);
-
-  // After write, TX buffer should still be empty (TX complete is fast)
-  // In real hardware this would be baud-rate dependent
-}
-
-TEST_F(Z80DartTest, ChannelSelect_A) {
-  dart.write(WR0, 0x00);  // Channel A select (bits 2-3 = 00)
-  dart.write(DATA, 0xAA);
-
-  uint8_t status = dart.read(WR0);
-  EXPECT_TRUE(status & 0x04);  // TX Empty (transmit complete)
-}
-
-TEST_F(Z80DartTest, ResetReceiver_ClearsFIFO) {
-  dart.write(WR0, 0x40);  // Reset receiver (bits 6-7 = 01)
-  EXPECT_FALSE(dart.rx_available());
-}
-
-TEST_F(Z80DartTest, ResetTransmitter_ClearsTxBuffer) {
-  dart.write(DATA, 0x12);
-  dart.write(WR0, 0x80);  // Reset transmitter (bits 6-7 = 10)
-
-  uint8_t status = dart.read(WR0);
-  EXPECT_TRUE(status & 0x04);  // TX Empty
-  EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
-}
-
-TEST_F(Z80DartTest, ResetErrorFlags_ClearsErrorBits) {
-  dart.write(WR0, 0xC0);  // Reset error flags (bits 6-7 = 11)
-
-  uint8_t rr1 = dart.read(WR1);  // RR1
-  EXPECT_EQ(rr1, 0x00);
-}
-
-TEST_F(Z80DartTest, WR1_InterruptEnable) {
-  dart.write(WR1, 0x02);  // Enable TX interrupt only
-
-  // TX buffer is empty after reset, so TX interrupt fires
-  EXPECT_TRUE(dart.has_interrupt());
-
-  dart.reset();
-  EXPECT_FALSE(dart.has_interrupt());
-
-  // Now write data - TX interrupt should still fire when buffer empties
-  dart.write(DATA, 0x42);
-  EXPECT_FALSE(dart.has_interrupt());  // TX in progress
-}
-
-TEST_F(Z80DartTest, InterruptVector_Default) {
-  uint8_t vec = dart.get_interrupt_vector();
-  EXPECT_EQ(vec, 0x00);
-}
-
-TEST_F(Z80DartTest, MultipleChannelSelects) {
-  dart.write(WR0, 0x00);  // Channel A
-  dart.write(WR0, 0x04);  // Channel B (bits 2-3 = 01)
-  dart.write(WR1, 0xBB);  // Data to channel B's WR1
-}
-
-TEST_F(Z80DartTest, StatusBits_Comprehensive) {
-  uint8_t status = dart.read(WR0);
-
-  EXPECT_TRUE(status & 0x04);  // TX Empty
-  EXPECT_TRUE(status & 0x08);  // TX Buffer Empty
-  EXPECT_TRUE(status & 0x20);  // CTS
-}
-
-// ─────────────────────────────────────────────────
-// Intel8253 Timer Tests
-// ─────────────────────────────────────────────────
-
-class Intel8253Test : public testing::Test {
- protected:
-  // Logical register offsets for the 8253 timer.
-  static constexpr uint8_t CTR0 = 0;  // Counter 0 (baud rate)
-  static constexpr uint8_t CTR1 = 1;  // Counter 1
-  static constexpr uint8_t CTR2 = 2;  // Counter 2
-  static constexpr uint8_t MODE = 3;  // Mode/command register
-
-  void SetUp() override { timer = Intel8253(); }
-
-  Intel8253 timer;
-};
-
-TEST_F(Intel8253Test, Reset_InitialState) {
-  timer.reset();
-
-  // All counters should be readable
-  EXPECT_EQ(timer.read_counter(0), 0);
-  EXPECT_EQ(timer.read_counter(1), 0);
-  EXPECT_EQ(timer.read_counter(2), 0);
-}
-
-TEST_F(Intel8253Test, ReadCounter_InvalidChannel) {
-  // Should return 0 for invalid channel
-  EXPECT_EQ(timer.read_counter(-1), 0);
-  EXPECT_EQ(timer.read_counter(3), 0);
-  EXPECT_EQ(timer.read_counter(10), 0);
-}
-
-TEST_F(Intel8253Test, WriteCounter0_SetsCount) {
-  timer.write(CTR0, 0x12);
-  EXPECT_EQ(timer.read_counter(0), 0x12);
-}
-
-TEST_F(Intel8253Test, WriteCounter1_SetsCount) {
-  timer.write(CTR1, 0x34);
-  EXPECT_EQ(timer.read_counter(1), 0x34);
-}
-
-TEST_F(Intel8253Test, WriteCounter2_SetsCount) {
-  timer.write(CTR2, 0x56);
-  EXPECT_EQ(timer.read_counter(2), 0x56);
-}
-
-TEST_F(Intel8253Test, ModeRegister_Write) {
-  timer.write(MODE, 0x12);
-
-  // Mode write doesn't affect counter state
-  EXPECT_EQ(timer.read_counter(0), 0);
-}
-
-TEST_F(Intel8253Test, LatchCommand_Counters) {
-  timer.write(CTR0, 0x99);
-  timer.write(MODE, 0x00);  // Latch counter 0
-
-  uint8_t val = timer.read(CTR0);
-  EXPECT_EQ(val, 0x99);
-}
-
-TEST_F(Intel8253Test, LatchAllCounters) {
-  timer.write(CTR0, 0x11);
-  timer.write(CTR1, 0x22);
-  timer.write(CTR2, 0x33);
-
-  timer.write(MODE, 0xC0);  // Latch all counters
-
-  EXPECT_EQ(timer.read(CTR0), 0x11);
-  EXPECT_EQ(timer.read(CTR1), 0x22);
-  EXPECT_EQ(timer.read(CTR2), 0x33);
-}
-
-TEST_F(Intel8253Test, ManualBaud_SetsAndClears) {
-  // Set manual baud
-  timer.set_manual_baud(9600);
-  EXPECT_TRUE(timer.has_manual_baud());
-
-  // Clear manual baud
-  timer.clear_manual_baud();
-  EXPECT_FALSE(timer.has_manual_baud());
-}
-
-TEST_F(Intel8253Test, BaudCallback_NotCalledWithoutManualBaud) {
-  bool callback_called = false;
-  timer.set_baud_callback([&](uint16_t) { callback_called = true; });
-
-  timer.write(CTR0, 0x40);  // Should trigger callback
-  EXPECT_TRUE(callback_called);
-}
-
-TEST_F(Intel8253Test, BaudCallback_NotCalledWithManualBaud) {
-  bool callback_called = false;
-
-  timer.set_manual_baud(9600);
-  timer.set_baud_callback([&](uint16_t) { callback_called = true; });
-
-  timer.write(CTR0, 0x40);  // Should NOT trigger callback
-  EXPECT_FALSE(callback_called);
-}
-
-TEST_F(Intel8253Test, ReadInvalidPort) {
-  // Mode register is write-only; reading it returns 0
-  uint8_t val = timer.read(MODE);
-  EXPECT_EQ(val, 0);
-}
 
 // ─────────────────────────────────────────────────
 // Serial Backend Tests
@@ -384,17 +154,15 @@ TEST_F(SerialBackendTest, HostTxCountsUndeliveredBytes) {
   si.host_tx(0x41);  // no backend at all
   EXPECT_EQ(1u, si.tx_dropped());
 
-  NullBackend sink;
-  si.backend = &sink;
+  si.set_backend(std::make_shared<NullBackend>());
   si.host_tx(0x42);  // delivered (and dropped by design, not by failure)
   EXPECT_EQ(1u, si.tx_dropped());
 
-  FileBackend no_output("", "");
-  ASSERT_TRUE(no_output.is_open());
-  si.backend = &no_output;
+  auto no_output = std::make_shared<FileBackend>("", "");
+  ASSERT_TRUE(no_output->is_open());
+  si.set_backend(no_output);
   si.host_tx(0x43);
   EXPECT_EQ(2u, si.tx_dropped());
-  si.backend = nullptr;
 }
 
 // beads-5os: a failing output stream must be reported, not swallowed.
@@ -467,16 +235,6 @@ TEST_F(SerialBackendTest, FileBackend_RecvWhenNoFile) {
   // No input file, should return 0
   EXPECT_FALSE(backend.has_data());
   EXPECT_EQ(backend.recv(), 0);
-}
-
-// ─────────────────────────────────────────────────
-// Global Instance Test
-// ─────────────────────────────────────────────────
-
-TEST(SerialInterfaceTest, GlobalInstanceExists) {
-  // Should be able to access global instance without crash
-  EXPECT_NO_THROW(g_serial_interface.dart.reset());
-  EXPECT_NO_THROW(g_serial_interface.timer.reset());
 }
 
 // ─────────────────────────────────────────────────
@@ -990,4 +748,219 @@ TEST_F(SerialInterfaceConfigTest, ReapplyingAfterChangeRestoresApplied) {
 
   iface.apply_config();
   EXPECT_TRUE(iface.config_applied());
+}
+
+// ─────────────────────────────────────────────────
+// Host <-> card queues (beads-2myi): the IPC server and the Serial Terminal
+// reach the board's rs232 Device only through these.
+// ─────────────────────────────────────────────────
+
+namespace {
+
+// A backend with bytes waiting to be received, and nothing else.
+class ScriptedRxBackend : public NullBackend {
+ public:
+  explicit ScriptedRxBackend(std::vector<uint8_t> rx)
+      : rx_(rx.begin(), rx.end()) {}
+  bool has_data() const override { return !rx_.empty(); }
+  uint8_t recv() override {
+    uint8_t const b = rx_.front();
+    rx_.pop_front();
+    return b;
+  }
+  size_t left() const { return rx_.size(); }
+
+ private:
+  std::deque<uint8_t> rx_;
+};
+
+void collect(uint8_t byte, void* ctx) {
+  static_cast<std::vector<uint8_t>*>(ctx)->push_back(byte);
+}
+
+const uint8_t kHello[] = {'H', 'E', 'L', 'L', 'O'};
+
+}  // namespace
+
+TEST(SerialHostQueues, PumpNeverHandsTheCardMoreThanItHasRoomFor) {
+  SerialInterface si;
+  ASSERT_EQ(5u, si.queue_rx(kHello, sizeof(kHello)));
+  EXPECT_EQ(5u, si.rx_pending());
+
+  std::vector<uint8_t> card;
+  EXPECT_EQ(3u, si.pump_rx(3, collect, &card));  // a three-deep FIFO
+  EXPECT_EQ((std::vector<uint8_t>{'H', 'E', 'L'}), card);
+  EXPECT_EQ(2u, si.rx_pending());
+
+  EXPECT_EQ(0u, si.pump_rx(0, collect, &card));  // FIFO still full
+  EXPECT_EQ(3u, card.size());
+
+  EXPECT_EQ(2u, si.pump_rx(3, collect, &card));
+  EXPECT_EQ((std::vector<uint8_t>{'H', 'E', 'L', 'L', 'O'}), card);
+  EXPECT_EQ(0u, si.rx_pending());
+}
+
+TEST(SerialHostQueues, QueuedBytesGoBeforeTheBackendsAndTheRestWait) {
+  SerialInterface si;
+  auto wire =
+      std::make_shared<ScriptedRxBackend>(std::vector<uint8_t>{'x', 'y', 'z'});
+  si.set_backend(wire);
+  const uint8_t typed[] = {'A', 'B'};
+  si.queue_rx(typed, sizeof(typed));
+
+  std::vector<uint8_t> card;
+  EXPECT_EQ(3u, si.pump_rx(3, collect, &card));
+  EXPECT_EQ((std::vector<uint8_t>{'A', 'B', 'x'}), card);
+  // The backend keeps what did not fit, instead of overrunning the FIFO.
+  EXPECT_EQ(2u, wire->left());
+}
+
+TEST(SerialHostQueues, QueueIsBoundedAndReportsWhatFitted) {
+  SerialInterface si;
+  std::vector<uint8_t> big(SerialInterface::kRxQueueCap - 2, 0x55);
+  ASSERT_EQ(big.size(), si.queue_rx(big.data(), big.size()));
+  EXPECT_EQ(2u, si.queue_rx(kHello, sizeof(kHello)));
+  EXPECT_EQ(SerialInterface::kRxQueueCap, si.rx_pending());
+}
+
+TEST(SerialHostQueues, DisablingTheCardDropsWhatWasQueuedForIt) {
+  SerialInterface si;
+  si.queue_rx(kHello, sizeof(kHello));
+  SerialConfig cfg;
+  cfg.enabled = false;
+  si.set_config(cfg);
+  si.apply_config();
+  EXPECT_EQ(0u, si.rx_pending());
+}
+
+TEST(SerialHostQueues, HostWiredOnlyWhenEnabledAndNotThePlotter) {
+  SerialInterface si;
+  SerialConfig cfg;
+  cfg.enabled = false;
+  si.set_config(cfg);
+  EXPECT_FALSE(si.host_wired());
+  cfg.enabled = true;
+  cfg.backend_type = SerialBackendType::Null;
+  si.set_config(cfg);
+  EXPECT_TRUE(si.host_wired());
+  cfg.backend_type = SerialBackendType::Plotter;  // a Device on that wire
+  si.set_config(cfg);
+  EXPECT_FALSE(si.host_wired());
+}
+
+TEST(SerialHostQueues, TransmittedBytesReachTheTerminalMonitor) {
+  SerialInterface si;
+  si.set_backend(std::make_shared<NullBackend>());
+  for (uint8_t const b : kHello) si.host_tx(b);
+
+  std::vector<uint8_t> shown;
+  si.drain_monitor(shown);
+  EXPECT_EQ(std::vector<uint8_t>(std::begin(kHello), std::end(kHello)), shown);
+  si.drain_monitor(shown);  // drained: nothing new
+  EXPECT_EQ(5u, shown.size());
+}
+
+TEST(SerialHostQueues, MonitorKeepsTheNewestBytesWhileNobodyDrains) {
+  SerialInterface si;
+  for (size_t i = 0; i < SerialInterface::kMonitorCap + 2; ++i)
+    si.host_tx(static_cast<uint8_t>(i));
+
+  std::vector<uint8_t> shown;
+  si.drain_monitor(shown);
+  ASSERT_EQ(SerialInterface::kMonitorCap, shown.size());
+  EXPECT_EQ(2, shown.front());
+  EXPECT_EQ(static_cast<uint8_t>(SerialInterface::kMonitorCap + 1),
+            shown.back());
+}
+
+// beads-qn5t: the Machine's host_tx ctx is the SerialInterface, and every
+// CPC-transmitted byte goes through host_tx() on the Z80 thread, while
+// apply_config() runs on the IPC or UI thread with no quiesce (`serial config
+// set`, the Options dialog). apply_config() used to `delete` the backend
+// out from under a send() in flight -- a use-after-free. A backend swapped
+// out mid-send must outlive that send.
+namespace {
+
+struct GateState {
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  std::atomic<bool> destroyed{false};
+  std::atomic<bool> destroyed_during_send{false};
+};
+
+// A backend whose send() parks until the test releases it, and which
+// records its own destruction in state that outlives it.
+class GatedBackend : public SerialBackend {
+ public:
+  explicit GatedBackend(GateState* s) : s_(s) {}
+  ~GatedBackend() override { s_->destroyed = true; }
+  bool open() override { return true; }
+  void close() override {}
+  bool is_open() const override { return true; }
+  bool send(uint8_t) override {
+    GateState* const s = s_;  // `this` may be gone after the wait
+    s->entered = true;
+    while (!s->release) std::this_thread::yield();
+    if (s->destroyed) s->destroyed_during_send = true;
+    return true;
+  }
+  bool has_data() const override { return false; }
+  uint8_t recv() override { return 0; }
+  bool connected() const override { return true; }
+  std::string name() const override { return "gated"; }
+  std::string status() const override { return "gated"; }
+
+ private:
+  GateState* s_;
+};
+
+}  // namespace
+
+TEST(SerialInterfaceBackendLifetime, ApplyConfigMidSendKeepsBackendAlive) {
+  SerialInterface si;
+  GateState st;
+  si.set_backend(std::make_shared<GatedBackend>(&st));
+
+  std::thread z80([&] { si.host_tx(0x41); });  // the DART data write
+  while (!st.entered) std::this_thread::yield();
+
+  SerialConfig cfg;
+  cfg.enabled = false;  // the swap itself is what matters, not the target
+  si.set_config(cfg);
+  si.apply_config();  // IPC `serial config set enabled 0`, no quiesce
+  EXPECT_EQ(nullptr, si.backend());
+  EXPECT_FALSE(st.destroyed)
+      << "the backend was destroyed while host_tx() was inside its send()";
+
+  st.release = true;
+  z80.join();
+  EXPECT_FALSE(st.destroyed_during_send);
+  EXPECT_TRUE(st.destroyed)
+      << "the swapped-out backend must still die once its last send ends";
+  EXPECT_EQ(0u, si.tx_dropped());
+}
+
+// The same race at volume: a Z80-thread transmit loop against a config
+// thread replacing the backend. Under ASan/TSan this is the UAF/data-race
+// detector; without a sanitizer it must at least not crash.
+TEST(SerialInterfaceBackendLifetime, ConcurrentApplyConfigAndHostTx) {
+  SerialInterface si;
+  SerialConfig cfg;
+  cfg.enabled = true;
+  cfg.backend_type = SerialBackendType::Null;
+  si.set_config(cfg);
+  si.apply_config();
+
+  std::atomic<bool> stop{false};
+  std::thread z80([&] {
+    while (!stop) si.host_tx(0x55);
+  });
+  for (int i = 0; i < 2000; ++i) {
+    cfg.baud_rate = (i & 1) ? 9600 : 19200;
+    si.set_config(cfg);
+    si.apply_config();
+  }
+  stop = true;
+  z80.join();
+  EXPECT_NE(nullptr, si.backend());
 }

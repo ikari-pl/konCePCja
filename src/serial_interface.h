@@ -1,9 +1,10 @@
-/* konCePCja — Serial Interface Emulation (AMSIf-compatible)
+/* konCePCja — Serial Interface host side (AMSIf-compatible)
  *
- * Emulates the Amstrad Serial Interface with:
- * - Z80 DART (Z8470) at ports $FADx
- * - Intel 8253 Timer at ports $FBDx
- * - Optional SI ROM firmware (expansion ROM)
+ * The card itself -- Z80 DART at $FADx, Intel 8253 at $FBDx -- is the rs232
+ * Device the board clocks (src/hw/rs232.cpp, docs/hardware/rs232-device.md).
+ * This file is the host end of its wire: the pluggable backends, the queues
+ * the IPC server and the Serial Terminal share with the Z80 thread, and the
+ * SI ROM loader.
  */
 
 #pragma once
@@ -11,10 +12,10 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <filesystem>
-#include <functional>
+#include <memory>
 #include <mutex>
-#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -26,177 +27,6 @@
 namespace config {
 class Config;
 }
-
-// Z80 DART (Z8470) emulation
-class Z80Dart {
- public:
-  Z80Dart();
-
-  // Port I/O (called from io_dispatch)
-  uint8_t read(uint8_t port);
-  void write(uint8_t port, uint8_t val);
-
-  // Reset
-  void reset();
-
-  // Connect a callback for transmitted bytes (Z80 → backend)
-  using RxCallback = std::function<void(uint8_t byte)>;
-  void set_rx_callback(RxCallback cb) { rx_callback_ = cb; }
-
-  // Connect a poll callback for incoming data (backend → DART rx_fifo).
-  // Called when the Z80 reads the status register, so data appears
-  // "just in time" — matches real DART behavior.
-  using RxPollCallback = std::function<void()>;
-  void set_rx_poll(RxPollCallback cb) { rx_poll_ = cb; }
-
-  // Check if interrupt is pending
-  bool has_interrupt() const { return interrupt_pending_; }
-  uint8_t get_interrupt_vector() const;
-
-  // Status for debugging UI
-  bool tx_empty() const { return tx_buffer_empty_; }
-  bool rx_available() const { return !rx_fifo_.empty(); }
-  bool cts() const { return cts_; }  // Clear To Send
-
-  // Send a byte (injects into RX FIFO, used by terminal UI)
-  void enqueue_rx(uint8_t byte);
-
- private:
-  // DART Register indices
-  enum class Reg : std::uint8_t {
-    RR0 = 0,
-    RR1 = 1,
-    RR2 = 2,
-    RR3 = 3,
-    WR0 = 0,
-    WR1 = 1,
-    WR2 = 2,
-    WR3 = 3
-  };
-
-  // RR0 status bits
-  static constexpr uint8_t RR0_RX_AVAILABLE = 0x01;
-  static constexpr uint8_t RR0_ZERO_COUNT = 0x02;
-  static constexpr uint8_t RR0_TX_EMPTY = 0x04;
-  static constexpr uint8_t RR0_TX_BUFFER_EMPTY = 0x08;
-  static constexpr uint8_t RR0_BREAK = 0x10;
-  static constexpr uint8_t RR0_CTS = 0x20;
-  static constexpr uint8_t RR0_SYNC_HUNT = 0x40;
-  static constexpr uint8_t RR0_DCD = 0x80;
-
-  // RR1 status bits
-  static constexpr uint8_t RR1_ALL_SENT = 0x01;
-  static constexpr uint8_t RR1_TX_UNDERRUN = 0x02;
-  static constexpr uint8_t RR1_CRC_FRAMING_ERROR = 0x08;
-  static constexpr uint8_t RR1_OVERRUN = 0x10;
-  static constexpr uint8_t RR1_PARITY_ERROR = 0x20;
-  static constexpr uint8_t RR1_RX_OVERFLOW = 0x40;
-
-  // Channel selection
-  bool channel_a_ = true;  // true = A, false = B
-
-  // Receive FIFO (max 3 bytes)
-  std::queue<uint8_t> rx_fifo_;
-  static constexpr size_t RX_FIFO_SIZE = 3;
-
-  // Transmit
-  bool tx_buffer_empty_ = true;
-  bool tx_shift_reg_empty_ = true;
-  uint8_t tx_buffer_ = 0;
-  uint8_t tx_shift_ = 0;
-
-  // Modem control signals
-  bool rts_ = false;  // Request To Send
-  bool cts_ = true;   // Clear To Send (inverted for loopback)
-  bool dtr_ = false;  // Data Terminal Ready
-  bool dsr_ = true;   // Data Set Ready
-  bool dcd_ = false;  // Data Carrier Detect
-  bool break_pending_ = false;
-
-  // Error flags
-  bool overrun_error_ = false;
-  bool parity_error_ = false;
-  bool framing_error_ = false;
-
-  // Write registers (WR0-WR3 for each channel)
-  uint8_t wr0_[2] = {0};  // Command register
-  uint8_t wr1_[2] = {0};  // Interrupt/DMA enable
-  uint8_t wr2_[2] = {0};  // Interrupt vector (Channel A) / same (Channel B)
-  uint8_t wr3_[2] = {0};  // Receive parameters
-
-  // Read registers (RR0-RR3 for each channel)
-  uint8_t rr0_[2] = {0};
-  uint8_t rr1_[2] = {0};
-  uint8_t rr2_ = 0;  // Interrupt vector (Channel B only)
-
-  // External interrupt
-  bool interrupt_pending_ = false;
-  uint8_t interrupt_vector_ = 0;
-
-  // Rx callback (Z80 → backend)
-  RxCallback rx_callback_;
-  // Rx poll (backend → rx_fifo, called on status read)
-  RxPollCallback rx_poll_;
-
-  // Internal helpers
-  uint8_t read_rr(int reg);
-  void write_wr(int reg, uint8_t val);
-  void update_interrupts();
-  void do_tx();
-};
-
-// Intel 8253 Timer emulation
-class Intel8253 {
- public:
-  Intel8253();
-
-  // Port I/O (called from io_dispatch)
-  uint8_t read(uint8_t port);  // port: 0,1,2 or mode (0x03 = mode)
-  void write(uint8_t port, uint8_t val);
-
-  // Reset
-  void reset();
-
-  // Connect baud rate callback (called when counter 0 changes)
-  using BaudRateCallback = std::function<void(uint16_t divisor)>;
-  void set_baud_callback(BaudRateCallback cb) { baud_callback_ = cb; }
-
-  // Manual baud rate override (bypasses counter)
-  void set_manual_baud(uint32_t baud);
-  bool has_manual_baud() const { return manual_baud_.has_value(); }
-  void clear_manual_baud() { manual_baud_.reset(); }
-
-  // Read current count (latched or actual)
-  uint16_t read_counter(int ch) const;
-
- private:
-  // Counter 0: TX baud rate clock (to DART)
-  // Counter 1: unused
-  // Counter 2: unused
-
-  struct Counter {
-    uint16_t count = 0;  // Current count (down counter)
-    uint16_t latch = 0;  // Latched count for read
-    uint8_t mode = 0;    // 0-5
-    bool counting = false;
-    bool gate = true;
-  } counters_[3];
-
-  // Mode register ($FBDF)
-  uint8_t mode_register_ = 0;
-
-  // Read back command
-  bool latch_count_[3] = {false, false, false};
-
-  // Manual baud override
-  std::optional<uint32_t> manual_baud_;
-
-  // Baud rate callback
-  BaudRateCallback baud_callback_;
-
-  // Calculate divisor from counter 0
-  void update_baud();
-};
 
 // Serial backend interface (pluggable backends)
 class SerialBackend {
@@ -387,19 +217,24 @@ class TcpSocketBackend : public SerialBackend {
 
 // Serial interface state container
 struct SerialInterface {
-  Z80Dart dart;
-  Intel8253 timer;
-  SerialBackend* backend = nullptr;
+  // The open backend, or null. The Z80 thread transmits through it (the
+  // Machine's host_tx ctx is this SerialInterface, never the backend) while
+  // the IPC and UI threads may replace it via apply_config() at any moment,
+  // so callers get a counted reference: a backend swapped out mid-send stays
+  // alive until that send returns, and is destroyed by whoever drops it last.
+  std::shared_ptr<SerialBackend> backend() const;
+  // Replace the backend (apply_config()'s own path; tests inject one).
+  void set_backend(std::shared_ptr<SerialBackend> next);
 
   void set_config(const SerialConfig& config);
-  SerialConfig get_config() const { return config_; }
+  SerialConfig get_config() const;
   void apply_config();
   // True once apply_config() has actually reopened the backend for the
   // config currently staged in config_ -- false right after set_config()
   // stages a change apply_config() hasn't seen yet. A rebuild triggered by
   // an unrelated setting (RAM size, CRTC type, model) should skip
   // re-opening an already-current backend rather than truncate/reconnect it.
-  bool config_applied() const { return applied_ && config_ == applied_config_; }
+  bool config_applied() const;
 
   // Hand one CPC-transmitted byte to the backend, counting the ones it could
   // not deliver (not connected, peer gone, disk full) so `serial status`
@@ -409,8 +244,40 @@ struct SerialInterface {
     return tx_dropped_.load(std::memory_order_relaxed);
   }
 
+  // True while the card's wire runs to the host (enabled, any backend but
+  // the plotter, which is a Device on that wire and has it to itself). Only
+  // then do the queues below mean anything.
+  bool host_wired() const;
+
+  // Host -> CPC bytes typed in the Serial Terminal or sent over IPC. They
+  // wait here for room in the card's RX FIFO, which is three bytes deep and
+  // overruns when pushed past that. Any thread may queue; returns how many
+  // of the n bytes fitted under kRxQueueCap.
+  size_t queue_rx(const uint8_t* data, size_t n);
+  size_t rx_pending() const;
+  // Hand at most `room` bytes to `sink` (the card's RX FIFO): queued bytes
+  // first, then whatever the backend has. The bridge calls this on the Z80
+  // thread once per frame with the FIFO's free slots. Returns bytes moved.
+  size_t pump_rx(size_t room, void (*sink)(uint8_t, void*), void* ctx);
+  // CPC -> host bytes, mirrored for the Serial Terminal: host_tx() appends,
+  // keeping the newest kMonitorCap while nobody drains; the UI thread
+  // appends them all to `out`.
+  void drain_monitor(std::vector<uint8_t>& out);
+
+  static constexpr size_t kRxQueueCap = 64 * 1024;
+  static constexpr size_t kMonitorCap = 4096;
+
  private:
   std::atomic<uint64_t> tx_dropped_{0};
+  // Guards backend_, config_, applied_config_ and applied_. Held only to copy
+  // or swap them, never across backend I/O.
+  mutable std::mutex mu_;
+  std::shared_ptr<SerialBackend> backend_;
+  // Guards rx_queue_ and monitor_ only: the IPC/UI threads fill and drain
+  // them while the Z80 thread pumps and transmits.
+  mutable std::mutex queue_mu_;
+  std::deque<uint8_t> rx_queue_;
+  std::deque<uint8_t> monitor_;
   SerialConfig config_;
   SerialConfig applied_config_;
   bool applied_ = false;

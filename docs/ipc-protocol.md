@@ -786,9 +786,9 @@ echo "rom load 7 maxam.rom" | nc -w 1 localhost 6543
 
 | Command | Description |
 |---------|-------------|
-| `serial status` | Report interface/backend configuration and counters. `tx_dropped=N` counts bytes the CPC sent that the backend could not deliver (not connected, peer gone, disk full). `backend_connected=0\|1` is the resolved state; for a TCP backend `backend_status` reads `Connecting to host:port` while the connect is in flight, `Connected to …` once it completes and `Disconnected from …` after a refusal or hang-up |
-| `serial send <byte>` | Inject one received byte |
-| `serial send_string <text>` | Inject text into the receive path |
+| `serial status` | Report interface/backend configuration and counters. `tx_empty`, `rx_available`, `rx_fifo=0-3` and `rx_overrun` are read off the board's serial card (DART channel A RR0/RR1, what the CPC sees at `&FADE`); `rx_pending=N` counts bytes `serial send` and the Serial Terminal queued that are still waiting for room in that three-byte FIFO. `tx_dropped=N` counts bytes the CPC sent that the backend could not deliver (not connected, peer gone, disk full). `backend_connected=0\|1` is the resolved state; for a TCP backend `backend_status` reads `Connecting to host:port` while the connect is in flight, `Connected to …` once it completes and `Disconnected from …` after a refusal or hang-up |
+| `serial send <byte>` | Queue one byte for the CPC to receive. The bridge moves queued bytes into the card's RX FIFO as it has room (at most three per frame, never an overrun). `ERR 409 serial-card-not-on-host-wire` while the card is disabled or the plotter backend owns its wire; `ERR 507 rx-queue-full` past 64 KiB queued |
+| `serial send_string <text>` | Queue text for the CPC to receive, like `serial send` |
 | `serial config get` | Report serial configuration |
 | `serial config set <key> <value>` | Change a serial configuration field |
 

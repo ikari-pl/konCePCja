@@ -416,6 +416,10 @@ void rs232_host_rx(const Device* dev, uint8_t byte) {
   fifo_push(self_of(dev->self), byte);
 }
 
+int rs232_rx_room(const Device* dev) {
+  return RX_FIFO_SIZE - static_cast<const rs232_state*>(dev->self)->rx_count;
+}
+
 void rs232_set_host_tx(const Device* dev, void (*fn)(uint8_t, void*),
                        void* ctx) {
   rs232_state* s = static_cast<rs232_state*>(dev->self);

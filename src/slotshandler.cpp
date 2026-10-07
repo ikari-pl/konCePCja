@@ -747,6 +747,7 @@ int snapshot_load_machine(subcycle::Machine& m, FILE* pfile) {
                                            << " — state loaded as-is");
   }
   subcycle_bridge_sync_regs_view();
+  subcycle_bridge_sync_chip_views();
   set_osd_message("Snapshot loaded (sub-cycle engine)");
   return 0;
 }

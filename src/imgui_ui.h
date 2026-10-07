@@ -89,7 +89,6 @@ bool imgui_lease_ready(CpcPauseLease& lease);
 
 // Serial Terminal window
 void imgui_render_serial_terminal();
-void serial_terminal_feed_byte(uint8_t byte);
 
 // Plotter Preview window
 void imgui_render_plotter_preview();

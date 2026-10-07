@@ -7,8 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
 #include <vector>
 
 #include "hw/fdc.h"
@@ -332,4 +334,41 @@ TEST(SubcycleMachine, SiliconDiscRaisesTheRamFloorWithoutShrinkingIt) {
   const size_t before = big.ram_size();
   big.enable_silicon_disc(true);
   EXPECT_EQ(big.ram_size(), before) << "the Silicon Disc shrank the machine";
+}
+
+// beads-szc0: on a 6128+ a single step across the firmware's ROM-switching
+// OUT (C),C must leave the Gate Array's ROM enables, the memory Device's own
+// latch of the same write and the CPU's view of &0000 all agreeing — the
+// memory map follows the GA's ROMEN outputs. Synthetic cartridge: bank 0
+// disables both ROMs (&7F8D: fn 2, bits 2+3 set) and parks.
+TEST(SubcycleMachine, PlusStepAcrossRomSwitchOutKeepsGaAndMemoryAgreeing) {
+  std::vector<uint8_t> cart(0x8000, 0);
+  const uint8_t prog[] = {0x01, 0x8D, 0x7F,  // LD BC,&7F8D
+                          0xED, 0x49,        // OUT (C),C
+                          0x18, 0xFE};       // JR $
+  std::copy(std::begin(prog), std::end(prog), cart.begin());
+
+  subcycle::Machine m;
+  ASSERT_TRUE(m.build(cart.data(), cart.size()));
+  m.attach_cartridge(cart.data(), cart.size());
+  m.set_asic(true);  // model 3
+  m.reset();
+
+  auto expect_agree = [&](uint8_t rom_config, uint8_t cpu_at_0) {
+    GateArrayRegs ga{};
+    ga_peek(m.gate_array(), &ga);
+    MemRegs mr{};
+    mem_peek(m.mem(), &mr);
+    EXPECT_EQ(rom_config, ga.rom_config) << "PC=" << m.regs().pc;
+    EXPECT_EQ(rom_config, mr.rom_config) << "PC=" << m.regs().pc;
+    EXPECT_EQ(cpu_at_0, m.peek_mem(0x0000)) << "PC=" << m.regs().pc;
+  };
+
+  m.step_instruction();  // LD BC,&7F8D
+  ASSERT_EQ(0x0003, m.regs().pc);
+  expect_agree(0x00, 0x01);  // both ROMs on: &0000 is the cartridge's LD BC
+
+  m.step_instruction();  // OUT (C),C
+  ASSERT_EQ(0x0005, m.regs().pc);
+  expect_agree(0x8D, 0x00);  // lower ROM off: &0000 is the RAM underneath
 }
