@@ -288,12 +288,6 @@ namespace {
 uint64_t perfFreq;  // SDL_GetPerformanceFrequency() — ticks per second
 }  // namespace
 namespace {
-uint64_t perfTicksOffset;  // frame period in perf-counter ticks
-}  // namespace
-namespace {
-uint64_t perfTicksTarget;  // next frame deadline in perf-counter ticks
-}  // namespace
-namespace {
 uint64_t perfTicksTargetFPS;  // next 1-second FPS sample point
 }  // namespace
 // NOLINTNEXTLINE(misc-use-internal-linkage): dwFPS is referenced cross-TU
@@ -2320,20 +2314,12 @@ void controller_apply_bit(int slot, unsigned bit, bool pressed) {
 }  // namespace
 
 namespace {
+// The frame deadline itself lives in the bridge's pacer
+// (subcycle_bridge_frame); this only restarts the 1-second FPS sample window.
 void update_timings() {
   perfFreq = SDL_GetPerformanceFrequency();
-  // Frame period in perf-counter ticks: (FRAME_PERIOD_MS / 1000) * freq /
-  // speed_ratio
-  double const speed_ratio = CPC.speed / CPC_BASE_FREQUENCY_MHZ;
-  perfTicksOffset = static_cast<uint64_t>((FRAME_PERIOD_MS / 1000.0) *
-                                          perfFreq / speed_ratio);
-  uint64_t const now = SDL_GetPerformanceCounter();
-  perfTicksTarget = now + perfTicksOffset;
-  perfTicksTargetFPS = now + perfFreq;  // 1 second from now
-  LOG_VERBOSE("Timing: perfFreq="
-              << perfFreq << " perfTicksOffset=" << perfTicksOffset << " ("
-              << (perfTicksOffset * 1000.0 / perfFreq) << "ms/frame)"
-              << " speed_ratio=" << speed_ratio);
+  perfTicksTargetFPS = SDL_GetPerformanceCounter() + perfFreq;  // 1 s from now
+  LOG_VERBOSE("Timing: perfFreq=" << perfFreq);
 }
 }  // namespace
 
@@ -3698,10 +3684,10 @@ void publish_frame_stats() {
   // emulation the way an IPC `wait vbl` probe does.
   if (g_log_fps || g_debug) {
     // Split the frame: machine = subcycle_bridge_frame (Z80+devices+blit+
-    // debug_sync, the z80Start..z80End region); total = whole emu-loop
-    // iteration. machine≈total localizes the cost inside the machine
-    // frame; total>>machine points at the wrapper
-    // (audio/keyboard/signal/timing).
+    // debug_sync, the z80Start..z80End region) minus the pacer's sleep;
+    // total = whole emu-loop iteration, sleep included. machine≈total
+    // localizes the cost inside the machine frame; total>>machine on an
+    // unpaced run points at the wrapper (audio/keyboard/signal/timing).
     double const machine_ms =
         frameTimeSamples ? static_cast<double>(z80TimeAccum) * 1000.0 /
                                static_cast<double>(perfFreq) / frameTimeSamples
@@ -3776,7 +3762,7 @@ void publish_frame_stats() {
 // Run one whole frame of the pin-level board and return its exit condition.
 // Keyboard comes from the published matrix (so autotype/IPC/session all work);
 // audio uses the existing SDL push path.
-dword run_machine_frame(bool limit_now, bool bridge_paces) {
+dword run_machine_frame(bool limit_now) {
   if (!subcycle_bridge_active()) {
     // The sub-cycle board is the only engine; without it there is no
     // frame to run (start failure is fatal at init).
@@ -3801,11 +3787,14 @@ dword run_machine_frame(bool limit_now, bool bridge_paces) {
   // at most one presentation period stale.
   static uint64_t s_last_blit = 0;
   const uint64_t blit_now = SDL_GetPerformanceCounter();
-  const bool blit_due =
-      limit_now || blit_now - s_last_blit >= SDL_GetPerformanceFrequency() / 60;
+  // A frame auto frameskip drops is never published, so its blit would be
+  // wasted: skipping the conversion is the time frameskip wins back.
+  const bool blit_due = !CPC.skip_rendering &&
+                        (limit_now || blit_now - s_last_blit >=
+                                          SDL_GetPerformanceFrequency() / 60);
   if (blit_due) s_last_blit = blit_now;
-  const std::vector<int16_t>& frame_audio = subcycle_bridge_frame(
-      rows, blit_due ? back_surface : nullptr, bridge_paces && limit_now);
+  const std::vector<int16_t>& frame_audio =
+      subcycle_bridge_frame(rows, blit_due ? back_surface : nullptr, limit_now);
   if (!frame_audio.empty() && CPC.snd_enabled &&
       !g_emu_paused.load(std::memory_order_relaxed)) {
     audio_push_buffer(reinterpret_cast<const byte*>(frame_audio.data()),
@@ -4047,7 +4036,7 @@ EmuFrameResult emu_handle_stop() {
   return EmuFrameResult::kBreakAbsorbed;
 }
 
-EmuFrameResult emu_run_frame(bool bridge_paces) {
+EmuFrameResult emu_run_frame() {
   // Publish a consistent snapshot of the pending keyboard state for this
   // frame's firmware scan (see publish_keyboard_snapshot).
   publish_keyboard_snapshot();
@@ -4062,14 +4051,20 @@ EmuFrameResult emu_run_frame(bool bridge_paces) {
   // isn't reading. The pacing itself is the bridge's own 50 Hz deadline.
   const bool limit_now = CPC.limit_speed || g_autotype_queue.is_active();
 
-  // Frameskip decision at frame boundaries.
-  CPC.skip_rendering = g_last_exit_condition == EC_FRAME_COMPLETE &&
-                       limit_now && CPC.frameskip &&
-                       SDL_GetPerformanceCounter() > perfTicksTarget;
+  // Auto frameskip keys on the pacer's verdict on the previous frame
+  // (beads-af0k): skip this one's render only if that frame ran late.
+  static unsigned consecutive_skips = 0;
+  CPC.skip_rendering = frameskip_should_skip(
+      g_last_exit_condition == EC_FRAME_COMPLETE, limit_now, CPC.frameskip,
+      subcycle_bridge_frame_was_late(), consecutive_skips);
+  consecutive_skips = CPC.skip_rendering ? consecutive_skips + 1 : 0;
 
   uint64_t const z80Start = SDL_GetPerformanceCounter();
-  dword const exit_condition = run_machine_frame(limit_now, bridge_paces);
-  z80TimeAccum += SDL_GetPerformanceCounter() - z80Start;
+  dword const exit_condition = run_machine_frame(limit_now);
+  // The pacer sleeps inside the machine frame; book it as sleep, not machine.
+  uint64_t const slept = subcycle_bridge_take_sleep_ticks();
+  sleepTimeAccum += slept;
+  z80TimeAccum += SDL_GetPerformanceCounter() - z80Start - slept;
   g_last_exit_condition = exit_condition;
 
   // Tape wave sample (sub-frame resolution, render thread reads this under
@@ -4112,7 +4107,7 @@ void z80_thread_main() {
     // About to run a frame — mark non-idle.
     g_z80_idle.store(false, std::memory_order_release);
 
-    EmuFrameResult const result = emu_run_frame(/*bridge_paces=*/true);
+    EmuFrameResult const result = emu_run_frame();
 
     if (result == EmuFrameResult::kStopped) {
       // Mid-frame stop: the render thread may be waiting in
@@ -5289,8 +5284,7 @@ int koncpc_main(int argc, char** argv) {
       if (CPC.paused) {
         std::this_thread::sleep_for(
             std::chrono::milliseconds(POLL_INTERVAL_MS));
-      } else if (emu_run_frame(/*bridge_paces=*/false) ==
-                 EmuFrameResult::kFrameComplete) {
+      } else if (emu_run_frame() == EmuFrameResult::kFrameComplete) {
 #ifdef __APPLE__
         // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
         // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT *

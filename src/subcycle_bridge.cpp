@@ -20,6 +20,7 @@
 #include "amx_mouse.h"     // legacy g_amx_mouse: SDL events fill its counters
 #include "drive_sounds.h"  // host audio overlay: motor hum / seek clicks
 #include "flux_ingest.h"   // flux::to_scp: unified flux-container dispatcher
+#include "frame_pacer.h"   // the 50 Hz deadline subcycle_bridge_frame paces to
 #include "hw/asic.h"
 #include "hw/crtc.h"
 #include "hw/device.h"  // Device (Save-As FDC handle)
@@ -144,7 +145,8 @@ struct Bridge {
   bool m4_loaded = false;
   std::vector<uint8_t> serialrom;   // SI card serial BIOS 16K ROM (owned)
   std::vector<uint8_t> tape_media;  // cassette in the deck (owner)
-  uint64_t next_deadline = 0;       // 50 Hz pacing (performance-counter ticks)
+  FramePacer pacer;                 // 50 Hz pacing (performance-counter ticks)
+  uint64_t sleep_ticks = 0;         // pacer sleep since the last take
   bool active = false;
 
   // Tape host-side mirror (engine=1): each frame debug_sync mirrors the deck's
@@ -509,7 +511,8 @@ bool subcycle_bridge_start() {
         reinterpret_cast<void*>(bdos_hook));
   }
 
-  b.next_deadline = 0;
+  b.pacer.unpaced();
+  b.sleep_ticks = 0;
   b.active = true;
   subcycle_bridge_sync_regs_view();  // the baseline a register edit diffs
   LOG_INFO("subcycle engine: running the pin-level board ("
@@ -1758,18 +1761,17 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
 
   if (limit) {  // drift-corrected 50 Hz deadline (the emulation's only pacer)
     const uint64_t freq = SDL_GetPerformanceFrequency();
-    const uint64_t tick = freq / 50;
     uint64_t now = SDL_GetPerformanceCounter();
-    if (b.next_deadline == 0 || now > b.next_deadline + (freq / 4))
-      b.next_deadline = now;  // (re)sync after start, pause, or a long stall
-    while (now < b.next_deadline) {
-      const uint64_t remaining_ms = (b.next_deadline - now) * 1000 / freq;
+    const uint64_t release = b.pacer.arrive(now, freq);
+    const uint64_t sleep_start = now;
+    while (now < release) {
+      const uint64_t remaining_ms = (release - now) * 1000 / freq;
       SDL_Delay(remaining_ms > 2 ? static_cast<Uint32>(remaining_ms - 1) : 0);
       now = SDL_GetPerformanceCounter();
     }
-    b.next_deadline += tick;
+    b.sleep_ticks += now - sleep_start;
   } else {
-    b.next_deadline = 0;
+    b.pacer.unpaced();
   }
 
   if (spliced) {  // stitch the final segment onto the earlier ones
@@ -1778,6 +1780,14 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
     return b.spliced_audio;
   }
   return b.machine.audio();
+}
+
+bool subcycle_bridge_frame_was_late() { return g_bridge.pacer.late(); }
+
+uint64_t subcycle_bridge_take_sleep_ticks() {
+  const uint64_t ticks = g_bridge.sleep_ticks;
+  g_bridge.sleep_ticks = 0;
+  return ticks;
 }
 
 /* Re-blit the machine's CURRENT framebuffer without running a frame (the IPC

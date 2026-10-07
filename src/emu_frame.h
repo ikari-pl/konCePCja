@@ -17,9 +17,24 @@ enum class EmuFrameResult : std::uint8_t {
                    // machine keeps running
 };
 
-// bridge_paces: let the board's own 50 Hz deadline pace the frame when speed
-// is limited. The GUI's Z80 thread passes true; -H passes false.
-EmuFrameResult emu_run_frame(bool bridge_paces);
+// With speed limited (or autotype active) the board's own 50 Hz deadline
+// paces the frame, in both loops: -H runs at real time like the GUI, and
+// limit_speed=0 runs either one unpaced (beads-gnx3).
+EmuFrameResult emu_run_frame();
+
+// Auto frameskip never skips more frames than this in a row, so a machine that
+// can never keep up (Faithful tier, a slow host) still shows a picture.
+inline constexpr unsigned kMaxConsecutiveSkips = 5;
+
+// Auto frameskip: skip rendering this frame when the previous one completed
+// paced but late (subcycle_bridge_frame_was_late), up to kMaxConsecutiveSkips
+// in a row. Decided only at frame boundaries (prev_complete), never mid-frame.
+inline bool frameskip_should_skip(bool prev_complete, bool limit,
+                                  unsigned frameskip, bool prev_late,
+                                  unsigned consecutive_skips) {
+  return prev_complete && limit && frameskip != 0 && prev_late &&
+         consecutive_skips < kMaxConsecutiveSkips;
+}
 
 // The stop half of emu_run_frame: classify an EC_BREAKPOINT exit from
 // z80.breakpoint_reached / watchpoint_reached / step_in. Exposed for tests.
