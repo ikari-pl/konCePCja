@@ -278,8 +278,6 @@ class t_CPC {
                                // (2*scr_bps if doubling Y)
   unsigned int scr_green_mode;
   unsigned int scr_green_blue_percent;
-  unsigned char* scr_base;  // begining of current line in the SDL back_surface
-  unsigned char* scr_pos;   // current position in the SDL back_surface
   bool scr_is_ogl;
 
   int devtools_scale;
@@ -299,7 +297,6 @@ class t_CPC {
   unsigned int snd_volume;
   unsigned int snd_pp_device;
   unsigned int snd_buffersize;
-  unsigned char* snd_bufferptr;
   union {
     struct {
       unsigned int low;
@@ -500,7 +497,6 @@ struct PsgScopeCapture {
 extern PsgScopeCapture g_psg_scope;
 
 struct t_VDU {
-  int scrln;
   int scanline;
   unsigned int flag_drawing;
   unsigned int frame_completed;

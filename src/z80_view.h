@@ -185,8 +185,6 @@ enum : std::uint8_t {
   EC_BREAKPOINT = 10,
   EC_TRACE = 20,
   EC_FRAME_COMPLETE = 30,
-  EC_CYCLE_COUNT = 40,
-  EC_SOUND_BUFFER = 50,
   EC_STOP_REQUESTED = 60
 };
 
