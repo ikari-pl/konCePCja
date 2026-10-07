@@ -351,6 +351,15 @@ void DevToolsUI::render_registers() {
   ImGui::Separator();
 
   bool locked = !CPC.paused;
+  // Set by a real edit below. Only an edit may be pushed to the machine:
+  // regs_to_machine() is z80_poke(), which rewrites every register from this
+  // host mirror AND restarts the CPU at a fresh instruction boundary. A pause
+  // parks the board mid-instruction, so pushing every rendered frame dropped
+  // the rest of the instruction in flight -- a half-done PUSH BC in the
+  // firmware kernel then lost its saved Gate Array port, the next ROM-switch
+  // OUT landed on the PPI control register and the keyboard read all keys
+  // down (beads-vwwq).
+  bool edited = false;
   ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
                                   (locked ? ImGuiInputTextFlags_ReadOnly : 0);
 
@@ -388,7 +397,10 @@ void DevToolsUI::render_registers() {
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::InputScalar(id, ImGuiDataType_U16, &val, nullptr, nullptr,
                            "%04X", hex_flags)) {
-      if (!locked) rp.w.l = val;
+      if (!locked && rp.w.l != val) {
+        rp.w.l = val;
+        edited = true;
+      }
     }
     // Context menu uses the live register value (rp.w.l), so it stays correct
     // even while the field is disabled and editing is blocked.
@@ -402,7 +414,10 @@ void DevToolsUI::render_registers() {
     unsigned char v = val;
     if (ImGui::InputScalar(label, ImGuiDataType_U8, &v, nullptr, nullptr,
                            "%02X", hex_flags)) {
-      if (!locked) val = v;
+      if (!locked && val != v) {
+        val = v;
+        edited = true;
+      }
     }
   };
 
@@ -488,7 +503,13 @@ void DevToolsUI::render_registers() {
     if (pv) new_f |= Pflag;
     if (n) new_f |= Nflag;
     if (cf) new_f |= Cflag;
-    z80.AF.b.l = new_f | (f & Xflags);
+    new_f |= f & Xflags;
+    if (new_f != f) {
+      z80.AF.b.l = new_f;
+      edited = true;
+    }
+  }
+  if (edited) {
     subcycle_bridge_regs_to_machine();  // the edit must reach the machine —
                                         // the shim re-publishes next frame
   }

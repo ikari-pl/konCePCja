@@ -36,9 +36,12 @@
 #include "imgui_internal.h"
 #include "koncepcja.h"
 #include "slotshandler.h"
+#include "subcycle/machine.h"
 #include "subcycle_bridge.h"
 #include "symfile.h"
 #include "z80_view.h"
+
+extern t_z80regs z80;
 
 extern byte *membank_read[4], *membank_write[4];
 extern t_CPC CPC;
@@ -456,11 +459,12 @@ namespace {
 // machine is paused, which moves the medium generation a second time.
 class LiveBoard {
  public:
-  LiveBoard() {
+  // `rom` is the synthetic 32K system ROM (default: all NOPs).
+  explicit LiveBoard(std::vector<char> const& rom = std::vector<char>(0x8000,
+                                                                      0)) {
     dir_ =
         std::filesystem::temp_directory_path() / "koncepcja-disc-tools-board";
     std::filesystem::create_directories(dir_);
-    std::vector<char> const rom(0x8000, 0);
     std::filesystem::path const rom_file = dir_ / "cpc6128.rom";
     FILE* f = fopen(rom_file.string().c_str(), "wb");
     EXPECT_NE(nullptr, f);
@@ -524,4 +528,47 @@ TEST_F(DevToolsRenderTest, DiscToolsRelistsOncePerSwapWithTheBoardRunning) {
       << "the listing was keyed on the pre-pull generation, so the swap the "
          "pull applied made it stale again: two directory walks and two "
          "pause/resume cycles for one disc";
+}
+
+// -----------------------------------------------
+// Registers window: a paused render never writes to the machine (beads-vwwq)
+// -----------------------------------------------
+
+TEST_F(DevToolsRenderTest, PausedRegistersWindowLeavesTheMachineAlone) {
+  // Every ROM byte is PUSH BC: 11 T-states, SP drops by 2 per instruction. SP
+  // comes out of reset at 0xFFFF, so it stays odd as long as every PUSH runs
+  // whole. A frame ends wherever the frame boundary falls, which is almost
+  // always mid-instruction, and the window then renders against that parked
+  // CPU; the check runs once that instruction has finished. The window used
+  // to push the host register mirror on every paused frame, and z80_poke()
+  // restarts the CPU at a fresh instruction boundary, so a PUSH cut between
+  // its two SP decrements left SP even. That is the half-done PUSH BC in the
+  // firmware kernel that corrupted the keyboard read (beads-vwwq).
+  std::vector<char> rom(0x8000, static_cast<char>(0xC5));  // PUSH BC ...
+  rom[0x3FFD] = static_cast<char>(0xC3);  // ... JP &0000: loop for ever,
+  rom[0x3FFE] = 0;                        // never touching SP
+  rom[0x3FFF] = 0;
+  LiveBoard const board(rom);
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  // The window unlocks its editors on CPC.paused; pin both pause flags.
+  PausedFlag const paused(true);
+  bool const saved_cpc_paused = CPC.paused;
+  CPC.paused = true;
+  dt_.toggle_window("registers");
+
+  for (int frame = 0; frame < 20; ++frame) {
+    m->run_frame();
+    ASSERT_EQ(0x0000u, m->regs().pc & 0xC000u)
+        << "the CPU left the PUSH BC ROM; the test no longer measures anything";
+    gui_.settled_frames([this] { dt_.render(); });
+    // The frame may have parked between the two SP decrements, where an even
+    // SP is honest. Let the in-flight instruction finish before judging.
+    m->step_instruction();
+    ASSERT_EQ(1, m->regs().sp & 1) << "frame " << frame
+                                   << ": SP went even -- rendering the paused "
+                                      "Registers window cut a PUSH BC in half";
+  }
+  CPC.paused = saved_cpc_paused;
 }

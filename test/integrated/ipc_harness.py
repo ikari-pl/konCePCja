@@ -963,11 +963,12 @@ def test_inject_launches_like_run():
             # the tap, so settle well clear of it.
             #
             # `step frame`, not `wait vbl`: wait vbl is a wall-clock sleep
-            # (beads-71pg) that runs ~150 frames for 50, and a pause/resume
-            # that late after this breakpoint stop corrupts the machine about
-            # 2% of the time -- the firmware key buffer then hands KM READ KEY
-            # a blank slot and it spins forever (beads-27a7, root cause in
-            # beads-vwwq). step frame 50 runs exactly 50: 0/200 failures.
+            # (beads-71pg) that runs ~150 frames for 50; step frame runs
+            # exactly 50. This test used to lose its key ~2% of the time
+            # (beads-27a7): the breakpoint stop above opens the DevTools
+            # Registers window, which pushed the registers into the machine
+            # on every paused frame and cut the instruction in flight in half
+            # (beads-vwwq, fixed in devtools_ui.cpp).
             ok, resp = ipc.send_command('step frame 50')
             if not ok:
                 print(f"FAIL: step frame 50: {resp}")
