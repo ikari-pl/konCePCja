@@ -48,6 +48,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "data_areas.h"
 #include "devtools_ui.h"
 #include "drive_sounds.h"
+#include "emu_frame.h"
 #include "hw_views.h"
 #include "io_bus.h"
 #include "io_dispatch.h"
@@ -3656,25 +3657,449 @@ void publish_keyboard_snapshot() {
 }
 }  // namespace
 
-// Z80 emulation thread — runs z80_execute() and handles all emulation side
-// effects. Used only in non-headless (GUI) mode; headless runs the original
-// single-threaded path.
+// ---- One emulated frame, shared by both loops (beads-cv2.2) ----
 //
-// At EC_FRAME_COMPLETE:
-//   1. Completes per-frame work (autotype, session, IPC, etc.)
-//   2. Calls asic_draw_sprites() — finalises the write buffer's pixels
-//   3. Calls video_ring_publish() — publishes the frame + advances back_surface
-//   4. Calls g_frame_signal.signal_ready() — wakes the render thread (no wait)
-//   5. Immediately starts the next frame — the render thread reads the latest
+// The GUI's Z80 thread (z80_thread_main) and the -H main loop used to carry
+// two near-identical copies of everything below, and they drifted. Each
+// per-frame duty now exists once; the loops keep only what differs (see
+// emu_frame.h).
+namespace {
+// The previous frame's exit condition: frameskip decides only on frame
+// boundaries, never mid-frame. Both loops never run at once.
+dword g_last_exit_condition = EC_FRAME_COMPLETE;
+// Residual "render-wait" metric (from the U1 baseline): time the Z80 thread
+// spends in signal_ready() — now just a mutex+notify, so the [fps] log reads
+// ~0, confirming the decouple holds (it was 15-45% before the ring). Always 0
+// under -H, which has no render thread.
+uint64_t g_render_wait_accum = 0;
+
+// FPS counter: publish stats once per second.
+void publish_frame_stats() {
+  uint64_t const perfNow = SDL_GetPerformanceCounter();
+  if (perfNow < perfTicksTargetFPS) return;
+  dwFPS = dwFrameCount;
+  dwFrameCount = 0;
+  perfTicksTargetFPS = perfNow + perfFreq;
+
+  // U1 baseline: average time/frame the Z80 was blocked in
+  // wait_consumed() waiting for render, and the % of wall-clock spent
+  // blocked. Both fall to ~0 once the Z80 no longer waits on render.
+  double const render_wait_ms =
+      dwFPS ? static_cast<double>(g_render_wait_accum) * 1000.0 /
+                  static_cast<double>(perfFreq) / dwFPS
+            : 0.0;
+  double const render_wait_pct = static_cast<double>(g_render_wait_accum) *
+                                 100.0 / static_cast<double>(perfFreq);
+  g_render_wait_accum = 0;
+
+  // Opt-in once-per-second FPS log (run with --fps, or --debug) — a
+  // passive, tail-able steady-FPS readout that doesn't perturb the
+  // emulation the way an IPC `wait vbl` probe does.
+  if (g_log_fps || g_debug) {
+    // Split the frame: machine = subcycle_bridge_frame (Z80+devices+blit+
+    // debug_sync, the z80Start..z80End region); total = whole emu-loop
+    // iteration. machine≈total localizes the cost inside the machine
+    // frame; total>>machine points at the wrapper
+    // (audio/keyboard/signal/timing).
+    double const machine_ms =
+        frameTimeSamples ? static_cast<double>(z80TimeAccum) * 1000.0 /
+                               static_cast<double>(perfFreq) / frameTimeSamples
+                         : 0.0;
+    double const total_ms =
+        frameTimeSamples ? static_cast<double>(frameTimeAccum) * 1000.0 /
+                               static_cast<double>(perfFreq) / frameTimeSamples
+                         : 0.0;
+    printf(
+        "[fps] %3u FPS  %3u%% speed  | render-wait %.1f ms/f (%2.0f%%)  "
+        "| "
+        "machine %.1f ms/f  total %.1f ms/f\n",
+        dwFPS, dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS),
+        render_wait_ms, render_wait_pct, machine_ms, total_ms);
+    fflush(stdout);
+  }
+
+  std::scoped_lock const stats_lock(g_imgui_stats_mutex);
+  if (frameTimeSamples > 0) {
+    double const ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
+    imgui_state.frame_time_avg_us = static_cast<float>(
+        static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
+    imgui_state.frame_time_min_us =
+        static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
+    imgui_state.frame_time_max_us =
+        static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
+    imgui_state.display_time_avg_us =
+        static_cast<float>(static_cast<double>(displayTimeAccum.exchange(
+                               0, std::memory_order_relaxed)) /
+                           frameTimeSamples * ticksToUs);
+    imgui_state.sleep_time_avg_us = static_cast<float>(
+        static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
+    imgui_state.z80_time_avg_us = static_cast<float>(
+        static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
+  }
+  frameTimeAccum = 0;
+  frameTimeMin = UINT64_MAX;
+  frameTimeMax = 0;
+  sleepTimeAccum = 0;
+  z80TimeAccum = 0;
+  frameTimeSamples = 0;
+
+  imgui_state.audio_underruns = audio_underrun_count;
+  imgui_state.audio_near_underruns = audio_near_underrun_count;
+  imgui_state.audio_pushes = audio_push_count;
+  if (audio_push_count == 0) {
+    imgui_state.audio_queue_avg_ms = 0;
+    imgui_state.audio_queue_min_ms = 0;
+    imgui_state.audio_push_interval_max_us = 0;
+  } else {
+    // Convert queue depth from bytes to milliseconds
+    double const avg_bytes = audio_queue_sum_bytes / audio_push_count;
+    int frame_size = CPC.snd_stereo ? 4 : 2;  // 16-bit stereo=4, mono=2
+    if (CPC.snd_bits == 0) frame_size /= 2;   // 8-bit halves it
+    int const sample_rate = freq_table[CPC.snd_playback_rate];
+    double const bytes_per_ms = sample_rate * frame_size / 1000.0;
+    imgui_state.audio_queue_avg_ms =
+        static_cast<float>(avg_bytes / bytes_per_ms);
+    imgui_state.audio_queue_min_ms =
+        static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
+    imgui_state.audio_push_interval_max_us = static_cast<float>(
+        static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
+  }
+  audio_underrun_count = 0;
+  audio_near_underrun_count = 0;
+  audio_push_count = 0;
+  audio_queue_sum_bytes = 0;
+  audio_queue_min_bytes = INT_MAX;
+  audio_push_interval_max = 0;
+}
+
+// Run one whole frame of the pin-level board and return its exit condition.
+// Keyboard comes from the published matrix (so autotype/IPC/session all work);
+// audio uses the existing SDL push path.
+dword run_machine_frame(bool limit_now, bool bridge_paces) {
+  if (!subcycle_bridge_active()) {
+    // The sub-cycle board is the only engine; without it there is no
+    // frame to run (start failure is fatal at init).
+    SDL_Delay(1);
+    return EC_FRAME_COMPLETE;
+  }
+  subcycle_bridge_sync_probe();  // list edits made while paused reach
+                                 // the probe before this frame runs
+  uint8_t rows[16];
+  for (int i = 0; i < 16; i++)
+    rows[i] = keyboard_matrix_live[i].load(std::memory_order_relaxed);
+  if (tape_line_in_active())  // mic -> Schmitt -> the deck's line queue
+    tape_line_in_pump(*subcycle_bridge_machine());
+  // Blit at presentation rate, not emulation rate: the bridge's scaled
+  // blit is a second full-frame format conversion (the machine's video
+  // device already rendered into its own fb — that cost is inherent,
+  // like the legacy renderer's). An uncapped run emits thousands of
+  // frames a second while the render side consumes ~60; converting
+  // every one of them was measured at ~2 ms/frame — a 6× cap on the
+  // Fast tier under §8.3. Capped (50 Hz) sessions blit every frame as
+  // before; consumers (display, screenshots, recorders) see a surface
+  // at most one presentation period stale.
+  static uint64_t s_last_blit = 0;
+  const uint64_t blit_now = SDL_GetPerformanceCounter();
+  const bool blit_due =
+      limit_now || blit_now - s_last_blit >= SDL_GetPerformanceFrequency() / 60;
+  if (blit_due) s_last_blit = blit_now;
+  const std::vector<int16_t>& frame_audio = subcycle_bridge_frame(
+      rows, blit_due ? back_surface : nullptr, bridge_paces && limit_now);
+  if (!frame_audio.empty() && CPC.snd_enabled &&
+      !g_emu_paused.load(std::memory_order_relaxed)) {
+    audio_push_buffer(reinterpret_cast<const byte*>(frame_audio.data()),
+                      static_cast<int>(frame_audio.size() * sizeof(int16_t)));
+  }
+  if (tape_line_out_active())  // wires -> jack (data + motor carrier)
+    tape_line_out_pump(*subcycle_bridge_machine());
+  // Signal autotype only when the firmware ACTUALLY read the keyboard
+  // this frame (machine-side PSG port-A read detection — the engine=1
+  // equivalent of the legacy PPI read handler). Treating every
+  // completed frame as a scan made autotype type blindly during BOOT,
+  // before the firmware listens — eating the leading autocmd
+  // characters (`run"hello` arrived as `un3hello` in the e2e dsk test).
+  g_engine1_scanned_rows = subcycle_bridge_scanned_key_rows();
+  if (g_engine1_scanned_rows != 0) g_keyboard_scanned = true;
+  // Wave-1 debug shim: mirror bench lists into the probe, publish the
+  // machine's registers into the legacy view struct, and surface a
+  // latched probe hit as the legacy breakpoint flow (pause, DevTools,
+  // IPC "wait bp") — all existing debug UX, pin-level truth.
+  return subcycle_bridge_debug_sync() ? EC_BREAKPOINT : EC_FRAME_COMPLETE;
+}
+
+// Engine=1: the sub-cycle PPI/PSG read the keyboard directly and bypass
+// the legacy PPI I/O handler that calls notify_scanned(). Relay the rows
+// the firmware actually scanned this frame so the KeyboardManager's
+// BufferedUntilRead mode can release a held key once its row was read
+// (matches the legacy per-read notify).
+void relay_scanned_rows() {
+  if (!subcycle_bridge_active()) return;
+  // Captured once at frame run (read-and-clear source) — see
+  // g_engine1_scanned_rows; a second take here would always read 0.
+  uint16_t const scanned = g_engine1_scanned_rows;
+  for (int krow = 0; krow < 16; ++krow)
+    if (scanned & (1u << krow))
+      // Value-aware: confirm only keys actually present in the snapshot
+      // the firmware read this frame (keyboard_matrix_live is stable
+      // between this frame's publish and here), so a key set mid-frame
+      // stays held.
+      g_keyboard_manager.notify_scanned(
+          krow, keyboard_matrix_live[krow].load(std::memory_order_relaxed));
+}
+
+void record_frame_timing() {
+  uint64_t const now = SDL_GetPerformanceCounter();
+  if (lastFrameStart > 0) {
+    uint64_t const elapsed = now - lastFrameStart;
+    frameTimeAccum += elapsed;
+    frameTimeMin = std::min(elapsed, frameTimeMin);
+    frameTimeMax = std::max(elapsed, frameTimeMax);
+    frameTimeSamples++;
+  }
+  lastFrameStart = now;
+}
+
+// Session recording: keyboard snapshot per frame. Session playback: replay
+// this frame's events.
+void session_frame() {
+  if (g_session.state() == SessionState::RECORDING) {
+    static uint8_t prev_matrix[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                      0xFF, 0xFF, 0xFF, 0xFF};
+    for (int row = 0; row < 16; row++) {
+      byte const cur = keyboard_matrix[row].load(std::memory_order_relaxed);
+      if (cur != prev_matrix[row]) {
+        // Encode as row in high byte, value in low byte
+        g_session.record_event(SessionEventType::KEY_DOWN,
+                               static_cast<uint16_t>((row << 8) | cur));
+        prev_matrix[row] = cur;
+      }
+    }
+    g_session.record_frame_sync();
+  }
+
+  if (g_session.state() == SessionState::PLAYING) {
+    SessionEvent evt;
+    while (g_session.next_event(evt)) {
+      if (evt.type == SessionEventType::KEY_DOWN) {
+        int const row = (evt.data >> 8) & 0x0F;
+        keyboard_matrix[row].store(static_cast<byte>(evt.data & 0xFF),
+                                   std::memory_order_relaxed);
+      }
+    }
+    if (!g_session.advance_frame()) { /* recording finished */
+    }
+  }
+}
+
+// Auto-type: drain the queue, synchronized with CPC keyboard scans. Only
+// inject key changes after the firmware has read the matrix, so keys aren't
+// changed mid-scan. Fallback after kAutotypeScanTimeoutFrames for programs
+// that don't scan the keyboard (e.g. during loading).
+void autotype_frame() {
+  if (!g_autotype_queue.is_active()) return;
+  bool do_tick = false;
+  if (g_keyboard_scanned) {
+    g_keyboard_scanned = false;
+    g_keyboard_scan_timeout = 0;
+    do_tick = true;
+  } else if (++g_keyboard_scan_timeout >= kAutotypeScanTimeoutFrames) {
+    g_keyboard_scan_timeout = 0;
+    do_tick = true;
+  }
+  if (!do_tick) return;
+  g_autotype_queue.tick(
+      [](uint16_t cpc_key, bool pressed) {
+        // A break only satisfies a WAITBREAK when it fired AFTER the
+        // last typed keystroke (i.e. was caused by what autotype just
+        // typed) — clear the latch on every key PRESS so a boot-time
+        // break can't pre-satisfy a later WAITBREAK. Releases don't
+        // clear: `call 0`'s break can land between RETURN's press and
+        // its release tick, and must survive to the WAITBREAK.
+        if (pressed) g_waitbreak_latch = false;
+        CPCScancode const scancode = CPC.InputMapper->CPCscancodeFromCPCkey(
+            static_cast<CPC_KEYS>(cpc_key));
+        if (static_cast<byte>(scancode) == 0xff) return;
+        if (pressed) {
+          keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
+              ~bit_values[static_cast<byte>(scancode) & 7],
+              std::memory_order_relaxed);
+          if (scancode & MOD_CPC_SHIFT)
+            keyboard_matrix[0x25 >> 4].fetch_and(~bit_values[0x25 & 7],
+                                                 std::memory_order_relaxed);
+          else if (static_cast<byte>(scancode) != 0x25)
+            keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
+                                                std::memory_order_relaxed);
+          if (scancode & MOD_CPC_CTRL)
+            keyboard_matrix[0x27 >> 4].fetch_and(~bit_values[0x27 & 7],
+                                                 std::memory_order_relaxed);
+          else if (static_cast<byte>(scancode) != 0x27)
+            keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
+                                                std::memory_order_relaxed);
+        } else {
+          keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
+              bit_values[static_cast<byte>(scancode) & 7],
+              std::memory_order_relaxed);
+          keyboard_matrix[0x25 >> 4].fetch_or(bit_values[0x25 & 7],
+                                              std::memory_order_relaxed);
+          keyboard_matrix[0x27 >> 4].fetch_or(bit_values[0x27 & 7],
+                                              std::memory_order_relaxed);
+        }
+      },
+      [](uint16_t cmd) -> bool {
+        koncpc_menu_action(static_cast<int>(cmd));
+        // KONCPC_WAITBREAK blocks the queue until the next breakpoint
+        // fires (emu_handle_stop() then calls g_autotype_queue.resume()).
+        // A break that already fired while the WAITBREAK was still
+        // queued (latched there) satisfies it immediately.
+        if (cmd == KONCPC_WAITBREAK && g_waitbreak_latch) {
+          g_waitbreak_latch = false;
+          return false;
+        }
+        return cmd == KONCPC_WAITBREAK;
+      });
+}
+
+// Everything that follows a completed frame, in this order.
+void frame_epilogue() {
+  dwFrameCountOverall++;
+  dwFrameCount++;
+
+  relay_scanned_rows();
+  g_keyboard_manager.update(keyboard_matrix, dwFrameCountOverall);
+
+  record_frame_timing();
+
+  // Exit-after checks (--exit-after N frames or N ms)
+  if (g_exit_mode == EXIT_FRAMES && dwFrameCountOverall >= g_exit_target) {
+    cleanExit(0, false);
+  }
+  if (g_exit_mode == EXIT_MS &&
+      (SDL_GetTicks() - g_exit_start_ticks) >= g_exit_target) {
+    cleanExit(0, false);
+  }
+
+  ipc_check_vbl_events();
+
+  // M4 Board activity LED countdown (1 per frame at 50fps)
+  if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
+
+  // YM register recording: capture PSG state once per VBL
+  if (g_ym_recorder.is_recording()) {
+    g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
+  }
+
+  // AVI video capture — reads back_surface, so it must run before the GUI
+  // thread publishes it to the ring. A skipped frame rendered nothing.
+  if (!CPC.skip_rendering && g_avi_recorder.is_recording()) {
+    g_avi_recorder.capture_video_frame(
+        static_cast<const uint8_t*>(back_surface->pixels), back_surface->w,
+        back_surface->h, back_surface->pitch);
+  }
+
+  session_frame();
+  autotype_frame();
+
+  g_telnet.drain_input();
+
+  // IPC frame step. This thread published the snapshot this frame began
+  // with, so the current serial is that frame's.
+  if (g_ipc->frame_step_tick(
+          g_kbd_publish_serial.load(std::memory_order_relaxed))) {
+    cpc_pause();
+    g_ipc->notify_frame_step_done();
+  }
+}
+}  // namespace
+
+EmuFrameResult emu_handle_stop() {
+  if (z80.breakpoint_reached || z80.watchpoint_reached) {
+    g_trace.dump_if_crash();
+    if (g_exit_on_break) {
+      cleanExit(1, false);
+    }
+    imgui_state.show_devtools = true;
+    // No cpc_pause() here: engine breakpoints are committed atomically in
+    // debug_sync before their hit is published. Re-pausing here would let
+    // this older stop overtake a newer IPC `run`.
+    z80.step_in = 0;
+    return EmuFrameResult::kStopped;
+  }
+  if (z80.step_in >= 2) {
+    // Step In completed (one instruction) or Step Out completed (RET
+    // reached). cpc_pause(), not a bare CPC.paused write: g_emu_paused and
+    // the audio pause must follow (the -H loop used to skip both).
+    cpc_pause();
+    z80.step_in = 0;
+    return EmuFrameResult::kStopped;
+  }
+  // An old flavour breakpoint: clear it to let the Z80 move on, and make
+  // sure we'll be here to rearm it at the next instruction.
+  z80.break_point = Z80_BREAKPOINT_NONE;
+  z80.trace = 1;
+  // Release an autotype KONCPC_WAITBREAK that was waiting for this
+  // break — or latch the break for a WAITBREAK still queued behind the
+  // command that caused it (e.g. `call 0` executing before the queue
+  // reaches its WAITBREAK).
+  g_waitbreak_latch = true;
+  g_autotype_queue.resume();
+  return EmuFrameResult::kBreakAbsorbed;
+}
+
+EmuFrameResult emu_run_frame(bool bridge_paces) {
+  // Publish a consistent snapshot of the pending keyboard state for this
+  // frame's firmware scan (see publish_keyboard_snapshot).
+  publish_keyboard_snapshot();
+
+  publish_frame_stats();
+
+  // Real-time pacing is forced on while autotype is active so the Z80 stays
+  // at real time: the autotype is paced by the firmware's keyboard scans
+  // (with a frame-based timeout fallback), which is only meaningful at
+  // real-time speed — an uncapped Z80 would drain the queue during a busy CPU
+  // stretch (e.g. while BASIC executes a typed command) and drop the keys it
+  // isn't reading. The pacing itself is the bridge's own 50 Hz deadline.
+  const bool limit_now = CPC.limit_speed || g_autotype_queue.is_active();
+
+  // Frameskip decision at frame boundaries.
+  CPC.skip_rendering = g_last_exit_condition == EC_FRAME_COMPLETE &&
+                       limit_now && CPC.frameskip &&
+                       SDL_GetPerformanceCounter() > perfTicksTarget;
+
+  uint64_t const z80Start = SDL_GetPerformanceCounter();
+  dword const exit_condition = run_machine_frame(limit_now, bridge_paces);
+  z80TimeAccum += SDL_GetPerformanceCounter() - z80Start;
+  g_last_exit_condition = exit_condition;
+
+  // Tape wave sample (sub-frame resolution, render thread reads this under
+  // condvar)
+  if (CPC.tape_motor && CPC.tape_play_button) {
+    imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
+    imgui_state.tape_wave_head =
+        (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
+  }
+
+  if (exit_condition == EC_BREAKPOINT) return emu_handle_stop();
+
+  if (z80.break_point == Z80_BREAKPOINT_NONE) {
+    LOG_DEBUG("Rearming EC_BREAKPOINT.");
+    z80.break_point = 0;  // set break point for next time
+  }
+  frame_epilogue();
+  return EmuFrameResult::kFrameComplete;
+}
+
+// Z80 emulation thread — runs emu_run_frame() and hands each finished frame
+// to the render thread. Used only in non-headless (GUI) mode; headless calls
+// emu_run_frame() from the main loop.
+//
+// At EC_FRAME_COMPLETE (after emu_run_frame's epilogue):
+//   1. Calls video_ring_publish() — publishes the frame + advances back_surface
+//   2. Calls g_frame_signal.signal_ready() — wakes the render thread (no wait)
+//   3. Immediately starts the next frame — the render thread reads the latest
 //   published buffer independently and never blocks the Z80.
 namespace {
 void z80_thread_main() {
-  dword iExitCondition = EC_FRAME_COMPLETE;
-  // Residual "render-wait" metric (from the U1 baseline): time the Z80 spends
-  // in signal_ready() — now just a mutex+notify, so the [fps] log reads ~0,
-  // confirming the decouple holds (it was 15-45% before the ring).
-  static uint64_t s_render_wait_accum = 0;
-
   while (!g_z80_thread_quit.load(std::memory_order_relaxed)) {
     if (g_emu_paused.load(std::memory_order_relaxed)) {
       // Mark idle so pause-lease holders know we are safe to
@@ -3683,445 +4108,53 @@ void z80_thread_main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
-    // About to enter z80_execute() — mark non-idle.
+    // About to run a frame — mark non-idle.
     g_z80_idle.store(false, std::memory_order_release);
 
-    // Publish a consistent snapshot of the pending keyboard state for this
-    // frame's firmware scan (see publish_keyboard_snapshot).
-    publish_keyboard_snapshot();
+    EmuFrameResult const result = emu_run_frame(/*bridge_paces=*/true);
 
-    // FPS counter: publish stats once per second
-    {
-      uint64_t const perfNow = SDL_GetPerformanceCounter();
-      if (perfNow >= perfTicksTargetFPS) {
-        dwFPS = dwFrameCount;
-        dwFrameCount = 0;
-        perfTicksTargetFPS = perfNow + perfFreq;
-
-        // U1 baseline: average time/frame the Z80 was blocked in
-        // wait_consumed() waiting for render, and the % of wall-clock spent
-        // blocked. Both fall to ~0 once the Z80 no longer waits on render.
-        double const render_wait_ms =
-            dwFPS ? static_cast<double>(s_render_wait_accum) * 1000.0 /
-                        static_cast<double>(perfFreq) / dwFPS
-                  : 0.0;
-        double const render_wait_pct =
-            static_cast<double>(s_render_wait_accum) * 100.0 /
-            static_cast<double>(perfFreq);
-        s_render_wait_accum = 0;
-
-        // Opt-in once-per-second FPS log (run with --fps, or --debug) — a
-        // passive, tail-able steady-FPS readout that doesn't perturb the
-        // emulation the way an IPC `wait vbl` probe does.
-        if (g_log_fps || g_debug) {
-          // Split the frame: machine = subcycle_bridge_frame (Z80+devices+blit+
-          // debug_sync, the z80Start..z80End region); total = whole emu-loop
-          // iteration. machine≈total localizes the cost inside the machine
-          // frame; total>>machine points at the wrapper
-          // (audio/keyboard/signal/timing).
-          double const machine_ms =
-              frameTimeSamples
-                  ? static_cast<double>(z80TimeAccum) * 1000.0 /
-                        static_cast<double>(perfFreq) / frameTimeSamples
-                  : 0.0;
-          double const total_ms =
-              frameTimeSamples
-                  ? static_cast<double>(frameTimeAccum) * 1000.0 /
-                        static_cast<double>(perfFreq) / frameTimeSamples
-                  : 0.0;
-          printf(
-              "[fps] %3u FPS  %3u%% speed  | render-wait %.1f ms/f (%2.0f%%)  "
-              "| "
-              "machine %.1f ms/f  total %.1f ms/f\n",
-              dwFPS,
-              dwFPS * 100u / static_cast<unsigned>(1000.0 / FRAME_PERIOD_MS),
-              render_wait_ms, render_wait_pct, machine_ms, total_ms);
-          fflush(stdout);
-        }
-
-        {
-          std::scoped_lock const stats_lock(g_imgui_stats_mutex);
-          if (frameTimeSamples > 0) {
-            double const ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
-            imgui_state.frame_time_avg_us =
-                static_cast<float>(static_cast<double>(frameTimeAccum) /
-                                   frameTimeSamples * ticksToUs);
-            imgui_state.frame_time_min_us = static_cast<float>(
-                static_cast<double>(frameTimeMin) * ticksToUs);
-            imgui_state.frame_time_max_us = static_cast<float>(
-                static_cast<double>(frameTimeMax) * ticksToUs);
-            imgui_state.display_time_avg_us = static_cast<float>(
-                static_cast<double>(
-                    displayTimeAccum.exchange(0, std::memory_order_relaxed)) /
-                frameTimeSamples * ticksToUs);
-            imgui_state.sleep_time_avg_us =
-                static_cast<float>(static_cast<double>(sleepTimeAccum) /
-                                   frameTimeSamples * ticksToUs);
-            imgui_state.z80_time_avg_us =
-                static_cast<float>(static_cast<double>(z80TimeAccum) /
-                                   frameTimeSamples * ticksToUs);
-          }
-          frameTimeAccum = 0;
-          frameTimeMin = UINT64_MAX;
-          frameTimeMax = 0;
-          sleepTimeAccum = 0;
-          z80TimeAccum = 0;
-          frameTimeSamples = 0;
-
-          imgui_state.audio_underruns = audio_underrun_count;
-          imgui_state.audio_near_underruns = audio_near_underrun_count;
-          imgui_state.audio_pushes = audio_push_count;
-          if (audio_push_count == 0) {
-            imgui_state.audio_queue_avg_ms = 0;
-            imgui_state.audio_queue_min_ms = 0;
-            imgui_state.audio_push_interval_max_us = 0;
-          } else {
-            double const avg_bytes = audio_queue_sum_bytes / audio_push_count;
-            int frame_size = CPC.snd_stereo ? 4 : 2;
-            if (CPC.snd_bits == 0) frame_size /= 2;
-            int const sample_rate = freq_table[CPC.snd_playback_rate];
-            double const bytes_per_ms = sample_rate * frame_size / 1000.0;
-            imgui_state.audio_queue_avg_ms =
-                static_cast<float>(avg_bytes / bytes_per_ms);
-            imgui_state.audio_queue_min_ms =
-                static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
-            imgui_state.audio_push_interval_max_us = static_cast<float>(
-                static_cast<double>(audio_push_interval_max) * 1000000.0 /
-                perfFreq);
-          }
-          audio_underrun_count = 0;
-          audio_near_underrun_count = 0;
-          audio_push_count = 0;
-          audio_queue_sum_bytes = 0;
-          audio_queue_min_bytes = INT_MAX;
-          audio_push_interval_max = 0;
-        }  // g_imgui_stats_mutex
-      }
+    if (result == EmuFrameResult::kStopped) {
+      // Mid-frame stop: the render thread may be waiting in
+      // try_wait_ready_for() for a frame that will never arrive (we stopped
+      // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
+      // sees g_emu_paused=true and shows the paused overlay on its next
+      // iteration.
+      g_frame_signal.signal_ready(true);
+      continue;
     }
+    if (result != EmuFrameResult::kFrameComplete) continue;
 
-    // Real-time pacing is forced on while autotype is active so the Z80 stays
-    // at real time: the autotype is paced by the firmware's keyboard scans
-    // (with a frame-based timeout fallback), which is only meaningful at
-    // real-time speed — an uncapped Z80 would drain the queue during a busy CPU
-    // stretch (e.g. while BASIC executes a typed command) and drop the keys it
-    // isn't reading. The pacing itself is the bridge's own 50 Hz deadline.
-    const bool limit_now = CPC.limit_speed || g_autotype_queue.is_active();
-
-    // Frameskip decision at frame boundaries.
-    CPC.skip_rendering = iExitCondition == EC_FRAME_COMPLETE && limit_now &&
-                         CPC.frameskip &&
-                         SDL_GetPerformanceCounter() > perfTicksTarget;
-
-    {
-      uint64_t const z80Start = SDL_GetPerformanceCounter();
-      if (subcycle_bridge_active()) {
-        subcycle_bridge_sync_probe();  // list edits made while paused reach
-                                       // the probe before this frame runs
-        // Sub-cycle engine: one whole frame of the pin-level board. Keyboard
-        // comes from the published matrix (so autotype/IPC/session all work);
-        // audio uses the existing SDL push path; pacing is the bridge's own
-        // 50 Hz deadline.
-        uint8_t rows[16];
-        for (int i = 0; i < 16; i++)
-          rows[i] = keyboard_matrix_live[i].load(std::memory_order_relaxed);
-        if (tape_line_in_active())  // mic -> Schmitt -> the deck's line queue
-          tape_line_in_pump(*subcycle_bridge_machine());
-        // Blit at presentation rate, not emulation rate: the bridge's scaled
-        // blit is a second full-frame format conversion (the machine's video
-        // device already rendered into its own fb — that cost is inherent,
-        // like the legacy renderer's). An uncapped run emits thousands of
-        // frames a second while the render side consumes ~60; converting
-        // every one of them was measured at ~2 ms/frame — a 6× cap on the
-        // Fast tier under §8.3. Capped (50 Hz) sessions blit every frame as
-        // before; consumers (display, screenshots, recorders) see a surface
-        // at most one presentation period stale.
-        static uint64_t s_last_blit = 0;
-        const uint64_t blit_now = SDL_GetPerformanceCounter();
-        const bool blit_due =
-            limit_now ||
-            blit_now - s_last_blit >= SDL_GetPerformanceFrequency() / 60;
-        if (blit_due) s_last_blit = blit_now;
-        const std::vector<int16_t>& frame_audio = subcycle_bridge_frame(
-            rows, blit_due ? back_surface : nullptr, limit_now);
-        if (!frame_audio.empty() && CPC.snd_enabled &&
-            !g_emu_paused.load(std::memory_order_relaxed)) {
-          audio_push_buffer(
-              reinterpret_cast<const byte*>(frame_audio.data()),
-              static_cast<int>(frame_audio.size() * sizeof(int16_t)));
-        }
-        if (tape_line_out_active())  // wires -> jack (data + motor carrier)
-          tape_line_out_pump(*subcycle_bridge_machine());
-        // Signal autotype only when the firmware ACTUALLY read the keyboard
-        // this frame (machine-side PSG port-A read detection — the engine=1
-        // equivalent of the legacy PPI read handler). Treating every
-        // completed frame as a scan made autotype type blindly during BOOT,
-        // before the firmware listens — eating the leading autocmd
-        // characters (`run"hello` arrived as `un3hello` in the e2e dsk test).
-        g_engine1_scanned_rows = subcycle_bridge_scanned_key_rows();
-        if (g_engine1_scanned_rows != 0) g_keyboard_scanned = true;
-        // Wave-1 debug shim: mirror bench lists into the probe, publish the
-        // machine's registers into the legacy view struct, and surface a
-        // latched probe hit as the legacy breakpoint flow (pause, DevTools,
-        // IPC "wait bp") — all existing debug UX, pin-level truth.
-        iExitCondition =
-            subcycle_bridge_debug_sync() ? EC_BREAKPOINT : EC_FRAME_COMPLETE;
-      } else {
-        // The sub-cycle board is the only engine; without it there is no
-        // frame to run (start failure is fatal at init).
-        SDL_Delay(1);
-        iExitCondition = EC_FRAME_COMPLETE;
-      }
-      z80TimeAccum += SDL_GetPerformanceCounter() - z80Start;
-    }
-
-    // Tape wave sample (sub-frame resolution, render thread reads this under
-    // condvar)
-    if (CPC.tape_motor && CPC.tape_play_button) {
-      imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
-      imgui_state.tape_wave_head =
-          (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
-    }
-
-    // Breakpoint / step
-    if (iExitCondition == EC_BREAKPOINT) {
-      if (z80.breakpoint_reached || z80.watchpoint_reached) {
-        g_trace.dump_if_crash();
-        if (g_exit_on_break) {
-          cleanExit(1, false);
-        }
-        imgui_state.show_devtools = true;
-        // No cpc_pause() here: engine breakpoints are committed atomically in
-        // debug_sync before their hit is published. Re-pausing here would let
-        // this older stop overtake a newer IPC `run`.
-        // Mid-frame pause: the render thread may be waiting in
-        // try_wait_ready_for() for a frame that will never arrive (we stopped
-        // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
-        // sees g_emu_paused=true and shows the paused overlay on its next
-        // iteration.
-        g_frame_signal.signal_ready(true);
-        z80.step_in = 0;
-      } else if (z80.step_in >= 2) {
-        cpc_pause();
-        g_frame_signal.signal_ready(true);  // same: unblock render thread
-        z80.step_in = 0;
-      } else {
-        z80.break_point = Z80_BREAKPOINT_NONE;
-        z80.trace = 1;
-        // Release an autotype KONCPC_WAITBREAK that was waiting for this
-        // break — or latch the break for a WAITBREAK still queued behind the
-        // command that caused it (e.g. `call 0` executing before the queue
-        // reaches its WAITBREAK).
-        g_waitbreak_latch = true;
-        g_autotype_queue.resume();
-      }
+    // Drive LED state and FPS text — written before signal_ready() so the
+    // condvar's happens-before ensures render thread sees them after
+    // wait_ready() returns. The sub-cycle FDC Device is the only FDC.
+    subcycle_bridge_disk_leds(imgui_state.drive_a_led, imgui_state.drive_b_led);
+    if (CPC.scr_fps) {
+      char chStr[15];
+      snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS),
+               static_cast<int>(dwFPS) * 100 /
+                   static_cast<int>(1000.0 / FRAME_PERIOD_MS));
+      imgui_state.topbar_fps = chStr;
     } else {
-      if (z80.break_point == Z80_BREAKPOINT_NONE) {
-        LOG_DEBUG("Rearming EC_BREAKPOINT.");
-        z80.break_point = 0;
-      }
+      imgui_state.topbar_fps.clear();
     }
 
-    if (iExitCondition == EC_FRAME_COMPLETE) {
-      dwFrameCountOverall++;
-      dwFrameCount++;
-
-      // Engine=1: the sub-cycle PPI/PSG read the keyboard directly and bypass
-      // the legacy PPI I/O handler that calls notify_scanned(). Relay the rows
-      // the firmware actually scanned this frame so the KeyboardManager's
-      // BufferedUntilRead mode can release a held key once its row was read
-      // (matches the legacy per-read notify; no-op on engine=0).
-      if (subcycle_bridge_active()) {
-        // Captured once at frame run (read-and-clear source) — see
-        // g_engine1_scanned_rows; a second take here would always read 0.
-        uint16_t const scanned = g_engine1_scanned_rows;
-        for (int krow = 0; krow < 16; ++krow)
-          if (scanned & (1u << krow))
-            // Value-aware: confirm only keys actually present in the snapshot
-            // the firmware read this frame (keyboard_matrix_live is stable
-            // between this frame's publish and here), so a key set mid-frame
-            // stays held.
-            g_keyboard_manager.notify_scanned(
-                krow,
-                keyboard_matrix_live[krow].load(std::memory_order_relaxed));
-      }
-      g_keyboard_manager.update(keyboard_matrix, dwFrameCountOverall);
-
-      // Frame-to-frame timing
-      {
-        uint64_t const now = SDL_GetPerformanceCounter();
-        if (lastFrameStart > 0) {
-          uint64_t const elapsed = now - lastFrameStart;
-          frameTimeAccum += elapsed;
-          frameTimeMin = std::min(elapsed, frameTimeMin);
-          frameTimeMax = std::max(elapsed, frameTimeMax);
-          frameTimeSamples++;
-        }
-        lastFrameStart = now;
-      }
-
-      // Exit-after checks (--exit-after N frames or N ms)
-      if (g_exit_mode == EXIT_FRAMES && dwFrameCountOverall >= g_exit_target) {
-        cleanExit(0, false);
-      }
-      if (g_exit_mode == EXIT_MS &&
-          (SDL_GetTicks() - g_exit_start_ticks) >= g_exit_target) {
-        cleanExit(0, false);
-      }
-
-      ipc_check_vbl_events();
-
-      if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
-
-      if (g_ym_recorder.is_recording()) {
-        g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
-      }
-
-      // AVI video capture — reads back_surface; must be before signal_ready()
-      if (!CPC.skip_rendering && g_avi_recorder.is_recording()) {
-        g_avi_recorder.capture_video_frame(
-            static_cast<const uint8_t*>(back_surface->pixels), back_surface->w,
-            back_surface->h, back_surface->pitch);
-      }
-
-      // Session recording: keyboard snapshot per frame
-      if (g_session.state() == SessionState::RECORDING) {
-        static uint8_t prev_matrix[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                                          0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                                          0xFF, 0xFF, 0xFF, 0xFF};
-        for (int row = 0; row < 16; row++) {
-          byte const cur = keyboard_matrix[row].load(std::memory_order_relaxed);
-          if (cur != prev_matrix[row]) {
-            g_session.record_event(SessionEventType::KEY_DOWN,
-                                   static_cast<uint16_t>((row << 8) | cur));
-            prev_matrix[row] = cur;
-          }
-        }
-        g_session.record_frame_sync();
-      }
-
-      // Session playback: replay frame events
-      if (g_session.state() == SessionState::PLAYING) {
-        SessionEvent evt;
-        while (g_session.next_event(evt)) {
-          if (evt.type == SessionEventType::KEY_DOWN) {
-            int const row = (evt.data >> 8) & 0x0F;
-            keyboard_matrix[row].store(static_cast<byte>(evt.data & 0xFF),
-                                       std::memory_order_relaxed);
-          }
-        }
-        if (!g_session.advance_frame()) { /* recording finished */
-        }
-      }
-
-      // Auto-type: drain queue, synchronized with CPC keyboard scans
-      if (g_autotype_queue.is_active()) {
-        bool do_tick = false;
-        if (g_keyboard_scanned) {
-          g_keyboard_scanned = false;
-          g_keyboard_scan_timeout = 0;
-          do_tick = true;
-        } else if (++g_keyboard_scan_timeout >= kAutotypeScanTimeoutFrames) {
-          g_keyboard_scan_timeout = 0;
-          do_tick = true;
-        }
-        if (do_tick) {
-          g_autotype_queue.tick(
-              [](uint16_t cpc_key, bool pressed) {
-                // A break only satisfies a WAITBREAK when it fired AFTER the
-                // last typed keystroke (i.e. was caused by what autotype just
-                // typed) — clear the latch on every key PRESS so a boot-time
-                // break can't pre-satisfy a later WAITBREAK. Releases don't
-                // clear: `call 0`'s break can land between RETURN's press and
-                // its release tick, and must survive to the WAITBREAK.
-                if (pressed) g_waitbreak_latch = false;
-                CPCScancode const scancode =
-                    CPC.InputMapper->CPCscancodeFromCPCkey(
-                        static_cast<CPC_KEYS>(cpc_key));
-                if (static_cast<byte>(scancode) == 0xff) return;
-                if (pressed) {
-                  keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
-                      ~bit_values[static_cast<byte>(scancode) & 7],
-                      std::memory_order_relaxed);
-                  if (scancode & MOD_CPC_SHIFT)
-                    keyboard_matrix[0x25 >> 4].fetch_and(
-                        ~bit_values[0x25 & 7], std::memory_order_relaxed);
-                  else if (static_cast<byte>(scancode) != 0x25)
-                    keyboard_matrix[0x25 >> 4].fetch_or(
-                        bit_values[0x25 & 7], std::memory_order_relaxed);
-                  if (scancode & MOD_CPC_CTRL)
-                    keyboard_matrix[0x27 >> 4].fetch_and(
-                        ~bit_values[0x27 & 7], std::memory_order_relaxed);
-                  else if (static_cast<byte>(scancode) != 0x27)
-                    keyboard_matrix[0x27 >> 4].fetch_or(
-                        bit_values[0x27 & 7], std::memory_order_relaxed);
-                } else {
-                  keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
-                      bit_values[static_cast<byte>(scancode) & 7],
-                      std::memory_order_relaxed);
-                  keyboard_matrix[0x25 >> 4].fetch_or(
-                      bit_values[0x25 & 7], std::memory_order_relaxed);
-                  keyboard_matrix[0x27 >> 4].fetch_or(
-                      bit_values[0x27 & 7], std::memory_order_relaxed);
-                }
-              },
-              [](uint16_t cmd) -> bool {
-                koncpc_menu_action(static_cast<int>(cmd));
-                // KONCPC_WAITBREAK blocks the queue until the next breakpoint
-                // fires (the Z80 thread then calls g_autotype_queue.resume()).
-                // A break that already fired while the WAITBREAK was still
-                // queued (latched below) satisfies it immediately.
-                if (cmd == KONCPC_WAITBREAK && g_waitbreak_latch) {
-                  g_waitbreak_latch = false;
-                  return false;
-                }
-                return cmd == KONCPC_WAITBREAK;
-              });
-        }
-      }
-
-      g_telnet.drain_input();
-
-      // IPC frame step. This thread published the snapshot this frame began
-      // with, so the current serial is that frame's.
-      if (g_ipc->frame_step_tick(
-              g_kbd_publish_serial.load(std::memory_order_relaxed))) {
-        cpc_pause();
-        g_ipc->notify_frame_step_done();
-      }
-
-      // Drive LED state and FPS text — written before signal_ready() so the
-      // condvar's happens-before ensures render thread sees them after
-      // wait_ready() returns. The sub-cycle FDC Device is the only FDC.
-      subcycle_bridge_disk_leds(imgui_state.drive_a_led,
-                                imgui_state.drive_b_led);
-      if (CPC.scr_fps) {
-        char chStr[15];
-        snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS),
-                 static_cast<int>(dwFPS) * 100 /
-                     static_cast<int>(1000.0 / FRAME_PERIOD_MS));
-        imgui_state.topbar_fps = chStr;
-      } else {
-        imgui_state.topbar_fps.clear();
-      }
-
-      // Finalise the write buffer (ASIC sprites must be drawn before publish)
-      // then publish it to the ring and advance back_surface to a free buffer.
-      // The Z80 keeps writing the new buffer; the render thread reads the
-      // published one.  On a skipped frame nothing is published (the previous
-      // frame stays current) and the same write buffer is reused next frame.
-      if (!CPC.skip_rendering) {
-        back_surface = video_ring_publish();
-      }
-
-      // Wake the render thread (it reads the latest published buffer) WITHOUT
-      // blocking: the triple-buffer ring gives the Z80 a free buffer to write,
-      // so it never waits for render.  render-wait now measures ~0 (the
-      // coupling this refactor removes).  The render thread reads
-      // g_ring_published and drops intermediate frames if it falls behind.
-      uint64_t const render_wait_t0 = SDL_GetPerformanceCounter();
-      g_frame_signal.signal_ready(CPC.skip_rendering);
-      s_render_wait_accum += SDL_GetPerformanceCounter() - render_wait_t0;
+    // Finalise the write buffer (ASIC sprites must be drawn before publish)
+    // then publish it to the ring and advance back_surface to a free buffer.
+    // The Z80 keeps writing the new buffer; the render thread reads the
+    // published one.  On a skipped frame nothing is published (the previous
+    // frame stays current) and the same write buffer is reused next frame.
+    if (!CPC.skip_rendering) {
+      back_surface = video_ring_publish();
     }
+
+    // Wake the render thread (it reads the latest published buffer) WITHOUT
+    // blocking: the triple-buffer ring gives the Z80 a free buffer to write,
+    // so it never waits for render.  render-wait now measures ~0 (the
+    // coupling this refactor removes).  The render thread reads
+    // g_ring_published and drops intermediate frames if it falls behind.
+    uint64_t const render_wait_t0 = SDL_GetPerformanceCounter();
+    g_frame_signal.signal_ready(CPC.skip_rendering);
+    g_render_wait_accum += SDL_GetPerformanceCounter() - render_wait_t0;
   }
 }
 }  // namespace
@@ -4305,7 +4338,6 @@ int koncpc_main(int argc, char** argv) {
     ~Win32TimerGuard() { timeEndPeriod(1); }
   } win32TimerGuard;
 #endif
-  int iExitCondition;
   bool bin_loaded = false;
   SDL_Event event;
   std::vector<std::string> slot_list;
@@ -4583,7 +4615,6 @@ int koncpc_main(int argc, char** argv) {
   loadBreakpoints();
 
   g_exit_start_ticks = SDL_GetTicks();
-  iExitCondition = EC_FRAME_COMPLETE;
 
   // Keyboard matrices start RELEASED. Both are std::atomic arrays with static
   // (zero) init — and 0x00 means ALL KEYS PRESSED (CPC matrix: bit clear =
@@ -5244,355 +5275,32 @@ int koncpc_main(int argc, char** argv) {
       if (render_one_frame()) continue;
     }
 
-    // ---- Headless: original single-threaded emulation (unchanged) ----
-    if (g_headless && !CPC.paused) {  // run the emulation
-      uint64_t const perfNow = SDL_GetPerformanceCounter();
-
-      if (perfNow >= perfTicksTargetFPS) {  // update FPS counter every second
-        dwFPS = dwFrameCount;
-        dwFrameCount = 0;
-        perfTicksTargetFPS = perfNow + perfFreq;  // next sample in 1 second
-
-        // Publish frame timing stats (use double to avoid integer division
-        // precision loss)
-        if (frameTimeSamples > 0) {
-          double const ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
-          imgui_state.frame_time_avg_us =
-              static_cast<float>(static_cast<double>(frameTimeAccum) /
-                                 frameTimeSamples * ticksToUs);
-          imgui_state.frame_time_min_us =
-              static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
-          imgui_state.frame_time_max_us =
-              static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
-          imgui_state.display_time_avg_us =
-              static_cast<float>(static_cast<double>(displayTimeAccum.load(
-                                     std::memory_order_relaxed)) /
-                                 frameTimeSamples * ticksToUs);
-          imgui_state.sleep_time_avg_us =
-              static_cast<float>(static_cast<double>(sleepTimeAccum) /
-                                 frameTimeSamples * ticksToUs);
-          imgui_state.z80_time_avg_us = static_cast<float>(
-              static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
-        }
-        frameTimeAccum = 0;
-        frameTimeMin = UINT64_MAX;
-        frameTimeMax = 0;
-        displayTimeAccum.store(0, std::memory_order_relaxed);
-        sleepTimeAccum = 0;
-        z80TimeAccum = 0;
-        frameTimeSamples = 0;
-
-        // Publish audio diagnostics
-        imgui_state.audio_underruns = audio_underrun_count;
-        imgui_state.audio_near_underruns = audio_near_underrun_count;
-        imgui_state.audio_pushes = audio_push_count;
-        if (audio_push_count == 0) {
-          imgui_state.audio_queue_avg_ms = 0;
-          imgui_state.audio_queue_min_ms = 0;
-          imgui_state.audio_push_interval_max_us = 0;
-        } else if (audio_push_count > 0) {
-          // Convert queue depth from bytes to milliseconds
-          double const avg_bytes = audio_queue_sum_bytes / audio_push_count;
-          int frame_size = CPC.snd_stereo ? 4 : 2;  // 16-bit stereo=4, mono=2
-          if (CPC.snd_bits == 0) frame_size /= 2;   // 8-bit halves it
-          int const sample_rate = freq_table[CPC.snd_playback_rate];
-          double const bytes_per_ms = sample_rate * frame_size / 1000.0;
-          imgui_state.audio_queue_avg_ms =
-              static_cast<float>(avg_bytes / bytes_per_ms);
-          imgui_state.audio_queue_min_ms =
-              static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
-          imgui_state.audio_push_interval_max_us =
-              static_cast<float>(static_cast<double>(audio_push_interval_max) *
-                                 1000000.0 / perfFreq);
-        }
-        audio_underrun_count = 0;
-        audio_near_underrun_count = 0;
-        audio_push_count = 0;
-        audio_queue_sum_bytes = 0;
-        audio_queue_min_bytes = INT_MAX;
-        audio_push_interval_max = 0;
-      }
-
-      // Frameskip decision: only on frame boundaries to avoid mid-frame
-      // toggles.
-      CPC.skip_rendering = iExitCondition == EC_FRAME_COMPLETE &&
-                           CPC.limit_speed && CPC.frameskip &&
-                           SDL_GetPerformanceCounter() > perfTicksTarget;
-
-      // Headless runs single-threaded, but the firmware still scans the live
-      // matrix — refresh it from pending each frame (uncontended here).
-      publish_keyboard_snapshot();
-
-      {
-        uint64_t const z80Start = SDL_GetPerformanceCounter();
-        if (subcycle_bridge_active()) {
-          // Headless flavour of the threaded loop's bridge branch
-          // (beads-iymn: this loop used to call z80_execute unconditionally,
-          // silently running the LEGACY core under engine=1). Differences
-          // from the threaded branch: the bridge's own 50 Hz pacer stays OFF
-          // (this loop's pacing keys on EC_FRAME_COMPLETE — one pacer only),
-          // and the audio gate reads CPC.paused (single-threaded).
-          subcycle_bridge_sync_probe();
-          uint8_t rows[16];
-          for (int i = 0; i < 16; i++)
-            rows[i] = keyboard_matrix_live[i].load(std::memory_order_relaxed);
-          if (tape_line_in_active())
-            tape_line_in_pump(*subcycle_bridge_machine());
-          static uint64_t s_last_blit_hl = 0;
-          const uint64_t blit_now = SDL_GetPerformanceCounter();
-          const bool blit_due =
-              CPC.limit_speed != 0 ||
-              blit_now - s_last_blit_hl >= SDL_GetPerformanceFrequency() / 60;
-          if (blit_due) s_last_blit_hl = blit_now;
-          const std::vector<int16_t>& frame_audio = subcycle_bridge_frame(
-              rows, blit_due ? back_surface : nullptr, false);
-          if (!frame_audio.empty() && CPC.snd_enabled && !CPC.paused) {
-            audio_push_buffer(
-                reinterpret_cast<const byte*>(frame_audio.data()),
-                static_cast<int>(frame_audio.size() * sizeof(int16_t)));
-          }
-          if (tape_line_out_active())
-            tape_line_out_pump(*subcycle_bridge_machine());
-          // Real-scan gate, same as the threaded branch: autotype must wait
-          // for the firmware's first matrix read (boot!) or it types into
-          // the void — the CI e2e dsk hang.
-          g_engine1_scanned_rows = subcycle_bridge_scanned_key_rows();
-          if (g_engine1_scanned_rows != 0) g_keyboard_scanned = true;
-          iExitCondition =
-              subcycle_bridge_debug_sync() ? EC_BREAKPOINT : EC_FRAME_COMPLETE;
-        } else {
-          SDL_Delay(1);  // no engine without the board (start failure is fatal)
-          iExitCondition = EC_FRAME_COMPLETE;
-        }
-        z80TimeAccum += SDL_GetPerformanceCounter() - z80Start;
-      }
-
-      // Sample tape level into waveform ring buffer (sub-frame rate)
-      if (CPC.tape_motor && CPC.tape_play_button) {
-        imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
-        imgui_state.tape_wave_head =
-            (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
-      }
-
-      if (iExitCondition == EC_BREAKPOINT) {
-        if (z80.breakpoint_reached || z80.watchpoint_reached) {
-          g_trace.dump_if_crash();
-          if (g_exit_on_break) {
-            cleanExit(1, false);
-          }
-          // This is a breakpoint from DevTools or symbol file
-          imgui_state.show_devtools = true;
-          z80.step_in = 0;
-        } else if (z80.step_in >= 2) {
-          // Step In completed (one instruction) or Step Out completed (RET
-          // reached)
-          CPC.paused = true;
-          z80.step_in = 0;
-        } else {
-          // This is an old flavour breakpoint
-          // We have to clear breakpoint to let the z80 emulator move on.
-          z80.break_point = Z80_BREAKPOINT_NONE;
-          z80.trace = 1;  // make sure we'll be here to rearm break point at the
-                          // next z80 instruction.
-
-          // Release an autotype KONCPC_WAITBREAK waiting for this break — or
-          // latch it for a WAITBREAK still queued (early `call 0`).
-          g_waitbreak_latch = true;
-          g_autotype_queue.resume();
-        }
-      } else {
-        if (z80.break_point == Z80_BREAKPOINT_NONE) {
-          LOG_DEBUG("Rearming EC_BREAKPOINT.");
-          z80.break_point = 0;  // set break point for next time
-        }
-      }
-
-      if (iExitCondition == EC_FRAME_COMPLETE) {  // emulation finished
-                                                  // rendering a complete frame?
-        dwFrameCountOverall++;
-        dwFrameCount++;
-
-        g_keyboard_manager.update(keyboard_matrix, dwFrameCountOverall);
-
-        // Measure frame-to-frame time (only on actual completed frames)
-        {
-          uint64_t const now = SDL_GetPerformanceCounter();
-          if (lastFrameStart > 0) {
-            uint64_t const elapsed = now - lastFrameStart;
-            frameTimeAccum += elapsed;
-            frameTimeMin = std::min(elapsed, frameTimeMin);
-            frameTimeMax = std::max(elapsed, frameTimeMax);
-            frameTimeSamples++;
-          }
-          lastFrameStart = now;
-        }
-
-        // Check --exit-after condition
-        if (g_exit_mode == EXIT_FRAMES &&
-            dwFrameCountOverall >= g_exit_target) {
-          cleanExit(0, false);
-        }
-        if (g_exit_mode == EXIT_MS &&
-            (SDL_GetTicks() - g_exit_start_ticks) >= g_exit_target) {
-          cleanExit(0, false);
-        }
-
-        // Check IPC VBL events
-        ipc_check_vbl_events();
-
-        // M4 Board activity LED countdown (1 per frame at 50fps)
-        if (g_m4board.activity_frames > 0) g_m4board.activity_frames--;
-
-        // M4 HTTP server — drain deferred actions (reset, pause toggle)
-        if (g_m4_http.is_running()) g_m4_http.drain_pending();
-
-        // IPC mouse input — flush staged deltas/buttons into the devices
-        ipc_drain_input();
-
+    // ---- Headless: the main thread runs the emulation itself ----
+    if (g_headless) {
+      // Main-thread-only housekeeping, done by render_one_frame() in GUI
+      // mode. It runs while paused too, or an HTTP resume would never land.
+      if (g_m4_http.is_running()) g_m4_http.drain_pending();
+      ipc_drain_input();
+      if (CPC.paused) {
+        std::this_thread::sleep_for(
+            std::chrono::milliseconds(POLL_INTERVAL_MS));
+      } else if (emu_run_frame(/*bridge_paces=*/false) ==
+                 EmuFrameResult::kFrameComplete) {
 #ifdef __APPLE__
         // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
-        // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT * scale
+        // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT *
+        // scale
         if (back_surface && (dwFrameCountOverall % 50) == 0) {
           koncpc_update_dock_icon_preview(
               back_surface->pixels, back_surface->w, back_surface->h,
               back_surface->pitch, 0, 0, back_surface->w, back_surface->h);
         }
 #endif
-
-        // YM register recording: capture PSG state once per VBL
-        if (g_ym_recorder.is_recording()) {
-          g_ym_recorder.capture_frame(PSG.RegisterAY.Index);
-        }
-
-        // AVI video recording: capture frame once per VBL
-        if (g_avi_recorder.is_recording()) {
-          g_avi_recorder.capture_video_frame(
-              static_cast<const uint8_t*>(back_surface->pixels),
-              back_surface->w, back_surface->h, back_surface->pitch);
-        }
-
-        // Session recording: capture keyboard state per frame
-        if (g_session.state() == SessionState::RECORDING) {
-          // Record changed keyboard matrix bytes as key events
-          static uint8_t prev_matrix[16] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                                            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                                            0xFF, 0xFF, 0xFF, 0xFF};
-          for (int row = 0; row < 16; row++) {
-            byte const cur =
-                keyboard_matrix[row].load(std::memory_order_relaxed);
-            if (cur != prev_matrix[row]) {
-              // Encode as row in high byte, value in low byte
-              uint16_t const data = static_cast<uint16_t>((row << 8) | cur);
-              g_session.record_event(SessionEventType::KEY_DOWN, data);
-              prev_matrix[row] = cur;
-            }
-          }
-          g_session.record_frame_sync();
-        }
-
-        // Session playback: replay events for this frame
-        if (g_session.state() == SessionState::PLAYING) {
-          SessionEvent evt;
-          while (g_session.next_event(evt)) {
-            if (evt.type == SessionEventType::KEY_DOWN) {
-              int const row = (evt.data >> 8) & 0x0F;
-              keyboard_matrix[row].store(static_cast<byte>(evt.data & 0xFF),
-                                         std::memory_order_relaxed);
-            }
-          }
-          if (!g_session.advance_frame()) {
-            // Recording finished, session goes back to IDLE
-          }
-        }
-
-        // Auto-type: drain queue synchronized with keyboard scans.
-        // Only inject key changes after the firmware has read the matrix,
-        // so keys aren't changed mid-scan. Fallback after 10 frames for
-        // programs that don't scan the keyboard (e.g. during loading).
-        if (g_autotype_queue.is_active()) {
-          bool do_tick = false;
-          if (g_keyboard_scanned) {
-            g_keyboard_scanned = false;
-            g_keyboard_scan_timeout = 0;
-            do_tick = true;
-          } else if (++g_keyboard_scan_timeout >= kAutotypeScanTimeoutFrames) {
-            g_keyboard_scan_timeout = 0;
-            do_tick = true;
-          }
-          if (do_tick) {
-            g_autotype_queue.tick(
-                [](uint16_t cpc_key, bool pressed) {
-                  // Same latch scoping as the threaded loop: only a break
-                  // after the last key PRESS can satisfy a WAITBREAK
-                  // (releases don't clear — the break can land mid-keystroke).
-                  if (pressed) g_waitbreak_latch = false;
-                  CPCScancode const scancode =
-                      CPC.InputMapper->CPCscancodeFromCPCkey(
-                          static_cast<CPC_KEYS>(cpc_key));
-                  // Direct matrix manipulation (same as ipc_apply_keypress)
-                  if (static_cast<byte>(scancode) == 0xff) return;
-                  if (pressed) {
-                    keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_and(
-                        ~bit_values[static_cast<byte>(scancode) & 7],
-                        std::memory_order_relaxed);
-                    if (scancode & MOD_CPC_SHIFT) {
-                      keyboard_matrix[0x25 >> 4].fetch_and(
-                          ~bit_values[0x25 & 7], std::memory_order_relaxed);
-                    } else if (static_cast<byte>(scancode) != 0x25) {
-                      keyboard_matrix[0x25 >> 4].fetch_or(
-                          bit_values[0x25 & 7], std::memory_order_relaxed);
-                    }
-                    if (scancode & MOD_CPC_CTRL) {
-                      keyboard_matrix[0x27 >> 4].fetch_and(
-                          ~bit_values[0x27 & 7], std::memory_order_relaxed);
-                    } else if (static_cast<byte>(scancode) != 0x27) {
-                      keyboard_matrix[0x27 >> 4].fetch_or(
-                          bit_values[0x27 & 7], std::memory_order_relaxed);
-                    }
-                  } else {
-                    keyboard_matrix[static_cast<byte>(scancode) >> 4].fetch_or(
-                        bit_values[static_cast<byte>(scancode) & 7],
-                        std::memory_order_relaxed);
-                    keyboard_matrix[0x25 >> 4].fetch_or(
-                        bit_values[0x25 & 7], std::memory_order_relaxed);
-                    keyboard_matrix[0x27 >> 4].fetch_or(
-                        bit_values[0x27 & 7], std::memory_order_relaxed);
-                  }
-                },
-                [](uint16_t cmd) -> bool {
-                  koncpc_menu_action(static_cast<int>(cmd));
-                  // Same early-break latch consumption as the threaded loop.
-                  if (cmd == KONCPC_WAITBREAK && g_waitbreak_latch) {
-                    g_waitbreak_latch = false;
-                    return false;
-                  }
-                  return cmd == KONCPC_WAITBREAK;
-                });
-          }
-        }
-
-        // Telnet console: drain input into autotype queue
-        g_telnet.drain_input();
-
-        // Handle IPC "step frame" — count the frame, pause when done
-        if (g_ipc->frame_step_tick(
-                g_kbd_publish_serial.load(std::memory_order_relaxed))) {
-          cpc_pause();
-          g_ipc->notify_frame_step_done();
-        }
-
         if (g_take_screenshot) {
           dumpScreen();
           g_take_screenshot = false;
         }
       }
-    } else if (g_headless) {  // Headless paused: sleep (non-headless handled
-                              // above)
-      // Drain HTTP deferred actions even while paused (otherwise resume won't
-      // work)
-      if (g_m4_http.is_running()) g_m4_http.drain_pending();
-      ipc_drain_input();
-      std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
     }
 
     // Fullscreen transitions destroy/recreate video resources, so an Options
