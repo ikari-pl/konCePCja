@@ -8,9 +8,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <iterator>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "keyboard_manager.h"
@@ -43,6 +46,15 @@ static_assert(sizeof(kScanRow5) == 0x2E, "JR offset assumes 46 bytes");
 
 constexpr CPCScancode kSpace = 0x57;  // row 5, bit 7
 
+// Programs the CRTC with the firmware's 50 Hz screen (R0-R9), then DI : JR $.
+// The pacing tests need frames far cheaper than the 20 ms period: with the
+// CRTC left at zero (as the scan loop above does) a frame costs ~10-12 ms;
+// this one runs in well under a millisecond.
+const unsigned char kIdle[] = {
+    0xF3, 0x21, 0x18, 0x00, 0x16, 0x00, 0x06, 0xBC, 0xED, 0x51, 0x7E, 0x23,
+    0x06, 0xBD, 0xED, 0x79, 0x14, 0x7A, 0xFE, 0x0A, 0x20, 0xF0, 0x18, 0xFE,
+    63,   40,   46,   0x8E, 38,   0,    25,   30,   0,    7};
+
 // Brings the sub-cycle board up on a synthetic 32K system ROM and tears it
 // down again so no other test sees an active bridge.
 class EmuFrameTest : public testing::Test {
@@ -51,8 +63,9 @@ class EmuFrameTest : public testing::Test {
     dir_ = std::filesystem::temp_directory_path() / "koncepcja-emu-frame";
     std::filesystem::create_directories(dir_);
     std::vector<char> rom(0x8000, 0);
-    for (size_t i = 0; i < sizeof(kScanRow5); ++i)
-      rom[i] = static_cast<char>(kScanRow5[i]);
+    std::vector<unsigned char> const code = rom_code();
+    for (size_t i = 0; i < code.size(); ++i)
+      rom[i] = static_cast<char>(code[i]);
     std::filesystem::path const rom_file = dir_ / "cpc6128.rom";
     FILE* f = fopen(rom_file.string().c_str(), "wb");
     ASSERT_NE(nullptr, f);
@@ -63,6 +76,7 @@ class EmuFrameTest : public testing::Test {
     saved_ram_ = CPC.ram_size;
     saved_mode_ = CPC.keyboard_support_mode;
     saved_limit_ = CPC.limit_speed;
+    saved_frameskip_ = CPC.frameskip;
     CPC.rom_path = dir_.string();
     CPC.model = 2;  // chROMFile[2] == "cpc6128.rom"
     CPC.ram_size = 128;
@@ -82,8 +96,14 @@ class EmuFrameTest : public testing::Test {
     CPC.ram_size = saved_ram_;
     CPC.keyboard_support_mode = saved_mode_;
     CPC.limit_speed = saved_limit_;
+    CPC.frameskip = saved_frameskip_;
+    CPC.skip_rendering = false;
     std::error_code ec;
     std::filesystem::remove_all(dir_, ec);
+  }
+
+  virtual std::vector<unsigned char> rom_code() const {
+    return {std::begin(kScanRow5), std::end(kScanRow5)};
   }
 
   std::filesystem::path dir_;
@@ -92,7 +112,15 @@ class EmuFrameTest : public testing::Test {
   unsigned int saved_ram_ = 0;
   KeyboardSupportMode saved_mode_ = KeyboardSupportMode::Direct;
   unsigned int saved_limit_ = 0;
+  unsigned int saved_frameskip_ = 0;
   bool started_ = false;
+};
+
+class EmuFramePacingTest : public EmuFrameTest {
+ protected:
+  std::vector<unsigned char> rom_code() const override {
+    return {std::begin(kIdle), std::end(kIdle)};
+  }
 };
 
 }  // namespace
@@ -103,16 +131,14 @@ class EmuFrameTest : public testing::Test {
 TEST_F(EmuFrameTest, FrameReleasesABufferedKeyOnceItsRowIsScanned) {
   // The first frame after reset is a short warm-up that ends before the
   // scan loop reads the keyboard.
-  ASSERT_EQ(EmuFrameResult::kFrameComplete,
-            emu_run_frame(/*bridge_paces=*/false));
+  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
   CPC.keyboard_support_mode = KeyboardSupportMode::BufferedUntilRead;
   g_keyboard_manager.handle_keydown(kSpace, keyboard_matrix);
   g_keyboard_manager.handle_keyup(kSpace, keyboard_matrix, false, 0);
   ASSERT_EQ(0, keyboard_matrix[5].load() & 0x80)
       << "the key must stay held until its row is scanned";
 
-  ASSERT_EQ(EmuFrameResult::kFrameComplete,
-            emu_run_frame(/*bridge_paces=*/false));
+  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
 
   EXPECT_EQ(0x80, keyboard_matrix[5].load() & 0x80)
       << "the frame scanned row 5 with SPACE down; the held key must be "
@@ -139,4 +165,88 @@ TEST_F(EmuFrameTest, FinishedStepPausesThroughCpcPause) {
   EXPECT_EQ(0, z80.step_in);
   CPC.paused = saved_paused;
   g_emu_paused.store(saved_emu_paused);
+}
+
+// beads-af0k / beads-o478: the frameskip deadline (perfTicksTarget) was only
+// ever advanced by a limiter that no longer runs, so with frameskip on every
+// frame ~20 ms after start counted as "late" and none reached the video ring.
+// Skipping now keys on the bridge pacer's verdict (FramePacer, unit-tested
+// with a synthetic clock), capped so the display never starves. These tests
+// run on the real clock, so they only assert what host load cannot change:
+// an oversleep makes frames later, never earlier.
+TEST_F(EmuFramePacingTest, FrameskipNeverStarvesTheDisplay) {
+  CPC.limit_speed = 1;
+  CPC.frameskip = 1;
+  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());  // warm-up
+  int rendered = 0;
+  for (int i = 0; i < 12; ++i) {
+    ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+    if (!CPC.skip_rendering) ++rendered;
+  }
+  // However late every frame runs, one in kMaxConsecutiveSkips + 1 renders.
+  EXPECT_GE(rendered, 12 / static_cast<int>(kMaxConsecutiveSkips + 1));
+}
+
+TEST_F(EmuFramePacingTest, AStalledLoopSkipsWhileItCatchesUp) {
+  CPC.limit_speed = 1;
+  CPC.frameskip = 1;
+  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+  // 100 ms behind (under the pacer's 250 ms resync): the next frames are
+  // more than a period late until they catch up, so at least one of the three
+  // after the stall skips its render even if the cap forces the first of them
+  // to render.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  int skipped = 0;
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+    if (CPC.skip_rendering) ++skipped;
+  }
+  EXPECT_GE(skipped, 1);
+}
+
+TEST_F(EmuFramePacingTest, FrameskipOffNeverSkips) {
+  CPC.limit_speed = 1;
+  CPC.frameskip = 0;
+  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
+    EXPECT_FALSE(CPC.skip_rendering);
+  }
+}
+
+// The pacer's sleep is what the DevTools "sleep" stat reports; it was never
+// accumulated once the bridge took over pacing (beads-af0k).
+TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
+  uint8_t rows[16];
+  for (auto& r : rows) r = 0xFF;
+  (void)subcycle_bridge_take_sleep_ticks();
+  // The first frame sets the deadline; the next three wait for theirs.
+  for (int i = 0; i < 4; ++i)
+    subcycle_bridge_frame(rows, nullptr, /*limit=*/true);
+  double const slept_ms =
+      static_cast<double>(subcycle_bridge_take_sleep_ticks()) * 1000.0 /
+      static_cast<double>(SDL_GetPerformanceFrequency());
+  // Three 20 ms periods less three sub-millisecond frames; a descheduled
+  // frame can eat some of that, so assert well under the ideal ~59 ms.
+  EXPECT_GT(slept_ms, 20.0);
+  EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks()) << "take must reset";
+
+  subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
+  EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks())
+      << "an unpaced frame never sleeps";
+}
+
+TEST(FrameskipDecision, SkipsOnlyALateCompletedPacedFrameUpToTheCap) {
+  // prev_complete, limit, frameskip, prev_late, consecutive
+  EXPECT_TRUE(frameskip_should_skip(true, true, 1, true, 0));
+  EXPECT_FALSE(frameskip_should_skip(true, true, 1, false, 0));  // on time
+  EXPECT_FALSE(frameskip_should_skip(true, true, 0, true, 0));   // option off
+  EXPECT_FALSE(frameskip_should_skip(true, false, 1, true, 0));  // unpaced
+  EXPECT_FALSE(frameskip_should_skip(false, true, 1, true, 0));  // mid-frame
+  EXPECT_TRUE(
+      frameskip_should_skip(true, true, 1, true, kMaxConsecutiveSkips - 1));
+  EXPECT_FALSE(frameskip_should_skip(true, true, 1, true, kMaxConsecutiveSkips))
+      << "a machine that can never keep up must still show a frame";
 }

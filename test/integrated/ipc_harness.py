@@ -601,6 +601,52 @@ def test_headless_runs_subcycle_engine():
         return True
 
 
+def test_headless_honours_the_speed_limiter():
+    """beads-gnx3: -H must run at real time when limit_speed=1.
+
+    The -H loop asked the bridge for an unpaced frame whatever limit_speed
+    said, so 500 frames took 0.27 s (~1850 FPS) where the GUI took 10 s. Both
+    loops now pace through the bridge's 50 Hz deadline, and limit_speed=0
+    keeps -H unpaced for benches. 100 frames are 99 periods: >= 1.98 s paced.
+    """
+    print("Running headless speed-limiter test...")
+    exe = EmulatorRunner().exe_path
+    example = Path(exe).parent / 'koncepcja.cfg.example'
+    env = os.environ.copy()
+    env['KONCPC_NO_DIALOGS'] = '1'
+    env['SDL_AUDIODRIVER'] = 'dummy'
+    cfg = tempfile.NamedTemporaryFile(mode='w', suffix='.cfg', delete=False)
+    try:
+        cfg.write(example.read_text())
+        cfg.close()
+
+        def run(limit):
+            cmd = [exe, '--headless', '--exit-after=100f', '-c', cfg.name,
+                   '-O', f'system.limit_speed={limit}']
+            started = time.monotonic()
+            proc = subprocess.run(cmd, env=env, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=60)
+            return proc.returncode, time.monotonic() - started
+
+        rc_paced, paced = run(1)
+        rc_fast, fast = run(0)
+    finally:
+        os.unlink(cfg.name)
+    if rc_paced != 0 or rc_fast != 0:
+        print(f"FAIL: -H runs exited {rc_paced}/{rc_fast}, expected 0")
+        return False
+    if paced < 1.8:
+        print(f"FAIL: -H with limit_speed=1 ran 100 frames in {paced:.2f}s "
+              f"(real time is 2.0s): the speed limiter is ignored")
+        return False
+    if fast > paced - 0.8:
+        print(f"FAIL: -H with limit_speed=0 took {fast:.2f}s against "
+              f"{paced:.2f}s paced: the unpaced mode is gone")
+        return False
+    print(f"PASS: -H paced 100 frames in {paced:.2f}s, unpaced in {fast:.2f}s")
+    return True
+
+
 def test_programmatic_quit_exit_codes():
     """IPC `quit N` and SIGTERM end the process with the right exit code.
 
@@ -3577,6 +3623,7 @@ def main():
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
         test_headless_runs_subcycle_engine,
+        test_headless_honours_the_speed_limiter,
         test_programmatic_quit_exit_codes,
         test_double_signal_terminates,
         test_engine1_bp_clear_resume,

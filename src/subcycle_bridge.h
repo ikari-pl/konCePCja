@@ -47,6 +47,17 @@ void subcycle_bridge_stop();
 const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
                                                   SDL_Surface* dst, bool limit);
 
+/* The pacer's report on the last subcycle_bridge_frame() call. Late: the frame
+ * finished more than one 50 Hz period after its deadline, so the emulation
+ * cannot keep up with real time (false when unpaced, and after the pacer
+ * resyncs from a pause or a stall longer than 250 ms; see FramePacer). Drives
+ * auto frameskip. */
+bool subcycle_bridge_frame_was_late();
+
+/* Performance-counter ticks the pacer has slept since the last call, then
+ * resets the count (the DevTools sleep-time stat). */
+uint64_t subcycle_bridge_take_sleep_ticks();
+
 /* Re-blit the CURRENT framebuffer without running a frame (IPC "repaint"). */
 void subcycle_bridge_repaint(SDL_Surface* dst);
 
