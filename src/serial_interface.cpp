@@ -1021,64 +1021,98 @@ void SIRomManager::unload(byte** rom_map) {
 }
 
 // SerialInterface implementation
+std::shared_ptr<SerialBackend> SerialInterface::backend() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return backend_;
+}
+
+void SerialInterface::set_backend(std::shared_ptr<SerialBackend> next) {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    backend_.swap(next);
+  }
+  // `next` now holds the old backend. Dropping it here closes it (every
+  // backend's destructor closes) -- unless a host_tx() on the Z80 thread is
+  // still inside its send(), in which case that call's reference closes it
+  // once the send returns. Never close() it explicitly: that would race the
+  // in-flight send on the same fd.
+}
+
 void SerialInterface::host_tx(uint8_t byte) {
-  if (backend == nullptr || !backend->send(byte))
+  const std::shared_ptr<SerialBackend> b = backend();
+  if (b == nullptr || !b->send(byte))
     tx_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void SerialInterface::set_config(const SerialConfig& config) {
+  std::lock_guard<std::mutex> lock(mu_);
   config_ = config;
 }
 
+SerialConfig SerialInterface::get_config() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return config_;
+}
+
+bool SerialInterface::config_applied() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return applied_ && config_ == applied_config_;
+}
+
 void SerialInterface::apply_config() {
-  // Close existing backend
-  if (backend) {
-    backend->close();
-    delete backend;
-    backend = nullptr;
-  }
+  // Drop the existing backend first: a TCP or tty backend must release its
+  // socket/device before the replacement opens the same one.
+  set_backend(nullptr);
+
+  const SerialConfig cfg = get_config();
 
   // Sync I/O dispatch gate with config
 
-  serial_interface_enabled = config_.enabled;
-  applied_config_ = config_;
-  applied_ = true;
+  serial_interface_enabled = cfg.enabled;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    applied_config_ = cfg;
+    applied_ = true;
+  }
 
-  if (!config_.enabled) {
+  if (!cfg.enabled) {
     z80_set_bdos_serial_out_hook(nullptr);
     z80_set_bdos_serial_in_hook(nullptr);
     return;
   }
 
   // Create new backend based on type
-  switch (config_.backend_type) {
+  std::shared_ptr<SerialBackend> next;
+  switch (cfg.backend_type) {
     case SerialBackendType::Null:
-      backend = new NullBackend();
+      next = std::make_shared<NullBackend>();
       break;
 
     case SerialBackendType::File:
-      backend = new FileBackend(config_.input_file, config_.output_file);
+      next = std::make_shared<FileBackend>(cfg.input_file, cfg.output_file);
       break;
 
     case SerialBackendType::HostSerial:
-      backend = new HostSerialBackend(config_.device_path);
+      next = std::make_shared<HostSerialBackend>(cfg.device_path);
       break;
 
     case SerialBackendType::NullModem:
-      backend = new NullModemBackend();
+      next = std::make_shared<NullModemBackend>();
       break;
 
     case SerialBackendType::TcpSocket:
-      backend = new TcpSocketBackend(config_.tcp_host, config_.tcp_port);
+      next = std::make_shared<TcpSocketBackend>(cfg.tcp_host, cfg.tcp_port);
       break;
 
     case SerialBackendType::Plotter:
-      backend = new PlotterBackend();
+      next = std::make_shared<PlotterBackend>();
       break;
   }
 
-  if (backend) {
-    backend->open();
+  if (next) {
+    // Open before publishing, so no host_tx() ever sees a half-open backend.
+    next->open();
+    set_backend(next);
 
     // Connect DART TX to backend + mirror to serial terminal
     dart.set_rx_callback([this](uint8_t byte) {
@@ -1089,8 +1123,9 @@ void SerialInterface::apply_config() {
 
     // Poll backend for incoming data on DART status reads
     dart.set_rx_poll([this]() {
-      if (backend && backend->has_data()) {
-        dart.enqueue_rx(backend->recv());
+      const std::shared_ptr<SerialBackend> b = backend();
+      if (b && b->has_data()) {
+        dart.enqueue_rx(b->recv());
       }
     });
 

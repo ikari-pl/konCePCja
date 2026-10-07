@@ -1883,6 +1883,27 @@ Z80Regs Machine::regs() const {
 
 void Machine::set_regs(const Z80Regs& regs) { z80_poke(&zdev_, &regs); }
 
+void Machine::set_regfile(const Z80Regs& regs) {
+  z80_poke_regfile(&zdev_, &regs);
+}
+
+bool Machine::at_instruction_boundary() const {
+  return z80_at_instruction_boundary(&zdev_) != 0;
+}
+
+// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
+// free function taking a non-const pointer
+void Machine::abandon_instruction() { z80_abandon_instruction(&zdev_); }
+
+// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
+// free function taking a non-const pointer
+void Machine::finish_instruction() {
+  if (!built_) return;
+  // Same bound as step_instruction(): far above the longest instruction.
+  for (int i = 0; i < 4096 && !at_instruction_boundary(); ++i)
+    board_tick(&board_);
+}
+
 uint8_t Machine::peek_mem(uint16_t addr) const {
   return mem_peek_cpu(&mdev_, addr);
 }

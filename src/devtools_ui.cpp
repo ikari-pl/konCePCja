@@ -351,14 +351,13 @@ void DevToolsUI::render_registers() {
   ImGui::Separator();
 
   bool locked = !CPC.paused;
-  // Set by a real edit below. Only an edit may be pushed to the machine:
-  // regs_to_machine() is z80_poke(), which rewrites every register from this
-  // host mirror AND restarts the CPU at a fresh instruction boundary. A pause
-  // parks the board mid-instruction, so pushing every rendered frame dropped
-  // the rest of the instruction in flight -- a half-done PUSH BC in the
-  // firmware kernel then lost its saved Gate Array port, the next ROM-switch
-  // OUT landed on the PPI control register and the keyboard read all keys
-  // down (beads-vwwq).
+  // Set by a real edit below. Only an edit is pushed to the machine. Pushing
+  // every rendered frame once restarted the CPU at a fresh instruction
+  // boundary each time, and a pause parks the board mid-instruction -- a
+  // half-done PUSH BC in the firmware kernel then lost its saved Gate Array
+  // port, the next ROM-switch OUT landed on the PPI control register and the
+  // keyboard read all keys down (beads-vwwq). regs_to_machine() now writes
+  // only changed fields and keeps the instruction in flight (beads-3yl2).
   bool edited = false;
   ImGuiInputTextFlags hex_flags = ImGuiInputTextFlags_CharsHexadecimal |
                                   (locked ? ImGuiInputTextFlags_ReadOnly : 0);
@@ -510,8 +509,10 @@ void DevToolsUI::render_registers() {
     }
   }
   if (edited) {
-    subcycle_bridge_regs_to_machine();  // the edit must reach the machine —
-                                        // the shim re-publishes next frame
+    // CPC.paused only says a pause was asked for: the Z80 thread may still be
+    // finishing its frame. The lease waits until it is idle.
+    CpcPauseLease lease;
+    if (imgui_lease_ready(lease)) subcycle_bridge_regs_to_machine();
   }
 
   if (!open) show_registers_ = false;
@@ -884,9 +885,15 @@ void DevToolsUI::render_disassembly() {
             dbg_run_to_address(static_cast<word>(entry.addr));
           }
           if (ImGui::MenuItem("Set PC here")) {
-            z80.PC.w.l = entry.addr;
-            subcycle_bridge_regs_to_machine();  // reach the machine (shim
-                                                // re-publishes next frame)
+            CpcPauseLease lease;
+            if (imgui_lease_ready(lease)) {
+              z80.PC.w.l = entry.addr;
+              subcycle_bridge_regs_to_machine();
+              if (!lease.was_paused()) {  // running: keep running from there
+                lease.release();
+                cpc_resume();
+              }
+            }
           }
         }
         if (ImGui::MenuItem("Goto this address")) {

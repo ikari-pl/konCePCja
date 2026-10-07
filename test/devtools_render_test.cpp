@@ -32,6 +32,7 @@
 #include "disk_file_editor.h"
 #include "disk_format.h"
 #include "headless_imgui.h"
+#include "hw/probe.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "koncepcja.h"
@@ -570,5 +571,155 @@ TEST_F(DevToolsRenderTest, PausedRegistersWindowLeavesTheMachineAlone) {
                                    << ": SP went even -- rendering the paused "
                                       "Registers window cut a PUSH BC in half";
   }
+  CPC.paused = saved_cpc_paused;
+}
+
+// -----------------------------------------------
+// Register edits never drop or replay the instruction in flight (beads-3yl2)
+// -----------------------------------------------
+
+namespace {
+
+// A ROM of PUSH BC (SP drops by 2 per instruction, so from reset's 0xFFFF it
+// stays odd while every PUSH runs whole), ending in JP &0000.
+std::vector<char> push_bc_rom() {
+  std::vector<char> rom(0x8000, static_cast<char>(0xC5));
+  rom[0x3FFD] = static_cast<char>(0xC3);
+  rom[0x3FFE] = 0;
+  rom[0x3FFF] = 0;
+  return rom;
+}
+
+// Runs frames until one parks between a PUSH's two SP decrements (SP even),
+// then publishes the registers the way the per-frame debug sync does.
+bool park_mid_push(subcycle::Machine& m) {
+  for (int frame = 0; frame < 400; ++frame) {
+    m.run_frame();
+    if ((m.regs().sp & 1) == 0) {
+      subcycle_bridge_sync_regs_view();
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST(RegisterEditTest, EditMidInstructionLetsThePushFinish) {
+  LiveBoard const board(push_bc_rom());
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  ASSERT_TRUE(park_mid_push(*m)) << "no frame ended between two SP decrements";
+
+  // The DevTools field / IPC `reg set DE` path: edit the host view, push it.
+  z80.DE.w.l = 0x1234;
+  subcycle_bridge_regs_to_machine();
+  EXPECT_EQ(0x1234, m->regs().de) << "the edit never reached the machine";
+  EXPECT_EQ(0x1234, z80.DE.w.l) << "the view lost the edit";
+
+  // Let whatever is in flight end, then judge: an edit that restarted the CPU
+  // at a fresh boundary dropped the PUSH's second half and left SP even.
+  m->step_instruction();
+  EXPECT_EQ(1, m->regs().sp & 1)
+      << "SP went even -- editing DE cut the PUSH BC in flight in half";
+  EXPECT_EQ(0x1234, m->regs().de);
+}
+
+TEST(RegisterEditTest, PcEditMidInstructionRedirectsAfterThePushEnds) {
+  LiveBoard const board(push_bc_rom());
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  ASSERT_TRUE(park_mid_push(*m)) << "no frame ended between two SP decrements";
+
+  // "Set PC here" / `reg set PC`: the next instruction comes from the new PC,
+  // and the half-done PUSH still completes first.
+  z80.PC.w.l = 0x0100;
+  subcycle_bridge_regs_to_machine();
+  EXPECT_EQ(0x0100, m->regs().pc);
+  EXPECT_EQ(0x0100, z80.PC.w.l);
+  EXPECT_EQ(1, m->regs().sp & 1)
+      << "SP is even -- the redirect dropped the second half of the PUSH";
+  m->step_instruction();
+  EXPECT_EQ(0x0101, m->regs().pc) << "the PUSH at the new PC did not run";
+  EXPECT_EQ(1, m->regs().sp & 1);
+}
+
+namespace {
+
+// Runs until the probe stops the machine on the exec breakpoint at `addr`,
+// then lets the debug sync judge the hit and publish the halted PC.
+bool stop_on_breakpoint(subcycle::Machine& m, uint16_t addr) {
+  probe_add_exec(m.probe(), addr);
+  for (int frame = 0; frame < 20; ++frame) {
+    m.run_frame();
+    ProbeHit hit{};
+    if (m.probe_hit(&hit)) return subcycle_bridge_debug_sync() == 1;
+  }
+  return false;
+}
+
+}  // namespace
+
+TEST(RegisterEditTest, EditAtABreakpointRunsTheShownInstructionOnce) {
+  LiveBoard const board(push_bc_rom());
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  PausedFlag const paused(true);  // the stop pauses the emulator
+  bool const saved_cpc_paused = CPC.paused;
+  ASSERT_TRUE(stop_on_breakpoint(*m, 0x0010));
+  ASSERT_EQ(0x0010, z80.PC.w.l) << "the debugger shows the breakpoint address";
+  Z80Regs const at_stop = m->regs();
+  ASSERT_EQ(0x0011, at_stop.pc) << "the machine parks after the opcode fetch";
+
+  z80.DE.w.l = 0xBEEF;
+  subcycle_bridge_regs_to_machine();
+  EXPECT_EQ(0xBEEF, m->regs().de);
+  EXPECT_EQ(0x0010, z80.PC.w.l) << "the edit lost the halted instruction's PC";
+  EXPECT_EQ(at_stop.pc, m->regs().pc)
+      << "the edit restarted the instruction at the breakpoint";
+
+  // Resuming carries on with the PUSH that was fetched, with no second fetch,
+  // and must not stop on the same breakpoint again: the ROM loops back to
+  // &0010 only every ~3 frames, so a whole frame runs without a hit.
+  uint64_t const fetched = m->regs().instr_count;
+  m->step_instruction();
+  EXPECT_EQ(0x0011, m->regs().pc);
+  EXPECT_EQ(static_cast<uint16_t>(at_stop.sp - 2), m->regs().sp)
+      << "the PUSH at the breakpoint did not run exactly once";
+  EXPECT_EQ(fetched + 1, m->regs().instr_count);
+  m->run_frame();
+  ProbeHit hit{};
+  EXPECT_FALSE(m->probe_hit(&hit))
+      << "the same breakpoint tripped again right after the edit (hit at &"
+      << std::hex << hit.addr << ")";
+  probe_clear_exec(m->probe());
+  CPC.paused = saved_cpc_paused;
+}
+
+TEST(RegisterEditTest, PcEditAtABreakpointDropsTheUnrunInstruction) {
+  LiveBoard const board(push_bc_rom());
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  PausedFlag const paused(true);
+  bool const saved_cpc_paused = CPC.paused;
+  ASSERT_TRUE(stop_on_breakpoint(*m, 0x0010));
+  probe_clear_exec(m->probe());
+  Z80Regs const at_stop = m->regs();
+
+  // The PUSH at the breakpoint has only been fetched; jumping away from it
+  // must not run it.
+  z80.PC.w.l = 0x0200;
+  subcycle_bridge_regs_to_machine();
+  EXPECT_EQ(0x0200, m->regs().pc);
+  EXPECT_EQ(0x0200, z80.PC.w.l);
+  EXPECT_EQ(at_stop.sp, m->regs().sp) << "the PUSH at the breakpoint ran";
+  m->step_instruction();
+  EXPECT_EQ(0x0201, m->regs().pc);
+  EXPECT_EQ(static_cast<uint16_t>(at_stop.sp - 2), m->regs().sp)
+      << "the PUSH at the new PC did not run whole";
   CPC.paused = saved_cpc_paused;
 }
