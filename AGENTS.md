@@ -245,6 +245,9 @@ The harness provides two classes:
 `make e2e_test_slow` runs it pinned to the efficiency cores (`taskpolicy -b`
 on macOS, `nice` elsewhere), the cheap way to reproduce a flake that only a
 slow shared CI Mac shows.
+`KONCPC_E2E_HEADLESS=1` in the environment makes `EmulatorRunner` add
+`--headless` to every launch, so the same suite exercises the `-H` loop.
+Both loops run each frame through `emu_run_frame()` (`src/emu_frame.h`).
 
 #### Key patterns
 
