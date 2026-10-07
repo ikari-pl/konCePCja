@@ -2275,9 +2275,10 @@ def read_lower_rom_signature(ipc: KoncepcjaIPC, addr: int = 0x02E0,
     --view=ram. Only then did the bytes come from a ROM overlay. Stepping
     rather than run/pause retries keeps this off the wall clock: a pause
     lands at the same point in the frame each time, where the ROM may well
-    be off. The `rom:LO` flag in the context line is no substitute for the
-    comparison: on a 6128+ it can run one step ahead of the memory device
-    right after the firmware's ROM-switching OUT at &B9B2 (beads-szc0).
+    be off. The comparison is the direct proof; the `rom:LO` flag in the
+    context line is only the Gate Array's latch. (Before beads-szc0 that flag
+    also went stale while paused: a step refreshed the registers but not the
+    chip views, so it kept the pre-pause ROM state.)
     The machine is left running, as EmulatorRunner.start() hands it over.
     """
     stride = 7  # odd, so the walk does not lock onto a loop's period
