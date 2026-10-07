@@ -478,10 +478,13 @@ void ipc_publish_config_file(const std::string& path) {
 }
 
 namespace {
-// `wait vbl` sleeps this long per requested blank (it is a paced sleep with
-// the machine running, not a real blank wait).
+// One 50Hz frame of emulated time. `wait vbl` counts real frames, so this only
+// sizes its default deadline: a machine held to real time needs this long per
+// blank (an unpaced one needs less).
 constexpr int kWaitVblMsPerBlank = 20;
 constexpr int kWaitDefaultTimeoutMs = 5000;
+// How often a frame-step wait looks at its stop conditions.
+constexpr int kFrameStepPollMs = 10;
 }  // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
@@ -1115,9 +1118,12 @@ void init_command_registry() {
       "reports hits from the CURRENT arming — a hit left uncollected from a "
       "previous bp/wp/IO-bp change is dropped (timeout). Watchpoint hits "
       "include WP_ADDR/WP_VAL/WP_OLD.\n"
-      "  vbl: Waits for N vertical blanks (1/50th second each). Without an "
-      "explicit timeout the deadline is N x 20ms plus 5000ms, so a long "
-      "count completes instead of timing out at 5s.");
+      "  vbl: Resumes, runs until N vertical blanks (frames of emulation, "
+      "not wall time) have passed, then pauses -- from a paused machine the "
+      "same N frames `step frame N` runs. A breakpoint stopping it first is "
+      "ERR 409 stopped-elsewhere. Without an explicit timeout the deadline "
+      "is N x 20ms plus 5000ms, so a long count completes instead of timing "
+      "out at 5s.");
 
   register_command(
       "step", "DEBUG",
@@ -3736,26 +3742,54 @@ std::string handle_command(const std::string& line) {
         }
       }
       if (parts[1] == "vbl") {
+        if (parts.size() < 3) return "ERR 400 usage: wait vbl <N> [timeout]\n";
         int const count = parse_int(parts[2]);
+        if (count < 1) return "ERR 400 bad-args\n";
         deadline =
             std::chrono::steady_clock::now() +
             (parts.size() >= 4 ? std::chrono::milliseconds(parse_int(parts[3]))
                                : ipc_wait_vbl_default_timeout(count));
-        cpc_resume();
-        for (int i = 0; i < count; i++) {
-          if (server_stopping()) {
-            cpc_pause();
-            return "ERR 503 shutting-down\n";
-          }
-          if (std::chrono::steady_clock::now() > deadline) {
+        if (!g_ipc_instance) return "ERR 503 no-server\n";
+        // Count real frames, the way `step frame` does: the emulation loop
+        // ticks the frame step at every completed frame and pauses the machine
+        // on the last one. This used to sleep 20ms per blank with the machine
+        // running, so the frame count was whatever the host fit in -- 143-182
+        // frames for `wait vbl 50` on an unpaced machine (beads-71pg). The
+        // frame in flight when this arms counts: its end is the next blank.
+        //
+        // Drop a hit latched before we armed (as `wait pc` does): it belongs
+        // to whatever ran last and would read as a stop during this wait.
+        uint16_t stale_pc = 0;
+        bool stale_watch = false;
+        g_ipc_instance->consume_breakpoint_hit(stale_pc, stale_watch);
+        // Resume only a paused machine. A running one can finish the counted
+        // frames -- and pause itself -- before this thread gets to a resume,
+        // which would then set it running again behind an OK (seen in the
+        // unpaced -H loop, ~1800 frames/s). A paused one can still complete
+        // the frame it was in when the pause landed, so check afterwards too.
+        bool const was_paused = CPC.paused;
+        g_ipc_instance->arm_frame_step(count);
+        if (was_paused) {
+          cpc_resume();
+          if (!g_ipc_instance->frame_step_active.load()) cpc_pause();
+        }
+        switch (
+            g_ipc_instance->wait_frame_step_until(deadline, server_stopping)) {
+          case KoncepcjaIpcServer::FrameStepWait::Done:
+            return ok_with_context();
+          case KoncepcjaIpcServer::FrameStepWait::Breakpoint:
+            // The machine is already stopped there; the hit stays latched
+            // for `wait bp`, as a stopped `step frame` leaves it.
+            return err_with_context(
+                409, "stopped-elsewhere " + breakpoint_hit_body());
+          case KoncepcjaIpcServer::FrameStepWait::Timeout:
             cpc_pause();
             return err_with_context(408, "timeout");
-          }
-          std::this_thread::sleep_for(
-              std::chrono::milliseconds(kWaitVblMsPerBlank));
+          case KoncepcjaIpcServer::FrameStepWait::Aborted:
+            cpc_pause();
+            return "ERR 503 shutting-down\n";
         }
-        cpc_pause();
-        return ok_with_context();
+        return "ERR 500 internal\n";
       }
     }
     if (cmd == "wait") return "ERR 400 usage: wait (pc|mem|bp|vbl) ...\n";
@@ -6356,6 +6390,36 @@ void KoncepcjaIpcServer::wait_frame_step_done() {
       frame_step_remaining.store(0);
       return;
     }
+  }
+}
+
+KoncepcjaIpcServer::FrameStepWait KoncepcjaIpcServer::wait_frame_step_until(
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<bool()>& should_abort) {
+  // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is mutated
+  // (out-param/compound-assign/loop/reference)
+  std::unique_lock<std::mutex> lock(frame_step_mutex);
+  auto const done = [this] { return !frame_step_active.load(); };
+  for (;;) {
+    // Sliced: notify_frame_step_done() signals without the mutex, so a wakeup
+    // can be missed, and the stop conditions below are not signalled at all.
+    auto const slice =
+        std::min(deadline, std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(kFrameStepPollMs));
+    if (frame_step_cv.wait_until(lock, slice, done)) return FrameStepWait::Done;
+    FrameStepWait why = FrameStepWait::Done;
+    if (CPC.paused && breakpoint_hit_pending()) {
+      why = FrameStepWait::Breakpoint;
+    } else if (should_abort && should_abort()) {
+      why = FrameStepWait::Aborted;
+    } else if (std::chrono::steady_clock::now() >= deadline) {
+      why = FrameStepWait::Timeout;
+    } else {
+      continue;
+    }
+    frame_step_active.store(false);
+    frame_step_remaining.store(0);
+    return why;
   }
 }
 
