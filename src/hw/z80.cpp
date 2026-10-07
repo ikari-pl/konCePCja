@@ -2589,6 +2589,55 @@ void z80_peek(const Device* dev, Z80Regs* out) {
   out->unimplemented = z->unimplemented ? 1 : 0;
 }
 
+void z80_poke_regfile(const Device* dev, const Z80Regs* in) {
+  z80_state* z = static_cast<z80_state*>(dev->self);
+  z->af.v = in->af;
+  z->bc.v = in->bc;
+  z->de.v = in->de;
+  z->hl.v = in->hl;
+  z->af2.v = in->af_;
+  z->bc2.v = in->bc_;
+  z->de2.v = in->de_;
+  z->hl2.v = in->hl_;
+  z->ix.v = in->ix;
+  z->iy.v = in->iy;
+  z->sp.v = in->sp;
+  z->pc.v = in->pc;
+  z->wz.v = in->wz;
+  z->i = in->i;
+  z->r = in->r;
+  z->im = static_cast<z80_state::IntMode>(in->im & 3);
+  z->iff1 = in->iff1;
+  z->iff2 = in->iff2;
+}
+
+int z80_at_instruction_boundary(const Device* dev) {
+  const z80_state* z = static_cast<const z80_state*>(dev->self);
+  // finish() leaves exactly this: M1 with no T-state counted, no micro-step,
+  // no prefix pending, no interrupt sequence running. HALT finishes too, so a
+  // halted CPU is at a boundary.
+  return (z->mc == z80_state::MC::M1 && z->t == 0 && z->step == 0 &&
+          z->prefix == 0 && z->servicing == z80_state::Servicing::NONE)
+             ? 1
+             : 0;
+}
+
+void z80_abandon_instruction(const Device* dev) {
+  z80_state* z = static_cast<z80_state*>(dev->self);
+  z->qq = 0;
+  z->mc = z80_state::MC::M1;
+  z->t = z->step = 0;
+  z->opcode = z->tmp = z->tmpl = z->prefix = 0;
+  z->mc_addr = z->mc_wval = z->mc_ilen = 0;
+  z->mc_io_read = false;
+  z->index = z80_state::IndexReg::HL;
+  z->mem_addr = 0;
+  z->servicing = z80_state::Servicing::NONE;
+  z->int_vec = 0;
+  z->held = CpuBus{};
+  z->held_valid = false;
+}
+
 void z80_poke(const Device* dev, const Z80Regs* in) {
   z80_state* z = static_cast<z80_state*>(dev->self);
   z->af.v = in->af;

@@ -1887,70 +1887,76 @@ std::string handle_command(const std::string& line) {
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
       unsigned int value = parse_number(parts[3]);
 
-      auto set8 = [&](byte& target) {
-        target = static_cast<byte>(value);
-        subcycle_bridge_regs_to_machine();  // Wave-1: the machine is the truth
-      };
-      auto set16 = [&](word& target) {
-        target = static_cast<word>(value);
-        subcycle_bridge_regs_to_machine();
-      };
-
+      byte* target8 = nullptr;
+      word* target16 = nullptr;
       if (reg == "A")
-        set8(z80.AF.b.h);
+        target8 = &z80.AF.b.h;
       else if (reg == "F")
-        set8(z80.AF.b.l);
+        target8 = &z80.AF.b.l;
       else if (reg == "B")
-        set8(z80.BC.b.h);
+        target8 = &z80.BC.b.h;
       else if (reg == "C")
-        set8(z80.BC.b.l);
+        target8 = &z80.BC.b.l;
       else if (reg == "D")
-        set8(z80.DE.b.h);
+        target8 = &z80.DE.b.h;
       else if (reg == "E")
-        set8(z80.DE.b.l);
+        target8 = &z80.DE.b.l;
       else if (reg == "H")
-        set8(z80.HL.b.h);
+        target8 = &z80.HL.b.h;
       else if (reg == "L")
-        set8(z80.HL.b.l);
+        target8 = &z80.HL.b.l;
       else if (reg == "I")
-        set8(z80.I);
+        target8 = &z80.I;
       else if (reg == "R")
-        set8(z80.R);
+        target8 = &z80.R;
       else if (reg == "IM")
-        set8(z80.IM);
+        target8 = &z80.IM;
       else if (reg == "HALT")
-        set8(z80.HALT);
+        target8 = &z80.HALT;
       else if (reg == "IFF1")
-        set8(z80.IFF1);
+        target8 = &z80.IFF1;
       else if (reg == "IFF2")
-        set8(z80.IFF2);
+        target8 = &z80.IFF2;
       else if (reg == "AF")
-        set16(z80.AF.w.l);
+        target16 = &z80.AF.w.l;
       else if (reg == "BC")
-        set16(z80.BC.w.l);
+        target16 = &z80.BC.w.l;
       else if (reg == "DE")
-        set16(z80.DE.w.l);
+        target16 = &z80.DE.w.l;
       else if (reg == "HL")
-        set16(z80.HL.w.l);
+        target16 = &z80.HL.w.l;
       else if (reg == "IX")
-        set16(z80.IX.w.l);
+        target16 = &z80.IX.w.l;
       else if (reg == "IY")
-        set16(z80.IY.w.l);
+        target16 = &z80.IY.w.l;
       else if (reg == "SP")
-        set16(z80.SP.w.l);
+        target16 = &z80.SP.w.l;
       else if (reg == "PC")
-        set16(z80.PC.w.l);
+        target16 = &z80.PC.w.l;
       else if (reg == "AF'" || reg == "AFX")
-        set16(z80.AFx.w.l);
+        target16 = &z80.AFx.w.l;
       else if (reg == "BC'" || reg == "BCX")
-        set16(z80.BCx.w.l);
+        target16 = &z80.BCx.w.l;
       else if (reg == "DE'" || reg == "DEX")
-        set16(z80.DEx.w.l);
+        target16 = &z80.DEx.w.l;
       else if (reg == "HL'" || reg == "HLX")
-        set16(z80.HLx.w.l);
+        target16 = &z80.HLx.w.l;
       else
         return "ERR 400 bad-reg\n";
 
+      // The machine is the truth (Wave-1), so the edit goes into it -- with
+      // the Z80 thread idle, not racing a frame in progress (beads-3yl2).
+      CpcPauseLease lease;
+      if (!lease.idle()) return z80_not_idle(lease);
+      if (target8 != nullptr)
+        *target8 = static_cast<byte>(value);
+      else
+        *target16 = static_cast<word>(value);
+      subcycle_bridge_regs_to_machine();
+      if (!lease.was_paused()) {
+        lease.release();
+        cpc_resume();
+      }
       return ok_with_context();
     }
     if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 &&
