@@ -5322,11 +5322,10 @@ std::string handle_command(const std::string& line) {
            << (g_serial_interface.dart.rx_available() ? 1 : 0)
            << " baud=" << cfg.baud_rate;
         ss << " tx_dropped=" << g_serial_interface.tx_dropped();
-        if (g_serial_interface.backend) {
-          ss << " backend_name=" << g_serial_interface.backend->name();
-          ss << " backend_connected="
-             << (g_serial_interface.backend->connected() ? 1 : 0);
-          ss << " backend_status=" << g_serial_interface.backend->status();
+        if (const auto backend = g_serial_interface.backend()) {
+          ss << " backend_name=" << backend->name();
+          ss << " backend_connected=" << (backend->connected() ? 1 : 0);
+          ss << " backend_status=" << backend->status();
         }
         ss << "\n";
         return ss.str();

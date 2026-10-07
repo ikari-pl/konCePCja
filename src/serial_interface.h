@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <queue>
@@ -389,17 +390,25 @@ class TcpSocketBackend : public SerialBackend {
 struct SerialInterface {
   Z80Dart dart;
   Intel8253 timer;
-  SerialBackend* backend = nullptr;
+
+  // The open backend, or null. The Z80 thread transmits through it (the
+  // Machine's host_tx ctx is this SerialInterface, never the backend) while
+  // the IPC and UI threads may replace it via apply_config() at any moment,
+  // so callers get a counted reference: a backend swapped out mid-send stays
+  // alive until that send returns, and is destroyed by whoever drops it last.
+  std::shared_ptr<SerialBackend> backend() const;
+  // Replace the backend (apply_config()'s own path; tests inject one).
+  void set_backend(std::shared_ptr<SerialBackend> next);
 
   void set_config(const SerialConfig& config);
-  SerialConfig get_config() const { return config_; }
+  SerialConfig get_config() const;
   void apply_config();
   // True once apply_config() has actually reopened the backend for the
   // config currently staged in config_ -- false right after set_config()
   // stages a change apply_config() hasn't seen yet. A rebuild triggered by
   // an unrelated setting (RAM size, CRTC type, model) should skip
   // re-opening an already-current backend rather than truncate/reconnect it.
-  bool config_applied() const { return applied_ && config_ == applied_config_; }
+  bool config_applied() const;
 
   // Hand one CPC-transmitted byte to the backend, counting the ones it could
   // not deliver (not connected, peer gone, disk full) so `serial status`
@@ -411,6 +420,10 @@ struct SerialInterface {
 
  private:
   std::atomic<uint64_t> tx_dropped_{0};
+  // Guards backend_, config_, applied_config_ and applied_. Held only to copy
+  // or swap them, never across backend I/O.
+  mutable std::mutex mu_;
+  std::shared_ptr<SerialBackend> backend_;
   SerialConfig config_;
   SerialConfig applied_config_;
   bool applied_ = false;

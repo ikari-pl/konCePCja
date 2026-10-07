@@ -683,9 +683,9 @@ void serial_host_tx_byte(uint8_t byte, void* ctx) {
 void sync_serial_backend(Bridge& b) {
   const SerialConfig sc = g_serial_interface.get_config();
   if (!sc.enabled || sc.backend_type == SerialBackendType::Plotter) return;
-  if (g_serial_interface.backend == nullptr) return;
-  while (g_serial_interface.backend->has_data())
-    b.machine.serial_host_rx(g_serial_interface.backend->recv());
+  const std::shared_ptr<SerialBackend> backend = g_serial_interface.backend();
+  if (backend == nullptr) return;
+  while (backend->has_data()) b.machine.serial_host_rx(backend->recv());
 }
 
 // Enable/plugged flags mirrored from the legacy UI toggles each frame, so the
@@ -718,14 +718,16 @@ void sync_peripheral_flags(Bridge& b) {
     const SerialConfig sc = g_serial_interface.get_config();
     if (sc.enabled && sc.backend_type == SerialBackendType::Plotter) {
       b.machine.set_serial_plotter(true, sc.baud_rate);
-      // Drop any host_tx left from a non-plotter backend: apply_config()
-      // deletes that backend object, so a stale ctx here is a use-after-free
-      // on the next DART data write.
+      // The plotter Device consumes the bytes itself; detach the rs232 host
+      // bridge left from a non-plotter backend.
       b.machine.set_serial_host_tx(nullptr, nullptr);
     } else {
       b.machine.set_serial_plotter(false, 0);
       b.machine.set_serial_card(sc.enabled);
-      if (sc.enabled && g_serial_interface.backend) {
+      // The ctx is the SerialInterface, which outlives the Machine; host_tx()
+      // takes a counted reference to the current backend per byte, so an
+      // apply_config() from the IPC or UI thread can swap it at any moment.
+      if (sc.enabled && g_serial_interface.backend()) {
         b.machine.set_serial_host_tx(serial_host_tx_byte, &g_serial_interface);
       } else {
         b.machine.set_serial_host_tx(nullptr, nullptr);
