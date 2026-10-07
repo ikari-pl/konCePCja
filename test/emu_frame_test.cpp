@@ -122,8 +122,12 @@ TEST_F(EmuFrameTest, FrameReleasesABufferedKeyOnceItsRowIsScanned) {
 // A finished step pauses through cpc_pause(), so g_emu_paused (what the GUI
 // Z80 thread, the render thread and the pause lease read) follows CPC.paused.
 TEST_F(EmuFrameTest, FinishedStepPausesThroughCpcPause) {
-  cpc_resume();
-  ASSERT_FALSE(g_emu_paused.load());
+  // Set the running state directly: cpc_resume() is a no-op when an earlier
+  // (shuffled) test left CPC.paused clear or a pause lease held.
+  bool const saved_paused = CPC.paused;
+  bool const saved_emu_paused = g_emu_paused.load();
+  CPC.paused = false;
+  g_emu_paused.store(false);
   z80.breakpoint_reached = 0;
   z80.watchpoint_reached = 0;
   z80.step_in = 2;
@@ -133,5 +137,6 @@ TEST_F(EmuFrameTest, FinishedStepPausesThroughCpcPause) {
   EXPECT_TRUE(CPC.paused);
   EXPECT_TRUE(g_emu_paused.load());
   EXPECT_EQ(0, z80.step_in);
-  cpc_resume();
+  CPC.paused = saved_paused;
+  g_emu_paused.store(saved_emu_paused);
 }
