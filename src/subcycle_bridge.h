@@ -206,7 +206,12 @@ void subcycle_bridge_refresh_asic_view();
 /* Machine registers -> the legacy view struct only (used after stepping). */
 void subcycle_bridge_sync_regs_view();
 
-/* The legacy struct -> machine (after IPC/DevTools write a register). */
+/* The legacy struct -> machine (after IPC/DevTools write a register). Writes
+ * only the fields that differ from what the view was last given, and never
+ * drops or replays part of the instruction in flight: the edit waits for it to
+ * finish, unless the machine is stopped on a breakpoint's opcode fetch -- that
+ * instruction has not run, so it runs with the edit, or is dropped when PC
+ * itself is edited. Hold a pause lease (Z80 idle) around the call. */
 void subcycle_bridge_regs_to_machine();
 
 // True when `dst_row` (0-based, in [0, dst_h)) is the trailing row of a

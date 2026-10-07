@@ -10,11 +10,14 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <iterator>
+#include <memory>
+#include <thread>
 #include <vector>
 
 #include "file_size_limit.h"
@@ -151,17 +154,15 @@ TEST_F(SerialBackendTest, HostTxCountsUndeliveredBytes) {
   si.host_tx(0x41);  // no backend at all
   EXPECT_EQ(1u, si.tx_dropped());
 
-  NullBackend sink;
-  si.backend = &sink;
+  si.set_backend(std::make_shared<NullBackend>());
   si.host_tx(0x42);  // delivered (and dropped by design, not by failure)
   EXPECT_EQ(1u, si.tx_dropped());
 
-  FileBackend no_output("", "");
-  ASSERT_TRUE(no_output.is_open());
-  si.backend = &no_output;
+  auto no_output = std::make_shared<FileBackend>("", "");
+  ASSERT_TRUE(no_output->is_open());
+  si.set_backend(no_output);
   si.host_tx(0x43);
   EXPECT_EQ(2u, si.tx_dropped());
-  si.backend = nullptr;
 }
 
 // beads-5os: a failing output stream must be reported, not swallowed.
@@ -801,8 +802,9 @@ TEST(SerialHostQueues, PumpNeverHandsTheCardMoreThanItHasRoomFor) {
 
 TEST(SerialHostQueues, QueuedBytesGoBeforeTheBackendsAndTheRestWait) {
   SerialInterface si;
-  ScriptedRxBackend wire({'x', 'y', 'z'});
-  si.backend = &wire;
+  auto wire =
+      std::make_shared<ScriptedRxBackend>(std::vector<uint8_t>{'x', 'y', 'z'});
+  si.set_backend(wire);
   const uint8_t typed[] = {'A', 'B'};
   si.queue_rx(typed, sizeof(typed));
 
@@ -810,8 +812,7 @@ TEST(SerialHostQueues, QueuedBytesGoBeforeTheBackendsAndTheRestWait) {
   EXPECT_EQ(3u, si.pump_rx(3, collect, &card));
   EXPECT_EQ((std::vector<uint8_t>{'A', 'B', 'x'}), card);
   // The backend keeps what did not fit, instead of overrunning the FIFO.
-  EXPECT_EQ(2u, wire.left());
-  si.backend = nullptr;
+  EXPECT_EQ(2u, wire->left());
 }
 
 TEST(SerialHostQueues, QueueIsBoundedAndReportsWhatFitted) {
@@ -849,10 +850,8 @@ TEST(SerialHostQueues, HostWiredOnlyWhenEnabledAndNotThePlotter) {
 
 TEST(SerialHostQueues, TransmittedBytesReachTheTerminalMonitor) {
   SerialInterface si;
-  NullBackend sink;
-  si.backend = &sink;
+  si.set_backend(std::make_shared<NullBackend>());
   for (uint8_t const b : kHello) si.host_tx(b);
-  si.backend = nullptr;
 
   std::vector<uint8_t> shown;
   si.drain_monitor(shown);
@@ -872,4 +871,96 @@ TEST(SerialHostQueues, MonitorKeepsTheNewestBytesWhileNobodyDrains) {
   EXPECT_EQ(2, shown.front());
   EXPECT_EQ(static_cast<uint8_t>(SerialInterface::kMonitorCap + 1),
             shown.back());
+}
+
+// beads-qn5t: the Machine's host_tx ctx is the SerialInterface, and every
+// CPC-transmitted byte goes through host_tx() on the Z80 thread, while
+// apply_config() runs on the IPC or UI thread with no quiesce (`serial config
+// set`, the Options dialog). apply_config() used to `delete` the backend
+// out from under a send() in flight -- a use-after-free. A backend swapped
+// out mid-send must outlive that send.
+namespace {
+
+struct GateState {
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  std::atomic<bool> destroyed{false};
+  std::atomic<bool> destroyed_during_send{false};
+};
+
+// A backend whose send() parks until the test releases it, and which
+// records its own destruction in state that outlives it.
+class GatedBackend : public SerialBackend {
+ public:
+  explicit GatedBackend(GateState* s) : s_(s) {}
+  ~GatedBackend() override { s_->destroyed = true; }
+  bool open() override { return true; }
+  void close() override {}
+  bool is_open() const override { return true; }
+  bool send(uint8_t) override {
+    GateState* const s = s_;  // `this` may be gone after the wait
+    s->entered = true;
+    while (!s->release) std::this_thread::yield();
+    if (s->destroyed) s->destroyed_during_send = true;
+    return true;
+  }
+  bool has_data() const override { return false; }
+  uint8_t recv() override { return 0; }
+  bool connected() const override { return true; }
+  std::string name() const override { return "gated"; }
+  std::string status() const override { return "gated"; }
+
+ private:
+  GateState* s_;
+};
+
+}  // namespace
+
+TEST(SerialInterfaceBackendLifetime, ApplyConfigMidSendKeepsBackendAlive) {
+  SerialInterface si;
+  GateState st;
+  si.set_backend(std::make_shared<GatedBackend>(&st));
+
+  std::thread z80([&] { si.host_tx(0x41); });  // the DART data write
+  while (!st.entered) std::this_thread::yield();
+
+  SerialConfig cfg;
+  cfg.enabled = false;  // the swap itself is what matters, not the target
+  si.set_config(cfg);
+  si.apply_config();  // IPC `serial config set enabled 0`, no quiesce
+  EXPECT_EQ(nullptr, si.backend());
+  EXPECT_FALSE(st.destroyed)
+      << "the backend was destroyed while host_tx() was inside its send()";
+
+  st.release = true;
+  z80.join();
+  EXPECT_FALSE(st.destroyed_during_send);
+  EXPECT_TRUE(st.destroyed)
+      << "the swapped-out backend must still die once its last send ends";
+  EXPECT_EQ(0u, si.tx_dropped());
+}
+
+// The same race at volume: a Z80-thread transmit loop against a config
+// thread replacing the backend. Under ASan/TSan this is the UAF/data-race
+// detector; without a sanitizer it must at least not crash.
+TEST(SerialInterfaceBackendLifetime, ConcurrentApplyConfigAndHostTx) {
+  SerialInterface si;
+  SerialConfig cfg;
+  cfg.enabled = true;
+  cfg.backend_type = SerialBackendType::Null;
+  si.set_config(cfg);
+  si.apply_config();
+
+  std::atomic<bool> stop{false};
+  std::thread z80([&] {
+    while (!stop) si.host_tx(0x55);
+  });
+  for (int i = 0; i < 2000; ++i) {
+    cfg.baud_rate = (i & 1) ? 9600 : 19200;
+    si.set_config(cfg);
+    si.apply_config();
+  }
+  stop = true;
+  z80.join();
+  EXPECT_NE(nullptr, si.backend());
 }

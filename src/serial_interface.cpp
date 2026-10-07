@@ -605,13 +605,31 @@ void SIRomManager::unload(byte** rom_map) {
 }
 
 // SerialInterface implementation
+std::shared_ptr<SerialBackend> SerialInterface::backend() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return backend_;
+}
+
+void SerialInterface::set_backend(std::shared_ptr<SerialBackend> next) {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    backend_.swap(next);
+  }
+  // `next` now holds the old backend. Dropping it here closes it (every
+  // backend's destructor closes) -- unless a host_tx() on the Z80 thread is
+  // still inside its send(), in which case that call's reference closes it
+  // once the send returns. Never close() it explicitly: that would race the
+  // in-flight send on the same fd.
+}
+
 void SerialInterface::host_tx(uint8_t byte) {
   {
     std::lock_guard<std::mutex> lock(queue_mu_);
     if (monitor_.size() == kMonitorCap) monitor_.pop_front();
     monitor_.push_back(byte);
   }
-  if (backend == nullptr || !backend->send(byte))
+  const std::shared_ptr<SerialBackend> b = backend();
+  if (b == nullptr || !b->send(byte))
     tx_dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -645,10 +663,14 @@ size_t SerialInterface::pump_rx(size_t room, void (*sink)(uint8_t, void*),
     }
   }
   // The backend's bytes stay in the backend (socket buffer, file, tty) until
-  // the FIFO has room for them, rather than overrunning it.
-  while (moved < room && backend != nullptr && backend->has_data()) {
-    sink(backend->recv(), ctx);
-    ++moved;
+  // the FIFO has room for them, rather than overrunning it. A counted
+  // reference, like host_tx(): apply_config() may swap it meanwhile.
+  if (moved < room) {
+    const std::shared_ptr<SerialBackend> b = backend();
+    while (moved < room && b != nullptr && b->has_data()) {
+      sink(b->recv(), ctx);
+      ++moved;
+    }
   }
   return moved;
 }
@@ -660,21 +682,34 @@ void SerialInterface::drain_monitor(std::vector<uint8_t>& out) {
 }
 
 void SerialInterface::set_config(const SerialConfig& config) {
+  std::lock_guard<std::mutex> lock(mu_);
   config_ = config;
 }
 
+SerialConfig SerialInterface::get_config() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return config_;
+}
+
+bool SerialInterface::config_applied() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return applied_ && config_ == applied_config_;
+}
+
 void SerialInterface::apply_config() {
-  // Close existing backend
-  if (backend) {
-    backend->close();
-    delete backend;
-    backend = nullptr;
+  // Drop the existing backend first: a TCP or tty backend must release its
+  // socket/device before the replacement opens the same one.
+  set_backend(nullptr);
+
+  const SerialConfig cfg = get_config();
+
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    applied_config_ = cfg;
+    applied_ = true;
   }
 
-  applied_config_ = config_;
-  applied_ = true;
-
-  if (!config_.enabled) {
+  if (!cfg.enabled) {
     // Bytes queued for a card that is now unplugged would otherwise arrive
     // the next time someone enables it.
     {
@@ -687,36 +722,39 @@ void SerialInterface::apply_config() {
   }
 
   // Create new backend based on type
-  switch (config_.backend_type) {
+  std::shared_ptr<SerialBackend> next;
+  switch (cfg.backend_type) {
     case SerialBackendType::Null:
-      backend = new NullBackend();
+      next = std::make_shared<NullBackend>();
       break;
 
     case SerialBackendType::File:
-      backend = new FileBackend(config_.input_file, config_.output_file);
+      next = std::make_shared<FileBackend>(cfg.input_file, cfg.output_file);
       break;
 
     case SerialBackendType::HostSerial:
-      backend = new HostSerialBackend(config_.device_path);
+      next = std::make_shared<HostSerialBackend>(cfg.device_path);
       break;
 
     case SerialBackendType::NullModem:
-      backend = new NullModemBackend();
+      next = std::make_shared<NullModemBackend>();
       break;
 
     case SerialBackendType::TcpSocket:
-      backend = new TcpSocketBackend(config_.tcp_host, config_.tcp_port);
+      next = std::make_shared<TcpSocketBackend>(cfg.tcp_host, cfg.tcp_port);
       break;
 
     case SerialBackendType::Plotter:
-      backend = new PlotterBackend();
+      next = std::make_shared<PlotterBackend>();
       break;
   }
 
-  if (backend) {
-    // The board's rs232 Device reaches this backend through the bridge:
-    // host_tx() for bytes the CPC sends, pump_rx() for bytes it receives.
-    backend->open();
+  if (next) {
+    // Open before publishing, so no host_tx() ever sees a half-open backend.
+    // The board's rs232 Device reaches it through the bridge: host_tx() for
+    // bytes the CPC sends, pump_rx() for bytes it receives.
+    next->open();
+    set_backend(next);
 
     // The BDOS serial hooks that used to shortcut the plotter backend are
     // retired (beads-5q4v milestone C): the plotter is a bus Device on the

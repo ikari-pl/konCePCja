@@ -4519,10 +4519,10 @@ void imgui_render_options() {
       ImGui::Spacing();
       ImGui::Separator();
       ImGui::TextDisabled("Status");
-      if (g_serial_interface.backend) {
+      if (auto backend = g_serial_interface.backend()) {
         const Rs232Regs card = serial_card_regs();
-        ImGui::Text("Backend: %s", g_serial_interface.backend->name().c_str());
-        ImGui::Text("Status: %s", g_serial_interface.backend->status().c_str());
+        ImGui::Text("Backend: %s", backend->name().c_str());
+        ImGui::Text("Status: %s", backend->status().c_str());
         ImGui::Text("TX Empty: %s", (card.rr0 & 0x04) ? "Yes" : "No");
         ImGui::Text("RX Available: %s", (card.rr0 & 0x01) ? "Yes" : "No");
       } else {
@@ -5870,13 +5870,13 @@ void imgui_render_serial_terminal() {
 
   // Status bar: the board's card, as the CPC sees it at $FADE
   const Rs232Regs card = serial_card_regs();
-  ImGui::Text(
-      "DART: TX=%s RX=%s (%d in FIFO, %zu queued) | Backend: %s",
-      (card.rr0 & 0x04) ? "Empty" : "Busy",
-      (card.rr0 & 0x01) ? "Data" : "Empty", static_cast<int>(card.fifo_depth),
-      g_serial_interface.rx_pending(),
-      g_serial_interface.backend ? g_serial_interface.backend->name().c_str()
-                                 : "None");
+  const auto backend = g_serial_interface.backend();
+  ImGui::Text("DART: TX=%s RX=%s (%d in FIFO, %zu queued) | Backend: %s",
+              (card.rr0 & 0x04) ? "Empty" : "Busy",
+              (card.rr0 & 0x01) ? "Data" : "Empty",
+              static_cast<int>(card.fifo_depth),
+              g_serial_interface.rx_pending(),
+              backend ? backend->name().c_str() : "None");
 
   ImGui::Separator();
 

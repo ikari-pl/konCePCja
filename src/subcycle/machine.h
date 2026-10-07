@@ -295,6 +295,16 @@ class Machine {
   // Architectural Z80 state (pin-level truth via z80_peek/z80_poke).
   Z80Regs regs() const;
   void set_regs(const Z80Regs& regs);
+  // Debugger edits (beads-3yl2): set_regs() restarts the CPU at a fresh
+  // instruction boundary, which drops whatever a pause or breakpoint parked
+  // mid-flight. set_regfile() writes only the registers and leaves the
+  // instruction in flight running; finish_instruction() ticks the board to
+  // the next boundary (no-op at one); abandon_instruction() drops the
+  // instruction in flight and refetches from PC.
+  void set_regfile(const Z80Regs& regs);
+  bool at_instruction_boundary() const;
+  void finish_instruction();
+  void abandon_instruction();
 
   // The CPU-visible memory view (active ROM overlays + RAM banking); writes
   // land in the banked RAM byte, never ROM — like a real mreq cycle.
