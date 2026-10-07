@@ -118,6 +118,13 @@ struct Bridge {
   // afterwards or the debugger reports the mid-fetch PC instead of the
   // breakpoint address.
   ProbeHit pending_hit{};
+  // The registers the host view (z80.*) was last given, so an edit can tell
+  // which fields the user actually changed (beads-3yl2). `parked_on_fetch`:
+  // published.pc is a breakpoint's address, not the machine's PC -- the
+  // machine stopped right after that opcode's M1 fetch, so the instruction
+  // the debugger shows has not run yet.
+  Z80Regs published{};
+  bool parked_on_fetch = false;
   // A listed breakpoint/watchpoint stop is classified while the machine is
   // parked, then committed at debug_sync after register publication. The
   // resume epoch prevents an older staged stop from overtaking a later Run.
@@ -174,6 +181,15 @@ struct Bridge {
   std::atomic<uint8_t> swap_unit{0};
 };
 Bridge g_bridge;
+
+// A breakpoint stop shows the halted instruction's address (probe spec §3),
+// not the machine's PC, which is already past the opcode it just fetched.
+void publish_halt_pc(Bridge& b, uint16_t addr) {
+  z80.PC.w.l = addr;
+  b.published.pc = addr;
+  b.parked_on_fetch = true;
+}
+
 void sync_m4_command(Bridge& b);  // defined below; installed as the machine's
                                   // coprocessor service at build
 const std::vector<int16_t> g_empty_audio;
@@ -495,6 +511,7 @@ bool subcycle_bridge_start() {
 
   b.next_deadline = 0;
   b.active = true;
+  subcycle_bridge_sync_regs_view();  // the baseline a register edit diffs
   LOG_INFO("subcycle engine: running the pin-level board ("
            << rom_file << ", model " << model << ")");
   return true;
@@ -626,6 +643,8 @@ const Device* subcycle_bridge_fdc() {
 void subcycle_bridge_sync_regs_view() {
   if (!g_bridge.active) return;
   const Z80Regs r = g_bridge.machine.regs();
+  g_bridge.published = r;
+  g_bridge.parked_on_fetch = false;
   z80.AF.w.l = r.af;
   z80.BC.w.l = r.bc;
   z80.DE.w.l = r.de;
@@ -648,26 +667,58 @@ void subcycle_bridge_sync_regs_view() {
 }
 
 void subcycle_bridge_regs_to_machine() {
-  if (!g_bridge.active) return;
-  Z80Regs r = g_bridge.machine.regs();
-  r.af = z80.AF.w.l;
-  r.bc = z80.BC.w.l;
-  r.de = z80.DE.w.l;
-  r.hl = z80.HL.w.l;
-  r.af_ = z80.AFx.w.l;
-  r.bc_ = z80.BCx.w.l;
-  r.de_ = z80.DEx.w.l;
-  r.hl_ = z80.HLx.w.l;
-  r.ix = z80.IX.w.l;
-  r.iy = z80.IY.w.l;
-  r.sp = z80.SP.w.l;
-  r.pc = z80.PC.w.l;
-  r.i = z80.I;
-  r.r = z80.R;
-  r.im = z80.IM;
-  r.iff1 = z80.IFF1;
-  r.iff2 = z80.IFF2;
-  g_bridge.machine.set_regs(r);
+  Bridge& b = g_bridge;
+  if (!b.active) return;
+  // An explicit edit of the host view. A pause or a breakpoint parks the board
+  // mid-instruction, so this must neither drop nor replay part of the
+  // instruction in flight (beads-3yl2; z80_poke() used to restart the CPU at a
+  // fresh boundary on every edit, losing e.g. the second half of a PUSH).
+  // Only the fields that differ from what was published are written.
+  const Z80Regs shown = b.published;
+  subcycle::Machine& m = b.machine;
+  const bool redirect = z80.PC.w.l != shown.pc;
+  const bool keep_halt_pc = b.parked_on_fetch && !redirect;
+  if (b.parked_on_fetch) {
+    // Stopped on a breakpoint: the instruction shown there has only been
+    // fetched and has not run. An edit lands before it runs, so it carries on
+    // with the new values (restarting it would fetch its opcode twice); a new
+    // PC drops it.
+    if (redirect) m.abandon_instruction();
+  } else {
+    // Anywhere else the instruction in flight may have begun to commit (SP
+    // moved once, one byte written). Let it end, so the edit lands between
+    // two instructions: `reg set SP` then `reg set PC` launches code with
+    // exactly that SP. A no-op at a boundary.
+    m.finish_instruction();
+  }
+  Z80Regs r = m.regs();
+  auto take = [](auto mirror, auto was, auto& out) {
+    if (mirror != was) out = mirror;
+  };
+  take(z80.AF.w.l, shown.af, r.af);
+  take(z80.BC.w.l, shown.bc, r.bc);
+  take(z80.DE.w.l, shown.de, r.de);
+  take(z80.HL.w.l, shown.hl, r.hl);
+  take(z80.AFx.w.l, shown.af_, r.af_);
+  take(z80.BCx.w.l, shown.bc_, r.bc_);
+  take(z80.DEx.w.l, shown.de_, r.de_);
+  take(z80.HLx.w.l, shown.hl_, r.hl_);
+  take(z80.IX.w.l, shown.ix, r.ix);
+  take(z80.IY.w.l, shown.iy, r.iy);
+  take(z80.SP.w.l, shown.sp, r.sp);
+  take(z80.PC.w.l, shown.pc, r.pc);
+  take(z80.I, shown.i, r.i);
+  take(z80.R, shown.r, r.r);
+  take(z80.IM, shown.im, r.im);
+  take(z80.IFF1, shown.iff1, r.iff1);
+  take(z80.IFF2, shown.iff2, r.iff2);
+  m.set_regfile(r);
+  // Re-publish, so the view and `published` match the machine again (a
+  // finished instruction moved other registers too). A breakpoint stop that
+  // was not redirected keeps showing the breakpoint's address.
+  const uint16_t halt_pc = shown.pc;
+  subcycle_bridge_sync_regs_view();
+  if (keep_halt_pc) publish_halt_pc(b, halt_pc);
 }
 
 namespace {
@@ -924,8 +975,7 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
     // still read as "a watchpoint did this" -- and any consumer reporting
     // WATCH= from it published stale WP_ADDR/VAL/OLD forever after.
     z80.watchpoint_reached = 0;
-    z80.PC.w.l =
-        hit.addr;  // the halted instruction's identity (spec: probe §3)
+    publish_halt_pc(b, hit.addr);
   } else {
     z80.watchpoint_reached = 1;
     z80.watchpoint_addr = hit.addr;
@@ -1136,7 +1186,7 @@ int subcycle_bridge_debug_sync() {
     // live mid-fetch PC. Re-publish the halted instruction's identity, the
     // same value process_probe_hit() set (probe spec §3) — otherwise `reg get
     // PC` and the disassembly view point one fetch past the breakpoint.
-    if (hit.kind == PROBE_HIT_EXEC) z80.PC.w.l = hit.addr;
+    if (hit.kind == PROBE_HIT_EXEC) publish_halt_pc(b, hit.addr);
     if (disposition != ProbeDisposition::kBreak) return 0;
     return commit_real_stop(hit) ? 1 : 0;
   }
@@ -1224,6 +1274,8 @@ void subcycle_bridge_stop() {
   b.pending_real_stop = false;
   b.pending_stop_epoch = 0;
   b.pending_stop_generation = 0;
+  b.published = Z80Regs{};
+  b.parked_on_fetch = false;
   b.machine.clear_taps();
   b.active = false;
 }
