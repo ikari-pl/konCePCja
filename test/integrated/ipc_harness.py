@@ -3409,6 +3409,69 @@ def test_conditional_debug_matrix():
         return True
 
 
+def test_pc_and_mem_events_fire():
+    """`event on|once pc=` / `mem=` must run their command (beads-uj1c).
+
+    The handlers existed but nothing called them, so both triggers armed with
+    `OK id=N` and never fired. The planted loop at 0x6000 is
+        6000 LD A,0x42   6002 LD (0x5000),A   6005 JR 0x6000
+    and each event's command is a `mem write` this test reads back. It runs
+    on the default tier: an event must fire on the Fast tier too, without
+    turning into a stop -- `wait vbl` answers ERR 409 if an event-only hit
+    paused the machine like a breakpoint.
+    """
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("  Failed to start emulator")
+            return False
+        emu.ipc.timeout = 20.0
+        emu.ipc.pause()
+        for command in ['mem write 0x6000 3E42320050 18F9',
+                        'mem write 0x5000 00',
+                        'mem write 0x6100 00000000',
+                        'reg set PC 0x6000']:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"  FAIL: {command!r}: {resp}")
+                return False
+        arms = [
+            # id 1: one-shot on the store's opcode fetch.
+            'event once pc=0x6002 mem write 0x6100 AA',
+            # id 2: persistent, value-matched write.
+            'event on mem=0x5000:0x42 mem write 0x6101 BB',
+            # id 3: value mismatch -- must never fire.
+            'event once mem=0x5000:0x43 mem write 0x6102 CC',
+            # id 4: removes itself from inside its own command (the event
+            # lock must not be held while a command runs).
+            'event on pc=0x6005 event off 4',
+        ]
+        for command in arms:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"  FAIL: {command!r}: {resp}")
+                return False
+        ok, resp = emu.ipc.send_command('wait vbl 10 10000')
+        if not ok:
+            print(f"  FAIL: an event-only hit stopped the machine: {resp}")
+            return False
+        ok, mem = emu.ipc.read_mem(0x6100, 3)
+        if not ok:
+            print(f"  FAIL: mem read: {mem}")
+            return False
+        got = mem.replace(' ', '').upper()
+        if 'AABB00' not in got:
+            print(f"  FAIL: event side effects at 0x6100 = {mem!r}, "
+                  "want AA BB 00 (pc= fired, mem=:42 fired, mem=:43 did not)")
+            return False
+        ok, listing = emu.ipc.send_command('event list')
+        if not ok or 'count=2' not in listing or 'id=2 ' not in listing \
+                or 'id=3 ' not in listing:
+            print(f"  FAIL: one-shots must go, the rest must stay: {listing!r}")
+            return False
+        print("  pc= and mem= events fired; one-shots removed; no stop")
+        return True
+
+
 class TelnetOracle:
     """Reader for the emulator's telnet console (IPC port + 1).
 
@@ -3615,6 +3678,7 @@ def main():
         test_boots_to_basic_with_peripherals,
         test_serial_ipc_drives_the_live_card,
         test_conditional_debug_matrix,
+        test_pc_and_mem_events_fire,
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
