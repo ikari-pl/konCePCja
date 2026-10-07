@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.4.1](https://github.com/ikari-pl/konCePCja/compare/v6.4.0...v6.4.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **devtools:** Registers window corrupted a paused machine; settle the inject test with step frame ([#68](https://github.com/ikari-pl/konCePCja/issues/68)) ([7684728](https://github.com/ikari-pl/konCePCja/commit/7684728356ebde94864c29ac849ed2367b574344))
+
 ## [6.4.0](https://github.com/ikari-pl/konCePCja/compare/v6.3.1...v6.4.0) (2026-10-06)
 
 
