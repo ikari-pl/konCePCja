@@ -193,22 +193,28 @@ TEST_F(EmuFramePacingTest, FrameskipNeverStarvesTheDisplay) {
   EXPECT_GE(rendered, 12 / static_cast<int>(kMaxConsecutiveSkips + 1));
 }
 
-TEST_F(EmuFramePacingTest, AStalledLoopSkipsWhileItCatchesUp) {
+// The wiring, with an exact oracle: every frame's skip decision is the
+// pacer's verdict on the frame before it, fed through frameskip_should_skip()
+// with the running skip count. Whatever the host's timing makes of the stall
+// (late frames, or a >250 ms resync on a crawling CI Mac), the decision must
+// match it.
+TEST_F(EmuFramePacingTest, SkipFollowsThePacersVerdictOnThePreviousFrame) {
   CPC.limit_speed = 1;
   CPC.frameskip = 1;
   ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
-  ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
-  // 100 ms behind (under the pacer's 250 ms resync): the next frames are
-  // more than a period late until they catch up, so at least one of the three
-  // after the stall skips its render even if the cap forces the first of them
-  // to render.
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  int skipped = 0;
-  for (int i = 0; i < 3; ++i) {
+  unsigned consecutive = 0;
+  for (int i = 0; i < 12; ++i) {
+    // 100 ms behind (under the pacer's 250 ms resync) leaves the next
+    // frames more than a period late until they catch up.
+    if (i == 4) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    bool const prev_late = subcycle_bridge_frame_was_late();
+    bool const expected =
+        frameskip_should_skip(true, true, 1, prev_late, consecutive);
     ASSERT_EQ(EmuFrameResult::kFrameComplete, emu_run_frame());
-    if (CPC.skip_rendering) ++skipped;
+    EXPECT_EQ(expected, CPC.skip_rendering)
+        << "frame " << i << " (previous frame late: " << prev_late << ")";
+    consecutive = CPC.skip_rendering ? consecutive + 1 : 0;
   }
-  EXPECT_GE(skipped, 1);
 }
 
 TEST_F(EmuFramePacingTest, FrameskipOffNeverSkips) {
