@@ -303,6 +303,13 @@ class EmulatorRunner:
             env['SDL_AUDIODRIVER'] = 'dummy'
 
         cmd = [self.exe_path] + list(args)
+        # KONCPC_E2E_HEADLESS=1 runs every test against the -H loop instead
+        # of the GUI build (whose dummy-driver run still has a Z80 thread and
+        # a render thread). Tests that need the threaded loop check
+        # is_threaded() and skip.
+        if (os.environ.get('KONCPC_E2E_HEADLESS') == '1'
+                and '--headless' not in args and '-H' not in args):
+            cmd.append('--headless')
         # Pin the config unless the caller chose one. Started from the repo
         # root the emulator would otherwise pick up $CWD/koncepcja.cfg — the
         # maintainer's live config, which makes runs depend on whoever is
