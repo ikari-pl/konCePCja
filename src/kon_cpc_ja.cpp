@@ -347,16 +347,8 @@ dword dwMF2ExitAddr;
 }  // namespace
 extern dword dwMF2Flags;
 dword dwMF2Flags = 0;
-// Audio buffer: PSG writes samples here, pushed to SDL stream on
-// EC_SOUND_BUFFER.
-namespace {
-std::unique_ptr<byte[]> pbSndBuffer;  // PSG write buffer
-}  // namespace
 extern byte* pbGPBuffer;
 byte* pbGPBuffer = nullptr;
-namespace {
-byte* pbSndBufferEnd = nullptr;
-}  // namespace
 extern byte *membank_read[4], *membank_write[4], *memmap_ROM[256];
 byte *membank_read[4], *membank_write[4], *memmap_ROM[256];
 extern byte* pbRAM;
@@ -1473,8 +1465,8 @@ uint64_t audio_push_interval_max =
     0;  // longest gap between pushes (perf ticks)
 }  // namespace
 
-// Push completed audio buffer into SDL stream (called from main loop on
-// EC_SOUND_BUFFER). SDL handles internal queuing and feeds the hardware at the
+// Push one frame of board audio (subcycle_bridge_frame's samples) into the SDL
+// stream. SDL handles internal queuing and feeds the hardware at the
 // correct rate.
 namespace {
 void audio_push_buffer(const byte* data, int len) {
@@ -1625,9 +1617,6 @@ int audio_init() {
               << ", Frames: " << sample_frames);
 
   CPC.snd_buffersize = sample_frames * SDL_AUDIO_FRAMESIZE(desired);
-  pbSndBuffer = std::make_unique<byte[]>(CPC.snd_buffersize);
-  pbSndBufferEnd = pbSndBuffer.get() + CPC.snd_buffersize;
-  CPC.snd_bufferptr = pbSndBuffer.get();
 
   // Pre-buffer 2 silent buffers (~46ms at 44100Hz) so the SDL queue has
   // enough margin to absorb occasional compositor stalls (~69ms observed).
@@ -2116,8 +2105,6 @@ int video_init() {
 
   CPC.scr_bps = back_surface->pitch;  // rendered screen line length in bytes
   CPC.scr_line_offs = CPC.scr_bps * dwYScale;
-  CPC.scr_pos = CPC.scr_base = static_cast<byte*>(
-      back_surface->pixels);  // memory address of back buffer
 
   // Size the window.  The plugin always creates it at the surface's own
   // 768x540 — video_init() inits every plugin at scale 2 — which is a 2.84:1
@@ -3683,7 +3670,6 @@ void publish_keyboard_snapshot() {
 namespace {
 void z80_thread_main() {
   dword iExitCondition = EC_FRAME_COMPLETE;
-  static int consecutive_skips = 0;
   // Residual "render-wait" metric (from the U1 baseline): time the Z80 spends
   // in signal_ready() — now just a mutex+notify, so the [fps] log reads ~0,
   // confirming the decouple holds (it was 15-45% before the ring).
@@ -3813,70 +3799,18 @@ void z80_thread_main() {
       }
     }
 
-    // Speed limiter: spin/sleep until deadline on audio-driven cycle
-    // boundaries. Forced on while autotype is active so the Z80 stays at real
-    // time: the autotype is paced by the firmware's keyboard scans (with a
-    // frame-based timeout fallback), which is only meaningful at real-time
-    // speed — an uncapped Z80 would drain the queue during a busy CPU stretch
-    // (e.g. while BASIC executes a typed command) and drop the keys it isn't
-    // reading.
-    static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
+    // Real-time pacing is forced on while autotype is active so the Z80 stays
+    // at real time: the autotype is paced by the firmware's keyboard scans
+    // (with a frame-based timeout fallback), which is only meaningful at
+    // real-time speed — an uncapped Z80 would drain the queue during a busy CPU
+    // stretch (e.g. while BASIC executes a typed command) and drop the keys it
+    // isn't reading. The pacing itself is the bridge's own 50 Hz deadline.
     const bool limit_now = CPC.limit_speed || g_autotype_queue.is_active();
-    if (limit_now && iExitCondition == EC_CYCLE_COUNT) {
-      uint64_t const sleepStart = SDL_GetPerformanceCounter();
-      if (sleepStart < perfTicksTarget) {
-        uint64_t const remaining_ticks = perfTicksTarget - sleepStart;
-        uint64_t const remaining_ms = (remaining_ticks * 1000) / perfFreq;
-        if (remaining_ms > 2) {
-          SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
-        }
-        while (SDL_GetPerformanceCounter() < perfTicksTarget) {
-          SDL_Delay(0);
-        }
-      }
-      sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
-      perfTicksTarget += perfTicksOffset;
-      uint64_t const now = SDL_GetPerformanceCounter();
-      if (!CPC.frameskip && perfTicksTarget + (3 * perfTicksOffset) < now) {
-        perfTicksTarget = now + perfTicksOffset;
-      }
-    } else if (iExitCondition != EC_CYCLE_COUNT) {
-      CPC.skip_rendering = false;
-      consecutive_skips = 0;
-    }
 
-    // Frameskip decision at frame boundaries
-    if (iExitCondition == EC_FRAME_COMPLETE && limit_now) {
-      uint64_t const now = SDL_GetPerformanceCounter();
-      if (CPC.frameskip && now > perfTicksTarget) {
-        if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
-          CPC.skip_rendering = true;
-          consecutive_skips++;
-        } else {
-          CPC.skip_rendering = false;
-          consecutive_skips = 0;
-          perfTicksTarget = now + perfTicksOffset;
-        }
-      } else {
-        CPC.skip_rendering = false;
-        consecutive_skips = 0;
-      }
-    } else if (iExitCondition == EC_FRAME_COMPLETE && !CPC.limit_speed) {
-      CPC.skip_rendering = false;
-      consecutive_skips = 0;
-    }
-
-    // Update screen buffer base pointer for this frame's scanline
-    {
-      dword const dwOffset = CPC.scr_pos - CPC.scr_base;
-      if (VDU.scrln > 0) {
-        CPC.scr_base = static_cast<byte*>(back_surface->pixels) +
-                       (VDU.scrln * CPC.scr_line_offs);
-      } else {
-        CPC.scr_base = static_cast<byte*>(back_surface->pixels);
-      }
-      CPC.scr_pos = CPC.scr_base + dwOffset;
-    }
+    // Frameskip decision at frame boundaries.
+    CPC.skip_rendering = iExitCondition == EC_FRAME_COMPLETE && limit_now &&
+                         CPC.frameskip &&
+                         SDL_GetPerformanceCounter() > perfTicksTarget;
 
     {
       uint64_t const z80Start = SDL_GetPerformanceCounter();
@@ -3886,8 +3820,7 @@ void z80_thread_main() {
         // Sub-cycle engine: one whole frame of the pin-level board. Keyboard
         // comes from the published matrix (so autotype/IPC/session all work);
         // audio uses the existing SDL push path; pacing is the bridge's own
-        // 50 Hz deadline (the legacy limiter below only acts on
-        // EC_CYCLE_COUNT, which this engine never emits).
+        // 50 Hz deadline.
         uint8_t rows[16];
         for (int i = 0; i < 16; i++)
           rows[i] = keyboard_matrix_live[i].load(std::memory_order_relaxed);
@@ -3949,15 +3882,6 @@ void z80_thread_main() {
           (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
     }
 
-    // Audio: PSG filled buffer — push to SDL
-    if (iExitCondition == EC_SOUND_BUFFER) {
-      if (!g_emu_paused.load(std::memory_order_relaxed)) {
-        audio_push_buffer(pbSndBuffer.get(),
-                          static_cast<int>(CPC.snd_buffersize));
-      }
-      CPC.snd_bufferptr = pbSndBuffer.get();
-    }
-
     // Breakpoint / step
     if (iExitCondition == EC_BREAKPOINT) {
       if (z80.breakpoint_reached || z80.watchpoint_reached) {
@@ -3966,10 +3890,9 @@ void z80_thread_main() {
           cleanExit(1, false);
         }
         imgui_state.show_devtools = true;
-        // Engine breakpoints are committed atomically in debug_sync before
-        // their hit is published. Re-pausing here would let this older stop
-        // overtake a newer IPC `run`.
-        if (!subcycle_bridge_active()) cpc_pause();
+        // No cpc_pause() here: engine breakpoints are committed atomically in
+        // debug_sync before their hit is published. Re-pausing here would let
+        // this older stop overtake a newer IPC `run`.
         // Mid-frame pause: the render thread may be waiting in
         // try_wait_ready_for() for a frame that will never arrive (we stopped
         // before EC_FRAME_COMPLETE).  Send a skip wake-up so it unblocks, then
@@ -4168,15 +4091,9 @@ void z80_thread_main() {
 
       // Drive LED state and FPS text — written before signal_ready() so the
       // condvar's happens-before ensures render thread sees them after
-      // wait_ready() returns. Under engine=1 the legacy FDC struct is dormant;
-      // read the sub-cycle FDC Device instead.
-      if (subcycle_bridge_active()) {
-        subcycle_bridge_disk_leds(imgui_state.drive_a_led,
-                                  imgui_state.drive_b_led);
-      } else {
-        imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
-        imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
-      }
+      // wait_ready() returns. The sub-cycle FDC Device is the only FDC.
+      subcycle_bridge_disk_leds(imgui_state.drive_a_led,
+                                imgui_state.drive_b_led);
       if (CPC.scr_fps) {
         char chStr[15];
         snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS),
@@ -4292,10 +4209,10 @@ bool render_one_frame() {
   video_display();  // Phase A: texture upload + ImGui render (~3ms)
   // NOTE: the old "partial audio push before the Phase B stall" lived here. It
   // was safe only because the blocking handshake parked the Z80 during render;
-  // post-decouple the Z80 runs free and owns CPC.snd_bufferptr / pbSndBuffer,
-  // so touching them here would be a data race. It is also redundant — the Z80
-  // feeds the audio queue itself at a steady 50 Hz (EC_SOUND_BUFFER) and never
-  // stalls on present. Removed.
+  // post-decouple the Z80 runs free and owns the audio buffer, so touching it
+  // here would be a data race. It is also redundant — the Z80 feeds the audio
+  // queue itself once per frame at a steady 50 Hz and never stalls on present.
+  // Removed.
   // Main-thread-only housekeeping
   if (g_m4_http.is_running()) g_m4_http.drain_pending();
   ipc_drain_input();
@@ -4501,7 +4418,6 @@ int koncpc_main(int argc, char** argv) {
     }
     CPC.scr_bps = back_surface->pitch;
     CPC.scr_line_offs = CPC.scr_bps * dwYScale;
-    CPC.scr_pos = CPC.scr_base = static_cast<byte*>(back_surface->pixels);
     // No audio in headless mode: audio_init() is simply never called, so
     // audio_push_buffer() no-ops (audio_stream null, snd_ready false).
     // CPC.snd_enabled is deliberately NOT cleared — it is the user's config
@@ -5397,71 +5313,11 @@ int koncpc_main(int argc, char** argv) {
         audio_push_interval_max = 0;
       }
 
-      static constexpr int MAX_CONSECUTIVE_SKIPS = 5;
-      static int consecutive_skips = 0;
-      if (CPC.limit_speed && iExitCondition == EC_CYCLE_COUNT) {
-        // Absolute deadline: sleep until perfTicksTarget, then advance by one
-        // frame. Multiple EC_CYCLE_COUNTs may fire per frame (audio-driven
-        // cycle boundaries); only the first one sleeps — subsequent ones see
-        // the deadline already passed.
-        uint64_t const sleepStart = SDL_GetPerformanceCounter();
-        if (sleepStart < perfTicksTarget) {
-          uint64_t const remaining_ticks = perfTicksTarget - sleepStart;
-          uint64_t const remaining_ms = (remaining_ticks * 1000) / perfFreq;
-          if (remaining_ms > 2) {
-            SDL_Delay(static_cast<Uint32>(remaining_ms - 2));
-          }
-          while (SDL_GetPerformanceCounter() < perfTicksTarget) {
-            SDL_Delay(0);
-          }
-        }
-        sleepTimeAccum += SDL_GetPerformanceCounter() - sleepStart;
-        perfTicksTarget += perfTicksOffset;
-        // Catch-up: if more than 3 frames behind, reset the deadline.
-        uint64_t const now = SDL_GetPerformanceCounter();
-        if (!CPC.frameskip && perfTicksTarget + (3 * perfTicksOffset) < now) {
-          perfTicksTarget = now + perfTicksOffset;
-        }
-      } else if (iExitCondition != EC_CYCLE_COUNT) {
-        // Speed limiter not active and not a mid-frame audio slice.
-        CPC.skip_rendering = false;
-        consecutive_skips = 0;
-      }
-
       // Frameskip decision: only on frame boundaries to avoid mid-frame
       // toggles.
-      if (iExitCondition == EC_FRAME_COMPLETE && CPC.limit_speed) {
-        uint64_t const now = SDL_GetPerformanceCounter();
-        if (CPC.frameskip && now > perfTicksTarget) {
-          if (consecutive_skips < MAX_CONSECUTIVE_SKIPS) {
-            CPC.skip_rendering = true;
-            consecutive_skips++;
-          } else {
-            CPC.skip_rendering = false;
-            consecutive_skips = 0;
-            perfTicksTarget = now + perfTicksOffset;
-          }
-        } else {
-          CPC.skip_rendering = false;
-          consecutive_skips = 0;
-        }
-      } else if (iExitCondition == EC_FRAME_COMPLETE && !CPC.limit_speed) {
-        CPC.skip_rendering = false;
-        consecutive_skips = 0;
-      }
-
-      dword const dwOffset =
-          CPC.scr_pos - CPC.scr_base;  // offset in current surface row
-      if (VDU.scrln > 0) {
-        CPC.scr_base =
-            static_cast<byte*>(back_surface->pixels) +
-            (VDU.scrln * CPC.scr_line_offs);  // determine current position
-      } else {
-        CPC.scr_base =
-            static_cast<byte*>(back_surface->pixels);  // reset to surface start
-      }
-      CPC.scr_pos =
-          CPC.scr_base + dwOffset;  // update current rendering position
+      CPC.skip_rendering = iExitCondition == EC_FRAME_COMPLETE &&
+                           CPC.limit_speed && CPC.frameskip &&
+                           SDL_GetPerformanceCounter() > perfTicksTarget;
 
       // Headless runs single-threaded, but the firmware still scans the live
       // matrix — refresh it from pending each frame (uncontended here).
@@ -5518,15 +5374,6 @@ int koncpc_main(int argc, char** argv) {
             (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
       }
 
-      // Audio push: PSG finished filling the back buffer — push it to SDL.
-      if (iExitCondition == EC_SOUND_BUFFER) {
-        if (!CPC.paused) {
-          audio_push_buffer(pbSndBuffer.get(),
-                            static_cast<int>(CPC.snd_buffersize));
-        }
-        CPC.snd_bufferptr = pbSndBuffer.get();  // reset write position
-      }
-
       if (iExitCondition == EC_BREAKPOINT) {
         if (z80.breakpoint_reached || z80.watchpoint_reached) {
           g_trace.dump_if_crash();
@@ -5535,7 +5382,6 @@ int koncpc_main(int argc, char** argv) {
           }
           // This is a breakpoint from DevTools or symbol file
           imgui_state.show_devtools = true;
-          if (!subcycle_bridge_active()) cpc_pause();
           z80.step_in = 0;
         } else if (z80.step_in >= 2) {
           // Step In completed (one instruction) or Step Out completed (RET
@@ -5733,76 +5579,6 @@ int koncpc_main(int argc, char** argv) {
                 g_kbd_publish_serial.load(std::memory_order_relaxed))) {
           cpc_pause();
           g_ipc->notify_frame_step_done();
-        }
-
-        if (!g_headless) {
-          if (SDL_GetTicks() < osd_timing) {
-            print(static_cast<byte*>(back_surface->pixels) + CPC.scr_line_offs,
-                  osd_message.c_str(), true);
-          }
-          std::string fpsText;
-          if (CPC.scr_fps) {
-            char chStr[15];
-            snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%",
-                     static_cast<int>(dwFPS),
-                     static_cast<int>(dwFPS) * 100 /
-                         static_cast<int>(1000.0 / FRAME_PERIOD_MS));
-            fpsText = chStr;
-          }
-          imgui_state.topbar_fps = fpsText;
-          if (subcycle_bridge_active()) {
-            subcycle_bridge_disk_leds(imgui_state.drive_a_led,
-                                      imgui_state.drive_b_led);
-          } else {
-            imgui_state.drive_a_led = FDC.led && (FDC.command[1] & 1) == 0;
-            imgui_state.drive_b_led = FDC.led && (FDC.command[1] & 1) == 1;
-          }
-        }
-        if (!g_headless) {
-          if (!CPC.skip_rendering) {
-            uint64_t const displayStart = SDL_GetPerformanceCounter();
-
-            video_display();  // phase A: texture upload + ImGui render (~3ms)
-
-            // Push any partial audio buffer accumulated since the last
-            // EC_SOUND_BUFFER. This tops up the audio queue before the
-            // expensive phase B stall (floating viewports + GL context
-            // switches, 0-60ms).
-            {
-              int const partial =
-                  static_cast<int>(CPC.snd_bufferptr - pbSndBuffer.get());
-              if (!CPC.paused && partial > 0) {
-                audio_push_buffer(pbSndBuffer.get(), partial);
-                CPC.snd_bufferptr = pbSndBuffer.get();
-              }
-            }
-
-            video_display_b();  // phase B: floating viewports + window swap
-
-            uint64_t const displayEnd = SDL_GetPerformanceCounter();
-            displayTimeAccum.fetch_add(displayEnd - displayStart,
-                                       std::memory_order_relaxed);
-
-            // Check audio queue after display (GL viewport stalls drain it)
-            // Sample audio queue depth after display — catches GL stalls.
-            // Only updates min (underrun counting is done in audio_push_buffer
-            // to avoid double-counting).
-            if (audio_stream && CPC.snd_ready) {
-              int queued = SDL_GetAudioStreamQueued(audio_stream);
-              queued = std::max(queued, 0);
-              audio_queue_min_bytes = std::min(queued, audio_queue_min_bytes);
-              if (queued < static_cast<int>(CPC.snd_buffersize) / 2 &&
-                  audio_push_count > 0) {
-                [[maybe_unused]] double const display_ms =
-                    static_cast<double>(displayEnd - displayStart) * 1000.0 /
-                    perfFreq;
-                LOG_DEBUG("Audio low queue after display: "
-                          << queued << "B, display took " << display_ms
-                          << "ms");
-              }
-            }
-          }
-          video_take_pending_window_screenshot();
         }
 
         if (g_take_screenshot) {

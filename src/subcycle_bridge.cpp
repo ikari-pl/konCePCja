@@ -1756,8 +1756,7 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
 
   blit_fb(b, dst);
 
-  if (limit) {  // drift-corrected 50 Hz deadline (the legacy limiter only
-                // paces EC_CYCLE_COUNT exits, which this engine never emits)
+  if (limit) {  // drift-corrected 50 Hz deadline (the emulation's only pacer)
     const uint64_t freq = SDL_GetPerformanceFrequency();
     const uint64_t tick = freq / 50;
     uint64_t now = SDL_GetPerformanceCounter();
