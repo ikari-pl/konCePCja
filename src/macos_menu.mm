@@ -4,6 +4,7 @@
 #include "keyboard.h"
 #include "menu_actions.h"
 #include "menu_bridge.h"
+#include "test_window.h"
 #ifdef KONCPC_MODERN_UI
 #include "imgui.h"
 #endif
@@ -465,7 +466,12 @@ static void koncpc_register_menu_tracking_observers() {
 
 void koncpc_setup_macos_menu() {
   @autoreleasepool {
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    // A test window (KONCPC_TEST_WINDOW) is an accessory app: no Dock icon,
+    // never the active app, so it can't take the keyboard from the person
+    // sharing the desktop.
+    [NSApp setActivationPolicy:koncpc_test_window_active()
+                                   ? NSApplicationActivationPolicyAccessory
+                                   : NSApplicationActivationPolicyRegular];
     [NSApp finishLaunching];
     koncpc_install_emulator_menu([NSApp mainMenu]);
     koncpc_register_menu_tracking_observers();
@@ -496,6 +502,7 @@ void koncpc_enable_app_nap() {
 }
 
 void koncpc_activate_app() {
+  if (koncpc_test_window_active()) return;  // never steal focus in tests
   // Must dispatch to main thread for NSApp activation
   dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
@@ -512,6 +519,7 @@ void koncpc_activate_app() {
 // reproduces every time the user goes Menu → Media → Load Disk A.
 extern SDL_Window* mainSDLWindow;
 void koncpc_restore_keyboard_focus() {
+  if (koncpc_test_window_active()) return;  // never steal focus in tests
   dispatch_async(dispatch_get_main_queue(), ^{
     @autoreleasepool {
       if (!mainSDLWindow) return;
@@ -528,6 +536,13 @@ void koncpc_restore_keyboard_focus() {
 }
 
 extern SDL_Window* mainSDLWindow;
+
+void koncpc_set_window_click_through(SDL_Window* window) {
+  if (!window) return;
+  NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
+      SDL_GetWindowProperties(window), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+  [nswin setIgnoresMouseEvents:YES];
+}
 
 #ifdef KONCPC_MODERN_UI
 static NSWindow* nswindow_from_viewport(ImGuiViewport* vp) {
