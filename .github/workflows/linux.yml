@@ -81,6 +81,11 @@ jobs:
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
+      # The sub-cycle board links on its own (no SDL, ImGui or host globals)
+      # and boots: sim_headless + bench + the rig tools, see `board_only` in
+      # the makefile. The -H loop's smoke runs inside e2e_test
+      # (test/integrated/headless_smoke).
+      - run: make -j 3 board_only
 
       - run: make -j 3 clean
       - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"

@@ -316,7 +316,7 @@ $(shell printf '%s' '$(GIT_HASH)' | cmp -s - $(HASH_STAMP) 2>/dev/null \
 $(OBJECTS) $(TEST_OBJECTS): $(VERSION_STAMP)
 $(OBJDIR)/src/argparse.o $(OBJDIR)/src/kon_cpc_ja.o: $(HASH_STAMP)
 
-.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test e2e_test e2e_test_slow install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo
+.PHONY: all check_deps clean deb_pkg debug debug_flag distrib doc tags unit_test e2e_test e2e_test_slow install doxygen coverage coverage-report coverage-clean sim sim_headless bench pgo board_only
 
 WARNINGS = -Wall -Wextra -Wzero-as-null-pointer-constant -Wformat=2 -Wold-style-cast -Wmissing-include-dirs -Woverloaded-virtual -Wpointer-arith -Wredundant-decls -Wimplicit-fallthrough
 # Tier 1: always-errors even in release (undefined behavior / security critical)
@@ -632,6 +632,19 @@ cpct_tap_rig: sim/cpct_tap_rig.cpp $(SIM_HW_SRCS)
 # program through the AY bus, generators dumped per PSG clock (copycat/sim/psg).
 psg_oracle_rig: sim/psg_oracle_rig.cpp $(SIM_HW_SRCS)
 	$(CXX) -std=c++17 -O2 -Isrc -o psg_oracle_rig $^
+
+# --- Board-only CI gate (beads-cv2.3) -------------------------------------------
+# The sub-cycle board (src/hw + src/subcycle) must link without the host runtime:
+# no SDL, no ImGui, no app globals. Nothing else builds these targets, so this is
+# the gate that keeps the property from rotting (sim/ had already stopped
+# compiling unnoticed). `sim` is here too: it is the SDL host the sim sources
+# share, and only the headless half is otherwise compiled. The smoke boots 100
+# frames and fails on a blank framebuffer; bench then runs a short fixed trace.
+BOARD_SMOKE_FRAMES ?= 100
+board_only: sim sim_headless cpct_tap_rig psg_oracle_rig
+	./$(SIM_TARGET)_headless --frames $(BOARD_SMOKE_FRAMES) 2>&1 | tee /dev/stderr | \
+	  grep -Eq 'ran $(BOARD_SMOKE_FRAMES) frames, [1-9][0-9]*/'
+	$(MAKE) bench PGO_BENCH_FRAMES=$(BOARD_SMOKE_FRAMES)
 
 # --- FPS benchmark + PGO 2-phase flow (beads-lcfa / plan §10-B4, risk #5) -------
 # A FIXED, deterministic headless cold-boot trace (sim/bench_fps.cpp) reusing the

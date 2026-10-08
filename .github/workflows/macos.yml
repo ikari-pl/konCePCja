@@ -70,6 +70,11 @@ jobs:
       - run: alias sed=gsed && make -j 3 e2e_test
         env:
           DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
+      # The sub-cycle board links on its own (no SDL, ImGui or host globals)
+      # and boots: sim_headless + bench + the rig tools, see `board_only` in
+      # the makefile. The -H loop's smoke runs inside e2e_test
+      # (test/integrated/headless_smoke).
+      - run: make -j 3 ARCH=macos board_only
       - run: make -j 3 ARCH=macos macos_bundle
 
       # ---- Release-only steps below ----

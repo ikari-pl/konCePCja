@@ -65,8 +65,10 @@ bool load_wav(const char* path, std::vector<int16_t>& out) {
 }
 
 // The whole simulated machine, kept together so both modes share assembly.
-// Drive-sound overlay: WAV assets + voices, fed FDC events by the machine and
-// mixed one mono sample at a time (see subcycle::AudioOverlay).
+// Drive-sound overlay: WAV assets + voices, fed FDC events by the machine. The
+// overlay interface is events-only (subcycle::AudioOverlay): the cosmetic audio
+// is mixed host-side at the speaker, one mono sample per stereo frame, and never
+// summed into the emulated AY output (Machine::speaker_audio below).
 struct DriveSounds final : subcycle::AudioOverlay {
   struct Voice { const std::vector<int16_t>* pcm; size_t pos; bool loop; };
   std::vector<int16_t> spinup, hum, spindown, step, index_tick;
@@ -114,7 +116,7 @@ struct DriveSounds final : subcycle::AudioOverlay {
     }
   }
 
-  int32_t sample() override {
+  int32_t sample() {
     int32_t sum = 0;
     for (size_t i = 0; i < voices.size();) {
       Voice& v = voices[i];
@@ -175,6 +177,21 @@ struct Machine {
 
   void run_frame() { core.run_frame(); }
   const std::vector<int16_t>& audio() const { return core.audio(); }
+
+  // What the speaker plays: this frame's AY audio (stereo, interleaved) plus the
+  // drive-sound voices. audio() stays the pure emulated output (--wav captures it).
+  std::vector<int16_t> speaker;
+  const std::vector<int16_t>& speaker_audio() {
+    if (!sounds.enabled) return core.audio();
+    speaker = core.audio();
+    for (size_t i = 0; i + 1 < speaker.size(); i += 2) {
+      const int32_t d = sounds.sample();
+      speaker[i] = static_cast<int16_t>(std::clamp<int32_t>(speaker[i] + d, -32768, 32767));
+      speaker[i + 1] =
+          static_cast<int16_t>(std::clamp<int32_t>(speaker[i + 1] + d, -32768, 32767));
+    }
+    return speaker;
+  }
 };
 
 // Printable char → CPC matrix byte (line<<4|bit) + whether SHIFT is needed. Enough to
@@ -360,9 +377,11 @@ int run_interactive(Machine& m, int scale, bool scanlines) {
     // we ever run a touch fast — drop a frame's worth rather than drift behind.
     if (audio && !m.audio().empty()) {
       const int cap = static_cast<int>(kAudioHz / 50) * 2 * 2 * 4;  // ~4 stereo frames
-      if (SDL_GetAudioStreamQueued(audio) < cap)
-        SDL_PutAudioStreamData(audio, m.audio().data(),
-                               static_cast<int>(m.audio().size() * sizeof(int16_t)));
+      if (SDL_GetAudioStreamQueued(audio) < cap) {
+        const std::vector<int16_t>& out = m.speaker_audio();
+        SDL_PutAudioStreamData(audio, out.data(),
+                               static_cast<int>(out.size() * sizeof(int16_t)));
+      }
     }
     if (scanlines) {
       expand_scanlines(m.fb.data(), disp.data());

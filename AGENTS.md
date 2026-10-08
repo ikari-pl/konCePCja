@@ -280,8 +280,11 @@ back to headless" in the log), runs the single-threaded headless loop. So
 render-thread code (DevTools windows, which a breakpoint stop opens) runs during
 e2e tests; that is how the Registers window corrupted the machine in
 beads-vwwq. The IPC protocol is identical in both modes.
-`KoncepcjaIPC.is_threaded()` tells them apart by sending `devtools` (fails in
-headless, succeeds in GUI mode).
+`KoncepcjaIPC.is_threaded()` tells them apart by sending `gui` (`gui=0` for
+the `-H` loop, `gui=1` for the GUI build, dummy driver included). `devtools`
+cannot tell them apart: it returns `OK` in both. `make e2e_test` also runs
+`test/integrated/headless_smoke.py`, which boots `-H`, reads its ports from
+the startup manifest and drives ping/regs/pause/run/quit.
 
 **Snapshot round-trip pattern.**  Pause → read reference bytes → `snapshot save`
 → corrupt bytes → `snapshot load` → verify bytes restored.  This catches state
