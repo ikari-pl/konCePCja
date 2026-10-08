@@ -1037,6 +1037,9 @@ TEST_F(IpcServerTest, PauseLeaseFailsFastWhileTheZ80ThreadIsKnownStuck) {
     CpcPauseLease const third;
   }
   EXPECT_GE(ms_since(t), 550) << "recovery did not re-arm the full bound";
+  // Hand the next test an idle runner, not the simulated stuck one: this
+  // suite has no per-test TearDown, and --gtest_shuffle can run anything next.
+  g_z80_idle.store(true, std::memory_order_release);
   cpc_resume();
 }
 
