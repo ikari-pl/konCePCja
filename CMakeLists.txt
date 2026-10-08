@@ -107,9 +107,20 @@ set(MODERN_UI_FILES
 list(JOIN MODERN_UI_FILES "|" MODERN_UI_FILES_JOINED)
 set(MODERN_UI_SOURCES_REGEX "src/(${MODERN_UI_FILES_JOINED})\\.cpp$")
 
+# The UI-free build is also SDL-free (beads-29zx, decision D5 on beads-cv2):
+# it links no SDL library, only SDL's headers for the types the shared input
+# code still names. These files are nothing but SDL host code (window, GPU,
+# test window) and leave with the UI, as does the native macOS menu.
+# Keep this list in sync with SDL_HOST_FILES in the makefile.
+set(SDL_HOST_FILES video_host video_gpu test_window)
+list(JOIN SDL_HOST_FILES "|" SDL_HOST_FILES_JOINED)
+set(SDL_HOST_SOURCES_REGEX "src/(${SDL_HOST_FILES_JOINED})\\.cpp$")
+
 if(NOT KONCPC_BUILD_MODERN_UI)
-    message(STATUS "KONCPC_BUILD_MODERN_UI=OFF — excluding modern UI sources from koncepcja_lib")
+    message(STATUS "KONCPC_BUILD_MODERN_UI=OFF — excluding modern UI and SDL host sources from koncepcja_lib; no SDL is linked")
     list(FILTER APP_SOURCES EXCLUDE REGEX "${MODERN_UI_SOURCES_REGEX}")
+    list(FILTER APP_SOURCES EXCLUDE REGEX "${SDL_HOST_SOURCES_REGEX}")
+    list(FILTER APP_SOURCES EXCLUDE REGEX ".*\\.mm$")
 endif()
 
 # ── Vendored ImGui sources ───────────────────────────────
@@ -155,8 +166,12 @@ target_include_directories(koncepcja_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/vendor/portable-file-dialogs
 )
 
+if(KONCPC_BUILD_MODERN_UI)
+    target_link_libraries(koncepcja_lib PUBLIC SDL3::SDL3-static)
+else()
+    target_link_libraries(koncepcja_lib PUBLIC SDL3::Headers)
+endif()
 target_link_libraries(koncepcja_lib PUBLIC
-    SDL3::SDL3-static
     Freetype::Freetype
     PNG::PNG
     ZLIB::ZLIB
@@ -176,8 +191,10 @@ target_compile_definitions(koncepcja_lib PUBLIC KONCPC_VERSION_STRING="v${PROJEC
 # Modern-UI guard define (P1.5.1 step 4).  Source files that have
 # optional ImGui paths (currently: macos_menu.mm) check this to skip
 # ImGui-only code in headless builds.
+# KONCPC_SDL marks the code that talks to SDL (beads-29zx); only the UI
+# build has it.
 if(KONCPC_BUILD_MODERN_UI)
-    target_compile_definitions(koncepcja_lib PUBLIC KONCPC_MODERN_UI)
+    target_compile_definitions(koncepcja_lib PUBLIC KONCPC_MODERN_UI KONCPC_SDL)
 endif()
 
 if(WIN32)

@@ -163,7 +163,8 @@ jobs:
           files: release/koncepcja-windows-${{ matrix.arch }}.zip
 
   # The UI-free build (beads-6oa) through the CMake path:
-  # -DKONCPC_BUILD_MODERN_UI=OFF links a koncepcja.exe with no ImGui that
+  # -DKONCPC_BUILD_MODERN_UI=OFF links a koncepcja.exe with no ImGui and no
+  # SDL (beads-29zx: only SDL's headers, SDL3-static is never built) that
   # always runs the -H loop. One configuration is enough to keep it linking
   # on MSVC; the GUI matrix above covers the rest.
   msvc-ui-free:

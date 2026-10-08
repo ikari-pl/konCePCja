@@ -252,17 +252,29 @@ VENDOR_TEXTEDITOR_SOURCES := vendor/ImGuiColorTextEdit/TextEditor.cpp vendor/ImG
 # Keep this list in sync with MODERN_UI_FILES in CMakeLists.txt.
 MODERN_UI_FILES := imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout
 MODERN_UI_SOURCES := $(addprefix $(SRCDIR)/,$(addsuffix .cpp,$(MODERN_UI_FILES)))
+#
+# The UI-free build is also SDL-free (beads-29zx, decision D5 on beads-cv2): it
+# links no SDL library. KONCPC_SDL marks the code that talks to SDL; the files
+# in SDL_HOST_FILES are nothing but SDL host code (window, GPU, test window)
+# and leave the build with it, as does the native macOS menu. Shared code that
+# only needs a clock or a surface goes through host_clock.h / host_surface.h,
+# which keep SDL's implementation in the GUI build.
+# Keep this list in sync with SDL_HOST_FILES in CMakeLists.txt.
+SDL_HOST_FILES := video_host video_gpu test_window
+SDL_HOST_SOURCES := $(addprefix $(SRCDIR)/,$(addsuffix .cpp,$(SDL_HOST_FILES)))
 ifeq ($(KONCPC_MODERN_UI),1)
-COMMON_CFLAGS += -DKONCPC_MODERN_UI
+COMMON_CFLAGS += -DKONCPC_MODERN_UI -DKONCPC_SDL
 IMGUI_SOURCES:=vendor/imgui/imgui.cpp vendor/imgui/imgui_draw.cpp vendor/imgui/imgui_tables.cpp vendor/imgui/imgui_widgets.cpp vendor/imgui/backends/imgui_impl_sdl3.cpp vendor/imgui/backends/imgui_impl_sdlrenderer3.cpp vendor/imgui/backends/imgui_impl_sdlgpu3.cpp
 SOURCES += $(VENDOR_TEXTEDITOR_SOURCES)
 # Their objects are built by a dedicated relaxed-warnings rule (like ImGui), so
 # keep them out of the generic $(OBJECTS_CPP) rule to avoid a double recipe.
 VENDORED_TEXTEDITOR := $(addprefix $(OBJDIR)/,$(VENDOR_TEXTEDITOR_SOURCES:.cpp=.o))
 else
-$(info KONCPC_MODERN_UI=0 — excluding modern UI sources; the UI-free binary falls back to IUiHost's null host.)
-SOURCES := $(filter-out $(MODERN_UI_SOURCES),$(SOURCES))
+$(info KONCPC_MODERN_UI=0 — excluding modern UI and SDL host sources; the UI-free binary links no SDL and falls back to IUiHost's null host.)
+SOURCES := $(filter-out $(MODERN_UI_SOURCES) $(SDL_HOST_SOURCES),$(SOURCES))
+MM_SOURCES :=
 IMGUI_SOURCES :=
+PKG_SDL_LIBS :=
 endif
 
 DEPENDS:=$(foreach file,$(SOURCES:.cpp=.d),$(shell echo "$(OBJDIR)/$(file)"))

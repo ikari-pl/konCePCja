@@ -27,16 +27,13 @@
 /* clang-format on */
 #endif
 
+#ifdef KONCPC_SDL
 #include "SDL3/SDL.h"
-
-namespace {
-inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
-  const SDL_PixelFormatDetails* fmt =
-      SDL_GetPixelFormatDetails(surface->format);
-  SDL_Palette const* pal = SDL_GetSurfacePalette(surface);
-  return SDL_MapRGB(fmt, pal, r, g, b);
-}
-}  // namespace
+#include "macos_menu.h"
+#include "test_window.h"
+#include "video_gpu.h"
+#include "video_host.h"
+#endif
 
 #include "amdrum.h"
 #include "amx_mouse.h"
@@ -49,7 +46,9 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "data_areas.h"
 #include "drive_sounds.h"
 #include "emu_frame.h"
+#include "host_clock.h"
 #include "host_state.h"  // g_host_tape / g_host_status / frame metrics
+#include "host_surface.h"
 #include "hw_views.h"
 #include "io_bus.h"
 #include "io_dispatch.h"
@@ -60,7 +59,6 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "launch_echo.h"
 #include "m4board.h"
 #include "m4board_http.h"
-#include "macos_menu.h"
 #include "memory_bus.h"
 #include "memutils.h"
 #include "quit_policy.h"
@@ -72,8 +70,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "symfile.h"
 #include "telnet_console.h"
 #include "trace.h"
-#include "video_gpu.h"
-#include "video_host.h"
+#include "video_plugin.h"
 #include "vjoystick_map.h"
 #include "wav_recorder.h"
 #include "window_rescue.h"
@@ -117,7 +114,6 @@ KoncepcjaIpcServer* g_ipc = new KoncepcjaIpcServer();
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
 #include "tape_line_in.h"
-#include "test_window.h"
 
 inline constexpr int MAX_NB_JOYSTICKS = 2;
 inline constexpr int POLL_INTERVAL_MS = 1;
@@ -133,6 +129,7 @@ extern t_disk_format disk_format[];
 
 extern byte* pbCartridgePages[];
 
+#ifdef KONCPC_SDL
 extern SDL_Window* mainSDLWindow;
 extern SDL_Renderer* renderer;
 
@@ -147,8 +144,9 @@ SDL_AudioStream* audio_stream = nullptr;
 namespace {
 SDL_AudioStream* drive_audio_stream = nullptr;
 }  // namespace
-extern SDL_Surface* back_surface;
-SDL_Surface* back_surface = nullptr;
+#endif
+extern HostSurface* back_surface;
+HostSurface* back_surface = nullptr;
 extern video_plugin* vid_plugin;
 video_plugin* vid_plugin;
 
@@ -203,15 +201,18 @@ const int kAutotypeScanTimeoutFrames =
     10;  // inject anyway after N frames without a scan
 }  // namespace
 
+#ifdef KONCPC_SDL
 namespace {
 int topbar_height_px = 24;
 }  // namespace
+#endif
 
 extern t_CPC CPC;
 // Two device slots -> CPC joystick 0 and 1.  A slot holds EITHER a high-level
 // SDL_Gamepad (preferred) OR a raw SDL_Joystick (fallback for non-gamepad
 // devices); device_instance[] maps an SDL event's instance id back to its slot
 // for hotplug and per-slot input routing.
+#ifdef KONCPC_SDL
 namespace {
 SDL_Joystick* joysticks[MAX_NB_JOYSTICKS];
 }  // namespace
@@ -221,6 +222,7 @@ SDL_Gamepad* gamepads[MAX_NB_JOYSTICKS] = {nullptr};
 namespace {
 SDL_JoystickID device_instance[MAX_NB_JOYSTICKS] = {0};
 }  // namespace
+#endif
 
 // Emulation/render thread split (P1.2a)
 // g_emu_paused: authoritative pause flag shared between threads.
@@ -285,9 +287,9 @@ thread_local bool t_frame_turn = false;
 // Phase A.
 FrameSignal g_frame_signal;
 
-// High-resolution timing using SDL_GetPerformanceCounter (nanosecond-class)
+// High-resolution timing using host_perf_counter (nanosecond-class)
 namespace {
-uint64_t perfFreq;  // SDL_GetPerformanceFrequency() — ticks per second
+uint64_t perfFreq;  // host_perf_frequency() — ticks per second
 }  // namespace
 namespace {
 uint64_t perfTicksTargetFPS;  // next 1-second FPS sample point
@@ -411,7 +413,7 @@ dword freq_table[MAX_FREQ_ENTRIES] = {11025, 22050, 44100, 48000, 96000};
 #include "font.h"
 
 void set_osd_message(const std::string& message, uint32_t for_milliseconds) {
-  osd_timing = SDL_GetTicks() + for_milliseconds;
+  osd_timing = host_ticks_ms() + for_milliseconds;
   osd_message = " " + message;
   // Unify feedback channels (beads-49l): in GUI mode also surface the message
   // as a toast, so the same action gives consistent feedback whether it was
@@ -463,7 +465,7 @@ double* video_get_green_palette(int mode) {
 double* video_get_rgb_color(int color) { return colours_rgb[color]; }
 
 namespace {
-SDL_Color colours[32];
+HostColor colours[32];
 }  // namespace
 
 extern byte bit_values[8];
@@ -747,6 +749,7 @@ void mf2_register_io() {  // NOLINT(misc-use-internal-linkage): registered from
 // CPC.scr_bpp (RGBA32 and RGB565 are the live plugin formats), replacing
 // four hand-unrolled copies whose 8-bit variant clobbered its own second
 // scanline.
+#ifdef KONCPC_SDL  // the OSD text; only the GUI draws it
 namespace {
 void print(byte* pbAddr, const char* pchStr, bool bolColour) {
   const unsigned int px = (CPC.scr_bpp + 7) / 8;  // bytes per pixel
@@ -758,8 +761,8 @@ void print(byte* pbAddr, const char* pchStr, bool bolColour) {
   // (out-param/compound-assign/loop/reference)
   uint32_t colour = bolColour ? 0xffffffffu : 0u;
   if (CPC.scr_bpp == 8) {
-    colour = bolColour ? MapRGBSurface(back_surface, 255, 255, 255)
-                       : MapRGBSurface(back_surface, 0, 0, 0);
+    colour = bolColour ? host_surface_map_rgb(back_surface, 255, 255, 255)
+                       : host_surface_map_rgb(back_surface, 0, 0, 0);
   }
 
   // Little-endian partial store: paints one pixel of any byte width.
@@ -796,6 +799,7 @@ void print(byte* pbAddr, const char* pchStr, bool bolColour) {
   }
 }
 }  // namespace
+#endif
 
 namespace {
 
@@ -995,8 +999,10 @@ void koncpc_reload_host_keymap() {
 namespace {
 int input_init() {
   reload_input_mapper();
+#ifdef KONCPC_SDL
   SDL_SetWindowRelativeMouseMode(
       mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
+#endif
   return 0;
 }
 }  // namespace
@@ -1440,9 +1446,11 @@ void printer_stop() {
 }
 
 // ── Audio diagnostics ──
+#ifdef KONCPC_SDL
 namespace {
 uint64_t audio_last_push_tick = 0;  // perf counter of last push
 }  // namespace
+#endif
 namespace {
 int audio_underrun_count = 0;  // underruns: queue was empty
 }  // namespace
@@ -1463,6 +1471,7 @@ uint64_t audio_push_interval_max =
     0;  // longest gap between pushes (perf ticks)
 }  // namespace
 
+#ifdef KONCPC_SDL
 // Push one frame of board audio (subcycle_bridge_frame's samples) into the SDL
 // stream. SDL handles internal queuing and feeds the hardware at the
 // correct rate.
@@ -1470,7 +1479,7 @@ namespace {
 void audio_push_buffer(const byte* data, int len) {
   if (!audio_stream || !CPC.snd_ready || len <= 0) return;
 
-  uint64_t const now = SDL_GetPerformanceCounter();
+  uint64_t const now = host_perf_counter();
 
   // Measure queue depth BEFORE pushing.
   int queued = SDL_GetAudioStreamQueued(audio_stream);
@@ -1732,6 +1741,21 @@ void audio_enable() {
   audio_resume();
   audio_apply_volume();
 }
+#else
+// The SDL-free build opens no audio device: `koncepcja -H` never did
+// (audio_init was not called), so every entry point is the no-op the GUI
+// build's would be with no stream open. CPC.snd_enabled stays the user's
+// config intent.
+namespace {
+void audio_push_buffer(const byte* /*data*/, int /*len*/) {}
+}  // namespace
+int audio_init() { return 1; }
+void audio_shutdown() {}
+void audio_pause() {}
+void audio_resume() {}
+void audio_apply_volume() {}
+void audio_enable() {}
+#endif
 
 namespace {
 std::atomic<int> g_idle_timeout_ms{kCpcIdleTimeoutMs};
@@ -1920,15 +1944,12 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b) {
   if (index < 0 || index >= 34) return;
   if (!back_surface) return;
-  const SDL_PixelFormatDetails* fmt =
-      SDL_GetPixelFormatDetails(back_surface->format);
-  SDL_Palette const* pal = SDL_GetSurfacePalette(back_surface);
-  GateArray.palette[index] = SDL_MapRGB(fmt, pal, r, g, b);
+  GateArray.palette[index] = host_surface_map_rgb(back_surface, r, g, b);
 
   unsigned int const clamped = std::clamp(CPC.scr_oglscanlines, 0u, 100u);
   float const factor = (100 - clamped) / 100.0f;
-  GateArray.dark_palette[index] = SDL_MapRGB(
-      fmt, pal, static_cast<uint8_t>(r * factor),
+  GateArray.dark_palette[index] = host_surface_map_rgb(
+      back_surface, static_cast<uint8_t>(r * factor),
       static_cast<uint8_t>(g * factor), static_cast<uint8_t>(b * factor));
 }
 
@@ -1995,6 +2016,7 @@ void mouse_init() {
   set_cursor_visibility(CPC.phazer_emulation);
 }
 
+#ifdef KONCPC_SDL
 // Pull `win` back onto a display if it has ended up (almost) entirely off every
 // monitor's usable area — windows drift off-screen from a saved position on a
 // now-disconnected display, or from OS window-management nudges. `min_visible`
@@ -2092,11 +2114,8 @@ int video_init() {
     back_surface = video_ring_init(back_surface);
   }
 
-  {
-    const SDL_PixelFormatDetails* fmt =
-        SDL_GetPixelFormatDetails(back_surface->format);
-    CPC.scr_bpp = fmt ? fmt->bits_per_pixel : 0;  // bit depth of the surface
-  }
+  // bit depth of the surface
+  CPC.scr_bpp = host_surface_bits_per_pixel(back_surface);
   video_set_style();  // select rendering style
 
   int const iErrCode = video_set_palette();  // init CPC colours
@@ -2149,6 +2168,11 @@ void video_shutdown() {
   vid_plugin->close();
   video_gpu_shutdown();  // safety net — idempotent no-op after plugin close
 }
+#else
+// The SDL-free build only ever runs the headless plugin, which main() sets up
+// directly; there is no window to (re)build, so no video_init().
+void video_shutdown() { vid_plugin->close(); }
+#endif
 
 void video_display() {  // NOLINT(misc-use-internal-linkage): called from
                         // video_host (cross-TU)
@@ -2162,6 +2186,7 @@ void video_display_b() {
 }
 }  // namespace
 
+#ifdef KONCPC_SDL
 // ── Controller device tracking (gamepad + raw joystick, hotplug-aware) ──────
 // Return the slot (0/1) a given SDL instance id is mapped to, or -1 if unknown.
 namespace {
@@ -2317,13 +2342,14 @@ void controller_apply_bit(int slot, unsigned bit, bool pressed) {
   }
 }
 }  // namespace
+#endif  // KONCPC_SDL: controllers
 
 namespace {
 // The frame deadline itself lives in the bridge's pacer
 // (subcycle_bridge_frame); this only restarts the 1-second FPS sample window.
 void update_timings() {
-  perfFreq = SDL_GetPerformanceFrequency();
-  perfTicksTargetFPS = SDL_GetPerformanceCounter() + perfFreq;  // 1 s from now
+  perfFreq = host_perf_frequency();
+  perfTicksTargetFPS = host_perf_counter() + perfFreq;  // 1 s from now
   LOG_VERBOSE("Timing: perfFreq=" << perfFreq);
 }
 }  // namespace
@@ -2558,6 +2584,11 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   //
   // Indices 0-16 in older configs already point at the right plugin
   // (just GPU-backed now instead of GL-backed) so no remap needed.
+  //
+  // The SDL-free build has no presentation plugins to choose from (its list
+  // holds only the headless one), so it keeps scr_style as read: it is the
+  // user's config intent for the GUI build, like snd_enabled.
+#ifdef KONCPC_SDL
   {
     unsigned int const s = CPC.scr_style;
     unsigned int remapped = s;
@@ -2587,6 +2618,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
     LOG_ERROR("Unsupported video plugin specified - defaulting to plugin "
               << video_plugin_list[DEFAULT_VIDEO_PLUGIN].name);
   }
+#endif
   CPC.scr_oglfilter = read_flag("video", "scr_oglfilter", 1);
   CPC.scr_oglscanlines = read_clamped("video", "scr_oglscanlines", 30, 0, 100);
   CPC.scr_scanlines = read_flag("video", "scr_scanlines", 0);
@@ -2765,7 +2797,9 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   // Record the live window size, so both "Save" and the save-on-exit keep
   // whatever the user last dragged the window to.  In fullscreen the stored
   // value stands, since that size belongs to the display.
+#ifdef KONCPC_SDL
   video_capture_windowed_geometry(mainSDLWindow, CPC.win_w, CPC.win_h);
+#endif
   config::Config conf;
   // Read before write. Building a fresh Config here deleted every comment in
   // the file and every key this build does not set — and because the MRU list
@@ -2983,11 +3017,11 @@ void register_launch_files(const std::vector<std::string>& slot_list) {
   // Generous: the echo arrives within the first frames. Anything later is the
   // user dropping a file they also passed on the command line, which is an
   // ordinary thing to do and must behave like any other drop.
-  g_launch_echo.arm(canonical, SDL_GetTicks(), 5000);
+  g_launch_echo.arm(canonical, host_ticks_ms(), 5000);
 }
 
 bool drop_is_launch_echo(const std::string& drop_path) {
-  return g_launch_echo.consume(canonical_path(drop_path), SDL_GetTicks());
+  return g_launch_echo.consume(canonical_path(drop_path), host_ticks_ms());
 }
 
 // As long as a GUI is enabled, we must show the cursor.
@@ -3001,11 +3035,13 @@ void set_cursor_visibility(bool show) {
     shows_count--;
   }
   shows_count = std::max(shows_count, 0);
+#ifdef KONCPC_SDL
   if (shows_count > 0) {
     SDL_ShowCursor();
   } else {
     SDL_HideCursor();
   }
+#endif
 }
 
 namespace {
@@ -3095,10 +3131,23 @@ unsigned int koncpc_fullscreen_toggle_target(
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 std::optional<bool> koncpc_main_window_is_fullscreen() {
+#ifdef KONCPC_SDL
   if (mainSDLWindow == nullptr) return std::nullopt;
   return (SDL_GetWindowFlags(mainSDLWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+#else
+  return std::nullopt;
+#endif
 }
 
+void koncpc_main_window_size(int& w, int& h) {
+  w = 0;
+  h = 0;
+#ifdef KONCPC_SDL
+  if (mainSDLWindow != nullptr) SDL_GetWindowSize(mainSDLWindow, &w, &h);
+#endif
+}
+
+#ifdef KONCPC_SDL
 void koncpc_toggle_fullscreen() {
   CpcPauseLease lease;
   if (!lease.idle()) {
@@ -3134,6 +3183,7 @@ void koncpc_toggle_fullscreen() {
     cpc_resume();
   }
 }
+#endif
 
 void koncpc_menu_action(int action) {
   switch (action) {
@@ -3225,8 +3275,10 @@ void koncpc_menu_action(int action) {
     case KONCPC_JOY:
       CPC.joystick_emulation = nextJoystickEmulation(CPC.joystick_emulation);
       CPC.InputMapper->set_joystick_emulation();
+#ifdef KONCPC_SDL
       SDL_SetWindowRelativeMouseMode(
           mainSDLWindow, CPC.joystick_emulation == JoystickEmulation::Mouse);
+#endif
       set_osd_message(std::string("Joystick emulation: ") +
                       JoystickEmulationToString(CPC.joystick_emulation));
       break;
@@ -3240,6 +3292,7 @@ void koncpc_menu_action(int action) {
       break;
 
     case KONCPC_PASTE:
+#ifdef KONCPC_SDL
       set_osd_message("Pasting...");
       {
         auto content = std::string(SDL_GetClipboardText());
@@ -3247,6 +3300,9 @@ void koncpc_menu_action(int action) {
         koncpc_queue_virtual_keys(content);
         break;
       }
+#else
+      break;  // no host clipboard without SDL
+#endif
 
     case KONCPC_EXIT:
       // F10 / the menus run here on the main thread and ask; a scripted
@@ -3265,9 +3321,9 @@ void koncpc_menu_action(int action) {
       // koncpc_menu_action() runs on the main thread and the IPC thread, so the
       // debounce timestamp must be atomic to avoid a data race.
       static std::atomic<uint64_t> last_speed_toggle{0};
-      uint64_t const now = SDL_GetPerformanceCounter();
+      uint64_t const now = host_perf_counter();
       if (now - last_speed_toggle.load(std::memory_order_relaxed) >
-          SDL_GetPerformanceFrequency() / 10) {
+          host_perf_frequency() / 10) {
         CPC.limit_speed = CPC.limit_speed ? 0 : 1;
         set_osd_message(std::string("Limit speed: ") +
                         (CPC.limit_speed ? "on" : "off"));
@@ -3386,12 +3442,17 @@ bool dumpScreenTo(const std::string& path) {
   // path stalls (occluded macOS window / remote desktop) even though the
   // emulation keeps producing frames; screenshots must not photograph that.
   // Falls back to the presented surface, then back_surface (headless).
-  SDL_Surface* surf = video_ring_published_peek();
+#ifdef KONCPC_SDL
+  HostSurface* surf = video_ring_published_peek();
   if (!surf) surf = video_render_surface();
   if (!surf) surf = back_surface;
+#else
+  HostSurface* surf = back_surface;
+#endif
   if (!surf) return false;
-  if (SDL_SavePNG(surf, path)) {
-    LOG_ERROR("Could not write screenshot file to " + path);
+  std::string error;
+  if (!host_surface_save_png(surf, path, error)) {
+    LOG_ERROR("Could not write screenshot file to " + path + ": " + error);
     return false;
   }
   return true;
@@ -3540,12 +3601,16 @@ void doCleanUp() {
   g_m4_http.stop();
   symbiface_cleanup();
   m4board_cleanup();
+#ifdef KONCPC_SDL
   joysticks_shutdown();
+#endif
   // Before audio_shutdown()/SDL_Quit(): the tape line I/O owns SDL audio
   // streams and an audio-device event watch that neither of them knows about.
   tape_line_audio_shutdown();
   audio_shutdown();
+#ifdef KONCPC_SDL
   video_clear_topbar();
+#endif
   video_shutdown();
 
 #ifdef DEBUG
@@ -3554,7 +3619,9 @@ void doCleanUp() {
   }
 #endif
 
+#ifdef KONCPC_SDL
   SDL_Quit();
+#endif
 }
 }  // namespace
 
@@ -3595,9 +3662,11 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
       // need this bit — the main thread handles shutdown orchestration.
       g_z80_thread_quit.store(true, std::memory_order_relaxed);
     }
+#ifdef KONCPC_SDL
     SDL_Event qe = {};
     qe.type = SDL_EVENT_QUIT;
     SDL_PushEvent(&qe);
+#endif
     return;
   }
 
@@ -3619,6 +3688,7 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   _exit(returnCode);
 }
 
+#ifdef KONCPC_SDL
 namespace {
 void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event,
                                   std::atomic<byte> keyboard_matrix[],
@@ -3633,6 +3703,7 @@ void handle_mouse_joystick_button(const SDL_MouseButtonEvent& event,
   }
 }
 }  // namespace
+#endif
 
 // Publish a consistent snapshot of the pending keyboard matrix into the live
 // matrix that the CPC firmware actually scans.  Called once per frame, before
@@ -3671,7 +3742,7 @@ uint64_t g_render_wait_accum = 0;
 
 // FPS counter: publish stats once per second.
 void publish_frame_stats() {
-  uint64_t const perfNow = SDL_GetPerformanceCounter();
+  uint64_t const perfNow = host_perf_counter();
   if (perfNow < perfTicksTargetFPS) return;
   dwFPS = dwFrameCount;
   dwFrameCount = 0;
@@ -3776,7 +3847,7 @@ dword run_machine_frame(bool limit_now) {
   if (!subcycle_bridge_active()) {
     // The sub-cycle board is the only engine; without it there is no
     // frame to run (start failure is fatal at init).
-    SDL_Delay(1);
+    host_delay_ms(1);
     return EC_FRAME_COMPLETE;
   }
   subcycle_bridge_sync_probe();  // list edits made while paused reach
@@ -3796,12 +3867,12 @@ dword run_machine_frame(bool limit_now) {
   // before; consumers (display, screenshots, recorders) see a surface
   // at most one presentation period stale.
   static uint64_t s_last_blit = 0;
-  const uint64_t blit_now = SDL_GetPerformanceCounter();
+  const uint64_t blit_now = host_perf_counter();
   // A frame auto frameskip drops is never published, so its blit would be
   // wasted: skipping the conversion is the time frameskip wins back.
-  const bool blit_due = !CPC.skip_rendering &&
-                        (limit_now || blit_now - s_last_blit >=
-                                          SDL_GetPerformanceFrequency() / 60);
+  const bool blit_due =
+      !CPC.skip_rendering &&
+      (limit_now || blit_now - s_last_blit >= host_perf_frequency() / 60);
   if (blit_due) s_last_blit = blit_now;
   const std::vector<int16_t>& frame_audio =
       subcycle_bridge_frame(rows, blit_due ? back_surface : nullptr, limit_now);
@@ -3848,7 +3919,7 @@ void relay_scanned_rows() {
 }
 
 void record_frame_timing() {
-  uint64_t const now = SDL_GetPerformanceCounter();
+  uint64_t const now = host_perf_counter();
   if (lastFrameStart > 0) {
     uint64_t const elapsed = now - lastFrameStart;
     frameTimeAccum += elapsed;
@@ -3975,7 +4046,7 @@ void frame_epilogue() {
     cleanExit(0, false);
   }
   if (g_exit_mode == EXIT_MS &&
-      (SDL_GetTicks() - g_exit_start_ticks) >= g_exit_target) {
+      (host_ticks_ms() - g_exit_start_ticks) >= g_exit_target) {
     cleanExit(0, false);
   }
 
@@ -4069,12 +4140,12 @@ EmuFrameResult emu_run_frame() {
       subcycle_bridge_frame_was_late(), consecutive_skips);
   consecutive_skips = CPC.skip_rendering ? consecutive_skips + 1 : 0;
 
-  uint64_t const z80Start = SDL_GetPerformanceCounter();
+  uint64_t const z80Start = host_perf_counter();
   dword const exit_condition = run_machine_frame(limit_now);
   // The pacer sleeps inside the machine frame; book it as sleep, not machine.
   uint64_t const slept = subcycle_bridge_take_sleep_ticks();
   sleepTimeAccum += slept;
-  z80TimeAccum += SDL_GetPerformanceCounter() - z80Start - slept;
+  z80TimeAccum += host_perf_counter() - z80Start - slept;
   g_last_exit_condition = exit_condition;
 
   // Tape wave sample (sub-frame resolution, render thread reads this under
@@ -4115,7 +4186,7 @@ std::optional<EmuFrameResult> emu_headless_turn() {
   if (!turn.entered()) return std::nullopt;
   EmuFrameResult const result = emu_run_frame();
   if (result == EmuFrameResult::kFrameComplete) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(KONCPC_SDL)
     // Update Dock icon with CPC screen preview (~1fps at 50fps emulation)
     // back_surface is already sized to CPC_VISIBLE_SCR_WIDTH/HEIGHT * scale
     if (back_surface && (dwFrameCountOverall % 50) == 0) {
@@ -4132,6 +4203,9 @@ std::optional<EmuFrameResult> emu_headless_turn() {
   return result;
 }
 
+// The threaded GUI loop: the Z80 thread, the render thread's frame and the
+// native-menu tick. The SDL-free build only runs the headless loop.
+#ifdef KONCPC_SDL
 // Z80 emulation thread — runs emu_run_frame() and hands each finished frame
 // to the render thread. Used only in non-headless (GUI) mode; headless calls
 // emu_run_frame() from the main loop.
@@ -4196,9 +4270,9 @@ void z80_thread_main() {
     // so it never waits for render.  render-wait now measures ~0 (the
     // coupling this refactor removes).  The render thread reads
     // g_ring_published and drops intermediate frames if it falls behind.
-    uint64_t const render_wait_t0 = SDL_GetPerformanceCounter();
+    uint64_t const render_wait_t0 = host_perf_counter();
     g_frame_signal.signal_ready(CPC.skip_rendering);
-    g_render_wait_accum += SDL_GetPerformanceCounter() - render_wait_t0;
+    g_render_wait_accum += host_perf_counter() - render_wait_t0;
   }
 }
 }  // namespace
@@ -4255,9 +4329,9 @@ bool render_one_frame() {
   // everything a real display could. A blocking-vsync present self-paces
   // below the threshold (60 Hz ≈ 16.7 ms > 1/70 s) and is unaffected.
   static uint64_t s_last_present = 0;
-  const uint64_t present_now = SDL_GetPerformanceCounter();
+  const uint64_t present_now = host_perf_counter();
   if (!skip && s_last_present != 0 &&
-      present_now - s_last_present < SDL_GetPerformanceFrequency() / 70) {
+      present_now - s_last_present < host_perf_frequency() / 70) {
     skip = true;
   }
   if (skip) {
@@ -4277,12 +4351,12 @@ bool render_one_frame() {
   // OSD text — render thread owns osd_message/osd_timing, no race.
   // Write onto the presented frame (video_render_surface()), not the
   // Z80's live write buffer.
-  if (SDL_GetTicks() < osd_timing) {
+  if (host_ticks_ms() < osd_timing) {
     print(
         static_cast<byte*>(video_render_surface()->pixels) + CPC.scr_line_offs,
         osd_message.c_str(), true);
   }
-  uint64_t const displayStart = SDL_GetPerformanceCounter();
+  uint64_t const displayStart = host_perf_counter();
   video_display();  // Phase A: texture upload + ImGui render (~3ms)
   // NOTE: the old "partial audio push before the Phase B stall" lived here. It
   // was safe only because the blocking handshake parked the Z80 during render;
@@ -4313,7 +4387,7 @@ bool render_one_frame() {
     return true;
   }
   video_display_b();  // Phase B: 0-60ms, Z80 runs concurrently!
-  uint64_t const displayEnd = SDL_GetPerformanceCounter();
+  uint64_t const displayEnd = host_perf_counter();
   displayTimeAccum.fetch_add(displayEnd - displayStart,
                              std::memory_order_relaxed);
   if (audio_stream && CPC.snd_ready) {
@@ -4357,6 +4431,7 @@ void koncpc_render_tracking_tick() {
   video_display_b();  // Phase B
   s_in_tick = false;
 }
+#endif  // KONCPC_SDL: threaded GUI loop
 
 int koncpc_main(int argc, char** argv) {
 #ifdef KONCPC_MODERN_UI
@@ -4383,7 +4458,9 @@ int koncpc_main(int argc, char** argv) {
   } win32TimerGuard;
 #endif
   bool bin_loaded = false;
+#ifdef KONCPC_SDL
   SDL_Event event;
+#endif
   std::vector<std::string> slot_list;
 
   try {
@@ -4398,7 +4475,9 @@ int koncpc_main(int argc, char** argv) {
   g_headless = koncpc_runs_headless(args);
   g_no_dialogs =
       koncpc_dialogs_suppressed_by_env(std::getenv("KONCPC_NO_DIALOGS"));
+#ifdef KONCPC_SDL
   koncpc_test_window_init_from_env();  // before SDL_Init: sets a hint
+#endif
   g_debug = args.debug;
   g_log_fps = args.fps;
   g_exit_on_break = args.exitOnBreak;
@@ -4426,10 +4505,13 @@ int koncpc_main(int argc, char** argv) {
   // which the main loop cannot tell from a user closing the window and so
   // would answer with the unsaved-disk dialog. A harness's terminate() must
   // never block on a modal.
+#ifdef KONCPC_SDL
   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
+#endif
   std::signal(SIGTERM, on_terminate_signal);
   std::signal(SIGINT, on_terminate_signal);
 
+#ifdef KONCPC_SDL
   if (g_headless) {
     // SDL3: timer is always available, init core only for headless
     if (!SDL_Init(0)) {
@@ -4442,6 +4524,7 @@ int koncpc_main(int argc, char** argv) {
       _exit(-1);
     }
   }
+#endif
 
   // PNG loader uses libpng; no SDL_image init required
 
@@ -4483,11 +4566,7 @@ int koncpc_main(int argc, char** argv) {
       fprintf(stderr, "headless video_init() failed. Aborting.\n");
       _exit(-1);
     }
-    {
-      const SDL_PixelFormatDetails* fmt =
-          SDL_GetPixelFormatDetails(back_surface->format);
-      CPC.scr_bpp = fmt ? fmt->bits_per_pixel : 0;
-    }
+    CPC.scr_bpp = host_surface_bits_per_pixel(back_surface);
     video_set_style();
     if (video_set_palette()) {
       fprintf(stderr, "headless video_set_palette() failed. Aborting.\n");
@@ -4502,7 +4581,9 @@ int koncpc_main(int argc, char** argv) {
     // headless run could write sound=off into the user's cfg and permanently
     // silence every later GUI session (the config-poisoning variant of the
     // engine=1 host-state gaps).
-  } else {
+  }
+#ifdef KONCPC_SDL
+  else {
     if (video_init()) {
       fprintf(stderr, "video_init() failed. Aborting.\n");
       cleanExit(-1);
@@ -4562,6 +4643,7 @@ int koncpc_main(int argc, char** argv) {
       fprintf(stderr, "joysticks_init() failed. Joysticks won't work.\n");
     }
   }
+#endif
 
 #ifdef DEBUG
   pfoDebug = fopen("./debug.txt", "wt");
@@ -4584,7 +4666,7 @@ int koncpc_main(int argc, char** argv) {
     cleanExit(-1);
   }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(KONCPC_SDL)
   // After emulator_init(): the menu prints each action's shortcut from the
   // live InputMapper bindings, which do not exist before it (beads-bqx).
   if (!g_headless) koncpc_setup_macos_menu();
@@ -4659,7 +4741,7 @@ int koncpc_main(int argc, char** argv) {
 
   loadBreakpoints();
 
-  g_exit_start_ticks = SDL_GetTicks();
+  g_exit_start_ticks = host_ticks_ms();
 
   // Keyboard matrices start RELEASED. Both are std::atomic arrays with static
   // (zero) init — and 0x00 means ALL KEYS PRESSED (CPC matrix: bit clear =
@@ -4700,9 +4782,11 @@ int koncpc_main(int argc, char** argv) {
   ipc_publish_device_gates(g_amx_mouse.enabled || g_symbiface.enabled,
                            static_cast<bool>(CPC.phazer_emulation));
 
+#ifdef KONCPC_SDL
   if (!g_headless) {
     g_z80_thread = std::thread(z80_thread_main);
   }
+#endif
 
   dword nextMouseReset = 0;
   // Whether this loop of emulation should release the joystick axis for mouse
@@ -4744,6 +4828,7 @@ int koncpc_main(int argc, char** argv) {
       applyKeypress(CPC.InputMapper->CPCscancodeFromCPCkey(CPC_J0_UP),
                     keyboard_matrix, false, false);
     }
+#ifdef KONCPC_SDL
     while (!g_headless && SDL_PollEvent(&event)) {
       // A test window (KONCPC_TEST_WINDOW) ignores whoever sits at the host:
       // their keys and clicks must never reach the CPC mid-test.
@@ -5311,6 +5396,7 @@ int koncpc_main(int argc, char** argv) {
       // loop body (the deferred video-reinit check below).
       if (render_one_frame()) continue;
     }
+#endif
 
     // ---- Headless: the main thread runs the emulation itself ----
     if (g_headless) {
@@ -5324,6 +5410,7 @@ int koncpc_main(int argc, char** argv) {
       }
     }
 
+#ifdef KONCPC_SDL
     // Fullscreen transitions destroy/recreate video resources, so an Options
     // checkbox cannot perform one from inside the active ImGui frame.
     if (imgui_state.fullscreen_request != -1) {
@@ -5370,7 +5457,7 @@ int koncpc_main(int argc, char** argv) {
           // GPU handles that would be used/freed against a dead device on next
           // use.
           ui_host().release_video_textures();
-          SDL_Delay(20);
+          host_delay_ms(20);
           video_shutdown();
           if (video_init()) {
             fprintf(stderr,
@@ -5398,6 +5485,8 @@ int koncpc_main(int argc, char** argv) {
       }
     }
 
+#endif  // KONCPC_SDL: fullscreen and video-plugin switches
+
     // Handle IPC "repaint" — re-render frame from RAM without Z80 advancement
     // Checked every loop (paused or unpaused)
     if (g_repaint_pending.load()) {
@@ -5411,9 +5500,10 @@ int koncpc_main(int argc, char** argv) {
       subcycle_bridge_repaint(back_surface);
 
       if (!shot_path.empty()) {
-        if (SDL_SavePNG(back_surface, shot_path)) {
+        std::string error;
+        if (!host_surface_save_png(back_surface, shot_path, error)) {
           std::scoped_lock const lock(g_repaint_mutex);
-          g_repaint_error = "SDL_SavePNG failed for " + shot_path;
+          g_repaint_error = "PNG write failed for " + shot_path + ": " + error;
         } else {
           LOG_INFO("Repaint screenshot saved to " + shot_path);
         }

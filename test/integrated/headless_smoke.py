@@ -14,7 +14,7 @@ forward past a busy port, so a guess can silently address another instance).
 With --ui-free the binary under test is a KONCPC_MODERN_UI=0 build
 (beads-6oa). That build IS `koncepcja -H`: it is started WITHOUT the flag and
 must still come up headless. The check also asserts that no Dear ImGui code
-was linked in (when `nm` is available) and that SIGTERM ends it with 143.
+and no SDL was linked in (beads-29zx) and that SIGTERM ends it with 143.
 
 Usage: headless_smoke.py [--ui-free] [path/to/koncepcja]
        (default binary: ./koncepcja, or $KONCPC_EXE when set)
@@ -153,6 +153,23 @@ def check_no_imgui(exe: Path) -> None:
     print(f"  nm: no ImGui:: symbols among {len(out.splitlines())}")
 
 
+# What any SDL3 link leaves in a binary. A dynamic link names the library in
+# the load commands / DT_NEEDED / import table (libSDL3 on macOS and Linux,
+# SDL3.dll on Windows); a static one (the MSVC CMake build links
+# SDL3-static) carries SDL's own strings, of which this error format is
+# compiled into SDL_error.h's SDL_InvalidParamError, used all over SDL.
+SDL_MARKERS = (b'libSDL3', b'SDL3.dll', b"Parameter '%s' is invalid")
+
+
+def check_no_sdl(exe: Path) -> None:
+    """A UI-free binary links no SDL at all (beads-29zx, decision D5)."""
+    data = exe.read_bytes()
+    found = [m.decode() for m in SDL_MARKERS if m in data]
+    if found:
+        fail(f"SDL in a UI-free binary: {found}")
+    print(f"  strings: none of {len(SDL_MARKERS)} SDL markers")
+
+
 def launch(exe: Path, cfg: Path, root: Path, ui_free: bool):
     env = os.environ.copy()
     env['KONCPC_NO_DIALOGS'] = '1'
@@ -214,6 +231,7 @@ def main() -> None:
         fail(f"{exe} does not exist; build it first")
     if ui_free:
         check_no_imgui(exe)
+        check_no_sdl(exe)
 
     # A throwaway copy of the shipped example config: never whoever's
     # koncepcja.cfg sits in the working directory, and a save on exit edits
