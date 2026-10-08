@@ -572,12 +572,6 @@ extern std::atomic<bool> g_emu_paused;  // true while Z80 thread is halted
 extern std::atomic<bool>
     g_z80_idle;  // true when Z80 thread is NOT inside z80_execute()
 extern FrameSignal g_frame_signal;  // back_surface handoff between threads
-// Protects imgui_state stats fields written by Z80 thread, read by render
-// thread. Lock before reading/writing: frame_time_*_us, z80_time_avg_us,
-// display_time_avg_us, sleep_time_avg_us, audio_underruns,
-// audio_near_underruns, audio_pushes, audio_queue_*_ms,
-// audio_push_interval_max_us.
-extern std::mutex g_imgui_stats_mutex;
 
 // kon_cpc_ja.cpp
 void set_osd_message(const std::string& message,

@@ -293,8 +293,8 @@ TEST_F(UIStateTest, FileDialogActionsAreDistinct) {
 // ─── Drive LEDs ──────────────────────────────────
 
 TEST_F(UIStateTest, DriveLEDsStartOff) {
-  EXPECT_FALSE(imgui_state.drive_a_led);
-  EXPECT_FALSE(imgui_state.drive_b_led);
+  EXPECT_FALSE(g_host_status.drive_a_led);
+  EXPECT_FALSE(g_host_status.drive_b_led);
 }
 
 // ─── Memory tool defaults ────────────────────────

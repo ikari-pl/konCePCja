@@ -50,6 +50,7 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "devtools_ui.h"
 #include "drive_sounds.h"
 #include "emu_frame.h"
+#include "host_state.h"  // g_host_tape / g_host_status / frame metrics
 #include "hw_views.h"
 #include "io_bus.h"
 #include "io_dispatch.h"
@@ -273,9 +274,6 @@ std::thread::id g_main_thread_id{};
 namespace {
 std::thread g_z80_thread;
 }  // namespace
-// Protects the imgui_state stats fields written by the Z80 thread and read by
-// the render thread (frame_time_avg_us, z80_time_avg_us, audio_*, etc.).
-std::mutex g_imgui_stats_mutex;
 // True when no thread is running a frame (i.e. safe to touch Z80 state from
 // another thread). Starts true because no frame has run yet. The frame runner
 // -- the GUI's Z80 thread, or the main thread under -H -- clears it for each
@@ -3716,22 +3714,23 @@ void publish_frame_stats() {
     fflush(stdout);
   }
 
-  std::scoped_lock const stats_lock(g_imgui_stats_mutex);
+  // The frame runner is the only writer: read, update, publish.
+  HostFrameMetrics metrics = host_frame_metrics();
   if (frameTimeSamples > 0) {
     double const ticksToUs = 1000000.0 / static_cast<double>(perfFreq);
-    imgui_state.frame_time_avg_us = static_cast<float>(
+    metrics.frame_time_avg_us = static_cast<float>(
         static_cast<double>(frameTimeAccum) / frameTimeSamples * ticksToUs);
-    imgui_state.frame_time_min_us =
+    metrics.frame_time_min_us =
         static_cast<float>(static_cast<double>(frameTimeMin) * ticksToUs);
-    imgui_state.frame_time_max_us =
+    metrics.frame_time_max_us =
         static_cast<float>(static_cast<double>(frameTimeMax) * ticksToUs);
-    imgui_state.display_time_avg_us =
+    metrics.display_time_avg_us =
         static_cast<float>(static_cast<double>(displayTimeAccum.exchange(
                                0, std::memory_order_relaxed)) /
                            frameTimeSamples * ticksToUs);
-    imgui_state.sleep_time_avg_us = static_cast<float>(
+    metrics.sleep_time_avg_us = static_cast<float>(
         static_cast<double>(sleepTimeAccum) / frameTimeSamples * ticksToUs);
-    imgui_state.z80_time_avg_us = static_cast<float>(
+    metrics.z80_time_avg_us = static_cast<float>(
         static_cast<double>(z80TimeAccum) / frameTimeSamples * ticksToUs);
   }
   frameTimeAccum = 0;
@@ -3741,13 +3740,13 @@ void publish_frame_stats() {
   z80TimeAccum = 0;
   frameTimeSamples = 0;
 
-  imgui_state.audio_underruns = audio_underrun_count;
-  imgui_state.audio_near_underruns = audio_near_underrun_count;
-  imgui_state.audio_pushes = audio_push_count;
+  metrics.audio_underruns = audio_underrun_count;
+  metrics.audio_near_underruns = audio_near_underrun_count;
+  metrics.audio_pushes = audio_push_count;
   if (audio_push_count == 0) {
-    imgui_state.audio_queue_avg_ms = 0;
-    imgui_state.audio_queue_min_ms = 0;
-    imgui_state.audio_push_interval_max_us = 0;
+    metrics.audio_queue_avg_ms = 0;
+    metrics.audio_queue_min_ms = 0;
+    metrics.audio_push_interval_max_us = 0;
   } else {
     // Convert queue depth from bytes to milliseconds
     double const avg_bytes = audio_queue_sum_bytes / audio_push_count;
@@ -3755,13 +3754,13 @@ void publish_frame_stats() {
     if (CPC.snd_bits == 0) frame_size /= 2;   // 8-bit halves it
     int const sample_rate = freq_table[CPC.snd_playback_rate];
     double const bytes_per_ms = sample_rate * frame_size / 1000.0;
-    imgui_state.audio_queue_avg_ms =
-        static_cast<float>(avg_bytes / bytes_per_ms);
-    imgui_state.audio_queue_min_ms =
+    metrics.audio_queue_avg_ms = static_cast<float>(avg_bytes / bytes_per_ms);
+    metrics.audio_queue_min_ms =
         static_cast<float>(audio_queue_min_bytes / bytes_per_ms);
-    imgui_state.audio_push_interval_max_us = static_cast<float>(
+    metrics.audio_push_interval_max_us = static_cast<float>(
         static_cast<double>(audio_push_interval_max) * 1000000.0 / perfFreq);
   }
+  host_frame_metrics_publish(metrics);
   audio_underrun_count = 0;
   audio_near_underrun_count = 0;
   audio_push_count = 0;
@@ -4081,9 +4080,7 @@ EmuFrameResult emu_run_frame() {
   // Tape wave sample (sub-frame resolution, render thread reads this under
   // condvar)
   if (CPC.tape_motor && CPC.tape_play_button) {
-    imgui_state.tape_wave_buf[imgui_state.tape_wave_head] = bTapeLevel;
-    imgui_state.tape_wave_head =
-        (imgui_state.tape_wave_head + 1) % ImGuiUIState::TAPE_WAVE_SAMPLES;
+    host_tape_push_wave(bTapeLevel);
   }
 
   if (exit_condition == EC_BREAKPOINT) return emu_handle_stop();
@@ -4173,15 +4170,16 @@ void z80_thread_main() {
     // Drive LED state and FPS text — written before signal_ready() so the
     // condvar's happens-before ensures render thread sees them after
     // wait_ready() returns. The sub-cycle FDC Device is the only FDC.
-    subcycle_bridge_disk_leds(imgui_state.drive_a_led, imgui_state.drive_b_led);
+    subcycle_bridge_disk_leds(g_host_status.drive_a_led,
+                              g_host_status.drive_b_led);
     if (CPC.scr_fps) {
       char chStr[15];
       snprintf(chStr, sizeof(chStr), "%3dFPS %3d%%", static_cast<int>(dwFPS),
                static_cast<int>(dwFPS) * 100 /
                    static_cast<int>(1000.0 / FRAME_PERIOD_MS));
-      imgui_state.topbar_fps = chStr;
+      g_host_status.fps_text = chStr;
     } else {
-      imgui_state.topbar_fps.clear();
+      g_host_status.fps_text.clear();
     }
 
     // Finalise the write buffer (ASIC sprites must be drawn before publish)

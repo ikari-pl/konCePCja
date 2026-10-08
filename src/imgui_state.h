@@ -3,9 +3,9 @@
 // Headless-safe data side of the modern UI.
 //
 // Background: the modern UI (ImGui + SDL_GPU) and the emulator core both
-// touch a process-wide "UIState" struct.  The core writes telemetry into
-// it (frame_time_*, audio_*, drive_*_led, …); the UI reads telemetry to
-// render and writes back request flags (show_devtools, …).
+// touch a process-wide "UIState" struct.  The UI writes request flags into
+// it (show_devtools, …) that the host loop acts on.  Telemetry the core
+// produces lives in host_state.h instead (beads-cv2.5).
 //
 // Today the struct lived in `imgui_ui.h` next to function declarations
 // that pull ImGui types into every translation unit that includes the
@@ -71,26 +71,9 @@ struct ImGuiUIState {
   // Menu was just opened (for first-frame focus)
   bool menu_just_opened = false;
 
-  // Top bar state
-  std::string topbar_fps;
-  bool drive_a_led = false;
-  bool drive_b_led = false;
-
-  // Frame timing measurement (updated each second, values in microseconds)
-  float frame_time_avg_us = 0.0f;
-  float frame_time_min_us = 0.0f;
-  float frame_time_max_us = 0.0f;
-  float display_time_avg_us = 0.0f;
-  float sleep_time_avg_us = 0.0f;
-  float z80_time_avg_us = 0.0f;
-
-  // Audio diagnostics (updated each second)
-  int audio_underruns = 0;          // times SDL queue was empty when we pushed
-  int audio_near_underruns = 0;     // times queue was below 1 buffer
-  int audio_pushes = 0;             // total pushes this second
-  float audio_queue_avg_ms = 0.0f;  // average queue depth in ms
-  float audio_queue_min_ms = 0.0f;  // minimum queue depth in ms
-  float audio_push_interval_max_us = 0.0f;  // longest gap between pushes
+  // The top bar's FPS text and drive LEDs, the frame/audio telemetry and the
+  // tape scope rings are produced by the emulation side: they live in
+  // host_state.h (g_host_status, host_frame_metrics(), g_host_tape).
 
   // Options dialog state
   t_CPC old_cpc_settings;
@@ -120,17 +103,8 @@ struct ImGuiUIState {
   std::string pending_dialog_result;
   int pending_rom_slot = -1;
 
-  // Tape waveform oscilloscope
-  static constexpr int TAPE_WAVE_SAMPLES = 128;
-  byte tape_wave_buf[TAPE_WAVE_SAMPLES] = {};  // raw pulse level
-  int tape_wave_head = 0;
-
+  // Tape scope: which ring (g_host_tape) the top bar draws.
   int tape_wave_mode = 0;  // 0=pulse, 1=decoded
-
-  // Decoded bits ring buffer (written by Tape_ReadDataBit)
-  static constexpr int TAPE_DECODED_SAMPLES = 200;
-  byte tape_decoded_buf[TAPE_DECODED_SAMPLES] = {};
-  int tape_decoded_head = 0;
 
   // Virtual keyboard state
   bool vkeyboard_caps_lock = false;   // CAPS LOCK - sticky toggle

@@ -21,7 +21,7 @@
 #include "drive_sounds.h"  // host audio overlay: motor hum / seek clicks
 #include "flux_ingest.h"   // flux::to_scp: unified flux-container dispatcher
 #include "frame_pacer.h"   // the 50 Hz deadline subcycle_bridge_frame paces to
-#include "host_state.h"    // g_host_tape: the deck ordinal the tape UI shows
+#include "host_state.h"  // g_host_tape: the deck ordinal + the BITS scope ring
 #include "hw/asic.h"
 #include "hw/crtc.h"
 #include "hw/device.h"  // Device (Save-As FDC handle)
@@ -31,8 +31,7 @@
 #include "hw/ppi.h"      // ppi_set_printer_ready: the /BUSY strap
 #include "hw/printer.h"  // printer_drain_events -> the pfoPrinter capture
 #include "hw/psg.h"
-#include "hw_views.h"     // TAPE_LEVEL_HIGH/LOW for the mirrored scope level
-#include "imgui_state.h"  // tape_decoded_buf: the BITS-view scope ring
+#include "hw_views.h"  // TAPE_LEVEL_HIGH/LOW for the mirrored scope level
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"  // pc= / mem= events armed on the probe
 #include "log.h"
@@ -1215,18 +1214,14 @@ int subcycle_bridge_debug_sync() {
     if (seek != ~uint32_t{0}) b.machine.tape_seek(seek);
   }
 
-  // Decoded-bits scope (BITS mode): drain the deck's decoded data bits into the
-  // UI ring. The sub-cycle deck knows each bit (hw/tape.cpp pulse_done); the
-  // legacy tape.cpp path that used to fill tape_decoded_buf never runs here.
+  // Decoded-bits scope (BITS mode): drain the deck's decoded data bits into
+  // g_host_tape's ring. The sub-cycle deck knows each bit (hw/tape.cpp
+  // pulse_done).
   {
     uint8_t bits[256];
     const int nbits =
         b.machine.tape_drain_bits(bits, static_cast<int>(sizeof(bits)));
-    for (int i = 0; i < nbits; ++i) {
-      imgui_state.tape_decoded_buf[imgui_state.tape_decoded_head] = bits[i];
-      imgui_state.tape_decoded_head = (imgui_state.tape_decoded_head + 1) %
-                                      ImGuiUIState::TAPE_DECODED_SAMPLES;
-    }
+    for (int i = 0; i < nbits; ++i) host_tape_push_decoded(bits[i]);
   }
 
   // Current-block counter: the legacy pbTapeBlock the tape UI tracks never

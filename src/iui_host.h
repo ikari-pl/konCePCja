@@ -22,13 +22,10 @@
 //     builds never include video.cpp at all, so there's no need for the
 //     interface to abstract over GPU rendering.
 //
-//   * It does NOT replace the global imgui_state struct.  That struct is a
-//     publish/subscribe data bus: the main loop writes telemetry samples
-//     (frame_time_avg_us, audio_queue_min_ms, drive_a_led, …) and reads
-//     UI-set flags (show_devtools, request_cpc_screen_focus, …).  Both
-//     sides can use it whether or not an actual UI is present, so it stays
-//     as a free-standing struct.  Future work can move imgui_state into
-//     the host if there's a reason; there isn't one yet.
+//   * It does NOT replace the global imgui_state struct, which carries
+//     UI-set flags (show_devtools, request_cpc_screen_focus, …) the main
+//     loop reads.  The telemetry the main loop writes (frame timing, audio
+//     queue, drive LEDs, tape scopes) lives in host_state.h (beads-cv2.5).
 //
 // Phase: P1.5.1 (beads-1az).  First sub-PR is interface-only — no callers
 // rewired yet, no headless build target wired up.  Subsequent sub-PRs in
