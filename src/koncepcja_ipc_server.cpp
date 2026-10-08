@@ -6502,64 +6502,93 @@ void KoncepcjaIpcServer::execute_event_command(const std::string& cmd) {
   recursion_depth--;
 }
 
+// The three checks below share one shape: decide under events_mutex which
+// commands are due (and drop the one-shots), then run them with the lock
+// released. A command runs through handle_command(), and holding the lock
+// across it deadlocked any command that edits the list, `event off` first.
 void KoncepcjaIpcServer::check_pc_events(uint16_t pc) {
   if (!has_pc_events.load(std::memory_order_relaxed)) return;
-  std::scoped_lock const lock(events_mutex);
-  bool removed = false;
-  for (auto it = events.begin(); it != events.end();) {
-    if (it->trigger == EventTrigger::PC && it->address == pc) {
-      execute_event_command(it->command);
-      if (it->one_shot) {
-        it = events.erase(it);
-        removed = true;
-        continue;
+  std::vector<std::string> due;
+  {
+    std::scoped_lock const lock(events_mutex);
+    bool removed = false;
+    for (auto it = events.begin(); it != events.end();) {
+      if (it->trigger == EventTrigger::PC && it->address == pc) {
+        due.push_back(it->command);
+        if (it->one_shot) {
+          it = events.erase(it);
+          removed = true;
+          continue;
+        }
       }
+      ++it;
     }
-    ++it;
+    if (removed) update_event_flags();
   }
-  if (removed) update_event_flags();
+  for (const auto& cmd : due) execute_event_command(cmd);
 }
 
 void KoncepcjaIpcServer::check_mem_write_events(uint16_t addr, uint8_t val) {
   if (!has_mem_events.load(std::memory_order_relaxed)) return;
-  std::scoped_lock const lock(events_mutex);
-  bool removed = false;
-  for (auto it = events.begin(); it != events.end();) {
-    if (it->trigger == EventTrigger::MEM_WRITE && it->address == addr) {
-      if (!it->match_value || it->value == val) {
-        execute_event_command(it->command);
+  std::vector<std::string> due;
+  {
+    std::scoped_lock const lock(events_mutex);
+    bool removed = false;
+    for (auto it = events.begin(); it != events.end();) {
+      if (it->trigger == EventTrigger::MEM_WRITE && it->address == addr &&
+          (!it->match_value || it->value == val)) {
+        due.push_back(it->command);
         if (it->one_shot) {
           it = events.erase(it);
           removed = true;
           continue;
         }
       }
+      ++it;
     }
-    ++it;
+    if (removed) update_event_flags();
   }
-  if (removed) update_event_flags();
+  for (const auto& cmd : due) execute_event_command(cmd);
 }
 
 void KoncepcjaIpcServer::check_vbl_events() {
   if (!has_vbl_events.load(std::memory_order_relaxed)) return;
-  std::scoped_lock const lock(events_mutex);
-  bool removed = false;
-  for (auto it = events.begin(); it != events.end();) {
-    if (it->trigger == EventTrigger::VBL) {
-      it->vbl_counter--;
-      if (it->vbl_counter <= 0) {
-        execute_event_command(it->command);
-        if (it->one_shot) {
-          it = events.erase(it);
-          removed = true;
-          continue;
+  std::vector<std::string> due;
+  {
+    std::scoped_lock const lock(events_mutex);
+    bool removed = false;
+    for (auto it = events.begin(); it != events.end();) {
+      if (it->trigger == EventTrigger::VBL) {
+        it->vbl_counter--;
+        if (it->vbl_counter <= 0) {
+          due.push_back(it->command);
+          if (it->one_shot) {
+            it = events.erase(it);
+            removed = true;
+            continue;
+          }
+          it->vbl_counter = it->vbl_interval;  // reset for next fire
         }
-        it->vbl_counter = it->vbl_interval;  // reset for next fire
       }
+      ++it;
     }
-    ++it;
+    if (removed) update_event_flags();
   }
-  if (removed) update_event_flags();
+  for (const auto& cmd : due) execute_event_command(cmd);
+}
+
+int KoncepcjaIpcServer::event_addresses(EventTrigger trigger, uint16_t* out,
+                                        int max) const {
+  const std::atomic<bool>& armed =
+      trigger == EventTrigger::PC ? has_pc_events : has_mem_events;
+  if (!armed.load(std::memory_order_relaxed)) return 0;
+  std::scoped_lock const lock(events_mutex);
+  int n = 0;
+  for (const auto& e : events) {
+    if (e.trigger != trigger || n >= max) continue;
+    if (std::find(out, out + n, e.address) == out + n) out[n++] = e.address;
+  }
+  return n;
 }
 
 // Free functions for z80.cpp / main loop
@@ -6571,6 +6600,16 @@ void ipc_check_mem_write_events(uint16_t addr, uint8_t val) {
 }
 void ipc_check_vbl_events() {
   if (g_ipc_instance) g_ipc_instance->check_vbl_events();
+}
+int ipc_event_pc_addresses(uint16_t* out, int max) {
+  return g_ipc_instance
+             ? g_ipc_instance->event_addresses(EventTrigger::PC, out, max)
+             : 0;
+}
+int ipc_event_mem_addresses(uint16_t* out, int max) {
+  return g_ipc_instance ? g_ipc_instance->event_addresses(
+                              EventTrigger::MEM_WRITE, out, max)
+                        : 0;
 }
 
 #ifdef _WIN32

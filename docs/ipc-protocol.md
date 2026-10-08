@@ -417,6 +417,17 @@ Register IPC commands to execute automatically on triggers.
 | Memory write | `mem=0xADDR` or `mem=0xADDR:VAL` | Fires on write to address (optionally matching value) |
 | VBL interval | `vbl=N` | Fires every N vertical blanks |
 
+`pc=` and `mem=` ride the board's bus probe, the comparators breakpoints and
+watchpoints use: `pc=` matches the opcode fetch at the address, `mem=` a CPU
+write to it (an IPC `mem write` is not a CPU write and does not trigger it).
+The command runs on the emulation thread while the machine is parked at that
+access, mid-frame, so `regs` or `mem read` see the CPU where it fired. The
+machine is not paused: a `pause` command stops it at the end of that frame,
+and a breakpoint is the way to stop at the address itself.
+While any such event is armed the board runs per-cycle, at the same cost as a
+breakpoint; with none armed it costs nothing. The probe holds 32 exec and 16
+watch addresses in total, shared with breakpoints and watchpoints.
+
 ### Commands
 
 | Command | Description |

@@ -33,6 +33,7 @@
 #include "hw_views.h"     // TAPE_LEVEL_HIGH/LOW for the mirrored scope level
 #include "imgui_state.h"  // tape_decoded_buf: the BITS-view scope ring
 #include "koncepcja.h"
+#include "koncepcja_ipc_server.h"  // pc= / mem= events armed on the probe
 #include "log.h"
 #include "m4board.h"  // legacy g_m4board: the deferred command executor
 #include "serial_interface.h"  // g_serial_interface config → the serial pair
@@ -138,6 +139,18 @@ struct Bridge {
   // actually happens -- an uninterrupted frame still returns machine.audio()
   // directly and pays nothing.
   std::vector<int16_t> spliced_audio;
+  // IPC pc= / mem= events (beads-uj1c): the addresses sync_probe armed for
+  // them this frame, and the hits waiting for their commands to run. A hit is
+  // judged inside a CpcStopCoordinationGuard, and a command takes pause
+  // leases (the same mutex), so commands run only once the guard is gone --
+  // see dispatch_event_hits(). Sized to the probe's own comparator counts.
+  std::array<uint16_t, 32> event_exec{};
+  int event_exec_count = 0;
+  std::array<uint16_t, 16> event_watch{};
+  int event_watch_count = 0;
+  std::vector<ProbeHit> event_hits;
+  // sync_probe mirrored the old-flavour z80.break_point into the probe.
+  bool waitbreak_armed = false;
   std::vector<uint8_t> ide_img[2];  // Symbiface IDE images (owned)
   std::string ide_path[2];          // their files, for write-back
   bool sf2_ide_loaded = false;
@@ -918,6 +931,18 @@ void subcycle_bridge_sync_probe() {
   for (const auto& io : z80_list_io_breakpoints_ref())
     probe_add_io(pr, io.port, io.mask, (io.dir & IO_IN) ? 1 : 0,
                  (io.dir & IO_OUT) ? 1 : 0);
+  // IPC events ride the same comparators but never stop the machine
+  // (process_probe_hit filters them). One atomic load each while none exist,
+  // so an event-free frame keeps the probe -- and the Fast tier -- untouched.
+  b.waitbreak_armed = waitbreak_armed;
+  b.event_exec_count = ipc_event_pc_addresses(
+      b.event_exec.data(), static_cast<int>(b.event_exec.size()));
+  for (int i = 0; i < b.event_exec_count; ++i)
+    probe_add_exec(pr, b.event_exec[i]);  // -1 on a shared address is fine
+  b.event_watch_count = ipc_event_mem_addresses(
+      b.event_watch.data(), static_cast<int>(b.event_watch.size()));
+  for (int i = 0; i < b.event_watch_count; ++i)
+    probe_add_watch(pr, b.event_watch[i], 1, /*on_read=*/0, /*on_write=*/1);
   b.debug_engaged = waitbreak_armed || !z80_list_breakpoints_ref().empty() ||
                     !z80_list_watchpoints_ref().empty() ||
                     !z80_list_io_breakpoints_ref().empty();
@@ -929,6 +954,53 @@ void subcycle_bridge_request_tape_seek(uint32_t block_ordinal) {
 
 namespace {
 
+// Was this hit armed for an IPC event (sync_probe's event lists)?
+bool event_armed_for(const Bridge& b, const ProbeHit& hit) {
+  if (hit.kind == PROBE_HIT_EXEC) {
+    const uint16_t* end = b.event_exec.data() + b.event_exec_count;
+    return std::find(b.event_exec.data(), end, hit.addr) != end;
+  }
+  if (hit.kind == PROBE_HIT_MEM_WRITE) {
+    const uint16_t* end = b.event_watch.data() + b.event_watch_count;
+    return std::find(b.event_watch.data(), end, hit.addr) != end;
+  }
+  return false;
+}
+
+// Did the debugger also arm a stop that this hit can trip? The predicates
+// behind process_probe_hit answer "break" for an address no list knows (the
+// step machinery relies on that), so an event-only hit must be told apart
+// before they see it.
+bool debugger_armed_for(const Bridge& b, const ProbeHit& hit) {
+  if (hit.kind == PROBE_HIT_EXEC) {
+    if (b.waitbreak_armed && hit.addr == z80.break_point) return true;
+    for (const auto& bp : z80_list_breakpoints_ref())
+      if (bp.address == hit.addr) return true;
+    return false;
+  }
+  for (const auto& wp : z80_list_watchpoints_ref()) {
+    const unsigned len = wp.length ? wp.length : 1;
+    if (static_cast<uint16_t>(hit.addr - wp.address) < len) return true;
+  }
+  return false;
+}
+
+// Run the commands of the event hits process_probe_hit queued. Called with no
+// CpcStopCoordinationGuard held, on the frame runner while the machine is
+// parked at the hit, so a command sees the CPU exactly where it fired.
+void dispatch_event_hits(Bridge& b) {
+  if (b.event_hits.empty()) return;
+  // Taken first: a command that runs the machine queues hits of its own.
+  std::vector<ProbeHit> hits;
+  hits.swap(b.event_hits);
+  for (const ProbeHit& hit : hits) {
+    if (hit.kind == PROBE_HIT_EXEC)
+      ipc_check_pc_events(hit.addr);
+    else
+      ipc_check_mem_write_events(hit.addr, hit.data);
+  }
+}
+
 // Sole authority on what a latched probe hit MEANS. Returns 0 when the hit was
 // filtered out (already acked -- the caller may keep running), 1 when it is a
 // real break the host must report. Called from exactly two places, the frame's
@@ -938,6 +1010,13 @@ namespace {
 // be a second side effect (beads-6561).
 int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
                       uint64_t breakpoint_generation) {
+  if (event_armed_for(b, hit)) {
+    b.event_hits.push_back(hit);
+    if (!debugger_armed_for(b, hit)) {
+      b.machine.probe_resume();
+      return 0;
+    }
+  }
   if (hit.kind == PROBE_HIT_EXEC && hit.addr == z80.break_point) {
     // The old-flavour single breakpoint (z80.break_point, mirrored into
     // the probe only while a KONCPC_WAITBREAK is in flight): report
@@ -1225,6 +1304,7 @@ int subcycle_bridge_debug_sync() {
                                       coordination.breakpoint_generation());
     }
   }
+  dispatch_event_hits(b);
   if (has_hit) {
     if (disposition == 0) return 0;
     return commit_real_stop(hit) ? 1 : 0;
@@ -1298,6 +1378,7 @@ void subcycle_bridge_stop() {
   b.pending_real_stop = false;
   b.pending_stop_epoch = 0;
   b.pending_stop_generation = 0;
+  b.event_hits.clear();  // their commands target the old machine too
   b.published = Z80Regs{};
   b.parked_on_fetch = false;
   b.machine.clear_taps();
@@ -1740,6 +1821,7 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
                                         coordination.breakpoint_generation());
       }
     }
+    dispatch_event_hits(b);
     if (!has_hit) break;  // frame ran to completion
     if (disposition != 0) {
       b.pending_hit_disposition = ProbeDisposition::kBreak;  // sync reports it

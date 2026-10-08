@@ -1854,3 +1854,48 @@ TEST_F(IpcServerTest, KeyJoyInjectionRequiresInputMapper) {
 }
 
 }  // namespace
+
+// beads-uj1c: pc= / mem= events armed and never fired, because nothing called
+// their checks. The bridge now arms their addresses on the bus probe from
+// ipc_event_*_addresses() and calls the checks on a hit; this pins the IPC
+// half of that contract.
+TEST_F(IpcServerTest, PcAndMemEventsFeedTheProbeAndRunTheirCommand) {
+  auto id_of = [](const std::string& resp) {
+    return std::stoi(resp.substr(resp.find("id=") + 3));
+  };
+  uint16_t addrs[8] = {};
+  ASSERT_EQ(ipc_event_pc_addresses(addrs, 8), 0) << "a stale event leaked in";
+  ASSERT_EQ(ipc_event_mem_addresses(addrs, 8), 0);
+
+  const int pc_a = id_of(send_command("event on pc=0x6002 mem write 0x100 AA"));
+  const int pc_b = id_of(send_command("event once pc=0x6002 ping"));
+  const int mem = id_of(send_command("event on mem=0x5000:0x42 ping"));
+
+  // One probe comparator per distinct address.
+  ASSERT_EQ(ipc_event_pc_addresses(addrs, 8), 1);
+  EXPECT_EQ(addrs[0], 0x6002);
+  ASSERT_EQ(ipc_event_mem_addresses(addrs, 8), 1);
+  EXPECT_EQ(addrs[0], 0x5000);
+
+  ipc_check_pc_events(0x6002);
+  EXPECT_EQ(z80_read_mem(0x100), 0xAA);
+  EXPECT_EQ(send_command("event off " + std::to_string(pc_b)),
+            "ERR 404 event-not-found\n")
+      << "a one-shot outlived its fire";
+
+  // A command that removes its own event: the event lock must be free while
+  // the command runs, or this call never returns.
+  const int self = pc_b + 2;  // ids are sequential; `mem` took pc_b + 1
+  ASSERT_EQ(mem, pc_b + 1);
+  ASSERT_EQ(id_of(send_command("event on pc=0x7000 event off " +
+                               std::to_string(self))),
+            self);
+  ipc_check_pc_events(0x7000);
+  EXPECT_EQ(send_command("event off " + std::to_string(self)),
+            "ERR 404 event-not-found\n");
+
+  EXPECT_EQ(send_command("event off " + std::to_string(pc_a)), "OK\n");
+  EXPECT_EQ(send_command("event off " + std::to_string(mem)), "OK\n");
+  EXPECT_EQ(ipc_event_pc_addresses(addrs, 8), 0);
+  EXPECT_EQ(ipc_event_mem_addresses(addrs, 8), 0);
+}

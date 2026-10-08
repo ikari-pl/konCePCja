@@ -89,10 +89,16 @@ class KoncepcjaIpcServer {
       std::chrono::steady_clock::time_point deadline,
       const std::function<bool()>& should_abort);
 
-  // Event system — called from hot paths, must be fast
+  // Event system — called from hot paths, must be fast. A matching event's
+  // command runs on the calling thread after the event lock is dropped, so it
+  // may edit the event list itself (`event off <own id>`).
   void check_pc_events(uint16_t pc);
   void check_mem_write_events(uint16_t addr, uint8_t val);
   void check_vbl_events();
+  // The distinct addresses armed by pc= (PC) or mem= (MEM_WRITE) events, up
+  // to `max`, for the board's bus probe. Returns 0 without locking while no
+  // event of that trigger exists.
+  int event_addresses(EventTrigger trigger, uint16_t* out, int max) const;
 
   // Event management
   int add_event(const IpcEvent& ev);
@@ -135,6 +141,11 @@ class KoncepcjaIpcServer {
 void ipc_check_pc_events(uint16_t pc);
 void ipc_check_mem_write_events(uint16_t addr, uint8_t val);
 void ipc_check_vbl_events();
+// What subcycle_bridge_sync_probe() arms on the bus probe so pc= / mem= events
+// fire (beads-uj1c). Each returns 0 at the cost of one atomic load while no
+// such event is armed.
+int ipc_event_pc_addresses(uint16_t* out, int max);
+int ipc_event_mem_addresses(uint16_t* out, int max);
 
 // Flush staged IPC input (mouse deltas/buttons) into the emulated devices.
 // MUST be called once per frame on the main thread — the IPC server thread only
