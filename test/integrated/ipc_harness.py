@@ -173,13 +173,16 @@ class KoncepcjaIPC:
             return False, 0
 
     def is_threaded(self) -> bool:
-        """Returns True if the emulator is running in non-headless (threaded) mode.
+        """Returns True if the emulator runs the threaded (GUI) loop.
 
-        'devtools' is a no-op in headless mode (returns ERR) but succeeds in GUI mode.
-        The Z80/render thread split is only active in non-headless mode.
+        'gui' reports g_headless: gui=0 for the single-threaded -H loop (or a
+        video init that fell back to it), gui=1 for the GUI build -- which is
+        what SDL_VIDEODRIVER=dummy still runs, Z80 thread + render thread.
+        (This used to send 'devtools', on the belief that it fails headless;
+        it returns OK in both modes, so every run looked threaded.)
         """
-        ok, _ = self.send_command('devtools')
-        return ok
+        ok, resp = self.send_command('gui')
+        return ok and 'gui=1' in resp
 
 
 class EmulatorRunner:
