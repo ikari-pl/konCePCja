@@ -19,11 +19,6 @@
 #include <iostream>
 #include <memory>
 
-#include "imgui.h"
-#include "imgui_impl_sdl3.h"
-#include "imgui_impl_sdlgpu3.h"
-#include "imgui_impl_sdlrenderer3.h"
-#include "imgui_ui.h"
 #include "iui_host.h"
 #include "koncepcja.h"
 #include "log.h"
@@ -47,23 +42,6 @@ SDL_Texture* cpc_sdl_texture = nullptr;
 // Which ImGui rendering backend is active
 namespace {
 bool using_sdl_renderer = false;
-}  // namespace
-
-// Returns path for imgui.ini in the same directory as koncepcja.cfg.
-// Uses a static string so the c_str() pointer remains valid for io.IniFilename.
-namespace {
-const char* imgui_ini_path() {
-  static std::string path;
-  if (path.empty()) {
-    std::string const cfg = getConfigurationFilename();
-    if (!cfg.empty()) {
-      auto slash = cfg.find_last_of('/');
-      path = (slash != std::string::npos ? cfg.substr(0, slash + 1) : "") +
-             "imgui.ini";
-    }
-  }
-  return path.empty() ? nullptr : path.c_str();
-}
 }  // namespace
 
 // the video surface ready to display
@@ -648,47 +626,12 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   }
 
   // video.vsync escape hatch: switch the MAIN window off VSYNC when requested.
-  // Viewport windows keep VSYNC via init_info.PresentMode below.
+  // Viewport windows keep VSYNC (the UI host's gpu_attach pins it).
   video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
 
-  // ImGui — SDLGPU3 backend with multi-viewport ENABLED.  The renderer
-  // hooks live in vendor/imgui/backends/imgui_impl_sdlgpu3.cpp; they
-  // claim each secondary window for g_gpu.device on creation and submit
-  // a per-viewport command buffer on render.  ImGui_ImplSDLGPU3_Init
-  // checks io.ConfigFlags after we set the flag and registers the
-  // hooks itself, so order matters: set flags BEFORE Init.
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = imgui_ini_path();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard |
-                    ImGuiConfigFlags_DockingEnable |
-                    ImGuiConfigFlags_ViewportsEnable;
-  ImGui::StyleColorsDark();
-  imgui_init_ui();
-  // Scale the ImGui chrome to the desktop scale.  Must follow
-  // CreateContext(); the host no-ops without a context.  Only the chrome:
-  // the CPC image keeps the users chosen integer scr_scale so it stays
-  // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
-  ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
-  ImGui_ImplSDLGPU3_InitInfo init_info{};
-  init_info.Device = g_gpu.device;
-  init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
-  init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
-  init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
-  // this present mode, and IMMEDIATE breaks their swapchain creation, so
-  // detached DevTools windows fail to become separate OS windows (they get
-  // clipped inside the main window). The multi-second present stall over remote
-  // desktop is fixed properly by decoupling emulation from render (so emulation
-  // never waits on present), NOT by the present mode. Any configurable
-  // video.vsync must apply only to the MAIN window, with a per-window
-  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
-  if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+  // UI chrome on the SDL_GPU device, with detached windows (viewports).
+  if (!ui_host().gpu_attach(mainSDLWindow, /*viewports=*/true,
+                            koncpc_window_content_scale(mainSDLWindow))) {
     video_gpu_shutdown();
     SDL_DestroyWindow(mainSDLWindow);
     mainSDLWindow = nullptr;
@@ -698,9 +641,7 @@ SDL_Surface* gpu_direct_init(video_plugin* t, int scale, bool fs) {
   vid =
       SDL_CreateSurface(surface_width, surface_height, SDL_PIXELFORMAT_RGBA32);
   if (!vid) {
-    ImGui_ImplSDLGPU3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+    ui_host().gpu_detach();
     video_gpu_shutdown();
     SDL_DestroyWindow(mainSDLWindow);
     mainSDLWindow = nullptr;
@@ -756,20 +697,14 @@ void gpu_flip_a(video_plugin* t) {
     SDL_EndGPUCopyPass(copy);
   }
 
-  // 2. ImGui frame.  Unlike the GL path, we do NOT push the CPC image
+  // 2. UI frame.  Unlike the GL path, we do NOT push the CPC image
   //    into the ImGui background draw list for Classic mode — the
   //    manual blit below (step 5) is the authoritative path because it
   //    picks the right sampler (linear vs nearest) per scr_crt_aspect.
   //    For Docked mode the CPC Screen ImGui window pulls the texture
   //    via video_get_cpc_texture() and renders it with ImGui::Image().
-  ImGui_ImplSDLGPU3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-  imgui_render_ui();
-  ImGui::Render();
-
-  // 3. CRITICAL: PrepareDrawData must precede BeginGPURenderPass.
-  ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+  // 3. CRITICAL: the UI's vertex upload must precede BeginGPURenderPass.
+  ui_host().gpu_prepare_frame(cmd);
 
   // 4. NON-BLOCKING swapchain acquire.  Null return = minimised / resizing;
   //    skip the render pass but still submit the copy pass so the GPU
@@ -825,7 +760,7 @@ void gpu_flip_a(video_plugin* t) {
       SDL_SetGPUViewport(pass, &full);
     }
 
-    ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+    ui_host().gpu_draw(cmd, pass);
     SDL_EndGPURenderPass(pass);
   }
 
@@ -840,10 +775,7 @@ void gpu_flip_a(video_plugin* t) {
   //    hooks in imgui_impl_sdlgpu3.cpp acquire + submit one command buffer
   //    per viewport.  RenderPlatformWindowsDefault skips the main viewport
   //    (already rendered above) so there's no double-render race.
-  if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    ImGui::UpdatePlatformWindows();
-    ImGui::RenderPlatformWindowsDefault();
-  }
+  ui_host().render_detached_windows();
 }
 }  // namespace
 
@@ -863,11 +795,7 @@ void gpu_direct_close() {
 
   if (g_gpu.device) SDL_WaitForGPUIdle(g_gpu.device);
 
-  if (ImGui::GetCurrentContext()) {
-    ImGui_ImplSDLGPU3_Shutdown();  // releases bd state, still needs device
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-  }
+  ui_host().gpu_detach();  // releases backend state, still needs device
   if (vid) {
     SDL_DestroySurface(vid);
     vid = nullptr;
@@ -1070,12 +998,7 @@ void crt_basic_gpu_flip_a(video_plugin* t) {
     SDL_EndGPUCopyPass(copy);
   }
 
-  ImGui_ImplSDLGPU3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-  imgui_render_ui();
-  ImGui::Render();
-  ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+  ui_host().gpu_prepare_frame(cmd);
 
   SDL_GPUTexture* swap_tex = nullptr;
   Uint32 sw = 0, sh = 0;
@@ -1138,7 +1061,7 @@ void crt_basic_gpu_flip_a(video_plugin* t) {
       SDL_SetGPUViewport(pass, &full);
     }
 
-    ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+    ui_host().gpu_draw(cmd, pass);
     SDL_EndGPURenderPass(pass);
   }
 
@@ -1146,10 +1069,7 @@ void crt_basic_gpu_flip_a(video_plugin* t) {
   SDL_SubmitGPUCommandBuffer(cmd);
   g_gpu.pending_cmd = nullptr;
 
-  if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    ImGui::UpdatePlatformWindows();
-    ImGui::RenderPlatformWindowsDefault();
-  }
+  ui_host().render_detached_windows();
 }
 }  // namespace
 
@@ -1341,12 +1261,7 @@ void crt_full_gpu_flip_a(video_plugin* t) {
     SDL_EndGPUCopyPass(copy);
   }
 
-  ImGui_ImplSDLGPU3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-  imgui_render_ui();
-  ImGui::Render();
-  ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+  ui_host().gpu_prepare_frame(cmd);
 
   SDL_GPUTexture* swap_tex = nullptr;
   Uint32 sw = 0, sh = 0;
@@ -1405,7 +1320,7 @@ void crt_full_gpu_flip_a(video_plugin* t) {
       SDL_SetGPUViewport(pass, &full);
     }
 
-    ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+    ui_host().gpu_draw(cmd, pass);
     SDL_EndGPURenderPass(pass);
   }
 
@@ -1413,10 +1328,7 @@ void crt_full_gpu_flip_a(video_plugin* t) {
   SDL_SubmitGPUCommandBuffer(cmd);
   g_gpu.pending_cmd = nullptr;
 
-  if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    ImGui::UpdatePlatformWindows();
-    ImGui::RenderPlatformWindowsDefault();
-  }
+  ui_host().render_detached_windows();
 }
 }  // namespace
 
@@ -1611,12 +1523,7 @@ void crt_lottes_gpu_flip_a(video_plugin* t) {
     SDL_EndGPUCopyPass(copy);
   }
 
-  ImGui_ImplSDLGPU3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-  imgui_render_ui();
-  ImGui::Render();
-  ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+  ui_host().gpu_prepare_frame(cmd);
 
   SDL_GPUTexture* swap_tex = nullptr;
   Uint32 sw = 0, sh = 0;
@@ -1675,7 +1582,7 @@ void crt_lottes_gpu_flip_a(video_plugin* t) {
       SDL_SetGPUViewport(pass, &full);
     }
 
-    ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+    ui_host().gpu_draw(cmd, pass);
     SDL_EndGPURenderPass(pass);
   }
 
@@ -1683,10 +1590,7 @@ void crt_lottes_gpu_flip_a(video_plugin* t) {
   SDL_SubmitGPUCommandBuffer(cmd);
   g_gpu.pending_cmd = nullptr;
 
-  if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    ImGui::UpdatePlatformWindows();
-    ImGui::RenderPlatformWindowsDefault();
-  }
+  ui_host().render_detached_windows();
 }
 }  // namespace
 
@@ -1720,6 +1624,33 @@ void sdlr_swscale_close();
 }  // namespace
 
 namespace {
+// Present one SDL_Renderer frame: the CPC texture with the UI chrome over it.
+// In Classic layout the UI queues the CPC image as its background so its
+// windows draw on top; a host without chrome leaves it to us.
+void sdlr_present(const video_plugin* t) {
+  bool const classic =
+      CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic;
+  SDL_FRect const dst{
+      static_cast<float>(t->x_offset), static_cast<float>(t->y_offset),
+      static_cast<float>(t->width), static_cast<float>(t->height)};
+  bool const ui_drew_cpc = ui_host().renderer_prepare_frame(
+      classic ? cpc_sdl_texture : nullptr, dst);
+
+  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+  SDL_RenderClear(renderer);
+  if (classic && !ui_drew_cpc) {
+    SDL_RenderTexture(renderer, cpc_sdl_texture, nullptr, &dst);
+  }
+  ui_host().renderer_draw(renderer);
+
+  // Capture screenshot (emulator screen only)
+  video_capture_if_pending();
+
+  SDL_RenderPresent(renderer);
+}
+}  // namespace
+
+namespace {
 SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
   mainSDLWindow =
       SDL_CreateWindow("konCePCja " VERSION_STRING, CPC_RENDER_WIDTH * scale,
@@ -1736,32 +1667,9 @@ SDL_Surface* sdlr_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
-  // Initialize Dear ImGui
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = imgui_ini_path();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  // ViewportsEnable not supported by SDL_Renderer backend
-  ImGui::StyleColorsDark();
-  imgui_init_ui();
-  // Scale the ImGui chrome to the desktop scale.  Must follow
-  // CreateContext(); the host no-ops without a context.  Only the chrome:
-  // the CPC image keeps the users chosen integer scr_scale so it stays
-  // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
-  if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
-    ImGui::DestroyContext();
-    SDL_DestroyRenderer(renderer);
-    renderer = nullptr;
-    SDL_DestroyWindow(mainSDLWindow);
-    mainSDLWindow = nullptr;
-    return nullptr;
-  }
-  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+  // UI chrome on the SDL_Renderer (no detached windows on this backend).
+  if (!ui_host().renderer_attach(mainSDLWindow, renderer,
+                                 koncpc_window_content_scale(mainSDLWindow))) {
     SDL_DestroyRenderer(renderer);
     renderer = nullptr;
     SDL_DestroyWindow(mainSDLWindow);
@@ -1813,43 +1721,13 @@ void sdlr_flip(video_plugin* t) {
   // Upload CPC framebuffer to SDL texture
   SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
 
-  // Start ImGui frame
-  ImGui_ImplSDLRenderer3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-
-  // Draw CPC framebuffer as background image via ImGui (classic mode only)
-  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::GetBackgroundDrawList(vp)->AddImage(
-        reinterpret_cast<ImTextureID>(cpc_sdl_texture),
-        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-        ImVec2(vp->Pos.x + t->x_offset + t->width,
-               vp->Pos.y + t->y_offset + t->height));
-  }
-
-  // Render all ImGui windows
-  imgui_render_ui();
-  ImGui::Render();
-
-  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-  SDL_RenderClear(renderer);
-  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
-
-  // Capture screenshot (emulator screen only)
-  video_capture_if_pending();
-
-  SDL_RenderPresent(renderer);
+  sdlr_present(t);
 }
 }  // namespace
 
 namespace {
 void sdlr_close() {
-  if (ImGui::GetCurrentContext()) {
-    ImGui_ImplSDLRenderer3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-  }
+  ui_host().renderer_detach();
   if (cpc_sdl_texture) {
     SDL_DestroyTexture(cpc_sdl_texture);
     cpc_sdl_texture = nullptr;
@@ -1889,30 +1767,9 @@ SDL_Surface* sdlr_swscale_init(video_plugin* t, int scale, bool fs) {
     return nullptr;
   }
 
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = imgui_ini_path();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  ImGui::StyleColorsDark();
-  imgui_init_ui();
-  // Scale the ImGui chrome to the desktop scale.  Must follow
-  // CreateContext(); the host no-ops without a context.  Only the chrome:
-  // the CPC image keeps the users chosen integer scr_scale so it stays
-  // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
-  if (!ImGui_ImplSDL3_InitForSDLRenderer(mainSDLWindow, renderer)) {
-    ImGui::DestroyContext();
-    SDL_DestroyRenderer(renderer);
-    renderer = nullptr;
-    SDL_DestroyWindow(mainSDLWindow);
-    mainSDLWindow = nullptr;
-    return nullptr;
-  }
-  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+  // UI chrome on the SDL_Renderer (no detached windows on this backend).
+  if (!ui_host().renderer_attach(mainSDLWindow, renderer,
+                                 koncpc_window_content_scale(mainSDLWindow))) {
     SDL_DestroyRenderer(renderer);
     renderer = nullptr;
     SDL_DestroyWindow(mainSDLWindow);
@@ -1995,29 +1852,7 @@ void sdlr_swscale_blit(video_plugin* t) {
 
   SDL_UpdateTexture(cpc_sdl_texture, nullptr, vid->pixels, vid->pitch);
 
-  ImGui_ImplSDLRenderer3_NewFrame();
-  ImGui_ImplSDL3_NewFrame();
-  ImGui::NewFrame();
-
-  if (CPC.workspace_layout == t_CPC::WorkspaceLayoutMode::Classic) {
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::GetBackgroundDrawList(vp)->AddImage(
-        reinterpret_cast<ImTextureID>(cpc_sdl_texture),
-        ImVec2(vp->Pos.x + t->x_offset, vp->Pos.y + t->y_offset),
-        ImVec2(vp->Pos.x + t->x_offset + t->width,
-               vp->Pos.y + t->y_offset + t->height));
-  }
-
-  imgui_render_ui();
-  ImGui::Render();
-
-  SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-  SDL_RenderClear(renderer);
-  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
-
-  video_capture_if_pending();
-
-  SDL_RenderPresent(renderer);
+  sdlr_present(t);
 }
 }  // namespace
 
@@ -2659,38 +2494,10 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
   // disabled, but the call is harmless and keeps both GPU inits consistent).
   video_gpu_set_main_present_mode(CPC.scr_vsync != 0);
 
-  // ImGui SDLGPU3 backend — viewports disabled (see Phase 4 rationale).
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = imgui_ini_path();
-  io.ConfigFlags |=
-      ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-  ImGui::StyleColorsDark();
-  imgui_init_ui();
-  // Scale the ImGui chrome to the desktop scale.  Must follow
-  // CreateContext(); the host no-ops without a context.  Only the chrome:
-  // the CPC image keeps the users chosen integer scr_scale so it stays
-  // pixel-exact, and its viewport is computed per frame anyway.
-  ui_host().set_display_scale(koncpc_window_content_scale(mainSDLWindow));
-  ImGui_ImplSDL3_InitForSDLGPU(mainSDLWindow);
-  ImGui_ImplSDLGPU3_InitInfo init_info{};
-  init_info.Device = g_gpu.device;
-  init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
-  init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
-  init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
-  // this present mode, and IMMEDIATE breaks their swapchain creation, so
-  // detached DevTools windows fail to become separate OS windows (they get
-  // clipped inside the main window). The multi-second present stall over remote
-  // desktop is fixed properly by decoupling emulation from render (so emulation
-  // never waits on present), NOT by the present mode. Any configurable
-  // video.vsync must apply only to the MAIN window, with a per-window
-  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
-  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
-  if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+  // UI chrome on the SDL_GPU device — viewports disabled (see Phase 4
+  // rationale).
+  if (!ui_host().gpu_attach(mainSDLWindow, /*viewports=*/false,
+                            koncpc_window_content_scale(mainSDLWindow))) {
     video_gpu_shutdown();
     SDL_DestroyWindow(mainSDLWindow);
     mainSDLWindow = nullptr;
@@ -2719,9 +2526,7 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
       SDL_DestroySurface(vid);
       vid = nullptr;
     }
-    ImGui_ImplSDLGPU3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+    ui_host().gpu_detach();
     video_gpu_shutdown();
     SDL_DestroyWindow(mainSDLWindow);
     mainSDLWindow = nullptr;
@@ -2745,9 +2550,7 @@ SDL_Surface* swscale_gpu_init(video_plugin* t, int scale, bool fs) {
       scaled = nullptr;
       SDL_DestroySurface(vid);
       vid = nullptr;
-      ImGui_ImplSDLGPU3_Shutdown();
-      ImGui_ImplSDL3_Shutdown();
-      ImGui::DestroyContext();
+      ui_host().gpu_detach();
       video_gpu_shutdown();
       SDL_DestroyWindow(mainSDLWindow);
       mainSDLWindow = nullptr;
@@ -2781,11 +2584,7 @@ namespace {
 void swscale_gpu_close() {
   if (g_gpu.device) SDL_WaitForGPUIdle(g_gpu.device);
 
-  if (ImGui::GetCurrentContext()) {
-    ImGui_ImplSDLGPU3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
-  }
+  ui_host().gpu_detach();
   if (scaled) {
     SDL_DestroySurface(scaled);
     scaled = nullptr;

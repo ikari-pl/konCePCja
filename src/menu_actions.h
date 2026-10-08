@@ -52,7 +52,6 @@ std::string koncpc_menu_title_with_shortcut(const char* title,
 // (beads-bqx).
 std::string koncpc_action_menu_title(KONCPC_KEYS action);
 
-// Live toggle state for a toggle-kind action (checkmark in menus).  Defined in
-// the GUI translation unit (imgui_ui.cpp) since it reads GUI/emulator globals;
-// returns false for non-toggle actions or in non-GUI builds.
+// Live toggle state for a toggle-kind action (checkmark in menus); false for
+// non-toggle actions.
 bool koncpc_action_is_active(KONCPC_KEYS action);

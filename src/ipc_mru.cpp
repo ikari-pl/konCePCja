@@ -6,7 +6,6 @@
 #include <utility>
 
 #include "imgui_state.h"
-#include "imgui_ui.h"
 #include "imgui_ui_testable.h"
 
 extern t_CPC CPC;
@@ -15,6 +14,15 @@ namespace {
 std::mutex g_mru_mutex;
 std::vector<std::pair<CpcMruList, std::string>> g_mru_entries;
 }  // namespace
+
+void koncpc_mru_push(std::vector<std::string>& list, const std::string& path) {
+  mru_list_push(list, path, t_CPC::MRU_MAX);
+  // Opening a file is a rare, explicit user action, so a full config
+  // write-back here is cheap. Use the intent-preserving path so a failed
+  // printer_start() or live fullscreen toggle cannot poison the file
+  // (Options▸Save is the deliberate path that captures new intent).
+  koncpc_save_configuration_preserving_intent();
+}
 
 std::string ipc_mru_canonical_path(const std::string& path) {
   std::error_code ec;
@@ -43,7 +51,7 @@ void ipc_mru_apply_staged(bool save_config) {
   }
   for (const auto& [list, path] : entries) {
     if (save_config) {
-      imgui_mru_push(CPC.*list, path);
+      koncpc_mru_push(CPC.*list, path);
     } else {
       mru_list_push(CPC.*list, path, t_CPC::MRU_MAX);
     }

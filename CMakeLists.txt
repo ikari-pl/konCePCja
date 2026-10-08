@@ -100,14 +100,12 @@ endif()
 # Keep this list in sync with MODERN_UI_FILES in the makefile.
 set(MODERN_UI_FILES
     imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout
-    video
 )
 list(JOIN MODERN_UI_FILES "|" MODERN_UI_FILES_JOINED)
 set(MODERN_UI_SOURCES_REGEX "src/(${MODERN_UI_FILES_JOINED})\\.cpp$")
 
 if(NOT KONCPC_BUILD_MODERN_UI)
     message(STATUS "KONCPC_BUILD_MODERN_UI=OFF — excluding modern UI sources from koncepcja_lib")
-    message(STATUS "  Note: full link will fail until P1.5.2 lands a headless main and an ImGui-free imgui_ui.h split.")
     list(FILTER APP_SOURCES EXCLUDE REGEX "${MODERN_UI_SOURCES_REGEX}")
 endif()
 

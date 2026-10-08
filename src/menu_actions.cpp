@@ -2,6 +2,12 @@
 
 #include <string>
 
+#include "imgui_state.h"  // show_devtools
+#include "koncepcja.h"
+#include "log.h"  // log_verbose
+
+extern t_CPC CPC;
+
 // Canonical label + toggle metadata for every emulator action.  Shortcut hints
 // are intentionally NOT stored here — every surface derives them from the live
 // binding via koncpc_action_shortcut() so a label can never drift from its key.
@@ -58,4 +64,25 @@ std::string koncpc_action_menu_title(KONCPC_KEYS action) {
   if (entry == nullptr) return "";
   return koncpc_menu_title_with_shortcut(entry->title,
                                          koncpc_action_shortcut(action));
+}
+
+// The live half of the registry: what a toggle action's checkmark shows,
+// read from the emulator and host state it toggles.  Both menu bars ask.
+bool koncpc_action_is_active(KONCPC_KEYS action) {
+  switch (action) {
+    case KONCPC_FPS:
+      return CPC.scr_fps != 0;
+    case KONCPC_SPEED:
+      return CPC.limit_speed != 0;
+    case KONCPC_JOY:
+      return CPC.joystick_emulation != JoystickEmulation::None;
+    case KONCPC_PHAZER:
+      return static_cast<bool>(CPC.phazer_emulation);
+    case KONCPC_DEVTOOLS:
+      return imgui_state.show_devtools;
+    case KONCPC_DEBUG:
+      return log_verbose;
+    default:
+      return false;
+  }
 }

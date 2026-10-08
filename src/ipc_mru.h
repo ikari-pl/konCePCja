@@ -12,6 +12,11 @@
 
 #include "koncepcja.h"
 
+// Main thread: put `path` at the front of a Recent list (deduplicated, capped
+// at t_CPC::MRU_MAX) and save the config, so a load followed by a quit or a
+// crash keeps the entry.  What every user-initiated load does.
+void koncpc_mru_push(std::vector<std::string>& list, const std::string& path);
+
 // Which of t_CPC's Recent lists an entry goes on: &t_CPC::mru_disks, ...
 using CpcMruList = std::vector<std::string> t_CPC::*;
 

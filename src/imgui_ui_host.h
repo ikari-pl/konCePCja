@@ -34,6 +34,26 @@ class ImGuiUiHost final : public IUiHost {
   void request_fullscreen(unsigned scr_window) override;
   void settings_baseline_set_kbd_layout(const std::string& name) override;
   void settings_baseline_set_scr_window(unsigned scr_window) override;
+
+  void toggle_command_palette() override;
+  void request_file_dialog(FileDialogAction action) override;
+  bool request_reset_confirmation() override;
+  void release_video_textures() override;
+  void await_background_work() override;
+
+  bool gpu_attach(SDL_Window* window, bool viewports,
+                  float display_scale) override;
+  void gpu_prepare_frame(SDL_GPUCommandBuffer* cmd) override;
+  void gpu_draw(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass) override;
+  void render_detached_windows() override;
+  void gpu_detach() override;
+
+  bool renderer_attach(SDL_Window* window, SDL_Renderer* renderer,
+                       float display_scale) override;
+  bool renderer_prepare_frame(SDL_Texture* background,
+                              const SDL_FRect& dst) override;
+  void renderer_draw(SDL_Renderer* renderer) override;
+  void renderer_detach() override;
 };
 
 // Install the ImGuiUiHost as the process-wide IUiHost.  Call once, early in

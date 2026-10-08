@@ -70,9 +70,7 @@ void imgui_toast(
     const std::string& message,
     ImGuiUIState::ToastLevel level = ImGuiUIState::ToastLevel::Info);
 
-// MRU (recent files) helper — pushes path to front, deduplicates, caps at
-// MRU_MAX
-void imgui_mru_push(std::vector<std::string>& list, const std::string& path);
+// MRU (recent files): koncpc_mru_push() in ipc_mru.h.
 
 // tape_scan_blocks() moved to tape.h (callable from headless builds).
 

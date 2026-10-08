@@ -240,7 +240,7 @@ VENDOR_TEXTEDITOR_SOURCES := vendor/ImGuiColorTextEdit/TextEditor.cpp vendor/ImG
 # build (P1.5.2).  Mirror in CMakeLists.txt (KONCPC_BUILD_MODERN_UI).
 KONCPC_MODERN_UI ?= 1
 # Keep this list in sync with MODERN_UI_FILES in CMakeLists.txt.
-MODERN_UI_FILES := imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout video
+MODERN_UI_FILES := imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout
 MODERN_UI_SOURCES := $(addprefix $(SRCDIR)/,$(addsuffix .cpp,$(MODERN_UI_FILES)))
 ifeq ($(KONCPC_MODERN_UI),1)
 COMMON_CFLAGS += -DKONCPC_MODERN_UI
@@ -250,7 +250,7 @@ SOURCES += $(VENDOR_TEXTEDITOR_SOURCES)
 # keep them out of the generic $(OBJECTS_CPP) rule to avoid a double recipe.
 VENDORED_TEXTEDITOR := $(addprefix $(OBJDIR)/,$(VENDOR_TEXTEDITOR_SOURCES:.cpp=.o))
 else
-$(info KONCPC_MODERN_UI=0 — excluding modern UI sources.  Full link will fail until P1.5.2 lands a headless main and an ImGui-free imgui_ui.h split.)
+$(info KONCPC_MODERN_UI=0 — excluding modern UI sources; the UI-free binary falls back to IUiHost's null host.)
 SOURCES := $(filter-out $(MODERN_UI_SOURCES),$(SOURCES))
 IMGUI_SOURCES :=
 endif

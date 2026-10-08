@@ -43,6 +43,7 @@ bool g_speedtest_open = false;
 #include "hw_views.h"
 #include "imgui.h"
 #include "imgui_ui_testable.h"
+#include "ipc_mru.h"  // koncpc_mru_push
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "log.h"
@@ -872,21 +873,9 @@ void imgui_render_ui() {
 
 namespace {
 void mru_push(std::vector<std::string>& list, const std::string& path) {
-  mru_list_push(list, path, t_CPC::MRU_MAX);
-  // Persist immediately so a load followed by quit/crash keeps the entry.
-  // Opening a file is a rare, explicit user action, so a full config
-  // write-back here is cheap. Use the intent-preserving path so a failed
-  // printer_start() or live fullscreen toggle cannot poison the file
-  // (Options▸Save is the deliberate path that captures new intent).
-  koncpc_save_configuration_preserving_intent();
+  koncpc_mru_push(list, path);
 }
 }  // namespace
-
-// NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
-// translation units/tests; internal linkage would break the link
-void imgui_mru_push(std::vector<std::string>& list, const std::string& path) {
-  mru_push(list, path);
-}
 
 // ─────────────────────────────────────────────────
 // Toast notification API
@@ -989,29 +978,6 @@ void imgui_close_menu() {
 // ─────────────────────────────────────────────────
 // Main Menu Bar
 // ─────────────────────────────────────────────────
-
-// Live toggle state for a toggle-kind action (drives menu checkmarks across the
-// ImGui menus and the native macOS menu).  This is the GUI-side half of the
-// action registry — menu_actions.cpp holds the labels, the binding map holds
-// the shortcuts, and this reads the live emulator/UI state.
-bool koncpc_action_is_active(KONCPC_KEYS action) {
-  switch (action) {
-    case KONCPC_FPS:
-      return CPC.scr_fps != 0;
-    case KONCPC_SPEED:
-      return CPC.limit_speed != 0;
-    case KONCPC_JOY:
-      return CPC.joystick_emulation != JoystickEmulation::None;
-    case KONCPC_PHAZER:
-      return static_cast<bool>(CPC.phazer_emulation);
-    case KONCPC_DEVTOOLS:
-      return imgui_state.show_devtools;
-    case KONCPC_DEBUG:
-      return log_verbose;
-    default:
-      return false;
-  }
-}
 
 // Render one ImGui menu item for an action, pulling its canonical label,
 // derived shortcut hint and live checkmark from the single source of truth, and
