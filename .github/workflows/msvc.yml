@@ -161,3 +161,55 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: release/koncepcja-windows-${{ matrix.arch }}.zip
+
+  # The UI-free build (beads-6oa) through the CMake path:
+  # -DKONCPC_BUILD_MODERN_UI=OFF links a koncepcja.exe with no ImGui that
+  # always runs the -H loop. One configuration is enough to keep it linking
+  # on MSVC; the GUI matrix above covers the rest.
+  msvc-ui-free:
+    name: MSVC UI-free (x64-Release)
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - name: Fetch submodules (retried)
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            git submodule update --init --recursive --depth=1 && exit 0
+            echo "submodule fetch attempt $i failed; retrying in 15s" >&2
+            sleep 15
+          done
+          echo "submodule fetch failed after 3 attempts" >&2
+          exit 1
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '4b77da7fed37817f124936239197833469f1b9a8'  # 2026.03.14
+      - name: CMake configure
+        run: >
+          cmake -B build
+          -G "Visual Studio 17 2022" -A x64
+          -DKONCPC_BUILD_MODERN_UI=OFF
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      - name: Build
+        run: cmake --build build --config Release --target koncepcja -j 4
+      - name: Smoke and -H e2e
+        shell: bash
+        env:
+          KONCPC_E2E_HEADLESS: '1'
+          KONCPC_EXE: ${{ github.workspace }}/build/Release/koncepcja.exe
+          # The harness prints arrows and dashes; the runner's console
+          # code page (cp1252) cannot encode them.
+          PYTHONUTF8: '1'
+        # Prepend in the shell: ${{ env.PATH }} is empty in a step's env:
+        # block, so setting PATH there drops python from it.
+        run: |
+          export PATH="$(cygpath -u '${{ github.workspace }}')/build/vcpkg_installed/x64-windows/bin:$PATH"
+          python test/integrated/headless_smoke.py --ui-free
+          python test/integrated/ipc_harness.py

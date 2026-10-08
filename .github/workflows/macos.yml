@@ -77,6 +77,18 @@ jobs:
       - run: make -j 3 ARCH=macos board_only
       - run: make -j 3 ARCH=macos macos_bundle
 
+      # The UI-free build (beads-6oa): KONCPC_MODERN_UI=0 links a ./koncepcja
+      # with no ImGui that always runs the -H loop. After macos_bundle, so the
+      # bundle keeps the GUI binary; its own object tree (obj/macos-noui).
+      - run: make -j 3 ARCH=macos KONCPC_MODERN_UI=0 koncepcja
+      - name: UI-free build — smoke and -H e2e
+        env:
+          DYLD_FALLBACK_LIBRARY_PATH: ${{ github.workspace }}/vendor/SDL/install/lib
+          KONCPC_E2E_HEADLESS: '1'
+        run: |
+          python3 test/integrated/headless_smoke.py --ui-free
+          python3 test/integrated/ipc_harness.py
+
       # ---- Release-only steps below ----
 
       - name: Import signing certificate

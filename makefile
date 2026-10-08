@@ -201,7 +201,18 @@ CLANG_CHECKS=modernize-*,performance-*,misc-*,readability-*,-misc-definitions-in
 
 SRCDIR:=src
 TSTDIR:=test
+# Modern UI gate: see the MODERN_UI_FILES block below. Read here because
+# it picks the object directory.
+KONCPC_MODERN_UI ?= 1
+# The two configurations compile the same sources with different -D flags,
+# and make tracks timestamps, not flags: in one directory a UI-off build
+# would reuse objects compiled for the GUI (and the reverse). Each gets its
+# own object tree, so switching back and forth stays incremental.
+ifeq ($(KONCPC_MODERN_UI),1)
 OBJDIR:=obj/$(ARCH)
+else
+OBJDIR:=obj/$(ARCH)-noui
+endif
 RELEASE_DIR = release
 ARCHIVE = koncepcja-$(ARCH)
 ARCHIVE_DIR = $(RELEASE_DIR)/$(ARCHIVE)
@@ -235,10 +246,9 @@ FORMAT_HEADERS := $(filter-out $(VENDORED_EXCLUDE),$(HEADERS))
 VENDOR_TEXTEDITOR_SOURCES := vendor/ImGuiColorTextEdit/TextEditor.cpp vendor/ImGuiColorTextEdit/LanguageDefinitions.cpp
 
 # Modern UI gate (P1.5.1 step 4).  KONCPC_MODERN_UI=1 (default) builds the
-# Dear ImGui + SDL_GPU UI as today.  =0 excludes UI-only sources so the
-# core can compile without the modern UI — used by the future headless
-# build (P1.5.2).  Mirror in CMakeLists.txt (KONCPC_BUILD_MODERN_UI).
-KONCPC_MODERN_UI ?= 1
+# Dear ImGui + SDL_GPU UI.  =0 excludes UI-only sources and links a binary
+# that always runs the headless loop, as if -H were given (beads-6oa).
+# Mirror in CMakeLists.txt (KONCPC_BUILD_MODERN_UI).
 # Keep this list in sync with MODERN_UI_FILES in CMakeLists.txt.
 MODERN_UI_FILES := imgui_ui imgui_ui_host devtools_ui command_palette workspace_layout
 MODERN_UI_SOURCES := $(addprefix $(SRCDIR)/,$(addsuffix .cpp,$(MODERN_UI_FILES)))
@@ -295,6 +305,13 @@ VERSION_STAMP := $(OBJDIR)/.version-stamp
 # Only argparse.cpp and kon_cpc_ja.cpp embed it, so scope the rebuild to those.
 HASH_STAMP := $(OBJDIR)/.hash-stamp
 
+# Both UI configurations link to the same ./koncepcja, from different object
+# trees. Nothing in the other tree is newer than the binary, so without this
+# stamp switching KONCPC_MODERN_UI would leave the previous configuration's
+# binary in place and report it up to date. It lives outside $(OBJDIR) so
+# both configurations read the same file.
+UI_STAMP := obj/.modern-ui-stamp-$(ARCH)
+
 # Refresh both stamps while the makefile is read, rewriting one only when its
 # value actually changed. Doing it here rather than in a rule with a phony
 # prerequisite keeps them ordinary files with honest timestamps, so
@@ -306,6 +323,8 @@ $(shell printf '%s' '$(KONCPC_VERSION)' | cmp -s - $(VERSION_STAMP) 2>/dev/null 
           || printf '%s' '$(KONCPC_VERSION)' > $(VERSION_STAMP))
 $(shell printf '%s' '$(GIT_HASH)' | cmp -s - $(HASH_STAMP) 2>/dev/null \
           || printf '%s' '$(GIT_HASH)' > $(HASH_STAMP))
+$(shell printf '%s' '$(KONCPC_MODERN_UI)' | cmp -s - $(UI_STAMP) 2>/dev/null \
+          || printf '%s' '$(KONCPC_MODERN_UI)' > $(UI_STAMP))
 
 # The dependency lines below are the first *real* rules in this file, and make
 # takes its first real rule as the default goal — without this line a bare
@@ -483,7 +502,7 @@ $(WIN_RES): resources/koncepcja.rc resources/koncepcja.ico
 	$(WINDRES) -I resources -O coff -o $@ $<
 endif
 
-$(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg
+$(TARGET): $(OBJECTS) $(MAIN) koncepcja.cfg $(UI_STAMP)
 	$(CXX) $(LDFLAGS) -o $(TARGET) $(OBJECTS) $(MAIN) $(LIBS)
 ifeq ($(ARCH),macos)
 	$(call SIGN_MACOS,$(TARGET),)

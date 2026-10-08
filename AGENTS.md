@@ -69,6 +69,11 @@ make -j$(nproc)
 
 # Debug build
 make -j$(nproc) DEBUG=1
+
+# UI-free build: no ImGui, no window, always the -H loop (objects in
+# obj/<arch>-noui; CMake: -DKONCPC_BUILD_MODERN_UI=OFF, no test_runner)
+make -j$(nproc) KONCPC_MODERN_UI=0 koncepcja
+python3 test/integrated/headless_smoke.py --ui-free
 ```
 
 ## Command Line Arguments

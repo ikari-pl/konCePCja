@@ -24,6 +24,12 @@ set(KONCPC_VERSION "${CMAKE_MATCH_1}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${CMAKE_SOURCE_DIR}/.release-please-manifest.json")
 project(koncepcja VERSION ${KONCPC_VERSION} LANGUAGES C CXX)
+# Objective-C++ (src/*.mm) must be enabled here, at the top level and before
+# vendor/SDL is added. Enabled later, next to the .mm glob, CMake 4 never set
+# CMAKE_OBJCXX_CREATE_STATIC_LIBRARY and the macOS generate step failed.
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,13 +39,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(WITH_CURL  "Enable libcurl (M4 HTTP)"  OFF)
 option(WITH_JPEG  "Enable libjpeg (AVI rec)"  OFF)
 
-# Modern UI gate (P1.5.1 step 4).  ON = the current ImGui + SDL_GPU
-# build.  OFF = exclude UI-only sources from compilation, leaving the
-# core ready for a future headless main (P1.5.2) to wire up.  OFF is
-# an in-progress state: kon_cpc_ja.cpp still references imgui_state
-# from imgui_ui.h, so a full link with OFF will fail until P1.5.2
-# splits that header.  Defaulting ON keeps every existing build
-# (CI matrix, distro packages, local dev) bit-identical to today.
+# Modern UI gate (P1.5.1 step 4).  ON = the ImGui + SDL_GPU build.  OFF =
+# leave the UI sources out and link a binary that always runs the headless
+# loop, as if -H were given (beads-6oa); test_runner is not built then.
+# Defaulting ON keeps every existing build (CI matrix, distro packages,
+# local dev) as it was.  Mirror of the makefile's KONCPC_MODERN_UI.
 option(KONCPC_BUILD_MODERN_UI "Build the ImGui + SDL_GPU modern UI" ON)
 
 # ── Git hash ─────────────────────────────────────────────
@@ -86,7 +90,6 @@ else()
         LANGUAGE OBJCXX
         COMPILE_FLAGS "-x objective-c++"
     )
-    enable_language(OBJCXX)
 endif()
 
 # ── UI-only source files (P1.5.1 step 4) ─────────────────
@@ -249,10 +252,14 @@ add_executable(koncepcja main.cpp)
 target_link_libraries(koncepcja PRIVATE koncepcja_lib)
 
 if(WIN32)
-    # Link as a Windows GUI app (no console window) for Release
-    set_target_properties(koncepcja PROPERTIES
-        WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
-    )
+    # Link as a Windows GUI app (no console window) for Release. The UI-free
+    # build has no window at all: it stays a console program, so the startup
+    # manifest and the logs reach the terminal that started it.
+    if(KONCPC_BUILD_MODERN_UI)
+        set_target_properties(koncepcja PROPERTIES
+            WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>
+        )
+    endif()
     # Embed the application icon.  Without an ICON resource the executable
     # shows the generic Windows binary icon in Explorer, the taskbar and
     # Alt-Tab.  The .rc references koncepcja.ico relative to its own
@@ -287,46 +294,54 @@ if(WIN32)
 endif()
 
 # ── Test executable ──────────────────────────────────────
-# googletest: use local directory if present, otherwise fetch from GitHub
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
-set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-if(EXISTS "${CMAKE_SOURCE_DIR}/googletest/CMakeLists.txt")
-    add_subdirectory(googletest EXCLUDE_FROM_ALL)
+# The unit tests cover the modern UI too (DevTools render tests, the pause
+# hub, the command palette), so they link only into a UI build. A
+# KONCPC_BUILD_MODERN_UI=OFF build is the `koncepcja -H` binary alone; CI
+# checks it end to end (headless_smoke --ui-free, ipc_harness under -H).
+if(NOT KONCPC_BUILD_MODERN_UI)
+    message(STATUS "KONCPC_BUILD_MODERN_UI=OFF — test_runner not built")
 else()
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.15.2
-        GIT_SHALLOW    TRUE
+    # googletest: use local directory if present, otherwise fetch from GitHub
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
+    set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/googletest/CMakeLists.txt")
+        add_subdirectory(googletest EXCLUDE_FROM_ALL)
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG        v1.15.2
+            GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(googletest)
+    endif()
+
+    file(GLOB TEST_SOURCES CONFIGURE_DEPENDS test/*.cpp)
+
+    add_executable(test_runner ${TEST_SOURCES})
+    target_include_directories(test_runner PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/test
     )
-    FetchContent_MakeAvailable(googletest)
+    target_link_libraries(test_runner PRIVATE
+        koncepcja_lib
+        gtest
+        gmock
+    )
+
+    # Absolute source-tree path so version_source_test can find the manifest whatever
+    # directory ctest launches from.  TEST-ONLY: as a PUBLIC define on koncepcja_lib
+    # it baked the build machine's path into every shipped object.
+    target_compile_definitions(test_runner PRIVATE KONCPC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+    if(MSVC)
+        # Relax warnings for test code
+        target_compile_options(test_runner PRIVATE /W3 /wd4201 /wd4244 /wd4267 /wd4100)
+    endif()
+
+    # Register tests with CTest
+    include(CTest)
+    add_test(NAME unit_tests COMMAND test_runner --gtest_shuffle)
 endif()
-
-file(GLOB TEST_SOURCES CONFIGURE_DEPENDS test/*.cpp)
-
-add_executable(test_runner ${TEST_SOURCES})
-target_include_directories(test_runner PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-    ${CMAKE_SOURCE_DIR}/test
-)
-target_link_libraries(test_runner PRIVATE
-    koncepcja_lib
-    gtest
-    gmock
-)
-
-# Absolute source-tree path so version_source_test can find the manifest whatever
-# directory ctest launches from.  TEST-ONLY: as a PUBLIC define on koncepcja_lib
-# it baked the build machine's path into every shipped object.
-target_compile_definitions(test_runner PRIVATE KONCPC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
-
-if(MSVC)
-    # Relax warnings for test code
-    target_compile_options(test_runner PRIVATE /W3 /wd4201 /wd4244 /wd4267 /wd4100)
-endif()
-
-# Register tests with CTest
-include(CTest)
-add_test(NAME unit_tests COMMAND test_runner --gtest_shuffle)
