@@ -14,7 +14,7 @@
 #include <cstdint>
 #include <vector>
 
-struct SDL_Surface;
+#include "host_surface.h"
 
 /* Build the machine from the app's configuration (CPC.rom_path + model ROM,
  * amsdos.rom, CPC.driveA.file when set). Returns false if the system ROM
@@ -45,7 +45,7 @@ void subcycle_bridge_stop();
  * limit paces to the 50 Hz wall clock with drift correction. Returns the
  * frame's interleaved stereo s16 44 100 Hz samples. */
 const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
-                                                  SDL_Surface* dst, bool limit);
+                                                  HostSurface* dst, bool limit);
 
 /* The pacer's report on the last subcycle_bridge_frame() call. Late: the frame
  * finished more than one 50 Hz period after its deadline, so the emulation
@@ -59,7 +59,7 @@ bool subcycle_bridge_frame_was_late();
 uint64_t subcycle_bridge_take_sleep_ticks();
 
 /* Re-blit the CURRENT framebuffer without running a frame (IPC "repaint"). */
-void subcycle_bridge_repaint(SDL_Surface* dst);
+void subcycle_bridge_repaint(HostSurface* dst);
 
 /* Media hot-swap. Thread-safe: callable from the main/UI thread
  * while the emulation runs — the swap is deferred and applied by the Z80

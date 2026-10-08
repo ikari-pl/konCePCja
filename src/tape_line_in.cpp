@@ -2,13 +2,14 @@
 
 #include "tape_line_in.h"
 
-#include <SDL3/SDL.h>
-
 #include <cstdint>
 #include <vector>
 
 #include "log.h"
 #include "subcycle/machine.h"
+
+#ifdef KONCPC_SDL
+#include <SDL3/SDL.h>
 
 namespace {
 
@@ -236,3 +237,41 @@ void tape_line_in_pump(subcycle::Machine& machine) {
     machine.feed_line_levels(levels.data(), static_cast<int>(levels.size()),
                              g_rate);
 }
+
+#else  // !KONCPC_SDL
+
+// The SDL-free build has no host audio devices: line-in and line-out never
+// open, exactly as when SDL finds no recording or playback device. The
+// monitor volume is still a setting that round-trips through IPC and config.
+namespace {
+float g_out_volume = 0.35f;  // same default as the SDL build
+}  // namespace
+
+bool tape_line_in_start(int /*channel*/) {
+  LOG_ERROR("tape line-in: no audio devices in this build");
+  return false;
+}
+void tape_line_in_stop() {}
+bool tape_line_in_active() { return false; }
+void tape_line_in_pump(subcycle::Machine& /*machine*/) {}
+
+bool tape_line_out_arm(subcycle::Machine& /*machine*/, int /*data_channel*/,
+                       bool /*source_rdata*/) {
+  LOG_ERROR("tape line-out: no audio devices in this build");
+  return false;
+}
+void tape_line_out_disarm(subcycle::Machine& machine) {
+  machine.tape_out_capture(false, true);
+}
+bool tape_line_out_active() { return false; }
+void tape_line_out_pump(subcycle::Machine& /*machine*/) {}
+void tape_line_audio_shutdown() {}
+
+void tape_line_out_set_volume(float level) {
+  // NOLINTNEXTLINE(readability-avoid-nested-conditional-operator): nested
+  // conditional kept intentionally; no clang-tidy auto-fix
+  g_out_volume = level < 0.0f ? 0.0f : (level > 1.0f ? 1.0f : level);
+}
+float tape_line_out_volume() { return g_out_volume; }
+
+#endif  // KONCPC_SDL

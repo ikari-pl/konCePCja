@@ -2,7 +2,9 @@
 
 #include "subcycle_bridge.h"
 
+#ifdef KONCPC_SDL
 #include <SDL3/SDL.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -21,7 +23,9 @@
 #include "drive_sounds.h"  // host audio overlay: motor hum / seek clicks
 #include "flux_ingest.h"   // flux::to_scp: unified flux-container dispatcher
 #include "frame_pacer.h"   // the 50 Hz deadline subcycle_bridge_frame paces to
+#include "host_clock.h"    // pacing clock + sleep (SDL-free in the -H build)
 #include "host_state.h"  // g_host_tape: the deck ordinal + the BITS scope ring
+#include "host_surface.h"  // back_surface: SDL_Surface, or the SDL-free one
 #include "hw/asic.h"
 #include "hw/crtc.h"
 #include "hw/device.h"  // Device (Save-As FDC handle)
@@ -91,7 +95,8 @@ enum class PendingMedia : std::uint8_t {
 
 struct Bridge {
   subcycle::Machine machine;
-  std::vector<uint8_t> fb;        // RGB24 native frame the machine renders into
+  std::vector<uint8_t> fb;  // RGB24 native frame the machine renders into
+#ifdef KONCPC_SDL
   SDL_Surface* fbsurf = nullptr;  // SDL view of fb for the scaled blit
   // Fully-dimmed copy of `fb`, native RGB24. Composited onto only the
   // trailing destination sub-row of each source scanline's replicated span
@@ -103,6 +108,7 @@ struct Bridge {
                                   // keeps SDL on its fast blit paths (F8: the
                                   // one-pass scale+convert fell into
                                   // SDL_Blit_Slow — ~10 ms/frame on E-cores)
+#endif
   std::vector<uint8_t> rom, amsdos, media;  // machine wiring: must outlive it
   std::vector<uint8_t>
       media_b;                  // drive B DSK image (unit 1): also must outlive
@@ -303,7 +309,7 @@ DriveSoundOverlay g_drive_overlay;
 
 // Scaled blit of the machine's framebuffer into the app surface (defined with
 // the frame path below; also serves the paused "repaint").
-void blit_fb(Bridge& b, SDL_Surface* dst);
+void blit_fb(Bridge& b, HostSurface* dst);
 
 // One-line note on whether the drive-A disc is flux and, if so, whether it got
 // a writable DSK overlay (Stage 2) or fell back to read-only (non-standard
@@ -443,11 +449,13 @@ bool subcycle_bridge_start() {
               0);
   b.machine.attach_framebuffer(b.fb.data(), subcycle::kFbWidth,
                                subcycle::kFbHeight);
+#ifdef KONCPC_SDL
   b.fbsurf = SDL_CreateSurfaceFrom(subcycle::kFbWidth, subcycle::kFbHeight,
                                    SDL_PIXELFORMAT_RGB24, b.fb.data(),
                                    subcycle::kFbWidth * 3);
   if (b.fbsurf == nullptr)
     LOG_ERROR("subcycle engine: SDL_CreateSurfaceFrom: " << SDL_GetError());
+#endif
 
   if (!CPC.driveA.file.empty()) {
     // Every flux container (.ipf/.raw/.scp/.hfe/.a2r) goes through the unified
@@ -1344,6 +1352,7 @@ void subcycle_bridge_stop() {
   flush_sf2_ide(b);  // and the IDE images keep theirs
   if (g_silicon_disc.enabled && g_silicon_disc.data != nullptr)
     b.machine.silicon_disc_save(g_silicon_disc.data, SILICON_DISC_SIZE);
+#ifdef KONCPC_SDL
   if (b.fbsurf != nullptr) {
     SDL_DestroySurface(b.fbsurf);
     b.fbsurf = nullptr;
@@ -1361,6 +1370,7 @@ void subcycle_bridge_stop() {
     SDL_DestroySurface(b.fbconv);
     b.fbconv = nullptr;
   }
+#endif
   // A restart builds a fresh Machine, so every one-shot "already fitted" latch
   // has to fall with it. Left set, they silently unfit the M4 and the Symbiface
   // IDE on the next subcycle_bridge_start() -- the gates there are
@@ -1699,7 +1709,7 @@ void subcycle_bridge_apply_pending_media() {
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
-                                                  SDL_Surface* dst,
+                                                  HostSurface* dst,
                                                   bool limit) {
   Bridge& b = g_bridge;
   if (!b.active) return g_empty_audio;
@@ -1718,18 +1728,17 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
       b.bench_secs = 0.0;
       b.bench_snap = b.machine.save_devices();
     }
-    const uint64_t freq = SDL_GetPerformanceFrequency();
-    const uint64_t slice_end = SDL_GetPerformanceCounter() + (freq * 12 / 1000);
+    const uint64_t freq = host_perf_frequency();
+    const uint64_t slice_end = host_perf_counter() + (freq * 12 / 1000);
     b.machine.set_run_tier(kBench[b.bench_tier]);
     // Per tier: up to 100 frames or 1.0 s of accumulated bench time,
     // whichever first — fast tiers finish in a few slices, the Microscope
     // tiers spread over ~1.5 s of real frames each; ~3.5-5 s total.
     while (b.bench_frames < 100 && b.bench_secs < 1.0 &&
-           SDL_GetPerformanceCounter() < slice_end) {
-      const uint64_t t0 = SDL_GetPerformanceCounter();
+           host_perf_counter() < slice_end) {
+      const uint64_t t0 = host_perf_counter();
       b.machine.run_frame();
-      b.bench_secs +=
-          static_cast<double>(SDL_GetPerformanceCounter() - t0) / freq;
+      b.bench_secs += static_cast<double>(host_perf_counter() - t0) / freq;
       b.bench_frames++;
     }
     if (b.bench_frames >= 100 ||
@@ -1838,14 +1847,15 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
   blit_fb(b, dst);
 
   if (limit) {  // drift-corrected 50 Hz deadline (the emulation's only pacer)
-    const uint64_t freq = SDL_GetPerformanceFrequency();
-    uint64_t now = SDL_GetPerformanceCounter();
+    const uint64_t freq = host_perf_frequency();
+    uint64_t now = host_perf_counter();
     const uint64_t release = b.pacer.arrive(now, freq);
     const uint64_t sleep_start = now;
     while (now < release) {
       const uint64_t remaining_ms = (release - now) * 1000 / freq;
-      SDL_Delay(remaining_ms > 2 ? static_cast<Uint32>(remaining_ms - 1) : 0);
-      now = SDL_GetPerformanceCounter();
+      host_delay_ms(remaining_ms > 2 ? static_cast<uint32_t>(remaining_ms - 1)
+                                     : 0);
+      now = host_perf_counter();
     }
     b.sleep_ticks += now - sleep_start;
   } else {
@@ -1870,7 +1880,7 @@ uint64_t subcycle_bridge_take_sleep_ticks() {
 
 /* Re-blit the machine's CURRENT framebuffer without running a frame (the IPC
  * "repaint" path: refresh the presented picture while paused). */
-void subcycle_bridge_repaint(SDL_Surface* dst) {
+void subcycle_bridge_repaint(HostSurface* dst) {
   Bridge& b = g_bridge;
   if (b.active) blit_fb(b, dst);
 }
@@ -1907,7 +1917,27 @@ void subcycle_bridge_apply_scanlines_rgb24(uint8_t* pixels, int width,
 }
 
 namespace {
-void blit_fb(Bridge& b, SDL_Surface* dst) {
+#ifndef KONCPC_SDL
+// The SDL-free build's only destination is the headless RGBA32 surface. Same
+// integer-exact vertical crop as the SDL path below, then a software nearest
+// copy -- for the headless geometry that is a 1:1 copy of 270 of the 272
+// rows, byte-identical to what SDL produces in the GUI build. No scanlines:
+// a 1:1 destination has no spare row to darken (see the SDL path).
+void blit_fb(Bridge& b, HostSurface* dst) {
+  if (dst == nullptr || dst->pixels == nullptr || b.fb.empty()) return;
+  const int fbh = subcycle::kFbHeight;
+  int factor = (dst->h + (fbh / 2)) / fbh;
+  factor = std::max(factor, 1);
+  int src_h = dst->h / factor;
+  src_h = std::min(src_h, fbh);
+  src_h = std::max(src_h, 1);
+  host_blit_rgb24_to_rgba32_nearest(b.fb.data(), subcycle::kFbWidth,
+                                    subcycle::kFbWidth * 3, (fbh - src_h) / 2,
+                                    src_h, static_cast<uint8_t*>(dst->pixels),
+                                    dst->w, dst->h, dst->pitch);
+}
+#else
+void blit_fb(Bridge& b, HostSurface* dst) {
   if (dst == nullptr || b.fbsurf == nullptr) return;
 
   // Two passes, each on an SDL fast path: unscaled RGB24→dst-format
@@ -1994,4 +2024,5 @@ void blit_fb(Bridge& b, SDL_Surface* dst) {
     }
   }
 }
+#endif  // KONCPC_SDL
 }  // namespace

@@ -44,7 +44,6 @@
 #include <unistd.h>
 #endif
 
-#include "SDL3/SDL.h"
 #include "amx_mouse.h"
 #include "asic_debug.h"
 #include "asm_source.h"
@@ -80,7 +79,10 @@
 #include "symfile.h"
 #include "telnet_console.h"
 #include "trace.h"
+#ifdef KONCPC_SDL
 #include "video_host.h"
+#endif
+#include "video_plugin.h"
 #include "wav_recorder.h"
 #include "ym_recorder.h"
 #include "z80_assembler.h"
@@ -93,7 +95,7 @@ extern t_CPC CPC;
 extern t_CRTC CRTC;
 extern t_GateArray GateArray;
 extern t_PSG PSG;
-extern SDL_Surface* back_surface;
+extern HostSurface* back_surface;
 extern byte* pbRAM;
 extern video_plugin* vid_plugin;
 
@@ -434,7 +436,6 @@ void ipc_publish_host_keymap(const std::string& layout,
 // the same deferral the menu item and the Options checkbox use (a fullscreen
 // transition tears down video and ImGui, so only the main loop may perform it,
 // between frames).
-extern SDL_Window* mainSDLWindow;
 
 namespace {
 struct IpcWindowPending {
@@ -459,7 +460,7 @@ void ipc_publish_window_state() {
     return;
   }
   g_ipc_window.known = true;
-  SDL_GetWindowSize(mainSDLWindow, &g_ipc_window.w, &g_ipc_window.h);
+  koncpc_main_window_size(g_ipc_window.w, g_ipc_window.h);
   g_ipc_window.scale = CPC.scr_scale;
   g_ipc_window.is_fullscreen = *fullscreen;
 }
@@ -606,7 +607,7 @@ void ipc_drain_input() {
       std::scoped_lock const lock(g_ipc_window.mutex);
       fullscreen.swap(g_ipc_window.fullscreen);
     }
-    if (fullscreen && mainSDLWindow != nullptr) {
+    if (fullscreen && koncpc_main_window_is_fullscreen().has_value()) {
       // scr_window is 1 for windowed; the main loop compares the request
       // against the window's real flags and toggles only on a difference.
       CPC.scr_window = *fullscreen ? 0u : 1u;
@@ -2126,6 +2127,11 @@ std::string handle_command(const std::string& line) {
     }
     if (cmd == "screenshot") {
       if (parts.size() >= 3 && parts[1] == "window") {
+#ifndef KONCPC_SDL
+        // The SDL-free build has no window to photograph; `screenshot <path>`
+        // writes the CPC frame.
+        return "ERR 503 no-window\n";
+#else
         const std::string& path = parts[2];
         // Force z80_execute to return so the main loop can render a frame
         bool const was_paused = CPC.paused;
@@ -2143,6 +2149,7 @@ std::string handle_command(const std::string& line) {
         }
         if (!was_paused) cpc_resume();
         return "ERR 504 timeout\n";
+#endif
       }
       if (parts.size() >= 2) {
         if (dumpScreenTo(parts[1])) return "OK\n";

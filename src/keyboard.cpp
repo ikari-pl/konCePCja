@@ -3,6 +3,7 @@
 #include "keyboard.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -756,8 +757,21 @@ std::string format_pckey(PCKey pckey) {
   std::string s;
   if (mod & SDL_KMOD_CTRL) s += "Ctrl+";
   if (mod & SDL_KMOD_SHIFT) s += "Shift+";
+#ifdef KONCPC_SDL
   const char* name = SDL_GetKeyName(key);
   s += (name != nullptr && *name != '\0') ? name : "?";
+#else
+  // The SDL-free build (beads-29zx) has no keymap to ask, and nothing that
+  // shows these labels but IPC text. Name the keys a binding uses most, the
+  // way SDL_GetKeyName does: F-keys, and printable keys upper-cased.
+  if (key >= SDLK_F1 && key <= SDLK_F12) {
+    s += "F" + std::to_string(key - SDLK_F1 + 1);
+  } else if (key > 0x20 && key < 0x7F) {
+    s += static_cast<char>(std::toupper(static_cast<int>(key)));
+  } else {
+    s += "?";
+  }
+#endif
   return s;
 }
 }  // namespace

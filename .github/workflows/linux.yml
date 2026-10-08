@@ -88,7 +88,7 @@ jobs:
       - run: make -j 3 board_only
 
       # The UI-free build (beads-6oa): KONCPC_MODERN_UI=0 links a ./koncepcja
-      # with no ImGui that always runs the -H loop. Its own object tree
+      # with no ImGui and no SDL (beads-29zx) that always runs the -H loop. Its own object tree
       # (obj/linux-noui), so the GUI objects above are untouched. No dummy
       # video driver here on purpose: it must not need one.
       - run: make -j 3 KONCPC_MODERN_UI=0 koncepcja

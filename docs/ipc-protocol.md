@@ -240,7 +240,7 @@ CRC32 hashes for CI regression testing.
 | Command | Description |
 |---------|-------------|
 | `screenshot [path]` | Save the CPC screen as PNG (default path when omitted) |
-| `screenshot window <path>` | Capture the emulator window on the next rendered frame |
+| `screenshot window <path>` | Capture the emulator window on the next rendered frame. The UI-free build has no window: `ERR 503 no-window` |
 | `snapshot save <path>` | Save emulator state (.sna) |
 | `snapshot load <path>` | Load emulator state (.sna). A successful load goes on the snapshot Recent list, as `load` does |
 

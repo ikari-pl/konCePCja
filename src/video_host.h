@@ -12,42 +12,9 @@
 #include <vector>
 
 #include "SDL3/SDL.h"
+#include "video_plugin.h"
 
 struct ImDrawList;
-
-typedef struct video_plugin {
-  /* the user-displayed name of this plugin */
-  const char* name;
-  /* whether the plugin should be hidden from UI (i.e. is deprecated) */
-  bool hidden;
-  /* initializes the video plugin ; returns the surface that you must draw into,
-   * nullptr in the (unlikely ;) event of a failure */
-  SDL_Surface* (*init)(video_plugin* t, int scale, bool fs);
-
-  void (*set_palette)(SDL_Color* c);
-  /* "flips" the video surface. Note that this might not always do a real flip
-   */
-  void (*flip)(video_plugin* t);
-  /* closes the plugin */
-  void (*close)();
-
-  /* this plugin wants : 0 half sized pixels (320x200 screen)/1 full sized
-   * pixels (640x200 screen)*/
-  Uint8 half_pixels;
-
-  /* mouse offset/scaling info */
-  int x_offset, y_offset;
-  float x_scale, y_scale;
-  /* width & height of the surface to display */
-  int width, height;
-
-  /* Second phase of flip: renders floating ImGui viewports and swaps the
-     window. Runs after audio push so the 30-60ms stall doesn't starve the audio
-     queue. Null for SDL_Renderer, headless, and non-ImGui GL plugins. */
-  void (*flip_b)(video_plugin* t);
-} video_plugin;
-
-extern std::vector<video_plugin> video_plugin_list;
 
 /* Only exposed for testing purposes. Do not use. */
 void compute_rects_for_tests(SDL_Rect* src, SDL_Rect* dst, Uint8 half_pixels);
@@ -90,8 +57,6 @@ int video_get_topbar_height();
 
 void video_set_bottombar(int height);
 int video_get_bottombar_height();
-
-video_plugin video_headless_plugin();
 
 // Lightweight video plugin switch (Direct ↔ CRT) without window/GL/ImGui
 // teardown. Returns true if handled; false if full reinit is needed.
@@ -165,9 +130,3 @@ void video_ring_shutdown();
 void video_request_window_screenshot(const std::string& path);
 // Call from main loop after video_display() to capture pending screenshots.
 void video_take_pending_window_screenshot();
-
-extern std::atomic<bool> g_repaint_pending;
-extern std::atomic<bool> g_repaint_done;
-extern std::mutex g_repaint_mutex;
-extern std::string g_repaint_screenshot_path;
-extern std::string g_repaint_error;

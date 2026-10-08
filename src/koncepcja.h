@@ -740,6 +740,8 @@ unsigned int koncpc_fullscreen_toggle_target(
     std::optional<bool> window_is_fullscreen);
 // Whether the main window is fullscreen right now; nullopt without a window.
 std::optional<bool> koncpc_main_window_is_fullscreen();
+// The main window's size in window coordinates; 0x0 without a window.
+void koncpc_main_window_size(int& w, int& h);
 // Registers that hand a RAM program at `entry` to the firmware's MC START
 // PROGRAM (&BD16) — the launch RUN" performs. Used by -i/--inject.
 class t_z80regs;

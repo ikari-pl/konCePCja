@@ -6,10 +6,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <string>
 #include <vector>
-
-#include "SDL3/SDL_mutex.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -25,19 +24,20 @@ static const int GEN_RATE = 44100;
 // intentionally never destroyed — a process-lifetime singleton avoids teardown
 // races with the audio callback. Null before init: callers fall back to the
 // unlocked single-threaded path, which is safe because no audio thread exists
-// yet.
+// yet. Recursive, as the SDL_Mutex it replaced was (beads-29zx: the SDL-free
+// build links no SDL).
 namespace {
-SDL_Mutex* s_drive_mutex = nullptr;
+std::recursive_mutex* s_drive_mutex = nullptr;
 }  // namespace
 
 namespace {
 inline void drive_sounds_lock() {
-  if (s_drive_mutex) SDL_LockMutex(s_drive_mutex);
+  if (s_drive_mutex) s_drive_mutex->lock();
 }
 }  // namespace
 namespace {
 inline void drive_sounds_unlock() {
-  if (s_drive_mutex) SDL_UnlockMutex(s_drive_mutex);
+  if (s_drive_mutex) s_drive_mutex->unlock();
 }
 }  // namespace
 
@@ -134,7 +134,9 @@ void drive_sounds_regenerate(unsigned which) {
 
 void drive_sounds_init(int target_sample_rate) {
   if (!s_drive_mutex) {
-    s_drive_mutex = SDL_CreateMutex();  // process-lifetime, never destroyed
+    // process-lifetime, never destroyed
+    s_drive_mutex =
+        new std::recursive_mutex;  // NOLINT(cppcoreguidelines-owning-memory)
   }
   g_drive_sounds.resample_ratio =
       static_cast<double>(target_sample_rate) / GEN_RATE;
