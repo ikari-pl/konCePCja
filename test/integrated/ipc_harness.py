@@ -665,7 +665,13 @@ def test_programmatic_quit_exit_codes():
     push from the IPC thread was never read: the command answered OK and the
     emulator ran on. A signal is not a success either: it exits 128+signo.
     """
-    for how, expected in (('ipc', 3), ('sigterm', 143), ('sigint', 130)):
+    cases = [('ipc', 3), ('sigterm', 143), ('sigint', 130)]
+    if os.name != 'posix':
+        # Popen.send_signal(SIGTERM) on Windows is TerminateProcess(h, 1): no
+        # signal reaches the emulator, so only the IPC case means anything.
+        print("  (not POSIX: signal cases skipped, IPC quit only)")
+        cases = cases[:1]
+    for how, expected in cases:
         with EmulatorRunner() as emu:
             if not emu.start('--headless'):
                 print(f"FAIL: could not start emulator ({how})")
@@ -711,6 +717,10 @@ def test_double_signal_terminates():
     the process is gone, and not because the harness's own SIGKILL fallback
     reaped it 5 seconds later.
     """
+    if os.name != 'posix':
+        # No POSIX signals on Windows: send_signal is TerminateProcess.
+        print("SKIP: double SIGTERM needs POSIX signals")
+        return True
     with EmulatorRunner() as emu:
         if not emu.start('--headless'):
             print("FAIL: could not start emulator")
@@ -1090,6 +1100,11 @@ def test_wait_pc_aborts_on_shutdown():
         if ok:
             print(f"FAIL: the interrupted wait must not answer OK: {resp}")
             return False
+        # A peer that _exit()s before the reply lands reads as EOF (an empty
+        # reply) on POSIX, but Windows reports it as a reset (WSAECONNRESET).
+        # Either way no reply arrived, which the docstring allows.
+        if resp and ('10054' in resp or 'reset' in resp.lower()):
+            resp = ''
         if resp and 'shutting-down' not in resp:
             print(f"FAIL: the aborted wait answered something other than "
                   f"ERR 503 shutting-down: {resp}")

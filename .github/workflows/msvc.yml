@@ -204,6 +204,9 @@ jobs:
         env:
           KONCPC_E2E_HEADLESS: '1'
           KONCPC_EXE: ${{ github.workspace }}/build/Release/koncepcja.exe
+          # The harness prints arrows and dashes; the runner's console
+          # code page (cp1252) cannot encode them.
+          PYTHONUTF8: '1'
         # Prepend in the shell: ${{ env.PATH }} is empty in a step's env:
         # block, so setting PATH there drops python from it.
         run: |
