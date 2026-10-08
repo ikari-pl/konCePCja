@@ -204,7 +204,9 @@ jobs:
         env:
           KONCPC_E2E_HEADLESS: '1'
           KONCPC_EXE: ${{ github.workspace }}/build/Release/koncepcja.exe
-          PATH: ${{ github.workspace }}/build/vcpkg_installed/x64-windows/bin;${{ env.PATH }}
+        # Prepend in the shell: ${{ env.PATH }} is empty in a step's env:
+        # block, so setting PATH there drops python from it.
         run: |
+          export PATH="$(cygpath -u '${{ github.workspace }}')/build/vcpkg_installed/x64-windows/bin:$PATH"
           python test/integrated/headless_smoke.py --ui-free
           python test/integrated/ipc_harness.py
