@@ -235,16 +235,39 @@ TEST_F(EmuFramePacingTest, FrameskipOffNeverSkips) {
 TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
   uint8_t rows[16];
   for (auto& r : rows) r = 0xFF;
+  // The pacer only sleeps for the part of each 20 ms period a frame leaves
+  // unused. A -O0 or MSVC Debug runner can take most of a period to emulate
+  // one frame, so assuming headroom made this test flaky there (beads-6tr9).
+  // Measure the headroom first: three unpaced frames, then three paced ones.
+  auto const t0 = std::chrono::steady_clock::now();
+  for (int i = 0; i < 3; ++i)
+    subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
+  double const work_ms = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - t0)
+                             .count();
   (void)subcycle_bridge_take_sleep_ticks();
-  // The first frame sets the deadline; the next three wait for theirs.
+  // The first paced frame sets the deadline; the next three wait for theirs.
   for (int i = 0; i < 4; ++i)
     subcycle_bridge_frame(rows, nullptr, /*limit=*/true);
   double const slept_ms =
       static_cast<double>(subcycle_bridge_take_sleep_ticks()) * 1000.0 /
       static_cast<double>(SDL_GetPerformanceFrequency());
-  // Three 20 ms periods less three sub-millisecond frames; a descheduled
-  // frame can eat some of that, so assert well under the ideal ~59 ms.
-  EXPECT_GT(slept_ms, 20.0);
+  // Ideal sleep is three periods minus three frames of work. Ask for half of
+  // it: a descheduled frame can eat into the rest.
+  double const headroom_ms = 60.0 - work_ms;
+  if (headroom_ms >= 20.0) {
+    EXPECT_GT(slept_ms, headroom_ms / 2)
+        << "3 frames took " << work_ms << " ms of 60 ms; the pacer slept "
+        << slept_ms << " ms";
+  } else {
+    // Too slow to leave a measurable margin: the sleep claim cannot be judged
+    // here, but the counter must still be sane and the rest still holds.
+    std::printf(
+        "[ note ] 3 frames took %.1f ms of 60 ms; sleep claim not judged on "
+        "this host (slept %.1f ms)\n",
+        work_ms, slept_ms);
+    EXPECT_GE(slept_ms, 0.0);
+  }
   EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks()) << "take must reset";
 
   subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
