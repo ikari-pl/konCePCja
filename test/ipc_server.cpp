@@ -27,6 +27,7 @@
 #include "devtools_ui.h"
 #include "errors.h"
 #include "host_state.h"
+#include "host_surface.h"
 #include "imgui_state.h"
 #include "imgui_ui_host.h"
 #include "ipc_mru.h"
@@ -45,7 +46,7 @@ extern t_z80regs z80;
 extern t_CPC CPC;
 extern t_GateArray GateArray;
 extern t_CRTC CRTC;
-extern SDL_Surface* back_surface;
+extern HostSurface* back_surface;
 extern byte* membank_read[4];
 extern byte* membank_write[4];
 extern video_plugin* vid_plugin;

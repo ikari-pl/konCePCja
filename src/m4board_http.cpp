@@ -21,8 +21,6 @@
 
 #include "m4board_http.h"
 
-#include <SDL3/SDL.h>
-
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -30,6 +28,7 @@
 #include <sstream>
 
 #include "autotype.h"
+#include "host_surface.h"
 #include "koncepcja.h"
 #include "log.h"
 #include "m4board.h"
@@ -54,7 +53,7 @@
 
 extern t_CPC CPC;
 
-extern SDL_Surface* back_surface;
+extern HostSurface* back_surface;
 extern byte* memmap_ROM[256];
 
 static constexpr int MAX_REQ = 256 * 1024;  // max HTTP request body size

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "host_state.h"
+#include "host_surface.h"
 #include "imgui.h"
 #include "imgui_ui.h"
 #include "ipc_mru.h"
@@ -11,7 +12,7 @@
 extern t_CPC CPC;
 extern ImGuiUIState imgui_state;
 extern video_plugin* vid_plugin;
-extern SDL_Surface* back_surface;
+extern HostSurface* back_surface;
 extern SDL_Window* mainSDLWindow;
 
 // Uses the real imgui_close_menu() — no duplication of logic.
