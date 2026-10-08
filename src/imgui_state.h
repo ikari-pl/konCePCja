@@ -112,9 +112,8 @@ struct ImGuiUIState {
   bool confirm_clear_recent = false;  // Clear Recent asked, awaiting an answer
   bool eject_confirm_tape = false;
 
-  // Tape block index (built on tape load)
-  std::vector<byte*> tape_block_offsets;
-  int tape_current_block = 0;
+  // The tape block index moved to g_host_tape (host_state.h): the IPC
+  // 'tape seek' reads it too, and that is not UI state.
 
   // File dialog async state
   FileDialogAction pending_dialog = FileDialogAction::None;

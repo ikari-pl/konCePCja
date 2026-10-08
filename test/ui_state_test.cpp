@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "host_state.h"
 #include "imgui.h"
 #include "imgui_ui.h"
 #include "keyboard.h"
@@ -310,8 +311,8 @@ TEST_F(UIStateTest, MemoryToolDefaultFilterOff) {
 // ─── Tape state ──────────────────────────────────
 
 TEST_F(UIStateTest, TapeBlocksStartEmpty) {
-  EXPECT_TRUE(imgui_state.tape_block_offsets.empty());
-  EXPECT_EQ(imgui_state.tape_current_block, 0);
+  EXPECT_TRUE(g_host_tape.block_offsets.empty());
+  EXPECT_EQ(g_host_tape.current_block, 0);
 }
 
 TEST_F(UIStateTest, TapeWaveformModeDefault) {

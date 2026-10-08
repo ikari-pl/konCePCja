@@ -14,6 +14,7 @@
 
 #include "SDL3/SDL.h"
 #include "TextEditor.h"
+#include "asm_source.h"
 #include "avi_recorder.h"
 #include "data_areas.h"
 #include "disk_file_editor.h"
@@ -3811,7 +3812,7 @@ std::string asm_upper_registers(const std::string& ops) {
 }
 }  // namespace
 
-// ── IPC compatibility for TextEditor ──
+// ── Assembler editor <-> host source store ──
 
 // Ensure the TextEditor exists (lazy creation to avoid ImGui context crash at
 // static init)
@@ -3822,18 +3823,26 @@ TextEditor& ensure_editor(std::unique_ptr<TextEditor>& ptr) {
 }
 }  // namespace
 
-char* DevToolsUI::asm_source_buf() {
-  auto& ed = ensure_editor(asm_editor_);
-  std::string const text = ed.GetText();
-  size_t const len = std::min(text.size(), sizeof(asm_source_shadow_) - 1);
-  memcpy(asm_source_shadow_, text.c_str(), len);
-  asm_source_shadow_[len] = '\0';
-  return asm_source_shadow_;
+// The host store (g_asm_source) is the source of truth.  Load its text when
+// another writer (IPC 'asm text' / 'asm load') moved the generation.
+void DevToolsUI::asm_pull_source(TextEditor& ed) {
+  if (g_asm_source.generation() == asm_store_generation_) return;
+  uint64_t generation = 0;
+  std::string const text = g_asm_source.text(generation);
+  ed.SetText(text);
+  asm_store_generation_ = generation;
+  asm_editor_serial_ = ed.GetChangeSerial();
 }
 
-void DevToolsUI::asm_set_source(const char* text) {
-  auto& ed = ensure_editor(asm_editor_);
-  ed.SetText(text ? text : "");
+// Write this frame's edits back.  If another writer got in since the pull,
+// its text wins and the next frame loads it, as an IPC 'asm text' always
+// replaced the editor's text before.
+void DevToolsUI::asm_push_source(TextEditor& ed) {
+  if (ed.GetChangeSerial() == asm_editor_serial_) return;
+  asm_editor_serial_ = ed.GetChangeSerial();
+  uint64_t const generation =
+      g_asm_source.set_if_generation(ed.GetText(), asm_store_generation_);
+  if (generation != 0) asm_store_generation_ = generation;
 }
 
 // Format one line into Maxam columns: label@0, mnemonic@16, operands@24,
@@ -4010,6 +4019,7 @@ void DevToolsUI::render_assembler() {
     ed.SetTabSize(8);
     asm_editor_initialized_ = true;
   }
+  asm_pull_source(ed);
 
   // Helper lambda to get source text for assembler
   auto get_source = [&]() -> std::string {
@@ -4241,6 +4251,7 @@ void DevToolsUI::render_assembler() {
     ImGui::EndChild();
   }
 
+  asm_push_source(ed);
   if (!open) show_assembler_ = false;
   ImGui::End();
 

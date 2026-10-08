@@ -23,6 +23,7 @@
 
 #include <cstdio>
 
+#include "devtools_ui.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_ui.h"
@@ -129,6 +130,52 @@ int ImGuiUiHost::topbar_height() const {
   // menubar+statusbar measurements.  Safe pre-init: returns 0 before
   // the first frame.
   return imgui_topbar_height();
+}
+
+// -- Debugger UI (DevTools) ------------------------------------------
+//
+// None of these touch the ImGui context: they set flags the next render()
+// acts on, so they are safe before the first frame and from the IPC thread
+// exactly as the direct g_devtools_ui calls they replace were.
+
+void ImGuiUiHost::set_debugger_visible(bool visible) {
+  imgui_state.show_devtools = visible;
+  if (!visible) g_devtools_ui.close_all_windows();
+}
+
+bool ImGuiUiHost::set_debugger_window_open(const std::string& name, bool open) {
+  bool* const flag = g_devtools_ui.window_ptr(name);
+  if (flag == nullptr) return false;
+  *flag = open;
+  return true;
+}
+
+void ImGuiUiHost::debugger_memory_changed() {
+  g_devtools_ui.disasm_cache_invalidate();
+}
+
+void ImGuiUiHost::debugger_symbols_changed() {
+  g_devtools_ui.symtable_mark_dirty();
+}
+
+// -- Settings dialog & window requests -------------------------------
+
+bool ImGuiUiHost::fullscreen_request_pending() const {
+  return imgui_state.fullscreen_request != -1;
+}
+
+void ImGuiUiHost::request_fullscreen(unsigned scr_window) {
+  imgui_state.fullscreen_request = static_cast<int>(scr_window);
+}
+
+void ImGuiUiHost::settings_baseline_set_kbd_layout(const std::string& name) {
+  if (imgui_state.show_options) imgui_state.old_cpc_settings.kbd_layout = name;
+}
+
+void ImGuiUiHost::settings_baseline_set_scr_window(unsigned scr_window) {
+  if (imgui_state.show_options) {
+    imgui_state.old_cpc_settings.scr_window = scr_window;
+  }
 }
 
 // -- Install at startup ----------------------------------------------

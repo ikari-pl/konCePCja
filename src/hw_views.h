@@ -185,7 +185,7 @@ enum : std::uint8_t { TAPE_LEVEL_LOW = 0, TAPE_LEVEL_HIGH = 0x80 };
 extern byte bTapeLevel;
 
 // Walk the loaded TZX/CDT image (pbTapeImage) and rebuild
-// imgui_state.tape_block_offsets; resets tape_current_block to 0. Block
+// g_host_tape.block_offsets; resets tape_current_block to 0. Block
 // ordinals match the deck Device's own walk (hw/tape.cpp block_len) — the
 // seek UI relies on that.
 void tape_scan_blocks();

@@ -92,6 +92,38 @@ class IUiHost {
   // scaling in video_host.cpp.  Defaults to a no-op, which hosts without
   // chrome inherit.
   virtual void set_display_scale(float /*scale*/) {}
+
+  // -- Debugger UI (DevTools) — beads-cv2.4 ---------------------------
+  // The IPC server reaches DevTools only through these.  A host without a
+  // debugger UI keeps the no-op defaults, and IPC 'devtools' answers
+  // ERR 503 no-ui there instead of claiming success.
+  virtual bool has_debugger_ui() const { return false; }
+  // Show or hide the DevTools toolbar; hiding also closes its windows.
+  virtual void set_debugger_visible(bool /*visible*/) {}
+  // Open or close one DevTools window by key (registers, disasm, …).
+  // False when the key names no window.
+  virtual bool set_debugger_window_open(const std::string& /*name*/,
+                                        bool /*open*/) {
+    return false;
+  }
+  // Guest memory changed behind the debugger's back (IPC mem write/fill):
+  // cached disassembly is stale.  Callable from any thread.
+  virtual void debugger_memory_changed() {}
+  // The symbol table changed (IPC sym load/add/del).  Any thread.
+  virtual void debugger_symbols_changed() {}
+
+  // -- Settings dialog & window requests (main thread) ----------------
+  // True while a fullscreen toggle the UI posted (menu, F2, Settings) is
+  // still waiting for the main loop; IPC's staged request waits behind it.
+  virtual bool fullscreen_request_pending() const { return false; }
+  // Ask the main loop to switch the window to `scr_window` (1 = windowed,
+  // 0 = fullscreen) on its next pass.
+  virtual void request_fullscreen(unsigned /*scr_window*/) {}
+  // A setting changed outside the Settings dialog.  While the dialog is
+  // open its Cancel restores the values it saw on opening; fold the change
+  // into that baseline so Cancel does not silently revert it.
+  virtual void settings_baseline_set_kbd_layout(const std::string& /*name*/) {}
+  virtual void settings_baseline_set_scr_window(unsigned /*scr_window*/) {}
 };
 
 // Returns a process-wide singleton chosen at build time:

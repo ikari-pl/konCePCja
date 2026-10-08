@@ -405,6 +405,12 @@ echo "frames dump /tmp/slowmo.gif 50 10" | nc -w 30 localhost 6543
 | `devtools on\|off` | Show or hide them explicitly |
 | `devtools show <name>` / `devtools hide <name>` | Open or close one window: `registers`, `disassembly`, `memory_hex`, `stack`, `breakpoints`, `symbols`, `session_recording`, `gfx_finder`, `silicon_disc`, `asic`, `disc_tools`, `data_areas`, `disasm_export`, `video_state`, `audio_state`, `recording_controls`, `assembler`, `drive_sound_lab`. `ERR 404 unknown window` otherwise |
 
+A build without the developer tools (`make KONCPC_MODERN_UI=0`, the UI-free
+core) answers `ERR 503 no-ui` to every form of `devtools`, since there is no
+window to open. Everything else the DevTools show stays reachable over IPC:
+`regs`, `disasm`, `mem`, `sym`, `bp`/`wp`, and `asm`, whose source text is
+owned by the emulator, not by the Assembler window.
+
 ## Event System
 
 Register IPC commands to execute automatically on triggers.

@@ -21,6 +21,7 @@
 #include "drive_sounds.h"  // host audio overlay: motor hum / seek clicks
 #include "flux_ingest.h"   // flux::to_scp: unified flux-container dispatcher
 #include "frame_pacer.h"   // the 50 Hz deadline subcycle_bridge_frame paces to
+#include "host_state.h"    // g_host_tape: the deck ordinal the tape UI shows
 #include "hw/asic.h"
 #include "hw/crtc.h"
 #include "hw/device.h"  // Device (Save-As FDC handle)
@@ -1235,14 +1236,14 @@ int subcycle_bridge_debug_sync() {
   // ordinal so it follows playback and the buttons enable/seek correctly. Both
   // the deck and tape_scan_blocks count CDT blocks in the same order, so the
   // ordinal indexes the host offsets table directly (clamped for safety).
-  if (!imgui_state.tape_block_offsets.empty()) {
+  if (!g_host_tape.block_offsets.empty()) {
     TapeRegs tr{};
     tape_peek(b.machine.tape(), &tr);
     if (tr.attached) {
-      const int nblk = static_cast<int>(imgui_state.tape_block_offsets.size());
-      imgui_state.tape_current_block = static_cast<int>(tr.block) >= nblk
-                                           ? nblk - 1
-                                           : static_cast<int>(tr.block);
+      const int nblk = static_cast<int>(g_host_tape.block_offsets.size());
+      g_host_tape.current_block = static_cast<int>(tr.block) >= nblk
+                                      ? nblk - 1
+                                      : static_cast<int>(tr.block);
     }
   }
 
