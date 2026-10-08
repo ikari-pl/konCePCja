@@ -3,9 +3,9 @@
 #include "autotype.h"
 #include "errors.h"
 #include "gfx_finder.h"
+#include "host_state.h"
 #include "hw/tape.h"
 #include "hw_views.h"
-#include "imgui_state.h"
 #include "log.h"
 #include "search_engine.h"
 #include "subcycle/machine.h"
@@ -31,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifdef _WIN32
@@ -46,13 +47,13 @@
 #include "SDL3/SDL.h"
 #include "amx_mouse.h"
 #include "asic_debug.h"
+#include "asm_source.h"
 #include "avi_recorder.h"
 #include "config_profile.h"
 #include "cpc_key_tables.h"
 #include "crtc_types.h"
 #include "data_areas.h"
 #include "debug_timers.h"
-#include "devtools_ui.h"
 #include "disk_file_editor.h"
 #include "disk_format.h"
 #include "disk_sector_editor.h"
@@ -62,6 +63,7 @@
 #include "gif_recorder.h"
 #include "imgui_ui_testable.h"
 #include "ipc_mru.h"
+#include "iui_host.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "m4board.h"
@@ -428,10 +430,10 @@ void ipc_publish_host_keymap(const std::string& layout,
 // Window state — the main window's live geometry, published by the drain
 // every frame so `config get window|fullscreen` can answer without touching
 // SDL or CPC.* from the IPC thread — and the fullscreen staging: a `config
-// set fullscreen` is applied by the drain by posting imgui_state's
-// fullscreen_request, the same deferral the menu item and the Options
-// checkbox use (a fullscreen transition tears down video and ImGui, so only
-// the main loop may perform it, between frames).
+// set fullscreen` is applied by the drain through ui_host().request_fullscreen,
+// the same deferral the menu item and the Options checkbox use (a fullscreen
+// transition tears down video and ImGui, so only the main loop may perform it,
+// between frames).
 extern SDL_Window* mainSDLWindow;
 
 namespace {
@@ -592,9 +594,7 @@ void ipc_drain_input() {
       // Settings ▸ Cancel restores the CPC snapshot taken when the dialog
       // opened.  A switch applied while it is open must become part of that
       // baseline, or Cancel silently undoes it after the client was told OK.
-      if (imgui_state.show_options) {
-        imgui_state.old_cpc_settings.kbd_layout = *name;
-      }
+      ui_host().settings_baseline_set_kbd_layout(*name);
     }
   }
   {
@@ -602,7 +602,7 @@ void ipc_drain_input() {
     // A request the menu, F2 or the Options checkbox posted this frame is
     // applied first; the staged IPC value waits for the next drain rather
     // than overwriting it (last-writer-wins would swallow the user's click).
-    if (imgui_state.fullscreen_request == -1) {
+    if (!ui_host().fullscreen_request_pending()) {
       std::scoped_lock const lock(g_ipc_window.mutex);
       fullscreen.swap(g_ipc_window.fullscreen);
     }
@@ -610,13 +610,11 @@ void ipc_drain_input() {
       // scr_window is 1 for windowed; the main loop compares the request
       // against the window's real flags and toggles only on a difference.
       CPC.scr_window = *fullscreen ? 0u : 1u;
-      imgui_state.fullscreen_request = static_cast<int>(CPC.scr_window);
+      ui_host().request_fullscreen(CPC.scr_window);
       // Settings ▸ Cancel restores the snapshot taken when the dialog opened
       // and re-posts its scr_window; fold the switch into that snapshot or
       // Cancel silently undoes it (as for kbd_layout above).
-      if (imgui_state.show_options) {
-        imgui_state.old_cpc_settings.scr_window = CPC.scr_window;
-      }
+      ui_host().settings_baseline_set_scr_window(CPC.scr_window);
     }
     ipc_publish_window_state();
   }
@@ -842,27 +840,17 @@ void init_command_registry() {
         // Snapshot under the lock, format outside — avoids holding the
         // mutex during string formatting and keeps the render thread
         // unblocked.
-        float f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min;
-        int underruns, near_underruns;
-        {
-          std::scoped_lock const lock(g_imgui_stats_mutex);
-          f_avg = imgui_state.frame_time_avg_us;
-          d_avg = imgui_state.display_time_avg_us;
-          z_avg = imgui_state.z80_time_avg_us;
-          s_avg = imgui_state.sleep_time_avg_us;
-          aq_avg = imgui_state.audio_queue_avg_ms;
-          aq_min = imgui_state.audio_queue_min_ms;
-          underruns = imgui_state.audio_underruns;
-          near_underruns = imgui_state.audio_near_underruns;
-        }
+        HostFrameMetrics const m = host_frame_metrics();
         char buf[512];
         std::snprintf(buf, sizeof(buf),
                       "OK frame_time_avg_us=%.1f display_time_avg_us=%.1f "
                       "z80_time_avg_us=%.1f sleep_time_avg_us=%.1f "
                       "audio_queue_avg_ms=%.1f audio_queue_min_ms=%.1f "
                       "audio_underruns=%d audio_near_underruns=%d\n",
-                      f_avg, d_avg, z_avg, s_avg, aq_avg, aq_min, underruns,
-                      near_underruns);
+                      m.frame_time_avg_us, m.display_time_avg_us,
+                      m.z80_time_avg_us, m.sleep_time_avg_us,
+                      m.audio_queue_avg_ms, m.audio_queue_min_ms,
+                      m.audio_underruns, m.audio_near_underruns);
         return std::string(buf);
       });
 
@@ -2189,11 +2177,10 @@ std::string handle_command(const std::string& line) {
         // Z80 thread at the frame boundary. Range-checked against the host
         // block table.
         if (!mach) return "ERR 409 subcycle-engine-only\n";
-        if (imgui_state.tape_block_offsets.empty()) return "ERR 409 no-tape\n";
+        if (g_host_tape.block_offsets.empty()) return "ERR 409 no-tape\n";
         try {
           const int blk = std::stoi(parts[2]);
-          const int nblk =
-              static_cast<int>(imgui_state.tape_block_offsets.size());
+          const int nblk = static_cast<int>(g_host_tape.block_offsets.size());
           if (blk < 0 || blk >= nblk) return "ERR 400 block-out-of-range\n";
           subcycle_bridge_request_tape_seek(static_cast<uint32_t>(blk));
           return ok_with_context();
@@ -2293,25 +2280,22 @@ std::string handle_command(const std::string& line) {
       return "ERR 400 bad-args\n";
     }
     if (cmd == "devtools") {
+      IUiHost& ui = ui_host();
+      // A build or run without the debugger UI says so rather than
+      // answering OK for a window nobody will ever see.
+      if (!ui.has_debugger_ui()) return "ERR 503 no-ui\n";
       if (parts.size() == 1) {
-        imgui_state.show_devtools = true;
+        ui.set_debugger_visible(true);
         return "OK\n";
       }
       if (parts.size() == 2 && (parts[1] == "on" || parts[1] == "off")) {
-        imgui_state.show_devtools = parts[1] == "on";
-        if (!imgui_state.show_devtools) g_devtools_ui.close_all_windows();
+        ui.set_debugger_visible(parts[1] == "on");
         return "OK\n";
       }
-      if (parts.size() >= 3 && parts[1] == "show") {
-        bool* ptr = g_devtools_ui.window_ptr(parts[2]);
-        if (!ptr) return "ERR 404 unknown window\n";
-        *ptr = true;
-        return "OK\n";
-      }
-      if (parts.size() >= 3 && parts[1] == "hide") {
-        bool* ptr = g_devtools_ui.window_ptr(parts[2]);
-        if (!ptr) return "ERR 404 unknown window\n";
-        *ptr = false;
+      if (parts.size() >= 3 && (parts[1] == "show" || parts[1] == "hide")) {
+        if (!ui.set_debugger_window_open(parts[2], parts[1] == "show")) {
+          return "ERR 404 unknown window\n";
+        }
         return "OK\n";
       }
       return "ERR 400 usage: devtools (on|off|show|hide) [name]\n";
@@ -2413,7 +2397,7 @@ std::string handle_command(const std::string& line) {
         byte const v = static_cast<byte>(std::stoul(byte_str, nullptr, 16));
         z80_write_mem(static_cast<word>(addr + (i / 2)), v);
       }
-      g_devtools_ui.disasm_cache_invalidate();
+      ui_host().debugger_memory_changed();
       return ok_with_context();
     }
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "fill") {
@@ -2430,7 +2414,7 @@ std::string handle_command(const std::string& line) {
       for (unsigned int i = 0; i < len; i++) {
         z80_write_mem(static_cast<word>(addr + i), pattern[i % pattern.size()]);
       }
-      g_devtools_ui.disasm_cache_invalidate();
+      ui_host().debugger_memory_changed();
       return ok_with_context();
     }
     if (cmd == "mem" && parts.size() >= 5 && parts[1] == "compare") {
@@ -4042,7 +4026,7 @@ std::string handle_command(const std::string& line) {
           g_symfile.addSymbol(addr, name);
           count++;
         }
-        g_devtools_ui.symtable_mark_dirty();
+        ui_host().debugger_symbols_changed();
         char buf[32];
         snprintf(buf, sizeof(buf), "OK loaded=%d\n", count);
         return {buf};
@@ -4050,12 +4034,12 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "add" && parts.size() >= 4) {
         unsigned int const addr = parse_number(parts[2]);
         g_symfile.addSymbol(static_cast<word>(addr), parts[3]);
-        g_devtools_ui.symtable_mark_dirty();
+        ui_host().debugger_symbols_changed();
         return "OK\n";
       }
       if (parts[1] == "del" && parts.size() >= 3) {
         g_symfile.delSymbol(parts[2]);
-        g_devtools_ui.symtable_mark_dirty();
+        ui_host().debugger_symbols_changed();
         return "OK\n";
       }
       if (parts[1] == "list") {
@@ -5997,10 +5981,7 @@ std::string handle_command(const std::string& line) {
         // text ")
         size_t const offset = line.find("text ");
         if (offset == std::string::npos) return "ERR 400 bad-args\n";
-        std::string source = line.substr(offset + 5);
-        size_t const max_len = g_devtools_ui.asm_source_buf_size() - 1;
-        if (source.size() > max_len) source.resize(max_len);
-        g_devtools_ui.asm_set_source(source.c_str());
+        g_asm_source.set(line.substr(offset + 5));
         return "OK\n";
       }
       if (parts[1] == "load" && parts.size() >= 3) {
@@ -6010,13 +5991,11 @@ std::string handle_command(const std::string& line) {
         if (!f.good()) return "ERR 404 file-not-found\n";
         std::string content((std::istreambuf_iterator<char>(f)),
                             std::istreambuf_iterator<char>());
-        size_t const max_len = g_devtools_ui.asm_source_buf_size() - 1;
-        if (content.size() > max_len) content.resize(max_len);
-        g_devtools_ui.asm_set_source(content.c_str());
+        g_asm_source.set(std::move(content));
         return "OK\n";
       }
       if (parts[1] == "assemble") {
-        AsmResult r = g_assembler.assemble(g_devtools_ui.asm_source_buf());
+        AsmResult r = g_assembler.assemble(g_asm_source.text());
         if (r.success) {
           char buf[128];
           snprintf(buf, sizeof(buf), "OK bytes=%d start=%04X end=%04X\n",
@@ -6032,7 +6011,7 @@ std::string handle_command(const std::string& line) {
       }
       if (parts[1] == "errors") {
         // Run check without writing and report errors
-        AsmResult const r = g_assembler.check(g_devtools_ui.asm_source_buf());
+        AsmResult const r = g_assembler.check(g_asm_source.text());
         std::string resp = "OK";
         for (auto& e : r.errors) {
           resp += " line=" + std::to_string(e.line) + " " + e.message + "\n";
@@ -6041,7 +6020,7 @@ std::string handle_command(const std::string& line) {
         return resp + "\n";
       }
       if (parts[1] == "symbols") {
-        AsmResult r = g_assembler.check(g_devtools_ui.asm_source_buf());
+        AsmResult r = g_assembler.check(g_asm_source.text());
         std::string resp = "OK";
         for (auto& [name, addr] : r.symbols) {
           char buf[64];
@@ -6051,7 +6030,7 @@ std::string handle_command(const std::string& line) {
         return resp + "\n";
       }
       if (parts[1] == "source") {
-        return "OK " + std::string(g_devtools_ui.asm_source_buf()) + "\n";
+        return "OK " + g_asm_source.text() + "\n";
       }
       return "ERR 400 usage: asm (text|load|assemble|errors|symbols|source)\n";
     }

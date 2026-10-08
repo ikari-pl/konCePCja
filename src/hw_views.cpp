@@ -5,8 +5,8 @@
 
 #include <vector>
 
+#include "host_state.h"
 #include "hw/tape.h"
-#include "imgui_state.h"
 #include "koncepcja.h"
 #include "log.h"
 
@@ -51,8 +51,8 @@ extern std::vector<byte> pbTapeImage;
 extern byte* pbTapeImageEnd;
 
 void tape_scan_blocks() {
-  imgui_state.tape_block_offsets.clear();
-  imgui_state.tape_current_block = 0;
+  g_host_tape.block_offsets.clear();
+  g_host_tape.current_block = 0;
   if (pbTapeImage.empty()) return;
 
   byte* base = pbTapeImage.data();
@@ -63,7 +63,7 @@ void tape_scan_blocks() {
   // here is the Nth block the deck seeks to.
   uint32_t pos = 0;
   while (pos < len) {
-    imgui_state.tape_block_offsets.push_back(base + pos);
+    g_host_tape.block_offsets.push_back(base + pos);
     const uint32_t sz = tape_cdt_block_len(base, len, pos);
     if (sz == 0 || sz > len - pos) break;  // truncated/malformed: stop
     pos += sz;

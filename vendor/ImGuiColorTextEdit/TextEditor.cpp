@@ -342,13 +342,19 @@ void TextEditor::Paste()
 void TextEditor::Undo(int aSteps)
 {
 	while (CanUndo() && aSteps-- > 0)
+	{
 		mUndoBuffer[--mUndoIndex].Undo(this);
+		++mChangeSerial;
+	}
 }
 
 void TextEditor::Redo(int aSteps)
 {
 	while (CanRedo() && aSteps-- > 0)
+	{
 		mUndoBuffer[mUndoIndex++].Redo(this);
+		++mChangeSerial;
+	}
 }
 
 void TextEditor::SetText(const std::string& aText)
@@ -372,6 +378,7 @@ void TextEditor::SetText(const std::string& aText)
 
 	mUndoBuffer.clear();
 	mUndoIndex = 0;
+	++mChangeSerial;
 
 	Colorize();
 }
@@ -409,6 +416,7 @@ void TextEditor::SetTextLines(const std::vector<std::string>& aLines)
 
 	mUndoBuffer.clear();
 	mUndoIndex = 0;
+	++mChangeSerial;
 
 	Colorize();
 }
@@ -442,6 +450,7 @@ void TextEditor::ReplaceLine(int aLine, const std::string& aText)
 	line.clear();
 	for (char c : aText)
 		line.push_back(Glyph(c, PaletteIndex::Default));
+	++mChangeSerial;
 	Colorize(aLine, 1);
 }
 
@@ -2581,6 +2590,7 @@ void TextEditor::AddUndo(UndoRecord& aValue)
 	mUndoBuffer.resize((size_t)(mUndoIndex + 1));
 	mUndoBuffer.back() = aValue;
 	++mUndoIndex;
+	++mChangeSerial;
 }
 
 // TODO

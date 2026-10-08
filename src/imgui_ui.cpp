@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "host_chords.h"
+#include "host_state.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
 
@@ -2464,20 +2465,18 @@ void imgui_render_statusbar() {
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,
                               ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
 
-        bool const at_start =
-            !tape_loaded || imgui_state.tape_current_block <= 0;
-        bool const at_end =
-            !tape_loaded || imgui_state.tape_block_offsets.empty();
+        bool const at_start = !tape_loaded || g_host_tape.current_block <= 0;
+        bool const at_end = !tape_loaded || g_host_tape.block_offsets.empty();
         bool const is_playing = tape_loaded && CPC.tape_play_button;
 
         // |◀ Prev block
         ImGui::BeginDisabled(at_start);
         if (ImGui::SmallButton("\xe2\x97\x80##sb_prev")) {  // ◀
-          int const prev = imgui_state.tape_current_block - 1;
+          int const prev = g_host_tape.current_block - 1;
           if (prev >= 0 &&
-              prev < static_cast<int>(imgui_state.tape_block_offsets.size())) {
+              prev < static_cast<int>(g_host_tape.block_offsets.size())) {
             CPC.tape_play_button = 0;
-            imgui_state.tape_current_block = prev;
+            g_host_tape.current_block = prev;
             // engine=1: the sub-cycle deck is a separate device — request the
             // same block seek by ordinal (applied on the Z80 thread at the
             // frame boundary; the deck walks its own cdt to that block).
@@ -2529,13 +2528,13 @@ void imgui_render_statusbar() {
         // ▷| Next block
         ImGui::BeginDisabled(
             at_end ||
-            imgui_state.tape_current_block >=
-                static_cast<int>(imgui_state.tape_block_offsets.size()) - 1);
+            g_host_tape.current_block >=
+                static_cast<int>(g_host_tape.block_offsets.size()) - 1);
         if (ImGui::SmallButton("\xe2\x96\xb6##sb_next")) {  // ▶
-          int const next = imgui_state.tape_current_block + 1;
-          if (next < static_cast<int>(imgui_state.tape_block_offsets.size())) {
+          int const next = g_host_tape.current_block + 1;
+          if (next < static_cast<int>(g_host_tape.block_offsets.size())) {
             CPC.tape_play_button = 0;
-            imgui_state.tape_current_block = next;
+            g_host_tape.current_block = next;
             // engine=1: mirror the seek onto the sub-cycle deck by ordinal (see
             // Prev).
             subcycle_bridge_request_tape_seek(static_cast<uint32_t>(next));
@@ -2548,8 +2547,8 @@ void imgui_render_statusbar() {
           float const pad = (rmax.y - rmin.y) * 0.15f;
           bool const dis =
               at_end ||
-              imgui_state.tape_current_block >=
-                  static_cast<int>(imgui_state.tape_block_offsets.size()) - 1;
+              g_host_tape.current_block >=
+                  static_cast<int>(g_host_tape.block_offsets.size()) - 1;
           ImU32 const barCol = dis ? IM_COL32(0x50, 0x50, 0x50, 0xFF)
                                    : IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
           ImGui::GetWindowDrawList()->AddLine(
@@ -2570,12 +2569,12 @@ void imgui_render_statusbar() {
       }
 
       // ── Block counter ──
-      if (tape_loaded && !imgui_state.tape_block_offsets.empty()) {
+      if (tape_loaded && !g_host_tape.block_offsets.empty()) {
         ImGui::SameLine(0, ui_dpi_px(4));
         char blockStr[32];
         snprintf(blockStr, sizeof(blockStr), "%d/%d",
-                 imgui_state.tape_current_block + 1,
-                 static_cast<int>(imgui_state.tape_block_offsets.size()));
+                 g_host_tape.current_block + 1,
+                 static_cast<int>(g_host_tape.block_offsets.size()));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.45f, 0.45f, 1.0f));
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(blockStr);
@@ -2984,8 +2983,8 @@ void imgui_render_statusbar() {
       if (ImGui::Button("Eject", ImVec2(ui_dpi_px(80), ui_dpi_px(0)))) {
         tape_eject();
         CPC.tape.file.clear();
-        imgui_state.tape_block_offsets.clear();
-        imgui_state.tape_current_block = 0;
+        g_host_tape.block_offsets.clear();
+        g_host_tape.current_block = 0;
         imgui_state.eject_confirm_tape = false;
         ImGui::CloseCurrentPopup();
       }

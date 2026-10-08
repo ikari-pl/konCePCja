@@ -16,20 +16,27 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "asm_source.h"
 #include "autotype.h"
 #include "cpc_key_tables.h"
+#include "devtools_ui.h"
 #include "errors.h"
+#include "host_state.h"
 #include "imgui_state.h"
+#include "imgui_ui_host.h"
 #include "ipc_mru.h"
+#include "iui_host.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "serial_interface.h"
 #include "stuck_z80_thread.h"
+#include "subcycle_bridge.h"
 #include "symfile.h"
 #include "video_host.h"
 #include "z80_view.h"
@@ -187,10 +194,17 @@ class IpcServerTest : public testing::Test {
       membank_read[i] = memory[i];
       membank_write[i] = memory[i];
     }
+    // The GUI build's UI host, as koncpc_main() installs it: these tests pin
+    // the GUI behaviour.  A test of a UI-less run overrides it again.
+    gui_override_.emplace(&gui_host_);
   }
+
+  void TearDown() override { gui_override_.reset(); }
 
   static KoncepcjaIpcServer server;
   static byte memory[4][kBankSize];
+  ImGuiUiHost gui_host_;
+  std::optional<UiHostOverride> gui_override_;
 };
 
 KoncepcjaIpcServer IpcServerTest::server;
@@ -463,6 +477,95 @@ TEST_F(IpcServerTest, BareDevtoolsIsAnIdempotentOpen) {
   EXPECT_OK(send_command("devtools"));
   EXPECT_TRUE(imgui_state.show_devtools) << "a second bare devtools closed it";
   imgui_state.show_devtools = false;
+}
+
+// beads-cv2.4: the IPC server reaches DevTools only through the UI host, so a
+// build without DevTools links and still answers.  This host records what the
+// server tells the debugger.
+class RecordingUiHost final : public IUiHost {
+ public:
+  void process_event(const SDL_Event& /*ev*/) override {}
+  bool wants_capture_keyboard() const override { return false; }
+  bool wants_capture_mouse() const override { return false; }
+  bool any_keyboard_ui_active() const override { return false; }
+  void toast(UiToastLevel /*level*/, const std::string& /*msg*/) override {}
+  int topbar_height() const override { return 0; }
+
+  bool has_debugger_ui() const override { return true; }
+  void debugger_memory_changed() override { ++memory_changed; }
+  void debugger_symbols_changed() override { ++symbols_changed; }
+
+  std::atomic<int> memory_changed{0};
+  std::atomic<int> symbols_changed{0};
+};
+
+// The disassembly cache is DevTools' own; mem write/fill used to clear it by
+// calling g_devtools_ui directly, which a UI-less build cannot link.
+TEST_F(IpcServerTest, MemWritesAndSymbolEditsReachTheDebuggerThroughTheHost) {
+  RecordingUiHost rec;
+  UiHostOverride const use(&rec);
+
+  EXPECT_OK(send_command("mem write 0x4000 C9"));
+  EXPECT_EQ(1, rec.memory_changed.load());
+  EXPECT_OK(send_command("mem fill 0x4000 4 00"));
+  EXPECT_EQ(2, rec.memory_changed.load());
+
+  EXPECT_OK(send_command("sym add 0x4000 screen"));
+  EXPECT_OK(send_command("sym del screen"));
+  EXPECT_EQ(2, rec.symbols_changed.load());
+  EXPECT_EQ(2, rec.memory_changed.load()) << "a symbol edit is not a write";
+}
+
+// No debugger UI (the null host of a UI-less build): 'devtools' says so instead
+// of answering OK for windows nobody will ever see.
+TEST_F(IpcServerTest, DevtoolsWithoutADebuggerUiAnswersNoUi) {
+  UiHostOverride const none(nullptr);
+  for (const char* cmd : {"devtools", "devtools on", "devtools off",
+                          "devtools show registers", "devtools hide bogus"}) {
+    EXPECT_EQ("ERR 503 no-ui\n", send_command(cmd)) << cmd;
+  }
+}
+
+// The GUI host keeps the old answers: a known window opens and closes, an
+// unknown one is a 404.
+TEST_F(IpcServerTest, DevtoolsShowAndHideReachTheWindowThroughTheHost) {
+  EXPECT_OK(send_command("devtools show registers"));
+  EXPECT_TRUE(g_devtools_ui.is_window_open("registers"));
+  EXPECT_OK(send_command("devtools hide registers"));
+  EXPECT_FALSE(g_devtools_ui.is_window_open("registers"));
+  EXPECT_EQ("ERR 404 unknown window\n",
+            send_command("devtools show no_such_window"));
+}
+
+// The assembler source is host data, not the DevTools editor's: every 'asm'
+// command works with no DevTools installed.
+TEST_F(IpcServerTest, AsmCommandsWorkWithoutDevTools) {
+  UiHostOverride const none(nullptr);
+
+  EXPECT_EQ("OK\n", send_command("asm text ld a,1"));
+  EXPECT_EQ("OK ld a,1\n", send_command("asm source"));
+  EXPECT_EQ("ld a,1", g_asm_source.text());
+
+  auto const path =
+      std::filesystem::temp_directory_path() / "koncepcja-ipc-asm-test.asm";
+  {
+    std::ofstream f(path);
+    f << "org &4000\nstart: ld a,&42\nret\n";
+  }
+  EXPECT_EQ("OK\n", send_command("asm load " + path.string()));
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+
+  auto resp = send_command("asm errors");
+  EXPECT_EQ("OK no-errors\n", resp);
+  resp = send_command("asm symbols");
+  EXPECT_NE(std::string::npos, resp.find("START=4000")) << resp;
+  resp = send_command("asm assemble");
+  EXPECT_EQ(0u, resp.find("OK bytes=3 start=4000")) << resp;
+  EXPECT_EQ(0x3E, memory[1][0]);
+  EXPECT_EQ(0x42, memory[1][1]);
+  EXPECT_EQ(0xC9, memory[1][2]);
+  g_asm_source.set("");
 }
 
 // A key tap's hold is counted in frames that BEGAN with the pressed matrix
@@ -1898,4 +2001,61 @@ TEST_F(IpcServerTest, PcAndMemEventsFeedTheProbeAndRunTheirCommand) {
   EXPECT_EQ(send_command("event off " + std::to_string(mem)), "OK\n");
   EXPECT_EQ(ipc_event_pc_addresses(addrs, 8), 0);
   EXPECT_EQ(ipc_event_mem_addresses(addrs, 8), 0);
+}
+
+// 'tape seek' range-checks against the host-owned block table (beads-cv2.4),
+// so it works on a board with no DevTools installed.  The board must run:
+// without one the command is a 409 before it looks at the table.
+class IpcServerBoardTest : public IpcServerTest {
+ protected:
+  void SetUp() override {
+    IpcServerTest::SetUp();
+    dir_ = std::filesystem::temp_directory_path() / "koncepcja-ipc-tape-seek";
+    std::filesystem::create_directories(dir_);
+    std::vector<char> const rom(0x8000, 0);
+    FILE* f = fopen((dir_ / "cpc6128.rom").string().c_str(), "wb");
+    ASSERT_NE(nullptr, f);
+    ASSERT_EQ(rom.size(), fwrite(rom.data(), 1, rom.size(), f));
+    ASSERT_EQ(0, fclose(f));
+    saved_rom_path_ = CPC.rom_path;
+    saved_model_ = CPC.model;
+    saved_ram_ = CPC.ram_size;
+    CPC.rom_path = dir_.string();
+    CPC.model = 2;  // chROMFile[2] == "cpc6128.rom"
+    CPC.ram_size = 128;
+    started_ = subcycle_bridge_start();
+    ASSERT_TRUE(started_);
+    saved_tape_ = g_host_tape;
+  }
+
+  void TearDown() override {
+    g_host_tape = saved_tape_;
+    if (started_) subcycle_bridge_stop();
+    CPC.rom_path = saved_rom_path_;
+    CPC.model = saved_model_;
+    CPC.ram_size = saved_ram_;
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+    IpcServerTest::TearDown();
+  }
+
+  std::filesystem::path dir_;
+  std::string saved_rom_path_;
+  unsigned int saved_model_ = 0;
+  unsigned int saved_ram_ = 0;
+  bool started_ = false;
+  HostTapeView saved_tape_;
+};
+
+TEST_F(IpcServerBoardTest, TapeSeekWorksWithoutDevTools) {
+  UiHostOverride const none(nullptr);
+  byte blocks[3] = {};
+
+  g_host_tape.block_offsets.clear();
+  EXPECT_EQ("ERR 409 no-tape\n", send_command("tape seek 0"));
+
+  g_host_tape.block_offsets = {&blocks[0], &blocks[1], &blocks[2]};
+  EXPECT_OK(send_command("tape seek 2"));
+  EXPECT_EQ("ERR 400 block-out-of-range\n", send_command("tape seek 3"));
+  EXPECT_EQ("ERR 400 block-out-of-range\n", send_command("tape seek -1"));
 }

@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "asm_source.h"
 #include "data_areas.h"
 #include "devtools_ui.h"
 #include "disk_file_editor.h"
@@ -722,4 +723,25 @@ TEST(RegisterEditTest, PcEditAtABreakpointDropsTheUnrunInstruction) {
   EXPECT_EQ(static_cast<uint16_t>(at_stop.sp - 2), m->regs().sp)
       << "the PUSH at the new PC did not run whole";
   CPC.paused = saved_cpc_paused;
+}
+
+// The Assembler window mirrors the host-owned source (beads-cv2.4).  Opening
+// it loads the text without writing it back, and a later IPC write is picked
+// up the same way: an echo would bump the generation and could clobber a
+// concurrent IPC 'asm text'.
+TEST_F(DevToolsRenderTest, AssemblerMirrorsTheHostSourceWithoutEchoingIt) {
+  auto const before = g_asm_source.set("org &4000\nld a,1\nret\n");
+  dt_.toggle_window("assembler");
+
+  int const vtx = gui_.settled_frames([this] { dt_.render(); });
+  EXPECT_GT(vtx, 0);
+  EXPECT_EQ(before, g_asm_source.generation())
+      << "loading the text into the editor wrote it back";
+  EXPECT_EQ("org &4000\nld a,1\nret\n", g_asm_source.text());
+
+  auto const ipc = g_asm_source.set("nop\n");
+  gui_.settled_frames([this] { dt_.render(); });
+  EXPECT_EQ(ipc, g_asm_source.generation());
+  EXPECT_EQ("nop\n", g_asm_source.text());
+  g_asm_source.set("");
 }

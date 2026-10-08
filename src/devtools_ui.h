@@ -49,10 +49,6 @@ class DevToolsUI {
   void navigate_disassembly(word addr);
   void navigate_to(word addr, NavTarget target);
   void navigate_memory(word addr);
-  // IPC access: returns a shadow buffer synced from TextEditor on demand
-  char* asm_source_buf();
-  size_t asm_source_buf_size() const { return sizeof(asm_source_shadow_); }
-  void asm_set_source(const char* text);  // IPC write path
 
   // Returns the array of all window key strings (NUM_WINDOWS entries).
   static const char* const* all_window_keys(int* count);
@@ -301,7 +297,12 @@ class DevToolsUI {
   bool asm_editor_initialized_ = false;
   int asm_prev_cursor_line_ = -1;
   int asm_prev_line_count_ = -1;
-  char asm_source_shadow_[65536] = "";  // shadow buffer for IPC compatibility
+  // The editor mirrors g_asm_source (asm_source.h), the host-owned text the
+  // IPC 'asm' commands also read and write (beads-cv2.4).
+  uint64_t asm_store_generation_ = 0;         // store text the editor holds
+  unsigned long long asm_editor_serial_ = 0;  // editor serial last synced
+  void asm_pull_source(TextEditor& ed);
+  void asm_push_source(TextEditor& ed);
   std::vector<AsmError> asm_errors_;
   std::string asm_status_;
   char asm_path_[256] = "";

@@ -93,6 +93,9 @@ public:
 	inline bool CanUndo() const { return !mReadOnly && mUndoIndex > 0; };
 	inline bool CanRedo() const { return !mReadOnly && mUndoIndex < (int)mUndoBuffer.size(); };
 	inline int GetUndoIndex() const { return mUndoIndex; };
+	// konCePCja: bumped by every text mutation (edit, undo/redo, SetText,
+	// ReplaceLine) so a caller can detect a change without diffing the text.
+	inline unsigned long long GetChangeSerial() const { return mChangeSerial; }
 
 	void SetText(const std::string& aText);
 	std::string GetText() const;
@@ -422,6 +425,7 @@ private:
 	EditorState mState;
 	std::vector<UndoRecord> mUndoBuffer;
 	int mUndoIndex = 0;
+	unsigned long long mChangeSerial = 0;  // konCePCja: see GetChangeSerial()
 
 	int mTabSize = 4;
 	float mLineSpacing = 1.0f;

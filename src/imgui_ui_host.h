@@ -23,6 +23,17 @@ class ImGuiUiHost final : public IUiHost {
   void toast(UiToastLevel level, const std::string& message) override;
   int topbar_height() const override;
   void set_display_scale(float scale) override;
+
+  bool has_debugger_ui() const override { return true; }
+  void set_debugger_visible(bool visible) override;
+  bool set_debugger_window_open(const std::string& name, bool open) override;
+  void debugger_memory_changed() override;
+  void debugger_symbols_changed() override;
+
+  bool fullscreen_request_pending() const override;
+  void request_fullscreen(unsigned scr_window) override;
+  void settings_baseline_set_kbd_layout(const std::string& name) override;
+  void settings_baseline_set_scr_window(unsigned scr_window) override;
 };
 
 // Install the ImGuiUiHost as the process-wide IUiHost.  Call once, early in
