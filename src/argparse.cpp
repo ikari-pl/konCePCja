@@ -94,6 +94,9 @@ void usage(std::ostream& os, const char* progPath, int errcode) {
         "(5s), or milliseconds (3000ms).\n";
   os << "   -H/--headless:          run without display or audio (IPC and "
         "emulation only).\n";
+  if (!kBuiltWithModernUi) {
+    os << "                           Always on: this build has no UI.\n";
+  }
   os << "   -h/--help:              shows this help\n";
   os << "   -i/--inject=<file>:     inject a binary in memory after the CPC "
         "startup finishes\n";

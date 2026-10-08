@@ -23,6 +23,21 @@ class CapriceArgs {
   bool fps = false;  // --fps: log once-per-second FPS to stdout
 };
 
+// A build without the modern UI (make KONCPC_MODERN_UI=0, cmake
+// -DKONCPC_BUILD_MODERN_UI=OFF) has no window to open, so it IS
+// `koncepcja -H`: it runs the headless loop with or without the flag
+// (beads-6oa, beads-cv2 decision D3).
+#ifdef KONCPC_MODERN_UI
+inline constexpr bool kBuiltWithModernUi = true;
+#else
+inline constexpr bool kBuiltWithModernUi = false;
+#endif
+
+// What -H asked for, combined with what the build can do.
+inline bool koncpc_runs_headless(const CapriceArgs& args) {
+  return args.headless || !kBuiltWithModernUi;
+}
+
 // Expands KONCPC_*/CPC_* keywords in an autocmd string into the internal
 // keystroke escape sequences understood by the autotype queue.
 std::string replaceKoncpcKeys(std::string command);

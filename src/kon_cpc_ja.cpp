@@ -4395,7 +4395,7 @@ int koncpc_main(int argc, char** argv) {
     binPath = std::filesystem::absolute(".");
   }
   parseArguments(argc, argv, slot_list, args);
-  g_headless = args.headless;
+  g_headless = koncpc_runs_headless(args);
   g_no_dialogs =
       koncpc_dialogs_suppressed_by_env(std::getenv("KONCPC_NO_DIALOGS"));
   koncpc_test_window_init_from_env();  // before SDL_Init: sets a hint

@@ -185,6 +185,11 @@ class KoncepcjaIPC:
         return ok and 'gui=1' in resp
 
 
+# The checkout this harness lives in: rom/, koncepcja.cfg.example, the make
+# build's ./koncepcja.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
 class EmulatorRunner:
     """Manages emulator process lifecycle."""
 
@@ -192,10 +197,10 @@ class EmulatorRunner:
 
     def __init__(self, exe_path: Optional[str] = None):
         if exe_path is None:
-            # Find the executable relative to this script
-            script_dir = Path(__file__).parent
-            project_root = script_dir.parent.parent
-            exe_path = str(project_root / 'koncepcja')
+            # $KONCPC_EXE names another build of the binary (the CMake or
+            # UI-free one in CI); otherwise use the make build at the root.
+            exe_path = os.environ.get('KONCPC_EXE') or str(
+                PROJECT_ROOT / 'koncepcja')
         self.exe_path = exe_path
         self.process: Optional[subprocess.Popen] = None
         self.ipc = KoncepcjaIPC()
@@ -323,7 +328,7 @@ class EmulatorRunner:
         # keeps a mid-run save from editing the example itself.
         if not any(a == '-c' or a.startswith('-c') or a == '--cfg_file'
                    or a.startswith('--cfg_file=') for a in args):
-            example = Path(self.exe_path).parent / 'koncepcja.cfg.example'
+            example = PROJECT_ROOT / 'koncepcja.cfg.example'
             if not example.exists():
                 # Silently carrying on would hand the emulator whoever's
                 # koncepcja.cfg happens to sit in the working directory —
@@ -617,7 +622,7 @@ def test_headless_honours_the_speed_limiter():
     """
     print("Running headless speed-limiter test...")
     exe = EmulatorRunner().exe_path
-    example = Path(exe).parent / 'koncepcja.cfg.example'
+    example = PROJECT_ROOT / 'koncepcja.cfg.example'
     env = os.environ.copy()
     env['KONCPC_NO_DIALOGS'] = '1'
     env['SDL_AUDIODRIVER'] = 'dummy'

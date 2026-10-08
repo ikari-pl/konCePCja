@@ -87,6 +87,18 @@ jobs:
       # (test/integrated/headless_smoke).
       - run: make -j 3 board_only
 
+      # The UI-free build (beads-6oa): KONCPC_MODERN_UI=0 links a ./koncepcja
+      # with no ImGui that always runs the -H loop. Its own object tree
+      # (obj/linux-noui), so the GUI objects above are untouched. No dummy
+      # video driver here on purpose: it must not need one.
+      - run: make -j 3 KONCPC_MODERN_UI=0 koncepcja
+      - name: UI-free build — smoke and -H e2e
+        env:
+          KONCPC_E2E_HEADLESS: '1'
+        run: |
+          python3 test/integrated/headless_smoke.py --ui-free
+          python3 test/integrated/ipc_harness.py
+
       - run: make -j 3 clean
       - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
       # clang-tidy: non-blocking while baseline issues exist. Remove
