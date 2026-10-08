@@ -1,5 +1,28 @@
 # Changelog
 
+## [6.5.0](https://github.com/ikari-pl/konCePCja/compare/v6.4.2...v6.5.0) (2026-10-08)
+
+
+### Features
+
+* **build:** the UI-free `koncepcja -H` links no SDL (beads-29zx) ([44d80cf](https://github.com/ikari-pl/konCePCja/commit/44d80cf4e96c5bfedba1beb51a53aed9c8a675a8))
+* **build:** the UI-free `koncepcja -H` links no SDL (beads-29zx) ([#89](https://github.com/ikari-pl/konCePCja/issues/89)) ([44d80cf](https://github.com/ikari-pl/konCePCja/commit/44d80cf4e96c5bfedba1beb51a53aed9c8a675a8))
+* **build:** the UI-free build is `koncepcja -H` and CI builds it (be… ([be321a3](https://github.com/ikari-pl/konCePCja/commit/be321a35b06d99a63e17a7fc575897fc7c6f21c2))
+* **build:** the UI-free build is `koncepcja -H` and CI builds it (beads-6oa) ([#88](https://github.com/ikari-pl/konCePCja/issues/88)) ([be321a3](https://github.com/ikari-pl/konCePCja/commit/be321a35b06d99a63e17a7fc575897fc7c6f21c2))
+* **test:** KONCPC_TEST_WINDOW keeps test windows out of the user's way ([fb40b1f](https://github.com/ikari-pl/konCePCja/commit/fb40b1fe205cf344f97849ac322547a80014e177))
+* **test:** KONCPC_TEST_WINDOW keeps test windows out of the user's way ([#78](https://github.com/ikari-pl/konCePCja/issues/78)) ([fb40b1f](https://github.com/ikari-pl/konCePCja/commit/fb40b1fe205cf344f97849ac322547a80014e177))
+
+
+### Bug Fixes
+
+* **build:** m4board_http declares back_surface as HostSurface (beads-… ([44d80cf](https://github.com/ikari-pl/konCePCja/commit/44d80cf4e96c5bfedba1beb51a53aed9c8a675a8))
+* **ipc:** pc= and mem= events fire through the bus probe (beads-uj1c) ([6627721](https://github.com/ikari-pl/konCePCja/commit/66277218e9de93fcca5c9ed564e90b650f0e854b))
+* **ipc:** pc= and mem= events fire through the bus probe (beads-uj1c) ([#82](https://github.com/ikari-pl/konCePCja/issues/82)) ([6627721](https://github.com/ikari-pl/konCePCja/commit/66277218e9de93fcca5c9ed564e90b650f0e854b))
+* **loop:** -H honours the speed limiter; auto frameskip keys on the p… ([43c4d57](https://github.com/ikari-pl/konCePCja/commit/43c4d5724bced65d78cb9315a5505bd62eebf362))
+* **loop:** -H honours the speed limiter; auto frameskip keys on the pacer ([#79](https://github.com/ikari-pl/konCePCja/issues/79)) ([43c4d57](https://github.com/ikari-pl/konCePCja/commit/43c4d5724bced65d78cb9315a5505bd62eebf362))
+* **loop:** pause leases exclude the frame under -H (beads-b0bj) ([ee55e5a](https://github.com/ikari-pl/konCePCja/commit/ee55e5a0c40e1287fb7aa93adcb0ca86d78aa167))
+* **loop:** pause leases exclude the frame under -H (beads-b0bj) ([#81](https://github.com/ikari-pl/konCePCja/issues/81)) ([ee55e5a](https://github.com/ikari-pl/konCePCja/commit/ee55e5a0c40e1287fb7aa93adcb0ca86d78aa167))
+
 ## [6.4.2](https://github.com/ikari-pl/konCePCja/compare/v6.4.1...v6.4.2) (2026-10-07)
 
 
