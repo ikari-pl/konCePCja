@@ -2198,8 +2198,8 @@ void imgui_render_topbar() {
     // legibility. Done here at the display site because the producer lives in
     // another translation unit.
     std::string fps_display;
-    if (!imgui_state.topbar_fps.empty()) {
-      const std::string& raw = imgui_state.topbar_fps;
+    if (!g_host_status.fps_text.empty()) {
+      const std::string& raw = g_host_status.fps_text;
       size_t const fpos = raw.find("FPS");
       if (fpos != std::string::npos) {
         // Left part = digits before "FPS"; right part = remainder after "FPS".
@@ -2585,9 +2585,7 @@ void imgui_render_statusbar() {
       {
         // Reset state when tape is ejected
         if (!tape_loaded) {
-          imgui_state.tape_decoded_head = 0;
-          memset(imgui_state.tape_decoded_buf, 0,
-                 sizeof(imgui_state.tape_decoded_buf));
+          host_tape_clear_decoded();
         }
 
         ImGui::SameLine(0, ui_dpi_px(4));
@@ -2609,24 +2607,24 @@ void imgui_render_statusbar() {
                                  : IM_COL32(0x00, 0x30, 0x18, 0x60));
 
         ImU32 const wave_color = tape_playing ? color_active : color_dim;
-        constexpr int N = ImGuiUIState::TAPE_WAVE_SAMPLES;
+        constexpr int N = HostTapeView::kWaveSamples;
         float const stepX = waveW / static_cast<float>(N - 1);
         int const mode = imgui_state.tape_wave_mode;
 
         float yBot = p1.y - 2.0f;
         float yTop = p0.y + 2.0f;
         auto yForSample = [&](byte val) -> float { return val ? yTop : yBot; };
-        int const oldest = imgui_state.tape_wave_head;
+        int const oldest = g_host_tape.wave_head;
 
         if (mode == 0) {
           ImVec2 points[(N * 2) + 2];
           int nPoints = 0;
-          float prevY = yForSample(imgui_state.tape_wave_buf[oldest]);
+          float prevY = yForSample(g_host_tape.wave_buf[oldest]);
           points[nPoints++] = ImVec2(p0.x, prevY);
           for (int i = 1; i < N; i++) {
             int const idx = (oldest + i) % N;
             float const curX = p0.x + (i * stepX);
-            float const curY = yForSample(imgui_state.tape_wave_buf[idx]);
+            float const curY = yForSample(g_host_tape.wave_buf[idx]);
             if (curY != prevY) {
               points[nPoints++] = ImVec2(curX, prevY);
               points[nPoints++] = ImVec2(curX, curY);
@@ -2636,8 +2634,8 @@ void imgui_render_statusbar() {
           points[nPoints++] = ImVec2(p1.x, prevY);
           dl->AddPolyline(points, nPoints, wave_color, 0, 1.0f);
         } else {
-          int const dN = ImGuiUIState::TAPE_DECODED_SAMPLES;
-          int const dHead = imgui_state.tape_decoded_head;
+          int const dN = HostTapeView::kDecodedSamples;
+          int const dHead = g_host_tape.decoded_head;
           int visCount = static_cast<int>(waveW);
           visCount = std::min(visCount, dN);
           int const startIdx = (dHead - visCount + dN) % dN;
@@ -2649,8 +2647,7 @@ void imgui_render_statusbar() {
           for (int i = 0; i < visCount; i++) {
             int const idx = (startIdx + i) % dN;
             float const x = p0.x + (waveW - visCount) + i;
-            ImU32 const c =
-                imgui_state.tape_decoded_buf[idx] ? col_one : col_zero;
+            ImU32 const c = g_host_tape.decoded_buf[idx] ? col_one : col_zero;
             dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + 1.0f, p1.y), c);
           }
         }
@@ -2693,7 +2690,7 @@ void imgui_render_statusbar() {
       float const frameH = ImGui::GetFrameHeight();
       for (int drv = 0; drv < 2; drv++) {
         bool const active =
-            drv == 0 ? imgui_state.drive_a_led : imgui_state.drive_b_led;
+            drv == 0 ? g_host_status.drive_a_led : g_host_status.drive_b_led;
         t_drive const& drive = drv == 0 ? driveA : driveB;
         auto& driveFile = drv == 0 ? CPC.driveA.file : CPC.driveB.file;
         const char* driveLabel = drv == 0 ? "A:" : "B:";
@@ -5035,27 +5032,26 @@ void imgui_render_devtools() {
 
     // ── Frame timing + audio diagnostics (--debug only) ──
     if (g_debug) {
-      // Snapshot stats under the mutex — Z80 thread writes these once/second.
-      // Take the snapshot first, then render from it (never hold the mutex
-      // during ImGui calls).
+      // host_frame_metrics() snapshots under the stats lock (the frame runner
+      // publishes once a second); render from the copy.
       float s_frame_avg_ms, s_frame_min_ms, s_frame_max_ms;
       float s_z80_ms, s_disp_ms, s_sleep_ms;
       int s_underruns, s_near_underruns, s_pushes;
       float s_queue_avg_ms, s_queue_min_ms, s_push_interval_max_us;
       {
-        std::scoped_lock const stats_lock(g_imgui_stats_mutex);
-        s_frame_avg_ms = imgui_state.frame_time_avg_us / 1000.0f;
-        s_frame_min_ms = imgui_state.frame_time_min_us / 1000.0f;
-        s_frame_max_ms = imgui_state.frame_time_max_us / 1000.0f;
-        s_z80_ms = imgui_state.z80_time_avg_us / 1000.0f;
-        s_disp_ms = imgui_state.display_time_avg_us / 1000.0f;
-        s_sleep_ms = imgui_state.sleep_time_avg_us / 1000.0f;
-        s_underruns = imgui_state.audio_underruns;
-        s_near_underruns = imgui_state.audio_near_underruns;
-        s_pushes = imgui_state.audio_pushes;
-        s_queue_avg_ms = imgui_state.audio_queue_avg_ms;
-        s_queue_min_ms = imgui_state.audio_queue_min_ms;
-        s_push_interval_max_us = imgui_state.audio_push_interval_max_us;
+        HostFrameMetrics const m = host_frame_metrics();
+        s_frame_avg_ms = m.frame_time_avg_us / 1000.0f;
+        s_frame_min_ms = m.frame_time_min_us / 1000.0f;
+        s_frame_max_ms = m.frame_time_max_us / 1000.0f;
+        s_z80_ms = m.z80_time_avg_us / 1000.0f;
+        s_disp_ms = m.display_time_avg_us / 1000.0f;
+        s_sleep_ms = m.sleep_time_avg_us / 1000.0f;
+        s_underruns = m.audio_underruns;
+        s_near_underruns = m.audio_near_underruns;
+        s_pushes = m.audio_pushes;
+        s_queue_avg_ms = m.audio_queue_avg_ms;
+        s_queue_min_ms = m.audio_queue_min_ms;
+        s_push_interval_max_us = m.audio_push_interval_max_us;
       }
 
       ImGui::SameLine(0, 8.0f);
