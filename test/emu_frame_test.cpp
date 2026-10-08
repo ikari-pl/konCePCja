@@ -326,7 +326,16 @@ class EmuFrameTurnTest : public testing::Test {
  protected:
   void SetUp() override {
     was_paused_ = g_emu_paused.load();
+    // These tests drive the turn handshake directly, so they need a running
+    // machine and an idle runner whatever --gtest_shuffle ran before them.
+    // cpc_resume() returns early when CPC.paused is already false, which
+    // leaves a stray g_emu_paused (PausedFlag pins only that flag) in place;
+    // a turn then refuses to enter and the tests fail confusingly.
+    if (!CPC.paused) g_emu_paused.store(false);
     cpc_resume();
+    g_z80_idle.store(true);
+    ASSERT_FALSE(g_emu_paused.load())
+        << "a previous test left the machine paused (a pause lease held?)";
   }
   void TearDown() override {
     cpc_set_idle_timeout_ms(kCpcIdleTimeoutMs);
@@ -371,10 +380,12 @@ TEST_F(EmuFrameTurnTest, ATurnAfterThePauseDoesNotEnter) {
 TEST_F(EmuFrameTurnTest, OnlyTheHeadlessTurnGoesIdleWhenItEnds) {
   {
     EmuFrameTurn const turn(/*idle_after=*/false);
+    ASSERT_TRUE(turn.entered()) << "a refused turn proves nothing here";
   }
   EXPECT_FALSE(cpc_wait_until_idle(1));
   {
     EmuFrameTurn const turn(/*idle_after=*/true);
+    ASSERT_TRUE(turn.entered());
   }
   EXPECT_TRUE(cpc_wait_until_idle(1));
 }
