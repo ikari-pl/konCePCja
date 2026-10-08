@@ -2683,3 +2683,8 @@ void z80_poke(const Device* dev, const Z80Regs* in) {
 }
 
 }  // extern "C"
+
+// SCRATCH (beads-cv2.3 demo, do not merge): a hw Device reaching into host
+// globals. The full emulator links; the board-only targets must not.
+#include "koncepcja.h"
+bool z80_scratch_host_peek() { return g_headless; }
