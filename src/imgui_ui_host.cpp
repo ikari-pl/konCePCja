@@ -20,13 +20,22 @@
 #include "imgui_ui_host.h"
 
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_gpu.h>
+#include <SDL3/SDL_render.h>
 
 #include <cstdio>
+#include <string>
 
+#include "command_palette.h"
 #include "devtools_ui.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
+#include "imgui_impl_sdlgpu3.h"
+#include "imgui_impl_sdlrenderer3.h"
 #include "imgui_ui.h"
+#include "koncepcja.h"  // getConfigurationFilename
+#include "menu_bridge.h"
+#include "video_gpu.h"
 
 namespace {
 
@@ -44,6 +53,35 @@ ImGuiUIState::ToastLevel to_imgui_toast_level(UiToastLevel level) {
       return ImGuiUIState::ToastLevel::Error;
   }
   return ImGuiUIState::ToastLevel::Info;
+}
+
+// Path for imgui.ini in the same directory as koncepcja.cfg.  A static
+// string, so the c_str() pointer stays valid for io.IniFilename.
+const char* imgui_ini_path() {
+  static std::string path;
+  if (path.empty()) {
+    std::string const cfg = getConfigurationFilename();
+    if (!cfg.empty()) {
+      auto slash = cfg.find_last_of('/');
+      path = (slash != std::string::npos ? cfg.substr(0, slash + 1) : "") +
+             "imgui.ini";
+    }
+  }
+  return path.empty() ? nullptr : path.c_str();
+}
+
+// The context every backend starts from.  The SDL_Renderer backend does not
+// support multi-viewport, so only the SDL_GPU attach may ask for it.
+void create_imgui_context(bool viewports) {
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.IniFilename = imgui_ini_path();
+  io.ConfigFlags |=
+      ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+  if (viewports) io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+  ImGui::StyleColorsDark();
+  imgui_init_ui();
 }
 
 }  // namespace
@@ -175,6 +213,143 @@ void ImGuiUiHost::settings_baseline_set_kbd_layout(const std::string& name) {
 void ImGuiUiHost::settings_baseline_set_scr_window(unsigned scr_window) {
   if (imgui_state.show_options) {
     imgui_state.old_cpc_settings.scr_window = scr_window;
+  }
+}
+
+// -- Main-loop requests ----------------------------------------------
+
+void ImGuiUiHost::toggle_command_palette() { g_command_palette.toggle(); }
+
+void ImGuiUiHost::request_file_dialog(FileDialogAction action) {
+  koncpc_request_file_dialog(static_cast<int>(action));
+}
+
+bool ImGuiUiHost::request_reset_confirmation() {
+  imgui_request_reset_confirmation();
+  return true;
+}
+
+void ImGuiUiHost::release_video_textures() { imgui_invalidate_slot_thumbs(); }
+
+void ImGuiUiHost::await_background_work() { dbg_step_walk_await_shutdown(); }
+
+// -- Render layer ----------------------------------------------------
+//
+// Moved verbatim from the video plugins in video_host.cpp, which used to
+// carry one copy of each sequence per plugin.
+
+bool ImGuiUiHost::gpu_attach(SDL_Window* window, bool viewports,
+                             float display_scale) {
+  // SDLGPU3 backend.  With viewports, the renderer hooks in
+  // vendor/imgui/backends/imgui_impl_sdlgpu3.cpp claim each secondary window
+  // for g_gpu.device on creation and submit a per-viewport command buffer on
+  // render.  ImGui_ImplSDLGPU3_Init checks io.ConfigFlags and registers the
+  // hooks itself, so order matters: set the flags BEFORE Init.
+  create_imgui_context(viewports);
+  // Scale the chrome to the desktop scale.  Must follow CreateContext(); the
+  // host no-ops without a context.  Only the chrome: the CPC image keeps the
+  // user's chosen integer scr_scale so it stays pixel-exact.
+  set_display_scale(display_scale);
+  ImGui_ImplSDL3_InitForSDLGPU(window);
+  ImGui_ImplSDLGPU3_InitInfo init_info{};
+  init_info.Device = g_gpu.device;
+  init_info.ColorTargetFormat = g_gpu.swapchain_fmt;
+  init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+  init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+  // VSYNC — do NOT switch this to IMMEDIATE: ImGui viewport windows inherit
+  // this present mode, and IMMEDIATE breaks their swapchain creation, so
+  // detached DevTools windows fail to become separate OS windows (they get
+  // clipped inside the main window). The multi-second present stall over remote
+  // desktop is fixed properly by decoupling emulation from render (so emulation
+  // never waits on present), NOT by the present mode. Any configurable
+  // video.vsync must apply only to the MAIN window, with a per-window
+  // SDL_WindowSupportsGPUPresentMode check before touching viewport swapchains.
+  init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+  if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    return false;
+  }
+  return true;
+}
+
+void ImGuiUiHost::gpu_prepare_frame(SDL_GPUCommandBuffer* cmd) {
+  // The CPC image is NOT pushed into the background draw list here, unlike
+  // the SDL_Renderer path: the plugin's own blit is authoritative because it
+  // picks the sampler (linear vs nearest) per scr_crt_aspect.  Docked mode's
+  // CPC Screen window pulls the texture via video_get_cpc_texture().
+  ImGui_ImplSDLGPU3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
+  imgui_render_ui();
+  ImGui::Render();
+  ImGui_ImplSDLGPU3_PrepareDrawData(ImGui::GetDrawData(), cmd);
+}
+
+void ImGuiUiHost::gpu_draw(SDL_GPUCommandBuffer* cmd, SDL_GPURenderPass* pass) {
+  ImGui_ImplSDLGPU3_RenderDrawData(ImGui::GetDrawData(), cmd, pass);
+}
+
+void ImGuiUiHost::render_detached_windows() {
+  // The renderer hooks in imgui_impl_sdlgpu3.cpp acquire + submit one
+  // command buffer per viewport.  RenderPlatformWindowsDefault skips the
+  // main viewport (already rendered) so there's no double-render race.
+  if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    ImGui::UpdatePlatformWindows();
+    ImGui::RenderPlatformWindowsDefault();
+  }
+}
+
+void ImGuiUiHost::gpu_detach() {
+  if (ImGui::GetCurrentContext()) {
+    ImGui_ImplSDLGPU3_Shutdown();  // releases bd state, still needs device
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+  }
+}
+
+bool ImGuiUiHost::renderer_attach(SDL_Window* window, SDL_Renderer* renderer,
+                                  float display_scale) {
+  create_imgui_context(/*viewports=*/false);
+  set_display_scale(display_scale);
+  if (!ImGui_ImplSDL3_InitForSDLRenderer(window, renderer)) {
+    ImGui::DestroyContext();
+    return false;
+  }
+  if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    return false;
+  }
+  return true;
+}
+
+bool ImGuiUiHost::renderer_prepare_frame(SDL_Texture* background,
+                                         const SDL_FRect& dst) {
+  ImGui_ImplSDLRenderer3_NewFrame();
+  ImGui_ImplSDL3_NewFrame();
+  ImGui::NewFrame();
+  if (background != nullptr) {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::GetBackgroundDrawList(vp)->AddImage(
+        reinterpret_cast<ImTextureID>(background),
+        ImVec2(vp->Pos.x + dst.x, vp->Pos.y + dst.y),
+        ImVec2(vp->Pos.x + dst.x + dst.w, vp->Pos.y + dst.y + dst.h));
+  }
+  imgui_render_ui();
+  ImGui::Render();
+  return background != nullptr;
+}
+
+void ImGuiUiHost::renderer_draw(SDL_Renderer* renderer) {
+  ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
+}
+
+void ImGuiUiHost::renderer_detach() {
+  if (ImGui::GetCurrentContext()) {
+    ImGui_ImplSDLRenderer3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
   }
 }
 

@@ -47,7 +47,6 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "cpc_machine.h"
 #include "crtc_types.h"
 #include "data_areas.h"
-#include "devtools_ui.h"
 #include "drive_sounds.h"
 #include "emu_frame.h"
 #include "host_state.h"  // g_host_tape / g_host_status / frame metrics
@@ -82,17 +81,14 @@ inline Uint32 MapRGBSurface(SDL_Surface* surface, Uint8 r, Uint8 g, Uint8 b) {
 #include "z80_view.h"
 #include "zip_archive.h"
 
-// imgui.h / imgui_impl_sdl3.h are intentionally NOT included here.
-// The main loop talks to the UI through IUiHost only (P1.5.1).
-// imgui_ui.h is still included because the global `imgui_state` struct
-// (telemetry / flag bus) is defined there and is a public data
-// contract — see iui_host.h header for why imgui_state stays free-
-// standing instead of being absorbed into the host interface.
-#include "command_palette.h"
+// No ImGui or DevTools header here: the main loop talks to the UI through
+// IUiHost only (P1.5.1, beads-cv2.6).  imgui_state.h carries the UI request
+// flags (show_devtools, fullscreen_request, ...) and links in every build;
+// see iui_host.h for why those stay outside the host interface.
 #include "host_chords.h"
-#include "imgui_ui.h"
+#include "imgui_state.h"
+#include "ipc_mru.h"
 #include "iui_host.h"
-#include "menu_bridge.h"
 #ifdef KONCPC_MODERN_UI
 #include "imgui_ui_host.h"
 #endif
@@ -3048,6 +3044,18 @@ void showVJoystick() {
 }
 }  // namespace
 
+namespace {
+// F12 / Tools ▸ DevTools: verbose logging and the debugger UI go together.
+// Hiding the debugger also closes its windows.
+void toggle_debug_mode() {
+  imgui_state.show_devtools = !imgui_state.show_devtools;
+  log_verbose = imgui_state.show_devtools;
+  ui_host().set_debugger_visible(imgui_state.show_devtools);
+  set_osd_message(imgui_state.show_devtools ? "Debug mode: on"
+                                            : "Debug mode: off");
+}
+}  // namespace
+
 void koncpc_queue_virtual_keys(const std::string& text) {
   // Single scan-synced path: feed the legacy \a/\f encoding into the
   // AutoTypeQueue, which the Z80 thread drains in sync with the firmware's
@@ -3144,17 +3152,9 @@ void koncpc_menu_action(int action) {
       break;
     }
 
-    case KONCPC_DEVTOOLS: {
-      imgui_state.show_devtools = !imgui_state.show_devtools;
-      log_verbose = imgui_state.show_devtools;
-      if (imgui_state.show_devtools) {
-        set_osd_message("Debug mode: on");
-      } else {
-        g_devtools_ui.close_all_windows();
-        set_osd_message("Debug mode: off");
-      }
+    case KONCPC_DEVTOOLS:
+      toggle_debug_mode();
       break;
-    }
 
     case KONCPC_FULLSCRN:
       // Fullscreen transitions destroy/recreate video (and the whole ImGui
@@ -3471,7 +3471,7 @@ void doCleanUp() {
   // still touches z80/CPC state; wait for it (bounded by its own 5s
   // timeout) before the teardown below starts pausing/joining the Z80
   // thread out from under it.
-  dbg_step_walk_await_shutdown();
+  ui_host().await_background_work();
   // Shutdown ordering — three constraints that together force this dance:
   //
   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside
@@ -4801,7 +4801,7 @@ int koncpc_main(int argc, char** argv) {
             CPC.driveA.file = drop_path;
             if (file_load(CPC.driveA) == 0) {
               ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
-              imgui_mru_push(CPC.mru_disks, drop_path);
+              koncpc_mru_push(CPC.mru_disks, drop_path);
             } else {
               ui_host().toast(UiToastLevel::Error,
                               "Failed to load disk: " + drop_fname);
@@ -4811,7 +4811,7 @@ int koncpc_main(int argc, char** argv) {
             if (file_load(CPC.tape) == 0) {
               ui_host().toast(UiToastLevel::Success,
                               "Tape loaded: " + drop_fname);
-              imgui_mru_push(CPC.mru_tapes, drop_path);
+              koncpc_mru_push(CPC.mru_tapes, drop_path);
               tape_scan_blocks();
             } else {
               ui_host().toast(UiToastLevel::Error,
@@ -4822,7 +4822,7 @@ int koncpc_main(int argc, char** argv) {
             if (file_load(CPC.snapshot) == 0) {
               ui_host().toast(UiToastLevel::Success,
                               "Snapshot loaded: " + drop_fname);
-              imgui_mru_push(CPC.mru_snaps, drop_path);
+              koncpc_mru_push(CPC.mru_snaps, drop_path);
             } else {
               ui_host().toast(UiToastLevel::Error,
                               "Failed to load snapshot: " + drop_fname);
@@ -4832,7 +4832,7 @@ int koncpc_main(int argc, char** argv) {
             if (file_load(CPC.cartridge) == 0) {
               ui_host().toast(UiToastLevel::Success,
                               "Cartridge loaded: " + drop_fname);
-              imgui_mru_push(CPC.mru_carts, drop_path);
+              koncpc_mru_push(CPC.mru_carts, drop_path);
               emulator_reset();
             } else {
               ui_host().toast(UiToastLevel::Error,
@@ -4843,7 +4843,7 @@ int koncpc_main(int argc, char** argv) {
             CPC.driveA.file = drop_path;
             if (file_load(CPC.driveA) == 0) {
               ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
-              imgui_mru_push(CPC.mru_disks, drop_path);
+              koncpc_mru_push(CPC.mru_disks, drop_path);
             } else {
               ui_host().toast(UiToastLevel::Error,
                               "Unsupported ZIP content: " + drop_fname);
@@ -4869,15 +4869,13 @@ int koncpc_main(int argc, char** argv) {
         switch (host_chord_for(event.key.key, ctrl, cmd_key, kHostChordApple,
                                CPC.host_chords != 0)) {
           case HostChord::CommandPalette:
-            g_command_palette.toggle();
+            ui_host().toggle_command_palette();
             break;
           case HostChord::OpenDisk:
-            koncpc_request_file_dialog(
-                static_cast<int>(FileDialogAction::LoadDiskA));
+            ui_host().request_file_dialog(FileDialogAction::LoadDiskA);
             break;
           case HostChord::SaveSnapshot:
-            koncpc_request_file_dialog(
-                static_cast<int>(FileDialogAction::SaveSnapshot));
+            ui_host().request_file_dialog(FileDialogAction::SaveSnapshot);
             break;
           case HostChord::None:
             handled = false;
@@ -4947,17 +4945,9 @@ int koncpc_main(int argc, char** argv) {
               case KONCPC_VJOY:
                 showVJoystick();
                 break;
-              case KONCPC_DEVTOOLS: {
-                imgui_state.show_devtools = !imgui_state.show_devtools;
-                log_verbose = imgui_state.show_devtools;
-                if (imgui_state.show_devtools) {
-                  set_osd_message("Debug mode: on");
-                } else {
-                  g_devtools_ui.close_all_windows();
-                  set_osd_message("Debug mode: off");
-                }
+              case KONCPC_DEVTOOLS:
+                toggle_debug_mode();
                 break;
-              }
               case KONCPC_FULLSCRN:
                 koncpc_toggle_fullscreen();
                 break;
@@ -4981,9 +4971,8 @@ int koncpc_main(int argc, char** argv) {
                 // F5 is how people actually reset, so it must ask too.
                 // Headless and IPC keep the unconditional path — there is no
                 // one to answer a modal.
-                if (!g_headless && driveAltered()) {
-                  imgui_request_reset_confirmation();
-                } else {
+                if (g_headless || !driveAltered() ||
+                    !ui_host().request_reset_confirmation()) {
                   koncpc_menu_action(KONCPC_RESET);
                 }
                 break;
@@ -5380,7 +5369,7 @@ int koncpc_main(int argc, char** argv) {
           // device is still alive — video_shutdown() destroys it, leaving stale
           // GPU handles that would be used/freed against a dead device on next
           // use.
-          imgui_invalidate_slot_thumbs();
+          ui_host().release_video_textures();
           SDL_Delay(20);
           video_shutdown();
           if (video_init()) {

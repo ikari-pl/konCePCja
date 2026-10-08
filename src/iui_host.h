@@ -14,18 +14,19 @@
 //                    Used by the koncpc-core build (P1.5.2) which has
 //                    no ImGui linked in at all.
 //
-// IMPORTANT non-goals for this header:
+// What this header does NOT cover:
 //
-//   * It does NOT cover GPU rendering (PrepareDrawData/RenderDrawData).
-//     Those are only called from inside the SDL_GPU video plugins
-//     (src/video.cpp), which themselves are MODERN_UI-only code.  Headless
-//     builds never include video.cpp at all, so there's no need for the
-//     interface to abstract over GPU rendering.
+//   * GPU rendering of the CPC image itself.  The video plugins
+//     (src/video_host.cpp) own the window, the swapchain and the CPC blit.
+//     They hand the UI a command buffer / render pass / renderer to draw
+//     its chrome into through the render-layer hooks below (beads-cv2.6);
+//     a host without chrome leaves those as no-ops and the plugins present
+//     the CPC image alone.
 //
-//   * It does NOT replace the global imgui_state struct, which carries
-//     UI-set flags (show_devtools, request_cpc_screen_focus, …) the main
-//     loop reads.  The telemetry the main loop writes (frame timing, audio
-//     queue, drive LEDs, tape scopes) lives in host_state.h (beads-cv2.5).
+//   * The UI request flags in imgui_state (show_devtools, show_menu,
+//     fullscreen_request, ...).  Those link in every build; the telemetry
+//     the main loop writes (frame timing, audio queue, drive LEDs, tape
+//     scopes) lives in host_state.h (beads-cv2.5).
 //
 // Phase: P1.5.1 (beads-1az).  First sub-PR is interface-only — no callers
 // rewired yet, no headless build target wired up.  Subsequent sub-PRs in
@@ -37,6 +38,15 @@
 #include <string>
 
 union SDL_Event;
+struct SDL_Window;
+struct SDL_Renderer;
+struct SDL_Texture;
+struct SDL_FRect;
+struct SDL_GPUCommandBuffer;
+struct SDL_GPURenderPass;
+// imgui_state.h owns the enumerators; the opaque declaration keeps that
+// header (and the ImGui-side state it carries) out of this one.
+enum class FileDialogAction : std::uint8_t;
 
 // Severity for `toast()`.  Values match ImGuiUIState::ToastLevel
 // (defined in src/imgui_ui.h:110) one-for-one so wrapping the existing
@@ -121,6 +131,63 @@ class IUiHost {
   // into that baseline so Cancel does not silently revert it.
   virtual void settings_baseline_set_kbd_layout(const std::string& /*name*/) {}
   virtual void settings_baseline_set_scr_window(unsigned /*scr_window*/) {}
+
+  // -- Main-loop requests (main thread) — beads-cv2.6 -----------------
+  // Host chords (Cmd/Ctrl+K, O, S) and menu items the UI owns.
+  virtual void toggle_command_palette() {}
+  virtual void request_file_dialog(FileDialogAction /*action*/) {}
+  // F5 with unsaved disk edits: true when the UI took the request and will
+  // ask the user; false means nobody can ask, so the caller resets now.
+  virtual bool request_reset_confirmation() { return false; }
+  // The video plugin is about to be torn down and rebuilt: drop textures
+  // the UI created on the old render device before it disappears.
+  virtual void release_video_textures() {}
+  // Shutdown: wait for UI-started worker threads that still touch the
+  // machine (a DevTools Step Out walk) before the teardown pauses it.
+  virtual void await_background_work() {}
+
+  // -- Render layer (render thread) — beads-cv2.6 ---------------------
+  // The video plugins drive the UI's draw backend through these, in this
+  // order each frame: *_prepare_frame, then *_draw inside the plugin's own
+  // pass, then (SDL_GPU only) render_detached_windows after the submit.
+  // The defaults are a host without chrome: attaching succeeds and draws
+  // nothing.
+  //
+  // SDL_GPU backend, bound to the g_gpu device (video_gpu.h) the plugin
+  // created on `window`.  `viewports` lets UI windows detach into their own
+  // OS windows.  `display_scale` is the desktop content scale, as for
+  // set_display_scale().  False: the plugin must tear down and fail.
+  virtual bool gpu_attach(SDL_Window* /*window*/, bool /*viewports*/,
+                          float /*display_scale*/) {
+    return true;
+  }
+  // Build this frame's UI and upload its vertex data on `cmd`.  SDL_GPU
+  // forbids copy passes inside a render pass, so this must precede
+  // SDL_BeginGPURenderPass.
+  virtual void gpu_prepare_frame(SDL_GPUCommandBuffer* /*cmd*/) {}
+  // Draw the prepared UI into the main window's render pass.
+  virtual void gpu_draw(SDL_GPUCommandBuffer* /*cmd*/,
+                        SDL_GPURenderPass* /*pass*/) {}
+  // After the main command buffer is submitted: render detached windows.
+  virtual void render_detached_windows() {}
+  // Release the backend.  Needs the device alive; safe when not attached.
+  virtual void gpu_detach() {}
+
+  // SDL_Renderer backend (no detached windows).
+  virtual bool renderer_attach(SDL_Window* /*window*/,
+                               SDL_Renderer* /*renderer*/,
+                               float /*display_scale*/) {
+    return true;
+  }
+  // Build this frame's UI.  `background` (nullable) is the CPC image to sit
+  // beneath it at `dst`, in main-window coordinates.  True when the UI
+  // queued the background; false leaves drawing it to the caller.
+  virtual bool renderer_prepare_frame(SDL_Texture* /*background*/,
+                                      const SDL_FRect& /*dst*/) {
+    return false;
+  }
+  virtual void renderer_draw(SDL_Renderer* /*renderer*/) {}
+  virtual void renderer_detach() {}
 };
 
 // Returns a process-wide singleton chosen at build time:

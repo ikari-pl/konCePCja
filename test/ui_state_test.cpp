@@ -3,6 +3,7 @@
 #include "host_state.h"
 #include "imgui.h"
 #include "imgui_ui.h"
+#include "ipc_mru.h"
 #include "keyboard.h"
 #include "koncepcja.h"
 #include "video_host.h"
@@ -365,20 +366,20 @@ TEST_F(UIStateTest, AllDialogsCanBeClosed) {
   EXPECT_FALSE(imgui_state.show_vkeyboard);
 }
 
-// ─── MRU (recent files) via imgui_mru_push ───────
+// ─── MRU (recent files) via koncpc_mru_push ───────
 
 TEST_F(UIStateTest, MruPushAddsPath) {
   std::vector<std::string> list;
-  imgui_mru_push(list, "/path/to/game.dsk");
+  koncpc_mru_push(list, "/path/to/game.dsk");
   EXPECT_EQ(list.size(), 1u);
   EXPECT_EQ(list[0], "/path/to/game.dsk");
 }
 
 TEST_F(UIStateTest, MruPushDuplicateMovesToFront) {
   std::vector<std::string> list;
-  imgui_mru_push(list, "/a.dsk");
-  imgui_mru_push(list, "/b.dsk");
-  imgui_mru_push(list, "/a.dsk");
+  koncpc_mru_push(list, "/a.dsk");
+  koncpc_mru_push(list, "/b.dsk");
+  koncpc_mru_push(list, "/a.dsk");
   EXPECT_EQ(list.size(), 2u);
   EXPECT_EQ(list[0], "/a.dsk");
   EXPECT_EQ(list[1], "/b.dsk");

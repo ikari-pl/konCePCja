@@ -41,13 +41,13 @@ enum BridgeKind {
   BK_SCALE,     // payload = scale index
   BK_RENDERER,  // payload = video_plugin index
 };
-static inline NSInteger pack_bridge_tag(BridgeKind kind, int payload) {
+[[maybe_unused]] static inline NSInteger pack_bridge_tag(BridgeKind kind, int payload) {
   return (static_cast<NSInteger>(kind) << 24) | (payload & 0x00FFFFFF);
 }
-static inline BridgeKind bridge_kind(NSInteger tag) {
+[[maybe_unused]] static inline BridgeKind bridge_kind(NSInteger tag) {
   return static_cast<BridgeKind>((tag >> 24) & 0xFF);
 }
-static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 0x00FFFFFF); }
+[[maybe_unused]] static inline int bridge_payload(NSInteger tag) { return static_cast<int>(tag & 0x00FFFFFF); }
 
 // Marks the items add_action_item built, so validateMenuItem: retitles only
 // those. AppKit's own Quit item is retargeted to menuAction:/KONCPC_EXIT too
@@ -64,7 +64,10 @@ static NSString* const kKoncpcActionItem = @"koncpc.action-item";
 }
 
 // Bridge items: route to the single-source entry points in menu_bridge.h.
+// They are the modern UI's (imgui_ui.cpp), so a build without it adds no
+// bridge items (see add_bridge_item) and this never fires.
 - (void)bridgeAction:(id)sender {
+#ifdef KONCPC_MODERN_UI
   NSInteger tag = [sender tag];
   int payload = bridge_payload(tag);
   switch (bridge_kind(tag)) {
@@ -93,6 +96,9 @@ static NSString* const kKoncpcActionItem = @"koncpc.action-item";
       koncpc_set_renderer(payload);
       break;
   }
+#else
+  (void)sender;
+#endif
 }
 
 // Queried by AppKit each time the menu opens, so toggle items show a live
@@ -112,7 +118,9 @@ static NSString* const kKoncpcActionItem = @"koncpc.action-item";
       [item setState:koncpc_action_is_active(entry->action) ? NSControlStateValueOn
                                                             : NSControlStateValueOff];
     }
-  } else if (act == @selector(bridgeAction:)) {
+  }
+#ifdef KONCPC_MODERN_UI
+  else if (act == @selector(bridgeAction:)) {
     NSInteger tag = [item tag];
     int payload = bridge_payload(tag);
     bool on = false;
@@ -134,6 +142,7 @@ static NSString* const kKoncpcActionItem = @"koncpc.action-item";
     }
     [item setState:on ? NSControlStateValueOn : NSControlStateValueOff];
   }
+#endif
   return YES;
 }
 @end
@@ -160,6 +169,7 @@ static void add_action_item(NSMenu* submenu, KoncepcjaMenuTarget* target, const 
 static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target, NSString* title,
                                    BridgeKind kind, int payload,
                                    HostChord chord = HostChord::None) {
+#ifdef KONCPC_MODERN_UI
   std::string const text =
       koncpc_menu_title_with_shortcut([title UTF8String], host_chord_label(chord));
   title = [NSString stringWithUTF8String:text.c_str()];
@@ -170,6 +180,12 @@ static NSMenuItem* add_bridge_item(NSMenu* submenu, KoncepcjaMenuTarget* target,
   [item setTag:pack_bridge_tag(kind, payload)];
   [submenu addItem:item];
   return item;
+#else
+  // Every bridge entry point belongs to the modern UI: without it the item
+  // would do nothing, so it is not shown.
+  (void)submenu, (void)target, (void)title, (void)kind, (void)payload, (void)chord;
+  return nil;
+#endif
 }
 
 // Append every registry action whose MenuGroup matches `group` to `submenu`,
@@ -181,7 +197,7 @@ static void add_group_actions(NSMenu* submenu, KoncepcjaMenuTarget* target, Menu
   }
 }
 
-static NSMenu* make_submenu(NSMenu* mainMenu, NSString* title) {
+[[maybe_unused]] static NSMenu* make_submenu(NSMenu* mainMenu, NSString* title) {
   NSMenuItem* menuItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
   NSMenu* submenu = [[NSMenu alloc] initWithTitle:title];
   [menuItem setSubmenu:submenu];
@@ -215,18 +231,23 @@ static NSMenu* insert_submenu(NSMenu* mainMenu, NSString* title, NSInteger idx) 
 // Leaves their Cmd+, / Cmd+Q accelerators intact (host keys SDL doesn't own).
 static void wire_app_menu(NSMenu* appMenu, KoncepcjaMenuTarget* target) {
   if (!appMenu) return;
-  int settings_tab = koncpc_settings_tab_items().front().tab;
   for (NSMenuItem* it in [appMenu itemArray]) {
     NSString* t = [it title];
+#ifdef KONCPC_MODERN_UI
     if ([t hasPrefix:@"About"]) {
       [it setTarget:target];
       [it setAction:@selector(bridgeAction:)];
       [it setTag:pack_bridge_tag(BK_ABOUT, 0)];
-    } else if ([t hasPrefix:@"Settings"] || [t hasPrefix:@"Preferences"]) {
+      continue;
+    }
+    if ([t hasPrefix:@"Settings"] || [t hasPrefix:@"Preferences"]) {
       [it setTarget:target];
       [it setAction:@selector(bridgeAction:)];
-      [it setTag:pack_bridge_tag(BK_SETTINGS, settings_tab)];
-    } else if ([t hasPrefix:@"Quit"]) {
+      [it setTag:pack_bridge_tag(BK_SETTINGS, koncpc_settings_tab_items().front().tab)];
+      continue;
+    }
+#endif
+    if ([t hasPrefix:@"Quit"]) {
       // Route Quit through KONCPC_EXIT so the unsaved-disk guard runs (F13).
       [it setTarget:target];
       [it setAction:@selector(menuAction:)];
@@ -265,11 +286,13 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   // ── Machine ── 7 Settings deep-links + Reset.
   {
     NSMenu* m = insert_submenu(mainMenu, @"Machine", insertIdx++);
+#ifdef KONCPC_MODERN_UI
     for (const SettingsTabItem& it : koncpc_settings_tab_items()) {
       if (it.separator_before) [m addItem:[NSMenuItem separatorItem]];
       add_bridge_item(m, target, [NSString stringWithUTF8String:it.label], BK_SETTINGS, it.tab);
     }
     [m addItem:[NSMenuItem separatorItem]];
+#endif
     if (const MenuAction* e = koncpc_find_action(KONCPC_RESET)) add_action_item(m, target, e);
   }
 
@@ -314,6 +337,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     NSMenu* m = insert_submenu(mainMenu, @"View", insertIdx++);
     if (const MenuAction* e = koncpc_find_action(KONCPC_FULLSCRN)) add_action_item(m, target, e);
 
+#ifdef KONCPC_MODERN_UI
     // Scale ▸
     NSMenuItem* scaleItem = [[NSMenuItem alloc] initWithTitle:@"Scale"
                                                        action:nil
@@ -352,6 +376,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
     }
     [rendItem setSubmenu:rendMenu];
     [m addItem:rendItem];
+#endif
 
     [m addItem:[NSMenuItem separatorItem]];
     if (const MenuAction* e = koncpc_find_action(KONCPC_SCRNSHOT)) add_action_item(m, target, e);
@@ -388,6 +413,7 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
   // append our 3 specials + 17 devtools windows (single-sourced list) after a
   // separator, rather than adding a second "Window" menu.
   {
+#ifdef KONCPC_MODERN_UI
     NSMenu* m = find_top_menu(mainMenu, @"Window");
     if (!m) m = make_submenu(mainMenu, @"Window");  // fallback if none yet
     [m addItem:[NSMenuItem separatorItem]];
@@ -396,7 +422,29 @@ static void koncpc_install_emulator_menu(NSMenu* mainMenu) {
       if (items[i].separator_before && i != 0) [m addItem:[NSMenuItem separatorItem]];
       add_bridge_item(m, target, [NSString stringWithUTF8String:items[i].label], BK_WINDOW, i);
     }
+#endif
   }
+
+#ifndef KONCPC_MODERN_UI
+  // The bridge items left out above leave doubled, leading or trailing
+  // separators in the menus they shared (Media).
+  for (NSMenuItem* top in [mainMenu itemArray]) {
+    NSMenu* sub = [top submenu];
+    if (!sub) continue;
+    bool prev_sep = true;  // a leading separator counts as doubled
+    for (NSInteger i = 0; i < [sub numberOfItems];) {
+      bool const sep = [[sub itemAtIndex:i] isSeparatorItem];
+      if (sep && prev_sep) {
+        [sub removeItemAtIndex:i];
+        continue;
+      }
+      prev_sep = sep;
+      i++;
+    }
+    NSInteger const last = [sub numberOfItems] - 1;
+    if (last >= 0 && [[sub itemAtIndex:last] isSeparatorItem]) [sub removeItemAtIndex:last];
+  }
+#endif
 }
 
 extern "C" __attribute__((visibility("default"))) void SDL_CocoaAddMenuItems(NSMenu* mainMenu) {
