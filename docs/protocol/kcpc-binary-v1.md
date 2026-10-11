@@ -3,8 +3,9 @@
 **Status: design. Nothing in this document is implemented yet.** It is the
 contract for phase 3 of the headless-core epic (beads-cv2, bead beads-3o1).
 The implementation lands in the slices listed in
-[section 16](#16-implementation-slices). Until the last slice merges, the
-server announces protocol version 0 and the layouts below may still change.
+[section 16](#16-implementation-slices). The server announces protocol
+version 0, and the layouts below may still change, until phase 5 (the remote
+GUI) has shipped; see [section 6](#6-versioning-and-hello).
 
 The text IPC on port 6543 ([ipc-protocol.md](../ipc-protocol.md)) stays as it
 is. This is a second, separate server.
@@ -39,10 +40,11 @@ stepping, symbols, and input.
   This protocol only describes the frame (`FB_INFO`) and announces each new
   one (`EVT_FRAME`).
 - **Audio.** Decision D4: none for remote frontends at first.
-- **Loading media, snapshots, configuration, recording, disc tools.** They
-  stay on the text IPC, which a frontend may use alongside this port. Opcode
-  ranges are reserved for them ([section 13](#13-opcode-table)); phase 5 adds
-  them in a minor version when the remote GUI needs them.
+- **Recording, disc tools (files and sectors inside a disc image), pokes,
+  sessions, the M4 board.** They stay on the text IPC, which a frontend may
+  use alongside this port. Loading media, snapshots and configuration *are*
+  here ([section 12](#media)), because a remote GUI needs them on its one
+  connection.
 - **`Machine::save_devices()`.** It is an unversioned format for disposable
   measurement runs and is never exposed here. Snapshots are SNA files.
 - **Disassembly.** The client disassembles the bytes it reads. One Z80
@@ -87,6 +89,18 @@ stepping, symbols, and input.
 
   In `StartupManifest` the field is `binary_port`, filled through
   `startup_manifest_await_port()` like the others.
+- The server is **on by default**. One configuration key turns it off:
+
+  ```ini
+  [ipc]
+  binary_port_enabled=1   # 1 (default) = start the binary server on 6545;
+                          # 0 = do not open the port at all
+  ```
+
+  With `0` no socket is created, no server thread starts, and the manifest
+  prints `binary: null`. The key is read once at startup, so changing it
+  needs a restart; `-O ipc.binary_port_enabled=0` works for a single run. It
+  does not affect the text IPC or the telnet console.
 - The server runs in the GUI build, under `-H`, and in the UI-free build
   (`KONCPC_MODERN_UI=0`). It uses `std::thread` and BSD sockets (Winsock on
   Windows) and nothing from SDL (decision D5).
@@ -220,12 +234,18 @@ Reply:
 
 - The **major** version is the `version` byte of every frame. A server that
   does not speak the client's major answers `UNSUPPORTED_VERSION` and closes.
-- **Major 0 is the development version.** While the slices land, the server
-  speaks major 0 and any payload may change between commits; client and
-  server must come from the same checkout. The last slice freezes the layouts
-  and switches to major 1, minor 0.
+- **Major 0 is the development version, and it is the only one for now.**
+  The server speaks major 0 and any payload may change between commits;
+  client and server must come from the same checkout. Nothing outside this
+  repository should be built against it.
+- **Major 0 lasts until phase 5 has shipped** (beads-3sp, the ImGui GUI with
+  `--connect`). Phase 3 ends with the exit test and finished documentation,
+  not with a freeze: the remote GUI is the first client that uses the whole
+  protocol, and the layouts are frozen only after it has. The switch to
+  major 1, minor 0 is a step of its own after phase 5.
 - From major 1 on, a **minor** bump only adds: new opcodes, new events, new
   capability bits, fields appended to payloads. Old clients keep working.
+  While the major is 0 the `minor` fields are sent as 0 and ignored.
 
 ### Capability bits
 
@@ -246,6 +266,9 @@ ship one at a time.
 | 8 | `CAP_FB_INFO` | `FB_INFO` |
 | 9 | `CAP_FB_SHM` | Phase 4: `FB_INFO` names a shared-memory ring |
 | 10 | `CAP_MEM_ROM` | Memory spaces `ROM_LOWER` and `ROM_UPPER` |
+| 11 | `CAP_MEDIA` | `MEDIA_*`, `TAPE_CONTROL` |
+| 12 | `CAP_SNAPSHOT` | `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` |
+| 13 | `CAP_CONFIG` | `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` |
 
 `PING` (empty request, empty reply) needs no capability.
 
@@ -259,21 +282,37 @@ Each client has a role:
 - An **observer** may read (registers, memory, chips, breakpoint and symbol
   lists, run state), subscribe to events and `PING`.
 - The **controller** may also change things: write registers and memory, run,
-  pause, step, reset, edit breakpoints and symbols, send input.
+  pause, step, reset, edit breakpoints and symbols, send input, load and
+  eject media, load snapshots, change configuration.
 
 At most one client is the controller.
 
 - `HELLO` with `role = 1` gets control if nobody has it. Otherwise the client
-  is admitted as an observer and the reply says so.
-- `CONTROL` (section 13) with `action = 1` asks for control later; it
-  succeeds only when nobody has it. `action = 0` gives it up.
-- Control is released when the controller disconnects, sends
+  is admitted as an observer and the reply says so. `HELLO` never takes
+  control away from anyone.
+- `CONTROL` with `action = 1` (acquire) asks for control later. Without the
+  force flag it succeeds only when nobody has it. `action = 0` gives it up.
+- **Takeover: the newest request wins.** `CONTROL` acquire with `force = 1`
+  always succeeds. The previous controller is not disconnected: it becomes an
+  observer on the spot, any request of its that has not started yet answers
+  `NOT_CONTROLLER`, and the keys it was holding down are released. It may
+  force control back the same way. No client is special: the GUI, a test
+  script and a tool all follow this one rule.
+- Control is also released when the controller disconnects, sends
   `CONTROL release`, or goes quiet: a controller that has sent no frame for
   **30 s** is disconnected. A controller with nothing to say sends `PING`
   every 10 s. Observers are never timed out.
-- There is no way to take control from a live controller in version 1.
-- Every change of controller is announced to all clients with
-  `EVT_CONTROL_CHANGED`.
+- Every change of controller is announced to **all** clients, the demoted
+  one included, with `EVT_CONTROL_CHANGED` carrying the new controller's
+  `client_id` (0 when control became free). The event ignores subscription
+  masks, so a client always learns that it lost control.
+- A step that the previous controller started keeps running across a
+  takeover. Its `EVT_STOPPED` still goes to the client that asked for it, and
+  the new controller may end it with `PAUSE`.
+
+A polite client asks without force first and uses force only when its user
+asked for it; two clients that both force in a loop will take control from
+each other for ever, and the protocol does not try to stop them.
 
 Control only orders the binary clients among themselves. It is not a lock on
 the machine: the text IPC, the telnet console, and in the GUI build the user
@@ -390,7 +429,9 @@ as soon as the step is armed. The walker thread runs it with the existing
 as `EVT_STOPPED`. One walk runs at a time; a second `STEP` meanwhile answers
 `BUSY`, and `PAUSE` aborts the walk through its abort predicate.
 
-So the longest any request can take is the pause lease's idle timeout.
+So the longest any request can take is the pause lease's idle timeout. The
+one exception is `CONFIG_APPLY` (section 12), which waits for the machine to
+be rebuilt on the main thread.
 
 ### Shutdown
 
@@ -490,8 +531,12 @@ shared-memory ring.
 **`EVT_MACHINE_CHANGED` (`0x8008`)** — the machine was rebuilt (model, RAM
 size, CRTC type, tier). Payload: the `MACHINE_INFO` reply fields.
 
-**`EVT_CONTROL_CHANGED` (`0x8009`)** — `u32 controller` (`client_id`, or 0
-for none).
+**`EVT_CONTROL_CHANGED` (`0x8009`)** — `u32 controller` (the new
+controller's `client_id`, or 0 for none), `u32 previous` (the `client_id`
+that had control before, or 0), `u8 reason` (1 = acquired while free,
+2 = taken by force, 3 = released, 4 = controller disconnected or timed out),
+3 reserved bytes. A client compares `previous` with its own `client_id` to
+learn that it was demoted.
 
 **`EVT_OVERRUN` (`0x800A`)** — `u32 dropped`.
 
@@ -724,14 +769,105 @@ is not here.
 This is the machine's canonical frame, before scaling or scanlines (epic
 invariant 1).
 
+### Media
+
+Paths are files on the core's machine, in the core's filesystem. A relative
+path is resolved against the core's working directory and made absolute
+before it is stored on a Recent list, as the text IPC's `load` does. All of
+these requests are controller only, run under a pause lease, and reuse the
+loaders in `src/slotshandler.cpp` and the bridge's deferred media swap
+(`subcycle_bridge_insert_media`, `subcycle_bridge_apply_pending_media`);
+none of them adds a second loading path.
+
+`slot`: 0 = drive A, 1 = drive B, 2 = tape, 3 = cartridge. The same numbers
+as `EVT_MEDIA_CHANGED`.
+
+- **`MEDIA_INSERT` (`0x0800`)** — Request: `u8 slot`, `u8 flags` (bit 0:
+  write-protect, drives only), 2 reserved bytes, `str path`. Reply:
+  `u64 generation`.
+  - Drives accept `.dsk`, `.ipf`, `.raw`; drive A also accepts the flux
+    images `.scp`, `.hfe`, `.a2r` (flux is drive A only: `BAD_PAYLOAD` on
+    drive B).
+  - Tape accepts `.cdt` and `.voc`. Cartridge accepts `.cpr` and answers
+    `NOT_PRESENT` unless the model is a 6128+; inserting one resets the
+    machine, as it does from the menu.
+  - A `.zip` is opened and its first supported member is used.
+  - `NOT_FOUND` if the file is missing; `BAD_PAYLOAD` if the type does not
+    fit the slot or the image is malformed.
+- **`MEDIA_EJECT` (`0x0801`)** — Request: `u8 slot`, 3 reserved bytes.
+  Reply: `u64 generation`. A drive with unsaved changes follows the
+  File-menu flush-on-eject path and never raises a dialog. Ejecting an empty
+  slot succeeds.
+- **`MEDIA_INFO` (`0x0802`)** — anyone. Request: `u8 slot`, 3 reserved
+  bytes. Reply: `u8 slot`, `u8 present`, `u8 flags` (bit 0 write-protected,
+  bit 1 unsaved changes, bit 2 flux image), `u8` reserved, `u64 generation`,
+  `str path`. For the tape slot three more fields follow: `u8 playing`,
+  `u8 motor`, 2 reserved bytes, `u32 block` (current block), `u32 blocks`
+  (blocks in the image).
+- **`TAPE_CONTROL` (`0x0803`)** — Request: `u8 action` (0 stop, 1 play,
+  2 rewind, 3 seek), 3 reserved bytes, `u32 block` (for seek). Reply: the
+  tape fields of `MEDIA_INFO`. `NOT_PRESENT` with no tape loaded;
+  `OUT_OF_RANGE` for a block past the end. Seek uses the deferred
+  `subcycle_bridge_request_tape_seek()`.
+
+Every successful insert and eject, from this port or any other source,
+produces `EVT_MEDIA_CHANGED`.
+
+### Snapshots
+
+The format is SNA and nothing else (epic invariant 4).
+
+- **`SNAPSHOT_SAVE` (`0x0900`)** — controller. Request: `str path`. Reply:
+  `stamp`. Writes with `snapshot_save_machine()`. It needs the controller
+  role because it writes a file on the core's machine, not because it
+  changes the CPC.
+- **`SNAPSHOT_LOAD` (`0x0901`)** — controller. Request: `u8 flags` (bit 0:
+  stay paused afterwards), 3 reserved bytes, `str path`. Reply: `stamp`.
+  Loads with `snapshot_load_machine()`. The run state is restored to what it
+  was unless bit 0 is set. Clients are told with `EVT_RESET`, plus
+  `EVT_MACHINE_CHANGED` when the snapshot changed the model or RAM size;
+  either way a client should re-read everything it shows.
+
+Both answer `NOT_FOUND` for a missing file or directory and `BAD_PAYLOAD`
+for a file that is not a valid SNA.
+
+### Configuration
+
+The keys and values are the text IPC's `config get|set`, spelled the same
+(`model`, `crtc_type`, `ram_size`, `silicon_disc`, `kbd_layout`, ...).
+Carrying them as strings keeps one list of keys in one place
+(`koncepcja_ipc_server.cpp` today; the slice moves the table somewhere both
+servers call) instead of a second, numbered copy that would drift.
+
+- **`CONFIG_GET` (`0x0A00`)** — anyone. Request: `str key`. Reply:
+  `u8 flags` (bit 0: a different value is staged and waits for
+  `CONFIG_APPLY` or the next frame), 3 reserved bytes, `str value`,
+  `str pending` (empty unless bit 0). `NOT_FOUND` for an unknown key;
+  `NOT_PRESENT` for a key that needs a window under `-H`.
+- **`CONFIG_SET` (`0x0A01`)** — controller. Request: `str key`,
+  `str value`. Reply: `u8 effect` (0 = applied now, 1 = applied on the next
+  frame, 2 = staged, needs `CONFIG_APPLY`), 3 reserved bytes. `BAD_PAYLOAD`
+  for a value the key rejects.
+- **`CONFIG_APPLY` (`0x0A02`)** — controller. Empty. Rebuilds the machine
+  with the staged settings through the existing main-thread rebuild request.
+  This is the one request allowed to take longer than a pause lease: the
+  reply is sent when the rebuild has finished, with `stamp`, or with
+  `INTERNAL` if it failed and `BUSY` if the main loop did not pick it up in
+  time. `EVT_MACHINE_CHANGED` follows a successful rebuild.
+
+`CONFIG_SET` does not write the configuration file. Saving settings stays a
+GUI action.
+
 ### Session
 
 - **`PING` (`0x0002`)** — empty both ways.
 - **`SUBSCRIBE` (`0x0003`)** — section 9.
 - **`CONTROL` (`0x0004`)** — Request: `u8 action` (0 release, 1 acquire),
-  3 reserved bytes. Reply: `u8 role` now held, 3 reserved bytes,
-  `u32 controller`. Asking for control while another client has it is not an
-  error: the reply simply still says observer.
+  `u8 flags` (bit 0 = force: take control even if another client has it),
+  2 reserved bytes. Reply: `u8 role` now held, 3 reserved bytes,
+  `u32 controller`. Asking without force while another client has control is
+  not an error: the reply simply still says observer. With force the reply
+  always says controller.
 
 ## 13. Opcode table
 
@@ -768,11 +904,20 @@ invariant 1).
 | `0x0602` | `SYM_DEL` | `CAP_SYMBOLS` | controller | 7 |
 | `0x0603` | `SYM_LOAD` | `CAP_SYMBOLS` | controller | 7 |
 | `0x0700` | `FB_INFO` | `CAP_FB_INFO` | anyone | 7 |
+| `0x0800` | `MEDIA_INSERT` | `CAP_MEDIA` | controller | 9 |
+| `0x0801` | `MEDIA_EJECT` | `CAP_MEDIA` | controller | 9 |
+| `0x0802` | `MEDIA_INFO` | `CAP_MEDIA` | anyone | 9 |
+| `0x0803` | `TAPE_CONTROL` | `CAP_MEDIA` | controller | 9 |
+| `0x0900` | `SNAPSHOT_SAVE` | `CAP_SNAPSHOT` | controller | 9 |
+| `0x0901` | `SNAPSHOT_LOAD` | `CAP_SNAPSHOT` | controller | 9 |
+| `0x0A00` | `CONFIG_GET` | `CAP_CONFIG` | anyone | 9 |
+| `0x0A01` | `CONFIG_SET` | `CAP_CONFIG` | controller | 9 |
+| `0x0A02` | `CONFIG_APPLY` | `CAP_CONFIG` | controller | 9 |
 | `0x8001`–`0x800B` | events | `CAP_EVENTS` | server only | 4, 5, 7 |
 
-Reserved for later minor versions: `0x0800`–`0x08FF` media (insert, eject),
-`0x0900`–`0x09FF` snapshots (SNA files), `0x0A00`–`0x0AFF` configuration,
-`0x0B00`–`0x0BFF` light gun and other input devices.
+Reserved: the unused opcodes of the media (`0x08xx`), snapshot (`0x09xx`)
+and configuration (`0x0Axx`) ranges, and `0x0B00`–`0x0BFF` for the light gun
+and other input devices.
 
 ## 14. A session, byte by byte
 
@@ -811,10 +956,14 @@ The same position as the text IPC today:
 - The listening socket binds `127.0.0.1` and nothing else. There is no option
   to bind another address.
 - No authentication and no encryption. Any process of any local user that can
-  reach the loopback port can read and change the emulated machine, and with
-  `SYM_LOAD` make the core read a file the core's user can read. That is
-  already true of port 6543 (`load`, `snapshot save`), so this port adds no
-  new exposure, and it must not be forwarded off the machine.
+  reach the loopback port can read and change the emulated machine, make the
+  core read any file the core's user can read (`SYM_LOAD`, `MEDIA_INSERT`,
+  `SNAPSHOT_LOAD`) and write an SNA file anywhere that user can write
+  (`SNAPSHOT_SAVE`). That is already true of port 6543 (`load`,
+  `snapshot save`), so this port adds no new exposure, and it must not be
+  forwarded off the machine.
+- `[ipc] binary_port_enabled=0` (section 3) closes the port for users who do
+  not want it.
 - The parser trusts nothing: every length is checked against the payload that
   actually arrived before it is used, every index against the table it
   indexes, and a request is bounded at 1 MiB before any allocation.
@@ -830,14 +979,27 @@ test-first against a real `-H` core.
 
 | # | Slice | Brings |
 |--:|-------|--------|
-| 1 | Server skeleton | Socket shim, listener and port probing, the thread model, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
+| 1 | Server skeleton | Socket shim, listener and port probing, the `[ipc] binary_port_enabled` key, the thread model, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
 | 2 | Machine reads | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with every space |
-| 3 | Control and writes | Roles, `CONTROL`, the controller idle timeout; `REGS_SET`, `MEM_WRITE` |
+| 3 | Control and writes | Roles, `CONTROL` with forced takeover, the controller idle timeout; `REGS_SET`, `MEM_WRITE` |
 | 4 | Run control and events | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED` |
 | 5 | Breakpoints and pushed hits | `BP_*`, hits through the probe hook, `EVT_BREAKPOINTS_CHANGED`; the walker and `STEP` over, out, to |
 | 6 | Input | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`; keys released when control is lost |
 | 7 | DevTools data | `CHIP_GET`, `ASIC_PAGE`, `SYM_*`, `FB_INFO`, `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` |
-| 8 | Freeze | The exit test of beads-3o1, user documentation, major version 1 |
+| 8 | Exit test and documentation | The exit test of beads-3o1, the documentation brought in line with the code. **No freeze:** the server stays at major 0 |
+| 9 | Media, snapshots, configuration | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`, `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` |
+
+Slice 9 needs slices 3 (the controller role) and 4 (events) and nothing
+later, so it can be built alongside slices 5 to 7. Slice 8 is numbered before
+it because it carries the exit criterion below, which does not involve
+media; phase 3 is finished when both have merged.
+
+The `[ipc] binary_port_enabled` key and forced takeover belong to slices 1
+and 3.
+
+**After phase 3:** the protocol is frozen as major 1, minor 0 only once
+phase 5 (beads-3sp) has shipped the remote GUI on top of it. That freeze is
+not one of these slices.
 
 Source layout the slices should follow:
 
@@ -873,8 +1035,9 @@ Recorded so a reviewer can disagree with one without reading the rest.
    stronger wrong-port check and lets a future server speak two majors on one
    port.
 2. **No resynchronisation.** A framing error closes the connection.
-3. **Major 0 until the last slice.** Nothing outside this repository can
-   depend on a half-built protocol.
+3. **Major 0 until phase 5 has shipped** (user decision, 2026-10-11). The
+   protocol is "same checkout only" until the remote GUI has used all of it;
+   the freeze to major 1 comes after that.
 4. **Thread per client**, not one `select()` loop. Eight clients do not need
    an event loop, and a client that sends slowly cannot delay another's
    requests.
@@ -883,8 +1046,9 @@ Recorded so a reviewer can disagree with one without reading the rest.
    reuse the path the text IPC has already proven.
 6. **Nothing blocks on emulated time.** Steps complete with an event. The
    text IPC's `wait` family has no equivalent; a client waits for an event.
-7. **One controller, no takeover**, released on disconnect or 30 s of
-   silence.
+7. **One controller; forced takeover, newest wins** (user decision,
+   2026-10-11). The previous controller is demoted to observer and told. No
+   client has a special role.
 8. **Events are notices.** They carry what identifies the change, and the
    client fetches the data. Lost events are counted and reported, never
    silently dropped.
@@ -893,5 +1057,9 @@ Recorded so a reviewer can disagree with one without reading the rest.
     frontend.
 11. **Chip layouts start at what the text IPC reports** and grow by layout
     version.
-12. **No disassembly, media, snapshot or configuration opcodes in version
-    1.** The text IPC still serves them.
+12. **Media, snapshots and configuration are in phase 3** as a ninth slice
+    (user decision, 2026-10-11), as thin wrappers over the loaders the text
+    IPC and the menus already use. Configuration keys travel as the text
+    IPC's strings. There is still no disassembly opcode.
+13. **The port is on by default with one key to turn it off**,
+    `[ipc] binary_port_enabled` (user decision, 2026-10-11).
