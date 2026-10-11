@@ -399,3 +399,120 @@ TEST(KcpcPayloads, TrailingBytesAreIgnored) {
   EXPECT_EQ(out.ram_bytes, 128U * 1024U);
   EXPECT_EQ(r.remaining(), 4U);
 }
+
+// ---- Slice 2: the machine reads (beads-3o1.2) ----------------------------
+
+// Section 12: twelve 16-bit registers, six bytes, two reserved zero bytes.
+TEST(KcpcProto, RegisterBlockIs32BytesInWireOrder) {
+  kcpc::Regs in;
+  in.af = 0x0102;
+  in.bc = 0x0304;
+  in.de = 0x0506;
+  in.hl = 0x0708;
+  in.ix = 0x090A;
+  in.iy = 0x0B0C;
+  in.sp = 0x0D0E;
+  in.pc = 0x0F10;
+  in.af_alt = 0x1112;
+  in.bc_alt = 0x1314;
+  in.de_alt = 0x1516;
+  in.hl_alt = 0x1718;
+  in.i = 0x19;
+  in.r = 0x1A;
+  in.iff1 = 0x1B;
+  in.iff2 = 0x1C;
+  in.im = 0x1D;
+  in.halt = 0x1E;
+  kcpc::Writer w;
+  kcpc::write_regs(w, in);
+  ASSERT_EQ(w.size(), kcpc::kRegsSize);
+  // Every field is one more than the one before, low byte first, so the block
+  // reads 02 01 04 03 ... 18 17, then 19 .. 1E, then the two reserved zeros.
+  for (std::size_t field = 0; field < 12; ++field) {
+    EXPECT_EQ(w.data()[field * 2], 2 * field + 2) << "field " << field;
+    EXPECT_EQ(w.data()[(field * 2) + 1], 2 * field + 1) << "field " << field;
+  }
+  for (std::size_t i = 24; i < 30; ++i) EXPECT_EQ(w.data()[i], i + 1);
+  EXPECT_EQ(w.data()[30], 0);
+  EXPECT_EQ(w.data()[31], 0);
+
+  kcpc::Reader r(w.data());
+  kcpc::Regs out;
+  ASSERT_TRUE(kcpc::read_regs(r, out));
+  EXPECT_EQ(r.remaining(), 0U);
+  EXPECT_EQ(out.af, in.af);
+  EXPECT_EQ(out.iy, in.iy);
+  EXPECT_EQ(out.pc, in.pc);
+  EXPECT_EQ(out.af_alt, in.af_alt);
+  EXPECT_EQ(out.hl_alt, in.hl_alt);
+  EXPECT_EQ(out.i, in.i);
+  EXPECT_EQ(out.r, in.r);
+  EXPECT_EQ(out.iff1, in.iff1);
+  EXPECT_EQ(out.iff2, in.iff2);
+  EXPECT_EQ(out.im, in.im);
+  EXPECT_EQ(out.halt, in.halt);
+
+  kcpc::Reader cut(w.data().data(), kcpc::kRegsSize - 1);
+  EXPECT_FALSE(kcpc::read_regs(cut, out));
+}
+
+TEST(KcpcProto, MemInfoRoundTrips) {
+  kcpc::MemInfo in;
+  in.ram_bytes = 0x00090000;
+  in.ram_config = 0xC4;
+  in.rom_config = 0x8D;
+  in.upper_rom = 7;
+  in.rom_slots = 0x80000081;
+  in.stamp = {0x0102030405060708ULL, true};
+  kcpc::Writer w;
+  kcpc::write_mem_info(w, in);
+  ASSERT_EQ(w.size(), 24U);  // u32, 3 x u8, reserved, u32, stamp
+  EXPECT_EQ(w.data()[7], 0) << "reserved";
+  kcpc::Reader r(w.data());
+  kcpc::MemInfo out;
+  ASSERT_TRUE(kcpc::read_mem_info(r, out));
+  EXPECT_EQ(out.ram_bytes, in.ram_bytes);
+  EXPECT_EQ(out.ram_config, in.ram_config);
+  EXPECT_EQ(out.rom_config, in.rom_config);
+  EXPECT_EQ(out.upper_rom, in.upper_rom);
+  EXPECT_EQ(out.rom_slots, in.rom_slots);
+  EXPECT_EQ(out.stamp.frame, in.stamp.frame);
+  EXPECT_TRUE(out.stamp.paused);
+}
+
+TEST(KcpcProto, MemReadRequestIs12Bytes) {
+  kcpc::MemReadRequest in;
+  in.space = 4;
+  in.bank = 0x0107;
+  in.addr = 0x00012345;
+  in.len = 0x00ABCDEF;
+  kcpc::Writer w;
+  kcpc::write_mem_read_request(w, in);
+  const std::vector<std::uint8_t> expected = {
+      0x04, 0x00, 0x07, 0x01, 0x45, 0x23, 0x01, 0x00, 0xEF, 0xCD, 0xAB, 0x00};
+  EXPECT_EQ(w.data(), expected);
+  kcpc::Reader r(w.data());
+  kcpc::MemReadRequest out;
+  ASSERT_TRUE(kcpc::read_mem_read_request(r, out));
+  EXPECT_EQ(out.space, in.space);
+  EXPECT_EQ(out.bank, in.bank);
+  EXPECT_EQ(out.addr, in.addr);
+  EXPECT_EQ(out.len, in.len);
+  kcpc::Reader cut(w.data().data(), 11);
+  EXPECT_FALSE(kcpc::read_mem_read_request(cut, out));
+}
+
+// addr + len must not pass the end of the space, and the check itself must
+// not wrap for any pair of 32-bit values.
+TEST(KcpcProto, MemRangeNeverWraps) {
+  EXPECT_TRUE(kcpc::mem_range_ok(0, 0x10000, 0x10000));
+  EXPECT_TRUE(kcpc::mem_range_ok(0xFFFF, 1, 0x10000));
+  EXPECT_TRUE(kcpc::mem_range_ok(0x10000, 0, 0x10000)) << "empty, at the end";
+  EXPECT_FALSE(kcpc::mem_range_ok(0xFFFF, 2, 0x10000));
+  EXPECT_FALSE(kcpc::mem_range_ok(0x10001, 0, 0x10000));
+  EXPECT_FALSE(kcpc::mem_range_ok(0, 0x10001, 0x10000));
+  EXPECT_FALSE(kcpc::mem_range_ok(0xFFFFFFFF, 0xFFFFFFFF, 0x10000));
+  EXPECT_FALSE(kcpc::mem_range_ok(0xFFFFFFFF, 2, 0x10000));
+  EXPECT_FALSE(kcpc::mem_range_ok(1, 0xFFFFFFFF, 0x410000));
+  EXPECT_TRUE(kcpc::mem_range_ok(0x400000, 0x10000, 0x410000));
+}

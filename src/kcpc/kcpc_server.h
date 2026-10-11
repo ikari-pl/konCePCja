@@ -2,12 +2,13 @@
 
 // KCPC binary frontend server: the listener and the per-client threads.
 //
-// The contract is docs/protocol/kcpc-binary-v1.md. This is slice 1: framing,
-// HELLO, PING, MACHINE_INFO and ERROR. Every client is an observer.
+// The contract is docs/protocol/kcpc-binary-v1.md. So far: framing, HELLO,
+// PING, MACHINE_INFO, ERROR (slice 1) and the machine reads REGS_GET,
+// MEM_INFO, MEM_READ (slice 2). Every client is an observer.
 //
 // The server knows nothing about the emulator. What it reports about the
-// machine comes through ServerConfig::machine_info, so the same class runs in
-// the GUI build, under -H, in the UI-free build and in test_runner (with a
+// machine comes through the callbacks of ServerConfig, so the same class runs
+// in the GUI build, under -H, in the UI-free build and in test_runner (with a
 // fake machine). It uses std::thread and net_socket.h and nothing from SDL.
 
 #include <atomic>
@@ -25,10 +26,21 @@
 
 namespace kcpc {
 
-// Fills in the MACHINE_INFO fields. Called on a client's reader thread.
-// False means the runner did not go idle in time and nothing was read: the
-// request answers BUSY.
-using MachineInfoFn = std::function<bool(MachineInfo&)>;
+// The machine, as the server reaches it. Each callback is called on a
+// client's reader thread and returns once the read has been taken, at one
+// instant, with the machine not being clocked (kcpc_gate.h). What it returns
+// is the status the request answers with:
+//   kOk            the out-parameters are filled in
+//   kBusy          the runner did not go idle in time; nothing was read
+//   kShuttingDown  the core is quitting
+//   kBadPayload, kOutOfRange, kNotPresent, kInternal   the request itself
+using MachineInfoFn = std::function<Status(MachineInfo&)>;
+using RegsGetFn = std::function<Status(Stamp&, Regs&)>;
+using MemInfoFn = std::function<Status(MemInfo&)>;
+// Copies request.len bytes into dst, which the server has sized: the read
+// itself allocates nothing.
+using MemReadFn =
+    std::function<Status(const MemReadRequest&, Stamp&, std::uint8_t* dst)>;
 
 struct ServerConfig {
   int base_port = kDefaultPort;
@@ -44,6 +56,12 @@ struct ServerConfig {
   std::string server_version;
   std::uint32_t pid = 0;
   MachineInfoFn machine_info;
+  // The CAP_MACHINE_READ group. HELLO announces the capability (and
+  // CAP_MEM_ROM with it) only when all three are set; without them the
+  // opcodes answer UNKNOWN_OPCODE.
+  RegsGetFn regs_get;
+  MemInfoFn mem_info;
+  MemReadFn mem_read;
 };
 
 class Server {

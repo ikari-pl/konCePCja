@@ -5,7 +5,8 @@ phase 3 of the headless-core epic (beads-cv2, bead beads-3o1). The
 implementation lands in the slices listed in
 [section 16](#16-implementation-slices), and that table says which have
 landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
-`MACHINE_INFO`, `ERROR`). Everything else is still design; a server tells a
+`MACHINE_INFO`, `ERROR`), and slice 2, the machine reads (`REGS_GET`,
+`MEM_INFO`, `MEM_READ`). Everything else is still design; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
 version 0, and the layouts below may still change, until phase 5 (the remote
@@ -443,34 +444,106 @@ A lease is the wrong tool for a GUI that refreshes its views 50 times a
 second: taking one pauses audio and waits out the rest of the frame, up to
 20 ms.
 
-So reads go through a **machine gate**, one small class:
+So reads go through a **machine gate**, one small class
+(`src/kcpc/kcpc_gate.h`):
 
 - The reader thread builds a *read job* (for example "copy 65536 bytes of CPU
   view from address 0") and gives it to the gate.
-- **If the machine is paused**, the reader takes a pause lease, which is
-  immediate because the runner is already idle, runs the job itself and
-  releases the lease. The machine stays paused.
 - **If the machine is running**, the job goes on a queue. At the next frame
   boundary the runner calls `kcpc_service_frame()` from the shared frame
   epilogue in `emu_run_frame()`, next to `g_telnet.drain_input()`. That call
   runs queued jobs on the runner thread, while the machine is not being
-  clocked, and wakes the readers that wait for them.
-- If a queued job is not served within 100 ms (the machine was paused in the
-  meantime, or the tier is too slow to finish a frame), the reader takes a
-  pause lease and runs it itself. Each job has an atomic state
-  (queued → claimed → done), so it runs exactly once whichever side claims
-  it.
+  clocked, and wakes the readers that wait for them. Nothing is paused: not
+  the machine, not the audio.
+- **If the machine is stopped** (paused, with no pause lease held and the
+  runner idle), no boundary is coming and none is needed. The reader runs
+  the job itself through `cpc_read_while_stopped()`, which holds the pause
+  mutex for the length of the copy. Every pause, resume and lease in the
+  core goes through that mutex, so the machine stays stopped under the
+  read, and a `run` that arrives meanwhile waits a few microseconds and then
+  takes effect.
+
+  This is deliberately not a pause lease. `cpc_resume()` does nothing while
+  any lease is held (the text IPC's `run` answers `ERR 409
+  pause-lease-held`), which is right for a change in progress and wrong for
+  a view that refreshes 50 times a second: with three clients reading a
+  paused machine through leases, 3 of 60 `run` commands were refused. Held
+  through the mutex instead, none are.
+- **If the machine is paused but not stopped** (somebody's lease holds it,
+  or a stop was requested and the frame in flight has not ended), the reader
+  waits, looking again every 100 µs. That state passes in a moment, and then
+  the machine is either stopped or running again and one of the two rules
+  above applies. The reader does not answer a lease with a lease of its own:
+  readers doing that keep one another's leases alive.
+- A reader whose job is queued looks at the pause flag every 5 ms. If the
+  machine is paused under a queued job (a breakpoint, somebody's `pause`),
+  the reader takes the job back and goes on as above. It does not wait for
+  the fallback.
+- **Fallback:** a read that has got neither a frame boundary nor a stopped
+  machine within **250 ms** is run by the reader under a pause lease. This
+  is a safety net for a runner that turns out no frames although nothing
+  paused it, and for a lease that holds the machine that long. It should
+  never fire on a healthy machine, because on a running one a lease costs
+  exactly what the gate exists to avoid and is no quicker: it too waits for
+  the frame in flight to end.
+- Each job has an atomic state (queued → claimed → done), so it runs exactly
+  once whichever side claims it.
+
+"Paused" above is the flag the runner itself obeys (`g_emu_paused`), which
+is set for a real stop and for a lease alike. The gate reads that atomic and
+nothing else on the path of a running machine. It must not ask
+`cpc_stopped()` there: that takes the pause mutex, which the runner holds
+for the whole of every machine frame, and on an unpaced machine a reader
+then waited about 15 ms for it on every read (measured; one frame, 0.4 ms,
+with the atomic).
 
 What the runner is allowed to do in `kcpc_service_frame()`:
 
-- copy out of the machine into a buffer owned by the job; no socket calls, no
-  allocation proportional to anything but the job, no waiting on a client;
+- copy out of the machine into a buffer the reader thread allocated before
+  it queued the job; no socket calls, no allocation at all, no waiting on a
+  client. The one lock it takes guards the queue's pointers and is never
+  held across a copy, an allocation or a system call;
 - at most **1 MiB** of copying per frame boundary, and always at least one
-  job. A 4 MiB dump of expansion RAM takes four frames;
-- nothing at all when the queue is empty: one relaxed atomic load.
+  job. The budget decides how many jobs share a boundary; it never splits
+  one, because all the bytes of a reply come from the same instant
+  ([section 11](#11-memory)). Eight clients that each want 64 KiB are all
+  served at the same boundary; a second 1 MiB read waits for the next one;
+  a dump of all 4160 KiB of the largest machine is one job and one boundary;
+- nothing at all when the queue is empty: it counts the frame (the `frame`
+  of every `stamp`) and does one relaxed atomic load.
 
 Read jobs never change machine state, so a run with clients attached makes
-the same observations as a run without them (epic invariant 2).
+the same observations as a run without them (epic invariant 2). The test
+suite checks it: 100 frames from a reset end in the same registers (all of
+them, `R` included) and the same physical RAM whether nobody reads or three
+clients read 64 KiB and the registers at every boundary.
+
+Where the numbers come from (measured on an Apple M-series host, slice 2):
+
+| What | Cost |
+|------|------|
+| `kcpc_service_frame()` with nothing queued | not measurable: 3 FPS in 2400 on an unpaced `-H` core, inside the run-to-run noise |
+| Copying a 64 KiB view (four `memcpy`s, one per 16 KiB slot) | about 1 µs; byte by byte through the debugger's peek it was 116 µs |
+| Copying 1 MiB of physical RAM | about 20 µs |
+| Copying all 4160 KiB | about 80 µs |
+| A paced frame / an unpaced Fast-tier frame | 20 ms / about 0.4 ms |
+| A read on a running machine, request to reply | one frame: 0.4 ms unpaced, up to 20 ms paced |
+
+So the 1 MiB budget caps a boundary at about 20 µs of copying, a thousandth
+of a paced frame, plus whatever its first job costs.
+
+The fallback was first set to 100 ms and that was too short. A paced frame
+sleeps until its 50 Hz deadline, and on a loaded host that 19 ms sleep was
+measured at 67 ms in the median and 107 ms at worst; the pacer then catches
+up with frames back to back. With 100 ms, 14 of 301 reads of a healthy
+machine fell back to a lease, each pausing the machine for nothing. With
+250 ms none did. 250 ms is also where the frame pacer itself decides a host
+has stalled (`frame_pacer.h`).
+
+When the server stops, it logs where the gate took the reads of that run
+(`KCPC: reads served: N at a frame boundary, N while paused, N by fallback,
+N busy`), so "did a client cost the machine pauses?" can be answered from a
+log: only the last two numbers are leases.
 
 ### Seam 3: the bridge probe and `debug_sync`, for events
 
@@ -513,8 +586,9 @@ be rebuilt on the main thread.
 ### Shutdown
 
 `stop()` closes the listening socket, sends `EVT_SHUTDOWN` to every client,
-aborts the walk, fails queued jobs with `SHUTTING_DOWN`, closes the client
-sockets and joins every thread. No thread waits on anything without a
+aborts the walk, fails queued jobs with `SHUTTING_DOWN` (the gate is shut
+first, so a reader waiting for a frame boundary answers at once), closes the
+client sockets and joins every thread. No thread waits on anything without a
 deadline or an abort flag.
 
 The core calls `stop()` first thing when it quits, while the runner is still
@@ -650,15 +724,17 @@ AMSDOS in slot 7.
 from the `effective_tier` of the startup manifest, which is printed before
 the first frame has chosen the tier.
 
-Until the machine gate exists (slice 2), the server reads these fields under
-a pause lease, on the client's reader thread: on a running machine the
-request waits for the frame in flight to end, at most 20 ms, and the run
-state is put back as it was. `BUSY` if the runner did not go idle in time.
-The lease does not change what the machine computes: the test suite runs
-100 frames from a reset with and without two clients reading throughout and
-compares registers and all 64 KiB of RAM. It does cost the frame runner a
-pause and a resume, so this is not a request to send 50 times a second;
-slice 2 moves it to the frame-boundary gate with the other reads.
+`ram_bytes` is what the machine has fitted, which is the size of the memory
+space `PHYS_RAM` ([section 11](#11-memory)). It is the configured RAM size
+unless something raises it: the Silicon Disc needs 512 KiB of expansion and
+fits them whatever was asked for.
+
+Like every read, this one goes through the machine gate
+([section 8](#seam-2-the-frame-boundary-for-reads-while-running)): on a
+running machine the runner takes it at the next frame boundary and nothing
+is paused, so it is cheap enough to poll. (Slice 1 read it under a pause
+lease.) `BUSY` only when a read had to fall back to a pause lease and the runner did
+not go idle for it in time.
 
 ## 11. Memory
 
@@ -676,12 +752,35 @@ One address means different bytes depending on which view is asked for.
 | 4 | `ROM_UPPER` | 0–`0x3FFF` | Upper ROM in slot `bank` (0–31), paged in or not |
 | 5 | `ASIC_PAGE` | 0–`0x3FFF` | The 6128+ ASIC register page as it appears at `0x4000` when unlocked; `NOT_PRESENT` on other models |
 
-`bank` is only meaningful for `ROM_UPPER` and must be 0 elsewhere.
+`bank` is only meaningful for `ROM_UPPER` and must be 0 elsewhere
+(`BAD_PAYLOAD`). For `ROM_UPPER` it is the ROM number, 0 to 31
+(`OUT_OF_RANGE` beyond). A number with no ROM fitted is not an error: it
+reads as the on-board BASIC, which is what answers on the bus when that
+number is selected.
 
-**`MEM_INFO` (`0x0210`)** — empty request. Reply: `u32 ram_bytes`,
-`u8 ram_config` (Gate Array RAM banking register), `u8 rom_config` (bit 2 set
-= lower ROM off, bit 3 set = upper ROM off, as the Gate Array holds them),
-`u8 upper_rom` (selected slot), `u8` reserved, `u32 rom_slots`, `stamp`.
+The two ROM spaces show the ROM whether or not the Gate Array has it paged
+in. On a 6128+ they show cartridge banks: `ROM_LOWER` the bank the lower
+ROM window is currently mapped to, `ROM_UPPER` the bank that ROM number
+selects.
+
+`CPU` is the view of the memory device and the text IPC's `mem read`. It
+does not include what an expansion or the ASIC lays over an address range;
+the ASIC's register page has its own space.
+
+A space this server does not implement answers `BAD_PAYLOAD`: a number that
+is not in the table, and `ASIC_PAGE` until the server announces `CAP_CHIPS`.
+
+**`MEM_INFO` (`0x0210`)** — empty request. Reply:
+
+| Size | Field | Meaning |
+|-----:|-------|---------|
+| 4 | `ram_bytes` | The size of space `PHYS_RAM` |
+| 1 | `ram_config` | The RAM banking register, as last written (`11bbbccc`); 0 after a reset |
+| 1 | `rom_config` | The Gate Array's mode register, as last written. Bit 2 set = lower ROM off, bit 3 set = upper ROM off. The other bits are the rest of that register (the screen mode in bits 0–1); mask them off |
+| 1 | `upper_rom` | The selected upper-ROM number |
+| 1 | reserved | 0 |
+| 4 | `rom_slots` | As in `MACHINE_INFO` |
+| `stamp` | | |
 
 **`MEM_READ` (`0x0211`)**
 
@@ -690,10 +789,17 @@ Request: `u8 space`, `u8` reserved, `u16 bank`, `u32 addr`, `u32 len`.
 Reply: `stamp`, then `len` bytes.
 
 - `addr + len` must not pass the end of the space: `OUT_OF_RANGE`. Nothing
-  wraps around.
-- `len` may be anything from 0 up to what fits the frame limit: `TOO_LARGE`
-  otherwise. **A 64 KiB read of a CPU space is always one reply.**
-- All the bytes of one reply come from the same instant.
+  wraps around, not at 64 KiB and not at 32 bits. A read of 0 bytes at the
+  very end of a space succeeds; one byte further is `OUT_OF_RANGE`.
+- `len` may be anything from 0 up to what fits the frame limit. The reply
+  is 16 bytes longer than `len` (the status header and the stamp), so the
+  largest read is the connection's `max_frame` less 16: `TOO_LARGE`
+  otherwise. **A 64 KiB read of a CPU space is always one reply**, since
+  `max_frame` is at least 128 KiB.
+- `TOO_LARGE` is decided first, from the request alone and before anything
+  is allocated; then `BAD_PAYLOAD` (space, bank), then `OUT_OF_RANGE`.
+- All the bytes of one reply come from the same instant, the one its stamp
+  names. The server never splits a read over two frame boundaries.
 
 **`MEM_WRITE` (`0x0212`)** — controller only.
 
@@ -724,6 +830,9 @@ The register block is 32 bytes:
 | 30 | 2 | reserved, 0 |
 
 - **`REGS_GET` (`0x0200`)** — empty request. Reply: `stamp`, register block.
+  The values are the Z80's own (`Machine::regs()`), not the host-side copy
+  the in-process debugger refreshes at a stop. `IFF1`, `IFF2` and `HALT` are
+  0 or 1, `IM` is 0 to 2.
 - **`REGS_SET` (`0x0201`)** — controller. Request: `u32 mask`, register
   block. Bit N of `mask` selects the Nth field of the block (bit 0 = `AF`,
   bit 11 = `HL'`, bit 12 = `I`, bit 17 = `HALT`); fields whose bit is clear
@@ -1083,7 +1192,7 @@ test-first against a real `-H` core.
 | # | Slice | Brings |
 |--:|-------|--------|
 | 1 | Server skeleton (**landed**, beads-3o1.1) | Socket shim, listener and port probing, the `[ipc] binary_port_enabled` key, the acceptor, reader and writer threads, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
-| 2 | Machine reads | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with every space |
+| 2 | Machine reads (**landed**, beads-3o1.2) | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with the spaces `CPU`, `CPU_RAM`, `PHYS_RAM`, `ROM_LOWER`, `ROM_UPPER` (`ASIC_PAGE` comes with slice 7); `MACHINE_INFO` moved onto the gate; `CAP_MACHINE_READ` and `CAP_MEM_ROM` |
 | 3 | Control and writes | Roles, `CONTROL` with forced takeover, the controller idle timeout; `REGS_SET`, `MEM_WRITE` |
 | 4 | Run control and events | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED` |
 | 5 | Breakpoints and pushed hits | `BP_*`, hits through the probe hook, `EVT_BREAKPOINTS_CHANGED`; the walker and `STEP` over, out, to |
@@ -1116,7 +1225,14 @@ Source layout the slices should follow:
 - `src/kcpc/kcpc_host.{h,cpp}` — the other side of those callbacks: the one
   server instance, started and stopped by `kon_cpc_ja.cpp`, and the code
   that reads the machine for it.
-- `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate.
+- `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate. Like the server it
+  knows nothing about the emulator (the pause flag and the lease are two
+  callbacks), so `test/kcpc_gate_test.cpp` runs real reader and runner
+  threads against a fake machine, and those tests build under
+  ThreadSanitizer.
+- `src/hw/memory.{h,cpp}` — `mem_peek_cpu_range()`, `mem_peek_ram_range()`,
+  `mem_lower_rom()`, `mem_upper_rom()`: whole views and ROMs for
+  `MEM_READ`, through the same banking decisions as the per-byte peeks.
 - `src/net_socket.{h,cpp}` — the one place with `#ifdef _WIN32` around
   sockets. The text IPC keeps its own two copies of `run()` for now; moving
   it onto the shim is a separate clean-up.
@@ -1177,3 +1293,11 @@ Recorded so a reviewer can disagree with one without reading the rest.
     IPC's strings. There is still no disassembly opcode.
 13. **The port is on by default with one key to turn it off**,
     `[ipc] binary_port_enabled` (user decision, 2026-10-11).
+14. **A stopped machine is read under the pause mutex, not under a pause
+    lease** (slice 2). A lease makes a Run be refused, which a view that
+    polls must never cause. The lease stays the tool for changes and the
+    gate's last resort.
+15. **A read is never split over frame boundaries** (slice 2). The 1 MiB
+    budget decides how many reads share a boundary; a single read larger
+    than that still runs whole, because its bytes must come from one
+    instant.

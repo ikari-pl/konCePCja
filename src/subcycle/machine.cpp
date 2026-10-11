@@ -1867,6 +1867,17 @@ uint8_t Machine::ram_read(size_t addr) const {
   return xmem_[addr - 0x10000];
 }
 
+void Machine::ram_copy(size_t addr, uint8_t* dst, size_t len) const {
+  if (addr < 0x10000) {
+    size_t const base = std::min(len, 0x10000 - addr);
+    std::memcpy(dst, mem_video_ram(&mdev_) + addr, base);
+    dst += base;
+    addr += base;
+    len -= base;
+  }
+  if (len != 0) std::memcpy(dst, xmem_.data() + (addr - 0x10000), len);
+}
+
 void Machine::ram_write(size_t addr, uint8_t val) {
   if (addr < 0x10000) {
     mem_write_ram(&mdev_, static_cast<uint16_t>(addr), val);
@@ -1906,6 +1917,20 @@ void Machine::finish_instruction() {
 
 uint8_t Machine::peek_mem(uint16_t addr) const {
   return mem_peek_cpu(&mdev_, addr);
+}
+
+void Machine::peek_mem_range(uint16_t addr, uint8_t* dst, size_t len) const {
+  mem_peek_cpu_range(&mdev_, addr, dst, len);
+}
+
+void Machine::peek_ram_range(uint16_t addr, uint8_t* dst, size_t len) const {
+  mem_peek_ram_range(&mdev_, addr, dst, len);
+}
+
+const uint8_t* Machine::lower_rom() const { return mem_lower_rom(&mdev_); }
+
+const uint8_t* Machine::upper_rom(uint8_t n) const {
+  return mem_upper_rom(&mdev_, n);
 }
 
 void Machine::poke_mem(uint16_t addr, uint8_t val) {

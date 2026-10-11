@@ -1,47 +1,218 @@
 #include "kcpc/kcpc_host.h"
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 
+#include "hw/memory.h"
+#include "hw/z80.h"
+#include "kcpc/kcpc_gate.h"
 #include "kcpc/kcpc_server.h"
 #include "koncepcja.h"
+#include "log.h"
 #include "startup_manifest.h"
+#include "subcycle/machine.h"
 #include "subcycle_bridge.h"
 
 extern t_CPC CPC;
 extern t_CRTC CRTC;
 extern byte* memmap_ROM[256];
-extern dword dwFrameCountOverall;
 
 namespace {
+
+using kcpc::Status;
+
+kcpc::GateHost gate_host() {
+  kcpc::GateHost host;
+  // The atomic the frame runner itself obeys, true for a stop and for a
+  // lease alike: either way no frame boundary is coming and the reader has
+  // to take the read itself. Not cpc_stopped(): that takes the pause mutex,
+  // which the runner holds for the whole of every machine frame, so on an
+  // unpaced machine a reader would wait some 15 ms for it on every read
+  // (measured).
+  host.paused = [] { return g_emu_paused.load(std::memory_order_acquire); };
+  host.read_stopped = [](const std::function<void()>& work) {
+    return cpc_read_while_stopped(work);
+  };
+  host.with_lease = [](const std::function<void(bool)>& work) {
+    CpcPauseLease lease;
+    if (!lease.idle()) {
+      lease.restore_run_state();
+      return false;
+    }
+    work(lease.was_paused());
+    lease.restore_run_state();
+    return true;
+  };
+  return host;
+}
+
+kcpc::Gate g_gate{gate_host()};
 kcpc::Server g_kcpc_server;
+
+// Runs read(stamp) through the gate and returns what it returned, or why it
+// did not run. `read` copies out of the machine and nothing else: it runs on
+// the frame runner or under a pause lease.
+template <typename Read>
+Status gated(std::size_t cost, Read&& read) {
+  Status status = Status::kInternal;
+  switch (g_gate.read(
+      cost, [&](const kcpc::Stamp& stamp) { status = read(stamp); })) {
+    case kcpc::GateResult::kDone:
+      return status;
+    case kcpc::GateResult::kBusy:
+      return Status::kBusy;
+    case kcpc::GateResult::kShuttingDown:
+      return Status::kShuttingDown;
+  }
+  return Status::kInternal;
+}
+
+// Bit N = an expansion ROM is fitted in slot N. The on-board BASIC is not
+// one: it sets no bit.
+std::uint32_t fitted_rom_slots() {
+  std::uint32_t slots = 0;
+  for (unsigned slot = 0; slot < kcpc::kRomSlotCount; ++slot) {
+    if (memmap_ROM[slot] != nullptr) slots |= 1U << slot;
+  }
+  return slots;
+}
+
 }  // namespace
 
-bool kcpc_host_machine_info(kcpc::MachineInfo& info) {
-  // The values below are host configuration the main thread rewrites when it
-  // rebuilds the machine, and a frame counter the runner increments. The
-  // lease is what makes reading them from a socket thread safe.
-  CpcPauseLease lease;
-  if (!lease.idle()) {
-    lease.restore_run_state();
-    return false;
+void kcpc_service_frame() { g_gate.service_frame(); }
+
+Status kcpc_host_machine_info(kcpc::MachineInfo& info) {
+  // Host configuration the main thread rewrites when it rebuilds the machine,
+  // which it only does with the runner idle: the gate keeps this read out of
+  // that.
+  return gated(sizeof(info), [&info](const kcpc::Stamp& stamp) {
+    subcycle::Machine const* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    constexpr unsigned kModel6128Plus = 3;
+    info.model = static_cast<std::uint8_t>(CPC.model);
+    info.crtc_type = CRTC.crtc_type;
+    info.effective_tier =
+        static_cast<std::uint8_t>(subcycle_bridge_effective_tier_index());
+    info.flags = 0;
+    if (g_headless) info.flags |= kcpc::kMachineFlagHeadless;
+    if (CPC.model >= kModel6128Plus) info.flags |= kcpc::kMachineFlagAsic;
+    info.ram_bytes = static_cast<std::uint32_t>(machine->ram_size());
+    info.rom_slots = fitted_rom_slots();
+    info.stamp = stamp;
+    return Status::kOk;
+  });
+}
+
+Status kcpc_host_regs_get(kcpc::Stamp& stamp, kcpc::Regs& regs) {
+  return gated(kcpc::kRegsSize, [&](const kcpc::Stamp& taken) {
+    subcycle::Machine const* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    Z80Regs const z = machine->regs();
+    regs.af = z.af;
+    regs.bc = z.bc;
+    regs.de = z.de;
+    regs.hl = z.hl;
+    regs.ix = z.ix;
+    regs.iy = z.iy;
+    regs.sp = z.sp;
+    regs.pc = z.pc;
+    regs.af_alt = z.af_;
+    regs.bc_alt = z.bc_;
+    regs.de_alt = z.de_;
+    regs.hl_alt = z.hl_;
+    regs.i = z.i;
+    regs.r = z.r;
+    regs.iff1 = z.iff1;
+    regs.iff2 = z.iff2;
+    regs.im = z.im;
+    regs.halt = z.halted;
+    stamp = taken;
+    return Status::kOk;
+  });
+}
+
+Status kcpc_host_mem_info(kcpc::MemInfo& info) {
+  return gated(sizeof(info), [&info](const kcpc::Stamp& stamp) {
+    subcycle::Machine const* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    MemRegs banking{};
+    mem_peek(machine->mem(), &banking);
+    info.ram_bytes = static_cast<std::uint32_t>(machine->ram_size());
+    info.ram_config = banking.ram_config;
+    info.rom_config = banking.rom_config;
+    info.upper_rom = banking.rom_select;
+    info.rom_slots = fitted_rom_slots();
+    info.stamp = stamp;
+    return Status::kOk;
+  });
+}
+
+Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
+                          kcpc::Stamp& stamp, std::uint8_t* dst) {
+  // What does not depend on the machine is refused before it is asked.
+  if (request.space > static_cast<std::uint8_t>(kcpc::MemSpace::kRomUpper)) {
+    return Status::kBadPayload;  // ASIC_PAGE comes with CAP_CHIPS
   }
-  constexpr unsigned kModel6128Plus = 3;
-  info.model = static_cast<std::uint8_t>(CPC.model);
-  info.crtc_type = CRTC.crtc_type;
-  info.effective_tier =
-      static_cast<std::uint8_t>(subcycle_bridge_effective_tier_index());
-  info.flags = 0;
-  if (g_headless) info.flags |= kcpc::kMachineFlagHeadless;
-  if (CPC.model >= kModel6128Plus) info.flags |= kcpc::kMachineFlagAsic;
-  info.ram_bytes = static_cast<std::uint32_t>(CPC.ram_size) * 1024U;
-  info.rom_slots = 0;
-  for (int slot = 0; slot < 32; ++slot) {
-    if (memmap_ROM[slot] != nullptr) info.rom_slots |= 1U << slot;
+  auto const space = static_cast<kcpc::MemSpace>(request.space);
+  if (space == kcpc::MemSpace::kRomUpper) {
+    if (request.bank >= kcpc::kRomSlotCount) return Status::kOutOfRange;
+  } else if (request.bank != 0) {
+    return Status::kBadPayload;
   }
-  info.stamp.frame = dwFrameCountOverall;
-  info.stamp.paused = lease.was_paused();
-  lease.restore_run_state();
-  return true;
+  std::uint32_t const addr = request.addr;
+  std::uint32_t const len = request.len;
+  switch (space) {
+    case kcpc::MemSpace::kCpu:
+    case kcpc::MemSpace::kCpuRam:
+      if (!kcpc::mem_range_ok(addr, len, kcpc::kCpuSpaceSize)) {
+        return Status::kOutOfRange;
+      }
+      break;
+    case kcpc::MemSpace::kRomLower:
+    case kcpc::MemSpace::kRomUpper:
+      if (!kcpc::mem_range_ok(addr, len, kcpc::kRomSpaceSize)) {
+        return Status::kOutOfRange;
+      }
+      break;
+    case kcpc::MemSpace::kPhysRam:  // as large as the machine, asked below
+    case kcpc::MemSpace::kAsicPage:
+      break;
+  }
+
+  return gated(len, [&](const kcpc::Stamp& taken) {
+    subcycle::Machine const* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    switch (space) {
+      case kcpc::MemSpace::kCpu:
+        machine->peek_mem_range(static_cast<std::uint16_t>(addr), dst, len);
+        break;
+      case kcpc::MemSpace::kCpuRam:
+        machine->peek_ram_range(static_cast<std::uint16_t>(addr), dst, len);
+        break;
+      case kcpc::MemSpace::kPhysRam:
+        if (!kcpc::mem_range_ok(addr, len, machine->ram_size())) {
+          return Status::kOutOfRange;
+        }
+        machine->ram_copy(addr, dst, len);
+        break;
+      case kcpc::MemSpace::kRomLower:
+        std::memcpy(dst, machine->lower_rom() + addr, len);
+        break;
+      case kcpc::MemSpace::kRomUpper:
+        std::memcpy(
+            dst,
+            machine->upper_rom(static_cast<std::uint8_t>(request.bank)) + addr,
+            len);
+        break;
+      case kcpc::MemSpace::kAsicPage:
+        return Status::kBadPayload;
+    }
+    stamp = taken;
+    return Status::kOk;
+  });
 }
 
 void kcpc_host_start(bool enabled) {
@@ -52,9 +223,27 @@ void kcpc_host_start(bool enabled) {
 #endif
   config.pid = static_cast<std::uint32_t>(startup_manifest_self_pid());
   config.machine_info = &kcpc_host_machine_info;
+  config.regs_get = &kcpc_host_regs_get;
+  config.mem_info = &kcpc_host_mem_info;
+  config.mem_read = &kcpc_host_mem_read;
+  g_gate.reopen();
   g_kcpc_server.start(config);
 }
 
-void kcpc_host_stop() { g_kcpc_server.stop(); }
+void kcpc_host_stop() {
+  // First the gate, so a reader waiting for a frame boundary answers
+  // SHUTTING_DOWN at once and its thread can be joined.
+  g_gate.shut_down();
+  bool const was_running = g_kcpc_server.running();
+  g_kcpc_server.stop();
+  if (!was_running) return;
+  // Where the reads of this run were taken: the answer to "did a client cost
+  // the machine pauses?" without a debugger.
+  kcpc::Gate::Counters const c = g_gate.counters();
+  LOG_INFO("KCPC: reads served: " << c.at_boundary << " at a frame boundary, "
+                                  << c.while_paused << " while paused, "
+                                  << c.fallback << " by fallback, " << c.busy
+                                  << " busy");
+}
 
 int kcpc_host_port() { return g_kcpc_server.port(); }

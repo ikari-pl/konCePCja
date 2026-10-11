@@ -51,6 +51,24 @@ std::string printable(const std::string& name) {
   return out;
 }
 
+// What a request that the machine refused says in its message.
+std::string machine_refusal(Status status) {
+  switch (status) {
+    case Status::kBusy:
+      return "the machine did not go idle in time";
+    case Status::kShuttingDown:
+      return "the core is shutting down";
+    case Status::kOutOfRange:
+      return "address, length or bank outside the space";
+    case Status::kBadPayload:
+      return "unknown memory space, or a bank where none applies";
+    case Status::kNotPresent:
+      return "the hardware is not fitted";
+    default:
+      return "the machine could not be read";
+  }
+}
+
 }  // namespace
 
 // One TCP connection: a reader thread that parses and answers requests, and a
@@ -258,9 +276,9 @@ class Server::Connection {
       }
       case Opcode::kMachineInfo: {
         MachineInfo info;
-        if (!read_machine(info)) {
-          respond_error(header, Status::kBusy,
-                        "the machine did not go idle in time");
+        Status const status = read_machine(info);
+        if (status != Status::kOk) {
+          respond_error(header, status, machine_refusal(status));
           return true;
         }
         Writer w;
@@ -269,11 +287,89 @@ class Server::Connection {
         respond(header, w.take());
         return true;
       }
-      default:
-        respond_error(header, Status::kUnknownOpcode,
-                      "opcode not implemented by this server");
+      case Opcode::kRegsGet:
+        if (!machine_reads()) break;
+        handle_regs_get(header);
         return true;
+      case Opcode::kMemInfo:
+        if (!machine_reads()) break;
+        handle_mem_info(header);
+        return true;
+      case Opcode::kMemRead:
+        if (!machine_reads()) break;
+        handle_mem_read(header, payload);
+        return true;
+      default:
+        break;
     }
+    respond_error(header, Status::kUnknownOpcode,
+                  "opcode not implemented by this server");
+    return true;
+  }
+
+  // CAP_MACHINE_READ: the group is there whole or not at all.
+  bool machine_reads() const {
+    return config_.regs_get && config_.mem_info && config_.mem_read;
+  }
+
+  void handle_regs_get(const FrameHeader& header) {
+    Stamp stamp;
+    Regs regs;
+    Status const status = config_.regs_get(stamp, regs);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_stamp(w, stamp);
+    write_regs(w, regs);
+    respond(header, w.take());
+  }
+
+  void handle_mem_info(const FrameHeader& header) {
+    MemInfo info;
+    Status const status = config_.mem_info(info);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_mem_info(w, info);
+    respond(header, w.take());
+  }
+
+  void handle_mem_read(const FrameHeader& header,
+                       const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    MemReadRequest request;
+    if (!read_mem_read_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "MEM_READ payload too short");
+      return;
+    }
+    // Before anything is allocated: `len` is the client's word, up to 4 GiB.
+    if (request.len > max_frame_ - kMemReadReplyOverhead) {
+      respond_error(header, Status::kTooLarge,
+                    "the reply would exceed this connection's frame limit of " +
+                        std::to_string(max_frame_) + " bytes");
+      return;
+    }
+    // The reply is built in place, so the bytes are copied out of the machine
+    // straight into it: status header, stamp, data.
+    std::vector<std::uint8_t> reply(kMemReadReplyOverhead + request.len);
+    Stamp stamp;
+    Status const status =
+        config_.mem_read(request, stamp, reply.data() + kMemReadReplyOverhead);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_stamp(w, stamp);
+    std::copy(w.data().begin(), w.data().end(), reply.begin());
+    respond(header, reply);
   }
 
   // A HELLO that is refused leaves the connection open and not yet a client:
@@ -296,11 +392,12 @@ class Server::Connection {
       return;
     }
     HelloReply reply;
-    if (!read_machine(reply.machine)) {
-      respond_error(header, Status::kBusy,
-                    "the machine did not go idle in time");
+    Status const machine = read_machine(reply.machine);
+    if (machine != Status::kOk) {
+      respond_error(header, machine, machine_refusal(machine));
       return;
     }
+    reply.caps = machine_reads() ? (kCapMachineRead | kCapMemRom) : 0;
     // Roles arrive with CONTROL (slice 3); until then everyone observes.
     reply.role = Role::kObserver;
     reply.max_frame = request.max_frame == 0
@@ -311,6 +408,7 @@ class Server::Connection {
     reply.server_version = config_.server_version;
 
     client_id_ = reply.client_id;
+    max_frame_ = reply.max_frame;
     hello_done_ = true;
     LOG_INFO("KCPC: client " << client_id_ << " connected ("
                              << printable(request.client_name) << ")");
@@ -320,8 +418,9 @@ class Server::Connection {
     respond(header, w.take());
   }
 
-  bool read_machine(MachineInfo& info) const {
-    return config_.machine_info && config_.machine_info(info);
+  Status read_machine(MachineInfo& info) const {
+    return config_.machine_info ? config_.machine_info(info)
+                                : Status::kInternal;
   }
 
   void respond(const FrameHeader& request,
@@ -405,6 +504,7 @@ class Server::Connection {
   // Reader thread only.
   bool hello_done_ = false;
   std::uint32_t client_id_ = 0;
+  std::uint32_t max_frame_ = kMaxServerFrame;  // the limit HELLO agreed on
   Clock::time_point hello_deadline_;
 
   std::mutex queue_mutex_;

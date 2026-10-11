@@ -395,8 +395,9 @@ to 6554; read `ports.binary` from the startup manifest, never assume it).
 Binary frames, up to 8 clients at once, loopback only. The contract, and the
 table of which implementation slices have landed, is
 [docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md). So far it
-answers `HELLO`, `PING` and `MACHINE_INFO`. The protocol is at major version
-0: client and server must come from the same checkout.
+answers `HELLO`, `PING`, `MACHINE_INFO` and the machine reads `REGS_GET`,
+`MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply). The protocol is at
+major version 0: client and server must come from the same checkout.
 
 ```ini
 [ipc]
@@ -408,9 +409,23 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 - `src/kcpc/kcpc_server.{h,cpp}` — acceptor thread plus a reader and a writer
   thread per client. Knows nothing about the emulator, so
   `test/kcpc_server_test.cpp` runs it over loopback with a fake machine.
+- `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate: how a read is taken
+  without pausing anything. A reader thread queues it and the frame runner
+  runs it at the next frame boundary (`kcpc_service_frame()`, called from
+  `frame_epilogue()`); on a stopped machine the reader runs it itself under
+  `cpc_read_while_stopped()`. That is not a `CpcPauseLease` on purpose: a
+  Run is refused while any lease is held, so a client polling a paused
+  machine through leases swallows `run` now and then. Emulator-free like
+  the server; `test/kcpc_gate_test.cpp` drives it with a fake machine.
 - `src/kcpc/kcpc_host.{h,cpp}` — the seam to the emulator. **Nothing touches
   the machine from a socket thread except through here**, and only the ways
-  the document's threading model allows (a `CpcPauseLease` today).
+  the document's threading model allows: reads through the gate, changes
+  (later slices) under a `CpcPauseLease`. A read callback must only copy:
+  it runs on the frame runner. **Do not call anything that takes
+  `g_pause_mutex` (`cpc_stopped()`, a lease) from a path a running machine
+  hits per read**: the runner holds that mutex for the whole of every
+  machine frame, and on an unpaced machine a socket thread then waits about
+  15 ms for it each time.
 - `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores

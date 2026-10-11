@@ -8,11 +8,13 @@ it and grows with each implementation slice of the protocol.
 The protocol is at major version 0: client and server must come from the same
 checkout, and nothing outside this repository should be built on this file.
 
-    from kcpc_client import KcpcClient
+    from kcpc_client import KcpcClient, SPACE_CPU
     with KcpcClient(port) as c:          # port: `ports.binary` of the manifest
         hello = c.hello('my-tool')
         print(hello.server_version, hello.machine.model)
         c.ping()
+        regs = c.regs_get()              # works paused or running
+        ram = c.mem_read(SPACE_CPU, 0, 0x10000)   # 64 KiB, one reply
 
 Never assume port 6545: read it from the startup manifest the core prints.
 """
@@ -20,7 +22,7 @@ Never assume port 6545: read it from the startup manifest the core prints.
 import socket
 import struct
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 MAGIC = b'KCPC'
 VERSION_MAJOR = 0
@@ -45,7 +47,27 @@ OP_PING = 0x0002
 OP_SUBSCRIBE = 0x0003
 OP_CONTROL = 0x0004
 OP_MACHINE_INFO = 0x0005
-OP_MEM_READ = 0x0211  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_REGS_GET = 0x0200
+OP_REGS_SET = 0x0201  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_MEM_INFO = 0x0210
+OP_MEM_READ = 0x0211
+
+# Capability bits (section 6) of the groups implemented so far.
+CAP_MACHINE_READ = 1 << 0
+CAP_MEM_ROM = 1 << 10
+
+# Memory spaces (section 11).
+SPACE_CPU = 0        # what the Z80 would read now
+SPACE_CPU_RAM = 1    # the RAM behind that address, ROMs ignored
+SPACE_PHYS_RAM = 2   # physical RAM, flat
+SPACE_ROM_LOWER = 3  # the lower ROM, paged in or not
+SPACE_ROM_UPPER = 4  # upper ROM `bank`, paged in or not
+SPACE_ASIC_PAGE = 5  # 6128+ register page; comes with CAP_CHIPS
+
+CPU_SPACE_SIZE = 0x10000
+ROM_SPACE_SIZE = 0x4000
+ROM_SLOT_COUNT = 32
+MEM_READ_REPLY_OVERHEAD = 16  # status header and stamp, before the bytes
 
 # Status codes (section 5).
 OK = 0
@@ -259,6 +281,80 @@ class Hello:
                      server_version, MachineInfo.read(fields))
 
 
+# The register block of section 12, in wire order.
+REG16_NAMES = ('af', 'bc', 'de', 'hl', 'ix', 'iy', 'sp', 'pc',
+               'af_alt', 'bc_alt', 'de_alt', 'hl_alt')
+REG8_NAMES = ('i', 'r', 'iff1', 'iff2', 'im', 'halt')
+REGS = struct.Struct('<12H6B2x')
+
+
+@dataclass
+class Regs:
+    stamp: Stamp
+    af: int
+    bc: int
+    de: int
+    hl: int
+    ix: int
+    iy: int
+    sp: int
+    pc: int
+    af_alt: int
+    bc_alt: int
+    de_alt: int
+    hl_alt: int
+    i: int
+    r: int
+    iff1: int
+    iff2: int
+    im: int
+    halt: int
+
+    @staticmethod
+    def read(fields: Fields) -> 'Regs':
+        stamp = Stamp.read(fields)
+        return Regs(stamp, *REGS.unpack(fields._take(REGS.size)))
+
+    def values(self) -> dict:
+        """Every register by name, without the stamp."""
+        return {name: getattr(self, name)
+                for name in REG16_NAMES + REG8_NAMES}
+
+
+@dataclass
+class MemInfo:
+    ram_bytes: int    # the size of space PHYS_RAM
+    ram_config: int   # RAM banking register
+    rom_config: int   # bit 2: lower ROM off; bit 3: upper ROM off
+    upper_rom: int    # selected upper-ROM slot
+    rom_slots: int
+    stamp: Stamp
+
+    @property
+    def lower_rom_on(self) -> bool:
+        return not self.rom_config & 0x04
+
+    @property
+    def upper_rom_on(self) -> bool:
+        return not self.rom_config & 0x08
+
+    @staticmethod
+    def read(fields: Fields) -> 'MemInfo':
+        ram_bytes = fields.u32()
+        ram_config = fields.u8()
+        rom_config = fields.u8()
+        upper_rom = fields.u8()
+        fields.skip(1)
+        rom_slots = fields.u32()
+        return MemInfo(ram_bytes, ram_config, rom_config, upper_rom,
+                       rom_slots, Stamp.read(fields))
+
+
+def mem_read_payload(space: int, addr: int, length: int,
+                     bank: int = 0) -> bytes:
+    return struct.pack('<BBHII', space, 0, bank, addr, length)
+
+
 def hello_payload(name: str = 'kcpc_client.py', role: int = ROLE_OBSERVER,
                   max_frame: int = 0, want_caps: int = 0,
                   client_minor: int = 0) -> bytes:
@@ -370,3 +466,26 @@ class KcpcClient:
 
     def machine_info(self) -> MachineInfo:
         return MachineInfo.read(self.request(OP_MACHINE_INFO))
+
+    def regs_get(self) -> Regs:
+        return Regs.read(self.request(OP_REGS_GET))
+
+    def mem_info(self) -> MemInfo:
+        return MemInfo.read(self.request(OP_MEM_INFO))
+
+    def mem_read_stamped(self, space: int, addr: int, length: int,
+                         bank: int = 0) -> Tuple[Stamp, bytes]:
+        """`length` bytes of `space` from `addr`, all from the one instant the
+        stamp names. One request, one reply frame, whatever the length."""
+        fields = self.request(OP_MEM_READ,
+                              mem_read_payload(space, addr, length, bank))
+        stamp = Stamp.read(fields)
+        data = fields.rest()
+        if len(data) != length:
+            raise ValueError(f'MEM_READ returned {len(data)} bytes, asked '
+                             f'for {length}')
+        return stamp, data
+
+    def mem_read(self, space: int, addr: int, length: int,
+                 bank: int = 0) -> bytes:
+        return self.mem_read_stamped(space, addr, length, bank)[1]

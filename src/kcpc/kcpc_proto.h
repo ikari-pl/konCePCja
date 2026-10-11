@@ -140,9 +140,9 @@ inline constexpr std::uint64_t kCapMedia = 1ULL << 11;
 inline constexpr std::uint64_t kCapSnapshot = 1ULL << 12;
 inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
 
-// What this server implements today. Slice 1 completes no capability group:
-// HELLO, PING and MACHINE_INFO need none.
-inline constexpr std::uint64_t kServerCaps = 0;
+// What this server implements today: the machine reads (slice 2), with the
+// ROM spaces. HELLO, PING and MACHINE_INFO need no capability.
+inline constexpr std::uint64_t kServerCaps = kCapMachineRead | kCapMemRom;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -412,6 +412,117 @@ inline bool read_machine_info(Reader& r, MachineInfo& out) {
   r.u32(out.rom_slots);
   return read_stamp(r, out.stamp);
 }
+
+// The register block (section 12): 32 bytes on the wire.
+inline constexpr std::size_t kRegsSize = 32;
+
+struct Regs {
+  std::uint16_t af = 0, bc = 0, de = 0, hl = 0, ix = 0, iy = 0, sp = 0, pc = 0;
+  std::uint16_t af_alt = 0, bc_alt = 0, de_alt = 0, hl_alt = 0;
+  std::uint8_t i = 0, r = 0, iff1 = 0, iff2 = 0, im = 0, halt = 0;
+};
+
+inline void write_regs(Writer& w, const Regs& g) {
+  for (std::uint16_t const v : {g.af, g.bc, g.de, g.hl, g.ix, g.iy, g.sp, g.pc,
+                                g.af_alt, g.bc_alt, g.de_alt, g.hl_alt}) {
+    w.u16(v);
+  }
+  for (std::uint8_t const v : {g.i, g.r, g.iff1, g.iff2, g.im, g.halt}) {
+    w.u8(v);
+  }
+  w.zeros(2);
+}
+
+inline bool read_regs(Reader& r, Regs& out) {
+  for (std::uint16_t* const v :
+       {&out.af, &out.bc, &out.de, &out.hl, &out.ix, &out.iy, &out.sp, &out.pc,
+        &out.af_alt, &out.bc_alt, &out.de_alt, &out.hl_alt}) {
+    r.u16(*v);
+  }
+  for (std::uint8_t* const v :
+       {&out.i, &out.r, &out.iff1, &out.iff2, &out.im, &out.halt}) {
+    r.u8(*v);
+  }
+  return r.skip(2);
+}
+
+// Section 11: the views one address can be read through.
+enum class MemSpace : std::uint8_t {
+  kCpu = 0,       // what the Z80 would read now
+  kCpuRam = 1,    // the RAM behind that address, ROMs ignored
+  kPhysRam = 2,   // physical RAM, flat
+  kRomLower = 3,  // the lower ROM, paged in or not
+  kRomUpper = 4,  // upper ROM `bank`, paged in or not
+  kAsicPage = 5,  // the 6128+ register page (CAP_CHIPS)
+};
+
+inline constexpr std::uint32_t kCpuSpaceSize = 0x10000;
+inline constexpr std::uint32_t kRomSpaceSize = 0x4000;
+inline constexpr std::uint16_t kRomSlotCount = 32;
+
+// `addr + len` must not pass the end of the space; nothing wraps. Written so
+// that no sum can overflow.
+inline bool mem_range_ok(std::uint32_t addr, std::uint32_t len,
+                         std::uint64_t space_size) {
+  return addr <= space_size && len <= space_size - addr;
+}
+
+// MEM_INFO reply.
+struct MemInfo {
+  std::uint32_t ram_bytes = 0;  // the size of space PHYS_RAM
+  std::uint8_t ram_config = 0;  // RAM banking register
+  std::uint8_t rom_config = 0;  // bit 2: lower ROM off; bit 3: upper ROM off
+  std::uint8_t upper_rom = 0;   // selected upper-ROM slot
+  std::uint32_t rom_slots = 0;  // as in MACHINE_INFO
+  Stamp stamp;
+};
+
+inline void write_mem_info(Writer& w, const MemInfo& m) {
+  w.u32(m.ram_bytes);
+  w.u8(m.ram_config);
+  w.u8(m.rom_config);
+  w.u8(m.upper_rom);
+  w.u8(0);
+  w.u32(m.rom_slots);
+  write_stamp(w, m.stamp);
+}
+
+inline bool read_mem_info(Reader& r, MemInfo& out) {
+  r.u32(out.ram_bytes);
+  r.u8(out.ram_config);
+  r.u8(out.rom_config);
+  r.u8(out.upper_rom);
+  r.skip(1);
+  r.u32(out.rom_slots);
+  return read_stamp(r, out.stamp);
+}
+
+struct MemReadRequest {
+  std::uint8_t space = 0;  // raw; the server validates it
+  std::uint16_t bank = 0;
+  std::uint32_t addr = 0;
+  std::uint32_t len = 0;
+};
+
+inline void write_mem_read_request(Writer& w, const MemReadRequest& m) {
+  w.u8(m.space);
+  w.u8(0);
+  w.u16(m.bank);
+  w.u32(m.addr);
+  w.u32(m.len);
+}
+
+inline bool read_mem_read_request(Reader& r, MemReadRequest& out) {
+  r.u8(out.space);
+  r.skip(1);
+  r.u16(out.bank);
+  r.u32(out.addr);
+  return r.u32(out.len);
+}
+
+// What a MEM_READ reply carries besides the bytes: the status header and the
+// stamp. `len` may be anything up to the frame limit less this.
+inline constexpr std::uint32_t kMemReadReplyOverhead = 4 + 12;
 
 struct HelloRequest {
   std::uint16_t client_minor = 0;

@@ -4,9 +4,11 @@
 Each test starts a real core, finds the binary port the way a frontend must
 (`ports.binary` of the startup manifest, never a hardcoded 6545) and talks to
 it with kcpc_client.py. The suite grows with every slice of
-docs/protocol/kcpc-binary-v1.md; this is slice 1: framing, HELLO, PING,
+docs/protocol/kcpc-binary-v1.md. Slice 1: framing, HELLO, PING,
 MACHINE_INFO, ERROR, the client limit, the manifest line, the
-[ipc] binary_port_enabled key and shutdown with clients connected.
+[ipc] binary_port_enabled key and shutdown with clients connected. Slice 2:
+the machine reads REGS_GET, MEM_INFO and MEM_READ, checked against the text
+IPC, on a running and on a paused machine.
 
 Usage: test_kcpc.py [--ui-free | --gui] [-k substring] [path/to/koncepcja]
   (default)  the binary is started with -H
@@ -166,6 +168,25 @@ class Core:
     def wait_exit(self, timeout: float = EXIT_TIMEOUT_S) -> int:
         return self.proc.wait(timeout=timeout)
 
+    def reads_served(self) -> Dict[str, int]:
+        """Where the machine gate took this core's reads, from the line the
+        server logs when it stops: {'boundary', 'paused', 'fallback',
+        'busy'}. Call after the core has exited."""
+        deadline = time.monotonic() + 2.0
+        while True:
+            for line in self.stderr_lines:
+                m = re.search(r'KCPC: reads served: (\d+) at a frame '
+                              r'boundary, (\d+) while paused, (\d+) by '
+                              r'fallback, (\d+) busy', line)
+                if m:
+                    return dict(zip(('boundary', 'paused', 'fallback',
+                                     'busy'), map(int, m.groups())))
+            # The pump thread may still be draining the pipe.
+            assert time.monotonic() < deadline, (
+                'the core did not log where its reads were served:\n'
+                + ''.join(self.stderr_lines[-10:]))
+            time.sleep(0.02)
+
     def stop(self) -> None:
         if self.proc.poll() is None:
             self.proc.kill()
@@ -266,8 +287,10 @@ def test_manifest_port_and_hello() -> None:
             assert hello.server_minor == 0
             assert hello.role == kc.ROLE_OBSERVER
             assert hello.max_frame == kc.MAX_SERVER_FRAME, hello.max_frame
-            # Slice 1 completes no capability group.
-            assert hello.caps == 0, f'caps {hello.caps:#x}'
+            # The groups implemented so far: the machine reads, with the
+            # ROM spaces.
+            assert hello.caps == kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM, (
+                f'caps {hello.caps:#x}')
 
             m = hello.machine
             assert m.model == int(core.manifest['machine.model']), m
@@ -390,25 +413,47 @@ def test_machine_info_stamp() -> None:
 
 
 class Readers:
-    """`count` clients that each call MACHINE_INFO in a loop, as fast as the
-    server answers, until stopped. Every call takes a pause lease, so this is
-    the heaviest thing slice 1 lets a client do to the machine."""
+    """`count` clients that each read in a loop, as fast as the server
+    answers, until stopped. `what` is 'info' (MACHINE_INFO) or 'memory' (all
+    64 KiB of the CPU space and the registers, in turn: what a live memory
+    view and a register window ask for). On a running machine every read is taken by
+    the frame runner at a frame boundary; on a paused one, under a pause
+    lease."""
 
-    def __init__(self, core: Core, count: int):
+    def __init__(self, core: Core, count: int, what: str = 'info'):
         self.core = core
+        self.what = what
         self.stop = threading.Event()
         self.calls = 0
+        self.running_reads = 0   # replies whose stamp said "running"
+        self.slowest = 0.0       # seconds, the longest single read
         self.errors: List[str] = []
         self.threads = [threading.Thread(target=self._run)
                         for _ in range(count)]
+
+    def _read(self, c: KcpcClient, turn: int) -> kc.Stamp:
+        if self.what == 'info':
+            return c.machine_info().stamp
+        if turn % 2:
+            return c.regs_get().stamp
+        stamp, data = c.mem_read_stamped(kc.SPACE_CPU, 0, kc.CPU_SPACE_SIZE)
+        assert len(data) == kc.CPU_SPACE_SIZE
+        return stamp
 
     def _run(self) -> None:
         try:
             with self.core.client() as c:
                 c.hello('test_kcpc reader')
+                turn = 0
                 while not self.stop.is_set():
-                    c.machine_info()
+                    begin = time.monotonic()
+                    stamp = self._read(c, turn)
+                    turn += 1
+                    self.slowest = max(self.slowest,
+                                       time.monotonic() - begin)
                     self.calls += 1
+                    if not stamp.paused:
+                        self.running_reads += 1
         except Exception as e:  # pylint: disable=broad-except
             self.errors.append(repr(e))
 
@@ -454,11 +499,15 @@ def test_concurrent_reads_keep_the_run_state() -> None:
         print(f'    {readers.calls} reads while paused, frame unchanged')
 
 
-def _stepped_state(core: Core, frames: int, readers: int) -> Tuple[
-        int, bool, str, str, int]:
+def _stepped_state(core: Core, frames: int, readers: int,
+                   what: str = 'info') -> Tuple[int, bool, str, str, Readers]:
     """Reset to a known paused state, run `frames` frames with the text
     IPC's `step frame` while `readers` clients read, and describe the
-    machine afterwards: (frames run, paused, registers, RAM, reads)."""
+    machine afterwards: (frames run, paused, registers, memory, readers).
+
+    The registers are every one of them, R included, and the memory is all
+    physical RAM (the video RAM with it), so two runs that end in the same
+    description computed the same thing."""
     with core.client() as c:
         c.hello('test_kcpc step')
         assert core.ipc('pause').startswith('OK')
@@ -469,24 +518,31 @@ def _stepped_state(core: Core, frames: int, readers: int) -> Tuple[
             assert time.monotonic() < deadline, 'reset did not stay paused'
             time.sleep(0.02)
         before = c.machine_info().stamp
-        with Readers(core, readers) as r:
+        with Readers(core, readers, what) as r:
             resp = core.ipc(f'step frame {frames}')
         assert resp.startswith('OK'), resp
         assert not r.errors, r.errors
         after = c.machine_info().stamp
-        regs = core.ipc('regs')
-        ram = ''.join(core.ipc(f'mem read {addr} 4096 --view=ram')
-                      for addr in range(0, 0x10000, 0x1000))
-        return after.frame - before.frame, after.paused, regs, ram, r.calls
+        # Through the text IPC, not through the port under test.
+        regs = core.ipc('regs') + ''.join(
+            ' ' + core.ipc(f'reg get {name}')
+            for name in ('I', 'R', 'IFF1', 'IFF2', 'AFX', 'BCX', 'DEX',
+                         'HLX'))
+        pages = c.mem_info().ram_bytes // 16384
+        ram = ''.join(core.ipc(f'mem read 0 16384 --bank={page}')
+                      for page in range(pages))
+        return after.frame - before.frame, after.paused, regs, ram, r
 
 
 def test_reads_do_not_change_what_the_machine_computes() -> None:
-    """Epic invariant 2: a run with clients attached makes the same
-    observations as a run without. From the same reset, 100 stepped frames
-    end in the same registers and the same 64 KiB of RAM whether or not two
-    clients read MACHINE_INFO all the way through, and the step itself runs
-    exactly 100 frames and ends paused. (A read used to abandon the text
-    IPC's frame step after a few frames and leave the machine running.)"""
+    """Epic invariant 2 and acceptance 5 of slice 2: a run with clients
+    attached makes the same observations as a run without. From the same
+    reset, 100 frames end in the same registers and the same RAM whether
+    nobody reads, two clients read MACHINE_INFO all the way through, or a
+    client reads all 64 KiB and the registers at every frame boundary; and
+    the step itself runs exactly 100 frames and ends paused. (A read used to
+    abandon the text IPC's frame step after a few frames and leave the
+    machine running.)"""
     frames = 100
     with Core() as core:
         alone = _stepped_state(core, frames, 0)
@@ -494,18 +550,406 @@ def test_reads_do_not_change_what_the_machine_computes() -> None:
         assert alone[:4] == again[:4], (
             'the reference run is not reproducible; the comparison below '
             'would prove nothing')
-        watched = _stepped_state(core, frames, 2)
-    assert alone[0] == frames and alone[1], alone[:2]
-    assert watched[4] > 50, f'only {watched[4]} reads during the step'
-    assert watched[0] == frames, (
-        f'the step ran {watched[0]} frames with clients reading, not '
-        f'{frames}')
-    assert watched[1], 'the step did not end paused with clients reading'
-    assert watched[2] == alone[2], (
-        f'registers differ:\n  alone   {alone[2]}\n  watched {watched[2]}')
-    assert watched[3] == alone[3], 'RAM differs after the same 100 frames'
-    print(f'    {watched[4]} reads during {frames} stepped frames; '
-          'registers and RAM identical')
+        assert alone[0] == frames and alone[1], alone[:2]
+        for what, readers in (('info', 2), ('memory', 1), ('memory', 3)):
+            watched = _stepped_state(core, frames, readers, what)
+            r = watched[4]
+            label = f'{readers} x {what}'
+            # A read that waited out the gate's fallback takes a quarter of
+            # a second, so more than 50 in these two seconds were taken at
+            # frame boundaries, by the runner.
+            assert r.calls > 50, (
+                f'{label}: only {r.calls} reads during the step')
+            assert r.running_reads > 50, (
+                f'{label}: only {r.running_reads} reads saw the machine '
+                'running; the step was not read at its frame boundaries')
+            assert watched[0] == frames, (
+                f'{label}: the step ran {watched[0]} frames, not {frames}')
+            assert watched[1], f'{label}: the step did not end paused'
+            assert watched[2] == alone[2], (
+                f'{label}: registers differ:\n  alone   {alone[2]}\n'
+                f'  watched {watched[2]}')
+            assert watched[3] == alone[3], (
+                f'{label}: RAM differs after the same {frames} frames')
+            print(f'    {label}: {r.calls} reads during {frames} frames '
+                  f'({r.running_reads} at a frame boundary, slowest '
+                  f'{r.slowest * 1000:.0f} ms); registers and RAM identical')
+
+
+# -- slice 2: the machine reads ---------------------------------------------
+
+def ipc_bytes(core: Core, command: str) -> bytes:
+    """The bytes of a text IPC `mem read`: 'OK ' and two hex digits each."""
+    resp = core.ipc(command)
+    assert resp.startswith('OK '), f'{command}: {resp[:80]}'
+    return bytes.fromhex(resp[3:])
+
+
+def pause_core(core: Core, c: KcpcClient) -> kc.Stamp:
+    """Pause through the text IPC and wait until the port agrees."""
+    assert core.ipc('pause').startswith('OK')
+    deadline = time.monotonic() + IO_TIMEOUT_S
+    while True:
+        stamp = c.machine_info().stamp
+        if stamp.paused:
+            return stamp
+        assert time.monotonic() < deadline, 'the machine did not pause'
+        time.sleep(0.02)
+
+
+def expect_status(c: KcpcClient, status: int, what: str, space: int,
+                  addr: int, length: int, bank: int = 0) -> None:
+    try:
+        c.mem_read(space, addr, length, bank)
+    except KcpcError as e:
+        assert e.status == status, (
+            f'{what}: {kc.status_name(e.status)}, expected '
+            f'{kc.status_name(status)} ({e.message!r})')
+        assert e.message, f'{what}: no message'
+        return
+    raise AssertionError(f'{what}: the read was accepted')
+
+
+def test_mem_read_matches_the_text_ipc() -> None:
+    """Acceptance 1: MEM_READ of 65536 bytes of the CPU space is one response
+    frame whose bytes equal the text IPC's `mem read 0 65536`; the same for
+    CPU_RAM against --view=ram and PHYS_RAM against every --bank=N page."""
+    with Core() as core, core.client() as c:
+        c.hello('test_kcpc mem')
+        # Let the firmware draw something first, then stop the clock so the
+        # two ports read the same instant.
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        paused = pause_core(core, c)
+
+        request_id = c.send_request(
+            kc.OP_MEM_READ,
+            kc.mem_read_payload(kc.SPACE_CPU, 0, kc.CPU_SPACE_SIZE))
+        frame = c.read_frame()   # the very next frame, and the only one
+        assert frame.kind == kc.KIND_RESPONSE and frame.id == request_id
+        assert frame.opcode == kc.OP_MEM_READ and frame.status == kc.OK
+        assert len(frame.payload) == (
+            kc.MEM_READ_REPLY_OVERHEAD + kc.CPU_SPACE_SIZE), len(frame.payload)
+        cpu = frame.payload[kc.MEM_READ_REPLY_OVERHEAD:]
+        assert cpu == ipc_bytes(core, 'mem read 0 65536'), (
+            'CPU space differs from the text IPC')
+
+        stamp, ram = c.mem_read_stamped(kc.SPACE_CPU_RAM, 0,
+                                        kc.CPU_SPACE_SIZE)
+        assert stamp.paused and stamp.frame == paused.frame, (stamp, paused)
+        assert ram == ipc_bytes(core, 'mem read 0 65536 --view=ram'), (
+            'CPU_RAM space differs from --view=ram')
+        assert cpu != ram, (
+            'a ROM is paged in at the BASIC prompt: the two views of the '
+            'same addresses must differ, or the test compared nothing')
+
+        info = c.mem_info()
+        assert info.ram_bytes == c.machine_info().ram_bytes == (
+            int(core.manifest['machine.ram_size_kb']) * 1024), info
+        assert info.stamp.paused and info.stamp.frame == paused.frame
+        assert info.rom_slots == 0x80, f'rom_slots {info.rom_slots:#x}'
+        phys = c.mem_read(kc.SPACE_PHYS_RAM, 0, info.ram_bytes)
+        assert len(phys) == info.ram_bytes
+        pages = info.ram_bytes // 16384
+        assert pages >= 8, 'the example config is a 128K machine'
+        for page in range(pages):
+            assert phys[page * 16384:(page + 1) * 16384] == ipc_bytes(
+                core, f'mem read 0 16384 --bank={page}'), (
+                    f'PHYS_RAM page {page} differs from --bank={page}')
+        assert any(phys[:0x10000]), 'the base RAM is all zeros'
+
+        # Parts of a space, across the 16K slot borders.
+        for space, view in ((kc.SPACE_CPU, ''), (kc.SPACE_CPU_RAM,
+                                                 ' --view=ram')):
+            for addr, length in ((0x3FF0, 0x20), (0xBFFF, 2), (0xFFFF, 1),
+                                 (0x1234, 0x9000)):
+                assert c.mem_read(space, addr, length) == ipc_bytes(
+                    core, f'mem read {addr} {length}{view}'), (
+                        space, hex(addr), length)
+        assert c.mem_read(kc.SPACE_PHYS_RAM, 0xFFF0, 0x20) == (
+            phys[0xFFF0:0x10010]), 'across the base/expansion border'
+        assert c.mem_read(kc.SPACE_CPU, 0x10000, 0) == b''
+
+
+def test_rom_spaces_and_limits() -> None:
+    """Acceptance 2: ROM_LOWER and ROM_UPPER return the ROM bytes while the
+    ROM is paged out; addr+len past the end of a space is OUT_OF_RANGE; a
+    read over the frame limit is TOO_LARGE."""
+    with Core() as core, core.client() as c:
+        c.hello('test_kcpc rom')
+        assert core.ipc('pause').startswith('OK')
+        assert core.ipc('reset --no-resume').startswith('OK')
+        pause_core(core, c)
+
+        # Out of reset both ROMs are paged in and slot 0 is selected, so the
+        # text IPC's CPU view shows them: that is the reference.
+        info = c.mem_info()
+        assert info.lower_rom_on and info.upper_rom_on, info
+        assert info.upper_rom == 0, info
+        lower = ipc_bytes(core, 'mem read 0 16384')
+        basic = ipc_bytes(core, f'mem read {0xC000} 16384')
+        assert c.mem_read(kc.SPACE_ROM_LOWER, 0, 0x4000) == lower
+        assert c.mem_read(kc.SPACE_ROM_UPPER, 0, 0x4000, bank=0) == basic
+        amsdos = c.mem_read(kc.SPACE_ROM_UPPER, 0, 0x4000, bank=7)
+        assert amsdos != basic, 'slot 7 holds AMSDOS, not BASIC'
+        # A slot with nothing fitted answers with the on-board BASIC, as it
+        # does on the bus.
+        assert c.mem_read(kc.SPACE_ROM_UPPER, 0, 0x4000, bank=3) == basic
+
+        # Page both ROMs out with three instructions in RAM:
+        #   DI : LD BC,&7F8C : OUT (C),C
+        assert core.ipc('mem write 0x8000 F3018C7FED4918FE').startswith('OK')
+        assert core.ipc('reg set PC 0x8000').startswith('OK')
+        assert core.ipc('step 3').startswith('OK')
+        info = c.mem_info()
+        assert not info.lower_rom_on and not info.upper_rom_on, (
+            f'rom_config {info.rom_config:#x}: the ROMs are still paged in')
+        cpu = c.mem_read(kc.SPACE_CPU, 0, kc.CPU_SPACE_SIZE)
+        assert cpu == c.mem_read(kc.SPACE_CPU_RAM, 0, kc.CPU_SPACE_SIZE), (
+            'with both ROMs out the CPU sees RAM everywhere')
+        assert cpu[:0x4000] != lower and cpu[0xC000:] != basic
+        assert cpu == ipc_bytes(core, 'mem read 0 65536')
+        # ...and the ROM spaces are what they were.
+        assert c.mem_read(kc.SPACE_ROM_LOWER, 0, 0x4000) == lower
+        assert c.mem_read(kc.SPACE_ROM_UPPER, 0, 0x4000, bank=0) == basic
+        assert c.mem_read(kc.SPACE_ROM_UPPER, 0, 0x4000, bank=7) == amsdos
+        assert c.mem_read(kc.SPACE_ROM_LOWER, 0x3FF0, 0x10) == lower[0x3FF0:]
+
+        # Select AMSDOS and page the upper ROM back in: the CPU space shows
+        # slot 7, and MEM_INFO says which slot.
+        #   LD BC,&DF07 : OUT (C),C : LD BC,&7F84 : OUT (C),C
+        assert core.ipc(
+            'mem write 0x8000 0107DFED4901847FED4918FE').startswith('OK')
+        assert core.ipc('reg set PC 0x8000').startswith('OK')
+        assert core.ipc('step 4').startswith('OK')
+        info = c.mem_info()
+        assert info.upper_rom == 7 and info.upper_rom_on, info
+        assert not info.lower_rom_on, info
+        assert c.mem_read(kc.SPACE_CPU, 0xC000, 0x4000) == amsdos
+
+        # Past the end of a space: nothing wraps.
+        ram_bytes = info.ram_bytes
+        for what, space, addr, length, bank in (
+                ('CPU, one byte over', kc.SPACE_CPU, 0xFFFF, 2, 0),
+                ('CPU, 64K + 1', kc.SPACE_CPU, 0, 0x10001, 0),
+                ('CPU, empty read past the end', kc.SPACE_CPU, 0x10001, 0, 0),
+                ('CPU_RAM, addr wraps 32 bits', kc.SPACE_CPU_RAM,
+                 0xFFFFFFFF, 2, 0),
+                ('ROM_LOWER, one byte over', kc.SPACE_ROM_LOWER, 0x3FFF, 2,
+                 0),
+                ('ROM_UPPER, 16K + 1', kc.SPACE_ROM_UPPER, 0, 0x4001, 7),
+                ('ROM_UPPER, slot 32', kc.SPACE_ROM_UPPER, 0, 1, 32),
+                ('PHYS_RAM, one byte over', kc.SPACE_PHYS_RAM,
+                 ram_bytes - 1, 2, 0),
+                ('PHYS_RAM, starts past the end', kc.SPACE_PHYS_RAM,
+                 ram_bytes + 1, 0, 0)):
+            expect_status(c, kc.OUT_OF_RANGE, what, space, addr, length, bank)
+        assert c.mem_read(kc.SPACE_PHYS_RAM, ram_bytes - 1, 1) != b''
+        assert c.mem_read(kc.SPACE_PHYS_RAM, ram_bytes, 0) == b''
+
+        # A space the server does not have, and a bank where none applies.
+        for what, space, bank in (
+                ('ASIC_PAGE before CAP_CHIPS', kc.SPACE_ASIC_PAGE, 0),
+                ('space 99', 99, 0),
+                ('a bank on the CPU space', kc.SPACE_CPU, 1),
+                ('a bank on PHYS_RAM', kc.SPACE_PHYS_RAM, 2)):
+            expect_status(c, kc.BAD_PAYLOAD, what, space, 0, 16, bank)
+        try:
+            c.request(kc.OP_MEM_READ, b'\x00' * 11)
+            raise AssertionError('a short MEM_READ request was accepted')
+        except KcpcError as e:
+            assert e.status == kc.BAD_PAYLOAD, e
+
+        # Over the frame limit, which is 16 MiB on this connection...
+        fits = kc.MAX_SERVER_FRAME - kc.MEM_READ_REPLY_OVERHEAD
+        for length in (fits + 1, 0xFFFFFFFF):
+            expect_status(c, kc.TOO_LARGE, f'{length} bytes',
+                          kc.SPACE_PHYS_RAM, 0, length)
+        c.ping()
+
+    # ...and whatever a client asked for in HELLO on its own. With the
+    # smallest allowed limit, all of a 128K machine's RAM does not fit one
+    # reply although every byte of the range exists.
+    with Core() as core, core.client() as small:
+        hello = small.hello('test_kcpc small frames',
+                            max_frame=kc.MIN_CLIENT_MAX_FRAME)
+        assert hello.max_frame == kc.MIN_CLIENT_MAX_FRAME
+        ram_bytes = small.mem_info().ram_bytes
+        assert ram_bytes >= kc.MIN_CLIENT_MAX_FRAME
+        fits = kc.MIN_CLIENT_MAX_FRAME - kc.MEM_READ_REPLY_OVERHEAD
+        expect_status(small, kc.TOO_LARGE, 'all RAM in a 128 KiB frame',
+                      kc.SPACE_PHYS_RAM, 0, ram_bytes)
+        expect_status(small, kc.TOO_LARGE, 'one byte over the frame',
+                      kc.SPACE_PHYS_RAM, 0, fits + 1)
+        assert len(small.mem_read(kc.SPACE_PHYS_RAM, 0, fits)) == fits
+        # The promise of section 11: 64 KiB always fits.
+        assert len(small.mem_read(kc.SPACE_CPU, 0, 0x10000)) == 0x10000
+
+
+def test_regs_get_matches_the_text_ipc() -> None:
+    """Acceptance 3: REGS_GET equals the text IPC's registers at the same
+    paused instant, and two reads while paused carry the same stamp."""
+    names = {'af': 'AF', 'bc': 'BC', 'de': 'DE', 'hl': 'HL', 'ix': 'IX',
+             'iy': 'IY', 'sp': 'SP', 'pc': 'PC', 'af_alt': 'AFX',
+             'bc_alt': 'BCX', 'de_alt': 'DEX', 'hl_alt': 'HLX', 'i': 'I',
+             'r': 'R', 'iff1': 'IFF1', 'iff2': 'IFF2', 'im': 'IM',
+             'halt': 'HALT'}
+
+    def text_regs(core: Core) -> dict:
+        out = {}
+        for field, name in names.items():
+            resp = core.ipc(f'reg get {name}')
+            assert resp.startswith('OK '), (name, resp)
+            out[field] = int(resp[3:], 16)
+        return out
+
+    with Core() as core, core.client() as c:
+        c.hello('test_kcpc regs')
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        paused = pause_core(core, c)
+
+        first = c.regs_get()
+        assert first.values() == text_regs(core), (
+            first.values(), text_regs(core))
+        assert first.pc != 0 and first.sp != 0, first
+        # The one-line dump agrees too.
+        dump = core.ipc('regs')
+        for token, value in (('PC', first.pc), ('SP', first.sp),
+                             ('IX', first.ix), ('IY', first.iy)):
+            assert f'{token}={value:04X}' in dump, (token, dump)
+        assert f'A={first.af >> 8:02X} F={first.af & 0xFF:02X}' in dump, dump
+
+        time.sleep(0.2)
+        second = c.regs_get()
+        assert first.stamp.paused and second.stamp.paused
+        assert first.stamp.frame == second.stamp.frame == paused.frame, (
+            first.stamp, second.stamp, paused)
+        assert second.values() == first.values(), 'a paused machine moved'
+
+        # The block follows the machine, not a copy taken at the pause:
+        # every register set through the text IPC reads back.
+        wanted = {'af': 0x1234, 'bc': 0x2345, 'de': 0x3456, 'hl': 0x4567,
+                  'ix': 0x5678, 'iy': 0x6789, 'sp': 0x789A, 'af_alt': 0x89AB,
+                  'bc_alt': 0x9ABC, 'de_alt': 0xABCD, 'hl_alt': 0xBCDE,
+                  'i': 0x5A}
+        for field, value in wanted.items():
+            resp = core.ipc(f'reg set {names[field]} {value:#x}')
+            assert resp.startswith('OK'), (field, resp)
+        after = c.regs_get()
+        for field, value in wanted.items():
+            assert getattr(after, field) == value, (
+                f'{field}: {getattr(after, field):#x}, set to {value:#x}')
+        assert after.values() == text_regs(core)
+        assert after.stamp.frame == paused.frame and after.stamp.paused
+
+        # Running: the stamp says so and the frame count moves.
+        assert core.ipc('reset').startswith('OK')
+        deadline = time.monotonic() + IO_TIMEOUT_S
+        while True:
+            live = c.regs_get()
+            if not live.stamp.paused and live.stamp.frame > paused.frame + 5:
+                break
+            assert time.monotonic() < deadline, f'not running: {live.stamp}'
+            time.sleep(0.02)
+        assert 0 <= live.im <= 2 and live.iff1 in (0, 1), live
+
+
+def test_reads_work_running_and_across_a_pause() -> None:
+    """Acceptance 4: reads work on a running and on a paused machine, and a
+    read that is waiting for a frame boundary when the machine is paused
+    under it is still answered, once. Nothing a reader does changes the run
+    state."""
+    with Core() as core, core.client() as c:
+        c.hello('test_kcpc gate')
+        # Running: every read is taken at a frame boundary.
+        stamps = []
+        begin = time.monotonic()
+        for _ in range(100):
+            stamp, data = c.mem_read_stamped(kc.SPACE_CPU, 0,
+                                             kc.CPU_SPACE_SIZE)
+            assert len(data) == kc.CPU_SPACE_SIZE
+            stamps.append(stamp)
+        took = time.monotonic() - begin
+        assert not any(s.paused for s in stamps), 'a read paused the machine'
+        frames = [s.frame for s in stamps]
+        assert frames == sorted(frames) and frames[-1] > frames[0], frames
+        # One frame boundary each: 100 reads span about 100 frames (2 s at
+        # 50 Hz), where 100 reads through the fallback would take 25 s.
+        assert frames[-1] - frames[0] <= 150, (frames[0], frames[-1])
+        print(f'    100 x 64 KiB while running: {took * 1000:.0f} ms, '
+              f'{frames[-1] - frames[0]} frames')
+
+        # Readers hammering while the machine is paused and resumed under
+        # them: each request gets its one answer (the client matches ids),
+        # whichever side of a pause it landed on.
+        with Readers(core, 3, 'memory') as readers:
+            for _ in range(25):
+                assert core.ipc('pause').startswith('OK')
+                time.sleep(0.03)
+                assert core.ipc('run').startswith('OK')
+                time.sleep(0.05)
+            calls_running = readers.calls
+            assert core.ipc('pause').startswith('OK')
+            time.sleep(0.5)
+            calls_paused = readers.calls - calls_running
+        assert not readers.errors, readers.errors
+        assert calls_running > 100, f'only {calls_running} reads'
+        assert calls_paused > 100, (
+            f'only {calls_paused} reads in half a second of pause')
+        assert readers.running_reads > 50, readers.running_reads
+        print(f'    {calls_running} reads across 25 pause/run cycles, '
+              f'{calls_paused} more while paused; slowest '
+              f'{readers.slowest * 1000:.0f} ms')
+
+        # Still paused, and nothing moved while the readers read.
+        one = c.regs_get()
+        time.sleep(0.2)
+        two = c.regs_get()
+        assert one.stamp.paused and two.stamp == one.stamp, (one.stamp,
+                                                             two.stamp)
+        assert two.values() == one.values()
+        # And it runs again when told to.
+        assert core.ipc('run').startswith('OK')
+        deadline = time.monotonic() + IO_TIMEOUT_S
+        while True:
+            now = c.mem_info().stamp
+            if not now.paused and now.frame > one.stamp.frame:
+                break
+            assert time.monotonic() < deadline, f'stuck at {now}'
+            time.sleep(0.05)
+
+
+def test_quit_while_clients_read() -> None:
+    """Shutdown with reads in flight: the core still quits promptly, and no
+    reader is left waiting for a frame boundary that will not come."""
+    with Core() as core:
+        readers = Readers(core, 4, 'memory')
+        with readers:
+            time.sleep(0.5)
+            begin = time.monotonic()
+            core.ipc_quit()
+            try:
+                code = core.wait_exit()
+            except subprocess.TimeoutExpired:
+                raise AssertionError(
+                    f'quit did not end the core within {EXIT_TIMEOUT_S:.0f}s '
+                    'with clients reading') from None
+            took = time.monotonic() - begin
+        assert code == 0, f'quit exited with {code}'
+        assert readers.calls > 20, readers.calls
+        # Every reader was cut off by the shutdown, not by a timeout of its
+        # own socket.
+        assert len(readers.errors) == 4, readers.errors
+        assert not any('timed out' in e for e in readers.errors), (
+            readers.errors)
+        # The core says where the gate took its reads. On a running machine
+        # that is the frame boundary: the runner copied, nothing was paused.
+        served = core.reads_served()
+        assert served['busy'] == 0, served
+        assert served['boundary'] > 20, served
+        assert served['boundary'] + served['paused'] + served[
+            'fallback'] >= readers.calls, (served, readers.calls)
+        print(f'    quit -> exit 0 in {took * 1000:.0f} ms with 4 clients '
+              f'reading ({readers.calls} reads; served {served})')
 
 
 def test_bad_frames_close_the_connection() -> None:
@@ -596,7 +1040,7 @@ def test_recoverable_errors_keep_the_connection() -> None:
 
         # An opcode of a capability this server does not have yet, and one
         # that exists nowhere.
-        for opcode in (kc.OP_MEM_READ, 0x7FFF, kc.OP_ERROR):
+        for opcode in (kc.OP_REGS_SET, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -803,6 +1247,11 @@ TESTS: List[Callable[[], None]] = [
     test_machine_info_stamp,
     test_concurrent_reads_keep_the_run_state,
     test_reads_do_not_change_what_the_machine_computes,
+    test_mem_read_matches_the_text_ipc,
+    test_rom_spaces_and_limits,
+    test_regs_get_matches_the_text_ipc,
+    test_reads_work_running_and_across_a_pause,
+    test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,
     test_ninth_client_is_refused,

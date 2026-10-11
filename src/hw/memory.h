@@ -86,6 +86,24 @@ void mem_poke_cpu(const Device* dev, uint16_t addr, uint8_t val);
  * banking, so it is correct in the 0x4000-0x7FFF window too. */
 uint8_t mem_peek_ram(const Device* dev, uint16_t addr);
 
+/* Bulk debug reads: copy `len` bytes starting at `addr` out of a view, as if
+ * by one mem_peek_cpu / mem_peek_ram per byte, but a 16K slot at a time (a
+ * view is one flat run of bytes per slot whatever is banked or overlaid).
+ * `addr + len` must not pass 0x10000; nothing wraps. For tools that read whole
+ * views (the KCPC MEM_READ spaces CPU and CPU_RAM). */
+void mem_peek_cpu_range(const Device* dev, uint16_t addr, uint8_t* dst,
+                        size_t len);
+void mem_peek_ram_range(const Device* dev, uint16_t addr, uint8_t* dst,
+                        size_t len);
+
+/* The 16K a read of the lower / upper ROM window would see if the Gate Array
+ * had that ROM paged in, whether or not it has. `n` is the upper-ROM number an
+ * A13-low I/O write would latch: an unattached number answers with the onboard
+ * BASIC, as on the bus. On a Plus cartridge these are the cartridge banks the
+ * current RMR2 value / that ROM number map to. */
+const uint8_t* mem_lower_rom(const Device* dev);
+const uint8_t* mem_upper_rom(const Device* dev, uint8_t n);
+
 /* --- Fast-tier batch seam (memory-device.md §batch, plan §4.3) ---
  *
  * The same CPU-visible view as mem_peek_cpu/mem_poke_cpu, but table-driven:

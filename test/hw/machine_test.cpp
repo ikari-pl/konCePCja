@@ -372,3 +372,50 @@ TEST(SubcycleMachine, PlusStepAcrossRomSwitchOutKeepsGaAndMemoryAgreeing) {
   ASSERT_EQ(0x0005, m.regs().pc);
   expect_agree(0x8D, 0x00);  // lower ROM off: &0000 is the RAM underneath
 }
+
+// The bulk reads the KCPC server copies whole views with must agree with the
+// per-byte accessors on a real, booted machine: the CPU view, the banked RAM
+// view, physical RAM across the base/expansion border, and the ROMs.
+TEST(SubcycleMachine, BulkReadsMatchThePerByteAccessors) {
+  std::vector<uint8_t> rom = read_file("rom/cpc6128.rom");
+  if (rom.size() < 0x8000) rom = read_file("../rom/cpc6128.rom");
+  if (rom.size() < 0x8000) GTEST_SKIP() << "rom/cpc6128.rom not found";
+
+  subcycle::Machine m;
+  m.set_ram_size(128 * 1024);
+  ASSERT_TRUE(m.build(rom.data(), rom.size()));
+  for (int i = 0; i < 60; ++i) m.run_frame();  // the firmware has drawn
+  m.ram_write(0x10000 + 0x123, 0x77);          // expansion bank 0
+  m.ram_write(0x1FFFF, 0x99);                  // the very last byte
+
+  std::vector<uint8_t> cpu(0x10000), ram(0x10000);
+  m.peek_mem_range(0, cpu.data(), cpu.size());
+  m.peek_ram_range(0, ram.data(), ram.size());
+  for (uint32_t a = 0; a < 0x10000; ++a) {
+    ASSERT_EQ(cpu[a], m.peek_mem(static_cast<uint16_t>(a))) << "cpu " << a;
+    ASSERT_EQ(ram[a], mem_peek_ram(m.mem(), static_cast<uint16_t>(a)))
+        << "ram " << a;
+  }
+  EXPECT_NE(cpu, ram) << "after boot a ROM is paged in: the views differ";
+
+  ASSERT_EQ(m.ram_size(), 0x20000U);
+  std::vector<uint8_t> phys(m.ram_size());
+  m.ram_copy(0, phys.data(), phys.size());
+  for (size_t a = 0; a < phys.size(); ++a) {
+    ASSERT_EQ(phys[a], m.ram_read(a)) << "phys " << a;
+  }
+  // A range inside the expansion, and one across the 64K border.
+  uint8_t part[0x200];
+  m.ram_copy(0x10000 + 0x100, part, sizeof(part));
+  EXPECT_EQ(part[0x23], 0x77);
+  m.ram_copy(0xFF00, part, sizeof(part));
+  for (size_t i = 0; i < sizeof(part); ++i) {
+    ASSERT_EQ(part[i], m.ram_read(0xFF00 + i)) << "border " << i;
+  }
+
+  // The ROMs as built: firmware below, BASIC above, paged in or not.
+  EXPECT_EQ(std::vector<uint8_t>(m.lower_rom(), m.lower_rom() + 0x4000),
+            std::vector<uint8_t>(rom.begin(), rom.begin() + 0x4000));
+  EXPECT_EQ(std::vector<uint8_t>(m.upper_rom(0), m.upper_rom(0) + 0x4000),
+            std::vector<uint8_t>(rom.begin() + 0x4000, rom.begin() + 0x8000));
+}
