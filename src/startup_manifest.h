@@ -24,6 +24,7 @@ struct StartupManifest {
   bool headless = false;
   int ipc_port = 0;
   int telnet_port = 0;
+  int binary_port = 0;  // the KCPC binary server (docs/protocol/)
   int m4_http_port = 0;
   std::string m4_bind_ip;
   unsigned int model = 0;        // 0=464, 1=664, 2=6128, 3=6128+

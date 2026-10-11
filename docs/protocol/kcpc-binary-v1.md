@@ -1,9 +1,13 @@
 # KCPC binary frontend protocol, version 1
 
-**Status: design. Nothing in this document is implemented yet.** It is the
-contract for phase 3 of the headless-core epic (beads-cv2, bead beads-3o1).
-The implementation lands in the slices listed in
-[section 16](#16-implementation-slices). The server announces protocol
+**Status: being implemented, one slice at a time.** This is the contract for
+phase 3 of the headless-core epic (beads-cv2, bead beads-3o1). The
+implementation lands in the slices listed in
+[section 16](#16-implementation-slices), and that table says which have
+landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
+`MACHINE_INFO`, `ERROR`). Everything else is still design; a server tells a
+client what it implements through the `caps` mask of `HELLO`. The server
+announces protocol
 version 0, and the layouts below may still change, until phase 5 (the remote
 GUI) has shipped; see [section 6](#6-versioning-and-hello).
 
@@ -87,8 +91,14 @@ stepping, symbols, and input.
     m4_http: null
   ```
 
-  In `StartupManifest` the field is `binary_port`, filled through
-  `startup_manifest_await_port()` like the others.
+  In `StartupManifest` the field is `binary_port`. The server binds its
+  port before `start()` returns, so the manifest reads it directly and does
+  not have to wait for a server thread as it does for the other ports.
+- The server starts after the configuration is read and the machine is
+  built, just before the manifest is printed. A client that connects the
+  moment it sees the manifest gets a `HELLO` reply that describes the real
+  machine. (The text IPC starts earlier and has a window in which the
+  machine is not there yet.)
 - The server is **on by default**. One configuration key turns it off:
 
   ```ini
@@ -125,7 +135,10 @@ Every frame is a 16-byte header followed by `length` bytes of payload:
 Rules:
 
 - **Requests** go from client to server. The client picks `id`; any value
-  except 0, and it should not reuse one that is still unanswered.
+  except 0, and it should not reuse one that is still unanswered. Id 0
+  belongs to `ERROR` (section 5): a request with `id` 0 is a bad frame.
+- Requests are the only kind a client may send. A response or an event sent
+  by a client is a bad frame.
 - **Responses** go from server to client and carry the `opcode` and `id` of
   the request they answer. Every request gets exactly one response.
 - **Events** go from server to client. Their `id` is a per-connection sequence
@@ -140,7 +153,10 @@ Rules:
 - There is no resynchronisation. TCP already delivers bytes in order; the
   magic exists to catch a client that connected to the wrong port. On a bad
   magic, a wrong `version`, an unknown `kind` or an oversized `length`, the
-  server sends one `ERROR` frame (section 5) and closes the connection.
+  server sends one `ERROR` frame (section 5) and closes the connection. The
+  header is checked in wire order and the first fault is the one reported.
+  An oversized `length` is refused from the header alone: the server never
+  waits for, or allocates, the payload it announces.
 
 ### Common field types
 
@@ -202,6 +218,18 @@ with `id` 0, right before it closes a connection it cannot serve: a bad
 frame, a ninth client, shutdown. Its payload is the same `status` and
 `message`.
 
+The server makes sure the `ERROR` arrives. Closing a TCP connection that
+still has unread input makes the operating system send a reset, and a reset
+can destroy data the other side has not read yet; a client that had already
+sent more requests would then never see why it was dropped. So after
+`ERROR` the server closes only its sending direction, keeps reading and
+discarding for up to half a second, and closes fully when the client has
+closed or the time is up. A client that receives `ERROR` should close its
+socket; it will read end-of-stream right after the frame.
+
+Until events exist (slice 4, `EVT_SHUTDOWN`), a core that is quitting says
+so with `ERROR` and status `SHUTTING_DOWN`.
+
 ## 6. Versioning and `HELLO`
 
 The first frame on a connection must be a `HELLO` request. The server sends
@@ -232,6 +260,20 @@ Reply:
 | `str` | `server_version` | e.g. `v6.5.0` |
 | ... | machine info | The `MACHINE_INFO` reply fields (section 10) |
 
+- A `HELLO` the server refuses with a status that keeps the connection open
+  (`BAD_PAYLOAD`, `BUSY`) has not happened: the connection is still waiting
+  for its first `HELLO`, and the client may send it again. `BUSY` here means
+  the machine did not go idle in time for the server to read the machine
+  information.
+- `role` must be 0 or 1 (`BAD_PAYLOAD` otherwise). Until slice 3 brings
+  `CONTROL`, every client is admitted as an observer whatever it asked for,
+  and the reply says so.
+- `max_frame` must be 0 or at least **128 KiB** (131072; `BAD_PAYLOAD`
+  otherwise), so that a 64 KiB memory read always fits one reply
+  (section 11). The reply carries the smaller of the client's value and
+  16 MiB.
+- `client_name` is written to the core's log, cut to 64 characters, with
+  anything that is not printable ASCII replaced.
 - The **major** version is the `version` byte of every frame. A server that
   does not speak the client's major answers `UNSUPPORTED_VERSION` and closes.
 - **Major 0 is the development version, and it is the only one for now.**
@@ -275,7 +317,16 @@ ship one at a time.
 ## 7. Clients, roles and control
 
 Up to **8** clients. A ninth connection receives `ERROR` with
-`TOO_MANY_CLIENTS` and is closed.
+`TOO_MANY_CLIENTS` and is closed. It is refused as soon as it connects; it
+does not have to send `HELLO` to find out.
+
+A connection takes one of the 8 places when it is accepted, not when its
+`HELLO` completes: otherwise connections that never speak would cost the
+core threads without limit. In return a connection that has not completed
+`HELLO` within **5 s** is closed with `ERROR` and `HELLO_REQUIRED`, so it
+cannot keep a real client out for long. Once `HELLO` has completed there is
+no such deadline. A place is free again as soon as the server has noticed
+that its connection closed.
 
 Each client has a role:
 
@@ -331,14 +382,21 @@ core already has.
 
 | Thread | Count | Job |
 |--------|------:|-----|
-| Acceptor | 1 | `accept()`, enforces the client limit |
-| Reader | 1 per client | Reads frames, runs requests, queues responses |
+| Acceptor | 1 | `accept()`, enforces the client limit, joins the threads of connections that have ended |
+| Reader | 1 per client | Reads frames, runs requests, queues responses; starts and joins its writer and closes the socket |
 | Writer | 1 per client | Sends that client's queued responses and events |
 | Fan-out | 1 | Takes events from the runner's ring and copies them to subscribed clients |
 | Walker | 1 | Runs steps that take emulated time (step over, out, to, frame) |
 
-At most 19 threads with 8 clients. They block in `select()`/`recv()` or on a
-condition variable; none of them spins.
+At most 19 threads with 8 clients. They wait in `poll()` (`select()` on
+Windows) for at most 50 ms at a time or on a condition variable; none of
+them spins. The sockets are non-blocking, so no thread is ever inside a
+`recv()` or `send()` that only the other side can end, and each one sees
+its stop flag within 50 ms.
+
+A connection refused for being over the limit gets the same two threads for
+the second it takes to deliver its `ERROR`. At most 8 such connections are
+handled at once; beyond that a refused connection is simply closed.
 
 ### Seam 1: the pause lease, for every change
 
@@ -354,6 +412,25 @@ do:
    `z80_step_instruction()`.
 3. Restore the run state the lease found (`restore_run_state()`), unless the
    request itself is meant to leave the machine paused.
+
+Leases overlap as soon as there is more than one client: two connections
+here, a connection and the text IPC, the IPC and the GUI. Three rules keep
+that safe, and the first slice had to add all three to `CpcPauseLease`,
+because until then only one holder at a time had been expected:
+
+- Every holder of overlapping leases is told the run state from before the
+  first of them (`was_paused()`), and the holder that lets go last puts it
+  back. A holder never takes "another lease has paused the machine" for
+  "the machine was paused".
+- A real stop that arrives while a lease is held (a breakpoint in the frame
+  the lease was waiting out, the end of a frame step, somebody's pause)
+  stands. `restore_run_state()` does not run the machine again after it.
+- A lease is not a stop. Code that waits for emulated time to pass asks
+  `cpc_stopped()` (paused, and no lease held), not `CPC.paused`.
+
+Requests must use `restore_run_state()`, which lets go and resumes in one
+step; letting go and resuming separately leaves an instant that looks like a
+stop.
 
 Breakpoint and symbol edits use the editing lists and their existing locks
 (`CpcStopCoordinationGuard`, the list mutators in `z80_view.cpp`). The runner
@@ -439,6 +516,13 @@ be rebuilt on the main thread.
 aborts the walk, fails queued jobs with `SHUTTING_DOWN`, closes the client
 sockets and joins every thread. No thread waits on anything without a
 deadline or an abort flag.
+
+The core calls `stop()` first thing when it quits, while the runner is still
+alive, because a request in flight may be waiting for the runner to go idle.
+Each connection gets 200 ms to take its last frame and 200 ms more to close
+its side; the connections shut down side by side, so `stop()` returns in
+well under a second however many clients there are and whatever they were
+doing (measured: about 0.3 s with four connections, one of them mid-frame).
 
 ## 9. Events
 
@@ -556,6 +640,25 @@ it.
 | 4 | `ram_bytes` | Physical RAM: base 64 KiB plus expansion |
 | 4 | `rom_slots` | Bit N set = an expansion ROM is fitted in slot N (0–31) |
 | `stamp` | | |
+
+The on-board BASIC ROM is not an expansion ROM. It answers in slot 0, and in
+every slot with nothing fitted, without setting a bit; bit 0 is set only when
+an expansion ROM has been fitted over it. A stock 6128 reports `0x00000080`:
+AMSDOS in slot 7.
+
+`effective_tier` is the tier the machine is running in now. It can differ
+from the `effective_tier` of the startup manifest, which is printed before
+the first frame has chosen the tier.
+
+Until the machine gate exists (slice 2), the server reads these fields under
+a pause lease, on the client's reader thread: on a running machine the
+request waits for the frame in flight to end, at most 20 ms, and the run
+state is put back as it was. `BUSY` if the runner did not go idle in time.
+The lease does not change what the machine computes: the test suite runs
+100 frames from a reset with and without two clients reading throughout and
+compares registers and all 64 KiB of RAM. It does cost the frame runner a
+pause and a resume, so this is not a request to send 50 times a second;
+slice 2 moves it to the frame-boundary gate with the other reads.
 
 ## 11. Memory
 
@@ -979,7 +1082,7 @@ test-first against a real `-H` core.
 
 | # | Slice | Brings |
 |--:|-------|--------|
-| 1 | Server skeleton | Socket shim, listener and port probing, the `[ipc] binary_port_enabled` key, the thread model, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
+| 1 | Server skeleton (**landed**, beads-3o1.1) | Socket shim, listener and port probing, the `[ipc] binary_port_enabled` key, the acceptor, reader and writer threads, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
 | 2 | Machine reads | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with every space |
 | 3 | Control and writes | Roles, `CONTROL` with forced takeover, the controller idle timeout; `REGS_SET`, `MEM_WRITE` |
 | 4 | Run control and events | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED` |
@@ -1006,14 +1109,25 @@ Source layout the slices should follow:
 - `src/kcpc/kcpc_proto.h` — opcodes, status codes, capability bits, and a
   bounds-checked reader and writer for the field types of section 4. Pure, no
   sockets, unit-tested in `test_runner`.
-- `src/kcpc/kcpc_server.{h,cpp}` — the threads of section 8.
+- `src/kcpc/kcpc_server.{h,cpp}` — the threads of section 8. It knows
+  nothing about the emulator: what it needs from the machine comes through
+  callbacks, so `test_runner` runs the real threads and sockets against a
+  fake machine.
+- `src/kcpc/kcpc_host.{h,cpp}` — the other side of those callbacks: the one
+  server instance, started and stopped by `kon_cpc_ja.cpp`, and the code
+  that reads the machine for it.
 - `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate.
 - `src/net_socket.{h,cpp}` — the one place with `#ifdef _WIN32` around
   sockets. The text IPC keeps its own two copies of `run()` for now; moving
   it onto the shim is a separate clean-up.
 - `test/integrated/kcpc/kcpc_client.py`, `test/integrated/kcpc/test_kcpc.py`
   — standard library only (`socket`, `struct`, `threading`), so the Windows
-  CI job needs nothing installed.
+  CI job needs nothing installed. `test_kcpc.py` starts its own cores:
+  with `-H` by default, `--ui-free` for a `KONCPC_MODERN_UI=0` binary and
+  `--gui` for the GUI build under SDL's dummy drivers. `make e2e_test` runs
+  the first and the last; the UI-free CI steps run the second.
+- `test/kcpc_proto_test.cpp`, `test/kcpc_server_test.cpp` — the unit tests
+  in `test_runner`.
 
 ### Exit criterion of phase 3
 

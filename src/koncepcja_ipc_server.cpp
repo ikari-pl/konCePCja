@@ -6388,7 +6388,11 @@ void KoncepcjaIpcServer::wait_frame_step_done() {
                                [this] { return !frame_step_active.load(); })) {
       return;
     }
-    if (CPC.paused) {
+    // cpc_stopped(), not CPC.paused: a pause lease held by another client
+    // (a KCPC request, a UI action) pauses the machine for a moment and then
+    // lets it run on. Taking that for a stop abandoned the step after a few
+    // frames and left the machine running (beads-3o1.1).
+    if (cpc_stopped()) {
       frame_step_active.store(false);
       frame_step_remaining.store(0);
       return;

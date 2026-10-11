@@ -7,9 +7,12 @@ commands separated by `;` — each runs in order and gets its own response.
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
 A second, binary protocol for out-of-process frontends (several clients,
-pushed events, bulk memory) is designed in
-[protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md). It is not
-implemented yet and does not replace this one.
+pushed events, bulk memory) is specified in
+[protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md) and is being
+implemented slice by slice. Its server listens on its own port (6545 by
+default, `ports.binary` in the manifest below; `[ipc] binary_port_enabled=0`
+turns it off) and so far answers `HELLO`, `PING` and `MACHINE_INFO`. It does
+not replace this protocol.
 
 The port is only the default: every server probes forward when its port is
 taken, so a stale instance can hold 6543 and the new one lands elsewhere. Read
@@ -18,7 +21,7 @@ prints on stdout once its servers are up:
 
 ```yaml
 --- # koncepcja
-manifest_version: 2        # 1 = run_tier held the effective tier (no effective_tier key)
+manifest_version: 3        # 3 added ports.binary; 2 split run_tier / effective_tier
 version: 'v6.3.1'
 build: 'dba77141'
 pid: 4242
@@ -26,6 +29,7 @@ mode: headless            # or gui
 ports:
   ipc: 6545
   telnet: 6546
+  binary: 6547            # the KCPC binary server; null with [ipc] binary_port_enabled=0
   m4_http: null           # null = that server is not running
 m4_bind_ip: null
 machine:
@@ -37,7 +41,7 @@ config_file: '/home/u/.config/koncepcja/koncepcja.cfg'
 ...
 ```
 
-Slice it out of the log between `--- # koncepcja` and `...`. Version 2 split the tier into `run_tier` (policy) and `effective_tier`; a version-1 manifest carried the effective tier under `run_tier`.
+Slice it out of the log between `--- # koncepcja` and `...`. Version 3 added `ports.binary`. Version 2 split the tier into `run_tier` (policy) and `effective_tier`; a version-1 manifest carried the effective tier under `run_tier`.
 
 Commands that change machine state — `reset`, `load` of a snapshot or a
 `.bin`, `snapshot save|load`, the `disk` family, `profile load`,
@@ -215,7 +219,7 @@ echo "iobp add 0xF400 0xFF00 in" | nc -w 1 localhost 6543
 | `step over [N]` | Execute N instructions, skipping over calls. A `CALL` is skipped with an ephemeral breakpoint at `pc+len`; an `RST` is stepped into and its frame finished instead, because the CPC firmware restarts (`&08`/`&10`/`&18`/`&28`) carry inline operands and do not resume at `pc+1`. Timeout: 5s. A breakpoint/watchpoint hit inside the skipped callee returns `OK breakpoint-hit`. `ERR 409 no-progress` when no machine is attached (both the CALL and RST paths); a callee that never returns is `ERR 408 timeout`. The `breakpoint-hit` body carries `WATCH=0`, or `WATCH=1 WP_ADDR=.. WP_VAL=.. WP_OLD=..` when a watchpoint caused the stop. |
 | `step out` | Finish the current stack frame: run until a **taken** return (`RET`/`RET cc`/`RETI`/`RETN`, or a `POP rr : JP (rr)` computed return) fires at the frame depth the walk started from. Depth counting — not a stack-pointer threshold — is what makes a `POP` before the `RET`, an **untaken** `RET cc`, and an interrupt arriving mid-walk all safe. `CALL` callees are skipped at full speed via an ephemeral breakpoint; `RST` vectors are stepped through. Timeout: 5s. A breakpoint/watchpoint inside a skipped callee returns `OK breakpoint-hit` with `WATCH=0`, or `WATCH=1 WP_ADDR=.. WP_VAL=.. WP_OLD=..`, plus the usual debug context. Watchpoints are NOT evaluated on the single-stepped path, only inside skipped callees. `ERR 409 no-progress` only when no sub-cycle machine is attached, so nothing can retire. A frame that never returns is an honest `ERR 408 timeout` — deciding in advance whether it *would* return is undecidable, so the command does not pretend to. Code that unwinds by manual stack surgery (`LD SP,nn` mid-frame) is not tracked. |
 | `step to <addr>` | Run until PC reaches addr (ephemeral breakpoint). Timeout: 5s. A breakpoint of your own armed AT `addr` is an arrival, not an interruption: `OK breakpoint-hit` (with `WATCH=`/`WP_*` as above). Any other breakpoint or watchpoint firing on the way returns `ERR 409 stopped-elsewhere breakpoint-hit ...` — the same polarity `wait pc` uses, so a client whose success test is "the reply starts with OK" cannot mistake an intervening stop for reaching `addr`. `ERR 409 no-progress` when no machine is attached; `ERR 503 shutting-down` if the server is torn down mid-walk. |
-| `step frame [N]` | Advance N complete frames (default 1), then pause. Blocks until done. |
+| `step frame [N]` | Advance N complete frames (default 1), then pause. Blocks until done. If something else stops the machine first (a breakpoint, a pause) the step is abandoned and the command returns. A pause lease held by another client for the length of one operation (a binary-protocol request, a GUI action) is not such a stop: the step waits it out and still runs exactly N frames |
 
 ## Waiting
 

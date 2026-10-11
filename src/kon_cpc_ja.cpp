@@ -52,6 +52,7 @@
 #include "hw_views.h"
 #include "io_bus.h"
 #include "io_dispatch.h"
+#include "kcpc/kcpc_host.h"
 #include "keyboard.h"
 #include "keyboard_manager.h"
 #include "koncepcja.h"
@@ -1776,6 +1777,19 @@ namespace {
 std::mutex g_pause_mutex;
 uint64_t g_resume_epoch = 0;
 unsigned g_pause_lease_count = 0;
+// Whether the machine was paused before the first of the leases now held was
+// taken. Leases overlap (two KCPC clients, a client and the text IPC, IPC and
+// the UI), and a holder that arrives while another holds one finds
+// CPC.paused set by that other lease, not by anyone who wanted the machine
+// stopped. Every holder of the chain is given this value instead, so whoever
+// lets go last puts back the run state that existed before the first.
+//
+// A real stop that lands while leases are held (a breakpoint in the frame a
+// lease is waiting out, the end of a frame step, somebody's Pause) also sets
+// it: the machine is then meant to stay stopped, and
+// CpcPauseLease::restore_run_state() must not run it again.
+bool g_lease_chain_was_paused = false;
+uint64_t cpc_resume_unlocked();
 }  // namespace
 
 // External API consumed by other translation units (the step-out walk in
@@ -1800,6 +1814,12 @@ bool cpc_wait_until_idle(int timeout_ms) {
 }
 
 namespace {
+// A stop somebody asked for, as opposed to the pause a lease applies for the
+// length of its own operation.
+void cpc_stop_requested_locked() {
+  if (g_pause_lease_count > 0) g_lease_chain_was_paused = true;
+}
+
 void cpc_pause_locked() {
   audio_pause();
   CPC.paused = true;
@@ -1821,7 +1841,8 @@ CpcStopCoordinationGuard::~CpcStopCoordinationGuard() {
 void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
   {
     std::scoped_lock const lock(g_pause_mutex);
-    was_paused_ = CPC.paused;
+    if (g_pause_lease_count == 0) g_lease_chain_was_paused = CPC.paused;
+    was_paused_ = g_lease_chain_was_paused;
     ++g_pause_lease_count;
     active_ = true;
     cpc_pause_locked();
@@ -1869,9 +1890,23 @@ void CpcPauseLease::release() {
 
 void CpcPauseLease::restore_run_state() {
   if (!active_) return;
-  bool const resume = !was_paused_;
-  release();
-  if (resume) cpc_resume();
+  // One critical section for both halves. Released and resumed separately,
+  // there is an instant in which the machine is paused and nobody holds a
+  // lease, which is what a real stop looks like to cpc_stopped().
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) --g_pause_lease_count;
+  active_ = false;
+  // With other leases still held the machine stays theirs; the last holder
+  // was told the same was_paused() and resumes. Not after a real stop that
+  // arrived meanwhile: that one stands.
+  if (!was_paused_ && !g_lease_chain_was_paused && g_pause_lease_count == 0) {
+    cpc_resume_unlocked();
+  }
+}
+
+bool cpc_stopped() {
+  std::scoped_lock const lock(g_pause_mutex);
+  return CPC.paused && g_pause_lease_count == 0;
 }
 
 uint64_t cpc_resume_epoch() {
@@ -1881,6 +1916,7 @@ uint64_t cpc_resume_epoch() {
 
 void cpc_pause() {
   std::scoped_lock const lock(g_pause_mutex);
+  cpc_stop_requested_locked();
   cpc_pause_locked();
 }
 
@@ -1925,6 +1961,7 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch) {
   std::scoped_lock const lock(g_pause_mutex);
   if (expected_epoch != g_resume_epoch) return false;
 
+  cpc_stop_requested_locked();
   cpc_pause_locked();
   return true;
 }
@@ -1936,6 +1973,7 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
       arming_generation != z80_breakpoint_generation())
     return false;
 
+  cpc_stop_requested_locked();
   cpc_pause_locked();
   z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
   return true;
@@ -2692,6 +2730,7 @@ void loadConfiguration(t_CPC& CPC, const std::string& configFilename) {
   g_m4board.sd_root_path = conf.getStringValue("peripheral", "m4_sd_path", "");
   g_m4board.rom_slot = conf.getIntValue("peripheral", "m4_rom_slot", 6);
   CPC.m4_http_port = conf.getIntValue("peripheral", "m4_http_port", 8080);
+  CPC.binary_port_enabled = read_flag("ipc", "binary_port_enabled", 1) != 0;
   CPC.m4_bind_ip = conf.getStringValue("peripheral", "m4_bind_ip", "127.0.0.1");
   // Load port mappings (m4_port_map_N = cpc_port:host_port:user_override)
   for (int i = 0; i < 16; i++) {
@@ -2902,6 +2941,8 @@ bool saveConfiguration(t_CPC& CPC, const std::string& configFilename) {
   conf.setStringValue("peripheral", "m4_sd_path", g_m4board.sd_root_path);
   conf.setIntValue("peripheral", "m4_rom_slot", g_m4board.rom_slot);
   conf.setIntValue("peripheral", "m4_http_port", CPC.m4_http_port);
+  conf.setIntValue("ipc", "binary_port_enabled",
+                   CPC.binary_port_enabled ? 1 : 0);
   conf.setStringValue("peripheral", "m4_bind_ip", CPC.m4_bind_ip);
 
   // Serial Interface config
@@ -3533,6 +3574,10 @@ void doCleanUp() {
   // timeout) before the teardown below starts pausing/joining the Z80
   // thread out from under it.
   ui_host().await_background_work();
+  // The binary server goes first, while the frame runner is still alive: a
+  // client request may hold a pause lease that waits for the runner to go
+  // idle. stop() tells the clients and joins every server thread.
+  kcpc_host_stop();
   // Shutdown ordering — three constraints that together force this dance:
   //
   //  1. Z80 thread reads pbRAM/pbROM/MF2ROM and disk buffers from inside
@@ -4680,6 +4725,12 @@ int koncpc_main(int argc, char** argv) {
     g_m4_http.start(CPC.m4_http_port, CPC.m4_bind_ip);
   }
 
+  // KCPC binary frontend server (docs/protocol/kcpc-binary-v1.md). Started
+  // here rather than next to the text IPC: the config has been read, so
+  // [ipc] binary_port_enabled is known, and the machine is built, so the
+  // first HELLO describes a real one.
+  kcpc_host_start(CPC.binary_port_enabled);
+
   // Machine-consumable startup manifest. Emitted here because this is the first
   // point at which every server has bound, so the ports it reports are the ones
   // actually in use — each server probes forward when its default is taken, so
@@ -4699,6 +4750,8 @@ int koncpc_main(int argc, char** argv) {
         startup_manifest_await_port([] { return g_ipc->port(); }, kPortWaitMs);
     manifest.telnet_port = startup_manifest_await_port(
         [] { return g_telnet.port(); }, kPortWaitMs);
+    // Bound synchronously by kcpc_host_start(); 0 when the server is off.
+    manifest.binary_port = kcpc_host_port();
     if (g_m4_http.is_running()) {
       manifest.m4_http_port = startup_manifest_await_port(
           [] { return g_m4_http.port(); }, kPortWaitMs);
@@ -5516,6 +5569,7 @@ int koncpc_main(int argc, char** argv) {
     }
   }
 
+  kcpc_host_stop();
   g_m4_http.stop();
   g_telnet.stop();
   g_ipc->stop();

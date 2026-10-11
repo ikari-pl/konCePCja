@@ -346,6 +346,10 @@ class t_CPC {
   std::vector<std::string> mru_snaps;
   std::vector<std::string> mru_carts;
 
+  // [ipc] binary_port_enabled: whether the KCPC binary server (port 6545,
+  // docs/protocol/kcpc-binary-v1.md) is started. Read once at startup.
+  bool binary_port_enabled = true;
+
   // M4 Board HTTP server config
   int m4_http_port = 8080;
   std::string m4_bind_ip = "127.0.0.1";
@@ -659,6 +663,9 @@ class CpcPauseLease {
   CpcPauseLease(CpcPauseLease&& other) noexcept;
   CpcPauseLease& operator=(CpcPauseLease&&) = delete;
 
+  // Whether the machine was paused before this lease, or, when other leases
+  // were already held, before the first of them: never "paused" merely
+  // because another holder's lease had paused it.
   bool was_paused() const { return was_paused_; }
   bool active() const { return active_; }
   // True once the Z80 thread is known idle. False after a wait that timed
@@ -683,6 +690,12 @@ class CpcPauseLease {
 };
 
 void emulator_reset();
+// True when the machine is paused and no CpcPauseLease is held: somebody
+// stopped it and nobody is about to put the run state back. A lease pauses
+// the machine for the length of one operation; code that waits for emulated
+// time to pass (a frame step) must not take that for the machine having been
+// stopped under it, and asks this instead of reading CPC.paused.
+bool cpc_stopped();
 void cpc_pause();
 uint64_t cpc_resume();
 // Like cpc_resume(), but reports whether a pause lease deferred the call.
