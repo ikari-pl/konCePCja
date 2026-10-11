@@ -214,3 +214,4 @@ jobs:
           export PATH="$(cygpath -u '${{ github.workspace }}')/build/vcpkg_installed/x64-windows/bin:$PATH"
           python test/integrated/headless_smoke.py --ui-free
           python test/integrated/ipc_harness.py
+          python test/integrated/kcpc/test_kcpc.py --ui-free

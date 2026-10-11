@@ -946,7 +946,9 @@ TEST_F(IpcServerTest, NestedPauseLeasesKeepResumeDeferred) {
     CpcPauseLease outer;
     {
       CpcPauseLease inner;
-      EXPECT_TRUE(inner.was_paused());
+      // The run state from before the outer lease, not "paused" because the
+      // outer lease paused it (beads-3o1.1; test/pause_lease_chain_test.cpp).
+      EXPECT_FALSE(inner.was_paused());
       EXPECT_EQ(cpc_resume(), epoch);
       EXPECT_TRUE(CPC.paused);
     }

@@ -27,6 +27,8 @@ src/
 ├── devtools_ui.cpp    # DevTools windows (disassembly, memory, breakpoints…)
 ├── koncepcja_ipc_server.cpp  # TCP IPC server for external debugging
 ├── telnet_console.cpp # TCP text console — mirrors CPC output, injects keyboard
+├── kcpc/              # KCPC binary frontend server (port 6545): codec, threads, host seam
+├── net_socket.cpp     # the socket shim the KCPC server uses (the one #ifdef _WIN32 for it)
 └── z80_view.cpp       # host-side Z80 view + the firmware/BDOS output hooks
 ```
 
@@ -385,6 +387,39 @@ nc localhost 6544
 - `src/telnet_console.cpp` — TCP server thread, ANSI parsing, Z80 hook callback
 - Z80 hooks: `z80_set_txt_output_hook()` (firmware) and `z80_set_bdos_output_hook()` (CP/M) in `src/z80_view.cpp` / `src/z80_view.h`
 - Main loop integration: `g_telnet.start()` / `drain_input()` / `stop()` in `src/kon_cpc_ja.cpp`
+
+## KCPC Binary Server
+
+A second server for out-of-process frontends on **port 6545** (probes forward
+to 6554; read `ports.binary` from the startup manifest, never assume it).
+Binary frames, up to 8 clients at once, loopback only. The contract, and the
+table of which implementation slices have landed, is
+[docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md). So far it
+answers `HELLO`, `PING` and `MACHINE_INFO`. The protocol is at major version
+0: client and server must come from the same checkout.
+
+```ini
+[ipc]
+binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
+```
+
+- `src/kcpc/kcpc_proto.h` — opcodes, status codes and the bounds-checked
+  field reader/writer. Pure; unit-tested in `test/kcpc_proto_test.cpp`.
+- `src/kcpc/kcpc_server.{h,cpp}` — acceptor thread plus a reader and a writer
+  thread per client. Knows nothing about the emulator, so
+  `test/kcpc_server_test.cpp` runs it over loopback with a fake machine.
+- `src/kcpc/kcpc_host.{h,cpp}` — the seam to the emulator. **Nothing touches
+  the machine from a socket thread except through here**, and only the ways
+  the document's threading model allows (a `CpcPauseLease` today).
+- `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
+- `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
+  library only); `test_kcpc.py` next to it starts its own cores
+  (`-H` by default, `--ui-free`, `--gui`) and runs inside `make e2e_test`.
+
+A test must only ever connect to ports its own core printed in its manifest.
+Probing 6543–6554 to see who answers reaches the text IPC and telnet console
+of any other emulator on the machine, and the telnet console types what it
+receives into its CPC.
 
 ## M4 HTTP Server
 

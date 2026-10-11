@@ -43,7 +43,7 @@ std::string port_or_null(int port) {
 std::string startup_manifest_yaml(const StartupManifest& m) {
   std::ostringstream o;
   o << "--- # koncepcja\n";
-  o << "manifest_version: 2\n";
+  o << "manifest_version: 3\n";
   o << "version: " << quoted(m.version) << '\n';
   o << "build: " << quoted(m.build) << '\n';
   o << "pid: " << m.pid << '\n';
@@ -51,6 +51,7 @@ std::string startup_manifest_yaml(const StartupManifest& m) {
   o << "ports:\n";
   o << "  ipc: " << port_or_null(m.ipc_port) << '\n';
   o << "  telnet: " << port_or_null(m.telnet_port) << '\n';
+  o << "  binary: " << port_or_null(m.binary_port) << '\n';
   o << "  m4_http: " << port_or_null(m.m4_http_port) << '\n';
   // Not nested under ports: a bind address is not a port.
   o << "m4_bind_ip: " << quoted_or_null(m.m4_bind_ip) << '\n';

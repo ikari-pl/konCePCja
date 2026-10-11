@@ -629,6 +629,21 @@ const char* subcycle_bridge_effective_tier_name() {
   return "?";
 }
 
+int subcycle_bridge_effective_tier_index() {
+  using RT = subcycle::Machine::RunTier;
+  switch (g_bridge.machine.effective_run_tier()) {
+    case RT::Fast:
+      return 0;
+    case RT::Wake:
+      return 1;
+    case RT::Soldered:
+      return 2;
+    case RT::Faithful:
+      return 3;
+  }
+  return 3;
+}
+
 const char* subcycle_bridge_effective_tier_label() {
   using RT = subcycle::Machine::RunTier;
   switch (g_bridge.machine.effective_run_tier()) {

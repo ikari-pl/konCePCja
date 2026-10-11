@@ -242,6 +242,15 @@ slot14=
 slot15=
 rom_mf2=MF2.rom
 
+[ipc]
+# binary_port_enabled
+#   1 (default): start the KCPC binary frontend server on the first free port
+#   from 6545 (loopback only; see docs/protocol/kcpc-binary-v1.md). The port
+#   in use is printed in the startup manifest as ports.binary.
+#   0: do not open the port at all.
+#   Read once at startup. Does not affect the text IPC or the telnet console.
+binary_port_enabled=1
+
 [devtools]
 scale=2
 max_stack_size=50

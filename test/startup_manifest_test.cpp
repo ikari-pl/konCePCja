@@ -22,6 +22,7 @@ StartupManifest sample() {
   m.headless = false;
   m.ipc_port = 6545;
   m.telnet_port = 6546;
+  m.binary_port = 6547;
   m.m4_http_port = 8080;
   m.m4_bind_ip = "127.0.0.1";
   m.model = 2;
@@ -44,13 +45,15 @@ TEST(StartupManifest, IsFramedAsOneYamlDocument) {
   // 2: machine.run_tier changed meaning (effective tier -> policy) and
   // effective_tier was added (beads-tt7v). A consumer keyed on run_tier must
   // be able to tell which reading it has.
-  EXPECT_TRUE(contains(y, "manifest_version: 2"));
+  // 3: ports.binary was added (the KCPC binary server, beads-3o1.1).
+  EXPECT_TRUE(contains(y, "manifest_version: 3"));
 }
 
 TEST(StartupManifest, ReportsActualPorts) {
   std::string const y = startup_manifest_yaml(sample());
   EXPECT_TRUE(contains(y, "ipc: 6545"));
   EXPECT_TRUE(contains(y, "telnet: 6546"));
+  EXPECT_TRUE(contains(y, "binary: 6547"));
   EXPECT_TRUE(contains(y, "m4_http: 8080"));
 }
 
@@ -60,11 +63,13 @@ TEST(StartupManifest, AbsentServersAreNullNotZero) {
   StartupManifest m = sample();
   m.ipc_port = 0;
   m.telnet_port = -1;
+  m.binary_port = 0;  // [ipc] binary_port_enabled=0
   m.m4_http_port = 0;
 
   std::string const y = startup_manifest_yaml(m);
   EXPECT_TRUE(contains(y, "ipc: null"));
   EXPECT_TRUE(contains(y, "telnet: null"));
+  EXPECT_TRUE(contains(y, "binary: null"));
   EXPECT_TRUE(contains(y, "m4_http: null"));
   EXPECT_FALSE(contains(y, ": 0\n")) << "no port should be emitted as 0";
 }

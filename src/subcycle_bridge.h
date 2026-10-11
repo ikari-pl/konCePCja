@@ -180,6 +180,9 @@ int subcycle_bridge_tier_env_pinned();
 // The tier the machine resolved for the CURRENT frame, as a display name
 // ("fast", "wake", ...), after policy, env, and composition degradation.
 const char* subcycle_bridge_effective_tier_name();
+// The same as a number: 0 fast, 1 wake, 2 soldered, 3 faithful (the order of
+// the tier benchmark below and of the KCPC protocol's MACHINE_INFO).
+int subcycle_bridge_effective_tier_index();
 // The same, as the user-facing display label ("Performance", "Balanced",
 // "Microscope", "Microscope, socketed chips"). IPC keeps the short tokens.
 const char* subcycle_bridge_effective_tier_label();

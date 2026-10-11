@@ -98,6 +98,7 @@ jobs:
         run: |
           python3 test/integrated/headless_smoke.py --ui-free
           python3 test/integrated/ipc_harness.py
+          python3 test/integrated/kcpc/test_kcpc.py --ui-free
 
       - run: make -j 3 clean
       - run: make -j 3 debug CFLAGS="-Wno-literal-suffix -Wno-old-style-cast"
