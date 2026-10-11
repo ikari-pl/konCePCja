@@ -187,8 +187,13 @@ void TelnetConsole::run() {
     return;
   }
 
+  // SO_EXCLUSIVEADDRUSE, not SO_REUSEADDR, for the reason given in
+  // koncepcja_ipc_server.cpp: on Windows SO_REUSEADDR lets a second process
+  // bind a port that is already being listened on, so the scan below never
+  // moved on and two emulators shared one telnet port (beads-3o1.1: the
+  // KCPC e2e test saw both report 6544).
   int opt = 1;
-  setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
+  setsockopt(server_fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
              reinterpret_cast<const char*>(&opt), sizeof(opt));
 
   sockaddr_in addr{};
