@@ -6,6 +6,11 @@ commands separated by `;` — each runs in order and gets its own response.
 
 Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
+A second, binary protocol for out-of-process frontends (several clients,
+pushed events, bulk memory) is designed in
+[protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md). It is not
+implemented yet and does not replace this one.
+
 The port is only the default: every server probes forward when its port is
 taken, so a stale instance can hold 6543 and the new one lands elsewhere. Read
 the real ports from the **startup manifest**, one YAML document the emulator
