@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -54,10 +55,82 @@ kcpc::ServerConfig test_config() {
   c.pid = 4242;
   c.machine_info = [](kcpc::MachineInfo& info) {
     info = fake_machine();
-    return true;
+    return Status::kOk;
   };
   return c;
 }
+
+// A machine with something to read: 64 KiB in which no two neighbouring bytes
+// are alike, registers that are all different, and a record of what the
+// server asked for.
+struct FakeReads {
+  static constexpr std::uint32_t kSize = 0x10000;
+
+  FakeReads() : memory(kSize) {
+    for (std::uint32_t a = 0; a < kSize; ++a) {
+      memory[a] = static_cast<std::uint8_t>((a * 7) ^ (a >> 8));
+    }
+  }
+
+  static kcpc::Regs regs() {
+    kcpc::Regs g;
+    g.af = 0x0102;
+    g.bc = 0x0304;
+    g.de = 0x0506;
+    g.hl = 0x0708;
+    g.ix = 0x090A;
+    g.iy = 0x0B0C;
+    g.sp = 0x0D0E;
+    g.pc = 0x0F10;
+    g.af_alt = 0x1112;
+    g.bc_alt = 0x1314;
+    g.de_alt = 0x1516;
+    g.hl_alt = 0x1718;
+    g.i = 0x19;
+    g.r = 0x1A;
+    g.iff1 = 1;
+    g.iff2 = 0;
+    g.im = 2;
+    g.halt = 1;
+    return g;
+  }
+
+  void attach(kcpc::ServerConfig& c) {
+    c.regs_get = [this](kcpc::Stamp& stamp, kcpc::Regs& out) {
+      if (refuse != Status::kOk) return refuse.load();
+      stamp = {77, true};
+      out = regs();
+      return Status::kOk;
+    };
+    c.mem_info = [this](kcpc::MemInfo& info) {
+      if (refuse != Status::kOk) return refuse.load();
+      info.ram_bytes = kSize;
+      info.ram_config = 0xC4;
+      info.rom_config = 0x89;
+      info.upper_rom = 7;
+      info.rom_slots = 0x80;
+      info.stamp = {78, false};
+      return Status::kOk;
+    };
+    c.mem_read = [this](const kcpc::MemReadRequest& request, kcpc::Stamp& stamp,
+                        std::uint8_t* dst) {
+      mem_reads.fetch_add(1);
+      last = request;
+      if (refuse != Status::kOk) return refuse.load();
+      if (!kcpc::mem_range_ok(request.addr, request.len, kSize)) {
+        return Status::kOutOfRange;
+      }
+      std::copy_n(memory.begin() + request.addr, request.len, dst);
+      stamp = {79, false};
+      return Status::kOk;
+    };
+  }
+
+  std::vector<std::uint8_t> memory;
+  std::atomic<Status> refuse{Status::kOk};
+  std::atomic<int> mem_reads{0};
+  kcpc::MemReadRequest last;  // written on the one reader thread of a test
+};
 
 struct Frame {
   kcpc::FrameHeader header;
@@ -245,7 +318,7 @@ TEST_F(KcpcServerTest, HelloReportsTheServerAndTheMachine) {
   EXPECT_EQ(reply.server_minor, 0);
   EXPECT_EQ(reply.role, kcpc::Role::kObserver);
   EXPECT_EQ(reply.max_frame, kcpc::kMaxServerFrame);
-  EXPECT_EQ(reply.caps, kcpc::kServerCaps);
+  EXPECT_EQ(reply.caps, 0U) << "this machine offers no reads";
   EXPECT_NE(reply.client_id, 0U);
   EXPECT_EQ(reply.pid, 4242U);
   EXPECT_EQ(reply.server_version, "v0.0.0-test");
@@ -495,7 +568,8 @@ TEST_F(KcpcServerTest, UnknownOpcodeKeepsTheConnection) {
   kcpc::HelloReply reply;
   expect_hello_ok(client, 1, reply);
 
-  // MEM_READ belongs to a capability this server does not have yet.
+  // MEM_READ belongs to a capability this server was not given: an opcode
+  // from a group whose bit is clear answers UNKNOWN_OPCODE.
   EXPECT_EQ(reply.caps & kcpc::kCapMachineRead, 0U);
   ASSERT_TRUE(client.request(Opcode::kMemRead, 2, {0, 0, 0, 0}));
   Frame frame;
@@ -545,9 +619,9 @@ TEST_F(KcpcServerTest, BusyMachineAnswersBusy) {
   std::atomic<bool> busy{true};
   kcpc::ServerConfig config = test_config();
   config.machine_info = [&busy](kcpc::MachineInfo& info) {
-    if (busy.load()) return false;
+    if (busy.load()) return Status::kBusy;
     info = fake_machine();
-    return true;
+    return Status::kOk;
   };
   start(config);
   TestClient client(server_.port());
@@ -687,4 +761,253 @@ TEST_F(KcpcServerTest, RestartsAndKeepsClientIdsUnique) {
   expect_hello_ok(client, 1, reply);
   EXPECT_NE(reply.client_id, first_id)
       << "a client id is unique for the life of the core";
+}
+
+// ---- Slice 2: the machine reads (beads-3o1.2) ----------------------------
+
+namespace {
+
+std::vector<std::uint8_t> mem_read_payload(kcpc::MemSpace space,
+                                           std::uint16_t bank,
+                                           std::uint32_t addr,
+                                           std::uint32_t len) {
+  kcpc::MemReadRequest request;
+  request.space = static_cast<std::uint8_t>(space);
+  request.bank = bank;
+  request.addr = addr;
+  request.len = len;
+  kcpc::Writer w;
+  kcpc::write_mem_read_request(w, request);
+  return w.take();
+}
+
+class KcpcReadsTest : public KcpcServerTest {
+ protected:
+  // Starts the server with the fake reads and completes HELLO on client_.
+  void connect(std::uint32_t max_frame = 0) {
+    kcpc::ServerConfig config = test_config();
+    reads_.attach(config);
+    start(config);
+    client_ = std::make_unique<TestClient>(server_.port());
+    ASSERT_TRUE(client_->hello(1, "reads", max_frame));
+    Frame frame;
+    ASSERT_TRUE(client_->receive(frame));
+    ASSERT_EQ(frame.status(), Status::kOk);
+    kcpc::Reader r(frame.payload);
+    r.skip(4);
+    ASSERT_TRUE(kcpc::read_hello_reply(r, hello_));
+  }
+
+  // One request and its response, which must carry the request's opcode and
+  // id.
+  void exchange(Opcode opcode, std::uint32_t id,
+                const std::vector<std::uint8_t>& payload, Frame& frame) {
+    ASSERT_TRUE(client_->request(opcode, id, payload));
+    ASSERT_TRUE(client_->receive(frame));
+    ASSERT_EQ(frame.header.kind,
+              static_cast<std::uint8_t>(kcpc::Kind::kResponse));
+    ASSERT_EQ(frame.header.opcode, static_cast<std::uint16_t>(opcode));
+    ASSERT_EQ(frame.header.id, id);
+  }
+
+  FakeReads reads_;
+  std::unique_ptr<TestClient> client_;
+  kcpc::HelloReply hello_;
+};
+
+}  // namespace
+
+TEST_F(KcpcReadsTest, HelloAnnouncesTheReadCapabilities) {
+  connect();
+  EXPECT_EQ(hello_.caps, kcpc::kCapMachineRead | kcpc::kCapMemRom);
+  EXPECT_EQ(hello_.caps, kcpc::kServerCaps);
+}
+
+TEST_F(KcpcReadsTest, RegsGetRepliesWithTheStampAndTheBlock) {
+  connect();
+  Frame frame;
+  exchange(Opcode::kRegsGet, 2, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U + 12U + kcpc::kRegsSize);
+
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::Stamp stamp;
+  kcpc::Regs regs;
+  ASSERT_TRUE(kcpc::read_stamp(r, stamp));
+  ASSERT_TRUE(kcpc::read_regs(r, regs));
+  EXPECT_EQ(stamp.frame, 77U);
+  EXPECT_TRUE(stamp.paused);
+  EXPECT_EQ(regs.af, 0x0102);
+  EXPECT_EQ(regs.pc, 0x0F10);
+  EXPECT_EQ(regs.hl_alt, 0x1718);
+  EXPECT_EQ(regs.i, 0x19);
+  EXPECT_EQ(regs.im, 2);
+  EXPECT_EQ(regs.halt, 1);
+  // On the wire: PC is the eighth 16-bit field, low byte first.
+  EXPECT_EQ(frame.payload[16 + 14], 0x10);
+  EXPECT_EQ(frame.payload[16 + 15], 0x0F);
+}
+
+TEST_F(KcpcReadsTest, MemInfoRepliesWithTheBankingState) {
+  connect();
+  Frame frame;
+  exchange(Opcode::kMemInfo, 2, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U + 12U + 12U);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::MemInfo info;
+  ASSERT_TRUE(kcpc::read_mem_info(r, info));
+  EXPECT_EQ(info.ram_bytes, FakeReads::kSize);
+  EXPECT_EQ(info.ram_config, 0xC4);
+  EXPECT_EQ(info.rom_config, 0x89);
+  EXPECT_EQ(info.upper_rom, 7);
+  EXPECT_EQ(info.rom_slots, 0x80U);
+  EXPECT_EQ(info.stamp.frame, 78U);
+}
+
+// The point of the port: 64 KiB of memory is one reply.
+TEST_F(KcpcReadsTest, MemReadOf64KiBIsOneFrame) {
+  connect();
+  Frame frame;
+  exchange(Opcode::kMemRead, 2,
+           mem_read_payload(kcpc::MemSpace::kCpu, 0, 0, 0x10000), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), kcpc::kMemReadReplyOverhead + 0x10000U);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::Stamp stamp;
+  ASSERT_TRUE(kcpc::read_stamp(r, stamp));
+  EXPECT_EQ(stamp.frame, 79U);
+  EXPECT_FALSE(stamp.paused);
+  std::vector<std::uint8_t> bytes;
+  ASSERT_TRUE(r.bytes(bytes));
+  EXPECT_EQ(bytes, reads_.memory);
+  expect_ping_ok(*client_, 3);
+}
+
+TEST_F(KcpcReadsTest, MemReadPassesTheRequestThrough) {
+  connect();
+  Frame frame;
+  exchange(Opcode::kMemRead, 2,
+           mem_read_payload(kcpc::MemSpace::kRomUpper, 7, 0x1234, 0x20), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reads_.last.space,
+            static_cast<std::uint8_t>(kcpc::MemSpace::kRomUpper));
+  EXPECT_EQ(reads_.last.bank, 7);
+  EXPECT_EQ(reads_.last.addr, 0x1234U);
+  EXPECT_EQ(reads_.last.len, 0x20U);
+  ASSERT_EQ(frame.payload.size(), kcpc::kMemReadReplyOverhead + 0x20U);
+  for (std::uint32_t i = 0; i < 0x20; ++i) {
+    ASSERT_EQ(frame.payload[kcpc::kMemReadReplyOverhead + i],
+              reads_.memory[0x1234 + i])
+        << i;
+  }
+
+  // An empty read is a stamp and no bytes.
+  exchange(Opcode::kMemRead, 3,
+           mem_read_payload(kcpc::MemSpace::kCpu, 0, 0x10000, 0), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), kcpc::kMemReadReplyOverhead);
+}
+
+// A read whose reply would not fit the frame limit HELLO agreed on is refused
+// before the machine is asked and before anything is allocated.
+TEST_F(KcpcReadsTest, MemReadOverTheFrameLimitIsTooLarge) {
+  connect(kcpc::kMinClientMaxFrame);
+  ASSERT_EQ(hello_.max_frame, kcpc::kMinClientMaxFrame);
+  std::uint32_t const fits =
+      kcpc::kMinClientMaxFrame - kcpc::kMemReadReplyOverhead;
+
+  Frame frame;
+  for (std::uint32_t const len : {fits + 1, 0x7FFFFFFFU, 0xFFFFFFFFU}) {
+    exchange(Opcode::kMemRead, 2,
+             mem_read_payload(kcpc::MemSpace::kPhysRam, 0, 0, len), frame);
+    EXPECT_EQ(frame.status(), Status::kTooLarge) << len;
+  }
+  EXPECT_EQ(reads_.mem_reads.load(), 0) << "the machine was asked anyway";
+
+  // Exactly at the limit the request goes through to the machine (which
+  // here says the space is not that large).
+  exchange(Opcode::kMemRead, 3,
+           mem_read_payload(kcpc::MemSpace::kPhysRam, 0, 0, fits), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange);
+  EXPECT_EQ(reads_.mem_reads.load(), 1);
+  expect_ping_ok(*client_, 4);
+}
+
+TEST_F(KcpcReadsTest, AShortMemReadRequestIsABadPayload) {
+  connect();
+  Frame frame;
+  exchange(Opcode::kMemRead, 2, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  EXPECT_EQ(reads_.mem_reads.load(), 0);
+  // Bytes after the fields are ignored: a later minor may append some.
+  std::vector<std::uint8_t> longer =
+      mem_read_payload(kcpc::MemSpace::kCpu, 0, 0, 4);
+  longer.push_back(0xAA);
+  exchange(Opcode::kMemRead, 3, longer, frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+}
+
+// Whatever the machine answers is the status of the response, the message is
+// there for the log, and the connection stays open.
+TEST_F(KcpcReadsTest, TheMachinesRefusalIsTheStatus) {
+  connect();
+  std::uint32_t id = 2;
+  for (Status const refusal :
+       {Status::kBusy, Status::kOutOfRange, Status::kBadPayload,
+        Status::kNotPresent, Status::kInternal}) {
+    reads_.refuse.store(refusal);
+    for (Opcode const opcode :
+         {Opcode::kRegsGet, Opcode::kMemInfo, Opcode::kMemRead}) {
+      Frame frame;
+      exchange(opcode, id++,
+               opcode == Opcode::kMemRead
+                   ? mem_read_payload(kcpc::MemSpace::kCpu, 0, 0, 16)
+                   : std::vector<std::uint8_t>{},
+               frame);
+      EXPECT_EQ(frame.status(), refusal);
+      kcpc::Reader r(frame.payload);
+      std::string message;
+      r.skip(4);
+      EXPECT_TRUE(r.str(message));
+      EXPECT_FALSE(message.empty());
+    }
+  }
+  reads_.refuse.store(Status::kOk);
+  expect_ping_ok(*client_, id);
+}
+
+// Two clients read at once and each gets its own bytes under its own id.
+TEST_F(KcpcReadsTest, TwoClientsReadConcurrently) {
+  connect();
+  std::atomic<int> failures{0};
+  auto const reader = [&](std::uint32_t addr) {
+    TestClient client(server_.port());
+    Frame frame;
+    if (!client.hello(1) || !client.receive(frame)) {
+      failures.fetch_add(1);
+      return;
+    }
+    for (std::uint32_t id = 2; id < 202; ++id) {
+      if (!client.request(
+              Opcode::kMemRead, id,
+              mem_read_payload(kcpc::MemSpace::kCpu, 0, addr, 0x4000)) ||
+          !client.receive(frame) || frame.header.id != id ||
+          frame.status() != Status::kOk ||
+          frame.payload.size() != kcpc::kMemReadReplyOverhead + 0x4000U ||
+          !std::equal(frame.payload.begin() + kcpc::kMemReadReplyOverhead,
+                      frame.payload.end(), reads_.memory.begin() + addr)) {
+        failures.fetch_add(1);
+        return;
+      }
+    }
+  };
+  std::thread a(reader, 0x0000U);
+  std::thread b(reader, 0x8000U);
+  a.join();
+  b.join();
+  EXPECT_EQ(failures.load(), 0);
 }

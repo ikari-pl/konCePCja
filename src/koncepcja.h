@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <mutex>
 #ifdef _MSC_VER
 #include "compat/msvc_compat.h"
@@ -696,6 +697,18 @@ void emulator_reset();
 // time to pass (a frame step) must not take that for the machine having been
 // stopped under it, and asks this instead of reading CPC.paused.
 bool cpc_stopped();
+// Calls read() if the machine is stopped right now -- paused, no pause lease
+// held, the frame runner idle -- and keeps it stopped until read() returns: a
+// resume, a pause lease and the frame runner all wait for the pause mutex this
+// holds. False when the machine is not in that state; read() was then not
+// called and nothing waited.
+//
+// This is how a tool reads a stopped machine without becoming a reason for a
+// Run to be refused. A CpcPauseLease would do for the read itself, but
+// cpc_resume() does nothing while any lease is held, so a client polling a
+// paused machine through leases swallows the user's Run now and then. read()
+// must only copy: every pause and resume in the process waits for it.
+bool cpc_read_while_stopped(const std::function<void()>& read);
 void cpc_pause();
 uint64_t cpc_resume();
 // Like cpc_resume(), but reports whether a pause lease deferred the call.

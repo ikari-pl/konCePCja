@@ -698,3 +698,142 @@ TEST(Memory, FastSeamWritesLandInTheSameCellsAsTheBusPath) {
   }
   ASSERT_EQ(exp_fast, exp_ref) << "expansion RAM diverged";
 }
+
+namespace {
+
+// Like seed_all, but no two neighbouring bytes alike, so a copy that starts at
+// the wrong offset inside a 16K slot cannot pass.
+void seed_distinct(MemRig& rig, std::vector<uint8_t>& expansion) {
+  for (uint32_t a = 0; a < 0x10000; ++a)
+    mem_write_ram(&rig.dev, static_cast<uint16_t>(a),
+                  static_cast<uint8_t>((a * 7) ^ (a >> 8)));
+  for (size_t i = 0; i < expansion.size(); ++i)
+    expansion[i] = static_cast<uint8_t>((i * 11) ^ (i >> 7) ^ 0x5A);
+  std::vector<uint8_t> lo(0x4000), hi(0x4000);
+  for (size_t i = 0; i < 0x4000; ++i) {
+    lo[i] = static_cast<uint8_t>((i * 3) ^ (i >> 6));
+    hi[i] = static_cast<uint8_t>((i * 5) ^ (i >> 5) ^ 0xC3);
+  }
+  mem_load_lower_rom(&rig.dev, lo.data(), lo.size());
+  mem_load_upper_rom(&rig.dev, hi.data(), hi.size());
+  mem_attach_expansion(&rig.dev, expansion.data(), expansion.size());
+}
+
+// The bulk reads (KCPC MEM_READ) must be byte for byte what the per-byte
+// peeks return, in every ROM and banking configuration and for ranges that
+// start and end inside a 16K slot.
+void expect_ranges_match_peeks(MemRig& rig, const char* what) {
+  std::vector<uint8_t> cpu(0x10000), ram(0x10000);
+  mem_peek_cpu_range(&rig.dev, 0, cpu.data(), cpu.size());
+  mem_peek_ram_range(&rig.dev, 0, ram.data(), ram.size());
+  for (uint32_t a = 0; a < 0x10000; ++a) {
+    const auto addr = static_cast<uint16_t>(a);
+    ASSERT_EQ(cpu[a], mem_peek_cpu(&rig.dev, addr)) << what << " cpu " << a;
+    ASSERT_EQ(ram[a], mem_peek_ram(&rig.dev, addr)) << what << " ram " << a;
+  }
+  // A range that straddles every slot border, and stops short of the top.
+  const uint16_t start = 0x3FF0;
+  const size_t len = 0x8020;
+  std::vector<uint8_t> part(len + 2, 0xEE);
+  mem_peek_cpu_range(&rig.dev, start, part.data() + 1, len);
+  EXPECT_EQ(part.front(), 0xEE) << what << ": wrote before the buffer";
+  EXPECT_EQ(part.back(), 0xEE) << what << ": wrote past the buffer";
+  for (size_t i = 0; i < len; ++i) {
+    ASSERT_EQ(part[i + 1], cpu[start + i]) << what << " partial " << i;
+  }
+  // The last byte of the address space, and an empty read.
+  uint8_t last = 0;
+  mem_peek_ram_range(&rig.dev, 0xFFFF, &last, 1);
+  EXPECT_EQ(last, ram[0xFFFF]) << what;
+  mem_peek_cpu_range(&rig.dev, 0x1234, &last, 0);
+  EXPECT_EQ(last, ram[0xFFFF]) << what << ": an empty read wrote a byte";
+}
+
+}  // namespace
+
+TEST(Memory, RangeReadsMatchThePerBytePeeks) {
+  MemRig rig;
+  make_mem(rig);
+  std::vector<uint8_t> expansion(128 * 1024);
+  seed_distinct(rig, expansion);
+  std::vector<uint8_t> amsdos(0x4000);
+  for (size_t i = 0; i < amsdos.size(); ++i)
+    amsdos[i] = static_cast<uint8_t>((i * 13) ^ 0x77);
+  mem_attach_rom(&rig.dev, 7, amsdos.data());
+
+  for (uint8_t select : {0, 7}) {
+    mem_fast_io_write(&rig.dev, 0xDF00, select);
+    // ROM enables: both in, lower out, upper out, both out.
+    for (uint8_t rom : {0x80, 0x84, 0x88, 0x8C}) {
+      mem_fast_io_write(&rig.dev, 0x7F00, rom);
+      for (uint8_t cfg = 0; cfg < 8; ++cfg) {
+        mem_fast_io_write(&rig.dev, 0x7F00, static_cast<uint8_t>(0xC0 | cfg));
+        expect_ranges_match_peeks(rig, "classic");
+      }
+    }
+  }
+}
+
+TEST(Memory, RangeReadsMatchThePerBytePeeksWithCartridge) {
+  MemRig rig;
+  make_mem(rig);
+  std::vector<uint8_t> expansion(128 * 1024);
+  seed_distinct(rig, expansion);
+  std::vector<uint8_t> cart(4 * 0x4000);
+  for (size_t i = 0; i < cart.size(); ++i)
+    cart[i] = static_cast<uint8_t>((i * 9) ^ (i >> 14) ^ 0x21);
+  mem_load_cartridge(&rig.dev, cart.data(), cart.size());
+  for (uint8_t select : {0, 7, 0x82}) {
+    mem_fast_io_write(&rig.dev, 0xDF00, select);
+    for (uint8_t rom : {0x80, 0x84, 0x88, 0x8C}) {
+      mem_fast_io_write(&rig.dev, 0x7F00, rom);
+      expect_ranges_match_peeks(rig, "cartridge");
+    }
+  }
+}
+
+// ROM_LOWER / ROM_UPPER: the ROM itself, whether or not it is paged in.
+TEST(Memory, RomAccessorsIgnoreTheRomEnables) {
+  MemRig rig;
+  make_mem(rig);
+  std::vector<uint8_t> lower(0x4000), basic(0x4000), amsdos(0x4000, 0xA7);
+  for (size_t i = 0; i < 0x4000; ++i) {
+    lower[i] = static_cast<uint8_t>(i * 3);
+    basic[i] = static_cast<uint8_t>(i * 5 + 1);
+  }
+  mem_load_lower_rom(&rig.dev, lower.data(), lower.size());
+  mem_load_upper_rom(&rig.dev, basic.data(), basic.size());
+  mem_attach_rom(&rig.dev, 7, amsdos.data());
+
+  for (uint8_t rom : {0x80, 0x8C}) {  // both paged in, both paged out
+    mem_fast_io_write(&rig.dev, 0x7F00, rom);
+    EXPECT_EQ(std::vector<uint8_t>(mem_lower_rom(&rig.dev),
+                                   mem_lower_rom(&rig.dev) + 0x4000),
+              lower);
+    EXPECT_EQ(std::vector<uint8_t>(mem_upper_rom(&rig.dev, 0),
+                                   mem_upper_rom(&rig.dev, 0) + 0x4000),
+              basic);
+    EXPECT_EQ(mem_upper_rom(&rig.dev, 7), amsdos.data());
+    // A number with nothing fitted answers with the onboard BASIC, whatever
+    // number is latched at the moment.
+    EXPECT_EQ(mem_upper_rom(&rig.dev, 3), mem_upper_rom(&rig.dev, 0));
+  }
+  // Paged out, the CPU view shows RAM there, not these bytes.
+  wr(rig, 0x0000, 0x11);
+  EXPECT_EQ(mem_peek_cpu(&rig.dev, 0x0000), 0x11);
+  EXPECT_EQ(mem_lower_rom(&rig.dev)[0], lower[0]);
+}
+
+TEST(Memory, RomAccessorsFollowTheCartridgeMap) {
+  MemRig rig;
+  make_mem(rig);
+  std::vector<uint8_t> cart(4 * 0x4000);
+  for (size_t i = 0; i < cart.size(); ++i)
+    cart[i] = static_cast<uint8_t>(0xB0 + (i >> 14));
+  mem_load_cartridge(&rig.dev, cart.data(), cart.size());
+  EXPECT_EQ(mem_lower_rom(&rig.dev)[0], 0xB0);     // bank 0: the OS
+  EXPECT_EQ(mem_upper_rom(&rig.dev, 0)[0], 0xB1);  // BASIC
+  EXPECT_EQ(mem_upper_rom(&rig.dev, 7)[0], 0xB3);  // AMSDOS
+  EXPECT_EQ(mem_upper_rom(&rig.dev, 0x82)[0], 0xB2);
+  EXPECT_EQ(mem_upper_rom(&rig.dev, 0x9F)[0], 0xB0) << "past the image: 0";
+}

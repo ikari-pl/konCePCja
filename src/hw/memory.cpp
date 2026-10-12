@@ -136,6 +136,50 @@ uint8_t mem_read(mem_state* m, uint16_t addr) {
                      addr);  // ROM overlays win over whatever page is banked in
 }
 
+// The lower ROM a read would see when it is paged in: the firmware, or on a
+// Plus the RMR2-selected cartridge page (the same clamp as mem_read).
+const uint8_t* lower_rom_ptr(const mem_state* m) {
+  if (m->cart) {
+    const int bank = m->cart_lower < m->cart_banks ? m->cart_lower : 0;
+    return &m->cart[static_cast<size_t>(bank) * 0x4000];
+  }
+  return m->lower_rom;
+}
+
+// Where the 16K slot holding `addr` reads from, resolved through the same
+// predicates as mem_read: within one slot a view never changes source, so a
+// range read is one memcpy per slot.
+const uint8_t* slot_read_ptr(mem_state* m, uint16_t slot_base,
+                             bool rom_overlays) {
+  if (rom_overlays) {
+    if (lower_rom_serves(m, slot_base)) return lower_rom_ptr(m);
+    if (slot_base >= 0xC000 && upper_rom_on(m)) {
+      if (m->cart) {
+        const int bank = m->cart_upper < m->cart_banks ? m->cart_upper : 0;
+        return &m->cart[static_cast<size_t>(bank) * 0x4000];
+      }
+      const uint8_t* rom = m->roms[m->rom_select];
+      return rom ? rom : m->upper_rom;
+    }
+  }
+  return banked_ptr(m, slot_base);
+}
+
+void copy_view(mem_state* m, uint16_t addr, uint8_t* dst, size_t len,
+               bool rom_overlays) {
+  size_t pos = addr;
+  size_t const end = std::min<size_t>(pos + len, 0x10000);
+  while (pos < end) {
+    size_t const slot_base = pos & ~static_cast<size_t>(0x3FFF);
+    size_t const chunk = std::min(end, slot_base + 0x4000) - pos;
+    const uint8_t* src =
+        slot_read_ptr(m, static_cast<uint16_t>(slot_base), rom_overlays);
+    std::memcpy(dst, src + (pos - slot_base), chunk);
+    dst += chunk;
+    pos += chunk;
+  }
+}
+
 // The banking I/O-WRITE decode — the ONE definition both execution shapes
 // share: mem_tick snoops it off the bus every asserted iorq/wr tick (the
 // latches are idempotent under the held strobes), the Fast tier applies it
@@ -405,6 +449,32 @@ uint8_t mem_peek_ram(const Device* dev, uint16_t addr) {
   // Read counterpart of mem_poke_cpu: same banked_ptr resolution, so a peek and
   // a poke at the same address always refer to the same physical byte.
   return *banked_ptr(static_cast<mem_state*>(dev->self), addr);
+}
+
+void mem_peek_cpu_range(const Device* dev, uint16_t addr, uint8_t* dst,
+                        size_t len) {
+  mem_state* m = static_cast<mem_state*>(dev->self);
+  copy_view(m, addr, dst, len, /*rom_overlays=*/true);
+}
+
+void mem_peek_ram_range(const Device* dev, uint16_t addr, uint8_t* dst,
+                        size_t len) {
+  mem_state* m = static_cast<mem_state*>(dev->self);
+  copy_view(m, addr, dst, len, /*rom_overlays=*/false);
+}
+
+const uint8_t* mem_lower_rom(const Device* dev) {
+  return lower_rom_ptr(static_cast<const mem_state*>(dev->self));
+}
+
+const uint8_t* mem_upper_rom(const Device* dev, uint8_t n) {
+  const mem_state* m = static_cast<const mem_state*>(dev->self);
+  if (m->cart) {
+    const int page = plus_upper_page(n);
+    const int bank = page < m->cart_banks ? page : 0;
+    return &m->cart[static_cast<size_t>(bank) * 0x4000];
+  }
+  return m->roms[n] ? m->roms[n] : m->upper_rom;
 }
 
 uint8_t mem_fast_read(const Device* dev, uint16_t addr) {

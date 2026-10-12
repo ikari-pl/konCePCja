@@ -1909,6 +1909,17 @@ bool cpc_stopped() {
   return CPC.paused && g_pause_lease_count == 0;
 }
 
+bool cpc_read_while_stopped(const std::function<void()>& read) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (!CPC.paused || g_pause_lease_count != 0) return false;
+  // Paused, and under this mutex it stays paused, so no frame can start. What
+  // is left is a frame that was already in flight when the stop landed: it
+  // holds g_z80_idle false until it has ended (seq_cst: emu_frame.h).
+  if (!g_z80_idle.load(std::memory_order_seq_cst)) return false;
+  read();
+  return true;
+}
+
 uint64_t cpc_resume_epoch() {
   std::scoped_lock const lock(g_pause_mutex);
   return g_resume_epoch;
@@ -4117,6 +4128,9 @@ void frame_epilogue() {
   autotype_frame();
 
   g_telnet.drain_input();
+
+  // KCPC: count the frame and run the reads clients queued for this boundary.
+  kcpc_service_frame();
 
   // IPC frame step. This thread published the snapshot this frame began
   // with, so the current serial is that frame's.

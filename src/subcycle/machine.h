@@ -311,6 +311,17 @@ class Machine {
   uint8_t peek_mem(uint16_t addr) const;
   void poke_mem(uint16_t addr, uint8_t val);
 
+  // Bulk reads for tools that copy a whole view at once (the KCPC MEM_READ
+  // spaces): `len` bytes from `addr`, byte for byte what peek_mem() (the CPU
+  // view) or mem_peek_ram() (the banked RAM, ROMs ignored) return, one
+  // memcpy per 16K slot. addr + len must not pass 0x10000.
+  void peek_mem_range(uint16_t addr, uint8_t* dst, size_t len) const;
+  void peek_ram_range(uint16_t addr, uint8_t* dst, size_t len) const;
+  // The 16K of the lower ROM, and of upper ROM number `n` (the onboard BASIC
+  // where no ROM is fitted), paged in or not: see mem_lower_rom().
+  const uint8_t* lower_rom() const;
+  const uint8_t* upper_rom(uint8_t n) const;
+
   // Run until exactly one more instruction completes (bounded; ignores the
   // probe — stepping past a breakpoint must not immediately re-trip it).
   void step_instruction();
@@ -343,6 +354,9 @@ class Machine {
   void set_ram_size(size_t total_bytes);
   uint8_t ram_read(size_t addr) const;
   void ram_write(size_t addr, uint8_t val);
+  // `len` bytes of physical RAM from `addr`; addr + len must not pass
+  // ram_size().
+  void ram_copy(size_t addr, uint8_t* dst, size_t len) const;
 
   // DK'Tronics Silicon Disc (silicon-disc-device.md): battery-backed RAM at
   // expansion banks 4-7 — a sizing + persistence policy, NOT a bus Device.

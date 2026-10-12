@@ -11,6 +11,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
 #include "koncepcja.h"
 
 extern t_CPC CPC;
@@ -122,4 +126,67 @@ TEST_F(PauseLeaseChainTest, ALeaseIsNotAStop) {
     lease.restore_run_state();
   }
   EXPECT_TRUE(cpc_stopped());
+}
+
+// cpc_read_while_stopped(): how a tool reads a stopped machine without
+// holding a lease (beads-3o1.2). A KCPC client polling a paused machine
+// through leases made the text IPC's `run` answer ERR 409 pause-lease-held,
+// and cpc_resume() do nothing, whenever it landed on one.
+TEST_F(PauseLeaseChainTest, AStoppedMachineIsReadWithoutALease) {
+  int reads = 0;
+  EXPECT_FALSE(cpc_read_while_stopped([&] { ++reads; }))
+      << "running: there is nothing stopped to read";
+  {
+    CpcPauseLease lease;
+    EXPECT_FALSE(cpc_read_while_stopped([&] { ++reads; }))
+        << "paused by a lease only: not stopped";
+    lease.restore_run_state();
+  }
+  EXPECT_EQ(reads, 0);
+
+  cpc_pause();
+  EXPECT_TRUE(cpc_read_while_stopped([&] {
+    ++reads;
+    EXPECT_TRUE(CPC.paused);
+  }));
+  EXPECT_EQ(reads, 1);
+  EXPECT_TRUE(cpc_stopped()) << "reading left it stopped";
+  {
+    CpcPauseLease lease;
+    EXPECT_FALSE(cpc_read_while_stopped([&] { ++reads; }))
+        << "stopped, but a lease holder is at work on it";
+    lease.restore_run_state();
+  }
+  EXPECT_EQ(reads, 1);
+}
+
+// The point of it: a Run that arrives during the read is neither refused nor
+// lost. It waits for the read and then takes effect.
+TEST_F(PauseLeaseChainTest, ARunDuringAStoppedReadWaitsAndThenApplies) {
+  cpc_pause();
+  std::atomic<bool> reading{false};
+  std::atomic<bool> read_done{false};
+  std::atomic<bool> resume_called{false};
+  bool applied = false;
+  bool read_was_done_when_resume_returned = false;
+
+  std::thread resumer([&] {
+    while (!reading.load()) std::this_thread::yield();
+    resume_called.store(true);
+    applied = cpc_resume_applied();
+    read_was_done_when_resume_returned = read_done.load();
+  });
+  EXPECT_TRUE(cpc_read_while_stopped([&] {
+    reading.store(true);
+    while (!resume_called.load()) std::this_thread::yield();
+    // Long enough for the resume to have gone ahead if nothing held it.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    EXPECT_TRUE(CPC.paused) << "resumed in the middle of the read";
+    read_done.store(true);
+  }));
+  resumer.join();
+
+  EXPECT_TRUE(applied) << "the Run was refused";
+  EXPECT_TRUE(read_was_done_when_resume_returned);
+  EXPECT_FALSE(CPC.paused) << "the Run was lost";
 }
