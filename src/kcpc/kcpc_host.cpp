@@ -1,11 +1,13 @@
 #include "kcpc/kcpc_host.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <thread>
 
 #include "hw/memory.h"
 #include "hw/z80.h"
@@ -26,9 +28,40 @@ namespace {
 
 using kcpc::Status;
 
-// How long a read that fell back to a lease waits for other lease holders to
-// finish before it gives up. They hold the machine for one operation each.
+// How long a write, or a read that fell back to a lease, waits for other lease
+// holders to finish before it gives up. They hold the machine for one
+// operation each.
 constexpr int kLeaseAloneWaitMs = 250;
+
+// Calls work(was_paused) with nothing clocking the machine and no pause lease
+// held but this thread's own, then puts the run state back. False when the
+// runner did not go idle, or other holders kept the machine for longer than
+// kLeaseAloneWaitMs; work was not called then.
+//
+// Leases do not exclude one another, and the main thread rebuilds the machine
+// (reallocating its RAM) under one of its own, so nothing here may touch the
+// machine beside another holder. A holder that is not alone lets go of its
+// lease before it tries again. Waiting with the lease held does not work: two
+// threads that both wait to be alone each keep the other from being it, until
+// one gives up (a writer and a reader that had fallen back to a lease did
+// exactly that, and the write answered BUSY).
+bool alone_under_lease(const std::function<void(bool)>& work) {
+  auto const deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kLeaseAloneWaitMs);
+  for (;;) {
+    CpcPauseLease lease;
+    if (!lease.idle()) {
+      lease.restore_run_state();
+      return false;
+    }
+    bool const ran =
+        lease.change_alone([&] { work(lease.was_paused()); }, /*timeout_ms=*/0);
+    lease.restore_run_state();
+    if (ran) return true;
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+}
 
 kcpc::GateHost gate_host() {
   kcpc::GateHost host;
@@ -42,20 +75,7 @@ kcpc::GateHost gate_host() {
   host.read_stopped = [](const std::function<void()>& work) {
     return cpc_read_while_stopped(work);
   };
-  host.with_lease = [](const std::function<void(bool)>& work) {
-    CpcPauseLease lease;
-    if (!lease.idle()) {
-      lease.restore_run_state();
-      return false;
-    }
-    // Alone: another holder may be changing what this copies (a machine
-    // rebuild reallocates the expansion RAM). The bound is the gate's own
-    // patience; a reader that cannot have the machine answers BUSY.
-    bool const ran =
-        lease.read_alone([&] { work(lease.was_paused()); }, kLeaseAloneWaitMs);
-    lease.restore_run_state();
-    return ran;
-  };
+  host.with_lease = &alone_under_lease;
   return host;
 }
 
@@ -67,23 +87,13 @@ kcpc::Server g_kcpc_server;
 // state was, and is, around the change.
 template <typename Change>
 Status changed(Change&& change) {
-  CpcPauseLease lease;
-  if (!lease.idle()) {
-    lease.restore_run_state();
-    return Status::kBusy;
-  }
   Status status = Status::kInternal;
-  // Alone: leases do not exclude one another, and the main thread rebuilds
-  // the machine (and reallocates its RAM) under one of its own.
-  bool const ran = lease.change_alone(
-      [&] {
-        kcpc::Stamp stamp;
-        stamp.frame = g_gate.frame();
-        stamp.paused = lease.was_paused();
-        status = change(stamp);
-      },
-      kLeaseAloneWaitMs);
-  lease.restore_run_state();
+  bool const ran = alone_under_lease([&](bool was_paused) {
+    kcpc::Stamp stamp;
+    stamp.frame = g_gate.frame();
+    stamp.paused = was_paused;
+    status = change(stamp);
+  });
   return ran ? status : Status::kBusy;
 }
 

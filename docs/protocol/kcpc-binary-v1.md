@@ -471,14 +471,28 @@ three. When several leases overlap, the last request stands: a stop after a
 stop runs it, and either takes effect when the last holder lets go.
 
 The two writes of this port, `REGS_SET` and `MEM_WRITE`, go one step
-further than step 1 asks. Having taken the lease they wait, for up to
-250 ms, until theirs is the only one held, make the change while holding the
-pause mutex (`CpcPauseLease::change_alone()`), and answer `BUSY` if they
-never were alone. The reason is the paragraph below: a machine rebuild runs
+further than step 1 asks. They make the change only while their lease is the
+only one held, holding the pause mutex meanwhile
+(`CpcPauseLease::change_alone()`). A write that finds another lease lets go
+of its own, waits 200 µs and takes a new one, for up to 250 ms, and answers
+`BUSY` if it never was alone. It must not wait with its lease held: two
+threads that both wait to be alone each keep the other from being it. (The
+first version of this slice did, and a write beside a read that had fallen
+back to a lease answered `BUSY` on a slow host.) A read that falls back to a
+lease ([seam 2](#seam-2-the-frame-boundary-for-reads-while-running)) is
+taken the same way. The reason is the paragraph below: a machine rebuild runs
 under a lease of its own and reallocates the expansion RAM, and a
 `MEM_WRITE` that ran beside it would write into freed memory. Both changes
 are short (a 1 MiB write is a copy; a register write lets at most one
 instruction finish), so nothing waits for that mutex for long.
+
+A controller that sends its next write as soon as the last one is answered
+leaves the runner very few frames, and other clients' reads, which wait for
+a frame boundary, slow down with it: beside several thousand writes a second
+some reads took longer than 250 ms and fell back to a lease. Nothing is lost
+or wrong then, but it is the pause the gate exists to avoid; letting a
+boundary pass between writes while reads are waiting is tracked as
+beads-df1x.
 
 **Leases do not exclude one another.** Two holders both find the runner idle
 and both go ahead. That is deliberate: the text IPC's `profile load` holds a
