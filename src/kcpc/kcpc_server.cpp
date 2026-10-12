@@ -184,6 +184,7 @@ class Server::Connection {
     // time it takes to deliver its last frame.
     if (client_id_ != 0 && give_up_control()) {
       LOG_INFO("KCPC: control is free: client " << client_id_ << " is leaving");
+      owner_.release_held(client_id_);
       control_changed(0, client_id_, kControlLeft);
     }
     {
@@ -440,6 +441,28 @@ class Server::Connection {
         if (!breakpoints()) break;
         if (controller_only(header)) handle_bp_clear(header, payload);
         return true;
+      case Opcode::kKey:
+        if (!input()) break;
+        if (controller_only(header)) handle_key(header, payload);
+        return true;
+      case Opcode::kKeysRelease:
+        if (!input()) break;
+        if (controller_only(header)) {
+          respond_input(header, owner_.release_all_keys(client_id_));
+        }
+        return true;
+      case Opcode::kText:
+        if (!input()) break;
+        if (controller_only(header)) handle_text(header, payload);
+        return true;
+      case Opcode::kMouse:
+        if (!input()) break;
+        if (controller_only(header)) handle_mouse(header, payload);
+        return true;
+      case Opcode::kInputState:
+        if (!input()) break;
+        handle_input_state(header);
+        return true;
       case Opcode::kControl:
         if (!machine_writes()) break;
         handle_control(header, payload);
@@ -690,6 +713,99 @@ class Server::Connection {
     respond_generation(header, generation);
   }
 
+  // CAP_INPUT: the group is there whole or not at all. It needs the control
+  // role, which comes with the machine writes.
+  bool input() const {
+    return machine_writes() && config_.key && config_.keys_release &&
+           config_.text && config_.mouse && config_.input_state;
+  }
+
+  // The reply to KEY, KEYS_RELEASE and MOUSE: the status alone.
+  void respond_input(const FrameHeader& header, Status status) {
+    if (status == Status::kNotController) {
+      // Control was taken between the request's start and the change.
+      refuse_observer(header);
+      return;
+    }
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    status == Status::kNotPresent
+                        ? "no AMX or Symbiface mouse is enabled"
+                        : machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    respond(header, w.take());
+  }
+
+  void handle_key(const FrameHeader& header,
+                  const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    KeyRequest request;
+    if (!read_key_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "KEY payload too short");
+      return;
+    }
+    if (request.down > 1) {
+      respond_error(header, Status::kBadPayload,
+                    "down must be 1 (press) or 0 (release)");
+      return;
+    }
+    if (request.row >= kKeyRows || request.bit >= kKeyBits) {
+      respond_error(header, Status::kOutOfRange,
+                    "the keyboard matrix has rows 0 to 9 and bits 0 to 7");
+      return;
+    }
+    respond_input(header, owner_.press_key(client_id_, request));
+  }
+
+  void handle_text(const FrameHeader& header,
+                   const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::string text;
+    if (!r.str(text)) {
+      respond_error(header, Status::kBadPayload, "TEXT payload too short");
+      return;
+    }
+    std::uint32_t pending = 0;
+    std::string message;
+    Status const status = config_.text(text, pending, message);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    message.empty() ? machine_refusal(status) : message);
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    w.u32(pending);
+    respond(header, w.take());
+  }
+
+  void handle_mouse(const FrameHeader& header,
+                    const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    MouseRequest request;
+    if (!read_mouse_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "MOUSE payload too short");
+      return;
+    }
+    respond_input(header, owner_.move_mouse(client_id_, request));
+  }
+
+  void handle_input_state(const FrameHeader& header) {
+    KeyMatrix rows{};
+    Status const status = config_.input_state(rows);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    w.bytes(rows.data(), rows.size());
+    respond(header, w.take());
+  }
+
   // Tells every client who has control now. Sent after the response to the
   // request that changed it, when one did.
   void control_changed(std::uint32_t controller, std::uint32_t previous,
@@ -736,10 +852,14 @@ class Server::Connection {
   // request starts: one that was queued behind a takeover is refused.
   bool controller_only(const FrameHeader& header) {
     if (is_controller()) return true;
+    refuse_observer(header);
+    return false;
+  }
+
+  void refuse_observer(const FrameHeader& header) {
     respond_error(header, Status::kNotController,
                   "this request changes the machine and needs control; ask "
                   "for it with CONTROL");
-    return false;
   }
 
   void handle_control(const FrameHeader& header,
@@ -753,6 +873,7 @@ class Server::Connection {
     if (request.action == kControlRelease) {
       if (give_up_control()) {
         LOG_INFO("KCPC: client " << client_id_ << " released control");
+        owner_.release_held(client_id_);
         control_changed(0, client_id_, kControlReleased, header.id);
       }
     } else if (request.action == kControlAcquire) {
@@ -764,6 +885,8 @@ class Server::Connection {
             controller_.exchange(client_id_, std::memory_order_acq_rel);
         LOG_INFO("KCPC: client " << client_id_ << " took control from client "
                                  << previous);
+        // A demoted controller cannot let go of its keys any more.
+        if (previous != 0) owner_.release_held(previous);
         control_changed(client_id_, previous,
                         previous == 0 ? kControlAcquired : kControlTaken,
                         header.id);
@@ -936,6 +1059,7 @@ class Server::Connection {
     if (machine_writes()) reply.caps |= kCapMachineWrite;
     if (run_control()) reply.caps |= kCapRunControl;
     if (breakpoints()) reply.caps |= kCapBreakpoints;
+    if (input()) reply.caps |= kCapInput;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);
@@ -1177,6 +1301,12 @@ bool Server::start(const ServerConfig& config) {
   stopping_.store(false, std::memory_order_release);
   frame_stride_.store(0, std::memory_order_release);
   {
+    std::scoped_lock const lock(held_mutex_);
+    held_owner_ = 0;
+    held_keys_.fill(0);
+    held_buttons_ = 0;
+  }
+  {
     // Whatever was posted to a server that has since stopped is history.
     Event stale;
     while (ring_.pop(stale)) {
@@ -1216,6 +1346,74 @@ void Server::stop() {
   leaving.clear();
   frame_stride_.store(0, std::memory_order_release);
   net::cleanup();
+}
+
+// The three changes below are made under held_mutex_, and only while the
+// client is the controller. A client that loses control has what it held
+// released under the same mutex, after controller_ has changed: so a KEY that
+// was already past its role check either lands before that release, and is
+// undone by it, or finds it is no longer the controller.
+Status Server::press_key(std::uint32_t client, const KeyRequest& key) {
+  std::scoped_lock const lock(held_mutex_);
+  if (controller_.load(std::memory_order_acquire) != client) {
+    return Status::kNotController;
+  }
+  // What a previous controller left is not this client's to keep down.
+  if (held_owner_ != client) release_held_locked();
+  held_owner_ = client;
+  bool const down = key.down != 0;
+  Status const status = config_.key(key.row, key.bit, down);
+  if (status != Status::kOk) return status;
+  auto const mask = static_cast<std::uint8_t>(1U << key.bit);
+  if (down) {
+    held_keys_[key.row] |= mask;
+  } else {
+    held_keys_[key.row] &= static_cast<std::uint8_t>(~mask);
+  }
+  return Status::kOk;
+}
+
+Status Server::release_all_keys(std::uint32_t client) {
+  std::scoped_lock const lock(held_mutex_);
+  if (controller_.load(std::memory_order_acquire) != client) {
+    return Status::kNotController;
+  }
+  Status const status = config_.keys_release();
+  if (status == Status::kOk) held_keys_.fill(0);
+  return status;
+}
+
+Status Server::move_mouse(std::uint32_t client, const MouseRequest& mouse) {
+  std::scoped_lock const lock(held_mutex_);
+  if (controller_.load(std::memory_order_acquire) != client) {
+    return Status::kNotController;
+  }
+  if (held_owner_ != client) release_held_locked();
+  held_owner_ = client;
+  bool const set_buttons = (mouse.flags & kMouseFlagButtons) != 0;
+  auto const buttons =
+      static_cast<std::uint8_t>(mouse.buttons & kMouseButtonsAll);
+  Status const status = config_.mouse(mouse.dx, mouse.dy, set_buttons, buttons);
+  if (status == Status::kOk && set_buttons) held_buttons_ = buttons;
+  return status;
+}
+
+void Server::release_held(std::uint32_t client) {
+  std::scoped_lock const lock(held_mutex_);
+  if (held_owner_ == client) release_held_locked();
+}
+
+void Server::release_held_locked() {
+  for (std::uint8_t row = 0; row < kKeyRows; ++row) {
+    for (std::uint8_t bit = 0; bit < kKeyBits; ++bit) {
+      if ((held_keys_[row] & (1U << bit)) != 0) config_.key(row, bit, false);
+    }
+  }
+  // A mouse that has been unplugged meanwhile has no buttons to let go of.
+  if (held_buttons_ != 0) config_.mouse(0, 0, true, 0);
+  held_keys_.fill(0);
+  held_buttons_ = 0;
+  held_owner_ = 0;
 }
 
 void Server::post(const Event& event) {

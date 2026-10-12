@@ -879,6 +879,29 @@ constexpr byte kControlScancode = 0x27;
 
 }  // namespace
 
+void kbd_matrix_set_line(std::atomic<byte> keyboard_matrix[], int row, int bit,
+                         bool pressed) {
+  if (row < 0 || row >= kKbdMatrixRows || bit < 0 || bit > 7) return;
+  std::scoped_lock const matrix_lock(g_kbd_matrix_mutex);
+  set_matrix_line(keyboard_matrix, static_cast<byte>((row << 4) | bit),
+                  pressed);
+}
+
+void kbd_matrix_release_all(std::atomic<byte> keyboard_matrix[]) {
+  std::scoped_lock const matrix_lock(g_kbd_matrix_mutex);
+  for (int row = 0; row < 16; ++row) {
+    keyboard_matrix[row].store(0xFF, std::memory_order_relaxed);
+  }
+}
+
+void kbd_matrix_read(const std::atomic<byte> keyboard_matrix[],
+                     byte rows[kKbdMatrixRows]) {
+  std::scoped_lock const matrix_lock(g_kbd_matrix_mutex);
+  for (int row = 0; row < kKbdMatrixRows; ++row) {
+    rows[row] = keyboard_matrix[row].load(std::memory_order_relaxed);
+  }
+}
+
 void applyKeypressDirect(CPCScancode cpc_key,
                          std::atomic<byte> keyboard_matrix[], bool pressed,
                          bool release_modifiers) {

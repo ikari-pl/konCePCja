@@ -8,7 +8,9 @@
 // and MEM_WRITE (slice 3), and run control with the pushed events: SUBSCRIBE,
 // RUN_STATE, PAUSE, RUN, RESET, STEP and the fan-out thread (slice 4), and
 // the breakpoints BP_LIST, BP_ADD, BP_DEL, BP_CLEAR with the STEP modes that
-// walk the machine (slice 5). At most one client is the controller.
+// walk the machine (slice 5), and input: KEY, KEYS_RELEASE, TEXT, MOUSE,
+// INPUT_STATE, with the keys a controller holds released when it loses
+// control (slice 6). At most one client is the controller.
 //
 // The server knows nothing about the emulator. What it reports about the
 // machine comes through the callbacks of ServerConfig, so the same class runs
@@ -102,6 +104,31 @@ using BpDelFn = std::function<Status(const Cause&, const BpDelRequest&,
 using BpClearFn = std::function<Status(const Cause&, std::uint8_t kind,
                                        std::uint64_t& generation)>;
 
+// Input (section 12). Each is called on a reader thread. None of them touches
+// the machine: a key goes into the keyboard matrix the runner copies at the
+// start of every frame, text onto the queue the runner types from, mouse
+// movement into what the main loop hands the mouse once a frame.
+//
+// Presses or releases the one key at `row`, `bit`, and no other: a modifier
+// is a key of its own. The server has checked both numbers. It also calls
+// this with `down` false, from whichever thread took control away, for every
+// key a controller still held when it lost control.
+using KeyFn =
+    std::function<Status(std::uint8_t row, std::uint8_t bit, bool down)>;
+// Releases every key of the matrix, whoever pressed it.
+using KeysReleaseFn = std::function<Status()>;
+// Queues `text` for typing. `pending` is how many key actions are queued
+// afterwards. kBadPayload when the text does not parse (`message` says why);
+// nothing was queued then.
+using TextFn = std::function<Status(
+    const std::string& text, std::uint32_t& pending, std::string& message)>;
+// Moves the mouse and, when `set_buttons`, sets its buttons
+// (kMouseButton*). kNotPresent when no mouse is fitted.
+using MouseFn = std::function<Status(int dx, int dy, bool set_buttons,
+                                     std::uint8_t buttons)>;
+// The matrix as it is now, in its own polarity: a clear bit is a key down.
+using InputStateFn = std::function<Status(KeyMatrix&)>;
+
 struct ServerConfig {
   int base_port = kDefaultPort;
   int probe_count = kPortProbeCount;
@@ -145,6 +172,14 @@ struct ServerConfig {
   BpAddFn bp_add;
   BpDelFn bp_del;
   BpClearFn bp_clear;
+  // The CAP_INPUT group: KEY, KEYS_RELEASE, TEXT, MOUSE and INPUT_STATE
+  // exist, and HELLO announces the capability, only when all five are set
+  // and there is a control role to send them with (CAP_MACHINE_WRITE).
+  KeyFn key;
+  KeysReleaseFn keys_release;
+  TextFn text;
+  MouseFn mouse;
+  InputStateFn input_state;
   // A controller that has sent no frame for this long is disconnected, so
   // that a client that hangs does not keep control for ever (section 7).
   int controller_idle_timeout_ms = 30000;
@@ -199,6 +234,18 @@ class Server {
   // subscription.
   void update_frame_stride();
 
+  // Input from `client`, which must still be the controller when the change
+  // is made: kNotController otherwise, and nothing was changed. They
+  // remember what the client holds down, for release_held().
+  Status press_key(std::uint32_t client, const KeyRequest& key);
+  Status release_all_keys(std::uint32_t client);
+  Status move_mouse(std::uint32_t client, const MouseRequest& mouse);
+  // Releases the keys and mouse buttons `client` holds down through this
+  // port. Called when it stops being the controller, by whichever thread
+  // ended that, and before the change of controller is announced.
+  void release_held(std::uint32_t client);
+  void release_held_locked();
+
   ServerConfig config_;
   std::atomic<bool> running_{false};
   std::atomic<bool> stopping_{false};
@@ -210,6 +257,17 @@ class Server {
   std::thread acceptor_;
   std::mutex connections_mutex_;
   std::list<std::unique_ptr<Connection>> connections_;
+
+  // What the controller holds down through this port: the keys it pressed
+  // with KEY and has not released (a set bit is a held key), and the mouse
+  // buttons it set. Only one client at a time can press anything, so there
+  // is one record and the id of the client it belongs to. The mutex also
+  // orders a KEY against the loss of control that releases the keys: the
+  // press is made, or refused, under it.
+  std::mutex held_mutex_;
+  std::uint32_t held_owner_ = 0;
+  KeyMatrix held_keys_{};
+  std::uint8_t held_buttons_ = 0;
 
   EventRing ring_;
   std::thread fan_out_;

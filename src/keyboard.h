@@ -346,6 +346,24 @@ void applyKeypressDirect(CPCScancode cpc_key,
 void applyKeypress(CPCScancode cpc_key, std::atomic<byte> keyboard_matrix[],
                    bool pressed, bool release_modifiers = true);
 
+// The matrix by position, for a frontend that maps its own keys (KCPC's KEY,
+// KEYS_RELEASE and INPUT_STATE). Unlike the functions above these know
+// nothing of modifiers: SHIFT and CONTROL are lines like any other, pressed
+// and released by whoever wants them. Each takes g_kbd_matrix_mutex, so the
+// frame's snapshot sees a change whole, and none of them minds a paused
+// machine.
+//
+// Rows the CPC scans: 0 to 9, of 8 lines each. Row 9 is joystick 0.
+inline constexpr int kKbdMatrixRows = 10;
+// Presses (or releases) the one line at `row`, `bit`. Out of range: nothing.
+void kbd_matrix_set_line(std::atomic<byte> keyboard_matrix[], int row, int bit,
+                         bool pressed);
+// Releases every line of the matrix, whoever pressed it.
+void kbd_matrix_release_all(std::atomic<byte> keyboard_matrix[]);
+// Copies rows 0 to 9 into `rows`: a clear bit is a line that is down.
+void kbd_matrix_read(const std::atomic<byte> keyboard_matrix[],
+                     byte rows[kKbdMatrixRows]);
+
 class LineParsingResult {
  public:
   bool valid = true;

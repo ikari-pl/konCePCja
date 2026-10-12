@@ -704,7 +704,63 @@ TEST(KcpcCodec, TheServerAnnouncesRunControlAndEvents) {
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapEvents, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapBreakpoints, 0U);
-  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapInput, 0U) << "slice 6";
+  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapChips, 0U) << "slice 7";
+}
+
+// -- slice 6: input ----------------------------------------------------------
+
+TEST(KcpcCodec, TheServerAnnouncesInput) {
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapInput, 0U);
+}
+
+TEST(KcpcCodec, AKeyRequestRoundTrips) {
+  Writer w;
+  kcpc::KeyRequest in;
+  in.row = 8;
+  in.bit = 5;
+  in.down = 1;
+  kcpc::write_key_request(w, in);
+  EXPECT_EQ(w.data(), (std::vector<std::uint8_t>{8, 5, 1, 0}));
+  Reader r(w.data());
+  kcpc::KeyRequest out;
+  ASSERT_TRUE(kcpc::read_key_request(r, out));
+  EXPECT_EQ(out.row, 8);
+  EXPECT_EQ(out.bit, 5);
+  EXPECT_EQ(out.down, 1);
+
+  std::vector<std::uint8_t> const cut = {8, 5, 1};
+  Reader short_reader(cut);
+  EXPECT_FALSE(kcpc::read_key_request(short_reader, out));
+}
+
+TEST(KcpcCodec, AMouseRequestCarriesSignedDeltas) {
+  Writer w;
+  kcpc::MouseRequest in;
+  in.dx = -300;
+  in.dy = 7;
+  in.buttons = kcpc::kMouseButtonLeft | kcpc::kMouseButtonRight;
+  in.flags = kcpc::kMouseFlagButtons;
+  kcpc::write_mouse_request(w, in);
+  // -300 is 0xFED4, little-endian.
+  EXPECT_EQ(w.data(),
+            (std::vector<std::uint8_t>{0xD4, 0xFE, 0x07, 0x00, 0x05, 0x01}));
+  Reader r(w.data());
+  kcpc::MouseRequest out;
+  ASSERT_TRUE(kcpc::read_mouse_request(r, out));
+  EXPECT_EQ(out.dx, -300);
+  EXPECT_EQ(out.dy, 7);
+  EXPECT_EQ(out.buttons, 0x05);
+  EXPECT_EQ(out.flags, kcpc::kMouseFlagButtons);
+
+  std::vector<std::uint8_t> const cut = {0xD4, 0xFE, 0x07, 0x00, 0x05};
+  Reader short_reader(cut);
+  EXPECT_FALSE(kcpc::read_mouse_request(short_reader, out));
+}
+
+TEST(KcpcCodec, TheMatrixHasTenRowsOfEightKeys) {
+  EXPECT_EQ(kcpc::KeyMatrix{}.size(), 10U);
+  EXPECT_EQ(kcpc::kKeyRows, 10);
+  EXPECT_EQ(kcpc::kKeyBits, 8);
 }
 
 // -- slice 5: breakpoints ----------------------------------------------------

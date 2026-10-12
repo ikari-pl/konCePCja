@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -338,6 +339,10 @@ class KcpcServerTest : public ::testing::Test {
     ASSERT_TRUE(server_.start(config));
     ASSERT_GT(server_.port(), 0);
   }
+  // The fake machines are members of the fixtures derived from this one, so
+  // they go before server_ does. A connection that ends may still call one
+  // (the keys a controller held are released when it leaves): stop first.
+  void TearDown() override { server_.stop(); }
   kcpc::Server server_;
 };
 
@@ -1195,10 +1200,10 @@ TEST_F(KcpcControlTest, HelloGrantsControlToTheFirstWhoAsks) {
   kcpc::HelloReply observer_hello;
   auto observer = join(kcpc::Role::kObserver, observer_hello);
   EXPECT_EQ(observer_hello.role, kcpc::Role::kObserver);
-  EXPECT_EQ(observer_hello.caps,
-            kcpc::kServerCaps & ~kcpc::kCapRunControl & ~kcpc::kCapBreakpoints)
-      << "everything but run control and breakpoints, which this machine "
-         "does not offer";
+  EXPECT_EQ(observer_hello.caps, kcpc::kServerCaps & ~kcpc::kCapRunControl &
+                                     ~kcpc::kCapBreakpoints & ~kcpc::kCapInput)
+      << "everything but run control, breakpoints and input, which this "
+         "machine does not offer";
   EXPECT_NE(observer_hello.caps & kcpc::kCapMachineWrite, 0U);
   EXPECT_EQ(server_.controller(), 0U) << "nobody asked for control yet";
 
@@ -1715,7 +1720,8 @@ TEST_F(KcpcEventsTest, HelloAnnouncesRunControlAndEvents) {
   start_with_run_control();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapBreakpoints);
+  EXPECT_EQ(hello.caps,
+            kcpc::kServerCaps & ~kcpc::kCapBreakpoints & ~kcpc::kCapInput);
   EXPECT_NE(hello.caps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(hello.caps & kcpc::kCapEvents, 0U);
 }
@@ -2319,7 +2325,7 @@ TEST_F(KcpcBreakpointsTest, HelloAnnouncesBreakpoints) {
   start_with_breakpoints();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput);
   EXPECT_NE(hello.caps & kcpc::kCapBreakpoints, 0U);
 }
 
@@ -2542,4 +2548,462 @@ TEST_F(KcpcBreakpointsTest, TheWalkingStepsReachTheMachineWithADeadline) {
   exchange(*controller, Opcode::kStep, 6, step_payload(over, 1), frame);
   EXPECT_EQ(frame.status(), Status::kLimitReached);
   EXPECT_FALSE(frame.message().empty());
+}
+
+// -- slice 6: input ----------------------------------------------------------
+
+namespace {
+
+// A keyboard matrix, a typing queue and a mouse, and a record of what the
+// server did to them. The callbacks come from several reader threads (a key
+// is released by whichever thread took control away), so everything is read
+// and written under one mutex.
+struct FakeInput {
+  FakeInput() { matrix.fill(0xFF); }
+
+  void attach(kcpc::ServerConfig& c) {
+    c.key = [this](std::uint8_t row, std::uint8_t bit, bool down) {
+      std::scoped_lock const lock(mutex);
+      (down ? presses : releases) += 1;
+      auto const mask = static_cast<std::uint8_t>(1U << bit);
+      if (down) {
+        matrix[row] &= static_cast<std::uint8_t>(~mask);
+      } else {
+        matrix[row] |= mask;
+      }
+      return Status::kOk;
+    };
+    c.keys_release = [this] {
+      std::scoped_lock const lock(mutex);
+      release_alls += 1;
+      matrix.fill(0xFF);
+      return Status::kOk;
+    };
+    c.text = [this](const std::string& text, std::uint32_t& pending,
+                    std::string& message) {
+      std::scoped_lock const lock(mutex);
+      if (text.find("~NOPE~") != std::string::npos) {
+        message = "unknown key: NOPE";
+        return Status::kBadPayload;
+      }
+      typed += text;
+      pending = static_cast<std::uint32_t>(typed.size());
+      return Status::kOk;
+    };
+    c.mouse = [this](int dx, int dy, bool set_buttons, std::uint8_t buttons) {
+      std::scoped_lock const lock(mutex);
+      mouse_calls += 1;
+      if (!mouse_fitted) return Status::kNotPresent;
+      mouse_x += dx;
+      mouse_y += dy;
+      if (set_buttons) mouse_buttons = buttons;
+      return Status::kOk;
+    };
+    c.input_state = [this](kcpc::KeyMatrix& rows) {
+      std::scoped_lock const lock(mutex);
+      rows = matrix;
+      return Status::kOk;
+    };
+  }
+
+  std::uint8_t row(std::size_t index) {
+    std::scoped_lock const lock(mutex);
+    return matrix[index];
+  }
+  // A key some other source holds down: the text IPC, the user's keyboard.
+  void press_from_elsewhere(std::uint8_t row_index, std::uint8_t bit) {
+    std::scoped_lock const lock(mutex);
+    matrix[row_index] &= static_cast<std::uint8_t>(~(1U << bit));
+  }
+  int count(int FakeInput::* counter) {
+    std::scoped_lock const lock(mutex);
+    return this->*counter;
+  }
+  std::uint8_t buttons() {
+    std::scoped_lock const lock(mutex);
+    return mouse_buttons;
+  }
+
+  std::mutex mutex;
+  kcpc::KeyMatrix matrix{};  // the matrix's polarity: a clear bit is down
+  int presses = 0;
+  int releases = 0;
+  int release_alls = 0;
+  int mouse_calls = 0;
+  std::string typed;
+  bool mouse_fitted = true;
+  int mouse_x = 0;
+  int mouse_y = 0;
+  std::uint8_t mouse_buttons = 0;
+};
+
+std::vector<std::uint8_t> key_payload(std::uint8_t row, std::uint8_t bit,
+                                      std::uint8_t down) {
+  kcpc::Writer w;
+  kcpc::KeyRequest key;
+  key.row = row;
+  key.bit = bit;
+  key.down = down;
+  kcpc::write_key_request(w, key);
+  return w.take();
+}
+
+std::vector<std::uint8_t> text_payload(const std::string& text) {
+  kcpc::Writer w;
+  w.str(text);
+  return w.take();
+}
+
+std::vector<std::uint8_t> mouse_payload(std::int16_t dx, std::int16_t dy,
+                                        std::uint8_t buttons,
+                                        std::uint8_t flags) {
+  kcpc::Writer w;
+  kcpc::MouseRequest mouse;
+  mouse.dx = dx;
+  mouse.dy = dy;
+  mouse.buttons = buttons;
+  mouse.flags = flags;
+  kcpc::write_mouse_request(w, mouse);
+  return w.take();
+}
+
+// The keys the tests press: A, and joystick 0 up.
+constexpr std::uint8_t kRowA = 8;
+constexpr std::uint8_t kBitA = 5;
+constexpr std::uint8_t kRowJoy = 9;
+constexpr std::uint8_t kBitUp = 0;
+
+class KcpcInputTest : public KcpcBreakpointsTest {
+ protected:
+  void start_with_input(int idle_timeout_ms = 30000) {
+    kcpc::ServerConfig config = test_config();
+    reads_.attach(config);
+    writes_.attach(config);
+    run_.attach(config, server_);
+    bps_.attach(config, server_);
+    input_.attach(config);
+    config.controller_idle_timeout_ms = idle_timeout_ms;
+    start(config);
+  }
+
+  static Status key(TestClient& client, std::uint32_t id, std::uint8_t row,
+                    std::uint8_t bit, bool down) {
+    Frame frame;
+    exchange(client, Opcode::kKey, id, key_payload(row, bit, down ? 1 : 0),
+             frame);
+    return frame.status();
+  }
+
+  // Reads events until an EVT_CONTROL_CHANGED says control is free.
+  static void await_free_control(TestClient& client) {
+    Frame frame;
+    for (;;) {
+      ASSERT_TRUE(client.next_event(frame)) << "control never became free";
+      if (frame.header.opcode !=
+          static_cast<std::uint16_t>(Opcode::kEvtControlChanged)) {
+        continue;
+      }
+      kcpc::Reader r(frame.payload);
+      std::uint32_t now = 1;
+      ASSERT_TRUE(r.u32(now));
+      if (now == 0) return;
+    }
+  }
+
+  FakeInput input_;
+};
+
+}  // namespace
+
+TEST_F(KcpcInputTest, HelloAnnouncesInput) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_NE(hello.caps & kcpc::kCapInput, 0U);
+}
+
+TEST_F(KcpcInputTest, WithoutTheGroupItsOpcodesDoNotExist) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  EXPECT_EQ(hello.caps & kcpc::kCapInput, 0U);
+  Frame frame;
+  std::uint32_t id = 2;
+  for (Opcode const opcode : {Opcode::kKey, Opcode::kKeysRelease, Opcode::kText,
+                              Opcode::kMouse, Opcode::kInputState}) {
+    exchange(*controller, opcode, id++, key_payload(kRowA, kBitA, 1), frame);
+    EXPECT_EQ(frame.status(), Status::kUnknownOpcode);
+  }
+}
+
+TEST_F(KcpcInputTest, AKeyReachesTheMatrixAndAnyoneReadsIt) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+
+  Frame frame;
+  exchange(*controller, Opcode::kKey, 2, key_payload(kRowA, kBitA, 1), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U) << "KEY replies with the status alone";
+  EXPECT_EQ(input_.row(kRowA), 0xDF);
+
+  // One key, and no other: SHIFT is a key of its own and stays down while
+  // another key is pressed and released.
+  ASSERT_EQ(key(*controller, 3, 2, 5, true), Status::kOk);
+  ASSERT_EQ(key(*controller, 4, kRowJoy, kBitUp, true), Status::kOk);
+  ASSERT_EQ(key(*controller, 5, kRowJoy, kBitUp, false), Status::kOk);
+  EXPECT_EQ(input_.row(2), 0xDF);
+  EXPECT_EQ(input_.row(kRowJoy), 0xFF);
+
+  exchange(*observer, Opcode::kInputState, 2, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 10U) << "one byte per matrix row";
+  for (std::size_t row = 0; row < kcpc::kKeyRows; ++row) {
+    EXPECT_EQ(frame.payload[4 + row], row == kRowA || row == 2 ? 0xDF : 0xFF)
+        << "row " << row;
+  }
+}
+
+// "A request that needs control is refused with NOT_CONTROLLER before its
+// payload is looked at."
+TEST_F(KcpcInputTest, AnObserversInputIsRefusedAndReachesNothing) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+  std::uint32_t id = 2;
+  for (Opcode const opcode :
+       {Opcode::kKey, Opcode::kKeysRelease, Opcode::kText, Opcode::kMouse}) {
+    exchange(*observer, opcode, id++, key_payload(kRowA, kBitA, 1), frame);
+    EXPECT_EQ(frame.status(), Status::kNotController);
+    EXPECT_FALSE(frame.message().empty());
+    exchange(*observer, opcode, id++, {}, frame);
+    EXPECT_EQ(frame.status(), Status::kNotController) << "malformed, too";
+  }
+  EXPECT_EQ(input_.count(&FakeInput::presses), 0);
+  EXPECT_EQ(input_.count(&FakeInput::release_alls), 0);
+  EXPECT_EQ(input_.count(&FakeInput::mouse_calls), 0);
+  EXPECT_TRUE(input_.typed.empty());
+  EXPECT_EQ(input_.row(kRowA), 0xFF);
+}
+
+TEST_F(KcpcInputTest, AKeyIsCheckedBeforeTheMatrixIsTouched) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+
+  exchange(*controller, Opcode::kKey, 2, {kRowA, kBitA, 1}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "three bytes of four";
+  exchange(*controller, Opcode::kKey, 3, key_payload(kRowA, kBitA, 2), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "down is 0 or 1";
+  exchange(*controller, Opcode::kKey, 4, key_payload(10, 0, 1), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange) << "rows 0 to 9";
+  exchange(*controller, Opcode::kKey, 5, key_payload(0, 8, 1), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange) << "bits 0 to 7";
+  EXPECT_FALSE(frame.message().empty());
+  // The last key of the matrix exists.
+  EXPECT_EQ(key(*controller, 6, 9, 7, true), Status::kOk);
+  EXPECT_EQ(input_.count(&FakeInput::presses), 1);
+}
+
+// Section 7: the keys a controller holds are released when it disconnects,
+// gives control up, has it taken, or is dropped for silence. Only those: a
+// key another source holds is not this port's to release.
+TEST_F(KcpcInputTest, HeldKeysAreReleasedWhenTheControllerDisconnects) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+  input_.press_from_elsewhere(0, 0);
+
+  ASSERT_EQ(key(*controller, 2, kRowA, kBitA, true), Status::kOk);
+  ASSERT_EQ(key(*controller, 3, kRowJoy, kBitUp, true), Status::kOk);
+  ASSERT_EQ(key(*controller, 4, 2, 5, true), Status::kOk);
+  ASSERT_EQ(key(*controller, 5, 2, 5, false), Status::kOk);
+  ASSERT_EQ(input_.row(kRowA), 0xDF);
+  ASSERT_EQ(input_.row(kRowJoy), 0xFE);
+
+  controller->close();
+  // The keys are up by the time anyone is told that control is free.
+  await_free_control(*observer);
+  EXPECT_EQ(input_.row(kRowA), 0xFF);
+  EXPECT_EQ(input_.row(kRowJoy), 0xFF);
+  EXPECT_EQ(input_.row(0), 0xFE) << "somebody else's key was released";
+  // Two keys were still down; the one it had let go of itself is not
+  // released a second time.
+  EXPECT_EQ(input_.count(&FakeInput::releases), 1 + 2);
+  EXPECT_EQ(input_.count(&FakeInput::release_alls), 0);
+}
+
+TEST_F(KcpcInputTest, HeldKeysAreReleasedWhenControlIsGivenUp) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  ASSERT_EQ(key(*controller, 2, kRowA, kBitA, true), Status::kOk);
+
+  kcpc::ControlReply reply;
+  control(*controller, 3, kcpc::kControlRelease, 0, reply);
+  ASSERT_EQ(reply.role, kcpc::Role::kObserver);
+  // Released before the reply: CONTROL is answered by the thread that
+  // released them.
+  EXPECT_EQ(input_.row(kRowA), 0xFF);
+
+  // Taking control again does not bring the key back, and the keys of the
+  // new term are released at its end like the first.
+  control(*controller, 4, kcpc::kControlAcquire, 0, reply);
+  ASSERT_EQ(reply.role, kcpc::Role::kController);
+  EXPECT_EQ(input_.row(kRowA), 0xFF);
+  ASSERT_EQ(key(*controller, 5, kRowJoy, kBitUp, true), Status::kOk);
+  control(*controller, 6, kcpc::kControlRelease, 0, reply);
+  EXPECT_EQ(input_.row(kRowJoy), 0xFF);
+  EXPECT_EQ(input_.count(&FakeInput::releases), 2);
+}
+
+TEST_F(KcpcInputTest, HeldKeysAreReleasedByAForcedTakeover) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto first = join(kcpc::Role::kController, hello);
+  auto second = join(kcpc::Role::kObserver, hello);
+  ASSERT_EQ(key(*first, 2, kRowA, kBitA, true), Status::kOk);
+
+  kcpc::ControlReply reply;
+  control(*second, 2, kcpc::kControlAcquire, kcpc::kControlFlagForce, reply);
+  ASSERT_EQ(reply.role, kcpc::Role::kController);
+  EXPECT_EQ(input_.row(kRowA), 0xFF) << "the demoted controller's key";
+
+  // The demoted client can press nothing, and the new controller's keys are
+  // its own: the first one leaving does not release them.
+  EXPECT_EQ(key(*first, 3, kRowA, kBitA, true), Status::kNotController);
+  ASSERT_EQ(key(*second, 3, kRowJoy, kBitUp, true), Status::kOk);
+  first->close();
+  auto const deadline = Clock::now() + std::chrono::seconds(5);
+  while (server_.client_count() != 1 && Clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_EQ(server_.client_count(), 1U) << "the first client is still there";
+  EXPECT_EQ(input_.row(kRowA), 0xFF);
+  EXPECT_EQ(input_.row(kRowJoy), 0xFE);
+}
+
+TEST_F(KcpcInputTest, HeldKeysAreReleasedWhenASilentControllerIsDropped) {
+  // Long enough that a loaded host still gets the KEY in before the silence
+  // counts.
+  start_with_input(/*idle_timeout_ms=*/1000);
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  ASSERT_EQ(key(*controller, 2, kRowA, kBitA, true), Status::kOk);
+  ASSERT_EQ(input_.row(kRowA), 0xDF);
+  expect_error_then_close(*controller, Status::kIdleTimeout);
+  EXPECT_EQ(input_.row(kRowA), 0xFF);
+}
+
+TEST_F(KcpcInputTest, KeysReleaseLetsGoOfEveryKey) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  input_.press_from_elsewhere(0, 0);
+  ASSERT_EQ(key(*controller, 2, kRowA, kBitA, true), Status::kOk);
+
+  Frame frame;
+  exchange(*controller, Opcode::kKeysRelease, 3, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U);
+  EXPECT_EQ(input_.count(&FakeInput::release_alls), 1);
+  for (std::size_t row = 0; row < kcpc::kKeyRows; ++row) {
+    EXPECT_EQ(input_.row(row), 0xFF) << "row " << row;
+  }
+
+  // Nothing is held any more, so nothing is released when it leaves.
+  kcpc::ControlReply reply;
+  control(*controller, 4, kcpc::kControlRelease, 0, reply);
+  EXPECT_EQ(input_.count(&FakeInput::releases), 0);
+}
+
+TEST_F(KcpcInputTest, TextIsQueuedAndTheReplySaysHowMuchIsPending) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+
+  exchange(*controller, Opcode::kText, 2, text_payload("print 1+1~RETURN~"),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 4U);
+  kcpc::Reader r(frame.payload);
+  std::uint32_t pending = 0;
+  r.skip(4);
+  ASSERT_TRUE(r.u32(pending));
+  EXPECT_EQ(pending, 17U);
+  EXPECT_EQ(input_.typed, "print 1+1~RETURN~");
+
+  // Text the queue cannot parse is the client's mistake, in the parser's
+  // words; nothing was queued.
+  exchange(*controller, Opcode::kText, 3, text_payload("a~NOPE~"), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  EXPECT_EQ(frame.message(), "unknown key: NOPE");
+  EXPECT_EQ(input_.typed, "print 1+1~RETURN~");
+
+  // A `str` that says more bytes than arrived.
+  exchange(*controller, Opcode::kText, 4, {5, 0, 'a', 'b'}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  exchange(*controller, Opcode::kText, 5, text_payload(""), frame);
+  EXPECT_EQ(frame.status(), Status::kOk) << "no text is valid text";
+}
+
+TEST_F(KcpcInputTest, MouseMovesAndSetsButtonsOnlyWhenAsked) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  constexpr std::uint8_t kLeft = kcpc::kMouseButtonLeft;
+
+  exchange(*controller, Opcode::kMouse, 2,
+           mouse_payload(10, -4, kLeft, kcpc::kMouseFlagButtons), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U);
+  EXPECT_EQ(input_.mouse_x, 10);
+  EXPECT_EQ(input_.mouse_y, -4);
+  EXPECT_EQ(input_.buttons(), kLeft);
+
+  // Without the flag the buttons stay as they are, whatever the field holds.
+  exchange(*controller, Opcode::kMouse, 3, mouse_payload(-300, 300, 0, 0),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(input_.mouse_x, -290);
+  EXPECT_EQ(input_.mouse_y, 296);
+  EXPECT_EQ(input_.buttons(), kLeft);
+
+  // Bits that are no button are dropped.
+  exchange(*controller, Opcode::kMouse, 4,
+           mouse_payload(0, 0, 0xFC | kcpc::kMouseButtonRight,
+                         kcpc::kMouseFlagButtons),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(input_.buttons(), kcpc::kMouseButtonRight);
+
+  exchange(*controller, Opcode::kMouse, 5, {1, 0, 1, 0, 0}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "five bytes of six";
+
+  // A button held when control is lost is let go, like a key.
+  kcpc::ControlReply reply;
+  control(*controller, 6, kcpc::kControlRelease, 0, reply);
+  EXPECT_EQ(input_.buttons(), 0);
+  EXPECT_EQ(input_.mouse_x, -290) << "letting go moves nothing";
+}
+
+TEST_F(KcpcInputTest, MouseWithNoMouseFittedIsNotPresent) {
+  input_.mouse_fitted = false;
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  exchange(*controller, Opcode::kMouse, 2,
+           mouse_payload(1, 1, 0, kcpc::kMouseFlagButtons), frame);
+  EXPECT_EQ(frame.status(), Status::kNotPresent);
+  EXPECT_NE(frame.message().find("mouse"), std::string::npos);
+  expect_ping_ok(*controller, 3);
 }

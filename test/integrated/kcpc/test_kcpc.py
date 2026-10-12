@@ -11,7 +11,9 @@ the machine reads REGS_GET, MEM_INFO and MEM_READ, checked against the text
 IPC, on a running and on a paused machine. Slice 3: the control role and the
 machine writes. Slice 4: run control (PAUSE, RUN, RESET, STEP, RUN_STATE)
 and the pushed events, which the tests wait for in a blocking read, never
-in a polling loop.
+in a polling loop. Slice 5: breakpoints and the steps that walk. Slice 6:
+input (KEY, KEYS_RELEASE, TEXT, MOUSE, INPUT_STATE), checked by what the
+firmware prints and by what a Z80 program reads from the PPI.
 
 Usage: test_kcpc.py [--ui-free | --gui] [-k substring] [path/to/koncepcja]
   (default)  the binary is started with -H
@@ -308,11 +310,12 @@ def test_manifest_port_and_hello() -> None:
             assert hello.role == kc.ROLE_OBSERVER, 'it did not ask for control'
             assert hello.max_frame == kc.MAX_SERVER_FRAME, hello.max_frame
             # The groups implemented so far: the machine reads, with the
-            # ROM spaces, and the writes with the control role.
+            # ROM spaces, the writes with the control role, run control,
+            # events, breakpoints and input.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
                                   | kc.CAP_MACHINE_WRITE
                                   | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS
-                                  | kc.CAP_BREAKPOINTS), (
+                                  | kc.CAP_BREAKPOINTS | kc.CAP_INPUT), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -2858,6 +2861,396 @@ def test_step_over_a_restart_uses_a_prepared_rom() -> None:
         shutil.rmtree(romdir, ignore_errors=True)
 
 
+# -- slice 6: input ----------------------------------------------------------
+
+SCREEN_ADDR = 0xC000    # the screen after a reset, before anything scrolls
+SCREEN_SIZE = 0x4000
+FONT_ADDR = 0x3800      # the firmware's character matrices, in the lower ROM
+TEXT_ROWS = 25
+TEXT_COLS = 40          # mode 1, which BASIC starts in
+CURSOR = '\x7f'         # how screen_text() shows the cursor block
+BOOT_TIMEOUT_S = 60.0
+
+
+def screen_text(c: KcpcClient) -> List[str]:
+    """The mode 1 screen as 25 lines of text: every character cell compared
+    with the character matrices of the firmware ROM. Pen 1 on paper 0, which
+    is what BASIC prints in; the cursor is a solid cell and reads as CURSOR,
+    anything else unknown as '?'. Trailing spaces are cut."""
+    font = c.mem_read(kc.SPACE_ROM_LOWER, FONT_ADDR, 0x800)
+    glyphs = {font[code * 8:code * 8 + 8]: chr(code)
+              for code in range(126, 31, -1)}
+    glyphs[b'\xff' * 8] = CURSOR
+    screen = c.mem_read(kc.SPACE_CPU_RAM, SCREEN_ADDR, SCREEN_SIZE)
+    lines = []
+    for row in range(TEXT_ROWS):
+        line = ''
+        for col in range(TEXT_COLS):
+            cell = bytearray()
+            for scan in range(8):
+                # A mode 1 byte is four pixels; pen 1 is its high nibble.
+                at = scan * 0x800 + row * 80 + col * 2
+                cell.append((screen[at] & 0xF0) | (screen[at + 1] >> 4))
+            line += glyphs.get(bytes(cell), '?')
+        lines.append(line.rstrip())
+    return lines
+
+
+def wait_for_screen(c: KcpcClient, what: str,
+                    found: Callable[[List[str]], Optional[int]]) -> int:
+    """Reads the screen until `found` returns a row. The firmware takes
+    emulated time to print; there is no event for 'BASIC has printed'."""
+    deadline = time.monotonic() + BOOT_TIMEOUT_S
+    while True:
+        lines = screen_text(c)
+        row = found(lines)
+        if row is not None:
+            return row
+        assert time.monotonic() < deadline, (
+            f'{what}: the screen shows\n' + '\n'.join(lines[:14]))
+        time.sleep(0.05)
+
+
+def wait_for_ready(c: KcpcClient) -> int:
+    """Waits for BASIC's prompt and returns the row the cursor is on."""
+    def found(lines: List[str]) -> Optional[int]:
+        for row in range(1, TEXT_ROWS):
+            if lines[row] == CURSOR and lines[row - 1] == 'Ready':
+                return row
+        return None
+    return wait_for_screen(c, 'no Ready prompt', found)
+
+
+def run_frames(c: KcpcClient, frames: int) -> None:
+    """Runs exactly `frames` frames and returns when they have ended: a
+    blocking read of the step's EVT_STOPPED."""
+    request = c.step(count=frames, mode=kc.STEP_FRAMES)
+    while True:
+        event = c.next_event(EVENT_TIMEOUT_S)
+        if (event.opcode == kc.EVT_STOPPED
+                and event.cause_request == request):
+            assert event.reason == kc.STOP_STEP_DONE, event
+            return
+
+
+def held(rows: bytes) -> List[Tuple[int, int]]:
+    """The (row, bit) of every key that is down in an INPUT_STATE reply."""
+    return [(row, bit) for row in range(kc.KEY_ROWS) for bit in range(8)
+            if not rows[row] & (1 << bit)]
+
+
+# Long enough for the firmware to see a key change: it scans the keyboard
+# once a frame and debounces over two scans.
+KEY_FRAMES = 6
+
+
+def test_a_key_reaches_the_matrix_and_the_firmware() -> None:
+    """Acceptance 1: KEY down for the matrix position of A shows in
+    INPUT_STATE (for an observer too) and in the text IPC's `input state`,
+    and after frames have run the firmware has typed the character. SHIFT is
+    a key like any other, held by the client itself."""
+    with Core() as core, controller(core, 'typist') as c, \
+            observer(core, 'watcher') as o:
+        assert c.hello_reply.caps & kc.CAP_INPUT, hex(c.hello_reply.caps)
+        row = wait_for_ready(c)
+        c.subscribe(kc.CLASS_RUN)
+        c.pause()
+        assert held(o.input_state()) == []
+
+        # The matrix is host state: a key lands in it on a paused machine.
+        c.key(*kc.KEY_A)
+        assert held(c.input_state()) == [kc.KEY_A]
+        rows = o.input_state()
+        assert rows[kc.KEY_A[0]] == 0xDF and held(rows) == [kc.KEY_A], rows
+        resp = core.ipc(f'input state {kc.KEY_A[0]}')
+        assert resp == f'OK row{kc.KEY_A[0]}=0xDF held=A', resp
+        assert core.ipc('input state') == 'OK held=A'
+
+        run_frames(c, KEY_FRAMES)
+        c.key(*kc.KEY_A, down=False)
+        assert held(o.input_state()) == []
+        assert core.ipc('input state') == 'OK held=(none)'
+        run_frames(c, KEY_FRAMES)
+        line = screen_text(c)[row]
+        assert line == 'a' + CURSOR, repr(line)
+
+        # SHIFT and then A: pressing and releasing A leaves SHIFT down.
+        c.key(*kc.KEY_SHIFT)
+        c.key(*kc.KEY_A)
+        assert held(o.input_state()) == [kc.KEY_SHIFT, kc.KEY_A]
+        run_frames(c, KEY_FRAMES)
+        c.key(*kc.KEY_A, down=False)
+        assert held(o.input_state()) == [kc.KEY_SHIFT]
+        run_frames(c, KEY_FRAMES)
+        c.key(*kc.KEY_SHIFT, down=False)
+        run_frames(c, KEY_FRAMES)
+        line = screen_text(c)[row]
+        assert line == 'aA' + CURSOR, repr(line)
+
+
+SCAN_RESULT = CODE_ADDR + 0x100     # row 9 as the program last read it
+SCAN_RIGHT = SCAN_RESULT + 1        # scans that found "right" down
+SCAN_DOWN = SCAN_RESULT + 2         # scans that found "down" down
+
+# Reads keyboard row 9 (joystick 0) the way software does: PSG register 14
+# through the PPI, the row on port C. Each pass selects row 9, reads it and
+# selects row 0 again, which is the cycle an AMX mouse counts its pulses by.
+ROW9_SCAN = bytes([
+    0xF3,                   # 8000 DI
+    0x01, 0x0E, 0xF4,       # 8001 LD BC,&F40E   PSG register 14 ...
+    0xED, 0x49,             # 8004 OUT (C),C
+    0x01, 0xC0, 0xF6,       # 8006 LD BC,&F6C0   ... is latched
+    0xED, 0x49,             # 8009 OUT (C),C
+    0x01, 0x00, 0xF6,       # 800B LD BC,&F600   PSG inactive
+    0xED, 0x49,             # 800E OUT (C),C
+    0x01, 0x92, 0xF7,       # 8010 LD BC,&F792   PPI port A is an input
+    0xED, 0x49,             # 8013 OUT (C),C
+    0x01, 0x49, 0xF6,       # 8015 LD BC,&F649   row 9, PSG read
+    0xED, 0x49,             # 8018 OUT (C),C
+    0x06, 0xF4,             # 801A LD B,&F4
+    0xED, 0x78,             # 801C IN A,(C)      the row
+    0x01, 0x82, 0xF7,       # 801E LD BC,&F782   port A is an output again
+    0xED, 0x49,             # 8021 OUT (C),C
+    0x01, 0x00, 0xF6,       # 8023 LD BC,&F600   row 0, PSG inactive
+    0xED, 0x49,             # 8026 OUT (C),C
+    0x32, SCAN_RESULT & 0xFF, SCAN_RESULT >> 8,     # 8028 LD (result),A
+    0xCB, 0x5F,             # 802B BIT 3,A       right
+    0x20, 0x04,             # 802D JR NZ,&8033
+    0x21, SCAN_RIGHT & 0xFF, SCAN_RIGHT >> 8,       # 802F LD HL,right
+    0x34,                   # 8032 INC (HL)
+    0xCB, 0x4F,             # 8033 BIT 1,A       down
+    0x20, 0x04,             # 8035 JR NZ,&803B
+    0x21, SCAN_DOWN & 0xFF, SCAN_DOWN >> 8,         # 8037 LD HL,down
+    0x34,                   # 803A INC (HL)
+    0x18, 0xC4,             # 803B JR &8001
+])
+
+
+def scan_bytes(c: KcpcClient) -> bytes:
+    return c.mem_read(kc.SPACE_CPU_RAM, SCAN_RESULT, 3)
+
+
+def start_row9_scan(c: KcpcClient) -> None:
+    """Leaves the machine paused in ROW9_SCAN with its three bytes zeroed."""
+    c.subscribe(kc.CLASS_RUN)
+    c.pause()
+    c.mem_write(kc.SPACE_CPU_RAM, SCAN_RESULT, bytes(3))
+    load_program(c, ROW9_SCAN)
+
+
+def scan_until(c: KcpcClient, what: str,
+               done: Callable[[bytes], bool]) -> bytes:
+    """Runs frames until the scan program's three bytes satisfy `done`."""
+    deadline = time.monotonic() + IO_TIMEOUT_S
+    while True:
+        run_frames(c, 2)
+        data = scan_bytes(c)
+        if done(data):
+            return data
+        assert time.monotonic() < deadline, f'{what}: {data.hex()}'
+
+
+def test_joystick_keys_reach_a_program_reading_the_ppi() -> None:
+    """Acceptance 2: joystick 0 is row 9 of the matrix. A Z80 program that
+    reads the row through the PPI sees the directions KEY presses, with the
+    next frame's keyboard snapshot."""
+    with Core() as core, controller(core, 'joystick') as c:
+        wait_for_ready(c)
+        start_row9_scan(c)
+        run_frames(c, 2)
+        assert scan_bytes(c)[0] == 0xFF, 'row 9 with nothing pressed'
+
+        for what, key, down, expected in (
+                ('up', kc.JOY0_UP, True, 0xFE),
+                ('up and right', kc.JOY0_RIGHT, True, 0xF6),
+                ('right', kc.JOY0_UP, False, 0xF7),
+                ('right and fire 1', kc.JOY0_FIRE1, True, 0xD7),
+                ('fire 1', kc.JOY0_RIGHT, False, 0xDF)):
+            c.key(*key, down=down)
+            run_frames(c, 2)
+            got = scan_bytes(c)[0]
+            assert got == expected, f'{what}: the program read {got:#04x}'
+
+        # A key that is not on row 9 does not show there.
+        c.key(*kc.KEY_A)
+        c.keys_release()
+        run_frames(c, 2)
+        assert scan_bytes(c)[0] == 0xFF, 'KEYS_RELEASE left a key down'
+        assert held(c.input_state()) == []
+
+
+def wait_control_free(c: KcpcClient) -> kc.Event:
+    """The next EVT_CONTROL_CHANGED that says nobody has control."""
+    while True:
+        event = c.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+        if event.controller == 0:
+            return event
+
+
+def test_held_keys_are_released_when_control_is_lost() -> None:
+    """Acceptance 3: a controller that disconnects with keys held leaves
+    none of them down, and INPUT_STATE from an observer shows it by the
+    time the observer is told control is free. The same when control is
+    taken by force or given up. A key another source holds is left alone;
+    KEYS_RELEASE is what lets go of every key."""
+    with Core() as core, observer(core, 'watcher') as o:
+        assert core.ipc('input keydown SHIFT').startswith('OK')
+        a = controller(core, 'holder')
+        a.key(*kc.KEY_A)
+        a.key(*kc.JOY0_UP)
+        assert held(o.input_state()) == [kc.KEY_SHIFT, kc.KEY_A, kc.JOY0_UP]
+
+        a.close()
+        wait_control_free(o)
+        assert held(o.input_state()) == [kc.KEY_SHIFT], (
+            'a disconnected controller left keys down, or the text '
+            "IPC's SHIFT was released with them")
+
+        # Forced takeover: the demoted controller's keys are released, and
+        # it can press nothing more.
+        with controller(core, 'second holder') as b:
+            b.key(*kc.KEY_A)
+            assert o.acquire_control(force=True).is_controller
+            assert held(o.input_state()) == [kc.KEY_SHIFT]
+            refused(kc.NOT_CONTROLLER, 'KEY from the demoted controller',
+                    b.key, *kc.KEY_A)
+
+            # Giving control up.
+            o.key(*kc.JOY0_FIRE1)
+            assert held(b.input_state()) == [kc.KEY_SHIFT, kc.JOY0_FIRE1]
+            assert not o.release_control().is_controller
+            assert held(b.input_state()) == [kc.KEY_SHIFT]
+
+            # KEYS_RELEASE lets go of every key, the text IPC's too.
+            assert b.acquire_control().is_controller
+            b.key(*kc.KEY_A)
+            b.keys_release()
+            assert held(o.input_state()) == []
+            assert core.ipc('input state') == 'OK held=(none)'
+
+
+def test_text_is_typed_by_the_autotype_queue() -> None:
+    """Acceptance 4: TEXT 'print 1+1~RETURN~' makes BASIC print 2, and the
+    reply says how many key actions are queued. Text the queue cannot parse
+    is refused and types nothing."""
+    with Core() as core, controller(core, 'typist') as c:
+        row = wait_for_ready(c)
+        c.subscribe(kc.CLASS_RUN)
+        c.pause()   # so that nothing is typed between the request and reply
+        try:
+            c.text('print 1~NOSUCHKEY~')
+            raise AssertionError('an unknown ~KEY~ token was accepted')
+        except KcpcError as e:
+            assert e.status == kc.BAD_PAYLOAD, e
+            assert 'NOSUCHKEY' in e.message, e.message
+        assert c.text('') == 0, 'the refused text was queued'
+
+        # Nine characters and one token.
+        assert c.text('print 1+1~RETURN~') == 10
+        assert core.ipc('autotype status').startswith('OK active: 10'), (
+            core.ipc('autotype status'))
+        c.run()
+
+        def printed(lines: List[str]) -> Optional[int]:
+            return row if lines[row + 2] == 'Ready' else None
+        wait_for_screen(c, 'BASIC did not answer', printed)
+        lines = screen_text(c)
+        assert lines[row:row + 4] == ['print 1+1', ' 2', 'Ready', CURSOR], (
+            lines[row:row + 4])
+        assert c.text('') == 0, 'the queue did not drain'
+
+
+def test_mouse_needs_a_mouse_and_moves_the_amx_counters() -> None:
+    """Acceptance 5: MOUSE answers NOT_PRESENT when no mouse is enabled.
+    With the AMX mouse enabled, a movement arrives as that many pulses on
+    joystick row 9, counted by a program that scans the row, and a button
+    as a fire line; a button still held when control is lost is let go."""
+    with Core() as core, controller(core, 'no mouse') as c:
+        refused(kc.NOT_PRESENT, 'MOUSE with no mouse', c.mouse, 5, 5)
+        refused(kc.NOT_PRESENT, 'MOUSE buttons with no mouse', c.mouse, 0, 0,
+                kc.MOUSE_LEFT)
+
+    with Core('-O', 'input.amx_mouse=1') as core, \
+            controller(core, 'mouse') as c, observer(core, 'watcher') as o:
+        wait_for_ready(c)
+        start_row9_scan(c)
+        run_frames(c, 4)
+        assert scan_bytes(c) == b'\xff\x00\x00', scan_bytes(c).hex()
+
+        # The movement is handed to the mouse by the main loop, once a frame
+        # of its own, so the test runs frames until it has arrived. One
+        # pulse a scan while there is movement left: the program's count is
+        # the distance, give or take the pulse the first scan may eat.
+        c.mouse(10, 7)
+        _, right, down = scan_until(
+            c, 'MOUSE 10, 7',
+            lambda d: d[0] == 0xFF and d[1] >= 9 and d[2] >= 6)
+        run_frames(c, 4)
+        assert scan_bytes(c) == bytes([0xFF, right, down]), 'still counting'
+        assert right <= 10, f'{right} pulses right for dx=10'
+        assert down <= 7, f'{down} pulses down for dy=7'
+
+        # Left and up are the other two lines, which the program does not
+        # count. The left button is fire 2 of the joystick port.
+        c.mouse(-5, -5)
+        c.mouse(0, 0, kc.MOUSE_LEFT)
+        scan_until(c, 'the left button', lambda d: d[0] == 0xEF)
+        assert scan_bytes(c)[1:] == bytes([right, down])
+
+        # A movement without the buttons flag leaves the button down.
+        c.mouse(4, 0)
+        scan_until(c, 'MOUSE 4, 0',
+                   lambda d: d[0] == 0xEF and d[1] >= right + 3)
+        assert scan_bytes(c)[1] <= right + 4
+
+        # Lost control: the button goes up, as a key would.
+        c.run()
+        c.close()
+        wait_control_free(o)
+        deadline = time.monotonic() + IO_TIMEOUT_S
+        while scan_bytes(o)[0] != 0xFF:
+            assert time.monotonic() < deadline, (
+                'the mouse button stayed down after its controller left')
+            time.sleep(0.02)
+
+
+def test_input_needs_control_and_is_checked() -> None:
+    """Acceptance 6: an observer's KEY, KEYS_RELEASE, TEXT and MOUSE answer
+    NOT_CONTROLLER and change nothing, malformed or not; INPUT_STATE is
+    anyone's. A controller's malformed requests are refused by what is
+    wrong with them."""
+    with Core() as core, controller(core, 'controller') as c, \
+            observer(core, 'observer') as o:
+        refused(kc.NOT_CONTROLLER, 'KEY', o.key, *kc.KEY_A)
+        refused(kc.NOT_CONTROLLER, 'KEYS_RELEASE', o.keys_release)
+        refused(kc.NOT_CONTROLLER, 'TEXT', o.text, 'print 1')
+        refused(kc.NOT_CONTROLLER, 'MOUSE', o.mouse, 1, 1)
+        for opcode in (kc.OP_KEY, kc.OP_TEXT, kc.OP_MOUSE):
+            refused(kc.NOT_CONTROLLER, f'short {opcode:#06x}', o.request,
+                    opcode, b'\x01')
+        assert held(o.input_state()) == []
+        assert core.ipc('autotype status') == 'OK idle', (
+            core.ipc('autotype status'))
+
+        refused(kc.BAD_PAYLOAD, 'KEY cut short', c.request, kc.OP_KEY,
+                b'\x08\x05\x01')
+        refused(kc.BAD_PAYLOAD, 'KEY down=2', c.request, kc.OP_KEY,
+                kc.key_payload(8, 5, 2))
+        refused(kc.OUT_OF_RANGE, 'KEY row 10', c.key, 10, 0)
+        refused(kc.OUT_OF_RANGE, 'KEY bit 8', c.key, 0, 8)
+        refused(kc.BAD_PAYLOAD, 'TEXT cut short', c.request, kc.OP_TEXT,
+                b'\x05\x00ab')
+        refused(kc.BAD_PAYLOAD, 'MOUSE cut short', c.request, kc.OP_MOUSE,
+                b'\x01\x00\x01\x00\x00')
+        assert held(c.input_state()) == []
+        # The last key of the matrix exists, and bytes after the fields a
+        # request has are ignored.
+        c.request(kc.OP_KEY, kc.key_payload(9, 7, 1) + b'later')
+        assert held(o.input_state()) == [(9, 7)]
+        c.request(kc.OP_KEYS_RELEASE, b'later')
+        assert held(o.input_state()) == []
+
+
 def test_bad_frames_close_the_connection() -> None:
     """Acceptance 3: bad magic, a wrong major, an unknown kind, an oversized
     length, request id 0, a first frame that is not HELLO and a second HELLO
@@ -2942,7 +3335,7 @@ def test_recoverable_errors_keep_the_connection() -> None:
 
         # An opcode of a capability this server does not have yet, and one
         # that exists nowhere.
-        for opcode in (kc.OP_KEY, 0x7FFF, kc.OP_ERROR):
+        for opcode in (kc.OP_CHIP_GET, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -3185,6 +3578,12 @@ TESTS: List[Callable[[], None]] = [
     test_a_kcpc_walk_runs_beside_other_actors_leases,
     test_quit_during_a_walk,
     test_step_over_a_restart_uses_a_prepared_rom,
+    test_a_key_reaches_the_matrix_and_the_firmware,
+    test_joystick_keys_reach_a_program_reading_the_ppi,
+    test_held_keys_are_released_when_control_is_lost,
+    test_text_is_typed_by_the_autotype_queue,
+    test_mouse_needs_a_mouse_and_moves_the_amx_counters,
+    test_input_needs_control_and_is_checked,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

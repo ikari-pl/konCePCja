@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -161,6 +162,14 @@ void ipc_publish_device_gates(bool mouse_fitted, bool gun_fitted);
 // The published state, as the gates read it.
 bool ipc_mouse_gate_open();
 bool ipc_gun_gate_open();
+
+// Stages a relative mouse movement and, when `buttons` is given, the button
+// mask (SDL's bits: left 1, middle 2, right 4) for ipc_drain_input() to hand
+// to the AMX and Symbiface mice at the next frame. Callable from any thread:
+// it is the one way a server thread moves the mouse (the text IPC's
+// `input mouse`, KCPC's MOUSE). False, and nothing staged, when no mouse is
+// fitted.
+bool ipc_stage_mouse(int dx, int dy, std::optional<uint32_t> buttons);
 
 // Main thread: publish the host keymap in use and the directory its *.map
 // files live in, for `config get|set kbd_layout(s)` to answer from without
