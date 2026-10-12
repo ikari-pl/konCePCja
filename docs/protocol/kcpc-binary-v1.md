@@ -2084,8 +2084,9 @@ Recorded so a reviewer can disagree with one without reading the rest.
     instant.
 16. **`HALT` is read-only** (slice 3). The design listed it as bit 17 of
     the `REGS_SET` mask. Nothing in the core can set it without restarting
-    the CPU, and the text IPC's `reg set HALT` has silently done nothing
-    for that reason (beads-gpx7); this port says `BAD_PAYLOAD` instead.
+    the CPU, and the text IPC's `reg set HALT` silently did nothing for
+    that reason; this port says `BAD_PAYLOAD` instead, and the text IPC now
+    answers `ERR 400 reg-read-only` (beads-gpx7).
 17. **A machine write runs while its lease is the only one** (slice 3), and
     answers `BUSY` when it cannot be. A bare lease would have let a
     `MEM_WRITE` run beside a machine rebuild that frees the RAM it writes.

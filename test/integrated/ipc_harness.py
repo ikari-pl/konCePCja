@@ -1332,6 +1332,68 @@ def test_snapshot_round_trip():
                 os.unlink(snap)
 
 
+def test_reg_set_halt_is_refused():
+    """`reg set HALT` must not answer OK for an edit it cannot make.
+
+    Whether the CPU is halted is where it is in an instruction, not a
+    register. No path carries an edit of it into the machine, so the command
+    used to answer `OK` while `reg get HALT` went on reading the old value
+    (beads-gpx7). It is refused now, in both directions, and changes nothing.
+    """
+    print("Running reg set HALT test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        emu.ipc.pause()
+
+        # DI : HALT : NOP. With interrupts off the CPU stays halted, so the
+        # second half of the test has a machine that really is.
+        for cmd in ['mem write 0x6000 F37600', 'reg set PC 0x6000']:
+            ok, resp = emu.ipc.send_command(cmd)
+            if not ok:
+                print(f"FAIL: {cmd}: {resp}")
+                return False
+
+        def halt_is(want, when):
+            ok, resp = emu.ipc.send_command('reg get HALT')
+            if not ok or resp.split()[-1] != want:
+                print(f"FAIL: HALT reads {resp!r} {when}, expected {want}")
+                return False
+            return True
+
+        def refused(cmd):
+            ok, resp = emu.ipc.send_command(cmd)
+            if ok or not resp.startswith('ERR 400 reg-read-only'):
+                print(f"FAIL: {cmd} answered {resp!r}, "
+                      "expected ERR 400 reg-read-only")
+                return False
+            return True
+
+        if not halt_is('00', 'before the HALT'):
+            return False
+        if not refused('reg set HALT 1'):
+            return False
+        if not halt_is('00', 'after a refused reg set HALT 1'):
+            return False
+
+        ok, resp = emu.ipc.send_command('step 2')
+        if not ok:
+            print(f"FAIL: step 2: {resp}")
+            return False
+        if not halt_is('01', 'after executing DI : HALT'):
+            return False
+        if not refused('reg set HALT 0'):
+            return False
+        if not halt_is('01', 'after a refused reg set HALT 0'):
+            return False
+
+    print("PASS: reg set HALT is refused and changes nothing")
+    return True
+
+
 def test_rapid_pause_resume():
     """20 rapid pause/resume cycles without deadlock.
 
@@ -3725,6 +3787,7 @@ def main():
         test_breakpoint_pause_step_resume,
         test_snapshot_round_trip,
         test_rapid_pause_resume,
+        test_reg_set_halt_is_refused,
         test_step_in_accuracy,
         test_step_out_nested_call,
         test_step_out_gated_on_ret_not_sp,
