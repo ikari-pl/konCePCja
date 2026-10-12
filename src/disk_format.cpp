@@ -155,5 +155,10 @@ std::string disk_format_drive(char drive_letter,
     subcycle_bridge_rollback_host_view(unit, snapshot);
     return "formatted host view but could not update the live FDC medium";
   }
+  // The drive holds a disc now, whether or not it did: a blank one, still
+  // backed by the file the old one came from, if there was one.
+  MediaSlot const slot = unit == 0 ? MediaSlot::DriveA : MediaSlot::DriveB;
+  media_note(slot, true, media_state(slot).path);
+  media_changed(slot);
   return "";
 }

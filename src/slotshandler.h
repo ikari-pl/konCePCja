@@ -51,12 +51,45 @@ void dsk_eject(t_drive* drive);
 // dsk_eject_host) only re-reads the same medium and leaves it alone.
 uint64_t dsk_media_generation(uint8_t unit);
 void dsk_media_changed(uint8_t unit);
+
+// The same for every slot a medium goes into, the tape deck and the
+// cartridge port included, with what the host last put there. The drives'
+// counters are the two above.
+enum class MediaSlot : uint8_t {
+  DriveA = 0,
+  DriveB = 1,
+  Tape = 2,
+  Cartridge = 3,
+};
+inline constexpr int kMediaSlotCount = 4;
+
+struct MediaState {
+  bool present = false;
+  std::string path;  // absolute; empty when nothing is in, or it has no file
+  uint64_t generation = 0;
+};
+uint64_t media_generation(MediaSlot slot);
+// What the slot holds, as the loaders last said. Takes a lock: callable from
+// any thread, but not for the frame runner's hot path.
+MediaState media_state(MediaSlot slot);
+// Records what `slot` holds from now on; a relative path is made absolute.
+// Call it before media_changed(), so that whoever the change wakes reads the
+// new state.
+void media_note(MediaSlot slot, bool present, const std::string& path);
+// Moves the slot's counter and calls the hook.
+void media_changed(MediaSlot slot);
+// Called after every change, on the thread that made it, the frame runner
+// included (the board applying a queued swap): it must not block. One hook;
+// nullptr removes it.
+using MediaChangedHook = void (*)(MediaSlot slot, uint64_t generation);
+void media_set_changed_hook(MediaChangedHook hook);
 int dsk_format(t_drive* drive, int iFormat);
 
 int tape_insert(FILE* pfile);
 int tape_insert(const std::string& filename);
 int tape_insert_cdt(FILE* pfile);
 int tape_insert_voc(FILE* pfile);
+// Empties the deck and says so (media_changed()).
 void tape_eject();
 
 void cartridge_load();

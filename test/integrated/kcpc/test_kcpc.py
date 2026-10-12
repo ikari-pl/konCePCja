@@ -13,7 +13,9 @@ machine writes. Slice 4: run control (PAUSE, RUN, RESET, STEP, RUN_STATE)
 and the pushed events, which the tests wait for in a blocking read, never
 in a polling loop. Slice 5: breakpoints and the steps that walk. Slice 6:
 input (KEY, KEYS_RELEASE, TEXT, MOUSE, INPUT_STATE), checked by what the
-firmware prints and by what a Z80 program reads from the PPI.
+firmware prints and by what a Z80 program reads from the PPI. Slice 7: what
+the DevTools show (CHIP_GET, the ASIC's register page, SYM_*, FB_INFO) and
+the events for a change of medium, of the symbols and of the machine.
 
 Usage: test_kcpc.py [--ui-free | --gui] [-k substring] [path/to/koncepcja]
   (default)  the binary is started with -H
@@ -311,11 +313,14 @@ def test_manifest_port_and_hello() -> None:
             assert hello.max_frame == kc.MAX_SERVER_FRAME, hello.max_frame
             # The groups implemented so far: the machine reads, with the
             # ROM spaces, the writes with the control role, run control,
-            # events, breakpoints and input.
+            # events, breakpoints, input, chip state, symbols and the
+            # description of the frame.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
                                   | kc.CAP_MACHINE_WRITE
                                   | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS
-                                  | kc.CAP_BREAKPOINTS | kc.CAP_INPUT), (
+                                  | kc.CAP_BREAKPOINTS | kc.CAP_INPUT
+                                  | kc.CAP_CHIPS | kc.CAP_SYMBOLS
+                                  | kc.CAP_FB_INFO), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -440,9 +445,11 @@ def test_machine_info_stamp() -> None:
 
 class Readers:
     """`count` clients that each read in a loop, as fast as the server
-    answers, until stopped. `what` is 'info' (MACHINE_INFO) or 'memory' (all
+    answers, until stopped. `what` is 'info' (MACHINE_INFO), 'memory' (all
     64 KiB of the CPU space and the registers, in turn: what a live memory
-    view and a register window ask for). On a running machine every read is taken by
+    view and a register window ask for) or 'chips' (all five chips and the
+    ASIC's register page, in turn: what the chip windows ask for). On a
+    running machine every read is taken by
     the frame runner at a frame boundary; on a paused one, under a pause
     lease."""
 
@@ -460,6 +467,12 @@ class Readers:
     def _read(self, c: KcpcClient, turn: int) -> kc.Stamp:
         if self.what == 'info':
             return c.machine_info().stamp
+        if self.what == 'chips':
+            which = turn % 6
+            if which == 5:
+                return c.mem_read_stamped(kc.SPACE_ASIC_PAGE, 0,
+                                          kc.ASIC_PAGE_SIZE)[0]
+            return c.chip_get(kc.CHIP_CRTC + which).stamp
         if turn % 2:
             return c.regs_get().stamp
         stamp, data = c.mem_read_stamped(kc.SPACE_CPU, 0, kc.CPU_SPACE_SIZE)
@@ -870,7 +883,7 @@ def test_rom_spaces_and_limits() -> None:
 
         # A space the server does not have, and a bank where none applies.
         for what, space, bank in (
-                ('ASIC_PAGE before CAP_CHIPS', kc.SPACE_ASIC_PAGE, 0),
+                ('space 6', 6, 0),
                 ('space 99', 99, 0),
                 ('a bank on the CPU space', kc.SPACE_CPU, 1),
                 ('a bank on PHYS_RAM', kc.SPACE_PHYS_RAM, 2)):
@@ -3251,6 +3264,552 @@ def test_input_needs_control_and_is_checked() -> None:
         assert held(o.input_state()) == []
 
 
+# -- slice 7: what the DevTools show ----------------------------------------
+
+def text_fields(core: Core, command: str) -> Dict[str, int]:
+    """The NAME=HEX fields of a text IPC chip dump."""
+    resp = core.ipc(command)
+    assert resp.startswith('OK '), f'{command}: {resp[:80]}'
+    return {name: int(value, 16)
+            for name, value in (field.split('=') for field in resp[3:].split())}
+
+
+def chips_match_the_text_ipc(core: Core, c: KcpcClient, where: str) -> None:
+    """CHIP_GET of the CRTC, the Gate Array and the PSG against `regs crtc`,
+    `regs ga` and `regs psg`, field for field. The machine must be paused."""
+    crtc = c.chip_get(kc.CHIP_CRTC)
+    ga = c.chip_get(kc.CHIP_GATE_ARRAY)
+    psg = c.chip_get(kc.CHIP_PSG)
+    for chip in (crtc, ga, psg):
+        assert chip.stamp.paused and chip.stamp == crtc.stamp, (where, chip)
+
+    text = text_fields(core, 'regs crtc')
+    assert [text[f'R{i}'] for i in range(18)] == list(crtc.reg), (where, text)
+    assert (text['VCC'], text['VLC'], text['HCC'], text['HSC'], text['VSC'],
+            text['VMA'], text['SL']) == (
+        crtc.vcc, crtc.ra, crtc.hcc, crtc.hsw, crtc.vsw, crtc.ma,
+        crtc.scanline & 0xFF), (where, text, crtc)
+    # R52 is the Gate Array's line counter, printed with the CRTC's.
+    assert text['R52'] == ga.sl_count, (where, text, ga)
+    resp = core.ipc('config get crtc_type')
+    assert resp == f'OK {crtc.type}', (where, resp, crtc)
+
+    text = text_fields(core, 'regs ga')
+    assert [text[f'INK{i}'] for i in range(17)] == list(ga.ink), (where, text)
+    # The text IPC prints MODE in decimal; a mode is one digit either way.
+    assert (text['MODE'], text['PEN'], text['ROM_CFG'], text['RAM_CFG'],
+            text['SL'], text['INT_DELAY']) == (
+        ga.mode, ga.pen, ga.rom_config, ga.ram_config, ga.sl_count,
+        ga.hs_count), (where, text, ga)
+    info = c.mem_info()
+    assert (ga.rom_config, ga.ram_config, ga.upper_rom) == (
+        info.rom_config, info.ram_config, info.upper_rom), (where, ga, info)
+
+    text = text_fields(core, 'regs psg')
+    assert [text[f'R{i}'] for i in range(16)] == list(psg.reg), (where, text)
+    assert text['SELECT'] == psg.reg_select, (where, text, psg)
+
+
+# Sets a CRTC register, a pen, the border and two PSG registers to values
+# the firmware does not leave there, then spins.
+CHIP_CODE = bytes([
+    0x01, 0x0C, 0xBC,   # LD BC,&BC0C
+    0xED, 0x49,         # OUT (C),C        CRTC: select R12
+    0x01, 0x21, 0xBD,   # LD BC,&BD21
+    0xED, 0x49,         # OUT (C),C        CRTC: R12 = &21
+    0x01, 0x03, 0x7F,   # LD BC,&7F03
+    0xED, 0x49,         # OUT (C),C        Gate Array: select pen 3
+    0x01, 0x4B, 0x7F,   # LD BC,&7F4B
+    0xED, 0x49,         # OUT (C),C        Gate Array: ink &0B
+    0x18, 0xFE,         # JR $
+])
+CHIP_SPIN = CODE_ADDR + len(CHIP_CODE) - 2
+
+
+def run_to(c: KcpcClient, addr: int) -> kc.Event:
+    """Run the paused machine to `addr` and return the stop. The client must
+    be the controller."""
+    c.subscribe(kc.CLASS_RUN)
+    c.step(mode=kc.STEP_TO, addr=addr, timeout_ms=5000)
+    while True:
+        event = run_event(c)
+        if event.opcode == kc.EVT_STOPPED:
+            break
+    assert event.reason == kc.STOP_STEP_DONE and event.pc == addr, event
+    return event
+
+
+def test_chip_get_matches_the_text_ipc() -> None:
+    """Acceptance 1: CHIP_GET of the CRTC, the Gate Array and the PSG equals
+    the text IPC's `regs crtc|ga|psg`, field for field, at the same paused
+    instant: between two frames, in the middle of a frame (where the beam
+    counters are not zero), and after a program has written the chips."""
+    with Core() as core, controller(core, 'chips') as c:
+        assert c.hello_reply.caps & kc.CAP_CHIPS, hex(c.hello_reply.caps)
+        wait_for_ready(c)
+        pause_core(core, c)
+        chips_match_the_text_ipc(core, c, 'between frames')
+
+        # In the middle of a frame: the interrupt entry. (Reached with a
+        # step of this port, not with the text IPC's `bp add`, `run` and
+        # `wait bp`: that `wait bp` now and then reports a hit from before
+        # the `run` while the machine is running again,
+        # beads-1ew8.)
+        run_to(c, INTERRUPT_VECTOR)
+        crtc = c.chip_get(kc.CHIP_CRTC)
+        assert crtc.scanline != 0 and crtc.reg[0] == 63, crtc
+        chips_match_the_text_ipc(core, c, 'at the interrupt')
+
+        load_program(c, CHIP_CODE)
+        run_to(c, CHIP_SPIN)
+        crtc = c.chip_get(kc.CHIP_CRTC)
+        ga = c.chip_get(kc.CHIP_GATE_ARRAY)
+        assert crtc.reg_select == 12 and crtc.reg[12] == 0x21, crtc
+        assert ga.pen == 3 and ga.ink[3] == 0x0B, ga
+        chips_match_the_text_ipc(core, c, 'after the program')
+
+        # The PSG's register file is what the firmware left: the mixer has
+        # every channel off, which is not the reset value.
+        psg = c.chip_get(kc.CHIP_PSG)
+        assert psg.reg[7] != 0, psg
+
+        # Reading changes nothing and needs no control.
+        with observer(core, 'chip observer') as b:
+            assert b.chip_get(kc.CHIP_CRTC) == crtc
+        assert c.machine_info().stamp.paused
+
+        # On a running machine the reads are taken at a frame boundary.
+        spin(core, c)
+        frames = set()
+        for _ in range(20):
+            chip = c.chip_get(kc.CHIP_CRTC)
+            assert not chip.stamp.paused, chip.stamp
+            frames.add(chip.stamp.frame)
+        assert len(frames) > 1, 'the machine did not run under the reads'
+
+        # A chip that does not exist, and a request cut short.
+        for what, payload in (('chip 0', b'\x00\x00\x00\x00'),
+                              ('chip 6', b'\x06\x00\x00\x00'),
+                              ('short', b'')):
+            refused(kc.BAD_PAYLOAD, what, c.request, kc.OP_CHIP_GET, payload)
+        c.ping()
+        # None of these reads cost the machine a pause lease.
+        served = core_reads(core)
+        assert served['fallback'] == 0 and served['busy'] == 0, served
+        assert served['boundary'] >= 20, served
+
+
+def core_reads(core: Core) -> Dict[str, int]:
+    """Quit the core and say where the gate took its reads."""
+    core.ipc_quit()
+    core.wait_exit()
+    return core.reads_served()
+
+
+def pending(c: KcpcClient, *opcodes: int) -> List[kc.Event]:
+    """The events of these kinds that `c` has received and not yet taken."""
+    return [event for event in map(kc.Event.decode, c.events)
+            if event.opcode in opcodes]
+
+
+def test_fdc_chip_and_media_events() -> None:
+    """Acceptance 4, first half: the text IPC's `load game.dsk` pushes
+    EVT_MEDIA_CHANGED for slot 0 with a new generation, and CHIP_GET FDC
+    shows the disc; ejecting it, and loading and ejecting a tape, are pushed
+    too. A client that did not subscribe to MEDIA is sent none of it."""
+    with Core() as core, observer(core, 'media', kc.CLASS_MEDIA) as c, \
+            observer(core, 'deaf', kc.CLASS_RUN) as deaf:
+        tmp = Path(os.path.realpath(core.tmpdir))
+        disk = tmp / 'game.dsk'
+        resp = core.ipc(f'disk new {disk} data sector')
+        assert resp.startswith('OK'), resp
+
+        before = c.chip_get(kc.CHIP_FDC)
+        assert before.present == (0, 0) and before.motor == 0, before
+
+        def media_event(slot: int, present: bool) -> kc.Event:
+            """The next EVT_MEDIA_CHANGED for `slot` that says `present`."""
+            while True:
+                event = c.wait_event(kc.EVT_MEDIA_CHANGED, EVENT_TIMEOUT_S)
+                if event.slot == slot and event.present == present:
+                    return event
+
+        assert core.ipc(f'load {disk}').startswith('OK')
+        event = media_event(kc.SLOT_DRIVE_A, True)
+        assert event.generation > before.generation[0], (event, before)
+        assert Path(event.path) == disk, event
+        # The machine takes the disc at its next frame boundary, and says so
+        # with one more event; from then on the FDC has it.
+        deadline = time.monotonic() + IO_TIMEOUT_S
+        while True:
+            fdc = c.chip_get(kc.CHIP_FDC)
+            if fdc.present[0]:
+                break
+            assert time.monotonic() < deadline, f'the FDC has no disc: {fdc}'
+            time.sleep(0.02)
+        assert fdc.present == (1, 0), fdc
+        assert fdc.generation[0] >= event.generation, (fdc, event)
+        assert fdc.generation[1] == before.generation[1], (fdc, before)
+
+        loaded = fdc.generation[0]
+        assert core.ipc('disk eject A').startswith('OK')
+        while True:
+            event = media_event(kc.SLOT_DRIVE_A, False)
+            if event.generation > loaded:
+                break
+        assert event.path == '', event
+        fdc = c.chip_get(kc.CHIP_FDC)
+        assert fdc.present == (0, 0), fdc
+        assert fdc.generation[0] >= event.generation, (fdc, event)
+
+        # A tape: a CDT with one pause block.
+        tape = tmp / 'tape.cdt'
+        tape.write_bytes(b'ZXTape!\x1a\x01\x0d' + b'\x20\xe8\x03')
+        assert core.ipc(f'load {tape}').startswith('OK')
+        event = media_event(kc.SLOT_TAPE, True)
+        assert Path(event.path) == tape and event.generation > 0, event
+        inserted = event.generation
+        assert core.ipc('tape eject').startswith('OK')
+        event = media_event(kc.SLOT_TAPE, False)
+        assert event.generation > inserted and event.path == '', event
+
+        # A file that is no tape leaves the deck empty, and says so.
+        tape.write_bytes(b'not a tape at all')
+        assert core.ipc(f'load {tape}').startswith('ERR')
+        event = media_event(kc.SLOT_TAPE, False)
+        assert event.generation > inserted, event
+
+        # Nothing of this reached the client that asked for RUN events only.
+        deaf.ping()
+        assert not pending(deaf, kc.EVT_MEDIA_CHANGED), deaf.events
+
+
+# The ASIC's unlock sequence, as the Plus firmware sends it to the CRTC's
+# register-select port.
+ASIC_UNLOCK = bytes([0xFF, 0x00, 0xFF, 0x77, 0xB3, 0x51, 0xA8, 0xD4, 0x62,
+                     0x39, 0x9C, 0x46, 0x2B, 0x15, 0x8A, 0xCD, 0xEE])
+ASIC_SEQ = CODE_ADDR + 0x40
+ASIC_CODE = bytes([
+    0x21, ASIC_SEQ & 0xFF, ASIC_SEQ >> 8,   # LD HL,sequence
+    0x1E, len(ASIC_UNLOCK),                 # LD E,17
+    0x01, 0x00, 0xBC,                       # LD BC,&BC00
+    0x7E,                                   # loop: LD A,(HL)
+    0xED, 0x79,                             # OUT (C),A
+    0x23,                                   # INC HL
+    0x1D,                                   # DEC E
+    0x20, 0xF9,                             # JR NZ,loop
+    0x00,                                   # unlocked: NOP
+    0x01, 0xB8, 0x7F,                       # LD BC,&7FB8
+    0xED, 0x49,                             # OUT (C),C   RMR2: page in
+    0x21, 0x5A, 0x0C,                       # LD HL,&0C5A
+    0x22, 0x02, 0x64,                       # LD (&6402),HL   pen 1 = &C5A
+    0x21, 0x21, 0x03,                       # LD HL,&0321
+    0x22, 0x20, 0x64,                       # LD (&6420),HL   border = &321
+    0x3E, 0x37,                             # LD A,&37
+    0x32, 0x00, 0x68,                       # LD (&6800),A    PRI line &37
+    0x01, 0xA0, 0x7F,                       # LD BC,&7FA0
+    0xED, 0x49,                             # OUT (C),C   RMR2: page out
+    0x18, 0xFE,                             # JR $
+])
+ASIC_UNLOCKED = CODE_ADDR + 15
+ASIC_SPIN = CODE_ADDR + len(ASIC_CODE) - 2
+
+
+def test_asic_state_and_register_page() -> None:
+    """Acceptance 2: on a 6128+, after the unlock sequence, CHIP_GET ASIC
+    reports the ASIC unlocked and the memory space ASIC_PAGE returns 16384
+    bytes whose palette bytes are what the text IPC's `asic palette` prints.
+    On a 6128 both answer NOT_PRESENT."""
+    with Core('-O', 'system.model=3') as core, \
+            controller(core, 'asic') as c:
+        assert c.hello_reply.machine.has_asic, c.hello_reply.machine
+        # The Plus boots through its cartridge; give it the second it takes.
+        run_frames_plain(core, c, 100)
+        pause_core(core, c)
+        assert len(ASIC_CODE) <= 0x40
+        c.mem_write(kc.SPACE_CPU_RAM, ASIC_SEQ, ASIC_UNLOCK)
+        load_program(c, ASIC_CODE)
+        run_to(c, ASIC_UNLOCKED)
+        asic = c.chip_get(kc.CHIP_ASIC)
+        assert asic.unlocked and asic.stamp.paused, asic
+        assert not asic.page_on, asic
+
+        run_to(c, ASIC_SPIN)
+        asic = c.chip_get(kc.CHIP_ASIC)
+        assert asic.unlocked and asic.pri_line == 0x37, asic
+        assert not asic.page_on, 'the program paged the registers out'
+        assert len(asic.dma) == 3 and len(asic.sprite) == 16, asic
+
+        stamp, page = c.mem_read_stamped(kc.SPACE_ASIC_PAGE, 0,
+                                         kc.ASIC_PAGE_SIZE)
+        assert len(page) == kc.ASIC_PAGE_SIZE and stamp == asic.stamp, stamp
+        # `asic palette`: 32 entries 'penN=0GRB' / 'inkN=0GRB'.
+        resp = core.ipc('asic palette')
+        assert resp.startswith('OK'), resp
+        text = [int(entry.split('=')[1], 16) for entry in resp.split()[1:]]
+        assert len(text) == 32, resp
+        palette = page[kc.ASIC_PALETTE_OFFSET:kc.ASIC_PALETTE_OFFSET + 64]
+        ours = [((palette[2 * i + 1] & 0x0F) << 8) | palette[2 * i]
+                for i in range(32)]
+        assert ours == text, (ours, text)
+        assert ours[1] == 0xC5A and ours[16] == 0x321, ours
+        # What the layout carries decoded is what the page holds raw.
+        assert page[0x2800] == asic.pri_line, page[0x2800:0x2808].hex()
+
+        # A part of the page, and its limits.
+        assert c.mem_read(kc.SPACE_ASIC_PAGE, kc.ASIC_PALETTE_OFFSET,
+                          64) == palette
+        assert c.mem_read(kc.SPACE_ASIC_PAGE, kc.ASIC_PAGE_SIZE, 0) == b''
+        expect_status(c, kc.OUT_OF_RANGE, 'past the page',
+                      kc.SPACE_ASIC_PAGE, kc.ASIC_PAGE_SIZE - 1, 2)
+        expect_status(c, kc.BAD_PAYLOAD, 'a bank', kc.SPACE_ASIC_PAGE, 0, 16,
+                      bank=1)
+        # The page is read-only here: the ASIC acts on writes to it.
+        refused(kc.BAD_PAYLOAD, 'a write', c.mem_write, kc.SPACE_ASIC_PAGE,
+                0, b'\x00')
+
+        # The CPU view does not show the page, whatever is paged in.
+        assert c.mem_read(kc.SPACE_CPU, 0x6402, 2) != bytes([0x5A, 0x0C])
+
+    with Core() as core, core.client() as c:
+        hello = c.hello('no asic')
+        assert not hello.machine.has_asic, hello.machine
+        refused(kc.NOT_PRESENT, 'CHIP_GET ASIC on a 6128', c.chip_get,
+                kc.CHIP_ASIC)
+        expect_status(c, kc.NOT_PRESENT, 'ASIC_PAGE on a 6128',
+                      kc.SPACE_ASIC_PAGE, 0, kc.ASIC_PAGE_SIZE)
+        # What is wrong with the request itself is said first.
+        expect_status(c, kc.OUT_OF_RANGE, 'past the page, on a 6128',
+                      kc.SPACE_ASIC_PAGE, 0, kc.ASIC_PAGE_SIZE + 1)
+        c.ping()
+
+
+def run_frames_plain(core: Core, c: KcpcClient, frames: int) -> None:
+    """Let a running machine complete `frames` more frames."""
+    target = c.machine_info().stamp.frame + frames
+    wait_running(c, target)
+
+
+def symbols_changed(c: KcpcClient) -> kc.Event:
+    return c.wait_event(kc.EVT_SYMBOLS_CHANGED, EVENT_TIMEOUT_S)
+
+
+def test_symbols_round_trip_and_are_pushed() -> None:
+    """Acceptance 3: SYM_ADD then SYM_LIST round-trips; a second client is
+    pushed EVT_SYMBOLS_CHANGED, and so is everybody when the text IPC's
+    `sym add` edits the table. A name stands for one address."""
+    with Core() as core, controller(core, 'symbols') as a, \
+            observer(core, 'watcher', kc.CLASS_DEBUG) as b:
+        assert a.hello_reply.caps & kc.CAP_SYMBOLS, hex(a.hello_reply.caps)
+        a.subscribe(kc.CLASS_DEBUG)
+        generation, symbols = b.sym_list()      # an observer may list
+        assert symbols == [], symbols
+
+        added = a.sym_add(0x4000, 'start')
+        assert added > generation, (added, generation)
+        assert not pending(a, kc.EVT_SYMBOLS_CHANGED), (
+            'the event came before the reply')
+        for who, c in (('controller', a), ('observer', b)):
+            assert symbols_changed(c).generation == added, who
+        assert a.sym_add(0xBB5A, 'TXT_OUTPUT') > added
+        assert a.sym_add(0x0038, 'int.entry') > added
+        for c in (a, b):
+            for _ in range(2):
+                symbols_changed(c)
+        generation, symbols = b.sym_list()
+        assert symbols == [(0x0038, 'int.entry'), (0x4000, 'start'),
+                           (0xBB5A, 'TXT_OUTPUT')], symbols
+        assert a.sym_list() == (generation, symbols)
+        # The text IPC reads the same table.
+        assert core.ipc('sym lookup start') == 'OK 4000', core.ipc(
+            'sym lookup start')
+
+        # The text IPC's edit is pushed to both, and listed.
+        assert core.ipc('sym add 0x4100 other').startswith('OK')
+        for who, c in (('controller', a), ('observer', b)):
+            assert symbols_changed(c).generation > generation, who
+        generation, symbols = a.sym_list()
+        assert (0x4100, 'other') in symbols, symbols
+
+        # A name is one address: adding it elsewhere moves it. An address has
+        # one name: a second one replaces the first.
+        a.sym_add(0x4200, 'start')
+        a.sym_add(0x4100, 'another')
+        symbols = a.sym_list()[1]
+        assert symbols == [(0x0038, 'int.entry'), (0x4100, 'another'),
+                           (0x4200, 'start'), (0xBB5A, 'TXT_OUTPUT')], symbols
+        for c in (a, b):
+            for _ in range(2):
+                symbols_changed(c)
+
+        before = a.sym_list()[0]
+        assert a.sym_del('another') > before
+        for c in (a, b):
+            symbols_changed(c)
+        refused(kc.NOT_FOUND, 'a name that is not there', a.sym_del, 'another')
+        refused(kc.NOT_FOUND, 'a name the table never had', a.sym_del, 'nope')
+        assert a.sym_list()[0] > before
+        assert [name for _, name in a.sym_list()[1]] == [
+            'int.entry', 'start', 'TXT_OUTPUT']
+
+        # A file of symbols is one change, however many it holds.
+        path = Path(os.path.realpath(core.tmpdir)) / 'game.sym'
+        path.write_text('; labels\nal  $c000 .rom_entry\n'
+                        'al  $4200 .main\nb  $c000\n', encoding='utf-8')
+        before = a.sym_list()[0]
+        generation, loaded = a.sym_load(str(path))
+        assert loaded == 2 and generation > before, (loaded, generation)
+        for c in (a, b):
+            assert symbols_changed(c).generation == generation
+        symbols = a.sym_list()[1]
+        assert (0xC000, 'rom_entry') in symbols, symbols
+        assert (0x4200, 'main') in symbols, symbols
+        assert (0x4200, 'start') not in symbols, symbols
+        refused(kc.NOT_FOUND, 'a file that is not there', a.sym_load,
+                str(path) + '.missing')
+
+        # Checked before anything is changed.
+        for what, name in (('no name', ''), ('a blank', 'two words'),
+                           ('a control character', 'a\tb'),
+                           ('too long', 'x' * (kc.MAX_SYMBOL_NAME + 1))):
+            refused(kc.BAD_PAYLOAD, what, a.sym_add, 0x1234, name)
+        refused(kc.BAD_PAYLOAD, 'SYM_ADD cut short', a.request,
+                kc.OP_SYM_ADD, b'\x00')
+        for call, args in ((b.sym_add, (0x5000, 'mine')),
+                           (b.sym_del, ('start',)),
+                           (b.sym_load, (str(path),))):
+            refused(kc.NOT_CONTROLLER, 'an observer', call, *args)
+        assert a.sym_list() == b.sym_list()
+        # Nothing more was pushed for what was refused.
+        a.ping()
+        b.ping()
+        for c in (a, b):
+            assert not pending(c, kc.EVT_SYMBOLS_CHANGED), c.events
+        # None of it paused or stopped the machine.
+        assert not a.machine_info().stamp.paused
+
+
+def test_fb_info_describes_the_frame() -> None:
+    """Acceptance 5: FB_INFO reports the machine's canonical frame, 768 by
+    272 pixels of RGB24 with 2304 bytes a row, and no transport yet."""
+    with Core() as core, core.client() as c:
+        hello = c.hello('fb')
+        assert hello.caps & kc.CAP_FB_INFO, hex(hello.caps)
+        fb = c.fb_info()
+        assert fb == kc.FbInfo(768, 272, kc.FB_FORMAT_RGB24,
+                               kc.FB_TRANSPORT_NONE, 2304, 0, ''), fb
+        c.request(kc.OP_FB_INFO, b'from a later version')
+
+
+def test_a_rebuilt_machine_is_announced() -> None:
+    """Acceptance 4, second half: `config set model 3` and `config apply` on
+    the text IPC push EVT_MACHINE_CHANGED with the new model, and from then
+    on the ASIC is there. Loading a cartridge is a change of medium."""
+    with Core() as core, observer(core, 'machine',
+                                  kc.CLASS_MACHINE | kc.CLASS_MEDIA) as c, \
+            observer(core, 'deaf', kc.CLASS_RUN) as deaf:
+        before = c.machine_info()
+        assert before.model == 2 and not before.has_asic, before
+        refused(kc.NOT_PRESENT, 'the ASIC of a 6128', c.chip_get,
+                kc.CHIP_ASIC)
+        assert core.ipc('config set model 3').startswith('OK')
+        # Staged, not applied: nothing was rebuilt yet.
+        c.ping()
+        assert not pending(c, kc.EVT_MACHINE_CHANGED), c.events
+        assert core.ipc('config apply').startswith('OK')
+        event = c.wait_event(kc.EVT_MACHINE_CHANGED, EVENT_TIMEOUT_S)
+        assert event.machine.model == 3 and event.machine.has_asic, event
+        assert event.machine.ram_bytes == before.ram_bytes, event
+        after = c.machine_info()
+        assert (after.model, after.flags, after.ram_bytes,
+                after.rom_slots) == (
+            event.machine.model, event.machine.flags,
+            event.machine.ram_bytes, event.machine.rom_slots), (event, after)
+        assert c.chip_get(kc.CHIP_ASIC).stamp.frame >= event.frame
+        assert len(c.mem_read(kc.SPACE_ASIC_PAGE, 0,
+                              kc.ASIC_PAGE_SIZE)) == kc.ASIC_PAGE_SIZE
+
+        # RAM size is part of the machine too.
+        assert core.ipc('config set ram_size 512').startswith('OK')
+        assert core.ipc('config apply').startswith('OK')
+        event = c.wait_event(kc.EVT_MACHINE_CHANGED, EVENT_TIMEOUT_S)
+        assert event.machine.ram_bytes == 512 * 1024, event
+        assert event.machine.model == 3, event
+
+        cartridge = ROOT / 'rom' / 'system.cpr'
+        generation = 0
+        assert core.ipc(f'load {cartridge}').startswith('OK')
+        while True:
+            event = c.wait_event(kc.EVT_MEDIA_CHANGED, EVENT_TIMEOUT_S)
+            if event.slot == kc.SLOT_CARTRIDGE:
+                break
+        assert event.present and event.generation > generation, event
+        assert Path(event.path) == cartridge, event
+
+        # A client that asked for neither class was sent neither event (the
+        # rebuild's EVT_RESET it did ask for).
+        deaf.ping()
+        assert not pending(deaf, kc.EVT_MEDIA_CHANGED,
+                           kc.EVT_MACHINE_CHANGED), deaf.events
+
+
+def test_polling_every_chip_changes_nothing() -> None:
+    """Acceptance 6: a client that reads all five chips and the ASIC's
+    register page at every frame boundary does not change what the machine
+    computes, and every one of its reads is taken at a frame boundary: none
+    pauses the machine. On a 6128+, so that the ASIC is among them."""
+    frames = 100
+    with Core('-O', 'system.model=3') as core:
+        alone = _stepped_state(core, frames, 0)
+        again = _stepped_state(core, frames, 0)
+        assert alone[:4] == again[:4], (
+            'the reference run is not reproducible; the comparison below '
+            'would prove nothing')
+        assert alone[0] == frames and alone[1], alone[:2]
+        for readers in (1, 3):
+            watched = _stepped_state(core, frames, readers, 'chips')
+            r = watched[4]
+            label = f'{readers} x chips'
+            assert r.calls > 50 and r.running_reads > 50, (
+                f'{label}: {r.calls} reads, {r.running_reads} of a running '
+                'machine')
+            assert watched[0] == frames and watched[1], (label, watched[:2])
+            assert watched[2] == alone[2], (
+                f'{label}: registers differ:\n  alone   {alone[2]}\n'
+                f'  watched {watched[2]}')
+            assert watched[3] == alone[3], (
+                f'{label}: RAM differs after the same {frames} frames')
+            print(f'    {label}: {r.calls} reads during {frames} frames '
+                  f'({r.running_reads} at a frame boundary, slowest '
+                  f'{r.slowest * 1000:.0f} ms); registers and RAM identical')
+
+        # And a running machine keeps its 50 frames a second under them.
+        # RUN_STATE is two atomics: asking it does not wait for a frame.
+        with core.client() as c:
+            c.hello('fps')
+            assert core.ipc('run').startswith('OK')
+            wait_running(c)
+
+            def frames_a_second(seconds: float) -> float:
+                begin = time.monotonic()
+                first = c.run_state().stamp.frame
+                time.sleep(seconds)
+                last = c.run_state().stamp.frame
+                return (last - first) / (time.monotonic() - begin)
+
+            alone_fps = frames_a_second(2.0)
+            with Readers(core, 2, 'chips') as r:
+                watched_fps = frames_a_second(2.0)
+            assert not r.errors, r.errors
+            print(f'    {alone_fps:.1f} frames a second alone, '
+                  f'{watched_fps:.1f} beside {r.calls} chip reads')
+            assert watched_fps > 45 and watched_fps > alone_fps - 3, (
+                alone_fps, watched_fps)
+        served = core_reads(core)
+        assert served['busy'] == 0, served
+        print(f'    reads served: {served}')
+
+
 def test_bad_frames_close_the_connection() -> None:
     """Acceptance 3: bad magic, a wrong major, an unknown kind, an oversized
     length, request id 0, a first frame that is not HELLO and a second HELLO
@@ -3335,7 +3894,7 @@ def test_recoverable_errors_keep_the_connection() -> None:
 
         # An opcode of a capability this server does not have yet, and one
         # that exists nowhere.
-        for opcode in (kc.OP_CHIP_GET, 0x7FFF, kc.OP_ERROR):
+        for opcode in (kc.OP_MEDIA_INFO, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -3584,6 +4143,13 @@ TESTS: List[Callable[[], None]] = [
     test_text_is_typed_by_the_autotype_queue,
     test_mouse_needs_a_mouse_and_moves_the_amx_counters,
     test_input_needs_control_and_is_checked,
+    test_chip_get_matches_the_text_ipc,
+    test_fdc_chip_and_media_events,
+    test_asic_state_and_register_page,
+    test_symbols_round_trip_and_are_pushed,
+    test_fb_info_describes_the_frame,
+    test_a_rebuilt_machine_is_announced,
+    test_polling_every_chip_changes_nothing,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

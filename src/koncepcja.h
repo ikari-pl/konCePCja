@@ -951,6 +951,13 @@ int emulator_init();
 // Restores whatever run state the caller was in. Returns emulator_init()'s
 // code; non-zero means the machine is NOT usable and is left paused.
 int koncpc_rebuild_machine();
+// Called after every rebuild that worked, on the thread that rebuilt, while
+// that thread still holds its pause lease: nothing clocks the new machine
+// yet, so the hook may read it. `was_paused` is the run state the rebuild is
+// about to put back. It must not pause, resume or take a lease. One hook;
+// nullptr removes it.
+using CpcMachineRebuiltHook = void (*)(bool was_paused);
+void cpc_set_machine_rebuilt_hook(CpcMachineRebuiltHook hook);
 int video_set_palette();
 void video_update_palette_entry(int index, uint8_t r, uint8_t g, uint8_t b);
 void init_joystick_emulation();

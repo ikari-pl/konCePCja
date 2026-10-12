@@ -111,7 +111,8 @@ class Server::Connection {
   }
 
   // The fan-out thread's half: queues the event if this client is to have it.
-  void deliver(const Event& event) {
+  // `media` is what an EVT_MEDIA_CHANGED says besides its slot.
+  void deliver(const Event& event, const MediaNote& media) {
     std::uint32_t const id = event_client_id_.load(std::memory_order_acquire);
     if (id == 0 || !wanted(event, id)) return;
     {
@@ -123,10 +124,10 @@ class Server::Connection {
       if (in_flight_id_ != 0 && (hold_all_ || !held_.empty() ||
                                  (event.cause_client == id &&
                                   event.cause_request == in_flight_id_))) {
-        held_.push_back(event);
+        held_.push_back(Held{event, media});
         return;
       }
-      queue_event_locked(event);
+      queue_event_locked(event, media);
     }
     queue_cv_.notify_one();
   }
@@ -463,6 +464,30 @@ class Server::Connection {
         if (!input()) break;
         handle_input_state(header);
         return true;
+      case Opcode::kChipGet:
+        if (!chips()) break;
+        handle_chip_get(header, payload);
+        return true;
+      case Opcode::kSymList:
+        if (!symbols()) break;
+        handle_sym_list(header);
+        return true;
+      case Opcode::kSymAdd:
+        if (!symbols()) break;
+        if (controller_only(header)) handle_sym_add(header, payload);
+        return true;
+      case Opcode::kSymDel:
+        if (!symbols()) break;
+        if (controller_only(header)) handle_sym_del(header, payload);
+        return true;
+      case Opcode::kSymLoad:
+        if (!symbols()) break;
+        if (controller_only(header)) handle_sym_load(header, payload);
+        return true;
+      case Opcode::kFbInfo:
+        if (!config_.fb_info) break;
+        handle_fb_info(header);
+        return true;
       case Opcode::kControl:
         if (!machine_writes()) break;
         handle_control(header, payload);
@@ -711,6 +736,152 @@ class Server::Connection {
       return;
     }
     respond_generation(header, generation);
+  }
+
+  // CAP_CHIPS: CHIP_GET, and with it the memory space ASIC_PAGE, which the
+  // machine reads serve.
+  bool chips() const { return machine_reads() && config_.chip_get; }
+
+  void handle_chip_get(const FrameHeader& header,
+                       const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    ChipState state;
+    if (!r.u8(state.chip) || !r.skip(3)) {
+      respond_error(header, Status::kBadPayload, "CHIP_GET payload too short");
+      return;
+    }
+    if (!chip_known(state.chip)) {
+      respond_error(header, Status::kBadPayload, "unknown chip");
+      return;
+    }
+    Status const status = config_.chip_get(state);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    status == Status::kNotPresent
+                        ? "this machine has no such chip: the ASIC is a "
+                          "6128+'s"
+                        : machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_chip_reply(w, state);
+    respond(header, w.take());
+  }
+
+  // CAP_SYMBOLS: the group is there whole or not at all. The edits need the
+  // control role.
+  bool symbols() const {
+    return machine_writes() && config_.sym_list && config_.sym_add &&
+           config_.sym_del && config_.sym_load;
+  }
+
+  void handle_sym_list(const FrameHeader& header) {
+    std::uint64_t generation = 0;
+    std::vector<Symbol> list;
+    Status const status = config_.sym_list(generation, list);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    w.u64(generation);
+    w.u32(static_cast<std::uint32_t>(list.size()));
+    for (const Symbol& symbol : list) write_symbol(w, symbol);
+    if (w.size() > max_frame_) {
+      respond_error(header, Status::kTooLarge,
+                    "the list would exceed this connection's frame limit of " +
+                        std::to_string(max_frame_) + " bytes");
+      return;
+    }
+    respond(header, w.take());
+  }
+
+  void handle_sym_add(const FrameHeader& header,
+                      const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    Symbol symbol;
+    if (!read_symbol(r, symbol)) {
+      respond_error(header, Status::kBadPayload, "SYM_ADD payload too short");
+      return;
+    }
+    if (const char* const refusal = symbol_name_refusal(symbol.name)) {
+      respond_error(header, Status::kBadPayload, refusal);
+      return;
+    }
+    std::uint64_t generation = 0;
+    Status const status =
+        config_.sym_add(Cause{client_id_, header.id}, symbol, generation);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    respond_generation(header, generation);
+  }
+
+  void handle_sym_del(const FrameHeader& header,
+                      const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::string name;
+    if (!r.str(name)) {
+      respond_error(header, Status::kBadPayload, "SYM_DEL payload too short");
+      return;
+    }
+    std::uint64_t generation = 0;
+    Status const status =
+        config_.sym_del(Cause{client_id_, header.id}, name, generation);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    status == Status::kNotFound ? "no symbol of that name"
+                                                : machine_refusal(status));
+      return;
+    }
+    respond_generation(header, generation);
+  }
+
+  void handle_sym_load(const FrameHeader& header,
+                       const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::string path;
+    if (!r.str(path)) {
+      respond_error(header, Status::kBadPayload, "SYM_LOAD payload too short");
+      return;
+    }
+    if (path.empty()) {
+      respond_error(header, Status::kBadPayload, "SYM_LOAD needs a path");
+      return;
+    }
+    std::uint64_t generation = 0;
+    std::uint32_t loaded = 0;
+    Status const status = config_.sym_load(Cause{client_id_, header.id}, path,
+                                           generation, loaded);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    status == Status::kNotFound
+                        ? "the symbol file could not be opened"
+                        : machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    w.u64(generation);
+    w.u32(loaded);
+    respond(header, w.take());
+  }
+
+  // CAP_FB_INFO.
+  void handle_fb_info(const FrameHeader& header) {
+    FbInfo info;
+    Status const status = config_.fb_info(info);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_fb_info(w, info);
+    respond(header, w.take());
   }
 
   // CAP_INPUT: the group is there whole or not at all. It needs the control
@@ -1060,6 +1231,9 @@ class Server::Connection {
     if (run_control()) reply.caps |= kCapRunControl;
     if (breakpoints()) reply.caps |= kCapBreakpoints;
     if (input()) reply.caps |= kCapInput;
+    if (chips()) reply.caps |= kCapChips;
+    if (symbols()) reply.caps |= kCapSymbols;
+    if (config_.fb_info) reply.caps |= kCapFbInfo;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);
@@ -1113,7 +1287,9 @@ class Server::Connection {
       if (in_flight_id_ == 0) return;
       in_flight_id_ = 0;
       hold_all_ = false;
-      for (const Event& event : held_) queue_event_locked(event);
+      for (const Held& held : held_) {
+        queue_event_locked(held.event, held.media);
+      }
       held_.clear();
     }
     queue_cv_.notify_one();
@@ -1135,13 +1311,13 @@ class Server::Connection {
 
   // Events go in only while the queue is under its event cap. Beyond it they
   // are counted, and the client is told how many once there is room.
-  void queue_event_locked(const Event& event) {
+  void queue_event_locked(const Event& event, const MediaNote& media = {}) {
     if (queued_bytes_ >= config_.max_event_queue_bytes) {
       ++dropped_;
       return;
     }
     flush_overrun_locked();
-    push_event_locked(event);
+    push_event_locked(event, media);
   }
 
   void flush_overrun_locked() {
@@ -1156,10 +1332,10 @@ class Server::Connection {
   }
 
   // The event's id is its place among the events of this connection.
-  void push_event_locked(const Event& event) {
+  void push_event_locked(const Event& event, const MediaNote& media = {}) {
     std::vector<std::uint8_t> frame =
         encode_frame(Kind::kEvent, static_cast<std::uint16_t>(event.opcode),
-                     next_event_id_++, encode_event(event));
+                     next_event_id_++, encode_event(event, media));
     queued_bytes_ += frame.size();
     queue_.push_back(std::move(frame));
   }
@@ -1269,7 +1445,11 @@ class Server::Connection {
   std::uint64_t dropped_ = 0;       // events not queued since the last OVERRUN
   std::uint32_t in_flight_id_ = 0;  // the request being served; 0 = none
   bool hold_all_ = false;           // HELLO is being served
-  std::vector<Event> held_;         // waiting for the response to go first
+  struct Held {
+    Event event;
+    MediaNote media;
+  };
+  std::vector<Held> held_;  // waiting for the response to go first
 };
 
 Server::Server() = default;
@@ -1433,8 +1613,15 @@ void Server::fan_out_loop() {
   Event event;
   for (;;) {
     while (ring_.pop(event)) {
+      // What the slot holds is asked for here, not where the event was
+      // posted: that may have been the frame runner, and a path is no
+      // fixed-size field. An event is a notice; it says what is true now.
+      MediaNote media;
+      if (event.opcode == Opcode::kEvtMediaChanged && config_.media_state) {
+        config_.media_state(event.slot, media);
+      }
       std::scoped_lock const lock(connections_mutex_);
-      for (auto& connection : connections_) connection->deliver(event);
+      for (auto& connection : connections_) connection->deliver(event, media);
     }
     if (std::uint64_t const lost = ring_.take_lost()) {
       std::scoped_lock const lock(connections_mutex_);
