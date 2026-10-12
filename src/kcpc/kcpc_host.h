@@ -1,12 +1,13 @@
 #pragma once
 
 // The seam between the KCPC binary server and the emulator: the one global
-// server instance, and the code that reads the machine for it.
+// server instance, and the code that reads and changes the machine for it.
 //
 // kcpc_server.cpp knows nothing about the emulator; everything that touches
 // CPC state for the binary protocol lives behind this header and follows the
 // threading model of docs/protocol/kcpc-binary-v1.md section 8.
 
+#include <cstddef>
 #include <cstdint>
 
 #include "kcpc/kcpc_proto.h"
@@ -42,3 +43,19 @@ kcpc::Status kcpc_host_regs_get(kcpc::Stamp& stamp, kcpc::Regs& regs);
 kcpc::Status kcpc_host_mem_info(kcpc::MemInfo& info);
 kcpc::Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
                                 kcpc::Stamp& stamp, std::uint8_t* dst);
+
+// The machine changes behind REGS_SET and MEM_WRITE (seam 1 of section 8).
+// Each runs on the calling (socket) thread under a pause lease, while that
+// lease is the only one held, and puts the run state back: a running machine
+// runs on, a paused one stays paused. kBusy when the runner did not go idle
+// or other lease holders kept the machine; nothing was changed then.
+//
+// `mask` selects fields of `values` (kcpc_proto.h); `after` is the register
+// block once the write has been applied.
+kcpc::Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
+                                kcpc::Stamp& stamp, kcpc::Regs& after);
+// Writes `len` bytes to CPU_RAM or PHYS_RAM. All of them or none: a range
+// that does not fit the space is kOutOfRange and writes nothing.
+kcpc::Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
+                                 const std::uint8_t* data, std::size_t len,
+                                 kcpc::Stamp& stamp);

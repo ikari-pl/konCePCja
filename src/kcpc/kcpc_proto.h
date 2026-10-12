@@ -117,6 +117,7 @@ enum class Status : std::uint16_t {
   kLimitReached = 13,
   kShuttingDown = 14,
   kInternal = 15,
+  kIdleTimeout = 16,
 };
 
 enum class Role : std::uint8_t {
@@ -141,8 +142,10 @@ inline constexpr std::uint64_t kCapSnapshot = 1ULL << 12;
 inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
 
 // What this server implements today: the machine reads (slice 2), with the
-// ROM spaces. HELLO, PING and MACHINE_INFO need no capability.
-inline constexpr std::uint64_t kServerCaps = kCapMachineRead | kCapMemRom;
+// ROM spaces, and the control role with the machine writes (slice 3). HELLO,
+// PING and MACHINE_INFO need no capability.
+inline constexpr std::uint64_t kServerCaps =
+    kCapMachineRead | kCapMemRom | kCapMachineWrite;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -446,6 +449,47 @@ inline bool read_regs(Reader& r, Regs& out) {
   return r.skip(2);
 }
 
+// REGS_SET: bit N of the mask selects the Nth field of the block, in wire
+// order (bit 0 = AF, bit 7 = PC, bit 11 = HL', bit 12 = I, bit 16 = IM).
+inline constexpr std::uint32_t kRegBitPc = 1U << 7;
+inline constexpr std::uint32_t kRegBitIff1 = 1U << 14;
+inline constexpr std::uint32_t kRegBitIff2 = 1U << 15;
+inline constexpr std::uint32_t kRegBitIm = 1U << 16;
+// The 18th field. It can be read and not set: whether the CPU is halted is
+// where it is in an instruction, not a register.
+inline constexpr std::uint32_t kRegBitHalt = 1U << 17;
+inline constexpr std::uint32_t kRegsSettableMask = kRegBitHalt - 1;
+
+struct RegsSetRequest {
+  std::uint32_t mask = 0;
+  Regs regs;
+};
+
+inline void write_regs_set_request(Writer& w, const RegsSetRequest& s) {
+  w.u32(s.mask);
+  write_regs(w, s.regs);
+}
+
+inline bool read_regs_set_request(Reader& r, RegsSetRequest& out) {
+  r.u32(out.mask);
+  return read_regs(r, out.regs);
+}
+
+// Why a REGS_SET cannot be applied, or nullptr when it can. Only the fields
+// the mask selects are looked at.
+inline const char* regs_set_refusal(const RegsSetRequest& s) {
+  if ((s.mask & kRegBitHalt) != 0) return "HALT cannot be set";
+  if ((s.mask & ~kRegsSettableMask) != 0) {
+    return "the mask selects a field the register block does not have";
+  }
+  if ((s.mask & kRegBitIm) != 0 && s.regs.im > 2) return "IM must be 0 to 2";
+  if (((s.mask & kRegBitIff1) != 0 && s.regs.iff1 > 1) ||
+      ((s.mask & kRegBitIff2) != 0 && s.regs.iff2 > 1)) {
+    return "IFF1 and IFF2 must be 0 or 1";
+  }
+  return nullptr;
+}
+
 // Section 11: the views one address can be read through.
 enum class MemSpace : std::uint8_t {
   kCpu = 0,       // what the Z80 would read now
@@ -523,6 +567,77 @@ inline bool read_mem_read_request(Reader& r, MemReadRequest& out) {
 // What a MEM_READ reply carries besides the bytes: the status header and the
 // stamp. `len` may be anything up to the frame limit less this.
 inline constexpr std::uint32_t kMemReadReplyOverhead = 4 + 12;
+
+// MEM_WRITE: these eight bytes, then the bytes to write.
+inline constexpr std::size_t kMemWriteHeaderSize = 8;
+
+struct MemWriteRequest {
+  std::uint8_t space = 0;  // raw; the server validates it
+  std::uint16_t bank = 0;
+  std::uint32_t addr = 0;
+};
+
+inline void write_mem_write_request(Writer& w, const MemWriteRequest& m) {
+  w.u8(m.space);
+  w.u8(0);
+  w.u16(m.bank);
+  w.u32(m.addr);
+}
+
+inline bool read_mem_write_request(Reader& r, MemWriteRequest& out) {
+  r.u8(out.space);
+  r.skip(1);
+  r.u16(out.bank);
+  return r.u32(out.addr);
+}
+
+// Only RAM is written, and only through a view that reads back what was
+// written: the CPU view would return the ROM paged over the byte.
+inline bool mem_space_writable(std::uint8_t space) {
+  return space == static_cast<std::uint8_t>(MemSpace::kCpuRam) ||
+         space == static_cast<std::uint8_t>(MemSpace::kPhysRam);
+}
+
+// CONTROL (section 12, Session).
+inline constexpr std::uint8_t kControlRelease = 0;
+inline constexpr std::uint8_t kControlAcquire = 1;
+inline constexpr std::uint8_t kControlFlagForce = 1U << 0;
+
+struct ControlRequest {
+  std::uint8_t action = 0;  // raw; the server validates it
+  std::uint8_t flags = 0;
+};
+
+inline void write_control_request(Writer& w, const ControlRequest& c) {
+  w.u8(c.action);
+  w.u8(c.flags);
+  w.zeros(2);
+}
+
+inline bool read_control_request(Reader& r, ControlRequest& out) {
+  r.u8(out.action);
+  r.u8(out.flags);
+  return r.skip(2);
+}
+
+struct ControlReply {
+  Role role = Role::kObserver;   // what the asking client holds now
+  std::uint32_t controller = 0;  // the controller's client_id; 0 = nobody
+};
+
+inline void write_control_reply(Writer& w, const ControlReply& c) {
+  w.u8(static_cast<std::uint8_t>(c.role));
+  w.zeros(3);
+  w.u32(c.controller);
+}
+
+inline bool read_control_reply(Reader& r, ControlReply& out) {
+  std::uint8_t role = 0;
+  r.u8(role);
+  r.skip(3);
+  out.role = role == 1 ? Role::kController : Role::kObserver;
+  return r.u32(out.controller);
+}
 
 struct HelloRequest {
   std::uint16_t client_minor = 0;

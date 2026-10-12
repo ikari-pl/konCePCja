@@ -516,3 +516,127 @@ TEST(KcpcProto, MemRangeNeverWraps) {
   EXPECT_FALSE(kcpc::mem_range_ok(1, 0xFFFFFFFF, 0x410000));
   EXPECT_TRUE(kcpc::mem_range_ok(0x400000, 0x10000, 0x410000));
 }
+
+// -- slice 3: control and writes (beads-3o1.3) ------------------------------
+
+TEST(KcpcPayloads, ControlRequestAndReplyRoundTrip) {
+  Writer w;
+  kcpc::write_control_request(w,
+                              {kcpc::kControlAcquire, kcpc::kControlFlagForce});
+  std::vector<std::uint8_t> const expected = {1, 1, 0, 0};
+  EXPECT_EQ(w.data(), expected);
+  Reader r(w.data());
+  kcpc::ControlRequest request;
+  ASSERT_TRUE(kcpc::read_control_request(r, request));
+  EXPECT_EQ(request.action, kcpc::kControlAcquire);
+  EXPECT_EQ(request.flags, kcpc::kControlFlagForce);
+  for (std::size_t cut = 0; cut < w.size(); ++cut) {
+    Reader short_reader(w.data().data(), cut);
+    kcpc::ControlRequest ignored;
+    EXPECT_FALSE(kcpc::read_control_request(short_reader, ignored)) << cut;
+  }
+
+  Writer reply;
+  kcpc::write_control_reply(reply, {kcpc::Role::kController, 0x01020304});
+  std::vector<std::uint8_t> const reply_bytes = {1, 0, 0, 0, 4, 3, 2, 1};
+  EXPECT_EQ(reply.data(), reply_bytes);
+  Reader rr(reply.data());
+  kcpc::ControlReply out;
+  ASSERT_TRUE(kcpc::read_control_reply(rr, out));
+  EXPECT_EQ(out.role, kcpc::Role::kController);
+  EXPECT_EQ(out.controller, 0x01020304U);
+}
+
+TEST(KcpcPayloads, RegsSetRequestIsTheMaskThenTheBlock) {
+  kcpc::RegsSetRequest in;
+  in.mask = kcpc::kRegBitPc | 1U;
+  in.regs.af = 0x1122;
+  in.regs.pc = 0x4000;
+  in.regs.im = 2;
+  Writer w;
+  kcpc::write_regs_set_request(w, in);
+  ASSERT_EQ(w.size(), 4U + kcpc::kRegsSize);
+  EXPECT_EQ(w.data()[0], 0x81);
+  EXPECT_EQ(w.data()[4], 0x22) << "AF is the first field of the block";
+  EXPECT_EQ(w.data()[4 + 14], 0x00) << "PC is the eighth: bit 7";
+  EXPECT_EQ(w.data()[4 + 15], 0x40);
+
+  Reader r(w.data());
+  kcpc::RegsSetRequest out;
+  ASSERT_TRUE(kcpc::read_regs_set_request(r, out));
+  EXPECT_EQ(out.mask, in.mask);
+  EXPECT_EQ(out.regs.af, 0x1122);
+  EXPECT_EQ(out.regs.pc, 0x4000);
+  EXPECT_EQ(out.regs.im, 2);
+  for (std::size_t cut = 0; cut < w.size(); ++cut) {
+    Reader short_reader(w.data().data(), cut);
+    kcpc::RegsSetRequest ignored;
+    EXPECT_FALSE(kcpc::read_regs_set_request(short_reader, ignored)) << cut;
+  }
+}
+
+TEST(KcpcPayloads, RegsSetRefusalLooksOnlyAtSelectedFields) {
+  kcpc::RegsSetRequest s;
+  EXPECT_EQ(kcpc::regs_set_refusal(s), nullptr) << "an empty mask";
+  s.mask = kcpc::kRegsSettableMask;
+  s.regs.im = 2;
+  s.regs.iff1 = 1;
+  EXPECT_EQ(kcpc::regs_set_refusal(s), nullptr) << "all 17 settable fields";
+  EXPECT_EQ(kcpc::kRegsSettableMask, 0x1FFFFU);
+
+  s.mask = kcpc::kRegBitHalt;
+  EXPECT_NE(kcpc::regs_set_refusal(s), nullptr) << "HALT is read-only";
+  s.mask = 1U << 18;
+  EXPECT_NE(kcpc::regs_set_refusal(s), nullptr) << "no such field";
+  s.mask = 1U << 31;
+  EXPECT_NE(kcpc::regs_set_refusal(s), nullptr);
+
+  s.regs.im = 3;
+  s.regs.iff1 = 2;
+  s.regs.iff2 = 0xFF;
+  s.mask = 1;  // AF only: the bad values are not selected
+  EXPECT_EQ(kcpc::regs_set_refusal(s), nullptr);
+  for (std::uint32_t const bit :
+       {kcpc::kRegBitIm, kcpc::kRegBitIff1, kcpc::kRegBitIff2}) {
+    s.mask = bit;
+    EXPECT_NE(kcpc::regs_set_refusal(s), nullptr) << "bit " << bit;
+  }
+}
+
+TEST(KcpcPayloads, MemWriteRequestIsEightBytesThenTheData) {
+  kcpc::MemWriteRequest in;
+  in.space = static_cast<std::uint8_t>(kcpc::MemSpace::kPhysRam);
+  in.bank = 0x0201;
+  in.addr = 0x00012345;
+  Writer w;
+  kcpc::write_mem_write_request(w, in);
+  std::vector<std::uint8_t> const expected = {2,    0,    0x01, 0x02,
+                                              0x45, 0x23, 0x01, 0x00};
+  EXPECT_EQ(w.data(), expected);
+  EXPECT_EQ(w.size(), kcpc::kMemWriteHeaderSize);
+  Reader r(w.data());
+  kcpc::MemWriteRequest out;
+  ASSERT_TRUE(kcpc::read_mem_write_request(r, out));
+  EXPECT_EQ(out.space, in.space);
+  EXPECT_EQ(out.bank, 0x0201);
+  EXPECT_EQ(out.addr, 0x00012345U);
+  EXPECT_EQ(r.remaining(), 0U);
+  for (std::size_t cut = 0; cut < w.size(); ++cut) {
+    Reader short_reader(w.data().data(), cut);
+    kcpc::MemWriteRequest ignored;
+    EXPECT_FALSE(kcpc::read_mem_write_request(short_reader, ignored)) << cut;
+  }
+}
+
+TEST(KcpcPayloads, OnlyTheTwoRamSpacesAreWritable) {
+  for (unsigned space = 0; space < 256; ++space) {
+    bool const ram = space == 1 || space == 2;
+    EXPECT_EQ(kcpc::mem_space_writable(static_cast<std::uint8_t>(space)), ram)
+        << "space " << space;
+  }
+}
+
+TEST(KcpcPayloads, ServerCapsAnnounceTheWrites) {
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapMachineWrite, 0U);
+  EXPECT_EQ(static_cast<std::uint16_t>(kcpc::Status::kIdleTimeout), 16);
+}

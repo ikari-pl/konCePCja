@@ -15,6 +15,9 @@ checkout, and nothing outside this repository should be built on this file.
         c.ping()
         regs = c.regs_get()              # works paused or running
         ram = c.mem_read(SPACE_CPU, 0, 0x10000)   # 64 KiB, one reply
+        if c.acquire_control().is_controller:     # changes need control
+            c.regs_set(hl=0x1234)                 # exactly that register
+            c.mem_write(SPACE_CPU_RAM, 0x8000, b'\x18\xfe')
 
 Never assume port 6545: read it from the startup manifest the core prints.
 """
@@ -48,12 +51,15 @@ OP_SUBSCRIBE = 0x0003
 OP_CONTROL = 0x0004
 OP_MACHINE_INFO = 0x0005
 OP_REGS_GET = 0x0200
-OP_REGS_SET = 0x0201  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_REGS_SET = 0x0201
 OP_MEM_INFO = 0x0210
 OP_MEM_READ = 0x0211
+OP_MEM_WRITE = 0x0212
+OP_PAUSE = 0x0100  # not implemented yet; used to test UNKNOWN_OPCODE
 
 # Capability bits (section 6) of the groups implemented so far.
 CAP_MACHINE_READ = 1 << 0
+CAP_MACHINE_WRITE = 1 << 1
 CAP_MEM_ROM = 1 << 10
 
 # Memory spaces (section 11).
@@ -86,6 +92,7 @@ NOT_FOUND = 12
 LIMIT_REACHED = 13
 SHUTTING_DOWN = 14
 INTERNAL = 15
+IDLE_TIMEOUT = 16
 
 STATUS_NAMES = {
     OK: 'OK', BAD_FRAME: 'BAD_FRAME',
@@ -96,11 +103,16 @@ STATUS_NAMES = {
     OUT_OF_RANGE: 'OUT_OF_RANGE', TOO_LARGE: 'TOO_LARGE',
     NOT_PRESENT: 'NOT_PRESENT', NOT_FOUND: 'NOT_FOUND',
     LIMIT_REACHED: 'LIMIT_REACHED', SHUTTING_DOWN: 'SHUTTING_DOWN',
-    INTERNAL: 'INTERNAL',
+    INTERNAL: 'INTERNAL', IDLE_TIMEOUT: 'IDLE_TIMEOUT',
 }
 
 ROLE_OBSERVER = 0
 ROLE_CONTROLLER = 1
+
+# CONTROL (section 12, Session).
+CONTROL_RELEASE = 0
+CONTROL_ACQUIRE = 1
+CONTROL_FLAG_FORCE = 1 << 0
 
 MACHINE_FLAG_HEADLESS = 1 << 0
 MACHINE_FLAG_ASIC = 1 << 1
@@ -286,6 +298,10 @@ REG16_NAMES = ('af', 'bc', 'de', 'hl', 'ix', 'iy', 'sp', 'pc',
                'af_alt', 'bc_alt', 'de_alt', 'hl_alt')
 REG8_NAMES = ('i', 'r', 'iff1', 'iff2', 'im', 'halt')
 REGS = struct.Struct('<12H6B2x')
+# REGS_SET: bit N of the mask selects the Nth field of the block.
+REG_BITS = {name: 1 << bit
+            for bit, name in enumerate(REG16_NAMES + REG8_NAMES)}
+REGS_SETTABLE = REG16_NAMES + REG8_NAMES[:-1]   # HALT can only be read
 
 
 @dataclass
@@ -348,6 +364,39 @@ class MemInfo:
         rom_slots = fields.u32()
         return MemInfo(ram_bytes, ram_config, rom_config, upper_rom,
                        rom_slots, Stamp.read(fields))
+
+
+@dataclass
+class Control:
+    role: int         # what this client holds now
+    controller: int   # the controller's client_id; 0 = nobody
+
+    @property
+    def is_controller(self) -> bool:
+        return self.role == ROLE_CONTROLLER
+
+    @staticmethod
+    def read(fields: Fields) -> 'Control':
+        role = fields.u8()
+        fields.skip(3)
+        return Control(role, fields.u32())
+
+
+def control_payload(action: int, flags: int = 0) -> bytes:
+    return struct.pack('<BBH', action, flags, 0)
+
+
+def regs_set_payload(mask: int, values: Optional[dict] = None) -> bytes:
+    """`mask`, then a register block holding `values` (by name) and zeros
+    elsewhere."""
+    values = values or {}
+    block = [values.get(name, 0) for name in REG16_NAMES + REG8_NAMES]
+    return struct.pack('<I', mask) + REGS.pack(*block)
+
+
+def mem_write_payload(space: int, addr: int, data: bytes,
+                      bank: int = 0) -> bytes:
+    return struct.pack('<BBHI', space, 0, bank, addr) + bytes(data)
 
 
 def mem_read_payload(space: int, addr: int, length: int,
@@ -489,3 +538,36 @@ class KcpcClient:
     def mem_read(self, space: int, addr: int, length: int,
                  bank: int = 0) -> bytes:
         return self.mem_read_stamped(space, addr, length, bank)[1]
+
+    # -- control and writes (controller only) -------------------------------
+
+    def control(self, action: int, flags: int = 0) -> Control:
+        return Control.read(self.request(OP_CONTROL,
+                                         control_payload(action, flags)))
+
+    def acquire_control(self, force: bool = False) -> Control:
+        """Ask for control. Without `force` it is granted only when nobody
+        has it; the reply says which role this client holds now. With
+        `force` it is always granted and the previous controller becomes an
+        observer: use it only when the user asked for it."""
+        return self.control(CONTROL_ACQUIRE,
+                            CONTROL_FLAG_FORCE if force else 0)
+
+    def release_control(self) -> Control:
+        return self.control(CONTROL_RELEASE)
+
+    def regs_set(self, **values: int) -> Regs:
+        """Set the registers named, and only those: `regs_set(pc=0x4000)`.
+        Returns the register block after the write."""
+        mask = 0
+        for name in values:
+            mask |= REG_BITS[name]
+        return Regs.read(self.request(OP_REGS_SET,
+                                      regs_set_payload(mask, values)))
+
+    def mem_write(self, space: int, addr: int, data: bytes,
+                  bank: int = 0) -> Stamp:
+        """Write `data` to SPACE_CPU_RAM or SPACE_PHYS_RAM, in one request
+        (at most MAX_REQUEST_PAYLOAD - 8 bytes)."""
+        return Stamp.read(self.request(
+            OP_MEM_WRITE, mem_write_payload(space, addr, data, bank)))

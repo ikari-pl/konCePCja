@@ -124,6 +124,12 @@ class Gate {
   void reopen();
 
   std::size_t queued() const { return queued_.load(std::memory_order_acquire); }
+  // Reads that have been asked for and not yet taken, wherever they are
+  // waiting: queued for a frame boundary, or for a lease to let go of the
+  // machine. A writer looks at this to let them in between two writes.
+  std::size_t waiting() const {
+    return waiting_.load(std::memory_order_acquire);
+  }
   Counters counters() const;
 
  private:
@@ -147,6 +153,7 @@ class Gate {
   std::atomic<std::uint64_t> frame_{0};
   // Mirrors the length of the list below so the runner can skip the mutex.
   std::atomic<std::size_t> queued_{0};
+  std::atomic<std::size_t> waiting_{0};
 
   // Guards the list and pairs with done_cv_. Held for pointer updates only,
   // never across a read, an allocation or a system call.

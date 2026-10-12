@@ -54,7 +54,8 @@ EXE = ROOT / 'koncepcja'
 class Core:
     """One emulator process and what its startup manifest said."""
 
-    def __init__(self, *extra_args: str):
+    def __init__(self, *extra_args: str,
+                 extra_env: Optional[Dict[str, str]] = None):
         self.tmpdir = tempfile.mkdtemp(prefix='koncpc-kcpc-')
         # A throwaway copy of the shipped example config: never whoever's
         # koncepcja.cfg sits in the working directory.
@@ -63,6 +64,7 @@ class Core:
         env = os.environ.copy()
         env['KONCPC_NO_DIALOGS'] = '1'
         env['KONCPC_TEST_WINDOW'] = '1'
+        env.update(extra_env or {})
         cmd = [str(EXE)]
         if MODE == 'headless':
             cmd.append('-H')
@@ -286,11 +288,12 @@ def test_manifest_port_and_hello() -> None:
                 hello.server_version, core.manifest['version'])
             assert hello.client_id != 0
             assert hello.server_minor == 0
-            assert hello.role == kc.ROLE_OBSERVER
+            assert hello.role == kc.ROLE_OBSERVER, 'it did not ask for control'
             assert hello.max_frame == kc.MAX_SERVER_FRAME, hello.max_frame
             # The groups implemented so far: the machine reads, with the
-            # ROM spaces.
-            assert hello.caps == kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM, (
+            # ROM spaces, and the writes with the control role.
+            assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
+                                  | kc.CAP_MACHINE_WRITE), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -1017,6 +1020,540 @@ def test_reads_work_running_and_across_a_pause() -> None:
             time.sleep(0.05)
 
 
+# -- slice 3: the control role and the machine writes (beads-3o1.3) --------
+
+# What the text IPC calls each register of the block.
+REG_TEXT_NAMES = {'af': 'AF', 'bc': 'BC', 'de': 'DE', 'hl': 'HL', 'ix': 'IX',
+                  'iy': 'IY', 'sp': 'SP', 'pc': 'PC', 'af_alt': 'AFX',
+                  'bc_alt': 'BCX', 'de_alt': 'DEX', 'hl_alt': 'HLX',
+                  'i': 'I', 'r': 'R', 'iff1': 'IFF1', 'iff2': 'IFF2',
+                  'im': 'IM', 'halt': 'HALT'}
+
+SPIN_ADDR = 0x8000   # RAM in every banking state, free at the BASIC prompt
+INTERRUPT_VECTOR = 0x0038
+
+
+def text_reg(core: Core, field: str) -> int:
+    resp = core.ipc(f'reg get {REG_TEXT_NAMES[field]}')
+    assert resp.startswith('OK '), (field, resp)
+    return int(resp[3:], 16)
+
+
+def controller(core: Core, name: str) -> KcpcClient:
+    """A client that asked for control in HELLO and got it."""
+    c = core.client()
+    hello = c.hello(name, role=kc.ROLE_CONTROLLER)
+    assert hello.role == kc.ROLE_CONTROLLER, 'control was not free'
+    assert hello.caps & kc.CAP_MACHINE_WRITE, f'caps {hello.caps:#x}'
+    return c
+
+
+def refused(status: int, what: str, call: Callable, *args, **kwargs) -> None:
+    try:
+        call(*args, **kwargs)
+    except KcpcError as e:
+        assert e.status == status, (
+            f'{what}: {kc.status_name(e.status)}, expected '
+            f'{kc.status_name(status)} ({e.message!r})')
+        assert e.message, f'{what}: no message'
+        return
+    raise AssertionError(f'{what}: the request was accepted')
+
+
+def stop_at_interrupt(core: Core, c: KcpcClient) -> kc.Regs:
+    """Stop the machine on a breakpoint at &0038, the interrupt entry. PC is
+    then in the lower ROM (so that ROM is paged in) and the machine is parked
+    on the fetch of an instruction it has not run."""
+    assert core.ipc(f'bp add {INTERRUPT_VECTOR:#x}').startswith('OK')
+    assert core.ipc('run').startswith('OK')
+    resp = core.ipc('wait bp 10000')
+    assert resp.startswith('OK'), f'no breakpoint stop: {resp}'
+    assert core.ipc(f'bp del {INTERRUPT_VECTOR:#x}').startswith('OK')
+    regs = c.regs_get()
+    assert regs.stamp.paused, regs.stamp
+    return regs
+
+
+def wait_running(c: KcpcClient, beyond: int = 0) -> kc.Stamp:
+    deadline = time.monotonic() + IO_TIMEOUT_S
+    while True:
+        stamp = c.machine_info().stamp
+        if not stamp.paused and stamp.frame > beyond:
+            return stamp
+        assert time.monotonic() < deadline, f'not running: {stamp}'
+        time.sleep(0.02)
+
+
+def spin(core: Core, c: KcpcClient) -> None:
+    """Leave the machine running `JR $` at SPIN_ADDR with interrupts off: a
+    running machine whose registers hold still, so a write to one of them
+    can be read back, and cannot crash the firmware under it."""
+    pause_core(core, c)
+    c.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, b'\x18\xfe')
+    c.regs_set(pc=SPIN_ADDR, iff1=0, iff2=0)
+    assert core.ipc('run').startswith('OK')
+    wait_running(c)
+
+
+def test_control_roles_and_forced_takeover() -> None:
+    """Acceptance 1 and the takeover decision: one controller; an observer's
+    writes answer NOT_CONTROLLER and change nothing; control is free once
+    the controller disconnects; CONTROL with force always wins and demotes
+    the previous controller without disconnecting it."""
+    with Core() as core, core.client() as a, core.client() as b:
+        hello_a = a.hello('test_kcpc first', role=kc.ROLE_CONTROLLER)
+        assert hello_a.role == kc.ROLE_CONTROLLER
+        hello_b = b.hello('test_kcpc second', role=kc.ROLE_CONTROLLER)
+        assert hello_b.role == kc.ROLE_OBSERVER, (
+            'HELLO took control away from the controller')
+        ram_bytes = hello_a.machine.ram_bytes
+
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        pause_core(core, a)
+        a.regs_set()  # nothing selected; the instruction in flight ends
+        regs = a.regs_get().values()
+        ram = a.mem_read(kc.SPACE_PHYS_RAM, 0, ram_bytes)
+
+        def unchanged(who: KcpcClient, what: str) -> None:
+            assert who.regs_get().values() == regs, f'{what}: registers'
+            assert who.mem_read(kc.SPACE_PHYS_RAM, 0, ram_bytes) == ram, (
+                f'{what}: memory')
+
+        refused(kc.NOT_CONTROLLER, 'observer REGS_SET', b.regs_set,
+                hl=regs['hl'] ^ 0xFFFF, pc=0x1234)
+        refused(kc.NOT_CONTROLLER, 'observer MEM_WRITE', b.mem_write,
+                kc.SPACE_CPU_RAM, SPIN_ADDR, b'observer')
+        refused(kc.NOT_CONTROLLER, 'observer MEM_WRITE to PHYS_RAM',
+                b.mem_write, kc.SPACE_PHYS_RAM, 0x4000, b'observer')
+        # The role is judged first: not even a malformed write is examined.
+        refused(kc.NOT_CONTROLLER, 'observer, empty REGS_SET', b.request,
+                kc.OP_REGS_SET)
+        unchanged(b, 'an observer wrote')
+
+        # Asking politely is not an error; the reply says who has control.
+        asked = b.acquire_control()
+        assert not asked.is_controller, asked
+        assert asked.controller == hello_a.client_id, asked
+        assert b.release_control().controller == hello_a.client_id, (
+            'an observer released the controller\'s control')
+        assert a.acquire_control().is_controller, 'the controller lost it'
+
+        # The controller disconnects: control is free.
+        a.close()
+        deadline = time.monotonic() + IO_TIMEOUT_S
+        while True:
+            asked = b.acquire_control()
+            if asked.is_controller:
+                break
+            assert time.monotonic() < deadline, (
+                f'control was not freed by the disconnect: {asked}')
+            time.sleep(0.02)
+        assert asked.controller == hello_b.client_id, asked
+        b.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, b'second')
+        assert b.mem_read(kc.SPACE_CPU_RAM, SPIN_ADDR, 6) == b'second'
+
+        # Takeover: the newest forced request wins.
+        with core.client() as c:
+            hello_c = c.hello('test_kcpc third', role=kc.ROLE_CONTROLLER)
+            assert hello_c.role == kc.ROLE_OBSERVER
+            assert not c.acquire_control().is_controller
+            taken = c.acquire_control(force=True)
+            assert taken.is_controller, taken
+            assert taken.controller == hello_c.client_id, taken
+
+            regs = c.regs_get().values()
+            ram = c.mem_read(kc.SPACE_PHYS_RAM, 0, ram_bytes)
+            refused(kc.NOT_CONTROLLER, 'demoted MEM_WRITE', b.mem_write,
+                    kc.SPACE_CPU_RAM, SPIN_ADDR, b'demoted')
+            refused(kc.NOT_CONTROLLER, 'demoted REGS_SET', b.regs_set,
+                    de=regs['de'] ^ 0xFFFF)
+            unchanged(c, 'a demoted controller wrote')
+            # Demoted, not disconnected: it still reads.
+            b.ping()
+            unchanged(b, 'reading as an observer')
+            assert b.acquire_control().controller == hello_c.client_id
+
+            c.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, b'third!')
+            assert b.mem_read(kc.SPACE_CPU_RAM, SPIN_ADDR, 6) == b'third!'
+            # No client is special: the demoted one may force it back.
+            back = b.acquire_control(force=True)
+            assert back.is_controller, back
+            assert back.controller == hello_b.client_id, back
+            refused(kc.NOT_CONTROLLER, 'the third, demoted in turn',
+                    c.mem_write, kc.SPACE_CPU_RAM, SPIN_ADDR, b'no')
+            b.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, b'second')
+            assert c.mem_read(kc.SPACE_CPU_RAM, SPIN_ADDR, 6) == b'second'
+        # Still paused: none of it ran the machine.
+        assert b.machine_info().stamp.paused
+
+
+def test_silent_controller_is_dropped() -> None:
+    """Acceptance 2: a controller that sends no frame for the idle timeout
+    is disconnected and control becomes free; PING keeps it; an observer is
+    never timed out."""
+    timeout_s = 1.5
+    env = {'KONCPC_KCPC_CONTROLLER_TIMEOUT_MS': str(int(timeout_s * 1000))}
+    with Core(extra_env=env) as core, core.client() as a, \
+            core.client() as b:
+        hello_a = a.hello('test_kcpc pinger', role=kc.ROLE_CONTROLLER)
+        assert hello_a.role == kc.ROLE_CONTROLLER
+        hello_b = b.hello('test_kcpc quiet observer')
+
+        # PING keeps control for twice the timeout.
+        begin = time.monotonic()
+        pings = 0
+        while time.monotonic() - begin < 2 * timeout_s:
+            a.ping()
+            pings += 1
+            time.sleep(0.1)
+        held = a.acquire_control()
+        last_frame = time.monotonic()
+        assert held.is_controller, (
+            f'{pings} pings in {2 * timeout_s:.0f}s did not keep control')
+
+        # Silence. The server says why, then closes.
+        frame = a.read_frame()
+        waited = time.monotonic() - last_frame
+        assert frame.opcode == kc.OP_ERROR and frame.id == 0, frame
+        assert frame.status == kc.IDLE_TIMEOUT, kc.status_name(frame.status)
+        assert frame.message
+        assert waited >= timeout_s - 0.05, (
+            f'dropped after {waited:.2f}s of silence, timeout {timeout_s}s')
+        try:
+            a.read_frame()
+            raise AssertionError('the connection stayed open')
+        except (KcpcClosed, OSError):
+            pass
+
+        # The observer said nothing for all that time and is still there;
+        # control is free and it takes it.
+        took = b.acquire_control()
+        assert took.is_controller, took
+        assert took.controller == hello_b.client_id, took
+        b.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, b'free')
+        print(f'    {pings} pings kept control for {2 * timeout_s:.0f}s; '
+              f'dropped {waited:.2f}s after the last frame')
+
+
+def test_regs_set_changes_exactly_one_register() -> None:
+    """Acceptance 3: REGS_SET with a one-bit mask changes that register and
+    no other, as REGS_GET and the text IPC both see it."""
+    with Core() as core, controller(core, 'test_kcpc regs_set') as c:
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        paused = pause_core(core, c)
+        # Nothing selected: the block comes back, and the instruction that
+        # was in flight at the pause has ended, so nothing else moves below.
+        base = c.regs_set()
+        assert base.stamp == paused, (base.stamp, paused)
+        expect = base.values()
+        assert c.regs_get().values() == expect
+
+        for name in kc.REGS_SETTABLE:
+            old = expect[name]
+            if name == 'im':
+                new = (old + 1) % 3
+            elif name in ('iff1', 'iff2'):
+                new = old ^ 1
+            elif name in kc.REG8_NAMES:
+                new = old ^ 0x5A
+            else:
+                new = old ^ 0xA55A
+            after = c.regs_set(**{name: new})
+            expect[name] = new
+            assert after.values() == expect, (
+                f'{name}: the reply shows '
+                f'{ {k: v for k, v in after.values().items() if v != expect[k]} }')
+            assert c.regs_get().values() == expect, f'{name}: REGS_GET'
+            assert text_reg(core, name) == new, (
+                f'{name}: the text IPC reads {text_reg(core, name):#x}')
+            assert after.stamp == paused, (name, after.stamp)
+        for name in kc.REGS_SETTABLE:
+            assert text_reg(core, name) == expect[name], name
+        dump = core.ipc('regs')
+        assert f'PC={expect["pc"]:04X}' in dump, dump
+
+        # Several at once, and a field the mask leaves out is not touched
+        # whatever the block holds for it.
+        both = c.regs_set(bc=0x1111, ix=0x2222)
+        expect.update(bc=0x1111, ix=0x2222)
+        assert both.values() == expect
+        c.request(kc.OP_REGS_SET, kc.regs_set_payload(
+            kc.REG_BITS['de'], {'de': 0x3333, 'hl': 0x4444, 'im': 7}))
+        expect['de'] = 0x3333
+        assert c.regs_get().values() == expect
+
+        # What cannot be set is refused whole.
+        for what, payload in (
+                ('HALT', kc.regs_set_payload(
+                    kc.REG_BITS['halt'] | kc.REG_BITS['hl'],
+                    {'halt': 1, 'hl': 0x9999})),
+                ('a 19th field', kc.regs_set_payload(1 << 18)),
+                ('IM 3', kc.regs_set_payload(kc.REG_BITS['im'], {'im': 3})),
+                ('IFF1 2', kc.regs_set_payload(kc.REG_BITS['iff1'],
+                                              {'iff1': 2})),
+                ('cut short', kc.regs_set_payload(1)[:-1])):
+            refused(kc.BAD_PAYLOAD, what, c.request, kc.OP_REGS_SET, payload)
+        assert c.regs_get().values() == expect, 'a refused write changed it'
+        assert c.machine_info().stamp == paused, 'the machine moved'
+
+
+def test_pc_edit_at_a_breakpoint_matches_the_text_ipc() -> None:
+    """Acceptance 3, second half. At a breakpoint the machine has fetched
+    the instruction it stopped on and not run it. The PC both ports show is
+    the breakpoint's address; writing that same PC is no edit, and a new PC
+    drops the fetched instruction: `reg set PC`'s rules."""
+    code = bytes([0x21, 0x34, 0x12, 0x18, 0xFE])   # LD HL,&1234 : JR $
+    with Core() as core, controller(core, 'test_kcpc breakpoint') as c:
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        at = stop_at_interrupt(core, c)
+        assert at.pc == INTERRUPT_VECTOR, (
+            f'REGS_GET shows PC {at.pc:#06x} at a breakpoint on '
+            f'{INTERRUPT_VECTOR:#06x}')
+        assert text_reg(core, 'pc') == INTERRUPT_VECTOR
+        assert at.values() == {n: text_reg(core, n) for n in REG_TEXT_NAMES}
+        c.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, code)
+
+        # Writing back what is shown, PC included, is no edit: the fetched
+        # instruction runs, once. The firmware's is a JP.
+        jp = c.mem_read(kc.SPACE_CPU, INTERRUPT_VECTOR, 3)
+        assert jp[0] == 0xC3, f'&0038 is not a JP in this ROM: {jp.hex()}'
+        same = c.regs_set(**{n: getattr(at, n) for n in kc.REGS_SETTABLE})
+        assert same.values() == at.values(), 'writing it back changed it'
+        assert same.stamp == at.stamp
+        assert core.ipc('step 1').startswith('OK')
+        stepped = c.regs_get()
+        assert stepped.pc == jp[1] | jp[2] << 8, (
+            f'the instruction at the breakpoint went to {stepped.pc:#06x}')
+        assert stepped.sp == at.sp
+
+        # A new PC: the instruction fetched at the breakpoint is dropped and
+        # the next one comes from there.
+        at = stop_at_interrupt(core, c)
+        assert at.pc == INTERRUPT_VECTOR
+        moved = c.regs_set(pc=SPIN_ADDR, hl=0)
+        assert moved.pc == SPIN_ADDR and moved.hl == 0, moved
+        assert moved.sp == at.sp and moved.stamp == at.stamp, moved
+        assert text_reg(core, 'pc') == SPIN_ADDR
+        assert core.ipc('step 1').startswith('OK')
+        binary = c.regs_get()
+        assert (binary.pc, binary.hl) == (SPIN_ADDR + 3, 0x1234), binary
+        assert binary.sp == at.sp, 'the dropped instruction ran'
+
+        # The same through the text IPC ends in the same place. Interrupts
+        # back on, so the loop is interrupted and the breakpoint reached.
+        c.regs_set(iff1=1, iff2=1)
+        at = stop_at_interrupt(core, c)
+        assert at.pc == INTERRUPT_VECTOR
+        c.regs_set(hl=0)
+        assert core.ipc(f'reg set PC {SPIN_ADDR:#x}').startswith('OK')
+        assert c.regs_get().pc == SPIN_ADDR
+        assert core.ipc('step 1').startswith('OK')
+        text = c.regs_get()
+        assert (text.pc, text.hl) == (binary.pc, binary.hl), (text, binary)
+        assert text.sp == at.sp
+        assert text.stamp.paused
+
+
+def test_mem_write_lands_in_the_ram_it_names() -> None:
+    """Acceptance 4: a CPU_RAM write under the lower ROM reads back through
+    CPU_RAM and not through CPU; a PHYS_RAM write lands in the right 16K
+    page of the expansion RAM and nowhere else; what is not RAM, or does not
+    fit, is refused whole."""
+    with Core() as core, controller(core, 'test_kcpc mem_write') as c:
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        at = stop_at_interrupt(core, c)   # in the lower ROM: it is paged in
+        info = c.mem_info()
+        assert info.lower_rom_on, info
+        assert info.ram_config & 0x07 == 0, info
+        ram_bytes = info.ram_bytes
+        assert ram_bytes >= 0x20000, 'the example config is a 128K machine'
+        expect = bytearray(c.mem_read(kc.SPACE_PHYS_RAM, 0, ram_bytes))
+
+        def phys_matches(what: str) -> None:
+            now = c.mem_read(kc.SPACE_PHYS_RAM, 0, ram_bytes)
+            if now != expect:
+                first = next(i for i in range(ram_bytes)
+                             if now[i] != expect[i])
+                raise AssertionError(
+                    f'{what}: physical RAM differs from &{first:05X} on '
+                    f'({now[first]:#04x}, expected {expect[first]:#04x})')
+
+        # Under the lower ROM.
+        under = 0x0100
+        rom = c.mem_read(kc.SPACE_ROM_LOWER, under, 16)
+        data = bytes(range(0xA0, 0xB0))
+        assert data != rom and bytes(expect[under:under + 16]) != data
+        stamp = c.mem_write(kc.SPACE_CPU_RAM, under, data)
+        assert stamp == at.stamp, (stamp, at.stamp)
+        expect[under:under + 16] = data
+        assert c.mem_read(kc.SPACE_CPU_RAM, under, 16) == data
+        assert c.mem_read(kc.SPACE_CPU, under, 16) == rom, (
+            'the CPU view shows the write, not the ROM over it')
+        assert ipc_bytes(core, f'mem read {under:#x} 16 --view=ram') == data
+        assert ipc_bytes(core, f'mem read {under:#x} 16') == rom
+        phys_matches('CPU_RAM write under the ROM')
+
+        # Expansion RAM: page 5 is the second 16K above the base 64K.
+        page, offset = 5, 0x0123
+        patch = b'KCPC\x00\xff\x55\xaa'
+        c.mem_write(kc.SPACE_PHYS_RAM, page * 0x4000 + offset, patch)
+        expect[page * 0x4000 + offset:page * 0x4000 + offset + 8] = patch
+        assert ipc_bytes(
+            core, f'mem read {offset:#x} 8 --bank={page}') == patch
+        phys_matches('PHYS_RAM write to page 5')
+        assert patch not in c.mem_read(kc.SPACE_CPU_RAM, 0,
+                                       kc.CPU_SPACE_SIZE), (
+            'expansion RAM that is not banked in showed up in the CPU view')
+
+        # Refused, and nothing written.
+        for space in (kc.SPACE_CPU, kc.SPACE_ROM_LOWER, kc.SPACE_ROM_UPPER,
+                      kc.SPACE_ASIC_PAGE, 9, 255):
+            refused(kc.BAD_PAYLOAD, f'space {space}', c.mem_write, space,
+                    0x8000, b'no')
+        refused(kc.BAD_PAYLOAD, 'a bank for CPU_RAM', c.mem_write,
+                kc.SPACE_CPU_RAM, 0x8000, b'no', 1)
+        refused(kc.BAD_PAYLOAD, 'cut short', c.request, kc.OP_MEM_WRITE,
+                kc.mem_write_payload(kc.SPACE_CPU_RAM, 0, b'')[:-1])
+        for what, space, addr, size in (
+                ('CPU_RAM across the end', kc.SPACE_CPU_RAM, 0xFFFF, 2),
+                ('CPU_RAM past the end', kc.SPACE_CPU_RAM, 0x10000, 1),
+                ('PHYS_RAM across the end', kc.SPACE_PHYS_RAM,
+                 ram_bytes - 1, 2),
+                ('PHYS_RAM past the end', kc.SPACE_PHYS_RAM, ram_bytes, 1),
+                ('PHYS_RAM at 4 GiB', kc.SPACE_PHYS_RAM, 0xFFFFFFFF, 2)):
+            refused(kc.OUT_OF_RANGE, what, c.mem_write, space, addr,
+                    b'\xEE' * size)
+        phys_matches('a refused write')
+
+        # The edges that do fit.
+        c.mem_write(kc.SPACE_CPU_RAM, 0x10000, b'')
+        c.mem_write(kc.SPACE_PHYS_RAM, ram_bytes, b'')
+        c.mem_write(kc.SPACE_CPU_RAM, 0xFFFF, b'\x5A')
+        c.mem_write(kc.SPACE_PHYS_RAM, ram_bytes - 1, b'\xA5')
+        expect[0xFFFF] = 0x5A
+        expect[ram_bytes - 1] = 0xA5
+        phys_matches('writes at the last byte of each space')
+
+        # All 64 KiB of the CPU_RAM view in one request, then all of
+        # physical RAM in one request.
+        blob = bytes(((i * 7) ^ (i >> 8)) & 0xFF
+                     for i in range(kc.CPU_SPACE_SIZE))
+        c.mem_write(kc.SPACE_CPU_RAM, 0, blob)
+        assert c.mem_read(kc.SPACE_CPU_RAM, 0, kc.CPU_SPACE_SIZE) == blob
+        expect[0:kc.CPU_SPACE_SIZE] = blob
+        phys_matches('a 64 KiB write')
+        whole = bytes((i * 13 + (i >> 9)) & 0xFF for i in range(ram_bytes))
+        c.mem_write(kc.SPACE_PHYS_RAM, 0, whole)
+        assert c.mem_read(kc.SPACE_PHYS_RAM, 0, ram_bytes) == whole
+
+        assert c.machine_info().stamp == at.stamp, 'the machine moved'
+
+
+def test_writes_leave_the_run_state_alone() -> None:
+    """Acceptance 5: a write while running leaves the machine running, a
+    write while paused leaves it paused, and reads are still taken at a
+    frame boundary, with nothing paused for them."""
+    with Core() as core:
+        with controller(core, 'test_kcpc run state') as c:
+            assert core.ipc('wait vbl 60 20000').startswith('OK')
+            spin(core, c)
+            before = c.machine_info().stamp
+            running_reads = 1
+            for i in range(40):
+                after = c.regs_set(de=0x1000 + i, iy=0xFF00 - i)
+                assert not after.stamp.paused, f'write {i} says paused'
+                assert (after.de, after.iy) == (0x1000 + i, 0xFF00 - i)
+                stamp = c.mem_write(kc.SPACE_CPU_RAM, 0x9000,
+                                    bytes([i]) * 64)
+                assert not stamp.paused, f'write {i} says paused'
+                got = c.regs_get()
+                assert not got.stamp.paused, f'paused after write {i}'
+                assert (got.de, got.iy) == (0x1000 + i, 0xFF00 - i), got
+                assert SPIN_ADDR <= got.pc <= SPIN_ADDR + 2, hex(got.pc)
+                assert c.mem_read(kc.SPACE_CPU_RAM, 0x9000,
+                                  64) == bytes([i]) * 64
+                running_reads += 2
+            end = wait_running(c, before.frame + 5)
+            running_reads += 1
+
+            # A PC written while it runs lands between two instructions and
+            # the machine carries on from there.
+            c.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR + 0x100,
+                        bytes([0x3E, 0x55, 0x18, 0xFE]))  # LD A,&55 : JR $
+            moved = c.regs_set(pc=SPIN_ADDR + 0x100)
+            assert not moved.stamp.paused and moved.pc == SPIN_ADDR + 0x100
+            deadline = time.monotonic() + IO_TIMEOUT_S
+            while True:
+                got = c.regs_get()
+                running_reads += 1
+                if got.af >> 8 == 0x55:
+                    break
+                assert time.monotonic() < deadline, f'never got there: {got}'
+            assert SPIN_ADDR + 0x102 <= got.pc <= SPIN_ADDR + 0x104, got
+            assert not got.stamp.paused
+
+            # Paused: every write says so and the frame count stands still.
+            paused = pause_core(core, c)
+            for i in range(20):
+                after = c.regs_set(bc=i)
+                assert after.stamp == paused and after.bc == i, after
+                assert c.mem_write(kc.SPACE_PHYS_RAM, 0x9000,
+                                   bytes([i]) * 64) == paused
+            time.sleep(0.2)
+            assert c.machine_info().stamp == paused, 'a write ran the machine'
+            # And no lease was left behind: it runs when told to.
+            assert core.ipc('run').startswith('OK')
+            wait_running(c, paused.frame + 2)
+
+        core.ipc_quit()
+        assert core.wait_exit() == 0
+        served = core.reads_served()
+        # Every read of the running phase was taken by the runner at a frame
+        # boundary; none fell back to a pause lease.
+        assert served['fallback'] == 0 and served['busy'] == 0, served
+        assert served['boundary'] >= running_reads, (served, running_reads)
+        print(f'    80 writes while running over {end.frame - before.frame} '
+              f'frames, 40 while paused; reads served {served}')
+
+
+def test_readers_and_a_writer_at_once() -> None:
+    """Observers reading 64 KiB and the registers as fast as they can while
+    the controller writes: every reply arrives, every read of the running
+    machine says running, and the machine is still running afterwards."""
+    with Core() as core, controller(core, 'test_kcpc writer') as c:
+        assert core.ipc('wait vbl 60 20000').startswith('OK')
+        spin(core, c)
+        before = c.machine_info().stamp
+        writes = 0
+        with Readers(core, 3, 'memory') as readers:
+            begin = time.monotonic()
+            while time.monotonic() - begin < 1.5:
+                value = 0x4000 + writes
+                assert c.regs_set(hl=value).hl == value
+                c.mem_write(kc.SPACE_CPU_RAM, 0x9000,
+                            value.to_bytes(2, 'little') * 512)
+                writes += 1
+        assert not readers.errors, readers.errors
+        # Three readers at a boundary each, 50 boundaries a second: a writer
+        # that left the runner no frames got 15 reads through here, each one
+        # by the gate's 250 ms fallback.
+        assert readers.calls > 45, f'only {readers.calls} reads'
+        assert readers.running_reads == readers.calls, (
+            f'{readers.calls - readers.running_reads} of {readers.calls} '
+            'reads were stamped paused: a write\'s lease leaked into a read')
+        # The writer gives way to the readers: beside waiting reads a write
+        # lets a frame boundary pass first, so it gets a few dozen in, not
+        # thousands.
+        assert writes >= 2, f'only {writes} rounds of writes in 1.5 s'
+        last = 0x4000 + writes - 1
+        assert c.regs_get().hl == last
+        assert c.mem_read(kc.SPACE_CPU_RAM, 0x9000,
+                          1024) == last.to_bytes(2, 'little') * 512
+        wait_running(c, before.frame + 5)
+        print(f'    {writes * 2} writes beside {readers.calls} reads from 3 '
+              f'observers; slowest read {readers.slowest * 1000:.0f} ms')
+
+
 def test_quit_while_clients_read() -> None:
     """Shutdown with reads in flight: the core still quits promptly, and no
     reader is left waiting for a frame boundary that will not come."""
@@ -1130,16 +1667,12 @@ def test_recoverable_errors_keep_the_connection() -> None:
                 what, kc.status_name(frame.status))
             assert frame.message, what
 
-        hello = c.hello('test_kcpc recoverable', role=kc.ROLE_CONTROLLER,
-                        max_frame=1 << 20)
-        # Roles arrive with CONTROL; until then everyone observes, and the
-        # reply says so rather than pretending.
-        assert hello.role == kc.ROLE_OBSERVER
+        hello = c.hello('test_kcpc recoverable', max_frame=1 << 20)
         assert hello.max_frame == 1 << 20, hello.max_frame
 
         # An opcode of a capability this server does not have yet, and one
         # that exists nowhere.
-        for opcode in (kc.OP_REGS_SET, 0x7FFF, kc.OP_ERROR):
+        for opcode in (kc.OP_PAUSE, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -1351,6 +1884,13 @@ TESTS: List[Callable[[], None]] = [
     test_rom_spaces_and_limits,
     test_regs_get_matches_the_text_ipc,
     test_reads_work_running_and_across_a_pause,
+    test_control_roles_and_forced_takeover,
+    test_silent_controller_is_dropped,
+    test_regs_set_changes_exactly_one_register,
+    test_pc_edit_at_a_breakpoint_matches_the_text_ipc,
+    test_mem_write_lands_in_the_ram_it_names,
+    test_writes_leave_the_run_state_alone,
+    test_readers_and_a_writer_at_once,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

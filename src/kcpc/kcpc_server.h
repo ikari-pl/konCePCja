@@ -3,8 +3,9 @@
 // KCPC binary frontend server: the listener and the per-client threads.
 //
 // The contract is docs/protocol/kcpc-binary-v1.md. So far: framing, HELLO,
-// PING, MACHINE_INFO, ERROR (slice 1) and the machine reads REGS_GET,
-// MEM_INFO, MEM_READ (slice 2). Every client is an observer.
+// PING, MACHINE_INFO, ERROR (slice 1), the machine reads REGS_GET, MEM_INFO,
+// MEM_READ (slice 2), and the control role with the machine writes REGS_SET
+// and MEM_WRITE (slice 3). At most one client is the controller.
 //
 // The server knows nothing about the emulator. What it reports about the
 // machine comes through the callbacks of ServerConfig, so the same class runs
@@ -42,6 +43,20 @@ using MemInfoFn = std::function<Status(MemInfo&)>;
 using MemReadFn =
     std::function<Status(const MemReadRequest&, Stamp&, std::uint8_t* dst)>;
 
+// The machine changes. Each is called on the controller's reader thread and
+// returns once the change has been made, with the machine not being clocked
+// and its run state put back as it was; kBusy when that could not be had, and
+// nothing was changed then.
+//
+// Sets the fields of `values` that `mask` selects (the server has checked
+// both with regs_set_refusal()); `after` is the register block afterwards.
+using RegsSetFn = std::function<Status(std::uint32_t mask, const Regs& values,
+                                       Stamp&, Regs& after)>;
+// Writes `len` bytes at request.addr. The server has checked the space and
+// the bank; the range is the machine's to judge (kOutOfRange).
+using MemWriteFn = std::function<Status(
+    const MemWriteRequest&, const std::uint8_t* data, std::size_t len, Stamp&)>;
+
 struct ServerConfig {
   int base_port = kDefaultPort;
   int probe_count = kPortProbeCount;
@@ -62,6 +77,14 @@ struct ServerConfig {
   RegsGetFn regs_get;
   MemInfoFn mem_info;
   MemReadFn mem_read;
+  // The CAP_MACHINE_WRITE group, and with it the control role: HELLO grants
+  // control, and CONTROL, REGS_SET and MEM_WRITE exist, only when both are
+  // set. Without them every client is an observer.
+  RegsSetFn regs_set;
+  MemWriteFn mem_write;
+  // A controller that has sent no frame for this long is disconnected, so
+  // that a client that hangs does not keep control for ever (section 7).
+  int controller_idle_timeout_ms = 30000;
 };
 
 class Server {
@@ -84,6 +107,10 @@ class Server {
   int port() const { return port_.load(std::memory_order_acquire); }
   // Connections that currently hold a client place.
   std::size_t client_count();
+  // The client_id of the controller, or 0 when nobody has control.
+  std::uint32_t controller() const {
+    return controller_.load(std::memory_order_acquire);
+  }
 
  private:
   class Connection;
@@ -96,6 +123,9 @@ class Server {
   std::atomic<bool> running_{false};
   std::atomic<bool> stopping_{false};
   std::atomic<int> port_{0};
+  // The one controller, by client_id; 0 = control is free. Connections take
+  // and give it with compare-and-swap, so there is never more than one.
+  std::atomic<std::uint32_t> controller_{0};
   net::Socket listener_ = net::kInvalidSocket;
   std::thread acceptor_;
   std::mutex connections_mutex_;

@@ -1,13 +1,17 @@
 #include "kcpc/kcpc_host.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <thread>
 
 #include "hw/memory.h"
 #include "hw/z80.h"
+#include "iui_host.h"
 #include "kcpc/kcpc_gate.h"
 #include "kcpc/kcpc_server.h"
 #include "koncepcja.h"
@@ -24,9 +28,40 @@ namespace {
 
 using kcpc::Status;
 
-// How long a read that fell back to a lease waits for other lease holders to
-// finish before it gives up. They hold the machine for one operation each.
+// How long a write, or a read that fell back to a lease, waits for other lease
+// holders to finish before it gives up. They hold the machine for one
+// operation each.
 constexpr int kLeaseAloneWaitMs = 250;
+
+// Calls work(was_paused) with nothing clocking the machine and no pause lease
+// held but this thread's own, then puts the run state back. False when the
+// runner did not go idle, or other holders kept the machine for longer than
+// kLeaseAloneWaitMs; work was not called then.
+//
+// Leases do not exclude one another, and the main thread rebuilds the machine
+// (reallocating its RAM) under one of its own, so nothing here may touch the
+// machine beside another holder. A holder that is not alone lets go of its
+// lease before it tries again. Waiting with the lease held does not work: two
+// threads that both wait to be alone each keep the other from being it, until
+// one gives up (a writer and a reader that had fallen back to a lease did
+// exactly that, and the write answered BUSY).
+bool alone_under_lease(const std::function<void(bool)>& work) {
+  auto const deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kLeaseAloneWaitMs);
+  for (;;) {
+    CpcPauseLease lease;
+    if (!lease.idle()) {
+      lease.restore_run_state();
+      return false;
+    }
+    bool const ran =
+        lease.change_alone([&] { work(lease.was_paused()); }, /*timeout_ms=*/0);
+    lease.restore_run_state();
+    if (ran) return true;
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+}
 
 kcpc::GateHost gate_host() {
   kcpc::GateHost host;
@@ -40,25 +75,79 @@ kcpc::GateHost gate_host() {
   host.read_stopped = [](const std::function<void()>& work) {
     return cpc_read_while_stopped(work);
   };
-  host.with_lease = [](const std::function<void(bool)>& work) {
-    CpcPauseLease lease;
-    if (!lease.idle()) {
-      lease.restore_run_state();
-      return false;
-    }
-    // Alone: another holder may be changing what this copies (a machine
-    // rebuild reallocates the expansion RAM). The bound is the gate's own
-    // patience; a reader that cannot have the machine answers BUSY.
-    bool const ran =
-        lease.read_alone([&] { work(lease.was_paused()); }, kLeaseAloneWaitMs);
-    lease.restore_run_state();
-    return ran;
-  };
+  host.with_lease = &alone_under_lease;
   return host;
 }
 
 kcpc::Gate g_gate{gate_host()};
 kcpc::Server g_kcpc_server;
+
+// Runs change(stamp) with nothing clocking the machine and no other pause
+// lease held, then puts the run state back. The stamp says what the run
+// state was, and is, around the change.
+// Every write pauses the machine between two frames, and reads of a running
+// machine are taken at a frame boundary. A controller that sends its next
+// write as soon as the last is answered would leave the runner no frame at
+// all, and every read beside it would wait out the gate's fallback and take a
+// pause lease (measured on CI: 15 reads in 1.5 s from three clients). So a
+// write that finds reads waiting on a running machine lets one frame boundary
+// pass first. With nobody reading, and on a paused machine, it waits for
+// nothing.
+void let_waiting_reads_in() {
+  // A paced frame is 20 ms; this is that and room for a late wake-up. A
+  // runner that turns out no frame in that time does not hold the write up
+  // any longer.
+  constexpr int kBoundaryWaitMs = 50;
+  if (g_gate.waiting() == 0) return;
+  std::uint64_t const frame = g_gate.frame();
+  auto const deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kBoundaryWaitMs);
+  while (g_gate.waiting() != 0 && g_gate.frame() == frame &&
+         !g_emu_paused.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+}
+
+template <typename Change>
+Status changed(Change&& change) {
+  let_waiting_reads_in();
+  Status status = Status::kInternal;
+  bool const ran = alone_under_lease([&](bool was_paused) {
+    kcpc::Stamp stamp;
+    stamp.frame = g_gate.frame();
+    stamp.paused = was_paused;
+    status = change(stamp);
+  });
+  return ran ? status : Status::kBusy;
+}
+
+void to_wire(const Z80Regs& z, kcpc::Regs& regs) {
+  regs.af = z.af;
+  regs.bc = z.bc;
+  regs.de = z.de;
+  regs.hl = z.hl;
+  regs.ix = z.ix;
+  regs.iy = z.iy;
+  regs.sp = z.sp;
+  regs.pc = z.pc;
+  regs.af_alt = z.af_;
+  regs.bc_alt = z.bc_;
+  regs.de_alt = z.de_;
+  regs.hl_alt = z.hl_;
+  regs.i = z.i;
+  regs.r = z.r;
+  regs.iff1 = z.iff1;
+  regs.iff2 = z.iff2;
+  regs.im = z.im;
+  regs.halt = z.halted;
+}
+
+// The REGS_SET mask is handed to the bridge as it came.
+static_assert(kcpc::kRegBitPc == kSubcycleRegPC);
+static_assert(kcpc::kRegBitIff1 == kSubcycleRegIFF1);
+static_assert(kcpc::kRegBitIm == kSubcycleRegIM);
+static_assert(kcpc::kRegsSettableMask == kSubcycleRegAll);
 
 // Runs read(stamp) through the gate and returns what it returned, or why it
 // did not run. `read` copies out of the machine and nothing else: it runs on
@@ -116,27 +205,10 @@ Status kcpc_host_machine_info(kcpc::MachineInfo& info) {
 
 Status kcpc_host_regs_get(kcpc::Stamp& stamp, kcpc::Regs& regs) {
   return gated(kcpc::kRegsSize, [&](const kcpc::Stamp& taken) {
-    subcycle::Machine const* machine = subcycle_bridge_machine();
-    if (machine == nullptr) return Status::kInternal;
-    Z80Regs const z = machine->regs();
-    regs.af = z.af;
-    regs.bc = z.bc;
-    regs.de = z.de;
-    regs.hl = z.hl;
-    regs.ix = z.ix;
-    regs.iy = z.iy;
-    regs.sp = z.sp;
-    regs.pc = z.pc;
-    regs.af_alt = z.af_;
-    regs.bc_alt = z.bc_;
-    regs.de_alt = z.de_;
-    regs.hl_alt = z.hl_;
-    regs.i = z.i;
-    regs.r = z.r;
-    regs.iff1 = z.iff1;
-    regs.iff2 = z.iff2;
-    regs.im = z.im;
-    regs.halt = z.halted;
+    if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
+    // As the debugger shows them: at a breakpoint the PC is the
+    // breakpoint's address, not the machine's own, which is past the opcode.
+    to_wire(subcycle_bridge_shown_regs(), regs);
     stamp = taken;
     return Status::kOk;
   });
@@ -223,6 +295,95 @@ Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
   });
 }
 
+Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
+                          kcpc::Stamp& stamp, kcpc::Regs& after) {
+  kcpc::RegsSetRequest request;
+  request.mask = mask;
+  request.regs = values;
+  if (kcpc::regs_set_refusal(request) != nullptr) return Status::kBadPayload;
+  return changed([&](const kcpc::Stamp& taken) {
+    if (subcycle_bridge_machine() == nullptr) return Status::kInternal;
+    Z80Regs z{};
+    z.af = values.af;
+    z.bc = values.bc;
+    z.de = values.de;
+    z.hl = values.hl;
+    z.ix = values.ix;
+    z.iy = values.iy;
+    z.sp = values.sp;
+    z.pc = values.pc;
+    z.af_ = values.af_alt;
+    z.bc_ = values.bc_alt;
+    z.de_ = values.de_alt;
+    z.hl_ = values.hl_alt;
+    z.i = values.i;
+    z.r = values.r;
+    z.iff1 = values.iff1;
+    z.iff2 = values.iff2;
+    z.im = values.im;
+    subcycle_bridge_write_regs(z, mask);
+    to_wire(subcycle_bridge_shown_regs(), after);
+    stamp = taken;
+    return Status::kOk;
+  });
+}
+
+Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
+                           const std::uint8_t* data, std::size_t len,
+                           kcpc::Stamp& stamp) {
+  if (!kcpc::mem_space_writable(request.space) || request.bank != 0) {
+    return Status::kBadPayload;
+  }
+  auto const space = static_cast<kcpc::MemSpace>(request.space);
+  // A request is at most 1 MiB, so its length fits 32 bits.
+  auto const len32 = static_cast<std::uint32_t>(len);
+  if (space == kcpc::MemSpace::kCpuRam &&
+      !kcpc::mem_range_ok(request.addr, len32, kcpc::kCpuSpaceSize)) {
+    return Status::kOutOfRange;
+  }
+  Status const status = changed([&](const kcpc::Stamp& taken) {
+    subcycle::Machine* machine = subcycle_bridge_machine();
+    if (machine == nullptr) return Status::kInternal;
+    if (space == kcpc::MemSpace::kCpuRam) {
+      // Where a Z80 write to that address lands: banked RAM, never ROM.
+      for (std::size_t i = 0; i < len; ++i) {
+        machine->poke_mem(static_cast<std::uint16_t>(request.addr + i),
+                          data[i]);
+      }
+    } else {
+      if (!kcpc::mem_range_ok(request.addr, len32, machine->ram_size())) {
+        return Status::kOutOfRange;
+      }
+      for (std::size_t i = 0; i < len; ++i) {
+        machine->ram_write(request.addr + i, data[i]);
+      }
+    }
+    stamp = taken;
+    return Status::kOk;
+  });
+  // What the in-process debugger had decoded from those bytes is stale.
+  if (status == Status::kOk && len != 0) ui_host().debugger_memory_changed();
+  return status;
+}
+
+namespace {
+
+// How long a controller may stay silent. A test lowers it; nothing else
+// should.
+int controller_idle_timeout_ms() {
+  constexpr int kDefaultMs = 30000;
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any thread starts
+  const char* const text = std::getenv("KONCPC_KCPC_CONTROLLER_TIMEOUT_MS");
+  if (text == nullptr) return kDefaultMs;
+  char* end = nullptr;
+  long const ms = std::strtol(text, &end, 10);
+  return (end != text && *end == '\0' && ms > 0 && ms <= kDefaultMs)
+             ? static_cast<int>(ms)
+             : kDefaultMs;
+}
+
+}  // namespace
+
 void kcpc_host_start(bool enabled) {
   if (!enabled) return;
   kcpc::ServerConfig config;
@@ -234,6 +395,9 @@ void kcpc_host_start(bool enabled) {
   config.regs_get = &kcpc_host_regs_get;
   config.mem_info = &kcpc_host_mem_info;
   config.mem_read = &kcpc_host_mem_read;
+  config.regs_set = &kcpc_host_regs_set;
+  config.mem_write = &kcpc_host_mem_write;
+  config.controller_idle_timeout_ms = controller_idle_timeout_ms();
   g_gate.reopen();
   g_kcpc_server.start(config);
 }

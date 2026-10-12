@@ -395,8 +395,10 @@ to 6554; read `ports.binary` from the startup manifest, never assume it).
 Binary frames, up to 8 clients at once, loopback only. The contract, and the
 table of which implementation slices have landed, is
 [docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md). So far it
-answers `HELLO`, `PING`, `MACHINE_INFO` and the machine reads `REGS_GET`,
-`MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply). The protocol is at
+answers `HELLO`, `PING`, `MACHINE_INFO`, the machine reads `REGS_GET`,
+`MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply), and, for the one
+client that holds control (`CONTROL`; a forced request takes it from another
+client), the writes `REGS_SET` and `MEM_WRITE`. The protocol is at
 major version 0: client and server must come from the same checkout.
 
 ```ini
@@ -420,12 +422,22 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
 - `src/kcpc/kcpc_host.{h,cpp}` — the seam to the emulator. **Nothing touches
   the machine from a socket thread except through here**, and only the ways
   the document's threading model allows: reads through the gate, changes
-  (later slices) under a `CpcPauseLease`. A read callback must only copy:
+  under a `CpcPauseLease` while it is the only lease held
+  (`change_alone()`, so a write never runs beside a machine rebuild) and
+  ended with `restore_run_state()`. A read callback must only copy:
   it runs on the frame runner. **Do not call anything that takes
   `g_pause_mutex` (`cpc_stopped()`, a lease) from a path a running machine
   hits per read**: the runner holds that mutex for the whole of every
   machine frame, and on an unpaced machine a socket thread then waits about
   15 ms for it each time.
+- Register edits from every source reach the machine through
+  `subcycle_bridge_write_regs()` (`src/subcycle_bridge.h`): KCPC by mask, the
+  text IPC and DevTools through `subcycle_bridge_regs_to_machine()`, which
+  diffs the host view. At a breakpoint the machine's own PC is one past the
+  address everything shows; `subcycle_bridge_shown_regs()` is the block with
+  the address that is shown.
+- `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
+  controller may stay silent. It exists for the tests.
 - `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores

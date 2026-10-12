@@ -55,7 +55,8 @@ std::string printable(const std::string& name) {
 std::string machine_refusal(Status status) {
   switch (status) {
     case Status::kBusy:
-      return "the machine did not go idle in time";
+      return "the machine did not go idle in time, or was held by another "
+             "pause lease";
     case Status::kShuttingDown:
       return "the core is shutting down";
     case Status::kOutOfRange:
@@ -65,7 +66,7 @@ std::string machine_refusal(Status status) {
     case Status::kNotPresent:
       return "the hardware is not fitted";
     default:
-      return "the machine could not be read";
+      return "the core could not serve the request";
   }
 }
 
@@ -76,8 +77,12 @@ std::string machine_refusal(Status status) {
 // connection's life: it starts the writer, joins it and closes the socket.
 class Server::Connection {
  public:
-  Connection(const ServerConfig& config, net::Socket socket, bool rejected)
-      : config_(config), socket_(socket), rejected_(rejected) {}
+  Connection(const ServerConfig& config, std::atomic<std::uint32_t>& controller,
+             net::Socket socket, bool rejected)
+      : config_(config),
+        controller_(controller),
+        socket_(socket),
+        rejected_(rejected) {}
   ~Connection() { join(); }
   Connection(const Connection&) = delete;
   Connection& operator=(const Connection&) = delete;
@@ -105,6 +110,7 @@ class Server::Connection {
     kGone,          // peer closed, connection failed, or the writer gave up
     kStop,          // the server is stopping
     kHelloTimeout,  // no completed HELLO in time
+    kIdleTimeout,   // the controller sent no frame in time
   };
 
   static End fatal(Status status, std::string message) {
@@ -125,6 +131,11 @@ class Server::Connection {
             ? fatal(Status::kTooManyClients,
                     "the server already has its maximum number of clients")
             : serve();
+    // A controller that goes leaves control free, and at once: not after the
+    // time it takes to deliver its last frame.
+    if (client_id_ != 0 && give_up_control()) {
+      LOG_INFO("KCPC: control is free: client " << client_id_ << " is leaving");
+    }
     if (end.send_error) {
       // ERROR: a response nobody asked for, id 0.
       enqueue(encode_frame(Kind::kResponse,
@@ -172,6 +183,9 @@ class Server::Connection {
       if (!hello_done_ && Clock::now() >= hello_deadline_) {
         return ReadResult::kHelloTimeout;
       }
+      if (is_controller() && Clock::now() >= last_frame_ + idle_timeout()) {
+        return ReadResult::kIdleTimeout;
+      }
       if (!net::wait_readable(socket_, kPollMs)) continue;
       net::IoResult const r = net::recv_some(socket_, buf + got, size - got);
       switch (r.status) {
@@ -200,6 +214,11 @@ class Server::Connection {
         return fatal(Status::kHelloRequired,
                      "no HELLO within " +
                          std::to_string(config_.hello_timeout_ms) + " ms");
+      case ReadResult::kIdleTimeout:
+        return fatal(Status::kIdleTimeout,
+                     "the controller sent no frame for " +
+                         std::to_string(config_.controller_idle_timeout_ms) +
+                         " ms");
       case ReadResult::kOk:
       case ReadResult::kGone:
         break;
@@ -248,6 +267,9 @@ class Server::Connection {
       End end;
       if (!dispatch(header, payload, end)) return end;
       if (overflowed_) return End{};
+      // The controller's silence is counted from here: the time the core
+      // took to serve its request is not the client's.
+      last_frame_ = Clock::now();
     }
   }
 
@@ -299,12 +321,158 @@ class Server::Connection {
         if (!machine_reads()) break;
         handle_mem_read(header, payload);
         return true;
+      case Opcode::kControl:
+        if (!machine_writes()) break;
+        handle_control(header, payload);
+        return true;
+      case Opcode::kRegsSet:
+        if (!machine_writes()) break;
+        if (controller_only(header)) handle_regs_set(header, payload);
+        return true;
+      case Opcode::kMemWrite:
+        if (!machine_writes()) break;
+        if (controller_only(header)) handle_mem_write(header, payload);
+        return true;
       default:
         break;
     }
     respond_error(header, Status::kUnknownOpcode,
                   "opcode not implemented by this server");
     return true;
+  }
+
+  // CAP_MACHINE_WRITE, and the control role that comes with it.
+  bool machine_writes() const { return config_.regs_set && config_.mem_write; }
+
+  bool is_controller() const {
+    return client_id_ != 0 &&
+           controller_.load(std::memory_order_acquire) == client_id_;
+  }
+
+  std::chrono::milliseconds idle_timeout() const {
+    return std::chrono::milliseconds(config_.controller_idle_timeout_ms);
+  }
+
+  // Takes control if nobody has it. True when this client now holds it.
+  bool take_free_control() {
+    std::uint32_t holder = 0;
+    if (controller_.compare_exchange_strong(holder, client_id_,
+                                            std::memory_order_acq_rel)) {
+      LOG_INFO("KCPC: client " << client_id_ << " has control");
+      return true;
+    }
+    return holder == client_id_;
+  }
+
+  // True when this client had control and it is now free.
+  bool give_up_control() {
+    std::uint32_t holder = client_id_;
+    return controller_.compare_exchange_strong(holder, 0,
+                                               std::memory_order_acq_rel);
+  }
+
+  // Answers NOT_CONTROLLER and returns false for an observer. Asked when the
+  // request starts: one that was queued behind a takeover is refused.
+  bool controller_only(const FrameHeader& header) {
+    if (is_controller()) return true;
+    respond_error(header, Status::kNotController,
+                  "this request changes the machine and needs control; ask "
+                  "for it with CONTROL");
+    return false;
+  }
+
+  void handle_control(const FrameHeader& header,
+                      const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    ControlRequest request;
+    if (!read_control_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "CONTROL payload too short");
+      return;
+    }
+    if (request.action == kControlRelease) {
+      if (give_up_control()) {
+        LOG_INFO("KCPC: client " << client_id_ << " released control");
+      }
+    } else if (request.action == kControlAcquire) {
+      if (!take_free_control() && (request.flags & kControlFlagForce) != 0) {
+        // Takeover: the newest request wins. The previous controller stays
+        // connected as an observer.
+        std::uint32_t const previous =
+            controller_.exchange(client_id_, std::memory_order_acq_rel);
+        LOG_INFO("KCPC: client " << client_id_ << " took control from client "
+                                 << previous);
+      }
+    } else {
+      respond_error(header, Status::kBadPayload, "unknown CONTROL action");
+      return;
+    }
+    ControlReply reply;
+    reply.controller = controller_.load(std::memory_order_acquire);
+    reply.role =
+        reply.controller == client_id_ ? Role::kController : Role::kObserver;
+    Writer w;
+    write_status(w, Status::kOk);
+    write_control_reply(w, reply);
+    respond(header, w.take());
+  }
+
+  void handle_regs_set(const FrameHeader& header,
+                       const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    RegsSetRequest request;
+    if (!read_regs_set_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "REGS_SET payload too short");
+      return;
+    }
+    if (const char* const refusal = regs_set_refusal(request)) {
+      respond_error(header, Status::kBadPayload, refusal);
+      return;
+    }
+    Stamp stamp;
+    Regs after;
+    Status const status =
+        config_.regs_set(request.mask, request.regs, stamp, after);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_stamp(w, stamp);
+    write_regs(w, after);
+    respond(header, w.take());
+  }
+
+  void handle_mem_write(const FrameHeader& header,
+                        const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    MemWriteRequest request;
+    if (!read_mem_write_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "MEM_WRITE payload too short");
+      return;
+    }
+    if (!mem_space_writable(request.space)) {
+      respond_error(header, Status::kBadPayload,
+                    "only the spaces CPU_RAM and PHYS_RAM can be written");
+      return;
+    }
+    if (request.bank != 0) {
+      respond_error(header, Status::kBadPayload,
+                    "bank must be 0 for this space");
+      return;
+    }
+    Stamp stamp;
+    Status const status =
+        config_.mem_write(request, payload.data() + kMemWriteHeaderSize,
+                          payload.size() - kMemWriteHeaderSize, stamp);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_stamp(w, stamp);
+    respond(header, w.take());
   }
 
   // CAP_MACHINE_READ: the group is there whole or not at all.
@@ -398,8 +566,7 @@ class Server::Connection {
       return;
     }
     reply.caps = machine_reads() ? (kCapMachineRead | kCapMemRom) : 0;
-    // Roles arrive with CONTROL (slice 3); until then everyone observes.
-    reply.role = Role::kObserver;
+    if (machine_writes()) reply.caps |= kCapMachineWrite;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);
@@ -410,6 +577,14 @@ class Server::Connection {
     client_id_ = reply.client_id;
     max_frame_ = reply.max_frame;
     hello_done_ = true;
+    // HELLO never takes control away from anyone: a client that asks for it
+    // while another has it is admitted as an observer, and the reply says so.
+    last_frame_ = Clock::now();
+    if (machine_writes() &&
+        request.role == static_cast<std::uint8_t>(Role::kController) &&
+        take_free_control()) {
+      reply.role = Role::kController;
+    }
     LOG_INFO("KCPC: client " << client_id_ << " connected ("
                              << printable(request.client_name) << ")");
     Writer w;
@@ -493,6 +668,7 @@ class Server::Connection {
   }
 
   const ServerConfig& config_;
+  std::atomic<std::uint32_t>& controller_;  // the server's; see Server
   net::Socket socket_;
   const bool rejected_;
   std::thread reader_;
@@ -506,6 +682,9 @@ class Server::Connection {
   std::uint32_t client_id_ = 0;
   std::uint32_t max_frame_ = kMaxServerFrame;  // the limit HELLO agreed on
   Clock::time_point hello_deadline_;
+  // When this client's last request had been answered: where a controller's
+  // silence is counted from.
+  Clock::time_point last_frame_;
 
   std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
@@ -599,7 +778,7 @@ void Server::accept_pending() {
       continue;
     }
     connections_.push_back(
-        std::make_unique<Connection>(config_, socket, reject));
+        std::make_unique<Connection>(config_, controller_, socket, reject));
     connections_.back()->start();
   }
 }
