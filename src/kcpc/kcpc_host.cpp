@@ -85,8 +85,33 @@ kcpc::Server g_kcpc_server;
 // Runs change(stamp) with nothing clocking the machine and no other pause
 // lease held, then puts the run state back. The stamp says what the run
 // state was, and is, around the change.
+// Every write pauses the machine between two frames, and reads of a running
+// machine are taken at a frame boundary. A controller that sends its next
+// write as soon as the last is answered would leave the runner no frame at
+// all, and every read beside it would wait out the gate's fallback and take a
+// pause lease (measured on CI: 15 reads in 1.5 s from three clients). So a
+// write that finds reads waiting on a running machine lets one frame boundary
+// pass first. With nobody reading, and on a paused machine, it waits for
+// nothing.
+void let_waiting_reads_in() {
+  // A paced frame is 20 ms; this is that and room for a late wake-up. A
+  // runner that turns out no frame in that time does not hold the write up
+  // any longer.
+  constexpr int kBoundaryWaitMs = 50;
+  if (g_gate.waiting() == 0) return;
+  std::uint64_t const frame = g_gate.frame();
+  auto const deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kBoundaryWaitMs);
+  while (g_gate.waiting() != 0 && g_gate.frame() == frame &&
+         !g_emu_paused.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+  }
+}
+
 template <typename Change>
 Status changed(Change&& change) {
+  let_waiting_reads_in();
   Status status = Status::kInternal;
   bool const ran = alone_under_lease([&](bool was_paused) {
     kcpc::Stamp stamp;

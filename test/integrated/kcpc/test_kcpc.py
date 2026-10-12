@@ -1534,11 +1534,17 @@ def test_readers_and_a_writer_at_once() -> None:
                             value.to_bytes(2, 'little') * 512)
                 writes += 1
         assert not readers.errors, readers.errors
-        assert readers.calls > 30, f'only {readers.calls} reads'
+        # Three readers at a boundary each, 50 boundaries a second: a writer
+        # that left the runner no frames got 15 reads through here, each one
+        # by the gate's 250 ms fallback.
+        assert readers.calls > 45, f'only {readers.calls} reads'
         assert readers.running_reads == readers.calls, (
             f'{readers.calls - readers.running_reads} of {readers.calls} '
             'reads were stamped paused: a write\'s lease leaked into a read')
-        assert writes > 10, f'only {writes} writes in 1.5 s'
+        # The writer gives way to the readers: beside waiting reads a write
+        # lets a frame boundary pass first, so it gets a few dozen in, not
+        # thousands.
+        assert writes >= 2, f'only {writes} rounds of writes in 1.5 s'
         last = 0x4000 + writes - 1
         assert c.regs_get().hl == last
         assert c.mem_read(kc.SPACE_CPU_RAM, 0x9000,

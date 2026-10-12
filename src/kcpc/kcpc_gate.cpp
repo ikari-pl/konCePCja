@@ -93,6 +93,16 @@ bool Gate::wait_at_boundary(Job& job, Clock::time_point deadline,
 }
 
 GateResult Gate::read(std::size_t cost, const Work& work) {
+  // Counted for as long as the read has not been taken (Gate::waiting()).
+  struct Waiting {
+    explicit Waiting(std::atomic<std::size_t>& n) : count(n) {
+      count.fetch_add(1, std::memory_order_acq_rel);
+    }
+    ~Waiting() { count.fetch_sub(1, std::memory_order_acq_rel); }
+    Waiting(const Waiting&) = delete;
+    Waiting& operator=(const Waiting&) = delete;
+    std::atomic<std::size_t>& count;
+  } const waiting(waiting_);
   Job job;
   job.work = &work;
   job.cost = cost;

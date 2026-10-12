@@ -486,13 +486,19 @@ under a lease of its own and reallocates the expansion RAM, and a
 are short (a 1 MiB write is a copy; a register write lets at most one
 instruction finish), so nothing waits for that mutex for long.
 
-A controller that sends its next write as soon as the last one is answered
-leaves the runner very few frames, and other clients' reads, which wait for
-a frame boundary, slow down with it: beside several thousand writes a second
-some reads took longer than 250 ms and fell back to a lease. Nothing is lost
-or wrong then, but it is the pause the gate exists to avoid; letting a
-boundary pass between writes while reads are waiting is tracked as
-beads-df1x.
+**Writes give way to reads.** Every write pauses the machine between two
+frames, and reads of a running machine are taken at a frame boundary. A
+controller that sends its next write as soon as the last one is answered
+would leave the runner no frame at all: measured on the CI hosts, three
+clients reading beside such a controller got 15 reads through in 1.5 s, each
+one by the gate's 250 ms fallback and so under a pause lease. So a write
+that finds reads waiting on a running machine first lets one frame boundary
+pass (it waits at most 50 ms for it). With nobody reading, and on a paused
+machine, a write waits for nothing. Beside clients that read all the time a
+write therefore costs up to two paced frames, about 25 writes a second,
+where the readers get their 50 boundaries a second; whether that can be
+made cheaper is tracked as beads-df1x. A client with a lot to write puts it
+in one `MEM_WRITE`.
 
 **Leases do not exclude one another.** Two holders both find the runner idle
 and both go ahead. That is deliberate: the text IPC's `profile load` holds a
