@@ -3134,6 +3134,127 @@ def test_disk_eject_flushes_dirty_writes():
         return True
 
 
+def _dirty_disc_in_drive_a(emu, td):
+    """Create a.dsk in `td`, load it into drive A and write a file to it that
+    is never saved: the write lives only in the FDC's copy of the disc.
+    Returns (path of a.dsk, the marker the unsaved file holds) or None."""
+    a_path = os.path.join(td, 'a.dsk')
+    ok, resp = emu.ipc.send_command(f'disk new {a_path} data sector')
+    if not ok:
+        print(f"FAIL: disk new a: {resp}")
+        return None
+    ok, resp = emu.ipc.send_command(f'load {a_path}')
+    if not ok:
+        print(f"FAIL: load a: {resp}")
+        return None
+    marker = b'UNSAVED-WRITE-TO-DISC-A'
+    host = os.path.join(td, 'hello.bin')
+    with open(host, 'wb') as f:
+        f.write(marker)
+    ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+    if not ok:
+        print(f"FAIL: put: {resp}")
+        return None
+    return a_path, marker
+
+
+def _read_bytes(path):
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+def test_disk_load_over_dirty_disc_flushes_to_its_own_file():
+    """Loading a disc over one with unsaved writes must write those back to
+    the OUTGOING disc's file (beads-11us).
+
+    Every load path names the new file in CPC.driveA.file before the swap is
+    applied, and the write-back used that field: the old disc's image landed
+    in the NEW file and the old file never got its write.
+    """
+    print("Running load-over-dirty-disc test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            b_path = os.path.join(td, 'b.dsk')
+            ok, resp = emu.ipc.send_command(f'disk new {b_path} data sector')
+            if not ok:
+                print(f"FAIL: disk new b: {resp}")
+                return False
+            b_before = _read_bytes(b_path)
+
+            dirty = _dirty_disc_in_drive_a(emu, td)
+            if dirty is None:
+                return False
+            a_path, marker = dirty
+
+            ok, resp = emu.ipc.send_command(f'load {b_path}')
+            if not ok:
+                print(f"FAIL: load b over dirty a: {resp}")
+                return False
+            # The swap is queued for the next frame boundary; a listing
+            # applies it now, so the files below are read after the flush.
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' in ls:
+                print(f"FAIL: drive A does not hold the blank b.dsk; ls={ls!r}")
+                return False
+
+            if _read_bytes(b_path) != b_before:
+                print("FAIL: b.dsk was overwritten by the load that read it")
+                return False
+            if marker not in _read_bytes(a_path):
+                print("FAIL: a.dsk lost its unsaved write")
+                return False
+
+        print("PASS: the outgoing disc's writes went back to its own file")
+        return True
+
+
+def test_disk_failed_load_does_not_redirect_write_back():
+    """A load that fails leaves the old disc in the drive; its unsaved writes
+    still belong to its own file, not to the file that failed to load
+    (beads-11us: the failed path stayed in CPC.driveA.file)."""
+    print("Running failed-load write-back test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            dirty = _dirty_disc_in_drive_a(emu, td)
+            if dirty is None:
+                return False
+            a_path, marker = dirty
+
+            junk_path = os.path.join(td, 'junk.dsk')
+            junk = b'this is not a disc image\n' * 8
+            with open(junk_path, 'wb') as f:
+                f.write(junk)
+            ok, resp = emu.ipc.send_command(f'load {junk_path}')
+            if ok:
+                print(f"FAIL: a junk file loaded as a disc: {resp}")
+                return False
+
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+
+            if _read_bytes(junk_path) != junk:
+                print("FAIL: the file that failed to load was overwritten")
+                return False
+            if marker not in _read_bytes(a_path):
+                print("FAIL: a.dsk lost its unsaved write")
+                return False
+
+        print("PASS: a failed load leaves the write-back pointed at the disc")
+        return True
+
+
 def test_profile_load_missing_keeps_running():
     """profile load ERR must restore a running machine (beads-csl7.2).
 
@@ -3855,6 +3976,8 @@ def main():
         test_frames_dump_stops_at_a_breakpoint,
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
+        test_disk_load_over_dirty_disc_flushes_to_its_own_file,
+        test_disk_failed_load_does_not_redirect_write_back,
         test_headless_runs_subcycle_engine,
         test_headless_honours_the_speed_limiter,
         test_programmatic_quit_exit_codes,
