@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "host_surface.h"
+#include "hw/z80.h"
 
 /* Build the machine from the app's configuration (CPC.rom_path + model ROM,
  * amsdos.rom, CPC.driveA.file when set). Returns false if the system ROM
@@ -232,6 +233,46 @@ void subcycle_bridge_sync_chip_views();
  * instruction has not run, so it runs with the edit, or is dropped when PC
  * itself is edited. Hold a pause lease (Z80 idle) around the call. */
 void subcycle_bridge_regs_to_machine();
+
+/* One bit per register subcycle_bridge_write_regs() can set. The order is
+ * that of the KCPC register block (kcpc_proto.h), whose REGS_SET mask is
+ * passed straight through. */
+enum : uint32_t {
+  kSubcycleRegAF = 1U << 0,
+  kSubcycleRegBC = 1U << 1,
+  kSubcycleRegDE = 1U << 2,
+  kSubcycleRegHL = 1U << 3,
+  kSubcycleRegIX = 1U << 4,
+  kSubcycleRegIY = 1U << 5,
+  kSubcycleRegSP = 1U << 6,
+  kSubcycleRegPC = 1U << 7,
+  kSubcycleRegAFx = 1U << 8,
+  kSubcycleRegBCx = 1U << 9,
+  kSubcycleRegDEx = 1U << 10,
+  kSubcycleRegHLx = 1U << 11,
+  kSubcycleRegI = 1U << 12,
+  kSubcycleRegR = 1U << 13,
+  kSubcycleRegIFF1 = 1U << 14,
+  kSubcycleRegIFF2 = 1U << 15,
+  kSubcycleRegIM = 1U << 16,
+  kSubcycleRegAll = (1U << 17) - 1,
+};
+
+/* Sets the registers `fields` selects to their `values`, by the rules of
+ * subcycle_bridge_regs_to_machine() (which calls this with the fields that
+ * were edited in the view): nothing of the instruction in flight is dropped
+ * or replayed. On a machine stopped on a breakpoint, writing the PC that is
+ * shown (the breakpoint's address) changes nothing; any other PC drops the
+ * fetched instruction. A selected register ends up holding its value even
+ * when the instruction that was finished first moved it, which a diff of the
+ * view cannot promise. Hold a pause lease (Z80 idle) around the call. */
+void subcycle_bridge_write_regs(const Z80Regs& values, uint32_t fields);
+
+/* The registers as the debugger shows them: the machine's own, except that a
+ * machine stopped on a breakpoint reports the breakpoint's address as PC (it
+ * has fetched that opcode and not run it, so its own PC is one further).
+ * Call with the machine not being clocked. */
+Z80Regs subcycle_bridge_shown_regs();
 
 // True when `dst_row` (0-based, in [0, dst_h)) is the trailing row of a
 // >1-row span that nearest-neighbour upscaling maps back to the same

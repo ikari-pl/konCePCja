@@ -332,9 +332,10 @@ TEST_F(KcpcServerTest, HelloReportsTheServerAndTheMachine) {
   EXPECT_EQ(server_.client_count(), 1U);
 }
 
-// Roles arrive with CONTROL in a later slice: asking for control in HELLO is
-// valid and is answered with the role actually granted.
-TEST_F(KcpcServerTest, EveryClientStartsAsAnObserver) {
+// The control role comes with the machine writes (CAP_MACHINE_WRITE). A
+// server without them has no controller: asking for control in HELLO is valid
+// and is answered with the role actually granted.
+TEST_F(KcpcServerTest, WithoutMachineWritesEveryClientIsAnObserver) {
   start(test_config());
   TestClient client(server_.port());
   ASSERT_TRUE(client.hello(1, "wants-control", 0, 1));
@@ -346,6 +347,16 @@ TEST_F(KcpcServerTest, EveryClientStartsAsAnObserver) {
   kcpc::HelloReply reply;
   ASSERT_TRUE(kcpc::read_hello_reply(r, reply));
   EXPECT_EQ(reply.role, kcpc::Role::kObserver);
+  EXPECT_EQ(server_.controller(), 0U);
+  EXPECT_EQ(reply.caps & kcpc::kCapMachineWrite, 0U);
+
+  // And the opcodes of the group do not exist.
+  for (Opcode const opcode :
+       {Opcode::kControl, Opcode::kRegsSet, Opcode::kMemWrite}) {
+    ASSERT_TRUE(client.request(opcode, 2, std::vector<std::uint8_t>(64)));
+    ASSERT_TRUE(client.receive(frame));
+    EXPECT_EQ(frame.status(), Status::kUnknownOpcode);
+  }
 }
 
 TEST_F(KcpcServerTest, MaxFrameIsTheSmallerOfTheTwoLimits) {
@@ -820,7 +831,6 @@ class KcpcReadsTest : public KcpcServerTest {
 TEST_F(KcpcReadsTest, HelloAnnouncesTheReadCapabilities) {
   connect();
   EXPECT_EQ(hello_.caps, kcpc::kCapMachineRead | kcpc::kCapMemRom);
-  EXPECT_EQ(hello_.caps, kcpc::kServerCaps);
 }
 
 TEST_F(KcpcReadsTest, RegsGetRepliesWithTheStampAndTheBlock) {
@@ -1010,4 +1020,482 @@ TEST_F(KcpcReadsTest, TwoClientsReadConcurrently) {
   a.join();
   b.join();
   EXPECT_EQ(failures.load(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// The control role and the machine writes (beads-3o1.3)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A machine that can be written: it records what the server handed it.
+struct FakeWrites {
+  void attach(kcpc::ServerConfig& c) {
+    c.regs_set = [this](std::uint32_t mask, const kcpc::Regs& values,
+                        kcpc::Stamp& stamp, kcpc::Regs& after) {
+      regs_sets.fetch_add(1);
+      if (refuse != Status::kOk) return refuse.load();
+      last_mask = mask;
+      last_regs = values;
+      stamp = {90, true};
+      after = FakeReads::regs();
+      after.hl = values.hl;
+      return Status::kOk;
+    };
+    c.mem_write = [this](const kcpc::MemWriteRequest& request,
+                         const std::uint8_t* data, std::size_t len,
+                         kcpc::Stamp& stamp) {
+      mem_writes.fetch_add(1);
+      if (refuse != Status::kOk) return refuse.load();
+      if (!kcpc::mem_range_ok(request.addr, static_cast<std::uint32_t>(len),
+                              FakeReads::kSize)) {
+        return Status::kOutOfRange;
+      }
+      last_write = request;
+      written.assign(data, data + len);
+      stamp = {91, false};
+      return Status::kOk;
+    };
+  }
+
+  std::atomic<Status> refuse{Status::kOk};
+  std::atomic<int> regs_sets{0};
+  std::atomic<int> mem_writes{0};
+  // Written on the controller's reader thread, read after its reply.
+  std::uint32_t last_mask = 0;
+  kcpc::Regs last_regs;
+  kcpc::MemWriteRequest last_write;
+  std::vector<std::uint8_t> written;
+};
+
+std::vector<std::uint8_t> control_payload(std::uint8_t action,
+                                          std::uint8_t flags = 0) {
+  kcpc::Writer w;
+  kcpc::write_control_request(w, {action, flags});
+  return w.take();
+}
+
+std::vector<std::uint8_t> regs_set_payload(std::uint32_t mask,
+                                           const kcpc::Regs& regs) {
+  kcpc::Writer w;
+  kcpc::write_regs_set_request(w, {mask, regs});
+  return w.take();
+}
+
+std::vector<std::uint8_t> mem_write_payload(
+    kcpc::MemSpace space, std::uint32_t addr,
+    const std::vector<std::uint8_t>& data, std::uint16_t bank = 0) {
+  kcpc::Writer w;
+  kcpc::MemWriteRequest request;
+  request.space = static_cast<std::uint8_t>(space);
+  request.bank = bank;
+  request.addr = addr;
+  kcpc::write_mem_write_request(w, request);
+  w.bytes(data.data(), data.size());
+  return w.take();
+}
+
+class KcpcControlTest : public KcpcServerTest {
+ protected:
+  void start_writable(int idle_timeout_ms = 30000) {
+    kcpc::ServerConfig config = test_config();
+    reads_.attach(config);
+    writes_.attach(config);
+    config.controller_idle_timeout_ms = idle_timeout_ms;
+    start(config);
+  }
+
+  // Connects and completes HELLO asking for `role`.
+  std::unique_ptr<TestClient> join(kcpc::Role role, kcpc::HelloReply& reply) {
+    auto client = std::make_unique<TestClient>(server_.port());
+    EXPECT_TRUE(
+        client->hello(1, "control", 0, static_cast<std::uint8_t>(role)));
+    Frame frame;
+    EXPECT_TRUE(client->receive(frame));
+    EXPECT_EQ(frame.status(), Status::kOk);
+    kcpc::Reader r(frame.payload);
+    r.skip(4);
+    EXPECT_TRUE(kcpc::read_hello_reply(r, reply));
+    return client;
+  }
+
+  static void exchange(TestClient& client, Opcode opcode, std::uint32_t id,
+                       const std::vector<std::uint8_t>& payload, Frame& frame) {
+    ASSERT_TRUE(client.request(opcode, id, payload));
+    ASSERT_TRUE(client.receive(frame));
+    ASSERT_EQ(frame.header.opcode, static_cast<std::uint16_t>(opcode));
+    ASSERT_EQ(frame.header.id, id);
+  }
+
+  static void control(TestClient& client, std::uint32_t id, std::uint8_t action,
+                      std::uint8_t flags, kcpc::ControlReply& reply) {
+    Frame frame;
+    exchange(client, Opcode::kControl, id, control_payload(action, flags),
+             frame);
+    ASSERT_EQ(frame.status(), Status::kOk);
+    EXPECT_EQ(frame.payload.size(), 4U + 8U);
+    kcpc::Reader r(frame.payload);
+    r.skip(4);
+    ASSERT_TRUE(kcpc::read_control_reply(r, reply));
+  }
+
+  static Status mem_write_status(TestClient& client, std::uint32_t id) {
+    Frame frame;
+    exchange(client, Opcode::kMemWrite, id,
+             mem_write_payload(kcpc::MemSpace::kCpuRam, 0x4000, {1, 2, 3}),
+             frame);
+    return frame.status();
+  }
+
+  FakeReads reads_;
+  FakeWrites writes_;
+};
+
+}  // namespace
+
+TEST_F(KcpcControlTest, HelloGrantsControlToTheFirstWhoAsks) {
+  start_writable();
+  kcpc::HelloReply observer_hello;
+  auto observer = join(kcpc::Role::kObserver, observer_hello);
+  EXPECT_EQ(observer_hello.role, kcpc::Role::kObserver);
+  EXPECT_EQ(observer_hello.caps, kcpc::kServerCaps);
+  EXPECT_NE(observer_hello.caps & kcpc::kCapMachineWrite, 0U);
+  EXPECT_EQ(server_.controller(), 0U) << "nobody asked for control yet";
+
+  kcpc::HelloReply first_hello;
+  auto first = join(kcpc::Role::kController, first_hello);
+  EXPECT_EQ(first_hello.role, kcpc::Role::kController);
+  EXPECT_EQ(server_.controller(), first_hello.client_id);
+
+  // HELLO never takes control away: the second asker observes.
+  kcpc::HelloReply second_hello;
+  auto second = join(kcpc::Role::kController, second_hello);
+  EXPECT_EQ(second_hello.role, kcpc::Role::kObserver);
+  EXPECT_EQ(server_.controller(), first_hello.client_id);
+}
+
+TEST_F(KcpcControlTest, ObserversWritesAnswerNotControllerAndReachNothing) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kController, hello);
+  ASSERT_EQ(hello.role, kcpc::Role::kObserver);
+
+  Frame frame;
+  exchange(*observer, Opcode::kRegsSet, 2,
+           regs_set_payload(1, FakeReads::regs()), frame);
+  EXPECT_EQ(frame.status(), Status::kNotController);
+  EXPECT_EQ(mem_write_status(*observer, 3), Status::kNotController);
+  // The role is judged before the payload: an observer learns nothing about
+  // a request it may not make, and the machine is never asked.
+  exchange(*observer, Opcode::kMemWrite, 4, {}, frame);
+  EXPECT_EQ(frame.status(), Status::kNotController);
+  EXPECT_EQ(writes_.regs_sets.load(), 0);
+  EXPECT_EQ(writes_.mem_writes.load(), 0);
+
+  // It stays connected and may still read.
+  exchange(*observer, Opcode::kRegsGet, 5, {}, frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+  // The controller's own write goes through.
+  EXPECT_EQ(mem_write_status(*controller, 2), Status::kOk);
+  EXPECT_EQ(writes_.mem_writes.load(), 1);
+}
+
+TEST_F(KcpcControlTest, ControlIsAcquiredOnlyWhenFreeUnlessForced) {
+  start_writable();
+  kcpc::HelloReply a_hello;
+  kcpc::HelloReply b_hello;
+  auto a = join(kcpc::Role::kController, a_hello);
+  auto b = join(kcpc::Role::kObserver, b_hello);
+
+  // Asking politely while another client has control is not an error.
+  kcpc::ControlReply reply;
+  control(*b, 2, kcpc::kControlAcquire, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kObserver);
+  EXPECT_EQ(reply.controller, a_hello.client_id);
+  // Releasing what one does not hold changes nothing.
+  control(*b, 3, kcpc::kControlRelease, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kObserver);
+  EXPECT_EQ(reply.controller, a_hello.client_id);
+
+  // Acquiring what one already holds is a no-op that says controller.
+  control(*a, 2, kcpc::kControlAcquire, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kController);
+
+  // Released, it is free, and then the polite request succeeds.
+  control(*a, 3, kcpc::kControlRelease, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kObserver);
+  EXPECT_EQ(reply.controller, 0U);
+  EXPECT_EQ(server_.controller(), 0U);
+  EXPECT_EQ(mem_write_status(*a, 4), Status::kNotController);
+  control(*b, 4, kcpc::kControlAcquire, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kController);
+  EXPECT_EQ(reply.controller, b_hello.client_id);
+  EXPECT_EQ(mem_write_status(*b, 5), Status::kOk);
+}
+
+// User decision 2026-10-11: takeover is a force flag and the newest wins.
+TEST_F(KcpcControlTest, ForcedTakeoverDemotesThePreviousController) {
+  start_writable();
+  kcpc::HelloReply a_hello;
+  kcpc::HelloReply b_hello;
+  auto a = join(kcpc::Role::kController, a_hello);
+  auto b = join(kcpc::Role::kObserver, b_hello);
+  ASSERT_EQ(mem_write_status(*a, 2), Status::kOk);
+
+  kcpc::ControlReply reply;
+  control(*b, 2, kcpc::kControlAcquire, kcpc::kControlFlagForce, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kController);
+  EXPECT_EQ(reply.controller, b_hello.client_id);
+  EXPECT_EQ(server_.controller(), b_hello.client_id);
+
+  // The first is still connected, as an observer: its writes are refused and
+  // change nothing, its reads work.
+  int const writes_before = writes_.mem_writes.load();
+  EXPECT_EQ(mem_write_status(*a, 3), Status::kNotController);
+  EXPECT_EQ(writes_.mem_writes.load(), writes_before);
+  expect_ping_ok(*a, 4);
+  EXPECT_EQ(mem_write_status(*b, 3), Status::kOk);
+
+  // No client is special: the first may force it back.
+  control(*a, 5, kcpc::kControlAcquire, kcpc::kControlFlagForce, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kController);
+  EXPECT_EQ(reply.controller, a_hello.client_id);
+  EXPECT_EQ(mem_write_status(*b, 4), Status::kNotController);
+  EXPECT_EQ(mem_write_status(*a, 6), Status::kOk);
+}
+
+TEST_F(KcpcControlTest, ControlIsFreeOnceTheControllerDisconnects) {
+  start_writable();
+  kcpc::HelloReply a_hello;
+  kcpc::HelloReply b_hello;
+  auto a = join(kcpc::Role::kController, a_hello);
+  auto b = join(kcpc::Role::kObserver, b_hello);
+  ASSERT_EQ(server_.controller(), a_hello.client_id);
+
+  a->close();
+  auto const deadline = Clock::now() + std::chrono::seconds(5);
+  while (server_.controller() != 0 && Clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_EQ(server_.controller(), 0U) << "a closed connection kept control";
+
+  kcpc::ControlReply reply;
+  control(*b, 2, kcpc::kControlAcquire, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kController);
+  EXPECT_EQ(mem_write_status(*b, 3), Status::kOk);
+}
+
+TEST_F(KcpcControlTest, ASilentControllerIsDroppedAndControlBecomesFree) {
+  // Twelve pings fit in one timeout, so a loaded host that oversleeps one of
+  // them several times over still does not look like silence.
+  constexpr int kIdleMs = 600;
+  constexpr int kPingEveryMs = 50;
+  start_writable(kIdleMs);
+  kcpc::HelloReply a_hello;
+  kcpc::HelloReply b_hello;
+  auto a = join(kcpc::Role::kController, a_hello);
+  auto b = join(kcpc::Role::kObserver, b_hello);
+
+  // PING keeps it: twice the timeout passes and it still has control.
+  auto const begin = Clock::now();
+  auto last_ping = begin;
+  std::uint32_t id = 2;
+  while (Clock::now() - begin < std::chrono::milliseconds(2 * kIdleMs)) {
+    expect_ping_ok(*a, id++);
+    last_ping = Clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(kPingEveryMs));
+  }
+  ASSERT_EQ(server_.controller(), a_hello.client_id);
+
+  // Silence: one ERROR saying why, then the connection is closed. Not before
+  // the timeout has passed since its last frame.
+  expect_error_then_close(*a, Status::kIdleTimeout);
+  EXPECT_GE(Clock::now() - last_ping, std::chrono::milliseconds(kIdleMs - 20));
+  EXPECT_EQ(server_.controller(), 0U);
+
+  // The observer was silent all along and is still there: observers are
+  // never timed out. It takes the free control.
+  kcpc::ControlReply reply;
+  control(*b, 2, kcpc::kControlAcquire, 0, reply);
+  EXPECT_EQ(reply.role, kcpc::Role::kController);
+}
+
+TEST_F(KcpcControlTest, AnObserverThatTakesControlIsTimedFromThatMoment) {
+  constexpr int kIdleMs = 600;
+  start_writable(kIdleMs);
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  // Longer than the timeout as an observer...
+  std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs + 200));
+  kcpc::ControlReply reply;
+  control(*client, 2, kcpc::kControlAcquire, 0, reply);
+  ASSERT_EQ(reply.role, kcpc::Role::kController);
+  // ...does not count against the controller it has just become.
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  expect_ping_ok(*client, 3);
+  EXPECT_EQ(server_.controller(), hello.client_id);
+  // Giving control up ends the clock.
+  control(*client, 4, kcpc::kControlRelease, 0, reply);
+  std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs + 200));
+  expect_ping_ok(*client, 5);
+}
+
+TEST_F(KcpcControlTest, BadControlRequestsAreBadPayloads) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+  exchange(*client, Opcode::kControl, 2, {1, 0}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "cut short";
+  exchange(*client, Opcode::kControl, 3, control_payload(2), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "unknown action";
+  EXPECT_EQ(server_.controller(), 0U);
+  expect_ping_ok(*client, 4);
+}
+
+TEST_F(KcpcControlTest, RegsSetPassesTheMaskAndRepliesWithTheBlock) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kController, hello);
+
+  kcpc::Regs values;
+  values.hl = 0xBEEF;
+  values.pc = 0x1234;
+  Frame frame;
+  exchange(*client, Opcode::kRegsSet, 2, regs_set_payload(1U << 3, values),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U + 12U + kcpc::kRegsSize);
+  EXPECT_EQ(writes_.last_mask, 1U << 3);
+  EXPECT_EQ(writes_.last_regs.hl, 0xBEEF);
+  EXPECT_EQ(writes_.last_regs.pc, 0x1234);
+
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::Stamp stamp;
+  kcpc::Regs after;
+  ASSERT_TRUE(kcpc::read_stamp(r, stamp));
+  ASSERT_TRUE(kcpc::read_regs(r, after));
+  EXPECT_EQ(stamp.frame, 90U);
+  EXPECT_TRUE(stamp.paused);
+  EXPECT_EQ(after.hl, 0xBEEF);
+  EXPECT_EQ(after.bc, FakeReads::regs().bc);
+}
+
+TEST_F(KcpcControlTest, RegsSetRefusesWhatCannotBeSet) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kController, hello);
+  kcpc::Regs const good;
+  kcpc::Regs bad_im;
+  bad_im.im = 3;
+  kcpc::Regs bad_iff;
+  bad_iff.iff2 = 2;
+  struct Case {
+    const char* what;
+    std::vector<std::uint8_t> payload;
+  };
+  std::vector<std::uint8_t> short_payload = regs_set_payload(1, good);
+  short_payload.pop_back();
+  const Case cases[] = {
+      {"cut short", short_payload},
+      {"HALT", regs_set_payload(kcpc::kRegBitHalt, good)},
+      {"a field past the block", regs_set_payload(1U << 18, good)},
+      {"IM 3", regs_set_payload(kcpc::kRegBitIm, bad_im)},
+      {"IFF2 2", regs_set_payload(kcpc::kRegBitIff2, bad_iff)},
+  };
+  std::uint32_t id = 2;
+  for (const Case& c : cases) {
+    Frame frame;
+    exchange(*client, Opcode::kRegsSet, id++, c.payload, frame);
+    EXPECT_EQ(frame.status(), Status::kBadPayload) << c.what;
+  }
+  EXPECT_EQ(writes_.regs_sets.load(), 0) << "a refused write reached the core";
+
+  // A value the mask does not select is not looked at.
+  Frame frame;
+  exchange(*client, Opcode::kRegsSet, id++, regs_set_payload(1, bad_im), frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+  // An empty mask is a valid way to ask for the block.
+  exchange(*client, Opcode::kRegsSet, id++, regs_set_payload(0, good), frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(writes_.last_mask, 0U);
+}
+
+TEST_F(KcpcControlTest, MemWritePassesTheBytesThrough) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kController, hello);
+
+  std::vector<std::uint8_t> const data = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x7F};
+  Frame frame;
+  exchange(*client, Opcode::kMemWrite, 2,
+           mem_write_payload(kcpc::MemSpace::kPhysRam, 0x8123, data), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U + 12U);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::Stamp stamp;
+  ASSERT_TRUE(kcpc::read_stamp(r, stamp));
+  EXPECT_EQ(stamp.frame, 91U);
+  EXPECT_EQ(writes_.last_write.space,
+            static_cast<std::uint8_t>(kcpc::MemSpace::kPhysRam));
+  EXPECT_EQ(writes_.last_write.addr, 0x8123U);
+  EXPECT_EQ(writes_.written, data);
+
+  // No bytes at all is a write of nothing, and still a write.
+  exchange(*client, Opcode::kMemWrite, 3,
+           mem_write_payload(kcpc::MemSpace::kCpuRam, 0x10000, {}), frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+  EXPECT_TRUE(writes_.written.empty());
+}
+
+TEST_F(KcpcControlTest, MemWriteRefusesTheSpacesThatAreNotRam) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kController, hello);
+  std::uint32_t id = 2;
+  Frame frame;
+  for (std::uint8_t space : {0, 3, 4, 5, 6, 255}) {
+    exchange(*client, Opcode::kMemWrite, id++,
+             mem_write_payload(static_cast<kcpc::MemSpace>(space), 0, {1}),
+             frame);
+    EXPECT_EQ(frame.status(), Status::kBadPayload) << "space " << +space;
+  }
+  exchange(*client, Opcode::kMemWrite, id++,
+           mem_write_payload(kcpc::MemSpace::kCpuRam, 0, {1}, 1), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "a bank where none applies";
+  exchange(*client, Opcode::kMemWrite, id++, {1, 0, 0, 0, 0, 0, 0}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "cut short";
+  EXPECT_EQ(writes_.mem_writes.load(), 0) << "a refused write reached the core";
+
+  // The range is the machine's to judge.
+  exchange(*client, Opcode::kMemWrite, id++,
+           mem_write_payload(kcpc::MemSpace::kCpuRam, 0xFFFF, {1, 2}), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange);
+}
+
+TEST_F(KcpcControlTest, ABusyMachineRefusesTheWriteAndKeepsTheController) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kController, hello);
+  writes_.refuse = Status::kBusy;
+  Frame frame;
+  exchange(*client, Opcode::kRegsSet, 2, regs_set_payload(1, FakeReads::regs()),
+           frame);
+  EXPECT_EQ(frame.status(), Status::kBusy);
+  EXPECT_EQ(mem_write_status(*client, 3), Status::kBusy);
+  writes_.refuse = Status::kOk;
+  EXPECT_EQ(mem_write_status(*client, 4), Status::kOk);
+  EXPECT_EQ(server_.controller(), hello.client_id);
+}
+
+TEST_F(KcpcControlTest, StopLeavesNoController) {
+  start_writable();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kController, hello);
+  ASSERT_NE(server_.controller(), 0U);
+  server_.stop();
+  EXPECT_EQ(server_.controller(), 0U);
 }

@@ -715,6 +715,13 @@ class CpcPauseLease {
   // did not, or the lease is not idle, and read() was then not called.
   // read() must only copy: every pause, resume and lease waits for it.
   bool read_alone(const std::function<void()>& read, int timeout_ms);
+  // The same for a holder that changes the machine and must not do so while
+  // another holder is changing or rebuilding it (a KCPC write, against a
+  // rebuild reallocating the RAM it writes to). change() has to be short and
+  // must not pause, resume or take a lease: all of those wait for it.
+  bool change_alone(const std::function<void()>& change, int timeout_ms) {
+    return read_alone(change, timeout_ms);
+  }
 
  private:
   void acquire(CpcPauseLeaseMode mode);

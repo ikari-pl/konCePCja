@@ -5,8 +5,9 @@ phase 3 of the headless-core epic (beads-cv2, bead beads-3o1). The
 implementation lands in the slices listed in
 [section 16](#16-implementation-slices), and that table says which have
 landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
-`MACHINE_INFO`, `ERROR`), and slice 2, the machine reads (`REGS_GET`,
-`MEM_INFO`, `MEM_READ`). Everything else is still design; a server tells a
+`MACHINE_INFO`, `ERROR`), slice 2, the machine reads (`REGS_GET`,
+`MEM_INFO`, `MEM_READ`), and slice 3, the control role and the machine
+writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`). Everything else is still design; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
 version 0, and the layouts below may still change, until phase 5 (the remote
@@ -202,7 +203,7 @@ text.
 | 5 | `UNKNOWN_OPCODE` | Not implemented by this server | stays open |
 | 6 | `BAD_PAYLOAD` | Payload too short or a field has an invalid value | stays open |
 | 7 | `NOT_CONTROLLER` | The request changes the machine and the client is an observer | stays open |
-| 8 | `BUSY` | The runner did not go idle in time, or a step is already in progress | stays open |
+| 8 | `BUSY` | The runner did not go idle in time, another pause lease kept the machine, or a step is already in progress | stays open |
 | 9 | `OUT_OF_RANGE` | Address, length, bank or index outside what exists | stays open |
 | 10 | `TOO_LARGE` | The reply would exceed the frame limit | stays open |
 | 11 | `NOT_PRESENT` | The hardware is not fitted (ASIC on a 6128, a mouse that is off) | stays open |
@@ -210,14 +211,15 @@ text.
 | 13 | `LIMIT_REACHED` | A table is full (the probe holds 32 exec, 16 watch, 8 I/O comparators) | stays open |
 | 14 | `SHUTTING_DOWN` | The core is quitting | closed |
 | 15 | `INTERNAL` | A bug; the message says what | stays open |
+| 16 | `IDLE_TIMEOUT` | The controller sent no frame for 30 s ([section 7](#7-clients-roles-and-control)) | closed |
 
 `BUSY` maps to the text IPC's `ERR 409 z80-not-idle`: the request changed
 nothing and the machine runs or stays paused as before.
 
 **`ERROR` (opcode `0x0000`)** is a response the server sends on its own,
 with `id` 0, right before it closes a connection it cannot serve: a bad
-frame, a ninth client, shutdown. Its payload is the same `status` and
-`message`.
+frame, a ninth client, a controller that went silent, shutdown. Its payload
+is the same `status` and `message`.
 
 The server makes sure the `ERROR` arrives. Closing a TCP connection that
 still has unread input makes the operating system send a reset, and a reset
@@ -266,9 +268,11 @@ Reply:
   for its first `HELLO`, and the client may send it again. `BUSY` here means
   the machine did not go idle in time for the server to read the machine
   information.
-- `role` must be 0 or 1 (`BAD_PAYLOAD` otherwise). Until slice 3 brings
-  `CONTROL`, every client is admitted as an observer whatever it asked for,
-  and the reply says so.
+- `role` must be 0 or 1 (`BAD_PAYLOAD` otherwise). A client that asks for
+  control gets it only if nobody has it; the reply says which role it was
+  given ([section 7](#7-clients-roles-and-control)). The control role comes
+  with `CAP_MACHINE_WRITE`: a server that does not announce that bit has no
+  controller and admits everyone as an observer.
 - `max_frame` must be 0 or at least **128 KiB** (131072; `BAD_PAYLOAD`
   otherwise), so that a 64 KiB memory read always fits one reply
   (section 11). The reply carries the smaller of the client's value and
@@ -352,8 +356,13 @@ At most one client is the controller.
   script and a tool all follow this one rule.
 - Control is also released when the controller disconnects, sends
   `CONTROL release`, or goes quiet: a controller that has sent no frame for
-  **30 s** is disconnected. A controller with nothing to say sends `PING`
-  every 10 s. Observers are never timed out.
+  **30 s** is disconnected, with `ERROR` and `IDLE_TIMEOUT`, and control is
+  free at that moment. A controller with nothing to say sends `PING` every
+  10 s. The 30 s count from the reply to its last request, so the time the
+  core took to serve a request is not held against the client, and they
+  count only while it is the controller: an observer is never timed out,
+  and one that takes control after an hour of silence starts with a full
+  30 s.
 - Every change of controller is announced to **all** clients, the demoted
   one included, with `EVT_CONTROL_CHANGED` carrying the new controller's
   `client_id` (0 when control became free). The event ignores subscription
@@ -361,6 +370,16 @@ At most one client is the controller.
 - A step that the previous controller started keeps running across a
   takeover. Its `EVT_STOPPED` still goes to the client that asked for it, and
   the new controller may end it with `PAUSE`.
+
+`EVT_CONTROL_CHANGED` arrives with the events of slice 4 and the release of
+held keys with the input of slice 6. Until then a demoted client learns it
+from the `NOT_CONTROLLER` its next change answers with, or by asking:
+`CONTROL` acquire without force changes nothing while another client has
+control and its reply names the controller.
+
+A request that needs control is refused with `NOT_CONTROLLER` before its
+payload is looked at: an observer learns nothing from a malformed write but
+that it may not write.
 
 A polite client asks without force first and uses force only when its user
 asked for it; two clients that both force in a loop will take control from
@@ -451,6 +470,16 @@ three. When several leases overlap, the last request stands: a stop after a
 `release_running()` leaves the machine stopped, a `release_running()` after a
 stop runs it, and either takes effect when the last holder lets go.
 
+The two writes of this port, `REGS_SET` and `MEM_WRITE`, go one step
+further than step 1 asks. Having taken the lease they wait, for up to
+250 ms, until theirs is the only one held, make the change while holding the
+pause mutex (`CpcPauseLease::change_alone()`), and answer `BUSY` if they
+never were alone. The reason is the paragraph below: a machine rebuild runs
+under a lease of its own and reallocates the expansion RAM, and a
+`MEM_WRITE` that ran beside it would write into freed memory. Both changes
+are short (a 1 MiB write is a copy; a register write lets at most one
+instruction finish), so nothing waits for that mutex for long.
+
 **Leases do not exclude one another.** Two holders both find the runner idle
 and both go ahead. That is deliberate: the text IPC's `profile load` holds a
 lease while the main thread rebuilds the machine under its own, so making
@@ -459,10 +488,11 @@ operations that each restore what they found, and it is not safe for a
 holder that copies out of the machine while another rebuilds it. A holder
 that only reads therefore reads through `CpcPauseLease::read_alone()`, which
 runs the copy only while its lease is the only one and holds the pause mutex
-meanwhile, so that no other lease can be taken until the copy is done. (Two
-holders that both change the machine at once, from two threads, are still
-not kept apart: that needs the holders to hand the machine to one another,
-and is tracked as beads-nhfy.)
+meanwhile, so that no other lease can be taken until the copy is done. The
+writes of this port use the same mechanism, as said above. (Two holders
+elsewhere in the core that both change the machine at once, from two
+threads, are still not kept apart: that needs the holders to hand the
+machine to one another, and is tracked as beads-nhfy.)
 
 Breakpoint and symbol edits use the editing lists and their existing locks
 (`CpcStopCoordinationGuard`, the list mutators in `z80_view.cpp`). The runner
@@ -839,8 +869,25 @@ Reply: `stamp`, then `len` bytes.
 Request: `u8 space`, `u8` reserved, `u16 bank`, `u32 addr`, then the bytes to
 write. Reply: `stamp`.
 
-- Allowed spaces: `CPU_RAM` and `PHYS_RAM`. ROM spaces and `ASIC_PAGE` answer
-  `BAD_PAYLOAD`.
+- Allowed spaces: `CPU_RAM` and `PHYS_RAM`. ROM spaces, `ASIC_PAGE` and
+  numbers that are not in the table answer `BAD_PAYLOAD`. `bank` must be 0
+  (`BAD_PAYLOAD`).
+- A `CPU_RAM` write lands where a Z80 write to that address would: in the
+  RAM the current banking puts there, never in a ROM. A `PHYS_RAM` write
+  lands at that offset of physical RAM whatever the banking is.
+- `addr` plus the number of bytes must not pass the end of the space:
+  `OUT_OF_RANGE`, and then **nothing** is written. A write is all of its
+  bytes or none. No bytes at all is a valid write of nothing, also at the
+  very end of a space.
+- One request carries at most 1 MiB less the 8 bytes above (the request
+  limit of [section 4](#4-framing)). All 64 KiB of `CPU_RAM` is one request;
+  a machine with more than 1 MiB of RAM needs several to fill `PHYS_RAM`.
+- Checked in this order: `NOT_CONTROLLER`, then `BAD_PAYLOAD` (too short,
+  space, bank), then `OUT_OF_RANGE`, then `BUSY`.
+- Host writes never trip a watchpoint, like the text IPC's `mem write`.
+- The run state is put back as it was: a running machine keeps running (it
+  is paused for the length of the write, between two frames), a paused one
+  stays paused. The stamp carries the run state from before the write.
 - `CPU` is refused too, on purpose. A write through the CPU view lands in
   RAM, but reading it back through the same view returns the ROM byte paged
   over it; the text IPC has that trap (`mem write` followed by `disasm`).
@@ -863,15 +910,47 @@ The register block is 32 bytes:
 | 30 | 2 | reserved, 0 |
 
 - **`REGS_GET` (`0x0200`)** — empty request. Reply: `stamp`, register block.
-  The values are the Z80's own (`Machine::regs()`), not the host-side copy
-  the in-process debugger refreshes at a stop. `IFF1`, `IFF2` and `HALT` are
-  0 or 1, `IM` is 0 to 2.
+  The values are the Z80's own (`Machine::regs()`), read now, not the
+  host-side copy the in-process debugger refreshes at a stop. `IFF1`, `IFF2`
+  and `HALT` are 0 or 1, `IM` is 0 to 2.
+
+  There is one exception, `PC` at a breakpoint. A machine stopped on an
+  execution breakpoint has fetched the opcode at that address and not run
+  it, so the Z80's own `PC` is already one further. The block carries the
+  breakpoint's address, which is where the instruction that runs next
+  starts, and what the text IPC's `reg get PC` and the in-process debugger
+  show. (Slice 2 reported the Z80's own value there, one too many.)
 - **`REGS_SET` (`0x0201`)** — controller. Request: `u32 mask`, register
   block. Bit N of `mask` selects the Nth field of the block (bit 0 = `AF`,
-  bit 11 = `HL'`, bit 12 = `I`, bit 17 = `HALT`); fields whose bit is clear
-  are ignored. Reply: `stamp`, the register block after the write. The write
-  follows `subcycle_bridge_regs_to_machine()`: it never drops or replays part
-  of an instruction in flight.
+  bit 7 = `PC`, bit 11 = `HL'`, bit 12 = `I`, bit 16 = `IM`); fields whose
+  bit is clear are ignored, whatever they hold. Reply: `stamp`, the register
+  block after the write, as `REGS_GET` would return it.
+  - The first 17 fields can be set. **`HALT` (bit 17) cannot**: whether the
+    CPU is halted is where it is in an instruction, not a register, and no
+    path in the core can change it without restarting the CPU. A mask with
+    bit 17, or with any bit from 18 up, answers `BAD_PAYLOAD`, as does a
+    selected `IM` above 2 or a selected `IFF1` or `IFF2` above 1. A refused
+    request sets nothing.
+  - An empty mask is valid. It sets nothing and replies with the block, after
+    letting the instruction in flight finish (next point).
+  - The write never drops or replays part of an instruction in flight, by
+    the rules of the text IPC's `reg set` and the DevTools
+    (`subcycle_bridge_write_regs()`, which `subcycle_bridge_regs_to_machine()`
+    now also goes through). A pause leaves the machine wherever the frame
+    ended, usually inside an instruction; that instruction is finished
+    first and the values are set between two instructions. So a register
+    the mask did not select may differ from an earlier `REGS_GET` by what
+    that one instruction did.
+  - At a breakpoint the instruction shown has only been fetched. An edit
+    lands before it runs, and it runs with the new values. Writing the `PC`
+    that `REGS_GET` shows there is no edit, so a client may write back a
+    whole block it has read. Any other `PC` drops the fetched instruction;
+    the next one comes from the new address.
+  - The mask says which registers to set; nothing is inferred from what a
+    value was before. A selected register ends up holding the value sent
+    even when that is the value it showed and the instruction that was
+    finished moved it (`SP` halfway through a `PUSH`).
+  - The run state is put back as it was, as for `MEM_WRITE`.
 
 ### Run control
 
@@ -1110,9 +1189,13 @@ GUI action.
 - **`CONTROL` (`0x0004`)** — Request: `u8 action` (0 release, 1 acquire),
   `u8 flags` (bit 0 = force: take control even if another client has it),
   2 reserved bytes. Reply: `u8 role` now held, 3 reserved bytes,
-  `u32 controller`. Asking without force while another client has control is
-  not an error: the reply simply still says observer. With force the reply
-  always says controller.
+  `u32 controller` (its `client_id`, 0 when control is free). Asking without
+  force while another client has control is not an error: the reply simply
+  still says observer, and names the controller. With force the reply always
+  says controller. Releasing what the client does not hold, and acquiring
+  what it already holds, change nothing and reply the same way. An `action`
+  other than 0 or 1 is `BAD_PAYLOAD`; flag bits other than bit 0 are
+  ignored.
 
 ## 13. Opcode table
 
@@ -1226,7 +1309,7 @@ test-first against a real `-H` core.
 |--:|-------|--------|
 | 1 | Server skeleton (**landed**, beads-3o1.1) | Socket shim, listener and port probing, the `[ipc] binary_port_enabled` key, the acceptor, reader and writer threads, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
 | 2 | Machine reads (**landed**, beads-3o1.2) | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with the spaces `CPU`, `CPU_RAM`, `PHYS_RAM`, `ROM_LOWER`, `ROM_UPPER` (`ASIC_PAGE` comes with slice 7); `MACHINE_INFO` moved onto the gate; `CAP_MACHINE_READ` and `CAP_MEM_ROM` |
-| 3 | Control and writes | Roles, `CONTROL` with forced takeover, the controller idle timeout; `REGS_SET`, `MEM_WRITE` |
+| 3 | Control and writes (**landed**, beads-3o1.3) | Roles, `CONTROL` with forced takeover, the controller idle timeout and `IDLE_TIMEOUT`; `REGS_SET`, `MEM_WRITE` to `CPU_RAM` and `PHYS_RAM`; `CAP_MACHINE_WRITE`; `REGS_GET` shows the breakpoint's address at a breakpoint |
 | 4 | Run control and events | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED` |
 | 5 | Breakpoints and pushed hits | `BP_*`, hits through the probe hook, `EVT_BREAKPOINTS_CHANGED`; the walker and `STEP` over, out, to |
 | 6 | Input | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`; keys released when control is lost |
@@ -1257,7 +1340,12 @@ Source layout the slices should follow:
   fake machine.
 - `src/kcpc/kcpc_host.{h,cpp}` — the other side of those callbacks: the one
   server instance, started and stopped by `kon_cpc_ja.cpp`, and the code
-  that reads the machine for it.
+  that reads and changes the machine for it.
+- `src/subcycle_bridge.{h,cpp}` — `subcycle_bridge_write_regs()`, the one
+  place a register edit reaches the machine from (this port by mask, the
+  text IPC and the DevTools by what differs in the host view), and
+  `subcycle_bridge_shown_regs()`, the registers with the breakpoint's
+  address as `PC` at a breakpoint.
 - `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate. Like the server it
   knows nothing about the emulator (the pause flag and the lease are two
   callbacks), so `test/kcpc_gate_test.cpp` runs real reader and runner
@@ -1334,3 +1422,16 @@ Recorded so a reviewer can disagree with one without reading the rest.
     budget decides how many reads share a boundary; a single read larger
     than that still runs whole, because its bytes must come from one
     instant.
+16. **`HALT` is read-only** (slice 3). The design listed it as bit 17 of
+    the `REGS_SET` mask. Nothing in the core can set it without restarting
+    the CPU, and the text IPC's `reg set HALT` has silently done nothing
+    for that reason (beads-gpx7); this port says `BAD_PAYLOAD` instead.
+17. **A machine write runs while its lease is the only one** (slice 3), and
+    answers `BUSY` when it cannot be. A bare lease would have let a
+    `MEM_WRITE` run beside a machine rebuild that frees the RAM it writes.
+18. **The registers of this port show the breakpoint's address at a
+    breakpoint** (slice 3), on reads and in the reply to a write, so that a
+    block read there can be written back unchanged.
+19. **The controller's idle timeout has a status of its own**,
+    `IDLE_TIMEOUT` (slice 3), so a client that was dropped for silence can
+    tell that from a framing error.

@@ -705,24 +705,28 @@ void subcycle_bridge_sync_regs_view() {
   g_tstate_counter = r.tstates;  // the DevTools T-state readout
 }
 
-void subcycle_bridge_regs_to_machine() {
+void subcycle_bridge_write_regs(const Z80Regs& values, uint32_t fields) {
   Bridge& b = g_bridge;
   if (!b.active) return;
-  // An explicit edit of the host view. A pause or a breakpoint parks the board
-  // mid-instruction, so this must neither drop nor replay part of the
-  // instruction in flight (beads-3yl2; z80_poke() used to restart the CPU at a
-  // fresh boundary on every edit, losing e.g. the second half of a PUSH).
-  // Only the fields that differ from what was published are written.
-  const Z80Regs shown = b.published;
+  // A pause or a breakpoint parks the board mid-instruction, so this must
+  // neither drop nor replay part of the instruction in flight (beads-3yl2;
+  // z80_poke() used to restart the CPU at a fresh boundary on every edit,
+  // losing e.g. the second half of a PUSH).
   subcycle::Machine& m = b.machine;
-  const bool redirect = z80.PC.w.l != shown.pc;
+  const uint16_t halt_pc = b.published.pc;
+  const bool redirect = (fields & kSubcycleRegPC) != 0 && values.pc != halt_pc;
   const bool keep_halt_pc = b.parked_on_fetch && !redirect;
   if (b.parked_on_fetch) {
     // Stopped on a breakpoint: the instruction shown there has only been
     // fetched and has not run. An edit lands before it runs, so it carries on
     // with the new values (restarting it would fetch its opcode twice); a new
-    // PC drops it.
-    if (redirect) m.abandon_instruction();
+    // PC drops it. Writing the PC that is shown is no edit: the machine's own
+    // PC is already past the opcode.
+    if (redirect) {
+      m.abandon_instruction();
+    } else {
+      fields &= ~kSubcycleRegPC;
+    }
   } else {
     // Anywhere else the instruction in flight may have begun to commit (SP
     // moved once, one byte written). Let it end, so the edit lands between
@@ -731,33 +735,73 @@ void subcycle_bridge_regs_to_machine() {
     m.finish_instruction();
   }
   Z80Regs r = m.regs();
-  auto take = [](auto mirror, auto was, auto& out) {
-    if (mirror != was) out = mirror;
+  auto take = [fields](uint32_t field, auto value, auto& out) {
+    if ((fields & field) != 0) out = value;
   };
-  take(z80.AF.w.l, shown.af, r.af);
-  take(z80.BC.w.l, shown.bc, r.bc);
-  take(z80.DE.w.l, shown.de, r.de);
-  take(z80.HL.w.l, shown.hl, r.hl);
-  take(z80.AFx.w.l, shown.af_, r.af_);
-  take(z80.BCx.w.l, shown.bc_, r.bc_);
-  take(z80.DEx.w.l, shown.de_, r.de_);
-  take(z80.HLx.w.l, shown.hl_, r.hl_);
-  take(z80.IX.w.l, shown.ix, r.ix);
-  take(z80.IY.w.l, shown.iy, r.iy);
-  take(z80.SP.w.l, shown.sp, r.sp);
-  take(z80.PC.w.l, shown.pc, r.pc);
-  take(z80.I, shown.i, r.i);
-  take(z80.R, shown.r, r.r);
-  take(z80.IM, shown.im, r.im);
-  take(z80.IFF1, shown.iff1, r.iff1);
-  take(z80.IFF2, shown.iff2, r.iff2);
+  take(kSubcycleRegAF, values.af, r.af);
+  take(kSubcycleRegBC, values.bc, r.bc);
+  take(kSubcycleRegDE, values.de, r.de);
+  take(kSubcycleRegHL, values.hl, r.hl);
+  take(kSubcycleRegIX, values.ix, r.ix);
+  take(kSubcycleRegIY, values.iy, r.iy);
+  take(kSubcycleRegSP, values.sp, r.sp);
+  take(kSubcycleRegPC, values.pc, r.pc);
+  take(kSubcycleRegAFx, values.af_, r.af_);
+  take(kSubcycleRegBCx, values.bc_, r.bc_);
+  take(kSubcycleRegDEx, values.de_, r.de_);
+  take(kSubcycleRegHLx, values.hl_, r.hl_);
+  take(kSubcycleRegI, values.i, r.i);
+  take(kSubcycleRegR, values.r, r.r);
+  take(kSubcycleRegIFF1, values.iff1, r.iff1);
+  take(kSubcycleRegIFF2, values.iff2, r.iff2);
+  take(kSubcycleRegIM, values.im, r.im);
   m.set_regfile(r);
   // Re-publish, so the view and `published` match the machine again (a
   // finished instruction moved other registers too). A breakpoint stop that
   // was not redirected keeps showing the breakpoint's address.
-  const uint16_t halt_pc = shown.pc;
   subcycle_bridge_sync_regs_view();
   if (keep_halt_pc) publish_halt_pc(b, halt_pc);
+}
+
+void subcycle_bridge_regs_to_machine() {
+  Bridge const& b = g_bridge;
+  if (!b.active) return;
+  // An explicit edit of the host view: the fields that differ from what the
+  // view was last given are the ones the user changed.
+  const Z80Regs shown = b.published;
+  Z80Regs edited = shown;
+  uint32_t fields = 0;
+  auto take = [&fields](uint32_t field, auto mirror, auto& out) {
+    if (mirror == out) return;
+    out = mirror;
+    fields |= field;
+  };
+  take(kSubcycleRegAF, z80.AF.w.l, edited.af);
+  take(kSubcycleRegBC, z80.BC.w.l, edited.bc);
+  take(kSubcycleRegDE, z80.DE.w.l, edited.de);
+  take(kSubcycleRegHL, z80.HL.w.l, edited.hl);
+  take(kSubcycleRegAFx, z80.AFx.w.l, edited.af_);
+  take(kSubcycleRegBCx, z80.BCx.w.l, edited.bc_);
+  take(kSubcycleRegDEx, z80.DEx.w.l, edited.de_);
+  take(kSubcycleRegHLx, z80.HLx.w.l, edited.hl_);
+  take(kSubcycleRegIX, z80.IX.w.l, edited.ix);
+  take(kSubcycleRegIY, z80.IY.w.l, edited.iy);
+  take(kSubcycleRegSP, z80.SP.w.l, edited.sp);
+  take(kSubcycleRegPC, z80.PC.w.l, edited.pc);
+  take(kSubcycleRegI, z80.I, edited.i);
+  take(kSubcycleRegR, z80.R, edited.r);
+  take(kSubcycleRegIM, z80.IM, edited.im);
+  take(kSubcycleRegIFF1, z80.IFF1, edited.iff1);
+  take(kSubcycleRegIFF2, z80.IFF2, edited.iff2);
+  subcycle_bridge_write_regs(edited, fields);
+}
+
+Z80Regs subcycle_bridge_shown_regs() {
+  Bridge const& b = g_bridge;
+  if (!b.active) return Z80Regs{};
+  Z80Regs r = b.machine.regs();
+  if (b.parked_on_fetch) r.pc = b.published.pc;
+  return r;
 }
 
 namespace {

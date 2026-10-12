@@ -725,6 +725,80 @@ TEST(RegisterEditTest, PcEditAtABreakpointDropsTheUnrunInstruction) {
   CPC.paused = saved_cpc_paused;
 }
 
+// The masked form behind KCPC's REGS_SET (beads-3o1.3). It is told which
+// registers to set and sets exactly those, between two instructions.
+TEST(RegisterEditTest, MaskedWriteSetsExactlyTheSelectedRegisters) {
+  LiveBoard const board(push_bc_rom());
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  ASSERT_TRUE(park_mid_push(*m)) << "no frame ended between two SP decrements";
+  Z80Regs before = m->regs();
+  ASSERT_EQ(0, before.sp & 1);
+
+  // Every field of this block is junk the mask has to keep out.
+  Z80Regs values{};
+  values.de = static_cast<uint16_t>(before.de ^ 0xFFFF);
+  values.af = static_cast<uint16_t>(before.af ^ 0xFFFF);
+  values.sp = 0x1234;
+
+  // Nothing selected: nothing is set, and the PUSH in flight ends.
+  subcycle_bridge_write_regs(values, 0);
+  EXPECT_EQ(static_cast<uint16_t>(before.sp - 1), m->regs().sp);
+  EXPECT_EQ(before.de, m->regs().de);
+  EXPECT_EQ(before.af, m->regs().af);
+  EXPECT_EQ(before.pc, m->regs().pc);
+
+  // Write SP the value it shows, halfway through a PUSH. A diff of the view
+  // sees no edit there and SP ends one lower, where the PUSH left it; the
+  // mask says SP, so SP it is.
+  ASSERT_TRUE(park_mid_push(*m));
+  before = m->regs();
+  values.sp = before.sp;
+  subcycle_bridge_write_regs(values, kSubcycleRegSP);
+  EXPECT_EQ(before.sp, m->regs().sp)
+      << "the selected register does not hold the value that was written";
+  EXPECT_EQ(before.de, m->regs().de) << "a register the mask left out changed";
+  EXPECT_EQ(before.af, m->regs().af);
+  EXPECT_EQ(before.pc, m->regs().pc)
+      << "the PUSH in flight was dropped or replayed";
+  EXPECT_EQ(before.sp, z80.SP.w.l) << "the view was not republished";
+}
+
+TEST(RegisterEditTest, ShownRegistersCarryTheBreakpointAddress) {
+  LiveBoard const board(push_bc_rom());
+  subcycle::Machine* m = subcycle_bridge_machine();
+  ASSERT_NE(nullptr, m);
+  m->set_run_tier(subcycle::Machine::RunTier::Faithful);
+  PausedFlag const paused(true);
+  bool const saved_cpc_paused = CPC.paused;
+  ASSERT_TRUE(stop_on_breakpoint(*m, 0x0010));
+  probe_clear_exec(m->probe());
+  Z80Regs const at_stop = m->regs();
+  ASSERT_EQ(0x0011, at_stop.pc) << "the machine parks after the opcode fetch";
+  EXPECT_EQ(0x0010, subcycle_bridge_shown_regs().pc)
+      << "a client would be shown the PC one past the breakpoint";
+  EXPECT_EQ(at_stop.sp, subcycle_bridge_shown_regs().sp);
+
+  // Writing back everything that is shown, PC included, is no edit: the
+  // fetched instruction is neither dropped nor fetched again.
+  subcycle_bridge_write_regs(subcycle_bridge_shown_regs(), kSubcycleRegAll);
+  EXPECT_EQ(0x0011, m->regs().pc)
+      << "writing the shown PC restarted the instruction at the breakpoint";
+  EXPECT_EQ(0x0010, subcycle_bridge_shown_regs().pc);
+  uint64_t const fetched = m->regs().instr_count;
+  m->step_instruction();
+  EXPECT_EQ(0x0011, m->regs().pc);
+  EXPECT_EQ(static_cast<uint16_t>(at_stop.sp - 2), m->regs().sp)
+      << "the PUSH at the breakpoint did not run exactly once";
+  EXPECT_EQ(fetched + 1, m->regs().instr_count);
+
+  // Away from a breakpoint the shown registers are the machine's own.
+  subcycle_bridge_sync_regs_view();
+  EXPECT_EQ(m->regs().pc, subcycle_bridge_shown_regs().pc);
+  CPC.paused = saved_cpc_paused;
+}
+
 // The Assembler window mirrors the host-owned source (beads-cv2.4).  Opening
 // it loads the text without writing it back, and a later IPC write is picked
 // up the same way: an echo would bump the generation and could clobber a
