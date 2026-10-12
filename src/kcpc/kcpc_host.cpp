@@ -24,6 +24,10 @@ namespace {
 
 using kcpc::Status;
 
+// How long a read that fell back to a lease waits for other lease holders to
+// finish before it gives up. They hold the machine for one operation each.
+constexpr int kLeaseAloneWaitMs = 250;
+
 kcpc::GateHost gate_host() {
   kcpc::GateHost host;
   // The atomic the frame runner itself obeys, true for a stop and for a
@@ -42,9 +46,13 @@ kcpc::GateHost gate_host() {
       lease.restore_run_state();
       return false;
     }
-    work(lease.was_paused());
+    // Alone: another holder may be changing what this copies (a machine
+    // rebuild reallocates the expansion RAM). The bound is the gate's own
+    // patience; a reader that cannot have the machine answers BUSY.
+    bool const ran =
+        lease.read_alone([&] { work(lease.was_paused()); }, kLeaseAloneWaitMs);
     lease.restore_run_state();
-    return true;
+    return ran;
   };
   return host;
 }

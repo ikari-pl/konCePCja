@@ -690,6 +690,13 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
 - Use `byte` (uint8_t), `word` (uint16_t), `dword` (uint32_t) types
 - Z80 memory access: `z80_read_mem(addr)`, `z80_write_mem(addr, val)`
 - Pause/resume: `cpc_pause()`, `cpc_resume()`
+- A `CpcPauseLease` holder lets go with exactly one of `restore_run_state()`
+  (borrowed the machine: put back what was there), `release_stopped()` (a
+  stop somebody asked for: a step) or `release_running()` (promises a running
+  machine: reset, the start of a frame step). Never `if (!was_paused)
+  cpc_resume();` by hand: it resumes over a breakpoint that fired meanwhile
+  and does nothing while another lease is held. A lease that only reads uses
+  `read_alone()`.
 - Reset: `emulator_reset()`
 - ImGui state is in global `imgui_state` struct
 

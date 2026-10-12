@@ -1052,6 +1052,7 @@ void dbg_step_over() {
     cls = z80_classify_at(pc);
     if (!cls.is_call && !cls.is_rst) {
       z80_step_instruction();
+      lease.release_stopped();
       return;
     }
     if (cls.is_rst) {
@@ -1061,6 +1062,9 @@ void dbg_step_over() {
       // into the vector; the walk below finishes the frame it opened.
       z80_step_instruction();
     }
+    // A step is a stop somebody asked for. The walk below runs the machine
+    // under its own control.
+    lease.release_stopped();
   }
   if (cls.is_rst) {
     dispatch_step_walk(StepWalkAction::StepOver,
@@ -1115,8 +1119,10 @@ void dispatch_step_walk(StepWalkAction action,
   // render thread -- a long wait here would freeze the GUI, which is the
   // exact failure this worker exists to prevent.
   {
-    CpcPauseLease const lease(CpcPauseLeaseMode::PauseOnly);
-    if (!cpc_wait_until_idle(kStepWalkIdleWaitMs)) {
+    CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly);
+    bool const idle = cpc_wait_until_idle(kStepWalkIdleWaitMs);
+    lease.release_stopped();  // stopped either way, as before
+    if (!idle) {
       g_step_walk_running.store(false, std::memory_order_release);
       set_osd_message("Z80 thread is not responding", 3000);
       return;
@@ -2921,6 +2927,7 @@ void imgui_render_statusbar() {
             // silent no-op and drops unsaved writes).
             subcycle_bridge_apply_pending_media();
             driveFile.clear();
+            lease.restore_run_state();
           }
         }
         popup_eject_drive = -1;

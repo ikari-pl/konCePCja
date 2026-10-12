@@ -411,8 +411,12 @@ do:
    `subcycle_bridge_regs_to_machine()` for registers, `z80_write_mem()` and
    `Machine::ram_write()` for memory, `emulator_reset()`,
    `z80_step_instruction()`.
-3. Restore the run state the lease found (`restore_run_state()`), unless the
-   request itself is meant to leave the machine paused.
+3. Let go of the lease with the one call that says what the request means:
+   - `restore_run_state()`: the request borrowed the machine, and what was
+     there before is put back (a register or memory write).
+   - `release_stopped()`: the request is a stop somebody asked for (a step).
+   - `release_running()`: the request promises a running machine (a reset
+     that resumes, the start of a frame step).
 
 Leases overlap as soon as there is more than one client: two connections
 here, a connection and the text IPC, the IPC and the GUI. Three rules keep
@@ -429,9 +433,36 @@ because until then only one holder at a time had been expected:
 - A lease is not a stop. Code that waits for emulated time to pass asks
   `cpc_stopped()` (paused, and no lease held), not `CPC.paused`.
 
-Requests must use `restore_run_state()`, which lets go and resumes in one
-step; letting go and resuming separately leaves an instant that looks like a
-stop.
+Each of the three calls lets go and settles the run state in one step, under
+the pause mutex. Doing it by hand (drop the lease, then call `cpc_resume()`
+or nothing) is wrong as soon as there is a second actor, in three ways:
+
+- It resumes over a real stop that arrived while the lease was held.
+- Between the two halves the machine is paused with no lease held, which is
+  what a real stop looks like to `cpc_stopped()`; a frame step waiting at
+  that instant gives up.
+- `cpc_resume()` does nothing while another lease is held, so a request that
+  promised a running machine does not deliver one, and a request that meant
+  to leave the machine stopped has it run again by the other holder.
+
+So `release()` is private to the lease, and every holder in the core (the
+text IPC, DevTools, the reset, rebuild and video paths) ends with one of the
+three. When several leases overlap, the last request stands: a stop after a
+`release_running()` leaves the machine stopped, a `release_running()` after a
+stop runs it, and either takes effect when the last holder lets go.
+
+**Leases do not exclude one another.** Two holders both find the runner idle
+and both go ahead. That is deliberate: the text IPC's `profile load` holds a
+lease while the main thread rebuilds the machine under its own, so making
+holders wait for one another would deadlock that pair. It is safe between
+operations that each restore what they found, and it is not safe for a
+holder that copies out of the machine while another rebuilds it. A holder
+that only reads therefore reads through `CpcPauseLease::read_alone()`, which
+runs the copy only while its lease is the only one and holds the pause mutex
+meanwhile, so that no other lease can be taken until the copy is done. (Two
+holders that both change the machine at once, from two threads, are still
+not kept apart: that needs the holders to hand the machine to one another,
+and is tracked as beads-nhfy.)
 
 Breakpoint and symbol edits use the editing lists and their existing locks
 (`CpcStopCoordinationGuard`, the list mutators in `z80_view.cpp`). The runner
@@ -480,8 +511,9 @@ So reads go through a **machine gate**, one small class
   the reader takes the job back and goes on as above. It does not wait for
   the fallback.
 - **Fallback:** a read that has got neither a frame boundary nor a stopped
-  machine within **250 ms** is run by the reader under a pause lease. This
-  is a safety net for a runner that turns out no frames although nothing
+  machine within **250 ms** is run by the reader under a pause lease, through
+  `read_alone()` (see seam 1): it waits up to another 250 ms to be the only
+  lease holder and answers `BUSY` if it never is. This is a safety net for a runner that turns out no frames although nothing
   paused it, and for a lease that holds the machine that long. It should
   never fire on a healthy machine, because on a running one a lease costs
   exactly what the gate exists to avoid and is no quicker: it too waits for
@@ -733,8 +765,9 @@ Like every read, this one goes through the machine gate
 ([section 8](#seam-2-the-frame-boundary-for-reads-while-running)): on a
 running machine the runner takes it at the next frame boundary and nothing
 is paused, so it is cheap enough to poll. (Slice 1 read it under a pause
-lease.) `BUSY` only when a read had to fall back to a pause lease and the runner did
-not go idle for it in time.
+lease.) `BUSY` only when a read had to fall back to a pause lease and the
+runner did not go idle for it in time, or other lease holders kept the
+machine for longer than the read waits to be alone.
 
 ## 11. Memory
 

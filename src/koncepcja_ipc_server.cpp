@@ -1730,17 +1730,17 @@ std::string handle_command(const std::string& line) {
     if (cmd == "reset") {
       CpcPauseLease lease;
       if (!lease.idle()) return z80_not_idle(lease);
-      bool const was_paused = lease.was_paused();
       emulator_reset();
       bool no_resume = false;
       for (size_t i = 1; i < parts.size(); i++) {
         if (parts[i] == "--no-resume") no_resume = true;
       }
-      if (!no_resume) {
-        lease.release();
-        cpc_resume();
-      } else if (was_paused) {
-        // Was already paused and user wants no-resume, keep paused
+      // `reset` promises a running machine and `reset --no-resume` a stopped
+      // one, whichever it was before.
+      if (no_resume) {
+        lease.release_stopped();
+      } else {
+        lease.release_running();
       }
       return ok_with_context();
     }
@@ -1834,14 +1834,10 @@ std::string handle_command(const std::string& line) {
       if (ext == ".sna") {
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
-        bool const was_paused = lease.was_paused();
         CPC.snapshot.file = path;
         CPC.snapshot.zip_index = 0;
         int const rc = file_load(CPC.snapshot);
-        if (!was_paused) {
-          lease.release();
-          cpc_resume();
-        }
+        lease.restore_run_state();
         if (rc != 0) return "ERR 500 load-sna\n";
         ipc_mru_stage(&t_CPC::mru_snaps, path);
         return ok_with_context();
@@ -1948,10 +1944,7 @@ std::string handle_command(const std::string& line) {
       else
         *target16 = static_cast<word>(value);
       subcycle_bridge_regs_to_machine();
-      if (!lease.was_paused()) {
-        lease.release();
-        cpc_resume();
-      }
+      lease.restore_run_state();
       return ok_with_context();
     }
     if ((cmd == "reg" || cmd == "regs") && parts.size() >= 2 &&
@@ -2313,12 +2306,8 @@ std::string handle_command(const std::string& line) {
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
-        bool const was_paused = lease.was_paused();
         int const rc = snapshot_save(parts[2]);
-        if (!was_paused) {
-          lease.release();
-          cpc_resume();
-        }
+        lease.restore_run_state();
         return rc == 0 ? ok_with_context() : "ERR 500 snapshot-save\n";
       }
       if (parts[1] == "load") {
@@ -2326,12 +2315,8 @@ std::string handle_command(const std::string& line) {
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
-        bool const was_paused = lease.was_paused();
         int const rc = snapshot_load(parts[2]);
-        if (!was_paused) {
-          lease.release();
-          cpc_resume();
-        }
+        lease.restore_run_state();
         if (rc != 0) return "ERR 500 snapshot-load\n";
         ipc_mru_stage(&t_CPC::mru_snaps, parts[2]);
         return ok_with_context();
@@ -2933,6 +2918,15 @@ std::string handle_command(const std::string& line) {
       // started, with no way for the caller to send `pause` or anything else.
       CpcPauseLease lease(CpcPauseLeaseMode::PauseOnly, kStepIdleWaitMs);
       if (!lease.wait()) return z80_not_idle(lease);
+      // Every way out of `step` leaves the machine stopped (a refused
+      // argument included, as it always has), and as a stop somebody asked
+      // for: another holder that found the machine running must not run it
+      // again behind the debugger. The paths that run the machine themselves
+      // let go earlier; this then does nothing.
+      struct StopOnExit {
+        CpcPauseLease& lease;
+        ~StopOnExit() { lease.release_stopped(); }
+      } const stop_on_exit{lease};
       // "step in [N]" or "step [N]" — single-step instructions
       if (parts.size() == 1 ||
           (parts.size() >= 2 &&
@@ -2961,8 +2955,9 @@ std::string handle_command(const std::string& line) {
         if (parts.size() >= 3) n = parse_int(parts[2]);
         if (n < 1) return "ERR 400 bad-args\n";
         g_ipc_instance->arm_frame_step(n);
-        lease.release();
-        cpc_resume();
+        // Not release-then-cpc_resume(): that does nothing while another
+        // lease is held, and the step then never ran.
+        lease.release_running();
         g_ipc_instance->wait_frame_step_done();
         return ok_with_context();
       }
@@ -2980,7 +2975,7 @@ std::string handle_command(const std::string& line) {
           if (z80_is_call(pc)) {
             word const next_pc =
                 static_cast<word>(pc + z80_instruction_length(pc));
-            lease.release();
+            lease.release_stopped();
             switch (z80_run_until_ephemeral(next_pc, deadline, consume_hit,
                                             ipc_server_stopping)) {
               case Z80RunUntilResult::Landed:
@@ -3004,7 +2999,7 @@ std::string handle_command(const std::string& line) {
             // hard-coded here. Nested CALLs inside the handler still skip at
             // full speed.
             z80_step_instruction();
-            lease.release();
+            lease.release_stopped();
             switch (z80_step_out_finish(5000, consume_hit)) {
               case Z80StepOutResult::Done:
                 break;
@@ -3032,7 +3027,9 @@ std::string handle_command(const std::string& line) {
         auto consume_hit = [](uint16_t& pc, bool& watch) {
           return g_ipc_instance->consume_breakpoint_hit(pc, watch);
         };
-        lease.release();  // z80_step_out_finish resumes under its own control
+        // Stopped, as far as anyone else is concerned: z80_step_out_finish
+        // resumes under its own control.
+        lease.release_stopped();
         switch (z80_step_out_finish(5000, consume_hit)) {
           case Z80StepOutResult::Done:
             return ok_with_context();
@@ -3052,7 +3049,7 @@ std::string handle_command(const std::string& line) {
         RunUntilStop stop;
         auto const deadline =
             std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        lease.release();
+        lease.release_stopped();
         switch (z80_run_until_ephemeral(static_cast<word>(addr), deadline,
                                         stop.consumer(), ipc_server_stopping)) {
           case Z80RunUntilResult::Landed:
@@ -4341,12 +4338,8 @@ std::string handle_command(const std::string& line) {
         char drive = parts[2][0];
         CpcPauseLease lease;  // idle before replacing the live medium
         if (!lease.idle()) return z80_not_idle(lease);
-        bool const was_paused = lease.was_paused();
         std::string const err = disk_format_drive(drive, parts[3]);
-        if (!was_paused) {
-          lease.release();
-          cpc_resume();
-        }
+        lease.restore_run_state();
         if (!err.empty()) return "ERR " + err + "\n";
         return "OK\n";
       }
@@ -4396,7 +4389,6 @@ std::string handle_command(const std::string& line) {
         t_drive* drv = unit == 0 ? &driveA : &driveB;
         CpcPauseLease lease;
         if (!lease.idle()) return z80_not_idle(lease);
-        bool const was_paused = lease.was_paused();
         if (subcycle_bridge_active()) {
           subcycle_bridge_pull_drive_view(static_cast<uint8_t>(unit));
         }
@@ -4412,10 +4404,7 @@ std::string handle_command(const std::string& line) {
             result = "ERR failed to update live FDC medium\n";
           }
         }
-        if (!was_paused) {
-          lease.release();
-          cpc_resume();
-        }
+        lease.restore_run_state();
         return result;
       };
 
@@ -5938,12 +5927,8 @@ std::string handle_command(const std::string& line) {
             g_session.stop_playback();
             return z80_not_idle(lease);
           }
-          bool const was_paused = lease.was_paused();
           int const rc = snapshot_load(snap_path);
-          if (!was_paused) {
-            lease.release();
-            cpc_resume();
-          }
+          lease.restore_run_state();
           if (rc != 0) {
             g_session.stop_playback();
             return "ERR 500 snapshot-load-failed\n";

@@ -639,13 +639,29 @@ void cpc_set_idle_timeout_ms(int timeout_ms);
 //
 // Acquires a pause lease, pauses the machine, and (by default) waits until the
 // Z80 thread is idle. While any lease is held, cpc_resume() is deferred:
-// it neither clears CPC.paused nor advances the resume epoch. Nested leases
-// are refcounted. Call release() before an intentional cpc_resume() that must
-// take effect while this scope is still alive.
+// it neither clears CPC.paused nor advances the resume epoch. Leases overlap
+// and are counted.
 //
 // Hold one whenever the caller touches shared machine/video state (reset,
 // rebuild, snapshot, fullscreen, video reinit, stepped Z80 state), and check
 // idle() before doing so.
+//
+// A holder says how it lets go, with exactly one of three calls (beads-mk1w):
+//
+//   restore_run_state()  the operation borrowed the machine: put back what
+//                        was there (reg set, snapshot, disk, video reinit).
+//   release_stopped()    the operation is a stop somebody asked for: a step,
+//                        a machine that failed to build.
+//   release_running()    the operation promises a running machine: reset,
+//                        the start of a frame step.
+//
+// Never by hand (`release(); if (!was_paused) cpc_resume();`). That resumes
+// over a breakpoint that fired in the frame the lease waited out, leaves an
+// instant in which the machine is paused with no lease held (a real stop, to
+// cpc_stopped()), and does nothing at all while another lease is held. A
+// lease that just goes out of scope drops its count and nothing else: the
+// machine stays as it is and nobody is told why, which is right only for a
+// process on its way out.
 
 enum class CpcPauseLeaseMode {
   WaitImmediately,  // pause + wait for g_z80_idle (default)
@@ -666,7 +682,9 @@ class CpcPauseLease {
 
   // Whether the machine was paused before this lease, or, when other leases
   // were already held, before the first of them: never "paused" merely
-  // because another holder's lease had paused it.
+  // because another holder's lease had paused it. For reporting (a KCPC read
+  // stamps its reply with it). Not for deciding whether to resume: that is
+  // restore_run_state()'s job, and it knows about stops that came later.
   bool was_paused() const { return was_paused_; }
   bool active() const { return active_; }
   // True once the Z80 thread is known idle. False after a wait that timed
@@ -676,14 +694,31 @@ class CpcPauseLease {
   bool idle() const { return idle_; }
   // Wait (bounded) for g_z80_idle; returns idle(). Idempotent once idle.
   bool wait();
-  void release();  // drop the lease early; machine stays paused
-  // Drop the lease and resume if this holder found the machine running.
-  // Error paths that return before the success-path resume must call this
-  // (the destructor only releases the count — it never resumes).
+  // Drop the lease and put the run state back: run the machine if it was
+  // running before the first of the leases now held and nobody has stopped
+  // it since. With other leases still held the machine stays theirs, and the
+  // last one to let go does this.
   void restore_run_state();
+  // Drop the lease and leave the machine stopped, as a stop somebody asked
+  // for: other holders will not run it again when they let go.
+  void release_stopped();
+  // Drop the lease and run the machine, whatever state it was found in. With
+  // other leases still held it runs when the last of them lets go (unless
+  // somebody stops it first).
+  void release_running();
+  // Runs read() while this is the only lease held, and keeps it the only one
+  // until read() returns: a new lease waits for the pause mutex this holds.
+  // For a holder that only copies out of the machine and must not do so
+  // while another holder is changing it (a KCPC read that fell back to a
+  // lease, against a machine rebuild reallocating the RAM it is copying).
+  // Waits up to timeout_ms for the other holders to let go; false when they
+  // did not, or the lease is not idle, and read() was then not called.
+  // read() must only copy: every pause, resume and lease waits for it.
+  bool read_alone(const std::function<void()>& read, int timeout_ms);
 
  private:
   void acquire(CpcPauseLeaseMode mode);
+  void release();  // drop the count only; what the destructor does
   bool was_paused_ = false;
   bool active_ = false;
   bool idle_ = false;

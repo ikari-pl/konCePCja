@@ -964,10 +964,7 @@ void emulator_reset() {
     set_osd_message("Machine reset");
   }
 
-  if (!lease.was_paused()) {
-    lease.release();
-    cpc_resume();  // a running caller keeps running post-reset
-  }
+  lease.restore_run_state();  // a running caller keeps running post-reset
 }
 
 namespace {
@@ -1284,8 +1281,6 @@ int koncpc_rebuild_machine() {
     lease.restore_run_state();
     return ERR_Z80_NOT_IDLE;
   }
-  const bool was_paused = lease.was_paused();
-
   subcycle_bridge_stop();
   // Serial backends are raw callback contexts in the Machine. Replace them
   // only after the bridge has been stopped, then let bridge_start() attach the
@@ -1302,15 +1297,14 @@ int koncpc_rebuild_machine() {
   }
 
   // emulator_init() ends with CPC.paused = false without touching g_emu_paused,
-  // so the two flags that are meant to agree no longer do. Restore the run
-  // state through the functions that set both, rather than trusting what it
-  // left behind. A machine that failed to build stays stopped: it never reached
-  // emulator_reset() and must not be run.
-  lease.release();
-  if (err != 0 || was_paused) {
-    cpc_pause();
+  // so the two flags that are meant to agree no longer do. The lease puts
+  // both back, rather than trusting what it left behind. A machine that
+  // failed to build stays stopped, and as a real stop, so that no other
+  // holder runs it: it never reached emulator_reset() and must not be run.
+  if (err != 0) {
+    lease.release_stopped();
   } else {
-    cpc_resume();
+    lease.restore_run_state();
   }
   return err;
 }
@@ -1369,14 +1363,10 @@ BinLoadResult bin_load(const std::string& filename, const size_t offset) {
   } else {
     std::memcpy(&pbRAM[offset], chunk.data(), read);
   }
-  bool const was_paused = lease.was_paused();
   koncpc_inject_launch_regs(z80, static_cast<word>(offset),
                             z80_read_mem(kMcStartProgram));
   if (subcycle_bridge_active()) subcycle_bridge_regs_to_machine();
-  if (!was_paused) {
-    lease.release();
-    cpc_resume();
-  }
+  lease.restore_run_state();
   return BinLoadResult::Ok;
 }
 
@@ -1896,11 +1886,62 @@ void CpcPauseLease::restore_run_state() {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
-  // With other leases still held the machine stays theirs; the last holder
-  // was told the same was_paused() and resumes. Not after a real stop that
-  // arrived meanwhile: that one stands.
-  if (!was_paused_ && !g_lease_chain_was_paused && g_pause_lease_count == 0) {
+  // With other leases still held the machine stays theirs, and the last
+  // holder does this. The chain's flag, not what this holder was told when
+  // it arrived: a stop that landed since stands, and so does a
+  // release_running().
+  //
+  // A lease holds the machine paused, so CPC.paused is true here whatever
+  // the holder's own work did to it: emulator_init() clears it during a
+  // rebuild, and cpc_resume_unlocked() would take that for a machine that is
+  // already running and leave g_emu_paused set.
+  CPC.paused = true;
+  if (!g_lease_chain_was_paused && g_pause_lease_count == 0) {
     cpc_resume_unlocked();
+  }
+}
+
+void CpcPauseLease::release_stopped() {
+  if (!active_) return;
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) --g_pause_lease_count;
+  active_ = false;
+  cpc_stop_requested_locked();
+  cpc_pause_locked();
+}
+
+void CpcPauseLease::release_running() {
+  if (!active_) return;
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_pause_lease_count > 0) --g_pause_lease_count;
+  active_ = false;
+  if (g_pause_lease_count > 0) {
+    // Not ours to run yet. The last holder's restore_run_state() will.
+    g_lease_chain_was_paused = false;
+    return;
+  }
+  CPC.paused = true;  // as in restore_run_state()
+  cpc_resume_unlocked();
+}
+
+bool CpcPauseLease::read_alone(const std::function<void()>& read,
+                               int timeout_ms) {
+  if (!active_ || !idle_) return false;
+  auto const deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  for (;;) {
+    {
+      // Paused and idle already (this lease). Under the mutex nobody can
+      // take another lease, so being the only holder now is being the only
+      // holder until read() returns.
+      std::scoped_lock const lock(g_pause_mutex);
+      if (g_pause_lease_count == 1) {
+        read();
+        return true;
+      }
+    }
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
   }
 }
 
@@ -3209,8 +3250,6 @@ void koncpc_toggle_fullscreen() {
                     3000);
     return;
   }
-  bool const was_paused = lease.was_paused();
-
   // Read the window before video_shutdown() destroys it.
   std::optional<bool> const fullscreen_now = koncpc_main_window_is_fullscreen();
   audio_pause();
@@ -3230,10 +3269,7 @@ void koncpc_toggle_fullscreen() {
   ipc_publish_window_state();
   audio_resume();
 
-  if (!was_paused) {
-    lease.release();
-    cpc_resume();
-  }
+  lease.restore_run_state();
 }
 #endif
 
@@ -5517,7 +5553,6 @@ int koncpc_main(int argc, char** argv) {
           set_osd_message("Video switch skipped: Z80 thread is not responding",
                           3000);
         } else {
-          bool const z80_was_paused = lease.was_paused();
           audio_pause();
           // Free cached save-state thumbnail textures while the OLD render
           // device is still alive — video_shutdown() destroys it, leaving stale
@@ -5544,10 +5579,7 @@ int koncpc_main(int argc, char** argv) {
           koncpc_setup_macos_menu();
 #endif
           audio_resume();
-          if (!z80_was_paused) {
-            lease.release();
-            cpc_resume();
-          }
+          lease.restore_run_state();
         }
       }
     }
