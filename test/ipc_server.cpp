@@ -1131,6 +1131,130 @@ TEST_F(IpcServerTest, RunReportsPauseLeaseHeld) {
   EXPECT_OK(send_command("run"));
 }
 
+// --- Lease holders that used to release and resume by hand (beads-mk1w) ---
+//
+// Every command below takes a CpcPauseLease. Each used to end with
+// `lease.release(); if (!was_paused) cpc_resume();`, or simply let the lease
+// go out of scope, which is only right while nobody else acts on the machine.
+// These tests add the second actor: a frame that ends in a real stop while
+// the command's lease waits it out, or another holder's lease overlapping it.
+
+namespace {
+// What the frame runner looks like to a lease when the frame it has to wait
+// out ends in a real stop: a breakpoint, or the last frame of a frame step.
+// Busy until a lease pauses the machine, then it stops the machine the way
+// the runner does (cpc_pause(), as emu_handle_stop() and the frame-step
+// epilogue do) and goes idle.
+class FrameThatEndsInAStop {
+ public:
+  FrameThatEndsInAStop() {
+    g_z80_idle.store(false, std::memory_order_seq_cst);
+    thread_ = std::thread([] {
+      while (!g_emu_paused.load(std::memory_order_seq_cst))
+        std::this_thread::yield();
+      cpc_pause();
+      g_z80_idle.store(true, std::memory_order_seq_cst);
+    });
+  }
+  ~FrameThatEndsInAStop() {
+    thread_.join();
+    g_z80_idle.store(true, std::memory_order_seq_cst);
+  }
+  FrameThatEndsInAStop(const FrameThatEndsInAStop&) = delete;
+  FrameThatEndsInAStop& operator=(const FrameThatEndsInAStop&) = delete;
+
+ private:
+  std::thread thread_;
+};
+}  // namespace
+
+// Class 1, "put back what you found": reg set, snapshot, load, the disk
+// commands, the DevTools pokes. A breakpoint that fires in the frame the
+// command waited out stopped the machine for real; the command resumed over
+// it and the stop was lost.
+TEST_F(IpcServerTest, ARestoringCommandDoesNotResumeOverAStopItWaitedOut) {
+  cpc_resume();
+  ASSERT_FALSE(CPC.paused);
+  {
+    FrameThatEndsInAStop const frame;
+    EXPECT_OK(send_command("reg set A 0x42"));
+  }
+  EXPECT_TRUE(cpc_stopped())
+      << "reg set resumed over the stop that ended the frame it waited for";
+  cpc_resume();
+}
+
+// The same class, single actor: nothing changes for it.
+TEST_F(IpcServerTest, ARestoringCommandLeavesTheRunStateItFound) {
+  cpc_resume();
+  EXPECT_OK(send_command("reg set A 0x42"));
+  EXPECT_FALSE(CPC.paused) << "running before, running after";
+  cpc_pause();
+  EXPECT_OK(send_command("reg set A 0x43"));
+  EXPECT_TRUE(cpc_stopped()) << "stopped before, stopped after";
+  cpc_resume();
+}
+
+// Class 1 again, the other half of the bug: between release() and
+// cpc_resume() the machine was paused with no lease held, which is what a
+// real stop looks like. Anything asking cpc_stopped() at that instant (a
+// frame step waiting for its frames) took it for one. A running machine must
+// never be seen stopped while commands merely borrow it.
+TEST_F(IpcServerTest, ARestoringCommandNeverLooksLikeAStop) {
+  cpc_resume();
+  std::atomic<bool> quit{false};
+  std::atomic<int> seen_stopped{0};
+  std::thread observer([&] {
+    while (!quit.load(std::memory_order_relaxed)) {
+      if (cpc_stopped()) seen_stopped.fetch_add(1, std::memory_order_relaxed);
+    }
+  });
+  for (int i = 0; i < 300; ++i) EXPECT_OK(send_command("reg set A 0x42"));
+  quit.store(true);
+  observer.join();
+  EXPECT_EQ(0, seen_stopped.load())
+      << "a running machine looked stopped between a command's release and "
+         "its resume";
+  EXPECT_FALSE(CPC.paused);
+}
+
+// Class 2, "leave it stopped": the step commands. A step is a stop somebody
+// asked for, so another holder that found the machine running must not run
+// it again when it lets go.
+TEST_F(IpcServerTest, AStepStaysStoppedWhenAnotherHolderLetsGo) {
+  cpc_resume();
+  ASSERT_FALSE(CPC.paused);
+  CpcPauseLease other;  // e.g. a DevTools disk operation, a KCPC request
+  EXPECT_OK(send_command("step"));
+  other.restore_run_state();
+  EXPECT_TRUE(cpc_stopped())
+      << "the other holder resumed a machine the debugger had just stepped";
+  cpc_resume();
+}
+
+// Class 3, "run it": step frame (and reset without --no-resume) promise a
+// running machine. cpc_resume() does nothing while another lease is held, so
+// with one overlapping the step never ran: the other holder put back
+// "paused", the wait took that for a stop and answered OK after 0 frames.
+TEST_F(IpcServerTest, AFrameStepRunsItsFramesAcrossAnotherHoldersLease) {
+  cpc_pause();
+  FakeFrameLoop loop(server);
+  std::atomic<bool> held{false};
+  std::thread other([&] {
+    CpcPauseLease lease;
+    held.store(true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    lease.restore_run_state();
+  });
+  while (!held.load()) std::this_thread::yield();
+  EXPECT_OK(send_command("step frame 5"));
+  other.join();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_EQ(5, loop.frames()) << "step frame 5 must run 5 frames";
+  EXPECT_TRUE(cpc_stopped()) << "and end stopped";
+  cpc_resume();
+}
+
 TEST_F(IpcServerTest, ScreenshotReturnsErrorWithoutSurface) {
   back_surface = nullptr;
   auto screenshotPath =

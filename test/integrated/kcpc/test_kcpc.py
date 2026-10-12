@@ -22,6 +22,7 @@ The binary defaults to ./koncepcja, or $KONCPC_EXE when set.
 Exit status 0 when every test passed.
 """
 
+import http.client
 import os
 import re
 import shutil
@@ -574,6 +575,102 @@ def test_reads_do_not_change_what_the_machine_computes() -> None:
             print(f'    {label}: {r.calls} reads during {frames} frames '
                   f'({r.running_reads} at a frame boundary, slowest '
                   f'{r.slowest * 1000:.0f} ms); registers and RAM identical')
+
+
+# -- beads-mk1w: a second actor that takes a lease by its own means ---------
+
+def _free_port() -> int:
+    """A loopback port nobody holds right now, for a server this test
+    starts itself. (Never a probe of somebody else's.)"""
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+class Resetter:
+    """Asks the M4 board's HTTP server for a CPC reset, over and over. The
+    server only raises a flag; the core's main loop then calls
+    emulator_reset(), which takes a pause lease of its own. It is the one
+    lease holder a test can aim at a text IPC command that is still running:
+    the text IPC serves one connection at a time."""
+
+    def __init__(self, port: int):
+        self.port = port
+        self.stop = threading.Event()
+        self.posts = 0
+        self.errors: List[str] = []
+        self.thread = threading.Thread(target=self._run)
+
+    def _run(self) -> None:
+        try:
+            while not self.stop.is_set():
+                conn = http.client.HTTPConnection('127.0.0.1', self.port,
+                                                  timeout=IO_TIMEOUT_S)
+                try:
+                    conn.request('POST', '/reset')
+                    conn.getresponse().read()
+                finally:
+                    conn.close()
+                self.posts += 1
+        except Exception as exc:  # noqa: BLE001 - reported by the test
+            self.errors.append(f'{type(exc).__name__}: {exc}')
+
+    def __enter__(self) -> 'Resetter':
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        self.thread.join()
+
+
+def test_a_reset_by_another_actor_does_not_end_a_frame_step() -> None:
+    """beads-mk1w: a frame step ends in a real stop, and a reset that arrives
+    from somewhere else while it runs must neither cut it short nor run the
+    machine on after it. emulator_reset() used to let go of its lease and
+    resume by hand: when the frame its lease waited out was the step's last,
+    it resumed over the step's stop (the step answered OK and the machine
+    ran on), and between its release and its resume the machine looked
+    stopped to the waiting step, which then gave up early."""
+    frames = 150
+    http_port = _free_port()
+    with Core('-O', f'peripheral.m4_http_port={http_port}') as core, \
+            core.client() as c:
+        c.hello('test_kcpc reset during step')
+        assert core.ipc('m4 http start').startswith('OK')
+        deadline = time.monotonic() + IO_TIMEOUT_S
+        while f'running=1 port={http_port} ' not in core.ipc('m4 http status'):
+            assert time.monotonic() < deadline, core.ipc('m4 http status')
+            time.sleep(0.02)
+        posts = 0
+        for attempt in range(3):
+            assert core.ipc('pause').startswith('OK')
+            deadline = time.monotonic() + IO_TIMEOUT_S
+            while not c.machine_info().stamp.paused:
+                assert time.monotonic() < deadline, 'the machine did not pause'
+                time.sleep(0.02)
+            before = c.machine_info().stamp
+            with Resetter(http_port) as resetter:
+                resp = core.ipc(f'step frame {frames}')
+            assert resp.startswith('OK'), resp
+            assert not resetter.errors, resetter.errors
+            after = c.machine_info().stamp
+            assert after.frame - before.frame == frames, (
+                f'attempt {attempt}: the step ran '
+                f'{after.frame - before.frame} frames, not {frames}')
+            assert after.paused, f'attempt {attempt}: not paused after the step'
+            # Any reset still on its way lands now. The stop must outlast it.
+            time.sleep(0.3)
+            later = c.machine_info().stamp
+            assert later.paused and later.frame == after.frame, (
+                f'attempt {attempt}: the machine ran on after the step: '
+                f'{after} then {later}')
+            posts += resetter.posts
+        assert posts > 3 * frames // 4, (
+            f'only {posts} reset requests in {3 * frames} frames: the step was '
+            'hardly disturbed and this proved little')
+        print(f'    {posts} reset requests during 3 x {frames} stepped frames; every '
+              'step ran its frames and stayed stopped')
 
 
 # -- slice 2: the machine reads ---------------------------------------------
@@ -1249,6 +1346,7 @@ TESTS: List[Callable[[], None]] = [
     test_machine_info_stamp,
     test_concurrent_reads_keep_the_run_state,
     test_reads_do_not_change_what_the_machine_computes,
+    test_a_reset_by_another_actor_does_not_end_a_frame_step,
     test_mem_read_matches_the_text_ipc,
     test_rom_spaces_and_limits,
     test_regs_get_matches_the_text_ipc,

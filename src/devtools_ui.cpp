@@ -513,7 +513,10 @@ void DevToolsUI::render_registers() {
     // CPC.paused only says a pause was asked for: the Z80 thread may still be
     // finishing its frame. The lease waits until it is idle.
     CpcPauseLease lease;
-    if (imgui_lease_ready(lease)) subcycle_bridge_regs_to_machine();
+    if (imgui_lease_ready(lease)) {
+      subcycle_bridge_regs_to_machine();
+      lease.restore_run_state();
+    }
   }
 
   if (!open) show_registers_ = false;
@@ -890,10 +893,7 @@ void DevToolsUI::render_disassembly() {
             if (imgui_lease_ready(lease)) {
               z80.PC.w.l = entry.addr;
               subcycle_bridge_regs_to_machine();
-              if (!lease.was_paused()) {  // running: keep running from there
-                lease.release();
-                cpc_resume();
-              }
+              lease.restore_run_state();  // running: keep running from there
             }
           }
         }
@@ -2130,10 +2130,7 @@ void DevToolsUI::render_disc_tools() {
     CpcPauseLease lease;
     if (!imgui_lease_ready(lease)) return false;
     subcycle_bridge_pull_drive_view(dt_unit);
-    if (!lease.was_paused()) {
-      lease.release();
-      cpc_resume();
-    }
+    lease.restore_run_state();
     return true;
   };
   // Mutating helpers: pause, pull, run body, push.
@@ -2153,10 +2150,7 @@ void DevToolsUI::render_disc_tools() {
       subcycle_bridge_rollback_host_view(dt_unit, snapshot);
       imgui_toast_error("Could not update live FDC medium");
     }
-    if (!lease.was_paused()) {
-      lease.release();
-      cpc_resume();
-    }
+    lease.restore_run_state();
   };
   t_drive* drv = (dt_drive_ == 0) ? &driveA : &driveB;
 
@@ -2186,10 +2180,7 @@ void DevToolsUI::render_disc_tools() {
           CpcPauseLease lease;
           if (imgui_lease_ready(lease)) {
             disk_format_drive(letter, formats[dt_format_]);
-            if (!lease.was_paused()) {
-              lease.release();
-              cpc_resume();
-            }
+            lease.restore_run_state();
             dt_files_dirty_ = true;
           }
         }
@@ -2275,10 +2266,7 @@ void DevToolsUI::render_disc_tools() {
               subcycle_bridge_rollback_host_view(unit, snapshot);
               err = "could not update live FDC medium";
             }
-            if (!lease.was_paused()) {
-              lease.release();
-              cpc_resume();
-            }
+            lease.restore_run_state();
             if (err.empty()) {
               imgui_toast_success("Imported: " + fname);
               self->dt_files_dirty_ = true;
@@ -2344,10 +2332,7 @@ void DevToolsUI::render_disc_tools() {
                 // (out-param/compound-assign/loop/reference)
                 std::string err;
                 auto data = disk_read_file(d, self->dt_export_filename_, err);
-                if (!lease.was_paused()) {
-                  lease.release();
-                  cpc_resume();
-                }
+                lease.restore_run_state();
                 if (!err.empty()) {
                   imgui_toast_error("Export failed: " + err);
                   return;
