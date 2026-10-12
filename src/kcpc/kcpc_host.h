@@ -9,6 +9,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "kcpc/kcpc_proto.h"
 
@@ -83,5 +85,27 @@ kcpc::Status kcpc_host_reset(std::uint32_t client, std::uint32_t request,
                              bool stay_paused, kcpc::Stamp& stamp);
 // Mode 0 single-steps `count` instructions before it returns; mode 4 arms
 // `count` frames and returns. kBusy while a step is in progress.
+// Modes 1 to 3 (over, out, to) pause the machine, hand the step to the
+// walker thread and return; kLimitReached when the probe has no execution
+// comparator left for the one-shot breakpoint such a step runs to.
 kcpc::Status kcpc_host_step(std::uint32_t client, std::uint32_t request,
                             const kcpc::StepRequest& step);
+
+// Breakpoints (section 12): the editing lists of z80_view.h, which the text
+// IPC and the DevTools edit too. They take the lists' own lock, which the
+// frame runner holds for the length of a machine frame: on a running machine
+// a call waits for the frame in flight, so none of this is for polling. An
+// edit from any source is pushed as EVT_BREAKPOINTS_CHANGED.
+kcpc::Status kcpc_host_bp_list(std::uint64_t& generation,
+                               std::vector<kcpc::BpEntry>& entries);
+// Adds the entry or replaces the one with the same kind and address (and
+// mask). kBadPayload for a condition that does not parse, with the parser's
+// words in `message`; kLimitReached when the probe would not arm it.
+kcpc::Status kcpc_host_bp_add(std::uint32_t client, std::uint32_t request,
+                              const kcpc::BpEntry& entry,
+                              std::uint64_t& generation, std::string& message);
+kcpc::Status kcpc_host_bp_del(std::uint32_t client, std::uint32_t request,
+                              const kcpc::BpDelRequest& del,
+                              std::uint64_t& generation);
+kcpc::Status kcpc_host_bp_clear(std::uint32_t client, std::uint32_t request,
+                                std::uint8_t kind, std::uint64_t& generation);

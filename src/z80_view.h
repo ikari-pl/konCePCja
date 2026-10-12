@@ -104,6 +104,8 @@ struct IOBreakpoint {
   IOBreakpointDir dir;
   std::unique_ptr<ExprNode> condition;
   std::string condition_str;
+  int pass_count = 0;  // break only after this many hits
+  int hit_count = 0;
 };
 
 struct BreakpointSnapshot {
@@ -128,6 +130,8 @@ struct IOBreakpointSnapshot {
   word mask;
   IOBreakpointDir dir;
   std::string condition_str;
+  int pass_count = 0;
+  int hit_count = 0;
 };
 
 class t_z80regs {
@@ -217,6 +221,54 @@ void z80_clear_breakpoints();
 // over from an earlier arming". Without it `wait bp` reports a stale hit as if
 // the breakpoint just armed had fired (beads-6561).
 uint64_t z80_breakpoint_generation();
+// Called after every such mutation, with the new generation: the KCPC server
+// tells its clients (EVT_BREAKPOINTS_CHANGED), whoever made the edit. It runs
+// under the pause mutex, on the thread that edited: it must only post.
+using BreakpointsChangedHook = void (*)(uint64_t generation);
+void z80_set_breakpoints_changed_hook(BreakpointsChangedHook hook);
+
+// The three editing lists as one family, entries named by kind and address
+// (and mask, for I/O): what the KCPC protocol's BP_* requests work on
+// (docs/protocol/kcpc-binary-v1.md, section 12). Each call is one mutation
+// under the lists' lock, with one new generation.
+enum class Z80BpKind : std::uint8_t { Exec = 0, Watch = 1, Io = 2 };
+
+struct Z80BpSpec {
+  Z80BpKind kind = Z80BpKind::Exec;
+  // Watch and I/O: 1 read (IN), 2 write (OUT), 3 both. Execution: 0.
+  std::uint8_t access = 0;
+  word addr = 0;          // address, or port value for I/O
+  word len_or_mask = 0;   // watch: length of the range; I/O: port mask
+  int pass_count = 0;     // break only after this many hits
+  int hit_count = 0;      // listings only
+  std::string condition;  // expression source; empty = always
+};
+
+enum class Z80BpEdit : std::uint8_t {
+  Ok,
+  BadCondition,  // the condition does not parse; nothing was added
+  LimitReached,  // the probe has no comparator left for it; nothing was added
+  NotFound,      // no such entry
+};
+
+// Adds the entry, or replaces the one with the same kind and address (and
+// mask). An entry is only accepted if the probe will arm it: the probe has
+// PROBE_MAX_EXEC / _WATCH / _IO comparators, entries of every source share
+// them, and one beyond that would be listed and never fire (beads-zqf3).
+// `error` says why a condition was refused.
+Z80BpEdit z80_bp_put(const Z80BpSpec& spec, std::string& error,
+                     uint64_t& generation);
+// Removes the entries with that kind and address (and mask, for I/O).
+Z80BpEdit z80_bp_remove(Z80BpKind kind, word addr, word mask,
+                        uint64_t& generation);
+// Empties the lists named.
+void z80_bp_clear(bool exec, bool watch, bool io, uint64_t& generation);
+// Every entry of the three lists, and the generation they belong to.
+std::vector<Z80BpSpec> z80_bp_list(uint64_t& generation);
+// Whether the probe has an execution comparator to spare: a step that runs to
+// an address needs one for its one-shot breakpoint.
+bool z80_exec_comparator_free();
+
 void z80_step_instruction();
 
 enum class Z80StepOutResult : std::uint8_t {
@@ -274,6 +326,23 @@ Z80RunUntilResult z80_run_until_ephemeral(
 // paused PC.
 Z80StepOutResult z80_step_out_finish(
     int timeout_ms, const BreakpointHitConsumer& consume_hit = {});
+// The same against a deadline the caller shares with other walks.
+Z80StepOutResult z80_step_out_until(
+    std::chrono::steady_clock::time_point deadline,
+    const BreakpointHitConsumer& consume_hit = {});
+
+// Step over `count` instructions: a CALL runs to the instruction after it,
+// an RST is stepped into and its handler finished (it does not return to
+// pc+1 on a CPC, see z80_step_out_finish), anything else is single-stepped.
+// Stops early, with what stopped it, as the two walks above do. The caller
+// must first idle the CPU.
+Z80StepOutResult z80_step_over(uint32_t count,
+                               std::chrono::steady_clock::time_point deadline);
+
+// Every one of these walks is a CpcWalk (koncepcja.h): to the run-state
+// observer it is one step, announced when the outermost walk returns as
+// StepDone, StepTimeout or StepStalled, or as whatever else stopped it.
+// Somebody's pause ends a walk at its next poll (cpc_walk_interrupted()).
 
 const std::vector<Breakpoint>& z80_list_breakpoints_ref();
 std::vector<BreakpointSnapshot> z80_breakpoints_snapshot();
@@ -292,6 +361,9 @@ bool z80_probe_exec_should_break(uint16_t pc);
 bool z80_probe_exec_should_break(uint16_t pc, bool& user_breakpoint_fired);
 bool z80_probe_watch_should_break(uint16_t addr, uint8_t data, bool is_write,
                                   uint8_t old_val);
+// The same for a port comparator that matched: the conditions and pass
+// counts of the I/O breakpoints that cover this port and direction.
+bool z80_probe_io_should_break(uint16_t port, uint8_t data, bool is_write);
 void z80_record_probe_hit_source(bool user_breakpoint);
 bool z80_last_probe_hit_was_user_breakpoint();
 void z80_remove_ephemeral_breakpoints();

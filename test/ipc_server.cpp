@@ -729,6 +729,19 @@ TEST_F(IpcServerTest, WaitVblRejectsANonPositiveCount) {
   EXPECT_EQ(0u, send_command("wait vbl -2 100").rfind("ERR 400", 0));
 }
 
+namespace {
+// Commits an execution breakpoint's stop the way the bridge does for a probe
+// hit: announced as a breakpoint at `pc`, and handed to the hit hook.
+bool commit_exec_stop(uint64_t epoch, uint64_t generation, word pc) {
+  CpcRunCause hit;
+  hit.reason = CpcStopReason::Breakpoint;
+  hit.has_pc = true;
+  hit.pc = pc;
+  hit.addr = pc;
+  return cpc_commit_breakpoint_stop(epoch, generation, hit, pc,
+                                    /*watchpoint=*/false);
+}
+}  // namespace
 TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
   uint16_t hit_pc = 0;
   bool watch = false;
@@ -744,14 +757,12 @@ TEST_F(IpcServerTest, StaleBreakpointStopCannotOvertakeResume) {
   cpc_resume();
 
   uint64_t const generation = z80_breakpoint_generation();
-  EXPECT_FALSE(
-      cpc_commit_breakpoint_stop(stale_epoch, generation, 0x1234, false));
+  EXPECT_FALSE(commit_exec_stop(stale_epoch, generation, 0x1234));
   EXPECT_FALSE(CPC.paused);
   EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
 
   uint64_t const current_epoch = cpc_resume_epoch();
-  EXPECT_TRUE(
-      cpc_commit_breakpoint_stop(current_epoch, generation, 0x5678, false));
+  EXPECT_TRUE(commit_exec_stop(current_epoch, generation, 0x5678));
   EXPECT_TRUE(CPC.paused);
   EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
   EXPECT_EQ(hit_pc, 0x5678);
@@ -781,7 +792,7 @@ TEST_F(IpcServerTest, RedundantResumeCannotDiscardAPendingStop) {
       << "a resume on an already-running machine must not advance the epoch";
 
   // The hit staged against the FIRST (and only real) epoch must still commit.
-  EXPECT_TRUE(cpc_commit_breakpoint_stop(epoch, generation, 0x1234, false));
+  EXPECT_TRUE(commit_exec_stop(epoch, generation, 0x1234));
   EXPECT_TRUE(CPC.paused);
   EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
   EXPECT_EQ(hit_pc, 0x1234);
@@ -796,8 +807,7 @@ TEST_F(IpcServerTest, BreakpointMutationInvalidatesClassifiedStop) {
   uint64_t const old_generation = z80_breakpoint_generation();
   z80_add_breakpoint(0x1234);
 
-  EXPECT_FALSE(
-      cpc_commit_breakpoint_stop(epoch, old_generation, 0x1234, false));
+  EXPECT_FALSE(commit_exec_stop(epoch, old_generation, 0x1234));
   EXPECT_FALSE(CPC.paused);
   EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
   z80_clear_breakpoints();
@@ -831,8 +841,7 @@ TEST_F(IpcServerTest, ResumeCannotInterleaveWithExecutionEpochStamp) {
 
   resume_thread.join();
   EXPECT_TRUE(resume_finished.load(std::memory_order_acquire));
-  EXPECT_FALSE(cpc_commit_breakpoint_stop(stamped_epoch, stamped_generation,
-                                          0x1234, false));
+  EXPECT_FALSE(commit_exec_stop(stamped_epoch, stamped_generation, 0x1234));
 }
 
 TEST_F(IpcServerTest, BreakpointMutationCannotRaceStopCommit) {

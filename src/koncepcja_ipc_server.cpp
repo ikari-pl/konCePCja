@@ -3150,7 +3150,10 @@ std::string handle_command(const std::string& line) {
       auto step_one_frame = [&]() -> bool {
         if (!g_ipc_instance) return true;
         g_ipc_instance->arm_frame_step(1);
-        cpc_resume();
+        // cpc_run(), not cpc_resume(): the latter is dropped while another
+        // actor holds a pause lease, and the frame then never came
+        // (beads-pja3).
+        cpc_run();
         g_ipc_instance->wait_frame_step_done();
         return !g_ipc_instance->breakpoint_hit_pending();
       };
@@ -3269,7 +3272,9 @@ std::string handle_command(const std::string& line) {
           g_ipc_instance->arm_frame_step(
               hold_frames,
               g_kbd_publish_serial.load(std::memory_order_acquire));
-          cpc_resume();
+          // A run that is not lost to another actor's pause lease
+          // (beads-pja3): the hold needs its frames.
+          cpc_run();
           // Block on the frame-step condvar until the hold completes — no
           // busy-wait.
           g_ipc_instance->wait_frame_step_done();
@@ -3280,7 +3285,7 @@ std::string handle_command(const std::string& line) {
         // straight through it.
         if (!was_paused && g_ipc_instance != nullptr &&
             !g_ipc_instance->breakpoint_hit_pending()) {
-          cpc_resume();
+          cpc_run();
         }
       };
 
@@ -3685,7 +3690,7 @@ std::string handle_command(const std::string& line) {
                        std::chrono::milliseconds(parse_int(parts[4]));
           }
         }
-        cpc_resume();
+        cpc_run();  // not lost to another actor's pause lease (beads-pja3)
         while (true) {
           byte const memv = z80_read_mem(static_cast<word>(addr));
           if ((memv & static_cast<byte>(mask)) ==
@@ -3765,7 +3770,10 @@ std::string handle_command(const std::string& line) {
         bool const was_paused = CPC.paused;
         g_ipc_instance->arm_frame_step(count);
         if (was_paused) {
-          cpc_resume();
+          // cpc_run(): with a bare resume the frames never came when another
+          // actor held a pause lease at this instant, and the wait timed out
+          // on a machine nobody had started (beads-pja3).
+          cpc_run();
           if (!g_ipc_instance->frame_step_active.load()) cpc_pause();
         }
         switch (

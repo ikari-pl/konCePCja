@@ -1105,6 +1105,10 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
     }
   }
   bool user_breakpoint_fired = hit.kind != PROBE_HIT_EXEC;
+  // The byte a watch hit is about. For a write it is on the data bus when
+  // the probe latches. For a read it is not there yet (the memory has not
+  // answered; the bus floats at &FF), so it is the byte at the address.
+  uint8_t watch_value = hit.data;
   if (hit.kind == PROBE_HIT_EXEC) {
     if (!z80_probe_exec_should_break(hit.addr, user_breakpoint_fired)) {
       b.machine.probe_resume();
@@ -1117,11 +1121,24 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
     // master cycle (one-tick write latch), and run_frame parks on the tick
     // the probe latched — peek_mem still reads the pre-write value here.
     const uint8_t old_val = b.machine.peek_mem(hit.addr);
-    if (!z80_probe_watch_should_break(hit.addr, hit.data, is_write, old_val)) {
+    if (!is_write) watch_value = old_val;
+    if (!z80_probe_watch_should_break(hit.addr, watch_value, is_write,
+                                      old_val)) {
       b.machine.probe_resume();
       return 0;
     }
     z80.watchpoint_old = old_val;
+  }
+  if (hit.kind == PROBE_HIT_IO_READ || hit.kind == PROBE_HIT_IO_WRITE) {
+    // The comparator knows the port and the direction; the condition and
+    // the pass count of the I/O breakpoint are the host's to judge. Until
+    // this filter existed a condition on an I/O breakpoint was accepted and
+    // then ignored: every access to the port stopped the machine.
+    if (!z80_probe_io_should_break(hit.addr, hit.data,
+                                   hit.kind == PROBE_HIT_IO_WRITE)) {
+      b.machine.probe_resume();
+      return 0;
+    }
   }
   b.machine.probe_resume();  // edge consumed: resume continues mid-instruction
   if (hit.kind == PROBE_HIT_EXEC) {
@@ -1135,7 +1152,7 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
   } else {
     z80.watchpoint_reached = 1;
     z80.watchpoint_addr = hit.addr;
-    z80.watchpoint_value = hit.data;
+    z80.watchpoint_value = watch_value;
   }
   z80_record_probe_hit_source(user_breakpoint_fired);
   z80_remove_ephemeral_breakpoints_while_coordinated();
@@ -1329,8 +1346,38 @@ int subcycle_bridge_debug_sync() {
 
   auto commit_real_stop = [&](const ProbeHit& hit) {
     if (!b.pending_real_stop) return true;  // legacy KONCPC_WAITBREAK
+    // What the stop is announced as: the hit itself. An execution breakpoint
+    // stops at its own address. A watch or an I/O hit stops inside the
+    // instruction that made the access, and its PC is whatever the registers
+    // then show, so it is left for the announcement to read.
+    CpcRunCause stop;
+    stop.addr = hit.addr;
+    switch (hit.kind) {
+      case PROBE_HIT_EXEC:
+        stop.reason = CpcStopReason::Breakpoint;
+        stop.has_pc = true;
+        stop.pc = hit.addr;
+        break;
+      case PROBE_HIT_MEM_READ:
+      case PROBE_HIT_MEM_WRITE:
+        stop.reason = CpcStopReason::Watchpoint;
+        stop.access = hit.kind == PROBE_HIT_MEM_READ ? 1 : 2;
+        // As process_probe_hit() published it: the byte written, or the
+        // byte the read returns.
+        stop.value = z80.watchpoint_value;
+        if (hit.kind == PROBE_HIT_MEM_WRITE)
+          stop.old_value = z80.watchpoint_old;
+        break;
+      default:  // PROBE_HIT_IO_READ, PROBE_HIT_IO_WRITE
+        stop.reason = CpcStopReason::IoBreakpoint;
+        stop.access = hit.kind == PROBE_HIT_IO_READ ? 1 : 2;
+        // An OUT has its byte on the bus when the probe latches. An IN does
+        // not: the device has not answered, and there is nothing to report.
+        if (hit.kind == PROBE_HIT_IO_WRITE) stop.value = hit.data;
+        break;
+    }
     bool const committed = cpc_commit_breakpoint_stop(
-        b.pending_stop_epoch, b.pending_stop_generation,
+        b.pending_stop_epoch, b.pending_stop_generation, stop,
         static_cast<word>(hit.addr), hit.kind != PROBE_HIT_EXEC);
     b.pending_real_stop = false;
     b.pending_stop_epoch = 0;

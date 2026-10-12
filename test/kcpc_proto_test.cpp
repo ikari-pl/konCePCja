@@ -703,5 +703,113 @@ TEST(KcpcCodec, RunStateRoundTrips) {
 TEST(KcpcCodec, TheServerAnnouncesRunControlAndEvents) {
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapEvents, 0U);
-  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapBreakpoints, 0U) << "slice 5";
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapBreakpoints, 0U);
+  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapInput, 0U) << "slice 6";
+}
+
+// -- slice 5: breakpoints ----------------------------------------------------
+
+TEST(KcpcCodec, ABreakpointEntryRoundTrips) {
+  kcpc::BpEntry in;
+  in.kind = static_cast<std::uint8_t>(kcpc::BpKind::kIo);
+  in.access = kcpc::kBpAccessWrite;
+  in.addr = 0x7F00;
+  in.len_or_mask = 0xFF00;
+  in.pass_count = 7;
+  in.hit_count = 3;
+  in.condition = "value = 0x10";
+  kcpc::Writer w;
+  kcpc::write_bp_entry(w, in);
+  // kind, access, addr, len_or_mask, 2 reserved, pass, hits, str.
+  ASSERT_EQ(w.size(), 16U + 2U + in.condition.size());
+  EXPECT_EQ(w.data()[2], 0x00);
+  EXPECT_EQ(w.data()[3], 0x7F) << "little-endian";
+  EXPECT_EQ(w.data()[6], 0) << "reserved";
+  EXPECT_EQ(w.data()[7], 0) << "reserved";
+
+  kcpc::Reader r(w.data());
+  kcpc::BpEntry out;
+  ASSERT_TRUE(kcpc::read_bp_entry(r, out));
+  EXPECT_EQ(r.remaining(), 0U);
+  EXPECT_EQ(out.kind, in.kind);
+  EXPECT_EQ(out.access, in.access);
+  EXPECT_EQ(out.addr, in.addr);
+  EXPECT_EQ(out.len_or_mask, in.len_or_mask);
+  EXPECT_EQ(out.pass_count, in.pass_count);
+  EXPECT_EQ(out.hit_count, in.hit_count);
+  EXPECT_EQ(out.condition, in.condition);
+
+  // Every shorter payload is refused, wherever it was cut.
+  for (std::size_t cut = 0; cut < w.size(); ++cut) {
+    kcpc::Reader shorter(w.data().data(), cut);
+    kcpc::BpEntry ignored;
+    EXPECT_FALSE(kcpc::read_bp_entry(shorter, ignored)) << "cut at " << cut;
+  }
+}
+
+TEST(KcpcCodec, ABreakpointEntryIsRefusedForItsFields) {
+  kcpc::BpEntry exec;
+  EXPECT_EQ(kcpc::bp_entry_refusal(exec), nullptr);
+  exec.pass_count = kcpc::kMaxBpPassCount;
+  EXPECT_EQ(kcpc::bp_entry_refusal(exec), nullptr);
+  exec.pass_count = kcpc::kMaxBpPassCount + 1;
+  EXPECT_NE(kcpc::bp_entry_refusal(exec), nullptr);
+  exec.pass_count = 0;
+  exec.access = kcpc::kBpAccessRead;
+  EXPECT_NE(kcpc::bp_entry_refusal(exec), nullptr);
+  exec.access = 0;
+  exec.len_or_mask = 1;
+  EXPECT_NE(kcpc::bp_entry_refusal(exec), nullptr);
+  exec.len_or_mask = 0;
+  exec.kind = 3;
+  EXPECT_NE(kcpc::bp_entry_refusal(exec), nullptr) << "no such kind";
+
+  kcpc::BpEntry watch;
+  watch.kind = static_cast<std::uint8_t>(kcpc::BpKind::kWatch);
+  watch.len_or_mask = 1;
+  for (std::uint8_t access = 0; access <= 4; ++access) {
+    watch.access = access;
+    EXPECT_EQ(kcpc::bp_entry_refusal(watch) == nullptr,
+              access >= 1 && access <= 3)
+        << "access " << int{access};
+  }
+  watch.access = kcpc::kBpAccessBoth;
+  watch.len_or_mask = 0;
+  EXPECT_NE(kcpc::bp_entry_refusal(watch), nullptr) << "no bytes to watch";
+  watch.addr = 0xFFFF;
+  watch.len_or_mask = 1;
+  EXPECT_TRUE(kcpc::bp_watch_range_ok(watch));
+  watch.len_or_mask = 2;
+  EXPECT_FALSE(kcpc::bp_watch_range_ok(watch)) << "nothing wraps at 64 KiB";
+
+  kcpc::BpEntry io;
+  io.kind = static_cast<std::uint8_t>(kcpc::BpKind::kIo);
+  io.access = kcpc::kBpAccessRead;
+  EXPECT_EQ(kcpc::bp_entry_refusal(io), nullptr) << "mask 0 matches any port";
+}
+
+TEST(KcpcCodec, ABreakpointDeleteRoundTrips) {
+  kcpc::BpDelRequest in;
+  in.kind = static_cast<std::uint8_t>(kcpc::BpKind::kIo);
+  in.addr = 0xBC00;
+  in.len_or_mask = 0xFF00;
+  kcpc::Writer w;
+  kcpc::write_bp_del_request(w, in);
+  ASSERT_EQ(w.size(), 8U);
+  kcpc::Reader r(w.data());
+  kcpc::BpDelRequest out;
+  ASSERT_TRUE(kcpc::read_bp_del_request(r, out));
+  EXPECT_EQ(out.kind, in.kind);
+  EXPECT_EQ(out.addr, 0xBC00U);
+  EXPECT_EQ(out.len_or_mask, 0xFF00U);
+  kcpc::Reader shorter(w.data().data(), 7);
+  EXPECT_FALSE(kcpc::read_bp_del_request(shorter, out));
+}
+
+TEST(KcpcCodec, OnlyOverOutAndToWalk) {
+  EXPECT_FALSE(kcpc::step_mode_walks(kcpc::StepMode::kIn));
+  EXPECT_TRUE(kcpc::step_mode_walks(kcpc::StepMode::kOver));
+  EXPECT_TRUE(kcpc::step_mode_walks(kcpc::StepMode::kOut));
+  EXPECT_TRUE(kcpc::step_mode_walks(kcpc::StepMode::kTo));
+  EXPECT_FALSE(kcpc::step_mode_walks(kcpc::StepMode::kFrames));
 }

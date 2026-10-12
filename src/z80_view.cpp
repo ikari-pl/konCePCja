@@ -15,9 +15,11 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "hw/memory.h"
+#include "hw/probe.h"
 #include "koncepcja.h"
 #include "memory_bus.h"
 #include "subcycle/machine.h"
@@ -108,15 +110,25 @@ namespace {
 // enough: the value is only ever stamped and later compared for equality.
 std::atomic<uint64_t> g_bp_generation{0};
 std::atomic<bool> g_last_probe_hit_user_breakpoint{false};
+std::atomic<BreakpointsChangedHook> g_breakpoints_changed_hook{nullptr};
 
 // Bumped AFTER the list mutation it describes, never before: a hit that fires
 // mid-mutation then carries the OLD generation and is dropped by
 // consume_breakpoint_hit(), which is the conservative direction. Bumping first
 // would let such a hit be reported as if it had fired under the new arming.
 void bump_bp_generation() {
-  g_bp_generation.fetch_add(1, std::memory_order_relaxed);
+  uint64_t const now =
+      g_bp_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (BreakpointsChangedHook const hook =
+          g_breakpoints_changed_hook.load(std::memory_order_acquire)) {
+    hook(now);
+  }
 }
 }  // namespace
+
+void z80_set_breakpoints_changed_hook(BreakpointsChangedHook hook) {
+  g_breakpoints_changed_hook.store(hook, std::memory_order_release);
+}
 
 uint64_t z80_breakpoint_generation() {
   return g_bp_generation.load(std::memory_order_relaxed);
@@ -166,6 +178,14 @@ void z80_clear_breakpoints() {
 void z80_step_instruction() {
   if (subcycle::Machine* m = subcycle_bridge_machine()) {
     m->step_instruction();  // probe-blind: never re-trips the halt
+    // Blind, but the probe is on the board and was ticked along: a fetch at
+    // an address it has a comparator for (the next turn of a loop a
+    // breakpoint sits in) closes its latch all the same. Nobody collects
+    // that hit, and the next frame would report it as a breakpoint stop,
+    // at an address the CPU has long left and even after the breakpoint was
+    // deleted. A hit is collected in the frame that latched it, so whatever
+    // is latched here came from this step.
+    m->probe_resume();
     subcycle_bridge_sync_regs_view();
     subcycle_bridge_sync_chip_views();  // rom:LO etc. follow the step's OUTs
   }
@@ -225,19 +245,15 @@ bool user_breakpoint_fires_at(word pc) {
 }
 }  // namespace
 
-Z80RunUntilResult z80_run_until_ephemeral(
+namespace {
+// How often a walk looks again while a pause lease keeps it from running the
+// machine. A lease is one operation long.
+constexpr auto kLeaseRetry = std::chrono::microseconds(200);
+
+Z80RunUntilResult run_until_ephemeral(
     word target, std::chrono::steady_clock::time_point deadline,
     const BreakpointHitConsumer& consume_hit,
     const Z80AbortPredicate& should_abort) {
-  // Asked before the machine check as well as inside the loop below: a caller
-  // that is already going away wants an answer now, and "nothing can run" is
-  // not the reason it is being told to stop.
-  if (should_abort && should_abort()) return Z80RunUntilResult::Aborted;
-  // Nothing can reach `target` without a machine, so waiting for it is waiting
-  // for the deadline. z80_step_out_finish() bails the same way; leaving this
-  // one out meant `step to` and `step over` still burned the full 5s in the
-  // unit-test binary.
-  if (subcycle_bridge_machine() == nullptr) return Z80RunUntilResult::Stalled;
   z80_add_breakpoint_ephemeral(target);
 
   // Drop a hit latched before we armed: it belongs to whatever ran last, and
@@ -248,7 +264,27 @@ Z80RunUntilResult z80_run_until_ephemeral(
     consume_hit(stale_pc, stale_watch);
   }
 
-  uint64_t const run_epoch = cpc_resume();
+  // Run the machine, and not with a bare cpc_resume(): that does nothing
+  // while another actor holds a pause lease, and the walk then waited for a
+  // machine nobody had started (beads-pja3). Wait the lease out instead.
+  uint64_t run_epoch = 0;
+  for (;;) {
+    CpcWalkRun const run = cpc_walk_run(run_epoch);
+    if (run == CpcWalkRun::Running) break;
+    if (run == CpcWalkRun::Interrupted) {
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::OtherBreak;
+    }
+    if (should_abort && should_abort()) {
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::Aborted;
+    }
+    if (std::chrono::steady_clock::now() > deadline) {
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::Timeout;
+    }
+    std::this_thread::sleep_for(kLeaseRetry);
+  }
   bool landed = false;
   for (;;) {
     // A different epoch means someone else resumed the machine out from under
@@ -271,9 +307,20 @@ Z80RunUntilResult z80_run_until_ephemeral(
         return Z80RunUntilResult::OtherBreak;
       }
     }
-    if (g_emu_paused.load(std::memory_order_acquire)) {
+    // Stopped, and not merely leased: g_emu_paused is also set while another
+    // actor holds a pause lease (a memory write, a register edit), and
+    // taking that for the stop ended the walk short of its target with the
+    // machine about to run on (beads-pja3). The announced state is settled
+    // only by a stop somebody asked for, once the frame runner has parked.
+    if (cpc_announced_stopped()) {
       landed = z80.PC.w.l == target;
       break;
+    }
+    // A core that is quitting ends the walk without pausing anything.
+    if (cpc_walk_interrupted()) {
+      cpc_pause_if_epoch(run_epoch);
+      z80_remove_ephemeral_breakpoints();
+      return Z80RunUntilResult::OtherBreak;
     }
     // Polled with the deadline, not instead of it: a wait whose caller is
     // being torn down must end now, not when its own clock says so.
@@ -313,18 +360,160 @@ Z80RunUntilResult z80_run_until_ephemeral(
   return Z80RunUntilResult::Landed;
 }
 
+// What a walk that ended tells the run-state observer (CpcWalk).
+void walk_verdict(Z80RunUntilResult result) {
+  switch (result) {
+    case Z80RunUntilResult::Landed:
+      cpc_walk_verdict(CpcStopReason::StepDone);
+      break;
+    case Z80RunUntilResult::Timeout:
+      cpc_walk_verdict(CpcStopReason::StepTimeout);
+      break;
+    case Z80RunUntilResult::Stalled:
+      cpc_walk_verdict(CpcStopReason::StepStalled);
+      break;
+    case Z80RunUntilResult::OtherBreak:
+    case Z80RunUntilResult::Aborted:
+      cpc_walk_stopped_by_other();
+      break;
+  }
+}
+
+Z80StepOutResult step_out_until(std::chrono::steady_clock::time_point deadline,
+                                const BreakpointHitConsumer& consume_hit,
+                                bool& stepped_onto_breakpoint);
+}  // namespace
+
+Z80RunUntilResult z80_run_until_ephemeral(
+    word target, std::chrono::steady_clock::time_point deadline,
+    const BreakpointHitConsumer& consume_hit,
+    const Z80AbortPredicate& should_abort) {
+  // Asked before the machine check as well as inside the walk: a caller
+  // that is already going away wants an answer now, and "nothing can run" is
+  // not the reason it is being told to stop.
+  if (should_abort && should_abort()) return Z80RunUntilResult::Aborted;
+  // Nothing can reach `target` without a machine, so waiting for it is waiting
+  // for the deadline. z80_step_out_finish() bails the same way; leaving this
+  // one out meant `step to` and `step over` still burned the full 5s in the
+  // unit-test binary.
+  if (subcycle_bridge_machine() == nullptr) return Z80RunUntilResult::Stalled;
+  CpcWalk const walk;
+  Z80RunUntilResult const result =
+      run_until_ephemeral(target, deadline, consume_hit, should_abort);
+  walk_verdict(result);
+  return result;
+}
+
 Z80StepOutResult z80_step_out_finish(int timeout_ms,
                                      const BreakpointHitConsumer& consume_hit) {
+  return z80_step_out_until(
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms),
+      consume_hit);
+}
+
+namespace {
+void walk_verdict(Z80StepOutResult result, bool stepped_onto_breakpoint) {
+  switch (result) {
+    case Z80StepOutResult::Done:
+      cpc_walk_verdict(CpcStopReason::StepDone);
+      break;
+    case Z80StepOutResult::Timeout:
+      cpc_walk_verdict(CpcStopReason::StepTimeout);
+      break;
+    case Z80StepOutResult::Stalled:
+      cpc_walk_verdict(CpcStopReason::StepStalled);
+      break;
+    case Z80StepOutResult::BreakpointHit:
+      // A breakpoint the walk stepped onto has been given as the verdict
+      // already; anything else that ended it is somebody else's stop.
+      if (!stepped_onto_breakpoint) cpc_walk_stopped_by_other();
+      break;
+  }
+}
+}  // namespace
+
+Z80StepOutResult z80_step_out_until(
+    std::chrono::steady_clock::time_point deadline,
+    const BreakpointHitConsumer& consume_hit) {
   // Without a machine nothing can retire: SP never moves and the walk below
   // would spin to the deadline for nothing. The unit-test binary never calls
   // subcycle_bridge_start(), so this is the difference between a 5s hot spin
   // on every suite run and an immediate, honest answer.
   if (subcycle_bridge_machine() == nullptr) return Z80StepOutResult::Stalled;
+  CpcWalk const walk;
+  bool stepped_onto_breakpoint = false;
+  Z80StepOutResult const result =
+      step_out_until(deadline, consume_hit, stepped_onto_breakpoint);
+  walk_verdict(result, stepped_onto_breakpoint);
+  return result;
+}
 
+Z80StepOutResult z80_step_over(uint32_t count,
+                               std::chrono::steady_clock::time_point deadline) {
+  if (subcycle_bridge_machine() == nullptr) return Z80StepOutResult::Stalled;
+  CpcWalk const walk;
+  uint64_t operation_epoch = cpc_resume_epoch();
+  for (uint32_t i = 0; i < count; ++i) {
+    word pc = 0;
+    Z80StepClass cls;
+    bool interrupted = false;
+    {
+      // As the step-out walk steps: under the lock every pause, resume and
+      // list edit takes, and only while the machine is still stopped and
+      // still ours.
+      CpcStopCoordinationGuard const coordination;
+      interrupted = coordination.resume_epoch() != operation_epoch ||
+                    !g_emu_paused.load(std::memory_order_acquire) ||
+                    cpc_walk_interrupted();
+      if (!interrupted) {
+        pc = z80.PC.w.l;
+        cls = z80_classify_at(pc);
+        // A CALL is run over below. An RST is stepped into, and the walk
+        // below finishes the frame it opened. Anything else is the step.
+        if (!cls.is_call) z80_step_instruction();
+      }
+    }
+    if (interrupted) {
+      cpc_walk_stopped_by_other();
+      return Z80StepOutResult::BreakpointHit;
+    }
+    if (cls.is_call) {
+      switch (z80_run_until_ephemeral(static_cast<word>(pc + cls.length),
+                                      deadline)) {
+        case Z80RunUntilResult::Landed:
+          break;
+        case Z80RunUntilResult::OtherBreak:
+        case Z80RunUntilResult::Aborted:  // no predicate passed: unreachable
+          return Z80StepOutResult::BreakpointHit;
+        case Z80RunUntilResult::Timeout:
+          return Z80StepOutResult::Timeout;
+        case Z80RunUntilResult::Stalled:
+          return Z80StepOutResult::Stalled;
+      }
+      operation_epoch = cpc_resume_epoch();
+    } else if (cls.is_rst) {
+      Z80StepOutResult const out = z80_step_out_until(deadline);
+      if (out != Z80StepOutResult::Done) return out;
+      operation_epoch = cpc_resume_epoch();
+    }
+    // The clock is looked at between instructions, on the stride the
+    // step-out walk uses: a count of millions must not outlive the deadline.
+    if (i + 1 < count && (i % kStepOutClockStride) == kStepOutClockStride - 1 &&
+        std::chrono::steady_clock::now() > deadline) {
+      cpc_walk_verdict(CpcStopReason::StepTimeout);
+      return Z80StepOutResult::Timeout;
+    }
+  }
+  cpc_walk_verdict(CpcStopReason::StepDone);
+  return Z80StepOutResult::Done;
+}
+
+namespace {
+Z80StepOutResult step_out_until(std::chrono::steady_clock::time_point deadline,
+                                const BreakpointHitConsumer& consume_hit,
+                                bool& stepped_onto_breakpoint) {
   word const entry_sp = z80.SP.w.l;
   uint64_t operation_epoch = cpc_resume_epoch();
-  auto const deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   uint64_t retired = 0;
   // Stack slots holding the return address of each frame this walk has entered
   // (a stepped-into RST, or an accepted interrupt).
@@ -352,8 +541,12 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
   };
 
   for (;;) {
+    // Somebody ran the machine under the walk, or asked for it to stop. The
+    // second cannot be seen from the run state: the walk single-steps a
+    // machine that is stopped already.
     if (cpc_resume_epoch() != operation_epoch ||
-        !g_emu_paused.load(std::memory_order_acquire)) {
+        !g_emu_paused.load(std::memory_order_acquire) ||
+        cpc_walk_interrupted()) {
       z80_remove_ephemeral_breakpoints();
       return Z80StepOutResult::BreakpointHit;
     }
@@ -413,7 +606,8 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
       {
         CpcStopCoordinationGuard const coordination;
         interrupted = coordination.resume_epoch() != operation_epoch ||
-                      !g_emu_paused.load(std::memory_order_acquire);
+                      !g_emu_paused.load(std::memory_order_acquire) ||
+                      cpc_walk_interrupted();
         if (!interrupted) {
           z80_step_instruction();
           // Inside the guard: `breakpoints` is shared with the DevTools editor
@@ -487,6 +681,15 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
         z80.breakpoint_reached = 1;
         z80.watchpoint_reached = 0;  // an exec stop, not a watchpoint
         z80_record_probe_hit_source(true);
+        // And tell the run-state observer what the step ran into: nothing
+        // committed this stop, so nobody else has noted it.
+        CpcRunCause met;
+        met.reason = CpcStopReason::Breakpoint;
+        met.has_pc = true;
+        met.pc = z80.PC.w.l;
+        met.addr = z80.PC.w.l;
+        cpc_walk_verdict(met);
+        stepped_onto_breakpoint = true;
         return Z80StepOutResult::BreakpointHit;
       }
     }
@@ -508,6 +711,7 @@ Z80StepOutResult z80_step_out_finish(int timeout_ms,
     }
   }
 }
+}  // namespace
 
 // ---- Tool-facing memory accessors (IPC, DevTools, expr parser) ----------
 // All of these read/write the machine's CPU-visible view via peeks — no
@@ -779,7 +983,8 @@ std::vector<IOBreakpointSnapshot> z80_io_breakpoints_snapshot() {
   std::vector<IOBreakpointSnapshot> result;
   result.reserve(io_breakpoints.size());
   for (const auto& bp : io_breakpoints) {
-    result.push_back({bp.port, bp.mask, bp.dir, bp.condition_str});
+    result.push_back({bp.port, bp.mask, bp.dir, bp.condition_str, bp.pass_count,
+                      bp.hit_count});
   }
   return result;
 }
@@ -845,4 +1050,245 @@ std::vector<WatchpointSnapshot> z80_watchpoints_snapshot() {
 void z80_add_breakpoint_ephemeral(word addr) {
   CpcStopCoordinationGuard const coordination;
   breakpoints.emplace_back(addr, EPHEMERAL);
+}
+
+// --- The three lists as one family (the KCPC BP_* requests) ---
+
+bool z80_probe_io_should_break(uint16_t port, uint8_t data, bool is_write) {
+  // Parity with the exec and watch filters: a probe armed with no host list
+  // keeps breaking.
+  if (io_breakpoints.empty()) return true;
+  IOBreakpointDir const access = is_write ? IO_OUT : IO_IN;
+  for (auto& bp : io_breakpoints) {
+    if (!(bp.dir & access)) continue;
+    if ((port & bp.mask) != (bp.port & bp.mask)) continue;
+    if (bp.condition) {
+      ExprContext ctx;
+      ctx.z80 = &z80;
+      ctx.crtc = &CRTC;
+      ctx.ga = &GateArray;
+      ctx.psg = &PSG;
+      ctx.address = port;
+      ctx.value = data;
+      ctx.mode = is_write ? 2 : 1;
+      if (expr_eval(bp.condition.get(), ctx) == 0) continue;
+    }
+    bp.hit_count++;
+    if (bp.pass_count <= 0 || bp.hit_count >= bp.pass_count) return true;
+  }
+  // The comparator matched, and no entry that covers this access wants the
+  // stop (its condition said no, or its pass count is not reached).
+  return false;
+}
+
+namespace {
+
+// How many of the probe's comparators the lists take, the way
+// subcycle_bridge_sync_probe() fills them: one per distinct address for
+// execution (every entry type, a walk's one-shot breakpoint included), one
+// per distinct range for watches, one per distinct port and mask for I/O.
+// `skip` leaves out the entries a put is about to replace.
+template <typename List, typename Key, typename Skip>
+std::vector<Key> comparators_used(const List& list,
+                                  Key (*key)(const typename List::value_type&),
+                                  Skip skip) {
+  std::vector<Key> used;
+  for (const auto& entry : list) {
+    if (skip(entry)) continue;
+    Key const k = key(entry);
+    if (std::find(used.begin(), used.end(), k) == used.end()) used.push_back(k);
+  }
+  return used;
+}
+
+using WatchKey = std::pair<word, word>;  // address, length
+using IoKey = std::pair<word, word>;     // port, mask
+
+word exec_key(const Breakpoint& b) { return static_cast<word>(b.address); }
+WatchKey watch_key(const Watchpoint& w) {
+  return {static_cast<word>(w.address),
+          static_cast<word>(w.length != 0 ? w.length : 1)};
+}
+IoKey io_key(const IOBreakpoint& b) { return {b.port, b.mask}; }
+
+template <typename Key>
+bool room_for(const std::vector<Key>& used, const Key& wanted, size_t limit) {
+  return std::find(used.begin(), used.end(), wanted) != used.end() ||
+         used.size() < limit;
+}
+
+}  // namespace
+
+Z80BpEdit z80_bp_put(const Z80BpSpec& spec, std::string& error,
+                     uint64_t& generation) {
+  // Parsed before the lock is taken: nothing waits for a parser.
+  std::unique_ptr<ExprNode> condition;
+  if (!spec.condition.empty()) {
+    condition = expr_parse(spec.condition, error);
+    if (!condition) {
+      generation = z80_breakpoint_generation();
+      return Z80BpEdit::BadCondition;
+    }
+  }
+  CpcStopCoordinationGuard const coordination;
+  Z80BpEdit result = Z80BpEdit::Ok;
+  switch (spec.kind) {
+    case Z80BpKind::Exec: {
+      auto same = [&](const Breakpoint& b) {
+        return b.type == NORMAL && b.address == spec.addr;
+      };
+      if (!room_for(comparators_used(breakpoints, &exec_key, same), spec.addr,
+                    PROBE_MAX_EXEC)) {
+        result = Z80BpEdit::LimitReached;
+        break;
+      }
+      breakpoints.erase(
+          std::remove_if(breakpoints.begin(), breakpoints.end(), same),
+          breakpoints.end());
+      Breakpoint bp(spec.addr, NORMAL);
+      bp.condition = std::move(condition);
+      bp.condition_str = spec.condition;
+      bp.pass_count = spec.pass_count;
+      breakpoints.push_back(std::move(bp));
+      break;
+    }
+    case Z80BpKind::Watch: {
+      auto same = [&](const Watchpoint& w) { return w.address == spec.addr; };
+      if (!room_for(comparators_used(watchpoints, &watch_key, same),
+                    WatchKey{spec.addr, spec.len_or_mask}, PROBE_MAX_WATCH)) {
+        result = Z80BpEdit::LimitReached;
+        break;
+      }
+      watchpoints.erase(
+          std::remove_if(watchpoints.begin(), watchpoints.end(), same),
+          watchpoints.end());
+      Watchpoint wp(spec.addr, static_cast<WatchpointType>(spec.access));
+      wp.length = spec.len_or_mask;
+      wp.condition = std::move(condition);
+      wp.condition_str = spec.condition;
+      wp.pass_count = spec.pass_count;
+      watchpoints.push_back(std::move(wp));
+      break;
+    }
+    case Z80BpKind::Io: {
+      auto same = [&](const IOBreakpoint& b) {
+        return b.port == spec.addr && b.mask == spec.len_or_mask;
+      };
+      if (!room_for(comparators_used(io_breakpoints, &io_key, same),
+                    IoKey{spec.addr, spec.len_or_mask}, PROBE_MAX_IO)) {
+        result = Z80BpEdit::LimitReached;
+        break;
+      }
+      io_breakpoints.erase(
+          std::remove_if(io_breakpoints.begin(), io_breakpoints.end(), same),
+          io_breakpoints.end());
+      IOBreakpoint bp;
+      bp.port = spec.addr;
+      bp.mask = spec.len_or_mask;
+      bp.dir = static_cast<IOBreakpointDir>(spec.access);
+      bp.condition = std::move(condition);
+      bp.condition_str = spec.condition;
+      bp.pass_count = spec.pass_count;
+      io_breakpoints.push_back(std::move(bp));
+      break;
+    }
+  }
+  if (result == Z80BpEdit::Ok) bump_bp_generation();
+  generation = z80_breakpoint_generation();
+  return result;
+}
+
+Z80BpEdit z80_bp_remove(Z80BpKind kind, word addr, word mask,
+                        uint64_t& generation) {
+  CpcStopCoordinationGuard const coordination;
+  bool removed = false;
+  // Erases what `same` names from `list`; true when anything went.
+  auto erase = [&removed](auto& list, auto same) {
+    auto const first = std::remove_if(list.begin(), list.end(), same);
+    removed = first != list.end();
+    list.erase(first, list.end());
+  };
+  switch (kind) {
+    case Z80BpKind::Exec:
+      erase(breakpoints, [&](const Breakpoint& b) {
+        return b.type == NORMAL && b.address == addr;
+      });
+      break;
+    case Z80BpKind::Watch:
+      erase(watchpoints,
+            [&](const Watchpoint& w) { return w.address == addr; });
+      break;
+    case Z80BpKind::Io:
+      erase(io_breakpoints, [&](const IOBreakpoint& b) {
+        return b.port == addr && b.mask == mask;
+      });
+      break;
+  }
+  if (removed) bump_bp_generation();
+  generation = z80_breakpoint_generation();
+  return removed ? Z80BpEdit::Ok : Z80BpEdit::NotFound;
+}
+
+void z80_bp_clear(bool exec, bool watch, bool io, uint64_t& generation) {
+  CpcStopCoordinationGuard const coordination;
+  if (exec) {
+    // A walk's one-shot breakpoint is the walk's, not an entry to clear.
+    breakpoints.erase(
+        std::remove_if(breakpoints.begin(), breakpoints.end(),
+                       [](const Breakpoint& b) { return b.type == NORMAL; }),
+        breakpoints.end());
+  }
+  if (watch) watchpoints.clear();
+  if (io) io_breakpoints.clear();
+  // Bumped although nothing may have gone, as the clears of each list do: a
+  // hit latched under the old arming must not be reported under the new.
+  bump_bp_generation();
+  generation = z80_breakpoint_generation();
+}
+
+std::vector<Z80BpSpec> z80_bp_list(uint64_t& generation) {
+  CpcStopCoordinationGuard const coordination;
+  std::vector<Z80BpSpec> out;
+  out.reserve(breakpoints.size() + watchpoints.size() + io_breakpoints.size());
+  for (const auto& bp : breakpoints) {
+    if (bp.type != NORMAL) continue;
+    Z80BpSpec spec;
+    spec.kind = Z80BpKind::Exec;
+    spec.addr = static_cast<word>(bp.address);
+    spec.pass_count = bp.pass_count;
+    spec.hit_count = bp.hit_count;
+    spec.condition = bp.condition_str;
+    out.push_back(std::move(spec));
+  }
+  for (const auto& wp : watchpoints) {
+    Z80BpSpec spec;
+    spec.kind = Z80BpKind::Watch;
+    spec.access = wp.type;
+    spec.addr = static_cast<word>(wp.address);
+    spec.len_or_mask = wp.length != 0 ? wp.length : 1;
+    spec.pass_count = wp.pass_count;
+    spec.hit_count = wp.hit_count;
+    spec.condition = wp.condition_str;
+    out.push_back(std::move(spec));
+  }
+  for (const auto& bp : io_breakpoints) {
+    Z80BpSpec spec;
+    spec.kind = Z80BpKind::Io;
+    spec.access = bp.dir;
+    spec.addr = bp.port;
+    spec.len_or_mask = bp.mask;
+    spec.pass_count = bp.pass_count;
+    spec.hit_count = bp.hit_count;
+    spec.condition = bp.condition_str;
+    out.push_back(std::move(spec));
+  }
+  generation = z80_breakpoint_generation();
+  return out;
+}
+
+bool z80_exec_comparator_free() {
+  CpcStopCoordinationGuard const coordination;
+  return comparators_used(breakpoints, &exec_key, [](const Breakpoint&) {
+           return false;
+         }).size() < PROBE_MAX_EXEC;
 }

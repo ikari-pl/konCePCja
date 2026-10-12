@@ -689,6 +689,15 @@ struct CpcRunCause {
   bool step = false;
   bool has_pc = false;  // stops: `pc` is where the machine stopped
   word pc = 0;
+  // Stops at a breakpoint, a watchpoint or an I/O breakpoint: what was hit.
+  // `addr` is the breakpoint's address, the watched address or the port;
+  // `access` is 1 for a read (or IN) and 2 for a write (or OUT), 0 for an
+  // execution breakpoint; `value` is the data bus at a watch or I/O hit and
+  // `old_value` the byte a watched write replaced.
+  word addr = 0;
+  uint8_t access = 0;
+  byte value = 0;
+  byte old_value = 0;
 };
 
 enum class CpcRunEventKind : uint8_t { Stopped, Resumed, Reset };
@@ -701,6 +710,11 @@ struct CpcRunEvent {
   // Stopped: the KCPC client whose step this stop ends, or 0.
   uint32_t step_client = 0;
   word pc = 0;  // Stopped: the program counter at the stop
+  // Stopped at a breakpoint, watchpoint or I/O breakpoint: as in CpcRunCause.
+  word addr = 0;
+  uint8_t access = 0;
+  byte value = 0;
+  byte old_value = 0;
 };
 
 // The run state is announced, not sampled. Three things settle it, all under
@@ -730,6 +744,62 @@ bool cpc_step_active();
 void cpc_runner_parked();
 // Tells the observer the CPC was reset. emulator_reset() calls it.
 void cpc_announce_reset(const CpcRunCause& cause);
+
+// A walk: a step that runs and stops the machine as often as it needs to on
+// its way (step over a call, step out of a routine, run to an address). It
+// is one step to everybody else. While a walk is open:
+//
+//   - the stops it passes through are not announced. cpc_announced_stopped()
+//     still follows them, so the walk itself can wait for one without taking
+//     the pause mutex: that is the lock-free "stopped, not merely leased"
+//     signal (beads-pja3). g_emu_paused is not it: a pause lease sets that
+//     for the length of somebody's memory write, and a walk that took it for
+//     a stop ended half way with the machine still running;
+//   - the first time it runs a stopped machine is announced as a resume that
+//     names the step;
+//   - when the last walk closes, the step ends with one stop, announced with
+//     the verdict the walk gave last: it finished, timed out, stalled, or was
+//     stopped by something else (a breakpoint, somebody's pause), which is
+//     then announced as what it was.
+//
+// Walks nest (the step-out walk runs to an address for every call it skips)
+// and only the outermost one announces. `step` names the request, for the
+// events; a walk that opens while a step is already in progress joins it.
+// Somebody's pause during a walk (cpc_pause(), a lease let go with
+// release_stopped()) also sets cpc_walk_interrupted(), which every walk
+// polls: the machine may be stopped already at that moment, and then there
+// is no stop to wait for.
+void cpc_walk_begin(const CpcRunCause& step = {});
+void cpc_walk_end();
+// How the step ended, unless something says otherwise later: the latest
+// verdict stands. `outcome.reason` is StepDone, StepTimeout or StepStalled,
+// or Breakpoint with `pc` and `addr` for a breakpoint the walk met while it
+// was single-stepping (the probe is blind there, so nobody else noted it).
+void cpc_walk_verdict(const CpcRunCause& outcome);
+void cpc_walk_verdict(CpcStopReason reason);
+// The step ended because something else stopped the machine. The stop is
+// announced as what it was: the breakpoint that was hit, the pause. This is
+// also what a walk that gave no verdict ends with.
+void cpc_walk_stopped_by_other();
+// One walk, for the length of a scope.
+class CpcWalk {
+ public:
+  explicit CpcWalk(const CpcRunCause& step = {}) { cpc_walk_begin(step); }
+  ~CpcWalk() { cpc_walk_end(); }
+  CpcWalk(const CpcWalk&) = delete;
+  CpcWalk& operator=(const CpcWalk&) = delete;
+};
+// Whether somebody asked for a stop since the outermost walk opened.
+// Lock-free.
+bool cpc_walk_interrupted();
+// Ends the walk in progress, if there is one, as a pause would, without
+// pausing anything: for a core that is shutting down.
+void cpc_walk_interrupt();
+// Runs the machine for a walk and gives the resume epoch the run belongs to.
+// Not while a pause lease is held (the walk tries again shortly: a lease is
+// one operation long), and not once the walk has been interrupted.
+enum class CpcWalkRun : uint8_t { Running, LeaseHeld, Interrupted };
+CpcWalkRun cpc_walk_run(uint64_t& epoch);
 
 enum class CpcPauseLeaseMode {
   WaitImmediately,  // pause + wait for g_z80_idle (default)
@@ -833,6 +903,10 @@ bool cpc_resume_applied(const CpcRunCause& cause = {});
 // when the last holder lets go, unless somebody stops it first. True when
 // the machine is running on return, false when a lease deferred it.
 bool cpc_run(const CpcRunCause& cause = {});
+// The resume epoch: a number that changes whenever somebody runs a stopped
+// machine. A pause lease that pauses a running machine and puts it back does
+// not change it (the run it interrupted goes on), so the holder of an epoch
+// can tell "my run is still the run" across other actors' leases. Lock-free.
 uint64_t cpc_resume_epoch();
 bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // Spin until the Z80 thread has left z80_execute(). cpc_pause_if_epoch() only
@@ -846,8 +920,13 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch);
 bool cpc_wait_until_idle(int timeout_ms = -1);
 // Atomically commits a staged engine breakpoint only if no later resume has
 // invalidated it. Publishes the hit after the paused state is visible.
+//
+// `hit` says what is announced (reason, and the address, access and values
+// of the hit); `hook_pc` and `watchpoint` are what the breakpoint hit hook is
+// given, as before.
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
-                                word pc, bool watchpoint);
+                                const CpcRunCause& hit, word hook_pc,
+                                bool watchpoint);
 enum class BinLoadResult : std::uint8_t {
   Ok,
   FileError,  // missing, unreadable, empty or too big

@@ -64,13 +64,18 @@ OP_RUN = 0x0101
 OP_STEP = 0x0102
 OP_RESET = 0x0103
 OP_RUN_STATE = 0x0104
-OP_BP_LIST = 0x0300  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_BP_LIST = 0x0300
+OP_BP_ADD = 0x0301
+OP_BP_DEL = 0x0302
+OP_BP_CLEAR = 0x0303
+OP_KEY = 0x0400      # not implemented yet; used to test UNKNOWN_OPCODE
 
 # Events (section 9): frames of kind 3 the server sends unasked.
 EVT_STOPPED = 0x8001
 EVT_RESUMED = 0x8002
 EVT_RESET = 0x8003
 EVT_FRAME = 0x8004
+EVT_BREAKPOINTS_CHANGED = 0x8006
 EVT_CONTROL_CHANGED = 0x8009
 EVT_OVERRUN = 0x800A
 EVT_SHUTDOWN = 0x800B
@@ -78,6 +83,7 @@ EVT_SHUTDOWN = 0x800B
 EVENT_NAMES = {
     EVT_STOPPED: 'EVT_STOPPED', EVT_RESUMED: 'EVT_RESUMED',
     EVT_RESET: 'EVT_RESET', EVT_FRAME: 'EVT_FRAME',
+    EVT_BREAKPOINTS_CHANGED: 'EVT_BREAKPOINTS_CHANGED',
     EVT_CONTROL_CHANGED: 'EVT_CONTROL_CHANGED', EVT_OVERRUN: 'EVT_OVERRUN',
     EVT_SHUTDOWN: 'EVT_SHUTDOWN',
 }
@@ -112,6 +118,20 @@ STEP_OUT = 2
 STEP_TO = 3
 STEP_FRAMES = 4
 MAX_STEP_IN_COUNT = 4096
+DEFAULT_STEP_TIMEOUT_MS = 5000   # what timeout_ms 0 means for over, out, to
+
+# Breakpoints: `kind` of an entry, `access` of a watch or I/O entry (and of
+# EVT_STOPPED), and how many the probe arms of each kind.
+BP_EXEC = 0
+BP_WATCH = 1
+BP_IO = 2
+BP_ALL = 0xFF        # BP_CLEAR only
+ACCESS_READ = 1      # a read, or IN
+ACCESS_WRITE = 2     # a write, or OUT
+ACCESS_BOTH = 3
+MAX_EXEC_BREAKPOINTS = 32
+MAX_WATCHPOINTS = 16
+MAX_IO_BREAKPOINTS = 8
 
 RESET_FLAG_STAY_PAUSED = 1 << 0
 
@@ -120,6 +140,7 @@ CAP_MACHINE_READ = 1 << 0
 CAP_MACHINE_WRITE = 1 << 1
 CAP_RUN_CONTROL = 1 << 2
 CAP_EVENTS = 1 << 3
+CAP_BREAKPOINTS = 1 << 4
 CAP_MEM_ROM = 1 << 10
 
 # Memory spaces (section 11).
@@ -476,6 +497,7 @@ class Event:
     controller: int = 0      # EVT_CONTROL_CHANGED
     previous: int = 0
     dropped: int = 0         # EVT_OVERRUN
+    generation: int = 0      # EVT_BREAKPOINTS_CHANGED
 
     @property
     def name(self) -> str:
@@ -508,7 +530,51 @@ class Event:
             event.reason = fields.u8()
         elif frame.opcode == EVT_OVERRUN:
             event.dropped = fields.u32()
+        elif frame.opcode == EVT_BREAKPOINTS_CHANGED:
+            event.generation = fields.u64()
         return event
+
+
+@dataclass
+class BpEntry:
+    """One breakpoint, watchpoint or I/O breakpoint. An entry is named by
+    its kind and address (and mask, for I/O): adding one that exists
+    replaces it."""
+    kind: int = BP_EXEC
+    addr: int = 0            # address, or port value for I/O
+    access: int = 0          # watch and I/O: ACCESS_*; execution: 0
+    len_or_mask: int = 0     # watch: length of the range; I/O: port mask
+    pass_count: int = 0      # break only after this many hits
+    hit_count: int = 0       # ignored in requests
+    condition: str = ''      # the text IPC's expression syntax; '' = always
+
+    @property
+    def key(self) -> Tuple[int, int, int]:
+        """What names the entry."""
+        return (self.kind, self.addr,
+                self.len_or_mask if self.kind == BP_IO else 0)
+
+    def pack(self) -> bytes:
+        return (struct.pack('<BBHH2xII', self.kind, self.access, self.addr,
+                            self.len_or_mask, self.pass_count,
+                            self.hit_count)
+                + pack_str(self.condition))
+
+    @staticmethod
+    def read(fields: Fields) -> 'BpEntry':
+        kind = fields.u8()
+        access = fields.u8()
+        addr = fields.u16()
+        len_or_mask = fields.u16()
+        fields.skip(2)
+        pass_count = fields.u32()
+        hit_count = fields.u32()
+        return BpEntry(kind, addr, access, len_or_mask, pass_count,
+                       hit_count, fields.string())
+
+
+def bp_del_payload(kind: int, addr: int, mask: int = 0) -> bytes:
+    return struct.pack('<BBHH2x', kind, 0, addr, mask)
 
 
 def subscribe_payload(classes: int, frame_interval: int = 0) -> bytes:
@@ -703,11 +769,35 @@ class KcpcClient:
         return Stamp.read(self.request(OP_RESET,
                                        struct.pack('<B3x', flags)))
 
-    def step(self, count: int = 1, mode: int = STEP_IN) -> int:
+    def step(self, count: int = 1, mode: int = STEP_IN, addr: int = 0,
+             timeout_ms: int = 0) -> int:
         """Arm a step and return the request id. How it ended arrives as an
-        EVT_STOPPED whose cause_request is that id."""
-        self.request(OP_STEP, step_payload(mode, count))
+        EVT_STOPPED whose cause_request is that id. `addr` is where STEP_TO
+        runs to; `timeout_ms` bounds STEP_OVER, STEP_OUT and STEP_TO (0 =
+        DEFAULT_STEP_TIMEOUT_MS)."""
+        self.request(OP_STEP, step_payload(mode, count, addr, timeout_ms))
         return self.last_request_id
+
+    # -- breakpoints ---------------------------------------------------------
+
+    def bp_list(self) -> Tuple[int, List[BpEntry]]:
+        """(generation, entries): every execution breakpoint, watchpoint
+        and I/O breakpoint, whoever set it."""
+        fields = self.request(OP_BP_LIST)
+        generation = fields.u64()
+        return generation, [BpEntry.read(fields)
+                            for _ in range(fields.u32())]
+
+    def bp_add(self, entry: BpEntry) -> int:
+        """Controller only. Adds the entry, or replaces the one with the
+        same kind and address (and mask). Returns the new generation."""
+        return self.request(OP_BP_ADD, entry.pack()).u64()
+
+    def bp_del(self, kind: int, addr: int, mask: int = 0) -> int:
+        return self.request(OP_BP_DEL, bp_del_payload(kind, addr, mask)).u64()
+
+    def bp_clear(self, kind: int = BP_ALL) -> int:
+        return self.request(OP_BP_CLEAR, struct.pack('<B', kind)).u64()
 
     # -- opcodes -----------------------------------------------------------
 

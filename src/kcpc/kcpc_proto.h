@@ -142,12 +142,13 @@ inline constexpr std::uint64_t kCapSnapshot = 1ULL << 12;
 inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
 
 // What this server implements today: the machine reads (slice 2), with the
-// ROM spaces, the control role with the machine writes (slice 3), and run
-// control with the pushed events (slice 4). HELLO, PING and MACHINE_INFO
-// need no capability.
+// ROM spaces, the control role with the machine writes (slice 3), run
+// control with the pushed events (slice 4), and breakpoints with the steps
+// that walk the machine (slice 5). HELLO, PING and MACHINE_INFO need no
+// capability.
 inline constexpr std::uint64_t kServerCaps = kCapMachineRead | kCapMemRom |
                                              kCapMachineWrite | kCapRunControl |
-                                             kCapEvents;
+                                             kCapEvents | kCapBreakpoints;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -719,8 +720,125 @@ inline bool read_step_request(Reader& r, StepRequest& out) {
   return r.u32(out.timeout_ms);
 }
 
+// STEP `timeout_ms` 0: the deadline of a step that walks the machine.
+inline constexpr std::uint32_t kDefaultStepTimeoutMs = 5000;
+
+// Whether the step runs the machine on a walker thread (over, out, to) and
+// so has a deadline.
+inline bool step_mode_walks(StepMode mode) {
+  return mode == StepMode::kOver || mode == StepMode::kOut ||
+         mode == StepMode::kTo;
+}
+
 // RESET `flags`.
 inline constexpr std::uint8_t kResetFlagStayPaused = 1U << 0;
+
+// Breakpoints (section 12): execution breakpoints, memory watchpoints and
+// I/O breakpoints as one family, each entry named by its kind and address
+// (and mask, for I/O).
+enum class BpKind : std::uint8_t {
+  kExec = 0,
+  kWatch = 1,
+  kIo = 2,
+};
+// BP_CLEAR `kind`: all three.
+inline constexpr std::uint8_t kBpKindAll = 0xFF;
+
+// `access` of a watch or an I/O entry, and of EVT_STOPPED.
+inline constexpr std::uint8_t kBpAccessRead = 1;   // a read, or IN
+inline constexpr std::uint8_t kBpAccessWrite = 2;  // a write, or OUT
+inline constexpr std::uint8_t kBpAccessBoth = 3;
+
+// What the probe can arm at once, per kind (src/hw/probe.h).
+inline constexpr std::size_t kMaxExecBreakpoints = 32;
+inline constexpr std::size_t kMaxWatchpoints = 16;
+inline constexpr std::size_t kMaxIoBreakpoints = 8;
+
+// A pass count is a signed int in the core's lists.
+inline constexpr std::uint32_t kMaxBpPassCount = 0x7FFFFFFF;
+
+struct BpEntry {
+  std::uint8_t kind = 0;          // raw; bp_entry_refusal() validates it
+  std::uint8_t access = 0;        // watch and I/O: 1, 2 or 3. Execution: 0
+  std::uint16_t addr = 0;         // address, or port value for I/O
+  std::uint16_t len_or_mask = 0;  // watch: length. I/O: port mask
+  std::uint32_t pass_count = 0;   // break only after this many hits
+  std::uint32_t hit_count = 0;    // ignored in requests
+  std::string condition;          // empty = always
+};
+
+inline void write_bp_entry(Writer& w, const BpEntry& e) {
+  w.u8(e.kind);
+  w.u8(e.access);
+  w.u16(e.addr);
+  w.u16(e.len_or_mask);
+  w.zeros(2);
+  w.u32(e.pass_count);
+  w.u32(e.hit_count);
+  w.str(e.condition);
+}
+
+inline bool read_bp_entry(Reader& r, BpEntry& out) {
+  r.u8(out.kind);
+  r.u8(out.access);
+  r.u16(out.addr);
+  r.u16(out.len_or_mask);
+  r.skip(2);
+  r.u32(out.pass_count);
+  r.u32(out.hit_count);
+  return r.str(out.condition);
+}
+
+// Why BP_ADD refuses this entry with BAD_PAYLOAD, or nullptr when its fields
+// are fine. (A condition that does not parse is the machine's to say.)
+inline const char* bp_entry_refusal(const BpEntry& e) {
+  if (e.kind > static_cast<std::uint8_t>(BpKind::kIo)) {
+    return "unknown breakpoint kind";
+  }
+  if (e.pass_count > kMaxBpPassCount) return "pass_count is too large";
+  auto const kind = static_cast<BpKind>(e.kind);
+  if (kind == BpKind::kExec) {
+    if (e.access != 0 || e.len_or_mask != 0) {
+      return "access and len_or_mask must be 0 for an execution breakpoint";
+    }
+    return nullptr;
+  }
+  if (e.access < kBpAccessRead || e.access > kBpAccessBoth) {
+    return "access must be 1 (read), 2 (write) or 3 (both)";
+  }
+  if (kind == BpKind::kWatch && e.len_or_mask == 0) {
+    return "a watchpoint covers at least one byte";
+  }
+  return nullptr;
+}
+
+// Whether a watch entry's range stays inside the 64 KiB the Z80 addresses.
+inline bool bp_watch_range_ok(const BpEntry& e) {
+  return mem_range_ok(e.addr, e.len_or_mask, kCpuSpaceSize);
+}
+
+// BP_DEL.
+struct BpDelRequest {
+  std::uint8_t kind = 0;  // raw
+  std::uint16_t addr = 0;
+  std::uint16_t len_or_mask = 0;  // the mask, for I/O; ignored otherwise
+};
+
+inline void write_bp_del_request(Writer& w, const BpDelRequest& d) {
+  w.u8(d.kind);
+  w.u8(0);
+  w.u16(d.addr);
+  w.u16(d.len_or_mask);
+  w.zeros(2);
+}
+
+inline bool read_bp_del_request(Reader& r, BpDelRequest& out) {
+  r.u8(out.kind);
+  r.skip(1);
+  r.u16(out.addr);
+  r.u16(out.len_or_mask);
+  return r.skip(2);
+}
 
 // RUN_STATE reply.
 struct RunState {
