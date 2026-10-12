@@ -640,3 +640,68 @@ TEST(KcpcPayloads, ServerCapsAnnounceTheWrites) {
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapMachineWrite, 0U);
   EXPECT_EQ(static_cast<std::uint16_t>(kcpc::Status::kIdleTimeout), 16);
 }
+
+// -- slice 4 ---------------------------------------------------------------
+
+TEST(KcpcCodec, SubscriptionRoundTrips) {
+  Writer w;
+  kcpc::write_subscription(w,
+                           {kcpc::kEventClassRun | kcpc::kEventClassFrame, 5});
+  ASSERT_EQ(w.size(), 8U);
+  Reader r(w.data());
+  kcpc::Subscription s;
+  ASSERT_TRUE(kcpc::read_subscription(r, s));
+  EXPECT_EQ(s.classes, 3U);
+  EXPECT_EQ(s.frame_interval, 5U);
+
+  Reader cut(w.data().data(), 7);
+  EXPECT_FALSE(kcpc::read_subscription(cut, s));
+}
+
+TEST(KcpcCodec, StepRequestIsTwelveBytes) {
+  Writer w;
+  kcpc::StepRequest step;
+  step.mode = static_cast<std::uint8_t>(kcpc::StepMode::kTo);
+  step.addr = 0xBB5A;
+  step.count = 0x01020304;
+  step.timeout_ms = 2500;
+  kcpc::write_step_request(w, step);
+  ASSERT_EQ(w.size(), 12U);
+  EXPECT_EQ(w.data()[0], 3);
+  EXPECT_EQ(w.data()[1], 0) << "reserved";
+  EXPECT_EQ(w.data()[2], 0x5A);
+  EXPECT_EQ(w.data()[3], 0xBB);
+  Reader r(w.data());
+  kcpc::StepRequest out;
+  ASSERT_TRUE(kcpc::read_step_request(r, out));
+  EXPECT_EQ(out.mode, 3);
+  EXPECT_EQ(out.addr, 0xBB5A);
+  EXPECT_EQ(out.count, 0x01020304U);
+  EXPECT_EQ(out.timeout_ms, 2500U);
+
+  Reader cut(w.data().data(), 11);
+  EXPECT_FALSE(kcpc::read_step_request(cut, out));
+}
+
+TEST(KcpcCodec, RunStateRoundTrips) {
+  Writer w;
+  kcpc::RunState state;
+  state.stamp = {123456789012ULL, true};
+  state.walk_active = true;
+  state.controller = 0xCAFE;
+  kcpc::write_run_state(w, state);
+  ASSERT_EQ(w.size(), 20U);
+  Reader r(w.data());
+  kcpc::RunState out;
+  ASSERT_TRUE(kcpc::read_run_state(r, out));
+  EXPECT_EQ(out.stamp.frame, 123456789012ULL);
+  EXPECT_TRUE(out.stamp.paused);
+  EXPECT_TRUE(out.walk_active);
+  EXPECT_EQ(out.controller, 0xCAFEU);
+}
+
+TEST(KcpcCodec, TheServerAnnouncesRunControlAndEvents) {
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapRunControl, 0U);
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapEvents, 0U);
+  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapBreakpoints, 0U) << "slice 5";
+}

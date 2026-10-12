@@ -663,6 +663,74 @@ void cpc_set_idle_timeout_ms(int timeout_ms);
 // machine stays as it is and nobody is told why, which is right only for a
 // process on its way out.
 
+// Why the machine stopped, as it is announced. The numbers are the `reason` of
+// EVT_STOPPED in docs/protocol/kcpc-binary-v1.md.
+enum class CpcStopReason : uint8_t {
+  Paused = 1,        // somebody paused: a client, the text IPC, the GUI
+  Breakpoint = 2,    // execution reached a breakpoint
+  Watchpoint = 3,    // a watched memory range was read or written
+  IoBreakpoint = 4,  // a port comparator matched
+  StepDone = 5,      // a step finished where it was meant to
+  StepTimeout = 6,   // a walk hit its deadline
+  StepStalled = 7,   // a walk could make no progress
+};
+
+// Who asked for a stop or a run, and why: what the announcement of the run
+// state (below) says about it. Every pause, resume and lease exit takes one;
+// the default is "somebody, no KCPC request".
+struct CpcRunCause {
+  CpcStopReason reason = CpcStopReason::Paused;  // stops only
+  uint32_t client = 0;   // KCPC client_id whose request this is, or 0
+  uint32_t request = 0;  // that request's id, or 0
+  // The request is a step. On a run: a step starts, and the next stop ends
+  // it, whatever causes that stop. On a stop: a step ends here, which is
+  // announced even when the machine was stopped before it (a single step of
+  // a paused machine changes no run state, and still moved the registers).
+  bool step = false;
+  bool has_pc = false;  // stops: `pc` is where the machine stopped
+  word pc = 0;
+};
+
+enum class CpcRunEventKind : uint8_t { Stopped, Resumed, Reset };
+
+struct CpcRunEvent {
+  CpcRunEventKind kind = CpcRunEventKind::Stopped;
+  CpcStopReason reason = CpcStopReason::Paused;  // Stopped only
+  uint32_t cause_client = 0;
+  uint32_t cause_request = 0;
+  // Stopped: the KCPC client whose step this stop ends, or 0.
+  uint32_t step_client = 0;
+  word pc = 0;  // Stopped: the program counter at the stop
+};
+
+// The run state is announced, not sampled. Three things settle it, all under
+// the pause mutex: cpc_pause(), a resume that is applied, and the last pause
+// lease letting go. At each of them the state that now holds is compared with
+// the one last announced and the observer is called only when they differ.
+// A lease that pauses a running machine and runs it again is therefore never
+// announced: while any lease is held the state is not settled.
+//
+// A stop is announced once it has happened, not when it was asked for: a
+// pause from another thread leaves the frame in flight to finish, and the
+// announcement waits until the frame runner is parked, so that its `pc` and
+// the frame count are the ones a read that follows it sees.
+//
+// The observer runs under the pause mutex, on whichever thread settled the
+// state (the frame runner included). It must not block, allocate, or call
+// anything that pauses, resumes or takes a lease. One observer; nullptr for
+// none.
+using CpcRunStateObserver = void (*)(const CpcRunEvent&);
+void cpc_set_run_state_observer(CpcRunStateObserver observer);
+// The state last announced, and whether a step is in progress. Lock-free:
+// safe on paths a running machine hits per request.
+bool cpc_announced_stopped();
+bool cpc_step_active();
+// The frame runner calls this whenever it finds the machine paused and has
+// parked: a stop that was asked for while a frame ran is announced here.
+void cpc_runner_parked();
+// Tells the observer the CPC was reset. emulator_reset() calls it.
+void cpc_announce_reset(const CpcRunCause& cause);
+
 enum class CpcPauseLeaseMode {
   WaitImmediately,  // pause + wait for g_z80_idle (default)
   PauseOnly,        // pause under lease; caller must call wait() after any
@@ -701,11 +769,11 @@ class CpcPauseLease {
   void restore_run_state();
   // Drop the lease and leave the machine stopped, as a stop somebody asked
   // for: other holders will not run it again when they let go.
-  void release_stopped();
+  void release_stopped(const CpcRunCause& cause = {});
   // Drop the lease and run the machine, whatever state it was found in. With
   // other leases still held it runs when the last of them lets go (unless
   // somebody stops it first).
-  void release_running();
+  void release_running(const CpcRunCause& cause = {});
   // Runs read() while this is the only lease held, and keeps it the only one
   // until read() returns: a new lease waits for the pause mutex this holds.
   // For a holder that only copies out of the machine and must not do so
@@ -732,7 +800,8 @@ class CpcPauseLease {
   int idle_timeout_ms_ = -1;
 };
 
-void emulator_reset();
+// Announced as a reset to the run-state observer, with `cause`.
+void emulator_reset(const CpcRunCause& cause = {});
 // True when the machine is paused and no CpcPauseLease is held: somebody
 // stopped it and nobody is about to put the run state back. A lease pauses
 // the machine for the length of one operation; code that waits for emulated
@@ -751,11 +820,19 @@ bool cpc_stopped();
 // paused machine through leases swallows the user's Run now and then. read()
 // must only copy: every pause and resume in the process waits for it.
 bool cpc_read_while_stopped(const std::function<void()>& read);
-void cpc_pause();
+void cpc_pause(const CpcRunCause& cause = {});
 uint64_t cpc_resume();
 // Like cpc_resume(), but reports whether a pause lease deferred the call.
 // False means the machine is still paused because a CpcPauseLease is held.
-bool cpc_resume_applied();
+bool cpc_resume_applied(const CpcRunCause& cause = {});
+// Runs the machine, and is never dropped. cpc_resume() does nothing while a
+// pause lease is held, which is right for a caller that only undoes its own
+// pause and wrong for one that was asked to run the machine: its request
+// vanished whenever another actor happened to hold a lease (beads-pja3).
+// Here the run is recorded for the lease chain instead, and the machine runs
+// when the last holder lets go, unless somebody stops it first. True when
+// the machine is running on return, false when a lease deferred it.
+bool cpc_run(const CpcRunCause& cause = {});
 uint64_t cpc_resume_epoch();
 bool cpc_pause_if_epoch(uint64_t expected_epoch);
 // Spin until the Z80 thread has left z80_execute(). cpc_pause_if_epoch() only

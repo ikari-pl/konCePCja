@@ -18,6 +18,10 @@ checkout, and nothing outside this repository should be built on this file.
         if c.acquire_control().is_controller:     # changes need control
             c.regs_set(hl=0x1234)                 # exactly that register
             c.mem_write(SPACE_CPU_RAM, 0x8000, b'\x18\xfe')
+            c.subscribe(CLASS_RUN)                # events are pushed
+            c.pause()                             # reply, then EVT_STOPPED
+            stopped = c.wait_event(EVT_STOPPED)   # blocks; no polling
+            c.step(count=3)                       # ends with EVT_STOPPED
 
 Never assume port 6545: read it from the startup manifest the core prints.
 """
@@ -55,11 +59,67 @@ OP_REGS_SET = 0x0201
 OP_MEM_INFO = 0x0210
 OP_MEM_READ = 0x0211
 OP_MEM_WRITE = 0x0212
-OP_PAUSE = 0x0100  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_PAUSE = 0x0100
+OP_RUN = 0x0101
+OP_STEP = 0x0102
+OP_RESET = 0x0103
+OP_RUN_STATE = 0x0104
+OP_BP_LIST = 0x0300  # not implemented yet; used to test UNKNOWN_OPCODE
+
+# Events (section 9): frames of kind 3 the server sends unasked.
+EVT_STOPPED = 0x8001
+EVT_RESUMED = 0x8002
+EVT_RESET = 0x8003
+EVT_FRAME = 0x8004
+EVT_CONTROL_CHANGED = 0x8009
+EVT_OVERRUN = 0x800A
+EVT_SHUTDOWN = 0x800B
+
+EVENT_NAMES = {
+    EVT_STOPPED: 'EVT_STOPPED', EVT_RESUMED: 'EVT_RESUMED',
+    EVT_RESET: 'EVT_RESET', EVT_FRAME: 'EVT_FRAME',
+    EVT_CONTROL_CHANGED: 'EVT_CONTROL_CHANGED', EVT_OVERRUN: 'EVT_OVERRUN',
+    EVT_SHUTDOWN: 'EVT_SHUTDOWN',
+}
+
+# Event classes of SUBSCRIBE.
+CLASS_RUN = 1 << 0       # EVT_STOPPED, EVT_RESUMED, EVT_RESET
+CLASS_FRAME = 1 << 1     # EVT_FRAME
+CLASS_MEDIA = 1 << 2
+CLASS_DEBUG = 1 << 3
+CLASS_MACHINE = 1 << 4
+CLASS_ALL = (1 << 5) - 1
+
+# EVT_STOPPED reasons.
+STOP_PAUSED = 1
+STOP_BREAKPOINT = 2
+STOP_WATCHPOINT = 3
+STOP_IO_BREAKPOINT = 4
+STOP_STEP_DONE = 5
+STOP_STEP_TIMEOUT = 6
+STOP_STEP_STALLED = 7
+
+# EVT_CONTROL_CHANGED reasons.
+CONTROL_ACQUIRED = 1   # while it was free
+CONTROL_TAKEN = 2      # by force
+CONTROL_RELEASED = 3
+CONTROL_LEFT = 4       # the controller disconnected or timed out
+
+# STEP modes.
+STEP_IN = 0
+STEP_OVER = 1
+STEP_OUT = 2
+STEP_TO = 3
+STEP_FRAMES = 4
+MAX_STEP_IN_COUNT = 4096
+
+RESET_FLAG_STAY_PAUSED = 1 << 0
 
 # Capability bits (section 6) of the groups implemented so far.
 CAP_MACHINE_READ = 1 << 0
 CAP_MACHINE_WRITE = 1 << 1
+CAP_RUN_CONTROL = 1 << 2
+CAP_EVENTS = 1 << 3
 CAP_MEM_ROM = 1 << 10
 
 # Memory spaces (section 11).
@@ -382,6 +442,84 @@ class Control:
         return Control(role, fields.u32())
 
 
+@dataclass
+class RunState:
+    stamp: Stamp
+    walk_active: bool   # a step is in progress
+    controller: int     # the controller's client_id; 0 = nobody
+
+    @staticmethod
+    def read(fields: Fields) -> 'RunState':
+        stamp = Stamp.read(fields)
+        walk = fields.u8()
+        fields.skip(3)
+        return RunState(stamp, walk != 0, fields.u32())
+
+
+@dataclass
+class Event:
+    """One pushed event, decoded. `seq` is its number on this connection:
+    1 for the first event and one more for each one after it. Fields an
+    event does not carry are 0."""
+    opcode: int
+    seq: int
+    frame: int = 0
+    reason: int = 0          # EVT_STOPPED, EVT_CONTROL_CHANGED
+    access: int = 0
+    pc: int = 0
+    addr: int = 0
+    value: int = 0
+    old_value: int = 0
+    cause_client: int = 0
+    cause_request: int = 0
+    fb_seq: int = 0          # EVT_FRAME
+    controller: int = 0      # EVT_CONTROL_CHANGED
+    previous: int = 0
+    dropped: int = 0         # EVT_OVERRUN
+
+    @property
+    def name(self) -> str:
+        return EVENT_NAMES.get(self.opcode, f'event {self.opcode:#06x}')
+
+    @staticmethod
+    def decode(frame: Frame) -> 'Event':
+        event = Event(frame.opcode, frame.id)
+        fields = Fields(frame.payload)
+        if frame.opcode == EVT_STOPPED:
+            event.frame = fields.u64()
+            event.reason = fields.u8()
+            event.access = fields.u8()
+            event.pc = fields.u16()
+            event.addr = fields.u16()
+            event.value = fields.u8()
+            event.old_value = fields.u8()
+            event.cause_client = fields.u32()
+            event.cause_request = fields.u32()
+        elif frame.opcode in (EVT_RESUMED, EVT_RESET):
+            event.frame = fields.u64()
+            event.cause_client = fields.u32()
+            event.cause_request = fields.u32()
+        elif frame.opcode == EVT_FRAME:
+            event.frame = fields.u64()
+            event.fb_seq = fields.u64()
+        elif frame.opcode == EVT_CONTROL_CHANGED:
+            event.controller = fields.u32()
+            event.previous = fields.u32()
+            event.reason = fields.u8()
+        elif frame.opcode == EVT_OVERRUN:
+            event.dropped = fields.u32()
+        return event
+
+
+def subscribe_payload(classes: int, frame_interval: int = 0) -> bytes:
+    return struct.pack('<II', classes, frame_interval)
+
+
+def step_payload(mode: int, count: int = 1, addr: int = 0,
+                 timeout_ms: int = 0) -> bytes:
+    return struct.pack('<BBHII', mode, 0, addr, count, timeout_ms)
+
+
 def control_payload(action: int, flags: int = 0) -> bytes:
     return struct.pack('<BBH', action, flags, 0)
 
@@ -419,8 +557,12 @@ class KcpcClient:
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.next_id = 1
+        # Events that arrived while a response was being waited for, oldest
+        # first. next_event() and wait_event() take them from here before
+        # they read the socket.
         self.events: List[Frame] = []
         self.hello_reply: Optional[Hello] = None
+        self.last_request_id = 0
 
     def __enter__(self) -> 'KcpcClient':
         return self
@@ -445,6 +587,7 @@ class KcpcClient:
         if request_id is None:
             request_id = self.next_id
             self.next_id += 1
+        self.last_request_id = request_id
         self.send_raw(encode_frame(KIND_REQUEST, opcode, request_id, payload))
         return request_id
 
@@ -500,6 +643,71 @@ class KcpcClient:
         fields = Fields(frame.payload)
         fields.skip(4)
         return fields
+
+    # -- events ------------------------------------------------------------
+
+    def next_event(self, timeout: Optional[float] = None) -> Event:
+        """The next event on this connection, in the order the server sent
+        them. Blocks in the socket read until one arrives: no polling.
+        Raises socket.timeout after `timeout` seconds (default: the
+        connection's), KcpcClosed when the server closes."""
+        if self.events:
+            return Event.decode(self.events.pop(0))
+        previous = self.sock.gettimeout()
+        if timeout is not None:
+            self.sock.settimeout(timeout)
+        try:
+            while True:
+                frame = self.read_frame()
+                if frame.kind == KIND_EVENT:
+                    return Event.decode(frame)
+                if frame.opcode == OP_ERROR and frame.id == 0:
+                    raise KcpcClosed(KcpcError(frame.status, frame.message))
+                raise ValueError(f'response {frame.opcode:#06x} id '
+                                 f'{frame.id} with no request waiting')
+        finally:
+            self.sock.settimeout(previous)
+
+    def wait_event(self, opcode: int,
+                   timeout: Optional[float] = None) -> Event:
+        """The next event with this opcode; events of other kinds that come
+        first are dropped."""
+        while True:
+            event = self.next_event(timeout)
+            if event.opcode == opcode:
+                return event
+
+    def subscribe(self, classes: int, frame_interval: int = 0
+                  ) -> Tuple[int, int]:
+        """Replace this client's subscription. Returns (classes,
+        frame_interval) as the server accepted them."""
+        fields = self.request(OP_SUBSCRIBE,
+                              subscribe_payload(classes, frame_interval))
+        return fields.u32(), fields.u32()
+
+    # -- run control ---------------------------------------------------------
+
+    def run_state(self) -> RunState:
+        return RunState.read(self.request(OP_RUN_STATE))
+
+    def pause(self) -> Stamp:
+        """Controller only. The stop is pushed as EVT_STOPPED, after this
+        reply."""
+        return Stamp.read(self.request(OP_PAUSE))
+
+    def run(self) -> Stamp:
+        return Stamp.read(self.request(OP_RUN))
+
+    def reset(self, stay_paused: bool = False) -> Stamp:
+        flags = RESET_FLAG_STAY_PAUSED if stay_paused else 0
+        return Stamp.read(self.request(OP_RESET,
+                                       struct.pack('<B3x', flags)))
+
+    def step(self, count: int = 1, mode: int = STEP_IN) -> int:
+        """Arm a step and return the request id. How it ended arrives as an
+        EVT_STOPPED whose cause_request is that id."""
+        self.request(OP_STEP, step_payload(mode, count))
+        return self.last_request_id
 
     # -- opcodes -----------------------------------------------------------
 

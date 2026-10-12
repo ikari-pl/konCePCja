@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <numeric>
 #include <utility>
 #include <vector>
 
@@ -55,8 +56,8 @@ std::string printable(const std::string& name) {
 std::string machine_refusal(Status status) {
   switch (status) {
     case Status::kBusy:
-      return "the machine did not go idle in time, or was held by another "
-             "pause lease";
+      return "the machine did not go idle in time, was held by another "
+             "pause lease, or a step is already in progress";
     case Status::kShuttingDown:
       return "the core is shutting down";
     case Status::kOutOfRange:
@@ -77,10 +78,10 @@ std::string machine_refusal(Status status) {
 // connection's life: it starts the writer, joins it and closes the socket.
 class Server::Connection {
  public:
-  Connection(const ServerConfig& config, std::atomic<std::uint32_t>& controller,
-             net::Socket socket, bool rejected)
-      : config_(config),
-        controller_(controller),
+  Connection(Server& owner, net::Socket socket, bool rejected)
+      : owner_(owner),
+        config_(owner.config_),
+        controller_(owner.controller_),
         socket_(socket),
         rejected_(rejected) {}
   ~Connection() { join(); }
@@ -95,6 +96,46 @@ class Server::Connection {
     if (reader_.joinable()) reader_.join();
   }
 
+  // The frame interval this client wants EVT_FRAME at, or 0 for none.
+  std::uint32_t frame_interval() const {
+    return (classes_.load(std::memory_order_acquire) & kEventClassFrame) != 0
+               ? frame_interval_.load(std::memory_order_acquire)
+               : 0;
+  }
+
+  // The fan-out thread's half: queues the event if this client is to have it.
+  void deliver(const Event& event) {
+    std::uint32_t const id = event_client_id_.load(std::memory_order_acquire);
+    if (id == 0 || !wanted(event, id)) return;
+    {
+      std::scoped_lock const lock(queue_mutex_);
+      if (closing_) return;
+      // An event a request of this client caused follows the response to
+      // that request, and nothing precedes the reply to HELLO. What happens
+      // after a held event waits behind it: the order stays the order.
+      if (in_flight_id_ != 0 && (hold_all_ || !held_.empty() ||
+                                 (event.cause_client == id &&
+                                  event.cause_request == in_flight_id_))) {
+        held_.push_back(event);
+        return;
+      }
+      queue_event_locked(event);
+    }
+    queue_cv_.notify_one();
+  }
+
+  // Events this client never saw because the ring was full.
+  void add_dropped(std::uint64_t count) {
+    if (event_client_id_.load(std::memory_order_acquire) == 0) return;
+    {
+      std::scoped_lock const lock(queue_mutex_);
+      if (closing_) return;
+      dropped_ += count;
+      if (queued_bytes_ < config_.max_event_queue_bytes) flush_overrun_locked();
+    }
+    queue_cv_.notify_one();
+  }
+
  private:
   // Why the reader stopped serving, and what the peer is told about it.
   struct End {
@@ -103,6 +144,7 @@ class Server::Connection {
     std::string message;
     int flush_ms = kFlushMs;
     int linger_ms = 0;
+    bool shutdown = false;  // the core is quitting: EVT_SHUTDOWN goes first
   };
 
   enum class ReadResult : std::uint8_t {
@@ -135,7 +177,23 @@ class Server::Connection {
     // time it takes to deliver its last frame.
     if (client_id_ != 0 && give_up_control()) {
       LOG_INFO("KCPC: control is free: client " << client_id_ << " is leaving");
+      control_changed(0, client_id_, kControlLeft);
     }
+    {
+      // No more events for this connection, and none left behind a request
+      // that will not be answered.
+      std::scoped_lock const lock(queue_mutex_);
+      in_flight_id_ = 0;
+      held_.clear();
+      if (end.shutdown && hello_done_) {
+        Event bye;
+        bye.opcode = Opcode::kEvtShutdown;
+        push_event_locked(bye);
+      }
+    }
+    event_client_id_.store(0, std::memory_order_release);
+    classes_.store(0, std::memory_order_release);
+    owner_.update_frame_stride();
     if (end.send_error) {
       // ERROR: a response nobody asked for, id 0.
       enqueue(encode_frame(Kind::kResponse,
@@ -208,6 +266,7 @@ class Server::Connection {
         End end = fatal(Status::kShuttingDown, "the core is shutting down");
         end.flush_ms = kShutdownFlushMs;
         end.linger_ms = kShutdownLingerMs;
+        end.shutdown = true;
         return end;
       }
       case ReadResult::kHelloTimeout:
@@ -265,7 +324,13 @@ class Server::Connection {
       if (r != ReadResult::kOk) return end_of_read(r);
 
       End end;
-      if (!dispatch(header, payload, end)) return end;
+      {
+        std::scoped_lock const lock(queue_mutex_);
+        in_flight_id_ = header.id;
+      }
+      bool const serving = dispatch(header, payload, end);
+      request_done();
+      if (!serving) return end;
       if (overflowed_) return End{};
       // The controller's silence is counted from here: the time the core
       // took to serve its request is not the client's.
@@ -321,6 +386,37 @@ class Server::Connection {
         if (!machine_reads()) break;
         handle_mem_read(header, payload);
         return true;
+      case Opcode::kSubscribe:
+        handle_subscribe(header, payload);
+        return true;
+      case Opcode::kRunState:
+        if (!run_control()) break;
+        handle_run_state(header);
+        return true;
+      case Opcode::kPause:
+        if (!run_control()) break;
+        if (controller_only(header)) {
+          run_request(header, [this](const Cause& cause, Stamp& stamp) {
+            return config_.pause(cause, stamp);
+          });
+        }
+        return true;
+      case Opcode::kRun:
+        if (!run_control()) break;
+        if (controller_only(header)) {
+          run_request(header, [this](const Cause& cause, Stamp& stamp) {
+            return config_.run(cause, stamp);
+          });
+        }
+        return true;
+      case Opcode::kReset:
+        if (!run_control()) break;
+        if (controller_only(header)) handle_reset(header, payload);
+        return true;
+      case Opcode::kStep:
+        if (!run_control()) break;
+        if (controller_only(header)) handle_step(header, payload);
+        return true;
       case Opcode::kControl:
         if (!machine_writes()) break;
         handle_control(header, payload);
@@ -344,6 +440,128 @@ class Server::Connection {
   // CAP_MACHINE_WRITE, and the control role that comes with it.
   bool machine_writes() const { return config_.regs_set && config_.mem_write; }
 
+  // CAP_RUN_CONTROL: the group is there whole or not at all.
+  bool run_control() const {
+    return config_.run_state && config_.pause && config_.run && config_.reset &&
+           config_.step;
+  }
+
+  void handle_subscribe(const FrameHeader& header,
+                        const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    Subscription wanted;
+    if (!read_subscription(r, wanted)) {
+      respond_error(header, Status::kBadPayload, "SUBSCRIBE payload too short");
+      return;
+    }
+    // Class bits this server does not know are not an error: a later minor
+    // version adds classes, and the reply says what was accepted.
+    wanted.classes &= kEventClassAll;
+    classes_.store(wanted.classes, std::memory_order_release);
+    frame_interval_.store(wanted.frame_interval, std::memory_order_release);
+    owner_.update_frame_stride();
+    Writer w;
+    write_status(w, Status::kOk);
+    write_subscription(w, wanted);
+    respond(header, w.take());
+  }
+
+  void handle_run_state(const FrameHeader& header) {
+    RunState state;
+    Status const status = config_.run_state(state.stamp, state.walk_active);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    state.controller = controller_.load(std::memory_order_acquire);
+    Writer w;
+    write_status(w, Status::kOk);
+    write_run_state(w, state);
+    respond(header, w.take());
+  }
+
+  // PAUSE and RUN: no payload, a stamp back.
+  template <typename Call>
+  void run_request(const FrameHeader& header, Call&& call) {
+    Stamp stamp;
+    Status const status = call(Cause{client_id_, header.id}, stamp);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    write_stamp(w, stamp);
+    respond(header, w.take());
+  }
+
+  void handle_reset(const FrameHeader& header,
+                    const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::uint8_t flags = 0;
+    r.u8(flags);
+    if (!r.skip(3)) {
+      respond_error(header, Status::kBadPayload, "RESET payload too short");
+      return;
+    }
+    bool const stay_paused = (flags & kResetFlagStayPaused) != 0;
+    run_request(header, [&](const Cause& cause, Stamp& stamp) {
+      return config_.reset(cause, stay_paused, stamp);
+    });
+  }
+
+  void handle_step(const FrameHeader& header,
+                   const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    StepRequest request;
+    if (!read_step_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "STEP payload too short");
+      return;
+    }
+    if (request.mode > static_cast<std::uint8_t>(StepMode::kFrames)) {
+      respond_error(header, Status::kBadPayload, "unknown STEP mode");
+      return;
+    }
+    auto const mode = static_cast<StepMode>(request.mode);
+    if (mode != StepMode::kIn && mode != StepMode::kFrames) {
+      respond_error(header, Status::kBadPayload,
+                    "STEP over, out and to come with CAP_BREAKPOINTS");
+      return;
+    }
+    if (request.count == 0) request.count = 1;
+    if (request.count >
+        (mode == StepMode::kIn ? kMaxStepInCount : kMaxStepFrames)) {
+      respond_error(header, Status::kOutOfRange,
+                    mode == StepMode::kIn
+                        ? "at most " + std::to_string(kMaxStepInCount) +
+                              " instructions in one STEP"
+                        : "too many frames");
+      return;
+    }
+    Status const status = config_.step(Cause{client_id_, header.id}, request);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    respond(header, w.take());
+  }
+
+  // Tells every client who has control now. Sent after the response to the
+  // request that changed it, when one did.
+  void control_changed(std::uint32_t controller, std::uint32_t previous,
+                       std::uint8_t reason, std::uint32_t request = 0) {
+    Event event;
+    event.opcode = Opcode::kEvtControlChanged;
+    event.controller = controller;
+    event.previous = previous;
+    event.reason = reason;
+    event.cause_client = client_id_;
+    event.cause_request = request;
+    owner_.post(event);
+  }
+
   bool is_controller() const {
     return client_id_ != 0 &&
            controller_.load(std::memory_order_acquire) == client_id_;
@@ -354,11 +572,12 @@ class Server::Connection {
   }
 
   // Takes control if nobody has it. True when this client now holds it.
-  bool take_free_control() {
+  bool take_free_control(std::uint32_t request) {
     std::uint32_t holder = 0;
     if (controller_.compare_exchange_strong(holder, client_id_,
                                             std::memory_order_acq_rel)) {
       LOG_INFO("KCPC: client " << client_id_ << " has control");
+      control_changed(client_id_, 0, kControlAcquired, request);
       return true;
     }
     return holder == client_id_;
@@ -392,15 +611,20 @@ class Server::Connection {
     if (request.action == kControlRelease) {
       if (give_up_control()) {
         LOG_INFO("KCPC: client " << client_id_ << " released control");
+        control_changed(0, client_id_, kControlReleased, header.id);
       }
     } else if (request.action == kControlAcquire) {
-      if (!take_free_control() && (request.flags & kControlFlagForce) != 0) {
+      if (!take_free_control(header.id) &&
+          (request.flags & kControlFlagForce) != 0) {
         // Takeover: the newest request wins. The previous controller stays
-        // connected as an observer.
+        // connected as an observer, and learns it from the event.
         std::uint32_t const previous =
             controller_.exchange(client_id_, std::memory_order_acq_rel);
         LOG_INFO("KCPC: client " << client_id_ << " took control from client "
                                  << previous);
+        control_changed(client_id_, previous,
+                        previous == 0 ? kControlAcquired : kControlTaken,
+                        header.id);
       }
     } else {
       respond_error(header, Status::kBadPayload, "unknown CONTROL action");
@@ -565,8 +789,10 @@ class Server::Connection {
       respond_error(header, machine, machine_refusal(machine));
       return;
     }
-    reply.caps = machine_reads() ? (kCapMachineRead | kCapMemRom) : 0;
+    reply.caps = kCapEvents;
+    if (machine_reads()) reply.caps |= kCapMachineRead | kCapMemRom;
     if (machine_writes()) reply.caps |= kCapMachineWrite;
+    if (run_control()) reply.caps |= kCapRunControl;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);
@@ -580,9 +806,16 @@ class Server::Connection {
     // HELLO never takes control away from anyone: a client that asks for it
     // while another has it is admitted as an observer, and the reply says so.
     last_frame_ = Clock::now();
+    {
+      // From here the fan-out thread may have events for this client. They
+      // wait behind the reply: nothing is sent before HELLO is answered.
+      std::scoped_lock const lock(queue_mutex_);
+      hold_all_ = true;
+    }
+    event_client_id_.store(client_id_, std::memory_order_release);
     if (machine_writes() &&
         request.role == static_cast<std::uint8_t>(Role::kController) &&
-        take_free_control()) {
+        take_free_control(header.id)) {
       reply.role = Role::kController;
     }
     LOG_INFO("KCPC: client " << client_id_ << " connected ("
@@ -602,6 +835,66 @@ class Server::Connection {
                const std::vector<std::uint8_t>& payload) {
     enqueue(encode_frame(Kind::kResponse, request.opcode, request.id, payload),
             false);
+    request_done();
+  }
+
+  // The request in flight has been answered (or will not be): the events it
+  // caused, which were kept back for the response to go first, follow now.
+  void request_done() {
+    {
+      std::scoped_lock const lock(queue_mutex_);
+      if (in_flight_id_ == 0) return;
+      in_flight_id_ = 0;
+      hold_all_ = false;
+      for (const Event& event : held_) queue_event_locked(event);
+      held_.clear();
+    }
+    queue_cv_.notify_one();
+  }
+
+  bool wanted(const Event& event, std::uint32_t id) const {
+    std::uint32_t const bit = event_class(event.opcode);
+    if (bit == 0) return true;  // SHUTDOWN, OVERRUN, CONTROL_CHANGED
+    // The end of a step always reaches the client that asked for the step.
+    if (event.opcode == Opcode::kEvtStopped && event.step_client == id) {
+      return true;
+    }
+    if ((classes_.load(std::memory_order_acquire) & bit) == 0) return false;
+    if (event.opcode != Opcode::kEvtFrame) return true;
+    std::uint32_t const interval =
+        frame_interval_.load(std::memory_order_acquire);
+    return interval != 0 && event.frame % interval == 0;
+  }
+
+  // Events go in only while the queue is under its event cap. Beyond it they
+  // are counted, and the client is told how many once there is room.
+  void queue_event_locked(const Event& event) {
+    if (queued_bytes_ >= config_.max_event_queue_bytes) {
+      ++dropped_;
+      return;
+    }
+    flush_overrun_locked();
+    push_event_locked(event);
+  }
+
+  void flush_overrun_locked() {
+    if (dropped_ == 0) return;
+    Event overrun;
+    overrun.opcode = Opcode::kEvtOverrun;
+    overrun.dropped = dropped_ > 0xFFFFFFFFULL
+                          ? 0xFFFFFFFFU
+                          : static_cast<std::uint32_t>(dropped_);
+    dropped_ = 0;
+    push_event_locked(overrun);
+  }
+
+  // The event's id is its place among the events of this connection.
+  void push_event_locked(const Event& event) {
+    std::vector<std::uint8_t> frame =
+        encode_frame(Kind::kEvent, static_cast<std::uint16_t>(event.opcode),
+                     next_event_id_++, encode_event(event));
+    queued_bytes_ += frame.size();
+    queue_.push_back(std::move(frame));
   }
 
   void respond_error(const FrameHeader& request, Status status,
@@ -638,6 +931,9 @@ class Server::Connection {
       {
         std::scoped_lock const lock(queue_mutex_);
         queued_bytes_ -= frame.size();
+        if (!closing_ && queued_bytes_ < config_.max_event_queue_bytes) {
+          flush_overrun_locked();  // there is room again: say what was lost
+        }
       }
       if (!sent) {
         broken_.store(true, std::memory_order_release);
@@ -667,6 +963,7 @@ class Server::Connection {
     return true;
   }
 
+  Server& owner_;
   const ServerConfig& config_;
   std::atomic<std::uint32_t>& controller_;  // the server's; see Server
   net::Socket socket_;
@@ -693,6 +990,19 @@ class Server::Connection {
   bool overflowed_ = false;  // written and read by the reader only
   bool closing_ = false;
   Clock::time_point flush_deadline_;
+
+  // Events. The subscription is written by the reader and read by the
+  // fan-out thread; event_client_id_ is client_id_ once HELLO has completed
+  // and 0 before that and at the end, when no event is wanted.
+  std::atomic<std::uint32_t> event_client_id_{0};
+  std::atomic<std::uint32_t> classes_{0};
+  std::atomic<std::uint32_t> frame_interval_{0};
+  // Under queue_mutex_.
+  std::uint32_t next_event_id_ = 1;
+  std::uint64_t dropped_ = 0;       // events not queued since the last OVERRUN
+  std::uint32_t in_flight_id_ = 0;  // the request being served; 0 = none
+  bool hold_all_ = false;           // HELLO is being served
+  std::vector<Event> held_;         // waiting for the response to go first
 };
 
 Server::Server() = default;
@@ -722,7 +1032,16 @@ bool Server::start(const ServerConfig& config) {
     return false;
   }
   stopping_.store(false, std::memory_order_release);
+  frame_stride_.store(0, std::memory_order_release);
+  {
+    // Whatever was posted to a server that has since stopped is history.
+    Event stale;
+    while (ring_.pop(stale)) {
+    }
+    ring_.take_lost();
+  }
   running_.store(true, std::memory_order_release);
+  fan_out_ = std::thread(&Server::fan_out_loop, this);
   acceptor_ = std::thread(&Server::accept_loop, this);
   LOG_INFO("KCPC: listening on port " << port());
   return true;
@@ -732,18 +1051,73 @@ void Server::stop() {
   if (!running_.exchange(false, std::memory_order_acq_rel)) return;
   stopping_.store(true, std::memory_order_release);
   if (acceptor_.joinable()) acceptor_.join();
+  {
+    std::scoped_lock const lock(fan_out_mutex_);
+  }
+  fan_out_cv_.notify_all();
+  if (fan_out_.joinable()) fan_out_.join();
   net::close_socket(listener_);
   listener_ = net::kInvalidSocket;
   port_.store(0, std::memory_order_release);
+  // The acceptor and the fan-out thread are gone, so nothing adds or walks
+  // connections any more. Ask them all first, then join: they shut down side
+  // by side, not one by one. Joined outside the lock, because a connection
+  // on its way out takes it (update_frame_stride()).
+  std::list<std::unique_ptr<Connection>> leaving;
   {
-    // The acceptor is gone, so nothing adds connections any more. Ask them
-    // all first, then join: they shut down side by side, not one by one.
     std::scoped_lock const lock(connections_mutex_);
-    for (auto& connection : connections_) connection->request_stop();
-    for (auto& connection : connections_) connection->join();
-    connections_.clear();
+    leaving.swap(connections_);
   }
+  for (auto& connection : leaving) connection->request_stop();
+  for (auto& connection : leaving) connection->join();
+  leaving.clear();
+  frame_stride_.store(0, std::memory_order_release);
   net::cleanup();
+}
+
+void Server::post(const Event& event) {
+  if (!running_.load(std::memory_order_acquire)) return;
+  ring_.push(event);
+  // Wake the fan-out thread only if it sleeps. It holds its mutex for the
+  // one check it makes before sleeping, so this waits for nothing longer.
+  if (fan_out_sleeping_.exchange(false, std::memory_order_acq_rel)) {
+    {
+      std::scoped_lock const lock(fan_out_mutex_);
+    }
+    fan_out_cv_.notify_one();
+  }
+}
+
+void Server::fan_out_loop() {
+  Event event;
+  for (;;) {
+    while (ring_.pop(event)) {
+      std::scoped_lock const lock(connections_mutex_);
+      for (auto& connection : connections_) connection->deliver(event);
+    }
+    if (std::uint64_t const lost = ring_.take_lost()) {
+      std::scoped_lock const lock(connections_mutex_);
+      for (auto& connection : connections_) connection->add_dropped(lost);
+    }
+    std::unique_lock lock(fan_out_mutex_);
+    fan_out_sleeping_.store(true, std::memory_order_seq_cst);
+    if (!ring_.empty()) {
+      fan_out_sleeping_.store(false, std::memory_order_release);
+      continue;
+    }
+    if (stopping_.load(std::memory_order_acquire)) return;
+    fan_out_cv_.wait_for(lock, std::chrono::milliseconds(kPollMs));
+    fan_out_sleeping_.store(false, std::memory_order_release);
+  }
+}
+
+void Server::update_frame_stride() {
+  std::scoped_lock const lock(connections_mutex_);
+  std::uint32_t stride = 0;
+  for (auto const& connection : connections_) {
+    stride = std::gcd(stride, connection->frame_interval());
+  }
+  frame_stride_.store(stride, std::memory_order_release);
 }
 
 std::size_t Server::client_count() {
@@ -777,8 +1151,7 @@ void Server::accept_pending() {
       net::close_socket(socket);
       continue;
     }
-    connections_.push_back(
-        std::make_unique<Connection>(config_, controller_, socket, reject));
+    connections_.push_back(std::make_unique<Connection>(*this, socket, reject));
     connections_.back()->start();
   }
 }

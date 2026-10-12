@@ -8,7 +8,10 @@ docs/protocol/kcpc-binary-v1.md. Slice 1: framing, HELLO, PING,
 MACHINE_INFO, ERROR, the client limit, the manifest line, the
 [ipc] binary_port_enabled key and shutdown with clients connected. Slice 2:
 the machine reads REGS_GET, MEM_INFO and MEM_READ, checked against the text
-IPC, on a running and on a paused machine.
+IPC, on a running and on a paused machine. Slice 3: the control role and the
+machine writes. Slice 4: run control (PAUSE, RUN, RESET, STEP, RUN_STATE)
+and the pushed events, which the tests wait for in a blocking read, never
+in a polling loop.
 
 Usage: test_kcpc.py [--ui-free | --gui] [-k substring] [path/to/koncepcja]
   (default)  the binary is started with -H
@@ -241,11 +244,25 @@ def read_until_closed(sock: socket.socket) -> Tuple[List[kc.Frame], bool]:
 
 
 def expect_error_and_close(sock: socket.socket, status: int,
-                           what: str, leading: int = 0) -> None:
+                           what: str, leading: int = 0,
+                           shutdown: bool = False) -> None:
     """After `leading` ordinary frames: exactly one ERROR frame (a response,
-    opcode 0, id 0) carrying `status`, then end of stream."""
+    opcode 0, id 0) carrying `status`, then end of stream. With `shutdown`
+    the frame before the ERROR must be EVT_SHUTDOWN, and events before that
+    are not counted."""
     frames, closed = read_until_closed(sock)
     assert closed, f'{what}: the server did not close the connection'
+    if shutdown:
+        assert len(frames) >= 2, f'{what}: no EVT_SHUTDOWN before the ERROR'
+        bye = frames[-2]
+        assert (bye.kind, bye.opcode) == (kc.KIND_EVENT, kc.EVT_SHUTDOWN), (
+            f'{what}: the frame before the ERROR is kind {bye.kind} opcode '
+            f'{bye.opcode:#06x}, not EVT_SHUTDOWN')
+        assert bye.payload == b'', f'{what}: EVT_SHUTDOWN has a payload'
+        assert all(f.kind == kc.KIND_EVENT for f in frames[:-1]), (
+            f'{what}: {[(f.kind, f.opcode) for f in frames]}')
+        frames = frames[-1:]
+        leading = 0
     assert len(frames) == leading + 1, (
         f'{what}: expected {leading} frame(s) then one ERROR, got '
         f'{[(f.opcode, f.id) for f in frames]}')
@@ -293,7 +310,8 @@ def test_manifest_port_and_hello() -> None:
             # The groups implemented so far: the machine reads, with the
             # ROM spaces, and the writes with the control role.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
-                                  | kc.CAP_MACHINE_WRITE), (
+                                  | kc.CAP_MACHINE_WRITE
+                                  | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -1588,6 +1606,550 @@ def test_quit_while_clients_read() -> None:
               f'reading ({readers.calls} reads; served {served})')
 
 
+# -- slice 4: run control and pushed events ---------------------------------
+
+EVENT_TIMEOUT_S = 10.0
+
+
+def observer(core: Core, name: str, classes: int = 0,
+             frame_interval: int = 0) -> KcpcClient:
+    c = core.client()
+    hello = c.hello(name)
+    assert hello.caps & kc.CAP_EVENTS, f'caps {hello.caps:#x}'
+    if classes:
+        assert c.subscribe(classes, frame_interval) == (classes,
+                                                       frame_interval)
+    return c
+
+
+def run_event(c: KcpcClient) -> kc.Event:
+    """The next EVT_STOPPED, EVT_RESUMED or EVT_RESET: a blocking read."""
+    while True:
+        event = c.next_event(EVENT_TIMEOUT_S)
+        if event.opcode in (kc.EVT_STOPPED, kc.EVT_RESUMED, kc.EVT_RESET):
+            return event
+
+
+def expect_stopped(c: KcpcClient, reason: int, client: int, request: int,
+                   who: str) -> kc.Event:
+    event = run_event(c)
+    assert event.opcode == kc.EVT_STOPPED, f'{who}: {event}'
+    assert (event.reason, event.cause_client, event.cause_request) == (
+        reason, client, request), f'{who}: {event}'
+    return event
+
+
+def expect_resumed(c: KcpcClient, client: int, request: int,
+                   who: str) -> kc.Event:
+    event = run_event(c)
+    assert event.opcode == kc.EVT_RESUMED, f'{who}: {event}'
+    assert (event.cause_client, event.cause_request) == (client, request), (
+        f'{who}: {event}')
+    return event
+
+
+def test_pause_and_run_are_pushed_to_every_subscriber() -> None:
+    """Acceptance 1: the controller pauses; it and an observer subscribed to
+    RUN both receive EVT_STOPPED, reason PAUSED, naming the controller and
+    its request. RUN gives both EVT_RESUMED. No polling: every wait is a
+    blocking read of the socket. The requester sees its reply first, the
+    event after it, and the event describes the machine a read then finds."""
+    with Core() as core, controller(core, 'pusher') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        hello = a.hello_reply
+        assert hello.caps & kc.CAP_RUN_CONTROL, f'caps {hello.caps:#x}'
+        a.subscribe(kc.CLASS_RUN)
+        a_id = hello.client_id
+        state = a.run_state()
+        assert not state.stamp.paused and not state.walk_active, state
+        assert state.controller == a_id, state
+
+        stamp = a.pause()
+        pause_id = a.last_request_id
+        assert not [e for e in a.events if e.opcode == kc.EVT_STOPPED], (
+            'EVT_STOPPED arrived before the reply to the PAUSE that caused '
+            'it')
+        assert stamp.paused, f'the PAUSE reply says running: {stamp}'
+        for who, c in (('controller', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_PAUSED, a_id, pause_id, who)
+            assert event.frame == stamp.frame, (who, event, stamp)
+        regs = b.regs_get()
+        assert regs.stamp.paused and regs.stamp.frame == event.frame, (
+            regs.stamp, event)
+        assert regs.pc == event.pc, (
+            f'EVT_STOPPED says pc {event.pc:#06x}, REGS_GET {regs.pc:#06x}')
+        assert a.run_state().stamp.paused
+
+        # A second PAUSE changes nothing and announces nothing: the next
+        # event either client sees is the RUN's.
+        a.pause()
+        a.run()
+        run_id = a.last_request_id
+        for who, c in (('controller', a), ('observer', b)):
+            expect_resumed(c, a_id, run_id, who)
+        assert not a.run_state().stamp.paused
+
+        # An observer may ask for the state and may not change it.
+        refused(kc.NOT_CONTROLLER, 'observer PAUSE', b.pause)
+        refused(kc.NOT_CONTROLLER, 'observer RUN', b.run)
+        refused(kc.NOT_CONTROLLER, 'observer STEP', b.step)
+        refused(kc.NOT_CONTROLLER, 'observer RESET', b.reset)
+        assert b.run_state().controller == a_id
+
+
+def test_stops_from_the_text_ipc_are_pushed() -> None:
+    """Acceptance 2: a pause on the text IPC port reaches both binary
+    clients with cause_client 0, and so do its run, its single step and its
+    frame step."""
+    with Core() as core, controller(core, 'ctl') as a, \
+            observer(core, 'obs', kc.CLASS_RUN) as b:
+        a.subscribe(kc.CLASS_RUN)
+        assert core.ipc('pause').startswith('OK')
+        for who, c in (('controller', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_PAUSED, 0, 0, who)
+        assert b.regs_get().stamp.frame == event.frame
+        # A single step of a paused machine changes no run state, and is
+        # announced all the same: the registers moved.
+        assert core.ipc('step').startswith('OK')
+        for who, c in (('controller', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_STEP_DONE, 0, 0, who)
+        assert core.ipc('step frame 3').startswith('OK')
+        for who, c in (('controller', a), ('observer', b)):
+            expect_resumed(c, 0, 0, who)
+            done = expect_stopped(c, kc.STOP_STEP_DONE, 0, 0, who)
+            assert done.frame == event.frame + 3, (event, done)
+        assert core.ipc('run').startswith('OK')
+        for who, c in (('controller', a), ('observer', b)):
+            expect_resumed(c, 0, 0, who)
+
+
+def test_reads_and_writes_are_not_run_state_events() -> None:
+    """Acceptance 3: a client reading and a controller writing at every
+    frame pause the machine again and again under their leases, and none of
+    it is announced. The first run-state event anybody sees afterwards is
+    the PAUSE that ends the test."""
+    with Core() as core, controller(core, 'writer') as a, \
+            observer(core, 'reader') as r, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a.subscribe(kc.CLASS_RUN)
+        spin(core, a)           # text IPC pause and run: two events each
+        for c in (a, b):
+            assert run_event(c).opcode == kc.EVT_STOPPED
+            assert run_event(c).opcode == kc.EVT_RESUMED
+        writes = 0
+        first = a.machine_info().stamp
+        for turn in range(60):
+            data = r.mem_read(kc.SPACE_CPU, 0, kc.CPU_SPACE_SIZE)
+            assert len(data) == kc.CPU_SPACE_SIZE
+            stamp = a.mem_write(kc.SPACE_CPU_RAM, 0x9000, bytes([turn]))
+            assert not stamp.paused, f'write {turn}: {stamp}'
+            a.regs_set(hl=turn)
+            writes += 2
+        last = a.machine_info().stamp
+        assert not last.paused and last.frame > first.frame, (first, last)
+        a.pause()
+        for who, c in (('controller', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_PAUSED, a.hello_reply.client_id,
+                           a.last_request_id, who)
+        print(f'    {writes} writes and 60 reads over '
+              f'{last.frame - first.frame} frames: no run-state event')
+
+
+def test_step_in_ends_with_an_event() -> None:
+    """Acceptance 4, first half: STEP in N answers, then EVT_STOPPED with
+    reason STEP_DONE and the step's request id arrives, and PC has advanced
+    by N instructions. The stepping client is told although it subscribed
+    to nothing; an observer that subscribed to RUN is told too."""
+    count = 5
+    with Core() as core, controller(core, 'stepper') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        pause_core(core, a)
+        expect_stopped(b, kc.STOP_PAUSED, 0, 0, 'observer')
+        # Eight one-byte instructions (INC A) and a JR $ behind them.
+        a.mem_write(kc.SPACE_CPU_RAM, SPIN_ADDR, b'\x3c' * 8 + b'\x18\xfe')
+        before = a.regs_set(pc=SPIN_ADDR, af=0, iff1=0, iff2=0)
+        step_id = a.step(count)
+        assert not [e for e in a.events if e.opcode == kc.EVT_STOPPED], (
+            'the step\'s EVT_STOPPED arrived before its reply')
+        for who, c in (('stepper', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_STEP_DONE, a_id, step_id, who)
+            assert event.pc == SPIN_ADDR + count, f'{who}: {event}'
+            assert event.frame == before.stamp.frame, (who, event)
+        regs = a.regs_get()
+        assert regs.stamp.paused
+        assert regs.pc == SPIN_ADDR + count, f'pc {regs.pc:#06x}'
+        assert regs.af >> 8 == count, f'A = {regs.af >> 8}, not {count}'
+        assert text_reg(core, 'pc') == regs.pc
+
+        # A step from a running machine pauses it first.
+        a.run()
+        expect_resumed(b, a_id, a.last_request_id, 'observer')
+        step_id = a.step()      # count 0 on the wire would mean 1 as well
+        expect_stopped(a, kc.STOP_STEP_DONE, a_id, step_id, 'stepper')
+        expect_stopped(b, kc.STOP_STEP_DONE, a_id, step_id, 'observer')
+        assert a.run_state().stamp.paused
+
+        refused(kc.OUT_OF_RANGE, 'STEP in over the limit', a.step,
+                kc.MAX_STEP_IN_COUNT + 1)
+        refused(kc.BAD_PAYLOAD, 'STEP mode 9', a.step, 1, 9)
+        refused(kc.BAD_PAYLOAD, 'STEP over (slice 5)', a.step, 1,
+                kc.STEP_OVER)
+        refused(kc.BAD_PAYLOAD, 'STEP with no payload', a.request,
+                kc.OP_STEP)
+
+
+def test_step_frames_counts_like_the_text_ipc() -> None:
+    """Acceptance 4, second half: STEP frames N answers once it is armed,
+    runs exactly N frames (as the text IPC's `step frame N` does) and ends
+    with EVT_STOPPED STEP_DONE. While it runs RUN_STATE says so, a second
+    STEP answers BUSY, and PAUSE ends it."""
+    frames = 7
+    with Core() as core, controller(core, 'stepper') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        start = a.pause()
+        expect_stopped(b, kc.STOP_PAUSED, a_id, a.last_request_id, 'observer')
+
+        step_id = a.step(frames, kc.STEP_FRAMES)
+        expect_resumed(b, a_id, step_id, 'observer')
+        for who, c in (('stepper', a), ('observer', b)):
+            done = expect_stopped(c, kc.STOP_STEP_DONE, a_id, step_id, who)
+            assert done.frame == start.frame + frames, (who, start, done)
+        kcpc_end = a.regs_get().stamp
+        assert kcpc_end.paused and kcpc_end.frame == start.frame + frames
+
+        assert core.ipc(f'step frame {frames}').startswith('OK')
+        text_end = a.regs_get().stamp
+        assert text_end.frame - kcpc_end.frame == frames, (
+            f'text `step frame {frames}` ran '
+            f'{text_end.frame - kcpc_end.frame} frames, STEP frames '
+            f'{kcpc_end.frame - start.frame}')
+        expect_resumed(b, 0, 0, 'observer')
+        expect_stopped(b, kc.STOP_STEP_DONE, 0, 0, 'observer')
+
+        # A long step: visible in RUN_STATE, exclusive, and ended by PAUSE.
+        long_id = a.step(1_000_000, kc.STEP_FRAMES)
+        expect_resumed(b, a_id, long_id, 'observer')
+        state = a.run_state()
+        assert state.walk_active and not state.stamp.paused, state
+        refused(kc.BUSY, 'a second STEP during a step', a.step)
+        refused(kc.BUSY, 'a second frame step', a.step, 2, kc.STEP_FRAMES)
+        a.pause()
+        pause_id = a.last_request_id
+        for who, c in (('stepper', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_PAUSED, a_id, pause_id, who)
+        state = a.run_state()
+        assert not state.walk_active and state.stamp.paused, state
+        # The counter of the step that was cut short is gone: the next
+        # step runs its own frames and no others.
+        here = a.regs_get().stamp
+        step_id = a.step(2, kc.STEP_FRAMES)
+        done = expect_stopped(a, kc.STOP_STEP_DONE, a_id, step_id, 'stepper')
+        assert done.frame == here.frame + 2, (here, done)
+
+
+def test_reset_is_pushed() -> None:
+    """RESET resets the CPC and leaves it running, or stopped with the
+    stay-paused flag, whichever it was; EVT_RESET names the request and the
+    run-state event follows it."""
+    with Core() as core, controller(core, 'resetter') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        spin(core, a)
+        for _ in range(2):
+            run_event(b)        # the text IPC's pause and run inside spin()
+        assert a.regs_get().pc == SPIN_ADDR
+
+        # Running, stay paused: reset, then stopped.
+        stamp = a.reset(stay_paused=True)
+        reset_id = a.last_request_id
+        assert stamp.paused, stamp
+        event = run_event(b)
+        assert (event.opcode, event.cause_client, event.cause_request) == (
+            kc.EVT_RESET, a_id, reset_id), event
+        expect_stopped(b, kc.STOP_PAUSED, a_id, reset_id, 'observer')
+        regs = a.regs_get()
+        assert regs.pc == 0 and regs.stamp.paused, regs
+        assert (regs.iff1, regs.im) == (0, 0), regs
+
+        # Paused, plain reset: reset, then running.
+        stamp = a.reset()
+        reset_id = a.last_request_id
+        assert not stamp.paused, stamp
+        event = run_event(b)
+        assert (event.opcode, event.cause_request) == (kc.EVT_RESET,
+                                                      reset_id), event
+        expect_resumed(b, a_id, reset_id, 'observer')
+
+        # Running, plain reset: the machine keeps running, so the reset is
+        # the only event; the PAUSE behind it is the next.
+        a.reset()
+        reset_id = a.last_request_id
+        event = run_event(b)
+        assert (event.opcode, event.cause_request) == (kc.EVT_RESET,
+                                                      reset_id), event
+        a.pause()
+        expect_stopped(b, kc.STOP_PAUSED, a_id, a.last_request_id,
+                       'observer')
+        refused(kc.BAD_PAYLOAD, 'RESET with no payload', a.request,
+                kc.OP_RESET)
+
+
+class LeaseTaker:
+    """Another actor that holds one pause lease after another: the text IPC
+    writing a byte of memory in a loop, on its own connections."""
+
+    def __init__(self, core: Core):
+        self.core = core
+        self.stop = threading.Event()
+        self.writes = 0
+        self.errors: List[str] = []
+        self.thread = threading.Thread(target=self._run)
+
+    def _run(self) -> None:
+        try:
+            while not self.stop.is_set():
+                resp = self.core.ipc('mem write 0x9000 00')
+                assert resp.startswith('OK'), resp
+                self.writes += 1
+        except Exception as exc:  # noqa: BLE001 - reported by the test
+            self.errors.append(f'{type(exc).__name__}: {exc}')
+
+    def __enter__(self) -> 'LeaseTaker':
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        self.thread.join()
+
+
+def test_run_is_not_lost_to_another_actors_lease() -> None:
+    """RUN must not vanish because somebody else happens to hold a pause
+    lease (beads-pja3): with the text IPC writing memory in a loop on its
+    own connections, every PAUSE is followed by EVT_STOPPED and every RUN
+    by EVT_RESUMED, and nothing else is announced."""
+    turns = 40
+    with Core() as core, controller(core, 'runner') as a:
+        a.subscribe(kc.CLASS_RUN)
+        a_id = a.hello_reply.client_id
+        with LeaseTaker(core) as other:
+            for turn in range(turns):
+                a.pause()
+                expect_stopped(a, kc.STOP_PAUSED, a_id, a.last_request_id,
+                               f'turn {turn}')
+                a.run()
+                expect_resumed(a, a_id, a.last_request_id, f'turn {turn}')
+        assert not other.errors, other.errors
+        assert other.writes > turns, (
+            f'only {other.writes} leases by the other actor: this proved '
+            'little')
+        print(f'    {turns} pause/run pairs beside {other.writes} text IPC '
+              'writes: every RUN took effect')
+
+
+def test_frame_events_arrive_at_the_interval() -> None:
+    """Acceptance 5, first half: with frame_interval 5, EVT_FRAME arrives
+    for every fifth frame and the events on the connection are numbered
+    without a gap. SUBSCRIBE replaces the subscription."""
+    with Core() as core, observer(core, 'frames') as c:
+        assert c.subscribe(kc.CLASS_FRAME | 0x8000_0000, 5) == (
+            kc.CLASS_FRAME, 5), 'an unknown class bit is dropped, not refused'
+        events = [c.next_event(EVENT_TIMEOUT_S) for _ in range(8)]
+        assert all(e.opcode == kc.EVT_FRAME for e in events), events
+        frames = [e.frame for e in events]
+        assert all(f % 5 == 0 for f in frames), frames
+        assert frames == list(range(frames[0], frames[0] + 40, 5)), frames
+        seqs = [e.seq for e in events]
+        assert seqs == list(range(seqs[0], seqs[0] + 8)), seqs
+        assert seqs[0] == 1, f'the first event on a connection is 1: {seqs}'
+        # A frame read now is the frame the events are counting.
+        stamp = c.machine_info().stamp
+        assert stamp.frame >= frames[-1], (stamp, frames)
+
+        # No class, no events: the PING's reply is the next frame.
+        assert c.subscribe(0) == (0, 0)
+        c.events.clear()
+        time.sleep(0.2)
+        c.ping()
+        assert not c.events, f'events after unsubscribing: {c.events}'
+        refused(kc.BAD_PAYLOAD, 'SUBSCRIBE with no payload', c.request,
+                kc.OP_SUBSCRIBE)
+
+
+def test_a_client_that_stops_reading_is_told_what_it_missed() -> None:
+    """Acceptance 5, second half: a client that stops reading has its events
+    dropped once its queue is over the event cap, and learns how many from
+    EVT_OVERRUN when it reads again: the frames it received and the counts
+    it was given add up to every frame. Another subscriber misses nothing
+    meanwhile."""
+    cap = 64 * 1024
+    read_size = 128 * 1024
+    reads = 128       # 16 MiB of replies: more than any socket buffer holds
+    with Core(extra_env={'KONCPC_KCPC_EVENT_QUEUE_BYTES': str(cap)}) as core, \
+            observer(core, 'steady', kc.CLASS_FRAME, 1) as steady:
+        slow = core.client()
+        slow.hello('slow')
+        assert slow.mem_info().ram_bytes >= read_size
+        slow.subscribe(kc.CLASS_FRAME, 1)
+        first = slow.next_event(EVENT_TIMEOUT_S)
+        assert first.opcode == kc.EVT_FRAME, first
+
+        # Stop reading, with a lot of replies on their way.
+        ids = [slow.send_request(kc.OP_MEM_READ, kc.mem_read_payload(
+            kc.SPACE_PHYS_RAM, 0, read_size)) for _ in range(reads)]
+        # Each read is taken at a frame boundary: when the steady client has
+        # seen this many more frames, the replies have all been produced.
+        seen = [steady.next_event(EVENT_TIMEOUT_S) for _ in range(reads + 40)]
+        assert all(e.opcode == kc.EVT_FRAME for e in seen), (
+            'the steady client was sent something else: '
+            f'{[e.name for e in seen if e.opcode != kc.EVT_FRAME]}')
+        frames = [e.frame for e in seen]
+        assert frames == list(range(frames[0], frames[0] + len(frames))), (
+            'the steady client missed frames while another client stalled')
+
+        # Read again. Every reply is there, and the events account for
+        # every frame: received, or counted in an EVT_OVERRUN.
+        for request_id in ids:
+            frame = slow.read_response(request_id)
+            assert frame.status == kc.OK, kc.status_name(frame.status)
+        events = [kc.Event.decode(f) for f in slow.events]
+        slow.events.clear()
+        # The last count comes once the queue has drained, behind the last
+        # reply; read on until the events have caught up with the frames the
+        # steady client saw.
+        while not (events and events[-1].opcode == kc.EVT_FRAME
+                   and events[-1].frame >= frames[-1]):
+            events.append(slow.next_event(EVENT_TIMEOUT_S))
+        expected = first.frame + 1
+        seq = first.seq + 1
+        dropped = 0
+        for event in events:
+            assert event.seq == seq, f'event ids have a gap at {event}'
+            seq += 1
+            if event.opcode == kc.EVT_OVERRUN:
+                assert event.dropped > 0, event
+                dropped += event.dropped
+                expected += event.dropped
+                continue
+            assert event.opcode == kc.EVT_FRAME, event
+            assert event.frame == expected, (
+                f'frame {event.frame} after {dropped} reported lost: '
+                f'expected frame {expected}')
+            expected += 1
+        assert dropped > reads // 2, (
+            f'only {dropped} events were dropped while {reads} replies '
+            'backed up: the test proved little')
+        print(f'    stalled client: {dropped} events dropped and reported, '
+              f'{len(events)} delivered, every frame accounted for')
+        slow.close()
+
+
+def test_control_changes_reach_every_client() -> None:
+    """Every change of controller is pushed to every client, whatever it
+    subscribed to: the demoted controller learns of a takeover from the
+    event, not from a refused request."""
+    with Core() as core, controller(core, 'first') as a, \
+            observer(core, 'second') as b:
+        a_id = a.hello_reply.client_id
+        b_id = b.hello_reply.client_id
+        event = a.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+        assert (event.controller, event.previous, event.reason) == (
+            a_id, 0, kc.CONTROL_ACQUIRED), event
+        assert event.seq == 1, event
+
+        assert b.acquire_control(force=True).is_controller
+        assert not [e for e in b.events
+                    if e.opcode == kc.EVT_CONTROL_CHANGED], (
+            'the event arrived before the reply to the CONTROL behind it')
+        for who, c in (('demoted', a), ('new controller', b)):
+            event = c.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+            assert (event.controller, event.previous, event.reason) == (
+                b_id, a_id, kc.CONTROL_TAKEN), (who, event)
+        refused(kc.NOT_CONTROLLER, 'the demoted controller', a.pause)
+
+        b.release_control()
+        for who, c in (('first', a), ('second', b)):
+            event = c.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+            assert (event.controller, event.previous, event.reason) == (
+                0, b_id, kc.CONTROL_RELEASED), (who, event)
+
+        assert a.acquire_control().is_controller
+        a.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+        b.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+        a.close()
+        event = b.wait_event(kc.EVT_CONTROL_CHANGED, EVENT_TIMEOUT_S)
+        assert (event.controller, event.previous, event.reason) == (
+            0, a_id, kc.CONTROL_LEFT), event
+
+
+def _stepped_by_kcpc(core: Core, frames: int, watchers: int) -> Tuple:
+    """From a reset that stays paused, run `frames` frames with STEP frames
+    while `watchers` clients are subscribed to every event (a frame event
+    per frame), and describe the machine afterwards."""
+    with controller(core, 'determinism') as a:
+        a_id = a.hello_reply.client_id
+        a.reset(stay_paused=True)
+        before = a.regs_get().stamp
+        assert before.paused
+        clients = [observer(core, f'subscriber {i}', kc.CLASS_ALL, 1)
+                   for i in range(watchers)]
+        try:
+            step_id = a.step(frames, kc.STEP_FRAMES)
+            done = expect_stopped(a, kc.STOP_STEP_DONE, a_id, step_id,
+                                  'stepper')
+            received = []
+            for c in clients:
+                got = 0
+                while True:
+                    event = c.next_event(EVENT_TIMEOUT_S)
+                    if event.opcode == kc.EVT_FRAME:
+                        got += 1
+                    elif (event.opcode == kc.EVT_STOPPED
+                          and event.cause_request == step_id):
+                        break
+                received.append(got)
+        finally:
+            for c in clients:
+                c.close()
+        regs = core.ipc('regs') + ''.join(
+            ' ' + core.ipc(f'reg get {name}')
+            for name in ('I', 'R', 'IFF1', 'IFF2', 'AFX', 'BCX', 'DEX',
+                         'HLX'))
+        pages = a.mem_info().ram_bytes // 16384
+        ram = ''.join(core.ipc(f'mem read 0 16384 --bank={page}')
+                      for page in range(pages))
+        return done.frame - before.frame, regs, ram, received
+
+
+def test_subscribers_do_not_change_what_the_machine_computes() -> None:
+    """Acceptance 7: the determinism check of slice 2 with two clients
+    subscribed to everything. From the same reset, 100 frames end in the
+    same registers and the same RAM with nobody listening and with two
+    clients receiving an event for every frame."""
+    frames = 100
+    with Core() as core:
+        alone = _stepped_by_kcpc(core, frames, 0)
+        again = _stepped_by_kcpc(core, frames, 0)
+        assert alone[:3] == again[:3], (
+            'the reference run is not reproducible; the comparison below '
+            'would prove nothing')
+        assert alone[0] == frames, alone[0]
+        watched = _stepped_by_kcpc(core, frames, 2)
+        assert watched[0] == frames, watched[0]
+        assert watched[3] == [frames, frames], (
+            f'the subscribers received {watched[3]} frame events for '
+            f'{frames} frames')
+        assert watched[1] == alone[1], (
+            f'registers differ:\n  alone   {alone[1]}\n  watched '
+            f'{watched[1]}')
+        assert watched[2] == alone[2], (
+            f'RAM differs after the same {frames} frames')
+        print(f'    2 subscribers, {frames} frame events each: registers '
+              'and RAM identical')
+
+
 def test_bad_frames_close_the_connection() -> None:
     """Acceptance 3: bad magic, a wrong major, an unknown kind, an oversized
     length, request id 0, a first frame that is not HELLO and a second HELLO
@@ -1672,7 +2234,7 @@ def test_recoverable_errors_keep_the_connection() -> None:
 
         # An opcode of a capability this server does not have yet, and one
         # that exists nowhere.
-        for opcode in (kc.OP_PAUSE, 0x7FFF, kc.OP_ERROR):
+        for opcode in (kc.OP_BP_LIST, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -1835,8 +2397,10 @@ def test_ipc_quit_with_clients_connected() -> None:
             took = time.monotonic() - begin
             assert code == 0, f'quit exited with {code}'
             print(f'    quit -> exit 0 in {took * 1000:.0f} ms')
+            # Acceptance 6 of slice 4: EVT_SHUTDOWN, then the ERROR, then
+            # end of stream.
             expect_error_and_close(said_hello.sock, kc.SHUTTING_DOWN,
-                                   'client at quit')
+                                   'client at quit', shutdown=True)
         finally:
             said_hello.close()
             for sock in others:
@@ -1865,7 +2429,7 @@ def test_sigterm_with_clients_connected() -> None:
             assert code == 128 + signal.SIGTERM, f'SIGTERM exited with {code}'
             print(f'    SIGTERM -> exit {code} in {took * 1000:.0f} ms')
             expect_error_and_close(said_hello.sock, kc.SHUTTING_DOWN,
-                                   'client at SIGTERM')
+                                   'client at SIGTERM', shutdown=True)
         finally:
             said_hello.close()
             for sock in others:
@@ -1891,6 +2455,17 @@ TESTS: List[Callable[[], None]] = [
     test_mem_write_lands_in_the_ram_it_names,
     test_writes_leave_the_run_state_alone,
     test_readers_and_a_writer_at_once,
+    test_pause_and_run_are_pushed_to_every_subscriber,
+    test_stops_from_the_text_ipc_are_pushed,
+    test_reads_and_writes_are_not_run_state_events,
+    test_step_in_ends_with_an_event,
+    test_step_frames_counts_like_the_text_ipc,
+    test_reset_is_pushed,
+    test_run_is_not_lost_to_another_actors_lease,
+    test_frame_events_arrive_at_the_interval,
+    test_a_client_that_stops_reading_is_told_what_it_missed,
+    test_control_changes_reach_every_client,
+    test_subscribers_do_not_change_what_the_machine_computes,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

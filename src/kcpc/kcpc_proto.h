@@ -142,10 +142,12 @@ inline constexpr std::uint64_t kCapSnapshot = 1ULL << 12;
 inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
 
 // What this server implements today: the machine reads (slice 2), with the
-// ROM spaces, and the control role with the machine writes (slice 3). HELLO,
-// PING and MACHINE_INFO need no capability.
-inline constexpr std::uint64_t kServerCaps =
-    kCapMachineRead | kCapMemRom | kCapMachineWrite;
+// ROM spaces, the control role with the machine writes (slice 3), and run
+// control with the pushed events (slice 4). HELLO, PING and MACHINE_INFO
+// need no capability.
+inline constexpr std::uint64_t kServerCaps = kCapMachineRead | kCapMemRom |
+                                             kCapMachineWrite | kCapRunControl |
+                                             kCapEvents;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -636,6 +638,110 @@ inline bool read_control_reply(Reader& r, ControlReply& out) {
   r.u8(role);
   r.skip(3);
   out.role = role == 1 ? Role::kController : Role::kObserver;
+  return r.u32(out.controller);
+}
+
+// SUBSCRIBE (section 9): the request, and the reply, which repeats the two
+// values as the server accepted them.
+inline constexpr std::uint32_t kEventClassRun = 1U << 0;
+inline constexpr std::uint32_t kEventClassFrame = 1U << 1;
+inline constexpr std::uint32_t kEventClassMedia = 1U << 2;
+inline constexpr std::uint32_t kEventClassDebug = 1U << 3;
+inline constexpr std::uint32_t kEventClassMachine = 1U << 4;
+inline constexpr std::uint32_t kEventClassAll = (1U << 5) - 1;
+
+struct Subscription {
+  std::uint32_t classes = 0;
+  std::uint32_t frame_interval = 0;  // EVT_FRAME every N frames; 0 = never
+};
+
+inline void write_subscription(Writer& w, const Subscription& s) {
+  w.u32(s.classes);
+  w.u32(s.frame_interval);
+}
+
+inline bool read_subscription(Reader& r, Subscription& out) {
+  r.u32(out.classes);
+  return r.u32(out.frame_interval);
+}
+
+// EVT_STOPPED `reason`.
+enum class StopReason : std::uint8_t {
+  kPaused = 1,
+  kBreakpoint = 2,
+  kWatchpoint = 3,
+  kIoBreakpoint = 4,
+  kStepDone = 5,
+  kStepTimeout = 6,
+  kStepStalled = 7,
+};
+
+// EVT_CONTROL_CHANGED `reason`.
+inline constexpr std::uint8_t kControlAcquired = 1;  // while it was free
+inline constexpr std::uint8_t kControlTaken = 2;     // by force
+inline constexpr std::uint8_t kControlReleased = 3;
+inline constexpr std::uint8_t kControlLeft = 4;  // disconnected or timed out
+
+// STEP (section 12, Run control).
+enum class StepMode : std::uint8_t {
+  kIn = 0,
+  kOver = 1,
+  kOut = 2,
+  kTo = 3,
+  kFrames = 4,
+};
+
+// Step in runs with every pause, resume and lease waiting for it, so one
+// request single-steps at most this many instructions (about 10 ms).
+inline constexpr std::uint32_t kMaxStepInCount = 4096;
+inline constexpr std::uint32_t kMaxStepFrames = 0x7FFFFFFF;
+
+struct StepRequest {
+  std::uint8_t mode = 0;  // raw; the server validates it
+  std::uint16_t addr = 0;
+  std::uint32_t count = 0;  // 0 means 1
+  std::uint32_t timeout_ms = 0;
+};
+
+inline void write_step_request(Writer& w, const StepRequest& s) {
+  w.u8(s.mode);
+  w.u8(0);
+  w.u16(s.addr);
+  w.u32(s.count);
+  w.u32(s.timeout_ms);
+}
+
+inline bool read_step_request(Reader& r, StepRequest& out) {
+  r.u8(out.mode);
+  r.skip(1);
+  r.u16(out.addr);
+  r.u32(out.count);
+  return r.u32(out.timeout_ms);
+}
+
+// RESET `flags`.
+inline constexpr std::uint8_t kResetFlagStayPaused = 1U << 0;
+
+// RUN_STATE reply.
+struct RunState {
+  Stamp stamp;
+  bool walk_active = false;      // a step is in progress
+  std::uint32_t controller = 0;  // the controller's client_id; 0 = nobody
+};
+
+inline void write_run_state(Writer& w, const RunState& s) {
+  write_stamp(w, s.stamp);
+  w.u8(s.walk_active ? 1 : 0);
+  w.zeros(3);
+  w.u32(s.controller);
+}
+
+inline bool read_run_state(Reader& r, RunState& out) {
+  std::uint8_t walk = 0;
+  read_stamp(r, out.stamp);
+  r.u8(walk);
+  r.skip(3);
+  out.walk_active = walk != 0;
   return r.u32(out.controller);
 }
 

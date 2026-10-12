@@ -6,8 +6,11 @@ implementation lands in the slices listed in
 [section 16](#16-implementation-slices), and that table says which have
 landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
 `MACHINE_INFO`, `ERROR`), slice 2, the machine reads (`REGS_GET`,
-`MEM_INFO`, `MEM_READ`), and slice 3, the control role and the machine
-writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`). Everything else is still design; a server tells a
+`MEM_INFO`, `MEM_READ`), slice 3, the control role and the machine
+writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`), and slice 4, run control and
+the pushed events (`SUBSCRIBE`, `RUN_STATE`, `PAUSE`, `RUN`, `RESET`,
+`STEP` in and frames, and the events that tell every client about them).
+Everything else is still design; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
 version 0, and the layouts below may still change, until phase 5 (the remote
@@ -148,6 +151,10 @@ Rules:
   connection.
 - Events may arrive between a request and its response. Match responses by
   `id`, never by position in the stream.
+- An event that a client's own request caused is sent to that client after
+  the response to the request, never before it: the reply to `PAUSE` comes
+  first and its `EVT_STOPPED` second. Other clients may receive the event
+  while the request is still being served.
 - The server answers one connection's requests in the order they arrived, one
   at a time. A client may send several requests without waiting (pipelining).
 - Maximum payload a client may send: **1 MiB**. Maximum payload the server
@@ -230,8 +237,11 @@ discarding for up to half a second, and closes fully when the client has
 closed or the time is up. A client that receives `ERROR` should close its
 socket; it will read end-of-stream right after the frame.
 
-Until events exist (slice 4, `EVT_SHUTDOWN`), a core that is quitting says
-so with `ERROR` and status `SHUTTING_DOWN`.
+A core that is quitting tells a client twice, in this order: `EVT_SHUTDOWN`
+(an event, so a client that is waiting for events sees it), then `ERROR`
+with status `SHUTTING_DOWN` (so a client that is waiting for a response
+sees it), then end of stream. A connection that has not completed `HELLO`
+is promised no events and gets the `ERROR` alone.
 
 ## 6. Versioning and `HELLO`
 
@@ -371,11 +381,11 @@ At most one client is the controller.
   takeover. Its `EVT_STOPPED` still goes to the client that asked for it, and
   the new controller may end it with `PAUSE`.
 
-`EVT_CONTROL_CHANGED` arrives with the events of slice 4 and the release of
-held keys with the input of slice 6. Until then a demoted client learns it
-from the `NOT_CONTROLLER` its next change answers with, or by asking:
-`CONTROL` acquire without force changes nothing while another client has
-control and its reply names the controller.
+The release of held keys arrives with the input of slice 6. A client that
+wants to know who has control without waiting for an event asks:
+`RUN_STATE` names the controller, and so does the reply to a `CONTROL`
+acquire without force, which changes nothing while another client has
+control.
 
 A request that needs control is refused with `NOT_CONTROLLER` before its
 payload is looked at: an observer learns nothing from a malformed write but
@@ -405,10 +415,10 @@ core already has.
 | Acceptor | 1 | `accept()`, enforces the client limit, joins the threads of connections that have ended |
 | Reader | 1 per client | Reads frames, runs requests, queues responses; starts and joins its writer and closes the socket |
 | Writer | 1 per client | Sends that client's queued responses and events |
-| Fan-out | 1 | Takes events from the runner's ring and copies them to subscribed clients |
-| Walker | 1 | Runs steps that take emulated time (step over, out, to, frame) |
+| Fan-out | 1 | Takes events from the ring and copies them to subscribed clients |
+| Walker | 1 | Runs steps that walk the machine (step over, out, to); arrives with slice 5 |
 
-At most 19 threads with 8 clients. They wait in `poll()` (`select()` on
+At most 19 threads with 8 clients (18 until the walker exists). They wait in `poll()` (`select()` on
 Windows) for at most 50 ms at a time or on a condition variable; none of
 them spins. The sockets are non-blocking, so no thread is ever inside a
 `recv()` or `send()` that only the other side can end, and each one sees
@@ -636,30 +646,97 @@ thread and calls the hit hook, which today ends in
 the same hook. `emu_handle_stop()` classifies the stop, and that is where the
 event gets its reason.
 
-The runner's part of an event is one push into a fixed-size ring (4096
-entries, single producer). It never blocks and never allocates. If the ring
-is full the event is counted as lost. The fan-out thread does the rest.
+Posting an event is one push into a fixed-size ring (4096 entries). It
+never blocks on another thread, never allocates and makes no socket call. If
+the ring is full the event is counted as lost, and every client is told with
+`EVT_OVERRUN`. The fan-out thread does the rest: it takes the events out in
+the order they were pushed, encodes them and queues them for the clients
+that subscribed.
+
+The ring takes **several producers**, not the one the first design named.
+The runner posts frames and breakpoint stops, but a pause is settled on the
+thread that asked for it, under the pause mutex, while the runner may be
+finishing a frame; and a change of controller is posted by a client's reader
+thread. So a producer claims its slot with a compare-and-swap (a bounded
+queue after Vyukov), which keeps the push lock-free for all of them.
+
+A producer wakes the fan-out thread only when that thread is asleep, by
+taking its mutex for an instant and signalling it. The fan-out thread holds
+that mutex only for the one check it makes before it sleeps, so this is the
+only place a producer can wait, and for no longer than that check.
+
+`EVT_FRAME` costs the runner nothing while nobody wants it. The server keeps
+the greatest common divisor of the frame intervals clients asked for (0 when
+there are none), and `kcpc_service_frame()` posts a frame event only for
+frames that number divides: one relaxed atomic load per frame otherwise.
 
 ### Run state: one announced value
 
-"Paused" and "running" are announced, not sampled. Three functions settle the
-pause state today, all under `g_pause_mutex`: `cpc_pause()`, `cpc_resume()`
-when it is applied, and `CpcPauseLease::release()` when the last lease goes.
-At each of them the server compares the real state with the last state it
-announced and posts `EVT_STOPPED` or `EVT_RESUMED` only when they differ.
+"Paused" and "running" are announced, not sampled. Three things settle the
+pause state, all under `g_pause_mutex`: a pause (`cpc_pause()` and the
+breakpoint commit), a resume that is applied, and the last pause lease
+letting go, by whichever of its exits. At each of them the core compares the
+state that now holds with the last state it announced and calls its one
+observer only when they differ (`cpc_set_run_state_observer()` in
+`koncepcja.h`). The server is that observer and posts `EVT_STOPPED` or
+`EVT_RESUMED`. While any lease is held the state is not settled and nothing
+is compared.
 
 A lease that pauses a running machine and resumes it inside one request is
 therefore invisible, which is what a client wants: reads and pokes do not
-make the run state flicker.
+make the run state flicker. The test suite checks it: 60 reads and 120
+writes beside a running machine produce no run-state event.
+
+Because the announcement lives in the core and not in this server, it does
+not matter who pauses. The text IPC's `pause`, `run` and `step`, the GUI's
+pause and the DevTools' step buttons are pushed to the clients like a
+client's own requests, with `cause_client` 0.
+
+**A stop is announced when it has happened, not when it was asked for.** A
+pause from another thread only raises a flag; the frame in flight runs to
+its end first, up to 20 ms later. An event sent at once would carry a `pc`
+and a `frame` that are already wrong when the client reads the registers.
+So a stop that is asked for while a frame runs is announced by the runner
+itself when it parks (`cpc_runner_parked()`), and `EVT_STOPPED` always
+describes the machine a read then finds: same `frame`, same `pc`. A pause
+that is taken back before the frame ended was never a stop and is never
+announced. `RUN_STATE` reports this announced state, from two atomics, so
+polling it costs a running machine nothing.
+
+Every pause, resume and lease exit can be told who asked (`CpcRunCause`:
+client, request, reason), and the announcement repeats it. The latest
+request stands, as it does for the lease chain: a stop that arrives after a
+deferred run leaves the machine stopped and is the one announced.
+
+**A run is never dropped.** `cpc_resume()` does nothing while a pause lease
+is held, which is right for a caller that only undoes its own pause and
+wrong for a request to run the machine: with several actors a lease is held
+somewhere much of the time (another client's write, a read that fell back to
+a lease, the text IPC), and the run then vanished (beads-pja3). `RUN` uses
+`cpc_run()`, which records the run for the lease chain: the machine runs
+when the last holder lets go, unless somebody stops it first.
 
 ### Steps that take emulated time
 
 No request waits for emulated time to pass. `STEP` in the modes that run the
 machine (over a call, out of a routine, to an address, N frames) answers `OK`
-as soon as the step is armed. The walker thread runs it with the existing
-`z80_run_until_ephemeral()` and frame-step machinery and the result arrives
-as `EVT_STOPPED`. One walk runs at a time; a second `STEP` meanwhile answers
-`BUSY`, and `PAUSE` aborts the walk through its abort predicate.
+as soon as the step is armed, and the result arrives as `EVT_STOPPED`. One
+step runs at a time; a second `STEP` meanwhile answers `BUSY`, and `PAUSE`
+ends the one in progress.
+
+A frame step needs no thread of its own. It arms the frame counter the text
+IPC's `step frame` uses (`arm_frame_step()`, counted down by the runner in
+its frame epilogue) and lets go of its lease with `release_running()`; when
+the count reaches zero the runner pauses the machine, and that pause is
+announced with reason `STEP_DONE`. Nothing waits for it. The core remembers
+which request the step in progress belongs to, so whatever stop ends it (the
+count, a breakpoint, somebody's pause) is delivered to the client that
+asked. A stop that ends the step early also disarms the counter: left armed,
+it would stop the machine again some frames after the next `RUN`.
+
+The walker thread, for the steps that walk the machine instruction by
+instruction with `z80_run_until_ephemeral()` (over, out, to), arrives with
+slice 5.
 
 So the longest any request can take is the pause lease's idle timeout. The
 one exception is `CONFIG_APPLY` (section 12), which waits for the machine to
@@ -684,15 +761,22 @@ doing (measured: about 0.3 s with four connections, one of them mid-frame).
 
 ### Subscribing
 
-`SUBSCRIBE` replaces the client's subscription:
+`SUBSCRIBE` (`0x0003`) replaces the client's subscription:
 
 | Size | Field | Meaning |
 |-----:|-------|---------|
 | 4 | `classes` | Bit mask of event classes |
 | 4 | `frame_interval` | Send `EVT_FRAME` every N frames; 0 = never |
 
-The reply repeats the two values as accepted. After `HELLO` a client is
+The reply repeats the two values as accepted: class bits this server does
+not know are cleared, not refused, so a client written for a later minor
+version still subscribes to what exists. After `HELLO` a client is
 subscribed to nothing.
+
+`EVT_FRAME` is sent for the frames whose number is a multiple of
+`frame_interval`, so two clients that ask for the same interval are told of
+the same frames. An interval without the `FRAME` class, and the class with
+interval 0, ask for nothing.
 
 | Bit | Class | Events |
 |----:|-------|--------|
@@ -708,14 +792,23 @@ always sent to the client that asked for the step.
 
 ### Delivery
 
-- Events on one connection arrive in the order they happened.
+- Events on one connection arrive in the order they happened, and each
+  carries the next number of that connection in its `id`: 1 for the first
+  event after `HELLO`, `EVT_OVERRUN` included. A gap in the numbers means a
+  bug, not a loss; a loss is always reported.
+- An event caused by a client's own request follows the response to that
+  request ([section 4](#4-framing)). Events that happen while that one waits
+  wait behind it, so the order is kept.
 - An event is a notice, not the data. After `EVT_BREAKPOINTS_CHANGED` the
   client asks for `BP_LIST`; after `EVT_STOPPED` it reads the registers.
 - Each client has an outgoing queue. Responses always go in. Events go in
   only while the queue holds less than 4 MiB; beyond that they are dropped
   for that client alone, and once there is room the client receives one
-  `EVT_OVERRUN` with the number dropped. A client that sees it should assume
-  everything changed and re-read.
+  `EVT_OVERRUN` with the number dropped since the last one. A client that
+  sees it should assume everything changed and re-read. Events lost because
+  the ring itself was full are counted for every client the same way.
+  (`KONCPC_KCPC_EVENT_QUEUE_BYTES` in the environment lowers the 4 MiB. It
+  exists for the tests.)
 - A client whose queue reaches 32 MiB of unread responses is disconnected.
 - A slow or stuck client costs the runner nothing: the runner only ever
   writes to its own ring.
@@ -746,8 +839,22 @@ always sent to the client that asked for the step.
 | 6 | `STEP_TIMEOUT` | A walk hit its deadline; the machine is paused where it was |
 | 7 | `STEP_STALLED` | A walk could make no progress (`JP $`, `HALT` with interrupts off) |
 
-A walk that runs into a breakpoint reports `BREAKPOINT`, with the `cause_*`
-fields still naming the step.
+`EVT_STOPPED` is sent once the machine has stopped: its `frame` is the
+`frame` of every read taken before the machine runs again, and its `pc` is
+the `PC` those reads show (at a breakpoint, the breakpoint's address).
+
+A step always ends with exactly one `EVT_STOPPED`, also when the machine was
+paused before it and is paused after it. Whatever ends a step, the event is
+sent to the client that asked for the step, subscribed or not:
+
+- the step finished, or ran into a breakpoint: `STEP_DONE` or `BREAKPOINT`,
+  and the `cause_*` fields name the step;
+- somebody paused: `PAUSED`, and the `cause_*` fields name the pause (a
+  client's `PAUSE` request, or 0 for the text IPC and the GUI).
+
+Until the probe hook of slice 5, a breakpoint or watchpoint set through the
+text IPC or the DevTools is reported with its reason, `pc` and (for a
+breakpoint) `addr`; `access`, `value`, `old_value` and the I/O reason are 0.
 
 **`EVT_RESUMED` (`0x8002`)** — `u64 frame`, `u32 cause_client`,
 `u32 cause_request`.
@@ -976,12 +1083,30 @@ The register block is 32 bytes:
 
 - **`RUN_STATE` (`0x0104`)** — empty request. Reply: `stamp`,
   `u8 walk_active`, 3 reserved bytes, `u32 controller`.
-- **`PAUSE` (`0x0100`)** — controller. Empty. Pauses, aborts a walk in
-  progress. Reply: `stamp`.
-- **`RUN` (`0x0101`)** — controller. Empty. Reply: `stamp`. `BUSY` if a
-  pause lease held elsewhere defers the resume.
+  `walk_active` is 1 while a step is in progress. The stamp is the run state
+  as announced ([section 8](#run-state-one-announced-value)); nothing waits
+  for the machine, so this is cheap to poll.
+- **`PAUSE` (`0x0100`)** — controller. Empty. Pauses, and ends a step in
+  progress. Reply: `stamp`. The request waits for the frame in flight to
+  end, so the stamp is that of the stopped machine and `EVT_STOPPED` (reason
+  `PAUSED`, naming this request) follows the reply at once. Pausing a
+  machine that is already paused succeeds and announces nothing. Never
+  `BUSY`: a runner that will not go idle is paused all the same, the stamp
+  then still says running, and the event comes when the stop has happened.
+- **`RUN` (`0x0101`)** — controller. Empty. Reply: `stamp`. Never `BUSY`
+  (the design said `BUSY` when a pause lease held elsewhere defers the
+  resume; a run that can be lost to another actor's lease is a bug, see
+  [section 8](#run-state-one-announced-value)). When a lease defers it, the
+  stamp still says paused and `EVT_RESUMED` follows when the last holder
+  lets go. Running a machine that is running succeeds and announces nothing.
 - **`RESET` (`0x0103`)** — controller. Request: `u8 flags` (bit 0: stay
-  paused afterwards), 3 reserved bytes. Reply: `stamp`.
+  paused afterwards), 3 reserved bytes. Reply: `stamp`. The machine runs
+  afterwards, or stays paused with bit 0, whichever it was before.
+  `EVT_RESET` names this request, and `EVT_STOPPED` or `EVT_RESUMED` follows
+  it if the run state changed. A reset does not end a step in progress.
+  `BUSY` when the runner did not go idle; nothing was reset then. A reset
+  from any other source (the text IPC, the menu, a cartridge insert) is
+  pushed as `EVT_RESET` too.
 - **`STEP` (`0x0102`)** — controller.
 
   | Size | Field | Meaning |
@@ -996,6 +1121,23 @@ The register block is 32 bytes:
   step is armed. The outcome is an `EVT_STOPPED` whose `cause_request` is
   this request's `id`. Mode 0 completes before the reply is sent, and its
   event follows the reply.
+
+  - Modes 0 and 4 are implemented. Modes 1 to 3 answer `BAD_PAYLOAD` until
+    the server announces `CAP_BREAKPOINTS` (slice 5), as does a mode above 4.
+  - **Mode 0** single-steps `count` instructions under the pause mutex, like
+    a machine write ([seam 1](#seam-1-the-pause-lease-for-every-change)), so
+    every pause and resume in the core waits for it. `count` is therefore at
+    most **4096** (about 10 ms): `OUT_OF_RANGE` beyond. Stepping further than
+    that is what mode 3 and breakpoints are for. The stepping is blind to
+    breakpoints, like the text IPC's `step`.
+  - **Mode 4** runs `count` frames, exactly as many as the text IPC's
+    `step frame N`, and ends with reason `STEP_DONE`. From a paused machine
+    `EVT_RESUMED` comes first. `count` is at most 2147483647.
+  - `BUSY` while a step is in progress (this client's, another's, or a frame
+    step of the text IPC), when the runner did not go idle, and for mode 0
+    when other lease holders kept the machine.
+  - Checked in this order: `NOT_CONTROLLER`, `BAD_PAYLOAD` (too short,
+    mode), `OUT_OF_RANGE` (count), `BUSY`.
 
 ### Breakpoints
 
@@ -1330,7 +1472,7 @@ test-first against a real `-H` core.
 | 1 | Server skeleton (**landed**, beads-3o1.1) | Socket shim, listener and port probing, the `[ipc] binary_port_enabled` key, the acceptor, reader and writer threads, framing codec, `HELLO`, `PING`, `ERROR`, `MACHINE_INFO`, the manifest line; built in the GUI, `-H` and UI-free builds; Python client and test wired into CI on Linux, macOS and Windows |
 | 2 | Machine reads (**landed**, beads-3o1.2) | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with the spaces `CPU`, `CPU_RAM`, `PHYS_RAM`, `ROM_LOWER`, `ROM_UPPER` (`ASIC_PAGE` comes with slice 7); `MACHINE_INFO` moved onto the gate; `CAP_MACHINE_READ` and `CAP_MEM_ROM` |
 | 3 | Control and writes (**landed**, beads-3o1.3) | Roles, `CONTROL` with forced takeover, the controller idle timeout and `IDLE_TIMEOUT`; `REGS_SET`, `MEM_WRITE` to `CPU_RAM` and `PHYS_RAM`; `CAP_MACHINE_WRITE`; `REGS_GET` shows the breakpoint's address at a breakpoint |
-| 4 | Run control and events | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED` |
+| 4 | Run control and events (**landed**, beads-3o1.4) | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED`; `CAP_RUN_CONTROL` and `CAP_EVENTS` |
 | 5 | Breakpoints and pushed hits | `BP_*`, hits through the probe hook, `EVT_BREAKPOINTS_CHANGED`; the walker and `STEP` over, out, to |
 | 6 | Input | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`; keys released when control is lost |
 | 7 | DevTools data | `CHIP_GET`, `ASIC_PAGE`, `SYM_*`, `FB_INFO`, `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` |
@@ -1361,6 +1503,13 @@ Source layout the slices should follow:
 - `src/kcpc/kcpc_host.{h,cpp}` — the other side of those callbacks: the one
   server instance, started and stopped by `kon_cpc_ja.cpp`, and the code
   that reads and changes the machine for it.
+- `src/kcpc/kcpc_events.h` — the event record, its encoding and the ring.
+  Emulator-free and header-only; `test/kcpc_events_test.cpp` runs several
+  producers against it.
+- `src/koncepcja.h`, `src/kon_cpc_ja.cpp` — the announced run state:
+  `CpcRunCause`, `cpc_set_run_state_observer()`, `cpc_run()`,
+  `cpc_runner_parked()`. `test/run_state_announce_test.cpp` covers the
+  reconciliation without any server.
 - `src/subcycle_bridge.{h,cpp}` — `subcycle_bridge_write_regs()`, the one
   place a register edit reaches the machine from (this port by mask, the
   text IPC and the DevTools by what differs in the host view), and
@@ -1455,3 +1604,30 @@ Recorded so a reviewer can disagree with one without reading the rest.
 19. **The controller's idle timeout has a status of its own**,
     `IDLE_TIMEOUT` (slice 3), so a client that was dropped for silence can
     tell that from a framing error.
+20. **Run state is announced by the core, not by the server** (slice 4).
+    One observer is called where the pause state settles, so a stop is
+    pushed whoever caused it, and a lease's own pause and resume are
+    invisible by construction instead of by filtering.
+21. **A stop is announced when it has happened** (slice 4): by the runner
+    when it parks, if a frame was in flight when the stop was asked for. The
+    event's `frame` and `pc` are then the ones a read finds.
+22. **The event ring takes several producers** (slice 4). The design said
+    one, the runner; pauses are settled on the thread that pauses. The push
+    stays lock-free.
+23. **`RUN` is never refused** (slice 4). The design answered `BUSY` when a
+    lease was held elsewhere. With several clients that is most of the time,
+    and a run that can vanish is the defect of beads-pja3; `cpc_run()` defers
+    it to the last lease holder instead.
+24. **`PAUSE` waits for the frame in flight** (slice 4), under a pause
+    lease, so that its reply is the stamp of a stopped machine.
+25. **An event follows the response to the request that caused it**
+    (slice 4), so a client can read "reply, then outcome" without sorting.
+26. **Step in is limited to 4096 instructions a request** (slice 4): it
+    runs with the pause mutex held, as the machine writes do, so that it
+    never runs beside a machine rebuild.
+27. **`EVT_SHUTDOWN` and then `ERROR`** (slice 4). The event is for a client
+    reading events and the `ERROR` for one waiting for a response; neither
+    has to know about the other.
+28. **`EVT_FRAME` is sent for multiples of the interval** (slice 4), not
+    every Nth frame since the subscription, so clients agree on which frames
+    they saw and the runner posts only the frames somebody is due.

@@ -438,8 +438,12 @@ ifeq ($(UNAME_S),Darwin)
 # LLVM source-based coverage for macOS (clang)
 COVERAGE_FLAGS = -fprofile-instr-generate -fcoverage-mapping
 else
-# gcov-style coverage for Linux (gcc) - compatible with codecov/coveralls
-COVERAGE_FLAGS = --coverage -fprofile-arcs -ftest-coverage
+# gcov-style coverage for Linux (gcc) - compatible with codecov/coveralls.
+# -fprofile-update=atomic: the counters are otherwise plain increments, and
+# the KCPC tests run several threads through the same lines. Two threads
+# updating one counter lose or tear an update, gcov then computes a negative
+# branch count, and gcovr stops on it ("Got negative hit value").
+COVERAGE_FLAGS = --coverage -fprofile-arcs -ftest-coverage -fprofile-update=atomic
 endif
 ALL_CFLAGS += $(COVERAGE_FLAGS)
 LDFLAGS += $(COVERAGE_FLAGS)

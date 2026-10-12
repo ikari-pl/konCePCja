@@ -2947,6 +2947,13 @@ std::string handle_command(const std::string& line) {
         for (int i = 0; i < count; i++) {
           z80_step_instruction();
         }
+        // A step that finished: announced as one even though a paused
+        // machine stays paused, so that a frontend watching the run state
+        // re-reads what the step moved.
+        CpcRunCause stepped;
+        stepped.reason = CpcStopReason::StepDone;
+        stepped.step = true;
+        lease.release_stopped(stepped);
         return ok_with_context();
       }
       // "step frame [N]" — advance N complete frames, then pause

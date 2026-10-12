@@ -398,7 +398,11 @@ table of which implementation slices have landed, is
 answers `HELLO`, `PING`, `MACHINE_INFO`, the machine reads `REGS_GET`,
 `MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply), and, for the one
 client that holds control (`CONTROL`; a forced request takes it from another
-client), the writes `REGS_SET` and `MEM_WRITE`. The protocol is at
+client), the writes `REGS_SET` and `MEM_WRITE` and run control: `PAUSE`,
+`RUN`, `RESET`, `STEP` (in, frames), with `RUN_STATE` for anyone. A client
+that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
+`EVT_RESET`, `EVT_FRAME`, ...), whoever caused them: a pause from the text
+IPC or the GUI is pushed too. The protocol is at
 major version 0: client and server must come from the same checkout.
 
 ```ini
@@ -436,8 +440,24 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   diffs the host view. At a breakpoint the machine's own PC is one past the
   address everything shows; `subcycle_bridge_shown_regs()` is the block with
   the address that is shown.
+- `src/kcpc/kcpc_events.h` — the event record and the ring events are
+  posted into (`Server::post()`): lock-free, several producers, one
+  consumer (the server's fan-out thread). Posting is the only thing the
+  frame runner does for an event.
+- The run state is **announced by the core**, not sampled by the server:
+  `cpc_pause()`, an applied resume and the last pause lease letting go
+  compare the settled state with the one last announced and call the one
+  observer (`cpc_set_run_state_observer()`, `src/koncepcja.h`). A lease's
+  own pause and resume are never announced. The observer runs under the
+  pause mutex, on the frame runner too: it must only post. Pass a
+  `CpcRunCause` to `cpc_pause()` / `release_stopped()` / `release_running()`
+  when the stop or run should name who asked.
+- To run the machine on somebody's request use `cpc_run()`, not
+  `cpc_resume()`: the latter is dropped while any pause lease is held.
 - `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
-  controller may stay silent. It exists for the tests.
+  controller may stay silent, and `KONCPC_KCPC_EVENT_QUEUE_BYTES` the 4 MiB
+  of queue beyond which a client's events are dropped. They exist for the
+  tests.
 - `src/net_socket.{h,cpp}` — non-blocking loopback sockets with timeouts.
 - `test/integrated/kcpc/kcpc_client.py` is the reference client (standard
   library only); `test_kcpc.py` next to it starts its own cores
