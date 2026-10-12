@@ -215,11 +215,14 @@ jobs:
               fails=$((fails + 1)); echo "=== cartridge run $i FAILED"; cat probe.log
             fi
           done
-          echo "PROBE cartridge: $fails of 40 failed"
-          for i in 1 2 3; do
-            python test/integrated/kcpc/test_kcpc.py --ui-free -k test_polling_every_chip || true
-            python test/integrated/kcpc/test_kcpc.py --ui-free -k test_a_stop_is_not_caught_up || true
+          echo "PROBE cartridge running: $fails of 40 failed"
+          fails=0
+          for i in $(seq 1 80); do
+            if ! KONCPC_PROBE_PAUSE=1 python test/integrated/kcpc/test_kcpc.py --ui-free -k test_a_rebuilt_machine_is_announced > probe.log 2>&1; then
+              fails=$((fails + 1)); echo "=== paused cartridge run $i FAILED"; cat probe.log
+            fi
           done
+          echo "PROBE cartridge paused: $fails of 80 failed"
       - name: Smoke and -H e2e
         shell: bash
         env:
