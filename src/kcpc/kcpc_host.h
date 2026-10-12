@@ -131,3 +131,31 @@ kcpc::Status kcpc_host_text(const std::string& text, std::uint32_t& pending,
 kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
                              std::uint8_t buttons);
 kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows);
+
+// Chip state (section 12): the block of state.chip, read off the Devices
+// through the gate like the other machine reads. kNotPresent for the ASIC of
+// a machine that has none; the memory space ASIC_PAGE of kcpc_host_mem_read()
+// answers the same way.
+kcpc::Status kcpc_host_chip_get(kcpc::ChipState& state);
+
+// Symbols (section 12): g_symfile, the table the text IPC and the DevTools
+// read and edit. None of these touches the machine. A change from any source
+// is pushed as EVT_SYMBOLS_CHANGED.
+kcpc::Status kcpc_host_sym_list(std::uint64_t& generation,
+                                std::vector<kcpc::Symbol>& symbols);
+kcpc::Status kcpc_host_sym_add(std::uint32_t client, std::uint32_t request,
+                               const kcpc::Symbol& symbol,
+                               std::uint64_t& generation);
+// kNotFound when there is no symbol of that name.
+kcpc::Status kcpc_host_sym_del(std::uint32_t client, std::uint32_t request,
+                               const std::string& name,
+                               std::uint64_t& generation);
+// Adds the symbols of a symbol file as one change. kNotFound when the file
+// cannot be opened.
+kcpc::Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
+                                const std::string& path,
+                                std::uint64_t& generation,
+                                std::uint32_t& loaded);
+
+// FB_INFO: the machine's canonical frame, with no transport until phase 4.
+kcpc::Status kcpc_host_fb_info(kcpc::FbInfo& info);

@@ -18,8 +18,13 @@
 
 #include "autotype.h"
 #include "emu_frame.h"
+#include "hw/asic.h"
+#include "hw/crtc.h"
+#include "hw/fdc.h"
+#include "hw/gate_array.h"
 #include "hw/memory.h"
 #include "hw/probe.h"
+#include "hw/psg.h"
 #include "hw/z80.h"
 #include "iui_host.h"
 #include "kcpc/kcpc_gate.h"
@@ -28,9 +33,11 @@
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "log.h"
+#include "slotshandler.h"
 #include "startup_manifest.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
+#include "symfile.h"
 #include "z80_view.h"
 
 extern t_CPC CPC;
@@ -300,6 +307,94 @@ static_assert(kcpc::kMaxWatchpoints == PROBE_MAX_WATCH);
 static_assert(kcpc::kMaxIoBreakpoints == PROBE_MAX_IO);
 static_assert(kcpc::kBpAccessRead == READ && kcpc::kBpAccessWrite == WRITE);
 static_assert(kcpc::kBpAccessRead == IO_IN && kcpc::kBpAccessWrite == IO_OUT);
+
+// The request that is editing the symbol table on this thread, if one is,
+// and the generation its edit ended with: the table's hook runs on the
+// editing thread, so both travel in thread-local storage.
+thread_local kcpc::Cause t_sym_cause;
+thread_local std::uint64_t t_sym_generation = 0;
+
+struct SymCauseScope {
+  SymCauseScope(std::uint32_t client, std::uint32_t request) {
+    t_sym_cause = kcpc::Cause{client, request};
+    t_sym_generation = 0;
+  }
+  ~SymCauseScope() { t_sym_cause = kcpc::Cause{}; }
+  SymCauseScope(const SymCauseScope&) = delete;
+  SymCauseScope& operator=(const SymCauseScope&) = delete;
+  // The generation after the edit this scope covered. An edit that changed
+  // nothing called no hook: the table's own count then.
+  std::uint64_t generation() const {
+    return t_sym_generation != 0 ? t_sym_generation : g_symfile.generation();
+  }
+};
+
+// The symbol table changed, whoever edited it: this port, the text IPC, the
+// DevTools, the assembler. Called under the table's lock on the editing
+// thread, so it only posts.
+void on_symbols_changed(std::uint64_t generation) {
+  t_sym_generation = generation;
+  kcpc::Event event;
+  event.opcode = kcpc::Opcode::kEvtSymbolsChanged;
+  event.frame = g_gate.frame();
+  event.generation = generation;
+  event.cause_client = t_sym_cause.client;
+  event.cause_request = t_sym_cause.request;
+  g_kcpc_server.post(event);
+}
+
+static_assert(static_cast<int>(kcpc::MediaSlot::kDriveB) ==
+              static_cast<int>(::MediaSlot::DriveB));
+static_assert(static_cast<int>(kcpc::MediaSlot::kTape) ==
+              static_cast<int>(::MediaSlot::Tape));
+static_assert(static_cast<int>(kcpc::MediaSlot::kCartridge) ==
+              static_cast<int>(::MediaSlot::Cartridge));
+static_assert(kcpc::kMediaSlots == kMediaSlotCount);
+
+// A slot got a different medium, or lost it: a load or an eject on whichever
+// thread did it, or the frame runner giving the machine a queued swap. So
+// this only posts; what the slot holds is asked for when the event is sent.
+void on_media_changed(::MediaSlot slot, std::uint64_t generation) {
+  kcpc::Event event;
+  event.opcode = kcpc::Opcode::kEvtMediaChanged;
+  event.frame = g_gate.frame();
+  event.slot = static_cast<std::uint8_t>(slot);
+  event.generation = generation;
+  g_kcpc_server.post(event);
+}
+
+// The machine as MACHINE_INFO describes it. The caller has made sure nothing
+// is clocking or rebuilding it.
+bool fill_machine_info(kcpc::MachineInfo& info, const kcpc::Stamp& stamp) {
+  subcycle::Machine const* machine = subcycle_bridge_machine();
+  if (machine == nullptr) return false;
+  constexpr unsigned kModel6128Plus = 3;
+  info.model = static_cast<std::uint8_t>(CPC.model);
+  info.crtc_type = CRTC.crtc_type;
+  info.effective_tier =
+      static_cast<std::uint8_t>(subcycle_bridge_effective_tier_index());
+  info.flags = 0;
+  if (g_headless) info.flags |= kcpc::kMachineFlagHeadless;
+  if (CPC.model >= kModel6128Plus) info.flags |= kcpc::kMachineFlagAsic;
+  info.ram_bytes = static_cast<std::uint32_t>(machine->ram_size());
+  info.rom_slots = fitted_rom_slots();
+  info.stamp = stamp;
+  return true;
+}
+
+// The machine was rebuilt (a new model, RAM size, CRTC type). Called by the
+// thread that rebuilt it, which still holds its pause lease: the machine is
+// read here directly, not through the gate, which would wait for that lease.
+void on_machine_rebuilt(bool was_paused) {
+  kcpc::Event event;
+  event.opcode = kcpc::Opcode::kEvtMachineChanged;
+  event.frame = g_gate.frame();
+  kcpc::Stamp stamp;
+  stamp.frame = event.frame;
+  stamp.paused = was_paused;
+  if (!fill_machine_info(event.machine, stamp)) return;
+  g_kcpc_server.post(event);
+}
 
 // The walker: the one thread that runs the steps that walk the machine
 // (over, out, to). A request arms a step and returns; the walk happens here
@@ -618,21 +713,194 @@ Status kcpc_host_machine_info(kcpc::MachineInfo& info) {
   // which it only does with the runner idle: the gate keeps this read out of
   // that.
   return gated(sizeof(info), [&info](const kcpc::Stamp& stamp) {
+    return fill_machine_info(info, stamp) ? Status::kOk : Status::kInternal;
+  });
+}
+
+namespace {
+
+void read_crtc(const subcycle::Machine& machine, kcpc::CrtcState& out) {
+  CrtcRegs regs{};
+  crtc_peek(machine.crtc(), &regs);
+  static_assert(sizeof(regs.reg) == kcpc::kCrtcRegisters);
+  out.type = regs.type;
+  out.reg_select = regs.reg_select;
+  std::memcpy(out.reg.data(), regs.reg, sizeof(regs.reg));
+  // The counter is 8 bits wide on the chip; the Device keeps it in 16.
+  out.hcc = static_cast<std::uint8_t>(regs.hcc);
+  out.vcc = regs.vcc;
+  out.ra = regs.ra;
+  out.hsw = regs.hsw;
+  out.vsw = regs.vsw;
+  out.vta = regs.vta;
+  out.ma = regs.ma;
+  out.scanline = regs.scanline;
+}
+
+void read_gate_array(const subcycle::Machine& machine,
+                     kcpc::GateArrayState& out) {
+  GateArrayRegs regs{};
+  ga_peek(machine.gate_array(), &regs);
+  MemRegs banking{};
+  mem_peek(machine.mem(), &banking);
+  static_assert(sizeof(regs.ink) == kcpc::kGateArrayInks);
+  out.mode = regs.mode;
+  out.requested_mode = regs.req_mode;
+  out.pen = regs.pen;
+  out.rom_config = regs.rom_config;
+  out.ram_config = regs.ram_config;
+  out.upper_rom = banking.rom_select;  // the latch is the memory Device's
+  out.sl_count = regs.sl_count;
+  out.hs_count = regs.hs_count;
+  std::memcpy(out.ink.data(), regs.ink, sizeof(regs.ink));
+}
+
+void read_psg(const subcycle::Machine& machine, kcpc::PsgState& out) {
+  PsgRegs regs{};
+  psg_peek(machine.psg(), &regs);
+  static_assert(sizeof(regs.reg) == kcpc::kPsgRegisters);
+  std::memcpy(out.reg.data(), regs.reg, sizeof(regs.reg));
+  out.reg_select = regs.sel;
+}
+
+void read_fdc(const subcycle::Machine& machine, kcpc::FdcState& out) {
+  FdcRegs regs{};
+  fdc_peek(machine.fdc(), &regs);
+  out.motor = regs.motor;
+  for (std::uint8_t unit = 0; unit < kcpc::kFdcDrives; ++unit) {
+    out.track[unit] = regs.track[unit];
+    out.present[unit] =
+        static_cast<std::uint8_t>(fdc_media_present_unit(machine.fdc(), unit));
+    out.generation[unit] = dsk_media_generation(unit);
+  }
+}
+
+// False when there is no ASIC on this board.
+bool read_asic(const subcycle::Machine& machine, kcpc::AsicState& out) {
+  const Device* asic = machine.asic();
+  AsicRegs regs{};
+  asic_peek(asic, &regs);
+  if (regs.plugged == 0) return false;
+  out.unlocked = regs.locked == 0 ? 1 : 0;
+  out.pri_line = regs.pri_line;
+  out.lock_pos = static_cast<std::uint8_t>(asic_lock_pos(asic));
+  out.page_on = regs.page_on;
+  out.hscroll = regs.hscroll;
+  out.vscroll = regs.vscroll;
+  out.extend_border = regs.extend_border;
+  out.int_vector = regs.int_vector;
+  out.split_line = regs.split_line;
+  out.split_addr = regs.split_addr;
+  for (std::size_t ch = 0; ch < kcpc::kAsicDmaChannels; ++ch) {
+    kcpc::AsicDmaState& dma = out.dma[ch];
+    asic_dma_regs(asic, static_cast<int>(ch), &dma.source, &dma.prescaler,
+                  &dma.enabled);
+    asic_dma_debug(asic, static_cast<int>(ch), &dma.loop_addr, &dma.loops,
+                   &dma.pause_ticks, &dma.tick_cycles, &dma.irq);
+  }
+  for (std::size_t id = 0; id < kcpc::kAsicSprites; ++id) {
+    kcpc::AsicSpriteState& sprite = out.sprite[id];
+    asic_vid_sprite_attr(asic, static_cast<int>(id), &sprite.x, &sprite.y,
+                         &sprite.mag_x, &sprite.mag_y);
+  }
+  return true;
+}
+
+}  // namespace
+
+// Every field comes off the Devices, through the gate: the structs the
+// in-process views read (CRTC, GateArray, PSG, asic) are rewritten by the
+// frame runner once a frame and by whoever steps the machine, and are not
+// for a socket thread to read.
+Status kcpc_host_chip_get(kcpc::ChipState& state) {
+  if (!kcpc::chip_known(state.chip)) return Status::kBadPayload;
+  return gated(sizeof(state), [&state](const kcpc::Stamp& taken) {
     subcycle::Machine const* machine = subcycle_bridge_machine();
     if (machine == nullptr) return Status::kInternal;
-    constexpr unsigned kModel6128Plus = 3;
-    info.model = static_cast<std::uint8_t>(CPC.model);
-    info.crtc_type = CRTC.crtc_type;
-    info.effective_tier =
-        static_cast<std::uint8_t>(subcycle_bridge_effective_tier_index());
-    info.flags = 0;
-    if (g_headless) info.flags |= kcpc::kMachineFlagHeadless;
-    if (CPC.model >= kModel6128Plus) info.flags |= kcpc::kMachineFlagAsic;
-    info.ram_bytes = static_cast<std::uint32_t>(machine->ram_size());
-    info.rom_slots = fitted_rom_slots();
-    info.stamp = stamp;
+    switch (static_cast<kcpc::Chip>(state.chip)) {
+      case kcpc::Chip::kCrtc:
+        read_crtc(*machine, state.crtc);
+        break;
+      case kcpc::Chip::kGateArray:
+        read_gate_array(*machine, state.gate_array);
+        break;
+      case kcpc::Chip::kPsg:
+        read_psg(*machine, state.psg);
+        break;
+      case kcpc::Chip::kFdc:
+        read_fdc(*machine, state.fdc);
+        break;
+      case kcpc::Chip::kAsic:
+        if (!read_asic(*machine, state.asic)) return Status::kNotPresent;
+        break;
+    }
+    state.stamp = taken;
     return Status::kOk;
   });
+}
+
+Status kcpc_host_sym_list(std::uint64_t& generation,
+                          std::vector<kcpc::Symbol>& symbols) {
+  auto const listed = g_symfile.listSymbols(generation);
+  symbols.clear();
+  symbols.reserve(listed.size());
+  for (const auto& [addr, name] : listed) {
+    symbols.push_back(kcpc::Symbol{addr, name});
+  }
+  return Status::kOk;
+}
+
+Status kcpc_host_sym_add(std::uint32_t client, std::uint32_t request,
+                         const kcpc::Symbol& symbol,
+                         std::uint64_t& generation) {
+  if (kcpc::symbol_name_refusal(symbol.name) != nullptr) {
+    return Status::kBadPayload;
+  }
+  {
+    SymCauseScope const editing(client, request);
+    g_symfile.addSymbol(symbol.addr, symbol.name);
+    generation = editing.generation();
+  }
+  // What the in-process debugger has listed is stale.
+  ui_host().debugger_symbols_changed();
+  return Status::kOk;
+}
+
+Status kcpc_host_sym_del(std::uint32_t client, std::uint32_t request,
+                         const std::string& name, std::uint64_t& generation) {
+  {
+    SymCauseScope const editing(client, request);
+    if (!g_symfile.delSymbol(name)) return Status::kNotFound;
+    generation = editing.generation();
+  }
+  ui_host().debugger_symbols_changed();
+  return Status::kOk;
+}
+
+Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
+                          const std::string& path, std::uint64_t& generation,
+                          std::uint32_t& loaded) {
+  Symfile const file(path);
+  if (!file.readable()) return Status::kNotFound;
+  {
+    SymCauseScope const editing(client, request);
+    loaded = static_cast<std::uint32_t>(g_symfile.addSymbols(file));
+    generation = editing.generation();
+  }
+  if (loaded != 0) ui_host().debugger_symbols_changed();
+  return Status::kOk;
+}
+
+Status kcpc_host_fb_info(kcpc::FbInfo& info) {
+  constexpr int kBytesPerPixel = 3;  // RGB24
+  info.width = static_cast<std::uint16_t>(subcycle::kFbWidth);
+  info.height = static_cast<std::uint16_t>(subcycle::kFbHeight);
+  info.format = kcpc::kFbFormatRgb24;
+  info.transport = kcpc::kFbTransportNone;
+  info.stride = static_cast<std::uint32_t>(subcycle::kFbWidth * kBytesPerPixel);
+  info.fb_seq = 0;
+  info.shm_name.clear();
+  return Status::kOk;
 }
 
 Status kcpc_host_regs_get(kcpc::Stamp& stamp, kcpc::Regs& regs) {
@@ -665,8 +933,8 @@ Status kcpc_host_mem_info(kcpc::MemInfo& info) {
 Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
                           kcpc::Stamp& stamp, std::uint8_t* dst) {
   // What does not depend on the machine is refused before it is asked.
-  if (request.space > static_cast<std::uint8_t>(kcpc::MemSpace::kRomUpper)) {
-    return Status::kBadPayload;  // ASIC_PAGE comes with CAP_CHIPS
+  if (request.space > static_cast<std::uint8_t>(kcpc::MemSpace::kAsicPage)) {
+    return Status::kBadPayload;
   }
   auto const space = static_cast<kcpc::MemSpace>(request.space);
   if (space == kcpc::MemSpace::kRomUpper) {
@@ -689,8 +957,12 @@ Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
         return Status::kOutOfRange;
       }
       break;
-    case kcpc::MemSpace::kPhysRam:  // as large as the machine, asked below
     case kcpc::MemSpace::kAsicPage:
+      if (!kcpc::mem_range_ok(addr, len, kcpc::kAsicPageSize)) {
+        return Status::kOutOfRange;
+      }
+      break;
+    case kcpc::MemSpace::kPhysRam:  // as large as the machine, asked below
       break;
   }
 
@@ -719,8 +991,16 @@ Status kcpc_host_mem_read(const kcpc::MemReadRequest& request,
             machine->upper_rom(static_cast<std::uint8_t>(request.bank)) + addr,
             len);
         break;
-      case kcpc::MemSpace::kAsicPage:
-        return Status::kBadPayload;
+      case kcpc::MemSpace::kAsicPage: {
+        // The page itself, whether or not the ASIC is unlocked and has it
+        // paged in at &4000.
+        AsicRegs regs{};
+        asic_peek(machine->asic(), &regs);
+        if (regs.plugged == 0) return Status::kNotPresent;
+        asic_page_copy(machine->asic(), static_cast<std::uint16_t>(addr), dst,
+                       len);
+        break;
+      }
     }
     stamp = taken;
     return Status::kOk;
@@ -905,11 +1185,36 @@ void kcpc_host_start(bool enabled) {
   config.text = &kcpc_host_text;
   config.mouse = &kcpc_host_mouse;
   config.input_state = &kcpc_host_input_state;
+  config.chip_get = &kcpc_host_chip_get;
+  config.sym_list = &kcpc_host_sym_list;
+  config.sym_add = [](const kcpc::Cause& cause, const kcpc::Symbol& symbol,
+                      std::uint64_t& generation) {
+    return kcpc_host_sym_add(cause.client, cause.request, symbol, generation);
+  };
+  config.sym_del = [](const kcpc::Cause& cause, const std::string& name,
+                      std::uint64_t& generation) {
+    return kcpc_host_sym_del(cause.client, cause.request, name, generation);
+  };
+  config.sym_load = [](const kcpc::Cause& cause, const std::string& path,
+                       std::uint64_t& generation, std::uint32_t& loaded) {
+    return kcpc_host_sym_load(cause.client, cause.request, path, generation,
+                              loaded);
+  };
+  config.fb_info = &kcpc_host_fb_info;
+  config.media_state = [](std::uint8_t slot, kcpc::MediaNote& note) {
+    if (slot >= kcpc::kMediaSlots) return;
+    MediaState state = media_state(static_cast<::MediaSlot>(slot));
+    note.present = state.present;
+    note.path = std::move(state.path);
+  };
   config.controller_idle_timeout_ms = controller_idle_timeout_ms();
   config.max_event_queue_bytes = static_cast<std::size_t>(env_int(
       "KONCPC_KCPC_EVENT_QUEUE_BYTES", 4 << 20, /*min=*/1, /*max=*/32 << 20));
   cpc_set_run_state_observer(&on_run_event);
   z80_set_breakpoints_changed_hook(&on_breakpoints_changed);
+  g_symfile.set_changed_hook(&on_symbols_changed);
+  media_set_changed_hook(&on_media_changed);
+  cpc_set_machine_rebuilt_hook(&on_machine_rebuilt);
   g_gate.reopen();
   walker_start();
   g_kcpc_server.start(config);
@@ -925,6 +1230,9 @@ void kcpc_host_stop() {
   // is ended, not waited for.
   walker_stop();
   z80_set_breakpoints_changed_hook(nullptr);
+  g_symfile.set_changed_hook(nullptr);
+  media_set_changed_hook(nullptr);
+  cpc_set_machine_rebuilt_hook(nullptr);
   if (!was_running) return;
   // Where the reads of this run were taken: the answer to "did a client cost
   // the machine pauses?" without a debugger.

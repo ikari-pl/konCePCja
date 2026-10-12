@@ -704,7 +704,7 @@ TEST(KcpcCodec, TheServerAnnouncesRunControlAndEvents) {
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapEvents, 0U);
   EXPECT_NE(kcpc::kServerCaps & kcpc::kCapBreakpoints, 0U);
-  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapChips, 0U) << "slice 7";
+  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapMedia, 0U) << "slice 9";
 }
 
 // -- slice 6: input ----------------------------------------------------------
@@ -868,4 +868,251 @@ TEST(KcpcCodec, OnlyOverOutAndToWalk) {
   EXPECT_TRUE(kcpc::step_mode_walks(kcpc::StepMode::kOut));
   EXPECT_TRUE(kcpc::step_mode_walks(kcpc::StepMode::kTo));
   EXPECT_FALSE(kcpc::step_mode_walks(kcpc::StepMode::kFrames));
+}
+
+// -- slice 7: chip state, symbols, FB_INFO -----------------------------------
+
+TEST(KcpcCodec, TheServerAnnouncesChipsSymbolsAndTheFrame) {
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapChips, 0U);
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapSymbols, 0U);
+  EXPECT_NE(kcpc::kServerCaps & kcpc::kCapFbInfo, 0U);
+  EXPECT_EQ(kcpc::kServerCaps & kcpc::kCapFbShm, 0U) << "phase 4";
+}
+
+TEST(KcpcCodec, TheCrtcBlockIsThirtyBytesInWireOrder) {
+  kcpc::ChipState in;
+  in.chip = static_cast<std::uint8_t>(kcpc::Chip::kCrtc);
+  in.stamp.frame = 5;
+  in.crtc.type = 1;
+  in.crtc.reg_select = 12;
+  for (std::size_t i = 0; i < in.crtc.reg.size(); ++i) {
+    in.crtc.reg[i] = static_cast<std::uint8_t>(0x40 + i);
+  }
+  in.crtc.hcc = 0xA1;
+  in.crtc.vcc = 0xA2;
+  in.crtc.ra = 0xA3;
+  in.crtc.hsw = 0xA4;
+  in.crtc.vsw = 0xA5;
+  in.crtc.vta = 0xA6;
+  in.crtc.ma = 0x3012;
+  in.crtc.scanline = 0x0138;
+  Writer w;
+  kcpc::write_chip_reply(w, in);
+  const std::vector<std::uint8_t>& b = w.data();
+  ASSERT_EQ(b.size(), 12U + 4U + 30U);
+  EXPECT_EQ(b[12], 1) << "chip";
+  EXPECT_EQ(b[13], 0) << "reserved";
+  EXPECT_EQ(b[14], 1) << "layout, low byte";
+  EXPECT_EQ(b[15], 0);
+  EXPECT_EQ(b[16], 1) << "type";
+  EXPECT_EQ(b[17], 12) << "reg_select";
+  EXPECT_EQ(b[18], 0x40) << "R0";
+  EXPECT_EQ(b[35], 0x51) << "R17";
+  EXPECT_EQ(b[36], 0xA1) << "hcc";
+  EXPECT_EQ(b[41], 0xA6) << "vta";
+  EXPECT_EQ(b[42], 0x12) << "ma, little-endian";
+  EXPECT_EQ(b[43], 0x30);
+  EXPECT_EQ(b[44], 0x38) << "scanline";
+  EXPECT_EQ(b[45], 0x01);
+
+  Reader r(b);
+  kcpc::ChipState out;
+  std::uint16_t layout = 0;
+  ASSERT_TRUE(kcpc::read_chip_reply(r, out, layout));
+  EXPECT_EQ(layout, kcpc::kChipLayoutCrtc);
+  EXPECT_EQ(out.crtc.reg, in.crtc.reg);
+  EXPECT_EQ(out.crtc.ma, 0x3012);
+  EXPECT_EQ(out.crtc.scanline, 0x0138);
+  EXPECT_EQ(out.stamp.frame, 5U);
+}
+
+TEST(KcpcCodec, EveryChipBlockRoundTripsAtItsDocumentedSize) {
+  kcpc::ChipState in;
+  in.gate_array.mode = 1;
+  in.gate_array.requested_mode = 2;
+  in.gate_array.pen = 16;
+  in.gate_array.rom_config = 0x8C;
+  in.gate_array.ram_config = 0xC4;
+  in.gate_array.upper_rom = 7;
+  in.gate_array.sl_count = 51;
+  in.gate_array.hs_count = 2;
+  in.gate_array.ink[0] = 0x04;
+  in.gate_array.ink[16] = 0x14;
+  in.psg.reg[7] = 0x3F;
+  in.psg.reg[15] = 0xEE;
+  in.psg.reg_select = 14;
+  in.fdc.motor = 1;
+  in.fdc.track = {39, 2};
+  in.fdc.present = {1, 0};
+  in.fdc.generation = {0x1122334455667788ULL, 9};
+  in.asic.unlocked = 1;
+  in.asic.pri_line = 200;
+  in.asic.lock_pos = 17;
+  in.asic.page_on = 1;
+  in.asic.hscroll = 15;
+  in.asic.vscroll = 7;
+  in.asic.extend_border = 1;
+  in.asic.int_vector = 0xF8;
+  in.asic.split_line = 100;
+  in.asic.split_addr = 0x2000;
+  in.asic.dma[2] = {0x8000, 0x8010, 3, 500, 63, 255, 1, 1};
+  in.asic.sprite[0] = {0x3FF, 0x1FF, 4, 2};
+  in.asic.sprite[15] = {1, 2, 1, 1};
+
+  struct Case {
+    kcpc::Chip chip;
+    std::size_t size;
+    std::uint16_t layout;
+  };
+  for (const Case& c :
+       {Case{kcpc::Chip::kGateArray, 25, 1}, Case{kcpc::Chip::kPsg, 17, 1},
+        Case{kcpc::Chip::kFdc, 24, 1}, Case{kcpc::Chip::kAsic, 154, 2}}) {
+    in.chip = static_cast<std::uint8_t>(c.chip);
+    Writer w;
+    kcpc::write_chip_reply(w, in);
+    EXPECT_EQ(w.size(), 12U + 4U + c.size) << "chip " << int{in.chip};
+    Reader r(w.data());
+    kcpc::ChipState out;
+    std::uint16_t layout = 0;
+    ASSERT_TRUE(kcpc::read_chip_reply(r, out, layout));
+    EXPECT_EQ(layout, c.layout);
+    EXPECT_EQ(r.remaining(), 0U);
+    switch (c.chip) {
+      case kcpc::Chip::kGateArray:
+        EXPECT_EQ(out.gate_array.requested_mode, 2);
+        EXPECT_EQ(out.gate_array.upper_rom, 7);
+        EXPECT_EQ(out.gate_array.hs_count, 2);
+        EXPECT_EQ(out.gate_array.ink, in.gate_array.ink);
+        break;
+      case kcpc::Chip::kPsg:
+        EXPECT_EQ(out.psg.reg, in.psg.reg);
+        EXPECT_EQ(out.psg.reg_select, 14);
+        break;
+      case kcpc::Chip::kFdc:
+        EXPECT_EQ(out.fdc.motor, 1);
+        EXPECT_EQ(out.fdc.track, in.fdc.track);
+        EXPECT_EQ(out.fdc.present, in.fdc.present);
+        EXPECT_EQ(out.fdc.generation, in.fdc.generation);
+        break;
+      case kcpc::Chip::kAsic:
+        EXPECT_EQ(out.asic.unlocked, 1);
+        EXPECT_EQ(out.asic.pri_line, 200);
+        EXPECT_EQ(out.asic.lock_pos, 17);
+        EXPECT_EQ(out.asic.int_vector, 0xF8);
+        EXPECT_EQ(out.asic.split_addr, 0x2000);
+        EXPECT_EQ(out.asic.dma[2].loop_addr, 0x8010);
+        EXPECT_EQ(out.asic.dma[2].pause_ticks, 500);
+        EXPECT_EQ(out.asic.dma[2].irq, 1);
+        EXPECT_EQ(out.asic.dma[0].enabled, 0);
+        EXPECT_EQ(out.asic.sprite[0].x, 0x3FF);
+        EXPECT_EQ(out.asic.sprite[0].mag_x, 4);
+        EXPECT_EQ(out.asic.sprite[15].y, 2);
+        break;
+      case kcpc::Chip::kCrtc:
+        break;
+    }
+  }
+}
+
+// The ASIC's block starts with layout 1's four bytes, so a client that knows
+// only that layout still reads them.
+TEST(KcpcCodec, TheAsicBlockStartsWithLayoutOne) {
+  kcpc::ChipState in;
+  in.chip = static_cast<std::uint8_t>(kcpc::Chip::kAsic);
+  in.asic.unlocked = 1;
+  in.asic.pri_line = 0x37;
+  in.asic.lock_pos = 0xAA;
+  Writer w;
+  kcpc::write_chip_reply(w, in);
+  const std::vector<std::uint8_t>& b = w.data();
+  EXPECT_EQ(b[14], 2) << "layout";
+  EXPECT_EQ(b[16], 1) << "unlocked";
+  EXPECT_EQ(b[17], 0x37) << "pri_line";
+  EXPECT_EQ(b[18], 0);
+  EXPECT_EQ(b[19], 0);
+  EXPECT_EQ(b[20], 0xAA) << "layout 2 begins here";
+}
+
+TEST(KcpcCodec, AChipReplyThatIsShortOrUnknownIsRefused) {
+  kcpc::ChipState in;
+  in.chip = static_cast<std::uint8_t>(kcpc::Chip::kPsg);
+  Writer w;
+  kcpc::write_chip_reply(w, in);
+  std::vector<std::uint8_t> bytes = w.data();
+  kcpc::ChipState out;
+  std::uint16_t layout = 0;
+  {
+    std::vector<std::uint8_t> cut(bytes.begin(), bytes.end() - 1);
+    Reader r(cut);
+    EXPECT_FALSE(kcpc::read_chip_reply(r, out, layout));
+  }
+  {
+    std::vector<std::uint8_t> unknown = bytes;
+    unknown[12] = 9;
+    Reader r(unknown);
+    EXPECT_FALSE(kcpc::read_chip_reply(r, out, layout));
+  }
+  {
+    // A later layout appends: the start still reads.
+    std::vector<std::uint8_t> later = bytes;
+    later[14] = 5;
+    later.push_back(0xFF);
+    Reader r(later);
+    EXPECT_TRUE(kcpc::read_chip_reply(r, out, layout));
+    EXPECT_EQ(layout, 5);
+    EXPECT_EQ(r.remaining(), 1U);
+  }
+  EXPECT_FALSE(kcpc::chip_known(0));
+  EXPECT_TRUE(kcpc::chip_known(1));
+  EXPECT_TRUE(kcpc::chip_known(5));
+  EXPECT_FALSE(kcpc::chip_known(6));
+}
+
+TEST(KcpcCodec, ASymbolNameIsOneTokenOfASymbolFile) {
+  EXPECT_EQ(kcpc::symbol_name_refusal("start"), nullptr);
+  EXPECT_EQ(kcpc::symbol_name_refusal("TXT_OUTPUT.2"), nullptr);
+  EXPECT_EQ(kcpc::symbol_name_refusal("za\xC5\xBC\xC3\xB3\xC5\x82\xC4\x87"),
+            nullptr)
+      << "UTF-8 is a name";
+  EXPECT_EQ(kcpc::symbol_name_refusal(std::string(255, 'a')), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal(""), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal(std::string(256, 'a')), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal("a b"), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal("a\nb"), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal(std::string("a\0b", 3)), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal("a\x7F"), nullptr);
+  EXPECT_NE(kcpc::symbol_name_refusal("a;b"), nullptr);
+}
+
+TEST(KcpcCodec, ASymbolAndFbInfoRoundTrip) {
+  Writer w;
+  kcpc::write_symbol(w, kcpc::Symbol{0xBB5A, "TXT_OUTPUT"});
+  EXPECT_EQ(w.size(), 2U + 2U + 10U);
+  Reader r(w.data());
+  kcpc::Symbol symbol;
+  ASSERT_TRUE(kcpc::read_symbol(r, symbol));
+  EXPECT_EQ(symbol.addr, 0xBB5A);
+  EXPECT_EQ(symbol.name, "TXT_OUTPUT");
+
+  Writer f;
+  kcpc::FbInfo in;
+  in.width = 768;
+  in.height = 272;
+  in.stride = 2304;
+  kcpc::write_fb_info(f, in);
+  const std::vector<std::uint8_t>& b = f.data();
+  ASSERT_EQ(b.size(), 22U);
+  EXPECT_EQ(b[0], 0x00) << "768, little-endian";
+  EXPECT_EQ(b[1], 0x03);
+  EXPECT_EQ(b[2], 0x10) << "272";
+  EXPECT_EQ(b[3], 0x01);
+  EXPECT_EQ(b[4], 1) << "RGB24";
+  EXPECT_EQ(b[5], 0) << "no transport";
+  EXPECT_EQ(b[8], 0x00) << "stride 2304";
+  EXPECT_EQ(b[9], 0x09);
+  Reader fr(b);
+  kcpc::FbInfo out;
+  ASSERT_TRUE(kcpc::read_fb_info(fr, out));
+  EXPECT_EQ(out.stride, 2304U);
+  EXPECT_TRUE(out.shm_name.empty());
 }

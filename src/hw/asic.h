@@ -113,6 +113,12 @@ void asic_peek(const Device* dev, AsicRegs* out);
 /* One raw byte of the register page; offset 0..0x3FFF. */
 uint8_t asic_page_peek(const Device* dev, uint16_t offset);
 
+/* `len` raw bytes of the register page from `offset`, in one copy: the whole
+ * page is 16K, and a frontend's view reads all of it at a frame boundary. The
+ * range must lie within the page (offset + len <= 0x4000). */
+void asic_page_copy(const Device* dev, uint16_t offset, uint8_t* dst,
+                    size_t len);
+
 /* Position in the unlock-knock FSM (debug display). */
 int asic_lock_pos(const Device* dev);
 

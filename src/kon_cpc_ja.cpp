@@ -1272,6 +1272,14 @@ void emulator_shutdown() {
 }
 }  // namespace
 
+namespace {
+std::atomic<CpcMachineRebuiltHook> g_machine_rebuilt_hook{nullptr};
+}  // namespace
+
+void cpc_set_machine_rebuilt_hook(CpcMachineRebuiltHook hook) {
+  g_machine_rebuilt_hook.store(hook, std::memory_order_release);
+}
+
 int koncpc_rebuild_machine() {
   // Quiesce first. cpc_pause() only raises a flag; the Z80 thread may still be
   // inside a frame until it observes it, and emulator_init() frees memory that
@@ -1307,6 +1315,12 @@ int koncpc_rebuild_machine() {
   if (err != 0) {
     lease.release_stopped();
   } else {
+    // Whoever shows the machine (a KCPC frontend) is told now, while it is
+    // still held: what the hook reads is the machine the next frame runs.
+    if (CpcMachineRebuiltHook const hook =
+            g_machine_rebuilt_hook.load(std::memory_order_acquire)) {
+      hook(lease.was_paused());
+    }
     lease.restore_run_state();
   }
   return err;
@@ -3819,9 +3833,7 @@ void loadBreakpoints() {
     breakpoints.emplace_back(breakpoint);
   }
   // Populate global symbol table from symfile
-  for (const auto& [addr, name] : symfile.Symbols()) {
-    g_symfile.addSymbol(addr, name);
-  }
+  g_symfile.addSymbols(symfile);
 }
 }  // namespace
 

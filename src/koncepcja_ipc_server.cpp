@@ -2042,10 +2042,13 @@ std::string handle_command(const std::string& line) {
         snprintf(buf, sizeof(buf), " INK%d=%02X", i, GateArray.ink_values[i]);
         resp << buf;
       }
+      // INT_DELAY is the Gate Array's hs_count, the HSYNC countdown after a
+      // VSYNC. It used to print GateArray.int_delay, a field nothing has
+      // written since the Devices took over: always 00.
       snprintf(buf, sizeof(buf),
                " ROM_CFG=%02X RAM_CFG=%02X SL=%02X INT_DELAY=%02X",
                GateArray.ROM_config, GateArray.RAM_config, GateArray.sl_count,
-               GateArray.int_delay);
+               GateArray.hs_count & 0xFFU);
       resp << buf << "\n";
       return resp.str();
     }
@@ -2178,8 +2181,16 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (parts[1] == "eject") {
-        if (mach) mach->eject_tape();
+        // Through the loader's eject, like the File menu: the host's copy of
+        // the tape goes with the deck's, and the change is announced. It
+        // only queues the deck's half for the next frame; apply it now, with
+        // the Z80 idle, as `disk eject` does.
+        CpcPauseLease lease;
+        if (!lease.idle()) return z80_not_idle(lease);
+        tape_eject();
+        subcycle_bridge_apply_pending_media();
         CPC.tape.file = "";
+        lease.restore_run_state();
         return ok_with_context();
       }
       if (parts[1] == "seek" && parts.size() >= 3) {
@@ -4047,13 +4058,8 @@ std::string handle_command(const std::string& line) {
       if (parts[1] == "load" && parts.size() >= 3) {
         if (!is_safe_path(parts[2])) return "ERR 403 path-traversal-blocked\n";
         Symfile const loaded(parts[2]);
-        // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
-        // mutated (out-param/compound-assign/loop/reference)
-        int count = 0;
-        for (const auto& [addr, name] : loaded.Symbols()) {
-          g_symfile.addSymbol(addr, name);
-          count++;
-        }
+        // One change of the table, however many symbols the file holds.
+        int const count = static_cast<int>(g_symfile.addSymbols(loaded));
         ui_host().debugger_symbols_changed();
         char buf[32];
         snprintf(buf, sizeof(buf), "OK loaded=%d\n", count);
@@ -6017,7 +6023,12 @@ std::string handle_command(const std::string& line) {
           snprintf(buf, sizeof(buf), "OK bytes=%d start=%04X end=%04X\n",
                    r.bytes_written, r.start_addr, r.end_addr);
           // Export symbols
-          for (auto& [name, addr] : r.symbols) g_symfile.addSymbol(addr, name);
+          std::vector<std::pair<word, std::string>> exported;
+          exported.reserve(r.symbols.size());
+          for (auto& [name, addr] : r.symbols) {
+            exported.emplace_back(addr, name);
+          }
+          g_symfile.addSymbols(exported);
           return {buf};
         }
         char buf[64];

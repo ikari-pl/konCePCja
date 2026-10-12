@@ -48,6 +48,10 @@ kcpc::MachineInfo fake_machine() {
   return m;
 }
 
+// The groups of slice 7, which a fixture without them does not announce.
+constexpr std::uint64_t kDevtoolsCaps =
+    kcpc::kCapChips | kcpc::kCapSymbols | kcpc::kCapFbInfo;
+
 kcpc::ServerConfig test_config() {
   kcpc::ServerConfig c;
   c.base_port = kTestBasePort;
@@ -1201,9 +1205,10 @@ TEST_F(KcpcControlTest, HelloGrantsControlToTheFirstWhoAsks) {
   auto observer = join(kcpc::Role::kObserver, observer_hello);
   EXPECT_EQ(observer_hello.role, kcpc::Role::kObserver);
   EXPECT_EQ(observer_hello.caps, kcpc::kServerCaps & ~kcpc::kCapRunControl &
-                                     ~kcpc::kCapBreakpoints & ~kcpc::kCapInput)
-      << "everything but run control, breakpoints and input, which this "
-         "machine does not offer";
+                                     ~kcpc::kCapBreakpoints & ~kcpc::kCapInput &
+                                     ~kDevtoolsCaps)
+      << "everything but run control, breakpoints, input and the DevTools "
+         "data, which this machine does not offer";
   EXPECT_NE(observer_hello.caps & kcpc::kCapMachineWrite, 0U);
   EXPECT_EQ(server_.controller(), 0U) << "nobody asked for control yet";
 
@@ -1720,8 +1725,8 @@ TEST_F(KcpcEventsTest, HelloAnnouncesRunControlAndEvents) {
   start_with_run_control();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps,
-            kcpc::kServerCaps & ~kcpc::kCapBreakpoints & ~kcpc::kCapInput);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapBreakpoints &
+                            ~kcpc::kCapInput & ~kDevtoolsCaps);
   EXPECT_NE(hello.caps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(hello.caps & kcpc::kCapEvents, 0U);
 }
@@ -2325,7 +2330,7 @@ TEST_F(KcpcBreakpointsTest, HelloAnnouncesBreakpoints) {
   start_with_breakpoints();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapInput & ~kDevtoolsCaps);
   EXPECT_NE(hello.caps & kcpc::kCapBreakpoints, 0U);
 }
 
@@ -2719,7 +2724,7 @@ TEST_F(KcpcInputTest, HelloAnnouncesInput) {
   start_with_input();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kDevtoolsCaps);
   EXPECT_NE(hello.caps & kcpc::kCapInput, 0U);
 }
 
@@ -3006,4 +3011,446 @@ TEST_F(KcpcInputTest, MouseWithNoMouseFittedIsNotPresent) {
   EXPECT_EQ(frame.status(), Status::kNotPresent);
   EXPECT_NE(frame.message().find("mouse"), std::string::npos);
   expect_ping_ok(*controller, 3);
+}
+
+// -- slice 7: what the DevTools show -----------------------------------------
+
+namespace {
+
+std::vector<std::uint8_t> chip_payload(std::uint8_t chip) {
+  return {chip, 0, 0, 0};
+}
+
+std::vector<std::uint8_t> symbol_payload(std::uint16_t addr,
+                                         const std::string& name) {
+  kcpc::Writer w;
+  kcpc::write_symbol(w, kcpc::Symbol{addr, name});
+  return w.take();
+}
+
+// A machine with chips, a symbol table and a frame. The table posts
+// EVT_SYMBOLS_CHANGED for every change, as the real one does.
+struct FakeDevtools {
+  void attach(kcpc::ServerConfig& c, kcpc::Server& server) {
+    c.chip_get = [this](kcpc::ChipState& state) {
+      std::scoped_lock const lock(mutex);
+      chip_calls += 1;
+      auto const chip = static_cast<kcpc::Chip>(state.chip);
+      if (chip == kcpc::Chip::kAsic && !has_asic) return Status::kNotPresent;
+      std::uint8_t const asked = state.chip;
+      state = chips;
+      state.chip = asked;
+      state.stamp.frame = 77;
+      state.stamp.paused = true;
+      return chip_status;
+    };
+    c.sym_list = [this](std::uint64_t& generation,
+                        std::vector<kcpc::Symbol>& out) {
+      std::scoped_lock const lock(mutex);
+      generation = sym_generation;
+      out = symbols;
+      return Status::kOk;
+    };
+    c.sym_add = [this, &server](const kcpc::Cause& cause,
+                                const kcpc::Symbol& symbol,
+                                std::uint64_t& generation) {
+      std::scoped_lock const lock(mutex);
+      symbols.push_back(symbol);
+      generation = changed(server, cause);
+      return Status::kOk;
+    };
+    c.sym_del = [this, &server](const kcpc::Cause& cause,
+                                const std::string& name,
+                                std::uint64_t& generation) {
+      std::scoped_lock const lock(mutex);
+      for (auto it = symbols.begin(); it != symbols.end(); ++it) {
+        if (it->name != name) continue;
+        symbols.erase(it);
+        generation = changed(server, cause);
+        return Status::kOk;
+      }
+      return Status::kNotFound;
+    };
+    c.sym_load = [this, &server](
+                     const kcpc::Cause& cause, const std::string& path,
+                     std::uint64_t& generation, std::uint32_t& loaded) {
+      std::scoped_lock const lock(mutex);
+      if (path != "game.sym") return Status::kNotFound;
+      symbols.push_back(kcpc::Symbol{0xC000, "rom_entry"});
+      symbols.push_back(kcpc::Symbol{0xC003, "rom_name"});
+      loaded = 2;
+      generation = changed(server, cause);
+      return Status::kOk;
+    };
+    c.fb_info = [](kcpc::FbInfo& info) {
+      info.width = 768;
+      info.height = 272;
+      info.stride = 2304;
+      return Status::kOk;
+    };
+    c.media_state = [this](std::uint8_t slot, kcpc::MediaNote& note) {
+      std::scoped_lock const lock(mutex);
+      media_asked.push_back(slot);
+      if (slot == 0) {
+        note.present = true;
+        note.path = "/discs/game.dsk";
+      }
+    };
+  }
+
+  // Under `mutex`. One change of the table: a new generation, and the event.
+  std::uint64_t changed(kcpc::Server& server, const kcpc::Cause& cause) {
+    sym_generation += 1;
+    kcpc::Event event;
+    event.opcode = Opcode::kEvtSymbolsChanged;
+    event.generation = sym_generation;
+    event.cause_client = cause.client;
+    event.cause_request = cause.request;
+    server.post(event);
+    return sym_generation;
+  }
+
+  std::mutex mutex;
+  int chip_calls = 0;
+  bool has_asic = true;
+  Status chip_status = Status::kOk;
+  kcpc::ChipState chips;
+  std::uint64_t sym_generation = 10;
+  std::vector<kcpc::Symbol> symbols;
+  std::vector<std::uint8_t> media_asked;
+};
+
+class KcpcDevtoolsTest : public KcpcInputTest {
+ protected:
+  void start_with_devtools() {
+    kcpc::ServerConfig config = test_config();
+    reads_.attach(config);
+    writes_.attach(config);
+    run_.attach(config, server_);
+    bps_.attach(config, server_);
+    input_.attach(config);
+    devtools_.attach(config, server_);
+    start(config);
+  }
+
+  FakeDevtools devtools_;
+};
+
+}  // namespace
+
+TEST_F(KcpcDevtoolsTest, HelloAnnouncesChipsSymbolsAndTheFrame) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_EQ(hello.caps & kDevtoolsCaps, kDevtoolsCaps);
+}
+
+TEST_F(KcpcDevtoolsTest, WithoutTheGroupsTheirOpcodesDoNotExist) {
+  start_with_input();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  EXPECT_EQ(hello.caps & kDevtoolsCaps, 0U);
+  Frame frame;
+  std::uint32_t id = 2;
+  for (Opcode const opcode :
+       {Opcode::kChipGet, Opcode::kSymList, Opcode::kSymAdd, Opcode::kSymDel,
+        Opcode::kSymLoad, Opcode::kFbInfo}) {
+    exchange(*controller, opcode, id++, chip_payload(1), frame);
+    EXPECT_EQ(frame.status(), Status::kUnknownOpcode);
+  }
+}
+
+TEST_F(KcpcDevtoolsTest, ChipGetRepliesWithTheStampTheLayoutAndTheBlock) {
+  devtools_.chips.crtc.type = 3;
+  devtools_.chips.crtc.reg[0] = 63;
+  devtools_.chips.crtc.ma = 0x3000;
+  devtools_.chips.gate_array.ink[16] = 0x14;
+  devtools_.chips.psg.reg_select = 7;
+  devtools_.chips.fdc.generation[1] = 0x0102030405060708ULL;
+  devtools_.chips.asic.unlocked = 1;
+  devtools_.chips.asic.sprite[15].mag_y = 4;
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto observer = join(kcpc::Role::kObserver, hello);
+
+  // What each block weighs after the 16 bytes of stamp, chip and layout.
+  const std::size_t sizes[] = {0, 30, 25, 17, 24, 154};
+  Frame frame;
+  for (std::uint8_t chip = 1; chip <= 5; ++chip) {
+    exchange(*observer, Opcode::kChipGet, 1U + chip, chip_payload(chip), frame);
+    ASSERT_EQ(frame.status(), Status::kOk) << "chip " << int{chip};
+    EXPECT_EQ(frame.payload.size(), 4U + 16U + sizes[chip])
+        << "chip " << int{chip};
+    kcpc::Reader r(frame.payload);
+    r.skip(4);
+    kcpc::ChipState state;
+    std::uint16_t layout = 0;
+    ASSERT_TRUE(kcpc::read_chip_reply(r, state, layout));
+    EXPECT_EQ(state.chip, chip);
+    EXPECT_EQ(layout, kcpc::chip_layout(static_cast<kcpc::Chip>(chip)));
+    EXPECT_EQ(state.stamp.frame, 77U);
+    EXPECT_TRUE(state.stamp.paused);
+    EXPECT_EQ(r.remaining(), 0U);
+    switch (static_cast<kcpc::Chip>(chip)) {
+      case kcpc::Chip::kCrtc:
+        EXPECT_EQ(state.crtc.type, 3);
+        EXPECT_EQ(state.crtc.reg[0], 63);
+        EXPECT_EQ(state.crtc.ma, 0x3000);
+        break;
+      case kcpc::Chip::kGateArray:
+        EXPECT_EQ(state.gate_array.ink[16], 0x14);
+        break;
+      case kcpc::Chip::kPsg:
+        EXPECT_EQ(state.psg.reg_select, 7);
+        break;
+      case kcpc::Chip::kFdc:
+        EXPECT_EQ(state.fdc.generation[1], 0x0102030405060708ULL);
+        break;
+      case kcpc::Chip::kAsic:
+        EXPECT_EQ(state.asic.unlocked, 1);
+        EXPECT_EQ(state.asic.sprite[15].mag_y, 4);
+        break;
+    }
+  }
+}
+
+TEST_F(KcpcDevtoolsTest, AChipIsCheckedBeforeTheMachineIsAsked) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+  exchange(*observer, Opcode::kChipGet, 2, chip_payload(0), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  exchange(*observer, Opcode::kChipGet, 3, chip_payload(6), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  exchange(*observer, Opcode::kChipGet, 4, {1, 0, 0}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "three bytes of four";
+  EXPECT_EQ(devtools_.chip_calls, 0);
+
+  // What the machine refuses keeps its status.
+  devtools_.has_asic = false;
+  exchange(*observer, Opcode::kChipGet, 5, chip_payload(5), frame);
+  EXPECT_EQ(frame.status(), Status::kNotPresent);
+  EXPECT_NE(frame.message().find("ASIC"), std::string::npos);
+  devtools_.chip_status = Status::kBusy;
+  exchange(*observer, Opcode::kChipGet, 6, chip_payload(1), frame);
+  EXPECT_EQ(frame.status(), Status::kBusy);
+  expect_ping_ok(*observer, 7);
+}
+
+TEST_F(KcpcDevtoolsTest, AnyoneListsSymbolsAndOnlyTheControllerEdits) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+
+  exchange(*controller, Opcode::kSymAdd, 2, symbol_payload(0x4000, "start"),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reply_generation(frame), 11U);
+
+  exchange(*controller, Opcode::kSymLoad, 3, text_payload("game.sym"), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  ASSERT_EQ(frame.payload.size(), 4U + 8U + 4U);
+  EXPECT_EQ(reply_generation(frame), 12U);
+  EXPECT_EQ(frame.payload[12], 2) << "symbols loaded";
+
+  exchange(*observer, Opcode::kSymList, 2, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  std::uint64_t generation = 0;
+  std::uint32_t count = 0;
+  ASSERT_TRUE(r.u64(generation));
+  ASSERT_TRUE(r.u32(count));
+  EXPECT_EQ(generation, 12U);
+  ASSERT_EQ(count, 3U);
+  kcpc::Symbol symbol;
+  ASSERT_TRUE(kcpc::read_symbol(r, symbol));
+  EXPECT_EQ(symbol.addr, 0x4000);
+  EXPECT_EQ(symbol.name, "start");
+
+  exchange(*controller, Opcode::kSymDel, 4, text_payload("start"), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reply_generation(frame), 13U);
+  exchange(*controller, Opcode::kSymDel, 5, text_payload("start"), frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  EXPECT_NE(frame.message().find("symbol"), std::string::npos);
+  exchange(*controller, Opcode::kSymLoad, 6, text_payload("nowhere.sym"),
+           frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  EXPECT_NE(frame.message().find("file"), std::string::npos);
+
+  // An observer may not edit, whatever it sends.
+  std::uint32_t id = 3;
+  for (Opcode const opcode :
+       {Opcode::kSymAdd, Opcode::kSymDel, Opcode::kSymLoad}) {
+    exchange(*observer, opcode, id++, symbol_payload(1, "x"), frame);
+    EXPECT_EQ(frame.status(), Status::kNotController);
+    exchange(*observer, opcode, id++, {}, frame);
+    EXPECT_EQ(frame.status(), Status::kNotController) << "malformed, too";
+  }
+  EXPECT_EQ(devtools_.sym_generation, 13U);
+}
+
+TEST_F(KcpcDevtoolsTest, ASymbolIsCheckedBeforeTheTableIsTouched) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  std::uint32_t id = 2;
+  for (const std::string& name :
+       {std::string(), std::string("two words"), std::string("tab\there"),
+        std::string("semi;colon"), std::string(256, 'x')}) {
+    exchange(*controller, Opcode::kSymAdd, id++, symbol_payload(0x4000, name),
+             frame);
+    EXPECT_EQ(frame.status(), Status::kBadPayload) << '"' << name << '"';
+    EXPECT_FALSE(frame.message().empty());
+  }
+  exchange(*controller, Opcode::kSymAdd, id++, {0x00}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "cut short";
+  exchange(*controller, Opcode::kSymDel, id++, {0x05, 0x00, 'a'}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "a str longer than it is";
+  exchange(*controller, Opcode::kSymLoad, id++, text_payload(""), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "no path";
+  EXPECT_TRUE(devtools_.symbols.empty());
+  EXPECT_EQ(devtools_.sym_generation, 10U);
+
+  // The longest name there is.
+  exchange(*controller, Opcode::kSymAdd, id++,
+           symbol_payload(0x4000, std::string(255, 'x')), frame);
+  EXPECT_EQ(frame.status(), Status::kOk);
+}
+
+TEST_F(KcpcDevtoolsTest, ASymbolEditIsPushedAfterItsReplyToDebugSubscribers) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto watcher = join(kcpc::Role::kObserver, hello);
+  auto deaf = join(kcpc::Role::kObserver, hello);
+  subscribe(*controller, 2, kcpc::kEventClassDebug);
+  subscribe(*watcher, 2, kcpc::kEventClassDebug);
+  subscribe(*deaf, 2, kcpc::kEventClassRun | kcpc::kEventClassMedia);
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
+
+  ASSERT_TRUE(
+      controller->request(Opcode::kSymAdd, 3, symbol_payload(0x4000, "start")));
+  ASSERT_TRUE(controller->receive_any(frame));
+  EXPECT_EQ(frame.header.kind, static_cast<std::uint8_t>(kcpc::Kind::kResponse))
+      << "the event overtook the response";
+  ASSERT_EQ(frame.status(), Status::kOk);
+  for (TestClient* client : {controller.get(), watcher.get()}) {
+    expect_event(*client, Opcode::kEvtSymbolsChanged, frame);
+    ASSERT_EQ(frame.payload.size(), 8U);
+    EXPECT_EQ(event_frame(frame), 11U) << "the payload is the generation";
+  }
+  settle(*deaf, 3);
+  EXPECT_TRUE(deaf->events.empty()) << "it did not subscribe to DEBUG";
+}
+
+TEST_F(KcpcDevtoolsTest, FbInfoDescribesTheFrame) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto observer = join(kcpc::Role::kObserver, hello);
+  Frame frame;
+  exchange(*observer, Opcode::kFbInfo, 2, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  // width, height, format, transport, two reserved, stride, fb_seq and an
+  // empty str.
+  ASSERT_EQ(frame.payload.size(), 4U + 2U + 2U + 1U + 1U + 2U + 4U + 8U + 2U);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  kcpc::FbInfo info;
+  ASSERT_TRUE(kcpc::read_fb_info(r, info));
+  EXPECT_EQ(info.width, 768);
+  EXPECT_EQ(info.height, 272);
+  EXPECT_EQ(info.format, kcpc::kFbFormatRgb24);
+  EXPECT_EQ(info.transport, kcpc::kFbTransportNone);
+  EXPECT_EQ(info.stride, 2304U);
+  EXPECT_EQ(info.fb_seq, 0U);
+  EXPECT_TRUE(info.shm_name.empty());
+}
+
+TEST_F(KcpcDevtoolsTest, AMediaChangeIsSentWithWhatTheSlotHoldsNow) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto watcher = join(kcpc::Role::kObserver, hello);
+  auto deaf = join(kcpc::Role::kObserver, hello);
+  subscribe(*watcher, 2, kcpc::kEventClassMedia);
+  subscribe(*deaf, 2, kcpc::kEventClassDebug);
+
+  kcpc::Event event;
+  event.opcode = Opcode::kEvtMediaChanged;
+  event.slot = 0;
+  event.generation = 7;
+  server_.post(event);
+  event.slot = 2;
+  event.generation = 3;
+  server_.post(event);
+
+  Frame frame;
+  expect_event(*watcher, Opcode::kEvtMediaChanged, frame);
+  {
+    kcpc::Reader r(frame.payload);
+    std::uint8_t slot = 9;
+    std::uint8_t present = 9;
+    std::uint64_t generation = 0;
+    std::string path;
+    r.u8(slot);
+    r.u8(present);
+    r.skip(2);
+    r.u64(generation);
+    ASSERT_TRUE(r.str(path));
+    EXPECT_EQ(slot, 0);
+    EXPECT_EQ(present, 1);
+    EXPECT_EQ(generation, 7U);
+    EXPECT_EQ(path, "/discs/game.dsk");
+    EXPECT_EQ(r.remaining(), 0U);
+  }
+  expect_event(*watcher, Opcode::kEvtMediaChanged, frame);
+  ASSERT_EQ(frame.payload.size(), 1U + 1U + 2U + 8U + 2U) << "no path";
+  EXPECT_EQ(frame.payload[0], 2) << "the tape";
+  EXPECT_EQ(frame.payload[1], 0) << "nothing in it";
+  // Asked once an event, not once a client.
+  EXPECT_EQ(devtools_.media_asked, (std::vector<std::uint8_t>{0, 2}));
+  settle(*deaf, 3);
+  EXPECT_TRUE(deaf->events.empty()) << "it did not subscribe to MEDIA";
+}
+
+TEST_F(KcpcDevtoolsTest, ARebuiltMachineIsSentAsItsMachineInfo) {
+  start_with_devtools();
+  kcpc::HelloReply hello;
+  auto watcher = join(kcpc::Role::kObserver, hello);
+  auto deaf = join(kcpc::Role::kObserver, hello);
+  subscribe(*watcher, 2, kcpc::kEventClassMachine);
+  subscribe(*deaf, 2, kcpc::kEventClassMedia);
+
+  kcpc::Event event;
+  event.opcode = Opcode::kEvtMachineChanged;
+  event.machine.model = 3;
+  event.machine.crtc_type = 3;
+  event.machine.flags = kcpc::kMachineFlagAsic;
+  event.machine.ram_bytes = 576U * 1024U;
+  event.machine.rom_slots = 0x80;
+  event.machine.stamp.frame = 1234;
+  event.machine.stamp.paused = true;
+  server_.post(event);
+
+  Frame frame;
+  expect_event(*watcher, Opcode::kEvtMachineChanged, frame);
+  kcpc::Reader r(frame.payload);
+  kcpc::MachineInfo info;
+  ASSERT_TRUE(kcpc::read_machine_info(r, info));
+  EXPECT_EQ(r.remaining(), 0U) << "exactly the MACHINE_INFO reply fields";
+  EXPECT_EQ(info.model, 3);
+  EXPECT_EQ(info.flags, kcpc::kMachineFlagAsic);
+  EXPECT_EQ(info.ram_bytes, 576U * 1024U);
+  EXPECT_EQ(info.rom_slots, 0x80U);
+  EXPECT_EQ(info.stamp.frame, 1234U);
+  EXPECT_TRUE(info.stamp.paused);
+  settle(*deaf, 3);
+  EXPECT_TRUE(deaf->events.empty()) << "it did not subscribe to MACHINE";
 }

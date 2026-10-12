@@ -10,7 +10,9 @@
 // the breakpoints BP_LIST, BP_ADD, BP_DEL, BP_CLEAR with the STEP modes that
 // walk the machine (slice 5), and input: KEY, KEYS_RELEASE, TEXT, MOUSE,
 // INPUT_STATE, with the keys a controller holds released when it loses
-// control (slice 6). At most one client is the controller.
+// control (slice 6), and the DevTools data: CHIP_GET, SYM_LIST, SYM_ADD,
+// SYM_DEL, SYM_LOAD, FB_INFO and the events for a change of medium, of the
+// symbols and of the machine (slice 7). At most one client is the controller.
 //
 // The server knows nothing about the emulator. What it reports about the
 // machine comes through the callbacks of ServerConfig, so the same class runs
@@ -129,6 +131,39 @@ using MouseFn = std::function<Status(int dx, int dy, bool set_buttons,
 // The matrix as it is now, in its own polarity: a clear bit is a key down.
 using InputStateFn = std::function<Status(KeyMatrix&)>;
 
+// Chip state (section 12). Called on a reader thread; like the other machine
+// reads it is taken at one instant with the machine not being clocked. The
+// server has checked `chip`; the callback fills in that chip's block and the
+// stamp. kNotPresent for the ASIC of a machine that has none.
+using ChipGetFn = std::function<Status(ChipState&)>;
+
+// Symbols: the table the text IPC and the DevTools share. Each is called on
+// a reader thread and none of them touches the machine. The edits return the
+// table's generation afterwards; every change, from any source, is also
+// posted by the machine's side as EVT_SYMBOLS_CHANGED, with `cause` for one
+// a request made.
+using SymListFn =
+    std::function<Status(std::uint64_t& generation, std::vector<Symbol>&)>;
+// The server has checked the name (symbol_name_refusal()).
+using SymAddFn = std::function<Status(const Cause&, const Symbol&,
+                                      std::uint64_t& generation)>;
+// kNotFound when there is no symbol of that name.
+using SymDelFn = std::function<Status(const Cause&, const std::string& name,
+                                      std::uint64_t& generation)>;
+// Adds the symbols of a file on the core's machine; `loaded` is how many.
+// kNotFound when the file cannot be opened.
+using SymLoadFn =
+    std::function<Status(const Cause&, const std::string& path,
+                         std::uint64_t& generation, std::uint32_t& loaded)>;
+
+// FB_INFO: the machine's canonical frame. Constant for the life of the core.
+using FbInfoFn = std::function<Status(FbInfo&)>;
+
+// What `slot` (a MediaSlot) holds now. Called on the fan-out thread for each
+// EVT_MEDIA_CHANGED before it is sent; it may take a lock, and must not wait
+// for the machine.
+using MediaStateFn = std::function<void(std::uint8_t slot, MediaNote&)>;
+
 struct ServerConfig {
   int base_port = kDefaultPort;
   int probe_count = kPortProbeCount;
@@ -180,6 +215,21 @@ struct ServerConfig {
   TextFn text;
   MouseFn mouse;
   InputStateFn input_state;
+  // CAP_CHIPS: CHIP_GET exists, mem_read is asked for the space ASIC_PAGE and
+  // HELLO announces the capability, when this and the machine reads are set.
+  ChipGetFn chip_get;
+  // The CAP_SYMBOLS group: SYM_LIST, SYM_ADD, SYM_DEL and SYM_LOAD exist, and
+  // HELLO announces the capability, only when all four are set and there is
+  // a control role to edit with (CAP_MACHINE_WRITE).
+  SymListFn sym_list;
+  SymAddFn sym_add;
+  SymDelFn sym_del;
+  SymLoadFn sym_load;
+  // CAP_FB_INFO.
+  FbInfoFn fb_info;
+  // Fills in EVT_MEDIA_CHANGED. Without it the event says "nothing in the
+  // slot" and no path.
+  MediaStateFn media_state;
   // A controller that has sent no frame for this long is disconnected, so
   // that a client that hangs does not keep control for ever (section 7).
   int controller_idle_timeout_ms = 30000;
