@@ -200,6 +200,26 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       - name: Build
         run: cmake --build build --config Release --target koncepcja -j 4
+      # TEMPORARY (beads-drzi): to be reverted before this PR is reviewed.
+      - name: PROBE beads-drzi
+        shell: bash
+        env:
+          KONCPC_E2E_HEADLESS: '1'
+          KONCPC_EXE: ${{ github.workspace }}/build/Release/koncepcja.exe
+          PYTHONUTF8: '1'
+        run: |
+          export PATH="$(cygpath -u '${{ github.workspace }}')/build/vcpkg_installed/x64-windows/bin:$PATH"
+          fails=0
+          for i in $(seq 1 40); do
+            if ! python test/integrated/kcpc/test_kcpc.py --ui-free -k test_a_rebuilt_machine_is_announced > probe.log 2>&1; then
+              fails=$((fails + 1)); echo "=== cartridge run $i FAILED"; cat probe.log
+            fi
+          done
+          echo "PROBE cartridge: $fails of 40 failed"
+          for i in 1 2 3; do
+            python test/integrated/kcpc/test_kcpc.py --ui-free -k test_polling_every_chip || true
+            python test/integrated/kcpc/test_kcpc.py --ui-free -k test_a_stop_is_not_caught_up || true
+          done
       - name: Smoke and -H e2e
         shell: bash
         env:
