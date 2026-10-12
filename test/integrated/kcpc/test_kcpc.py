@@ -153,16 +153,33 @@ class Core:
     def ipc(self, command: str) -> str:
         """One text IPC command on its own connection."""
         port = int(self.manifest['ports.ipc'])
-        with socket.create_connection(('127.0.0.1', port),
-                                      timeout=IO_TIMEOUT_S) as sock:
-            sock.sendall((command + '\n').encode())
-            buf = b''
-            while b'\n' not in buf:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                buf += chunk
+        try:
+            with socket.create_connection(('127.0.0.1', port),
+                                          timeout=IO_TIMEOUT_S) as sock:
+                sock.sendall((command + '\n').encode())
+                buf = b''
+                while b'\n' not in buf:
+                    chunk = sock.recv(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+        except OSError as e:
+            # A connection the core dropped: say whether the core is still
+            # there, and what it last logged (beads-drzi).
+            raise AssertionError(
+                f'text IPC {command!r}: {e!r}; {self.post_mortem()}') from e
         return buf.decode().strip()
+
+    def post_mortem(self) -> str:
+        """Whether the core is alive, its exit code if not, and the end of
+        its stderr."""
+        try:
+            code = self.proc.wait(timeout=2.0)
+            state = f'the core exited with {code} (0x{code & 0xFFFFFFFF:08X})'
+        except subprocess.TimeoutExpired:
+            state = 'the core is still running'
+        return (f'{state}; its last stderr:\n'
+                + ''.join(self.stderr_lines[-40:]))
 
     def ipc_quit(self) -> None:
         port = int(self.manifest['ports.ipc'])
@@ -3803,11 +3820,41 @@ def test_polling_every_chip_changes_nothing() -> None:
             assert not r.errors, r.errors
             print(f'    {alone_fps:.1f} frames a second alone, '
                   f'{watched_fps:.1f} beside {r.calls} chip reads')
-            assert watched_fps > 45 and watched_fps > alone_fps - 3, (
+            # Against the pace when the machine alone read above it: the
+            # claim is that reading costs no frames, not that it adds some.
+            assert watched_fps > 45 and watched_fps > min(alone_fps,
+                                                          50.0) - 3, (
                 alone_fps, watched_fps)
         served = core_reads(core)
         assert served['busy'] == 0, served
         print(f'    reads served: {served}')
+
+
+def test_a_stop_is_not_caught_up() -> None:
+    """Time a machine spent stopped is not owed: after a stop shorter than
+    the pacer's quarter second resync, the machine runs at its 50 frames a
+    second, not a burst of the frames it would have run meanwhile. (It ran
+    them unpaced: 54 frames a second for the two seconds after a stop of
+    170 ms, which is what a slow host showed of it, beads-drzi.)"""
+    with Core() as core, core.client() as c:
+        c.hello('stop')
+        wait_running(c)
+        time.sleep(0.5)  # at pace, on the pacer's grid
+        for stop in (0.0, 0.05, 0.1):
+            stopped = time.monotonic()
+            first = pause_core(core, c)
+            time.sleep(stop)
+            begin = time.monotonic()
+            assert core.ipc('run').startswith('OK')
+            time.sleep(1.0)
+            last = c.run_state().stamp
+            seconds = time.monotonic() - begin
+            ran = last.frame - first.frame
+            print(f'    stopped {(begin - stopped) * 1000:.0f} ms: {ran} '
+                  f'frames in the {seconds:.2f} s after')
+            assert not last.paused, last
+            # Two frames of slack: the one in flight and the clock's grain.
+            assert ran <= seconds * 50 + 2, (stop, ran, seconds)
 
 
 def test_bad_frames_close_the_connection() -> None:
@@ -4150,6 +4197,7 @@ TESTS: List[Callable[[], None]] = [
     test_fb_info_describes_the_frame,
     test_a_rebuilt_machine_is_announced,
     test_polling_every_chip_changes_nothing,
+    test_a_stop_is_not_caught_up,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

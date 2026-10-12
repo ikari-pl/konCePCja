@@ -1978,6 +1978,8 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
 
 bool subcycle_bridge_frame_was_late() { return g_bridge.pacer.late(); }
 
+void subcycle_bridge_pacing_stopped() { g_bridge.pacer.stopped(); }
+
 uint64_t subcycle_bridge_take_sleep_ticks() {
   const uint64_t ticks = g_bridge.sleep_ticks;
   g_bridge.sleep_ticks = 0;

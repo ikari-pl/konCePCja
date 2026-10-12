@@ -4585,12 +4585,25 @@ EmuFrameResult emu_run_frame() {
   return EmuFrameResult::kFrameComplete;
 }
 
+namespace {
+// The frame runner is parked. Time spent in a stop somebody was told about (a
+// pause, a breakpoint, the end of a step) is not caught up afterwards: it was
+// repaid as a burst of unpaced frames when the stop was shorter than the
+// pacer's quarter second (beads-drzi). A pause lease alone is not such a
+// stop: the frames it holds up are made up, so a client that writes all the
+// time does not slow the machine down.
+void emu_note_stop_for_pacing() {
+  if (cpc_announced_stopped()) subcycle_bridge_pacing_stopped();
+}
+}  // namespace
+
 EmuFrameTurn::EmuFrameTurn(bool idle_after) : idle_after_(idle_after) {
   // seq_cst on both sides of the handshake: see emu_frame.h.
   g_z80_idle.store(false, std::memory_order_seq_cst);
   if (g_emu_paused.load(std::memory_order_seq_cst)) {
     g_z80_idle.store(true, std::memory_order_release);
     cpc_runner_parked();  // a stop asked for mid-frame has happened now
+    emu_note_stop_for_pacing();
     return;
   }
   entered_ = true;
@@ -4645,6 +4658,7 @@ void z80_thread_main() {
       // inspect.
       g_z80_idle.store(true, std::memory_order_release);
       cpc_runner_parked();  // a stop asked for mid-frame has happened now
+      emu_note_stop_for_pacing();
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }

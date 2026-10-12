@@ -65,6 +65,32 @@ TEST(FramePacer, ALongStallResyncsAndIsNotLate) {
   EXPECT_EQ(now + kPeriod, p.arrive(now + 1, kFreq));
 }
 
+// beads-drzi: a stop of 150 ms (under the quarter second) was repaid as seven
+// frames released at once.
+TEST(FramePacer, AStopIsNotCaughtUp) {
+  FramePacer p;
+  p.arrive(5000, kFreq);  // next line: 5020
+  p.stopped();
+  // The first frame after the stop arrives 150 ticks past its line.
+  EXPECT_EQ(5170u, p.arrive(5170, kFreq));
+  EXPECT_FALSE(p.late());
+  EXPECT_EQ(5170 + kPeriod, p.arrive(5171, kFreq)) << "paced from the restart";
+  EXPECT_FALSE(p.late());
+  // The stop is over: a later overshoot is jitter again, and is made up.
+  EXPECT_EQ(5170 + 2 * kPeriod, p.arrive(5170 + 2 * kPeriod + 5, kFreq));
+  EXPECT_EQ(5170 + 3 * kPeriod, p.arrive(5170 + 2 * kPeriod + 6, kFreq));
+}
+
+// A stop that is over before the frame's deadline must not release that frame
+// early.
+TEST(FramePacer, AStopThatEndsBeforeTheDeadlineKeepsTheGrid) {
+  FramePacer p;
+  p.arrive(5000, kFreq);  // next line: 5020
+  p.stopped();
+  EXPECT_EQ(5020u, p.arrive(5008, kFreq));
+  EXPECT_EQ(5040u, p.arrive(5023, kFreq));
+}
+
 TEST(FramePacer, AnUnpacedFrameRestartsPacing) {
   FramePacer p;
   p.arrive(5000, kFreq);
