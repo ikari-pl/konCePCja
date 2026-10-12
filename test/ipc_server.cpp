@@ -429,6 +429,21 @@ TEST_F(IpcServerTest, RegSetUpdatesRegisters) {
   EXPECT_EQ(z80.PC.w.l, 0x1234);
 }
 
+// HALT is where the CPU is in an instruction, not a register: nothing carries
+// an edit of it to the machine, so `reg set HALT` used to answer OK and change
+// nothing (beads-gpx7). It is refused, and the view is left alone.
+TEST_F(IpcServerTest, RegSetHaltIsRefused) {
+  for (byte const held : {byte{0}, byte{1}}) {
+    z80.HALT = held;
+    for (const char* cmd : {"reg set HALT 1", "reg set halt 0"}) {
+      auto resp = send_command(cmd);
+      EXPECT_EQ(resp, "ERR 400 reg-read-only\n") << cmd;
+      EXPECT_EQ(z80.HALT, held) << cmd;
+    }
+  }
+  z80.HALT = 0;
+}
+
 TEST_F(IpcServerTest, RegGetReturnsValues) {
   z80.AF.b.h = 0x77;
   z80.PC.w.l = 0x3456;
