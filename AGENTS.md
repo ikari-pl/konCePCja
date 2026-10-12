@@ -402,7 +402,9 @@ client), the writes `REGS_SET` and `MEM_WRITE` and run control: `PAUSE`,
 `RUN`, `RESET`, `STEP` (in, over, out, to, frames), with `RUN_STATE` for
 anyone, and the breakpoints `BP_ADD`, `BP_DEL`, `BP_CLEAR` (`BP_LIST` for
 anyone): execution breakpoints, watchpoints and I/O breakpoints, on the
-lists the text IPC and DevTools edit. A client
+lists the text IPC and DevTools edit, and input: `KEY` (a keyboard matrix
+position; row 9 is joystick 0), `KEYS_RELEASE`, `TEXT` (the AutoTypeQueue)
+and `MOUSE`, with `INPUT_STATE` for anyone. A client
 that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
 `EVT_RESET`, `EVT_FRAME`, `EVT_BREAKPOINTS_CHANGED`, ...), whoever caused
 them: a pause or a `bp add` from the text IPC or the GUI is pushed too, and
@@ -480,6 +482,18 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   of the lists ends in `bump_bp_generation()`, which calls the one hook
   (`z80_set_breakpoints_changed_hook()`) under the pause mutex: a new
   mutator must bump, and the hook must only post.
+- Input from this port uses the paths the text IPC's `input` commands use
+  and takes no pause lease: `KEY` writes the pending matrix through
+  `kbd_matrix_set_line()` (`src/keyboard.h`), `TEXT` enqueues on
+  `g_autotype_queue`, `MOUSE` stages through `ipc_stage_mouse()` for
+  `ipc_drain_input()`. **`KEY` must not go through `ipc_apply_keypress()` or
+  `applyKeypressDirect()`**: those release SHIFT and CONTROL around a plain
+  key, and a frontend sends its modifiers as matrix positions of their own.
+- The server (`Server::press_key()`, `release_held()`) remembers the keys
+  and mouse buttons the controller holds and releases exactly those when it
+  loses control, before `EVT_CONTROL_CHANGED` is posted. A new request that
+  holds something down (a key, a button) must be recorded there, under
+  `held_mutex_`, after re-checking the controller under that mutex.
 - `z80_step_instruction()` acknowledges the probe after the step. The probe
   is ticked along with the board, so a stepped fetch at an armed address
   latches a hit nobody collects; left there, the next frame reported it as a

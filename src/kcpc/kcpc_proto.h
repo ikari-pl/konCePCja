@@ -11,6 +11,7 @@
 // Nothing here casts a buffer to a struct, so host byte order and compiler
 // padding never reach the wire.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -143,12 +144,12 @@ inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
 
 // What this server implements today: the machine reads (slice 2), with the
 // ROM spaces, the control role with the machine writes (slice 3), run
-// control with the pushed events (slice 4), and breakpoints with the steps
-// that walk the machine (slice 5). HELLO, PING and MACHINE_INFO need no
-// capability.
-inline constexpr std::uint64_t kServerCaps = kCapMachineRead | kCapMemRom |
-                                             kCapMachineWrite | kCapRunControl |
-                                             kCapEvents | kCapBreakpoints;
+// control with the pushed events (slice 4), breakpoints with the steps that
+// walk the machine (slice 5), and input (slice 6). HELLO, PING and
+// MACHINE_INFO need no capability.
+inline constexpr std::uint64_t kServerCaps =
+    kCapMachineRead | kCapMemRom | kCapMachineWrite | kCapRunControl |
+    kCapEvents | kCapBreakpoints | kCapInput;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -838,6 +839,66 @@ inline bool read_bp_del_request(Reader& r, BpDelRequest& out) {
   r.u16(out.addr);
   r.u16(out.len_or_mask);
   return r.skip(2);
+}
+
+// Input (section 12). A key is a place in the CPC keyboard matrix: rows 0
+// to 9 of 8 keys each. Row 9 is joystick 0.
+inline constexpr std::uint8_t kKeyRows = 10;
+inline constexpr std::uint8_t kKeyBits = 8;
+
+// INPUT_STATE reply, and how the server remembers what a controller holds:
+// one byte per row. On the wire a clear bit is a key that is down, which is
+// the matrix's own polarity.
+using KeyMatrix = std::array<std::uint8_t, kKeyRows>;
+
+// KEY.
+struct KeyRequest {
+  std::uint8_t row = 0;  // raw; the server validates all three
+  std::uint8_t bit = 0;
+  std::uint8_t down = 0;  // 1 press, 0 release
+};
+
+inline void write_key_request(Writer& w, const KeyRequest& k) {
+  w.u8(k.row);
+  w.u8(k.bit);
+  w.u8(k.down);
+  w.zeros(1);
+}
+
+inline bool read_key_request(Reader& r, KeyRequest& out) {
+  r.u8(out.row);
+  r.u8(out.bit);
+  r.u8(out.down);
+  return r.skip(1);
+}
+
+// MOUSE. The button bits are SDL's, which the mouse devices take.
+inline constexpr std::uint8_t kMouseButtonLeft = 1U << 0;
+inline constexpr std::uint8_t kMouseButtonMiddle = 1U << 1;
+inline constexpr std::uint8_t kMouseButtonRight = 1U << 2;
+inline constexpr std::uint8_t kMouseButtonsAll = 0x07;
+// `buttons` is to be applied; without it the buttons stay as they are.
+inline constexpr std::uint8_t kMouseFlagButtons = 1U << 0;
+
+struct MouseRequest {
+  std::int16_t dx = 0;
+  std::int16_t dy = 0;
+  std::uint8_t buttons = 0;
+  std::uint8_t flags = 0;
+};
+
+inline void write_mouse_request(Writer& w, const MouseRequest& m) {
+  w.i16(m.dx);
+  w.i16(m.dy);
+  w.u8(m.buttons);
+  w.u8(m.flags);
+}
+
+inline bool read_mouse_request(Reader& r, MouseRequest& out) {
+  r.i16(out.dx);
+  r.i16(out.dy);
+  r.u8(out.buttons);
+  return r.u8(out.flags);
 }
 
 // RUN_STATE reply.

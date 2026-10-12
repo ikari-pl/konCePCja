@@ -10,11 +10,13 @@
 #include <exception>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
+#include "autotype.h"
 #include "emu_frame.h"
 #include "hw/memory.h"
 #include "hw/probe.h"
@@ -22,7 +24,9 @@
 #include "iui_host.h"
 #include "kcpc/kcpc_gate.h"
 #include "kcpc/kcpc_server.h"
+#include "keyboard.h"
 #include "koncepcja.h"
+#include "koncepcja_ipc_server.h"
 #include "log.h"
 #include "startup_manifest.h"
 #include "subcycle/machine.h"
@@ -819,6 +823,42 @@ int controller_idle_timeout_ms() {
 
 }  // namespace
 
+kcpc::Status kcpc_host_key(std::uint8_t row, std::uint8_t bit, bool down) {
+  kbd_matrix_set_line(keyboard_matrix, row, bit, down);
+  return Status::kOk;
+}
+
+kcpc::Status kcpc_host_keys_release() {
+  kbd_matrix_release_all(keyboard_matrix);
+  return Status::kOk;
+}
+
+kcpc::Status kcpc_host_text(const std::string& text, std::uint32_t& pending,
+                            std::string& message) {
+  std::string error = g_autotype_queue.enqueue(text);
+  if (!error.empty()) {
+    message = std::move(error);
+    return Status::kBadPayload;
+  }
+  pending = static_cast<std::uint32_t>(g_autotype_queue.remaining());
+  return Status::kOk;
+}
+
+kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
+                             std::uint8_t buttons) {
+  // The protocol's button bits are SDL's, which the staging takes.
+  std::optional<uint32_t> mask;
+  if (set_buttons) mask = buttons;
+  return ipc_stage_mouse(dx, dy, mask) ? Status::kOk : Status::kNotPresent;
+}
+
+kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows) {
+  static_assert(kcpc::kKeyRows == kKbdMatrixRows,
+                "INPUT_STATE is the matrix, row for row");
+  kbd_matrix_read(keyboard_matrix, rows.data());
+  return Status::kOk;
+}
+
 void kcpc_host_start(bool enabled) {
   if (!enabled) return;
   kcpc::ServerConfig config;
@@ -860,6 +900,11 @@ void kcpc_host_start(bool enabled) {
                        std::uint64_t& generation) {
     return kcpc_host_bp_clear(cause.client, cause.request, kind, generation);
   };
+  config.key = &kcpc_host_key;
+  config.keys_release = &kcpc_host_keys_release;
+  config.text = &kcpc_host_text;
+  config.mouse = &kcpc_host_mouse;
+  config.input_state = &kcpc_host_input_state;
   config.controller_idle_timeout_ms = controller_idle_timeout_ms();
   config.max_event_queue_bytes = static_cast<std::size_t>(env_int(
       "KONCPC_KCPC_EVENT_QUEUE_BYTES", 4 << 20, /*min=*/1, /*max=*/32 << 20));

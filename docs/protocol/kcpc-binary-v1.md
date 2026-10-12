@@ -10,8 +10,9 @@ landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
 writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`), slice 4, run control and
 the pushed events (`SUBSCRIBE`, `RUN_STATE`, `PAUSE`, `RUN`, `RESET`,
 `STEP` in and frames, and the events that tell every client about them),
-and slice 5, breakpoints (`BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR`), their
-hits pushed with what was hit, and `STEP` over, out and to.
+slice 5, breakpoints (`BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR`), their
+hits pushed with what was hit, and `STEP` over, out and to,
+and slice 6, input (`KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`).
 Everything else is still design; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
@@ -363,9 +364,10 @@ At most one client is the controller.
 - **Takeover: the newest request wins.** `CONTROL` acquire with `force = 1`
   always succeeds. The previous controller is not disconnected: it becomes an
   observer on the spot, any request of its that has not started yet answers
-  `NOT_CONTROLLER`, and the keys it was holding down are released. It may
-  force control back the same way. No client is special: the GUI, a test
-  script and a tool all follow this one rule.
+  `NOT_CONTROLLER`, and the keys and mouse buttons it was holding down are
+  released ([section 12](#input)). It may force control back the same way.
+  No client is special: the GUI, a test script and a tool all follow this
+  one rule.
 - Control is also released when the controller disconnects, sends
   `CONTROL release`, or goes quiet: a controller that has sent no frame for
   **30 s** is disconnected, with `ERROR` and `IDLE_TIMEOUT`, and control is
@@ -383,8 +385,13 @@ At most one client is the controller.
   takeover. Its `EVT_STOPPED` still goes to the client that asked for it, and
   the new controller may end it with `PAUSE`.
 
-The release of held keys arrives with the input of slice 6. A client that
-wants to know who has control without waiting for an event asks:
+A controller that loses control in any of these ways (takeover, release,
+disconnection, silence) has the keys and mouse buttons it holds released, and
+they are up before `EVT_CONTROL_CHANGED` is sent: a client that reads
+`INPUT_STATE` after the event sees them released.
+
+A client that wants to know who has control without waiting for an event
+asks:
 `RUN_STATE` names the controller, and so does the reply to a `CONTROL`
 acquire without force, which changes nothing while another client has
 control.
@@ -1358,26 +1365,86 @@ it does for breakpoints set any other way.
 ### Input
 
 Keys are named by their place in the CPC keyboard matrix, which is what the
-hardware has: `row` 0–9 and `bit` 0–7. Row 9 is joystick 0 and row 6 carries
-joystick 1, so joysticks need no opcode of their own. A frontend maps its
-host keys to matrix positions itself.
+hardware has: `row` 0–9 and `bit` 0–7. Row 9 is joystick 0 (bit 0 up, 1 down,
+2 left, 3 right, 4 fire 2, 5 fire 1) and row 6 carries joystick 1, so
+joysticks need no opcode of their own. A frontend maps its host keys to
+matrix positions itself.
+
+None of the input requests touches the machine or takes a pause lease. A key
+is written to the *pending* keyboard matrix, host state that every key source
+writes (the user's keyboard, the text IPC, the `AutoTypeQueue`, this port);
+the runner copies it into the matrix the firmware scans at the start of each
+frame. So input works on a paused machine, where it waits for the next frame
+that runs, and costs a running one nothing. Input therefore has no stamp and
+is never `BUSY`.
 
 - **`KEY` (`0x0400`)** — controller. Request: `u8 row`, `u8 bit`, `u8 down`
   (1 press, 0 release), `u8` reserved. Reply: empty. The change is written to
   the keyboard matrix under `g_kbd_matrix_mutex` and the runner picks it up
   with the next frame's keyboard snapshot, like every other input path.
-- **`KEYS_RELEASE` (`0x0401`)** — controller. Empty. Releases every key.
-  The server does this by itself when the controller disconnects or loses
-  control, so a dropped connection never leaves a key held down.
+  - **One key and no other.** SHIFT (row 2, bit 5) and CONTROL (row 2,
+    bit 7) are keys like any other: the client presses and releases them
+    itself, and pressing or releasing another key leaves them as they are.
+    (The text IPC's `input keydown A` names a character and so drives the
+    two modifiers too; a matrix position does not.)
+  - A key stays down until it is released, by `KEY`, by `KEYS_RELEASE`, or
+    by the server when the client loses control. Pressing a key that is down
+    and releasing one that is up succeed and change nothing.
+  - The firmware scans the keyboard once a frame and debounces: hold a key
+    for a few frames, and leave a few between two presses of the same key,
+    or it may not be seen.
+  - `BAD_PAYLOAD` for a payload that is too short or a `down` that is not 0
+    or 1; `OUT_OF_RANGE` for a `row` above 9 or a `bit` above 7. Checked in
+    this order: `NOT_CONTROLLER`, `BAD_PAYLOAD`, `OUT_OF_RANGE`.
+- **`KEYS_RELEASE` (`0x0401`)** — controller. Empty. Reply: empty. Releases
+  **every** key of the matrix, whoever pressed it: this client, the text
+  IPC's `input keydown`, the user at the keyboard of a GUI core. It is what a
+  frontend sends when its window loses focus.
+- **Keys held when control is lost.** The server remembers which keys the
+  controller pressed with `KEY` and has not released, and which mouse buttons
+  it set with `MOUSE`. When the controller disconnects, is dropped for
+  silence, sends `CONTROL release` or has control taken by force, the server
+  releases exactly those, so a dropped connection never leaves a key held
+  down. It does not release keys another source holds: a client that only
+  debugs must not let go of a key the user is holding by disconnecting. Text
+  already queued by `TEXT` is typed to its end.
 - **`TEXT` (`0x0402`)** — controller. Request: `str text`. Queued on the
   `AutoTypeQueue`, with the same `~KEY~` tokens as the text IPC's
-  `input type`. Reply: `u32 pending` (characters now queued).
+  `input type` (`~RETURN~`, `~+SHIFT~` and `~-SHIFT~` to hold and release a
+  key, `~PAUSE 50~` for frames, ...; `~~` is skipped). Reply: `u32 pending`,
+  the number of key actions now queued, this text and whatever was queued
+  before it: a character or a token is one action, a character the CPC
+  keyboard cannot type is skipped and counts as none. The typing takes
+  emulated time, a few frames a character; `pending` of an empty `TEXT`
+  says how much is left.
+  - The text is bytes, one character each: ASCII. It is not quoted or
+    unquoted (the text IPC strips one pair of wrapping quotes; this port
+    types what it is given).
+  - `BAD_PAYLOAD` for a payload that is too short and for text the queue does
+    not parse: an unknown `~KEY~` token or an unclosed `~`. The message says
+    which, and nothing of that request was queued.
 - **`MOUSE` (`0x0403`)** — controller. Request: `i16 dx`, `i16 dy`,
   `u8 buttons` (bit 0 left, bit 1 middle, bit 2 right), `u8 flags` (bit 0:
-  `buttons` is valid). Staged and applied by `ipc_drain_input()` at the next
-  frame. `NOT_PRESENT` if no AMX or Symbiface mouse is enabled.
-- **`INPUT_STATE` (`0x0404`)** — empty request. Reply: 10 bytes, one per
-  matrix row, bit clear = key down (the matrix's own polarity).
+  `buttons` is valid). Reply: empty. Staged and applied by
+  `ipc_drain_input()`, which the main loop calls once a frame, to the AMX
+  mouse, the Symbiface II mouse, or both, whichever are enabled: the same
+  staging as the text IPC's `input mouse`.
+  - `dx` and `dy` are relative, in the mouse's own counts (*mickeys*), `dy`
+    positive downwards. Movements sent before the main loop has taken them
+    add up.
+  - With flag bit 0 the three button bits replace the button state; without
+    it `buttons` is ignored and the buttons stay as they are. The other bits
+    of `buttons` and of `flags` are ignored.
+  - `NOT_PRESENT` if no AMX or Symbiface mouse is enabled; `BAD_PAYLOAD` for
+    a payload that is too short.
+  - The movement reaches the machine a frame or two later, not with the next
+    frame: the main loop hands it to the device, and the runner takes it
+    from there. In a GUI core those are two threads.
+- **`INPUT_STATE` (`0x0404`)** — anyone. Empty request. Reply: 10 bytes, one
+  per matrix row, bit clear = key down (the matrix's own polarity). It is the
+  pending matrix, the keys as every source has asked for them, so a `KEY` is
+  visible in it at once, on a paused machine too. It is what the text IPC's
+  `input state` reports.
 
 ### Chip state
 
@@ -1655,7 +1722,7 @@ test-first against a real `-H` core.
 | 3 | Control and writes (**landed**, beads-3o1.3) | Roles, `CONTROL` with forced takeover, the controller idle timeout and `IDLE_TIMEOUT`; `REGS_SET`, `MEM_WRITE` to `CPU_RAM` and `PHYS_RAM`; `CAP_MACHINE_WRITE`; `REGS_GET` shows the breakpoint's address at a breakpoint |
 | 4 | Run control and events (**landed**, beads-3o1.4) | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED`; `CAP_RUN_CONTROL` and `CAP_EVENTS` |
 | 5 | Breakpoints and pushed hits (**landed**, beads-3o1.5) | `BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR` on the editing lists the text IPC and the DevTools share; `EVT_STOPPED` says what was hit; `EVT_BREAKPOINTS_CHANGED` for edits from any source; the walker and `STEP` over, out, to; walks announced as one step, whoever walks; `CAP_BREAKPOINTS` |
-| 6 | Input | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`; keys released when control is lost |
+| 6 | Input (**landed**, beads-3o1.6) | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE` on the paths the text IPC's `input` commands use; the keys and mouse buttons a controller holds are released when it loses control; `CAP_INPUT` |
 | 7 | DevTools data | `CHIP_GET`, `ASIC_PAGE`, `SYM_*`, `FB_INFO`, `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` |
 | 8 | Exit test and documentation | The exit test of beads-3o1, the documentation brought in line with the code. **No freeze:** the server stays at major 0 |
 | 9 | Media, snapshots, configuration | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`, `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` |
@@ -1706,6 +1773,12 @@ Source layout the slices should follow:
   text IPC and the DevTools by what differs in the host view), and
   `subcycle_bridge_shown_regs()`, the registers with the breakpoint's
   address as `PC` at a breakpoint.
+- `src/keyboard.{h,cpp}` — the keyboard matrix by position
+  (`kbd_matrix_set_line()`, `kbd_matrix_release_all()`, `kbd_matrix_read()`):
+  one line and no modifier handling, under `g_kbd_matrix_mutex`. And
+  `ipc_stage_mouse()` in `src/koncepcja_ipc_server.{h,cpp}`, the staging the
+  text IPC's `input mouse` and `MOUSE` share. `test/kcpc_input_test.cpp`
+  covers both and the `kcpc_host_*` functions over them.
 - `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate. Like the server it
   knows nothing about the emulator (the pause flag and the lease are two
   callbacks), so `test/kcpc_gate_test.cpp` runs real reader and runner
@@ -1848,3 +1921,24 @@ Recorded so a reviewer can disagree with one without reading the rest.
 36. **`STEP` over has no instruction limit** (slice 5). Step in is limited
     because it holds the pause mutex throughout; a walk does not, and has a
     deadline.
+37. **`KEY` writes one matrix line and leaves the modifiers alone**
+    (slice 6). The text IPC's key commands name characters and drive SHIFT
+    and CONTROL for them: pressing a plain key there releases both. A
+    frontend that sends matrix positions sends SHIFT as a key of its own,
+    and a `KEY` that released it would turn `A` into `a`.
+38. **The server releases the keys the controller held, not every key**
+    (slice 6). The design said "releases every key" for both `KEYS_RELEASE`
+    and the loss of control. The matrix is shared with the user's keyboard
+    and the text IPC, and a tool that connects, debugs and disconnects must
+    not let go of their keys. `KEYS_RELEASE`, which a client sends on
+    purpose, still releases everything.
+39. **Mouse buttons are released with the keys** (slice 6). The design
+    spoke of keys only; a button stuck down after a dropped connection is
+    the same defect.
+40. **Input takes no pause lease and has no stamp** (slice 6). It changes
+    host state the runner samples at a frame boundary, never the machine,
+    so it is never `BUSY` and never pauses anything.
+41. **`TEXT` counts key actions, not characters** (slice 6). The design
+    said "characters now queued". The queue holds actions, a token is one
+    of them, and characters the CPC cannot type are dropped before they are
+    queued; the number the queue has is the one a client can wait on.

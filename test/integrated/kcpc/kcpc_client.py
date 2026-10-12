@@ -22,6 +22,8 @@ checkout, and nothing outside this repository should be built on this file.
             c.pause()                             # reply, then EVT_STOPPED
             stopped = c.wait_event(EVT_STOPPED)   # blocks; no polling
             c.step(count=3)                       # ends with EVT_STOPPED
+            c.key(*KEY_A, down=True)              # a matrix position
+            c.text('print 1+1~RETURN~')           # the AutoTypeQueue
 
 Never assume port 6545: read it from the startup manifest the core prints.
 """
@@ -68,7 +70,12 @@ OP_BP_LIST = 0x0300
 OP_BP_ADD = 0x0301
 OP_BP_DEL = 0x0302
 OP_BP_CLEAR = 0x0303
-OP_KEY = 0x0400      # not implemented yet; used to test UNKNOWN_OPCODE
+OP_KEY = 0x0400
+OP_KEYS_RELEASE = 0x0401
+OP_TEXT = 0x0402
+OP_MOUSE = 0x0403
+OP_INPUT_STATE = 0x0404
+OP_CHIP_GET = 0x0500  # not implemented yet; used to test UNKNOWN_OPCODE
 
 # Events (section 9): frames of kind 3 the server sends unasked.
 EVT_STOPPED = 0x8001
@@ -141,7 +148,25 @@ CAP_MACHINE_WRITE = 1 << 1
 CAP_RUN_CONTROL = 1 << 2
 CAP_EVENTS = 1 << 3
 CAP_BREAKPOINTS = 1 << 4
+CAP_INPUT = 1 << 5
 CAP_MEM_ROM = 1 << 10
+
+# Input (section 12). A key is a place in the CPC keyboard matrix: (row, bit).
+# Row 9 is joystick 0; a pressed key reads as a clear bit in INPUT_STATE.
+KEY_ROWS = 10
+KEY_A = (8, 5)
+KEY_SHIFT = (2, 5)
+KEY_RETURN = (2, 2)
+JOY0_UP = (9, 0)
+JOY0_DOWN = (9, 1)
+JOY0_LEFT = (9, 2)
+JOY0_RIGHT = (9, 3)
+JOY0_FIRE2 = (9, 4)
+JOY0_FIRE1 = (9, 5)
+MOUSE_LEFT = 1 << 0
+MOUSE_MIDDLE = 1 << 1
+MOUSE_RIGHT = 1 << 2
+MOUSE_FLAG_BUTTONS = 1 << 0   # MOUSE: the `buttons` field is to be applied
 
 # Memory spaces (section 11).
 SPACE_CPU = 0        # what the Z80 would read now
@@ -603,6 +628,16 @@ def mem_write_payload(space: int, addr: int, data: bytes,
     return struct.pack('<BBHI', space, 0, bank, addr) + bytes(data)
 
 
+def key_payload(row: int, bit: int, down: int) -> bytes:
+    return struct.pack('<BBBx', row, bit, down)
+
+
+def mouse_payload(dx: int, dy: int, buttons: Optional[int] = None) -> bytes:
+    """`buttons` None leaves the buttons as they are."""
+    flags = 0 if buttons is None else MOUSE_FLAG_BUTTONS
+    return struct.pack('<hhBB', dx, dy, buttons or 0, flags)
+
+
 def mem_read_payload(space: int, addr: int, length: int,
                      bank: int = 0) -> bytes:
     return struct.pack('<BBHII', space, 0, bank, addr, length)
@@ -869,3 +904,36 @@ class KcpcClient:
         (at most MAX_REQUEST_PAYLOAD - 8 bytes)."""
         return Stamp.read(self.request(
             OP_MEM_WRITE, mem_write_payload(space, addr, data, bank)))
+
+    # -- input (KEY, KEYS_RELEASE, TEXT and MOUSE: controller only) ----------
+
+    def key(self, row: int, bit: int, down: bool = True) -> None:
+        """Press or release the key at matrix position (row, bit). It stays
+        down until it is released, KEYS_RELEASE is sent, or this client loses
+        control. Modifiers are keys like any other: press KEY_SHIFT too."""
+        self.request(OP_KEY, key_payload(row, bit, 1 if down else 0))
+
+    def keys_release(self) -> None:
+        """Release every key of the matrix, whoever pressed it."""
+        self.request(OP_KEYS_RELEASE)
+
+    def text(self, text: str) -> int:
+        """Type `text` through the AutoTypeQueue (`~RETURN~` and the other
+        tokens of the text IPC's `input type`). Returns how many key actions
+        are now queued; the typing itself takes emulated time."""
+        return self.request(OP_TEXT, pack_str(text)).u32()
+
+    def mouse(self, dx: int = 0, dy: int = 0,
+              buttons: Optional[int] = None) -> None:
+        """Move the AMX or Symbiface mouse by (dx, dy) and, when `buttons`
+        is given, set its buttons (MOUSE_LEFT | MOUSE_MIDDLE | MOUSE_RIGHT).
+        NOT_PRESENT when no mouse is enabled."""
+        self.request(OP_MOUSE, mouse_payload(dx, dy, buttons))
+
+    def input_state(self) -> bytes:
+        """The keyboard matrix, one byte per row (KEY_ROWS of them); a clear
+        bit is a key that is down. Anyone may ask."""
+        rows = self.request(OP_INPUT_STATE).rest()[:KEY_ROWS]
+        if len(rows) != KEY_ROWS:
+            raise ValueError(f'INPUT_STATE returned {len(rows)} rows')
+        return rows

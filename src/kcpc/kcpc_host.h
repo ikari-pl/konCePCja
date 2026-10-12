@@ -109,3 +109,25 @@ kcpc::Status kcpc_host_bp_del(std::uint32_t client, std::uint32_t request,
                               std::uint64_t& generation);
 kcpc::Status kcpc_host_bp_clear(std::uint32_t client, std::uint32_t request,
                                 std::uint8_t kind, std::uint64_t& generation);
+
+// Input (section 12): KEY, KEYS_RELEASE, TEXT, MOUSE, INPUT_STATE. None of
+// them touches the machine or takes a pause lease, so all of them work on a
+// paused machine and cost a running one nothing: a key is a write to the
+// pending keyboard matrix under g_kbd_matrix_mutex, which the runner copies
+// at the start of each frame; text goes onto the AutoTypeQueue; a mouse
+// movement is staged for ipc_drain_input(). These are the paths the text
+// IPC's `input` commands use.
+//
+// One matrix line, by position, and no other: SHIFT and CONTROL are keys the
+// client presses itself.
+kcpc::Status kcpc_host_key(std::uint8_t row, std::uint8_t bit, bool down);
+kcpc::Status kcpc_host_keys_release();
+// kBadPayload, with the parser's words in `message`, for text the queue does
+// not parse (an unknown ~KEY~ token); nothing was queued then. `pending` is
+// the number of key actions queued afterwards.
+kcpc::Status kcpc_host_text(const std::string& text, std::uint32_t& pending,
+                            std::string& message);
+// kNotPresent when neither the AMX nor the Symbiface mouse is enabled.
+kcpc::Status kcpc_host_mouse(int dx, int dy, bool set_buttons,
+                             std::uint8_t buttons);
+kcpc::Status kcpc_host_input_state(kcpc::KeyMatrix& rows);

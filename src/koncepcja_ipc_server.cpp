@@ -581,6 +581,16 @@ bool ipc_gun_gate_open() {
   return g_ipc_gun.device_active.load(std::memory_order_relaxed);
 }
 
+bool ipc_stage_mouse(int dx, int dy, std::optional<uint32_t> buttons) {
+  if (!ipc_mouse_gate_open()) return false;
+  std::scoped_lock const lock(g_ipc_mouse.mutex);
+  g_ipc_mouse.dx += dx;
+  g_ipc_mouse.dy += dy;
+  if (buttons) g_ipc_mouse.buttons = *buttons;
+  g_ipc_mouse.dirty.store(true, std::memory_order_release);
+  return true;
+}
+
 void ipc_drain_input() {
   ipc_drain_rebuild();
   {
@@ -3476,10 +3486,9 @@ std::string handle_command(const std::string& line) {
         if (!ipc_mouse_gate_open())
           return "ERR 409 no-mouse-device (enable AMX or Symbiface mouse)\n";
         if (parts[2] == "move" && parts.size() >= 5) {
-          std::scoped_lock const lock(g_ipc_mouse.mutex);
-          g_ipc_mouse.dx += parse_int(parts[3]);
-          g_ipc_mouse.dy += parse_int(parts[4]);
-          g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          int const dx = parse_int(parts[3]);
+          int const dy = parse_int(parts[4]);
+          ipc_stage_mouse(dx, dy, std::nullopt);
           return "OK\n";
         }
         if (parts[2] == "button" && parts.size() >= 5) {
@@ -3508,9 +3517,8 @@ std::string handle_command(const std::string& line) {
           return "OK\n";
         }
         if (parts[2] == "buttons" && parts.size() >= 4) {
-          std::scoped_lock const lock(g_ipc_mouse.mutex);
-          g_ipc_mouse.buttons = static_cast<uint32_t>(parse_int(parts[3]));
-          g_ipc_mouse.dirty.store(true, std::memory_order_release);
+          auto const mask = static_cast<uint32_t>(parse_int(parts[3]));
+          ipc_stage_mouse(0, 0, mask);
           return "OK\n";
         }
         return "ERR 400 bad-mouse-cmd (move <dx> <dy> | button <L|M|R> "
