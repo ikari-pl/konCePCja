@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "kcpc/kcpc_proto.h"
@@ -48,11 +49,27 @@ struct Event {
   // EVT_OVERRUN.
   std::uint32_t dropped = 0;
   // EVT_BREAKPOINTS_CHANGED: z80_breakpoint_generation() after the edit.
+  // EVT_SYMBOLS_CHANGED and EVT_MEDIA_CHANGED: the table's, the slot's.
   std::uint64_t generation = 0;
+  // EVT_MEDIA_CHANGED. Whether a medium is in the slot, and its path, are
+  // not here: a path does not fit a record of fixed size, and the frame
+  // runner posts this event too. The fan-out thread asks for both when it
+  // sends the event (ServerConfig::media_state).
+  std::uint8_t slot = 0;
+  // EVT_MACHINE_CHANGED: the machine as rebuilt.
+  MachineInfo machine;
 };
 
-// The payload of the event frame, per section 9.
-inline std::vector<std::uint8_t> encode_event(const Event& e) {
+// What the fan-out thread adds to an EVT_MEDIA_CHANGED before it is encoded.
+struct MediaNote {
+  bool present = false;
+  std::string path;  // empty if unknown
+};
+
+// The payload of the event frame, per section 9. `media` is for
+// EVT_MEDIA_CHANGED alone.
+inline std::vector<std::uint8_t> encode_event(const Event& e,
+                                              const MediaNote& media = {}) {
   Writer w;
   switch (e.opcode) {
     case Opcode::kEvtStopped:
@@ -86,9 +103,20 @@ inline std::vector<std::uint8_t> encode_event(const Event& e) {
       w.u32(e.dropped);
       break;
     case Opcode::kEvtBreakpointsChanged:
+    case Opcode::kEvtSymbolsChanged:
       w.u64(e.generation);
       break;
-    default:  // EVT_SHUTDOWN, and events of later slices: no payload yet
+    case Opcode::kEvtMediaChanged:
+      w.u8(e.slot);
+      w.u8(media.present ? 1 : 0);
+      w.zeros(2);
+      w.u64(e.generation);
+      w.str(media.path);
+      break;
+    case Opcode::kEvtMachineChanged:
+      write_machine_info(w, e.machine);
+      break;
+    default:  // EVT_SHUTDOWN has no payload
       break;
   }
   return w.take();

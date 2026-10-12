@@ -12,9 +12,12 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 
 #include "cartridge.h"
 #include "errors.h"
@@ -308,24 +311,85 @@ void dsk_eject_host(t_drive* drive) {
 }
 
 namespace {
-std::atomic<uint64_t> g_dsk_media_generation[2] = {};
+std::atomic<uint64_t> g_media_generation[kMediaSlotCount] = {};
+std::atomic<MediaChangedHook> g_media_changed_hook{nullptr};
+
+// What each slot holds, as the loaders last said. The loaders run on several
+// threads (the main loop, the text IPC's), so the paths are behind a lock.
+struct MediaNotes {
+  std::mutex mutex;
+  bool present[kMediaSlotCount] = {};
+  std::string path[kMediaSlotCount];
+};
+MediaNotes& media_notes() {
+  static MediaNotes notes;
+  return notes;
+}
+
+int media_index(MediaSlot slot) {
+  return static_cast<int>(slot) % kMediaSlotCount;
+}
 }  // namespace
 
+uint64_t media_generation(MediaSlot slot) {
+  return g_media_generation[media_index(slot)].load(std::memory_order_acquire);
+}
+
+MediaState media_state(MediaSlot slot) {
+  MediaNotes& notes = media_notes();
+  MediaState state;
+  std::scoped_lock const lock(notes.mutex);
+  state.present = notes.present[media_index(slot)];
+  state.path = notes.path[media_index(slot)];
+  state.generation = media_generation(slot);
+  return state;
+}
+
+void media_note(MediaSlot slot, bool present, const std::string& path) {
+  std::string absolute;
+  if (present && !path.empty()) {
+    std::error_code ec;
+    absolute = std::filesystem::absolute(path, ec).string();
+    if (ec) absolute = path;
+  }
+  MediaNotes& notes = media_notes();
+  std::scoped_lock const lock(notes.mutex);
+  notes.present[media_index(slot)] = present;
+  notes.path[media_index(slot)] = std::move(absolute);
+}
+
+void media_changed(MediaSlot slot) {
+  uint64_t const generation = g_media_generation[media_index(slot)].fetch_add(
+                                  1, std::memory_order_acq_rel) +
+                              1;
+  if (MediaChangedHook const hook =
+          g_media_changed_hook.load(std::memory_order_acquire)) {
+    hook(slot, generation);
+  }
+}
+
+void media_set_changed_hook(MediaChangedHook hook) {
+  g_media_changed_hook.store(hook, std::memory_order_release);
+}
+
 uint64_t dsk_media_generation(uint8_t unit) {
-  return g_dsk_media_generation[unit & 1].load(std::memory_order_acquire);
+  return media_generation((unit & 1) != 0 ? MediaSlot::DriveB
+                                          : MediaSlot::DriveA);
 }
 
 void dsk_media_changed(uint8_t unit) {
-  g_dsk_media_generation[unit & 1].fetch_add(1, std::memory_order_acq_rel);
+  media_changed((unit & 1) != 0 ? MediaSlot::DriveB : MediaSlot::DriveA);
 }
 
 void dsk_eject(t_drive* drive) {
   if (drive == &driveA) {
     subcycle_bridge_eject_media(0);  // mirror to engine
+    media_note(MediaSlot::DriveA, false, "");
     dsk_media_changed(0);
   }
   if (drive == &driveB) {
     subcycle_bridge_eject_media(1);
+    media_note(MediaSlot::DriveB, false, "");
     dsk_media_changed(1);
   }
   if (drive->eject_hook) drive->eject_hook(drive);  // additional cleanup
@@ -650,10 +714,20 @@ int dsk_format(t_drive* drive, int iFormat) {
   return 0;
 }
 
-void tape_eject() {
+namespace {
+// Empties the deck without saying so: the first step of an insert, which
+// announces the tape it ends with.
+void tape_eject_quiet() {
   pbTapeImage.clear();
   pbTapeImageEnd = nullptr;
   subcycle_bridge_eject_tape();  // the deck side (frame-boundary deferred)
+}
+}  // namespace
+
+void tape_eject() {
+  tape_eject_quiet();
+  media_note(MediaSlot::Tape, false, "");
+  media_changed(MediaSlot::Tape);
 }
 
 // --- SNA <-> subcycle::Machine (Wave 1) -------------------------------------
@@ -879,7 +953,7 @@ int snapshot_load(const std::string& filename) {
 }
 
 int tape_insert(FILE* pfile) {
-  tape_eject();
+  tape_eject_quiet();
   byte header[10];
   if (fread(header, sizeof(header), 1, pfile) != 1) {
     LOG_ERROR("Error loading tape: couldn't read header");
@@ -940,7 +1014,7 @@ int tape_insert_cdt(FILE* pfile) {
   pbTapeImage.resize(lFileSize);
   if (fread(pbTapeImage.data(), lFileSize, 1, pfile) != 1) {
     LOG_ERROR("Couldn't read CDT file");
-    tape_eject();
+    tape_eject_quiet();
     return ERR_TAP_INVALID;
   }
   pbTapeImageEnd = pbTapeImage.data() + lFileSize;
@@ -954,7 +1028,7 @@ int tape_insert_cdt(FILE* pfile) {
         LOG_ERROR("CDT block 0x"
                   << std::hex << static_cast<int>(pbTapeImage[pos]) << std::dec
                   << " extends past end of file");
-        tape_eject();
+        tape_eject_quiet();
         return ERR_TAP_INVALID;
       }
       pos += sz;
@@ -967,7 +1041,7 @@ int tape_insert_voc(FILE* pfile) {
   // .voc rides the clean VOC->TZX converter (voc_import.cpp); the host keeps
   // the converted block stream so the tape UI table matches what the deck
   // plays (file_load runs the same conversion for the deck).
-  tape_eject();
+  tape_eject_quiet();
   const long lFileSize = file_size(fileno(pfile));
   if (lFileSize <= 0) {
     LOG_ERROR("Reading VOC file: empty file");
@@ -1121,9 +1195,27 @@ int file_load(t_slot& slot) {
     // write (the way dsk_eject bumps next to subcycle_bridge_eject_media):
     // announced earlier, a render-thread pull landing in the gap would list
     // the outgoing disc and then record this generation as the one it listed.
-    auto media_changed = [&slot]() {
-      if (slot.drive == DRIVE::DSK_A) dsk_media_changed(0);
-      if (slot.drive == DRIVE::DSK_B) dsk_media_changed(1);
+    // `loaded` is what the slot ends up holding: this file, or nothing. The
+    // tape deck and the cartridge port are announced the same way.
+    auto announce = [&slot](bool loaded) {
+      MediaSlot which = MediaSlot::DriveA;
+      switch (slot.drive) {
+        case DRIVE::DSK_A:
+          break;
+        case DRIVE::DSK_B:
+          which = MediaSlot::DriveB;
+          break;
+        case DRIVE::TAPE:
+          which = MediaSlot::Tape;
+          break;
+        case DRIVE::CARTRIDGE:
+          which = MediaSlot::Cartridge;
+          break;
+        case DRIVE::SNAPSHOT:
+          return;  // a snapshot is not a medium
+      }
+      media_note(which, loaded, slot.file);
+      media_changed(which);
     };
 
     // Flux containers only use the loader above to fill the best-effort legacy
@@ -1135,11 +1227,11 @@ int file_load(t_slot& slot) {
                          extension == ".scp" || extension == ".hfe" ||
                          extension == ".a2r";
     if (!subcycle_bridge_active()) {
-      media_changed();
+      announce(ret == 0);
       return ret;
     }
     if (ret != 0 && !is_flux) {
-      media_changed();
+      announce(false);
       return ret;
     }
 
@@ -1148,6 +1240,7 @@ int file_load(t_slot& slot) {
       // .voc: the deck speaks TZX — convert (clean-room, voc_import.cpp).
       if (extension == ".voc") bytes = voc_to_tzx(bytes.data(), bytes.size());
       if (!bytes.empty()) subcycle_bridge_insert_tape(std::move(bytes));
+      announce(true);
     } else if (extension == ".dsk" &&
                (slot.drive == DRIVE::DSK_A || slot.drive == DRIVE::DSK_B)) {
       // Mirror the new disc into the sub-cycle engine (the Z80 thread
@@ -1161,7 +1254,7 @@ int file_load(t_slot& slot) {
       } else {
         subcycle_bridge_insert_media(std::move(bytes), false, unit);
       }
-      media_changed();
+      announce(true);
     } else if (is_flux) {
       // The sub-cycle FDC eats flux: run the raw file bytes through the unified
       // content-sniffing dispatcher (flux::to_scp) into an in-memory SCP
@@ -1178,11 +1271,11 @@ int file_load(t_slot& slot) {
                                                             << " into flux");
           // The flux medium IS the disk for the sub-cycle FDC — no flux, no
           // load. Surface the sector-view error if we had one, else generic.
-          media_changed();
+          announce(false);
           return ret != 0 ? ret : ERR_DSK_INVALID;
         }
         subcycle_bridge_insert_media(std::move(scp), true, 0);
-        media_changed();
+        announce(true);
         return 0;  // flux transcode is the authority: a successful decode is a
                    // successful load even when the sector-view loader
                    // (ipf_load) failed or was stubbed out in a clean build.
@@ -1190,7 +1283,9 @@ int file_load(t_slot& slot) {
       LOG_INFO(
           "subcycle engine: flux is drive-A-only — IPF/RAW in "
           "drive B keeps the host sector view");
-      media_changed();
+      announce(ret == 0);
+    } else if (slot.drive == DRIVE::CARTRIDGE) {
+      announce(true);
     }
     return ret;
   }

@@ -147,6 +147,10 @@ const uint8_t* fdc_media_image(const Device* dev, size_t& len_out);
 const uint8_t* fdc_media_image_unit(const Device* dev, uint8_t unit,
                                     size_t& len_out);
 
+/* Whether a medium of any backing is in the drive (unit 0 = A, 1 = B): a DSK
+ * image, a flux dump, or both. */
+int fdc_media_present_unit(const Device* dev, uint8_t unit);
+
 /* Remove the disc from a drive. `unit`: 0 = A (default), 1 = B. */
 void fdc_eject_disk(const Device* dev, uint8_t unit = 0);
 

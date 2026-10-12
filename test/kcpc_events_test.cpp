@@ -183,6 +183,54 @@ TEST(KcpcEvents, PayloadSizesMatchTheDocument) {
   ASSERT_EQ(changed.size(), 8U);
   EXPECT_EQ(changed.front(), 0x01) << "the generation, little-endian";
   EXPECT_EQ(changed.back(), 0x08);
+  e.opcode = Opcode::kEvtSymbolsChanged;
+  EXPECT_EQ(kcpc::encode_event(e), changed) << "the same payload";
+}
+
+TEST(KcpcEvents, MediaChangedCarriesTheSlotTheGenerationAndThePath) {
+  Event e;
+  e.opcode = Opcode::kEvtMediaChanged;
+  e.slot = 1;
+  e.generation = 0x0102030405060708ULL;
+  kcpc::MediaNote note;
+  note.present = true;
+  note.path = "/d/b.dsk";
+  std::vector<std::uint8_t> const bytes = kcpc::encode_event(e, note);
+  ASSERT_EQ(bytes.size(), 1U + 1U + 2U + 8U + 2U + 8U);
+  EXPECT_EQ(bytes[0], 1) << "slot";
+  EXPECT_EQ(bytes[1], 1) << "present";
+  EXPECT_EQ(bytes[2], 0);
+  EXPECT_EQ(bytes[3], 0);
+  EXPECT_EQ(bytes[4], 0x08) << "generation, little-endian";
+  EXPECT_EQ(bytes[11], 0x01);
+  EXPECT_EQ(bytes[12], 8) << "the path's length";
+  EXPECT_EQ(bytes[13], 0);
+  EXPECT_EQ(bytes[14], '/');
+  EXPECT_EQ(bytes.back(), 'k');
+
+  // With nothing known about the slot: not present, and an empty path.
+  std::vector<std::uint8_t> const bare = kcpc::encode_event(e);
+  ASSERT_EQ(bare.size(), 14U);
+  EXPECT_EQ(bare[1], 0);
+}
+
+TEST(KcpcEvents, MachineChangedIsTheMachineInfoFields) {
+  Event e;
+  e.opcode = Opcode::kEvtMachineChanged;
+  e.machine.model = 3;
+  e.machine.crtc_type = 3;
+  e.machine.effective_tier = 1;
+  e.machine.flags = kcpc::kMachineFlagAsic;
+  e.machine.ram_bytes = 0x00090000;
+  e.machine.rom_slots = 0x80;
+  e.machine.stamp.frame = 42;
+  e.machine.stamp.paused = true;
+  kcpc::Writer expected;
+  kcpc::write_machine_info(expected, e.machine);
+  std::vector<std::uint8_t> const bytes = kcpc::encode_event(e);
+  EXPECT_EQ(bytes, expected.data());
+  EXPECT_EQ(bytes.size(), 24U);
+  EXPECT_EQ(bytes[0], 3) << "model";
 }
 
 TEST(KcpcEvents, OnlyTheThreeMasklessEventsHaveNoClass) {

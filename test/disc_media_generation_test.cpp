@@ -218,3 +218,146 @@ TEST_F(LiveBoardMediaTest, TheBoardApplyingASwapMovesTheGeneration) {
       << "a listing pulled between queue and apply saw the outgoing disc; "
          "readers must be told to look again when the FDC takes the new one";
 }
+
+// -- every slot, and what it holds (beads-3o1.7) -----------------------------
+//
+// A frontend on the KCPC port is told of a change of medium with the slot, a
+// generation, whether something is in it and the file it came from. The
+// loaders say so here.
+
+namespace {
+
+struct SeenChange {
+  MediaSlot slot;
+  uint64_t generation;
+};
+std::vector<SeenChange> g_seen;
+void record_change(MediaSlot slot, uint64_t generation) {
+  g_seen.push_back(SeenChange{slot, generation});
+}
+
+class MediaNotesTest : public DiscMediaGenerationTest {
+ protected:
+  void SetUp() override {
+    DiscMediaGenerationTest::SetUp();
+    // The fixture above formatted drive A to make its disc; nothing is in.
+    media_note(MediaSlot::DriveA, false, "");
+    media_note(MediaSlot::DriveB, false, "");
+    g_seen.clear();
+    media_set_changed_hook(&record_change);
+  }
+  void TearDown() override {
+    media_set_changed_hook(nullptr);
+    tape_eject();
+    DiscMediaGenerationTest::TearDown();
+  }
+};
+
+}  // namespace
+
+TEST_F(MediaNotesTest, ALoadedDiscIsNotedWithItsAbsolutePath) {
+  t_slot slot{};
+  slot.drive = DRIVE::DSK_A;
+  slot.file = dsk_path_;
+  uint64_t const before = media_generation(MediaSlot::DriveA);
+  ASSERT_EQ(0, file_load(slot));
+
+  MediaState const state = media_state(MediaSlot::DriveA);
+  EXPECT_TRUE(state.present);
+  EXPECT_EQ(std::filesystem::path(state.path),
+            std::filesystem::absolute(dsk_path_));
+  EXPECT_GT(state.generation, before);
+  EXPECT_EQ(state.generation, dsk_media_generation(0))
+      << "the drives' counters are the slots'";
+
+  // The hook heard of every step, the last one with the state above.
+  ASSERT_FALSE(g_seen.empty());
+  EXPECT_EQ(g_seen.back().slot, MediaSlot::DriveA);
+  EXPECT_EQ(g_seen.back().generation, state.generation);
+  EXPECT_FALSE(media_state(MediaSlot::DriveB).present);
+}
+
+TEST_F(MediaNotesTest, AnEjectedDiscIsGoneFromTheNotes) {
+  t_slot slot{};
+  slot.drive = DRIVE::DSK_B;
+  slot.file = dsk_path_;
+  ASSERT_EQ(0, file_load(slot));
+  ASSERT_TRUE(media_state(MediaSlot::DriveB).present);
+  g_seen.clear();
+  dsk_eject(&driveB);
+  MediaState const state = media_state(MediaSlot::DriveB);
+  EXPECT_FALSE(state.present);
+  EXPECT_TRUE(state.path.empty());
+  ASSERT_EQ(g_seen.size(), 1U);
+  EXPECT_EQ(g_seen[0].slot, MediaSlot::DriveB);
+  EXPECT_EQ(g_seen[0].generation, state.generation);
+}
+
+TEST_F(MediaNotesTest, AFileThatIsNoDiscLeavesTheDriveEmpty) {
+  t_slot slot{};
+  slot.drive = DRIVE::DSK_A;
+  slot.file = dsk_path_;
+  ASSERT_EQ(0, file_load(slot));
+  std::string const bad = (dir_ / "bad.dsk").string();
+  FILE* f = fopen(bad.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  ASSERT_EQ(fputs("this is not a disc image", f) >= 0, true);
+  ASSERT_EQ(fclose(f), 0);
+  slot.file = bad;
+  uint64_t const before = media_generation(MediaSlot::DriveA);
+  EXPECT_NE(0, file_load(slot));
+  MediaState const state = media_state(MediaSlot::DriveA);
+  EXPECT_FALSE(state.present) << "the old disc went when the load began";
+  EXPECT_TRUE(state.path.empty());
+  EXPECT_GT(state.generation, before);
+}
+
+TEST_F(MediaNotesTest, ATapeIsAnnouncedOnceAnInsertAndOnceAnEject) {
+  // A CDT with one pause block.
+  std::string const cdt = (dir_ / "tape.cdt").string();
+  FILE* f = fopen(cdt.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  const unsigned char bytes[] = {'Z',  'X', 'T', 'a',  'p',  'e', '!',
+                                 0x1A, 1,   13,  0x20, 0xE8, 0x03};
+  ASSERT_EQ(fwrite(bytes, sizeof(bytes), 1, f), 1U);
+  ASSERT_EQ(fclose(f), 0);
+
+  t_slot slot{};
+  slot.drive = DRIVE::TAPE;
+  slot.file = cdt;
+  uint64_t const before = media_generation(MediaSlot::Tape);
+  g_seen.clear();
+  ASSERT_EQ(0, file_load(slot));
+  ASSERT_EQ(g_seen.size(), 1U)
+      << "the eject an insert begins with is not a change of its own";
+  EXPECT_EQ(g_seen[0].slot, MediaSlot::Tape);
+  EXPECT_EQ(g_seen[0].generation, before + 1);
+  MediaState state = media_state(MediaSlot::Tape);
+  EXPECT_TRUE(state.present);
+  EXPECT_EQ(std::filesystem::path(state.path), std::filesystem::absolute(cdt));
+
+  tape_eject();
+  ASSERT_EQ(g_seen.size(), 2U);
+  state = media_state(MediaSlot::Tape);
+  EXPECT_FALSE(state.present);
+  EXPECT_TRUE(state.path.empty());
+  EXPECT_EQ(state.generation, before + 2);
+
+  // Something that is no tape: the deck ends up empty, and says so.
+  f = fopen(cdt.c_str(), "wb");
+  ASSERT_NE(f, nullptr);
+  ASSERT_EQ(fputs("no tape, this", f) >= 0, true);
+  ASSERT_EQ(fclose(f), 0);
+  EXPECT_NE(0, file_load(slot));
+  ASSERT_EQ(g_seen.size(), 3U);
+  EXPECT_FALSE(media_state(MediaSlot::Tape).present);
+}
+
+TEST_F(MediaNotesTest, ASnapshotIsNotAMedium) {
+  t_slot slot{};
+  slot.drive = DRIVE::SNAPSHOT;
+  slot.file = (dir_ / "absent.sna").string();
+  g_seen.clear();
+  EXPECT_NE(0, file_load(slot));
+  EXPECT_TRUE(g_seen.empty());
+}

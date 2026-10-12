@@ -1826,9 +1826,7 @@ void DevToolsUI::render_symbols() {
   if (ImGui::Button("Load .sym")) {
     if (sym_path_[0] != '\0' && !has_path_traversal(sym_path_)) {
       Symfile const loaded(sym_path_);
-      for (const auto& [addr, name] : loaded.Symbols()) {
-        g_symfile.addSymbol(addr, name);
-      }
+      g_symfile.addSymbols(loaded);
       symtable_dirty_ = true;
     }
   }
@@ -4031,9 +4029,10 @@ void DevToolsUI::render_assembler() {
       snprintf(buf, sizeof(buf), "OK: %d bytes at $%04X-$%04X", r.bytes_written,
                r.start_addr, r.end_addr);
       asm_status_ = buf;
-      for (auto& [name, addr] : r.symbols) {
-        g_symfile.addSymbol(addr, name);
-      }
+      std::vector<std::pair<word, std::string>> exported;
+      exported.reserve(r.symbols.size());
+      for (auto& [name, addr] : r.symbols) exported.emplace_back(addr, name);
+      g_symfile.addSymbols(exported);
     } else {
       char buf[64];
       snprintf(buf, sizeof(buf), "%d error(s)",
