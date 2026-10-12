@@ -1195,6 +1195,87 @@ def test_inject_launches_like_run():
         os.unlink(bin_path)
 
 
+def test_wait_bp_drops_a_hit_the_machine_has_run_past():
+    """`wait bp` must not report a stop the machine has since been run out of.
+
+    beads-1ew8: a breakpoint stops the machine and nobody collects the hit;
+    `run` resumes it; `wait bp` then answered OK with that old hit while the
+    machine was running. `bp add; run; wait bp; bp del` (the way tests stop a
+    machine at &0038) could so end on a running machine.
+
+    The program passes its breakpoint exactly once, so after the `run` there
+    is no second hit that could make a stale answer look true.
+    """
+    print("Running wait bp vs. a hit from before a run test...")
+
+    def paused(ipc) -> Optional[bool]:
+        ok, resp = ipc.send_command('status')
+        m = re.search(r'paused=([01])', resp)
+        return (m.group(1) == '1') if ok and m else None
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.pause()
+        # 8000 DI : 8001 NOP : 8002 NOP : 8003 JR $
+        if not ipc.write_mem(0x8000, 'F3000018FE'):
+            print("FAIL: could not write the program")
+            return False
+        ok, resp = ipc.send_command('reg set PC 0x8000')
+        if not ok:
+            print(f"FAIL: reg set PC: {resp}")
+            return False
+        if not ipc.bp_add(0x8002):
+            print("FAIL: Could not add breakpoint")
+            return False
+        ipc.run()
+        # See the stop without collecting the hit.
+        deadline = time.time() + 5.0
+        while paused(ipc) is not True:
+            if time.time() > deadline:
+                print("FAIL: the breakpoint at 8002 never stopped the machine")
+                return False
+            time.sleep(0.01)
+        ok, pc = ipc.get_reg('PC')
+        if not ok or pc != 0x8002:
+            print(f"FAIL: stopped at {pc:04X}, expected 8002")
+            return False
+
+        ipc.run()
+        time.sleep(0.1)
+        if paused(ipc) is not False:
+            print("FAIL: the machine is not running after run (the breakpoint "
+                  "fired twice: this program cannot test the latch)")
+            return False
+
+        ok, resp = ipc.wait_bp(timeout_ms=300)
+        still_running = paused(ipc) is False
+        if ok or '408' not in resp:
+            print(f"FAIL: wait bp reported a hit from before the run: {resp!r} "
+                  f"(machine running: {still_running})")
+            return False
+        if not still_running:
+            print("FAIL: the machine stopped during a wait bp that timed out")
+            return False
+
+        # A hit under the current run is still reported, and is a real stop.
+        ipc.pause()
+        ipc.send_command('reg set PC 0x8000')
+        ipc.run()
+        ok, resp = ipc.wait_bp(timeout_ms=5000)
+        if not ok or 'PC=8002' not in resp:
+            print(f"FAIL: wait bp missed a fresh hit: {resp!r}")
+            return False
+        if paused(ipc) is not True:
+            print("FAIL: wait bp answered OK on a running machine")
+            return False
+
+    print("PASS: wait bp drops a hit the machine has run past")
+    return True
+
+
 def test_breakpoint_pause_step_resume():
     """Breakpoint fires, emulator pauses, step in advances PC, resume works.
 
@@ -3785,6 +3866,7 @@ def main():
         test_breakpoint,
         # Thread-split correctness tests (work in both headless and threaded mode)
         test_breakpoint_pause_step_resume,
+        test_wait_bp_drops_a_hit_the_machine_has_run_past,
         test_snapshot_round_trip,
         test_rapid_pause_resume,
         test_reg_set_halt_is_refused,

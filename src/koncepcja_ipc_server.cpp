@@ -1115,7 +1115,8 @@ void init_command_registry() {
       "optional mask).\n"
       "  bp:  Waits for a committed breakpoint or watchpoint stop. Only "
       "reports hits from the CURRENT arming — a hit left uncollected from a "
-      "previous bp/wp/IO-bp change is dropped (timeout). Watchpoint hits "
+      "previous bp/wp/IO-bp change is dropped (timeout), and so is the hit "
+      "of a stop the machine has since been run out of. Watchpoint hits "
       "include WP_ADDR/WP_VAL/WP_OLD.\n"
       "  vbl: Resumes, runs until N vertical blanks (frames of emulation, "
       "not wall time) have passed, then pauses -- from a paused machine the "
@@ -6345,25 +6346,34 @@ void KoncepcjaIpcServer::notify_breakpoint_hit(uint16_t pc, bool watchpoint,
   breakpoint_pc.store(pc);
   breakpoint_watchpoint.store(watchpoint);
   breakpoint_hit_generation.store(arming_generation);
+  // Called from cpc_commit_breakpoint_stop(), under the pause mutex and after
+  // the stop was checked against this epoch: no run can slip in between.
+  breakpoint_hit_epoch.store(cpc_resume_epoch());
   breakpoint_hit.store(true);
+}
+
+bool KoncepcjaIpcServer::latched_hit_is_current() const {
+  return breakpoint_hit_generation.load() == z80_breakpoint_generation() &&
+         breakpoint_hit_epoch.load() == cpc_resume_epoch();
 }
 
 bool KoncepcjaIpcServer::breakpoint_hit_pending() const {
   // Agrees with consume_breakpoint_hit() on purpose: a hit stamped under a
   // previous arming is one the consumer would drop, so it must not count as
   // "a breakpoint is pending" and suppress `input key`'s resume.
-  return breakpoint_hit.load() &&
-         breakpoint_hit_generation.load() == z80_breakpoint_generation();
+  return breakpoint_hit.load() && latched_hit_is_current();
 }
 
 bool KoncepcjaIpcServer::consume_breakpoint_hit(uint16_t& pc,
                                                 bool& watchpoint) {
   if (!breakpoint_hit.load()) return false;
-  if (breakpoint_hit_generation.load() != z80_breakpoint_generation()) {
+  if (!latched_hit_is_current()) {
     // Fired under a breakpoint set that has since changed. Reporting it would
     // answer "did the breakpoint I just armed fire?" with someone else's hit,
     // which is how test_conditional_debug_matrix's carry step could pass while
-    // measuring nothing (beads-6561). Drop it and say no.
+    // measuring nothing (beads-6561). Or the machine was run out of the stop
+    // it made, and an OK would be for a machine that is running (beads-1ew8).
+    // Drop it and say no.
     breakpoint_hit.store(false);
     return false;
   }
