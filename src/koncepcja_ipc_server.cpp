@@ -1913,7 +1913,11 @@ std::string handle_command(const std::string& line) {
       else if (reg == "IM")
         target8 = &z80.IM;
       else if (reg == "HALT")
-        target8 = &z80.HALT;
+        // Whether the CPU is halted is where it is in an instruction, not a
+        // register: nothing carries an edit of it to the machine, so this
+        // used to answer OK and change nothing (beads-gpx7). KCPC's REGS_SET
+        // refuses it too (BAD_PAYLOAD).
+        return "ERR 400 reg-read-only\n";
       else if (reg == "IFF1")
         target8 = &z80.IFF1;
       else if (reg == "IFF2")

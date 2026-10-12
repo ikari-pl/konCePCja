@@ -114,7 +114,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 |---------|----------|
 | `regs` | `OK A=xx F=xx B=xx C=xx D=xx E=xx H=xx L=xx IX=xxxx IY=xxxx SP=xxxx PC=xxxx IM=x HALT=x` |
 | `reg get <name>` | `OK xxxx` — names: A B C D E H L F I R IM HALT IFF1 IFF2 AF BC DE HL IX IY SP PC AF' BC' DE' HL' |
-| `reg set <name> <value>` | `OK` |
+| `reg set <name> <value>` | `OK`. Every name `reg get` takes except `HALT`, which is `ERR 400 reg-read-only`: whether the CPU is halted is where it is in an instruction, not a register, and nothing in the core can change it without restarting the CPU. An unknown name is `ERR 400 bad-reg` |
 
 ### Hardware registers
 
