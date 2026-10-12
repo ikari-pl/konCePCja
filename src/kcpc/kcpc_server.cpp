@@ -66,6 +66,13 @@ std::string machine_refusal(Status status) {
       return "unknown memory space, or a bank where none applies";
     case Status::kNotPresent:
       return "the hardware is not fitted";
+    case Status::kNotFound:
+      return "no such breakpoint";
+    case Status::kLimitReached:
+      return "the probe has no comparator left: it holds " +
+             std::to_string(kMaxExecBreakpoints) + " execution, " +
+             std::to_string(kMaxWatchpoints) + " watch and " +
+             std::to_string(kMaxIoBreakpoints) + " I/O comparators";
     default:
       return "the core could not serve the request";
   }
@@ -417,6 +424,22 @@ class Server::Connection {
         if (!run_control()) break;
         if (controller_only(header)) handle_step(header, payload);
         return true;
+      case Opcode::kBpList:
+        if (!breakpoints()) break;
+        handle_bp_list(header);
+        return true;
+      case Opcode::kBpAdd:
+        if (!breakpoints()) break;
+        if (controller_only(header)) handle_bp_add(header, payload);
+        return true;
+      case Opcode::kBpDel:
+        if (!breakpoints()) break;
+        if (controller_only(header)) handle_bp_del(header, payload);
+        return true;
+      case Opcode::kBpClear:
+        if (!breakpoints()) break;
+        if (controller_only(header)) handle_bp_clear(header, payload);
+        return true;
       case Opcode::kControl:
         if (!machine_writes()) break;
         handle_control(header, payload);
@@ -523,29 +546,148 @@ class Server::Connection {
       return;
     }
     auto const mode = static_cast<StepMode>(request.mode);
-    if (mode != StepMode::kIn && mode != StepMode::kFrames) {
+    if (step_mode_walks(mode) && !breakpoints()) {
       respond_error(header, Status::kBadPayload,
                     "STEP over, out and to come with CAP_BREAKPOINTS");
       return;
     }
     if (request.count == 0) request.count = 1;
-    if (request.count >
-        (mode == StepMode::kIn ? kMaxStepInCount : kMaxStepFrames)) {
+    if (mode == StepMode::kIn && request.count > kMaxStepInCount) {
       respond_error(header, Status::kOutOfRange,
-                    mode == StepMode::kIn
-                        ? "at most " + std::to_string(kMaxStepInCount) +
-                              " instructions in one STEP"
-                        : "too many frames");
+                    "at most " + std::to_string(kMaxStepInCount) +
+                        " instructions in one STEP in; step over, or run to "
+                        "an address, to go further");
       return;
     }
+    if (mode == StepMode::kFrames && request.count > kMaxStepFrames) {
+      respond_error(header, Status::kOutOfRange, "too many frames");
+      return;
+    }
+    if (step_mode_walks(mode) && request.timeout_ms == 0) {
+      request.timeout_ms = kDefaultStepTimeoutMs;
+    }
     Status const status = config_.step(Cause{client_id_, header.id}, request);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    status == Status::kLimitReached
+                        ? "a step that runs to an address needs an execution "
+                          "comparator, and breakpoints hold all " +
+                              std::to_string(kMaxExecBreakpoints)
+                        : machine_refusal(status));
+      return;
+    }
+    Writer w;
+    write_status(w, Status::kOk);
+    respond(header, w.take());
+  }
+
+  // CAP_BREAKPOINTS: the group is there whole or not at all.
+  bool breakpoints() const {
+    return config_.bp_list && config_.bp_add && config_.bp_del &&
+           config_.bp_clear;
+  }
+
+  void respond_generation(const FrameHeader& header, std::uint64_t generation) {
+    Writer w;
+    write_status(w, Status::kOk);
+    w.u64(generation);
+    respond(header, w.take());
+  }
+
+  void handle_bp_list(const FrameHeader& header) {
+    std::uint64_t generation = 0;
+    std::vector<BpEntry> entries;
+    Status const status = config_.bp_list(generation, entries);
     if (status != Status::kOk) {
       respond_error(header, status, machine_refusal(status));
       return;
     }
     Writer w;
     write_status(w, Status::kOk);
+    w.u64(generation);
+    w.u32(static_cast<std::uint32_t>(entries.size()));
+    for (const BpEntry& entry : entries) write_bp_entry(w, entry);
+    if (w.size() > max_frame_) {
+      respond_error(header, Status::kTooLarge,
+                    "the list would exceed this connection's frame limit of " +
+                        std::to_string(max_frame_) + " bytes");
+      return;
+    }
     respond(header, w.take());
+  }
+
+  void handle_bp_add(const FrameHeader& header,
+                     const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    BpEntry entry;
+    if (!read_bp_entry(r, entry)) {
+      respond_error(header, Status::kBadPayload, "BP_ADD payload too short");
+      return;
+    }
+    if (const char* const refusal = bp_entry_refusal(entry)) {
+      respond_error(header, Status::kBadPayload, refusal);
+      return;
+    }
+    if (static_cast<BpKind>(entry.kind) == BpKind::kWatch &&
+        !bp_watch_range_ok(entry)) {
+      respond_error(header, Status::kOutOfRange,
+                    "the watched range passes the end of the address space");
+      return;
+    }
+    std::uint64_t generation = 0;
+    std::string message;
+    Status const status = config_.bp_add(Cause{client_id_, header.id}, entry,
+                                         generation, message);
+    if (status != Status::kOk) {
+      respond_error(header, status,
+                    message.empty() ? machine_refusal(status) : message);
+      return;
+    }
+    respond_generation(header, generation);
+  }
+
+  void handle_bp_del(const FrameHeader& header,
+                     const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    BpDelRequest request;
+    if (!read_bp_del_request(r, request)) {
+      respond_error(header, Status::kBadPayload, "BP_DEL payload too short");
+      return;
+    }
+    if (request.kind > static_cast<std::uint8_t>(BpKind::kIo)) {
+      respond_error(header, Status::kBadPayload, "unknown breakpoint kind");
+      return;
+    }
+    std::uint64_t generation = 0;
+    Status const status =
+        config_.bp_del(Cause{client_id_, header.id}, request, generation);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    respond_generation(header, generation);
+  }
+
+  void handle_bp_clear(const FrameHeader& header,
+                       const std::vector<std::uint8_t>& payload) {
+    Reader r(payload);
+    std::uint8_t kind = 0;
+    if (!r.u8(kind)) {
+      respond_error(header, Status::kBadPayload, "BP_CLEAR payload too short");
+      return;
+    }
+    if (kind != kBpKindAll && kind > static_cast<std::uint8_t>(BpKind::kIo)) {
+      respond_error(header, Status::kBadPayload, "unknown breakpoint kind");
+      return;
+    }
+    std::uint64_t generation = 0;
+    Status const status =
+        config_.bp_clear(Cause{client_id_, header.id}, kind, generation);
+    if (status != Status::kOk) {
+      respond_error(header, status, machine_refusal(status));
+      return;
+    }
+    respond_generation(header, generation);
   }
 
   // Tells every client who has control now. Sent after the response to the
@@ -793,6 +935,7 @@ class Server::Connection {
     if (machine_reads()) reply.caps |= kCapMachineRead | kCapMemRom;
     if (machine_writes()) reply.caps |= kCapMachineWrite;
     if (run_control()) reply.caps |= kCapRunControl;
+    if (breakpoints()) reply.caps |= kCapBreakpoints;
     reply.max_frame = request.max_frame == 0
                           ? kMaxServerFrame
                           : std::min(request.max_frame, kMaxServerFrame);

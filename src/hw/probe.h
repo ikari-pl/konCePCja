@@ -36,6 +36,14 @@ typedef struct ProbeHit {
   uint64_t cycle; /* master cycles since probe init when the latch closed */
 } ProbeHit;
 
+/* How many comparators of each kind the probe has. An address (a range, a
+ * port and mask) beyond these is not armed: probe_add_* returns -1. */
+enum : std::uint8_t {
+  PROBE_MAX_EXEC = 32,
+  PROBE_MAX_WATCH = 16,
+  PROBE_MAX_IO = 8,
+};
+
 size_t probe_state_size(void);
 Device probe_init(void* storage);
 

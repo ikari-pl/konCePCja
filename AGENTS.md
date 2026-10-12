@@ -399,10 +399,14 @@ answers `HELLO`, `PING`, `MACHINE_INFO`, the machine reads `REGS_GET`,
 `MEM_INFO` and `MEM_READ` (64 KiB of memory is one reply), and, for the one
 client that holds control (`CONTROL`; a forced request takes it from another
 client), the writes `REGS_SET` and `MEM_WRITE` and run control: `PAUSE`,
-`RUN`, `RESET`, `STEP` (in, frames), with `RUN_STATE` for anyone. A client
+`RUN`, `RESET`, `STEP` (in, over, out, to, frames), with `RUN_STATE` for
+anyone, and the breakpoints `BP_ADD`, `BP_DEL`, `BP_CLEAR` (`BP_LIST` for
+anyone): execution breakpoints, watchpoints and I/O breakpoints, on the
+lists the text IPC and DevTools edit. A client
 that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
-`EVT_RESET`, `EVT_FRAME`, ...), whoever caused them: a pause from the text
-IPC or the GUI is pushed too. The protocol is at
+`EVT_RESET`, `EVT_FRAME`, `EVT_BREAKPOINTS_CHANGED`, ...), whoever caused
+them: a pause or a `bp add` from the text IPC or the GUI is pushed too, and
+a breakpoint, watchpoint or I/O hit says what was hit. The protocol is at
 major version 0: client and server must come from the same checkout.
 
 ```ini
@@ -454,6 +458,32 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   when the stop or run should name who asked.
 - To run the machine on somebody's request use `cpc_run()`, not
   `cpc_resume()`: the latter is dropped while any pause lease is held.
+- A step that runs and stops the machine on its way (over a call, out of a
+  routine, to an address) is a **walk**: `CpcWalk` in `src/koncepcja.h`,
+  opened by `z80_run_until_ephemeral()`, `z80_step_out_until()` and
+  `z80_step_over()` themselves, so the text IPC's and the DevTools' walks
+  get it too. It is announced as one step (one `EVT_RESUMED` at most, one
+  `EVT_STOPPED`). **A walk waits on `cpc_announced_stopped()`, never on
+  `g_emu_paused`**: a pause lease sets the latter for the length of another
+  actor's memory write, and a walk that took that for a stop ended half way
+  (beads-pja3). It runs the machine with `cpc_walk_run()` and looks at
+  `cpc_walk_interrupted()` before every instruction it steps: somebody's
+  pause must end it, and on a machine the walk has stopped already a pause
+  changes nothing else it could notice.
+- The KCPC walker (`walk()` in `src/kcpc/kcpc_host.cpp`) is the one thread
+  that runs this port's walks. `kcpc_host_step()` opens the walk
+  (`cpc_walk_begin()`) on the reader thread and the walker closes it.
+- Breakpoints for this port go through `z80_bp_put()` / `z80_bp_remove()` /
+  `z80_bp_clear()` / `z80_bp_list()` (`src/z80_view.h`): one entry per kind
+  and address, refused with `LimitReached` when the probe would not arm it
+  (32 execution, 16 watch, 8 I/O comparators, `PROBE_MAX_*`). Every mutator
+  of the lists ends in `bump_bp_generation()`, which calls the one hook
+  (`z80_set_breakpoints_changed_hook()`) under the pause mutex: a new
+  mutator must bump, and the hook must only post.
+- `z80_step_instruction()` acknowledges the probe after the step. The probe
+  is ticked along with the board, so a stepped fetch at an armed address
+  latches a hit nobody collects; left there, the next frame reported it as a
+  breakpoint stop at an address the CPU had left.
 - `KONCPC_KCPC_CONTROLLER_TIMEOUT_MS` in the environment lowers the 30 s a
   controller may stay silent, and `KONCPC_KCPC_EVENT_QUEUE_BYTES` the 4 MiB
   of queue beyond which a client's events are dropped. They exist for the

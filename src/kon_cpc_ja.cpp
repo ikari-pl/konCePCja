@@ -1768,7 +1768,10 @@ void cpc_set_idle_timeout_ms(int timeout_ms) {
 
 namespace {
 std::mutex g_pause_mutex;
-uint64_t g_resume_epoch = 0;
+// Written under g_pause_mutex. Atomic for cpc_resume_epoch(), which the step
+// walks poll beside a running machine and which must not wait for the mutex
+// the frame runner holds for the whole of every frame.
+std::atomic<uint64_t> g_resume_epoch{0};
 unsigned g_pause_lease_count = 0;
 // Whether the machine was paused before the first of the leases now held was
 // taken. Leases overlap (two KCPC clients, a client and the text IPC, IPC and
@@ -1782,7 +1785,14 @@ unsigned g_pause_lease_count = 0;
 // it: the machine is then meant to stay stopped, and
 // CpcPauseLease::restore_run_state() must not run it again.
 bool g_lease_chain_was_paused = false;
-uint64_t cpc_resume_unlocked();
+// Somebody asked for the machine to run while the leases now held kept it
+// (cpc_run(), release_running()). The holder that lets go last then starts a
+// new run. Without it that holder only puts back a run that was in progress
+// before the leases, which is not a new one: the resume epoch stays, so a
+// step walk that started the run does not take another actor's memory write
+// for somebody having stopped and restarted the machine (beads-pja3).
+bool g_lease_chain_run_requested = false;
+uint64_t cpc_resume_unlocked(bool new_epoch = true);
 
 // The announced run state (koncepcja.h). Everything here is written under
 // g_pause_mutex; the atomics are there for the lock-free readers.
@@ -1791,6 +1801,10 @@ std::atomic<bool> g_announced_stopped{false};
 // it when it parks (cpc_runner_parked()).
 std::atomic<bool> g_stop_unannounced{false};
 std::atomic<bool> g_step_active{false};
+// What the observer was last told. The same as g_announced_stopped except
+// inside a walk (CpcWalk in koncepcja.h), whose stops on the way settle the
+// state without being announced.
+bool g_told_stopped = false;
 CpcRunStateObserver g_run_state_observer = nullptr;
 // What the latest stop request and the latest run request said about
 // themselves. The latest one stands, as it does for the lease chain.
@@ -1799,6 +1813,16 @@ CpcRunCause g_run_note;
 // The step in progress: who is told when it ends.
 uint32_t g_step_client = 0;
 uint32_t g_step_request = 0;
+
+// Walks (koncepcja.h). How many are open, what stopped the machine inside
+// the outermost one (a stop that was not the walk's own doing), and the
+// verdict the walk gave last.
+unsigned g_walk_depth = 0;
+std::atomic<bool> g_walk_interrupted{false};
+CpcRunCause g_walk_stop;
+bool g_walk_stop_valid = false;
+CpcRunCause g_walk_verdict;
+bool g_walk_verdict_other = true;
 
 void cpc_reconcile_run_state_locked();
 }  // namespace
@@ -1827,14 +1851,32 @@ bool cpc_wait_until_idle(int timeout_ms) {
 namespace {
 // A stop somebody asked for, as opposed to the pause a lease applies for the
 // length of its own operation.
-void cpc_stop_requested_locked(const CpcRunCause& cause) {
+//
+// `by_walk`: the walk in progress stops the machine itself (its deadline).
+// Any other stop inside a walk is remembered as what ended it, unless it is
+// part of the step (the lease a step request lets go of before its walk).
+void cpc_stop_requested_locked(const CpcRunCause& cause, bool by_walk = false) {
   if (g_pause_lease_count > 0) g_lease_chain_was_paused = true;
+  g_lease_chain_run_requested = false;
   g_stop_note = cause;
   g_run_note = {};
   if (cause.step && !g_step_active.load(std::memory_order_relaxed)) {
     g_step_client = cause.client;
     g_step_request = cause.request;
     g_step_active.store(true, std::memory_order_release);
+  }
+  if (g_walk_depth > 0 && !by_walk && !cause.step) {
+    g_walk_stop = cause;
+    g_walk_stop_valid = true;
+  }
+}
+
+// Somebody's pause: the walk in progress, if any, is over. The walks poll
+// this because the machine may be stopped already (a walk single-steps a
+// stopped machine), and then no stop follows that they could wait for.
+void cpc_interrupt_walk_locked(const CpcRunCause& cause) {
+  if (g_walk_depth > 0 && !cause.step) {
+    g_walk_interrupted.store(true, std::memory_order_release);
   }
 }
 
@@ -1862,8 +1904,10 @@ void cpc_reconcile_run_state_locked() {
   if (!CPC.paused) {
     g_stop_unannounced.store(false, std::memory_order_release);
     g_stop_note = {};
-    if (g_announced_stopped.load(std::memory_order_relaxed)) {
-      g_announced_stopped.store(false, std::memory_order_release);
+    g_walk_stop_valid = false;
+    g_announced_stopped.store(false, std::memory_order_release);
+    if (g_told_stopped) {
+      g_told_stopped = false;
       CpcRunEvent event;
       event.kind = CpcRunEventKind::Resumed;
       event.cause_client = g_run_note.client;
@@ -1874,7 +1918,7 @@ void cpc_reconcile_run_state_locked() {
     return;
   }
   bool const step = g_step_active.load(std::memory_order_relaxed);
-  if (g_announced_stopped.load(std::memory_order_relaxed) && !step) {
+  if (g_told_stopped && !step) {
     g_stop_note = {};
     return;
   }
@@ -1888,6 +1932,10 @@ void cpc_reconcile_run_state_locked() {
   }
   g_stop_unannounced.store(false, std::memory_order_release);
   g_announced_stopped.store(true, std::memory_order_release);
+  // A stop on a walk's way: the state is settled, which is what the walk
+  // waits for, and the observer hears of the step when the walk closes.
+  if (g_walk_depth > 0) return;
+  g_told_stopped = true;
   CpcRunEvent event;
   event.kind = CpcRunEventKind::Stopped;
   event.reason = g_stop_note.reason;
@@ -1895,6 +1943,10 @@ void cpc_reconcile_run_state_locked() {
   event.cause_request = g_stop_note.request;
   event.pc =
       g_stop_note.has_pc ? g_stop_note.pc : subcycle_bridge_shown_regs().pc;
+  event.addr = g_stop_note.addr;
+  event.access = g_stop_note.access;
+  event.value = g_stop_note.value;
+  event.old_value = g_stop_note.old_value;
   if (step) {
     event.step_client = g_step_client;
     // A step that ran into a breakpoint, or simply finished: the stop is
@@ -1933,7 +1985,10 @@ CpcStopCoordinationGuard::~CpcStopCoordinationGuard() {
 void CpcPauseLease::acquire(CpcPauseLeaseMode mode) {
   {
     std::scoped_lock const lock(g_pause_mutex);
-    if (g_pause_lease_count == 0) g_lease_chain_was_paused = CPC.paused;
+    if (g_pause_lease_count == 0) {
+      g_lease_chain_was_paused = CPC.paused;
+      g_lease_chain_run_requested = false;
+    }
     was_paused_ = g_lease_chain_was_paused;
     ++g_pause_lease_count;
     active_ = true;
@@ -2000,7 +2055,8 @@ void CpcPauseLease::restore_run_state() {
   // already running and leave g_emu_paused set.
   CPC.paused = true;
   if (!g_lease_chain_was_paused && g_pause_lease_count == 0) {
-    cpc_resume_unlocked();
+    cpc_resume_unlocked(/*new_epoch=*/g_lease_chain_run_requested);
+    g_lease_chain_run_requested = false;
   }
   cpc_reconcile_run_state_locked();
 }
@@ -2011,6 +2067,7 @@ void CpcPauseLease::release_stopped(const CpcRunCause& cause) {
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
   cpc_stop_requested_locked(cause);
+  cpc_interrupt_walk_locked(cause);
   cpc_pause_locked();
   cpc_reconcile_run_state_locked();
 }
@@ -2024,6 +2081,7 @@ void CpcPauseLease::release_running(const CpcRunCause& cause) {
   if (g_pause_lease_count > 0) {
     // Not ours to run yet. The last holder's restore_run_state() will.
     g_lease_chain_was_paused = false;
+    g_lease_chain_run_requested = true;
     return;
   }
   CPC.paused = true;  // as in restore_run_state()
@@ -2069,15 +2127,83 @@ bool cpc_read_while_stopped(const std::function<void()>& read) {
 }
 
 uint64_t cpc_resume_epoch() {
-  std::scoped_lock const lock(g_pause_mutex);
-  return g_resume_epoch;
+  // Lock-free on purpose: see g_resume_epoch.
+  return g_resume_epoch.load(std::memory_order_acquire);
 }
 
 void cpc_pause(const CpcRunCause& cause) {
   std::scoped_lock const lock(g_pause_mutex);
   cpc_stop_requested_locked(cause);
+  cpc_interrupt_walk_locked(cause);
   cpc_pause_locked();
   cpc_reconcile_run_state_locked();
+}
+
+void cpc_walk_begin(const CpcRunCause& step) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_walk_depth++ > 0) return;
+  g_walk_interrupted.store(false, std::memory_order_release);
+  g_walk_stop_valid = false;
+  g_walk_verdict = {};
+  g_walk_verdict_other = true;
+  // A walk is a step. One that opens while a step is in progress (a frame
+  // step somebody armed) joins it: that step's owner is told how it ends.
+  if (!g_step_active.load(std::memory_order_relaxed)) {
+    g_step_client = step.client;
+    g_step_request = step.request;
+    g_step_active.store(true, std::memory_order_release);
+  }
+}
+
+void cpc_walk_end() {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_walk_depth == 0 || --g_walk_depth > 0) return;
+  g_walk_interrupted.store(false, std::memory_order_release);
+  // The stop the step ends with. With the machine running (somebody else
+  // ran it under the walk) there is none yet: the step stays in progress and
+  // whatever stops the machine next ends it, as it does for a frame step.
+  if (CPC.paused) {
+    if (!g_walk_verdict_other) {
+      g_stop_note = g_walk_verdict;
+    } else if (g_walk_stop_valid) {
+      g_stop_note = g_walk_stop;
+    } else {
+      g_stop_note = {};
+    }
+  }
+  g_walk_stop_valid = false;
+  cpc_reconcile_run_state_locked();
+}
+
+void cpc_walk_verdict(const CpcRunCause& outcome) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_walk_depth == 0) return;
+  g_walk_verdict = outcome;
+  g_walk_verdict_other = false;
+  // Whatever stopped the machine before this was the walk's own doing.
+  g_walk_stop_valid = false;
+}
+
+void cpc_walk_verdict(CpcStopReason reason) {
+  CpcRunCause outcome;
+  outcome.reason = reason;
+  cpc_walk_verdict(outcome);
+}
+
+void cpc_walk_stopped_by_other() {
+  std::scoped_lock const lock(g_pause_mutex);
+  g_walk_verdict_other = true;
+}
+
+bool cpc_walk_interrupted() {
+  return g_walk_interrupted.load(std::memory_order_acquire);
+}
+
+void cpc_walk_interrupt() {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_walk_depth > 0) {
+    g_walk_interrupted.store(true, std::memory_order_release);
+  }
 }
 
 void cpc_set_run_state_observer(CpcRunStateObserver observer) {
@@ -2107,7 +2233,8 @@ void cpc_runner_parked() {
 }
 
 namespace {
-uint64_t cpc_resume_unlocked() {
+// `new_epoch` false: a pause lease puts back the run it interrupted.
+uint64_t cpc_resume_unlocked(bool new_epoch) {
   // A resume issued while the machine is already running is not a real
   // pause->run transition -- bumping the epoch here would invalidate a
   // breakpoint stop that was legitimately classified moments ago (between
@@ -2117,7 +2244,7 @@ uint64_t cpc_resume_unlocked() {
   // cpc_resume_epoch() for that; this only guards the two real transition
   // side effects (lastFrameStart reset, audio_resume) from re-firing too.
   if (!CPC.paused) return g_resume_epoch;
-  ++g_resume_epoch;
+  if (new_epoch) ++g_resume_epoch;
   CPC.paused = false;
   g_emu_paused.store(false, std::memory_order_release);
   lastFrameStart =
@@ -2153,6 +2280,7 @@ bool cpc_run(const CpcRunCause& cause) {
   if (g_pause_lease_count > 0) {
     // As release_running(): the last holder's restore_run_state() runs it.
     g_lease_chain_was_paused = false;
+    g_lease_chain_run_requested = true;
     return false;
   }
   cpc_resume_unlocked();
@@ -2160,32 +2288,47 @@ bool cpc_run(const CpcRunCause& cause) {
   return true;
 }
 
+CpcWalkRun cpc_walk_run(uint64_t& epoch) {
+  std::scoped_lock const lock(g_pause_mutex);
+  if (g_walk_interrupted.load(std::memory_order_relaxed)) {
+    return CpcWalkRun::Interrupted;
+  }
+  // Not recorded for the lease chain, as cpc_run() would: the walk needs the
+  // epoch its run belongs to, and a run the last holder applies later has
+  // one the walk never sees.
+  if (g_pause_lease_count > 0) return CpcWalkRun::LeaseHeld;
+  CpcRunCause run;
+  run.client = g_step_client;
+  run.request = g_step_request;
+  g_run_note = run;
+  g_stop_note = {};
+  epoch = cpc_resume_unlocked();
+  cpc_reconcile_run_state_locked();
+  return CpcWalkRun::Running;
+}
+
 bool cpc_pause_if_epoch(uint64_t expected_epoch) {
   std::scoped_lock const lock(g_pause_mutex);
   if (expected_epoch != g_resume_epoch) return false;
 
-  cpc_stop_requested_locked({});
+  cpc_stop_requested_locked({}, /*by_walk=*/true);
   cpc_pause_locked();
   cpc_reconcile_run_state_locked();
   return true;
 }
 
 bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
-                                word pc, bool watchpoint) {
+                                const CpcRunCause& hit, word hook_pc,
+                                bool watchpoint) {
   std::scoped_lock const lock(g_pause_mutex);
   if (hit_epoch != g_resume_epoch ||
       arming_generation != z80_breakpoint_generation())
     return false;
 
-  CpcRunCause cause;
-  cause.reason =
-      watchpoint ? CpcStopReason::Watchpoint : CpcStopReason::Breakpoint;
-  cause.has_pc = true;
-  cause.pc = pc;
-  cpc_stop_requested_locked(cause);
+  cpc_stop_requested_locked(hit);
   cpc_pause_locked();
   cpc_reconcile_run_state_locked();
-  z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
+  z80_call_breakpoint_hit_hook(hook_pc, watchpoint, arming_generation);
   return true;
 }
 

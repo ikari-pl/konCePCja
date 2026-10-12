@@ -177,6 +177,12 @@ TEST(KcpcEvents, PayloadSizesMatchTheDocument) {
   EXPECT_EQ(kcpc::encode_event(e).size(), 4U);
   e.opcode = Opcode::kEvtShutdown;
   EXPECT_TRUE(kcpc::encode_event(e).empty());
+  e.opcode = Opcode::kEvtBreakpointsChanged;
+  e.generation = 0x0807060504030201ULL;
+  std::vector<std::uint8_t> const changed = kcpc::encode_event(e);
+  ASSERT_EQ(changed.size(), 8U);
+  EXPECT_EQ(changed.front(), 0x01) << "the generation, little-endian";
+  EXPECT_EQ(changed.back(), 0x08);
 }
 
 TEST(KcpcEvents, OnlyTheThreeMasklessEventsHaveNoClass) {

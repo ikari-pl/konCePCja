@@ -142,6 +142,14 @@ struct Frame {
     r.u16(s);
     return static_cast<Status>(s);
   }
+  // The words of a refusal: the `str` after the status header.
+  std::string message() const {
+    kcpc::Reader r(payload);
+    std::string text;
+    r.skip(4);
+    r.str(text);
+    return text;
+  }
 };
 
 // A blocking-with-deadline client on the same socket shim the server uses.
@@ -1187,8 +1195,10 @@ TEST_F(KcpcControlTest, HelloGrantsControlToTheFirstWhoAsks) {
   kcpc::HelloReply observer_hello;
   auto observer = join(kcpc::Role::kObserver, observer_hello);
   EXPECT_EQ(observer_hello.role, kcpc::Role::kObserver);
-  EXPECT_EQ(observer_hello.caps, kcpc::kServerCaps & ~kcpc::kCapRunControl)
-      << "everything but run control, which this machine does not offer";
+  EXPECT_EQ(observer_hello.caps,
+            kcpc::kServerCaps & ~kcpc::kCapRunControl & ~kcpc::kCapBreakpoints)
+      << "everything but run control and breakpoints, which this machine "
+         "does not offer";
   EXPECT_NE(observer_hello.caps & kcpc::kCapMachineWrite, 0U);
   EXPECT_EQ(server_.controller(), 0U) << "nobody asked for control yet";
 
@@ -1705,7 +1715,7 @@ TEST_F(KcpcEventsTest, HelloAnnouncesRunControlAndEvents) {
   start_with_run_control();
   kcpc::HelloReply hello;
   auto client = join(kcpc::Role::kObserver, hello);
-  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps & ~kcpc::kCapBreakpoints);
   EXPECT_NE(hello.caps & kcpc::kCapRunControl, 0U);
   EXPECT_NE(hello.caps & kcpc::kCapEvents, 0U);
 }
@@ -2169,4 +2179,367 @@ TEST_F(KcpcEventsTest, StopSendsShutdownThenTheError) {
   expect_event(*later, Opcode::kEvtStopped, frame);
   EXPECT_EQ(event_frame(frame), 3U);
   EXPECT_EQ(frame.header.id, 1U);
+}
+
+// -- slice 5: breakpoints and the steps that walk ---------------------------
+
+namespace {
+
+// The breakpoint lists of a machine that records what the server handed it.
+// An edit posts EVT_BREAKPOINTS_CHANGED naming the request before it
+// returns, as the real lists do from under their lock.
+struct FakeBreakpoints {
+  void attach(kcpc::ServerConfig& c, kcpc::Server& server) {
+    c.bp_list = [this](std::uint64_t& out, std::vector<kcpc::BpEntry>& list) {
+      lists.fetch_add(1);
+      out = generation;
+      list = entries;
+      return Status::kOk;
+    };
+    c.bp_add = [this, &server](const kcpc::Cause& cause,
+                               const kcpc::BpEntry& entry, std::uint64_t& out,
+                               std::string& message) {
+      adds.fetch_add(1);
+      last_cause = cause;
+      last_entry = entry;
+      if (refuse != Status::kOk) {
+        message = refusal;
+        return refuse.load();
+      }
+      entries.push_back(entry);
+      changed(server, cause, out);
+      return Status::kOk;
+    };
+    c.bp_del = [this, &server](const kcpc::Cause& cause,
+                               const kcpc::BpDelRequest& del,
+                               std::uint64_t& out) {
+      dels.fetch_add(1);
+      last_cause = cause;
+      last_del = del;
+      if (refuse != Status::kOk) return refuse.load();
+      changed(server, cause, out);
+      return Status::kOk;
+    };
+    c.bp_clear = [this, &server](const kcpc::Cause& cause, std::uint8_t kind,
+                                 std::uint64_t& out) {
+      clears.fetch_add(1);
+      last_cause = cause;
+      last_clear_kind = kind;
+      entries.clear();
+      changed(server, cause, out);
+      return Status::kOk;
+    };
+  }
+
+  void changed(kcpc::Server& server, const kcpc::Cause& cause,
+               std::uint64_t& out) {
+    out = ++generation;
+    kcpc::Event e;
+    e.opcode = Opcode::kEvtBreakpointsChanged;
+    e.generation = out;
+    e.cause_client = cause.client;
+    e.cause_request = cause.request;
+    server.post(e);
+  }
+
+  std::atomic<Status> refuse{Status::kOk};
+  std::string refusal;
+  std::atomic<int> lists{0};
+  std::atomic<int> adds{0};
+  std::atomic<int> dels{0};
+  std::atomic<int> clears{0};
+  // Written on the controller's reader thread, read after its reply.
+  std::uint64_t generation = 40;
+  std::vector<kcpc::BpEntry> entries;
+  kcpc::Cause last_cause;
+  kcpc::BpEntry last_entry;
+  kcpc::BpDelRequest last_del;
+  std::uint8_t last_clear_kind = 0;
+};
+
+std::vector<std::uint8_t> bp_payload(const kcpc::BpEntry& entry) {
+  kcpc::Writer w;
+  kcpc::write_bp_entry(w, entry);
+  return w.take();
+}
+
+kcpc::BpEntry exec_bp(std::uint16_t addr) {
+  kcpc::BpEntry entry;
+  entry.addr = addr;
+  return entry;
+}
+
+kcpc::BpEntry watch_bp(std::uint16_t addr, std::uint16_t len,
+                       std::uint8_t access) {
+  kcpc::BpEntry entry;
+  entry.kind = static_cast<std::uint8_t>(kcpc::BpKind::kWatch);
+  entry.addr = addr;
+  entry.len_or_mask = len;
+  entry.access = access;
+  return entry;
+}
+
+std::vector<std::uint8_t> bp_del_payload(std::uint8_t kind, std::uint16_t addr,
+                                         std::uint16_t mask = 0) {
+  kcpc::Writer w;
+  kcpc::BpDelRequest del;
+  del.kind = kind;
+  del.addr = addr;
+  del.len_or_mask = mask;
+  kcpc::write_bp_del_request(w, del);
+  return w.take();
+}
+
+// The u64 a successful edit replies with.
+std::uint64_t reply_generation(const Frame& frame) {
+  kcpc::Reader r(frame.payload);
+  std::uint64_t generation = 0;
+  r.skip(4);
+  r.u64(generation);
+  return generation;
+}
+
+class KcpcBreakpointsTest : public KcpcEventsTest {
+ protected:
+  void start_with_breakpoints() {
+    kcpc::ServerConfig config = test_config();
+    reads_.attach(config);
+    writes_.attach(config);
+    run_.attach(config, server_);
+    bps_.attach(config, server_);
+    start(config);
+  }
+
+  FakeBreakpoints bps_;
+};
+
+}  // namespace
+
+TEST_F(KcpcBreakpointsTest, HelloAnnouncesBreakpoints) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto client = join(kcpc::Role::kObserver, hello);
+  EXPECT_EQ(hello.caps, kcpc::kServerCaps);
+  EXPECT_NE(hello.caps & kcpc::kCapBreakpoints, 0U);
+}
+
+TEST_F(KcpcBreakpointsTest, WithoutTheGroupItsOpcodesDoNotExist) {
+  start_with_run_control();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  EXPECT_EQ(hello.caps & kcpc::kCapBreakpoints, 0U);
+  Frame frame;
+  std::uint32_t id = 2;
+  for (Opcode const opcode :
+       {Opcode::kBpList, Opcode::kBpAdd, Opcode::kBpDel, Opcode::kBpClear}) {
+    exchange(*controller, opcode, id++, bp_payload(exec_bp(0x4000)), frame);
+    EXPECT_EQ(frame.status(), Status::kUnknownOpcode);
+  }
+}
+
+TEST_F(KcpcBreakpointsTest, AnyoneListsAndOnlyTheControllerEdits) {
+  start_with_breakpoints();
+  kcpc::HelloReply controller_hello;
+  kcpc::HelloReply observer_hello;
+  auto controller = join(kcpc::Role::kController, controller_hello);
+  auto observer = join(kcpc::Role::kObserver, observer_hello);
+
+  Frame frame;
+  std::uint32_t id = 2;
+  for (Opcode const opcode :
+       {Opcode::kBpAdd, Opcode::kBpDel, Opcode::kBpClear}) {
+    // Refused before the payload is looked at: these are all malformed.
+    exchange(*observer, opcode, id++, {}, frame);
+    EXPECT_EQ(frame.status(), Status::kNotController);
+  }
+  EXPECT_EQ(bps_.adds + bps_.dels + bps_.clears, 0);
+
+  kcpc::BpEntry conditional = exec_bp(0xC000);
+  conditional.pass_count = 3;
+  conditional.hit_count = 2;
+  conditional.condition = "a = 5";
+  bps_.entries = {conditional, watch_bp(0x9000, 16, kcpc::kBpAccessBoth)};
+  exchange(*observer, Opcode::kBpList, id++, {}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  kcpc::Reader r(frame.payload);
+  r.skip(4);
+  std::uint64_t generation = 0;
+  std::uint32_t count = 0;
+  r.u64(generation);
+  ASSERT_TRUE(r.u32(count));
+  EXPECT_EQ(generation, 40U);
+  ASSERT_EQ(count, 2U);
+  kcpc::BpEntry first;
+  kcpc::BpEntry second;
+  ASSERT_TRUE(kcpc::read_bp_entry(r, first));
+  ASSERT_TRUE(kcpc::read_bp_entry(r, second));
+  EXPECT_EQ(r.remaining(), 0U);
+  EXPECT_EQ(first.addr, 0xC000U);
+  EXPECT_EQ(first.pass_count, 3U);
+  EXPECT_EQ(first.hit_count, 2U);
+  EXPECT_EQ(first.condition, "a = 5");
+  EXPECT_EQ(second.kind, static_cast<std::uint8_t>(kcpc::BpKind::kWatch));
+  EXPECT_EQ(second.len_or_mask, 16U);
+  EXPECT_EQ(second.access, kcpc::kBpAccessBoth);
+}
+
+TEST_F(KcpcBreakpointsTest, AnEntryIsCheckedBeforeTheMachineIsAsked) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  std::uint32_t id = 2;
+
+  std::vector<std::uint8_t> cut = bp_payload(exec_bp(0x4000));
+  cut.pop_back();
+  exchange(*controller, Opcode::kBpAdd, id++, cut, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "too short";
+
+  kcpc::BpEntry bad_kind = exec_bp(0x4000);
+  bad_kind.kind = 3;
+  kcpc::BpEntry exec_with_access = exec_bp(0x4000);
+  exec_with_access.access = kcpc::kBpAccessRead;
+  kcpc::BpEntry huge_pass = exec_bp(0x4000);
+  huge_pass.pass_count = kcpc::kMaxBpPassCount + 1;
+  for (const kcpc::BpEntry& entry :
+       {bad_kind, exec_with_access, huge_pass, watch_bp(0x4000, 1, 0),
+        watch_bp(0x4000, 1, 4), watch_bp(0x4000, 0, kcpc::kBpAccessWrite)}) {
+    exchange(*controller, Opcode::kBpAdd, id++, bp_payload(entry), frame);
+    EXPECT_EQ(frame.status(), Status::kBadPayload)
+        << "kind " << int{entry.kind} << " access " << int{entry.access};
+  }
+  exchange(*controller, Opcode::kBpAdd, id++,
+           bp_payload(watch_bp(0xFFFF, 2, kcpc::kBpAccessWrite)), frame);
+  EXPECT_EQ(frame.status(), Status::kOutOfRange);
+  exchange(*controller, Opcode::kBpDel, id++, bp_del_payload(3, 0x4000), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  exchange(*controller, Opcode::kBpDel, id++, {0, 0, 0}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "too short";
+  exchange(*controller, Opcode::kBpClear, id++, {3}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  exchange(*controller, Opcode::kBpClear, id++, {}, frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload) << "too short";
+  EXPECT_EQ(bps_.adds + bps_.dels + bps_.clears, 0)
+      << "a refused edit reached the machine";
+
+  // A watch that ends exactly at the top of memory is fine.
+  exchange(*controller, Opcode::kBpAdd, id,
+           bp_payload(watch_bp(0xFFFE, 2, kcpc::kBpAccessRead)), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reply_generation(frame), 41U);
+  EXPECT_EQ(bps_.last_entry.addr, 0xFFFEU);
+  EXPECT_EQ(bps_.last_cause.client, hello.client_id);
+  EXPECT_EQ(bps_.last_cause.request, id);
+  ++id;
+
+  exchange(*controller, Opcode::kBpDel, id++,
+           bp_del_payload(static_cast<std::uint8_t>(kcpc::BpKind::kIo), 0x7F00,
+                          0xFF00),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reply_generation(frame), 42U);
+  EXPECT_EQ(bps_.last_del.addr, 0x7F00U);
+  EXPECT_EQ(bps_.last_del.len_or_mask, 0xFF00U);
+
+  exchange(*controller, Opcode::kBpClear, id++, {kcpc::kBpKindAll}, frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(bps_.last_clear_kind, kcpc::kBpKindAll);
+}
+
+TEST_F(KcpcBreakpointsTest, TheMachinesRefusalsKeepTheirStatusAndWords) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+
+  bps_.refuse = Status::kBadPayload;
+  bps_.refusal = "the condition does not parse: unexpected ')'";
+  exchange(*controller, Opcode::kBpAdd, 2, bp_payload(exec_bp(0x4000)), frame);
+  EXPECT_EQ(frame.status(), Status::kBadPayload);
+  EXPECT_EQ(frame.message(), bps_.refusal);
+
+  bps_.refuse = Status::kLimitReached;
+  bps_.refusal.clear();
+  exchange(*controller, Opcode::kBpAdd, 3, bp_payload(exec_bp(0x4000)), frame);
+  EXPECT_EQ(frame.status(), Status::kLimitReached);
+  EXPECT_NE(frame.message().find("32"), std::string::npos) << frame.message();
+
+  bps_.refuse = Status::kNotFound;
+  exchange(*controller, Opcode::kBpDel, 4, bp_del_payload(0, 0x4000), frame);
+  EXPECT_EQ(frame.status(), Status::kNotFound);
+  EXPECT_FALSE(frame.message().empty());
+}
+
+TEST_F(KcpcBreakpointsTest, AnEditIsPushedAfterItsReplyAndToDebugSubscribers) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  auto watcher = join(kcpc::Role::kObserver, hello);
+  auto deaf = join(kcpc::Role::kObserver, hello);
+  subscribe(*controller, 2, kcpc::kEventClassDebug);
+  subscribe(*watcher, 2, kcpc::kEventClassDebug);
+  subscribe(*deaf, 2, kcpc::kEventClassRun);
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
+
+  ASSERT_TRUE(
+      controller->request(Opcode::kBpAdd, 3, bp_payload(exec_bp(0x4000))));
+  ASSERT_TRUE(controller->receive_any(frame));
+  EXPECT_EQ(frame.header.kind, static_cast<std::uint8_t>(kcpc::Kind::kResponse))
+      << "the event overtook the response";
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(reply_generation(frame), 41U);
+  for (TestClient* client : {controller.get(), watcher.get()}) {
+    expect_event(*client, Opcode::kEvtBreakpointsChanged, frame);
+    ASSERT_EQ(frame.payload.size(), 8U);
+    EXPECT_EQ(event_frame(frame), 41U) << "the payload is the generation";
+  }
+  settle(*deaf, 3);
+  EXPECT_TRUE(deaf->events.empty()) << "it did not subscribe to DEBUG";
+}
+
+TEST_F(KcpcBreakpointsTest, TheWalkingStepsReachTheMachineWithADeadline) {
+  start_with_breakpoints();
+  kcpc::HelloReply hello;
+  auto controller = join(kcpc::Role::kController, hello);
+  Frame frame;
+  auto const over = static_cast<std::uint8_t>(kcpc::StepMode::kOver);
+  auto const to = static_cast<std::uint8_t>(kcpc::StepMode::kTo);
+
+  exchange(*controller, Opcode::kStep, 2, step_payload(over, 0), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(frame.payload.size(), 4U);
+  EXPECT_EQ(run_.last_step.mode, over);
+  EXPECT_EQ(run_.last_step.count, 1U) << "count 0 means 1";
+  EXPECT_EQ(run_.last_step.timeout_ms, kcpc::kDefaultStepTimeoutMs)
+      << "timeout 0 means the default";
+
+  kcpc::Writer w;
+  kcpc::StepRequest step;
+  step.mode = to;
+  step.addr = 0xBB5A;
+  step.timeout_ms = 250;
+  kcpc::write_step_request(w, step);
+  exchange(*controller, Opcode::kStep, 3, w.take(), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(run_.last_step.addr, 0xBB5AU);
+  EXPECT_EQ(run_.last_step.timeout_ms, 250U);
+
+  // Step over has no instruction limit: its deadline bounds it.
+  exchange(*controller, Opcode::kStep, 4,
+           step_payload(over, kcpc::kMaxStepInCount + 1), frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(run_.last_step.count, kcpc::kMaxStepInCount + 1);
+
+  // A frame step has no deadline, and is not given one.
+  exchange(*controller, Opcode::kStep, 5,
+           step_payload(static_cast<std::uint8_t>(kcpc::StepMode::kFrames), 2),
+           frame);
+  ASSERT_EQ(frame.status(), Status::kOk);
+  EXPECT_EQ(run_.last_step.timeout_ms, 0U);
+
+  run_.refuse = Status::kLimitReached;  // no comparator for the one-shot bp
+  exchange(*controller, Opcode::kStep, 6, step_payload(over, 1), frame);
+  EXPECT_EQ(frame.status(), Status::kLimitReached);
+  EXPECT_FALSE(frame.message().empty());
 }

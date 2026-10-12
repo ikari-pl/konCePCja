@@ -9,9 +9,9 @@
 
 namespace {
 
-constexpr int kMaxExec = 32;
-constexpr int kMaxWatch = 16;
-constexpr int kMaxIo = 8;
+constexpr int kMaxExec = PROBE_MAX_EXEC;
+constexpr int kMaxWatch = PROBE_MAX_WATCH;
+constexpr int kMaxIo = PROBE_MAX_IO;
 
 struct WatchEntry {
   uint16_t addr;

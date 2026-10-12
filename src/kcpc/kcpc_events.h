@@ -47,6 +47,8 @@ struct Event {
   std::uint32_t previous = 0;
   // EVT_OVERRUN.
   std::uint32_t dropped = 0;
+  // EVT_BREAKPOINTS_CHANGED: z80_breakpoint_generation() after the edit.
+  std::uint64_t generation = 0;
 };
 
 // The payload of the event frame, per section 9.
@@ -82,6 +84,9 @@ inline std::vector<std::uint8_t> encode_event(const Event& e) {
       break;
     case Opcode::kEvtOverrun:
       w.u32(e.dropped);
+      break;
+    case Opcode::kEvtBreakpointsChanged:
+      w.u64(e.generation);
       break;
     default:  // EVT_SHUTDOWN, and events of later slices: no payload yet
       break;

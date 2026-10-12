@@ -6,8 +6,9 @@
 // PING, MACHINE_INFO, ERROR (slice 1), the machine reads REGS_GET, MEM_INFO,
 // MEM_READ (slice 2), the control role with the machine writes REGS_SET
 // and MEM_WRITE (slice 3), and run control with the pushed events: SUBSCRIBE,
-// RUN_STATE, PAUSE, RUN, RESET, STEP and the fan-out thread (slice 4). At
-// most one client is the controller.
+// RUN_STATE, PAUSE, RUN, RESET, STEP and the fan-out thread (slice 4), and
+// the breakpoints BP_LIST, BP_ADD, BP_DEL, BP_CLEAR with the STEP modes that
+// walk the machine (slice 5). At most one client is the controller.
 //
 // The server knows nothing about the emulator. What it reports about the
 // machine comes through the callbacks of ServerConfig, so the same class runs
@@ -24,6 +25,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "kcpc/kcpc_events.h"
 #include "kcpc/kcpc_proto.h"
@@ -75,8 +77,30 @@ using RunStateFn = std::function<Status(Stamp&, bool& walk_active)>;
 using PauseFn = std::function<Status(const Cause&, Stamp&)>;
 using RunFn = std::function<Status(const Cause&, Stamp&)>;
 using ResetFn = std::function<Status(const Cause&, bool stay_paused, Stamp&)>;
-// The server has checked the mode and the count (0 already made 1).
+// The server has checked the mode and the count (0 already made 1), and has
+// made a timeout of 0 the default for the modes that have one.
 using StepFn = std::function<Status(const Cause&, const StepRequest&)>;
+
+// Breakpoints: the editing lists the text IPC and the DevTools share. Each
+// is called on a reader thread. The edits return the generation of the lists
+// afterwards; every edit, from any source, is also posted by the machine's
+// side as EVT_BREAKPOINTS_CHANGED (Server::post()), with `cause` for an edit
+// a request made, so that the client hears of it after its reply.
+using BpListFn =
+    std::function<Status(std::uint64_t& generation, std::vector<BpEntry>&)>;
+// The server has checked the entry's fields (bp_entry_refusal()) and a
+// watch's range. kBadPayload when the condition does not parse (`message`
+// says why), kLimitReached when the probe has no comparator left for it;
+// nothing was added then.
+using BpAddFn =
+    std::function<Status(const Cause&, const BpEntry&,
+                         std::uint64_t& generation, std::string& message)>;
+// kNotFound when there is no such entry.
+using BpDelFn = std::function<Status(const Cause&, const BpDelRequest&,
+                                     std::uint64_t& generation)>;
+// `kind` is a BpKind or kBpKindAll; the server has checked it.
+using BpClearFn = std::function<Status(const Cause&, std::uint8_t kind,
+                                       std::uint64_t& generation)>;
 
 struct ServerConfig {
   int base_port = kDefaultPort;
@@ -114,6 +138,13 @@ struct ServerConfig {
   RunFn run;
   ResetFn reset;
   StepFn step;
+  // The CAP_BREAKPOINTS group: BP_LIST, BP_ADD, BP_DEL and BP_CLEAR exist,
+  // HELLO announces the capability and STEP takes the modes over, out and
+  // to, only when all four are set.
+  BpListFn bp_list;
+  BpAddFn bp_add;
+  BpDelFn bp_del;
+  BpClearFn bp_clear;
   // A controller that has sent no frame for this long is disconnected, so
   // that a client that hangs does not keep control for ever (section 7).
   int controller_idle_timeout_ms = 30000;

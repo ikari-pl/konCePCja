@@ -311,7 +311,8 @@ def test_manifest_port_and_hello() -> None:
             # ROM spaces, and the writes with the control role.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
                                   | kc.CAP_MACHINE_WRITE
-                                  | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS), (
+                                  | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS
+                                  | kc.CAP_BREAKPOINTS), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -1793,8 +1794,6 @@ def test_step_in_ends_with_an_event() -> None:
         refused(kc.OUT_OF_RANGE, 'STEP in over the limit', a.step,
                 kc.MAX_STEP_IN_COUNT + 1)
         refused(kc.BAD_PAYLOAD, 'STEP mode 9', a.step, 1, 9)
-        refused(kc.BAD_PAYLOAD, 'STEP over (slice 5)', a.step, 1,
-                kc.STEP_OVER)
         refused(kc.BAD_PAYLOAD, 'STEP with no payload', a.request,
                 kc.OP_STEP)
 
@@ -1935,17 +1934,25 @@ def test_run_is_not_lost_to_another_actors_lease() -> None:
         a.subscribe(kc.CLASS_RUN)
         a_id = a.hello_reply.client_id
         with LeaseTaker(core) as other:
-            for turn in range(turns):
+            turn = 0
+            # At least `turns` pairs, and on until the other actor has taken
+            # more leases than that: a text IPC write is a connection of its
+            # own and on a slow host (the Windows CI runner) falls behind
+            # the pairs, which then proved little. Bounded all the same.
+            while turn < turns or (other.writes <= turns
+                                   and turn < 50 * turns
+                                   and not other.errors):
                 a.pause()
                 expect_stopped(a, kc.STOP_PAUSED, a_id, a.last_request_id,
                                f'turn {turn}')
                 a.run()
                 expect_resumed(a, a_id, a.last_request_id, f'turn {turn}')
+                turn += 1
         assert not other.errors, other.errors
         assert other.writes > turns, (
-            f'only {other.writes} leases by the other actor: this proved '
-            'little')
-        print(f'    {turns} pause/run pairs beside {other.writes} text IPC '
+            f'only {other.writes} leases by the other actor in {turn} '
+            'turns: this proved little')
+        print(f'    {turn} pause/run pairs beside {other.writes} text IPC '
               'writes: every RUN took effect')
 
 
@@ -2150,6 +2157,707 @@ def test_subscribers_do_not_change_what_the_machine_computes() -> None:
               'and RAM identical')
 
 
+# -- beads-pja3: another actor's pause lease is not a stop -----------------
+
+DELAY_ADDR = 0x8000
+DELAY_END = 0x8010
+
+
+def delay_program(outer: int) -> bytes:
+    """`outer` times 65536 turns of a counting loop (about half an emulated
+    second each), then `JR $` at DELAY_END. Interrupts are expected off."""
+    code = bytes([
+        0x16, outer,        # 8000 LD D,outer
+        0x01, 0x00, 0x00,   # 8002 LD BC,0
+        0x0B,               # 8005 DEC BC
+        0x78,               # 8006 LD A,B
+        0xB1,               # 8007 OR C
+        0x20, 0xFB,         # 8008 JR NZ,8005
+        0x15,               # 800A DEC D
+        0x20, 0xF5,         # 800B JR NZ,8002
+        0x00, 0x00, 0x00,   # 800D NOP NOP NOP
+        0x18, 0xFE,         # 8010 JR $
+    ])
+    assert len(code) == DELAY_END - DELAY_ADDR + 2
+    return code
+
+
+class KcpcWriter:
+    """A KCPC controller that takes one pause lease after another: it writes
+    memory in a loop on its own thread. `data` at `addr` must be what is
+    there already, so the writes change nothing."""
+
+    def __init__(self, c: KcpcClient, addr: int, data: bytes):
+        self.c = c
+        self.addr = addr
+        self.data = data
+        self.stop = threading.Event()
+        self.writes = 0
+        self.errors: List[str] = []
+        self.thread = threading.Thread(target=self._run)
+
+    def _run(self) -> None:
+        try:
+            while not self.stop.is_set():
+                self.c.mem_write(kc.SPACE_CPU_RAM, self.addr, self.data)
+                self.writes += 1
+        except Exception as exc:  # noqa: BLE001 - reported by the test
+            self.errors.append(f'{type(exc).__name__}: {exc}')
+
+    def __enter__(self) -> 'KcpcWriter':
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        self.thread.join()
+
+
+def test_a_lease_does_not_end_a_text_ipc_walk() -> None:
+    """beads-pja3, first half. The text IPC's `step to` runs the machine to
+    an address about half an emulated second away. A KCPC client writing
+    memory meanwhile pauses the machine under a lease for every write; the
+    walk used to take the first of those for a stop and answer
+    `stopped-elsewhere` with the machine still on its way."""
+    with Core() as core, controller(core, 'writer') as a:
+        pause_core(core, a)
+        a.mem_write(kc.SPACE_CPU_RAM, DELAY_ADDR, delay_program(1))
+        for turn in range(3):
+            a.regs_set(pc=DELAY_ADDR, iff1=0, iff2=0)
+            with KcpcWriter(a, 0x9000, bytes(64)) as writer:
+                resp = core.ipc(f'step to {DELAY_END:#x}')
+            assert not writer.errors, writer.errors
+            assert resp.startswith('OK'), (
+                f'turn {turn}, after {writer.writes} writes: {resp}')
+            assert writer.writes >= 1, (
+                'no lease during the walk: this proved nothing')
+            regs = a.regs_get()
+            assert regs.stamp.paused and regs.pc == DELAY_END, regs
+
+
+def test_a_run_for_a_frame_step_is_not_lost_to_a_lease() -> None:
+    """beads-pja3, second half. `wait vbl` from a paused machine arms the
+    frame counter and runs the machine. With a bare resume that run was
+    dropped whenever another actor held a pause lease at that instant, and
+    the frames never came."""
+    turns = 25
+    with Core() as core, controller(core, 'writer') as a:
+        spin(core, a)
+        pause_core(core, a)
+        ram = a.mem_read(kc.SPACE_CPU_RAM, 0, kc.CPU_SPACE_SIZE)
+        with KcpcWriter(a, 0, ram) as writer:
+            for turn in range(turns):
+                resp = core.ipc('wait vbl 2 3000')
+                assert resp.startswith('OK'), (
+                    f'turn {turn}, after {writer.writes} writes: {resp}')
+        assert not writer.errors, writer.errors
+        assert writer.writes >= turns, (
+            f'only {writer.writes} leases: this proved little')
+        assert a.run_state().stamp.paused
+
+
+# -- slice 5: breakpoints, pushed hits and the steps that walk --------------
+
+CODE_ADDR = 0x8000
+
+
+def load_program(c: KcpcClient, code: bytes, addr: int = CODE_ADDR) -> None:
+    """Put `code` at `addr` and point the CPU at it with interrupts off. The
+    machine must be paused."""
+    c.mem_write(kc.SPACE_CPU_RAM, addr, code)
+    c.regs_set(pc=addr, iff1=0, iff2=0)
+
+
+def breakpoints_changed(c: KcpcClient) -> kc.Event:
+    """The next EVT_BREAKPOINTS_CHANGED: a blocking read. Run-state events
+    that come first are dropped."""
+    return c.wait_event(kc.EVT_BREAKPOINTS_CHANGED, EVENT_TIMEOUT_S)
+
+
+def keys(entries: List[kc.BpEntry]) -> List[Tuple[int, int, int]]:
+    return sorted(entry.key for entry in entries)
+
+
+def test_a_breakpoint_hit_is_pushed_to_both_clients() -> None:
+    """Acceptance 1: the controller sets an execution breakpoint at a
+    firmware address and runs. It and an observer both receive EVT_STOPPED,
+    reason BREAKPOINT, with that pc, within 5 s and without asking: every
+    wait is a blocking read. The stop describes the machine a read then
+    finds, and the edit itself is pushed as EVT_BREAKPOINTS_CHANGED."""
+    with Core() as core, controller(core, 'debugger') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN | kc.CLASS_DEBUG) as b:
+        assert a.hello_reply.caps & kc.CAP_BREAKPOINTS, (
+            f'caps {a.hello_reply.caps:#x}')
+        a.subscribe(kc.CLASS_RUN)
+        a_id = a.hello_reply.client_id
+        a.pause()
+        for who, c in (('controller', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_PAUSED, a_id, a.last_request_id, who)
+
+        before, entries = b.bp_list()       # an observer may list
+        assert entries == [], entries
+        generation = a.bp_add(kc.BpEntry(kc.BP_EXEC, INTERRUPT_VECTOR))
+        assert generation > before, (before, generation)
+        changed = breakpoints_changed(b)
+        assert changed.generation == generation, changed
+        assert b.bp_list() == (generation, [
+            kc.BpEntry(kc.BP_EXEC, INTERRUPT_VECTOR)])
+
+        began = time.monotonic()
+        a.run()
+        for who, c in (('controller', a), ('observer', b)):
+            expect_resumed(c, a_id, a.last_request_id, who)
+            event = expect_stopped(c, kc.STOP_BREAKPOINT, 0, 0, who)
+            assert (event.pc, event.addr, event.access) == (
+                INTERRUPT_VECTOR, INTERRUPT_VECTOR, 0), f'{who}: {event}'
+        took = time.monotonic() - began
+        assert took < 5.0, f'the hit took {took:.1f}s to arrive'
+        regs = b.regs_get()
+        assert regs.stamp.paused and regs.pc == INTERRUPT_VECTOR, regs
+        assert regs.stamp.frame == event.frame, (regs.stamp, event)
+        hit = a.bp_list()[1][0]
+        assert hit.hit_count >= 1, hit
+
+        # An observer may not edit.
+        refused(kc.NOT_CONTROLLER, 'BP_ADD by an observer', b.bp_add,
+                kc.BpEntry(kc.BP_EXEC, 0x4000))
+        refused(kc.NOT_CONTROLLER, 'BP_DEL by an observer', b.bp_del,
+                kc.BP_EXEC, INTERRUPT_VECTOR)
+        refused(kc.NOT_CONTROLLER, 'BP_CLEAR by an observer', b.bp_clear)
+
+        gone = a.bp_del(kc.BP_EXEC, INTERRUPT_VECTOR)
+        assert gone > generation
+        assert breakpoints_changed(b).generation == gone
+        refused(kc.NOT_FOUND, 'BP_DEL of what is not there', a.bp_del,
+                kc.BP_EXEC, INTERRUPT_VECTOR)
+        assert a.bp_list() == (gone, [])
+        # With the breakpoint gone the machine runs on: the next stop anybody
+        # hears of is the pause that ends the test.
+        a.run()
+        for who, c in (('controller', a), ('observer', b)):
+            expect_resumed(c, a_id, a.last_request_id, who)
+        wait_running(a, regs.stamp.frame + 5)
+        a.pause()
+        for who, c in (('controller', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_PAUSED, a_id, a.last_request_id, who)
+        print(f'    pushed to both clients {took * 1000:.0f} ms after RUN')
+
+
+def test_watch_and_io_hits_say_what_was_hit() -> None:
+    """Acceptance 2: a write watchpoint reports WATCHPOINT with the address,
+    the value written and the value it replaced; a read watchpoint the value
+    read; an I/O breakpoint IO_BREAKPOINT with the port and the direction.
+    The pc of each is the one REGS_GET then shows."""
+    code = bytes([
+        0x3E, 0x5A,         # 8000 LD A,&5A
+        0x32, 0x00, 0x90,   # 8002 LD (&9000),A
+        0x3A, 0x01, 0x90,   # 8005 LD A,(&9001)
+        0x01, 0x10, 0x7F,   # 8008 LD BC,&7F10
+        0xED, 0x49,         # 800B OUT (C),C   Gate Array: select the border
+        0xED, 0x78,         # 800D IN A,(C)
+        0x18, 0xFE,         # 800F JR $
+    ])
+    with Core() as core, controller(core, 'debugger') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a.subscribe(kc.CLASS_RUN)
+        a_id = a.hello_reply.client_id
+        a.pause()
+        for c in (a, b):
+            assert run_event(c).reason == kc.STOP_PAUSED
+        load_program(a, code)
+        a.mem_write(kc.SPACE_CPU_RAM, 0x9000, b'\x11\x77')
+
+        def hit(what: str) -> kc.Event:
+            a.run()
+            for who, c in (('controller', a), ('observer', b)):
+                expect_resumed(c, a_id, a.last_request_id, f'{what}, {who}')
+                event = run_event(c)
+                assert event.opcode == kc.EVT_STOPPED, f'{what}, {who}: {event}'
+                assert (event.cause_client, event.cause_request) == (0, 0), (
+                    f'{what}, {who}: {event}')
+            regs = a.regs_get()
+            assert regs.stamp.paused and regs.pc == event.pc, (
+                f'{what}: event {event}, registers {regs}')
+            assert CODE_ADDR <= event.pc < CODE_ADDR + len(code), event
+            return event
+
+        a.bp_add(kc.BpEntry(kc.BP_WATCH, 0x9000, kc.ACCESS_WRITE, 1))
+        event = hit('write watch')
+        assert (event.reason, event.addr, event.access, event.value,
+                event.old_value) == (kc.STOP_WATCHPOINT, 0x9000,
+                                     kc.ACCESS_WRITE, 0x5A, 0x11), event
+
+        a.bp_clear(kc.BP_WATCH)
+        a.bp_add(kc.BpEntry(kc.BP_WATCH, 0x9001, kc.ACCESS_READ, 1))
+        event = hit('read watch')
+        assert (event.reason, event.addr, event.access, event.value,
+                event.old_value) == (kc.STOP_WATCHPOINT, 0x9001,
+                                     kc.ACCESS_READ, 0x77, 0), event
+
+        a.bp_clear(kc.BP_WATCH)
+        a.bp_add(kc.BpEntry(kc.BP_IO, 0x7F00, kc.ACCESS_WRITE, 0xFF00))
+        event = hit('I/O write')
+        assert (event.reason, event.addr, event.access, event.value) == (
+            kc.STOP_IO_BREAKPOINT, 0x7F10, kc.ACCESS_WRITE, 0x10), event
+
+        # The same port and mask again is the same entry: this replaces it.
+        a.bp_add(kc.BpEntry(kc.BP_IO, 0x7F00, kc.ACCESS_READ, 0xFF00))
+        assert a.bp_list()[1] == [
+            kc.BpEntry(kc.BP_IO, 0x7F00, kc.ACCESS_READ, 0xFF00)]
+        event = hit('I/O read')
+        assert (event.reason, event.addr, event.access) == (
+            kc.STOP_IO_BREAKPOINT, 0x7F10, kc.ACCESS_READ), event
+        assert a.bp_list()[1][0].hit_count == 1
+
+        # A condition on an I/O breakpoint is honoured: this one never
+        # holds, so the OUT goes through and the machine reaches the JR $.
+        a.bp_add(kc.BpEntry(kc.BP_IO, 0x7F00, kc.ACCESS_WRITE, 0xFF00,
+                            condition='value = 0x99'))
+        a.regs_set(pc=CODE_ADDR)
+        a.run()
+        wait_running(a, a.machine_info().stamp.frame + 3)
+        a.pause()
+        spin_at = CODE_ADDR + len(code) - 2
+        # (A pause may land inside the JR, after its offset was fetched.)
+        assert spin_at <= a.regs_get().pc <= spin_at + 2, a.regs_get()
+
+
+def test_conditions_pass_counts_and_limits() -> None:
+    """Acceptance 3: a conditional breakpoint and a pass count fire only
+    when they should; a condition that does not parse is BAD_PAYLOAD and
+    adds nothing; the 33rd execution breakpoint is LIMIT_REACHED (the probe
+    arms 32, and one more would be listed and never fire), as are the 17th
+    watchpoint and the 9th I/O breakpoint."""
+    code = bytes([
+        0x06, 0x00,     # 8000 LD B,0
+        0x04,           # 8002 INC B
+        0x18, 0xFD,     # 8003 JR &8002
+    ])
+    loop = CODE_ADDR + 2
+    with Core() as core, controller(core, 'debugger') as a:
+        a.pause()
+        load_program(a, code)
+
+        def run_to_stop() -> kc.Regs:
+            a.run()
+            event = expect_stopped(a, kc.STOP_BREAKPOINT, 0, 0, 'debugger')
+            assert (event.pc, event.addr) == (loop, loop), event
+            return a.regs_get()
+
+        a.subscribe(kc.CLASS_RUN)
+        a.bp_add(kc.BpEntry(kc.BP_EXEC, loop, condition='b = 5'))
+        expect_run = run_event      # (the RUN's own EVT_RESUMED comes first)
+        a.run()
+        assert expect_run(a).opcode == kc.EVT_RESUMED
+        event = expect_stopped(a, kc.STOP_BREAKPOINT, 0, 0, 'condition')
+        regs = a.regs_get()
+        assert event.pc == loop and regs.bc >> 8 == 5, (event, regs)
+
+        # The same address again replaces the entry: a pass count now, no
+        # condition, and its hits counted from nothing.
+        a.bp_add(kc.BpEntry(kc.BP_EXEC, loop, pass_count=10))
+        a.regs_set(pc=CODE_ADDR)
+        a.run()
+        assert expect_run(a).opcode == kc.EVT_RESUMED
+        expect_stopped(a, kc.STOP_BREAKPOINT, 0, 0, 'pass count')
+        regs = a.regs_get()
+        assert regs.bc >> 8 == 9, f'stopped with B = {regs.bc >> 8}'
+        generation, entries = a.bp_list()
+        assert entries == [kc.BpEntry(kc.BP_EXEC, loop, pass_count=10,
+                                      hit_count=10)], entries
+
+        refused(kc.BAD_PAYLOAD, 'a condition that does not parse', a.bp_add,
+                kc.BpEntry(kc.BP_EXEC, 0x4000, condition='b = = ('))
+        assert a.bp_list() == (generation, entries), 'the refusal added it'
+        for what, entry in (
+                ('kind 3', kc.BpEntry(3, 0x4000)),
+                ('access on an execution breakpoint',
+                 kc.BpEntry(kc.BP_EXEC, 0x4000, kc.ACCESS_READ)),
+                ('a watch with no access', kc.BpEntry(kc.BP_WATCH, 0x4000,
+                                                      0, 1)),
+                ('a watch of no bytes',
+                 kc.BpEntry(kc.BP_WATCH, 0x4000, kc.ACCESS_WRITE, 0)),
+                ('access 4', kc.BpEntry(kc.BP_IO, 0x7F00, 4, 0xFF00)),
+                ('a pass count over 2^31',
+                 kc.BpEntry(kc.BP_EXEC, 0x4000, pass_count=0x80000000))):
+            refused(kc.BAD_PAYLOAD, what, a.bp_add, entry)
+        refused(kc.OUT_OF_RANGE, 'a watch past &FFFF', a.bp_add,
+                kc.BpEntry(kc.BP_WATCH, 0xFFFF, kc.ACCESS_WRITE, 2))
+        refused(kc.BAD_PAYLOAD, 'BP_ADD cut short', a.request, kc.OP_BP_ADD,
+                kc.BpEntry(kc.BP_EXEC, 0x4000).pack()[:-1])
+        refused(kc.BAD_PAYLOAD, 'BP_DEL kind 7', a.bp_del, 7, 0x4000)
+        refused(kc.BAD_PAYLOAD, 'BP_CLEAR kind 9', a.bp_clear, 9)
+        refused(kc.BAD_PAYLOAD, 'BP_CLEAR with no payload', a.request,
+                kc.OP_BP_CLEAR)
+        assert a.bp_list() == (generation, entries)
+
+        a.bp_clear()
+        assert a.bp_list()[1] == []
+        for n in range(kc.MAX_EXEC_BREAKPOINTS):
+            a.bp_add(kc.BpEntry(kc.BP_EXEC, 0x4000 + n))
+        refused(kc.LIMIT_REACHED, 'the 33rd execution breakpoint', a.bp_add,
+                kc.BpEntry(kc.BP_EXEC, 0x5000))
+        # Replacing one of the 32 needs no new comparator.
+        a.bp_add(kc.BpEntry(kc.BP_EXEC, 0x4000, pass_count=2))
+        # Nor is there a comparator for the one-shot breakpoint of a step
+        # that runs to an address.
+        refused(kc.LIMIT_REACHED, 'STEP over with the probe full', a.step, 1,
+                kc.STEP_OVER)
+        assert not a.run_state().walk_active
+        for n in range(kc.MAX_WATCHPOINTS):
+            a.bp_add(kc.BpEntry(kc.BP_WATCH, 0x9000 + 2 * n,
+                                kc.ACCESS_BOTH, 2))
+        refused(kc.LIMIT_REACHED, 'the 17th watchpoint', a.bp_add,
+                kc.BpEntry(kc.BP_WATCH, 0xA000, kc.ACCESS_WRITE, 1))
+        for n in range(kc.MAX_IO_BREAKPOINTS):
+            a.bp_add(kc.BpEntry(kc.BP_IO, 0x1000 * n, kc.ACCESS_WRITE,
+                                0xFF00))
+        refused(kc.LIMIT_REACHED, 'the 9th I/O breakpoint', a.bp_add,
+                kc.BpEntry(kc.BP_IO, 0xF800, kc.ACCESS_READ, 0xFF00))
+        entries = a.bp_list()[1]
+        assert len(entries) == (kc.MAX_EXEC_BREAKPOINTS + kc.MAX_WATCHPOINTS
+                                + kc.MAX_IO_BREAKPOINTS), len(entries)
+        assert len(set(keys(entries))) == len(entries)
+
+        a.bp_clear(kc.BP_EXEC)
+        kinds = {entry.kind for entry in a.bp_list()[1]}
+        assert kinds == {kc.BP_WATCH, kc.BP_IO}, kinds
+        a.bp_clear(kc.BP_ALL)
+        assert a.bp_list()[1] == []
+        # And with room again the step is taken.
+        a.regs_set(pc=CODE_ADDR)
+        step = a.step(1, kc.STEP_OVER)
+        expect_stopped(a, kc.STOP_STEP_DONE, a.hello_reply.client_id, step,
+                       'step over')
+
+
+def test_text_ipc_edits_reach_the_binary_clients() -> None:
+    """Acceptance 4: breakpoints set on the text IPC port are pushed as
+    EVT_BREAKPOINTS_CHANGED and show up in BP_LIST; and a hit the binary
+    clients were pushed is still there for the text IPC's `wait bp`."""
+    with Core() as core, controller(core, 'ctl') as a, \
+            observer(core, 'obs', kc.CLASS_RUN | kc.CLASS_DEBUG) as b:
+        a.subscribe(kc.CLASS_RUN | kc.CLASS_DEBUG)
+        generation = a.bp_list()[0]
+        assert core.ipc('wp add 0x9000 2 w').startswith('OK')
+        # (A port nothing answers on and the firmware never writes: the
+        # machine is running, and this must not be what stops it.)
+        assert core.ipc('iobp add 0xF900 0xFF00 out').startswith('OK')
+        for c in (a, b):
+            for _ in range(2):
+                event = breakpoints_changed(c)
+                assert event.generation > generation, event
+                assert (event.cause_client, event.cause_request) == (0, 0)
+        generation, entries = b.bp_list()
+        assert entries == [
+            kc.BpEntry(kc.BP_WATCH, 0x9000, kc.ACCESS_WRITE, 2),
+            kc.BpEntry(kc.BP_IO, 0xF900, kc.ACCESS_WRITE, 0xFF00)], entries
+
+        # The machine is running the firmware: the interrupt entry is hit
+        # within a few milliseconds of the breakpoint being set.
+        assert core.ipc(f'bp add {INTERRUPT_VECTOR:#x} if pc = 0x38'
+                        ).startswith('OK')
+        for who, c in (('controller', a), ('observer', b)):
+            assert breakpoints_changed(c).generation > generation
+        for who, c in (('controller', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_BREAKPOINT, 0, 0, who)
+            assert event.pc == INTERRUPT_VECTOR, f'{who}: {event}'
+        resp = core.ipc('wait bp 5000')
+        assert resp.startswith('OK') and 'PC=0038' in resp, resp
+        entries = a.bp_list()[1]
+        assert kc.BpEntry(kc.BP_EXEC, INTERRUPT_VECTOR, hit_count=1,
+                          condition='pc = 0x38') in entries, entries
+
+        before = a.bp_list()[0]
+        assert core.ipc('bp clear').startswith('OK')
+        for c in (a, b):
+            assert breakpoints_changed(c).generation > before
+        assert keys(a.bp_list()[1]) == [(kc.BP_WATCH, 0x9000, 0),
+                                       (kc.BP_IO, 0xF900, 0xFF00)]
+
+
+# A routine to step over and out of, and a place to spin.
+STEP_CODE = bytes([
+    0xCD, 0x10, 0x80,   # 8000 CALL &8010
+    0x3C,               # 8003 INC A
+    0x00,               # 8004 NOP
+    0x18, 0xFE,         # 8005 JR $
+]) + bytes(9) + bytes([
+    0x06, 0x80,         # 8010 LD B,&80
+    0x10, 0xFE,         # 8012 DJNZ $
+    0xC9,               # 8014 RET
+])
+STEP_SUB = CODE_ADDR + 0x10
+STEP_SPIN = CODE_ADDR + 5
+NOWHERE = 0x9999        # an address the code above never reaches
+
+
+def test_step_over_out_and_to() -> None:
+    """Acceptance 5, first half: STEP over a CALL lands on the instruction
+    after it and STEP out returns to the caller, each with one EVT_STOPPED,
+    reason STEP_DONE, naming the step. The one-shot breakpoint the walk runs
+    to is nobody's business: an observer sees the machine resume and the
+    step end, and nothing in between. The stepping client is told although
+    it subscribed to nothing."""
+    with Core() as core, controller(core, 'stepper') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        pause_core(core, a)
+        expect_stopped(b, kc.STOP_PAUSED, 0, 0, 'observer')
+        load_program(a, STEP_CODE)
+
+        def stepped(what: str, ran: bool, pc: int, **step) -> None:
+            step_id = a.step(**step)
+            assert not [e for e in a.events if e.opcode == kc.EVT_STOPPED], (
+                f'{what}: the EVT_STOPPED arrived before the reply')
+            if ran:
+                expect_resumed(b, a_id, step_id, f'{what}, observer')
+            for who, c in (('stepper', a), ('observer', b)):
+                event = expect_stopped(c, kc.STOP_STEP_DONE, a_id, step_id,
+                                       f'{what}, {who}')
+                assert event.pc == pc, f'{what}, {who}: {event}'
+            state = a.run_state()
+            assert state.stamp.paused and not state.walk_active, (what, state)
+            regs = a.regs_get()
+            assert regs.pc == pc and regs.stamp.frame == event.frame, (
+                what, regs, event)
+            assert text_reg(core, 'pc') == pc, what
+
+        stepped('over a CALL', True, CODE_ADDR + 3, mode=kc.STEP_OVER)
+        assert a.regs_get().bc >> 8 == 0, 'the routine did not run to its end'
+        # Not a call: the instruction is single-stepped and nothing runs.
+        stepped('over INC A', False, CODE_ADDR + 4, mode=kc.STEP_OVER)
+
+        a.regs_set(pc=CODE_ADDR)
+        stepped('over three instructions', True, STEP_SPIN,
+                mode=kc.STEP_OVER, count=3)
+
+        a.regs_set(pc=CODE_ADDR)
+        stepped('in', False, STEP_SUB, mode=kc.STEP_IN)
+        # The routine calls nothing, so the walk single-steps it to its RET
+        # and the machine never runs.
+        stepped('out', False, CODE_ADDR + 3, mode=kc.STEP_OUT)
+
+        a.regs_set(pc=CODE_ADDR)
+        stepped('to an address', True, CODE_ADDR + 4, mode=kc.STEP_TO,
+                addr=CODE_ADDR + 4)
+
+        # From a running machine: paused first, quietly, then walked.
+        a.regs_set(pc=CODE_ADDR, sp=0xBF00)
+        a.mem_write(kc.SPACE_CPU_RAM, CODE_ADDR, b'\x18\xfe')   # JR $
+        a.run()
+        expect_resumed(b, a_id, a.last_request_id, 'observer')
+        step_id = a.step(mode=kc.STEP_OVER)
+        for who, c in (('stepper', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_STEP_DONE, a_id, step_id, who)
+            assert event.pc == CODE_ADDR, f'{who}: {event}'
+
+        # The text IPC's walks are one step to a client as well: its
+        # `step over` of the CALL is a resume and a STEP_DONE, not the hit
+        # of a breakpoint nobody set.
+        a.mem_write(kc.SPACE_CPU_RAM, CODE_ADDR, STEP_CODE)
+        a.regs_set(pc=CODE_ADDR)
+        assert core.ipc('step over').startswith('OK')
+        expect_resumed(b, 0, 0, 'text step over')
+        event = expect_stopped(b, kc.STOP_STEP_DONE, 0, 0, 'text step over')
+        assert event.pc == CODE_ADDR + 3, event
+        assert a.bp_list()[1] == [], 'the one-shot breakpoint is listed'
+
+
+def test_a_step_can_be_stopped_by_something_else() -> None:
+    """Acceptance 5, second half: a step that meets a breakpoint reports
+    BREAKPOINT with the step's request as the cause; a walk that cannot get
+    anywhere ends with STEP_TIMEOUT (or STEP_STALLED) and the machine
+    paused; a second STEP during a walk is BUSY; and PAUSE ends a walk, by
+    whoever sends it, with the event still reaching the client that
+    stepped."""
+    with Core() as core, controller(core, 'stepper') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        pause_core(core, a)
+        expect_stopped(b, kc.STOP_PAUSED, 0, 0, 'observer')
+        load_program(a, STEP_CODE)
+
+        # A breakpoint inside the routine that is stepped over.
+        inside = STEP_SUB + 2
+        a.bp_add(kc.BpEntry(kc.BP_EXEC, inside))
+        step_id = a.step(mode=kc.STEP_OVER)
+        expect_resumed(b, a_id, step_id, 'observer')
+        for who, c in (('stepper', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_BREAKPOINT, a_id, step_id, who)
+            assert (event.pc, event.addr) == (inside, inside), event
+        assert a.regs_get().pc == inside
+        # And one on the way of a walk that single-steps: step out of the
+        # routine walks DJNZ by DJNZ, and the probe is not what sees this.
+        a.bp_clear()
+        a.bp_add(kc.BpEntry(kc.BP_EXEC, STEP_SUB + 4))      # the RET
+        step_id = a.step(mode=kc.STEP_OUT)
+        for who, c in (('stepper', a), ('observer', b)):
+            event = expect_stopped(c, kc.STOP_BREAKPOINT, a_id, step_id, who)
+            assert (event.pc, event.addr) == (STEP_SUB + 4,
+                                              STEP_SUB + 4), event
+        a.bp_clear()
+
+        # Nowhere to go: JR $.
+        for mode in (kc.STEP_OUT, kc.STEP_TO):
+            a.regs_set(pc=STEP_SPIN)
+            began = time.monotonic()
+            step_id = a.step(mode=mode, addr=NOWHERE, timeout_ms=300)
+            event = run_event(a)
+            took = time.monotonic() - began
+            assert event.opcode == kc.EVT_STOPPED, event
+            assert event.reason in (kc.STOP_STEP_TIMEOUT,
+                                    kc.STOP_STEP_STALLED), event
+            assert (event.cause_client, event.cause_request) == (
+                a_id, step_id), event
+            assert 0.25 < took < 3.0, f'a 300 ms deadline took {took:.2f}s'
+            state = a.run_state()
+            assert state.stamp.paused and not state.walk_active, state
+            # (A deadline may pause the JR after its offset was fetched.)
+            assert STEP_SPIN <= a.regs_get().pc <= STEP_SPIN + 2
+            while True:     # the observer: a resume (STEP_TO ran it), a stop
+                seen = run_event(b)
+                if seen.opcode == kc.EVT_STOPPED:
+                    assert seen.reason == event.reason, seen
+                    break
+
+        # PAUSE ends a walk.
+        a.regs_set(pc=STEP_SPIN)
+        step_id = a.step(mode=kc.STEP_TO, addr=NOWHERE, timeout_ms=60000)
+        expect_resumed(b, a_id, step_id, 'observer')
+        state = a.run_state()
+        assert state.walk_active and not state.stamp.paused, state
+        for mode in (kc.STEP_IN, kc.STEP_OVER, kc.STEP_OUT, kc.STEP_TO,
+                     kc.STEP_FRAMES):
+            refused(kc.BUSY, f'STEP mode {mode} during a walk', a.step, 1,
+                    mode)
+        stamp = a.pause()
+        assert stamp.paused, stamp
+        assert not [e for e in a.events if e.opcode == kc.EVT_STOPPED], (
+            'the EVT_STOPPED arrived before the reply to PAUSE')
+        for who, c in (('stepper', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_PAUSED, a_id, a.last_request_id, who)
+        state = a.run_state()
+        assert state.stamp.paused and not state.walk_active, state
+
+        # The text IPC's pause ends one too, and names nobody.
+        step_id = a.step(mode=kc.STEP_TO, addr=NOWHERE, timeout_ms=60000)
+        expect_resumed(b, a_id, step_id, 'observer')
+        assert core.ipc('pause').startswith('OK')
+        for who, c in (('stepper', a), ('observer', b)):
+            expect_stopped(c, kc.STOP_PAUSED, 0, 0, who)
+        assert not a.run_state().walk_active
+
+        # A walk survives a takeover, the new controller may end it, and the
+        # client that stepped is told although it is an observer now and
+        # subscribed to nothing.
+        step_id = a.step(mode=kc.STEP_OUT, timeout_ms=60000)
+        with core.client() as c:
+            c.hello('usurper')
+            assert c.acquire_control(force=True).is_controller
+            assert c.run_state().walk_active
+            c.pause()
+            expect_stopped(a, kc.STOP_PAUSED, c.hello_reply.client_id,
+                           c.last_request_id, 'the client that stepped')
+        assert not a.run_state().walk_active
+
+
+def test_quit_during_a_walk() -> None:
+    """A walk only watches its own deadline, a minute away here; a core that
+    quits ends it and exits at once all the same."""
+    with Core() as core, controller(core, 'stepper') as a:
+        pause_core(core, a)
+        load_program(a, STEP_CODE)
+        a.regs_set(pc=STEP_SPIN)
+        a.step(mode=kc.STEP_TO, addr=NOWHERE, timeout_ms=60000)
+        assert a.run_state().walk_active
+        began = time.monotonic()
+        core.ipc_quit()
+        code = core.wait_exit()
+        took = time.monotonic() - began
+        assert code == 0, f'exit code {code}'
+        assert took < 3.0, f'quit took {took:.1f}s with a walk in progress'
+        print(f'    quit -> exit 0 in {took * 1000:.0f} ms during a walk')
+
+
+def test_a_kcpc_walk_runs_beside_other_actors_leases() -> None:
+    """beads-pja3 over this port: STEP over a routine that takes half an
+    emulated second, while the text IPC writes memory in a loop and so
+    pauses the machine under a lease again and again. The walk lands where
+    it should every time, and an observer sees one resume and one stop for
+    each step: the leases are nobody's event."""
+    code = bytes([
+        0xCD, 0x10, 0x80,   # 8000 CALL &8010
+        0x18, 0xFE,         # 8003 JR $
+    ]) + bytes(11) + bytes([
+        0x01, 0x00, 0x00,   # 8010 LD BC,0
+        0x0B,               # 8013 DEC BC
+        0x78,               # 8014 LD A,B
+        0xB1,               # 8015 OR C
+        0x20, 0xFB,         # 8016 JR NZ,&8013
+        0xC9,               # 8018 RET
+    ])
+    with Core() as core, controller(core, 'stepper') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        a.pause()
+        expect_stopped(b, kc.STOP_PAUSED, a_id, a.last_request_id, 'observer')
+        load_program(a, code)
+        with LeaseTaker(core) as other:
+            for turn in range(3):
+                a.regs_set(pc=CODE_ADDR)
+                writes = other.writes
+                step_id = a.step(mode=kc.STEP_OVER)
+                expect_resumed(b, a_id, step_id, f'turn {turn}')
+                for who, c in (('stepper', a), ('observer', b)):
+                    event = expect_stopped(c, kc.STOP_STEP_DONE, a_id,
+                                           step_id, f'turn {turn}, {who}')
+                    assert event.pc == CODE_ADDR + 3, f'turn {turn}: {event}'
+                # (One is enough to end a walk that mistakes it for a stop;
+                # a slow host fits few text IPC connections into the walk.)
+                assert other.writes - writes >= 1, (
+                    f'turn {turn}: no lease during the walk: this proved '
+                    'nothing')
+        assert not other.errors, other.errors
+        assert a.regs_get().pc == CODE_ADDR + 3
+
+
+def test_step_over_a_restart_uses_a_prepared_rom() -> None:
+    """Acceptance 6: an RST is stepped into and its handler finished, since
+    a CPC restart need not come back to the byte after it. The handler has
+    to be in ROM, where the restart vectors are, so this machine boots a
+    ROM made for the test (make_test_rom in ipc_harness.py)."""
+    sys.path.insert(0, str(ROOT / 'test' / 'integrated'))
+    try:
+        from ipc_harness import make_test_rom  # pylint: disable=import-outside-toplevel
+    finally:
+        sys.path.pop(0)
+    # RST &30: load A and come back.
+    romdir = make_test_rom({0x0030: bytes([0x3E, 0x42, 0xC9])})
+    try:
+        with Core('-O', f'rom.rom_path={romdir}', '-O',
+                  'system.model=2') as core, \
+                controller(core, 'stepper') as a:
+            a_id = a.hello_reply.client_id
+            a.pause()
+            rom = a.mem_read(kc.SPACE_ROM_LOWER, 0x30, 3)
+            assert rom == bytes([0x3E, 0x42, 0xC9]), (
+                f'not the prepared ROM: {rom.hex()}')
+            assert a.mem_info().lower_rom_on, 'the lower ROM is paged out'
+            a.mem_write(kc.SPACE_CPU_RAM, 0x6000,
+                        bytes([0xF7, 0x00, 0x18, 0xFE]))   # RST &30:NOP:JR $
+            a.regs_set(pc=0x6000, sp=0xBF00, af=0, iff1=0, iff2=0)
+            step_id = a.step(mode=kc.STEP_OVER)
+            event = expect_stopped(a, kc.STOP_STEP_DONE, a_id, step_id,
+                                   'step over RST')
+            assert event.pc == 0x6001, event
+            regs = a.regs_get()
+            assert regs.pc == 0x6001 and regs.af >> 8 == 0x42, regs
+            assert regs.sp == 0xBF00, f'sp {regs.sp:#06x}'
+    finally:
+        shutil.rmtree(romdir, ignore_errors=True)
+
+
 def test_bad_frames_close_the_connection() -> None:
     """Acceptance 3: bad magic, a wrong major, an unknown kind, an oversized
     length, request id 0, a first frame that is not HELLO and a second HELLO
@@ -2234,7 +2942,7 @@ def test_recoverable_errors_keep_the_connection() -> None:
 
         # An opcode of a capability this server does not have yet, and one
         # that exists nowhere.
-        for opcode in (kc.OP_BP_LIST, 0x7FFF, kc.OP_ERROR):
+        for opcode in (kc.OP_KEY, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -2466,6 +3174,17 @@ TESTS: List[Callable[[], None]] = [
     test_a_client_that_stops_reading_is_told_what_it_missed,
     test_control_changes_reach_every_client,
     test_subscribers_do_not_change_what_the_machine_computes,
+    test_a_lease_does_not_end_a_text_ipc_walk,
+    test_a_run_for_a_frame_step_is_not_lost_to_a_lease,
+    test_a_breakpoint_hit_is_pushed_to_both_clients,
+    test_watch_and_io_hits_say_what_was_hit,
+    test_conditions_pass_counts_and_limits,
+    test_text_ipc_edits_reach_the_binary_clients,
+    test_step_over_out_and_to,
+    test_a_step_can_be_stopped_by_something_else,
+    test_a_kcpc_walk_runs_beside_other_actors_leases,
+    test_quit_during_a_walk,
+    test_step_over_a_restart_uses_a_prepared_rom,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

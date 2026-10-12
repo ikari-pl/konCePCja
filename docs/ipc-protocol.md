@@ -267,7 +267,7 @@ Memory access breakpoints. Trigger on read, write, or both within an address ran
 
 When a watchpoint triggers, the breakpoint hit response includes: `OK PC=XXXX WATCH=1 WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX`
 
-Watchpoint conditions can use the special variables `address`, `value`, and `previous` to inspect the access that triggered.
+Watchpoint conditions can use the special variables `address`, `value`, and `previous` to inspect the access that triggered. For a write, `value` is the byte being written and `previous` the byte it replaces; for a read, `value` is the byte read. An IO breakpoint's condition sees the port as `address` and, for an `OUT`, the byte sent as `value` (an `IN` has no value yet when the breakpoint is judged).
 
 ```bash
 # Break on any write to screen memory (first 256 bytes)

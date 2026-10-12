@@ -7,9 +7,11 @@ implementation lands in the slices listed in
 landed: so far slice 1, the server skeleton (`HELLO`, `PING`,
 `MACHINE_INFO`, `ERROR`), slice 2, the machine reads (`REGS_GET`,
 `MEM_INFO`, `MEM_READ`), slice 3, the control role and the machine
-writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`), and slice 4, run control and
+writes (`CONTROL`, `REGS_SET`, `MEM_WRITE`), slice 4, run control and
 the pushed events (`SUBSCRIBE`, `RUN_STATE`, `PAUSE`, `RUN`, `RESET`,
-`STEP` in and frames, and the events that tell every client about them).
+`STEP` in and frames, and the events that tell every client about them),
+and slice 5, breakpoints (`BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR`), their
+hits pushed with what was hit, and `STEP` over, out and to.
 Everything else is still design; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
@@ -210,12 +212,12 @@ text.
 | 5 | `UNKNOWN_OPCODE` | Not implemented by this server | stays open |
 | 6 | `BAD_PAYLOAD` | Payload too short or a field has an invalid value | stays open |
 | 7 | `NOT_CONTROLLER` | The request changes the machine and the client is an observer | stays open |
-| 8 | `BUSY` | The runner did not go idle in time, another pause lease kept the machine, or a step is already in progress | stays open |
+| 8 | `BUSY` | The runner did not go idle in time, another pause lease kept the machine, or a step is already in progress (a client's, the text IPC's or the DevTools') | stays open |
 | 9 | `OUT_OF_RANGE` | Address, length, bank or index outside what exists | stays open |
 | 10 | `TOO_LARGE` | The reply would exceed the frame limit | stays open |
 | 11 | `NOT_PRESENT` | The hardware is not fitted (ASIC on a 6128, a mouse that is off) | stays open |
 | 12 | `NOT_FOUND` | No such breakpoint, symbol or file | stays open |
-| 13 | `LIMIT_REACHED` | A table is full (the probe holds 32 exec, 16 watch, 8 I/O comparators) | stays open |
+| 13 | `LIMIT_REACHED` | The probe has no comparator left for it (it holds 32 exec, 16 watch, 8 I/O): a breakpoint that would be listed and never fire, or a step that could not plant its one-shot breakpoint | stays open |
 | 14 | `SHUTTING_DOWN` | The core is quitting | closed |
 | 15 | `INTERNAL` | A bug; the message says what | stays open |
 | 16 | `IDLE_TIMEOUT` | The controller sent no frame for 30 s ([section 7](#7-clients-roles-and-control)) | closed |
@@ -416,11 +418,13 @@ core already has.
 | Reader | 1 per client | Reads frames, runs requests, queues responses; starts and joins its writer and closes the socket |
 | Writer | 1 per client | Sends that client's queued responses and events |
 | Fan-out | 1 | Takes events from the ring and copies them to subscribed clients |
-| Walker | 1 | Runs steps that walk the machine (step over, out, to); arrives with slice 5 |
+| Walker | 1 | Runs steps that walk the machine (step over, out, to) |
 
-At most 19 threads with 8 clients (18 until the walker exists). They wait in `poll()` (`select()` on
+At most 19 threads with 8 clients. They wait in `poll()` (`select()` on
 Windows) for at most 50 ms at a time or on a condition variable; none of
-them spins. The sockets are non-blocking, so no thread is ever inside a
+them spins. (The walker sleeps on a condition variable until a step is
+armed. While it walks it looks at the machine every millisecond, as the text
+IPC's walks do.) The sockets are non-blocking, so no thread is ever inside a
 `recv()` or `send()` that only the other side can end, and each one sees
 its stop flag within 50 ms.
 
@@ -528,6 +532,15 @@ Breakpoint and symbol edits use the editing lists and their existing locks
 (`CpcStopCoordinationGuard`, the list mutators in `z80_view.cpp`). The runner
 copies those lists into the probe with `subcycle_bridge_sync_probe()` before
 each frame, as it does for edits made by the text IPC and DevTools.
+
+That lock is the pause mutex, and the runner holds it for the length of
+every machine frame. `BP_LIST` and the three edits therefore wait for the
+frame in flight on a running machine: a fraction of a millisecond most of the
+time, up to some 15 ms on an unpaced one (the measurement that made the
+machine gate read an atomic instead, see seam 2). That is fine for a request
+a person causes and wrong for a poll. A client does not poll `BP_LIST`: it
+asks after `EVT_BREAKPOINTS_CHANGED`, and after a stop if it shows hit
+counts.
 
 ### Seam 2: the frame boundary, for reads while running
 
@@ -641,10 +654,16 @@ log: only the last two numbers are leases.
 
 Breakpoint, watchpoint and I/O hits are already detected in one place:
 `subcycle_bridge_debug_sync()` consumes the probe's latch on the runner
-thread and calls the hit hook, which today ends in
-`KoncepcjaIpcServer::notify_breakpoint_hit()`. The binary server hangs off
-the same hook. `emu_handle_stop()` classifies the stop, and that is where the
-event gets its reason.
+thread and commits the stop with `cpc_commit_breakpoint_stop()`, which
+pauses the machine, announces the stop and calls the hit hook
+(`KoncepcjaIpcServer::notify_breakpoint_hit()`, the text IPC's `wait bp`
+latch), all under the pause mutex. The binary server hangs off that commit:
+the bridge hands it what the probe latched (which kind of hit, the address
+or port, the data bus) and the announcement carries it to
+`EVT_STOPPED`. The design had the server on the hit hook itself; the hook
+is given a `pc` and a watchpoint flag and nothing else, and the announcement
+of slice 4 was already the one place a stop is pushed from, so the details
+went there instead of into a second path.
 
 Posting an event is one push into a fixed-size ring (4096 entries). It
 never blocks on another thread, never allocates and makes no socket call. If
@@ -734,9 +753,60 @@ count, a breakpoint, somebody's pause) is delivered to the client that
 asked. A stop that ends the step early also disarms the counter: left armed,
 it would stop the machine again some frames after the next `RUN`.
 
-The walker thread, for the steps that walk the machine instruction by
-instruction with `z80_run_until_ephemeral()` (over, out, to), arrives with
-slice 5.
+The steps that walk the machine (over, out, to) need a thread, because a
+walk waits: for a one-shot breakpoint to be reached, for a deadline. The
+server has one **walker** thread for them. The request pauses the machine
+under a lease, arms the step, lets go of the lease and answers; the walker
+then runs the walk the text IPC and the DevTools already use
+(`z80_run_until_ephemeral()` for *to* and for a call that *over* skips,
+`z80_step_out_until()` for *out* and for a restart that *over* steps into,
+`z80_step_over()` around them).
+
+**A walk is one step, whatever it does to the run state on the way.** Step
+out runs the machine to a one-shot breakpoint for every call it skips and
+single-steps in between: a dozen resumes and stops for one request. The core
+calls that a walk (`CpcWalk` in `koncepcja.h`), and while one is open:
+
+- the stops on its way are not announced. The announced run state still
+  follows them, which is what the walk itself waits on;
+- the first time it runs a stopped machine is announced, as `EVT_RESUMED`
+  naming the step. A walk that only single-steps announces no resume, and
+  neither does one that starts from a running machine (the request's lease
+  paused it for a moment, as a write's would);
+- when it closes, the step ends with one `EVT_STOPPED`: `STEP_DONE`,
+  `STEP_TIMEOUT`, `STEP_STALLED`, or whatever else stopped the machine, as
+  what it was (the breakpoint or watchpoint that was hit, with its details;
+  somebody's pause).
+
+This lives in the core, not in the walker, so the walks of the text IPC
+(`step over`, `step out`, `step to`, `wait pc`) and of the DevTools are one
+step to a client too. Before slice 5 they were pushed as a resume and then
+the hit of a breakpoint nobody had set.
+
+**A walk waits for a stop, not for a pause** (beads-pja3). The walks used to
+poll the flag the runner obeys, which a pause lease also sets: another
+client's `MEM_WRITE` in the middle of a step over ended the walk short of
+its target, and the lease then set the machine running again behind the
+reply. Three things were wrong, and all three had to go:
+
+- the walk now waits on the announced run state, which only a stop somebody
+  asked for settles, and only once the runner has parked. It is an atomic:
+  the walk never takes the pause mutex beside a running machine;
+- the walk runs the machine through a call that waits a lease out (a lease
+  is one operation long) instead of a resume that is dropped while one is
+  held;
+- a lease that pauses a running machine and puts it back no longer starts a
+  new *resume epoch*. The walk remembers the epoch of its run to tell
+  "somebody stopped and restarted the machine under me" from "my run goes
+  on", and every lease looked like the first. A run that somebody asked for
+  while a lease was held is still a new epoch.
+
+**Somebody's pause ends a walk**, whoever pauses: `PAUSE`, the text IPC, the
+GUI. The machine may be stopped already at that moment (the walk is
+single-stepping), and then no stop follows that the walk could wait for; so
+the pause also raises a flag the walk looks at before every instruction and
+every run. The walk ends within a millisecond and its `EVT_STOPPED` is the
+pause's.
 
 So the longest any request can take is the pause lease's idle timeout. The
 one exception is `CONFIG_APPLY` (section 12), which waits for the machine to
@@ -745,7 +815,7 @@ be rebuilt on the main thread.
 ### Shutdown
 
 `stop()` closes the listening socket, sends `EVT_SHUTDOWN` to every client,
-aborts the walk, fails queued jobs with `SHUTTING_DOWN` (the gate is shut
+fails queued jobs with `SHUTTING_DOWN` (the gate is shut
 first, so a reader waiting for a frame boundary answers at once), closes the
 client sockets and joins every thread. No thread waits on anything without a
 deadline or an abort flag.
@@ -756,6 +826,11 @@ Each connection gets 200 ms to take its last frame and 200 ms more to close
 its side; the connections shut down side by side, so `stop()` returns in
 well under a second however many clients there are and whatever they were
 doing (measured: about 0.3 s with four connections, one of them mid-frame).
+
+The walker is stopped after the connections, when no reader is left to arm a
+step. A walk in progress is ended, not waited for: it gets the flag a pause
+would raise, and stops at its next look (measured: the core exits 0.3 s
+after `quit` with a walk in progress whose deadline is a minute away).
 
 ## 9. Events
 
@@ -821,11 +896,11 @@ always sent to the client that asked for the step.
 |-----:|-------|---------|
 | 8 | `frame` | |
 | 1 | `reason` | See below |
-| 1 | `access` | For watch and I/O hits: 1 = read, 2 = write; else 0 |
+| 1 | `access` | For watch and I/O hits: 1 = read or `IN`, 2 = write or `OUT`; else 0 |
 | 2 | `pc` | Program counter at the stop |
-| 2 | `addr` | Breakpoint address, watched address or I/O port; else 0 |
-| 1 | `value` | Data bus at a watch or I/O hit; else 0 |
-| 1 | `old_value` | Previous memory byte at a watch write; else 0 |
+| 2 | `addr` | Breakpoint address, the address that was read or written, or the I/O port that was addressed; else 0 |
+| 1 | `value` | The byte written, the byte read, or the byte an `OUT` sent; else 0 |
+| 1 | `old_value` | The byte a watched write replaced; else 0 |
 | 4 | `cause_client` | `client_id` whose request led to this stop, or 0 |
 | 4 | `cause_request` | That request's `id`, or 0 |
 
@@ -847,14 +922,36 @@ A step always ends with exactly one `EVT_STOPPED`, also when the machine was
 paused before it and is paused after it. Whatever ends a step, the event is
 sent to the client that asked for the step, subscribed or not:
 
-- the step finished, or ran into a breakpoint: `STEP_DONE` or `BREAKPOINT`,
-  and the `cause_*` fields name the step;
+- the step finished, timed out or stalled: `STEP_DONE`, `STEP_TIMEOUT`,
+  `STEP_STALLED`, and the `cause_*` fields name the step;
+- the step ran into a breakpoint, a watchpoint or an I/O breakpoint: that
+  reason with its details, and the `cause_*` fields name the step;
 - somebody paused: `PAUSED`, and the `cause_*` fields name the pause (a
   client's `PAUSE` request, or 0 for the text IPC and the GUI).
 
-Until the probe hook of slice 5, a breakpoint or watchpoint set through the
-text IPC or the DevTools is reported with its reason, `pc` and (for a
-breakpoint) `addr`; `access`, `value`, `old_value` and the I/O reason are 0.
+What a hit says, whoever set the breakpoint (this port, the text IPC, the
+DevTools):
+
+| Hit | `reason` | `addr` | `access` | `value` | `old_value` |
+|-----|----------|--------|---------:|---------|-------------|
+| Execution reached a breakpoint | `BREAKPOINT` | its address, which is also `pc` | 0 | 0 | 0 |
+| A watched byte was written | `WATCHPOINT` | the address written | 2 | the byte written | the byte it replaced |
+| A watched byte was read | `WATCHPOINT` | the address read | 1 | the byte read | 0 |
+| An `OUT` to a watched port | `IO_BREAKPOINT` | the port, all 16 bits | 2 | the byte sent | 0 |
+| An `IN` from a watched port | `IO_BREAKPOINT` | the port | 1 | 0 | 0 |
+
+- `addr` is the one address or port of the access, not the start of the
+  range or the comparator's value: a watch on 16 bytes says which of them,
+  an I/O breakpoint on `&7Fxx` says `&7F10`.
+- An `IN` has no `value`: the probe latches when the port is addressed, and
+  the device has not answered yet. (For the same reason the byte *read* at
+  a watchpoint is the byte in memory at that address, not the data bus,
+  which still floats then. The text IPC's `value` in a watch condition used
+  to be that floating `&FF` for reads; it is the byte read now.)
+- A watch or an I/O hit stops the machine inside the instruction that made
+  the access. `pc` is what `REGS_GET` then shows, somewhere in or just past
+  that instruction; it is not an address to disassemble from. An opcode
+  fetch is a read: a read watch on code stops on it.
 
 **`EVT_RESUMED` (`0x8002`)** — `u64 frame`, `u32 cause_client`,
 `u32 cause_request`.
@@ -871,7 +968,12 @@ shared-memory ring.
 (for drives, `dsk_media_generation()`), `str path` (empty if unknown).
 
 **`EVT_BREAKPOINTS_CHANGED` (`0x8006`)** — `u64 generation`
-(`z80_breakpoint_generation()`). Sent for edits from any source.
+(`z80_breakpoint_generation()`). Sent for every edit of the breakpoint,
+watchpoint and I/O breakpoint lists, from any source: `BP_ADD`, `BP_DEL` and
+`BP_CLEAR`, the text IPC's `bp`, `wp` and `iobp`, the DevTools. An edit a
+request made is sent to that client after its reply. Hit counts move without
+an event, and so does the one-shot breakpoint of a walk, which is never
+listed.
 
 **`EVT_SYMBOLS_CHANGED` (`0x8007`)** — `u64 generation`.
 
@@ -1083,11 +1185,16 @@ The register block is 32 bytes:
 
 - **`RUN_STATE` (`0x0104`)** — empty request. Reply: `stamp`,
   `u8 walk_active`, 3 reserved bytes, `u32 controller`.
-  `walk_active` is 1 while a step is in progress. The stamp is the run state
-  as announced ([section 8](#run-state-one-announced-value)); nothing waits
-  for the machine, so this is cheap to poll.
+  `walk_active` is 1 while a step is in progress: one of this port's, or a
+  walk or frame step of the text IPC or the DevTools. The stamp is the run
+  state as announced ([section 8](#run-state-one-announced-value)); nothing
+  waits for the machine, so this is cheap to poll. During a walk the stamp
+  follows the machine through the stops on the walk's way, which are not
+  pushed as events.
 - **`PAUSE` (`0x0100`)** — controller. Empty. Pauses, and ends a step in
-  progress. Reply: `stamp`. The request waits for the frame in flight to
+  progress: the walk stops at its next look, within a millisecond, and its
+  `EVT_STOPPED` is this pause's (reason `PAUSED`, naming this request) and
+  goes to the client that stepped as well. Reply: `stamp`. The request waits for the frame in flight to
   end, so the stamp is that of the stopped machine and `EVT_STOPPED` (reason
   `PAUSED`, naming this request) follows the reply at once. Pausing a
   machine that is already paused succeeds and announces nothing. Never
@@ -1114,16 +1221,17 @@ The register block is 32 bytes:
   | 1 | `mode` | 0 in, 1 over, 2 out, 3 to address, 4 frames |
   | 1 | reserved | 0 |
   | 2 | `addr` | Target for mode 3 |
-  | 4 | `count` | Instructions (modes 0, 1) or frames (mode 4); 0 means 1 |
-  | 4 | `timeout_ms` | Deadline for modes 1–3; 0 means 5000 |
+  | 4 | `count` | Instructions (modes 0, 1) or frames (mode 4); 0 means 1. Ignored by modes 2 and 3 |
+  | 4 | `timeout_ms` | Deadline for modes 1–3, for the whole step; 0 means 5000. Ignored by modes 0 and 4 |
 
   The machine is paused first if it was running. Reply: empty, sent once the
   step is armed. The outcome is an `EVT_STOPPED` whose `cause_request` is
   this request's `id`. Mode 0 completes before the reply is sent, and its
   event follows the reply.
 
-  - Modes 0 and 4 are implemented. Modes 1 to 3 answer `BAD_PAYLOAD` until
-    the server announces `CAP_BREAKPOINTS` (slice 5), as does a mode above 4.
+  - Modes 1 to 3 come with `CAP_BREAKPOINTS`: a server that does not
+    announce it answers them `BAD_PAYLOAD`, as every server does a mode
+    above 4.
   - **Mode 0** single-steps `count` instructions under the pause mutex, like
     a machine write ([seam 1](#seam-1-the-pause-lease-for-every-change)), so
     every pause and resume in the core waits for it. `count` is therefore at
@@ -1133,19 +1241,55 @@ The register block is 32 bytes:
   - **Mode 4** runs `count` frames, exactly as many as the text IPC's
     `step frame N`, and ends with reason `STEP_DONE`. From a paused machine
     `EVT_RESUMED` comes first. `count` is at most 2147483647.
-  - `BUSY` while a step is in progress (this client's, another's, or a frame
-    step of the text IPC), when the runner did not go idle, and for mode 0
-    when other lease holders kept the machine.
+  - **Modes 1 to 3** are walks ([section 8](#steps-that-take-emulated-time)).
+    The reply says the step is armed; the walker thread does the rest.
+    - **Mode 1, over**, `count` times: a `CALL` (taken or not) runs to the
+      instruction after it; an `RST` is stepped into and its handler run to
+      its return, because a CPC firmware restart carries operand bytes after
+      the opcode and does not come back to the byte after it; anything else
+      is single-stepped. `count` has no limit: the deadline bounds the step.
+    - **Mode 2, out**: runs until the routine the CPU is in returns, and
+      stops at the instruction after the call. Calls on the way run at full
+      speed; everything else is single-stepped, so a long loop in the
+      routine itself is slow (some 400 000 instructions a second).
+    - **Mode 3, to**: runs until an instruction at `addr` is about to
+      execute.
+    - They end with `STEP_DONE`; with `BREAKPOINT`, `WATCHPOINT` or
+      `IO_BREAKPOINT` when one of those stops the machine first (the event
+      then names the step in `cause_*` and the hit in the other fields); with
+      `STEP_TIMEOUT` at the deadline, the machine paused where it was; with
+      `PAUSED` when somebody pauses. `STEP_STALLED` means no machine was
+      there to walk. A walk cannot tell a routine that never returns from a
+      slow one, so `JP $` ends in `STEP_TIMEOUT`, never in a guess.
+    - A single-stepped instruction is blind to breakpoints, as in mode 0,
+      with one exception: step out stops, with `BREAKPOINT`, on a breakpoint
+      it steps onto, because the same breakpoint inside a call it skips
+      would stop it too.
+    - A walk needs one of the probe's 32 execution comparators for its
+      one-shot breakpoint: `LIMIT_REACHED` when breakpoints hold them all.
+      Nothing was stepped then.
+    - `EVT_RESUMED` naming the step comes first if the walk runs a machine
+      that was stopped ([section 8](#steps-that-take-emulated-time)).
+  - `BUSY` while a step is in progress (this client's, another's, or a walk
+    or frame step of the text IPC or the DevTools), when the runner did not
+    go idle, and for mode 0 when other lease holders kept the machine.
   - Checked in this order: `NOT_CONTROLLER`, `BAD_PAYLOAD` (too short,
-    mode), `OUT_OF_RANGE` (count), `BUSY`.
+    mode), `OUT_OF_RANGE` (count, mode 0 and 4), `BUSY`, `LIMIT_REACHED`.
 
 ### Breakpoints
 
 One family covers execution breakpoints, memory watchpoints and I/O
-breakpoints. Entries are identified the way the editing lists identify them:
-by kind and address (and mask, for I/O).
+breakpoints. They are the lists the text IPC (`bp`, `wp`, `iobp`) and the
+DevTools edit: an entry set there is listed here, and the other way round.
 
 `kind`: 0 = execution, 1 = memory watch, 2 = I/O.
+
+**An entry is named by its kind and its address**, and an I/O entry by its
+port and mask together. `BP_ADD` of a name that exists replaces that entry
+(a new condition, pass count, access or length), and its hit count starts
+again. The text IPC can hold several entries under one name (`bp add` twice
+with different conditions); here they are one, and `BP_ADD` or `BP_DEL` of
+that name replaces or removes all of them.
 
 An entry on the wire:
 
@@ -1154,22 +1298,59 @@ An entry on the wire:
 | 1 | `kind` | |
 | 1 | `access` | Watch and I/O: 1 read/in, 2 write/out, 3 both. Execution: 0 |
 | 2 | `addr` | Address, or port value for I/O |
-| 2 | `len_or_mask` | Watch: length of the range. I/O: port mask. Execution: 0 |
+| 2 | `len_or_mask` | Watch: length of the range, at least 1. I/O: port mask. Execution: 0 |
 | 2 | reserved | 0 |
-| 4 | `pass_count` | Break only after this many hits |
-| 4 | `hit_count` | Ignored in requests |
+| 4 | `pass_count` | Break only from this many hits on; 0 and 1 break on the first. At most 2147483647 |
+| 4 | `hit_count` | Hits counted so far. Ignored in requests |
 | `str` | `condition` | Expression in the text IPC's syntax; empty = always |
 
-- **`BP_LIST` (`0x0300`)** — empty request. Reply: `u64 generation`,
-  `u32 count`, then `count` entries.
+- A watch covers `addr` to `addr + len_or_mask − 1` and must end by
+  `0xFFFF`: nothing wraps. An I/O entry matches a port `p` when
+  `(p & mask) == (addr & mask)`; mask 0 matches every port.
+- A hit counts only if the entry's condition holds, and the entry breaks
+  once its count has reached `pass_count`. A condition is an expression of
+  the text IPC ([ipc-protocol.md](../ipc-protocol.md)): registers by name
+  (`a`, `bc`, `pc`, ...), `=`, `<>`, `<`, `and`, `or`, numbers in decimal
+  or `0x`/`&`/`$` hex, and for a watch or an I/O entry `address`, `value`
+  and `previous`. At an execution breakpoint `pc` is the breakpoint's
+  address.
+- **`BP_LIST` (`0x0300`)** — anyone. Empty request. Reply:
+  `u64 generation`, `u32 count`, then `count` entries: execution, then
+  watch, then I/O, each in the order they were set. `generation` is the
+  number `EVT_BREAKPOINTS_CHANGED` carries; a client whose list has that
+  generation is up to date, hit counts apart.
 - **`BP_ADD` (`0x0301`)** — controller. Request: one entry. Reply:
-  `u64 generation`. `BAD_PAYLOAD` if the condition does not parse,
-  `LIMIT_REACHED` if the probe table for that kind is full.
+  `u64 generation`.
+  - `BAD_PAYLOAD`: the payload is too short; `kind` is not 0 to 2; an
+    execution entry with `access` or `len_or_mask` not 0; a watch or I/O
+    entry whose `access` is not 1, 2 or 3; a watch of 0 bytes; a
+    `pass_count` above 2147483647; a condition that does not parse (the
+    message says what the parser said).
+  - `OUT_OF_RANGE`: a watch that passes `0xFFFF`.
+  - `LIMIT_REACHED`: the probe has no comparator left for it. The probe
+    arms 32 execution addresses, 16 watch ranges and 8 port comparators,
+    and the entries of every source share them; so does the one-shot
+    breakpoint of a walk in progress. An entry that the probe would not arm
+    is refused, here. (The text IPC accepts it, lists it, and it never
+    fires: beads-zqf3. An entry this port accepted is always armed, because
+    the lists are copied into the probe before anything else is.) Replacing
+    an entry that exists needs no new comparator and is never refused for
+    this.
+  - A refused request changes nothing: not the list, not the generation.
+  - Checked in this order: `NOT_CONTROLLER`, `BAD_PAYLOAD` (fields),
+    `OUT_OF_RANGE`, `BAD_PAYLOAD` (condition), `LIMIT_REACHED`.
 - **`BP_DEL` (`0x0302`)** — controller. Request: `u8 kind`, `u8` reserved,
   `u16 addr`, `u16 len_or_mask`, `u16` reserved. Reply: `u64 generation`.
-  `NOT_FOUND` if there is no such entry.
+  `len_or_mask` is the mask of an I/O entry and is ignored for the other
+  kinds. `NOT_FOUND` if there is no such entry; `BAD_PAYLOAD` for a `kind`
+  that is not 0 to 2.
 - **`BP_CLEAR` (`0x0303`)** — controller. Request: `u8 kind`, or `0xFF` for
-  all three. Reply: `u64 generation`.
+  all three (`BAD_PAYLOAD` for anything else). Reply: `u64 generation`. It
+  succeeds, and the generation moves, also when there was nothing to clear.
+
+A breakpoint set while the machine is paused is armed before the next frame
+runs. One set while it runs is armed from the next frame on, at most 20 ms
+later.
 
 Setting any breakpoint moves the Auto run-tier policy from Fast to Wake, as
 it does for breakpoints set any other way.
@@ -1473,7 +1654,7 @@ test-first against a real `-H` core.
 | 2 | Machine reads (**landed**, beads-3o1.2) | The machine gate and `kcpc_service_frame()`; `REGS_GET`, `MEM_INFO`, `MEM_READ` with the spaces `CPU`, `CPU_RAM`, `PHYS_RAM`, `ROM_LOWER`, `ROM_UPPER` (`ASIC_PAGE` comes with slice 7); `MACHINE_INFO` moved onto the gate; `CAP_MACHINE_READ` and `CAP_MEM_ROM` |
 | 3 | Control and writes (**landed**, beads-3o1.3) | Roles, `CONTROL` with forced takeover, the controller idle timeout and `IDLE_TIMEOUT`; `REGS_SET`, `MEM_WRITE` to `CPU_RAM` and `PHYS_RAM`; `CAP_MACHINE_WRITE`; `REGS_GET` shows the breakpoint's address at a breakpoint |
 | 4 | Run control and events (**landed**, beads-3o1.4) | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED`; `CAP_RUN_CONTROL` and `CAP_EVENTS` |
-| 5 | Breakpoints and pushed hits | `BP_*`, hits through the probe hook, `EVT_BREAKPOINTS_CHANGED`; the walker and `STEP` over, out, to |
+| 5 | Breakpoints and pushed hits (**landed**, beads-3o1.5) | `BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR` on the editing lists the text IPC and the DevTools share; `EVT_STOPPED` says what was hit; `EVT_BREAKPOINTS_CHANGED` for edits from any source; the walker and `STEP` over, out, to; walks announced as one step, whoever walks; `CAP_BREAKPOINTS` |
 | 6 | Input | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`; keys released when control is lost |
 | 7 | DevTools data | `CHIP_GET`, `ASIC_PAGE`, `SYM_*`, `FB_INFO`, `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` |
 | 8 | Exit test and documentation | The exit test of beads-3o1, the documentation brought in line with the code. **No freeze:** the server stays at major 0 |
@@ -1510,6 +1691,16 @@ Source layout the slices should follow:
   `CpcRunCause`, `cpc_set_run_state_observer()`, `cpc_run()`,
   `cpc_runner_parked()`. `test/run_state_announce_test.cpp` covers the
   reconciliation without any server.
+- `src/koncepcja.h`, `src/kon_cpc_ja.cpp` again — walks: `CpcWalk`,
+  `cpc_walk_run()`, `cpc_walk_verdict()`, `cpc_walk_interrupted()`; and what
+  a hit carries to its announcement (`CpcRunCause::addr`, `access`, `value`,
+  `old_value`, through `cpc_commit_breakpoint_stop()`).
+- `src/z80_view.{h,cpp}` — the breakpoint lists as one family (`z80_bp_put()`,
+  `z80_bp_remove()`, `z80_bp_clear()`, `z80_bp_list()`), the hook every edit
+  of the lists calls (`z80_set_breakpoints_changed_hook()`), and the walks
+  (`z80_run_until_ephemeral()`, `z80_step_out_until()`, `z80_step_over()`).
+  `test/z80_bp_family_test.cpp` covers the lists and their limits without a
+  machine.
 - `src/subcycle_bridge.{h,cpp}` — `subcycle_bridge_write_regs()`, the one
   place a register edit reaches the machine from (this port by mask, the
   text IPC and the DevTools by what differs in the host view), and
@@ -1631,3 +1822,29 @@ Recorded so a reviewer can disagree with one without reading the rest.
 28. **`EVT_FRAME` is sent for multiples of the interval** (slice 4), not
     every Nth frame since the subscription, so clients agree on which frames
     they saw and the runner posts only the frames somebody is due.
+29. **A breakpoint is named by kind and address, and adding one that exists
+    replaces it** (slice 5). The design left open what a second `BP_ADD` at
+    an address does. The text IPC adds a second entry; a frontend that
+    edits a condition wants the entry changed, and with names that are
+    unique the probe's limits can be counted.
+30. **A breakpoint the probe would not arm is refused** (slice 5), with
+    `LIMIT_REACHED`, and so is a step that could not plant its one-shot
+    breakpoint. Accepting what never fires is beads-zqf3.
+31. **A stop's details ride on the announcement, not on the hit hook**
+    (slice 5). The design hung the server on the text IPC's hit hook. One
+    path that pushes stops is enough; the hook keeps its two arguments.
+32. **A walk is announced as one step, in the core** (slice 5): one
+    `EVT_RESUMED` at most and one `EVT_STOPPED`, for the walks of this
+    port, of the text IPC and of the DevTools alike.
+33. **A walk waits on the announced run state** (slice 5, beads-pja3), and
+    a pause lease does not start a new resume epoch. Another actor's read or
+    write must not end somebody's step.
+34. **Somebody's pause ends a walk through a flag of its own** (slice 5): a
+    walk single-steps a machine that is already stopped, where a pause
+    changes nothing it could wait for.
+35. **An `IN` reports no value, and a read watch reports the byte in
+    memory** (slice 5). The probe latches before the device or the memory
+    drives the data bus; the bus then reads `&FF` whatever is there.
+36. **`STEP` over has no instruction limit** (slice 5). Step in is limited
+    because it holds the pause mutex throughout; a walk does not, and has a
+    deadline.
