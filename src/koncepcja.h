@@ -951,6 +951,19 @@ int emulator_init();
 // Restores whatever run state the caller was in. Returns emulator_init()'s
 // code; non-zero means the machine is NOT usable and is left paused.
 int koncpc_rebuild_machine();
+
+// Put another cartridge in the port of the built machine. THE way to load a
+// cartridge after boot: the menus, drag and drop and the text IPC all come
+// here. Loading frees the image the board reads through a raw pointer, so it
+// is done with the machine held, the board is pointed at the new image, and
+// the machine is reset to boot it. A file that is refused changes nothing:
+// the cartridge that was in the port stays, as does CPC.cartridge.file.
+// Returns 0, the loader's ERR_* code, or ERR_Z80_NOT_IDLE. Restores the
+// caller's run state.
+int cpc_cartridge_insert(const std::string& path);
+// The load and the re-attach alone, without the reset, for a caller that
+// holds the machine itself (a pause lease that is idle).
+int cpc_cartridge_swap(const std::string& path);
 // Called after every rebuild that worked, on the thread that rebuilt, while
 // that thread still holds its pause lease: nothing clocks the new machine
 // yet, so the hook may read it. `was_paused` is the run state the rebuild is

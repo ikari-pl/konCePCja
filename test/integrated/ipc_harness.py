@@ -2646,6 +2646,89 @@ def read_lower_rom_signature(ipc: KoncepcjaIPC, addr: int = 0x02E0,
         ipc.run()
 
 
+def test_cartridge_hotload_reattaches():
+    """A cartridge loaded into a running 6128+ is the one the board reads.
+
+    beads-lrdy: the board holds the cartridge image by a raw pointer, and
+    loading a cartridge frees that image and allocates another. `load x.cpr`
+    never told the board, which went on reading released memory; it looked
+    fine because the allocator usually hands the same block back, so the
+    proof that counts is this test against an AddressSanitizer build. A file
+    that was refused left the board with no image at all.
+
+    The second cartridge is the system one with one byte of the character
+    set changed, so the machine still boots and the lower ROM says which
+    cartridge the board is reading.
+    """
+    print("Running cartridge hot-load test...")
+    window, patch = 0x3C78, 0x3C7A
+
+    system = PROJECT_ROOT / 'rom' / 'system.cpr'
+    image = bytearray(system.read_bytes())
+    bank0 = image.find(b'cb00') + 8  # chunk id, 32-bit length, then the bank
+    if bank0 < 8:
+        print("FAIL: rom/system.cpr has no cb00 chunk")
+        return False
+    original = bytes(image[bank0 + window:bank0 + window + 8]).hex().upper()
+    image[bank0 + patch] ^= 0xA5
+    patched = bytes(image[bank0 + window:bank0 + window + 8]).hex().upper()
+
+    def lower_rom(ipc: KoncepcjaIPC) -> Optional[str]:
+        sig = read_lower_rom_signature(ipc, window, 8)
+        return None if sig is None else sig.replace(' ', '')
+
+    tmp = Path(tempfile.mkdtemp(prefix='koncpc_cart_'))
+    try:
+        other = tmp / 'other.cpr'
+        other.write_bytes(image)
+        refused = tmp / 'refused.cpr'
+        refused.write_bytes(b'RIFF\x04\x00\x00\x00nope')
+
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', 'system.model=3'):
+                print("FAIL: Could not start 6128+")
+                return False
+            ipc = emu.ipc
+            if lower_rom(ipc) != original:
+                print("FAIL: the 6128+ did not boot the system cartridge")
+                return False
+
+            steps = (
+                (other, True, patched, 'the new cartridge'),
+                (refused, False, patched, 'the cartridge it had (refused file)'),
+                (system, True, original, 'the system cartridge again'),
+            )
+            for path, accepted, expected, what in steps:
+                ok, resp = ipc.send_command(f'load {path}')
+                if ok != accepted:
+                    print(f"FAIL: load {path.name}: {resp}")
+                    return False
+                # Frames of the machine, on whatever image the board holds.
+                if not ipc.wait_vbl(25):
+                    print(f"FAIL: no frames after load {path.name}")
+                    return False
+                ipc.run()
+                seen = lower_rom(ipc)
+                if seen != expected:
+                    print(f"FAIL: after load {path.name} the lower ROM reads "
+                          f"{seen}, expected {expected} ({what})")
+                    return False
+                if accepted:
+                    continue
+                # A rebuild loads the cartridge the config names, and gives
+                # up on the whole emulator when that fails: the refused file
+                # must not have stayed behind as the configured cartridge.
+                ok, resp = ipc.send_command('config apply')
+                if not ok or lower_rom(ipc) != expected:
+                    print(f"FAIL: rebuild after a refused cartridge: {resp}")
+                    return False
+
+        print("PASS: Cartridge hot-load test")
+        return True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_model_change_rebuild():
     """Model changes must rebuild the board, not just mutate config state.
 
@@ -3969,6 +4052,7 @@ def main():
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
+        test_cartridge_hotload_reattaches,
         test_profile_load_rebuilds_machine,
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
