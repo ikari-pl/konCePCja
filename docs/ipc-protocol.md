@@ -11,8 +11,9 @@ pushed events, bulk memory) is specified in
 [protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md) and is being
 implemented slice by slice. Its server listens on its own port (6545 by
 default, `ports.binary` in the manifest below; `[ipc] binary_port_enabled=0`
-turns it off) and so far answers `HELLO`, `PING` and `MACHINE_INFO`. It does
-not replace this protocol.
+turns it off); that document lists what it answers so far. It pushes run-state
+changes to its clients whoever caused them, a `pause` or `step` sent here
+included. It does not replace this protocol.
 
 The port is only the default: every server probes forward when its port is
 taken, so a stale instance can hold 6543 and the new one lands elsewhere. Read

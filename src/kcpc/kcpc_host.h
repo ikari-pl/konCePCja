@@ -59,3 +59,29 @@ kcpc::Status kcpc_host_regs_set(std::uint32_t mask, const kcpc::Regs& values,
 kcpc::Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
                                  const std::uint8_t* data, std::size_t len,
                                  kcpc::Stamp& stamp);
+
+// Run control (section 12): RUN_STATE, PAUSE, RUN, RESET, STEP. None waits
+// for emulated time. `client` and `request` name the request in the events
+// it leads to. What each one settles is announced by the core
+// (cpc_set_run_state_observer() in koncepcja.h) and pushed to the clients
+// from there, so a pause from the text IPC or the GUI is pushed the same way.
+//
+// The run state as last announced and whether a step is in progress. Reads
+// two atomics: safe to poll beside a running machine.
+kcpc::Status kcpc_host_run_state(kcpc::Stamp& stamp, bool& walk_active);
+// Stops the machine and ends a step in progress. Returns once the frame in
+// flight has ended, so the stamp is that of a stopped machine.
+kcpc::Status kcpc_host_pause(std::uint32_t client, std::uint32_t request,
+                             kcpc::Stamp& stamp);
+// Runs the machine. Never refused: while another actor holds a pause lease
+// the machine runs when the last holder lets go, and the stamp still says
+// paused.
+kcpc::Status kcpc_host_run(std::uint32_t client, std::uint32_t request,
+                           kcpc::Stamp& stamp);
+// Resets the CPC and leaves it running, or stopped when `stay_paused`.
+kcpc::Status kcpc_host_reset(std::uint32_t client, std::uint32_t request,
+                             bool stay_paused, kcpc::Stamp& stamp);
+// Mode 0 single-steps `count` instructions before it returns; mode 4 arms
+// `count` frames and returns. kBusy while a step is in progress.
+kcpc::Status kcpc_host_step(std::uint32_t client, std::uint32_t request,
+                            const kcpc::StepRequest& step);

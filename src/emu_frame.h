@@ -79,3 +79,13 @@ inline bool frameskip_should_skip(bool prev_complete, bool limit,
 // The stop half of emu_run_frame: classify an EC_BREAKPOINT exit from
 // z80.breakpoint_reached / watchpoint_reached / step_in. Exposed for tests.
 EmuFrameResult emu_handle_stop();
+
+// The one frame-step counter, for a caller outside the text IPC server (KCPC's
+// STEP frames). The frame runner counts it down in its epilogue and pauses
+// the machine when it reaches zero, as it does for the text IPC's
+// `step frame`. Arm it with the machine held under a pause lease.
+bool emu_frame_step_active();
+void emu_arm_frame_step(int frames);
+// Disarms it without pausing anything. Only atomics: callable under the
+// pause mutex.
+void emu_cancel_frame_step();

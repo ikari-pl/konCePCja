@@ -4,8 +4,10 @@
 //
 // The contract is docs/protocol/kcpc-binary-v1.md. So far: framing, HELLO,
 // PING, MACHINE_INFO, ERROR (slice 1), the machine reads REGS_GET, MEM_INFO,
-// MEM_READ (slice 2), and the control role with the machine writes REGS_SET
-// and MEM_WRITE (slice 3). At most one client is the controller.
+// MEM_READ (slice 2), the control role with the machine writes REGS_SET
+// and MEM_WRITE (slice 3), and run control with the pushed events: SUBSCRIBE,
+// RUN_STATE, PAUSE, RUN, RESET, STEP and the fan-out thread (slice 4). At
+// most one client is the controller.
 //
 // The server knows nothing about the emulator. What it reports about the
 // machine comes through the callbacks of ServerConfig, so the same class runs
@@ -13,6 +15,7 @@
 // fake machine). It uses std::thread and net_socket.h and nothing from SDL.
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -22,6 +25,7 @@
 #include <string>
 #include <thread>
 
+#include "kcpc/kcpc_events.h"
 #include "kcpc/kcpc_proto.h"
 #include "net_socket.h"
 
@@ -57,6 +61,23 @@ using RegsSetFn = std::function<Status(std::uint32_t mask, const Regs& values,
 using MemWriteFn = std::function<Status(
     const MemWriteRequest&, const std::uint8_t* data, std::size_t len, Stamp&)>;
 
+// Run control. Each is called on a reader thread and returns without waiting
+// for emulated time: a step answers once it is armed, and how it ended
+// arrives as an event (Server::post()). `cause` names the request, for the
+// events it leads to.
+struct Cause {
+  std::uint32_t client = 0;
+  std::uint32_t request = 0;
+};
+// The run state as last announced, and whether a step is in progress. Must
+// not wait for the machine: clients poll it.
+using RunStateFn = std::function<Status(Stamp&, bool& walk_active)>;
+using PauseFn = std::function<Status(const Cause&, Stamp&)>;
+using RunFn = std::function<Status(const Cause&, Stamp&)>;
+using ResetFn = std::function<Status(const Cause&, bool stay_paused, Stamp&)>;
+// The server has checked the mode and the count (0 already made 1).
+using StepFn = std::function<Status(const Cause&, const StepRequest&)>;
+
 struct ServerConfig {
   int base_port = kDefaultPort;
   int probe_count = kPortProbeCount;
@@ -68,6 +89,10 @@ struct ServerConfig {
   // A client that lets this many bytes of responses pile up unread is
   // disconnected (section 9).
   std::size_t max_queue_bytes = 32U << 20;
+  // Events are queued for a client only while its queue holds less than
+  // this. Beyond it they are dropped for that client alone, which is told
+  // how many with one EVT_OVERRUN once there is room again.
+  std::size_t max_event_queue_bytes = 4U << 20;
   std::string server_version;
   std::uint32_t pid = 0;
   MachineInfoFn machine_info;
@@ -82,6 +107,13 @@ struct ServerConfig {
   // set. Without them every client is an observer.
   RegsSetFn regs_set;
   MemWriteFn mem_write;
+  // The CAP_RUN_CONTROL group: RUN_STATE, PAUSE, RUN, RESET and STEP exist,
+  // and HELLO announces the capability, only when all five are set.
+  RunStateFn run_state;
+  PauseFn pause;
+  RunFn run;
+  ResetFn reset;
+  StepFn step;
   // A controller that has sent no frame for this long is disconnected, so
   // that a client that hangs does not keep control for ever (section 7).
   int controller_idle_timeout_ms = 30000;
@@ -112,12 +144,29 @@ class Server {
     return controller_.load(std::memory_order_acquire);
   }
 
+  // Hands an event to the fan-out thread, which copies it to the clients
+  // that subscribed. Callable from any thread, the frame runner included:
+  // one lock-free push into a fixed ring, no allocation, no socket call. A
+  // full ring loses the event; the clients are then told with EVT_OVERRUN.
+  // Does nothing while the server is not running.
+  void post(const Event& event);
+  // Whether any client is due an EVT_FRAME for this frame: the runner asks
+  // before it posts one. One relaxed load when nobody subscribed to frames.
+  bool frame_due(std::uint64_t frame) const {
+    std::uint32_t const stride = frame_stride_.load(std::memory_order_relaxed);
+    return stride != 0 && frame % stride == 0;
+  }
+
  private:
   class Connection;
 
   void accept_loop();
   void accept_pending();
   void reap_finished();
+  void fan_out_loop();
+  // Recomputes which frames the runner has to post, from every client's
+  // subscription.
+  void update_frame_stride();
 
   ServerConfig config_;
   std::atomic<bool> running_{false};
@@ -130,6 +179,17 @@ class Server {
   std::thread acceptor_;
   std::mutex connections_mutex_;
   std::list<std::unique_ptr<Connection>> connections_;
+
+  EventRing ring_;
+  std::thread fan_out_;
+  std::mutex fan_out_mutex_;
+  std::condition_variable fan_out_cv_;
+  // True while the fan-out thread is, or is about to be, asleep: a producer
+  // then wakes it. Otherwise posting is the push alone.
+  std::atomic<bool> fan_out_sleeping_{false};
+  // The greatest common divisor of the frame intervals clients asked for; 0
+  // when nobody wants EVT_FRAME.
+  std::atomic<std::uint32_t> frame_stride_{0};
 };
 
 }  // namespace kcpc

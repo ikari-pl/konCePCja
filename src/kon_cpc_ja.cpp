@@ -866,7 +866,7 @@ int emulator_patch_ROM() {
 }
 }  // namespace
 
-void emulator_reset() {
+void emulator_reset(const CpcRunCause& cause) {
   // Reset mutates the entire board. Under engine=1 the Z80 runs on its own
   // thread, so board_reset() must not race a concurrent run_frame() — a torn
   // reset can leave the machine unable to complete a frame, and the Fast tier
@@ -964,6 +964,9 @@ void emulator_reset() {
     set_osd_message("Machine reset");
   }
 
+  // Before the lease lets go: a client hears of the reset first and of the
+  // run state it left behind second.
+  cpc_announce_reset(cause);
   lease.restore_run_state();  // a running caller keeps running post-reset
 }
 
@@ -1780,6 +1783,24 @@ unsigned g_pause_lease_count = 0;
 // CpcPauseLease::restore_run_state() must not run it again.
 bool g_lease_chain_was_paused = false;
 uint64_t cpc_resume_unlocked();
+
+// The announced run state (koncepcja.h). Everything here is written under
+// g_pause_mutex; the atomics are there for the lock-free readers.
+std::atomic<bool> g_announced_stopped{false};
+// A stop that was asked for while a frame was running: the runner announces
+// it when it parks (cpc_runner_parked()).
+std::atomic<bool> g_stop_unannounced{false};
+std::atomic<bool> g_step_active{false};
+CpcRunStateObserver g_run_state_observer = nullptr;
+// What the latest stop request and the latest run request said about
+// themselves. The latest one stands, as it does for the lease chain.
+CpcRunCause g_stop_note;
+CpcRunCause g_run_note;
+// The step in progress: who is told when it ends.
+uint32_t g_step_client = 0;
+uint32_t g_step_request = 0;
+
+void cpc_reconcile_run_state_locked();
 }  // namespace
 
 // External API consumed by other translation units (the step-out walk in
@@ -1806,8 +1827,89 @@ bool cpc_wait_until_idle(int timeout_ms) {
 namespace {
 // A stop somebody asked for, as opposed to the pause a lease applies for the
 // length of its own operation.
-void cpc_stop_requested_locked() {
+void cpc_stop_requested_locked(const CpcRunCause& cause) {
   if (g_pause_lease_count > 0) g_lease_chain_was_paused = true;
+  g_stop_note = cause;
+  g_run_note = {};
+  if (cause.step && !g_step_active.load(std::memory_order_relaxed)) {
+    g_step_client = cause.client;
+    g_step_request = cause.request;
+    g_step_active.store(true, std::memory_order_release);
+  }
+}
+
+// A run somebody asked for.
+void cpc_run_requested_locked(const CpcRunCause& cause) {
+  g_run_note = cause;
+  g_stop_note = {};
+  if (cause.step) {
+    g_step_client = cause.client;
+    g_step_request = cause.request;
+    g_step_active.store(true, std::memory_order_release);
+  }
+}
+
+void cpc_emit_run_event(const CpcRunEvent& event) {
+  if (g_run_state_observer != nullptr) g_run_state_observer(event);
+}
+
+// Compares the run state that now holds with the one last announced and
+// tells the observer when they differ. Called wherever the state settles.
+void cpc_reconcile_run_state_locked() {
+  // A lease holds the machine: whatever CPC.paused says is the lease's, and
+  // the holder that lets go last settles the state.
+  if (g_pause_lease_count > 0) return;
+  if (!CPC.paused) {
+    g_stop_unannounced.store(false, std::memory_order_release);
+    g_stop_note = {};
+    if (g_announced_stopped.load(std::memory_order_relaxed)) {
+      g_announced_stopped.store(false, std::memory_order_release);
+      CpcRunEvent event;
+      event.kind = CpcRunEventKind::Resumed;
+      event.cause_client = g_run_note.client;
+      event.cause_request = g_run_note.request;
+      cpc_emit_run_event(event);
+    }
+    g_run_note = {};
+    return;
+  }
+  bool const step = g_step_active.load(std::memory_order_relaxed);
+  if (g_announced_stopped.load(std::memory_order_relaxed) && !step) {
+    g_stop_note = {};
+    return;
+  }
+  // Stopped, but has it happened? A frame that was in flight when the stop
+  // was asked for holds g_z80_idle false until it has ended (the handshake
+  // of emu_frame.h, as in cpc_read_while_stopped()). On the runner itself
+  // the machine is not being clocked whenever this code runs.
+  if (!t_frame_turn && !g_z80_idle.load(std::memory_order_seq_cst)) {
+    g_stop_unannounced.store(true, std::memory_order_release);
+    return;
+  }
+  g_stop_unannounced.store(false, std::memory_order_release);
+  g_announced_stopped.store(true, std::memory_order_release);
+  CpcRunEvent event;
+  event.kind = CpcRunEventKind::Stopped;
+  event.reason = g_stop_note.reason;
+  event.cause_client = g_stop_note.client;
+  event.cause_request = g_stop_note.request;
+  event.pc =
+      g_stop_note.has_pc ? g_stop_note.pc : subcycle_bridge_shown_regs().pc;
+  if (step) {
+    event.step_client = g_step_client;
+    // A step that ran into a breakpoint, or simply finished: the stop is
+    // the step's. Somebody's pause is the pauser's.
+    if (event.reason != CpcStopReason::Paused && event.cause_client == 0) {
+      event.cause_client = g_step_client;
+      event.cause_request = g_step_request;
+    }
+    g_step_client = 0;
+    g_step_request = 0;
+    g_step_active.store(false, std::memory_order_release);
+  }
+  g_stop_note = {};
+  g_run_note = {};
+  cpc_emit_run_event(event);
 }
 
 void cpc_pause_locked() {
@@ -1876,6 +1978,7 @@ void CpcPauseLease::release() {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
+  cpc_reconcile_run_state_locked();
 }
 
 void CpcPauseLease::restore_run_state() {
@@ -1899,22 +2002,25 @@ void CpcPauseLease::restore_run_state() {
   if (!g_lease_chain_was_paused && g_pause_lease_count == 0) {
     cpc_resume_unlocked();
   }
+  cpc_reconcile_run_state_locked();
 }
 
-void CpcPauseLease::release_stopped() {
+void CpcPauseLease::release_stopped(const CpcRunCause& cause) {
   if (!active_) return;
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
-  cpc_stop_requested_locked();
+  cpc_stop_requested_locked(cause);
   cpc_pause_locked();
+  cpc_reconcile_run_state_locked();
 }
 
-void CpcPauseLease::release_running() {
+void CpcPauseLease::release_running(const CpcRunCause& cause) {
   if (!active_) return;
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) --g_pause_lease_count;
   active_ = false;
+  cpc_run_requested_locked(cause);
   if (g_pause_lease_count > 0) {
     // Not ours to run yet. The last holder's restore_run_state() will.
     g_lease_chain_was_paused = false;
@@ -1922,6 +2028,7 @@ void CpcPauseLease::release_running() {
   }
   CPC.paused = true;  // as in restore_run_state()
   cpc_resume_unlocked();
+  cpc_reconcile_run_state_locked();
 }
 
 bool CpcPauseLease::read_alone(const std::function<void()>& read,
@@ -1966,10 +2073,37 @@ uint64_t cpc_resume_epoch() {
   return g_resume_epoch;
 }
 
-void cpc_pause() {
+void cpc_pause(const CpcRunCause& cause) {
   std::scoped_lock const lock(g_pause_mutex);
-  cpc_stop_requested_locked();
+  cpc_stop_requested_locked(cause);
   cpc_pause_locked();
+  cpc_reconcile_run_state_locked();
+}
+
+void cpc_set_run_state_observer(CpcRunStateObserver observer) {
+  std::scoped_lock const lock(g_pause_mutex);
+  g_run_state_observer = observer;
+}
+
+bool cpc_announced_stopped() {
+  return g_announced_stopped.load(std::memory_order_acquire);
+}
+
+bool cpc_step_active() { return g_step_active.load(std::memory_order_acquire); }
+
+void cpc_announce_reset(const CpcRunCause& cause) {
+  std::scoped_lock const lock(g_pause_mutex);
+  CpcRunEvent event;
+  event.kind = CpcRunEventKind::Reset;
+  event.cause_client = cause.client;
+  event.cause_request = cause.request;
+  cpc_emit_run_event(event);
+}
+
+void cpc_runner_parked() {
+  if (!g_stop_unannounced.load(std::memory_order_relaxed)) return;
+  std::scoped_lock const lock(g_pause_mutex);
+  cpc_reconcile_run_state_locked();
 }
 
 namespace {
@@ -1999,13 +2133,30 @@ uint64_t cpc_resume() {
   // finishes. Concurrent IPC/UI Run must not clear pause mid-wait (unbounded
   // idle spin) or mid-teardown (use-after-free on shared state).
   if (g_pause_lease_count > 0) return g_resume_epoch;
-  return cpc_resume_unlocked();
+  uint64_t const epoch = cpc_resume_unlocked();
+  cpc_reconcile_run_state_locked();
+  return epoch;
 }
 
-bool cpc_resume_applied() {
+bool cpc_resume_applied(const CpcRunCause& cause) {
   std::scoped_lock const lock(g_pause_mutex);
   if (g_pause_lease_count > 0) return false;
+  cpc_run_requested_locked(cause);
   cpc_resume_unlocked();
+  cpc_reconcile_run_state_locked();
+  return true;
+}
+
+bool cpc_run(const CpcRunCause& cause) {
+  std::scoped_lock const lock(g_pause_mutex);
+  cpc_run_requested_locked(cause);
+  if (g_pause_lease_count > 0) {
+    // As release_running(): the last holder's restore_run_state() runs it.
+    g_lease_chain_was_paused = false;
+    return false;
+  }
+  cpc_resume_unlocked();
+  cpc_reconcile_run_state_locked();
   return true;
 }
 
@@ -2013,8 +2164,9 @@ bool cpc_pause_if_epoch(uint64_t expected_epoch) {
   std::scoped_lock const lock(g_pause_mutex);
   if (expected_epoch != g_resume_epoch) return false;
 
-  cpc_stop_requested_locked();
+  cpc_stop_requested_locked({});
   cpc_pause_locked();
+  cpc_reconcile_run_state_locked();
   return true;
 }
 
@@ -2025,8 +2177,14 @@ bool cpc_commit_breakpoint_stop(uint64_t hit_epoch, uint64_t arming_generation,
       arming_generation != z80_breakpoint_generation())
     return false;
 
-  cpc_stop_requested_locked();
+  CpcRunCause cause;
+  cause.reason =
+      watchpoint ? CpcStopReason::Watchpoint : CpcStopReason::Breakpoint;
+  cause.has_pc = true;
+  cause.pc = pc;
+  cpc_stop_requested_locked(cause);
   cpc_pause_locked();
+  cpc_reconcile_run_state_locked();
   z80_call_breakpoint_hit_hook(pc, watchpoint, arming_generation);
   return true;
 }
@@ -4172,11 +4330,22 @@ void frame_epilogue() {
   // with, so the current serial is that frame's.
   if (g_ipc->frame_step_tick(
           g_kbd_publish_serial.load(std::memory_order_relaxed))) {
-    cpc_pause();
+    CpcRunCause done;
+    done.reason = CpcStopReason::StepDone;
+    cpc_pause(done);
     g_ipc->notify_frame_step_done();
   }
 }
 }  // namespace
+
+bool emu_frame_step_active() { return g_ipc->frame_step_active.load(); }
+
+void emu_arm_frame_step(int frames) { g_ipc->arm_frame_step(frames); }
+
+void emu_cancel_frame_step() {
+  g_ipc->frame_step_active.store(false);
+  g_ipc->frame_step_remaining.store(0);
+}
 
 EmuFrameResult emu_handle_stop() {
   if (z80.breakpoint_reached || z80.watchpoint_reached) {
@@ -4195,7 +4364,9 @@ EmuFrameResult emu_handle_stop() {
     // Step In completed (one instruction) or Step Out completed (RET
     // reached). cpc_pause(), not a bare CPC.paused write: g_emu_paused and
     // the audio pause must follow (the -H loop used to skip both).
-    cpc_pause();
+    CpcRunCause done;
+    done.reason = CpcStopReason::StepDone;
+    cpc_pause(done);
     z80.step_in = 0;
     return EmuFrameResult::kStopped;
   }
@@ -4264,6 +4435,7 @@ EmuFrameTurn::EmuFrameTurn(bool idle_after) : idle_after_(idle_after) {
   g_z80_idle.store(false, std::memory_order_seq_cst);
   if (g_emu_paused.load(std::memory_order_seq_cst)) {
     g_z80_idle.store(true, std::memory_order_release);
+    cpc_runner_parked();  // a stop asked for mid-frame has happened now
     return;
   }
   entered_ = true;
@@ -4317,6 +4489,7 @@ void z80_thread_main() {
       // Mark idle so pause-lease holders know we are safe to
       // inspect.
       g_z80_idle.store(true, std::memory_order_release);
+      cpc_runner_parked();  // a stop asked for mid-frame has happened now
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }

@@ -9,6 +9,7 @@
 #include <functional>
 #include <thread>
 
+#include "emu_frame.h"
 #include "hw/memory.h"
 #include "hw/z80.h"
 #include "iui_host.h"
@@ -19,6 +20,7 @@
 #include "startup_manifest.h"
 #include "subcycle/machine.h"
 #include "subcycle_bridge.h"
+#include "z80_view.h"
 
 extern t_CPC CPC;
 extern t_CRTC CRTC;
@@ -45,7 +47,14 @@ constexpr int kLeaseAloneWaitMs = 250;
 // threads that both wait to be alone each keep the other from being it, until
 // one gives up (a writer and a reader that had fallen back to a lease did
 // exactly that, and the write answered BUSY).
-bool alone_under_lease(const std::function<void(bool)>& work) {
+//
+// `let_go` is how the lease is dropped once work has run: by default the run
+// state is put back; a step leaves the machine stopped instead.
+void put_back(CpcPauseLease& lease) { lease.restore_run_state(); }
+
+bool alone_under_lease(
+    const std::function<void(bool)>& work,
+    const std::function<void(CpcPauseLease&)>& let_go = &put_back) {
   auto const deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(kLeaseAloneWaitMs);
   for (;;) {
@@ -56,8 +65,11 @@ bool alone_under_lease(const std::function<void(bool)>& work) {
     }
     bool const ran =
         lease.change_alone([&] { work(lease.was_paused()); }, /*timeout_ms=*/0);
+    if (ran) {
+      let_go(lease);
+      return true;
+    }
     lease.restore_run_state();
-    if (ran) return true;
     if (std::chrono::steady_clock::now() >= deadline) return false;
     std::this_thread::sleep_for(std::chrono::microseconds(200));
   }
@@ -75,7 +87,9 @@ kcpc::GateHost gate_host() {
   host.read_stopped = [](const std::function<void()>& work) {
     return cpc_read_while_stopped(work);
   };
-  host.with_lease = &alone_under_lease;
+  host.with_lease = [](const std::function<void(bool)>& work) {
+    return alone_under_lease(work);
+  };
   return host;
 }
 
@@ -177,9 +191,177 @@ std::uint32_t fitted_rom_slots() {
   return slots;
 }
 
+// The frame step this port armed, if one is running. It shares the text
+// IPC's frame counter (arm_frame_step()), which nobody waits on here: the
+// end of the step is an event.
+std::atomic<bool> g_frame_step_armed{false};
+
+static_assert(static_cast<int>(CpcStopReason::Paused) ==
+              static_cast<int>(kcpc::StopReason::kPaused));
+static_assert(static_cast<int>(CpcStopReason::StepStalled) ==
+              static_cast<int>(kcpc::StopReason::kStepStalled));
+
+// The core announces a change of run state: push it to the clients. Called
+// under the pause mutex, on whichever thread settled the state, the frame
+// runner included, so this only fills in an event and posts it.
+void on_run_event(const CpcRunEvent& change) {
+  kcpc::Event event;
+  event.frame = g_gate.frame();
+  event.cause_client = change.cause_client;
+  event.cause_request = change.cause_request;
+  switch (change.kind) {
+    case CpcRunEventKind::Stopped:
+      event.opcode = kcpc::Opcode::kEvtStopped;
+      event.reason = static_cast<std::uint8_t>(change.reason);
+      event.pc = change.pc;
+      // The details of a watchpoint or I/O hit come with the probe hook of
+      // slice 5; a breakpoint's address is where the machine stopped.
+      if (change.reason == CpcStopReason::Breakpoint) event.addr = change.pc;
+      event.step_client = change.step_client;
+      // Whatever stopped the machine, a frame step this port armed is over:
+      // left armed, it would stop the machine again some frames after the
+      // next Run.
+      if (g_frame_step_armed.exchange(false, std::memory_order_acq_rel)) {
+        emu_cancel_frame_step();
+      }
+      break;
+    case CpcRunEventKind::Resumed:
+      event.opcode = kcpc::Opcode::kEvtResumed;
+      break;
+    case CpcRunEventKind::Reset:
+      event.opcode = kcpc::Opcode::kEvtReset;
+      break;
+  }
+  g_kcpc_server.post(event);
+}
+
+// The stamp of a run-control reply: the run state as announced, now.
+kcpc::Stamp announced_stamp() {
+  kcpc::Stamp stamp;
+  stamp.paused = cpc_announced_stopped();
+  stamp.frame = g_gate.frame();
+  return stamp;
+}
+
+CpcRunCause cause_of(std::uint32_t client, std::uint32_t request) {
+  CpcRunCause cause;
+  cause.client = client;
+  cause.request = request;
+  return cause;
+}
+
 }  // namespace
 
-void kcpc_service_frame() { g_gate.service_frame(); }
+void kcpc_service_frame() {
+  g_gate.service_frame();
+  // Nobody subscribed to frames: one relaxed load, and that is all.
+  std::uint64_t const frame = g_gate.frame();
+  if (g_kcpc_server.frame_due(frame)) {
+    kcpc::Event event;
+    event.opcode = kcpc::Opcode::kEvtFrame;
+    event.frame = frame;
+    g_kcpc_server.post(event);
+  }
+}
+
+Status kcpc_host_run_state(kcpc::Stamp& stamp, bool& walk_active) {
+  stamp = announced_stamp();
+  walk_active = cpc_step_active();
+  return Status::kOk;
+}
+
+Status kcpc_host_pause(std::uint32_t client, std::uint32_t request,
+                       kcpc::Stamp& stamp) {
+  {
+    // A lease, and not cpc_pause() alone, for what it waits for: the frame
+    // in flight. When this returns the stop has happened, it has been
+    // announced, and the reply's stamp is that of the stopped machine. A
+    // runner that will not go idle is paused all the same; its stop is
+    // announced when it parks.
+    CpcPauseLease lease;
+    lease.release_stopped(cause_of(client, request));
+  }
+  stamp = announced_stamp();
+  return Status::kOk;
+}
+
+Status kcpc_host_run(std::uint32_t client, std::uint32_t request,
+                     kcpc::Stamp& stamp) {
+  // Not cpc_resume(): that is dropped while another actor holds a pause
+  // lease (a read that fell back to one, the text IPC, the GUI), and a Run
+  // must not vanish for that.
+  cpc_run(cause_of(client, request));
+  stamp = announced_stamp();
+  return Status::kOk;
+}
+
+Status kcpc_host_reset(std::uint32_t client, std::uint32_t request,
+                       bool stay_paused, kcpc::Stamp& stamp) {
+  CpcPauseLease lease;
+  if (!lease.idle() || subcycle_bridge_machine() == nullptr) {
+    bool const idle = lease.idle();
+    lease.restore_run_state();
+    return idle ? Status::kInternal : Status::kBusy;
+  }
+  CpcRunCause const cause = cause_of(client, request);
+  emulator_reset(cause);
+  // RESET promises a running machine, or a stopped one, whichever it was.
+  if (stay_paused) {
+    lease.release_stopped(cause);
+  } else {
+    lease.release_running(cause);
+  }
+  stamp = announced_stamp();
+  return Status::kOk;
+}
+
+Status kcpc_host_step(std::uint32_t client, std::uint32_t request,
+                      const kcpc::StepRequest& step) {
+  if (cpc_step_active() || emu_frame_step_active()) {
+    return Status::kBusy;
+  }
+  CpcRunCause cause = cause_of(client, request);
+  cause.step = true;
+  std::uint32_t const count = step.count == 0 ? 1 : step.count;
+
+  if (step.mode == static_cast<std::uint8_t>(kcpc::StepMode::kIn)) {
+    if (count > kcpc::kMaxStepInCount) return Status::kOutOfRange;
+    cause.reason = CpcStopReason::StepDone;
+    Status status = Status::kInternal;
+    bool const ran = alone_under_lease(
+        [&](bool /*was_paused*/) {
+          if (subcycle_bridge_machine() == nullptr) return;
+          for (std::uint32_t i = 0; i < count; ++i) z80_step_instruction();
+          status = Status::kOk;
+        },
+        [&](CpcPauseLease& lease) {
+          // A step is a stop somebody asked for, and it is announced even
+          // when the machine was stopped before it.
+          if (status == Status::kOk) {
+            lease.release_stopped(cause);
+          } else {
+            lease.restore_run_state();
+          }
+        });
+    return ran ? status : Status::kBusy;
+  }
+
+  if (step.mode == static_cast<std::uint8_t>(kcpc::StepMode::kFrames)) {
+    if (count > kcpc::kMaxStepFrames) return Status::kOutOfRange;
+    CpcPauseLease lease;
+    if (!lease.idle()) {
+      lease.restore_run_state();
+      return Status::kBusy;
+    }
+    g_frame_step_armed.store(true, std::memory_order_release);
+    emu_arm_frame_step(static_cast<int>(count));
+    // release_running(), not a resume by hand: with another lease held the
+    // frames then run when its holder lets go, instead of never.
+    lease.release_running(cause);
+    return Status::kOk;
+  }
+  return Status::kBadPayload;  // over, out, to: slice 5
+}
 
 Status kcpc_host_machine_info(kcpc::MachineInfo& info) {
   // Host configuration the main thread rewrites when it rebuilds the machine,
@@ -368,18 +550,25 @@ Status kcpc_host_mem_write(const kcpc::MemWriteRequest& request,
 
 namespace {
 
+// A number from the environment, or `fallback` when it is unset, not a
+// number or outside [min, max]. For the two limits a test lowers.
+int env_int(const char* name, int fallback, int min, int max) {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any thread starts
+  const char* const text = std::getenv(name);
+  if (text == nullptr) return fallback;
+  char* end = nullptr;
+  long const value = std::strtol(text, &end, 10);
+  return (end != text && *end == '\0' && value >= min && value <= max)
+             ? static_cast<int>(value)
+             : fallback;
+}
+
 // How long a controller may stay silent. A test lowers it; nothing else
 // should.
 int controller_idle_timeout_ms() {
   constexpr int kDefaultMs = 30000;
-  // NOLINTNEXTLINE(concurrency-mt-unsafe): read once, before any thread starts
-  const char* const text = std::getenv("KONCPC_KCPC_CONTROLLER_TIMEOUT_MS");
-  if (text == nullptr) return kDefaultMs;
-  char* end = nullptr;
-  long const ms = std::strtol(text, &end, 10);
-  return (end != text && *end == '\0' && ms > 0 && ms <= kDefaultMs)
-             ? static_cast<int>(ms)
-             : kDefaultMs;
+  return env_int("KONCPC_KCPC_CONTROLLER_TIMEOUT_MS", kDefaultMs, 1,
+                 kDefaultMs);
 }
 
 }  // namespace
@@ -397,7 +586,24 @@ void kcpc_host_start(bool enabled) {
   config.mem_read = &kcpc_host_mem_read;
   config.regs_set = &kcpc_host_regs_set;
   config.mem_write = &kcpc_host_mem_write;
+  config.run_state = &kcpc_host_run_state;
+  config.pause = [](const kcpc::Cause& cause, kcpc::Stamp& stamp) {
+    return kcpc_host_pause(cause.client, cause.request, stamp);
+  };
+  config.run = [](const kcpc::Cause& cause, kcpc::Stamp& stamp) {
+    return kcpc_host_run(cause.client, cause.request, stamp);
+  };
+  config.reset = [](const kcpc::Cause& cause, bool stay_paused,
+                    kcpc::Stamp& stamp) {
+    return kcpc_host_reset(cause.client, cause.request, stay_paused, stamp);
+  };
+  config.step = [](const kcpc::Cause& cause, const kcpc::StepRequest& step) {
+    return kcpc_host_step(cause.client, cause.request, step);
+  };
   config.controller_idle_timeout_ms = controller_idle_timeout_ms();
+  config.max_event_queue_bytes = static_cast<std::size_t>(env_int(
+      "KONCPC_KCPC_EVENT_QUEUE_BYTES", 4 << 20, /*min=*/1, /*max=*/32 << 20));
+  cpc_set_run_state_observer(&on_run_event);
   g_gate.reopen();
   g_kcpc_server.start(config);
 }
