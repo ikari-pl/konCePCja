@@ -16,6 +16,10 @@ input (KEY, KEYS_RELEASE, TEXT, MOUSE, INPUT_STATE), checked by what the
 firmware prints and by what a Z80 program reads from the PPI. Slice 7: what
 the DevTools show (CHIP_GET, the ASIC's register page, SYM_*, FB_INFO) and
 the events for a change of medium, of the symbols and of the machine.
+Slice 9: media (MEDIA_INSERT, MEDIA_EJECT, MEDIA_INFO, TAPE_CONTROL),
+snapshots (SNAPSHOT_SAVE, SNAPSHOT_LOAD) and configuration (CONFIG_GET,
+CONFIG_SET, CONFIG_APPLY), checked by running a program off a disc, by the
+bytes of the files on disk and against the text IPC.
 
 Usage: test_kcpc.py [--ui-free | --gui] [-k substring] [path/to/koncepcja]
   (default)  the binary is started with -H
@@ -41,6 +45,7 @@ import tempfile
 import threading
 import time
 import traceback
+import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -313,14 +318,15 @@ def test_manifest_port_and_hello() -> None:
             assert hello.max_frame == kc.MAX_SERVER_FRAME, hello.max_frame
             # The groups implemented so far: the machine reads, with the
             # ROM spaces, the writes with the control role, run control,
-            # events, breakpoints, input, chip state, symbols and the
-            # description of the frame.
+            # events, breakpoints, input, chip state, symbols, the
+            # description of the frame, media, snapshots and configuration.
             assert hello.caps == (kc.CAP_MACHINE_READ | kc.CAP_MEM_ROM
                                   | kc.CAP_MACHINE_WRITE
                                   | kc.CAP_RUN_CONTROL | kc.CAP_EVENTS
                                   | kc.CAP_BREAKPOINTS | kc.CAP_INPUT
                                   | kc.CAP_CHIPS | kc.CAP_SYMBOLS
-                                  | kc.CAP_FB_INFO), (
+                                  | kc.CAP_FB_INFO | kc.CAP_MEDIA
+                                  | kc.CAP_SNAPSHOT | kc.CAP_CONFIG), (
                 f'caps {hello.caps:#x}')
 
             m = hello.machine
@@ -3484,6 +3490,489 @@ def test_fdc_chip_and_media_events() -> None:
         assert not pending(deaf, kc.EVT_MEDIA_CHANGED), deaf.events
 
 
+# -- slice 9: media, snapshots, configuration -------------------------------
+
+def new_disc(core: Core, path: Path) -> None:
+    resp = core.ipc(f'disk new {path} data sector')
+    assert resp.startswith('OK'), resp
+
+
+def media_events(c: KcpcClient, slot: int, upto: int) -> List[kc.Event]:
+    """The EVT_MEDIA_CHANGED events of `slot`, up to the one that carries
+    generation `upto`: blocking reads, no polling."""
+    seen = []
+    while True:
+        event = c.wait_event(kc.EVT_MEDIA_CHANGED, EVENT_TIMEOUT_S)
+        if event.slot != slot:
+            continue
+        seen.append(event)
+        if event.generation >= upto:
+            return seen
+
+
+def test_a_disc_runs_and_a_snapshot_round_trips() -> None:
+    """Acceptance 1: the client loads a DSK, runs a program from it, saves an
+    SNA, changes the machine, loads the SNA and reads byte-identical RAM.
+    The machine has the disc when MEDIA_INSERT is answered; the events reach
+    an observer, and the controller after its reply; an observer may ask
+    MEDIA_INFO and may change nothing."""
+    with Core() as core, controller(core, 'media') as c, \
+            observer(core, 'watcher',
+                     kc.CLASS_MEDIA | kc.CLASS_RUN) as watcher:
+        me = c.hello_reply.client_id
+        c.subscribe(kc.CLASS_MEDIA | kc.CLASS_RUN)
+        tmp = Path(os.path.realpath(core.tmpdir))
+        disc = tmp / 'game.dsk'
+        new_disc(core, disc)
+        # A program on the disc, put there through the text IPC's disc
+        # tools, which need the disc in a drive: the eject writes it back.
+        source = tmp / 'prog.bas'
+        source.write_bytes(b'10 PRINT "KCPC":POKE &8000,123\r\n')
+        assert core.ipc(f'load {disc}').startswith('OK')
+        resp = core.ipc(f'disk put A {source} PROG.BAS ascii')
+        assert resp.startswith('OK'), resp
+        assert core.ipc('disk eject A').startswith('OK')
+        wait_for_ready(c)
+        c.ping()
+        c.events.clear()
+        watcher.ping()
+        watcher.events.clear()
+
+        empty = c.media_info(kc.SLOT_DRIVE_A)
+        assert not empty.present and empty.path == '' and empty.flags == 0, (
+            empty)
+        generation = c.media_insert(kc.SLOT_DRIVE_A, str(disc))
+        request = c.last_request_id
+        assert generation > empty.generation, (generation, empty)
+        # No event of the insert overtook its reply...
+        assert not pending(c, kc.EVT_MEDIA_CHANGED), c.events
+        # ...and the machine has the disc already: no waiting for a frame.
+        fdc = c.chip_get(kc.CHIP_FDC)
+        assert fdc.present == (1, 0) and fdc.generation[0] == generation, fdc
+        for who in (c, watcher):
+            events = media_events(who, kc.SLOT_DRIVE_A, generation)
+            assert events[-1].generation == generation, events
+            assert events[-1].present, events
+            assert Path(events[-1].path) == disc, events
+        info = watcher.media_info(kc.SLOT_DRIVE_A)
+        assert (info.slot, info.present, info.flags, info.generation) == (
+            kc.SLOT_DRIVE_A, True, 0, generation), info
+        assert Path(info.path) == disc and info.tape is None, info
+
+        # The program on the disc runs.
+        assert c.text('run"prog~RETURN~') > 0
+
+        def printed(lines: List[str]) -> Optional[int]:
+            for row in range(1, TEXT_ROWS - 1):
+                if lines[row] == 'KCPC' and lines[row + 1] == 'Ready':
+                    return row
+            return None
+        wait_for_screen(c, 'the program on the disc did not run', printed)
+        assert c.mem_read(kc.SPACE_CPU_RAM, 0x8000, 1) == b'\x7b'
+
+        # Save, damage, load: the RAM is the same, byte for byte.
+        c.pause()
+        expect_stopped(c, kc.STOP_PAUSED, me, c.last_request_id, 'controller')
+        size = c.mem_info().ram_bytes
+        ram = c.mem_read(kc.SPACE_PHYS_RAM, 0, size)
+        regs = c.regs_get()
+        sna = tmp / 'state.sna'
+        stamp = c.snapshot_save(str(sna))
+        assert stamp.paused, stamp
+        assert sna.read_bytes()[:8] == b'MV - SNA', 'not an SNA file'
+        assert sna.stat().st_size == 0x100 + size, sna.stat().st_size
+        c.mem_write(kc.SPACE_PHYS_RAM, 0, bytes(0x10000))
+        c.regs_set(hl=regs.hl ^ 0xFFFF, pc=0x4000)
+        assert c.mem_read(kc.SPACE_PHYS_RAM, 0, size) != ram
+        c.ping()
+        c.events.clear()
+        watcher.ping()
+        watcher.events.clear()
+
+        stamp = c.snapshot_load(str(sna))
+        request = c.last_request_id
+        assert stamp.paused, f'a paused machine stays paused: {stamp}'
+        assert not pending(c, kc.EVT_RESET), 'the event overtook the reply'
+        for who in (c, watcher):
+            event = run_event(who)
+            assert event.opcode == kc.EVT_RESET, event
+            assert (event.cause_client, event.cause_request) == (
+                me, request), event
+        assert c.mem_read(kc.SPACE_PHYS_RAM, 0, size) == ram, (
+            'the RAM after SNAPSHOT_LOAD is not the RAM that was saved')
+        after = c.regs_get()
+        assert after.values() == regs.values(), (regs, after)
+        # The disc is still in the drive: a snapshot is not a medium.
+        assert c.media_info(kc.SLOT_DRIVE_A).generation == generation
+
+        # A running machine runs on after a load; with the flag it stops.
+        c.run()
+        expect_resumed(c, me, c.last_request_id, 'controller')
+        stamp = c.snapshot_load(str(sna))
+        request = c.last_request_id
+        event = run_event(c)
+        assert event.opcode == kc.EVT_RESET and event.cause_request == (
+            request), event
+        wait_running(c)
+        stamp = c.snapshot_load(str(sna), stay_paused=True)
+        request = c.last_request_id
+        assert stamp.paused, stamp
+        event = run_event(c)
+        assert event.opcode == kc.EVT_RESET and event.cause_request == (
+            request), event
+        expect_stopped(c, kc.STOP_PAUSED, me, request, 'controller')
+        assert c.mem_read(kc.SPACE_PHYS_RAM, 0, size) == ram
+
+        # An observer changes nothing, whatever it sends.
+        other = tmp / 'other.sna'
+        for what, call, args in (
+                ('MEDIA_INSERT', watcher.media_insert,
+                 (kc.SLOT_DRIVE_B, str(disc))),
+                ('MEDIA_EJECT', watcher.media_eject, (kc.SLOT_DRIVE_A,)),
+                ('TAPE_CONTROL', watcher.tape_control, (kc.TAPE_PLAY,)),
+                ('SNAPSHOT_SAVE', watcher.snapshot_save, (str(other),)),
+                ('SNAPSHOT_LOAD', watcher.snapshot_load, (str(sna),)),
+                ('CONFIG_SET', watcher.config_set, ('model', '3')),
+                ('CONFIG_APPLY', watcher.config_apply, ())):
+            refused(kc.NOT_CONTROLLER, f'{what} from an observer', call,
+                    *args)
+        for opcode in (kc.OP_MEDIA_INSERT, kc.OP_MEDIA_EJECT,
+                       kc.OP_TAPE_CONTROL, kc.OP_SNAPSHOT_SAVE,
+                       kc.OP_SNAPSHOT_LOAD, kc.OP_CONFIG_SET):
+            refused(kc.NOT_CONTROLLER, f'a malformed {opcode:#06x}',
+                    watcher.request, opcode, b'')
+        assert not other.exists(), 'an observer wrote a file'
+        assert watcher.media_info(kc.SLOT_DRIVE_A).generation == generation
+        assert watcher.media_info(kc.SLOT_DRIVE_B).present is False
+        assert watcher.config_get('model').pending is None
+
+
+def test_media_requests_are_checked() -> None:
+    """What does not exist is NOT_FOUND; what does not fit the slot, is no
+    image, or leads out through '..' is BAD_PAYLOAD, and leaves the slot
+    empty; a cartridge needs a 6128+. A relative path is the core's."""
+    with Core() as core, controller(core, 'checks') as c:
+        tmp = Path(os.path.realpath(core.tmpdir))
+        disc = tmp / 'good.dsk'
+        new_disc(core, disc)
+        tape = tmp / 'tape.cdt'
+        tape.write_bytes(b'ZXTape!\x1a\x01\x0d' + b'\x20\xe8\x03')
+        junk = tmp / 'junk.dsk'
+        junk.write_bytes(b'this is not a disc image at all' * 40)
+        flux = tmp / 'dump.hfe'
+        flux.write_bytes(b'HXCPICFE' + bytes(1024))
+
+        refused(kc.NOT_FOUND, 'a file that is not there', c.media_insert,
+                kc.SLOT_DRIVE_A, str(tmp / 'nowhere.dsk'))
+        refused(kc.NOT_FOUND, 'a directory', c.media_insert,
+                kc.SLOT_DRIVE_A, str(tmp))
+        refused(kc.BAD_PAYLOAD, 'a tape in a drive', c.media_insert,
+                kc.SLOT_DRIVE_A, str(tape))
+        refused(kc.BAD_PAYLOAD, 'a disc in the deck', c.media_insert,
+                kc.SLOT_TAPE, str(disc))
+        refused(kc.BAD_PAYLOAD, 'flux in drive B', c.media_insert,
+                kc.SLOT_DRIVE_B, str(flux))
+        refused(kc.BAD_PAYLOAD, 'a slot that does not exist',
+                c.media_insert, 4, str(disc))
+        refused(kc.BAD_PAYLOAD, 'a reserved flag', c.media_insert,
+                kc.SLOT_DRIVE_A, str(disc), 1)
+        refused(kc.BAD_PAYLOAD, 'no path', c.media_insert,
+                kc.SLOT_DRIVE_A, '')
+        refused(kc.BAD_PAYLOAD, "a path through '..'", c.media_insert,
+                kc.SLOT_DRIVE_A, '../../etc/good.dsk')
+        refused(kc.BAD_PAYLOAD, 'a short MEDIA_INSERT', c.request,
+                kc.OP_MEDIA_INSERT, b'\x00')
+        refused(kc.BAD_PAYLOAD, 'a short MEDIA_EJECT', c.request,
+                kc.OP_MEDIA_EJECT, b'')
+        refused(kc.BAD_PAYLOAD, 'MEDIA_INFO of slot 7', c.media_info, 7)
+        refused(kc.BAD_PAYLOAD, 'MEDIA_EJECT of slot 7', c.media_eject, 7)
+        refused(kc.NOT_PRESENT, 'a cartridge in a 6128', c.media_insert,
+                kc.SLOT_CARTRIDGE, str(ROOT / 'rom' / 'system.cpr'))
+        refused(kc.BAD_PAYLOAD, 'ejecting the cartridge', c.media_eject,
+                kc.SLOT_CARTRIDGE)
+        for slot in (kc.SLOT_DRIVE_A, kc.SLOT_DRIVE_B, kc.SLOT_TAPE):
+            assert not c.media_info(slot).present, slot
+        assert c.chip_get(kc.CHIP_FDC).present == (0, 0)
+
+        # A file that is no disc empties the drive it was meant for.
+        loaded = c.media_insert(kc.SLOT_DRIVE_B, str(disc))
+        assert c.chip_get(kc.CHIP_FDC).present == (0, 1)
+        refused(kc.BAD_PAYLOAD, 'a file that is no disc', c.media_insert,
+                kc.SLOT_DRIVE_B, str(junk))
+        info = c.media_info(kc.SLOT_DRIVE_B)
+        assert not info.present and info.path == '', info
+        assert info.generation > loaded, (info, loaded)
+        assert c.chip_get(kc.CHIP_FDC).present == (0, 0)
+
+        # Ejecting an empty slot succeeds.
+        assert c.media_eject(kc.SLOT_DRIVE_B) > info.generation
+        assert c.media_eject(kc.SLOT_TAPE) >= 0
+
+        # A relative path is resolved in the core's working directory and
+        # reported absolute.
+        relative = 'test_tapes/valid-minimal.cdt'
+        c.media_insert(kc.SLOT_TAPE, relative)
+        info = c.media_info(kc.SLOT_TAPE)
+        assert info.present and Path(info.path) == ROOT / relative, info
+
+        # Snapshots are checked the same way.
+        refused(kc.NOT_FOUND, 'a snapshot that is not there',
+                c.snapshot_load, str(tmp / 'nowhere.sna'))
+        refused(kc.BAD_PAYLOAD, 'a file that is no SNA', c.snapshot_load,
+                str(junk))
+        refused(kc.NOT_FOUND, 'a directory that is not there',
+                c.snapshot_save, str(tmp / 'nowhere' / 'state.sna'))
+        refused(kc.BAD_PAYLOAD, 'a directory as the file', c.snapshot_save,
+                str(tmp))
+        refused(kc.BAD_PAYLOAD, "a snapshot through '..'", c.snapshot_save,
+                '../state.sna')
+        refused(kc.BAD_PAYLOAD, 'no path', c.snapshot_save, '')
+        refused(kc.BAD_PAYLOAD, 'no path', c.snapshot_load, '')
+        # None of the refusals stopped or reset the machine.
+        wait_running(c)
+
+
+def test_unsaved_writes_go_back_to_their_own_disc() -> None:
+    """A disc that was written to is saved to its own file when another disc
+    takes its place, and when it is ejected; the new disc's file is not
+    touched. MEDIA_INFO says when a disc has unsaved writes."""
+    with Core() as core, controller(core, 'writes') as c:
+        tmp = Path(os.path.realpath(core.tmpdir))
+        first, second = tmp / 'first.dsk', tmp / 'second.dsk'
+        new_disc(core, first)
+        new_disc(core, second)
+        blank = first.read_bytes()
+        assert second.read_bytes() == blank
+        payload = tmp / 'hello.bin'
+        payload.write_bytes(b'KCPC' * 64)
+
+        c.media_insert(kc.SLOT_DRIVE_A, str(first))
+        assert not c.media_info(kc.SLOT_DRIVE_A).unsaved
+        resp = core.ipc(f'disk put A {payload} HELLO.BIN')
+        assert resp.startswith('OK'), resp
+        assert c.media_info(kc.SLOT_DRIVE_A).unsaved
+        assert first.read_bytes() == blank, 'written back too early'
+
+        c.media_insert(kc.SLOT_DRIVE_A, str(second))
+        written = first.read_bytes()
+        assert written != blank, 'the write to the first disc was lost'
+        assert second.read_bytes() == blank, (
+            "the first disc's writes went into the second disc's file")
+        info = c.media_info(kc.SLOT_DRIVE_A)
+        assert Path(info.path) == second and not info.unsaved, info
+        assert 'HELLO.BIN' not in core.ipc('disk ls A')
+
+        # The same on eject.
+        assert core.ipc(f'disk put A {payload} BYE.BIN').startswith('OK')
+        assert c.media_info(kc.SLOT_DRIVE_A).unsaved
+        c.media_eject(kc.SLOT_DRIVE_A)
+        assert second.read_bytes() != blank, 'the eject lost the write'
+        assert first.read_bytes() == written
+        info = c.media_info(kc.SLOT_DRIVE_A)
+        assert not info.present and info.flags == 0, info
+
+        # And it is the first disc that has the first file.
+        c.media_insert(kc.SLOT_DRIVE_B, str(first))
+        assert 'HELLO.BIN' in core.ipc('disk ls B')
+
+
+def test_the_tape_deck_is_driven_and_reported() -> None:
+    """TAPE_CONTROL plays, stops, rewinds and seeks, and answers with the
+    deck as the text IPC's `tape status` shows it; without a tape it is
+    NOT_PRESENT. A tape may come out of a .zip."""
+    with Core() as core, controller(core, 'deck') as c, \
+            observer(core, 'watcher', kc.CLASS_MEDIA) as watcher:
+        tmp = Path(os.path.realpath(core.tmpdir))
+        refused(kc.NOT_PRESENT, 'PLAY with no tape', c.tape_control,
+                kc.TAPE_PLAY)
+        info = c.media_info(kc.SLOT_TAPE)
+        assert not info.present and info.tape == kc.TapeState(
+            False, False, 0, 0), info
+
+        # Three pause blocks.
+        tape = tmp / 'tape.cdt'
+        tape.write_bytes(b'ZXTape!\x1a\x01\x0d' + b'\x20\xe8\x03' * 3)
+        generation = c.media_insert(kc.SLOT_TAPE, str(tape))
+        events = media_events(watcher, kc.SLOT_TAPE, generation)
+        assert events[-1].present and Path(events[-1].path) == tape, events
+        info = watcher.media_info(kc.SLOT_TAPE)
+        assert info.present and Path(info.path) == tape, info
+        assert info.tape == kc.TapeState(False, False, 0, 3), info
+
+        def text_status() -> Dict[str, str]:
+            resp = core.ipc('tape status')
+            assert resp.startswith('OK '), resp
+            return dict(field.split('=', 1) for field in resp[3:].split())
+
+        deck = c.tape_control(kc.TAPE_PLAY)
+        assert deck.playing and deck.blocks == 3, deck
+        status = text_status()
+        assert status['play'] == '1' and status['attached'] == '1', status
+        deck = c.tape_control(kc.TAPE_SEEK, 2)
+        assert deck.block == 2 and deck.playing, deck
+        assert text_status()['block'] == '2'
+        assert watcher.media_info(kc.SLOT_TAPE).tape.block == 2
+        refused(kc.OUT_OF_RANGE, 'a block past the end', c.tape_control,
+                kc.TAPE_SEEK, 3)
+        deck = c.tape_control(kc.TAPE_STOP)
+        assert not deck.playing and deck.block == 2, deck
+        assert text_status()['play'] == '0'
+        deck = c.tape_control(kc.TAPE_REWIND)
+        assert deck.block == 0, deck
+        assert text_status()['block'] == '0'
+        refused(kc.BAD_PAYLOAD, 'an action that does not exist',
+                c.tape_control, 4)
+        refused(kc.BAD_PAYLOAD, 'a short TAPE_CONTROL', c.request,
+                kc.OP_TAPE_CONTROL, b'\x01')
+
+        ejected = c.media_eject(kc.SLOT_TAPE)
+        assert ejected > generation
+        info = c.media_info(kc.SLOT_TAPE)
+        assert not info.present and info.tape.blocks == 0, info
+        assert text_status()['attached'] == '0'
+        refused(kc.NOT_PRESENT, 'SEEK with no tape', c.tape_control,
+                kc.TAPE_SEEK, 0)
+
+        # The first member of an archive that the slot takes.
+        archive = tmp / 'tapes.zip'
+        with zipfile.ZipFile(archive, 'w') as z:
+            z.writestr('readme.txt', 'not a tape')
+            z.writestr('side-a.cdt', tape.read_bytes())
+        c.media_insert(kc.SLOT_TAPE, str(archive))
+        info = c.media_info(kc.SLOT_TAPE)
+        assert info.present and Path(info.path) == archive, info
+        assert info.tape.blocks == 3, info
+        refused(kc.BAD_PAYLOAD, 'an archive with no disc in it',
+                c.media_insert, kc.SLOT_DRIVE_A, str(archive))
+
+
+def text_config(core: Core, key: str) -> str:
+    resp = core.ipc(f'config get {key}')
+    assert resp.startswith('OK'), (key, resp)
+    return resp[3:]
+
+
+def test_configuration_is_read_set_and_applied() -> None:
+    """Acceptance 2: CONFIG_SET model 3 stages it, CONFIG_APPLY rebuilds the
+    machine and EVT_MACHINE_CHANGED is pushed, to the controller after its
+    reply. The keys and values are the text IPC's. On the rebuilt 6128+ a
+    cartridge can be inserted, which resets the machine."""
+    with Core() as core, controller(core, 'settings') as c, \
+            observer(core, 'watcher',
+                     kc.CLASS_MACHINE | kc.CLASS_MEDIA) as watcher:
+        me = c.hello_reply.client_id
+        c.subscribe(kc.CLASS_MACHINE | kc.CLASS_RUN | kc.CLASS_MEDIA)
+        for key in ('model', 'crtc_type', 'crtc_info', 'ram_size',
+                    'silicon_disc', 'm4board', 'm4_rom_slot', 'file'):
+            got = watcher.config_get(key)
+            assert got.value == text_config(core, key) and (
+                got.pending is None), (key, got)
+        assert watcher.config_get('model').value == '2'
+        refused(kc.NOT_FOUND, 'a key that does not exist', c.config_get,
+                'no_such_key')
+        refused(kc.NOT_FOUND, 'setting a key that does not exist',
+                c.config_set, 'no_such_key', '1')
+        refused(kc.BAD_PAYLOAD, 'a model that does not exist', c.config_set,
+                'model', '9')
+        refused(kc.BAD_PAYLOAD, 'a model that is no number', c.config_set,
+                'model', 'plus')
+        refused(kc.BAD_PAYLOAD, 'a RAM size that does not exist',
+                c.config_set, 'ram_size', '100')
+        refused(kc.BAD_PAYLOAD, 'a short CONFIG_SET', c.request,
+                kc.OP_CONFIG_SET, kc.pack_str('model'))
+        # A window is the GUI's.
+        if MODE == 'gui':
+            assert c.config_get('fullscreen').value in ('0', '1')
+            assert c.config_get('window').value == text_config(core,
+                                                                'window')
+        else:
+            refused(kc.NOT_PRESENT, 'fullscreen without a window',
+                    c.config_get, 'fullscreen')
+            refused(kc.NOT_PRESENT, 'a window without a window',
+                    c.config_set, 'fullscreen', '1')
+
+        # Applied at once: the machine has the other CRTC.
+        assert c.config_set('crtc_type', '1') == kc.CONFIG_NOW
+        assert c.config_get('crtc_type').value == '1'
+        assert c.machine_info().crtc_type == 1
+        assert c.chip_get(kc.CHIP_CRTC).type == 1
+        assert text_config(core, 'crtc_type') == '1'
+
+        # Staged: nothing is rebuilt, and both servers say what is waiting.
+        assert c.config_set('model', '3') == kc.CONFIG_STAGED
+        got = watcher.config_get('model')
+        assert (got.value, got.pending) == ('2', '3'), got
+        assert text_config(core, 'model') == '2 pending=3'
+        assert c.machine_info().model == 2
+        c.ping()
+        assert not pending(c, kc.EVT_MACHINE_CHANGED), c.events
+
+        stamp = c.config_apply()
+        request = c.last_request_id
+        assert not stamp.paused, f'a running machine runs on: {stamp}'
+        assert not pending(c, kc.EVT_MACHINE_CHANGED), (
+            'the event overtook the reply')
+        for who in (c, watcher):
+            event = who.wait_event(kc.EVT_MACHINE_CHANGED, EVENT_TIMEOUT_S)
+            assert event.machine.model == 3 and event.machine.has_asic, event
+        info = c.machine_info()
+        assert info.model == 3 and info.has_asic, info
+        got = c.config_get('model')
+        assert (got.value, got.pending) == ('3', None), got
+        assert text_config(core, 'model') == '3'
+        assert request > 0 and me > 0
+        wait_running(c)
+
+        # RAM size is staged too.
+        assert c.config_set('ram_size', '512') == kc.CONFIG_STAGED
+        c.config_apply()
+        event = watcher.wait_event(kc.EVT_MACHINE_CHANGED, EVENT_TIMEOUT_S)
+        assert event.machine.ram_bytes == 512 * 1024, event
+        assert c.mem_info().ram_bytes == 512 * 1024
+        c.wait_event(kc.EVT_MACHINE_CHANGED, EVENT_TIMEOUT_S)
+
+        # A 6128+ takes a cartridge, and starts it from a reset.
+        cartridge = ROOT / 'rom' / 'system.cpr'
+        before = c.media_info(kc.SLOT_CARTRIDGE)
+        assert before.present, before
+        c.events.clear()
+        generation = c.media_insert(kc.SLOT_CARTRIDGE, str(cartridge))
+        request = c.last_request_id
+        assert generation > before.generation, (generation, before)
+        seen = {kc.EVT_RESET: None, kc.EVT_MEDIA_CHANGED: None}
+        while None in seen.values():
+            event = c.next_event(EVENT_TIMEOUT_S)
+            if event.opcode == kc.EVT_MEDIA_CHANGED and (
+                    event.slot != kc.SLOT_CARTRIDGE
+                    or event.generation < generation):
+                continue
+            if event.opcode in seen:
+                seen[event.opcode] = event
+        assert (seen[kc.EVT_RESET].cause_client,
+                seen[kc.EVT_RESET].cause_request) == (me, request), seen
+        assert Path(seen[kc.EVT_MEDIA_CHANGED].path) == cartridge, seen
+        info = c.media_info(kc.SLOT_CARTRIDGE)
+        assert info.present and Path(info.path) == cartridge, info
+        # The reset left it running, as it was.
+        wait_running(c, beyond=c.machine_info().stamp.frame + 5)
+
+        # A file that is no cartridge leaves the one that was there, and a
+        # machine that still runs.
+        refused(kc.BAD_PAYLOAD, 'a file that is no cartridge',
+                c.media_insert, kc.SLOT_CARTRIDGE,
+                str(ROOT / 'test' / 'cartridge' / 'invalid_noriff.cpr'))
+        info = c.media_info(kc.SLOT_CARTRIDGE)
+        assert info.present and Path(info.path) == cartridge, info
+        frame = wait_running(c).frame
+        wait_running(c, beyond=frame + 5)
+        # It executes the cartridge that was put back, not freed memory: the
+        # lower ROM the CPU sees is the cartridge's first page.
+        page = cartridge.read_bytes()
+        first = page.index(b'cb00') + 8
+        assert c.mem_read(kc.SPACE_ROM_LOWER, 0, 0x4000) == (
+            page[first:first + 0x4000]), 'the lower ROM is not the cartridge'
+
+
 # The ASIC's unlock sequence, as the Plus firmware sends it to the CRTC's
 # register-select port.
 ASIC_UNLOCK = bytes([0xFF, 0x00, 0xFF, 0x77, 0xB3, 0x51, 0xA8, 0xD4, 0x62,
@@ -3892,9 +4381,9 @@ def test_recoverable_errors_keep_the_connection() -> None:
         hello = c.hello('test_kcpc recoverable', max_frame=1 << 20)
         assert hello.max_frame == 1 << 20, hello.max_frame
 
-        # An opcode of a capability this server does not have yet, and one
-        # that exists nowhere.
-        for opcode in (kc.OP_MEDIA_INFO, 0x7FFF, kc.OP_ERROR):
+        # An opcode of a range that is reserved, and one that exists
+        # nowhere.
+        for opcode in (kc.OP_RESERVED_INPUT, 0x7FFF, kc.OP_ERROR):
             try:
                 c.request(opcode, b'\x00' * 12)
                 raise AssertionError(f'opcode {opcode:#06x} was accepted')
@@ -4150,6 +4639,11 @@ TESTS: List[Callable[[], None]] = [
     test_fb_info_describes_the_frame,
     test_a_rebuilt_machine_is_announced,
     test_polling_every_chip_changes_nothing,
+    test_a_disc_runs_and_a_snapshot_round_trips,
+    test_media_requests_are_checked,
+    test_unsaved_writes_go_back_to_their_own_disc,
+    test_the_tape_deck_is_driven_and_reported,
+    test_configuration_is_read_set_and_applied,
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,

@@ -147,11 +147,12 @@ inline constexpr std::uint64_t kCapConfig = 1ULL << 13;
 // control with the pushed events (slice 4), breakpoints with the steps that
 // walk the machine (slice 5), input (slice 6), and the DevTools data: chip
 // state with the ASIC's register page, symbols and the description of the
-// frame (slice 7). HELLO, PING and MACHINE_INFO need no capability.
+// frame (slice 7), and media, snapshots and configuration (slice 9). HELLO,
+// PING and MACHINE_INFO need no capability.
 inline constexpr std::uint64_t kServerCaps =
     kCapMachineRead | kCapMemRom | kCapMachineWrite | kCapRunControl |
     kCapEvents | kCapBreakpoints | kCapInput | kCapChips | kCapSymbols |
-    kCapFbInfo;
+    kCapFbInfo | kCapMedia | kCapSnapshot | kCapConfig;
 
 // MACHINE_INFO flags.
 inline constexpr std::uint8_t kMachineFlagHeadless = 1U << 0;
@@ -1346,6 +1347,200 @@ enum class MediaSlot : std::uint8_t {
   kCartridge = 3,
 };
 inline constexpr std::size_t kMediaSlots = 4;
+
+// Media (section 12). A request that names a slot starts with it.
+inline bool media_slot_known(std::uint8_t slot) { return slot < kMediaSlots; }
+
+struct MediaInsertRequest {
+  std::uint8_t slot = 0;
+  std::uint8_t flags = 0;  // reserved: must be 0
+  std::string path;
+};
+
+inline void write_media_insert_request(Writer& w, const MediaInsertRequest& m) {
+  w.u8(m.slot);
+  w.u8(m.flags);
+  w.zeros(2);
+  w.str(m.path);
+}
+
+inline bool read_media_insert_request(Reader& r, MediaInsertRequest& out) {
+  r.u8(out.slot);
+  r.u8(out.flags);
+  r.skip(2);
+  return r.str(out.path);
+}
+
+// MEDIA_EJECT and MEDIA_INFO: the slot and three reserved bytes.
+inline void write_media_slot_request(Writer& w, std::uint8_t slot) {
+  w.u8(slot);
+  w.zeros(3);
+}
+
+inline bool read_media_slot_request(Reader& r, std::uint8_t& slot) {
+  r.u8(slot);
+  return r.skip(3);
+}
+
+// The tape deck: the last fields of MEDIA_INFO for the tape slot, and the
+// whole reply to TAPE_CONTROL.
+struct TapeState {
+  std::uint8_t playing = 0;  // PLAY is pressed
+  std::uint8_t motor = 0;    // the motor relay is closed
+  std::uint32_t block = 0;   // the block the deck is at
+  std::uint32_t blocks = 0;  // blocks in the image
+};
+
+inline void write_tape_state(Writer& w, const TapeState& t) {
+  w.u8(t.playing);
+  w.u8(t.motor);
+  w.zeros(2);
+  w.u32(t.block);
+  w.u32(t.blocks);
+}
+
+inline bool read_tape_state(Reader& r, TapeState& out) {
+  r.u8(out.playing);
+  r.u8(out.motor);
+  r.skip(2);
+  r.u32(out.block);
+  return r.u32(out.blocks);
+}
+
+// MEDIA_INFO flags.
+inline constexpr std::uint8_t kMediaFlagWriteProtected = 1U << 0;
+inline constexpr std::uint8_t kMediaFlagUnsaved = 1U << 1;
+inline constexpr std::uint8_t kMediaFlagFlux = 1U << 2;
+
+struct MediaInfo {
+  std::uint8_t slot = 0;
+  std::uint8_t present = 0;
+  std::uint8_t flags = 0;
+  std::uint64_t generation = 0;
+  std::string path;  // empty if unknown
+  TapeState tape;    // on the wire for the tape slot only
+};
+
+inline void write_media_info(Writer& w, const MediaInfo& m) {
+  w.u8(m.slot);
+  w.u8(m.present);
+  w.u8(m.flags);
+  w.u8(0);
+  w.u64(m.generation);
+  w.str(m.path);
+  if (m.slot == static_cast<std::uint8_t>(MediaSlot::kTape)) {
+    write_tape_state(w, m.tape);
+  }
+}
+
+inline bool read_media_info(Reader& r, MediaInfo& out) {
+  r.u8(out.slot);
+  r.u8(out.present);
+  r.u8(out.flags);
+  r.skip(1);
+  r.u64(out.generation);
+  if (!r.str(out.path)) return false;
+  if (out.slot == static_cast<std::uint8_t>(MediaSlot::kTape)) {
+    return read_tape_state(r, out.tape);
+  }
+  return true;
+}
+
+enum class TapeAction : std::uint8_t {
+  kStop = 0,
+  kPlay = 1,
+  kRewind = 2,
+  kSeek = 3,
+};
+
+inline bool tape_action_known(std::uint8_t action) {
+  return action <= static_cast<std::uint8_t>(TapeAction::kSeek);
+}
+
+struct TapeControlRequest {
+  std::uint8_t action = 0;  // raw; the server checks it names a TapeAction
+  std::uint32_t block = 0;  // kSeek: the block to go to
+};
+
+inline void write_tape_control_request(Writer& w, const TapeControlRequest& t) {
+  w.u8(t.action);
+  w.zeros(3);
+  w.u32(t.block);
+}
+
+inline bool read_tape_control_request(Reader& r, TapeControlRequest& out) {
+  r.u8(out.action);
+  r.skip(3);
+  return r.u32(out.block);
+}
+
+// Snapshots (section 12).
+inline constexpr std::uint8_t kSnapshotFlagStayPaused = 1U << 0;
+
+struct SnapshotLoadRequest {
+  std::uint8_t flags = 0;
+  std::string path;
+};
+
+inline void write_snapshot_load_request(Writer& w,
+                                        const SnapshotLoadRequest& s) {
+  w.u8(s.flags);
+  w.zeros(3);
+  w.str(s.path);
+}
+
+inline bool read_snapshot_load_request(Reader& r, SnapshotLoadRequest& out) {
+  r.u8(out.flags);
+  r.skip(3);
+  return r.str(out.path);
+}
+
+// Configuration (section 12).
+inline constexpr std::uint8_t kConfigFlagPending = 1U << 0;
+
+struct ConfigValue {
+  bool has_pending = false;  // a different value is staged
+  std::string value;
+  std::string pending;  // empty unless has_pending
+};
+
+inline void write_config_value(Writer& w, const ConfigValue& c) {
+  w.u8(c.has_pending ? kConfigFlagPending : 0);
+  w.zeros(3);
+  w.str(c.value);
+  w.str(c.has_pending ? c.pending : std::string());
+}
+
+inline bool read_config_value(Reader& r, ConfigValue& out) {
+  std::uint8_t flags = 0;
+  r.u8(flags);
+  r.skip(3);
+  r.str(out.value);
+  out.has_pending = (flags & kConfigFlagPending) != 0;
+  return r.str(out.pending);
+}
+
+// What a CONFIG_SET did.
+enum class ConfigEffect : std::uint8_t {
+  kNow = 0,        // applied
+  kNextFrame = 1,  // the main loop applies it on its next frame
+  kStaged = 2,     // waits for CONFIG_APPLY
+};
+
+struct ConfigSetRequest {
+  std::string key;
+  std::string value;
+};
+
+inline void write_config_set_request(Writer& w, const ConfigSetRequest& c) {
+  w.str(c.key);
+  w.str(c.value);
+}
+
+inline bool read_config_set_request(Reader& r, ConfigSetRequest& out) {
+  r.str(out.key);
+  return r.str(out.value);
+}
 
 struct HelloRequest {
   std::uint16_t client_minor = 0;

@@ -13,10 +13,13 @@ the pushed events (`SUBSCRIBE`, `RUN_STATE`, `PAUSE`, `RUN`, `RESET`,
 slice 5, breakpoints (`BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR`), their
 hits pushed with what was hit, and `STEP` over, out and to,
 slice 6, input (`KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`),
-and slice 7, what the DevTools show (`CHIP_GET`, the memory space
+slice 7, what the DevTools show (`CHIP_GET`, the memory space
 `ASIC_PAGE`, `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`, `FB_INFO`) with
-the events for a change of medium, of the symbols and of the machine.
-Everything else is still design; a server tells a
+the events for a change of medium, of the symbols and of the machine,
+and slice 9, media, snapshots and configuration (`MEDIA_INSERT`,
+`MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`,
+`SNAPSHOT_LOAD`, `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY`).
+Slice 8, the exit test, is what is left; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
 version 0, and the layouts below may still change, until phase 5 (the remote
@@ -973,8 +976,10 @@ DevTools):
 **`EVT_RESUMED` (`0x8002`)** — `u64 frame`, `u32 cause_client`,
 `u32 cause_request`.
 
-**`EVT_RESET` (`0x8003`)** — the CPC was reset. `u64 frame`,
-`u32 cause_client`, `u32 cause_request`.
+**`EVT_RESET` (`0x8003`)** — the CPC was reset, or a snapshot was loaded
+into it (`SNAPSHOT_LOAD`): either way what a client shows is another
+program's, and it re-reads. `u64 frame`, `u32 cause_client`,
+`u32 cause_request`.
 
 **`EVT_FRAME` (`0x8004`)** — a frame completed. `u64 frame`, `u64 fb_seq`.
 `fb_seq` is 0 until phase 4, then the sequence number of that frame in the
@@ -995,6 +1000,9 @@ shared-memory ring.
   is announced again with a higher generation. A client re-reads on each;
   `CHIP_GET` of the FDC says when the machine has the disc
   (`present[unit]`, and `generation[unit]` at least the event's).
+  `MEDIA_INSERT` and `MEDIA_EJECT` give the machine its half before they
+  answer, so their reply's `generation` is the last of these and the events
+  of the request all follow that reply ([section 12](#media)).
 - `present` and `path` are what the slot holds **when the event is sent**,
   not when the change was made: the frame runner posts this event too, and
   it may neither take a lock nor carry a path. The server asks for both on
@@ -1022,8 +1030,9 @@ is sent to that client after its reply.
 **`EVT_MACHINE_CHANGED` (`0x8008`)** — the machine was rebuilt (model, RAM
 size, CRTC type, tier). Payload: the `MACHINE_INFO` reply fields, read from
 the new machine before it runs its first frame; the stamp's `run_state` is
-the one the rebuild puts back. Sent after every rebuild that worked: the text
-IPC's `config apply` and `profile load`, the GUI's settings. A client should
+the one the rebuild puts back. Sent after every rebuild that worked:
+`CONFIG_APPLY`, the text IPC's `config apply` and `profile load`, the GUI's
+settings. A client should
 re-read everything it shows. (`effective_tier` is the tier the new machine
 starts in; the first frame may choose another, and `MACHINE_INFO` then says
 so.)
@@ -1633,87 +1642,161 @@ there is nothing to read the frame from, and `transport` 0 says so.
 
 Paths are files on the core's machine, in the core's filesystem. A relative
 path is resolved against the core's working directory and made absolute
-before it is stored on a Recent list, as the text IPC's `load` does. All of
-these requests are controller only, run under a pause lease, and reuse the
-loaders in `src/slotshandler.cpp` and the bridge's deferred media swap
-(`subcycle_bridge_insert_media`, `subcycle_bridge_apply_pending_media`);
-none of them adds a second loading path.
+before it is used, stored on a Recent list or reported, as the text IPC's
+`load` does. A path that is empty, or that still has a `..` in it once it is
+normalised, is `BAD_PAYLOAD`: the rule the text IPC's `load` and
+`snapshot` apply.
+
+The changes are controller only and run under a pause lease, while it is the
+only lease held. They reuse the loaders in `src/slotshandler.cpp`
+(`file_load()`, `dsk_eject()`, `tape_eject()`) and the bridge's media swap;
+none of them adds a second loading path. The swap those loaders queue for the
+next frame boundary is applied before the lease is let go
+(`subcycle_bridge_apply_pending_media()`, as the text IPC's `disk eject`
+does), so **when the reply is sent the machine holds what the request put
+there**: no client has to wait for a frame, or poll `CHIP_GET`, after its own
+insert.
 
 `slot`: 0 = drive A, 1 = drive B, 2 = tape, 3 = cartridge. The same numbers
-as `EVT_MEDIA_CHANGED`.
+as `EVT_MEDIA_CHANGED`. A number above 3 is `BAD_PAYLOAD`.
 
-- **`MEDIA_INSERT` (`0x0800`)** — Request: `u8 slot`, `u8 flags` (bit 0:
-  write-protect, drives only), 2 reserved bytes, `str path`. Reply:
-  `u64 generation`.
+- **`MEDIA_INSERT` (`0x0800`)** — Request: `u8 slot`, `u8 flags` (reserved:
+  must be 0, `BAD_PAYLOAD` otherwise), 2 reserved bytes, `str path`. Reply:
+  `u64 generation`, the slot's when the machine has the medium.
   - Drives accept `.dsk`, `.ipf`, `.raw`; drive A also accepts the flux
     images `.scp`, `.hfe`, `.a2r` (flux is drive A only: `BAD_PAYLOAD` on
     drive B).
   - Tape accepts `.cdt` and `.voc`. Cartridge accepts `.cpr` and answers
     `NOT_PRESENT` unless the model is a 6128+; inserting one resets the
-    machine, as it does from the menu.
-  - A `.zip` is opened and its first supported member is used.
-  - `NOT_FOUND` if the file is missing; `BAD_PAYLOAD` if the type does not
-    fit the slot or the image is malformed.
+    machine, as it does from the menu, and that is pushed as `EVT_RESET`.
+  - A `.zip` is opened and its first member of a kind the slot takes is
+    used; an archive with none is `BAD_PAYLOAD`.
+  - `NOT_FOUND` if the file is missing or is not a file; `BAD_PAYLOAD` if
+    the type does not fit the slot (judged by the file's name) or the image
+    is malformed. Checked in this order: `NOT_CONTROLLER`, `BAD_PAYLOAD`
+    (slot, flags, path), `NOT_FOUND`, `BAD_PAYLOAD` (type), `BUSY`,
+    `NOT_PRESENT`, `BAD_PAYLOAD` (malformed).
+  - **A malformed image leaves a drive or the deck empty**: the disc or tape
+    that was there is gone, as it is after a failed load from the menu, and
+    the events say so. The cartridge port is the exception: a 6128+ does not
+    run without a cartridge, so a file that is no cartridge leaves the one
+    that was there, and no reset happens.
+  - **The outgoing disc keeps its writes.** A disc that was written to is
+    written back to its own file before the new one takes its place.
+  - There is no write-protect flag. The FDC has no switch for it: a medium
+    is write-protected when it has no image the FDC can write to (a flux
+    dump without an overlay), and `MEDIA_INFO` says so. A flag the core
+    could not honour would be a lie, so the bit is reserved (beads-uxle).
 - **`MEDIA_EJECT` (`0x0801`)** — Request: `u8 slot`, 3 reserved bytes.
-  Reply: `u64 generation`. A drive with unsaved changes follows the
-  File-menu flush-on-eject path and never raises a dialog. Ejecting an empty
-  slot succeeds.
+  Reply: `u64 generation`. A drive with unsaved changes is written back to
+  its file first (the path the File menu's eject takes) and never raises a
+  dialog. Ejecting an empty drive or deck succeeds, and is announced like
+  any other eject. The cartridge cannot be ejected (`BAD_PAYLOAD`): a 6128+
+  does not run without one, so a cartridge is replaced, with `MEDIA_INSERT`.
 - **`MEDIA_INFO` (`0x0802`)** — anyone. Request: `u8 slot`, 3 reserved
-  bytes. Reply: `u8 slot`, `u8 present`, `u8 flags` (bit 0 write-protected,
-  bit 1 unsaved changes, bit 2 flux image), `u8` reserved, `u64 generation`,
-  `str path`. For the tape slot three more fields follow: `u8 playing`,
-  `u8 motor`, 2 reserved bytes, `u32 block` (current block), `u32 blocks`
-  (blocks in the image).
+  bytes. Reply: `u8 slot`, `u8 present`, `u8 flags`, `u8` reserved,
+  `u64 generation`, `str path`. For the tape slot three more fields follow:
+  `u8 playing`, `u8 motor`, 2 reserved bytes, `u32 block` (the block the
+  deck is at), `u32 blocks` (blocks in the image).
+  - `present`, `generation` and `path` are what `EVT_MEDIA_CHANGED` says:
+    what the host last put in the slot.
+  - `flags` is read off the machine, through the gate, so it pauses
+    nothing: bit 0 write-protected (a disc the FDC cannot write to), bit 1
+    unsaved changes (written to since it was loaded or last written back),
+    bit 2 flux image. All three are 0 for the tape and the cartridge.
+  - `playing` is the PLAY button, `motor` the relay the CPC switches.
 - **`TAPE_CONTROL` (`0x0803`)** — Request: `u8 action` (0 stop, 1 play,
-  2 rewind, 3 seek), 3 reserved bytes, `u32 block` (for seek). Reply: the
-  tape fields of `MEDIA_INFO`. `NOT_PRESENT` with no tape loaded;
-  `OUT_OF_RANGE` for a block past the end. Seek uses the deferred
-  `subcycle_bridge_request_tape_seek()`.
+  2 rewind, 3 seek; anything else `BAD_PAYLOAD`), 3 reserved bytes,
+  `u32 block` (for seek). Reply: the tape fields of `MEDIA_INFO`, as the deck
+  is after the change. `NOT_PRESENT` with no tape loaded; `OUT_OF_RANGE` for
+  a block past the end. The deck is moved under the request's lease, so the
+  reply already shows it there. (The tape window of the GUI defers its seeks
+  to a frame boundary with `subcycle_bridge_request_tape_seek()` for the same
+  reason: the deck must not move under a running frame. Under a lease no
+  frame is running.) It produces no event: a client that shows the deck asks
+  `MEDIA_INFO`.
 
 Every successful insert and eject, from this port or any other source,
-produces `EVT_MEDIA_CHANGED`.
+produces `EVT_MEDIA_CHANGED`; so does a load that failed and left the slot
+empty. The events of a request name it and follow its reply.
 
 ### Snapshots
 
-The format is SNA and nothing else (epic invariant 4).
+The format is SNA and nothing else (epic invariant 4). Paths follow the rules
+of [Media](#media).
 
 - **`SNAPSHOT_SAVE` (`0x0900`)** — controller. Request: `str path`. Reply:
-  `stamp`. Writes with `snapshot_save_machine()`. It needs the controller
-  role because it writes a file on the core's machine, not because it
-  changes the CPC.
+  `stamp`. Writes with `snapshot_save()`, which is
+  `snapshot_save_machine()` on the live machine, under a pause lease; the run
+  state is put back. It needs the controller role because it writes a file
+  on the core's machine, not because it changes the CPC. `NOT_FOUND` when
+  the directory does not exist, `BAD_PAYLOAD` when the path is a directory,
+  `INTERNAL` when the file could not be written (the message says so).
 - **`SNAPSHOT_LOAD` (`0x0901`)** — controller. Request: `u8 flags` (bit 0:
   stay paused afterwards), 3 reserved bytes, `str path`. Reply: `stamp`.
-  Loads with `snapshot_load_machine()`. The run state is restored to what it
-  was unless bit 0 is set. Clients are told with `EVT_RESET`, plus
-  `EVT_MACHINE_CHANGED` when the snapshot changed the model or RAM size;
-  either way a client should re-read everything it shows.
-
-Both answer `NOT_FOUND` for a missing file or directory and `BAD_PAYLOAD`
-for a file that is not a valid SNA.
+  Loads with `snapshot_load()` (`snapshot_load_machine()` on the live
+  machine). The run state is restored to what it was unless bit 0 is set;
+  with it the machine is left stopped, announced as `EVT_STOPPED` with
+  reason `PAUSED` and this request as its cause. Clients are told with
+  `EVT_RESET`, after the reply; a client re-reads everything it shows.
+  `NOT_FOUND` for a missing file, `BAD_PAYLOAD` for a file that is not a
+  valid SNA.
+  - **A snapshot never changes the machine.** One that holds more RAM than
+    the machine has is refused (`BAD_PAYLOAD`, and nothing was loaded); one
+    saved on another model is loaded as it is, into the model that is
+    running. So no `EVT_MACHINE_CHANGED` follows a load. A client that wants
+    the snapshot's machine sets it up first with `CONFIG_SET` and
+    `CONFIG_APPLY`.
+  - The media stay where they are: a snapshot is not a medium.
 
 ### Configuration
 
-The keys and values are the text IPC's `config get|set`, spelled the same
-(`model`, `crtc_type`, `ram_size`, `silicon_disc`, `kbd_layout`, ...).
-Carrying them as strings keeps one list of keys in one place
-(`koncepcja_ipc_server.cpp` today; the slice moves the table somewhere both
-servers call) instead of a second, numbered copy that would drift.
+The keys and values are the text IPC's `config get|set`, spelled the same:
+`model`, `crtc_type`, `crtc_info`, `ram_size`, `silicon_disc`, `m4board`,
+`m4_sd_path`, `m4_rom_slot`, `kbd_layout`, `kbd_layouts`, `fullscreen`,
+`window`, `file`. Carrying them as strings keeps one list of keys in one
+place instead of a second, numbered copy that would drift: both servers call
+`ipc_config_get()`, `ipc_config_set()` and `ipc_config_apply()`
+(`src/koncepcja_ipc_server.h`), and the text IPC only formats what they
+return.
 
 - **`CONFIG_GET` (`0x0A00`)** — anyone. Request: `str key`. Reply:
   `u8 flags` (bit 0: a different value is staged and waits for
   `CONFIG_APPLY` or the next frame), 3 reserved bytes, `str value`,
   `str pending` (empty unless bit 0). `NOT_FOUND` for an unknown key;
-  `NOT_PRESENT` for a key that needs a window under `-H`.
+  `NOT_PRESENT` for a key that needs something this run does not have
+  (`fullscreen` and `window` under `-H`). `kbd_layouts` answers with one
+  file name per line. The settings a rebuild rewrites (`model`, `crtc_type`,
+  `ram_size`, ...) are read through the gate, so a get pauses nothing and
+  never reads beside a rebuild.
 - **`CONFIG_SET` (`0x0A01`)** — controller. Request: `str key`,
   `str value`. Reply: `u8 effect` (0 = applied now, 1 = applied on the next
-  frame, 2 = staged, needs `CONFIG_APPLY`), 3 reserved bytes. `BAD_PAYLOAD`
-  for a value the key rejects.
+  frame, 2 = staged, needs `CONFIG_APPLY`), 3 reserved bytes. `NOT_FOUND`
+  for an unknown key, or one that can only be read; `BAD_PAYLOAD` for a
+  value the key rejects, with the reason as the message. It runs under a
+  pause lease, whatever the key: `crtc_type` and `silicon_disc` change the
+  machine.
+
+  | Key | Effect |
+  |-----|--------|
+  | `crtc_type`, `silicon_disc`, `m4_sd_path` | 0, applied now |
+  | `kbd_layout`, `fullscreen` | 1, the main loop applies it on its next frame |
+  | `model`, `ram_size`, `m4board` | 2, staged |
+
+  A staged `model` shows as `pending` in `CONFIG_GET` until it is applied.
+  `ram_size` and `m4board` are settings the next rebuild reads, and
+  `CONFIG_GET` shows them as set at once; what the machine has fitted is in
+  `MACHINE_INFO`.
 - **`CONFIG_APPLY` (`0x0A02`)** — controller. Empty. Rebuilds the machine
-  with the staged settings through the existing main-thread rebuild request.
-  This is the one request allowed to take longer than a pause lease: the
-  reply is sent when the rebuild has finished, with `stamp`, or with
-  `INTERNAL` if it failed and `BUSY` if the main loop did not pick it up in
-  time. `EVT_MACHINE_CHANGED` follows a successful rebuild.
+  with the staged settings through the main-thread rebuild request the text
+  IPC's `config apply` uses (`koncpc_rebuild_machine()`, under the main
+  thread's own lease; the reader thread holds none while it waits). This is
+  the one request allowed to take longer than a pause lease: the reply is
+  sent when the rebuild has finished, with `stamp`, or with `INTERNAL` if it
+  failed (the machine is then left paused) and `BUSY` if the main loop did
+  not pick it up in time or the runner did not go idle.
+  `EVT_MACHINE_CHANGED` follows a successful rebuild, after the reply. The
+  controller's 30 s of allowed silence count from that reply.
 
 `CONFIG_SET` does not write the configuration file. Saving settings stays a
 GUI action.
@@ -1851,7 +1934,7 @@ test-first against a real `-H` core.
 | 6 | Input (**landed**, beads-3o1.6) | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE` on the paths the text IPC's `input` commands use; the keys and mouse buttons a controller holds are released when it loses control; `CAP_INPUT` |
 | 7 | DevTools data (**landed**, beads-3o1.7) | `CHIP_GET` for the CRTC, the Gate Array, the PSG, the FDC and the ASIC (layout 2), the memory space `ASIC_PAGE`; `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD` on a symbol table that now has a lock; `FB_INFO` with no transport; `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` for changes from any source; `CAP_CHIPS`, `CAP_SYMBOLS`, `CAP_FB_INFO` |
 | 8 | Exit test and documentation | The exit test of beads-3o1, the documentation brought in line with the code. **No freeze:** the server stays at major 0 |
-| 9 | Media, snapshots, configuration | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`, `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` |
+| 9 | Media, snapshots, configuration (**landed**, beads-rcyq) | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL` on the loaders and the media swap the text IPC and the menus use, with the machine's half applied under the request's lease; `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD` (SNA); `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` on one table of keys shared with the text IPC; `CAP_MEDIA`, `CAP_SNAPSHOT`, `CAP_CONFIG` |
 
 Slice 9 needs slices 3 (the controller role) and 4 (events) and nothing
 later, so it can be built alongside slices 5 to 7. Slice 8 is numbered before
@@ -1917,6 +2000,10 @@ Source layout the slices should follow:
 - `src/koncepcja.h`, `src/kon_cpc_ja.cpp` once more —
   `cpc_set_machine_rebuilt_hook()`, called by `koncpc_rebuild_machine()`
   while it still holds its lease.
+- `src/koncepcja_ipc_server.{h,cpp}` — the configuration keys as one table
+  for both servers: `ipc_config_machine()`, `ipc_config_get()`,
+  `ipc_config_set()`, `ipc_config_apply()`; and `ipc_is_safe_path()`, the
+  rule a path from a client must pass.
 - `src/hw/asic.{h,cpp}`, `src/hw/fdc.{h,cpp}` — `asic_page_copy()` (the
   register page in one copy) and `fdc_media_present_unit()`.
 - `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate. Like the server it
@@ -2109,3 +2196,46 @@ Recorded so a reviewer can disagree with one without reading the rest.
 48. **The text IPC's `tape eject` goes through the loader** (slice 7), under
     a pause lease, as `disk eject` does. It called the machine's deck from
     the IPC thread and left the host's copy of the tape in place.
+49. **A media request gives the machine its half before it answers**
+    (slice 9). The loaders queue the swap for the next frame boundary,
+    because the menus run beside a running machine. A request of this port
+    holds a lease, so it applies the swap itself: the reply is true when it
+    arrives, all the events of the request are posted on the request's
+    thread and can name it, and none overtakes the reply.
+50. **`MEDIA_INSERT` ejects the outgoing disc first** (slice 9). The write
+    back of a disc with unsaved changes goes to the file the drive's slot
+    names when the machine lets go of the disc. Every other load path names
+    the new file first, and the old disc's writes then land in the new
+    disc's file (beads-11us, found here). Ejecting first costs two more
+    `EVT_MEDIA_CHANGED` and keeps both files right.
+51. **No write-protect flag on `MEDIA_INSERT`** (slice 9). The design had
+    one. The FDC has no such switch (a medium is write-protected when it
+    has no writable image), and a flag the core accepts and ignores is worse
+    than none. The bit is reserved and must be 0; `MEDIA_INFO` reports what
+    the FDC would. Giving the FDC the switch is beads-uxle.
+52. **The cartridge is replaced, never ejected, and a bad one leaves the old
+    one** (slice 9). A 6128+ with an empty cartridge port executes nothing.
+    The loader frees the image before it reads the new file, and the board
+    holds that image by a raw pointer, so the request re-attaches the image
+    after every load and loads the previous cartridge again when the new
+    one is refused. (The menus and the text IPC's `load` do neither yet:
+    beads-lrdy.)
+53. **A snapshot never rebuilds the machine** (slice 9). The design promised
+    `EVT_MACHINE_CHANGED` "when the snapshot changed the model or RAM size".
+    The SNA loader does neither: it refuses a snapshot larger than the
+    machine and loads one from another model as it is. The document says
+    what the loader does.
+54. **`TAPE_CONTROL` moves the deck itself** (slice 9), instead of the
+    deferred seek the design named. That deferral exists for callers beside
+    a running machine; under a lease the deck can be moved at once, and the
+    reply then shows where it is.
+55. **One table of configuration keys** (slice 9). The text IPC's `config`
+    command was a chain of string comparisons that built its replies in
+    place. It now calls three functions that return values, and both servers
+    use them. `CONFIG_GET` reads the settings a rebuild rewrites through the
+    gate, in one copy of fixed size; `CONFIG_SET` runs under a lease, which
+    the text IPC's `config set crtc_type` still does not (beads-7h32).
+56. **`CONFIG_APPLY` names itself in `EVT_MACHINE_CHANGED`** (slice 9), so
+    that the controller is sent the event after the reply. The rebuild runs
+    on the main thread, so the request travels in two atomics, not in
+    thread-local storage like the other causes.

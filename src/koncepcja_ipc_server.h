@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -187,6 +188,76 @@ void ipc_publish_config_file(const std::string& path);
 // for `config get window|fullscreen`. ipc_drain_input() does it once per
 // frame; a fullscreen toggle re-publishes right after the transition.
 void ipc_publish_window_state();
+
+// The rule every path a client names must pass (`load`, `snapshot save`, the
+// binary server's media and snapshot requests): not empty, and no `..` left
+// once it is normalised.
+bool ipc_is_safe_path(const std::string& path);
+
+// The configuration keys of `config get|set|apply`, in one place: the text
+// IPC formats what these return, and the KCPC binary server
+// (CONFIG_GET/SET/APPLY) carries the same keys and values as strings.
+enum class IpcConfigStatus : uint8_t {
+  Ok,
+  UnknownKey,
+  NotReady,  // the main thread has not published what the key reads yet
+  NoWindow,  // the key needs a window and this run has none
+  BadValue,  // `note` says why
+};
+
+// The host settings the keys `model`, `crtc_type`, `crtc_info`, `ram_size`,
+// `silicon_disc`, `m4board`, `m4_rom_slot` and `m4_sd_path` read. They are
+// plain fields a machine rebuild and `config set` rewrite, so a reader on
+// another thread takes them in one copy while nothing changes them: the text
+// IPC as it always has, the binary server through its machine gate. Fixed
+// size and no allocation, so the copy may run on the frame runner.
+struct IpcConfigMachine {
+  unsigned int model = 0;
+  int crtc_type = 0;
+  unsigned int ram_size = 0;
+  bool silicon_disc = false;
+  bool m4board = false;
+  int m4_rom_slot = 0;
+  // Cut at the size of the array; no terminator.
+  std::array<char, 1024> m4_sd_path{};
+  size_t m4_sd_path_len = 0;
+};
+IpcConfigMachine ipc_config_machine();
+
+struct IpcConfigValue {
+  std::string value;
+  // A different value is staged and waits for `config apply` (model) or for
+  // the main loop's next frame (kbd_layout, fullscreen).
+  bool has_pending = false;
+  std::string pending;
+};
+// `kbd_layouts` answers with one file name per line.
+IpcConfigStatus ipc_config_get(const std::string& key,
+                               const IpcConfigMachine& machine,
+                               IpcConfigValue& out);
+
+enum class IpcConfigEffect : uint8_t {
+  Now = 0,        // applied
+  NextFrame = 1,  // the main loop applies it on its next frame
+  Staged = 2,     // waits for a rebuild (`config apply`)
+};
+// Sets `key`. On Ok `note` is what the text IPC adds to its OK ("apply
+// required", "reset required", "applied on next frame", or nothing); on
+// BadValue it is the reason. `crtc_type` and `silicon_disc` change the
+// machine: the caller makes sure nothing is clocking it.
+IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
+                               IpcConfigEffect& effect, std::string& note);
+
+enum class IpcRebuildResult : uint8_t {
+  Ok,
+  NotDrained,    // the main loop did not take the request in 10 s
+  StillRunning,  // the rebuild started and had not finished 30 s later
+  NotIdle,       // refused: the frame runner did not go idle
+  Failed,        // `code` is emulator_init()'s
+};
+// `config apply`: hands the rebuild to the main thread, which commits the
+// staged model, and waits for it. Never rebuilds on the calling thread.
+IpcRebuildResult ipc_config_apply(int& code);
 
 // The deadline `wait vbl <n>` gets when the caller gives none: the wait's own
 // nominal length (20ms per blank) plus the 5s every `wait` allows, so a long
