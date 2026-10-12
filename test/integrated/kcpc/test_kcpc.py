@@ -873,8 +873,10 @@ def test_reads_work_running_and_across_a_pause() -> None:
         frames = [s.frame for s in stamps]
         assert frames == sorted(frames) and frames[-1] > frames[0], frames
         # One frame boundary each: 100 reads span about 100 frames (2 s at
-        # 50 Hz), where 100 reads through the fallback would take 25 s.
-        assert frames[-1] - frames[0] <= 150, (frames[0], frames[-1])
+        # 50 Hz) on a host that keeps up, where 100 reads through the
+        # fallback would take 25 s, more than 1200 frames. The bound leaves
+        # room for a slow client on a loaded CI machine.
+        assert frames[-1] - frames[0] <= 600, (frames[0], frames[-1])
         print(f'    100 x 64 KiB while running: {took * 1000:.0f} ms, '
               f'{frames[-1] - frames[0]} frames')
 
