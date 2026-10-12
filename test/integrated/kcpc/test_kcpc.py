@@ -3755,8 +3755,6 @@ def test_a_rebuilt_machine_is_announced() -> None:
 
         cartridge = ROOT / 'rom' / 'system.cpr'
         generation = 0
-        if os.environ.get('KONCPC_PROBE_PAUSE'):  # TEMPORARY probe
-            pause_core(core, c)
         assert core.ipc(f'load {cartridge}').startswith('OK')
         while True:
             event = c.wait_event(kc.EVT_MEDIA_CHANGED, EVENT_TIMEOUT_S)
