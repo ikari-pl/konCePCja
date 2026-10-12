@@ -75,14 +75,23 @@ OP_KEYS_RELEASE = 0x0401
 OP_TEXT = 0x0402
 OP_MOUSE = 0x0403
 OP_INPUT_STATE = 0x0404
-OP_CHIP_GET = 0x0500  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_CHIP_GET = 0x0500
+OP_SYM_LIST = 0x0600
+OP_SYM_ADD = 0x0601
+OP_SYM_DEL = 0x0602
+OP_SYM_LOAD = 0x0603
+OP_FB_INFO = 0x0700
+OP_MEDIA_INFO = 0x0802  # not implemented yet; used to test UNKNOWN_OPCODE
 
 # Events (section 9): frames of kind 3 the server sends unasked.
 EVT_STOPPED = 0x8001
 EVT_RESUMED = 0x8002
 EVT_RESET = 0x8003
 EVT_FRAME = 0x8004
+EVT_MEDIA_CHANGED = 0x8005
 EVT_BREAKPOINTS_CHANGED = 0x8006
+EVT_SYMBOLS_CHANGED = 0x8007
+EVT_MACHINE_CHANGED = 0x8008
 EVT_CONTROL_CHANGED = 0x8009
 EVT_OVERRUN = 0x800A
 EVT_SHUTDOWN = 0x800B
@@ -90,7 +99,10 @@ EVT_SHUTDOWN = 0x800B
 EVENT_NAMES = {
     EVT_STOPPED: 'EVT_STOPPED', EVT_RESUMED: 'EVT_RESUMED',
     EVT_RESET: 'EVT_RESET', EVT_FRAME: 'EVT_FRAME',
+    EVT_MEDIA_CHANGED: 'EVT_MEDIA_CHANGED',
     EVT_BREAKPOINTS_CHANGED: 'EVT_BREAKPOINTS_CHANGED',
+    EVT_SYMBOLS_CHANGED: 'EVT_SYMBOLS_CHANGED',
+    EVT_MACHINE_CHANGED: 'EVT_MACHINE_CHANGED',
     EVT_CONTROL_CHANGED: 'EVT_CONTROL_CHANGED', EVT_OVERRUN: 'EVT_OVERRUN',
     EVT_SHUTDOWN: 'EVT_SHUTDOWN',
 }
@@ -149,7 +161,31 @@ CAP_RUN_CONTROL = 1 << 2
 CAP_EVENTS = 1 << 3
 CAP_BREAKPOINTS = 1 << 4
 CAP_INPUT = 1 << 5
+CAP_CHIPS = 1 << 6
+CAP_SYMBOLS = 1 << 7
+CAP_FB_INFO = 1 << 8
 CAP_MEM_ROM = 1 << 10
+
+# CHIP_GET: the chips, and the layout of each one's block.
+CHIP_CRTC = 1
+CHIP_GATE_ARRAY = 2
+CHIP_PSG = 3
+CHIP_FDC = 4
+CHIP_ASIC = 5
+CHIP_LAYOUTS = {CHIP_CRTC: 1, CHIP_GATE_ARRAY: 1, CHIP_PSG: 1, CHIP_FDC: 1,
+                CHIP_ASIC: 2}
+
+# Media slots (EVT_MEDIA_CHANGED).
+SLOT_DRIVE_A = 0
+SLOT_DRIVE_B = 1
+SLOT_TAPE = 2
+SLOT_CARTRIDGE = 3
+
+MAX_SYMBOL_NAME = 255
+
+# FB_INFO.
+FB_FORMAT_RGB24 = 1
+FB_TRANSPORT_NONE = 0
 
 # Input (section 12). A key is a place in the CPC keyboard matrix: (row, bit).
 # Row 9 is joystick 0; a pressed key reads as a clear bit in INPUT_STATE.
@@ -174,10 +210,12 @@ SPACE_CPU_RAM = 1    # the RAM behind that address, ROMs ignored
 SPACE_PHYS_RAM = 2   # physical RAM, flat
 SPACE_ROM_LOWER = 3  # the lower ROM, paged in or not
 SPACE_ROM_UPPER = 4  # upper ROM `bank`, paged in or not
-SPACE_ASIC_PAGE = 5  # 6128+ register page; comes with CAP_CHIPS
+SPACE_ASIC_PAGE = 5  # the 6128+ register page; NOT_PRESENT elsewhere
 
 CPU_SPACE_SIZE = 0x10000
 ROM_SPACE_SIZE = 0x4000
+ASIC_PAGE_SIZE = 0x4000
+ASIC_PALETTE_OFFSET = 0x2400  # 32 entries of two bytes: &6400 on the CPC
 ROM_SLOT_COUNT = 32
 MEM_READ_REPLY_OVERHEAD = 16  # status header and stamp, before the bytes
 
@@ -259,6 +297,9 @@ class Fields:
     def __init__(self, data: bytes):
         self.data = data
         self.pos = 0
+
+    def take(self, size: int) -> bytes:
+        return self._take(size)
 
     def _take(self, size: int) -> bytes:
         if self.pos + size > len(self.data):
@@ -503,6 +544,165 @@ class RunState:
 
 
 @dataclass
+class Crtc:
+    stamp: Stamp
+    type: int
+    reg_select: int
+    reg: bytes        # 18 registers
+    hcc: int          # horizontal character counter
+    vcc: int          # character line counter
+    ra: int           # raster line within the character
+    hsw: int          # HSYNC width counter
+    vsw: int          # VSYNC width counter
+    vta: int          # vertical total adjust counter
+    ma: int           # memory address
+    scanline: int
+
+
+@dataclass
+class GateArray:
+    stamp: Stamp
+    mode: int
+    requested_mode: int
+    pen: int
+    rom_config: int
+    ram_config: int
+    upper_rom: int
+    sl_count: int     # the 6-bit HSYNC counter of the raster interrupt
+    hs_count: int     # interrupt delay
+    ink: bytes        # 17 hardware colours: pens 0-15, then the border
+
+
+@dataclass
+class Psg:
+    stamp: Stamp
+    reg: bytes        # 16 registers
+    reg_select: int
+
+
+@dataclass
+class Fdc:
+    stamp: Stamp
+    motor: int
+    track: Tuple[int, int]       # physical head position, drive A and B
+    present: Tuple[int, int]     # a medium is in the drive
+    generation: Tuple[int, int]
+
+
+@dataclass
+class AsicDma:
+    source: int
+    loop_addr: int
+    loops: int
+    pause_ticks: int
+    tick_cycles: int
+    prescaler: int
+    enabled: bool
+    irq: bool
+
+
+@dataclass
+class AsicSprite:
+    x: int
+    y: int
+    mag_x: int
+    mag_y: int
+
+
+@dataclass
+class Asic:
+    stamp: Stamp
+    unlocked: bool
+    pri_line: int
+    # Layout 2.
+    lock_pos: int
+    page_on: bool
+    hscroll: int
+    vscroll: int
+    extend_border: bool
+    int_vector: int
+    split_line: int
+    split_addr: int
+    dma: List[AsicDma]
+    sprite: List[AsicSprite]
+
+
+def read_chip(fields: Fields):
+    """A CHIP_GET reply, as the dataclass of its chip. The block's layout
+    must be at least the one this client knows; what a later layout appended
+    is ignored."""
+    stamp = Stamp.read(fields)
+    chip = fields.u8()
+    fields.skip(1)
+    layout = fields.u16()
+    if layout < CHIP_LAYOUTS.get(chip, 1 << 16):
+        raise ValueError(f'chip {chip}: layout {layout} is not known')
+    if chip == CHIP_CRTC:
+        return Crtc(stamp, fields.u8(), fields.u8(), fields.take(18),
+                    fields.u8(), fields.u8(), fields.u8(), fields.u8(),
+                    fields.u8(), fields.u8(), fields.u16(), fields.u16())
+    if chip == CHIP_GATE_ARRAY:
+        return GateArray(stamp, fields.u8(), fields.u8(), fields.u8(),
+                         fields.u8(), fields.u8(), fields.u8(), fields.u8(),
+                         fields.u8(), fields.take(17))
+    if chip == CHIP_PSG:
+        return Psg(stamp, fields.take(16), fields.u8())
+    if chip == CHIP_FDC:
+        motor = fields.u8()
+        track = (fields.u8(), fields.u8())
+        present = (fields.u8(), fields.u8())
+        fields.skip(3)
+        return Fdc(stamp, motor, track, present,
+                   (fields.u64(), fields.u64()))
+    unlocked = fields.u8() != 0
+    pri_line = fields.u8()
+    fields.skip(2)
+    lock_pos = fields.u8()
+    page_on = fields.u8() != 0
+    hscroll = fields.u8()
+    vscroll = fields.u8()
+    extend_border = fields.u8() != 0
+    int_vector = fields.u8()
+    split_line = fields.u8()
+    fields.skip(1)
+    split_addr = fields.u16()
+    fields.skip(2)
+    dma = []
+    for _ in range(3):
+        channel = AsicDma(fields.u16(), fields.u16(), fields.u16(),
+                          fields.u16(), fields.u16(), fields.u8(),
+                          fields.u8() != 0, fields.u8() != 0)
+        fields.skip(1)
+        dma.append(channel)
+    sprite = [AsicSprite(fields.u16(), fields.u16(), fields.u8(),
+                         fields.u8()) for _ in range(16)]
+    return Asic(stamp, unlocked, pri_line, lock_pos, page_on, hscroll,
+                vscroll, extend_border, int_vector, split_line, split_addr,
+                dma, sprite)
+
+
+@dataclass
+class FbInfo:
+    width: int
+    height: int
+    format: int
+    transport: int
+    stride: int
+    fb_seq: int
+    shm_name: str
+
+    @staticmethod
+    def read(fields: Fields) -> 'FbInfo':
+        width = fields.u16()
+        height = fields.u16()
+        fmt = fields.u8()
+        transport = fields.u8()
+        fields.skip(2)
+        return FbInfo(width, height, fmt, transport, fields.u32(),
+                      fields.u64(), fields.string())
+
+
+@dataclass
 class Event:
     """One pushed event, decoded. `seq` is its number on this connection:
     1 for the first event and one more for each one after it. Fields an
@@ -522,7 +722,12 @@ class Event:
     controller: int = 0      # EVT_CONTROL_CHANGED
     previous: int = 0
     dropped: int = 0         # EVT_OVERRUN
-    generation: int = 0      # EVT_BREAKPOINTS_CHANGED
+    generation: int = 0      # EVT_BREAKPOINTS_CHANGED, EVT_SYMBOLS_CHANGED,
+    #                          EVT_MEDIA_CHANGED
+    slot: int = 0            # EVT_MEDIA_CHANGED
+    present: bool = False
+    path: str = ''
+    machine: Optional['MachineInfo'] = None   # EVT_MACHINE_CHANGED
 
     @property
     def name(self) -> str:
@@ -555,8 +760,17 @@ class Event:
             event.reason = fields.u8()
         elif frame.opcode == EVT_OVERRUN:
             event.dropped = fields.u32()
-        elif frame.opcode == EVT_BREAKPOINTS_CHANGED:
+        elif frame.opcode in (EVT_BREAKPOINTS_CHANGED, EVT_SYMBOLS_CHANGED):
             event.generation = fields.u64()
+        elif frame.opcode == EVT_MEDIA_CHANGED:
+            event.slot = fields.u8()
+            event.present = fields.u8() != 0
+            fields.skip(2)
+            event.generation = fields.u64()
+            event.path = fields.string()
+        elif frame.opcode == EVT_MACHINE_CHANGED:
+            event.machine = MachineInfo.read(fields)
+            event.frame = event.machine.stamp.frame
         return event
 
 
@@ -854,6 +1068,36 @@ class KcpcClient:
 
     def mem_info(self) -> MemInfo:
         return MemInfo.read(self.request(OP_MEM_INFO))
+
+    # -- DevTools data: chips, symbols, the frame -----------------------------
+
+    def chip_get(self, chip: int):
+        """One chip's state: a Crtc, GateArray, Psg, Fdc or Asic."""
+        return read_chip(self.request(OP_CHIP_GET,
+                                      struct.pack('<B3x', chip)))
+
+    def sym_list(self) -> Tuple[int, List[Tuple[int, str]]]:
+        """(generation, [(addr, name), ...]) in address order."""
+        fields = self.request(OP_SYM_LIST)
+        generation = fields.u64()
+        count = fields.u32()
+        return generation, [(fields.u16(), fields.string())
+                            for _ in range(count)]
+
+    def sym_add(self, addr: int, name: str) -> int:
+        return self.request(OP_SYM_ADD,
+                            struct.pack('<H', addr) + pack_str(name)).u64()
+
+    def sym_del(self, name: str) -> int:
+        return self.request(OP_SYM_DEL, pack_str(name)).u64()
+
+    def sym_load(self, path: str) -> Tuple[int, int]:
+        """(generation, symbols loaded) from a file on the core's machine."""
+        fields = self.request(OP_SYM_LOAD, pack_str(path))
+        return fields.u64(), fields.u32()
+
+    def fb_info(self) -> FbInfo:
+        return FbInfo.read(self.request(OP_FB_INFO))
 
     def mem_read_stamped(self, space: int, addr: int, length: int,
                          bank: int = 0) -> Tuple[Stamp, bytes]:

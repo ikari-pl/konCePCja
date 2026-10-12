@@ -739,6 +739,13 @@ uint8_t asic_page_peek(const Device* dev, uint16_t offset) {
   return static_cast<const asic_state*>(dev->self)->page[offset & 0x3FFF];
 }
 
+void asic_page_copy(const Device* dev, uint16_t offset, uint8_t* dst,
+                    size_t len) {
+  const asic_state* a = static_cast<const asic_state*>(dev->self);
+  if (offset > 0x4000 || len > static_cast<size_t>(0x4000 - offset)) return;
+  memcpy(dst, a->page + offset, len);
+}
+
 void asic_dma_regs(const Device* dev, int ch, uint16_t* source,
                    uint8_t* prescaler, uint8_t* enabled) {
   const asic_state* a = static_cast<const asic_state*>(dev->self);

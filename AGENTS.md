@@ -404,10 +404,15 @@ anyone, and the breakpoints `BP_ADD`, `BP_DEL`, `BP_CLEAR` (`BP_LIST` for
 anyone): execution breakpoints, watchpoints and I/O breakpoints, on the
 lists the text IPC and DevTools edit, and input: `KEY` (a keyboard matrix
 position; row 9 is joystick 0), `KEYS_RELEASE`, `TEXT` (the AutoTypeQueue)
-and `MOUSE`, with `INPUT_STATE` for anyone. A client
+and `MOUSE`, with `INPUT_STATE` for anyone, and what the DevTools show:
+`CHIP_GET` (CRTC, Gate Array, PSG, FDC, ASIC), the memory space `ASIC_PAGE`,
+the symbols (`SYM_LIST` for anyone; `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`) and
+`FB_INFO`. A client
 that sends `SUBSCRIBE` is pushed events (`EVT_STOPPED`, `EVT_RESUMED`,
-`EVT_RESET`, `EVT_FRAME`, `EVT_BREAKPOINTS_CHANGED`, ...), whoever caused
-them: a pause or a `bp add` from the text IPC or the GUI is pushed too, and
+`EVT_RESET`, `EVT_FRAME`, `EVT_BREAKPOINTS_CHANGED`, `EVT_SYMBOLS_CHANGED`,
+`EVT_MEDIA_CHANGED`, `EVT_MACHINE_CHANGED`, ...), whoever caused
+them: a pause, a `bp add`, a `sym add`, a `load` or a `config apply` from the
+text IPC or the GUI is pushed too, and
 a breakpoint, watchpoint or I/O hit says what was hit. The protocol is at
 major version 0: client and server must come from the same checkout.
 
@@ -494,6 +499,29 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   loses control, before `EVT_CONTROL_CHANGED` is posted. A new request that
   holds something down (a key, a button) must be recorded there, under
   `held_mutex_`, after re-checking the controller under that mutex.
+- Chip state for this port is read off the Devices, through the gate
+  (`kcpc_host_chip_get()`): `crtc_peek()`, `ga_peek()`, `psg_peek()`,
+  `fdc_peek()`, `asic_peek()`. **Never from the host view structs** (`CRTC`,
+  `GateArray`, `PSG`, `asic`, `pbRegisterPage`): the frame runner rewrites
+  those once a frame and a socket thread reading them races it. A chip's
+  block only grows, by a new layout number (`kChipLayout*` in
+  `kcpc_proto.h`), and the document's table of which window reads what says
+  when one has to.
+- `g_symfile` is shared by the render thread, the text IPC and this port.
+  Every `Symfile` method takes the table's lock; `Symbols()`,
+  `Breakpoints()` and `Entrypoints()` hand out references and are only for a
+  table no other thread can reach (one just read from a file). Add several
+  symbols with `addSymbols()`, which is one change: each change calls the one
+  hook (`set_changed_hook()`) under the lock, and that hook must only post.
+- A medium that changes is announced through `media_note()` then
+  `media_changed()` (`src/slotshandler.h`): the note first, because the
+  event's `present` and `path` are read from it later, on the server's
+  fan-out thread. `media_changed()` is called on the frame runner too (the
+  machine taking a queued disc), so its hook must only post. A new way to
+  load or eject must do both, or frontends keep showing the old medium.
+- `koncpc_rebuild_machine()` calls the one hook
+  (`cpc_set_machine_rebuilt_hook()`) while it still holds its pause lease;
+  the hook reads the new machine directly and must not take a lease.
 - `z80_step_instruction()` acknowledges the probe after the step. The probe
   is ticked along with the board, so a stepped fetch at an armed address
   latches a hit nobody collects; left there, the next frame reported it as a

@@ -1337,6 +1337,12 @@ const uint8_t* fdc_media_image_unit(const Device* dev, uint8_t unit,
   return m->image;
 }
 
+int fdc_media_present_unit(const Device* dev, uint8_t unit) {
+  const fdc_state* f = static_cast<const fdc_state*>(dev->self);
+  const fdc_media* m = sel_media(f, unit);
+  return (m->image != nullptr || m->scp != nullptr) ? 1 : 0;
+}
+
 int fdc_attach_flux(const Device* dev, const uint8_t* scp, size_t len) {
   fdc_state* f = static_cast<fdc_state*>(dev->self);
   const int cyls = flux_scp_cylinders(scp, len);

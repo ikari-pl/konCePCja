@@ -12,7 +12,10 @@ the pushed events (`SUBSCRIBE`, `RUN_STATE`, `PAUSE`, `RUN`, `RESET`,
 `STEP` in and frames, and the events that tell every client about them),
 slice 5, breakpoints (`BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR`), their
 hits pushed with what was hit, and `STEP` over, out and to,
-and slice 6, input (`KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`).
+slice 6, input (`KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE`),
+and slice 7, what the DevTools show (`CHIP_GET`, the memory space
+`ASIC_PAGE`, `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD`, `FB_INFO`) with
+the events for a change of medium, of the symbols and of the machine.
 Everything else is still design; a server tells a
 client what it implements through the `caps` mask of `HELLO`. The server
 announces protocol
@@ -535,10 +538,17 @@ elsewhere in the core that both change the machine at once, from two
 threads, are still not kept apart: that needs the holders to hand the
 machine to one another, and is tracked as beads-nhfy.)
 
-Breakpoint and symbol edits use the editing lists and their existing locks
+Breakpoint edits use the editing lists and their existing locks
 (`CpcStopCoordinationGuard`, the list mutators in `z80_view.cpp`). The runner
 copies those lists into the probe with `subcycle_bridge_sync_probe()` before
 each frame, as it does for edits made by the text IPC and DevTools.
+
+Symbol edits touch no machine state at all: the table (`g_symfile`) is host
+data. It had no lock, although the DevTools read it while they draw and the
+text IPC edits it from its own thread; slice 7 gave it one (every method of
+`Symfile` takes it), a generation counter and the hook `EVT_SYMBOLS_CHANGED`
+is posted from. The runner never takes that lock, so a symbol request never
+waits for a frame.
 
 That lock is the pause mutex, and the runner holds it for the length of
 every machine frame. `BP_LIST` and the three edits therefore wait for the
@@ -974,6 +984,26 @@ shared-memory ring.
 2 = tape, 3 = cartridge), `u8 present`, 2 reserved bytes, `u64 generation`
 (for drives, `dsk_media_generation()`), `str path` (empty if unknown).
 
+- Sent whenever a slot gets a different medium or loses it, whoever did it:
+  the text IPC's `load`, `disk eject`, `disk format` and `tape eject`, the
+  menus, drag and drop, a failed load (which leaves the slot empty).
+- `generation` is a counter per slot that only grows. Each event carries the
+  value its change produced; the number itself means nothing.
+- **A disc is announced more than once.** A load first empties the drive
+  (`present` 0), then puts the new disc into the host's view (`present` 1,
+  the path), and the machine takes the disc at its next frame boundary, which
+  is announced again with a higher generation. A client re-reads on each;
+  `CHIP_GET` of the FDC says when the machine has the disc
+  (`present[unit]`, and `generation[unit]` at least the event's).
+- `present` and `path` are what the slot holds **when the event is sent**,
+  not when the change was made: the frame runner posts this event too, and
+  it may neither take a lock nor carry a path. The server asks for both on
+  its fan-out thread. With two changes in quick succession both events may
+  describe the second; their generations still differ.
+- `path` is absolute. It is the file the host loaded, so for a `.zip` it is
+  the archive. It is empty for an empty slot and for a medium that has no
+  file (a drive formatted in place before anything was loaded into it).
+
 **`EVT_BREAKPOINTS_CHANGED` (`0x8006`)** — `u64 generation`
 (`z80_breakpoint_generation()`). Sent for every edit of the breakpoint,
 watchpoint and I/O breakpoint lists, from any source: `BP_ADD`, `BP_DEL` and
@@ -982,10 +1012,21 @@ request made is sent to that client after its reply. Hit counts move without
 an event, and so does the one-shot breakpoint of a walk, which is never
 listed.
 
-**`EVT_SYMBOLS_CHANGED` (`0x8007`)** — `u64 generation`.
+**`EVT_SYMBOLS_CHANGED` (`0x8007`)** — `u64 generation`, the one `SYM_LIST`
+reports. Sent for every change of the symbol table, from any source:
+`SYM_ADD`, `SYM_DEL` and `SYM_LOAD`, the text IPC's `sym`, the DevTools, the
+assembler exporting its labels. A file of symbols and an assembly are one
+change and one event, however many symbols they bring. An edit a request made
+is sent to that client after its reply.
 
 **`EVT_MACHINE_CHANGED` (`0x8008`)** — the machine was rebuilt (model, RAM
-size, CRTC type, tier). Payload: the `MACHINE_INFO` reply fields.
+size, CRTC type, tier). Payload: the `MACHINE_INFO` reply fields, read from
+the new machine before it runs its first frame; the stamp's `run_state` is
+the one the rebuild puts back. Sent after every rebuild that worked: the text
+IPC's `config apply` and `profile load`, the GUI's settings. A client should
+re-read everything it shows. (`effective_tier` is the tier the new machine
+starts in; the first frame may choose another, and `MACHINE_INFO` then says
+so.)
 
 **`EVT_CONTROL_CHANGED` (`0x8009`)** — `u32 controller` (the new
 controller's `client_id`, or 0 for none), `u32 previous` (the `client_id`
@@ -1067,7 +1108,19 @@ does not include what an expansion or the ASIC lays over an address range;
 the ASIC's register page has its own space.
 
 A space this server does not implement answers `BAD_PAYLOAD`: a number that
-is not in the table, and `ASIC_PAGE` until the server announces `CAP_CHIPS`.
+is not in the table.
+
+`ASIC_PAGE` is the ASIC's register page itself, all 16384 bytes of it,
+whether or not the ASIC is unlocked and whether or not the page is paged in
+at `0x4000`: a view must not depend on what the program under it has mapped.
+What the bytes mean is the 6128+'s own layout (sprite pixels from offset 0,
+sprite positions at `0x2000`, the palette at `0x2400`, the raster interrupt,
+split and scroll registers at `0x2800`, the DMA channels at `0x2C00`). It is
+read-only here: `MEM_WRITE` refuses it, because the ASIC acts on writes to
+its registers and a poke that bypassed that would show a state the chip is
+not in. On a machine without an ASIC a read answers `NOT_PRESENT`, after the
+checks of the request itself (so a read past the end of the page is
+`OUT_OF_RANGE` there too).
 
 **`MEM_INFO` (`0x0210`)** — empty request. Reply:
 
@@ -1096,7 +1149,8 @@ Reply: `stamp`, then `len` bytes.
   otherwise. **A 64 KiB read of a CPU space is always one reply**, since
   `max_frame` is at least 128 KiB.
 - `TOO_LARGE` is decided first, from the request alone and before anything
-  is allocated; then `BAD_PAYLOAD` (space, bank), then `OUT_OF_RANGE`.
+  is allocated; then `BAD_PAYLOAD` (space, bank), then `OUT_OF_RANGE`, then
+  `NOT_PRESENT` (`ASIC_PAGE` without an ASIC).
 - All the bytes of one reply come from the same instant, the one its stamp
   names. The server never splits a read over two frame boundaries.
 
@@ -1448,42 +1502,113 @@ is never `BUSY`.
 
 ### Chip state
 
-**`CHIP_GET` (`0x0500`)** — Request: `u8 chip`, 3 reserved bytes. Reply:
-`stamp`, `u8 chip`, `u8` reserved, `u16 layout`, then the chip's block.
+**`CHIP_GET` (`0x0500`)** — anyone. Request: `u8 chip`, 3 reserved bytes.
+Reply: `stamp`, `u8 chip`, `u8` reserved, `u16 layout`, then the chip's
+block. `BAD_PAYLOAD` for a chip that is not in the table.
 
 `layout` is the version of that block. A new layout only appends fields, so a
 client that knows layout 1 can read the start of layout 2.
 
-Every field comes from the Device debug structures that
-`subcycle_bridge_sync_chip_views()` and `subcycle_bridge_refresh_asic_view()`
-already read. The server reads them through the machine gate; it does not
-read the host view structs (`CRTC`, `GateArray`, `PSG`) from its own threads.
+Every field comes from the Device debug structures (`crtc_peek()`,
+`ga_peek()`, `psg_peek()`, `fdc_peek()`, `asic_peek()` and the ASIC's debug
+accessors), the ones `subcycle_bridge_sync_chip_views()` and
+`subcycle_bridge_refresh_asic_view()` read. The server reads them through
+the machine gate, so a read of a running machine is taken at a frame boundary
+and pauses nothing; it does not read the host view structs (`CRTC`,
+`GateArray`, `PSG`, `asic`) from its own threads, which the runner rewrites
+once a frame.
 
-| Chip | Id | Block, layout 1 |
-|------|---:|-----------------|
-| CRTC | 1 | `u8 type`, `u8 reg_select`, `u8 reg[18]`, `u8 hcc` (horizontal character counter), `u8 vcc` (character line counter), `u8 ra` (raster line within the character), `u8 hsw` (HSYNC width counter), `u8 vsw` (VSYNC width counter), `u8 vta` (vertical total adjust counter), `u16 ma` (memory address), `u16 scanline` |
-| Gate Array | 2 | `u8 mode`, `u8 requested_mode`, `u8 pen`, `u8 rom_config`, `u8 ram_config`, `u8 upper_rom`, `u8 sl_count` (the 6-bit HSYNC counter raster interrupts fire from), `u8 hs_count` (interrupt delay), `u8 ink[17]` (hardware colour numbers, pen 0–15 then border) |
-| PSG | 3 | `u8 reg[16]`, `u8 reg_select` |
-| FDC | 4 | `u8 motor`, `u8 track[2]` (physical head position per drive), `u8 present[2]`, 3 reserved bytes, `u64 generation[2]` |
-| ASIC | 5 | `u8 unlocked`, `u8 pri_line` (programmable raster interrupt line, 0 = off), 2 reserved bytes. Everything else (sprites, palette, DMA channels, split screen) is read raw from memory space `ASIC_PAGE` |
+| Chip | Id | Layout | Block |
+|------|---:|-------:|-------|
+| CRTC | 1 | 1 | `u8 type`, `u8 reg_select`, `u8 reg[18]`, `u8 hcc` (horizontal character counter), `u8 vcc` (character line counter), `u8 ra` (raster line within the character), `u8 hsw` (HSYNC width counter), `u8 vsw` (VSYNC width counter), `u8 vta` (vertical total adjust counter), `u16 ma` (memory address), `u16 scanline`. 30 bytes |
+| Gate Array | 2 | 1 | `u8 mode`, `u8 requested_mode`, `u8 pen`, `u8 rom_config`, `u8 ram_config`, `u8 upper_rom`, `u8 sl_count` (the 6-bit HSYNC counter raster interrupts fire from), `u8 hs_count` (interrupt delay: the HSYNCs still to count after a VSYNC), `u8 ink[17]` (hardware colour numbers, pen 0–15 then border). 25 bytes |
+| PSG | 3 | 1 | `u8 reg[16]`, `u8 reg_select`. 17 bytes |
+| FDC | 4 | 1 | `u8 motor`, `u8 track[2]` (physical head position per drive), `u8 present[2]` (a medium is in the drive, as the machine has it), 3 reserved bytes, `u64 generation[2]` (the drive's `EVT_MEDIA_CHANGED` counter). 24 bytes |
+| ASIC | 5 | 2 | See below. 154 bytes |
 
-`ASIC` answers `NOT_PRESENT` unless the model is a 6128+.
+The ASIC's block, in wire order:
 
-Layout 1 is deliberately no more than the text IPC's `regs crtc|ga|psg`
-already reports, so the first version can be checked against it byte for
-byte. The DevTools slice may raise a layout when a window needs a field that
-is not here.
+| Size | Field | Layout | Meaning |
+|-----:|-------|-------:|---------|
+| 1 | `unlocked` | 1 | 1 once the unlock sequence has been sent |
+| 1 | `pri_line` | 1 | Programmable raster interrupt line, 0 = off |
+| 2 | reserved | 1 | 0 |
+| 1 | `lock_pos` | 2 | How far into the unlock sequence the ASIC is |
+| 1 | `page_on` | 2 | 1 while the register page is paged in at `0x4000` |
+| 1 | `hscroll` | 2 | Soft scroll, horizontal (0–15) |
+| 1 | `vscroll` | 2 | Soft scroll, vertical (0–7) |
+| 1 | `extend_border` | 2 | The scroll register's border bit |
+| 1 | `int_vector` | 2 | Interrupt vector register |
+| 1 | `split_line` | 2 | Split screen line |
+| 1 | reserved | 2 | 0 |
+| 2 | `split_addr` | 2 | Display address below the split |
+| 2 | reserved | 2 | 0 |
+| 3 × 14 | `dma[3]` | 2 | Per sound DMA channel: `u16 source` (the address it reads next), `u16 loop_addr`, `u16 loops` (iterations left), `u16 pause_ticks` (what is left of a pause), `u16 tick_cycles` (the prescaler's own counter), `u8 prescaler`, `u8 enabled`, `u8 irq` (the channel's interrupt flag), `u8` reserved |
+| 16 × 6 | `sprite[16]` | 2 | Per sprite: `u16 x`, `u16 y`, `u8 mag_x`, `u8 mag_y` (0 = not shown, else 1, 2 or 4) |
+
+Sprite pixels and the palette are not in the block; they are read raw from
+the memory space `ASIC_PAGE` ([section 11](#11-memory)).
+
+`ASIC` answers `NOT_PRESENT` unless the machine has one (a 6128+).
+
+Layout 1 was deliberately no more than the text IPC's `regs crtc|ga|psg`
+reports, so that it could be checked against it field for field; the test
+suite does, between frames, in the middle of one and after a program has
+written the chips. (Doing so found that `regs ga` printed `INT_DELAY` from a
+host field nothing had written since the Devices took over, always `00`; it
+prints `hs_count` now.)
+
+**Which window reads what** (audited for slice 7, because phase 5 draws
+these windows from this port):
+
+| Window or surface | Reads | From |
+|-------------------|-------|------|
+| Video State | CRTC `reg[18]`; Gate Array mode, ROM and RAM configuration, pen | `CHIP_GET` CRTC, Gate Array |
+| Audio State | PSG `reg[16]` (tone, noise, mixer, amplitudes, envelope) | `CHIP_GET` PSG |
+| Disassembly, Memory | Gate Array `rom_config`, `ram_config` (the bank is its low 3 bits) | `CHIP_GET` Gate Array, or `MEM_INFO` |
+| Top bar, status line | CRTC `type`, Gate Array `rom_config`, `upper_rom` | `CHIP_GET`, `MACHINE_INFO` |
+| Drive status, Disc Tools | FDC `motor`, `track[2]`, the drives' generations | `CHIP_GET` FDC, `EVT_MEDIA_CHANGED` |
+| Graphics finder, palette strip | Gate Array `ink[17]` | `CHIP_GET` Gate Array |
+| ASIC Registers | Lock state and `lock_pos`; sprite positions and magnification; the DMA channels' address, loop, prescaler, pause, loops, interrupt flag and tick counter; raster interrupt; interrupt vector; scroll; border extension | `CHIP_GET` ASIC, layout 2 |
+| Text IPC `asic palette`, `asic sprite` | The palette and the sprite pixels | `ASIC_PAGE` |
+
+Only the ASIC needed more than layout 1. The page holds what a program
+wrote, and the DMA channels' loop target, loop count, pause and tick
+counters, and the position in the unlock sequence, are the ASIC's own state
+and appear nowhere in it; the rest of layout 2 (scroll, vector, split, sprite
+positions) is in the page too, and is sent decoded so that a client need not
+know which registers are write-only on the real chip. The CRTC's and the
+PSG's blocks are no wider than the windows need, and a field no window reads
+(the PSG's envelope position, the FDC's command phase and status bytes) was
+left out rather than guessed at: a layout can grow, and cannot shrink.
 
 ### Symbols
 
-- **`SYM_LIST` (`0x0600`)** — empty request. Reply: `u64 generation`,
-  `u32 count`, then `count` × (`u16 addr`, `str name`).
+The table is the one the text IPC's `sym` commands and the DevTools' Symbols
+window read and edit. An address has one name and a name stands for one
+address: adding a name that is elsewhere moves it, and a second name for an
+address replaces the first. (The table used to keep the old address of a
+moved name, as an entry `SYM_DEL` could never reach.)
+
+- **`SYM_LIST` (`0x0600`)** — anyone. Empty request. Reply: `u64 generation`,
+  `u32 count`, then `count` × (`u16 addr`, `str name`), in address order.
+  `TOO_LARGE` when the list does not fit the connection's `max_frame`.
 - **`SYM_ADD` (`0x0601`)** — controller. Request: `u16 addr`, `str name`.
-  Reply: `u64 generation`.
+  Reply: `u64 generation`. A name is one token of a symbol file line: 1 to
+  255 bytes, no blanks, no control characters and no `;` (`BAD_PAYLOAD`
+  otherwise, and nothing is added).
 - **`SYM_DEL` (`0x0602`)** — controller. Request: `str name`. Reply:
   `u64 generation`. `NOT_FOUND` if absent.
 - **`SYM_LOAD` (`0x0603`)** — controller. Request: `str path`, a file on the
-  core's machine. Reply: `u64 generation`, `u32 loaded`.
+  core's machine, in the text IPC's `sym load` format. Reply:
+  `u64 generation`, `u32 loaded` (the symbols the file held). Its symbols are
+  added to the table as one change; breakpoints and entry points in the file
+  are ignored, as `sym load` ignores them. `NOT_FOUND` when the file cannot
+  be opened; `BAD_PAYLOAD` for an empty path.
+
+`generation` grows with every change of the table and is the value
+`EVT_SYMBOLS_CHANGED` carries. None of these requests touches the machine,
+takes a pause lease or has a stamp.
 
 ### Video
 
@@ -1501,7 +1626,8 @@ is not here.
 | `str` | `shm_name` | Empty until phase 4 |
 
 This is the machine's canonical frame, before scaling or scanlines (epic
-invariant 1).
+invariant 1). The reply is the same for the life of the core: until phase 4
+there is nothing to read the frame from, and `transport` 0 says so.
 
 ### Media
 
@@ -1723,7 +1849,7 @@ test-first against a real `-H` core.
 | 4 | Run control and events (**landed**, beads-3o1.4) | The event ring and fan-out, `SUBSCRIBE`, the announced run state; `PAUSE`, `RUN`, `RESET`, `RUN_STATE`, `STEP` in and frames; `EVT_STOPPED`, `EVT_RESUMED`, `EVT_RESET`, `EVT_FRAME`, `EVT_OVERRUN`, `EVT_SHUTDOWN`, `EVT_CONTROL_CHANGED`; `CAP_RUN_CONTROL` and `CAP_EVENTS` |
 | 5 | Breakpoints and pushed hits (**landed**, beads-3o1.5) | `BP_LIST`, `BP_ADD`, `BP_DEL`, `BP_CLEAR` on the editing lists the text IPC and the DevTools share; `EVT_STOPPED` says what was hit; `EVT_BREAKPOINTS_CHANGED` for edits from any source; the walker and `STEP` over, out, to; walks announced as one step, whoever walks; `CAP_BREAKPOINTS` |
 | 6 | Input (**landed**, beads-3o1.6) | `KEY`, `KEYS_RELEASE`, `TEXT`, `MOUSE`, `INPUT_STATE` on the paths the text IPC's `input` commands use; the keys and mouse buttons a controller holds are released when it loses control; `CAP_INPUT` |
-| 7 | DevTools data | `CHIP_GET`, `ASIC_PAGE`, `SYM_*`, `FB_INFO`, `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` |
+| 7 | DevTools data (**landed**, beads-3o1.7) | `CHIP_GET` for the CRTC, the Gate Array, the PSG, the FDC and the ASIC (layout 2), the memory space `ASIC_PAGE`; `SYM_LIST`, `SYM_ADD`, `SYM_DEL`, `SYM_LOAD` on a symbol table that now has a lock; `FB_INFO` with no transport; `EVT_MEDIA_CHANGED`, `EVT_SYMBOLS_CHANGED`, `EVT_MACHINE_CHANGED` for changes from any source; `CAP_CHIPS`, `CAP_SYMBOLS`, `CAP_FB_INFO` |
 | 8 | Exit test and documentation | The exit test of beads-3o1, the documentation brought in line with the code. **No freeze:** the server stays at major 0 |
 | 9 | Media, snapshots, configuration | `MEDIA_INSERT`, `MEDIA_EJECT`, `MEDIA_INFO`, `TAPE_CONTROL`, `SNAPSHOT_SAVE`, `SNAPSHOT_LOAD`, `CONFIG_GET`, `CONFIG_SET`, `CONFIG_APPLY` |
 
@@ -1779,6 +1905,20 @@ Source layout the slices should follow:
   `ipc_stage_mouse()` in `src/koncepcja_ipc_server.{h,cpp}`, the staging the
   text IPC's `input mouse` and `MOUSE` share. `test/kcpc_input_test.cpp`
   covers both and the `kcpc_host_*` functions over them.
+- `src/symfile.{h,cpp}` — the symbol table with its lock, its generation,
+  `addSymbols()` (a batch as one change) and the one hook every change calls
+  (`Symfile::set_changed_hook()`). `test/symfile.cpp` runs readers and
+  writers against it.
+- `src/slotshandler.{h,cpp}` — what each slot holds and when it changed:
+  `media_note()`, `media_changed()`, `media_state()`, `media_generation()`
+  and the hook (`media_set_changed_hook()`). The drives' counters are
+  `dsk_media_generation()`'s; the tape deck and the cartridge port have
+  their own. `test/disc_media_generation_test.cpp` covers the loaders.
+- `src/koncepcja.h`, `src/kon_cpc_ja.cpp` once more —
+  `cpc_set_machine_rebuilt_hook()`, called by `koncpc_rebuild_machine()`
+  while it still holds its lease.
+- `src/hw/asic.{h,cpp}`, `src/hw/fdc.{h,cpp}` — `asic_page_copy()` (the
+  register page in one copy) and `fdc_media_present_unit()`.
 - `src/kcpc/kcpc_gate.{h,cpp}` — the machine gate. Like the server it
   knows nothing about the emulator (the pause flag and the lease are two
   callbacks), so `test/kcpc_gate_test.cpp` runs real reader and runner
@@ -1943,3 +2083,30 @@ Recorded so a reviewer can disagree with one without reading the rest.
     said "characters now queued". The queue holds actions, a token is one
     of them, and characters the CPC cannot type are dropped before they are
     queued; the number the queue has is the one a client can wait on.
+42. **The ASIC's block is at layout 2 from the start** (slice 7). The audit
+    of the DevTools windows found the ASIC window showing the DMA channels'
+    counters and the position in the unlock sequence, which are in no
+    register and so not in `ASIC_PAGE`. The other four chips stay at
+    layout 1.
+43. **`ASIC_PAGE` is the page, not the view at `0x4000`** (slice 7). It
+    reads the same whether the ASIC is locked, unlocked or has the page
+    mapped, and it is read-only: the chip acts on writes to its registers.
+44. **What an `EVT_MEDIA_CHANGED` says about the slot is read when the event
+    is sent** (slice 7). The event is posted from the frame runner too (the
+    machine taking a queued disc), which may not take a lock or carry a path;
+    an event is a notice (decision 8), and a notice says what is true now.
+45. **A change of medium is announced per step, not per load** (slice 7).
+    A disc load is three: the drive emptied, the host's view filled, the
+    machine given the disc. Hiding the first two would need the loaders to
+    know which eject is the start of a load; the generations make the extra
+    notices harmless.
+46. **The symbol table got a lock, and a name is unique in it** (slice 7).
+    It was read by the render thread and written by the text IPC's with
+    nothing between them. And `SYM_DEL` names a symbol by its name, which
+    only works if a name has one address.
+47. **`EVT_MACHINE_CHANGED` is posted by the thread that rebuilt, under its
+    lease** (slice 7). Its payload is read from the machine directly there:
+    through the gate it would wait for that very lease.
+48. **The text IPC's `tape eject` goes through the loader** (slice 7), under
+    a pause lease, as `disk eject` does. It called the machine's deck from
+    the IPC thread and left the host's copy of the tape in place.
