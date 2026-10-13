@@ -111,8 +111,12 @@ struct Bridge {
 #endif
   std::vector<uint8_t> rom, amsdos, media;  // machine wiring: must outlive it
   std::vector<uint8_t>
-      media_b;                  // drive B DSK image (unit 1): also must outlive
-  std::vector<uint8_t> mf2rom;  // Multiface II 8K ROM (optional)
+      media_b;  // drive B DSK image (unit 1): also must outlive
+  // The file each drive's medium was read from, and so where its writes go
+  // back to. Not CPC.driveA/B.file: a load names the NEW file there before
+  // the swap is applied (or fails), while the drive still holds the old disc.
+  std::string media_path[2];
+  std::vector<uint8_t> mf2rom;        // Multiface II 8K ROM (optional)
   std::atomic<bool> mf2_stop{false};  // deferred STOP (UI -> Z80 thread)
   // Disposition of a probe hit already judged inside subcycle_bridge_frame's
   // continue loop, waiting for the debug sync to report it. -1 = none pending.
@@ -198,6 +202,7 @@ struct Bridge {
   // applies them at its next frame boundary.
   std::mutex swap_mutex;
   std::vector<uint8_t> swap_bytes;
+  std::string swap_path;  // the file swap_bytes came from (-> media_path)
   std::atomic<PendingMedia> swap_kind{PendingMedia::kNone};
   std::atomic<uint8_t> swap_unit{0};
 };
@@ -457,6 +462,8 @@ bool subcycle_bridge_start() {
     LOG_ERROR("subcycle engine: SDL_CreateSurfaceFrom: " << SDL_GetError());
 #endif
 
+  b.media_path[0].clear();
+  b.media_path[1].clear();
   if (!CPC.driveA.file.empty()) {
     // Every flux container (.ipf/.raw/.scp/.hfe/.a2r) goes through the unified
     // content-sniffing dispatcher (flux::to_scp) into an in-memory SCP capture
@@ -477,6 +484,7 @@ bool subcycle_bridge_start() {
         (flux ? b.machine.insert_flux(b.media.data(), b.media.size())
               : b.machine.insert_disk(b.media.data(), b.media.size()));
     if (ok) {
+      b.media_path[0] = CPC.driveA.file;
       LOG_INFO("subcycle engine: drive A <- " << CPC.driveA.file);
       log_flux_writability(b);  // self-gating: silent unless drive A is flux
     } else {
@@ -494,6 +502,7 @@ bool subcycle_bridge_start() {
     b.media_b = read_media_file(CPC.driveB.file, ext_b);
     if (!b.media_b.empty() &&
         b.machine.insert_disk(b.media_b.data(), b.media_b.size(), 1)) {
+      b.media_path[1] = CPC.driveB.file;
       LOG_INFO("subcycle engine: drive B <- " << CPC.driveB.file);
     } else {
       LOG_ERROR("subcycle engine: cannot attach " << CPC.driveB.file
@@ -1500,11 +1509,12 @@ void subcycle_bridge_stop() {
 // NOLINTNEXTLINE(misc-use-internal-linkage): external API consumed by other
 // translation units/tests; internal linkage would break the link
 void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
-                                  uint8_t unit) {
+                                  uint8_t unit, std::string path) {
   Bridge& b = g_bridge;
   if (!b.active || bytes.empty()) return;
   std::scoped_lock const lock(b.swap_mutex);
   b.swap_bytes = std::move(bytes);
+  b.swap_path = std::move(path);
   b.swap_unit.store(unit & 1, std::memory_order_release);
   b.swap_kind.store(flux ? PendingMedia::kFlux : PendingMedia::kDisk,
                     std::memory_order_release);
@@ -1598,6 +1608,7 @@ void subcycle_bridge_eject_media(uint8_t unit) {
   if (!b.active) return;
   std::scoped_lock const lock(b.swap_mutex);
   b.swap_bytes.clear();
+  b.swap_path.clear();
   b.swap_unit.store(unit & 1, std::memory_order_release);
   b.swap_kind.store(PendingMedia::kEject, std::memory_order_release);
 }
@@ -1645,6 +1656,7 @@ bool subcycle_bridge_push_drive_view(uint8_t unit) {
       b.swap_kind.load(std::memory_order_acquire) != PendingMedia::kNone) {
     b.swap_kind.store(PendingMedia::kNone, std::memory_order_release);
     b.swap_bytes.clear();
+    b.swap_path.clear();
   }
 
   size_t cur_len = 0;
@@ -1705,7 +1717,10 @@ namespace {
 // Shared write-back core for drive A and drive B.
 void flush_dirty_media_unit(Bridge& b, uint8_t unit) {
   std::vector<uint8_t>& buf = unit == 0 ? b.media : b.media_b;
-  const std::string& path = unit == 0 ? CPC.driveA.file : CPC.driveB.file;
+  // The disc's own file, not CPC.driveA/B.file: by the time a load's swap
+  // is applied that names the incoming disc, and this one's bytes would be
+  // written over it (beads-11us).
+  const std::string& path = b.media_path[unit & 1];
   bool& altered = unit == 0 ? driveA.altered : driveB.altered;
   const char* label = unit == 0 ? "drive A" : "drive B";
   if (fdc_media_dirty_unit(b.machine.fdc(), unit) == 0) return;
@@ -1760,6 +1775,8 @@ void apply_pending_media(Bridge& b) {
       }
       flush_dirty_media_unit(b, unit);  // the outgoing disc keeps its writes
       buf = std::move(b.swap_bytes);
+      b.media_path[unit] = std::move(b.swap_path);
+      b.swap_path.clear();
       const bool ok = (kind == PendingMedia::kFlux)
                           ? b.machine.insert_flux(buf.data(), buf.size())
                           : b.machine.insert_disk(buf.data(), buf.size(), unit);
@@ -1771,6 +1788,7 @@ void apply_pending_media(Bridge& b) {
         LOG_ERROR("subcycle engine: drive "
                   << drive << " hot-swap rejected (bad image)");
         b.machine.eject_disk(unit);
+        b.media_path[unit].clear();
       }
       // The host announced the load when it queued it; this is the moment the
       // FDC actually holds the new disc. A listing pulled in between saw the
@@ -1781,6 +1799,7 @@ void apply_pending_media(Bridge& b) {
     case PendingMedia::kEject:
       flush_dirty_media_unit(b, unit);  // the outgoing disc keeps its writes
       b.machine.eject_disk(unit);
+      b.media_path[unit].clear();
       dsk_media_changed(unit);
       LOG_INFO("subcycle engine: drive " << drive << " ejected");
       break;
@@ -1977,6 +1996,8 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
 }
 
 bool subcycle_bridge_frame_was_late() { return g_bridge.pacer.late(); }
+
+void subcycle_bridge_pacing_stopped() { g_bridge.pacer.stopped(); }
 
 uint64_t subcycle_bridge_take_sleep_ticks() {
   const uint64_t ticks = g_bridge.sleep_ticks;

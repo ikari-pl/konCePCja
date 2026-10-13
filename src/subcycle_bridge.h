@@ -12,6 +12,7 @@
 #define KONCPC_SUBCYCLE_BRIDGE_H
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "host_surface.h"
@@ -55,6 +56,11 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
  * auto frameskip. */
 bool subcycle_bridge_frame_was_late();
 
+/* The frame runner found the machine in an announced stop: the pacer does not
+ * make up the time (FramePacer::stopped()). Frame runner only, like the frame
+ * itself. */
+void subcycle_bridge_pacing_stopped();
+
 /* Performance-counter ticks the pacer has slept since the last call, then
  * resets the count (the DevTools sleep-time stat). */
 uint64_t subcycle_bridge_take_sleep_ticks();
@@ -66,10 +72,12 @@ void subcycle_bridge_repaint(HostSurface* dst);
  * while the emulation runs — the swap is deferred and applied by the Z80
  * thread at the next frame boundary (the FDC's media is live wiring; it must
  * not change mid-tick). `flux` selects SCP interpretation; bytes are moved
- * into the bridge, which keeps them alive for the machine. No-ops when the
+ * into the bridge, which keeps them alive for the machine. `path` is the file
+ * the bytes came from: the disc's unsaved writes are written back there when
+ * it leaves the drive (empty: nowhere, they are dropped). No-ops when the
  * engine is inactive. */
 void subcycle_bridge_insert_media(std::vector<uint8_t> bytes, bool flux,
-                                  uint8_t unit = 0);
+                                  uint8_t unit = 0, std::string path = {});
 void subcycle_bridge_eject_media(uint8_t unit = 0);
 // Apply a queued insert/eject now. Safe only while the Z80 thread is
 // idle (hold CpcPauseLease). IPC disk eject uses this so the next

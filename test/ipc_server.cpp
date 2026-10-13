@@ -813,6 +813,57 @@ TEST_F(IpcServerTest, RedundantResumeCannotDiscardAPendingStop) {
   EXPECT_EQ(hit_pc, 0x1234);
 }
 
+TEST_F(IpcServerTest, ARunDropsTheHitOfTheStopItLeaves) {
+  // beads-1ew8: a breakpoint stopped the machine and nobody collected the
+  // hit; somebody then ran the machine. The latch survived the run, so the
+  // next `wait bp` answered OK for a stop that was over, on a machine that
+  // was running (`bp add; run; wait bp; bp del` then left it running).
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  cpc_pause();
+  uint64_t const epoch = cpc_resume();
+  uint64_t const generation = z80_breakpoint_generation();
+  ASSERT_TRUE(commit_exec_stop(epoch, generation, 0x0038));
+  ASSERT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.breakpoint_hit_pending());
+
+  cpc_resume();  // the run that leaves that stop behind
+  ASSERT_FALSE(CPC.paused);
+  EXPECT_FALSE(server.breakpoint_hit_pending());
+  EXPECT_EQ(0u, send_command("wait bp 50").rfind("ERR 408", 0));
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_FALSE(server.consume_breakpoint_hit(hit_pc, watch));
+
+  // A stop under the new run is reported as before.
+  ASSERT_TRUE(commit_exec_stop(cpc_resume_epoch(), generation, 0x5678));
+  EXPECT_EQ("OK PC=5678 WATCH=0\n", send_command("wait bp 50"));
+  cpc_resume();
+}
+
+TEST_F(IpcServerTest, ALeaseRestoreKeepsAnUncollectedHit) {
+  // The other side of beads-1ew8: a pause lease that borrows the stopped
+  // machine (another actor's `mem read`) and puts it back is not a run, and
+  // must not cost `wait bp` the hit.
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+
+  cpc_pause();
+  uint64_t const epoch = cpc_resume();
+  ASSERT_TRUE(commit_exec_stop(epoch, z80_breakpoint_generation(), 0x0038));
+  {
+    CpcPauseLease lease;
+    lease.restore_run_state();
+  }
+  ASSERT_TRUE(CPC.paused);
+  EXPECT_TRUE(server.breakpoint_hit_pending());
+  EXPECT_TRUE(server.consume_breakpoint_hit(hit_pc, watch));
+  EXPECT_EQ(hit_pc, 0x0038);
+  cpc_resume();
+}
+
 TEST_F(IpcServerTest, BreakpointMutationInvalidatesClassifiedStop) {
   uint16_t hit_pc = 0;
   bool watch = false;

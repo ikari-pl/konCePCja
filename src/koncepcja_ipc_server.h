@@ -119,6 +119,13 @@ class KoncepcjaIpcServer {
   // z80_breakpoint_generation(). A hit from an older generation is dropped
   // rather than reported as if the currently-armed breakpoint had fired.
   std::atomic<uint64_t> breakpoint_hit_generation{0};
+  // Run the latched hit stopped (cpc_resume_epoch() at the stop). Once the
+  // machine has been run again the stop is over, and so is the hit: `wait bp`
+  // answered OK with it on a running machine (beads-1ew8).
+  std::atomic<uint64_t> breakpoint_hit_epoch{0};
+  // The latched hit, if any, is of the breakpoints armed now and of the stop
+  // the machine has not been run out of.
+  bool latched_hit_is_current() const;
   std::atomic<uint16_t> breakpoint_pc{0};
   std::atomic<bool> breakpoint_watchpoint{false};
 

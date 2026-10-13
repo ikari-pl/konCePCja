@@ -183,7 +183,7 @@ OK available commands (usage: help <command>):
 | `step [n]` | Step N instructions | `step 10` → `OK` |
 | `wait pc <addr> [timeout]` | Run until PC reaches addr exactly (one-shot breakpoint), then pause. A breakpoint of your own AT addr counts as arriving (`OK`); one that fires earlier is `ERR 409 stopped-elsewhere`, and a shutdown mid-wait is `ERR 503 shutting-down` | `wait pc 0x4000 5000` |
 | `wait mem <addr> <val> [mask] [timeout]` | Wait for memory value | `wait mem 0xBE80 0xFF` |
-| `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming) | `wait bp 10000` |
+| `wait bp [timeout]` | Wait for breakpoint hit (reports only after pause lands; drops hits from a previous arming and the hit of a stop the machine has since been run out of) | `wait bp 10000` |
 | `wait vbl <n> [timeout]` | Run N frames of emulation (vertical blanks, not wall time), then pause; same count as `step frame N` from a paused machine. A breakpoint that fires first is `ERR 409 stopped-elsewhere` | `wait vbl 50` |
 | `disasm <addr> <count>` | Disassemble | `disasm 0x4000 10` |
 | `screenshot [path]` | Take screenshot | `screenshot /tmp/shot.bmp` |
@@ -802,6 +802,10 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   and does nothing while another lease is held. A lease that only reads uses
   `read_alone()`.
 - Reset: `emulator_reset()`
+- A cartridge goes into a built machine through `cpc_cartridge_insert()`
+  (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
+  image the board reads through a raw pointer. A caller that holds the
+  machine itself uses `cpc_cartridge_swap()`.
 - ImGui state is in global `imgui_state` struct
 
 ## Code Review Themes

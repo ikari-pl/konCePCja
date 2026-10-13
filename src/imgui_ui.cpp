@@ -363,15 +363,13 @@ void process_pending_dialog() {
       CPC.current_tape_path = dir;
       break;
     case FileDialogAction::LoadCartridge:
-      CPC.cartridge.file = path;
-      if (file_load(CPC.cartridge) == 0) {
+      if (cpc_cartridge_insert(path) == 0) {
         imgui_toast_success("Cartridge loaded: " + fname);
         mru_push(CPC.mru_carts, path);
       } else {
         imgui_toast_error("Failed to load cartridge: " + fname);
       }
       CPC.current_cart_path = dir;
-      emulator_reset();
       break;
     case FileDialogAction::LoadROM:
       // Record it AND fit it: setting rom_file alone only took effect at the
@@ -1746,11 +1744,9 @@ void imgui_render_menubar() {
         }
       });
       render_mru_section("Cartridges", CPC.mru_carts, [](const std::string& p) {
-        CPC.cartridge.file = p;
         auto f = std::filesystem::path(p).filename().string();
-        if (file_load(CPC.cartridge) == 0) {
+        if (cpc_cartridge_insert(p) == 0) {
           imgui_toast_success("Cartridge: " + f);
-          emulator_reset();
           mru_push(CPC.mru_carts, p);
         } else {
           imgui_toast_error("Failed: " + f);

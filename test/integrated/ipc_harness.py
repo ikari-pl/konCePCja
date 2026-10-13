@@ -1195,6 +1195,87 @@ def test_inject_launches_like_run():
         os.unlink(bin_path)
 
 
+def test_wait_bp_drops_a_hit_the_machine_has_run_past():
+    """`wait bp` must not report a stop the machine has since been run out of.
+
+    beads-1ew8: a breakpoint stops the machine and nobody collects the hit;
+    `run` resumes it; `wait bp` then answered OK with that old hit while the
+    machine was running. `bp add; run; wait bp; bp del` (the way tests stop a
+    machine at &0038) could so end on a running machine.
+
+    The program passes its breakpoint exactly once, so after the `run` there
+    is no second hit that could make a stale answer look true.
+    """
+    print("Running wait bp vs. a hit from before a run test...")
+
+    def paused(ipc) -> Optional[bool]:
+        ok, resp = ipc.send_command('status')
+        m = re.search(r'paused=([01])', resp)
+        return (m.group(1) == '1') if ok and m else None
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.pause()
+        # 8000 DI : 8001 NOP : 8002 NOP : 8003 JR $
+        if not ipc.write_mem(0x8000, 'F3000018FE'):
+            print("FAIL: could not write the program")
+            return False
+        ok, resp = ipc.send_command('reg set PC 0x8000')
+        if not ok:
+            print(f"FAIL: reg set PC: {resp}")
+            return False
+        if not ipc.bp_add(0x8002):
+            print("FAIL: Could not add breakpoint")
+            return False
+        ipc.run()
+        # See the stop without collecting the hit.
+        deadline = time.time() + 5.0
+        while paused(ipc) is not True:
+            if time.time() > deadline:
+                print("FAIL: the breakpoint at 8002 never stopped the machine")
+                return False
+            time.sleep(0.01)
+        ok, pc = ipc.get_reg('PC')
+        if not ok or pc != 0x8002:
+            print(f"FAIL: stopped at {pc:04X}, expected 8002")
+            return False
+
+        ipc.run()
+        time.sleep(0.1)
+        if paused(ipc) is not False:
+            print("FAIL: the machine is not running after run (the breakpoint "
+                  "fired twice: this program cannot test the latch)")
+            return False
+
+        ok, resp = ipc.wait_bp(timeout_ms=300)
+        still_running = paused(ipc) is False
+        if ok or '408' not in resp:
+            print(f"FAIL: wait bp reported a hit from before the run: {resp!r} "
+                  f"(machine running: {still_running})")
+            return False
+        if not still_running:
+            print("FAIL: the machine stopped during a wait bp that timed out")
+            return False
+
+        # A hit under the current run is still reported, and is a real stop.
+        ipc.pause()
+        ipc.send_command('reg set PC 0x8000')
+        ipc.run()
+        ok, resp = ipc.wait_bp(timeout_ms=5000)
+        if not ok or 'PC=8002' not in resp:
+            print(f"FAIL: wait bp missed a fresh hit: {resp!r}")
+            return False
+        if paused(ipc) is not True:
+            print("FAIL: wait bp answered OK on a running machine")
+            return False
+
+    print("PASS: wait bp drops a hit the machine has run past")
+    return True
+
+
 def test_breakpoint_pause_step_resume():
     """Breakpoint fires, emulator pauses, step in advances PC, resume works.
 
@@ -2565,6 +2646,89 @@ def read_lower_rom_signature(ipc: KoncepcjaIPC, addr: int = 0x02E0,
         ipc.run()
 
 
+def test_cartridge_hotload_reattaches():
+    """A cartridge loaded into a running 6128+ is the one the board reads.
+
+    beads-lrdy: the board holds the cartridge image by a raw pointer, and
+    loading a cartridge frees that image and allocates another. `load x.cpr`
+    never told the board, which went on reading released memory; it looked
+    fine because the allocator usually hands the same block back, so the
+    proof that counts is this test against an AddressSanitizer build. A file
+    that was refused left the board with no image at all.
+
+    The second cartridge is the system one with one byte of the character
+    set changed, so the machine still boots and the lower ROM says which
+    cartridge the board is reading.
+    """
+    print("Running cartridge hot-load test...")
+    window, patch = 0x3C78, 0x3C7A
+
+    system = PROJECT_ROOT / 'rom' / 'system.cpr'
+    image = bytearray(system.read_bytes())
+    bank0 = image.find(b'cb00') + 8  # chunk id, 32-bit length, then the bank
+    if bank0 < 8:
+        print("FAIL: rom/system.cpr has no cb00 chunk")
+        return False
+    original = bytes(image[bank0 + window:bank0 + window + 8]).hex().upper()
+    image[bank0 + patch] ^= 0xA5
+    patched = bytes(image[bank0 + window:bank0 + window + 8]).hex().upper()
+
+    def lower_rom(ipc: KoncepcjaIPC) -> Optional[str]:
+        sig = read_lower_rom_signature(ipc, window, 8)
+        return None if sig is None else sig.replace(' ', '')
+
+    tmp = Path(tempfile.mkdtemp(prefix='koncpc_cart_'))
+    try:
+        other = tmp / 'other.cpr'
+        other.write_bytes(image)
+        refused = tmp / 'refused.cpr'
+        refused.write_bytes(b'RIFF\x04\x00\x00\x00nope')
+
+        with EmulatorRunner() as emu:
+            if not emu.start('-O', 'system.model=3'):
+                print("FAIL: Could not start 6128+")
+                return False
+            ipc = emu.ipc
+            if lower_rom(ipc) != original:
+                print("FAIL: the 6128+ did not boot the system cartridge")
+                return False
+
+            steps = (
+                (other, True, patched, 'the new cartridge'),
+                (refused, False, patched, 'the cartridge it had (refused file)'),
+                (system, True, original, 'the system cartridge again'),
+            )
+            for path, accepted, expected, what in steps:
+                ok, resp = ipc.send_command(f'load {path}')
+                if ok != accepted:
+                    print(f"FAIL: load {path.name}: {resp}")
+                    return False
+                # Frames of the machine, on whatever image the board holds.
+                if not ipc.wait_vbl(25):
+                    print(f"FAIL: no frames after load {path.name}")
+                    return False
+                ipc.run()
+                seen = lower_rom(ipc)
+                if seen != expected:
+                    print(f"FAIL: after load {path.name} the lower ROM reads "
+                          f"{seen}, expected {expected} ({what})")
+                    return False
+                if accepted:
+                    continue
+                # A rebuild loads the cartridge the config names, and gives
+                # up on the whole emulator when that fails: the refused file
+                # must not have stayed behind as the configured cartridge.
+                ok, resp = ipc.send_command('config apply')
+                if not ok or lower_rom(ipc) != expected:
+                    print(f"FAIL: rebuild after a refused cartridge: {resp}")
+                    return False
+
+        print("PASS: Cartridge hot-load test")
+        return True
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_model_change_rebuild():
     """Model changes must rebuild the board, not just mutate config state.
 
@@ -3050,6 +3214,127 @@ def test_disk_eject_flushes_dirty_writes():
                 return False
 
         print("PASS: disk eject flushes dirty writes without an explicit save")
+        return True
+
+
+def _dirty_disc_in_drive_a(emu, td):
+    """Create a.dsk in `td`, load it into drive A and write a file to it that
+    is never saved: the write lives only in the FDC's copy of the disc.
+    Returns (path of a.dsk, the marker the unsaved file holds) or None."""
+    a_path = os.path.join(td, 'a.dsk')
+    ok, resp = emu.ipc.send_command(f'disk new {a_path} data sector')
+    if not ok:
+        print(f"FAIL: disk new a: {resp}")
+        return None
+    ok, resp = emu.ipc.send_command(f'load {a_path}')
+    if not ok:
+        print(f"FAIL: load a: {resp}")
+        return None
+    marker = b'UNSAVED-WRITE-TO-DISC-A'
+    host = os.path.join(td, 'hello.bin')
+    with open(host, 'wb') as f:
+        f.write(marker)
+    ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+    if not ok:
+        print(f"FAIL: put: {resp}")
+        return None
+    return a_path, marker
+
+
+def _read_bytes(path):
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+def test_disk_load_over_dirty_disc_flushes_to_its_own_file():
+    """Loading a disc over one with unsaved writes must write those back to
+    the OUTGOING disc's file (beads-11us).
+
+    Every load path names the new file in CPC.driveA.file before the swap is
+    applied, and the write-back used that field: the old disc's image landed
+    in the NEW file and the old file never got its write.
+    """
+    print("Running load-over-dirty-disc test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            b_path = os.path.join(td, 'b.dsk')
+            ok, resp = emu.ipc.send_command(f'disk new {b_path} data sector')
+            if not ok:
+                print(f"FAIL: disk new b: {resp}")
+                return False
+            b_before = _read_bytes(b_path)
+
+            dirty = _dirty_disc_in_drive_a(emu, td)
+            if dirty is None:
+                return False
+            a_path, marker = dirty
+
+            ok, resp = emu.ipc.send_command(f'load {b_path}')
+            if not ok:
+                print(f"FAIL: load b over dirty a: {resp}")
+                return False
+            # The swap is queued for the next frame boundary; a listing
+            # applies it now, so the files below are read after the flush.
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' in ls:
+                print(f"FAIL: drive A does not hold the blank b.dsk; ls={ls!r}")
+                return False
+
+            if _read_bytes(b_path) != b_before:
+                print("FAIL: b.dsk was overwritten by the load that read it")
+                return False
+            if marker not in _read_bytes(a_path):
+                print("FAIL: a.dsk lost its unsaved write")
+                return False
+
+        print("PASS: the outgoing disc's writes went back to its own file")
+        return True
+
+
+def test_disk_failed_load_does_not_redirect_write_back():
+    """A load that fails leaves the old disc in the drive; its unsaved writes
+    still belong to its own file, not to the file that failed to load
+    (beads-11us: the failed path stayed in CPC.driveA.file)."""
+    print("Running failed-load write-back test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            dirty = _dirty_disc_in_drive_a(emu, td)
+            if dirty is None:
+                return False
+            a_path, marker = dirty
+
+            junk_path = os.path.join(td, 'junk.dsk')
+            junk = b'this is not a disc image\n' * 8
+            with open(junk_path, 'wb') as f:
+                f.write(junk)
+            ok, resp = emu.ipc.send_command(f'load {junk_path}')
+            if ok:
+                print(f"FAIL: a junk file loaded as a disc: {resp}")
+                return False
+
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+
+            if _read_bytes(junk_path) != junk:
+                print("FAIL: the file that failed to load was overwritten")
+                return False
+            if marker not in _read_bytes(a_path):
+                print("FAIL: a.dsk lost its unsaved write")
+                return False
+
+        print("PASS: a failed load leaves the write-back pointed at the disc")
         return True
 
 
@@ -3767,6 +4052,7 @@ def main():
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
         test_model_change_rebuild,
+        test_cartridge_hotload_reattaches,
         test_profile_load_rebuilds_machine,
         test_profile_load_missing_keeps_running,
         test_disk_live_put_cat,
@@ -3774,6 +4060,8 @@ def main():
         test_frames_dump_stops_at_a_breakpoint,
         test_disk_status_save_eject,
         test_disk_eject_flushes_dirty_writes,
+        test_disk_load_over_dirty_disc_flushes_to_its_own_file,
+        test_disk_failed_load_does_not_redirect_write_back,
         test_headless_runs_subcycle_engine,
         test_headless_honours_the_speed_limiter,
         test_programmatic_quit_exit_codes,
@@ -3785,6 +4073,7 @@ def main():
         test_breakpoint,
         # Thread-split correctness tests (work in both headless and threaded mode)
         test_breakpoint_pause_step_resume,
+        test_wait_bp_drops_a_hit_the_machine_has_run_past,
         test_snapshot_round_trip,
         test_rapid_pause_resume,
         test_reg_set_halt_is_refused,

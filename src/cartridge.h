@@ -14,5 +14,8 @@
 void cpr_eject();
 
 // Load a .cpr file. Returns 0 on success or an ERR_* code from errors.h.
+// A file that is refused leaves the loaded cartridge as it was. One that is
+// accepted frees the old image: the board reads it through a raw pointer, so
+// load into a built machine through cpc_cartridge_insert() (koncepcja.h).
 int cpr_load(const std::string& filename);
 int cpr_load(std::FILE* pfile);
