@@ -526,11 +526,9 @@ binary_port_enabled=1      # 0 = do not open the port (manifest: `binary: null`)
   lease, alone, and then call `subcycle_bridge_apply_pending_media()`: the
   machine has the medium when the reply is sent, and every event of the
   request is posted on the request's thread, named after it
-  (`MediaCauseScope`). **A disc insert ejects the outgoing disc before it
-  changes `CPC.driveA.file`**: a dirty disc is written back to the file that
-  field names when the machine lets go of it (beads-11us). A cartridge load
-  must be followed by `subcycle_bridge_attach_cartridge()`: the loader frees
-  the image the board points at.
+  (`MediaCauseScope`). A cartridge goes in through `cpc_cartridge_swap()`
+  (`src/koncepcja.h`), never `file_load()` alone: the board reads the image
+  through a raw pointer and has to be pointed at the new one.
 - The configuration keys are one table, `ipc_config_get()` /
   `ipc_config_set()` / `ipc_config_apply()` in `src/koncepcja_ipc_server.h`,
   which the text IPC's `config` only formats. Add a key there and both
@@ -824,6 +822,10 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   and does nothing while another lease is held. A lease that only reads uses
   `read_alone()`.
 - Reset: `emulator_reset()`
+- A cartridge goes into a built machine through `cpc_cartridge_insert()`
+  (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
+  image the board reads through a raw pointer. A caller that holds the
+  machine itself uses `cpc_cartridge_swap()`.
 - ImGui state is in global `imgui_state` struct
 
 ## Code Review Themes

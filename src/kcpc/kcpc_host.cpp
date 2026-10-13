@@ -1179,23 +1179,15 @@ Status load_status(int rc) {
 }
 
 // A disc into drive `unit`. Under a lease, alone.
-Status insert_disc(const subcycle::Machine& machine, std::uint8_t unit,
-                   const std::string& path) {
+Status insert_disc(std::uint8_t unit, const std::string& path) {
   t_slot& slot = unit == 0 ? CPC.driveA : CPC.driveB;
-  // The outgoing disc first, while the slot still names its file: its
-  // unsaved writes are written back when the machine lets go of it, to the
-  // file the slot names at that moment. Changing the name first sends them
-  // into the new file (beads-11us).
-  if (fdc_media_present_unit(machine.fdc(), unit) != 0) {
-    dsk_eject(unit == 0 ? &driveA : &driveB);
-    subcycle_bridge_apply_pending_media();
-  }
   slot.file = path;
   slot.zip_index = 0;
   int const rc = file_load(slot);
   // The loader queued the machine's half for the next frame boundary. Nothing
   // is clocking the machine: give it the disc now, so that the reply is sent
-  // with the disc in the drive.
+  // with the disc in the drive. The disc that leaves is written back to its
+  // own file there: the bridge remembers which file each drive's disc is.
   subcycle_bridge_apply_pending_media();
   if (rc != 0) slot.file.clear();
   return load_status(rc);
@@ -1211,29 +1203,11 @@ Status insert_tape(const std::string& path) {
   return load_status(rc);
 }
 
-Status insert_cartridge(const std::string& path, std::string& message) {
+Status insert_cartridge(const std::string& path) {
   constexpr unsigned kModel6128Plus = 3;
   if (CPC.model < kModel6128Plus) return Status::kNotPresent;
-  std::string const previous = CPC.cartridge.file;
-  CPC.cartridge.file = path;
-  CPC.cartridge.zip_index = 0;
-  int const rc = file_load(CPC.cartridge);
-  Status status = load_status(rc);
-  if (rc != 0) {
-    // The loader freed the image before it read the file. A 6128+ does not
-    // run without a cartridge: put back the one it had.
-    CPC.cartridge.file = previous;
-    if (file_load(CPC.cartridge) != 0) {
-      message =
-          "the cartridge is not valid, and the one before it could not "
-          "be loaded again";
-      status = Status::kInternal;
-    }
-  }
-  // Loading frees the image the board reads from and allocates another: the
-  // board holds that pointer raw.
-  subcycle_bridge_attach_cartridge();
-  return status;
+  // The load and the re-attach; a file that is refused changes nothing.
+  return load_status(cpc_cartridge_swap(path));
 }
 
 // The deck, as MEDIA_INFO and TAPE_CONTROL report it. Nothing is clocking
@@ -1276,13 +1250,13 @@ Status kcpc_host_media_insert(std::uint32_t client, std::uint32_t request,
         switch (slot) {
           case kcpc::MediaSlot::kDriveA:
           case kcpc::MediaSlot::kDriveB:
-            status = insert_disc(*machine, insert.slot, path);
+            status = insert_disc(insert.slot, path);
             break;
           case kcpc::MediaSlot::kTape:
             status = insert_tape(path);
             break;
           case kcpc::MediaSlot::kCartridge:
-            status = insert_cartridge(path, message);
+            status = insert_cartridge(path);
             break;
         }
       },

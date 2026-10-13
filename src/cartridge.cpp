@@ -27,9 +27,9 @@ extern byte* pbROMlo;
 
 namespace {
 
-// Allocates a zeroed image and rebuilds the page table.
-void cartridge_init() {
-  pbCartridgeImage.reset(new byte[CARTRIDGE_MAX_SIZE]());  // value-initialized
+// Makes `image` the cartridge and rebuilds the page table.
+void cartridge_init(std::unique_ptr<byte[]> image) {
+  pbCartridgeImage = std::move(image);
   for (dword i = 0; i < CARTRIDGE_NB_PAGES; ++i) {
     pbCartridgePages[i] = &pbCartridgeImage[i * CARTRIDGE_PAGE_SIZE];
   }
@@ -76,8 +76,6 @@ int cpr_load(std::FILE* pfile) {
   constexpr dword CPR_HEADER_SIZE = 12;
   constexpr dword CPR_CHUNK_HEADER_SIZE = 8;
 
-  cpr_eject();
-
   const std::vector<byte> data = slurp(pfile);
 
   // RIFF container header: "RIFF" <le32 size> "AMS!"
@@ -97,7 +95,10 @@ int cpr_load(std::FILE* pfile) {
   const dword totalSize = read_le32(data.data() + 4);
   LOG_DEBUG("CPR size: " << totalSize);
 
-  cartridge_init();
+  // Parsed into an image of its own, and made the cartridge only once it is
+  // whole: a file that is refused leaves the one in the port where it was.
+  std::unique_ptr<byte[]> image(
+      new byte[CARTRIDGE_MAX_SIZE]());  // value-initialized
 
   // Walk the chunks. `cursor` mirrors the historical file position;
   // `offset` keeps the historical loop bound (header size + declared chunk
@@ -137,8 +138,7 @@ int cpr_load(std::FILE* pfile) {
       LOG_DEBUG("Failed reading chunk content");
       return ERR_CPR_INVALID;
     }
-    std::memcpy(&pbCartridgeImage[cartridgeOffset], data.data() + cursor,
-                chunkKept);
+    std::memcpy(&image[cartridgeOffset], data.data() + cursor, chunkKept);
     cursor += chunkKept;
     if (chunkKept >= CARTRIDGE_PAGE_SIZE && chunkKept < chunkSize) {
       LOG_DEBUG("This chunk is bigger than the max allowed size !!!");
@@ -154,6 +154,7 @@ int cpr_load(std::FILE* pfile) {
   }
   LOG_DEBUG("Final offset: " << offset);
   LOG_DEBUG("Final cartridge offset: " << cartridgeOffset);
+  cartridge_init(std::move(image));
   pbROMlo = &pbCartridgeImage[0];
   return 0;
 }

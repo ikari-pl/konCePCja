@@ -1682,7 +1682,7 @@ as `EVT_MEDIA_CHANGED`. A number above 3 is `BAD_PAYLOAD`.
     run without a cartridge, so a file that is no cartridge leaves the one
     that was there, and no reset happens.
   - **The outgoing disc keeps its writes.** A disc that was written to is
-    written back to its own file before the new one takes its place.
+    written back to its own file when the new one takes its place.
   - There is no write-protect flag. The FDC has no switch for it: a medium
     is write-protected when it has no image the FDC can write to (a flux
     dump without an overlay), and `MEDIA_INFO` says so. A flag the core
@@ -2203,12 +2203,14 @@ Recorded so a reviewer can disagree with one without reading the rest.
     holds a lease, so it applies the swap itself: the reply is true when it
     arrives, all the events of the request are posted on the request's
     thread and can name it, and none overtakes the reply.
-50. **`MEDIA_INSERT` ejects the outgoing disc first** (slice 9). The write
-    back of a disc with unsaved changes goes to the file the drive's slot
-    names when the machine lets go of the disc. Every other load path names
-    the new file first, and the old disc's writes then land in the new
-    disc's file (beads-11us, found here). Ejecting first costs two more
-    `EVT_MEDIA_CHANGED` and keeps both files right.
+50. **`MEDIA_INSERT` does not eject the outgoing disc** (slice 9, revised).
+    It did at first: the write back of a disc with unsaved changes went to
+    the file the drive's slot named when the machine let go of the disc,
+    every load path names the new file first, and the old disc's writes
+    landed in the new disc's file (beads-11us, found here). The bridge now
+    remembers the file of the disc each drive holds, so an insert is the
+    plain load every other source does, with the same events, and both
+    files stay right.
 51. **No write-protect flag on `MEDIA_INSERT`** (slice 9). The design had
     one. The FDC has no such switch (a medium is write-protected when it
     has no writable image), and a flag the core accepts and ignores is worse
@@ -2216,11 +2218,12 @@ Recorded so a reviewer can disagree with one without reading the rest.
     the FDC would. Giving the FDC the switch is beads-uxle.
 52. **The cartridge is replaced, never ejected, and a bad one leaves the old
     one** (slice 9). A 6128+ with an empty cartridge port executes nothing.
-    The loader frees the image before it reads the new file, and the board
-    holds that image by a raw pointer, so the request re-attaches the image
-    after every load and loads the previous cartridge again when the new
-    one is refused. (The menus and the text IPC's `load` do neither yet:
-    beads-lrdy.)
+    The board holds the cartridge image by a raw pointer, so a load is a
+    swap of a whole image followed by a re-attach, and a file that is
+    refused changes nothing. That is `cpc_cartridge_swap()`, which the
+    menus, drag and drop and the text IPC's `load` reach through
+    `cpc_cartridge_insert()` (beads-lrdy, found here); this port calls the
+    swap under its own lease and resets after it.
 53. **A snapshot never rebuilds the machine** (slice 9). The design promised
     `EVT_MACHINE_CHANGED` "when the snapshot changed the model or RAM size".
     The SNA loader does neither: it refuses a snapshot larger than the

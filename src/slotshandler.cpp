@@ -1252,7 +1252,7 @@ int file_load(t_slot& slot) {
         LOG_ERROR("subcycle engine: could not re-read "
                   << slot.file << " for drive " << (unit ? 'B' : 'A'));
       } else {
-        subcycle_bridge_insert_media(std::move(bytes), false, unit);
+        subcycle_bridge_insert_media(std::move(bytes), false, unit, slot.file);
       }
       announce(true);
     } else if (is_flux) {
@@ -1274,7 +1274,7 @@ int file_load(t_slot& slot) {
           announce(false);
           return ret != 0 ? ret : ERR_DSK_INVALID;
         }
-        subcycle_bridge_insert_media(std::move(scp), true, 0);
+        subcycle_bridge_insert_media(std::move(scp), true, 0, slot.file);
         announce(true);
         return 0;  // flux transcode is the authority: a successful decode is a
                    // successful load even when the sector-view loader
