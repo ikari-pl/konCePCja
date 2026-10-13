@@ -609,7 +609,7 @@ File-level and sector-level access to DSK disc images.
 | `disk info <A\|B> <filename>` | `OK type=basic\|binary\|protected load=XXXX exec=XXXX size=N` — AMSDOS header info |
 | `disk status <A\|B>` | `OK present=0\|1 backing=empty\|sector\|flux can_dsk=0\|1 can_scp=0\|1 can_hfe=0\|1` — same save caps the File menu uses |
 | `disk save <A\|B> <path> [dsk\|scp\|hfe]` | Write the **live FDC medium** (not a stale host `t_drive`). Default `dsk`. `ERR 409 save-format-unavailable` when caps forbid the format (flux is drive-A-only). `ERR 404 empty-drive` for `dsk` on an empty drive. `ERR 500 <reason>` on a genuine write failure (bad path, disk full, I/O error). Traversal (`..`) rejected |
-| `disk eject <A\|B>` | Unmount the drive (`dsk_eject`). No GUI confirm. Dirty media follows the File-menu flush-on-eject path |
+| `disk eject <A\|B>` | Unmount the drive (`dsk_eject`). No GUI confirm. Dirty media follows the File-menu flush-on-eject path: the disc's unsaved writes go back to the file it was loaded from. A disc loaded out of a `.zip` is written as a DSK beside the archive instead (`<entry name>.dsk` in the archive's directory, or `<entry name>-2.dsk`, `-3` ... when that name is taken); the archive is never written, and the new file goes on the Recent list |
 
 ### Sector Commands
 
