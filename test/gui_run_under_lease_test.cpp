@@ -30,6 +30,11 @@ class GuiRunUnderLeaseTest : public ::testing::Test {
     imgui_state.show_menu = false;
     imgui_state.show_options = false;
     imgui_state.show_quit_confirm = false;
+    // drain_pending() serves every queued request, not only the pause
+    // toggle: a reset left queued by another suite would run
+    // emulator_reset() here, on a process that has no video plugin.
+    g_m4_http.pending_reset.store(false);
+    g_m4_http.pending_nmi.store(false);
     g_m4_http.pending_pause_toggle.store(false);
     cpc_resume();
     ASSERT_FALSE(CPC.paused);
