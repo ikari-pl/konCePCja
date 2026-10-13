@@ -1862,9 +1862,14 @@ std::string handle_command(const std::string& line) {
         return ok_with_context();
       }
       if (ext == ".cpr") {
-        CPC.cartridge.file = path;
-        CPC.cartridge.zip_index = 0;
-        if (file_load(CPC.cartridge) != 0) return "ERR 500 load-cpr\n";
+        // Through the one function that swaps a cartridge under a built
+        // machine: it holds the machine, points the board at the new image
+        // and resets, as the menu and a dropped file do.
+        int const rc = cpc_cartridge_insert(path);
+        if (rc == ERR_Z80_NOT_IDLE) {
+          return err_with_context(409, "z80-not-idle");
+        }
+        if (rc != 0) return "ERR 500 load-cpr\n";
         ipc_mru_stage(&t_CPC::mru_carts, path);
         return ok_with_context();
       }

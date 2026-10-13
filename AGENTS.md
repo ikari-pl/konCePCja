@@ -802,6 +802,10 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   and does nothing while another lease is held. A lease that only reads uses
   `read_alone()`.
 - Reset: `emulator_reset()`
+- A cartridge goes into a built machine through `cpc_cartridge_insert()`
+  (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
+  image the board reads through a raw pointer. A caller that holds the
+  machine itself uses `cpc_cartridge_swap()`.
 - ImGui state is in global `imgui_state` struct
 
 ## Code Review Themes

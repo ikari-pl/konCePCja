@@ -7,6 +7,7 @@
 
 extern byte* pbGPBuffer;
 extern std::unique_ptr<byte[]> pbCartridgeImage;
+extern byte* pbCartridgePages[];
 
 class Cartridge : public testing::Test {
  public:
@@ -41,6 +42,20 @@ TEST_F(Cartridge, CprLoadOnNonAMSFileReturnsError) {
   int rc = cpr_load("test/cartridge/invalid_noams.cpr");
 
   ASSERT_EQ(ERR_CPR_INVALID, rc);
+}
+
+// The board reads the cartridge through a raw pointer to this image. A file
+// that is refused must not take the cartridge that is in the port with it.
+TEST_F(Cartridge, RefusedCartridgeLeavesTheLoadedOneInPlace) {
+  ASSERT_EQ(0, cpr_load("test/cartridge/dummy.cpr"));
+  const byte* const image = pbCartridgeImage.get();
+  ASSERT_NE(nullptr, image);
+
+  ASSERT_EQ(ERR_CPR_INVALID, cpr_load("test/cartridge/invalid_noams.cpr"));
+
+  ASSERT_EQ(image, pbCartridgeImage.get());
+  ASSERT_EQ(image, pbCartridgePages[0]);
+  ASSERT_EQ('t', pbCartridgeImage[0]);
 }
 
 TEST_F(Cartridge, CprLoadOnDummyCPRFile) {
