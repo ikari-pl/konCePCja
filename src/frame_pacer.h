@@ -9,8 +9,9 @@
 //
 // The deadline is drift-corrected: it advances by exactly one period per
 // frame, so a frame that ran (or slept) long is made up by the frames after
-// it. A loop more than a quarter second behind -- a pause, a debugger stop, a
-// stalled host -- resyncs to "now" instead of racing to catch up.
+// it. A loop more than a quarter second behind -- a stalled host -- resyncs to
+// "now" instead of racing to catch up. Time the machine spent stopped is not
+// owed at all, however short the stop: see stopped().
 class FramePacer {
  public:
   // A frame has finished at `now` (perf-counter ticks, `freq` per second).
@@ -24,8 +25,10 @@ class FramePacer {
   // behind, and that is when auto frameskip should drop renders.
   uint64_t arrive(uint64_t now, uint64_t freq) {
     uint64_t const period = freq / 50;
-    bool const resync =
-        next_deadline_ == 0 || now > next_deadline_ + (freq / 4);
+    bool const resync = next_deadline_ == 0 ||
+                        now > next_deadline_ + (freq / 4) ||
+                        (stopped_ && now > next_deadline_);
+    stopped_ = false;
     // A resync is a restart, not lateness: after a pause the stale deadline
     // would otherwise call the first frame back late.
     late_ = !resync && now > next_deadline_ + period;
@@ -39,7 +42,17 @@ class FramePacer {
   void unpaced() {
     next_deadline_ = 0;
     late_ = false;
+    stopped_ = false;
   }
+
+  // The machine was stopped (a pause, a breakpoint, the end of a step) since
+  // the last frame. The frames it would have run meanwhile are not made up:
+  // if the next frame arrives past its deadline, pacing restarts there.
+  // Without this a stop shorter than the quarter second was repaid as a
+  // burst of unpaced frames (beads-drzi). A stop that ends before the
+  // deadline costs nothing and keeps the grid: it never releases a frame
+  // early.
+  void stopped() { stopped_ = true; }
 
   // The last arrive() found the emulation more than a period behind.
   bool late() const { return late_; }
@@ -47,4 +60,5 @@ class FramePacer {
  private:
   uint64_t next_deadline_ = 0;
   bool late_ = false;
+  bool stopped_ = false;
 };

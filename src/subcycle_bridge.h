@@ -56,6 +56,11 @@ const std::vector<int16_t>& subcycle_bridge_frame(const uint8_t rows[16],
  * auto frameskip. */
 bool subcycle_bridge_frame_was_late();
 
+/* The frame runner found the machine in an announced stop: the pacer does not
+ * make up the time (FramePacer::stopped()). Frame runner only, like the frame
+ * itself. */
+void subcycle_bridge_pacing_stopped();
+
 /* Performance-counter ticks the pacer has slept since the last call, then
  * resets the count (the DevTools sleep-time stat). */
 uint64_t subcycle_bridge_take_sleep_ticks();
