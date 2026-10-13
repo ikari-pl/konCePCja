@@ -3338,6 +3338,248 @@ def test_disk_failed_load_does_not_redirect_write_back():
         return True
 
 
+def _dirty_zipped_disc_in_drive_a(emu, td, marker):
+    """Put Game.DSK (and a readme) in game.zip in `td`, load the archive into
+    drive A and write a file holding `marker` to the disc, unsaved.
+    Returns (path of game.zip, its bytes) or None."""
+    import zipfile
+
+    src = os.path.join(td, 'blank-for-zip.dsk')
+    zip_path = os.path.join(td, 'game.zip')
+    if not os.path.exists(zip_path):
+        ok, resp = emu.ipc.send_command(f'disk new {src} data sector')
+        if not ok:
+            print(f"FAIL: disk new: {resp}")
+            return None
+        with zipfile.ZipFile(zip_path, 'w') as archive:
+            archive.writestr('readme.txt', b'the other entry of the archive')
+            archive.writestr('Game.DSK', _read_bytes(src))
+        os.remove(src)
+    zip_before = _read_bytes(zip_path)
+    ok, resp = emu.ipc.send_command(f'load {zip_path}')
+    if not ok:
+        print(f"FAIL: load zip: {resp}")
+        return None
+    host = os.path.join(td, 'hello.bin')
+    with open(host, 'wb') as f:
+        f.write(marker)
+    ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+    if not ok:
+        print(f"FAIL: put: {resp}")
+        return None
+    return zip_path, zip_before
+
+
+def test_zipped_disc_write_back_goes_beside_the_archive():
+    """Unsaved writes to a disc loaded from a .zip are written as a DSK next
+    to the archive; the archive itself is never written (beads-lels: it was
+    overwritten with the raw DSK, destroying its other entries). A .dsk
+    already there is not overwritten either: the next free name is taken."""
+    print("Running zipped-disc write-back test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            first = b'FIRST-UNSAVED-WRITE-TO-THE-ZIPPED-DISC'
+            dirty = _dirty_zipped_disc_in_drive_a(emu, td, first)
+            if dirty is None:
+                return False
+            zip_path, zip_before = dirty
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+
+            if _read_bytes(zip_path) != zip_before:
+                print("FAIL: the archive was written to; it now starts with "
+                      f"{_read_bytes(zip_path)[:8]!r}")
+                return False
+            dsk_path = os.path.join(td, 'Game.dsk')
+            if not os.path.exists(dsk_path):
+                print(f"FAIL: no Game.dsk beside the archive: {os.listdir(td)}")
+                return False
+            dsk_first = _read_bytes(dsk_path)
+            if first not in dsk_first:
+                print("FAIL: Game.dsk does not hold the unsaved write")
+                return False
+            ok, resp = emu.ipc.send_command(f'load {dsk_path}')
+            ok2, ls = emu.ipc.send_command('disk ls A')
+            if not ok or not ok2 or 'HELLO.BIN' not in ls:
+                print(f"FAIL: Game.dsk is not a loadable disc: {resp!r} {ls!r}")
+                return False
+
+            # Again, with Game.dsk now in the way: it holds somebody's work.
+            second = b'SECOND-UNSAVED-WRITE-TO-THE-ZIPPED-DISC'
+            if _dirty_zipped_disc_in_drive_a(emu, td, second) is None:
+                return False
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: second eject: {resp}")
+                return False
+            if _read_bytes(zip_path) != zip_before:
+                print("FAIL: the archive was written to on the second eject")
+                return False
+            if _read_bytes(dsk_path) != dsk_first:
+                print("FAIL: the existing Game.dsk was overwritten")
+                return False
+            dsk2_path = os.path.join(td, 'Game-2.dsk')
+            if not os.path.exists(dsk2_path) or \
+                    second not in _read_bytes(dsk2_path):
+                print("FAIL: the second write is not in Game-2.dsk: "
+                      f"{os.listdir(td)}")
+                return False
+
+        print("PASS: a zipped disc's writes land beside the archive")
+        return True
+
+
+def test_zipped_disc_keeps_its_writes_over_a_machine_rebuild():
+    """A machine rebuild writes the discs back and reads the drives' files
+    again. For a disc from a .zip the write goes beside the archive, so the
+    drive must be pointed at that file: re-reading the archive would bring
+    the unwritten disc back (beads-lels)."""
+    print("Running zipped-disc machine-rebuild test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            marker = b'UNSAVED-WRITE-KEPT-OVER-A-REBUILD'
+            dirty = _dirty_zipped_disc_in_drive_a(emu, td, marker)
+            if dirty is None:
+                return False
+            zip_path, zip_before = dirty
+
+            ok, resp = emu.ipc.send_command('config apply')
+            if not ok:
+                print(f"FAIL: config apply: {resp}")
+                return False
+
+            if _read_bytes(zip_path) != zip_before:
+                print("FAIL: the archive was written to by the rebuild")
+                return False
+            dsk_path = os.path.join(td, 'Game.dsk')
+            if not os.path.exists(dsk_path) or \
+                    marker not in _read_bytes(dsk_path):
+                print(f"FAIL: the write is not in Game.dsk: {os.listdir(td)}")
+                return False
+            ok, status = emu.ipc.send_command('status')
+            if not ok or 'image=Game.dsk' not in status:
+                print(f"FAIL: drive A is not pointed at Game.dsk: {status!r}")
+                return False
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls:
+                print(f"FAIL: the rebuilt machine lost the write; ls={ls!r}")
+                return False
+            # The drive holds a plain DSK now: later writes go to that file.
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+            if sorted(os.listdir(td)) != ['Game.dsk', 'game.zip', 'hello.bin']:
+                print(f"FAIL: unexpected files: {sorted(os.listdir(td))}")
+                return False
+
+        print("PASS: a rebuild points the drive at the DSK beside the archive")
+        return True
+
+
+def test_zipped_disc_from_the_command_line_writes_beside_the_archive():
+    """A .zip named on the command line is attached when the machine is
+    built, not through a load: that path must know the disc came out of an
+    archive too (beads-lels)."""
+    print("Running zipped-disc command-line test...")
+    import zipfile
+
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, 'blank.dsk')
+        zip_path = os.path.join(td, 'boot.zip')
+        with EmulatorRunner() as emu:
+            if not emu.start():
+                print("FAIL: Could not start emulator")
+                return False
+            ok, resp = emu.ipc.send_command(f'disk new {src} data sector')
+            if not ok:
+                print(f"FAIL: disk new: {resp}")
+                return False
+        with zipfile.ZipFile(zip_path, 'w') as archive:
+            archive.writestr('Boot.dsk', _read_bytes(src))
+        os.remove(src)
+        zip_before = _read_bytes(zip_path)
+
+        marker = b'UNSAVED-WRITE-TO-THE-DISC-FROM-ARGV'
+        with EmulatorRunner() as emu:
+            if not emu.start(zip_path):
+                print("FAIL: Could not start emulator with the archive")
+                return False
+            host = os.path.join(td, 'hello.bin')
+            with open(host, 'wb') as f:
+                f.write(marker)
+            ok, resp = emu.ipc.send_command(f'disk put A {host} HELLO.BIN')
+            if not ok:
+                print(f"FAIL: put: {resp}")
+                return False
+            ok, resp = emu.ipc.send_command('disk eject A')
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+
+        if _read_bytes(zip_path) != zip_before:
+            print("FAIL: the archive was written to; it now starts with "
+                  f"{_read_bytes(zip_path)[:8]!r}")
+            return False
+        dsk_path = os.path.join(td, 'Boot.dsk')
+        if not os.path.exists(dsk_path) or marker not in _read_bytes(dsk_path):
+            print(f"FAIL: the write is not in Boot.dsk: {os.listdir(td)}")
+            return False
+
+    print("PASS: a zipped disc from the command line is written beside it")
+    return True
+
+
+def test_zipped_disc_unwritable_directory_leaves_the_archive_alone():
+    """When the DSK cannot be created beside the archive the write-back
+    fails; it must not fall back to writing the archive (beads-lels)."""
+    print("Running zipped-disc unwritable-directory test...")
+    if os.name == 'nt' or os.geteuid() == 0:
+        print("SKIP: needs a directory the process cannot write to")
+        return True
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+
+        with tempfile.TemporaryDirectory() as td:
+            dirty = _dirty_zipped_disc_in_drive_a(emu, td, b'NOWHERE-TO-GO')
+            if dirty is None:
+                return False
+            zip_path, zip_before = dirty
+            listing = sorted(os.listdir(td))
+            os.chmod(td, 0o555)
+            try:
+                ok, resp = emu.ipc.send_command('disk eject A')
+            finally:
+                os.chmod(td, 0o755)
+            if not ok:
+                print(f"FAIL: eject: {resp}")
+                return False
+            if _read_bytes(zip_path) != zip_before:
+                print("FAIL: the archive was written to")
+                return False
+            if sorted(os.listdir(td)) != listing:
+                print(f"FAIL: unexpected files: {sorted(os.listdir(td))}")
+                return False
+
+        print("PASS: an unwritable directory never costs the archive")
+        return True
+
+
 def test_profile_load_missing_keeps_running():
     """profile load ERR must restore a running machine (beads-csl7.2).
 
@@ -4062,6 +4304,10 @@ def main():
         test_disk_eject_flushes_dirty_writes,
         test_disk_load_over_dirty_disc_flushes_to_its_own_file,
         test_disk_failed_load_does_not_redirect_write_back,
+        test_zipped_disc_write_back_goes_beside_the_archive,
+        test_zipped_disc_keeps_its_writes_over_a_machine_rebuild,
+        test_zipped_disc_from_the_command_line_writes_beside_the_archive,
+        test_zipped_disc_unwritable_directory_leaves_the_archive_alone,
         test_headless_runs_subcycle_engine,
         test_headless_honours_the_speed_limiter,
         test_programmatic_quit_exit_codes,
