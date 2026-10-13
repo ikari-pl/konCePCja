@@ -1873,11 +1873,12 @@ TEST_F(KcpcEventsTest, AnEventFollowsTheResponseToTheRequestThatCausedIt) {
   start_with_run_control();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassRun);
   subscribe(*watcher, 2, kcpc::kEventClassRun);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   run_.post_from_request = true;
   ASSERT_TRUE(controller->request(Opcode::kPause, 3));
@@ -2077,9 +2078,10 @@ TEST_F(KcpcEventsTest, TheEndOfAStepReachesItsClientWhateverItSubscribedTo) {
   kcpc::HelloReply stepper_hello;
   kcpc::HelloReply other_hello;
   auto stepper = join(kcpc::Role::kController, stepper_hello);
-  auto other = join(kcpc::Role::kObserver, other_hello);
+  // Before anyone else joins: it is sent to every client connected by then.
   Frame frame;
   expect_event(*stepper, Opcode::kEvtControlChanged, frame);
+  auto other = join(kcpc::Role::kObserver, other_hello);
 
   kcpc::Event done = stopped_event(400);
   done.reason = static_cast<std::uint8_t>(kcpc::StopReason::kStepDone);
@@ -2489,13 +2491,14 @@ TEST_F(KcpcBreakpointsTest, AnEditIsPushedAfterItsReplyAndToDebugSubscribers) {
   start_with_breakpoints();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   auto deaf = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassDebug);
   subscribe(*watcher, 2, kcpc::kEventClassDebug);
   subscribe(*deaf, 2, kcpc::kEventClassRun);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   ASSERT_TRUE(
       controller->request(Opcode::kBpAdd, 3, bp_payload(exec_bp(0x4000))));
@@ -3332,13 +3335,14 @@ TEST_F(KcpcDevtoolsTest, ASymbolEditIsPushedAfterItsReplyToDebugSubscribers) {
   start_with_devtools();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   auto deaf = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassDebug);
   subscribe(*watcher, 2, kcpc::kEventClassDebug);
   subscribe(*deaf, 2, kcpc::kEventClassRun | kcpc::kEventClassMedia);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   ASSERT_TRUE(
       controller->request(Opcode::kSymAdd, 3, symbol_payload(0x4000, "start")));
@@ -3799,13 +3803,14 @@ TEST_F(KcpcMediaTest, AMediaChangeFollowsItsReplyAndReachesSubscribers) {
   start_with_media();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   auto deaf = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassMedia);
   subscribe(*watcher, 2, kcpc::kEventClassMedia);
   subscribe(*deaf, 2, kcpc::kEventClassRun);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   ASSERT_TRUE(controller->request(Opcode::kMediaInsert, 3,
                                   insert_payload(0, "game.dsk")));
@@ -3907,11 +3912,12 @@ TEST_F(KcpcMediaTest, ConfigurationIsStagedAndApplied) {
   start_with_media();
   kcpc::HelloReply hello;
   auto controller = join(kcpc::Role::kController, hello);
+  // Before anyone else joins: it is sent to every client connected by then.
+  Frame frame;
+  expect_event(*controller, Opcode::kEvtControlChanged, frame);
   auto watcher = join(kcpc::Role::kObserver, hello);
   subscribe(*controller, 2, kcpc::kEventClassMachine);
   subscribe(*watcher, 2, kcpc::kEventClassMachine);
-  Frame frame;
-  expect_event(*controller, Opcode::kEvtControlChanged, frame);
 
   auto get = [&](TestClient& client, std::uint32_t id) {
     exchange(client, Opcode::kConfigGet, id, text_payload("model"), frame);
