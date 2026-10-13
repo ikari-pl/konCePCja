@@ -806,6 +806,11 @@ host_chords=1     # Cmd/Ctrl+K/O/S drive the host UI (palette, Load Disk A,
   (`src/koncepcja.h`), never `file_load(CPC.cartridge)`: the load frees the
   image the board reads through a raw pointer. A caller that holds the
   machine itself uses `cpc_cartridge_swap()`.
+- A disc's unsaved writes go back to the file the bridge was told it came
+  from (`subcycle_bridge_insert_media()`'s `path`). A loader that reads a
+  disc out of an archive must pass the entry's name too (`archive_entry`):
+  such a disc is written as `<entry>.dsk` beside the archive, never into it
+  (`dsk_beside_archive()` in `src/subcycle_bridge.cpp`, beads-lels).
 - ImGui state is in global `imgui_state` struct
 
 ## Code Review Themes
