@@ -1326,6 +1326,36 @@ int koncpc_rebuild_machine() {
   return err;
 }
 
+int cpc_cartridge_swap(const std::string& path) {
+  const t_slot previous = CPC.cartridge;
+  CPC.cartridge.file = path;
+  CPC.cartridge.zip_index = 0;
+  int const rc = file_load(CPC.cartridge);
+  if (rc != 0) {
+    // Nothing was swapped. The slot must go on naming the cartridge that is
+    // in the port: a rebuild loads what it names and exits when that fails.
+    CPC.cartridge = previous;
+    media_note(MediaSlot::Cartridge, !previous.file.empty(), previous.file);
+    media_changed(MediaSlot::Cartridge);
+    return rc;
+  }
+  subcycle_bridge_attach_cartridge();
+  return 0;
+}
+
+int cpc_cartridge_insert(const std::string& path) {
+  CpcPauseLease lease;
+  if (!lease.idle()) {
+    // Fail closed: the load frees the image the stuck frame is reading.
+    lease.restore_run_state();
+    return ERR_Z80_NOT_IDLE;
+  }
+  int const rc = cpc_cartridge_swap(path);
+  if (rc == 0) emulator_reset();
+  lease.restore_run_state();
+  return rc;
+}
+
 namespace {
 constexpr word kMcStartProgram =
     0xBD16;  // firmware jumpblock: MC START PROGRAM
@@ -5358,12 +5388,10 @@ int koncpc_main(int argc, char** argv) {
                               "Failed to load snapshot: " + drop_fname);
             }
           } else if (ext == ".cpr") {
-            CPC.cartridge.file = drop_path;
-            if (file_load(CPC.cartridge) == 0) {
+            if (cpc_cartridge_insert(drop_path) == 0) {
               ui_host().toast(UiToastLevel::Success,
                               "Cartridge loaded: " + drop_fname);
               koncpc_mru_push(CPC.mru_carts, drop_path);
-              emulator_reset();
             } else {
               ui_host().toast(UiToastLevel::Error,
                               "Failed to load cartridge: " + drop_fname);
