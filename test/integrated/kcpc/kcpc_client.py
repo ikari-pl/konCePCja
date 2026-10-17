@@ -24,6 +24,10 @@ checkout, and nothing outside this repository should be built on this file.
             c.step(count=3)                       # ends with EVT_STOPPED
             c.key(*KEY_A, down=True)              # a matrix position
             c.text('print 1+1~RETURN~')           # the AutoTypeQueue
+            c.media_insert(SLOT_DRIVE_A, '/path/game.dsk')
+            c.snapshot_save('/path/state.sna')    # SNA, nothing else
+            c.config_set('model', '3')            # staged...
+            c.config_apply()                      # ...and the machine rebuilt
 
 Never assume port 6545: read it from the startup manifest the core prints.
 """
@@ -81,7 +85,16 @@ OP_SYM_ADD = 0x0601
 OP_SYM_DEL = 0x0602
 OP_SYM_LOAD = 0x0603
 OP_FB_INFO = 0x0700
-OP_MEDIA_INFO = 0x0802  # not implemented yet; used to test UNKNOWN_OPCODE
+OP_MEDIA_INSERT = 0x0800
+OP_MEDIA_EJECT = 0x0801
+OP_MEDIA_INFO = 0x0802
+OP_TAPE_CONTROL = 0x0803
+OP_SNAPSHOT_SAVE = 0x0900
+OP_SNAPSHOT_LOAD = 0x0901
+OP_CONFIG_GET = 0x0A00
+OP_CONFIG_SET = 0x0A01
+OP_CONFIG_APPLY = 0x0A02
+OP_RESERVED_INPUT = 0x0B00  # a reserved range: used to test UNKNOWN_OPCODE
 
 # Events (section 9): frames of kind 3 the server sends unasked.
 EVT_STOPPED = 0x8001
@@ -165,6 +178,9 @@ CAP_CHIPS = 1 << 6
 CAP_SYMBOLS = 1 << 7
 CAP_FB_INFO = 1 << 8
 CAP_MEM_ROM = 1 << 10
+CAP_MEDIA = 1 << 11
+CAP_SNAPSHOT = 1 << 12
+CAP_CONFIG = 1 << 13
 
 # CHIP_GET: the chips, and the layout of each one's block.
 CHIP_CRTC = 1
@@ -180,6 +196,24 @@ SLOT_DRIVE_A = 0
 SLOT_DRIVE_B = 1
 SLOT_TAPE = 2
 SLOT_CARTRIDGE = 3
+
+# MEDIA_INFO flags.
+MEDIA_WRITE_PROTECTED = 1 << 0   # the FDC cannot write to the medium
+MEDIA_UNSAVED = 1 << 1           # written to since it was loaded or saved
+MEDIA_FLUX = 1 << 2              # a flux image
+
+# TAPE_CONTROL actions.
+TAPE_STOP = 0
+TAPE_PLAY = 1
+TAPE_REWIND = 2
+TAPE_SEEK = 3
+
+SNAPSHOT_FLAG_STAY_PAUSED = 1 << 0
+
+# What a CONFIG_SET did.
+CONFIG_NOW = 0          # applied
+CONFIG_NEXT_FRAME = 1   # the main loop applies it on its next frame
+CONFIG_STAGED = 2       # waits for CONFIG_APPLY
 
 MAX_SYMBOL_NAME = 255
 
@@ -703,6 +737,62 @@ class FbInfo:
 
 
 @dataclass
+class TapeState:
+    """The tape deck: the reply to TAPE_CONTROL and the tape fields of
+    MEDIA_INFO."""
+    playing: bool
+    motor: bool
+    block: int      # the block the deck is at
+    blocks: int     # blocks in the image
+
+    @staticmethod
+    def read(fields: Fields) -> 'TapeState':
+        playing = fields.u8() != 0
+        motor = fields.u8() != 0
+        fields.skip(2)
+        return TapeState(playing, motor, fields.u32(), fields.u32())
+
+
+@dataclass
+class MediaInfo:
+    slot: int
+    present: bool
+    flags: int      # MEDIA_WRITE_PROTECTED | MEDIA_UNSAVED | MEDIA_FLUX
+    generation: int
+    path: str
+    tape: Optional[TapeState] = None    # the tape slot only
+
+    @property
+    def unsaved(self) -> bool:
+        return bool(self.flags & MEDIA_UNSAVED)
+
+    @staticmethod
+    def read(fields: Fields) -> 'MediaInfo':
+        slot = fields.u8()
+        present = fields.u8() != 0
+        flags = fields.u8()
+        fields.skip(1)
+        info = MediaInfo(slot, present, flags, fields.u64(), fields.string())
+        if slot == SLOT_TAPE:
+            info.tape = TapeState.read(fields)
+        return info
+
+
+@dataclass
+class ConfigValue:
+    value: str
+    pending: Optional[str] = None   # a different value that is staged
+
+    @staticmethod
+    def read(fields: Fields) -> 'ConfigValue':
+        flags = fields.u8()
+        fields.skip(3)
+        value = fields.string()
+        pending = fields.string()
+        return ConfigValue(value, pending if flags & 1 else None)
+
+
+@dataclass
 class Event:
     """One pushed event, decoded. `seq` is its number on this connection:
     1 for the first event and one more for each one after it. Fields an
@@ -1098,6 +1188,56 @@ class KcpcClient:
 
     def fb_info(self) -> FbInfo:
         return FbInfo.read(self.request(OP_FB_INFO))
+
+    # -- media, snapshots, configuration -------------------------------------
+
+    def media_insert(self, slot: int, path: str, flags: int = 0) -> int:
+        """Controller only. Put the file at `path` (on the core's machine)
+        into `slot` and return the slot's generation. When this returns the
+        machine holds the medium; the EVT_MEDIA_CHANGED events follow."""
+        return self.request(OP_MEDIA_INSERT,
+                            struct.pack('<BB2x', slot, flags)
+                            + pack_str(path)).u64()
+
+    def media_eject(self, slot: int) -> int:
+        """Controller only. A disc with unsaved writes is written back to
+        its file first. Returns the slot's generation."""
+        return self.request(OP_MEDIA_EJECT, struct.pack('<B3x', slot)).u64()
+
+    def media_info(self, slot: int) -> MediaInfo:
+        return MediaInfo.read(self.request(OP_MEDIA_INFO,
+                                           struct.pack('<B3x', slot)))
+
+    def tape_control(self, action: int, block: int = 0) -> TapeState:
+        """Controller only: TAPE_STOP, TAPE_PLAY, TAPE_REWIND, or TAPE_SEEK
+        to `block`. Returns the deck afterwards."""
+        return TapeState.read(self.request(
+            OP_TAPE_CONTROL, struct.pack('<B3xI', action, block)))
+
+    def snapshot_save(self, path: str) -> Stamp:
+        """Controller only. Writes an SNA file on the core's machine."""
+        return Stamp.read(self.request(OP_SNAPSHOT_SAVE, pack_str(path)))
+
+    def snapshot_load(self, path: str, stay_paused: bool = False) -> Stamp:
+        """Controller only. Pushed as EVT_RESET, after this reply."""
+        flags = SNAPSHOT_FLAG_STAY_PAUSED if stay_paused else 0
+        return Stamp.read(self.request(
+            OP_SNAPSHOT_LOAD, struct.pack('<B3x', flags) + pack_str(path)))
+
+    def config_get(self, key: str) -> ConfigValue:
+        """A key of the text IPC's `config get`."""
+        return ConfigValue.read(self.request(OP_CONFIG_GET, pack_str(key)))
+
+    def config_set(self, key: str, value: str) -> int:
+        """Controller only. Returns CONFIG_NOW, CONFIG_NEXT_FRAME or
+        CONFIG_STAGED."""
+        return self.request(OP_CONFIG_SET,
+                            pack_str(key) + pack_str(str(value))).u8()
+
+    def config_apply(self) -> Stamp:
+        """Controller only. Rebuilds the machine with the staged settings;
+        returns when it is rebuilt, and EVT_MACHINE_CHANGED follows."""
+        return Stamp.read(self.request(OP_CONFIG_APPLY))
 
     def mem_read_stamped(self, space: int, addr: int, length: int,
                          bank: int = 0) -> Tuple[Stamp, bytes]:

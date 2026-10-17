@@ -159,3 +159,58 @@ kcpc::Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
 
 // FB_INFO: the machine's canonical frame, with no transport until phase 4.
 kcpc::Status kcpc_host_fb_info(kcpc::FbInfo& info);
+
+// Media (section 12): MEDIA_INSERT, MEDIA_EJECT, MEDIA_INFO, TAPE_CONTROL.
+// The changes run on the calling (socket) thread under a pause lease, while
+// it is the only lease held, through the loaders of slotshandler.h and the
+// bridge's media swap, which is applied before the lease is let go: when the
+// reply is sent the machine holds what the request put there. Every change is
+// pushed as EVT_MEDIA_CHANGED, named after the request.
+//
+// kBadPayload for a path with `..` in it, a type that does not fit the slot
+// or a malformed image (`message` says which); kNotFound for a missing file;
+// kNotPresent for a cartridge on a machine that is not a 6128+. A failed load
+// leaves a drive or the deck empty and the cartridge port as it was.
+kcpc::Status kcpc_host_media_insert(std::uint32_t client, std::uint32_t request,
+                                    const kcpc::MediaInsertRequest& insert,
+                                    std::uint64_t& generation,
+                                    std::string& message);
+// A drive with unsaved changes is written back to its file first. The
+// cartridge cannot be ejected (kBadPayload): a 6128+ does not run without
+// one.
+kcpc::Status kcpc_host_media_eject(std::uint32_t client, std::uint32_t request,
+                                   std::uint8_t slot, std::uint64_t& generation,
+                                   std::string& message);
+// What info.slot holds: read through the gate, so it pauses nothing.
+kcpc::Status kcpc_host_media_info(kcpc::MediaInfo& info);
+// kNotPresent with no tape in the deck, kOutOfRange for a block past the
+// last. `tape` is the deck after the change.
+kcpc::Status kcpc_host_tape_control(const kcpc::TapeControlRequest& control,
+                                    kcpc::TapeState& tape);
+
+// Snapshots (section 12): SNA files, through snapshot_save() and
+// snapshot_load() of slotshandler.h, under a pause lease. Never
+// Machine::save_devices(). kNotFound for a missing file or directory,
+// kBadPayload for a file that is no SNA or holds more RAM than the machine.
+kcpc::Status kcpc_host_snapshot_save(const std::string& path,
+                                     kcpc::Stamp& stamp, std::string& message);
+// Announced as EVT_RESET. The run state is put back, or the machine is left
+// stopped when load.flags says so.
+kcpc::Status kcpc_host_snapshot_load(std::uint32_t client,
+                                     std::uint32_t request,
+                                     const kcpc::SnapshotLoadRequest& load,
+                                     kcpc::Stamp& stamp, std::string& message);
+
+// Configuration (section 12): the keys of the text IPC's `config`, through
+// the functions that command uses (ipc_config_get() and the others in
+// koncepcja_ipc_server.h). A get is read through the gate; a set runs under
+// a pause lease; an apply has the main thread rebuild the machine
+// (koncpc_rebuild_machine()) and returns when it has.
+kcpc::Status kcpc_host_config_get(const std::string& key,
+                                  kcpc::ConfigValue& value);
+kcpc::Status kcpc_host_config_set(const std::string& key,
+                                  const std::string& value,
+                                  kcpc::ConfigEffect& effect,
+                                  std::string& message);
+kcpc::Status kcpc_host_config_apply(std::uint32_t client, std::uint32_t request,
+                                    kcpc::Stamp& stamp, std::string& message);
