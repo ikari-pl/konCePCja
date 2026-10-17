@@ -999,6 +999,45 @@ def test_pause_replies_once_stopped():
     return True
 
 
+def test_config_set_machine_keys_on_a_running_machine():
+    """`config set crtc_type|silicon_disc` on a machine that is running.
+
+    Both keys change the machine (the CRTC device, the banking). They were
+    set from the IPC thread while the frame runner could be mid-frame, with
+    no pause lease (beads-7h32); now the set holds the machine still, alone,
+    and puts the run state back. Unpaced, so the frame runner is nearly
+    always inside a frame when a set arrives.
+    """
+    print("Running config set on a running machine test...")
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.limit_speed=0'):
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        for i in range(60):
+            crtc = i % 4
+            for cmd in (f'config set crtc_type {crtc}',
+                        f'config set silicon_disc {i % 2}'):
+                ok, resp = ipc.send_command(cmd)
+                if not ok:
+                    print(f"FAIL: {cmd}: {resp}")
+                    return False
+            ok, resp = ipc.send_command('config get crtc_type')
+            if not ok or not resp.startswith(f'OK {crtc}'):
+                print(f"FAIL: config get crtc_type after {crtc}: {resp}")
+                return False
+        ok, resp = ipc.send_command('status')
+        if not ok or 'paused=0' not in resp:
+            print(f"FAIL: the sets left the machine paused: {resp}")
+            return False
+        ok, resp = ipc.send_command('sdisc status')
+        if not ok or 'enabled' not in resp or 'disabled' in resp:
+            print(f"FAIL: silicon disc after the last set: {resp}")
+            return False
+    print("PASS: config set of machine keys on a running machine")
+    return True
+
+
 def test_wait_pc_timeout_ends_stopped():
     """`wait pc` that times out must answer only once the machine HAS stopped.
 
@@ -4640,6 +4679,7 @@ def main():
         test_wait_vbl_counts_real_frames,
         test_wait_vbl_timeout_ends_stopped,
         test_pause_replies_once_stopped,
+        test_config_set_machine_keys_on_a_running_machine,
         test_wait_pc_timeout_ends_stopped,
         test_wait_pc_is_exact,
         test_wait_pc_aborts_on_shutdown,

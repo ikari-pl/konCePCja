@@ -210,6 +210,7 @@ enum class IpcConfigStatus : uint8_t {
   NotReady,  // the main thread has not published what the key reads yet
   NoWindow,  // the key needs a window and this run has none
   BadValue,  // `note` says why
+  NotIdle,   // set only: the machine could not be held still for the change
 };
 
 // The host settings the keys `model`, `crtc_type`, `crtc_info`, `ram_size`,
@@ -248,12 +249,20 @@ enum class IpcConfigEffect : uint8_t {
   NextFrame = 1,  // the main loop applies it on its next frame
   Staged = 2,     // waits for a rebuild (`config apply`)
 };
+// Who holds the machine still while a key that changes it is set.
+enum class IpcConfigHold : uint8_t {
+  Lease,   // ipc_config_set() takes a pause lease, alone, for the change
+  Caller,  // the caller already holds one, alone (KCPC's CONFIG_SET)
+};
 // Sets `key`. On Ok `note` is what the text IPC adds to its OK ("apply
 // required", "reset required", "applied on next frame", or nothing); on
 // BadValue it is the reason. `crtc_type` and `silicon_disc` change the
-// machine: the caller makes sure nothing is clocking it.
+// machine, so nothing may be clocking it and no other lease holder may be
+// changing or rebuilding it: with IpcConfigHold::Lease that is made sure of
+// here, and NotIdle is answered when it cannot be.
 IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
-                               IpcConfigEffect& effect, std::string& note);
+                               IpcConfigEffect& effect, std::string& note,
+                               IpcConfigHold hold);
 
 enum class IpcRebuildResult : uint8_t {
   Ok,
