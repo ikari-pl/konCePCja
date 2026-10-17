@@ -163,6 +163,7 @@ class t_z80regs {
     watchpoint_addr = 0;
     watchpoint_value = 0;
     watchpoint_old = 0;
+    watchpoint_io = 0;
     step_in = 0;
     break_point = 0;
     trace = 0;
@@ -175,6 +176,9 @@ class t_z80regs {
   word watchpoint_addr;   // address that triggered
   byte watchpoint_value;  // value being read/written
   byte watchpoint_old;    // previous value at address
+  // 0: a memory watchpoint fired. 1 (IN) or 2 (OUT): an I/O breakpoint did,
+  // and watchpoint_addr is the port, watchpoint_value the byte an OUT wrote.
+  byte watchpoint_io;
   byte step_in;
   dword break_point, trace;
 };

@@ -192,6 +192,8 @@ Break on Z80 IN/OUT port access. Port matching uses a mask to support the CPC's 
 | `iobp clear` | Remove all IO breakpoints |
 | `iobp list` | `OK count=N PORT/MASK/DIR ...` |
 
+When an IO breakpoint triggers, `wait bp` answers `OK PC=XXXX WATCH=0 IO=1 PORT=XXXX DIR=OUT VAL=XX`, or `... DIR=IN` with no `VAL` for an `IN` (the device has not answered yet when the breakpoint latches). `PORT` is the full 16-bit port the instruction addressed (`B` is its high byte for `IN r,(C)`/`OUT (C),r`), and `PC` is the CPU's program counter as `reg get PC` then shows it: just past the `IN`/`OUT` that made the access, not the port. The step and wait commands that report a stop elsewhere (`breakpoint-hit ...`) carry the same fields. This is what KCPC's `EVT_STOPPED` reports for the same stop (`reason` 4, the port as `addr`, `access` 1 for IN and 2 for OUT, the PC the registers show).
+
 ### Port shorthand
 
 Use `X` in a 4-character hex port spec to wildcard nibbles:
@@ -234,7 +236,7 @@ All wait commands resume emulation, block until condition or timeout, then pause
 |---------|-------------|
 | `wait pc <addr> [timeout_ms]` | Run until the CPU reaches `addr`, then pause there. Exact: a one-shot breakpoint stops on the instruction, so code that only passes through `addr` is caught every time. `ERR 408 timeout` if it is not reached; `ERR 409 stopped-elsewhere` (with the `WATCH=` detail) when a breakpoint or watchpoint stops the machine somewhere else first — a breakpoint of your own armed AT `addr` is an arrival and returns `OK breakpoint-hit`. `ERR 503 shutting-down` if the server is torn down mid-wait, so a long wait never holds up process exit. A pause and resume by someone else (the `-i` injection) does not end the wait; a pause that leaves the CPU standing on `addr` ends it with `OK` |
 | `wait mem <addr> <value> [mask=0xFF] [timeout_ms]` | Wait until memory matches |
-| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop, and drops the hit of a stop nobody collected: the answer is never for a stop the machine has been run out of. Only hits from the current arming are reported |
+| `wait bp [timeout_ms]` | Wait for any breakpoint hit. Returns `OK PC=xxxx WATCH=0\|1` (an IO breakpoint stop: `WATCH=0 IO=1 PORT=xxxx DIR=IN\|OUT [VAL=xx]`) only after the epoch-validated pause transaction has committed. A later `run` invalidates an older staged stop, and drops the hit of a stop nobody collected: the answer is never for a stop the machine has been run out of. Only hits from the current arming are reported |
 | `wait vbl <count> [timeout_ms]` | Run until N vertical blanks (frames of emulation) have passed, then pause at the frame boundary — from a paused machine exactly the frames `step frame <count>` runs; from a running one the frame in flight is the first blank. Counted in emulated frames, not wall time, so an unpaced (`system.limit_speed=0`) machine finishes sooner and a loaded host later. `count` must be ≥ 1 (`ERR 400`). Without `timeout_ms` the deadline is `count × 20ms + 5000ms` (the real-time length plus slack). `ERR 409 stopped-elsewhere` (with the `WATCH=` detail) when a breakpoint or watchpoint stops the machine first; the hit stays latched for `wait bp`. A pause and resume by someone else only delays the count |
 
 Default timeout: 5000ms. Returns `ERR 408 timeout` on expiry.
@@ -269,7 +271,7 @@ Memory access breakpoints. Trigger on read, write, or both within an address ran
 | `wp clear` | Remove all watchpoints |
 | `wp list` | `OK count=N idx:ADDR+LEN/TYPE[if ...][pass N] ...` |
 
-When a watchpoint triggers, the breakpoint hit response includes: `OK PC=XXXX WATCH=1 WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX`
+When a watchpoint triggers, the breakpoint hit response includes: `OK PC=XXXX WATCH=1 WP_ADDR=XXXX WP_VAL=XX WP_OLD=XX`. `WP_ADDR` is the watched address the access hit; `PC` is the CPU's program counter, just past the instruction that made the access (as `reg get PC` shows it), never the watched address. An IO breakpoint stop is `WATCH=0 IO=1 ...` (see IO breakpoints above), not a watchpoint.
 
 Watchpoint conditions can use the special variables `address`, `value`, and `previous` to inspect the access that triggered. For a write, `value` is the byte being written and `previous` the byte it replaces; for a read, `value` is the byte read. An IO breakpoint's condition sees the port as `address` and, for an `OUT`, the byte sent as `value` (an `IN` has no value yet when the breakpoint is judged).
 

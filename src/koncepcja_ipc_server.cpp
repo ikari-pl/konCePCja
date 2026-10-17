@@ -250,14 +250,30 @@ constexpr int kStepIdleWaitMs = 1000;
 // exactly that detail for the same underlying event all along. The fields are
 // still valid here: the bridge sets them on the hit and only clears them on a
 // failed commit.
+//
+// An I/O breakpoint is not a watchpoint: it says IO=1, the port, the direction
+// and, for an OUT, the byte written (an IN has no byte yet when the probe
+// latches). Reported as WATCH=1 with the port as WP_ADDR, it named a
+// watchpoint nobody set (beads-llnn).
 namespace {
-std::string breakpoint_hit_body() {
-  if (z80.watchpoint_reached == 0) return "breakpoint-hit WATCH=0";
+std::string stop_detail(bool watch) {
+  if (!watch || z80.watchpoint_reached == 0) return "WATCH=0";
   char buf[96];
-  snprintf(buf, sizeof(buf),
-           "breakpoint-hit WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X",
-           z80.watchpoint_addr, z80.watchpoint_value, z80.watchpoint_old);
+  if (z80.watchpoint_io == 1) {
+    snprintf(buf, sizeof(buf), "WATCH=0 IO=1 PORT=%04X DIR=IN",
+             z80.watchpoint_addr);
+  } else if (z80.watchpoint_io == 2) {
+    snprintf(buf, sizeof(buf), "WATCH=0 IO=1 PORT=%04X DIR=OUT VAL=%02X",
+             z80.watchpoint_addr, z80.watchpoint_value);
+  } else {
+    snprintf(buf, sizeof(buf), "WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X",
+             z80.watchpoint_addr, z80.watchpoint_value, z80.watchpoint_old);
+  }
   return {buf};
+}
+
+std::string breakpoint_hit_body() {
+  return "breakpoint-hit " + stop_detail(true);
 }
 }  // namespace
 
@@ -1349,6 +1365,9 @@ void init_command_registry() {
       "  list:  Shows all IO breakpoints with index, port, mask, direction and "
       "conditions.\n"
       "  clear: Removes all IO breakpoints.\n"
+      "When an IO breakpoint triggers, 'wait bp' returns: OK PC=XXXX WATCH=0 "
+      "IO=1 PORT=XXXX DIR=IN|OUT [VAL=XX] (VAL, the byte written, for an "
+      "OUT only)\n"
       "Conditions: same dialect as 'help bp' (registers, flags, "
       "address/value/previous/mode, peek()/…, 0x/&/$/#/% literals, "
       "and/or/xor/not; '&'/'%' after an operand mean and/mod). "
@@ -1371,7 +1390,10 @@ void init_command_registry() {
       "reports hits from the CURRENT arming — a hit left uncollected from a "
       "previous bp/wp/IO-bp change is dropped (timeout), and so is the hit "
       "of a stop the machine has since been run out of. Watchpoint hits "
-      "include WP_ADDR/WP_VAL/WP_OLD.\n"
+      "include WP_ADDR/WP_VAL/WP_OLD; an I/O breakpoint stop is WATCH=0 "
+      "IO=1 PORT=XXXX DIR=IN|OUT (VAL=XX for an OUT). PC is where the CPU "
+      "is: for a watch or I/O hit, just past the instruction that made the "
+      "access.\n"
       "  vbl: Resumes, runs until N vertical blanks (frames of emulation, "
       "not wall time) have passed, then pauses -- from a paused machine the "
       "same N frames `step frame N` runs. A breakpoint stopping it first is "
@@ -4003,17 +4025,9 @@ std::string handle_command(const std::string& line) {
               // Publication happens inside the epoch-validated pause
               // transaction, so consuming a hit proves the machine stopped
               // before this response became observable.
-              char resp[128];
-              if (watch) {
-                snprintf(
-                    resp, sizeof(resp),
-                    "OK PC=%04X WATCH=1 WP_ADDR=%04X WP_VAL=%02X WP_OLD=%02X\n",
-                    pc, z80.watchpoint_addr, z80.watchpoint_value,
-                    z80.watchpoint_old);
-              } else {
-                snprintf(resp, sizeof(resp), "OK PC=%04X WATCH=0\n", pc);
-              }
-              return {resp};
+              char resp[16];
+              snprintf(resp, sizeof(resp), "OK PC=%04X ", pc);
+              return resp + stop_detail(watch) + "\n";
             }
           }
           if (server_stopping()) return "ERR 503 shutting-down\n";
