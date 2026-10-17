@@ -268,6 +268,13 @@ def main() -> None:
             fail("ping did not answer 'OK pong'")
         if 'gui=0' not in conn.expect_ok('gui'):
             fail("'gui' does not report the headless loop (gui=0)")
+        # The manifest's tier is the one the machine runs, not the one it
+        # had before it was built or before the policy was applied
+        # (beads-m9dq): the example config sets nothing that changes it.
+        tier = conn.expect_ok('tier')
+        want = f"effective={manifest.get('machine.effective_tier')} "
+        if want not in tier:
+            fail(f"manifest effective_tier disagrees with 'tier': {tier!r}")
 
         # The core is up once PC leaves 0 (the IPC server binds before the
         # board finishes initialising).
