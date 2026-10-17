@@ -903,6 +903,47 @@ def test_wait_vbl_counts_real_frames():
     return True
 
 
+def test_wait_vbl_timeout_ends_stopped():
+    """`wait vbl` that times out must answer only once the machine HAS stopped.
+
+    The timeout path paused the machine and answered ERR 408 at once, but a
+    pause only stops the machine between frames: in the threaded GUI loop the
+    frame in flight ran on after the reply, so the firmware clock moved on a
+    machine the reply called paused (beads-wrkg, seen on a slow CI Mac). The
+    Faithful tier, unpaced, makes a frame cost ~14 ms of host time, so the
+    pause nearly always lands mid-frame: before the fix 2 runs in 10 moved.
+    """
+    print("Running wait vbl timeout stop test...")
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.limit_speed=0'):
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 20.0
+        ok, resp = ipc.send_command('step frame 100')
+        if not ok:
+            print(f"FAIL: step frame 100: {resp}")
+            return False
+        ipc.send_command('tier set faithful')
+        for i in range(25):
+            ok, resp = ipc.send_command('wait vbl 100000 100')
+            if ok or not resp.startswith('ERR 408'):
+                print(f"FAIL: expected ERR 408, got {resp!r}")
+                return False
+            t2 = _firmware_time(ipc)
+            time.sleep(0.05)
+            t3 = _firmware_time(ipc)
+            if t2 is None or t3 is None:
+                print("FAIL: could not read TIME")
+                return False
+            if t3 != t2:
+                print(f"FAIL: machine ran {t3 - t2} TIME ticks after ERR 408 "
+                      f"(try {i + 1})")
+                return False
+    print("PASS: wait vbl timeout answers once the machine has stopped")
+    return True
+
+
 def test_wait_pc_is_exact():
     """`wait pc` must stop on an address the CPU only passes through.
 
@@ -4509,6 +4550,7 @@ def main():
 
     tests = [
         test_wait_vbl_counts_real_frames,
+        test_wait_vbl_timeout_ends_stopped,
         test_wait_pc_is_exact,
         test_wait_pc_aborts_on_shutdown,
         test_run_to_address_breakpoint_polarity,
