@@ -350,11 +350,10 @@ def test_manifest_port_and_hello() -> None:
             assert m.model == int(core.manifest['machine.model']), m
             assert m.ram_bytes == (
                 int(core.manifest['machine.ram_size_kb']) * 1024), m
-            # Not the manifest's effective_tier: that is printed before the
-            # first frame has latched the tier (beads-3o1.1 report). The
-            # text IPC reads the live one.
-            tier = core.ipc('tier')
-            assert f'effective={m.tier_name} ' in tier, (tier, m)
+            # The manifest is printed once the machine is in the tier its
+            # first frame runs (beads-m9dq).
+            assert m.tier_name == core.manifest['machine.effective_tier'], (
+                m.tier_name, core.manifest['machine.effective_tier'])
             assert m.headless == (core.manifest['mode'] == 'headless'), m
             assert m.has_asic == (m.model == 3), m
             assert 0 <= m.crtc_type <= 3, m

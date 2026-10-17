@@ -209,6 +209,13 @@ class Machine {
         return RunTier::Faithful;
     }
   }
+  // Rebuild board_.tick_order/active_count to skip structurally-dormant devices
+  // (an unplugged peripheral whose tick early-returns). Called at frame start —
+  // dormancy only changes at composition/plug points. Observation-neutral by
+  // construction: a dormant device drives nothing and mutates nothing. Public
+  // so a host that plugs devices after build() can settle effective_run_tier()
+  // before the first frame (the startup manifest reports it, beads-m9dq).
+  void recompose_active();
   // Is the soldered path valid for the current board? True when the count
   // matches its frozen call list and the active set was not manually
   // overridden (KONCPC_ACTIVE). Automatic dormancy (recompose_active) does NOT
@@ -554,12 +561,6 @@ class Machine {
   // both automatic dormancy (recompose_active) and the soldered fast path,
   // since an arbitrary manual prefix may drop a non-inert device.
   bool active_override_ = false;
-
-  // Rebuild board_.tick_order/active_count to skip structurally-dormant devices
-  // (an unplugged peripheral whose tick early-returns). Called at frame start —
-  // dormancy only changes at composition/plug points. Observation-neutral by
-  // construction: a dormant device drives nothing and mutates nothing.
-  void recompose_active();
 
   // --- Wake tier (Gate B6, beads-708f) -----------------------------------
   // One master cycle under clock-wake scheduling: same devices, same two-phase
