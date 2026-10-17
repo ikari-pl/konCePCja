@@ -1543,6 +1543,7 @@ void subcycle_bridge_write_back_discs() {
   // the discs leave with the process, as on an eject
   flush_dirty_media_unit(b, 0, DiscFate::kLeaves);
   flush_dirty_media_unit(b, 1, DiscFate::kLeaves);
+  flush_sf2_ide(b);  // and the IDE images theirs (beads-ssqd)
 }
 
 void subcycle_bridge_stop() {
