@@ -613,18 +613,19 @@ def test_reads_do_not_change_what_the_machine_computes() -> None:
             'the reference run is not reproducible; the comparison below '
             'would prove nothing')
         assert alone[0] == frames and alone[1], alone[:2]
+        running_reads = 0
         for what, readers in (('info', 2), ('memory', 1), ('memory', 3)):
             watched = _stepped_state(core, frames, readers, what)
             r = watched[4]
             label = f'{readers} x {what}'
-            # A read that waited out the gate's fallback takes a quarter of
-            # a second, so more than 50 in these two seconds were taken at
-            # frame boundaries, by the runner.
-            assert r.calls > 50, (
-                f'{label}: only {r.calls} reads during the step')
-            assert r.running_reads > 50, (
-                f'{label}: only {r.running_reads} reads saw the machine '
-                'running; the step was not read at its frame boundaries')
+            # How many reads fit into the step is the host's speed (the
+            # efficiency cores of a loaded Mac fitted in 41 of 64 KiB);
+            # that they were taken at a frame boundary is the core's own
+            # count, below.
+            assert r.running_reads >= readers, (
+                f'{label}: only {r.running_reads} of {r.calls} reads saw '
+                'the machine running; the step was not read while it ran')
+            running_reads += r.running_reads
             assert watched[0] == frames, (
                 f'{label}: the step ran {watched[0]} frames, not {frames}')
             assert watched[1], f'{label}: the step did not end paused'
@@ -634,8 +635,9 @@ def test_reads_do_not_change_what_the_machine_computes() -> None:
             assert watched[3] == alone[3], (
                 f'{label}: RAM differs after the same {frames} frames')
             print(f'    {label}: {r.calls} reads during {frames} frames '
-                  f'({r.running_reads} at a frame boundary, slowest '
+                  f'({r.running_reads} of a running machine, slowest '
                   f'{r.slowest * 1000:.0f} ms); registers and RAM identical')
+        assert_running_reads_at_boundaries(core, running_reads)
 
 
 # -- beads-mk1w: a second actor that takes a lease by its own means ---------
@@ -3467,6 +3469,28 @@ def core_reads(core: Core) -> Dict[str, int]:
     return core.reads_served()
 
 
+def assert_running_reads_at_boundaries(core: Core,
+                                       running_reads: int) -> None:
+    """Quit the core and check that the reads its clients saw of a running
+    machine were taken at frame boundaries, by the runner. How many fit
+    into a step depends on how fast the host turns a request round, so a
+    count of them is no evidence of where they were served; this is.
+
+    Every read that saw the machine running was copied by the runner at a
+    frame boundary (a lease's read of a running machine is stamped running
+    too), but for the odd one the gate's safety net took under a lease
+    after a quarter second without a frame: a loaded host stalls the
+    runner that long now and then (2 of 378 reads on the efficiency cores
+    of a saturated Mac). A gate that pauses for reads takes them all that
+    way."""
+    served = core_reads(core)
+    assert served['busy'] == 0, served
+    assert served['fallback'] * 20 <= served['boundary'], served
+    assert served['boundary'] + served['fallback'] >= running_reads, (
+        served, running_reads)
+    print(f'    reads served: {served}')
+
+
 def pending(c: KcpcClient, *opcodes: int) -> List[kc.Event]:
     """The events of these kinds that `c` has received and not yet taken."""
     return [event for event in map(kc.Event.decode, c.events)
@@ -4414,19 +4438,7 @@ def test_polling_every_chip_changes_nothing() -> None:
             best = max(watched_fps)
             assert best > 45 and best > min(max(alone_fps), 50.0) - 3, (
                 alone_fps, watched_fps)
-        served = core_reads(core)
-        # Every read that saw the machine running was copied by the runner
-        # at a frame boundary (a lease's read of a running machine is
-        # stamped running too), but for the odd one the gate's safety net
-        # took under a lease after a quarter second without a frame: a
-        # loaded host stalls the runner that long now and then (2 of 378
-        # reads on the efficiency cores of a saturated Mac). A gate that
-        # pauses for reads takes them all that way.
-        assert served['busy'] == 0, served
-        assert served['fallback'] * 20 <= served['boundary'], served
-        assert served['boundary'] + served['fallback'] >= running_reads, (
-            served, running_reads)
-        print(f'    reads served: {served}')
+        assert_running_reads_at_boundaries(core, running_reads)
 
 
 def test_a_stop_is_not_caught_up() -> None:
