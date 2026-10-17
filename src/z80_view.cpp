@@ -243,6 +243,14 @@ bool user_breakpoint_fires_at(word pc) {
   }
   return false;
 }
+
+// Is a user breakpoint armed at `pc` at all? Asked before the fetch, so it
+// must not judge: the shared predicate counts the hit.
+bool user_breakpoint_listed_at(word pc) {
+  for (const auto& b : breakpoints)
+    if (b.type == NORMAL && b.address == pc) return true;
+  return false;
+}
 }  // namespace
 
 namespace {
@@ -608,16 +616,7 @@ Z80StepOutResult step_out_until(std::chrono::steady_clock::time_point deadline,
         interrupted = coordination.resume_epoch() != operation_epoch ||
                       !g_emu_paused.load(std::memory_order_acquire) ||
                       cpc_walk_interrupted();
-        if (!interrupted) {
-          z80_step_instruction();
-          // Inside the guard: `breakpoints` is shared with the DevTools editor
-          // on the render thread, and every mutator (add/del/clear) takes this
-          // same guard. Scanning it outside was a genuine data race — the IPC
-          // walk releases its pause lease before starting, and the GUI walk
-          // runs on a worker thread, so in both cases the render thread is
-          // free to add or delete breakpoints mid-walk.
-          fires = user_breakpoint_fires_at(z80.PC.w.l);
-        }
+        if (!interrupted) z80_step_instruction();
       }
       if (interrupted) {
         z80_remove_ephemeral_breakpoints();
@@ -667,6 +666,36 @@ Z80StepOutResult step_out_until(std::chrono::steady_clock::time_point deadline,
       // A POP does not write memory, so the word it lifted is still sitting at
       // the pre-step SP.
       if (popped) last_popped = read_word(sp_before);
+
+      // A breakpoint is met where a run meets it: on its opcode's fetch. Run
+      // the machine through that fetch, and judge the breakpoint there, the
+      // way the probe path does. Stopping at the boundary before it instead
+      // left the fetch to the next run, which stopped at the same breakpoint
+      // a second time and counted it twice (beads-w88g).
+      //
+      // Under the guard: `breakpoints` is shared with the DevTools editor on
+      // the render thread, and every mutator (add/del/clear) takes this same
+      // guard. Scanning it outside was a genuine data race — the IPC walk
+      // releases its pause lease before starting, and the GUI walk runs on a
+      // worker thread, so in both cases the render thread is free to add or
+      // delete breakpoints mid-walk.
+      {
+        CpcStopCoordinationGuard const coordination;
+        interrupted = coordination.resume_epoch() != operation_epoch ||
+                      !g_emu_paused.load(std::memory_order_acquire) ||
+                      cpc_walk_interrupted();
+        if (!interrupted && user_breakpoint_listed_at(pc_after)) {
+          if (subcycle_bridge_park_on_fetch(pc_after)) {
+            fires = user_breakpoint_fires_at(pc_after);
+          } else if (z80.PC.w.l != pc_after) {
+            entered.push_back(z80.SP.w.l);  // an interrupt came first
+          }
+        }
+      }
+      if (interrupted) {
+        z80_remove_ephemeral_breakpoints();
+        return Z80StepOutResult::BreakpointHit;
+      }
 
       // z80_step_instruction() is probe-blind, so without this a breakpoint
       // the user armed inside THIS frame is walked straight through, while the

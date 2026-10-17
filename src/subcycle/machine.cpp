@@ -1954,4 +1954,28 @@ void Machine::step_instruction() {
   }
 }
 
+// NOLINTNEXTLINE(readability-make-member-function-const): mutates state via a
+// free function taking a non-const pointer
+bool Machine::run_to_fetch(uint16_t addr) {
+  if (!built_) return false;
+  // A probe with nothing armed is left out of the tick list until the next
+  // frame (recompose_active), and the comparator for `addr` may be newer
+  // than the last frame: a breakpoint set while paused.
+  recompose_active();
+  Z80Regs before{};
+  z80_peek(&zdev_, &before);
+  Z80Regs now = before;
+  // Same bound as step_instruction(); the fetch is the next bus cycle.
+  for (int i = 0; i < 4096 && now.instr_count == before.instr_count; ++i) {
+    board_tick(&board_);
+    ProbeHit hit{};
+    if (probe_pending(&prdev_, &hit) != 0) {
+      if (hit.kind == PROBE_HIT_EXEC && hit.addr == addr) return true;
+      probe_ack(&prdev_);
+    }
+    z80_peek(&zdev_, &now);
+  }
+  return false;
+}
+
 }  // namespace subcycle
