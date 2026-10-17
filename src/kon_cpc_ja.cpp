@@ -4022,7 +4022,7 @@ void loadSnapshot() {
 bool driveAltered() { return driveA.altered || driveB.altered; }
 
 namespace {
-void doCleanUp(bool write_back_discs) {
+void doCleanUp(bool write_back_discs, bool save_config) {
 #ifdef _WIN32
   timeEndPeriod(1);
 #endif
@@ -4098,6 +4098,12 @@ void doCleanUp(bool write_back_discs) {
   // never applied, so a disc's unsaved writes are written back here or not
   // at all (beads-lgul).
   if (write_back_discs) subcycle_bridge_write_back_discs();
+  // Saved after the write-back: a zipped disc's writes went to a DSK beside
+  // the archive, staged for the Recent list as on an eject (beads-8c1o).
+  if (save_config) {
+    ipc_mru_apply_staged(false);
+    koncpc_save_configuration_preserving_intent();
+  }
   printer_stop();
   emulator_shutdown();
   dsk_eject(&driveA);
@@ -4187,10 +4193,8 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   // state worth recording.  printer / scr_window are restored to the
   // captured intent (refreshed by Options▸Save via
   // koncpc_capture_config_intent) so runtime mutations cannot poison the file.
-  if (returnCode == 0 && !g_headless && g_config_loaded) {
-    koncpc_save_configuration_preserving_intent();
-  }
-  doCleanUp(koncpc_quit_writes_back_discs(asked));
+  doCleanUp(koncpc_quit_writes_back_discs(asked),
+            returnCode == 0 && !g_headless && g_config_loaded);
   _exit(returnCode);
 }
 
