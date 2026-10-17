@@ -944,6 +944,94 @@ def test_wait_vbl_timeout_ends_stopped():
     return True
 
 
+def _machine_moved_after(ipc, what: str) -> Optional[str]:
+    """Why the machine is still running after `what` answered, or None.
+
+    Reads TIME straight after the reply and again 50 ms later: a machine the
+    reply called stopped must not have advanced in between.
+    """
+    t2 = _firmware_time(ipc)
+    time.sleep(0.05)
+    t3 = _firmware_time(ipc)
+    if t2 is None or t3 is None:
+        return "could not read TIME"
+    if t3 != t2:
+        return f"machine ran {t3 - t2} TIME ticks after {what}"
+    return None
+
+
+def test_pause_replies_once_stopped():
+    """`pause` must answer only once the machine HAS stopped.
+
+    It answered right after asking for the pause, which only stops the
+    machine between frames: in the threaded GUI loop the frame in flight ran
+    on after `OK`, so a read that followed saw the clock still moving
+    (beads-veb0). Faithful, unpaced (~14 ms of host time per frame), makes
+    the pause land mid-frame nearly every time.
+    """
+    print("Running pause stop test...")
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.limit_speed=0'):
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 20.0
+        ok, resp = ipc.send_command('step frame 100')
+        if not ok:
+            print(f"FAIL: step frame 100: {resp}")
+            return False
+        ipc.send_command('tier set faithful')
+        for i in range(25):
+            ok, resp = ipc.send_command('run')
+            if not ok:
+                print(f"FAIL: run: {resp}")
+                return False
+            time.sleep(0.03 + 0.007 * (i % 3))
+            ok, resp = ipc.send_command('pause')
+            if not ok:
+                print(f"FAIL: pause: {resp}")
+                return False
+            why = _machine_moved_after(ipc, 'pause')
+            if why:
+                print(f"FAIL: {why} (try {i + 1})")
+                return False
+    print("PASS: pause answers once the machine has stopped")
+    return True
+
+
+def test_wait_pc_timeout_ends_stopped():
+    """`wait pc` that times out must answer only once the machine HAS stopped.
+
+    The walk's deadline paused the machine and returned Timeout at once, so
+    ERR 408 went out while the frame in flight still ran (beads-veb0), the
+    same shape `wait vbl` had (beads-wrkg). `step to` and `step over` share
+    the walk. &9000 is RAM the idle BASIC prompt never executes.
+    """
+    print("Running wait pc timeout stop test...")
+    with EmulatorRunner() as emu:
+        if not emu.start('-O', 'system.limit_speed=0'):
+            print("FAIL: Could not start emulator")
+            return False
+        ipc = emu.ipc
+        ipc.timeout = 20.0
+        ok, resp = ipc.send_command('step frame 100')
+        if not ok:
+            print(f"FAIL: step frame 100: {resp}")
+            return False
+        ipc.send_command('tier set faithful')
+        for i in range(25):
+            ok, resp = ipc.send_command('wait pc 0x9000 100')
+            if ok or not resp.startswith('ERR 408'):
+                print(f"FAIL: expected ERR 408, got {resp!r}")
+                return False
+            why = _machine_moved_after(ipc, 'ERR 408')
+            if why:
+                print(f"FAIL: {why} (try {i + 1})")
+                return False
+    print("PASS: wait pc timeout answers once the machine has stopped")
+    return True
+
+
 def test_wait_pc_is_exact():
     """`wait pc` must stop on an address the CPU only passes through.
 
@@ -4551,6 +4639,8 @@ def main():
     tests = [
         test_wait_vbl_counts_real_frames,
         test_wait_vbl_timeout_ends_stopped,
+        test_pause_replies_once_stopped,
+        test_wait_pc_timeout_ends_stopped,
         test_wait_pc_is_exact,
         test_wait_pc_aborts_on_shutdown,
         test_run_to_address_breakpoint_polarity,
