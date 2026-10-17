@@ -743,11 +743,31 @@ bool config_number(const std::string& text, int& out) {
     return false;
   }
 }
+
+// Runs change() with the machine held still as `hold` says: nothing clocking
+// it and no other lease holder beside it (the main thread rebuilds the
+// machine under a lease of its own). False when that could not be had, and
+// change() was not called; the run state is put back either way.
+bool config_change_machine(IpcConfigHold hold,
+                           const std::function<void()>& change) {
+  if (hold == IpcConfigHold::Caller) {
+    change();
+    return true;
+  }
+  // How long to wait for other holders: they hold the machine for one
+  // operation each (the KCPC server waits as long for its writes).
+  constexpr int kAloneWaitMs = 250;
+  CpcPauseLease lease;
+  bool const changed = lease.change_alone(change, kAloneWaitMs);
+  lease.restore_run_state();
+  return changed;
+}
 }  // namespace
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): the KCPC binary server calls it
 IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
-                               IpcConfigEffect& effect, std::string& note) {
+                               IpcConfigEffect& effect, std::string& note,
+                               IpcConfigHold hold) {
   effect = IpcConfigEffect::Now;
   note.clear();
   if (key == "model") {
@@ -767,10 +787,12 @@ IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
       note = "crtc_type must be 0-3";
       return IpcConfigStatus::BadValue;
     }
-    CRTC.crtc_type = static_cast<unsigned char>(t);
-    if (subcycle::Machine* m = subcycle_bridge_machine())
-      m->set_crtc_type(static_cast<uint8_t>(t));
-    return IpcConfigStatus::Ok;
+    bool const changed = config_change_machine(hold, [t] {
+      CRTC.crtc_type = static_cast<unsigned char>(t);
+      if (subcycle::Machine* m = subcycle_bridge_machine())
+        m->set_crtc_type(static_cast<uint8_t>(t));
+    });
+    return changed ? IpcConfigStatus::Ok : IpcConfigStatus::NotIdle;
   }
   if (key == "ram_size") {
     int sz = 0;
@@ -790,12 +812,14 @@ IpcConfigStatus ipc_config_set(const std::string& key, const std::string& value,
       note = "bad-value";
       return IpcConfigStatus::BadValue;
     }
-    g_silicon_disc.enabled = (v != 0);
-    if (g_silicon_disc.enabled && !g_silicon_disc.data) {
-      silicon_disc_init(g_silicon_disc);
-    }
-    ga_memory_manager();
-    return IpcConfigStatus::Ok;
+    bool const changed = config_change_machine(hold, [v] {
+      g_silicon_disc.enabled = (v != 0);
+      if (g_silicon_disc.enabled && !g_silicon_disc.data) {
+        silicon_disc_init(g_silicon_disc);
+      }
+      ga_memory_manager();
+    });
+    return changed ? IpcConfigStatus::Ok : IpcConfigStatus::NotIdle;
   }
   if (key == "m4board") {
     int v = 0;
@@ -5441,6 +5465,7 @@ std::string handle_command(const std::string& line) {
             return "ERR 503 no-window\n";
           case IpcConfigStatus::UnknownKey:
           case IpcConfigStatus::BadValue:
+          case IpcConfigStatus::NotIdle:  // set only
             return "ERR 400 unknown-config-key\n";
         }
         if (parts[2] == "kbd_layouts") {
@@ -5461,9 +5486,12 @@ std::string handle_command(const std::string& line) {
         }
         IpcConfigEffect effect = IpcConfigEffect::Now;
         std::string note;
-        switch (ipc_config_set(parts[2], value, effect, note)) {
+        switch (ipc_config_set(parts[2], value, effect, note,
+                               IpcConfigHold::Lease)) {
           case IpcConfigStatus::Ok:
             break;
+          case IpcConfigStatus::NotIdle:
+            return err_with_context(409, "z80-not-idle");
           case IpcConfigStatus::NotReady:
             return "ERR 503 not-ready\n";
           case IpcConfigStatus::NoWindow:
