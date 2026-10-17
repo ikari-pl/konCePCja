@@ -3580,6 +3580,66 @@ def test_zipped_disc_unwritable_directory_leaves_the_archive_alone():
         return True
 
 
+def test_scripted_exit_writes_back_unsaved_disc_writes():
+    """An exit nobody is asked about writes a disc's unsaved writes back, as
+    an eject does (beads-lgul). doCleanUp() only queued an eject the stopped
+    machine never applied, so IPC `quit`, a signal and --exit-after dropped
+    them. A zipped disc's writes go beside the archive, as on an eject."""
+    print("Running scripted-exit write-back test...")
+    # --exit-after leaves the test this long to dirty the disc first.
+    exit_after = '--exit-after=10s'
+    cases = [('ipc quit', 'quit', ()), ('sigterm', 'sigterm', ()),
+             ('exit-after', None, (exit_after,)),
+             ('ipc quit, zipped disc', 'quit', ())]
+    if os.name != 'posix':
+        # Popen.send_signal(SIGTERM) on Windows is TerminateProcess(h, 1): no
+        # signal reaches the emulator, so nothing could be written back.
+        print("  (not POSIX: the signal case is skipped)")
+        cases = [c for c in cases if c[1] != 'sigterm']
+    for name, how, args in cases:
+        with EmulatorRunner() as emu, tempfile.TemporaryDirectory() as td:
+            if not emu.start(*args):
+                print(f"FAIL: could not start emulator ({name})")
+                return False
+            proc = emu.process
+            marker = b'UNSAVED-WRITE-AT-EXIT'
+            if 'zipped' in name:
+                dirty = _dirty_zipped_disc_in_drive_a(emu, td, marker)
+                if dirty is None:
+                    return False
+                zip_path, zip_before = dirty
+                written = os.path.join(td, 'Game.dsk')
+            else:
+                dirty = _dirty_disc_in_drive_a(emu, td)
+                if dirty is None:
+                    return False
+                written, marker = dirty
+            if os.path.exists(written) and marker in _read_bytes(written):
+                print(f"FAIL: {name}: the write reached the file before the "
+                      "exit; the test proves nothing")
+                return False
+            if how == 'quit':
+                emu.ipc.send_command('quit')
+            elif how == 'sigterm':
+                proc.send_signal(signal.SIGTERM)
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                print(f"FAIL: {name}: the emulator did not exit")
+                return False
+            if not os.path.exists(written) or \
+                    marker not in _read_bytes(written):
+                print(f"FAIL: {name}: the disc's unsaved write was dropped "
+                      f"at exit: {sorted(os.listdir(td))}")
+                return False
+            if 'zipped' in name and _read_bytes(zip_path) != zip_before:
+                print(f"FAIL: {name}: the archive was written to")
+                return False
+    print("PASS: IPC quit, SIGTERM and --exit-after write a disc's unsaved "
+          "writes back (a zipped disc's beside the archive)")
+    return True
+
+
 def test_profile_load_missing_keeps_running():
     """profile load ERR must restore a running machine (beads-csl7.2).
 
@@ -4365,6 +4425,7 @@ def main():
         test_zipped_disc_keeps_its_writes_over_a_machine_rebuild,
         test_zipped_disc_from_the_command_line_writes_beside_the_archive,
         test_zipped_disc_unwritable_directory_leaves_the_archive_alone,
+        test_scripted_exit_writes_back_unsaved_disc_writes,
         test_headless_runs_subcycle_engine,
         test_headless_honours_the_speed_limiter,
         test_programmatic_quit_exit_codes,
