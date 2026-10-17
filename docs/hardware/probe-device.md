@@ -67,6 +67,8 @@ void probe_clear_exec(dev)
 int  probe_list_exec(dev, out[], max)     returns count copied
      (same trio for watch: probe_add_watch(dev, addr, on_read, on_write), …)
      (same trio for io:    probe_add_io(dev, port, mask, on_read, on_write), …)
+     (a watch range or an io port+mask added again merges its directions
+      into the comparator already there: 0, and no second slot is taken)
 int  probe_pending(dev, ProbeHit* out)    nonzero if latched; does not clear
 void probe_ack(dev)                       clear the latch, resume matching
 ```

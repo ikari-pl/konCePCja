@@ -135,6 +135,48 @@ TEST(Probe, MemoryWatchAndIoComparatorFireOnRealEdges) {
   probe_clear_io(m.probe());
 }
 
+// Two I/O breakpoints may share a port and mask and differ in direction (the
+// text IPC's `iobp add 0xF400 0xFF00 out` then `... in` are two list entries).
+// The comparator table has one slot per (value, mask): the second add must
+// merge its direction into it, as probe_add_watch does for a range. It used to
+// be dropped, so the second breakpoint was listed and never fired (beads-lj1t).
+// The oracle is the firmware's keyboard scan: every interrupt it writes the
+// PSG register number to PPI port A (&F4xx) and reads the row back from it.
+TEST(Probe, SecondIoComparatorOnTheSamePortMergesItsDirection) {
+  const std::vector<uint8_t> rom = load_rom();
+  if (rom.empty()) GTEST_SKIP() << "rom/cpc6128.rom not found";
+  subcycle::Machine m;
+  ASSERT_TRUE(m.build(rom.data(), rom.size()));
+  for (int i = 0; i < 120; ++i) m.run_frame();  // to Ready: scanning the keys
+
+  ASSERT_EQ(probe_add_io(m.probe(), 0xF400, 0xFF00, 0, 1), 0);
+  EXPECT_EQ(probe_add_io(m.probe(), 0xF400, 0xFF00, 1, 0), 0)
+      << "the other direction on the same port is armed, not dropped";
+  EXPECT_EQ(probe_add_io(m.probe(), 0xF400, 0xFF00, 0, 0), -1)
+      << "no direction at all is still refused";
+
+  int reads = 0, writes = 0;
+  for (int i = 0; i < 400 && (reads == 0 || writes == 0); ++i) {
+    m.run_frame();
+    ProbeHit hit{};
+    if (!m.probe_hit(&hit)) continue;
+    EXPECT_EQ(hit.addr & 0xFF00, 0xF400);
+    if (hit.kind == PROBE_HIT_IO_READ) ++reads;
+    if (hit.kind == PROBE_HIT_IO_WRITE) ++writes;
+    m.probe_resume();
+  }
+  EXPECT_GT(writes, 0) << "the first entry's direction still fires";
+  EXPECT_GT(reads, 0) << "the second entry's direction fires too";
+
+  // Merged, not appended: the pair took one of the PROBE_MAX_IO slots, and a
+  // repeat is accepted even with the table full.
+  for (uint16_t port = 1; port < PROBE_MAX_IO; ++port)
+    ASSERT_EQ(probe_add_io(m.probe(), port, 0xFFFF, 1, 0), 0) << port;
+  EXPECT_EQ(probe_add_io(m.probe(), 0x1234, 0xFFFF, 1, 0), -1) << "table full";
+  EXPECT_EQ(probe_add_io(m.probe(), 0xF400, 0xFF00, 1, 1), 0);
+  probe_clear_io(m.probe());
+}
+
 TEST(Probe, RegsAndMemoryPeeksReadPinLevelTruth) {
   const std::vector<uint8_t> rom = load_rom();
   if (rom.empty()) GTEST_SKIP() << "rom/cpc6128.rom not found";

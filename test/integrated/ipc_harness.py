@@ -4021,6 +4021,62 @@ def test_conditional_debug_matrix():
         return True
 
 
+def test_iobp_second_entry_on_same_port_fires():
+    """Two I/O breakpoints on one port and mask, one per direction, both arm.
+
+    beads-lj1t: `iobp add 0x7F00 0xFF00 in` then `iobp add 0x7F00 0xFF00 out`
+    are two entries in the list, and the probe has one comparator for the
+    pair. It kept the first entry's direction and dropped the second, so the
+    OUT breakpoint was listed and never fired. The firmware writes the Gate
+    Array (&7Fxx) on every interrupt and never reads it, so the IN entry alone
+    must stay silent and the pair must stop on a write.
+    """
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("  Failed to start emulator")
+            return False
+        emu.ipc.timeout = 20.0
+        time.sleep(3)  # let the firmware reach its idle loop
+
+        ok, resp = emu.ipc.send_command('iobp add 0x7F00 0xFF00 in')
+        if not ok:
+            print(f"  FAIL: iobp add in: {resp}")
+            return False
+        ok, resp = emu.ipc.send_command('wait bp 1500')
+        if ok:
+            print(f"  FAIL: nothing reads the Gate Array, yet IN fired: {resp}")
+            return False
+
+        ok, resp = emu.ipc.send_command('iobp add 0x7F00 0xFF00 out')
+        if not ok:
+            print(f"  FAIL: iobp add out: {resp}")
+            return False
+        ok, resp = emu.ipc.send_command('iobp list')
+        if not ok or 'count=2' not in resp or '/in' not in resp \
+                or '/out' not in resp:
+            print(f"  FAIL: expected the two entries listed: {resp}")
+            return False
+        ok, resp = emu.ipc.send_command('wait bp 5000')
+        if not ok:
+            print(f"  FAIL: the OUT breakpoint on the shared port never "
+                  f"fired: {resp}")
+            return False
+        print(f"  second entry on the same port fires: {resp.strip()}")
+
+        # Deleting the OUT entry disarms its direction again: the comparator
+        # is rebuilt from the list, not left with the merged directions.
+        emu.ipc.send_command('iobp del 1')
+        emu.ipc.send_command('run')
+        ok, resp = emu.ipc.send_command('wait bp 1500')
+        if ok:
+            print(f"  FAIL: OUT still fires after its entry was deleted: "
+                  f"{resp}")
+            return False
+        emu.ipc.send_command('iobp clear')
+        emu.ipc.send_command('run')
+        return True
+
+
 def test_pc_and_mem_events_fire():
     """`event on|once pc=` / `mem=` must run their command (beads-uj1c).
 
@@ -4290,6 +4346,7 @@ def main():
         test_boots_to_basic_with_peripherals,
         test_serial_ipc_drives_the_live_card,
         test_conditional_debug_matrix,
+        test_iobp_second_entry_on_same_port_fires,
         test_pc_and_mem_events_fire,
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,
