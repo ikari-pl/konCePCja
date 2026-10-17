@@ -1497,6 +1497,7 @@ Status kcpc_host_config_get(const std::string& key, kcpc::ConfigValue& value) {
       return Status::kNotPresent;
     case IpcConfigStatus::UnknownKey:
     case IpcConfigStatus::BadValue:
+    case IpcConfigStatus::NotIdle:  // set only
       return Status::kNotFound;
   }
   value.value = std::move(got.value);
@@ -1513,10 +1514,13 @@ Status kcpc_host_config_set(const std::string& key, const std::string& value,
   return changed([&](const kcpc::Stamp& /*taken*/) {
     IpcConfigEffect how = IpcConfigEffect::Now;
     std::string note;
-    switch (ipc_config_set(key, value, how, note)) {
+    // This lease is the one ipc_config_set() would otherwise take.
+    switch (ipc_config_set(key, value, how, note, IpcConfigHold::Caller)) {
       case IpcConfigStatus::Ok:
         effect = static_cast<kcpc::ConfigEffect>(how);
         return Status::kOk;
+      case IpcConfigStatus::NotIdle:
+        return Status::kBusy;
       case IpcConfigStatus::NotReady:
       case IpcConfigStatus::NoWindow:
         return Status::kNotPresent;

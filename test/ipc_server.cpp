@@ -36,6 +36,7 @@
 #include "koncepcja.h"
 #include "koncepcja_ipc_server.h"
 #include "serial_interface.h"
+#include "silicon_disc.h"
 #include "stuck_z80_thread.h"
 #include "subcycle_bridge.h"
 #include "symfile.h"
@@ -1197,6 +1198,55 @@ TEST_F(IpcServerTest, LeaseTakingCommandsFailClosedOnAStuckZ80Thread) {
   CPC.ram_size = saved_ram_size;
   std::filesystem::remove(bin);
   std::filesystem::remove("test/.ipc_stuck_z80.dsk");
+}
+
+// The configuration keys that change the machine (the CRTC type, the Silicon
+// Disc's banking) take a pause lease too, and fail closed like the commands
+// above; the others touch no machine and are answered as before
+// (beads-7h32).
+TEST_F(IpcServerTest, ConfigSetOfAMachineKeyFailsClosedOnAStuckZ80Thread) {
+  unsigned char const saved_crtc = CRTC.crtc_type;
+  bool const saved_sdisc = g_silicon_disc.enabled;
+  CRTC.crtc_type = 0;
+  g_silicon_disc.enabled = false;
+  for (const char* cmd :
+       {"config set crtc_type 1", "config set silicon_disc 1"}) {
+    SCOPED_TRACE(cmd);
+    cpc_resume();
+    StuckZ80Thread const stuck(50);
+    std::string const resp = send_command(cmd);
+    EXPECT_EQ(0u, resp.rfind("ERR 409 z80-not-idle", 0)) << resp;
+    EXPECT_FALSE(CPC.paused) << "the machine was left paused";
+  }
+  EXPECT_EQ(0, CRTC.crtc_type) << "CRTC type changed under a stuck frame";
+  EXPECT_FALSE(g_silicon_disc.enabled) << "banking changed under a stuck frame";
+  {
+    cpc_resume();
+    StuckZ80Thread const stuck(50);
+    EXPECT_EQ("OK (reset required)\n", send_command("config set m4board 0"));
+  }
+  CRTC.crtc_type = saved_crtc;
+  g_silicon_disc.enabled = saved_sdisc;
+}
+
+// Nor beside another lease holder, who may be rebuilding the machine.
+TEST_F(IpcServerTest, ConfigSetOfAMachineKeyWaitsToBeTheOnlyLeaseHolder) {
+  unsigned char const saved_crtc = CRTC.crtc_type;
+  CRTC.crtc_type = 0;
+  cpc_resume();
+  {
+    CpcPauseLease other;
+    ASSERT_TRUE(other.idle());
+    std::string const resp = send_command("config set crtc_type 2");
+    EXPECT_EQ(0u, resp.rfind("ERR 409 z80-not-idle", 0)) << resp;
+    EXPECT_EQ(0, CRTC.crtc_type) << "CRTC type changed beside another holder";
+    other.restore_run_state();
+  }
+  EXPECT_FALSE(CPC.paused);
+  EXPECT_EQ("OK\n", send_command("config set crtc_type 2"));
+  EXPECT_EQ(2, CRTC.crtc_type);
+  EXPECT_FALSE(CPC.paused) << "the lease was not given back";
+  CRTC.crtc_type = saved_crtc;
 }
 
 // A rebuild refused for the same reason tears nothing down and says why, so
