@@ -4088,6 +4088,61 @@ def test_conditional_debug_matrix():
         return True
 
 
+def test_wait_bp_reports_an_io_stop_as_one():
+    """`wait bp` says an I/O breakpoint stopped the machine, and where.
+
+    beads-llnn: the probe's I/O hit went out through the watchpoint fields, so
+    `wait bp` answered `OK PC=7F89 WATCH=1 WP_ADDR=7F89 ...` for the firmware's
+    Gate Array write: a watchpoint that nobody set, and a PC that was the port
+    (B=7F, C=89), not an address the CPU was executing. The reply must name the
+    I/O breakpoint (`IO=1 PORT= DIR=OUT VAL=`), and its PC must be the one the
+    registers show, just past the OUT that made the access.
+    """
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("  Failed to start emulator")
+            return False
+        emu.ipc.timeout = 20.0
+        time.sleep(3)  # let the firmware reach its idle loop
+
+        ok, resp = emu.ipc.send_command('iobp add 0x7F00 0xFF00 out')
+        if not ok:
+            print(f"  FAIL: iobp add out: {resp}")
+            return False
+        ok, resp = emu.ipc.send_command('wait bp 5000')
+        emu.ipc.send_command('iobp clear')
+        if not ok:
+            print(f"  FAIL: the Gate Array write never stopped: {resp}")
+            return False
+        fields = dict(t.split('=', 1) for t in resp.split()[1:] if '=' in t)
+        print(f"  wait bp: {resp.strip()}")
+        problems = []
+        if fields.get('WATCH') != '0':
+            problems.append("an I/O stop reported as a watchpoint")
+        if fields.get('IO') != '1' or fields.get('DIR') != 'OUT':
+            problems.append("no IO=1 DIR=OUT")
+        port = int(fields.get('PORT', '0'), 16)
+        if port & 0xFF00 != 0x7F00:
+            problems.append(f"PORT={port:04X} is not the Gate Array's")
+        if 'VAL' not in fields:
+            problems.append("an OUT without the byte it wrote")
+        pc = int(fields.get('PC', '0'), 16)
+        ok, reg = emu.ipc.send_command('reg get PC')
+        if not ok or int(reg.split()[1], 16) != pc:
+            problems.append(f"PC={pc:04X} but the registers show {reg!r}")
+        # The OUT is the instruction just behind PC: OUT (C),r / OUTI / OTIR
+        # (ED xx) or OUT (n),A (D3 nn), both two bytes long.
+        ok, mem = emu.ipc.send_command(f'mem read {(pc - 2) & 0xFFFF:#06x} 2')
+        opcode = mem.split()[1][:2].upper() if ok else ''
+        if opcode not in ('ED', 'D3'):
+            problems.append(f"no OUT at PC-2 ({mem!r}): PC is not the code's")
+        emu.ipc.send_command('run')
+        if problems:
+            print(f"  FAIL: {'; '.join(problems)}")
+            return False
+        return True
+
+
 def test_iobp_second_entry_on_same_port_fires():
     """Two I/O breakpoints on one port and mask, one per direction, both arm.
 
@@ -4414,6 +4469,7 @@ def main():
         test_serial_ipc_drives_the_live_card,
         test_conditional_debug_matrix,
         test_iobp_second_entry_on_same_port_fires,
+        test_wait_bp_reports_an_io_stop_as_one,
         test_pc_and_mem_events_fire,
         test_debugger_stop_contract,
         test_m4_cat_lists_the_sd_card,

@@ -842,6 +842,40 @@ TEST_F(IpcServerTest, ARunDropsTheHitOfTheStopItLeaves) {
   cpc_resume();
 }
 
+TEST_F(IpcServerTest, WaitBpSaysWhichKindOfNonExecHitStopped) {
+  // beads-llnn: an I/O breakpoint stop was answered as a watchpoint
+  // (WATCH=1 WP_ADDR=<port>). Each kind of hit has its own detail.
+  uint16_t hit_pc = 0;
+  bool watch = false;
+  server.consume_breakpoint_hit(hit_pc, watch);
+  auto commit_hit = [](byte io, word addr, byte value, byte old_value) {
+    z80.watchpoint_reached = 1;
+    z80.watchpoint_io = io;
+    z80.watchpoint_addr = addr;
+    z80.watchpoint_value = value;
+    z80.watchpoint_old = old_value;
+    CpcRunCause hit;
+    hit.reason = io ? CpcStopReason::IoBreakpoint : CpcStopReason::Watchpoint;
+    hit.addr = addr;
+    hit.access = io ? io : 2;
+    return cpc_commit_breakpoint_stop(cpc_resume(), z80_breakpoint_generation(),
+                                      hit, 0xB950, /*watchpoint=*/true);
+  };
+
+  ASSERT_TRUE(commit_hit(2, 0x7F89, 0x89, 0));
+  EXPECT_EQ("OK PC=B950 WATCH=0 IO=1 PORT=7F89 DIR=OUT VAL=89\n",
+            send_command("wait bp 50"));
+  ASSERT_TRUE(commit_hit(1, 0xF500, 0xFF, 0));
+  EXPECT_EQ("OK PC=B950 WATCH=0 IO=1 PORT=F500 DIR=IN\n",
+            send_command("wait bp 50"));
+  ASSERT_TRUE(commit_hit(0, 0x4000, 0x12, 0x34));
+  EXPECT_EQ("OK PC=B950 WATCH=1 WP_ADDR=4000 WP_VAL=12 WP_OLD=34\n",
+            send_command("wait bp 50"));
+  z80.watchpoint_reached = 0;
+  z80.watchpoint_io = 0;
+  cpc_resume();
+}
+
 TEST_F(IpcServerTest, ALeaseRestoreKeepsAnUncollectedHit) {
   // The other side of beads-1ew8: a pause lease that borrows the stopped
   // machine (another actor's `mem read`) and puts it back is not a run, and

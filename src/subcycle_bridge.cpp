@@ -1177,6 +1177,9 @@ int process_probe_hit(Bridge& b, const ProbeHit& hit, uint64_t resume_epoch,
     z80.watchpoint_reached = 1;
     z80.watchpoint_addr = hit.addr;
     z80.watchpoint_value = watch_value;
+    z80.watchpoint_io = hit.kind == PROBE_HIT_IO_READ    ? 1
+                        : hit.kind == PROBE_HIT_IO_WRITE ? 2
+                                                         : 0;
   }
   z80_record_probe_hit_source(user_breakpoint_fired);
   z80_remove_ephemeral_breakpoints_while_coordinated();
@@ -1400,9 +1403,14 @@ int subcycle_bridge_debug_sync() {
         if (hit.kind == PROBE_HIT_IO_WRITE) stop.value = hit.data;
         break;
     }
+    // The hit hook (`wait bp`) is given the PC the announcement reads, never
+    // the watched address or the port: those are not where the CPU is.
+    word const hook_pc = hit.kind == PROBE_HIT_EXEC
+                             ? static_cast<word>(hit.addr)
+                             : subcycle_bridge_shown_regs().pc;
     bool const committed = cpc_commit_breakpoint_stop(
-        b.pending_stop_epoch, b.pending_stop_generation, stop,
-        static_cast<word>(hit.addr), hit.kind != PROBE_HIT_EXEC);
+        b.pending_stop_epoch, b.pending_stop_generation, stop, hook_pc,
+        hit.kind != PROBE_HIT_EXEC);
     b.pending_real_stop = false;
     b.pending_stop_epoch = 0;
     b.pending_stop_generation = 0;
