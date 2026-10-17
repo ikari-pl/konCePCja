@@ -151,11 +151,12 @@ kcpc::Status kcpc_host_sym_del(std::uint32_t client, std::uint32_t request,
                                const std::string& name,
                                std::uint64_t& generation);
 // Adds the symbols of a symbol file as one change. kNotFound when the file
-// cannot be opened.
+// cannot be opened, kBadPayload (with `message`) for a path that leads out
+// through '..', the rule MEDIA_INSERT and the snapshots apply.
 kcpc::Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
                                 const std::string& path,
                                 std::uint64_t& generation,
-                                std::uint32_t& loaded);
+                                std::uint32_t& loaded, std::string& message);
 
 // FB_INFO: the machine's canonical frame, with no transport until phase 4.
 kcpc::Status kcpc_host_fb_info(kcpc::FbInfo& info);

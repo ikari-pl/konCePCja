@@ -68,6 +68,7 @@ DevTools UI is built on top of the same API.
 
   * **IPC protocol** — TCP server on port 6543 for remote control by scripts and LLM agents (80+ commands — see [docs/ipc-protocol.md](docs/ipc-protocol.md))
   * **Telnet console** — persistent TCP text terminal on port 6544, mirrors CPC output and accepts keyboard input (`nc localhost 6544`)
+  * **Binary frontend protocol (KCPC)** — port 6545 for out-of-process frontends and tools: up to 8 clients (one controller, any number of observers), events pushed as they happen (breakpoint hits, pauses, media and machine changes) and 64 KiB of memory in one reply. A Python reference client ships in `test/integrated/kcpc/`; see [docs/protocol/kcpc-binary-v1.md](docs/protocol/kcpc-binary-v1.md). Its layouts may still change until the remote GUI ships
   * **Headless mode** (`--headless`) — run without a window for CI and automation
   * **Input replay** — type text, press keys, drive joysticks and the mouse over IPC
   * **Auto-Type** — `autotype` command with `~KEY~` syntax for scripted keyboard input

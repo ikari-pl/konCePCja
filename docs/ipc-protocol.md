@@ -8,12 +8,16 @@ Connect with `nc`: `echo "ping" | nc -w 1 localhost 6543`
 
 A second, binary protocol for out-of-process frontends (several clients,
 pushed events, bulk memory) is specified in
-[protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md) and is being
-implemented slice by slice. Its server listens on its own port (6545 by
-default, `ports.binary` in the manifest below; `[ipc] binary_port_enabled=0`
-turns it off); that document lists what it answers so far. It pushes run-state
-changes to its clients whoever caused them, a `pause` or `step` sent here
-included. It does not replace this protocol.
+[protocol/kcpc-binary-v1.md](protocol/kcpc-binary-v1.md), and implemented
+in full. Its server listens on its own port (6545 by default, `ports.binary`
+in the manifest below; `[ipc] binary_port_enabled=0` turns it off). It pushes
+run-state, breakpoint, symbol, media and machine changes to its clients
+whoever caused them, a `pause`, `step`, `bp add` or `load` sent here
+included, and it reads and changes the machine through the same tables and
+loaders as this protocol: `config` keys, the breakpoint lists, the symbol
+table, `load`. It does not replace this protocol. Its layouts may change
+until the remote GUI has shipped (major version 0): a client must be built
+from the same checkout as the core.
 
 The port is only the default: every server probes forward when its port is
 taken, so a stale instance can hold 6543 and the new one lands elsewhere. Read
@@ -104,7 +108,7 @@ See CLAUDE.md § Telnet Console for architecture details and key mappings.
 
 | Command | Description |
 |---------|-------------|
-| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`; `ERR 500 load-bin` if the file is missing, empty or too big), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported`. A cartridge is swapped with the machine held and the machine is then reset to boot it, as the File menu does; one that is refused (`ERR 500 load-cpr`) leaves the cartridge in the port, and the machine, as they were. A successful disk, tape, snapshot or cartridge load goes on the matching Recent list, as a File-menu load does, with the path made absolute first (a cwd-relative `load game.dsk` would otherwise persist an entry that opens nothing from another directory); the GUI then saves the config (as the menu does), a `--headless` run never rewrites the config file. While the Settings dialog is open the entry waits until it closes (saving then would persist the dialog's uncommitted edits) |
+| `load <path>` | Load file by extension: `.dsk`/`.ipf`/`.raw` and the flux images `.scp`/`.hfe`/`.a2r` (all drive A — flux is drive-A only), `.cdt`/`.voc` (tape), `.sna` (snapshot), `.cpr` (cartridge), `.bin` (IPC binary injection at 0x6000; the CLI equivalent is `--inject`; `ERR 500 load-bin` if the file is missing, empty or too big), or the first supported media member in a `.zip`. An unrecognised extension returns `ERR 415 unsupported`. A cartridge is swapped with the machine held and the machine is then reset to boot it, as the File menu does; one that is refused (`ERR 500 load-cpr`) leaves the cartridge in the port, and the machine, as they were. A disc that is refused (`ERR 500 load-disk`: no image, or a flux file with no flux in it) leaves drive A as it was too, the disc and its unsaved writes included; the binary protocol's `MEDIA_INSERT` does the same. A successful disk, tape, snapshot or cartridge load goes on the matching Recent list, as a File-menu load does, with the path made absolute first (a cwd-relative `load game.dsk` would otherwise persist an entry that opens nothing from another directory); the GUI then saves the config (as the menu does), a `--headless` run never rewrites the config file. While the Settings dialog is open the entry waits until it closes (saving then would persist the dialog's uncommitted edits) |
 
 ## Registers
 

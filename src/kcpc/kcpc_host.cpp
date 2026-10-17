@@ -915,7 +915,11 @@ Status kcpc_host_sym_del(std::uint32_t client, std::uint32_t request,
 
 Status kcpc_host_sym_load(std::uint32_t client, std::uint32_t request,
                           const std::string& path, std::uint64_t& generation,
-                          std::uint32_t& loaded) {
+                          std::uint32_t& loaded, std::string& message) {
+  if (!ipc_is_safe_path(path)) {
+    message = "a path must not be empty or lead out through '..'";
+    return Status::kBadPayload;
+  }
   Symfile const file(path);
   if (!file.readable()) return Status::kNotFound;
   {
@@ -1180,16 +1184,13 @@ Status load_status(int rc) {
 
 // A disc into drive `unit`. Under a lease, alone.
 Status insert_disc(std::uint8_t unit, const std::string& path) {
-  t_slot& slot = unit == 0 ? CPC.driveA : CPC.driveB;
-  slot.file = path;
-  slot.zip_index = 0;
-  int const rc = file_load(slot);
+  // A file that is refused changes nothing, the slot's file included.
+  int const rc = disc_insert(unit == 0 ? CPC.driveA : CPC.driveB, path);
   // The loader queued the machine's half for the next frame boundary. Nothing
   // is clocking the machine: give it the disc now, so that the reply is sent
   // with the disc in the drive. The disc that leaves is written back to its
   // own file there: the bridge remembers which file each drive's disc is.
   subcycle_bridge_apply_pending_media();
-  if (rc != 0) slot.file.clear();
   return load_status(rc);
 }
 
@@ -1679,9 +1680,10 @@ void kcpc_host_start(bool enabled) {
     return kcpc_host_sym_del(cause.client, cause.request, name, generation);
   };
   config.sym_load = [](const kcpc::Cause& cause, const std::string& path,
-                       std::uint64_t& generation, std::uint32_t& loaded) {
+                       std::uint64_t& generation, std::uint32_t& loaded,
+                       std::string& message) {
     return kcpc_host_sym_load(cause.client, cause.request, path, generation,
-                              loaded);
+                              loaded, message);
   };
   config.fb_info = &kcpc_host_fb_info;
   config.media_insert = [](const kcpc::Cause& cause,

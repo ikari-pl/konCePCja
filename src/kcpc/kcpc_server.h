@@ -155,9 +155,9 @@ using SymDelFn = std::function<Status(const Cause&, const std::string& name,
                                       std::uint64_t& generation)>;
 // Adds the symbols of a file on the core's machine; `loaded` is how many.
 // kNotFound when the file cannot be opened.
-using SymLoadFn =
-    std::function<Status(const Cause&, const std::string& path,
-                         std::uint64_t& generation, std::uint32_t& loaded)>;
+using SymLoadFn = std::function<Status(
+    const Cause&, const std::string& path, std::uint64_t& generation,
+    std::uint32_t& loaded, std::string& message)>;
 
 // FB_INFO: the machine's canonical frame. Constant for the life of the core.
 using FbInfoFn = std::function<Status(FbInfo&)>;

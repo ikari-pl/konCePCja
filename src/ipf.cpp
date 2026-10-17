@@ -27,7 +27,6 @@
 // Decode `len` bytes of an IPF image into the legacy sector view via the
 // clean-room decoder. A CAPS-encoder (encoderType 1) IPF is rejected outright
 // — there is no fallback.
-namespace {
 int ipf_load_bytes(const uint8_t* data, size_t len, t_drive* drive) {
   dsk_eject(drive);  // release any previously-loaded medium first
 
@@ -47,7 +46,6 @@ int ipf_load_bytes(const uint8_t* data, size_t len, t_drive* drive) {
   }
   return 0;
 }
-}  // namespace
 
 // Read an open IPF file handle fully into memory (the clean decoder takes raw
 // bytes, so there is no temp-file round-trip), then decode it. Reads from the

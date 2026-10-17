@@ -3321,6 +3321,13 @@ def test_disk_failed_load_does_not_redirect_write_back():
             if ok:
                 print(f"FAIL: a junk file loaded as a disc: {resp}")
                 return False
+            # A refused file changes nothing: the old disc, unsaved write
+            # and all, is still in the drive (KCPC MEDIA_INSERT agrees:
+            # test_kcpc.py, test_media_requests_are_checked).
+            ok, ls = emu.ipc.send_command('disk ls A')
+            if not ok or 'HELLO.BIN' not in ls:
+                print(f"FAIL: the refused load emptied drive A; ls={ls!r}")
+                return False
 
             ok, resp = emu.ipc.send_command('disk eject A')
             if not ok:
