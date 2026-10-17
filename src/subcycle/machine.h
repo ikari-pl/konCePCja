@@ -326,6 +326,13 @@ class Machine {
   // probe — stepping past a breakpoint must not immediately re-trip it).
   void step_instruction();
 
+  // From an instruction boundary, clock the board the way a run would until
+  // the probe latches the opcode fetch at `addr`: the machine then stands
+  // where a breakpoint stop at `addr` leaves it, the hit left latched for the
+  // caller. False when an instruction completed first (an accepted interrupt
+  // counts as one); a hit of another kind met on the way is acked.
+  bool run_to_fetch(uint16_t addr);
+
   // Firmware-vector taps: fn(ctx, addr) runs synchronously the master cycle
   // an M1 fetch lands on addr — registers still hold the caller's values
   // (telnet TXT_OUTPUT/BDOS hooks ride here). Up to 4; never halts.

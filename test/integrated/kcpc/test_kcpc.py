@@ -2803,6 +2803,44 @@ def test_a_step_can_be_stopped_by_something_else() -> None:
         assert not a.run_state().walk_active
 
 
+def test_a_breakpoint_a_walk_steps_onto_is_one_arrival() -> None:
+    """beads-w88g: STEP out single-steps the routine onto a breakpoint on
+    its RET and stops there, hit once. The next run must carry on from that
+    stop, the way it does from a probe stop: the RET runs, nothing stops at
+    the breakpoint a second time, and its hit count stays 1. The same for
+    the text IPC's `step out`."""
+    ret = STEP_SUB + 4
+    with Core() as core, controller(core, 'stepper') as a, \
+            observer(core, 'watcher', kc.CLASS_RUN) as b:
+        a_id = a.hello_reply.client_id
+        pause_core(core, a)
+        expect_stopped(b, kc.STOP_PAUSED, 0, 0, 'observer')
+        for who in ('STEP out', 'text step out'):
+            load_program(a, STEP_CODE)
+            a.regs_set(pc=STEP_SUB, sp=0xBF00)
+            a.mem_write(kc.SPACE_CPU_RAM, 0xBF00, bytes([0x03, 0x80]))
+            a.bp_clear()
+            a.bp_add(kc.BpEntry(kc.BP_EXEC, ret))
+            if who == 'STEP out':
+                step_id = a.step(mode=kc.STEP_OUT)
+                event = expect_stopped(b, kc.STOP_BREAKPOINT, a_id, step_id,
+                                       who)
+            else:
+                assert 'breakpoint-hit' in core.ipc('step out'), who
+                event = expect_stopped(b, kc.STOP_BREAKPOINT, 0, 0, who)
+            assert event.pc == ret, f'{who}: {event}'
+            assert [e.hit_count for e in a.bp_list()[1]] == [1], who
+            # Two frames from that stop: the RET runs, then the spin.
+            step_id = a.step(mode=kc.STEP_FRAMES, count=2)
+            expect_resumed(b, a_id, step_id, who)
+            event = expect_stopped(b, kc.STOP_STEP_DONE, a_id, step_id, who)
+            # (A pause may land after the JR fetched its offset.)
+            assert STEP_SPIN <= event.pc <= STEP_SPIN + 2, f'{who}: {event}'
+            assert [e.hit_count for e in a.bp_list()[1]] == [1], (
+                f'{who}: the breakpoint was hit again')
+        a.bp_clear()
+
+
 def test_quit_during_a_walk() -> None:
     """A walk only watches its own deadline, a minute away here; a core that
     quits ends it and exits at once all the same."""
@@ -4823,6 +4861,7 @@ TESTS: List[Callable[[], None]] = [
     test_text_ipc_edits_reach_the_binary_clients,
     test_step_over_out_and_to,
     test_a_step_can_be_stopped_by_something_else,
+    test_a_breakpoint_a_walk_steps_onto_is_one_arrival,
     test_a_kcpc_walk_runs_beside_other_actors_leases,
     test_quit_during_a_walk,
     test_step_over_a_restart_uses_a_prepared_rom,

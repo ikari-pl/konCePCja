@@ -290,6 +290,15 @@ void subcycle_bridge_write_regs(const Z80Regs& values, uint32_t fields);
  * Call with the machine not being clocked. */
 Z80Regs subcycle_bridge_shown_regs();
 
+/* A step that walks onto a breakpoint at `addr` (the machine stopped at the
+ * instruction boundary before it): clock the machine through that opcode's
+ * fetch and publish the stop the way a breakpoint stop through the probe is,
+ * so the next run carries on with the instruction instead of fetching it
+ * again and stopping at the breakpoint a second time (beads-w88g). False,
+ * with the view synced, when the machine took an interrupt instead. Call
+ * with the machine stopped, under the stop coordination lock. */
+bool subcycle_bridge_park_on_fetch(uint16_t addr);
+
 // True when `dst_row` (0-based, in [0, dst_h)) is the trailing row of a
 // >1-row span that nearest-neighbour upscaling maps back to the same
 // source row -- the one spare destination row scanline dimming is free to

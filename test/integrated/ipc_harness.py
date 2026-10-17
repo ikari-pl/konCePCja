@@ -2210,6 +2210,54 @@ def test_step_out_stops_at_breakpoint_inside_own_frame():
         return True
 
 
+def test_step_out_breakpoint_stop_is_one_arrival():
+    """A breakpoint the step-out walk steps onto is hit once (beads-w88g).
+
+    The walk stopped the CPU before that opcode's fetch, where a probe stop
+    leaves it after the fetch, so the next run fetched it again and stopped
+    at the same breakpoint a second time.
+    """
+    print("Running step-out breakpoint-arrives-once test...")
+
+    with EmulatorRunner() as emu:
+        if not emu.start():
+            print("FAIL: Could not start emulator")
+            return False
+        if not emu.ipc.pause():
+            print("FAIL: Could not pause emulator")
+            return False
+
+        # 6003: JR $ / 6006: NOP / 6007: NOP / 6008: RET, returning to 6003.
+        setup = ['mem write 0x6003 18FE00000000C9',
+                 'mem write 0x8000 0360',
+                 'reg set SP 0x8000',
+                 'reg set PC 0x6006',
+                 'bp clear',
+                 'bp add 0x6007']
+        for command in setup:
+            ok, resp = emu.ipc.send_command(command)
+            if not ok:
+                print(f"FAIL: {command!r} failed: {resp}")
+                emu.ipc.send_command('bp clear')
+                return False
+
+        ok, resp = emu.ipc.send_command('step out')
+        if 'breakpoint-hit' not in resp:
+            emu.ipc.send_command('bp clear')
+            print(f"FAIL: expected breakpoint-hit, got: {resp.strip()}")
+            return False
+        ok, resp = emu.ipc.send_command('step frame 2')
+        ok_pc, pc = emu.ipc.get_reg('PC')
+        emu.ipc.send_command('bp clear')
+        if not ok or not ok_pc or not 0x6003 <= pc <= 0x6005:
+            print(f"FAIL: the run from the stop should reach the JR $ at "
+                  f"6003, got {resp.strip()!r} PC={pc:04X}")
+            return False
+
+        print("PASS: the run from a stepped-onto breakpoint carries on")
+        return True
+
+
 def test_step_out_stops_at_real_breakpoint_on_landing_address():
     """A real breakpoint sitting on Step Out's ephemeral landing address
     must win and be reported as a breakpoint hit, not silently absorbed as
@@ -4556,6 +4604,7 @@ def main():
         test_step_out_computed_return,
         test_step_out_never_returns_times_out_honestly,
         test_step_out_stops_at_breakpoint_inside_own_frame,
+        test_step_out_breakpoint_stop_is_one_arrival,
         test_step_out_stops_at_real_breakpoint_on_landing_address,
         test_mouse_input,
         test_gun_input,

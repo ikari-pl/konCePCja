@@ -828,6 +828,18 @@ Z80Regs subcycle_bridge_shown_regs() {
   return r;
 }
 
+bool subcycle_bridge_park_on_fetch(uint16_t addr) {
+  Bridge& b = g_bridge;
+  if (!b.active) return false;
+  // Armed already when the breakpoint is listed; a duplicate is refused.
+  probe_add_exec(b.machine.probe(), addr);
+  const bool parked = b.machine.run_to_fetch(addr);
+  if (parked) b.machine.probe_resume();  // this stop is the walk's to report
+  subcycle_bridge_sync_regs_view();
+  if (parked) publish_halt_pc(b, addr);
+  return parked;
+}
+
 namespace {
 
 uint8_t to_bcd(int v) {
