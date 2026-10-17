@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "autotype.h"
+#include "host_clock.h"
 #include "keyboard_manager.h"
 #include "koncepcja.h"
 #include "subcycle/machine.h"
@@ -246,28 +247,52 @@ TEST_F(EmuFramePacingTest, PacedFramesReportTheirSleep) {
   double const work_ms = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - t0)
                              .count();
-  (void)subcycle_bridge_take_sleep_ticks();
-  // The first paced frame sets the deadline; the next three wait for theirs.
-  for (int i = 0; i < 4; ++i)
-    subcycle_bridge_frame(rows, nullptr, /*limit=*/true);
-  double const slept_ms =
-      static_cast<double>(subcycle_bridge_take_sleep_ticks()) * 1000.0 /
-      static_cast<double>(SDL_GetPerformanceFrequency());
-  // Ideal sleep is three periods minus three frames of work. Ask for half of
-  // it: a descheduled frame can eat into the rest.
   double const headroom_ms = 60.0 - work_ms;
+  double const freq = static_cast<double>(host_perf_frequency());
+  // A host that holds the thread up between its sleeps (a shared CI Mac
+  // descheduling it for tens of ms, beads-7ik5) leaves the pacer nothing to
+  // sleep: the deadlines pass while the thread waits, and drift correction
+  // rightly sleeps that much less. That says nothing about the counter, so a
+  // short sleep is measured again; a counter that loses the sleep fails
+  // every attempt.
+  std::string attempts;
+  bool slept_enough = false;
+  for (int attempt = 0; attempt < 5 && !slept_enough; ++attempt) {
+    // An unpaced frame forgets the deadline: the first paced frame sets it,
+    // the next three wait for theirs.
+    subcycle_bridge_frame(rows, nullptr, /*limit=*/false);
+    (void)subcycle_bridge_take_sleep_ticks();
+    uint64_t const start = host_perf_counter();
+    for (int i = 0; i < 4; ++i)
+      subcycle_bridge_frame(rows, nullptr, /*limit=*/true);
+    double const wall_ms =
+        static_cast<double>(host_perf_counter() - start) * 1000.0 / freq;
+    double const slept_ms =
+        static_cast<double>(subcycle_bridge_take_sleep_ticks()) * 1000.0 / freq;
+    // Whatever the host does, the three deadlines are 60 ms apart and the
+    // sleep happened inside the window.
+    EXPECT_GE(wall_ms, 59.99) << "attempt " << attempt;
+    EXPECT_LE(slept_ms, wall_ms) << "attempt " << attempt;
+    // Ideal sleep is three periods minus three frames of work. Ask for half
+    // of it: a descheduled frame can eat into the rest.
+    slept_enough = headroom_ms < 20.0 || slept_ms > headroom_ms / 2;
+    attempts += "\n  attempt " + std::to_string(attempt) + ": slept " +
+                std::to_string(slept_ms) + " ms of a " +
+                std::to_string(wall_ms) + " ms window, so " +
+                std::to_string(wall_ms - slept_ms) + " ms awake";
+  }
   if (headroom_ms >= 20.0) {
-    EXPECT_GT(slept_ms, headroom_ms / 2)
-        << "3 frames took " << work_ms << " ms of 60 ms; the pacer slept "
-        << slept_ms << " ms";
+    EXPECT_TRUE(slept_enough)
+        << "3 frames took " << work_ms << " ms of 60 ms; the pacer never slept "
+        << "more than half the " << headroom_ms
+        << " ms of headroom:" << attempts;
   } else {
     // Too slow to leave a measurable margin: the sleep claim cannot be judged
     // here, but the counter must still be sane and the rest still holds.
     std::printf(
         "[ note ] 3 frames took %.1f ms of 60 ms; sleep claim not judged on "
-        "this host (slept %.1f ms)\n",
-        work_ms, slept_ms);
-    EXPECT_GE(slept_ms, 0.0);
+        "this host:%s\n",
+        work_ms, attempts.c_str());
   }
   EXPECT_EQ(0u, subcycle_bridge_take_sleep_ticks()) << "take must reset";
 
