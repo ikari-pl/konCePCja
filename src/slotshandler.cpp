@@ -1131,6 +1131,51 @@ std::vector<uint8_t> read_file_bytes(const std::string& path) {
 }  // namespace
 
 // Still some duplication there... but it cannot really be helped
+namespace {
+
+// Whether drive `drive` would take this image, decided on copies so that a
+// refusal leaves both drives as they were: 0, or the error the load would end
+// in. In drive A the flux formats are the disc (the sub-cycle FDC reads
+// flux), so their transcoded capture is left in `scp` for the load to use.
+int disc_image_check(DRIVE drive, const std::string& extension, bool from_file,
+                     const std::string& file, const std::vector<uint8_t>& bytes,
+                     std::vector<uint8_t>& scp) {
+  if (bytes.empty()) {
+    std::error_code ec;
+    bool const missing = from_file && !std::filesystem::exists(file, ec);
+    LOG_ERROR((missing ? "File not found: " : "Empty disc image: ") << file);
+    return missing ? ERR_FILE_NOT_FOUND : ERR_DSK_INVALID;
+  }
+  auto scratch = std::make_unique<t_drive>();
+  int rc = 0;
+  if (extension == ".dsk") {
+    rc = dsk_load_bytes(bytes.data(), bytes.size(), scratch.get());
+  } else if (drive == DRIVE::DSK_A) {
+    scp = flux::to_scp(bytes.data(), bytes.size(), extension);
+    if (scp.empty()) rc = ERR_DSK_INVALID;
+  } else {
+    // .ipf and .raw in drive B, where the sector view is the disc.
+    rc = ipf_load_bytes(bytes.data(), bytes.size(), scratch.get());
+  }
+  dsk_eject_host(scratch.get());
+  return rc;
+}
+
+}  // namespace
+
+int disc_insert(t_slot& slot, const std::string& path) {
+  std::string const was_file = slot.file;
+  unsigned int const was_zip_index = slot.zip_index;
+  slot.file = path;
+  slot.zip_index = 0;
+  int const rc = file_load(slot);
+  if (rc != 0) {
+    slot.file = was_file;
+    slot.zip_index = was_zip_index;
+  }
+  return rc;
+}
+
 int file_load(t_slot& slot) {
   if (slot.file.empty()) {
     // Special casing because this is not an error if called from loadSlots
@@ -1184,6 +1229,31 @@ int file_load(t_slot& slot) {
 
   for (const auto& loader : files_loader_list) {
     if (slot.drive != loader.drive || extension != loader.extension) continue;
+    // Flux containers only use the loader below to fill the best-effort legacy
+    // sector view (disc-tools/DSK-export). The real medium is the flux
+    // transcoded below, so a sector-view failure must NOT abort the load — e.g.
+    // ipf_load returns an error for a CAPS-encoder IPF, yet a mainstream SPS
+    // IPF must still reach flux::to_scp (the clean-room decoder).
+    const bool is_flux = extension == ".ipf" || extension == ".raw" ||
+                         extension == ".scp" || extension == ".hfe" ||
+                         extension == ".a2r";
+    // A disc is tried on copies before either drive is touched: the loaders
+    // below empty the drive first, and a file that is then refused would
+    // leave it empty (beads-3o1.8). The bytes are read once, for the check
+    // and for the machine.
+    std::vector<uint8_t> disc_bytes;
+    std::vector<uint8_t> disc_scp;
+    if (slot.drive == DRIVE::DSK_A || slot.drive == DRIVE::DSK_B) {
+      disc_bytes = slot_bytes();
+      int const refused =
+          disc_image_check(slot.drive, extension, zip_inner.empty(), slot.file,
+                           disc_bytes, disc_scp);
+      if (refused != 0) {
+        if (file) fclose(file);
+        LOG_ERROR("Refused " << slot.file << ": the drive keeps its disc");
+        return refused;
+      }
+    }
     // NOLINTNEXTLINE(misc-const-correctness): clang-tidy FP — variable is
     // mutated (out-param/compound-assign/loop/reference)
     int ret = file ? loader.load_from_file(file)
@@ -1218,14 +1288,6 @@ int file_load(t_slot& slot) {
       media_changed(which);
     };
 
-    // Flux containers only use the loader above to fill the best-effort legacy
-    // sector view (disc-tools/DSK-export). The real medium is the flux
-    // transcoded below, so a sector-view failure must NOT abort the load — e.g.
-    // ipf_load returns an error for a CAPS-encoder IPF, yet a mainstream SPS
-    // IPF must still reach flux::to_scp (the clean-room decoder).
-    const bool is_flux = extension == ".ipf" || extension == ".raw" ||
-                         extension == ".scp" || extension == ".hfe" ||
-                         extension == ".a2r";
     if (!subcycle_bridge_active()) {
       announce(ret == 0);
       return ret;
@@ -1244,17 +1306,10 @@ int file_load(t_slot& slot) {
     } else if (extension == ".dsk" &&
                (slot.drive == DRIVE::DSK_A || slot.drive == DRIVE::DSK_B)) {
       // Mirror the new disc into the sub-cycle engine (the Z80 thread
-      // applies it at the next frame boundary). Re-read the image bytes:
-      // the track-structure loader consumed its copy.
+      // applies it at the next frame boundary): the bytes the check read.
       const int unit = (slot.drive == DRIVE::DSK_B) ? 1 : 0;
-      std::vector<uint8_t> bytes = slot_bytes();
-      if (bytes.empty()) {
-        LOG_ERROR("subcycle engine: could not re-read "
-                  << slot.file << " for drive " << (unit ? 'B' : 'A'));
-      } else {
-        subcycle_bridge_insert_media(std::move(bytes), false, unit, slot.file,
-                                     zip_inner);
-      }
+      subcycle_bridge_insert_media(std::move(disc_bytes), false, unit,
+                                   slot.file, zip_inner);
       announce(true);
     } else if (is_flux) {
       // The sub-cycle FDC eats flux: run the raw file bytes through the unified
@@ -1264,18 +1319,9 @@ int file_load(t_slot& slot) {
       // mirror only for CAPS-encoder IPFs. Flux is drive-A-only (fdc.cpp
       // sel_media), so drive B keeps the legacy path.
       if (slot.drive == DRIVE::DSK_A) {
-        std::vector<uint8_t> raw = slot_bytes();
-        std::vector<uint8_t> scp =
-            flux::to_scp(raw.data(), raw.size(), extension);
-        if (scp.empty()) {
-          LOG_ERROR("subcycle engine: could not transcode " << slot.file
-                                                            << " into flux");
-          // The flux medium IS the disk for the sub-cycle FDC — no flux, no
-          // load. Surface the sector-view error if we had one, else generic.
-          announce(false);
-          return ret != 0 ? ret : ERR_DSK_INVALID;
-        }
-        subcycle_bridge_insert_media(std::move(scp), true, 0, slot.file,
+        // Transcoded by the check above: no flux, no load, and nothing
+        // changed.
+        subcycle_bridge_insert_media(std::move(disc_scp), true, 0, slot.file,
                                      zip_inner);
         announce(true);
         return 0;  // flux transcode is the authority: a successful decode is a

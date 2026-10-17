@@ -65,6 +65,14 @@ TEST(QuitPolicy, ExitActionAsksOnlyOnTheMainThread) {
   EXPECT_FALSE(koncpc_exit_action_asks(/*on_main_thread=*/false));
 }
 
+TEST(QuitPolicy, OnlyAUserWhoWasAskedCanDropADiscsWrites) {
+  // Nobody asked (IPC `quit`, a signal, --exit-after, KONCPC_NO_DIALOGS):
+  // the writes go back to the disc's file, as on an eject (beads-lgul).
+  EXPECT_TRUE(koncpc_quit_writes_back_discs(/*user_was_asked=*/false));
+  // The user answered "Quit anyway?" with yes: they chose to drop them.
+  EXPECT_FALSE(koncpc_quit_writes_back_discs(/*user_was_asked=*/true));
+}
+
 TEST(QuitPolicy, SignalExitCodeFollowsTheShellConvention) {
   EXPECT_EQ(koncpc_signal_exit_code(2), 130);   // SIGINT
   EXPECT_EQ(koncpc_signal_exit_code(15), 143);  // SIGTERM

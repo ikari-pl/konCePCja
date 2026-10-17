@@ -890,13 +890,16 @@ class Server::Connection {
     }
     std::uint64_t generation = 0;
     std::uint32_t loaded = 0;
+    std::string message;
     Status const status = config_.sym_load(Cause{client_id_, header.id}, path,
-                                           generation, loaded);
+                                           generation, loaded, message);
     if (status != Status::kOk) {
-      respond_error(header, status,
-                    status == Status::kNotFound
-                        ? "the symbol file could not be opened"
-                        : machine_refusal(status));
+      if (message.empty()) {
+        message = status == Status::kNotFound
+                      ? "the symbol file could not be opened"
+                      : machine_refusal(status);
+      }
+      respond_error(header, status, message);
       return;
     }
     Writer w;

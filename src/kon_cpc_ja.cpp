@@ -4005,7 +4005,7 @@ void loadSnapshot() {
 bool driveAltered() { return driveA.altered || driveB.altered; }
 
 namespace {
-void doCleanUp() {
+void doCleanUp(bool write_back_discs) {
 #ifdef _WIN32
   timeEndPeriod(1);
 #endif
@@ -4077,6 +4077,10 @@ void doCleanUp() {
     g_z80_thread.detach();
   }
 
+  // The machine is stopped for good: the eject below is only queued and is
+  // never applied, so a disc's unsaved writes are written back here or not
+  // at all (beads-lgul).
+  if (write_back_discs) subcycle_bridge_write_back_discs();
   printer_stop();
   emulator_shutdown();
   dsk_eject(&driveA);
@@ -4156,9 +4160,9 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   }
 
   // Main thread (or early-init pre-capture): safe to prompt and tear down.
-  if (koncpc_quit_should_prompt(g_headless, askIfUnsaved, driveAltered(),
-                                g_no_dialogs) &&
-      !userConfirmsQuitWithoutSaving()) {
+  const bool asked = koncpc_quit_should_prompt(g_headless, askIfUnsaved,
+                                               driveAltered(), g_no_dialogs);
+  if (asked && !userConfirmsQuitWithoutSaving()) {
     return;
   }
   // Persist settings on a clean exit, so a change survives without an
@@ -4169,7 +4173,7 @@ void cleanExit(int returnCode, bool askIfUnsaved) {
   if (returnCode == 0 && !g_headless && g_config_loaded) {
     koncpc_save_configuration_preserving_intent();
   }
-  doCleanUp();
+  doCleanUp(koncpc_quit_writes_back_discs(asked));
   _exit(returnCode);
 }
 
@@ -5408,8 +5412,7 @@ int koncpc_main(int argc, char** argv) {
           // a hand-kept copy — a dropped .hfe used to hit the unknown-file
           // toast because this list had drifted from the loaders.
           if (extension_in_dotted_list(drive_extensions(DRIVE::DSK_A), ext)) {
-            CPC.driveA.file = drop_path;
-            if (file_load(CPC.driveA) == 0) {
+            if (disc_insert(CPC.driveA, drop_path) == 0) {
               ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
               koncpc_mru_push(CPC.mru_disks, drop_path);
             } else {
@@ -5448,8 +5451,7 @@ int koncpc_main(int argc, char** argv) {
             }
           } else if (ext == ".zip") {
             // Try as disk first (most common zip content)
-            CPC.driveA.file = drop_path;
-            if (file_load(CPC.driveA) == 0) {
+            if (disc_insert(CPC.driveA, drop_path) == 0) {
               ui_host().toast(UiToastLevel::Success, "Drive A: " + drop_fname);
               koncpc_mru_push(CPC.mru_disks, drop_path);
             } else {

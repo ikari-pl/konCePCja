@@ -3666,8 +3666,9 @@ def test_a_disc_runs_and_a_snapshot_round_trips() -> None:
 
 def test_media_requests_are_checked() -> None:
     """What does not exist is NOT_FOUND; what does not fit the slot, is no
-    image, or leads out through '..' is BAD_PAYLOAD, and leaves the slot
-    empty; a cartridge needs a 6128+. A relative path is the core's."""
+    image, or leads out through '..' is BAD_PAYLOAD, and changes nothing: a
+    drive keeps the disc it had; a cartridge needs a 6128+. A relative path
+    is the core's."""
     with Core() as core, controller(core, 'checks') as c:
         tmp = Path(os.path.realpath(core.tmpdir))
         disc = tmp / 'good.dsk'
@@ -3711,15 +3712,25 @@ def test_media_requests_are_checked() -> None:
             assert not c.media_info(slot).present, slot
         assert c.chip_get(kc.CHIP_FDC).present == (0, 0)
 
-        # A file that is no disc empties the drive it was meant for.
+        # A file that is refused changes nothing: the drive keeps its disc,
+        # the host and the machine alike, and no event says otherwise. The
+        # text IPC's `load` does the same (ipc_harness.py,
+        # test_disk_failed_load_does_not_redirect_write_back).
         loaded = c.media_insert(kc.SLOT_DRIVE_B, str(disc))
         assert c.chip_get(kc.CHIP_FDC).present == (0, 1)
         refused(kc.BAD_PAYLOAD, 'a file that is no disc', c.media_insert,
                 kc.SLOT_DRIVE_B, str(junk))
+        refused(kc.NOT_FOUND, 'a disc that is not there', c.media_insert,
+                kc.SLOT_DRIVE_B, str(tmp / 'nowhere.dsk'))
+        refused(kc.BAD_PAYLOAD, 'flux with nothing in it', c.media_insert,
+                kc.SLOT_DRIVE_A, str(flux))
         info = c.media_info(kc.SLOT_DRIVE_B)
-        assert not info.present and info.path == '', info
-        assert info.generation > loaded, (info, loaded)
-        assert c.chip_get(kc.CHIP_FDC).present == (0, 0)
+        assert info.present and Path(info.path) == disc, info
+        assert info.generation == loaded, (info, loaded)
+        assert c.chip_get(kc.CHIP_FDC).present == (0, 1)
+        assert not c.media_info(kc.SLOT_DRIVE_A).present
+        assert c.media_eject(kc.SLOT_DRIVE_B) > info.generation
+        info = c.media_info(kc.SLOT_DRIVE_B)
 
         # Ejecting an empty slot succeeds.
         assert c.media_eject(kc.SLOT_DRIVE_B) > info.generation
@@ -4173,6 +4184,9 @@ def test_symbols_round_trip_and_are_pushed() -> None:
         assert (0x4200, 'start') not in symbols, symbols
         refused(kc.NOT_FOUND, 'a file that is not there', a.sym_load,
                 str(path) + '.missing')
+        # The rule MEDIA_INSERT and SNAPSHOT_* apply to a path.
+        refused(kc.BAD_PAYLOAD, "a path through '..'", a.sym_load,
+                '../game.sym')
 
         # Checked before anything is changed.
         for what, name in (('no name', ''), ('a blank', 'two words'),
@@ -4447,6 +4461,75 @@ def test_recoverable_errors_keep_the_connection() -> None:
         c.ping()
 
 
+# Requests that carry no payload: an empty one is the whole request, so their
+# refusal is the role or the order of frames, never BAD_PAYLOAD.
+EMPTY_REQUESTS = {'PING', 'MACHINE_INFO', 'RUN_STATE', 'PAUSE', 'RUN',
+                  'REGS_GET', 'MEM_INFO', 'BP_LIST', 'KEYS_RELEASE',
+                  'INPUT_STATE', 'SYM_LIST', 'FB_INFO', 'CONFIG_APPLY'}
+
+
+def doc_opcode_table() -> List[Tuple[int, str, str]]:
+    """(opcode, name, who) for every row of section 13 of the protocol
+    document, the opcode table."""
+    doc = (ROOT / 'docs' / 'protocol' / 'kcpc-binary-v1.md').read_text(
+        encoding='utf-8')
+    section = doc.split('## 13. Opcode table', 1)[1].split('\n## ', 1)[0]
+    rows = re.findall(r'^\| `0x([0-9A-Fa-f]{4})` \| `([A-Z_]+)` \| [^|]+\| '
+                      r'([a-z ]+?) \|', section, re.MULTILINE)
+    assert len(rows) > 30, f'only {len(rows)} rows in the opcode table'
+    return [(int(code, 16), name, who) for code, name, who in rows]
+
+
+def test_every_opcode_has_a_documented_refusal() -> None:
+    """Every opcode of the document's table is the client's, with the same
+    number, and each is refused as the document says: sent as a first frame
+    it is HELLO_REQUIRED and closes the connection; from an observer, one
+    that is the controller's is NOT_CONTROLLER; one that carries a payload
+    is BAD_PAYLOAD without it. ERROR is the server's alone. Every refusal
+    keeps the connection open, and none changes the run state."""
+    table = doc_opcode_table()
+    client = {name[3:]: value for name, value in vars(kc).items()
+              if name.startswith('OP_') and name != 'OP_RESERVED_INPUT'}
+    assert {name for _, name, _ in table} == set(client), (
+        sorted({name for _, name, _ in table} ^ set(client)))
+    for code, name, who in table:
+        assert client[name] == code, (name, hex(code), hex(client[name]))
+        assert who in ('anyone', 'controller', 'server only'), (name, who)
+
+    with Core() as core:
+        port = core.binary_port
+        for code, name, _ in table:
+            if name == 'HELLO':
+                continue
+            sock = connect(port)
+            try:
+                sock.sendall(kc.encode_frame(kc.KIND_REQUEST, code, 1, b''))
+                expect_error_and_close(sock, kc.HELLO_REQUIRED,
+                                       f'{name} before HELLO')
+            finally:
+                sock.close()
+
+        with controller(core, 'refusals') as a, \
+                observer(core, 'refused') as b:
+            running = a.run_state().stamp
+            for code, name, who in table:
+                if who == 'server only':
+                    refused(kc.UNKNOWN_OPCODE, f'{name} from a client',
+                            a.request, code, b'')
+                    continue
+                if name == 'HELLO':
+                    continue   # a second HELLO closes: test_bad_frames_...
+                if who == 'controller':
+                    refused(kc.NOT_CONTROLLER, f'{name} from an observer',
+                            b.request, code, b'')
+                if name not in EMPTY_REQUESTS:
+                    refused(kc.BAD_PAYLOAD, f'{name} with no payload',
+                            a.request, code, b'')
+            a.ping()
+            b.ping()
+            assert a.run_state().stamp.paused == running.paused
+
+
 def test_ninth_client_is_refused() -> None:
     """Acceptance 3: with 8 clients connected a ninth gets one ERROR frame
     with TOO_MANY_CLIENTS and is closed, the eight are unaffected, and the
@@ -4695,6 +4778,7 @@ TESTS: List[Callable[[], None]] = [
     test_quit_while_clients_read,
     test_bad_frames_close_the_connection,
     test_recoverable_errors_keep_the_connection,
+    test_every_opcode_has_a_documented_refusal,
     test_ninth_client_is_refused,
     test_second_instance_gets_its_own_port,
     test_port_can_be_disabled,

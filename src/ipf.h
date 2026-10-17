@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -8,6 +9,8 @@
 
 int ipf_load(FILE* /*pfileIn*/, t_drive* /*drive*/);
 int ipf_load(const std::string& /*filename*/, t_drive* /*drive*/);
+// The same from bytes already in memory.
+int ipf_load_bytes(const uint8_t* data, size_t len, t_drive* drive);
 
 // One captured revolution of one cylinder: MFM bitcells, packed MSB-first.
 struct t_mfm_rev {

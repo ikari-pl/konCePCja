@@ -1479,9 +1479,17 @@ void flush_sf2_ide(Bridge& b) {
 }
 }  // namespace
 
+void subcycle_bridge_write_back_discs() {
+  Bridge& b = g_bridge;
+  if (!b.active) return;
+  // the discs leave with the process, as on an eject
+  flush_dirty_media_unit(b, 0, DiscFate::kLeaves);
+  flush_dirty_media_unit(b, 1, DiscFate::kLeaves);
+}
+
 void subcycle_bridge_stop() {
   Bridge& b = g_bridge;
-  // shutdown: both discs keep their writes
+  // a rebuild: both discs keep their writes
   flush_dirty_media_unit(b, 0, DiscFate::kStays);
   flush_dirty_media_unit(b, 1, DiscFate::kStays);
   flush_sf2_ide(b);  // and the IDE images keep theirs
